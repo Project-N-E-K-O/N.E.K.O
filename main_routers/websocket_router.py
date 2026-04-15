@@ -27,6 +27,21 @@ logger = get_module_logger(__name__, "Main")
 # Lock for session management
 _lock = asyncio.Lock()
 
+# 防止 fire-and-forget 任务被 Python 3.11+ GC 回收
+_ws_bg_tasks: set = set()
+
+
+def _fire_task(coro):
+    """Create a background task with GC protection."""
+    task = asyncio.create_task(coro)
+    _ws_bg_tasks.add(task)
+    task.add_done_callback(_ws_bg_tasks.discard)
+    return task
+
+
+# 每个角色的 WS 断开时间戳（epoch），用于区分"首次连接"与"刷新/重连"
+_ws_disconnect_time: dict[str, float] = {}
+
 
 @router.websocket("/ws/{lanlan_name}")
 async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
@@ -73,7 +88,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
 
     if mgr.pending_agent_callbacks:
         logger.info(f"[{lanlan_name}] websocket reconnect: {len(mgr.pending_agent_callbacks)} pending callbacks, scheduling delivery")
-        asyncio.create_task(mgr.trigger_agent_callbacks())
+        _fire_task(mgr.trigger_agent_callbacks())
 
     try:
         while True:
@@ -105,25 +120,38 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     # 传递input_mode参数，告知session manager使用何种模式
                     # 注意：音频模块由 main_server 后台预加载，Python import lock 会自动等待首次导入完成
                     mode = 'text' if input_type == 'text' else 'audio'
-                    asyncio.create_task(session_manager[lanlan_name].start_session(websocket, message.get("new_session", False), mode))
+                    _fire_task(session_manager[lanlan_name].start_session(websocket, message.get("new_session", False), mode))
                 else:
                     await session_manager[lanlan_name].send_status(json.dumps({"code": "INVALID_INPUT_TYPE", "details": {"input_type": input_type}}))
 
             elif action == "stream_data":
-                asyncio.create_task(session_manager[lanlan_name].stream_data(message))
+                _fire_task(session_manager[lanlan_name].stream_data(message))
 
             elif action == "end_session":
                 session_manager[lanlan_name].active_session_is_idle = False
-                asyncio.create_task(session_manager[lanlan_name].end_session())
+                _fire_task(session_manager[lanlan_name].end_session())
 
             elif action == "pause_session":
                 session_manager[lanlan_name].active_session_is_idle = True
-                asyncio.create_task(session_manager[lanlan_name].end_session())
+                _fire_task(session_manager[lanlan_name].end_session())
 
             elif action == "screenshot_response":
                 raw = message.get("data", "")
                 b64 = raw.split(",", 1)[1] if "," in raw else raw
                 session_manager[lanlan_name].resolve_screenshot_request(b64)
+
+            elif action == "greeting_check":
+                # 首次连接或切换角色时，前端请求检查是否需要主动搭话
+                # is_switch=true 时始终触发；否则检查上次断开距今是否 >15s（排除刷新/重连）
+                import time as _time
+                is_switch = message.get("is_switch", False)
+                last_disconnect = _ws_disconnect_time.get(lanlan_name, 0)
+                since_disconnect = _time.time() - last_disconnect if last_disconnect else float('inf')
+                if is_switch or since_disconnect > 15:
+                    logger.info(f"[{lanlan_name}] greeting_check: is_switch={is_switch} since_disconnect={since_disconnect:.1f}s → triggering")
+                    _fire_task(session_manager[lanlan_name].trigger_greeting())
+                else:
+                    logger.info(f"[{lanlan_name}] greeting_check: since_disconnect={since_disconnect:.1f}s ≤15s → skip (refresh/reconnect)")
 
             elif action == "ping":
                 # 心跳保活消息，回复pong
@@ -146,13 +174,16 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             pass
     finally:
         logger.info(f"Cleaning up WebSocket resources: {websocket.client}")
+        # 记录 WS 断开时间，供下次连接时判断是否为"刷新/重连"
+        import time as _time
+        _ws_disconnect_time[lanlan_name] = _time.time()
         # 安全检查：如果角色已被重命名或删除，lanlan_name 可能不再存在
         async with _lock:
             session_id = get_session_id()
             is_current = session_id.get(lanlan_name) == this_session_id
             if is_current:
                 session_id.pop(lanlan_name, None)
-        
+
         if is_current and lanlan_name in session_manager:
             await session_manager[lanlan_name].cleanup(expected_websocket=websocket)
 

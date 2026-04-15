@@ -234,6 +234,30 @@
         });
     }
 
+    /**
+     * 轻量 markdown → HTML：# 标题转加粗、**加粗**、*斜体*、- 列表项、换行保留。
+     * 先转义 HTML 实体，再按顺序替换 markdown 标记。
+     */
+    function _miniMarkdown(text) {
+        let s = text
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+        // # 标题 → 加粗（支持 1~6 级，去掉 #）
+        s = s.replace(/^#{1,6}\s+(.+)$/gm, '<strong>$1</strong>');
+        // **加粗**（先于 *斜体*）
+        s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+        // *斜体*
+        s = s.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>');
+        // - 列表项 → <li>（连续 <li> 后续用 CSS 处理）
+        s = s.replace(/^[-•]\s+(.+)$/gm, '<li style="margin-left:18px;list-style:disc;text-align:left;">$1</li>');
+        // 换行
+        s = s.replace(/\n/g, '<br>');
+        // 清理连续 <li> 之间多余的 <br>
+        s = s.replace(/<\/li><br><li/g, '</li><li');
+        return s;
+    }
+
     function _renderProminentNotice(notice, onDismiss) {
         // 回退文本优先级：按用户 locale 选择语言
         const _isChinese = (typeof _isUserRegionChina === 'function' && _isUserRegionChina())
@@ -276,7 +300,10 @@
         `;
 
         const btn = document.createElement('button');
-        btn.textContent = (typeof safeT === 'function') ? safeT('common.confirm', '确认') : '确认';
+        const _hasMore = _prominentNoticeQueue.length > 0;
+        btn.textContent = _hasMore
+            ? ((window.t && window.t('common.next')) || '下一个')
+            : ((window.t && window.t('common.confirm')) || '确认');
         btn.style.cssText = `
             background: #3b82f6; color: #fff; border: none;
             border-radius: 10px; padding: 10px 48px;
@@ -291,8 +318,8 @@
         icon.style.cssText = 'width:36px;height:36px;margin-bottom:14px;';
 
         const textDiv = document.createElement('div');
-        textDiv.style.cssText = 'font-size:16px;font-weight:600;line-height:1.7;margin-bottom:22px;';
-        textDiv.textContent = displayText;
+        textDiv.style.cssText = 'font-size:16px;font-weight:600;line-height:1.7;margin-bottom:22px;text-align:left;';
+        textDiv.innerHTML = _miniMarkdown(displayText);
 
         box.appendChild(icon);
         box.appendChild(textDiv);
@@ -416,6 +443,9 @@
                         imgOff.style.opacity = isActive ? '0' : '1';
                         imgOn.style.opacity = isActive ? '1' : '0';
                     }
+                    if (typeof manager.updateSeparatePopupTriggerIcon === 'function') {
+                        manager.updateSeparatePopupTriggerIcon('mic');
+                    }
                 }
             }
         }
@@ -435,6 +465,9 @@
                     if (imgOff && imgOn) {
                         imgOff.style.opacity = isActive ? '0' : '1';
                         imgOn.style.opacity = isActive ? '1' : '0';
+                    }
+                    if (typeof manager.updateSeparatePopupTriggerIcon === 'function') {
+                        manager.updateSeparatePopupTriggerIcon('screen');
                     }
                 }
             }
@@ -654,6 +687,8 @@
                     live2dCanvas.style.transition = '';
                     live2dCanvas.style.opacity = '';
                 }
+                // 清除容器的内联 opacity，使 CSS class（如 locked-hover-fade）能正常生效
+                container.style.removeProperty('opacity');
                 window._returnFadeTimer = null;
             }, 550);
         }
@@ -695,9 +730,23 @@
         }
 
         try {
+            // 运行时检测当前已加载且可见的模型，用于 API 失败时的回退
+            // 需同时检查模型引用和容器可见性（goodbye 流程中模型引用存在但容器已隐藏）
+            const _vrmEl = document.getElementById('vrm-container');
+            const _mmdEl = document.getElementById('mmd-container');
+            const isVrmCurrentlyActive = window.vrmManager && window.vrmManager.currentModel
+                && _vrmEl && _vrmEl.style.display !== 'none' && !_vrmEl.classList.contains('hidden');
+            const isMmdCurrentlyActive = window.mmdManager && window.mmdManager.currentModel
+                && _mmdEl && _mmdEl.style.display !== 'none' && !_mmdEl.classList.contains('hidden');
+
             const charResponse = await fetch('/api/characters');
             if (!charResponse.ok) {
-                console.warn('[showCurrentModel] 无法获取角色配置，默认显示Live2D');
+                console.warn('[showCurrentModel] 无法获取角色配置');
+                // 如果当前已有 VRM/MMD 模型在运行，保持当前状态而非回退到 Live2D
+                if (isVrmCurrentlyActive || isMmdCurrentlyActive) {
+                    console.log('[showCurrentModel] 保持当前已加载的模型');
+                    return;
+                }
                 showLive2d();
                 return;
             }
@@ -707,27 +756,53 @@
             const catgirlConfig = charactersData['猫娘']?.[currentCatgirl];
 
             if (!catgirlConfig) {
-                console.warn('[showCurrentModel] 未找到角色配置，默认显示Live2D');
+                console.warn('[showCurrentModel] 未找到角色配置');
+                if (isVrmCurrentlyActive || isMmdCurrentlyActive) {
+                    console.log('[showCurrentModel] 保持当前已加载的模型');
+                    return;
+                }
                 showLive2d();
                 return;
             }
 
             const modelType = catgirlConfig.model_type || (catgirlConfig.vrm ? 'vrm' : 'live2d');
 
-            // 解析 live3d 子类型（与 app-character.js 保持一致）
+            // 解析 live3d 子类型
+            // 优先使用 live3d_sub_type（后端权威来源），与 vrm-init.js / live2d-init.js 保持一致
+            // 旧逻辑仅通过 mmd/vrm 路径字段猜测，当两个字段同时存在时会误判
             let effectiveModelType = modelType;
             if (modelType === 'live3d') {
-                const _sanitize = v => (typeof v === 'string' && v.trim() && v !== 'undefined' && v !== 'null') ? v : '';
-                const mmdPath = _sanitize(catgirlConfig.mmd)
-                    || _sanitize(catgirlConfig._reserved?.avatar?.mmd?.model_path)
-                    || '';
-                const vrmPath = _sanitize(catgirlConfig.vrm)
-                    || _sanitize(catgirlConfig._reserved?.avatar?.vrm?.model_path)
-                    || '';
-                if (mmdPath) {
-                    effectiveModelType = 'mmd';
-                } else if (vrmPath) {
+                const subType = (
+                    window.lanlan_config?.live3d_sub_type
+                    || catgirlConfig._reserved?.avatar?.live3d_sub_type
+                    || catgirlConfig.live3d_sub_type
+                    || ''
+                ).toString().trim().toLowerCase();
+
+                if (subType === 'vrm') {
                     effectiveModelType = 'vrm';
+                } else if (subType === 'mmd') {
+                    effectiveModelType = 'mmd';
+                } else {
+                    // sub_type 缺失时回退到路径探测
+                    const _sanitize = (v) => {
+                        if (v === undefined || v === null) return '';
+                        const s = String(v).trim();
+                        const lower = s.toLowerCase();
+                        if (!s || lower === 'undefined' || lower === 'null') return '';
+                        return s;
+                    };
+                    const mmdPath = _sanitize(catgirlConfig.mmd)
+                        || _sanitize(catgirlConfig._reserved?.avatar?.mmd?.model_path)
+                        || '';
+                    const vrmPath = _sanitize(catgirlConfig.vrm)
+                        || _sanitize(catgirlConfig._reserved?.avatar?.vrm?.model_path)
+                        || '';
+                    if (mmdPath && !vrmPath) {
+                        effectiveModelType = 'mmd';
+                    } else if (vrmPath) {
+                        effectiveModelType = 'vrm';
+                    }
                 }
             }
             console.log('[showCurrentModel] 当前角色模型类型:', modelType, '有效类型:', effectiveModelType);
@@ -1029,7 +1104,18 @@
             }
         } catch (error) {
             console.error('[showCurrentModel] 失败:', error);
-            showLive2d(); // 出错时默认显示Live2D
+            // 出错时检查是否有 VRM/MMD 正在运行且可见，如果有则保持当前状态
+            const vrmEl = document.getElementById('vrm-container');
+            const mmdEl = document.getElementById('mmd-container');
+            const isVrmRunning = window.vrmManager && window.vrmManager.currentModel
+                && vrmEl && vrmEl.style.display !== 'none' && !vrmEl.classList.contains('hidden');
+            const isMmdRunning = window.mmdManager && window.mmdManager.currentModel
+                && mmdEl && mmdEl.style.display !== 'none' && !mmdEl.classList.contains('hidden');
+            if (isVrmRunning || isMmdRunning) {
+                console.log('[showCurrentModel] 保持当前已加载的模型');
+                return;
+            }
+            showLive2d();
         }
     }
 
@@ -1175,6 +1261,14 @@
             if (window.vrmManager && typeof window.vrmManager.resetAllButtons === 'function') {
                 window.vrmManager.resetAllButtons();
             }
+
+            // 保存当前锁定状态，以便"请她回来"时恢复
+            // core.setLocked() 将值写入 manager.isLocked，因此从 manager 级别读取
+            window._savedLockState = {
+                live2d: window.live2dManager ? window.live2dManager.isLocked : false,
+                vrm: window.vrmManager ? window.vrmManager.isLocked : false,
+                mmd: window.mmdManager ? window.mmdManager.isLocked : false
+            };
 
             // 设置锁定状态
             if (window.live2dManager && typeof window.live2dManager.setLocked === 'function') {
@@ -1632,15 +1726,18 @@
                 mmdLockIcon.style.removeProperty('visibility');
                 mmdLockIcon.style.removeProperty('opacity');
             }
+            // 恢复"请她离开"之前的锁定状态（而非强制解锁）
+            const savedLock = window._savedLockState || { live2d: false, vrm: false, mmd: false };
             if (window.live2dManager && typeof window.live2dManager.setLocked === 'function') {
-                window.live2dManager.setLocked(false, { updateFloatingButtons: false });
+                window.live2dManager.setLocked(savedLock.live2d, { updateFloatingButtons: false });
             }
             if (window.vrmManager && window.vrmManager.core && typeof window.vrmManager.core.setLocked === 'function') {
-                window.vrmManager.core.setLocked(false);
+                window.vrmManager.core.setLocked(savedLock.vrm);
             }
             if (window.mmdManager && window.mmdManager.core && typeof window.mmdManager.core.setLocked === 'function') {
-                window.mmdManager.core.setLocked(false);
+                window.mmdManager.core.setLocked(savedLock.mmd);
             }
+            window._savedLockState = null;
 
             // 恢复浮动按钮系统
             const live2dFloatingButtons = document.getElementById('live2d-floating-buttons');

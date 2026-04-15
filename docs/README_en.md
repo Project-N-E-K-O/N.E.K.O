@@ -43,13 +43,13 @@ https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 <tr>
 <td align="center" width="25%">🎙️<br><b>Omni-Modal Dialogue</b><br>Real-time voice (Realtime API) + text chat (ChatCompletion) with visual understanding</td>
 <td align="center" width="25%">🧠<br><b>Three-Tier Memory</b><br>Facts / Reflection / Persona — she truly "remembers" you</td>
-<td align="center" width="25%">🤖<br><b>Agent Capabilities</b><br>Browser control (CUA), computer use, MCP tool calling — she can get work done for you</td>
+<td align="center" width="25%">🤖<br><b>Agent Capabilities</b><br>Browser control (CUA), computer use, OpenClaw A2A calling — she can get work done for you</td>
 <td align="center" width="25%">🎭<br><b>Multi-Form Avatar</b><br>Live2D / VRM / MMD with motion capture and full-screen tracking support</td>
 </tr>
 <tr>
-<td align="center">🔌<br><b>Plugin Ecosystem</b><br>Full plugin SDK for custom extensions</td>
+<td align="center">🔌<br><b>Plugin Ecosystem</b><br>Full plugin SDK & marketplace for custom extensions</td>
 <td align="center">🌐<br><b>14+ AI Providers</b><br>OpenAI / Gemini / Qwen / DeepSeek and more, with free models out of the box</td>
-<td align="center">💬<br><b>Proactive Chat</b><br>24/7 ambient awareness: screen understanding, social media trends, personal feeds, news — she initiates conversations with you</td>
+<td align="center">💬<br><b>Proactive Chat</b><br>24/7 ambient awareness: screen understanding, social media trends, personal feeds, music & memes — she initiates conversations with you</td>
 <td align="center">🏪<br><b>UGC Workshop</b><br>Upload and share custom characters, models, and voice packs via Steam Workshop</td>
 </tr>
 </table>
@@ -383,8 +383,6 @@ After container startup:
 
 </details>
 
-**Note**: The current Docker deployment solution is provided by [**HINS**](https://home.hinswu.top)
-
 ### Source Code Development
 
 <details>
@@ -392,23 +390,31 @@ After container startup:
 
 > Full developer documentation at [project-neko.online](https://project-neko.online)
 
-**Requirements**: Python 3.11 (other versions not supported), [uv](https://docs.astral.sh/uv/) package manager
+**Requirements**: Python 3.11 (other versions not supported), [uv](https://docs.astral.sh/uv/) package manager, Node.js (>=20.19)
 
 ```bash
 # 1. Clone the project
 git clone https://github.com/Project-N-E-K-O/N.E.K.O.git
 cd N.E.K.O
 
-# 2. Install dependencies
+# 2. Install Python dependencies
 uv sync
 
-# 3. Start services (main_server and memory_server required at minimum)
+# 3. Build frontend projects (requires Node.js >= 20.19; needed on first run or after frontend changes)
+#    Recommended: use the convenience script (this is the officially supported build path)
+#      Windows:      build_frontend.bat
+#      Linux/macOS:  ./build_frontend.sh
+#    Manual build (must match what the script runs):
+# cd frontend/react-neko-chat && npm install && npm run build && cd ../..
+# cd frontend/plugin-manager && npm install && npm run build-only && cd ../..
+
+# 4. Start services (main_server and memory_server required at minimum)
 uv run python memory_server.py
 uv run python main_server.py
 # Optional: start Agent service
 uv run python agent_server.py
 
-# 4. Visit http://localhost:48911 to configure API Key and start using
+# 5. Visit http://localhost:48911 to configure API Key and start using
 ```
 
 Developers are encouraged to join QQ group 1022939659.
@@ -458,6 +464,7 @@ Visit `http://localhost:48911/api_key` to configure directly through the Web int
 
 ```
 N.E.K.O/
+├── 📁 .agent/                   # 🤖 AI coding assistant rules & skills (Google Antigravity convention)
 ├── 📁 brain/                    # 🧠 Agent modules
 │   ├── computer_use.py          # Computer control
 │   ├── browser_use_adapter.py   # Browser automation
@@ -480,17 +487,21 @@ N.E.K.O/
 │   ├── facts/                   # Fact memory
 │   ├── reflection/              # Reflection memory
 │   └── persona/                 # Persona memory
+├── 📁 frontend/                 # 🖥️ Modern frontend projects
+│   ├── react-neko-chat/         # React chat window component
+│   └── plugin-manager/          # Vue plugin manager dashboard
 ├── 📁 plugin/                   # 🔌 Plugin system
 │   ├── sdk/                     # Plugin SDK
-│   ├── server/                  # Plugin server
-│   └── frontend/                # Plugin frontend
-├── 📁 static/                   # 🌐 Frontend static resources
+│   └── server/                  # Plugin server
+├── 📁 static/                   # 🌐 Frontend static resources (incl. build artifacts)
 ├── 📁 templates/                # 📄 Frontend HTML templates (14 pages)
 ├── 📁 utils/                    # 🛠️ Utility modules
 ├── main_server.py               # 🌐 Main server
 ├── agent_server.py              # 🤖 AI agent server
 └── memory_server.py             # 🧠 Memory server
 ```
+
+> **AI-Assisted Development**: The `.agent/` directory follows the Google Antigravity open convention and contains the project's development rules and skill sets. Only Antigravity auto-reads it; all other AI tools (including Claude Code) need to import manually. See the [adaptation guide](https://project-neko.online/contributing/ai-assisted-dev).
 
 **Data Flow**
 

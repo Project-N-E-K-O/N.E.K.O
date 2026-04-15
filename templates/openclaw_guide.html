@@ -1,0 +1,843 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenClaw 接入教程 - N.E.K.O.</title>
+    <script src="/static/i18n-i18next.js"></script>
+    <link rel="stylesheet" href="/static/css/dark-mode.css">
+    <script src="/static/theme-manager.js"></script>
+    <style>
+        :root {
+            color-scheme: light;
+            --guide-bg: linear-gradient(135deg, #edf7ff 0%, #f8fbff 48%, #fff4fb 100%);
+            --guide-shell: rgba(255, 255, 255, 0.86);
+            --guide-sidebar: linear-gradient(180deg, rgba(75, 212, 253, 0.92) 0%, rgba(23, 167, 255, 0.9) 100%);
+            --guide-card: rgba(255, 255, 255, 0.72);
+            --guide-card-border: rgba(23, 167, 255, 0.16);
+            --guide-text: #17324d;
+            --guide-text-soft: rgba(23, 50, 77, 0.72);
+            --guide-accent: #0b84d8;
+            --guide-accent-strong: #0667aa;
+            --guide-code-bg: rgba(10, 39, 68, 0.08);
+            --guide-shadow: 0 24px 60px rgba(31, 77, 122, 0.16);
+            --guide-toolbar-btn: rgba(255, 255, 255, 0.74);
+            --guide-toolbar-btn-hover: rgba(255, 255, 255, 0.96);
+        }
+
+        html[data-theme="dark"] {
+            color-scheme: dark;
+            --guide-bg: radial-gradient(circle at top, #173c57 0%, #0f1726 42%, #0b101a 100%);
+            --guide-shell: rgba(10, 16, 26, 0.86);
+            --guide-sidebar: linear-gradient(180deg, rgba(10, 87, 143, 0.96) 0%, rgba(8, 52, 92, 0.96) 100%);
+            --guide-card: rgba(20, 28, 40, 0.82);
+            --guide-card-border: rgba(110, 184, 255, 0.14);
+            --guide-text: #e6f2ff;
+            --guide-text-soft: rgba(230, 242, 255, 0.72);
+            --guide-accent: #79cbff;
+            --guide-accent-strong: #9cd7ff;
+            --guide-code-bg: rgba(121, 203, 255, 0.12);
+            --guide-shadow: 0 28px 70px rgba(0, 0, 0, 0.42);
+            --guide-toolbar-btn: rgba(18, 29, 44, 0.92);
+            --guide-toolbar-btn-hover: rgba(33, 48, 69, 0.98);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html, body {
+            margin: 0;
+            min-height: 100%;
+            font-family: "SF Pro Display", "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
+            background: var(--guide-bg);
+            color: var(--guide-text);
+        }
+
+        body {
+            min-height: 100vh;
+            padding: 24px;
+        }
+
+        .guide-shell {
+            min-height: calc(100vh - 48px);
+            display: grid;
+            grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+            background: var(--guide-shell);
+            border: 1px solid var(--guide-card-border);
+            border-radius: 28px;
+            overflow: hidden;
+            box-shadow: var(--guide-shadow);
+            backdrop-filter: blur(22px);
+            -webkit-backdrop-filter: blur(22px);
+        }
+
+        .guide-sidebar {
+            padding: 28px 24px;
+            background: var(--guide-sidebar);
+            color: #fff;
+            display: flex;
+            flex-direction: column;
+            gap: 18px;
+        }
+
+        .sidebar-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 14px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.16);
+            width: fit-content;
+            font-size: 13px;
+            font-weight: 600;
+            letter-spacing: 0.04em;
+        }
+
+        .sidebar-title {
+            margin: 0;
+            font-size: clamp(28px, 4vw, 40px);
+            line-height: 1.08;
+        }
+
+        .sidebar-copy {
+            margin: 0;
+            font-size: 15px;
+            line-height: 1.7;
+            color: rgba(255, 255, 255, 0.86);
+        }
+
+        .guide-main {
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            padding: 24px;
+            gap: 18px;
+        }
+
+        .guide-topbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 16px;
+        }
+
+        .guide-heading h1 {
+            margin: 0;
+            font-size: clamp(24px, 3.2vw, 34px);
+            line-height: 1.18;
+        }
+
+        .guide-actions {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 10px;
+        }
+
+        .guide-action-btn {
+            border: 1px solid var(--guide-card-border);
+            background: var(--guide-toolbar-btn);
+            color: var(--guide-text);
+            border-radius: 999px;
+            min-height: 42px;
+            padding: 0 16px;
+            font-size: 14px;
+            font-weight: 600;
+            transition: transform 0.18s ease, background 0.18s ease, border-color 0.18s ease;
+        }
+
+        .guide-action-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            cursor: pointer;
+        }
+
+        .guide-action-btn:hover {
+            background: var(--guide-toolbar-btn-hover);
+            border-color: rgba(11, 132, 216, 0.26);
+            transform: translateY(-1px);
+        }
+
+        .guide-lang-dropdown {
+            position: relative;
+        }
+
+        .guide-lang-trigger {
+            width: 42px;
+            min-width: 42px;
+            padding: 0;
+            border-radius: 999px;
+        }
+
+        .guide-lang-short {
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+        }
+
+        .guide-lang-menu {
+            position: absolute;
+            top: calc(100% + 10px);
+            right: 0;
+            min-width: 188px;
+            padding: 8px;
+            border-radius: 18px;
+            border: 1px solid var(--guide-card-border);
+            background: rgba(255, 255, 255, 0.96);
+            box-shadow: 0 18px 36px rgba(14, 42, 72, 0.14);
+            backdrop-filter: blur(18px);
+            -webkit-backdrop-filter: blur(18px);
+            z-index: 20;
+            display: none;
+        }
+
+        html[data-theme="dark"] .guide-lang-menu {
+            background: rgba(18, 29, 44, 0.96);
+            box-shadow: 0 18px 38px rgba(0, 0, 0, 0.34);
+        }
+
+        .guide-lang-menu.is-open {
+            display: block;
+        }
+
+        .guide-lang-item {
+            width: 100%;
+            border: none;
+            background: transparent;
+            color: var(--guide-text);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 12px;
+            border-radius: 12px;
+            font-size: 13px;
+            text-align: left;
+            cursor: pointer;
+            transition: background 0.16s ease, transform 0.16s ease;
+        }
+
+        .guide-lang-item:hover {
+            background: rgba(11, 132, 216, 0.09);
+            transform: translateX(1px);
+        }
+
+        .guide-lang-item.is-active {
+            background: rgba(11, 132, 216, 0.12);
+            color: var(--guide-accent-strong);
+        }
+
+        .guide-lang-item + .guide-lang-item {
+            margin-top: 2px;
+        }
+
+        .guide-content-wrap {
+            min-height: 0;
+            flex: 1;
+            overflow: auto;
+            padding-right: 4px;
+        }
+
+        .guide-content {
+            background: var(--guide-card);
+            border: 1px solid var(--guide-card-border);
+            border-radius: 24px;
+            padding: 28px;
+            line-height: 1.82;
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+        }
+
+        .guide-content > :first-child {
+            margin-top: 0;
+        }
+
+        .guide-content > :last-child {
+            margin-bottom: 0;
+        }
+
+        .guide-content h1,
+        .guide-content h2,
+        .guide-content h3,
+        .guide-content h4,
+        .guide-content h5,
+        .guide-content h6 {
+            margin: 1.6em 0 0.72em;
+            line-height: 1.28;
+            color: var(--guide-text);
+        }
+
+        .guide-content h1 {
+            font-size: 2rem;
+        }
+
+        .guide-content h2 {
+            font-size: 1.45rem;
+            padding-bottom: 0.3em;
+            border-bottom: 1px solid var(--guide-card-border);
+        }
+
+        .guide-content h3 {
+            font-size: 1.18rem;
+        }
+
+        .guide-content p,
+        .guide-content ul,
+        .guide-content ol,
+        .guide-content blockquote,
+        .guide-content pre {
+            margin: 0 0 1.1em;
+        }
+
+        .guide-content ul,
+        .guide-content ol {
+            padding-left: 1.4em;
+        }
+
+        .guide-content li + li {
+            margin-top: 0.45em;
+        }
+
+        .guide-content a {
+            color: var(--guide-accent);
+        }
+
+        .guide-content code {
+            font-family: "SFMono-Regular", "JetBrains Mono", "Consolas", monospace;
+            background: var(--guide-code-bg);
+            border-radius: 8px;
+            padding: 0.16em 0.42em;
+            font-size: 0.92em;
+        }
+
+        .guide-content pre {
+            position: relative;
+            overflow: auto;
+            padding: 16px 18px;
+            border-radius: 18px;
+            background: rgba(10, 39, 68, 0.9);
+            color: #eff7ff;
+        }
+
+        html[data-theme="dark"] .guide-content pre {
+            background: rgba(4, 11, 21, 0.96);
+        }
+
+        .guide-content pre code {
+            background: transparent;
+            padding: 0;
+            color: inherit;
+        }
+
+        .guide-content blockquote {
+            padding: 14px 18px;
+            border-left: 4px solid var(--guide-accent);
+            background: rgba(11, 132, 216, 0.08);
+            border-radius: 0 16px 16px 0;
+            color: var(--guide-text-soft);
+        }
+
+        .guide-content img {
+            display: block;
+            width: 100%;
+            max-width: min(100%, 980px);
+            height: auto;
+            margin: 18px auto 22px;
+            border-radius: 18px;
+            border: 1px solid var(--guide-card-border);
+            box-shadow: 0 18px 40px rgba(14, 42, 72, 0.14);
+            background: rgba(255, 255, 255, 0.72);
+        }
+
+        html[data-theme="dark"] .guide-content img {
+            box-shadow: 0 20px 46px rgba(0, 0, 0, 0.34);
+            background: rgba(12, 18, 28, 0.84);
+        }
+
+        .guide-content hr {
+            border: none;
+            border-top: 1px solid var(--guide-card-border);
+            margin: 1.6em 0;
+        }
+
+        .guide-empty {
+            color: var(--guide-text-soft);
+        }
+
+        @media (max-width: 980px) {
+            body {
+                padding: 12px;
+            }
+
+            .guide-shell {
+                min-height: calc(100vh - 24px);
+                grid-template-columns: 1fr;
+            }
+
+            .guide-sidebar {
+                gap: 14px;
+            }
+
+            .guide-main {
+                padding: 18px;
+            }
+
+            .guide-topbar {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .guide-actions {
+                justify-content: flex-start;
+            }
+
+            .guide-content {
+                padding: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="guide-shell">
+        <aside class="guide-sidebar">
+            <div class="sidebar-badge">
+                <span>OpenClaw</span>
+                <span>Guide</span>
+            </div>
+            <h1 class="sidebar-title" data-guide-text="title">OpenClaw 接入教程</h1>
+        </aside>
+
+        <main class="guide-main">
+            <div class="guide-topbar">
+                <div class="guide-heading">
+                    <h1 data-guide-text="title">OpenClaw 接入教程</h1>
+                </div>
+
+                <div class="guide-actions">
+                    <div class="guide-lang-dropdown">
+                        <button id="languageToggleBtn" class="guide-action-btn guide-lang-trigger" type="button" aria-haspopup="menu" aria-expanded="false">
+                            <span id="languageShortLabel" class="guide-lang-short">简</span>
+                        </button>
+                        <div id="languageMenu" class="guide-lang-menu" role="menu" aria-label="Language">
+                            <button class="guide-lang-item" type="button" data-lang="auto" role="menuitem">🌐 自动</button>
+                            <button class="guide-lang-item" type="button" data-lang="zh-CN" role="menuitem">🇨🇳 简体中文</button>
+                            <button class="guide-lang-item" type="button" data-lang="zh-TW" role="menuitem">🇹🇼 繁體中文</button>
+                            <button class="guide-lang-item" type="button" data-lang="en" role="menuitem">🇺🇸 English</button>
+                            <button class="guide-lang-item" type="button" data-lang="ja" role="menuitem">🇯🇵 日本語</button>
+                            <button class="guide-lang-item" type="button" data-lang="ko" role="menuitem">🇰🇷 한국어</button>
+                            <button class="guide-lang-item" type="button" data-lang="ru" role="menuitem">🇷🇺 Русский</button>
+                        </div>
+                    </div>
+                    <button id="themeToggleBtn" class="guide-action-btn" type="button">
+                        <span id="themeToggleIcon">◐</span>
+                        <span id="themeToggleText">主题切换</span>
+                    </button>
+                    <button id="closeGuideBtn" class="guide-action-btn" type="button">
+                        <span>✕</span>
+                        <span data-guide-common="close">关闭</span>
+                    </button>
+                </div>
+            </div>
+
+            <div class="guide-content-wrap">
+                <article id="guideContent" class="guide-content" aria-live="polite"></article>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        (function () {
+            'use strict';
+
+            let guideMarkdown = '';
+            let guideRequestSerial = 0;
+            const languageToggleBtn = document.getElementById('languageToggleBtn');
+            const languageShortLabel = document.getElementById('languageShortLabel');
+            const languageMenu = document.getElementById('languageMenu');
+            const languageItems = Array.from(document.querySelectorAll('.guide-lang-item'));
+            const themeToggleBtn = document.getElementById('themeToggleBtn');
+            const themeToggleText = document.getElementById('themeToggleText');
+            const themeToggleIcon = document.getElementById('themeToggleIcon');
+            const closeGuideBtn = document.getElementById('closeGuideBtn');
+            const guideContent = document.getElementById('guideContent');
+
+            const GUIDE_TEXT = {
+                title: 'openclawGuide.pageTitle',
+            };
+
+            const GUIDE_ROUTE_BASE = '/api/agent/openclaw/guide/';
+            const LANGUAGE_OPTIONS = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru'];
+            const LOCALE_SHORT_LABELS = {
+                'zh-CN': '简',
+                'zh-TW': '繁',
+                'en': 'EN',
+                'ja': 'JP',
+                'ko': 'KR',
+                'ru': 'RU'
+            };
+            const AUTO_LABELS = {
+                'zh-CN': '🌐 自动',
+                'zh-TW': '🌐 自動',
+                'en': '🌐 Auto',
+                'ja': '🌐 自動',
+                'ko': '🌐 자동',
+                'ru': '🌐 Авто'
+            };
+
+            function translate(key, fallback) {
+                if (typeof window.t === 'function') {
+                    const text = window.t(key);
+                    if (text && text !== key) return text;
+                }
+                if (window.i18next && typeof window.i18next.t === 'function') {
+                    const text = window.i18next.t(key);
+                    if (text && text !== key) return text;
+                }
+                return fallback;
+            }
+
+            function escapeHtml(text) {
+                return String(text || '')
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#39;');
+            }
+
+            function renderInline(text) {
+                let rendered = escapeHtml(text);
+                rendered = rendered.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) => {
+                    const safeAlt = escapeHtml(alt);
+                    const safeUrl = escapeHtml(resolveGuideUrl(url));
+                    return '<img src="' + safeUrl + '" alt="' + safeAlt + '" loading="lazy">';
+                });
+                rendered = rendered.replace(/`([^`]+)`/g, '<code>$1</code>');
+                rendered = rendered.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+                rendered = rendered.replace(/(^|[^*])\*([^*]+)\*(?!\*)/g, '$1<em>$2</em>');
+                rendered = rendered.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
+                    const safeUrl = escapeHtml(resolveGuideUrl(url));
+                    const isDownload = /\.zip(?:$|[?#])/i.test(String(url || '').trim());
+                    const downloadAttr = isDownload ? ' download' : '';
+                    return '<a href="' + safeUrl + '" target="_blank" rel="noreferrer"' + downloadAttr + '>' + label + '</a>';
+                });
+                return rendered;
+            }
+
+            function resolveGuideUrl(rawUrl) {
+                const text = String(rawUrl || '').trim();
+                if (!text) return '';
+                if (/^(https?:)?\/\//i.test(text) || text.startsWith('mailto:') || text.startsWith('#')) {
+                    return text;
+                }
+                if (text.startsWith('/')) {
+                    return text;
+                }
+                const normalized = text.replace(/^\.?\//, '');
+                return GUIDE_ROUTE_BASE + normalized;
+            }
+
+            function renderMarkdown(markdown) {
+                const lines = String(markdown || '').replace(/\r\n/g, '\n').split('\n');
+                const html = [];
+                let paragraph = [];
+                let listType = null;
+                let listItems = [];
+                let inCode = false;
+                let codeLang = '';
+                let codeLines = [];
+
+                function flushParagraph() {
+                    if (!paragraph.length) return;
+                    html.push('<p>' + renderInline(paragraph.join(' ')) + '</p>');
+                    paragraph = [];
+                }
+
+                function flushList() {
+                    if (!listItems.length || !listType) return;
+                    html.push('<' + listType + '>' + listItems.map(item => '<li>' + renderInline(item) + '</li>').join('') + '</' + listType + '>');
+                    listType = null;
+                    listItems = [];
+                }
+
+                function flushCode() {
+                    if (!codeLines.length && !inCode) return;
+                    const label = codeLang ? '<div style="font-size:12px;opacity:0.7;margin-bottom:8px;">' + escapeHtml(codeLang) + '</div>' : '';
+                    html.push('<pre>' + label + '<code>' + escapeHtml(codeLines.join('\n')) + '</code></pre>');
+                    inCode = false;
+                    codeLang = '';
+                    codeLines = [];
+                }
+
+                lines.forEach((rawLine) => {
+                    const line = rawLine || '';
+
+                    if (inCode) {
+                        if (/^```/.test(line.trim())) {
+                            flushCode();
+                        } else {
+                            codeLines.push(line);
+                        }
+                        return;
+                    }
+
+                    if (/^```/.test(line.trim())) {
+                        flushParagraph();
+                        flushList();
+                        inCode = true;
+                        codeLang = line.trim().slice(3).trim();
+                        return;
+                    }
+
+                    if (!line.trim()) {
+                        flushParagraph();
+                        flushList();
+                        return;
+                    }
+
+                    if (/^---+$/.test(line.trim())) {
+                        flushParagraph();
+                        flushList();
+                        html.push('<hr>');
+                        return;
+                    }
+
+                    let match = line.match(/^(#{1,6})\s+(.+)$/);
+                    if (match) {
+                        flushParagraph();
+                        flushList();
+                        const level = Math.min(match[1].length, 6);
+                        html.push('<h' + level + '>' + renderInline(match[2]) + '</h' + level + '>');
+                        return;
+                    }
+
+                    match = line.match(/^>\s+(.+)$/);
+                    if (match) {
+                        flushParagraph();
+                        flushList();
+                        html.push('<blockquote>' + renderInline(match[1]) + '</blockquote>');
+                        return;
+                    }
+
+                    match = line.match(/^[-*]\s+(.+)$/);
+                    if (match) {
+                        flushParagraph();
+                        if (listType && listType !== 'ul') flushList();
+                        listType = 'ul';
+                        listItems.push(match[1]);
+                        return;
+                    }
+
+                    match = line.match(/^\d+\.\s+(.+)$/);
+                    if (match) {
+                        flushParagraph();
+                        if (listType && listType !== 'ol') flushList();
+                        listType = 'ol';
+                        listItems.push(match[1]);
+                        return;
+                    }
+
+                    paragraph.push(line.trim());
+                });
+
+                flushParagraph();
+                flushList();
+                if (inCode) flushCode();
+
+                if (!html.length) {
+                    return '<p class="guide-empty">' + escapeHtml(translate('openclawGuide.guideUnavailable', '教程内容为空。')) + '</p>';
+                }
+
+                return html.join('\n');
+            }
+
+            function normalizeLanguage(lang) {
+                const current = String(lang || '').trim().toLowerCase();
+                if (!current) return 'zh-CN';
+                if (current.startsWith('zh-tw') || current.startsWith('zh-hk') || current.startsWith('zh-hant')) {
+                    return 'zh-TW';
+                }
+                if (current.startsWith('zh')) return 'zh-CN';
+                if (current.startsWith('en')) return 'en';
+                if (current.startsWith('ja')) return 'ja';
+                if (current.startsWith('ko')) return 'ko';
+                if (current.startsWith('ru')) return 'ru';
+                return 'zh-CN';
+            }
+
+            function getCurrentLanguage() {
+                const current = (window.i18next && window.i18next.language) || localStorage.getItem('i18nextLng') || navigator.language || 'zh-CN';
+                return normalizeLanguage(current);
+            }
+
+            function getLanguageSetting() {
+                const saved = localStorage.getItem('i18nextLng');
+                if (!saved) return 'auto';
+                return LANGUAGE_OPTIONS.includes(saved) ? saved : 'auto';
+            }
+
+            function refreshThemeButton() {
+                const dark = !!(window.nekoTheme && typeof window.nekoTheme.isDark === 'function' && window.nekoTheme.isDark());
+                themeToggleIcon.textContent = dark ? '☀' : '☾';
+                themeToggleText.textContent = dark
+                    ? translate('common.lightMode', '亮色模式')
+                    : translate('common.darkMode', '暗色模式');
+                themeToggleBtn.title = themeToggleText.textContent;
+            }
+
+            function applyLocalizedChrome() {
+                document.querySelectorAll('[data-guide-text]').forEach((node) => {
+                    const guideKey = node.getAttribute('data-guide-text');
+                    const key = GUIDE_TEXT[guideKey];
+                    if (!key) return;
+                    const fallback = node.textContent;
+                    node.textContent = translate(key, fallback);
+                });
+
+                document.querySelectorAll('[data-guide-common]').forEach((node) => {
+                    const key = node.getAttribute('data-guide-common');
+                    const fallback = node.textContent;
+                    node.textContent = translate('common.' + key, fallback);
+                });
+
+                document.title = translate('openclawGuide.windowTitle', 'OpenClaw 接入教程 - N.E.K.O.');
+                closeGuideBtn.title = translate('common.close', '关闭');
+                languageToggleBtn.title = translate('openclawGuide.languageLabel', '语言');
+                refreshThemeButton();
+                refreshLanguageButton();
+            }
+
+            function setLanguageMenuOpen(open) {
+                languageMenu.classList.toggle('is-open', open);
+                languageToggleBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+            }
+
+            function refreshLanguageButton() {
+                const current = getCurrentLanguage();
+                const setting = getLanguageSetting();
+                languageShortLabel.textContent = LOCALE_SHORT_LABELS[current] || '简';
+                languageItems.forEach((item) => {
+                    const itemLang = item.dataset.lang;
+                    item.classList.toggle('is-active', itemLang === setting);
+                    if (itemLang === 'auto') {
+                        item.textContent = AUTO_LABELS[current] || AUTO_LABELS['zh-CN'];
+                    }
+                });
+            }
+
+            async function applyLanguage(nextLang) {
+                if (nextLang === 'auto') {
+                    localStorage.removeItem('i18nextLng');
+                    window.location.reload();
+                    return;
+                }
+                if (!LANGUAGE_OPTIONS.includes(nextLang)) return;
+                try {
+                    if (typeof window.changeLanguage === 'function') {
+                        await window.changeLanguage(nextLang);
+                    } else {
+                        localStorage.setItem('i18nextLng', nextLang);
+                        window.location.reload();
+                        return;
+                    }
+                } catch (error) {
+                    console.warn('[OpenClawGuide] Failed to change language:', error);
+                } finally {
+                    refreshLanguageButton();
+                }
+            }
+
+            function initializeLanguageSelect() {
+                refreshLanguageButton();
+
+                languageToggleBtn.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    setLanguageMenuOpen(!languageMenu.classList.contains('is-open'));
+                });
+
+                languageItems.forEach((item) => {
+                    item.addEventListener('click', async () => {
+                        const nextLang = item.dataset.lang;
+                        setLanguageMenuOpen(false);
+                        if (!nextLang) return;
+                        await applyLanguage(nextLang);
+                    });
+                });
+
+                document.addEventListener('click', (event) => {
+                    if (!languageMenu.classList.contains('is-open')) return;
+                    if (languageMenu.contains(event.target) || languageToggleBtn.contains(event.target)) return;
+                    setLanguageMenuOpen(false);
+                });
+
+                document.addEventListener('keydown', (event) => {
+                    if (event.key === 'Escape') {
+                        setLanguageMenuOpen(false);
+                    }
+                });
+            }
+
+            function initializeThemeToggle() {
+                themeToggleBtn.addEventListener('click', () => {
+                    if (window.nekoTheme && typeof window.nekoTheme.toggle === 'function') {
+                        window.nekoTheme.toggle();
+                    }
+                    refreshThemeButton();
+                });
+            }
+
+            function initializeCloseButton() {
+                closeGuideBtn.addEventListener('click', () => window.close());
+            }
+
+            function renderGuideContent() {
+                guideContent.innerHTML = renderMarkdown(guideMarkdown);
+            }
+
+            async function loadGuideContent() {
+                const lang = getCurrentLanguage();
+                const requestSerial = ++guideRequestSerial;
+                guideContent.innerHTML = '<p class="guide-empty">' + escapeHtml(translate('common.loading', '加载中...')) + '</p>';
+
+                try {
+                    const response = await fetch('/api/agent/openclaw/guide/content?lang=' + encodeURIComponent(lang), {
+                        cache: 'no-store',
+                    });
+                    if (!response.ok) {
+                        throw new Error('HTTP ' + response.status);
+                    }
+                    const payload = await response.json();
+                    if (requestSerial !== guideRequestSerial) return;
+                    guideMarkdown = typeof payload.markdown === 'string' ? payload.markdown : '';
+                    document.documentElement.lang = normalizeLanguage(payload.lang || lang);
+                    renderGuideContent();
+                } catch (error) {
+                    if (requestSerial !== guideRequestSerial) return;
+                    console.warn('[OpenClawGuide] Failed to load guide content:', error);
+                    guideMarkdown = '';
+                    renderGuideContent();
+                }
+            }
+
+            async function initializePage() {
+                initializeLanguageSelect();
+                initializeThemeToggle();
+                initializeCloseButton();
+                applyLocalizedChrome();
+                await loadGuideContent();
+            }
+
+            window.addEventListener('localechange', () => {
+                applyLocalizedChrome();
+                loadGuideContent();
+            });
+
+            window.addEventListener('neko-theme-changed', refreshThemeButton);
+            initializePage();
+        })();
+    </script>
+</body>
+</html>

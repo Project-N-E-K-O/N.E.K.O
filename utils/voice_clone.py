@@ -417,7 +417,7 @@ class QwenVoiceCloneClient:
         prefix: str,
         url: str,
         language_hints: list[str],
-        target_model: str = "cosyvoice-v3.5-plus",
+        target_model: str | None = None,
     ) -> tuple[str, str | None]:
         """通过 DashScope VoiceEnrollmentService 注册音色（同步调用）。
 
@@ -429,17 +429,27 @@ class QwenVoiceCloneClient:
         """
         import dashscope
         from dashscope.audio.tts_v2 import VoiceEnrollmentService
+        from utils.api_config_loader import (
+            cosyvoice_model_supports_language_hints,
+            get_cosyvoice_clone_model,
+        )
+
+        if target_model is None:
+            target_model = get_cosyvoice_clone_model()
 
         dashscope.api_key = self.api_key
         service = VoiceEnrollmentService()
 
+        kwargs: dict = dict(
+            target_model=target_model,
+            prefix=prefix,
+            url=url,
+        )
+        if language_hints and cosyvoice_model_supports_language_hints(target_model):
+            kwargs["language_hints"] = language_hints
+
         try:
-            voice_id = service.create_voice(
-                target_model=target_model,
-                prefix=prefix,
-                url=url,
-                language_hints=language_hints,
-            )
+            voice_id = service.create_voice(**kwargs)
             request_id = service.get_last_request_id()
             logger.info("CosyVoice 音色注册成功: voice_id=%s", voice_id)
             return voice_id, request_id
@@ -456,7 +466,7 @@ class QwenVoiceCloneClient:
         prefix: str,
         language_hints: list[str],
         mime_type: str = 'audio/wav',
-        target_model: str = "cosyvoice-v3.5-plus",
+        target_model: str | None = None,
     ) -> tuple[str, str, str | None]:
         """上传音频并注册音色（组合两步 + 重试），返回 (voice_id, file_url, request_id)。
 

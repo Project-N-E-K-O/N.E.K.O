@@ -6,9 +6,14 @@ Project N.E.K.O. is open source under the MIT License. Contributions are welcome
 
 1. **Fork** the repository on GitHub
 2. **Create a branch** for your feature or fix
-3. **Make your changes** following the [code style](./code-style) guidelines
-4. **Test** your changes (`uv run pytest`)
-5. **Submit a Pull Request** with a clear description
+3. **Set up your environment** — Python 3.11 + [uv](https://docs.astral.sh/uv/), [Node.js](https://nodejs.org/) >= 20.19 (required for frontend builds via `build_frontend.bat` / `build_frontend.sh`)
+4. **Make your changes** following the [code style](./code-style) guidelines
+5. **Test** your changes (`uv run pytest`)
+6. **Submit a Pull Request** with a clear description
+
+::: tip AI-Assisted Development
+The project includes built-in configurations for AI coding assistants (Claude Code, Cursor, etc.). If you develop with these tools, they will automatically load the project's rules and skills. See [AI-Assisted Dev](./ai-assisted-dev) for details and how to adapt them for other AI tools.
+:::
 
 ## What we need
 

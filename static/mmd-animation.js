@@ -16,6 +16,7 @@ class MMDAnimation {
         this.currentClip = null;
         this.clock = null;
         this.isPlaying = false;
+        this.isPaused = false;  // 区分暂停 vs 停止（IK/Grant 仅在非暂停、非播放时运行）
         this.isLoop = true;
 
         // IK + Grant
@@ -84,12 +85,25 @@ class MMDAnimation {
 
         // 构建动画 Clip
         const clip = buildAnimation(vmdObject, mmd.mesh);
+        // 防御：把每条四元数轨道的相邻关键帧翻到同半球（dot >= 0），
+        // 避免个别 VMD 在动画切换初始几帧被插值成长路径 / 奇点甩动。
+        this._normalizeQuaternionTrackSigns(clip);
         this.currentClip = clip;
 
         // 创建 AnimationMixer
         this.mixer = new THREE.AnimationMixer(mmd.mesh);
         this.currentAction = this.mixer.clipAction(clip);
         this.currentAction.setLoop(this.isLoop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
+        this.currentAction.clampWhenFinished = true; // 防止动画结束后 action 被 disable 导致 T-Pose
+
+        // 安全网：如果循环动画意外触发 finished 事件，自动重播
+        this.mixer.addEventListener('finished', (e) => {
+            if (this.isLoop && e.action === this.currentAction) {
+                console.warn('[MMD Animation] 循环动画意外结束，自动重播');
+                e.action.reset();
+                e.action.play();
+            }
+        });
 
         // IK 解算器
         if (mmd.iks && mmd.iks.length > 0) {
@@ -107,8 +121,17 @@ class MMDAnimation {
             this.grantSolver = new GrantSolver(mmd.mesh, mmd.grants);
         }
 
-        // 重置骨骼到绑定姿态，防止上一动画残留姿态污染备份
+        // 重置骨骼到绑定姿态（干净的基准状态）
         if (mmd.mesh.skeleton) mmd.mesh.skeleton.pose();
+
+        // 重置 cursorFollow 的眼骨偏移状态（新动画的骨骼基准已重置）
+        if (this.manager?.cursorFollow) {
+            this.manager.cursorFollow._eyeLastOffsetQuat?.identity();
+            this.manager.cursorFollow._currentYaw = 0;
+            this.manager.cursorFollow._currentPitch = 0;
+            this.manager.cursorFollow._targetYaw = 0;
+            this.manager.cursorFollow._targetPitch = 0;
+        }
 
         // 初始化骨骼缓存
         this._initBoneBackup(mmd.mesh);
@@ -117,9 +140,50 @@ class MMDAnimation {
         this._processBones = processBones;
 
         this.clock = new THREE.Clock();
+
+        // Pre-warm：立即应用第 0 帧，避免 T-pose 闪烁
+        this.currentAction.play();
+        this.mixer.update(0);
+        if (this.ikSolver) this.ikSolver.update();
+        if (this.grantSolver) this.grantSolver.update();
+        mmd.mesh.updateMatrixWorld(true);
+
+        // 在第 0 帧姿态上初始化骨骼备份（而非 T-pose）
+        this._initBoneBackup(mmd.mesh);
+
+        // 暂停，等待外部调用 play()
+        this.currentAction.paused = true;
+        this.clock.stop();
+
         console.log('[MMD Animation] 动画加载完成:', vmdUrl);
 
         return clip;
+    }
+
+    // ═══════════════════ 轨道防御 ═══════════════════
+
+    _normalizeQuaternionTrackSigns(clip) {
+        const THREE = window.THREE;
+        if (!clip?.tracks || !THREE?.QuaternionKeyframeTrack) return;
+        const stride = 4;
+        for (const track of clip.tracks) {
+            if (!(track instanceof THREE.QuaternionKeyframeTrack)) continue;
+            const v = track.values;
+            if (!v || v.length < stride * 2) continue;
+            for (let i = stride; i < v.length; i += stride) {
+                const dot =
+                    v[i - 4] * v[i] +
+                    v[i - 3] * v[i + 1] +
+                    v[i - 2] * v[i + 2] +
+                    v[i - 1] * v[i + 3];
+                if (dot < 0) {
+                    v[i]     = -v[i];
+                    v[i + 1] = -v[i + 1];
+                    v[i + 2] = -v[i + 2];
+                    v[i + 3] = -v[i + 3];
+                }
+            }
+        }
     }
 
     // ═══════════════════ 骨骼缓存 ═══════════════════
@@ -157,15 +221,21 @@ class MMDAnimation {
     // ═══════════════════ 播放控制 ═══════════════════
 
     play() {
-        if (!this.currentAction) return;
+        if (!this.currentAction) {
+            return;
+        }
+        this.currentAction.paused = false;
         this.currentAction.play();
         if (this.clock) this.clock.start();
         this.isPlaying = true;
+        this.isPaused = false;
+        this.manager._isTPose = false;
     }
 
     pause() {
         if (this.clock) this.clock.stop();
         this.isPlaying = false;
+        this.isPaused = true;
     }
 
     stop() {
@@ -173,7 +243,28 @@ class MMDAnimation {
             this.currentAction.stop();
         }
         if (this.clock) this.clock.stop();
+
+        const mesh = this.manager.currentModel?.mesh;
+        if (mesh?.skeleton) {
+            mesh.skeleton.pose();
+        }
+
+        if (this.manager?.cursorFollow) {
+            const cf = this.manager.cursorFollow;
+            cf._appliedLastFrame = false;
+            cf._targetWeight = 0;
+            cf._trackingWeight = 0;
+            cf._eyeLastOffsetQuat?.identity();
+            cf._currentYaw = 0;
+            cf._currentPitch = 0;
+            cf._targetYaw = 0;
+            cf._targetPitch = 0;
+            if (cf._neckBone) cf._neckBaseQuat.copy(cf._neckBone.quaternion);
+            if (cf._headBone) cf._headBaseQuat.copy(cf._headBone.quaternion);
+        }
+
         this.isPlaying = false;
+        this.isPaused = false;
     }
 
     setLoop(loop) {
@@ -358,6 +449,7 @@ class MMDAnimation {
         this.grantSolver = null;
         this._boneBackup = null;
         this.isPlaying = false;
+        this.isPaused = false;
         if (this.clock) {
             this.clock.stop();
             this.clock = null;

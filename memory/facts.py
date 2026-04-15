@@ -11,7 +11,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import asyncio
+import threading
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -19,7 +21,7 @@ from config import SETTING_PROPOSER_MODEL
 from config.prompts_memory import get_fact_extraction_prompt
 from utils.language_utils import get_global_language
 from utils.config_manager import get_config_manager
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json, robust_json_loads
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
 
@@ -29,6 +31,10 @@ if TYPE_CHECKING:
 logger = get_module_logger(__name__, "Memory")
 
 
+_ARCHIVE_AGE_DAYS = 7          # absorbed 且创建超过此天数的 facts 被归档
+_ARCHIVE_COOLDOWN_HOURS = 24   # 两次归档尝试之间的最小间隔
+
+
 class FactStore:
     """Manages raw fact extraction, deduplication, and persistence."""
 
@@ -36,6 +42,16 @@ class FactStore:
         self._config_manager = get_config_manager()
         self._time_indexed = time_indexed_memory
         self._facts: dict[str, list[dict]] = {}  # {lanlan_name: [fact, ...]}
+        self._locks: dict[str, threading.Lock] = {}  # per-character 文件锁
+        self._locks_guard = threading.Lock()  # 保护 _locks 字典本身
+
+    def _get_lock(self, name: str) -> threading.Lock:
+        """获取角色专属的文件锁（懒创建）"""
+        if name not in self._locks:
+            with self._locks_guard:
+                if name not in self._locks:  # double-check
+                    self._locks[name] = threading.Lock()
+        return self._locks[name]
 
     # ── persistence ──────────────────────────────────────────────────
 
@@ -43,25 +59,128 @@ class FactStore:
         from memory import ensure_character_dir
         return os.path.join(ensure_character_dir(self._config_manager.memory_dir, name), 'facts.json')
 
+    # v1→v2 entity key renames
+    _ENTITY_RENAMES = {'user': 'master', 'ai': 'neko'}
+
     def load_facts(self, name: str) -> list[dict]:
         path = self._facts_path(name)
         if name in self._facts:
             return self._facts[name]
-        if os.path.exists(path):
-            try:
-                with open(path, encoding='utf-8') as f:
-                    data = json.load(f)
-                if isinstance(data, list):
-                    self._facts[name] = data
-                    return data
-            except (json.JSONDecodeError, OSError) as e:
-                logger.warning(f"[FactStore] 加载 facts 文件失败: {e}")
-        self._facts[name] = []
-        return self._facts[name]
+        with self._get_lock(name):
+            # double-check: 另一个线程可能在等锁期间已经加载了
+            if name in self._facts:
+                return self._facts[name]
+            if os.path.exists(path):
+                try:
+                    with open(path, encoding='utf-8') as f:
+                        data = json.load(f)
+                    if isinstance(data, list):
+                        if self._migrate_v1_entity_values(data):
+                            atomic_write_json(path, data, indent=2, ensure_ascii=False)
+                            logger.info(f"[FactStore] {name}: v1→v2 entity 值迁移完成")
+                        self._facts[name] = data
+                        return data
+                except (json.JSONDecodeError, OSError) as e:
+                    logger.warning(f"[FactStore] 加载 facts 文件失败: {e}")
+            self._facts[name] = []
+            return self._facts[name]
+
+    @classmethod
+    def _migrate_v1_entity_values(cls, facts: list[dict]) -> bool:
+        """Rename v1 entity values ('user'→'master', 'ai'→'neko') in-place."""
+        changed = False
+        for f in facts:
+            old = f.get('entity')
+            new = cls._ENTITY_RENAMES.get(old)
+            if new:
+                f['entity'] = new
+                changed = True
+        return changed
 
     def save_facts(self, name: str) -> None:
+        with self._get_lock(name):
+            facts = self._facts.get(name, [])
+            path = self._facts_path(name)
+            # Read-merge-write: 保护其他进程写入的 absorbed 标记
+            if os.path.exists(path):
+                try:
+                    with open(path, encoding='utf-8') as f:
+                        disk_facts = json.load(f)
+                    if isinstance(disk_facts, list):
+                        absorbed_ids = {
+                            f['id'] for f in disk_facts
+                            if isinstance(f, dict) and f.get('absorbed')
+                        }
+                        if absorbed_ids:
+                            for f in facts:
+                                if f.get('id') in absorbed_ids:
+                                    f['absorbed'] = True
+                except (json.JSONDecodeError, OSError):
+                    pass
+            atomic_write_json(path, facts, indent=2, ensure_ascii=False)
+            # 基于文件修改时间节流归档：距上次归档超过 _ARCHIVE_COOLDOWN_HOURS 才尝试
+            try:
+                archive_path = self._facts_archive_path(name)
+                if os.path.exists(archive_path):
+                    mtime = datetime.fromtimestamp(os.path.getmtime(archive_path))
+                    if (datetime.now() - mtime).total_seconds() < _ARCHIVE_COOLDOWN_HOURS * 3600:
+                        return
+                # 用 marker 文件记录上次归档尝试时间（即使归档文件尚不存在）
+                marker_path = archive_path + '.last_attempt'
+                if os.path.exists(marker_path):
+                    mtime = datetime.fromtimestamp(os.path.getmtime(marker_path))
+                    if (datetime.now() - mtime).total_seconds() < _ARCHIVE_COOLDOWN_HOURS * 3600:
+                        return
+                self._archive_absorbed(name)
+                # 更新 marker（无论归档是否有实际条目都 touch 一次）
+                with open(marker_path, 'w') as f:
+                    f.write(datetime.now().isoformat())
+            except Exception:
+                pass
+
+    def _facts_archive_path(self, name: str) -> str:
+        from memory import ensure_character_dir
+        return os.path.join(ensure_character_dir(self._config_manager.memory_dir, name), 'facts_archive.json')
+
+    def _archive_absorbed(self, name: str) -> int:
+        """将已 absorbed 且超过 _ARCHIVE_AGE_DAYS 的 facts 移入归档文件。"""
+        from datetime import timedelta
         facts = self._facts.get(name, [])
+        cutoff = datetime.now() - timedelta(days=_ARCHIVE_AGE_DAYS)
+        active, to_archive = [], []
+        for f in facts:
+            try:
+                created = datetime.fromisoformat(f.get('created_at', ''))
+            except (ValueError, TypeError):
+                active.append(f)
+                continue
+            if f.get('absorbed') and created < cutoff:
+                to_archive.append(f)
+            else:
+                active.append(f)
+        if not to_archive:
+            return 0
+        # 追加到归档文件
+        archive_path = self._facts_archive_path(name)
+        existing_archive: list[dict] = []
+        if os.path.exists(archive_path):
+            try:
+                with open(archive_path, encoding='utf-8') as fh:
+                    data = json.load(fh)
+                if isinstance(data, list):
+                    existing_archive = data
+            except (json.JSONDecodeError, OSError) as e:
+                # 归档文件损坏 → 放弃本次归档，避免覆盖丢数据
+                logger.warning(f"[FactStore] {name}: 读取归档文件失败，跳过本次归档: {e}")
+                return 0
+        existing_archive.extend(to_archive)
+        atomic_write_json(archive_path, existing_archive, indent=2, ensure_ascii=False)
+        # 原地更新活跃列表（保持对象引用不变，避免外部持有旧引用导致修改丢失）
+        facts.clear()
+        facts.extend(active)
         atomic_write_json(self._facts_path(name), facts, indent=2, ensure_ascii=False)
+        logger.info(f"[FactStore] {name}: 归档 {len(to_archive)} 条已吸收的旧 facts，剩余 {len(active)} 条")
+        return len(to_archive)
 
     # ── extraction ───────────────────────────────────────────────────
 
@@ -114,20 +233,40 @@ class FactStore:
                     await llm.aclose()
                 raw = resp.content.strip()
                 if raw.startswith("```"):
-                    raw = raw.replace("```json", "").replace("```", "").strip()
-                extracted = json.loads(raw)
+                    match = re.search(r'```(?:json)?\s*([\s\S]*?)```', raw)
+                    if match:
+                        raw = match.group(1).strip()
+                    else:
+                        raw = raw.replace("```json", "").replace("```", "").strip()
+                extracted = robust_json_loads(raw)
                 if not isinstance(extracted, list):
-                    extracted = []
+                    logger.warning(f"[FactStore] {lanlan_name}: LLM 返回非数组类型 {type(extracted).__name__}，重试")
+                    retries += 1
+                    if retries < max_retries:
+                        await asyncio.sleep(2 ** (retries - 1))
+                    continue
                 break
-            except (APIConnectionError, InternalServerError, RateLimitError):
+            except (APIConnectionError, InternalServerError, RateLimitError) as e:
                 retries += 1
+                logger.warning(f"[FactStore] {lanlan_name}: 网络错误 {type(e).__name__}，重试 {retries}/{max_retries}")
+                if retries < max_retries:
+                    await asyncio.sleep(2 ** (retries - 1))
+                continue
+            except json.JSONDecodeError as e:
+                retries += 1
+                print(f"⚠️ [FactStore] {lanlan_name}: JSON 解析失败 (重试 {retries}/{max_retries}): {e}")
+                print(f"⚠️ [FactStore] 原始返回: {raw[:500]}")
                 if retries < max_retries:
                     await asyncio.sleep(2 ** (retries - 1))
                 continue
             except Exception as e:
-                logger.warning(f"[FactStore] 事实提取失败: {e}")
-                return []
+                retries += 1
+                logger.warning(f"[FactStore] {lanlan_name}: 事实提取失败 (重试 {retries}/{max_retries}): {type(e).__name__}: {e}")
+                if retries < max_retries:
+                    await asyncio.sleep(2 ** (retries - 1))
+                continue
         else:
+            logger.warning(f"[FactStore] {lanlan_name}: 事实提取达到最大重试次数 {max_retries}，放弃")
             return []
 
         # Deduplicate and store
@@ -166,7 +305,7 @@ class FactStore:
                 'id': f"fact_{datetime.now().strftime('%Y%m%d%H%M%S')}_{content_hash[:8]}",
                 'text': text,
                 'importance': importance,
-                'entity': fact.get('entity', 'user'),
+                'entity': fact.get('entity', 'master'),
                 'tags': fact.get('tags', []),
                 'hash': content_hash,
                 'created_at': datetime.now().isoformat(),
@@ -182,6 +321,9 @@ class FactStore:
 
         if new_facts:
             self.save_facts(lanlan_name)
+            print(f"📝 [FactStore] {lanlan_name}: 提取了 {len(new_facts)} 条新事实")
+            for nf in new_facts:
+                print(f"   - [{nf.get('entity','?')}] {nf.get('text','')[:80]}")
             logger.info(f"[FactStore] {lanlan_name}: 提取了 {len(new_facts)} 条新事实")
 
         return new_facts

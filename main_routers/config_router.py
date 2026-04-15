@@ -32,6 +32,24 @@ from config import (
 
 router = APIRouter(prefix="/api/config", tags=["config"])
 
+
+def _apply_noise_reduction_to_active_sessions(enabled: bool):
+    """Apply noise reduction toggle to all active voice sessions immediately."""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+    try:
+        session_manager = get_session_manager()
+        for _name, mgr in session_manager.items():
+            if not mgr.is_active or mgr.session is None:
+                continue
+            if not isinstance(mgr.session, OmniRealtimeClient):
+                continue
+            ap = getattr(mgr.session, '_audio_processor', None)
+            if ap is not None:
+                ap.set_enabled(enabled)
+    except Exception as e:
+        logger.warning(f"Failed to apply noise reduction to active sessions: {e}")
+
+
 # --- proxy mode helpers ---
 _PROXY_LOCK = threading.Lock()
 _proxy_snapshot: dict[str, str] = {}
@@ -44,6 +62,18 @@ VRM_USER_PATH = "/user_vrm"  # 用户文档目录下的 VRM 模型路径
 # MMD 模型路径常量
 MMD_STATIC_PATH = "/static/mmd"  # 项目目录下的 MMD 模型路径
 MMD_USER_PATH = "/user_mmd"  # 用户文档目录下的 MMD 模型路径
+
+
+def _resolve_master_display_name(master_basic_config: dict, fallback_name: str = "") -> str:
+    nickname = str(master_basic_config.get('昵称', '') or '').strip()
+    if nickname:
+        first_nickname = nickname.split(',')[0].split('，')[0].strip()
+        if first_nickname:
+            return first_nickname
+    profile_name = str(master_basic_config.get('档案名', '') or '').strip()
+    if profile_name:
+        return profile_name
+    return str(fallback_name or '').strip()
 
 
 @router.get("/character_reserved_fields")
@@ -63,7 +93,20 @@ _MMD_EXTENSIONS = {'.pmx', '.pmd'}
 
 def _get_live3d_sub_type(catgirl_config: dict) -> str:
     """判断 Live3D 模式下应使用 VRM 还是 MMD 渲染器。
-    优先检查 MMD 路径（因为 VRM 是旧字段，可能遗留非空值）。"""
+    优先使用持久化的子类型；缺失或失效时再按模型路径回退判断。"""
+    stored_sub_type = str(
+        get_reserved(
+            catgirl_config,
+            'avatar',
+            'live3d_sub_type',
+            default='',
+            legacy_keys=('live3d_sub_type',),
+        )
+        or ''
+    ).strip().lower()
+    if stored_sub_type in {'mmd', 'vrm'}:
+        return stored_sub_type
+
     mmd_path = get_reserved(catgirl_config, 'avatar', 'mmd', 'model_path', default='')
     if mmd_path:
         return 'mmd'
@@ -161,7 +204,8 @@ async def get_page_config(lanlan_name: str = ""):
     try:
         # 获取角色数据
         _config_manager = get_config_manager()
-        _, her_name, _, lanlan_basic_config, _, _, _, _, _ = _config_manager.get_character_data()
+        master_name, her_name, master_basic_config, lanlan_basic_config, _, _, _, _, _ = _config_manager.get_character_data()
+        master_display_name = _resolve_master_display_name(master_basic_config, master_name)
         
         # 如果提供了 lanlan_name 参数，使用它；否则使用当前角色
         target_name = lanlan_name if lanlan_name else her_name
@@ -174,6 +218,7 @@ async def get_page_config(lanlan_name: str = ""):
             model_type = 'live3d'
         
         model_path = ""
+        lighting = None
         # live3d_sub_type: 前端用于区分 Live3D 模式下加载 VRM 还是 MMD 渲染器
         live3d_sub_type = ""
         
@@ -186,6 +231,16 @@ async def get_page_config(lanlan_name: str = ""):
                 model_path = _resolve_vrm_path(vrm_path, _config_manager, target_name)
             else:
                 logger.warning(f"角色 {target_name} 的VRM模型路径为空")
+            saved_lighting = get_reserved(
+                catgirl_config,
+                'avatar',
+                'vrm',
+                'lighting',
+                default=None,
+                legacy_keys=('lighting',),
+            )
+            if isinstance(saved_lighting, dict):
+                lighting = dict(saved_lighting)
         elif model_type == 'live3d' and _get_live3d_sub_type(catgirl_config) == 'mmd':
             live3d_sub_type = 'mmd'
             # MMD模型：处理路径转换
@@ -221,8 +276,13 @@ async def get_page_config(lanlan_name: str = ""):
         result = {
             "success": True,
             "lanlan_name": target_name,
+            "master_name": master_name or "",
+            "master_profile_name": str(master_basic_config.get('档案名', '') or ''),
+            "master_nickname": str(master_basic_config.get('昵称', '') or ''),
+            "master_display_name": master_display_name or "",
             "model_path": model_path,
-            "model_type": model_type
+            "model_type": model_type,
+            "lighting": lighting,
         }
         if model_type == 'live3d':
             result["live3d_sub_type"] = live3d_sub_type
@@ -233,6 +293,10 @@ async def get_page_config(lanlan_name: str = ""):
             "success": False,
             "error": str(e),
             "lanlan_name": "",
+            "master_name": "",
+            "master_profile_name": "",
+            "master_nickname": "",
+            "master_display_name": "",
             "model_path": "",
             "model_type": ""
         }
@@ -331,10 +395,13 @@ async def save_conversation_settings(request: Request):
         if not isinstance(data, dict):
             return {"success": False, "error": "请求体必须为对象"}
 
-        if save_global_conversation_settings(data):
-            return {"success": True, "message": "对话设置已保存"}
-        else:
+        if not save_global_conversation_settings(data):
             return {"success": False, "error": "保存失败"}
+
+        if 'noiseReductionEnabled' in data:
+            _apply_noise_reduction_to_active_sessions(data['noiseReductionEnabled'])
+
+        return {"success": True, "message": "对话设置已保存"}
     except Exception as e:
         logger.exception(f"保存对话设置失败: {e}")
         return {"success": False, "error": "Internal server error"}
@@ -489,6 +556,7 @@ async def get_core_config_api():
             "coreApi": core_cfg.get('coreApi', 'qwen'),
             "assistApi": core_cfg.get('assistApi', 'qwen'),
             "assistApiKeyQwen": core_cfg.get('assistApiKeyQwen', ''),
+            "assistApiKeyQwenIntl": core_cfg.get('assistApiKeyQwenIntl', ''),
             "assistApiKeyOpenai": core_cfg.get('assistApiKeyOpenai', ''),
             "assistApiKeyGlm": core_cfg.get('assistApiKeyGlm', ''),
             "assistApiKeyStep": core_cfg.get('assistApiKeyStep', ''),
@@ -500,6 +568,7 @@ async def get_core_config_api():
             "assistApiKeyMinimax": core_cfg.get('assistApiKeyMinimax', ''),
             "assistApiKeyMinimaxIntl": core_cfg.get('assistApiKeyMinimaxIntl', ''),
             "assistApiKeyGrok": core_cfg.get('assistApiKeyGrok', ''),
+            "assistApiKeyClaude": core_cfg.get('assistApiKeyClaude', ''),
             "mcpToken": core_cfg.get('mcpToken', ''),
             "openclawUrl": core_cfg.get('openclawUrl'),
             "openclawTimeout": core_cfg.get('openclawTimeout'),
@@ -512,6 +581,7 @@ async def get_core_config_api():
                            'vision', 'agent', 'omni', 'tts')
                 for suffix in ('Provider', 'Url', 'Id', 'ApiKey')
             },
+            "gptsovitsEnabled": core_cfg.get('gptsovitsEnabled'),
             "ttsVoiceId": core_cfg.get('ttsVoiceId', ''),
             "success": True
         }
@@ -583,10 +653,11 @@ async def update_core_config(request: Request):
         if 'assistApi' in data:
             core_cfg['assistApi'] = data['assistApi']
         _api_key_fields = [
-            'assistApiKeyQwen', 'assistApiKeyOpenai', 'assistApiKeyDeepseek',
+            'assistApiKeyQwen', 'assistApiKeyQwenIntl', 'assistApiKeyOpenai', 'assistApiKeyDeepseek',
             'assistApiKeyGlm', 'assistApiKeyStep', 'assistApiKeySilicon',
             'assistApiKeyGemini', 'assistApiKeyKimi', 'assistApiKeyDoubao',
             'assistApiKeyMinimax', 'assistApiKeyMinimaxIntl', 'assistApiKeyGrok',
+            'assistApiKeyClaude',
         ]
         for field in _api_key_fields:
             if field in data:
@@ -601,6 +672,8 @@ async def update_core_config(request: Request):
             core_cfg['openclawDefaultSenderId'] = data['openclawDefaultSenderId']
         if 'enableCustomApi' in data:
             core_cfg['enableCustomApi'] = data['enableCustomApi']
+        if 'gptsovitsEnabled' in data:
+            core_cfg['gptsovitsEnabled'] = data['gptsovitsEnabled']
 
         # 自定义API配置（Provider / Url / Id / ApiKey per model type）
         _model_types = [

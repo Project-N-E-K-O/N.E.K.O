@@ -19,6 +19,8 @@
 
     // ======================== 模块级变量 ========================
     let _musicDispatchId = 0;
+    let _reactMessageSeq = 0;
+    let _userDisplayNamePromise = null;
 
     // 首次交互跟踪
     let isFirstUserInput = true;   // 跟踪是否为用户第一次输入
@@ -32,6 +34,268 @@
             hour: '2-digit',
             minute: '2-digit',
             second: '2-digit'
+        });
+    }
+
+    function getReactChatHost() {
+        return window.reactChatWindowHost || null;
+    }
+
+    function sanitizeDisplayName(value) {
+        if (value == null) return '';
+        var text = String(value).trim();
+        return text;
+    }
+
+    function getCurrentAssistantName() {
+        return sanitizeDisplayName(
+            (window.lanlan_config && window.lanlan_config.lanlan_name)
+            || window._currentCatgirl
+            || window.currentCatgirl
+        ) || 'Neko';
+    }
+
+    function getCurrentUserName() {
+        var candidates = [
+            window.master_display_name,
+            window.lanlan_config && window.lanlan_config.master_display_name,
+            window.master_nickname,
+            window.lanlan_config && window.lanlan_config.master_nickname,
+            window.master_name,
+            window.lanlan_config && window.lanlan_config.master_name,
+            window.currentUser && (window.currentUser.nickname || window.currentUser.display_name || window.currentUser.displayName || window.currentUser.username || window.currentUser.name),
+            window.userProfile && (window.userProfile.nickname || window.userProfile.display_name || window.userProfile.displayName || window.userProfile.username || window.userProfile.name),
+            window.appUser && (window.appUser.nickname || window.appUser.display_name || window.appUser.displayName || window.appUser.username || window.appUser.name),
+            window.username,
+            window.userName,
+            window.displayName,
+            window.nickname
+        ];
+
+        for (var i = 0; i < candidates.length; i += 1) {
+            var resolved = sanitizeDisplayName(candidates[i]);
+            if (resolved) return resolved;
+        }
+
+        try {
+            var storageKeys = ['nickname', 'displayName', 'userName', 'username'];
+            for (var j = 0; j < storageKeys.length; j += 1) {
+                var stored = sanitizeDisplayName(localStorage.getItem(storageKeys[j]));
+                if (stored) return stored;
+            }
+        } catch (_) {}
+
+        return 'You';
+    }
+
+    function getRoleDisplayName(role, fallbackAuthor) {
+        var resolvedFallback = sanitizeDisplayName(fallbackAuthor);
+        if (resolvedFallback) return resolvedFallback;
+        return role === 'user' ? getCurrentUserName() : getCurrentAssistantName();
+    }
+
+    function resolveMasterDisplayNameFromProfile(masterProfile) {
+        if (!masterProfile || typeof masterProfile !== 'object') return '';
+        var nickname = sanitizeDisplayName(masterProfile['昵称']);
+        if (nickname) {
+            var firstNickname = nickname.split(',')[0].split('，')[0].trim();
+            if (firstNickname) return firstNickname;
+        }
+        return sanitizeDisplayName(masterProfile['档案名']);
+    }
+
+    async function ensureUserDisplayName() {
+        if (getCurrentUserName() !== 'You') {
+            return getCurrentUserName();
+        }
+
+        if (_userDisplayNamePromise) {
+            return _userDisplayNamePromise;
+        }
+
+        _userDisplayNamePromise = (async function () {
+            try {
+                var response = await fetch('/api/characters?language=zh-CN', {
+                    credentials: 'same-origin'
+                });
+                if (!response.ok) {
+                    throw new Error('HTTP ' + response.status);
+                }
+                var data = await response.json();
+                var masterProfile = data && data['主人'];
+                var displayName = resolveMasterDisplayNameFromProfile(masterProfile);
+                var profileName = masterProfile && sanitizeDisplayName(masterProfile['档案名']);
+                var nickname = masterProfile && sanitizeDisplayName(masterProfile['昵称']);
+
+                if (displayName) {
+                    window.master_display_name = displayName;
+                    window.master_name = profileName || displayName;
+                    window.master_profile_name = profileName || '';
+                    window.master_nickname = nickname || '';
+                    window.lanlan_config = window.lanlan_config || {};
+                    window.lanlan_config.master_display_name = displayName;
+                    window.lanlan_config.master_name = profileName || displayName;
+                    window.lanlan_config.master_profile_name = profileName || '';
+                    window.lanlan_config.master_nickname = nickname || '';
+                }
+                return displayName || getCurrentUserName();
+            } catch (error) {
+                console.warn('[Chat] ensureUserDisplayName failed:', error);
+                return getCurrentUserName();
+            } finally {
+                _userDisplayNamePromise = null;
+            }
+        })();
+
+        return _userDisplayNamePromise;
+    }
+
+    function getAssistantAvatarUrl() {
+        if (!window.appChatAvatar || typeof window.appChatAvatar.getCurrentAvatarDataUrl !== 'function') {
+            return '';
+        }
+        return window.appChatAvatar.getCurrentAvatarDataUrl() || '';
+    }
+
+    function nextReactMessageId(prefix) {
+        _reactMessageSeq += 1;
+        return (prefix || 'msg') + '-' + Date.now() + '-' + _reactMessageSeq;
+    }
+
+    function getOrAssignReactMessageId(element, prefix) {
+        if (!element || element.nodeType !== Node.ELEMENT_NODE) return nextReactMessageId(prefix);
+        if (!element.dataset.reactChatMessageId) {
+            element.dataset.reactChatMessageId = nextReactMessageId(prefix);
+        }
+        return element.dataset.reactChatMessageId;
+    }
+
+    function extractMessageText(text) {
+        return String(text || '')
+            .replace(/^\[\d{2}:\d{2}:\d{2}\]\s+[\u{1F380}\u{1F4AC}]\s*/u, '')
+            .trim();
+    }
+
+    function buildReactTextMessage(messageId, role, author, timeText, text, status) {
+        var cleanText = extractMessageText(text);
+        if (!cleanText) return null;
+        var avatarUrl = role === 'assistant' ? getAssistantAvatarUrl() : '';
+        var resolvedAuthor = getRoleDisplayName(role, author);
+
+        return {
+            id: messageId,
+            role: role,
+            author: resolvedAuthor,
+            time: timeText || getCurrentTimeString(),
+            createdAt: Date.now(),
+            avatarLabel: resolvedAuthor ? String(resolvedAuthor).trim().slice(0, 1).toUpperCase() : undefined,
+            avatarUrl: avatarUrl || undefined,
+            blocks: [
+                {
+                    type: 'text',
+                    text: cleanText
+                }
+            ],
+            status: status
+        };
+    }
+
+    function appendReactTextMessage(element, role, author, text, status) {
+        var host = getReactChatHost();
+        if (!host || typeof host.appendMessage !== 'function') return;
+
+        var messageId = getOrAssignReactMessageId(element, role);
+        var timeStr = getCurrentTimeString();
+        // Cache the initial timestamp on the element so updateReactTextMessage can reuse it
+        if (element && element.dataset) {
+            element.dataset.reactChatInitTime = timeStr;
+        }
+        var message = buildReactTextMessage(messageId, role, author, timeStr, text, status);
+        if (!message) return;
+        host.appendMessage(message);
+    }
+
+    function appendReactUserMessage(payload) {
+        var host = getReactChatHost();
+        if (!host || typeof host.appendMessage !== 'function') return;
+
+        payload = payload || {};
+        var text = String(payload.text || '').trim();
+        var imageUrls = Array.isArray(payload.imageUrls) ? payload.imageUrls.filter(Boolean) : [];
+        if (!text && imageUrls.length === 0) return;
+
+        var author = getCurrentUserName();
+        var blocks = [];
+
+        if (text) {
+            blocks.push({
+                type: 'text',
+                text: text
+            });
+        }
+
+        imageUrls.forEach(function (url, index) {
+            blocks.push({
+                type: 'image',
+                url: String(url),
+                alt: (window.t ? window.t('chat.pendingImageAlt', { index: index + 1 }) : '图片 ' + (index + 1))
+            });
+        });
+
+        host.appendMessage({
+            id: nextReactMessageId('user'),
+            role: 'user',
+            author: author,
+            time: getCurrentTimeString(),
+            createdAt: Date.now(),
+            avatarLabel: String(author).trim().slice(0, 1).toUpperCase(),
+            blocks: blocks,
+            status: 'sent'
+        });
+    }
+
+    function updateReactTextMessage(element, role, author, text, status) {
+        var host = getReactChatHost();
+        if (!host || typeof host.updateMessage !== 'function' || !element) return;
+
+        var messageId = getOrAssignReactMessageId(element, role);
+        // Reuse the stable timestamp from the initial append to avoid time drift during streaming
+        var stableTime = (element.dataset && element.dataset.reactChatInitTime) || getCurrentTimeString();
+        var message = buildReactTextMessage(messageId, role, author, stableTime, text, status);
+        if (!message) return;
+
+        host.updateMessage(messageId, {
+            author: message.author,
+            time: message.time,
+            avatarUrl: message.avatarUrl,
+            blocks: message.blocks,
+            status: status
+        });
+    }
+
+    function setReactMessageStatus(element, role, status) {
+        var host = getReactChatHost();
+        if (!host || typeof host.updateMessage !== 'function' || !element) return;
+
+        var messageId = getOrAssignReactMessageId(element, role);
+        host.updateMessage(messageId, {
+            status: status
+        });
+    }
+
+    function refreshReactAssistantAvatars() {
+        var host = getReactChatHost();
+        if (!host || typeof host.getState !== 'function' || typeof host.updateMessage !== 'function') return;
+
+        var avatarUrl = getAssistantAvatarUrl();
+        var snapshot = host.getState();
+        if (!snapshot || !Array.isArray(snapshot.messages)) return;
+
+        snapshot.messages.forEach(function (message) {
+            if (!message || message.role !== 'assistant') return;
+            host.updateMessage(message.id, {
+                avatarUrl: avatarUrl || undefined
+            });
         });
     }
 
@@ -62,14 +326,15 @@
         const cleanSentence = (sentence || '').replace(/\[play_music:[^\]]*(\]|$)/g, '');
         messageDiv.textContent = "[" + getCurrentTimeString() + "] \u{1F380} " + cleanSentence;
         chatContainer.appendChild(messageDiv);
+        appendReactTextMessage(messageDiv, 'assistant', getCurrentAssistantName(), messageDiv.textContent);
         window.currentGeminiMessage = messageDiv;
 
         // ========== 追踪本轮气泡 ==========
         window.currentTurnGeminiBubbles = window.currentTurnGeminiBubbles || [];
         window.currentTurnGeminiBubbles.push(messageDiv);
-
-        // 检测AI消息的语言，如果与用户语言不同，显示字幕提示框
-        checkAndShowSubtitlePrompt(cleanSentence);
+        if (typeof window.ensureAssistantTurnStarted === 'function') {
+            window.ensureAssistantTurnStarted('create_gemini_bubble');
+        }
 
         // 如果是AI第一次回复，更新状态并检查成就
         if (isFirstAIResponse) {
@@ -77,6 +342,38 @@
             console.log(window.t('console.aiFirstReplyDetected'));
             checkAndUnlockFirstDialogueAchievement();
         }
+    }
+
+    function normalizeGeminiText(s) {
+        return (s || '').replace(/\r\n/g, '\n');
+    }
+
+    function sanitizeGeminiChunk(rawText, options) {
+        options = options || {};
+        var consumePending = options.consumePending !== false;
+        var s = normalizeGeminiText(rawText);
+        if (window._pendingMusicCommand) {
+            s = window._pendingMusicCommand + s;
+            if (consumePending) {
+                window._pendingMusicCommand = '';
+            }
+        }
+        var m = s.match(/\[[^\]]*$/);
+        if (m) {
+            var partial = m[0].toLowerCase();
+            var target = "[play_music:";
+            if (partial.startsWith(target) || target.startsWith(partial)) {
+                if (consumePending) {
+                    window._pendingMusicCommand = m[0];
+                }
+                s = s.slice(0, m.index);
+            }
+        }
+        return s.replace(/\[play_music:[^\]]*(\]|$)/g, '');
+    }
+
+    function cleanMusicFromChunk(rawText) {
+        return sanitizeGeminiChunk(rawText, { consumePending: true });
     }
 
     // ======================== 拟真输出队列 ========================
@@ -106,8 +403,14 @@
 
                 const s = window._realisticGeminiQueue.shift();
                 if (s && (window._realisticGeminiVersion || 0) === queueVersion) {
+                    // 在修改 DOM 之前记录用户是否在底部附近
+                    var _wrap = chatContainer.parentElement;
+                    var wasNearBottom = _wrap && (_wrap.scrollHeight - _wrap.scrollTop - _wrap.clientHeight) < 60;
                     createGeminiBubble(s);
-                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                    // 仅在用户之前已处于底部附近时自动滚动
+                    if (wasNearBottom && _wrap) {
+                        _wrap.scrollTop = _wrap.scrollHeight;
+                    }
                     window._lastBubbleTime = Date.now();
                 }
             }
@@ -130,10 +433,24 @@
     window.dispatchMusicPlay = async function (trackInfo, options) {
         options = options || {};
 
-        // 拦截逻辑：如果是主动搭话触发的切歌，且当前正在放歌，则拦截
-        if (options.source === 'proactive' && typeof window.isMusicPlaying === 'function' && window.isMusicPlaying()) {
-            console.log('[MusicDispatch] 拦截来自主动搭话的切歌请求，保持当前播放');
-            return false;
+        // 拦截逻辑：如果是主动搭话触发的切歌，且本地正在放歌 / 加载中 /
+        // 其他窗口（chat.html 与 index.html 互为兄弟）也在放歌，则拦截。
+        // 单纯的 isMusicPlaying() 在"已 dispatch 但 audio 还没 play"的窗口里
+        // 会返回 false，导致并发的第二次 dispatch 被放行，最终两首歌同时响。
+        //
+        // 注意：这是有意的不对称拦截 —— 仅 source==='proactive'（主动搭话）
+        // 的推荐会被当前播放拦下；用户主动搜索、插件 music_play_url、
+        // [play_music:] 指令等（app-websocket.js 的 dispatchMusicPlay 调用不带
+        // source 字段）仍允许直接切歌。用户/插件意图 > 被动推荐。
+        if (options.source === 'proactive') {
+            var localPlaying = typeof window.isMusicPlaying === 'function' && window.isMusicPlaying();
+            var localPending = typeof window.isMusicPending === 'function' && window.isMusicPending();
+            var remoteActive = typeof window.isRemoteMusicActive === 'function' && window.isRemoteMusicActive();
+            var rateLimited = typeof window.isMusicRecommendRateLimited === 'function' && window.isMusicRecommendRateLimited();
+            if (localPlaying || localPending || remoteActive || rateLimited) {
+                console.log('[MusicDispatch] 拦截来自主动搭话的切歌请求 (playing=' + localPlaying + ', pending=' + localPending + ', remote=' + remoteActive + ', rateLimited=' + rateLimited + ')');
+                return false;
+            }
         }
 
         if (!trackInfo || !trackInfo.url) {
@@ -145,6 +462,10 @@
 
         if (window.sendMusicMessage) {
             var accepted = await window.sendMusicMessage(trackInfo);
+            // proactive 来源成功派发后打上限流时间戳，阻止接下来 18s 内的再次 proactive 推荐
+            if (accepted && options.source === 'proactive' && typeof window.markProactiveMusicRecommended === 'function') {
+                window.markProactiveMusicRecommended();
+            }
             return accepted; // 返回布尔值表示是否成功派发
         } else {
             console.warn('[MusicDispatch] sendMusicMessage \u5C1A\u672A\u5C31\u7EEA\uFF0C\u542F\u52A8\u7B49\u5F85 (ID: ' + currentDispatchId + ')...');
@@ -353,36 +674,21 @@
     /**
      * 添加消息到聊天界面
      */
-    function appendMessage(text, sender, isNewMessage) {
+    function appendMessage(text, sender, isNewMessage, options) {
         if (typeof isNewMessage === 'undefined') isNewMessage = true;
+        options = options || {};
 
         var chatContainer = S.dom.chatContainer;
+        var bubbleCountBefore = window.currentTurnGeminiBubbles ? window.currentTurnGeminiBubbles.length : 0;
+        var createdVisibleBubble = false;
+
+        // 在任何 DOM 变更之前快照滚动位置，供尾部通用自动滚动使用
+        var _wrapForScroll = chatContainer && chatContainer.parentElement;
+        var _wasNearBottom = _wrapForScroll && (_wrapForScroll.scrollHeight - _wrapForScroll.scrollTop - _wrapForScroll.clientHeight) < 60;
 
         function isMergeMessagesEnabled() {
             if (typeof window.mergeMessagesEnabled !== 'undefined') return window.mergeMessagesEnabled;
             return S.mergeMessagesEnabled;
-        }
-
-        function normalizeGeminiText(s) {
-            return (s || '').replace(/\r\n/g, '\n');
-        }
-
-        function cleanMusicFromChunk(rawText) {
-            var s = normalizeGeminiText(rawText);
-            if (window._pendingMusicCommand) {
-                s = window._pendingMusicCommand + s;
-                window._pendingMusicCommand = '';
-            }
-            var m = s.match(/\[[^\]]*$/);
-            if (m) {
-                var partial = m[0].toLowerCase();
-                var target = "[play_music:";
-                if (partial.startsWith(target) || target.startsWith(partial)) {
-                    window._pendingMusicCommand = m[0];
-                    s = s.slice(0, m.index);
-                }
-            }
-            return s.replace(/\[play_music:[^\]]*(\]|$)/g, '');
         }
 
         function splitIntoSentences(buffer) {
@@ -427,18 +733,101 @@
             return { sentences: sentences, rest: rest };
         }
 
+        function looksLikeStructuredRichText(text) {
+            // 统一复用 app-chat-text-utils.js 里的唯一实现，避免与 adapter 路径分叉。
+            return window.appChatTextUtils.looksLikeStructuredRichText(text);
+        }
+
+        function renderStructuredGeminiMessage(fullText) {
+            var cleanFullText = normalizeGeminiText(fullText).replace(/\[play_music:[^\]]*(\]|$)/g, '').trim();
+            if (!cleanFullText) return;
+
+            // 进入 structured 模式前，收拢本轮旧的拟真气泡（保留最后一个用于升级）
+            if (window.currentTurnGeminiBubbles && window.currentTurnGeminiBubbles.length > 1) {
+                var host = getReactChatHost();
+                var oldBubbles = window.currentTurnGeminiBubbles.slice(0, -1);
+                for (var bi = 0; bi < oldBubbles.length; bi++) {
+                    var oldBubble = oldBubbles[bi];
+                    // 移除 React 镜像消息
+                    if (host && typeof host.removeMessage === 'function' && oldBubble.dataset && oldBubble.dataset.reactChatMessageId) {
+                        host.removeMessage(oldBubble.dataset.reactChatMessageId);
+                    }
+                    // 移除 DOM 节点
+                    if (oldBubble.parentNode) {
+                        oldBubble.parentNode.removeChild(oldBubble);
+                    }
+                }
+                window.currentTurnGeminiBubbles = [window.currentTurnGeminiBubbles[window.currentTurnGeminiBubbles.length - 1]];
+            }
+
+            if (!window.currentTurnGeminiBubbles || window.currentTurnGeminiBubbles.length === 0 ||
+                !window.currentGeminiMessage || !window.currentGeminiMessage.isConnected) {
+                var msgDiv = document.createElement('div');
+                msgDiv.classList.add('message', 'gemini');
+                msgDiv.textContent = "[" + getCurrentTimeString() + "] \u{1F380} " + cleanFullText;
+                chatContainer.appendChild(msgDiv);
+                appendReactTextMessage(msgDiv, 'assistant', getCurrentAssistantName(), msgDiv.textContent, 'streaming');
+
+                window.currentGeminiMessage = msgDiv;
+                window.currentTurnGeminiBubbles = window.currentTurnGeminiBubbles || [];
+                window.currentTurnGeminiBubbles.push(msgDiv);
+
+                if (isFirstAIResponse) {
+                    isFirstAIResponse = false;
+                    console.log(window.t('console.aiFirstReplyDetected'));
+                    checkAndUnlockFirstDialogueAchievement();
+                }
+                return;
+            }
+
+            var timePrefix = window.currentGeminiMessage.textContent.match(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /u);
+            if (!timePrefix) {
+                timePrefix = "[" + getCurrentTimeString() + "] \u{1F380} ";
+            } else {
+                timePrefix = timePrefix[0];
+            }
+            window.currentGeminiMessage.textContent = timePrefix + cleanFullText;
+            updateReactTextMessage(window.currentGeminiMessage, 'assistant', getCurrentAssistantName(), window.currentGeminiMessage.textContent, 'streaming');
+        }
+
         // 维护"本轮 AI 回复"的完整文本（用于 turn end 时整段翻译/情感分析）
         if (sender === 'gemini') {
             if (isNewMessage) {
                 window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
                 window._geminiTurnFullText = '';
                 window._pendingMusicCommand = '';
+                window._structuredGeminiStreaming = false;
+                window._turnIsStructured = false;
                 // ========== 重置本轮气泡追踪 ==========
                 window.currentTurnGeminiBubbles = [];
                 window.currentTurnGeminiAttachments = [];
+                // 提前复位字幕 turn 状态：neko-assistant-turn-start 事件要等
+                // 首个可见气泡创建后才发，而 updateSubtitleStreamingText 在
+                // 首个 chunk 就会被调用，必须在此解锁 isCurrentTurnFinalized
+                // 闸门，否则上一轮结束留下的 true 会把本轮首个 chunk 吞掉。
+                if (typeof window.beginSubtitleTurn === 'function') {
+                    window.beginSubtitleTurn();
+                }
             }
             var prevFull = typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : '';
             window._geminiTurnFullText = prevFull + normalizeGeminiText(text);
+
+            // 结构化富文本（markdown / code / table / latex）→ 字幕显示 [markdown] 占位，
+            // 不再流式写原文，turn_end 也跳过翻译。检测命中后幂等，不会往回切。
+            var streamingText = window._geminiTurnFullText.replace(/\[play_music:[^\]]*(\]|$)/g, '');
+            if (!window._turnIsStructured && looksLikeStructuredRichText(streamingText)) {
+                window._turnIsStructured = true;
+            }
+
+            if (window._turnIsStructured) {
+                if (typeof window.markSubtitleStructured === 'function') {
+                    window.markSubtitleStructured();
+                }
+            } else if (typeof window.updateSubtitleStreamingText === 'function') {
+                // 把整轮累积的原文流式写入字幕（常驻字幕，跨气泡持续显示）
+                // turn 结束时由 app-websocket.js 调用翻译替换；turn-start 事件清空
+                window.updateSubtitleStreamingText(streamingText);
+            }
         }
 
         if (sender === 'gemini' && !isMergeMessagesEnabled()) {
@@ -481,6 +870,23 @@
             var combined = prev + incoming;
             combined = combined.replace(/\[play_music:[^\]]*(\]|$)/g, '');
 
+            var fullTurnText = (typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : '')
+                .replace(/\[play_music:[^\]]*(\]|$)/g, '');
+
+            if (looksLikeStructuredRichText(fullTurnText) || looksLikeStructuredRichText(combined)) {
+                window._structuredGeminiStreaming = true;
+                window._realisticGeminiBuffer = combined;
+                window._realisticGeminiQueue = [];
+                // 在修改 DOM 之前记录用户是否在底部附近
+                var _wrapStructured = chatContainer.parentElement;
+                var wasNearBottomStructured = _wrapStructured && (_wrapStructured.scrollHeight - _wrapStructured.scrollTop - _wrapStructured.clientHeight) < 60;
+                renderStructuredGeminiMessage(fullTurnText || combined);
+                if (wasNearBottomStructured && _wrapStructured) {
+                    _wrapStructured.scrollTop = _wrapStructured.scrollHeight;
+                }
+                return;
+            }
+
             var splitResult = splitIntoSentences(combined);
             window._realisticGeminiBuffer = splitResult.rest;
 
@@ -488,6 +894,7 @@
                 window._realisticGeminiQueue = window._realisticGeminiQueue || [];
                 window._realisticGeminiQueue.push.apply(window._realisticGeminiQueue, splitResult.sentences);
                 processRealisticQueue(window._realisticGeminiVersion || 0);
+                createdVisibleBubble = (window.currentTurnGeminiBubbles ? window.currentTurnGeminiBubbles.length : 0) > bubbleCountBefore;
             }
         } else if (sender === 'gemini' && isMergeMessagesEnabled() && isNewMessage) {
             // 合并消息开启：新一轮开始时，清空拟真缓冲，防止残留
@@ -505,16 +912,15 @@
                 messageDiv.textContent = "[" + getCurrentTimeString() + "] \u{1F380} " + cleanNewText;
 
                 chatContainer.appendChild(messageDiv);
+                appendReactTextMessage(messageDiv, 'assistant', getCurrentAssistantName(), messageDiv.textContent, 'streaming');
                 window.currentGeminiMessage = messageDiv;
 
                 // ========== 追踪本轮气泡 ==========
                 window.currentTurnGeminiBubbles.push(messageDiv);
+                createdVisibleBubble = true;
             } else {
                 window.currentGeminiMessage = null;
             }
-
-            // 3. 对干净的文本调用字幕检测
-            checkAndShowSubtitlePrompt(cleanNewText);
 
             if (isFirstAIResponse) {
                 isFirstAIResponse = false;
@@ -533,12 +939,12 @@
                     msgDiv.classList.add('message', 'gemini');
                     msgDiv.textContent = "[" + getCurrentTimeString() + "] \u{1F380} " + cleanText;
                     chatContainer.appendChild(msgDiv);
+                    appendReactTextMessage(msgDiv, 'assistant', getCurrentAssistantName(), msgDiv.textContent, 'streaming');
 
                     window.currentGeminiMessage = msgDiv;
                     window.currentTurnGeminiBubbles = window.currentTurnGeminiBubbles || [];
                     window.currentTurnGeminiBubbles.push(msgDiv);
-
-                    checkAndShowSubtitlePrompt(cleanText);
+                    createdVisibleBubble = true;
                 } else {
                     // 仅有指令无文本，继续保持指针为空，直到出现有意义的文本块
                     window.currentGeminiMessage = null;
@@ -548,51 +954,14 @@
             else if (window.currentGeminiMessage && window.currentGeminiMessage.isConnected) {
                 var fullText = window._geminiTurnFullText.replace(/\[play_music:[^\]]*(\]|$)/g, '');
 
-
-                // var timePrefix = window.currentGeminiMessage.textContent.match(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /) || [""];
-                // window.currentGeminiMessage.textContent = timePrefix[0] + fullText;
-                var timePrefix = window.currentGeminiMessage.textContent.match(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /);
+                var timePrefix = window.currentGeminiMessage.textContent.match(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /u);
                 if (!timePrefix) {
                     timePrefix = "[" + getCurrentTimeString() + "] \u{1F380} ";
                 } else {
                     timePrefix = timePrefix[0];
                 }
                 window.currentGeminiMessage.textContent = timePrefix + fullText;
-
-                
-                // 触发字幕检测逻辑（防抖）
-                if (S.subtitleCheckDebounceTimer) {
-                    clearTimeout(S.subtitleCheckDebounceTimer);
-                }
-
-                S.subtitleCheckDebounceTimer = setTimeout(function () {
-                    if (!window.currentGeminiMessage ||
-                        window.currentGeminiMessage.nodeType !== Node.ELEMENT_NODE ||
-                        !window.currentGeminiMessage.isConnected) {
-                        S.subtitleCheckDebounceTimer = null;
-                        return;
-                    }
-
-                    var currentFullText = window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /, '');
-                    if (currentFullText && currentFullText.trim()) {
-                        if (typeof userLanguage !== 'undefined' && userLanguage === null) {
-                            getUserLanguage().then(function () {
-                                if (window.currentGeminiMessage && window.currentGeminiMessage.isConnected) {
-                                    var detectedLang = detectLanguage(currentFullText);
-                                    if (detectedLang !== 'unknown' && detectedLang !== userLanguage) {
-                                        showSubtitlePrompt();
-                                    }
-                                }
-                            }).catch(function (err) { console.warn('[i18n] Stream error:', err); });
-                        } else {
-                            var detectedLang = detectLanguage(currentFullText);
-                            if (detectedLang !== 'unknown' && typeof userLanguage !== 'undefined' && detectedLang !== userLanguage) {
-                                showSubtitlePrompt();
-                            }
-                        }
-                    }
-                    S.subtitleCheckDebounceTimer = null;
-                }, 300);
+                updateReactTextMessage(window.currentGeminiMessage, 'assistant', getCurrentAssistantName(), window.currentGeminiMessage.textContent, 'streaming');
             }
         } else {
             // 创建新消息 (user / 其他 sender)
@@ -604,15 +973,21 @@
             var cleanedText = (text || '').replace(/\[play_music:[^\]]*(\]|$)/g, '');
             newDiv.textContent = "[" + getCurrentTimeString() + "] " + icon + " " + cleanedText;
             chatContainer.appendChild(newDiv);
+            if (!options.skipReactSync) {
+                appendReactTextMessage(
+                    newDiv,
+                    sender === 'user' ? 'user' : 'assistant',
+                    sender === 'user' ? getCurrentUserName() : getCurrentAssistantName(),
+                    newDiv.textContent
+                );
+            }
 
             // 如果是Gemini消息，更新当前消息引用
             if (sender === 'gemini') {
                 window.currentGeminiMessage = newDiv;
                 // ========== 追踪本轮气泡 ==========
                 window.currentTurnGeminiBubbles.push(newDiv);
-
-                // 检测AI消息的语言，如果与用户语言不同，显示字幕提示框
-                checkAndShowSubtitlePrompt(cleanedText);
+                createdVisibleBubble = true;
 
                 // 如果是AI第一次回复，更新状态并检查成就
                 if (isFirstAIResponse) {
@@ -622,7 +997,11 @@
                 }
             }
         }
-        chatContainer.scrollTop = chatContainer.scrollHeight;
+        // 仅在用户已处于底部附近时自动滚动（使用函数开头缓存的快照）
+        if (_wasNearBottom && _wrapForScroll) {
+            _wrapForScroll.scrollTop = _wrapForScroll.scrollHeight;
+        }
+        return createdVisibleBubble;
     }
 
     // ======================== 导出 ========================
@@ -631,7 +1010,10 @@
     mod.createGeminiBubble = createGeminiBubble;
     mod.processRealisticQueue = processRealisticQueue;
     mod.appendMessage = appendMessage;
+    mod.appendReactUserMessage = appendReactUserMessage;
     mod.checkAndUnlockFirstDialogueAchievement = checkAndUnlockFirstDialogueAchievement;
+    mod.setReactMessageStatus = setReactMessageStatus;
+    mod.ensureUserDisplayName = ensureUserDisplayName;
 
     /**
      * 标记用户已完成首次输入（供外部模块调用）
@@ -654,6 +1036,10 @@
     window.processRealisticQueue = processRealisticQueue;
     window.checkAndUnlockFirstDialogueAchievement = checkAndUnlockFirstDialogueAchievement;
     window.getCurrentTimeString = getCurrentTimeString;
+    window.setReactMessageStatus = setReactMessageStatus;
+
+    window.addEventListener('chat-avatar-preview-updated', refreshReactAssistantAvatars);
+    window.addEventListener('chat-avatar-preview-cleared', refreshReactAssistantAvatars);
 
     // 音乐搜索纪元：向后兼容全局变量（原来定义在 app.js IIFE 外部的 currentMusicSearchEpoch）
     if (typeof window._musicSearchEpoch === 'undefined') {

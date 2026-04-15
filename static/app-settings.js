@@ -33,9 +33,11 @@
             proactiveMusicEnabled: S.proactiveMusicEnabled,
             mergeMessagesEnabled: S.mergeMessagesEnabled,
             focusModeEnabled: S.focusModeEnabled,
+            avatarReactionBubbleEnabled: S.avatarReactionBubbleEnabled,
             proactiveChatInterval: S.proactiveChatInterval,
             proactiveVisionInterval: S.proactiveVisionInterval,
-            subtitleEnabled: S.subtitleEnabled
+            subtitleEnabled: S.subtitleEnabled,
+            textGuardMaxLength: S.textGuardMaxLength
         };
         // 只有在 S 上存在 userLanguage 属性时才包含（含 null，支持显式清除语义）
         if ('userLanguage' in S) {
@@ -170,6 +172,12 @@
         const currentMemeChat = typeof window.proactiveMemeEnabled !== 'undefined'
             ? window.proactiveMemeEnabled
             : S.proactiveMemeEnabled;
+        const currentAvatarReactionBubble = typeof window.avatarReactionBubbleEnabled !== 'undefined'
+            ? window.avatarReactionBubbleEnabled
+            : S.avatarReactionBubbleEnabled;
+        const currentTextGuardMaxLength = typeof window.textGuardMaxLength !== 'undefined'
+            ? window.textGuardMaxLength
+            : S.textGuardMaxLength;
         const currentRenderQuality = typeof window.renderQuality !== 'undefined'
             ? window.renderQuality
             : S.renderQuality;
@@ -185,6 +193,9 @@
         const currentHumanoidLocalTracking = typeof window.humanoidLocalTrackingEnabled !== 'undefined'
             ? window.humanoidLocalTrackingEnabled
             : false;
+        const currentLockedHoverFade = typeof window.lockedHoverFadeEnabled !== 'undefined'
+            ? window.lockedHoverFadeEnabled
+            : true;
 
         // 读取字幕设置（从 S 读取，因为 subtitle.js 会写入 S）
         const currentSubtitleEnabled = typeof S.subtitleEnabled !== 'undefined' ? S.subtitleEnabled : (localStorage.getItem('subtitleEnabled') === 'true');
@@ -201,13 +212,16 @@
             proactiveMemeEnabled: currentMemeChat,
             mergeMessagesEnabled: currentMerge,
             focusModeEnabled: currentFocus,
+            avatarReactionBubbleEnabled: currentAvatarReactionBubble,
             proactiveChatInterval: currentProactiveChatInterval,
             proactiveVisionInterval: currentProactiveVisionInterval,
+            textGuardMaxLength: currentTextGuardMaxLength,
             renderQuality: currentRenderQuality,
             targetFrameRate: currentTargetFrameRate,
             mouseTrackingEnabled: currentMouseTracking,
             live2dFullscreenTrackingEnabled: currentLive2dFullscreenTracking,
             humanoidLocalTrackingEnabled: currentHumanoidLocalTracking,
+            lockedHoverFadeEnabled: currentLockedHoverFade,
             subtitleEnabled: currentSubtitleEnabled,
             userLanguage: currentUserLanguage
         };
@@ -231,13 +245,18 @@
         S.proactiveMemeEnabled = currentMemeChat;
         S.mergeMessagesEnabled = currentMerge;
         S.focusModeEnabled = currentFocus;
+        S.avatarReactionBubbleEnabled = currentAvatarReactionBubble;
         S.proactiveChatInterval = currentProactiveChatInterval;
         S.proactiveVisionInterval = currentProactiveVisionInterval;
+        S.textGuardMaxLength = currentTextGuardMaxLength;
         S.renderQuality = currentRenderQuality;
         S.targetFrameRate = currentTargetFrameRate;
         // 同步字幕设置到共享状态
         S.subtitleEnabled = currentSubtitleEnabled;
         S.userLanguage = currentUserLanguage;
+
+        // 同步到服务器（异步，不阻塞）
+        syncSettingsToServer();
     }
 
     // ======================== loadSettings ========================
@@ -298,14 +317,18 @@
                 S.proactiveVisionEnabled = settings.proactiveVisionEnabled ?? false;
                 S.proactiveVisionChatEnabled = settings.proactiveVisionChatEnabled ?? true;
                 S.proactiveNewsChatEnabled = settings.proactiveNewsChatEnabled ?? false;
-                S.proactiveVideoChatEnabled = settings.proactiveVideoChatEnabled ?? false;
+                S.proactiveVideoChatEnabled = settings.proactiveVideoChatEnabled ?? true;
                 S.proactivePersonalChatEnabled = settings.proactivePersonalChatEnabled ?? false;
                 S.proactiveMusicEnabled = settings.proactiveMusicEnabled ?? true;
                 S.proactiveMemeEnabled = settings.proactiveMemeEnabled ?? true;
                 S.mergeMessagesEnabled = settings.mergeMessagesEnabled ?? false;
                 S.focusModeEnabled = settings.focusModeEnabled ?? false;
+                S.avatarReactionBubbleEnabled = settings.avatarReactionBubbleEnabled ?? true;
                 S.proactiveChatInterval = settings.proactiveChatInterval ?? C.DEFAULT_PROACTIVE_CHAT_INTERVAL;
                 S.proactiveVisionInterval = settings.proactiveVisionInterval ?? C.DEFAULT_PROACTIVE_VISION_INTERVAL;
+                // 字数限制设置（默认350字）
+                S.textGuardMaxLength = settings.textGuardMaxLength ?? 350;
+                window.textGuardMaxLength = S.textGuardMaxLength;
                 // 画质设置
                 S.renderQuality = settings.renderQuality ?? 'medium';
                 window.cursorFollowPerformanceLevel = U.mapRenderQualityToFollowPerf(S.renderQuality);
@@ -331,6 +354,15 @@
                     window.humanoidLocalTrackingEnabled = settings.humanoidLocalTrackingEnabled;
                 } else if (typeof settings.humanoidLocalTrackingEnabled === 'string') {
                     window.humanoidLocalTrackingEnabled = settings.humanoidLocalTrackingEnabled === 'true';
+                }
+
+                // 锁定悬停淡化设置
+                if (typeof settings.lockedHoverFadeEnabled === 'boolean') {
+                    window.lockedHoverFadeEnabled = settings.lockedHoverFadeEnabled;
+                } else if (typeof settings.lockedHoverFadeEnabled === 'string') {
+                    window.lockedHoverFadeEnabled = settings.lockedHoverFadeEnabled === 'true';
+                } else {
+                    window.lockedHoverFadeEnabled = true;
                 }
 
                 // 同步到运行中的实例
@@ -367,12 +399,16 @@
                 // 首次启动默认开启音乐/meme搭话
                 S.proactiveMusicEnabled = true;
                 S.proactiveMemeEnabled = true;
+                // 首次启动默认字数限制为350
+                S.textGuardMaxLength = 350;
+                window.textGuardMaxLength = 350;
 
                 console.log('未找到保存的设置，使用默认值');
                 window.cursorFollowPerformanceLevel = U.mapRenderQualityToFollowPerf(S.renderQuality);
                 window.mouseTrackingEnabled = true;
                 window.live2dFullscreenTrackingEnabled = false;
                 window.humanoidLocalTrackingEnabled = false;
+                window.lockedHoverFadeEnabled = true;
 
                 // 持久化首次启动设置，避免每次重新检测
                 saveSettings();
@@ -381,10 +417,13 @@
         } catch (error) {
             console.error('加载本地设置失败:', error);
             // 出错时也要确保全局变量被初始化
+            S.textGuardMaxLength = 350;
+            window.textGuardMaxLength = 350;
             window.cursorFollowPerformanceLevel = U.mapRenderQualityToFollowPerf(S.renderQuality);
             window.mouseTrackingEnabled = true;
             window.live2dFullscreenTrackingEnabled = false;
             window.humanoidLocalTrackingEnabled = false;
+            window.lockedHoverFadeEnabled = true;
         }
 
         // 以下逻辑不依赖本地 JSON 解析结果，始终执行
@@ -426,8 +465,10 @@
                         window.proactiveMusicEnabled = S.proactiveMusicEnabled;
                         window.mergeMessagesEnabled = S.mergeMessagesEnabled;
                         window.focusModeEnabled = S.focusModeEnabled;
+                        window.avatarReactionBubbleEnabled = S.avatarReactionBubbleEnabled;
                         window.proactiveChatInterval = S.proactiveChatInterval;
                         window.proactiveVisionInterval = S.proactiveVisionInterval;
+                        window.textGuardMaxLength = S.textGuardMaxLength;
                         // 同步回 localStorage
                         saveSettings();
                         // 重新初始化主动搭话调度器（使用最新标志）
@@ -467,22 +508,27 @@
         }
         
         // 加载麦克风设备选择
-        if (typeof window.appAudio !== 'undefined' && window.appAudio.loadSelectedMicrophone) {
-            window.appAudio.loadSelectedMicrophone();
+        if (typeof window.appAudioCapture !== 'undefined' && window.appAudioCapture.loadSelectedMicrophone) {
+            window.appAudioCapture.loadSelectedMicrophone();
         } else if (typeof window.loadSelectedMicrophone === 'function') {
             window.loadSelectedMicrophone();
         }
 
         // 加载麦克风增益设置
-        if (typeof window.appAudio !== 'undefined' && window.appAudio.loadMicGainSetting) {
-            window.appAudio.loadMicGainSetting();
+        if (typeof window.appAudioCapture !== 'undefined' && window.appAudioCapture.loadMicGainSetting) {
+            window.appAudioCapture.loadMicGainSetting();
         } else if (typeof window.loadMicGainSetting === 'function') {
             window.loadMicGainSetting();
         }
 
+        // 加载降噪设置
+        if (typeof window.appAudioCapture !== 'undefined' && window.appAudioCapture.loadNoiseReductionSetting) {
+            window.appAudioCapture.loadNoiseReductionSetting();
+        }
+
         // 加载扬声器音量设置
-        if (typeof window.appAudio !== 'undefined' && window.appAudio.loadSpeakerVolumeSetting) {
-            window.appAudio.loadSpeakerVolumeSetting();
+        if (typeof window.appAudioPlayback !== 'undefined' && window.appAudioPlayback.loadSpeakerVolumeSetting) {
+            window.appAudioPlayback.loadSpeakerVolumeSetting();
         } else if (typeof window.loadSpeakerVolumeSetting === 'function') {
             window.loadSpeakerVolumeSetting();
         }

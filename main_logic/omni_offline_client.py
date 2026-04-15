@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 from typing import Optional, Callable, Dict, Any, Awaitable
 from utils.llm_client import SystemMessage, HumanMessage, AIMessage, create_chat_llm
 from openai import APIConnectionError, InternalServerError, RateLimitError
@@ -118,7 +119,25 @@ class OmniOfflineClient:
         self._prefix_buffer_size = max(len(lanlan_name), len(master_name)) + 3 if (lanlan_name or master_name) else 0
 
         # 质量守卫回调：由 core.py 设置，用于通知前端清理气泡
-        
+
+    def update_max_response_length(self, max_length: int) -> None:
+        """更新回复字数限制(用户可能在对话期间修改设置)"""
+        if isinstance(max_length, int) and max_length >= 0:
+            self.max_response_length = max_length if max_length > 0 else 999999
+            logger.debug(f"OmniOfflineClient: 字数限制已更新为 {max_length}")
+
+    def _match_name_prefix(self, text: str, name: str) -> int:
+        """Check if text starts with a name prefix like 'Name | ' or 'Name |'.
+        Returns the length of the matched prefix, or 0 if no match.
+        Handles variants with/without spaces around the pipe character.
+        """
+        if not name:
+            return 0
+        for variant in (f"{name} | ", f"{name} |", f"{name}| ", f"{name}|"):
+            if text.startswith(variant):
+                return len(variant)
+        return 0
+
     async def connect(self, instructions: str, native_audio=False) -> None:
         """Initialize the client with system instructions."""
         self._instructions = instructions
@@ -340,17 +359,17 @@ class OmniOfflineClient:
                                     prefix_buffer += truncated_content
                                     if len(prefix_buffer) >= self._prefix_buffer_size:
                                         prefix_checked = True
-                                        lanlan_prefix = f"{self.lanlan_name} | "
-                                        master_prefix = f"{self.master_name} | "
-                                        if self.master_name and prefix_buffer.startswith(master_prefix):
+                                        master_match = self._match_name_prefix(prefix_buffer, self.master_name)
+                                        lanlan_match = self._match_name_prefix(prefix_buffer, self.lanlan_name)
+                                        if master_match:
                                             guard_triggered = True
                                             discard_reason = "role_hallucination"
-                                            logger.info(f"OmniOfflineClient: 检测到主人名前缀 '{master_prefix}'，触发重试")
+                                            logger.info(f"OmniOfflineClient: 检测到主人名前缀 '{prefix_buffer[:master_match]}'，触发重试")
                                             self._is_responding = False
                                             break
-                                        elif self.lanlan_name and prefix_buffer.startswith(lanlan_prefix):
-                                            logger.info(f"OmniOfflineClient: 剥离角色名前缀 '{lanlan_prefix}'")
-                                            truncated_content = prefix_buffer[len(lanlan_prefix):]
+                                        elif lanlan_match:
+                                            logger.info(f"OmniOfflineClient: 剥离角色名前缀 '{prefix_buffer[:lanlan_match]}'")
+                                            truncated_content = prefix_buffer[lanlan_match:]
                                         else:
                                             truncated_content = prefix_buffer
                                         # 前缀解析完毕，将结果送入下方的通用 emit/guard 路径
@@ -388,17 +407,17 @@ class OmniOfflineClient:
                         # 流结束后：flush 未处理的前缀缓冲区（走通用 emit/guard 路径）
                         if prefix_buffer and not prefix_checked:
                             prefix_checked = True
-                            lanlan_prefix = f"{self.lanlan_name} | "
-                            master_prefix = f"{self.master_name} | "
-                            if self.master_name and prefix_buffer.startswith(master_prefix):
+                            master_match = self._match_name_prefix(prefix_buffer, self.master_name)
+                            lanlan_match = self._match_name_prefix(prefix_buffer, self.lanlan_name)
+                            if master_match:
                                 guard_triggered = True
                                 discard_reason = "role_hallucination"
-                                logger.info(f"OmniOfflineClient: 流结束时检测到主人名前缀，触发重试")
+                                logger.info(f"OmniOfflineClient: 流结束时检测到主人名前缀 '{prefix_buffer[:master_match]}'，触发重试")
                             else:
                                 flush_text = prefix_buffer
-                                if self.lanlan_name and prefix_buffer.startswith(lanlan_prefix):
-                                    logger.info(f"OmniOfflineClient: 流结束时剥离角色名前缀")
-                                    flush_text = prefix_buffer[len(lanlan_prefix):]
+                                if lanlan_match:
+                                    logger.info(f"OmniOfflineClient: 流结束时剥离角色名前缀 '{prefix_buffer[:lanlan_match]}'")
+                                    flush_text = prefix_buffer[lanlan_match:]
                                 # fence + length guard
                                 for idx, char in enumerate(flush_text):
                                     if char == '|':
@@ -464,19 +483,43 @@ class OmniOfflineClient:
                             
                 except (APIConnectionError, InternalServerError, RateLimitError) as e:
                     error_type = type(e).__name__
+                    error_str_lower = str(e).lower()
+                    is_internal_error = isinstance(e, InternalServerError)
                     logger.info(f"ℹ️ 捕获到 {error_type} 错误")
+
+                    # 欠费/API Key 错误立即上报并终止；配额错误上报但继续重试
+                    if '欠费' in error_str_lower or 'standing' in error_str_lower:
+                        logger.error(f"OmniOfflineClient: 检测到欠费错误，直接上报: {e}")
+                        if self.on_status_message:
+                            await self.on_status_message(json.dumps({"code": "API_ARREARS"}))
+                            status_reported = True
+                        break
+                    elif ('401' in error_str_lower or 'unauthorized' in error_str_lower
+                            or 'authentication' in error_str_lower
+                            or ('invalid' in error_str_lower and 'key' in error_str_lower)):
+                        logger.error(f"OmniOfflineClient: 检测到 API Key 错误，直接上报: {e}")
+                        if self.on_status_message:
+                            await self.on_status_message(json.dumps({"code": "API_KEY_REJECTED"}))
+                            status_reported = True
+                        break
+                    elif 'quota' in error_str_lower or 'time limit' in error_str_lower:
+                        logger.warning(f"OmniOfflineClient: 检测到配额错误，上报前端: {e}")
+                        if self.on_status_message:
+                            await self.on_status_message(json.dumps({"code": "API_QUOTA_TIME"}))
+
                     if attempt < max_retries - 1:
                         wait_time = retry_delays[attempt]
                         logger.warning(f"OmniOfflineClient: LLM调用失败 (尝试 {attempt + 1}/{max_retries})，{wait_time}秒后重试: {e}")
-                        if self.on_status_message:
-                            await self.on_status_message(json.dumps({"code": "LLM_RETRY", "details": {"error_type": error_type, "attempt": attempt + 1, "max_retries": max_retries}}))
                         await asyncio.sleep(wait_time)
                         continue
                     else:
                         error_msg = f"💥 LLM连接失败（{error_type}），已重试{max_retries}次: {e}"
                         logger.error(error_msg)
                         if self.on_status_message:
-                            await self.on_status_message(json.dumps({"code": "LLM_CONNECTION_EXHAUSTED", "details": {"error_type": error_type, "max_retries": max_retries, "error": str(e)}}))
+                            if is_internal_error:
+                                await self.on_status_message(json.dumps({"code": "LLM_UPSTREAM_ERROR"}))
+                            else:
+                                await self.on_status_message(json.dumps({"code": "LLM_CONNECTION_EXHAUSTED", "details": {"error_type": error_type, "max_retries": max_retries, "error": str(e)}}))
                             status_reported = True
                         break
                 except Exception as e:
@@ -518,31 +561,117 @@ class OmniOfflineClient:
         """Check if there are pending images waiting to be sent."""
         return len(self._pending_images) > 0
     
+    # ------------------------------------------------------------------
+    # LLM message injection channels
+    #
+    # There are three distinct channels for injecting content into the
+    # LLM context.  Each has different persistence and triggering
+    # semantics.  Callers should pick the right one:
+    #
+    #   prime_context(text, skipped)
+    #       Session-start context priming.  Appends *text* to the system
+    #       prompt (position 0 in _conversation_history).  Used during
+    #       hot-swap to inject incremental conversation cache and task
+    #       summaries into a freshly created session.  The text becomes
+    #       part of the permanent system prompt.
+    #       Typical caller: core._perform_final_swap_sequence()
+    #
+    #   create_response(text, skipped)
+    #       Mid-conversation persistent message.  Appends a HumanMessage
+    #       to _conversation_history so the instruction and its reply
+    #       both persist across turns.  Mirrors the OpenAI Realtime API's
+    #       conversation.item.create + response.create pattern.
+    #       No active callers at present; kept as a stable interface.
+    #
+    #   prompt_ephemeral(instruction)
+    #       Fire-and-forget instruction.  The instruction is sent to the
+    #       LLM together with the conversation history but is NOT saved;
+    #       only the AI's response (AIMessage) is persisted.  Used for
+    #       agent task notifications, greetings, and other proactive
+    #       messages where the instruction is a stage direction that
+    #       should not pollute long-term context.
+    #       Typical callers: core.trigger_agent_callbacks(),
+    #                        core.trigger_greeting()
+    # ------------------------------------------------------------------
+
+    async def prime_context(self, text: str, skipped: bool = False) -> None:
+        """Append context to the system prompt at session start.
+
+        Called during hot-swap to inject incremental conversation cache
+        and/or task summaries into a freshly created session.  The *text*
+        is concatenated to the existing SystemMessage at position 0 —
+        format naturally continues the ``role | text`` lines already
+        present in the initial prompt, followed by ``======`` delimiters.
+
+        This method MUST only be called before any user interaction on the
+        session (i.e. the conversation history contains only the initial
+        SystemMessage from ``connect()``).
+
+        Args:
+            text: Context to append (incremental cache + summary/ready).
+            skipped: Accepted for interface compatibility with
+                     OmniRealtimeClient but not implemented in the
+                     offline (text-mode) path.
+        """
+        if not text or not text.strip():
+            return
+
+        if self._conversation_history and isinstance(self._conversation_history[0], SystemMessage):
+            self._conversation_history[0] = SystemMessage(
+                content=self._conversation_history[0].content + text
+            )
+        else:
+            # Defensive: should never happen — connect() always sets [0].
+            self._conversation_history.insert(0, SystemMessage(content=text))
+
     async def create_response(self, instructions: str, skipped: bool = False) -> None:
+        """Inject a persistent message and trigger an LLM response.
+
+        Appends *instructions* as a HumanMessage to the conversation
+        history.  Both the instruction and the LLM's reply persist across
+        turns.  This mirrors the OpenAI Realtime API's
+        ``conversation.item.create`` (role=user) + ``response.create``
+        pattern.
+
+        Unlike ``prime_context`` (system-prompt level, session start only)
+        and ``prompt_ephemeral`` (instruction discarded after response),
+        messages injected here become permanent conversation history.
+
+        No active callers at present; kept as a stable interface for
+        future mid-conversation injection needs.
+
+        Args:
+            instructions: Text to inject as a HumanMessage.
+            skipped: Accepted for interface compatibility with
+                     OmniRealtimeClient but not implemented in the
+                     offline (text-mode) path.
         """
-        Process a system message or instruction.
-        For compatibility with OmniRealtimeClient interface.
-        """
-        # Extract actual instruction if it starts with "SYSTEM_MESSAGE | "
-        if instructions.startswith("SYSTEM_MESSAGE | "):
-            instructions = instructions[17:]  # Remove prefix
-        
-        # Add as system message using langchain format
-        if instructions.strip():
-            self._conversation_history.append(SystemMessage(content=instructions))
+        if instructions and instructions.strip():
+            self._conversation_history.append(HumanMessage(content=instructions))
     
-    async def stream_proactive(self, instruction: str) -> bool:
-        """Generate and stream a proactive AI response driven by a system instruction.
+    async def prompt_ephemeral(self, instruction: str) -> bool:
+        """Send a fire-and-forget instruction to the LLM and stream the response.
 
-        The *instruction* is expected to be pre-formatted by the caller using the
-        ========...======== convention and is injected as a temporary HumanMessage.
-        It is **not** persisted to _conversation_history.  Only the AI's
-        natural-language response (AIMessage) is kept in history.
+        The *instruction* (typically wrapped in ``======...======`` delimiters)
+        is appended as a temporary HumanMessage for this single LLM call
+        but is **not** persisted to ``_conversation_history``.  Only the
+        AI's natural-language response (AIMessage) is kept in history.
 
-        Calls on_proactive_done() when finished — a lightweight callback that only
-        flushes TTS and sends turn_end to the frontend, WITHOUT triggering hot-swap
-        or analyze_request logic.  Falls back to on_response_done() if
-        on_proactive_done is not set.
+        This is the correct channel for agent task notifications, greeting
+        nudges, and any scenario where the AI should respond to a stage
+        direction that must not pollute long-term context.
+
+        Unlike ``prime_context`` (appends to system prompt, session start)
+        and ``create_response`` (persistent HumanMessage), the instruction
+        here is truly ephemeral — it exists only for the duration of this
+        single LLM inference call.
+
+        Calls ``on_proactive_done()`` when finished — a lightweight
+        callback that only flushes TTS and sends ``turn_end`` to the
+        frontend, WITHOUT triggering hot-swap or ``analyze_request``
+        logic.  Falls back to ``on_response_done()`` if
+        ``on_proactive_done`` is not set.
+
         Returns True if any text was generated, False if aborted or empty.
         """
         if not instruction or not instruction.strip():
@@ -558,6 +687,8 @@ class OmniOfflineClient:
         assistant_message = ""
         is_first_chunk = True
         chunk_usage = None
+        prefix_buffer = ""
+        prefix_checked = not bool(self._prefix_buffer_size)
 
         try:
             self._is_responding = True
@@ -574,12 +705,53 @@ class OmniOfflineClient:
                     break
                 content = chunk.content if hasattr(chunk, "content") else str(chunk)
                 if content and content.strip():
-                    assistant_message += content
+                    emit_content = content
+
+                    # ── 前缀检测阶段：缓冲初始输出，剥离角色名前缀 ──
+                    if not prefix_checked:
+                        prefix_buffer += emit_content
+                        if len(prefix_buffer) >= self._prefix_buffer_size:
+                            prefix_checked = True
+                            master_match = self._match_name_prefix(prefix_buffer, self.master_name)
+                            lanlan_match = self._match_name_prefix(prefix_buffer, self.lanlan_name)
+                            if master_match:
+                                logger.info(f"OmniOfflineClient.prompt_ephemeral: 剥离主人名前缀 '{prefix_buffer[:master_match]}'")
+                                emit_content = prefix_buffer[master_match:]
+                            elif lanlan_match:
+                                logger.info(f"OmniOfflineClient.prompt_ephemeral: 剥离角色名前缀 '{prefix_buffer[:lanlan_match]}'")
+                                emit_content = prefix_buffer[lanlan_match:]
+                            else:
+                                emit_content = prefix_buffer
+                            if not (emit_content and emit_content.strip()):
+                                continue
+                        else:
+                            continue  # 缓冲区未满，等更多 chunk
+
+                    assistant_message += emit_content
                     if self.on_text_delta:
-                        await self.on_text_delta(content, is_first_chunk)
+                        await self.on_text_delta(emit_content, is_first_chunk)
+                    is_first_chunk = False
+
+            # ── flush 前缀缓冲区（流提前结束时） ──
+            if prefix_buffer and not prefix_checked:
+                prefix_checked = True
+                master_match = self._match_name_prefix(prefix_buffer, self.master_name)
+                lanlan_match = self._match_name_prefix(prefix_buffer, self.lanlan_name)
+                if master_match:
+                    logger.info("OmniOfflineClient.prompt_ephemeral: 流结束时剥离主人名前缀")
+                    flush_text = prefix_buffer[master_match:]
+                elif lanlan_match:
+                    logger.info("OmniOfflineClient.prompt_ephemeral: 流结束时剥离角色名前缀")
+                    flush_text = prefix_buffer[lanlan_match:]
+                else:
+                    flush_text = prefix_buffer
+                if flush_text and flush_text.strip():
+                    assistant_message += flush_text
+                    if self.on_text_delta:
+                        await self.on_text_delta(flush_text, is_first_chunk)
                     is_first_chunk = False
         except Exception as e:
-            error_msg = f"OmniOfflineClient.stream_proactive error: {e}"
+            error_msg = f"OmniOfflineClient.prompt_ephemeral error: {e}"
             logger.error(error_msg)
             if self.on_status_message:
                 await self.on_status_message(json.dumps({"code": "PROACTIVE_GEN_FAILED", "details": {"error_type": type(e).__name__, "error": str(e)}}))

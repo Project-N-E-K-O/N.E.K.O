@@ -29,6 +29,7 @@
         const item = document.createElement('div');
         item.className = 'screenshot-item';
         item.dataset.index = S.screenshotCounter;
+        item.dataset.attachmentId = 'attachment-' + Date.now() + '-' + S.screenshotCounter;
 
         // Create thumbnail
         const img = document.createElement('img');
@@ -68,6 +69,7 @@
         // Update count and show container
         mod.updateScreenshotCount();
         screenshotThumbnailContainer.classList.add('show');
+        mod.syncPendingComposerAttachments();
 
         // Auto-scroll to latest screenshot
         setTimeout(function () {
@@ -89,6 +91,7 @@
         setTimeout(function () {
             item.remove();
             mod.updateScreenshotCount();
+            mod.syncPendingComposerAttachments();
 
             if (screenshotsList.children.length === 0) {
                 screenshotThumbnailContainer.classList.remove('show');
@@ -107,6 +110,124 @@
         screenshotCountEl.textContent = count;
     };
     window.updateScreenshotCount = mod.updateScreenshotCount;
+
+    mod.getPendingComposerAttachments = function getPendingComposerAttachments() {
+        var screenshotsList = S.dom.screenshotsList;
+        if (!screenshotsList) return [];
+
+        return Array.from(screenshotsList.children).map(function (item, index) {
+            var img = item.querySelector('.screenshot-thumbnail');
+            if (!img || !img.src) return null;
+            return {
+                id: String(item.dataset.attachmentId || item.dataset.index || ('attachment-' + index)),
+                url: img.src,
+                alt: img.alt || (window.t ? window.t('chat.pendingImageAlt', { index: index + 1 }) : '图片 ' + (index + 1))
+            };
+        }).filter(Boolean);
+    };
+
+    mod.syncPendingComposerAttachments = function syncPendingComposerAttachments() {
+        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setComposerAttachments === 'function') {
+            window.reactChatWindowHost.setComposerAttachments(mod.getPendingComposerAttachments());
+        }
+    };
+
+    mod.ensureImportImageInput = function ensureImportImageInput() {
+        if (mod._importImageInput && mod._importImageInput.isConnected) {
+            return mod._importImageInput;
+        }
+
+        var input = document.getElementById('reactChatWindowImportImageInput');
+        if (!input) {
+            input = document.createElement('input');
+            input.id = 'reactChatWindowImportImageInput';
+            input.type = 'file';
+            input.accept = 'image/*';
+            input.multiple = true;
+            input.hidden = true;
+            document.body.appendChild(input);
+        }
+
+        input.addEventListener('change', function (event) {
+            var files = event && event.target && event.target.files ? Array.from(event.target.files) : [];
+            if (!files.length) return;
+
+            Promise.allSettled(files.map(mod.importImageFileToPendingList))
+                .then(function (results) {
+                    var succeeded = 0;
+                    for (var i = 0; i < results.length; i++) {
+                        if (results[i].status === 'fulfilled') {
+                            succeeded++;
+                        } else {
+                            console.error('[导入图片] 单张处理失败:', results[i].reason);
+                        }
+                    }
+                    if (succeeded > 0) {
+                        window.showStatusToast(
+                            window.t ? window.t('app.importImageAdded', { count: succeeded }) : '已添加 ' + succeeded + ' 张图片，发送时会一并带上',
+                            3000
+                        );
+                    } else {
+                        window.showStatusToast(
+                            window.t ? window.t('app.importImageFailed') : '导入图片失败',
+                            4000
+                        );
+                    }
+                })
+                .finally(function () {
+                    input.value = '';
+                });
+        });
+
+        mod._importImageInput = input;
+        return input;
+    };
+
+    mod.importImageFileToPendingList = function importImageFileToPendingList(file) {
+        return new Promise(function (resolve, reject) {
+            if (!(file instanceof File)) {
+                reject(new Error('INVALID_FILE'));
+                return;
+            }
+
+            if (!/^image\//i.test(file.type || '')) {
+                reject(new Error('INVALID_IMAGE_TYPE'));
+                return;
+            }
+
+            var reader = new FileReader();
+            reader.onload = function () {
+                try {
+                    mod.addScreenshotToList(String(reader.result || ''));
+                    resolve(reader.result);
+                } catch (error) {
+                    reject(error);
+                }
+            };
+            reader.onerror = function () {
+                reject(reader.error || new Error('READ_IMAGE_FAILED'));
+            };
+            reader.readAsDataURL(file);
+        });
+    };
+
+    mod.openImageImportPicker = function openImageImportPicker() {
+        var input = mod.ensureImportImageInput();
+        input.click();
+    };
+
+    mod.removePendingAttachmentById = function removePendingAttachmentById(attachmentId) {
+        if (!attachmentId) return;
+        var screenshotsList = S.dom.screenshotsList;
+        if (!screenshotsList) return;
+        var items = Array.from(screenshotsList.children);
+        var target = items.find(function (item) {
+            return item.dataset.attachmentId === String(attachmentId);
+        });
+        if (target) {
+            mod.removeScreenshotFromList(target);
+        }
+    };
 
     // ======================== Emotion analysis ========================
 
@@ -179,6 +300,8 @@
         var screenshotThumbnailContainer = S.dom.screenshotThumbnailContainer = document.getElementById('screenshot-thumbnail-container');
         var screenshotCountEl    = S.dom.screenshotCount      = document.getElementById('screenshot-count');
         var clearAllScreenshots  = S.dom.clearAllScreenshots   = document.getElementById('clear-all-screenshots');
+        var textInputComposing = false;
+        var lastTextCompositionEndAt = 0;
 
         // ----------------------------------------------------------------
         // Mic button click
@@ -256,8 +379,9 @@
                             console.log(window.t('console.sessionTimeoutEndSession'));
                         }
 
-                        window.showVoicePreparingToast(window.t ? window.t('app.sessionTimeout') || '\u8FDE\u63A5\u8D85\u65F6' : '\u8FDE\u63A5\u8D85\u65F6\uFF0C\u8BF7\u68C0\u67E5\u7F51\u7EDC\u8FDE\u63A5');
-                        rejecter(new Error(window.t ? window.t('app.sessionTimeout') : 'Session\u542F\u52A8\u8D85\u65F6'));
+                        var timeoutMsg = (window.t && window.t('app.sessionTimeout')) || '\u542F\u52A8\u8D85\u65F6\uFF0C\u670D\u52A1\u5668\u53EF\u80FD\u7E41\u5FD9\uFF0C\u8BF7\u7A0D\u540E\u624B\u52A8\u91CD\u8BD5';
+                        window.showVoicePreparingToast(timeoutMsg);
+                        rejecter(new Error(timeoutMsg));
                     } else {
                         window.sessionTimeoutId = null;
                     }
@@ -395,6 +519,7 @@
             });
 
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
+                S._suppressCharacterLeft = true;
                 S.socket.send(JSON.stringify({ action: 'end_session' }));
             }
             window.stopRecording();
@@ -412,6 +537,7 @@
             screenshotsList.innerHTML = '';
             screenshotThumbnailContainer.classList.remove('show');
             mod.updateScreenshotCount();
+            mod.syncPendingComposerAttachments();
             S.screenshotCounter = 0;
 
             console.log(window.t('console.executingBranchJudgment'), isGoodbyeMode);
@@ -456,6 +582,9 @@
                 returnSessionButton.disabled = false;
 
                 window.stopProactiveChatSchedule();
+                if (typeof window.stopProactiveVisionDuringSpeech === 'function') {
+                    window.stopProactiveVisionDuringSpeech();
+                }
 
                 window.showStatusToast('', 0);
             }
@@ -477,6 +606,9 @@
                 }
                 if (window.vrmManager) {
                     window.vrmManager._goodbyeClicked = false;
+                }
+                if (window.mmdManager) {
+                    window.mmdManager._goodbyeClicked = false;
                 }
 
                 micButton.classList.remove('recording');
@@ -515,7 +647,8 @@
                                 console.log(window.t('console.returnSessionTimeoutEndSession'));
                             }
 
-                            rejecter(new Error(window.t ? window.t('app.sessionTimeout') : 'Session\u542F\u52A8\u8D85\u65F6'));
+                            var timeoutMsg = (window.t && window.t('app.sessionTimeout')) || '\u542F\u52A8\u8D85\u65F6\uFF0C\u670D\u52A1\u5668\u53EF\u80FD\u7E41\u5FD9\uFF0C\u8BF7\u7A0D\u540E\u624B\u52A8\u91CD\u8BD5';
+                            rejecter(new Error(timeoutMsg));
                         }
                     }, 15000);
                 });
@@ -612,11 +745,9 @@
             }
         });
 
-        // ----------------------------------------------------------------
-        // Text send button click
-        // ----------------------------------------------------------------
-        textSendButton.addEventListener('click', async function () {
-            var text = textInputBox.value.trim();
+        async function sendTextPayload(rawText, options) {
+            options = options || {};
+            var text = String(typeof rawText === 'string' ? rawText : '').trim();
             var hasScreenshots = screenshotsList.children.length > 0;
 
             if (!text && !hasScreenshots) return;
@@ -665,7 +796,8 @@
                                 console.log('[TextSession] timeout \u2192 sent end_session');
                             }
 
-                            rejecter(new Error(window.t ? window.t('app.sessionTimeout') : 'Session\u542F\u52A8\u8D85\u65F6'));
+                            var timeoutMsg = (window.t && window.t('app.sessionTimeout')) || '\u542F\u52A8\u8D85\u65F6\uFF0C\u670D\u52A1\u5668\u53EF\u80FD\u7E41\u5FD9\uFF0C\u8BF7\u7A0D\u540E\u624B\u52A8\u91CD\u8BD5';
+                            rejecter(new Error(timeoutMsg));
                         }
                     }, 15000);
 
@@ -706,12 +838,15 @@
 
             // Send message
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
+                var sentImageUrls = [];
+
                 // Send screenshots first
                 if (hasScreenshots) {
                     var screenshotItems = Array.from(screenshotsList.children);
                     for (var i = 0; i < screenshotItems.length; i++) {
                         var img = screenshotItems[i].querySelector('.screenshot-thumbnail');
                         if (img && img.src) {
+                            sentImageUrls.push(img.src);
                             S.socket.send(JSON.stringify({
                                 action: 'stream_data',
                                 data: img.src,
@@ -721,7 +856,9 @@
                     }
 
                     var screenshotItemCount = screenshotItems.length;
-                    window.appendMessage('\uD83D\uDCF8 [\u5DF2\u53D1\u9001' + screenshotItemCount + '\u5F20\u622A\u56FE]', 'user', true);
+                    window.appendMessage('\uD83D\uDCF8 [\u5DF2\u53D1\u9001' + screenshotItemCount + '\u5F20\u622A\u56FE]', 'user', true, {
+                        skipReactSync: true
+                    });
 
                     // Achievement: send image
                     if (window.unlockAchievement) {
@@ -734,22 +871,35 @@
                     screenshotsList.innerHTML = '';
                     screenshotThumbnailContainer.classList.remove('show');
                     mod.updateScreenshotCount();
+                    mod.syncPendingComposerAttachments();
                 }
 
                 // Then send text (if any)
                 if (text) {
+                    if (window.appChat && typeof window.appChat.ensureUserDisplayName === 'function') {
+                        try {
+                            await window.appChat.ensureUserDisplayName();
+                        } catch (nameError) {
+                            console.warn('[Chat] preload user display name failed:', nameError);
+                        }
+                    }
+
                     S.socket.send(JSON.stringify({
                         action: 'stream_data',
                         data: text,
                         input_type: 'text'
                     }));
 
-                    textInputBox.value = '';
-                    window.appendMessage(text, 'user', true);
+                    if (!options.preserveInputValue) {
+                        textInputBox.value = '';
+                    }
+                    window.appendMessage(text, 'user', true, {
+                        skipReactSync: sentImageUrls.length > 0
+                    });
 
                     // Achievement: meow detection
                     if (window.incrementAchievementCounter) {
-                        var meowPattern = /\u55B5|miao|meow|nya|\u306B\u3083/i;
+                        var meowPattern = /\u55B5|miao|meow|nya[no]?|\u306B\u3083|\uB0E5|\u043C\u044F\u0443/i;
                         if (meowPattern.test(text)) {
                             try {
                                 window.incrementAchievementCounter('meowCount');
@@ -767,6 +917,13 @@
                     }
                 }
 
+                if (window.appChat && typeof window.appChat.appendReactUserMessage === 'function' && sentImageUrls.length > 0) {
+                    window.appChat.appendReactUserMessage({
+                        text: text,
+                        imageUrls: sentImageUrls
+                    });
+                }
+
                 // Reset proactive chat timer
                 if (S.proactiveChatEnabled && window.hasAnyChatModeEnabled()) {
                     window.resetProactiveChatBackoff();
@@ -776,6 +933,26 @@
             } else {
                 window.showStatusToast(window.t ? window.t('app.websocketNotConnected') : 'WebSocket\u672A\u8FDE\u63A5\uFF01', 4000);
             }
+        }
+
+        mod.sendTextPayload = sendTextPayload;
+        window.sendTextPayload = sendTextPayload;
+
+        // ----------------------------------------------------------------
+        // Text send button click
+        // ----------------------------------------------------------------
+        textSendButton.addEventListener('click', async function () {
+            await sendTextPayload(textInputBox.value, { source: 'legacy-text-button' });
+        });
+
+        // 中文输入法候选确认时，Enter 也会参与组合输入流程；这里单独跟踪，避免误发消息。
+        textInputBox.addEventListener('compositionstart', function () {
+            textInputComposing = true;
+        });
+
+        textInputBox.addEventListener('compositionend', function () {
+            textInputComposing = false;
+            lastTextCompositionEndAt = Date.now();
         });
 
         // ----------------------------------------------------------------
@@ -783,16 +960,62 @@
         // ----------------------------------------------------------------
         textInputBox.addEventListener('keydown', function (e) {
             if (e.key === 'Enter' && !e.shiftKey) {
+                var isImeEnter = e.isComposing || e.keyCode === 229 || textInputComposing;
+                var justEndedComposition = lastTextCompositionEndAt > 0 && (Date.now() - lastTextCompositionEndAt) < 80;
+
+                if (isImeEnter || justEndedComposition) {
+                    return;
+                }
+
                 e.preventDefault();
                 textSendButton.click();
             }
         });
 
-        // ----------------------------------------------------------------
-        // Screenshot button click
-        // ----------------------------------------------------------------
-        screenshotButton.addEventListener('click', async function () {
-            var captureStream = null;
+        // 工具：将 dataUrl 图片降采样到 720p 上限并重新编码为 JPEG 0.8，保持与既有流水线一致。
+        // 如果图片本身已经在 720p 以内，直接返回原 dataUrl，避免无谓的解码/再编码。
+        // 返回 { dataUrl, width, height }：width/height 始终是"返回的这张图"的实际尺寸，
+        // 避免调用方把源尺寸误当成最终尺寸写进日志/UI。
+        async function downscaleDataUrlTo720p(srcDataUrl) {
+            if (!srcDataUrl) return { dataUrl: null, width: 0, height: 0 };
+            var maxW = (window.appConst && window.appConst.MAX_SCREENSHOT_WIDTH) || 1280;
+            var maxH = (window.appConst && window.appConst.MAX_SCREENSHOT_HEIGHT) || 720;
+            return await new Promise(function (resolve) {
+                var img = new Image();
+                img.onload = function () {
+                    var w = img.naturalWidth, h = img.naturalHeight;
+                    if (!w || !h) { resolve({ dataUrl: srcDataUrl, width: 0, height: 0 }); return; }
+                    if (w <= maxW && h <= maxH) { resolve({ dataUrl: srcDataUrl, width: w, height: h }); return; }
+                    var scale = Math.min(maxW / w, maxH / h);
+                    var tw = Math.max(1, Math.round(w * scale));
+                    var th = Math.max(1, Math.round(h * scale));
+                    try {
+                        var cv = document.createElement('canvas');
+                        cv.width = tw; cv.height = th;
+                        var cx = cv.getContext('2d');
+                        cx.drawImage(img, 0, 0, tw, th);
+                        resolve({ dataUrl: cv.toDataURL('image/jpeg', 0.8), width: tw, height: th });
+                    } catch (e) {
+                        console.warn('[截图] 降采样失败，使用原图:', e);
+                        resolve({ dataUrl: srcDataUrl, width: w, height: h });
+                    }
+                };
+                img.onerror = function (e) {
+                    console.warn('[截图] 图片加载失败，使用原图:', e);
+                    resolve({ dataUrl: srcDataUrl, width: 0, height: 0 });
+                };
+                img.src = srcDataUrl;
+            });
+        }
+
+        mod.captureScreenshotToPendingList = async function captureScreenshotToPendingList() {
+            // 桌面端优先级：
+            //   1) 主进程直接 desktopCapturer 捕获选中源（最可靠，绕开所有 Chromium 桌面捕获管线问题）
+            //   2) acquireOrReuseCachedStream（缓存流 / Electron chromeMediaSourceId / getDisplayMedia）
+            //   3) 后端 pyautogui（只能截主屏）
+            // isCachedStream 用于区分缓存流（绝不能关）与一次性流（finally 要关）。
+            var acquiredStream = null;
+            var isCachedStream = false;
 
             try {
                 screenshotButton.disabled = true;
@@ -801,61 +1024,93 @@
                 var dataUrl = null;
                 var width = 0, height = 0;
 
-                // 1. 优先尝试缓存流（不创建新缓存，即时截取无弹窗）
-                try {
-                    if (S.screenCaptureStream && S.screenCaptureStream.active) {
-                        var tracks = S.screenCaptureStream.getVideoTracks();
-                        if (tracks.length > 0 && tracks.some(function (t) { return t.readyState === 'live'; })) {
-                            var cachedFrame = await window.captureFrameFromStream(S.screenCaptureStream, 0.8);
-                            if (cachedFrame && cachedFrame.dataUrl) {
-                                dataUrl = cachedFrame.dataUrl;
-                                width = cachedFrame.width;
-                                height = cachedFrame.height;
-                                // 刷新缓存流最后使用时间
-                                S.screenCaptureStreamLastUsed = Date.now();
-                                if (window.scheduleScreenCaptureIdleCheck) window.scheduleScreenCaptureIdleCheck();
-                            }
+                if (U.isMobile()) {
+                    // 移动端：沿用摄像头采集，永远是一次性流
+                    try {
+                        acquiredStream = await window.getMobileCameraStream();
+                    } catch (mobileErr) {
+                        console.warn('[截图] 移动端摄像头获取失败:', mobileErr);
+                        // 无条件抛出：保留原始错误 name（NotAllowedError / NotFoundError /
+                        // NotReadableError 等），让外层 catch 的分支能给出对应的本地化提示。
+                        throw mobileErr;
+                    }
+                    if (acquiredStream) {
+                        var mframe = await window.captureFrameFromStream(acquiredStream, 0.8);
+                        if (mframe) {
+                            dataUrl = mframe.dataUrl;
+                            width = mframe.width;
+                            height = mframe.height;
                         }
                     }
-                } catch (cachedErr) {
-                    console.warn('[截图] 缓存流截取失败，将尝试一次性流:', cachedErr);
-                }
-
-                // 2. 无缓存流或缓存流截取失败 → 一次性流（用后即释放，不存入缓存）
-                if (!dataUrl) {
-                    if (U.isMobile()) {
-                        captureStream = await window.getMobileCameraStream();
-                    } else {
-                        // Desktop: try getDisplayMedia
+                } else {
+                    // === 优先级 1：主进程直接捕获选中源 ===
+                    // 只要渲染器知道用户选了某个源，就让主进程用 desktopCapturer 的高分辨率缩略图
+                    // 对该源做一次静态快照。完全绕开 getUserMedia(chromeMediaSourceId) 和
+                    // getDisplayMedia + setDisplayMediaRequestHandler 这条 Chromium 桌面捕获管线
+                    // ——在 Electron 41 / Windows 11 + useSystemPicker:true 的组合下，这条管线对窗口
+                    // 源常常返回整个屏幕。主进程 desktopCapturer 则直接由平台原生 API 支持，可靠。
+                    var selectedSourceId = S.selectedScreenSourceId;
+                    if (selectedSourceId && window.electronDesktopCapturer
+                        && typeof window.electronDesktopCapturer.captureSourceAsDataUrl === 'function') {
                         try {
-                            if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
-                                captureStream = await navigator.mediaDevices.getDisplayMedia({
-                                    video: { cursor: 'always' },
-                                    audio: false,
-                                });
-                            } else {
-                                throw new Error('UNSUPPORTED_API');
+                            var direct = await window.electronDesktopCapturer.captureSourceAsDataUrl(selectedSourceId);
+                            if (direct && direct.success && direct.dataUrl) {
+                                var scaled = await downscaleDataUrlTo720p(direct.dataUrl);
+                                dataUrl = scaled.dataUrl;
+                                // 以降采样后的实际尺寸为准；解码失败时 scaled.width/height 为 0，
+                                // 此时回退到主进程上报的原始尺寸，避免日志空值。
+                                width = scaled.width || direct.width || 0;
+                                height = scaled.height || direct.height || 0;
+                                console.log('[截图] 主进程直接捕获成功:', selectedSourceId, width + 'x' + height);
+                            } else if (direct && direct.error) {
+                                console.warn('[截图] 主进程直接捕获失败:', direct.error);
                             }
-                        } catch (displayErr) {
-                            if (displayErr.name === 'NotAllowedError') throw displayErr;
+                        } catch (directErr) {
+                            console.warn('[截图] 主进程直接捕获抛错，将回退到流路径:', directErr);
+                        }
+                    }
 
-                            console.warn('[\u622A\u56FE] getDisplayMedia \u5931\u8D25\uFF0C\u5C1D\u8BD5\u540E\u7AEF\u622A\u56FE:', displayErr);
-                            var result = await window.fetchBackendScreenshot();
-                            if (result && result.dataUrl) {
-                                dataUrl = result.dataUrl;
-                            } else {
-                                throw displayErr;
+                    // === 优先级 2：acquireOrReuseCachedStream 流路径 ===
+                    if (!dataUrl && typeof window.acquireOrReuseCachedStream === 'function') {
+                        try {
+                            // 用户手势上下文（点击截图按钮）→ allowPrompt:true，允许 getDisplayMedia
+                            acquiredStream = await window.acquireOrReuseCachedStream({ allowPrompt: true });
+                        } catch (acqErr) {
+                            if (acqErr && acqErr.name === 'NotAllowedError') throw acqErr;
+                            console.warn('[截图] acquireOrReuseCachedStream 抛错:', acqErr);
+                            acquiredStream = null;
+                        }
+
+                        if (acquiredStream) {
+                            // 与全局缓存流等值比较 ⇒ acquireOrReuseCachedStream 新建的流一定写回 S.screenCaptureStream
+                            isCachedStream = (acquiredStream === S.screenCaptureStream);
+                            var frame = await window.captureFrameFromStream(acquiredStream, 0.8);
+                            if (frame) {
+                                dataUrl = frame.dataUrl;
+                                width = frame.width;
+                                height = frame.height;
+                                if (isCachedStream) {
+                                    S.screenCaptureStreamLastUsed = Date.now();
+                                    if (window.scheduleScreenCaptureIdleCheck) window.scheduleScreenCaptureIdleCheck();
+                                }
                             }
                         }
                     }
 
-                    // Extract frame from one-time stream
-                    if (!dataUrl && captureStream) {
-                        var frame = await window.captureFrameFromStream(captureStream, 0.8);
-                        if (frame) {
-                            dataUrl = frame.dataUrl;
-                            width = frame.width;
-                            height = frame.height;
+                    // === 优先级 3：后端 pyautogui（只能截主屏，且需 localhost）===
+                    if (!dataUrl) {
+                        try {
+                            var backendResult = await window.fetchBackendScreenshot();
+                            if (backendResult && backendResult.dataUrl) {
+                                // 后端 pyautogui 返回原生分辨率（2K/4K 显示器会超过 720p 上限），
+                                // 与主进程直接捕获路径保持一致，统一降采样到 MAX_SCREENSHOT_WIDTH/HEIGHT。
+                                var beScaled = await downscaleDataUrlTo720p(backendResult.dataUrl);
+                                dataUrl = beScaled.dataUrl;
+                                width = beScaled.width || 0;
+                                height = beScaled.height || 0;
+                            }
+                        } catch (beErr) {
+                            console.warn('[截图] 后端兜底失败:', beErr);
                         }
                     }
                 }
@@ -889,13 +1144,22 @@
 
                 window.showStatusToast(errorMsg, 5000);
             } finally {
-                // 只释放一次性流，不碰缓存流
-                if (captureStream instanceof MediaStream) {
-                    captureStream.getTracks().forEach(function (track) { track.stop(); });
+                // 只释放一次性流；缓存流由 acquireOrReuseCachedStream 体系管理，绝不能在这里停
+                if (!isCachedStream && acquiredStream instanceof MediaStream) {
+                    try {
+                        acquiredStream.getTracks().forEach(function (track) {
+                            try { track.stop(); } catch (e) { }
+                        });
+                    } catch (e) { }
                 }
                 screenshotButton.disabled = false;
             }
-        });
+        };
+
+        // ----------------------------------------------------------------
+        // Screenshot button click
+        // ----------------------------------------------------------------
+        screenshotButton.addEventListener('click', mod.captureScreenshotToPendingList);
 
         // ----------------------------------------------------------------
         // Clear all screenshots button
@@ -911,8 +1175,33 @@
                 screenshotsList.innerHTML = '';
                 screenshotThumbnailContainer.classList.remove('show');
                 mod.updateScreenshotCount();
+                mod.syncPendingComposerAttachments();
             }
         });
+
+        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setOnComposerSubmit === 'function') {
+            window.reactChatWindowHost.setOnComposerSubmit(function (detail) {
+                return mod.sendTextPayload(detail && detail.text, { source: 'react-chat-window' });
+            });
+        }
+        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setOnComposerImportImage === 'function') {
+            window.reactChatWindowHost.setOnComposerImportImage(function () {
+                return mod.openImageImportPicker();
+            });
+        }
+        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setOnComposerScreenshot === 'function') {
+            window.reactChatWindowHost.setOnComposerScreenshot(function () {
+                return mod.captureScreenshotToPendingList();
+            });
+        }
+        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setOnComposerRemoveAttachment === 'function') {
+            window.reactChatWindowHost.setOnComposerRemoveAttachment(function (attachmentId) {
+                return mod.removePendingAttachmentById(attachmentId);
+            });
+        }
+
+        mod.ensureImportImageInput();
+        mod.syncPendingComposerAttachments();
     };
 
     window.appButtons = mod;

@@ -315,10 +315,7 @@
 
 
         if (typeof window.checkAndToggleTaskHUD === 'function') {
-            console.log('[AgentUIv2] Calling checkAndToggleTaskHUD from render()');
             window.checkAndToggleTaskHUD();
-        } else {
-            console.log('[AgentUIv2] checkAndToggleTaskHUD not found during render()');
         }
 
     }
@@ -369,7 +366,7 @@
                     setGlobalBusy(false);
                     fetchSnapshot().catch(() => { });
                     if (typeof window.showStatusToast === 'function') {
-                        window.showStatusToast(`Agent切换失败: ${e.message}`, 2500);
+                        window.showStatusToast(window.t ? window.t('agent.status.toggleFailed', { error: e.message }) : `Agent切换失败: ${e.message}`, 2500);
                     }
                 }
                 return;
@@ -409,7 +406,7 @@
                         setGlobalBusy(false);
                         fetchSnapshot().catch(() => { });
                         if (typeof window.showStatusToast === 'function') {
-                            window.showStatusToast(`${getName(key)}切换失败: ${err.message}`, 2500);
+                            window.showStatusToast(window.t ? window.t('settings.toggles.toggleFailed', { name: getName(key), error: err.message }) : `${getName(key)}切换失败: ${err.message}`, 2500);
                         }
                         return;
                     } finally {
@@ -460,7 +457,7 @@
                     setGlobalBusy(false);
                     fetchSnapshot().catch(() => {});
                     if (typeof window.showStatusToast === 'function') {
-                        window.showStatusToast(`${openclawName}\u5207\u6362\u5931\u8d25: ${err.message}`, 2500);
+                        window.showStatusToast(window.t ? window.t('settings.toggles.toggleFailed', { name: openclawName, error: err.message }) : `${openclawName}切换失败: ${err.message}`, 2500);
                     }
                     return;
                 } finally {
@@ -473,7 +470,7 @@
             });
         });
 
-        window.addEventListener('live2d-agent-popup-opening', async () => {
+        window.addEventListener('neko-popup-opening', async () => {
             state.popupOpen = true;
             render('popup');
             refreshOpenClawAvailability().catch(() => {});
@@ -484,7 +481,7 @@
             // Open popup without waiting, then refresh in background.
             fetchSnapshot().catch(() => { });
         });
-        window.addEventListener('live2d-agent-popup-closed', () => {
+        window.addEventListener('neko-popup-closed', () => {
             state.popupOpen = false;
         });
     }

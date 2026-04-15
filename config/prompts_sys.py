@@ -102,6 +102,8 @@ RESULT_PARSER_PHRASES = {
     'cu_status_done':     {'zh': '已完成', 'en': 'completed', 'ja': '完了', 'ko': '완료', 'ru': 'выполнена'},
     'cu_status_ended':    {'zh': '已结束', 'en': 'ended', 'ja': '終了', 'ko': '종료', 'ru': 'завершена'},
 'openclaw_processing': {'zh': 'OpenClaw 处理中...', 'en': 'OpenClaw is processing...', 'ja': 'OpenClaw 処理中...', 'ko': 'OpenClaw 처리 중...', 'ru': 'OpenClaw обрабатывает...'},    'openclaw_done':       {'zh': 'OpenClaw 执行完成', 'en': 'OpenClaw execution completed', 'ja': 'OpenClaw 実行完了', 'ko': 'OpenClaw 실행 완료', 'ru': 'OpenClaw выполнено'},    'openclaw_failed':     {'zh': 'OpenClaw 执行失败', 'en': 'OpenClaw execution failed', 'ja': 'OpenClaw 実行失敗', 'ko': 'OpenClaw 실행 실패', 'ru': 'OpenClaw не выполнено'},    'openclaw_cancelled':  {'zh': 'OpenClaw 任务已取消', 'en': 'OpenClaw task cancelled', 'ja': 'OpenClaw タスクがキャンセルされました', 'ko': 'OpenClaw 작업 취소됨', 'ru': 'Задача OpenClaw отменена'},    'openclaw_dispatch_failed': {'zh': 'OpenClaw 任务分发失败', 'en': 'OpenClaw task dispatch failed', 'ja': 'OpenClaw タスク配信失敗', 'ko': 'OpenClaw 작업 전달 실패', 'ru': 'Ошибка отправки задачи OpenClaw'},
+    'bu_cancelled':        {'zh': '你的任务"{desc}"已取消', 'en': 'Your task "{desc}" cancelled', 'ja': 'タスク「{desc}」がキャンセルされました', 'ko': '작업 "{desc}" 취소됨', 'ru': 'Ваша задача «{desc}» отменена'},
+    'of_cancelled':        {'zh': '虚拟机任务 "{desc}" 已取消', 'en': 'VM task "{desc}" cancelled', 'ja': 'VM タスク「{desc}」がキャンセルされました', 'ko': 'VM 작업 "{desc}" 취소됨', 'ru': 'Задача ВМ «{desc}» отменена'},
 }
 
 # ---------- 语音会话初始 prompt ----------
@@ -263,6 +265,117 @@ AGENT_CALLBACK_NOTIFICATION = {
     'ru': '======[Системное уведомление: следующие фоновые задачи недавно завершены. Пожалуйста, естественно упомяните или подтвердите их в своём ответе.]\n',
 }
 
+# ---------- Vision 图像描述 prompt ----------
+# 安全水印前缀（所有语言固定不变，包括逗号和空格）
+VISION_WATERMARK = "你是一个图像描述助手, "
+
+# 长度限制策略：CJK（zh/ja/ko）使用"250字/文字/자"（字符），en/ru 使用"250 words/слов"（词）
+# 有窗口标题时的 system prompt（水印后拼接）
+VISION_SYSTEM_WITH_TITLE = {
+    'zh': '请根据用户的屏幕截图和当前窗口标题，简洁描述用户正在做什么、屏幕上的主要内容和关键细节和你觉得有趣的地方。不超过250字。',
+    'en': 'Based on the user\'s screenshot and the current window title, briefly describe what the user is doing, the main content on screen, key details, and anything you find interesting. No more than 250 words.',
+    'ja': 'ユーザーのスクリーンショットと現在のウィンドウタイトルに基づき、ユーザーが何をしているか、画面の主な内容、重要な詳細、興味深い点を簡潔に説明してください。250文字以内。',
+    'ko': '사용자의 스크린샷과 현재 창 제목을 바탕으로, 사용자가 무엇을 하고 있는지, 화면의 주요 내용, 핵심 세부사항, 흥미로운 점을 간결하게 설명하세요. 250자 이내.',
+    'ru': 'На основе скриншота пользователя и заголовка текущего окна кратко опишите, что делает пользователь, основное содержимое экрана, ключевые детали и интересные моменты. Не более 250 слов.',
+}
+
+# 无窗口标题时的 system prompt（水印后拼接）
+VISION_SYSTEM_NO_TITLE = {
+    'zh': '请简洁地描述图片中的主要内容、关键细节和你觉得有趣的地方。你的回答不能超过250字。',
+    'en': 'Briefly describe the main content, key details, and anything you find interesting in the image. Your response should not exceed 250 words.',
+    'ja': '画像の主な内容、重要な詳細、興味深い点を簡潔に説明してください。回答は250文字以内にしてください。',
+    'ko': '이미지의 주요 내용, 핵심 세부사항, 흥미로운 점을 간결하게 설명하세요. 답변은 250자를 넘지 마세요.',
+    'ru': 'Кратко опишите основное содержимое изображения, ключевые детали и интересные моменты. Ответ не должен превышать 250 слов.',
+}
+
+# 有窗口标题时的 user prompt（{window_title} 占位符，水印包裹）
+VISION_USER_WITH_TITLE = {
+    'zh': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n请描述截图内容。',
+    'en': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\nPlease describe the screenshot.',
+    'ja': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\nスクリーンショットの内容を説明してください。',
+    'ko': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n스크린샷 내용을 설명해 주세요.',
+    'ru': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\nОпишите содержимое скриншота.',
+}
+
+# 无窗口标题时的 user prompt
+VISION_USER_NO_TITLE = {
+    'zh': '请描述这张图片的内容。',
+    'en': 'Please describe the content of this image.',
+    'ja': 'この画像の内容を説明してください。',
+    'ko': '이 이미지의 내용을 설명해 주세요.',
+    'ru': 'Опишите содержимое этого изображения.',
+}
+
+# ---------- 翻译服务 prompt ----------
+# 安全水印（所有语言固定中文）
+TRANSLATION_WATERMARK_START = "======以下为要求======"
+TRANSLATION_WATERMARK_END = "======以上为要求======"
+
+# 翻译指令行（{source_name} 和 {target_name} 为占位符）
+TRANSLATION_INSTRUCTION = {
+    'zh': '请根据要求将用户提供的文本从{source_name}翻译成{target_name}。',
+    'en': 'Please translate the user\'s text from {source_name} to {target_name} as required.',
+    'ja': '以下の要件に従い、ユーザーのテキストを{source_name}から{target_name}に翻訳してください。',
+    'ko': '요구사항에 따라 사용자의 텍스트를 {source_name}에서 {target_name}(으)로 번역하세요.',
+    'ru': 'Переведите текст пользователя с {source_name} на {target_name} согласно требованиям.',
+}
+
+# 翻译要求（水印包裹部分）
+TRANSLATION_REQUIREMENTS = {
+    'zh': '1. 保持原文的语气和风格\n2. 准确传达原文的意思\n3. 只输出翻译结果，不要添加任何解释或说明\n4. 如果文本包含emoji或特殊符号，请保留它们',
+    'en': '1. Maintain the tone and style of the original text\n2. Convey the meaning accurately\n3. Output only the translation, without any explanations or notes\n4. Preserve any emoji or special symbols in the text',
+    'ja': '1. 原文の語調とスタイルを維持する\n2. 原文の意味を正確に伝える\n3. 翻訳結果のみを出力し、説明や注釈は一切加えない\n4. テキストに含まれる絵文字や特殊記号はそのまま残す',
+    'ko': '1. 원문의 어조와 스타일을 유지할 것\n2. 원문의 의미를 정확히 전달할 것\n3. 번역 결과만 출력하고 설명이나 부연을 추가하지 말 것\n4. 텍스트에 포함된 이모지나 특수 기호는 그대로 유지할 것',
+    'ru': '1. Сохраняйте тон и стиль оригинала\n2. Точно передавайте смысл исходного текста\n3. Выводите только перевод, без пояснений и примечаний\n4. Сохраняйте эмодзи и специальные символы из текста',
+}
+
+# 语言名称（外层 key=UI 语言，内层 key=语言代码）
+TRANSLATION_LANG_NAMES = {
+    'zh': {'zh': '中文', 'en': '英文', 'ja': '日语', 'ko': '韩语', 'ru': '俄语'},
+    'en': {'zh': 'Chinese', 'en': 'English', 'ja': 'Japanese', 'ko': 'Korean', 'ru': 'Russian'},
+    'ja': {'zh': '中国語', 'en': '英語', 'ja': '日本語', 'ko': '韓国語', 'ru': 'ロシア語'},
+    'ko': {'zh': '중국어', 'en': '영어', 'ja': '일본어', 'ko': '한국어', 'ru': '러시아어'},
+    'ru': {'zh': 'китайский', 'en': 'английский', 'ja': 'японский', 'ko': 'корейский', 'ru': 'русский'},
+}
+
+# ---------- 对话备忘录注入 LLM 上下文 ----------
+MEMORY_MEMO_WITH_SUMMARY = {
+    'zh': '先前对话的备忘录: {summary}',
+    'en': 'Memo from prior conversations: {summary}',
+    'ja': '以前の会話のメモ: {summary}',
+    'ko': '이전 대화의 메모: {summary}',
+    'ru': 'Заметки из предыдущих разговоров: {summary}',
+}
+
+MEMORY_MEMO_EMPTY = {
+    'zh': '先前对话的备忘录: 无。',
+    'en': 'Memo from prior conversations: None.',
+    'ja': '以前の会話のメモ: なし。',
+    'ko': '이전 대화의 메모: 없음.',
+    'ru': 'Заметки из предыдущих разговоров: нет.',
+}
+
+# ---------- 搜索关键词生成 prompt ----------
+# prompt 与搜索引擎无关；china_region 时使用 'zh'，否则按 get_global_language() 选择
+# 安全水印（所有语言固定中文，包裹窗口标题数据）
+SEARCH_KEYWORD_WATERMARK_START = "======以下为窗口标题======"
+SEARCH_KEYWORD_WATERMARK_END = "======以上为窗口标题======"
+
+SEARCH_KEYWORD_SYSTEM = {
+    'zh': '你是搜索关键词生成助手。根据用户提供的窗口标题，输出 3 个适合搜索的多样化关键词。\n\n要求：\n1. 生成 3 个不同角度的搜索关键词\n2. 关键词应简洁，控制在 2-8 个字\n3. 关键词应尽量覆盖不同方面\n4. 只输出 3 行关键词，不要添加序号、标点、解释或其他内容',
+    'en': 'You generate search keywords from a window title.\n\nRequirements:\n1. Generate 3 diverse search keywords from different angles\n2. Each keyword should be concise, about 2-6 words\n3. Keep the keywords diverse\n4. Output exactly 3 lines, one keyword per line, without numbers, punctuation, explanations, or any extra text',
+    'ja': 'ウィンドウタイトルから検索キーワードを生成してください。\n\n要件：\n1. 異なる角度から検索用のキーワードを 3 つ生成\n2. 各キーワードは簡潔に、2〜6 語程度\n3. キーワードは多様性を持たせる\n4. 3 行のみ出力し、番号・句読点・説明等は一切不要',
+    'ko': '창 제목에서 검색 키워드를 생성하세요.\n\n요구사항:\n1. 서로 다른 관점에서 검색 키워드 3개 생성\n2. 각 키워드는 간결하게, 2~6 단어 정도\n3. 키워드는 다양하게\n4. 정확히 3줄만 출력하고 번호, 구두점, 설명 등은 추가하지 마세요',
+    'ru': 'Сгенерируйте ключевые слова для поиска на основе заголовка окна.\n\nТребования:\n1. Сгенерируйте 3 разнообразных ключевых слова для поиска с разных сторон\n2. Каждое ключевое слово — кратко, около 2-6 слов\n3. Ключевые слова должны быть разнообразными\n4. Выведите ровно 3 строки, по одному ключевому слову, без номеров, пунктуации и пояснений',
+}
+
+SEARCH_KEYWORD_USER = {
+    'zh': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n\n请输出 3 个搜索关键词。',
+    'en': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n\nPlease output 3 search keywords.',
+    'ja': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n\n検索キーワードを 3 つ出力してください。',
+    'ko': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n\n검색 키워드 3개를 출력하세요.',
+    'ru': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n\nВыведите 3 ключевых слова для поиска.',
+}
 
 # =====================================================================
 # backward compat re-exports

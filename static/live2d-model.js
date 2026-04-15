@@ -20,6 +20,7 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
     const loadToken = ++this._activeLoadToken;
     this._modelLoadState = 'preparing';
     this._isModelReadyForInteraction = false;
+    this._resetDerivedModelMetadata();
 
     // 清除上一次加载遗留的画布揭示定时器
     if (this._canvasRevealTimer) {
@@ -158,7 +159,11 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
             console.warn('模型加载失败，尝试回退到默认模型: mao_pro');
             try {
                 const defaultModelPath = '/static/mao_pro/mao_pro.model3.json';
+                // 主模型可能已在 _configureLoadedModel 中途写入派生状态；
+                // 回退加载前先清空，避免默认模型继承失败模型的元数据。
+                this._resetDerivedModelMetadata();
                 const model = await Live2DModel.from(defaultModelPath, { autoFocus: false });
+                this._resetDerivedModelMetadata();
                 this.currentModel = model;
 
                 // 使用统一的模型配置方法
@@ -193,6 +198,23 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
 
 Live2DManager.prototype._isLoadTokenActive = function(loadToken) {
     return this._activeLoadToken === loadToken;
+};
+
+Live2DManager.prototype._resetDerivedModelMetadata = function() {
+    this._displayInfo = null;
+    this._autoNamedHitAreaIds = new Set();
+    this.fileReferences = null;
+    this.emotionMapping = null;
+    this.savedModelParameters = null;
+    this._shouldApplySavedParams = false;
+    this.modelName = null;
+    this.modelRootPath = null;
+
+    if (this._missingExpressionFiles instanceof Set) {
+        this._missingExpressionFiles.clear();
+    } else {
+        this._missingExpressionFiles = new Set();
+    }
 };
 
 Live2DManager.prototype._waitForModelVisualStability = function(model, loadToken, options = {}) {
@@ -385,6 +407,33 @@ Live2DManager.prototype._preTickPhysics = async function(model, simulatedMs, ste
 // 不再需要预解析嘴巴参数ID，保留占位以兼容旧代码调用
 Live2DManager.prototype.resolveMouthParameterId = function() { return null; };
 
+Live2DManager.prototype._loadDisplayInfo = async function(settings) {
+    this._displayInfo = null;
+
+    const displayInfoPath = settings?.FileReferences?.DisplayInfo;
+    if (!displayInfoPath) {
+        return null;
+    }
+
+    let resolvedPath = displayInfoPath;
+    if (!/^(?:[a-z]+:)?\/\//i.test(displayInfoPath) && !displayInfoPath.startsWith('/')) {
+        resolvedPath = `${this.modelRootPath}/${displayInfoPath}`;
+    }
+
+    try {
+        const response = await fetch(resolvedPath);
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        this._displayInfo = await response.json();
+        return this._displayInfo;
+    } catch (error) {
+        console.warn('[Live2D] 加载 DisplayInfo 失败:', displayInfoPath, error);
+        this._displayInfo = null;
+        return null;
+    }
+};
+
 // 配置已加载的模型（私有方法，用于消除主路径和回退路径的重复代码）
 Live2DManager.prototype._configureLoadedModel = async function(model, modelPath, options, loadToken) {
     if (!this._isLoadTokenActive(loadToken)) return;
@@ -477,6 +526,9 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         hitAreas_disk.forEach(hitArea => {
             if (!hitArea.Name || hitArea.Name === '') {
                 hitArea.Name = hitArea.Id;
+                if (this._autoNamedHitAreaIds instanceof Set) {
+                    this._autoNamedHitAreaIds.add(hitArea.Id);
+                }
                 fixedCount++;
             }
         });
@@ -526,9 +578,17 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     // 设置原来的锁按钮
     this.setupHTMLLockIcon(model);
 
+    const settings = model.internalModel && model.internalModel.settings && model.internalModel.settings.json;
+    if (settings) {
+        try {
+            await this._loadDisplayInfo(settings);
+        } catch (_) {}
+    } else {
+        this._displayInfo = null;
+    }
+
     // 加载 FileReferences 与 EmotionMapping
     if (options.loadEmotionMapping !== false) {
-        const settings = model.internalModel && model.internalModel.settings && model.internalModel.settings.json;
         if (settings) {
             // 保存原始 FileReferences
             this.fileReferences = settings.FileReferences || null;

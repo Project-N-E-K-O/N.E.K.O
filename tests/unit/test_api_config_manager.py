@@ -44,6 +44,7 @@ class TestKeybookSaveLoad:
 
     ALL_KEY_FIELDS = {
         'assistApiKeyQwen': 'ASSIST_API_KEY_QWEN',
+        'assistApiKeyQwenIntl': 'ASSIST_API_KEY_QWEN_INTL',
         'assistApiKeyOpenai': 'ASSIST_API_KEY_OPENAI',
         'assistApiKeyGlm': 'ASSIST_API_KEY_GLM',
         'assistApiKeyStep': 'ASSIST_API_KEY_STEP',
@@ -283,7 +284,7 @@ class TestProviderExclusion:
         from utils.api_config_loader import get_core_api_profiles
         core_profiles = get_core_api_profiles()
 
-        expected_core = {'free', 'qwen', 'openai', 'step', 'gemini'}
+        expected_core = {'free', 'qwen', 'qwen_intl', 'openai', 'step', 'gemini'}
         actual_core = set(core_profiles.keys())
 
         assert actual_core == expected_core, (
@@ -338,7 +339,7 @@ class TestProviderExclusion:
         data = get_config()
         registry = data.get('api_key_registry', {})
 
-        expected_restricted = {'openai', 'gemini', 'grok'}
+        expected_restricted = {'openai', 'gemini', 'grok', 'claude', 'qwen_intl'}
         for pk, entry in registry.items():
             if pk in expected_restricted:
                 assert entry.get('restricted') is True, \

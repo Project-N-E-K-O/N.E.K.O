@@ -2,9 +2,46 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
+
+# ── LLM JSON tolerance ─────────────────────────��────────────────────────
+# LLM 经常返回带有格式瑕疵的 JSON（无引号 key、尾逗号、Python 字面值等）。
+# 先尝试标准解析，失败后逐步修补再试。
+_UNQUOTED_KEY_RE = re.compile(r'(?<=[{,])\s*([A-Za-z_]\w*)\s*:')
+
+
+def robust_json_loads(raw: str) -> Any:
+    """json.loads with fallback for common LLM JSON quirks.
+
+    Handles: unquoted keys, trailing commas, ``{{ }}``, Python ``True/False/None``,
+    single-quoted strings (including mixed-quote scenarios).
+    """
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+    s = raw
+    # {{ }} → { }  (LLM 模仿 prompt 模板转义)
+    s = s.replace("{{", "{").replace("}}", "}")
+    # Python 字面值 → JSON
+    s = s.replace("True", "true").replace("False", "false").replace("None", "null")
+    # 尾逗号
+    s = re.sub(r',\s*([}\]])', r'\1', s)
+    # 无引号 key:  {key: "v"} → {"key": "v"}
+    s = _UNQUOTED_KEY_RE.sub(r' "\1":', s)
+    # 单引号 → 双引号
+    if '"' not in s:
+        s = s.replace("'", '"')
+    else:
+        # 混合引号：逐步替换单引号 key/value
+        s = re.sub(r"'([^']*?)'\s*:", r'"\1":', s)           # key
+        s = re.sub(r":\s*'([^']*?)'", r': "\1"', s)         # value
+        s = re.sub(r"'\s*([,\]\}])", r'"\1', s)              # 数组尾
+        s = re.sub(r"([,\[\{])\s*'", r'\1"', s)              # 数组头
+    return json.loads(s)
 
 
 def atomic_write_text(path: str | os.PathLike[str], content: str, *, encoding: str = "utf-8") -> None:

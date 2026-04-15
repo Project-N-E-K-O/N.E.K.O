@@ -1,174 +1,226 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title data-i18n="subtitle.title">实时字幕</title>
-    <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
-    <script src="/static/i18n-i18next.js"></script>
+    <title>N.E.K.O. Subtitle</title>
     <style>
-        body {
-            margin: 0;
-            padding: 0;
-            background: transparent;
-            font-family: 'Microsoft YaHei', Arial, sans-serif;
+        /* 与 index.css body 一致 */
+        html, body {
+            margin: 0; padding: 0;
+            width: 100%; height: 100%;
             overflow: hidden;
-            height: 100vh;
-            width: 100vw;
+            font-family: 'Segoe UI', Arial, sans-serif;
         }
 
-        .subtitle-container {
-            position: fixed;
-            top: 20px;
-            left: 15%;
-            width: 65%;
-            background: rgba(0, 0, 0, 0.7);
-            border-radius: 10px;
-            padding: 15px 20px;
+        /* 与 index.css #subtitle-display 完全一致 */
+        #subtitle-display {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            padding: 10px 18px;
+            background: linear-gradient(135deg, rgba(68, 183, 254, 0.95) 0%, rgba(68, 183, 254, 0.9) 50%, rgba(100, 200, 255, 0.95) 100%);
+            color: #fff;
+            border-radius: 12px;
+            font-size: 17px;
+            font-weight: 500;
+            line-height: 1.5;
+            text-align: center;
+            overflow-wrap: break-word;
+            white-space: normal;
+            box-shadow: 0 6px 24px rgba(68, 183, 254, 0.35),
+                0 0 0 1px rgba(255, 255, 255, 0.3) inset;
+            border: 1.5px solid rgba(255, 255, 255, 0.4);
+            text-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+            display: flex;
+            align-items: center;
+            justify-content: center;
             box-sizing: border-box;
-            backdrop-filter: blur(5px);
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            min-height: 60px;
+        }
+
+        /* 与 index.css #subtitle-text 一致 */
+        #subtitle-text {
+            display: block;
+            margin-right: 24px;
+            white-space: pre-wrap;
+            overflow-wrap: break-word;
+        }
+
+        /* 与 index.css #subtitle-drag-handle 一致 */
+        #subtitle-drag-handle {
+            position: absolute;
+            top: 50%;
+            right: 4px;
+            transform: translateY(-50%);
+            width: 26px;
+            height: 26px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: grab;
+            border-radius: 6px;
+            transition: all 0.2s ease;
+            pointer-events: auto;
+            background: rgba(255, 255, 255, 0.18);
+            backdrop-filter: blur(4px);
+        }
+        #subtitle-drag-handle:hover {
+            background: rgba(255, 255, 255, 0.32);
+            box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.6);
+        }
+        #subtitle-drag-handle:active {
+            cursor: grabbing;
+            background: rgba(255, 255, 255, 0.42);
+            box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9);
+        }
+        #subtitle-drag-arrows {
+            width: 100%; height: 100%;
             display: flex;
             align-items: center;
             justify-content: center;
         }
-
-        .subtitle-text {
-            color: white;
-            font-size: 24px;
-            line-height: 1.4;
-            text-align: center;
-            overflow-wrap: break-word;
-            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
-            opacity: 0;
-            transition: opacity 0.3s ease-in-out;
+        #subtitle-drag-arrows svg {
+            width: 14px; height: 14px;
         }
 
-        .subtitle-text.show {
-            opacity: 1;
-        }
-
-        .connection-status {
-            position: fixed;
-            top: 25px;
-            left: 80%;
-            padding: 5px 10px;
-            border-radius: 5px;
-            font-size: 12px;
-            color: white;
-        }
-
-        .connected {
-            background: rgba(0, 255, 0, 0.7);
-        }
-
-        .disconnected {
-            background: rgba(255, 0, 0, 0.7);
+        /* 与 dark-mode.css [data-theme="dark"] #subtitle-display 一致 */
+        [data-theme="dark"] #subtitle-display {
+            background: linear-gradient(135deg, rgba(42, 123, 196, 0.92) 0%, rgba(42, 123, 196, 0.88) 50%, rgba(60, 145, 220, 0.92) 100%);
+            border-color: rgba(255, 255, 255, 0.25);
+            box-shadow: 0 8px 32px rgba(42, 123, 196, 0.5),
+                0 0 0 1px rgba(255, 255, 255, 0.2) inset;
         }
     </style>
 </head>
 <body>
-    <div class="subtitle-container">
-        <div class="subtitle-text" id="subtitleText"></div>
+    <!-- 与 index.html 中 #subtitle-display 结构完全一致 -->
+    <div id="subtitle-display">
+        <span id="subtitle-text"></span>
+        <div id="subtitle-drag-handle">
+            <div id="subtitle-drag-arrows">
+                <svg viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 3L8.5 8H10.5V10.5H13.5V8H15.5L12 3Z"/>
+                    <path d="M12 21L15.5 16H13.5V13.5H10.5V16H8.5L12 21Z"/>
+                    <path d="M3 12L8 8.5V10.5H10.5V13.5H8V15.5L3 12Z"/>
+                    <path d="M21 12L16 15.5V13.5H13.5V10.5H16V8.5L21 12Z"/>
+                    <circle cx="12" cy="12" r="1.2"/>
+                </svg>
+            </div>
+        </div>
     </div>
-    <div class="connection-status disconnected" id="status" data-i18n="status.notConnected">未连接</div>
 
     <script>
-        class SubtitleClient {
-            constructor() {
-                this.ws = null;
-                this.subtitleElement = document.getElementById('subtitleText');
-                this.statusElement = document.getElementById('status');
-                this.currentText = '';
-                this.connect();
+        var subtitleText = document.getElementById('subtitle-text');
+        var dragHandle = document.getElementById('subtitle-drag-handle');
+        var api = window.nekoSubtitle;
+
+        // ===== 监听转写消息 =====
+        window.addEventListener('neko-ws-transcript', function(e) {
+            var data = e.detail;
+            if (data && data.transcript != null) {
+                subtitleText.textContent = data.transcript || '';
+                autoResize();
             }
+        });
 
-            connect() {
-                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-                const wsUrl = `${protocol}//${window.location.host}/subtitle_ws`;
+        // ===== 自动缩放窗口（防抖，避免流式文本高频 resize 导致闪烁）=====
+        var DEFAULT_W = 600, DEFAULT_H = 80;
+        var resizeTimer = null;
 
-                this.ws = new WebSocket(wsUrl);
-
-                this.ws.onopen = () => {
-                    console.log('字幕WebSocket连接已建立');
-                    this.updateStatus(window.t ? window.t('status.connected') : '已连接', true);
-                };
-
-                this.ws.onmessage = (event) => {
-                    try {
-                        const data = JSON.parse(event.data);
-                        console.log(data)
-                        this.handleMessage(data);
-                    } catch (error) {
-                        console.error('解析消息错误:', error);
-                    }
-                };
-
-                this.ws.onclose = () => {
-                    console.log('字幕WebSocket连接已关闭');
-                    this.updateStatus(window.t ? window.t('status.connectionClosed') : '连接断开', false);
-                    // 3秒后重连
-                    setTimeout(() => this.connect(), 3000);
-                };
-
-                this.ws.onerror = (error) => {
-                    console.error('字幕WebSocket错误:', error);
-                    this.updateStatus(window.t ? window.t('status.connectionError') : '连接错误', false);
-                };
-            }
-
-            handleMessage(data) {
-                if (data.type === 'subtitle') {
-                    this.displaySubtitle(data.text);
-                } else if (data.type === 'clear') {
-                    this.clearSubtitle();
-                }
-            }
-
-            displaySubtitle(text) {
-                this.currentText = text;
-                this.subtitleElement.textContent = text;
-                this.subtitleElement.classList.add('show');
-            }
-
-            clearSubtitle() {
-                this.subtitleElement.classList.remove('show');
-                setTimeout(() => {
-                    this.subtitleElement.textContent = '';
-                    this.currentText = '';
-                }, 300);
-            }
-
-            updateStatus(text, connected) {
-                this.statusElement.textContent = text;
-                this.statusElement.className = `connection-status ${connected ? 'connected' : 'disconnected'}`;
-            }
+        function autoResize() {
+            if (!api || !api.setSize) return;
+            // 防抖：流式文本快速到达时，仅在最后一次更新后 150ms 才真正 resize
+            if (resizeTimer) clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(doResize, 150);
         }
 
-        // 初始化字幕客户端
-        const subtitleClient = new SubtitleClient();
-
-        // Electron白屏修复
-        (function() {
-            const fixWhiteScreen = () => {
-                if (document.body) {
-                    void document.body.offsetHeight;
-                    const currentOpacity = document.body.style.opacity || '1';
-                    document.body.style.opacity = '0.99';
-                    requestAnimationFrame(() => {
-                        document.body.style.opacity = currentOpacity;
-                    });
-                }
-            };
-            if (document.readyState === 'loading') {
-                document.addEventListener('DOMContentLoaded', fixWhiteScreen);
-            } else {
-                fixWhiteScreen();
+        function doResize() {
+            resizeTimer = null;
+            var text = subtitleText.textContent || '';
+            if (!text.trim()) {
+                // 文本清空时重置为默认尺寸
+                api.setSize(DEFAULT_W, DEFAULT_H);
+                return;
             }
-            window.addEventListener('load', fixWhiteScreen);
-        })();
+
+            // 用隐藏元素测量：先测单行宽度
+            var m = document.createElement('div');
+            m.style.cssText = 'position:absolute;visibility:hidden;left:-9999px;top:-9999px;' +
+                'font-size:17px;font-weight:500;line-height:1.5;font-family:Segoe UI,Arial,sans-serif;' +
+                'padding:10px 18px;box-sizing:border-box;white-space:nowrap;';
+            m.textContent = text;
+            document.body.appendChild(m);
+
+            // 单行宽度 + drag handle 余量
+            var singleW = m.offsetWidth + 30;
+            var finalW = Math.max(200, Math.min(singleW, 800));
+
+            // 用最终宽度测量换行后的高度
+            m.style.whiteSpace = 'normal';
+            m.style.overflowWrap = 'break-word';
+            m.style.width = finalW + 'px';
+            var finalH = Math.max(40, m.offsetHeight + 4);
+
+            document.body.removeChild(m);
+            api.setSize(finalW, finalH);
+        }
+
+        // ===== 拖拽交互（配合 setIgnoreMouseEvents forward 模式）=====
+        // 窗口默认 setIgnoreMouseEvents(true, {forward:true})
+        // mousemove 能收到，但 mousedown 收不到
+        // 进入 drag handle 区域时取消穿透，离开时恢复
+        //
+        // 拖拽委托给主进程的 DRAG_START/DRAG_STOP：主进程在 dragStart 时缓存
+        // startBounds（含固定的 width/height），后续 setBounds 使用缓存尺寸，
+        // 彻底避免 Windows DWM 透明窗口 getBounds() 尺寸漂移导致窗口逐渐放大。
+        if (api) {
+            var overHandle = false;
+            var isDragging = false;
+
+            document.addEventListener('mousemove', function(e) {
+                if (isDragging) return; // 拖拽中由主进程控制位置，renderer 不干预
+                // 检测是否在 drag handle 上
+                var el = document.elementFromPoint(e.clientX, e.clientY);
+                var isOnHandle = dragHandle.contains(el);
+                if (isOnHandle && !overHandle) {
+                    overHandle = true;
+                    api.enableInteraction();
+                } else if (!isOnHandle && overHandle) {
+                    overHandle = false;
+                    api.disableInteraction();
+                }
+            });
+
+            dragHandle.addEventListener('mousedown', function(e) {
+                isDragging = true;
+                // 委托主进程进行拖拽（主进程缓存初始尺寸，避免 getBounds 漂移）
+                api.dragStart();
+                dragHandle.style.cursor = 'grabbing';
+                e.preventDefault();
+            });
+
+            document.addEventListener('mouseup', function() {
+                if (isDragging) {
+                    dragHandle.style.cursor = 'grab';
+                    isDragging = false;
+                    // 通知主进程停止拖拽（会触发 bounceBackToWorkArea）
+                    api.dragStop();
+                }
+                if (overHandle) {
+                    // 鼠标还在 handle 上，保持交互
+                } else {
+                    api.disableInteraction();
+                }
+            });
+
+            // 鼠标离开窗口时恢复穿透
+            document.addEventListener('mouseleave', function() {
+                if (!isDragging) {
+                    overHandle = false;
+                    api.disableInteraction();
+                }
+            });
+        }
     </script>
 </body>
 </html>

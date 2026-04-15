@@ -1,0 +1,1001 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>B站弹幕监听 - N.E.K.O</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+      background: #0f0f13;
+      color: #e8e8ed;
+      min-height: 100vh;
+      padding: 20px;
+    }
+
+    .container { max-width: 860px; margin: 0 auto; }
+
+    /* ── 页头 ── */
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    .header-logo {
+      width: 42px; height: 42px;
+      background: linear-gradient(135deg, #fb7299, #e02078);
+      border-radius: 12px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 22px;
+    }
+    .header h1 { font-size: 1.4rem; font-weight: 700; }
+    .header p  { font-size: 0.8rem; color: #8e8e93; margin-top: 2px; }
+
+    /* ── 卡片 ── */
+    .card {
+      background: #1c1c22;
+      border-radius: 16px;
+      border: 1px solid #2a2a32;
+      padding: 20px;
+      margin-bottom: 16px;
+    }
+    .card-title {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: #8e8e93;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 14px;
+    }
+
+    /* ── 状态条 ── */
+    .status-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 16px;
+      border-radius: 12px;
+      font-size: 0.9rem;
+      margin-bottom: 16px;
+      background: #2a2a32;
+      border: 1px solid #3a3a44;
+      transition: background 0.3s, border-color 0.3s;
+    }
+    .status-bar.connected   { background: #0d2e1a; border-color: #34c759; }
+    .status-bar.connecting  { background: #2a2200; border-color: #ff9500; }
+    .status-bar.error       { background: #2e0d0d; border-color: #ff3b30; }
+
+    .status-dot {
+      width: 9px; height: 9px;
+      border-radius: 50%;
+      background: #8e8e93;
+      flex-shrink: 0;
+      transition: background 0.3s;
+    }
+    .status-bar.connected  .status-dot { background: #34c759; box-shadow: 0 0 6px #34c759; }
+    .status-bar.connecting .status-dot { background: #ff9500; animation: pulse 1.2s infinite; }
+    .status-bar.error      .status-dot { background: #ff3b30; }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.3; }
+    }
+
+    /* ── 输入区 ── */
+    .input-row {
+      display: flex;
+      gap: 10px;
+      align-items: flex-end;
+    }
+    .input-group { flex: 1; }
+    .input-group label {
+      display: block;
+      font-size: 0.78rem;
+      color: #8e8e93;
+      margin-bottom: 6px;
+    }
+    input[type="number"], input[type="text"] {
+      width: 100%;
+      background: #28282f;
+      border: 1px solid #3a3a44;
+      border-radius: 10px;
+      color: #e8e8ed;
+      padding: 10px 14px;
+      font-size: 0.95rem;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    input:focus {
+      outline: none;
+      border-color: #fb7299;
+      box-shadow: 0 0 0 3px rgba(251,114,153,0.15);
+    }
+    input::-webkit-inner-spin-button { opacity: 0; }
+
+    /* ── 按钮 ── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 10px 18px;
+      border-radius: 10px;
+      border: none;
+      cursor: pointer;
+      font-size: 0.88rem;
+      font-weight: 600;
+      white-space: nowrap;
+      transition: opacity 0.15s, transform 0.1s;
+    }
+    .btn:active   { transform: scale(0.97); }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+    .btn-primary  { background: #fb7299; color: #fff; }
+    .btn-success  { background: #34c759; color: #fff; }
+    .btn-danger   { background: #ff3b30; color: #fff; }
+    .btn-ghost    { background: #2a2a32; color: #e8e8ed; border: 1px solid #3a3a44; }
+    .btn-sm       { padding: 7px 13px; font-size: 0.82rem; }
+
+    .btn-group { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+
+    /* ── 统计行 ── */
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+    }
+    .stat-item {
+      background: #28282f;
+      border-radius: 12px;
+      padding: 14px;
+      text-align: center;
+    }
+    .stat-value { font-size: 1.6rem; font-weight: 700; color: #fb7299; line-height: 1; }
+    .stat-label { font-size: 0.75rem; color: #8e8e93; margin-top: 4px; }
+
+    /* ── 弹幕流 ── */
+    #danmakuFeed {
+      height: 340px;
+      overflow-y: auto;
+      background: #16161c;
+      border-radius: 12px;
+      padding: 12px;
+      border: 1px solid #2a2a32;
+      scroll-behavior: smooth;
+    }
+    #danmakuFeed::-webkit-scrollbar { width: 4px; }
+    #danmakuFeed::-webkit-scrollbar-track { background: transparent; }
+    #danmakuFeed::-webkit-scrollbar-thumb { background: #3a3a44; border-radius: 2px; }
+
+    .danmaku-item {
+      padding: 5px 8px;
+      border-radius: 8px;
+      margin-bottom: 4px;
+      font-size: 0.875rem;
+      line-height: 1.5;
+      animation: slideIn 0.2s ease;
+      background: #1e1e26;
+      border-left: 3px solid #3a3a44;
+    }
+    .danmaku-item.type-danmaku { border-left-color: #fb7299; }
+    .danmaku-item.type-gift    { border-left-color: #ffd60a; background: #1e1c0d; }
+    .danmaku-item.type-sc      { border-left-color: #30d158; background: #0d1e10; }
+    .danmaku-item.type-system  { border-left-color: #636366; color: #8e8e93; font-style: italic; }
+
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateY(-4px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .danmaku-meta {
+      font-size: 0.75rem;
+      color: #8e8e93;
+      margin-right: 6px;
+    }
+    .danmaku-user { font-weight: 600; color: #c0c0c8; margin-right: 4px; }
+    .danmaku-badge {
+      display: inline-block;
+      font-size: 0.68rem;
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: rgba(251,114,153,0.2);
+      color: #fb7299;
+      margin-right: 4px;
+      vertical-align: middle;
+    }
+
+    .feed-empty {
+      color: #636366;
+      text-align: center;
+      padding: 40px 0;
+      font-size: 0.88rem;
+    }
+
+    /* ── 加载指示 ── */
+    .spinner {
+      display: inline-block;
+      width: 14px; height: 14px;
+      border: 2px solid #3a3a44;
+      border-top-color: #fb7299;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── 间隔滑块 ── */
+    .slider-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    input[type="range"] {
+      -webkit-appearance: none;
+      flex: 1;
+      height: 4px;
+      background: #3a3a44;
+      border-radius: 2px;
+      outline: none;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 16px; height: 16px;
+      border-radius: 50%;
+      background: #fb7299;
+      cursor: pointer;
+    }
+    .slider-value {
+      min-width: 48px;
+      text-align: right;
+      font-weight: 600;
+      color: #fb7299;
+    }
+
+    .toast {
+      position: fixed;
+      bottom: 24px; right: 24px;
+      background: #2a2a32;
+      border: 1px solid #3a3a44;
+      border-radius: 12px;
+      padding: 12px 18px;
+      font-size: 0.88rem;
+      z-index: 1000;
+      animation: toastIn 0.25s ease;
+      max-width: 280px;
+    }
+    .toast.success { border-color: #34c759; background: #0d2e1a; }
+    .toast.error   { border-color: #ff3b30; background: #2e0d0d; }
+    @keyframes toastIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ── 登录面板 ── */
+    .login-status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      margin-bottom: 14px;
+    }
+    .login-status-badge.logged-in  { background: rgba(52,199,89,0.15);  color: #34c759; border: 1px solid rgba(52,199,89,0.3); }
+    .login-status-badge.guest      { background: rgba(142,142,147,0.12); color: #8e8e93; border: 1px solid #3a3a44; }
+
+    .cookie-fields { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
+    .cookie-field-row { display: flex; flex-direction: column; gap: 4px; }
+    .cookie-field-row label { font-size: 0.78rem; color: #8e8e93; }
+    .cookie-field-row input[type="password"],
+    .cookie-field-row input[type="text"] {
+      font-family: 'SF Mono', 'Consolas', monospace;
+      font-size: 0.82rem;
+    }
+    .field-hint { font-size: 0.72rem; color: #636366; margin-top: 2px; }
+
+    .reveal-toggle {
+      background: none;
+      border: none;
+      color: #8e8e93;
+      cursor: pointer;
+      padding: 0 4px;
+      font-size: 0.8rem;
+    }
+    .field-input-wrap { position: relative; display: flex; align-items: center; }
+    .field-input-wrap input { padding-right: 32px; }
+    .field-input-wrap .reveal-toggle { position: absolute; right: 8px; }
+
+    .login-help {
+      background: #1a1a22;
+      border: 1px solid #2a2a3a;
+      border-radius: 10px;
+      padding: 12px 14px;
+      font-size: 0.78rem;
+      color: #636366;
+      line-height: 1.7;
+      margin-top: 12px;
+    }
+    .login-help strong { color: #8e8e93; }
+    .login-help code {
+      background: #28282f;
+      padding: 1px 5px;
+      border-radius: 4px;
+      color: #fb7299;
+      font-size: 0.76rem;
+    }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <!-- 页头 -->
+  <div class="header">
+    <div class="header-logo">📺</div>
+    <div>
+      <h1>B站弹幕监听</h1>
+      <p>N.E.K.O 插件控制台 · bilibili-danmaku</p>
+    </div>
+  </div>
+
+  <!-- 状态卡片 -->
+  <div class="card">
+    <div class="card-title">连接状态</div>
+    <div id="statusBar" class="status-bar">
+      <span class="status-dot"></span>
+      <span id="statusText">正在获取状态...</span>
+    </div>
+
+    <!-- 统计 -->
+    <div class="stats">
+      <div class="stat-item">
+        <div class="stat-value" id="statReceived">—</div>
+        <div class="stat-label">已收到</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-value" id="statFiltered">—</div>
+        <div class="stat-label">已过滤</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-value" id="statQueue">—</div>
+        <div class="stat-label">缓冲弹幕</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- B站账号 -->
+  <div class="card" id="loginCard">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+      <div class="card-title" style="margin:0;">B站账号</div>
+      <button class="btn btn-ghost btn-sm" id="toggleLoginBtn" onclick="toggleLoginPanel()">展开</button>
+    </div>
+
+    <!-- 登录状态徽章 -->
+    <div id="loginBadge" class="login-status-badge guest">👤 游客模式</div>
+
+    <!-- 可折叠的 Cookie 输入区 -->
+    <div id="loginPanel" style="display:none;">
+      <div class="cookie-fields">
+
+        <div class="cookie-field-row">
+          <label>SESSDATA <span style="color:#ff3b30">*</span></label>
+          <div class="field-input-wrap">
+            <input type="password" id="f_sessdata" placeholder="粘贴 SESSDATA Cookie 值" autocomplete="off">
+            <button class="reveal-toggle" onclick="toggleReveal('f_sessdata', this)" title="显示/隐藏">👁</button>
+          </div>
+        </div>
+
+        <div class="cookie-field-row">
+          <label>bili_jct <span style="color:#ff3b30">*</span></label>
+          <div class="field-input-wrap">
+            <input type="password" id="f_bili_jct" placeholder="粘贴 bili_jct Cookie 值" autocomplete="off">
+            <button class="reveal-toggle" onclick="toggleReveal('f_bili_jct', this)" title="显示/隐藏">👁</button>
+          </div>
+        </div>
+
+        <div class="cookie-field-row">
+          <label>DedeUserID <span style="color:#ff3b30">*</span></label>
+          <div class="field-input-wrap">
+            <input type="text" id="f_dedeuserid" placeholder="你的 B站 UID，如 12345678" autocomplete="off">
+          </div>
+        </div>
+
+        <div class="cookie-field-row">
+          <label>buvid3 <span style="color:#8e8e93;font-weight:400;">（强烈建议填写，可避免 -352 风控）</span></label>
+          <div class="field-input-wrap">
+            <input type="password" id="f_buvid3" placeholder="粘贴 buvid3 Cookie 值" autocomplete="off">
+            <button class="reveal-toggle" onclick="toggleReveal('f_buvid3', this)" title="显示/隐藏">👁</button>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="btn-group">
+        <button class="btn btn-success" id="saveCredBtn">🔐 加密保存</button>
+        <button class="btn btn-danger btn-sm" id="clearCredBtn">🗑 清除凭据</button>
+      </div>
+
+      <div class="login-help">
+        <strong>如何获取 Cookie？</strong><br>
+        1. 浏览器打开 <strong>bilibili.com</strong> 并登录<br>
+        2. 按 <code>F12</code> → Application → Cookies → <code>https://www.bilibili.com</code><br>
+        3. 找到并复制 <code>SESSDATA</code>、<code>bili_jct</code>、<code>DedeUserID</code>、<code>buvid3</code> 的值<br>
+        4. 粘贴到上方对应输入框，点击「加密保存」<br>
+        <br>
+        <strong>安全说明：</strong>Cookie 使用 Fernet 对称加密存储在本地插件目录，不会上传到任何服务器。
+      </div>
+    </div>
+  </div>
+
+  <!-- 直播间设置 -->
+  <div class="card">
+    <div class="card-title">直播间设置</div>
+    <div class="input-row">
+      <div class="input-group">
+        <label>直播间 ID</label>
+        <input type="number" id="roomIdInput" placeholder="输入直播间号码，如 12345">
+      </div>
+      <button class="btn btn-primary" id="setRoomBtn">
+        <span>切换直播间</span>
+      </button>
+    </div>
+
+    <div class="btn-group">
+      <button class="btn btn-success" id="connectBtn">🔗 开始监听</button>
+      <button class="btn btn-danger"  id="disconnectBtn">⏹ 停止监听</button>
+      <button class="btn btn-ghost"   id="refreshBtn">↻ 刷新状态</button>
+    </div>
+  </div>
+
+  <!-- 推送间隔 -->
+  <div class="card">
+    <div class="card-title">AI 推送间隔</div>
+    <div class="slider-row">
+      <input type="range" id="intervalSlider" min="10" max="180" value="30" step="5">
+      <span class="slider-value" id="intervalDisplay">30s</span>
+      <button class="btn btn-ghost btn-sm" id="setIntervalBtn">保存</button>
+    </div>
+    <p style="font-size:0.78rem;color:#636366;margin-top:8px;">每隔这段时间将缓冲弹幕推送给 AI 处理（10 ~ 180 秒）</p>
+  </div>
+
+  <!-- AI 目标设置 -->
+  <div class="card">
+    <div class="card-title">AI 目标设置</div>
+    <div class="input-row" style="margin-bottom:12px;">
+      <div class="input-group">
+        <label>目标 AI 名称</label>
+        <input type="text" id="targetLanlanInput" placeholder="留空则不指定目标 AI，如：小天">
+      </div>
+      <button class="btn btn-ghost btn-sm" id="setTargetBtn">保存</button>
+    </div>
+    <div class="slider-row">
+      <label style="font-size:0.85rem;margin-right:8px;">弹幕最大长度:</label>
+      <input type="range" id="danmakuMaxLenSlider" min="5" max="20" value="20" step="5">
+      <span class="slider-value" id="danmakuMaxLenDisplay">20</span>
+      <button class="btn btn-ghost btn-sm" id="setDanmakuMaxLenBtn">保存</button>
+    </div>
+    <p style="font-size:0.78rem;color:#636366;margin-top:8px;">目标 AI 名称应与 lanlan_name 一致（留空则不指定）。B站弹幕限制 20 字符/秒。</p>
+  </div>
+
+  <!-- 弹幕实时流 -->
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <div class="card-title" style="margin:0;">实时弹幕流</div>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <label style="font-size:0.78rem;color:#8e8e93;display:flex;align-items:center;gap:6px;cursor:pointer;">
+          <input type="checkbox" id="autoScrollCb" checked style="accent-color:#fb7299;width:14px;height:14px;">
+          自动滚动
+        </label>
+        <button class="btn btn-ghost btn-sm" id="pollBtn">⏸ 暂停轮询</button>
+        <button class="btn btn-ghost btn-sm" id="clearFeedBtn">清空</button>
+      </div>
+    </div>
+    <div id="danmakuFeed">
+      <div class="feed-empty" id="feedEmpty">暂无弹幕，等待连接...</div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  const PLUGIN_ID = 'bilibili-danmaku';
+  const RUNS_URL  = '/runs';
+
+  // ── API 调用 ─────────────────────────────────────────────
+  async function callPlugin(entry, args = {}) {
+    const createResp = await fetch(RUNS_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plugin_id: PLUGIN_ID, entry_id: entry, args })
+    });
+    if (!createResp.ok) throw new Error(`HTTP ${createResp.status}`);
+    const { run_id, id } = await createResp.json();
+    const runId = run_id || id;
+    if (!runId) throw new Error('未获取到 run_id');
+
+    const deadline = Date.now() + 20000;
+    while (Date.now() < deadline) {
+      await sleep(350);
+      const pollResp = await fetch(`${RUNS_URL}/${runId}`);
+      if (!pollResp.ok) continue;
+      const rec = await pollResp.json();
+      if (rec.status === 'succeeded') {
+        const exportResp = await fetch(`${RUNS_URL}/${runId}/export`);
+        if (!exportResp.ok) return {};
+        const { items = [] } = await exportResp.json();
+        const item = items.find(i => i.type === 'json' && i.json) || items[0];
+        if (!item) return {};
+        const raw = item.json || {};
+        // 增加健壮性检查，防止 null 或 undefined 导致异常
+        if (!raw || typeof raw !== 'object') return {};
+        // 后端 Ok({...}) 经过 host _handle_trigger 和 trigger_service _normalize_plugin_response 后，
+        // 可能产生多层嵌套。逐层解包，直到拿到插件返回的原始 dict。
+        //
+        // 典型结构：
+        //   raw = { success, code, data: { success, data: <插件原始返回>, error, ... }, ... }
+        //
+        // 解包策略：如果 data 字段看起来像嵌套包装（含 success + data/error），
+        // 就继续剥一层；否则 data 本身就是最终数据。
+        let resp = raw;
+        const _unwrap = (obj) => {
+            if (!obj || typeof obj !== 'object') return obj;
+            const d = obj.data;
+            if (d === null || d === undefined) return obj;
+            if (typeof d !== 'object') return obj;
+            // 如果 data 是数组，直接返回 data（数组不可能是 envelope）
+            if (Array.isArray(d)) return d;
+            // 如果 data 有 success + (data 或 error) 字段，说明是嵌套包装
+            if ('success' in d && ('data' in d || 'error' in d)) {
+                return _unwrap(d);  // 递归剥层
+            }
+            return d;
+        };
+        if (resp && typeof resp === 'object' && resp.success === true && typeof resp.data === 'object') {
+            resp = _unwrap(resp);
+        } else if (resp && typeof resp === 'object' && resp.success === true && resp.data !== undefined) {
+            resp = resp.data;
+        }
+        return resp;
+      }
+      if (['failed','canceled','timeout'].includes(rec.status))
+        throw new Error(rec.error?.message || rec.message || rec.status);
+    }
+    throw new Error('调用超时');
+  }
+
+  // ── 登录面板 ────────────────────────────────────────────
+  function toggleLoginPanel() {
+    const panel = document.getElementById('loginPanel');
+    const btn   = document.getElementById('toggleLoginBtn');
+    const open  = panel.style.display === 'none';
+    panel.style.display = open ? '' : 'none';
+    btn.textContent = open ? '收起' : '展开';
+  }
+
+  function toggleReveal(inputId, btn) {
+    const el = document.getElementById(inputId);
+    const show = el.type === 'password';
+    el.type = show ? 'text' : 'password';
+    btn.textContent = show ? '🙈' : '👁';
+  }
+
+  function updateLoginBadge(loggedIn) {
+    const badge = document.getElementById('loginBadge');
+    if (loggedIn) {
+      badge.className = 'login-status-badge logged-in';
+      badge.textContent = '🔐 已登录';
+    } else {
+      badge.className = 'login-status-badge guest';
+      badge.textContent = '👤 游客模式';
+    }
+  }
+
+  document.getElementById('saveCredBtn').addEventListener('click', async () => {
+    const sessdata   = document.getElementById('f_sessdata').value.trim();
+    const bili_jct   = document.getElementById('f_bili_jct').value.trim();
+    const dedeuserid = document.getElementById('f_dedeuserid').value.trim();
+    const buvid3     = document.getElementById('f_buvid3').value.trim();
+
+    if (!sessdata)   { toast('请填写 SESSDATA', 'error'); return; }
+    if (!bili_jct)   { toast('请填写 bili_jct', 'error'); return; }
+    if (!dedeuserid) { toast('请填写 DedeUserID', 'error'); return; }
+
+    const btn = document.getElementById('saveCredBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> 保存中...';
+    try {
+      const data = await callPlugin('save_credential', { sessdata, bili_jct, dedeuserid, buvid3 });
+      toast(data.message || '✅ 凭据已保存', 'success');
+      updateLoginBadge(true);
+      // 清空输入框（安全考虑）
+      ['f_sessdata','f_bili_jct','f_dedeuserid','f_buvid3'].forEach(id => {
+        document.getElementById(id).value = '';
+        const el = document.getElementById(id);
+        if (el.type === 'text' && id !== 'f_dedeuserid') el.type = 'password';
+      });
+      // 收起面板
+      const panel = document.getElementById('loginPanel');
+      if (panel.style.display !== 'none') toggleLoginPanel();
+      await refreshStatus(true);
+    } catch (e) {
+      toast('保存失败：' + e.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '🔐 加密保存';
+    }
+  });
+
+  document.getElementById('clearCredBtn').addEventListener('click', async () => {
+    if (!confirm('确定要清除 B站凭据并切换为游客模式吗？')) return;
+    const btn = document.getElementById('clearCredBtn');
+    btn.disabled = true;
+    try {
+      const data = await callPlugin('clear_credential', {});
+      toast(data.message || '✅ 凭据已清除', 'success');
+      updateLoginBadge(false);
+      await refreshStatus(true);
+    } catch (e) {
+      toast('清除失败：' + e.message, 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  // ── Toast ────────────────────────────────────────────────
+  let toastTimer;
+  function toast(msg, type = '') {
+    clearTimeout(toastTimer);
+    document.querySelectorAll('.toast').forEach(el => el.remove());
+    const el = document.createElement('div');
+    el.className = `toast ${type}`;
+    el.textContent = msg;
+    document.body.appendChild(el);
+    toastTimer = setTimeout(() => el.remove(), 3000);
+  }
+
+  // ── 状态渲染 ────────────────────────────────────────────
+  function renderStatus(data) {
+    const bar  = document.getElementById('statusBar');
+    const text = document.getElementById('statusText');
+    const listening   = data.listening;
+    const connecting  = data.connecting;
+    const roomId      = data.room_id || 0;
+
+    bar.className = 'status-bar';
+    if (listening) {
+      bar.classList.add('connected');
+      text.textContent = `🟢 正在监听直播间 ${roomId}  ·  ${data.logged_in ? '🔐 已登录' : '👤 游客'}`;
+    } else if (connecting) {
+      bar.classList.add('connecting');
+      text.textContent = `⏳ 正在连接直播间 ${roomId}…`;
+    } else {
+      if (roomId > 0) bar.classList.add('error');
+      text.textContent = roomId > 0
+        ? `🔴 未在监听  ·  直播间 ${roomId}`
+        : '⚙️ 未配置直播间';
+    }
+
+    // 统计
+    const stats = data.stats || {};
+    document.getElementById('statReceived').textContent = stats.received ?? data.received ?? '—';
+    document.getElementById('statFiltered').textContent = stats.filtered ?? data.filtered ?? '—';
+    document.getElementById('statQueue').textContent    = data.queue_size ?? '—';
+
+    // 同步直播间输入框（只在空白时填入）
+    const roomInput = document.getElementById('roomIdInput');
+    if (!roomInput.value && roomId > 0) roomInput.value = roomId;
+
+    // 同步登录状态徽章（严格检查 boolean，避免 truthy 误判）
+    updateLoginBadge(data.logged_in === true);
+  }
+
+  // 渲染静态配置（启动时一次性获取，之后不再覆盖）
+  function renderStaticConfig(data) {
+    // 同步间隔滑块（仅在启动时同步一次，之后由用户自行控制）
+    if (data.interval) {
+      document.getElementById('intervalSlider').value = data.interval;
+      document.getElementById('intervalDisplay').textContent = data.interval + 's';
+    }
+    // 同步目标 AI 名称
+    if (data.target_lanlan !== undefined) {
+      document.getElementById('targetLanlanInput').value = data.target_lanlan || '';
+    }
+    // 同步弹幕最大长度
+    if (data.danmaku_max_length) {
+      document.getElementById('danmakuMaxLenSlider').value = data.danmaku_max_length;
+      document.getElementById('danmakuMaxLenDisplay').textContent = data.danmaku_max_length;
+    }
+  }
+
+  // ── 刷新状态 ────────────────────────────────────────────
+  async function refreshStatus(silent = false) {
+    try {
+      const data = await callPlugin('get_status', {});
+      renderStatus(data);
+    } catch (e) {
+      if (!silent) toast('获取状态失败：' + e.message, 'error');
+    }
+  }
+
+  // ── 弹幕渲染 ────────────────────────────────────────────
+  const feed = document.getElementById('danmakuFeed');
+  const feedEmpty = document.getElementById('feedEmpty');
+  let totalShown = 0;
+
+  function appendItem(html, typeClass) {
+    if (feedEmpty.style.display !== 'none') feedEmpty.style.display = 'none';
+    const div = document.createElement('div');
+    div.className = `danmaku-item ${typeClass}`;
+    div.innerHTML = html;
+    feed.appendChild(div);
+    totalShown++;
+    // 超过 300 条清理旧的
+    if (totalShown > 300) {
+      feed.removeChild(feed.querySelector('.danmaku-item'));
+      totalShown--;
+    }
+    if (document.getElementById('autoScrollCb').checked)
+      feed.scrollTop = feed.scrollHeight;
+  }
+
+  function addSystemMsg(msg) {
+    appendItem(`<span class="danmaku-meta">${nowTime()}</span>${msg}`, 'type-system');
+  }
+
+  function nowTime() {
+    return new Date().toTimeString().slice(0,8);
+  }
+
+  function renderDanmakuBatch(data) {
+    (data.superchat || []).forEach(sc => {
+      appendItem(
+        `<span class="danmaku-meta">${nowTime()}</span>` +
+        `<span class="danmaku-badge">SC ¥${sc.price}</span>` +
+        `<span class="danmaku-user">${esc(sc.user_name)}</span>` +
+        esc(sc.message),
+        'type-sc'
+      );
+    });
+    (data.gifts || []).forEach(g => {
+      appendItem(
+        `<span class="danmaku-meta">${nowTime()}</span>` +
+        `<span class="danmaku-badge">礼物</span>` +
+        `<span class="danmaku-user">${esc(g.user_name)}</span>` +
+        `送出 ${g.num}个 ${esc(g.gift_name)}` +
+        ((g.price_rmb ?? 0) > 0 ? ` <span style="color:#ffd60a">≈¥${g.price_rmb}</span>` : ''),
+        'type-gift'
+      );
+    });
+    (data.danmaku || []).forEach(d => {
+      const medal = d.medal
+        ? `<span class="danmaku-badge">${esc(d.medal)}</span>` : '';
+      const level = d.user_level
+        ? `<span class="danmaku-meta">LV${d.user_level}</span>` : '';
+      appendItem(
+        `<span class="danmaku-meta">${d.time || nowTime()}</span>` +
+        medal + level +
+        `<span class="danmaku-user">${esc(d.user_name)}</span>` +
+        esc(d.content),
+        'type-danmaku'
+      );
+    });
+  }
+
+  function esc(str) {
+    return String(str || '')
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  // ── 弹幕轮询 ────────────────────────────────────────────
+  let polling = true;
+  let pollActive = false;
+  // 上次 get_danmaku 返回的状态，用于决定下次轮询间隔
+  let _lastListening = false;
+  let _lastConnecting = false;
+
+  async function pollDanmaku() {
+    if (pollActive) return;
+    pollActive = true;
+    while (polling) {
+      try {
+        const data = await callPlugin('get_danmaku', { max_count: 20, include_gifts: true });
+        _lastListening  = !!data.listening;
+        _lastConnecting = !!data.connecting;
+
+        // 有弹幕/礼物/SC 就渲染，不依赖 listening 状态
+        const hasDanmaku = (data.danmaku && data.danmaku.length > 0)
+                        || (data.superchat && data.superchat.length > 0)
+                        || (data.gifts && data.gifts.length > 0);
+        if (hasDanmaku) {
+          console.log('[poll] 收到弹幕批次', data.danmaku?.length, '条');
+          renderDanmakuBatch(data);
+        }
+        // 只更新实时状态（listening/connecting），不更新静态配置
+        const bar = document.getElementById('statusBar');
+        const text = document.getElementById('statusText');
+        const roomId = data.room_id || 0;
+        bar.className = 'status-bar';
+        if (_lastListening) {
+          bar.classList.add('connected');
+          text.textContent = `🟢 正在监听直播间 ${roomId}  ·  ${data.logged_in ? '🔐 已登录' : '👤 游客'}`;
+        } else if (_lastConnecting) {
+          bar.classList.add('connecting');
+          text.textContent = `⏳ 正在连接直播间 ${roomId}…`;
+        } else {
+          if (roomId > 0) bar.classList.add('error');
+          text.textContent = roomId > 0
+            ? `🔴 未在监听  ·  直播间 ${roomId}`
+            : '⚙️ 未配置直播间';
+        }
+        // 更新统计
+        const stats = data.stats || {};
+        document.getElementById('statReceived').textContent = stats.received ?? data.received ?? '—';
+        document.getElementById('statFiltered').textContent = stats.filtered ?? data.filtered ?? '—';
+        document.getElementById('statQueue').textContent    = data.queue_size ?? '—';
+      } catch (e) {
+        console.warn('[poll] 轮询出错', e.message);
+      }
+
+      // 自适应轮询间隔：
+      //   监听中          → 3s（实时性优先）
+      //   正在连接中      → 2s（快速感知连上）
+      //   未监听/未配置   → 10s（没数据也没必要高频）
+      const interval = _lastListening ? 3000 : (_lastConnecting ? 2000 : 10000);
+      await sleep(interval);
+    }
+    pollActive = false;
+  }
+
+  document.getElementById('pollBtn').addEventListener('click', () => {
+    polling = !polling;
+    const btn = document.getElementById('pollBtn');
+    if (polling) {
+      btn.textContent = '⏸ 暂停轮询';
+      pollDanmaku();
+    } else {
+      btn.textContent = '▶ 恢复轮询';
+    }
+  });
+
+  document.getElementById('clearFeedBtn').addEventListener('click', () => {
+    feed.innerHTML = '';
+    feed.appendChild(feedEmpty);
+    feedEmpty.style.display = '';
+    totalShown = 0;
+  });
+
+  // ── 切换直播间 ──────────────────────────────────────────
+  document.getElementById('setRoomBtn').addEventListener('click', async () => {
+    const val = parseInt(document.getElementById('roomIdInput').value);
+    if (!val || val <= 0) { toast('请输入有效的直播间 ID', 'error'); return; }
+    const btn = document.getElementById('setRoomBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> 切换中...';
+    try {
+      const data = await callPlugin('set_room_id', { room_id: val });
+      toast(data.message || `已切换到直播间 ${val}`, 'success');
+      addSystemMsg(`⚡ 切换直播间 → ${val}`);
+      await refreshStatus(true);
+    } catch (e) {
+      toast('切换失败：' + e.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '<span>切换直播间</span>';
+    }
+  });
+
+  // ── 连接/断开 ───────────────────────────────────────────
+  document.getElementById('connectBtn').addEventListener('click', async () => {
+    const roomId = parseInt(document.getElementById('roomIdInput').value) || 0;
+    if (roomId <= 0) { toast('请先填写直播间 ID', 'error'); return; }
+    const btn = document.getElementById('connectBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> 连接中...';
+    try {
+      const data = await callPlugin('connect', { room_id: roomId });
+      toast(data.message || '连接指令已发送', 'success');
+      addSystemMsg(`🔗 发起连接 → 直播间 ${roomId}`);
+      await refreshStatus(true);
+    } catch (e) {
+      toast('连接失败：' + e.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '🔗 开始监听';
+    }
+  });
+
+  document.getElementById('disconnectBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('disconnectBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> 停止中...';
+    try {
+      const data = await callPlugin('disconnect', {});
+      toast(data.message || '已停止监听', 'success');
+      addSystemMsg('⏹ 监听已停止');
+      await refreshStatus(true);
+    } catch (e) {
+      toast('操作失败：' + e.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '⏹ 停止监听';
+    }
+  });
+
+  document.getElementById('refreshBtn').addEventListener('click', () => refreshStatus());
+
+  // ── 间隔设置 ────────────────────────────────────────────
+  document.getElementById('intervalSlider').addEventListener('input', e => {
+    document.getElementById('intervalDisplay').textContent = e.target.value + 's';
+  });
+
+  document.getElementById('setIntervalBtn').addEventListener('click', async () => {
+    const val = parseInt(document.getElementById('intervalSlider').value);
+    const btn = document.getElementById('setIntervalBtn');
+    btn.disabled = true;
+    try {
+      const data = await callPlugin('set_interval', { seconds: val });
+      toast(data.message || `间隔已设为 ${val}s`, 'success');
+    } catch (e) {
+      toast('设置失败：' + e.message, 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  // 目标 AI 名称设置
+  document.getElementById('setTargetBtn').addEventListener('click', async () => {
+    const val = document.getElementById('targetLanlanInput').value.trim();
+    const btn = document.getElementById('setTargetBtn');
+    btn.disabled = true;
+    try {
+      const data = await callPlugin('set_target_lanlan', { target_lanlan: val });
+      toast(data.message || `目标 AI 已设为 ${val || '(不指定)'}`, 'success');
+    } catch (e) {
+      toast('设置失败：' + e.message, 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  // 弹幕最大长度设置
+  document.getElementById('danmakuMaxLenSlider').addEventListener('input', e => {
+    document.getElementById('danmakuMaxLenDisplay').textContent = e.target.value;
+  });
+  document.getElementById('setDanmakuMaxLenBtn').addEventListener('click', async () => {
+    const val = parseInt(document.getElementById('danmakuMaxLenSlider').value);
+    const btn = document.getElementById('setDanmakuMaxLenBtn');
+    btn.disabled = true;
+    try {
+      const data = await callPlugin('set_danmaku_max_length', { max_length: val });
+      toast(data.message || `弹幕最大长度已设为 ${val}`, 'success');
+    } catch (e) {
+      toast('设置失败：' + e.message, 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  // ── 回车快捷键 ──────────────────────────────────────────
+  document.getElementById('roomIdInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') document.getElementById('setRoomBtn').click();
+  });
+
+  // ── 初始化 ──────────────────────────────────────────────
+  (async () => {
+    // 1. 先获取静态配置（直播间ID、登录状态、推送间隔等），只在启动时获取一次
+    const staticData = await callPlugin('get_status', {});
+    renderStaticConfig(staticData);
+    renderStatus(staticData);
+    // 同步直播间输入框
+    const roomInput = document.getElementById('roomIdInput');
+    if (!roomInput.value && staticData.room_id > 0) {
+      roomInput.value = staticData.room_id;
+    }
+
+    // 2. 启动弹幕轮询（只负责弹幕流和实时状态，不覆盖静态配置）
+    pollDanmaku();
+  })();
+</script>
+</body>
+</html>

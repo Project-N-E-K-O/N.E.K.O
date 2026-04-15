@@ -16,6 +16,8 @@ import asyncio
 import copy
 import base64
 import hashlib
+import struct
+import zlib
 from datetime import datetime
 from fastapi import APIRouter, Request, File, UploadFile, Form
 from fastapi.responses import JSONResponse, Response
@@ -28,6 +30,7 @@ from .workshop_router import _ugc_sync_lock
 from main_logic.tts_client import get_custom_tts_voices, CustomTTSVoiceFetchError
 from utils.config_manager import get_reserved, set_reserved, flatten_reserved
 from utils.audio import normalize_voice_clone_api_audio, validate_audio_file
+from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from utils.voice_clone import (
     MinimaxVoiceCloneClient,
     MinimaxVoiceCloneError,
@@ -51,8 +54,28 @@ router = APIRouter(prefix="/api/characters", tags=["characters"])
 logger = get_module_logger(__name__, "Main")
 
 
-PROFILE_NAME_MAX_UNITS = 20
 CHARACTER_RESERVED_FIELD_SET = set(CHARACTER_RESERVED_FIELDS)
+
+
+def _embed_zip_in_png_chunk(png_data: bytes, zip_data: bytes) -> bytes:
+    """将 ZIP 数据嵌入 PNG 的 ancillary private chunk（neKo 块），插在 IEND 之前。
+
+    生成的文件仍是合法 PNG，任何图片查看器 / Electron 都可以正常预览。
+    """
+    # PNG IEND 块固定 12 字节: 00 00 00 00  49 45 4E 44  AE 42 60 82
+    if len(png_data) < 12 or png_data[-12:-4] != b'\x00\x00\x00\x00IEND':
+        raise ValueError("Invalid PNG: IEND chunk not found at end of file")
+
+    iend = png_data[-12:]
+    before_iend = png_data[:-12]
+
+    # 构建 neKo 块: length(4B, big-endian) + type(4B) + data + CRC32(4B)
+    chunk_type = b'neKo'
+    chunk_length = struct.pack('>I', len(zip_data))
+    chunk_crc = struct.pack('>I', zlib.crc32(chunk_type + zip_data) & 0xFFFFFFFF)
+
+    neko_chunk = chunk_length + chunk_type + zip_data + chunk_crc
+    return before_iend + neko_chunk + iend
 
 
 def _profile_name_units(name: str) -> int:
@@ -61,16 +84,20 @@ def _profile_name_units(name: str) -> int:
 
 
 def _validate_profile_name(name: str) -> str | None:
-    if name is None:
+    result = validate_character_name(name, max_units=PROFILE_NAME_MAX_UNITS)
+    if result.code == 'empty':
         return '档案名为必填项'
-    name = str(name).strip()
-    if not name:
-        return '档案名为必填项'
-    if '/' in name or '\\' in name:
+    if result.code == 'contains_path_separator':
         return '档案名不能包含路径分隔符(/或\\)'
-    if '.' in name:
+    if result.code == 'contains_dot':
         return '档案名不能包含点号(.)'
-    if _profile_name_units(name) > PROFILE_NAME_MAX_UNITS:
+    if result.code == 'reserved_device_name':
+        return '档案名不能使用 Windows 保留设备名'
+    if result.code == 'reserved_route_name':
+        return '此名称是系统保留的路由名称，不能用作档案名'
+    if result.code == 'invalid_character':
+        return '档案名只能包含文字、数字、空格、下划线、连字符、括号、间隔号(·/・)和撇号'
+    if result.code == 'too_long_units':
         return f'档案名长度不能超过{PROFILE_NAME_MAX_UNITS}单位（ASCII=1，其他=2；PROFILE_NAME_MAX_UNITS={PROFILE_NAME_MAX_UNITS}）'
     return None
 
@@ -441,9 +468,9 @@ async def update_catgirl_l2d(name: str, request: Request):
                     return JSONResponse(content={'success': False, 'error': 'VRM模型路径不能包含URL方案'}, status_code=400)
                 if '..' in vrm_model_str:
                     return JSONResponse(content={'success': False, 'error': 'VRM模型路径不能包含路径遍历（..）'}, status_code=400)
-                allowed_prefixes = ['/user_vrm/', '/static/vrm/']
+                allowed_prefixes = ['/user_vrm/', '/static/vrm/', '/workshop/']
                 if not any(vrm_model_str.startswith(prefix) for prefix in allowed_prefixes):
-                    return JSONResponse(content={'success': False, 'error': 'VRM模型路径必须以 /user_vrm/ 或 /static/vrm/ 开头'}, status_code=400)
+                    return JSONResponse(content={'success': False, 'error': 'VRM模型路径必须以 /user_vrm/、/static/vrm/ 或 /workshop/ 开头'}, status_code=400)
                 vrm_model = vrm_model_str
             elif mmd_model:
                 # 验证 MMD 路径
@@ -452,9 +479,9 @@ async def update_catgirl_l2d(name: str, request: Request):
                     return JSONResponse(content={'success': False, 'error': 'MMD模型路径不能包含URL方案'}, status_code=400)
                 if '..' in mmd_model_str:
                     return JSONResponse(content={'success': False, 'error': 'MMD模型路径不能包含路径遍历（..）'}, status_code=400)
-                allowed_mmd_prefixes = ['/user_mmd/', '/static/mmd/']
+                allowed_mmd_prefixes = ['/user_mmd/', '/static/mmd/', '/workshop/']
                 if not any(mmd_model_str.startswith(prefix) for prefix in allowed_mmd_prefixes):
-                    return JSONResponse(content={'success': False, 'error': 'MMD模型路径必须以 /user_mmd/ 或 /static/mmd/ 开头'}, status_code=400)
+                    return JSONResponse(content={'success': False, 'error': 'MMD模型路径必须以 /user_mmd/、/static/mmd/ 或 /workshop/ 开头'}, status_code=400)
                 mmd_model = mmd_model_str
             else:
                 return JSONResponse(content={'success': False, 'error': '未提供VRM或MMD模型路径'}, status_code=400)
@@ -483,20 +510,15 @@ async def update_catgirl_l2d(name: str, request: Request):
                 status_code=404
             )
         
-        # 切换模型类型时清理"另一套模型字段"，避免配置残留
+        # 切换模型类型时保留非当前模型配置，避免来回切换后丢失待机动作/光照等设置
         if model_type_str == 'live3d':
-            # Live3D 模式：清理 live2d 字段
-            set_reserved(characters['猫娘'][name], 'avatar', 'live2d', 'model_path', '')
-            set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', '')
             set_reserved(characters['猫娘'][name], 'avatar', 'model_type', 'live3d')
             
             if vrm_model:
-                # Live3D + VRM：设置 VRM 路径，清空 MMD 路径
+                # Live3D + VRM：更新当前激活的 VRM 配置，保留 MMD 配置便于切回
+                set_reserved(characters['猫娘'][name], 'avatar', 'live3d_sub_type', 'vrm')
                 set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'model_path', vrm_model)
-                set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'model_path', '')
-                set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'animation', None)
-                set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', '')
-                
+
                 # 处理 VRM 动画（复用同样的验证逻辑）
                 if 'vrm_animation' in data:
                     if vrm_animation is None or vrm_animation == '':
@@ -513,28 +535,32 @@ async def update_catgirl_l2d(name: str, request: Request):
                         set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'animation', vrm_animation_str)
                 
                 if 'idle_animation' in data:
-                    if idle_animation is None or idle_animation == '':
-                        set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', None)
+                    if idle_animation is None or idle_animation == '' or idle_animation == []:
+                        set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', [])
+                    elif isinstance(idle_animation, str):
+                        idle_list = [idle_animation]
+                    elif isinstance(idle_animation, list):
+                        idle_list = idle_animation
                     else:
-                        idle_animation_str = str(idle_animation).strip()
-                        if '://' in idle_animation_str or idle_animation_str.startswith('data:'):
-                            return JSONResponse(content={'success': False, 'error': '待机动作路径不能包含URL方案'}, status_code=400)
-                        if '..' in idle_animation_str:
-                            return JSONResponse(content={'success': False, 'error': '待机动作路径不能包含路径遍历（..）'}, status_code=400)
+                        return JSONResponse(content={'success': False, 'error': 'idle_animation must be a string or list of strings'}, status_code=400)
+                    if isinstance(idle_animation, (str, list)) and idle_animation:
                         allowed_animation_prefixes = ['/user_vrm/animation/', '/static/vrm/animation/']
-                        if not any(idle_animation_str.startswith(prefix) for prefix in allowed_animation_prefixes):
-                            return JSONResponse(content={'success': False, 'error': '待机动作路径必须以 /user_vrm/animation/ 或 /static/vrm/animation/ 开头'}, status_code=400)
-                        set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', idle_animation_str)
+                        for item in idle_list:
+                            item_str = str(item).strip()
+                            if '://' in item_str or item_str.startswith('data:'):
+                                return JSONResponse(content={'success': False, 'error': '待机动作路径不能包含URL方案'}, status_code=400)
+                            if '..' in item_str:
+                                return JSONResponse(content={'success': False, 'error': '待机动作路径不能包含路径遍历（..）'}, status_code=400)
+                            if not any(item_str.startswith(prefix) for prefix in allowed_animation_prefixes):
+                                return JSONResponse(content={'success': False, 'error': '待机动作路径必须以 /user_vrm/animation/ 或 /static/vrm/animation/ 开头'}, status_code=400)
+                        set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', [str(x).strip() for x in idle_list])
                 
                 logger.debug(f"已保存角色 {name} 的Live3D(VRM)模型 {vrm_model}")
             elif mmd_model:
-                # Live3D + MMD：设置 MMD 路径，清空 VRM 路径
+                # Live3D + MMD：更新当前激活的 MMD 配置，保留 VRM 配置便于切回
+                set_reserved(characters['猫娘'][name], 'avatar', 'live3d_sub_type', 'mmd')
                 set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'model_path', mmd_model)
-                set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'model_path', '')
-                set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'animation', None)
-                set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', None)
-                set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'lighting', None)
-                
+
                 # 处理 MMD 动画
                 if 'mmd_animation' in data:
                     if mmd_animation is None or mmd_animation == '':
@@ -551,28 +577,28 @@ async def update_catgirl_l2d(name: str, request: Request):
                         set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'animation', mmd_animation_str)
                 
                 if 'mmd_idle_animation' in data:
-                    if mmd_idle_animation is None or mmd_idle_animation == '':
-                        set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', '')
+                    if mmd_idle_animation is None or mmd_idle_animation == '' or mmd_idle_animation == []:
+                        set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', [])
+                    elif isinstance(mmd_idle_animation, str):
+                        mmd_idle_list = [mmd_idle_animation]
+                    elif isinstance(mmd_idle_animation, list):
+                        mmd_idle_list = mmd_idle_animation
                     else:
-                        mmd_idle_str = str(mmd_idle_animation).strip()
-                        if '://' in mmd_idle_str or mmd_idle_str.startswith('data:'):
-                            return JSONResponse(content={'success': False, 'error': 'MMD待机动作路径不能包含URL方案'}, status_code=400)
-                        if '..' in mmd_idle_str:
-                            return JSONResponse(content={'success': False, 'error': 'MMD待机动作路径不能包含路径遍历（..）'}, status_code=400)
+                        return JSONResponse(content={'success': False, 'error': 'mmd_idle_animation must be a string or list of strings'}, status_code=400)
+                    if isinstance(mmd_idle_animation, (str, list)) and mmd_idle_animation:
                         allowed_mmd_anim_prefixes = ['/user_mmd/animation/', '/static/mmd/animation/']
-                        if not any(mmd_idle_str.startswith(prefix) for prefix in allowed_mmd_anim_prefixes):
-                            return JSONResponse(content={'success': False, 'error': 'MMD待机动作路径必须以 /user_mmd/animation/ 或 /static/mmd/animation/ 开头'}, status_code=400)
-                        set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', mmd_idle_str)
+                        for item in mmd_idle_list:
+                            mmd_idle_str = str(item).strip()
+                            if '://' in mmd_idle_str or mmd_idle_str.startswith('data:'):
+                                return JSONResponse(content={'success': False, 'error': 'MMD待机动作路径不能包含URL方案'}, status_code=400)
+                            if '..' in mmd_idle_str:
+                                return JSONResponse(content={'success': False, 'error': 'MMD待机动作路径不能包含路径遍历（..）'}, status_code=400)
+                            if not any(mmd_idle_str.startswith(prefix) for prefix in allowed_mmd_anim_prefixes):
+                                return JSONResponse(content={'success': False, 'error': 'MMD待机动作路径必须以 /user_mmd/animation/ 或 /static/mmd/animation/ 开头'}, status_code=400)
+                        set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', [str(x).strip() for x in mmd_idle_list])
                 
                 logger.debug(f"已保存角色 {name} 的Live3D(MMD)模型 {mmd_model}")
         else:
-            set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'model_path', '')
-            set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'animation', None)
-            set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'lighting', None)  # 清理 VRM 打光配置
-            set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'model_path', '')
-            set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'animation', None)
-            set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', '')
-            
             # 更新Live2D模型设置，同时保存item_id（如果有）
             normalized_live2d = str(live2d_model).strip().replace('\\', '/')
             if normalized_live2d.endswith('.model3.json'):
@@ -1790,9 +1816,10 @@ async def get_voice_preview(voice_id: str):
 
         # 生成音频
         dashscope.api_key = audio_api_key
-        # 参照 复刻.py 使用 cosyvoice-v3.5-plus 模型
         try:
-            synthesizer = SpeechSynthesizer(model="cosyvoice-v3.5-plus", voice=voice_id)
+            from utils.api_config_loader import get_cosyvoice_clone_model
+            clone_model = (voice_data or {}).get('clone_model') or get_cosyvoice_clone_model()
+            synthesizer = SpeechSynthesizer(model=clone_model, voice=voice_id)
             # 使用 asyncio.to_thread 包装同步阻塞调用
             audio_data = await asyncio.to_thread(lambda: synthesizer.call(text))
             
@@ -2371,17 +2398,23 @@ async def voice_clone(
     # ---------- 按 provider 调用对应克隆 API ----------
     try:
         if provider in ('minimax', 'minimax_intl'):
+            # 为MiniMax生成带随机数的前缀（避免重复）
+            import uuid
+            original_prefix = prefix  # 保存原始前缀用于显示
+            minimax_prefix = f"{prefix}_{uuid.uuid4().hex[:8]}"  # 添加8位随机数
+            
             minimax_lang = minimax_normalize_language(ref_language)
             client = MinimaxVoiceCloneClient(api_key=api_key, base_url=base_url)
             voice_id = await client.clone_voice(
                 audio_buffer=normalized_buffer,
                 filename=normalized_filename,
-                prefix=prefix,
+                prefix=minimax_prefix,
                 language=minimax_lang,
             )
             voice_data = {
                 'voice_id': voice_id,
-                'prefix': prefix,
+                'prefix': original_prefix,  # 保存原始前缀（不含随机数）用于显示
+                'minimax_prefix': minimax_prefix,  # 保存实际使用的带随机数前缀
                 'audio_md5': audio_md5,
                 'ref_language': ref_language,
                 'minimax_language': minimax_lang,
@@ -2391,13 +2424,16 @@ async def voice_clone(
             }
 
         else:  # cosyvoice
+            from utils.api_config_loader import get_cosyvoice_clone_model
+            clone_model = get_cosyvoice_clone_model()
             language_hints = qwen_language_hints(ref_language)
             client = QwenVoiceCloneClient(api_key=api_key, tflink_upload_url=TFLINK_UPLOAD_URL)
-            voice_id, tmp_url, request_id = await client.clone_voice(
+            voice_id, tmp_url, _request_id = await client.clone_voice(
                 audio_buffer=normalized_buffer,
                 filename=normalized_filename,
                 prefix=prefix,
                 language_hints=language_hints,
+                target_model=clone_model,
             )
             voice_data = {
                 'voice_id': voice_id,
@@ -2406,6 +2442,7 @@ async def voice_clone(
                 'audio_md5': audio_md5,
                 'ref_language': ref_language,
                 'provider': 'cosyvoice',
+                'clone_model': clone_model,
                 'created_at': datetime.now().isoformat()
             }
 
@@ -2444,7 +2481,365 @@ async def voice_clone(
         'message': f'{provider_label}音色注册成功并已保存到音色库',
         'provider': provider,
     })
+
+
+@router.post('/voice_clone_direct')
+async def voice_clone_direct(request: Request):
+    """
+    直链语音克隆接口 - 跳过音频上传步骤，直接使用提供的直链URL注册音色
     
+    支持 CosyVoice 和 MiniMax 服务商：
+    - CosyVoice: 直接使用直链URL注册音色
+    - MiniMax: 先下载音频文件，再上传到MiniMax服务器注册音色
+    
+    请求体:
+        {
+            "direct_link": "https://example.com/audio.wav",  // 音频直链URL
+            "prefix": "custom_prefix",                        // 音色前缀名
+            "ref_language": "ch",                             // 参考音频语言
+            "provider": "cosyvoice"                           // 服务商：cosyvoice / minimax / minimax_intl
+        }
+    """
+    try:
+        data = await request.json()
+    except Exception as e:
+        return JSONResponse({'error': f'请求体解析失败: {e}'}, status_code=400)
+
+    direct_link = data.get('direct_link', '').strip()
+    prefix = data.get('prefix', '').strip()
+    ref_language = data.get('ref_language', 'ch').lower().strip()
+    provider = data.get('provider', 'cosyvoice').lower().strip()
+
+    # 参数验证
+    if not direct_link:
+        return JSONResponse({'error': '缺少 direct_link 参数'}, status_code=400)
+    if not prefix:
+        return JSONResponse({'error': '缺少 prefix 参数'}, status_code=400)
+    if not direct_link.startswith(('http://', 'https://')):
+        return JSONResponse({'error': 'direct_link 必须是有效的HTTP/HTTPS链接'}, status_code=400)
+
+    # SSRF防护：验证直链域名不是内网IP
+    try:
+        from urllib.parse import urlparse
+        import socket
+        import ipaddress
+        
+        parsed_url = urlparse(direct_link)
+        hostname = parsed_url.hostname
+        
+        if not hostname:
+            return JSONResponse({'error': '无法解析直链域名'}, status_code=400)
+        
+        # 解析域名到IP
+        try:
+            addr_info = socket.getaddrinfo(hostname, None)
+        except socket.gaierror:
+            return JSONResponse({'error': '无法解析直链域名'}, status_code=400)
+        
+        # 检查每个IP是否是内网IP
+        for _, _, _, _, sockaddr in addr_info:
+            ip = sockaddr[0]
+            try:
+                ip_obj = ipaddress.ip_address(ip)
+                # 检查是否是内网、回环、链路本地、未指定或多播地址
+                if (ip_obj.is_loopback or ip_obj.is_private or 
+                    ip_obj.is_link_local or ip_obj.is_unspecified or 
+                    ip_obj.is_multicast):
+                    return JSONResponse({
+                        'error': '直链不能指向内网地址',
+                        'code': 'PRIVATE_IP_NOT_ALLOWED'
+                    }, status_code=400)
+            except ValueError:
+                continue
+    except Exception as e:
+        logger.warning(f"SSRF检查失败: {e}")
+        return JSONResponse({'error': '直链安全检查失败'}, status_code=400)
+
+    # 验证语言参数
+    valid_languages = ['ch', 'en', 'fr', 'de', 'ja', 'ko', 'ru']
+    if ref_language not in valid_languages:
+        ref_language = 'ch'
+
+    # 验证服务商参数
+    valid_providers = ['minimax', 'minimax_intl', 'cosyvoice']
+    if provider not in valid_providers:
+        return JSONResponse({
+            'error': f'无效的服务商: {provider}',
+            'code': 'TTS_PROVIDER_INVALID',
+            'message': f'支持的服务商: {", ".join(valid_providers)}'
+        }, status_code=400)
+
+    # 获取 API Key
+    _config_manager = get_config_manager()
+    api_key = _config_manager.get_tts_api_key(provider)
+    if not api_key:
+        if provider in ('minimax', 'minimax_intl'):
+            return JSONResponse({
+                'error': 'MINIMAX_API_KEY_MISSING',
+                'code': 'MINIMAX_API_KEY_MISSING',
+                'message': '未配置 MiniMax API Key，请先在设置中填写'
+            }, status_code=400)
+        else:
+            return JSONResponse({
+                'error': 'TTS_AUDIO_API_KEY_MISSING',
+                'code': 'TTS_AUDIO_API_KEY_MISSING'
+            }, status_code=400)
+
+    # 导入所有可能用到的异常类（用于后面的异常捕获）
+    from utils.voice_clone import MinimaxVoiceCloneError, QwenVoiceCloneError
+    
+    # 设置服务商相关参数
+    if provider in ('minimax', 'minimax_intl'):
+        from utils.voice_clone import (
+            MinimaxVoiceCloneClient, 
+            minimax_normalize_language,
+            get_minimax_base_url,
+            get_minimax_storage_prefix
+        )
+        base_url = get_minimax_base_url(provider)
+        storage_key = f'{get_minimax_storage_prefix(provider)}{api_key[-8:]}'
+        provider_label = 'MiniMax国际服' if provider == 'minimax_intl' else 'MiniMax国服'
+    else:  # cosyvoice
+        from utils.voice_clone import QwenVoiceCloneClient, qwen_language_hints
+        storage_key = api_key
+        provider_label = '阿里云CosyVoice'
+
+    # 验证直链是否可访问（HEAD失败时回退到GET）
+    try:
+        async with httpx.AsyncClient(timeout=30, proxy=None, trust_env=False) as client:
+            head_resp = await client.head(direct_link, follow_redirects=True)
+            if head_resp.status_code >= 400:
+                # HEAD失败，尝试GET
+                logger.warning(f"HEAD请求失败({head_resp.status_code})，尝试GET请求: {direct_link}")
+                get_resp = await client.get(direct_link, follow_redirects=True)
+                if get_resp.status_code >= 400:
+                    return JSONResponse({
+                        'error': f'直链无法访问，状态码: {get_resp.status_code}',
+                        'code': 'DIRECT_LINK_INACCESSIBLE'
+                    }, status_code=400)
+    except Exception as e:
+        logger.warning(f"直链验证失败: {e}")
+        # 不阻断流程，只是警告
+
+    # 根据服务商类型执行不同的克隆逻辑
+    try:
+        if provider in ('minimax', 'minimax_intl'):
+            # ========== MiniMax 直链克隆流程 ==========
+            # 1. 下载音频文件（使用流式读取避免内存问题）
+            logger.info(f"开始下载直链音频: {direct_link}")
+            MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB限制
+            
+            async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
+                async with client.stream('GET', direct_link, follow_redirects=True) as download_resp:
+                    if download_resp.status_code != 200:
+                        return JSONResponse({
+                            'error': f'下载音频失败，状态码: {download_resp.status_code}',
+                            'code': 'DOWNLOAD_FAILED'
+                        }, status_code=400)
+                    
+                    # 从Content-Disposition或URL推断文件名
+                    filename = 'audio.wav'
+                    content_disposition = download_resp.headers.get('content-disposition', '')
+                    if 'filename=' in content_disposition:
+                        import re
+                        match = re.search(r'filename=["\']?([^"\';]+)', content_disposition)
+                        if match:
+                            filename = match.group(1)
+                    else:
+                        # 从URL路径获取文件名
+                        from urllib.parse import urlparse
+                        parsed = urlparse(direct_link)
+                        path_filename = parsed.path.split('/')[-1]
+                        if path_filename and '.' in path_filename:
+                            filename = path_filename
+                    
+                    # 流式读取内容并检查大小
+                    audio_buffer = io.BytesIO()
+                    total_size = 0
+                    async for chunk in download_resp.aiter_bytes(chunk_size=8192):
+                        total_size += len(chunk)
+                        if total_size > MAX_FILE_SIZE:
+                            return JSONResponse({
+                                'error': '音频文件超过100MB限制',
+                                'code': 'FILE_TOO_LARGE'
+                            }, status_code=400)
+                        audio_buffer.write(chunk)
+                    
+                    audio_buffer.seek(0)
+                    audio_bytes = audio_buffer.getvalue()
+            
+            logger.info(f"音频下载完成: {filename}, 大小: {len(audio_bytes)} bytes")
+            
+            # 2. 计算音频内容的 MD5 用于去重（与文件上传路径保持一致）
+            import hashlib
+            audio_md5 = hashlib.md5(audio_bytes).hexdigest()
+            
+            # 3. MD5 去重检查
+            existing = _config_manager.find_voice_by_audio_md5(storage_key, audio_md5, ref_language)
+            if existing:
+                voice_id, voice_data = existing
+                logger.info(f"{provider_label} 直链 MD5 命中，复用 voice_id: {voice_id}")
+                return JSONResponse({
+                    'voice_id': voice_id,
+                    'message': f'已复用现有{provider_label}音色，跳过注册',
+                    'reused': True,
+                    'provider': provider
+                })
+            
+            # 2. 音频归一化处理（与文件上传路径保持一致）
+            from utils.audio import normalize_voice_clone_api_audio
+            original_buffer = io.BytesIO(audio_bytes)
+            normalized_buffer, normalized_filename, _ = normalize_voice_clone_api_audio(
+                original_buffer, filename
+            )
+            
+            # 3. 为MiniMax生成带随机数的前缀（避免重复）
+            import uuid
+            original_prefix = prefix  # 保存原始前缀用于显示
+            minimax_prefix = f"{prefix}_{uuid.uuid4().hex[:8]}"  # 添加8位随机数
+            
+            # 4. 使用 MinimaxVoiceCloneClient 上传并注册音色
+            minimax_lang = minimax_normalize_language(ref_language)
+            client = MinimaxVoiceCloneClient(api_key=api_key, base_url=base_url)
+            
+            voice_id = await client.clone_voice(
+                audio_buffer=normalized_buffer,
+                filename=normalized_filename,
+                prefix=minimax_prefix,
+                language=minimax_lang,
+            )
+            
+            voice_data = {
+                'voice_id': voice_id,
+                'prefix': original_prefix,  # 保存原始前缀（不含随机数）用于显示
+                'minimax_prefix': minimax_prefix,  # 保存实际使用的带随机数前缀
+                'direct_link': direct_link,
+                'audio_md5': audio_md5,
+                'ref_language': ref_language,
+                'minimax_language': minimax_lang,
+                'provider': provider,
+                'minimax_base_url': base_url,
+                'created_at': datetime.now().isoformat(),
+                'is_direct_link': True
+            }
+            
+            logger.info(f"{provider_label} 直链音色注册成功，voice_id: {voice_id}")
+            
+        else:  # cosyvoice
+            # ========== CosyVoice 直链克隆流程 ==========
+            # 1. 下载音频文件以计算内容MD5（使用流式读取避免内存问题）
+            logger.info(f"开始下载直链音频用于CosyVoice: {direct_link}")
+            MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB限制
+            
+            async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
+                async with client.stream('GET', direct_link, follow_redirects=True) as download_resp:
+                    if download_resp.status_code != 200:
+                        return JSONResponse({
+                            'error': f'下载音频失败，状态码: {download_resp.status_code}',
+                            'code': 'DOWNLOAD_FAILED'
+                        }, status_code=400)
+                    
+                    # 流式读取内容并检查大小
+                    audio_buffer = io.BytesIO()
+                    total_size = 0
+                    async for chunk in download_resp.aiter_bytes(chunk_size=8192):
+                        total_size += len(chunk)
+                        if total_size > MAX_FILE_SIZE:
+                            return JSONResponse({
+                                'error': '音频文件超过100MB限制',
+                                'code': 'FILE_TOO_LARGE'
+                            }, status_code=400)
+                        audio_buffer.write(chunk)
+                    
+                    audio_buffer.seek(0)
+                    audio_bytes = audio_buffer.getvalue()
+            
+            logger.info(f"音频下载完成，大小: {len(audio_bytes)} bytes")
+            
+            # 2. 计算音频内容的 MD5 用于去重
+            import hashlib
+            audio_md5 = hashlib.md5(audio_bytes).hexdigest()
+            
+            # 3. MD5 去重检查
+            existing = _config_manager.find_voice_by_audio_md5(storage_key, audio_md5, ref_language)
+            if existing:
+                voice_id, voice_data = existing
+                logger.info(f"{provider_label} 直链 MD5 命中，复用 voice_id: {voice_id}")
+                return JSONResponse({
+                    'voice_id': voice_id,
+                    'message': f'已复用现有{provider_label}音色，跳过注册',
+                    'reused': True,
+                    'provider': provider
+                })
+            
+            # 4. 使用直链注册音色
+            language_hints = qwen_language_hints(ref_language)
+            client = QwenVoiceCloneClient(api_key=api_key, tflink_upload_url=TFLINK_UPLOAD_URL)
+
+            from utils.api_config_loader import get_cosyvoice_clone_model
+            clone_model = get_cosyvoice_clone_model()
+            voice_id, _ = await asyncio.to_thread(
+                client.create_voice,
+                prefix=prefix,
+                url=direct_link,
+                language_hints=language_hints,
+                target_model=clone_model,
+            )
+
+            voice_data = {
+                'voice_id': voice_id,
+                'prefix': prefix,
+                'file_url': direct_link,
+                'audio_md5': audio_md5,
+                'ref_language': ref_language,
+                'provider': 'cosyvoice',
+                'clone_model': clone_model,
+                'created_at': datetime.now().isoformat(),
+                'is_direct_link': True
+            }
+
+            logger.info(f"{provider_label} 直链音色注册成功，voice_id: {voice_id}")
+
+    except (MinimaxVoiceCloneError, QwenVoiceCloneError) as e:
+        logger.error(f"{provider_label} 直链音色注册失败: {e}")
+        error_detail = str(e)
+        if '超时' in error_detail:
+            return JSONResponse({'error': error_detail, 'provider': provider}, status_code=408)
+        elif '下载' in error_detail:
+            return JSONResponse({'error': error_detail, 'provider': provider}, status_code=415)
+        return JSONResponse({
+            'error': f'{provider_label}音色注册失败: {error_detail}',
+            'provider': provider
+        }, status_code=500)
+    except Exception as e:
+        logger.error(f"{provider_label} 直链音色注册时发生错误: {e}")
+        return JSONResponse({
+            'error': f'{provider_label}音色注册失败: {str(e)}',
+            'provider': provider
+        }, status_code=500)
+
+    # 保存到本地音色库
+    try:
+        _config_manager.save_voice_for_api_key(storage_key, voice_id, voice_data)
+        logger.info(f"{provider_label} 直链 voice_id 已保存到音色库: {voice_id}")
+    except Exception as save_error:
+        logger.error(f"保存 {provider_label} 直链 voice_id 到音色库失败: {save_error}")
+        return JSONResponse({
+            'voice_id': voice_id,
+            'message': f'{provider_label}直链音色注册成功，但本地保存失败',
+            'local_save_failed': True,
+            'error': str(save_error),
+            'provider': provider,
+        }, status_code=200)
+
+    return JSONResponse({
+        'voice_id': voice_id,
+        'message': f'{provider_label}直链音色注册成功并已保存到音色库',
+        'provider': provider,
+        'is_direct_link': True
+    })
+
+
 @router.get('/character-card/list')
 async def get_character_cards():
     """获取character_cards文件夹中的所有角色卡"""
@@ -2564,6 +2959,10 @@ async def save_character_card(request: Request):
         # 获取角色卡名称（档案名）
         # 兼容中英文字段名
         chara_name = chara_data.get('档案名') or chara_data.get('name') or character_card_name
+        name_error = _validate_profile_name(chara_name)
+        if name_error:
+            return JSONResponse({"success": False, "error": f"角色名称无效: {name_error}"}, status_code=400)
+        chara_name = str(chara_name).strip()
         filtered_chara_data = _filter_mutable_catgirl_fields(chara_data)
         
         # 创建猫娘数据，只保存非空字段
@@ -2790,20 +3189,14 @@ async def export_catgirl_card(name: str):
             png_path = temp_path / 'character_card.png'
             img.save(png_path, 'PNG')
 
-            # 5. 将压缩包数据拼接到PNG图片
-            # 使用PNG的尾部追加数据的方式（类似某些图片隐写技术）
+            # 5. 将压缩包数据嵌入 PNG 的 neKo 块（合法 PNG chunk，Electron 可正常预览）
             with open(png_path, 'rb') as f:
                 png_data = f.read()
 
             with open(zip_path, 'rb') as f:
                 zip_data = f.read()
 
-            # 组合数据：PNG数据 + ZIP数据 + 8字节ZIP大小（用于解析时定位）
-            combined_data = png_data + zip_data + len(zip_data).to_bytes(8, 'little')
-
-            # 添加标记，方便识别这是一个角色卡图片
-            marker = b'NEKOCHARA\x00'
-            combined_data = combined_data + marker
+            combined_data = _embed_zip_in_png_chunk(png_data, zip_data)
 
             # 6. 返回图片文件
             # 使用档案名作为文件名，并进行安全编码
@@ -3542,16 +3935,14 @@ async def export_catgirl_with_portrait(
         png_path = temp_path / 'character_card.png'
         final_img.save(png_path, 'PNG')
 
-        # 6. 将压缩包数据拼接到PNG图片
+        # 6. 将压缩包数据嵌入 PNG 的 neKo 块（合法 PNG chunk，Electron 可正常预览）
         with open(png_path, 'rb') as f:
             png_data = f.read()
 
         with open(zip_path, 'rb') as f:
             zip_data = f.read()
 
-        combined_data = png_data + zip_data + len(zip_data).to_bytes(8, 'little')
-        marker = b'NEKOCHARA\x00'
-        combined_data = combined_data + marker
+        combined_data = _embed_zip_in_png_chunk(png_data, zip_data)
 
         # 7. 返回图片文件
         safe_name = "".join(c for c in name if c.isalnum() or c in (' ', '-', '_', '·', '•') or '\u4e00' <= c <= '\u9fff').strip()

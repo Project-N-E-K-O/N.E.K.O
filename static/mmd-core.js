@@ -194,6 +194,8 @@ class MMDCore {
         container.style.top = '0';
         container.style.left = '0';
         container.style.setProperty('pointer-events', 'auto', 'important');
+        // 【修复】确保 z-index 与 vrm-container 一致，作为 CSS 缺失时的后备
+        container.style.zIndex = '10';
 
         this.manager.clock = new THREE.Clock();
         this.manager.scene = new THREE.Scene();
@@ -261,9 +263,8 @@ class MMDCore {
             this.manager.renderer.outputEncoding = THREE.sRGBEncoding;
         }
 
-        // NoToneMapping 与 hime-display 一致（Three.js r180 默认值）
-        // 可通过调试面板切换不同 toneMapping 实时比较效果
-        this.manager.renderer.toneMapping = THREE.NoToneMapping;
+        // 默认使用 NeutralToneMapping（色调平衡、对比度适中）
+        this.manager.renderer.toneMapping = THREE.NeutralToneMapping;
         this.manager.renderer.toneMappingExposure = 1.0;
 
         // Canvas 样式
@@ -835,10 +836,11 @@ class MMDCore {
             this.manager.animationModule.update(clampedDelta);
         }
 
-        // 2. IK/Grant 求解（每帧执行）
+        // 2. IK/Grant 求解（仅在无动画静止状态执行，暂停时跳过）
         //    Grant（付与変換）常用负比率实现骨骼联动（如裙摆反向补偿），
-        //    必须每帧执行，否则 kinematic 骨骼位置错误导致物理镜像分离。
-        if (this.manager.animationModule && !this.manager.animationModule.isPlaying) {
+        //    必须在静止状态每帧执行，否则 kinematic 骨骼位置错误导致物理镜像分离。
+        //    但在暂停时不应运行——暂停保持的是动画帧的快照，IK 会破坏该快照。
+        if (this.manager.animationModule && !this.manager.animationModule.isPlaying && !this.manager.animationModule.isPaused) {
             const anim = this.manager.animationModule;
             const mmd = this.manager.currentModel;
             if (mmd && mmd.mesh) {
@@ -854,18 +856,26 @@ class MMDCore {
         }
 
         // 4. 更新物理（库内部有 substep）
-        if (this.manager.enablePhysics && this.manager.currentModel && this.manager.currentModel.physics) {
+        //    暂停时冻结物理，防止头发/裙摆持续摆动
+        const animPaused = this.manager.animationModule && this.manager.animationModule.isPaused;
+        if (this.manager.enablePhysics && this.manager.currentModel && this.manager.currentModel.physics && !animPaused) {
             this.manager.currentModel.update(clampedDelta);
         }
 
         // 5. 更新表情模块（眨眼、口型同步等）
-        if (this.manager.expression) {
+        //    暂停时冻结表情，防止自动眨眼导致的循环感
+        if (this.manager.expression && !animPaused) {
             this.manager.expression.update(clampedDelta);
         }
 
         // 更新 OrbitControls
         if (this.manager.controls) {
             this.manager.controls.update();
+        }
+
+        // 更新屏幕空间包围盒缓存（用于悬停检测和鼠标穿透判断）
+        if (this.manager.interaction) {
+            this.manager.interaction.updateScreenBounds();
         }
 
         // 渲染
@@ -925,11 +935,16 @@ class MMDCore {
         }
 
         this.manager.enablePhysics = hadPhysics;
+
+        // 标记 T-Pose 状态，让鼠标跟踪模块跳过眼骨旋转
+        this.manager._isTPose = true;
     }
 
     resetModelPosition() {
         const mmd = this.manager.currentModel;
         if (!mmd || !mmd.mesh) return;
+
+        const THREE = window.THREE;
 
         // 禁用物理，防止位置变更期间拉丝
         const hadPhysics = this.manager.enablePhysics;
@@ -939,6 +954,40 @@ class MMDCore {
         mesh.position.set(0, 0, 0);
         mesh.quaternion.identity();
         mesh.scale.set(1, 1, 1);
+
+        // 复位相机到初始机位，使模型稳定出现在屏幕中央
+        // （MMD 的 orbit 仅旋转 mesh 不动相机，但用户可能通过其他入口改动过相机；
+        //  同时也为将来相机交互做前向兼容）
+        if (THREE && this.manager.camera) {
+            try {
+                mesh.updateMatrixWorld(true);
+                const box = new THREE.Box3().setFromObject(mesh);
+                const center = box.getCenter(new THREE.Vector3());
+                const size = box.getSize(new THREE.Vector3());
+
+                const modelHeight = size.y > 0 ? size.y : 20;
+                const screenHeight = window.innerHeight;
+                const targetScreenHeight = screenHeight * 0.45;
+                const fov = this.manager.camera.fov * (Math.PI / 180);
+                // 让模型在屏幕上占约 45% 高度
+                const distance = (modelHeight / 2) / Math.tan(fov / 2) / targetScreenHeight * screenHeight;
+
+                // 把相机锚定到 bounding box 中心，否则模型几何中心偏离世界原点时，
+                // 实际相机到目标的距离与 `distance` 不一致，复位构图会漂
+                this.manager.camera.position.set(center.x, center.y, center.z + Math.abs(distance));
+                this.manager.camera.lookAt(center.x, center.y, center.z);
+                this.manager.camera.updateProjectionMatrix();
+
+                if (this.manager.controls) {
+                    this.manager.controls.target.set(center.x, center.y, center.z);
+                    this.manager.controls.update();
+                }
+            } catch (err) {
+                console.warn('[MMD Core] 重置相机失败，回退到初始机位:', err);
+                this.manager.camera.position.set(0, 10, 70);
+                this.manager.camera.lookAt(0, 10, 0);
+            }
+        }
 
         if (mmd.physics && typeof mmd.physics.reset === 'function') {
             mesh.updateMatrixWorld(true);
@@ -950,13 +999,30 @@ class MMDCore {
 
         const modelPath = mmd.url;
         if (modelPath) {
+            // 构造重置后的相机位置，覆盖后端保存的旧值
+            let resetCameraPosition = null;
+            if (this.manager.camera) {
+                const cam = this.manager.camera;
+                const ctrl = this.manager.controls;
+                resetCameraPosition = {
+                    x: cam.position.x, y: cam.position.y, z: cam.position.z,
+                    targetX: ctrl ? ctrl.target.x : 0,
+                    targetY: ctrl ? ctrl.target.y : 0,
+                    targetZ: ctrl ? ctrl.target.z : 0
+                };
+            }
             this.saveUserPreferences(
                 modelPath,
                 { x: 0, y: 0, z: 0 },
                 { x: 1, y: 1, z: 1 },
-                { x: 0, y: 0, z: 0 }
+                { x: 0, y: 0, z: 0 },
+                null,  // display
+                null,  // viewport
+                resetCameraPosition
             );
         }
+
+        console.log('[MMD Core] 模型位置已重置，相机已复位');
     }
 
     // ═══════════════════ 锁定 ═══════════════════
@@ -976,9 +1042,14 @@ class MMDCore {
         }
 
         if (!locked) {
-            const container = document.getElementById('mmd-container');
-            if (container) {
-                container.style.opacity = '1';
+            // 解锁时恢复容器透明度（同时重置淡化状态）
+            if (typeof this.manager._setMmdLockedHoverFade === 'function') {
+                this.manager._setMmdLockedHoverFade(false);
+            } else {
+                const container = document.getElementById('mmd-container');
+                if (container) {
+                    container.style.opacity = '1';
+                }
             }
         }
 
@@ -1003,7 +1074,7 @@ class MMDCore {
 
     // ═══════════════════ 用户偏好持久化 ═══════════════════
 
-    async saveUserPreferences(modelPath, position, scale, rotation, display, viewport) {
+    async saveUserPreferences(modelPath, position, scale, rotation, display, viewport, cameraPosition) {
         try {
             if (!position || typeof position !== 'object' ||
                 !Number.isFinite(position.x) || !Number.isFinite(position.y) || !Number.isFinite(position.z)) {
@@ -1031,6 +1102,17 @@ class MMDCore {
                 Number.isFinite(viewport.width) && Number.isFinite(viewport.height) &&
                 viewport.width > 0 && viewport.height > 0) {
                 preferences.viewport = { width: viewport.width, height: viewport.height };
+            }
+            if (cameraPosition && typeof cameraPosition === 'object' &&
+                Number.isFinite(cameraPosition.x) && Number.isFinite(cameraPosition.y) && Number.isFinite(cameraPosition.z)) {
+                preferences.camera_position = {
+                    x: cameraPosition.x, y: cameraPosition.y, z: cameraPosition.z
+                };
+                if (Number.isFinite(cameraPosition.targetX) && Number.isFinite(cameraPosition.targetY) && Number.isFinite(cameraPosition.targetZ)) {
+                    preferences.camera_position.targetX = cameraPosition.targetX;
+                    preferences.camera_position.targetY = cameraPosition.targetY;
+                    preferences.camera_position.targetZ = cameraPosition.targetZ;
+                }
             }
 
             const controller = new AbortController();
@@ -1127,10 +1209,16 @@ class MMDCore {
             }
 
             // 恢复缩放（含跨分辨率归一化）
+            // MMD 模型 scale 必须均匀（x=y=z），否则模型变形。
+            // 历史偏好或 bug 可能保存了非均匀值，加载时强制均匀化。
             if (preferences.scale) {
                 const scl = preferences.scale;
                 if (Number.isFinite(scl.x) && Number.isFinite(scl.y) && Number.isFinite(scl.z) &&
                     scl.x > 0 && scl.y > 0 && scl.z > 0) {
+                    let uniformScale = (scl.x + scl.y + scl.z) / 3;
+                    if (Math.abs(scl.x - scl.y) > 0.001 || Math.abs(scl.y - scl.z) > 0.001) {
+                        console.warn(`[MMD Core] 非均匀缩放已修正: (${scl.x.toFixed(3)}, ${scl.y.toFixed(3)}, ${scl.z.toFixed(3)}) → ${uniformScale.toFixed(3)}`);
+                    }
                     const savedViewport = preferences.viewport;
                     const currentScreenH = window.screen.height;
                     const hRatio = (savedViewport &&
@@ -1138,11 +1226,10 @@ class MMDCore {
                         ? currentScreenH / savedViewport.height : 1;
                     const isExtremeChange = hRatio > 1.8 || hRatio < 0.56;
                     if (isExtremeChange) {
-                        mesh.scale.set(scl.x * hRatio, scl.y * hRatio, scl.z * hRatio);
+                        uniformScale *= hRatio;
                         console.log('[MMD Core] 屏幕分辨率大幅变化，缩放已归一化');
-                    } else {
-                        mesh.scale.set(scl.x, scl.y, scl.z);
                     }
+                    mesh.scale.setScalar(uniformScale);
                 }
             }
 
@@ -1217,3 +1304,5 @@ class MMDCore {
         console.log('[MMD Core] 资源已完全清理');
     }
 }
+
+window.MMDCore = MMDCore;

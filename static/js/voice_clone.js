@@ -1,6 +1,70 @@
 // 允许的来源列表
 const ALLOWED_ORIGINS = [window.location.origin];
 
+// 打开API设置页（带弹窗拦截回退）
+function openApiSettings() {
+    const win = window.open('/api_key', 'apiSettings', 'width=820,height=700,scrollbars=yes,resizable=yes');
+    if (win) {
+        const modal = document.getElementById('noApiModal');
+        if (modal) modal.style.display = 'none';
+    } else {
+        location.href = '/api_key';
+    }
+}
+
+// 安全地解析 fetch 响应：当后端/反向代理返回 HTML（404/502/504/网关错误等）时
+// 不应抛出 "Unexpected token '<', '<html>...' is not valid JSON"，而应返回带状态码的可读错误。
+async function safeReadResponse(res) {
+    const contentType = (res.headers.get('content-type') || '').toLowerCase();
+    // 识别 application/json 以及 RFC 6839 的结构化后缀（如 application/problem+json,
+    // application/vnd.api+json 等），它们都是合法 JSON。
+    const isJsonContentType = contentType.includes('application/json') || /\+json(\s*;|\s*$)/.test(contentType);
+    if (isJsonContentType) {
+        try {
+            return { data: await res.json(), nonJson: false, text: '' };
+        } catch (_) {
+            // Content-Type 声明 JSON 但解析失败，落到文本分支
+        }
+    }
+    let text = '';
+    try { text = await res.text(); } catch (_) { text = ''; }
+    return { data: null, nonJson: true, text };
+}
+
+function buildNonJsonError(res, text) {
+    // 去除 HTML 标签并截断，避免把整段 HTML 报告给用户
+    const snippet = text
+        ? text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120)
+        : '';
+    if (window.t) {
+        if (res.status === 404) {
+            return window.t('voice.serverRouteNotFound', { status: res.status });
+        }
+        return window.t('voice.serverNonJsonError', {
+            status: res.status,
+            snippet: snippet || res.statusText || ''
+        });
+    }
+    if (res.status === 404) {
+        return `接口未找到 (HTTP 404)，请确认服务端已正确部署并重启`;
+    }
+    return `服务端返回了非JSON响应 (HTTP ${res.status})${snippet ? ': ' + snippet : ''}`;
+}
+
+// 把后端错误响应体转成可读消息：
+// 只有在 errors.<code> 翻译确实存在时才使用 i18n，否则回退到响应自带文案，
+// 避免 i18next 的「缺失 key 回退成 key 本身」行为把 "errors.XXX_UNKNOWN" 直接丢给用户。
+function resolveBackendErrorMsg(data, status) {
+    if (data && data.code && window.t) {
+        const i18nKey = 'errors.' + data.code;
+        const translated = window.t(i18nKey, data.details || {});
+        if (translated && translated !== i18nKey) {
+            return translated;
+        }
+    }
+    return (data && (data.detail || data.message || data.error)) || `API returned ${status}`;
+}
+
 function parseVoiceRegisterError(errorObj) {
     const errorCode = errorObj?.code;
     const errorMsg = errorObj?.message || errorObj?.error || errorObj || '';
@@ -230,6 +294,28 @@ if (window.i18n && window.i18n.isInitialized) {
             lanlanInput.value = "";
         }
     }
+
+    // 检查是否已设置可用于克隆的API Key
+    try {
+        const resp = await fetch('/api/config/core_api');
+        if (resp.ok) {
+            const cfg = await resp.json();
+            if (!cfg || cfg.success === false) {
+                console.warn('获取核心配置失败:', cfg?.error);
+            } else {
+                // 本地TTS服务器(ws/wss协议)不需要云端API Key
+                const ttsUrl = cfg.ttsModelUrl || '';
+                const isLocalTts = cfg.enableCustomApi && (ttsUrl.startsWith('ws://') || ttsUrl.startsWith('wss://'));
+                const hasCloneApi = isLocalTts || !!(cfg.assistApiKeyQwen || cfg.assistApiKeyMinimax || cfg.assistApiKeyMinimaxIntl);
+                if (!hasCloneApi) {
+                    const modal = document.getElementById('noApiModal');
+                    if (modal) modal.style.display = 'flex';
+                }
+            }
+        }
+    } catch (e) {
+        console.warn('检查克隆API Key失败:', e);
+    }
 })();
 
 // 服务商切换时更新提示横幅
@@ -259,12 +345,51 @@ document.addEventListener('DOMContentLoaded', function initProviderSwitch() {
     updateNotice();
 });
 
+// 当前克隆方式
+let currentCloneMethod = 'file';
+
+// 切换克隆方式
+function switchCloneMethod(method) {
+    currentCloneMethod = method;
+    const btnFileClone = document.getElementById('btnFileClone');
+    const btnDirectLinkClone = document.getElementById('btnDirectLinkClone');
+    const fileCloneSection = document.getElementById('fileCloneSection');
+    const directLinkCloneSection = document.getElementById('directLinkCloneSection');
+
+    if (!btnFileClone || !btnDirectLinkClone || !fileCloneSection || !directLinkCloneSection) {
+        console.warn('克隆方式切换：部分DOM元素未找到');
+        return;
+    }
+
+    if (method === 'file') {
+        btnFileClone.classList.add('active');
+        btnFileClone.setAttribute('aria-selected', 'true');
+        btnFileClone.setAttribute('tabindex', '0');
+        btnDirectLinkClone.classList.remove('active');
+        btnDirectLinkClone.setAttribute('aria-selected', 'false');
+        btnDirectLinkClone.setAttribute('tabindex', '-1');
+        fileCloneSection.style.display = 'block';
+        directLinkCloneSection.style.display = 'none';
+    } else {
+        btnFileClone.classList.remove('active');
+        btnFileClone.setAttribute('aria-selected', 'false');
+        btnFileClone.setAttribute('tabindex', '-1');
+        btnDirectLinkClone.classList.add('active');
+        btnDirectLinkClone.setAttribute('aria-selected', 'true');
+        btnDirectLinkClone.setAttribute('tabindex', '0');
+        fileCloneSection.style.display = 'none';
+        directLinkCloneSection.style.display = 'block';
+    }
+}
+
 function setFormDisabled(disabled) {
     const audioFile = document.getElementById('audioFile');
+    const directLinkUrl = document.getElementById('directLinkUrl');
     const refLanguage = document.getElementById('refLanguage');
     const prefix = document.getElementById('prefix');
     const voiceProvider = document.getElementById('voiceProvider');
     if (audioFile) audioFile.disabled = disabled;
+    if (directLinkUrl) directLinkUrl.disabled = disabled;
     if (refLanguage) refLanguage.disabled = disabled;
     if (prefix) prefix.disabled = disabled;
     if (voiceProvider) voiceProvider.disabled = disabled;
@@ -279,6 +404,7 @@ function setFormDisabled(disabled) {
 
 function registerVoice() {
     const fileInput = document.getElementById('audioFile');
+    const directLinkUrl = document.getElementById('directLinkUrl');
     const refLanguage = document.getElementById('refLanguage').value;
     const prefix = document.getElementById('prefix').value.trim();
     const resultDiv = document.getElementById('result');
@@ -287,30 +413,94 @@ function registerVoice() {
     resultDiv.textContent = '';
     resultDiv.className = 'result';
 
-    if (!fileInput.files.length || !prefix) {
-        resultDiv.textContent = window.t ? window.t('voice.pleaseUploadFile') : '请上传音频文件并填写前缀';
-        resultDiv.className = 'result error';
-        return;
+    const provider = (document.getElementById('voiceProvider') || {}).value || 'cosyvoice';
+
+    // 根据克隆方式验证输入
+    if (currentCloneMethod === 'file') {
+        // 先检查文件
+        if (!fileInput.files.length) {
+            resultDiv.textContent = window.t ? window.t('voice.pleaseUploadFile') : '请选择音频文件';
+            resultDiv.className = 'result error';
+            return;
+        }
+        // 再检查前缀
+        if (!prefix) {
+            resultDiv.textContent = window.t ? window.t('voice.pleaseEnterPrefix') : '请填写自定义前缀';
+            resultDiv.className = 'result error';
+            return;
+        }
+    } else {
+        // 直链克隆
+        const url = directLinkUrl.value.trim();
+        // 先检查URL
+        if (!url) {
+            resultDiv.textContent = window.t ? window.t('voice.pleaseEnterDirectLink') : '请输入音频直链URL';
+            resultDiv.className = 'result error';
+            return;
+        }
+        // 再检查前缀
+        if (!prefix) {
+            resultDiv.textContent = window.t ? window.t('voice.pleaseEnterPrefix') : '请填写自定义前缀';
+            resultDiv.className = 'result error';
+            return;
+        }
+        // 验证URL格式
+        if (!url.startsWith('http://') && !url.startsWith('https://')) {
+            resultDiv.textContent = window.t ? window.t('voice.invalidDirectLink') : '请输入有效的HTTP/HTTPS链接';
+            resultDiv.className = 'result error';
+            return;
+        }
     }
+
     setFormDisabled(true);
     resultDiv.textContent = window.t ? window.t('voice.registering') : '正在注册声音，请稍后！';
     resultDiv.className = 'result';
-    const provider = (document.getElementById('voiceProvider') || {}).value || 'cosyvoice';
-    const formData = new FormData();
-    formData.append('file', fileInput.files[0]);
-    formData.append('ref_language', refLanguage);
-    formData.append('prefix', prefix);
-    formData.append('provider', provider);
-    fetch('/api/characters/voice_clone', {
-        method: 'POST',
-        body: formData
-    })
+
+    // 根据克隆方式选择API端点和参数
+    let requestOptions;
+    if (currentCloneMethod === 'file') {
+        // 本地文件克隆
+        const formData = new FormData();
+        formData.append('file', fileInput.files[0]);
+        formData.append('ref_language', refLanguage);
+        formData.append('prefix', prefix);
+        formData.append('provider', provider);
+        requestOptions = {
+            method: 'POST',
+            body: formData
+        };
+    } else {
+        // 直链克隆
+        requestOptions = {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                direct_link: directLinkUrl.value.trim(),
+                ref_language: refLanguage,
+                prefix: prefix,
+                provider: provider
+            })
+        };
+    }
+
+    const apiUrl = currentCloneMethod === 'file'
+        ? '/api/characters/voice_clone'
+        : '/api/characters/voice_clone_direct';
+
+    fetch(apiUrl, requestOptions)
         .then(async res => {
-            const data = await res.json();
+            const { data, nonJson, text } = await safeReadResponse(res);
             if (!res.ok) {
-                // 从响应体中提取详细错误信息
-                const errorMsg = (data.code && window.t) ? window.t('errors.' + data.code, data.details || {}) : (data.error || data.detail || `API returned ${res.status}`);
-                throw new Error(errorMsg);
+                if (data) {
+                    // 从响应体中提取详细错误信息（优先已翻译的 errors.<code>，缺失则回退到 message/detail/error）
+                    throw new Error(resolveBackendErrorMsg(data, res.status));
+                }
+                // 后端/网关返回了 HTML（如 404/502/504），构造可读错误而不是 "Unexpected token '<'"
+                throw new Error(buildNonJsonError(res, text));
+            }
+            if (nonJson) {
+                // 状态码 2xx 但响应体不是 JSON——不应发生，但仍优雅处理
+                throw new Error(buildNonJsonError(res, text));
             }
             return data;
         })
@@ -318,6 +508,36 @@ function registerVoice() {
             if (data.voice_id) {
                 if (data.reused) {
                     resultDiv.textContent = window.t ? window.t('voice.reusedExisting', { voiceId: data.voice_id }) : '已复用现有音色，跳过上传。voice_id: ' + data.voice_id;
+                } else if (data.local_save_failed) {
+                    // 部分成功：音色注册成功但本地保存失败
+                    resultDiv.innerHTML = '';
+                    const partialMsg = document.createElement('span');
+                    partialMsg.style.color = 'orange';
+                    partialMsg.textContent = window.t ? window.t('voice.registerSuccessButSaveFailed') : '音色注册成功，但本地保存失败';
+                    resultDiv.appendChild(partialMsg);
+                    resultDiv.appendChild(document.createElement('br'));
+                    
+                    const voiceIdLabel = document.createElement('span');
+                    voiceIdLabel.textContent = 'voice_id: ';
+                    resultDiv.appendChild(voiceIdLabel);
+                    
+                    const voiceIdCode = document.createElement('code');
+                    voiceIdCode.style.background = '#f0f0f0';
+                    voiceIdCode.style.padding = '2px 6px';
+                    voiceIdCode.style.borderRadius = '4px';
+                    voiceIdCode.style.userSelect = 'all';
+                    voiceIdCode.textContent = data.voice_id;
+                    resultDiv.appendChild(voiceIdCode);
+                    
+                    resultDiv.appendChild(document.createElement('br'));
+                    const copyHint = document.createElement('span');
+                    copyHint.style.fontSize = '12px';
+                    copyHint.style.color = '#666';
+                    copyHint.textContent = window.t ? window.t('voice.pleaseCopyVoiceId') : '请复制上面的voice_id手动保存';
+                    resultDiv.appendChild(copyHint);
+                    
+                    setFormDisabled(false);
+                    return;
                 } else {
                     resultDiv.textContent = window.t ? window.t('voice.registerSuccess', { voiceId: data.voice_id }) : '注册成功！voice_id: ' + data.voice_id;
                 }
@@ -334,11 +554,18 @@ function registerVoice() {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ voice_id: data.voice_id })
-                    }).then(resp => {
+                    }).then(async resp => {
+                        const { data: respData, nonJson, text } = await safeReadResponse(resp);
                         if (!resp.ok) {
-                            throw new Error(`API returned ${resp.status}`);
+                            if (respData && (respData.error || respData.detail)) {
+                                throw new Error(respData.error || respData.detail);
+                            }
+                            throw new Error(buildNonJsonError(resp, text));
                         }
-                        return resp.json();
+                        if (nonJson) {
+                            throw new Error(buildNonJsonError(resp, text));
+                        }
+                        return respData;
                     }).then(res => {
                         if (!res.success) {
                             const errorMsg = res.error || (window.t ? window.t('common.unknownError') : '未知错误');
@@ -374,9 +601,13 @@ function registerVoice() {
                             }
                         }
                     }).catch(e => {
+                        // e 可能携带 safeReadResponse/buildNonJsonError 构造的可读错误
+                        // （含 HTTP 状态和正文摘要），必须拼进最终提示，否则诊断信息被吞。
+                        const saveErrorMsg = e?.message || e?.toString() || (window.t ? window.t('common.unknownError') : '未知错误');
+                        const base = window.t ? window.t('voice.voiceIdSaveRequestError') : 'voice_id自动保存请求出错';
                         const errorSpan = document.createElement('span');
                         errorSpan.className = 'error';
-                        errorSpan.textContent = (window.t ? window.t('voice.voiceIdSaveRequestError') : 'voice_id自动保存请求出错');
+                        errorSpan.textContent = saveErrorMsg ? `${base}: ${saveErrorMsg}` : base;
                         resultDiv.appendChild(document.createElement('br'));
                         resultDiv.appendChild(errorSpan);
                     });
@@ -430,10 +661,16 @@ async function playPreview(voiceId, btn) {
         if (!audioSrc) {
             // 如果本地没有缓存，则从服务器获取
             const response = await fetch(`/api/characters/voice_preview?voice_id=${encodeURIComponent(voiceId)}`);
-            if (response.status === 404) {
-                throw new Error('API route not found (404). Please ensure the server has been restarted.');
+            const { data, nonJson, text } = await safeReadResponse(response);
+            if (!response.ok) {
+                if (data && (data.error || data.detail)) {
+                    throw new Error(data.error || data.detail);
+                }
+                throw new Error(buildNonJsonError(response, text));
             }
-            const data = await response.json();
+            if (nonJson) {
+                throw new Error(buildNonJsonError(response, text));
+            }
 
             if (data.success && data.audio) {
                 audioSrc = `data:${data.mime_type || 'audio/mpeg'};base64,${data.audio}`;
@@ -445,7 +682,7 @@ async function playPreview(voiceId, btn) {
                     // localStorage 可能满了，但我们仍然可以播放这一次生成的音频
                 }
             } else {
-                const _errMsg = (data.code && window.t) ? window.t('errors.' + data.code, data.details || {}) : (data.error || 'Failed to get preview');
+                const _errMsg = resolveBackendErrorMsg(data, response.status) || 'Failed to get preview';
                 throw new Error(_errMsg);
             }
         }
@@ -492,10 +729,16 @@ async function loadVoices() {
 
     try {
         const response = await fetch('/api/characters/voices');
+        const { data, nonJson, text } = await safeReadResponse(response);
         if (!response.ok) {
-            throw new Error(`API returned ${response.status}`);
+            if (data && (data.error || data.detail)) {
+                throw new Error(data.error || data.detail);
+            }
+            throw new Error(buildNonJsonError(response, text));
         }
-        const data = await response.json();
+        if (nonJson) {
+            throw new Error(buildNonJsonError(response, text));
+        }
 
         if ((!data.voices || Object.keys(data.voices).length === 0) &&
             (!data.free_voices || Object.keys(data.free_voices).length === 0)) {
@@ -607,14 +850,16 @@ async function loadVoices() {
 
         // 渲染免费预设音色（不可删除，放在最后）
         if (data.free_voices && Object.keys(data.free_voices).length > 0) {
-            // 添加分隔线
-            const divider = document.createElement('div');
-            divider.style.cssText = 'border-top: 1px dashed rgba(255,255,255,0.2); margin: 12px 0; padding-top: 8px; color: rgba(255,255,255,0.5); font-size: 12px; text-align: center;';
-            const freeLabel = window.t ? window.t('voice.freePresetLabel') : '免费预设音色';
-            divider.textContent = '── ' + freeLabel + ' ──';
-            container.appendChild(divider);
+            // 用户注册音色与预设音色之间的分隔线
+            if (voicesArray.length > 0) {
+                const divider = document.createElement('div');
+                divider.style.cssText = 'border-top: 1px dashed #b0d4f1; margin: 12px 0; padding-top: 8px; color: #90b8d8; font-size: 12px; text-align: center;';
+                const freeLabel = window.t ? window.t('voice.freePresetLabel') : '免费预设音色';
+                divider.textContent = '── ' + freeLabel + ' ──';
+                container.appendChild(divider);
+            }
 
-            Object.entries(data.free_voices).forEach(([displayName, voiceId]) => {
+            Object.entries(data.free_voices).forEach(([voiceKey, voiceId]) => {
                 const item = document.createElement('div');
                 item.className = 'voice-list-item';
                 item.style.opacity = '0.85';
@@ -624,6 +869,8 @@ async function loadVoices() {
 
                 const nameDiv = document.createElement('div');
                 nameDiv.className = 'voice-name';
+                // 使用 i18n 翻译键获取显示名称
+                const displayName = window.t ? window.t(`voice.freeVoice.${voiceKey}`) : voiceKey;
                 nameDiv.textContent = displayName;
                 // 添加预设标签
                 const badge = document.createElement('span');
@@ -696,7 +943,15 @@ async function deleteVoice(voiceId, voiceName) {
             headers: { 'Content-Type': 'application/json' }
         });
 
-        const data = await response.json();
+        const { data: parsed, nonJson, text } = await safeReadResponse(response);
+        if (!response.ok && !parsed) {
+            // 后端/网关返回了 HTML（如 404/502），抛出可读错误
+            throw new Error(buildNonJsonError(response, text));
+        }
+        if (nonJson) {
+            throw new Error(buildNonJsonError(response, text));
+        }
+        const data = parsed || {};
 
         if (response.ok && data.success) {
             // 删除本地缓存的预览音频

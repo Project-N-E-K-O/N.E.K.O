@@ -73,6 +73,9 @@ async function autoSaveMasterField(input) {
     
     const fieldName = input.name;
     if (!fieldName) return;
+
+    const profileValidation = await validateMasterProfileNameBeforeSave(form);
+    if (!profileValidation.ok) return;
     
     const data = {};
     data[fieldName] = input.value;
@@ -395,9 +398,9 @@ function toggleFold(fold) {
     fold.classList.toggle('open');
 }
 
-// 档案名长度限制：最多 20 个计数单位（纯中文不超过 10 个字）
+// 档案名长度限制：最多 60 个计数单位（纯中文不超过 30 个字）
 // 计数规则：ASCII(<=0x7F) 计 1，其它字符计 2
-const PROFILE_NAME_MAX_UNITS = 20;
+const PROFILE_NAME_MAX_UNITS = 60;
 
 const PROFILE_NAME_MAX_HINT_KEY = 'character.profileNameMaxHint';
 const PROFILE_NAME_TOO_LONG_KEY = 'character.profileNameTooLong';
@@ -448,14 +451,94 @@ function tOrFallback(key, fallback, params) {
 
 const PROFILE_NAME_CONTAINS_SLASH_KEY = 'character.profileNameContainsSlash';
 const PROFILE_NAME_CONTAINS_DOT_KEY = 'character.profileNameContainsDot';
+const PROFILE_NAME_INVALID_CHARS_KEY = 'character.profileNameInvalidChars';
+const PROFILE_NAME_RESERVED_ROUTE_KEY = 'character.profileNameReservedRoute';
+
+// 系统保留的一级路由名称，不可用作角色名
+const RESERVED_ROUTE_NAMES = new Set([
+    'l2d', 'model_manager', 'live2d_parameter_editor', 'live2d_emotion_manager',
+    'vrm_emotion_manager', 'mmd_emotion_manager', 'chara_manager', 'voice_clone',
+    'api_key', 'steam_workshop_manager', 'memory_browser', 'cookies_login',
+    'chat', 'subtitle', 'agenthud', 'toast',
+    'static', 'user_live2d', 'user_live2d_local', 'user_vrm', 'user_mmd',
+    'user_mods', 'workshop',
+    'api', 'ws', 'health',
+]);
+const PROFILE_NAME_WINDOWS_FORBIDDEN_CHARS = new Set(['<', '>', ':', '"', '/', '\\', '|', '?', '*']);
+const PROFILE_NAME_SAFE_EXTRA_CHARS = new Set([' ', '_', '-', '(', ')', '（', '）', '·', '・', '•', "'", '’']);
+
+function getProfileNameCharIssue(ch) {
+    if (!ch) return '';
+    if (ch === '/' || ch === '\\') return 'slash';
+    if (ch === '.') return 'dot';
+    if (PROFILE_NAME_WINDOWS_FORBIDDEN_CHARS.has(ch)) return 'invalid';
+    if (/[\p{L}\p{N}]/u.test(ch)) return '';
+    if (PROFILE_NAME_SAFE_EXTRA_CHARS.has(ch)) return '';
+    if (/\p{Zs}/u.test(ch)) return '';
+    return 'invalid';
+}
+
+function findInvalidProfileNameIssue(value) {
+    const str = String(value ?? '');
+    if (RESERVED_ROUTE_NAMES.has(str)) return 'reserved_route';
+    for (const ch of str) {
+        const issue = getProfileNameCharIssue(ch);
+        if (issue) return issue;
+    }
+    return '';
+}
+
+function sanitizeProfileNameValue(value, caretPos = null) {
+    const raw = String(value ?? '');
+    let sanitized = '';
+    let removedBeforeCaret = 0;
+    let cursor = 0;
+    let removedSlash = false;
+    let removedDot = false;
+    let removedOther = false;
+    const caret = (typeof caretPos === 'number') ? caretPos : null;
+
+    for (const ch of raw) {
+        const issue = getProfileNameCharIssue(ch);
+        if (!issue) {
+            sanitized += ch;
+        } else {
+            if (issue === 'slash') {
+                removedSlash = true;
+            } else if (issue === 'dot') {
+                removedDot = true;
+            } else {
+                removedOther = true;
+            }
+            if (caret !== null && cursor < caret) {
+                removedBeforeCaret += ch.length;
+            }
+        }
+        cursor += ch.length;
+    }
+
+    return {
+        value: sanitized,
+        removedBeforeCaret,
+        removedSlash,
+        removedDot,
+        removedOther
+    };
+}
 
 function translateBackendError(errorMessage) {
     if (!errorMessage || typeof errorMessage !== 'string') return errorMessage;
+    if (errorMessage.includes('保留的路由名称')) {
+        return tOrFallback(PROFILE_NAME_RESERVED_ROUTE_KEY, errorMessage);
+    }
     if (errorMessage.includes('路径分隔符') || errorMessage.includes('不能包含"/"')) {
         return tOrFallback(PROFILE_NAME_CONTAINS_SLASH_KEY, errorMessage);
     }
     if (errorMessage.includes('点号') || errorMessage.includes('不能包含"."')) {
         return tOrFallback(PROFILE_NAME_CONTAINS_DOT_KEY, errorMessage);
+    }
+    if (errorMessage.includes('只能包含文字、数字')) {
+        return tOrFallback(PROFILE_NAME_INVALID_CHARS_KEY, errorMessage);
     }
     if (errorMessage.includes('档案名为必填项')) {
         return tOrFallback('character.profileNameRequired', errorMessage);
@@ -518,6 +601,82 @@ function flashProfileNameContainsDot(inputEl) {
     flashProfileNameError(inputEl, msg);
 }
 
+function flashProfileNameContainsInvalidChars(inputEl) {
+    if (!inputEl) return;
+
+    const msg = tOrFallback(
+        PROFILE_NAME_INVALID_CHARS_KEY,
+        '档案名只能包含文字、数字、空格、下划线、连字符、括号、间隔号(·/・)和撇号'
+    );
+
+    flashProfileNameError(inputEl, msg);
+}
+
+function flashProfileNameReservedRoute(inputEl) {
+    if (!inputEl) return;
+
+    const msg = tOrFallback(
+        PROFILE_NAME_RESERVED_ROUTE_KEY,
+        '此名称是系统保留的路由名称，不能用作档案名'
+    );
+
+    flashProfileNameError(inputEl, msg);
+}
+
+function flashProfileNameInvalidIssue(inputEl, issue) {
+    if (issue === 'reserved_route') {
+        flashProfileNameReservedRoute(inputEl);
+        return;
+    }
+    if (issue === 'slash') {
+        flashProfileNameContainsSlash(inputEl);
+        return;
+    }
+    if (issue === 'dot') {
+        flashProfileNameContainsDot(inputEl);
+        return;
+    }
+    if (issue === 'invalid') {
+        flashProfileNameContainsInvalidChars(inputEl);
+    }
+}
+
+async function validateMasterProfileNameBeforeSave(form, { showRequiredAlert = false } = {}) {
+    if (!form) {
+        return { ok: false, normalized: '' };
+    }
+
+    const profileInput = form.querySelector('input[name="档案名"]');
+    if (!profileInput) {
+        return { ok: false, normalized: '' };
+    }
+
+    const trimmed = String(profileInput.value ?? '').trim();
+    if (profileInput.value !== trimmed) {
+        profileInput.value = trimmed;
+    }
+
+    if (!trimmed) {
+        if (showRequiredAlert) {
+            await showAlert(window.t ? window.t('character.profileNameRequired') : '档案名为必填项');
+        }
+        return { ok: false, normalized: trimmed, inputEl: profileInput, reason: 'empty' };
+    }
+
+    const invalidIssue = findInvalidProfileNameIssue(trimmed);
+    if (invalidIssue) {
+        flashProfileNameInvalidIssue(profileInput, invalidIssue);
+        return { ok: false, normalized: trimmed, inputEl: profileInput, reason: invalidIssue };
+    }
+
+    if (profileNameCountUnits(trimmed) > PROFILE_NAME_MAX_UNITS) {
+        flashProfileNameTooLong(profileInput);
+        return { ok: false, normalized: trimmed, inputEl: profileInput, reason: 'too_long' };
+    }
+
+    return { ok: true, normalized: trimmed, inputEl: profileInput };
+}
+
 function flashProfileNameError(inputEl, msg) {
     if (!inputEl) return;
 
@@ -564,7 +723,12 @@ function flashProfileNameError(inputEl, msg) {
 }
 
 function attachProfileNameLimiter(inputEl) {
-    if (!inputEl || inputEl.dataset.profileNameLimiterAttached === 'true') return;
+    if (!inputEl) return;
+    if (typeof inputEl._enforceProfileNameLimiter === 'function') {
+        inputEl._enforceProfileNameLimiter();
+        return;
+    }
+    if (inputEl.dataset.profileNameLimiterAttached === 'true') return;
     inputEl.dataset.profileNameLimiterAttached = 'true';
 
     // IME 组合输入期间不要修改 value/selection，否则可能打断中文输入
@@ -583,37 +747,27 @@ function attachProfileNameLimiter(inputEl) {
         if (composing) return;
         if (inputEl.readOnly || inputEl.disabled) return;
         let before = inputEl.value;
-        
-        // 检查是否包含路径分隔符，移除并显示警告
-        if (before.includes('/') || before.includes('\\')) {
-            const caret = (typeof inputEl.selectionStart === 'number') ? inputEl.selectionStart : null;
-            inputEl.value = before.replace(/[/\\]/g, '');
+
+        const caret = (typeof inputEl.selectionStart === 'number') ? inputEl.selectionStart : null;
+        const sanitizedResult = sanitizeProfileNameValue(before, caret);
+        if (before !== sanitizedResult.value) {
+            inputEl.value = sanitizedResult.value;
             if (caret !== null) {
-                // 计算光标之前被移除的路径分隔符数量
-                const beforeCaret = before.substring(0, caret);
-                const removedCount = (beforeCaret.match(/[/\\]/g) || []).length;
-                const newPos = Math.max(0, caret - removedCount);
+                const newPos = Math.max(0, caret - sanitizedResult.removedBeforeCaret);
                 try { inputEl.setSelectionRange(newPos, newPos); } catch (e) { /* ignore */ }
             }
-            flashProfileNameContainsSlash(inputEl);
-            before = inputEl.value;
-        }
-        
-        // 检查是否包含点号，移除并显示警告
-        if (before.includes('.')) {
-            const caret = (typeof inputEl.selectionStart === 'number') ? inputEl.selectionStart : null;
-            inputEl.value = before.replace(/\./g, '');
-            if (caret !== null) {
-                // 计算光标之前被移除的点号数量
-                const beforeCaret = before.substring(0, caret);
-                const removedCount = (beforeCaret.match(/\./g) || []).length;
-                const newPos = Math.max(0, caret - removedCount);
-                try { inputEl.setSelectionRange(newPos, newPos); } catch (e) { /* ignore */ }
+            if (sanitizedResult.removedSlash) {
+                flashProfileNameContainsSlash(inputEl);
             }
-            flashProfileNameContainsDot(inputEl);
+            if (sanitizedResult.removedDot) {
+                flashProfileNameContainsDot(inputEl);
+            }
+            if (sanitizedResult.removedOther) {
+                flashProfileNameContainsInvalidChars(inputEl);
+            }
             before = inputEl.value;
         }
-        
+
         const beforeUnits = profileNameCountUnits(before);
         const after = profileNameTrimToMaxUnits(before, PROFILE_NAME_MAX_UNITS);
         if (before !== after) {
@@ -633,6 +787,7 @@ function attachProfileNameLimiter(inputEl) {
         // 理论上不会超过（已截断），这里保持表单可提交
         try { inputEl.setCustomValidity(''); } catch (e) { /* ignore */ }
     };
+    inputEl._enforceProfileNameLimiter = enforce;
 
     inputEl.addEventListener('input', enforce);
     inputEl.addEventListener('compositionstart', () => {
@@ -966,7 +1121,7 @@ function renderMaster() {
         profileInput.type = 'text';
         profileInput.name = '档案名';
         profileInput.required = true;
-        profileInput.maxLength = 20;
+        profileInput.maxLength = PROFILE_NAME_MAX_UNITS;
         profileInput.autocomplete = 'off';
         row.appendChild(profileInput);
         wrapper.appendChild(row);
@@ -990,6 +1145,7 @@ function renderMaster() {
 
     // 设置档案名的值
     profileInput.value = master['档案名'] || '';
+    attachProfileNameLimiter(profileInput);
 
     // 确保档案名的修改按钮存在
     const profileWrapper = profileInput.closest('.field-row-wrapper');
@@ -1130,7 +1286,9 @@ function setupMasterFormListeners() {
             const textareaEl = document.createElement('textarea');
             textareaEl.name = key;
             textareaEl.rows = 1;
-            textareaEl.placeholder = '可输入详细描述';
+            textareaEl.placeholder = (window.t && typeof window.t === 'function')
+                ? window.t('character.detailDescriptionPlaceholder')
+                : '可输入详细描述';
             row.appendChild(textareaEl);
 
             // 将field-row添加到wrapper
@@ -1218,6 +1376,10 @@ if (!window._addMasterFieldHandler) {
 const masterForm = document.getElementById('master-form');
 masterForm.onsubmit = async function (e) {
     e.preventDefault();
+
+    const profileValidation = await validateMasterProfileNameBeforeSave(masterForm, { showRequiredAlert: true });
+    if (!profileValidation.ok) return;
+
     const data = {};
     for (const [k, v] of new FormData(masterForm).entries()) {
         if (k && v) data[k] = v;
@@ -1746,7 +1908,9 @@ function showCatgirlForm(key, container) {
             const textareaEl = document.createElement('textarea');
             textareaEl.name = k;
             textareaEl.rows = 1;
-            textareaEl.placeholder = '可输入详细描述';
+            textareaEl.placeholder = (window.t && typeof window.t === 'function')
+                ? window.t('character.detailDescriptionPlaceholder')
+                : '可输入详细描述';
             textareaEl.value = cat[k];
             fieldRow.appendChild(textareaEl);
 
@@ -1825,12 +1989,24 @@ function showCatgirlForm(key, container) {
     const normalizedModelType = modelType === 'vrm' ? 'live3d' : modelType;
     let modelDisplayText = '';
 
-    const mmdPath = validateModelPath(cat['mmd']);
-    const vrmPath = validateModelPath(cat['vrm']);
+    const mmdPath = validateModelPath(cat['mmd'])
+        || validateModelPath(cat['_reserved']?.avatar?.mmd?.model_path);
+    const vrmPath = validateModelPath(cat['vrm'])
+        || validateModelPath(cat['_reserved']?.avatar?.vrm?.model_path);
     const live2dPath = validateModelPath(cat['live2d']);
 
-    if (normalizedModelType === 'live3d' && mmdPath) {
-        // live3d 模式下 MMD 优先（VRM 是旧字段，可能遗留非空值，与后端 _get_live3d_sub_type 一致）
+    // 优先使用 live3d_sub_type 判断当前活跃的 3D 模型类型
+    const live3dSubType = String(
+        cat['_reserved']?.avatar?.live3d_sub_type || cat['live3d_sub_type'] || ''
+    ).trim().toLowerCase();
+
+    if (normalizedModelType === 'live3d' && live3dSubType === 'mmd' && mmdPath) {
+        const mmdName = (mmdPath.split(/[\\/]/).pop() || mmdPath).replace(/\.(pmx|pmd)$/i, '');
+        modelDisplayText = mmdName;
+    } else if (normalizedModelType === 'live3d' && live3dSubType === 'vrm' && vrmPath) {
+        const vrmName = (vrmPath.split(/[\\/]/).pop() || vrmPath).replace(/\.vrm$/i, '');
+        modelDisplayText = vrmName;
+    } else if (normalizedModelType === 'live3d' && mmdPath && !vrmPath) {
         const mmdName = (mmdPath.split(/[\\/]/).pop() || mmdPath).replace(/\.(pmx|pmd)$/i, '');
         modelDisplayText = mmdName;
     } else if (normalizedModelType === 'live3d' && vrmPath) {
@@ -2117,7 +2293,9 @@ function showCatgirlForm(key, container) {
         const textareaEl = document.createElement('textarea');
         textareaEl.name = key;
         textareaEl.rows = 1;
-        textareaEl.placeholder = '可输入详细描述';
+        textareaEl.placeholder = (window.t && typeof window.t === 'function')
+            ? window.t('character.detailDescriptionPlaceholder')
+            : '可输入详细描述';
         fieldRow.appendChild(textareaEl);
 
         wrapper.appendChild(fieldRow);
@@ -2188,10 +2366,11 @@ function showCatgirlForm(key, container) {
                     const freeGroup = document.createElement('optgroup');
                     const freeLabel = window.t ? window.t('character.freePresetVoices') : '免费预设音色';
                     freeGroup.label = '── ' + freeLabel + ' ──';
-                    Object.entries(data.free_voices).forEach(([displayName, voiceId]) => {
+                    Object.entries(data.free_voices).forEach(([voiceKey, voiceId]) => {
                         const option = document.createElement('option');
                         option.value = voiceId;
-                        option.textContent = displayName;
+                        // 使用 i18n 翻译键获取显示名称
+                        option.textContent = window.t ? window.t(`voice.freeVoice.${voiceKey}`) : voiceKey;
                         if (voiceId === String(cat['voice_id'] || '').trim()) option.selected = true;
                         freeGroup.appendChild(option);
                     });
@@ -2531,6 +2710,7 @@ window.renameMaster = async function (oldName) {
     let _renameMasterDidOverLimit = false;
     let _renameMasterContainsSlash = false;
     let _renameMasterContainsDot = false;
+    let _renameMasterContainsInvalidChars = false;
     const newName = await showPrompt(
         window.t ? window.t('character.enterNewProfileName') : '请输入新的主人档案名',
         oldName,
@@ -2542,10 +2722,12 @@ window.renameMaster = async function (oldName) {
             },
             normalize: (v) => {
                 const trimmed = String(v ?? '').trim();
-                _renameMasterDidOverLimit = profileNameCountUnits(trimmed) > PROFILE_NAME_MAX_UNITS;
-                _renameMasterContainsSlash = trimmed.includes('/') || trimmed.includes('\\');
-                _renameMasterContainsDot = trimmed.includes('.');
-                return profileNameTrimToMaxUnits(trimmed.replace(/[/\\.]/g, ''), PROFILE_NAME_MAX_UNITS);
+                const sanitized = sanitizeProfileNameValue(trimmed);
+                _renameMasterDidOverLimit = profileNameCountUnits(sanitized.value) > PROFILE_NAME_MAX_UNITS;
+                _renameMasterContainsSlash = sanitized.removedSlash;
+                _renameMasterContainsDot = sanitized.removedDot;
+                _renameMasterContainsInvalidChars = sanitized.removedOther;
+                return profileNameTrimToMaxUnits(sanitized.value, PROFILE_NAME_MAX_UNITS);
             },
             validator: (v) => {
                 const trimmed = String(v ?? '').trim();
@@ -2553,8 +2735,18 @@ window.renameMaster = async function (oldName) {
                 if (profileNameCountUnits(trimmed) > PROFILE_NAME_MAX_UNITS) {
                     return tOrFallback(PROFILE_NAME_TOO_LONG_KEY, '档案名过长');
                 }
-                if (trimmed.includes('.')) {
+                const invalidIssue = findInvalidProfileNameIssue(trimmed);
+                if (invalidIssue === 'reserved_route') {
+                    return tOrFallback(PROFILE_NAME_RESERVED_ROUTE_KEY, '此名称是系统保留的路由名称，不能用作档案名');
+                }
+                if (invalidIssue === 'slash') {
+                    return tOrFallback(PROFILE_NAME_CONTAINS_SLASH_KEY, '档案名不能包含路径分隔符(/或\\)');
+                }
+                if (invalidIssue === 'dot') {
                     return tOrFallback(PROFILE_NAME_CONTAINS_DOT_KEY, '档案名不能包含点号(.)');
+                }
+                if (invalidIssue === 'invalid') {
+                    return tOrFallback(PROFILE_NAME_INVALID_CHARS_KEY, '档案名只能包含文字、数字、空格、下划线、连字符、括号、间隔号(·/・)和撇号');
                 }
                 return '';
             },
@@ -2570,6 +2762,10 @@ window.renameMaster = async function (oldName) {
                 if (_renameMasterContainsDot) {
                     _renameMasterContainsDot = false;
                     flashProfileNameContainsDot(inputEl);
+                }
+                if (_renameMasterContainsInvalidChars) {
+                    _renameMasterContainsInvalidChars = false;
+                    flashProfileNameContainsInvalidChars(inputEl);
                 }
             }
         }
@@ -2614,6 +2810,7 @@ window.renameCatgirl = async function (oldName) {
     let _renameCatgirlDidOverLimit = false;
     let _renameCatgirlContainsSlash = false;
     let _renameCatgirlContainsDot = false;
+    let _renameCatgirlContainsInvalidChars = false;
     const newName = await showPrompt(
         window.t ? window.t('character.enterNewProfileName') : '请输入新的猫娘档案名',
         oldName,
@@ -2625,10 +2822,12 @@ window.renameCatgirl = async function (oldName) {
             },
             normalize: (v) => {
                 const trimmed = String(v ?? '').trim();
-                _renameCatgirlDidOverLimit = profileNameCountUnits(trimmed) > PROFILE_NAME_MAX_UNITS;
-                _renameCatgirlContainsSlash = trimmed.includes('/') || trimmed.includes('\\');
-                _renameCatgirlContainsDot = trimmed.includes('.');
-                return profileNameTrimToMaxUnits(trimmed.replace(/[/\\.]/g, ''), PROFILE_NAME_MAX_UNITS);
+                const sanitized = sanitizeProfileNameValue(trimmed);
+                _renameCatgirlDidOverLimit = profileNameCountUnits(sanitized.value) > PROFILE_NAME_MAX_UNITS;
+                _renameCatgirlContainsSlash = sanitized.removedSlash;
+                _renameCatgirlContainsDot = sanitized.removedDot;
+                _renameCatgirlContainsInvalidChars = sanitized.removedOther;
+                return profileNameTrimToMaxUnits(sanitized.value, PROFILE_NAME_MAX_UNITS);
             },
             validator: (v) => {
                 const trimmed = String(v ?? '').trim();
@@ -2636,8 +2835,18 @@ window.renameCatgirl = async function (oldName) {
                 if (profileNameCountUnits(trimmed) > PROFILE_NAME_MAX_UNITS) {
                     return tOrFallback(PROFILE_NAME_TOO_LONG_KEY, '档案名过长');
                 }
-                if (trimmed.includes('.')) {
+                const invalidIssue = findInvalidProfileNameIssue(trimmed);
+                if (invalidIssue === 'reserved_route') {
+                    return tOrFallback(PROFILE_NAME_RESERVED_ROUTE_KEY, '此名称是系统保留的路由名称，不能用作档案名');
+                }
+                if (invalidIssue === 'slash') {
+                    return tOrFallback(PROFILE_NAME_CONTAINS_SLASH_KEY, '档案名不能包含路径分隔符(/或\\)');
+                }
+                if (invalidIssue === 'dot') {
                     return tOrFallback(PROFILE_NAME_CONTAINS_DOT_KEY, '档案名不能包含点号(.)');
+                }
+                if (invalidIssue === 'invalid') {
+                    return tOrFallback(PROFILE_NAME_INVALID_CHARS_KEY, '档案名只能包含文字、数字、空格、下划线、连字符、括号、间隔号(·/・)和撇号');
                 }
                 return '';
             },
@@ -2653,6 +2862,10 @@ window.renameCatgirl = async function (oldName) {
                 if (_renameCatgirlContainsDot) {
                     _renameCatgirlContainsDot = false;
                     flashProfileNameContainsDot(inputEl);
+                }
+                if (_renameCatgirlContainsInvalidChars) {
+                    _renameCatgirlContainsInvalidChars = false;
+                    flashProfileNameContainsInvalidChars(inputEl);
                 }
             }
         }
@@ -2889,10 +3102,11 @@ window.addEventListener('message', function (event) {
                     const freeGroup = document.createElement('optgroup');
                     const freeLabel = window.t ? window.t('character.freePresetVoices') : '免费预设音色';
                     freeGroup.label = '── ' + freeLabel + ' ──';
-                    Object.entries(data.free_voices).forEach(([displayName, id]) => {
+                    Object.entries(data.free_voices).forEach(([voiceKey, id]) => {
                         const option = document.createElement('option');
                         option.value = id;
-                        option.textContent = displayName;
+                        // 使用 i18n 翻译键获取显示名称
+                        option.textContent = window.t ? window.t(`voice.freeVoice.${voiceKey}`) : voiceKey;
                         freeGroup.appendChild(option);
                     });
                     select.appendChild(freeGroup);
@@ -3041,6 +3255,58 @@ function setupPageEventListeners() {
     }
 }
 
+/**
+ * 从 PNG 文件的 neKo ancillary chunk 中提取 ZIP 数据。
+ * 按照 PNG 规范逐块扫描，找到 type='neKo' 的块并返回其 data 部分。
+ * 如果未找到则返回 null。
+ */
+function _extractNekoChunk(uint8Array) {
+    // PNG 签名: 137 80 78 71 13 10 26 10
+    if (uint8Array.length < 8) return null;
+    if (uint8Array[0] !== 0x89 || uint8Array[1] !== 0x50 || uint8Array[2] !== 0x4E ||
+        uint8Array[3] !== 0x47 || uint8Array[4] !== 0x0D || uint8Array[5] !== 0x0A ||
+        uint8Array[6] !== 0x1A || uint8Array[7] !== 0x0A) {
+        return null;
+    }
+
+    const view = new DataView(uint8Array.buffer, uint8Array.byteOffset, uint8Array.byteLength);
+    let offset = 8; // 跳过 PNG 签名
+
+    while (offset + 12 <= uint8Array.length) {
+        // 读取块长度（4 字节 big-endian，无符号）
+        const chunkLen = view.getUint32(offset, false);
+
+        // PNG 规范：chunk data 最大 2^31-1 字节
+        if (chunkLen > 0x7FFFFFFF) return null;
+
+        // 确保完整的 chunk (length + type + data + CRC) 在缓冲区内
+        const chunkEnd = offset + 12 + chunkLen; // 4(len) + 4(type) + data + 4(CRC)
+        if (chunkEnd > uint8Array.length) return null;
+
+        // 读取块类型（4 字节 ASCII）
+        const t0 = uint8Array[offset + 4];
+        const t1 = uint8Array[offset + 5];
+        const t2 = uint8Array[offset + 6];
+        const t3 = uint8Array[offset + 7];
+
+        // 检查是否为 neKo 块 (0x6E 0x65 0x4B 0x6F)
+        if (t0 === 0x6E && t1 === 0x65 && t2 === 0x4B && t3 === 0x6F) {
+            const dataStart = offset + 8;
+            return uint8Array.slice(dataStart, dataStart + chunkLen);
+        }
+
+        // 遇到 IEND 就停止
+        if (t0 === 0x49 && t1 === 0x45 && t2 === 0x4E && t3 === 0x44) {
+            break;
+        }
+
+        // 跳到下一个块
+        offset = chunkEnd;
+    }
+
+    return null;
+}
+
 // 处理导入角色卡
 async function handleImportCharacterCard(event) {
     const file = event.target.files[0];
@@ -3078,46 +3344,51 @@ async function handleImportCharacterCard(event) {
             // PNG 文件需要提取 ZIP 数据
             const uint8Array = new Uint8Array(arrayBuffer);
 
-            // 查找 NEKOCHARA 标记
-            const marker = new TextEncoder().encode('NEKOCHARA\x00');
-            let markerIndex = -1;
-            for (let i = uint8Array.length - marker.length; i >= 0; i--) {
-                let found = true;
-                for (let j = 0; j < marker.length; j++) {
-                    if (uint8Array[i + j] !== marker[j]) {
-                        found = false;
+            // 优先尝试从 PNG neKo 块中提取（新格式，合法 PNG chunk）
+            fileData = _extractNekoChunk(uint8Array);
+
+            if (!fileData) {
+                // 回退：查找旧版 NEKOCHARA 标记（兼容旧版角色卡）
+                const marker = new TextEncoder().encode('NEKOCHARA\x00');
+                let markerIndex = -1;
+                for (let i = uint8Array.length - marker.length; i >= 0; i--) {
+                    let found = true;
+                    for (let j = 0; j < marker.length; j++) {
+                        if (uint8Array[i + j] !== marker[j]) {
+                            found = false;
+                            break;
+                        }
+                    }
+                    if (found) {
+                        markerIndex = i;
                         break;
                     }
                 }
-                if (found) {
-                    markerIndex = i;
-                    break;
+
+                if (markerIndex === -1) {
+                    throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
                 }
+
+                if (markerIndex < 8) {
+                    throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
+                }
+
+                // 读取 ZIP 大小（标记前的 8 字节）
+                const zipSizeBytes = uint8Array.slice(markerIndex - 8, markerIndex);
+                const zipSize = new DataView(zipSizeBytes.buffer).getUint32(0, true);
+
+                if (zipSize <= 0 || zipSize > uint8Array.length) {
+                    throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
+                }
+
+                // 提取 ZIP 数据
+                const zipStart = markerIndex - 8 - zipSize;
+                if (zipStart < 0 || zipStart + zipSize > markerIndex - 8) {
+                    throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
+                }
+
+                fileData = uint8Array.slice(zipStart, markerIndex - 8);
             }
-
-            if (markerIndex === -1) {
-                throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
-            }
-
-            if (markerIndex < 8) {
-                throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
-            }
-
-            // 读取 ZIP 大小（标记前的 8 字节）
-            const zipSizeBytes = uint8Array.slice(markerIndex - 8, markerIndex);
-            const zipSize = new DataView(zipSizeBytes.buffer).getUint32(0, true);
-
-            if (zipSize <= 0 || zipSize > uint8Array.length) {
-                throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
-            }
-
-            // 提取 ZIP 数据
-            const zipStart = markerIndex - 8 - zipSize;
-            if (zipStart < 0 || zipStart + zipSize > markerIndex - 8) {
-                throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
-            }
-
-            fileData = uint8Array.slice(zipStart, markerIndex - 8);
         }
 
         // 创建 FormData 发送到后端
@@ -3398,6 +3669,17 @@ async function closeCharaManagerPage() {
         } catch (error) {
             await showAlert(window.t ? window.t('character.autoSaveFailed') : '自动保存失败，请手动保存后再关闭页面');
             return;
+        }
+    }
+
+    // 先显式关闭从本页打开的子窗口（如 model_manager），
+    // 避免浏览器级联关闭时 beforeunload 不触发、主页收不到 show_main_ui
+    if (window._openSettingsWindows) {
+        for (const [key, win] of Object.entries(window._openSettingsWindows)) {
+            if (win && !win.closed) {
+                win.close();
+            }
+            delete window._openSettingsWindows[key];
         }
     }
 

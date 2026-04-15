@@ -150,7 +150,7 @@ def test_provider_compatibility():
     for provider_id, config in PROVIDER_CACHE_CONFIG.items():
         cache_config = get_cache_kwargs(config["base_url"])
 
-        if provider_id == "qwen":
+        if provider_id in ("qwen", "qwen_intl"):
             expected = True
         else:
             expected = False

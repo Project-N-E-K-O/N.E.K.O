@@ -3,6 +3,8 @@
  * 参考 vrm-manager.js 结构，提供统一 API
  */
 class MMDManager {
+    static DEFAULT_MODEL_PATH = '/static/mmd/Miku/Miku.pmx';
+
     constructor() {
         this.scene = null;
         this.camera = null;
@@ -39,6 +41,7 @@ class MMDManager {
         this._isModelReadyForInteraction = false;
         this._isInReturnState = false;
         this._activeLoadToken = 0;
+        this._headScreenAnchorProjection = null;
 
         // 事件处理器
         this._coreWindowHandlers = [];
@@ -154,7 +157,50 @@ class MMDManager {
             return modelInfo;
         } catch (error) {
             console.error('[MMD Manager] 模型加载失败:', error);
-            throw error;
+
+            // 尝试回退到默认模型
+            const defaultModelPath = MMDManager.DEFAULT_MODEL_PATH;
+            if (modelPath !== defaultModelPath) {
+                console.warn('[MMD Manager] 模型加载失败，尝试回退到默认模型:', defaultModelPath);
+                try {
+                    const modelInfo = await this.core.loadModel(defaultModelPath);
+
+                    if (this._isDisposed || this._activeLoadToken !== loadToken) {
+                        console.log('[MMD Manager] 回退模型加载已被取代或已销毁');
+                        return null;
+                    }
+
+                    if (this.cursorFollow) {
+                        this.cursorFollow.refresh();
+                    }
+
+                    if (this.expression && modelInfo.name) {
+                        await this.expression.loadMoodMap(modelInfo.name);
+                    }
+
+                    if (this._isDisposed || this._activeLoadToken !== loadToken) {
+                        return null;
+                    }
+
+                    this._isModelReadyForInteraction = true;
+
+                    if (this.cursorFollow) {
+                        this.cursorFollow.setLocalTrackingEnabled(window.humanoidLocalTrackingEnabled === true);
+                    }
+
+                    window.dispatchEvent(new CustomEvent('mmd-model-loaded', {
+                        detail: { modelInfo, modelPath: defaultModelPath }
+                    }));
+
+                    console.log('[MMD Manager] 成功回退到默认模型:', defaultModelPath);
+                    return modelInfo;
+                } catch (fallbackError) {
+                    console.error('[MMD Manager] 回退到默认模型也失败:', fallbackError);
+                    throw new Error(`原始模型加载失败: ${error.message}，且回退模型也失败: ${fallbackError.message}`);
+                }
+            } else {
+                throw error;
+            }
         }
     }
 
@@ -167,10 +213,13 @@ class MMDManager {
         return clip;
     }
 
-    playAnimation() {
-        // 播放动画时禁用鼠标跟踪
+    /**
+     * 播放动画
+     * @param {'idle'|'dance'} mode - 动画模式，影响视线跟踪权重
+     */
+    playAnimation(mode = 'idle') {
         if (this.cursorFollow) {
-            this.cursorFollow.setDisabledByAnimation(true);
+            this.cursorFollow.setAnimationMode(mode);
         }
         if (this.animationModule) {
             this.animationModule.play();
@@ -188,10 +237,6 @@ class MMDManager {
             this.animationModule.stop();
         }
         this.currentAnimationUrl = null;
-        // 恢复鼠标跟踪
-        if (this.cursorFollow) {
-            this.cursorFollow.setDisabledByAnimation(false);
-        }
     }
 
     // ═══════════════════ 表情/口型 ═══════════════════
@@ -394,6 +439,47 @@ class MMDManager {
     }
 
     /**
+     * 获取 MMD 头部在屏幕上的锚点
+     * @returns {Object|null} 锚点对象 { x, y } 或 null
+     */
+    getHeadScreenAnchor() {
+        if (!this.currentModel || !this.camera || !this.renderer || !window.THREE) {
+            return null;
+        }
+        if (!this.cursorFollow || typeof this.cursorFollow.getHeadWorldPosition !== 'function') {
+            return null;
+        }
+
+        const headWorldPos = this.cursorFollow.getHeadWorldPosition();
+        if (!headWorldPos) {
+            return null;
+        }
+
+        const canvas = this.renderer.domElement;
+        if (!canvas) return null;
+
+        const canvasRect = canvas.getBoundingClientRect();
+        if (!canvasRect.width || !canvasRect.height) return null;
+
+        if (!this._headScreenAnchorProjection) {
+            this._headScreenAnchorProjection = new window.THREE.Vector3();
+        }
+
+        this.camera.updateMatrixWorld(true);
+        this._headScreenAnchorProjection.copy(headWorldPos).project(this.camera);
+
+        if (!Number.isFinite(this._headScreenAnchorProjection.x) ||
+            !Number.isFinite(this._headScreenAnchorProjection.y)) {
+            return null;
+        }
+
+        return {
+            x: canvasRect.left + (this._headScreenAnchorProjection.x * 0.5 + 0.5) * canvasRect.width,
+            y: canvasRect.top + (-this._headScreenAnchorProjection.y * 0.5 + 0.5) * canvasRect.height
+        };
+    }
+
+    /**
      * 获取 MMD 模型在屏幕上的边界（用于局部跟踪）
      * @returns {Object|null} 边界对象 { left, right, top, bottom, width, height, centerX, centerY } 或 null
      */
@@ -480,6 +566,7 @@ class MMDManager {
             this.cursorFollow.dispose();
             this.cursorFollow = null;
         }
+        this._headScreenAnchorProjection = null;
         if (this.core) {
             this.core.dispose();
             this.core = null;
@@ -495,3 +582,5 @@ class MMDManager {
         console.log('[MMD Manager] 已完全销毁');
     }
 }
+
+window.MMDManager = MMDManager;

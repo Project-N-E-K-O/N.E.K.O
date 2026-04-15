@@ -25,9 +25,10 @@ from typing import TYPE_CHECKING
 
 from config import SETTING_PROPOSER_MODEL
 from utils.config_manager import get_config_manager
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json, robust_json_loads
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
+from memory.persona import PersonaManager
 
 if TYPE_CHECKING:
     from memory.facts import FactStore
@@ -42,6 +43,8 @@ AUTO_CONFIRM_DAYS = 3       # pending → confirmed
 AUTO_PROMOTE_DAYS = 3       # confirmed → promoted (persona)
 # Cooldown between proactive chat candidacy
 REFLECTION_COOLDOWN_MINUTES = 30
+# promoted/denied reflections older than this are moved to archive
+_REFLECTION_ARCHIVE_DAYS = 30
 
 
 class ReflectionEngine:
@@ -57,6 +60,10 @@ class ReflectionEngine:
     def _reflections_path(self, name: str) -> str:
         from memory import ensure_character_dir
         return os.path.join(ensure_character_dir(self._config_manager.memory_dir, name), 'reflections.json')
+
+    def _reflections_archive_path(self, name: str) -> str:
+        from memory import ensure_character_dir
+        return os.path.join(ensure_character_dir(self._config_manager.memory_dir, name), 'reflections_archive.json')
 
     def _surfaced_path(self, name: str) -> str:
         from memory import ensure_character_dir
@@ -82,7 +89,10 @@ class ReflectionEngine:
         return []
 
     def save_reflections(self, name: str, reflections: list[dict]) -> None:
-        """Save reflections, merging with archived entries on disk."""
+        """Save reflections, merging with archived entries on disk.
+
+        promoted/denied 超过 _REFLECTION_ARCHIVE_DAYS 的条目自动移入归档文件。
+        """
         path = self._reflections_path(name)
         # Load all (including archived) to preserve them
         all_on_disk = []
@@ -100,9 +110,43 @@ class ReflectionEngine:
         # Build id→entry map from active list
         active_ids = {r['id'] for r in reflections if 'id' in r}
         # Keep archived entries that aren't in the active list
-        archived = [r for r in all_on_disk if r.get('id') not in active_ids
+        finished = [r for r in all_on_disk if r.get('id') not in active_ids
                      and r.get('status') in ('promoted', 'denied')]
-        merged = reflections + archived
+
+        # 分离需要归档的旧条目
+        cutoff = datetime.now() - timedelta(days=_REFLECTION_ARCHIVE_DAYS)
+        keep_in_main, to_archive = [], []
+        for r in finished:
+            ts_key = r.get('promoted_at') or r.get('denied_at') or r.get('created_at', '')
+            try:
+                if datetime.fromisoformat(ts_key) < cutoff:
+                    to_archive.append(r)
+                    continue
+            except (ValueError, TypeError):
+                pass
+            keep_in_main.append(r)
+
+        # 归档到独立文件
+        if to_archive:
+            archive_path = self._reflections_archive_path(name)
+            existing: list[dict] = []
+            if os.path.exists(archive_path):
+                try:
+                    with open(archive_path, encoding='utf-8') as f:
+                        data = json.load(f)
+                    if isinstance(data, list):
+                        existing = data
+                except (json.JSONDecodeError, OSError) as e:
+                    # 归档文件损坏 → 放弃本次归档，保留在主文件中，避免覆盖丢数据
+                    logger.warning(f"[Reflection] {name}: 读取归档文件失败，跳过本次归档: {e}")
+                    keep_in_main.extend(to_archive)
+                    to_archive = []
+            if to_archive:
+                existing.extend(to_archive)
+                atomic_write_json(archive_path, existing, indent=2, ensure_ascii=False)
+                logger.info(f"[Reflection] {name}: 归档 {len(to_archive)} 条旧 reflections")
+
+        merged = reflections + keep_in_main
         atomic_write_json(path, merged, indent=2, ensure_ascii=False)
 
     def load_surfaced(self, name: str) -> list[dict]:
@@ -162,7 +206,7 @@ class ReflectionEngine:
             raw = resp.content.strip()
             if raw.startswith("```"):
                 raw = raw.replace("```json", "").replace("```", "").strip()
-            result = json.loads(raw)
+            result = robust_json_loads(raw)
             if not isinstance(result, dict):
                 logger.warning(f"[Reflection] LLM 返回非 dict: {type(result)}")
                 return []
@@ -171,6 +215,9 @@ class ReflectionEngine:
                 logger.warning(f"[Reflection] reflection 字段非 str: {type(reflection_text)}")
                 return []
             reflection_text = reflection_text.strip()
+            reflection_entity = result.get('entity', 'relationship')
+            if reflection_entity not in ('master', 'neko', 'relationship'):
+                reflection_entity = 'relationship'
         except Exception as e:
             logger.warning(f"[Reflection] 合成失败: {e}")
             return []
@@ -183,6 +230,7 @@ class ReflectionEngine:
         reflection = {
             'id': f"ref_{now.strftime('%Y%m%d%H%M%S')}",
             'text': reflection_text,
+            'entity': reflection_entity,
             'status': 'pending',  # pending | confirmed | denied | promoted | archived
             'source_fact_ids': [f['id'] for f in unabsorbed],
             'created_at': now.isoformat(),
@@ -322,7 +370,7 @@ class ReflectionEngine:
             raw = resp.content.strip()
             if raw.startswith("```"):
                 raw = raw.replace("```json", "").replace("```", "").strip()
-            feedbacks = json.loads(raw)
+            feedbacks = robust_json_loads(raw)
             if not isinstance(feedbacks, list):
                 feedbacks = [feedbacks]
         except Exception as e:
@@ -384,7 +432,7 @@ class ReflectionEngine:
             raw = resp.content.strip()
             if raw.startswith("```"):
                 raw = raw.replace("```json", "").replace("```", "").strip()
-            feedbacks = json.loads(raw)
+            feedbacks = robust_json_loads(raw)
             if not isinstance(feedbacks, list):
                 feedbacks = [feedbacks]
             return feedbacks
@@ -466,14 +514,26 @@ class ReflectionEngine:
                     # confirmed → promoted after AUTO_PROMOTE_DAYS
                     confirmed_at = datetime.fromisoformat(r.get('confirmed_at', ''))
                     if (now - confirmed_at).total_seconds() / 86400 >= AUTO_PROMOTE_DAYS:
-                        self._persona_manager.add_fact(
-                            lanlan_name, r['text'], entity='relationship'
+                        result = self._persona_manager.add_fact(
+                            lanlan_name, r['text'],
+                            entity=r.get('entity', 'relationship'),
+                            source='reflection',
+                            source_id=r['id'],
                         )
-                        r['status'] = 'promoted'
-                        r['promoted_at'] = now.isoformat()
-                        promoted_ids.append(r['id'])
-                        transitions += 1
-                        logger.info(f"[Reflection] {lanlan_name}: confirmed→persona({AUTO_PROMOTE_DAYS}天): {r['text'][:50]}...")
+                        if result == PersonaManager.FACT_ADDED:
+                            r['status'] = 'promoted'
+                            r['promoted_at'] = now.isoformat()
+                            promoted_ids.append(r['id'])
+                            transitions += 1
+                            logger.info(f"[Reflection] {lanlan_name}: confirmed→persona({AUTO_PROMOTE_DAYS}天): {r['text'][:50]}...")
+                        elif result == PersonaManager.FACT_REJECTED_CARD:
+                            r['status'] = 'denied'
+                            r['denied_at'] = now.isoformat()
+                            r['denied_reason'] = 'contradicts_character_card'
+                            transitions += 1
+                            logger.info(f"[Reflection] {lanlan_name}: confirmed→denied(与角色卡矛盾): {r['text'][:50]}...")
+                        else:
+                            logger.info(f"[Reflection] {lanlan_name}: confirmed→persona 暂缓(进入矛盾审视队列): {r['text'][:50]}...")
             except (ValueError, TypeError):
                 continue
 
