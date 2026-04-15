@@ -2228,7 +2228,7 @@ def build_proactive_response(source_tag: str, ctx: dict) -> tuple[str, list]:
     
     match source_tag:
         case 'CHAT':
-            primary_channel = 'vision'
+            primary_channel = 'chat'
         case 'WEB':
             # 使用细粒度 web 子通道（news/video/home/personal），fallback 到 'web'
             web_link = ctx.get('selected_web_link')
