@@ -115,9 +115,13 @@
                     <span class="range-unit">px</span>
                 </div>
                 <div class="control-row" style="justify-content:flex-end;">
-                    <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;">
-                        <input type="checkbox" id="sticker-lock-ratio" checked> <span data-i18n="cardExport.lockRatio">锁定比例</span>
-                    </label>
+                    <button type="button" id="sticker-lock-ratio" class="lock-ratio-btn active" title="锁定比例">
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="3" y="11" width="18" height="11" rx="2"/>
+                            <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                        </svg>
+                        <span data-i18n="cardExport.lockRatio">锁定比例</span>
+                    </button>
                 </div>
                 <div class="control-row">
                     <span data-i18n="cardExport.stickerRotation">旋转</span>

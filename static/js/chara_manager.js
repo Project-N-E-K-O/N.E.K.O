@@ -3754,7 +3754,7 @@ function showExportOptionsModal(catgirlName) {
         exportBtn.onclick = () => {
             closeModal();
             resolve(null);  // 不走原有流程
-            const w = 1100, h = 720;
+            const w = 1400, h = 820;
             const left = Math.round((screen.width - w) / 2);
             const top = Math.round((screen.height - h) / 2);
             window.open(

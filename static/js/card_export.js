@@ -26,6 +26,9 @@
     let stickerIdCounter = 0;
     let selectedStickerId = null;
 
+    // 当前激活的标签页: 'model-tab' | 'decor-tab'
+    let activeTab = 'model-tab';
+
     // 可用贴纸列表
     const STICKER_FILES = [
         'add.png', 'angry_cat.png', 'calm_cat.png', 'cat_icon.png',
@@ -106,6 +109,11 @@
                 tab.classList.add('active');
                 const target = document.getElementById(tab.dataset.tab);
                 if (target) target.classList.add('active');
+                activeTab = tab.dataset.tab;
+                updateStickerInteractivity();
+                if (activeTab === 'model-tab') {
+                    selectSticker(null);
+                }
             });
         });
 
@@ -120,11 +128,18 @@
         const lockRatioBox  = $('#sticker-lock-ratio');
         const stickerRotInput = $('#sticker-rotation');
 
+        // 锁定比例按钮切换
+        if (lockRatioBox) {
+            lockRatioBox.addEventListener('click', () => {
+                lockRatioBox.classList.toggle('active');
+            });
+        }
+
         function applyStickerSize(axis, val) {
             const s = getSelectedSticker();
             if (!s) return;
             val = Math.max(1, val);
-            if (lockRatioBox && lockRatioBox.checked && s.w > 0 && s.h > 0) {
+            if (lockRatioBox && lockRatioBox.classList.contains('active') && s.w > 0 && s.h > 0) {
                 const ratio = s.w / s.h;
                 if (axis === 'w') {
                     s.w = val;
@@ -272,6 +287,15 @@
             });
         }
         await window.live2dManager.loadModel(modelPath);
+
+        // 将模型居中（默认布局放在右下角，导出页面需要居中）
+        const model = window.live2dManager.currentModel;
+        if (model) {
+            const screen = window.live2dManager.pixi_app.renderer.screen;
+            model.anchor.set(0.5, 0.5);
+            model.x = screen.width / 2;
+            model.y = screen.height / 2;
+        }
     }
 
     async function loadVRMModel(modelPath, lighting) {
@@ -491,6 +515,7 @@
 
         previewEl.addEventListener('pointerdown', (e) => {
             if (!isModelLoaded) return;
+            if (activeTab !== 'model-tab') return;
             dragging = true;
             startX = e.clientX;
             startY = e.clientY;
@@ -516,13 +541,23 @@
         previewEl.addEventListener('pointerup', stopDrag);
         previewEl.addEventListener('pointercancel', stopDrag);
 
-        // 滚轮缩放
+        // 滚轮：模型 tab 缩放模型，装饰 tab 缩放选中贴纸
         previewEl.addEventListener('wheel', (e) => {
             e.preventDefault();
-            const delta = e.deltaY > 0 ? -5 : 5;
-            composition.scale = clamp(composition.scale + delta, 50, 300);
-            scaleInput.value = composition.scale;
-            scaleVal.textContent = composition.scale + '%';
+            if (activeTab === 'model-tab') {
+                const delta = e.deltaY > 0 ? -5 : 5;
+                composition.scale = clamp(composition.scale + delta, 50, 300);
+                scaleInput.value = composition.scale;
+                scaleVal.textContent = composition.scale + '%';
+            } else if (activeTab === 'decor-tab') {
+                const s = getSelectedSticker();
+                if (!s) return;
+                const factor = e.deltaY > 0 ? 0.95 : 1.05;
+                s.w = Math.max(1, Math.round(s.w * factor));
+                s.h = Math.max(1, Math.round(s.h * factor));
+                _syncStickerSizeUI(s);
+                updateStickerElement(s);
+            }
         }, { passive: false });
     }
 
@@ -629,8 +664,89 @@
             item.appendChild(img);
             item.addEventListener('click', () => addSticker(`/static/icons/${file}`));
             grid.appendChild(item);
-        });
+        });        // "导入自定义贴纸"按钮
+        const importItem = document.createElement('div');
+        importItem.className = 'sticker-item sticker-import-btn';
+        importItem.innerHTML = '<svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>';
+        importItem.title = t('cardExport.importSticker', '导入自定义贴纸');
+        importItem.addEventListener('click', () => importCustomSticker());
+        grid.appendChild(importItem);
+
+        // 从 localStorage 恢复已保存的自定义贴纸
+        loadCustomStickers();
     }
+
+    function importCustomSticker() {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = 'image/*';
+        input.style.display = 'none';
+        input.addEventListener('change', () => {
+            const file = input.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                addCustomStickerToGrid(e.target.result);
+            };
+            reader.readAsDataURL(file);
+            input.remove();
+        });
+        document.body.appendChild(input);
+        input.click();
+    }
+
+    function addCustomStickerToGrid(dataUrl, save = true) {
+        const grid = $('#sticker-grid');
+        const importBtn = grid.querySelector('.sticker-import-btn');
+        if (!grid) return;
+
+        const item = document.createElement('div');
+        item.className = 'sticker-item sticker-custom';
+
+        const img = document.createElement('img');
+        img.src = dataUrl;
+        img.draggable = false;
+        item.appendChild(img);
+
+        // 右上角删除按钮
+        const delBtn = document.createElement('button');
+        delBtn.className = 'sticker-delete-btn';
+        delBtn.innerHTML = '&times;';
+        delBtn.title = t('cardExport.removeCustomSticker', '删除贴纸');
+        delBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            item.remove();
+            saveCustomStickers();
+        });
+        item.appendChild(delBtn);
+
+        item.addEventListener('click', () => addSticker(dataUrl));
+
+        // 插入到"+"按钮前面
+        grid.insertBefore(item, importBtn);
+        if (save) saveCustomStickers();
+    }
+
+    function saveCustomStickers() {
+        const items = document.querySelectorAll('.sticker-custom img');
+        const urls = Array.from(items).map(img => img.src);
+        try {
+            localStorage.setItem('neko_custom_stickers', JSON.stringify(urls));
+        } catch (e) {
+            console.warn('[CardExport] 保存自定义贴纸失败:', e);
+        }
+    }
+
+    function loadCustomStickers() {
+        try {
+            const data = localStorage.getItem('neko_custom_stickers');
+            if (!data) return;
+            const urls = JSON.parse(data);
+            if (!Array.isArray(urls)) return;
+            urls.forEach(url => addCustomStickerToGrid(url, false));
+        } catch (e) {
+            console.warn('[CardExport] 加载自定义贴纸失败:', e);
+        }    }
 
     function addSticker(src) {
         const overlay = $('#sticker-overlay');
@@ -668,11 +784,35 @@
         el.style.transform = `rotate(${s.rotation}deg)`;
     }
 
+    /** 同步贴纸尺寸到右侧滑块/数值框（模块级） */
+    function _syncStickerSizeUI(s) {
+        const wr = $('#sticker-w'), wn = $('#sticker-w-num');
+        const hr = $('#sticker-h'), hn = $('#sticker-h-num');
+        if (wr) wr.value = Math.min(s.w, 500);
+        if (wn) wn.value = s.w;
+        if (hr) hr.value = Math.min(s.h, 500);
+        if (hn) hn.value = s.h;
+    }
+
+    /** 根据当前活动标签页切换贴纸的可交互性 */
+    function updateStickerInteractivity() {
+        const enabled = (activeTab === 'decor-tab');
+        document.querySelectorAll('.sticker-placed').forEach(el => {
+            el.style.pointerEvents = enabled ? 'auto' : 'none';
+        });
+        // 模型模式显示拖拽光标，装饰模式显示默认光标
+        const preview = $('#card-preview');
+        if (preview) {
+            preview.style.cursor = (activeTab === 'model-tab') ? 'grab' : 'default';
+        }
+    }
+
     function setupStickerDrag(sticker, el) {
         let dragging = false;
         let startX, startY, startPctX, startPctY;
 
         el.addEventListener('pointerdown', (e) => {
+            if (activeTab !== 'decor-tab') return;
             e.stopPropagation();
             dragging = true;
             startX = e.clientX;
