@@ -2157,44 +2157,69 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
         }
         model_name = "speech-2.8-turbo"
         agg_flush_bytes = 4096
-        request_timeout = 60.0
 
         current_speech_id = None
         text_buffer = ""
-        # 有序合成任务队列：保证音频按文本顺序输出
-        synth_tasks: list[asyncio.Task] = []
+        # 当前正在执行的合成任务（串行执行保证音频顺序）
+        synth_task: asyncio.Task | None = None
+        # 待合成的句子队列（按文本顺序）
+        pending_sentences: list[tuple[str, str]] = []  # [(text, speech_id), ...]
 
-        def _launch_synth(client, text_to_synth: str, speech_id: str) -> None:
-            """启动一个合成任务并加入有序队列。"""
-            task = asyncio.create_task(
-                _minimax_sse_synthesize(
+        async def _run_next_synth(client) -> None:
+            """从 pending_sentences 取出下一句并串行合成。"""
+            nonlocal synth_task
+            if synth_task is not None and not synth_task.done():
+                return  # 上一句还在合成，等它完成
+            if not pending_sentences:
+                synth_task = None
+                return
+            text_to_synth, speech_id = pending_sentences.pop(0)
+
+            async def _synth_then_continue():
+                await _minimax_sse_synthesize(
                     client, api_url, headers, model_name,
                     text_to_synth, voice_id, speech_id,
                     response_queue, agg_flush_bytes,
                 )
-            )
-            synth_tasks.append(task)
+                # 合成完成后自动启动下一句
+                await _run_next_synth(client)
 
-        async def _drain_synth_tasks() -> None:
-            """按顺序等待所有合成任务完成。"""
-            for task in synth_tasks:
+            synth_task = asyncio.create_task(_synth_then_continue())
+
+        def _enqueue_synth(client, text_to_synth: str, speech_id: str) -> None:
+            """将一句文本加入待合成队列，如果当前空闲则立即启动。"""
+            pending_sentences.append((text_to_synth, speech_id))
+            if synth_task is None or synth_task.done():
+                asyncio.ensure_future(_run_next_synth(client))
+
+        async def _drain_synth() -> None:
+            """等待当前合成任务及所有待合成句子全部完成。"""
+            while synth_task is not None and not synth_task.done():
                 try:
-                    await task
+                    await synth_task
                 except (asyncio.CancelledError, Exception):
                     pass
-            synth_tasks.clear()
+            # synth_task 完成后可能已经自动启动了下一句，继续等
+            while pending_sentences or (synth_task is not None and not synth_task.done()):
+                if synth_task is not None and not synth_task.done():
+                    try:
+                        await synth_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                else:
+                    break
 
         async def _cancel_all_synth() -> None:
-            """取消所有进行中的合成任务。"""
-            for task in synth_tasks:
-                if not task.done():
-                    task.cancel()
-            for task in synth_tasks:
+            """取消当前合成任务并清空待合成队列。"""
+            nonlocal synth_task
+            pending_sentences.clear()
+            if synth_task is not None and not synth_task.done():
+                synth_task.cancel()
                 try:
-                    await task
+                    await synth_task
                 except (asyncio.CancelledError, Exception):
                     pass
-            synth_tasks.clear()
+            synth_task = None
 
         def _try_split_and_synth(client, speech_id: str, force: bool = False) -> None:
             """尝试按句切分 text_buffer 并发起合成。
@@ -2207,7 +2232,7 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
                 return
 
             if force:
-                _launch_synth(client, text_buffer, speech_id)
+                _enqueue_synth(client, text_buffer, speech_id)
                 text_buffer = ""
                 return
 
@@ -2216,7 +2241,7 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
             for m in _SENTENCE_END_RE.finditer(text_buffer):
                 candidate = text_buffer[last_end:m.end()]
                 if len(candidate.strip()) >= _MIN_FLUSH_CHARS:
-                    _launch_synth(client, candidate, speech_id)
+                    _enqueue_synth(client, candidate, speech_id)
                     last_end = m.end()
 
             if last_end > 0:
@@ -2249,7 +2274,7 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
 
         try:
             async with httpx.AsyncClient(
-                timeout=httpx.Timeout(request_timeout, connect=10),
+                timeout=httpx.Timeout(connect=10, read=None, write=10, pool=10),
                 limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
             ) as client:
                 loop = asyncio.get_running_loop()
@@ -2278,7 +2303,7 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
                         # flush: 合成 buffer 中剩余文本
                         if text_buffer.strip() and current_speech_id is not None:
                             _try_split_and_synth(client, current_speech_id, force=True)
-                        await _drain_synth_tasks()
+                        await _drain_synth()
                         text_buffer = ""
                         current_speech_id = None
                         continue
@@ -2289,9 +2314,6 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
                         _try_split_and_synth(client, current_speech_id)
 
                 await _cancel_all_synth()
-        except Exception as exc:
-            _enqueue_error(response_queue, f"MiniMax TTS Worker 运行错误: {exc}")
-            response_queue.put(("__ready__", False))
         except Exception as exc:
             _enqueue_error(response_queue, f"MiniMax TTS Worker 运行错误: {exc}")
             response_queue.put(("__ready__", False))
