@@ -139,11 +139,149 @@
         }, WINDOW_CHECK_INTERVAL_MS);
     }
 
+    // ─── 内部：弹层工具 ──────────────────────────────────────
+
+    var POPUP_OPEN_ANIMATION_MS = 250;
+
+    function getPrefix() {
+        if (typeof window.UniversalTutorialManager === 'function' &&
+            typeof window.UniversalTutorialManager.detectModelPrefix === 'function') {
+            return window.UniversalTutorialManager.detectModelPrefix();
+        }
+        if (window.lanlan_config && window.lanlan_config.model_type) {
+            var mt = window.lanlan_config.model_type;
+            if (mt === 'vrm' || mt === 'mmd') return mt;
+        }
+        return 'live2d';
+    }
+
+    function getManager(prefix) {
+        var p = prefix || getPrefix();
+        return window[p + 'Manager'] || null;
+    }
+
+    function getPopup(buttonId, prefix) {
+        var p = prefix || getPrefix();
+        return document.getElementById(p + '-popup-' + buttonId);
+    }
+
+    // ─── M2: 首页交互包装 API ────────────────────────────────
+
+    /**
+     * 打开设置弹层。
+     * 教程引导调用后，设置菜单项（#${p}-menu-* / #${p}-toggle-*）变为可定位。
+     *
+     * @returns {Promise<boolean>} 弹层是否成功打开
+     */
+    function openSettingsPanel() {
+        var prefix = getPrefix();
+        var manager = getManager(prefix);
+        var popup = getPopup('settings', prefix);
+
+        if (!manager || !popup) {
+            console.warn('[YuiGuideHandoff] openSettingsPanel: manager 或 popup 不可用');
+            return Promise.resolve(false);
+        }
+
+        if (popup.style.display === 'flex') {
+            return Promise.resolve(true);
+        }
+
+        manager.showPopup('settings', popup);
+
+        return new Promise(function (resolve) {
+            setTimeout(function () {
+                resolve(popup.style.display === 'flex');
+            }, POPUP_OPEN_ANIMATION_MS);
+        });
+    }
+
+    /**
+     * 关闭设置弹层。
+     *
+     * @returns {Promise<boolean>} 弹层是否成功关闭
+     */
+    function closeSettingsPanel() {
+        var manager = getManager();
+        if (!manager || typeof manager.closePopupById !== 'function') {
+            return Promise.resolve(false);
+        }
+        var popup = getPopup('settings');
+        var wasOpen = popup && popup.style.display === 'flex';
+        manager.closePopupById('settings');
+        return Promise.resolve(wasOpen);
+    }
+
+    /**
+     * 打开 Agent / 猫爪弹层。
+     * 用于 takeover_plugin_preview 等需要展示真实 Agent 能力面板的场景。
+     *
+     * @returns {Promise<boolean>} 弹层是否成功打开
+     */
+    function openAgentPanel() {
+        var prefix = getPrefix();
+        var manager = getManager(prefix);
+        var popup = getPopup('agent', prefix);
+
+        if (!manager || !popup) {
+            console.warn('[YuiGuideHandoff] openAgentPanel: manager 或 popup 不可用');
+            return Promise.resolve(false);
+        }
+
+        if (popup.style.display === 'flex') {
+            return Promise.resolve(true);
+        }
+
+        manager.showPopup('agent', popup);
+
+        return new Promise(function (resolve) {
+            setTimeout(function () {
+                resolve(popup.style.display === 'flex');
+            }, POPUP_OPEN_ANIMATION_MS);
+        });
+    }
+
+    /**
+     * 确保设置弹层已打开且指定菜单项可见、可被教程高亮定位。
+     *
+     * 如果弹层未打开，会先打开它；然后滚动/展开使目标菜单项进入视口。
+     *
+     * @param {string} menuId - 菜单项 DOM ID 后缀，如 'api-keys'、'memory'、'character'
+     *                           自动拼接为 #${prefix}-menu-${menuId}
+     * @returns {Promise<boolean>} 菜单项是否可见
+     */
+    function ensureSettingsMenuVisible(menuId) {
+        if (!menuId) return Promise.resolve(false);
+        var prefix = getPrefix();
+
+        return openSettingsPanel().then(function (opened) {
+            if (!opened) return false;
+
+            var el = document.getElementById(prefix + '-menu-' + menuId);
+            if (!el) {
+                console.warn('[YuiGuideHandoff] ensureSettingsMenuVisible: 菜单项不存在:', menuId);
+                return false;
+            }
+
+            if (typeof el.scrollIntoView === 'function') {
+                el.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+            }
+
+            return true;
+        });
+    }
+
     var handoff = Object.freeze({
+        // M1
         openPage: openPage,
         isWindowOpen: isWindowOpen,
         resumeOnReturn: resumeOnReturn,
-        normalizeWindowName: normalizeWindowName
+        normalizeWindowName: normalizeWindowName,
+        // M2
+        openSettingsPanel: openSettingsPanel,
+        closeSettingsPanel: closeSettingsPanel,
+        openAgentPanel: openAgentPanel,
+        ensureSettingsMenuVisible: ensureSettingsMenuVisible
     });
 
     window.YuiGuidePageHandoff = handoff;
