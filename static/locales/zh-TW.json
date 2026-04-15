@@ -811,7 +811,7 @@
         "coreApiAutoFillHint": "Key從API管理簿自動填充，也可在此直接輸入",
         "assistApiSelectLabel": "輔助API服務商",
         "assistApiKeyLabel": "輔助API Key",
-        "assistApiAutoFillHint": "Key從API管理簿自動填充，也可在此直接輸入",
+        "assistApiAutoFillHint": "留空時自動使用管理簿中的Key，手動輸入則獨立保存",
         "keyBookTitle": "API 管理簿",
         "keyBookDescription": "統一管理所有API Key。核心API和輔助API切換服務商時會自動從此處讀取Key，在核心/輔助區域輸入的Key也會自動回寫到此處。",
         "keyBookPlaceholder": "請先載入API服務商配置",

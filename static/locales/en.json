@@ -811,7 +811,7 @@
         "coreApiAutoFillHint": "Key auto-filled from API Key Book, or enter directly",
         "assistApiSelectLabel": "Assist API Provider",
         "assistApiKeyLabel": "Assist API Key",
-        "assistApiAutoFillHint": "Key auto-filled from API Key Book, or enter directly",
+        "assistApiAutoFillHint": "Auto-fills from Key Book when empty; manually entered keys are saved independently",
         "keyBookTitle": "API Key Book",
         "keyBookDescription": "Manage all API Keys in one place. Keys are auto-filled when switching providers in Core/Assist API, and keys entered there are auto-saved back here.",
         "keyBookPlaceholder": "Loading API provider config...",
