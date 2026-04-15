@@ -925,6 +925,8 @@
                     }
                     case 'request_avatar_capture': {
                         if (window.location.pathname === '/chat') break;
+                        var captureLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+                        if (event.data.lanlan_name && (!captureLanlanName || event.data.lanlan_name !== captureLanlanName)) break;
                         var captureRequestId = event.data.requestId || '';
                         var includeSource = !!event.data.includeSourceDataUrl;
                         if (window.avatarPortrait && typeof window.avatarPortrait.capture === 'function') {
@@ -954,6 +956,13 @@
                                     error: true,
                                     timestamp: Date.now()
                                 });
+                            });
+                        } else if (nekoBroadcastChannel) {
+                            nekoBroadcastChannel.postMessage({
+                                action: 'avatar_capture_result',
+                                requestId: captureRequestId,
+                                error: true,
+                                timestamp: Date.now()
                             });
                         }
                         break;

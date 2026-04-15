@@ -535,9 +535,15 @@
                 wrap.style.height = displayH + 'px';
 
                 if (defaultCropRect) {
-                    crop.size = Math.round(Math.min(defaultCropRect.width, defaultCropRect.height) / scaleRatio);
-                    crop.x = Math.round(defaultCropRect.x / scaleRatio);
-                    crop.y = Math.round(defaultCropRect.y / scaleRatio);
+                    var rX = defaultCropRect.x || 0;
+                    var rY = defaultCropRect.y || 0;
+                    var rW = defaultCropRect.width || defaultCropRect.size || 0;
+                    var rH = defaultCropRect.height || defaultCropRect.size || 0;
+                    if (rW > rH) { rX += Math.round((rW - rH) / 2); rW = rH; }
+                    else if (rH > rW) { rY += Math.round((rH - rW) / 2); rH = rW; }
+                    crop.size = Math.round(rW / scaleRatio);
+                    crop.x = Math.round(rX / scaleRatio);
+                    crop.y = Math.round(rY / scaleRatio);
                 } else {
                     crop.size = Math.round(Math.min(displayW, displayH) * 0.7);
                     crop.x = Math.round((displayW - crop.size) / 2);
