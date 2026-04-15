@@ -478,7 +478,14 @@
         }
         if (window.__NEKO_MULTI_WINDOW__) {
             if (extra.includeSourceDataUrl) {
-                return captureAvatarPreviewViaBroadcast(true);
+                try {
+                    return await captureAvatarPreviewViaBroadcast(true);
+                } catch (_bcErr) {
+                    if (typeof window.__nekoRequestAvatarPreview === 'function') {
+                        return captureAvatarPreviewViaIpc();
+                    }
+                    throw _bcErr;
+                }
             }
             if (typeof window.__nekoRequestAvatarPreview === 'function') {
                 return captureAvatarPreviewViaIpc();
