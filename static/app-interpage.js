@@ -339,6 +339,22 @@
 
                     // Load the new model
                     if (window.vrmManager) {
+                        // 【关键修复】确保容器和 canvas 存在，并恢复 Three.js 场景可见性。
+                        // 角色切换的清理逻辑会将 renderer.domElement 设为 display:none，
+                        // 而 loadModel 内部在 scene/camera/renderer 已存在时不会调用
+                        // ensureThreeReady（也就不会恢复 canvas 可见性），导致从 Live2D
+                        // 切换到 VRM 时模型加载成功但不可见。
+                        // initThreeJS 在已初始化时是幂等的，但会无条件恢复容器/canvas 可见性。
+                        {
+                            var vrmContainerEl = document.getElementById('vrm-container');
+                            if (vrmContainerEl && !vrmContainerEl.querySelector('canvas')) {
+                                var newCanvas = document.createElement('canvas');
+                                newCanvas.id = 'vrm-canvas';
+                                vrmContainerEl.appendChild(newCanvas);
+                            }
+                        }
+                        await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container', nextLighting);
+
                         // 停止旧的待机轮换
                         if (typeof window._stopVrmIdleRotation === 'function') window._stopVrmIdleRotation();
                         if (typeof window._stopMmdIdleRotation === 'function') window._stopMmdIdleRotation();

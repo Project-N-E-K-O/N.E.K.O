@@ -3145,6 +3145,10 @@ class LLMSessionManager:
                                     self._respawn_tts_worker()
                                 self._tts_respawn_task = asyncio.ensure_future(_delayed_respawn())
                         continue
+                    elif data[0] == "__warning__":
+                        # TTS worker 发来的提示性消息（如水印检测），直接转发前端
+                        self._fire_task(self.send_status(data[1]))
+                        continue
                     elif data[0] == "__reconnecting__":
                         self._tts_retry_notify_count += 1
                         logger.info(f"🌊 TTS 正在自动重连 (retry {self._tts_retry_notify_count})")

@@ -42,6 +42,13 @@
       "name": "Gemini Live（Google）",
       "description": "Google AI 实时语音模型，国内版不支持",
       "core_model": "gemini-2.5-flash-native-audio-preview-12-2025"
+    },
+    "glm": {
+      "key": "glm",
+      "name": "GLM-Realtime（智谱，需手动去水印）",
+      "description": "有免费额度，支持联网搜索，语音默认含水印滴滴声（已自动检测裁剪，可在智谱控制台手动关闭）",
+      "core_url": "wss://open.bigmodel.cn/api/paas/v4/realtime",
+      "core_model": "glm-realtime-air"
     }
   },
   "assist_api_providers": {
