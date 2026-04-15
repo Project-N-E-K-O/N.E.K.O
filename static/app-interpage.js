@@ -359,28 +359,38 @@
                         if (typeof window._stopVrmIdleRotation === 'function') window._stopVrmIdleRotation();
                         if (typeof window._stopMmdIdleRotation === 'function') window._stopMmdIdleRotation();
 
-                        await window.vrmManager.loadModel(newModelPath);
-
-                        // 获取角色待机动作列表并启动轮换
-                        if (nameForConfig && typeof window._startVrmIdleRotation === 'function') {
+                        // 【修复】在 loadModel 之前获取角色待机动作列表，
+                        // 更新 lanlan_config 使 loadModel 内部读取到正确的待机动作 URL，
+                        // 避免使用初始页面加载时的过时值导致动画加载失败进入 T-pose。
+                        // 先清空旧值，确保 fetch 失败时 loadModel 回退到安全的硬编码默认值
+                        // 而非残留的上一个角色的待机动作 URL。
+                        var vrmIdleList = [];
+                        window.lanlan_config.vrmIdleAnimation = '';
+                        window.lanlan_config.vrmIdleAnimations = [];
+                        if (nameForConfig) {
                             try {
-                                const charRes = await fetch('/api/characters/');
-                                if (charRes.ok) {
-                                    const charData = await charRes.json();
-                                    const catData = charData?.['猫娘']?.[nameForConfig];
-                                    let idleList = catData?.idleAnimations;
-                                    if (!Array.isArray(idleList)) {
-                                        const single = catData?.idleAnimation;
-                                        idleList = single ? [single] : [];
+                                var charResVrm = await fetch('/api/characters/');
+                                if (charResVrm.ok) {
+                                    var charDataVrm = await charResVrm.json();
+                                    var catDataVrm = charDataVrm?.['猫娘']?.[nameForConfig];
+                                    vrmIdleList = catDataVrm?.idleAnimations;
+                                    if (!Array.isArray(vrmIdleList)) {
+                                        var singleIdle = catDataVrm?.idleAnimation;
+                                        vrmIdleList = singleIdle ? [singleIdle] : [];
                                     }
-                                    window.lanlan_config.vrmIdleAnimations = idleList;
-                                    if (idleList.length > 0) {
-                                        window._startVrmIdleRotation(idleList);
-                                    }
+                                    window.lanlan_config.vrmIdleAnimation = vrmIdleList[0] || '';
+                                    window.lanlan_config.vrmIdleAnimations = vrmIdleList;
                                 }
                             } catch (e) {
                                 console.warn('[Model] 获取VRM待机动作列表失败:', e);
                             }
+                        }
+
+                        await window.vrmManager.loadModel(newModelPath);
+
+                        // 启动待机动作轮换（多个动作时自动切换）
+                        if (vrmIdleList.length > 0 && typeof window._startVrmIdleRotation === 'function') {
+                            window._startVrmIdleRotation(vrmIdleList);
                         }
 
                         // 重新应用打光/曝光/描边；若角色未保存自定义光照，则回退到默认值，避免沿用上一个角色的灯光状态。
