@@ -151,6 +151,10 @@
         if (window.lanlan_config && window.lanlan_config.model_type) {
             var mt = window.lanlan_config.model_type;
             if (mt === 'vrm' || mt === 'mmd') return mt;
+            if (mt === 'live3d') {
+                if (window.mmdManager && window.mmdManager.currentModel) return 'mmd';
+                if (window.vrmManager && window.vrmManager.currentModel) return 'vrm';
+            }
         }
         return 'live2d';
     }
@@ -178,8 +182,8 @@
         var manager = getManager(prefix);
         var popup = getPopup('settings', prefix);
 
-        if (!manager || !popup) {
-            console.warn('[YuiGuideHandoff] openSettingsPanel: manager 或 popup 不可用');
+        if (!manager || !popup || typeof manager.showPopup !== 'function') {
+            console.warn('[YuiGuideHandoff] openSettingsPanel: manager/showPopup 不可用');
             return Promise.resolve(false);
         }
 
@@ -206,10 +210,10 @@
         if (!manager || typeof manager.closePopupById !== 'function') {
             return Promise.resolve(false);
         }
-        var popup = getPopup('settings');
-        var wasOpen = popup && popup.style.display === 'flex';
         manager.closePopupById('settings');
-        return Promise.resolve(wasOpen);
+        var popup = getPopup('settings');
+        var closed = !popup || popup.style.display !== 'flex';
+        return Promise.resolve(closed);
     }
 
     /**
@@ -223,8 +227,8 @@
         var manager = getManager(prefix);
         var popup = getPopup('agent', prefix);
 
-        if (!manager || !popup) {
-            console.warn('[YuiGuideHandoff] openAgentPanel: manager 或 popup 不可用');
+        if (!manager || !popup || typeof manager.showPopup !== 'function') {
+            console.warn('[YuiGuideHandoff] openAgentPanel: manager/showPopup 不可用');
             return Promise.resolve(false);
         }
 
