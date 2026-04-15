@@ -62,12 +62,13 @@ def _wait_for_queue_item(q, predicate, timeout=5.0):
 
 
 class FakeSSETransport(httpx.AsyncBaseTransport):
-    """Fake httpx transport that returns SSE responses for MiniMax TTS."""
+    """Fake httpx transport that returns SSE or JSON responses for MiniMax TTS."""
 
-    def __init__(self, sse_events=None, status_code=200, probe_status=400):
+    def __init__(self, sse_events=None, status_code=200, probe_status=400, use_sse=True):
         self._sse_events = sse_events or []
         self._status_code = status_code
         self._probe_status = probe_status
+        self._use_sse = use_sse
         self.requests = []
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
@@ -79,15 +80,26 @@ class FakeSSETransport(httpx.AsyncBaseTransport):
             return httpx.Response(self._probe_status, json={"base_resp": {"status_code": 0}})
 
         # Streaming synthesis request
-        sse_body = ""
-        for event in self._sse_events:
-            sse_body += f"data: {json.dumps(event)}\n\n"
-
-        return httpx.Response(
-            self._status_code,
-            content=sse_body.encode("utf-8"),
-            headers={"content-type": "text/event-stream"},
-        )
+        if self._use_sse:
+            # SSE format: data: {json}\n\n
+            sse_body = ""
+            for event in self._sse_events:
+                sse_body += f"data: {json.dumps(event)}\n\n"
+            return httpx.Response(
+                self._status_code,
+                content=sse_body.encode("utf-8"),
+                headers={"content-type": "text/event-stream"},
+            )
+        else:
+            # JSON stream format: line-delimited JSON objects
+            json_body = ""
+            for event in self._sse_events:
+                json_body += json.dumps(event) + "\n"
+            return httpx.Response(
+                self._status_code,
+                content=json_body.encode("utf-8"),
+                headers={"content-type": "application/json"},
+            )
 
 
 def _make_audio_sse_events(pcm_bytes: bytes, num_chunks: int = 1):
@@ -167,6 +179,50 @@ def test_minimax_worker_streams_audio_via_sse(monkeypatch):
     assert len(audio_item[2]) > 0
 
     # Verify the synthesis request was sent with accumulated text
+    synth_requests = [r for r in transport.requests if r.get("stream")]
+    assert len(synth_requests) == 1
+    assert synth_requests[0]["text"] == "你好世界今天"
+
+    request_queue.close()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
+
+@pytest.mark.unit
+def test_minimax_worker_streams_audio_via_json_format(monkeypatch):
+    """Test JSON stream format (application/json) instead of SSE"""
+    pcm_bytes = (np.arange(3000, dtype=np.int16)).tobytes()
+    json_events = _make_audio_sse_events(pcm_bytes, num_chunks=2)
+    transport = FakeSSETransport(sse_events=json_events, use_sse=False)
+
+    original_async_client = httpx.AsyncClient
+
+    def patched_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", patched_client)
+
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = _start_worker(request_queue, response_queue)
+
+    _wait_for_queue_item(response_queue, lambda item: item == ("__ready__", True))
+
+    request_queue.put(("speech-1", "你好"))
+    request_queue.put(("speech-1", "世界今天"))
+    request_queue.put((None, None))
+
+    audio_item, seen = _wait_for_queue_item(
+        response_queue,
+        lambda item: isinstance(item, tuple) and len(item) == 3 and item[0] == "__audio__",
+    )
+    assert audio_item[0] == "__audio__"
+    assert audio_item[1] == "speech-1"
+    assert isinstance(audio_item[2], bytes)
+    assert len(audio_item[2]) > 0
+
+    # Verify the synthesis request was sent
     synth_requests = [r for r in transport.requests if r.get("stream")]
     assert len(synth_requests) == 1
     assert synth_requests[0]["text"] == "你好世界今天"

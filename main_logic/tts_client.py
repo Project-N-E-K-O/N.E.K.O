@@ -2003,6 +2003,40 @@ async def _minimax_sse_synthesize(
             response_queue.put(("__audio__", speech_id, bytes(audio_chunk_buffer)))
             audio_chunk_buffer.clear()
 
+    def process_audio_chunk(audio_hex: str) -> None:
+        """处理单个音频块（hex 编码）"""
+        nonlocal resampler
+        if not audio_hex:
+            return
+        try:
+            pcm_bytes = binascii.unhexlify(audio_hex)
+        except (binascii.Error, ValueError) as exc:
+            _enqueue_error(response_queue, f"MiniMax TTS 音频解码失败: {exc}")
+            return
+        if pcm_bytes:
+            audio_array = np.frombuffer(pcm_bytes, dtype=np.int16)
+            if resampler is None:
+                resampler = soxr.ResampleStream(24000, 48000, 1, dtype="float32")
+            audio_chunk_buffer.extend(
+                _resample_audio(audio_array, 24000, 48000, resampler)
+            )
+            flush_audio(force=False)
+
+    def process_event(event: dict) -> bool:
+        """处理单个事件，返回 False 表示遇到错误需要停止"""
+        base_resp = event.get("base_resp") or {}
+        if base_resp.get("status_code", 0) != 0:
+            _enqueue_error(
+                response_queue,
+                f"MiniMax TTS 服务端错误: {base_resp.get('status_msg', '')} (code={base_resp.get('status_code')})",
+            )
+            return False
+        
+        data = event.get("data") or {}
+        audio_hex = data.get("audio", "")
+        process_audio_chunk(audio_hex)
+        return True
+
     try:
         async with client.stream("POST", api_url, json=payload, headers=headers) as resp:
             if resp.status_code != 200:
@@ -2014,50 +2048,63 @@ async def _minimax_sse_synthesize(
 
             _record_tts_telemetry("minimax", text)
 
-            buffer = ""
-            async for raw_chunk in resp.aiter_text():
-                buffer += raw_chunk
-                while "\n" in buffer:
-                    line, buffer = buffer.split("\n", 1)
-                    line = line.strip()
-                    if not line or line.startswith(":"):
-                        continue
-                    # SSE 格式: "data: {json}"
-                    if line.startswith("data:"):
-                        json_str = line[5:].strip()
-                        if not json_str or json_str == "[DONE]":
+            content_type = resp.headers.get("content-type", "").lower()
+            
+            # SSE 格式: text/event-stream
+            if "text/event-stream" in content_type:
+                buffer = ""
+                async for raw_chunk in resp.aiter_text():
+                    buffer += raw_chunk
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        line = line.strip()
+                        if not line or line.startswith(":"):
                             continue
-                        try:
-                            event = json.loads(json_str)
-                        except json.JSONDecodeError:
-                            logger.warning("MiniMax TTS SSE JSON 解析失败: %s", json_str[:200])
-                            continue
-
-                        base_resp = event.get("base_resp") or {}
-                        if base_resp.get("status_code", 0) != 0:
-                            _enqueue_error(
-                                response_queue,
-                                f"MiniMax TTS 服务端错误: {base_resp.get('status_msg', '')} (code={base_resp.get('status_code')})",
-                            )
-                            flush_audio(force=True)
-                            return
-
-                        data = event.get("data") or {}
-                        audio_hex = data.get("audio", "")
-                        if audio_hex:
-                            try:
-                                pcm_bytes = binascii.unhexlify(audio_hex)
-                            except (binascii.Error, ValueError) as exc:
-                                _enqueue_error(response_queue, f"MiniMax TTS 音频解码失败: {exc}")
+                        # SSE 格式: "data: {json}"
+                        if line.startswith("data:"):
+                            json_str = line[5:].strip()
+                            if not json_str or json_str == "[DONE]":
                                 continue
-                            if pcm_bytes:
-                                audio_array = np.frombuffer(pcm_bytes, dtype=np.int16)
-                                if resampler is None:
-                                    resampler = soxr.ResampleStream(24000, 48000, 1, dtype="float32")
-                                audio_chunk_buffer.extend(
-                                    _resample_audio(audio_array, 24000, 48000, resampler)
-                                )
-                                flush_audio(force=False)
+                            try:
+                                event = json.loads(json_str)
+                                if not process_event(event):
+                                    flush_audio(force=True)
+                                    return
+                            except json.JSONDecodeError:
+                                logger.warning("MiniMax TTS SSE JSON 解析失败: %s", json_str[:200])
+                                continue
+            
+            # JSON 流格式: application/json (逐行 JSON 对象)
+            else:
+                buffer = ""
+                async for raw_chunk in resp.aiter_text():
+                    buffer += raw_chunk
+                    # 尝试按行分割 JSON 对象
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        line = line.strip()
+                        if not line:
+                            continue
+                        
+                        # 移除可能的逗号分隔符
+                        if line.startswith(","):
+                            line = line[1:].strip()
+                        if line.endswith(","):
+                            line = line[:-1].strip()
+                        
+                        # 跳过数组开始/结束标记
+                        if line in ("[", "]"):
+                            continue
+                        
+                        try:
+                            event = json.loads(line)
+                            if not process_event(event):
+                                flush_audio(force=True)
+                                return
+                        except json.JSONDecodeError:
+                            # 不完整的 JSON 或格式错误，记录警告后跳过
+                            logger.warning("MiniMax TTS JSON 解析失败: %s", line[:200])
+                            continue
 
             flush_audio(force=True)
 
