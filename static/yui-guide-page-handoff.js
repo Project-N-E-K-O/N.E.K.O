@@ -35,6 +35,7 @@
     var WINDOW_CHECK_INTERVAL_MS = 1000;
 
     var _activeWindows = {};
+    var _activeTimers = {};
 
     /**
      * 规范化窗口名称：简写自动补 neko_ 前缀。
@@ -57,6 +58,10 @@
      */
     function openPage(openUrl, windowName, features) {
         var fullName = normalizeWindowName(windowName);
+        if (!fullName) {
+            console.warn('[YuiGuideHandoff] windowName 为空，取消打开');
+            return Promise.resolve(null);
+        }
         var childWin;
 
         if (typeof window.openOrFocusWindow === 'function') {
@@ -87,6 +92,7 @@
      */
     function isWindowOpen(windowName) {
         var fullName = normalizeWindowName(windowName);
+        if (!fullName) return false;
         var win = _activeWindows[fullName];
         if (!win) return false;
         if (win.closed) {
@@ -105,17 +111,29 @@
      */
     function resumeOnReturn(windowName, onReturn) {
         var fullName = normalizeWindowName(windowName);
-        var win = _activeWindows[fullName];
-
-        if (!win) {
+        if (!fullName) {
             if (typeof onReturn === 'function') onReturn();
             return;
         }
 
+        if (_activeTimers[fullName]) return;
+
+        var win = _activeWindows[fullName];
+
+        if (!win || win.closed) {
+            delete _activeWindows[fullName];
+            if (typeof onReturn === 'function') onReturn();
+            return;
+        }
+
+        _activeTimers[fullName] = true;
         var timer = setInterval(function () {
             if (win.closed) {
                 clearInterval(timer);
-                delete _activeWindows[fullName];
+                if (_activeWindows[fullName] === win) {
+                    delete _activeWindows[fullName];
+                }
+                delete _activeTimers[fullName];
                 if (typeof onReturn === 'function') onReturn();
             }
         }, WINDOW_CHECK_INTERVAL_MS);

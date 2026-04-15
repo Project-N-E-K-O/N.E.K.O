@@ -391,14 +391,22 @@ function createSettingsPopupContent(manager, prefix, popup) {
 }
 
 /**
+ * 将菜单锚点 ID 标准化：trim、小写、去非法字符，再拼 ${prefix}-menu-${id}。
+ */
+function createMenuAnchorId(prefix, rawId) {
+    if (!rawId) return '';
+    var sanitized = String(rawId).trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+    return sanitized ? `${prefix}-menu-${sanitized}` : '';
+}
+
+/**
  * 创建设置菜单按钮
  */
 function createSettingsMenuButton(manager, prefix, config) {
     const btn = document.createElement('div');
     btn.className = `${prefix}-settings-menu-item`;
-    if (config && config.id) {
-        btn.id = `${prefix}-menu-${config.id}`;
-    }
+    var btnAnchorId = createMenuAnchorId(prefix, config && config.id);
+    if (btnAnchorId) btn.id = btnAnchorId;
     Object.assign(btn.style, {
         justifyContent: 'space-between'
     });
@@ -2077,9 +2085,8 @@ const AvatarPopupMixin = {
         ManagerProto._createMenuItem = function (item, isSubmenuItem = false) {
             const menuItem = document.createElement('div');
             menuItem.className = `${prefix}-settings-menu-item`;
-            if (item && item.id) {
-                menuItem.id = `${prefix}-menu-${item.id}`;
-            }
+            var itemAnchorId = createMenuAnchorId(prefix, item && item.id);
+            if (itemAnchorId) menuItem.id = itemAnchorId;
             Object.assign(menuItem.style, {
                 display: 'flex',
                 alignItems: 'center',
