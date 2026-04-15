@@ -805,7 +805,8 @@
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Intl)",
             "claude": "Claude (Anthropic)",
-            "grok": "Grok (xAI)"
+            "grok": "Grok (xAI)",
+            "openrouter": "OpenRouter (Model Aggregator)"
         },
         "coreApiAutoFillHint": "Key auto-filled from API Key Book, or enter directly",
         "assistApiSelectLabel": "Assist API Provider",
@@ -837,7 +838,8 @@
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Intl)",
             "claude": "Claude (Anthropic)",
-            "grok": "Grok (xAI)"
+            "grok": "Grok (xAI)",
+            "openrouter": "OpenRouter"
         },
         "freeVersionNoApiKey": "Free version does not require API Key",
         "pleaseEnterApiKey": "Please enter your API Key",

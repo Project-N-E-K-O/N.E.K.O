@@ -805,7 +805,8 @@
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax(국제 서버)",
             "claude": "Claude(Anthropic)",
-            "grok": "Grok(xAI)"
+            "grok": "Grok(xAI)",
+            "openrouter": "OpenRouter(모델 통합 플랫폼)"
         },
         "coreApiAutoFillHint": "API 관리 대장에서 키가 자동 입력됩니다. 직접 입력도 가능합니다",
         "assistApiSelectLabel": "보조 API 제공업체",
@@ -837,7 +838,8 @@
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax(국제 서버)",
             "claude": "Claude(Anthropic)",
-            "grok": "Grok(xAI)"
+            "grok": "Grok(xAI)",
+            "openrouter": "OpenRouter"
         },
         "freeVersionNoApiKey": "무료 버전에는 API 키가 필요하지 않습니다.",
         "pleaseEnterApiKey": "API 키를 입력하세요.",
