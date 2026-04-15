@@ -415,14 +415,13 @@
                 }
             }
         } finally {
-            // 只有当 version 没变（即没有被 discard/isNewMessage 接管）时，
-            // 才重置锁并尝试递归。如果 version 已变，说明新的持有者已经
-            // 在管理队列了，这里静默退出，避免破坏新实例的互斥锁。
-            if ((window._realisticGeminiVersion || 0) === queueVersion) {
-                window._isProcessingRealisticQueue = false;
-                if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
-                    processRealisticQueue(window._realisticGeminiVersion || 0);
-                }
+            window._isProcessingRealisticQueue = false;
+            // 只有当 version 没变（即没有被 discard/isNewMessage 接管）时才递归消费剩余队列。
+            // version 已变时，新的持有者会自行启动 processRealisticQueue，这里不递归，
+            // 避免两个实例同时 shift 同一个队列导致文本 chunk 交错。
+            if ((window._realisticGeminiVersion || 0) === queueVersion &&
+                window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
+                processRealisticQueue(window._realisticGeminiVersion || 0);
             }
         }
     }
