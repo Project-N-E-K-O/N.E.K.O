@@ -457,6 +457,29 @@
                 <button id="chatAvatarPreviewRefreshButton" class="chat-avatar-preview-refresh-btn" type="button" data-i18n="chat.avatarPreviewRefresh">刷新头像</button>
             </div>
         </div>
+        <div class="chat-avatar-preview-crop-body">
+            <div id="avatar-cropper-wrap" class="avatar-cropper-canvas-wrap">
+                <img id="avatar-cropper-img" class="avatar-cropper-source-img" alt="">
+                <svg id="avatar-cropper-mask" class="avatar-cropper-mask"></svg>
+                <div id="avatar-cropper-box" class="avatar-cropper-crop-box">
+                    <div class="avatar-cropper-viewfinder">
+                        <div class="avatar-cropper-grid-line h1"></div>
+                        <div class="avatar-cropper-grid-line h2"></div>
+                        <div class="avatar-cropper-grid-line v1"></div>
+                        <div class="avatar-cropper-grid-line v2"></div>
+                        <div class="avatar-cropper-circle-guide"></div>
+                    </div>
+                    <div class="avatar-cropper-handle tl" data-handle="tl"></div>
+                    <div class="avatar-cropper-handle tr" data-handle="tr"></div>
+                    <div class="avatar-cropper-handle bl" data-handle="bl"></div>
+                    <div class="avatar-cropper-handle br" data-handle="br"></div>
+                </div>
+            </div>
+            <div class="avatar-cropper-buttons">
+                <button id="avatar-cropper-cancel" class="avatar-cropper-btn" type="button">取消</button>
+                <button id="avatar-cropper-save" class="avatar-cropper-btn primary" type="button">保存</button>
+            </div>
+        </div>
     </div>
 
     <!-- 跳过：Live2D/VRM/Three.js、common_ui.js(DOM拖拽不兼容)、touch-config、tutorial -->

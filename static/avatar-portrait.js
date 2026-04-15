@@ -21,6 +21,7 @@
         quality: 0.92,
         includeBlob: false,
         includeDataUrl: false,
+        includeSourceDataUrl: false,
         modelType: null,
         // 新增：裁剪模式
         // 'headshot' - 头像模式（默认，聚焦头部）
@@ -476,6 +477,24 @@
             width,
             height
         };
+    }
+
+    function cropRectToTargetAspect(rect, targetWidth, targetHeight) {
+        const targetAspect = targetWidth / Math.max(targetHeight, 1);
+        const currentAspect = rect.width / Math.max(rect.height, 1);
+        if (Math.abs(currentAspect - targetAspect) < 0.005) return rect;
+
+        const result = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+        if (currentAspect > targetAspect) {
+            const newWidth = result.height * targetAspect;
+            result.x += (result.width - newWidth) * 0.5;
+            result.width = newWidth;
+        } else {
+            const newHeight = result.width / targetAspect;
+            result.y += (result.height - newHeight) * 0.3;
+            result.height = newHeight;
+        }
+        return result;
     }
 
     function cssRectToPixelRect(rect, metrics) {
@@ -1407,12 +1426,13 @@
                 clipOutputShape(outputCtx, outputCanvas.width, outputCanvas.height, finalOptions);
                 maybeFillBackground(outputCtx, outputCanvas.width, outputCanvas.height, finalOptions.background);
 
-                const sourceCropRect = renderedSource.cropRectPixels || {
+                const sourceCropRectRaw = renderedSource.cropRectPixels || {
                     x: 0,
                     y: 0,
                     width: renderedSource.canvas.width,
                     height: renderedSource.canvas.height
                 };
+                const sourceCropRect = cropRectToTargetAspect(sourceCropRectRaw, outputCanvas.width, outputCanvas.height);
                 outputCtx.drawImage(
                     renderedSource.canvas,
                     sourceCropRect.x,
@@ -1450,6 +1470,9 @@
                 if (finalOptions.includeDataUrl) {
                     result.dataUrl = canvasToDataUrl(outputCanvas, finalOptions.mimeType, finalOptions.quality);
                 }
+                if (finalOptions.includeSourceDataUrl) {
+                    result.sourceDataUrl = canvasToDataUrl(result.sourceCanvas, finalOptions.mimeType, finalOptions.quality);
+                }
 
                 return result;
             }
@@ -1463,7 +1486,8 @@
 
         const sourceMetrics = getCanvasMetrics(sourceCanvas);
         const cssCropRect = adapter.getCropRect(context, finalOptions);
-        const pixelCropRect = cssRectToPixelRect(cssCropRect, sourceMetrics);
+        const pixelCropRectRaw = cssRectToPixelRect(cssCropRect, sourceMetrics);
+        const pixelCropRect = cropRectToTargetAspect(pixelCropRectRaw, finalOptions.width, finalOptions.height);
         const outputCanvas = createOutputCanvas(finalOptions.width, finalOptions.height);
         const outputCtx = outputCanvas.getContext('2d');
 
@@ -1500,6 +1524,14 @@
         }
         if (finalOptions.includeDataUrl) {
             result.dataUrl = canvasToDataUrl(outputCanvas, finalOptions.mimeType, finalOptions.quality);
+        }
+        if (finalOptions.includeSourceDataUrl) {
+            const srcCopy = createOutputCanvas(sourceCanvas.width, sourceCanvas.height);
+            const srcCtx = srcCopy.getContext('2d');
+            if (srcCtx) {
+                srcCtx.drawImage(sourceCanvas, 0, 0);
+                result.sourceDataUrl = canvasToDataUrl(srcCopy, finalOptions.mimeType, finalOptions.quality);
+            }
         }
 
         return result;
