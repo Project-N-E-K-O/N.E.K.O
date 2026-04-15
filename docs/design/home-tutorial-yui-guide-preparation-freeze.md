@@ -185,6 +185,54 @@ interface YuiGuideDirector {
 - `intro_proactive` 与 `intro_cat_paw` 不在第一阶段的 `prelude` 中重复播放，而是分别跟随旧首页步骤进入
 - 这样做是为了避免在主负责人前置阶段提前重排首页旧教程顺序，降低与后续实现合流时的冲突概率
 
+### 3.4.2 M2 首页交互包装 API 冻结（补充）
+
+为降低开发 B 的演出层与开发 C 的真实首页交互之间的运行时耦合，进入 `Milestone 2` 前补冻结一组最小首页交互包装 API。
+
+这组 API 的定位不是替代真实 DOM，而是：
+
+- 由开发 C 统一封装首页真实入口与打开时机
+- 由开发 B 优先调用这些 API，而不是自行假设页面点击链稳定
+- 由主负责人审核字段、语义与失败回退是否一致
+
+第一版最小 API 冻结建议为：
+
+```ts
+interface YuiGuideHomeBridge {
+  openAgentPanel(options?: { source?: string }): Promise<boolean>;
+  openSettingsPanel(options?: { source?: string }): Promise<boolean>;
+  ensureSettingsMenuVisible(
+    menuId: 'character' | 'api-keys' | 'memory' | 'steam-workshop',
+    options?: { source?: string }
+  ): Promise<boolean>;
+  closeSettingsPanel(options?: { source?: string }): Promise<boolean>;
+}
+```
+
+字段与语义冻结为：
+
+- `openAgentPanel()`：
+  - 负责稳定打开首页真实 `猫爪 / Agent / OpenClaw` 入口
+  - 成功返回 `true`，失败或入口不存在返回 `false`
+- `openSettingsPanel()`：
+  - 负责稳定打开首页真实设置弹层
+  - 不要求开发 B 知道点击链、遮挡关系或 hover 细节
+- `ensureSettingsMenuVisible(menuId)`：
+  - 负责保证对应菜单项真实可见且可定位
+  - `menuId` 第一版仅允许 `character`、`api-keys`、`memory`、`steam-workshop`
+  - 不在这一阶段引入新的菜单 ID 命名协议
+- `closeSettingsPanel()`：
+  - 负责优雅关闭首页真实设置弹层
+  - 供 `takeover_settings_peek` 的收尾与 `skip / angry_exit` 清理复用
+
+补充约束：
+
+- 第一版返回值统一为 `Promise<boolean>`，不在 M2 前扩成复杂结果对象
+- 若后续确需返回额外调试信息，必须先改冻结说明，再改实现
+- 开发 B 不应在 M2 中绕过这组 API，直接把 `click()`、`mouseover()`、临时定时器散写回 `Director`
+- 开发 C 不应把该桥接逻辑散落进多个按钮回调，而应收口到单独模块或统一导出入口
+- 主负责人应优先把这组 API 视为 M2 的 B/C 边界，而不是让双方继续围绕页面偶然行为联调
+
 ### 3.5 `handoff` 最小字段冻结
 
 第一版最小字段冻结为：

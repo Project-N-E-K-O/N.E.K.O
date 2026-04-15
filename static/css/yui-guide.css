@@ -258,6 +258,14 @@ body.yui-taking-over #neko-tutorial-skip-btn:focus-visible {
     0 12px 32px rgba(198, 54, 54, 0.26);
 }
 
+body.yui-guide-home-driver-hidden #react-chat-window-shell:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
+  top: auto !important;
+  left: 18px !important;
+  right: auto !important;
+  bottom: 18px !important;
+  transform: none !important;
+}
+
 #text-input-area.yui-guide-chat-target,
 #react-chat-window-shell.yui-guide-chat-target,
 #react-chat-window-root.yui-guide-chat-target,
@@ -356,6 +364,13 @@ body.yui-taking-over #neko-tutorial-skip-btn:focus-visible {
 }
 
 @media (max-width: 768px) {
+  body.yui-guide-home-driver-hidden #react-chat-window-shell:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
+    left: 6px !important;
+    right: 6px !important;
+    bottom: 6px !important;
+    width: auto !important;
+  }
+
   .yui-guide-bubble {
     width: min(300px, calc(100vw - 24px));
   }

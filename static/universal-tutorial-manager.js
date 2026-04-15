@@ -43,6 +43,7 @@ class UniversalTutorialManager {
         this._yuiGuideLastSceneId = null;
         this._yuiGuideLifecycleActive = false;
         this._tutorialEndReason = null;
+        this._tutorialEndRawReason = null;
         this._tutorialEndHandled = false;
 
         // 刷新延迟常量
@@ -322,6 +323,9 @@ class UniversalTutorialManager {
     }
 
     notifyYuiGuideTutorialEnd(reason = 'destroy') {
+        const normalizedReason = this.normalizeTutorialEndReason(reason);
+        const rawReason = this.normalizeTutorialEndRawReason(reason);
+
         if (!this.isYuiGuideEnabledForPage()) {
             this.yuiGuideDirector = null;
             this._yuiGuideLastSceneId = null;
@@ -335,7 +339,8 @@ class UniversalTutorialManager {
 
         this.dispatchYuiGuideEvent('tutorial-end', {
             page: this.currentPage,
-            reason: reason
+            reason: normalizedReason,
+            rawReason: rawReason
         });
         this.callYuiGuideDirector('destroy');
         this.yuiGuideDirector = null;
@@ -343,20 +348,55 @@ class UniversalTutorialManager {
         this._yuiGuideLifecycleActive = false;
     }
 
-    setTutorialEndReason(reason) {
-        this._tutorialEndReason = reason || 'destroy';
+    normalizeTutorialEndRawReason(reason) {
+        const normalized = typeof reason === 'string' ? reason.trim().toLowerCase() : '';
+        return normalized || 'destroy';
     }
 
-    resolveTutorialEndReason(finalSteps = this.cachedValidSteps || []) {
-        if (this._tutorialEndReason) {
-            return this._tutorialEndReason;
-        }
+    normalizeTutorialEndReason(reason) {
+        const normalized = this.normalizeTutorialEndRawReason(reason);
 
-        if (Array.isArray(finalSteps) && finalSteps.length > 0 && this.currentStep >= finalSteps.length - 1) {
+        if (normalized === 'complete') {
             return 'complete';
         }
 
+        if (normalized === 'skip' || normalized === 'escape' || normalized === 'angry_exit') {
+            return 'skip';
+        }
+
         return 'destroy';
+    }
+
+    setTutorialEndReason(reason) {
+        if (this._tutorialEndRawReason) {
+            return this._tutorialEndReason || 'destroy';
+        }
+
+        const rawReason = this.normalizeTutorialEndRawReason(reason);
+        this._tutorialEndRawReason = rawReason;
+        this._tutorialEndReason = this.normalizeTutorialEndReason(rawReason);
+        return this._tutorialEndReason;
+    }
+
+    resolveTutorialEndMeta(finalSteps = this.cachedValidSteps || []) {
+        if (this._tutorialEndReason || this._tutorialEndRawReason) {
+            return {
+                reason: this._tutorialEndReason || 'destroy',
+                rawReason: this._tutorialEndRawReason || this._tutorialEndReason || 'destroy'
+            };
+        }
+
+        if (Array.isArray(finalSteps) && finalSteps.length > 0 && this.currentStep >= finalSteps.length - 1) {
+            return {
+                reason: 'complete',
+                rawReason: 'complete'
+            };
+        }
+
+        return {
+            reason: 'destroy',
+            rawReason: 'destroy'
+        };
     }
 
     requestTutorialDestroy(reason = 'destroy') {
@@ -758,15 +798,27 @@ class UniversalTutorialManager {
     /**
      * 获取当前页面的存储键（模型管理页区分 Live2D / VRM / MMD）
      */
-    getStorageKey() {
-        let pageKey = this.currentPage;
-
-        if (this.currentPage === 'model_manager') {
-            const mode = UniversalTutorialManager.getModelManagerDisplayMode();
-            pageKey = UniversalTutorialManager.modelManagerModeToPageKey(mode);
-            console.log('[Tutorial] 模型管理页存储键，展示模式:', mode, '→', pageKey);
+    getYuiGuideVersionedPageKey(page = this.currentPage) {
+        if (page === 'home' && this.isYuiGuideEnabledForPage(page)) {
+            return 'home_yui_v1';
         }
 
+        return null;
+    }
+
+    getPreferredStoragePageKey(page = this.currentPage) {
+        if (page === 'model_manager') {
+            const mode = UniversalTutorialManager.getModelManagerDisplayMode();
+            const pageKey = UniversalTutorialManager.modelManagerModeToPageKey(mode);
+            console.log('[Tutorial] 模型管理页存储键，展示模式:', mode, '→', pageKey);
+            return pageKey;
+        }
+
+        return this.getYuiGuideVersionedPageKey(page) || page;
+    }
+
+    getStorageKey() {
+        const pageKey = this.getPreferredStoragePageKey(this.currentPage);
         return this.STORAGE_KEY_PREFIX + pageKey;
     }
 
@@ -785,10 +837,15 @@ class UniversalTutorialManager {
             keys.push(this.STORAGE_KEY_PREFIX + 'model_manager_mmd');
             keys.push(this.STORAGE_KEY_PREFIX + 'model_manager_common');
         } else {
-            keys.push(this.STORAGE_KEY_PREFIX + targetPage);
+            const preferredPageKey = this.getPreferredStoragePageKey(targetPage);
+            keys.push(this.STORAGE_KEY_PREFIX + preferredPageKey);
+
+            if (preferredPageKey !== targetPage) {
+                keys.push(this.STORAGE_KEY_PREFIX + targetPage);
+            }
         }
 
-        return keys;
+        return Array.from(new Set(keys));
     }
 
     clearModelManagerTutorialRecheckTimer() {
@@ -2233,6 +2290,7 @@ class UniversalTutorialManager {
         this._lastOnHighlightedStepIndex = null;
         this._tutorialEndHandled = false;
         this._tutorialEndReason = null;
+        this._tutorialEndRawReason = null;
 
         // 缓存已验证的步骤，供 onStepChange 使用
         this.cachedValidSteps = validSteps;
@@ -3128,10 +3186,10 @@ class UniversalTutorialManager {
         const finalStepConfig = (finalStepIndex >= 0 && finalStepIndex < finalSteps.length)
             ? finalSteps[finalStepIndex]
             : null;
-        const endReason = this.resolveTutorialEndReason(finalSteps);
+        const endMeta = this.resolveTutorialEndMeta(finalSteps);
 
         this.notifyYuiGuideStepLeave(finalStepConfig, finalStepIndex, 'tutorial-end');
-        this.notifyYuiGuideTutorialEnd(endReason);
+        this.notifyYuiGuideTutorialEnd(endMeta.rawReason);
 
         // 重置运行标志
         this.isTutorialRunning = false;
@@ -3142,6 +3200,7 @@ class UniversalTutorialManager {
         this._applyingInteractionState = false;
         this.cachedValidSteps = null;
         this._tutorialEndReason = null;
+        this._tutorialEndRawReason = null;
 
         // 移除跳过按钮
         this.hideSkipButton();
@@ -3499,7 +3558,7 @@ class UniversalTutorialManager {
      */ 
     resetAllTutorials() {
         TUTORIAL_PAGES.forEach(page => {
-            localStorage.removeItem(this.STORAGE_KEY_PREFIX + page);
+            this.getStorageKeysForPage(page).forEach(key => localStorage.removeItem(key));
         });
         console.log('[Tutorial] 已重置所有页面引导');
         this.notifyTutorialResetForCurrentPageIfNeeded('all');
@@ -3524,7 +3583,11 @@ class UniversalTutorialManager {
                 if (oldVal) console.log('[Tutorial] 重置: 移除', fullKey, '(旧值:', oldVal, ')');
             });
         } else {
-            localStorage.removeItem(this.STORAGE_KEY_PREFIX + pageKey);
+            this.getStorageKeysForPage(pageKey).forEach(fullKey => {
+                const oldVal = localStorage.getItem(fullKey);
+                localStorage.removeItem(fullKey);
+                if (oldVal) console.log('[Tutorial] 重置: 移除', fullKey, '(旧值:', oldVal, ')');
+            });
         }
 
         console.log('[Tutorial] 已重置页面引导:', pageKey);
@@ -3551,9 +3614,9 @@ class UniversalTutorialManager {
         }
 
         // 清除当前页面的引导记录
-        const storageKey = this.getStorageKey();
-        localStorage.removeItem(storageKey);
-        console.log('[Tutorial] 已清除当前页面引导记录:', this.currentPage);
+        const storageKeys = this.getStorageKeysForPage(this.currentPage);
+        storageKeys.forEach(storageKey => localStorage.removeItem(storageKey));
+        console.log('[Tutorial] 已清除当前页面引导记录:', this.currentPage, storageKeys);
 
         // 重新初始化并启动引导
         this.isInitialized = false;

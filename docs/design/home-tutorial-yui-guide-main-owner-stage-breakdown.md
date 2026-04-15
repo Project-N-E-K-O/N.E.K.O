@@ -229,6 +229,12 @@
 - 不允许真实系统鼠标控制逻辑混入首页教程
 - 不允许 Agent 自动化链路被当成教程执行器
 - 不允许插件管理在这一阶段直接把首页结构写成 `/ui/` 的假壳
+- 在进入 M2 实装前，先要求开发 C 提供首页交互包装 API，至少包括：
+  - `openAgentPanel()`
+  - `openSettingsPanel()`
+  - `ensureSettingsMenuVisible(menuId)`
+  - `closeSettingsPanel()`
+- 要求开发 B 在接管演出中优先调用上述包装 API，而不是继续把页面点击链硬写进 `Director`
 
 ### 这一阶段主负责人必须拿到的交付物
 
