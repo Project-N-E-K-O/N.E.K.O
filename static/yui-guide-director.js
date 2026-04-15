@@ -436,7 +436,7 @@
             };
         }
 
-        clearIntroFlow() {
+        clearIntroFlow(preserveSpotlight) {
             if (this.introThirdMessageTimer) {
                 window.clearTimeout(this.introThirdMessageTimer);
                 this.introThirdMessageTimer = null;
@@ -451,7 +451,9 @@
                 }
             }
 
-            this.overlay.clearSpotlight();
+            if (!preserveSpotlight) {
+                this.overlay.clearSpotlight();
+            }
         }
 
         waitForElement(resolveElement, timeoutMs) {
@@ -485,6 +487,37 @@
         }
 
         getChatIntroTarget() {
+            return this.getChatInputTarget() || this.getChatWindowTarget();
+        }
+
+        getChatInputTarget() {
+            const preferredSelectors = [
+                '#react-chat-window-root .composer-input',
+                '#react-chat-window-root .composer-input-shell',
+                '#react-chat-window-root .composer-panel',
+                '#text-input-area'
+            ];
+
+            for (let index = 0; index < preferredSelectors.length; index += 1) {
+                const element = this.resolveElement(preferredSelectors[index]);
+                if (!element) {
+                    continue;
+                }
+
+                const rect = typeof element.getBoundingClientRect === 'function'
+                    ? element.getBoundingClientRect()
+                    : null;
+                if (!rect || rect.width <= 0 || rect.height <= 0) {
+                    continue;
+                }
+
+                return element;
+            }
+
+            return null;
+        }
+
+        getChatWindowTarget() {
             const preferredSelectors = [
                 '#react-chat-window-shell',
                 '#react-chat-window-root .chat-window',
@@ -512,6 +545,71 @@
             }
 
             return null;
+        }
+
+        shouldNarrateInChat(stepId) {
+            return this.page === 'home' && typeof stepId === 'string' && !!stepId;
+        }
+
+        getSceneSpotlightTarget(stepId, performance) {
+            const selector = (performance && (performance.cursorTarget || this.currentStep && this.currentStep.anchor))
+                || (this.currentStep && this.currentStep.anchor)
+                || '';
+            const fallbackTarget = selector ? this.resolveElement(selector) : null;
+            if (this.page !== 'home') {
+                return fallbackTarget;
+            }
+
+            if (stepId === 'intro_basic' && !this.introFlowCompleted) {
+                return this.getChatInputTarget() || this.getChatWindowTarget() || fallbackTarget;
+            }
+
+            if (this.shouldNarrateInChat(stepId)) {
+                return this.getChatWindowTarget() || fallbackTarget;
+            }
+
+            return fallbackTarget;
+        }
+
+        getActionSpotlightTarget(stepId, performance) {
+            const selector = (performance && (performance.cursorTarget || this.currentStep && this.currentStep.anchor))
+                || (this.currentStep && this.currentStep.anchor)
+                || '';
+            const fallbackTarget = selector ? this.resolveElement(selector) : null;
+            if (this.page !== 'home') {
+                return fallbackTarget;
+            }
+
+            if (stepId === 'takeover_capture_cursor' || stepId === 'takeover_plugin_preview' || stepId === 'takeover_settings_peek') {
+                return fallbackTarget;
+            }
+
+            return null;
+        }
+
+        highlightChatInput() {
+            this.focusAndHighlightChatInput(this.getChatInputTarget() || this.getChatWindowTarget());
+        }
+
+        highlightChatWindow() {
+            const target = this.getChatWindowTarget() || this.getChatInputTarget();
+            if (!target) {
+                return;
+            }
+
+            if (typeof target.scrollIntoView === 'function') {
+                try {
+                    target.scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'center',
+                        inline: 'nearest'
+                    });
+                } catch (_) {
+                    target.scrollIntoView();
+                }
+            }
+
+            this.overlay.setPersistentSpotlight(target);
         }
 
         getChatIntroActivationTarget() {
@@ -613,11 +711,22 @@
             await this.voiceQueue.speak(playbackText, {
                 onBoundary: (event) => {
                     const charIndex = event && Number.isFinite(event.charIndex) ? event.charIndex : 0;
-                    narration.resumeIndex = clamp(
+                    const absoluteCharIndex = clamp(
                         narration.playbackStartIndex + charIndex,
                         narration.playbackStartIndex,
                         narration.text.length
                     );
+                    narration.resumeIndex = absoluteCharIndex;
+                    if (typeof narration.onBoundary === 'function') {
+                        try {
+                            narration.onBoundary(Object.assign({}, event, {
+                                absoluteCharIndex: absoluteCharIndex,
+                                fullText: narration.text
+                            }));
+                        } catch (error) {
+                            console.warn('[YuiGuide] 旁白边界扩展回调失败:', error);
+                        }
+                    }
                 }
             });
             narration.running = false;
@@ -645,13 +754,14 @@
             }
         }
 
-        async speakLineAndWait(text) {
+        async speakLineAndWait(text, options) {
             const content = typeof text === 'string' ? text.trim() : '';
             if (!content || this.destroyed) {
                 return;
             }
 
             this.cancelActiveNarration();
+            const normalizedOptions = options || {};
 
             await new Promise((resolve) => {
                 const narration = {
@@ -659,6 +769,7 @@
                     resumeIndex: 0,
                     playbackStartIndex: 0,
                     playbackStartAt: 0,
+                    onBoundary: typeof normalizedOptions.onBoundary === 'function' ? normalizedOptions.onBoundary : null,
                     resolve: resolve,
                     interrupted: false,
                     cancelled: false,
@@ -747,7 +858,23 @@
             }
 
             const performance = this.currentStep.performance || {};
-            if (performance.bubbleText) {
+            const spotlightTarget = this.getSceneSpotlightTarget(this.currentSceneId, performance);
+            if (spotlightTarget) {
+                this.overlay.setPersistentSpotlight(spotlightTarget);
+            } else {
+                this.overlay.clearPersistentSpotlight();
+            }
+
+            const actionSpotlightTarget = this.getActionSpotlightTarget(this.currentSceneId, performance);
+            if (actionSpotlightTarget) {
+                this.overlay.activateSpotlight(actionSpotlightTarget);
+            } else {
+                this.overlay.clearActionSpotlight();
+            }
+
+            if (this.shouldNarrateInChat(this.currentSceneId)) {
+                this.overlay.hideBubble();
+            } else if (performance.bubbleText) {
                 this.overlay.showBubble(performance.bubbleText, {
                     title: 'Yui',
                     emotion: performance.emotion || 'neutral',
@@ -1209,7 +1336,7 @@
         }
 
         focusAndHighlightChatInput(spotlightTarget) {
-            const target = spotlightTarget || this.getChatIntroTarget();
+            const target = spotlightTarget || this.getChatInputTarget() || this.getChatWindowTarget();
             const inputBox = this.resolveElement('#react-chat-window-root .composer-input')
                 || this.resolveElement('#textInputBox');
 
@@ -1222,7 +1349,7 @@
             }
 
             if (target) {
-                this.overlay.activateSpotlight(target);
+                this.overlay.setPersistentSpotlight(target);
             }
 
             if (inputBox && typeof inputBox.focus === 'function') {
@@ -1248,10 +1375,14 @@
                 if (this.destroyed || this.introClickActivated) {
                     return;
                 }
+                if (!this.introFlowCompleted) {
+                    return;
+                }
 
                 this.introClickActivated = true;
                 inputArea.classList.remove('yui-guide-chat-target');
-                this.clearIntroFlow();
+                this.clearIntroFlow(true);
+                this.highlightChatWindow();
                 this.sendIntroFollowups();
             };
 
@@ -1337,7 +1468,12 @@
                 this.emotionBridge.apply(introStep.performance.emotion);
             }
             this.attachChatIntroActivation();
-            this.speakLineAndWait(introText);
+            await this.speakLineAndWait(introText);
+            if (this.destroyed) {
+                return;
+            }
+            this.introFlowCompleted = true;
+            this.highlightChatWindow();
         }
 
         async startPrelude() {
@@ -1412,6 +1548,7 @@
             const delayMs = Number.isFinite(performance.delayMs) ? performance.delayMs : DEFAULT_STEP_DELAY_MS;
             const durationMs = clamp(Math.round(DEFAULT_CURSOR_DURATION_MS / Math.max(0.35, cursorSpeed)), 160, 900);
             const spotlightElement = this.resolveElement(performance.cursorTarget || step.anchor);
+            const shouldNarrateInChat = this.shouldNarrateInChat(stepId);
             const shouldNarrateAfterMove = (
                 stepId === 'takeover_capture_cursor'
                 || stepId === 'takeover_plugin_preview'
@@ -1434,15 +1571,23 @@
                 this.overlay.setTakingOver(true);
             }
 
-            if (isTakeoverScene && spotlightElement) {
-                this.overlay.activateSpotlight(spotlightElement);
+            const persistentSpotlightTarget = this.getSceneSpotlightTarget(stepId, performance);
+            if (persistentSpotlightTarget) {
+                this.overlay.setPersistentSpotlight(persistentSpotlightTarget);
+            }
+
+            const actionSpotlightTarget = this.getActionSpotlightTarget(stepId, performance);
+            if (actionSpotlightTarget) {
+                this.overlay.activateSpotlight(actionSpotlightTarget);
+            } else {
+                this.overlay.clearActionSpotlight();
             }
 
             if (stepId !== 'takeover_plugin_preview') {
                 this.overlay.hidePluginPreview();
             }
 
-            if (performance.bubbleText && !shouldNarrateAfterMove) {
+            if (performance.bubbleText && !shouldNarrateAfterMove && !shouldNarrateInChat) {
                 this.overlay.showBubble(performance.bubbleText, {
                     title: 'Yui',
                     emotion: performance.emotion || 'neutral',
@@ -1493,7 +1638,7 @@
                 this.enableInterrupts(step);
             }
 
-            if (performance.bubbleText && shouldNarrateDuringMove) {
+            if (performance.bubbleText && shouldNarrateDuringMove && !shouldNarrateInChat) {
                 this.overlay.showBubble(performance.bubbleText, {
                     title: 'Yui',
                     emotion: performance.emotion || 'neutral',
@@ -1506,6 +1651,10 @@
             }
 
             if (shouldNarrateDuringMove) {
+                if (performance.bubbleText && shouldNarrateInChat) {
+                    this.appendGuideChatMessage(performance.bubbleText);
+                    this.overlay.hideBubble();
+                }
                 narrationPromise = this.speakLineAndWait(performance.bubbleText || '');
             }
 
@@ -1537,34 +1686,10 @@
                 this.disableInterrupts();
             }
 
-            if (performance.bubbleText && shouldNarrateAfterMove) {
-                this.overlay.showBubble(performance.bubbleText, {
-                    title: 'Yui',
-                    emotion: performance.emotion || 'neutral',
-                    anchorRect: anchorRect
-                });
-            } else if (shouldNarrateAfterMove) {
-                this.overlay.hideBubble();
-            }
-
-            if (performance.emotion && shouldNarrateAfterMove) {
-                this.emotionBridge.apply(performance.emotion);
-            }
-
-            if (!shouldNarrateDuringMove) {
-                await this.speakLineAndWait(performance.bubbleText || '');
-                if (runId !== this.sceneRunId || this.destroyed) {
-                    return;
-                }
-            }
-
-            if (performance.cursorAction === 'click' && !shouldOpenPanelAfterNarration) {
-                this.cursor.click();
-            } else if (performance.cursorAction === 'wobble') {
-                this.cursor.wobble();
-            }
+            let handledPostMove = false;
 
             if (stepId === 'takeover_plugin_preview') {
+                handledPostMove = true;
                 this.cursor.click();
                 await this.openAgentPanel();
                 if (runId !== this.sceneRunId || this.destroyed) {
@@ -1573,9 +1698,22 @@
                 this.overlay.showPluginPreview(PREVIEW_ITEMS, {
                     title: '插件管理预演'
                 });
+                this.highlightChatWindow();
+                if (performance.emotion) {
+                    this.emotionBridge.apply(performance.emotion);
+                }
+                if (performance.bubbleText) {
+                    this.appendGuideChatMessage(performance.bubbleText);
+                }
+                await this.speakLineAndWait(performance.bubbleText || '');
+                if (runId !== this.sceneRunId || this.destroyed) {
+                    return;
+                }
+                this.highlightChatWindow();
             }
 
             if (stepId === 'takeover_settings_peek') {
+                handledPostMove = true;
                 this.cursor.click();
                 await this.closeAgentPanel();
                 const settingsMenuId = this.normalizeSettingsMenuId(performance.settingsMenuId || 'character');
@@ -1584,11 +1722,80 @@
                     return;
                 }
 
-                const spotlightTarget = menuVisible
-                    ? this.getSettingsMenuElement(settingsMenuId)
-                    : (this.isManagedPanelVisible('settings') ? this.getManagedPanelElement('settings') : null);
-                if (spotlightTarget) {
-                    this.overlay.activateSpotlight(spotlightTarget);
+                this.highlightChatWindow();
+                if (performance.emotion) {
+                    this.emotionBridge.apply(performance.emotion);
+                }
+                if (performance.bubbleText) {
+                    this.appendGuideChatMessage(performance.bubbleText);
+                }
+
+                const characterPhrase = '你看，这里可以穿我的新衣服、给我换一个好听的声音';
+                const highlightStartIndex = typeof performance.bubbleText === 'string'
+                    ? performance.bubbleText.indexOf(characterPhrase)
+                    : -1;
+                let settingsMenuHighlighted = false;
+
+                await this.speakLineAndWait(performance.bubbleText || '', {
+                    onBoundary: (event) => {
+                        if (settingsMenuHighlighted || highlightStartIndex < 0) {
+                            return;
+                        }
+
+                        const absoluteCharIndex = event && Number.isFinite(event.absoluteCharIndex)
+                            ? event.absoluteCharIndex
+                            : -1;
+                        if (absoluteCharIndex < highlightStartIndex) {
+                            return;
+                        }
+
+                        const spotlightTarget = menuVisible
+                            ? this.getSettingsMenuElement(settingsMenuId)
+                            : (this.isManagedPanelVisible('settings') ? this.getManagedPanelElement('settings') : null);
+                        if (!spotlightTarget) {
+                            return;
+                        }
+
+                        settingsMenuHighlighted = true;
+                        this.overlay.activateSpotlight(spotlightTarget);
+                    }
+                });
+                if (runId !== this.sceneRunId || this.destroyed) {
+                    return;
+                }
+                this.highlightChatWindow();
+            }
+
+            if (!handledPostMove) {
+                if (performance.bubbleText && shouldNarrateAfterMove && !shouldNarrateInChat) {
+                    this.overlay.showBubble(performance.bubbleText, {
+                        title: 'Yui',
+                        emotion: performance.emotion || 'neutral',
+                        anchorRect: anchorRect
+                    });
+                } else if (shouldNarrateAfterMove) {
+                    this.overlay.hideBubble();
+                }
+
+                if (performance.emotion && shouldNarrateAfterMove) {
+                    this.emotionBridge.apply(performance.emotion);
+                }
+
+                if (!shouldNarrateDuringMove) {
+                    if (performance.bubbleText && shouldNarrateInChat) {
+                        this.appendGuideChatMessage(performance.bubbleText);
+                        this.overlay.hideBubble();
+                    }
+                    await this.speakLineAndWait(performance.bubbleText || '');
+                    if (runId !== this.sceneRunId || this.destroyed) {
+                        return;
+                    }
+                }
+
+                if (performance.cursorAction === 'click' && !shouldOpenPanelAfterNarration) {
+                    this.cursor.click();
+                } else if (performance.cursorAction === 'wobble') {
+                    this.cursor.wobble();
                 }
             }
 
@@ -1597,7 +1804,7 @@
                 if (runId !== this.sceneRunId || this.destroyed) {
                     return;
                 }
-                this.overlay.clearSpotlight();
+                this.highlightChatWindow();
                 const centerPoint = this.getViewportCenter();
                 await wait(140);
                 if (runId !== this.sceneRunId || this.destroyed) {
@@ -1759,11 +1966,8 @@
 
             this.interruptNarrationForResistance();
 
-            this.overlay.showBubble(message, {
-                title: 'Yui',
-                emotion: performance.emotion || 'surprised',
-                anchorRect: null
-            });
+            this.overlay.hideBubble();
+            this.appendGuideChatMessage(message);
             this.emotionBridge.apply(performance.emotion || 'surprised');
             this.voiceQueue.speak(message).finally(() => {
                 const narration = this.activeNarration;
@@ -1792,11 +1996,8 @@
             this.overlay.setTakingOver(true);
             this.overlay.setAngry(true);
             this.overlay.hidePluginPreview();
-            this.overlay.showBubble(performance.bubbleText || '人类~~~~！你真的很没礼貌喵！', {
-                title: 'Yui',
-                emotion: performance.emotion || 'angry',
-                anchorRect: null
-            });
+            this.overlay.hideBubble();
+            this.appendGuideChatMessage(performance.bubbleText || '人类~~~~！你真的很没礼貌喵！');
             this.emotionBridge.apply(performance.emotion || 'angry');
             await this.speakLineAndWait(performance.bubbleText || '');
             if (this.destroyed) {

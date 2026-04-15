@@ -65,6 +65,13 @@
         return $('react-chat-window-drag-handle');
     }
 
+    function isYuiGuideDragLocked() {
+        var body = document.body;
+        if (!body) return false;
+        return body.classList.contains('yui-guide-home-driver-hidden')
+            || body.classList.contains('yui-taking-over');
+    }
+
     function getMinimizeButton() {
         return $('reactChatWindowMinimizeButton');
     }
@@ -1302,6 +1309,7 @@
         var shell = getShell();
         if (!shell) return;
         if (isMobileWidth() && !minimized) return;
+        if (isYuiGuideDragLocked()) return;
 
         var rect = shell.getBoundingClientRect();
         dragState = {
