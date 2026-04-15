@@ -144,6 +144,13 @@
     var POPUP_OPEN_ANIMATION_MS = 250;
     var _popupsOpenedByTutorial = {};
 
+    // ─── M3: Handoff Token 常量 ──────────────────────────────
+
+    var HANDOFF_STORAGE_KEY = 'neko_yui_guide_handoff_token';
+    var HANDOFF_TOKEN_VERSION = 1;
+    var HANDOFF_TOKEN_TTL_MS = 5 * 60 * 1000; // 5 分钟
+    var HANDOFF_FLOW_ID = 'home_yui_guide_v1';
+
     function getPrefix() {
         if (typeof window.UniversalTutorialManager === 'function' &&
             typeof window.UniversalTutorialManager.detectModelPrefix === 'function') {
@@ -168,6 +175,124 @@
     function getPopup(buttonId, prefix) {
         var p = prefix || getPrefix();
         return document.getElementById(p + '-popup-' + buttonId);
+    }
+
+    // ─── M3: Handoff Token CRUD ──────────────────────────────
+
+    /**
+     * 生成简易唯一 ID。
+     */
+    function generateTokenId() {
+        return 'h_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 10);
+    }
+
+    /**
+     * 创建 handoff token 并写入 localStorage。
+     *
+     * @param {string} targetPage - 目标页面标识，如 'api_key'
+     * @param {string} [resumeScene] - 恢复场景 ID，如 'handoff_api_key'，可为 null
+     * @returns {Object|null} token 对象，失败返回 null
+     */
+    function createHandoffToken(targetPage, resumeScene) {
+        var now = Date.now();
+        var tokenObj = {
+            token: generateTokenId(),
+            token_version: HANDOFF_TOKEN_VERSION,
+            flow_id: HANDOFF_FLOW_ID,
+            source_page: 'home',
+            target_page: targetPage || '',
+            resume_scene: resumeScene || null,
+            created_at: now,
+            expires_at: now + HANDOFF_TOKEN_TTL_MS
+        };
+        try {
+            localStorage.setItem(HANDOFF_STORAGE_KEY, JSON.stringify(tokenObj));
+        } catch (e) {
+            console.error('[YuiGuideHandoff] createHandoffToken: 存储失败:', e);
+            return null;
+        }
+        return tokenObj;
+    }
+
+    /**
+     * 读取并校验 handoff token（不消费）。
+     *
+     * @returns {Object|null} 有效 token 对象，无则返回 null
+     */
+    function readHandoffToken() {
+        try {
+            var raw = localStorage.getItem(HANDOFF_STORAGE_KEY);
+            if (!raw) return null;
+            var tokenObj = JSON.parse(raw);
+            if (!tokenObj || !tokenObj.token || tokenObj.token_version !== HANDOFF_TOKEN_VERSION) {
+                return null;
+            }
+            if (Date.now() > tokenObj.expires_at) {
+                clearHandoffToken();
+                return null;
+            }
+            return tokenObj;
+        } catch (e) {
+            console.error('[YuiGuideHandoff] readHandoffToken: 读取失败:', e);
+            return null;
+        }
+    }
+
+    /**
+     * 消费 handoff token（单次语义：读取 + 校验页面 + 清除）。
+     *
+     * @param {string} [expectedPage] - 期望的目标页面标识，不匹配则不消费
+     * @returns {Object|null} 有效 token 对象，失败或不匹配返回 null
+     */
+    function consumeHandoffToken(expectedPage) {
+        var tokenObj = readHandoffToken();
+        if (!tokenObj) return null;
+
+        if (expectedPage && tokenObj.target_page !== expectedPage) {
+            console.warn('[YuiGuideHandoff] consumeHandoffToken: 页面不匹配, 期望:', expectedPage, '实际:', tokenObj.target_page);
+            return null;
+        }
+
+        clearHandoffToken();
+        return tokenObj;
+    }
+
+    /**
+     * 清除 localStorage 中的 handoff token。
+     */
+    function clearHandoffToken() {
+        try {
+            localStorage.removeItem(HANDOFF_STORAGE_KEY);
+        } catch (e) { /* ignore */ }
+    }
+
+    /**
+     * 打开目标页面并携带 handoff token。
+     * token 创建失败时回退到普通打开。
+     *
+     * @param {string} targetPage - 目标页面标识
+     * @param {string} [resumeScene] - 恢复场景 ID
+     * @param {string} openUrl - 目标页面 URL
+     * @param {string} windowName - 窗口名称简写
+     * @param {string} [features] - window.open features
+     * @returns {Promise<Window|null>}
+     */
+    function openPageWithHandoff(targetPage, resumeScene, openUrl, windowName, features) {
+        var tokenObj = createHandoffToken(targetPage, resumeScene);
+        if (!tokenObj) {
+            console.warn('[YuiGuideHandoff] openPageWithHandoff: token 创建失败，回退到普通打开');
+            return openPage(openUrl, windowName, features);
+        }
+
+        window.dispatchEvent(new CustomEvent('neko:yui-guide:handoff-sent', {
+            detail: {
+                token: tokenObj.token,
+                target_page: targetPage,
+                resume_scene: resumeScene
+            }
+        }));
+
+        return openPage(openUrl, windowName, features);
     }
 
     // ─── M2: 首页交互包装 API ────────────────────────────────
@@ -321,6 +446,7 @@
             manager.closePopupById(buttonId);
         });
         _popupsOpenedByTutorial = {};
+        clearHandoffToken();
     }
 
     window.addEventListener('neko:yui-guide:tutorial-end', function () {
@@ -344,7 +470,13 @@
         triggerGoodbye: triggerGoodbye,
         triggerReturn: triggerReturn,
         // M2 — 清理
-        cleanupTutorialPopups: cleanupTutorialPopups
+        cleanupTutorialPopups: cleanupTutorialPopups,
+        // M3 — 跨页 handoff
+        createHandoffToken: createHandoffToken,
+        readHandoffToken: readHandoffToken,
+        consumeHandoffToken: consumeHandoffToken,
+        clearHandoffToken: clearHandoffToken,
+        openPageWithHandoff: openPageWithHandoff
     });
 
     window.YuiGuidePageHandoff = handoff;
