@@ -449,7 +449,7 @@
             var cancelBtn = document.getElementById('avatar-cropper-cancel');
             var saveBtn = document.getElementById('avatar-cropper-save');
 
-            if (!popup || !wrap || !img || !svgMask || !cropBox) {
+            if (!popup || !wrap || !img || !svgMask || !cropBox || !cancelBtn || !saveBtn) {
                 resolve(null);
                 return;
             }
