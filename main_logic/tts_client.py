@@ -286,8 +286,10 @@ async def _non_bistream_tts_main_loop(
             if synth_task is not None and not synth_task.done():
                 try:
                     await synth_task
-                except (asyncio.CancelledError, Exception):
+                except asyncio.CancelledError:
                     pass
+                except Exception as e:
+                    logger.debug(f"{label} drain: synth_task 异常", exc_info=True)
             elif pending:
                 await asyncio.sleep(0)
             else:
@@ -300,8 +302,10 @@ async def _non_bistream_tts_main_loop(
             synth_task.cancel()
             try:
                 await synth_task
-            except (asyncio.CancelledError, Exception):
+            except asyncio.CancelledError:
                 pass
+            except Exception as e:
+                logger.debug(f"{label} cancel: synth_task 异常", exc_info=True)
         synth_task = None
 
     # ── 主循环 ──
@@ -1419,60 +1423,69 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                     buffer = ""
                     first_audio_received = False
 
+                    def _handle_sse_line(line: str) -> None:
+                        """解析单条 SSE data 行并将音频入队。"""
+                        nonlocal first_audio_received
+                        line = line.strip()
+                        if not line or not line.startswith('data: '):
+                            return
+                        json_str = line[6:]
+                        try:
+                            event_data = json.loads(json_str)
+                            choices = event_data.get('choices', [])
+                            if not choices or 'delta' not in choices[0]:
+                                return
+                            delta = choices[0]['delta']
+                            audio_b64 = delta.get('content', '')
+                            if not audio_b64:
+                                return
+
+                            audio_bytes = base64.b64decode(audio_b64)
+                            if len(audio_bytes) < 200:
+                                return
+
+                            sample_rate = delta.get('return_sample_rate', 24000)
+                            audio_array = np.frombuffer(
+                                audio_bytes, dtype=np.int16,
+                            ).astype(np.float32) / 32768.0
+
+                            # 首个音频块：裁剪 1s 初始化噪音 + 10ms 淡入
+                            if not first_audio_received:
+                                first_audio_received = True
+                                trim_samples = int(sample_rate)
+                                if len(audio_array) > trim_samples:
+                                    audio_array = audio_array[trim_samples:]
+                                fade_samples = min(
+                                    int(sample_rate * 0.01), len(audio_array),
+                                )
+                                if fade_samples > 0:
+                                    audio_array[:fade_samples] *= np.linspace(
+                                        0.0, 1.0, fade_samples,
+                                    )
+
+                            resampled = soxr.resample(
+                                audio_array, sample_rate, 48000, quality='HQ',
+                            )
+                            resampled_int16 = (
+                                (resampled * 32768.0)
+                                .clip(-32768, 32767)
+                                .astype(np.int16)
+                            )
+                            response_queue.put(resampled_int16.tobytes())
+                        except json.JSONDecodeError as e:
+                            logger.warning(f"CogTTS SSE JSON 解析失败: {e}")
+                        except Exception as e:
+                            logger.error(f"CogTTS 音频处理出错: {e}")
+
                     async for raw_chunk in resp.aiter_text():
                         buffer += raw_chunk
                         while '\n' in buffer:
                             line, buffer = buffer.split('\n', 1)
-                            line = line.strip()
-                            if not line or not line.startswith('data: '):
-                                continue
-                            json_str = line[6:]
-                            try:
-                                event_data = json.loads(json_str)
-                                choices = event_data.get('choices', [])
-                                if not choices or 'delta' not in choices[0]:
-                                    continue
-                                delta = choices[0]['delta']
-                                audio_b64 = delta.get('content', '')
-                                if not audio_b64:
-                                    continue
+                            _handle_sse_line(line)
 
-                                audio_bytes = base64.b64decode(audio_b64)
-                                if len(audio_bytes) < 200:
-                                    continue
-
-                                sample_rate = delta.get('return_sample_rate', 24000)
-                                audio_array = np.frombuffer(
-                                    audio_bytes, dtype=np.int16,
-                                ).astype(np.float32) / 32768.0
-
-                                # 首个音频块：裁剪 1s 初始化噪音 + 10ms 淡入
-                                if not first_audio_received:
-                                    first_audio_received = True
-                                    trim_samples = int(sample_rate)
-                                    if len(audio_array) > trim_samples:
-                                        audio_array = audio_array[trim_samples:]
-                                    fade_samples = min(
-                                        int(sample_rate * 0.01), len(audio_array),
-                                    )
-                                    if fade_samples > 0:
-                                        audio_array[:fade_samples] *= np.linspace(
-                                            0.0, 1.0, fade_samples,
-                                        )
-
-                                resampled = soxr.resample(
-                                    audio_array, sample_rate, 48000, quality='HQ',
-                                )
-                                resampled_int16 = (
-                                    (resampled * 32768.0)
-                                    .clip(-32768, 32767)
-                                    .astype(np.int16)
-                                )
-                                response_queue.put(resampled_int16.tobytes())
-                            except json.JSONDecodeError as e:
-                                logger.warning(f"CogTTS SSE JSON 解析失败: {e}")
-                            except Exception as e:
-                                logger.error(f"CogTTS 音频处理出错: {e}")
+                    # 处理尾部残留（服务端最后一条消息可能不带换行）
+                    if buffer.strip():
+                        _handle_sse_line(buffer)
 
             try:
                 await _non_bistream_tts_main_loop(
