@@ -149,6 +149,11 @@
             const bottom = Math.min(window.innerHeight, Math.ceil(rect.bottom + padding));
             const width = Math.max(0, right - left);
             const height = Math.max(0, bottom - top);
+            const radius = this.getSpotlightRadius(element);
+            const minEdge = Math.min(width, height);
+            const isCircular = minEdge > 0
+                && Math.abs(width - height) <= 18
+                && radius >= ((minEdge / 2) - 6);
 
             return {
                 left: left,
@@ -157,7 +162,8 @@
                 bottom: bottom,
                 width: width,
                 height: height,
-                radius: this.getSpotlightRadius(element)
+                radius: radius,
+                isCircular: isCircular
             };
         }
 
@@ -219,11 +225,21 @@
                 return;
             }
 
-            this.applyBackdropMask(spotlightRect);
+            if (this.backdrop) {
+                if (spotlightRect.isCircular) {
+                    this.backdrop.hidden = true;
+                    this.backdrop.classList.remove('is-visible');
+                } else {
+                    this.backdrop.hidden = false;
+                    this.backdrop.classList.add('is-visible');
+                    this.applyBackdropMask(spotlightRect);
+                }
+            }
 
             if (this.spotlightFrame) {
                 this.spotlightFrame.hidden = false;
                 this.spotlightFrame.classList.add('is-visible');
+                this.spotlightFrame.classList.toggle('is-circular-mask', !!spotlightRect.isCircular);
                 this.spotlightFrame.style.left = spotlightRect.left + 'px';
                 this.spotlightFrame.style.top = spotlightRect.top + 'px';
                 this.spotlightFrame.style.width = spotlightRect.width + 'px';
@@ -384,6 +400,7 @@
             if (this.spotlightFrame) {
                 this.spotlightFrame.hidden = true;
                 this.spotlightFrame.classList.remove('is-visible');
+                this.spotlightFrame.classList.remove('is-circular-mask');
             }
 
             if (this.highlightedElement) {

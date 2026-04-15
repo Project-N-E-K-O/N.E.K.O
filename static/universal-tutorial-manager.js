@@ -193,10 +193,16 @@ class UniversalTutorialManager {
         }
 
         try {
+            const homeInteractionApi = (
+                typeof window.getYuiGuideHomeInteractionApi === 'function'
+                    ? window.getYuiGuideHomeInteractionApi()
+                    : (window.YuiGuideHomeInteractionApi || window.YuiGuidePageHandoff || null)
+            );
             const director = window.createYuiGuideDirector({
                 tutorialManager: this,
                 page: this.currentPage,
-                registry: this.getYuiGuideRegistry()
+                registry: this.getYuiGuideRegistry(),
+                homeInteractionApi: homeInteractionApi
             });
 
             if (director && typeof director === 'object') {

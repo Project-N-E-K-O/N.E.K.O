@@ -288,5 +288,11 @@
         ensureSettingsMenuVisible: ensureSettingsMenuVisible
     });
 
+    function getHomeInteractionApi() {
+        return handoff;
+    }
+
     window.YuiGuidePageHandoff = handoff;
+    window.YuiGuideHomeInteractionApi = handoff;
+    window.getYuiGuideHomeInteractionApi = getHomeInteractionApi;
 })();

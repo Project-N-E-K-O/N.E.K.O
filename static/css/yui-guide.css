@@ -53,6 +53,13 @@ body.yui-guide-home-driver-hidden .driver-highlight {
   animation: yui-guide-chat-pulse 1.5s ease-in-out infinite;
 }
 
+.yui-guide-spotlight-frame.is-circular-mask {
+  box-shadow:
+    0 0 0 9999px rgba(3, 7, 18, 0.62),
+    0 0 0 10px rgba(255, 214, 168, 0.28),
+    0 22px 44px rgba(203, 122, 46, 0.2);
+}
+
 .yui-guide-bubble {
   position: fixed;
   width: min(320px, calc(100vw - 32px));
