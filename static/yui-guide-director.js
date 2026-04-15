@@ -2417,31 +2417,66 @@
                     ? performance.bubbleText.indexOf(characterPhrase)
                     : -1;
                 let settingsMenuHighlighted = false;
+                let settingsMenuFallbackTimer = 0;
 
-                await this.speakLineAndWait(performance.bubbleText || '', {
-                    onBoundary: (event) => {
-                        if (settingsMenuHighlighted || highlightStartIndex < 0) {
-                            return;
-                        }
-
-                        const absoluteCharIndex = event && Number.isFinite(event.absoluteCharIndex)
-                            ? event.absoluteCharIndex
-                            : -1;
-                        if (absoluteCharIndex < highlightStartIndex) {
-                            return;
-                        }
-
-                        const spotlightTarget = menuVisible
-                            ? this.getSettingsMenuElement(settingsMenuId)
-                            : (this.isManagedPanelVisible('settings') ? this.getManagedPanelElement('settings') : null);
-                        if (!spotlightTarget) {
-                            return;
-                        }
-
-                        settingsMenuHighlighted = true;
-                        this.overlay.activateSecondarySpotlight(spotlightTarget);
+                const activateSettingsMenuSpotlight = () => {
+                    if (settingsMenuHighlighted) {
+                        return;
                     }
-                });
+
+                    const spotlightTarget = menuVisible
+                        ? this.getSettingsMenuElement(settingsMenuId)
+                        : (this.isManagedPanelVisible('settings') ? this.getManagedPanelElement('settings') : null);
+                    if (!spotlightTarget) {
+                        return;
+                    }
+
+                    settingsMenuHighlighted = true;
+                    this.overlay.activateSecondarySpotlight(spotlightTarget);
+                };
+
+                if (highlightStartIndex >= 0 && performance.bubbleText) {
+                    const estimatedDurationMs = Math.max(
+                        estimateSpeechDurationMs(performance.bubbleText),
+                        3000
+                    );
+                    const highlightDelayMs = clamp(
+                        Math.round((highlightStartIndex / Math.max(performance.bubbleText.length, 1)) * estimatedDurationMs),
+                        200,
+                        Math.max(estimatedDurationMs - 200, 200)
+                    );
+                    settingsMenuFallbackTimer = window.setTimeout(() => {
+                        settingsMenuFallbackTimer = 0;
+                        if (runId !== this.sceneRunId || this.destroyed) {
+                            return;
+                        }
+                        activateSettingsMenuSpotlight();
+                    }, highlightDelayMs);
+                }
+
+                try {
+                    await this.speakLineAndWait(performance.bubbleText || '', {
+                        onBoundary: (event) => {
+                            if (settingsMenuHighlighted || highlightStartIndex < 0) {
+                                return;
+                            }
+
+                            const absoluteCharIndex = event && Number.isFinite(event.absoluteCharIndex)
+                                ? event.absoluteCharIndex
+                                : -1;
+                            if (absoluteCharIndex < highlightStartIndex) {
+                                return;
+                            }
+
+                            activateSettingsMenuSpotlight();
+                        }
+                    });
+                } finally {
+                    if (settingsMenuFallbackTimer) {
+                        window.clearTimeout(settingsMenuFallbackTimer);
+                        settingsMenuFallbackTimer = 0;
+                    }
+                }
                 if (runId !== this.sceneRunId || this.destroyed) {
                     return;
                 }
