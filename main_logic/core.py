@@ -1910,7 +1910,7 @@ class LLMSessionManager:
             
             initial_prompt = await self._build_initial_prompt()
             self.initial_cache_snapshot_len = len(self.message_cache_for_new_session)
-            async with httpx.AsyncClient(timeout=2.0, proxy=None, trust_env=False) as client:
+            async with httpx.AsyncClient(timeout=3.0, proxy=None, trust_env=False) as client:
                 resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}")
                 if not resp.is_success:
                     raise ConnectionError(f"❌ 记忆服务热切换时返回非2xx状态 {resp.status_code}: {resp.text[:200]}")

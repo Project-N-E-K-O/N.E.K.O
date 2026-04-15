@@ -554,11 +554,17 @@
                 }
             }
 
-            // 音乐搭话
+            // 音乐搭话（正在播放或冷却期内不发送 music 模式，避免后端搜歌浪费 + 污染模型上下文）
             console.log('[ProactiveChat] 检查音乐模式: proactiveMusicEnabled=' + S.proactiveMusicEnabled + ', proactiveChatEnabled=' + S.proactiveChatEnabled);
             if (S.proactiveMusicEnabled && S.proactiveChatEnabled) {
-                console.log('[ProactiveChat] 音乐模式已启用');
-                availableModes.push('music');
+                var musicPlaying = (typeof window.isMusicPlaying === 'function') && window.isMusicPlaying();
+                var musicCooldown = (typeof window.isMusicCooldown === 'function') && window.isMusicCooldown();
+                if (musicPlaying || musicCooldown) {
+                    console.log('[ProactiveChat] 音乐模式跳过: playing=' + musicPlaying + ', cooldown=' + musicCooldown);
+                } else {
+                    console.log('[ProactiveChat] 音乐模式已启用');
+                    availableModes.push('music');
+                }
             }
 
             // Meme搭话
@@ -641,9 +647,13 @@
                 if (S.proactivePersonalChatEnabled && S.proactiveChatEnabled) {
                     latestModes.push('personal');
                 }
-                // 音乐搭话
+                // 音乐搭话（重新检查冷却状态，await 期间可能变化）
                 if (S.proactiveMusicEnabled && S.proactiveChatEnabled) {
-                    latestModes.push('music');
+                    var musicPlayingNow = (typeof window.isMusicPlaying === 'function') && window.isMusicPlaying();
+                    var musicCooldownNow = (typeof window.isMusicCooldown === 'function') && window.isMusicCooldown();
+                    if (!musicPlayingNow && !musicCooldownNow) {
+                        latestModes.push('music');
+                    }
                 }
                 // Meme搭话
                 if (S.proactiveMemeEnabled && S.proactiveChatEnabled) {
