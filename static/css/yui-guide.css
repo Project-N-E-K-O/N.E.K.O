@@ -28,7 +28,7 @@ body.yui-guide-home-driver-hidden .driver-highlight {
 
 .yui-guide-backdrop-panel {
   position: fixed;
-  background: rgba(3, 7, 18, 0.62);
+  background: rgba(3, 7, 18, 0.76);
   pointer-events: none;
   transition:
     top 220ms ease,
@@ -342,16 +342,11 @@ body.yui-taking-over #react-chat-window-root .composer-input-shell.yui-guide-cha
   z-index: auto;
 }
 
-body.yui-guide-home-driver-hidden #react-chat-window-root .composer-input-shell,
-body.yui-guide-home-driver-hidden #react-chat-window-root .composer-input-shell:focus-within,
 body.yui-taking-over #react-chat-window-root .composer-input-shell,
 body.yui-taking-over #react-chat-window-root .composer-input-shell:focus-within {
   box-shadow: none !important;
 }
 
-body.yui-guide-home-driver-hidden #react-chat-window-root .composer-input,
-body.yui-guide-home-driver-hidden #react-chat-window-root .composer-input:focus,
-body.yui-guide-home-driver-hidden #react-chat-window-root .composer-input:focus-visible,
 body.yui-taking-over #react-chat-window-root .composer-input,
 body.yui-taking-over #react-chat-window-root .composer-input:focus,
 body.yui-taking-over #react-chat-window-root .composer-input:focus-visible {

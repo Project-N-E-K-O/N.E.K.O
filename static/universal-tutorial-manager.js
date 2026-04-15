@@ -193,11 +193,18 @@ class UniversalTutorialManager {
         }
 
         try {
-            const homeInteractionApi = (
-                typeof window.getYuiGuideHomeInteractionApi === 'function'
-                    ? window.getYuiGuideHomeInteractionApi()
-                    : (window.YuiGuideHomeInteractionApi || window.YuiGuidePageHandoff || null)
-            );
+            let homeInteractionApi = null;
+            if (typeof window.getYuiGuideHomeInteractionApi === 'function') {
+                try {
+                    homeInteractionApi = window.getYuiGuideHomeInteractionApi() || null;
+                } catch (error) {
+                    console.warn('[Tutorial] 获取首页交互 API 失败，改用兜底实现:', error);
+                }
+            }
+            if (!homeInteractionApi) {
+                homeInteractionApi = window.YuiGuideHomeInteractionApi || window.YuiGuidePageHandoff || null;
+            }
+
             const director = window.createYuiGuideDirector({
                 tutorialManager: this,
                 page: this.currentPage,

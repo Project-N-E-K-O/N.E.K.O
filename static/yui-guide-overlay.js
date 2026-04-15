@@ -223,10 +223,13 @@
             panels.bottom.style.height = Math.max(0, viewportHeight - spotlightRect.bottom) + 'px';
         }
 
-        updateSpotlightFrame(frame, spotlightRect) {
+        updateSpotlightFrame(frame, spotlightRect, options) {
             if (!frame) {
                 return;
             }
+
+            const normalizedOptions = options || {};
+            const allowMask = normalizedOptions.allowMask !== false;
 
             if (!spotlightRect) {
                 frame.hidden = true;
@@ -237,7 +240,7 @@
 
             frame.hidden = false;
             frame.classList.add('is-visible');
-            frame.classList.toggle('is-circular-mask', !!spotlightRect.isCircular);
+            frame.classList.toggle('is-circular-mask', !!spotlightRect.isCircular && allowMask);
             frame.style.left = spotlightRect.left + 'px';
             frame.style.top = spotlightRect.top + 'px';
             frame.style.width = spotlightRect.width + 'px';
@@ -274,14 +277,14 @@
             const actionRect = this.getSpotlightRect(this.actionHighlightedElement);
 
             if (this.backdrop) {
-                if (actionRect) {
-                    if (actionRect.isCircular) {
+                if (persistentRect) {
+                    if (persistentRect.isCircular) {
                         this.backdrop.hidden = true;
                         this.backdrop.classList.remove('is-visible');
                     } else {
                         this.backdrop.hidden = false;
                         this.backdrop.classList.add('is-visible');
-                        this.applyBackdropMask(actionRect);
+                        this.applyBackdropMask(persistentRect);
                     }
                 } else {
                     this.backdrop.hidden = true;
@@ -289,8 +292,12 @@
                 }
             }
 
-            this.updateSpotlightFrame(this.persistentSpotlightFrame, persistentRect);
-            this.updateSpotlightFrame(this.actionSpotlightFrame, actionRect);
+            this.updateSpotlightFrame(this.persistentSpotlightFrame, persistentRect, {
+                allowMask: true
+            });
+            this.updateSpotlightFrame(this.actionSpotlightFrame, actionRect, {
+                allowMask: false
+            });
         }
 
         startSpotlightTracking() {

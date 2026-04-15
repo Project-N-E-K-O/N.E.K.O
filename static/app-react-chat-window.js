@@ -1326,6 +1326,10 @@
 
     function updateDrag(clientX, clientY) {
         if (!dragState) return;
+        if (isYuiGuideDragLocked()) {
+            stopDrag();
+            return;
+        }
 
         var dx = clientX - dragState.startClientX;
         var dy = clientY - dragState.startClientY;

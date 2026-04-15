@@ -3,7 +3,7 @@
     // Dev B edits performance blocks. Dev C edits anchor/navigation blocks.
     // If you need to change field shape or scene IDs, update the freeze doc first.
 
-    const CONTRACT_VERSION = 1;
+    const CONTRACT_VERSION = 2;
     const PAGE_KEYS = Object.freeze([
         'home',
         'api_key',

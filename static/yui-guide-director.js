@@ -580,7 +580,18 @@
                 return fallbackTarget;
             }
 
-            if (stepId === 'takeover_capture_cursor' || stepId === 'takeover_plugin_preview' || stepId === 'takeover_settings_peek') {
+            if (stepId === 'takeover_capture_cursor' || stepId === 'takeover_plugin_preview') {
+                return fallbackTarget;
+            }
+
+            if (stepId === 'takeover_settings_peek') {
+                const settingsMenuId = this.normalizeSettingsMenuId((performance && performance.settingsMenuId) || 'character');
+                if (this.isManagedPanelVisible('settings')) {
+                    return this.getSettingsMenuElement(settingsMenuId)
+                        || this.getManagedPanelElement('settings')
+                        || fallbackTarget;
+                }
+
                 return fallbackTarget;
             }
 
@@ -1816,6 +1827,12 @@
                     await this.cursor.moveToPoint(centerPoint.x, centerPoint.y, { durationMs: 360 });
                 }
                 this.cursor.wobble();
+                await wait(260);
+                if (runId !== this.sceneRunId || this.destroyed) {
+                    return;
+                }
+                this.cursor.hide();
+                this.overlay.clearActionSpotlight();
                 this.disableInterrupts();
                 this.overlay.setTakingOver(false);
             }
