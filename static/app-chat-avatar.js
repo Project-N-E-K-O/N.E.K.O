@@ -413,6 +413,55 @@
         });
     }
 
+    /**
+     * 通过 BroadcastChannel 请求 Pet 窗口执行带源数据的截取。
+     */
+    function captureAvatarPreviewViaBroadcast(includeSourceDataUrl) {
+        return new Promise(function (resolve, reject) {
+            var bc = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
+            if (!bc) {
+                reject(new Error('BroadcastChannel unavailable'));
+                return;
+            }
+            var requestId = 'cap_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+            var finished = false;
+            var timerId = null;
+            function onMessage(event) {
+                if (!event.data || event.data.action !== 'avatar_capture_result') return;
+                if (event.data.requestId !== requestId) return;
+                if (finished) return;
+                finished = true;
+                bc.removeEventListener('message', onMessage);
+                if (timerId) { clearTimeout(timerId); timerId = null; }
+                if (event.data.error) {
+                    reject(new Error(translateLabel('chat.avatarPreviewFailed', '生成头像失败')));
+                } else {
+                    var result = {
+                        dataUrl: event.data.dataUrl || '',
+                        modelType: event.data.modelType || ''
+                    };
+                    if (event.data.sourceDataUrl) result.sourceDataUrl = event.data.sourceDataUrl;
+                    if (event.data.cropRectPixels) result.cropRectPixels = event.data.cropRectPixels;
+                    resolve(result);
+                }
+            }
+            bc.addEventListener('message', onMessage);
+            timerId = setTimeout(function () {
+                if (finished) return;
+                finished = true;
+                bc.removeEventListener('message', onMessage);
+                reject(new Error(translateLabel('chat.avatarPreviewFailed', '生成头像失败')));
+            }, 15000);
+            bc.postMessage({
+                action: 'request_avatar_capture',
+                requestId: requestId,
+                includeSourceDataUrl: !!includeSourceDataUrl,
+                lanlan_name: (window.lanlan_config && window.lanlan_config.lanlan_name) || '',
+                timestamp: Date.now()
+            });
+        });
+    }
+
     async function captureAvatarPreview(opts) {
         const extra = opts || {};
         if (window.avatarPortrait && typeof window.avatarPortrait.capture === 'function') {
@@ -427,8 +476,14 @@
                 includeSourceDataUrl: !!extra.includeSourceDataUrl
             });
         }
-        if (window.__NEKO_MULTI_WINDOW__ && typeof window.__nekoRequestAvatarPreview === 'function') {
-            return captureAvatarPreviewViaIpc();
+        if (window.__NEKO_MULTI_WINDOW__) {
+            if (extra.includeSourceDataUrl) {
+                return captureAvatarPreviewViaBroadcast(true);
+            }
+            if (typeof window.__nekoRequestAvatarPreview === 'function') {
+                return captureAvatarPreviewViaIpc();
+            }
+            return captureAvatarPreviewViaBroadcast(false);
         }
         throw new Error(translateLabel('chat.avatarPreviewUnavailable', '头像预览功能尚未就绪。'));
     }
@@ -697,7 +752,7 @@
                         cropRect.x, cropRect.y, cropRect.size, cropRect.size,
                         0, 0, 320, 320
                     );
-                    resolve(canvas.toDataURL('image/png', 0.92));
+                    resolve(canvas.toDataURL('image/png'));
                 } catch (err) {
                     reject(err);
                 }

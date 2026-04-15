@@ -923,6 +923,41 @@
                         }
                         break;
                     }
+                    case 'request_avatar_capture': {
+                        if (window.location.pathname === '/chat') break;
+                        var captureRequestId = event.data.requestId || '';
+                        var includeSource = !!event.data.includeSourceDataUrl;
+                        if (window.avatarPortrait && typeof window.avatarPortrait.capture === 'function') {
+                            window.avatarPortrait.capture({
+                                width: 320, height: 320, padding: 0.035,
+                                shape: 'rounded', radius: 40,
+                                background: 'rgba(255, 255, 255, 0.96)',
+                                includeDataUrl: true,
+                                includeSourceDataUrl: includeSource
+                            }).then(function (result) {
+                                if (!nekoBroadcastChannel) return;
+                                nekoBroadcastChannel.postMessage({
+                                    action: 'avatar_capture_result',
+                                    requestId: captureRequestId,
+                                    dataUrl: result.dataUrl || '',
+                                    modelType: result.modelType || '',
+                                    sourceDataUrl: includeSource ? (result.sourceDataUrl || '') : '',
+                                    cropRectPixels: result.cropRectPixels || null,
+                                    timestamp: Date.now()
+                                });
+                            }).catch(function (err) {
+                                console.error('[BroadcastChannel] avatar capture failed:', err);
+                                if (!nekoBroadcastChannel) return;
+                                nekoBroadcastChannel.postMessage({
+                                    action: 'avatar_capture_result',
+                                    requestId: captureRequestId,
+                                    error: true,
+                                    timestamp: Date.now()
+                                });
+                            });
+                        }
+                        break;
+                    }
                 }
             };
         }
