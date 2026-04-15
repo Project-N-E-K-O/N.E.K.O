@@ -772,7 +772,7 @@
         "assistApiKeyGemini": "지원 API 키 - Gemini",
         "assistApiKeyKimi": "지원 API 키 - Kimi",
         "assistApiKeyHint": "(Assist API가 {{provider}}인 경우에만 필요함)",
-        "assistApiKeyPlaceholder": "선택 사항, 기본값은 핵심 API 키입니다.",
+        "assistApiKeyPlaceholder": "비어 있으면 관리 대장의 키를 자동 사용",
         "providerNames": {
             "ali": "알리바바",
             "openai": "오픈AI",
@@ -811,7 +811,7 @@
         "coreApiAutoFillHint": "API 관리 대장에서 키가 자동 입력됩니다. 직접 입력도 가능합니다",
         "assistApiSelectLabel": "보조 API 제공업체",
         "assistApiKeyLabel": "보조 API 키",
-        "assistApiAutoFillHint": "API 관리 대장에서 키가 자동 입력됩니다. 직접 입력도 가능합니다",
+        "assistApiAutoFillHint": "비어 있으면 관리 대장의 키를 자동 사용, 직접 입력하면 독립적으로 저장됩니다",
         "keyBookTitle": "API 관리 대장",
         "keyBookDescription": "모든 API 키를 한 곳에서 관리합니다. 코어/보조 API에서 제공업체를 전환할 때 여기서 키가 자동 입력되며, 입력한 키도 여기에 자동 저장됩니다.",
         "keyBookPlaceholder": "API 제공업체 설정 로딩 중...",

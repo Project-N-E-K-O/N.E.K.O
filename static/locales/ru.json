@@ -772,7 +772,7 @@
         "assistApiKeyGemini": "Вспомогательный API Key — Gemini",
         "assistApiKeyKimi": "Вспомогательный API Key — Kimi",
         "assistApiKeyHint": "(Требуется только когда вспомогательный API — {{provider}})",
-        "assistApiKeyPlaceholder": "Необязательно, по умолчанию основной API Key",
+        "assistApiKeyPlaceholder": "Автоматически заполняется из справочника",
         "providerNames": {
             "ali": "Alibaba",
             "openai": "OpenAI",
@@ -811,7 +811,7 @@
         "coreApiAutoFillHint": "Ключ автоматически заполняется из справочника API, можно ввести вручную",
         "assistApiSelectLabel": "Провайдер вспомогательного API",
         "assistApiKeyLabel": "Ключ вспомогательного API",
-        "assistApiAutoFillHint": "Ключ автоматически заполняется из справочника API, можно ввести вручную",
+        "assistApiAutoFillHint": "При пустом поле используется ключ из справочника; введённый вручную сохраняется отдельно",
         "keyBookTitle": "Справочник API",
         "keyBookDescription": "Управление всеми API-ключами в одном месте. Ключи автоматически подставляются при смене провайдера в основном/вспомогательном API, а введённые ключи автоматически сохраняются сюда.",
         "keyBookPlaceholder": "Загрузка конфигурации провайдеров API...",

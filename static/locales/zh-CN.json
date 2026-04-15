@@ -772,7 +772,7 @@
         "assistApiKeyGemini": "辅助API Key - Gemini",
         "assistApiKeyKimi": "辅助API Key - Kimi",
         "assistApiKeyHint": "（仅当辅助API为{{provider}}时需要填写）",
-        "assistApiKeyPlaceholder": "可选，默认为核心API Key",
+        "assistApiKeyPlaceholder": "留空使用管理簿对应 Key",
         "providerNames": {
             "ali": "阿里",
             "openai": "OpenAI",
@@ -811,7 +811,7 @@
         "coreApiAutoFillHint": "Key从API管理簿自动填充，也可在此直接输入",
         "assistApiSelectLabel": "辅助API服务商",
         "assistApiKeyLabel": "辅助API Key",
-        "assistApiAutoFillHint": "Key从API管理簿自动填充，也可在此直接输入",
+        "assistApiAutoFillHint": "留空时自动使用管理簿中的Key，手动输入则独立保存",
         "keyBookTitle": "API 管理簿",
         "keyBookDescription": "统一管理所有API Key。核心API和辅助API切换服务商时会自动从此处读取Key，在核心/辅助区域输入的Key也会自动回写到此处。",
         "keyBookPlaceholder": "请先加载API服务商配置",
