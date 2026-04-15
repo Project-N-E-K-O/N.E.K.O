@@ -569,6 +569,7 @@ async def get_core_config_api():
             "assistApiKeyMinimaxIntl": core_cfg.get('assistApiKeyMinimaxIntl', ''),
             "assistApiKeyGrok": core_cfg.get('assistApiKeyGrok', ''),
             "assistApiKeyClaude": core_cfg.get('assistApiKeyClaude', ''),
+            "assistApiKeyOpenrouter": core_cfg.get('assistApiKeyOpenrouter', ''),
             "mcpToken": core_cfg.get('mcpToken', ''),
             "openclawUrl": core_cfg.get('openclawUrl'),
             "openclawTimeout": core_cfg.get('openclawTimeout'),
@@ -657,7 +658,7 @@ async def update_core_config(request: Request):
             'assistApiKeyGlm', 'assistApiKeyStep', 'assistApiKeySilicon',
             'assistApiKeyGemini', 'assistApiKeyKimi', 'assistApiKeyDoubao',
             'assistApiKeyMinimax', 'assistApiKeyMinimaxIntl', 'assistApiKeyGrok',
-            'assistApiKeyClaude',
+            'assistApiKeyClaude', 'assistApiKeyOpenrouter',
         ]
         for field in _api_key_fields:
             if field in data:

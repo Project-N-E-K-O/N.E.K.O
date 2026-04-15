@@ -805,7 +805,8 @@
             "minimax": "MiniMax（国服）",
             "minimax_intl": "MiniMax（国际服）",
             "claude": "Claude（Anthropic，国内无法使用）",
-            "grok": "Grok（xAI）"
+            "grok": "Grok（xAI）",
+            "openrouter": "OpenRouter（模型聚合，国内无法使用）"
         },
         "coreApiAutoFillHint": "Key从API管理簿自动填充，也可在此直接输入",
         "assistApiSelectLabel": "辅助API服务商",
@@ -837,7 +838,8 @@
             "minimax": "MiniMax（国服）",
             "minimax_intl": "MiniMax（国际服）",
             "claude": "Claude（Anthropic）",
-            "grok": "Grok（xAI）"
+            "grok": "Grok（xAI）",
+            "openrouter": "OpenRouter"
         },
         "freeVersionNoApiKey": "免费版无需API Key",
         "pleaseEnterApiKey": "请输入您的API Key",

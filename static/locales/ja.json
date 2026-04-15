@@ -805,7 +805,8 @@
             "minimax": "MiniMax（中国版）",
             "minimax_intl": "MiniMax（国際版）",
             "claude": "Claude（Anthropic）",
-            "grok": "Grok（xAI）"
+            "grok": "Grok（xAI）",
+            "openrouter": "OpenRouter（モデルアグリゲーター）"
         },
         "coreApiAutoFillHint": "API管理簿からキーが自動入力されます。直接入力も可能です",
         "assistApiSelectLabel": "アシストAPIプロバイダー",
@@ -837,7 +838,8 @@
             "minimax": "MiniMax（中国版）",
             "minimax_intl": "MiniMax（国際版）",
             "claude": "Claude（Anthropic）",
-            "grok": "Grok（xAI）"
+            "grok": "Grok（xAI）",
+            "openrouter": "OpenRouter"
         },
         "freeVersionNoApiKey": "無料版はAPIキー不要です",
         "pleaseEnterApiKey": "APIキーを入力してください",
