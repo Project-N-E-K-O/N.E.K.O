@@ -147,6 +147,7 @@
     // ─── M3: Handoff Token 常量 ──────────────────────────────
 
     var HANDOFF_STORAGE_KEY = 'neko_yui_guide_handoff_token';
+    var HANDOFF_CONSUMED_NOTIFY_KEY = 'neko_yui_guide_handoff_consumed';
     var HANDOFF_TOKEN_VERSION = 1;
     var HANDOFF_TOKEN_TTL_MS = 5 * 60 * 1000; // 5 分钟
     var HANDOFF_FLOW_ID = 'home_yui_guide_v1';
@@ -184,6 +185,34 @@
      */
     function generateTokenId() {
         return 'h_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 10);
+    }
+
+    var HANDOFF_SESSION_ID = generateTokenId();
+
+    function getHandoffTokenSignature(tokenObj) {
+        if (!tokenObj) return '';
+        return tokenObj.signature || tokenObj.id || tokenObj.token || '';
+    }
+
+    function dispatchHandoffConsumedEvent(detail) {
+        var payload = detail || {};
+        window.dispatchEvent(new CustomEvent('neko:yui-guide:handoff-consumed', {
+            detail: payload
+        }));
+    }
+
+    function notifyHandoffConsumed(detail) {
+        var payload = detail || {};
+        dispatchHandoffConsumedEvent(payload);
+        try {
+            localStorage.setItem(HANDOFF_CONSUMED_NOTIFY_KEY, JSON.stringify({
+                detail: payload,
+                emitted_at: Date.now(),
+                sessionId: HANDOFF_SESSION_ID
+            }));
+        } catch (e) {
+            console.warn('[YuiGuideHandoff] notifyHandoffConsumed: 广播失败:', e);
+        }
     }
 
     /**
@@ -253,8 +282,62 @@
             return null;
         }
 
-        clearHandoffToken();
-        return tokenObj;
+        if (tokenObj.consumed) {
+            return null;
+        }
+
+        var expectedSignature = getHandoffTokenSignature(tokenObj);
+        if (!expectedSignature) {
+            console.warn('[YuiGuideHandoff] consumeHandoffToken: token 缺少稳定标识');
+            return null;
+        }
+
+        var currentTokenObj = readHandoffToken();
+        if (!currentTokenObj || currentTokenObj.consumed) {
+            return null;
+        }
+
+        if (getHandoffTokenSignature(currentTokenObj) !== expectedSignature) {
+            console.warn('[YuiGuideHandoff] consumeHandoffToken: token 已变化，取消消费');
+            return null;
+        }
+
+        var consumedTokenObj = Object.assign({}, currentTokenObj, {
+            consumed: true,
+            consumed_by: HANDOFF_SESSION_ID,
+            consumed_at: Date.now()
+        });
+
+        try {
+            localStorage.setItem(HANDOFF_STORAGE_KEY, JSON.stringify(consumedTokenObj));
+        } catch (e) {
+            console.error('[YuiGuideHandoff] consumeHandoffToken: 标记消费失败:', e);
+            return null;
+        }
+
+        var storedTokenObj = readHandoffToken();
+        if (!storedTokenObj || !storedTokenObj.consumed) {
+            return null;
+        }
+        if (getHandoffTokenSignature(storedTokenObj) !== expectedSignature) {
+            return null;
+        }
+        if (storedTokenObj.consumed_by !== HANDOFF_SESSION_ID) {
+            return null;
+        }
+
+        notifyHandoffConsumed({
+            token: storedTokenObj.token,
+            target_page: storedTokenObj.target_page || '',
+            resume_scene: storedTokenObj.resume_scene || null,
+            consumed_by: storedTokenObj.consumed_by,
+            consumed_at: storedTokenObj.consumed_at,
+            source_page: storedTokenObj.source_page || '',
+            flow_id: storedTokenObj.flow_id || '',
+            expected_page: expectedPage || null
+        });
+
+        return storedTokenObj;
     }
 
     /**
@@ -292,7 +375,22 @@
             }
         }));
 
-        return openPage(openUrl, windowName, features);
+        return openPage(openUrl, windowName, features).then(function (childWin) {
+            if (childWin) {
+                return childWin;
+            }
+
+            var currentTokenObj = readHandoffToken();
+            if (
+                currentTokenObj &&
+                !currentTokenObj.consumed &&
+                getHandoffTokenSignature(currentTokenObj) === getHandoffTokenSignature(tokenObj)
+            ) {
+                clearHandoffToken();
+            }
+
+            return null;
+        });
     }
 
     // ─── M2: 首页交互包装 API ────────────────────────────────
@@ -440,14 +538,30 @@
      */
     function cleanupTutorialPopups() {
         var manager = getManager();
-        if (!manager || typeof manager.closePopupById !== 'function') return;
-
-        Object.keys(_popupsOpenedByTutorial).forEach(function (buttonId) {
-            manager.closePopupById(buttonId);
-        });
-        _popupsOpenedByTutorial = {};
         clearHandoffToken();
+
+        if (manager && typeof manager.closePopupById === 'function') {
+            Object.keys(_popupsOpenedByTutorial).forEach(function (buttonId) {
+                manager.closePopupById(buttonId);
+            });
+        }
+        _popupsOpenedByTutorial = {};
     }
+
+    window.addEventListener('storage', function (event) {
+        if (event.key !== HANDOFF_CONSUMED_NOTIFY_KEY || !event.newValue) {
+            return;
+        }
+        try {
+            var payload = JSON.parse(event.newValue);
+            if (!payload || payload.sessionId === HANDOFF_SESSION_ID) {
+                return;
+            }
+            dispatchHandoffConsumedEvent(payload.detail || {});
+        } catch (e) {
+            console.warn('[YuiGuideHandoff] handoff_consumed storage payload 无法解析:', e);
+        }
+    });
 
     window.addEventListener('neko:yui-guide:tutorial-end', function () {
         cleanupTutorialPopups();
