@@ -176,7 +176,7 @@ def test_minimax_worker_streams_audio_via_sse(monkeypatch):
     request_queue.put(("speech-1", "世界今天"))
     request_queue.put((None, None))
 
-    audio_item, seen = _wait_for_queue_item(
+    audio_item, _ = _wait_for_queue_item(
         response_queue,
         lambda item: isinstance(item, tuple) and len(item) == 3 and item[0] == "__audio__",
     )
@@ -219,7 +219,7 @@ def test_minimax_worker_streams_audio_via_json_format(monkeypatch):
     request_queue.put(("speech-1", "世界今天"))
     request_queue.put((None, None))
 
-    audio_item, seen = _wait_for_queue_item(
+    audio_item, _ = _wait_for_queue_item(
         response_queue,
         lambda item: isinstance(item, tuple) and len(item) == 3 and item[0] == "__audio__",
     )
@@ -463,7 +463,7 @@ def test_minimax_worker_probe_rejects_404(monkeypatch):
     response_queue = queue.Queue()
     thread = _start_worker(request_queue, response_queue)
 
-    not_ready_item, seen = _wait_for_queue_item(
+    not_ready_item, _ = _wait_for_queue_item(
         response_queue,
         lambda item: item == ("__ready__", False),
     )
