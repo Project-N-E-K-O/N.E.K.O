@@ -535,11 +535,15 @@
                     crop.y = drag.oy + dy;
                 } else {
                     var hh = drag.handle;
-                    var delta;
-                    if (hh === 'br') { delta = Math.max(dx, dy); crop.size = drag.osize + delta; }
-                    else if (hh === 'tl') { delta = Math.min(dx, dy); crop.size = drag.osize - delta; crop.x = drag.ox + delta; crop.y = drag.oy + delta; }
-                    else if (hh === 'tr') { delta = Math.max(dx, -dy); crop.size = drag.osize + delta; crop.y = drag.oy - delta; }
-                    else if (hh === 'bl') { delta = Math.max(-dx, dy); crop.size = drag.osize + delta; crop.x = drag.ox - delta; }
+                    var ldx, ldy;
+                    if (hh === 'br')      { ldx =  dx; ldy =  dy; }
+                    else if (hh === 'tl') { ldx = -dx; ldy = -dy; }
+                    else if (hh === 'tr') { ldx =  dx; ldy = -dy; }
+                    else                  { ldx = -dx; ldy =  dy; }
+                    var delta = Math.max(ldx, ldy);
+                    crop.size = drag.osize + delta;
+                    if (hh === 'tl' || hh === 'bl') { crop.x = drag.ox - delta; }
+                    if (hh === 'tl' || hh === 'tr') { crop.y = drag.oy - delta; }
                 }
                 clampCrop();
                 renderCrop();
@@ -655,7 +659,10 @@
 
             cropperState = { finish: finish, controlsEl: controlsEl, onCtrlAction: onCtrlAction };
 
-            requestAnimationFrame(function () { initLayout(); });
+            requestAnimationFrame(function () {
+                initLayout();
+                positionPopupNearTrigger(popup, activeTrigger);
+            });
         });
     }
 
