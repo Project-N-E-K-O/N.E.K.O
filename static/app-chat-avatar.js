@@ -48,7 +48,8 @@
             localStorage.setItem(key, JSON.stringify({
                 dataUrl: preview.dataUrl,
                 modelType: preview.modelType,
-                capturedAt: preview.capturedAt
+                capturedAt: preview.capturedAt,
+                cacheKey: preview.cacheKey || ''
             }));
         } catch (_) { /* quota exceeded — 静默失败 */ }
     }
@@ -534,6 +535,15 @@
         }, 180);
     }
 
+    function handleModelLoaded(reason) {
+        var newCacheKey = getCurrentModelCacheKey();
+        if (cachedPreview && cachedPreview.dataUrl && cachedPreview.cacheKey === newCacheKey) {
+            return;
+        }
+        invalidateCachedPreview();
+        scheduleAutoCapture(reason);
+    }
+
     function bindModelLoadListeners() {
         const previousOnModelLoaded = window.live2dManager && typeof window.live2dManager.onModelLoaded === 'function'
             ? window.live2dManager.onModelLoaded
@@ -544,19 +554,16 @@
                 if (previousOnModelLoaded) {
                     previousOnModelLoaded.call(window.live2dManager, model, modelPath);
                 }
-                invalidateCachedPreview();
-                scheduleAutoCapture('live2d-model-loaded');
+                handleModelLoaded('live2d-model-loaded');
             };
         }
 
         window.addEventListener('vrm-model-loaded', function () {
-            invalidateCachedPreview();
-            scheduleAutoCapture('vrm-model-loaded');
+            handleModelLoaded('vrm-model-loaded');
         });
 
         window.addEventListener('mmd-model-loaded', function () {
-            invalidateCachedPreview();
-            scheduleAutoCapture('mmd-model-loaded');
+            handleModelLoaded('mmd-model-loaded');
         });
     }
 
@@ -642,7 +649,7 @@
             setPreviewNote(translateLabel('chat.avatarPreviewReadyHint', '这是从当前模型画布实时提取的头像预览。'));
         } else if (stored) {
             cachedPreview = {
-                cacheKey: getCurrentModelCacheKey(),
+                cacheKey: stored.cacheKey || getCurrentModelCacheKey(),
                 dataUrl: stored.dataUrl,
                 modelType: stored.modelType,
                 capturedAt: stored.capturedAt
