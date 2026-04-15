@@ -243,7 +243,7 @@
       "conversation_model": "google/gemini-2.5-flash",
       "summary_model": "deepseek/deepseek-v3.2",
       "correction_model": "deepseek/deepseek-v3.2",
-      "emotion_model": "google/gemma-3n-e4b-it:free",
+      "emotion_model": "qwen/qwen3.5-9b",
       "vision_model": "google/gemini-2.5-flash",
       "agent_model": "google/gemini-3-flash-preview"
     }

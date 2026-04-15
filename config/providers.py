@@ -22,6 +22,7 @@ EXTRA_BODY_OPENAI = {"enable_thinking": False}
 EXTRA_BODY_CLAUDE = {"thinking": {"type": "disabled"}}
 EXTRA_BODY_GEMINI = {"extra_body": {"google": {"thinking_config": {"thinking_budget": 0}}}}
 EXTRA_BODY_GEMINI_3 = {"extra_body": {"google": {"thinking_config": {"thinking_level": "low", "include_thoughts": False}}}}
+EXTRA_BODY_OPENROUTER = {"reasoning": {"effort": "none"}}
 
 # Agent 调用统一开关：是否加载 extra_body。
 # 默认开启，配合 MODELS_EXTRA_BODY_MAP 实现默认关闭 thinking。
@@ -59,10 +60,11 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "gemini-2.5-flash": EXTRA_BODY_GEMINI,
     "gemini-2.5-flash-lite": EXTRA_BODY_GEMINI,
     "gemini-3-flash-preview": EXTRA_BODY_GEMINI_3,
-    # OpenRouter 格式（provider/model）— OpenRouter 使用统一的 reasoning 参数
-    "google/gemini-2.5-flash": {"reasoning": {"effort": "none"}},
-    "google/gemini-2.5-flash-lite": {"reasoning": {"effort": "none"}},
-    "google/gemini-3-flash-preview": {"reasoning": {"effort": "none"}},
+    # OpenRouter 格式 (provider/model) — OpenRouter 使用统一的 reasoning 参数
+    "google/gemini-2.5-flash": EXTRA_BODY_OPENROUTER,
+    "google/gemini-2.5-flash-lite": EXTRA_BODY_OPENROUTER,
+    "google/gemini-3-flash-preview": EXTRA_BODY_OPENROUTER,
+    "qwen/qwen3.5-9b": EXTRA_BODY_OPENROUTER,
 }
 
 
