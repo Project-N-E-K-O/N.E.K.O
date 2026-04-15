@@ -772,7 +772,7 @@
         "assistApiKeyGemini": "Assist APIキー - Gemini",
         "assistApiKeyKimi": "Assist APIキー - Kimi",
         "assistApiKeyHint": "（Assist APIが {{provider}} の場合のみ必要）",
-        "assistApiKeyPlaceholder": "任意（空欄ならCore APIキーを使用）",
+        "assistApiKeyPlaceholder": "空欄時は管理簿のキーを自動使用",
         "providerNames": {
             "ali": "Alibaba",
             "openai": "OpenAI",

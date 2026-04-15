@@ -772,7 +772,7 @@
         "assistApiKeyGemini": "지원 API 키 - Gemini",
         "assistApiKeyKimi": "지원 API 키 - Kimi",
         "assistApiKeyHint": "(Assist API가 {{provider}}인 경우에만 필요함)",
-        "assistApiKeyPlaceholder": "선택 사항, 기본값은 핵심 API 키입니다.",
+        "assistApiKeyPlaceholder": "비어 있으면 관리 대장의 키를 자동 사용",
         "providerNames": {
             "ali": "알리바바",
             "openai": "오픈AI",

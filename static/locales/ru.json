@@ -772,7 +772,7 @@
         "assistApiKeyGemini": "Вспомогательный API Key — Gemini",
         "assistApiKeyKimi": "Вспомогательный API Key — Kimi",
         "assistApiKeyHint": "(Требуется только когда вспомогательный API — {{provider}})",
-        "assistApiKeyPlaceholder": "Необязательно, по умолчанию основной API Key",
+        "assistApiKeyPlaceholder": "Автоматически заполняется из справочника",
         "providerNames": {
             "ali": "Alibaba",
             "openai": "OpenAI",

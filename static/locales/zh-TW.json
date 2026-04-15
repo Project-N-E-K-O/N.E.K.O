@@ -772,7 +772,7 @@
         "assistApiKeyGemini": "輔助API Key - Gemini",
         "assistApiKeyKimi": "輔助API Key - Kimi",
         "assistApiKeyHint": "（僅當輔助API為{{provider}}時需要填寫）",
-        "assistApiKeyPlaceholder": "可選，默認為核心API Key",
+        "assistApiKeyPlaceholder": "留空使用管理簿對應 Key",
         "providerNames": {
             "ali": "阿裏",
             "openai": "OpenAI",
