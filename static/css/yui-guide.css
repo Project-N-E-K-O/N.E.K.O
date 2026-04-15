@@ -1,7 +1,7 @@
 .yui-guide-overlay {
   position: fixed;
   inset: 0;
-  z-index: 100001;
+  z-index: 100006;
   pointer-events: none;
 }
 
@@ -266,7 +266,7 @@ body.yui-taking-over #neko-tutorial-skip-btn:focus-visible {
 #react-chat-window-root .composer-input-shell.yui-guide-chat-target,
 #react-chat-window-root .composer-input.yui-guide-chat-target {
   position: relative;
-  z-index: 100002;
+  z-index: 100007;
 }
 
 #text-input-area.yui-guide-chat-target::after,
