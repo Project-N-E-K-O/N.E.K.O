@@ -2308,6 +2308,21 @@ class UniversalTutorialManager {
         // 缓存已验证的步骤，供 onStepChange 使用
         this.cachedValidSteps = validSteps;
 
+        const useYuiOnlyHomeFlow = (
+            this.currentPage === 'home'
+            && this.isYuiGuideEnabledForPage(this.currentPage)
+        );
+
+        if (useYuiOnlyHomeFlow) {
+            window.isInTutorial = true;
+            this.currentStep = 0;
+            this.driver = null;
+            console.log('[Tutorial] 首页启用 Yui Guide，跳过旧版 driver 教程启动流程');
+            this.notifyYuiGuidePreludeStart(validSteps);
+            this.showSkipButton();
+            return;
+        }
+
         // 重新创建 driver 实例以确保按钮文本使用最新的 i18n 翻译
         this.recreateDriverWithI18n();
 

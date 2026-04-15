@@ -10,6 +10,10 @@
     const DEFAULT_STEP_DELAY_MS = 120;
     const DEFAULT_SCENE_SETTLE_MS = 260;
     const DEFAULT_CURSOR_DURATION_MS = 520;
+    const INTRO_PRACTICE_TEXT = '完现在来可以试试跟我说说话吧，看看我们是不是超有默契的喵～';
+    const INTRO_SKIP_ACTION_ID = 'yui-guide-intro-skip-chat';
+    const REACT_CHAT_ACTION_EVENT = 'react-chat-window:action';
+    const REACT_CHAT_SUBMIT_EVENT = 'react-chat-window:submit';
     const PREVIEW_ITEMS = Object.freeze([
         'WebSearch',
         'B站弹幕',
@@ -28,12 +32,123 @@
         return Math.max(min, Math.min(max, value));
     }
 
+    function estimateSpeechDurationMs(text) {
+        const message = typeof text === 'string' ? text.trim() : '';
+        if (!message) {
+            return 0;
+        }
+
+        return clamp(Math.round(message.length * 280), 2200, 24000);
+    }
+
+    function waitForFirstUserGesture(timeoutMs) {
+        const normalizedTimeoutMs = Number.isFinite(timeoutMs) ? timeoutMs : 12000;
+        if (navigator.userActivation && (navigator.userActivation.isActive || navigator.userActivation.hasBeenActive)) {
+            return Promise.resolve(true);
+        }
+
+        return new Promise((resolve) => {
+            let settled = false;
+            let timeoutId = 0;
+
+            const finish = (activated) => {
+                if (settled) {
+                    return;
+                }
+                settled = true;
+                if (timeoutId) {
+                    window.clearTimeout(timeoutId);
+                    timeoutId = 0;
+                }
+                window.removeEventListener('pointerdown', handleGesture, true);
+                window.removeEventListener('mousedown', handleGesture, true);
+                window.removeEventListener('keydown', handleGesture, true);
+                window.removeEventListener('touchstart', handleGesture, true);
+                resolve(!!activated);
+            };
+
+            const handleGesture = () => {
+                finish(true);
+            };
+
+            window.addEventListener('pointerdown', handleGesture, true);
+            window.addEventListener('mousedown', handleGesture, true);
+            window.addEventListener('keydown', handleGesture, true);
+            window.addEventListener('touchstart', handleGesture, true);
+            timeoutId = window.setTimeout(() => finish(false), normalizedTimeoutMs);
+        });
+    }
+
+    async function resumeKnownAudioContexts() {
+        const tasks = [];
+
+        if (window.AM && typeof window.AM.unlock === 'function') {
+            try {
+                window.AM.unlock();
+            } catch (_) {}
+        }
+
+        const playerContext = window.appState && window.appState.audioPlayerContext;
+        if (playerContext && playerContext.state === 'suspended' && typeof playerContext.resume === 'function') {
+            tasks.push(playerContext.resume().catch(() => {}));
+        }
+
+        if (window.lanlanAudioContext && window.lanlanAudioContext.state === 'suspended' && typeof window.lanlanAudioContext.resume === 'function') {
+            tasks.push(window.lanlanAudioContext.resume().catch(() => {}));
+        }
+
+        if (tasks.length > 0) {
+            await Promise.all(tasks);
+        }
+    }
+
+    function normalizeVoiceLang(voice) {
+        const lang = voice && typeof voice.lang === 'string' ? voice.lang.trim().toLowerCase() : '';
+        return lang.replace('_', '-');
+    }
+
+    function scoreSpeechVoice(voice) {
+        if (!voice) {
+            return 0;
+        }
+
+        const name = typeof voice.name === 'string' ? voice.name.trim().toLowerCase() : '';
+        const lang = normalizeVoiceLang(voice);
+        let score = 0;
+
+        if (lang === 'zh-cn') {
+            score += 100;
+        } else if (lang.indexOf('zh') === 0) {
+            score += 80;
+        } else if (lang === 'cmn-cn') {
+            score += 90;
+        }
+
+        if (name.indexOf('chinese') >= 0 || name.indexOf('mandarin') >= 0 || name.indexOf('中文') >= 0) {
+            score += 20;
+        }
+
+        if (voice.default) {
+            score += 5;
+        }
+
+        return score;
+    }
+
     class YuiGuideVoiceQueue {
         constructor() {
             this.currentUtterance = null;
             this.currentFallbackTimer = null;
             this.currentFinish = null;
             this.enabled = !!window.speechSynthesis;
+            this.voicesReadyPromise = null;
+            this.currentAudio = null;
+            this.voiceIdCache = {
+                name: '',
+                value: '',
+                fetchedAt: 0
+            };
+            this.previewCache = new Map();
         }
 
         stop() {
@@ -52,6 +167,17 @@
                 }
             }
 
+            if (this.currentAudio) {
+                try {
+                    this.currentAudio.pause();
+                    this.currentAudio.removeAttribute('src');
+                    this.currentAudio.load();
+                } catch (error) {
+                    console.warn('[YuiGuide] 停止预览音频失败:', error);
+                }
+                this.currentAudio = null;
+            }
+
             this.currentUtterance = null;
             this.currentFinish = null;
 
@@ -62,30 +188,277 @@
             }
         }
 
+        async ensureVoicesReady() {
+            if (!this.enabled || !window.speechSynthesis || typeof window.speechSynthesis.getVoices !== 'function') {
+                return [];
+            }
+
+            try {
+                const existingVoices = window.speechSynthesis.getVoices();
+                if (Array.isArray(existingVoices) && existingVoices.length > 0) {
+                    return existingVoices;
+                }
+            } catch (error) {
+                console.warn('[YuiGuide] 读取语音列表失败:', error);
+            }
+
+            if (this.voicesReadyPromise) {
+                return this.voicesReadyPromise;
+            }
+
+            this.voicesReadyPromise = new Promise((resolve) => {
+                let settled = false;
+                const finish = () => {
+                    if (settled) {
+                        return;
+                    }
+                    settled = true;
+                    window.clearTimeout(timeoutId);
+                    window.speechSynthesis.removeEventListener('voiceschanged', handleVoicesChanged);
+                    this.voicesReadyPromise = null;
+                    try {
+                        resolve(window.speechSynthesis.getVoices() || []);
+                    } catch (_) {
+                        resolve([]);
+                    }
+                };
+                const handleVoicesChanged = () => {
+                    try {
+                        const voices = window.speechSynthesis.getVoices();
+                        if (Array.isArray(voices) && voices.length > 0) {
+                            finish();
+                        }
+                    } catch (_) {}
+                };
+                const timeoutId = window.setTimeout(finish, 1800);
+
+                window.speechSynthesis.addEventListener('voiceschanged', handleVoicesChanged);
+                handleVoicesChanged();
+            });
+
+            return this.voicesReadyPromise;
+        }
+
+        getCurrentCatgirlName() {
+            const candidates = [
+                window.lanlan_config && window.lanlan_config.lanlan_name,
+                window._currentCatgirl,
+                window.currentCatgirl
+            ];
+
+            for (let index = 0; index < candidates.length; index += 1) {
+                const candidate = typeof candidates[index] === 'string' ? candidates[index].trim() : '';
+                if (candidate) {
+                    return candidate;
+                }
+            }
+
+            return '';
+        }
+
+        async getCurrentVoiceId() {
+            const catgirlName = this.getCurrentCatgirlName();
+            if (!catgirlName) {
+                return '';
+            }
+
+            if (this.voiceIdCache.name === catgirlName && this.voiceIdCache.value) {
+                return this.voiceIdCache.value;
+            }
+
+            try {
+                const response = await fetch('/api/characters', {
+                    credentials: 'same-origin'
+                });
+                if (!response.ok) {
+                    return '';
+                }
+
+                const data = await response.json();
+                const catgirlConfig = data && data['猫娘'] && data['猫娘'][catgirlName]
+                    ? data['猫娘'][catgirlName]
+                    : null;
+                const voiceId = catgirlConfig && typeof catgirlConfig.voice_id === 'string'
+                    ? catgirlConfig.voice_id.trim()
+                    : '';
+
+                this.voiceIdCache = {
+                    name: catgirlName,
+                    value: voiceId,
+                    fetchedAt: Date.now()
+                };
+                return voiceId;
+            } catch (error) {
+                console.warn('[YuiGuide] 获取当前猫娘 voice_id 失败:', error);
+                return '';
+            }
+        }
+
+        async fetchPreviewAudioSrc(text) {
+            const message = typeof text === 'string' ? text.trim() : '';
+            if (!message) {
+                return null;
+            }
+
+            const voiceId = await this.getCurrentVoiceId();
+            if (!voiceId) {
+                return null;
+            }
+
+            const cacheKey = voiceId + '::' + message;
+            if (this.previewCache.has(cacheKey)) {
+                return {
+                    voiceId: voiceId,
+                    audioSrc: this.previewCache.get(cacheKey)
+                };
+            }
+
+            try {
+                const response = await fetch(
+                    '/api/characters/voice_preview?voice_id='
+                    + encodeURIComponent(voiceId)
+                    + '&text='
+                    + encodeURIComponent(message),
+                    {
+                        credentials: 'same-origin'
+                    }
+                );
+                if (!response.ok) {
+                    return null;
+                }
+
+                const data = await response.json();
+                if (!data || !data.success || !data.audio) {
+                    return null;
+                }
+
+                const audioSrc = 'data:' + (data.mime_type || 'audio/mpeg') + ';base64,' + data.audio;
+                this.previewCache.set(cacheKey, audioSrc);
+                return {
+                    voiceId: voiceId,
+                    audioSrc: audioSrc
+                };
+            } catch (error) {
+                console.warn('[YuiGuide] 获取语音预览失败:', error);
+                return null;
+            }
+        }
+
+        async playPreviewAudio(audioSrc, minimumDurationMs) {
+            if (!audioSrc) {
+                return false;
+            }
+
+            const minDurationMs = Number.isFinite(minimumDurationMs) ? minimumDurationMs : 0;
+
+            return new Promise((resolve, reject) => {
+                let settled = false;
+                const audio = new Audio(audioSrc);
+                const maxBlockedWaitMs = 12000;
+                const finish = (success, error) => {
+                    if (settled) {
+                        return;
+                    }
+                    settled = true;
+                    if (this.currentFallbackTimer === fallbackTimerId) {
+                        this.currentFallbackTimer = null;
+                    }
+                    window.clearTimeout(fallbackTimerId);
+                    audio.onended = null;
+                    audio.onerror = null;
+                    audio.onpause = null;
+                    if (this.currentAudio === audio) {
+                        this.currentAudio = null;
+                    }
+                    if (this.currentFinish === cancelPlayback) {
+                        this.currentFinish = null;
+                    }
+                    if (success) {
+                        resolve(true);
+                        return;
+                    }
+                    reject(error || new Error('preview_audio_failed'));
+                };
+                const cancelPlayback = () => {
+                    finish(true);
+                };
+
+                audio.preload = 'auto';
+                audio.volume = 1;
+                audio.onended = () => finish(true);
+                audio.onerror = () => finish(false, new Error('preview_audio_error'));
+                this.currentAudio = audio;
+                this.currentFinish = cancelPlayback;
+
+                const fallbackTimerId = window.setTimeout(() => {
+                    finish(true);
+                }, Math.max(estimateSpeechDurationMs('x'), minDurationMs, 3000) + maxBlockedWaitMs);
+                this.currentFallbackTimer = fallbackTimerId;
+
+                const attemptPlayback = async () => {
+                    try {
+                        const playPromise = audio.play();
+                        if (playPromise && typeof playPromise.then === 'function') {
+                            await playPromise;
+                        }
+                    } catch (error) {
+                        const message = error && typeof error.message === 'string' ? error.message : '';
+                        const errorName = error && typeof error.name === 'string' ? error.name : '';
+                        const blockedByAutoplay = errorName === 'NotAllowedError'
+                            || /gesture|user activation|autoplay/i.test(message);
+
+                        if (!blockedByAutoplay) {
+                            finish(false, error);
+                            return;
+                        }
+
+                        console.warn('[YuiGuide] 教程语音等待用户手势后重试播放:', error);
+                        const unlocked = await waitForFirstUserGesture(maxBlockedWaitMs);
+                        if (!unlocked || settled) {
+                            finish(false, error);
+                            return;
+                        }
+
+                        await resumeKnownAudioContexts();
+                        try {
+                            audio.currentTime = 0;
+                        } catch (_) {}
+
+                        try {
+                            const retryPromise = audio.play();
+                            if (retryPromise && typeof retryPromise.then === 'function') {
+                                await retryPromise;
+                            }
+                        } catch (retryError) {
+                            finish(false, retryError);
+                        }
+                    }
+                };
+
+                void attemptPlayback();
+            });
+        }
+
         async speak(text, options) {
             const message = typeof text === 'string' ? text.trim() : '';
             const normalizedOptions = options || {};
             if (!message) {
                 return;
             }
-
             this.stop();
             await wait(48);
 
-            if (this.enabled && window.speechSynthesis) {
-                try {
-                    if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
-                        window.speechSynthesis.cancel();
-                        await wait(24);
-                    }
-                } catch (error) {
-                    console.warn('[YuiGuide] 重置语音播放状态失败:', error);
-                }
-            }
+            const minimumDurationMs = Number.isFinite(normalizedOptions.minDurationMs)
+                ? normalizedOptions.minDurationMs
+                : 0;
+            const fallbackDurationMs = Math.max(estimateSpeechDurationMs(message), minimumDurationMs);
 
-            if (!this.enabled || typeof SpeechSynthesisUtterance === 'undefined') {
+            if (!this.enabled || typeof SpeechSynthesisUtterance === 'undefined' || !window.speechSynthesis) {
+                await wait(fallbackDurationMs);
                 return;
             }
+
+            await this.ensureVoicesReady();
 
             return new Promise((resolve) => {
                 let settled = false;
@@ -112,6 +485,27 @@
                 utterance.rate = 1.02;
                 utterance.pitch = 1.05;
                 utterance.volume = 0.9;
+
+                try {
+                    const voices = window.speechSynthesis.getVoices();
+                    if (Array.isArray(voices) && voices.length > 0) {
+                        let bestVoice = null;
+                        let bestScore = -1;
+                        voices.forEach((voice) => {
+                            const score = scoreSpeechVoice(voice);
+                            if (score > bestScore) {
+                                bestScore = score;
+                                bestVoice = voice;
+                            }
+                        });
+                        if (bestVoice) {
+                            utterance.voice = bestVoice;
+                        }
+                    }
+                } catch (error) {
+                    console.warn('[YuiGuide] 选择系统语音失败:', error);
+                }
+
                 utterance.onboundary = (event) => {
                     if (typeof normalizedOptions.onBoundary === 'function') {
                         try {
@@ -127,13 +521,14 @@
                 this.currentFinish = finish;
                 this.currentFallbackTimer = window.setTimeout(
                     finish,
-                    clamp(Math.round(message.length * 280), 7000, 24000)
+                    Math.max(fallbackDurationMs, 3000)
                 );
 
                 try {
+                    window.speechSynthesis.cancel();
                     window.speechSynthesis.speak(utterance);
                 } catch (error) {
-                    console.warn('[YuiGuide] 播放语音失败，回退为静默模式:', error);
+                    console.warn('[YuiGuide] 播放系统语音失败，回退为静默等待:', error);
                     finish();
                 }
             });
@@ -303,7 +698,10 @@
             this.introFlowStarted = false;
             this.introFlowCompleted = false;
             this.introClickActivated = false;
+            this.introChoicePending = false;
+            this.introPracticeMessageId = null;
             this.introThirdMessageTimer = null;
+            this.introReplyPollTimer = null;
             this.takeoverFlowStarted = false;
             this.takeoverFlowCompleted = false;
             this.takeoverFlowPromise = null;
@@ -442,6 +840,14 @@
                 this.introThirdMessageTimer = null;
             }
 
+            if (this.introReplyPollTimer) {
+                window.clearTimeout(this.introReplyPollTimer);
+                this.introReplyPollTimer = null;
+            }
+
+            this.introChoicePending = false;
+            this.introPracticeMessageId = null;
+
             while (this.chatIntroCleanupFns.length > 0) {
                 const cleanup = this.chatIntroCleanupFns.pop();
                 try {
@@ -561,7 +967,7 @@
             }
 
             if (stepId === 'intro_basic' && !this.introFlowCompleted) {
-                return this.getChatInputTarget() || this.getChatWindowTarget() || fallbackTarget;
+                return this.getChatInputTarget() || null;
             }
 
             if (this.shouldNarrateInChat(stepId)) {
@@ -599,7 +1005,7 @@
         }
 
         highlightChatInput() {
-            this.focusAndHighlightChatInput(this.getChatInputTarget() || this.getChatWindowTarget());
+            this.focusAndHighlightChatInput(this.getChatInputTarget());
         }
 
         highlightChatWindow() {
@@ -720,6 +1126,9 @@
             narration.playbackStartIndex = playbackStartIndex;
             narration.playbackStartAt = Date.now();
             await this.voiceQueue.speak(playbackText, {
+                minDurationMs: Number.isFinite(narration.minDurationMs)
+                    ? narration.minDurationMs
+                    : 0,
                 onBoundary: (event) => {
                     const charIndex = event && Number.isFinite(event.charIndex) ? event.charIndex : 0;
                     const absoluteCharIndex = clamp(
@@ -780,6 +1189,9 @@
                     resumeIndex: 0,
                     playbackStartIndex: 0,
                     playbackStartAt: 0,
+                    minDurationMs: Number.isFinite(normalizedOptions.minDurationMs)
+                        ? normalizedOptions.minDurationMs
+                        : 0,
                     onBoundary: typeof normalizedOptions.onBoundary === 'function' ? normalizedOptions.onBoundary : null,
                     resolve: resolve,
                     interrupted: false,
@@ -1187,6 +1599,10 @@
                     source: 'auto-takeover'
                 });
                 this.takeoverFlowCompleted = true;
+                if (this.destroyed || this.angryExitTriggered) {
+                    return;
+                }
+                this.requestTermination('complete', 'complete');
             })().catch((error) => {
                 console.error('[YuiGuide] 接管主流程执行失败:', error);
             });
@@ -1236,7 +1652,12 @@
                 reactChatOverlay.hidden = false;
             }
 
-            return this.waitForElement(() => this.getChatIntroTarget(), 5000);
+            const inputTarget = await this.waitForElement(() => this.getChatInputTarget(), 5000);
+            if (inputTarget) {
+                return inputTarget;
+            }
+
+            return this.waitForElement(() => this.getChatWindowTarget(), 1200);
         }
 
         getGuideAssistantName() {
@@ -1305,12 +1726,13 @@
             this.schedule(scroll, 160);
         }
 
-        appendGuideChatMessage(text) {
+        appendGuideChatMessage(text, options) {
             const content = typeof text === 'string' ? text.trim() : '';
             if (!content) {
-                return;
+                return null;
             }
 
+            const normalizedOptions = options || {};
             const host = window.reactChatWindowHost;
             if (host && typeof host.appendMessage === 'function') {
                 const createdAt = Date.now();
@@ -1323,7 +1745,7 @@
                     });
                 } catch (_) {}
 
-                host.appendMessage({
+                const message = {
                     id: 'yui-guide-' + createdAt + '-' + Math.random().toString(36).slice(2, 8),
                     role: 'assistant',
                     author: this.getGuideAssistantName(),
@@ -1335,21 +1757,116 @@
                         text: content
                     }],
                     status: 'sent'
-                });
+                };
+
+                if (Array.isArray(normalizedOptions.buttons) && normalizedOptions.buttons.length > 0) {
+                    message.blocks.push({
+                        type: 'buttons',
+                        buttons: normalizedOptions.buttons.map(function (button) {
+                            if (!button || typeof button !== 'object') {
+                                return null;
+                            }
+
+                            return {
+                                id: button.id,
+                                label: button.label,
+                                action: button.action,
+                                variant: button.variant,
+                                disabled: !!button.disabled,
+                                payload: button.payload || undefined
+                            };
+                        }).filter(Boolean)
+                    });
+                }
+
+                if (Array.isArray(normalizedOptions.actions) && normalizedOptions.actions.length > 0) {
+                    message.actions = normalizedOptions.actions.map(function (action) {
+                        if (!action || typeof action !== 'object') {
+                            return null;
+                        }
+
+                        return {
+                            id: action.id,
+                            label: action.label,
+                            action: action.action,
+                            variant: action.variant,
+                            disabled: !!action.disabled,
+                            payload: action.payload || undefined
+                        };
+                    }).filter(Boolean);
+                }
+
+                const appendedMessage = host.appendMessage(message);
                 this.scrollChatToBottom();
-                return;
+                return appendedMessage;
             }
 
             if (typeof window.appendMessage === 'function') {
                 window.appendMessage(content, 'gemini', true);
                 this.scrollChatToBottom();
             }
+
+            return null;
+        }
+
+        getGuideChatMessage(messageId) {
+            const host = window.reactChatWindowHost;
+            if (!host || typeof host.getState !== 'function' || !messageId) {
+                return null;
+            }
+
+            try {
+                const snapshot = host.getState();
+                const messages = snapshot && Array.isArray(snapshot.messages) ? snapshot.messages : [];
+                return messages.find(function (message) {
+                    return message && String(message.id) === String(messageId);
+                }) || null;
+            } catch (error) {
+                console.warn('[YuiGuide] 读取引导消息失败:', error);
+                return null;
+            }
+        }
+
+        updateGuideChatMessage(messageId, patch) {
+            const host = window.reactChatWindowHost;
+            if (!host || typeof host.updateMessage !== 'function' || !messageId) {
+                return null;
+            }
+
+            try {
+                return host.updateMessage(messageId, patch || {});
+            } catch (error) {
+                console.warn('[YuiGuide] 更新引导消息失败:', error);
+                return null;
+            }
+        }
+
+        clearGuideChatMessageActions(messageId) {
+            if (!messageId) {
+                return null;
+            }
+
+            const existingMessage = this.getGuideChatMessage(messageId);
+            const nextBlocks = existingMessage && Array.isArray(existingMessage.blocks)
+                ? existingMessage.blocks.filter(function (block) {
+                    return block && block.type !== 'buttons';
+                })
+                : undefined;
+
+            return this.updateGuideChatMessage(messageId, {
+                blocks: nextBlocks,
+                actions: []
+            });
         }
 
         focusAndHighlightChatInput(spotlightTarget) {
-            const target = spotlightTarget || this.getChatInputTarget() || this.getChatWindowTarget();
+            const target = spotlightTarget || this.getChatInputTarget();
             const inputBox = this.resolveElement('#react-chat-window-root .composer-input')
                 || this.resolveElement('#textInputBox');
+
+            if (!target) {
+                return;
+            }
 
             if (target && typeof target.scrollIntoView === 'function') {
                 target.scrollIntoView({
@@ -1375,51 +1892,172 @@
         }
 
         attachChatIntroActivation() {
-            const inputArea = this.getChatIntroActivationTarget();
-            const inputBox = this.resolveElement('#react-chat-window-root .composer-input')
-                || this.resolveElement('#textInputBox');
-            if (!inputArea) {
+            const actionHandler = (event) => {
+                if (this.destroyed || !this.introChoicePending) {
+                    return;
+                }
+
+                const detail = event && event.detail ? event.detail : null;
+                const message = detail && detail.message ? detail.message : null;
+                const action = detail && detail.action ? detail.action : null;
+                const messageId = message && message.id ? String(message.id) : '';
+                const actionId = action && action.id ? String(action.id) : '';
+                const actionName = action && action.action ? String(action.action) : '';
+
+                if (!messageId || messageId !== this.introPracticeMessageId) {
+                    return;
+                }
+
+                if (actionId !== INTRO_SKIP_ACTION_ID && actionName !== INTRO_SKIP_ACTION_ID) {
+                    return;
+                }
+
+                this.resolveChatIntroChoice('skip');
+            };
+
+            const submitHandler = (event) => {
+                if (this.destroyed || !this.introChoicePending) {
+                    return;
+                }
+
+                const detail = event && event.detail ? event.detail : null;
+                const text = detail && typeof detail.text === 'string' ? detail.text : '';
+                if (!text.trim()) {
+                    return;
+                }
+
+                this.resolveChatIntroChoice('chat', {
+                    submittedAt: Date.now()
+                });
+            };
+
+            window.addEventListener(REACT_CHAT_ACTION_EVENT, actionHandler, true);
+            window.addEventListener(REACT_CHAT_SUBMIT_EVENT, submitHandler, true);
+            this.chatIntroCleanupFns.push(() => {
+                window.removeEventListener(REACT_CHAT_ACTION_EVENT, actionHandler, true);
+            });
+            this.chatIntroCleanupFns.push(() => {
+                window.removeEventListener(REACT_CHAT_SUBMIT_EVENT, submitHandler, true);
+            });
+        }
+
+        waitForFirstAssistantReplyAfter(submittedAt) {
+            const replyStartAt = Number.isFinite(submittedAt) ? submittedAt : Date.now();
+            const maxWaitMs = 120000;
+
+            return new Promise((resolve) => {
+                const startedAt = Date.now();
+                const poll = () => {
+                    if (this.destroyed) {
+                        this.introReplyPollTimer = null;
+                        resolve(null);
+                        return;
+                    }
+
+                    const host = window.reactChatWindowHost;
+                    const snapshot = host && typeof host.getState === 'function'
+                        ? host.getState()
+                        : null;
+                    const messages = snapshot && Array.isArray(snapshot.messages)
+                        ? snapshot.messages
+                        : [];
+
+                    const replyMessage = messages.find((message) => {
+                        if (!message || message.role !== 'assistant') {
+                            return false;
+                        }
+
+                        const messageId = typeof message.id === 'string' ? message.id : '';
+                        if (messageId.indexOf('yui-guide-') === 0) {
+                            return false;
+                        }
+
+                        const createdAt = Number.isFinite(message.createdAt) ? message.createdAt : 0;
+                        if (createdAt < replyStartAt) {
+                            return false;
+                        }
+
+                        return message.status === 'sent';
+                    }) || null;
+
+                    if (replyMessage) {
+                        this.introReplyPollTimer = null;
+                        resolve(replyMessage);
+                        return;
+                    }
+
+                    if ((Date.now() - startedAt) >= maxWaitMs) {
+                        this.introReplyPollTimer = null;
+                        resolve(null);
+                        return;
+                    }
+
+                    this.introReplyPollTimer = window.setTimeout(poll, 280);
+                };
+
+                poll();
+            });
+        }
+
+        resolveChatIntroChoice(mode, options) {
+            if (this.destroyed || !this.introChoicePending) {
                 return;
             }
 
-            const activate = () => {
-                if (this.destroyed || this.introClickActivated) {
-                    return;
-                }
-                if (!this.introFlowCompleted) {
-                    return;
-                }
+            const normalizedMode = mode === 'chat' ? 'chat' : 'skip';
+            const promptMessageId = this.introPracticeMessageId;
+            const submittedAt = options && Number.isFinite(options.submittedAt)
+                ? options.submittedAt
+                : Date.now();
 
-                this.introClickActivated = true;
-                inputArea.classList.remove('yui-guide-chat-target');
-                this.clearIntroFlow(true);
-                this.highlightChatWindow();
-                this.sendIntroFollowups();
-            };
+            this.introChoicePending = false;
+            this.introClickActivated = true;
+            this.introFlowCompleted = true;
 
-            const clickHandler = function () {
-                activate();
-            };
-
-            inputArea.addEventListener('click', clickHandler, true);
-            this.chatIntroCleanupFns.push(() => {
-                inputArea.removeEventListener('click', clickHandler, true);
-            });
-
-            if (inputBox && inputBox !== inputArea) {
-                inputBox.addEventListener('click', clickHandler, true);
-                this.chatIntroCleanupFns.push(() => {
-                    inputBox.removeEventListener('click', clickHandler, true);
-                });
+            if (promptMessageId) {
+                this.clearGuideChatMessageActions(promptMessageId);
             }
+
+            this.cancelActiveNarration();
+            this.clearIntroFlow(true);
+            this.highlightChatWindow();
+
+            if (normalizedMode === 'chat') {
+                this.waitForFirstAssistantReplyAfter(submittedAt).then(() => {
+                    if (this.destroyed) {
+                        return;
+                    }
+
+                    this.sendIntroFollowups({
+                        includeProactive: false
+                    });
+                }).catch((error) => {
+                    console.warn('[YuiGuide] 等待首次聊天回复失败:', error);
+                    if (this.destroyed) {
+                        return;
+                    }
+
+                    this.sendIntroFollowups({
+                        includeProactive: false
+                    });
+                });
+                return;
+            }
+
+            this.sendIntroFollowups({
+                includeProactive: true
+            });
         }
 
-        sendIntroFollowups() {
+        sendIntroFollowups(options) {
             const proactiveStep = this.getStep('intro_proactive');
             const catPawStep = this.getStep('intro_cat_paw');
+            const normalizedOptions = options || {};
+            const includeProactive = normalizedOptions.includeProactive !== false;
+            const catPawDelayMs = includeProactive ? 5000 : 280;
 
             (async () => {
-                if (proactiveStep && proactiveStep.performance) {
+                if (includeProactive && proactiveStep && proactiveStep.performance) {
                     const proactiveText = proactiveStep.performance.bubbleText || '';
                     this.appendGuideChatMessage(proactiveText);
                     if (proactiveStep.performance.emotion) {
@@ -1431,12 +2069,14 @@
                     return;
                 }
 
-                await new Promise((resolve) => {
-                    this.introThirdMessageTimer = window.setTimeout(() => {
-                        this.introThirdMessageTimer = null;
-                        resolve();
-                    }, 5000);
-                });
+                if (catPawDelayMs > 0) {
+                    await new Promise((resolve) => {
+                        this.introThirdMessageTimer = window.setTimeout(() => {
+                            this.introThirdMessageTimer = null;
+                            resolve();
+                        }, catPawDelayMs);
+                    });
+                }
 
                 if (this.destroyed) {
                     return;
@@ -1471,20 +2111,47 @@
             this.introFlowStarted = true;
             this.overlay.hideBubble();
             this.overlay.hidePluginPreview();
-            const spotlightTarget = await this.ensureChatVisible();
-            this.focusAndHighlightChatInput(spotlightTarget);
+            await this.ensureChatVisible();
+            this.focusAndHighlightChatInput(this.getChatInputTarget());
             const introText = introStep.performance.bubbleText || '';
             this.appendGuideChatMessage(introText);
             if (introStep.performance.emotion) {
                 this.emotionBridge.apply(introStep.performance.emotion);
             }
+            await this.speakLineAndWait(introText, {
+                minDurationMs: 4200
+            });
+            if (this.destroyed) {
+                return;
+            }
+
+            this.highlightChatWindow();
+            await wait(240);
+            if (this.destroyed) {
+                return;
+            }
+
+            const practiceMessage = this.appendGuideChatMessage(INTRO_PRACTICE_TEXT, {
+                buttons: [{
+                    id: INTRO_SKIP_ACTION_ID,
+                    label: '暂时先不聊天',
+                    action: INTRO_SKIP_ACTION_ID,
+                    variant: 'secondary',
+                    disabled: false
+                }]
+            });
+            this.introPracticeMessageId = practiceMessage && practiceMessage.id
+                ? String(practiceMessage.id)
+                : null;
+            this.introChoicePending = true;
             this.attachChatIntroActivation();
-            await this.speakLineAndWait(introText);
+            await this.speakLineAndWait(INTRO_PRACTICE_TEXT, {
+                minDurationMs: 3600
+            });
             if (this.destroyed) {
                 return;
             }
             this.introFlowCompleted = true;
-            this.highlightChatWindow();
         }
 
         async startPrelude() {
@@ -1778,6 +2445,7 @@
                 if (runId !== this.sceneRunId || this.destroyed) {
                     return;
                 }
+                this.overlay.clearActionSpotlight();
                 this.highlightChatWindow();
             }
 

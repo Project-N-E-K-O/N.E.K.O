@@ -268,10 +268,18 @@
 
             if (!spotlightRect) {
                 cutout.hidden = true;
+                cutout.setAttribute('x', '0');
+                cutout.setAttribute('y', '0');
+                cutout.setAttribute('width', '0');
+                cutout.setAttribute('height', '0');
+                cutout.setAttribute('rx', '0');
+                cutout.setAttribute('ry', '0');
+                cutout.style.display = 'none';
                 return;
             }
 
             cutout.hidden = false;
+            cutout.style.removeProperty('display');
             cutout.setAttribute('x', String(spotlightRect.left));
             cutout.setAttribute('y', String(spotlightRect.top));
             cutout.setAttribute('width', String(spotlightRect.width));

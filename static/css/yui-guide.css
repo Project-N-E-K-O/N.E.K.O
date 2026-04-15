@@ -324,28 +324,6 @@ body.yui-taking-over #react-chat-window-drag-handle {
     0 12px 32px rgba(198, 54, 54, 0.26);
 }
 
-#text-input-area.yui-guide-chat-target,
-#react-chat-window-shell.yui-guide-chat-target,
-#react-chat-window-root.yui-guide-chat-target,
-#react-chat-window-root .chat-window.yui-guide-chat-target,
-#react-chat-window-root .composer-panel.yui-guide-chat-target,
-#react-chat-window-root .composer-input-shell.yui-guide-chat-target,
-#react-chat-window-root .composer-input.yui-guide-chat-target {
-  position: relative;
-  z-index: 100007;
-}
-
-#react-chat-window-root .composer-input.yui-guide-chat-target {
-  border-radius: 12px;
-}
-
-body.yui-guide-home-driver-hidden #react-chat-window-root .composer-panel.yui-guide-chat-target,
-body.yui-guide-home-driver-hidden #react-chat-window-root .composer-input-shell.yui-guide-chat-target,
-body.yui-taking-over #react-chat-window-root .composer-panel.yui-guide-chat-target,
-body.yui-taking-over #react-chat-window-root .composer-input-shell.yui-guide-chat-target {
-  z-index: auto;
-}
-
 body.yui-taking-over #react-chat-window-root .composer-input-shell,
 body.yui-taking-over #react-chat-window-root .composer-input-shell:focus-within {
   box-shadow: none !important;
@@ -356,12 +334,6 @@ body.yui-taking-over #react-chat-window-root .composer-input:focus,
 body.yui-taking-over #react-chat-window-root .composer-input:focus-visible {
   outline: none !important;
   box-shadow: none !important;
-}
-
-#react-chat-window-shell.yui-guide-chat-target,
-#react-chat-window-root.yui-guide-chat-target,
-#react-chat-window-root .chat-window.yui-guide-chat-target {
-  border-radius: 24px;
 }
 
 @keyframes yui-guide-cursor-click {
