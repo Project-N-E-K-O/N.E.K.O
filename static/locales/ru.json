@@ -805,7 +805,8 @@
             "minimax": "MiniMax (Китай)",
             "minimax_intl": "MiniMax (международный)",
             "claude": "Claude (Anthropic)",
-            "grok": "Grok (xAI)"
+            "grok": "Grok (xAI)",
+            "openrouter": "OpenRouter (агрегатор моделей)"
         },
         "coreApiAutoFillHint": "Ключ автоматически заполняется из справочника API, можно ввести вручную",
         "assistApiSelectLabel": "Провайдер вспомогательного API",
@@ -837,7 +838,8 @@
             "minimax": "MiniMax (Китай)",
             "minimax_intl": "MiniMax (международный)",
             "claude": "Claude (Anthropic)",
-            "grok": "Grok (xAI)"
+            "grok": "Grok (xAI)",
+            "openrouter": "OpenRouter"
         },
         "freeVersionNoApiKey": "Бесплатная версия не требует API Key",
         "pleaseEnterApiKey": "Введите ваш API Key",
