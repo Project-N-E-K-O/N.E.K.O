@@ -264,14 +264,16 @@ async def _non_bistream_tts_main_loop(
         if not pending:
             synth_task = None
             return
-        text, sid = pending.pop(0)
 
         async def _do():
-            try:
-                await synthesize_fn(text, sid)
-            except Exception as exc:
-                _enqueue_error(response_queue, f"{label} 合成失败: {exc}")
-            await _run_next()
+            nonlocal synth_task
+            while pending:
+                text, sid = pending.pop(0)
+                try:
+                    await synthesize_fn(text, sid)
+                except Exception as exc:
+                    _enqueue_error(response_queue, f"{label} 合成失败: {exc}")
+            synth_task = None
 
         synth_task = asyncio.create_task(_do())
 
