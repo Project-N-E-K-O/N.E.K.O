@@ -1972,6 +1972,9 @@ async def _minimax_sse_synthesize(
             "channel": 1,
         },
         "output_format": "hex",
+        "stream_options": {
+            "exclude_aggregated_audio": True,
+        },
     }
 
     resampler = None
