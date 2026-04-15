@@ -396,6 +396,9 @@ function createSettingsPopupContent(manager, prefix, popup) {
 function createSettingsMenuButton(manager, prefix, config) {
     const btn = document.createElement('div');
     btn.className = `${prefix}-settings-menu-item`;
+    if (config && config.id) {
+        btn.id = `${prefix}-menu-${config.id}`;
+    }
     Object.assign(btn.style, {
         justifyContent: 'space-between'
     });
@@ -2074,6 +2077,9 @@ const AvatarPopupMixin = {
         ManagerProto._createMenuItem = function (item, isSubmenuItem = false) {
             const menuItem = document.createElement('div');
             menuItem.className = `${prefix}-settings-menu-item`;
+            if (item && item.id) {
+                menuItem.id = `${prefix}-menu-${item.id}`;
+            }
             Object.assign(menuItem.style, {
                 display: 'flex',
                 alignItems: 'center',
@@ -2356,6 +2362,7 @@ const AvatarPopupMixin = {
             // 角色设置按钮（带侧边面板）
             if (this._characterMenuItems && this._characterMenuItems.length > 0) {
                 const charSettingsBtn = this._createSettingsMenuButton({
+                    id: 'character',
                     label: window.t ? window.t('settings.menu.characterSettings') : '角色设置',
                     labelKey: 'settings.menu.characterSettings',
                     icon: '/static/icons/character_icon.png'
