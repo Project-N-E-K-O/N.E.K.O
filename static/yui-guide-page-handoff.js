@@ -193,10 +193,12 @@
         }
 
         manager.showPopup('settings', popup);
-        _popupsOpenedByTutorial['settings'] = true;
 
         return new Promise(function (resolve) {
             setTimeout(function () {
+                if (popup.style.display === 'flex') {
+                    _popupsOpenedByTutorial['settings'] = true;
+                }
                 resolve(popup.style.display === 'flex');
             }, POPUP_OPEN_ANIMATION_MS);
         });
@@ -240,10 +242,12 @@
         }
 
         manager.showPopup('agent', popup);
-        _popupsOpenedByTutorial['agent'] = true;
 
         return new Promise(function (resolve) {
             setTimeout(function () {
+                if (popup.style.display === 'flex') {
+                    _popupsOpenedByTutorial['agent'] = true;
+                }
                 resolve(popup.style.display === 'flex');
             }, POPUP_OPEN_ANIMATION_MS);
         });
@@ -283,16 +287,16 @@
 
     /**
      * 触发 Yui 离开流程。
-     * 包装现有的 ${prefix}-goodbye-click 事件，不重复实现逻辑。
+     * 所有模型类型（Live2D/VRM/MMD）的 goodbye 按钮统一派发 'live2d-goodbye-click'，
+     * 此处保持一致。
      *
      * @param {string} [reason] - 可选离开原因，用于日志
      */
     function triggerGoodbye(reason) {
-        var prefix = getPrefix();
         if (reason) {
             console.log('[YuiGuideHandoff] triggerGoodbye, reason:', reason);
         }
-        window.dispatchEvent(new CustomEvent(prefix + '-goodbye-click'));
+        window.dispatchEvent(new CustomEvent('live2d-goodbye-click'));
     }
 
     /**
