@@ -2677,9 +2677,14 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
         tts_config = cm.get_model_api_config('tts_custom')
         if tts_config.get('is_custom'):
             base_url = tts_config.get('base_url') or ''
-            if base_url.startswith('http://') or base_url.startswith('https://'):
+            # GPT-SoVITS / local CosyVoice 需要用户显式启用 gptsovitsEnabled 开关，
+            # 仅 enableCustomApi + http URL 不应自动路由到 GPT-SoVITS。
+            core_cfg = cm.get_core_config()
+            gsv_enabled = core_cfg.get('gptsovitsEnabled', False)
+            if gsv_enabled and (base_url.startswith('http://') or base_url.startswith('https://')):
                 return gptsovits_tts_worker, None, 'gptsovits'
-            return local_cosyvoice_worker, None, 'local_cosyvoice'
+            if gsv_enabled and (base_url.startswith('ws://') or base_url.startswith('wss://')):
+                return local_cosyvoice_worker, None, 'local_cosyvoice'
     except Exception as e:
         logger.warning(f'TTS调度器检查报告:{e}')
 

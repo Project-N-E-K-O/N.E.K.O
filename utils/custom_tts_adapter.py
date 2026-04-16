@@ -27,6 +27,7 @@ def check_custom_tts_voice_allowed(
     if not suffix:
         return False
 
-    tts_config = get_model_api_config('tts_custom')
-    base_url = tts_config.get('base_url') or ''
-    return bool(tts_config.get('is_custom') and base_url.startswith(('http://', 'https://')))
+    # gsv: 前缀的 voice_id 仅在用户显式启用 GPT-SoVITS 开关时有效
+    from utils.config_manager import get_config_manager
+    core_cfg = get_config_manager().get_core_config()
+    return bool(core_cfg.get('gptsovitsEnabled', False))

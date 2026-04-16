@@ -1258,7 +1258,7 @@ class ConfigManager:
         tts_config = self.get_model_api_config('tts_custom')
         base_url = tts_config.get('base_url', '')
         is_local_tts = tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://'))
-        
+
         if is_local_tts:
             api_key = '__LOCAL_TTS__'
         else:
