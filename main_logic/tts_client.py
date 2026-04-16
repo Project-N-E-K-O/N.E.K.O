@@ -1048,6 +1048,8 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         
                     except Exception as e:
                         logger.error(f"重新建立连接失败: {e}")
+                        if 'HTTP 503' in str(e):
+                            _enqueue_error(response_queue, json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
                         response_queue.put(("__reconnecting__", "TTS_RECONNECTING"))
                         await asyncio.sleep(1.0)
                         continue
@@ -1086,6 +1088,8 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         
         except Exception as e:
             logger.error(f"StepFun实时TTS Worker错误: {e}")
+            if 'HTTP 503' in str(e):
+                _enqueue_error(response_queue, json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
             response_queue.put(("__ready__", False))
         finally:
             # 清理资源
@@ -1381,6 +1385,8 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         
                     except Exception as e:
                         logger.error(f"重新建立连接失败: {e}")
+                        if 'HTTP 503' in str(e):
+                            _enqueue_error(response_queue, json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
                         response_queue.put(("__reconnecting__", "TTS_RECONNECTING"))
                         await asyncio.sleep(1.0)
                         continue
@@ -1414,6 +1420,8 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         
         except Exception as e:
             logger.error(f"Qwen实时TTS Worker错误: {e}")
+            if 'HTTP 503' in str(e):
+                _enqueue_error(response_queue, json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
             response_queue.put(("__ready__", False))
         finally:
             # 清理资源
@@ -2635,9 +2643,14 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     若某个 provider 需要替换 api_key，返回的第二个值非 None。
 
     Returns:
-        (worker_fn, api_key_override)
+        (worker_fn, api_key_override, provider_key)
         - worker_fn: 签名统一的 TTS worker callable
         - api_key_override: 若非 None，替换 tts_config['api_key']
+        - provider_key: 实际选中的 provider 名称（对应 TTS_PROVIDER_REGISTRY 的 key），
+          用于调用方查询 provider 元数据（如 category）。
+          特殊值：'free' 故意不在 registry 中（国外走 Gemini 后端需要 normalizer，
+          meta=None → 调用方 fallthrough 启用 normalizer）；
+          不支持原生 TTS 时为 None
     """
     cm = get_config_manager()
 
@@ -2658,15 +2671,15 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
                 MINIMAX_INTL_BASE_URL if provider == 'minimax_intl' else MINIMAX_DOMESTIC_BASE_URL
             )
             worker = partial(minimax_tts_worker, base_url=base_url)
-            return worker, api_key
+            return worker, api_key, 'minimax'
 
     try:
         tts_config = cm.get_model_api_config('tts_custom')
         if tts_config.get('is_custom'):
             base_url = tts_config.get('base_url') or ''
             if base_url.startswith('http://') or base_url.startswith('https://'):
-                return gptsovits_tts_worker, None
-            return local_cosyvoice_worker, None
+                return gptsovits_tts_worker, None, 'gptsovits'
+            return local_cosyvoice_worker, None, 'local_cosyvoice'
     except Exception as e:
         logger.warning(f'TTS调度器检查报告:{e}')
 
@@ -2675,25 +2688,28 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     if has_custom_voice and voice_id:
         from utils.api_config_loader import get_free_voices
         if voice_id not in set(get_free_voices().values()):
-            return cosyvoice_vc_tts_worker, None
+            return cosyvoice_vc_tts_worker, None, 'cosyvoice'
         logger.info("voice_id '%s' 是免费预设音色，跳过 CosyVoice，使用默认 TTS", voice_id)
 
     # 没有自定义音色时，使用与 core_api 匹配的默认 TTS
     if core_api_type == 'qwen':
-        return qwen_realtime_tts_worker, None
+        return qwen_realtime_tts_worker, None, 'qwen'
     if core_api_type == 'free':
-        return partial(step_realtime_tts_worker, free_mode=True), None
+        # provider_key 故意用 'free' 而非 'step'：'free' 不在 TTS_PROVIDER_REGISTRY 中，
+        # 使调用方 meta=None → normalizer 启用，因为 free 国外模式走 Gemini 后端需要
+        # CJK 空格清理。若改为 'step'（ws_bistream）则国外 free 用户的 normalizer 会被错误禁用。
+        return partial(step_realtime_tts_worker, free_mode=True), None, 'free'
     elif core_api_type == 'step':
-        return step_realtime_tts_worker, None
+        return step_realtime_tts_worker, None, 'step'
     elif core_api_type == 'glm':
-        return cogtts_tts_worker, None
+        return cogtts_tts_worker, None, 'cogtts'
     elif core_api_type == 'gemini':
-        return gemini_tts_worker, None
+        return gemini_tts_worker, None, 'gemini'
     elif core_api_type == 'openai':
-        return openai_tts_worker, None
+        return openai_tts_worker, None, 'openai'
     else:
         logger.error(f"{core_api_type}不支持原生TTS，请使用自定义语音")
-        return dummy_tts_worker, None
+        return dummy_tts_worker, None, None
 
 
 def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_id):

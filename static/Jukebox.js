@@ -960,7 +960,8 @@ window.Jukebox = {
       const song = this.data.songs[songId];
       if (!song) return;
 
-      const message = window.t('Jukebox.confirmDeleteSong', '确定要删除歌曲 "{{name}}" 吗？\n此操作不可恢复！', { name: song.name });
+      const template = window.t('Jukebox.confirmDeleteSong', '确定要删除歌曲 "{{name}}" 吗？\n此操作不可恢复！');
+      const message = template.replace('{{name}}', song.name);
       if (confirm(message)) {
         this.deleteSong(songId);
       }
@@ -970,7 +971,8 @@ window.Jukebox = {
       const action = this.data.actions[actionId];
       if (!action) return;
 
-      const message = window.t('Jukebox.confirmDeleteAction', '确定要删除动画 "{{name}}" 吗？\n此操作不可恢复！', { name: action.name });
+      const template = window.t('Jukebox.confirmDeleteAction', '确定要删除动画 "{{name}}" 吗？\n此操作不可恢复！');
+      const message = template.replace('{{name}}', action.name);
       if (confirm(message)) {
         this.deleteAction(actionId);
       }
@@ -2162,6 +2164,27 @@ window.Jukebox = {
           border: 2px solid transparent;
           transition: border-color 0.3s, box-shadow 0.3s;
           pointer-events: auto;
+          cursor: grab;
+          user-select: none;
+          -webkit-user-select: none;
+        }
+
+        .jukebox-sam-panel:active {
+          cursor: grabbing;
+        }
+
+        .jukebox-sam-panel button,
+        .jukebox-sam-panel a {
+          cursor: pointer;
+        }
+
+        .jukebox-sam-panel input,
+        .jukebox-sam-panel textarea {
+          cursor: text;
+        }
+
+        .jukebox-sam-panel select {
+          cursor: default;
         }
 
         .jukebox-sam-panel.sam-file-drag-over {
@@ -2177,13 +2200,6 @@ window.Jukebox = {
           padding-bottom: 10px;
           border-bottom: 1px solid ${C.tabs.borderBottom};
           gap: 10px;
-          cursor: grab;
-          user-select: none;
-          -webkit-user-select: none;
-        }
-
-        .sam-header:active {
-          cursor: grabbing;
         }
 
         body.sam-panel-dragging {
@@ -3380,6 +3396,12 @@ window.Jukebox = {
       Jukebox.State._dragCleanup = null;
     }
 
+    // 清理缩放事件监听
+    if (Jukebox.State._resizeCleanup) {
+      Jukebox.State._resizeCleanup();
+      Jukebox.State._resizeCleanup = null;
+    }
+
     // 断开独立窗口拖拽层守护 observer
     if (Jukebox.State._dragGuard) {
       try { Jukebox.State._dragGuard.disconnect(); } catch (_) {}
@@ -3431,6 +3453,12 @@ window.Jukebox = {
       Jukebox.State._dragCleanup = null;
     }
 
+    // 清理缩放事件监听
+    if (Jukebox.State._resizeCleanup) {
+      Jukebox.State._resizeCleanup();
+      Jukebox.State._resizeCleanup = null;
+    }
+
     // 断开独立窗口拖拽层守护 observer
     if (Jukebox.State._dragGuard) {
       try { Jukebox.State._dragGuard.disconnect(); } catch (_) {}
@@ -3469,8 +3497,8 @@ window.Jukebox = {
     const jukeboxContainer = document.createElement('div');
     jukeboxContainer.className = 'jukebox-container';
     jukeboxContainer.innerHTML = `
+      <div class="jukebox-drag-overlay"></div>
       <div class="jukebox-header">
-        <div class="jukebox-drag-overlay"></div>
         <div class="jukebox-header-left">
           <h3>${window.t('Jukebox.title', '点歌台')}</h3>
           <span id="jukebox-status-text" class="jukebox-status-text">${window.t('Jukebox.ready', '准备就绪')}</span>
@@ -3481,6 +3509,14 @@ window.Jukebox = {
           <button class="jukebox-close" onclick="Jukebox_close()" title="${window.t('Jukebox.close', '关闭')}">×</button>
         </div>
       </div>
+      <div class="jukebox-resize-handle" data-dir="n"></div>
+      <div class="jukebox-resize-handle" data-dir="s"></div>
+      <div class="jukebox-resize-handle" data-dir="w"></div>
+      <div class="jukebox-resize-handle" data-dir="e"></div>
+      <div class="jukebox-resize-handle" data-dir="nw"></div>
+      <div class="jukebox-resize-handle" data-dir="ne"></div>
+      <div class="jukebox-resize-handle" data-dir="sw"></div>
+      <div class="jukebox-resize-handle" data-dir="se"></div>
       <div id="jukebox-calibration-section" class="jukebox-calibration-section" style="display: none;">
         <button id="jukebox-calibration-toggle" class="jukebox-calibration-toggle" onclick="Jukebox.toggleCalibrationPanel()">
           ${window.t('Jukebox.calibrateAnimation', '校准动画')}
@@ -3559,15 +3595,18 @@ window.Jukebox = {
     if (!window.__NEKO_JUKEBOX_STANDALONE__) {
       Jukebox.bindWindowDrag(wrapper, jukeboxContainer);
       Jukebox.bindPanelDrag(sidePanel);
+      Jukebox.bindResize(jukeboxContainer);
     }
 
     Jukebox.injectStyles();
 
     // 独立窗口：使用专属拖拽层（.jukebox-drag-overlay）处理原生窗口拖拽，
-    // 容器内除 overlay 以外的任何元素都强制 no-drag，防止 preload 注入 drag 污染。
+    // 拖拽层覆盖整个容器，交互元素（按钮、输入框等）强制 no-drag。
     // 这种"兄弟层"方案彻底规避 Chromium -webkit-app-region 命中测试缓存 bug：
     // 拖拽层与按钮不是父子关系，Chromium 不会把按钮区域错误地归入拖拽区域。
     if (window.__NEKO_JUKEBOX_STANDALONE__) {
+      // 需要排除拖拽的交互元素选择器
+      var _noDragSelector = 'button, input, a, select, textarea, .jukebox-header-buttons, .jukebox-table tbody tr, .sam-panel, .jukebox-calibration-section, .jukebox-notice, .jukebox-content';
       // 立即设置：拖拽层 drag，其它全部 no-drag
       var _applyDragRegions = function() {
         var overlay = jukeboxContainer.querySelector('.jukebox-drag-overlay');
@@ -3619,12 +3658,9 @@ window.Jukebox = {
   
   // 窗口拖拽功能
   bindWindowDrag: function(wrapper, container) {
-    const header = container.querySelector('.jukebox-header');
-    if (!header) return;
-
     const onMouseDown = (e) => {
-      // 忽略按钮点击
-      if (e.target.closest('.jukebox-header-buttons')) return;
+      // 仅忽略具体交互元素，其余区域均可拖动
+      if (e.target.closest('button, input, a, select, textarea, .jukebox-header-buttons, .jukebox-table tbody tr, .sam-panel, .jukebox-controls-row, .jukebox-resize-handle')) return;
       
       e.preventDefault();
       const clientX = e.touches ? e.touches[0].clientX : e.clientX;
@@ -3677,13 +3713,13 @@ window.Jukebox = {
       document.body.classList.remove('jukebox-dragging');
     };
 
-    header.addEventListener('mousedown', onMouseDown);
-    header.addEventListener('touchstart', onMouseDown, { passive: false });
+    container.addEventListener('mousedown', onMouseDown);
+    container.addEventListener('touchstart', onMouseDown, { passive: false });
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('touchmove', onMouseMove, { passive: false });
     document.addEventListener('mouseup', onMouseUp);
     document.addEventListener('touchend', onMouseUp);
-    
+
     // 保存引用，方便 destroy 时清理
     Jukebox.State._dragCleanup = () => {
       document.removeEventListener('mousemove', onMouseMove);
@@ -3694,36 +3730,147 @@ window.Jukebox = {
       document.body.classList.remove('jukebox-dragging');
     };
   },
-  
+
+  // 缩放功能（八方向：四条边 + 四个角，内容等比缩放）
+  bindResize: function(container) {
+    const handles = container.querySelectorAll('.jukebox-resize-handle');
+    if (!handles.length) return;
+
+    const BASE_WIDTH = parseInt(Jukebox.Config.width) || 500;
+    const MIN_SCALE = 0.5;
+    const MAX_SCALE = 3;
+
+    // 记录初始 zoom
+    const getZoom = () => parseFloat(container.style.zoom) || 1;
+
+    const onPointerDown = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const dir = e.target.dataset.dir;
+      if (!dir) return;
+
+      const startX = e.touches ? e.touches[0].clientX : e.clientX;
+      const startY = e.touches ? e.touches[0].clientY : e.clientY;
+      const startZoom = getZoom();
+      const startRect = container.getBoundingClientRect();
+      const startLeft = startRect.left;
+      const startTop = startRect.top;
+      // 实际视觉宽高（包含 zoom 效果）
+      const startVisualW = startRect.width;
+      const startVisualH = startRect.height;
+
+      document.body.classList.add('jukebox-resizing');
+
+      const onPointerMove = (ev) => {
+        const clientX = ev.touches ? ev.touches[0].clientX : ev.clientX;
+        const clientY = ev.touches ? ev.touches[0].clientY : ev.clientY;
+        const dx = clientX - startX;
+        const dy = clientY - startY;
+
+        let newZoom = startZoom;
+        let newLeft = startLeft;
+        let newTop = startTop;
+
+        // 计算新的视觉宽度/高度
+        let newVisualW = startVisualW;
+        let newVisualH = startVisualH;
+
+        if (dir.includes('e')) {
+          newVisualW = Math.max(BASE_WIDTH * MIN_SCALE, startVisualW + dx);
+        }
+        if (dir.includes('w')) {
+          newVisualW = Math.max(BASE_WIDTH * MIN_SCALE, startVisualW - dx);
+          newLeft = startLeft + (startVisualW - newVisualW);
+        }
+        if (dir.includes('s')) {
+          newVisualH = Math.max(BASE_WIDTH * MIN_SCALE, startVisualH + dy);
+        }
+        if (dir.includes('n')) {
+          newVisualH = Math.max(BASE_WIDTH * MIN_SCALE, startVisualH - dy);
+          newTop = startTop + (startVisualH - newVisualH);
+        }
+
+        // 根据拖拽方向选择缩放基准
+        if (dir === 'n' || dir === 's') {
+          newZoom = Math.max(MIN_SCALE, Math.min(MAX_SCALE, startZoom * (newVisualH / startVisualH)));
+        } else {
+          newZoom = Math.max(MIN_SCALE, Math.min(MAX_SCALE, startZoom * (newVisualW / startVisualW)));
+        }
+
+        container.style.zoom = newZoom;
+
+        // 左/上方向缩放时同步移动 wrapper 位置
+        const wrapper = container.parentElement;
+        if (wrapper && (dir.includes('w') || dir.includes('n'))) {
+          // 使用 getBoundingClientRect 获取实际视觉尺寸
+          const zoomedRect = container.getBoundingClientRect();
+          if (dir.includes('w')) {
+            newLeft = startLeft + startVisualW - zoomedRect.width;
+          }
+          if (dir.includes('n')) {
+            newTop = startTop + startVisualH - zoomedRect.height;
+          }
+          wrapper.style.left = newLeft + 'px';
+          wrapper.style.top = newTop + 'px';
+          wrapper.style.bottom = 'auto';
+          wrapper.style.right = 'auto';
+        }
+      };
+
+      const cleanup = () => {
+        document.body.classList.remove('jukebox-resizing');
+        document.removeEventListener('mousemove', onPointerMove);
+        document.removeEventListener('touchmove', onPointerMove);
+        document.removeEventListener('mouseup', cleanup);
+        document.removeEventListener('touchend', cleanup);
+        window.removeEventListener('blur', cleanup);
+        Jukebox.State._resizeCleanup = null;
+      };
+
+      // 保存清理函数以便 destroy 时调用
+      Jukebox.State._resizeCleanup = cleanup;
+
+      document.addEventListener('mousemove', onPointerMove);
+      document.addEventListener('touchmove', onPointerMove, { passive: false });
+      document.addEventListener('mouseup', cleanup);
+      document.addEventListener('touchend', cleanup);
+      // 窗口失焦时清理，防止监听泄漏
+      window.addEventListener('blur', cleanup);
+    };
+
+    handles.forEach(function(handle) {
+      handle.addEventListener('mousedown', onPointerDown);
+      handle.addEventListener('touchstart', onPointerDown, { passive: false });
+    });
+  },
+
   // 管理器面板拖拽功能
   bindPanelDrag: function(panel) {
-    const header = panel.querySelector('.sam-header');
-    if (!header) return;
-
     let isDragging = false;
     let dragOffset = { x: 0, y: 0 };
 
     const onMouseDown = (e) => {
-      // 忽略按钮和 tab 点击
-      if (e.target.closest('.sam-close-btn') || e.target.closest('.sam-tab')) return;
-      
+      // 忽略所有交互元素
+      if (e.target.closest('button, input, a, select, textarea, .sam-close-btn, .sam-tab, .sam-footer, .sam-content, .sam-checkbox')) return;
+
       e.preventDefault();
       const clientX = e.touches ? e.touches[0].clientX : e.clientX;
       const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-      
+
       const rect = panel.getBoundingClientRect();
-      
+
       if (!panel.style.left) {
         panel.style.left = rect.left + 'px';
         panel.style.top = rect.top + 'px';
       }
-      
+
       isDragging = true;
       dragOffset = {
         x: clientX - rect.left,
         y: clientY - rect.top
       };
-      
+
       document.body.classList.add('sam-panel-dragging');
     };
 
@@ -3754,8 +3901,8 @@ window.Jukebox = {
       document.body.classList.remove('sam-panel-dragging');
     };
 
-    header.addEventListener('mousedown', onMouseDown);
-    header.addEventListener('touchstart', onMouseDown, { passive: false });
+    panel.addEventListener('mousedown', onMouseDown);
+    panel.addEventListener('touchstart', onMouseDown, { passive: false });
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('touchmove', onMouseMove, { passive: false });
     document.addEventListener('mouseup', onMouseUp);
@@ -3801,7 +3948,6 @@ window.Jukebox = {
 
       .jukebox-container {
         width: ${Jukebox.Config.width};
-        max-height: 500px;
         background: ${Jukebox.Config.container.background};
         border-radius: 12px;
         box-shadow: ${Jukebox.Config.container.boxShadow};
@@ -3809,10 +3955,16 @@ window.Jukebox = {
         padding: 20px;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         transition: transform 0.3s ease, opacity 0.3s ease;
-        overflow-y: auto;
+        overflow: auto;
         opacity: 0;
         transform: translateY(20px);
         pointer-events: auto;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+
+      .jukebox-container::-webkit-scrollbar {
+        display: none;
       }
       
       .jukebox-container.open {
@@ -3839,22 +3991,29 @@ window.Jukebox = {
         position: relative;
       }
 
-      /* 专属拖拽层：绝对定位覆盖整个 header，与按钮是兄弟关系而非父子关系，
+      /* 专属拖拽层：绝对定位覆盖整个容器，与按钮是兄弟关系而非父子关系，
          规避 Chromium -webkit-app-region 命中测试缓存 bug。
-         只有需要点击的按钮抬到 overlay 之上，标题/状态文字让 overlay 盖住，
-         这样除按钮外的整个 header 区域都是原生拖拽热区。 */
+         只有需要点击的元素抬到 overlay 之上，其余区域让 overlay 盖住，
+         这样除交互元素外的整个容器区域都是原生拖拽热区。 */
       .jukebox-drag-overlay {
         position: absolute;
         inset: 0;
         z-index: 0;
+        border-radius: inherit;
       }
 
-      .jukebox-header-buttons {
+      .jukebox-header,
+      .jukebox-header-buttons,
+      .jukebox-content,
+      .jukebox-controls-row,
+      .jukebox-calibration-section,
+      .jukebox-notice,
+      .sam-panel {
         position: relative;
         z-index: 1;
       }
-      
-      .jukebox-header:active {
+
+      .jukebox-container:active {
         cursor: grabbing;
       }
 
@@ -3872,7 +4031,41 @@ window.Jukebox = {
         transition: none !important;
         opacity: 0.9;
       }
-      
+
+      body.jukebox-resizing {
+        user-select: none;
+        -webkit-user-select: none;
+      }
+
+      body.jukebox-resizing .jukebox-wrapper {
+        transition: none !important;
+      }
+
+      body.jukebox-resizing .jukebox-container {
+        transition: none !important;
+      }
+
+      .jukebox-resize-handle {
+        position: absolute;
+        z-index: 2;
+      }
+
+      /* 四条边 - 6px 宽的透明热区 */
+      .jukebox-resize-handle[data-dir="n"]  { top: -3px; left: 8px; right: 8px; height: 6px; cursor: ns-resize; }
+      .jukebox-resize-handle[data-dir="s"]  { bottom: -3px; left: 8px; right: 8px; height: 6px; cursor: ns-resize; }
+      .jukebox-resize-handle[data-dir="w"]  { left: -3px; top: 8px; bottom: 8px; width: 6px; cursor: ew-resize; }
+      .jukebox-resize-handle[data-dir="e"]  { right: -3px; top: 8px; bottom: 8px; width: 6px; cursor: ew-resize; }
+
+      /* 四个角 - 14x14 热区 */
+      .jukebox-resize-handle[data-dir="nw"] { top: -3px; left: -3px; width: 14px; height: 14px; cursor: nwse-resize; }
+      .jukebox-resize-handle[data-dir="ne"] { top: -3px; right: -3px; width: 14px; height: 14px; cursor: nesw-resize; }
+      .jukebox-resize-handle[data-dir="sw"] { bottom: -3px; left: -3px; width: 14px; height: 14px; cursor: nesw-resize; }
+      .jukebox-resize-handle[data-dir="se"] { bottom: -3px; right: -3px; width: 14px; height: 14px; cursor: nwse-resize; }
+
+      .jukebox-resize-handle:hover {
+        background: rgba(255,255,255,0.15);
+      }
+
       .jukebox-header-left {
         display: flex;
         align-items: center;
@@ -4092,6 +4285,13 @@ window.Jukebox = {
         flex: 1;
         overflow-y: auto;
         min-height: 0;
+        max-height: 270px;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+
+      .jukebox-content::-webkit-scrollbar {
+        display: none;
       }
       
       .jukebox-table {
@@ -4134,6 +4334,12 @@ window.Jukebox = {
         color: ${Jukebox.Config.table.loadingColor};
       }
       
+      .jukebox-table td:last-child {
+        display: inline-flex;
+        gap: 4px;
+        align-items: center;
+      }
+
       .play-btn {
         background: ${Jukebox.Config.button.playBg};
         border: none;
@@ -4693,13 +4899,7 @@ window.Jukebox = {
     
     player.list.clear();
     
-    if (!song.audio.endsWith('.mp3')) {
-      console.error('[Jukebox]', window.t('Jukebox.nonMp3Error', '试图播放非mp3格式文件'));
-      console.error('[Jukebox]', window.t('Jukebox.nonMp3Info', '非mp3音频信息'), JSON.stringify(song, null, 2));
-      throw new Error(window.t('Jukebox.nonMp3Error', '试图播放非mp3格式文件'));
-    }
-    
-    console.log('[Jukebox]', window.t('Jukebox.useAPlayer', '使用APlayer播放mp3文件'));
+    console.log('[Jukebox]', window.t('Jukebox.useAPlayer', '使用APlayer播放音频文件'));
     
     // 将相对路径转换为API路径
     const audioUrl = `/api/jukebox/file/${song.audio}`;
@@ -4715,7 +4915,7 @@ window.Jukebox = {
     
     if (Jukebox.State.boundPlayer !== player) {
       player.on('ended', () => {
-        console.log('[Jukebox]', window.t('Jukebox.mp3Ended', 'mp3播放结束'), {
+        console.log('[Jukebox]', window.t('Jukebox.audioEnded', '音频播放结束'), {
           isPlaying: Jukebox.State.isPlaying,
           currentSong: Jukebox.State.currentSong,
           playerLoop: player.options.loop
@@ -4731,7 +4931,7 @@ window.Jukebox = {
     
     player.play();
     
-    console.log('[Jukebox]', window.t('Jukebox.startPlay', '开始播放mp3音频'), song.audio);
+    console.log('[Jukebox]', window.t('Jukebox.startPlay', '开始播放音频'), song.audio);
   },
   
   playVMD: async function(vmdPath) {

@@ -534,6 +534,7 @@
         "AGENT_CU_AUTO_CLOSED": "Модуль Computer Use не загружен, автоматически отключён",
         "AGENT_CU_CAPABILITY_LOST": "Computer Use недоступен: $t(agent.precheck.{{reason_code}})",
         "TTS_CONNECTION_FAILED": "Ошибка подключения к TTS-сервису: {{msg}}",
+        "UPSTREAM_SERVER_BUSY": "Извините, ня, сервер провайдера перегружен. Попробуйте позже~",
         "TTS_RECONNECTING": "🔄 Служба TTS автоматически переподключается, подождите...",
         "TTS_WATERMARK_DETECTED": "⚠️ Обнаружен водяной знак CogTTS (звуковой сигнал). Чтобы отключить водяной знак, настройте это вручную в консоли Zhipu.",
         "TTS_CUSTOM_URL_NOT_CONFIGURED": "URL GPT-SoVITS API не настроен. Включите и настройте пользовательский TTS в настройках API.",
@@ -1887,8 +1888,19 @@
             "changeFailed": "Не удалось изменить анимацию ожидания"
         },
         "managerInitFailed": "Не удалось инициализировать менеджер MMD",
+        "moduleLoading": "Загрузка модулей MMD...",
         "modelLoading": "Загрузка модели MMD...",
-        "modelLoaded": "Модель MMD успешно загружена"
+        "modelLoaded": "Модель MMD успешно загружена",
+        "modelLoadFailed": "Не удалось загрузить модель MMD: {{error}}",
+        "loadingOverlay": {
+            "engine": "Подготовка движка MMD...",
+            "settings": "Загрузка настроек MMD...",
+            "model": "Загрузка ресурсов модели...",
+            "physics": "Инициализация физики...",
+            "idle": "Загрузка idle-анимации...",
+            "done": "MMD готова",
+            "failed": "Не удалось загрузить MMD"
+        }
     },
     "modelManager": {
         "vrmLoadingDependencies": "[VRM] Начало загрузки зависимых модулей",
@@ -2821,12 +2833,12 @@
         "play": "Воспроизвести",
         "playError": "Музыкальный плеер не инициализирован",
         "notFound": "Песня не найдена",
-        "mp3Ended": "mp3 воспроизведение завершено",
+        "audioEnded": "Воспроизведение завершено",
         "vmdNotInit": "MMD Manager не инициализирован, пропуск анимации",
         "vmdPlayFailed": "Ошибка воспроизведения VMD",
         "vmdPlayed": "VMD анимация воспроизведена",
-        "useAPlayer": "Использование APlayer для воспроизведения mp3 файла",
-        "startPlay": "Начало воспроизведения mp3 аудио",
+        "useAPlayer": "Воспроизведение аудио через APlayer",
+        "startPlay": "Начало воспроизведения аудио",
         "nonMp3Error": "Попытка воспроизведения файла не в формате mp3",
         "nonMp3Info": "Информация о не-mp3 аудио",
         "btnNotFound": "Кнопка музыкального автомата не найдена, ожидание загрузки...",
