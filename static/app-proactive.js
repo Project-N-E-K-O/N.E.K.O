@@ -490,6 +490,7 @@
     // ======================== triggerProactiveChat ========================
 
     async function triggerProactiveChat() {
+        var requestSent = false;
         try {
             // 主备协调：本窗口非 leader 时不触发，避免和 Pet 主窗口重复发请求。
             // 这里再 guard 一次是为了防止 leader 切换后旧定时器仍然触发。
@@ -519,6 +520,7 @@
                         voice_mode: true
                     })
                 });
+                requestSent = true;
                 var result = await resp.json();
                 S._voiceProactiveLastResult = result.action || 'unknown';
                 console.log('[ProactiveChat] 语音模式结果:', S._voiceProactiveLastResult);
@@ -730,6 +732,7 @@
                 },
                 body: JSON.stringify(requestBody)
             });
+            requestSent = true;
 
             var result = await response.json();
 
@@ -801,6 +804,7 @@
             return true;
         } catch (error) {
             console.error('主动搭话触发失败:', error);
+            return requestSent;
         }
     }
     mod.triggerProactiveChat = triggerProactiveChat;
