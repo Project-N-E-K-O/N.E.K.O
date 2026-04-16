@@ -1150,6 +1150,9 @@ class OmniRealtimeClient:
         """
         # Gemini 使用 send_client_content 发送文本内容
         if self._is_gemini:
+            if not instructions or not instructions.strip():
+                logger.info("Gemini: skipping empty content in create_response")
+                return
             if skipped:
                 self._skip_until_next_response = True
             await self._create_response_gemini(instructions)
