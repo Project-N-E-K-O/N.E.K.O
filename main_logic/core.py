@@ -17,7 +17,7 @@ from utils.frontend_utils import contains_chinese, replace_blank, replace_corner
 from utils.screenshot_utils import process_screen_data
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
-from main_logic.tts_client import get_tts_worker
+from main_logic.tts_client import get_tts_worker, TTS_PROVIDER_REGISTRY
 from utils.preferences import load_global_conversation_settings
 from config import MEMORY_SERVER_PORT, TOOL_SERVER_PORT
 from config.prompts_sys import (
@@ -156,8 +156,12 @@ class LLMSessionManager:
         # 跨 chunk 规范化器：Gemini Live 输出转录会在中文 token 之间插入 ASCII
         # 空格，让 MiniMax / CosyVoice 等 streaming TTS 把中文读断。normalizer
         # 按 replace_blank 的语义剔除空格，同时延后处理 chunk 尾部空格以保证边界正确。
+        # 注意：仅对 http_sentence 类 TTS provider 启用（它们做客户端切句，需要干净文本）。
+        # ws_bistream 类 provider（qwen / step / cosyvoice）直接把文本碎片发给服务端，
+        # normalizer 的 pending_spaces 延迟投递 + CJK 边界空格删除会干扰服务端处理节奏。
         self._tts_stream_normalizer = TtsStreamNormalizer()
         self._tts_norm_speech_id: Optional[str] = None
+        self._tts_normalize_enabled: bool = True  # 默认启用，_start_tts_thread 按 provider 类别覆盖
         # 流式音频重采样器（24kHz→48kHz）- 维护内部状态避免 chunk 边界不连续
         self.audio_resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
         self.lock = asyncio.Lock()  # 使用异步锁替代同步锁
@@ -320,21 +324,23 @@ class LLMSessionManager:
             return 350
 
     def _enqueue_tts_text_chunk(self, speech_id, text: str) -> None:
-        """通过 stream normalizer 把一段文本 chunk 入 TTS 队列。
+        """把一段文本 chunk 入 TTS 队列，http_sentence 类 provider 走 normalizer。
 
         调用方必须已持有 ``self.tts_cache_lock``（与现有 put 调用点一致）。
-        speech_id 变化会触发 normalizer 重置；规范化后若 chunk 为空则不入队，
-        避免给 TTS worker 发无意义的空串。控制信号（``__interrupt__`` /
+        对于 ws_bistream 类 provider（qwen / step / cosyvoice），文本碎片直接
+        发给服务端处理，跳过 normalizer 以避免 pending_spaces 延迟和 CJK 边界
+        空格删除干扰服务端合成节奏。控制信号（``__interrupt__`` /
         ``(None, None)``）请继续用 ``tts_request_queue.put`` 直接发送，
         并在合适时机调用 ``_reset_tts_stream_normalizer``。
         """
-        if speech_id != self._tts_norm_speech_id:
-            self._tts_stream_normalizer.reset()
-            self._tts_norm_speech_id = speech_id
-        normalized = self._tts_stream_normalizer.feed(text)
-        if not normalized:
-            return
-        self.tts_request_queue.put((speech_id, normalized))
+        if self._tts_normalize_enabled:
+            if speech_id != self._tts_norm_speech_id:
+                self._tts_stream_normalizer.reset()
+                self._tts_norm_speech_id = speech_id
+            text = self._tts_stream_normalizer.feed(text)
+            if not text:
+                return
+        self.tts_request_queue.put((speech_id, text))
 
     def _reset_tts_stream_normalizer(self) -> None:
         """清空 normalizer 状态。中断 / 轮次结束 / session 重建时调用。"""
@@ -911,6 +917,34 @@ class LLMSessionManager:
             core_config.get('ENABLE_CUSTOM_API') and core_config.get('TTS_MODEL_URL')
         )
 
+    def _resolve_tts_needs_normalizer(self, has_custom: bool) -> bool:
+        """判断当前 TTS provider 是否需要客户端文本规范化。
+
+        ws_bistream 类 provider 直接把文本碎片发给服务端，不需要 normalizer；
+        http_sentence / local 类 provider 做客户端切句，normalizer 有助于
+        去除 Gemini Live 输出转录中的 CJK 边界空格。
+
+        Returns:
+            True 表示应启用 TtsStreamNormalizer，False 表示跳过。
+        """
+        # 自定义 MiniMax 克隆音色 → http_sentence，需要 normalizer
+        if has_custom and self.voice_id:
+            from main_logic.tts_client import _get_voice_meta
+            voice_meta = _get_voice_meta(self.voice_id)
+            if voice_meta and voice_meta.get('provider', '').startswith('minimax'):
+                return True
+
+        # 默认 TTS：按 core_api_type 查 registry
+        provider_key = self.core_api_type or 'qwen'
+        if provider_key == 'free':
+            provider_key = 'step'
+        meta = TTS_PROVIDER_REGISTRY.get(provider_key)
+        if meta and meta.category == "ws_bistream":
+            return False
+
+        # 未知 provider 或 http_sentence / local → 保守地启用 normalizer
+        return True
+
     def _start_tts_thread(self):
         """创建并启动 TTS Worker 线程。
 
@@ -931,6 +965,13 @@ class LLMSessionManager:
             'tts_custom' if has_custom else 'tts_default'
         )
         api_key = api_key_override or tts_config['api_key']
+
+        # 根据 TTS provider 类别决定是否启用流式文本规范化。
+        # ws_bistream 类（qwen / step / cosyvoice）直接把文本碎片发给服务端处理，
+        # normalizer 的 pending_spaces 延迟投递和 CJK 边界空格删除会干扰送达节奏。
+        # http_sentence 类（cogtts / gemini / openai / minimax）做客户端句子分割，
+        # 需要干净的文本，normalizer 在此有意义。
+        self._tts_normalize_enabled = self._resolve_tts_needs_normalizer(has_custom)
 
         self.tts_request_queue = Queue()
         self.tts_response_queue = Queue()
