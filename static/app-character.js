@@ -1291,16 +1291,21 @@
             }
             showStatusToast(window.t ? window.t('app.switchCatgirlError', { error: error.message }) : `切换失败: ${error.message}`, 4000);
         } finally {
-            // 安全网：确保旧连接一定被关闭，即使 try 中途 throw
+            // 安全网：若新 socket 已接管，确保旧连接一定被关闭（即使 try 中途 throw）
+            // 门闸 S.socket !== _switchOldSocket：切换早期失败（如 /api/characters fetch 抛错）时
+            // 新 socket 尚未建立，此时保留旧 socket 让用户继续与当前猫娘对话
             // 必须在 isSwitchingCatgirl=false 之前执行，
             // 否则 onclose 会在 isSwitchingCatgirl=false 时触发 auto-reconnect
             try {
                 if (_switchOldSocket
+                    && S.socket !== _switchOldSocket
                     && _switchOldSocket.readyState !== WebSocket.CLOSED
                     && _switchOldSocket.readyState !== WebSocket.CLOSING) {
                     _switchOldSocket.close();
                 }
-                if (_switchOldHeartbeat) clearInterval(_switchOldHeartbeat);
+                if (_switchOldHeartbeat && S.heartbeatInterval !== _switchOldHeartbeat) {
+                    clearInterval(_switchOldHeartbeat);
+                }
             } catch (_e) { /* ignore */ }
 
             S.isSwitchingCatgirl = false;
