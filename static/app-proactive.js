@@ -429,23 +429,26 @@
             console.log('触发主动搭话...');
             S.isProactiveChatRunning = true; // 加锁
 
+            var triggered = false;
             try {
-                await triggerProactiveChat();
+                triggered = await triggerProactiveChat();
             } finally {
                 S.isProactiveChatRunning = false; // 解锁
             }
 
-            // 增加退避级别：
+            // 增加退避级别（仅在实际发送了请求时才累加，冷却期/前置条件未满足的跳过不计入）：
             //   level < 2 时每次必升（30s → 75s → 187s ≈ 3min），快速拉开间隔；
             //   level ≥ 2 后改为 30% 概率升级，让"长期无人搭理"的情况间隔能继续慢慢变长，
             //     但大多数轮次仍停在当前档位，避免一次跳太远。
             //   注：硬上限从原设计的 level 3 降到 2，因为同批改动里去掉了 turn_end reset，
             //   整体退避会更猛 —— 先降一级做软着陆，让用户不至于突然觉得搭话显著变少。
-            if (S.proactiveChatBackoffLevel < 2) {
-                S.proactiveChatBackoffLevel++;
-            } else if (Math.random() < 0.3) {
-                S.proactiveChatBackoffLevel++;
-                console.log('[ProactiveChat] 高档位概率升级命中，退避级别升至 ' + S.proactiveChatBackoffLevel);
+            if (triggered) {
+                if (S.proactiveChatBackoffLevel < 2) {
+                    S.proactiveChatBackoffLevel++;
+                } else if (Math.random() < 0.3) {
+                    S.proactiveChatBackoffLevel++;
+                    console.log('[ProactiveChat] 高档位概率升级命中，退避级别升至 ' + S.proactiveChatBackoffLevel);
+                }
             }
 
             // 安排下一次
@@ -519,7 +522,7 @@
                 var result = await resp.json();
                 S._voiceProactiveLastResult = result.action || 'unknown';
                 console.log('[ProactiveChat] 语音模式结果:', S._voiceProactiveLastResult);
-                return;
+                return true;
             }
 
             var availableModes = [];
@@ -795,6 +798,7 @@
             } else {
                 console.warn('主动搭话失败:', result.error);
             }
+            return true;
         } catch (error) {
             console.error('主动搭话触发失败:', error);
         }
