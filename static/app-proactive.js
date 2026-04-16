@@ -397,8 +397,8 @@
         //   cap2 = cap1 + SLOW                          — 慢区终点
         //
         // Delay 函数:
-        //   level < cap1:  base × M1^(level + jitter)                     (tier 1: 每 tick 必升)
-        //   level ≥ cap1:  base × M1^cap1 × M2^(level - cap1 + jitter)   (tier 2/3)
+        //   level < cap1:  base × M1^level × (1 ± 12%)                   (tier 1: 每 tick 必升)
+        //   level ≥ cap1:  base × M1^cap1 × M2^(level - cap1) × (1 ± 12%)  (tier 2/3)
         //   min(上式, HARD_CAP)
         //
         // Level 推进:
@@ -427,21 +427,21 @@
         var cap1 = caps.cap1;
         var cap2 = caps.cap2;
 
-        // 在指数上叠加 ±0.125 的随机漂移
-        // 对 M1=1.09167 波动约 [0.99x, 1.01x]，对 M2=1.55 约 [0.95x, 1.06x]
-        var expJitter = (Math.random() - 0.5) * 0.25;
         var level = S.proactiveChatBackoffLevel;
         var delay;
 
         if (level < cap1) {
             // Tier 1: base × M1^level，确定性爬升
-            delay = (baseInterval * 1000) * Math.pow(BACKOFF_M1, level + expJitter);
+            delay = (baseInterval * 1000) * Math.pow(BACKOFF_M1, level);
         } else {
             // Tier 2/3: 从收敛点开始用 M2 爬升
             var convergenceDelay = baseInterval * Math.pow(BACKOFF_M1, cap1);
-            delay = convergenceDelay * 1000 * Math.pow(BACKOFF_M2, (level - cap1) + expJitter);
+            delay = convergenceDelay * 1000 * Math.pow(BACKOFF_M2, level - cap1);
             delay = Math.min(delay, BACKOFF_HARD_CAP_MS);
         }
+
+        // 对 delay 做 ±12% 乘性随机抖动，避免节奏过于机械
+        delay *= 1 + (Math.random() - 0.5) * 0.24;
 
         // 首次启动时额外等待 6 秒，避免程序刚启动就触发音乐推荐。
         // 用一次性 flag 而非 backoffLevel === 0 —— 后者在 user_input reset 或
@@ -454,7 +454,7 @@
         }
         delay += startupDelay;
 
-        console.log('主动搭话：' + (delay / 1000).toFixed(1) + '秒后触发（基础间隔：' + baseInterval + '秒，退避级别：' + level + '，cap1：' + cap1 + '，cap2：' + cap2 + '，指数漂移：' + expJitter.toFixed(2) + '，启动延迟：' + (startupDelay / 1000) + '秒）');
+        console.log('主动搭话：' + (delay / 1000).toFixed(1) + '秒后触发（基础间隔：' + baseInterval + '秒，退避级别：' + level + '，cap1：' + cap1 + '，cap2：' + cap2 + '，启动延迟：' + (startupDelay / 1000) + '秒）');
 
         S.proactiveChatTimer = setTimeout(async function () {
             // 双重检查锁：定时器触发时再次检查是否正在执行
