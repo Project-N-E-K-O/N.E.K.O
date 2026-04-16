@@ -3672,6 +3672,17 @@ async function closeCharaManagerPage() {
         }
     }
 
+    // 先显式关闭从本页打开的子窗口（如 model_manager），
+    // 避免浏览器级联关闭时 beforeunload 不触发、主页收不到 show_main_ui
+    if (window._openSettingsWindows) {
+        for (const [key, win] of Object.entries(window._openSettingsWindows)) {
+            if (win && !win.closed) {
+                win.close();
+            }
+            delete window._openSettingsWindows[key];
+        }
+    }
+
     if (window.opener) {
         window.close();
     } else if (window.parent && window.parent !== window) {

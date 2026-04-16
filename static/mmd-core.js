@@ -194,6 +194,8 @@ class MMDCore {
         container.style.top = '0';
         container.style.left = '0';
         container.style.setProperty('pointer-events', 'auto', 'important');
+        // 【修复】确保 z-index 与 vrm-container 一致，作为 CSS 缺失时的后备
+        container.style.zIndex = '10';
 
         this.manager.clock = new THREE.Clock();
         this.manager.scene = new THREE.Scene();

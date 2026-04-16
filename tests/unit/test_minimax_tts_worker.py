@@ -2,11 +2,10 @@ import json
 import queue
 import threading
 import time
-import asyncio
-from collections import deque
 
 import numpy as np
 import pytest
+import httpx
 
 from main_logic import tts_client
 
@@ -32,65 +31,6 @@ class ControlledQueue:
         self._queue.put(self._stop)
 
 
-class FakeMiniMaxWebSocket:
-    _CLOSE_SENTINEL = object()
-
-    def __init__(self, handshake=None, on_send=None):
-        self._recv_queue = deque()
-        self.sent_messages = []
-        self.closed = False
-        self.on_send = on_send
-        self.state = getattr(tts_client, "_WsState", None).OPEN if getattr(tts_client, "_WsState", None) else None
-        self._recv_queue.append(handshake or {"event": "connected_success"})
-
-    def queue_event(self, payload):
-        self._recv_queue.append(payload)
-
-    async def send(self, raw_message):
-        message = json.loads(raw_message)
-        self.sent_messages.append(message)
-        if self.on_send is not None:
-            result = self.on_send(self, message)
-            if hasattr(result, "__await__"):
-                await result
-
-    async def recv(self):
-        while not self._recv_queue:
-            await asyncio.sleep(0.01)
-        item = self._recv_queue.popleft()
-        if item is self._CLOSE_SENTINEL:
-            self.closed = True
-            if getattr(tts_client, "_WsState", None):
-                self.state = tts_client._WsState.CLOSED
-            raise RuntimeError("fake websocket closed")
-        if isinstance(item, dict):
-            return json.dumps(item)
-        return item
-
-    async def close(self):
-        self.force_disconnect()
-
-    def force_disconnect(self):
-        if self.closed:
-            return
-        self.closed = True
-        if getattr(tts_client, "_WsState", None):
-            self.state = tts_client._WsState.CLOSED
-        self._recv_queue.append(self._CLOSE_SENTINEL)
-
-
-class FakeConnectFactory:
-    def __init__(self, *sockets):
-        self.sockets = list(sockets)
-        self.calls = []
-
-    async def __call__(self, url, **kwargs):
-        self.calls.append((url, kwargs))
-        if not self.sockets:
-            raise RuntimeError("no fake websocket left")
-        return self.sockets.pop(0)
-
-
 def _start_worker(request_queue, response_queue, base_url="https://api.minimaxi.com"):
     thread = threading.Thread(
         target=tts_client.minimax_tts_worker,
@@ -101,7 +41,7 @@ def _start_worker(request_queue, response_queue, base_url="https://api.minimaxi.
     return thread
 
 
-def _wait_for_queue_item(q, predicate, timeout=3.0):
+def _wait_for_queue_item(q, predicate, timeout=5.0):
     deadline = time.time() + timeout
     seen = []
     while time.time() < deadline:
@@ -116,35 +56,108 @@ def _wait_for_queue_item(q, predicate, timeout=3.0):
     raise AssertionError(f"Timed out waiting for queue item, seen={seen!r}")
 
 
-@pytest.mark.unit
-def test_get_minimax_tts_ws_url():
-    assert tts_client._get_minimax_tts_ws_url("https://api.minimaxi.com/v1") == "wss://api.minimaxi.com/ws/v1/t2a_v2"
-    assert tts_client._get_minimax_tts_ws_url("https://api.minimax.io") == "wss://api.minimax.io/ws/v1/t2a_v2"
+# ---------------------------------------------------------------------------
+# Fake httpx transport for testing
+# ---------------------------------------------------------------------------
 
 
-@pytest.mark.unit
-def test_minimax_worker_probes_ready_and_streams_audio_per_turn(monkeypatch):
-    pcm_bytes = (np.arange(3000, dtype=np.int16)).tobytes()
+class FakeSSETransport(httpx.AsyncBaseTransport):
+    """Fake httpx transport that returns SSE or JSON responses for MiniMax TTS."""
 
-    async def task_on_send(ws, message):
-        event = message.get("event")
-        if event == "task_start":
-            ws.queue_event({"event": "task_started"})
-        elif event == "task_continue":
-            ws.queue_event(
-                {
-                    "event": "task_continued",
-                    "data": {"audio": pcm_bytes.hex()},
-                    "is_final": True,
-                }
+    def __init__(self, sse_events=None, status_code=200, probe_status=400,
+                 use_sse=True, trailing_newline=True):
+        self._sse_events = sse_events or []
+        self._status_code = status_code
+        self._probe_status = probe_status
+        self._use_sse = use_sse
+        self._trailing_newline = trailing_newline
+        self.requests = []
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else {}
+        self.requests.append(body)
+
+        # Probe request (empty text, stream=False)
+        if not body.get("stream", False):
+            return httpx.Response(self._probe_status, json={"base_resp": {"status_code": 0}})
+
+        # Streaming synthesis request
+        if self._use_sse:
+            # SSE format: data: {json}\n\n
+            sse_body = ""
+            for i, event in enumerate(self._sse_events):
+                sse_body += f"data: {json.dumps(event)}"
+                if i < len(self._sse_events) - 1 or self._trailing_newline:
+                    sse_body += "\n\n"
+            return httpx.Response(
+                self._status_code,
+                content=sse_body.encode("utf-8"),
+                headers={"content-type": "text/event-stream"},
             )
-        elif event == "task_finish":
-            ws.queue_event({"event": "task_finished"})
+        else:
+            # JSON stream format: line-delimited JSON objects
+            json_body = ""
+            for i, event in enumerate(self._sse_events):
+                json_body += json.dumps(event)
+                if i < len(self._sse_events) - 1 or self._trailing_newline:
+                    json_body += "\n"
+            return httpx.Response(
+                self._status_code,
+                content=json_body.encode("utf-8"),
+                headers={"content-type": "application/json"},
+            )
 
-    probe_ws = FakeMiniMaxWebSocket()
-    task_ws = FakeMiniMaxWebSocket(on_send=task_on_send)
-    factory = FakeConnectFactory(probe_ws, task_ws)
-    monkeypatch.setattr(tts_client.websockets, "connect", factory)
+
+def _make_audio_sse_events(pcm_bytes: bytes, num_chunks: int = 1):
+    """Generate SSE event dicts with hex-encoded PCM audio."""
+    events = []
+    chunk_size = max(1, len(pcm_bytes) // num_chunks)
+    for i in range(num_chunks):
+        start = i * chunk_size
+        end = start + chunk_size if i < num_chunks - 1 else len(pcm_bytes)
+        chunk = pcm_bytes[start:end]
+        status = 2 if i == num_chunks - 1 else 1
+        events.append({
+            "data": {"audio": chunk.hex(), "status": status},
+            "trace_id": "test-trace",
+            "base_resp": {"status_code": 0, "status_msg": "success"},
+        })
+    return events
+
+
+# ---------------------------------------------------------------------------
+# URL helper tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_get_minimax_tts_http_url():
+    assert tts_client._get_minimax_tts_http_url("https://api.minimaxi.com/v1") == "https://api.minimaxi.com/v1/t2a_v2"
+    assert tts_client._get_minimax_tts_http_url("https://api.minimax.io") == "https://api.minimax.io/v1/t2a_v2"
+    # ws/wss 转换
+    assert tts_client._get_minimax_tts_http_url("wss://api.minimaxi.com") == "https://api.minimaxi.com/v1/t2a_v2"
+    # 默认值
+    assert tts_client._get_minimax_tts_http_url(None) == "https://api.minimaxi.com/v1/t2a_v2"
+
+
+# ---------------------------------------------------------------------------
+# Worker integration tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_minimax_worker_streams_audio_via_sse(monkeypatch):
+    pcm_bytes = (np.arange(3000, dtype=np.int16)).tobytes()
+    sse_events = _make_audio_sse_events(pcm_bytes, num_chunks=2)
+    transport = FakeSSETransport(sse_events=sse_events)
+
+    original_async_client = httpx.AsyncClient
+
+    def patched_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", patched_client)
 
     request_queue = ControlledQueue()
     response_queue = queue.Queue()
@@ -157,33 +170,79 @@ def test_minimax_worker_probes_ready_and_streams_audio_per_turn(monkeypatch):
     request_queue.put(("speech-1", "世界今天"))
     request_queue.put((None, None))
 
-    audio_item, seen = _wait_for_queue_item(
+    audio_item, _ = _wait_for_queue_item(
         response_queue,
         lambda item: isinstance(item, tuple) and len(item) == 3 and item[0] == "__audio__",
     )
     assert audio_item[1] == "speech-1"
     assert isinstance(audio_item[2], bytes)
     assert len(audio_item[2]) > 0
-    assert ("__reconnecting__", "TTS_RECONNECTING") not in seen
+
+    # Verify the synthesis request was sent with accumulated text
+    synth_requests = [r for r in transport.requests if r.get("stream")]
+    assert len(synth_requests) == 1
+    assert synth_requests[0]["text"] == "你好世界今天"
 
     request_queue.close()
-    thread.join(timeout=2.0)
+    thread.join(timeout=3.0)
     assert not thread.is_alive()
-
-    assert probe_ws.sent_messages == []
-    assert probe_ws.closed is True
-    assert [msg["event"] for msg in task_ws.sent_messages] == ["task_start", "task_continue", "task_finish"]
-    assert task_ws.sent_messages[1]["text"] == "你好世界今天"
-    assert task_ws.closed is True
-    assert len(factory.calls) == 2
-    assert factory.calls[0][0] == "wss://api.minimaxi.com/ws/v1/t2a_v2"
 
 
 @pytest.mark.unit
-def test_minimax_worker_handshake_failure_reports_not_ready(monkeypatch):
-    bad_ws = FakeMiniMaxWebSocket(handshake={"event": "bad_handshake"})
-    factory = FakeConnectFactory(bad_ws)
-    monkeypatch.setattr(tts_client.websockets, "connect", factory)
+def test_minimax_worker_streams_audio_via_json_format(monkeypatch):
+    """Test JSON stream format (application/json) instead of SSE"""
+    pcm_bytes = (np.arange(3000, dtype=np.int16)).tobytes()
+    json_events = _make_audio_sse_events(pcm_bytes, num_chunks=2)
+    transport = FakeSSETransport(sse_events=json_events, use_sse=False)
+
+    original_async_client = httpx.AsyncClient
+
+    def patched_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", patched_client)
+
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = _start_worker(request_queue, response_queue)
+
+    _wait_for_queue_item(response_queue, lambda item: item == ("__ready__", True))
+
+    request_queue.put(("speech-1", "你好"))
+    request_queue.put(("speech-1", "世界今天"))
+    request_queue.put((None, None))
+
+    audio_item, _ = _wait_for_queue_item(
+        response_queue,
+        lambda item: isinstance(item, tuple) and len(item) == 3 and item[0] == "__audio__",
+    )
+    assert audio_item[0] == "__audio__"
+    assert audio_item[1] == "speech-1"
+    assert isinstance(audio_item[2], bytes)
+    assert len(audio_item[2]) > 0
+
+    # Verify the synthesis request was sent
+    synth_requests = [r for r in transport.requests if r.get("stream")]
+    assert len(synth_requests) == 1
+    assert synth_requests[0]["text"] == "你好世界今天"
+
+    request_queue.close()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
+
+@pytest.mark.unit
+def test_minimax_worker_auth_failure_reports_not_ready(monkeypatch):
+    transport = FakeSSETransport(probe_status=401)
+
+    original_async_client = httpx.AsyncClient
+
+    def patched_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", patched_client)
 
     request_queue = ControlledQueue()
     response_queue = queue.Queue()
@@ -197,73 +256,23 @@ def test_minimax_worker_handshake_failure_reports_not_ready(monkeypatch):
     assert any(isinstance(item, tuple) and item[0] == "__error__" for item in seen)
 
     request_queue.close()
-    thread.join(timeout=2.0)
+    thread.join(timeout=3.0)
     assert not thread.is_alive()
 
 
 @pytest.mark.unit
-def test_minimax_worker_unexpected_disconnect_triggers_reconnecting(monkeypatch):
-    async def task_on_send(ws, message):
-        event = message.get("event")
-        if event == "task_start":
-            ws.queue_event({"event": "task_started"})
-        elif event == "task_continue":
-            ws.force_disconnect()
-
-    probe_ws = FakeMiniMaxWebSocket()
-    task_ws = FakeMiniMaxWebSocket(on_send=task_on_send)
-    factory = FakeConnectFactory(probe_ws, task_ws)
-    monkeypatch.setattr(tts_client.websockets, "connect", factory)
-
-    request_queue = ControlledQueue()
-    response_queue = queue.Queue()
-    thread = _start_worker(request_queue, response_queue)
-
-    _wait_for_queue_item(response_queue, lambda item: item == ("__ready__", True))
-
-    request_queue.put(("speech-1", "你好"))
-    request_queue.put(("speech-1", "世界今天"))
-
-    reconnecting_item, _ = _wait_for_queue_item(
-        response_queue,
-        lambda item: item == ("__reconnecting__", "TTS_RECONNECTING"),
-    )
-    assert reconnecting_item == ("__reconnecting__", "TTS_RECONNECTING")
-    assert len(factory.calls) == 2
-
-    request_queue.close()
-    thread.join(timeout=2.0)
-    assert not thread.is_alive()
-
-
-@pytest.mark.unit
-def test_minimax_worker_switches_speech_id_without_reusing_old_connection(monkeypatch):
+def test_minimax_worker_switches_speech_id_discards_old_buffer(monkeypatch):
     pcm_bytes = (np.arange(2500, dtype=np.int16)).tobytes()
+    sse_events = _make_audio_sse_events(pcm_bytes, num_chunks=1)
+    transport = FakeSSETransport(sse_events=sse_events)
 
-    async def old_turn_on_send(ws, message):
-        if message.get("event") == "task_start":
-            ws.queue_event({"event": "task_started"})
+    original_async_client = httpx.AsyncClient
 
-    async def new_turn_on_send(ws, message):
-        event = message.get("event")
-        if event == "task_start":
-            ws.queue_event({"event": "task_started"})
-        elif event == "task_continue":
-            ws.queue_event(
-                {
-                    "event": "task_continued",
-                    "data": {"audio": pcm_bytes.hex()},
-                    "is_final": True,
-                }
-            )
-        elif event == "task_finish":
-            ws.queue_event({"event": "task_finished"})
+    def patched_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original_async_client(*args, **kwargs)
 
-    probe_ws = FakeMiniMaxWebSocket()
-    old_turn_ws = FakeMiniMaxWebSocket(on_send=old_turn_on_send)
-    new_turn_ws = FakeMiniMaxWebSocket(on_send=new_turn_on_send)
-    factory = FakeConnectFactory(probe_ws, old_turn_ws, new_turn_ws)
-    monkeypatch.setattr(tts_client.websockets, "connect", factory)
+    monkeypatch.setattr(httpx, "AsyncClient", patched_client)
 
     request_queue = ControlledQueue()
     response_queue = queue.Queue()
@@ -271,6 +280,7 @@ def test_minimax_worker_switches_speech_id_without_reusing_old_connection(monkey
 
     _wait_for_queue_item(response_queue, lambda item: item == ("__ready__", True))
 
+    # Send text for old speech, then switch to new speech before flush
     request_queue.put(("speech-old", "abcdef"))
     request_queue.put(("speech-new", "ghijkl"))
     request_queue.put((None, None))
@@ -280,50 +290,30 @@ def test_minimax_worker_switches_speech_id_without_reusing_old_connection(monkey
         lambda item: isinstance(item, tuple) and len(item) == 3 and item[0] == "__audio__",
     )
     assert audio_item[1] == "speech-new"
-    assert probe_ws.closed is True
-    assert old_turn_ws.closed is True
-    assert [msg["event"] for msg in old_turn_ws.sent_messages] == ["task_start", "task_continue"]
-    assert [msg["event"] for msg in new_turn_ws.sent_messages] == ["task_start", "task_continue", "task_finish"]
+
+    # Only one synthesis request for the new speech
+    synth_requests = [r for r in transport.requests if r.get("stream")]
+    assert len(synth_requests) == 1
+    assert synth_requests[0]["text"] == "ghijkl"
 
     request_queue.close()
-    thread.join(timeout=2.0)
+    thread.join(timeout=3.0)
     assert not thread.is_alive()
 
 
 @pytest.mark.unit
-def test_minimax_worker_preserves_tail_audio_until_close_flush(monkeypatch):
-    # Keep resampled output below the 4KB aggregation threshold so audio only
-    # appears when the receive-loop finally block flushes on close.
-    pcm_bytes = (np.arange(1500, dtype=np.int16)).tobytes()
-    original_asyncio_wait = asyncio.wait
-    wait_call_count = 0
+def test_minimax_worker_interrupt_clears_buffer(monkeypatch):
+    pcm_bytes = (np.arange(1000, dtype=np.int16)).tobytes()
+    sse_events = _make_audio_sse_events(pcm_bytes)
+    transport = FakeSSETransport(sse_events=sse_events)
 
-    async def patched_asyncio_wait(*args, **kwargs):
-        nonlocal wait_call_count
-        wait_call_count += 1
-        if wait_call_count == 2:
-            pending = set(args[0])
-            return set(), pending
-        return await original_asyncio_wait(*args, **kwargs)
+    original_async_client = httpx.AsyncClient
 
-    async def task_on_send(ws, message):
-        event = message.get("event")
-        if event == "task_start":
-            ws.queue_event({"event": "task_started"})
-        elif event == "task_continue":
-            ws.queue_event(
-                {
-                    "event": "task_continued",
-                    "data": {"audio": pcm_bytes.hex()},
-                }
-            )
+    def patched_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original_async_client(*args, **kwargs)
 
-    probe_ws = FakeMiniMaxWebSocket()
-    task_ws = FakeMiniMaxWebSocket(on_send=task_on_send)
-    factory = FakeConnectFactory(probe_ws, task_ws)
-    monkeypatch.setattr(tts_client.websockets, "connect", factory)
-    monkeypatch.setattr(asyncio, "wait", patched_asyncio_wait)
-    monkeypatch.setattr(tts_client.asyncio, "wait", patched_asyncio_wait)
+    monkeypatch.setattr(httpx, "AsyncClient", patched_client)
 
     request_queue = ControlledQueue()
     response_queue = queue.Queue()
@@ -331,17 +321,194 @@ def test_minimax_worker_preserves_tail_audio_until_close_flush(monkeypatch):
 
     _wait_for_queue_item(response_queue, lambda item: item == ("__ready__", True))
 
-    request_queue.put(("speech-tail", "abcdef"))
+    # Buffer some text, then interrupt, then close
+    request_queue.put(("speech-1", "abcdef"))
+    request_queue.put(("__interrupt__", None))
+    request_queue.put((None, None))  # flush with no buffer → no synthesis
+    request_queue.close()
+
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
+    # No synthesis should have happened (only probe request)
+    synth_requests = [r for r in transport.requests if r.get("stream")]
+    assert len(synth_requests) == 0
+
+
+@pytest.mark.unit
+def test_minimax_worker_server_error_in_sse(monkeypatch):
+    error_events = [{
+        "data": {"audio": "", "status": 1},
+        "trace_id": "test-trace",
+        "base_resp": {"status_code": 1000, "status_msg": "internal error"},
+    }]
+    transport = FakeSSETransport(sse_events=error_events)
+
+    original_async_client = httpx.AsyncClient
+
+    def patched_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", patched_client)
+
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = _start_worker(request_queue, response_queue)
+
+    _wait_for_queue_item(response_queue, lambda item: item == ("__ready__", True))
+
+    request_queue.put(("speech-1", "hello"))
     request_queue.put((None, None))
 
+    # Should get an error
+    error_item, _ = _wait_for_queue_item(
+        response_queue,
+        lambda item: isinstance(item, tuple) and len(item) == 2 and item[0] == "__error__",
+    )
+    assert "internal error" in error_item[1]
+
+    request_queue.close()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
+
+@pytest.mark.unit
+def test_minimax_worker_residual_buffer_without_trailing_newline(monkeypatch):
+    """服务端关闭流时未发尾部换行，残留在 buffer 中的最后一个事件仍应被解析。"""
+    pcm_bytes = (np.arange(2000, dtype=np.int16)).tobytes()
+    # 只有一个事件，且不带尾部换行
+    sse_events = _make_audio_sse_events(pcm_bytes, num_chunks=1)
+    transport = FakeSSETransport(sse_events=sse_events, trailing_newline=False)
+
+    original_async_client = httpx.AsyncClient
+
+    def patched_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", patched_client)
+
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = _start_worker(request_queue, response_queue)
+
+    _wait_for_queue_item(response_queue, lambda item: item == ("__ready__", True))
+
+    request_queue.put(("speech-1", "hello"))
+    request_queue.put((None, None))
+
+    # 即使没有尾部换行，音频仍应被解析并输出
     audio_item, _ = _wait_for_queue_item(
         response_queue,
         lambda item: isinstance(item, tuple) and len(item) == 3 and item[0] == "__audio__",
     )
-    assert audio_item[1] == "speech-tail"
+    assert audio_item[1] == "speech-1"
     assert len(audio_item[2]) > 0
-    assert [msg["event"] for msg in task_ws.sent_messages] == ["task_start", "task_continue", "task_finish"]
 
     request_queue.close()
-    thread.join(timeout=2.0)
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
+
+@pytest.mark.unit
+def test_minimax_worker_probe_rejects_5xx(monkeypatch):
+    """探测阶段收到 500 等非 200/400 状态码时应报告 not ready。"""
+    transport = FakeSSETransport(probe_status=500)
+
+    original_async_client = httpx.AsyncClient
+
+    def patched_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", patched_client)
+
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = _start_worker(request_queue, response_queue)
+
+    not_ready_item, seen = _wait_for_queue_item(
+        response_queue,
+        lambda item: item == ("__ready__", False),
+    )
+    assert not_ready_item == ("__ready__", False)
+    assert any(isinstance(item, tuple) and item[0] == "__error__" for item in seen)
+
+    request_queue.close()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
+
+@pytest.mark.unit
+def test_minimax_worker_probe_rejects_404(monkeypatch):
+    """探测阶段收到 404 时应报告 not ready。"""
+    transport = FakeSSETransport(probe_status=404)
+
+    original_async_client = httpx.AsyncClient
+
+    def patched_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", patched_client)
+
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = _start_worker(request_queue, response_queue)
+
+    not_ready_item, _ = _wait_for_queue_item(
+        response_queue,
+        lambda item: item == ("__ready__", False),
+    )
+    assert not_ready_item == ("__ready__", False)
+
+    request_queue.close()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
+
+@pytest.mark.unit
+def test_minimax_worker_incremental_synthesis_on_punctuation(monkeypatch):
+    """句末标点到达时应立即发起合成，不等待 flush 信号。"""
+    pcm_bytes = (np.arange(2000, dtype=np.int16)).tobytes()
+    sse_events = _make_audio_sse_events(pcm_bytes, num_chunks=1)
+    transport = FakeSSETransport(sse_events=sse_events)
+
+    original_async_client = httpx.AsyncClient
+
+    def patched_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", patched_client)
+
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = _start_worker(request_queue, response_queue)
+
+    _wait_for_queue_item(response_queue, lambda item: item == ("__ready__", True))
+
+    # 第一句带句号，第二句不带（会在 flush 时合成）
+    request_queue.put(("speech-1", "你好世界。"))
+    request_queue.put(("speech-1", "今天天气"))
+    request_queue.put((None, None))
+
+    # 应该收到音频
+    audio_item, _ = _wait_for_queue_item(
+        response_queue,
+        lambda item: isinstance(item, tuple) and len(item) == 3 and item[0] == "__audio__",
+    )
+    assert audio_item[1] == "speech-1"
+
+    # 应该有两个合成请求：一个是句号切分的，一个是 flush 的
+    # 等待 flush 合成也完成（第二个音频块）
+    time.sleep(0.5)
+    synth_requests = [r for r in transport.requests if r.get("stream")]
+    assert len(synth_requests) == 2
+    assert synth_requests[0]["text"] == "你好世界。"
+    assert synth_requests[1]["text"] == "今天天气"
+
+    request_queue.close()
+    thread.join(timeout=3.0)
     assert not thread.is_alive()

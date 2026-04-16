@@ -521,10 +521,19 @@ class VRMManager {
             shadowZ = 0;
         }
 
-        // 9. 设置阴影位置
+        // 9. 缓存脚骨引用，供 animate loop 每帧更新阴影 Y
+        this._shadowFootBones = [];
+        if (result.vrm.humanoid) {
+            for (const name of ['leftToes', 'rightToes', 'leftFoot', 'rightFoot']) {
+                const bone = result.vrm.humanoid.getNormalizedBoneNode(name);
+                if (bone) this._shadowFootBones.push(bone);
+            }
+        }
+
+        // 10. 设置阴影位置
         this._shadowMesh.position.set(shadowX, shadowY, shadowZ);
 
-        // 10. 添加到模型场景中
+        // 11. 添加到模型场景中
         result.vrm.scene.add(this._shadowMesh);
     }
 
@@ -577,9 +586,11 @@ class VRMManager {
         // 恢复容器可见性：在 Live2D/VRM 之间反复切换时，cleanup 会把容器隐藏
         // （display:none + 'hidden' class），若 _isInitialized 为 true，app-character.js
         // 会跳过整个初始化块，导致下次切回 VRM 时容器仍不可见，新模型"加载不出来"。
-        // 这里无条件恢复，确保每次尝试初始化 VRM 时容器都是可见的。
+        // 【修复】仅在非 MMD 子类型时恢复容器可见性，防止 MMD 模式下 VRM 容器
+        // 被意外显示（initThreeJS 可能被 loadModel 等间接调用，此时 MMD 正在前台）。
+        const isMmdMode = (window.lanlan_config?.live3d_sub_type || '').toLowerCase() === 'mmd';
         const container = containerId ? document.getElementById(containerId) : null;
-        if (container) {
+        if (container && !isMmdMode) {
             container.style.display = 'block';
             container.style.visibility = 'visible';
             container.style.opacity = '1';
@@ -589,7 +600,8 @@ class VRMManager {
         // 检查是否已完全初始化（不仅检查 scene，还要检查 camera 和 renderer）
         if (this.scene && this.camera && this.renderer) {
             // 恢复 renderer canvas 可见性（切换清理时会把 domElement 设为 display:none）
-            if (this.renderer.domElement) {
+            // 【修复】同样受 MMD 守卫保护
+            if (this.renderer.domElement && !isMmdMode) {
                 this.renderer.domElement.style.display = 'block';
             }
             this._initMouseLookAtTracking();
@@ -733,8 +745,28 @@ class VRMManager {
                 }
 
                 // 6. CursorFollow：头/颈加成旋转（在 vrm.update 之后，确保不被覆盖）
-                if (this._cursorFollow) {
+                // VRMA 动画播放中（包括 idle）跳过 applyHead：动画自身的 lookAtProxy track
+                // 已包含视线方向，由 vrm.lookAt.update() 处理。applyHead 额外叠加头颈旋转
+                // 会和动画打架导致脖子抽动（特别是跨 clip crossfade 期间）。
+                if (this._cursorFollow && !(this.animation && this.animation.vrmaIsPlaying)) {
                     this._cursorFollow.applyHead(delta);
+                }
+            }
+
+            // 6.5 阴影 Y 跟随脚骨（每帧更新，修复跳舞时阴影不动 + 初始高度不对）
+            if (this._shadowMesh && this._shadowFootBones && this._shadowFootBones.length > 0
+                && this.currentModel && this.currentModel.vrm && this.currentModel.vrm.scene) {
+                if (!this._shadowTmpMat4) this._shadowTmpMat4 = new window.THREE.Matrix4();
+                if (!this._shadowTmpVec3) this._shadowTmpVec3 = new window.THREE.Vector3();
+                this._shadowTmpMat4.copy(this.currentModel.vrm.scene.matrixWorld).invert();
+                let minY = Infinity;
+                for (const bone of this._shadowFootBones) {
+                    bone.getWorldPosition(this._shadowTmpVec3);
+                    this._shadowTmpVec3.applyMatrix4(this._shadowTmpMat4);
+                    if (this._shadowTmpVec3.y < minY) minY = this._shadowTmpVec3.y;
+                }
+                if (minY !== Infinity) {
+                    this._shadowMesh.position.y = minY + 0.001;
                 }
             }
 

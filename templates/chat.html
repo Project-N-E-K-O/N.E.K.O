@@ -457,6 +457,43 @@
                 <button id="chatAvatarPreviewRefreshButton" class="chat-avatar-preview-refresh-btn" type="button" data-i18n="chat.avatarPreviewRefresh">刷新头像</button>
             </div>
         </div>
+        <div class="chat-avatar-preview-crop-body">
+            <div class="avatar-cropper-area">
+                <div id="avatar-cropper-wrap" class="avatar-cropper-canvas-wrap">
+                    <img id="avatar-cropper-img" class="avatar-cropper-source-img" alt="">
+                    <svg id="avatar-cropper-mask" class="avatar-cropper-mask"></svg>
+                    <div id="avatar-cropper-box" class="avatar-cropper-crop-box">
+                        <div class="avatar-cropper-viewfinder">
+                            <div class="avatar-cropper-grid-line h1"></div>
+                            <div class="avatar-cropper-grid-line h2"></div>
+                            <div class="avatar-cropper-grid-line v1"></div>
+                            <div class="avatar-cropper-grid-line v2"></div>
+                            <div class="avatar-cropper-circle-guide"></div>
+                        </div>
+                        <div class="avatar-cropper-handle tl" data-handle="tl"></div>
+                        <div class="avatar-cropper-handle tr" data-handle="tr"></div>
+                        <div class="avatar-cropper-handle bl" data-handle="bl"></div>
+                        <div class="avatar-cropper-handle br" data-handle="br"></div>
+                    </div>
+                </div>
+                <div class="avatar-cropper-controls">
+                    <button class="avatar-cropper-ctrl-btn" data-crop-action="up" data-i18n-title="chat.avatarCropMoveUp" title="上移"><svg viewBox="0 0 16 16"><path d="M8 3L2 10h12z"/></svg></button>
+                    <div class="avatar-cropper-controls-row">
+                        <button class="avatar-cropper-ctrl-btn" data-crop-action="left" data-i18n-title="chat.avatarCropMoveLeft" title="左移"><svg viewBox="0 0 16 16"><path d="M3 8l7-6v12z"/></svg></button>
+                        <button class="avatar-cropper-ctrl-btn" data-crop-action="center" data-i18n-title="chat.avatarCropCenter" title="居中"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="3"/><path d="M8 1v3M8 12v3M1 8h3M12 8h3" stroke="currentColor" stroke-width="1.5" fill="none"/></svg></button>
+                        <button class="avatar-cropper-ctrl-btn" data-crop-action="right" data-i18n-title="chat.avatarCropMoveRight" title="右移"><svg viewBox="0 0 16 16"><path d="M13 8L6 2v12z"/></svg></button>
+                    </div>
+                    <button class="avatar-cropper-ctrl-btn" data-crop-action="down" data-i18n-title="chat.avatarCropMoveDown" title="下移"><svg viewBox="0 0 16 16"><path d="M8 13l6-7H2z"/></svg></button>
+                    <div class="avatar-cropper-ctrl-divider"></div>
+                    <button class="avatar-cropper-ctrl-btn" data-crop-action="bigger" data-i18n-title="chat.avatarCropZoomIn" title="放大"><svg viewBox="0 0 16 16"><path d="M3 8h10M8 3v10" stroke="currentColor" stroke-width="2" fill="none"/></svg></button>
+                    <button class="avatar-cropper-ctrl-btn" data-crop-action="smaller" data-i18n-title="chat.avatarCropZoomOut" title="缩小"><svg viewBox="0 0 16 16"><path d="M3 8h10" stroke="currentColor" stroke-width="2" fill="none"/></svg></button>
+                </div>
+            </div>
+            <div class="avatar-cropper-buttons">
+                <button id="avatar-cropper-cancel" class="avatar-cropper-btn" type="button" data-i18n="chat.avatarCropCancel">取消</button>
+                <button id="avatar-cropper-save" class="avatar-cropper-btn primary" type="button" data-i18n="chat.avatarCropSave">保存</button>
+            </div>
+        </div>
     </div>
 
     <!-- 跳过：Live2D/VRM/Three.js、common_ui.js(DOM拖拽不兼容)、touch-config、tutorial -->
@@ -471,6 +508,7 @@
     <!-- app 模块（与 index.html 完全相同的加载顺序）-->
     <script src="/static/app-state.js"></script>
     <script src="/static/app-ui.js"></script>
+    <script src="/static/app-chat-text-utils.js"></script>
     <script src="/static/app-chat.js"></script>
     <script src="/static/app-chat-avatar.js"></script>
     <script src="/static/app-audio-playback.js"></script>

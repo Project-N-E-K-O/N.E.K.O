@@ -339,32 +339,58 @@
 
                     // Load the new model
                     if (window.vrmManager) {
+                        // 【关键修复】确保容器和 canvas 存在，并恢复 Three.js 场景可见性。
+                        // 角色切换的清理逻辑会将 renderer.domElement 设为 display:none，
+                        // 而 loadModel 内部在 scene/camera/renderer 已存在时不会调用
+                        // ensureThreeReady（也就不会恢复 canvas 可见性），导致从 Live2D
+                        // 切换到 VRM 时模型加载成功但不可见。
+                        // initThreeJS 在已初始化时是幂等的，但会无条件恢复容器/canvas 可见性。
+                        {
+                            var vrmContainerEl = document.getElementById('vrm-container');
+                            if (vrmContainerEl && !vrmContainerEl.querySelector('canvas')) {
+                                var newCanvas = document.createElement('canvas');
+                                newCanvas.id = 'vrm-canvas';
+                                vrmContainerEl.appendChild(newCanvas);
+                            }
+                        }
+                        await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container', nextLighting);
+
                         // 停止旧的待机轮换
                         if (typeof window._stopVrmIdleRotation === 'function') window._stopVrmIdleRotation();
                         if (typeof window._stopMmdIdleRotation === 'function') window._stopMmdIdleRotation();
 
-                        await window.vrmManager.loadModel(newModelPath);
-
-                        // 获取角色待机动作列表并启动轮换
-                        if (nameForConfig && typeof window._startVrmIdleRotation === 'function') {
+                        // 【修复】在 loadModel 之前获取角色待机动作列表，
+                        // 更新 lanlan_config 使 loadModel 内部读取到正确的待机动作 URL，
+                        // 避免使用初始页面加载时的过时值导致动画加载失败进入 T-pose。
+                        // 先清空旧值，确保 fetch 失败时 loadModel 回退到安全的硬编码默认值
+                        // 而非残留的上一个角色的待机动作 URL。
+                        var vrmIdleList = [];
+                        window.lanlan_config.vrmIdleAnimation = '';
+                        window.lanlan_config.vrmIdleAnimations = [];
+                        if (nameForConfig) {
                             try {
-                                const charRes = await fetch('/api/characters/');
-                                if (charRes.ok) {
-                                    const charData = await charRes.json();
-                                    const catData = charData?.['猫娘']?.[nameForConfig];
-                                    let idleList = catData?.idleAnimations;
-                                    if (!Array.isArray(idleList)) {
-                                        const single = catData?.idleAnimation;
-                                        idleList = single ? [single] : [];
+                                var charResVrm = await fetch('/api/characters/');
+                                if (charResVrm.ok) {
+                                    var charDataVrm = await charResVrm.json();
+                                    var catDataVrm = charDataVrm?.['猫娘']?.[nameForConfig];
+                                    vrmIdleList = catDataVrm?.idleAnimations;
+                                    if (!Array.isArray(vrmIdleList)) {
+                                        var singleIdle = catDataVrm?.idleAnimation;
+                                        vrmIdleList = singleIdle ? [singleIdle] : [];
                                     }
-                                    window.lanlan_config.vrmIdleAnimations = idleList;
-                                    if (idleList.length > 0) {
-                                        window._startVrmIdleRotation(idleList);
-                                    }
+                                    window.lanlan_config.vrmIdleAnimation = vrmIdleList[0] || '';
+                                    window.lanlan_config.vrmIdleAnimations = vrmIdleList;
                                 }
                             } catch (e) {
                                 console.warn('[Model] 获取VRM待机动作列表失败:', e);
                             }
+                        }
+
+                        await window.vrmManager.loadModel(newModelPath);
+
+                        // 启动待机动作轮换（多个动作时自动切换）
+                        if (vrmIdleList.length > 0 && typeof window._startVrmIdleRotation === 'function') {
+                            window._startVrmIdleRotation(vrmIdleList);
                         }
 
                         // 重新应用打光/曝光/描边；若角色未保存自定义光照，则回退到默认值，避免沿用上一个角色的灯光状态。
@@ -904,6 +930,50 @@
                                     timestamp: Date.now()
                                 });
                             }
+                        }
+                        break;
+                    }
+                    case 'request_avatar_capture': {
+                        if (window.location.pathname === '/chat') break;
+                        var captureLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+                        if (event.data.lanlan_name && (!captureLanlanName || event.data.lanlan_name !== captureLanlanName)) break;
+                        var captureRequestId = event.data.requestId || '';
+                        var includeSource = !!event.data.includeSourceDataUrl;
+                        if (window.avatarPortrait && typeof window.avatarPortrait.capture === 'function') {
+                            window.avatarPortrait.capture({
+                                width: 320, height: 320, padding: 0.035,
+                                shape: 'rounded', radius: 40,
+                                background: 'rgba(255, 255, 255, 0.96)',
+                                includeDataUrl: true,
+                                includeSourceDataUrl: includeSource
+                            }).then(function (result) {
+                                if (!nekoBroadcastChannel) return;
+                                nekoBroadcastChannel.postMessage({
+                                    action: 'avatar_capture_result',
+                                    requestId: captureRequestId,
+                                    dataUrl: result.dataUrl || '',
+                                    modelType: result.modelType || '',
+                                    sourceDataUrl: includeSource ? (result.sourceDataUrl || '') : '',
+                                    cropRectPixels: result.cropRectPixels || null,
+                                    timestamp: Date.now()
+                                });
+                            }).catch(function (err) {
+                                console.error('[BroadcastChannel] avatar capture failed:', err);
+                                if (!nekoBroadcastChannel) return;
+                                nekoBroadcastChannel.postMessage({
+                                    action: 'avatar_capture_result',
+                                    requestId: captureRequestId,
+                                    error: true,
+                                    timestamp: Date.now()
+                                });
+                            });
+                        } else if (nekoBroadcastChannel) {
+                            nekoBroadcastChannel.postMessage({
+                                action: 'avatar_capture_result',
+                                requestId: captureRequestId,
+                                error: true,
+                                timestamp: Date.now()
+                            });
                         }
                         break;
                     }

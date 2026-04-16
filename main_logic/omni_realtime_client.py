@@ -548,7 +548,7 @@ class OmniRealtimeClient:
                 await self.update_session({
                     "type": "realtime",
                     "model": self.model,
-                    "instructions": instructions + '\n请使用卡哇伊的声音与用户交流。\n',
+                    "instructions": instructions,
                     "output_modalities": ['audio'] if 'audio' in self._modalities else ['text'],
                     "audio": {
                         "input": {
@@ -1503,6 +1503,7 @@ class OmniRealtimeClient:
                     self._audio_delta_count = 0
                     # 确保 buffer 被清空
                     self._output_transcript_buffer = ""
+                    self._print_input_transcript = False
                     self._image_recognized_this_turn = False
                     self._image_sent_this_turn = False
                     if self.on_response_done:
@@ -1538,6 +1539,9 @@ class OmniRealtimeClient:
                     self._client_vad_last_speech_time = time.time()
                 elif event_type == "conversation.item.input_audio_transcription.completed":
                     self._print_input_transcript = True
+                    transcript = event.get("transcript", "")
+                    if self.on_input_transcript:
+                        await self.on_input_transcript(transcript)
                 elif event_type in ["response.audio_transcript.done", "response.output_audio_transcript.done"]:
                     self._print_input_transcript = False
                     if self._output_transcript_buffer and self.on_output_transcript and not self._skip_until_next_response and not self._interrupted:
@@ -1558,10 +1562,6 @@ class OmniRealtimeClient:
                         if self.on_audio_delta:
                             audio_bytes = base64.b64decode(event["delta"])
                             await self.on_audio_delta(audio_bytes)
-                    elif event_type == "conversation.item.input_audio_transcription.completed":
-                        transcript = event.get("transcript", "")
-                        if self.on_input_transcript:
-                            await self.on_input_transcript(transcript)
                     elif event_type in ["response.audio_transcript.done", "response.output_audio_transcript.done"]:
                         if self.on_output_transcript and self._is_first_transcript_chunk:
                             transcript = event.get("transcript", "")

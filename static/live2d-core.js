@@ -181,6 +181,10 @@ class Live2DManager {
                     window.removeEventListener('resize', this._screenChangeHandler);
                     this._screenChangeHandler = null;
                 }
+                if (this._displayChangeHandler) {
+                    window.removeEventListener('electron-display-changed', this._displayChangeHandler);
+                    this._displayChangeHandler = null;
+                }
                 try {
                     this.pixi_app.destroy(true);
                 } catch (e) {
@@ -238,23 +242,35 @@ class Live2DManager {
                     this.pixi_app.ticker.maxFPS = window.targetFrameRate;
                 }
 
-                // 仅在屏幕分辨率真正变化（换显示器/屏幕旋转）时 resize 渲染器并调整模型坐标
-                // 任务栏、DevTools、输入法等视口变化不触发任何操作
+                // Resize 渲染器并等比调整模型坐标/尺寸
+                // 触发时机：
+                //  1) 系统屏幕分辨率变化（window.screen.width/height 变化）—— 原有逻辑
+                //  2) Electron 跨屏切换 / 显示器 hotplug —— 通过 'electron-display-changed' 事件触发
+                //     （在 Electron 里 window.screen.width/height 不会随 BrowserWindow 跨屏而变，
+                //      所以单靠 screen 比较无法感知跨屏，canvas 会保持主屏初始尺寸被窗口边界裁切）
+                // 任务栏、DevTools、输入法等视口变化不会触发（幂等判定跳过）
                 let lastScreenW = window.screen.width;
                 let lastScreenH = window.screen.height;
-                this._screenChangeHandler = () => {
-                    const sw = window.screen.width;
-                    const sh = window.screen.height;
-                    if (sw === lastScreenW && sh === lastScreenH) return;
-                    lastScreenW = sw;
-                    lastScreenH = sh;
 
+                const doResize = (reason) => {
+                    if (!this.pixi_app || !this.pixi_app.renderer) return;
                     const prevW = this.pixi_app.renderer.screen.width;
                     const prevH = this.pixi_app.renderer.screen.height;
-                    const newW = Math.max(sw, 1);
-                    const newH = Math.max(sh, 1);
+                    // 以 CSS 像素为准（= BrowserWindow 当前像素尺寸），这是模型真正可见的区域
+                    const newW = Math.max(window.innerWidth || window.screen.width || 1, 1);
+                    const newH = Math.max(window.innerHeight || window.screen.height || 1, 1);
+                    if (prevW === newW && prevH === newH) return;
 
                     this.pixi_app.renderer.resize(newW, newH);
+
+                    // 跨屏切换路径（Live2DManager._checkAndSwitchDisplay）已在 moveWindowToDisplay 之后
+                    // 主动把 model.x/y 设置为新屏窗口坐标。若这里再按 (newW/prevW, newH/prevH) 缩放，
+                    // 会对同一个值双重作用，导致模型偏移。通过 _pendingDisplaySwitch 跳过缩放，
+                    // 仅 resize renderer（renderer 尺寸必须更新，否则 canvas 仍是旧尺寸裁切模型）。
+                    if (this._pendingDisplaySwitch) {
+                        console.log('[Live2D Core] renderer 已 resize（跨屏切换中，跳过模型缩放）:', { reason, prevW, prevH, newW, newH });
+                        return;
+                    }
 
                     if (this.currentModel && prevW > 0 && prevH > 0) {
                         const wRatio = newW / prevW;
@@ -265,9 +281,24 @@ class Live2DManager {
                         this.currentModel.scale.x *= areaRatio;
                         this.currentModel.scale.y *= areaRatio;
                     }
-                    console.log('[Live2D Core] 屏幕分辨率变化，渲染器已 resize:', { prevW, prevH, newW, newH });
+                    console.log('[Live2D Core] renderer 已 resize:', { reason, prevW, prevH, newW, newH });
                 };
+
+                this._screenChangeHandler = () => {
+                    const sw = window.screen.width;
+                    const sh = window.screen.height;
+                    if (sw === lastScreenW && sh === lastScreenH) return;
+                    lastScreenW = sw;
+                    lastScreenH = sh;
+                    doResize('window.screen changed');
+                };
+                // 跨屏切换信号：主进程 setBounds 后广播；这里等一帧让 innerWidth/Height 落地再 resize
+                this._displayChangeHandler = () => {
+                    requestAnimationFrame(() => doResize('electron-display-changed'));
+                };
+
                 window.addEventListener('resize', this._screenChangeHandler);
+                window.addEventListener('electron-display-changed', this._displayChangeHandler);
 
                 console.log('[Live2D Core] PIXI.Application 初始化成功，stage 已创建');
                 return this.pixi_app;
@@ -301,6 +332,10 @@ class Live2DManager {
                 window.removeEventListener('resize', this._screenChangeHandler);
                 this._screenChangeHandler = null;
             }
+            if (this._displayChangeHandler) {
+                window.removeEventListener('electron-display-changed', this._displayChangeHandler);
+                this._displayChangeHandler = null;
+            }
             if (this.pixi_app && this.pixi_app.destroy) {
                 try {
                     this.pixi_app.destroy(true);
@@ -329,6 +364,10 @@ class Live2DManager {
         if (this._screenChangeHandler) {
             window.removeEventListener('resize', this._screenChangeHandler);
             this._screenChangeHandler = null;
+        }
+        if (this._displayChangeHandler) {
+            window.removeEventListener('electron-display-changed', this._displayChangeHandler);
+            this._displayChangeHandler = null;
         }
         if (this.pixi_app && this.pixi_app.destroy) {
             try {
