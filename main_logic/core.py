@@ -1270,7 +1270,10 @@ class LLMSessionManager:
 
         # 标记正在启动（使用计数器，避免并发 start_session 的 finally 互相覆盖）
         self._starting_session_count += 1
-        
+        # CAS 落败早退标志：True 时禁止 finally 递减 guard，
+        # 防止赢家初始化期间第三个协程穿过 guard 浪费 LLM 连接。
+        _llm_concurrent_aborted = False
+
         # 回收残留的热切换资源，防止 main + pending + new-main 叠到 >2 个 session
         await self._cleanup_pending_session_resources()
         await self._reset_preparation_state(clear_main_cache=False)
@@ -1496,12 +1499,13 @@ class LLMSessionManager:
             first.  Only after connect() succeeds is it promoted to self.session.
             On failure the half-initialised session is closed and an exception raised.
             """
-            # Snapshot self.session at entry to detect concurrent start_session
-            # racing us. If self.session changes during our awaits (memory fetch +
-            # ws connect), another start_llm_session already promoted its own
-            # new_session — we must close ours instead of overwriting, otherwise
-            # the loser becomes an orphan whose silence_check_task / ws stay alive.
-            expected_prior_session = self.session
+            # 强 CAS 语义：只允许在 self.session 为 None（start_session 已清场）
+            # 或已经是自己的 new_session 时赋值。任何其他状态都视为并发落败，
+            # 必须关闭本次 new_session，避免覆盖赢家造成孤儿。
+            #
+            # 反例：若仅对比"入口快照"，当赢家已把 self.session 置为 B、
+            # 落败者 A 早退后 guard 被 finally 放开，第三者 C 会把入口快照
+            # 记作 B，随后 CAS 通过 B==B 的自反检查覆盖 B，产生新的孤儿。
             guard_max_length = self._get_text_guard_max_length()
             _lang = normalize_language_code(self.user_language, format='short')
             initial_prompt = await self._build_initial_prompt()
@@ -1592,17 +1596,16 @@ class LLMSessionManager:
                     pass
                 raise
 
-            # CAS promote to self.session. If a concurrent start_llm_session
-            # already assigned a different session while we were awaiting
-            # memory/connect, abort to avoid leaving behind an orphan.
+            # 强 CAS 提升：仅在 self.session 为 None（已被 end_session 清场）
+            # 或已经是自己时才赋值，确保不会覆盖任何已就位的赢家 session。
             concurrent_winner = False
             async with self.lock:
-                if self.session is not expected_prior_session and self.session is not new_session:
-                    concurrent_winner = True
-                else:
+                if self.session is None or self.session is new_session:
                     self.session = new_session
                     if not self.current_speech_id:
                         self.current_speech_id = str(uuid4())
+                else:
+                    concurrent_winner = True
 
             if concurrent_winner:
                 logger.warning("⚠️ start_llm_session: 检测到并发 start_session 已抢先建立 session，关闭本次 new_session 避免孤儿泄漏")
@@ -1651,9 +1654,11 @@ class LLMSessionManager:
             # 并发落败分支：赢家已持有 self.session / message_handler_task，
             # 我们不能继续走 "if self.session" 分支（会覆盖 handler task、重复
             # send_session_started），也不能 raise（会误触发 cleanup 杀掉赢家）。
-            # 直接早退，让 finally 正常递减 _starting_session_count。
+            # 同时设置 _llm_concurrent_aborted=True 让 finally 跳过 guard 递减：
+            # 赢家尚未完成初始化，必须保持 guard 以阻止第三个协程穿过。
             if llm_result is _START_LLM_CONCURRENT_ABORTED:
-                logger.info("[语音会话诊断] start_session 因并发 CAS 落败早退，不动共享资源")
+                logger.info("[语音会话诊断] start_session 因并发 CAS 落败早退，保持 guard 关闭")
+                _llm_concurrent_aborted = True
                 return
             if isinstance(llm_result, Exception):
                 raise llm_result  # LLM Session 失败是致命的
@@ -1749,8 +1754,12 @@ class LLMSessionManager:
             await self.cleanup()
         
         finally:
-            # 无论成功还是失败，都递减启动计数器（而非直接置 False，防止覆盖并发的第二个 start_session）
-            self._starting_session_count = max(0, self._starting_session_count - 1)
+            # 无论成功还是失败，都递减启动计数器（而非直接置 False，防止覆盖并发的第二个 start_session）。
+            # 例外：CAS 落败早退时不递减——赢家还在初始化，若此时放开 guard，
+            # 第三个协程会穿过并再次把入口快照当作"赢家"进而覆盖掉真正的赢家。
+            # 赢家完成（成功或异常）后会通过自己的 finally 或 cleanup 清理 guard。
+            if not _llm_concurrent_aborted:
+                self._starting_session_count = max(0, self._starting_session_count - 1)
 
     async def send_user_activity(self, interrupted_speech_id: Optional[str] = None):
         """发送用户活动信号，附带被打断的 speech_id 用于精确打断控制"""
