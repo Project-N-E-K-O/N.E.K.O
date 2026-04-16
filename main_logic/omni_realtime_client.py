@@ -1117,18 +1117,17 @@ class OmniRealtimeClient:
         """
         if not text or not text.strip():
             logger.info("prime_context: skipping empty content")
-            if self.on_response_done:
-                await self.on_response_done()
             return
 
         if self._is_gemini:
+            # Gemini Live API 没有 session.update 机制，只能通过
+            # send_client_content 注入上下文（会创建 user turn）。
+            # on_response_done 由 _handle_messages_gemini 自然触发。
             await self._create_response_gemini(text)
             return
 
         await self.update_session({"instructions": self.instructions + '\n' + text})
         logger.info("prime_context: updated session instructions")
-        if self.on_response_done:
-            await self.on_response_done()
 
     async def create_response(self, instructions: str, skipped: bool = False) -> None:
         """Inject a persistent user message and trigger an LLM response.
@@ -1149,20 +1148,20 @@ class OmniRealtimeClient:
         ``prompt_ephemeral()`` (fire-and-forget audio nudge) for the other
         two injection channels.
         """
-        if skipped:
-            self._skip_until_next_response = True
-
         # Gemini 使用 send_client_content 发送文本内容
         if self._is_gemini:
+            if skipped:
+                self._skip_until_next_response = True
             await self._create_response_gemini(instructions)
             return
 
         # 跳过空内容的发送，避免触发 API 错误
         if not instructions or not instructions.strip():
             logger.info("Skipping empty content in create_response")
-            if self.on_response_done:
-                await self.on_response_done()
             return
+
+        if skipped:
+            self._skip_until_next_response = True
 
         # 通过 conversation.item.create 添加用户消息，再触发响应
         item_event = {
@@ -1189,13 +1188,9 @@ class OmniRealtimeClient:
             logger.warning("Gemini session not available for create_response")
             return
         
-        # 🔧 修复：跳过空内容的发送，避免预热时污染 Gemini 对话历史
-        # 预热时 instructions 为空字符串，发送空 turn 会导致首轮对话被吞掉
+        # 跳过空内容的发送，避免预热时污染 Gemini 对话历史
         if not instructions or not instructions.strip():
             logger.info("Gemini: skipping empty content (warmup or empty message)")
-            # 直接触发 response_done 回调，让预热逻辑正常完成
-            if self.on_response_done:
-                await self.on_response_done()
             return
         
         try:
