@@ -23,6 +23,11 @@ AvatarButtonMixin.apply(MMDManager.prototype, 'mmd', {
 MMDManager.prototype.setupFloatingButtons = function() {
     if (window.location.pathname.includes('model_manager')) return;
 
+    // 防御性检查：当前模型类型不是 MMD 时不创建按钮（防止过时的异步回调）
+    var cfgType = (window.lanlan_config && window.lanlan_config.model_type || '').toLowerCase();
+    var cfgSub = (window.lanlan_config && window.lanlan_config.live3d_sub_type || '').toLowerCase();
+    if (!(cfgType === 'live3d' && cfgSub === 'mmd')) return;  // 仅 live3d + mmd 子类型时才创建 MMD 按钮
+
     // 基础框架初始化
     const buttonsContainer = this.setupFloatingButtonsBase();
 
@@ -696,7 +701,8 @@ MMDManager.prototype._startUIUpdateLoop = function() {
                         ? popupUi.hasVisibleOverlay('mmd')
                         : Array.from(document.querySelectorAll('[id^="mmd-popup-"], [data-neko-sidepanel-owner^="mmd-popup-"]'))
                             .some(isFallbackOverlayVisible);
-                    const shouldShowButtons = !isLocked && (this._mmdUiNearModel || hoveringButtons || hasOpenOverlay);
+                    const inTutorial = buttonsContainer.dataset.inTutorial === 'true' || window.isInTutorial === true;
+                    const shouldShowButtons = inTutorial || (!isLocked && (this._mmdUiNearModel || hoveringButtons || hasOpenOverlay));
                     buttonsContainer.style.display = shouldShowButtons ? 'flex' : 'none';
                 }
                 buttonsContainer.style.transform = `scale(${scale})`;

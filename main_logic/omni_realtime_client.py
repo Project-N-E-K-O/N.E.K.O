@@ -287,6 +287,7 @@ class OmniRealtimeClient:
 
         # Interruption state - suppress output after user interruption until next response
         self._interrupted = False  # 打断状态标志，防止重复消息块
+        self._suppressed_delta_logged_resp_id = None  # 限流：每个 response 只记录一次 text.delta 被拦截的日志
 
         # Native image input rate limiting
         self._last_native_image_time = 0.0  # 上次原生图片输入时间戳
@@ -547,7 +548,7 @@ class OmniRealtimeClient:
                 await self.update_session({
                     "type": "realtime",
                     "model": self.model,
-                    "instructions": instructions + '\n请使用卡哇伊的声音与用户交流。\n',
+                    "instructions": instructions,
                     "output_modalities": ['audio'] if 'audio' in self._modalities else ['text'],
                     "audio": {
                         "input": {
@@ -1491,6 +1492,7 @@ class OmniRealtimeClient:
                     self._current_response_id = None
                     self._current_item_id = None
                     self._skip_until_next_response = False
+                    self._interrupted = False  # 确保中断标志在响应结束时清除，防止阻塞下一轮 text.delta
                     # 响应完成，检测重复度
                     if self._current_response_transcript:
                         print(f"OmniRealtimeClient: response.done - 当前转录: '{self._current_response_transcript[:50]}...' | audio_deltas={self._audio_delta_count}")
@@ -1501,6 +1503,7 @@ class OmniRealtimeClient:
                     self._audio_delta_count = 0
                     # 确保 buffer 被清空
                     self._output_transcript_buffer = ""
+                    self._print_input_transcript = False
                     self._image_recognized_this_turn = False
                     self._image_sent_this_turn = False
                     if self.on_response_done:
@@ -1536,6 +1539,9 @@ class OmniRealtimeClient:
                     self._client_vad_last_speech_time = time.time()
                 elif event_type == "conversation.item.input_audio_transcription.completed":
                     self._print_input_transcript = True
+                    transcript = event.get("transcript", "")
+                    if self.on_input_transcript:
+                        await self.on_input_transcript(transcript)
                 elif event_type in ["response.audio_transcript.done", "response.output_audio_transcript.done"]:
                     self._print_input_transcript = False
                     if self._output_transcript_buffer and self.on_output_transcript and not self._skip_until_next_response and not self._interrupted:
@@ -1556,10 +1562,6 @@ class OmniRealtimeClient:
                         if self.on_audio_delta:
                             audio_bytes = base64.b64decode(event["delta"])
                             await self.on_audio_delta(audio_bytes)
-                    elif event_type == "conversation.item.input_audio_transcription.completed":
-                        transcript = event.get("transcript", "")
-                        if self.on_input_transcript:
-                            await self.on_input_transcript(transcript)
                     elif event_type in ["response.audio_transcript.done", "response.output_audio_transcript.done"]:
                         if self.on_output_transcript and self._is_first_transcript_chunk:
                             transcript = event.get("transcript", "")
@@ -1584,6 +1586,15 @@ class OmniRealtimeClient:
                     
                     elif event_type in self.extra_event_handlers:
                         await self.extra_event_handlers[event_type](event)
+                else:
+                    # 调试日志：text.delta 被 _interrupted/_skip 标志拦截（每个 response 仅记录一次）
+                    if event_type in ["response.text.delta", "response.output_text.delta"]:
+                        if self._suppressed_delta_logged_resp_id != self._current_response_id:
+                            self._suppressed_delta_logged_resp_id = self._current_response_id
+                            logger.warning(
+                                "⚠️ text.delta suppressed: _skip=%s, _interrupted=%s, resp_id=%s",
+                                self._skip_until_next_response, self._interrupted, self._current_response_id
+                            )
 
         except websockets.exceptions.ConnectionClosedOK:
             logger.info("Connection closed as expected")

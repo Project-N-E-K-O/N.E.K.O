@@ -110,6 +110,7 @@
         _voiceSessionInitialTimer: null,
         isProactiveChatRunning: false,
         _proactiveSchedulerInitialized: false,
+        _proactiveStartupDelayApplied: false,
         proactiveChatInterval: 15,
         proactiveVisionFrameTimer: null,
         proactiveVisionInterval: 10,
@@ -126,7 +127,6 @@
         screenshotCounter: 0,
         statusToastTimeout: null,
         _statusToastPriority: 0,
-        subtitleCheckDebounceTimer: null,
         lastVoiceUserMessage: null,
         lastVoiceUserMessageTime: 0,
 

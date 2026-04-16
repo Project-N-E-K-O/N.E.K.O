@@ -26,6 +26,12 @@ VRMManager.prototype.setupFloatingButtons = function() {
         return;
     }
 
+    // 防御性检查：当前模型类型不是 VRM 时不创建按钮（防止过时的异步回调）
+    var cfgType = (window.lanlan_config && window.lanlan_config.model_type || '').toLowerCase();
+    var cfgSub = (window.lanlan_config && window.lanlan_config.live3d_sub_type || '').toLowerCase();
+    var isVrm = cfgType === 'vrm' || (cfgType === 'live3d' && cfgSub === 'vrm');
+    if (cfgType && !isVrm) return;
+
     // 基础框架初始化
     const buttonsContainer = this.setupFloatingButtonsBase();
 
@@ -587,7 +593,8 @@ VRMManager.prototype._startUIUpdateLoop = function() {
                         ? popupUi.hasVisibleOverlay('vrm')
                         : Array.from(document.querySelectorAll('[id^="vrm-popup-"]'))
                             .some(popup => popup.style.display === 'flex' && popup.style.opacity !== '0');
-                    const shouldShowButtons = !isLocked && (this._vrmUiNearModel || hoveringButtons || hasOpenOverlay);
+                    const inTutorial = buttonsContainer.dataset.inTutorial === 'true' || window.isInTutorial === true;
+                    const shouldShowButtons = inTutorial || (!isLocked && (this._vrmUiNearModel || hoveringButtons || hasOpenOverlay));
                     buttonsContainer.style.display = shouldShowButtons ? 'flex' : 'none';
                 }
                 buttonsContainer.style.transform = `scale(${scale})`;

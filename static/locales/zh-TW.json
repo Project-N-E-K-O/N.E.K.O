@@ -57,7 +57,14 @@
             "档案名": "檔案名",
             "性别": "性別",
             "年龄": "年齡",
-            "昵称": "暱稱"
+            "昵称": "暱稱",
+            "性格原型": "性格原型",
+            "种族": "種族",
+            "自称": "自稱",
+            "核心特质": "核心特質",
+            "行为特点": "行為特點",
+            "厌恶": "厭惡",
+            "一句话台词": "一句話台詞"
         }
     },
     "steam": {
@@ -527,7 +534,9 @@
         "AGENT_CU_AUTO_CLOSED": "Computer Use 模組未載入，已自動關閉",
         "AGENT_CU_CAPABILITY_LOST": "Computer Use 不可用：$t(agent.precheck.{{reason_code}})",
         "TTS_CONNECTION_FAILED": "TTS服務連接失敗: {{msg}}",
+        "UPSTREAM_SERVER_BUSY": "抱歉喵，上游營運商伺服器繁忙，請稍後重試~",
         "TTS_RECONNECTING": "🔄 語音服務正在自動重連，請稍候...",
+        "TTS_WATERMARK_DETECTED": "⚠️ 偵測到智譜CogTTS音訊浮水印（嗶嗶聲），如需去除浮水印請前往智譜控制台手動配置。",
         "TTS_CUSTOM_URL_NOT_CONFIGURED": "未配置 GPT-SoVITS API URL，請先在 API 設置中啟用並配置自訂 TTS",
         "TTS_CUSTOM_URL_LOCALHOST_ONLY": "GPT-SoVITS API URL 必須為 localhost",
         "TTS_AUDIO_API_KEY_MISSING": "未配置音訊 API 金鑰 (AUDIO_API_KEY)",
@@ -545,7 +554,7 @@
         "title": "對話",
         "viewerTitle": "對話 (觀看模式)",
         "tooltip": "對話區",
-        "textInputPlaceholder": "文字聊天模式...迴車發送，Shift+迴車換行",
+        "textInputPlaceholder": "迴車發送，Shift+迴車換行",
         "send": "發送",
         "importImage": "匯入圖片",
         "importImageAriaLabel": "匯入圖片",
@@ -576,6 +585,18 @@
         "avatarPreviewRefreshing": "正在刷新當前頭像...",
         "avatarPreviewGenerating": "正在生成當前頭像...",
         "avatarPreviewFailed": "生成頭像失敗",
+        "avatarCropperTitle": "調整頭像裁剪區域",
+        "avatarPreviewCropping": "請調整裁剪區域",
+        "avatarPreviewCropCancelled": "已取消手動裁剪，保持原頭像不變。",
+        "avatarCropMoveUp": "上移",
+        "avatarCropMoveDown": "下移",
+        "avatarCropMoveLeft": "左移",
+        "avatarCropMoveRight": "右移",
+        "avatarCropCenter": "置中",
+        "avatarCropZoomIn": "放大",
+        "avatarCropZoomOut": "縮小",
+        "avatarCropCancel": "取消",
+        "avatarCropSave": "儲存",
         "emptyState": "聊天內容接入後會顯示在這裡。",
         "messageStreaming": "生成中",
         "messageFailed": "發送失敗",
@@ -764,7 +785,7 @@
         "assistApiKeyGemini": "輔助API Key - Gemini",
         "assistApiKeyKimi": "輔助API Key - Kimi",
         "assistApiKeyHint": "（僅當輔助API為{{provider}}時需要填寫）",
-        "assistApiKeyPlaceholder": "可選，默認為核心API Key",
+        "assistApiKeyPlaceholder": "留空使用管理簿對應 Key",
         "providerNames": {
             "ali": "阿裏",
             "openai": "OpenAI",
@@ -778,7 +799,7 @@
             "qwen": "Qwen-Omni（阿裏百煉，速度最快，推薦⭐）",
             "qwen_intl": "Qwen-Omni（阿裏國際版）",
             "openai": "GPT-Realtime（OpenAI）",
-            "glm": "GLM-realtime（智譜）",
+            "glm": "GLM-Realtime（智譜，有免費額度，語音含浮水印需去控制台設置去除）",
             "step": "Step-2-Audio（階躍星辰）",
             "gemini": "Gemini Live（谷歌，效果最好）"
         },
@@ -797,12 +818,13 @@
             "minimax": "MiniMax（中國）",
             "minimax_intl": "MiniMax（國際服）",
             "claude": "Claude（Anthropic）",
-            "grok": "Grok（xAI）"
+            "grok": "Grok（xAI）",
+            "openrouter": "OpenRouter（模型聚合，國內無法使用）"
         },
         "coreApiAutoFillHint": "Key從API管理簿自動填充，也可在此直接輸入",
         "assistApiSelectLabel": "輔助API服務商",
         "assistApiKeyLabel": "輔助API Key",
-        "assistApiAutoFillHint": "Key從API管理簿自動填充，也可在此直接輸入",
+        "assistApiAutoFillHint": "留空時自動使用管理簿中的Key，手動輸入則獨立保存",
         "keyBookTitle": "API 管理簿",
         "keyBookDescription": "統一管理所有API Key。核心API和輔助API切換服務商時會自動從此處讀取Key，在核心/輔助區域輸入的Key也會自動回寫到此處。",
         "keyBookPlaceholder": "請先載入API服務商配置",
@@ -829,14 +851,15 @@
             "minimax": "MiniMax（中國）",
             "minimax_intl": "MiniMax（國際服）",
             "claude": "Claude（Anthropic）",
-            "grok": "Grok（xAI）"
+            "grok": "Grok（xAI）",
+            "openrouter": "OpenRouter"
         },
         "freeVersionNoApiKey": "免費版無需API Key",
         "pleaseEnterApiKey": "請輸入您的API Key",
         "freeVersionOnlyWhenCoreFree": "免費版（僅核心API為免費版時可用）",
         "freeVersionConfig": "免費版配置：支持音視頻對話、文本對話和記憶管理，不支持自定義語音、Agent模式",
         "qwenRecommendation": "阿裏作為核心API時，建議輔助API也選擇阿裏以獲得最佳的自定義語音體驗",
-        "glmRecommendation": "智譜的音視頻對話模型GLM-Realtime已暫時下架，無法作為核心API使用",
+        "glmRecommendation": "智譜作為核心API時，有免費額度，支持聯網搜索。語音預設含浮水印嗶嗶聲（可在智譜控制台手動關閉）。建議輔助API選擇阿裏以支持自定義語音功能",
         "openaiRecommendation": "OpenAI作為核心API時，建議輔助API選擇阿裏以支持自定義語音功能",
         "stepRecommendation": "階躍星辰作為核心API時，建議輔助API選擇阿裏以支持自定義語音功能",
         "geminiRecommendation": "Gemini作為核心API時，建議輔助API選擇阿裏以支持自定義語音功能",
@@ -1267,6 +1290,8 @@
         "prefixShouldBeEnglishLetterAndNumber": "前綴應為英文字母和數字",
         "invalidApiKeyProvided": "提供的API密鑰無效",
         "requestError": "請求齣錯：{{error}}",
+        "serverNonJsonError": "服務端返迴瞭非JSON響應 (HTTP {{status}})：{{snippet}}",
+        "serverRouteNotFound": "接口未找到 (HTTP {{status}})，請確認服務端已正確部署並重啓",
         "voiceIdSaveFailed": "voice_id自動保存失敗: {{error}}",
         "voiceIdSaved": "voice_id已自動保存到角色",
         "pageWillRefresh": "當前頁麵即將自動刷新以應用新語音",
@@ -1670,6 +1695,7 @@
             "openfang": "專屬桌面",
             "userPluginAdapting": "用戶插件（開發中）",
             "openclawConnect": "OpenClaw",
+            "openclawGuide": "OpenClaw 接入教學",
             "chatSettings": "對話設定",
             "animationSettings": "動畫設定",
             "renderQuality": "畫質",
@@ -1693,10 +1719,20 @@
             "textGuardNote": "僅對文字回覆有效，不影響語音對話"
         }
     },
+    "openclawGuide": {
+        "windowTitle": "OpenClaw 接入教學 - N.E.K.O.",
+        "pageTitle": "OpenClaw 接入教學",
+        "pageSubtitle": "把 CoPaw 安裝、通道放置、健康檢查與 N.E.K.O 設定串起來，沿著一條清楚路徑接通。",
+        "sourceLabel": "教學來源",
+        "contentLanguageNotice": "語言切換會同時更新頁面控制文案和正文內容。",
+        "languageLabel": "語言",
+        "guideUnavailable": "教學內容為空。"
+    },
     "subtitle": {
         "title": "實時字幕",
         "enable": "字幕翻譯",
-        "enableAriaLabel": "字幕翻譯開關"
+        "enableAriaLabel": "字幕翻譯開關",
+        "markdownPlaceholder": "[格式化內容]"
     },
     "viewer": {
         "title": "Viewer - Project N.E.K.O."
@@ -1850,6 +1886,20 @@
             "selectedCount": "已選 {{count}} 個",
             "changed": "待機動作已切換",
             "changeFailed": "切換待機動作失敗"
+        },
+        "managerInitFailed": "MMD 管理器初始化失敗",
+        "moduleLoading": "正在載入MMD模組...",
+        "modelLoading": "正在載入 MMD 模型...",
+        "modelLoaded": "MMD 模型載入成功",
+        "modelLoadFailed": "MMD模型載入失敗: {{error}}",
+        "loadingOverlay": {
+            "engine": "正在準備 MMD 引擎...",
+            "settings": "正在讀取 MMD 設定...",
+            "model": "正在載入模型資源...",
+            "physics": "正在初始化物理...",
+            "idle": "正在載入待機動作...",
+            "done": "MMD 已就緒",
+            "failed": "MMD 載入失敗"
         }
     },
     "modelManager": {
@@ -2759,7 +2809,8 @@
         "ended": "已結束",
         "unknownState": "未知狀態",
         "volume": "音量: ",
-        "unsafeSource": "已攔截不安全音源: {{domain}}"
+        "unsafeSource": "已攔截不安全音源: {{domain}}",
+        "cookieExpired": "音樂Cookie已失效"
     },
     "Jukebox": {
         "title": "點歌台",
@@ -2783,14 +2834,14 @@
         "play": "播放",
         "playError": "音樂播放器未初始化",
         "notFound": "找不到歌曲",
-        "mp3Ended": "mp3播放結束",
+        "audioEnded": "音訊播放結束",
         "vmdNotInit": "MMD Manager 未初始化，跳過動畫",
         "vmdPlayFailed": "VMD 播放失敗",
         "vmdPlayed": "VMD 動畫已播放",
-        "useAPlayer": "使用APlayer播放mp3檔案",
-        "startPlay": "開始播放mp3音訊",
-        "nonMp3Error": "試圖播放非mp3格式檔案",
-        "nonMp3Info": "非mp3音訊資訊",
+        "useAPlayer": "使用APlayer播放音訊檔案",
+        "startPlay": "開始播放音訊",
+        "nonMp3Error": "試圖播放不支援的音訊格式",
+        "nonMp3Info": "不支援的音訊格式資訊",
         "btnNotFound": "點歌台按鈕不存在，等待載入...",
         "btnBound": "點歌台按鈕已綁定",
         "minimizeBtnNotFound": "最小化按鈕不存在，等待載入...",
@@ -2817,7 +2868,7 @@
         "idleRestoreFailed": "恢復待機動畫失敗",
         "btnNotFoundGiveUp": "點歌台按鈕在重試後仍未找到，放棄綁定",
         "minimizeBtnNotFoundGiveUp": "最小化按鈕在重試後仍未找到，放棄監聽",
-        "noticeDance": "💃 伴舞服務目前僅在載入 MMD 形象時可用，後續會增加更多互動",
+        "noticeDance": "💃 伴舞服務目前僅在載入 3D 模型（MMD / VRM）時可用，後續會增加更多互動",
         "noticeMusic": "⚠️ 目前歌曲僅供測試，後續版本將清除版權音樂，請自行匯入",
         "manager": "管理器",
         "managerTitle": "管理器",
@@ -2833,7 +2884,7 @@
         "dragZipHint": "支援拖曳 ZIP 檔案或資料夾到此處匯入",
         "unifiedDropHint": "支援拖曳歌曲、動作、匯入包到此處",
         "clickToAdd": "點擊新增",
-        "dragMp3Hint": "拖曳 MP3 檔案到此處新增歌曲",
+        "dragMp3Hint": "拖曳音訊檔案到此處新增歌曲",
         "dragVmdHint": "拖曳 VMD 檔案到此處新增動畫",
         "showHiddenSongs": "顯示隱藏的歌曲",
         "selectAll": "全選",

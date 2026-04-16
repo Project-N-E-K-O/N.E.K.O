@@ -457,9 +457,13 @@ cd N.E.K.O
 # 2. 安装 Python 依赖
 uv sync
 
-# 3. 构建前端项目（首次运行或前端代码变更后需要）
-cd frontend/react-neko-chat && npm install && npm run build && cd ../..
-cd frontend/plugin-manager && npm install && npm run build && cd ../..
+# 3. 构建前端项目（需要 Node.js >= 20.19，首次运行或前端代码变更后需要）
+#    推荐：使用一键脚本（这是官方支持的构建方式）
+#      Windows：      build_frontend.bat
+#      Linux/macOS：  ./build_frontend.sh
+#    如需手动构建（命令须与脚本保持一致）：
+# cd frontend/react-neko-chat && npm install && npm run build && cd ../..
+# cd frontend/plugin-manager && npm install && npm run build-only && cd ../..
 
 # 4. 启动服务（至少需要 main_server 和 memory_server）
 uv run python memory_server.py
@@ -517,6 +521,7 @@ uv run python agent_server.py
 
 ```
 N.E.K.O/
+├── 📁 .agent/                   # 🤖 AI 编程助手规范与技能集（Google Antigravity 规范）
 ├── 📁 brain/                    # 🧠 Agent 智能体模块
 │   ├── computer_use.py          # 电脑操控
 │   ├── browser_use_adapter.py   # 浏览器自动化
@@ -552,6 +557,8 @@ N.E.K.O/
 ├── agent_server.py              # 🤖 AI智能体服务器
 └── memory_server.py             # 🧠 记忆服务器
 ```
+
+> **AI 辅助开发**：`.agent/` 目录遵循 Google Antigravity 开放规范，包含项目的开发规范和技能集。只有 Antigravity 自动读取，其他 AI 工具（含 Claude Code）需手动导入，详见[适配指引](https://project-neko.online/contributing/ai-assisted-dev)。
 
 **数据流向**
 

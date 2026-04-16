@@ -545,7 +545,7 @@ DEFAULT_VOICE_STORAGE = {}
 # 默认API配置（供 utils.api_config_loader 作为回退选项使用）
 DEFAULT_CORE_API_PROFILES = {
     'free': {
-        'CORE_URL': "wss://api.lanlan.tech/core",
+        'CORE_URL': "wss://www.lanlan.tech/core",
         'CORE_MODEL': "free-model",
         'CORE_API_KEY': "free-access",
         'IS_FREE_VERSION': True,
@@ -574,7 +574,7 @@ DEFAULT_CORE_API_PROFILES = {
 
 DEFAULT_ASSIST_API_PROFILES = {
     'free': {
-        'OPENROUTER_URL': "https://api.lanlan.tech/text/v1",
+        'OPENROUTER_URL': "https://www.lanlan.tech/text/v1",
         'CONVERSATION_MODEL' : "free-model" ,
         'SUMMARY_MODEL': "free-model",
         'CORRECTION_MODEL': "free-model",
@@ -657,6 +657,15 @@ DEFAULT_ASSIST_API_PROFILES = {
         'VISION_MODEL': "claude-sonnet-4-6",
         'AGENT_MODEL': "claude-opus-4-6",
     },
+    'openrouter': {
+        'OPENROUTER_URL': "https://openrouter.ai/api/v1",
+        'CONVERSATION_MODEL': "openai/gpt-4.1",
+        'SUMMARY_MODEL': "openai/gpt-4.1-mini",
+        'CORRECTION_MODEL': "openai/gpt-4.1-mini",
+        'EMOTION_MODEL': "openai/gpt-4.1-nano",
+        'VISION_MODEL': "openai/gpt-4.1",
+        'AGENT_MODEL': "openai/gpt-4.1",
+    },
 }
 
 DEFAULT_ASSIST_API_KEY_FIELDS = {
@@ -670,6 +679,7 @@ DEFAULT_ASSIST_API_KEY_FIELDS = {
     'qwen_intl': 'ASSIST_API_KEY_QWEN_INTL',
     'minimax': 'ASSIST_API_KEY_MINIMAX',
     'claude': 'ASSIST_API_KEY_CLAUDE',
+    'openrouter': 'ASSIST_API_KEY_OPENROUTER',
 }
 
 DEFAULT_CONFIG_DATA = {

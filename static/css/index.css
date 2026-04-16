@@ -287,8 +287,29 @@ button * {
     opacity: 1;
     overflow: hidden;
     visibility: visible;
-    transition: all 1s ease-in-out;
+    /* 【修复】仅过渡 opacity 和 transform，排除 visibility 的过渡影响，
+     * 避免 MMD 模式下隐藏 VRM 容器时因 transition: all 导致约 1s 的视觉
+     * 残留窗口，使 VRM canvas 中缓存的旧模型（如 sister1.0）短暂可见。 */
+    transition: opacity 1s ease-in-out, transform 1s ease-in-out;
     /* GPU 合成层隔离：减少窗口级重绘对 canvas 的影响 */
+    will-change: transform;
+    transform: translateZ(0);
+}
+
+/* 看板娘MMD模型判定框-容器 */
+#mmd-container {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    /* 【修复】z-index 与 vrm-container 一致，防止 VRM 容器层级始终高于 MMD，
+     * 导致 MMD 画布透明窗口期（模型清理/重建期间）穿透显示 VRM 缓存内容。 */
+    z-index: 10;
+    pointer-events: none;
+    background: none;
+    overflow: hidden;
+    /* GPU 合成层隔离 */
     will-change: transform;
     transform: translateZ(0);
 }
@@ -1069,22 +1090,51 @@ body.react-chat-window-dragging {
     display: none;
 }
 
-#chat-avatar-preview-card {
+/* 独立头像预览弹窗（chat.html / index.html 共用）
+   作为一个浮动窗口定位在触发按钮附近。 */
+#chat-avatar-preview-popup {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 320px;
+    max-width: calc(100vw - 24px);
     display: flex;
     flex-direction: column;
     gap: 12px;
-    padding: 12px;
+    padding: 14px;
     border-radius: 16px;
-    border: 1px solid rgba(68, 183, 254, 0.18);
+    border: 1px solid rgba(68, 183, 254, 0.22);
     background:
-        linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(247, 250, 252, 0.92));
+        linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(247, 250, 252, 0.96));
     box-shadow:
-        0 8px 22px rgba(33, 95, 144, 0.08),
+        0 20px 48px rgba(12, 20, 34, 0.24),
+        0 8px 22px rgba(33, 95, 144, 0.12),
         inset 0 1px 0 rgba(255, 255, 255, 0.72);
+    z-index: 100010;
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+    transform-origin: top right;
+    transition: opacity 0.16s ease, transform 0.18s cubic-bezier(0.2, 0, 0, 1);
+    pointer-events: auto;
 }
 
-#chat-avatar-preview-card[hidden] {
+#chat-avatar-preview-popup.is-visible {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+}
+
+#chat-avatar-preview-popup[hidden] {
     display: none !important;
+}
+
+[data-theme="dark"] #chat-avatar-preview-popup {
+    border-color: rgba(68, 183, 254, 0.28);
+    background:
+        linear-gradient(180deg, rgba(30, 38, 52, 0.96), rgba(22, 28, 40, 0.96));
+    box-shadow:
+        0 20px 48px rgba(0, 0, 0, 0.5),
+        0 8px 22px rgba(0, 0, 0, 0.28),
+        inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
 .chat-avatar-preview-card-header {
@@ -1217,91 +1267,197 @@ body.react-chat-window-dragging {
     cursor: progress;
 }
 
-/* 字幕提示框样式（放在输入框区域中，与输入框对齐） */
-.subtitle-prompt-message {
-    width: 100%;
-    background: linear-gradient(135deg, rgba(68, 183, 254, 0.08) 0%, rgba(68, 183, 254, 0.12) 100%);
-    border: 1px solid rgba(68, 183, 254, 0.2);
-    border-radius: 8px;
-    padding: 0;
-    margin-top: 8px;
-    box-shadow: 0 2px 8px rgba(68, 183, 254, 0.1);
-    box-sizing: border-box;
-    pointer-events: auto;
-    touch-action: manipulation;
-}
-
-.subtitle-prompt-content {
-    display: flex;
-    align-items: center;
-    justify-content: center;
+/* ──── Avatar Cropper (inline in popup) ──── */
+.chat-avatar-preview-crop-body {
+    display: none;
+    flex-direction: column;
     gap: 10px;
-    padding: 8px 16px;
 }
+#chat-avatar-preview-popup.is-cropping .chat-avatar-preview-card-body { display: none; }
+#chat-avatar-preview-popup.is-cropping .chat-avatar-preview-crop-body { display: flex; }
+#chat-avatar-preview-popup.is-cropping { width: auto; max-width: calc(100vw - 24px); }
 
-.subtitle-toggle-wrapper {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex-shrink: 0;
-    cursor: pointer;
-}
-
-.subtitle-toggle-indicator {
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    border: 2px solid #ccc;
-    background-color: transparent;
-    cursor: pointer;
-    flex-shrink: 0;
-    transition: all 0.2s ease;
+.avatar-cropper-canvas-wrap {
     position: relative;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+    overflow: hidden;
+    border-radius: 8px;
+    background: #0a0a0a;
+    align-self: center;
+}
+
+.avatar-cropper-source-img {
+    display: block;
+    pointer-events: none;
+}
+
+.avatar-cropper-mask {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+
+.avatar-cropper-crop-box {
+    position: absolute;
+    cursor: move;
+    box-sizing: border-box;
+    border: 2px solid rgba(255, 255, 255, 0.85);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.3);
+    overflow: visible;
+}
+
+.avatar-cropper-viewfinder {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    overflow: hidden;
+}
+
+.avatar-cropper-grid-line {
+    position: absolute;
+    background: rgba(255, 255, 255, 0.35);
+}
+.avatar-cropper-grid-line.h1 { top: 33.33%; left: 0; right: 0; height: 1px; }
+.avatar-cropper-grid-line.h2 { top: 66.66%; left: 0; right: 0; height: 1px; }
+.avatar-cropper-grid-line.v1 { left: 33.33%; top: 0; bottom: 0; width: 1px; }
+.avatar-cropper-grid-line.v2 { left: 66.66%; top: 0; bottom: 0; width: 1px; }
+
+.avatar-cropper-circle-guide {
+    position: absolute;
+    inset: 4%;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    pointer-events: none;
+}
+
+/* 手柄：完全定位在 crop-box 外侧角落 */
+.avatar-cropper-handle {
+    position: absolute;
+    width: 24px;
+    height: 24px;
+    z-index: 2;
+}
+.avatar-cropper-handle::before,
+.avatar-cropper-handle::after {
+    content: '';
+    position: absolute;
+    background: #fff;
+    box-shadow: 0 0 5px rgba(0, 0, 0, 0.7);
+    border-radius: 1px;
+}
+.avatar-cropper-handle.tl { top: -26px; left: -26px; cursor: nwse-resize; }
+.avatar-cropper-handle.tr { top: -26px; right: -26px; cursor: nesw-resize; }
+.avatar-cropper-handle.bl { bottom: -26px; left: -26px; cursor: nesw-resize; }
+.avatar-cropper-handle.br { bottom: -26px; right: -26px; cursor: nwse-resize; }
+
+.avatar-cropper-handle.tl::before { bottom: 0; right: 0; width: 20px; height: 5px; }
+.avatar-cropper-handle.tl::after  { bottom: 0; right: 0; width: 5px; height: 20px; }
+.avatar-cropper-handle.tr::before { bottom: 0; left: 0; width: 20px; height: 5px; }
+.avatar-cropper-handle.tr::after  { bottom: 0; left: 0; width: 5px; height: 20px; }
+.avatar-cropper-handle.bl::before { top: 0; right: 0; width: 20px; height: 5px; }
+.avatar-cropper-handle.bl::after  { top: 0; right: 0; width: 5px; height: 20px; }
+.avatar-cropper-handle.br::before { top: 0; left: 0; width: 20px; height: 5px; }
+.avatar-cropper-handle.br::after  { top: 0; left: 0; width: 5px; height: 20px; }
+
+/* 右侧控制面板 */
+.avatar-cropper-controls {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    align-self: center;
+    flex-shrink: 0;
+}
+.avatar-cropper-controls-row {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+}
+.avatar-cropper-ctrl-btn {
     display: flex;
     align-items: center;
     justify-content: center;
-}
-
-.subtitle-toggle-indicator::after {
-    content: '✓';
-    color: #fff;
-    font-size: 12px;
-    font-weight: bold;
+    width: 28px;
+    height: 28px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.35);
+    color: rgba(255, 255, 255, 0.85);
+    font-size: 14px;
     line-height: 1;
-    opacity: 0;
-    transition: opacity 0.2s ease;
-    pointer-events: none;
-    user-select: none;
-}
-
-.subtitle-toggle-indicator.active {
-    border-color: #44b7fe;
-    background-color: #44b7fe;
-}
-
-.subtitle-toggle-indicator.active::after {
-    opacity: 1;
-}
-
-.subtitle-toggle-label {
-    font-size: 15px;
-    color: #333;
-    user-select: none;
     cursor: pointer;
-    font-weight: 500;
+    transition: background 0.12s, border-color 0.12s;
+    padding: 0;
+}
+.avatar-cropper-ctrl-btn:hover {
+    background: rgba(68, 183, 254, 0.25);
+    border-color: rgba(68, 183, 254, 0.4);
+}
+.avatar-cropper-ctrl-btn:active {
+    background: rgba(68, 183, 254, 0.4);
+}
+.avatar-cropper-ctrl-btn svg {
+    width: 16px;
+    height: 16px;
+    fill: currentColor;
+}
+.avatar-cropper-ctrl-divider {
+    height: 6px;
 }
 
-/* 语音模式下的字幕提示框样式（放在 chat-container 底部） */
-.subtitle-prompt-message.voice-mode {
-    width: auto;
-    margin: 8px 12px;
-    pointer-events: auto;
+.avatar-cropper-area {
+    display: flex;
+    gap: 10px;
+    align-items: stretch;
 }
 
-/* 最小化时隐藏字幕提示框 */
-#chat-container.minimized .subtitle-prompt-message {
-    display: none !important;
+.avatar-cropper-buttons {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
 }
+
+.avatar-cropper-btn {
+    padding: 6px 14px;
+    border-radius: 999px;
+    border: 1px solid rgba(68, 183, 254, 0.24);
+    background: rgba(68, 183, 254, 0.08);
+    color: #215f90;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+.avatar-cropper-btn:hover {
+    background: rgba(68, 183, 254, 0.14);
+    border-color: rgba(68, 183, 254, 0.38);
+}
+.avatar-cropper-btn.primary {
+    background: rgba(68, 183, 254, 0.22);
+    border-color: rgba(68, 183, 254, 0.4);
+    color: #127dbc;
+}
+.avatar-cropper-btn.primary:hover {
+    background: rgba(68, 183, 254, 0.32);
+}
+[data-theme="dark"] .avatar-cropper-btn {
+    color: #8fd4ff;
+    border-color: rgba(68, 183, 254, 0.22);
+    background: rgba(68, 183, 254, 0.06);
+}
+[data-theme="dark"] .avatar-cropper-btn:hover {
+    background: rgba(68, 183, 254, 0.14);
+}
+[data-theme="dark"] .avatar-cropper-btn.primary {
+    background: rgba(68, 183, 254, 0.18);
+    border-color: rgba(68, 183, 254, 0.38);
+}
+
+/* 旧的 .subtitle-prompt-message 注入式提示已下线：
+ * 字幕翻译开关现在常驻在 React 聊天窗口的 composer 工具栏，
+ * 由 frontend/react-neko-chat 渲染。 */
 
 
 /* 字幕显示区域样式（参考Xiao8项目优化，性能优化版本） */
@@ -2081,7 +2237,10 @@ body.react-chat-window-dragging {
         background: transparent;
     }
 
-    #react-chat-window-shell {
+    /* React chat window 移动端规则仅作用于 index.html 等真正的浏览器手机端。
+       chat.html 是 Electron 独立窗口（无论拖得多窄都应走 PC 逻辑），
+       在 <body> 加 .electron-chat-window 从此媒体查询中排除。 */
+    body:not(.electron-chat-window) #react-chat-window-shell:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
         width: calc(100vw - 12px);
         height: auto;
         max-height: 50vh;
@@ -2095,57 +2254,81 @@ body.react-chat-window-dragging {
         overflow: hidden;
     }
 
-    #react-chat-window-shell #react-chat-window-root {
+    body:not(.electron-chat-window) #react-chat-window-shell #react-chat-window-root {
         height: 100%;
         flex: 1 1 auto;
         overflow: hidden;
         min-height: 0;
     }
 
-    #react-chat-window-shell .app-shell {
+    body:not(.electron-chat-window) #react-chat-window-shell .app-shell {
         height: 100%;
         display: flex;
         flex-direction: column;
         min-height: 0;
     }
 
-    #react-chat-window-shell .chat-window {
+    /* 窄屏与桌面统一用 grid 布局：auto(顶栏) 1fr(消息) auto(输入) +
+       overflow:hidden 保证输入区不会被消息挤出。shell 尺寸仍由
+       syncMobileContentLayout() 写成显式像素（根据内容 50vh 上限）。 */
+    body:not(.electron-chat-window) #react-chat-window-shell .chat-window {
         height: 100%;
-        display: flex;
-        flex-direction: column;
+        display: grid;
+        grid-template-rows: auto 1fr auto;
         min-height: 0;
-    }
-
-    #react-chat-window-shell .chat-body {
-        flex: 1 1 auto;
-        min-height: 60px;
-        display: flex;
-        flex-direction: column;
         overflow: hidden;
     }
 
-    #react-chat-window-shell .message-list {
-        flex: 1 1 auto;
-        min-height: 60px;
-        height: auto;
-        overflow-y: hidden;
+    body:not(.electron-chat-window) #react-chat-window-shell .chat-body {
+        min-height: 0;
+        overflow: hidden;
+    }
+
+    body:not(.electron-chat-window) #react-chat-window-shell .message-list {
+        height: 100%;
+        min-height: 0;
+        overflow-y: auto;
         -webkit-overflow-scrolling: touch;
     }
 
-    #react-chat-window-shell.is-mobile-content-capped .message-list {
+    /* .is-mobile-content-capped 现在不再影响布局（message-list 始终可滚），
+       保留空规则以免其他位置若有依赖时出现样式回退。 */
+    body:not(.electron-chat-window) #react-chat-window-shell.is-mobile-content-capped .message-list {
         overflow-y: auto;
     }
 
     /* Mobile: hide the divider between translate and jukebox plus the last tool button (jukebox)
        to reduce clutter on small screens. If the tool order changes, replace these positional
        selectors with a dedicated class or data attribute on the affected controls. */
-    #react-chat-window-shell .composer-bottom-tools > .composer-tool-divider:nth-last-child(2),
-    #react-chat-window-shell .composer-bottom-tools > .composer-tool-btn:last-child {
+    body:not(.electron-chat-window) #react-chat-window-shell .composer-bottom-tools > .composer-tool-divider:nth-last-child(2),
+    body:not(.electron-chat-window) #react-chat-window-shell .composer-bottom-tools > .composer-tool-btn:last-child {
         display: none;
     }
 
-    #react-chat-window-drag-handle {
+    body:not(.electron-chat-window) #react-chat-window-drag-handle {
         cursor: default;
+    }
+
+    /* ---- 手机端最小化：全宽底部胶囊（替代 50px 圆球）----
+       胶囊横跨屏幕底部，点击即展开；比左下角小圆球更符合手机底栏交互习惯。
+       具体最小化尺寸由 JS 通过 transform scale 动画过渡到此 CSS 终态。 */
+    body:not(.electron-chat-window) #react-chat-window-shell.is-minimized {
+        width: calc(100vw - 12px) !important;
+        height: 48px !important;
+        border-radius: 24px;
+    }
+
+    body:not(.electron-chat-window) #react-chat-window-shell.is-minimized #react-chat-window-drag-handle {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    body:not(.electron-chat-window) #react-chat-window-shell.is-minimized .react-chat-minimized-icon {
+        width: 28px;
+        height: 28px;
+        /* 居中显示而非填满整条胶囊 */
+        object-fit: contain;
     }
 
     #chat-container.minimized::before {

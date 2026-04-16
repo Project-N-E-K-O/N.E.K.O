@@ -218,6 +218,7 @@ async def get_page_config(lanlan_name: str = ""):
             model_type = 'live3d'
         
         model_path = ""
+        lighting = None
         # live3d_sub_type: 前端用于区分 Live3D 模式下加载 VRM 还是 MMD 渲染器
         live3d_sub_type = ""
         
@@ -230,6 +231,16 @@ async def get_page_config(lanlan_name: str = ""):
                 model_path = _resolve_vrm_path(vrm_path, _config_manager, target_name)
             else:
                 logger.warning(f"角色 {target_name} 的VRM模型路径为空")
+            saved_lighting = get_reserved(
+                catgirl_config,
+                'avatar',
+                'vrm',
+                'lighting',
+                default=None,
+                legacy_keys=('lighting',),
+            )
+            if isinstance(saved_lighting, dict):
+                lighting = dict(saved_lighting)
         elif model_type == 'live3d' and _get_live3d_sub_type(catgirl_config) == 'mmd':
             live3d_sub_type = 'mmd'
             # MMD模型：处理路径转换
@@ -270,7 +281,8 @@ async def get_page_config(lanlan_name: str = ""):
             "master_nickname": str(master_basic_config.get('昵称', '') or ''),
             "master_display_name": master_display_name or "",
             "model_path": model_path,
-            "model_type": model_type
+            "model_type": model_type,
+            "lighting": lighting,
         }
         if model_type == 'live3d':
             result["live3d_sub_type"] = live3d_sub_type
@@ -539,24 +551,29 @@ async def get_core_config_api():
             # 创建空的配置对象用于返回默认值
             core_cfg = {}
         
+        # 旧版本 core_config.json 可能只有 coreApiKey 而没有各 assistApiKey* 字段，
+        # 需要与 ConfigManager.get_core_config() 保持一致的回退逻辑，
+        # 以免升级后声音克隆页面误报"没有可用API"。
+        fallback_key = api_key or ''
         return {
             "api_key": api_key,
             "coreApi": core_cfg.get('coreApi', 'qwen'),
             "assistApi": core_cfg.get('assistApi', 'qwen'),
-            "assistApiKeyQwen": core_cfg.get('assistApiKeyQwen', ''),
+            "assistApiKeyQwen": core_cfg.get('assistApiKeyQwen', '') or fallback_key,
             "assistApiKeyQwenIntl": core_cfg.get('assistApiKeyQwenIntl', ''),
-            "assistApiKeyOpenai": core_cfg.get('assistApiKeyOpenai', ''),
-            "assistApiKeyGlm": core_cfg.get('assistApiKeyGlm', ''),
-            "assistApiKeyStep": core_cfg.get('assistApiKeyStep', ''),
-            "assistApiKeySilicon": core_cfg.get('assistApiKeySilicon', ''),
-            "assistApiKeyGemini": core_cfg.get('assistApiKeyGemini', ''),
-            "assistApiKeyKimi": core_cfg.get('assistApiKeyKimi', ''),
-            "assistApiKeyDeepseek": core_cfg.get('assistApiKeyDeepseek', ''),
-            "assistApiKeyDoubao": core_cfg.get('assistApiKeyDoubao', ''),
+            "assistApiKeyOpenai": core_cfg.get('assistApiKeyOpenai', '') or fallback_key,
+            "assistApiKeyGlm": core_cfg.get('assistApiKeyGlm', '') or fallback_key,
+            "assistApiKeyStep": core_cfg.get('assistApiKeyStep', '') or fallback_key,
+            "assistApiKeySilicon": core_cfg.get('assistApiKeySilicon', '') or fallback_key,
+            "assistApiKeyGemini": core_cfg.get('assistApiKeyGemini', '') or fallback_key,
+            "assistApiKeyKimi": core_cfg.get('assistApiKeyKimi', '') or fallback_key,
+            "assistApiKeyDeepseek": core_cfg.get('assistApiKeyDeepseek', '') or fallback_key,
+            "assistApiKeyDoubao": core_cfg.get('assistApiKeyDoubao', '') or fallback_key,
             "assistApiKeyMinimax": core_cfg.get('assistApiKeyMinimax', ''),
             "assistApiKeyMinimaxIntl": core_cfg.get('assistApiKeyMinimaxIntl', ''),
-            "assistApiKeyGrok": core_cfg.get('assistApiKeyGrok', ''),
-            "assistApiKeyClaude": core_cfg.get('assistApiKeyClaude', ''),
+            "assistApiKeyGrok": core_cfg.get('assistApiKeyGrok', '') or fallback_key,
+            "assistApiKeyClaude": core_cfg.get('assistApiKeyClaude', '') or fallback_key,
+            "assistApiKeyOpenrouter": core_cfg.get('assistApiKeyOpenrouter', '') or fallback_key,
             "mcpToken": core_cfg.get('mcpToken', ''),
             "openclawUrl": core_cfg.get('openclawUrl'),
             "openclawTimeout": core_cfg.get('openclawTimeout'),
@@ -645,7 +662,7 @@ async def update_core_config(request: Request):
             'assistApiKeyGlm', 'assistApiKeyStep', 'assistApiKeySilicon',
             'assistApiKeyGemini', 'assistApiKeyKimi', 'assistApiKeyDoubao',
             'assistApiKeyMinimax', 'assistApiKeyMinimaxIntl', 'assistApiKeyGrok',
-            'assistApiKeyClaude',
+            'assistApiKeyClaude', 'assistApiKeyOpenrouter',
         ]
         for field in _api_key_fields:
             if field in data:
