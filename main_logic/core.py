@@ -924,6 +924,9 @@ class LLMSessionManager:
         http_sentence / local 类 provider 做客户端切句，normalizer 有助于
         去除 Gemini Live 输出转录中的 CJK 边界空格。
 
+        注意：free 模式国外服务器走 Gemini 后端，需要 normalizer，
+        因此 free 不映射到 step，走 fallthrough 启用 normalizer。
+
         Returns:
             True 表示应启用 TtsStreamNormalizer，False 表示跳过。
         """
@@ -935,14 +938,14 @@ class LLMSessionManager:
                 return True
 
         # 默认 TTS：按 core_api_type 查 registry
+        # 注意：'free' 不在 registry 中，会走 fallthrough 启用 normalizer——
+        # 因为 free 国外模式走 Gemini 后端，需要 CJK 空格清理。
         provider_key = self.core_api_type or 'qwen'
-        if provider_key == 'free':
-            provider_key = 'step'
         meta = TTS_PROVIDER_REGISTRY.get(provider_key)
         if meta and meta.category == "ws_bistream":
             return False
 
-        # 未知 provider 或 http_sentence / local → 保守地启用 normalizer
+        # 未知 provider / free / http_sentence / local → 保守地启用 normalizer
         return True
 
     def _start_tts_thread(self):
