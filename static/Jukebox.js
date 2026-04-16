@@ -4001,6 +4001,10 @@ window.Jukebox = {
 
       .jukebox-header-left,
       .jukebox-header-buttons,
+      .jukebox-content,
+      .jukebox-controls-row,
+      .jukebox-calibration-section,
+      .jukebox-notice,
       .sam-panel {
         position: relative;
         z-index: 1;
