@@ -825,6 +825,8 @@
         "assistApiSelectLabel": "アシストAPIプロバイダー",
         "assistApiKeyLabel": "アシストAPIキー",
         "assistApiAutoFillHint": "空欄時は管理簿のキーを自動使用、手動入力すると独立して保存されます",
+        "disableTts": "TTSを無効化",
+        "disableTtsHint": "有効にすると音声合成サービスを呼び出しません",
         "keyBookTitle": "API管理簿",
         "keyBookDescription": "すべてのAPIキーを一元管理。コア/アシストAPIのプロバイダー切替時にここからキーが自動入力され、入力したキーもここに自動保存されます。",
         "keyBookPlaceholder": "APIプロバイダー設定を読み込み中...",

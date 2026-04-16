@@ -1744,6 +1744,9 @@ class ConfigManager:
         enable_custom_api = core_cfg.get('enableCustomApi', False)
         config['ENABLE_CUSTOM_API'] = enable_custom_api
 
+        # 禁用TTS
+        config['DISABLE_TTS'] = core_cfg.get('disableTts', False)
+
         # 文本模式回复长度守卫上限（字/词数，超限会丢弃并重试）
         try:
             config['TEXT_GUARD_MAX_LENGTH'] = int(core_cfg.get('textGuardMaxLength', 300))

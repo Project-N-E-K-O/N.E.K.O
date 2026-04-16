@@ -1172,6 +1172,11 @@ async function loadCurrentApiKey() {
                 }, 100);
             }
 
+            // 加载禁用TTS状态
+            if (typeof data.disableTts === 'boolean' && document.getElementById('disableTts')) {
+                document.getElementById('disableTts').checked = data.disableTts;
+            }
+
         } else {
             showCurrentApiKey(window.t ? window.t('api.getCurrentApiKeyFailed') : '获取当前API Key失败', '', false);
         }
@@ -1709,6 +1714,7 @@ async function save_button_down(e) {
         omniModelUrl, omniModelId, omniModelApiKey,
         ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId,
         mcpToken, enableCustomApi, gptsovitsEnabled,
+        disableTts: document.getElementById('disableTts')?.checked || false,
         ...modelProviders
     };
 
