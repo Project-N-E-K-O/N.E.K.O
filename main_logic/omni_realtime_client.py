@@ -1690,9 +1690,22 @@ class OmniRealtimeClient:
             return
         
         if self.ws:
+            # 硬性约束 close handshake 的等待时间：默认 close_timeout=10s，
+            # 若远端（Qwen Realtime）晚响应 CLOSE 帧，会让 end_session 阻塞
+            # 数百毫秒~数秒，进而拖慢 message_handler_task 取消后的后续流程。
+            # 超时后直接 transport.abort() 做本地强制关闭（TCP RST），以保证
+            # end_session 快速返回、主事件循环心跳不受影响。
+            ws_ref = self.ws
             try:
-                # 尝试关闭websocket连接
-                await self.ws.close()
+                await asyncio.wait_for(ws_ref.close(), timeout=0.5)
+            except asyncio.TimeoutError:
+                logger.warning("WebSocket close handshake exceeded 0.5s, aborting transport")
+                transport = getattr(ws_ref, 'transport', None)
+                if transport is not None:
+                    try:
+                        transport.abort()
+                    except Exception as e:
+                        logger.error(f"Error aborting websocket transport: {e}")
             except Exception as e:
                 logger.error(f"Error closing websocket: {e}")
             finally:
