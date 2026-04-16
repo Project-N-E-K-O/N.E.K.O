@@ -2723,6 +2723,18 @@ class LLMSessionManager:
                         except Exception as _cb_err:
                             logger.warning(f"⚠️ Agent callback injection failed: {_cb_err}")
 
+                        # prompt_ephemeral 会通过 on_proactive_done → handle_proactive_complete
+                        # 发送 (None, None) 并置 _tts_done_queued_for_turn = True。
+                        # 对于 qwen-tts 的 server_commit 模式，这意味着 agent callback 的文本
+                        # 已被 commit，但后续 stream_text 的主回复文本会追加到已 commit 的缓冲区——
+                        # 如果不重置，handle_response_complete 会因 flag=True 跳过第二次 (None, None)，
+                        # 导致主回复永远不被 commit、TTS 静默。
+                        # 修复：为主回复生成新的 speech_id（触发 qwen worker 重建连接、重置
+                        # buffer_committed），并重置 done flag 允许 handle_response_complete 正常发送。
+                        async with self.lock:
+                            self.current_speech_id = str(uuid4())
+                            self._tts_done_queued_for_turn = False
+
                     await self.session.stream_text(data)
                 else:
                     logger.error(f"💥 Stream: Invalid text data type: {type(data)}")
