@@ -1190,7 +1190,10 @@
 
         if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setOnComposerSubmit === 'function') {
             window.reactChatWindowHost.setOnComposerSubmit(function (detail) {
-                return mod.sendTextPayload(detail && detail.text, { source: 'react-chat-window' });
+                return mod.sendTextPayload(detail && detail.text, {
+                    source: 'react-chat-window',
+                    requestId: detail && detail.requestId
+                });
             });
         }
         if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setOnComposerImportImage === 'function') {

@@ -499,13 +499,6 @@
                 if (response.type === 'gemini_response') {
                     var isNewMessage = response.isNewMessage || false;
                     if (isNewMessage) {
-                        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
-                            window.reactChatWindowHost.clearPendingRollbackDraft(response.request_id);
-                        }
-                        if (response.request_id && window._lastSubmittedRequestId === response.request_id) {
-                            window._lastSubmittedText = '';
-                            window._lastSubmittedRequestId = '';
-                        }
                         // voice chat 中，AI 新消息到来时若上一条人类消息为纯空白则替换为 ...
                         if (S.lastVoiceUserMessage && S.lastVoiceUserMessage.isConnected &&
                             !S.lastVoiceUserMessage.textContent.trim()) {
@@ -520,6 +513,15 @@
                     var createdVisibleBubble = false;
                     if (typeof window.appendMessage === 'function') {
                         createdVisibleBubble = window.appendMessage(response.text, 'gemini', isNewMessage) === true;
+                    }
+                    if (createdVisibleBubble && response.request_id) {
+                        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
+                            window.reactChatWindowHost.clearPendingRollbackDraft(response.request_id);
+                        }
+                        if (window._lastSubmittedRequestId === response.request_id) {
+                            window._lastSubmittedText = '';
+                            window._lastSubmittedRequestId = '';
+                        }
                     }
                     if (!S.assistantTurnId && S.assistantTurnAwaitingBubble && createdVisibleBubble) {
                         ensureAssistantTurnStarted('gemini_response_visible_bubble', response.turn_id);
