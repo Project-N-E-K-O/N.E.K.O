@@ -1046,6 +1046,9 @@
                 const textInputAreaMmd = document.getElementById('text-input-area');
                 if (chatContainerMmd) chatContainerMmd.classList.remove('minimized');
                 if (textInputAreaMmd) textInputAreaMmd.classList.remove('hidden');
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
 
                 // 延时显示 MMD 浮动按钮和锁图标
                 setTimeout(() => {
@@ -1200,6 +1203,9 @@
                 const textInputAreaL2d = document.getElementById('text-input-area');
                 if (chatContainerL2d) chatContainerL2d.classList.remove('minimized');
                 if (textInputAreaL2d) textInputAreaL2d.classList.remove('hidden');
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
 
                 // 延时重启 Ticker 和显示按钮（双重保险）
                 setTimeout(() => {

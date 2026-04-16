@@ -336,7 +336,7 @@
             if (!U.isMobile()) {
                 textInputArea.classList.add('hidden');
             }
-            if (typeof window.syncVoiceChatComposerHidden === 'function') {
+            if (!U.isMobile() && typeof window.syncVoiceChatComposerHidden === 'function') {
                 window.syncVoiceChatComposerHidden(true);
             }
 

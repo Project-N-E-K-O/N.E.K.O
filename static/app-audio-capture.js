@@ -543,7 +543,7 @@
             if (textInputArea && !window.appUtils.isMobile()) {
                 textInputArea.classList.add('hidden');
             }
-            if (typeof window.syncVoiceChatComposerHidden === 'function') {
+            if (!window.appUtils.isMobile() && typeof window.syncVoiceChatComposerHidden === 'function') {
                 window.syncVoiceChatComposerHidden(true);
             }
 
