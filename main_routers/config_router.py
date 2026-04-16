@@ -588,7 +588,7 @@ async def get_core_config_api():
             },
             "gptsovitsEnabled": core_cfg.get('gptsovitsEnabled'),
             "ttsVoiceId": core_cfg.get('ttsVoiceId', ''),
-            "disableTts": core_cfg.get('disableTts', False),
+            "disableTts": core_cfg.get('disableTts', False) is True or str(core_cfg.get('disableTts', False)).lower() in ('true', '1', 'yes', 'on'),
             "success": True
         }
     except Exception as e:
