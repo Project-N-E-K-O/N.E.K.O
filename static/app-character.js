@@ -135,6 +135,9 @@
         console.log('[猫娘切换] 从', oldCatgirl, '切换到', newCatgirl);
         console.log('[猫娘切换] isSwitchingCatgirl:', S.isSwitchingCatgirl);
         let mmdLoadingSessionId = '';
+        // 保存旧连接引用，finally 中确保关闭（防止 try 中途 throw 导致永久泄露）
+        let _switchOldSocket = null;
+        let _switchOldHeartbeat = null;
 
         if (S.isSwitchingCatgirl) {
             console.log('[猫娘切换] 正在切换中，忽略本次请求');
@@ -151,6 +154,8 @@
         // 确认切换到不同角色后，清空上一任的搜歌任务
         window.invalidatePendingMusicSearch();
         S.isSwitchingCatgirl = true;
+        _switchOldSocket = S.socket;
+        _switchOldHeartbeat = S.heartbeatInterval;
         console.log('[猫娘切换] 设置 isSwitchingCatgirl = true');
 
         try {
@@ -1286,6 +1291,18 @@
             }
             showStatusToast(window.t ? window.t('app.switchCatgirlError', { error: error.message }) : `切换失败: ${error.message}`, 4000);
         } finally {
+            // 安全网：确保旧连接一定被关闭，即使 try 中途 throw
+            // 必须在 isSwitchingCatgirl=false 之前执行，
+            // 否则 onclose 会在 isSwitchingCatgirl=false 时触发 auto-reconnect
+            try {
+                if (_switchOldSocket
+                    && _switchOldSocket.readyState !== WebSocket.CLOSED
+                    && _switchOldSocket.readyState !== WebSocket.CLOSING) {
+                    _switchOldSocket.close();
+                }
+                if (_switchOldHeartbeat) clearInterval(_switchOldHeartbeat);
+            } catch (_e) { /* ignore */ }
+
             S.isSwitchingCatgirl = false;
             // 清理切换标识，取消所有 pending 的 applyLighting 定时器
             window._currentCatgirlSwitchId = null;

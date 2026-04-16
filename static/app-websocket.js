@@ -397,6 +397,7 @@
         var wsUrl = protocol + '://' + window.location.host + '/ws/' + currentLanlanName;
         console.log(window.t('console.websocketConnecting'), currentLanlanName, window.t('console.websocketUrl'), wsUrl);
         S.socket = new WebSocket(wsUrl);
+        var _thisSocket = S.socket; // 闭包捕获，供 onclose 判断是否已被替换
 
         // ---- onopen ----
         S.socket.onopen = function () {
@@ -1674,8 +1675,10 @@
             if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(false);
             if (typeof window.syncFloatingScreenButtonState === 'function') window.syncFloatingScreenButtonState(false);
 
-            // Auto-reconnect (unless switching catgirl)
-            if (!S.isSwitchingCatgirl) {
+            // Auto-reconnect: skip if switching catgirl OR this socket was already
+            // replaced by a newer connectWebSocket() call (prevents reconnect storm
+            // when the old socket's onclose fires after the switch completes).
+            if (!S.isSwitchingCatgirl && S.socket === _thisSocket) {
                 S.autoReconnectTimeoutId = setTimeout(connectWebSocket, 3000);
             }
         };
