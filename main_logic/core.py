@@ -303,6 +303,23 @@ class LLMSessionManager:
         task.add_done_callback(self._bg_tasks.discard)
         return task
 
+    def _emit_cooldown_turn_end_if_needed(self):
+        """冷却期间去重发送 turn_end，每秒最多一次。返回 True 表示当前处于冷却中。"""
+        if not self._memory_error_retry_after or time.time() >= self._memory_error_retry_after:
+            return False
+        now = time.time()
+        if now - self._last_cooldown_turn_end_time >= 1.0:
+            self._last_cooldown_turn_end_time = now
+            time_left = int(self._memory_error_retry_after - now)
+            self._fire_task(self.send_status(json.dumps({
+                "code": "MEMORY_SERVER_COOLDOWN",
+                "details": {"wait_time": time_left}
+            })))
+            self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
+            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                self._fire_task(self.websocket.send_json({'type': 'system', 'data': 'turn end'}))
+        return True
+
     def _get_text_guard_max_length(self) -> int:
         try:
             # 优先从对话设置中读取，如果不存在则从核心配置读取
@@ -2534,19 +2551,7 @@ class LLMSessionManager:
         if not self.session_ready and self._starting_session_count == 0:
             if not self.session or not self.is_active:
                 # Memory Server 专属冷却检查
-                if self._memory_error_retry_after and time.time() < self._memory_error_retry_after:
-                    # 去重：冷却期间每秒最多发送一次 turn_end，防止音频流高频触发导致 cross_server 洪泛
-                    now = time.time()
-                    if now - self._last_cooldown_turn_end_time >= 1.0:
-                        self._last_cooldown_turn_end_time = now
-                        time_left = int(self._memory_error_retry_after - now)
-                        self._fire_task(self.send_status(json.dumps({
-                            "code": "MEMORY_SERVER_COOLDOWN",
-                            "details": {"wait_time": time_left}
-                        })))
-                        self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
-                        if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                            self._fire_task(self.websocket.send_json({'type': 'system', 'data': 'turn end'}))
+                if self._emit_cooldown_turn_end_if_needed():
                     return
                 logger.info(f"Session未就绪且不存在，根据输入类型 {input_type} 自动创建 session")
                 # 根据输入类型确定模式
@@ -2580,19 +2585,7 @@ class LLMSessionManager:
         # 如果 session 不存在或不活跃，检查是否可以自动重建
         if not self.session or not self.is_active:
             # Memory Server 专属冷却检查
-            if self._memory_error_retry_after and time.time() < self._memory_error_retry_after:
-                # 去重：冷却期间每秒最多发送一次 turn_end，防止音频流高频触发导致 cross_server 洪泛
-                now = time.time()
-                if now - self._last_cooldown_turn_end_time >= 1.0:
-                    self._last_cooldown_turn_end_time = now
-                    time_left = int(self._memory_error_retry_after - now)
-                    self._fire_task(self.send_status(json.dumps({
-                        "code": "MEMORY_SERVER_COOLDOWN",
-                        "details": {"wait_time": time_left}
-                    })))
-                    self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
-                    if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                        self._fire_task(self.websocket.send_json({'type': 'system', 'data': 'turn end'}))
+            if self._emit_cooldown_turn_end_if_needed():
                 return
             # 检查失败计数器和冷却时间
             if self.session_start_failure_count >= self.session_start_max_failures:
