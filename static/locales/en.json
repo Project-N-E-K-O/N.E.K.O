@@ -668,7 +668,7 @@
         "exportSelectInvert": "Invert",
         "exportSelectionCount": "{{selected}} / {{total}} selected",
         "inputTooLong": "Message too long ({{count}}/{{max}}), please shorten and retry",
-        "responseTooLong": "Master, you made me think too much, I can't handle it!"
+        "responseTooLong": "Response too long and was discarded; your input has been restored."
     },
     "voiceControl": {
         "startVoice": "Start Voice",

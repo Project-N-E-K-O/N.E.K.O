@@ -34,7 +34,7 @@
         onComposerScreenshot: null,
         onComposerRemoveAttachment: null,
         onComposerSubmit: null,
-        lastSubmittedText: '',
+        pendingRollbackDrafts: {},
         rollbackDraft: ''
     };
 
@@ -610,8 +610,12 @@
     }
 
     function handleComposerSubmit(payload) {
+        var requestId = payload && typeof payload.requestId === 'string' && payload.requestId
+            ? payload.requestId
+            : ('req-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
         var detail = {
-            text: payload && typeof payload.text === 'string' ? payload.text : ''
+            text: payload && typeof payload.text === 'string' ? payload.text : '',
+            requestId: requestId
         };
 
         var hasAttachments = state.composerAttachments && state.composerAttachments.length > 0;
@@ -620,9 +624,9 @@
         // Store last submitted text for rollback on RESPONSE_TOO_LONG
         // Preserve original whitespace so rollback restores exactly what the user typed
         if (detail.text.trim()) {
-            state.lastSubmittedText = detail.text;
+            state.pendingRollbackDrafts[detail.requestId] = detail.text;
         } else {
-            state.lastSubmittedText = '';
+            delete state.pendingRollbackDrafts[detail.requestId];
         }
         // Clear any stale rollback so it won't overwrite this new draft
         if (state.rollbackDraft) {
@@ -637,7 +641,7 @@
                 console.error('[ReactChatWindow] onComposerSubmit failed:', error);
             }
         } else if (window.appButtons && typeof window.appButtons.sendTextPayload === 'function') {
-            window.appButtons.sendTextPayload(detail.text, { source: 'react-chat-window' });
+            window.appButtons.sendTextPayload(detail.text, { source: 'react-chat-window', requestId: detail.requestId });
         } else {
             var input = $('textInputBox');
             var sendButton = $('textSendButton');
@@ -704,13 +708,20 @@
      * Rollback last submitted text to the React composer input.
      * Called when backend discards response due to RESPONSE_TOO_LONG.
      */
-    function rollbackLastDraft() {
-        if (!state.lastSubmittedText) return;
+    function rollbackLastDraft(requestId) {
+        var rollbackText = requestId ? state.pendingRollbackDrafts[requestId] : '';
+        if (!rollbackText) return;
         // Use a unique key each time so React useEffect can distinguish invocations
-        state.rollbackDraft = state.lastSubmittedText;
+        state.rollbackDraft = rollbackText;
         state._rollbackKey = 'rb-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+        delete state.pendingRollbackDrafts[requestId];
         console.log('[ROLLBACK] rollbackLastDraft: rollbackDraftPresent=true length=' + state.rollbackDraft.length + ' key=' + state._rollbackKey);
         renderWindow();
+    }
+
+    function clearPendingRollbackDraft(requestId) {
+        if (!requestId) return;
+        delete state.pendingRollbackDrafts[requestId];
     }
 
     function handleJukeboxClick() {
@@ -1739,6 +1750,7 @@
             state.onComposerSubmit = typeof handler === 'function' ? handler : null;
         },
         rollbackLastDraft: rollbackLastDraft,
+        clearPendingRollbackDraft: clearPendingRollbackDraft,
         isMounted: function () { return mounted; }
     };
 })();

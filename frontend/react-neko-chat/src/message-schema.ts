@@ -72,6 +72,7 @@ export const chatMessageSchema = z.object({
 
 export const composerSubmitSchema = z.object({
   text: z.string(),
+  requestId: z.string().optional(),
 });
 
 export const chatWindowPropsSchema = z.object({

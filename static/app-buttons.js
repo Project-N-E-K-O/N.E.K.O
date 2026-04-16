@@ -749,10 +749,14 @@
             options = options || {};
             var text = String(typeof rawText === 'string' ? rawText : '').trim();
             var hasScreenshots = screenshotsList.children.length > 0;
+            var requestId = (typeof options.requestId === 'string' && options.requestId)
+                ? options.requestId
+                : ('req-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
 
             // Store last submitted text for rollback on RESPONSE_TOO_LONG.
             // Clear stale text for pure-screenshot submissions.
             window._lastSubmittedText = text;
+            window._lastSubmittedRequestId = text ? requestId : '';
 
             if (!text && !hasScreenshots) return;
 
@@ -891,7 +895,8 @@
                     S.socket.send(JSON.stringify({
                         action: 'stream_data',
                         data: text,
-                        input_type: 'text'
+                        input_type: 'text',
+                        request_id: requestId
                     }));
 
                     if (!options.preserveInputValue) {

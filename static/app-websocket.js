@@ -499,6 +499,13 @@
                 if (response.type === 'gemini_response') {
                     var isNewMessage = response.isNewMessage || false;
                     if (isNewMessage) {
+                        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
+                            window.reactChatWindowHost.clearPendingRollbackDraft(response.request_id);
+                        }
+                        if (response.request_id && window._lastSubmittedRequestId === response.request_id) {
+                            window._lastSubmittedText = '';
+                            window._lastSubmittedRequestId = '';
+                        }
                         // voice chat 中，AI 新消息到来时若上一条人类消息为纯空白则替换为 ...
                         if (S.lastVoiceUserMessage && S.lastVoiceUserMessage.isConnected &&
                             !S.lastVoiceUserMessage.textContent.trim()) {
@@ -629,13 +636,26 @@
                         // Suppress toast — backend sends cute text via gemini_response
                         // Only rollback user input here
                         if (window.reactChatWindowHost && typeof window.reactChatWindowHost.rollbackLastDraft === 'function') {
-                            window.reactChatWindowHost.rollbackLastDraft();
+                            window.reactChatWindowHost.rollbackLastDraft(response.request_id);
                         }
                         var legacyInput = document.getElementById('textInputBox');
-                        if (legacyInput && !legacyInput.value && window._lastSubmittedText) {
+                        if (legacyInput && !legacyInput.value &&
+                            response.request_id && window._lastSubmittedRequestId === response.request_id &&
+                            window._lastSubmittedText) {
                             legacyInput.value = window._lastSubmittedText;
+                            window._lastSubmittedText = '';
+                            window._lastSubmittedRequestId = '';
                         }
                     } else {
+                        if (!response.will_retry) {
+                            if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
+                                window.reactChatWindowHost.clearPendingRollbackDraft(response.request_id);
+                            }
+                            if (response.request_id && window._lastSubmittedRequestId === response.request_id) {
+                                window._lastSubmittedText = '';
+                                window._lastSubmittedRequestId = '';
+                            }
+                        }
                         var retryMsg = window.t ? window.t('console.aiRetrying') : '猫娘链接出现异常，校准中…';
                         var failMsg = window.t ? window.t('console.aiFailed') : '猫娘链接出现异常';
                         if (typeof window.showStatusToast === 'function') {
@@ -1144,6 +1164,13 @@
 
                 // -------- system turn end (agent_callback — no proactive chat) --------
                 } else if (response.type === 'system' && response.data === 'turn end agent_callback') {
+                    if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
+                        window.reactChatWindowHost.clearPendingRollbackDraft(response.request_id);
+                    }
+                    if (response.request_id && window._lastSubmittedRequestId === response.request_id) {
+                        window._lastSubmittedText = '';
+                        window._lastSubmittedRequestId = '';
+                    }
                     console.log('[WS] turn end (agent_callback) — skipping proactive chat schedule');
                     logAssistantLifecycle('ws:turn_end_agent_callback:received');
                     try {
@@ -1224,6 +1251,13 @@
 
                 // -------- system turn end --------
                 } else if (response.type === 'system' && response.data === 'turn end') {
+                    if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
+                        window.reactChatWindowHost.clearPendingRollbackDraft(response.request_id);
+                    }
+                    if (response.request_id && window._lastSubmittedRequestId === response.request_id) {
+                        window._lastSubmittedText = '';
+                        window._lastSubmittedRequestId = '';
+                    }
                     console.log(window.t('console.turnEndReceived'));
                     logAssistantLifecycle('ws:turn_end:received');
                     // Flush remaining buffer

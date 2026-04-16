@@ -8,6 +8,8 @@ import json
 import struct  # For packing audio data
 import re
 import time
+from functools import lru_cache
+from pathlib import Path
 from typing import Optional
 from datetime import datetime
 from websockets import exceptions as web_exceptions
@@ -70,6 +72,45 @@ IMMEDIATE_REPORT_TTS_CODES = NO_RETRY_TTS_CODES | {'API_QUOTA_TIME'}
 _prominent_notice_queue: list[dict] = []
 _prominent_notice_lock = threading.Lock()
 _prominent_notice_seq: int = 0  # 单调递增，每条通知入队时分配
+_STATIC_LOCALES_DIR = Path(__file__).resolve().parents[1] / "static" / "locales"
+
+
+@lru_cache(maxsize=16)
+def _load_locale_messages(locale_code: str) -> dict:
+    try:
+        with (_STATIC_LOCALES_DIR / f"{locale_code}.json").open("r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _get_chat_locale_text(language: str | None, key: str, fallback: str) -> str:
+    raw_lang = language or get_global_language()
+    try:
+        lang_full = normalize_language_code(raw_lang, format='full')
+    except Exception:
+        lang_full = raw_lang or 'en'
+    try:
+        lang_short = normalize_language_code(raw_lang, format='short')
+    except Exception:
+        lang_short = 'en'
+
+    candidates: list[str] = []
+    for candidate in (lang_full, lang_short, 'en', 'zh-CN'):
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+    for locale_code in candidates:
+        cursor = _load_locale_messages(locale_code)
+        for part in ('chat', key):
+            if not isinstance(cursor, dict):
+                cursor = None
+                break
+            cursor = cursor.get(part)
+        if isinstance(cursor, str) and cursor.strip():
+            return cursor
+    return fallback
 
 
 def enqueue_prominent_notice(notice: "str | dict"):
@@ -276,6 +317,7 @@ class LLMSessionManager:
         self._last_tts_error_code: str = ''  # 上次 TTS 错误码
         self._tts_retry_notify_count: int = 0  # TTS 重试通知计数，前3次不通知前端
         self._tts_done_queued_for_turn: bool = False  # 防止同一轮次多次排入 TTS 结束信号
+        self._active_text_request_id: Optional[str] = None
         
         # 输入数据缓存机制：确保session初始化期间的输入不丢失
         self.session_ready = False  # Session是否完全就绪
@@ -473,6 +515,7 @@ class LLMSessionManager:
 
     async def handle_response_complete(self):
         """Qwen完成回调：用于处理Core API的响应完成事件，包含TTS和热切换逻辑"""
+        active_request_id = self._active_text_request_id
 
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
             if self._tts_done_queued_for_turn:
@@ -489,9 +532,15 @@ class LLMSessionManager:
         # 直接向前端发送turn end消息
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                await self.websocket.send_json({'type': 'system', 'data': 'turn end'})
+                await self.websocket.send_json({
+                    'type': 'system',
+                    'data': 'turn end',
+                    'request_id': active_request_id,
+                })
         except Exception as e:
             logger.error(f"💥 WS Send Turn End Error: {e}")
+        finally:
+            self._active_text_request_id = None
 
         # ── 热切换逻辑 ─────────────────────────────────────────────────────────
         # 正在切换过程中则跳过所有热切换判断
@@ -575,7 +624,8 @@ class LLMSessionManager:
                     "attempt": attempt,
                     "max_attempts": max_attempts,
                     "will_retry": will_retry,
-                    "message": message or ""
+                    "message": message or "",
+                    "request_id": self._active_text_request_id,
                 })
             except Exception as e:
                 logger.warning(f"发送 response_discarded 到前端失败: {e}")
@@ -583,7 +633,11 @@ class LLMSessionManager:
         # RESPONSE_TOO_LONG 最终丢弃时：发送可爱回复 + 用角色 TTS 音色念出来
         if _is_too_long_final:
             try:
-                too_long_text = "唔主人你让人家想太多了，人家想不过来了啦！"
+                too_long_text = _get_chat_locale_text(
+                    self.user_language,
+                    'responseTooLong',
+                    "Response too long and was discarded; your input has been restored.",
+                )
 
                 if self.use_tts:
                     async with self.lock:
@@ -608,15 +662,24 @@ class LLMSessionManager:
                 self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
                 if self.websocket and hasattr(self.websocket, 'client_state') and \
                         self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                    await self.websocket.send_json({'type': 'system', 'data': 'turn end'})
+                    await self.websocket.send_json({
+                        'type': 'system',
+                        'data': 'turn end',
+                        'request_id': self._active_text_request_id,
+                    })
             except Exception as e:
                 logger.warning(f"⚠️ RESPONSE_TOO_LONG 回复发送失败: {e}")
+            finally:
+                self._active_text_request_id = None
 
         if self.sync_message_queue:
             self.sync_message_queue.put({
                 'type': 'system',
                 'data': 'response_discarded_clear'
             })
+
+        if not will_retry and not _is_too_long_final:
+            self._active_text_request_id = None
 
         # turn end will 由 handle_response_complete 统一发送
 
@@ -703,7 +766,8 @@ class LLMSessionManager:
             "type": "gemini_response",
             "text": text_clean,
             "isNewMessage": is_first_chunk,
-            "turn_id": effective_turn_id
+            "turn_id": effective_turn_id,
+            "request_id": self._active_text_request_id,
         }
 
         # 无论 WS 发送成功与否，始终将消息写入 sync_message_queue 和 message_cache，
@@ -2800,6 +2864,7 @@ class LLMSessionManager:
                         except Exception as _cb_err:
                             logger.warning(f"⚠️ Agent callback injection failed: {_cb_err}")
 
+                    self._active_text_request_id = message.get("request_id")
                     await self.session.stream_text(data)
                 else:
                     logger.error(f"💥 Stream: Invalid text data type: {type(data)}")
