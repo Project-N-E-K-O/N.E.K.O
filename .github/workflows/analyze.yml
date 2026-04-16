@@ -7,6 +7,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Static-check job only needs to read the checked-out source.
+permissions:
+  contents: read
+
 jobs:
   python-lint:
     name: Python lint (ruff + async-blocking)
