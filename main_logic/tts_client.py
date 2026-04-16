@@ -2078,8 +2078,8 @@ def openai_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
         while True:
             try:
                 sid, _ = request_queue.get()
-                if sid is None:
-                    continue
+                if sid == TTS_SHUTDOWN_SENTINEL:
+                    break
             except Exception:
                 break
         return
