@@ -248,7 +248,7 @@ async def _periodic_rebuttal_loop():
         now = datetime.now()
         for name in catgirl_names:
             try:
-                confirmed = reflection_engine.get_confirmed_reflections(name)
+                confirmed = await reflection_engine.aget_confirmed_reflections(name)
                 if not confirmed:
                     continue
 
@@ -283,7 +283,7 @@ async def _periodic_rebuttal_loop():
                     if isinstance(fb, dict) and fb.get('feedback') == 'denied':
                         rid = fb.get('reflection_id')
                         if rid:
-                            reflection_engine.reject_promotion(name, rid)
+                            await reflection_engine.areject_promotion(name, rid)
                             logger.info(f"[Rebuttal] {name}: confirmed 反思被反驳: {rid}")
             except Exception as e:
                 logger.debug(f"[Rebuttal] {name}: 处理失败，跳过: {e}")
@@ -307,7 +307,7 @@ async def _periodic_auto_promote_loop():
 
         for name in catgirl_names:
             try:
-                transitions = reflection_engine.auto_promote_stale(name)
+                transitions = await reflection_engine.aauto_promote_stale(name)
                 if transitions:
                     logger.info(f"[AutoPromote] {name}: {transitions} 条状态迁移")
             except Exception as e:
@@ -331,7 +331,7 @@ async def startup_event_handler():
         character_data = _config_manager.load_characters()
         catgirl_names = list(character_data.get('猫娘', {}).keys())
         for name in catgirl_names:
-            persona_manager.ensure_persona(name)
+            await persona_manager.aensure_persona(name)
         logger.info(f"[Memory] Persona 迁移检查完成，角色数: {len(catgirl_names)}")
     except Exception as e:
         logger.warning(f"[Memory] Persona 迁移检查失败: {e}")
@@ -423,7 +423,7 @@ async def api_reflect(lanlan_name: str):
     auto_transitions = 0
     reflection_result = None
     try:
-        auto_transitions = reflection_engine.auto_promote_stale(lanlan_name)
+        auto_transitions = await reflection_engine.aauto_promote_stale(lanlan_name)
     except Exception as e:
         logger.debug(f"[ReflectAPI] {lanlan_name}: auto_promote_stale 失败: {e}")
     try:
@@ -441,7 +441,7 @@ async def api_followup_topics(lanlan_name: str):
     """获取回调话题候选（不标记 surfaced，调用方需后续调 /record_surfaced）。"""
     lanlan_name = validate_lanlan_name(lanlan_name)
     try:
-        topics = reflection_engine.get_followup_topics(lanlan_name)
+        topics = await reflection_engine.aget_followup_topics(lanlan_name)
     except Exception as e:
         logger.debug(f"[ReflectAPI] {lanlan_name}: get_followup_topics 失败: {e}")
         topics = []
@@ -457,7 +457,7 @@ async def api_record_surfaced(request: Request, lanlan_name: str):
     if not reflection_ids:
         return {"ok": True}
     try:
-        reflection_engine.record_surfaced(lanlan_name, reflection_ids)
+        await reflection_engine.arecord_surfaced(lanlan_name, reflection_ids)
     except Exception as e:
         logger.debug(f"[ReflectAPI] {lanlan_name}: record_surfaced 失败: {e}")
     return {"ok": True}
@@ -478,13 +478,13 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
         # 2. 全局复读嗅探：扫描 AI 回复中是否重复提及 persona 条目
         ai_response = _extract_ai_response(messages)
         if ai_response:
-            persona_manager.record_mentions(lanlan_name, ai_response)
+            await persona_manager.arecord_mentions(lanlan_name, ai_response)
     except Exception as e:
         logger.warning(f"[MemoryServer] 复读嗅探失败: {e}")
 
     try:
         # 3. 检查用户对之前 surfaced 反思的反馈（宽松确认）
-        surfaced = reflection_engine.load_surfaced(lanlan_name)
+        surfaced = await reflection_engine.aload_surfaced(lanlan_name)
         pending_surfaced = [s for s in surfaced if s.get('feedback') is None]
         if pending_surfaced:
             user_msgs = _extract_user_messages(messages)
@@ -503,10 +503,10 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
                     for s in pending_surfaced:
                         rid = s.get('reflection_id')
                         if rid in denied_ids:
-                            reflection_engine.reject_promotion(lanlan_name, rid)
+                            await reflection_engine.areject_promotion(lanlan_name, rid)
                         else:
                             # 宽松确认：用户有回复 + 未被 denied → 自动 confirm
-                            reflection_engine.confirm_promotion(lanlan_name, rid)
+                            await reflection_engine.aconfirm_promotion(lanlan_name, rid)
     except Exception as e:
         logger.warning(f"[MemoryServer] 反馈检查失败: {e}")
 
@@ -814,10 +814,10 @@ async def new_dialog(lanlan_name: str):
 
         # ── [静态前缀] Persona 长期记忆（变化极少 → 最大化 prefix cache） ──
     # pending + confirmed 反思也注入上下文（分区标注）
-        pending_reflections = reflection_engine.get_pending_reflections(lanlan_name)
-        confirmed_reflections = reflection_engine.get_confirmed_reflections(lanlan_name)
+        pending_reflections = await reflection_engine.aget_pending_reflections(lanlan_name)
+        confirmed_reflections = await reflection_engine.aget_confirmed_reflections(lanlan_name)
         result = _loc(PERSONA_HEADER, _lang).format(name=lanlan_name)
-        persona_md = persona_manager.render_persona_markdown(
+        persona_md = await persona_manager.arender_persona_markdown(
             lanlan_name, pending_reflections, confirmed_reflections,
         )
         if persona_md:
@@ -833,7 +833,7 @@ async def new_dialog(lanlan_name: str):
             time=get_timestamp(),
         )
 
-        for i in recent_history_manager.get_recent_history(lanlan_name):
+        for i in await recent_history_manager.aget_recent_history(lanlan_name):
             if isinstance(i.content, str):
                 cleaned_content = brackets_pattern.sub('', i.content).strip()
                 result += f"{name_mapping[i.type]} | {cleaned_content}\n"
