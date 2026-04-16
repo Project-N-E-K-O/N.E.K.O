@@ -1104,16 +1104,19 @@ class OmniRealtimeClient:
     # ------------------------------------------------------------------
 
     async def prime_context(self, text: str, skipped: bool = False) -> None:
-        """Append context to session instructions at startup.
+        """Inject context during hot-swap.
 
-        热切换时注入增量上下文。行为取决于 skipped 参数：
+        行为取决于 skipped 参数和提供商：
 
-        - ``skipped=True``：仅追加到系统指令，不触发模型响应。
-          用户下次开口时模型自然基于更新后的 instructions 回复。
-        - ``skipped=False``：追加到系统指令后，额外触发一次模型响应
-          （用于任务结果主动汇报）。对于支持 conversation.item.create
-          的提供商（GPT/GLM/Step）通过 create_response 实现；
-          Qwen 不支持该事件，仅更新 instructions。
+        - ``skipped=True`` (或 Qwen)：通过 ``session.update`` 追加到
+          系统指令，不触发模型响应。
+        - ``skipped=False`` (GPT/GLM/Step)：通过 ``create_response``
+          注入一条一次性 user 消息并触发模型响应（用于任务结果主动
+          汇报）。注意：此路径不写入 session instructions，文本是
+          瞬态的，不要改为持久化到 instructions。
+        - Gemini：无论 skipped 值，均通过 ``send_client_content``
+          注入（SDK 限制，无 session.update 机制）。skipped=True 时
+          通过 ``_skip_until_next_response`` 静默丢弃响应。
 
         Args:
             text: Context to inject (incremental cache + summary/ready).
