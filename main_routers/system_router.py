@@ -14,17 +14,19 @@ import sys
 import asyncio
 import base64
 import difflib
+import json
 import math
 import re
 import time
 from collections import deque
 from io import BytesIO
 from urllib.parse import unquote
+from uuid import uuid4
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from openai import APIConnectionError, InternalServerError, RateLimitError
-from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm
+from utils.llm_client import SystemMessage, HumanMessage, AIMessage, create_chat_llm
 import httpx
 from cachetools import TTLCache
 
@@ -964,6 +966,138 @@ def _is_similar_to_recent_proactive_chat(lanlan_name: str, message: str) -> tupl
         if score >= _PROACTIVE_SIMILARITY_THRESHOLD:
             return True, score
     return False, best
+
+
+@router.post('/weak_idle_chat')
+async def weak_idle_chat(request: Request):
+    """弱化版空闲互动：直接投递一句已确定的搭话，不触发完整主动搭话流程。"""
+    try:
+        _config_manager = get_config_manager()
+        session_manager = get_session_manager()
+        _, her_name_current, _, _, _, _, _, _, _ = _config_manager.get_character_data()
+
+        try:
+            data = await request.json()
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return JSONResponse({"success": False, "error": "invalid request body"}, status_code=400)
+        if not isinstance(data, dict):
+            return JSONResponse({"success": False, "error": "invalid request body"}, status_code=400)
+        lanlan_name = data.get('lanlan_name') or her_name_current
+        message_text = str(data.get('message') or '').strip()
+        if not message_text:
+            return JSONResponse({"success": False, "error": "message 不能为空"}, status_code=400)
+
+        mgr = session_manager.get(lanlan_name)
+        if not mgr:
+            return JSONResponse({"success": False, "error": f"角色 {lanlan_name} 不存在"}, status_code=404)
+
+        if mgr.is_active and hasattr(mgr.session, '_is_responding') and mgr.session._is_responding:
+            return JSONResponse({
+                "success": False,
+                "error": "AI正在响应中，无法插入弱化版搭话",
+            }, status_code=409)
+
+        turn_id = str(uuid4())
+
+        async def _deliver_once():
+            websocket = getattr(mgr, 'websocket', None)
+            if not websocket or not hasattr(websocket, 'client_state'):
+                logger.warning(f"[{lanlan_name}] 弱化版搭话未投递：websocket 不存在或不可用 turn_id={turn_id}")
+                return False
+
+            sent_first_frame = False
+            try:
+                if websocket.client_state != websocket.client_state.CONNECTED:
+                    logger.warning(
+                        f"[{lanlan_name}] 弱化版搭话未投递：websocket 未连接 "
+                        f"client_state={websocket.client_state} turn_id={turn_id}"
+                    )
+                    return False
+
+                await websocket.send_json({
+                    "type": "gemini_response",
+                    "text": message_text,
+                    "isNewMessage": True,
+                    "turn_id": turn_id,
+                    "skip_assistant_effects": True,
+                })
+                sent_first_frame = True
+                try:
+                    await websocket.send_json({"type": "system", "data": "turn end"})
+                except Exception as turn_end_error:
+                    logger.warning(
+                        f"[{lanlan_name}] 弱化版搭话发送 turn end 失败 "
+                        f"turn_id={turn_id}: {turn_end_error}"
+                    )
+                return True
+            except Exception as ws_error:
+                if sent_first_frame:
+                    logger.warning(
+                        f"[{lanlan_name}] 弱化版搭话首帧已送达，但后续发送异常 "
+                        f"turn_id={turn_id}: {ws_error}"
+                    )
+                    return True
+                logger.warning(f"[{lanlan_name}] 弱化版搭话发送到前端失败 turn_id={turn_id}: {ws_error}")
+                return False
+
+        async def _persist_delivered_turn():
+            current_session = getattr(mgr, 'session', None)
+            if current_session and hasattr(current_session, '_conversation_history'):
+                current_session._conversation_history.append(AIMessage(content=message_text))
+
+            memory_cached = True
+            try:
+                memory_payload = [{
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": message_text}],
+                }]
+                async with httpx.AsyncClient(proxy=None, trust_env=False) as client:
+                    memory_response = await client.post(
+                        f"http://127.0.0.1:{MEMORY_SERVER_PORT}/cache/{lanlan_name}",
+                        json={"input_history": json.dumps(memory_payload, ensure_ascii=False)},
+                        timeout=5.0,
+                    )
+                    if not memory_response.is_success:
+                        memory_cached = False
+                        logger.warning(
+                            f"[{lanlan_name}] 弱化版搭话写入 recent memory 失败 "
+                            f"turn_id={turn_id} status={memory_response.status_code} "
+                            f"body={memory_response.text[:500]}"
+                        )
+            except Exception as memory_error:
+                memory_cached = False
+                logger.warning(f"[{lanlan_name}] 弱化版搭话写入 recent memory 异常 turn_id={turn_id}: {memory_error}")
+
+            return memory_cached
+
+        lock = getattr(mgr, '_proactive_write_lock', None)
+        memory_cached = True
+        if lock is not None:
+            async with lock:
+                delivered = await _deliver_once()
+                if delivered:
+                    memory_cached = await _persist_delivered_turn()
+        else:
+            delivered = await _deliver_once()
+            if delivered:
+                memory_cached = await _persist_delivered_turn()
+
+        if not delivered:
+            return JSONResponse({
+                "success": False,
+                "error": "弱化版搭话未成功投递到前端",
+            }, status_code=503)
+
+        return JSONResponse({
+            "success": True,
+            "action": "chat",
+            "message": message_text,
+            "turn_id": turn_id,
+            "memory_cached": memory_cached,
+        })
+    except Exception as e:
+        logger.error(f"弱化版空闲搭话失败: {e}", exc_info=True)
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
 
 def _build_topic_dedup_key(topic_title: str = '', topic_source: str = '', topic_url: str = '') -> str:
@@ -2270,7 +2404,12 @@ async def proactive_chat(request: Request):
         # 获取当前角色数据（包括完整人设）
         master_name_current, her_name_current, _, _, _, lanlan_prompt_map, _, _, _ = _config_manager.get_character_data()
         
-        data = await request.json()
+        try:
+            data = await request.json()
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return JSONResponse({"success": False, "error": "invalid request body"}, status_code=400)
+        if not isinstance(data, dict):
+            return JSONResponse({"success": False, "error": "invalid request body"}, status_code=400)
         lanlan_name = data.get('lanlan_name') or her_name_current
         is_playing_music = data.get('is_playing_music', False)
         current_track = data.get('current_track', None)

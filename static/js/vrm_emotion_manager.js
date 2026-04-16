@@ -360,6 +360,9 @@
                 // 发送表情预览事件
                 if (window.opener && window.opener.vrmManager) {
                     window.opener.vrmManager.expression.setBaseExpression(exprName);
+                    if (typeof window.opener.recordWeakIdleInteraction === 'function') {
+                        window.opener.recordWeakIdleInteraction('popup_vrm_expression', { userInitiated: true });
+                    }
                 } else {
                     // 通过 postMessage 通知父窗口
                     window.opener?.postMessage({

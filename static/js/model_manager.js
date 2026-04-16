@@ -4390,6 +4390,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                     // 【修改】手动播放时禁用自动回到 neutral，保持表情直到手动停止
                     vrmManager.expression.autoReturnToNeutral = false;
                     vrmManager.expression.setBaseExpression(name);
+                    if (typeof window.recordWeakIdleInteraction === 'function') {
+                        try {
+                            window.recordWeakIdleInteraction('manual_vrm_expression', { userInitiated: true });
+                        } catch (weakIdleError) {
+                            console.warn('[VRM] recordWeakIdleInteraction 失败:', weakIdleError);
+                        }
+                    }
                     isVrmExpressionPlaying = true;
                     updateVRMExpressionPlayButtonIcon();
                     showStatus(t('live2d.vrmExpression.playing', `正在播放表情: ${name}`, { name: name }), 2000);

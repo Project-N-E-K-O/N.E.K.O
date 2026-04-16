@@ -333,6 +333,9 @@
                     window.opener.mmdManager.expression._clearEmotionMorphs();
                     // 设置预览的 morph
                     window.opener.mmdManager.expression.setMorphWeight(morphName, 1.0);
+                    if (typeof window.opener.recordWeakIdleInteraction === 'function') {
+                        window.opener.recordWeakIdleInteraction('popup_mmd_expression', { userInitiated: true });
+                    }
                 } else {
                     window.opener?.postMessage({
                         type: 'mmd-preview-morph',

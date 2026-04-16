@@ -299,6 +299,9 @@ window.addEventListener('message', function (event) {
         console.log('[VRM] 收到表情预览请求:', event.data.expression);
         if (window.vrmManager && window.vrmManager.expression) {
             window.vrmManager.expression.setBaseExpression(event.data.expression);
+            if (typeof window.recordWeakIdleInteraction === 'function') {
+                window.recordWeakIdleInteraction('message_vrm_expression', { userInitiated: true });
+            }
         }
     }
 
@@ -337,6 +340,9 @@ window.addEventListener('message', function (event) {
             clearTimeout(window._mmdMorphPreviewTimer);
             window.mmdManager.expression._clearEmotionMorphs();
             window.mmdManager.expression.setMorphWeight(event.data.morph, 1.0);
+            if (typeof window.recordWeakIdleInteraction === 'function') {
+                window.recordWeakIdleInteraction('message_mmd_expression', { userInitiated: true });
+            }
             var morphToReset = event.data.morph;
             window._mmdMorphPreviewTimer = setTimeout(() => {
                 if (window.mmdManager && window.mmdManager.expression) {
