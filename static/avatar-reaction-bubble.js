@@ -1943,6 +1943,7 @@
         if (!state.visible || !isEventInsideActiveAvatar(event)) {
             return;
         }
+        resetPositionTracking();
         scheduleInteractionSyncBurst(TIMING.wheelResyncDelayMs);
         extendFollowLoop(Math.max(TIMING.moveSettleWindowMs, TIMING.wheelFollowWindowMs));
     }
@@ -2345,6 +2346,7 @@
 
     function handleResize() {
         if (state.visible) {
+            resetPositionTracking();
             syncPositionOnce();
             extendFollowLoop(TIMING.showFollowWindowMs);
         } else {

@@ -691,7 +691,7 @@ class Live2DManager {
         };
     }
 
-    _getDrawableDirectScreenRect(drawableIndex) {
+    _getDrawableDirectScreenRect(drawableIndex, skipTransformSync = false) {
         const model = this.currentModel;
         const internalModel = model?.internalModel;
         const vertices = this._getDrawableVertexSequence(drawableIndex);
@@ -703,7 +703,9 @@ class Live2DManager {
             return null;
         }
 
-        this._ensureModelWorldTransform(model);
+        if (!skipTransformSync) {
+            this._ensureModelWorldTransform(model);
+        }
 
         let minX = Infinity;
         let maxX = -Infinity;
@@ -827,8 +829,8 @@ class Live2DManager {
         };
     }
 
-    _getDrawableScreenRect(drawableIndex, modelLogicalRect = null, modelBounds = null) {
-        const directScreenRect = this._getDrawableDirectScreenRect(drawableIndex);
+    _getDrawableScreenRect(drawableIndex, modelLogicalRect = null, modelBounds = null, skipTransformSync = false) {
+        const directScreenRect = this._getDrawableDirectScreenRect(drawableIndex, skipTransformSync);
         if (directScreenRect) {
             return directScreenRect;
         }
@@ -886,13 +888,20 @@ class Live2DManager {
             return [];
         }
 
+        this._ensureModelWorldTransform();
+
         const rects = [];
         for (let index = 0; index < drawableCount; index += 1) {
             if (!this._isDrawableRenderable(coreModel, index)) {
                 continue;
             }
 
-            const rect = this._getDrawableScreenRect(index, resolvedModelLogicalRect, resolvedModelBounds);
+            const rect = this._getDrawableScreenRect(
+                index,
+                resolvedModelLogicalRect,
+                resolvedModelBounds,
+                true
+            );
             if (rect) {
                 rects.push(rect);
             }
