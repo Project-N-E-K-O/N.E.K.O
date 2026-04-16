@@ -1,0 +1,38 @@
+name: Analyze
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  python-lint:
+    name: Python lint (ruff + async-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install ruff
+        # ruff is the only dev dep we need for the lint job; a full uv sync
+        # pulls heavy native extensions (playwright, numpy, etc.) that are
+        # unnecessary for static checks.
+        run: uv tool install ruff==0.15.4
+
+      - name: ruff check (incl. ASYNC210/220/221/222/251)
+        run: ruff check .
+
+      - name: Forbid blocking calls in async def bodies
+        # Custom AST checker — covers the gaps flake8-async doesn't:
+        # Thread/Process.join, queue.Queue.get, raw socket recv/accept/connect.
+        run: python scripts/check_async_blocking.py

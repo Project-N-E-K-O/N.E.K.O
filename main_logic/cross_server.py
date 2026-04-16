@@ -171,7 +171,10 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
             try:
                 # 检查消息队列
                 while not message_queue.empty():
-                    message = message_queue.get()
+                    try:
+                        message = message_queue.get_nowait()
+                    except Exception:
+                        break
 
                     if message["type"] == "json":
                         # Forward to monitor if enabled
