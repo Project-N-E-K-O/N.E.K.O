@@ -931,8 +931,15 @@ class LLMSessionManager:
     def _has_custom_tts(self) -> bool:
         """判断当前会话是否使用自定义 TTS（克隆音色或自定义 TTS URL）。"""
         core_config = self._config_manager.get_core_config()
-        return (bool(self.voice_id) and not self._is_free_preset_voice) or bool(
-            core_config.get('ENABLE_CUSTOM_API') and core_config.get('TTS_MODEL_URL')
+        # 克隆音色始终走 custom 路径；
+        # ENABLE_CUSTOM_API + TTS_MODEL_URL 仅在 gptsovitsEnabled 开启时才视为 custom，
+        # 否则 caller 会用 tts_custom credentials 启动 default worker，导致鉴权失败。
+        if bool(self.voice_id) and not self._is_free_preset_voice:
+            return True
+        return bool(
+            core_config.get('ENABLE_CUSTOM_API')
+            and core_config.get('TTS_MODEL_URL')
+            and core_config.get('gptsovitsEnabled')
         )
 
     def _start_tts_thread(self):
