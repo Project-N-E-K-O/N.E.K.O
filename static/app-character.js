@@ -841,6 +841,9 @@
                 console.log('[猫娘切换] VRM - 恢复对话框 - chatContainer存在:', !!chatContainerVrm, '当前类:', chatContainerVrm ? chatContainerVrm.className : 'N/A');
                 if (chatContainerVrm) chatContainerVrm.classList.remove('minimized');
                 if (textInputArea) textInputArea.classList.remove('hidden');
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
                 console.log('[猫娘切换] VRM - 对话框已恢复，当前类:', chatContainerVrm ? chatContainerVrm.className : 'N/A');
 
                 // 确保 VRM 按钮和锁图标可见

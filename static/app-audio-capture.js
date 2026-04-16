@@ -164,6 +164,9 @@
                 if (textInputArea) {
                     textInputArea.classList.remove('hidden');
                 }
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
 
                 // 清理资源
                 if (typeof window.stopScreening === 'function') {
@@ -540,6 +543,9 @@
             if (textInputArea && !window.appUtils.isMobile()) {
                 textInputArea.classList.add('hidden');
             }
+            if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                window.syncVoiceChatComposerHidden(true);
+            }
 
             if (!S.audioPlayerContext) {
                 S.audioPlayerContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -621,6 +627,9 @@
             if (textInputArea) {
                 textInputArea.classList.remove('hidden');
             }
+            if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                window.syncVoiceChatComposerHidden(false);
+            }
 
             // 失败时移除录音状态类
             if (_mic) {
@@ -690,6 +699,9 @@
         // 显示文本输入区
         const textInputArea = document.getElementById('text-input-area');
         if (textInputArea) textInputArea.classList.remove('hidden');
+        if (typeof window.syncVoiceChatComposerHidden === 'function') {
+            window.syncVoiceChatComposerHidden(false);
+        }
 
         // 停止录音后，重置主动搭话退避级别并开始定时
         if (S.proactiveChatEnabled && typeof window.hasAnyChatModeEnabled === 'function' && window.hasAnyChatModeEnabled()) {

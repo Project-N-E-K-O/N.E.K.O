@@ -29,6 +29,7 @@
         viewProps: null,
         messages: [],
         composerAttachments: [],
+        composerHidden: false,
         onMessageAction: null,
         onComposerImportImage: null,
         onComposerScreenshot: null,
@@ -363,6 +364,7 @@
         return Object.assign({}, ensureViewProps(), {
             messages: state.messages,
             composerAttachments: state.composerAttachments,
+            composerHidden: state.composerHidden,
             onMessageAction: handleMessageAction,
             onComposerImportImage: handleComposerImportImage,
             onComposerScreenshot: handleComposerScreenshot,
@@ -849,6 +851,11 @@
         return state.messages;
     }
 
+    function setComposerHidden(hidden) {
+        state.composerHidden = !!hidden;
+        renderWindow();
+    }
+
     function setComposerAttachments(attachments) {
         state.composerAttachments = Array.isArray(attachments)
             ? attachments.map(function (attachment, index) {
@@ -916,7 +923,8 @@
             minimized: minimized,
             viewProps: Object.assign({}, ensureViewProps()),
             messages: state.messages.map(cloneMessage),
-            composerAttachments: state.composerAttachments.slice()
+            composerAttachments: state.composerAttachments.slice(),
+            composerHidden: state.composerHidden
         };
     }
 
@@ -1562,6 +1570,10 @@
         window.addEventListener(EVENT_PREFIX + 'set-composer-attachments', function (event) {
             setComposerAttachments(event.detail && event.detail.attachments);
         });
+
+        window.addEventListener(EVENT_PREFIX + 'set-composer-hidden', function (event) {
+            setComposerHidden(event.detail && event.detail.hidden);
+        });
     }
 
     function init() {
@@ -1685,6 +1697,7 @@
         setViewProps: setViewProps,
         setMessages: setMessages,
         setComposerAttachments: setComposerAttachments,
+        setComposerHidden: setComposerHidden,
         appendMessage: appendMessage,
         updateMessage: updateMessage,
         removeMessage: removeMessage,
