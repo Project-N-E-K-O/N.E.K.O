@@ -169,6 +169,8 @@ def get_hyperv_excluded_ranges() -> list[tuple[int, int]]:
             [resolved_netsh, "interface", "ipv4", "show", "excludedportrange", "protocol=tcp"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
             check=False,
         )

@@ -392,9 +392,13 @@ cd N.E.K.O
 # 2. Python依存関係をインストール
 uv sync
 
-# 3. フロントエンドプロジェクトをビルド（初回実行時またはフロントエンドコード変更後に必要）
-cd frontend/react-neko-chat && npm install && npm run build && cd ../..
-cd frontend/plugin-manager && npm install && npm run build && cd ../..
+# 3. フロントエンドプロジェクトをビルド（Node.js >= 20.19 が必要。初回実行時またはフロントエンドコード変更後に必要）
+#    推奨：一括ビルドスクリプトを使用（公式にサポートされているビルド手順です）
+#      Windows：      build_frontend.bat
+#      Linux/macOS：  ./build_frontend.sh
+#    手動でビルドする場合（スクリプトと同じコマンドを使用してください）：
+# cd frontend/react-neko-chat && npm install && npm run build && cd ../..
+# cd frontend/plugin-manager && npm install && npm run build-only && cd ../..
 
 # 4. サービスを起動（最低限 main_server と memory_server が必要）
 uv run python memory_server.py
@@ -452,6 +456,7 @@ uv run python agent_server.py
 
 ```
 N.E.K.O/
+├── 📁 .agent/                   # 🤖 AIコーディングアシスタントのルールとスキル（Google Antigravity 規約）
 ├── 📁 brain/                    # 🧠 エージェントモジュール
 │   ├── computer_use.py          # PC操作
 │   ├── browser_use_adapter.py   # ブラウザ自動化
@@ -487,6 +492,8 @@ N.E.K.O/
 ├── agent_server.py              # 🤖 AIエージェントサーバー
 └── memory_server.py             # 🧠 記憶サーバー
 ```
+
+> **AI支援開発**：`.agent/` ディレクトリは Google Antigravity オープン規約に従い、プロジェクトの開発ルールとスキルセットを格納しています。Antigravity のみ自動読み込み、他のAIツール（Claude Code 含む）は手動インポートが必要です。[適応ガイド](https://project-neko.online/contributing/ai-assisted-dev)を参照してください。
 
 **データフロー**
 

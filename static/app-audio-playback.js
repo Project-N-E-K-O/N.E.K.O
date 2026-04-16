@@ -539,16 +539,18 @@
             // If init still failed, fall back to connecting sources directly to destination
             var hasAnalyser = !!S.globalAnalyser;
 
-            // Clamp nextChunkTime to now so stale values never cause past-scheduled
-            // (and therefore simultaneously playing) audio chunks.
-            var now = S.audioPlayerContext.currentTime;
-            if (S.nextChunkTime < now) {
-                S.nextChunkTime = now;
-            }
-
-            // Pre-schedule all chunks within the lookahead window
+            // Pre-schedule all chunks within the lookahead window.
+            // 只在有 chunk 可 schedule 时才 clamp nextChunkTime，
+            // 避免空转循环中把 nextChunkTime 无谓前推——对于 qwen-tts 等
+            // server_commit 模式 provider，服务端在韵律边界有天然的处理间隙
+            // （200-300ms），空转 clamp 会把这个间隙转化为用户可感知的停顿。
             while (S.nextChunkTime < S.audioPlayerContext.currentTime + scheduleAheadTime) {
                 if (S.audioBufferQueue.length > 0) {
+                    // Clamp: 防止 stale nextChunkTime 导致多个 chunk 被 schedule 到过去
+                    // （Web Audio 会同时播放过去时刻的 source），只在真正要 schedule 时才修正。
+                    if (S.nextChunkTime < S.audioPlayerContext.currentTime) {
+                        S.nextChunkTime = S.audioPlayerContext.currentTime;
+                    }
                     var item = S.audioBufferQueue.shift();
                     var nextBuffer = item.buffer;
                     if (window.DEBUG_AUDIO) {

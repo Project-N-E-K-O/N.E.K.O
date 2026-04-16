@@ -284,7 +284,7 @@ class TestProviderExclusion:
         from utils.api_config_loader import get_core_api_profiles
         core_profiles = get_core_api_profiles()
 
-        expected_core = {'free', 'qwen', 'qwen_intl', 'openai', 'step', 'gemini'}
+        expected_core = {'free', 'qwen', 'qwen_intl', 'openai', 'step', 'gemini', 'glm'}
         actual_core = set(core_profiles.keys())
 
         assert actual_core == expected_core, (
@@ -311,7 +311,7 @@ class TestProviderExclusion:
 
         must_not_be_core = [
             'deepseek', 'doubao', 'minimax', 'minimax_intl',
-            'kimi', 'grok', 'glm', 'silicon',
+            'kimi', 'grok', 'silicon',
         ]
         for provider in must_not_be_core:
             assert provider not in core_profiles, (

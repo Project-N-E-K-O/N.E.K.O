@@ -85,6 +85,9 @@ class MMDAnimation {
 
         // 构建动画 Clip
         const clip = buildAnimation(vmdObject, mmd.mesh);
+        // 防御：把每条四元数轨道的相邻关键帧翻到同半球（dot >= 0），
+        // 避免个别 VMD 在动画切换初始几帧被插值成长路径 / 奇点甩动。
+        this._normalizeQuaternionTrackSigns(clip);
         this.currentClip = clip;
 
         // 创建 AnimationMixer
@@ -155,6 +158,32 @@ class MMDAnimation {
         console.log('[MMD Animation] 动画加载完成:', vmdUrl);
 
         return clip;
+    }
+
+    // ═══════════════════ 轨道防御 ═══════════════════
+
+    _normalizeQuaternionTrackSigns(clip) {
+        const THREE = window.THREE;
+        if (!clip?.tracks || !THREE?.QuaternionKeyframeTrack) return;
+        const stride = 4;
+        for (const track of clip.tracks) {
+            if (!(track instanceof THREE.QuaternionKeyframeTrack)) continue;
+            const v = track.values;
+            if (!v || v.length < stride * 2) continue;
+            for (let i = stride; i < v.length; i += stride) {
+                const dot =
+                    v[i - 4] * v[i] +
+                    v[i - 3] * v[i + 1] +
+                    v[i - 2] * v[i + 2] +
+                    v[i - 1] * v[i + 3];
+                if (dot < 0) {
+                    v[i]     = -v[i];
+                    v[i + 1] = -v[i + 1];
+                    v[i + 2] = -v[i + 2];
+                    v[i + 3] = -v[i + 3];
+                }
+            }
+        }
     }
 
     // ═══════════════════ 骨骼缓存 ═══════════════════

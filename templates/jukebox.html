@@ -41,6 +41,26 @@
             border-radius: 0 !important;
             box-sizing: border-box !important;
         }
+
+        /* 窗口拖拽 —— Chromium 已知 bug：-webkit-app-region 的命中测试区域
+           会被合成器缓存，子元素的 no-drag 挖洞经常失效（拖拽后恢复、
+           鼠标晃动后又坏、resize 后又好），根本原因是缓存未正确失效。
+           解决方案：不在任何包含交互子元素的容器上设 drag，改用一个
+           绝对定位的专属拖拽层（.jukebox-drag-overlay），它与按钮在
+           DOM 上是兄弟关系而非父子关系，彻底规避缓存 bug。 */
+        .jukebox-drag-overlay {
+            -webkit-app-region: drag;
+        }
+        /* 整个 header 及所有交互区域显式 no-drag，防止 preload 注入污染 */
+        .jukebox-header,
+        .jukebox-header-left,
+        .jukebox-header-buttons,
+        .jukebox-content,
+        .jukebox-controls-row,
+        .jukebox-calibration-section,
+        .jukebox-notice {
+            -webkit-app-region: no-drag !important;
+        }
     </style>
 </head>
 <body>
@@ -50,12 +70,13 @@
         // 从后端获取当前模型类型，供 Jukebox 判断是否需要播放 VMD/VRMA
         async function _fetchModelType() {
             try {
-                var res = await fetch('/api/config/');
+                var res = await fetch('/api/config/page_config');
                 if (res.ok) {
                     var cfg = await res.json();
                     window.lanlan_config = window.lanlan_config || {};
                     window.lanlan_config.model_type = cfg.model_type || 'live2d';
-                    window.lanlan_config.catgirl_name = cfg.catgirl_name || '';
+                    window.lanlan_config.live3d_sub_type = cfg.live3d_sub_type || '';
+                    window.lanlan_config.catgirl_name = cfg.lanlan_name || '';
                 }
             } catch (_) { /* ignore */ }
         }

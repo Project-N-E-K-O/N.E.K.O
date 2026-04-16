@@ -895,6 +895,10 @@
                     vrmCanvasMmd.style.visibility = 'hidden';
                     vrmCanvasMmd.style.pointerEvents = 'none';
                 }
+                // 【修复】清除 VRM canvas 缓存帧，防止在模型切换窗口期透穿显示旧 VRM 模型
+                if (window.vrmManager && window.vrmManager.renderer) {
+                    try { window.vrmManager.renderer.clear(); } catch (_) { /* ignore */ }
+                }
 
                 // 显示 MMD 容器
                 const mmdContainerShow = document.getElementById('mmd-container');
@@ -911,12 +915,31 @@
                     mmdCanvasShow.style.pointerEvents = 'auto';
                 }
 
-                // 初始化 MMD 管理器（MMD→MMD 切换时需要完全重新初始化以避免状态残留）
-                console.log('[猫娘切换] 重新初始化 MMD 管理器');
-                if (typeof window.initMMDModel === 'function') {
-                    await window.initMMDModel();
-                } else if (typeof initMMDModel === 'function') {
-                    await initMMDModel();
+                // 初始化 MMD 管理器
+                // 【优化】如果 MMD 管理器已存在且场景有效，复用现有 renderer/scene，
+                // 仅清理旧模型并加载新模型，避免 dispose+重建导致的画布透明窗口期。
+                console.log('[猫娘切换] 初始化/复用 MMD 管理器');
+                if (window.mmdManager && window.mmdManager.scene && window.mmdManager.renderer && !window.mmdManager._isDisposed) {
+                    // 复用现有场景：清理旧模型（core._clearModel），保留 renderer/scene/camera
+                    if (window.mmdManager.core) {
+                        try { window.mmdManager.core._clearModel(); } catch (e) { console.warn('[猫娘切换] _clearModel 失败:', e); }
+                    }
+                    // 重置动画状态
+                    if (window.mmdManager.animationModule) {
+                        try { window.mmdManager.animationModule.dispose(); } catch (_) {}
+                        // 重新创建动画模块
+                        if (typeof MMDAnimation !== 'undefined') {
+                            window.mmdManager.animationModule = new MMDAnimation(window.mmdManager);
+                        }
+                    }
+                    console.log('[猫娘切换] MMD 管理器已复用');
+                } else {
+                    // 首次初始化或管理器已销毁，执行完整初始化
+                    if (typeof window.initMMDModel === 'function') {
+                        await window.initMMDModel();
+                    } else if (typeof initMMDModel === 'function') {
+                        await initMMDModel();
+                    }
                 }
 
                 // 加载 MMD 模型
