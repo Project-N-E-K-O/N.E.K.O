@@ -2402,14 +2402,16 @@ class Live2DManager {
         return hitAreaInfo || displayInfoInfo || inferredInfo;
     }
 
-    getBodyScreenRectInfo() {
+    getBodyScreenRectInfo(headInfo = undefined) {
         const modelBounds = this.getModelScreenBounds();
         const modelLogicalRect = this._getModelLogicalRect();
         const hitAreaInfo = this._getBodyHitAreaScreenRectInfo(modelBounds, modelLogicalRect);
         const displayInfoInfo = this._getDisplayInfoPartScreenRectInfo('body');
         const inferredInfo = this._inferDrawableRegionScreenRectInfo('body', modelBounds, modelLogicalRect);
-        const headInfo = this.getHeadScreenRectInfo();
-        if (this._shouldPreferInferredBodyRectOverDisplayInfo(displayInfoInfo, inferredInfo, headInfo, modelBounds)) {
+        const resolvedHeadInfo = headInfo === undefined
+            ? this.getHeadScreenRectInfo()
+            : headInfo;
+        if (this._shouldPreferInferredBodyRectOverDisplayInfo(displayInfoInfo, inferredInfo, resolvedHeadInfo, modelBounds)) {
             return inferredInfo;
         }
         if (this._shouldPreferDisplayInfoRect('body', hitAreaInfo, displayInfoInfo, modelBounds)) {
@@ -2430,8 +2432,8 @@ class Live2DManager {
         }
 
         const headInfo = this.getHeadScreenRectInfo();
-        const bodyInfo = this.getBodyScreenRectInfo();
-        const rawHeadAnchor = this.getHeadScreenAnchor();
+        const bodyInfo = this.getBodyScreenRectInfo(headInfo);
+        const rawHeadAnchor = this.getHeadScreenAnchor(headInfo);
         const headRect = this._normalizeBubbleHeadRect(
             headInfo?.rect || null,
             bounds,
@@ -2483,8 +2485,14 @@ class Live2DManager {
         });
     }
 
-    getHeadScreenAnchor() {
-        const headScreenInfo = this.getHeadScreenRectInfo();
+    getHeadScreenAnchor(headScreenInfo = undefined) {
+        const resolvedHeadScreenInfo = headScreenInfo === undefined
+            ? this.getHeadScreenRectInfo()
+            : headScreenInfo;
+        return this.getHeadScreenAnchorFromInfo(resolvedHeadScreenInfo);
+    }
+
+    getHeadScreenAnchorFromInfo(headScreenInfo) {
         const headScreenRect = headScreenInfo?.rect;
         if (!headScreenRect) {
             return null;

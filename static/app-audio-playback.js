@@ -77,9 +77,16 @@
         var retained = [];
         var removed = [];
         S.pendingAudioChunkMetaQueue.forEach(function (item) {
-            if (!item ||
-                item.shouldSkip ||
-                item.epoch !== S.incomingAudioEpoch ||
+            if (!item) {
+                return;
+            }
+
+            if (item.shouldSkip) {
+                removed.push(item);
+                return;
+            }
+
+            if (item.epoch !== S.incomingAudioEpoch ||
                 !Number.isFinite(item.receivedAt)) {
                 retained.push(item);
                 return;
@@ -845,7 +852,22 @@
 
     function enqueueIncomingAudioBlob(blob) {
         pruneStalledPendingAudioMetaQueue(Date.now());
-        var meta = S.pendingAudioChunkMetaQueue.shift();
+        var meta = null;
+        while (S.pendingAudioChunkMetaQueue.length > 0) {
+            meta = S.pendingAudioChunkMetaQueue.shift();
+            if (!meta) {
+                continue;
+            }
+            if (meta.shouldSkip) {
+                logAudioLifecycle('enqueueIncomingAudioBlob:discard_skip_meta', {
+                    turnId: meta.turnId || null,
+                    speechId: meta.speechId || null
+                });
+                meta = null;
+                continue;
+            }
+            break;
+        }
         schedulePendingAudioMetaStallCheck();
         if (!meta) {
             logAudioLifecycle('enqueueIncomingAudioBlob:missing_meta');

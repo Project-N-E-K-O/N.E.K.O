@@ -18,9 +18,13 @@
         anchorGapPx: 10,
         positionSnapPx: 3,
         sizeSnapPx: 2,
-        live2dMicroMoveDeadzonePx: 8,
-        live2dSizeDeadzonePx: 10,
-        live2dSizeDeadzoneRatio: 0.08,
+        live2dMicroMoveDeadzonePx: 12,
+        live2dSizeDeadzonePx: 14,
+        live2dSizeDeadzoneRatio: 0.1,
+        live2dHeadRectMoveDeadzonePx: 10,
+        live2dHeadRectSizeDeadzonePx: 12,
+        live2dHeadRectSizeDeadzoneRatio: 0.08,
+        live2dHeadAnchorDeadzonePx: 10,
         horizontalMoveLockThresholdPx: 10,
         verticalNoiseTolerancePx: 8,
         horizontalMoveMaxVerticalDriftPx: 18,
@@ -28,8 +32,9 @@
         horizontalNoiseTolerancePx: 8,
         verticalMoveMaxHorizontalDriftPx: 18,
         headBubbleScaleMultiplier: 1.77,
-        live2dReliableHeadBubbleScaleMultiplier: 1.18,
-        live2dDrawableHeadBubbleScaleMultiplier: 1.28,
+        live2dReliableHeadBubbleScaleMultiplier: 1.3,
+        live2dPreciseDisplayInfoHeadBubbleScaleMultiplier: 1.42,
+        live2dDrawableHeadBubbleScaleMultiplier: 1.36,
         baseWidthShrinkPx: 92,
         baseHeightShrinkPx: 66,
         verticalOffsetPx: 0,
@@ -154,21 +159,7 @@
     let debugBubbleRectEl = null;
 
     function resolveInitialDebugOverlayEnabled() {
-        if (window.NEKO_DEBUG_BUBBLE_OVERLAY === true) {
-            return true;
-        }
-
-        if (!window.location || !window.location.search) {
-            return false;
-        }
-
-        try {
-            var params = new URLSearchParams(window.location.search);
-            var value = params.get('bubbleDebug');
-            return value === '1' || value === 'true';
-        } catch (_) {
-            return false;
-        }
+        return false;
     }
 
     state.debugOverlayEnabled = resolveInitialDebugOverlayEnabled();
@@ -418,7 +409,7 @@
 
         var debugPanelHintEl = document.createElement('div');
         debugPanelHintEl.className = 'avatar-reaction-bubble-debug-hint';
-        debugPanelHintEl.textContent = 'Shift+B to toggle';
+        debugPanelHintEl.textContent = 'Debug disabled';
 
         debugPanelBodyEl = document.createElement('pre');
         debugPanelBodyEl.className = 'avatar-reaction-bubble-debug-body';
@@ -1192,6 +1183,97 @@
             boundsCenterY <= bodyRect.top + bodyRect.height * TIMING.live2dHeadMaxBodyCenterYRatio;
     }
 
+    function getRectCenterX(rect) {
+        if (!hasValidRect(rect)) {
+            return null;
+        }
+        return Number.isFinite(rect.centerX) ? rect.centerX : rect.left + rect.width * 0.5;
+    }
+
+    function getRectCenterY(rect) {
+        if (!hasValidRect(rect)) {
+            return null;
+        }
+        return Number.isFinite(rect.centerY) ? rect.centerY : rect.top + rect.height * 0.5;
+    }
+
+    function isWithinLive2dRectDeadzone(nextRect, previousRect) {
+        if (!hasValidRect(nextRect) || !hasValidRect(previousRect)) {
+            return false;
+        }
+
+        var previousSpan = Math.max(previousRect.width, previousRect.height);
+        var moveDeadzonePx = TIMING.live2dHeadRectMoveDeadzonePx;
+        var sizeDeadzonePx = Math.max(
+            TIMING.live2dHeadRectSizeDeadzonePx,
+            previousSpan * TIMING.live2dHeadRectSizeDeadzoneRatio
+        );
+
+        return Math.abs(getRectCenterX(nextRect) - getRectCenterX(previousRect)) <= moveDeadzonePx &&
+            Math.abs(getRectCenterY(nextRect) - getRectCenterY(previousRect)) <= moveDeadzonePx &&
+            Math.abs(nextRect.width - previousRect.width) <= sizeDeadzonePx &&
+            Math.abs(nextRect.height - previousRect.height) <= sizeDeadzonePx;
+    }
+
+    function isWithinLive2dPointDeadzone(nextPoint, previousPoint) {
+        if (!nextPoint || !previousPoint ||
+            !Number.isFinite(nextPoint.x) || !Number.isFinite(nextPoint.y) ||
+            !Number.isFinite(previousPoint.x) || !Number.isFinite(previousPoint.y)) {
+            return false;
+        }
+
+        return Math.abs(nextPoint.x - previousPoint.x) <= TIMING.live2dHeadAnchorDeadzonePx &&
+            Math.abs(nextPoint.y - previousPoint.y) <= TIMING.live2dHeadAnchorDeadzonePx;
+    }
+
+    function stabilizeLive2dAnchorInfo(anchorInfo) {
+        if (!anchorInfo || anchorInfo.type !== 'live2d' || !anchorInfo.bounds) {
+            return anchorInfo;
+        }
+
+        if (anchorInfo.reliableLive2dHeadRect !== true || !hasValidRect(anchorInfo.headRect)) {
+            return anchorInfo;
+        }
+
+        if (state.lastAnchorType !== 'live2d' ||
+            state.lastReliableLive2dHeadRect !== true ||
+            !hasValidRect(state.lastHeadRect)) {
+            return anchorInfo;
+        }
+
+        if (state.lastHeadSource && anchorInfo.headSource && state.lastHeadSource !== anchorInfo.headSource) {
+            return anchorInfo;
+        }
+
+        if (state.lastHeadMode && anchorInfo.headMode && state.lastHeadMode !== anchorInfo.headMode) {
+            return anchorInfo;
+        }
+
+        if (!isWithinLive2dRectDeadzone(anchorInfo.headRect, state.lastHeadRect)) {
+            return anchorInfo;
+        }
+
+        var nextAnchorInfo = Object.assign({}, anchorInfo, {
+            headRect: cloneBounds(state.lastHeadRect)
+        });
+
+        if (hasValidRect(anchorInfo.bodyRect) &&
+            hasValidRect(state.lastBodyRect) &&
+            (!anchorInfo.bodySource || !state.lastBodySource || anchorInfo.bodySource === state.lastBodySource) &&
+            isWithinLive2dRectDeadzone(anchorInfo.bodyRect, state.lastBodyRect)) {
+            nextAnchorInfo.bodyRect = cloneBounds(state.lastBodyRect);
+        }
+
+        if (isWithinLive2dPointDeadzone(anchorInfo.live2dHeadAnchor, state.lastLive2dHeadAnchor)) {
+            nextAnchorInfo.live2dHeadAnchor = clonePoint(state.lastLive2dHeadAnchor);
+        }
+        if (isWithinLive2dPointDeadzone(anchorInfo.head, state.lastHeadAnchor)) {
+            nextAnchorInfo.head = clonePoint(state.lastHeadAnchor);
+        }
+
+        return nextAnchorInfo;
+    }
+
     function getActiveAvatarBubbleAnchor() {
         var mmdBounds = isContainerVisible('mmd-container')
             ? getBoundsFromManager(window.mmdManager, 'getModelScreenBounds')
@@ -1283,6 +1365,9 @@
         var anchorInfo = getActiveAvatarBubbleAnchor();
         if (anchorInfo && anchorInfo.type === 'live2d' && !isPlausibleLive2dAnchorInfo(anchorInfo)) {
             anchorInfo = null;
+        }
+        if (anchorInfo && anchorInfo.type === 'live2d') {
+            anchorInfo = stabilizeLive2dAnchorInfo(anchorInfo);
         }
         if (anchorInfo && anchorInfo.bounds) {
             state.lastAnchorType = anchorInfo.type || null;
@@ -1408,9 +1493,13 @@
         if (avatarType === 'live2d' &&
             reliableLive2dHeadRect &&
             hasValidRect(headRect)) {
-            headBubbleScaleMultiplier = headSource === 'drawableHeuristic'
-                ? TIMING.live2dDrawableHeadBubbleScaleMultiplier
-                : TIMING.live2dReliableHeadBubbleScaleMultiplier;
+            if (preciseLive2dDisplayInfoRect) {
+                headBubbleScaleMultiplier = TIMING.live2dPreciseDisplayInfoHeadBubbleScaleMultiplier;
+            } else {
+                headBubbleScaleMultiplier = headSource === 'drawableHeuristic'
+                    ? TIMING.live2dDrawableHeadBubbleScaleMultiplier
+                    : TIMING.live2dReliableHeadBubbleScaleMultiplier;
+            }
         }
         var headSize = Math.max(
             96,
@@ -1955,6 +2044,8 @@
         clearTimer('textFallbackTimerId');
         clearTimer('timeoutTimerId');
         clearTimer('maxVisibleTimerId');
+        clearTimer('emotionFallbackTimerId');
+        clearTimer('emotionSwapTimerId');
 
         if (!state.visible) {
             forceHide(true);
@@ -2262,32 +2353,15 @@
     }
 
     function setDebugOverlayEnabled(enabled) {
-        state.debugOverlayEnabled = enabled === true;
-        window.NEKO_DEBUG_BUBBLE_OVERLAY = state.debugOverlayEnabled;
+        state.debugOverlayEnabled = false;
+        window.NEKO_DEBUG_BUBBLE_OVERLAY = false;
         syncDebugOverlayVisibility();
         ensureDebugOverlayLoop();
         syncDebugOverlaySnapshot();
     }
 
     function toggleDebugOverlay() {
-        setDebugOverlayEnabled(!debugOverlayEnabled());
-    }
-
-    function handleDebugToggleKeydown(event) {
-        if (!event || event.defaultPrevented) {
-            return;
-        }
-
-        if (event.key !== 'B' && event.key !== 'b') {
-            return;
-        }
-
-        if (!event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) {
-            return;
-        }
-
-        event.preventDefault();
-        toggleDebugOverlay();
+        setDebugOverlayEnabled(false);
     }
 
     function init() {
@@ -2321,7 +2395,6 @@
         window.addEventListener('vrm-model-loaded', handleModelLoaded);
         window.addEventListener('mmd-model-loaded', handleModelLoaded);
         window.addEventListener('live2d-model-loaded', handleModelLoaded);
-        window.addEventListener('keydown', handleDebugToggleKeydown);
         document.addEventListener('pointerdown', handleAvatarPointerDown, true);
         document.addEventListener('mousedown', handleAvatarPointerDown, true);
         document.addEventListener('pointermove', handleAvatarPointerMove, true);
@@ -2349,9 +2422,6 @@
         getState: function () {
             return Object.assign({}, state);
         },
-        getActiveAvatarBubbleAnchor: getActiveAvatarBubbleAnchor,
-        setDebugOverlayEnabled: setDebugOverlayEnabled,
-        toggleDebugOverlay: toggleDebugOverlay,
-        isDebugOverlayEnabled: debugOverlayEnabled
+        getActiveAvatarBubbleAnchor: getActiveAvatarBubbleAnchor
     };
 })();
