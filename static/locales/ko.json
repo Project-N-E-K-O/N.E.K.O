@@ -2770,7 +2770,7 @@
         "unknownState": "알 수 없는 상태",
         "volume": "볼륨: ",
         "unsafeSource": "안전하지 않은 오디오 소스를 차단했습니다: {{domain}}",
-        "cookieExpired": "音乐Cookie已失效"
+        "cookieExpired": "음악 쿠키가 만료되었습니다"
     },
     "Jukebox": {
         "title": "주크박스",

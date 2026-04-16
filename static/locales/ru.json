@@ -2770,7 +2770,7 @@
         "unknownState": "Неизвестное состояние",
         "volume": "Громкость: ",
         "unsafeSource": "Небезопасный источник аудио заблокирован: {{domain}}",
-        "cookieExpired": "音乐Cookie已失效"
+        "cookieExpired": "Срок действия музыкального cookie истек"
     },
     "Jukebox": {
         "title": "Музыкальный автомат",
