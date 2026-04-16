@@ -417,11 +417,18 @@
         var BACKOFF_P_SLOW = 0.09;
         var BACKOFF_HARD_CAP_MS = 3600 * 1000;
 
-        var cap1 = (baseInterval >= BACKOFF_TARGET) ? 0
-            : Math.ceil(Math.log(BACKOFF_TARGET / baseInterval) / Math.log(BACKOFF_M1));
-        var cap2 = cap1 + BACKOFF_SLOW;
+        function computeBackoffCaps(baseIntervalSeconds) {
+            var c1 = (baseIntervalSeconds >= BACKOFF_TARGET) ? 0
+                : Math.ceil(Math.log(BACKOFF_TARGET / baseIntervalSeconds) / Math.log(BACKOFF_M1));
+            return { cap1: c1, cap2: c1 + BACKOFF_SLOW };
+        }
 
-        // 在指数上叠加 ±0.125 的随机漂移 → 实际倍率波动约 [0.89x, 1.12x]
+        var caps = computeBackoffCaps(baseInterval);
+        var cap1 = caps.cap1;
+        var cap2 = caps.cap2;
+
+        // 在指数上叠加 ±0.125 的随机漂移
+        // 对 M1=1.09167 波动约 [0.99x, 1.01x]，对 M2=1.55 约 [0.95x, 1.06x]
         var expJitter = (Math.random() - 0.5) * 0.25;
         var level = S.proactiveChatBackoffLevel;
         var delay;
@@ -482,9 +489,9 @@
             //   tier 2 (cap1 ≤ level < cap2): 9% 概率升级 — 慢区，长时间停留
             //   tier 3 (level ≥ cap2): 每次必升 — 快区，快速逼近 60min 硬顶
             if (triggered) {
-                var currentCap1 = (S.proactiveChatInterval >= BACKOFF_TARGET) ? 0
-                    : Math.ceil(Math.log(BACKOFF_TARGET / S.proactiveChatInterval) / Math.log(BACKOFF_M1));
-                var currentCap2 = currentCap1 + BACKOFF_SLOW;
+                var currentCaps = computeBackoffCaps(S.proactiveChatInterval);
+                var currentCap1 = currentCaps.cap1;
+                var currentCap2 = currentCaps.cap2;
 
                 if (S.proactiveChatBackoffLevel < currentCap1) {
                     S.proactiveChatBackoffLevel++;
