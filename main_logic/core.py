@@ -1260,6 +1260,60 @@ class LLMSessionManager:
             return ""
         return text
 
+    async def _handle_session_start_exception(self, e: BaseException, input_mode: str, diag_start: float) -> None:
+        """统一的 session 启动失败收口：打日志、发状态码、send_session_failed、cleanup。
+
+        供 start_session 的外层 except 使用，覆盖 prelude（_cleanup_pending_session_resources /
+        end_session 等）和 gather 块两条路径，避免前端卡在 preparing。
+        """
+        self.session_start_failure_count += 1
+        self.session_start_last_failure_time = datetime.now()
+        logger.error(f"[语音会话诊断] start_session 失败 (总耗时: {time.time() - diag_start:.2f}秒): {e}")
+        error_str = str(e)
+
+        is_memory_server_error = isinstance(e, ConnectionError) and any(
+            kw in error_str.lower() for kw in ["memory server", "记忆服务"]
+        )
+
+        if is_memory_server_error:
+            logger.error(f"🧠 {error_str}")
+            await self.send_status(json.dumps({"code": "MEMORY_SERVER_NOT_RUNNING"}))
+            # Memory Server 错误不计入失败次数（这是配置问题而非网络问题）
+            self.session_start_failure_count -= 1
+            self._memory_error_retry_after = time.time() + self._memory_error_cooldown_seconds
+        else:
+            error_message = f"Error starting session: {e}"
+            logger.exception(f"💥 {error_message} (失败次数: {self.session_start_failure_count})")
+
+            if self.session_start_failure_count >= self.session_start_max_failures:
+                critical_message = f"⛔ Session启动连续失败{self.session_start_failure_count}次，已停止自动重试。请检查网络连接和API配置，然后刷新页面重试。"
+                logger.critical(critical_message)
+                await self.send_status(json.dumps({"code": "SESSION_START_CRITICAL", "details": {"count": self.session_start_failure_count}}))
+            else:
+                await self.send_status(json.dumps({"code": "SESSION_START_FAILED", "details": {"error": str(e), "count": self.session_start_failure_count}}))
+
+            if 'WinError 10061' in error_str or 'WinError 10054' in error_str:
+                if str(self.memory_server_port) in error_str or '48912' in error_str:
+                    await self.send_status(json.dumps({"code": "MEMORY_SERVER_CRASHED", "details": {"port": self.memory_server_port}}))
+                else:
+                    await self.send_status(json.dumps({"code": "CONNECTION_REFUSED"}))
+            elif ('401' in error_str or 'unauthorized' in error_str.lower()
+                    or 'authentication' in error_str.lower()
+                    or ('invalid' in error_str.lower() and 'key' in error_str.lower())):
+                await self.send_status(json.dumps({"code": "API_KEY_REJECTED"}))
+            elif '429' in error_str:
+                await self.send_status(json.dumps({"code": "API_RATE_LIMIT_SESSION"}))
+            elif 'HTTP 503' in error_str:
+                await self.send_status(json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
+            elif 'All connection attempts failed' in error_str:
+                await self.send_status(json.dumps({"code": "LLM_CONNECTION_FAILED"}))
+            else:
+                await self.send_status(json.dumps({"code": "CONNECTION_CLOSED_ABNORMAL", "details": {"error": error_str}}))
+
+        # 必须在 cleanup 之前发送，因为 cleanup 会清空 websocket 引用
+        await self.send_session_failed(input_mode)
+        await self.cleanup()
+
     async def start_session(self, websocket: WebSocket, new=False, input_mode='audio'):
         # 每次 start_session 都重新获取全局语言，确保 Steam/系统语言变更能即时生效
         self.user_language = normalize_language_code(get_global_language(), format='short')
@@ -1276,13 +1330,13 @@ class LLMSessionManager:
         # CAS 落败早退标志：True 时禁止 finally 递减 guard，
         # 防止赢家初始化期间第三个协程穿过 guard 浪费 LLM 连接。
         _llm_concurrent_aborted = False
+        _diag_start = time.time()
 
         try:
             # 回收残留的热切换资源，防止 main + pending + new-main 叠到 >2 个 session
             await self._cleanup_pending_session_resources()
             await self._reset_preparation_state(clear_main_cache=False)
         
-            _diag_start = time.time()
             logger.info(f"[语音会话诊断] 开始 start_session: input_mode={input_mode}, new={new}")
             logger.info(f"启动新session: input_mode={input_mode}, new={new}")
             self.websocket = websocket
@@ -1638,128 +1692,74 @@ class LLMSessionManager:
                 async with self.input_cache_lock:
                     self.pending_input_data.clear()
 
-            try:
-                # 并行启动 TTS 和 LLM Session
-                logger.info("🚀 并行启动 TTS 和 LLM Session...")
-                start_parallel_time = time.time()
+            # 并行启动 TTS 和 LLM Session
+            logger.info("🚀 并行启动 TTS 和 LLM Session...")
+            start_parallel_time = time.time()
             
-                tts_result, llm_result = await asyncio.gather(
-                    start_tts_if_needed(),
-                    start_llm_session(),
-                    return_exceptions=True
-                )
+            tts_result, llm_result = await asyncio.gather(
+                start_tts_if_needed(),
+                start_llm_session(),
+                return_exceptions=True
+            )
             
-                logger.info(f"⚡ 并行启动完成 (总用时: {time.time() - start_parallel_time:.2f}秒)")
-                tts_status = '异常' if isinstance(tts_result, Exception) else ('跳过(原生语音)' if not self.use_tts else 'OK')
-                logger.info(f"[语音会话诊断] 并行启动结果: TTS={tts_status}, LLM={'异常' if isinstance(llm_result, Exception) else 'OK'}")
-                # 检查是否有错误
-                if isinstance(tts_result, Exception):
-                    logger.error(f"TTS 启动失败: {tts_result}")
-                # 并发落败分支：赢家已持有 self.session / message_handler_task，
-                # 我们不能继续走 "if self.session" 分支（会覆盖 handler task、重复
-                # send_session_started），也不能 raise（会误触发 cleanup 杀掉赢家）。
-                # 同时设置 _llm_concurrent_aborted=True 让 finally 跳过 guard 递减：
-                # 赢家尚未完成初始化，必须保持 guard 以阻止第三个协程穿过。
-                if llm_result is _START_LLM_CONCURRENT_ABORTED:
-                    logger.info("[语音会话诊断] start_session 因并发 CAS 落败早退，保持 guard 关闭")
-                    _llm_concurrent_aborted = True
-                    return
-                if isinstance(llm_result, Exception):
-                    raise llm_result  # LLM Session 失败是致命的
+            logger.info(f"⚡ 并行启动完成 (总用时: {time.time() - start_parallel_time:.2f}秒)")
+            tts_status = '异常' if isinstance(tts_result, Exception) else ('跳过(原生语音)' if not self.use_tts else 'OK')
+            logger.info(f"[语音会话诊断] 并行启动结果: TTS={tts_status}, LLM={'异常' if isinstance(llm_result, Exception) else 'OK'}")
+            # 检查是否有错误
+            if isinstance(tts_result, Exception):
+                logger.error(f"TTS 启动失败: {tts_result}")
+            # 并发落败分支：赢家已持有 self.session / message_handler_task，
+            # 我们不能继续走 "if self.session" 分支（会覆盖 handler task、重复
+            # send_session_started），也不能 raise（会误触发 cleanup 杀掉赢家）。
+            # 同时设置 _llm_concurrent_aborted=True 让 finally 跳过 guard 递减：
+            # 赢家尚未完成初始化，必须保持 guard 以阻止第三个协程穿过。
+            if llm_result is _START_LLM_CONCURRENT_ABORTED:
+                logger.info("[语音会话诊断] start_session 因并发 CAS 落败早退，保持 guard 关闭")
+                _llm_concurrent_aborted = True
+                return
+            if isinstance(llm_result, Exception):
+                raise llm_result  # LLM Session 失败是致命的
             
-                # 标记 session 激活
-                if self.session:
-                    async with self.lock:
-                        self.is_active = True
+            # 标记 session 激活
+            if self.session:
+                async with self.lock:
+                    self.is_active = True
                     
-                    self.session_start_time = datetime.now()
-                    self._session_turn_count = 0
+                self.session_start_time = datetime.now()
+                self._session_turn_count = 0
 
-                    # 启动消息处理任务
-                    self.message_handler_task = asyncio.create_task(self.session.handle_messages())
+                # 启动消息处理任务
+                self.message_handler_task = asyncio.create_task(self.session.handle_messages())
                 
-                    # 启动成功，重置失败计数器
-                    self.session_start_failure_count = 0
-                    self.session_start_last_failure_time = None
-                    self._memory_error_retry_after = 0
+                # 启动成功，重置失败计数器
+                self.session_start_failure_count = 0
+                self.session_start_last_failure_time = None
+                self._memory_error_retry_after = 0
 
-                    logger.info(f"[语音会话诊断] 即将通知前端 session_started (start_session 总耗时: {time.time() - _diag_start:.2f}秒)")
-                    # 通知前端 session 已成功启动
-                    await self.send_session_started(input_mode)
+                logger.info(f"[语音会话诊断] 即将通知前端 session_started (start_session 总耗时: {time.time() - _diag_start:.2f}秒)")
+                # 通知前端 session 已成功启动
+                await self.send_session_started(input_mode)
 
-                    # 标记session为就绪状态并处理可能已缓存的输入数据
-                    async with self.input_cache_lock:
-                        self.session_ready = True
+                # 标记session为就绪状态并处理可能已缓存的输入数据
+                async with self.input_cache_lock:
+                    self.session_ready = True
 
-                    # 处理在session启动期间可能已经缓存的输入数据
-                    await self._flush_pending_input_data()
+                # 处理在session启动期间可能已经缓存的输入数据
+                await self._flush_pending_input_data()
 
-                    # WebSocket 重连后，投递因断线积压的 agent 任务回调
-                    if self.pending_agent_callbacks:
-                        self._fire_task(self.trigger_agent_callbacks())
+                # WebSocket 重连后，投递因断线积压的 agent 任务回调
+                if self.pending_agent_callbacks:
+                    self._fire_task(self.trigger_agent_callbacks())
 
-                else:
-                    raise Exception("Session not initialized")
+            else:
+                raise Exception("Session not initialized")
         
-            except Exception as e:
-                # 记录失败
-                self.session_start_failure_count += 1
-                self.session_start_last_failure_time = datetime.now()
-                logger.error(f"[语音会话诊断] start_session 失败 (总耗时: {time.time() - _diag_start:.2f}秒): {e}")
-                error_str = str(e)
-            
-                # 🔴 优先检查 Memory Server 错误（最常见的启动问题）
-                is_memory_server_error = isinstance(e, ConnectionError) and any(kw in error_str.lower() for kw in ["memory server", "记忆服务"])
-            
-                if is_memory_server_error:
-                    # Memory Server 错误使用专门的日志格式
-                    logger.error(f"🧠 {error_str}")
-                    await self.send_status(json.dumps({"code": "MEMORY_SERVER_NOT_RUNNING"}))
-                    # Memory Server 错误不计入失败次数（因为这是配置问题而非网络问题）
-                    self.session_start_failure_count -= 1
-                    # 设置 Memory 专属冷却，避免高频重试刷日志
-                    self._memory_error_retry_after = time.time() + self._memory_error_cooldown_seconds
-                else:
-                    error_message = f"Error starting session: {e}"
-                    logger.exception(f"💥 {error_message} (失败次数: {self.session_start_failure_count})")
-                
-                    # 如果达到最大失败次数，发送严重警告并通知前端
-                    if self.session_start_failure_count >= self.session_start_max_failures:
-                        critical_message = f"⛔ Session启动连续失败{self.session_start_failure_count}次，已停止自动重试。请检查网络连接和API配置，然后刷新页面重试。"
-                        logger.critical(critical_message)
-                        await self.send_status(json.dumps({"code": "SESSION_START_CRITICAL", "details": {"count": self.session_start_failure_count}}))
-                    else:
-                        await self.send_status(json.dumps({"code": "SESSION_START_FAILED", "details": {"error": str(e), "count": self.session_start_failure_count}}))
-                
-                    # 检查其他类型的连接错误
-                    if 'WinError 10061' in error_str or 'WinError 10054' in error_str:
-                        # 检查端口号是否为memory_server端口
-                        if str(self.memory_server_port) in error_str or '48912' in error_str:
-                            await self.send_status(json.dumps({"code": "MEMORY_SERVER_CRASHED", "details": {"port": self.memory_server_port}}))
-                        else:
-                            await self.send_status(json.dumps({"code": "CONNECTION_REFUSED"}))
-                    elif ('401' in error_str or 'unauthorized' in error_str.lower()
-                            or 'authentication' in error_str.lower()
-                            or ('invalid' in error_str.lower() and 'key' in error_str.lower())):
-                        await self.send_status(json.dumps({"code": "API_KEY_REJECTED"}))
-                    elif '429' in error_str:
-                        await self.send_status(json.dumps({"code": "API_RATE_LIMIT_SESSION"}))
-                    elif 'HTTP 503' in error_str:
-                        await self.send_status(json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
-                    elif 'All connection attempts failed' in error_str:
-                        await self.send_status(json.dumps({"code": "LLM_CONNECTION_FAILED"}))
-                    else:
-                        await self.send_status(json.dumps({"code": "CONNECTION_CLOSED_ABNORMAL", "details": {"error": error_str}}))
-            
-                # 通知前端 session 启动失败，让前端重置状态
-                # 必须在 cleanup 之前发送，因为 cleanup 会清空 websocket 引用
-                await self.send_session_failed(input_mode)
-            
-                await self.cleanup()
+        except Exception as e:
+            # prelude（_cleanup_pending_session_resources / end_session / asyncio.sleep 等）
+            # 与 gather 块的错误统一走这里收口：send_session_failed + cleanup，避免前端卡在 preparing。
+            # 注意：except Exception 不会捕获 CancelledError，shutdown 路径保持原语义。
+            await self._handle_session_start_exception(e, input_mode, _diag_start)
         finally:
-            # 外层 try/finally 兜底：递增 guard 之后到内层 try 之间（配置加载、_cleanup_pending_session_resources、
-            # send_session_preparing、end_session 等）任一 await 抛异常都会跳过内层 finally，导致 guard 永远卡在 >=1，
-            # 之后所有 start_session 被静默丢弃。
             # 例外：CAS 落败早退时不递减——赢家还在初始化，若此时放开 guard，
             # 第三个协程会穿过并再次把入口快照当作"赢家"进而覆盖掉真正的赢家。
             # 赢家完成（成功或异常）后会通过自己的 finally 或 cleanup 清理 guard。
