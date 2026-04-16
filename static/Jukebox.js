@@ -3601,24 +3601,22 @@ window.Jukebox = {
     Jukebox.injectStyles();
 
     // 独立窗口：使用专属拖拽层（.jukebox-drag-overlay）处理原生窗口拖拽，
-    // 拖拽层覆盖整个容器，交互元素（按钮、输入框等）强制 no-drag。
-    // 这种"兄弟层"方案彻底规避 Chromium -webkit-app-region 命中测试缓存 bug：
-    // 拖拽层与按钮不是父子关系，Chromium 不会把按钮区域错误地归入拖拽区域。
+    // 所有交互区域显式 no-drag，防止后续样式注入把这些区域重新污染成 drag。
+    // 这里保持 #798 的热区范围：按钮仍然可点，标题文字区域不再被 overlay 强行接管，
+    // 避免 Steam 桌面端在快速拖动时重新命中到不稳定的原生 drag 热区。
     if (window.__NEKO_JUKEBOX_STANDALONE__) {
-      // 需要排除拖拽的交互元素选择器
-      var _noDragSelector = 'button, input, a, select, textarea, .jukebox-header-buttons, .jukebox-table tbody tr, .sam-panel, .jukebox-calibration-section, .jukebox-notice, .jukebox-content';
-      // 立即设置：拖拽层 drag，其它全部 no-drag
+      var _noDragSelector =
+        '.jukebox-header, .jukebox-header-left, .jukebox-header-buttons, ' +
+        '.jukebox-content, .jukebox-controls-row, ' +
+        '.jukebox-calibration-section, .jukebox-notice';
+
+      // 立即设置：拖拽层 drag，交互区域 no-drag
       var _applyDragRegions = function() {
         var overlay = jukeboxContainer.querySelector('.jukebox-drag-overlay');
         if (overlay && overlay.style.webkitAppRegion !== 'drag') {
           overlay.style.webkitAppRegion = 'drag';
         }
-        // 容器本身 + 所有后代（除 overlay）都标 no-drag
-        if (jukeboxContainer.style.webkitAppRegion !== 'no-drag') {
-          jukeboxContainer.style.webkitAppRegion = 'no-drag';
-        }
-        jukeboxContainer.querySelectorAll('*').forEach(function(el) {
-          if (el === overlay) return;
+        jukeboxContainer.querySelectorAll(_noDragSelector).forEach(function(el) {
           if (el.style.webkitAppRegion !== 'no-drag') {
             el.style.webkitAppRegion = 'no-drag';
           }
@@ -3626,19 +3624,19 @@ window.Jukebox = {
       };
       _applyDragRegions();
 
-      // MutationObserver 守护：如果 preload 后续往任何非 overlay 元素重新注入 drag，立即纠正
+      // MutationObserver 守护：如果后续有样式注入把这些交互区重新改成 drag，立即纠正
       try {
         var _dragGuard = new MutationObserver(function(mutations) {
           for (var i = 0; i < mutations.length; i++) {
             var m = mutations[i];
             if (m.type !== 'attributes' || m.attributeName !== 'style') continue;
             var el = m.target;
-            // overlay 本身必须保持 drag，其它一律改回 no-drag
             if (el.classList && el.classList.contains('jukebox-drag-overlay')) {
               if (el.style.webkitAppRegion !== 'drag') {
                 el.style.webkitAppRegion = 'drag';
               }
-            } else if (el.style && el.style.webkitAppRegion !== 'no-drag') {
+            } else if (el.matches && el.matches(_noDragSelector) &&
+                       el.style.webkitAppRegion !== 'no-drag') {
               el.style.webkitAppRegion = 'no-drag';
             }
           }
@@ -3991,10 +3989,9 @@ window.Jukebox = {
         position: relative;
       }
 
-      /* 专属拖拽层：绝对定位覆盖整个容器，与按钮是兄弟关系而非父子关系，
-         规避 Chromium -webkit-app-region 命中测试缓存 bug。
-         只有需要点击的元素抬到 overlay 之上，其余区域让 overlay 盖住，
-         这样除交互元素外的整个容器区域都是原生拖拽热区。 */
+      /* 专属拖拽层：与按钮是兄弟关系而非父子关系，规避 Chromium
+         -webkit-app-region 命中测试缓存 bug。保持标题文字和按钮都在
+         overlay 之上，避免独立窗在快速拖动时重新落到不稳定热区。 */
       .jukebox-drag-overlay {
         position: absolute;
         inset: 0;
@@ -4002,7 +3999,7 @@ window.Jukebox = {
         border-radius: inherit;
       }
 
-      .jukebox-header,
+      .jukebox-header-left,
       .jukebox-header-buttons,
       .jukebox-content,
       .jukebox-controls-row,

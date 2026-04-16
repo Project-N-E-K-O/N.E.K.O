@@ -23,7 +23,8 @@
     var state = {
         isPreparingPreview: false,
         isExporting: false,
-        exportFormat: 'markdown',
+        isCopying: false,
+        exportFormat: 'image',
         imageExportFormat: 'png',
         imageExportStyle: 'neko',
         selectedIds: null,          // Set<string> of ChatMessage.id
@@ -1630,6 +1631,43 @@
         }
     }
 
+    async function copyImageToClipboard(blob) {
+        if (!navigator.clipboard || typeof navigator.clipboard.write !== 'function') {
+            return false;
+        }
+        try {
+            var pngBlob = blob;
+            if (blob.type !== 'image/png') {
+                // Clipboard API requires image/png — convert via canvas round-trip
+                var img = new Image();
+                var loaded = new Promise(function (resolve, reject) {
+                    img.onload = resolve;
+                    img.onerror = reject;
+                });
+                var blobUrl = URL.createObjectURL(blob);
+                try {
+                    img.src = blobUrl;
+                    await loaded;
+                    var cvs = document.createElement('canvas');
+                    cvs.width = img.naturalWidth;
+                    cvs.height = img.naturalHeight;
+                    cvs.getContext('2d').drawImage(img, 0, 0);
+                    pngBlob = await new Promise(function (resolve, reject) {
+                        cvs.toBlob(function (b) { b ? resolve(b) : reject(new Error('toBlob failed')); }, 'image/png');
+                    });
+                } finally {
+                    URL.revokeObjectURL(blobUrl);
+                }
+            }
+            await navigator.clipboard.write([
+                new ClipboardItem({ 'image/png': pngBlob })
+            ]);
+            return true;
+        } catch (_) {
+            return false;
+        }
+    }
+
     // ======================== Preview cache ========================
 
     function buildPreviewCacheKey(entries, formatId) {
@@ -1818,7 +1856,7 @@
         var copyButton = document.createElement('button');
         copyButton.type = 'button';
         copyButton.className = 'chat-export-preview-action chat-export-preview-action-copy';
-        copyButton.textContent = translateLabel('chat.copyMarkdown', 'Copy Markdown');
+        copyButton.textContent = translateLabel('chat.copyToClipboard', 'Copy to Clipboard');
 
         var openWindowButton = document.createElement('button');
         openWindowButton.type = 'button';
@@ -1927,7 +1965,7 @@
             selectAllButton.textContent = translateLabel('chat.exportSelectAll', 'Select All');
             selectNoneButton.textContent = translateLabel('chat.exportSelectNone', 'Clear');
             selectInvertButton.textContent = translateLabel('chat.exportSelectInvert', 'Invert');
-            copyButton.textContent = translateLabel('chat.copyMarkdown', 'Copy Markdown');
+            copyButton.textContent = translateLabel('chat.copyToClipboard', 'Copy to Clipboard');
             openWindowButton.textContent = translateLabel('chat.previewOpenWindow', 'Open In Window');
         };
         window.addEventListener('localechange', localeHandler);
@@ -2085,9 +2123,9 @@
             modal.imageOptions.appendChild(formatGroup2);
         }
 
-        // update copy button enabled state
-        modal.copyButton.disabled = state.exportFormat !== 'markdown';
-        modal.copyButton.textContent = translateLabel('chat.copyMarkdown', 'Copy Markdown');
+        // update copy button label based on format
+        modal.copyButton.disabled = state.isCopying;
+        modal.copyButton.textContent = translateLabel('chat.copyToClipboard', 'Copy to Clipboard');
 
         // update download button label
         var currentFormat = getCurrentExportFormat();
@@ -2178,7 +2216,7 @@
                 modal.selectAllButton.textContent = translateLabel('chat.exportSelectAll', 'Select All');
                 modal.selectNoneButton.textContent = translateLabel('chat.exportSelectNone', 'Clear');
                 modal.selectInvertButton.textContent = translateLabel('chat.exportSelectInvert', 'Invert');
-                modal.copyButton.textContent = translateLabel('chat.copyMarkdown', 'Copy Markdown');
+                modal.copyButton.textContent = translateLabel('chat.copyToClipboard', 'Copy to Clipboard');
                 modal.openWindowButton.textContent = translateLabel('chat.previewOpenWindow', 'Open In Window');
             };
             window.addEventListener('localechange', localeHandler);
@@ -2254,20 +2292,38 @@
     }
 
     async function handleCopyClick() {
-        if (state.exportFormat !== 'markdown') return;
+        if (state.isCopying) return;
         var entries = getSelectedEntries();
         if (entries.length === 0) {
             showToast('chat.exportSelectionEmpty', 'Select at least one message to export.');
             return;
         }
+        state.isCopying = true;
+        var modal = state.previewModal;
+        if (modal) modal.copyButton.disabled = true;
         try {
-            var payload = await getOrBuildPreviewPayload(entries, 'markdown');
-            var ok = await copyTextToClipboard(payload.exportData.content);
-            if (ok) showToast('chat.copyMarkdownSuccess', 'Markdown copied to clipboard.');
-            else showToast('chat.copyMarkdownFailed', 'Failed to copy Markdown.', 4000);
+            if (state.exportFormat === 'image') {
+                var imgPayload = await getOrBuildPreviewPayload(entries, 'image');
+                var imgBlob = imgPayload.exportData.previewBlob || imgPayload.exportData.content;
+                var imgOk = await copyImageToClipboard(imgBlob);
+                if (imgOk) showToast('chat.copyImageSuccess', 'Image copied to clipboard.');
+                else showToast('chat.copyImageFailed', 'Failed to copy image to clipboard.', 4000);
+            } else {
+                var mdPayload = await getOrBuildPreviewPayload(entries, 'markdown');
+                var mdOk = await copyTextToClipboard(mdPayload.exportData.content);
+                if (mdOk) showToast('chat.copyMarkdownSuccess', 'Markdown copied to clipboard.');
+                else showToast('chat.copyMarkdownFailed', 'Failed to copy Markdown.', 4000);
+            }
         } catch (error) {
             logExportError('handleCopyClick', error);
-            showToast('chat.copyMarkdownFailed', 'Failed to copy Markdown.', 4000);
+            if (state.exportFormat === 'image') {
+                showToast('chat.copyImageFailed', 'Failed to copy image to clipboard.', 4000);
+            } else {
+                showToast('chat.copyMarkdownFailed', 'Failed to copy Markdown.', 4000);
+            }
+        } finally {
+            state.isCopying = false;
+            if (modal) modal.copyButton.disabled = false;
         }
     }
 
