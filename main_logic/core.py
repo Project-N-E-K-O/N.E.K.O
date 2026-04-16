@@ -2331,7 +2331,7 @@ class LLMSessionManager:
 
     def _is_voice_session_active_or_starting(self) -> bool:
         """语音 session 正在启动或已经活跃时返回 True，用于阻止 greeting 干扰语音流。"""
-        if self.is_starting_session and self.input_mode == 'audio':
+        if self._starting_session_count > 0 and self.input_mode == 'audio':
             return True
         if self.is_active and self.input_mode == 'audio':
             return True
