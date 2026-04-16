@@ -110,15 +110,31 @@ def test_jukebox_standalone_bridge_fast_interactions(mock_page: Page):
     assert mock_page.evaluate("window.__speakerClicks") == 1
     assert mock_page.evaluate("window.__dragGuardCleared") is True
 
+    mock_page.evaluate("window.__bridgeLog = []")
     header = mock_page.locator(".jukebox-header").bounding_box()
     assert header is not None
+    mock_page.mouse.move(header["x"] + 30, header["y"] + 20)
+    mock_page.mouse.down(button="right")
+    mock_page.mouse.move(header["x"] + 180, header["y"] + 80)
+    mock_page.mouse.up(button="right")
+    mock_page.wait_for_timeout(50)
+    assert mock_page.evaluate("window.__bridgeLog") == []
+
+    mock_page.evaluate("window.__bridgeLog = []")
+    handle = mock_page.locator('.jukebox-resize-handle[data-dir="se"]').bounding_box()
+    assert handle is not None
+    mock_page.mouse.move(handle["x"] + 10, handle["y"] + 10)
+    mock_page.mouse.down(button="middle")
+    mock_page.mouse.move(handle["x"] + 90, handle["y"] + 70)
+    mock_page.mouse.up(button="middle")
+    mock_page.wait_for_timeout(50)
+    assert mock_page.evaluate("window.__bridgeLog") == []
+
     mock_page.mouse.move(header["x"] + 30, header["y"] + 20)
     mock_page.mouse.down()
     mock_page.mouse.move(header["x"] + 180, header["y"] + 80)
     mock_page.mouse.up()
 
-    handle = mock_page.locator('.jukebox-resize-handle[data-dir="se"]').bounding_box()
-    assert handle is not None
     mock_page.mouse.move(handle["x"] + 10, handle["y"] + 10)
     mock_page.mouse.down()
     mock_page.mouse.move(handle["x"] + 90, handle["y"] + 70)
@@ -252,15 +268,31 @@ def test_jukebox_standalone_fallback_fast_interactions(mock_page: Page):
         """,
     )
 
+    mock_page.evaluate("window.__fallbackLog = []")
     header = mock_page.locator(".jukebox-header").bounding_box()
     assert header is not None
+    mock_page.mouse.move(header["x"] + 30, header["y"] + 20)
+    mock_page.mouse.down(button="right")
+    mock_page.mouse.move(header["x"] + 180, header["y"] + 80)
+    mock_page.mouse.up(button="right")
+    mock_page.wait_for_timeout(50)
+    assert mock_page.evaluate("window.__fallbackLog") == []
+
+    mock_page.evaluate("window.__fallbackLog = []")
+    handle = mock_page.locator('.jukebox-resize-handle[data-dir="se"]').bounding_box()
+    assert handle is not None
+    mock_page.mouse.move(handle["x"] + 10, handle["y"] + 10)
+    mock_page.mouse.down(button="middle")
+    mock_page.mouse.move(handle["x"] + 90, handle["y"] + 70)
+    mock_page.mouse.up(button="middle")
+    mock_page.wait_for_timeout(50)
+    assert mock_page.evaluate("window.__fallbackLog") == []
+
     mock_page.mouse.move(header["x"] + 30, header["y"] + 20)
     mock_page.mouse.down()
     mock_page.mouse.move(header["x"] + 180, header["y"] + 80)
     mock_page.mouse.up()
 
-    handle = mock_page.locator('.jukebox-resize-handle[data-dir="se"]').bounding_box()
-    assert handle is not None
     mock_page.mouse.move(handle["x"] + 10, handle["y"] + 10)
     mock_page.mouse.down()
     mock_page.mouse.move(handle["x"] + 90, handle["y"] + 70)

@@ -283,6 +283,10 @@
     }
 
     async function onPointerDown(e) {
+      if (typeof e.button === 'number' && e.button !== 0) {
+        return;
+      }
+
       if (e.target.closest(IGNORE_DRAG_SELECTOR)) {
         return;
       }
@@ -423,6 +427,10 @@
     }
 
     async function onPointerDown(e) {
+      if (typeof e.button === 'number' && e.button !== 0) {
+        return;
+      }
+
       var dir = e.currentTarget && e.currentTarget.dataset ? e.currentTarget.dataset.dir : '';
       if (!dir) return;
 
