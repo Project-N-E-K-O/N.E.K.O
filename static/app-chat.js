@@ -633,6 +633,11 @@
                         continue;
                     }
 
+                    if (result.netease_cookie_invalid && typeof window.showStatusToast === 'function') {
+                        var musiccookieWarnMsg = (window.t && window.t('music.cookieExpired')) || '音乐Cookie已失效';
+                        window.showStatusToast(musiccookieWarnMsg, 5000);
+                    }
+
                     if (!result.success) {
                         console.error('[Music] Search API failed:', result.error);
                         if (window.showStatusToast) {
@@ -640,12 +645,6 @@
                             window.showStatusToast(result.message || result.error || failMsg, 3000);
                         }
                         continue;
-                    }
-
-
-                    if (result.netease_cookie_invalid && typeof window.showStatusToast === 'function') {
-                        var musiccookieWarnMsg = (window.t && window.t('music.cookieExpired')) || '音乐Cookie已失效';
-                        window.showStatusToast(musiccookieWarnMsg, 5000);
                     }
 
                     if (result.data && result.data.length > 0) {
