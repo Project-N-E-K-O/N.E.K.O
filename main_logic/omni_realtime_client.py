@@ -1128,6 +1128,8 @@ class OmniRealtimeClient:
             # Gemini Live API 没有 session.update 机制，只能通过
             # send_client_content 注入上下文（会创建 user turn）。
             # on_response_done 由 _handle_messages_gemini 自然触发。
+            if skipped:
+                self._skip_until_next_response = True
             await self._create_response_gemini(text)
             return
 
@@ -1788,13 +1790,13 @@ class OmniRealtimeClient:
                     if self._gemini_user_transcript and self.on_input_transcript:
                         await self.on_input_transcript(self._gemini_user_transcript)
                         self._gemini_user_transcript = ""  # 清空累积
-                    
+
                     self._is_responding = True
                     self._is_first_text_chunk = True  # 重置第一个 chunk 标记
                     self._gemini_current_transcript = ""  # 清空累积
-                    if self.on_new_message:
+                    if not self._skip_until_next_response and self.on_new_message:
                         await self.on_new_message()
-                
+
                 # 处理输出转录 - 流式发送每个 chunk 到前端
                 # 不参与新 turn 检测；turn_complete 后到达的迟到转录会以 isNewMessage=false
                 # 追加到当前轮次的气泡（正确行为）
@@ -1803,23 +1805,23 @@ class OmniRealtimeClient:
                     if hasattr(output_trans, 'text') and output_trans.text:
                         text = output_trans.text
                         self._gemini_current_transcript += text
-                        if self.on_text_delta:
+                        if not self._skip_until_next_response and self.on_text_delta:
                             await self.on_text_delta(text, self._is_first_text_chunk)
                             self._is_first_text_chunk = False
-                
+
                 # 处理模型输出 (音频)
                 if server_content.model_turn:
                     for part in server_content.model_turn.parts:
                         # 跳过 thinking/thought 部分
                         if hasattr(part, 'thought') and part.thought:
                             continue
-                        
+
                         # 处理音频
                         if hasattr(part, 'inline_data') and part.inline_data:
                             if isinstance(part.inline_data.data, bytes):
-                                if self.on_audio_delta:
+                                if not self._skip_until_next_response and self.on_audio_delta:
                                     await self.on_audio_delta(part.inline_data.data)
-                
+
                 # 检查是否 turn 完成（用 getattr 防止 SDK 无该字段时抛错）
                 if getattr(server_content, 'turn_complete', False):
                     # Gemini Live API 不返回 token 数，仅记录调用次数
@@ -1834,12 +1836,17 @@ class OmniRealtimeClient:
                     except Exception:
                         pass
                     self._is_responding = False
-                    # 不再调用 on_output_transcript（已通过 on_text_delta 流式发送）
-                    if self.on_response_done:
+                    if self._skip_until_next_response:
+                        self._skip_until_next_response = False
+                        logger.info("Gemini: skipped response (prime_context priming)")
+                    elif self.on_response_done:
                         await self.on_response_done()
                 
                 # 检查是否被中断
                 if hasattr(server_content, 'interrupted') and server_content.interrupted:
+                    if self._skip_until_next_response:
+                        self._skip_until_next_response = False
+                        logger.info("Gemini: skipped response interrupted, reset skip flag")
                     self._interrupted = True
                     self._is_responding = False
                     # 被中断时也发送已累积的用户输入
