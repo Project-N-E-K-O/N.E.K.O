@@ -112,6 +112,35 @@
             .forEach(function (el) { el.remove(); });
     }
 
+    function markMMDCanvasLoadingSession(canvas, loadingSessionId) {
+        if (!canvas) return;
+        canvas.dataset.mmdLoadingSessionId = String(loadingSessionId);
+        canvas.style.visibility = 'hidden';
+        canvas.style.pointerEvents = 'none';
+    }
+
+    function restoreMMDCanvasForLoadingSession(canvas, loadingSessionId) {
+        if (!canvas) return false;
+        if (canvas.dataset.mmdLoadingSessionId !== String(loadingSessionId)) {
+            return false;
+        }
+        delete canvas.dataset.mmdLoadingSessionId;
+        canvas.style.visibility = 'visible';
+        canvas.style.pointerEvents = 'auto';
+        return true;
+    }
+
+    function isMMDLoadingSessionActive(canvas, loadingSessionId) {
+        return !!canvas && canvas.dataset.mmdLoadingSessionId === String(loadingSessionId);
+    }
+
+    function clearMMDCanvasLoadingSession(canvas) {
+        if (!canvas) return;
+        delete canvas.dataset.mmdLoadingSessionId;
+        canvas.style.visibility = 'hidden';
+        canvas.style.pointerEvents = 'none';
+    }
+
     // =====================================================================
     // Shared: memory-edited session reset logic
     // =====================================================================
@@ -220,6 +249,8 @@
         });
 
         console.log('[Model] 开始热切换模型');
+        let mmdRequestSessionId = '';
+        let activeMmdLoadingSessionId = '';
 
         try {
             // 1. Re-fetch page config
@@ -359,28 +390,38 @@
                         if (typeof window._stopVrmIdleRotation === 'function') window._stopVrmIdleRotation();
                         if (typeof window._stopMmdIdleRotation === 'function') window._stopMmdIdleRotation();
 
-                        await window.vrmManager.loadModel(newModelPath);
-
-                        // 获取角色待机动作列表并启动轮换
-                        if (nameForConfig && typeof window._startVrmIdleRotation === 'function') {
+                        // 【修复】在 loadModel 之前获取角色待机动作列表，
+                        // 更新 lanlan_config 使 loadModel 内部读取到正确的待机动作 URL，
+                        // 避免使用初始页面加载时的过时值导致动画加载失败进入 T-pose。
+                        // 先清空旧值，确保 fetch 失败时 loadModel 回退到安全的硬编码默认值
+                        // 而非残留的上一个角色的待机动作 URL。
+                        var vrmIdleList = [];
+                        window.lanlan_config.vrmIdleAnimation = '';
+                        window.lanlan_config.vrmIdleAnimations = [];
+                        if (nameForConfig) {
                             try {
-                                const charRes = await fetch('/api/characters/');
-                                if (charRes.ok) {
-                                    const charData = await charRes.json();
-                                    const catData = charData?.['猫娘']?.[nameForConfig];
-                                    let idleList = catData?.idleAnimations;
-                                    if (!Array.isArray(idleList)) {
-                                        const single = catData?.idleAnimation;
-                                        idleList = single ? [single] : [];
+                                var charResVrm = await fetch('/api/characters/');
+                                if (charResVrm.ok) {
+                                    var charDataVrm = await charResVrm.json();
+                                    var catDataVrm = charDataVrm?.['猫娘']?.[nameForConfig];
+                                    vrmIdleList = catDataVrm?.idleAnimations;
+                                    if (!Array.isArray(vrmIdleList)) {
+                                        var singleIdle = catDataVrm?.idleAnimation;
+                                        vrmIdleList = singleIdle ? [singleIdle] : [];
                                     }
-                                    window.lanlan_config.vrmIdleAnimations = idleList;
-                                    if (idleList.length > 0) {
-                                        window._startVrmIdleRotation(idleList);
-                                    }
+                                    window.lanlan_config.vrmIdleAnimation = vrmIdleList[0] || '';
+                                    window.lanlan_config.vrmIdleAnimations = vrmIdleList;
                                 }
                             } catch (e) {
                                 console.warn('[Model] 获取VRM待机动作列表失败:', e);
                             }
+                        }
+
+                        await window.vrmManager.loadModel(newModelPath);
+
+                        // 启动待机动作轮换（多个动作时自动切换）
+                        if (vrmIdleList.length > 0 && typeof window._startVrmIdleRotation === 'function') {
+                            window._startVrmIdleRotation(vrmIdleList);
                         }
 
                         // 重新应用打光/曝光/描边；若角色未保存自定义光照，则回退到默认值，避免沿用上一个角色的灯光状态。
@@ -450,16 +491,25 @@
                         mmdContainerShow.style.removeProperty('pointer-events');
                     }
                     var mmdCanvasShow = document.getElementById('mmd-canvas');
+                    const loadingSessionId = window._createMMDLoadingSessionId
+                        ? window._createMMDLoadingSessionId('mmd-interpage')
+                        : `mmd-interpage-${Date.now()}`;
                     if (mmdCanvasShow) {
-                        mmdCanvasShow.style.visibility = 'visible';
-                        mmdCanvasShow.style.pointerEvents = 'auto';
+                        // 先隐藏 canvas，避免旧帧或加载中的模型透过半透明 overlay 露出。
+                        markMMDCanvasLoadingSession(mmdCanvasShow, loadingSessionId);
                     }
+                    mmdRequestSessionId = loadingSessionId;
+                    activeMmdLoadingSessionId = loadingSessionId;
+                    window.MMDLoadingOverlay?.begin(loadingSessionId, { stage: 'engine' });
 
                     // Ensure MMD manager is initialised
                     if (!window.mmdManager) {
                         console.log('[Model] MMD 管理器未初始化，等待初始化完成');
                         if (typeof initMMDModel === 'function') {
-                            await initMMDModel();
+                            const initializedManager = await initMMDModel();
+                            if (!initializedManager || !window.mmdManager || window.mmdManager._isDisposed) {
+                                throw new Error('MMD 管理器初始化失败');
+                            }
                         }
                     }
 
@@ -468,6 +518,7 @@
                         // 提前获取设置并预置物理开关
                         let savedSettings = null;
                         try {
+                            window.MMDLoadingOverlay?.update(loadingSessionId, { stage: 'settings' });
                             var settingsRes = await fetch('/api/characters/catgirl/' + encodeURIComponent(nameForConfig) + '/mmd_settings');
                             var settingsData = await settingsRes.json();
                             if (settingsData.success && settingsData.settings) {
@@ -483,7 +534,8 @@
                         if (typeof window._stopVrmIdleRotation === 'function') window._stopVrmIdleRotation();
                         if (typeof window._stopMmdIdleRotation === 'function') window._stopMmdIdleRotation();
 
-                        await window.mmdManager.loadModel(newModelPath);
+                        window.MMDLoadingOverlay?.update(loadingSessionId, { stage: 'model' });
+                        await window.mmdManager.loadModel(newModelPath, { loadingSessionId });
 
                         // 应用完整设置（光照、渲染、物理、鼠标跟踪）
                         if (savedSettings) {
@@ -504,6 +556,7 @@
                                     }
                                     if (idleList.length > 0) {
                                         try {
+                                            window.MMDLoadingOverlay?.update(loadingSessionId, { stage: 'idle' });
                                             await window.mmdManager.loadAnimation(idleList[0]);
                                             window.mmdManager.playAnimation();
                                             console.log('[Model] 已播放待机动作:', idleList[0]);
@@ -518,6 +571,17 @@
                             } catch (idleErr) {
                                 console.warn('[Model] 获取角色待机动作失败:', idleErr);
                             }
+                        }
+                        window.MMDLoadingOverlay?.update(loadingSessionId, { stage: 'done' });
+                        if (window._waitForMMDRenderFrame) {
+                            await window._waitForMMDRenderFrame(window.mmdManager);
+                        }
+                        var mmdCanvasReady = document.getElementById('mmd-canvas');
+                        if (mmdRequestSessionId === loadingSessionId && isMMDLoadingSessionActive(mmdCanvasReady, loadingSessionId)) {
+                            window.MMDLoadingOverlay?.end(loadingSessionId);
+                            restoreMMDCanvasForLoadingSession(mmdCanvasReady, loadingSessionId);
+                            mmdRequestSessionId = '';
+                            activeMmdLoadingSessionId = '';
                         }
                     } else {
                         console.error('[Model] MMD 管理器初始化失败');
@@ -549,8 +613,7 @@
                     }
                     var mmdCanvas2 = document.getElementById('mmd-canvas');
                     if (mmdCanvas2) {
-                        mmdCanvas2.style.visibility = 'hidden';
-                        mmdCanvas2.style.pointerEvents = 'none';
+                        clearMMDCanvasLoadingSession(mmdCanvas2);
                     }
                     if (window.vrmManager && typeof window.vrmManager.pauseRendering === 'function') {
                         window.vrmManager.pauseRendering();
@@ -658,6 +721,13 @@
             }
         } catch (error) {
             console.error('[Model] 模型热切换失败:', error);
+            if (activeMmdLoadingSessionId) {
+                window.MMDLoadingOverlay?.fail(activeMmdLoadingSessionId, { detail: error?.message || String(error) });
+                if (mmdRequestSessionId === activeMmdLoadingSessionId) {
+                    mmdRequestSessionId = '';
+                }
+                activeMmdLoadingSessionId = '';
+            }
             // 回滚提前写入的 config，防止残留错误的模型类型
             if (typeChanged && window.lanlan_config) {
                 window.lanlan_config.model_type = oldModelType;
@@ -728,8 +798,7 @@
 
             var mmdCanvas = document.getElementById('mmd-canvas');
             if (mmdCanvas) {
-                mmdCanvas.style.visibility = 'hidden';
-                mmdCanvas.style.pointerEvents = 'none';
+                clearMMDCanvasLoadingSession(mmdCanvas);
             }
 
             // Pause render loops to save resources
@@ -804,7 +873,7 @@
                         mmdContainerR.classList.remove('hidden');
                     }
                     var mmdCanvasR = document.getElementById('mmd-canvas');
-                    if (mmdCanvasR) {
+                    if (mmdCanvasR && !mmdRequestSessionId) {
                         mmdCanvasR.style.visibility = 'visible';
                         mmdCanvasR.style.pointerEvents = 'auto';
                     }
@@ -920,6 +989,50 @@
                                     timestamp: Date.now()
                                 });
                             }
+                        }
+                        break;
+                    }
+                    case 'request_avatar_capture': {
+                        if (window.location.pathname === '/chat') break;
+                        var captureLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+                        if (event.data.lanlan_name && (!captureLanlanName || event.data.lanlan_name !== captureLanlanName)) break;
+                        var captureRequestId = event.data.requestId || '';
+                        var includeSource = !!event.data.includeSourceDataUrl;
+                        if (window.avatarPortrait && typeof window.avatarPortrait.capture === 'function') {
+                            window.avatarPortrait.capture({
+                                width: 320, height: 320, padding: 0.035,
+                                shape: 'rounded', radius: 40,
+                                background: 'rgba(255, 255, 255, 0.96)',
+                                includeDataUrl: true,
+                                includeSourceDataUrl: includeSource
+                            }).then(function (result) {
+                                if (!nekoBroadcastChannel) return;
+                                nekoBroadcastChannel.postMessage({
+                                    action: 'avatar_capture_result',
+                                    requestId: captureRequestId,
+                                    dataUrl: result.dataUrl || '',
+                                    modelType: result.modelType || '',
+                                    sourceDataUrl: includeSource ? (result.sourceDataUrl || '') : '',
+                                    cropRectPixels: result.cropRectPixels || null,
+                                    timestamp: Date.now()
+                                });
+                            }).catch(function (err) {
+                                console.error('[BroadcastChannel] avatar capture failed:', err);
+                                if (!nekoBroadcastChannel) return;
+                                nekoBroadcastChannel.postMessage({
+                                    action: 'avatar_capture_result',
+                                    requestId: captureRequestId,
+                                    error: true,
+                                    timestamp: Date.now()
+                                });
+                            });
+                        } else if (nekoBroadcastChannel) {
+                            nekoBroadcastChannel.postMessage({
+                                action: 'avatar_capture_result',
+                                requestId: captureRequestId,
+                                error: true,
+                                timestamp: Date.now()
+                            });
                         }
                         break;
                     }

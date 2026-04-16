@@ -1501,6 +1501,10 @@ function createIntervalControl(manager, prefix, toggle) {
         window[toggle.intervalKey] = value;
         if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
         console.log(`${toggle.id} 间隔已设置为 ${value} 秒`);
+        // 滑块变更后立即重排定时器，让新间隔马上生效
+        if (toggle.id === 'proactive-chat' && typeof window.resetProactiveChatBackoff === 'function') {
+            window.resetProactiveChatBackoff();
+        }
     });
     slider.addEventListener('click', (e) => e.stopPropagation());
     slider.addEventListener('mousedown', (e) => e.stopPropagation());
