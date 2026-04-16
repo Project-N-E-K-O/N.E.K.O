@@ -635,7 +635,7 @@
 
                     if (result.netease_cookie_invalid && typeof window.showStatusToast === 'function') {
                         var now = Date.now();
-                        if (!window._cookieWarnLastTime || now - window._cookieWarnLastTime > 600000) {
+                        if (!window._cookieWarnLastTime || now - window._cookieWarnLastTime > 300000) {
                             var musiccookieWarnMsg = (window.t && window.t('music.cookieExpired')) || '音乐Cookie已失效';
                             window.showStatusToast(musiccookieWarnMsg, 5000);
                             window._cookieWarnLastTime = now;
