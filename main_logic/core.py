@@ -17,7 +17,7 @@ from utils.frontend_utils import contains_chinese, replace_blank, replace_corner
 from utils.screenshot_utils import process_screen_data
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
-from main_logic.tts_client import get_tts_worker, TTS_PROVIDER_REGISTRY
+from main_logic.tts_client import get_tts_worker, dummy_tts_worker, TTS_PROVIDER_REGISTRY
 from utils.preferences import load_global_conversation_settings
 from config import MEMORY_SERVER_PORT, TOOL_SERVER_PORT
 from config.prompts_sys import (
@@ -931,8 +931,15 @@ class LLMSessionManager:
     def _has_custom_tts(self) -> bool:
         """判断当前会话是否使用自定义 TTS（克隆音色或自定义 TTS URL）。"""
         core_config = self._config_manager.get_core_config()
-        return (bool(self.voice_id) and not self._is_free_preset_voice) or bool(
-            core_config.get('ENABLE_CUSTOM_API') and core_config.get('TTS_MODEL_URL')
+        # 克隆音色始终走 custom 路径；
+        # ENABLE_CUSTOM_API + TTS_MODEL_URL 仅在 gptsovitsEnabled 开启时才视为 custom，
+        # 否则 caller 会用 tts_custom credentials 启动 default worker，导致鉴权失败。
+        if bool(self.voice_id) and not self._is_free_preset_voice:
+            return True
+        return bool(
+            core_config.get('ENABLE_CUSTOM_API')
+            and core_config.get('TTS_MODEL_URL')
+            and core_config.get('gptsovitsEnabled')
         )
 
     def _start_tts_thread(self):
@@ -945,16 +952,25 @@ class LLMSessionManager:
         # 重置就绪状态，新 worker 需重新握手
         self.tts_ready = False
 
-        has_custom = self._has_custom_tts()
-        tts_worker, api_key_override, provider_key = get_tts_worker(
-            core_api_type=self.core_api_type,
-            has_custom_voice=has_custom,
-            voice_id=self.voice_id or '',
-        )
-        tts_config = self._config_manager.get_model_api_config(
-            'tts_custom' if has_custom else 'tts_default'
-        )
-        api_key = api_key_override or tts_config['api_key']
+        # 检查是否禁用了 TTS
+        core_config = self._config_manager.get_core_config()
+        if core_config.get('DISABLE_TTS', False):
+            logger.info("TTS 已被用户禁用, 使用 dummy worker")
+            tts_worker = dummy_tts_worker
+            api_key_override = None
+            provider_key = None
+            api_key = ''
+        else:
+            has_custom = self._has_custom_tts()
+            tts_worker, api_key_override, provider_key = get_tts_worker(
+                core_api_type=self.core_api_type,
+                has_custom_voice=has_custom,
+                voice_id=self.voice_id or '',
+            )
+            tts_config = self._config_manager.get_model_api_config(
+                'tts_custom' if has_custom else 'tts_default'
+            )
+            api_key = api_key_override or tts_config['api_key']
 
         # 根据实际选中的 TTS provider 类别决定是否启用流式文本规范化。
         # ws_bistream 类（qwen / step / cosyvoice）直接把文本碎片发给服务端处理，

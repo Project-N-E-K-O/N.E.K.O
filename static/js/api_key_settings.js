@@ -1172,6 +1172,11 @@ async function loadCurrentApiKey() {
                 }, 100);
             }
 
+            // 加载禁用TTS状态
+            if (typeof data.disableTts === 'boolean' && document.getElementById('disableTts')) {
+                document.getElementById('disableTts').checked = data.disableTts;
+            }
+
         } else {
             showCurrentApiKey(window.t ? window.t('api.getCurrentApiKeyFailed') : '获取当前API Key失败', '', false);
         }
@@ -1711,6 +1716,11 @@ async function save_button_down(e) {
         mcpToken, enableCustomApi, gptsovitsEnabled,
         ...modelProviders
     };
+
+    const disableTtsEl = document.getElementById('disableTts');
+    if (disableTtsEl) {
+        payload.disableTts = disableTtsEl.checked;
+    }
 
     // 检查是否已有API Key，如果有则显示警告
     const currentApiKeyDiv = document.getElementById('current-api-key');

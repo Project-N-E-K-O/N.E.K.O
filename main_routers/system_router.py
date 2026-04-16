@@ -25,6 +25,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from openai import APIConnectionError, InternalServerError, RateLimitError
 from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm
+import ssl
 import httpx
 from cachetools import TTLCache
 
@@ -1876,8 +1877,25 @@ async def proxy_meme_image(url: str):
 
         # 使用流式下载以严格控制资源大小，防止内存溢出或大文件攻击
         MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10MB 限制
-        
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
+
+        # 已知 SSL 证书有问题的 CDN 域名（如七牛 CDN hostname mismatch），
+        # 对这些域名首次请求即使用宽松 SSL，避免白白浪费一次超时。
+        _SSL_RELAXED_HOSTS = {'qn.doutub.com'}
+        need_relaxed_ssl = hostname in _SSL_RELAXED_HOSTS
+
+        def _make_client(relaxed: bool = False) -> httpx.AsyncClient:
+            if relaxed:
+                ctx = ssl.create_default_context()
+                try:
+                    ctx.set_ciphers('DEFAULT@SECLEVEL=1')
+                except Exception as e:
+                    logger.debug("[Meme Proxy] set_ciphers SECLEVEL=1 不可用，使用默认密码套件: %s", e)
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                return httpx.AsyncClient(timeout=15.0, follow_redirects=False, verify=ctx)
+            return httpx.AsyncClient(timeout=15.0, follow_redirects=False)
+
+        async with _make_client(relaxed=need_relaxed_ssl) as client:
             current_url = decoded_url
             for _ in range(4):  # 最多跟随 3 次重定向 (4次请求)
                 async with client.stream("GET", current_url, headers=headers) as resp:
@@ -1949,6 +1967,35 @@ async def proxy_meme_image(url: str):
 
     except httpx.TimeoutException:
         return JSONResponse(content={"success": False, "error": "请求超时"}, status_code=504)
+    except (ssl.SSLError, httpx.ConnectError) as e:
+        # SSL 握手失败：对白名单内的表情包域名降级重试（宽松 SSL）
+        is_ssl = isinstance(e, ssl.SSLError) or 'SSL' in str(e) or 'certificate' in str(e).lower()
+        if is_ssl and not need_relaxed_ssl:
+            logger.warning(f"[Meme Proxy] SSL 失败，降级重试: {hostname} ({e})")
+            try:
+                async with _make_client(relaxed=True) as fallback_client:
+                    async with fallback_client.stream("GET", decoded_url, headers=headers) as resp:
+                        resp.raise_for_status()
+                        raw_ct = resp.headers.get('Content-Type', '').lower()
+                        ct = raw_ct.split(';', 1)[0].strip()
+                        allowed_ct = {'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/avif', 'image/bmp'}
+                        if ct not in allowed_ct:
+                            return JSONResponse(content={"success": False, "error": "格式不支持"}, status_code=403)
+                        body = bytearray()
+                        async for chunk in resp.aiter_bytes():
+                            body.extend(chunk)
+                            if len(body) > MAX_IMAGE_SIZE:
+                                return JSONResponse(content={"success": False, "error": "资源超过大小限制"}, status_code=413)
+                        MEME_PROXY_CACHE[cache_key] = {'body': bytes(body), 'content_type': ct}
+                        return Response(
+                            content=bytes(body), media_type=ct,
+                            headers={'Cache-Control': 'public, max-age=86400', 'X-Cache': 'MISS-SSL-FALLBACK', 'X-Content-Type-Options': 'nosniff'}
+                        )
+            except Exception as fallback_e:
+                logger.error(f"[Meme Proxy] SSL 降级重试也失败: {fallback_e}")
+                return JSONResponse(content={"success": False, "error": str(fallback_e)}, status_code=500)
+        logger.error(f"[Meme Proxy] 代理失败: {str(e)}")
+        return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
     except Exception as e:
         logger.error(f"[Meme Proxy] 代理失败: {str(e)}")
         return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
