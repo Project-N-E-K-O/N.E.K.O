@@ -643,11 +643,9 @@
                     }
 
 
-                    if (result.netease_cookie_invalid) {
-                        if (window.showStatusToast) {
-                            var musiccookieWarnMsg = window.safeT ? window.safeT('music.cookieExpired', '音乐Cookie已失效') : '音乐cookie已失效';
-                            window.showStatusToast(musiccookieWarnMsg, 5000);
-                        }
+                    if (result.netease_cookie_invalid && typeof window.showStatusToast === 'function') {
+                        var musiccookieWarnMsg = (window.t && window.t('music.cookieExpired')) || '音乐Cookie已失效';
+                        window.showStatusToast(musiccookieWarnMsg, 5000);
                     }
 
                     if (result.data && result.data.length > 0) {

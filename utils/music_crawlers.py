@@ -1028,9 +1028,10 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
     all_results = []
     
     # 使用懒加载访问器获取爬虫实例
-    all_crawlers = get_music_crawlers() 
+    all_crawlers = get_music_crawlers()
+    netease_used = False
 
-    if keyword: 
+    if keyword:
         # 场景 A: 用户指定了明确关键词 -> 开启"梯队降级"机制
         kw_lower = keyword.lower()
         # 1. 【强古典词】确保正确路由至 Musopen
@@ -1079,8 +1080,7 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
         primary_tasks = []
         
         # --- 组建第一梯队（最优解竞速） ---
-        netease_used = False
-        
+
         # 1. 古典乐意图判定：强古典词 OR (包含乐器词且非现代风格词)
         is_classical = any(kw in kw_lower for kw in strong_classical) or \
                        (any(kw in kw_lower for kw in instruments) and not any(kw in kw_lower for kw in modern_styles))

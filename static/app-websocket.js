@@ -1363,6 +1363,11 @@
                                         return;
                                     }
                                 }
+                                if (result.netease_cookie_invalid && typeof window.showStatusToast === 'function') {
+                                    var musiccookieWarnMsg2 = (window.t && window.t('music.cookieExpired')) || '音乐Cookie已失效';
+                                    window.showStatusToast(musiccookieWarnMsg2, 5000);
+                                }
+
                                 if (result.success) {
                                     if (result.data && result.data.length > 0) {
                                         var track = result.data[0];
@@ -1372,12 +1377,6 @@
                                         if (typeof window.showStatusToast === 'function') {
                                             var notFoundMsg = window.t('music.notFound', { query: searchTerm, defaultValue: '找不到歌曲: ' + searchTerm });
                                             window.showStatusToast(notFoundMsg, 3000);
-                                        }
-                                    }
-                                    if (result.netease_cookie_invalid) {
-                                        if (typeof window.showStatusToast === 'function') {
-                                            var musiccookieWarnMsg2 = window.safeT ? window.safeT('music.cookieExpired', '音乐Cookie已失效') : '音乐Cookie已失效';
-                                            window.showStatusToast(musiccookieWarnMsg2, 5000);
                                         }
                                     }
                                 } else {
