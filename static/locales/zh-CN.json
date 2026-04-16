@@ -2811,7 +2811,8 @@
         "ended": "已结束",
         "unknownState": "未知状态",
         "volume": "音量: ",
-        "unsafeSource": "已拦截不安全音源: {{domain}}"
+        "unsafeSource": "已拦截不安全音源: {{domain}}",
+        "cookieExpired": "音乐Cookie已失效"
     },
     "Jukebox": {
         "title": "点歌台",

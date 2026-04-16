@@ -1511,6 +1511,15 @@
                                         return;
                                     }
                                 }
+                                if (result.netease_cookie_invalid && typeof window.showStatusToast === 'function') {
+                                    var now2 = Date.now();
+                                    if (!window._cookieWarnLastTime || now2 - window._cookieWarnLastTime > 300000) {
+                                        var musiccookieWarnMsg2 = (window.t && window.t('music.cookieExpired')) || '音乐Cookie已失效';
+                                        window.showStatusToast(musiccookieWarnMsg2, 5000);
+                                        window._cookieWarnLastTime = now2;
+                                    }
+                                }
+
                                 if (result.success) {
                                     if (result.data && result.data.length > 0) {
                                         var track = result.data[0];

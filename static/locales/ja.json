@@ -2811,7 +2811,8 @@
         "ended": "終了",
         "unknownState": "不明な状態",
         "volume": "音量: ",
-        "unsafeSource": "安全でない音源をブロックしました: {{domain}}"
+        "unsafeSource": "安全でない音源をブロックしました: {{domain}}",
+        "cookieExpired": "音楽Cookieの有効期限が切れました"
     },
     "Jukebox": {
         "title": "ジュークボックス",

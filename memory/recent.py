@@ -20,11 +20,12 @@ from utils.logger_config import setup_logging
 logger, log_config = setup_logging(service_name="Memory", log_level=logging.INFO)
 
 class CompressedRecentHistoryManager:
-    def __init__(self, max_history_length=10):
+    def __init__(self, max_history_length=10, compress_threshold=15):
         self._config_manager = get_config_manager()
         # 通过get_character_data获取相关变量
         _, _, _, _, name_mapping, _, _, _, recent_log = self._config_manager.get_character_data()
-        self.max_history_length = max_history_length
+        self.max_history_length = max_history_length      # 压缩后保留条数
+        self.compress_threshold = compress_threshold      # >此值才触发压缩
         self.log_file_path = recent_log
         self.name_mapping = name_mapping
         self.user_histories = {}
@@ -129,7 +130,7 @@ class CompressedRecentHistoryManager:
                 ensure_ascii=False,
             )  # Save the updated history to file before compressing
 
-            if compress and len(self.user_histories[lanlan_name]) > self.max_history_length:
+            if compress and len(self.user_histories[lanlan_name]) > self.compress_threshold:
                 to_compress = self.user_histories[lanlan_name][:-self.max_history_length+1]
                 compressed = [(await self.compress_history(to_compress, lanlan_name, detailed))[0]]
                 self.user_histories[lanlan_name] = compressed + self.user_histories[lanlan_name][-self.max_history_length+1:]
