@@ -2264,7 +2264,7 @@ class LLMSessionManager:
         _lang = normalize_language_code(self.user_language, format='short')
         from config.prompts_proactive import get_greeting_prompt, get_time_of_day_hint
         from utils.time_format import format_elapsed as _format_elapsed
-        from utils.holiday_cache import get_holiday_or_weekend_hint
+        from utils.holiday_cache import preview_holiday_or_weekend_hint, commit_holiday_or_weekend_hint
         template = get_greeting_prompt(gap_seconds, _lang)
         if not template:
             return
@@ -2294,12 +2294,13 @@ class LLMSessionManager:
             logger.warning("[%s] trigger_greeting: session is not text mode after start, aborting", self.lanlan_name)
             return
 
-        # 投递通道已就绪，构建 instruction（此时才消费节日预算）
+        # 投递通道已就绪，构建 instruction（节日预算仅 preview，不消费）
         elapsed = _format_elapsed(_lang, gap_seconds)
         time_hint = get_time_of_day_hint(_lang).format(master=self.master_name)
 
+        _holiday_token = None
         try:
-            holiday_hint_text = await get_holiday_or_weekend_hint(_lang, self.lanlan_name)
+            holiday_hint_text, _holiday_token = await preview_holiday_or_weekend_hint(_lang, self.lanlan_name)
         except Exception as e:
             logger.debug("[%s] trigger_greeting: holiday hint failed: %s", self.lanlan_name, e)
             holiday_hint_text = None
@@ -2327,6 +2328,9 @@ class LLMSessionManager:
                 self._tts_done_queued_for_turn = False
             delivered = await self.session.prompt_ephemeral(instruction)
             logger.info("[%s] trigger_greeting: delivered=%s", self.lanlan_name, delivered)
+            # 投递成功后才真正消费节日/周末预算
+            if delivered and _holiday_token is not None:
+                commit_holiday_or_weekend_hint(self.lanlan_name, _holiday_token)
 
     def enqueue_agent_callback(self, callback: dict) -> None:
         """Enqueue a structured agent task callback for LLM injection.
