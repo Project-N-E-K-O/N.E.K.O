@@ -750,6 +750,11 @@
             var text = String(typeof rawText === 'string' ? rawText : '').trim();
             var hasScreenshots = screenshotsList.children.length > 0;
 
+            // Store last submitted text for rollback on RESPONSE_TOO_LONG
+            if (text) {
+                window._lastSubmittedText = text;
+            }
+
             if (!text && !hasScreenshots) return;
 
             // Record user input time and reset proactive chat

@@ -33,7 +33,9 @@
         onComposerImportImage: null,
         onComposerScreenshot: null,
         onComposerRemoveAttachment: null,
-        onComposerSubmit: null
+        onComposerSubmit: null,
+        lastSubmittedText: '',
+        rollbackDraft: ''
     };
 
     var MOBILE_MAX_HEIGHT_RATIO = 0.5;
@@ -360,9 +362,14 @@
     }
 
     function buildRenderProps() {
+        if (state.rollbackDraft) {
+            console.log('[ROLLBACK] buildRenderProps: rollbackDraft=' + state.rollbackDraft.slice(0, 30) + ' key=' + state._rollbackKey);
+        }
         return Object.assign({}, ensureViewProps(), {
             messages: state.messages,
             composerAttachments: state.composerAttachments,
+            rollbackDraft: state.rollbackDraft || undefined,
+            _rollbackKey: state._rollbackKey || undefined,
             onMessageAction: handleMessageAction,
             onComposerImportImage: handleComposerImportImage,
             onComposerScreenshot: handleComposerScreenshot,
@@ -610,6 +617,16 @@
         var hasAttachments = state.composerAttachments && state.composerAttachments.length > 0;
         if (!detail.text.trim() && !hasAttachments) return;
 
+        // Store last submitted text for rollback on RESPONSE_TOO_LONG
+        if (detail.text.trim()) {
+            state.lastSubmittedText = detail.text.trim();
+        }
+        // Clear any stale rollback so it won't overwrite this new draft
+        if (state.rollbackDraft) {
+            console.log('[ROLLBACK] handleComposerSubmit: clearing rollbackDraft (was "' + state.rollbackDraft.slice(0, 30) + '")');
+        }
+        state.rollbackDraft = '';
+
         if (typeof state.onComposerSubmit === 'function') {
             try {
                 state.onComposerSubmit(detail);
@@ -678,6 +695,19 @@
         }
 
         dispatchHostEvent('remove-attachment', { attachmentId: attachmentId });
+    }
+
+    /**
+     * Rollback last submitted text to the React composer input.
+     * Called when backend discards response due to RESPONSE_TOO_LONG.
+     */
+    function rollbackLastDraft() {
+        if (!state.lastSubmittedText) return;
+        // Use a unique key each time so React useEffect can distinguish invocations
+        state.rollbackDraft = state.lastSubmittedText;
+        state._rollbackKey = 'rb-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+        console.log('[ROLLBACK] rollbackLastDraft: key=' + state._rollbackKey + ' text=' + state.rollbackDraft.slice(0, 30));
+        renderWindow();
     }
 
     function handleJukeboxClick() {
@@ -1705,6 +1735,7 @@
         setOnComposerSubmit: function (handler) {
             state.onComposerSubmit = typeof handler === 'function' ? handler : null;
         },
+        rollbackLastDraft: rollbackLastDraft,
         isMounted: function () { return mounted; }
     };
 })();

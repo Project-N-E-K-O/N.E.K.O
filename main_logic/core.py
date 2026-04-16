@@ -552,9 +552,19 @@ class LLMSessionManager:
         处理响应被丢弃的通知：清空 TTS 管线 + 前端输出，必要时发送 turn end
         """
         logger.warning(f"[{self.lanlan_name}] 响应异常已丢弃 (reason={reason}, attempt={attempt}/{max_attempts}, will_retry={will_retry})")
-        
+
+        # 检测是否为 RESPONSE_TOO_LONG 最终丢弃
+        _is_too_long_final = False
+        if not will_retry and message:
+            try:
+                parsed = json.loads(message) if isinstance(message, str) else message
+                if isinstance(parsed, dict) and parsed.get('code') == 'RESPONSE_TOO_LONG':
+                    _is_too_long_final = True
+            except Exception:
+                pass
+
         await self._clear_tts_pipeline()
-        
+
         if self.websocket and hasattr(self.websocket, 'client_state') and \
                 self.websocket.client_state == self.websocket.client_state.CONNECTED:
             try:
@@ -568,6 +578,33 @@ class LLMSessionManager:
                 })
             except Exception as e:
                 logger.warning(f"发送 response_discarded 到前端失败: {e}")
+
+        # RESPONSE_TOO_LONG 最终丢弃时：发送可爱回复 + 用角色 TTS 音色念出来
+        if _is_too_long_final:
+            try:
+                too_long_text = "唔主人你让人家想太多了，人家想不过来了啦！"
+
+                # 发送文本到前端显示
+                await self.send_lanlan_response(too_long_text, is_first_chunk=True)
+
+                # 喂给 TTS 管线用角色音色念
+                if self.use_tts:
+                    async with self.lock:
+                        self.current_speech_id = str(uuid4())
+                        self._tts_done_queued_for_turn = False
+                    await self.feed_tts_chunk(too_long_text)
+                    # TTS 结束信号
+                    if self.tts_thread and self.tts_thread.is_alive():
+                        self.tts_request_queue.put((None, None))
+                        self._tts_done_queued_for_turn = True
+
+                # turn end
+                self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
+                if self.websocket and hasattr(self.websocket, 'client_state') and \
+                        self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                    await self.websocket.send_json({'type': 'system', 'data': 'turn end'})
+            except Exception as e:
+                logger.warning(f"⚠️ RESPONSE_TOO_LONG 回复发送失败: {e}")
 
         if self.sync_message_queue:
             self.sync_message_queue.put({
