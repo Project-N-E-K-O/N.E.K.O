@@ -1888,8 +1888,8 @@ async def proxy_meme_image(url: str):
                 ctx = ssl.create_default_context()
                 try:
                     ctx.set_ciphers('DEFAULT@SECLEVEL=1')
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("[Meme Proxy] set_ciphers SECLEVEL=1 不可用，使用默认密码套件: %s", e)
                 ctx.check_hostname = False
                 ctx.verify_mode = ssl.CERT_NONE
                 return httpx.AsyncClient(timeout=15.0, follow_redirects=False, verify=ctx)
