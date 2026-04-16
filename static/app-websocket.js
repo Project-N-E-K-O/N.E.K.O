@@ -1333,6 +1333,12 @@
                                             window.showStatusToast(notFoundMsg, 3000);
                                         }
                                     }
+                                    if (result.netease_cookie_invalid) {
+                                        if (typeof window.showStatusToast === 'function') {
+                                            var musiccookieWarnMsg2 = window.safeT ? window.safeT('music.cookieExpired', '音乐Cookie已失效') : '音乐Cookie已失效';
+                                            window.showStatusToast(musiccookieWarnMsg2, 5000);
+                                        }
+                                    }
                                 } else {
                                     console.error('[Music] Music search API returned error:', result.message || result.error);
                                     if (typeof window.showStatusToast === 'function') {

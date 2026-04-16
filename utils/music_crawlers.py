@@ -326,7 +326,8 @@ class NeteaseCrawler(BaseMusicCrawler):
         self._has_cookies = False
         self._is_vip = False
         self._vip_checked = False
-        self._cookie_file_mtime = 0.0  # 记录 Cookie 文件最后修改时间
+        self._cookie_file_mtime = 0.0   # 记录 Cookie 文件最后修改时间
+        self._cookie_invalid = False    # 音乐凭证有效性
         self._load_cookies()
 
     def _get_cookie_file_mtime(self) -> float:
@@ -367,7 +368,7 @@ class NeteaseCrawler(BaseMusicCrawler):
         if current_mtime != self._cookie_file_mtime:
             logger.info(f"[{self.platform_name}] 检测到凭证文件变动 (mtime: {self._cookie_file_mtime} → {current_mtime})，执行热重载")
             self._load_cookies()
-            # 凭证变了，VIP 身份需要重新探测
+            self._cookie_invalid = False
             self._is_vip = False
             self._vip_checked = False
 
@@ -376,26 +377,38 @@ class NeteaseCrawler(BaseMusicCrawler):
         if self._vip_checked:
             return
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(
-                    'https://music.163.com/api/vip/info',
-                    headers={
-                        'Referer': 'https://music.163.com/',
-                        'Cookie': self.client.headers.get('Cookie', ''),
-                        'User-Agent': self.client.headers.get('User-Agent', '')
-                    }
-                )
-                data = resp.json()
-                # vipType > 0 表示有 VIP 身份
-                self._is_vip = data.get('data', {}).get('vipType', 0) > 0
-                self._vip_checked = True
-                if self._is_vip:
-                    logger.info(f"[{self.platform_name}] 用户为 VIP 会员，已解锁完整曲库搜索")
-                else:
-                    logger.info(f"[{self.platform_name}] 用户为普通账号，已登录但无 VIP")
+            # 切换到更稳定的获取账号与 VIP 信息的接口 (解决 /api/vip/info 的 404 问题)
+            resp = await self.client.get('https://music.163.com/api/nuser/account/get')
+            data = resp.json()
+            code = data.get('code')
+            
+            # 提取核心数据对象
+            profile = data.get('profile') or {}
+            data_field = data.get('data', {}) or {}
+            
+            # 1. 检查标准的 vipType (profile 级)
+            vip_type = profile.get('vipType', 0)
+            # 2. 检查 fallback 的 vipType (data 级)
+            alt_vip_type = data_field.get('vipType', 0)
+            
+            # 3. 检查 associator (包含音乐包等细分会员)
+            assoc = data_field.get('associator') or profile.get('associator') or {}
+            is_assoc_vip = assoc.get('isVip', False) or (assoc.get('vipCode', 0) > 0)
+            
+            self._is_vip = (vip_type > 0) or (alt_vip_type > 0) or is_assoc_vip
+            self._vip_checked = True
+            
+            if self._is_vip:
+                logger.info(f"[{self.platform_name}] VIP 身份探测成功 (VipType:{vip_type}, Assoc:{is_assoc_vip})")
+            elif code != 200:
+                logger.warning(f"[{self.platform_name}] 凭证失效或接口异常 (code: {code})")
+                self._cookie_invalid = True
+                self._vip_checked = False
+            else:
+                logger.info(f"[{self.platform_name}] 确认为普通账号 (无有效会员特征)")
+                logger.debug(f"[{self.platform_name}] 响应结构摘要: {list(data.keys())}")
         except Exception as e:
-            # 探测失败时不锁定状态，下次搜索会重试
-            logger.warning(f"[{self.platform_name}] VIP 状态检查失败 (下次搜索将重试): {e}")
+            logger.warning(f"[{self.platform_name}] VIP 状态检查链路异常: {e}")
 
     async def search(self, keyword: str, limit: int = 1) -> List[Dict[str, Any]]:
         self._refresh_user_agent()
@@ -1234,7 +1247,8 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
         'success': True, 
         'data': final_results, 
         'diversity': diversity_info,
-        'best_match': best_match  # 将匹配状态透传给业务层，用于后续生成动态提示词
+        'best_match': best_match,
+        'netease_cookie_invalid': all_crawlers.get('netease', NeteaseCrawler())._cookie_invalid if all_results else False
     }
 
 def expand_style_keyword(keyword: str) -> List[str]:

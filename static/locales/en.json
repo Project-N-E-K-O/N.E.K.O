@@ -2769,7 +2769,8 @@
         "ended": "Ended",
         "unknownState": "Unknown state",
         "volume": "Volume: ",
-        "unsafeSource": "Blocked unsafe audio source: {{domain}}"
+        "unsafeSource": "Blocked unsafe audio source: {{domain}}",
+        "cookieExpired": "音乐Cookie已失效"
     },
     "Jukebox": {
         "title": "Jukebox",
