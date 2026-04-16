@@ -603,19 +603,27 @@ async def get_holiday_or_weekend_hint(lang: str, character: str) -> str | None:
 # ── preview / commit (deferred consumption) ────────────────────────
 
 def _has_holiday_budget(character: str, proximity: HolidayProximity) -> bool:
-    """Check whether budget is available WITHOUT consuming it."""
-    period = proximity.period
+    """Check whether budget is available WITHOUT consuming or mutating state."""
+    rec = _consumption_data.get(character)
+    if rec is None:
+        return True  # no record → full budget
+    period_key = proximity.period.start.isoformat()
+    period_rec = rec.get("periods", {}).get(period_key)
+    if period_rec is None:
+        return True  # not initialised → full budget
+
     if not proximity.is_today:
-        return _get_period_bucket(character, period, "period", _BUDGET_PERIOD) > 0
-    today = date.today()
-    if period.is_nominal_day(today):
-        return _get_period_bucket(character, period, "holiday", _BUDGET_HOLIDAY) > 0
-    return _get_period_bucket(character, period, "period", _BUDGET_PERIOD) > 0
+        return period_rec.get("period", _BUDGET_PERIOD) > 0
+    if proximity.period.is_nominal_day(date.today()):
+        return period_rec.get("holiday", _BUDGET_HOLIDAY) > 0
+    return period_rec.get("period", _BUDGET_PERIOD) > 0
 
 
 def _has_weekend_budget(character: str) -> bool:
-    """Check whether weekend budget is available WITHOUT consuming it."""
-    rec = _get_char_record(character)
+    """Check whether weekend budget is available WITHOUT consuming or mutating state."""
+    rec = _consumption_data.get(character)
+    if rec is None:
+        return True  # no record → full budget
     today_iso = date.today().isoformat()
     if rec.get("weekend_date") != today_iso:
         return True  # new day → full budget
