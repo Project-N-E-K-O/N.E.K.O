@@ -1131,15 +1131,15 @@ class OmniRealtimeClient:
             await self._create_response_gemini(text)
             return
 
-        # 所有 WebSocket 提供商：先更新 session instructions
-        await self.update_session({"instructions": self.instructions + '\n' + text})
-        logger.info("prime_context: updated session instructions")
-
-        # skipped=False 时需要触发模型主动响应（任务结果汇报等场景）
         if not skipped and "qwen" not in self._model_lower:
-            # 通过 conversation.item.create + response.create 触发响应
-            # Qwen 不支持 conversation.item.create，跳过
+            # skipped=False：需要模型主动响应（任务结果汇报）
+            # 通过 create_response 注入 user 消息 + 触发响应
+            # Qwen 不支持 conversation.item.create，走下方 update_session
             await self.create_response(text)
+        else:
+            # skipped=True 或 Qwen：仅追加到 session instructions
+            await self.update_session({"instructions": self.instructions + '\n' + text})
+            logger.info("prime_context: updated session instructions")
 
     async def create_response(self, instructions: str, skipped: bool = False) -> None:
         """Inject a persistent user message and trigger an LLM response.
