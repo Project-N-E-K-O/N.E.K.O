@@ -152,6 +152,26 @@
     .stat-value { font-size: 1.6rem; font-weight: 700; color: #fb7299; line-height: 1; }
     .stat-label { font-size: 0.75rem; color: #8e8e93; margin-top: 4px; }
 
+    /* ── 连接详情 ── */
+    .conn-details {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid #2a2a32;
+    }
+    .conn-detail-item {
+      background: #28282f;
+      border-radius: 8px;
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .conn-label { font-size: 0.7rem; color: #8e8e93; }
+    .conn-value { font-size: 0.85rem; color: #e0e0e0; font-weight: 500; word-break: break-all; }
+
     /* ── 弹幕流 ── */
     #danmakuFeed {
       height: 340px;
@@ -358,6 +378,22 @@
       <div class="stat-item">
         <div class="stat-value" id="statQueue">—</div>
         <div class="stat-label">缓冲弹幕</div>
+      </div>
+    </div>
+
+    <!-- 连接详情 -->
+    <div class="conn-details">
+      <div class="conn-detail-item">
+        <span class="conn-label">弹幕服务器</span>
+        <span class="conn-value" id="connServer">—</span>
+      </div>
+      <div class="conn-detail-item">
+        <span class="conn-label">连接状态</span>
+        <span class="conn-value" id="connState">—</span>
+      </div>
+      <div class="conn-detail-item">
+        <span class="conn-label">当前人气</span>
+        <span class="conn-value" id="connViewers">—</span>
       </div>
     </div>
   </div>
@@ -661,11 +697,15 @@
     const listening   = data.listening;
     const connecting  = data.connecting;
     const roomId      = data.room_id || 0;
+    const conn        = data.connection || {};
 
     bar.className = 'status-bar';
     if (listening) {
       bar.classList.add('connected');
-      text.textContent = `🟢 正在监听直播间 ${roomId}  ·  ${data.logged_in ? '🔐 已登录' : '👤 游客'}`;
+      // 显示连接详情
+      const serverInfo = conn.server ? `  ·  ${conn.server}` : '';
+      const viewerInfo = conn.viewer_count ? `  ·  👁 ${conn.viewer_count.toLocaleString()}` : '';
+      text.textContent = `🟢 正在监听直播间 ${roomId}  ·  ${data.logged_in ? '🔐 已登录' : '👤 游客'}${serverInfo}${viewerInfo}`;
     } else if (connecting) {
       bar.classList.add('connecting');
       text.textContent = `⏳ 正在连接直播间 ${roomId}…`;
@@ -676,11 +716,19 @@
         : '⚙️ 未配置直播间';
     }
 
-    // 统计
+    // 更新统计区
     const stats = data.stats || {};
     document.getElementById('statReceived').textContent = stats.received ?? data.received ?? '—';
     document.getElementById('statFiltered').textContent = stats.filtered ?? data.filtered ?? '—';
     document.getElementById('statQueue').textContent    = data.queue_size ?? '—';
+
+    // 更新连接详情区（如果存在）
+    const connServer = document.getElementById('connServer');
+    const connViewers = document.getElementById('connViewers');
+    const connState = document.getElementById('connState');
+    if (connServer) connServer.textContent = conn.server || '—';
+    if (connViewers) connViewers.textContent = conn.viewer_count ? conn.viewer_count.toLocaleString() : '—';
+    if (connState) connState.textContent = conn.state_desc || conn.state || '—';
 
     // 同步直播间输入框（只在空白时填入）
     const roomInput = document.getElementById('roomIdInput');
@@ -815,10 +863,13 @@
         const bar = document.getElementById('statusBar');
         const text = document.getElementById('statusText');
         const roomId = data.room_id || 0;
+        const conn = data.connection || {};
         bar.className = 'status-bar';
         if (_lastListening) {
           bar.classList.add('connected');
-          text.textContent = `🟢 正在监听直播间 ${roomId}  ·  ${data.logged_in ? '🔐 已登录' : '👤 游客'}`;
+          const serverInfo = conn.server ? `  ·  ${conn.server}` : '';
+          const viewerInfo = conn.viewer_count ? `  ·  👁 ${conn.viewer_count.toLocaleString()}` : '';
+          text.textContent = `🟢 正在监听直播间 ${roomId}  ·  ${data.logged_in ? '🔐 已登录' : '👤 游客'}${serverInfo}${viewerInfo}`;
         } else if (_lastConnecting) {
           bar.classList.add('connecting');
           text.textContent = `⏳ 正在连接直播间 ${roomId}…`;
@@ -833,6 +884,14 @@
         document.getElementById('statReceived').textContent = stats.received ?? data.received ?? '—';
         document.getElementById('statFiltered').textContent = stats.filtered ?? data.filtered ?? '—';
         document.getElementById('statQueue').textContent    = data.queue_size ?? '—';
+
+        // 更新连接详情
+        const connServer = document.getElementById('connServer');
+        const connViewers = document.getElementById('connViewers');
+        const connState = document.getElementById('connState');
+        if (connServer) connServer.textContent = conn.server || '—';
+        if (connViewers) connViewers.textContent = conn.viewer_count ? conn.viewer_count.toLocaleString() : '—';
+        if (connState) connState.textContent = conn.state_desc || conn.state || '—';
       } catch (e) {
         console.warn('[poll] 轮询出错', e.message);
       }
