@@ -3396,6 +3396,12 @@ window.Jukebox = {
       Jukebox.State._dragCleanup = null;
     }
 
+    // 清理缩放事件监听
+    if (Jukebox.State._resizeCleanup) {
+      Jukebox.State._resizeCleanup();
+      Jukebox.State._resizeCleanup = null;
+    }
+
     // 断开独立窗口拖拽层守护 observer
     if (Jukebox.State._dragGuard) {
       try { Jukebox.State._dragGuard.disconnect(); } catch (_) {}
@@ -3818,7 +3824,7 @@ window.Jukebox = {
         document.removeEventListener('touchmove', onPointerMove);
         document.removeEventListener('mouseup', cleanup);
         document.removeEventListener('touchend', cleanup);
-        document.removeEventListener('blur', cleanup);
+        window.removeEventListener('blur', cleanup);
         Jukebox.State._resizeCleanup = null;
       };
 
@@ -3830,7 +3836,7 @@ window.Jukebox = {
       document.addEventListener('mouseup', cleanup);
       document.addEventListener('touchend', cleanup);
       // 窗口失焦时清理，防止监听泄漏
-      document.addEventListener('blur', cleanup);
+      window.addEventListener('blur', cleanup);
     };
 
     handles.forEach(function(handle) {
