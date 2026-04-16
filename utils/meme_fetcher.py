@@ -773,11 +773,12 @@ class DoutupkFetcher:
                 if not src or 'static.doutupk.com' in src or not _is_valid_meme_url(src):
                     continue
 
+                # 若站点偶发出根相对路径 /uploads/...，urljoin 会拼成绝对 URL；
+                # 已是绝对 URL 则原样返回。否则前端 safeUrl 会丢弃并让竞速假阳性。
+                src = urljoin(self.base_url + '/', src)
                 # 统一升级为 https，避免 mixed content 与部分 client 强校验
                 if src.startswith('http://'):
                     src = 'https://' + src[len('http://'):]
-                elif src.startswith('//'):
-                    src = 'https:' + src
 
                 # 详情页 URL 可做点击跳转的 page_url
                 parent_a = img.find_parent('a')
