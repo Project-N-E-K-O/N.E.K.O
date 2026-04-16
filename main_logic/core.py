@@ -948,7 +948,7 @@ class LLMSessionManager:
         # 检查是否禁用了 TTS
         core_config = self._config_manager.get_core_config()
         if core_config.get('DISABLE_TTS', False):
-            logger.info("TTS 已被用户禁用，使用 dummy worker")
+            logger.info("TTS 已被用户禁用, 使用 dummy worker")
             tts_worker = dummy_tts_worker
             api_key_override = None
             provider_key = None

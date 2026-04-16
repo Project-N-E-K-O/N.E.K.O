@@ -2609,7 +2609,9 @@ def dummy_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
         try:
             # 持续清空队列以避免阻塞，但不做任何处理
             sid, tts_text = request_queue.get()
-            if sid is None or sid == "__interrupt__":
+            if sid is None:
+                break
+            if sid == "__interrupt__":
                 continue
         except Exception as e:
             logger.error(f"Dummy TTS Worker 错误: {e}")

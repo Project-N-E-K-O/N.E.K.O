@@ -681,6 +681,8 @@ async def update_core_config(request: Request):
         if 'gptsovitsEnabled' in data:
             core_cfg['gptsovitsEnabled'] = data['gptsovitsEnabled']
         if 'disableTts' in data:
+            if not isinstance(data['disableTts'], bool):
+                return {"success": False, "error": "disableTts must be a boolean"}
             core_cfg['disableTts'] = data['disableTts']
 
         # 自定义API配置（Provider / Url / Id / ApiKey per model type）

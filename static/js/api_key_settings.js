@@ -1714,9 +1714,13 @@ async function save_button_down(e) {
         omniModelUrl, omniModelId, omniModelApiKey,
         ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId,
         mcpToken, enableCustomApi, gptsovitsEnabled,
-        disableTts: document.getElementById('disableTts')?.checked || false,
         ...modelProviders
     };
+
+    const disableTtsEl = document.getElementById('disableTts');
+    if (disableTtsEl) {
+        payload.disableTts = disableTtsEl.checked;
+    }
 
     // 检查是否已有API Key，如果有则显示警告
     const currentApiKeyDiv = document.getElementById('current-api-key');
