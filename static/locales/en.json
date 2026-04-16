@@ -1888,8 +1888,19 @@
             "changeFailed": "Failed to change idle animation"
         },
         "managerInitFailed": "MMD manager initialization failed",
+        "moduleLoading": "Loading MMD modules...",
         "modelLoading": "Loading MMD model...",
-        "modelLoaded": "MMD model loaded successfully"
+        "modelLoaded": "MMD model loaded successfully",
+        "modelLoadFailed": "Failed to load MMD model: {{error}}",
+        "loadingOverlay": {
+            "engine": "Preparing MMD engine...",
+            "settings": "Loading MMD settings...",
+            "model": "Loading model resources...",
+            "physics": "Initializing physics...",
+            "idle": "Loading idle animation...",
+            "done": "MMD ready",
+            "failed": "Failed to load MMD"
+        }
     },
     "modelManager": {
         "vrmLoadingDependencies": "[VRM] Starting to load dependency modules",
