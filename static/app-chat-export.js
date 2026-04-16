@@ -23,6 +23,7 @@
     var state = {
         isPreparingPreview: false,
         isExporting: false,
+        isCopying: false,
         exportFormat: 'image',
         imageExportFormat: 'png',
         imageExportStyle: 'neko',
@@ -1644,16 +1645,19 @@
                     img.onerror = reject;
                 });
                 var blobUrl = URL.createObjectURL(blob);
-                img.src = blobUrl;
-                await loaded;
-                var cvs = document.createElement('canvas');
-                cvs.width = img.naturalWidth;
-                cvs.height = img.naturalHeight;
-                cvs.getContext('2d').drawImage(img, 0, 0);
-                URL.revokeObjectURL(blobUrl);
-                pngBlob = await new Promise(function (resolve, reject) {
-                    cvs.toBlob(function (b) { b ? resolve(b) : reject(new Error('toBlob failed')); }, 'image/png');
-                });
+                try {
+                    img.src = blobUrl;
+                    await loaded;
+                    var cvs = document.createElement('canvas');
+                    cvs.width = img.naturalWidth;
+                    cvs.height = img.naturalHeight;
+                    cvs.getContext('2d').drawImage(img, 0, 0);
+                    pngBlob = await new Promise(function (resolve, reject) {
+                        cvs.toBlob(function (b) { b ? resolve(b) : reject(new Error('toBlob failed')); }, 'image/png');
+                    });
+                } finally {
+                    URL.revokeObjectURL(blobUrl);
+                }
             }
             await navigator.clipboard.write([
                 new ClipboardItem({ 'image/png': pngBlob })
@@ -2120,7 +2124,7 @@
         }
 
         // update copy button label based on format
-        modal.copyButton.disabled = false;
+        modal.copyButton.disabled = state.isCopying;
         modal.copyButton.textContent = translateLabel('chat.copyToClipboard', 'Copy to Clipboard');
 
         // update download button label
@@ -2288,11 +2292,13 @@
     }
 
     async function handleCopyClick() {
+        if (state.isCopying) return;
         var entries = getSelectedEntries();
         if (entries.length === 0) {
             showToast('chat.exportSelectionEmpty', 'Select at least one message to export.');
             return;
         }
+        state.isCopying = true;
         var modal = state.previewModal;
         if (modal) modal.copyButton.disabled = true;
         try {
@@ -2316,6 +2322,7 @@
                 showToast('chat.copyMarkdownFailed', 'Failed to copy Markdown.', 4000);
             }
         } finally {
+            state.isCopying = false;
             if (modal) modal.copyButton.disabled = false;
         }
     }
