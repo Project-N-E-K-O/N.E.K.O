@@ -9,6 +9,7 @@ Handles jukebox-related endpoints including:
 - Configuration import/export
 """
 
+import asyncio
 import io
 import json
 import hashlib
@@ -428,7 +429,7 @@ async def upload_songs(
             target_path = jukebox_config.songs_dir / target_filename
 
             with open(target_path, "wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
+                await asyncio.to_thread(shutil.copyfileobj, file.file, buffer)
 
             # 计算 MD5
             file_md5 = calculate_md5(target_path)
@@ -660,7 +661,7 @@ async def upload_actions(
             target_path = jukebox_config.actions_dir / target_filename
 
             with open(target_path, "wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
+                await asyncio.to_thread(shutil.copyfileobj, file.file, buffer)
 
             # 计算 MD5
             file_md5 = calculate_md5(target_path)
@@ -948,7 +949,7 @@ async def export_config(
             if src_path.exists():
                 dst_path = export_dir / song["audio"]
                 dst_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src_path, dst_path)
+                await asyncio.to_thread(shutil.copy2, src_path, dst_path)
 
         # 导出动画
         for action_id in action_ids_to_export:
@@ -975,7 +976,7 @@ async def export_config(
             if src_path.exists():
                 dst_path = export_dir / action["file"]
                 dst_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src_path, dst_path)
+                await asyncio.to_thread(shutil.copy2, src_path, dst_path)
 
         # 导出绑定关系（将ID绑定转换为MD5绑定，便于跨系统导入）
         # 本地存储格式: bindings[songId][actionId] = {"offset": 0}
@@ -1129,7 +1130,7 @@ async def import_config(file: UploadFile = File(...)):
         zip_path = temp_path / "import.zip"
 
         with open(zip_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+            await asyncio.to_thread(shutil.copyfileobj, file.file, buffer)
         
         extract_dir = temp_path / "extracted"
         extract_dir.mkdir()
@@ -1161,7 +1162,7 @@ async def import_config(file: UploadFile = File(...)):
                 else:
                     member_path.parent.mkdir(parents=True, exist_ok=True)
                     with zf.open(member) as src, open(member_path, 'wb') as dst:
-                        shutil.copyfileobj(src, dst)
+                        await asyncio.to_thread(shutil.copyfileobj, src, dst)
         
         config_path = extract_dir / "config.json"
         if not config_path.exists():
@@ -1215,7 +1216,7 @@ async def import_config(file: UploadFile = File(...)):
                     target_filename = get_unique_filename(jukebox_config.songs_dir, original_filename)
                     dst_audio = jukebox_config.songs_dir / target_filename
                     dst_audio.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src_audio, dst_audio)
+                    await asyncio.to_thread(shutil.copy2, src_audio, dst_audio)
 
                     new_id = sanitize_filename(target_filename)
                     base_id = new_id
@@ -1282,7 +1283,7 @@ async def import_config(file: UploadFile = File(...)):
                     target_filename = get_unique_filename(jukebox_config.actions_dir, original_filename)
                     dst_file = jukebox_config.actions_dir / target_filename
                     dst_file.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src_file, dst_file)
+                    await asyncio.to_thread(shutil.copy2, src_file, dst_file)
 
                     new_id = sanitize_filename(target_filename)
                     base_id = new_id
@@ -1402,7 +1403,7 @@ async def pack_folder(files: List[UploadFile] = File(...)):
                 raise HTTPException(400, f"文件名包含非法路径: {file.filename}") from err
             file_path.parent.mkdir(parents=True, exist_ok=True)
             with open(file_path, "wb") as f:
-                shutil.copyfileobj(file.file, f)
+                await asyncio.to_thread(shutil.copyfileobj, file.file, f)
 
         # 创建 ZIP 文件
         zip_path = temp_path / "packed.zip"

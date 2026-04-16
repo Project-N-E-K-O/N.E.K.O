@@ -9,6 +9,7 @@ Handles MMD model-related endpoints including:
 - MMD emotion mapping configuration
 """
 
+import asyncio
 import json
 import os
 import re
@@ -491,7 +492,7 @@ async def upload_mmd_zip(file: UploadFile = File(...)):
                     })
                 else:
                     logger.info(f"清理残留的无效模型目录: {target_dir}")
-                    shutil.rmtree(target_dir, ignore_errors=True)
+                    await asyncio.to_thread(shutil.rmtree, target_dir, ignore_errors=True)
 
             # 使用编码修正后的文件名解压
             if all(
@@ -510,7 +511,7 @@ async def upload_mmd_zip(file: UploadFile = File(...)):
         for ext in ALLOWED_MODEL_EXTENSIONS:
             pmx_candidates.extend(target_dir.rglob(f'*{ext}'))
         if not pmx_candidates:
-            shutil.rmtree(target_dir, ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, target_dir, ignore_errors=True)
             return JSONResponse(status_code=500, content={
                 "success": False, "error": "解压后未找到模型文件"
             })
@@ -533,11 +534,11 @@ async def upload_mmd_zip(file: UploadFile = File(...)):
 
     except zipfile.BadZipFile:
         if target_dir and target_dir.exists():
-            shutil.rmtree(target_dir, ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, target_dir, ignore_errors=True)
         return JSONResponse(status_code=400, content={"success": False, "error": "ZIP 文件损坏"})
     except Exception as e:
         if target_dir and target_dir.exists():
-            shutil.rmtree(target_dir, ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, target_dir, ignore_errors=True)
         logger.error(f"上传 MMD ZIP 包失败: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
     finally:
@@ -841,7 +842,7 @@ async def delete_mmd_model(request: Request):
                     })
                 # 残缺目录（无模型文件）：允许删除
                 deleted_files = sum(1 for f in candidate.rglob('*') if f.is_file())
-                shutil.rmtree(candidate)
+                await asyncio.to_thread(shutil.rmtree, candidate)
                 logger.info(f"删除残缺 MMD 模型目录: {candidate}")
                 return JSONResponse(content={
                     "success": True,
@@ -872,7 +873,7 @@ async def delete_mmd_model(request: Request):
             for f in top_subdir.rglob('*'):
                 if f.is_file():
                     deleted_files += 1
-            shutil.rmtree(top_subdir)
+            await asyncio.to_thread(shutil.rmtree, top_subdir)
             logger.info(f"删除 MMD 模型目录: {top_subdir} ({deleted_files} 个文件)")
         else:
             # 模型在顶层：只删除模型文件本身
