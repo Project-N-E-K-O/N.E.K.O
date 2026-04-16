@@ -63,14 +63,14 @@
         // avatar-popup-common, avatar-ui-popup, avatar-ui-popup-config, avatar-ui-buttons
         // 已由 model_manager.html 静态 <script> 加载，此处不再重复加载
         const mmdModules = [
+            '/static/mmd-init.js',
             '/static/mmd-core.js',
             '/static/mmd-animation.js',
             '/static/mmd-expression.js',
             '/static/mmd-interaction.js',
             '/static/mmd-cursor-follow.js',
             '/static/mmd-manager.js',
-            '/static/mmd-ui-buttons.js',
-            '/static/mmd-init.js'
+            '/static/mmd-ui-buttons.js'
         ];
 
         const failedModules = [];
@@ -91,9 +91,16 @@
 
         if (failedModules.length > 0) {
             window.mmdModuleLoaded = false;
+            window._mmdModulesLoading = false;
+            window._mmdModulesFailed = failedModules.slice();
             console.error('[MMD] 以下模块加载失败:', failedModules);
+            window.dispatchEvent(new CustomEvent('mmd-modules-failed', {
+                detail: { failedModules }
+            }));
         } else {
             window.mmdModuleLoaded = true;
+            window._mmdModulesLoading = false;
+            window._mmdModulesFailed = null;
             window.dispatchEvent(new CustomEvent('mmd-modules-ready'));
         }
     };
@@ -1037,6 +1044,48 @@ document.addEventListener('DOMContentLoaded', async () => {
     const IDLE_VRM_VISUAL_FADE_OUT_MS = 150;
     const IDLE_VRM_VISUAL_FADE_IN_MS = 220;
     const IDLE_MMD_PHYSICS_RESTORE_MS = 250;
+
+    function markMMDCanvasLoadingSession(canvas, loadingSessionId) {
+        if (!canvas) return;
+        canvas.dataset.mmdLoadingSessionId = String(loadingSessionId);
+        canvas.style.display = 'block';
+        canvas.style.visibility = 'hidden';
+        canvas.style.pointerEvents = 'none';
+    }
+
+    function restoreMMDCanvasForLoadingSession(canvas, loadingSessionId) {
+        if (!canvas) return false;
+        if (canvas.dataset.mmdLoadingSessionId !== String(loadingSessionId)) {
+            return false;
+        }
+        delete canvas.dataset.mmdLoadingSessionId;
+        canvas.style.visibility = 'visible';
+        canvas.style.pointerEvents = 'auto';
+        return true;
+    }
+
+    function isMMDLoadingSessionActive(canvas, loadingSessionId) {
+        return !!canvas && canvas.dataset.mmdLoadingSessionId === String(loadingSessionId);
+    }
+
+    function showStatusForMMDLoadingSession(canvas, loadingSessionId, message, timeout) {
+        if (!isMMDLoadingSessionActive(canvas, loadingSessionId)) {
+            return false;
+        }
+        showStatus(message, 0);
+        if (timeout > 0) {
+            setTimeout(() => {
+                if (!isMMDLoadingSessionActive(canvas, loadingSessionId)) {
+                    return;
+                }
+                if (currentModelInfo) {
+                    const modelMsg = t('live2d.currentModel', `当前模型: ${currentModelInfo.name}`, { model: currentModelInfo.name });
+                    updateStatusText(modelMsg);
+                }
+            }, timeout);
+        }
+        return true;
+    }
 
     // 更新模型类型按钮文字的函数（使用统一管理器）
     function updateModelTypeButtonText() {
@@ -4046,6 +4095,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             const modelPath = e.target.value;
             updateMMDModelSelectButtonText();
             if (!modelPath) return;
+            const mmdCanvas = document.getElementById('mmd-canvas');
+            const loadingSessionId = window._createMMDLoadingSessionId
+                ? window._createMMDLoadingSessionId('mmd-manager')
+                : `mmd-manager-${Date.now()}`;
+            if (window.MMDLoadingOverlay) {
+                window.MMDLoadingOverlay.begin(loadingSessionId, { stage: 'engine' });
+            }
 
             // 加载 MMD 前，隐藏 VRM 容器（VRM/MMD 使用独立画布，仅需 CSS 切换）
             if (vrmContainer) {
@@ -4061,16 +4117,55 @@ document.addEventListener('DOMContentLoaded', async () => {
                 mmdContainer.classList.remove('hidden');
                 mmdContainer.style.display = 'block';
             }
+            if (mmdCanvas) {
+                // 预览页加载 MMD 时，物理初始化会持续一段时间；
+                // 在 ready 之前保持 canvas 不可见，避免模型从 overlay 背后透出。
+                markMMDCanvasLoadingSession(mmdCanvas, loadingSessionId);
+            }
 
             try {
                 // 等待 MMD 模块加载
                 if (!window.mmdModuleLoaded && !window.MMDManager) {
-                    showStatus('正在加载MMD模块...', 0);
-                    await new Promise((resolve, reject) => {
-                        if (window.MMDManager || window.mmdModuleLoaded) return resolve();
-                        window.addEventListener('mmd-modules-ready', resolve, { once: true });
-                        setTimeout(() => reject(new Error('MMD Module Load Timeout')), 8000);
-                    });
+                    showStatusForMMDLoadingSession(mmdCanvas, loadingSessionId, t('mmd.moduleLoading', '正在加载MMD模块...'), 0);
+                    if (window._waitForMMDModules) {
+                        await window._waitForMMDModules(8000);
+                    } else {
+                        await new Promise((resolve, reject) => {
+                            if (window.MMDManager || window.mmdModuleLoaded) return resolve();
+                            const failedModules = window._mmdModulesFailed || window.mmdModulesFailed;
+                            if (failedModules) {
+                                const modules = Array.isArray(failedModules) ? failedModules.join(', ') : failedModules;
+                                return reject(new Error(`MMD modules failed: ${modules}`));
+                            }
+
+                            let timeoutId = null;
+                            const cleanup = () => {
+                                if (timeoutId) {
+                                    clearTimeout(timeoutId);
+                                    timeoutId = null;
+                                }
+                                window.removeEventListener('mmd-modules-ready', onReady);
+                                window.removeEventListener('mmd-modules-failed', onFailed);
+                            };
+                            const onReady = () => {
+                                cleanup();
+                                resolve();
+                            };
+                            const onFailed = (event) => {
+                                cleanup();
+                                const failed = event?.detail?.failedModules || window._mmdModulesFailed || window.mmdModulesFailed || [];
+                                const modules = Array.isArray(failed) ? failed.join(', ') : failed;
+                                reject(new Error(`MMD modules failed: ${modules}`));
+                            };
+
+                            window.addEventListener('mmd-modules-ready', onReady, { once: true });
+                            window.addEventListener('mmd-modules-failed', onFailed, { once: true });
+                            timeoutId = setTimeout(() => {
+                                cleanup();
+                                reject(new Error('MMD Module Load Timeout'));
+                            }, 8000);
+                        });
+                    }
                 }
 
                 // 初始化 mmdManager（如果尚未存在）
@@ -4081,11 +4176,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
 
                 if (!window.mmdManager) {
-                    showStatus(t('mmd.managerInitFailed', 'MMD管理器初始化失败'), 3000);
+                    if (window.MMDLoadingOverlay) {
+                        window.MMDLoadingOverlay.fail(loadingSessionId, {
+                            detail: t('mmd.managerInitFailed', 'MMD管理器初始化失败')
+                        });
+                    }
+                    showStatusForMMDLoadingSession(mmdCanvas, loadingSessionId, t('mmd.managerInitFailed', 'MMD管理器初始化失败'), 3000);
                     return;
                 }
 
-                showStatus(t('mmd.modelLoading', '正在加载MMD模型...'), 0);
+                showStatusForMMDLoadingSession(mmdCanvas, loadingSessionId, t('mmd.modelLoading', '正在加载MMD模型...'), 0);
                 if (mmdContainer) mmdContainer.classList.remove('hidden');
 
                 // 在加载新模型前，重置动画播放状态
@@ -4107,6 +4207,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                     await _mmdSettingsLoadPromise;
                 }
                 try {
+                    if (window.MMDLoadingOverlay) {
+                        window.MMDLoadingOverlay.update(loadingSessionId, { stage: 'settings' });
+                    }
                     const savedMmdSettings = localStorage.getItem('mmdSettings');
                     if (savedMmdSettings) {
                         const s = JSON.parse(savedMmdSettings);
@@ -4115,12 +4218,18 @@ document.addEventListener('DOMContentLoaded', async () => {
                         }
                     }
                 } catch (e) { /* ignore */ }
-                await window.mmdManager.loadModel(modelPath);
-                showStatus(t('mmd.modelLoaded', 'MMD模型加载成功'), 2000);
+                if (window.MMDLoadingOverlay) {
+                    window.MMDLoadingOverlay.update(loadingSessionId, { stage: 'model' });
+                }
+                await window.mmdManager.loadModel(modelPath, { loadingSessionId });
+                showStatusForMMDLoadingSession(mmdCanvas, loadingSessionId, t('mmd.modelLoaded', 'MMD模型加载成功'), 2000);
 
                 // 加载后立即播内置 wait03 防 T-pose; 用户保存的 idle 选择
                 // 由 loadCharacterLighting 恢复后通过 startIdleRotation 覆盖
                 try {
+                    if (window.MMDLoadingOverlay) {
+                        window.MMDLoadingOverlay.update(loadingSessionId, { stage: 'idle' });
+                    }
                     await window.mmdManager.loadAnimation('/static/mmd/animation/wait03.vmd');
                     window.mmdManager.playAnimation();
                     isMmdIdlePlaying = true;
@@ -4130,9 +4239,29 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
 
                 await loadCharacterLighting();
+                if (window.MMDLoadingOverlay) {
+                    window.MMDLoadingOverlay.update(loadingSessionId, { stage: 'done' });
+                }
+                if (window._waitForMMDRenderFrame) {
+                    await window._waitForMMDRenderFrame(window.mmdManager);
+                }
+                if (window.MMDLoadingOverlay) {
+                    window.MMDLoadingOverlay.end(loadingSessionId);
+                }
+                restoreMMDCanvasForLoadingSession(mmdCanvas, loadingSessionId);
             } catch (error) {
                 console.error('加载MMD模型失败:', error);
-                showStatus(`MMD模型加载失败: ${error.message}`, 3000);
+                if (window.MMDLoadingOverlay) {
+                    window.MMDLoadingOverlay.fail(loadingSessionId, {
+                        detail: error?.message || String(error)
+                    });
+                }
+                showStatusForMMDLoadingSession(
+                    mmdCanvas,
+                    loadingSessionId,
+                    t('mmd.modelLoadFailed', 'MMD模型加载失败: {{error}}', { error: error.message }),
+                    3000
+                );
             }
         });
     }

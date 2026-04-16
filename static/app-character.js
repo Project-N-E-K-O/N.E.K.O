@@ -92,6 +92,33 @@
         }));
     }
 
+    function markMMDCanvasLoadingSession(canvas, loadingSessionId) {
+        if (!canvas) return;
+        canvas.dataset.mmdLoadingSessionId = String(loadingSessionId);
+        canvas.style.display = 'block';
+        canvas.style.visibility = 'hidden';
+        canvas.style.pointerEvents = 'none';
+    }
+
+    function restoreMMDCanvasForLoadingSession(canvas, loadingSessionId) {
+        if (!canvas) return false;
+        if (canvas.dataset.mmdLoadingSessionId !== String(loadingSessionId)) {
+            return false;
+        }
+        delete canvas.dataset.mmdLoadingSessionId;
+        canvas.style.display = 'block';
+        canvas.style.visibility = 'visible';
+        canvas.style.pointerEvents = 'auto';
+        return true;
+    }
+
+    function clearMMDCanvasLoadingSession(canvas) {
+        if (!canvas) return;
+        delete canvas.dataset.mmdLoadingSessionId;
+        canvas.style.visibility = 'hidden';
+        canvas.style.pointerEvents = 'none';
+    }
+
     // ======================================================================
     // handleCatgirlSwitch — main character switching logic
     // ======================================================================
@@ -107,6 +134,7 @@
         console.log('[猫娘切换] ========== 开始切换 ==========');
         console.log('[猫娘切换] 从', oldCatgirl, '切换到', newCatgirl);
         console.log('[猫娘切换] isSwitchingCatgirl:', S.isSwitchingCatgirl);
+        let mmdLoadingSessionId = '';
 
         if (S.isSwitchingCatgirl) {
             console.log('[猫娘切换] 正在切换中，忽略本次请求');
@@ -364,8 +392,7 @@
                 }
                 const mmdCanvas = document.getElementById('mmd-canvas');
                 if (mmdCanvas) {
-                    mmdCanvas.style.visibility = 'hidden';
-                    mmdCanvas.style.pointerEvents = 'none';
+                    clearMMDCanvasLoadingSession(mmdCanvas);
                 }
 
                 // 清理 MMD UI 资源（浮动按钮、锁图标等）
@@ -785,8 +812,7 @@
                 }
                 const mmdCanvasVrm = document.getElementById('mmd-canvas');
                 if (mmdCanvasVrm) {
-                    mmdCanvasVrm.style.visibility = 'hidden';
-                    mmdCanvasVrm.style.pointerEvents = 'none';
+                    clearMMDCanvasLoadingSession(mmdCanvasVrm);
                 }
 
                 // 确保 VRM 渲染器可见
@@ -909,11 +935,14 @@
                     mmdContainerShow.style.removeProperty('pointer-events');
                 }
                 const mmdCanvasShow = document.getElementById('mmd-canvas');
+                mmdLoadingSessionId = window._createMMDLoadingSessionId
+                    ? window._createMMDLoadingSessionId('mmd-character')
+                    : `mmd-character-${Date.now()}`;
                 if (mmdCanvasShow) {
-                    mmdCanvasShow.style.display = 'block';
-                    mmdCanvasShow.style.visibility = 'visible';
-                    mmdCanvasShow.style.pointerEvents = 'auto';
+                    // 先隐藏 canvas，避免旧帧或新模型首帧在半透明 loading overlay 后面透出。
+                    markMMDCanvasLoadingSession(mmdCanvasShow, mmdLoadingSessionId);
                 }
+                window.MMDLoadingOverlay?.begin(mmdLoadingSessionId, { stage: 'engine' });
 
                 // 初始化 MMD 管理器
                 // 【优化】如果 MMD 管理器已存在且场景有效，复用现有 renderer/scene，
@@ -935,10 +964,19 @@
                     console.log('[猫娘切换] MMD 管理器已复用');
                 } else {
                     // 首次初始化或管理器已销毁，执行完整初始化
+                    let initializedManager = null;
                     if (typeof window.initMMDModel === 'function') {
-                        await window.initMMDModel();
+                        initializedManager = await window.initMMDModel();
                     } else if (typeof initMMDModel === 'function') {
-                        await initMMDModel();
+                        initializedManager = await initMMDModel();
+                    }
+                    if (!initializedManager || !window.mmdManager || window.mmdManager._isDisposed) {
+                        console.error('[猫娘切换] MMD 管理器初始化失败');
+                        window.MMDLoadingOverlay?.fail(mmdLoadingSessionId, {
+                            detail: (window.t && window.t('mmd.managerInitFailed')) || 'MMD 管理器初始化失败'
+                        });
+                        mmdLoadingSessionId = '';
+                        return;
                     }
                 }
 
@@ -949,6 +987,7 @@
                     // 提前获取设置并预置物理开关
                     let savedSettings = null;
                     try {
+                        window.MMDLoadingOverlay?.update(mmdLoadingSessionId, { stage: 'settings' });
                         const settingsRes = await fetch('/api/characters/catgirl/' + encodeURIComponent(newCatgirl) + '/mmd_settings');
                         const settingsData = await settingsRes.json();
                         if (settingsData.success && settingsData.settings) {
@@ -958,7 +997,8 @@
                             }
                         }
                     } catch (e) { /* ignore - will use current enablePhysics */ }
-                    await window.mmdManager.loadModel(mmdModelUrl);
+                    window.MMDLoadingOverlay?.update(mmdLoadingSessionId, { stage: 'model' });
+                    await window.mmdManager.loadModel(mmdModelUrl, { loadingSessionId: mmdLoadingSessionId });
                     console.log('[猫娘切换] MMD 模型加载完成');
 
                     // 应用完整设置（光照、渲染、物理、鼠标跟踪）
@@ -970,6 +1010,7 @@
                     const mmdIdleAnimation = catgirlConfig?.mmd_idle_animation;
                     if (mmdIdleAnimation) {
                         try {
+                            window.MMDLoadingOverlay?.update(mmdLoadingSessionId, { stage: 'idle' });
                             await window.mmdManager.loadAnimation(mmdIdleAnimation);
                             window.mmdManager.playAnimation();
                             console.log('[猫娘切换] 已播放待机动作:', mmdIdleAnimation);
@@ -977,8 +1018,20 @@
                             console.warn('[猫娘切换] 播放待机动作失败:', idleErr);
                         }
                     }
+                    window.MMDLoadingOverlay?.update(mmdLoadingSessionId, { stage: 'done' });
+                    if (window._waitForMMDRenderFrame) {
+                        await window._waitForMMDRenderFrame(window.mmdManager);
+                    }
+                    window.MMDLoadingOverlay?.end(mmdLoadingSessionId);
+                    const mmdCanvasReady = document.getElementById('mmd-canvas');
+                    restoreMMDCanvasForLoadingSession(mmdCanvasReady, mmdLoadingSessionId);
+                    mmdLoadingSessionId = '';
                 } else {
                     console.error('[猫娘切换] MMD 管理器初始化失败');
+                    window.MMDLoadingOverlay?.fail(mmdLoadingSessionId, {
+                        detail: (window.t && window.t('mmd.managerInitFailed')) || 'MMD 管理器初始化失败'
+                    });
+                    mmdLoadingSessionId = '';
                 }
 
                 if (window.LanLan1) {
@@ -1137,8 +1190,7 @@
                 }
                 const mmdCanvasL2d = document.getElementById('mmd-canvas');
                 if (mmdCanvasL2d) {
-                    mmdCanvasL2d.style.visibility = 'hidden';
-                    mmdCanvasL2d.style.pointerEvents = 'none';
+                    clearMMDCanvasLoadingSession(mmdCanvasL2d);
                 }
 
                 const chatContainerL2d = document.getElementById('chat-container');
@@ -1229,6 +1281,9 @@
 
         } catch (error) {
             console.error('[猫娘切换] 失败:', error);
+            if (mmdLoadingSessionId) {
+                window.MMDLoadingOverlay?.fail(mmdLoadingSessionId, { detail: error?.message || String(error) });
+            }
             showStatusToast(window.t ? window.t('app.switchCatgirlError', { error: error.message }) : `切换失败: ${error.message}`, 4000);
         } finally {
             S.isSwitchingCatgirl = false;

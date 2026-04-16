@@ -1888,8 +1888,19 @@
             "changeFailed": "切换待机动作失败"
         },
         "managerInitFailed": "MMD 管理器初始化失败",
+        "moduleLoading": "正在加载MMD模块...",
         "modelLoading": "正在加载 MMD 模型...",
-        "modelLoaded": "MMD 模型加载成功"
+        "modelLoaded": "MMD 模型加载成功",
+        "modelLoadFailed": "MMD模型加载失败: {{error}}",
+        "loadingOverlay": {
+            "engine": "正在准备 MMD 引擎...",
+            "settings": "正在读取 MMD 设置...",
+            "model": "正在加载模型资源...",
+            "physics": "正在初始化物理...",
+            "idle": "正在加载待机动作...",
+            "done": "MMD 已就绪",
+            "failed": "MMD 加载失败"
+        }
     },
     "modelManager": {
         "vrmLoadingDependencies": "[VRM] 开始加载依赖模块",
