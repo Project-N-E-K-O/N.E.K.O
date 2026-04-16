@@ -611,6 +611,7 @@
             return scoredTracks[0].track;
         }
 
+        var cookieWarnShown = false;
         while ((match = musicRegex.exec(text)) !== null) {
             try {
                 var aiTrackInfo = JSON.parse(match[1]);
@@ -633,9 +634,10 @@
                         continue;
                     }
 
-                    if (result.netease_cookie_invalid && typeof window.showStatusToast === 'function') {
+                    if (result.netease_cookie_invalid && !cookieWarnShown && typeof window.showStatusToast === 'function') {
                         var musiccookieWarnMsg = (window.t && window.t('music.cookieExpired')) || '音乐Cookie已失效';
                         window.showStatusToast(musiccookieWarnMsg, 5000);
+                        cookieWarnShown = true;
                     }
 
                     if (!result.success) {
