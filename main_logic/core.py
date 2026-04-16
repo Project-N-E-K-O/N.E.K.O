@@ -2243,11 +2243,24 @@ class LLMSessionManager:
         finally:
             self._agent_delivery_in_progress = False
 
+    def _is_voice_session_active_or_starting(self) -> bool:
+        """语音 session 正在启动或已经活跃时返回 True，用于阻止 greeting 干扰语音流。"""
+        if self.is_starting_session and self.input_mode == 'audio':
+            return True
+        if self.is_active and self.input_mode == 'audio':
+            return True
+        return False
+
     async def trigger_greeting(self) -> None:
         """首次连接或切换角色时，根据距上次对话间隔触发主动搭话。
 
         流程：查询 memory_server 获取间隔 → 构建引导词 → 主动拉起 text session → 投递。
         """
+        # ── 守卫：语音 session 正在启动 / 已活跃时，跳过 greeting ──
+        if self._is_voice_session_active_or_starting():
+            logger.info("[%s] trigger_greeting: voice session active/starting, skipping", self.lanlan_name)
+            return
+
         try:
             async with httpx.AsyncClient(timeout=2.0, proxy=None, trust_env=False) as client:
                 resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/last_conversation_gap/{self.lanlan_name}")
@@ -2263,10 +2276,15 @@ class LLMSessionManager:
             logger.debug("[%s] trigger_greeting: gap %.0fs < 15min, skipping", self.lanlan_name, gap_seconds)
             return
 
+        # ── await 归来后再检查一次：memory 查询期间用户可能已点了麦克风 ──
+        if self._is_voice_session_active_or_starting():
+            logger.info("[%s] trigger_greeting: voice session appeared during gap query, skipping", self.lanlan_name)
+            return
+
         _lang = normalize_language_code(self.user_language, format='short')
         from config.prompts_proactive import get_greeting_prompt, get_time_of_day_hint
         from utils.time_format import format_elapsed as _format_elapsed
-        from utils.holiday_cache import get_holiday_or_weekend_hint
+        from utils.holiday_cache import preview_holiday_or_weekend_hint, commit_holiday_or_weekend_hint
         template = get_greeting_prompt(gap_seconds, _lang)
         if not template:
             return
@@ -2277,6 +2295,10 @@ class LLMSessionManager:
             pass
         else:
             # 没有 session 或不是 text session → 主动拉起
+            # ── 拉起前再次检查：避免与即将到来的语音 session 竞争 ──
+            if self._is_voice_session_active_or_starting():
+                logger.info("[%s] trigger_greeting: voice session appeared before text session auto-start, skipping", self.lanlan_name)
+                return
             ws = self.websocket
             if not ws or not hasattr(ws, 'client_state') or ws.client_state != ws.client_state.CONNECTED:
                 logger.warning("[%s] trigger_greeting: no connected websocket, aborting", self.lanlan_name)
@@ -2292,12 +2314,13 @@ class LLMSessionManager:
             logger.warning("[%s] trigger_greeting: session is not text mode after start, aborting", self.lanlan_name)
             return
 
-        # 投递通道已就绪，构建 instruction（此时才消费节日预算）
+        # 投递通道已就绪，构建 instruction（节日预算仅 preview，不消费）
         elapsed = _format_elapsed(_lang, gap_seconds)
         time_hint = get_time_of_day_hint(_lang).format(master=self.master_name)
 
+        _holiday_token = None
         try:
-            holiday_hint_text = await get_holiday_or_weekend_hint(_lang, self.lanlan_name)
+            holiday_hint_text, _holiday_token = await preview_holiday_or_weekend_hint(_lang, self.lanlan_name)
         except Exception as e:
             logger.debug("[%s] trigger_greeting: holiday hint failed: %s", self.lanlan_name, e)
             holiday_hint_text = None
@@ -2310,12 +2333,24 @@ class LLMSessionManager:
         print(f"[trigger_greeting] instruction:\n{instruction}")
         logger.info("[%s] trigger_greeting: gap=%.0fs elapsed=%s, delivering", self.lanlan_name, gap_seconds, elapsed)
 
+        # ── 投递前最终检查：构建 instruction 期间（holiday hint 等 await）语音可能已接管 ──
+        if self._is_voice_session_active_or_starting():
+            logger.info("[%s] trigger_greeting: voice session took over before delivery, skipping", self.lanlan_name)
+            return
+
         async with self._proactive_write_lock:
+            # 持锁后仍需检查：_proactive_write_lock 等待期间语音可能已启动
+            if self._is_voice_session_active_or_starting():
+                logger.info("[%s] trigger_greeting: voice session took over while waiting for write lock, skipping", self.lanlan_name)
+                return
             async with self.lock:
                 self.current_speech_id = str(uuid4())
                 self._tts_done_queued_for_turn = False
             delivered = await self.session.prompt_ephemeral(instruction)
             logger.info("[%s] trigger_greeting: delivered=%s", self.lanlan_name, delivered)
+            # 投递成功后才真正消费节日/周末预算
+            if delivered and _holiday_token is not None:
+                commit_holiday_or_weekend_hint(self.lanlan_name, _holiday_token)
 
     def enqueue_agent_callback(self, callback: dict) -> None:
         """Enqueue a structured agent task callback for LLM injection.
