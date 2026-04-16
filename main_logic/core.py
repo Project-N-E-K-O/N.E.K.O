@@ -140,6 +140,14 @@ def enqueue_voice_migration_notice(legacy_names: list) -> None:
     })
 
 
+# Sentinel returned by start_llm_session when CAS detects a concurrent start
+# already promoted its own session.  Returning a sentinel (instead of raising)
+# keeps the loser out of the generic error path — that path calls cleanup()
+# without an expected_session guard and would otherwise tear down the winner's
+# session/websocket while also inflating session_start_failure_count.
+_START_LLM_CONCURRENT_ABORTED = object()
+
+
 # --- 一个带有定期上下文压缩+在线热切换的语音会话管理器 ---
 class LLMSessionManager:
     def __init__(self, sync_message_queue, lanlan_name, lanlan_prompt):
@@ -1602,7 +1610,10 @@ class LLMSessionManager:
                     await new_session.close()
                 except Exception as _close_err:
                     logger.error(f"💥 关闭并发落败的 new_session 失败: {_close_err}")
-                raise RuntimeError("concurrent start_session detected; this invocation aborted")
+                # 返回哨兵（而非 raise）以绕开 start_session 的通用 except：后者会调
+                # cleanup()（无 expected_session 守卫），反过来拆掉赢家的 session/ws，
+                # 还会 +1 session_start_failure_count 并向前端发 SESSION_START_FAILED。
+                return _START_LLM_CONCURRENT_ABORTED
 
             logger.info("✅ LLM Session 已连接")
             logger.info(f"[语音会话诊断] LLM 连接并 connect 完成 (耗时: {time.time() - _llm_create_start:.2f}秒)")
@@ -1637,6 +1648,13 @@ class LLMSessionManager:
             # 检查是否有错误
             if isinstance(tts_result, Exception):
                 logger.error(f"TTS 启动失败: {tts_result}")
+            # 并发落败分支：赢家已持有 self.session / message_handler_task，
+            # 我们不能继续走 "if self.session" 分支（会覆盖 handler task、重复
+            # send_session_started），也不能 raise（会误触发 cleanup 杀掉赢家）。
+            # 直接早退，让 finally 正常递减 _starting_session_count。
+            if llm_result is _START_LLM_CONCURRENT_ABORTED:
+                logger.info("[语音会话诊断] start_session 因并发 CAS 落败早退，不动共享资源")
+                return
             if isinstance(llm_result, Exception):
                 raise llm_result  # LLM Session 失败是致命的
             
