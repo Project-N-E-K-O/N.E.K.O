@@ -2174,13 +2174,17 @@ window.Jukebox = {
         }
 
         .jukebox-sam-panel button,
-        .jukebox-sam-panel input,
-        .jukebox-sam-panel a,
-        .jukebox-sam-panel select,
-        .jukebox-sam-panel textarea,
-        .jukebox-sam-panel .sam-content,
-        .jukebox-sam-panel .sam-footer {
+        .jukebox-sam-panel a {
           cursor: pointer;
+        }
+
+        .jukebox-sam-panel input,
+        .jukebox-sam-panel textarea {
+          cursor: text;
+        }
+
+        .jukebox-sam-panel select {
+          cursor: default;
         }
 
         .jukebox-sam-panel.sam-file-drag-over {
@@ -3443,6 +3447,12 @@ window.Jukebox = {
       Jukebox.State._dragCleanup = null;
     }
 
+    // 清理缩放事件监听
+    if (Jukebox.State._resizeCleanup) {
+      Jukebox.State._resizeCleanup();
+      Jukebox.State._resizeCleanup = null;
+    }
+
     // 断开独立窗口拖拽层守护 observer
     if (Jukebox.State._dragGuard) {
       try { Jukebox.State._dragGuard.disconnect(); } catch (_) {}
@@ -3787,15 +3797,13 @@ window.Jukebox = {
         // 左/上方向缩放时同步移动 wrapper 位置
         const wrapper = container.parentElement;
         if (wrapper && (dir.includes('w') || dir.includes('n'))) {
-          // 计算缩放后实际的视觉偏移
-          const actualZoom = parseFloat(container.style.zoom) || 1;
-          const realVisualW = BASE_WIDTH * actualZoom;
-          const realVisualH = container.scrollHeight * actualZoom;
+          // 使用 getBoundingClientRect 获取实际视觉尺寸
+          const zoomedRect = container.getBoundingClientRect();
           if (dir.includes('w')) {
-            newLeft = startLeft + startVisualW - realVisualW;
+            newLeft = startLeft + startVisualW - zoomedRect.width;
           }
           if (dir.includes('n')) {
-            newTop = startTop + startVisualH - realVisualH;
+            newTop = startTop + startVisualH - zoomedRect.height;
           }
           wrapper.style.left = newLeft + 'px';
           wrapper.style.top = newTop + 'px';
@@ -3804,18 +3812,25 @@ window.Jukebox = {
         }
       };
 
-      const onPointerUp = () => {
+      const cleanup = () => {
         document.body.classList.remove('jukebox-resizing');
         document.removeEventListener('mousemove', onPointerMove);
         document.removeEventListener('touchmove', onPointerMove);
-        document.removeEventListener('mouseup', onPointerUp);
-        document.removeEventListener('touchend', onPointerUp);
+        document.removeEventListener('mouseup', cleanup);
+        document.removeEventListener('touchend', cleanup);
+        document.removeEventListener('blur', cleanup);
+        Jukebox.State._resizeCleanup = null;
       };
+
+      // 保存清理函数以便 destroy 时调用
+      Jukebox.State._resizeCleanup = cleanup;
 
       document.addEventListener('mousemove', onPointerMove);
       document.addEventListener('touchmove', onPointerMove, { passive: false });
-      document.addEventListener('mouseup', onPointerUp);
-      document.addEventListener('touchend', onPointerUp);
+      document.addEventListener('mouseup', cleanup);
+      document.addEventListener('touchend', cleanup);
+      // 窗口失焦时清理，防止监听泄漏
+      document.addEventListener('blur', cleanup);
     };
 
     handles.forEach(function(handle) {
@@ -3831,7 +3846,7 @@ window.Jukebox = {
 
     const onMouseDown = (e) => {
       // 忽略所有交互元素
-      if (e.target.closest('button, input, a, select, textarea, .sam-close-btn, .sam-tab, .sam-footer, .sam-content')) return;
+      if (e.target.closest('button, input, a, select, textarea, .sam-close-btn, .sam-tab, .sam-footer, .sam-content, .sam-checkbox')) return;
 
       e.preventDefault();
       const clientX = e.touches ? e.touches[0].clientX : e.clientX;
