@@ -43,7 +43,7 @@ from utils.voice_clone import (
     QwenVoiceCloneError,
     qwen_language_hints,
 )
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json, atomic_write_json_async
 from utils.frontend_utils import find_models, find_model_directory, is_user_imported_model
 from utils.language_utils import normalize_language_code
 from utils.logger_config import get_module_logger
@@ -624,7 +624,7 @@ async def update_catgirl_l2d(name: str, request: Request):
                 logger.debug(f"已保存角色 {name} 的模型 {live2d_model}")
         
         # 保存配置
-        _config_manager.save_characters(characters)
+        await _config_manager.asave_characters(characters)
         # 自动重新加载配置
         initialize_character_data = get_initialize_character_data()
         await initialize_character_data()
@@ -705,7 +705,7 @@ async def update_catgirl_touch_set(name: str, request: Request):
         existing_touch_set[model_name] = touch_set_data
         
         set_reserved(characters['猫娘'][name], 'touch_set', existing_touch_set)
-        _config_manager.save_characters(characters)
+        await _config_manager.asave_characters(characters)
         
         initialize_character_data = get_initialize_character_data()
         if initialize_character_data:
@@ -822,7 +822,7 @@ async def update_catgirl_lighting(name: str, request: Request):
             get_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'lighting', default=None),
         )
 
-        _config_manager.save_characters(characters)
+        await _config_manager.asave_characters(characters)
         
         if apply_runtime:
             initialize_character_data = get_initialize_character_data()
@@ -932,7 +932,7 @@ async def update_catgirl_mmd_settings(name: str, request: Request):
                 cursor_follow['enabled'] = _to_bool(cursor_follow['enabled'])
             set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'cursor_follow', cursor_follow)
 
-        _config_manager.save_characters(characters)
+        await _config_manager.asave_characters(characters)
 
         logger.info("已保存角色 %s 的MMD模型设置", name)
         return JSONResponse(content={
@@ -1025,7 +1025,7 @@ async def update_catgirl_voice_id(name: str, request: Request):
         }, status_code=400)
 
     set_reserved(characters['猫娘'][name], 'voice_id', voice_id)
-    _config_manager.save_characters(characters)
+    await _config_manager.asave_characters(characters)
     
     # 如果是当前活跃的猫娘，需要先通知前端，再关闭session
     is_current_catgirl = (name == characters.get('当前猫娘', ''))
@@ -1148,7 +1148,7 @@ async def rename_catgirl(old_name: str, request: Request):
     # 如果当前猫娘是被重命名的猫娘，也需要更新
     if is_current_catgirl:
         characters['当前猫娘'] = new_name
-    _config_manager.save_characters(characters)
+    await _config_manager.asave_characters(characters)
     # 自动重新加载配置
     initialize_character_data = get_initialize_character_data()
     await initialize_character_data()
@@ -1173,7 +1173,7 @@ async def unregister_voice(name: str):
         
         # COMPAT(v1->v2): 统一落到 _reserved.voice_id，旧平铺 voice_id 不再写入/删除。
         set_reserved(characters['猫娘'][name], 'voice_id', '')
-        _config_manager.save_characters(characters)
+        await _config_manager.asave_characters(characters)
 
         # 如果是当前活跃的猫娘，需要先通知前端，再关闭session
         is_current_catgirl = (name == characters.get('当前猫娘', ''))
@@ -1241,7 +1241,7 @@ async def set_current_catgirl(request: Request):
                     'error': '语音状态下无法切换角色，请先停止语音对话后再切换'
                 }, status_code=400)
     characters['当前猫娘'] = catgirl_name
-    _config_manager.save_characters(characters)
+    await _config_manager.asave_characters(characters)
     initialize_character_data = get_initialize_character_data()
     # 自动重新加载配置
     await initialize_character_data()
@@ -1315,7 +1315,7 @@ async def update_master(request: Request):
     initialize_character_data = get_initialize_character_data()
     characters = _config_manager.load_characters()
     characters['主人'] = {k: v for k, v in data.items() if v}
-    _config_manager.save_characters(characters)
+    await _config_manager.asave_characters(characters)
     # 自动重新加载配置
     await initialize_character_data()
     return {"success": True}
@@ -1352,7 +1352,7 @@ async def rename_master(old_name: str, request: Request):
             return JSONResponse({'success': False, 'error': '新档案名与已有猫娘名称冲突'}, status_code=400)
 
         characters['主人']['档案名'] = new_name
-        _config_manager.save_characters(characters)
+        await _config_manager.asave_characters(characters)
 
     try:
         initialize_character_data = get_initialize_character_data()
@@ -1411,7 +1411,7 @@ async def add_catgirl(request: Request):
                 catgirl_data[k] = v
 
     characters['猫娘'][key] = catgirl_data
-    _config_manager.save_characters(characters)
+    await _config_manager.asave_characters(characters)
     initialize_character_data = get_initialize_character_data()
     # 自动重新加载配置
     await initialize_character_data()
@@ -1504,7 +1504,7 @@ async def update_catgirl(name: str, request: Request):
     if model_type_in_payload and requested_model_type:
         set_reserved(characters['猫娘'][name], 'avatar', 'model_type', requested_model_type)
 
-    _config_manager.save_characters(characters)
+    await _config_manager.asave_characters(characters)
 
     new_voice_id = get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))
     voice_id_changed = voice_id_in_payload and old_voice_id != new_voice_id
@@ -1593,7 +1593,7 @@ async def delete_catgirl(name: str):
     
     # 删除角色配置
     del characters['猫娘'][name]
-    _config_manager.save_characters(characters)
+    await _config_manager.asave_characters(characters)
     initialize_character_data = get_initialize_character_data()
     await initialize_character_data()
     return {"success": True}
@@ -1613,7 +1613,7 @@ async def clear_voice_ids():
                     set_reserved(characters['猫娘'][name], 'voice_id', '')
                     cleared_count += 1
         
-        _config_manager.save_characters(characters)
+        await _config_manager.asave_characters(characters)
         # 自动重新加载配置
         initialize_character_data = get_initialize_character_data()
         await initialize_character_data()
@@ -1698,7 +1698,7 @@ async def set_microphone(request: Request):
         characters_data['当前麦克风'] = microphone_id
         
         # 保存配置
-        _config_manager.save_characters(characters_data)
+        await _config_manager.asave_characters(characters_data)
         # 自动重新加载配置
         initialize_character_data = get_initialize_character_data()
         await initialize_character_data()
@@ -1918,7 +1918,7 @@ async def delete_voice(voice_id: str):
                             affected_active_names.append(name)
             
             if cleaned_count > 0:
-                _config_manager.save_characters(characters)
+                await _config_manager.asave_characters(characters)
                 
                 # 对于受影响的活跃角色，通知并结束 session
                 for name in affected_active_names:
@@ -2925,7 +2925,7 @@ async def save_catgirl_to_model_folder(request: Request):
             
         # 保存角色卡到模型文件夹
         file_path = os.path.join(model_folder_path, safe_name)
-        atomic_write_json(file_path, chara_data, ensure_ascii=False, indent=2)
+        await atomic_write_json_async(file_path, chara_data, ensure_ascii=False, indent=2)
         
         logger.info(f"角色卡已成功保存到模型文件夹: {file_path}")
         return {"success": True, "path": file_path, "modelFolderPath": model_folder_path}
@@ -2975,7 +2975,7 @@ async def save_character_card(request: Request):
         characters['猫娘'][chara_name] = catgirl_data
         
         # 保存到characters.json
-        _config_manager.save_characters(characters)
+        await _config_manager.asave_characters(characters)
         
         # 自动重新加载配置
         initialize_character_data = get_initialize_character_data()
@@ -3657,7 +3657,7 @@ async def import_character_card(zip_file: UploadFile = File(...)):
             characters['猫娘'][character_name] = chara_data_to_save
 
             # 保存到文件
-            _config_manager.save_characters(characters)
+            await _config_manager.asave_characters(characters)
 
             # 刷新内存中的角色数据，确保磁盘和内存同步
             initialize_character_data = get_initialize_character_data()

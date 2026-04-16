@@ -1073,7 +1073,7 @@ class ConfigManager:
         return character_data
 
     def save_characters(self, data, character_json_path=None):
-        """保存角色配置"""
+        """保存角色配置（同步版本，会阻塞事件循环；async 路径请用 asave_characters）"""
         if character_json_path is None:
             character_json_path = str(self.get_config_path('characters.json'))
 
@@ -1090,6 +1090,10 @@ class ConfigManager:
             self._characters_cache_mtime = new_mtime
             self._characters_cache_path = character_json_path
             self._characters_dirty = False
+
+    async def asave_characters(self, data, character_json_path=None):
+        """async 包装：事件循环上禁止直接走同步版本（atomic_write_json 会阻塞）。"""
+        return await asyncio.to_thread(self.save_characters, data, character_json_path)
 
     # --- Voice storage helpers ---
 

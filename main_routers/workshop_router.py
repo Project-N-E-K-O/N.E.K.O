@@ -21,7 +21,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from .shared_state import get_steamworks, get_config_manager, get_initialize_character_data
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json, atomic_write_json_async
 from utils.workshop_utils import (
     ensure_workshop_folder_exists,
     get_workshop_path,
@@ -1329,7 +1329,8 @@ async def unsubscribe_workshop_item(request: Request):
                             logger.info(f"已从characters.json中删除角色卡: {chara_name}")
                     
                     if deleted_count > 0:
-                        # 保存更新后的characters.json
+                        # 保存更新后的characters.json（perform_cleanup 是同步闭包，被
+                        # Steamworks 回调线程调用，这里直接走同步 save_characters）
                         config_mgr.save_characters(characters)
                         logger.info(f"已保存更新后的characters.json，删除了 {deleted_count} 个角色卡")
                         
@@ -2034,7 +2035,7 @@ async def prepare_workshop_upload(request: Request):
         
         # 1. 复制角色卡JSON到临时目录(已验证为安全文件名)喵
         chara_file_path = os.path.join(temp_item_dir, safe_chara_name)
-        atomic_write_json(chara_file_path, chara_data, ensure_ascii=False, indent=2)
+        await atomic_write_json_async(chara_file_path, chara_data, ensure_ascii=False, indent=2)
         logger.info(f"角色卡已复制到临时目录: {chara_file_path}")
         
         # 2. 根据模型类型查找并复制模型文件
@@ -2472,7 +2473,13 @@ async def publish_to_workshop(request: Request):
                     logger.warning(f"读取角色卡数据时出错: {read_error}")
                 
                 # 写入元数据文件（包含快照）
-                write_workshop_meta(character_card_name, published_file_id, content_hash, uploaded_snapshot)
+                await asyncio.to_thread(
+                    write_workshop_meta,
+                    character_card_name,
+                    published_file_id,
+                    content_hash,
+                    uploaded_snapshot,
+                )
                 logger.info(f"已更新角色卡 {character_card_name} 的 .workshop_meta.json（包含快照）")
             except Exception as e:
                 logger.error(f"更新 .workshop_meta.json 失败: {e}")
@@ -2930,7 +2937,7 @@ async def sync_workshop_character_cards() -> dict:
             
             # 4. 保存并重新加载角色配置
             if need_save:
-                config_mgr.save_characters(characters)
+                await config_mgr.asave_characters(characters)
                 logger.info(f"sync_workshop_character_cards: 已保存，新增 {added_count} 个角色卡")
                 
                 try:

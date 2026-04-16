@@ -439,7 +439,8 @@ async def initialize_character_data():
     logger.info("正在加载角色配置...")
     
     # 清理无效的voice_id引用；如果发现旧版 CosyVoice 音色，推入通知缓冲池等前端连接后弹出
-    _cleaned, _legacy_names = _config_manager.cleanup_invalid_voice_ids()
+    # cleanup_invalid_voice_ids 内部涉及同步 IO（load/save characters），offload 以免阻塞事件循环
+    _cleaned, _legacy_names = await asyncio.to_thread(_config_manager.cleanup_invalid_voice_ids)
     if _legacy_names:
         core.enqueue_voice_migration_notice(_legacy_names)
     

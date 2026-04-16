@@ -29,6 +29,9 @@ class DummyConfigManager:
         self.saved_characters = copy.deepcopy(characters)
         self.characters = copy.deepcopy(characters)
 
+    async def asave_characters(self, characters):
+        self.save_characters(characters)
+
 
 def _build_characters_fixture():
     return {
