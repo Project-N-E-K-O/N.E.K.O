@@ -1290,12 +1290,29 @@
                 window.MMDLoadingOverlay?.fail(mmdLoadingSessionId, { detail: error?.message || String(error) });
             }
             showStatusToast(window.t ? window.t('app.switchCatgirlError', { error: error.message }) : `切换失败: ${error.message}`, 4000);
+
+            // 早期失败回滚：若新 socket 未接管（如 /api/characters fetch 抛错），
+            // try 开头的"紧急制动"已停掉 L2D ticker 和 VRM 动画，此处重启回旧模型的渲染循环，
+            // 否则用户看到的是切换失败 toast + 冻结画面。
+            if (_switchOldSocket && S.socket === _switchOldSocket) {
+                try {
+                    const ticker = window.live2dManager?.pixi_app?.ticker;
+                    if (ticker && !ticker.started) ticker.start();
+                } catch (_e) { /* ignore */ }
+                try {
+                    if (window.vrmManager
+                        && !window.vrmManager._animationFrameId
+                        && typeof window.vrmManager.startAnimation === 'function') {
+                        window.vrmManager.startAnimation();
+                    }
+                } catch (_e) { /* ignore */ }
+            }
         } finally {
-            // 安全网：若新 socket 已接管，确保旧连接一定被关闭（即使 try 中途 throw）
+            // 双重保障：若新 socket 已接管，确保旧连接被关闭（即使 try 中途 throw）。
+            // 真正的 stale-onclose guard 在 app-websocket.js 的 onclose 早退
+            // (S.socket !== _thisSocket)，本层是第二道防线。
             // 门闸 S.socket !== _switchOldSocket：切换早期失败（如 /api/characters fetch 抛错）时
-            // 新 socket 尚未建立，此时保留旧 socket 让用户继续与当前猫娘对话
-            // 必须在 isSwitchingCatgirl=false 之前执行，
-            // 否则 onclose 会在 isSwitchingCatgirl=false 时触发 auto-reconnect
+            // 新 socket 尚未建立，此时保留旧 socket 让用户继续与当前猫娘对话。
             try {
                 if (_switchOldSocket
                     && S.socket !== _switchOldSocket

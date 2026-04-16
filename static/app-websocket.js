@@ -1586,6 +1586,15 @@
 
         // ---- onclose ----
         S.socket.onclose = function () {
+            // Stale onclose guard: background-tab throttling (or async scheduling) can
+            // delay an old socket's onclose until after a replacement connectWebSocket()
+            // has already run onopen and started a new session. In that case the mutations
+            // below (heartbeat clear, recording/session reset, button state, audio queue)
+            // would corrupt the live new session. Skip everything when this socket is stale.
+            if (S.socket !== _thisSocket) {
+                console.log('[WS] stale onclose skipped (socket already replaced)');
+                return;
+            }
             console.log(window.t('console.websocketClosed'));
             clearAssistantLifecycleOnDisconnect('socket_close');
 
