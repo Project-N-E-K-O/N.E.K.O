@@ -2639,7 +2639,10 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
         - worker_fn: 签名统一的 TTS worker callable
         - api_key_override: 若非 None，替换 tts_config['api_key']
         - provider_key: 实际选中的 provider 名称（对应 TTS_PROVIDER_REGISTRY 的 key），
-          用于调用方查询 provider 元数据（如 category）
+          用于调用方查询 provider 元数据（如 category）。
+          特殊值：'free' 故意不在 registry 中（国外走 Gemini 后端需要 normalizer，
+          meta=None → 调用方 fallthrough 启用 normalizer）；
+          不支持原生 TTS 时为 None
     """
     cm = get_config_manager()
 
@@ -2684,6 +2687,9 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     if core_api_type == 'qwen':
         return qwen_realtime_tts_worker, None, 'qwen'
     if core_api_type == 'free':
+        # provider_key 故意用 'free' 而非 'step'：'free' 不在 TTS_PROVIDER_REGISTRY 中，
+        # 使调用方 meta=None → normalizer 启用，因为 free 国外模式走 Gemini 后端需要
+        # CJK 空格清理。若改为 'step'（ws_bistream）则国外 free 用户的 normalizer 会被错误禁用。
         return partial(step_realtime_tts_worker, free_mode=True), None, 'free'
     elif core_api_type == 'step':
         return step_realtime_tts_worker, None, 'step'
