@@ -258,8 +258,9 @@ class LLMSessionManager:
         self._memory_error_retry_after = 0  # Memory Server 专属冷却时间戳
         self._memory_error_cooldown_seconds = 10  # Memory Server 冷却时间
         
-        # 防止并发启动的标志
-        self.is_starting_session = False
+        # 防止并发启动的标志（使用计数器避免并发 start_session 的 finally 互相覆盖）
+        self._starting_session_count = 0
+        self._last_cooldown_turn_end_time = 0.0  # 冷却路径 turn_end 去重时间戳
 
         # TTS缓存机制：确保不丢包
         self.tts_ready = False  # TTS是否完全就绪
@@ -1206,12 +1207,12 @@ class LLMSessionManager:
         self.session_closed_by_server = False
         self.last_audio_send_error_time = 0.0
         # 检查是否正在启动中
-        if self.is_starting_session:
+        if self._starting_session_count > 0:
             logger.warning("⚠️ Session正在启动中，忽略重复请求")
             return
-        
-        # 标记正在启动
-        self.is_starting_session = True
+
+        # 标记正在启动（使用计数器，避免并发 start_session 的 finally 互相覆盖）
+        self._starting_session_count += 1
         
         # 回收残留的热切换资源，防止 main + pending + new-main 叠到 >2 个 session
         await self._cleanup_pending_session_resources()
@@ -1655,8 +1656,8 @@ class LLMSessionManager:
             await self.cleanup()
         
         finally:
-            # 无论成功还是失败，都重置启动标志
-            self.is_starting_session = False
+            # 无论成功还是失败，都递减启动计数器（而非直接置 False，防止覆盖并发的第二个 start_session）
+            self._starting_session_count = max(0, self._starting_session_count - 1)
 
     async def send_user_activity(self, interrupted_speech_id: Optional[str] = None):
         """发送用户活动信号，附带被打断的 speech_id 用于精确打断控制"""
@@ -2520,7 +2521,7 @@ class LLMSessionManager:
         async with self.input_cache_lock:
             if not self.session_ready:
                 # 检查是否正在启动session - 只有在启动过程中才缓存
-                if self.is_starting_session:
+                if self._starting_session_count > 0:
                     # Session正在启动中，缓存输入数据
                     self.pending_input_data.append(message)
                     if len(self.pending_input_data) == 1:
@@ -2528,20 +2529,24 @@ class LLMSessionManager:
                     else:
                         logger.debug(f"继续缓存输入数据 (总计: {len(self.pending_input_data)} 条)...")
                     return
-        
+
         # 在锁外检查是否需要创建新session（不要在锁内创建session，避免死锁）
-        if not self.session_ready and not self.is_starting_session:
+        if not self.session_ready and self._starting_session_count == 0:
             if not self.session or not self.is_active:
                 # Memory Server 专属冷却检查
                 if self._memory_error_retry_after and time.time() < self._memory_error_retry_after:
-                    time_left = int(self._memory_error_retry_after - time.time())
-                    self._fire_task(self.send_status(json.dumps({
-                        "code": "MEMORY_SERVER_COOLDOWN",
-                        "details": {"wait_time": time_left}
-                    })))
-                    self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
-                    if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                        self._fire_task(self.websocket.send_json({'type': 'system', 'data': 'turn end'}))
+                    # 去重：冷却期间每秒最多发送一次 turn_end，防止音频流高频触发导致 cross_server 洪泛
+                    now = time.time()
+                    if now - self._last_cooldown_turn_end_time >= 1.0:
+                        self._last_cooldown_turn_end_time = now
+                        time_left = int(self._memory_error_retry_after - now)
+                        self._fire_task(self.send_status(json.dumps({
+                            "code": "MEMORY_SERVER_COOLDOWN",
+                            "details": {"wait_time": time_left}
+                        })))
+                        self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
+                        if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                            self._fire_task(self.websocket.send_json({'type': 'system', 'data': 'turn end'}))
                     return
                 logger.info(f"Session未就绪且不存在，根据输入类型 {input_type} 自动创建 session")
                 # 根据输入类型确定模式
@@ -2568,22 +2573,26 @@ class LLMSessionManager:
                 return
         
         # 如果正在启动session，这不应该发生（因为stream_data已经检查过了）
-        if self.is_starting_session:
+        if self._starting_session_count > 0:
             logger.debug("Session正在启动中，跳过...")
             return
-        
+
         # 如果 session 不存在或不活跃，检查是否可以自动重建
         if not self.session or not self.is_active:
             # Memory Server 专属冷却检查
             if self._memory_error_retry_after and time.time() < self._memory_error_retry_after:
-                time_left = int(self._memory_error_retry_after - time.time())
-                self._fire_task(self.send_status(json.dumps({
-                    "code": "MEMORY_SERVER_COOLDOWN",
-                    "details": {"wait_time": time_left}
-                })))
-                self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
-                if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                    self._fire_task(self.websocket.send_json({'type': 'system', 'data': 'turn end'}))
+                # 去重：冷却期间每秒最多发送一次 turn_end，防止音频流高频触发导致 cross_server 洪泛
+                now = time.time()
+                if now - self._last_cooldown_turn_end_time >= 1.0:
+                    self._last_cooldown_turn_end_time = now
+                    time_left = int(self._memory_error_retry_after - now)
+                    self._fire_task(self.send_status(json.dumps({
+                        "code": "MEMORY_SERVER_COOLDOWN",
+                        "details": {"wait_time": time_left}
+                    })))
+                    self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
+                    if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                        self._fire_task(self.websocket.send_json({'type': 'system', 'data': 'turn end'}))
                 return
             # 检查失败计数器和冷却时间
             if self.session_start_failure_count >= self.session_start_max_failures:
@@ -2888,11 +2897,11 @@ class LLMSessionManager:
                 logger.info("⏭️ end_session: expected_session stale (post-init), skipping")
                 return
             self.is_active = False
-            # 重置 is_starting_session：如果 start_session 正在执行中（比如卡在预热），
+            # 重置 _starting_session_count：如果 start_session 正在执行中（比如卡在预热），
             # 前端超时后发来 end_session，必须解除这个 guard，否则用户手动重试会被
-            # 静默丢弃（is_starting_session=True → return），导致"必须重启应用才能恢复"。
+            # 静默丢弃（_starting_session_count>0 → return），导致"必须重启应用才能恢复"。
             # connect-then-assign 模式已保证不会出现 >2 个 session。
-            self.is_starting_session = False
+            self._starting_session_count = 0
             
             # Snapshot all mutable resource refs while holding the lock,
             # then operate only on locals to prevent killing newly created resources.
