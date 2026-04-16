@@ -814,6 +814,17 @@
                 window.mmdManager.pauseRendering();
             }
 
+            // 停止 UI 更新循环（独立于渲染循环，pauseRendering 不会停止它们）
+            // 如果不停止，UI 循环每帧会覆盖下面设置的 display: none，导致按钮重新出现
+            if (window.vrmManager && window.vrmManager._uiUpdateLoopId != null) {
+                cancelAnimationFrame(window.vrmManager._uiUpdateLoopId);
+                window.vrmManager._uiUpdateLoopId = null;
+            }
+            if (window.mmdManager && window.mmdManager._uiUpdateLoopId != null) {
+                cancelAnimationFrame(window.mmdManager._uiUpdateLoopId);
+                window.mmdManager._uiUpdateLoopId = null;
+            }
+
             // 隐藏所有悬浮按钮、锁图标和返回按钮（它们挂载在 document.body 上，不随容器隐藏）
             document.querySelectorAll(
                 '#live2d-floating-buttons, #vrm-floating-buttons, #mmd-floating-buttons, ' +
@@ -862,6 +873,11 @@
                 if (window.vrmManager && typeof window.vrmManager.resumeRendering === 'function') {
                     window.vrmManager.resumeRendering();
                 }
+                // 重启 VRM UI 更新循环（被 handleHideMainUI 停止）
+                if (window.vrmManager && window.vrmManager._uiUpdateLoopId == null
+                    && typeof window.vrmManager._startUIUpdateLoop === 'function') {
+                    window.vrmManager._startUIUpdateLoop();
+                }
             } else if (currentModelType === 'live3d') {
                 // Live3D: determine sub-type from config
                 var live3dSubType = (window.lanlan_config && window.lanlan_config.live3d_sub_type || '').toLowerCase();
@@ -873,12 +889,20 @@
                         mmdContainerR.classList.remove('hidden');
                     }
                     var mmdCanvasR = document.getElementById('mmd-canvas');
-                    if (mmdCanvasR && !mmdRequestSessionId) {
+                    var hasActiveLoadingSession = mmdCanvasR && !!mmdCanvasR.dataset.mmdLoadingSessionId;
+                    if (mmdCanvasR && !hasActiveLoadingSession) {
                         mmdCanvasR.style.visibility = 'visible';
                         mmdCanvasR.style.pointerEvents = 'auto';
                     }
                     if (window.mmdManager && typeof window.mmdManager.resumeRendering === 'function') {
                         window.mmdManager.resumeRendering();
+                    }
+                    // 重启 MMD UI 更新循环（被 handleHideMainUI 停止）
+                    // UI 循环会自动管理浮动按钮和锁图标的显示/定位
+                    if (window.mmdManager && window.mmdManager._uiUpdateLoopId == null
+                        && typeof window.mmdManager._startUIUpdateLoop === 'function') {
+                        window.mmdManager._snapUIPosition = true;
+                        window.mmdManager._startUIUpdateLoop();
                     }
                 } else {
                     var vrmContainerR = document.getElementById('vrm-container');
@@ -893,6 +917,10 @@
                     }
                     if (window.vrmManager && typeof window.vrmManager.resumeRendering === 'function') {
                         window.vrmManager.resumeRendering();
+                    }
+                    if (window.vrmManager && window.vrmManager._uiUpdateLoopId == null
+                        && typeof window.vrmManager._startUIUpdateLoop === 'function') {
+                        window.vrmManager._startUIUpdateLoop();
                     }
                 }
             } else {
