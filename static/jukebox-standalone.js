@@ -140,6 +140,8 @@
   function neutralizeLegacyRegions(container) {
     disconnectLegacyStandaloneDrag();
 
+    container.style.webkitAppRegion = 'no-drag';
+
     var overlay = container.querySelector('.jukebox-drag-overlay');
     if (overlay) {
       overlay.style.webkitAppRegion = 'no-drag';
