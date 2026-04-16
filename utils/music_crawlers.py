@@ -382,10 +382,14 @@ class NeteaseCrawler(BaseMusicCrawler):
             code = data.get('code')
 
             if code != 200:
-                logger.warning(f"[{self.platform_name}] 凭证失效或接口异常 (code: {code})")
-                self._cookie_invalid = True
-                self._is_vip = False
-                self._vip_checked = True
+                if code in (301, 302):
+                    logger.warning(f"[{self.platform_name}] 凭证失效 (code: {code}, 重定向)")
+                    self._cookie_invalid = True
+                    self._is_vip = False
+                    self._vip_checked = True
+                else:
+                    logger.warning(f"[{self.platform_name}] 接口异常 (code: {code})，允许重试")
+                    self._cookie_invalid = True
                 return
 
             profile = data.get('profile') or {}
