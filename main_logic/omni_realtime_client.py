@@ -1124,8 +1124,9 @@ class OmniRealtimeClient:
         Behaviour varies by provider:
           - **OpenAI**: ``conversation.item.create(role=user)`` +
             ``response.create``
-          - **Qwen**: ``conversation.item.create(role=user)`` +
-            ``response.create`` (also updates session instructions)
+          - **Qwen**: appends to session instructions only (Qwen Realtime
+            不支持 ``conversation.item.create``，且无 user 消息时
+            ``response.create`` 会触发 1007 错误)
           - **Gemini**: ``send_client_content(role=user)``
 
         See ``prime_context()`` (session-start priming) and
@@ -1148,12 +1149,17 @@ class OmniRealtimeClient:
             return
 
         if "qwen" in self._model_lower:
-            # 同时更新 session instructions 以保留上下文
+            # Qwen: 只更新 session instructions 注入上下文，不发送 response.create
+            # DashScope API 要求 response.create 前必须存在 user 消息，
+            # 但预热阶段尚无用户对话，发送 response.create 会导致 1007 错误：
+            # "The input messages do not contain elements with the role of user"
             await self.update_session({"instructions": self.instructions + '\n' + instructions})
+            logger.info("Qwen: updated session instructions (skipped response.create)")
+            if self.on_response_done:
+                await self.on_response_done()
+            return
 
-        # 通过 conversation.item.create 添加用户消息，确保 response.create 前存在 user role 消息
-        # 修复：DashScope (Qwen) API 要求 response.create 前必须存在 user 消息，
-        # 否则返回 1007 "The input messages do not contain elements with the role of user"
+        # 其他提供商：通过 conversation.item.create 添加用户消息，再触发响应
         item_event = {
             "type": "conversation.item.create",
             "item": {
