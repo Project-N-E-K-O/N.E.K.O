@@ -544,7 +544,9 @@ async def initialize_character_data():
             need_start_thread = True
             try:
                 await asyncio.to_thread(sync_process[k].join, timeout=0.1)
-            except: # noqa: E722
+            except Exception:
+                # 注意不要写成 bare except：to_thread 是 cancellation point，
+                # 如果 catch 了 BaseException 会吞掉 asyncio.CancelledError
                 pass
         
         if need_start_thread:
