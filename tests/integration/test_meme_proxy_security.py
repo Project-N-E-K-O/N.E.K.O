@@ -46,7 +46,7 @@ async def test_meme_proxy_host_validation():
         assert response.status_code == 200
         
     # 测试 case 2: 允许的子域名 (后缀匹配)
-    url_sub_ok = "https://sub.qn.doutub.com/test.jpg"
+    url_sub_ok = "https://sub.fabiaoqing.com/test.jpg"
     with patch("httpx.AsyncClient.stream", side_effect=create_mock_stream(200, {"Content-Type": "image/png"}, b"fake-image")):
         response = await proxy_meme_image(url_sub_ok)
         assert response.status_code == 200
