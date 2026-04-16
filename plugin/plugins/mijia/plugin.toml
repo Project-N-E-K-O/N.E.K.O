@@ -6,6 +6,7 @@ short_description = "Control Xiaomi/Mijia smart home devices: lights, AC, sensor
 keywords = ["米家", "(?i)mijia", "小米", "(?i)xiaomi", "智能家居", "(?i)smart.?home", "开灯", "关灯", "空调", "设备", "(?i)device", "灯", "(?i)light", "开关"]
 version = "1.0.0"
 entry = "plugin.plugins.mijia:MijiaPlugin"
+auto_start = false
 
 [plugin.sdk]
 recommended = ">=0.1.0,<0.2.0"

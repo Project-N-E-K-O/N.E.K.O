@@ -1096,6 +1096,28 @@ class BiliDanmakuPlugin(NekoPluginBase):
         })
 
     @plugin_entry(
+        id="open_ui",
+        name="打开弹幕控制台",
+        description="在浏览器中打开B站弹幕插件的Web UI控制台，用于配置直播间、查看弹幕等",
+        kind="action"
+    )
+    async def open_ui(self, **_):
+        """在浏览器中打开B站弹幕控制台"""
+        url = "http://localhost:48916/plugin/bilibili-danmaku/ui/"
+        try:
+            if sys.platform == "win32":
+                subprocess.Popen(["cmd", "/c", "start", "", url], shell=False)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", url])
+            else:
+                subprocess.Popen(["xdg-open", url])
+            self.logger.info(f"已在浏览器中打开: {url}")
+            return Ok({"success": True, "url": url, "message": "已在浏览器打开控制台"})
+        except Exception as e:
+            self.logger.exception("打开控制台失败")
+            return Err(SdkError(f"打开控制台失败: {e}"))
+
+    @plugin_entry(
         id="save_credential",
         name="保存B站登录凭据",
         description="将用户提供的 B站 Cookie 字段加密保存到插件本地，重启后生效",

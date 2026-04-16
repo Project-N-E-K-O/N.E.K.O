@@ -1,7 +1,8 @@
 import asyncio
 import json
 import re
-import webbrowser
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Optional
 
@@ -42,29 +43,22 @@ class MijiaPlugin(NekoPluginBase):
         self.credential_path = self.data_path("credential.json")
         self.logger.debug(f"凭据路径: {self.credential_path}")
 
-        store = FileCredentialStore(default_path=self.credential_path)
-        # 创建临时 ConfigManager（后续可从插件配置读取）
-        from .mijia_api.core.config import ConfigManager
-        config = ConfigManager()
-        provider = CredentialProvider(config)
-        self.auth_service = AuthService(provider, store)
+        # 检查是否首次启动（data 目录为空）
+        data_dir = self.data_path()
+        is_first_launch = not data_dir.exists() or not any(data_dir.iterdir())
 
-        # 尝试加载已有凭据
-        credential = await self._load_credential()
-        if credential:
-            try:
-                await self._init_api(credential)
-                self.logger.info("米家插件启动成功，已加载已有凭据")
-            except Exception as e:
-                self.logger.error(f"API初始化失败，插件将在未登录状态下运行: {e}")
-                task = asyncio.create_task(self._auto_open_config_page())
-                self._background_tasks.add(task)
-                task.add_done_callback(self._background_tasks.discard)
-        else:
-            self.logger.warning("未找到有效凭据，请在Web UI中登录")
+        # 首次启动：立即调度打开浏览器，完全不等待凭据加载
+        if is_first_launch:
+            self.logger.info("首次启动，立即打开配置页面")
             task = asyncio.create_task(self._auto_open_config_page())
             self._background_tasks.add(task)
             task.add_done_callback(self._background_tasks.discard)
+        else:
+            # 有数据：后台静默加载凭据，不阻塞启动
+            task = asyncio.create_task(self._background_load_credential())
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+
         # 注册静态UI
         # register_static_ui 接受相对目录名，内部会拼接 self.config_dir / directory
         # static/ 目录下的入口文件为 index.html
@@ -80,14 +74,73 @@ class MijiaPlugin(NekoPluginBase):
                 self.logger.warning("注册静态UI失败，请检查 static/index.html 是否存在")
 
         return Ok({"status": "ready"})
-    
+
+    async def _background_load_credential(self):
+        """后台静默加载凭据，不阻塞插件启动"""
+        try:
+            store = FileCredentialStore(default_path=self.credential_path)
+            from .mijia_api.core.config import ConfigManager
+            config = ConfigManager()
+            provider = CredentialProvider(config)
+            self.auth_service = AuthService(provider, store)
+
+            credential = await self._load_credential()
+            if credential:
+                try:
+                    await self._init_api(credential)
+                    self.logger.info("米家插件启动成功，已加载已有凭据")
+                except Exception as e:
+                    self.logger.error(f"API初始化失败，插件将在未登录状态下运行: {e}")
+            else:
+                self.logger.warning("未找到有效凭据，请在Web UI中登录")
+        except Exception as e:
+            self.logger.error(f"后台加载凭据失败: {e}")
+
     async def _auto_open_config_page(self):
-        """延迟打开浏览器配置页面"""
-        await asyncio.sleep(2)  # 等待主服务器完全启动
-        # 插件 UI 服务器运行在 agent_server 内，默认端口 48916（USER_PLUGIN_SERVER_PORT）
+        """打开浏览器配置页面（立即执行，无延迟）"""
         url = "http://localhost:48916/plugin/mijia/ui/"
-        webbrowser.open(url)
-        self.logger.info(f"已自动打开配置页面: {url}")
+        try:
+            if sys.platform == "win32":
+                subprocess.Popen(["cmd", "/c", "start", "", url], shell=False)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", url])
+            else:
+                subprocess.Popen(["xdg-open", url])
+            self.logger.info(f"已自动打开配置页面: {url}")
+        except Exception as e:
+            self.logger.warning(f"自动打开配置页面失败: {e}")
+
+    def _ensure_auth_service(self):
+        """懒加载初始化认证服务（供手动入口调用，避免启动时阻塞）"""
+        if self.auth_service:
+            return
+        from .mijia_api.core.config import ConfigManager
+        config = ConfigManager()
+        store = FileCredentialStore(default_path=self.credential_path)
+        provider = CredentialProvider(config)
+        self.auth_service = AuthService(provider, store)
+
+    @plugin_entry(
+        id="open_ui",
+        name="打开配置页面",
+        description="在浏览器中打开米家插件的 Web UI 配置页面",
+        kind="action"
+    )
+    async def open_ui(self, **_):
+        """在浏览器中打开米家配置页面"""
+        url = "http://localhost:48916/plugin/mijia/ui/"
+        try:
+            if sys.platform == "win32":
+                subprocess.Popen(["cmd", "/c", "start", "", url], shell=False)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", url])
+            else:
+                subprocess.Popen(["xdg-open", url])
+            self.logger.info(f"已在浏览器中打开: {url}")
+            return Ok({"success": True, "url": url, "message": "已在浏览器打开配置页面"})
+        except Exception as e:
+            self.logger.exception("打开配置页面失败")
+            return Err(SdkError(f"打开配置页面失败: {e}"))
 
     @lifecycle(id="shutdown")
     async def on_shutdown(self, **_):
@@ -208,6 +261,7 @@ class MijiaPlugin(NekoPluginBase):
         kind="action"
     )
     async def start_qrcode_login(self, **_):
+        self._ensure_auth_service()
         if not self.auth_service:
             return Err(SdkError("认证服务未初始化"))
         try:
@@ -230,6 +284,7 @@ class MijiaPlugin(NekoPluginBase):
         kind="action"
     )
     async def check_login_status(self, login_url: str, **_):
+        self._ensure_auth_service()
         if not self.auth_service:
             return Err(SdkError("认证服务未初始化"))
         try:
@@ -342,6 +397,7 @@ class MijiaPlugin(NekoPluginBase):
         # 关闭旧 client 再置 None，防止 HttpClient / CacheManager 资源泄漏
         old_api = self.api
         self.api = None
+        self.auth_service = None
         if old_api is not None:
             try:
                 await old_api.close()
@@ -558,6 +614,86 @@ class MijiaPlugin(NekoPluginBase):
         
         # 缓存不存在或刷新，调用 list_devices
         return await self.list_devices(refresh=refresh)
+
+    @plugin_entry(
+        id="list_scenes",
+        name="获取智能场景列表",
+        description="列出当前账号下所有米家智能场景，支持缓存",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "home_id": {"type": "string", "description": "家庭ID，留空自动使用第一个"},
+                "refresh": {"type": "boolean", "description": "是否强制刷新缓存"}
+            },
+            "required": []
+        },
+        llm_result_fields=["message"]
+    )
+    async def list_scenes(self, home_id: str = None, refresh: bool = False, **_):
+        """获取智能场景列表并缓存"""
+        cache_path = self.data_path("scenes_cache.json")
+
+        # 如果不强制刷新，尝试从缓存读取
+        if not refresh and cache_path.exists():
+            try:
+                with open(cache_path, 'r', encoding='utf-8') as f:
+                    cached = json.load(f)
+                cache_home_id = cached.get('home_id')
+                cache_user_id = cached.get('user_id')
+                current_user_id = self.api.credential.user_id if self.api and self.api.credential else None
+                if cache_home_id != home_id or (current_user_id and cache_user_id != current_user_id):
+                    self.logger.warning(
+                        f"场景缓存归属不匹配(user_id: {cache_user_id}→{current_user_id}, "
+                        f"home_id: {cache_home_id}→{home_id})，跳过缓存"
+                    )
+                else:
+                    scenes = cached.get('scenes', [])
+                    self.logger.info(f"AI 从缓存读取场景列表: {len(scenes)} 个场景")
+                    lines = [f"🎬 共有 {len(scenes)} 个智能场景:"]
+                    for s in scenes:
+                        lines.append(f"  • {s.get('name')} (ID: {s.get('id')})")
+                    message = "\n".join(lines)
+                    return Ok({"success": True, "message": message, "scenes": scenes, "from_cache": True, "count": len(scenes)})
+            except Exception as e:
+                self.logger.warning(f"读取场景缓存失败: {e}")
+
+        if not self.api:
+            return Err(SdkError("未登录"))
+
+        # 获取 home_id
+        if not home_id:
+            try:
+                homes = await self.api.get_homes()
+                valid_homes = [h for h in homes if h.id]
+                if not valid_homes:
+                    return Err(SdkError("没有可用的家庭"))
+                home_id = valid_homes[0].id
+            except Exception as e:
+                return Err(SdkError(f"无法获取默认家庭: {e}"))
+
+        try:
+            scenes = await self.api.get_scenes(home_id)
+            result = [{"id": s.get("id"), "name": s.get("name"), "status": s.get("status")} for s in scenes if s.get("id")]
+
+            # 保存缓存
+            try:
+                user_id = self.api.credential.user_id if self.api and self.api.credential else None
+                with open(cache_path, 'w', encoding='utf-8') as f:
+                    json.dump({"scenes": result, "home_id": home_id, "user_id": user_id}, f, ensure_ascii=False, indent=2)
+                self.logger.info(f"场景列表已缓存: {len(result)} 个场景")
+            except Exception as e:
+                self.logger.warning(f"保存场景缓存失败: {e}")
+
+            lines = [f"🎬 共有 {len(result)} 个智能场景:"]
+            for s in result:
+                lines.append(f"  • {s.get('name')} (ID: {s.get('id')})")
+            message = "\n".join(lines)
+            return Ok({"success": True, "message": message, "scenes": result, "from_cache": False, "count": len(result)})
+        except TokenExpiredError:
+            return Err(SdkError("凭据已过期，请重新登录"))
+        except Exception as e:
+            self.logger.exception("获取场景列表失败")
+            return Err(SdkError(f"获取场景列表失败: {e}"))
 
     @plugin_entry(
         id="set_device_alias",
