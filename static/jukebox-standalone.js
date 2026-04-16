@@ -232,7 +232,18 @@
       nextBounds.height = MIN_HEIGHT;
     }
 
-    state.pendingBounds = clampBounds(nextBounds, state.workArea, MIN_WIDTH, MIN_HEIGHT);
+    var pending = clampBounds(nextBounds, state.workArea, MIN_WIDTH, MIN_HEIGHT);
+    var right = nextBounds.x + nextBounds.width;
+    var bottom = nextBounds.y + nextBounds.height;
+
+    if (state.dir.indexOf('w') !== -1) {
+      pending.width = Math.max(MIN_WIDTH, right - pending.x);
+    }
+    if (state.dir.indexOf('n') !== -1) {
+      pending.height = Math.max(MIN_HEIGHT, bottom - pending.y);
+    }
+
+    state.pendingBounds = pending;
     scheduler.queue();
   }
 
@@ -340,6 +351,7 @@
     document.addEventListener('touchmove', onPointerMove, { passive: false });
     document.addEventListener('mouseup', finishDrag);
     document.addEventListener('touchend', finishDrag);
+    document.addEventListener('touchcancel', finishDrag);
     window.addEventListener('blur', finishDrag);
 
     if (window.Jukebox && window.Jukebox.State) {
@@ -350,6 +362,7 @@
         document.removeEventListener('touchmove', onPointerMove);
         document.removeEventListener('mouseup', finishDrag);
         document.removeEventListener('touchend', finishDrag);
+        document.removeEventListener('touchcancel', finishDrag);
         window.removeEventListener('blur', finishDrag);
         finishDrag();
         window.Jukebox.State._dragCleanup = null;
@@ -374,6 +387,7 @@
       document.removeEventListener('touchmove', onPointerMove);
       document.removeEventListener('mouseup', finishResize);
       document.removeEventListener('touchend', finishResize);
+      document.removeEventListener('touchcancel', finishResize);
       window.removeEventListener('blur', finishResize);
     }
 
@@ -438,6 +452,7 @@
       document.addEventListener('touchmove', onPointerMove, { passive: false });
       document.addEventListener('mouseup', finishResize);
       document.addEventListener('touchend', finishResize);
+      document.addEventListener('touchcancel', finishResize);
       window.addEventListener('blur', finishResize);
 
       if (window.Jukebox && window.Jukebox.State) {

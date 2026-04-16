@@ -20,7 +20,9 @@ HARNESS_HTML = """
     .jukebox-drag-overlay { position: absolute; inset: 0; background: rgba(255, 0, 0, 0.05); }
     .jukebox-content { position: relative; height: 312px; padding: 12px; }
     .jukebox-controls-row { margin-top: 12px; }
-    .jukebox-resize-handle { position: absolute; width: 24px; height: 24px; right: 0; bottom: 0; background: #333; z-index: 20; }
+    .jukebox-resize-handle { position: absolute; width: 24px; height: 24px; background: #333; z-index: 20; }
+    .jukebox-resize-handle[data-dir="se"] { right: 0; bottom: 0; }
+    .jukebox-resize-handle[data-dir="nw"] { left: 0; top: 0; }
   </style>
 </head>
 <body>
@@ -36,6 +38,7 @@ HARNESS_HTML = """
         <div class="jukebox-calibration-section">Calibration</div>
         <div class="jukebox-notice">Notice</div>
       </div>
+      <div class="jukebox-resize-handle" data-dir="nw"></div>
       <div class="jukebox-resize-handle" data-dir="se"></div>
     </div>
   </div>
@@ -114,7 +117,7 @@ def test_jukebox_standalone_bridge_fast_interactions(mock_page: Page):
     mock_page.mouse.move(header["x"] + 180, header["y"] + 80)
     mock_page.mouse.up()
 
-    handle = mock_page.locator(".jukebox-resize-handle").bounding_box()
+    handle = mock_page.locator('.jukebox-resize-handle[data-dir="se"]').bounding_box()
     assert handle is not None
     mock_page.mouse.move(handle["x"] + 10, handle["y"] + 10)
     mock_page.mouse.down()
@@ -138,6 +141,76 @@ def test_jukebox_standalone_bridge_fast_interactions(mock_page: Page):
 
     content_log = mock_page.evaluate("window.__bridgeLog")
     assert any(entry[0] == "dragStart" for entry in content_log)
+
+    mock_page.evaluate("window.__bridgeLog = []")
+    nw_handle = mock_page.locator('.jukebox-resize-handle[data-dir="nw"]').bounding_box()
+    assert nw_handle is not None
+    mock_page.mouse.move(nw_handle["x"] + 10, nw_handle["y"] + 10)
+    mock_page.mouse.down()
+    mock_page.mouse.move(nw_handle["x"] - 190, nw_handle["y"] - 190)
+    mock_page.mouse.up()
+    mock_page.wait_for_timeout(50)
+
+    resize_log = mock_page.evaluate(
+        """
+        () => window.__bridgeLog.filter((entry) => entry[0] === 'setBounds')
+        """
+    )
+    assert resize_log
+    x, y, width, height = resize_log[-1][1:]
+    assert (x, y) == (0, 0)
+    assert (width, height) == (580, 480)
+
+    mock_page.evaluate(
+        """
+        () => {
+          document.body.classList.add('jukebox-dragging');
+          window.Jukebox.State.isDragging = false;
+          const header = document.querySelector('.jukebox-header');
+          header.dispatchEvent(new TouchEvent('touchstart', {
+            bubbles: true,
+            cancelable: true,
+            touches: [new Touch({
+              identifier: 1,
+              target: header,
+              clientX: 50,
+              clientY: 20,
+              screenX: 150,
+              screenY: 140
+            })]
+          }));
+        }
+        """
+    )
+    mock_page.wait_for_timeout(50)
+    mock_page.evaluate("document.dispatchEvent(new TouchEvent('touchcancel', { bubbles: true, cancelable: true }))")
+    mock_page.wait_for_timeout(50)
+    assert "jukebox-dragging" not in mock_page.locator("body").get_attribute("class")
+
+    mock_page.evaluate(
+        """
+        () => {
+          const handle = document.querySelector('.jukebox-resize-handle[data-dir="se"]');
+          handle.dispatchEvent(new TouchEvent('touchstart', {
+            bubbles: true,
+            cancelable: true,
+            touches: [new Touch({
+              identifier: 2,
+              target: handle,
+              clientX: 470,
+              clientY: 350,
+              screenX: 570,
+              screenY: 470
+            })]
+          }));
+        }
+        """
+    )
+    mock_page.wait_for_timeout(50)
+    mock_page.evaluate("document.dispatchEvent(new TouchEvent('touchcancel', { bubbles: true, cancelable: true }))")
+    mock_page.wait_for_timeout(50)
+    body_class = mock_page.locator("body").get_attribute("class") or ""
+    assert "jukebox-resizing" not in body_class
 
 
 @pytest.mark.frontend
@@ -169,6 +242,12 @@ def test_jukebox_standalone_fallback_fast_interactions(mock_page: Page):
             oh = height;
             window.__fallbackLog.push(['resizeTo', width, height]);
           };
+          window.__setFallbackBounds = function(x, y, width, height) {
+            sx = x;
+            sy = y;
+            ow = width;
+            oh = height;
+          };
         }
         """,
     )
@@ -180,7 +259,7 @@ def test_jukebox_standalone_fallback_fast_interactions(mock_page: Page):
     mock_page.mouse.move(header["x"] + 180, header["y"] + 80)
     mock_page.mouse.up()
 
-    handle = mock_page.locator(".jukebox-resize-handle").bounding_box()
+    handle = mock_page.locator('.jukebox-resize-handle[data-dir="se"]').bounding_box()
     assert handle is not None
     mock_page.mouse.move(handle["x"] + 10, handle["y"] + 10)
     mock_page.mouse.down()
@@ -203,3 +282,24 @@ def test_jukebox_standalone_fallback_fast_interactions(mock_page: Page):
 
     content_log = mock_page.evaluate("window.__fallbackLog")
     assert any(entry[0] == "moveTo" and entry[1] != 100 for entry in content_log)
+
+    mock_page.evaluate(
+        """
+        () => {
+          window.__fallbackLog = [];
+          window.__setFallbackBounds(100, 120, 480, 360);
+        }
+        """
+    )
+    nw_handle = mock_page.locator('.jukebox-resize-handle[data-dir="nw"]').bounding_box()
+    assert nw_handle is not None
+    mock_page.mouse.move(nw_handle["x"] + 10, nw_handle["y"] + 10)
+    mock_page.mouse.down()
+    mock_page.mouse.move(nw_handle["x"] - 190, nw_handle["y"] - 190)
+    mock_page.mouse.up()
+    mock_page.wait_for_timeout(50)
+
+    resize_log = mock_page.evaluate("window.__fallbackLog")
+    resize_pairs = [entry for entry in resize_log if entry[0] in ('moveTo', 'resizeTo')]
+    assert ['moveTo', 0, 0] in resize_pairs
+    assert ['resizeTo', 580, 480] in resize_pairs
