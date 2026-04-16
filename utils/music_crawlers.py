@@ -1079,6 +1079,7 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
         primary_tasks = []
         
         # --- 组建第一梯队（最优解竞速） ---
+        netease_used = False
         
         # 1. 古典乐意图判定：强古典词 OR (包含乐器词且非现代风格词)
         is_classical = any(kw in kw_lower for kw in strong_classical) or \
@@ -1092,6 +1093,7 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
         elif any(kw in kw_lower for kw in chinese_keywords):
             logger.info(f"[智能调度] 识别到华语检索意图，优先调度网易云: {keyword}")
             primary_tasks.append(all_crawlers['netease'].search(keyword, limit))
+            netease_used = True
 
         # 3. 独立/电子/Lofi 路由
         elif any(kw in kw_lower for kw in indie_keywords):
@@ -1105,6 +1107,7 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
         else:
             if china:
                 primary_tasks.append(all_crawlers['netease'].search(keyword, limit))
+                netease_used = True
             else:
                 # 非中文区默认首选
                 primary_tasks.append(all_crawlers['soundcloud'].search(keyword, limit))
@@ -1189,6 +1192,9 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
         for source, kw in selected_styles:
             if source == 'musopen':
                 tasks.append(all_crawlers['musopen'].search(limit=limit))
+            elif source == 'netease':
+                tasks.append(all_crawlers['netease'].search(kw, limit))
+                netease_used = True
             else:
                 tasks.append(all_crawlers[source].search(kw, limit))
                 
@@ -1198,9 +1204,17 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
                 all_results.extend(res)
 
     # 统一的去重与返回逻辑
+    netease_crawler = all_crawlers.get('netease')
+    netease_cookie_invalid = bool(netease_used and netease_crawler and netease_crawler._cookie_invalid)
+
     if not all_results:
         logger.warning("所有音乐源（含兜底）均未返回任何结果")
-        return {'success': False, 'error': '未能找到任何相关音乐', 'data': []}
+        return {
+            'success': False,
+            'error': '未能找到任何相关音乐',
+            'data': [],
+            'netease_cookie_invalid': netease_cookie_invalid,
+        }
 
     # URL级别去重
     seen_urls = set()
@@ -1216,7 +1230,12 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
     # 去重后可能为空，需要修正返回语义
     if not unique_results:
         logger.warning("去重后无可用音乐")
-        return {'success': False, 'error': '去重后无可用音乐', 'data': []}
+        return {
+            'success': False,
+            'error': '去重后无可用音乐',
+            'data': [],
+            'netease_cookie_invalid': netease_cookie_invalid,
+        }
     
     # 【核心优化】获取搜索结果后立即鉴别最佳匹配，并重排列表顺序
     best_match = identify_best_music_resource(target_song=keyword, search_results=unique_results)
@@ -1243,16 +1262,13 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
     
     # 标记实际返回的歌曲为已播放（写入缓存）
     music_cache.mark_as_played(final_results)
-    
-    netease_crawler = all_crawlers.get('netease')
+
     return {
         'success': True,
         'data': final_results,
         'diversity': diversity_info,
         'best_match': best_match,
-        'netease_cookie_invalid': netease_crawler._cookie_invalid 
-        if netease_crawler and all_results 
-        else False
+        'netease_cookie_invalid': netease_cookie_invalid,
     }
 
 def expand_style_keyword(keyword: str) -> List[str]:
