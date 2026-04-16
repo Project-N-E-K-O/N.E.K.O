@@ -377,33 +377,31 @@ class NeteaseCrawler(BaseMusicCrawler):
         if self._vip_checked:
             return
         try:
-            # 切换到更稳定的获取账号与 VIP 信息的接口 (解决 /api/vip/info 的 404 问题)
             resp = await self.client.get('https://music.163.com/api/nuser/account/get')
             data = resp.json()
             code = data.get('code')
-            
-            # 提取核心数据对象
-            profile = data.get('profile') or {}
-            data_field = data.get('data', {}) or {}
-            
-            # 1. 检查标准的 vipType (profile 级)
-            vip_type = profile.get('vipType', 0)
-            # 2. 检查 fallback 的 vipType (data 级)
-            alt_vip_type = data_field.get('vipType', 0)
-            
-            # 3. 检查 associator (包含音乐包等细分会员)
-            assoc = data_field.get('associator') or profile.get('associator') or {}
-            is_assoc_vip = assoc.get('isVip', False) or (assoc.get('vipCode', 0) > 0)
-            
-            self._is_vip = (vip_type > 0) or (alt_vip_type > 0) or is_assoc_vip
-            self._vip_checked = True
-            
-            if self._is_vip:
-                logger.info(f"[{self.platform_name}] VIP 身份探测成功 (VipType:{vip_type}, Assoc:{is_assoc_vip})")
-            elif code != 200:
+
+            if code != 200:
                 logger.warning(f"[{self.platform_name}] 凭证失效或接口异常 (code: {code})")
                 self._cookie_invalid = True
-                self._vip_checked = False
+                self._is_vip = False
+                self._vip_checked = True
+                return
+
+            profile = data.get('profile') or {}
+            data_field = data.get('data', {}) or {}
+
+            vip_type = profile.get('vipType', 0)
+            alt_vip_type = data_field.get('vipType', 0)
+
+            assoc = data_field.get('associator') or profile.get('associator') or {}
+            is_assoc_vip = assoc.get('isVip', False) or (assoc.get('vipCode', 0) > 0)
+
+            self._is_vip = (vip_type > 0) or (alt_vip_type > 0) or is_assoc_vip
+            self._vip_checked = True
+
+            if self._is_vip:
+                logger.info(f"[{self.platform_name}] VIP 身份探测成功 (VipType:{vip_type}, Assoc:{is_assoc_vip})")
             else:
                 logger.info(f"[{self.platform_name}] 确认为普通账号 (无有效会员特征)")
                 logger.debug(f"[{self.platform_name}] 响应结构摘要: {list(data.keys())}")
