@@ -382,13 +382,59 @@
             return;
         }
 
-        // 文本模式：指数退避（带小幅随机指数浮动，避免节奏过于机械）
-        var baseInterval = S.proactiveChatInterval;
+        // ── 文本模式：三段式自适应退避 ──
+        //
+        // 常量:
+        //   BACKOFF_TARGET  = 120s (收敛目标)
+        //   BACKOFF_M1      = 1.09167 (tier 1 固定倍率, = 1 + (120 - 10) / 1200)
+        //   BACKOFF_M2      = 1.55 (tier 2/3 倍率)
+        //   BACKOFF_SLOW    = 4 (慢区级数)
+        //   BACKOFF_P_SLOW  = 0.09 (慢区升级概率)
+        //   BACKOFF_HARD_CAP = 3600s (硬顶 60min)
+        //
+        // 自适应参数 (由 base 决定):
+        //   cap1 = ceil(log(TARGET / base) / log(M1))   — tier 1 总级数
+        //   cap2 = cap1 + SLOW                          — 慢区终点
+        //
+        // Delay 函数:
+        //   level < cap1:  base × M1^(level + jitter)                     (tier 1: 每 tick 必升)
+        //   level ≥ cap1:  base × M1^cap1 × M2^(level - cap1 + jitter)   (tier 2/3)
+        //   min(上式, HARD_CAP)
+        //
+        // Level 推进:
+        //   level < cap1         → level++          (确定性)
+        //   cap1 ≤ level < cap2  → 9% 概率 level++  (慢区)
+        //   level ≥ cap2         → level++          (快区)
+        //
+        // 单调性: 固定 M1 使 delay(T) ≈ base + T×(M1-1)，
+        //         ∂delay/∂base = 1 > 0，base 越高期望 delay 越高。
 
-        // 在指数上叠加 ±0.125 的随机漂移 → 实际倍率波动约 [0.89x, 1.12x]，幅度很小但有变化
+        var baseInterval = S.proactiveChatInterval;
+        var BACKOFF_TARGET = 120;
+        var BACKOFF_M1 = 1.09167;
+        var BACKOFF_M2 = 1.55;
+        var BACKOFF_SLOW = 4;
+        var BACKOFF_P_SLOW = 0.09;
+        var BACKOFF_HARD_CAP_MS = 3600 * 1000;
+
+        var cap1 = (baseInterval >= BACKOFF_TARGET) ? 0
+            : Math.ceil(Math.log(BACKOFF_TARGET / baseInterval) / Math.log(BACKOFF_M1));
+        var cap2 = cap1 + BACKOFF_SLOW;
+
+        // 在指数上叠加 ±0.125 的随机漂移 → 实际倍率波动约 [0.89x, 1.12x]
         var expJitter = (Math.random() - 0.5) * 0.25;
-        var effectiveExp = S.proactiveChatBackoffLevel + expJitter;
-        var delay = (baseInterval * 1000) * Math.pow(1.8, effectiveExp);
+        var level = S.proactiveChatBackoffLevel;
+        var delay;
+
+        if (level < cap1) {
+            // Tier 1: base × M1^level，确定性爬升
+            delay = (baseInterval * 1000) * Math.pow(BACKOFF_M1, level + expJitter);
+        } else {
+            // Tier 2/3: 从收敛点开始用 M2 爬升
+            var convergenceDelay = baseInterval * Math.pow(BACKOFF_M1, cap1);
+            delay = convergenceDelay * 1000 * Math.pow(BACKOFF_M2, (level - cap1) + expJitter);
+            delay = Math.min(delay, BACKOFF_HARD_CAP_MS);
+        }
 
         // 首次启动时额外等待 6 秒，避免程序刚启动就触发音乐推荐。
         // 用一次性 flag 而非 backoffLevel === 0 —— 后者在 user_input reset 或
@@ -401,12 +447,7 @@
         }
         delay += startupDelay;
 
-        // Clamp：level 长期上爬后 (level ≥ ~25 @ base=15s) `1.8^level` 会把 delay
-        // 顶到超过 setTimeout 的 int32 上限 0x7fffffff ≈ 24.8 天，实际被截断成
-        // "1ms 后立刻 fire"。加个硬上限保险，实际封顶在 ~24 天，已足够长。
-        delay = Math.min(delay, 0x7fffffff);
-
-        console.log('主动搭话：' + (delay / 1000).toFixed(1) + '秒后触发（基础间隔：' + S.proactiveChatInterval + '秒，退避级别：' + S.proactiveChatBackoffLevel + '，指数漂移：' + expJitter.toFixed(2) + '，启动延迟：' + (startupDelay / 1000) + '秒）');
+        console.log('主动搭话：' + (delay / 1000).toFixed(1) + '秒后触发（基础间隔：' + baseInterval + '秒，退避级别：' + level + '，cap1：' + cap1 + '，cap2：' + cap2 + '，指数漂移：' + expJitter.toFixed(2) + '，启动延迟：' + (startupDelay / 1000) + '秒）');
 
         S.proactiveChatTimer = setTimeout(async function () {
             // 双重检查锁：定时器触发时再次检查是否正在执行
@@ -436,16 +477,24 @@
                 S.isProactiveChatRunning = false; // 解锁
             }
 
-            // 增加退避级别（仅在实际发送了请求时才累加，冷却期/前置条件未满足的跳过不计入）：
-            //   level < 3 时每次必升（15s → 27s → 49s → 87s ≈ 1.5min），温和拉开间隔；
-            //   level ≥ 3 后改为 30% 概率升级，让"长期无人搭理"的情况间隔能继续慢慢变长，
-            //     但大多数轮次仍停在当前档位，避免一次跳太远。
+            // 三段式 level 推进（仅在实际发送了请求时才推进）：
+            //   tier 1 (level < cap1): 每次必升 — 确定性爬升阶段
+            //   tier 2 (cap1 ≤ level < cap2): 9% 概率升级 — 慢区，长时间停留
+            //   tier 3 (level ≥ cap2): 每次必升 — 快区，快速逼近 60min 硬顶
             if (triggered) {
-                if (S.proactiveChatBackoffLevel < 3) {
+                var currentCap1 = (S.proactiveChatInterval >= BACKOFF_TARGET) ? 0
+                    : Math.ceil(Math.log(BACKOFF_TARGET / S.proactiveChatInterval) / Math.log(BACKOFF_M1));
+                var currentCap2 = currentCap1 + BACKOFF_SLOW;
+
+                if (S.proactiveChatBackoffLevel < currentCap1) {
                     S.proactiveChatBackoffLevel++;
-                } else if (Math.random() < 0.3) {
+                } else if (S.proactiveChatBackoffLevel < currentCap2) {
+                    if (Math.random() < BACKOFF_P_SLOW) {
+                        S.proactiveChatBackoffLevel++;
+                        console.log('[ProactiveChat] 慢区概率升级命中，退避级别升至 ' + S.proactiveChatBackoffLevel);
+                    }
+                } else {
                     S.proactiveChatBackoffLevel++;
-                    console.log('[ProactiveChat] 高档位概率升级命中，退避级别升至 ' + S.proactiveChatBackoffLevel);
                 }
             }
 
