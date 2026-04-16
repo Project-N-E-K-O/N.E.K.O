@@ -13,6 +13,7 @@ import asyncio
 import time
 import pickle
 import aiohttp
+from queue import Empty
 from config import MONITOR_SERVER_PORT, MEMORY_SERVER_PORT, COMMENTER_SERVER_PORT
 from datetime import datetime
 import json
@@ -173,7 +174,7 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                 while not message_queue.empty():
                     try:
                         message = message_queue.get_nowait()
-                    except Exception:
+                    except Empty:
                         break
 
                     if message["type"] == "json":

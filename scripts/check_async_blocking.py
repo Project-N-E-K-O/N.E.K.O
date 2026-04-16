@@ -45,6 +45,13 @@ DEFAULT_PATHS = [
     "main_routers",
     "utils",
 ]
+# NOTE: ``plugin/`` is intentionally NOT in the default scope. Plugin code uses
+# pyzmq sockets (``sock.connect`` / ``sock.recv`` via async zmq) and
+# ``asyncio.Queue`` heavily, both of which match the tail-name heuristics here
+# and produce a high false-positive rate (``await sock.recv`` on zmq,
+# ``await asyncio.wait_for(q.get(), …)`` on asyncio.Queue). Ruff's ASYNC*
+# rules still cover plugin code via pyproject.toml. A follow-up can
+# type-disambiguate queue/socket kinds and bring plugin into scope.
 
 CODE = "ASYNC_BLOCK"
 NOQA_TOKEN = "noqa: ASYNC_BLOCK"
