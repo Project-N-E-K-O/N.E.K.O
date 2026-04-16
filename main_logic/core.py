@@ -1450,7 +1450,7 @@ class LLMSessionManager:
                 logger.info("当前模式不需要TTS，关闭TTS线程")
                 try:
                     self.tts_request_queue.put(("__shutdown__", None))  # 通知线程退出
-                    self.tts_thread.join(timeout=1.0)  # 等待线程结束
+                    await asyncio.to_thread(self.tts_thread.join, 1.0)  # 等待线程结束
                 except Exception as e:
                     logger.error(f"关闭TTS线程时出错: {e}")
                 finally:
