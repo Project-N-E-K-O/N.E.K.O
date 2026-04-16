@@ -917,37 +917,6 @@ class LLMSessionManager:
             core_config.get('ENABLE_CUSTOM_API') and core_config.get('TTS_MODEL_URL')
         )
 
-    def _resolve_tts_needs_normalizer(self, has_custom: bool) -> bool:
-        """判断当前 TTS provider 是否需要客户端文本规范化。
-
-        ws_bistream 类 provider 直接把文本碎片发给服务端，不需要 normalizer；
-        http_sentence / local 类 provider 做客户端切句，normalizer 有助于
-        去除 Gemini Live 输出转录中的 CJK 边界空格。
-
-        注意：free 模式国外服务器走 Gemini 后端，需要 normalizer，
-        因此 free 不映射到 step，走 fallthrough 启用 normalizer。
-
-        Returns:
-            True 表示应启用 TtsStreamNormalizer，False 表示跳过。
-        """
-        # 自定义 MiniMax 克隆音色 → http_sentence，需要 normalizer
-        if has_custom and self.voice_id:
-            from main_logic.tts_client import _get_voice_meta
-            voice_meta = _get_voice_meta(self.voice_id)
-            if voice_meta and voice_meta.get('provider', '').startswith('minimax'):
-                return True
-
-        # 默认 TTS：按 core_api_type 查 registry
-        # 注意：'free' 不在 registry 中，会走 fallthrough 启用 normalizer——
-        # 因为 free 国外模式走 Gemini 后端，需要 CJK 空格清理。
-        provider_key = self.core_api_type or 'qwen'
-        meta = TTS_PROVIDER_REGISTRY.get(provider_key)
-        if meta and meta.category == "ws_bistream":
-            return False
-
-        # 未知 provider / free / http_sentence / local → 保守地启用 normalizer
-        return True
-
     def _start_tts_thread(self):
         """创建并启动 TTS Worker 线程。
 
@@ -959,7 +928,7 @@ class LLMSessionManager:
         self.tts_ready = False
 
         has_custom = self._has_custom_tts()
-        tts_worker, api_key_override = get_tts_worker(
+        tts_worker, api_key_override, provider_key = get_tts_worker(
             core_api_type=self.core_api_type,
             has_custom_voice=has_custom,
             voice_id=self.voice_id or '',
@@ -969,12 +938,15 @@ class LLMSessionManager:
         )
         api_key = api_key_override or tts_config['api_key']
 
-        # 根据 TTS provider 类别决定是否启用流式文本规范化。
+        # 根据实际选中的 TTS provider 类别决定是否启用流式文本规范化。
         # ws_bistream 类（qwen / step / cosyvoice）直接把文本碎片发给服务端处理，
         # normalizer 的 pending_spaces 延迟投递和 CJK 边界空格删除会干扰送达节奏。
         # http_sentence 类（cogtts / gemini / openai / minimax）做客户端句子分割，
         # 需要干净的文本，normalizer 在此有意义。
-        self._tts_normalize_enabled = self._resolve_tts_needs_normalizer(has_custom)
+        # 注意：'free' 不在 registry 中 → meta 为 None → 走 fallthrough 启用 normalizer，
+        # 因为 free 国外模式走 Gemini 后端，需要 CJK 空格清理。
+        meta = TTS_PROVIDER_REGISTRY.get(provider_key) if provider_key else None
+        self._tts_normalize_enabled = not meta or meta.category != "ws_bistream"
 
         self.tts_request_queue = Queue()
         self.tts_response_queue = Queue()
