@@ -942,6 +942,7 @@
             nekoBroadcastChannel.postMessage({
                 action: 'voice_chat_active',
                 active: hidden,
+                lanlan_name: (window.lanlan_config && window.lanlan_config.lanlan_name) || '',
                 timestamp: Date.now()
             });
         }
@@ -985,6 +986,9 @@
                         break;
                     case 'voice_chat_active': {
                         // 来自另一个窗口的语音对话状态变更，同步本地 React composer 隐藏状态
+                        // 校验 lanlan_name：多角色场景下避免串状态
+                        var vcCurrentName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+                        if (event.data.lanlan_name && (!vcCurrentName || event.data.lanlan_name !== vcCurrentName)) break;
                         var vcHidden = !!event.data.active;
                         if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setComposerHidden === 'function') {
                             window.reactChatWindowHost.setComposerHidden(vcHidden);
