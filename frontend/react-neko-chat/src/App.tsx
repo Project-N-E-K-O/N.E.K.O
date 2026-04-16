@@ -30,6 +30,7 @@ export default function App({
   chatWindowAriaLabel = i18n('chat.reactWindowAriaLabel', 'Neko chat window'),
   messageListAriaLabel = i18n('chat.messageListAriaLabel', 'Chat messages'),
   composerToolsAriaLabel = i18n('chat.composerToolsAriaLabel', 'Composer tools'),
+  composerHidden = false,
   composerAttachments = [],
   composerAttachmentsAriaLabel = i18n('chat.pendingImagesAriaLabel', 'Pending attachments'),
   importImageButtonLabel = i18n('chat.importImage', 'Import Image'),
@@ -154,7 +155,7 @@ export default function App({
           />
         </section>
 
-        <footer className="composer-panel">
+        <footer className="composer-panel" style={composerHidden ? { display: 'none' } : undefined}>
           <div id="music-player-mount" />
           {composerAttachments.length > 0 ? (
             <div className="composer-attachments" aria-label={composerAttachmentsAriaLabel}>

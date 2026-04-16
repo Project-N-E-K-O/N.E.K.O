@@ -977,6 +977,7 @@
 
                                     var tia = document.getElementById('text-input-area');
                                     if (tia) tia.classList.remove('hidden');
+                                    if (typeof window.syncVoiceChatComposerHidden === 'function') window.syncVoiceChatComposerHidden(false);
                                 }
                             }, 7500);
                         }
@@ -1463,6 +1464,7 @@
                         S.isSwitchingMode = false;
                         var _tia = document.getElementById('text-input-area');
                         if (_tia) _tia.classList.remove('hidden');
+                        if (typeof window.syncVoiceChatComposerHidden === 'function') window.syncVoiceChatComposerHidden(false);
                     }
                     S.sessionStartedResolver = null;
                     S.sessionStartedRejecter = null;
@@ -1509,6 +1511,7 @@
 
                     var _tia2 = document.getElementById('text-input-area');
                     if (_tia2) _tia2.classList.remove('hidden');
+                    if (typeof window.syncVoiceChatComposerHidden === 'function') window.syncVoiceChatComposerHidden(false);
 
                     if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(false);
                     if (typeof window.syncFloatingScreenButtonState === 'function') window.syncFloatingScreenButtonState(false);
@@ -1727,6 +1730,7 @@
 
             var _tia3 = document.getElementById('text-input-area');
             if (_tia3) _tia3.classList.remove('hidden');
+            if (typeof window.syncVoiceChatComposerHidden === 'function') window.syncVoiceChatComposerHidden(false);
 
             if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(false);
             if (typeof window.syncFloatingScreenButtonState === 'function') window.syncFloatingScreenButtonState(false);
