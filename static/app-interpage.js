@@ -857,6 +857,7 @@
     // =====================================================================
 
     var nekoBroadcastChannel = null;
+    var _isRelayingYuiGuideHandoffSent = false;
     try {
         if (typeof BroadcastChannel !== 'undefined') {
             nekoBroadcastChannel = new BroadcastChannel('neko_page_channel');
@@ -923,12 +924,46 @@
                         }
                         break;
                     }
+                    case 'handoff_consumed': {
+                        // 目标页面消费了 handoff token，转发为 DOM 事件
+                        window.dispatchEvent(new CustomEvent('neko:yui-guide:handoff-consumed', {
+                            detail: event.data.detail || {}
+                        }));
+                        break;
+                    }
+                    case 'handoff_sent': {
+                        // 其他标签页发出了 handoff-sent，转发为本地 DOM 事件
+                        _isRelayingYuiGuideHandoffSent = true;
+                        try {
+                            window.dispatchEvent(new CustomEvent('neko:yui-guide:handoff-sent', {
+                                detail: event.data.detail || {}
+                            }));
+                        } finally {
+                            _isRelayingYuiGuideHandoffSent = false;
+                        }
+                        break;
+                    }
                 }
             };
         }
     } catch (e) {
         console.log('[BroadcastChannel] 初始化失败，将使用 postMessage 后备方案:', e);
     }
+
+    // =====================================================================
+    // Cross-window handoff event forwarding via BroadcastChannel
+    // =====================================================================
+
+    // 首页发出 handoff-sent DOM 事件时，转发到 BC 让其他标签页感知
+    window.addEventListener('neko:yui-guide:handoff-sent', function (evt) {
+        if (_isRelayingYuiGuideHandoffSent) return;
+        if (!nekoBroadcastChannel) return;
+        nekoBroadcastChannel.postMessage({
+            action: 'handoff_sent',
+            detail: evt.detail || {},
+            timestamp: Date.now()
+        });
+    });
 
     // =====================================================================
     // Cross-window avatar forwarding via BroadcastChannel
