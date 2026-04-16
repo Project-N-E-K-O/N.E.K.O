@@ -543,7 +543,8 @@
         "TTS_VOICE_NOT_REGISTERED": "У этого персонажа нет зарегистрированного голоса",
         "TTS_VOICE_REGISTER_MISSING_PARAMS": "Отсутствуют обязательные параметры",
         "TTS_GPT_SOVITS_URL_REQUIRED": "Введите URL GPT-SoVITS API",
-        "TTS_GPT_SOVITS_URL_INVALID": "Недопустимый URL GPT-SoVITS API"
+        "TTS_GPT_SOVITS_URL_INVALID": "Недопустимый URL GPT-SoVITS API",
+        "INPUT_TOO_LONG": "Ввод слишком длинный, пожалуйста, сократите и повторите"
     },
     "camera": {
         "iosPermissionHint": "Проверьте в Настройках iOS → Safari → Камера, что разрешение установлено на «Разрешить»",
@@ -665,7 +666,9 @@
         "exportSelectAll": "Выбрать всё",
         "exportSelectNone": "Снять",
         "exportSelectInvert": "Инверсия",
-        "exportSelectionCount": "Выбрано {{selected}} из {{total}}"
+        "exportSelectionCount": "Выбрано {{selected}} из {{total}}",
+        "inputTooLong": "Сообщение слишком длинное ({{count}}/{{max}}), пожалуйста, сократите и повторите",
+        "responseTooLong": "Господин, вы заставили меня слишком много думать, я не справляюсь, мяу!"
     },
     "voiceControl": {
         "startVoice": "Начать голос",

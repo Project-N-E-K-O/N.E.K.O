@@ -543,7 +543,8 @@
         "TTS_VOICE_NOT_REGISTERED": "이 캐릭터에 등록된 음성이 없습니다",
         "TTS_VOICE_REGISTER_MISSING_PARAMS": "필수 매개변수가 누락되었습니다",
         "TTS_GPT_SOVITS_URL_REQUIRED": "GPT-SoVITS API URL을 입력하세요",
-        "TTS_GPT_SOVITS_URL_INVALID": "잘못된 GPT-SoVITS API URL"
+        "TTS_GPT_SOVITS_URL_INVALID": "잘못된 GPT-SoVITS API URL",
+        "INPUT_TOO_LONG": "입력이 너무 깁니다. 줄여서 다시 시도해 주세요"
     },
     "camera": {
         "iosPermissionHint": "iOS 설정 → Safari → 카메라 권한이 \"허용\"으로 설정되어 있는지 확인하세요",
@@ -665,7 +666,9 @@
         "exportSelectAll": "모두 선택",
         "exportSelectNone": "해제",
         "exportSelectInvert": "반전",
-        "exportSelectionCount": "{{selected}} / {{total}} 선택됨"
+        "exportSelectionCount": "{{selected}} / {{total}} 선택됨",
+        "inputTooLong": "메시지가 너무 깁니다 ({{count}}/{{max}}). 줄여서 다시 시도해 주세요",
+        "responseTooLong": "주인님이 너무 많이 생각하게 해서 머리가 따라가지 못해요냥!"
     },
     "voiceControl": {
         "startVoice": "음성 시작",

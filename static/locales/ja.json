@@ -543,7 +543,8 @@
         "TTS_VOICE_NOT_REGISTERED": "このキャラクターには登録された音声がありません",
         "TTS_VOICE_REGISTER_MISSING_PARAMS": "必須パラメータが不足しています",
         "TTS_GPT_SOVITS_URL_REQUIRED": "GPT-SoVITS API URLを入力してください",
-        "TTS_GPT_SOVITS_URL_INVALID": "無効なGPT-SoVITS API URL"
+        "TTS_GPT_SOVITS_URL_INVALID": "無効なGPT-SoVITS API URL",
+        "INPUT_TOO_LONG": "入力が長すぎます。短くしてから再試行してください"
     },
     "camera": {
         "iosPermissionHint": "iOS設定 → Safari → カメラの権限が「許可」に設定されているか確認してください",
@@ -665,7 +666,9 @@
         "exportSelectAll": "すべて選択",
         "exportSelectNone": "解除",
         "exportSelectInvert": "反転",
-        "exportSelectionCount": "{{selected}} / {{total}} 件選択中"
+        "exportSelectionCount": "{{selected}} / {{total}} 件選択中",
+        "inputTooLong": "メッセージが長すぎます（{{count}}/{{max}}）。短くしてから再試行してください",
+        "responseTooLong": "ご主人様、考えすぎちゃってもう頭が追いつかないにゃ～！"
     },
     "voiceControl": {
         "startVoice": "音声開始",

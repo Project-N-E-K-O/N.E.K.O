@@ -18,6 +18,7 @@ from utils.screenshot_utils import process_screen_data
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.tts_client import get_tts_worker, dummy_tts_worker, TTS_PROVIDER_REGISTRY
+from utils.llm_client import AIMessage
 from utils.preferences import load_global_conversation_settings
 from config import MEMORY_SERVER_PORT, TOOL_SERVER_PORT
 from config.prompts_sys import (
@@ -560,8 +561,8 @@ class LLMSessionManager:
                 parsed = json.loads(message) if isinstance(message, str) else message
                 if isinstance(parsed, dict) and parsed.get('code') == 'RESPONSE_TOO_LONG':
                     _is_too_long_final = True
-            except Exception:
-                pass
+            except Exception as _parse_err:
+                logger.debug(f"[{self.lanlan_name}] response_discarded JSON 解析失败: {_parse_err}, message={message!r}")
 
         await self._clear_tts_pipeline()
 
@@ -592,9 +593,8 @@ class LLMSessionManager:
                 # 发送文本到前端显示
                 await self.send_lanlan_response(too_long_text, is_first_chunk=True)
 
-                from utils.llm_client import AIMessage as _AIMsg
                 if self.session and hasattr(self.session, '_conversation_history'):
-                    self.session._conversation_history.append(_AIMsg(content=too_long_text))
+                    self.session._conversation_history.append(AIMessage(content=too_long_text))
 
                 # 喂给 TTS 管线用角色音色念
                 if self.use_tts:
@@ -2188,9 +2188,8 @@ class LLMSessionManager:
         async with self._proactive_write_lock:
             await self.send_lanlan_response(full_text, is_first_chunk=True)
 
-            from utils.llm_client import AIMessage as _AIMsg
             if self.session and hasattr(self.session, '_conversation_history'):
-                self.session._conversation_history.append(_AIMsg(content=full_text))
+                self.session._conversation_history.append(AIMessage(content=full_text))
 
             if self.use_tts and self.tts_thread and self.tts_thread.is_alive() and not self._tts_done_queued_for_turn:
                 try:

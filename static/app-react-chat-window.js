@@ -618,7 +618,12 @@
         if (!detail.text.trim() && !hasAttachments) return;
 
         // Store last submitted text for rollback on RESPONSE_TOO_LONG
-        state.lastSubmittedText = detail.text.trim();
+        // Preserve original whitespace so rollback restores exactly what the user typed
+        if (detail.text.trim()) {
+            state.lastSubmittedText = detail.text;
+        } else {
+            state.lastSubmittedText = '';
+        }
         // Clear any stale rollback so it won't overwrite this new draft
         if (state.rollbackDraft) {
             console.log('[ROLLBACK] handleComposerSubmit: clearing rollbackDraft length=' + state.rollbackDraft.length + ' key=' + state._rollbackKey);

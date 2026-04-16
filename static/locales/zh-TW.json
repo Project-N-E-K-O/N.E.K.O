@@ -543,7 +543,8 @@
         "TTS_VOICE_NOT_REGISTERED": "該角色未註冊聲音",
         "TTS_VOICE_REGISTER_MISSING_PARAMS": "缺少必要參數",
         "TTS_GPT_SOVITS_URL_REQUIRED": "請填寫 GPT-SoVITS API URL",
-        "TTS_GPT_SOVITS_URL_INVALID": "無效的 GPT-SoVITS API URL"
+        "TTS_GPT_SOVITS_URL_INVALID": "無效的 GPT-SoVITS API URL",
+        "INPUT_TOO_LONG": "輸入過長，請精簡後重試"
     },
     "camera": {
         "iosPermissionHint": "請檢查 iOS 設定 → Safari → 攝影機 權限是否為「允許」",
@@ -665,7 +666,9 @@
         "exportSelectAll": "全選",
         "exportSelectNone": "取消",
         "exportSelectInvert": "反選",
-        "exportSelectionCount": "已選 {{selected}} / 共 {{total}}"
+        "exportSelectionCount": "已選 {{selected}} / 共 {{total}}",
+        "inputTooLong": "訊息過長（{{count}}/{{max}}），請精簡後重試",
+        "responseTooLong": "唔主人你讓人家想太多了，人家想不過來了啦！"
     },
     "voiceControl": {
         "startVoice": "開始語音",

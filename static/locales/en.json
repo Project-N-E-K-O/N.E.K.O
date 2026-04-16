@@ -543,7 +543,8 @@
         "TTS_VOICE_NOT_REGISTERED": "This character has no registered voice",
         "TTS_VOICE_REGISTER_MISSING_PARAMS": "Missing required parameters",
         "TTS_GPT_SOVITS_URL_REQUIRED": "GPT-SoVITS API URL is required",
-        "TTS_GPT_SOVITS_URL_INVALID": "Invalid GPT-SoVITS API URL"
+        "TTS_GPT_SOVITS_URL_INVALID": "Invalid GPT-SoVITS API URL",
+        "INPUT_TOO_LONG": "Input too long, please shorten and retry"
     },
     "camera": {
         "iosPermissionHint": "Please check iOS Settings → Safari → Camera permission is set to \"Allow\"",
@@ -665,7 +666,9 @@
         "exportSelectAll": "Select All",
         "exportSelectNone": "Clear",
         "exportSelectInvert": "Invert",
-        "exportSelectionCount": "{{selected}} / {{total}} selected"
+        "exportSelectionCount": "{{selected}} / {{total}} selected",
+        "inputTooLong": "Message too long ({{count}}/{{max}}), please shorten and retry",
+        "responseTooLong": "Master, you made me think too much, I can't handle it!"
     },
     "voiceControl": {
         "startVoice": "Start Voice",
