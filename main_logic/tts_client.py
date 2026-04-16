@@ -1795,6 +1795,9 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         try:
             synthesizer.close()
         except Exception:
+            # best-effort：关闭路径不 raise，与文件内其他 synthesizer.close()
+            # 块保持一致（L1644 / 1683 / 1718 / 1770）。SDK WS 在关闭时通常
+            # 已被服务端回收，异常既常见又不可恢复，log 只会增噪。
             pass
         synthesizer = None
 
