@@ -21,11 +21,24 @@ import type { PluginMeta } from '@/types/api'
 export type LayoutMode = 'list' | 'single' | 'double' | 'compact'
 export type PackMode = PluginCliPackMode
 export type PluginGroupType = 'plugin' | 'adapter' | 'extension'
+export type PackageResultKind = '' | 'pack' | 'inspect' | 'verify' | 'unpack' | 'analyze'
 
 export type SelectablePlugin = PluginMeta & {
   type: PluginGroupType
   enabled?: boolean
   autoStart?: boolean
+}
+
+export type PackageResultRecord = {
+  id: string
+  createdAt: string
+  kind: Exclude<PackageResultKind, ''>
+  resultText: string
+  inspectResult: PluginCliInspectResponse | null
+  summaryMetrics: Array<{ label: string; value: string }>
+  summaryHighlights: Array<{ label: string; value: string }>
+  summaryListItems: string[]
+  summaryWarnings: string[]
 }
 
 export function usePackageManager() {
@@ -50,10 +63,13 @@ export function usePackageManager() {
   const unpacking = ref(false)
   const analyzing = ref(false)
 
-  const resultKind = ref('')
+  const resultKind = ref<PackageResultKind>('')
   const resultText = ref('')
   const resultData = ref<Record<string, any> | null>(null)
   const inspectResult = ref<PluginCliInspectResponse | null>(null)
+  const resultDialogVisible = ref(false)
+  const resultHistory = ref<PackageResultRecord[]>([])
+  const activeResultId = ref('')
 
   const packForm = ref<PluginCliPackRequest>({
     mode: 'selected',
@@ -346,16 +362,211 @@ export function usePackageManager() {
     return []
   })
 
+  const activeResultRecord = computed<PackageResultRecord | null>(() => {
+    if (resultHistory.value.length === 0) {
+      return null
+    }
+    return resultHistory.value.find((item) => item.id === activeResultId.value) ?? resultHistory.value[0] ?? null
+  })
+
   function normalizePluginType(type?: string): PluginGroupType {
     if (type === 'adapter') return 'adapter'
     if (type === 'extension') return 'extension'
     return 'plugin'
   }
 
-  function setResult(kind: string, payload: unknown) {
+  function createPrimaryPackResult(data: Record<string, any> | null, kind: PackageResultKind) {
+    if (!data || kind !== 'pack') return null
+    const packed = Array.isArray(data.packed) ? data.packed : []
+    if (packed.length !== 1) return null
+    return packed[0] as Record<string, any>
+  }
+
+  function buildSummaryMetrics(kind: Exclude<PackageResultKind, ''>, data: Record<string, any> | null) {
+    if (!data) return []
+
+    if (kind === 'pack') {
+      const primaryPacked = createPrimaryPackResult(data, kind)
+      return [
+        {
+          label: '类型',
+          value: primaryPacked?.package_type === 'bundle' ? '整合包' : '插件包',
+        },
+        { label: '成功', value: String(data.packed_count ?? 0) },
+        { label: '失败', value: String(data.failed_count ?? 0) },
+        {
+          label: primaryPacked?.package_type === 'bundle' ? '包含插件' : '状态',
+          value: primaryPacked?.package_type === 'bundle'
+            ? String(primaryPacked?.plugin_ids?.length ?? 0)
+            : data.ok ? '完成' : '部分失败',
+        },
+      ]
+    }
+
+    if (kind === 'inspect' || kind === 'verify') {
+      return [
+        { label: '插件数', value: String(data.plugin_count ?? 0) },
+        { label: 'Profiles', value: String(data.profile_count ?? 0) },
+        { label: 'Hash', value: formatHashStatus(data.payload_hash_verified) },
+      ]
+    }
+
+    if (kind === 'unpack') {
+      return [
+        { label: '已处理插件', value: String(data.unpacked_plugin_count ?? 0) },
+        { label: '冲突策略', value: String(data.conflict_strategy ?? '-') },
+        { label: 'Hash', value: formatHashStatus(data.payload_hash_verified) },
+      ]
+    }
+
+    const kindData = data
+    return [
+      { label: '插件数', value: String(kindData.plugin_count ?? 0) },
+      { label: '共同依赖', value: String(kindData.common_dependencies?.length ?? 0) },
+      { label: '共享依赖', value: String(kindData.shared_dependencies?.length ?? 0) },
+    ]
+  }
+
+  function buildSummaryHighlights(kind: Exclude<PackageResultKind, ''>, data: Record<string, any> | null) {
+    if (!data) return []
+
+    if (kind === 'pack') {
+      const primaryPacked = createPrimaryPackResult(data, kind)
+      const firstPacked = data.packed?.[0]
+      const latestPacked = data.packed?.[data.packed?.length - 1]
+      if (primaryPacked?.package_type === 'bundle') {
+        return [
+          primaryPacked?.plugin_id ? { label: '整合包 ID', value: primaryPacked.plugin_id } : null,
+          primaryPacked?.package_name ? { label: '整合包名称', value: primaryPacked.package_name } : null,
+          primaryPacked?.version ? { label: '整合包版本', value: primaryPacked.version } : null,
+          latestPacked?.package_path ? { label: '输出路径', value: latestPacked.package_path } : null,
+        ].filter(Boolean) as Array<{ label: string; value: string }>
+      }
+      return [
+        firstPacked?.plugin_id ? { label: '首个插件', value: firstPacked.plugin_id } : null,
+        latestPacked?.package_path ? { label: '最新包路径', value: latestPacked.package_path } : null,
+      ].filter(Boolean) as Array<{ label: string; value: string }>
+    }
+
+    if (kind === 'inspect' || kind === 'verify') {
+      return [
+        data.package_id ? { label: '包 ID', value: data.package_id } : null,
+        data.package_type ? { label: '包类型', value: data.package_type } : null,
+        data.version ? { label: '版本', value: data.version } : null,
+      ].filter(Boolean) as Array<{ label: string; value: string }>
+    }
+
+    if (kind === 'unpack') {
+      return [
+        data.package_id ? { label: '包 ID', value: data.package_id } : null,
+        data.plugins_root ? { label: '插件目录', value: data.plugins_root } : null,
+        data.profile_dir ? { label: 'Profiles 目录', value: data.profile_dir } : null,
+      ].filter(Boolean) as Array<{ label: string; value: string }>
+    }
+
+    const sdkSupported = data.sdk_supported_analysis
+    const sdkRecommended = data.sdk_recommended_analysis
+    return [
+      sdkSupported?.current_sdk_version
+        ? {
+            label: '当前 SDK 支持',
+            value: sdkSupported.current_sdk_supported_by_all ? `${sdkSupported.current_sdk_version} 全部支持` : `${sdkSupported.current_sdk_version} 存在不兼容`,
+          }
+        : null,
+      sdkRecommended?.matching_versions?.length
+        ? { label: '推荐交集', value: sdkRecommended.matching_versions.join(', ') }
+        : null,
+    ].filter(Boolean) as Array<{ label: string; value: string }>
+  }
+
+  function buildSummaryListItems(kind: Exclude<PackageResultKind, ''>, data: Record<string, any> | null) {
+    if (!data) return []
+
+    if (kind === 'pack') {
+      const primaryPacked = createPrimaryPackResult(data, kind)
+      if (primaryPacked?.package_type === 'bundle') {
+        return (primaryPacked.plugin_ids ?? []).map((pluginId: string) => `plugin:${pluginId}`)
+      }
+      return (data.packed ?? []).map((item: Record<string, any>) => `${item.plugin_id} -> ${item.package_path}`)
+    }
+
+    if (kind === 'inspect' || kind === 'verify') {
+      return [
+        ...(data.plugins ?? []).map((item: Record<string, any>) => item.plugin_id),
+        ...(data.profile_names ?? []).map((name: string) => `profile:${name}`),
+      ]
+    }
+
+    if (kind === 'unpack') {
+      return (data.unpacked_plugins ?? []).map((item: Record<string, any>) => {
+        const suffix = item.renamed ? ' (renamed)' : ''
+        return `${item.target_plugin_id}${suffix}`
+      })
+    }
+
+    return (data.common_dependencies ?? []).map((item: Record<string, any>) => `${item.name} (${item.plugin_count})`)
+  }
+
+  function buildSummaryWarnings(kind: Exclude<PackageResultKind, ''>, data: Record<string, any> | null) {
+    if (!data) return []
+
+    if (kind === 'pack') {
+      const warnings = (data.failed ?? []).map((item: Record<string, any>) => `${item.plugin}: ${item.error}`)
+      const primaryPacked = createPrimaryPackResult(data, kind)
+      if (primaryPacked?.package_type === 'bundle' && (primaryPacked.plugin_ids?.length ?? 0) < 2) {
+        warnings.push('整合包通常应至少包含两个插件')
+      }
+      return warnings
+    }
+
+    if (kind === 'verify' && data.ok === false) {
+      return ['包未通过 hash 校验，请不要直接导入运行环境']
+    }
+
+    if (kind === 'inspect' && data.payload_hash_verified === false) {
+      return ['当前包 hash 校验失败，内容可能已被修改']
+    }
+
+    if (kind === 'analyze') {
+      const warnings: string[] = []
+      if (data.sdk_supported_analysis && data.sdk_supported_analysis.current_sdk_supported_by_all === false) {
+        warnings.push('当前 SDK 版本不被所有插件共同支持')
+      }
+      if ((data.shared_dependencies?.length ?? 0) > 0) {
+        warnings.push(`检测到 ${data.shared_dependencies.length} 个共享依赖，整合时需要重点检查版本约束`)
+      }
+      return warnings
+    }
+
+    return []
+  }
+
+  function openResultDialog() {
+    resultDialogVisible.value = true
+  }
+
+  function setActiveResult(recordId: string) {
+    activeResultId.value = recordId
+  }
+
+  function setResult(kind: Exclude<PackageResultKind, ''>, payload: unknown) {
     resultKind.value = kind
     resultData.value = payload && typeof payload === 'object' ? (payload as Record<string, any>) : null
     resultText.value = JSON.stringify(payload, null, 2)
+    const record: PackageResultRecord = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      createdAt: new Date().toLocaleString('zh-CN', { hour12: false }),
+      kind,
+      resultText: resultText.value,
+      inspectResult: kind === 'inspect' || kind === 'verify' ? (resultData.value as PluginCliInspectResponse | null) : null,
+      summaryMetrics: buildSummaryMetrics(kind, resultData.value),
+      summaryHighlights: buildSummaryHighlights(kind, resultData.value),
+      summaryListItems: buildSummaryListItems(kind, resultData.value),
+      summaryWarnings: buildSummaryWarnings(kind, resultData.value),
+    }
+    resultHistory.value = [record, ...resultHistory.value].slice(0, 30)
+    activeResultId.value = record.id
+    resultDialogVisible.value = true
   }
 
   function formatHashStatus(value: boolean | null | undefined): string {
@@ -650,6 +861,10 @@ export function usePackageManager() {
     verifying,
     unpacking,
     analyzing,
+    resultDialogVisible,
+    resultHistory,
+    activeResultId,
+    activeResultRecord,
     resultKind,
     resultText,
     inspectResult,
@@ -671,6 +886,8 @@ export function usePackageManager() {
     summaryHighlights,
     summaryListItems,
     summaryWarnings,
+    setActiveResult,
+    openResultDialog,
     togglePlugin,
     selectAllVisible,
     clearSelection,

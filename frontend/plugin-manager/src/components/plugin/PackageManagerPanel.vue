@@ -25,6 +25,13 @@
       />
 
       <div class="content-stack">
+        <div class="toolbar-row">
+          <el-button class="history-button" plain @click="openResultDialog">
+            执行记录
+            <el-badge v-if="resultHistory.length > 0" :value="resultHistory.length" class="history-badge" />
+          </el-button>
+        </div>
+
         <el-card class="operations-card">
           <template #header>
             <div class="card-header">
@@ -194,18 +201,16 @@
           @prepare-unpack="prepareUnpackPackage"
           @update:package-filter-type="packageFilterType = $event"
         />
-
-        <PackageResultPanel
-          :result-kind="resultKind"
-          :result-text="resultText"
-          :inspect-result="inspectResult"
-          :summary-metrics="summaryMetrics"
-          :summary-highlights="summaryHighlights"
-          :summary-list-items="summaryListItems"
-          :summary-warnings="summaryWarnings"
-        />
       </div>
     </div>
+
+    <PackageResultPanel
+      v-model:visible="resultDialogVisible"
+      :result-history="resultHistory"
+      :active-result-id="activeResultId"
+      :active-result-record="activeResultRecord"
+      @select="setActiveResult"
+    />
   </div>
 </template>
 
@@ -231,9 +236,10 @@ const {
   verifying,
   unpacking,
   analyzing,
-  resultKind,
-  resultText,
-  inspectResult,
+  resultDialogVisible,
+  resultHistory,
+  activeResultId,
+  activeResultRecord,
   packForm,
   packageRef,
   unpackForm,
@@ -248,10 +254,8 @@ const {
   selectedPluginIds,
   resolvedPackTargets,
   filteredLocalPackages,
-  summaryMetrics,
-  summaryHighlights,
-  summaryListItems,
-  summaryWarnings,
+  setActiveResult,
+  openResultDialog,
   togglePlugin,
   selectAllVisible,
   clearSelection,
@@ -286,6 +290,21 @@ const {
   display: flex;
   flex-direction: column;
   gap: 20px;
+}
+
+.toolbar-row {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.history-button {
+  position: relative;
+  border-radius: 999px;
+  padding-inline: 18px;
+}
+
+.history-badge {
+  margin-left: 10px;
 }
 
 .operations-card {
