@@ -388,7 +388,7 @@
         // 在指数上叠加 ±0.125 的随机漂移 → 实际倍率波动约 [0.89x, 1.12x]，幅度很小但有变化
         var expJitter = (Math.random() - 0.5) * 0.25;
         var effectiveExp = S.proactiveChatBackoffLevel + expJitter;
-        var delay = (baseInterval * 1000) * Math.pow(2.5, effectiveExp);
+        var delay = (baseInterval * 1000) * Math.pow(1.8, effectiveExp);
 
         // 首次启动时额外等待 6 秒，避免程序刚启动就触发音乐推荐。
         // 用一次性 flag 而非 backoffLevel === 0 —— 后者在 user_input reset 或
@@ -401,7 +401,7 @@
         }
         delay += startupDelay;
 
-        // Clamp：level 长期上爬后 (level ≥ ~13 @ base=30s) `2.5^level` 会把 delay
+        // Clamp：level 长期上爬后 (level ≥ ~25 @ base=15s) `1.8^level` 会把 delay
         // 顶到超过 setTimeout 的 int32 上限 0x7fffffff ≈ 24.8 天，实际被截断成
         // "1ms 后立刻 fire"。加个硬上限保险，实际封顶在 ~24 天，已足够长。
         delay = Math.min(delay, 0x7fffffff);
@@ -437,13 +437,11 @@
             }
 
             // 增加退避级别（仅在实际发送了请求时才累加，冷却期/前置条件未满足的跳过不计入）：
-            //   level < 2 时每次必升（30s → 75s → 187s ≈ 3min），快速拉开间隔；
-            //   level ≥ 2 后改为 30% 概率升级，让"长期无人搭理"的情况间隔能继续慢慢变长，
+            //   level < 3 时每次必升（15s → 27s → 49s → 87s ≈ 1.5min），温和拉开间隔；
+            //   level ≥ 3 后改为 30% 概率升级，让"长期无人搭理"的情况间隔能继续慢慢变长，
             //     但大多数轮次仍停在当前档位，避免一次跳太远。
-            //   注：硬上限从原设计的 level 3 降到 2，因为同批改动里去掉了 turn_end reset，
-            //   整体退避会更猛 —— 先降一级做软着陆，让用户不至于突然觉得搭话显著变少。
             if (triggered) {
-                if (S.proactiveChatBackoffLevel < 2) {
+                if (S.proactiveChatBackoffLevel < 3) {
                     S.proactiveChatBackoffLevel++;
                 } else if (Math.random() < 0.3) {
                     S.proactiveChatBackoffLevel++;
