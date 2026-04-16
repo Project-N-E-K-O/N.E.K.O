@@ -3,7 +3,7 @@
     // Dev B edits performance blocks. Dev C edits anchor/navigation blocks.
     // If you need to change field shape or scene IDs, update the freeze doc first.
 
-    const CONTRACT_VERSION = 1;
+    const CONTRACT_VERSION = 2;
     const PAGE_KEYS = Object.freeze([
         'home',
         'api_key',
@@ -56,6 +56,7 @@
                 emotion: 'neutral',
                 cursorAction: 'none',
                 cursorTarget: '',
+                settingsMenuId: '',
                 cursorSpeedMultiplier: 1,
                 delayMs: 0,
                 interruptible: false,
@@ -80,14 +81,14 @@
     steps.intro_basic = createBaseStep('intro_basic', 'home', '#text-input-area');
     steps.intro_basic.tutorial.title = '文字和语音入口';
     steps.intro_basic.tutorial.description = '介绍首页的文字输入区和语音入口。';
-    steps.intro_basic.performance.bubbleText = '想要找我的时候，随时在这里打字或者发语音都能召唤本喵哦！(介绍基础)';
+    steps.intro_basic.performance.bubbleText = '想要找我的时候，随时在这里打字或者发语音都能召唤本喵哦！';
     steps.intro_basic.performance.voiceKey = 'intro_basic';
     steps.intro_basic.performance.emotion = 'happy';
 
     steps.intro_proactive = createBaseStep('intro_proactive', 'home', '#${p}-toggle-proactive-chat');
     steps.intro_proactive.tutorial.title = '主动能力';
     steps.intro_proactive.tutorial.description = '介绍主动搭话与主动视觉这类主动能力。';
-    steps.intro_proactive.performance.bubbleText = '要说你一直没理我，我可是会主动跑出来咬你的哦～（哈！！）(介绍主动)';
+    steps.intro_proactive.performance.bubbleText = '要说你一直没理我，我可是会主动跑出来咬你的哦～（哈！！）';
     steps.intro_proactive.performance.voiceKey = 'intro_proactive';
     steps.intro_proactive.performance.emotion = 'happy';
 
@@ -108,6 +109,7 @@
     steps.takeover_capture_cursor.performance.cursorTarget = '#${p}-btn-agent';
     steps.takeover_capture_cursor.performance.interruptible = true;
     steps.takeover_capture_cursor.interrupts.mode = 'theatrical_abort';
+    steps.takeover_capture_cursor.interrupts.resetOnStepAdvance = false;
 
     steps.takeover_plugin_preview = createBaseStep('takeover_plugin_preview', 'home', '#${p}-btn-agent');
     steps.takeover_plugin_preview.tutorial.title = '插件预演';
@@ -119,6 +121,7 @@
     steps.takeover_plugin_preview.performance.cursorTarget = '#${p}-btn-agent';
     steps.takeover_plugin_preview.performance.interruptible = true;
     steps.takeover_plugin_preview.interrupts.mode = 'theatrical_abort';
+    steps.takeover_plugin_preview.interrupts.resetOnStepAdvance = false;
 
     steps.takeover_settings_peek = createBaseStep('takeover_settings_peek', 'home', '#${p}-btn-settings');
     steps.takeover_settings_peek.tutorial.title = '设置一瞥';
@@ -128,8 +131,10 @@
     steps.takeover_settings_peek.performance.emotion = 'surprised';
     steps.takeover_settings_peek.performance.cursorAction = 'click';
     steps.takeover_settings_peek.performance.cursorTarget = '#${p}-btn-settings';
+    steps.takeover_settings_peek.performance.settingsMenuId = 'character';
     steps.takeover_settings_peek.performance.interruptible = true;
     steps.takeover_settings_peek.interrupts.mode = 'theatrical_abort';
+    steps.takeover_settings_peek.interrupts.resetOnStepAdvance = false;
 
     steps.takeover_return_control = createBaseStep('takeover_return_control', 'home', '#${p}-container');
     steps.takeover_return_control.tutorial.title = '归还控制权';

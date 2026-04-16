@@ -193,10 +193,23 @@ class UniversalTutorialManager {
         }
 
         try {
+            let homeInteractionApi = null;
+            if (typeof window.getYuiGuideHomeInteractionApi === 'function') {
+                try {
+                    homeInteractionApi = window.getYuiGuideHomeInteractionApi() || null;
+                } catch (error) {
+                    console.warn('[Tutorial] 获取首页交互 API 失败，改用兜底实现:', error);
+                }
+            }
+            if (!homeInteractionApi) {
+                homeInteractionApi = window.YuiGuideHomeInteractionApi || window.YuiGuidePageHandoff || null;
+            }
+
             const director = window.createYuiGuideDirector({
                 tutorialManager: this,
                 page: this.currentPage,
-                registry: this.getYuiGuideRegistry()
+                registry: this.getYuiGuideRegistry(),
+                homeInteractionApi: homeInteractionApi
             });
 
             if (director && typeof director === 'object') {
@@ -2294,6 +2307,21 @@ class UniversalTutorialManager {
 
         // 缓存已验证的步骤，供 onStepChange 使用
         this.cachedValidSteps = validSteps;
+
+        const useYuiOnlyHomeFlow = (
+            this.currentPage === 'home'
+            && this.isYuiGuideEnabledForPage(this.currentPage)
+        );
+
+        if (useYuiOnlyHomeFlow) {
+            window.isInTutorial = true;
+            this.currentStep = 0;
+            this.driver = null;
+            console.log('[Tutorial] 首页启用 Yui Guide，跳过旧版 driver 教程启动流程');
+            this.notifyYuiGuidePreludeStart(validSteps);
+            this.showSkipButton();
+            return;
+        }
 
         // 重新创建 driver 实例以确保按钮文本使用最新的 i18n 翻译
         this.recreateDriverWithI18n();

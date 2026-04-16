@@ -26,10 +26,19 @@ body.yui-guide-home-driver-hidden .driver-highlight {
   transition: opacity 180ms ease;
 }
 
-.yui-guide-backdrop-panel {
-  position: fixed;
-  background: rgba(3, 7, 18, 0.62);
-  pointer-events: none;
+.yui-guide-backdrop {
+  width: 100%;
+  height: 100%;
+}
+
+.yui-guide-backdrop-cutout {
+  transition:
+    x 220ms ease,
+    y 220ms ease,
+    width 220ms ease,
+    height 220ms ease,
+    rx 220ms ease,
+    ry 220ms ease;
 }
 
 .yui-guide-backdrop.is-visible {
@@ -44,13 +53,38 @@ body.yui-guide-home-driver-hidden .driver-highlight {
     0 22px 44px rgba(203, 122, 46, 0.2);
   opacity: 0;
   transform: translateY(0);
-  transition: opacity 180ms ease;
+  transition:
+    opacity 180ms ease,
+    top 220ms ease,
+    left 220ms ease,
+    width 220ms ease,
+    height 220ms ease,
+    border-radius 220ms ease;
   pointer-events: none;
 }
 
 .yui-guide-spotlight-frame.is-visible {
   opacity: 1;
   animation: yui-guide-chat-pulse 1.5s ease-in-out infinite;
+}
+
+.yui-guide-spotlight-frame-persistent {
+  border-color: rgba(255, 174, 106, 0.94);
+}
+
+.yui-guide-spotlight-frame-action {
+  z-index: 1;
+  border-color: rgba(255, 214, 122, 0.98);
+  box-shadow:
+    0 0 0 12px rgba(255, 222, 152, 0.24),
+    0 20px 38px rgba(203, 122, 46, 0.24);
+}
+
+.yui-guide-spotlight-frame.is-circular-mask {
+  box-shadow:
+    0 0 0 9999px rgba(3, 7, 18, 0.62),
+    0 0 0 10px rgba(255, 214, 168, 0.28),
+    0 22px 44px rgba(203, 122, 46, 0.2);
 }
 
 .yui-guide-bubble {
@@ -237,6 +271,16 @@ body.yui-guide-home-driver-hidden .driver-highlight {
   animation: yui-guide-cursor-wobble 620ms ease;
 }
 
+body.yui-guide-ghost-cursor-active,
+body.yui-guide-ghost-cursor-active * {
+  cursor: none !important;
+}
+
+body.yui-guide-ghost-cursor-active #neko-tutorial-skip-btn,
+body.yui-guide-ghost-cursor-active #neko-tutorial-skip-btn * {
+  cursor: auto !important;
+}
+
 body.yui-taking-over,
 body.yui-taking-over [data-yui-cursor-hidden='true'] {
   cursor: none !important;
@@ -252,53 +296,44 @@ body.yui-taking-over #neko-tutorial-skip-btn:focus-visible {
   outline-offset: 3px;
 }
 
+body.yui-guide-home-driver-hidden #live2d-container,
+body.yui-guide-home-driver-hidden #live2d-canvas,
+body.yui-guide-home-driver-hidden #vrm-container,
+body.yui-guide-home-driver-hidden #vrm-canvas,
+body.yui-guide-home-driver-hidden #mmd-container,
+body.yui-guide-home-driver-hidden #mmd-canvas,
+body.yui-taking-over #live2d-container,
+body.yui-taking-over #live2d-canvas,
+body.yui-taking-over #vrm-container,
+body.yui-taking-over #vrm-canvas,
+body.yui-taking-over #mmd-container,
+body.yui-taking-over #mmd-canvas {
+  pointer-events: none !important;
+  cursor: default !important;
+}
+
+body.yui-guide-home-driver-hidden #react-chat-window-drag-handle,
+body.yui-taking-over #react-chat-window-drag-handle {
+  pointer-events: none !important;
+  cursor: default !important;
+}
+
 .yui-guide-overlay.is-angry .yui-guide-cursor {
   box-shadow:
     0 0 0 6px rgba(255, 130, 130, 0.2),
     0 12px 32px rgba(198, 54, 54, 0.26);
 }
 
-body.yui-guide-home-driver-hidden #react-chat-window-shell:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
-  top: auto !important;
-  left: 18px !important;
-  right: auto !important;
-  bottom: 18px !important;
-  transform: none !important;
+body.yui-taking-over #react-chat-window-root .composer-input-shell,
+body.yui-taking-over #react-chat-window-root .composer-input-shell:focus-within {
+  box-shadow: none !important;
 }
 
-#text-input-area.yui-guide-chat-target,
-#react-chat-window-shell.yui-guide-chat-target,
-#react-chat-window-root.yui-guide-chat-target,
-#react-chat-window-root .chat-window.yui-guide-chat-target,
-#react-chat-window-root .composer-panel.yui-guide-chat-target,
-#react-chat-window-root .composer-input-shell.yui-guide-chat-target,
-#react-chat-window-root .composer-input.yui-guide-chat-target {
-  position: relative;
-  z-index: 100007;
-}
-
-#text-input-area.yui-guide-chat-target::after,
-#react-chat-window-shell.yui-guide-chat-target::after,
-#react-chat-window-root.yui-guide-chat-target::after,
-#react-chat-window-root .chat-window.yui-guide-chat-target::after,
-#react-chat-window-root .composer-panel.yui-guide-chat-target::after,
-#react-chat-window-root .composer-input-shell.yui-guide-chat-target::after {
-  content: '';
-  position: absolute;
-  inset: -8px;
-  border-radius: 24px;
-  border: 1px dashed rgba(255, 174, 106, 0.7);
-  pointer-events: none;
-}
-
-#react-chat-window-root .composer-input.yui-guide-chat-target {
-  border-radius: 12px;
-}
-
-#react-chat-window-shell.yui-guide-chat-target,
-#react-chat-window-root.yui-guide-chat-target,
-#react-chat-window-root .chat-window.yui-guide-chat-target {
-  border-radius: 24px;
+body.yui-taking-over #react-chat-window-root .composer-input,
+body.yui-taking-over #react-chat-window-root .composer-input:focus,
+body.yui-taking-over #react-chat-window-root .composer-input:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
 }
 
 @keyframes yui-guide-cursor-click {
@@ -364,13 +399,6 @@ body.yui-guide-home-driver-hidden #react-chat-window-shell:not(.is-minimized):no
 }
 
 @media (max-width: 768px) {
-  body.yui-guide-home-driver-hidden #react-chat-window-shell:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
-    left: 6px !important;
-    right: 6px !important;
-    bottom: 6px !important;
-    width: auto !important;
-  }
-
   .yui-guide-bubble {
     width: min(300px, calc(100vw - 24px));
   }

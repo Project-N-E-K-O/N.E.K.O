@@ -2,11 +2,21 @@
     'use strict';
 
     const ROOT_ID = 'yui-guide-overlay';
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+    const BACKDROP_MASK_ID = ROOT_ID + '-mask';
 
     function createElement(tagName, className) {
         const element = document.createElement(tagName);
         if (className) {
             element.className = className;
+        }
+        return element;
+    }
+
+    function createSvgElement(tagName, className) {
+        const element = document.createElementNS(SVG_NS, tagName);
+        if (className) {
+            element.setAttribute('class', className);
         }
         return element;
     }
@@ -17,8 +27,14 @@
             this.root = null;
             this.stage = null;
             this.backdrop = null;
-            this.backdropPanels = null;
-            this.spotlightFrame = null;
+            this.backdropBase = null;
+            this.backdropPersistentCutout = null;
+            this.backdropActionCutout = null;
+            this.backdropSecondaryActionCutout = null;
+            this.backdropFill = null;
+            this.persistentSpotlightFrame = null;
+            this.actionSpotlightFrame = null;
+            this.secondaryActionSpotlightFrame = null;
             this.bubble = null;
             this.bubbleTitle = null;
             this.bubbleBody = null;
@@ -28,7 +44,10 @@
             this.cursorShell = null;
             this.cursorInner = null;
             this.cursorPosition = null;
-            this.highlightedElement = null;
+            this.persistentHighlightedElement = null;
+            this.actionHighlightedElement = null;
+            this.secondaryActionHighlightedElement = null;
+            this.highlightedElements = new Set();
             this.spotlightRefreshTimer = null;
             this.boundRefreshSpotlight = this.refreshSpotlight.bind(this);
         }
@@ -48,21 +67,56 @@
                 const stage = createElement('div', 'yui-guide-stage');
                 stage.setAttribute('data-yui-cursor-hidden', 'true');
 
-                const backdrop = createElement('div', 'yui-guide-backdrop');
+                const backdrop = createSvgElement('svg', 'yui-guide-backdrop');
                 backdrop.hidden = true;
                 backdrop.setAttribute('data-yui-cursor-hidden', 'true');
-                const backdropTop = createElement('div', 'yui-guide-backdrop-panel yui-guide-backdrop-top');
-                const backdropLeft = createElement('div', 'yui-guide-backdrop-panel yui-guide-backdrop-left');
-                const backdropRight = createElement('div', 'yui-guide-backdrop-panel yui-guide-backdrop-right');
-                const backdropBottom = createElement('div', 'yui-guide-backdrop-panel yui-guide-backdrop-bottom');
-                backdrop.appendChild(backdropTop);
-                backdrop.appendChild(backdropLeft);
-                backdrop.appendChild(backdropRight);
-                backdrop.appendChild(backdropBottom);
+                backdrop.setAttribute('aria-hidden', 'true');
+                backdrop.setAttribute('preserveAspectRatio', 'none');
 
-                const spotlightFrame = createElement('div', 'yui-guide-spotlight-frame');
-                spotlightFrame.hidden = true;
-                spotlightFrame.setAttribute('data-yui-cursor-hidden', 'true');
+                const defs = createSvgElement('defs');
+                const mask = createSvgElement('mask');
+                mask.id = BACKDROP_MASK_ID;
+                mask.setAttribute('maskUnits', 'userSpaceOnUse');
+                mask.setAttribute('maskContentUnits', 'userSpaceOnUse');
+
+                const backdropBase = createSvgElement('rect', 'yui-guide-backdrop-base');
+                backdropBase.setAttribute('fill', 'white');
+
+                const backdropPersistentCutout = createSvgElement('rect', 'yui-guide-backdrop-cutout yui-guide-backdrop-cutout-persistent');
+                backdropPersistentCutout.setAttribute('fill', 'black');
+                backdropPersistentCutout.hidden = true;
+
+                const backdropActionCutout = createSvgElement('rect', 'yui-guide-backdrop-cutout yui-guide-backdrop-cutout-action');
+                backdropActionCutout.setAttribute('fill', 'black');
+                backdropActionCutout.hidden = true;
+
+                const backdropSecondaryActionCutout = createSvgElement('rect', 'yui-guide-backdrop-cutout yui-guide-backdrop-cutout-action yui-guide-backdrop-cutout-action-secondary');
+                backdropSecondaryActionCutout.setAttribute('fill', 'black');
+                backdropSecondaryActionCutout.hidden = true;
+
+                const backdropFill = createSvgElement('rect', 'yui-guide-backdrop-fill');
+                backdropFill.setAttribute('fill', 'rgba(3, 7, 18, 0.76)');
+                backdropFill.setAttribute('mask', 'url(#' + BACKDROP_MASK_ID + ')');
+
+                mask.appendChild(backdropBase);
+                mask.appendChild(backdropPersistentCutout);
+                mask.appendChild(backdropActionCutout);
+                mask.appendChild(backdropSecondaryActionCutout);
+                defs.appendChild(mask);
+                backdrop.appendChild(defs);
+                backdrop.appendChild(backdropFill);
+
+                const persistentSpotlightFrame = createElement('div', 'yui-guide-spotlight-frame yui-guide-spotlight-frame-persistent');
+                persistentSpotlightFrame.hidden = true;
+                persistentSpotlightFrame.setAttribute('data-yui-cursor-hidden', 'true');
+
+                const actionSpotlightFrame = createElement('div', 'yui-guide-spotlight-frame yui-guide-spotlight-frame-action');
+                actionSpotlightFrame.hidden = true;
+                actionSpotlightFrame.setAttribute('data-yui-cursor-hidden', 'true');
+
+                const secondaryActionSpotlightFrame = createElement('div', 'yui-guide-spotlight-frame yui-guide-spotlight-frame-action yui-guide-spotlight-frame-action-secondary');
+                secondaryActionSpotlightFrame.hidden = true;
+                secondaryActionSpotlightFrame.setAttribute('data-yui-cursor-hidden', 'true');
 
                 const bubble = createElement('section', 'yui-guide-bubble');
                 bubble.hidden = true;
@@ -84,7 +138,9 @@
                 cursorShell.appendChild(cursorInner);
 
                 stage.appendChild(backdrop);
-                stage.appendChild(spotlightFrame);
+                stage.appendChild(persistentSpotlightFrame);
+                stage.appendChild(actionSpotlightFrame);
+                stage.appendChild(secondaryActionSpotlightFrame);
                 stage.appendChild(bubble);
                 stage.appendChild(preview);
                 stage.appendChild(cursorShell);
@@ -93,13 +149,14 @@
 
                 this.stage = stage;
                 this.backdrop = backdrop;
-                this.backdropPanels = {
-                    top: backdropTop,
-                    left: backdropLeft,
-                    right: backdropRight,
-                    bottom: backdropBottom
-                };
-                this.spotlightFrame = spotlightFrame;
+                this.backdropBase = backdropBase;
+                this.backdropPersistentCutout = backdropPersistentCutout;
+                this.backdropActionCutout = backdropActionCutout;
+                this.backdropSecondaryActionCutout = backdropSecondaryActionCutout;
+                this.backdropFill = backdropFill;
+                this.persistentSpotlightFrame = persistentSpotlightFrame;
+                this.actionSpotlightFrame = actionSpotlightFrame;
+                this.secondaryActionSpotlightFrame = secondaryActionSpotlightFrame;
                 this.bubble = bubble;
                 this.bubbleTitle = bubbleTitle;
                 this.bubbleBody = bubbleBody;
@@ -111,13 +168,14 @@
             } else {
                 this.stage = root.querySelector('.yui-guide-stage');
                 this.backdrop = root.querySelector('.yui-guide-backdrop');
-                this.backdropPanels = {
-                    top: root.querySelector('.yui-guide-backdrop-top'),
-                    left: root.querySelector('.yui-guide-backdrop-left'),
-                    right: root.querySelector('.yui-guide-backdrop-right'),
-                    bottom: root.querySelector('.yui-guide-backdrop-bottom')
-                };
-                this.spotlightFrame = root.querySelector('.yui-guide-spotlight-frame');
+                this.backdropBase = root.querySelector('.yui-guide-backdrop-base');
+                this.backdropPersistentCutout = root.querySelector('.yui-guide-backdrop-cutout-persistent');
+                this.backdropActionCutout = root.querySelector('.yui-guide-backdrop-cutout-action');
+                this.backdropSecondaryActionCutout = root.querySelector('.yui-guide-backdrop-cutout-action-secondary');
+                this.backdropFill = root.querySelector('.yui-guide-backdrop-fill');
+                this.persistentSpotlightFrame = root.querySelector('.yui-guide-spotlight-frame-persistent');
+                this.actionSpotlightFrame = root.querySelector('.yui-guide-spotlight-frame-action');
+                this.secondaryActionSpotlightFrame = root.querySelector('.yui-guide-spotlight-frame-action-secondary');
                 this.bubble = root.querySelector('.yui-guide-bubble');
                 this.bubbleTitle = root.querySelector('.yui-guide-bubble-title');
                 this.bubbleBody = root.querySelector('.yui-guide-bubble-body');
@@ -130,6 +188,26 @@
 
             this.root = root;
             return root;
+        }
+
+        syncBackdropViewport() {
+            if (!this.backdrop) {
+                return;
+            }
+
+            const width = Math.max(1, Math.round(window.innerWidth || 0));
+            const height = Math.max(1, Math.round(window.innerHeight || 0));
+            this.backdrop.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
+
+            [this.backdropBase, this.backdropFill].forEach((rect) => {
+                if (!rect) {
+                    return;
+                }
+                rect.setAttribute('x', '0');
+                rect.setAttribute('y', '0');
+                rect.setAttribute('width', String(width));
+                rect.setAttribute('height', String(height));
+            });
         }
 
         getSpotlightRect(element) {
@@ -149,6 +227,11 @@
             const bottom = Math.min(window.innerHeight, Math.ceil(rect.bottom + padding));
             const width = Math.max(0, right - left);
             const height = Math.max(0, bottom - top);
+            const radius = this.getSpotlightRadius(element);
+            const minEdge = Math.min(width, height);
+            const isCircular = minEdge > 0
+                && Math.abs(width - height) <= 18
+                && radius >= ((minEdge / 2) - 6);
 
             return {
                 left: left,
@@ -157,7 +240,8 @@
                 bottom: bottom,
                 width: width,
                 height: height,
-                radius: this.getSpotlightRadius(element)
+                radius: radius,
+                isCircular: isCircular
             };
         }
 
@@ -177,59 +261,110 @@
             return 24;
         }
 
-        applyBackdropMask(spotlightRect) {
-            if (!this.backdropPanels || !spotlightRect) {
+        updateBackdropCutout(cutout, spotlightRect) {
+            if (!cutout) {
                 return;
             }
 
-            const panels = this.backdropPanels;
-            const viewportWidth = window.innerWidth;
-            const viewportHeight = window.innerHeight;
+            if (!spotlightRect) {
+                cutout.hidden = true;
+                cutout.setAttribute('x', '0');
+                cutout.setAttribute('y', '0');
+                cutout.setAttribute('width', '0');
+                cutout.setAttribute('height', '0');
+                cutout.setAttribute('rx', '0');
+                cutout.setAttribute('ry', '0');
+                cutout.style.display = 'none';
+                return;
+            }
 
-            panels.top.style.top = '0px';
-            panels.top.style.left = '0px';
-            panels.top.style.width = viewportWidth + 'px';
-            panels.top.style.height = spotlightRect.top + 'px';
+            cutout.hidden = false;
+            cutout.style.removeProperty('display');
+            cutout.setAttribute('x', String(spotlightRect.left));
+            cutout.setAttribute('y', String(spotlightRect.top));
+            cutout.setAttribute('width', String(spotlightRect.width));
+            cutout.setAttribute('height', String(spotlightRect.height));
+            cutout.setAttribute('rx', String(spotlightRect.radius));
+            cutout.setAttribute('ry', String(spotlightRect.radius));
+        }
 
-            panels.left.style.top = spotlightRect.top + 'px';
-            panels.left.style.left = '0px';
-            panels.left.style.width = spotlightRect.left + 'px';
-            panels.left.style.height = spotlightRect.height + 'px';
+        updateSpotlightFrame(frame, spotlightRect, options) {
+            if (!frame) {
+                return;
+            }
 
-            panels.right.style.top = spotlightRect.top + 'px';
-            panels.right.style.left = spotlightRect.right + 'px';
-            panels.right.style.width = Math.max(0, viewportWidth - spotlightRect.right) + 'px';
-            panels.right.style.height = spotlightRect.height + 'px';
+            const normalizedOptions = options || {};
+            const allowMask = normalizedOptions.allowMask !== false;
 
-            panels.bottom.style.top = spotlightRect.bottom + 'px';
-            panels.bottom.style.left = '0px';
-            panels.bottom.style.width = viewportWidth + 'px';
-            panels.bottom.style.height = Math.max(0, viewportHeight - spotlightRect.bottom) + 'px';
+            if (!spotlightRect) {
+                frame.hidden = true;
+                frame.classList.remove('is-visible');
+                frame.classList.remove('is-circular-mask');
+                return;
+            }
+
+            frame.hidden = false;
+            frame.classList.add('is-visible');
+            frame.classList.toggle('is-circular-mask', !!spotlightRect.isCircular && allowMask);
+            frame.style.left = spotlightRect.left + 'px';
+            frame.style.top = spotlightRect.top + 'px';
+            frame.style.width = spotlightRect.width + 'px';
+            frame.style.height = spotlightRect.height + 'px';
+            frame.style.borderRadius = spotlightRect.radius + 'px';
+        }
+
+        syncHighlightedElementClasses() {
+            const nextElements = new Set();
+            if (this.persistentHighlightedElement) {
+                nextElements.add(this.persistentHighlightedElement);
+            }
+
+            this.highlightedElements.forEach((element) => {
+                if (!nextElements.has(element)) {
+                    element.classList.remove('yui-guide-chat-target');
+                }
+            });
+
+            nextElements.forEach((element) => {
+                element.classList.add('yui-guide-chat-target');
+            });
+
+            this.highlightedElements = nextElements;
         }
 
         refreshSpotlight() {
             this.ensureRoot();
 
-            if (!this.highlightedElement) {
-                return;
+            const persistentRect = this.getSpotlightRect(this.persistentHighlightedElement);
+            const actionRect = this.getSpotlightRect(this.actionHighlightedElement);
+            const secondaryActionRect = this.getSpotlightRect(this.secondaryActionHighlightedElement);
+            const persistentMaskRect = persistentRect && !persistentRect.isCircular ? persistentRect : null;
+            const actionMaskRect = actionRect || null;
+            const secondaryActionMaskRect = secondaryActionRect || null;
+
+            if (this.backdrop) {
+                this.syncBackdropViewport();
+                if (persistentMaskRect || actionMaskRect || secondaryActionMaskRect) {
+                    this.backdrop.hidden = false;
+                    this.backdrop.classList.add('is-visible');
+                } else {
+                    this.backdrop.hidden = true;
+                    this.backdrop.classList.remove('is-visible');
+                }
+                this.updateBackdropCutout(this.backdropPersistentCutout, persistentMaskRect);
+                this.updateBackdropCutout(this.backdropActionCutout, actionMaskRect);
+                this.updateBackdropCutout(this.backdropSecondaryActionCutout, secondaryActionMaskRect);
             }
 
-            const spotlightRect = this.getSpotlightRect(this.highlightedElement);
-            if (!spotlightRect) {
-                return;
-            }
-
-            this.applyBackdropMask(spotlightRect);
-
-            if (this.spotlightFrame) {
-                this.spotlightFrame.hidden = false;
-                this.spotlightFrame.classList.add('is-visible');
-                this.spotlightFrame.style.left = spotlightRect.left + 'px';
-                this.spotlightFrame.style.top = spotlightRect.top + 'px';
-                this.spotlightFrame.style.width = spotlightRect.width + 'px';
-                this.spotlightFrame.style.height = spotlightRect.height + 'px';
-                this.spotlightFrame.style.borderRadius = spotlightRect.radius + 'px';
-            }
+            this.updateSpotlightFrame(this.persistentSpotlightFrame, persistentRect, {
+                allowMask: true
+            });
+            this.updateSpotlightFrame(this.actionSpotlightFrame, actionRect, {
+                allowMask: false
+            });
+            this.updateSpotlightFrame(this.secondaryActionSpotlightFrame, secondaryActionRect, {
+                allowMask: false
+            });
         }
 
         startSpotlightTracking() {
@@ -350,46 +485,70 @@
             this.previewList.innerHTML = '';
         }
 
-        activateSpotlight(element) {
+        setPersistentSpotlight(element) {
             this.ensureRoot();
-
-            if (this.highlightedElement && this.highlightedElement !== element) {
-                this.highlightedElement.classList.remove('yui-guide-chat-target');
-            }
-
-            this.highlightedElement = element || null;
-
-            if (this.backdrop) {
-                this.backdrop.hidden = false;
-                this.backdrop.classList.add('is-visible');
-            }
-
-            if (this.highlightedElement) {
-                this.highlightedElement.classList.add('yui-guide-chat-target');
-            }
-
+            this.persistentHighlightedElement = element || null;
+            this.syncHighlightedElementClasses();
             this.refreshSpotlight();
             this.startSpotlightTracking();
+        }
+
+        activateSpotlight(element) {
+            this.ensureRoot();
+            this.actionHighlightedElement = element || null;
+            this.secondaryActionHighlightedElement = null;
+            this.syncHighlightedElementClasses();
+            this.refreshSpotlight();
+            this.startSpotlightTracking();
+        }
+
+        activateSecondarySpotlight(element) {
+            this.ensureRoot();
+            this.secondaryActionHighlightedElement = element || null;
+            this.syncHighlightedElementClasses();
+            this.refreshSpotlight();
+            this.startSpotlightTracking();
+        }
+
+        clearActionSpotlight() {
+            this.ensureRoot();
+            this.actionHighlightedElement = null;
+            this.secondaryActionHighlightedElement = null;
+            this.syncHighlightedElementClasses();
+            this.refreshSpotlight();
+            if (!this.persistentHighlightedElement) {
+                this.stopSpotlightTracking();
+            }
+        }
+
+        clearPersistentSpotlight() {
+            this.ensureRoot();
+            this.persistentHighlightedElement = null;
+            this.syncHighlightedElementClasses();
+            this.refreshSpotlight();
+            if (!this.actionHighlightedElement && !this.secondaryActionHighlightedElement) {
+                this.stopSpotlightTracking();
+            }
         }
 
         clearSpotlight() {
             this.ensureRoot();
             this.stopSpotlightTracking();
+            this.persistentHighlightedElement = null;
+            this.actionHighlightedElement = null;
+            this.secondaryActionHighlightedElement = null;
+            this.syncHighlightedElementClasses();
 
             if (this.backdrop) {
                 this.backdrop.hidden = true;
                 this.backdrop.classList.remove('is-visible');
             }
-
-            if (this.spotlightFrame) {
-                this.spotlightFrame.hidden = true;
-                this.spotlightFrame.classList.remove('is-visible');
-            }
-
-            if (this.highlightedElement) {
-                this.highlightedElement.classList.remove('yui-guide-chat-target');
-                this.highlightedElement = null;
-            }
+            this.updateBackdropCutout(this.backdropPersistentCutout, null);
+            this.updateBackdropCutout(this.backdropActionCutout, null);
+            this.updateBackdropCutout(this.backdropSecondaryActionCutout, null);
+            this.updateSpotlightFrame(this.persistentSpotlightFrame, null);
+            this.updateSpotlightFrame(this.actionSpotlightFrame, null);
+            this.updateSpotlightFrame(this.secondaryActionSpotlightFrame, null);
         }
 
         hasCursorPosition() {
@@ -409,6 +568,7 @@
 
         showCursorAt(x, y) {
             this.ensureRoot();
+            this.document.body.classList.add('yui-guide-ghost-cursor-active');
             this.cursorShell.hidden = false;
             this.cursorShell.classList.add('is-visible');
             this.cursorShell.style.transitionDuration = '0ms';
@@ -427,6 +587,7 @@
                 return Promise.resolve();
             }
 
+            this.document.body.classList.add('yui-guide-ghost-cursor-active');
             this.cursorShell.hidden = false;
             this.cursorShell.classList.add('is-visible');
 
@@ -490,12 +651,14 @@
 
         hideCursor() {
             this.ensureRoot();
+            this.document.body.classList.remove('yui-guide-ghost-cursor-active');
             this.cursorShell.hidden = true;
             this.cursorShell.classList.remove('is-visible');
         }
 
         destroy() {
             this.document.body.classList.remove('yui-taking-over');
+            this.document.body.classList.remove('yui-guide-ghost-cursor-active');
             this.clearSpotlight();
             if (this.root && this.root.isConnected) {
                 this.root.remove();
@@ -503,8 +666,14 @@
             this.root = null;
             this.stage = null;
             this.backdrop = null;
-            this.backdropPanels = null;
-            this.spotlightFrame = null;
+            this.backdropBase = null;
+            this.backdropPersistentCutout = null;
+            this.backdropActionCutout = null;
+            this.backdropSecondaryActionCutout = null;
+            this.backdropFill = null;
+            this.persistentSpotlightFrame = null;
+            this.actionSpotlightFrame = null;
+            this.secondaryActionSpotlightFrame = null;
             this.bubble = null;
             this.bubbleTitle = null;
             this.bubbleBody = null;
@@ -514,7 +683,10 @@
             this.cursorShell = null;
             this.cursorInner = null;
             this.cursorPosition = null;
-            this.highlightedElement = null;
+            this.persistentHighlightedElement = null;
+            this.actionHighlightedElement = null;
+            this.secondaryActionHighlightedElement = null;
+            this.highlightedElements = new Set();
         }
     }
 

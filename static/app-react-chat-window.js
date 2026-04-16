@@ -38,6 +38,7 @@
 
     var MOBILE_MAX_HEIGHT_RATIO = 0.5;
     var MOBILE_MESSAGE_MIN_HEIGHT = 60;
+    var DESKTOP_DEFAULT_LEFT_MARGIN = 24;
     var mobileLayoutFrame = 0;
 
     function $(id) {
@@ -63,6 +64,13 @@
 
     function getHeader() {
         return $('react-chat-window-drag-handle');
+    }
+
+    function isYuiGuideDragLocked() {
+        var body = document.body;
+        if (!body) return false;
+        return body.classList.contains('yui-guide-home-driver-hidden')
+            || body.classList.contains('yui-taking-over');
     }
 
     function getMinimizeButton() {
@@ -527,12 +535,12 @@
         shell.style.transform = 'none';
     }
 
-    function centerWindow() {
+    function positionWindowAtLeftMiddle() {
         var shell = getShell();
         if (!shell || isMobileWidth()) return;
 
         var rect = shell.getBoundingClientRect();
-        var left = Math.max(0, Math.round((window.innerWidth - rect.width) / 2));
+        var left = Math.max(0, DESKTOP_DEFAULT_LEFT_MARGIN);
         var top = Math.max(0, Math.round((window.innerHeight - rect.height) / 2));
         applyPosition(left, top);
         persistPosition(left, top);
@@ -557,7 +565,7 @@
         if (stored) {
             applyPosition(stored.left, stored.top);
         } else {
-            centerWindow();
+            positionWindowAtLeftMiddle();
         }
     }
 
@@ -1302,6 +1310,7 @@
         var shell = getShell();
         if (!shell) return;
         if (isMobileWidth() && !minimized) return;
+        if (isYuiGuideDragLocked()) return;
 
         var rect = shell.getBoundingClientRect();
         dragState = {
@@ -1318,6 +1327,10 @@
 
     function updateDrag(clientX, clientY) {
         if (!dragState) return;
+        if (isYuiGuideDragLocked()) {
+            stopDrag();
+            return;
+        }
 
         var dx = clientX - dragState.startClientX;
         var dy = clientY - dragState.startClientY;

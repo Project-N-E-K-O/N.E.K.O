@@ -1,9 +1,19 @@
 (function () {
     'use strict';
 
-    const DEFAULT_INTERRUPT_DISTANCE = 18;
+    const DEFAULT_INTERRUPT_DISTANCE = 32;
+    const DEFAULT_INTERRUPT_SPEED_THRESHOLD = 1.8;
+    const DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD = 0.09;
+    const DEFAULT_INTERRUPT_ACCELERATION_STREAK = 3;
+    const DEFAULT_PASSIVE_RESISTANCE_DISTANCE = 10;
+    const DEFAULT_PASSIVE_RESISTANCE_INTERVAL_MS = 140;
     const DEFAULT_STEP_DELAY_MS = 120;
+    const DEFAULT_SCENE_SETTLE_MS = 260;
     const DEFAULT_CURSOR_DURATION_MS = 520;
+    const INTRO_PRACTICE_TEXT = '完现在来可以试试跟我说说话吧，看看我们是不是超有默契的喵～';
+    const INTRO_SKIP_ACTION_ID = 'yui-guide-intro-skip-chat';
+    const REACT_CHAT_ACTION_EVENT = 'react-chat-window:action';
+    const REACT_CHAT_SUBMIT_EVENT = 'react-chat-window:submit';
     const PREVIEW_ITEMS = Object.freeze([
         'WebSearch',
         'B站弹幕',
@@ -22,14 +32,128 @@
         return Math.max(min, Math.min(max, value));
     }
 
+    function estimateSpeechDurationMs(text) {
+        const message = typeof text === 'string' ? text.trim() : '';
+        if (!message) {
+            return 0;
+        }
+
+        return clamp(Math.round(message.length * 280), 2200, 24000);
+    }
+
+    function waitForFirstUserGesture(timeoutMs) {
+        const normalizedTimeoutMs = Number.isFinite(timeoutMs) ? timeoutMs : 12000;
+        if (navigator.userActivation && (navigator.userActivation.isActive || navigator.userActivation.hasBeenActive)) {
+            return Promise.resolve(true);
+        }
+
+        return new Promise((resolve) => {
+            let settled = false;
+            let timeoutId = 0;
+
+            const finish = (activated) => {
+                if (settled) {
+                    return;
+                }
+                settled = true;
+                if (timeoutId) {
+                    window.clearTimeout(timeoutId);
+                    timeoutId = 0;
+                }
+                window.removeEventListener('pointerdown', handleGesture, true);
+                window.removeEventListener('mousedown', handleGesture, true);
+                window.removeEventListener('keydown', handleGesture, true);
+                window.removeEventListener('touchstart', handleGesture, true);
+                resolve(!!activated);
+            };
+
+            const handleGesture = () => {
+                finish(true);
+            };
+
+            window.addEventListener('pointerdown', handleGesture, true);
+            window.addEventListener('mousedown', handleGesture, true);
+            window.addEventListener('keydown', handleGesture, true);
+            window.addEventListener('touchstart', handleGesture, true);
+            timeoutId = window.setTimeout(() => finish(false), normalizedTimeoutMs);
+        });
+    }
+
+    async function resumeKnownAudioContexts() {
+        const tasks = [];
+
+        if (window.AM && typeof window.AM.unlock === 'function') {
+            try {
+                window.AM.unlock();
+            } catch (_) {}
+        }
+
+        const playerContext = window.appState && window.appState.audioPlayerContext;
+        if (playerContext && playerContext.state === 'suspended' && typeof playerContext.resume === 'function') {
+            tasks.push(playerContext.resume().catch(() => {}));
+        }
+
+        if (window.lanlanAudioContext && window.lanlanAudioContext.state === 'suspended' && typeof window.lanlanAudioContext.resume === 'function') {
+            tasks.push(window.lanlanAudioContext.resume().catch(() => {}));
+        }
+
+        if (tasks.length > 0) {
+            await Promise.all(tasks);
+        }
+    }
+
+    function normalizeVoiceLang(voice) {
+        const lang = voice && typeof voice.lang === 'string' ? voice.lang.trim().toLowerCase() : '';
+        return lang.replace('_', '-');
+    }
+
+    function scoreSpeechVoice(voice) {
+        if (!voice) {
+            return 0;
+        }
+
+        const name = typeof voice.name === 'string' ? voice.name.trim().toLowerCase() : '';
+        const lang = normalizeVoiceLang(voice);
+        let score = 0;
+
+        if (lang === 'zh-cn') {
+            score += 100;
+        } else if (lang.indexOf('zh') === 0) {
+            score += 80;
+        } else if (lang === 'cmn-cn') {
+            score += 90;
+        }
+
+        if (name.indexOf('chinese') >= 0 || name.indexOf('mandarin') >= 0 || name.indexOf('中文') >= 0) {
+            score += 20;
+        }
+
+        if (voice.default) {
+            score += 5;
+        }
+
+        return score;
+    }
+
     class YuiGuideVoiceQueue {
         constructor() {
             this.currentUtterance = null;
             this.currentFallbackTimer = null;
+            this.currentFinish = null;
             this.enabled = !!window.speechSynthesis;
+            this.voicesReadyPromise = null;
+            this.currentAudio = null;
+            this.voiceIdCache = {
+                name: '',
+                value: '',
+                fetchedAt: 0
+            };
+            this.previewCache = new Map();
         }
 
         stop() {
+            const finish = this.currentFinish;
+
             if (this.currentFallbackTimer) {
                 window.clearTimeout(this.currentFallbackTimer);
                 this.currentFallbackTimer = null;
@@ -43,20 +167,298 @@
                 }
             }
 
+            if (this.currentAudio) {
+                try {
+                    this.currentAudio.pause();
+                    this.currentAudio.removeAttribute('src');
+                    this.currentAudio.load();
+                } catch (error) {
+                    console.warn('[YuiGuide] 停止预览音频失败:', error);
+                }
+                this.currentAudio = null;
+            }
+
             this.currentUtterance = null;
+            this.currentFinish = null;
+
+            if (typeof finish === 'function') {
+                try {
+                    finish();
+                } catch (_) {}
+            }
         }
 
-        speak(text) {
+        async ensureVoicesReady() {
+            if (!this.enabled || !window.speechSynthesis || typeof window.speechSynthesis.getVoices !== 'function') {
+                return [];
+            }
+
+            try {
+                const existingVoices = window.speechSynthesis.getVoices();
+                if (Array.isArray(existingVoices) && existingVoices.length > 0) {
+                    return existingVoices;
+                }
+            } catch (error) {
+                console.warn('[YuiGuide] 读取语音列表失败:', error);
+            }
+
+            if (this.voicesReadyPromise) {
+                return this.voicesReadyPromise;
+            }
+
+            this.voicesReadyPromise = new Promise((resolve) => {
+                let settled = false;
+                const finish = () => {
+                    if (settled) {
+                        return;
+                    }
+                    settled = true;
+                    window.clearTimeout(timeoutId);
+                    window.speechSynthesis.removeEventListener('voiceschanged', handleVoicesChanged);
+                    this.voicesReadyPromise = null;
+                    try {
+                        resolve(window.speechSynthesis.getVoices() || []);
+                    } catch (_) {
+                        resolve([]);
+                    }
+                };
+                const handleVoicesChanged = () => {
+                    try {
+                        const voices = window.speechSynthesis.getVoices();
+                        if (Array.isArray(voices) && voices.length > 0) {
+                            finish();
+                        }
+                    } catch (_) {}
+                };
+                const timeoutId = window.setTimeout(finish, 1800);
+
+                window.speechSynthesis.addEventListener('voiceschanged', handleVoicesChanged);
+                handleVoicesChanged();
+            });
+
+            return this.voicesReadyPromise;
+        }
+
+        getCurrentCatgirlName() {
+            const candidates = [
+                window.lanlan_config && window.lanlan_config.lanlan_name,
+                window._currentCatgirl,
+                window.currentCatgirl
+            ];
+
+            for (let index = 0; index < candidates.length; index += 1) {
+                const candidate = typeof candidates[index] === 'string' ? candidates[index].trim() : '';
+                if (candidate) {
+                    return candidate;
+                }
+            }
+
+            return '';
+        }
+
+        async getCurrentVoiceId() {
+            const catgirlName = this.getCurrentCatgirlName();
+            if (!catgirlName) {
+                return '';
+            }
+
+            if (this.voiceIdCache.name === catgirlName && this.voiceIdCache.value) {
+                return this.voiceIdCache.value;
+            }
+
+            try {
+                const response = await fetch('/api/characters', {
+                    credentials: 'same-origin'
+                });
+                if (!response.ok) {
+                    return '';
+                }
+
+                const data = await response.json();
+                const catgirlConfig = data && data['猫娘'] && data['猫娘'][catgirlName]
+                    ? data['猫娘'][catgirlName]
+                    : null;
+                const voiceId = catgirlConfig && typeof catgirlConfig.voice_id === 'string'
+                    ? catgirlConfig.voice_id.trim()
+                    : '';
+
+                this.voiceIdCache = {
+                    name: catgirlName,
+                    value: voiceId,
+                    fetchedAt: Date.now()
+                };
+                return voiceId;
+            } catch (error) {
+                console.warn('[YuiGuide] 获取当前猫娘 voice_id 失败:', error);
+                return '';
+            }
+        }
+
+        async fetchPreviewAudioSrc(text) {
             const message = typeof text === 'string' ? text.trim() : '';
             if (!message) {
-                return Promise.resolve();
+                return null;
             }
 
+            const voiceId = await this.getCurrentVoiceId();
+            if (!voiceId) {
+                return null;
+            }
+
+            const cacheKey = voiceId + '::' + message;
+            if (this.previewCache.has(cacheKey)) {
+                return {
+                    voiceId: voiceId,
+                    audioSrc: this.previewCache.get(cacheKey)
+                };
+            }
+
+            try {
+                const response = await fetch(
+                    '/api/characters/voice_preview?voice_id='
+                    + encodeURIComponent(voiceId)
+                    + '&text='
+                    + encodeURIComponent(message),
+                    {
+                        credentials: 'same-origin'
+                    }
+                );
+                if (!response.ok) {
+                    return null;
+                }
+
+                const data = await response.json();
+                if (!data || !data.success || !data.audio) {
+                    return null;
+                }
+
+                const audioSrc = 'data:' + (data.mime_type || 'audio/mpeg') + ';base64,' + data.audio;
+                this.previewCache.set(cacheKey, audioSrc);
+                return {
+                    voiceId: voiceId,
+                    audioSrc: audioSrc
+                };
+            } catch (error) {
+                console.warn('[YuiGuide] 获取语音预览失败:', error);
+                return null;
+            }
+        }
+
+        async playPreviewAudio(audioSrc, minimumDurationMs) {
+            if (!audioSrc) {
+                return false;
+            }
+
+            const minDurationMs = Number.isFinite(minimumDurationMs) ? minimumDurationMs : 0;
+
+            return new Promise((resolve, reject) => {
+                let settled = false;
+                const audio = new Audio(audioSrc);
+                const maxBlockedWaitMs = 12000;
+                const finish = (success, error) => {
+                    if (settled) {
+                        return;
+                    }
+                    settled = true;
+                    if (this.currentFallbackTimer === fallbackTimerId) {
+                        this.currentFallbackTimer = null;
+                    }
+                    window.clearTimeout(fallbackTimerId);
+                    audio.onended = null;
+                    audio.onerror = null;
+                    audio.onpause = null;
+                    if (this.currentAudio === audio) {
+                        this.currentAudio = null;
+                    }
+                    if (this.currentFinish === cancelPlayback) {
+                        this.currentFinish = null;
+                    }
+                    if (success) {
+                        resolve(true);
+                        return;
+                    }
+                    reject(error || new Error('preview_audio_failed'));
+                };
+                const cancelPlayback = () => {
+                    finish(true);
+                };
+
+                audio.preload = 'auto';
+                audio.volume = 1;
+                audio.onended = () => finish(true);
+                audio.onerror = () => finish(false, new Error('preview_audio_error'));
+                this.currentAudio = audio;
+                this.currentFinish = cancelPlayback;
+
+                const fallbackTimerId = window.setTimeout(() => {
+                    finish(true);
+                }, Math.max(estimateSpeechDurationMs('x'), minDurationMs, 3000) + maxBlockedWaitMs);
+                this.currentFallbackTimer = fallbackTimerId;
+
+                const attemptPlayback = async () => {
+                    try {
+                        const playPromise = audio.play();
+                        if (playPromise && typeof playPromise.then === 'function') {
+                            await playPromise;
+                        }
+                    } catch (error) {
+                        const message = error && typeof error.message === 'string' ? error.message : '';
+                        const errorName = error && typeof error.name === 'string' ? error.name : '';
+                        const blockedByAutoplay = errorName === 'NotAllowedError'
+                            || /gesture|user activation|autoplay/i.test(message);
+
+                        if (!blockedByAutoplay) {
+                            finish(false, error);
+                            return;
+                        }
+
+                        console.warn('[YuiGuide] 教程语音等待用户手势后重试播放:', error);
+                        const unlocked = await waitForFirstUserGesture(maxBlockedWaitMs);
+                        if (!unlocked || settled) {
+                            finish(false, error);
+                            return;
+                        }
+
+                        await resumeKnownAudioContexts();
+                        try {
+                            audio.currentTime = 0;
+                        } catch (_) {}
+
+                        try {
+                            const retryPromise = audio.play();
+                            if (retryPromise && typeof retryPromise.then === 'function') {
+                                await retryPromise;
+                            }
+                        } catch (retryError) {
+                            finish(false, retryError);
+                        }
+                    }
+                };
+
+                void attemptPlayback();
+            });
+        }
+
+        async speak(text, options) {
+            const message = typeof text === 'string' ? text.trim() : '';
+            const normalizedOptions = options || {};
+            if (!message) {
+                return;
+            }
             this.stop();
+            await wait(48);
 
-            if (!this.enabled || typeof SpeechSynthesisUtterance === 'undefined') {
-                return Promise.resolve();
+            const minimumDurationMs = Number.isFinite(normalizedOptions.minDurationMs)
+                ? normalizedOptions.minDurationMs
+                : 0;
+            const fallbackDurationMs = Math.max(estimateSpeechDurationMs(message), minimumDurationMs);
+
+            if (!this.enabled || typeof SpeechSynthesisUtterance === 'undefined' || !window.speechSynthesis) {
+                await wait(fallbackDurationMs);
+                return;
             }
+
+            await this.ensureVoicesReady();
 
             return new Promise((resolve) => {
                 let settled = false;
@@ -72,6 +474,9 @@
                     if (this.currentUtterance === utterance) {
                         this.currentUtterance = null;
                     }
+                    if (this.currentFinish === finish) {
+                        this.currentFinish = null;
+                    }
                     resolve();
                 };
 
@@ -80,15 +485,50 @@
                 utterance.rate = 1.02;
                 utterance.pitch = 1.05;
                 utterance.volume = 0.9;
+
+                try {
+                    const voices = window.speechSynthesis.getVoices();
+                    if (Array.isArray(voices) && voices.length > 0) {
+                        let bestVoice = null;
+                        let bestScore = -1;
+                        voices.forEach((voice) => {
+                            const score = scoreSpeechVoice(voice);
+                            if (score > bestScore) {
+                                bestScore = score;
+                                bestVoice = voice;
+                            }
+                        });
+                        if (bestVoice) {
+                            utterance.voice = bestVoice;
+                        }
+                    }
+                } catch (error) {
+                    console.warn('[YuiGuide] 选择系统语音失败:', error);
+                }
+
+                utterance.onboundary = (event) => {
+                    if (typeof normalizedOptions.onBoundary === 'function') {
+                        try {
+                            normalizedOptions.onBoundary(event);
+                        } catch (error) {
+                            console.warn('[YuiGuide] 语音边界回调失败:', error);
+                        }
+                    }
+                };
                 utterance.onend = finish;
                 utterance.onerror = finish;
                 this.currentUtterance = utterance;
-                this.currentFallbackTimer = window.setTimeout(finish, 6500);
+                this.currentFinish = finish;
+                this.currentFallbackTimer = window.setTimeout(
+                    finish,
+                    Math.max(fallbackDurationMs, 3000)
+                );
 
                 try {
+                    window.speechSynthesis.cancel();
                     window.speechSynthesis.speak(utterance);
                 } catch (error) {
-                    console.warn('[YuiGuide] 播放语音失败，回退为静默模式:', error);
+                    console.warn('[YuiGuide] 播放系统语音失败，回退为静默等待:', error);
                     finish();
                 }
             });
@@ -133,6 +573,7 @@
             this.overlay = overlay;
             this.motionToken = 0;
             this.lastTarget = null;
+            this.reactionToken = 0;
         }
 
         hasPosition() {
@@ -181,6 +622,38 @@
             await this.overlay.moveCursorTo(returnTarget.x, returnTarget.y, { durationMs: 260 });
         }
 
+        async reactToUserMotion(userX, userY, options) {
+            const current = this.overlay.getCursorPosition();
+            if (!current) {
+                return;
+            }
+
+            const normalizedOptions = options || {};
+            const dx = userX - current.x;
+            const dy = userY - current.y;
+            const distance = Math.max(1, Math.hypot(dx, dy));
+            const reactionDistance = clamp(
+                distance * (Number.isFinite(normalizedOptions.scale) ? normalizedOptions.scale : 0.12),
+                6,
+                18
+            );
+            const targetX = current.x + ((dx / distance) * reactionDistance);
+            const targetY = current.y + ((dy / distance) * reactionDistance);
+            const returnTarget = this.lastTarget || current;
+            const token = ++this.reactionToken;
+
+            await this.overlay.moveCursorTo(targetX, targetY, {
+                durationMs: Number.isFinite(normalizedOptions.outDurationMs) ? normalizedOptions.outDurationMs : 80
+            });
+            if (token !== this.reactionToken) {
+                return;
+            }
+
+            await this.overlay.moveCursorTo(returnTarget.x, returnTarget.y, {
+                durationMs: Number.isFinite(normalizedOptions.backDurationMs) ? normalizedOptions.backDurationMs : 150
+            });
+        }
+
         click() {
             this.overlay.clickCursor();
         }
@@ -215,7 +688,9 @@
             this.sceneTimers = new Set();
             this.interruptsEnabled = false;
             this.interruptCount = 0;
+            this.interruptAccelerationStreak = 0;
             this.lastInterruptAt = 0;
+            this.lastPassiveResistanceAt = 0;
             this.lastPointerPoint = null;
             this.angryExitTriggered = false;
             this.destroyed = false;
@@ -223,7 +698,16 @@
             this.introFlowStarted = false;
             this.introFlowCompleted = false;
             this.introClickActivated = false;
+            this.introChoicePending = false;
+            this.introPracticeMessageId = null;
             this.introThirdMessageTimer = null;
+            this.introReplyPollTimer = null;
+            this.takeoverFlowStarted = false;
+            this.takeoverFlowCompleted = false;
+            this.takeoverFlowPromise = null;
+            this.terminationRequested = false;
+            this.activeNarration = null;
+            this.narrationResumeTimer = null;
             this.chatIntroCleanupFns = [];
             this.keydownHandler = this.onKeyDown.bind(this);
             this.pointerMoveHandler = this.onPointerMove.bind(this);
@@ -350,11 +834,19 @@
             };
         }
 
-        clearIntroFlow() {
+        clearIntroFlow(preserveSpotlight) {
             if (this.introThirdMessageTimer) {
                 window.clearTimeout(this.introThirdMessageTimer);
                 this.introThirdMessageTimer = null;
             }
+
+            if (this.introReplyPollTimer) {
+                window.clearTimeout(this.introReplyPollTimer);
+                this.introReplyPollTimer = null;
+            }
+
+            this.introChoicePending = false;
+            this.introPracticeMessageId = null;
 
             while (this.chatIntroCleanupFns.length > 0) {
                 const cleanup = this.chatIntroCleanupFns.pop();
@@ -365,7 +857,9 @@
                 }
             }
 
-            this.overlay.clearSpotlight();
+            if (!preserveSpotlight) {
+                this.overlay.clearSpotlight();
+            }
         }
 
         waitForElement(resolveElement, timeoutMs) {
@@ -399,6 +893,37 @@
         }
 
         getChatIntroTarget() {
+            return this.getChatInputTarget() || this.getChatWindowTarget();
+        }
+
+        getChatInputTarget() {
+            const preferredSelectors = [
+                '#react-chat-window-root .composer-input',
+                '#react-chat-window-root .composer-input-shell',
+                '#react-chat-window-root .composer-panel',
+                '#text-input-area'
+            ];
+
+            for (let index = 0; index < preferredSelectors.length; index += 1) {
+                const element = this.resolveElement(preferredSelectors[index]);
+                if (!element) {
+                    continue;
+                }
+
+                const rect = typeof element.getBoundingClientRect === 'function'
+                    ? element.getBoundingClientRect()
+                    : null;
+                if (!rect || rect.width <= 0 || rect.height <= 0) {
+                    continue;
+                }
+
+                return element;
+            }
+
+            return null;
+        }
+
+        getChatWindowTarget() {
             const preferredSelectors = [
                 '#react-chat-window-shell',
                 '#react-chat-window-root .chat-window',
@@ -426,6 +951,82 @@
             }
 
             return null;
+        }
+
+        shouldNarrateInChat(stepId) {
+            return this.page === 'home' && typeof stepId === 'string' && !!stepId;
+        }
+
+        getSceneSpotlightTarget(stepId, performance) {
+            const selector = (performance && (performance.cursorTarget || this.currentStep && this.currentStep.anchor))
+                || (this.currentStep && this.currentStep.anchor)
+                || '';
+            const fallbackTarget = selector ? this.resolveElement(selector) : null;
+            if (this.page !== 'home') {
+                return fallbackTarget;
+            }
+
+            if (stepId === 'intro_basic' && !this.introFlowCompleted) {
+                return this.getChatInputTarget() || null;
+            }
+
+            if (this.shouldNarrateInChat(stepId)) {
+                return this.getChatWindowTarget() || fallbackTarget;
+            }
+
+            return fallbackTarget;
+        }
+
+        getActionSpotlightTarget(stepId, performance) {
+            const selector = (performance && (performance.cursorTarget || this.currentStep && this.currentStep.anchor))
+                || (this.currentStep && this.currentStep.anchor)
+                || '';
+            const fallbackTarget = selector ? this.resolveElement(selector) : null;
+            if (this.page !== 'home') {
+                return fallbackTarget;
+            }
+
+            if (stepId === 'takeover_capture_cursor' || stepId === 'takeover_plugin_preview') {
+                return fallbackTarget;
+            }
+
+            if (stepId === 'takeover_settings_peek') {
+                const settingsMenuId = this.normalizeSettingsMenuId((performance && performance.settingsMenuId) || 'character');
+                if (this.isManagedPanelVisible('settings')) {
+                    return this.getSettingsMenuElement(settingsMenuId)
+                        || this.getManagedPanelElement('settings')
+                        || fallbackTarget;
+                }
+
+                return fallbackTarget;
+            }
+
+            return null;
+        }
+
+        highlightChatInput() {
+            this.focusAndHighlightChatInput(this.getChatInputTarget());
+        }
+
+        highlightChatWindow() {
+            const target = this.getChatWindowTarget() || this.getChatInputTarget();
+            if (!target) {
+                return;
+            }
+
+            if (typeof target.scrollIntoView === 'function') {
+                try {
+                    target.scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'center',
+                        inline: 'nearest'
+                    });
+                } catch (_) {
+                    target.scrollIntoView();
+                }
+            }
+
+            this.overlay.setPersistentSpotlight(target);
         }
 
         getChatIntroActivationTarget() {
@@ -471,6 +1072,251 @@
             return timerId;
         }
 
+        clearNarrationResumeTimer() {
+            if (this.narrationResumeTimer) {
+                window.clearTimeout(this.narrationResumeTimer);
+                this.narrationResumeTimer = null;
+            }
+        }
+
+        cancelActiveNarration() {
+            const narration = this.activeNarration;
+            this.activeNarration = null;
+            this.clearNarrationResumeTimer();
+
+            if (!narration) {
+                return;
+            }
+
+            narration.cancelled = true;
+            this.voiceQueue.stop();
+            if (typeof narration.resolve === 'function') {
+                narration.resolve();
+            }
+        }
+
+        async runNarration(narration) {
+            if (!narration || narration.cancelled || this.destroyed) {
+                return;
+            }
+
+            if (narration.running) {
+                return;
+            }
+
+            const playbackStartIndex = clamp(
+                Number.isFinite(narration.resumeIndex) ? narration.resumeIndex : 0,
+                0,
+                narration.text.length
+            );
+            const playbackText = narration.text.slice(playbackStartIndex);
+
+            if (!playbackText.trim()) {
+                narration.resumeIndex = narration.text.length;
+                if (this.activeNarration === narration) {
+                    this.activeNarration = null;
+                }
+                if (typeof narration.resolve === 'function') {
+                    narration.resolve();
+                }
+                return;
+            }
+
+            narration.running = true;
+            narration.playbackStartIndex = playbackStartIndex;
+            narration.playbackStartAt = Date.now();
+            await this.voiceQueue.speak(playbackText, {
+                minDurationMs: Number.isFinite(narration.minDurationMs)
+                    ? narration.minDurationMs
+                    : 0,
+                onBoundary: (event) => {
+                    const charIndex = event && Number.isFinite(event.charIndex) ? event.charIndex : 0;
+                    const absoluteCharIndex = clamp(
+                        narration.playbackStartIndex + charIndex,
+                        narration.playbackStartIndex,
+                        narration.text.length
+                    );
+                    narration.resumeIndex = absoluteCharIndex;
+                    if (typeof narration.onBoundary === 'function') {
+                        try {
+                            narration.onBoundary(Object.assign({}, event, {
+                                absoluteCharIndex: absoluteCharIndex,
+                                fullText: narration.text
+                            }));
+                        } catch (error) {
+                            console.warn('[YuiGuide] 旁白边界扩展回调失败:', error);
+                        }
+                    }
+                }
+            });
+            narration.running = false;
+
+            if (this.destroyed || narration.cancelled) {
+                if (this.activeNarration === narration) {
+                    this.activeNarration = null;
+                }
+                if (typeof narration.resolve === 'function') {
+                    narration.resolve();
+                }
+                return;
+            }
+
+            if (narration.interrupted) {
+                return;
+            }
+
+            narration.resumeIndex = narration.text.length;
+            if (this.activeNarration === narration) {
+                this.activeNarration = null;
+            }
+            if (typeof narration.resolve === 'function') {
+                narration.resolve();
+            }
+        }
+
+        async speakLineAndWait(text, options) {
+            const content = typeof text === 'string' ? text.trim() : '';
+            if (!content || this.destroyed) {
+                return;
+            }
+
+            this.cancelActiveNarration();
+            const normalizedOptions = options || {};
+
+            await new Promise((resolve) => {
+                const narration = {
+                    text: content,
+                    resumeIndex: 0,
+                    playbackStartIndex: 0,
+                    playbackStartAt: 0,
+                    minDurationMs: Number.isFinite(normalizedOptions.minDurationMs)
+                        ? normalizedOptions.minDurationMs
+                        : 0,
+                    onBoundary: typeof normalizedOptions.onBoundary === 'function' ? normalizedOptions.onBoundary : null,
+                    resolve: resolve,
+                    interrupted: false,
+                    cancelled: false,
+                    running: false
+                };
+                this.activeNarration = narration;
+                this.runNarration(narration).catch((error) => {
+                    console.warn('[YuiGuide] 等待语音结束失败:', error);
+                    if (this.activeNarration === narration) {
+                        this.activeNarration = null;
+                    }
+                    resolve();
+                });
+            });
+        }
+
+        interruptNarrationForResistance() {
+            const narration = this.activeNarration;
+            if (!narration || narration.cancelled) {
+                return false;
+            }
+
+            if (narration.running) {
+                const playbackStartIndex = Number.isFinite(narration.playbackStartIndex) ? narration.playbackStartIndex : 0;
+                const playbackStartAt = Number.isFinite(narration.playbackStartAt) ? narration.playbackStartAt : 0;
+                const elapsedMs = playbackStartAt > 0 ? Math.max(0, Date.now() - playbackStartAt) : 0;
+                const estimatedChars = Math.floor(elapsedMs / 280);
+                const estimatedIndex = clamp(
+                    playbackStartIndex + estimatedChars,
+                    playbackStartIndex,
+                    narration.text.length
+                );
+                narration.resumeIndex = Math.max(
+                    Number.isFinite(narration.resumeIndex) ? narration.resumeIndex : playbackStartIndex,
+                    estimatedIndex
+                );
+            }
+
+            narration.interrupted = true;
+            this.clearNarrationResumeTimer();
+            this.voiceQueue.stop();
+            return true;
+        }
+
+        scheduleNarrationResume() {
+            this.clearNarrationResumeTimer();
+
+            const attemptResume = () => {
+                const narration = this.activeNarration;
+                if (!narration || narration.cancelled || this.destroyed) {
+                    this.restoreCurrentScenePresentation();
+                    return;
+                }
+
+                if (!narration.interrupted) {
+                    return;
+                }
+
+                const lastMotionAt = this.lastPointerPoint && Number.isFinite(this.lastPointerPoint.t)
+                    ? this.lastPointerPoint.t
+                    : 0;
+                if ((Date.now() - lastMotionAt) < 720) {
+                    this.narrationResumeTimer = window.setTimeout(attemptResume, 240);
+                    return;
+                }
+
+                narration.interrupted = false;
+                this.restoreCurrentScenePresentation();
+                this.runNarration(narration).catch((error) => {
+                    console.warn('[YuiGuide] 恢复教程语音失败:', error);
+                });
+            };
+
+            this.narrationResumeTimer = window.setTimeout(attemptResume, 720);
+        }
+
+        setCurrentScene(stepId, context) {
+            this.currentSceneId = stepId || null;
+            this.currentStep = stepId ? this.getStep(stepId) : null;
+            this.currentContext = context || null;
+        }
+
+        restoreCurrentScenePresentation() {
+            if (this.destroyed || this.angryExitTriggered || !this.currentStep) {
+                return;
+            }
+
+            const performance = this.currentStep.performance || {};
+            const spotlightTarget = this.getSceneSpotlightTarget(this.currentSceneId, performance);
+            if (spotlightTarget) {
+                this.overlay.setPersistentSpotlight(spotlightTarget);
+            } else {
+                this.overlay.clearPersistentSpotlight();
+            }
+
+            const actionSpotlightTarget = this.getActionSpotlightTarget(this.currentSceneId, performance);
+            if (actionSpotlightTarget) {
+                this.overlay.activateSpotlight(actionSpotlightTarget);
+            } else {
+                this.overlay.clearActionSpotlight();
+            }
+
+            if (this.shouldNarrateInChat(this.currentSceneId)) {
+                this.overlay.hideBubble();
+            } else if (performance.bubbleText) {
+                this.overlay.showBubble(performance.bubbleText, {
+                    title: 'Yui',
+                    emotion: performance.emotion || 'neutral',
+                    anchorRect: this.resolveRect(this.currentStep.anchor)
+                });
+            } else {
+                this.overlay.hideBubble();
+            }
+
+            if (performance.emotion) {
+                this.emotionBridge.apply(performance.emotion);
+            }
+        }
+
+        async playManagedScene(stepId, meta) {
+            this.setCurrentScene(stepId, meta && meta.context ? meta.context : null);
+            await this.playScene(stepId, meta || {});
+        }
+
         disableInterrupts() {
             if (!this.interruptsEnabled) {
                 return;
@@ -480,22 +1326,288 @@
             window.removeEventListener('mousedown', this.pointerDownHandler, true);
             this.interruptsEnabled = false;
             this.lastPointerPoint = null;
+            this.interruptAccelerationStreak = 0;
+            this.lastPassiveResistanceAt = 0;
         }
 
         enableInterrupts(step) {
             const performance = (step && step.performance) || {};
+            const interrupts = (step && step.interrupts) || {};
             if (performance.interruptible === false) {
                 this.disableInterrupts();
                 return;
             }
 
             this.disableInterrupts();
-            this.interruptCount = 0;
+            if (interrupts.resetOnStepAdvance !== false) {
+                this.interruptCount = 0;
+            }
+            this.interruptAccelerationStreak = 0;
             this.lastInterruptAt = 0;
+            this.lastPassiveResistanceAt = 0;
             this.lastPointerPoint = null;
             window.addEventListener('mousemove', this.pointerMoveHandler, true);
             window.addEventListener('mousedown', this.pointerDownHandler, true);
             this.interruptsEnabled = true;
+        }
+
+        maybePlayPassiveResistance(x, y, distance, speed, now) {
+            if (!this.cursor.hasPosition()) {
+                return;
+            }
+
+            if (distance < DEFAULT_PASSIVE_RESISTANCE_DISTANCE) {
+                return;
+            }
+
+            if (speed < 0.2) {
+                return;
+            }
+
+            if (now - this.lastPassiveResistanceAt < DEFAULT_PASSIVE_RESISTANCE_INTERVAL_MS) {
+                return;
+            }
+
+            this.lastPassiveResistanceAt = now;
+            this.cursor.reactToUserMotion(x, y, {
+                scale: 0.16,
+                outDurationMs: 90,
+                backDurationMs: 180
+            });
+        }
+
+        // Dev B boundary: Director only talks to this API surface.
+        // Dev C can later provide a real implementation via options.homeInteractionApi,
+        // window.getYuiGuideHomeInteractionApi(), window.YuiGuideHomeInteractionApi,
+        // or the broader window.YuiGuidePageHandoff module.
+        getHomeInteractionApi() {
+            if (this.options && this.options.homeInteractionApi) {
+                return this.options.homeInteractionApi;
+            }
+
+            if (typeof window.getYuiGuideHomeInteractionApi === 'function') {
+                try {
+                    return window.getYuiGuideHomeInteractionApi() || null;
+                } catch (error) {
+                    console.warn('[YuiGuide] 获取首页交互 API 失败:', error);
+                }
+            }
+
+            return window.YuiGuideHomeInteractionApi || window.YuiGuidePageHandoff || null;
+        }
+
+        async callHomeInteractionApi(methodName, args, fallback) {
+            const api = this.getHomeInteractionApi();
+            if (api && typeof api[methodName] === 'function') {
+                try {
+                    return !!(await api[methodName].apply(api, Array.isArray(args) ? args : []));
+                } catch (error) {
+                    console.warn('[YuiGuide] 首页交互 API 调用失败，回退到本地实现:', methodName, error);
+                }
+            }
+
+            if (typeof fallback === 'function') {
+                return !!(await fallback());
+            }
+
+            return false;
+        }
+
+        getManagedPanelElement(panelId) {
+            if (!panelId) {
+                return null;
+            }
+
+            return document.getElementById(this.resolveModelPrefix() + '-popup-' + panelId);
+        }
+
+        isManagedPanelVisible(panelId) {
+            const popup = this.getManagedPanelElement(panelId);
+            return !!(popup && popup.style.display === 'flex' && popup.style.opacity !== '0');
+        }
+
+        getFallbackFloatingButton(buttonId) {
+            if (!buttonId) {
+                return null;
+            }
+
+            return this.resolveElement('#${p}-btn-' + buttonId);
+        }
+
+        async setFallbackFloatingPopupVisible(buttonId, visible) {
+            const desiredVisible = !!visible;
+            if (this.isManagedPanelVisible(buttonId) === desiredVisible) {
+                return desiredVisible;
+            }
+
+            const button = this.getFallbackFloatingButton(buttonId);
+            if (!button || typeof button.click !== 'function') {
+                return this.isManagedPanelVisible(buttonId) === desiredVisible;
+            }
+
+            button.click();
+
+            const result = await this.waitForElement(() => {
+                const popup = this.getManagedPanelElement(buttonId);
+                const isVisible = this.isManagedPanelVisible(buttonId);
+                return isVisible === desiredVisible ? (popup || button) : null;
+            }, 1200);
+
+            return !!result && this.isManagedPanelVisible(buttonId) === desiredVisible;
+        }
+
+        async openAgentPanel() {
+            return this.callHomeInteractionApi('openAgentPanel', [], () => {
+                return this.setFallbackFloatingPopupVisible('agent', true);
+            });
+        }
+
+        async closeAgentPanel() {
+            return this.callHomeInteractionApi('closeAgentPanel', [], () => {
+                return this.setFallbackFloatingPopupVisible('agent', false);
+            });
+        }
+
+        async openSettingsPanel() {
+            return this.callHomeInteractionApi('openSettingsPanel', [], () => {
+                return this.setFallbackFloatingPopupVisible('settings', true);
+            });
+        }
+
+        async closeSettingsPanel() {
+            return this.callHomeInteractionApi('closeSettingsPanel', [], () => {
+                return this.setFallbackFloatingPopupVisible('settings', false);
+            });
+        }
+
+        normalizeSettingsMenuId(menuId) {
+            const normalized = typeof menuId === 'string'
+                ? menuId.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-')
+                : '';
+            return normalized || '';
+        }
+
+        getSettingsMenuSelector(menuId) {
+            const normalizedMenuId = this.normalizeSettingsMenuId(menuId);
+            if (!normalizedMenuId) {
+                return '';
+            }
+
+            return '#' + this.resolveModelPrefix() + '-menu-' + normalizedMenuId;
+        }
+
+        getSettingsMenuElement(menuId) {
+            const selector = this.getSettingsMenuSelector(menuId);
+            if (!selector) {
+                return null;
+            }
+
+            return this.resolveElement(selector);
+        }
+
+        async ensureSettingsMenuVisible(menuId) {
+            return this.callHomeInteractionApi('ensureSettingsMenuVisible', [menuId], async () => {
+                const panelReady = await this.openSettingsPanel();
+                if (!panelReady) {
+                    return false;
+                }
+
+                if (!menuId) {
+                    return true;
+                }
+
+                const selector = this.getSettingsMenuSelector(menuId);
+                if (!selector) {
+                    return false;
+                }
+
+                const menuLabel = await this.waitForElement(() => this.resolveElement(selector), 1200);
+                if (!menuLabel) {
+                    return false;
+                }
+
+                const menuItem = menuLabel.closest('.' + this.resolveModelPrefix() + '-settings-menu-item') || menuLabel.parentElement;
+                if (menuItem && typeof menuItem.scrollIntoView === 'function') {
+                    try {
+                        menuItem.scrollIntoView({
+                            behavior: 'smooth',
+                            block: 'nearest',
+                            inline: 'nearest'
+                        });
+                    } catch (_) {
+                        menuItem.scrollIntoView();
+                    }
+                }
+
+                return true;
+            });
+        }
+
+        async closeManagedPanels() {
+            const results = await Promise.all([
+                this.closeAgentPanel(),
+                this.closeSettingsPanel()
+            ]);
+
+            return results.every(Boolean);
+        }
+
+        async runTakeoverMainFlow() {
+            if (this.takeoverFlowStarted || this.destroyed || this.angryExitTriggered) {
+                return this.takeoverFlowPromise;
+            }
+
+            this.takeoverFlowStarted = true;
+            this.takeoverFlowPromise = (async () => {
+                await this.playManagedScene('takeover_capture_cursor', {
+                    source: 'auto-takeover'
+                });
+                if (this.destroyed || this.angryExitTriggered) {
+                    return;
+                }
+
+                await wait(360);
+                if (this.destroyed || this.angryExitTriggered) {
+                    return;
+                }
+
+                await this.playManagedScene('takeover_plugin_preview', {
+                    source: 'auto-takeover'
+                });
+                if (this.destroyed || this.angryExitTriggered) {
+                    return;
+                }
+
+                await wait(1200);
+                if (this.destroyed || this.angryExitTriggered) {
+                    return;
+                }
+
+                await this.playManagedScene('takeover_settings_peek', {
+                    source: 'auto-takeover'
+                });
+                if (this.destroyed || this.angryExitTriggered) {
+                    return;
+                }
+
+                await wait(1400);
+                if (this.destroyed || this.angryExitTriggered) {
+                    return;
+                }
+
+                await this.playManagedScene('takeover_return_control', {
+                    source: 'auto-takeover'
+                });
+                this.takeoverFlowCompleted = true;
+                if (this.destroyed || this.angryExitTriggered) {
+                    return;
+                }
+                this.requestTermination('complete', 'complete');
+            })().catch((error) => {
+                console.error('[YuiGuide] 接管主流程执行失败:', error);
+            });
+
+            return this.takeoverFlowPromise;
         }
 
         async ensureChatVisible() {
@@ -540,22 +1652,221 @@
                 reactChatOverlay.hidden = false;
             }
 
-            return this.waitForElement(() => this.getChatIntroTarget(), 5000);
+            const inputTarget = await this.waitForElement(() => this.getChatInputTarget(), 5000);
+            if (inputTarget) {
+                return inputTarget;
+            }
+
+            return this.waitForElement(() => this.getChatWindowTarget(), 1200);
         }
 
-        appendGuideChatMessage(text) {
-            const content = typeof text === 'string' ? text.trim() : '';
-            if (!content || typeof window.appendMessage !== 'function') {
+        getGuideAssistantName() {
+            const candidates = [
+                window.lanlan_config && window.lanlan_config.lanlan_name,
+                window._currentCatgirl,
+                window.currentCatgirl
+            ];
+
+            for (let index = 0; index < candidates.length; index += 1) {
+                const candidate = typeof candidates[index] === 'string' ? candidates[index].trim() : '';
+                if (candidate) {
+                    return candidate;
+                }
+            }
+
+            return 'Neko';
+        }
+
+        getGuideAssistantAvatarUrl() {
+            const host = window.reactChatWindowHost;
+            if (!host || typeof host.getState !== 'function') {
+                return undefined;
+            }
+
+            try {
+                const snapshot = host.getState();
+                const messages = snapshot && Array.isArray(snapshot.messages) ? snapshot.messages : [];
+                for (let index = messages.length - 1; index >= 0; index -= 1) {
+                    const message = messages[index];
+                    if (!message || message.role !== 'assistant') {
+                        continue;
+                    }
+
+                    const avatarUrl = typeof message.avatarUrl === 'string' ? message.avatarUrl.trim() : '';
+                    if (avatarUrl) {
+                        return avatarUrl;
+                    }
+                }
+            } catch (error) {
+                console.warn('[YuiGuide] 读取聊天头像失败:', error);
+            }
+
+            return undefined;
+        }
+
+        scrollChatToBottom() {
+            const messageList = this.resolveElement('#react-chat-window-root .message-list');
+            if (!messageList) {
                 return;
             }
 
-            window.appendMessage(content, 'gemini', true);
+            const scroll = () => {
+                try {
+                    messageList.scrollTo({
+                        top: messageList.scrollHeight,
+                        behavior: 'smooth'
+                    });
+                } catch (_) {
+                    messageList.scrollTop = messageList.scrollHeight;
+                }
+            };
+
+            scroll();
+            window.requestAnimationFrame(scroll);
+            this.schedule(scroll, 160);
+        }
+
+        appendGuideChatMessage(text, options) {
+            const content = typeof text === 'string' ? text.trim() : '';
+            if (!content) {
+                return null;
+            }
+
+            const normalizedOptions = options || {};
+            const host = window.reactChatWindowHost;
+            if (host && typeof host.appendMessage === 'function') {
+                const createdAt = Date.now();
+                let time = '';
+
+                try {
+                    time = new Date(createdAt).toLocaleTimeString([], {
+                        hour: '2-digit',
+                        minute: '2-digit'
+                    });
+                } catch (_) {}
+
+                const message = {
+                    id: 'yui-guide-' + createdAt + '-' + Math.random().toString(36).slice(2, 8),
+                    role: 'assistant',
+                    author: this.getGuideAssistantName(),
+                    time: time,
+                    createdAt: createdAt,
+                    avatarUrl: this.getGuideAssistantAvatarUrl(),
+                    blocks: [{
+                        type: 'text',
+                        text: content
+                    }],
+                    status: 'sent'
+                };
+
+                if (Array.isArray(normalizedOptions.buttons) && normalizedOptions.buttons.length > 0) {
+                    message.blocks.push({
+                        type: 'buttons',
+                        buttons: normalizedOptions.buttons.map(function (button) {
+                            if (!button || typeof button !== 'object') {
+                                return null;
+                            }
+
+                            return {
+                                id: button.id,
+                                label: button.label,
+                                action: button.action,
+                                variant: button.variant,
+                                disabled: !!button.disabled,
+                                payload: button.payload || undefined
+                            };
+                        }).filter(Boolean)
+                    });
+                }
+
+                if (Array.isArray(normalizedOptions.actions) && normalizedOptions.actions.length > 0) {
+                    message.actions = normalizedOptions.actions.map(function (action) {
+                        if (!action || typeof action !== 'object') {
+                            return null;
+                        }
+
+                        return {
+                            id: action.id,
+                            label: action.label,
+                            action: action.action,
+                            variant: action.variant,
+                            disabled: !!action.disabled,
+                            payload: action.payload || undefined
+                        };
+                    }).filter(Boolean);
+                }
+
+                const appendedMessage = host.appendMessage(message);
+                this.scrollChatToBottom();
+                return appendedMessage;
+            }
+
+            if (typeof window.appendMessage === 'function') {
+                window.appendMessage(content, 'gemini', true);
+                this.scrollChatToBottom();
+            }
+
+            return null;
+        }
+
+        getGuideChatMessage(messageId) {
+            const host = window.reactChatWindowHost;
+            if (!host || typeof host.getState !== 'function' || !messageId) {
+                return null;
+            }
+
+            try {
+                const snapshot = host.getState();
+                const messages = snapshot && Array.isArray(snapshot.messages) ? snapshot.messages : [];
+                return messages.find(function (message) {
+                    return message && String(message.id) === String(messageId);
+                }) || null;
+            } catch (error) {
+                console.warn('[YuiGuide] 读取引导消息失败:', error);
+                return null;
+            }
+        }
+
+        updateGuideChatMessage(messageId, patch) {
+            const host = window.reactChatWindowHost;
+            if (!host || typeof host.updateMessage !== 'function' || !messageId) {
+                return null;
+            }
+
+            try {
+                return host.updateMessage(messageId, patch || {});
+            } catch (error) {
+                console.warn('[YuiGuide] 更新引导消息失败:', error);
+                return null;
+            }
+        }
+
+        clearGuideChatMessageActions(messageId) {
+            if (!messageId) {
+                return null;
+            }
+
+            const existingMessage = this.getGuideChatMessage(messageId);
+            const nextBlocks = existingMessage && Array.isArray(existingMessage.blocks)
+                ? existingMessage.blocks.filter(function (block) {
+                    return block && block.type !== 'buttons';
+                })
+                : undefined;
+
+            return this.updateGuideChatMessage(messageId, {
+                blocks: nextBlocks,
+                actions: []
+            });
         }
 
         focusAndHighlightChatInput(spotlightTarget) {
-            const target = spotlightTarget || this.getChatIntroTarget();
+            const target = spotlightTarget || this.getChatInputTarget();
             const inputBox = this.resolveElement('#react-chat-window-root .composer-input')
                 || this.resolveElement('#textInputBox');
+
+            if (!target) {
+                return;
+            }
 
             if (target && typeof target.scrollIntoView === 'function') {
                 target.scrollIntoView({
@@ -566,7 +1877,7 @@
             }
 
             if (target) {
-                this.overlay.activateSpotlight(target);
+                this.overlay.setPersistentSpotlight(target);
             }
 
             if (inputBox && typeof inputBox.focus === 'function') {
@@ -581,56 +1892,192 @@
         }
 
         attachChatIntroActivation() {
-            const inputArea = this.getChatIntroActivationTarget();
-            const inputBox = this.resolveElement('#react-chat-window-root .composer-input')
-                || this.resolveElement('#textInputBox');
-            if (!inputArea) {
-                return;
-            }
-
-            const activate = () => {
-                if (this.destroyed || this.introClickActivated) {
+            const actionHandler = (event) => {
+                if (this.destroyed || !this.introChoicePending) {
                     return;
                 }
 
-                this.introClickActivated = true;
-                inputArea.classList.remove('yui-guide-chat-target');
-                this.clearIntroFlow();
-                this.sendIntroFollowups();
+                const detail = event && event.detail ? event.detail : null;
+                const message = detail && detail.message ? detail.message : null;
+                const action = detail && detail.action ? detail.action : null;
+                const messageId = message && message.id ? String(message.id) : '';
+                const actionId = action && action.id ? String(action.id) : '';
+                const actionName = action && action.action ? String(action.action) : '';
+
+                if (!messageId || messageId !== this.introPracticeMessageId) {
+                    return;
+                }
+
+                if (actionId !== INTRO_SKIP_ACTION_ID && actionName !== INTRO_SKIP_ACTION_ID) {
+                    return;
+                }
+
+                this.resolveChatIntroChoice('skip');
             };
 
-            const clickHandler = function () {
-                activate();
-            };
+            const submitHandler = (event) => {
+                if (this.destroyed || !this.introChoicePending) {
+                    return;
+                }
 
-            inputArea.addEventListener('click', clickHandler, true);
-            this.chatIntroCleanupFns.push(() => {
-                inputArea.removeEventListener('click', clickHandler, true);
-            });
+                const detail = event && event.detail ? event.detail : null;
+                const text = detail && typeof detail.text === 'string' ? detail.text : '';
+                if (!text.trim()) {
+                    return;
+                }
 
-            if (inputBox && inputBox !== inputArea) {
-                inputBox.addEventListener('click', clickHandler, true);
-                this.chatIntroCleanupFns.push(() => {
-                    inputBox.removeEventListener('click', clickHandler, true);
+                this.resolveChatIntroChoice('chat', {
+                    submittedAt: Date.now()
                 });
-            }
+            };
+
+            window.addEventListener(REACT_CHAT_ACTION_EVENT, actionHandler, true);
+            window.addEventListener(REACT_CHAT_SUBMIT_EVENT, submitHandler, true);
+            this.chatIntroCleanupFns.push(() => {
+                window.removeEventListener(REACT_CHAT_ACTION_EVENT, actionHandler, true);
+            });
+            this.chatIntroCleanupFns.push(() => {
+                window.removeEventListener(REACT_CHAT_SUBMIT_EVENT, submitHandler, true);
+            });
         }
 
-        sendIntroFollowups() {
-            const proactiveStep = this.getStep('intro_proactive');
-            const catPawStep = this.getStep('intro_cat_paw');
+        waitForFirstAssistantReplyAfter(submittedAt) {
+            const replyStartAt = Number.isFinite(submittedAt) ? submittedAt : Date.now();
+            const maxWaitMs = 120000;
 
-            if (proactiveStep && proactiveStep.performance) {
-                const proactiveText = proactiveStep.performance.bubbleText || '';
-                this.appendGuideChatMessage(proactiveText);
-                this.voiceQueue.speak(proactiveText);
-                if (proactiveStep.performance.emotion) {
-                    this.emotionBridge.apply(proactiveStep.performance.emotion);
-                }
+            return new Promise((resolve) => {
+                const startedAt = Date.now();
+                const poll = () => {
+                    if (this.destroyed) {
+                        this.introReplyPollTimer = null;
+                        resolve(null);
+                        return;
+                    }
+
+                    const host = window.reactChatWindowHost;
+                    const snapshot = host && typeof host.getState === 'function'
+                        ? host.getState()
+                        : null;
+                    const messages = snapshot && Array.isArray(snapshot.messages)
+                        ? snapshot.messages
+                        : [];
+
+                    const replyMessage = messages.find((message) => {
+                        if (!message || message.role !== 'assistant') {
+                            return false;
+                        }
+
+                        const messageId = typeof message.id === 'string' ? message.id : '';
+                        if (messageId.indexOf('yui-guide-') === 0) {
+                            return false;
+                        }
+
+                        const createdAt = Number.isFinite(message.createdAt) ? message.createdAt : 0;
+                        if (createdAt < replyStartAt) {
+                            return false;
+                        }
+
+                        return message.status === 'sent';
+                    }) || null;
+
+                    if (replyMessage) {
+                        this.introReplyPollTimer = null;
+                        resolve(replyMessage);
+                        return;
+                    }
+
+                    if ((Date.now() - startedAt) >= maxWaitMs) {
+                        this.introReplyPollTimer = null;
+                        resolve(null);
+                        return;
+                    }
+
+                    this.introReplyPollTimer = window.setTimeout(poll, 280);
+                };
+
+                poll();
+            });
+        }
+
+        resolveChatIntroChoice(mode, options) {
+            if (this.destroyed || !this.introChoicePending) {
+                return;
             }
 
-            this.introThirdMessageTimer = window.setTimeout(() => {
-                this.introThirdMessageTimer = null;
+            const normalizedMode = mode === 'chat' ? 'chat' : 'skip';
+            const promptMessageId = this.introPracticeMessageId;
+            const submittedAt = options && Number.isFinite(options.submittedAt)
+                ? options.submittedAt
+                : Date.now();
+
+            this.introChoicePending = false;
+            this.introClickActivated = true;
+            this.introFlowCompleted = true;
+
+            if (promptMessageId) {
+                this.clearGuideChatMessageActions(promptMessageId);
+            }
+
+            this.cancelActiveNarration();
+            this.clearIntroFlow(true);
+            this.highlightChatWindow();
+
+            if (normalizedMode === 'chat') {
+                this.waitForFirstAssistantReplyAfter(submittedAt).then(() => {
+                    if (this.destroyed) {
+                        return;
+                    }
+
+                    this.sendIntroFollowups({
+                        includeProactive: false
+                    });
+                }).catch((error) => {
+                    console.warn('[YuiGuide] 等待首次聊天回复失败:', error);
+                    if (this.destroyed) {
+                        return;
+                    }
+
+                    this.sendIntroFollowups({
+                        includeProactive: false
+                    });
+                });
+                return;
+            }
+
+            this.sendIntroFollowups({
+                includeProactive: true
+            });
+        }
+
+        sendIntroFollowups(options) {
+            const proactiveStep = this.getStep('intro_proactive');
+            const catPawStep = this.getStep('intro_cat_paw');
+            const normalizedOptions = options || {};
+            const includeProactive = normalizedOptions.includeProactive !== false;
+            const catPawDelayMs = includeProactive ? 5000 : 280;
+
+            (async () => {
+                if (includeProactive && proactiveStep && proactiveStep.performance) {
+                    const proactiveText = proactiveStep.performance.bubbleText || '';
+                    this.appendGuideChatMessage(proactiveText);
+                    if (proactiveStep.performance.emotion) {
+                        this.emotionBridge.apply(proactiveStep.performance.emotion);
+                    }
+                    await this.speakLineAndWait(proactiveText);
+                }
+                if (this.destroyed) {
+                    return;
+                }
+
+                if (catPawDelayMs > 0) {
+                    await new Promise((resolve) => {
+                        this.introThirdMessageTimer = window.setTimeout(() => {
+                            this.introThirdMessageTimer = null;
+                            resolve();
+                        }, catPawDelayMs);
+                    });
+                }
+
                 if (this.destroyed) {
                     return;
                 }
@@ -638,14 +2085,17 @@
                 if (catPawStep && catPawStep.performance) {
                     const catPawText = catPawStep.performance.bubbleText || '';
                     this.appendGuideChatMessage(catPawText);
-                    this.voiceQueue.speak(catPawText);
                     if (catPawStep.performance.emotion) {
                         this.emotionBridge.apply(catPawStep.performance.emotion);
                     }
+                    await this.speakLineAndWait(catPawText);
                 }
 
                 this.introFlowCompleted = true;
-            }, 5000);
+                this.schedule(() => {
+                    this.runTakeoverMainFlow();
+                }, 320);
+            })();
         }
 
         async runChatIntroPrelude() {
@@ -661,14 +2111,47 @@
             this.introFlowStarted = true;
             this.overlay.hideBubble();
             this.overlay.hidePluginPreview();
-            const spotlightTarget = await this.ensureChatVisible();
-            this.focusAndHighlightChatInput(spotlightTarget);
-            this.appendGuideChatMessage(introStep.performance.bubbleText || '');
-            this.voiceQueue.speak(introStep.performance.bubbleText || '');
+            await this.ensureChatVisible();
+            this.focusAndHighlightChatInput(this.getChatInputTarget());
+            const introText = introStep.performance.bubbleText || '';
+            this.appendGuideChatMessage(introText);
             if (introStep.performance.emotion) {
                 this.emotionBridge.apply(introStep.performance.emotion);
             }
+            await this.speakLineAndWait(introText, {
+                minDurationMs: 4200
+            });
+            if (this.destroyed) {
+                return;
+            }
+
+            this.highlightChatWindow();
+            await wait(240);
+            if (this.destroyed) {
+                return;
+            }
+
+            const practiceMessage = this.appendGuideChatMessage(INTRO_PRACTICE_TEXT, {
+                buttons: [{
+                    id: INTRO_SKIP_ACTION_ID,
+                    label: '暂时先不聊天',
+                    action: INTRO_SKIP_ACTION_ID,
+                    variant: 'secondary',
+                    disabled: false
+                }]
+            });
+            this.introPracticeMessageId = practiceMessage && practiceMessage.id
+                ? String(practiceMessage.id)
+                : null;
+            this.introChoicePending = true;
             this.attachChatIntroActivation();
+            await this.speakLineAndWait(INTRO_PRACTICE_TEXT, {
+                minDurationMs: 3600
+            });
+            if (this.destroyed) {
+                return;
+            }
+            this.introFlowCompleted = true;
         }
 
         async startPrelude() {
@@ -700,10 +2183,12 @@
                 return;
             }
 
-            this.currentSceneId = stepId;
-            this.currentStep = this.getStep(stepId);
-            this.currentContext = context || null;
-            await this.playScene(stepId, {
+            if (this.takeoverFlowStarted && stepId.indexOf('takeover_') === 0) {
+                this.setCurrentScene(stepId, context || null);
+                return;
+            }
+
+            await this.playManagedScene(stepId, {
                 source: (context && context.source) || 'step-enter',
                 context: context || null
             });
@@ -740,6 +2225,22 @@
             const cursorSpeed = Number.isFinite(performance.cursorSpeedMultiplier) ? performance.cursorSpeedMultiplier : 1;
             const delayMs = Number.isFinite(performance.delayMs) ? performance.delayMs : DEFAULT_STEP_DELAY_MS;
             const durationMs = clamp(Math.round(DEFAULT_CURSOR_DURATION_MS / Math.max(0.35, cursorSpeed)), 160, 900);
+            const spotlightElement = this.resolveElement(performance.cursorTarget || step.anchor);
+            const shouldNarrateInChat = this.shouldNarrateInChat(stepId);
+            const shouldNarrateAfterMove = (
+                stepId === 'takeover_capture_cursor'
+                || stepId === 'takeover_plugin_preview'
+                || stepId === 'takeover_settings_peek'
+            );
+            const shouldNarrateDuringMove = stepId === 'takeover_capture_cursor';
+            const shouldKeepInterruptsEnabled = (
+                performance.interruptible !== false
+                && (isTakeoverScene || stepId === 'intro_cat_paw')
+            );
+            const shouldOpenPanelAfterNarration = (
+                stepId === 'takeover_plugin_preview'
+                || stepId === 'takeover_settings_peek'
+            );
 
             this.clearSceneTimers();
             this.overlay.setAngry(false);
@@ -748,25 +2249,55 @@
                 this.overlay.setTakingOver(true);
             }
 
+            const persistentSpotlightTarget = this.getSceneSpotlightTarget(stepId, performance);
+            if (persistentSpotlightTarget) {
+                this.overlay.setPersistentSpotlight(persistentSpotlightTarget);
+            }
+
+            const actionSpotlightTarget = this.getActionSpotlightTarget(stepId, performance);
+            if (actionSpotlightTarget) {
+                this.overlay.activateSpotlight(actionSpotlightTarget);
+            } else {
+                this.overlay.clearActionSpotlight();
+            }
+
             if (stepId !== 'takeover_plugin_preview') {
                 this.overlay.hidePluginPreview();
             }
 
-            if (performance.bubbleText) {
+            if (performance.bubbleText && !shouldNarrateAfterMove && !shouldNarrateInChat) {
                 this.overlay.showBubble(performance.bubbleText, {
                     title: 'Yui',
                     emotion: performance.emotion || 'neutral',
                     anchorRect: anchorRect
                 });
-            } else {
+            } else if (!shouldNarrateAfterMove) {
                 this.overlay.hideBubble();
             }
 
-            if (performance.emotion) {
+            if (performance.emotion && !shouldNarrateAfterMove) {
                 this.emotionBridge.apply(performance.emotion);
             }
 
-            this.voiceQueue.speak(performance.bubbleText || '');
+            const shouldIntroduceCursor = stepId === 'takeover_capture_cursor' && !this.cursor.hasPosition();
+            if (shouldIntroduceCursor) {
+                const origin = this.getDefaultCursorOrigin();
+                this.cursor.showAt(origin.x, origin.y);
+                await wait(260);
+                if (runId !== this.sceneRunId || this.destroyed) {
+                    return;
+                }
+                this.cursor.wobble();
+                await wait(260);
+                if (runId !== this.sceneRunId || this.destroyed) {
+                    return;
+                }
+                this.cursor.wobble();
+                await wait(260);
+                if (runId !== this.sceneRunId || this.destroyed) {
+                    return;
+                }
+            }
 
             if (cursorTargetRect && !this.cursor.hasPosition()) {
                 const origin = this.getDefaultCursorOrigin();
@@ -780,28 +2311,218 @@
                 }
             }
 
-            if (performance.cursorAction === 'move' || performance.cursorAction === 'click' || performance.cursorAction === 'wobble') {
+            let narrationPromise = null;
+            if (shouldKeepInterruptsEnabled && shouldNarrateDuringMove) {
+                this.enableInterrupts(step);
+            }
+
+            if (performance.bubbleText && shouldNarrateDuringMove && !shouldNarrateInChat) {
+                this.overlay.showBubble(performance.bubbleText, {
+                    title: 'Yui',
+                    emotion: performance.emotion || 'neutral',
+                    anchorRect: anchorRect
+                });
+            }
+
+            if (performance.emotion && shouldNarrateDuringMove) {
+                this.emotionBridge.apply(performance.emotion);
+            }
+
+            if (shouldNarrateDuringMove) {
+                if (performance.bubbleText && shouldNarrateInChat) {
+                    this.appendGuideChatMessage(performance.bubbleText);
+                    this.overlay.hideBubble();
+                }
+                narrationPromise = this.speakLineAndWait(performance.bubbleText || '');
+            }
+
+            const shouldMoveCursor = (
+                stepId === 'takeover_capture_cursor'
+                || stepId === 'takeover_plugin_preview'
+                || stepId === 'takeover_settings_peek'
+                || (!shouldIntroduceCursor || stepId !== 'takeover_capture_cursor')
+            );
+            if (shouldMoveCursor && (performance.cursorAction === 'move' || performance.cursorAction === 'click' || performance.cursorAction === 'wobble')) {
                 if (cursorTargetRect) {
-                    await this.cursor.moveToRect(cursorTargetRect, { durationMs: durationMs });
+                    const movePromise = this.cursor.moveToRect(cursorTargetRect, { durationMs: durationMs });
+                    if (narrationPromise) {
+                        await Promise.all([movePromise, narrationPromise]);
+                    } else {
+                        await movePromise;
+                    }
                     if (runId !== this.sceneRunId || this.destroyed) {
                         return;
                     }
                 }
+            } else if (narrationPromise) {
+                await narrationPromise;
             }
 
-            if (performance.cursorAction === 'click') {
-                this.cursor.click();
-            } else if (performance.cursorAction === 'wobble') {
-                this.cursor.wobble();
+            if (shouldKeepInterruptsEnabled && !shouldNarrateDuringMove) {
+                this.enableInterrupts(step);
+            } else if (!shouldKeepInterruptsEnabled) {
+                this.disableInterrupts();
             }
+
+            let handledPostMove = false;
 
             if (stepId === 'takeover_plugin_preview') {
+                handledPostMove = true;
+                this.cursor.click();
+                await this.openAgentPanel();
+                if (runId !== this.sceneRunId || this.destroyed) {
+                    return;
+                }
                 this.overlay.showPluginPreview(PREVIEW_ITEMS, {
                     title: '插件管理预演'
                 });
+                this.highlightChatWindow();
+                if (performance.emotion) {
+                    this.emotionBridge.apply(performance.emotion);
+                }
+                if (performance.bubbleText) {
+                    this.appendGuideChatMessage(performance.bubbleText);
+                }
+                await this.speakLineAndWait(performance.bubbleText || '');
+                if (runId !== this.sceneRunId || this.destroyed) {
+                    return;
+                }
+                this.highlightChatWindow();
+            }
+
+            if (stepId === 'takeover_settings_peek') {
+                handledPostMove = true;
+                this.cursor.click();
+                await this.closeAgentPanel();
+                const settingsMenuId = this.normalizeSettingsMenuId(performance.settingsMenuId || 'character');
+                const settingsButtonTarget = this.resolveElement(performance.cursorTarget || this.currentStep && this.currentStep.anchor || '');
+                const menuVisible = await this.ensureSettingsMenuVisible(settingsMenuId);
+                if (runId !== this.sceneRunId || this.destroyed) {
+                    return;
+                }
+
+                if (settingsButtonTarget) {
+                    this.overlay.activateSpotlight(settingsButtonTarget);
+                }
+                this.highlightChatWindow();
+                if (performance.emotion) {
+                    this.emotionBridge.apply(performance.emotion);
+                }
+                if (performance.bubbleText) {
+                    this.appendGuideChatMessage(performance.bubbleText);
+                }
+
+                const characterPhrase = '你看，这里可以穿我的新衣服、给我换一个好听的声音';
+                const highlightStartIndex = typeof performance.bubbleText === 'string'
+                    ? performance.bubbleText.indexOf(characterPhrase)
+                    : -1;
+                let settingsMenuHighlighted = false;
+                let settingsMenuFallbackTimer = 0;
+
+                const activateSettingsMenuSpotlight = () => {
+                    if (settingsMenuHighlighted) {
+                        return;
+                    }
+
+                    const spotlightTarget = menuVisible
+                        ? this.getSettingsMenuElement(settingsMenuId)
+                        : (this.isManagedPanelVisible('settings') ? this.getManagedPanelElement('settings') : null);
+                    if (!spotlightTarget) {
+                        return;
+                    }
+
+                    settingsMenuHighlighted = true;
+                    this.overlay.activateSecondarySpotlight(spotlightTarget);
+                };
+
+                if (highlightStartIndex >= 0 && performance.bubbleText) {
+                    const estimatedDurationMs = Math.max(
+                        estimateSpeechDurationMs(performance.bubbleText),
+                        3000
+                    );
+                    const highlightDelayMs = clamp(
+                        Math.round((highlightStartIndex / Math.max(performance.bubbleText.length, 1)) * estimatedDurationMs),
+                        200,
+                        Math.max(estimatedDurationMs - 200, 200)
+                    );
+                    settingsMenuFallbackTimer = window.setTimeout(() => {
+                        settingsMenuFallbackTimer = 0;
+                        if (runId !== this.sceneRunId || this.destroyed) {
+                            return;
+                        }
+                        activateSettingsMenuSpotlight();
+                    }, highlightDelayMs);
+                }
+
+                try {
+                    await this.speakLineAndWait(performance.bubbleText || '', {
+                        onBoundary: (event) => {
+                            if (settingsMenuHighlighted || highlightStartIndex < 0) {
+                                return;
+                            }
+
+                            const absoluteCharIndex = event && Number.isFinite(event.absoluteCharIndex)
+                                ? event.absoluteCharIndex
+                                : -1;
+                            if (absoluteCharIndex < highlightStartIndex) {
+                                return;
+                            }
+
+                            activateSettingsMenuSpotlight();
+                        }
+                    });
+                } finally {
+                    if (settingsMenuFallbackTimer) {
+                        window.clearTimeout(settingsMenuFallbackTimer);
+                        settingsMenuFallbackTimer = 0;
+                    }
+                }
+                if (runId !== this.sceneRunId || this.destroyed) {
+                    return;
+                }
+                this.overlay.clearActionSpotlight();
+                this.highlightChatWindow();
+            }
+
+            if (!handledPostMove) {
+                if (performance.bubbleText && shouldNarrateAfterMove && !shouldNarrateInChat) {
+                    this.overlay.showBubble(performance.bubbleText, {
+                        title: 'Yui',
+                        emotion: performance.emotion || 'neutral',
+                        anchorRect: anchorRect
+                    });
+                } else if (shouldNarrateAfterMove) {
+                    this.overlay.hideBubble();
+                }
+
+                if (performance.emotion && shouldNarrateAfterMove) {
+                    this.emotionBridge.apply(performance.emotion);
+                }
+
+                if (!shouldNarrateDuringMove) {
+                    if (performance.bubbleText && shouldNarrateInChat) {
+                        this.appendGuideChatMessage(performance.bubbleText);
+                        this.overlay.hideBubble();
+                    }
+                    await this.speakLineAndWait(performance.bubbleText || '');
+                    if (runId !== this.sceneRunId || this.destroyed) {
+                        return;
+                    }
+                }
+
+                if (performance.cursorAction === 'click' && !shouldOpenPanelAfterNarration) {
+                    this.cursor.click();
+                } else if (performance.cursorAction === 'wobble') {
+                    this.cursor.wobble();
+                }
             }
 
             if (stepId === 'takeover_return_control') {
+                await this.closeManagedPanels();
+                if (runId !== this.sceneRunId || this.destroyed) {
+                    return;
+                }
+                this.highlightChatWindow();
                 const centerPoint = this.getViewportCenter();
                 await wait(140);
                 if (runId !== this.sceneRunId || this.destroyed) {
@@ -813,16 +2534,23 @@
                     await this.cursor.moveToPoint(centerPoint.x, centerPoint.y, { durationMs: 360 });
                 }
                 this.cursor.wobble();
+                await wait(260);
+                if (runId !== this.sceneRunId || this.destroyed) {
+                    return;
+                }
+                this.cursor.hide();
+                this.overlay.clearActionSpotlight();
                 this.disableInterrupts();
                 this.overlay.setTakingOver(false);
             }
 
-            if (performance.interruptible === false) {
+            if (!shouldKeepInterruptsEnabled) {
                 this.disableInterrupts();
-            } else if (isTakeoverScene || stepId === 'intro_cat_paw') {
-                this.enableInterrupts(step);
-            } else {
-                this.disableInterrupts();
+            }
+
+            await wait(DEFAULT_SCENE_SETTLE_MS);
+            if (runId !== this.sceneRunId || this.destroyed) {
+                return;
             }
 
             if (meta && meta.source === 'prelude') {
@@ -839,7 +2567,23 @@
         }
 
         onPointerDown(event) {
-            this.handleInterrupt(event);
+            if (!event || event.isTrusted === false) {
+                return;
+            }
+
+            const x = Number.isFinite(event.clientX) ? event.clientX : null;
+            const y = Number.isFinite(event.clientY) ? event.clientY : null;
+            if (x === null || y === null) {
+                return;
+            }
+
+            this.lastPointerPoint = {
+                x: x,
+                y: y,
+                t: Date.now(),
+                speed: 0
+            };
+            this.interruptAccelerationStreak = 0;
         }
 
         handleInterrupt(event) {
@@ -864,16 +2608,57 @@
                 return;
             }
 
-            if (this.lastPointerPoint) {
-                const dx = x - this.lastPointerPoint.x;
-                const dy = y - this.lastPointerPoint.y;
-                if (Math.hypot(dx, dy) < DEFAULT_INTERRUPT_DISTANCE) {
-                    return;
-                }
-            }
-            this.lastPointerPoint = { x: x, y: y };
-
             const now = Date.now();
+            const previousPoint = this.lastPointerPoint;
+            if (!previousPoint || !Number.isFinite(previousPoint.t)) {
+                this.lastPointerPoint = {
+                    x: x,
+                    y: y,
+                    t: now,
+                    speed: 0
+                };
+                this.interruptAccelerationStreak = 0;
+                return;
+            }
+
+            const dx = x - previousPoint.x;
+            const dy = y - previousPoint.y;
+            const distance = Math.hypot(dx, dy);
+            const dt = Math.max(1, now - previousPoint.t);
+            const speed = distance / dt;
+            const previousSpeed = Number.isFinite(previousPoint.speed) ? previousPoint.speed : 0;
+            const acceleration = (speed - previousSpeed) / dt;
+
+            this.lastPointerPoint = {
+                x: x,
+                y: y,
+                t: now,
+                speed: speed
+            };
+
+            this.maybePlayPassiveResistance(x, y, distance, speed, now);
+
+            if (distance < DEFAULT_INTERRUPT_DISTANCE) {
+                this.interruptAccelerationStreak = 0;
+                return;
+            }
+
+            if (speed < DEFAULT_INTERRUPT_SPEED_THRESHOLD) {
+                this.interruptAccelerationStreak = 0;
+                return;
+            }
+
+            if (acceleration < DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD) {
+                this.interruptAccelerationStreak = 0;
+                return;
+            }
+
+            this.interruptAccelerationStreak += 1;
+            if (this.interruptAccelerationStreak < DEFAULT_INTERRUPT_ACCELERATION_STREAK) {
+                return;
+            }
+            this.interruptAccelerationStreak = 0;
+
             const throttleMs = Number.isFinite(interrupts.throttleMs) ? interrupts.throttleMs : 500;
             if (now - this.lastInterruptAt < throttleMs) {
                 return;
@@ -903,32 +2688,21 @@
                 ? voices[(this.interruptCount - 1) % voices.length]
                 : performance.bubbleText || '不要拽我啦，还没结束呢！';
 
-            this.overlay.showBubble(message, {
-                title: 'Yui',
-                emotion: performance.emotion || 'surprised',
-                anchorRect: null
-            });
-            this.emotionBridge.apply(performance.emotion || 'surprised');
-            this.voiceQueue.speak(message);
-            this.cursor.resistTo(x, y);
+            this.interruptNarrationForResistance();
 
-            this.schedule(() => {
-                if (this.destroyed || this.angryExitTriggered || !this.currentStep) {
+            this.overlay.hideBubble();
+            this.appendGuideChatMessage(message);
+            this.emotionBridge.apply(performance.emotion || 'surprised');
+            this.voiceQueue.speak(message).finally(() => {
+                const narration = this.activeNarration;
+                if (narration && narration.interrupted) {
+                    this.scheduleNarrationResume();
                     return;
                 }
 
-                const currentPerformance = this.currentStep.performance || {};
-                if (currentPerformance.bubbleText) {
-                    this.overlay.showBubble(currentPerformance.bubbleText, {
-                        title: 'Yui',
-                        emotion: currentPerformance.emotion || 'neutral',
-                        anchorRect: this.resolveRect(this.currentStep.anchor)
-                    });
-                }
-                if (currentPerformance.emotion) {
-                    this.emotionBridge.apply(currentPerformance.emotion);
-                }
-            }, 900);
+                this.restoreCurrentScenePresentation();
+            });
+            this.cursor.resistTo(x, y);
         }
 
         async abortAsAngryExit(source) {
@@ -946,27 +2720,23 @@
             this.overlay.setTakingOver(true);
             this.overlay.setAngry(true);
             this.overlay.hidePluginPreview();
-            this.overlay.showBubble(performance.bubbleText || '人类~~~~！你真的很没礼貌喵！', {
-                title: 'Yui',
-                emotion: performance.emotion || 'angry',
-                anchorRect: null
-            });
+            this.overlay.hideBubble();
+            this.appendGuideChatMessage(performance.bubbleText || '人类~~~~！你真的很没礼貌喵！');
             this.emotionBridge.apply(performance.emotion || 'angry');
-            this.voiceQueue.speak(performance.bubbleText || '');
-
-            await wait(1200);
+            await this.speakLineAndWait(performance.bubbleText || '');
             if (this.destroyed) {
                 return;
             }
 
-            this.skip(source || 'angry_exit', 'angry_exit');
+            this.requestTermination(source || 'angry_exit', 'angry_exit');
         }
 
-        skip(reason, tutorialReason) {
-            if (this.destroyed) {
+        requestTermination(reason, tutorialReason) {
+            if (this.destroyed || this.terminationRequested) {
                 return;
             }
 
+            this.terminationRequested = true;
             const finalReason = tutorialReason || reason || 'skip';
             if (this.tutorialManager && typeof this.tutorialManager.requestTutorialDestroy === 'function') {
                 this.tutorialManager.requestTutorialDestroy(finalReason);
@@ -975,15 +2745,21 @@
             }
         }
 
+        skip(reason, tutorialReason) {
+            this.requestTermination(reason, tutorialReason);
+        }
+
         destroy() {
             if (this.destroyed) {
                 return;
             }
 
             this.destroyed = true;
+            this.terminationRequested = true;
             if (this.page === 'home') {
                 document.body.classList.remove('yui-guide-home-driver-hidden');
             }
+            this.cancelActiveNarration();
             this.clearIntroFlow();
             this.clearSceneTimers();
             this.disableInterrupts();
@@ -991,6 +2767,9 @@
             this.cursor.cancel();
             this.cursor.hide();
             this.emotionBridge.clear();
+            this.closeManagedPanels().catch((error) => {
+                console.warn('[YuiGuide] 销毁时关闭首页面板失败:', error);
+            });
             this.overlay.hidePluginPreview();
             this.overlay.hideBubble();
             this.overlay.setAngry(false);
