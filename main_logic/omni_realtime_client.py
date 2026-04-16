@@ -1124,8 +1124,8 @@ class OmniRealtimeClient:
         Behaviour varies by provider:
           - **OpenAI**: ``conversation.item.create(role=user)`` +
             ``response.create``
-          - **Qwen**: appends to session instructions + ``response.create``
-            (Qwen Realtime doesn't support ``conversation.item.create``)
+          - **Qwen**: ``conversation.item.create(role=user)`` +
+            ``response.create`` (also updates session instructions)
           - **Gemini**: ``send_client_content(role=user)``
 
         See ``prime_context()`` (session-start priming) and
@@ -1134,37 +1134,43 @@ class OmniRealtimeClient:
         """
         if skipped:
             self._skip_until_next_response = True
-        
+
         # Gemini 使用 send_client_content 发送文本内容
         if self._is_gemini:
             await self._create_response_gemini(instructions)
             return
 
+        # 跳过空内容的发送，避免触发 API 错误
+        if not instructions or not instructions.strip():
+            logger.info("Skipping empty content in create_response")
+            if self.on_response_done:
+                await self.on_response_done()
+            return
+
         if "qwen" in self._model_lower:
+            # 同时更新 session instructions 以保留上下文
             await self.update_session({"instructions": self.instructions + '\n' + instructions})
 
-            logger.info("Creating response with instructions override")
-            await self.send_event({"type": "response.create"})
-        else:
-            # 先通过 conversation.item.create 添加系统消息（增量）
-            item_event = {
-                "type": "conversation.item.create",
-                "item": {
-                    "type": "message",
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": instructions
-                        }
-                    ]
-                }
+        # 通过 conversation.item.create 添加用户消息，确保 response.create 前存在 user role 消息
+        # 修复：DashScope (Qwen) API 要求 response.create 前必须存在 user 消息，
+        # 否则返回 1007 "The input messages do not contain elements with the role of user"
+        item_event = {
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": instructions
+                    }
+                ]
             }
-            await self.send_event(item_event)
-            
-            # 然后调用 response.create，不带 instructions（避免替换 session instructions）
-            logger.info("Creating response without instructions override")
-            await self.send_event({"type": "response.create"})
+        }
+        await self.send_event(item_event)
+
+        logger.info("Creating response with user message")
+        await self.send_event({"type": "response.create"})
     
     async def _create_response_gemini(self, instructions: str) -> None:
         """Send text content to Gemini and trigger response."""
