@@ -305,10 +305,7 @@ class FactStore:
 
             # Stage 2: FTS5 semantic dedup (lightweight, no LLM)
             if self._time_indexed is not None:
-                # TODO(T3): timeindex SQLite 改原生 async 后去掉 to_thread 包装
-                similar = await asyncio.to_thread(
-                    self._time_indexed.search_facts, lanlan_name, text, 3,
-                )
+                similar = await self._time_indexed.asearch_facts(lanlan_name, text, 3)
                 is_dup = False
                 for fid, score in similar:
                     if score < -5:
@@ -333,10 +330,7 @@ class FactStore:
 
             # Index in FTS5
             if self._time_indexed is not None:
-                # TODO(T3): timeindex SQLite 改原生 async 后去掉 to_thread 包装
-                await asyncio.to_thread(
-                    self._time_indexed.index_fact, lanlan_name, fact_entry['id'], text,
-                )
+                await self._time_indexed.aindex_fact(lanlan_name, fact_entry['id'], text)
 
         if new_facts:
             await self.asave_facts(lanlan_name)

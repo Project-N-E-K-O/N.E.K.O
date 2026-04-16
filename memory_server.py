@@ -256,7 +256,7 @@ async def _periodic_rebuttal_loop():
                 start_time = _last_rebuttal_check.get(
                     name, now - _td(hours=1)
                 )
-                rows = time_manager.retrieve_original_by_timeframe(
+                rows = await time_manager.aretrieve_original_by_timeframe(
                     name, start_time, now,
                 )
                 if not rows:
@@ -558,7 +558,7 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
         # 旧模块已禁用（性能不足）：
         # await settings_manager.extract_and_update_settings(input_history, lanlan_name)
         # await semantic_manager.store_conversation(uid, input_history, lanlan_name)
-        await time_manager.store_conversation(uid, input_history, lanlan_name)
+        await time_manager.astore_conversation(uid, input_history, lanlan_name)
 
         # 异步事实提取（不阻塞返回，失败静默跳过）
         _spawn_background_task(_extract_facts_and_check_feedback(input_history, lanlan_name))
@@ -601,7 +601,7 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
         # 首轮摘要带锁：阻塞 /new_dialog 直到摘要+时间戳写入完成
         async with _get_settle_lock(lanlan_name):
             await recent_history_manager.update_history(input_history, lanlan_name, detailed=True)
-            await time_manager.store_conversation(uid, input_history, lanlan_name)
+            await time_manager.astore_conversation(uid, input_history, lanlan_name)
 
         # 以下操作在锁外执行，不阻塞 /new_dialog
         # 异步事实提取
@@ -642,7 +642,7 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
 
         async with _get_settle_lock(lanlan_name):
             if input_history:
-                await time_manager.store_conversation(uid, input_history, lanlan_name)
+                await time_manager.astore_conversation(uid, input_history, lanlan_name)
             await recent_history_manager.update_history([], lanlan_name, detailed=True)
 
         if input_history:
@@ -664,7 +664,7 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
 
 
 @app.get("/get_recent_history/{lanlan_name}")
-def get_recent_history(lanlan_name: str):
+async def get_recent_history(lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
     # 检查角色是否存在于配置中
     try:
@@ -676,8 +676,8 @@ def get_recent_history(lanlan_name: str):
     except Exception as e:
         logger.error(f"检查角色配置失败: {e}")
         return "开始聊天前，没有历史记录。\n"
-    
-    history = recent_history_manager.get_recent_history(lanlan_name)
+
+    history = await recent_history_manager.aget_recent_history(lanlan_name)
     _, _, _, _, name_mapping, _, _, _, _ = _config_manager.get_character_data()
     name_mapping['ai'] = lanlan_name
     result = f"开始聊天前，{lanlan_name}又在脑海内整理了近期发生的事情。\n"
@@ -704,7 +704,7 @@ async def get_memory(query: str, lanlan_name: str):
     )
 
 @app.get("/get_settings/{lanlan_name}")
-def get_settings(lanlan_name: str):
+async def get_settings(lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
     # 检查角色是否存在于配置中
     try:
@@ -718,23 +718,22 @@ def get_settings(lanlan_name: str):
         return f"{lanlan_name}记得{{}}"
 
     # 优先使用 persona markdown 渲染（与 /new_dialog 保持一致），回退到旧 settings 格式
-    pending_reflections = reflection_engine.get_pending_reflections(lanlan_name)
-    confirmed_reflections = reflection_engine.get_confirmed_reflections(lanlan_name)
-    persona_md = persona_manager.render_persona_markdown(
+    pending_reflections = await reflection_engine.aget_pending_reflections(lanlan_name)
+    confirmed_reflections = await reflection_engine.aget_confirmed_reflections(lanlan_name)
+    persona_md = await persona_manager.arender_persona_markdown(
         lanlan_name, pending_reflections, confirmed_reflections,
     )
     if persona_md:
         return persona_md
     # 兼容回退（自然语言格式）
     return _format_legacy_settings_as_text(settings_manager.get_settings(lanlan_name), lanlan_name)
-    return result
 
 
 @app.get("/get_persona/{lanlan_name}")
-def get_persona(lanlan_name: str):
+async def get_persona(lanlan_name: str):
     """返回完整 persona JSON（供 UI / memory_browser 使用）。"""
     lanlan_name = validate_lanlan_name(lanlan_name)
-    return persona_manager.get_persona(lanlan_name)
+    return await persona_manager.aget_persona(lanlan_name)
 
 @app.post("/reload")
 async def reload_config():
@@ -844,7 +843,7 @@ async def new_dialog(lanlan_name: str):
         # ── 距上次聊天间隔提示（放在最末尾，紧接 CONTEXT_SUMMARY_READY 之前） ──
         try:
             from datetime import datetime as _dt
-            last_time = time_manager.get_last_conversation_time(lanlan_name)
+            last_time = await time_manager.aget_last_conversation_time(lanlan_name)
             if last_time:
                 gap = _dt.now() - last_time
                 gap_seconds = gap.total_seconds()
@@ -877,7 +876,7 @@ async def last_conversation_gap(lanlan_name: str):
     """返回距上次对话的间隔秒数，供主服务判断是否触发主动搭话。"""
     lanlan_name = validate_lanlan_name(lanlan_name)
     try:
-        last_time = time_manager.get_last_conversation_time(lanlan_name)
+        last_time = await time_manager.aget_last_conversation_time(lanlan_name)
         if last_time is None:
             return {"gap_seconds": -1}
         gap = (datetime.now() - last_time).total_seconds()
