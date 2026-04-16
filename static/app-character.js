@@ -458,6 +458,10 @@
             console.log('[猫娘切换] 检测到模型类型:', modelType, '有效类型:', effectiveModelType);
             if (!supportsLocalModelRuntime()) {
                 console.log('[猫娘切换] 当前页面不加载本地模型，跳过模型热切换');
+                // chat.html 不走模型分支，在此显式恢复 composer（兜底 onclose 路径）
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
             } else if (effectiveModelType === 'vrm') {
                 // 加载 VRM 模型
                 console.log('[猫娘切换] 进入VRM加载分支');
