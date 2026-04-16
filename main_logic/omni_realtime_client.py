@@ -237,7 +237,7 @@ class OmniRealtimeClient:
         self._image_description = "[实时屏幕截图或相机画面正在分析中。先不要瞎编内容，可以稍等片刻。在此期间不要用搜索功能应付。等收到画面分析结果后再描述画面。]"
         self._latest_image_b64 = None  # Cached latest screenshot for proactive injection
         self._proactive_image_consumed = True  # Whether the cached image has been used by a proactive nudge
-        self._proactive_injecting = False  # True while stream_proactive is injecting audio — suppresses mic input
+        self._proactive_injecting = False  # True while prompt_ephemeral is injecting audio — suppresses mic input
 
         # Silence detection for auto-closing inactive sessions
         # 只在 GLM 和 free API 时启用90秒静默超时，Qwen 和 Step 放行
@@ -280,12 +280,14 @@ class OmniRealtimeClient:
         self._is_throttled = False  # 503检测后节流状态
         self._throttle_until = 0.0  # 节流结束时间戳
         self._throttle_duration = 2.0  # 节流持续时间（秒）
+        self._server_busy_count: int = 0  # 503 过载计数，第3次起通知前端
         
         # Fatal error detection - 检测到致命错误后立即中断
         self._fatal_error_occurred = False  # 致命错误标志
 
         # Interruption state - suppress output after user interruption until next response
         self._interrupted = False  # 打断状态标志，防止重复消息块
+        self._suppressed_delta_logged_resp_id = None  # 限流：每个 response 只记录一次 text.delta 被拦截的日志
 
         # Native image input rate limiting
         self._last_native_image_time = 0.0  # 上次原生图片输入时间戳
@@ -546,7 +548,7 @@ class OmniRealtimeClient:
                 await self.update_session({
                     "type": "realtime",
                     "model": self.model,
-                    "instructions": instructions + '\n请使用卡哇伊的声音与用户交流。\n',
+                    "instructions": instructions,
                     "output_modalities": ['audio'] if 'audio' in self._modalities else ['text'],
                     "audio": {
                         "input": {
@@ -1076,8 +1078,60 @@ class OmniRealtimeClient:
             logger.error(f"Error streaming image: {e}")
             raise e
 
+    # ------------------------------------------------------------------
+    # LLM message injection channels
+    #
+    # Three distinct channels mirror the OmniOfflineClient interface:
+    #
+    #   prime_context(text, skipped)
+    #       Session-start context priming.  Delegates to create_response()
+    #       because Realtime APIs have no separate "append to system
+    #       prompt" mechanism.
+    #       Typical caller: core._perform_final_swap_sequence()
+    #
+    #   create_response(text, skipped)
+    #       Mid-conversation persistent message + trigger LLM response.
+    #       Behaviour varies by provider:
+    #         OpenAI  → conversation.item.create(role=user) + response.create
+    #         Qwen    → update_session(instructions += text) + response.create
+    #         Gemini  → send_client_content(role=user)
+    #
+    #   prompt_ephemeral(instruction, *, language)
+    #       Fire-and-forget audio nudge.  Injects a short WAV clip via
+    #       input_audio_buffer so the model "hears" a conversational
+    #       prompt and responds.  The instruction itself is not persisted.
+    #       Typical callers: core.trigger_voice_proactive_nudge()
+    # ------------------------------------------------------------------
+
+    async def prime_context(self, text: str, skipped: bool = False) -> None:
+        """Append context to the session at startup (delegates to create_response).
+
+        Realtime APIs lack a dedicated "append to system prompt" mechanism,
+        so this simply delegates to ``create_response()``.  Semantically
+        identical to the OmniOfflineClient counterpart — called only at
+        session start during hot-swap to inject incremental conversation
+        cache and task summaries.
+
+        Args:
+            text: Context to inject (incremental cache + summary/ready).
+            skipped: If True, the next response will be silently discarded.
+        """
+        await self.create_response(text, skipped=skipped)
+
     async def create_response(self, instructions: str, skipped: bool = False) -> None:
-        """Request a response from the API. First adds message to conversation, then creates response."""
+        """Inject a persistent message and trigger an LLM response.
+
+        Behaviour varies by provider:
+          - **OpenAI**: ``conversation.item.create(role=user)`` +
+            ``response.create``
+          - **Qwen**: appends to session instructions + ``response.create``
+            (Qwen Realtime doesn't support ``conversation.item.create``)
+          - **Gemini**: ``send_client_content(role=user)``
+
+        See ``prime_context()`` (session-start priming) and
+        ``prompt_ephemeral()`` (fire-and-forget audio nudge) for the other
+        two injection channels.
+        """
         if skipped:
             self._skip_until_next_response = True
         
@@ -1143,12 +1197,17 @@ class OmniRealtimeClient:
         except Exception as e:
             logger.error(f"Error sending client content to Gemini: {e}")
 
-    async def stream_proactive(self, instruction: str = "", *, language: str = "zh") -> bool:
-        """Send a pre-recorded audio prompt to trigger proactive AI speech.
+    async def prompt_ephemeral(self, instruction: str = "", *, language: str = "zh") -> bool:
+        """Send a fire-and-forget audio nudge to trigger proactive AI speech.
 
         Injects a short WAV clip via ``input_audio_buffer.append`` so the
         realtime model "hears" a conversational nudge and responds.  Bypasses
         ``stream_audio()`` (no RNNoise / AGC) since the audio is clean.
+
+        Unlike ``prime_context`` (session-start system-prompt injection) and
+        ``create_response`` (persistent mid-conversation message), this
+        channel is truly ephemeral — the audio prompt is consumed by the
+        model but never stored in conversation history.
 
         Chunk pacing mirrors hot-swap flush: 1600 bytes/chunk, 0.025 s sleep,
         40 chunks/s → 2× real-time delivery.
@@ -1159,7 +1218,7 @@ class OmniRealtimeClient:
         if self._fatal_error_occurred or self.ws is None:
             return False
         if self._is_responding:
-            logger.debug("stream_proactive: skipped — already responding")
+            logger.debug("prompt_ephemeral: skipped — already responding")
             return False
         # Client VAD guard: only when RNNoise VAD is actively processing audio
         # (48kHz input + denoiser running). For 16kHz/mobile or when RNNoise is
@@ -1167,10 +1226,10 @@ class OmniRealtimeClient:
         # permanently blocking proactive.
         if self._rnnoise_vad_active:
             if self._client_vad_active:
-                logger.debug("stream_proactive: skipped — user speaking (VAD active)")
+                logger.debug("prompt_ephemeral: skipped — user speaking (VAD active)")
                 return False
             if time.time() - self._client_vad_last_speech_time < self._client_vad_grace_period:
-                logger.debug("stream_proactive: skipped — VAD grace period")
+                logger.debug("prompt_ephemeral: skipped — VAD grace period")
                 return False
 
         # ── Choose audio file ─────────────────────────────────────────
@@ -1198,7 +1257,7 @@ class OmniRealtimeClient:
             try:
                 pcm_data = _load_proactive_audio(f"prompt_{prompt_type}_zh.wav")
             except FileNotFoundError:
-                logger.warning("stream_proactive: no audio file found for %s", filename)
+                logger.warning("prompt_ephemeral: no audio file found for %s", filename)
                 return False
 
         # ── Non-native vision: inject text description before audio ───
@@ -1213,7 +1272,7 @@ class OmniRealtimeClient:
                     "content": [{"type": "input_text", "text": self._image_description}],
                 },
             })
-            logger.info("stream_proactive: injected vision text description for non-native backend")
+            logger.info("prompt_ephemeral: injected vision text description for non-native backend")
 
         # ── Suppress mic input during injection ────────────────────────
         self._proactive_injecting = True
@@ -1224,7 +1283,7 @@ class OmniRealtimeClient:
         sleep_interval = 0.025  # 25 ms → 40 chunks/s, 2× real-time
 
         logger.info(
-            "stream_proactive: injecting %s (%d bytes, %s)",
+            "prompt_ephemeral: injecting %s (%d bytes, %s)",
             filename, len(pcm_data), "vision" if has_vision else "general",
         )
 
@@ -1236,7 +1295,7 @@ class OmniRealtimeClient:
             for chunk_idx, i in enumerate(range(0, len(pcm_data), chunk_size)):
                 # Abort if AI starts responding, or user speaking (only when RNNoise VAD active)
                 if self._is_responding or (self._rnnoise_vad_active and self._client_vad_active):
-                    logger.info("stream_proactive: aborted — user spoke or response started")
+                    logger.info("prompt_ephemeral: aborted — user spoke or response started")
                     await self.clear_audio_buffer()
                     return False
 
@@ -1284,7 +1343,7 @@ class OmniRealtimeClient:
                             "video_frame": snapshot_image_b64,
                         })
                     image_injected = True
-                    logger.info("stream_proactive: injected screenshot at chunk %d/%d", chunk_idx, total_chunks)
+                    logger.info("prompt_ephemeral: injected screenshot at chunk %d/%d", chunk_idx, total_chunks)
 
                 await asyncio.sleep(sleep_interval)
 
@@ -1292,7 +1351,7 @@ class OmniRealtimeClient:
             # replaced by a newer frame from stream_image() during our async loop.
             if has_vision and self._latest_image_b64 == snapshot_image_b64:
                 self._proactive_image_consumed = True
-            logger.info("stream_proactive: audio injection complete (%s%s), waiting for VAD → response",
+            logger.info("prompt_ephemeral: audio injection complete (%s%s), waiting for VAD → response",
                          "vision" if has_vision else "general",
                          "+image" if image_injected else "")
             return True
@@ -1388,8 +1447,10 @@ class OmniRealtimeClient:
                     if '503' in error_msg or 'overloaded' in error_msg.lower():
                         self._is_throttled = True
                         self._throttle_until = time.time() + self._throttle_duration
-                        logger.warning(f"⚡ 503 detected, throttling for {self._throttle_duration}s")
-                        if self.on_status_message:
+                        self._server_busy_count += 1
+                        logger.warning(f"⚡ 503 detected (count={self._server_busy_count}), throttling for {self._throttle_duration}s")
+                        # 前2次静默节流，第3次起通知前端
+                        if self._server_busy_count >= 3 and self.on_status_message:
                             await self.on_status_message(json.dumps({"code": "SERVER_BUSY_THROTTLE"}))
                         continue
                     
@@ -1431,6 +1492,7 @@ class OmniRealtimeClient:
                     self._current_response_id = None
                     self._current_item_id = None
                     self._skip_until_next_response = False
+                    self._interrupted = False  # 确保中断标志在响应结束时清除，防止阻塞下一轮 text.delta
                     # 响应完成，检测重复度
                     if self._current_response_transcript:
                         print(f"OmniRealtimeClient: response.done - 当前转录: '{self._current_response_transcript[:50]}...' | audio_deltas={self._audio_delta_count}")
@@ -1441,6 +1503,7 @@ class OmniRealtimeClient:
                     self._audio_delta_count = 0
                     # 确保 buffer 被清空
                     self._output_transcript_buffer = ""
+                    self._print_input_transcript = False
                     self._image_recognized_this_turn = False
                     self._image_sent_this_turn = False
                     if self.on_response_done:
@@ -1476,6 +1539,9 @@ class OmniRealtimeClient:
                     self._client_vad_last_speech_time = time.time()
                 elif event_type == "conversation.item.input_audio_transcription.completed":
                     self._print_input_transcript = True
+                    transcript = event.get("transcript", "")
+                    if self.on_input_transcript:
+                        await self.on_input_transcript(transcript)
                 elif event_type in ["response.audio_transcript.done", "response.output_audio_transcript.done"]:
                     self._print_input_transcript = False
                     if self._output_transcript_buffer and self.on_output_transcript and not self._skip_until_next_response and not self._interrupted:
@@ -1496,10 +1562,6 @@ class OmniRealtimeClient:
                         if self.on_audio_delta:
                             audio_bytes = base64.b64decode(event["delta"])
                             await self.on_audio_delta(audio_bytes)
-                    elif event_type == "conversation.item.input_audio_transcription.completed":
-                        transcript = event.get("transcript", "")
-                        if self.on_input_transcript:
-                            await self.on_input_transcript(transcript)
                     elif event_type in ["response.audio_transcript.done", "response.output_audio_transcript.done"]:
                         if self.on_output_transcript and self._is_first_transcript_chunk:
                             transcript = event.get("transcript", "")
@@ -1524,6 +1586,15 @@ class OmniRealtimeClient:
                     
                     elif event_type in self.extra_event_handlers:
                         await self.extra_event_handlers[event_type](event)
+                else:
+                    # 调试日志：text.delta 被 _interrupted/_skip 标志拦截（每个 response 仅记录一次）
+                    if event_type in ["response.text.delta", "response.output_text.delta"]:
+                        if self._suppressed_delta_logged_resp_id != self._current_response_id:
+                            self._suppressed_delta_logged_resp_id = self._current_response_id
+                            logger.warning(
+                                "⚠️ text.delta suppressed: _skip=%s, _interrupted=%s, resp_id=%s",
+                                self._skip_until_next_response, self._interrupted, self._current_response_id
+                            )
 
         except websockets.exceptions.ConnectionClosedOK:
             logger.info("Connection closed as expected")

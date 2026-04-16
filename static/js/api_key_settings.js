@@ -16,6 +16,29 @@ let _assistApiProviders = {};
 let _coreApiProviders = {};
 // 所有模型类型
 const MODEL_TYPES = ['conversation', 'summary', 'correction', 'emotion', 'vision', 'agent', 'omni', 'tts'];
+// 当前加载到页面中的 GPT-SoVITS 状态：none | enabled | disabled
+let _loadedGptSovitsState = 'none';
+// 上方普通 TTS 配置是否被用户在本页改动过
+let _ttsConfigDirty = false;
+
+function markTtsConfigDirty() {
+    if (_isLoadingSavedConfig) return;
+    _ttsConfigDirty = true;
+}
+
+function looksLikeLegacyGptSovitsConfig(ttsModelUrl, ttsModelId = '', ttsModelApiKey = '') {
+    const normalizedUrl = (ttsModelUrl || '').trim();
+    if (!/^https?:\/\//i.test(normalizedUrl)) return false;
+    if ((ttsModelId || '').trim() || (ttsModelApiKey || '').trim()) return false;
+
+    const lowerUrl = normalizedUrl.replace(/\/+$/, '').toLowerCase();
+    return lowerUrl === 'http://127.0.0.1:9881'
+        || lowerUrl === 'http://localhost:9881'
+        || lowerUrl.startsWith('http://127.0.0.1:')
+        || lowerUrl.startsWith('http://localhost:')
+        || lowerUrl.startsWith('https://127.0.0.1:')
+        || lowerUrl.startsWith('https://localhost:');
+}
 
 /**
  * 遮蔽 API Key：只显示前6位和后6位，中间用 *** 替代。
@@ -219,6 +242,8 @@ function clearApiProviderSelects() {
         assistSelect.innerHTML = '';
         assistSelect.value = '';
     }
+
+    syncProviderSelectDropdowns(null, { rebuild: true });
 }
 
 // 等待下拉选项加载完成再设置值，避免单次 setTimeout 竞态
@@ -231,6 +256,7 @@ function waitForOptions(select, targetValue, { maxAttempts = 20, interval = 50, 
             const optionExists = Array.from(select.options).some(opt => opt.value === targetValue);
             if (optionExists) {
                 select.value = targetValue;
+                syncProviderSelectDropdowns(select);
                 // 选项设置完成后执行回调
                 if (onSuccess && typeof onSuccess === 'function') {
                     onSuccess();
@@ -246,6 +272,228 @@ function waitForOptions(select, targetValue, { maxAttempts = 20, interval = 50, 
     };
 
     checkAndSet();
+}
+
+let providerDropdownHandlersBound = false;
+
+function getProviderDropdownPlaceholder(select) {
+    const fallbackText = window.t ? window.t('api.providerSelectPlaceholder') : '请选择服务商';
+    if (!select) return fallbackText;
+
+    const label = select.id ? document.querySelector(`label[for="${select.id}"]`) : null;
+    const labelText = label ? label.querySelector('span')?.textContent?.trim() : '';
+    return labelText || fallbackText;
+}
+
+function closeProviderSelectDropdown(wrapper) {
+    if (!wrapper) return;
+
+    wrapper.classList.remove('open');
+
+    const trigger = wrapper.querySelector('.api-provider-dropdown-trigger');
+    if (trigger) {
+        trigger.setAttribute('aria-expanded', 'false');
+    }
+}
+
+function closeAllProviderSelectDropdowns(exceptWrapper = null) {
+    document.querySelectorAll('.api-provider-dropdown.open').forEach(wrapper => {
+        if (wrapper !== exceptWrapper) {
+            closeProviderSelectDropdown(wrapper);
+        }
+    });
+}
+
+function openProviderSelectDropdown(wrapper) {
+    if (!wrapper || wrapper.classList.contains('disabled')) return;
+
+    closeAllProviderSelectDropdowns(wrapper);
+    wrapper.classList.add('open');
+
+    const trigger = wrapper.querySelector('.api-provider-dropdown-trigger');
+    if (trigger) {
+        trigger.setAttribute('aria-expanded', 'true');
+    }
+}
+
+function buildProviderSelectDropdownMenu(select) {
+    if (!select) return;
+
+    const wrapper = select.closest('.api-provider-dropdown');
+    const menu = wrapper ? wrapper.querySelector('.api-provider-dropdown-menu') : null;
+    const menuScroll = menu ? menu.querySelector('.api-provider-dropdown-menu-scroll') : null;
+    if (!wrapper || !menu || !menuScroll) return;
+
+    menuScroll.innerHTML = '';
+
+    const options = Array.from(select.options);
+    if (options.length === 0) {
+        const emptyState = document.createElement('div');
+        emptyState.className = 'api-provider-dropdown-empty';
+        emptyState.textContent = window.t ? window.t('api.noOptionsAvailable') : '暂无可选项';
+        menuScroll.appendChild(emptyState);
+        return;
+    }
+
+    options.forEach(option => {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'api-provider-dropdown-option';
+        item.setAttribute('role', 'option');
+        item.dataset.value = option.value;
+        item.textContent = option.textContent;
+
+        if (option.disabled) {
+            item.disabled = true;
+            item.setAttribute('aria-disabled', 'true');
+        }
+
+        item.addEventListener('click', event => {
+            event.preventDefault();
+
+            if (option.disabled || select.disabled) {
+                return;
+            }
+
+            select.value = option.value;
+            syncProviderSelectDropdowns(select);
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+            closeProviderSelectDropdown(wrapper);
+        });
+
+        menuScroll.appendChild(item);
+    });
+}
+
+function syncProviderSelectDropdowns(targetSelect = null, { rebuild = false } = {}) {
+    const selects = targetSelect
+        ? [targetSelect]
+        : Array.from(document.querySelectorAll('.api-provider-select[data-dropdown-enhanced="true"]'));
+
+    selects.forEach(select => {
+        if (!select) return;
+
+        const wrapper = select.closest('.api-provider-dropdown');
+        const trigger = wrapper ? wrapper.querySelector('.api-provider-dropdown-trigger') : null;
+        const current = wrapper ? wrapper.querySelector('.api-provider-dropdown-current') : null;
+        const menu = wrapper ? wrapper.querySelector('.api-provider-dropdown-menu') : null;
+
+        if (!wrapper || !trigger || !current || !menu) return;
+
+        if (rebuild) {
+            buildProviderSelectDropdownMenu(select);
+        }
+
+        const selectedOption = select.options[select.selectedIndex] || null;
+        const placeholder = getProviderDropdownPlaceholder(select);
+
+        current.textContent = selectedOption ? selectedOption.textContent : placeholder;
+        current.classList.toggle('placeholder', !selectedOption);
+
+        trigger.disabled = !!select.disabled;
+        wrapper.classList.toggle('disabled', !!select.disabled);
+
+        menu.querySelectorAll('.api-provider-dropdown-option').forEach(item => {
+            const isSelected = item.dataset.value === select.value;
+            item.classList.toggle('selected', isSelected);
+            item.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+        });
+
+        if (select.disabled) {
+            closeProviderSelectDropdown(wrapper);
+        }
+    });
+}
+
+function bindProviderDropdownGlobalHandlers() {
+    if (providerDropdownHandlersBound) return;
+
+    document.addEventListener('click', event => {
+        if (!event.target.closest('.api-provider-dropdown')) {
+            closeAllProviderSelectDropdowns();
+        }
+    });
+
+    document.addEventListener('keydown', event => {
+        if (event.key === 'Escape') {
+            closeAllProviderSelectDropdowns();
+        }
+    });
+
+    window.addEventListener('resize', () => closeAllProviderSelectDropdowns());
+
+    providerDropdownHandlersBound = true;
+}
+
+function initProviderSelectDropdown(select) {
+    if (!select || select.dataset.dropdownEnhanced === 'true') return;
+
+    bindProviderDropdownGlobalHandlers();
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'api-provider-dropdown';
+
+    select.parentNode.insertBefore(wrapper, select);
+    wrapper.appendChild(select);
+
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'api-provider-dropdown-trigger';
+    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-expanded', 'false');
+    trigger.setAttribute('aria-label', getProviderDropdownPlaceholder(select));
+    trigger.innerHTML = '<span class="api-provider-dropdown-current"></span><span class="api-provider-dropdown-arrow" aria-hidden="true"></span>';
+
+    const menu = document.createElement('div');
+    menu.className = 'api-provider-dropdown-menu';
+    menu.setAttribute('role', 'listbox');
+
+    const menuScroll = document.createElement('div');
+    menuScroll.className = 'api-provider-dropdown-menu-scroll';
+
+    if (select.id) {
+        menu.id = `${select.id}-menu`;
+        trigger.id = `${select.id}-dropdown-trigger`;
+        trigger.setAttribute('aria-controls', menu.id);
+    }
+
+    menu.appendChild(menuScroll);
+    wrapper.appendChild(trigger);
+    wrapper.appendChild(menu);
+
+    select.classList.add('is-enhanced');
+    select.dataset.dropdownEnhanced = 'true';
+
+    trigger.addEventListener('click', event => {
+        event.preventDefault();
+
+        if (wrapper.classList.contains('open')) {
+            closeProviderSelectDropdown(wrapper);
+        } else {
+            openProviderSelectDropdown(wrapper);
+        }
+    });
+
+    select.addEventListener('change', () => syncProviderSelectDropdowns(select));
+
+    const observer = new MutationObserver(() => {
+        syncProviderSelectDropdowns(select, { rebuild: true });
+    });
+
+    observer.observe(select, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+        attributes: true,
+        attributeFilter: ['disabled', 'label', 'value', 'selected']
+    });
+
+    syncProviderSelectDropdowns(select, { rebuild: true });
+}
+
+function initProviderSelectDropdowns() {
+    document.querySelectorAll('.api-provider-select').forEach(initProviderSelectDropdown);
+    syncProviderSelectDropdowns(null, { rebuild: true });
 }
 
 async function clearVoiceIds() {
@@ -418,6 +666,8 @@ function populateModelProviderDropdowns() {
 function onCustomModelProviderChange(modelType) {
     const sel = document.getElementById(`${modelType}ModelProvider`);
     if (!sel) return;
+
+    syncProviderSelectDropdowns(sel);
 
     const provider = sel.value;
     const urlInput = document.getElementById(`${modelType}ModelUrl`);
@@ -665,6 +915,8 @@ async function loadApiProviders() {
                 // 填充模型服务商下拉框
                 populateModelProviderDropdowns();
 
+                syncProviderSelectDropdowns(null, { rebuild: true });
+
                 return true;
             } else {
                 console.error('加载API服务商配置失败:', data.error);
@@ -692,6 +944,7 @@ async function loadCurrentApiKey() {
     const coreApiSelect = document.getElementById('coreApiSelect');
     const assistApiSelect = document.getElementById('assistApiSelect');
     const assistApiKeyInput = document.getElementById('assistApiKeyInput');
+    _ttsConfigDirty = false;
 
     if (apiKeyInput) {
         apiKeyInput.value = '';
@@ -705,6 +958,8 @@ async function loadCurrentApiKey() {
     if (assistApiKeyInput) {
         assistApiKeyInput.value = '';
     }
+
+    syncProviderSelectDropdowns();
 
     try {
         const response = await fetch('/api/config/core_api');
@@ -753,6 +1008,7 @@ async function loadCurrentApiKey() {
                     const optionExists = Array.from(coreApiSelect.options).some(opt => opt.value === data.coreApi);
                     if (optionExists) {
                         coreApiSelect.value = data.coreApi;
+                        syncProviderSelectDropdowns(coreApiSelect);
                     }
                 } else {
                     // 等待选项加载完成后再设置值
@@ -778,6 +1034,7 @@ async function loadCurrentApiKey() {
                     const optionExists = Array.from(assistApiSelect.options).some(opt => opt.value === data.assistApi);
                     if (optionExists) {
                         assistApiSelect.value = data.assistApi;
+                        syncProviderSelectDropdowns(assistApiSelect);
                     }
                 } else {
                     waitForOptions(assistApiSelect, data.assistApi);
@@ -797,9 +1054,9 @@ async function loadCurrentApiKey() {
                 const dataField = _apiKeyRegistry[providerKey].config_field;
                 if (!dataField || !data.hasOwnProperty(dataField)) return;
                 const val = data[dataField];
-                // Skip empty-string values for the current core provider so we
-                // don't overwrite the valid key synced from data.api_key above.
-                if (val === '' && providerKey === data.coreApi) return;
+                // 当前核心API服务商的Key已由上方 data.api_key 写入管理簿，
+                // 此处跳过以免 assistApiKey* 字段的旧值覆盖核心Key
+                if (providerKey === data.coreApi && data.api_key) return;
                 // Only sync non-empty values; empty strings from the backend
                 // usually mean "not configured" rather than "intentionally cleared".
                 if (val !== '') {
@@ -807,17 +1064,26 @@ async function loadCurrentApiKey() {
                 }
             });
 
-            // Set assist key input from selected assist provider's book input
+            // Set assist key input from server response data directly.
+            // 不从管理簿读取，因为：
+            // 1) 同服务商时管理簿被核心Key占据；
+            // 2) 受限服务商（restricted）的管理簿DOM不存在。
             if (data.assistApi && data.assistApi !== 'free') {
-                const assistBookKey = syncKeyFromBook(data.assistApi);
+                const assistDataField = (_apiKeyRegistry[data.assistApi] || {}).config_field;
+                const assistKeyFromData = assistDataField ? (data[assistDataField] || '') : '';
                 if (assistApiKeyInput) {
-                    if (assistBookKey) {
-                        // 有Key Book中的值时设置
-                        setMaskedInput(assistApiKeyInput, assistBookKey);
+                    if (assistKeyFromData) {
+                        setMaskedInput(assistApiKeyInput, assistKeyFromData);
                         attachMaskBehavior(assistApiKeyInput);
-                    } else if (!data.enableCustomApi) {
-                        // 自定义API未启用且Key Book中没有值，强制刷新
-                        autoFillAssistApiKey(true);
+                    } else {
+                        // 后端无辅助Key时，尝试从管理簿读取（兼容旧数据迁移）
+                        const bookKey = syncKeyFromBook(data.assistApi);
+                        if (bookKey) {
+                            setMaskedInput(assistApiKeyInput, bookKey);
+                            attachMaskBehavior(assistApiKeyInput);
+                        } else if (!data.enableCustomApi) {
+                            autoFillAssistApiKey(true);
+                        }
                     }
                 }
             }
@@ -855,8 +1121,14 @@ async function loadCurrentApiKey() {
             setInputValue('ttsModelApiKey', data.ttsModelApiKey);
             setInputValue('ttsVoiceId', data.ttsVoiceId);
 
-            // 加载 GPT-SoVITS 配置（从 ttsModelUrl 和 ttsVoiceId 解析）
-            loadGptSovitsConfig(data.ttsModelUrl, data.ttsVoiceId);
+            // 加载 GPT-SoVITS 配置（优先使用显式启用状态，兼容旧配置）
+            loadGptSovitsConfig(
+                data.ttsModelUrl,
+                data.ttsVoiceId,
+                data.ttsModelId,
+                data.ttsModelApiKey,
+                data.gptsovitsEnabled,
+            );
 
             // 加载MCPR_TOKEN
             setInputValue('mcpTokenInput', data.mcpToken);
@@ -896,9 +1168,10 @@ async function loadCurrentApiKey() {
                 document.getElementById('enableCustomApi').checked = data.enableCustomApi;
                 // 延迟应用状态，确保API Key已正确加载
                 setTimeout(() => {
-                    toggleCustomApi();
+                    toggleCustomApi(true);
                 }, 100);
             }
+
         } else {
             showCurrentApiKey(window.t ? window.t('api.getCurrentApiKeyFailed') : '获取当前API Key失败', '', false);
         }
@@ -916,11 +1189,10 @@ let pendingApiKey = null;
 // ==================== GPT-SoVITS v3 配置相关函数 ====================
 
 /**
- * 从 ttsModelUrl 和 ttsVoiceId 解析并加载 GPT-SoVITS v3 配置
- * v3 voice_id 格式: "voice_id" 或 "voice_id|高级参数JSON"
- * 特殊格式：__gptsovits_disabled__|url|voiceId 表示禁用但保存了配置
+ * 从保存的 TTS 字段解析并加载 GPT-SoVITS v3 配置
+ * 优先使用显式 gptsovitsEnabled，旧配置再做有限兼容判断
  */
-function loadGptSovitsConfig(ttsModelUrl, ttsVoiceId) {
+function loadGptSovitsConfig(ttsModelUrl, ttsVoiceId, ttsModelId = '', ttsModelApiKey = '', gptsovitsEnabled = null) {
     // 检查是否是禁用但保存了配置的情况
     let isDisabledWithConfig = false;
     let savedUrl = '';
@@ -933,19 +1205,24 @@ function loadGptSovitsConfig(ttsModelUrl, ttsVoiceId) {
         if (parts.length >= 2) savedVoiceId = parts[1];
     }
 
-    // 检查是否是 GPT-SoVITS 配置（HTTP URL）
-    const isGptSovits = ttsModelUrl && (ttsModelUrl.startsWith('http://') || ttsModelUrl.startsWith('https://'));
+    const hasExplicitEnabledFlag = typeof gptsovitsEnabled === 'boolean';
+    const isLegacyEnabled = !hasExplicitEnabledFlag
+        && !isDisabledWithConfig
+        && looksLikeLegacyGptSovitsConfig(ttsModelUrl, ttsModelId, ttsModelApiKey);
+    const isEnabled = !isDisabledWithConfig && (hasExplicitEnabledFlag ? gptsovitsEnabled : isLegacyEnabled);
+
+    _loadedGptSovitsState = isDisabledWithConfig ? 'disabled' : (isEnabled ? 'enabled' : 'none');
 
     // 设置启用开关状态
     const enabledCheckbox = document.getElementById('gptsovitsEnabled');
     if (enabledCheckbox) {
-        enabledCheckbox.checked = isGptSovits && !isDisabledWithConfig;
+        enabledCheckbox.checked = isEnabled;
     }
     toggleGptSovitsConfig();
 
     // 确定要加载的配置
-    const urlToLoad = isGptSovits ? ttsModelUrl : (isDisabledWithConfig ? savedUrl : '');
-    const voiceIdToLoad = isGptSovits ? ttsVoiceId : (isDisabledWithConfig ? savedVoiceId : '');
+    const urlToLoad = isDisabledWithConfig ? savedUrl : (isEnabled ? ttsModelUrl : '');
+    const voiceIdToLoad = isDisabledWithConfig ? savedVoiceId : (isEnabled ? ttsVoiceId : '');
 
     if (urlToLoad || voiceIdToLoad) {
         const apiUrlEl = document.getElementById('gptsovitsApiUrl');
@@ -959,7 +1236,7 @@ function loadGptSovitsConfig(ttsModelUrl, ttsVoiceId) {
 
         // 自动获取语音列表（如果有 URL 且非禁用状态）
         const autoUrl = urlToLoad || document.getElementById('gptsovitsApiUrl')?.value.trim();
-        if (autoUrl && !isDisabledWithConfig) {
+        if (autoUrl && isEnabled) {
             fetchGptSovitsVoices(true);
         }
     }
@@ -1145,7 +1422,7 @@ function toggleGptSovitsConfig() {
 // ==================== 结束 GPT-SoVITS v3 配置相关函数 ====================
 
 // 切换自定义API启用状态
-function toggleCustomApi() {
+function toggleCustomApi(skipAutoFill) {
     const enableCustomApi = document.getElementById('enableCustomApi');
     const coreApiSelect = document.getElementById('coreApiSelect');
     const assistApiSelect = document.getElementById('assistApiSelect');
@@ -1205,11 +1482,15 @@ function toggleCustomApi() {
     }
 
     // 关闭自定义API时，自动填充已保存的API Key
-    if (!isCustomEnabled) {
+    // 但如果是从 loadCurrentApiKey 调用（skipAutoFill=true），
+    // Key 已由后端数据正确设置，跳过 autoFill 以免管理簿覆盖
+    if (!isCustomEnabled && !skipAutoFill) {
         autoFillCoreApiKey(true);
         autoFillAssistApiKey(true);
         updateAssistApiRecommendation();
     }
+
+    syncProviderSelectDropdowns();
 }
 
 // 自定义API折叠切换函数
@@ -1229,8 +1510,17 @@ function toggleCustomApiSection() {
 document.addEventListener('DOMContentLoaded', function () {
     const enableCustomApi = document.getElementById('enableCustomApi');
     if (enableCustomApi) {
-        enableCustomApi.addEventListener('change', toggleCustomApi);
+        enableCustomApi.addEventListener('change', () => toggleCustomApi());
     }
+
+    ['ttsModelProvider', 'ttsModelUrl', 'ttsModelId', 'ttsModelApiKey', 'ttsVoiceId'].forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener('change', markTtsConfigDirty);
+        if (el.tagName !== 'SELECT') {
+            el.addEventListener('input', markTtsConfigDirty);
+        }
+    });
 
     // 拦截所有 target="_blank" 的外部链接，使用系统默认浏览器打开
     document.querySelectorAll('a[target="_blank"]').forEach(function (link) {
@@ -1287,17 +1577,9 @@ async function save_button_down(e) {
         apiKey = '';
     }
 
-    // Sync core key to book (仅在API Key不为空时才同步，避免清空时破坏Key Book)
-    if (coreApi && coreApi !== 'free' && apiKey) {
-        syncKeyToBook(coreApi, apiKey);
-    }
-
-    // Sync assist key to book (仅在API Key不为空时才同步，避免清空时破坏Key Book)
+    // 读取辅助API Key
     const assistKeyInput = document.getElementById('assistApiKeyInput');
     const assistKeyVal = getRealKey(assistKeyInput);
-    if (assistApi && assistApi !== 'free' && assistKeyVal) {
-        syncKeyToBook(assistApi, assistKeyVal);
-    }
 
     // Collect keys from keyBookInput_* via _apiKeyRegistry.
     // syncKeyFromBook returns null when DOM is absent (restricted/hidden provider)
@@ -1310,6 +1592,15 @@ async function save_button_down(e) {
             allBookKeys[pk] = val; // include '' so backend can clear
         }
     });
+
+    // 用输入框中的值覆盖管理簿中对应服务商的Key（不直接修改管理簿DOM，
+    // 避免二次确认取消时管理簿已被污染）
+    if (coreApi && coreApi !== 'free' && apiKey) {
+        allBookKeys[coreApi] = apiKey;
+    }
+    if (assistApi && assistApi !== 'free' && assistKeyVal) {
+        allBookKeys[assistApi] = assistKeyVal;
+    }
 
     // 获取用户自定义API配置
     const getVal = (id) => {
@@ -1370,13 +1661,11 @@ async function save_button_down(e) {
     if (gptsovitsEnabled && gptsovitsConfigForSave) {
         ttsModelUrl = gptsovitsConfigForSave.url;
         ttsVoiceId = gptsovitsConfigForSave.voiceId;
-    } else if (!gptsovitsEnabled) {
-        if (ttsModelUrl && (ttsModelUrl.startsWith('http://') || ttsModelUrl.startsWith('https://'))) {
-            if (gptsovitsConfigForSave) {
-                ttsVoiceId = `__gptsovits_disabled__|${gptsovitsConfigForSave.url}|${gptsovitsConfigForSave.voiceId}`;
-            }
-            ttsModelUrl = '';
+    } else if (!gptsovitsEnabled && _loadedGptSovitsState !== 'none' && !_ttsConfigDirty) {
+        if (gptsovitsConfigForSave) {
+            ttsVoiceId = `__gptsovits_disabled__|${gptsovitsConfigForSave.url}|${gptsovitsConfigForSave.voiceId}`;
         }
+        ttsModelUrl = '';
     }
 
     const mcpToken = getVal('mcpTokenInput');
@@ -1419,7 +1708,7 @@ async function save_button_down(e) {
         agentModelUrl, agentModelId, agentModelApiKey,
         omniModelUrl, omniModelId, omniModelApiKey,
         ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId,
-        mcpToken, enableCustomApi,
+        mcpToken, enableCustomApi, gptsovitsEnabled,
         ...modelProviders
     };
 
@@ -1644,6 +1933,8 @@ function updateAssistApiRecommendation() {
 
     // Auto-fill core API key from book
     autoFillCoreApiKey();
+
+    syncProviderSelectDropdowns();
 }
 
 // 自动填充核心API Key到核心API Key输入框
@@ -1673,15 +1964,17 @@ function autoFillCoreApiKey(force) {
     // Use !== null to distinguish "input not present" from "input present but empty":
     // null = restricted/hidden provider (no input), '' = user cleared the key intentionally.
     const bookKey = syncKeyFromBook(selectedCoreApi);
-    // 仅在Key Book中有非空值时才填充，避免清空用户可能输入的值
-    if (bookKey !== null && bookKey !== '') {
-        setMaskedInput(apiKeyInput, bookKey);
+    // When forced (provider switch), clear input if no book key
+    if (force && (bookKey === null || bookKey === '')) {
+        setMaskedInput(apiKeyInput, '');
         attachMaskBehavior(apiKeyInput);
         return;
     }
-
-    // No book input or empty value for this provider — do not overwrite input
-    // Key Book intentionally cleared (empty string) should be respected
+    // Non-forced: only fill if book has a value
+    if (bookKey !== null && bookKey !== '') {
+        setMaskedInput(apiKeyInput, bookKey);
+        attachMaskBehavior(apiKeyInput);
+    }
 }
 
 // Auto-fill assist API key from book
@@ -1907,6 +2200,8 @@ async function initializePage() {
             loadingOverlay.style.display = 'flex';
         }
 
+        initProviderSelectDropdowns();
+
         await waitForI18n();
 
         isMainlandChinaUser = await checkMainlandChinaUser();
@@ -1953,7 +2248,10 @@ async function initializePage() {
 
             updateAssistApiRecommendation();
             autoFillCoreApiKey(true);
-            autoFillAssistApiKey(true);
+            // 不再调用 autoFillAssistApiKey(true)，因为 loadCurrentApiKey()
+            // 已从后端数据直接设置辅助API Key，此处再次从管理簿读取会覆盖正确值
+            // （同服务商时管理簿存的是核心Key，受限服务商时管理簿DOM不存在）
+            syncProviderSelectDropdowns();
         }
 
         // CRITICAL: Core/Assist selector change handlers that recompute follow-provider model slots
@@ -2020,6 +2318,8 @@ async function initializePage() {
                 assistApiSelect.value = selectedAssistApi;
             }
 
+            syncProviderSelectDropdowns();
+
             // Restore Key Book input values
             Object.keys(keyBookSnapshot).forEach(providerKey => {
                 syncKeyToBook(providerKey, keyBookSnapshot[providerKey]);
@@ -2042,7 +2342,7 @@ async function initializePage() {
         window.apiKeySettingsInitialized = true;
 
         setTimeout(() => {
-            toggleCustomApi();
+            toggleCustomApi(true);
         }, 0);
 
     } catch (error) {

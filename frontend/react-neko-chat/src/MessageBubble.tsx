@@ -1,5 +1,6 @@
 import clsx from 'clsx';
 import SmartTextBlock from './SmartTextBlock';
+import { i18n } from './i18n';
 import {
   type ChatMessage,
   type MessageAction,
@@ -9,7 +10,6 @@ import {
 type MessageBubbleProps = {
   message: ChatMessage;
   isGroupedWithPrevious?: boolean;
-  streamingStatusLabel?: string;
   failedStatusLabel?: string;
   onAction?: (message: ChatMessage, action: MessageAction) => void;
 };
@@ -47,14 +47,16 @@ function getAvatarClassName(message: ChatMessage) {
 function MessageBlockView({
   block,
   message,
+  isStreaming,
   onAction,
 }: {
   block: MessageBlock;
   message: ChatMessage;
+  isStreaming?: boolean;
   onAction?: (message: ChatMessage, action: MessageAction) => void;
 }) {
   if (block.type === 'text') {
-    return <SmartTextBlock text={block.text} />;
+    return <SmartTextBlock text={block.text} isStreaming={isStreaming} />;
   }
 
   if (block.type === 'image') {
@@ -122,8 +124,7 @@ function MessageBlockView({
 export default function MessageBubble({
   message,
   isGroupedWithPrevious = false,
-  streamingStatusLabel = '生成中',
-  failedStatusLabel = '发送失败',
+  failedStatusLabel = i18n('chat.messageFailed', 'Failed'),
   onAction,
 }: MessageBubbleProps) {
   const bubbleClassName = getBubbleClassName(message);
@@ -156,6 +157,8 @@ export default function MessageBubble({
     );
   }
 
+  const streaming = message.status === 'streaming';
+
   return (
     <article
       className={rowClassName}
@@ -179,7 +182,6 @@ export default function MessageBubble({
           <div className="message-meta">
             <span className="message-author">{message.author}</span>
             <span className="message-time">{message.time}</span>
-            {message.status === 'streaming' ? <span className="message-delivery">{streamingStatusLabel}</span> : null}
             {message.status === 'failed' ? <span className="message-delivery message-delivery-failed">{failedStatusLabel}</span> : null}
           </div>
         ) : null}
@@ -189,6 +191,7 @@ export default function MessageBubble({
               key={`${message.id}-${block.type}-${index}`}
               block={block}
               message={message}
+              isStreaming={streaming}
               onAction={onAction}
             />
           ))}

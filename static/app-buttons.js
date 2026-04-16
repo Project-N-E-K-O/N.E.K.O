@@ -972,8 +972,50 @@
             }
         });
 
+        // 工具：将 dataUrl 图片降采样到 720p 上限并重新编码为 JPEG 0.8，保持与既有流水线一致。
+        // 如果图片本身已经在 720p 以内，直接返回原 dataUrl，避免无谓的解码/再编码。
+        // 返回 { dataUrl, width, height }：width/height 始终是"返回的这张图"的实际尺寸，
+        // 避免调用方把源尺寸误当成最终尺寸写进日志/UI。
+        async function downscaleDataUrlTo720p(srcDataUrl) {
+            if (!srcDataUrl) return { dataUrl: null, width: 0, height: 0 };
+            var maxW = (window.appConst && window.appConst.MAX_SCREENSHOT_WIDTH) || 1280;
+            var maxH = (window.appConst && window.appConst.MAX_SCREENSHOT_HEIGHT) || 720;
+            return await new Promise(function (resolve) {
+                var img = new Image();
+                img.onload = function () {
+                    var w = img.naturalWidth, h = img.naturalHeight;
+                    if (!w || !h) { resolve({ dataUrl: srcDataUrl, width: 0, height: 0 }); return; }
+                    if (w <= maxW && h <= maxH) { resolve({ dataUrl: srcDataUrl, width: w, height: h }); return; }
+                    var scale = Math.min(maxW / w, maxH / h);
+                    var tw = Math.max(1, Math.round(w * scale));
+                    var th = Math.max(1, Math.round(h * scale));
+                    try {
+                        var cv = document.createElement('canvas');
+                        cv.width = tw; cv.height = th;
+                        var cx = cv.getContext('2d');
+                        cx.drawImage(img, 0, 0, tw, th);
+                        resolve({ dataUrl: cv.toDataURL('image/jpeg', 0.8), width: tw, height: th });
+                    } catch (e) {
+                        console.warn('[截图] 降采样失败，使用原图:', e);
+                        resolve({ dataUrl: srcDataUrl, width: w, height: h });
+                    }
+                };
+                img.onerror = function (e) {
+                    console.warn('[截图] 图片加载失败，使用原图:', e);
+                    resolve({ dataUrl: srcDataUrl, width: 0, height: 0 });
+                };
+                img.src = srcDataUrl;
+            });
+        }
+
         mod.captureScreenshotToPendingList = async function captureScreenshotToPendingList() {
-            var captureStream = null;
+            // 桌面端优先级：
+            //   1) 主进程直接 desktopCapturer 捕获选中源（最可靠，绕开所有 Chromium 桌面捕获管线问题）
+            //   2) acquireOrReuseCachedStream（缓存流 / Electron chromeMediaSourceId / getDisplayMedia）
+            //   3) 后端 pyautogui（只能截主屏）
+            // isCachedStream 用于区分缓存流（绝不能关）与一次性流（finally 要关）。
+            var acquiredStream = null;
+            var isCachedStream = false;
 
             try {
                 screenshotButton.disabled = true;
@@ -982,85 +1024,93 @@
                 var dataUrl = null;
                 var width = 0, height = 0;
 
-                // 1. 优先尝试缓存流（不创建新缓存，即时截取无弹窗）
-                try {
-                    if (S.screenCaptureStream && S.screenCaptureStream.active) {
-                        var tracks = S.screenCaptureStream.getVideoTracks();
-                        if (tracks.length > 0 && tracks.some(function (t) { return t.readyState === 'live'; })) {
-                            var cachedFrame = await window.captureFrameFromStream(S.screenCaptureStream, 0.8);
-                            if (cachedFrame && cachedFrame.dataUrl) {
-                                dataUrl = cachedFrame.dataUrl;
-                                width = cachedFrame.width;
-                                height = cachedFrame.height;
-                                // 刷新缓存流最后使用时间
-                                S.screenCaptureStreamLastUsed = Date.now();
-                                if (window.scheduleScreenCaptureIdleCheck) window.scheduleScreenCaptureIdleCheck();
-                            }
+                if (U.isMobile()) {
+                    // 移动端：沿用摄像头采集，永远是一次性流
+                    try {
+                        acquiredStream = await window.getMobileCameraStream();
+                    } catch (mobileErr) {
+                        console.warn('[截图] 移动端摄像头获取失败:', mobileErr);
+                        // 无条件抛出：保留原始错误 name（NotAllowedError / NotFoundError /
+                        // NotReadableError 等），让外层 catch 的分支能给出对应的本地化提示。
+                        throw mobileErr;
+                    }
+                    if (acquiredStream) {
+                        var mframe = await window.captureFrameFromStream(acquiredStream, 0.8);
+                        if (mframe) {
+                            dataUrl = mframe.dataUrl;
+                            width = mframe.width;
+                            height = mframe.height;
                         }
                     }
-                } catch (cachedErr) {
-                    console.warn('[截图] 缓存流截取失败，将尝试一次性流:', cachedErr);
-                }
-
-                // 2. 无缓存流或缓存流截取失败 → 一次性流（用后即释放，不存入缓存）
-                if (!dataUrl) {
-                    if (U.isMobile()) {
-                        captureStream = await window.getMobileCameraStream();
-                    } else {
-                        // Desktop: try Electron selected source first, then getDisplayMedia
-                        var selectedSourceId = S.selectedScreenSourceId;
-                        var electronCaptured = false;
-
-                        if (selectedSourceId && window.electronDesktopCapturer) {
-                            try {
-                                captureStream = await navigator.mediaDevices.getUserMedia({
-                                    audio: false,
-                                    video: {
-                                        mandatory: {
-                                            chromeMediaSource: 'desktop',
-                                            chromeMediaSourceId: selectedSourceId,
-                                            maxFrameRate: 1
-                                        }
-                                    }
-                                });
-                                electronCaptured = true;
-                            } catch (electronErr) {
-                                console.warn('[截图] Electron 源截取失败，回退到 getDisplayMedia:', electronErr);
-                                captureStream = null;
+                } else {
+                    // === 优先级 1：主进程直接捕获选中源 ===
+                    // 只要渲染器知道用户选了某个源，就让主进程用 desktopCapturer 的高分辨率缩略图
+                    // 对该源做一次静态快照。完全绕开 getUserMedia(chromeMediaSourceId) 和
+                    // getDisplayMedia + setDisplayMediaRequestHandler 这条 Chromium 桌面捕获管线
+                    // ——在 Electron 41 / Windows 11 + useSystemPicker:true 的组合下，这条管线对窗口
+                    // 源常常返回整个屏幕。主进程 desktopCapturer 则直接由平台原生 API 支持，可靠。
+                    var selectedSourceId = S.selectedScreenSourceId;
+                    if (selectedSourceId && window.electronDesktopCapturer
+                        && typeof window.electronDesktopCapturer.captureSourceAsDataUrl === 'function') {
+                        try {
+                            var direct = await window.electronDesktopCapturer.captureSourceAsDataUrl(selectedSourceId);
+                            if (direct && direct.success && direct.dataUrl) {
+                                var scaled = await downscaleDataUrlTo720p(direct.dataUrl);
+                                dataUrl = scaled.dataUrl;
+                                // 以降采样后的实际尺寸为准；解码失败时 scaled.width/height 为 0，
+                                // 此时回退到主进程上报的原始尺寸，避免日志空值。
+                                width = scaled.width || direct.width || 0;
+                                height = scaled.height || direct.height || 0;
+                                console.log('[截图] 主进程直接捕获成功:', selectedSourceId, width + 'x' + height);
+                            } else if (direct && direct.error) {
+                                console.warn('[截图] 主进程直接捕获失败:', direct.error);
                             }
-                        }
-
-                        if (!electronCaptured) {
-                            try {
-                                if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
-                                    captureStream = await navigator.mediaDevices.getDisplayMedia({
-                                        video: { cursor: 'always' },
-                                        audio: false,
-                                    });
-                                } else {
-                                    throw new Error('UNSUPPORTED_API');
-                                }
-                            } catch (displayErr) {
-                                if (displayErr.name === 'NotAllowedError') throw displayErr;
-
-                                console.warn('[截图] getDisplayMedia 失败，尝试后端截图:', displayErr);
-                                var result = await window.fetchBackendScreenshot();
-                                if (result && result.dataUrl) {
-                                    dataUrl = result.dataUrl;
-                                } else {
-                                    throw displayErr;
-                                }
-                            }
+                        } catch (directErr) {
+                            console.warn('[截图] 主进程直接捕获抛错，将回退到流路径:', directErr);
                         }
                     }
 
-                    // Extract frame from one-time stream
-                    if (!dataUrl && captureStream) {
-                        var frame = await window.captureFrameFromStream(captureStream, 0.8);
-                        if (frame) {
-                            dataUrl = frame.dataUrl;
-                            width = frame.width;
-                            height = frame.height;
+                    // === 优先级 2：acquireOrReuseCachedStream 流路径 ===
+                    if (!dataUrl && typeof window.acquireOrReuseCachedStream === 'function') {
+                        try {
+                            // 用户手势上下文（点击截图按钮）→ allowPrompt:true，允许 getDisplayMedia
+                            acquiredStream = await window.acquireOrReuseCachedStream({ allowPrompt: true });
+                        } catch (acqErr) {
+                            if (acqErr && acqErr.name === 'NotAllowedError') throw acqErr;
+                            console.warn('[截图] acquireOrReuseCachedStream 抛错:', acqErr);
+                            acquiredStream = null;
+                        }
+
+                        if (acquiredStream) {
+                            // 与全局缓存流等值比较 ⇒ acquireOrReuseCachedStream 新建的流一定写回 S.screenCaptureStream
+                            isCachedStream = (acquiredStream === S.screenCaptureStream);
+                            var frame = await window.captureFrameFromStream(acquiredStream, 0.8);
+                            if (frame) {
+                                dataUrl = frame.dataUrl;
+                                width = frame.width;
+                                height = frame.height;
+                                if (isCachedStream) {
+                                    S.screenCaptureStreamLastUsed = Date.now();
+                                    if (window.scheduleScreenCaptureIdleCheck) window.scheduleScreenCaptureIdleCheck();
+                                }
+                            }
+                        }
+                    }
+
+                    // === 优先级 3：后端 pyautogui（只能截主屏，且需 localhost）===
+                    if (!dataUrl) {
+                        try {
+                            var backendResult = await window.fetchBackendScreenshot();
+                            if (backendResult && backendResult.dataUrl) {
+                                // 后端 pyautogui 返回原生分辨率（2K/4K 显示器会超过 720p 上限），
+                                // 与主进程直接捕获路径保持一致，统一降采样到 MAX_SCREENSHOT_WIDTH/HEIGHT。
+                                var beScaled = await downscaleDataUrlTo720p(backendResult.dataUrl);
+                                dataUrl = beScaled.dataUrl;
+                                width = beScaled.width || 0;
+                                height = beScaled.height || 0;
+                            }
+                        } catch (beErr) {
+                            console.warn('[截图] 后端兜底失败:', beErr);
                         }
                     }
                 }
@@ -1094,9 +1144,13 @@
 
                 window.showStatusToast(errorMsg, 5000);
             } finally {
-                // 只释放一次性流，不碰缓存流
-                if (captureStream instanceof MediaStream) {
-                    captureStream.getTracks().forEach(function (track) { track.stop(); });
+                // 只释放一次性流；缓存流由 acquireOrReuseCachedStream 体系管理，绝不能在这里停
+                if (!isCachedStream && acquiredStream instanceof MediaStream) {
+                    try {
+                        acquiredStream.getTracks().forEach(function (track) {
+                            try { track.stop(); } catch (e) { }
+                        });
+                    } catch (e) { }
                 }
                 screenshotButton.disabled = false;
             }

@@ -186,6 +186,10 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
         return;
     }
 
+    // 防御性检查：当前模型类型不是 Live2D 时不创建按钮（防止过时的异步回调）
+    var cfgType = (window.lanlan_config && window.lanlan_config.model_type || '').toLowerCase();
+    if (cfgType && cfgType !== 'live2d') return;
+
     if (this._floatingButtonsResizeHandler) {
         window.removeEventListener('resize', this._floatingButtonsResizeHandler);
         this._floatingButtonsResizeHandler = null;
@@ -332,6 +336,8 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
         }
 
         // 处理弹窗
+        let triggerBtn = null;
+        let triggerImg = null;
         if (config.hasPopup && config.separatePopupTrigger) {
             if (isMobileWidth() && config.id === 'mic') {
                 buttonsContainer.appendChild(btnWrapper);
@@ -339,7 +345,9 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
                     button: btn,
                     wrapper: btnWrapper,
                     imgOff: imgOff,
-                    imgOn: imgOn
+                    imgOn: imgOn,
+                    triggerButton: null,
+                    triggerImg: null
                 };
                 return;
             }
@@ -347,9 +355,9 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
             if (!isMobileWidth()) {
                 const popup = this.createPopup(config.id);
 
-                const triggerBtn = document.createElement('div');
+                triggerBtn = document.createElement('div');
                 triggerBtn.className = 'live2d-trigger-btn';
-                const triggerImg = document.createElement('img');
+                triggerImg = document.createElement('img');
                 triggerImg.src = '/static/icons/play_trigger_icon.png' + iconVersion;
                 triggerImg.alt = '▶';
                 triggerImg.className = `live2d-trigger-icon-${config.id}`;
@@ -394,21 +402,53 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
                     triggerBtn.style.background = 'var(--neko-btn-bg)';
                 });
 
+                const isPopupVisible = () => popup.style.display === 'flex' && popup.style.opacity === '1';
+                const repositionPopup = () => {
+                    if (!isPopupVisible()) return;
+                    const popupUi = window.AvatarPopupUI || null;
+                    if (!popupUi || typeof popupUi.positionPopup !== 'function') return;
+                    void popup.offsetHeight;
+                    const pos = popupUi.positionPopup(popup, {
+                        buttonId: config.id,
+                        buttonPrefix: 'live2d-btn-',
+                        triggerPrefix: 'live2d-trigger-icon-',
+                        rightMargin: 20,
+                        bottomMargin: 60,
+                        topMargin: 8,
+                        gap: 8,
+                        sidePanelWidth: (config.id === 'settings' || config.id === 'agent') ? 320 : 0
+                    });
+                    popup.dataset.opensLeft = String(!!(pos && pos.opensLeft));
+                };
+
                 triggerBtn.addEventListener('click', async (e) => {
                     console.log(`[Live2D] 小三角被点击: ${config.id}`);
                     e.stopPropagation();
 
-                    const isPopupVisible = popup.style.display === 'flex' && popup.style.opacity === '1';
-
-                    if (config.id === 'mic' && window.renderFloatingMicList && !isPopupVisible) {
-                        await window.renderFloatingMicList();
-                    }
-
-                    if (config.id === 'screen' && window.renderFloatingScreenSourceList && !isPopupVisible) {
-                        await window.renderFloatingScreenSourceList();
+                    if (isPopupVisible()) {
+                        this.showPopup(config.id, popup);
+                        return;
                     }
 
                     this.showPopup(config.id, popup);
+                    const expectedShowToken = typeof popup._showToken === 'number' ? popup._showToken : null;
+                    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+                    const isSameOpenInstance = expectedShowToken === null || popup._showToken === expectedShowToken;
+                    const isStillOpen = popup.style.display === 'flex' || popup.style.opacity === '1';
+                    if (!isSameOpenInstance || !isStillOpen) {
+                        return;
+                    }
+
+                    if (config.id === 'mic' && window.renderFloatingMicList) {
+                        await window.renderFloatingMicList();
+                        repositionPopup();
+                    }
+
+                    if (config.id === 'screen' && window.renderFloatingScreenSourceList) {
+                        await window.renderFloatingScreenSourceList();
+                        repositionPopup();
+                    }
                 });
 
                 const triggerWrapper = document.createElement('div');
@@ -480,7 +520,9 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
             button: btn,
             wrapper: btnWrapper,
             imgOff: imgOff,
-            imgOn: imgOn
+            imgOn: imgOn,
+            triggerButton: (config.hasPopup && config.separatePopupTrigger && !isMobileWidth()) ? triggerBtn : null,
+            triggerImg: (config.hasPopup && config.separatePopupTrigger && !isMobileWidth()) ? triggerImg : null
         };
         console.log(`[Live2D] 按钮已创建: ${config.id}, hasPopup: ${config.hasPopup}, toggle: ${config.toggle}`);
     });

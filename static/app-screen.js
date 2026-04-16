@@ -40,6 +40,82 @@
         }
     })();
 
+    // ======================== pushSelectedSourceToMain ========================
+    /**
+     * 将渲染器端的 selectedScreenSourceId 同步到主进程，供 main.js 的
+     * setDisplayMediaRequestHandler 回调使用；任何修改 S.selectedScreenSourceId
+     * 的代码点都应调用此函数，保证 getDisplayMedia 兜底也能认用户的选择。
+     * fire-and-forget，不阻塞调用方。
+     */
+    function pushSelectedSourceToMain(sourceId) {
+        try {
+            if (window.electronDesktopCapturer && typeof window.electronDesktopCapturer.setSelectedSource === 'function') {
+                Promise.resolve(window.electronDesktopCapturer.setSelectedSource(sourceId || null))
+                    .catch(function (e) { console.warn('[屏幕源] 同步选中源到主进程失败:', e); });
+            }
+        } catch (e) {
+            console.warn('[屏幕源] 同步选中源到主进程异常:', e);
+        }
+    }
+    mod.pushSelectedSourceToMain = pushSelectedSourceToMain;
+
+    // 模块初始化：立刻将还原的选择推送到主进程，覆盖上次会话遗留的值
+    pushSelectedSourceToMain(S.selectedScreenSourceId);
+
+    // ======================== 跨窗口同步 selectedScreenSourceId ========================
+    // 在多窗口场景下（Pet 窗口有下拉菜单、独立 Chat 窗口只有截图按钮），两个窗口是
+    // 两个渲染进程，各自持有独立的 window.appState。Pet 窗口更新选择后，Chat 窗口
+    // 的 S.selectedScreenSourceId 仍是启动时的旧值 —— 导致 Chat 截图总是截"启动后
+    // 首次选择的那个窗口"。
+    //
+    // 修复：localStorage 在 Pet / Chat 两个同源窗口间共享，任一窗口 setItem 时
+    // 另一窗口会触发 storage 事件（w3c 规范）。监听它把 S 拉回最新值。
+    // 注意：storage 事件在写入它的那个窗口内部并不触发，所以不会产生回环。
+    window.addEventListener('storage', function (e) {
+        if (e.key !== 'selectedScreenSourceId') return;
+        var newId = e.newValue || null;
+        if (S.selectedScreenSourceId === newId) return;
+        var oldId = S.selectedScreenSourceId;
+        S.selectedScreenSourceId = newId;
+        try {
+            if (typeof updateScreenSourceListSelection === 'function') {
+                updateScreenSourceListSelection();
+            }
+        } catch (_) { }
+        // 源切换时释放本窗口缓存的旧流（若有），强制下次用新源
+        if (S.screenCaptureStream && oldId !== newId) {
+            // 先停掉可能仍在跑的发送循环，否则 startScreenVideoStreaming 创建的临时
+            // <video> 会保留在旧流上，interval 继续向 WebSocket 推送冻结帧；tracks 停止
+            // 后 UI 和后端都会收到"还在分享但画面不动"的矛盾状态。
+            stopScreening();
+            try {
+                if (typeof S.screenCaptureStream.getTracks === 'function') {
+                    S.screenCaptureStream.getTracks().forEach(function (track) {
+                        try { track.stop(); } catch (_) { }
+                    });
+                }
+            } catch (_) { }
+            S.screenCaptureStream = null;
+            S.screenCaptureStreamLastUsed = null;
+            if (S.screenCaptureStreamIdleTimer) {
+                clearTimeout(S.screenCaptureStreamIdleTimer);
+                S.screenCaptureStreamIdleTimer = null;
+            }
+            // 若本窗口正显示"分享中"状态，按钮/悬浮按钮需要同步回未分享态，
+            // 否则用户看到的是激活样式但实际已经停止推流。
+            try {
+                var sbtn = screenButton();
+                if (sbtn && sbtn.classList.contains('active')) {
+                    sbtn.classList.remove('active');
+                    syncFloatingScreenButtonState(false);
+                }
+            } catch (_) { }
+        }
+        console.log('[屏幕源] 从其它窗口同步了新选择:', newId);
+        // 不要再写 localStorage 或 pushSelectedSourceToMain —— 源窗口已经做过了，
+        // 再做会产生回环/重复 IPC。
+    });
+
     // ======================== scheduleScreenCaptureIdleCheck ========================
     function scheduleScreenCaptureIdleCheck() {
         // 清除现有定时器
@@ -387,6 +463,9 @@
                         imgOff.style.opacity = isActive ? '0' : '1';
                         imgOn.style.opacity = isActive ? '1' : '0';
                     }
+                    if (typeof manager.updateSeparatePopupTriggerIcon === 'function') {
+                        manager.updateSeparatePopupTriggerIcon('screen');
+                    }
                 }
             }
         }
@@ -533,12 +612,14 @@
                                     selectedSourceId = screenSources[0].id;
                                     S.selectedScreenSourceId = selectedSourceId;
                                     try { localStorage.setItem('selectedScreenSourceId', selectedSourceId); } catch (e) { }
+                                    pushSelectedSourceToMain(selectedSourceId);
                                     updateScreenSourceListSelection();
                                 } else {
                                     // 连全屏源都拿不到，清空选择让下面走 getDisplayMedia
                                     selectedSourceId = null;
                                     S.selectedScreenSourceId = null;
                                     try { localStorage.removeItem('selectedScreenSourceId'); } catch (e) { }
+                                    pushSelectedSourceToMain(null);
                                 }
                             }
                         } catch (validateErr) {
@@ -582,6 +663,7 @@
                                     });
                                     S.selectedScreenSourceId = fallbackSources[0].id;
                                     try { localStorage.setItem('selectedScreenSourceId', fallbackSources[0].id); } catch (e) { }
+                                    pushSelectedSourceToMain(fallbackSources[0].id);
                                     window.showStatusToast(
                                         safeT('app.screenSource.sourceLost', '屏幕分享无法找到之前选择窗口，已切换为全屏分享'),
                                         3000
@@ -602,6 +684,7 @@
                                     });
                                     S.selectedScreenSourceId = null;
                                     try { localStorage.removeItem('selectedScreenSourceId'); } catch (e) { }
+                                    pushSelectedSourceToMain(null);
                                     fallbackSucceeded = true;
                                 } catch (fallback2Err) {
                                     console.warn('[屏幕源] getDisplayMedia 回退也失败:', fallback2Err);
@@ -834,9 +917,45 @@
         }
     };
 
+    function getScreenSourceDisplayName(source, screenIndex) {
+        if (!source) return '';
+
+        var rawName = source.name ? String(source.name) : '';
+        var sourceId = source.id ? String(source.id) : '';
+        if (!sourceId.startsWith('screen:')) {
+            return rawName;
+        }
+
+        var index = null;
+        if (typeof screenIndex === 'number' && isFinite(screenIndex)) {
+            index = screenIndex + 1;
+        }
+
+        if (!index || index < 1) {
+            var displayId = source.display_id != null ? String(source.display_id) : '';
+            var displayIdMatch = displayId.match(/\d+/);
+            if (displayIdMatch) {
+                index = Number(displayIdMatch[0]);
+            }
+        }
+
+        if (!index || index < 1) {
+            index = 1;
+        }
+
+        if (window.t) {
+            return window.t('app.screenSource.screenLabel', { index: index });
+        }
+
+        return '屏幕 ' + index;
+    }
+    mod.getScreenSourceDisplayName = getScreenSourceDisplayName;
+
     // ======================== selectScreenSource ========================
-    async function selectScreenSource(sourceId, sourceName) {
+    async function selectScreenSource(sourceId, sourceName, displayName) {
         S.selectedScreenSourceId = sourceId;
+
+        var resolvedSourceName = displayName || sourceName || sourceId;
 
         // 持久化到 localStorage
         try {
@@ -849,13 +968,16 @@
             console.warn('[屏幕源] 无法保存到 localStorage:', e);
         }
 
+        // 同步到主进程，确保 setDisplayMediaRequestHandler 兜底也认这个选择
+        pushSelectedSourceToMain(sourceId);
+
         // 更新UI选中状态
         updateScreenSourceListSelection();
 
         // 显示选择提示
-        window.showStatusToast(window.t ? window.t('app.screenSource.selected', { source: sourceName }) : '已选择 ' + sourceName, 3000);
+        window.showStatusToast(window.t ? window.t('app.screenSource.selected', { source: resolvedSourceName }) : '已选择 ' + resolvedSourceName, 3000);
 
-        console.log('[屏幕源] 已选择:', sourceName, '(ID:', sourceId, ')');
+        console.log('[屏幕源] 已选择:', sourceName || resolvedSourceName, '(ID:', sourceId, ')');
 
         // 切换窗口源时，强制释放旧的缓存流（无论是否在屏幕分享中）
         // 这确保下次获取流时使用新选择的源
@@ -988,7 +1110,8 @@
             }
 
             // 创建屏幕源选项元素（网格样式：垂直布局，名字在下）
-            function createSourceOption(source) {
+            function createSourceOption(source, screenIndex) {
+                var displayName = getScreenSourceDisplayName(source, screenIndex);
                 var option = document.createElement('div');
                 option.className = 'screen-source-option';
                 option.dataset.sourceId = source.id;
@@ -1068,7 +1191,11 @@
 
                 // 名称（在缩略图下方，允许多行）
                 var label = document.createElement('span');
-                label.textContent = source.name;
+                label.textContent = displayName || source.name || '';
+                if (source.name) {
+                    label.title = source.name;
+                    option.title = source.name;
+                }
                 Object.assign(label.style, {
                     fontSize: '10px',
                     color: 'var(--neko-popup-text)',
@@ -1086,7 +1213,7 @@
 
                 option.addEventListener('click', async function (e) {
                     e.stopPropagation();
-                    await selectScreenSource(source.id, source.name);
+                    await selectScreenSource(source.id, source.name, displayName);
                 });
 
                 option.addEventListener('mouseenter', function () {
@@ -1117,8 +1244,8 @@
                 screenPopup.appendChild(screenLabel);
 
                 var screenGrid = createGridContainer();
-                screens.forEach(function (source) {
-                    screenGrid.appendChild(createSourceOption(source));
+                screens.forEach(function (source, index) {
+                    screenGrid.appendChild(createSourceOption(source, index));
                 });
                 screenPopup.appendChild(screenGrid);
             }
@@ -1139,7 +1266,7 @@
 
                 var windowGrid = createGridContainer();
                 windows.forEach(function (source) {
-                    windowGrid.appendChild(createSourceOption(source));
+                    windowGrid.appendChild(createSourceOption(source, null));
                 });
                 screenPopup.appendChild(windowGrid);
             }
@@ -1166,6 +1293,7 @@
     window.startScreenSharing = startScreenSharing;
     window.stopScreenSharing = stopScreenSharing;
     window.selectScreenSource = selectScreenSource;
+    window.getScreenSourceDisplayName = getScreenSourceDisplayName;
     window.captureCanvasFrame = captureCanvasFrame;
     window.captureFrameFromStream = captureFrameFromStream;
     window.acquireOrReuseCachedStream = acquireOrReuseCachedStream;

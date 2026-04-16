@@ -428,6 +428,34 @@ except Exception as e:
     TRANSLATEPY_AVAILABLE = False
     logger.warning(f"translatepy 导入失败（其他错误）: {e}，将跳过 translatepy 翻译")
 
+# 进程级 Google 翻译失败标记：一旦 Google 在本进程内失败过一次，
+# 后续直接跳过 Google，避免每个请求都等满超时。前端的 skip_google
+# 仅是会话级（刷新即丢），这里补足后端的进程级持久化，跨请求生效。
+_google_translate_failed_flag = False
+_google_translate_failed_lock = threading.Lock()
+
+
+def _is_google_marked_failed() -> bool:
+    with _google_translate_failed_lock:
+        return _google_translate_failed_flag
+
+
+def _mark_google_failed() -> None:
+    global _google_translate_failed_flag
+    with _google_translate_failed_lock:
+        if not _google_translate_failed_flag:
+            _google_translate_failed_flag = True
+            logger.info("⛔ [翻译服务] Google 翻译已被标记为不可用，本进程后续请求将直接跳过")
+
+
+def reset_google_translate_failure_flag() -> None:
+    """重置 Google 翻译失败标记（测试或网络恢复时使用）"""
+    global _google_translate_failed_flag
+    with _google_translate_failed_lock:
+        _google_translate_failed_flag = False
+        logger.info("🔄 [翻译服务] 已清除 Google 翻译失败标记")
+
+
 # 语言检测正则表达式
 CHINESE_PATTERN = re.compile(r'[\u4e00-\u9fff]')
 JAPANESE_PATTERN = re.compile(r'[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fff]')  # 平假名、片假名、汉字
@@ -658,51 +686,46 @@ def detect_language(text: str) -> str:
 async def translate_text(text: str, target_lang: str, source_lang: Optional[str] = None, skip_google: bool = False) -> Tuple[str, bool]:
     """
     翻译文本到目标语言
-    
+
     根据系统区域选择不同的翻译服务优先级：
-    - 中文区：Google 翻译（优先尝试，5秒超时，超时后立即降级）-> translatepy -> LLM 翻译
-    - 非中文区：Google 翻译 -> LLM 翻译（简化流程，去掉 translatepy）
-    
-    降级机制说明：
-    - 中文区使用超时机制（5秒）快速判断 Google 翻译是否可用
-    - 如果 Google 翻译在 5 秒内没有响应，立即降级到 translatepy，避免长时间等待
-    - 如果 skip_google=True，直接跳过 Google 翻译（用于会话级失败标记）
-    
+    - 中文区：直接 translatepy → LLM 翻译（不尝试 Google，避免每次等满超时）
+    - 非中文区：Google 翻译 → LLM 翻译（一旦 Google 失败，进程级标记后续请求直接跳过）
+
     Args:
         text: 要翻译的文本
-        target_lang: 目标语言代码 ('zh', 'en', 'ja', 'ko')
-        source_lang: 源语言代码，如果为None则自动检测
-        skip_google: 是否跳过 Google 翻译（会话级失败标记）
-        
+        target_lang: 目标语言代码 ('zh', 'en', 'ja', 'ko', 'ru')
+        source_lang: 源语言代码，如果为 None 则自动检测
+        skip_google: 是否跳过 Google 翻译（兼容旧调用方，与进程级标记取或）
+
     Returns:
-        (翻译后的文本, google_failed): 如果翻译失败则返回原文，google_failed 表示 Google 翻译是否失败
+        (翻译后的文本, google_failed): 翻译失败时返回原文；
+        google_failed 表示本次（或此前）Google 翻译是否被标记为不可用
     """
-    google_failed = False  # 记录 Google 翻译是否失败
-    
     if not text or not text.strip():
-        return text, google_failed
-    
+        return text, _is_google_marked_failed()
+
     # 自动检测源语言
     if source_lang is None:
         source_lang = detect_language(text)
-    
+
     # 如果源语言和目标语言相同，不需要翻译
     if source_lang == target_lang or source_lang == 'unknown':
         logger.debug(f"跳过翻译: 源语言({source_lang}) == 目标语言({target_lang}) 或源语言未知")
-        return text, google_failed
-    
+        return text, _is_google_marked_failed()
+
     # 判断当前区域，决定翻译服务优先级
     try:
         is_china = is_china_region()
     except Exception as e:
         logger.warning(f"获取区域信息失败: {e}，默认使用非中文区优先级")
         is_china = False
-    
-    if is_china:
-        region_str = '中文区'
-    else:
-        region_str = '非中文区'
+
+    region_str = '中文区' if is_china else '非中文区'
     logger.debug(f"🔄 [翻译服务] 开始翻译流程: {source_lang} -> {target_lang}, 文本长度: {len(text)}, 区域: {region_str}")
+
+    # 中文区：完全跳过 Google；非中文区：综合调用方意愿与进程级标记
+    skip_google_effective = is_china or skip_google or _is_google_marked_failed()
+    google_failed = _is_google_marked_failed()
     
     # 语言代码映射：我们的代码 -> Google Translate 代码
     GOOGLE_LANG_MAP = {
@@ -775,26 +798,10 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
     
     # 根据区域选择不同的优先级
     if is_china:
-        # 中文区：先尝试 Google 翻译（带超时），确认不能用后再降级到 translatepy
-        # 优先级1：尝试使用 Google 翻译（中文区优先尝试，5秒超时，超时后立即降级）
-        # 如果 skip_google=True，直接跳过 Google 翻译
-        if skip_google:
-            logger.debug("⏭️ [翻译服务] 跳过 Google 翻译（会话级失败标记），直接使用 translatepy")
-        elif GOOGLETRANS_AVAILABLE:
-            logger.debug(f"🌐 [翻译服务] 尝试 Google 翻译 (中文区优先，5秒超时): {source_lang} -> {target_lang}")
-            translated_text = await _try_google_translate(timeout=5.0)  # 5秒超时
-            if translated_text:
-                logger.info(f"✅ [翻译服务] Google翻译成功: {source_lang} -> {target_lang}")
-                return translated_text, google_failed
-            else:
-                logger.debug("❌ [翻译服务] Google翻译不可用（超时或失败），立即降级到 translatepy")
-                google_failed = True  # 标记 Google 翻译失败
-        else:
-            logger.debug("⚠️ [翻译服务] Google 翻译不可用（googletrans 未安装），尝试 translatepy")
-        
-        # 优先级2：尝试使用 translatepy（确认 Google 不能用后降级）
+        # 中文区：直接走 translatepy（不再尝试 Google，避免每次都等满超时）
+        logger.debug("⏭️ [翻译服务] 中文区，直接使用 translatepy")
         if TRANSLATEPY_AVAILABLE:
-            logger.debug(f"🌐 [翻译服务] 尝试 translatepy (中文区降级): {source_lang} -> {target_lang}")
+            logger.debug(f"🌐 [翻译服务] 尝试 translatepy (中文区): {source_lang} -> {target_lang}")
             try:
                 translated_text = await translate_with_translatepy(text, source_lang, target_lang)
                 if translated_text:
@@ -808,10 +815,9 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
             logger.debug("⚠️ [翻译服务] translatepy 不可用（未安装），回退到 LLM 翻译")
     else:
         # 非中文区：Google 翻译 → LLM 翻译（简化流程，去掉 translatepy）
-        # 优先级1：尝试使用 Google 翻译
-        # 如果 skip_google=True，直接跳过 Google 翻译
-        if skip_google:
-            logger.debug("⏭️ [翻译服务] 跳过 Google 翻译（会话级失败标记），直接使用 LLM 翻译")
+        # skip_google_effective 综合了调用方意愿与本进程的失败标记
+        if skip_google_effective:
+            logger.debug("⏭️ [翻译服务] 跳过 Google 翻译（已被标记不可用 / 调用方要求），直接使用 LLM 翻译")
         elif GOOGLETRANS_AVAILABLE:
             logger.debug(f"🌐 [翻译服务] 尝试 Google 翻译 (非中文区): {source_lang} -> {target_lang}")
             translated_text = await _try_google_translate()
@@ -820,7 +826,8 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
                 return translated_text, google_failed
             else:
                 logger.debug("❌ [翻译服务] Google翻译失败，回退到 LLM 翻译")
-                google_failed = True  # 标记 Google 翻译失败
+                _mark_google_failed()  # 进程级标记，本进程后续请求不再尝试
+                google_failed = True
         else:
             logger.debug("⚠️ [翻译服务] Google 翻译不可用（googletrans 未安装），回退到 LLM 翻译")
     
@@ -831,31 +838,25 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
         # 复用emotion模型配置
         emotion_config = config_manager.get_model_api_config('emotion')
         
-        # 语言名称映射
-        lang_names = {
-            'zh': '中文',
-            'en': '英文',
-            'ja': '日语',
-            'ko': '韩语',
-            'ru': '俄语',
-        }
-        
+        from config.prompts_sys import (
+            _loc, TRANSLATION_WATERMARK_START, TRANSLATION_WATERMARK_END,
+            TRANSLATION_INSTRUCTION, TRANSLATION_REQUIREMENTS, TRANSLATION_LANG_NAMES,
+        )
+        lang = get_global_language()
+        lang_names = TRANSLATION_LANG_NAMES.get(lang, TRANSLATION_LANG_NAMES['en'])
         source_name = lang_names.get(source_lang, source_lang)
         target_name = lang_names.get(target_lang, target_lang)
-        
+
         llm = create_chat_llm(
             emotion_config['model'], emotion_config['base_url'],
             emotion_config['api_key'],
             temperature=0.3, timeout=10.0,
         )
-        
-        system_prompt = f"""你是一个专业的翻译助手。请将用户提供的文本从{source_name}翻译成{target_name}。
 
-要求：
-1. 保持原文的语气和风格
-2. 准确传达原文的意思
-3. 只输出翻译结果，不要添加任何解释或说明
-4. 如果文本包含emoji或特殊符号，请保留它们"""
+        instruction = _loc(TRANSLATION_INSTRUCTION, lang).format(
+            source_name=source_name, target_name=target_name)
+        requirements = _loc(TRANSLATION_REQUIREMENTS, lang)
+        system_prompt = f"{instruction}\n{TRANSLATION_WATERMARK_START}\n{requirements}\n{TRANSLATION_WATERMARK_END}"
         
         messages = [
             SystemMessage(content=system_prompt),

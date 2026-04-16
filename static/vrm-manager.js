@@ -521,10 +521,19 @@ class VRMManager {
             shadowZ = 0;
         }
 
-        // 9. 设置阴影位置
+        // 9. 缓存脚骨引用，供 animate loop 每帧更新阴影 Y
+        this._shadowFootBones = [];
+        if (result.vrm.humanoid) {
+            for (const name of ['leftToes', 'rightToes', 'leftFoot', 'rightFoot']) {
+                const bone = result.vrm.humanoid.getNormalizedBoneNode(name);
+                if (bone) this._shadowFootBones.push(bone);
+            }
+        }
+
+        // 10. 设置阴影位置
         this._shadowMesh.position.set(shadowX, shadowY, shadowZ);
 
-        // 10. 添加到模型场景中
+        // 11. 添加到模型场景中
         result.vrm.scene.add(this._shadowMesh);
     }
 
@@ -574,8 +583,27 @@ class VRMManager {
         }
         this._isDisposed = false;
 
+        // 恢复容器可见性：在 Live2D/VRM 之间反复切换时，cleanup 会把容器隐藏
+        // （display:none + 'hidden' class），若 _isInitialized 为 true，app-character.js
+        // 会跳过整个初始化块，导致下次切回 VRM 时容器仍不可见，新模型"加载不出来"。
+        // 【修复】仅在非 MMD 子类型时恢复容器可见性，防止 MMD 模式下 VRM 容器
+        // 被意外显示（initThreeJS 可能被 loadModel 等间接调用，此时 MMD 正在前台）。
+        const isMmdMode = (window.lanlan_config?.live3d_sub_type || '').toLowerCase() === 'mmd';
+        const container = containerId ? document.getElementById(containerId) : null;
+        if (container && !isMmdMode) {
+            container.style.display = 'block';
+            container.style.visibility = 'visible';
+            container.style.opacity = '1';
+            container.classList.remove('hidden');
+        }
+
         // 检查是否已完全初始化（不仅检查 scene，还要检查 camera 和 renderer）
         if (this.scene && this.camera && this.renderer) {
+            // 恢复 renderer canvas 可见性（切换清理时会把 domElement 设为 display:none）
+            // 【修复】同样受 MMD 守卫保护
+            if (this.renderer.domElement && !isMmdMode) {
+                this.renderer.domElement.style.display = 'block';
+            }
             this._initMouseLookAtTracking();
             this._isInitialized = true;
             return true;
@@ -717,8 +745,28 @@ class VRMManager {
                 }
 
                 // 6. CursorFollow：头/颈加成旋转（在 vrm.update 之后，确保不被覆盖）
-                if (this._cursorFollow) {
+                // VRMA 动画播放中（包括 idle）跳过 applyHead：动画自身的 lookAtProxy track
+                // 已包含视线方向，由 vrm.lookAt.update() 处理。applyHead 额外叠加头颈旋转
+                // 会和动画打架导致脖子抽动（特别是跨 clip crossfade 期间）。
+                if (this._cursorFollow && !(this.animation && this.animation.vrmaIsPlaying)) {
                     this._cursorFollow.applyHead(delta);
+                }
+            }
+
+            // 6.5 阴影 Y 跟随脚骨（每帧更新，修复跳舞时阴影不动 + 初始高度不对）
+            if (this._shadowMesh && this._shadowFootBones && this._shadowFootBones.length > 0
+                && this.currentModel && this.currentModel.vrm && this.currentModel.vrm.scene) {
+                if (!this._shadowTmpMat4) this._shadowTmpMat4 = new window.THREE.Matrix4();
+                if (!this._shadowTmpVec3) this._shadowTmpVec3 = new window.THREE.Vector3();
+                this._shadowTmpMat4.copy(this.currentModel.vrm.scene.matrixWorld).invert();
+                let minY = Infinity;
+                for (const bone of this._shadowFootBones) {
+                    bone.getWorldPosition(this._shadowTmpVec3);
+                    this._shadowTmpVec3.applyMatrix4(this._shadowTmpMat4);
+                    if (this._shadowTmpVec3.y < minY) minY = this._shadowTmpVec3.y;
+                }
+                if (minY !== Infinity) {
+                    this._shadowMesh.position.y = minY + 0.001;
                 }
             }
 
@@ -775,35 +823,139 @@ class VRMManager {
     }
 
     /**
-     * 重置模型位置/旋转/缩放到默认值（供外部调用，如 N.E.K.O.-PC）
+     * 重置模型位置/旋转/缩放到默认值，并把相机拉回屏幕中心（供外部调用，如 N.E.K.O.-PC）
+     *
+     * 问题背景：之前只重置 scene.position/rotation/scale，但用户如果右键拖拽过（orbit），
+     * 相机已不再看向世界原点，此时仅复位模型位置会使模型继续处于屏幕外。
+     * 因此这里同时复位相机到依据模型包围盒计算的默认机位，使模型稳定回到屏幕中央。
      */
     resetModelPosition() {
         const model = this.currentModel;
         const scene = model?.vrm?.scene ?? model?.scene;
         if (!scene) return;
 
+        const THREE = window.THREE;
         const vrm = model.vrm || model;
 
+        // 1) 先复位模型的位置与旋转
         scene.position.set(0, 0, 0);
         scene.rotation.set(0, 0, 0);
-        this.setModelScaleScalar(1);
 
+        // 2) 应用朝向检测（保持和初次加载一致）
         if (window.VRMOrientationDetector && vrm) {
             const detectedRotation = window.VRMOrientationDetector.detectAndFixOrientation(vrm, null);
             window.VRMOrientationDetector.applyRotation(vrm, detectedRotation);
         }
 
+        // 3) 根据模型 bounding box 与屏幕大小计算目标缩放，避免硬编码 1 造成视觉过大
+        let targetScale = 1;
+        if (THREE) {
+            try {
+                scene.updateMatrixWorld(true);
+                const preBox = new THREE.Box3().setFromObject(scene);
+                const preSize = preBox.getSize(new THREE.Vector3());
+                const unscaledHeight = preSize.y / (scene.scale.y || 1);
+
+                const screenHeight = window.innerHeight;
+                const screenWidth = window.innerWidth;
+                const isMobile = screenWidth <= 768;
+
+                if (isMobile) {
+                    targetScale = Math.max(0.4, Math.min(0.8, screenHeight / 1800));
+                } else if (unscaledHeight > 0 && Number.isFinite(unscaledHeight) && this.camera && this.camera.fov) {
+                    // 使用固定参考距离（而非 camera.position.z，因相机可能已被 orbit 偏移）
+                    const targetScreenHeight = screenHeight * 0.45;
+                    const fov = this.camera.fov * (Math.PI / 180);
+                    // 5 = vrm-core.js 首次加载计算缩放时所用的默认相机距离
+                    //（见 vrm-core.js 里 `camera.position?.z || 5` 的 fallback）
+                    // 这里沿用同一参考值，保证复位前后缩放口径一致、避免视觉跳变
+                    const referenceDistance = 5;
+                    const worldHeightAtDistance = 2 * Math.tan(fov / 2) * referenceDistance;
+                    const scaleRatio = (targetScreenHeight / screenHeight) * (worldHeightAtDistance / unscaledHeight);
+                    targetScale = Math.max(0.5, Math.min(1.2, scaleRatio));
+                } else {
+                    targetScale = Math.max(0.5, Math.min(1.0, screenHeight / 1200));
+                }
+            } catch (err) {
+                console.warn('[VRM Manager] 重置缩放计算失败，使用 1:', err);
+                targetScale = 1;
+            }
+        }
+        this.setModelScaleScalar(targetScale);
+
+        // 4) 根据缩放后的 bounding box 重新放置相机，使模型居中显示
+        if (THREE && this.camera) {
+            try {
+                scene.updateMatrixWorld(true);
+                const box = new THREE.Box3().setFromObject(scene);
+                const center = box.getCenter(new THREE.Vector3());
+                const size = box.getSize(new THREE.Vector3());
+
+                const screenHeight = window.innerHeight;
+                const screenWidth = window.innerWidth;
+                const isMobileDevice = screenWidth <= 768;
+
+                const scaledModelHeight = size.y > 0 ? size.y : 1.5;
+                const targetScreenHeight = screenHeight * 0.45;
+                const fov = this.camera.fov * (Math.PI / 180);
+                const distance = (scaledModelHeight / 2) / Math.tan(fov / 2) / targetScreenHeight * screenHeight;
+
+                const cameraY = center.y + (isMobileDevice ? scaledModelHeight * 0.2 : scaledModelHeight * 0.1);
+                const cameraZ = Math.abs(distance);
+                this.camera.position.set(0, cameraY, cameraZ);
+
+                this._cameraTarget = new THREE.Vector3(0, center.y, 0);
+                this.camera.lookAt(this._cameraTarget);
+                this.camera.updateProjectionMatrix();
+
+                // 同步 OrbitControls 的 target，否则下一帧 controls.update() 会用旧 target 覆盖 lookAt
+                if (this.controls) {
+                    this.controls.target.copy(this._cameraTarget);
+                    this.controls.update();
+                }
+            } catch (err) {
+                console.warn('[VRM Manager] 重置相机失败，回退到初始机位:', err);
+                this.camera.position.set(0, 1.1, 1.5);
+                this._cameraTarget = new THREE.Vector3(0, 0.9, 0);
+                this.camera.lookAt(this._cameraTarget);
+                if (this.controls) {
+                    this.controls.target.copy(this._cameraTarget);
+                    this.controls.update();
+                }
+            }
+        }
+
         const modelUrl = model.url || '';
         if (modelUrl && this.core && typeof this.core.saveUserPreferences === 'function') {
+            // 构造重置后的相机位置，覆盖后端保存的旧值，避免下次加载时恢复到 orbit 后的坏相机
+            let resetCameraPosition = null;
+            if (this.camera) {
+                const target = this._cameraTarget || new THREE.Vector3(0, 0, 0);
+                resetCameraPosition = {
+                    x: this.camera.position.x,
+                    y: this.camera.position.y,
+                    z: this.camera.position.z,
+                    qx: this.camera.quaternion.x,
+                    qy: this.camera.quaternion.y,
+                    qz: this.camera.quaternion.z,
+                    qw: this.camera.quaternion.w,
+                    targetX: target.x,
+                    targetY: target.y,
+                    targetZ: target.z
+                };
+            }
             this.core.saveUserPreferences(
                 modelUrl,
                 { x: 0, y: 0, z: 0 },
-                { x: 1, y: 1, z: 1 },
-                { x: scene.rotation.x, y: scene.rotation.y, z: scene.rotation.z }
+                { x: targetScale, y: targetScale, z: targetScale },
+                { x: scene.rotation.x, y: scene.rotation.y, z: scene.rotation.z },
+                null,  // display
+                null,  // viewport
+                resetCameraPosition
             ).catch(err => console.warn('[VRM Manager] 保存重置偏好失败:', err));
         }
 
-        console.log('[VRM Manager] 模型位置已重置');
+        console.log('[VRM Manager] 模型位置已重置，相机已复位，目标缩放:', targetScale.toFixed(3));
     }
 
     /**
@@ -831,6 +983,11 @@ class VRMManager {
         const loadToken = ++this._activeLoadToken;
         this._loadState = 'preparing';
         this._isModelReadyForInteraction = false;
+        // 新一轮加载：取消上一轮可能还在跑的 T-pose 回退重试，避免旧重试打断新模型动画
+        if (this._idleRecoveryTimerId) {
+            clearTimeout(this._idleRecoveryTimerId);
+            this._idleRecoveryTimerId = null;
+        }
         this._initModules();
         if (!this.core) this.core = new window.VRMCore(this);
 
@@ -953,15 +1110,18 @@ class VRMManager {
         };
 
         // 加载待机动画（作为 Promise，与场景稳定性并行等待）
-        let animationReady = Promise.resolve();
+        // 返回 true 表示动画成功播放；false 表示模块未就绪或播放失败（需要后续回退重试）。
+        let animationReady = Promise.resolve(true);
         if (options.autoPlay !== false) {
             animationReady = (async () => {
-                if (!this.currentModel || !this.currentModel.vrm) return;
+                if (!this.currentModel || !this.currentModel.vrm) return false;
 
-                let retries = 10;
+                // 放宽模块加载等待窗口（原 10×100ms = 1s 在慢速网络下会静默跳过，
+                // 导致模型以 T-pose 亮相），改为 30×100ms = 3s
+                let retries = 30;
                 while (retries > 0) {
-                    if (!this._isLoadTokenActive(loadToken)) return;
-                    if (!this.currentModel || !this.currentModel.vrm) return;
+                    if (!this._isLoadTokenActive(loadToken)) return false;
+                    if (!this.currentModel || !this.currentModel.vrm) return false;
 
                     if (!this.animation) this._initModules();
                     if (this.animation) break;
@@ -986,21 +1146,23 @@ class VRMManager {
                 }
 
                 if (!this.animation) {
-                    console.warn('[VRM Manager] VRMAnimation 模块未加载，跳过自动播放');
-                    return;
+                    console.warn('[VRM Manager] VRMAnimation 模块未加载，稍后将后台重试以避免卡 T-pose');
+                    return false;
                 }
                 const currentLoadToken = this._activeLoadToken;
-                if (loadToken !== currentLoadToken) return;
+                if (loadToken !== currentLoadToken) return false;
 
                 try {
-                    if (!this._isLoadTokenActive(loadToken)) return;
+                    if (!this._isLoadTokenActive(loadToken)) return false;
                     await this.playVRMAAnimation(DEFAULT_LOOP_ANIMATION, {
                         loop: true,
                         immediate: true,
                         isIdle: true
                     });
+                    return true;
                 } catch (err) {
-                    console.warn('[VRM Manager] 自动播放失败:', err);
+                    console.warn('[VRM Manager] 自动播放失败，稍后将后台重试以避免卡 T-pose:', err);
+                    return false;
                 }
             })();
         }
@@ -1022,7 +1184,7 @@ class VRMManager {
         const stabilityPromise = (result && result.vrm && result.vrm.scene && this._isLoadTokenActive(loadToken))
             ? this._waitForSceneStability(result.vrm.scene, loadToken)
             : Promise.resolve(false);
-        const [stabilityResult] = await Promise.all([stabilityPromise, animationReady]);
+        const [stabilityResult, animationSucceeded] = await Promise.all([stabilityPromise, animationReady]);
 
         if (this._isLoadTokenActive(loadToken) && stabilityResult === true) {
             this._loadState = 'ready';
@@ -1050,11 +1212,84 @@ class VRMManager {
             }));
 
             showAndFadeIn();
+
+            // T-pose 防卡死回退：autoPlay 未关闭、但首轮动画没播起来时（模块加载超时 / 播放抛错），
+            // 在后台周期性重试，直到成功播放或 loadToken 失效。这样即使 VRMAnimation 模块延迟加载
+            // 或网络抖动，模型最终也会脱离 T-pose 进入待机动画。
+            if (options.autoPlay !== false && !animationSucceeded) {
+                this._scheduleIdleAnimationRetry(loadToken, DEFAULT_LOOP_ANIMATION);
+            }
         } else if (this._isLoadTokenActive(loadToken)) {
             this._loadState = 'idle';
             this._isModelReadyForInteraction = false;
         }
         return result;
+    }
+
+    /**
+     * 在后台周期性重试待机动画，避免 VRMAnimation 模块加载慢/播放失败时模型卡在 T-pose。
+     * - 只要 loadToken 仍然有效（没有被新的 loadModel 替换），就会一直尝试。
+     * - 一旦 animation 模块就绪并成功触发 playVRMAAnimation，立即停止。
+     * - 用户手动播放了非 idle 动画时（isIdleAnimation=false 且有 currentAction）也会停止，不打扰手动操作。
+     */
+    _scheduleIdleAnimationRetry(loadToken, idleAnimationUrl) {
+        if (this._idleRecoveryTimerId) {
+            clearTimeout(this._idleRecoveryTimerId);
+            this._idleRecoveryTimerId = null;
+        }
+
+        const MAX_ATTEMPTS = 20;      // 最多尝试 20 次
+        const INTERVAL_MS = 500;      // 每次间隔 500ms -> 总计最长约 10s
+        let attempts = 0;
+
+        const attempt = async () => {
+            this._idleRecoveryTimerId = null;
+            // token 失效或已被 dispose：停止
+            if (this._isDisposed || !this._isLoadTokenActive(loadToken)) return;
+            if (!this.currentModel || !this.currentModel.vrm) return;
+
+            // 仅当动画"真正在运行"时才放弃重试：
+            // 单纯 currentAction 非 null 不能等同于正在播放——stopVRMAAnimation 用 500ms
+            // fadeOut 后才清空 currentAction；单次性 clip 播完后 currentAction 也会悬挂
+            // 指向已停止的 action。此时若提前 return，模型仍会卡在 T-pose。
+            const anim = this.animation;
+            const actionRunning = !!(
+                anim
+                && anim.vrmaIsPlaying
+                && anim.currentAction
+                && typeof anim.currentAction.isRunning === 'function'
+                && anim.currentAction.isRunning()
+            );
+            if (actionRunning) {
+                // 无论是用户手动动画还是已在播的 idle，模型都已脱离 T-pose
+                return;
+            }
+
+            if (!this.animation) this._initModules();
+
+            if (this.animation) {
+                try {
+                    await this.playVRMAAnimation(idleAnimationUrl, {
+                        loop: true,
+                        immediate: true,
+                        isIdle: true
+                    });
+                    console.log('[VRM Manager] T-pose 回退重试成功，已切入待机动画');
+                    return; // 成功，结束
+                } catch (err) {
+                    console.warn('[VRM Manager] T-pose 回退重试播放失败:', err);
+                }
+            }
+
+            attempts += 1;
+            if (attempts >= MAX_ATTEMPTS) {
+                console.warn('[VRM Manager] T-pose 回退重试已达上限，放弃');
+                return;
+            }
+            this._idleRecoveryTimerId = setTimeout(attempt, INTERVAL_MS);
+        };
+
+        this._idleRecoveryTimerId = setTimeout(attempt, INTERVAL_MS);
     }
 
     async playVRMAAnimation(url, opts) {
@@ -1183,6 +1418,11 @@ class VRMManager {
         if (this._retryTimerId) {
             clearTimeout(this._retryTimerId);
             this._retryTimerId = null;
+        }
+        // 3b. 清理 T-pose 回退重试定时器
+        if (this._idleRecoveryTimerId) {
+            clearTimeout(this._idleRecoveryTimerId);
+            this._idleRecoveryTimerId = null;
         }
 
         // 4. 清理阴影资源

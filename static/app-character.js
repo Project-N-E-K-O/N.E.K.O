@@ -73,6 +73,10 @@
         }
     }
 
+    function supportsLocalModelRuntime() {
+        return !/^\/chat(?:\/|$)/.test(window.location.pathname || '');
+    }
+
     function emitAssistantSpeechCancel(source) {
         var turnId = S.assistantTurnId || S.assistantSpeechActiveTurnId || null;
         S.assistantTurnId = null;
@@ -149,26 +153,45 @@
 
             const modelType = catgirlConfig.model_type || (catgirlConfig.vrm ? 'vrm' : 'live2d');
 
-            // 检测 live3d 子类型（优先检查 MMD，与后端 _get_live3d_sub_type 保持一致）
-            const _sanitize = v => (typeof v === 'string' && v.trim() && v !== 'undefined' && v !== 'null') ? v : '';
+            // 检测 live3d 子类型：优先使用 live3d_sub_type（后端权威来源）
+            const _sanitize = (v) => {
+                if (v === undefined || v === null) return '';
+                const s = String(v).trim();
+                const lower = s.toLowerCase();
+                if (!s || lower === 'undefined' || lower === 'null') return '';
+                return s;
+            };
             let mmdPath = '';
             let vrmPath = '';
             let effectiveModelType = modelType;
             if (modelType === 'live3d') {
-                mmdPath = _sanitize(catgirlConfig.mmd)
-                    || _sanitize(catgirlConfig._reserved?.avatar?.mmd?.model_path)
-                    || '';
-                vrmPath = _sanitize(catgirlConfig.vrm)
-                    || _sanitize(catgirlConfig._reserved?.avatar?.vrm?.model_path)
-                    || '';
-                if (mmdPath) {
-                    effectiveModelType = 'mmd';
-                } else if (vrmPath) {
+                const subType = (
+                    catgirlConfig._reserved?.avatar?.live3d_sub_type
+                    || catgirlConfig.live3d_sub_type
+                    || ''
+                ).toString().trim().toLowerCase();
+
+                if (subType === 'vrm') {
                     effectiveModelType = 'vrm';
+                } else if (subType === 'mmd') {
+                    effectiveModelType = 'mmd';
                 } else {
-                    effectiveModelType = 'live2d'; // fallback
+                    // sub_type 缺失时回退到路径探测
+                    mmdPath = _sanitize(catgirlConfig.mmd)
+                        || _sanitize(catgirlConfig._reserved?.avatar?.mmd?.model_path)
+                        || '';
+                    vrmPath = _sanitize(catgirlConfig.vrm)
+                        || _sanitize(catgirlConfig._reserved?.avatar?.vrm?.model_path)
+                        || '';
+                    if (mmdPath && !vrmPath) {
+                        effectiveModelType = 'mmd';
+                    } else if (vrmPath) {
+                        effectiveModelType = 'vrm';
+                    } else {
+                        effectiveModelType = 'live2d';
+                    }
                 }
-                console.log('[猫娘切换] live3d 子类型检测:', effectiveModelType, '(mmd:', !!mmdPath, 'vrm:', !!vrmPath, ')');
+                console.log('[猫娘切换] live3d 子类型检测:', effectiveModelType, '(subType:', subType, 'mmd:', !!mmdPath, 'vrm:', !!vrmPath, ')');
             }
             console.log('[猫娘切换] effectiveModelType:', effectiveModelType);
 
@@ -406,7 +429,9 @@
 
             // 4. 根据模型类型加载相应的模型
             console.log('[猫娘切换] 检测到模型类型:', modelType, '有效类型:', effectiveModelType);
-            if (effectiveModelType === 'vrm') {
+            if (!supportsLocalModelRuntime()) {
+                console.log('[猫娘切换] 当前页面不加载本地模型，跳过模型热切换');
+            } else if (effectiveModelType === 'vrm') {
                 // 加载 VRM 模型
                 console.log('[猫娘切换] 进入VRM加载分支');
 
@@ -493,84 +518,88 @@
 
                 // 确保 VRM 管理器已初始化
                 console.log('[猫娘切换] 检查VRM管理器 - 存在:', !!window.vrmManager, '已初始化:', window.vrmManager?._isInitialized);
-                if (!window.vrmManager || !window.vrmManager._isInitialized) {
-                    console.log('[猫娘切换] VRM管理器需要初始化');
 
-                    // 等待 VRM 模块加载（双保险：事件 + 轮询）
-                    if (typeof window.VRMManager === 'undefined') {
-                        await new Promise((resolve, reject) => {
-                            // 先检查是否已经就绪（事件可能已经发出）
-                            if (window.VRMManager) {
-                                return resolve();
+                // 等待 VRM 模块加载（双保险：事件 + 轮询）
+                // VRMManager 与 VRMCore 由 vrm-init.js 并行加载，加载顺序不确定；
+                // 只检查 VRMManager 会在 VRMCore 未就绪时放行，导致 initThreeJS
+                // 抛 "VRMCore 尚未加载"。因此就绪条件需同时覆盖两者。
+                const isVRMRuntimeReady = () =>
+                    typeof window.VRMManager !== 'undefined' &&
+                    typeof window.VRMCore !== 'undefined';
+
+                if (!isVRMRuntimeReady()) {
+                    await new Promise((resolve, reject) => {
+                        // 先检查是否已经就绪（事件可能已经发出）
+                        if (isVRMRuntimeReady()) {
+                            return resolve();
+                        }
+
+                        let resolved = false;
+                        const timeoutId = setTimeout(() => {
+                            if (!resolved) {
+                                resolved = true;
+                                reject(new Error('VRM 模块加载超时'));
                             }
+                        }, 5000);
 
-                            let resolved = false;
-                            const timeoutId = setTimeout(() => {
+                        // 方法1：监听事件
+                        const eventHandler = () => {
+                            if (!resolved && isVRMRuntimeReady()) {
+                                resolved = true;
+                                clearTimeout(timeoutId);
+                                window.removeEventListener('vrm-modules-ready', eventHandler);
+                                resolve();
+                            }
+                        };
+                        window.addEventListener('vrm-modules-ready', eventHandler, { once: true });
+
+                        // 方法2：轮询检查（双保险）
+                        const pollInterval = setInterval(() => {
+                            if (isVRMRuntimeReady()) {
                                 if (!resolved) {
                                     resolved = true;
-                                    reject(new Error('VRM 模块加载超时'));
-                                }
-                            }, 5000);
-
-                            // 方法1：监听事件
-                            const eventHandler = () => {
-                                if (!resolved && window.VRMManager) {
-                                    resolved = true;
                                     clearTimeout(timeoutId);
+                                    clearInterval(pollInterval);
                                     window.removeEventListener('vrm-modules-ready', eventHandler);
                                     resolve();
                                 }
-                            };
-                            window.addEventListener('vrm-modules-ready', eventHandler, { once: true });
+                            }
+                        }, 100); // 每100ms检查一次
 
-                            // 方法2：轮询检查（双保险）
-                            const pollInterval = setInterval(() => {
-                                if (window.VRMManager) {
-                                    if (!resolved) {
-                                        resolved = true;
-                                        clearTimeout(timeoutId);
-                                        clearInterval(pollInterval);
-                                        window.removeEventListener('vrm-modules-ready', eventHandler);
-                                        resolve();
-                                    }
-                                }
-                            }, 100); // 每100ms检查一次
+                        // 清理轮询（在超时或成功时）
+                        const originalResolve = resolve;
+                        const originalReject = reject;
+                        resolve = (...args) => {
+                            clearInterval(pollInterval);
+                            originalResolve(...args);
+                        };
+                        reject = (...args) => {
+                            clearInterval(pollInterval);
+                            originalReject(...args);
+                        };
+                    });
+                }
 
-                            // 清理轮询（在超时或成功时）
-                            const originalResolve = resolve;
-                            const originalReject = reject;
-                            resolve = (...args) => {
-                                clearInterval(pollInterval);
-                                originalResolve(...args);
-                            };
-                            reject = (...args) => {
-                                clearInterval(pollInterval);
-                                originalReject(...args);
-                            };
-                        });
-                    }
+                if (!window.vrmManager) {
+                    window.vrmManager = new window.VRMManager();
+                }
+                // 每次都清除 goodbyeClicked 标志，确保新模型可以正常显示
+                window.vrmManager._goodbyeClicked = false;
 
-                    if (!window.vrmManager) {
-                        window.vrmManager = new window.VRMManager();
-                        // 初始化时确保 _goodbyeClicked 为 false
-                        window.vrmManager._goodbyeClicked = false;
-                    } else {
-                        // 如果 vrmManager 已存在，也清除 goodbyeClicked 标志，确保新模型可以正常显示
-                        window.vrmManager._goodbyeClicked = false;
-                    }
-
-                    // 确保容器和 canvas 存在
-                    const vrmContainer = document.getElementById('vrm-container');
-                    if (vrmContainer && !vrmContainer.querySelector('canvas')) {
+                // 确保容器和 canvas 存在，并初始化 Three.js 场景。
+                // 即使 vrmManager 已初始化也要调用 initThreeJS：在已初始化时是幂等的，
+                // 但会无条件恢复容器/canvas 可见性——修复在 Live2D/VRM 反复切换后，
+                // 容器/canvas 仍保持 display:none 导致 VRM 模型加载不出来的问题。
+                {
+                    const vrmContainerEl = document.getElementById('vrm-container');
+                    if (vrmContainerEl && !vrmContainerEl.querySelector('canvas')) {
                         const canvas = document.createElement('canvas');
                         canvas.id = 'vrm-canvas';
-                        vrmContainer.appendChild(canvas);
+                        vrmContainerEl.appendChild(canvas);
                     }
-
-                    // 初始化 Three.js 场景，传入光照配置（如果存在）
-                    const lightingConfig = catgirlConfig.lighting || null;
-                    await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container', lightingConfig);
                 }
+                const lightingConfig = catgirlConfig.lighting || null;
+                await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container', lightingConfig);
 
                 // 转换路径为 URL（基本格式处理，vrm-core.js 会处理备用路径）
                 // 再次验证 vrmModelPath 的有效性
@@ -660,14 +689,10 @@
 
                         if (window.vrmManager?.ambientLight && window.vrmManager?.mainLight &&
                             window.vrmManager?.fillLight && window.vrmManager?.rimLight) {
-                            // VRoid Hub 风格：极高环境光，柔和主光，无辅助光
-                            const defaultLighting = {
-                                ambient: 1.0,      // 极高环境光，消除所有暗部
-                                main: 0.6,         // 适中主光，配合跟随相机
-                                fill: 0.0,         // 不需要补光
-                                rim: 0.0,          // 不需要外部轮廓光
-                                top: 0.0,          // 不需要顶光
-                                bottom: 0.0        // 不需要底光
+                            // 引用全局唯一默认值（定义于 vrm-core.js）
+                            const defaultLighting = window.VRM_DEFAULT_LIGHTING || {
+                                ambient: 0.83, main: 1.91, fill: 0.0,
+                                rim: 0.0, top: 0.0, bottom: 0.0
                             };
 
                             if (window.vrmManager.ambientLight) {
@@ -829,10 +854,12 @@
                     || catgirlConfig._reserved?.avatar?.mmd?.model_path
                     || '';
 
-                if (!mmdModelPath) {
-                    throw new Error('MMD 模型路径未配置');
+                if (!mmdModelPath || mmdModelPath === 'undefined' || mmdModelPath === 'null') {
+                    mmdModelPath = '/static/mmd/Miku/Miku.pmx';
+                    console.warn('[猫娘切换] MMD 模型路径未配置或无效，使用默认模型:', mmdModelPath);
+                } else {
+                    console.log('[猫娘切换] MMD 模型路径:', mmdModelPath);
                 }
-                console.log('[猫娘切换] MMD 模型路径:', mmdModelPath);
 
                 // 处理路径格式
                 let mmdModelUrl = mmdModelPath;
@@ -868,6 +895,10 @@
                     vrmCanvasMmd.style.visibility = 'hidden';
                     vrmCanvasMmd.style.pointerEvents = 'none';
                 }
+                // 【修复】清除 VRM canvas 缓存帧，防止在模型切换窗口期透穿显示旧 VRM 模型
+                if (window.vrmManager && window.vrmManager.renderer) {
+                    try { window.vrmManager.renderer.clear(); } catch (_) { /* ignore */ }
+                }
 
                 // 显示 MMD 容器
                 const mmdContainerShow = document.getElementById('mmd-container');
@@ -884,12 +915,31 @@
                     mmdCanvasShow.style.pointerEvents = 'auto';
                 }
 
-                // 初始化 MMD 管理器（MMD→MMD 切换时需要完全重新初始化以避免状态残留）
-                console.log('[猫娘切换] 重新初始化 MMD 管理器');
-                if (typeof window.initMMDModel === 'function') {
-                    await window.initMMDModel();
-                } else if (typeof initMMDModel === 'function') {
-                    await initMMDModel();
+                // 初始化 MMD 管理器
+                // 【优化】如果 MMD 管理器已存在且场景有效，复用现有 renderer/scene，
+                // 仅清理旧模型并加载新模型，避免 dispose+重建导致的画布透明窗口期。
+                console.log('[猫娘切换] 初始化/复用 MMD 管理器');
+                if (window.mmdManager && window.mmdManager.scene && window.mmdManager.renderer && !window.mmdManager._isDisposed) {
+                    // 复用现有场景：清理旧模型（core._clearModel），保留 renderer/scene/camera
+                    if (window.mmdManager.core) {
+                        try { window.mmdManager.core._clearModel(); } catch (e) { console.warn('[猫娘切换] _clearModel 失败:', e); }
+                    }
+                    // 重置动画状态
+                    if (window.mmdManager.animationModule) {
+                        try { window.mmdManager.animationModule.dispose(); } catch (_) {}
+                        // 重新创建动画模块
+                        if (typeof MMDAnimation !== 'undefined') {
+                            window.mmdManager.animationModule = new MMDAnimation(window.mmdManager);
+                        }
+                    }
+                    console.log('[猫娘切换] MMD 管理器已复用');
+                } else {
+                    // 首次初始化或管理器已销毁，执行完整初始化
+                    if (typeof window.initMMDModel === 'function') {
+                        await window.initMMDModel();
+                    } else if (typeof initMMDModel === 'function') {
+                        await initMMDModel();
+                    }
                 }
 
                 // 加载 MMD 模型
@@ -1179,7 +1229,7 @@
 
         } catch (error) {
             console.error('[猫娘切换] 失败:', error);
-            showStatusToast(`切换失败: ${error.message}`, 4000);
+            showStatusToast(window.t ? window.t('app.switchCatgirlError', { error: error.message }) : `切换失败: ${error.message}`, 4000);
         } finally {
             S.isSwitchingCatgirl = false;
             // 清理切换标识，取消所有 pending 的 applyLighting 定时器

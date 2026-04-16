@@ -108,6 +108,8 @@ try {
 
 // 创建Agent弹出框内容
 window.AgentHUD._createAgentPopupContent = function (popup) {
+    popup.style.gap = '0';
+
     // 添加状态显示栏 - Fluent Design
     const statusDiv = document.createElement('div');
     statusDiv.id = 'live2d-agent-status';
@@ -117,7 +119,7 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
         padding: '6px 8px',
         borderRadius: '4px',
         background: 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.05))',
-        marginBottom: '8px',
+        marginBottom: '0',
         minHeight: '20px',
         textAlign: 'center'
     });
@@ -177,8 +179,8 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
         const toggleItem = this._createToggleItem(toggle, popup);
         popup.appendChild(toggleItem);
 
-        // 用户插件侧边面板
-        if (toggle.id === 'agent-user-plugin' && typeof this._createSidePanelContainer === 'function') {
+        // 侧边快捷入口（用户插件管理面板 / OpenClaw 接入教程）
+        if ((toggle.id === 'agent-user-plugin' || toggle.id === 'agent-openclaw') && typeof this._createSidePanelContainer === 'function') {
             const sidePanel = this._createSidePanelContainer();
             sidePanel.style.flexDirection = 'column';
             sidePanel.style.alignItems = 'stretch';
@@ -188,8 +190,22 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
             sidePanel._popupElement = popup;
 
             const configBtn = document.createElement('div');
-            const LABEL_KEY = 'settings.toggles.pluginManagementPanel';
-            const LABEL_FALLBACK = '管理面板';
+            const actionConfig = toggle.id === 'agent-user-plugin'
+                ? {
+                    labelKey: 'settings.toggles.pluginManagementPanel',
+                    labelFallback: '管理面板',
+                    icon: '⚙',
+                    url: '/api/agent/user_plugin/dashboard',
+                    windowName: 'neko_plugin_dashboard'
+                }
+                : {
+                    labelKey: 'settings.toggles.openclawGuide',
+                    labelFallback: 'OpenClaw 接入教程',
+                    icon: '📘',
+                    url: '/api/agent/openclaw/guide',
+                    windowName: 'neko_openclaw_guide',
+                    forceReloadOnReuse: true
+                };
             Object.assign(configBtn.style, {
                 display: 'flex',
                 alignItems: 'center',
@@ -203,11 +219,11 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                 transition: 'background 0.15s ease'
             });
             const configIcon = document.createElement('span');
-            configIcon.textContent = '⚙';
+            configIcon.textContent = actionConfig.icon;
             configIcon.style.fontSize = '13px';
             const configLabel = document.createElement('span');
-            configLabel.textContent = window.t ? window.t(LABEL_KEY) : LABEL_FALLBACK;
-            configLabel.setAttribute('data-i18n', LABEL_KEY);
+            configLabel.textContent = window.t ? window.t(actionConfig.labelKey) : actionConfig.labelFallback;
+            configLabel.setAttribute('data-i18n', actionConfig.labelKey);
             configLabel.style.userSelect = 'none';
             const configArrow = document.createElement('span');
             configArrow.textContent = '↗';
@@ -230,16 +246,26 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                 e.stopPropagation();
                 if (isOpening) return;
                 isOpening = true;
-                const dashboardUrl = '/api/agent/user_plugin/dashboard';
                 const width = Math.min(1280, Math.round(screen.width * 0.8));
                 const height = Math.min(900, Math.round(screen.height * 0.8));
                 const left = Math.max(0, Math.floor((screen.width - width) / 2));
                 const top = Math.max(0, Math.floor((screen.height - height) / 2));
                 const features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
-                if (typeof window.openOrFocusWindow === 'function') {
-                    window.openOrFocusWindow(dashboardUrl, 'neko_plugin_dashboard', features);
+                const targetUrl = actionConfig.forceReloadOnReuse
+                    ? `${actionConfig.url}?v=${Date.now()}`
+                    : actionConfig.url;
+                const existingWindow = window._openedWindows && window._openedWindows[actionConfig.windowName];
+                if (actionConfig.forceReloadOnReuse && existingWindow && !existingWindow.closed) {
+                    try {
+                        existingWindow.location.replace(targetUrl);
+                    } catch (_) {
+                        existingWindow.location.href = targetUrl;
+                    }
+                    existingWindow.focus();
+                } else if (typeof window.openOrFocusWindow === 'function') {
+                    window.openOrFocusWindow(targetUrl, actionConfig.windowName, features);
                 } else {
-                    window.open(dashboardUrl, 'neko_plugin_dashboard', features);
+                    window.open(targetUrl, actionConfig.windowName, features);
                 }
                 setTimeout(() => { isOpening = false; }, 500);
             });
@@ -598,14 +624,18 @@ window.AgentHUD.showAgentTaskHUD = function () {
 
 // 隐藏任务 HUD
 window.AgentHUD.hideAgentTaskHUD = function () {
-    console.log('[AgentHUD] hideAgentTaskHUD called');
-    let hud = document.getElementById('agent-task-hud');
+    const hud = document.getElementById('agent-task-hud');
     if (!hud) {
-        console.log('[AgentHUD] HUD element not found, creating it first to hide it properly');
-        hud = this.createAgentTaskHUD();
+        // HUD 不存在时无需创建再隐藏，直接返回
+        return;
     }
-    
-    console.log('[AgentHUD] HUD element found, starting fade out');
+
+    // 已经处于隐藏状态时跳过重复操作
+    if (hud.style.display === 'none') {
+        return;
+    }
+
+    console.log('[AgentHUD] hideAgentTaskHUD: starting fade out');
     hud.style.opacity = '0';
     const savedPos = localStorage.getItem('agent-task-hud-position');
     if (!savedPos) {
@@ -614,16 +644,13 @@ window.AgentHUD.hideAgentTaskHUD = function () {
 
     // 如果之前有正在等待的隐藏定时器，先清理掉
     if (this._hideTimeout) {
-        console.log('[AgentHUD][TimeoutTrace] hideAgentTaskHUD clearing previous timeout ID:', this._hideTimeout);
         clearTimeout(this._hideTimeout);
     }
 
     this._hideTimeout = setTimeout(() => {
-        console.log('[AgentHUD][TimeoutTrace] HUD element display set to none. Timeout ID was:', this._hideTimeout);
         hud.style.display = 'none';
         this._hideTimeout = null;
     }, 300);
-    console.log('[AgentHUD][TimeoutTrace] hideAgentTaskHUD set new timeout ID:', this._hideTimeout);
 };
 
 // 更新任务 HUD 内容

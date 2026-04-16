@@ -15,8 +15,11 @@ if sys.platform == 'win32':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
     
+# 检测打包环境（PyInstaller 设 sys.frozen，Nuitka 设 __compiled__）
+IS_FROZEN = getattr(sys, 'frozen', False) or '__compiled__' in globals()
+
 # 处理 PyInstaller 和 Nuitka 打包后的路径
-if getattr(sys, 'frozen', False):
+if IS_FROZEN:
     # 运行在打包后的环境
     if hasattr(sys, '_MEIPASS'):
         # PyInstaller
@@ -214,7 +217,7 @@ def report_startup_failure(message: str, show_dialog: bool = True):
     """统一报告启动失败信息：终端 + （可选）弹窗。"""
     print(message, flush=True)
     emit_frontend_event("startup_failure", {"message": message})
-    if show_dialog and getattr(sys, 'frozen', False):
+    if show_dialog and IS_FROZEN:
         _show_error_dialog(message)
 
 
@@ -359,6 +362,134 @@ SERVERS = [
 
 # 不再启动主程序，用户自己启动 lanlan_frd.exe
 
+
+# ===== 合并进程模式 =====
+# 打包时三个 FastAPI 服务跑在同一个进程里，共享 Python 运行时，
+# 省掉 2 份 CPython + uvicorn + 共享库的重复加载（约 150-200 MB）。
+# 每个服务仍然监听自己的端口，前端 / 服务间 HTTP 调用零改动。
+
+def run_merged_servers() -> int:
+    """单进程合并模式：3 个 uvicorn.Server 共享一个 asyncio event loop。"""
+    import asyncio
+    import uvicorn
+
+    _reload_runtime_config_from_env()
+
+    # frozen 环境通用设置
+    if IS_FROZEN:
+        if hasattr(sys, '_MEIPASS'):
+            os.chdir(sys._MEIPASS)
+        else:
+            os.chdir(os.path.dirname(os.path.abspath(__file__)))
+        try:
+            import typeguard
+            _dummy = lambda func=None, **kw: func if func else (lambda f: f)
+            typeguard.typechecked = _dummy
+            if hasattr(typeguard, '_decorators'):
+                typeguard._decorators.typechecked = _dummy
+        except Exception:
+            pass
+
+    _behind_proxy = os.environ.get("NEKO_BEHIND_PROXY", "").strip().lower() in ("1", "true", "yes")
+    _proxy_kw: dict = {}
+    if _behind_proxy:
+        _proxy_kw = {"proxy_headers": True, "forwarded_allow_ips": "*"}
+
+    # 分步 import（控制峰值内存 & 提供进度反馈）
+    print("[Merged] Importing memory_server...", flush=True)
+    import memory_server
+    print("[Merged] Importing agent_server...", flush=True)
+    import agent_server
+    print("[Merged] Importing main_server...", flush=True)
+    import main_server
+
+    _apps = [
+        (memory_server.app, MEMORY_SERVER_PORT, "Memory"),
+        (agent_server.app,  TOOL_SERVER_PORT,   "Agent"),
+        (main_server.app,   MAIN_SERVER_PORT,   "Main"),
+    ]
+
+    servers: list[uvicorn.Server] = []
+    for _app, _port, _name in _apps:
+        cfg = uvicorn.Config(
+            app=_app, host="127.0.0.1", port=_port,
+            log_level="error", **_proxy_kw,
+        )
+        servers.append(uvicorn.Server(cfg))
+
+    # ── 信号处理 ──
+    # 3 个 uvicorn.Server 各自 install_signal_handlers() 会互相覆盖
+    # （最后一个赢），导致 Ctrl+C 只通知 1 个退出，其余卡死。
+    # 禁用各自的处理器，统一安装一个全局处理器。
+    for s in servers:
+        s.install_signal_handlers = lambda: None
+
+    _exiting = False
+
+    def _on_exit_signal(_sig, _frame):
+        nonlocal _exiting
+        if _exiting:
+            # 第二次 Ctrl+C → 强制退出（与多进程模式行为一致）
+            print("\n[Merged] Force exit!", flush=True)
+            os._exit(1)
+        _exiting = True
+        print("\n[Merged] Shutting down...", flush=True)
+        for s in servers:
+            s.should_exit = True
+        # 看门狗：10s 后强制退出（防止 shutdown handler 卡死残留进程）
+        threading.Thread(
+            target=lambda: (time.sleep(10), os._exit(1)),
+            daemon=True, name="merged-shutdown-watchdog",
+        ).start()
+
+    _prev_sigint = signal.getsignal(signal.SIGINT)
+    _prev_sigterm = signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGINT, _on_exit_signal)
+    signal.signal(signal.SIGTERM, _on_exit_signal)
+
+    async def _serve_all() -> None:
+        # 并发启动所有 uvicorn.Server
+        tasks = [asyncio.create_task(s.serve()) for s in servers]
+
+        # 等所有端口可达后通知前端
+        for _ in range(120):
+            if all(check_port(p) for _, p, _ in _apps):
+                break
+            await asyncio.sleep(0.25)
+
+        print(f"[Merged] All servers ready "
+              f"(ports {MEMORY_SERVER_PORT}/{TOOL_SERVER_PORT}/{MAIN_SERVER_PORT})",
+              flush=True)
+        emit_frontend_event("startup_ready", {
+            "instance_id": INSTANCE_ID,
+            "selected": {
+                "MAIN_SERVER_PORT": MAIN_SERVER_PORT,
+                "MEMORY_SERVER_PORT": MEMORY_SERVER_PORT,
+                "TOOL_SERVER_PORT": TOOL_SERVER_PORT,
+            },
+        })
+
+        # 等所有 server 退出（收到 should_exit 后各自触发 FastAPI shutdown 事件）
+        await asyncio.gather(*tasks)
+
+    try:
+        asyncio.run(_serve_all())
+    except KeyboardInterrupt:
+        # 备用路径：如果自定义信号处理器未拦截到（理论上不会走到这里）
+        if not _exiting:
+            for s in servers:
+                s.should_exit = True
+    finally:
+        signal.signal(signal.SIGINT, _prev_sigint)
+        signal.signal(signal.SIGTERM, _prev_sigterm)
+
+    # 合并模式下第三方库（ZMQ、httpx 连接池等）可能残留非 daemon 线程，
+    # 导致 Python 解释器在 threading._shutdown() 永远等待。
+    # 所有清理已在 FastAPI shutdown handler 里完成，直接强制退出。
+    release_startup_lock()
+    os._exit(0)
+
+
 def run_memory_server(
     ready_event: Event,
     import_event: Event | None = None,
@@ -368,7 +499,7 @@ def run_memory_server(
     try:
         _reload_runtime_config_from_env()
         # 确保工作目录正确
-        if getattr(sys, 'frozen', False):
+        if IS_FROZEN:
             if hasattr(sys, '_MEIPASS'):
                 # PyInstaller
                 os.chdir(sys._MEIPASS)
@@ -453,7 +584,7 @@ def run_agent_server(
     try:
         _reload_runtime_config_from_env()
         # 确保工作目录正确
-        if getattr(sys, 'frozen', False):
+        if IS_FROZEN:
             if hasattr(sys, '_MEIPASS'):
                 # PyInstaller
                 os.chdir(sys._MEIPASS)
@@ -515,7 +646,7 @@ def run_main_server(
     try:
         _reload_runtime_config_from_env()
         # 确保工作目录正确
-        if getattr(sys, 'frozen', False):
+        if IS_FROZEN:
             if hasattr(sys, '_MEIPASS'):
                 # PyInstaller
                 os.chdir(sys._MEIPASS)
@@ -600,6 +731,8 @@ def get_port_owners(port: int) -> list[int]:
                 ["netstat", "-ano", "-p", "tcp"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=3,
                 check=False,
             )
@@ -619,6 +752,8 @@ def get_port_owners(port: int) -> list[int]:
                 ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=3,
                 check=False,
             )
@@ -1111,7 +1246,7 @@ def _ensure_playwright_browsers():
         return
 
     try:
-        if getattr(sys, "frozen", False):
+        if IS_FROZEN:
             if hasattr(sys, "_MEIPASS"):
                 _bundle = sys._MEIPASS
             else:
@@ -1134,6 +1269,8 @@ def _ensure_playwright_browsers():
             env=env,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=300,
         )
 
@@ -1188,6 +1325,21 @@ def main():
         print("=" * 60, flush=True)
         print("N.E.K.O. 服务器启动器", flush=True)
         print("=" * 60, flush=True)
+
+        # ── 合并 / 多进程模式选择 ──
+        # 打包环境默认合并（省内存），开发环境默认分离（方便调试）。
+        # 可通过环境变量 NEKO_MERGED=1/0 强制覆盖。
+        _merged_env = os.environ.get("NEKO_MERGED", "").strip().lower()
+        if _merged_env in ("1", "true", "yes"):
+            _use_merged = True
+        elif _merged_env in ("0", "false", "no"):
+            _use_merged = False
+        else:
+            _use_merged = IS_FROZEN
+
+        if _use_merged:
+            print("\n[Launcher] 合并进程模式\n", flush=True)
+            return run_merged_servers()
 
         # 1. 分步启动服务器（错开 import 阶段以降低内存峰值）
         #    Windows spawn 模式下每个子进程独立加载所有依赖，

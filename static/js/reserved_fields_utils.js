@@ -18,7 +18,7 @@ const ReservedFieldsUtils = (() => {
     }
 
     const SYSTEM_RESERVED_FIELDS_FALLBACK = Object.freeze([
-        'live2d', 'voice_id', 'system_prompt', 'model_type', 'vrm', 'vrm_animation',
+        'live2d', 'voice_id', 'system_prompt', 'model_type', 'live3d_sub_type', 'vrm', 'vrm_animation',
         'lighting', 'vrm_rotation', 'live2d_item_id', '_reserved', 'item_id', 'idleAnimation', 'idleAnimations',
         'mmd', 'mmd_animation', 'mmd_idle_animation', 'mmd_idle_animations'
     ]);

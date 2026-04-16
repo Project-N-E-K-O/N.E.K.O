@@ -305,15 +305,15 @@ function contributingSidebar(lang: 'en' | 'zh-CN' | 'ja') {
   const t = {
     en: {
       group: 'Contributing', overview: 'Overview', dev: 'Developer Notes',
-      test: 'Testing', code: 'Code Style', road: 'Roadmap',
+      test: 'Testing', code: 'Code Style', road: 'Roadmap', ai: 'AI-Assisted Dev',
     },
     'zh-CN': {
       group: '贡献指南', overview: '概览', dev: '开发者须知',
-      test: '测试', code: '代码风格', road: '路线图',
+      test: '测试', code: '代码风格', road: '路线图', ai: 'AI 辅助开发',
     },
     ja: {
       group: 'コントリビュート', overview: '概要', dev: '開発者ノート',
-      test: 'テスト', code: 'コードスタイル', road: 'ロードマップ',
+      test: 'テスト', code: 'コードスタイル', road: 'ロードマップ', ai: 'AI支援開発',
     },
   }[lang]
   const p = lang === 'en' ? '' : `/${lang}`
@@ -323,6 +323,7 @@ function contributingSidebar(lang: 'en' | 'zh-CN' | 'ja') {
       items: [
         { text: t.overview, link: `${p}/contributing/` },
         { text: t.dev, link: `${p}/contributing/developer-notes` },
+        { text: t.ai, link: `${p}/contributing/ai-assisted-dev` },
         { text: t.test, link: `${p}/contributing/testing` },
         { text: t.code, link: `${p}/contributing/code-style` },
         { text: t.road, link: `${p}/contributing/roadmap` },

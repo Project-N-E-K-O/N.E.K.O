@@ -28,7 +28,19 @@
         "fieldSeparator": "、",
         "tryAgainLater": "请稍后重试",
         "user": "用户",
-        "project": "项目"
+        "project": "项目",
+        "collapse": "收起",
+        "play": "播放",
+        "pause": "暂停",
+        "on": "开",
+        "off": "关",
+        "toneMappingNone": "无",
+        "toneMappingLinear": "线性",
+        "toneMappingReinhard": "Reinhard",
+        "toneMappingCineon": "Cineon",
+        "toneMappingACESFilmic": "ACES Filmic",
+        "toneMappingAgX": "AgX",
+        "toneMappingNeutral": "Neutral"
     },
     "characterProfile": {
         "gender": "性别",
@@ -45,7 +57,14 @@
             "档案名": "档案名",
             "性别": "性别",
             "年龄": "年龄",
-            "昵称": "昵称"
+            "昵称": "昵称",
+            "性格原型": "性格原型",
+            "种族": "种族",
+            "自称": "自称",
+            "核心特质": "核心特质",
+            "行为特点": "行为特点",
+            "厌恶": "厌恶",
+            "一句话台词": "一句话台词"
         }
     },
     "steam": {
@@ -65,6 +84,10 @@
         "tagsPreview": "标签",
         "notesPreview": "注意事项",
         "selectCharaToPreview": "请选择角色进行预览",
+        "coverBgBottom": "背景底层",
+        "characterCardCover": "角色卡封面",
+        "coverBgTop": "背景顶层",
+        "selectCharacterForCover": "请选择角色查看封面",
         "characterModelNotSet": "当前角色未设置模型",
         "selectCharacterCard": "请选择一个角色卡",
         "characterCardNotFound": "找不到角色卡数据",
@@ -93,6 +116,14 @@
         "live2dInitFailed": "Live2D预览环境初始化失败",
         "live2dPreviewLoaded": "Live2D模型预览加载成功",
         "live2dPreviewLoadFailed": "Live2D模型预览加载失败：{{error}} ",
+        "searchAriaLabel": "搜索订阅内容",
+        "sortAriaLabel": "排序方式",
+        "vrmModuleLoadFailed": "VRM 模块加载失败",
+        "vrmPreviewLoaded": "VRM 模型预览已加载",
+        "vrmPreviewFailed": "VRM 模型预览加载失败",
+        "mmdModuleLoadFailed": "MMD 模块加载失败",
+        "mmdPreviewLoaded": "MMD 模型预览已加载",
+        "mmdPreviewFailed": "MMD 模型预览加载失败",
         "placeholderCharacterName": "输入角色名称",
         "placeholderDescription": "输入描述",
         "placeholderCharacterSetting": "输入设定",
@@ -124,7 +155,7 @@
         "subscriptionsUpdated": "订阅列表已更新",
         "unsubscribeFailed": "取消订阅失败: {{error}}",
         "unsubscribeError": "取消订阅时发生错误，请稍后再试",
-        "validatingFolderPath": "正在验证文件夹路径...",
+        "validatingFolderPath": "正在验证文件夹: {{path}}",
         "previewImageMissing": "预览图片文件不存在，请检查路径",
         "uploadReady": "准备上传 {{itemName}}",
         "pageDescription": "通过此页面，您可以浏览、订阅、下载和管理Steam创意工坊中的Live2D模型和声音",
@@ -307,6 +338,7 @@
         "default": "默认",
         "noVoiceSelected": "未选择音色",
         "noDescription": "暂无描述",
+            "characterSettingsFile": "角色设置文件",
         "workshopAgreementText": "点击\"上传\"即表示您同意 Steam 创意工坊服务条款，包括创意工坊法律协议：",
         "alreadyUploaded": "已上传到创意工坊",
         "uploadTime": "上传时间",
@@ -503,6 +535,7 @@
         "AGENT_CU_CAPABILITY_LOST": "Computer Use 不可用：$t(agent.precheck.{{reason_code}})",
         "TTS_CONNECTION_FAILED": "TTS服务连接失败: {{msg}}",
         "TTS_RECONNECTING": "🔄 语音服务正在自动重连，请稍候...",
+        "TTS_WATERMARK_DETECTED": "⚠️ 检测到智谱CogTTS音频水印（滴滴声），如需去除水印请前往智谱控制台手动配置。",
         "TTS_CUSTOM_URL_NOT_CONFIGURED": "未配置 GPT-SoVITS API URL，请先在 API 设置中启用并配置自定义 TTS",
         "TTS_CUSTOM_URL_LOCALHOST_ONLY": "GPT-SoVITS API URL 必须为 localhost",
         "TTS_AUDIO_API_KEY_MISSING": "未配置音频 API 密钥 (AUDIO_API_KEY)",
@@ -520,7 +553,7 @@
         "title": "对话",
         "viewerTitle": "对话 (观看模式)",
         "tooltip": "对话区",
-        "textInputPlaceholder": "文字聊天模式...回车发送，Shift+回车换行",
+        "textInputPlaceholder": "回车发送，Shift+回车换行",
         "send": "发送",
         "importImage": "导入图片",
         "importImageAriaLabel": "导入图片",
@@ -542,6 +575,27 @@
         "avatarPreviewPlaceholder": "AVATAR",
         "avatarPreviewCardNote": "将基于当前显示中的 Live2D / VRM / MMD 模型生成头像。",
         "avatarPreviewRefresh": "刷新头像",
+        "avatarPreviewReady": "头像已更新",
+        "avatarPreviewReadyHint": "这是从当前模型画布实时提取的头像预览。",
+        "avatarPreviewWaiting": "等待当前模型头像缓存生成",
+        "avatarPreviewUnavailable": "头像预览功能尚未就绪。",
+        "avatarPreviewInputHidden": "当前输入区已隐藏，请回到文字聊天界面后再查看头像。",
+        "avatarPreviewCachedHint": "已显示当前模型的缓存头像，点击刷新可重新生成。",
+        "avatarPreviewRefreshing": "正在刷新当前头像...",
+        "avatarPreviewGenerating": "正在生成当前头像...",
+        "avatarPreviewFailed": "生成头像失败",
+        "avatarCropperTitle": "调整头像裁剪区域",
+        "avatarPreviewCropping": "请调整裁剪区域",
+        "avatarPreviewCropCancelled": "已取消手动裁剪，保持原头像不变。",
+        "avatarCropMoveUp": "上移",
+        "avatarCropMoveDown": "下移",
+        "avatarCropMoveLeft": "左移",
+        "avatarCropMoveRight": "右移",
+        "avatarCropCenter": "居中",
+        "avatarCropZoomIn": "放大",
+        "avatarCropZoomOut": "缩小",
+        "avatarCropCancel": "取消",
+        "avatarCropSave": "保存",
         "emptyState": "聊天内容接入后会显示在这里。",
         "messageStreaming": "生成中",
         "messageFailed": "发送失败",
@@ -564,7 +618,50 @@
         "emojiButtonAriaLabel": "表情",
         "attachmentButtonAriaLabel": "附件",
         "jukebox": "点歌台",
-        "jukeboxLabel": "点歌台"
+        "jukeboxLabel": "点歌台",
+        "exportConversation": "导出对话",
+        "exportSelected": "导出所选",
+        "exportPreviewTitle": "导出预览",
+        "exportPreviewSummary": "已选 {{count}} 条",
+        "exportPreviewEmpty": "当前没有可预览的内容",
+        "exportFormatLabel": "导出格式",
+        "exportFormatMarkdown": "Markdown",
+        "exportFormatImage": "图片",
+        "exportImageFormatPng": "PNG",
+        "exportImageFormatJpeg": "JPEG",
+        "exportImageFormatWebp": "WebP",
+        "exportImageStyleNeko": "N.E.K.O",
+        "exportImageStyleOriginal": "原生",
+        "exportImageStylePoster": "清新",
+        "exportImageStyleLyrics": "歌词",
+        "exportPosterTitle": "对话精华",
+        "exportPosterSubtitle": "来自 N.E.K.O 的分享",
+        "exportImageFormatUnsupported": "当前环境不支持 {{format}} 格式",
+        "confirmExportAs": "导出 {{format}}",
+        "exportMarkdownPreviewSubtitle": "导出 Markdown 的渲染预览",
+        "exportPreviewLoading": "正在生成预览…",
+        "exportPreviewFailed": "预览生成失败",
+        "previewOpenWindow": "在新窗口打开",
+        "previewClose": "关闭",
+        "previewOpenBlocked": "无法打开新的预览窗口",
+        "previewOpenFailed": "无法打开预览窗口",
+        "copyMarkdown": "复制 Markdown",
+        "copyMarkdownSuccess": "Markdown 已复制到剪贴板",
+        "copyMarkdownFailed": "复制 Markdown 失败",
+        "exportEmpty": "暂时没有可以导出的对话",
+        "exportSelectionEmpty": "请至少选择一条消息",
+        "exportSuccess": "对话已成功导出",
+        "exportFileTitle": "Project N.E.K.O 对话导出",
+        "exportGeneratedAt": "导出时间",
+        "exportUser": "我",
+        "exportAssistant": "N.E.K.O.",
+        "exportImageLabel": "图片",
+        "exportAudioLabel": "音频",
+        "exportVideoLabel": "视频",
+        "exportSelectAll": "全选",
+        "exportSelectNone": "取消",
+        "exportSelectInvert": "反选",
+        "exportSelectionCount": "已选 {{selected}} / 共 {{total}}"
     },
     "voiceControl": {
         "startVoice": "开始语音",
@@ -687,7 +784,7 @@
         "assistApiKeyGemini": "辅助API Key - Gemini",
         "assistApiKeyKimi": "辅助API Key - Kimi",
         "assistApiKeyHint": "（仅当辅助API为{{provider}}时需要填写）",
-        "assistApiKeyPlaceholder": "可选，默认为核心API Key",
+        "assistApiKeyPlaceholder": "留空使用管理簿对应 Key",
         "providerNames": {
             "ali": "阿里",
             "openai": "OpenAI",
@@ -701,7 +798,7 @@
             "qwen": "Qwen-Omni（阿里百炼，速度最快，推荐⭐）",
             "qwen_intl": "Qwen-Omni（阿里国际版）",
             "openai": "GPT-Realtime（OpenAI）",
-            "glm": "GLM-realtime（智谱）",
+            "glm": "GLM-Realtime（智谱，有免费额度，语音含水印需去控制台设置去除）",
             "step": "Step-2-Audio（阶跃星辰）",
             "gemini": "Gemini Live（谷歌，效果最好，国内版不支持）"
         },
@@ -720,12 +817,13 @@
             "minimax": "MiniMax（国服）",
             "minimax_intl": "MiniMax（国际服）",
             "claude": "Claude（Anthropic，国内无法使用）",
-            "grok": "Grok（xAI）"
+            "grok": "Grok（xAI）",
+            "openrouter": "OpenRouter（模型聚合，国内无法使用）"
         },
         "coreApiAutoFillHint": "Key从API管理簿自动填充，也可在此直接输入",
         "assistApiSelectLabel": "辅助API服务商",
         "assistApiKeyLabel": "辅助API Key",
-        "assistApiAutoFillHint": "Key从API管理簿自动填充，也可在此直接输入",
+        "assistApiAutoFillHint": "留空时自动使用管理簿中的Key，手动输入则独立保存",
         "keyBookTitle": "API 管理簿",
         "keyBookDescription": "统一管理所有API Key。核心API和辅助API切换服务商时会自动从此处读取Key，在核心/辅助区域输入的Key也会自动回写到此处。",
         "keyBookPlaceholder": "请先加载API服务商配置",
@@ -733,6 +831,8 @@
         "keyAutoFilledFromKeyBook": "Key从API管理簿自动填充，请在管理簿中配置",
         "goToKeyBook": "前往管理簿",
         "providerLabel": "服务商",
+        "providerSelectPlaceholder": "请选择服务商",
+        "noOptionsAvailable": "暂无可选项",
         "customModelProviderFollowCore": "跟随核心API",
         "customModelProviderFollowAssist": "跟随辅助API",
         "customModelProviderCustom": "自定义",
@@ -750,14 +850,15 @@
             "minimax": "MiniMax（国服）",
             "minimax_intl": "MiniMax（国际服）",
             "claude": "Claude（Anthropic）",
-            "grok": "Grok（xAI）"
+            "grok": "Grok（xAI）",
+            "openrouter": "OpenRouter"
         },
         "freeVersionNoApiKey": "免费版无需API Key",
         "pleaseEnterApiKey": "请输入您的API Key",
         "freeVersionOnlyWhenCoreFree": "免费版（仅核心API为免费版时可用）",
         "freeVersionConfig": "免费版配置：支持音视频对话、文本对话和记忆管理，不支持自定义语音、Agent模式",
         "qwenRecommendation": "阿里作为核心API时，建议辅助API也选择阿里以获得最佳的自定义语音体验",
-        "glmRecommendation": "智谱的音视频对话模型GLM-Realtime已暂时下架，无法作为核心API使用",
+        "glmRecommendation": "智谱作为核心API时，有免费额度，支持联网搜索。语音默认含水印滴滴声（可在智谱控制台手动关闭）。建议辅助API选择阿里以支持自定义语音功能",
         "openaiRecommendation": "OpenAI作为核心API时，建议辅助API选择阿里以支持自定义语音功能",
         "stepRecommendation": "阶跃星辰作为核心API时，建议辅助API选择阿里以支持自定义语音功能",
         "geminiRecommendation": "Gemini作为核心API时，建议辅助API选择阿里以支持自定义语音功能",
@@ -810,7 +911,7 @@
         "apiUrl": "API URL",
         "apiKey": "API Key",
         "modelId": "模型ID",
-        "agentApiConfigTitle": "Agent API 配置",
+        "agentApiConfigTitle": "Agent API 配置（需支持视觉功能）",
         "providerPlaceholder": "如：openai、azure、local",
         "apiUrlPlaceholder": "如：https://api.openai.com/v1",
         "modelIdPlaceholder": "如：gpt-5.1-chat-latest、qwen-flash",
@@ -912,6 +1013,7 @@
             "hitAreaId": "触摸区域",
             "close": "关闭",
             "configSaved": "触摸反应配置已保存",
+            "saved": "已保存",
             "noHitAreas": "模型没有定义可触摸位置",
             "modelNotFound": "当前没有加载模型",
             "modelDataNotReady": "模型内部数据未准备好",
@@ -1187,6 +1289,8 @@
         "prefixShouldBeEnglishLetterAndNumber": "前缀应为英文字母和数字",
         "invalidApiKeyProvided": "提供的API密钥无效",
         "requestError": "请求出错：{{error}}",
+        "serverNonJsonError": "服务端返回了非JSON响应 (HTTP {{status}})：{{snippet}}",
+        "serverRouteNotFound": "接口未找到 (HTTP {{status}})，请确认服务端已正确部署并重启",
         "voiceIdSaveFailed": "voice_id自动保存失败: {{error}}",
         "voiceIdSaved": "voice_id已自动保存到角色",
         "pageWillRefresh": "当前页面即将自动刷新以应用新语音",
@@ -1323,6 +1427,7 @@
         "profileNameContainsSlash": "档案名不能包含路径分隔符(/或\\)",
         "profileNameContainsDot": "档案名不能包含点号(.)",
         "profileNameInvalidChars": "档案名只能包含文字、数字、空格、下划线、连字符、括号、间隔号(·/・)和撇号",
+        "profileNameReservedRoute": "此名称是系统保留的路由名称，不能用作档案名",
         "newProfileNameRequired": "新档案名不能为空",
         "newProfileNameTooLong": "档案名过长",
         "required": "*",
@@ -1392,6 +1497,7 @@
         "unregisterVoiceTitle": "解除声音注册",
         "voiceUnregistered": "声音注册已解除",
         "unregisterFailed": "解除注册失败",
+        "partialSaveVoiceFailed": "角色已保存，但音色更新失败: {{error}}",
         "unregisterError": "解除注册时发生错误",
         "switchFailed": "切换失败",
         "switchError": "切换猫娘时发生错误",
@@ -1467,6 +1573,7 @@
         "switchingCatgirl": "正在切换到 {{name}}...",
         "switchedCatgirl": "已切换到 {{name}}",
         "switchCatgirlFailed": "切换到 {{name}} 失败",
+        "switchCatgirlError": "切换失败: {{error}}",
         "started": "{{name}} 已启动",
         "voiceUpdated": "{{name}} 的语音已更新",
         "audioWorkletFailed": "AudioWorklet加载失败",
@@ -1489,6 +1596,7 @@
         "connectingToServer": "正在连接服务器...",
         "readyToSpeak": "可以说话了！",
         "screenShareRequiresVoice": "屏幕分享仅用于音视频通话",
+        "screenRecordingPermissionDenied": "⚠️ 屏幕录制权限未授权，请在系统设置中允许屏幕录制",
         "repetitionDetected": "检测到高重复度对话。建议您终止对话，让{{name}}休息片刻。",
         "modelSwitched": "模型已切换",
         "screenSource": {
@@ -1497,6 +1605,7 @@
             "noSources": "没有可用的屏幕源",
             "loadFailed": "获取屏幕源失败",
             "screens": "屏幕",
+            "screenLabel": "屏幕 {{index}}",
             "windows": "窗口",
             "selected": "已选择 {{source}}",
             "sourceLost": "屏幕分享无法找到之前选择窗口，已切换为全屏分享"
@@ -1574,6 +1683,7 @@
             "browserUse": "浏览器控制",
             "focusMode": "允许打断",
             "unavailable": "{{name}}不可用",
+            "toggleFailed": "{{name}}切换失败: {{error}}",
             "checking": "查询中...",
             "serverOffline": "猫爪服务器未启动",
             "masterRequired": "请先开启猫爪总开关",
@@ -1584,6 +1694,7 @@
             "openfang": "专属桌面",
             "userPluginAdapting": "用户插件（开发中）",
             "openclawConnect": "OpenClaw",
+            "openclawGuide": "OpenClaw 接入教程",
             "chatSettings": "对话设置",
             "animationSettings": "动画设置",
             "renderQuality": "画质",
@@ -1598,6 +1709,7 @@
             "mouseTracking": "跟踪鼠标",
             "fullscreenTracking": "全屏跟踪",
             "localTracking": "局部跟踪",
+            "lockedHoverFade": "锁定悬停淡化",
             "textGuardMaxLength": "回复字数限制",
             "unlimited": "无限制",
             "characters": "字",
@@ -1606,9 +1718,20 @@
             "textGuardNote": "仅对文本回复有效，不影响语音对话"
         }
     },
+    "openclawGuide": {
+        "windowTitle": "OpenClaw 接入教程 - N.E.K.O.",
+        "pageTitle": "OpenClaw 接入教程",
+        "pageSubtitle": "把 OpenClaw 安装、通道放置、健康检查与 N.E.K.O 配置串起来，按一条路径接通。",
+        "sourceLabel": "教程来源",
+        "contentLanguageNotice": "语言切换会同时更新页面控件文案和正文内容。",
+        "languageLabel": "语言",
+        "guideUnavailable": "教程内容为空。"
+    },
     "subtitle": {
         "title": "实时字幕",
-        "enable": "开启字幕翻译"
+        "enable": "字幕翻译",
+        "enableAriaLabel": "字幕翻译开关",
+        "markdownPlaceholder": "[格式化内容]"
     },
     "viewer": {
         "title": "Viewer - Project N.E.K.O."
@@ -1626,7 +1749,8 @@
             "freeModelWarning": "由于限额问题，免费模型使用猫爪模式容易阻塞，建议您切换至自费模型。\n\n如果您已经配置好自费API，请尝试重启NEKO。",
             "freeModelWarningTitle": "免费模型提示",
             "connectivityCheck": "猫爪 LLM 连接检查中...",
-            "precheckFailed": "猫爪预检失败：{{reason}}"
+            "precheckFailed": "猫爪预检失败：{{reason}}",
+            "toggleFailed": "Agent切换失败: {{error}}"
         },
         "precheck": {
             "AGENT_PRECHECK_PENDING": "连接检查中...",
@@ -1761,7 +1885,10 @@
             "selectedCount": "已选 {{count}} 个",
             "changed": "待机动作已切换",
             "changeFailed": "切换待机动作失败"
-        }
+        },
+        "managerInitFailed": "MMD 管理器初始化失败",
+        "modelLoading": "正在加载 MMD 模型...",
+        "modelLoaded": "MMD 模型加载成功"
     },
     "modelManager": {
         "vrmLoadingDependencies": "[VRM] 开始加载依赖模块",
@@ -1867,11 +1994,11 @@
         },
         "step1b": {
             "title": "🖱️ 拖拽与缩放",
-            "desc": "你可以拖拽猫娘移动位置，也可以用鼠标滚轮放大缩小，试试看吧~"
+            "desc": "你可以拖拽猫娘移动位置，也可以用<strong>鼠标滚轮</strong>放大缩小，试试看吧~"
         },
         "step1c": {
             "title": "🔒 锁定猫娘",
-            "desc": "点击这个锁可以锁定猫娘位置，防止误触移动。再次点击可以解锁~"
+            "desc": "点击这个锁可以锁定猫娘位置，防止误触移动。锁定后周围的浮动工具栏也不会再出现。再次点击可以解锁~"
         },
         "step2": {
             "title": "💬 对话区域",
@@ -1895,15 +2022,15 @@
         },
         "step7": {
             "title": "🖥️ 屏幕分享",
-            "desc": "分享屏幕/窗口/标签页，让猫娘看到你的画面~"
+            "desc": "开启后会持续地将屏幕分享给猫娘，只能在语音对话期间使用~"
         },
         "step8": {
             "title": "🔨 猫爪",
-            "desc": "打开猫爪面板，使用 computer use、browser use 和 plugin 等功能~"
+            "desc": "打开猫爪面板，使用键鼠控制、浏览器控制和用户插件等功能。让猫娘使用你的电脑、帮你工作、陪你游戏~"
         },
         "step9": {
             "title": "💤 请她离开",
-            "desc": "让猫娘暂时离开并隐藏界面，需要时可点击\"请她回来\"恢复~"
+            "desc": "让猫娘暂时离开并隐藏界面，需要时可点击\"请她回来\"恢复~ <strong>当她出现问题时，让她离开休息一会儿，往往能解决问题。</strong>"
         },
         "step10": {
             "title": "⚙️ 设置",
@@ -1915,7 +2042,7 @@
         },
         "step14": {
             "title": "👀 自主视觉",
-            "desc": "开启后猫娘会主动读取画面信息，间隔可在此调整~"
+            "desc": "与语音会话中实时传输的屏幕分享不同，开启自主视觉后猫娘会时不时自己看一眼你的屏幕。间隔可在此调整~"
         },
         "step15": {
             "title": "👤 角色管理",
@@ -1942,10 +2069,10 @@
             },
             "menu": {
                 "title": "📋 托盘菜单",
-                "desc": "右下角托盘里会有 N.E.K.O 的图标，右键点击会出现很多选项。下面是两个常用功能："
+                "desc": "右键点击系统托盘（见上一步提示）中的 N.E.K.O 图标即可打开菜单。以下是一些常用功能："
             },
             "reset": {
-                "title": "🔄 复位模型位置",
+                "title": "🔄 重置角色位置",
                 "desc": "如果猫娘被拖到屏幕外或位置不理想，点击这个选项可以让她回到默认位置~"
             },
             "switchMode": "切换桌面/移动模式",
@@ -1961,11 +2088,15 @@
                 "title": "🎉 引导完成！",
                 "desc": "恭喜你完成了所有引导！现在你已经了解了 N.E.K.O 的主要功能。开始享受和猫娘的互动吧！如需重新查看引导，可以在设置中点击「重置引导」~"
             },
-            "resetPosition": "复位模型位置",
+            "resetPosition": "重置角色位置",
+            "resetPositionDesc": "猫娘跑到屏幕外时，点此恢复默认位置~",
+            "openChat": "打开对话框",
+            "openChatDesc": "打开独立的对话框进行文字对话~",
+            "important": "重要：",
             "compatibility": "兼容模式",
-            "hotkeyDesc": "在这里可以设置全局快捷键，让你更高效地控制 N.E.K.O~",
+            "hotkeyDesc": "设置全局快捷键，更高效地控制 N.E.K.O~",
             "uploadLogs": "上传日志",
-            "exitDesc": "想要关闭 N.E.K.O 时，在这里点击退出即可。因为窗口是无边框的，所以托盘菜单是退出应用的主要方式~"
+            "exitDesc": "关闭 N.E.K.O。托盘菜单是退出应用的主要方式~"
         },
         "completed": "✨ 引导完成！祝你使用愉快~",
         "resetHint": {
@@ -2045,6 +2176,24 @@
                 "step9": {
                     "title": "🎞️ 色调映射",
                     "desc": "选择不同的色调映射算法，决定画面亮部和暗部的呈现风格。"
+                }
+            },
+            "mmd": {
+                "step1": {
+                    "title": "🎭 选择 MMD 模型",
+                    "desc": "在 Live3D（MMD）模式下从这里选择要使用的模型。MMD 与 VRM 共用同一模型列表。"
+                },
+                "step2": {
+                    "title": "💃 VMD 动画",
+                    "desc": "为 MMD 模型选择 VMD 动作。也可使用「导入 VMD 动画」添加自定义动作文件。"
+                },
+                "step3": {
+                    "title": "🌟 MMD 光照",
+                    "desc": "在「MMD 模型设置」中调节环境光、主光源、曝光与色调映射等，控制 3D 画面效果。"
+                },
+                "step4": {
+                    "title": "😄 情感配置",
+                    "desc": "先选好模型后，可由此进入情感配置。Live3D 下 MMD 与 VRM 共用此入口，与 Live2D 的「情感配置」不是同一个按钮。"
                 }
             }
         },
@@ -2478,6 +2627,7 @@
         "weibo": "🌏 微博",
         "twitter": "🐦 Twitter/X",
         "reddit": "👽 Reddit",
+        "netease": "🎶 网易云音乐",
         "saveConfig": "保存配置",
         "encryptStorage": "安全加密存储至本地文件",
         "localMonitoring": "本地状态监控",
@@ -2503,7 +2653,8 @@
             "kuaishou": "📌 <b>目标：</b> 请前往 <b>kuaishou.com</b> 获取这些 Cookies。",
             "weibo": "📌 <b>目标：</b> 请前往 <b>weibo.com</b> 获取这些 Cookies。",
             "twitter": "📌 <b>目标：</b> 请前往 <b>x.com</b> 获取这些 Cookies。",
-            "reddit": "📌 <b>目标：</b> 请前往 <b>reddit.com</b> 获取这些 Cookies。"
+            "reddit": "📌 <b>目标：</b> 请前往 <b>reddit.com</b> 获取这些 Cookies。",
+            "netease": "📌 <b>目标：</b> 请前往 <b>music.163.com</b> 获取这些 Cookies。"
         },
         "guide": {
             "title": "新手通用获取教程",
@@ -2585,6 +2736,14 @@
             "csrftoken": {
                 "label": "csrftoken",
                 "desc": "CSRF 令牌"
+            },
+            "MUSIC_U": {
+                "label": "MUSIC_U",
+                "desc": "核心身份凭证 (必填)"
+            },
+            "NMTID": {
+                "label": "NMTID",
+                "desc": "设备标识 (选填)"
             }
         },
         "status": {
@@ -2596,6 +2755,7 @@
             "openQR": "📱 打开扫码登录",
             "loading": "正在获取二维码...",
             "scanTitle": "📱 扫码登录 {{platform}}",
+            "qrCodeAlt": "登录二维码",
             "waiting": "等待扫码...",
             "validFor": "二维码有效期: {{seconds}}秒",
             "refreshQR": "刷新二维码",
@@ -2608,7 +2768,14 @@
                 "scanned": "📱 {{message}}",
                 "waiting": "{{message}}..."
             },
-            "successAlert": "扫码登录成功！Cookie 已自动填入，请点击保存配置"
+            "statusMessage": {
+                "success": "登录成功",
+                "expired": "二维码已过期",
+                "scanned": "已扫码，请在手机上确认",
+                "waiting": "等待扫码"
+            },
+            "successAlert": "扫码登录成功！Cookie 已自动填入，请点击保存配置",
+            "extractFailed": "⚠️ 扫码成功但未能自动提取到字段，请手动检查。"
         }
     },
     "music": {
@@ -2627,7 +2794,10 @@
         "playError": "音乐播放加载失败",
         "loadError": "音乐播放器加载失败",
         "autoplayBlocked": "浏览器限制了自动播放，请点击播放按钮",
-        "ended": "已结束"
+        "ended": "已结束",
+        "unknownState": "未知状态",
+        "volume": "音量: ",
+        "unsafeSource": "已拦截不安全音源: {{domain}}"
     },
     "Jukebox": {
         "title": "点歌台",
@@ -2638,6 +2808,10 @@
         "playing": "正在播放: {{name}} - {{artist}}",
         "error": "错误: {{message}}",
         "volume": "音量",
+        "mute": "静音",
+        "noSongPlaying": "没有正在播放的歌曲",
+        "noActionBound": "当前歌曲没有绑定动画",
+        "adjustOffsetFailed": "调整偏移失败",
         "stop": "停止",
         "sequence": "序号",
         "song": "歌曲",
@@ -2681,8 +2855,91 @@
         "idleRestoreFailed": "恢复待机动画失败",
         "btnNotFoundGiveUp": "点歌台按钮在重试后仍未找到，放弃绑定",
         "minimizeBtnNotFoundGiveUp": "最小化按钮在重试后仍未找到，放弃监听",
-        "noticeDance": "💃 伴舞服务仅在载入 MMD 形象时可用",
-        "noticeMusic": "⚠️ 当前歌曲仅供测试，后续版本将清除版权音乐，请自行导入"
+        "noticeDance": "💃 伴舞服务目前仅在载入 3D 模型（MMD / VRM）时可用，后续会增加更多互动",
+        "noticeMusic": "⚠️ 当前歌曲仅供测试，后续版本将清除版权音乐，请自行导入",
+        "manager": "管理器",
+        "managerTitle": "管理器",
+        "songs": "歌曲",
+        "actions": "动作",
+        "bindings": "绑定",
+        "import": "导入",
+        "export": "导出",
+        "exportAll": "全部导出",
+        "exportAllIgnoreHidden": "全部导出(忽略隐藏)",
+        "exportAllIncludeHidden": "全部导出(含隐藏)",
+        "exportSelected": "导出选中",
+        "dragZipHint": "支持拖拽 ZIP 文件或文件夹到此处导入",
+        "unifiedDropHint": "支持拖拽歌曲、动作、导入包到此处",
+        "clickToAdd": "点击添加",
+        "dragMp3Hint": "拖拽 MP3 文件到此处添加歌曲",
+        "dragVmdHint": "拖拽 VMD 文件到此处添加动画",
+        "showHiddenSongs": "显示隐藏的歌曲",
+        "selectAll": "全选",
+        "noActions": "暂无动画",
+        "show": "显示",
+        "hide": "隐藏",
+        "delete": "删除",
+        "unknown": "未知",
+        "defaultAction": "默认动画",
+        "clickSetDefault": "点击设为默认",
+        "format": "格式",
+        "addSong": "添加歌曲",
+        "addAction": "添加动画",
+        "songList": "歌曲列表 (拖拽到右侧)",
+        "actionList": "动画列表 (拖拽到左侧)",
+        "unbind": "解除绑定",
+        "addBinding": "手动添加绑定",
+        "addSongBinding": "手动添加歌曲绑定",
+        "addActionBinding": "手动添加动画绑定",
+        "cancel": "取消",
+        "confirm": "确认",
+        "confirmDeleteSong": "确定要删除歌曲 \"{{name}}\" 吗？\n此操作不可恢复！",
+        "confirmDeleteAction": "确定要删除动画 \"{{name}}\" 吗？\n此操作不可恢复！",
+        "deleteFailed": "删除失败",
+        "setDefaultFailed": "设置失败",
+        "exportFailed": "导出失败",
+        "selectExportFirst": "请先选择要导出的歌曲或动画",
+        "notExist": "{{type}}不存在",
+        "songNotExist": "歌曲不存在",
+        "actionNotExist": "动画不存在",
+        "inputIndexOrName": "输入序号或名称",
+        "frame": "帧",
+        "offset": "偏移",
+        "selectedSongs": "已选择 {{count}} 首歌曲",
+        "selectedActions": "已选择 {{count}} 个动画",
+        "selectedSeparator": "，",
+        "selectedInfo": "已选择 {{songCount}} 首歌曲，{{actionCount}} 个动画",
+        "missing": "缺失",
+        "unknownError": "未知错误",
+        "calibration": "校准动画",
+        "calibrationTitle": "动画校准",
+        "fps": "FPS",
+        "currentFrame": "当前帧",
+        "reset": "重置",
+        "calibrationHint": "使用按钮微调或拖拽进度条校准",
+        "calibrateAnimation": "校准动画",
+        "animationCalibration": "动画校准",
+        "closeCalibration": "关闭校准控制台",
+        "advance1s": "动画提前1秒",
+        "advance10f": "动画提前10帧",
+        "advance1f": "动画提前1帧",
+        "delay1f": "动画推迟1帧",
+        "delay10f": "动画推迟10帧",
+        "delay1s": "动画推迟1秒",
+        "frames": "帧",
+        "operationFailed": "操作失败",
+        "saveFailed": "保存失败",
+        "importSuccess": "导入成功！",
+        "importFailed": "导入失败",
+        "importSongsAdded": "新增 {{count}} 首歌曲",
+        "importSongsMerged": "合并 {{count}} 首歌曲",
+        "importActionsAdded": "新增 {{count}} 个动画",
+        "importActionsMerged": "合并 {{count}} 个动画",
+        "importBindingsAdded": "新增 {{count}} 个绑定",
+        "noChanges": "无变化",
+        "noImportFilesFound": "未找到可导入的文件",
+        "missingConfigJson": "文件夹中缺少 config.json 文件",
+        "folderImportFailed": "文件夹导入失败"
     },
     "notice": {
         "voiceMigration": {
@@ -2698,5 +2955,8 @@
             "title": "表情包",
             "loadError": "表情包加载失败"
         }
+    },
+    "achievement": {
+        "unlocked": "🏆 成就解锁: {{description}}"
     }
 }

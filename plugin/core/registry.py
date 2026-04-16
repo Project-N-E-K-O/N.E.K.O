@@ -545,22 +545,8 @@ def register_plugin(
     
     # 如果 ID 被重命名，更新插件元数据
     if resolved_id != plugin.id:
-        plugin = PluginMeta(
-            id=resolved_id,
-            name=plugin.name,
-            type=plugin.type,
-            description=plugin.description,
-            version=plugin.version,
-            sdk_version=plugin.sdk_version,
-            sdk_recommended=plugin.sdk_recommended,
-            sdk_supported=plugin.sdk_supported,
-            sdk_untested=plugin.sdk_untested,
-            sdk_conflicts=plugin.sdk_conflicts,
-            input_schema=plugin.input_schema,
-            author=plugin.author,
-            dependencies=plugin.dependencies,
-        )
-    
+        plugin = plugin.model_copy(update={"id": resolved_id})
+
     with state.acquire_plugins_write_lock():
         plugin_dump = plugin.model_dump()
         if config_path is not None:
@@ -674,11 +660,26 @@ def _build_plugin_meta(
             email=author_data.get("email"),
         )
 
+    # 读取 keywords (正则表达式列表) 和 short_description
+    raw_keywords = pdata.get("keywords", [])
+    keywords: list[str] = []
+    if isinstance(raw_keywords, list):
+        for kw in raw_keywords:
+            if isinstance(kw, str) and kw.strip():
+                keywords.append(kw.strip())
+    short_desc = str(pdata.get("short_description", "") or "").strip()
+    if len(short_desc) > 300:
+        short_desc = short_desc[:300]
+    passive = parse_bool_config(pdata.get("passive"), default=False)
+
     return PluginMeta(
         id=pid,
         name=pdata.get("name", pid),
         type=pdata.get("type", "plugin"),
         description=pdata.get("description", ""),
+        short_description=short_desc,
+        keywords=keywords,
+        passive=passive,
         version=pdata.get("version", "0.1.0"),
         sdk_version=sdk_supported_str or SDK_VERSION,
         sdk_recommended=sdk_recommended_str,
@@ -969,6 +970,8 @@ def _parse_single_plugin_config(
                 base_config=conf,
                 config_path=toml_path,
             )
+            # Refresh pdata from post-overlay config so new fields (passive, keywords, etc.) pick up overrides
+            pdata = conf.get("plugin") or pdata
     except Exception as e:
         logger.warning(
             "Plugin {}: failed to apply user config profile overlay: {}. Using base config only.",

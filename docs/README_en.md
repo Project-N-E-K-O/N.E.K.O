@@ -390,23 +390,31 @@ After container startup:
 
 > Full developer documentation at [project-neko.online](https://project-neko.online)
 
-**Requirements**: Python 3.11 (other versions not supported), [uv](https://docs.astral.sh/uv/) package manager
+**Requirements**: Python 3.11 (other versions not supported), [uv](https://docs.astral.sh/uv/) package manager, Node.js (>=20.19)
 
 ```bash
 # 1. Clone the project
 git clone https://github.com/Project-N-E-K-O/N.E.K.O.git
 cd N.E.K.O
 
-# 2. Install dependencies
+# 2. Install Python dependencies
 uv sync
 
-# 3. Start services (main_server and memory_server required at minimum)
+# 3. Build frontend projects (requires Node.js >= 20.19; needed on first run or after frontend changes)
+#    Recommended: use the convenience script (this is the officially supported build path)
+#      Windows:      build_frontend.bat
+#      Linux/macOS:  ./build_frontend.sh
+#    Manual build (must match what the script runs):
+# cd frontend/react-neko-chat && npm install && npm run build && cd ../..
+# cd frontend/plugin-manager && npm install && npm run build-only && cd ../..
+
+# 4. Start services (main_server and memory_server required at minimum)
 uv run python memory_server.py
 uv run python main_server.py
 # Optional: start Agent service
 uv run python agent_server.py
 
-# 4. Visit http://localhost:48911 to configure API Key and start using
+# 5. Visit http://localhost:48911 to configure API Key and start using
 ```
 
 Developers are encouraged to join QQ group 1022939659.
@@ -456,6 +464,7 @@ Visit `http://localhost:48911/api_key` to configure directly through the Web int
 
 ```
 N.E.K.O/
+├── 📁 .agent/                   # 🤖 AI coding assistant rules & skills (Google Antigravity convention)
 ├── 📁 brain/                    # 🧠 Agent modules
 │   ├── computer_use.py          # Computer control
 │   ├── browser_use_adapter.py   # Browser automation
@@ -478,17 +487,21 @@ N.E.K.O/
 │   ├── facts/                   # Fact memory
 │   ├── reflection/              # Reflection memory
 │   └── persona/                 # Persona memory
+├── 📁 frontend/                 # 🖥️ Modern frontend projects
+│   ├── react-neko-chat/         # React chat window component
+│   └── plugin-manager/          # Vue plugin manager dashboard
 ├── 📁 plugin/                   # 🔌 Plugin system
 │   ├── sdk/                     # Plugin SDK
-│   ├── server/                  # Plugin server
-│   └── frontend/                # Plugin frontend
-├── 📁 static/                   # 🌐 Frontend static resources
+│   └── server/                  # Plugin server
+├── 📁 static/                   # 🌐 Frontend static resources (incl. build artifacts)
 ├── 📁 templates/                # 📄 Frontend HTML templates (14 pages)
 ├── 📁 utils/                    # 🛠️ Utility modules
 ├── main_server.py               # 🌐 Main server
 ├── agent_server.py              # 🤖 AI agent server
 └── memory_server.py             # 🧠 Memory server
 ```
+
+> **AI-Assisted Development**: The `.agent/` directory follows the Google Antigravity open convention and contains the project's development rules and skill sets. Only Antigravity auto-reads it; all other AI tools (including Claude Code) need to import manually. See the [adaptation guide](https://project-neko.online/contributing/ai-assisted-dev).
 
 **Data Flow**
 

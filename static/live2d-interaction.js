@@ -65,19 +65,23 @@ Live2DManager.prototype._checkSnapRequired = async function (model, options = {}
         const modelHeight = bounds.height;
 
         // 获取当前屏幕边界
+        // 吸附 clamp 范围必须等同于真实可渲染像素（即 Pet 窗口的 CSS 像素尺寸）。
+        // 多屏下 currentDisplay.workArea 可能大于当前窗口 innerHeight（窗口还未 resize 到新屏，或屏幕比主屏高），
+        // 若直接拿 workArea 作边界，模型会被吸附到窗口像素外、被窗口边界裁成一条水平切割线。
         let screenLeft = 0;
         let screenTop = 0;
         let screenRight = window.innerWidth;
         let screenBottom = window.innerHeight;
 
-        // 在 Electron 环境下，尝试获取更精确的屏幕信息
+        // 可选：读 workArea 做二次保险（取更小值），但绝不能超过 innerWidth/innerHeight
         if (window.electronScreen && window.electronScreen.getCurrentDisplay) {
             try {
                 const currentDisplay = await window.electronScreen.getCurrentDisplay();
                 if (currentDisplay && currentDisplay.workArea) {
-                    // workArea 是排除任务栏后的可用区域
-                    screenRight = currentDisplay.workArea.width || window.innerWidth;
-                    screenBottom = currentDisplay.workArea.height || window.innerHeight;
+                    const waW = currentDisplay.workArea.width;
+                    const waH = currentDisplay.workArea.height;
+                    if (Number.isFinite(waW) && waW > 0) screenRight = Math.min(screenRight, waW);
+                    if (Number.isFinite(waH) && waH > 0) screenBottom = Math.min(screenBottom, waH);
                 }
             } catch (e) {
                 console.debug('获取屏幕工作区域失败，使用窗口尺寸');
@@ -261,6 +265,11 @@ Live2DManager.prototype._checkAndPerformSnap = async function (model, options = 
     }
     // 如果正在执行吸附动画，跳过
     if (this._isSnapping) {
+        return false;
+    }
+    // 跨屏切换期间跳过吸附：窗口 setBounds 与 innerWidth/innerHeight 更新之间有一帧延迟，
+    // 中间读到的 clamp 边界会是旧值，触发误吸附。afterDisplaySwitch 路径自己会清标志后再 snap。
+    if (this._pendingDisplaySwitch && !options.afterDisplaySwitch) {
         return false;
     }
 
@@ -674,9 +683,23 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
     let stationaryFadeActive = false; // 静止1秒淡化
     const applyFade = () => {
         if (!live2dContainer) return;
-        const shouldFade = ctrlFadeActive || stationaryFadeActive;
+        const shouldFade = (ctrlFadeActive || stationaryFadeActive) && window.lockedHoverFadeEnabled !== false;
         live2dContainer.classList.toggle('locked-hover-fade', shouldFade);
     };
+
+    // 监听锁定悬停淡化设置变更
+    const onLockedHoverFadeChanged = () => {
+        if (window.lockedHoverFadeEnabled === false) {
+            ctrlFadeActive = false;
+            stationaryFadeActive = false;
+            applyFade();
+        }
+    };
+    if (this._lockedHoverFadeChangedListener) {
+        window.removeEventListener('neko-locked-hover-fade-changed', this._lockedHoverFadeChangedListener);
+    }
+    this._lockedHoverFadeChangedListener = onLockedHoverFadeChanged;
+    window.addEventListener('neko-locked-hover-fade-changed', onLockedHoverFadeChanged);
 
     // 跟踪 Ctrl 键状态（作为备用，主要从事件中直接读取）
     let isCtrlPressed = false;
@@ -847,7 +870,7 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                 distance = Math.sqrt(dx * dx + dy * dy);
             } else {
                 // 椭圆半径比例（相对于边界框）
-                const ellipseRadiusX = width * 0.35;
+                const ellipseRadiusX = width * 0.3;
                 const ellipseRadiusY = height * 0.45;
 
                 // 计算点到椭圆的归一化距离
@@ -881,9 +904,30 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
 
             const isNearModel = distance < HoverFadethreshold;
 
+            // 鼠标在 UI 元素（锁图标 / 浮动按钮）上时，重置淡化状态，
+            // 防止离开 UI 后残留的 stationaryFadeActive 立即重新触发淡化
+            const live2dLockIcon = document.getElementById('live2d-lock-icon');
+            const live2dFloatingBtns = document.getElementById('live2d-floating-buttons');
+            let isOverUi = false;
+            if (live2dLockIcon && live2dLockIcon.style.display !== 'none') {
+                const lr = live2dLockIcon.getBoundingClientRect();
+                if (pointer.x >= lr.left && pointer.x <= lr.right && pointer.y >= lr.top && pointer.y <= lr.bottom) isOverUi = true;
+            }
+            if (!isOverUi && live2dFloatingBtns && live2dFloatingBtns.style.display !== 'none') {
+                const br = live2dFloatingBtns.getBoundingClientRect();
+                if (pointer.x >= br.left && pointer.x <= br.right && pointer.y >= br.top && pointer.y <= br.bottom) isOverUi = true;
+            }
+            if (isOverUi) {
+                clearStationaryFadeTimer();
+                ctrlFadeActive = false;
+                stationaryFadeActive = false;
+                this._hasEnteredHoverRange = false;
+                applyFade();
+            }
+
             // 静止时启动定时器，移出范围时清除（移动端无鼠标悬停，跳过）
             const isMobileDevice = (window.appUtils && typeof window.appUtils.isMobile === 'function' && window.appUtils.isMobile()) || /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-            if (!isMobileDevice && this.isLocked && isNearModel) {
+            if (!isMobileDevice && this.isLocked && isNearModel && !isOverUi) {
                 // 首次进入范围：设置标志并启动定时器
                 if (!this._hasEnteredHoverRange) {
                     this._hasEnteredHoverRange = true;
@@ -905,8 +949,8 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                 this._hasEnteredHoverRange = false;
             }
 
-            // Ctrl 淡化：锁定 + Ctrl + 在模型范围内（独立于静止淡化，移动端跳过）
-            ctrlFadeActive = !isMobileDevice && this.isLocked && ctrlKeyPressed && isNearModel;
+            // Ctrl 淡化：锁定 + Ctrl + 在模型范围内（独立于静止淡化，移动端跳过，UI 上时跳过）
+            ctrlFadeActive = !isMobileDevice && this.isLocked && ctrlKeyPressed && isNearModel && !isOverUi;
             applyFade();
 
             const canvasEl = document.getElementById('live2d-canvas');
@@ -914,7 +958,14 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             if (distance < threshold) {
                 showButtons();
                 if (canvasEl && !this.isLocked && !(model.interactive && model.dragging)) {
-                    canvasEl.style.cursor = 'grab';
+                    // hitTest + 椭圆内部判定（0.3w × 0.45h），不外扩
+                    let isOnModel = false;
+                    try {
+                        const hitAreas = model.hitTest(pointer.x, pointer.y);
+                        if (hitAreas && hitAreas.length > 0) isOnModel = true;
+                    } catch (_) {}
+                    if (!isOnModel) isOnModel = distance === 0;
+                    canvasEl.style.cursor = isOnModel ? 'grab' : '';
                 }
                 const isMouseTrackingEnabled = this.isMouseTrackingEnabled ? this.isMouseTrackingEnabled() : (window.mouseTrackingEnabled !== false);
                 if (this.isFocusing) {
@@ -961,12 +1012,15 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
     // 窗口失去焦点时，只重置淡化效果，不重置 Ctrl 键状态
     // 这样窗口重新获得焦点后，如果 Ctrl 仍被按住，淡化功能可以恢复
     const onBlur = () => {
+        // blur 时 Ctrl 键事件无法到达，必须主动清除 Ctrl 状态
+        isCtrlPressed = false;
+        ctrlFadeActive = false;
         clearStationaryFadeTimer();
         // blur 时清除定时器和淡化状态，焦点恢复后需重新触发
         if (stationaryFadeActive) {
             stationaryFadeActive = false;
-            applyFade();
         }
+        applyFade();
         this._hasEnteredHoverRange = false;
     };
 
@@ -1342,52 +1396,60 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function (model) {
         if (targetDisplay) {
             console.log('[Live2D] 检测到模型移出当前屏幕，准备切换到屏幕:', targetDisplay.id);
 
-            // 使用之前已经计算好的模型屏幕绝对坐标调用切换屏幕
-            const result = await window.electronScreen.moveWindowToDisplay(modelScreenX, modelScreenY);
+            // 切换期间屏蔽常规吸附，防止中间态用旧窗口尺寸做 clamp 导致误吸附
+            this._pendingDisplaySwitch = true;
+            try {
+                // 使用之前已经计算好的模型屏幕绝对坐标调用切换屏幕
+                const result = await window.electronScreen.moveWindowToDisplay(modelScreenX, modelScreenY);
 
-            if (result && result.success && !result.sameDisplay) {
-                console.log('[Live2D] 屏幕切换成功:', result);
+                if (result && result.success && !result.sameDisplay) {
+                    console.log('[Live2D] 屏幕切换成功:', result);
 
-                // 计算模型在新窗口中的位置
-                // 新窗口左上角是 targetDisplay.screenX, targetDisplay.screenY
-                // 模型新的窗口坐标 = 模型屏幕坐标 - 新窗口屏幕坐标
-                const newModelX = modelScreenX - targetDisplay.screenX;
-                const newModelY = modelScreenY - targetDisplay.screenY;
+                    // 计算模型在新窗口中的位置
+                    // 新窗口左上角是 targetDisplay.screenX, targetDisplay.screenY
+                    // 模型新的窗口坐标 = 模型屏幕坐标 - 新窗口屏幕坐标
+                    const newModelX = modelScreenX - targetDisplay.screenX;
+                    const newModelY = modelScreenY - targetDisplay.screenY;
 
-                // 考虑缩放因子变化
-                if (result.scaleRatio && result.scaleRatio !== 1) {
-                    // 如果不同屏幕有不同的缩放，可能需要调整模型大小
-                    // 但通常保持模型原大小更合理，只调整位置
-                    console.log('[Live2D] 屏幕缩放比变化:', result.scaleRatio);
+                    // 考虑缩放因子变化
+                    if (result.scaleRatio && result.scaleRatio !== 1) {
+                        // 如果不同屏幕有不同的缩放，可能需要调整模型大小
+                        // 但通常保持模型原大小更合理，只调整位置
+                        console.log('[Live2D] 屏幕缩放比变化:', result.scaleRatio);
+                    }
+
+                    // 从中心点转换到锚点位置
+                    // newModelX/newModelY 是模型视觉中心的坐标
+                    // PIXI 的 x/y 是锚点位置，需要根据锚点偏离中心的距离调整
+                    model.x = newModelX + (model.anchor.x - 0.5) * model.width * model.scale.x;
+                    model.y = newModelY + (model.anchor.y - 0.5) * model.height * model.scale.y;
+
+                    console.log('[Live2D] 模型新位置:', model.x, model.y);
+
+                    // 屏幕切换后，延迟两帧再检测是否需要吸附
+                    // 两帧：一帧给 setBounds 落地，一帧给 resize 事件刷新 innerWidth/Height
+                    await new Promise(resolve => requestAnimationFrame(resolve));
+                    await new Promise(resolve => requestAnimationFrame(resolve));
+
+                    // 检测并执行自动吸附（切换到新屏幕后模型可能仍超出边界）
+                    // 屏幕切换后使用更宽松的吸附条件（只要超出就吸附）
+                    const snapped = await this._checkAndPerformSnap(model, { afterDisplaySwitch: true });
+
+                    // 如果没有执行吸附，保存位置
+                    if (!snapped) {
+                        await this._savePositionAfterInteraction();
+                    }
+                    // 如果执行了吸附，_checkAndPerformSnap 内部会保存位置
+
+                    return true;  // Display switch occurred
                 }
-
-                // 从中心点转换到锚点位置
-                // newModelX/newModelY 是模型视觉中心的坐标
-                // PIXI 的 x/y 是锚点位置，需要根据锚点偏离中心的距离调整
-                model.x = newModelX + (model.anchor.x - 0.5) * model.width * model.scale.x;
-                model.y = newModelY + (model.anchor.y - 0.5) * model.height * model.scale.y;
-
-                console.log('[Live2D] 模型新位置:', model.x, model.y);
-
-                // 屏幕切换后，延迟一帧再检测是否需要吸附
-                // 这是因为窗口大小可能还未更新完成
-                await new Promise(resolve => requestAnimationFrame(resolve));
-
-                // 检测并执行自动吸附（切换到新屏幕后模型可能仍超出边界）
-                // 屏幕切换后使用更宽松的吸附条件（只要超出就吸附）
-                const snapped = await this._checkAndPerformSnap(model, { afterDisplaySwitch: true });
-
-                // 如果没有执行吸附，保存位置
-                if (!snapped) {
-                    await this._savePositionAfterInteraction();
-                }
-                // 如果执行了吸附，_checkAndPerformSnap 内部会保存位置
-
-                return true;  // Display switch occurred
+            } finally {
+                this._pendingDisplaySwitch = false;
             }
         }
         return false;  // No display switch occurred
     } catch (error) {
+        this._pendingDisplaySwitch = false;
         console.error('[Live2D] 检测/切换屏幕时出错:', error);
         return false;
     }
@@ -1481,6 +1543,12 @@ Live2DManager.prototype.cleanupEventListeners = function () {
     if (this._windowBlurListener) {
         window.removeEventListener('blur', this._windowBlurListener);
         this._windowBlurListener = null;
+    }
+
+    // 清理锁定悬停淡化监听器
+    if (this._lockedHoverFadeChangedListener) {
+        window.removeEventListener('neko-locked-hover-fade-changed', this._lockedHoverFadeChangedListener);
+        this._lockedHoverFadeChangedListener = null;
     }
 
     // 清理静止淡化定时器

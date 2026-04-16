@@ -142,7 +142,7 @@ class QQAutoReplyPlugin(NekoPluginBase):
     @plugin_entry(
         id="start_auto_reply",
         name="启动自动回复",
-        description="用户说'启动'、'开始'、'开启自动回复'、'启动 QQ 监听'时调用此功能。开始监听 QQ 消息并自动回复。接收消息后根据权限等级生成 AI 回复。",
+        description="开始监听 QQ 消息并自动回复。",
         input_schema={
             "type": "object",
             "properties": {},
@@ -173,7 +173,7 @@ class QQAutoReplyPlugin(NekoPluginBase):
     @plugin_entry(
         id="stop_auto_reply",
         name="停止自动回复",
-        description="stop。停止监听 QQ 消息，断开与 OneBot 服务的连接。用户说'停止'、'关闭'、'停止自动回复'时调用此功能。",
+        description="停止监听 QQ 消息。",
         input_schema={
             "type": "object",
             "properties": {},
@@ -516,6 +516,7 @@ class QQAutoReplyPlugin(NekoPluginBase):
                 character_prompt
             ]
 
+            # TODO: i18n — 角色卡分隔标记、转述场景、relay_prompt 需国际化
             if character_card_fields:
                 system_prompt_parts.append("\n======角色卡额外设定======")
                 for field_name, field_value in character_card_fields.items():
@@ -617,6 +618,7 @@ class QQAutoReplyPlugin(NekoPluginBase):
             current_character = catgirl_data.get(her_name, {})
 
             # 获取角色核心提示词（system_prompt）
+            # TODO: i18n — fallback prompt 需国际化
             character_prompt = lanlan_prompt_map.get(her_name, "你是一个友好的AI助手")
 
             # 获取角色卡的额外字段（如果有）
@@ -692,6 +694,7 @@ class QQAutoReplyPlugin(NekoPluginBase):
                 if memory_context:
                     system_prompt_parts.append(memory_context)
 
+                # TODO: i18n — 角色卡分隔标记、群聊/私聊环境说明需国际化
                 # 注入角色卡额外字段
                 if character_card_fields:
                     system_prompt_parts.append("\n======角色卡额外设定======")
@@ -821,7 +824,7 @@ class QQAutoReplyPlugin(NekoPluginBase):
     @plugin_entry(
         id="add_trusted_user",
         name="添加信任用户",
-        description="【用户管理】添加一个信任的 QQ 号到白名单。支持三种权限等级：admin（管理员）、trusted（信任用户）、normal（普通用户）。可选设置昵称。用户说'添加用户'、'添加 QQ 号'、'添加信任用户'时调用。注意：这不是启动服务的功能。",
+        description="添加一个信任的 QQ 号到白名单。",
         input_schema={
             "type": "object",
             "properties": {
@@ -873,7 +876,7 @@ class QQAutoReplyPlugin(NekoPluginBase):
     @plugin_entry(
         id="remove_trusted_user",
         name="移除信任用户",
-        description="【用户管理】从白名单中移除一个 QQ 号，移除后该用户将无法触发自动回复。用户说'移除用户'、'删除用户'时调用。",
+        description="从白名单中移除一个 QQ 号。",
         input_schema={
             "type": "object",
             "properties": {
@@ -904,7 +907,7 @@ class QQAutoReplyPlugin(NekoPluginBase):
     @plugin_entry(
         id="set_user_nickname",
         name="设置用户昵称",
-        description="【用户管理】为信任用户设置专属称呼。管理员始终被称为主人，其他用户可以设置自定义昵称。用户说'设置昵称'、'修改昵称'时调用。",
+        description="为信任用户设置专属称呼。",
         input_schema={
             "type": "object",
             "properties": {
@@ -952,7 +955,7 @@ class QQAutoReplyPlugin(NekoPluginBase):
     @plugin_entry(
         id="add_trusted_group",
         name="添加信任群聊",
-        description="用户说'添加群聊'、'添加 QQ 群'时调用。添加一个信任的 QQ 群到白名单。支持两种等级：trusted（信任群聊）、normal（普通群聊）。",
+        description="添加一个信任的 QQ 群到白名单。",
         input_schema={
             "type": "object",
             "properties": {
@@ -986,7 +989,7 @@ class QQAutoReplyPlugin(NekoPluginBase):
     @plugin_entry(
         id="remove_trusted_group",
         name="移除信任群聊",
-        description="用户说'移除群聊'、'删除群聊'时调用。从白名单中移除一个 QQ 群，移除后该群将无法触发自动回复。",
+        description="从白名单中移除一个 QQ 群。",
         input_schema={
             "type": "object",
             "properties": {
@@ -1104,7 +1107,7 @@ class QQAutoReplyPlugin(NekoPluginBase):
     @plugin_entry(
         id="start_qq_server",
         name="开启QQ服务器",
-        description="用户说'开启QQ服务器'、'启动QQ服务器'、'打开QQ服务器'时调用。开启 QQ 服务器（NapCat.Shell / OneBot），但不会自动启用 QQ 自动回复。",
+        description="开启 QQ 服务器。",
         input_schema={
             "type": "object",
             "properties": {
@@ -1126,7 +1129,7 @@ class QQAutoReplyPlugin(NekoPluginBase):
     @plugin_entry(
         id="stop_qq_server",
         name="关闭QQ服务器",
-        description="用户说'关闭QQ服务器'、'停止QQ服务器'、'关闭 NapCat'时调用。关闭 QQ 服务器并断开连接。",
+        description="关闭 QQ 服务器并断开连接。",
         input_schema={
             "type": "object",
         },

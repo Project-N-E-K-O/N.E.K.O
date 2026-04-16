@@ -244,7 +244,7 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         "vrm",
         "idle_animation",
         default=None,
-        legacy_keys=("idleAnimation",),
+        legacy_keys=("idleAnimation", "idleAnimations"),
     )
     if idle_animation is not None:
         # 向前兼容: 旧版存的是 string, 迁移为 list; 空值保留 []
@@ -293,7 +293,7 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         "mmd",
         "idle_animation",
         default=None,
-        legacy_keys=("mmd_idle_animation",),
+        legacy_keys=("mmd_idle_animation", "mmd_idle_animations"),
     )
     if mmd_idle_animation is not None:
         # 向前兼容: 旧版存的是 string, 迁移为 list; 空值保留 []
@@ -302,22 +302,53 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         elif isinstance(mmd_idle_animation, list):
             changed |= set_reserved(catgirl_data, "avatar", "mmd", "idle_animation", mmd_idle_animation)
 
+    live3d_sub_type = str(
+        get_reserved(
+            catgirl_data,
+            "avatar",
+            "live3d_sub_type",
+            default="",
+            legacy_keys=("live3d_sub_type",),
+        )
+        or ""
+    ).strip().lower()
+    if live3d_sub_type not in {"vrm", "mmd"}:
+        has_mmd_model = bool(get_reserved(catgirl_data, "avatar", "mmd", "model_path", default=""))
+        has_vrm_model = bool(get_reserved(catgirl_data, "avatar", "vrm", "model_path", default=""))
+        if model_type == "live3d":
+            if has_mmd_model:
+                live3d_sub_type = "mmd"
+            elif has_vrm_model:
+                live3d_sub_type = "vrm"
+            else:
+                live3d_sub_type = ""
+        elif has_mmd_model and not has_vrm_model:
+            live3d_sub_type = "mmd"
+        elif has_vrm_model and not has_mmd_model:
+            live3d_sub_type = "vrm"
+        else:
+            live3d_sub_type = ""
+    changed |= set_reserved(catgirl_data, "avatar", "live3d_sub_type", live3d_sub_type)
+
     # COMPAT(v1->v2): 保留字段统一迁入 _reserved 后，移除旧平铺字段，避免再次泄露到可编辑字段。
     for legacy_key in (
         "voice_id",
         "system_prompt",
         "model_type",
+        "live3d_sub_type",
         "live2d_item_id",
         "item_id",
         "live2d",
         "vrm",
         "vrm_animation",
         "idleAnimation",
+        "idleAnimations",
         "lighting",
         "vrm_rotation",
         "mmd",
         "mmd_animation",
         "mmd_idle_animation",
+        "mmd_idle_animations",
     ):
         if legacy_key in catgirl_data:
             catgirl_data.pop(legacy_key, None)
@@ -342,6 +373,10 @@ def flatten_reserved(catgirl_data: dict) -> dict:
     model_type = get_reserved(result, "avatar", "model_type", default="live2d")
     if model_type:
         result["model_type"] = model_type
+
+    live3d_sub_type = get_reserved(result, "avatar", "live3d_sub_type", default="")
+    if live3d_sub_type:
+        result["live3d_sub_type"] = live3d_sub_type
 
     live2d_model_path = get_reserved(result, "avatar", "live2d", "model_path", default="")
     if live2d_model_path:
@@ -1571,6 +1606,7 @@ class ConfigManager:
             'ASSIST_API_KEY_MINIMAX': '',
             'ASSIST_API_KEY_MINIMAX_INTL': '',
             'ASSIST_API_KEY_GROK': DEFAULT_CORE_API_KEY,
+            'ASSIST_API_KEY_OPENROUTER': DEFAULT_CORE_API_KEY,
             'IS_FREE_VERSION': False,
             'VISION_MODEL': DEFAULT_VISION_MODEL,
             'AGENT_MODEL': DEFAULT_AGENT_MODEL,
@@ -1633,6 +1669,7 @@ class ConfigManager:
         config['ASSIST_API_KEY_MINIMAX_INTL'] = core_cfg.get('assistApiKeyMinimaxIntl', '')
         config['ASSIST_API_KEY_GROK'] = core_cfg.get('assistApiKeyGrok', '') or config['CORE_API_KEY']
         config['ASSIST_API_KEY_CLAUDE'] = core_cfg.get('assistApiKeyClaude', '') or config['CORE_API_KEY']
+        config['ASSIST_API_KEY_OPENROUTER'] = core_cfg.get('assistApiKeyOpenrouter', '') or config['CORE_API_KEY']
 
         if core_cfg.get('mcpToken'):
             config['MCP_ROUTER_API_KEY'] = core_cfg['mcpToken']

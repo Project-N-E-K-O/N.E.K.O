@@ -280,15 +280,26 @@ class MMDInteraction {
         };
 
         // 鼠标抬起
-        this.mouseUpHandler = () => {
+        this.mouseUpHandler = async () => {
             if (this.isDragging) {
+                // 保留本次拖拽类型再清状态，跨屏切换只对 pan 生效
+                // （orbit 是绕模型中心旋转朝向，不应触发多屏切换）
+                const wasPanDrag = this.dragMode === 'pan';
                 this.isDragging = false;
                 this.dragMode = null;
                 canvas.style.cursor = 'default';
                 this._restoreButtonPointerEvents();
 
-                // 拖拽结束后保存位置/旋转/缩放
-                this._savePositionAfterInteraction();
+                // 多屏幕支持：仅对平移拖拽检测是否移出当前屏幕并切换到新屏幕
+                // 若发生切屏，_checkAndSwitchDisplay 内部会负责保存位置
+                const displaySwitched = wasPanDrag
+                    ? await this._checkAndSwitchDisplay()
+                    : false;
+
+                if (!displaySwitched) {
+                    // 拖拽结束后保存位置/旋转/缩放
+                    this._savePositionAfterInteraction();
+                }
             }
         };
 
@@ -334,11 +345,14 @@ class MMDInteraction {
                 canvas.style.cursor = 'default';
                 return;
             }
-            const padding = 10;
-            const isNearModel = e.clientX >= (bounds.minX - padding) &&
-                e.clientX <= (bounds.maxX + padding) &&
-                e.clientY >= (bounds.minY - padding) &&
-                e.clientY <= (bounds.maxY + padding);
+            // 椭圆近似（内切于包围盒），不外扩
+            const cx = (bounds.minX + bounds.maxX) / 2;
+            const cy = (bounds.minY + bounds.maxY) / 2;
+            const rx = (bounds.maxX - bounds.minX) / 2 * 0.6;
+            const ry = (bounds.maxY - bounds.minY) / 2 * 0.95;
+            const nx = rx > 0 ? (e.clientX - cx) / rx : 0;
+            const ny = ry > 0 ? (e.clientY - cy) / ry : 0;
+            const isNearModel = (nx * nx + ny * ny) <= 1;
             canvas.style.cursor = isNearModel ? 'grab' : 'default';
         };
 
@@ -383,6 +397,158 @@ class MMDInteraction {
         this.dragMode = null;
         this._orbitPivot = null;
         this._restoreButtonPointerEvents();
+    }
+
+    // ═══════════════════ 多屏幕切换 ═══════════════════
+
+    /**
+     * 检测模型是否移出当前屏幕并切换到新屏幕
+     * 返回 true 表示发生了切屏（内部已保存位置），返回 false 表示未切屏
+     */
+    async _checkAndSwitchDisplay() {
+        // 仅在 Electron 环境下执行
+        if (!window.electronScreen || !window.electronScreen.moveWindowToDisplay) {
+            return false;
+        }
+        if (!THREE) return false;
+
+        const mesh = this.manager.currentModel?.mesh;
+        const camera = this.manager.camera;
+        const renderer = this.manager.renderer;
+        if (!mesh || !camera || !renderer) return false;
+
+        try {
+            // 1. 计算模型在当前窗口中的屏幕空间中心点（像素）
+            mesh.updateMatrixWorld(true);
+            const box = new THREE.Box3().setFromObject(mesh);
+            if (!box || !Number.isFinite(box.min.x) || !Number.isFinite(box.max.x)) {
+                return false;
+            }
+
+            const canvasRect = renderer.domElement.getBoundingClientRect();
+            const screenWidth = canvasRect.width;
+            const screenHeight = canvasRect.height;
+            if (!(screenWidth > 0) || !(screenHeight > 0)) return false;
+
+            const corners = [
+                new THREE.Vector3(box.min.x, box.min.y, box.min.z),
+                new THREE.Vector3(box.max.x, box.min.y, box.min.z),
+                new THREE.Vector3(box.min.x, box.max.y, box.min.z),
+                new THREE.Vector3(box.max.x, box.max.y, box.min.z),
+                new THREE.Vector3(box.min.x, box.min.y, box.max.z),
+                new THREE.Vector3(box.max.x, box.min.y, box.max.z),
+                new THREE.Vector3(box.min.x, box.max.y, box.max.z),
+                new THREE.Vector3(box.max.x, box.max.y, box.max.z),
+            ];
+
+            let modelMinX = Infinity, modelMaxX = -Infinity;
+            let modelMinY = Infinity, modelMaxY = -Infinity;
+            for (const corner of corners) {
+                const projected = corner.clone().project(camera);
+                const sx = (projected.x * 0.5 + 0.5) * screenWidth;
+                const sy = (-projected.y * 0.5 + 0.5) * screenHeight;
+                modelMinX = Math.min(modelMinX, sx);
+                modelMaxX = Math.max(modelMaxX, sx);
+                modelMinY = Math.min(modelMinY, sy);
+                modelMaxY = Math.max(modelMaxY, sy);
+            }
+
+            // 模型中心（相对于 canvas 左上角的像素），再偏移 canvas 在窗口中的位置
+            const modelCenterX = (modelMinX + modelMaxX) / 2 + canvasRect.left;
+            const modelCenterY = (modelMinY + modelMaxY) / 2 + canvasRect.top;
+
+            // 2. 多屏幕检查
+            const displays = await window.electronScreen.getAllDisplays();
+            if (!displays || displays.length <= 1) return false;
+
+            const windowWidth = window.innerWidth;
+            const windowHeight = window.innerHeight;
+            if (modelCenterX >= 0 && modelCenterX < windowWidth &&
+                modelCenterY >= 0 && modelCenterY < windowHeight) {
+                return false;
+            }
+
+            // 3. 计算模型中心在整个桌面上的绝对坐标
+            const currentDisplay = await window.electronScreen.getCurrentDisplay();
+            if (!currentDisplay) {
+                console.warn('[MMD] 无法获取当前显示器信息');
+                return false;
+            }
+            let currentScreenX = currentDisplay.screenX;
+            let currentScreenY = currentDisplay.screenY;
+            if (!Number.isFinite(currentScreenX) || !Number.isFinite(currentScreenY)) {
+                if (currentDisplay.bounds &&
+                    Number.isFinite(currentDisplay.bounds.x) &&
+                    Number.isFinite(currentDisplay.bounds.y)) {
+                    currentScreenX = currentDisplay.bounds.x;
+                    currentScreenY = currentDisplay.bounds.y;
+                } else {
+                    return false;
+                }
+            }
+
+            const modelScreenX = currentScreenX + modelCenterX;
+            const modelScreenY = currentScreenY + modelCenterY;
+
+            // 4. 查找包含模型中心点的目标显示器
+            let targetDisplay = null;
+            for (const display of displays) {
+                const dx = Number.isFinite(display.screenX) ? display.screenX
+                    : (display.bounds && display.bounds.x);
+                const dy = Number.isFinite(display.screenY) ? display.screenY
+                    : (display.bounds && display.bounds.y);
+                const dw = Number.isFinite(display.width) ? display.width
+                    : (display.bounds && display.bounds.width);
+                const dh = Number.isFinite(display.height) ? display.height
+                    : (display.bounds && display.bounds.height);
+                if (!Number.isFinite(dx) || !Number.isFinite(dy) ||
+                    !Number.isFinite(dw) || !Number.isFinite(dh)) continue;
+                if (modelScreenX >= dx && modelScreenX < dx + dw &&
+                    modelScreenY >= dy && modelScreenY < dy + dh) {
+                    targetDisplay = { ...display, screenX: dx, screenY: dy, width: dw, height: dh };
+                    break;
+                }
+            }
+            if (!targetDisplay) return false;
+
+            console.log('[MMD] 检测到模型移出当前屏幕，准备切换到屏幕:', targetDisplay.id);
+
+            const result = await window.electronScreen.moveWindowToDisplay(modelScreenX, modelScreenY);
+
+            if (!(result && result.success && !result.sameDisplay)) {
+                return false;
+            }
+            console.log('[MMD] 屏幕切换成功:', result);
+
+            // 5. 将模型在世界坐标中偏移，使它在新窗口中仍显示在原本的屏幕绝对位置
+            const deltaPxX = currentScreenX - targetDisplay.screenX;
+            const deltaPxY = currentScreenY - targetDisplay.screenY;
+
+            if (deltaPxX !== 0 || deltaPxY !== 0) {
+                const cameraDistance = camera.position.distanceTo(mesh.position);
+                const fov = camera.fov * (Math.PI / 180);
+                const worldHeight = 2 * Math.tan(fov / 2) * cameraDistance;
+                const worldWidth = worldHeight * (screenWidth / screenHeight);
+                const pixelToWorldX = worldWidth / screenWidth;
+                const pixelToWorldY = worldHeight / screenHeight;
+
+                const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+                const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+
+                mesh.position.add(right.clone().multiplyScalar(deltaPxX * pixelToWorldX));
+                mesh.position.add(up.clone().multiplyScalar(-deltaPxY * pixelToWorldY));
+            }
+
+            // 6. 等待一帧让新窗口尺寸生效，再保存位置
+            await new Promise(resolve => requestAnimationFrame(resolve));
+
+            await this._savePositionAfterInteraction();
+
+            return true;
+        } catch (error) {
+            console.error('[MMD] 检测/切换屏幕时出错:', error);
+            return false;
+        }
     }
 
     // ═══════════════════ 偏好保存 ═══════════════════

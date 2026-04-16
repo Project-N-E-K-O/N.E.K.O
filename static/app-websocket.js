@@ -407,9 +407,22 @@
                     window._realisticGeminiBuffer = '';
                     window._pendingMusicCommand = '';
                     window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
+                    // 重置并发锁，确保正在 sleep 的 processRealisticQueue 循环
+                    // 醒来后通过 version 检查退出，且不会阻塞下一轮启动
+                    window._isProcessingRealisticQueue = false;
 
+                    // 同时清理 host 未就绪期间缓存的待发消息（防止 discard 的消息在 host ready 后被重放）
                     var hadTrackedBubbles = window.currentTurnGeminiBubbles && window.currentTurnGeminiBubbles.length > 0;
                     if (hadTrackedBubbles) {
+                        var _discardIds = [];
+                        window.currentTurnGeminiBubbles.forEach(function (bubble) {
+                            if (bubble && bubble.dataset && bubble.dataset.reactChatMessageId) {
+                                _discardIds.push(bubble.dataset.reactChatMessageId);
+                            }
+                        });
+                        if (_discardIds.length > 0 && typeof window._clearPendingHostMessagesByIds === 'function') {
+                            window._clearPendingHostMessagesByIds(_discardIds);
+                        }
                         var _discardHost = window.reactChatWindowHost;
                         window.currentTurnGeminiBubbles.forEach(function (bubble) {
                             // Remove paired React mirror message
@@ -654,7 +667,12 @@
                     }
 
                     var translatedMessage = window.translateStatusMessage ? window.translateStatusMessage(response.message) : response.message;
-                    if (typeof window.showStatusToast === 'function') window.showStatusToast(translatedMessage, 4000, { important: isCriticalError });
+
+                    // TTS 水印提示需要更长显示时间和更高优先级，避免被后续消息覆盖
+                    var stickyInfoCodes = ['TTS_WATERMARK_DETECTED'];
+                    var isStickyInfo = statusCode && stickyInfoCodes.indexOf(statusCode) !== -1;
+
+                    if (typeof window.showStatusToast === 'function') window.showStatusToast(translatedMessage, isStickyInfo ? 8000 : 4000, { important: isCriticalError, priority: isStickyInfo ? 50 : undefined });
 
                     if (statusCode === 'CHARACTER_DISCONNECTED') {
                         if (S.isRecording === false && !S.isTextSessionActive) {
@@ -1005,6 +1023,39 @@
                     }
                     clearPendingAssistantTurnStart();
 
+                    // 主动消息 / 热切换回调也产生了 AI 文本（来自 send_lanlan_response），
+                    // 同样需要为字幕翻译。情感分析 / proactive backoff 维持原行为不动。
+                    (function () {
+                        var bufferedFullText = typeof window._geminiTurnFullText === 'string'
+                            ? window._geminiTurnFullText
+                            : '';
+                        var fallbackFromBubble = (window.currentGeminiMessage &&
+                            window.currentGeminiMessage.nodeType === Node.ELEMENT_NODE &&
+                            window.currentGeminiMessage.isConnected &&
+                            typeof window.currentGeminiMessage.textContent === 'string')
+                            ? window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /, '')
+                            : '';
+                        var fullText = (bufferedFullText && bufferedFullText.trim()) ? bufferedFullText : fallbackFromBubble;
+                        fullText = fullText.replace(/\[play_music:[^\]]*(\]|$)/g, '').trim();
+                        if (!fullText) return;
+                        // 结构化 turn（markdown/code/table/latex）→ 字幕收尾为 [markdown] 占位，不翻译
+                        if (window._turnIsStructured) {
+                            if (typeof window.finalizeSubtitleAsStructured === 'function') {
+                                try { window.finalizeSubtitleAsStructured(); } catch (_) {}
+                            }
+                            return;
+                        }
+                        (async function () {
+                            try {
+                                if (typeof window.translateAndShowSubtitle === 'function') {
+                                    await window.translateAndShowSubtitle(fullText);
+                                }
+                            } catch (transError) {
+                                console.error('[Subtitle] agent_callback translate failed:', transError);
+                            }
+                        })();
+                    })();
+
                 // -------- system turn end --------
                 } else if (response.type === 'system' && response.data === 'turn end') {
                     console.log(window.t('console.turnEndReceived'));
@@ -1106,17 +1157,19 @@
                             }
                         }, 100);
 
-                        // Frontend translation
+                        // Frontend subtitle finalization: subtitle.js 内部根据开关决定是否
+                        // 真正发请求；不需要的语言会保留流式累积的原文，不会清空字幕。
+                        // 结构化 turn 收尾为 [markdown] 占位，跳过翻译链路。
+                        if (window._turnIsStructured) {
+                            if (typeof window.finalizeSubtitleAsStructured === 'function') {
+                                try { window.finalizeSubtitleAsStructured(); } catch (_) {}
+                            }
+                            return;
+                        }
                         (async function () {
                             try {
-                                if (typeof getUserLanguage === 'function') {
-                                    var _userLanguage = await getUserLanguage();
-                                    // Only translate subtitle when subtitle toggle is on
-                                    if (typeof subtitleEnabled !== 'undefined' && subtitleEnabled) {
-                                        if (typeof translateAndShowSubtitle === 'function') {
-                                            await translateAndShowSubtitle(fullText);
-                                        }
-                                    }
+                                if (typeof window.translateAndShowSubtitle === 'function') {
+                                    await window.translateAndShowSubtitle(fullText);
                                 }
                             } catch (transError) {
                                 console.error(window.t('console.translationProcessFailed'), {
@@ -1131,13 +1184,14 @@
                         })();
                     })();
 
-                    // Reset proactive chat backoff after AI turn completes
+                    // AI turn_end 后只 reschedule，不 reset backoff。
+                    // 理由：turn_end 无法区分"用户发话引发的 turn"和"proactive 自己引发的 turn"，
+                    // 如果一律 reset 会让 proactive 自己的 turn 把退避清零 → 指数退避形同虚设。
+                    // 用户真的说话时会由 sendTextPayload / 录音开关等路径单独 reset，
+                    // 不依赖 turn_end。语音模式本来就不退避，只是"从 turn end 开始算下一个间隔"。
                     var hasChatMode = (typeof window.hasAnyChatModeEnabled === 'function') ? window.hasAnyChatModeEnabled() : false;
                     if (S.proactiveChatEnabled && hasChatMode) {
-                        if (!S.isRecording) {
-                            if (typeof window.resetProactiveChatBackoff === 'function') window.resetProactiveChatBackoff();
-                        } else if (typeof window.scheduleProactiveChat === 'function') {
-                            // Voice mode also needs a turn-end fallback rearm in case TTS/playback completion never fires.
+                        if (typeof window.scheduleProactiveChat === 'function') {
                             window.scheduleProactiveChat();
                         }
                     }

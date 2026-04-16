@@ -13,11 +13,18 @@ from .shared_state import get_templates
 router = APIRouter(tags=["pages"])
 
 
+def _vrm_defaults_ctx() -> dict:
+    """返回 VRM 光照默认值，供 Jinja2 模板注入到 <script> 中。"""
+    from config import DEFAULT_VRM_LIGHTING
+    return {"vrm_defaults": dict(DEFAULT_VRM_LIGHTING)}
+
+
 @router.get("/", response_class=HTMLResponse)
 async def get_default_index(request: Request):
     templates = get_templates()
     return templates.TemplateResponse("templates/index.html", {
-        "request": request
+        "request": request,
+        **_vrm_defaults_ctx(),
     })
 
 
@@ -25,7 +32,8 @@ def _render_model_manager(request: Request):
     """渲染模型管理器页面的内部实现"""
     templates = get_templates()
     return templates.TemplateResponse("templates/model_manager.html", {
-        "request": request
+        "request": request,
+        **_vrm_defaults_ctx(),
     })
 
 
@@ -123,7 +131,7 @@ async def cookies_login_page(request: Request):
 async def get_chat_page(request: Request):
     """Chat 独立窗口页面"""
     templates = get_templates()
-    return templates.TemplateResponse("templates/chat.html", {"request": request})
+    return templates.TemplateResponse("templates/chat.html", {"request": request, **_vrm_defaults_ctx()})
 
 
 @router.get("/subtitle", response_class=HTMLResponse)
@@ -140,10 +148,33 @@ async def get_agenthud_page(request: Request):
     return templates.TemplateResponse("templates/agenthud.html", {"request": request})
 
 
+@router.get("/jukebox", response_class=HTMLResponse)
+async def get_jukebox_page(request: Request):
+    """Jukebox 点歌台独立窗口页面（Electron 加载）"""
+    templates = get_templates()
+    return templates.TemplateResponse("templates/jukebox.html", {"request": request})
+
+
+@router.get("/jukebox/manager", response_class=HTMLResponse)
+async def get_jukebox_manager_page(request: Request):
+    """Jukebox 管理器独立窗口页面 (从点歌台打开)"""
+    templates = get_templates()
+    return templates.TemplateResponse("templates/jukebox_manager.html", {"request": request})
+
+
+@router.get("/toast", response_class=HTMLResponse)
+async def get_toast_page(request: Request):
+    """Toast 通知独立窗口页面（Electron 加载）"""
+    templates = get_templates()
+    return templates.TemplateResponse("templates/toast.html", {"request": request})
+
+
+
 @router.get("/{lanlan_name}", response_class=HTMLResponse)
 async def get_index(request: Request, lanlan_name: str):
     # lanlan_name 将从 URL 中提取，前端会通过 API 获取配置
     templates = get_templates()
     return templates.TemplateResponse("templates/index.html", {
-        "request": request
+        "request": request,
+        **_vrm_defaults_ctx(),
     })

@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "sync-css": "sh -c 'f=$(find ../../static/react/neko-chat/assets -maxdepth 1 -name \"style-*.css\" | head -n 1); if [ -n \"$f\" ]; then cp \"$f\" ../../static/react/neko-chat/neko-chat-window.css; fi'"
+    "sync-css": "node scripts/sync-css.mjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",

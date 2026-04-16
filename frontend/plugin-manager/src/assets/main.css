@@ -1,0 +1,41 @@
+@import './base.css';
+@import './styles/variables.css';
+@import './styles/common.css';
+
+/* 重置样式，确保全屏布局 */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* 禁止按钮文本被选中，避免误选 */
+button,
+[role="button"],
+.el-button,
+.el-button * {
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+}
+
+button * {
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+#app {
+  width: 100%;
+  height: 100vh;
+  margin: 0;
+  padding: 0;
+}

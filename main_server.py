@@ -722,6 +722,7 @@ from main_routers import ( # noqa
     live2d_router,
     vrm_router,
     mmd_router,
+    jukebox_router,
     workshop_router,
     memory_router,
     pages_router,
@@ -783,6 +784,7 @@ app.include_router(characters_router)
 app.include_router(live2d_router)
 app.include_router(vrm_router)
 app.include_router(mmd_router)
+app.include_router(jukebox_router)
 app.include_router(workshop_router)
 app.include_router(memory_router)
 # 注意：pages_router 含 /{lanlan_name} 兜底路由，应最后挂载
@@ -1306,6 +1308,32 @@ if __name__ == "__main__":
     logger.info(f"Serving index.html from: {os.path.abspath('templates/index.html')}")
     logger.info(f"Access UI at: http://127.0.0.1:{MAIN_SERVER_PORT} (or your network IP:{MAIN_SERVER_PORT})")
     logger.info("-----------------------------")
+
+    # ── 前端构建产物检测 ──────────────────────────────────────
+    _frontend_missing = []
+    if not os.path.isfile("frontend/plugin-manager/dist/index.html"):
+        _frontend_missing.append("plugin-manager  (frontend/plugin-manager/dist/index.html)")
+    if not os.path.isfile("static/react/neko-chat/neko-chat-window.iife.js"):
+        _frontend_missing.append("react-neko-chat  (static/react/neko-chat/neko-chat-window.iife.js)")
+    if _frontend_missing:
+        _bar = "!" * 60
+        _msg = (
+            f"\n{_bar}\n{_bar}\n"
+            f"!!  WARNING: 前端资源未构建，以下模块缺失:\n"
+        )
+        for _m in _frontend_missing:
+            _msg += f"!!    - {_m}\n"
+        _msg += (
+            f"!!\n"
+            f"!!  请先运行构建脚本:\n"
+            f"!!    Windows:  .\\build_frontend.bat\n"
+            f"!!    Linux:    ./build_frontend.sh\n"
+            f"!!\n"
+            f"!!  否则部分页面将无法正常显示！\n"
+            f"{_bar}\n{_bar}\n"
+        )
+        print(_msg, flush=True)
+        logger.warning("前端资源未构建，部分页面将无法正常显示！请运行 build_frontend.sh / build_frontend.bat")
 
     # 使用统一的速率限制日志过滤器
     from utils.logger_config import create_main_server_filter, create_httpx_filter

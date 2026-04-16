@@ -382,23 +382,31 @@ docker-compose up -d
 
 > Полная документация для разработчиков на [project-neko.online](https://project-neko.online)
 
-**Требования**: Python 3.11 (другие версии не поддерживаются), пакетный менеджер [uv](https://docs.astral.sh/uv/)
+**Требования**: Python 3.11 (другие версии не поддерживаются), пакетный менеджер [uv](https://docs.astral.sh/uv/), Node.js (>=20.19)
 
 ```bash
 # 1. Клонировать проект
 git clone https://github.com/Project-N-E-K-O/N.E.K.O.git
 cd N.E.K.O
 
-# 2. Установить зависимости
+# 2. Установить Python-зависимости
 uv sync
 
-# 3. Запустить сервисы (минимум main_server и memory_server)
+# 3. Собрать фронтенд-проекты (требуется Node.js >= 20.19; необходимо при первом запуске или после изменений фронтенда)
+#    Рекомендуется: используйте скрипт (это официально поддерживаемый способ сборки)
+#      Windows:      build_frontend.bat
+#      Linux/macOS:  ./build_frontend.sh
+#    Ручная сборка (должна совпадать с тем, что делает скрипт):
+# cd frontend/react-neko-chat && npm install && npm run build && cd ../..
+# cd frontend/plugin-manager && npm install && npm run build-only && cd ../..
+
+# 4. Запустить сервисы (минимум main_server и memory_server)
 uv run python memory_server.py
 uv run python main_server.py
 # Опционально: запуск Agent-сервиса
 uv run python agent_server.py
 
-# 4. Перейдите на http://localhost:48911 для настройки API Key и начала работы
+# 5. Перейдите на http://localhost:48911 для настройки API Key и начала работы
 ```
 
 Разработчикам рекомендуется присоединиться к QQ-группе 1022939659.
@@ -448,6 +456,7 @@ uv run python agent_server.py
 
 ```
 N.E.K.O/
+├── 📁 .agent/                   # 🤖 Правила и навыки для ИИ-ассистентов (конвенция Google Antigravity)
 ├── 📁 brain/                    # 🧠 Модули агента
 │   ├── computer_use.py          # Управление компьютером
 │   ├── browser_use_adapter.py   # Автоматизация браузера
@@ -470,17 +479,21 @@ N.E.K.O/
 │   ├── facts/                   # Память фактов
 │   ├── reflection/              # Память рефлексий
 │   └── persona/                 # Память персоны
+├── 📁 frontend/                 # 🖥️ Современные фронтенд-проекты
+│   ├── react-neko-chat/         # React компонент чата
+│   └── plugin-manager/          # Vue панель управления плагинами
 ├── 📁 plugin/                   # 🔌 Система плагинов
 │   ├── sdk/                     # SDK плагинов
-│   ├── server/                  # Сервер плагинов
-│   └── frontend/                # Фронтенд плагинов
-├── 📁 static/                   # 🌐 Статические ресурсы фронтенда
+│   └── server/                  # Сервер плагинов
+├── 📁 static/                   # 🌐 Статические ресурсы фронтенда (вкл. артефакты сборки)
 ├── 📁 templates/                # 📄 HTML-шаблоны фронтенда (14 страниц)
 ├── 📁 utils/                    # 🛠️ Утилиты
 ├── main_server.py               # 🌐 Основной сервер
 ├── agent_server.py              # 🤖 Сервер ИИ-агента
 └── memory_server.py             # 🧠 Сервер памяти
 ```
+
+> **Разработка с помощью ИИ**: Каталог `.agent/` следует открытой конвенции Google Antigravity и содержит правила разработки и наборы навыков проекта. Только Antigravity загружает автоматически; все остальные ИИ-инструменты (включая Claude Code) требуют ручного импорта. См. [руководство по адаптации](https://project-neko.online/contributing/ai-assisted-dev).
 
 **Поток данных**
 

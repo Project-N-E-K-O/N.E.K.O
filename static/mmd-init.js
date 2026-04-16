@@ -108,10 +108,10 @@ window.addEventListener('mmd-modules-ready', async () => {
     const subType = (window.lanlan_config?.live3d_sub_type || '').toLowerCase();
     if (modelType !== 'live3d' || subType !== 'mmd') return;
 
-    const mmdPath = window.mmdModel;
+    let mmdPath = window.mmdModel;
     if (!mmdPath || mmdPath === 'undefined' || mmdPath === 'null' || mmdPath.trim() === '') {
-        console.warn('[MMD Init] MMD 模型路径为空，跳过自动加载');
-        return;
+        console.warn('[MMD Init] MMD 模型路径为空，使用默认模型');
+        mmdPath = '/static/mmd/Miku/Miku.pmx';
     }
 
     console.log('[MMD Init] 检测到 MMD 模式，自动初始化并加载:', mmdPath);
@@ -165,18 +165,26 @@ window.addEventListener('mmd-modules-ready', async () => {
                 window.mmdManager.applySettings(nonPhysicsSettings);
             }
 
-            // 播放待机动作
+            // 播放待机动作 & 启动轮换
             if (catgirlName) {
                 try {
                     const charRes = await fetch('/api/characters/');
                     if (charRes.ok) {
                         const charData = await charRes.json();
-                        const mmdIdleAnimation = charData?.['猫娘']?.[catgirlName]?.mmd_idle_animation;
-                        if (mmdIdleAnimation && window.mmdManager) {
+                        const catData = charData?.['猫娘']?.[catgirlName];
+                        // 优先取列表，向前兼容单字符串
+                        let idleList = catData?.mmd_idle_animations;
+                        if (!Array.isArray(idleList)) {
+                            const single = catData?.mmd_idle_animation;
+                            idleList = single ? [single] : [];
+                        }
+                        if (idleList.length > 0 && window.mmdManager) {
                             try {
-                                await window.mmdManager.loadAnimation(mmdIdleAnimation);
+                                await window.mmdManager.loadAnimation(idleList[0]);
                                 window.mmdManager.playAnimation();
-                                console.log('[MMD Init] 已播放待机动作:', mmdIdleAnimation);
+                                console.log('[MMD Init] 已播放待机动作:', idleList[0]);
+                                // 多于 1 个时启动轮换
+                                _startMmdIdleRotation(idleList);
                             } catch (idleErr) {
                                 console.warn('[MMD Init] 播放待机动作失败:', idleErr);
                             }
@@ -193,6 +201,108 @@ window.addEventListener('mmd-modules-ready', async () => {
         console.error('[MMD Init] MMD 自动加载失败:', e);
     }
 });
+
+// ── 主页面 MMD 待机动作轮换 ──────────────────────────────
+// 策略：优先在动画一轮播完（loop 事件）时切换，避免动作中途跳变；
+//       20 秒回退定时器仅在动画过长时强制切换。
+let _mmdIdleTimer = null;
+let _mmdIdleLastUrl = null;
+let _mmdIdleLoopCleanup = null;
+
+function _clearMmdIdleSchedule() {
+    if (_mmdIdleTimer) {
+        clearTimeout(_mmdIdleTimer);
+        _mmdIdleTimer = null;
+    }
+    if (_mmdIdleLoopCleanup) {
+        _mmdIdleLoopCleanup();
+        _mmdIdleLoopCleanup = null;
+    }
+}
+
+function _startMmdIdleRotation(urls) {
+    _stopMmdIdleRotation();
+    if (!Array.isArray(urls) || urls.length < 2) return;
+
+    function pickRandom() {
+        const candidates = urls.filter(u => u !== _mmdIdleLastUrl);
+        return candidates[Math.floor(Math.random() * candidates.length)] || urls[0];
+    }
+
+    async function switchToNext() {
+        _clearMmdIdleSchedule();
+
+        // Jukebox 舞蹈播放中：不打断，续期定时器等舞蹈结束后再轮换
+        if (window.Jukebox?.State?.isVMDPlaying) {
+            scheduleFallback();
+            return;
+        }
+
+        const mgr = window.mmdManager;
+        if (!mgr || !mgr.currentModel) return;
+
+        try {
+            const url = pickRandom();
+            if (url) {
+                // 不在此处 stopAnimation — stopAnimation() 会调用 skeleton.pose() 重置到 T-pose，
+                // 而 await loadAnimation 期间渲染循环会显露这个 T-pose，造成闪帧。
+                // loadAnimation 内部通过 _cleanupAnimation 清理旧动画，并以同步方式应用新动画第 0 帧
+                // （pose() → mixer.update(0) → updateMatrixWorld 同步完成，不跨渲染帧），
+                // 所以旧动画会一直播放到新动画加载完成那一刻，无 T-pose 闪烁。
+                // 与 model_manager.js 的 _playIdleAnimation 保持一致的切换策略。
+                await mgr.loadAnimation(url);
+                mgr.playAnimation();
+                _mmdIdleLastUrl = url;
+                console.debug('[MMD IdleRotation] 切换待机动作:', url.split('/').pop());
+
+                // 注册 loop 事件监听：动画一轮播完时自动切换
+                const mixer = mgr.animationModule?.mixer;
+                if (mixer) {
+                    const handler = () => {
+                        console.debug('[MMD IdleRotation] 动画循环完成，切换下一个');
+                        switchToNext();
+                    };
+                    mixer.addEventListener('loop', handler);
+                    _mmdIdleLoopCleanup = () => mixer.removeEventListener('loop', handler);
+                }
+            }
+        } catch (e) {
+            console.warn('[MMD IdleRotation] 切换失败:', e);
+        }
+        scheduleFallback();
+    }
+
+    /** 设置回退定时器 */
+    function scheduleFallback() {
+        if (_mmdIdleTimer) clearTimeout(_mmdIdleTimer);
+        _mmdIdleTimer = setTimeout(() => {
+            console.debug('[MMD IdleRotation] 回退定时器触发，强制切换');
+            switchToNext();
+        }, 20000);
+    }
+
+    scheduleFallback();
+
+    // 如果动画已经在播放（如 app-interpage.js 预先播放的第一个），
+    // 立即注册 loop 监听器，不必等 20 秒回退定时器
+    const mixer = window.mmdManager?.animationModule?.mixer;
+    if (mixer) {
+        const handler = () => {
+            console.debug('[MMD IdleRotation] 初始动画循环完成，切换下一个');
+            switchToNext();
+        };
+        mixer.addEventListener('loop', handler);
+        _mmdIdleLoopCleanup = () => mixer.removeEventListener('loop', handler);
+    }
+}
+
+function _stopMmdIdleRotation() {
+    _clearMmdIdleSchedule();
+    _mmdIdleLastUrl = null;
+}
+
+window._stopMmdIdleRotation = _stopMmdIdleRotation;
+window._startMmdIdleRotation = _startMmdIdleRotation;
 
 // 全局路径配置
 window.MMD_PATHS = {
@@ -233,9 +343,11 @@ async function fetchMMDConfig() {
  * 路径转换：将模型路径转换为可访问的 URL
  */
 window._mmdConvertPath = function (modelPath, options = {}) {
-    const defaultPath = options.defaultPath || null;
+    const defaultPath = options.defaultPath || '/static/mmd/Miku/Miku.pmx';
 
-    if (!modelPath || typeof modelPath !== 'string' || modelPath.trim() === '') {
+    if (!modelPath || typeof modelPath !== 'string' || modelPath.trim() === '' ||
+        modelPath === 'undefined' || modelPath === 'null' || modelPath.includes('undefined')) {
+        console.warn('[MMD Path] 路径无效，使用默认路径:', modelPath);
         return defaultPath;
     }
 

@@ -384,12 +384,12 @@ class MijiaPlugin(NekoPluginBase):
     @plugin_entry(
         id="list_devices",
         name="获取设备列表",
-        description="从服务器拉取设备列表并写入本地缓存，返回设备名称和在线状态概览",
+        description="获取设备列表，home_id留空自动使用第一个家庭，支持缓存",
         input_schema={
             "type": "object",
             "properties": {
-                "home_id": {"type": "string", "description": "家庭ID，留空则自动使用第一个家庭"},
-                "refresh": {"type": "boolean", "description": "是否强制刷新缓存，默认 false"}
+                "home_id": {"type": "string", "description": "家庭ID，留空自动用第一个"},
+                "refresh": {"type": "boolean", "description": "是否强制刷新缓存"}
             },
             "required": []
         },
@@ -518,11 +518,11 @@ class MijiaPlugin(NekoPluginBase):
     @plugin_entry(
         id="get_cached_devices",
         name="获取缓存的设备列表",
-        description="读取本地缓存的设备列表，无网络请求，速度快。缓存不存在时自动调用 list_devices 获取",
+        description="读取本地缓存的设备列表，缓存不存在时自动拉取",
         input_schema={
             "type": "object",
             "properties": {
-                "refresh": {"type": "boolean", "description": "是否强制刷新缓存，默认 false"}
+                "refresh": {"type": "boolean", "description": "是否强制刷新缓存"}
             },
             "required": []
         },
@@ -560,13 +560,84 @@ class MijiaPlugin(NekoPluginBase):
         return await self.list_devices(refresh=refresh)
 
     @plugin_entry(
-        id="find_device_by_name",
-        name="根据名称查找设备",
-        description="按名称模糊搜索设备，返回匹配设备的完整信息（did、properties、actions 等）",
+        id="set_device_alias",
+        name="设置设备别名",
+        description="为指定设备设置自定义别名，方便用别名控制设备",
         input_schema={
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "设备名称或部分名称，如 '插座'、'灯'"}
+                "did": {"type": "string", "description": "设备 DID"},
+                "alias": {"type": "string", "description": "自定义别名，多个别名用逗号分隔，如'卧室插座,床头插座'，留空则清除别名"}
+            },
+            "required": ["did"]
+        },
+        llm_result_fields=["message"]
+    )
+    async def set_device_alias(self, did: str, alias: str = "", **_):
+        """设置设备别名到缓存"""
+        cache_path = self.data_path("devices_cache.json")
+        if not cache_path.exists():
+            return Err(SdkError("设备缓存不存在，请先获取设备列表"))
+
+        try:
+            with open(cache_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            devices = data.get("devices", [])
+            found = False
+            for d in devices:
+                if d.get("did") == did:
+                    if alias:
+                        d["alias"] = alias.strip()
+                        msg = f"已将'{d.get('name')}'的别名设为：{alias.strip()}"
+                    else:
+                        d.pop("alias", None)
+                        msg = f"已清除'{d.get('name')}'的别名"
+                    found = True
+                    break
+
+            if not found:
+                return Err(SdkError(f"未找到 DID 为 {did} 的设备"))
+
+            with open(cache_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+
+            return Ok({"success": True, "message": msg, "did": did, "alias": alias.strip() if alias else ""})
+        except Exception as e:
+            return Err(SdkError(f"保存别名失败: {e}"))
+
+    @plugin_entry(
+        id="get_device_aliases",
+        name="获取设备别名列表",
+        description="返回所有设备的别名映射（did -> alias）",
+        llm_result_fields=["message"]
+    )
+    async def get_device_aliases(self, **_):
+        """获取所有设备别名"""
+        cache_path = self.data_path("devices_cache.json")
+        if not cache_path.exists():
+            return Ok({"success": True, "aliases": {}, "message": "无缓存数据"})
+
+        try:
+            with open(cache_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            devices = data.get("devices", [])
+            aliases = {d.get("did"): d.get("alias", "") for d in devices if d.get("alias")}
+            lines = [f"📝 共有 {len(aliases)} 个设备别名:"]
+            for did, alias in aliases.items():
+                lines.append(f"  • {alias} (DID: {did})")
+            message = "\n".join(lines) if aliases else "暂无别名"
+            return Ok({"success": True, "aliases": aliases, "message": message})
+        except Exception as e:
+            return Err(SdkError(f"读取别名失败: {e}"))
+
+    @plugin_entry(
+        id="find_device_by_name",
+        name="根据名称查找设备",
+        description="按名称或别名模糊搜索设备，返回匹配设备列表",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "设备名称、部分名称或别名，如 '插座'"}
             },
             "required": ["name"]
         },
@@ -590,21 +661,31 @@ class MijiaPlugin(NekoPluginBase):
             except Exception as e:
                 return Err(SdkError(f"读取缓存失败: {e}"))
         
-        # 模糊匹配设备名称
+        # 模糊匹配设备名称和别名
         name_lower = name.lower()
         matched = []
         for d in devices:
+            # 优先匹配别名（支持多别名逗号分隔）
+            alias = d.get('alias', '')
+            if alias:
+                alias_list = [a.strip() for a in alias.split(',') if a.strip()]
+                if any(name_lower in a.lower() or a.lower() == name_lower for a in alias_list):
+                    matched.append(d)
+                    continue
+            # 再匹配设备名称
             if name_lower in d.get('name', '').lower():
                 matched.append(d)
         
         if not matched:
-            return Err(SdkError(f"未找到名称包含 '{name}' 的设备"))
+            return Err(SdkError(f"未找到名称或别名包含 '{name}' 的设备"))
         
         # 构建友好消息
         lines = [f"🔍 找到 {len(matched)} 个匹配 '{name}' 的设备:"]
         for d in matched:
             status = "🟢 在线" if d.get("is_online") else "🔴 离线"
-            lines.append(f"  • {d.get('name')} ({status})")
+            alias = d.get('alias', '')
+            alias_info = f" (别名: {alias})" if alias else ""
+            lines.append(f"  • {d.get('name')}{alias_info} ({status})")
             lines.append(f"    型号: {d.get('model')}")
             lines.append(f"    DID: {d.get('did')}")
             if d.get("properties"):
@@ -616,11 +697,11 @@ class MijiaPlugin(NekoPluginBase):
     @plugin_entry(
         id="smart_control",
         name="智能控制设备",
-        description="用自然语言控制设备开关，如'打开插座'、'关闭灯'，自动匹配设备并执行",
+        description="用一句话控制设备，支持泛称设备名和自定义别名（如'插座'、'空调'、'卧室插座'、'关灯'），自动搜索匹配的设备并执行开关",
         input_schema={
             "type": "object",
             "properties": {
-                "command": {"type": "string", "description": "控制命令，如'打开插座'、'关闭灯'"}
+                "command": {"type": "string", "description": "控制命令，支持泛称或别名，如'打开插座'、'关闭卧室插座'、'关灯'"}
             },
             "required": ["command"]
         },
@@ -680,9 +761,14 @@ class MijiaPlugin(NekoPluginBase):
         
         # 多设备匹配时返回歧义错误，避免误操作
         if len(devices) > 1:
-            device_names = [d.get("name", "未知") for d in devices]
+            device_infos = []
+            for d in devices:
+                alias = d.get("alias", "")
+                name = d.get("name", "未知")
+                info = f"{name} (别名: {alias})" if alias else name
+                device_infos.append(info)
             return Err(SdkError(
-                f"找到多个匹配 '{device_name}' 的设备: {', '.join(device_names)}。"
+                f"找到多个匹配 '{device_name}' 的设备: {', '.join(device_infos)}。"
                 f"请使用更精确的设备名称，或通过 find_device_by_name 查看完整列表后使用 control_device 精确控制。"
             ))
         
@@ -690,7 +776,8 @@ class MijiaPlugin(NekoPluginBase):
         self.logger.info(f"设备数据: {device}")
         
         did = device.get("did")
-        name = device.get("name", device_name)
+        alias = device.get("alias", "")
+        name = alias or device.get("name", device_name)
         props = device.get("properties", [])
         
         self.logger.info(f"使用设备: name={name}, did={did}, 属性数={len(props)}")
@@ -741,7 +828,7 @@ class MijiaPlugin(NekoPluginBase):
     @plugin_entry(
         id="control_device",
         name="控制设备属性",
-        description="向设备写入属性值，用于精确控制开关、亮度、温度等属性",
+        description="向设备写入属性值，精确控制开关/亮度/温度等",
         input_schema={
             "type": "object",
             "properties": {
@@ -779,14 +866,14 @@ class MijiaPlugin(NekoPluginBase):
     @plugin_entry(
         id="call_device_action",
         name="调用设备操作",
-        description="触发设备的预定义操作，如扫地机开始清扫、播放音乐等",
+        description="触发设备的预定义操作（如扫地机清扫）",
         input_schema={
             "type": "object",
             "properties": {
                 "device_id": {"type": "string", "description": "设备 ID（did）"},
                 "siid": {"type": "integer", "description": "服务 ID"},
                 "aiid": {"type": "integer", "description": "操作 ID"},
-                "params": {"type": "array", "description": "操作参数列表，可选"}
+                "params": {"type": "array", "description": "操作参数列表"}
             },
             "required": ["device_id", "siid", "aiid"]
         },
@@ -841,7 +928,7 @@ class MijiaPlugin(NekoPluginBase):
     @plugin_entry(
         id="get_device_status",
         name="获取设备属性值",
-        description="读取设备的单个属性当前值",
+        description="读取设备单个属性的当前值",
         input_schema={
             "type": "object",
             "properties": {
@@ -880,11 +967,11 @@ class MijiaPlugin(NekoPluginBase):
     @plugin_entry(
         id="query_device_state",
         name="查询设备状态",
-        description="按设备名称查询所有可读属性的当前值，返回格式化的状态汇总",
+        description="按名称查询设备所有可读属性的当前值",
         input_schema={
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "设备名称或部分名称，如 '插座'、'灯'"}
+                "name": {"type": "string", "description": "设备名称或部分名称"}
             },
             "required": ["name"]
         },
@@ -1180,11 +1267,11 @@ class MijiaPlugin(NekoPluginBase):
     @plugin_entry(
         id="get_device_spec",
         name="获取设备规格",
-        description="查询设备型号的完整规格，列出所有可控属性（含 siid/piid）和可调用操作（含 siid/aiid）",
+        description="查询设备型号规格，列出所有属性和操作",
         input_schema={
             "type": "object",
             "properties": {
-                "model": {"type": "string", "description": "设备型号，如 cuco.plug.v3"}
+                "model": {"type": "string", "description": "设备型号"}
             },
             "required": ["model"]
         },

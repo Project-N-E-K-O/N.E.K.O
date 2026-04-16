@@ -41,7 +41,7 @@ function getWorkshopReservedFields() {
 
 function getWorkshopHiddenFields() {
     const cfg = _getReservedConfigOrFallback();
-    const keySystemFields = ['live2d', 'system_prompt', 'voice_id', 'live2d_item_id', '_reserved', 'item_id', 'idleAnimation', 'idleAnimations', 'mmd_idle_animation', 'mmd_idle_animations'];
+    const keySystemFields = ['live2d', 'system_prompt', 'voice_id', 'live3d_sub_type', 'live2d_item_id', '_reserved', 'item_id', 'idleAnimation', 'idleAnimations', 'mmd_idle_animation', 'mmd_idle_animations'];
     const presentSystemFields = cfg.all_reserved_fields.length > 0
         ? keySystemFields.filter(field => cfg.all_reserved_fields.includes(field))
         : keySystemFields;
@@ -83,10 +83,12 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // 为每个标签按钮添加事件监听
     tabButtons.forEach(button => {
-        // 获取按钮文本作为tooltip内容
-        const tooltipText = button.textContent.trim();
-
         button.addEventListener('mouseenter', function (e) {
+                const tooltipText = button.textContent.trim();
+                if (!tooltipText) {
+                    return;
+                }
+
             // 计算tooltip位置
             const buttonRect = button.getBoundingClientRect();
             const sidebarRect = document.getElementById('sidebar').getBoundingClientRect();
@@ -1536,7 +1538,7 @@ function uploadItem() {
                 }
 
                 // 添加默认标签
-                addTag('模组');
+                    addTag(window.t ? window.t('steam.defaultTagMod') : '模组');
 
                 // 显示成功提示和操作选项
                 setTimeout(() => {
@@ -2024,10 +2026,10 @@ function viewItemDetails(itemId) {
                 lastUpdated: new Date(item.timeUpdated * 1000).toLocaleDateString(),
                 size: formatFileSize(item.fileSize),
                 previewUrl: item.previewUrl || item.previewImageUrl || '../static/icons/Steam_icon_logo.png',
-                description: item.description || '暂无描述',
+                description: escapeHtml(item.description || (window.t ? window.t('steam.noDescription') : '暂无描述')),
                 downloadCount: 'N/A',
                 rating: 'N/A',
-                tags: ['模组'], // 默认标签，实际应用中应该从API获取
+                tags: [window.t ? window.t('steam.defaultTagMod') : '模组'], // 默认标签，实际应用中应该从API获取
                 state: item.state || {} // 添加state属性，确保后续代码可以正常访问
             };
 
@@ -2618,7 +2620,7 @@ async function loadCharacterCards() {
                                     window.characterCards.push({
                                         id: idCounter++,
                                         name: jsonData.name || `${model.name}_settings`,
-                                        description: jsonData.description || '角色设置文件',
+                                            description: jsonData.description || (window.t ? window.t('steam.characterSettingsFile') : '角色设置文件'),
                                         tags: jsonData.tags || [],
                                         rawData: jsonData  // 保存原始数据，方便详情页使用
                                     });
@@ -2702,14 +2704,32 @@ function expandCharacterCardSection(card) {
     // 处理模型默认值 - 兼容 Live2D / VRM / MMD 三种模型类型
     let live2d = rawData['live2d'] || (rawData['model'] && rawData['model']['name']) || '';
     const modelType = rawData['model_type'] || 'live2d';
-    const vrmPath = rawData['vrm'] || '';
-    const mmdPath = rawData['mmd'] || '';
+        const normalizeModelPath = value => {
+            if (value && typeof value === 'object' && 'model_path' in value) {
+                return String(value.model_path || '');
+            }
+            return String(value || '');
+        };
+        const vrmPath = normalizeModelPath(rawData['vrm']);
+        const mmdPath = normalizeModelPath(rawData['mmd']);
+    // 优先使用 live3d_sub_type（后端权威来源，含 _reserved 迁移路径）
+    const explicitLive3dSubType = String(
+        rawData['_reserved']?.avatar?.live3d_sub_type
+        || rawData['live3d_sub_type']
+        || ''
+    ).trim().toLowerCase();
 
-    // 判断实际模型类型：如果 model_type 是 live3d 或 vrm，根据路径区分 VRM/MMD
+    // 判断实际模型类型：优先使用显式 live3d_sub_type，缺失时再根据路径区分 VRM/MMD
     let effectiveModelType = 'live2d';
     let effectiveModelPath = '';
     if (modelType === 'live3d' || modelType === 'vrm') {
-        if (mmdPath) {
+        if (explicitLive3dSubType === 'mmd') {
+            effectiveModelType = 'mmd';
+            effectiveModelPath = mmdPath;
+        } else if (explicitLive3dSubType === 'vrm') {
+            effectiveModelType = 'vrm';
+            effectiveModelPath = vrmPath;
+        } else if (mmdPath && !vrmPath) {
             effectiveModelType = 'mmd';
             effectiveModelPath = mmdPath;
         } else if (vrmPath) {
@@ -4772,17 +4792,34 @@ document.addEventListener('DOMContentLoaded', function () {
     // 渲染标签
     function renderTags() {
         tagsContainer.innerHTML = '';
+        const removeTagTitle = window.t ? window.t('steam.removeTag') : '删除标签';
         notesTags.forEach((tag, index) => {
             const tagElement = document.createElement('span');
             tagElement.className = 'tag';
-            tagElement.innerHTML = `
-                <span>${tag}</span>
-                <button class="tag-remove" onclick="removeNotesTag(${index})" data-i18n-title="steam.removeTag" title="删除标签">
-                    <span>×</span>
-                </button>
-            `;
+
+            const tagText = document.createElement('span');
+            tagText.textContent = tag;
+
+            const removeButton = document.createElement('button');
+            removeButton.type = 'button';
+            removeButton.className = 'tag-remove';
+            removeButton.title = removeTagTitle;
+            removeButton.setAttribute('aria-label', removeTagTitle);
+            removeButton.setAttribute('data-i18n-title', 'steam.removeTag');
+            removeButton.setAttribute('data-i18n-aria', 'steam.removeTag');
+            removeButton.addEventListener('click', () => removeNotesTag(index));
+
+            const removeIcon = document.createElement('span');
+            removeIcon.textContent = '×';
+            removeButton.appendChild(removeIcon);
+
+            tagElement.appendChild(tagText);
+            tagElement.appendChild(removeButton);
             tagsContainer.appendChild(tagElement);
         });
+        if (window.updatePageTexts) {
+            window.updatePageTexts();
+        }
         updateNotesPreview(); // 更新预览，移到循环外部确保无论是否有标签都会执行
     }
 
@@ -4812,10 +4849,12 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     // 删除标签
-    window.removeNotesTag = function (index) {
+    function removeNotesTag(index) {
         notesTags.splice(index, 1);
         renderTags();
     }
+
+    window.removeNotesTag = removeNotesTag;
 
     // 处理输入框变化
     function handleInput() {

@@ -7,6 +7,16 @@
  * 4. 自动检测并刷新状态
  */
 const PLATFORM_CONFIG_DATA = {
+    'netease': {
+        name: '网易云音乐',
+        nameKey: 'cookiesLogin.netease',
+        icon: '🎶', theme: '#c20c0c',
+        instructionKey: 'cookiesLogin.instructions.netease',
+        fields: [
+            { key: 'MUSIC_U', labelKey: 'cookiesLogin.fields.MUSIC_U.label', descKey: 'cookiesLogin.fields.MUSIC_U.desc', required: true },
+            { key: 'NMTID', labelKey: 'cookiesLogin.fields.NMTID.label', descKey: 'cookiesLogin.fields.NMTID.desc', required: false }
+        ]
+    },
     'bilibili': {
         name: 'Bilibili', 
         nameKey: 'cookiesLogin.bilibili',
@@ -75,16 +85,76 @@ const PLATFORM_CONFIG_DATA = {
     }
 };
 
+function getTranslator() {
+    if (typeof window.t === 'function') return window.t;
+    if (window.i18n && typeof window.i18n.t === 'function') return window.i18n.t.bind(window.i18n);
+    if (window.i18next && typeof window.i18next.t === 'function') return window.i18next.t.bind(window.i18next);
+    if (typeof i18next !== 'undefined' && typeof i18next.t === 'function') return i18next.t.bind(i18next);
+    return null;
+}
+
 // 如果字典还没加载好，坚决返回传入的中文后备(Fallback)
 const safeT = (key, fallback = '') => {
-    if (typeof window.t !== 'function') return fallback;
-    const result = window.t(key);
+    const translator = getTranslator();
+    if (!translator) return fallback;
+    const result = translator(key);
     // 如果返回的翻译和键名一样，或者为空，说明字典处于未就绪状态
     return (result === key || !result) ? fallback : result;
 };
 
+const CJK_CHAR_RE = /[\u3400-\u9fff]/u;
+
+const createLocalizedError = (message) => {
+    const error = new Error(message);
+    error.localized = true;
+    return error;
+};
+
+function shouldUseRawApiMessage(message) {
+    if (typeof message !== 'string') return false;
+
+    const trimmedMessage = message.trim();
+    if (!trimmedMessage) return false;
+
+    const currentLanguage = (window.i18next && window.i18next.language) || document.documentElement.lang || '';
+    return /^zh(?:-|$)/i.test(currentLanguage) || !CJK_CHAR_RE.test(trimmedMessage);
+}
+
+function getLocalizedApiMessage(message, key, fallback) {
+    if (shouldUseRawApiMessage(message)) {
+        return message.trim();
+    }
+
+    return safeT(key, fallback);
+}
+
+function getQrStatusMessage(status, message) {
+    const fallbackMessages = {
+        success: '登录成功',
+        expired: '二维码已过期',
+        scanned: '已扫码，请在手机上确认',
+        waiting: '等待扫码'
+    };
+    const fallbackTemplates = {
+        success: '✅ {{message}}',
+        expired: '❌ {{message}}，请刷新',
+        scanned: '📱 {{message}}',
+        waiting: '{{message}}...'
+    };
+    const statusMessage = getLocalizedApiMessage(
+        message,
+        `cookiesLogin.qrLogin.statusMessage.${status}`,
+        fallbackMessages[status] || fallbackMessages.waiting
+    );
+
+    return safeT(
+        `cookiesLogin.qrLogin.status.${status}`,
+        fallbackTemplates[status] || fallbackTemplates.waiting
+    ).replace('{{message}}', statusMessage);
+}
+
 let PLATFORM_CONFIG = {};
-let currentPlatform = 'bilibili';
+let currentPlatform = 'netease';
 
 // 当语言切换时，重新初始化平台配置
 function initPlatformConfig() {
@@ -141,6 +211,7 @@ function renderStaticHtmlI18n() {
     if (closeBtn) {
         const closeText = safeT('common.close', '关闭');
         closeBtn.title = closeText;
+        closeBtn.setAttribute('aria-label', closeText);
         const img = closeBtn.querySelector('img');
         if (img) img.alt = closeText;
     }
@@ -155,18 +226,24 @@ function handleLocaleChange() {
 
     initPlatformConfig();
     renderStaticHtmlI18n(); 
-    switchTab(currentPlatform, document.querySelector('.tab-btn.active'), true);
+    switchTab(currentPlatform, document.querySelector('.tab-btn.active') || document.querySelector('.tab-btn'), true);
     refreshStatusList();
 }
 // DOM 加载完成后，初始化平台配置、渲染静态 HTML 翻译并监听语言变化事件
 document.addEventListener('DOMContentLoaded', () => {
-    // 初次加载无论如何都渲染一次（带兜底中文），然后监听语言就绪事件
+    window.addEventListener('localechange', handleLocaleChange);
+
+    if (getTranslator()) {
+        handleLocaleChange();
+        return;
+    }
+
+    // 初次加载无论如何都渲染一次（带兜底中文），然后等待语言就绪事件刷新
     initPlatformConfig();
     renderStaticHtmlI18n();
-    window.addEventListener('localechange', handleLocaleChange);
     
     const firstTab = document.querySelector('.tab-btn');
-    if (firstTab) switchTab('bilibili', firstTab);
+    if (firstTab) switchTab('netease', firstTab);
     refreshStatusList();
 });
 
@@ -212,18 +289,23 @@ function decreaseColorLightness(hexColor, lightnessPercent) {
 
 
 async function showQRLogin(config, platformKey) {
-    let qrSupportedPlatforms =[];
+    let qrSupportedPlatforms = [];
     const qrLoginBox = document.getElementById('QRLogin');
+    if (!qrLoginBox) return;
+
+    // 清理之前的状态
     qrLoginBox.innerHTML = "";
-    if (qrLoginBox) {
-        qrLoginBox.style.display = 'block';
-    }
+    qrLoginBox.classList.remove('collapsed');
+    qrLoginBox.style.display = 'block';
     const resp = await fetch('/api/auth/get_CanQRLoginList');
     if (currentPlatform !== platformKey) return;
     qrSupportedPlatforms = await resp.json();
     if (currentPlatform !== platformKey) return;
 
-    if (qrSupportedPlatforms.includes(config["name"])){
+    // 采用多重匹配：优先转换后台返回的列表为全小写比对 platformKey，同时兼容已有的原始比对以防止破坏遗留代码
+    const isSupported = qrSupportedPlatforms.map(k => k.toLowerCase()).includes(platformKey.toLowerCase()) || qrSupportedPlatforms.includes(config["name"]);
+
+    if (isSupported){
         const QRinfo =  document.createElement("div");
         const butt = document.createElement("button");
         QRinfo.innerHTML = safeT('cookiesLogin.qrLogin.tryQR', '或者...试试扫码登陆?');
@@ -262,7 +344,7 @@ async function requestQR(config, platformKey) {
         const response = await fetch('/api/auth/get_QR', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ platform: config["name"] })
+            body: JSON.stringify({ platform: platformKey })
         });
         
 
@@ -271,10 +353,12 @@ async function requestQR(config, platformKey) {
         const result = await response.json();
         if (currentPlatform !== platformKey) return;
         if (!response.ok) {
-            throw new Error(
-                typeof result?.detail === 'string' && result.detail
-                    ? result.detail
-                    : safeT('cookiesLogin.qrLogin.fetchFailed', '获取二维码失败，请稍后重试')
+            throw createLocalizedError(
+                getLocalizedApiMessage(
+                    result?.detail || result?.message,
+                    'cookiesLogin.qrLogin.fetchFailed',
+                    '获取二维码失败，请稍后重试'
+                )
             );
         }
         if (result.success && result.data) {
@@ -282,14 +366,23 @@ async function requestQR(config, platformKey) {
             const timeout = result.data.timeout || 180;
             
             qrLoginBox.innerHTML = `
-                <div style="text-align: center; padding: 15px; background: #f8fafc; border-radius: 12px; border: 1px solid #e2e8f0;">
-                    <div style="font-weight: 600; color: #334155; margin-bottom: 12px;">${safeT('cookiesLogin.qrLogin.scanTitle', '📱 扫码登录 {{platform}}').replace('{{platform}}', config["name"])}</div>
-                    <img src="${result.data.qrcode_image}" alt="QR Code" style="width: 200px; height: 200px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                <div style="text-align: center; padding: 15px; background: #f8fafc; border-radius: 12px; border: 1px solid #e2e8f0; position: relative;">
+                    <button id="qr-collapse-action" class="qr-collapse-btn">
+                        <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                        ${safeT('common.collapse', '收起')}
+                    </button>
+                    <div style="font-weight: 600; color: #334155; margin-bottom: 12px; margin-top: 5px;">${safeT('cookiesLogin.qrLogin.scanTitle', '📱 扫码登录 {{platform}}').replace('{{platform}}', PLATFORM_CONFIG[platformKey]?.name || config["name"])}</div>
+                    <img src="${result.data.qrcode_image}" alt="${safeT('cookiesLogin.qrLogin.qrCodeAlt', 'QR code')}" style="width: 200px; height: 200px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
                     <div id="qr-status" style="margin-top: 12px; font-size: 13px; color: #64748b;">${safeT('cookiesLogin.qrLogin.waiting', '等待扫码...')}</div>
                     <div style="margin-top: 10px; font-size: 12px; color: #94a3b8;">${safeT('cookiesLogin.qrLogin.validFor', '二维码有效期: {{seconds}}秒').replace('{{seconds}}', timeout)}</div>
                     <button id="qr-refresh-btn" style="margin-top: 12px; padding: 8px 16px; font-size: 13px; border-radius: 8px; border: 1px solid #e2e8f0; background: white; color: #475569; cursor: pointer;">${safeT('cookiesLogin.qrLogin.refreshQR', '刷新二维码')}</button>
                 </div>
             `;
+            
+            document.getElementById('qr-collapse-action').onclick = function() {
+                stopQrPoll();
+                showQRLogin(config, platformKey);
+            };
             
             document.getElementById('qr-refresh-btn').onclick = function() {
                 currentQrKey = null;
@@ -312,10 +405,9 @@ async function requestQR(config, platformKey) {
     } catch (err) {
         console.error("Request QR error:", err);
         if (currentPlatform !== platformKey) return;
-        const errorMessage =
-            typeof err?.message === 'string' && err.message
-                ? err.message
-                : safeT('cookiesLogin.qrLogin.networkError', '网络请求失败，请检查连接');
+        const errorMessage = err?.localized === true
+            ? err.message
+            : safeT('cookiesLogin.qrLogin.networkError', '网络请求失败，请检查连接');
         qrLoginBox.innerHTML = `
             <div style="text-align: center; padding: 20px; color: #ef4444;">
                 ${errorMessage}
@@ -348,17 +440,19 @@ function startQrPoll(config, platformKey) {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 
-                    platform: config["name"], 
+                    platform: platformKey, 
                     qrcode_key: expectedQrKey 
                 })
             });
 
             const result = await response.json();
             if (!response.ok) {
-                throw new Error(
-                    typeof result?.detail === 'string'
-                        ? result.detail
-                        : safeT('cookiesLogin.qrLogin.networkError', '网络请求失败，请检查连接')
+                throw createLocalizedError(
+                    getLocalizedApiMessage(
+                        result?.detail || result?.message,
+                        'cookiesLogin.qrLogin.networkError',
+                        '网络请求失败，请检查连接'
+                    )
                 );
             }
 
@@ -383,21 +477,31 @@ function startQrPoll(config, platformKey) {
                 stopQrPoll();
                 setStatusSpan(
                     '#22c55e',
-                    safeT('cookiesLogin.qrLogin.status.success', '✅ {{message}}').replace('{{message}}', data.message),
+                    getQrStatusMessage('success', data.message),
                     '600'
                 );
 
                 const cookies = data.cookies;
                 const cookieFields = data.cookie_fields || [];
+                let capturedCount = 0;
 
                 cookieFields.forEach(field => {
                     if (cookies && cookies[field]) {
                         const input = document.getElementById('input-' + field);
-                        if (input) input.value = cookies[field];
+                        if (input) {
+                            input.value = cookies[field];
+                            capturedCount++;
+                        }
                     }
                 });
 
-                showAlert(true, safeT('cookiesLogin.qrLogin.successAlert', '扫码登录成功！Cookie 已自动填入，请点击保存配置'));
+                // 统一成功提醒
+                let customAlert = safeT('cookiesLogin.qrLogin.successAlert', '扫码登录成功！Cookie 已自动填入，请点击保存配置');
+                if (capturedCount === 0 && cookieFields.length > 0) {
+                  customAlert = safeT('cookiesLogin.qrLogin.extractFailed', '⚠️ 扫码成功但未能自动提取到字段，请手动检查。');
+                }
+
+                showAlert(capturedCount > 0, customAlert);
 
                 if (qrRefreshTimeout) {
                     clearTimeout(qrRefreshTimeout);
@@ -406,7 +510,7 @@ function startQrPoll(config, platformKey) {
                     if (currentPlatform !== platformKey) return;
                     showQRLogin(config, platformKey);
                     qrRefreshTimeout = null;
-                }, 2000);
+                }, 3000); // 延长一秒显示成功状态防止闪烁
 
             } else if (data) {
                 const status = data.status;
@@ -417,18 +521,18 @@ function startQrPoll(config, platformKey) {
                         shouldContinuePolling = false;
                         setStatusSpan(
                             '#ef4444',
-                            safeT('cookiesLogin.qrLogin.status.expired', '❌ {{message}}，请刷新').replace('{{message}}', message)
+                            getQrStatusMessage('expired', message)
                         );
                         stopQrPoll();
                     } else if (status === 'scanned') {
                         setStatusSpan(
                             '#f59e0b',
-                            safeT('cookiesLogin.qrLogin.status.scanned', '📱 {{message}}').replace('{{message}}', message)
+                            getQrStatusMessage('scanned', message)
                         );
                     } else if (status === 'waiting') {
-                        statusEl.textContent = safeT('cookiesLogin.qrLogin.status.waiting', '{{message}}...').replace('{{message}}', message);
+                        statusEl.textContent = getQrStatusMessage('waiting', message);
                     } else {
-                        statusEl.textContent = message;
+                        statusEl.textContent = getLocalizedApiMessage(message, 'cookiesLogin.qrLogin.waiting', '等待扫码...');
                     }
                 }
             } else {
@@ -441,7 +545,9 @@ function startQrPoll(config, platformKey) {
             if (currentPlatform === platformKey && currentQrKey === expectedQrKey) {
                 const statusEl = document.getElementById('qr-status');
                 if (statusEl) {
-                    statusEl.textContent = typeof err?.message === 'string' && err.message ? err.message : safeT('cookiesLogin.qrLogin.networkError', '网络请求失败，请检查连接');
+                    statusEl.textContent = err?.localized === true
+                        ? err.message
+                        : safeT('cookiesLogin.qrLogin.networkError', '网络请求失败，请检查连接');
                 }
             }
             stopQrPoll();
@@ -470,7 +576,15 @@ function stopQrPoll() {
 
 // 切换选项卡时，更新当前平台配置
 function switchTab(platformKey, btnElement, isReRender = false) {
-    if (!PLATFORM_CONFIG[platformKey]) return;
+    if (!PLATFORM_CONFIG[platformKey]) {
+        console.error(`PLATFORM_CONFIG is missing for ${platformKey}`);
+        return;
+    }
+
+    if (!isReRender && currentPlatform === platformKey && btnElement && btnElement.classList.contains('active')) {
+        return;
+    }
+
     stopQrPoll();
     currentQrKey = null;
     if (qrRefreshTimeout) {
@@ -618,25 +732,18 @@ async function submitCurrentCookie() {
                 encrypt: encryptToggle ? encryptToggle.checked : false
             })
         });
-        // 检查响应状态
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
         const result = await response.json();
         // 检查是否成功保存
-        if (result.success) {
+        if (response.ok && result.success) {
             const message = safeT('cookiesLogin.credentialsSaved', '{{platformName}} 凭证已保存').replace('{{platformName}}', config.name);
             showAlert(true, message);
             document.querySelectorAll('.credential-input').forEach(i => i.value = '');
             refreshStatusList();
         } else {
-            let errMsg = result.message;
-            if(!errMsg && result.detail) {
-                errMsg = Array.isArray(result.detail)
-                    ? result.detail.map(e => e.msg || JSON.stringify(e)).join('; ')
-                    : String(result.detail);
-            }
-            const message = errMsg || safeT('cookiesLogin.saveFailed', '保存失败');
+            const rawMessage = Array.isArray(result?.detail)
+                ? result.detail.map(e => e.msg || JSON.stringify(e)).join('; ')
+                : (result?.detail || result?.message);
+            const message = getLocalizedApiMessage(rawMessage, 'cookiesLogin.saveFailed', '保存失败，请检查格式是否正确');
             showAlert(false, message);
         }
     } catch (err) {
@@ -742,11 +849,16 @@ async function deleteCookie(platformKey) {
     try {
         const res = await fetch(`/api/auth/cookies/${platformKey}`, { method: 'DELETE' });
         const data = await res.json();
-        if (data.success) {
+        if (res.ok && data.success) {
             showAlert(true, safeT('cookiesLogin.credentialsRemoved', '凭证已清除'));
             refreshStatusList();
         } else {
-            showAlert(false, data.message || safeT('cookiesLogin.credentialsRemovedFailed', '清除失败'));
+            const message = getLocalizedApiMessage(
+                data?.message || data?.detail,
+                'cookiesLogin.credentialsRemovedFailed',
+                '清除失败'
+            );
+            showAlert(false, message);
         }
     } catch (e) {
         showAlert(false, safeT('cookiesLogin.removeFailed', '操作异常失败'));

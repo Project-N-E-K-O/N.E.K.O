@@ -179,7 +179,7 @@ class VRMInteraction {
 
                 // 开始拖动时，临时禁用按钮的 pointer-events
                 this._disableButtonPointerEvents();
-            } else if (e.button === 2) { // 右键 - 相机视角旋转
+            } else if (e.button === 2) { // 右键 - 模型旋转
                 this.isDragging = true;
                 this.dragMode = 'orbit';
                 this.previousMousePosition = { x: e.clientX, y: e.clientY };
@@ -187,13 +187,21 @@ class VRMInteraction {
                 e.preventDefault();
                 e.stopPropagation();
 
-                // 记录模型中心和它在屏幕上的 NDC 坐标，旋转过程中用于保持模型屏幕位置不变
-                if (this.manager.camera && this.manager.currentModel?.scene) {
-                    const box = new THREE.Box3().setFromObject(this.manager.currentModel.scene);
-                    this._orbitCenter = box.getCenter(new THREE.Vector3());
-                    // 将模型中心投影到 NDC 坐标（-1~1），记录模型在屏幕上的位置
-                    const projected = this._orbitCenter.clone().project(this.manager.camera);
-                    this._orbitNDC = { x: projected.x, y: projected.y };
+                // 缓存拖拽起始状态，用于幂等计算总旋转量（对齐 MMD 行为）
+                // 之前实现是 "相机绕模型公转 + NDC lookAt 补偿"：
+                //   1) 逐帧累加 phi/theta，phi 一旦被 clamp 到极区就不可逆；
+                //   2) NDC 补偿是一阶近似，拖多了会微漂；
+                //   3) 滚轮改走 scene.scale 后（见 commit e234db8），camera.y 不再
+                //      随缩放联动，Box3 中心的 y 却会跟着 scale 漂移，导致 offset.y/radius
+                //      偏离 π/2，上下转瞬间"不对称"。
+                // 改为直接绕包围盒中心旋转 scene 本身、相机完全不动，彻底摆脱上述耦合。
+                const scene = this.manager.currentModel?.scene;
+                if (scene) {
+                    const box = new THREE.Box3().setFromObject(scene);
+                    this._orbitPivot = box.getCenter(new THREE.Vector3());
+                    this._orbitStartQuat = scene.quaternion.clone();
+                    this._orbitStartPos = scene.position.clone();
+                    this._orbitStartMouse = { x: e.clientX, y: e.clientY };
                 }
 
                 this._disableButtonPointerEvents();
@@ -258,56 +266,31 @@ class VRMInteraction {
 
                 // 应用位置（按钮和锁图标位置由 _startUIUpdateLoop 自动更新）
                 this.manager.currentModel.scene.position.copy(finalPosition);
-            } else if (this.dragMode === 'orbit' && this.manager.camera && this._orbitCenter) {
-                // 右键拖拽：相机绕模型中心旋转，同时补偿 lookAt 使模型保持在屏幕原位
-                const camera = this.manager.camera;
-                const orbitCenter = this._orbitCenter;
+            } else if (this.dragMode === 'orbit' && this._orbitStartQuat && this._orbitPivot) {
+                // 右键拖拽：模型绕包围盒中心旋转（Y轴左右 + X轴上下），相机保持不动
+                // 对齐 MMD 的 orbit 实现（见 mmd-interaction.js:256-279）。
+                const scene = this.manager.currentModel?.scene;
+                if (!scene) return;
 
-                // 旋转灵敏度（弧度/像素）
-                const orbitSpeed = 0.005;
+                const rotateSpeed = 0.005;
+                const totalDx = e.clientX - this._orbitStartMouse.x;
+                const totalDy = e.clientY - this._orbitStartMouse.y;
 
-                // 计算从旋转中心到相机的偏移量
-                const offset = camera.position.clone().sub(orbitCenter);
-                const radius = offset.length();
+                // 世界轴 Y（左右）+ 世界轴 X（上下）
+                const yQuat = new THREE.Quaternion().setFromAxisAngle(
+                    new THREE.Vector3(0, 1, 0), totalDx * rotateSpeed);
+                const xQuat = new THREE.Quaternion().setFromAxisAngle(
+                    new THREE.Vector3(1, 0, 0), totalDy * rotateSpeed);
+                const totalQuat = new THREE.Quaternion().multiplyQuaternions(yQuat, xQuat);
 
-                // 球坐标：theta 为水平角（绕Y轴），phi 为俯仰角
-                let theta = Math.atan2(offset.x, offset.z);
-                let phi = Math.acos(Math.max(-1, Math.min(1, offset.y / radius)));
+                // 绕 _orbitPivot 旋转：先把 scene.position 相对 pivot 的偏移旋转后放回，
+                // 使包围盒中心保持不动，模型只在屏幕上"原地转身"。
+                const offset = new THREE.Vector3().subVectors(this._orbitStartPos, this._orbitPivot);
+                const rotatedOffset = offset.clone().applyQuaternion(totalQuat);
+                scene.position.copy(this._orbitPivot).add(rotatedOffset);
 
-                // 根据鼠标移动调整角度
-                theta -= deltaX * orbitSpeed;
-                phi -= deltaY * orbitSpeed;
-
-                // 限制俯仰角避免翻转（5° ~ 175°）
-                phi = Math.max(0.087, Math.min(Math.PI - 0.087, phi));
-
-                // 转回笛卡尔坐标
-                offset.x = radius * Math.sin(phi) * Math.sin(theta);
-                offset.y = radius * Math.cos(phi);
-                offset.z = radius * Math.sin(phi) * Math.cos(theta);
-
-                // 更新相机位置
-                camera.position.copy(orbitCenter).add(offset);
-
-                // 先临时看向旋转中心，建立新的相机坐标系
-                camera.lookAt(orbitCenter);
-
-                // 用 NDC 坐标补偿，使模型中心保持在原来的屏幕位置
-                const nx = this._orbitNDC.x;
-                const ny = this._orbitNDC.y;
-                const halfHeight = radius * Math.tan(camera.fov * Math.PI / 360);
-                const halfWidth = halfHeight * camera.aspect;
-
-                const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
-                const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
-
-                // target = 模型中心 - NDC偏移量（使模型投影回原屏幕位置）
-                const newTarget = orbitCenter.clone()
-                    .sub(right.clone().multiplyScalar(nx * halfWidth))
-                    .sub(up.clone().multiplyScalar(ny * halfHeight));
-
-                camera.lookAt(newTarget);
-                this.manager._cameraTarget = newTarget;
+                // 每帧从起始姿态重新乘出（幂等），避免增量累加的漂移
+                scene.quaternion.copy(this._orbitStartQuat).premultiply(totalQuat);
             }
 
             this.previousMousePosition = { x: e.clientX, y: e.clientY };
@@ -319,6 +302,9 @@ class VRMInteraction {
             if (this.isDragging) {
                 e.preventDefault();
                 e.stopPropagation();
+                // 保留本次拖拽类型再清状态，跨屏切换只对 pan 生效
+                // （orbit 绕包围盒中心原地转身，屏幕投影不位移，无需多屏切换）
+                const wasPanDrag = this.dragMode === 'pan';
                 this.isDragging = false;
                 this.dragMode = null;
                 canvas.style.cursor = 'default';
@@ -326,11 +312,19 @@ class VRMInteraction {
                 // 拖拽结束后恢复按钮的 pointer-events
                 this._restoreButtonPointerEvents();
 
-                // 拖拽结束后：若超出屏幕范围，执行回弹
-                await this._snapModelIntoScreen({ animate: true });
+                // 多屏幕支持：仅对平移拖拽检测是否移出当前屏幕并切换到新屏幕
+                // 与 Live2D 行为对齐：若发生切屏，_checkAndSwitchDisplay 内部负责回弹和保存
+                const displaySwitched = wasPanDrag
+                    ? await this._checkAndSwitchDisplay()
+                    : false;
 
-                // 拖动结束后保存位置（包含回弹后的位置）
-                await this._savePositionAfterInteraction();
+                if (!displaySwitched) {
+                    // 拖拽结束后：若超出屏幕范围，执行回弹
+                    await this._snapModelIntoScreen({ animate: true });
+
+                    // 拖动结束后保存位置（包含回弹后的位置）
+                    await this._savePositionAfterInteraction();
+                }
             }
         };
 
@@ -355,15 +349,20 @@ class VRMInteraction {
                 canvas.style.cursor = 'default';
                 return;
             }
-            const padding = 10;
-            const isNearModel = e.clientX >= (bounds.minX - padding) &&
-                e.clientX <= (bounds.maxX + padding) &&
-                e.clientY >= (bounds.minY - padding) &&
-                e.clientY <= (bounds.maxY + padding);
+            // 椭圆近似（内切于包围盒），不外扩
+            const cx = (bounds.minX + bounds.maxX) / 2;
+            const cy = (bounds.minY + bounds.maxY) / 2;
+            const rx = (bounds.maxX - bounds.minX) / 2 * 0.6;
+            const ry = (bounds.maxY - bounds.minY) / 2 * 0.95;
+            const nx = rx > 0 ? (e.clientX - cx) / rx : 0;
+            const ny = ry > 0 ? (e.clientY - cy) / ry : 0;
+            const isNearModel = (nx * nx + ny * ny) <= 1;
             canvas.style.cursor = isNearModel ? 'grab' : 'default';
         };
 
         // 6. 滚轮缩放
+        // 对齐 MMD 行为：直接缩放 scene.scale，围绕模型自身原点进行，
+        // 避免因 "相机靠近固定 _cameraTarget" 在角色被拖到边缘时把角色甩出屏幕。
         this.wheelHandler = (e) => {
             if (this.checkLocked() || !this.manager.currentModel) return;
 
@@ -383,42 +382,27 @@ class VRMInteraction {
             e.preventDefault();
             e.stopPropagation();
 
-            if (!THREE) {
-                console.error('[VRM Interaction] THREE.js 未加载，无法处理滚轮缩放');
+            const scene = this.manager.currentModel.scene;
+            if (!scene) return;
+
+            const scaleFactor = e.deltaY > 0 ? 0.95 : 1.05;
+            // 夹到一个合理范围，避免反复滚轮把模型缩到 0 或爆炸大
+            const minScale = 0.1;
+            const maxScale = 50.0;
+            const currentScale = scene.scale.x || 1;
+            const newScale = Math.max(minScale, Math.min(maxScale, currentScale * scaleFactor));
+
+            // 通过 manager.setModelScaleScalar 统一缩放，同时同步 SpringBone 碰撞体半径。
+            // 这里不走 scene.scale.setScalar 的静默回退：那样只会缩视觉 mesh、不同步 collider，
+            // 反而把状态失配藏起来。API 不可用时显式告警并中止，以便尽早暴露问题。
+            if (typeof this.manager.setModelScaleScalar !== 'function') {
+                console.warn('[VRM Interaction] manager.setModelScaleScalar 不可用，跳过缩放以避免 SpringBone 状态失配');
                 return;
             }
+            this.manager.setModelScaleScalar(newScale);
 
-            const delta = e.deltaY;
-            const zoomSpeed = 0.05;
-            const zoomFactor = delta > 0 ? (1 + zoomSpeed) : (1 - zoomSpeed);
-
-            if (this.manager.currentModel.scene && this.manager.camera) {
-                // 使用统一的 _cameraTarget 作为缩放中心
-                const zoomCenter = this.manager._cameraTarget
-                    ? this.manager._cameraTarget.clone()
-                    : new THREE.Vector3(0, 0, 0);
-
-                const oldDistance = this.manager.camera.position.distanceTo(zoomCenter);
-                const minDist = 0.5;
-                const maxDist = 20.0;
-
-                let newDistance = oldDistance * zoomFactor;
-                newDistance = Math.max(minDist, Math.min(maxDist, newDistance));
-
-                const direction = new THREE.Vector3()
-                    .subVectors(this.manager.camera.position, zoomCenter)
-                    .normalize();
-
-                this.manager.camera.position.copy(zoomCenter)
-                    .add(direction.multiplyScalar(newDistance));
-
-                if (this.manager.controls && this.manager.controls.update) {
-                    this.manager.controls.update();
-                }
-
-                // 缩放结束后防抖保存位置
-                this._debouncedSavePosition();
-            }
+            // 缩放结束后防抖保存位置
+            this._debouncedSavePosition();
         };
 
         this.auxClickHandler = (e) => {
@@ -450,6 +434,9 @@ class VRMInteraction {
      */
     _updateModelFacing(delta) {
         if (!this.enableFaceCamera) return;
+        // 手动 orbit 期间不自动朝向相机，避免和用户拖拽对抗
+        // （当前 vrm-core.js:887 加载完会把 enableFaceCamera=false，这里是防御性守卫）
+        if (this.dragMode === 'orbit') return;
         if (!this.manager.currentModel || !this.manager.currentModel.scene || !this.manager.camera) return;
 
         const model = this.manager.currentModel.scene;
@@ -845,6 +832,165 @@ class VRMInteraction {
         return await this._animateModelToPosition(startPosition, targetPosition);
     }
 
+    /**
+     * 多屏幕支持：检测模型是否移出当前屏幕并切换到新屏幕
+     * 返回 true 表示发生了切屏（内部已保存位置），返回 false 表示未切屏
+     */
+    async _checkAndSwitchDisplay() {
+        // 仅在 Electron 环境下执行
+        if (!window.electronScreen || !window.electronScreen.moveWindowToDisplay) {
+            return false;
+        }
+        if (!THREE) return false;
+
+        const scene = this.manager.currentModel?.scene;
+        const vrm = this.manager.currentModel?.vrm;
+        const camera = this.manager.camera;
+        const renderer = this.manager.renderer;
+        if (!scene || !vrm || !camera || !renderer) return false;
+
+        try {
+            // 1. 计算模型在当前窗口中的屏幕空间中心点（像素）
+            vrm.scene.updateMatrixWorld(true);
+            const box = new THREE.Box3().setFromObject(vrm.scene);
+            if (!box || !Number.isFinite(box.min.x) || !Number.isFinite(box.max.x)) {
+                return false;
+            }
+
+            const canvasRect = renderer.domElement.getBoundingClientRect();
+            const screenWidth = canvasRect.width;
+            const screenHeight = canvasRect.height;
+            if (!(screenWidth > 0) || !(screenHeight > 0)) return false;
+
+            const corners = [
+                new THREE.Vector3(box.min.x, box.min.y, box.min.z),
+                new THREE.Vector3(box.max.x, box.min.y, box.min.z),
+                new THREE.Vector3(box.min.x, box.max.y, box.min.z),
+                new THREE.Vector3(box.max.x, box.max.y, box.min.z),
+                new THREE.Vector3(box.min.x, box.min.y, box.max.z),
+                new THREE.Vector3(box.max.x, box.min.y, box.max.z),
+                new THREE.Vector3(box.min.x, box.max.y, box.max.z),
+                new THREE.Vector3(box.max.x, box.max.y, box.max.z),
+            ];
+
+            let modelMinX = Infinity, modelMaxX = -Infinity;
+            let modelMinY = Infinity, modelMaxY = -Infinity;
+            corners.forEach(corner => {
+                const projected = corner.clone().project(camera);
+                const sx = (projected.x * 0.5 + 0.5) * screenWidth;
+                const sy = (-projected.y * 0.5 + 0.5) * screenHeight;
+                modelMinX = Math.min(modelMinX, sx);
+                modelMaxX = Math.max(modelMaxX, sx);
+                modelMinY = Math.min(modelMinY, sy);
+                modelMaxY = Math.max(modelMaxY, sy);
+            });
+
+            // 模型中心（相对于 canvas 左上角的像素），再偏移 canvas 在窗口中的位置
+            const modelCenterX = (modelMinX + modelMaxX) / 2 + canvasRect.left;
+            const modelCenterY = (modelMinY + modelMaxY) / 2 + canvasRect.top;
+
+            // 2. 多屏幕检查
+            const displays = await window.electronScreen.getAllDisplays();
+            if (!displays || displays.length <= 1) return false;
+
+            const windowWidth = window.innerWidth;
+            const windowHeight = window.innerHeight;
+            // 如果模型中心仍在当前窗口内，不切屏
+            if (modelCenterX >= 0 && modelCenterX < windowWidth &&
+                modelCenterY >= 0 && modelCenterY < windowHeight) {
+                return false;
+            }
+
+            // 3. 计算模型中心在整个桌面（screen）上的绝对坐标
+            const currentDisplay = await window.electronScreen.getCurrentDisplay();
+            if (!currentDisplay) {
+                console.warn('[VRM] 无法获取当前显示器信息');
+                return false;
+            }
+            let currentScreenX = currentDisplay.screenX;
+            let currentScreenY = currentDisplay.screenY;
+            if (!Number.isFinite(currentScreenX) || !Number.isFinite(currentScreenY)) {
+                if (currentDisplay.bounds &&
+                    Number.isFinite(currentDisplay.bounds.x) &&
+                    Number.isFinite(currentDisplay.bounds.y)) {
+                    currentScreenX = currentDisplay.bounds.x;
+                    currentScreenY = currentDisplay.bounds.y;
+                } else {
+                    return false;
+                }
+            }
+
+            const modelScreenX = currentScreenX + modelCenterX;
+            const modelScreenY = currentScreenY + modelCenterY;
+
+            // 4. 查找包含模型中心点的目标显示器
+            let targetDisplay = null;
+            for (const display of displays) {
+                const dx = Number.isFinite(display.screenX) ? display.screenX
+                    : (display.bounds && display.bounds.x);
+                const dy = Number.isFinite(display.screenY) ? display.screenY
+                    : (display.bounds && display.bounds.y);
+                const dw = Number.isFinite(display.width) ? display.width
+                    : (display.bounds && display.bounds.width);
+                const dh = Number.isFinite(display.height) ? display.height
+                    : (display.bounds && display.bounds.height);
+                if (!Number.isFinite(dx) || !Number.isFinite(dy) ||
+                    !Number.isFinite(dw) || !Number.isFinite(dh)) continue;
+                if (modelScreenX >= dx && modelScreenX < dx + dw &&
+                    modelScreenY >= dy && modelScreenY < dy + dh) {
+                    targetDisplay = { ...display, screenX: dx, screenY: dy, width: dw, height: dh };
+                    break;
+                }
+            }
+            if (!targetDisplay) return false;
+
+            console.log('[VRM] 检测到模型移出当前屏幕，准备切换到屏幕:', targetDisplay.id);
+
+            const result = await window.electronScreen.moveWindowToDisplay(modelScreenX, modelScreenY);
+
+            if (!(result && result.success && !result.sameDisplay)) {
+                return false;
+            }
+            console.log('[VRM] 屏幕切换成功:', result);
+
+            // 5. 将模型在世界坐标中偏移，使它在新窗口中仍显示在原本的屏幕绝对位置
+            //    新窗口原点假定为 targetDisplay.(screenX, screenY)
+            //    期望的新窗口像素位置 = modelScreen(X,Y) - targetDisplay.(screenX, screenY)
+            //    当前投影后的窗口像素位置 = (modelCenterX, modelCenterY)
+            //    需要在屏幕空间移动的像素 = 期望 - 当前 = currentDisplay.(screenX, screenY) - targetDisplay.(screenX, screenY)
+            const deltaPxX = currentScreenX - targetDisplay.screenX;
+            const deltaPxY = currentScreenY - targetDisplay.screenY;
+
+            if (deltaPxX !== 0 || deltaPxY !== 0) {
+                const modelCenterWorld = scene.position.clone();
+                const cameraDistance = camera.position.distanceTo(modelCenterWorld);
+                const fov = camera.fov * (Math.PI / 180);
+                const worldHeight = 2 * Math.tan(fov / 2) * cameraDistance;
+                const worldWidth = worldHeight * (screenWidth / screenHeight);
+                const pixelToWorldX = worldWidth / screenWidth;
+                const pixelToWorldY = worldHeight / screenHeight;
+
+                const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+                const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+
+                // 屏幕像素 -> 世界空间：X 沿 +right，Y 沿 -up（屏幕 Y 向下）
+                scene.position.add(right.clone().multiplyScalar(deltaPxX * pixelToWorldX));
+                scene.position.add(up.clone().multiplyScalar(-deltaPxY * pixelToWorldY));
+            }
+
+            // 6. 等待一帧让新窗口尺寸生效，再执行回弹与保存
+            await new Promise(resolve => requestAnimationFrame(resolve));
+
+            await this._snapModelIntoScreen({ animate: true });
+            await this._savePositionAfterInteraction();
+
+            return true;
+        } catch (error) {
+            console.error('[VRM] 检测/切换屏幕时出错:', error);
+            return false;
+        }
+    }
+
 
     /**
      * 启用/禁用鼠标跟踪（用于控制浮动按钮显示/隐藏）
@@ -956,10 +1102,25 @@ class VRMInteraction {
 
         const applyFade = (forceFade) => {
             if (!vrmContainer) return;
-            const shouldFade = forceFade !== undefined ? forceFade : (ctrlFadeActive || stationaryFadeActive);
+            let shouldFade = forceFade !== undefined ? forceFade : (ctrlFadeActive || stationaryFadeActive);
+            if (window.lockedHoverFadeEnabled === false) shouldFade = false;
             vrmContainer.style.opacity = shouldFade ? '0.12' : '1';
         };
         this._setLockedHoverFade = applyFade;
+
+        // 监听锁定悬停淡化设置变更
+        const onLockedHoverFadeChanged = () => {
+            if (window.lockedHoverFadeEnabled === false) {
+                ctrlFadeActive = false;
+                stationaryFadeActive = false;
+                applyFade();
+            }
+        };
+        if (this._lockedHoverFadeChangedListener) {
+            window.removeEventListener('neko-locked-hover-fade-changed', this._lockedHoverFadeChangedListener);
+        }
+        this._lockedHoverFadeChangedListener = onLockedHoverFadeChanged;
+        window.addEventListener('neko-locked-hover-fade-changed', onLockedHoverFadeChanged);
 
         // 初始化缓存
         this.updateModelBoundsCache();
@@ -1193,7 +1354,12 @@ class VRMInteraction {
             this._isMouseOverButtons = isOverButtons || isOverLock;
 
             // 如果鼠标在按钮或锁图标上，不变淡，直接显示
+            // 同时重置所有淡化状态，防止离开 UI 后残留状态导致立即重新淡化
             if (isOverButtons || isOverLock) {
+                clearStationaryFadeTimer();
+                ctrlFadeActive = false;
+                stationaryFadeActive = false;
+                this._vrmHasEnteredHoverRange = false;
                 applyFade(false);
                 showButtons();
                 return;
@@ -1282,12 +1448,20 @@ class VRMInteraction {
             }
         };
         const onBlur = () => {
+            // blur 时 Ctrl 键事件无法到达，必须主动清除 Ctrl 状态避免卡死
+            isCtrlPressed = false;
+            ctrlFadeActive = false;
+            // 锁定状态下 blur 通常由鼠标穿透点击引起，保留静止淡化状态避免闪烁
+            if (this.checkLocked()) {
+                applyFade();
+                return;
+            }
             clearStationaryFadeTimer();
             // blur 时清除定时器和淡化状态，焦点恢复后需重新触发
             if (stationaryFadeActive) {
                 stationaryFadeActive = false;
-                applyFade();
             }
+            applyFade();
             this._vrmHasEnteredHoverRange = false;
         };
         this._vrmClearStationaryFadeTimer = clearStationaryFadeTimer;
@@ -1308,8 +1482,10 @@ class VRMInteraction {
         window.addEventListener('blur', onBlur);
 
         canvas.addEventListener('mouseenter', onMouseEnter);
-        canvas.addEventListener('pointermove', onPointerMove);
-        canvas.addEventListener('mousemove', onPointerMove);
+        // 监听 window 而非 canvas，使得鼠标穿透模式下 preload 轮询派发的
+        // 合成 pointermove 事件也能到达此处，保持淡化机制正常工作
+        window.addEventListener('pointermove', onPointerMove);
+        window.addEventListener('mousemove', onPointerMove);
 
         this._vrmCtrlKeyDownListener = onKeyDown;
         this._vrmCtrlKeyUpListener = onKeyUp;
@@ -1344,8 +1520,8 @@ class VRMInteraction {
             this._floatingButtonsMouseLeave = null;
         }
         if (this._floatingButtonsPointerMove) {
-            canvas.removeEventListener('pointermove', this._floatingButtonsPointerMove);
-            canvas.removeEventListener('mousemove', this._floatingButtonsPointerMove);
+            window.removeEventListener('pointermove', this._floatingButtonsPointerMove);
+            window.removeEventListener('mousemove', this._floatingButtonsPointerMove);
             this._floatingButtonsPointerMove = null;
         }
         // 清理 Ctrl 键 / blur 监听器
@@ -1360,6 +1536,11 @@ class VRMInteraction {
         if (this._vrmWindowBlurListener) {
             window.removeEventListener('blur', this._vrmWindowBlurListener);
             this._vrmWindowBlurListener = null;
+        }
+        // 清理锁定悬停淡化监听器
+        if (this._lockedHoverFadeChangedListener) {
+            window.removeEventListener('neko-locked-hover-fade-changed', this._lockedHoverFadeChangedListener);
+            this._lockedHoverFadeChangedListener = null;
         }
         // 清除变淡状态
         if (typeof this._setLockedHoverFade === 'function') {

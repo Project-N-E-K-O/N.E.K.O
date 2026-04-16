@@ -1,20 +1,101 @@
 {
-  "songs": [
-    {
+  "version": "1.0",
+  "songs": {
+    "song_001": {
       "id": "song_001",
       "name": "桃源恋歌",
       "artist": "GARNiDELiA",
-      "audio": "/static/jukebox/song_001.mp3",
-      "vmd": "/static/jukebox/song_001.vmd",
-      "duration": 231
+      "audio": "songs/song_001.mp3",
+      "audioMd5": "9cd4a11e5f62568c8e20ed85febffcee",
+      "audioFormat": "mp3",
+      "visible": true,
+      "defaultAction": "action_001",
+      "uploadDate": "2024-01-01T00:00:00",
+      "isBuiltin": true
     },
-    {
+    "song_002": {
       "id": "song_002",
       "name": "Ievan Polkka",
       "artist": "初音未来,Otomania",
-      "audio": "/static/jukebox/song_002.mp3",
-      "vmd": "/static/jukebox/song_002.vmd",
-      "duration": 151
+      "audio": "songs/song_002.mp3",
+      "audioMd5": "033bef32f00d9ec6b6a95fddfc003157",
+      "audioFormat": "mp3",
+      "visible": true,
+      "defaultAction": "action_002",
+      "uploadDate": "2024-01-01T00:00:00",
+      "isBuiltin": true
     }
-  ]
+  },
+  "actions": {
+    "action_001": {
+      "id": "action_001",
+      "name": "桃源恋歌",
+      "file": "actions/song_001.vmd",
+      "fileMd5": "f088920fd9c03e4b76c14dee67790b0e",
+      "format": "vmd",
+      "uploadDate": "2024-01-01T00:00:00",
+      "missing": false,
+      "isBuiltin": true
+    },
+    "action_002": {
+      "id": "action_002",
+      "name": "甩葱歌",
+      "file": "actions/song_002.vmd",
+      "fileMd5": "3eac125726bee615ec6ba246ce7e6f53",
+      "format": "vmd",
+      "uploadDate": "2024-01-01T00:00:00",
+      "missing": false,
+      "isBuiltin": true
+    },
+    "action_003": {
+      "id": "action_003",
+      "name": "桃源恋歌",
+      "file": "actions/song_001.vrma",
+      "fileMd5": "e4b85f670b0722982dab3591ff2d9f64",
+      "format": "vrma",
+      "uploadDate": "2024-01-01T00:00:00",
+      "missing": false,
+      "isBuiltin": true
+    },
+    "action_004": {
+      "id": "action_004",
+      "name": "甩葱歌",
+      "file": "actions/song_002.vrma",
+      "fileMd5": "0f9a0f206140f80d01d177952da6a650",
+      "format": "vrma",
+      "uploadDate": "2024-01-01T00:00:00",
+      "missing": false,
+      "isBuiltin": true
+    }
+  },
+  "bindings": {
+    "song_001": {
+      "action_001": {
+        "offset": 13
+      },
+      "action_003": {
+        "offset": 0
+      }
+    },
+    "song_002": {
+      "action_002": {
+        "offset": 0
+      },
+      "action_004": {
+        "offset": 0
+      }
+    }
+  },
+  "md5Index": {
+    "songs": {
+      "9cd4a11e5f62568c8e20ed85febffcee": "song_001",
+      "033bef32f00d9ec6b6a95fddfc003157": "song_002"
+    },
+    "actions": {
+      "f088920fd9c03e4b76c14dee67790b0e": "action_001",
+      "3eac125726bee615ec6ba246ce7e6f53": "action_002",
+      "e4b85f670b0722982dab3591ff2d9f64": "action_003",
+      "0f9a0f206140f80d01d177952da6a650": "action_004"
+    }
+  }
 }

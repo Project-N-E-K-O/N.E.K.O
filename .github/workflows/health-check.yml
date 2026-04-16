@@ -11,8 +11,8 @@ jobs:
     if: github.repository == 'Project-N-E-K-O/N.E.K.O' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      # ── 检查 lanlan.app (US) ──
-      - name: Check lanlan.app
+      # ── 检查 lanlan.app (US, old) ──
+      - name: Check lanlan.app (old)
         id: check_app
         run: |
           HTTP_CODE=$(curl -s -o /tmp/resp_app.json -w "%{http_code}" \
@@ -20,13 +20,13 @@ jobs:
             -X POST "https://lanlan.app/text/v1/chat/completions" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer free-access" \
-            -d '{"model":"free-model","messages":[{"role":"user","content":"sends some useful information"}],"max_completion_tokens":5}' \
+            -d '{"model":"free-mini-model","messages":[{"role":"user","content":"sends some useful information"}],"max_completion_tokens":5}' \
             2>/dev/null || echo "000")
           BODY=$(cat /tmp/resp_app.json 2>/dev/null || echo "{}")
           echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
 
           if [ "$HTTP_CODE" = "200" ]; then
-            HAS_CHOICES=$(echo "$BODY" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
+            HAS_CHOICES=$(echo "$BODY" | jq -r '.choices[0].message.content // empty' 2>/dev/null || true)
             if [ -n "$HAS_CHOICES" ]; then
               echo "healthy=true" >> "$GITHUB_OUTPUT"
             else
@@ -36,8 +36,8 @@ jobs:
             echo "healthy=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # ── 检查 lanlan.tech (China) ──
-      - name: Check lanlan.tech
+      # ── 检查 lanlan.tech (China, old) ──
+      - name: Check lanlan.tech (old)
         id: check_tech
         run: |
           HTTP_CODE=$(curl -s -o /tmp/resp_tech.json -w "%{http_code}" \
@@ -45,13 +45,63 @@ jobs:
             -X POST "https://lanlan.tech/text/v1/chat/completions" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer free-access" \
-            -d '{"model":"free-model","messages":[{"role":"user","content":"sends some useful information"}],"max_completion_tokens":5}' \
+            -d '{"model":"free-mini-model","messages":[{"role":"user","content":"sends some useful information"}],"max_completion_tokens":5}' \
             2>/dev/null || echo "000")
           BODY=$(cat /tmp/resp_tech.json 2>/dev/null || echo "{}")
           echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
 
           if [ "$HTTP_CODE" = "200" ]; then
-            HAS_CHOICES=$(echo "$BODY" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
+            HAS_CHOICES=$(echo "$BODY" | jq -r '.choices[0].message.content // empty' 2>/dev/null || true)
+            if [ -n "$HAS_CHOICES" ]; then
+              echo "healthy=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "healthy=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "healthy=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── 检查 www.lanlan.app (US, new) ──
+      - name: Check www.lanlan.app (new)
+        id: check_api_app
+        run: |
+          HTTP_CODE=$(curl -s -o /tmp/resp_api_app.json -w "%{http_code}" \
+            --max-time 30 --connect-timeout 10 \
+            -X POST "https://www.lanlan.app/text/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer free-access" \
+            -d '{"model":"free-mini-model","messages":[{"role":"user","content":"sends some useful information"}],"max_completion_tokens":5}' \
+            2>/dev/null || echo "000")
+          BODY=$(cat /tmp/resp_api_app.json 2>/dev/null || echo "{}")
+          echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
+
+          if [ "$HTTP_CODE" = "200" ]; then
+            HAS_CHOICES=$(echo "$BODY" | jq -r '.choices[0].message.content // empty' 2>/dev/null || true)
+            if [ -n "$HAS_CHOICES" ]; then
+              echo "healthy=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "healthy=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "healthy=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── 检查 www.lanlan.tech (China, new) ──
+      - name: Check www.lanlan.tech (new)
+        id: check_api_tech
+        run: |
+          HTTP_CODE=$(curl -s -o /tmp/resp_api_tech.json -w "%{http_code}" \
+            --max-time 30 --connect-timeout 10 \
+            -X POST "https://www.lanlan.tech/text/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer free-access" \
+            -d '{"model":"free-mini-model","messages":[{"role":"user","content":"sends some useful information"}],"max_completion_tokens":5}' \
+            2>/dev/null || echo "000")
+          BODY=$(cat /tmp/resp_api_tech.json 2>/dev/null || echo "{}")
+          echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
+
+          if [ "$HTTP_CODE" = "200" ]; then
+            HAS_CHOICES=$(echo "$BODY" | jq -r '.choices[0].message.content // empty' 2>/dev/null || true)
             if [ -n "$HAS_CHOICES" ]; then
               echo "healthy=true" >> "$GITHUB_OUTPUT"
             else
@@ -74,10 +124,24 @@ jobs:
           APP_CODE="${{ steps.check_app.outputs.http_code }}"
           TECH_CODE="${{ steps.check_tech.outputs.http_code }}"
 
-          if [ "$APP_HEALTHY" = "true" ] && [ "$TECH_HEALTHY" = "true" ]; then
+          API_APP_HEALTHY="${{ steps.check_api_app.outputs.healthy }}"
+          API_TECH_HEALTHY="${{ steps.check_api_tech.outputs.healthy }}"
+          API_APP_CODE="${{ steps.check_api_app.outputs.http_code }}"
+          API_TECH_CODE="${{ steps.check_api_tech.outputs.http_code }}"
+
+          ALL_HEALTHY="true"
+          ANY_DOWN="false"
+          for h in "$APP_HEALTHY" "$TECH_HEALTHY" "$API_APP_HEALTHY" "$API_TECH_HEALTHY"; do
+            if [ "$h" = "false" ]; then
+              ALL_HEALTHY="false"
+              ANY_DOWN="true"
+            fi
+          done
+
+          if [ "$ALL_HEALTHY" = "true" ]; then
             COLOR=3066993  # green
             TITLE="All Servers Healthy"
-          elif [ "$APP_HEALTHY" = "false" ] && [ "$TECH_HEALTHY" = "false" ]; then
+          elif [ "$APP_HEALTHY" = "false" ] && [ "$TECH_HEALTHY" = "false" ] && [ "$API_APP_HEALTHY" = "false" ] && [ "$API_TECH_HEALTHY" = "false" ]; then
             COLOR=15158332 # red
             TITLE="All Servers Down"
           else
@@ -86,24 +150,32 @@ jobs:
           fi
 
           if [ "$APP_HEALTHY" = "true" ]; then
-            APP_STATUS="OK (HTTP $APP_CODE)"
-            APP_EMOJI=":white_check_mark:"
+            APP_STATUS=":white_check_mark: OK (HTTP $APP_CODE)"
           else
-            APP_STATUS="DOWN (HTTP $APP_CODE)"
-            APP_EMOJI=":x:"
+            APP_STATUS=":x: DOWN (HTTP $APP_CODE)"
           fi
 
           if [ "$TECH_HEALTHY" = "true" ]; then
-            TECH_STATUS="OK (HTTP $TECH_CODE)"
-            TECH_EMOJI=":white_check_mark:"
+            TECH_STATUS=":white_check_mark: OK (HTTP $TECH_CODE)"
           else
-            TECH_STATUS="DOWN (HTTP $TECH_CODE)"
-            TECH_EMOJI=":x:"
+            TECH_STATUS=":x: DOWN (HTTP $TECH_CODE)"
+          fi
+
+          if [ "$API_APP_HEALTHY" = "true" ]; then
+            API_APP_STATUS=":white_check_mark: OK (HTTP $API_APP_CODE)"
+          else
+            API_APP_STATUS=":x: DOWN (HTTP $API_APP_CODE)"
+          fi
+
+          if [ "$API_TECH_HEALTHY" = "true" ]; then
+            API_TECH_STATUS=":white_check_mark: OK (HTTP $API_TECH_CODE)"
+          else
+            API_TECH_STATUS=":x: DOWN (HTTP $API_TECH_CODE)"
           fi
 
           # 只在有故障时 @everyone
           CONTENT=""
-          if [ "$APP_HEALTHY" = "false" ] || [ "$TECH_HEALTHY" = "false" ]; then
+          if [ "$ANY_DOWN" = "true" ]; then
             CONTENT="@everyone Server alert!"
           fi
 
@@ -111,8 +183,10 @@ jobs:
             --arg content "$CONTENT" \
             --arg title "$TITLE" \
             --argjson color "$COLOR" \
-            --arg app_status "$APP_EMOJI $APP_STATUS" \
-            --arg tech_status "$TECH_EMOJI $TECH_STATUS" \
+            --arg app_status "$APP_STATUS" \
+            --arg tech_status "$TECH_STATUS" \
+            --arg api_app_status "$API_APP_STATUS" \
+            --arg api_tech_status "$API_TECH_STATUS" \
             --arg timestamp "$TIMESTAMP" \
             '{
               content: (if $content == "" then null else $content end),
@@ -120,8 +194,11 @@ jobs:
                 title: $title,
                 color: $color,
                 fields: [
-                  {name: "lanlan.app (US)", value: $app_status, inline: true},
-                  {name: "lanlan.tech (China)", value: $tech_status, inline: true}
+                  {name: "lanlan.app (US, old)", value: $app_status, inline: true},
+                  {name: "lanlan.tech (China, old)", value: $tech_status, inline: true},
+                  {name: "\u200b", value: "\u200b", inline: false},
+                  {name: "www.lanlan.app (US, new)", value: $api_app_status, inline: true},
+                  {name: "www.lanlan.tech (China, new)", value: $api_tech_status, inline: true}
                 ],
                 footer: {text: "N.E.K.O Health Monitor"},
                 timestamp: $timestamp

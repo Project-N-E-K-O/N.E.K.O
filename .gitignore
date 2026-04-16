@@ -51,8 +51,11 @@ __pycache__/
 .DS_Store
 .venv
 .venv_monitor/
+.matplotlib/
+.pyinstaller-config/
 # Playwright browsers cache (used by build_nuitka.bat, not for repo)
 playwright_browsers/
+.playwright-browsers/
 .env
 .env.local
 .env.development.local
@@ -62,6 +65,7 @@ playwright_browsers/
 *.code-workspace
 .claude
 CLAUDE.md
+.codex
 
 # Rust: ignore target and cargo artifacts
 /launcher/target/
@@ -74,6 +78,7 @@ Cargo.lock
 # Node/Front-end temp (if any)
 node_modules/
 *.cache/
+*.tsbuildinfo
 dist/
 build/
 *.tsbuildinfo
@@ -99,10 +104,13 @@ static/ziraitikuwa/*
 static/neko/*
 static/kemomimi/*
 static/yui/*
+static/react/neko-chat/*
 打包说明.txt
 runtime_hook_inflect.py
 backup/
 build*
+!build_frontend.bat
+!build_frontend.sh
 metadata.package.json
 version_info.txt
 
@@ -141,10 +149,16 @@ plugin/rust/
 plugin/plugins/music_tester/
 plugin/plugins/web_radio/
 
-# QQ 自动回复：NapCat.Shell 按账号生成的配置、密钥与登录二维码（勿入库）
-plugin/plugins/qq_auto_reply/NapCat.Shell/config/
-plugin/plugins/qq_auto_reply/NapCat.Shell/cache/
+# QQ 自动回复：NapCat.Shell 整个目录不入库，仅保留 .gitkeep 占位
+plugin/plugins/qq_auto_reply/NapCat.Shell/*
+!plugin/plugins/qq_auto_reply/NapCat.Shell/.gitkeep
 
-# QQ 自动回复：NapCat.Shell 运行时配置、缓存与登录二维码（按本机/账号生成，勿入库）
-plugin/plugins/qq_auto_reply/NapCat.Shell/config/
-plugin/plugins/qq_auto_reply/NapCat.Shell/cache/
+# Jukebox 二进制资源（音乐、动画），只保留 songs.json 索引
+static/jukebox/*.mp3
+static/jukebox/*.wav
+static/jukebox/*.ogg
+static/jukebox/*.flac
+static/jukebox/*.vmd
+static/jukebox/*.vrma
+static/jukebox/*.bvh
+static/jukebox/*.fbx
