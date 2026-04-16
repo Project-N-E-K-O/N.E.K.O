@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import MessageList from './MessageList';
 import { i18n } from './i18n';
 import {
@@ -53,6 +53,7 @@ export default function App({
 }: ChatWindowProps) {
   const [draft, setDraft] = useState('');
   const [pendingDrafts, setPendingDrafts] = useState<Array<{ id: string; text: string; time: string; lastMsgId: string | null }>>([]);
+  const submittingRef = useRef(false);
   const canSubmit = draft.trim().length > 0 || composerAttachments.length > 0;
   const resolvedImportImageAriaLabel = importImageButtonAriaLabel || importImageButtonLabel;
   const resolvedScreenshotAriaLabel = screenshotButtonAriaLabel || screenshotButtonLabel;
@@ -92,8 +93,10 @@ export default function App({
   }, [messages, pendingDrafts, lastUserAuthor]);
 
   function submitDraft() {
+    if (submittingRef.current) return;
     const text = draft.trim();
     if (!text && composerAttachments.length === 0) return;
+    submittingRef.current = true;
     const now = new Date();
     const time = [now.getHours(), now.getMinutes(), now.getSeconds()]
       .map(n => String(n).padStart(2, '0')).join(':');
@@ -107,6 +110,7 @@ export default function App({
     }
     onComposerSubmit?.({ text });
     setDraft('');
+    requestAnimationFrame(() => { submittingRef.current = false; });
   }
 
   return (
