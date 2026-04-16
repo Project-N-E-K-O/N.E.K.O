@@ -1552,6 +1552,36 @@
             return results.every(Boolean);
         }
 
+        async openPageWithHandoff(stepId, step) {
+            const navigation = step && step.navigation ? step.navigation : null;
+            if (!navigation || !navigation.openUrl || !navigation.windowName) {
+                return false;
+            }
+
+            const targetPage = navigation.targetPage || navigation.windowName || stepId || '';
+            const resumeScene = navigation.resumeScene || null;
+
+            return this.callHomeInteractionApi('openPageWithHandoff', [
+                targetPage,
+                resumeScene,
+                navigation.openUrl,
+                navigation.windowName,
+                navigation.features || ''
+            ], async () => {
+                const api = this.getHomeInteractionApi();
+                if (api && typeof api.openPage === 'function') {
+                    const childWin = await api.openPage(
+                        navigation.openUrl,
+                        navigation.windowName,
+                        navigation.features || ''
+                    );
+                    return !!childWin;
+                }
+
+                return false;
+            });
+        }
+
         async runTakeoverMainFlow() {
             if (this.takeoverFlowStarted || this.destroyed || this.angryExitTriggered) {
                 return this.takeoverFlowPromise;
@@ -2546,6 +2576,20 @@
 
             if (!shouldKeepInterruptsEnabled) {
                 this.disableInterrupts();
+            }
+
+            if (step && step.navigation && step.navigation.openUrl) {
+                const opened = await this.openPageWithHandoff(stepId, step);
+                if (runId !== this.sceneRunId || this.destroyed) {
+                    return;
+                }
+
+                if (opened) {
+                    this.requestTermination('complete', 'complete');
+                } else {
+                    console.warn('[YuiGuide] handoff 打开失败，保留当前教程上下文:', stepId, step.navigation.openUrl);
+                }
+                return;
             }
 
             await wait(DEFAULT_SCENE_SETTLE_MS);

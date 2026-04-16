@@ -445,6 +445,23 @@
     }
 
     /**
+     * 关闭 Agent / 猫爪弹层。
+     *
+     * @returns {Promise<boolean>} 弹层是否成功关闭
+     */
+    function closeAgentPanel() {
+        var manager = getManager();
+        if (!manager || typeof manager.closePopupById !== 'function') {
+            return Promise.resolve(false);
+        }
+        manager.closePopupById('agent');
+        delete _popupsOpenedByTutorial.agent;
+        var popup = getPopup('agent');
+        var closed = !popup || popup.style.display !== 'flex';
+        return Promise.resolve(closed);
+    }
+
+    /**
      * 打开 Agent / 猫爪弹层。
      * 用于 takeover_plugin_preview 等需要展示真实 Agent 能力面板的场景。
      *
@@ -538,7 +555,6 @@
      */
     function cleanupTutorialPopups() {
         var manager = getManager();
-        clearHandoffToken();
 
         if (manager && typeof manager.closePopupById === 'function') {
             Object.keys(_popupsOpenedByTutorial).forEach(function (buttonId) {
@@ -579,6 +595,7 @@
         openSettingsPanel: openSettingsPanel,
         closeSettingsPanel: closeSettingsPanel,
         openAgentPanel: openAgentPanel,
+        closeAgentPanel: closeAgentPanel,
         ensureSettingsMenuVisible: ensureSettingsMenuVisible,
         // M2 — 离开/回来
         triggerGoodbye: triggerGoodbye,

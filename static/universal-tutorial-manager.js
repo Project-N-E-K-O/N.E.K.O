@@ -40,6 +40,7 @@ class UniversalTutorialManager {
         this._modelManagerBootstrapFallbackTimer = null;
         this._modelManagerReceivedModeEvent = false;
         this.yuiGuideDirector = null;
+        this._yuiGuideHandoffToken = null;
         this._yuiGuideLastSceneId = null;
         this._yuiGuideLifecycleActive = false;
         this._tutorialEndReason = null;
@@ -91,6 +92,67 @@ class UniversalTutorialManager {
 
     isYuiGuideAvailable() {
         return !!this.getYuiGuideRegistry();
+    }
+
+    getYuiGuideHandoffApi() {
+        return window.YuiGuidePageHandoff || null;
+    }
+
+    getYuiGuideHandoffExpectedPages() {
+        const path = window.location.pathname || '';
+
+        if (this.currentPage === 'settings') {
+            if (path.includes('api_key')) {
+                return ['api_key', 'settings'];
+            }
+
+            return ['settings'];
+        }
+
+        if (this.currentPage === 'memory_browser') {
+            return ['memory_browser'];
+        }
+
+        if (this.currentPage === 'steam_workshop') {
+            return ['steam_workshop'];
+        }
+
+        if (this.currentPage === 'plugin_dashboard' || path.includes('/api/agent/user_plugin/dashboard') || path === '/ui' || path.startsWith('/ui/')) {
+            return ['plugin_dashboard'];
+        }
+
+        return [];
+    }
+
+    consumePendingYuiGuideHandoffToken() {
+        if (this._yuiGuideHandoffToken) {
+            return this._yuiGuideHandoffToken;
+        }
+
+        const handoffApi = this.getYuiGuideHandoffApi();
+        if (!handoffApi || typeof handoffApi.consumeHandoffToken !== 'function') {
+            return null;
+        }
+
+        const expectedPages = this.getYuiGuideHandoffExpectedPages();
+        if (!Array.isArray(expectedPages) || expectedPages.length === 0) {
+            return null;
+        }
+
+        for (const expectedPage of expectedPages) {
+            try {
+                const token = handoffApi.consumeHandoffToken(expectedPage);
+                if (token) {
+                    this._yuiGuideHandoffToken = token;
+                    console.log('[Tutorial] 已消费 Yui Guide handoff token:', expectedPage, token);
+                    return token;
+                }
+            } catch (error) {
+                console.error('[Tutorial] 消费 Yui Guide handoff token 失败:', expectedPage, error);
+            }
+        }
+
+        return null;
     }
 
     isYuiGuideEnabledForPage(page = this.currentPage) {
@@ -917,6 +979,13 @@ class UniversalTutorialManager {
             return;
         }
 
+        const handoffToken = this.consumePendingYuiGuideHandoffToken();
+        if (handoffToken) {
+            console.log('[Tutorial] 检测到跨页 handoff，强制恢复当前页面引导:', this.currentPage, handoffToken);
+            this.startTutorialWhenI18nReady(500);
+            return;
+        }
+
         const storageKey = this.getStorageKey();
         const hasSeen = localStorage.getItem(storageKey);
 
@@ -1596,7 +1665,22 @@ class UniversalTutorialManager {
      * Steam Workshop 页面引导步骤
      */
     getSteamWorkshopSteps() {
-        return [];
+        return [
+            {
+                element: '#workshop-tabs',
+                popover: {
+                    title: this.t('tutorial.steam_workshop.step1.title', '🧭 创意工坊分区'),
+                    description: this.t('tutorial.steam_workshop.step1.desc', '这里可以在订阅内容和角色卡之间切换，后续管理 Workshop 内容都会从这里展开。'),
+                }
+            },
+            {
+                element: '#subscriptions-list',
+                popover: {
+                    title: this.t('tutorial.steam_workshop.step2.title', '📦 订阅内容列表'),
+                    description: this.t('tutorial.steam_workshop.step2.desc', '这里会展示当前已订阅的内容，您可以刷新、筛选并继续管理创意工坊资源。'),
+                }
+            }
+        ];
     }
 
     /**
