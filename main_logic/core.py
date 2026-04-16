@@ -2223,11 +2223,24 @@ class LLMSessionManager:
         finally:
             self._agent_delivery_in_progress = False
 
+    def _is_voice_session_active_or_starting(self) -> bool:
+        """语音 session 正在启动或已经活跃时返回 True，用于阻止 greeting 干扰语音流。"""
+        if self.is_starting_session and self.input_mode == 'audio':
+            return True
+        if self.is_active and self.input_mode == 'audio':
+            return True
+        return False
+
     async def trigger_greeting(self) -> None:
         """首次连接或切换角色时，根据距上次对话间隔触发主动搭话。
 
         流程：查询 memory_server 获取间隔 → 构建引导词 → 主动拉起 text session → 投递。
         """
+        # ── 守卫：语音 session 正在启动 / 已活跃时，跳过 greeting ──
+        if self._is_voice_session_active_or_starting():
+            logger.info("[%s] trigger_greeting: voice session active/starting, skipping", self.lanlan_name)
+            return
+
         try:
             async with httpx.AsyncClient(timeout=2.0, proxy=None, trust_env=False) as client:
                 resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/last_conversation_gap/{self.lanlan_name}")
@@ -2241,6 +2254,11 @@ class LLMSessionManager:
 
         if gap_seconds < 900:  # < 15分钟，不触发
             logger.debug("[%s] trigger_greeting: gap %.0fs < 15min, skipping", self.lanlan_name, gap_seconds)
+            return
+
+        # ── await 归来后再检查一次：memory 查询期间用户可能已点了麦克风 ──
+        if self._is_voice_session_active_or_starting():
+            logger.info("[%s] trigger_greeting: voice session appeared during gap query, skipping", self.lanlan_name)
             return
 
         _lang = normalize_language_code(self.user_language, format='short')
@@ -2257,6 +2275,10 @@ class LLMSessionManager:
             pass
         else:
             # 没有 session 或不是 text session → 主动拉起
+            # ── 拉起前再次检查：避免与即将到来的语音 session 竞争 ──
+            if self._is_voice_session_active_or_starting():
+                logger.info("[%s] trigger_greeting: voice session appeared before text session auto-start, skipping", self.lanlan_name)
+                return
             ws = self.websocket
             if not ws or not hasattr(ws, 'client_state') or ws.client_state != ws.client_state.CONNECTED:
                 logger.warning("[%s] trigger_greeting: no connected websocket, aborting", self.lanlan_name)
@@ -2290,7 +2312,16 @@ class LLMSessionManager:
         print(f"[trigger_greeting] instruction:\n{instruction}")
         logger.info("[%s] trigger_greeting: gap=%.0fs elapsed=%s, delivering", self.lanlan_name, gap_seconds, elapsed)
 
+        # ── 投递前最终检查：构建 instruction 期间（holiday hint 等 await）语音可能已接管 ──
+        if self._is_voice_session_active_or_starting():
+            logger.info("[%s] trigger_greeting: voice session took over before delivery, skipping", self.lanlan_name)
+            return
+
         async with self._proactive_write_lock:
+            # 持锁后仍需检查：_proactive_write_lock 等待期间语音可能已启动
+            if self._is_voice_session_active_or_starting():
+                logger.info("[%s] trigger_greeting: voice session took over while waiting for write lock, skipping", self.lanlan_name)
+                return
             async with self.lock:
                 self.current_speech_id = str(uuid4())
                 self._tts_done_queued_for_turn = False
