@@ -539,7 +539,7 @@ async def initialize_character_data():
         elif sync_process[k] is None:
             # 线程为None，需要启动
             need_start_thread = True
-        elif hasattr(sync_process[k], 'is_alive') and not sync_process[k].is_alive():
+        elif hasattr(sync_process[k], 'is_alive') and not await asyncio.to_thread(sync_process[k].is_alive):
             # 线程已停止，需要重启
             need_start_thread = True
             try:
@@ -596,7 +596,7 @@ async def initialize_character_data():
                 if k in sync_shutdown_event:
                     sync_shutdown_event[k].set()
                 await asyncio.to_thread(sync_process[k].join, timeout=3)  # 等待线程正常结束
-                if sync_process[k].is_alive():
+                if await asyncio.to_thread(sync_process[k].is_alive):
                     logger.warning(f"⚠️ 同步连接器线程 {k} 未能在超时内停止，将作为daemon线程自动清理")
                 else:
                     logger.info(f"✅ 已停止角色 {k} 的同步连接器线程")
@@ -939,6 +939,7 @@ async def on_startup():
     if _IS_MAIN_PROCESS:
         global steamworks, _preload_task, agent_event_bridge, _server_loop
         _server_loop = asyncio.get_running_loop()
+        _server_loop.slow_callback_duration = 0.05
         logger.info("正在初始化 Steamworks...")
         steamworks = initialize_steamworks()
         

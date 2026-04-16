@@ -108,7 +108,7 @@ class Modules:
 import threading
 _plugin_name_cache: Dict[str, str] = {}
 _plugin_name_cache_time: float = 0.0
-_plugin_name_cache_lock = threading.Lock()
+_plugin_name_cache_lock = asyncio.Lock()
 PLUGIN_NAME_CACHE_TTL: float = 30.0  # 缓存 30 秒
 TASK_REGISTRY_CLEANUP_TTL: float = 300.0  # 已完成任务保留 5 分钟
 DEFERRED_TASK_TIMEOUT: float = 3600.0  # deferred 任务超时 1 小时
@@ -379,30 +379,27 @@ def _bind_deferred_task(plugin_id: str, reminder_id: str, agent_task_id: str) ->
         logger.warning("[Deferred] bind failed: plugin=%s reminder=%s error=%s", plugin_id, reminder_id, e)
 
 
-def _get_plugin_friendly_name(plugin_id: str) -> str | None:
+async def _get_plugin_friendly_name(plugin_id: str) -> str | None:
     """获取插件的友好名称（用于 HUD 显示）
 
     通过 HTTP 调用嵌入式插件服务的 /plugins 端点获取插件列表，
-    并使用缓存减少请求次数。使用线程锁保证多线程安全。
+    并使用缓存减少请求次数。
     """
     global _plugin_name_cache, _plugin_name_cache_time
 
-    # 检查缓存（加锁读取）
     now = time.time()
-    with _plugin_name_cache_lock:
+    async with _plugin_name_cache_lock:
         if _plugin_name_cache and (now - _plugin_name_cache_time) < PLUGIN_NAME_CACHE_TTL:
             return _plugin_name_cache.get(plugin_id)
 
-    # 缓存过期或为空，从嵌入式插件服务获取
     new_cache = {}
     cache_time = now
     try:
-        with httpx.Client(timeout=1.0, proxy=None, trust_env=False) as client:
-            resp = client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins")
+        async with httpx.AsyncClient(timeout=1.0, proxy=None, trust_env=False) as client:
+            resp = await client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins")
             if resp.status_code == 200:
                 data = resp.json()
                 plugins = data.get("plugins", [])
-                # 构建新缓存
                 for p in plugins:
                     if isinstance(p, dict):
                         pid = p.get("id")
@@ -411,8 +408,7 @@ def _get_plugin_friendly_name(plugin_id: str) -> str | None:
                             new_cache[pid] = pname
                         elif pid:
                             new_cache[pid] = pid
-                # 更新全局缓存（加锁写入）
-                with _plugin_name_cache_lock:
+                async with _plugin_name_cache_lock:
                     _plugin_name_cache = new_cache
                     _plugin_name_cache_time = cache_time
                 return new_cache.get(plugin_id)
@@ -852,8 +848,8 @@ def _check_agent_api_gate() -> Dict[str, Any]:
         return {"ready": False, "reasons": [f"Agent API check failed: {e}"], "is_free_version": False}
 
 
-def _get_plugin_display_id(plugin_id: str) -> str:
-    return _get_plugin_friendly_name(plugin_id) or plugin_id
+async def _get_plugin_display_id(plugin_id: str) -> str:
+    return (await _get_plugin_friendly_name(plugin_id)) or plugin_id
 
 
 async def _emit_main_event(event_type: str, lanlan_name: Optional[str], **payload) -> None:
@@ -1350,7 +1346,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 entry_id = result.entry_id
                 up_start = _now_iso()
                 # 获取插件友好名称（用于 HUD 显示）
-                plugin_name = _get_plugin_friendly_name(plugin_id)
+                plugin_name = await _get_plugin_friendly_name(plugin_id)
                 logger.info(
                     "[TaskExecutor] Dispatching UserPlugin: plugin_id=%s, entry_id=%s, plugin_name=%s",
                     plugin_id, entry_id, plugin_name,
@@ -1468,7 +1464,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             logger.info(f"[TaskExecutor] ✅ UserPlugin completed: {plugin_id}")
                             if not _suppress_reply:
                                 _lang = _rp_lang(None)
-                                display_id = _get_plugin_display_id(plugin_id)
+                                display_id = await _get_plugin_display_id(plugin_id)
                                 summary = _rp_phrase('plugin_done_with', _lang, id=display_id, detail=detail) if detail else _rp_phrase('plugin_done', _lang, id=display_id)
                                 try:
                                     await _emit_task_result(
@@ -1492,7 +1488,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             if not _suppress_reply:
                                 _lang = _rp_lang(None)
                                 try:
-                                    display_id = _get_plugin_display_id(plugin_id)
+                                    display_id = await _get_plugin_display_id(plugin_id)
                                     _fail_summary = _rp_phrase('plugin_failed_with', _lang, id=display_id, detail=detail) if detail else _rp_phrase('plugin_failed', _lang, id=display_id)
                                     await _emit_task_result(
                                         lanlan_name,
@@ -2470,7 +2466,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
     logger.info(f"[Plugin] Direct execute request: plugin_id={plugin_id}, entry_id={entry_id}, lanlan={lanlan_name}")
 
     # 获取插件友好名称（用于 HUD 显示）
-    plugin_name = _get_plugin_friendly_name(plugin_id)
+    plugin_name = await _get_plugin_friendly_name(plugin_id)
     task_params = {"plugin_id": plugin_id, "entry_id": entry_id, "args": args}
     if plugin_name:
         task_params["plugin_name"] = plugin_name
@@ -2556,7 +2552,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                     if not res.success:
                         info["error"] = (detail or str(res.error or ""))[:500]
                     _lang = _rp_lang(None)
-                    display_id = _get_plugin_display_id(plugin_id)
+                    display_id = await _get_plugin_display_id(plugin_id)
                     if res.success:
                         summary = _rp_phrase('plugin_done_with', _lang, id=display_id, detail=detail) if detail else _rp_phrase('plugin_done', _lang, id=display_id)
                     else:

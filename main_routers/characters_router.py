@@ -1556,17 +1556,16 @@ async def update_catgirl(name: str, request: Request):
 
 @router.delete('/catgirl/{name}')
 async def delete_catgirl(name: str):
-    import shutil
     _config_manager = get_config_manager()
     characters = _config_manager.load_characters()
     if name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
-    
+
     # 检查是否是当前正在使用的猫娘
     current_catgirl = characters.get('当前猫娘', '')
     if name == current_catgirl:
         return JSONResponse({'success': False, 'error': '不能删除当前正在使用的猫娘！请先切换到其他猫娘后再删除。'}, status_code=400)
-    
+
     # 删除对应的记忆文件
     try:
         memory_paths = [_config_manager.memory_dir, _config_manager.project_memory_dir]
@@ -1576,7 +1575,7 @@ async def delete_catgirl(name: str):
             f'settings_{name}.json',    # 设置文件
             f'recent_{name}.json',      # 最近聊天记录文件
         ]
-        
+
         for base_dir in memory_paths:
             for file_name in files_to_delete:
                 file_path = base_dir / file_name
@@ -1585,7 +1584,7 @@ async def delete_catgirl(name: str):
                         if file_path.is_dir():
                             await asyncio.to_thread(shutil.rmtree, file_path)
                         else:
-                            file_path.unlink()
+                            await asyncio.to_thread(file_path.unlink)
                         logger.info(f"已删除: {file_path}")
                     except Exception as e:
                         logger.warning(f"删除失败 {file_path}: {e}")
