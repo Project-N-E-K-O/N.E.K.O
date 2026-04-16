@@ -119,7 +119,7 @@ class MemeFetcher:
     async def __aenter__(self) -> "MemeFetcher":
         """进入异步上下文，初始化持久 Session"""
         if self._session is None:
-            self._session = httpx.AsyncClient(timeout=8.0, follow_redirects=True, trust_env=True)
+            self._session = httpx.AsyncClient(timeout=10.0, follow_redirects=True, trust_env=True)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -182,7 +182,7 @@ class MemeFetcher:
                     response = await session.get(url, params=params, headers=headers)
                 else:
                     # 使用临时 Client
-                    async with httpx.AsyncClient(timeout=8.0, follow_redirects=True, trust_env=True) as client:
+                    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, trust_env=True) as client:
                         response = await client.get(url, params=params, headers=headers)
                     
                 if response.status_code == 429:
@@ -396,7 +396,7 @@ class DoutubFetcher:
 
     async def __aenter__(self) -> "DoutubFetcher":
         if self._session is None:
-            self._session = httpx.AsyncClient(timeout=8.0, follow_redirects=True, trust_env=True)
+            self._session = httpx.AsyncClient(timeout=10.0, follow_redirects=True, trust_env=True)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -427,14 +427,14 @@ class DoutubFetcher:
                 logger.warning(f"设置 SECLEVEL=1 失败: {e}")
             
             return httpx.AsyncClient(
-                timeout=8.0, 
+                timeout=10.0, 
                 follow_redirects=True, 
                 verify=context,
                 trust_env=True
             )
         else:
             return httpx.AsyncClient(
-                timeout=8.0, 
+                timeout=10.0, 
                 follow_redirects=True, 
                 trust_env=True
             )
@@ -645,7 +645,7 @@ class DoutupkFetcher:
     async def __aenter__(self) -> "DoutupkFetcher":
         if self._session is None:
             self._session = httpx.AsyncClient(
-                timeout=8.0,
+                timeout=10.0,
                 follow_redirects=True,
                 trust_env=True,
             )
@@ -676,8 +676,8 @@ class DoutupkFetcher:
                 context.set_ciphers('DEFAULT@SECLEVEL=1')
             except Exception as e:
                 logger.warning(f"设置 SECLEVEL=1 失败: {e}")
-            return httpx.AsyncClient(timeout=8.0, follow_redirects=True, verify=context, trust_env=True)
-        return httpx.AsyncClient(timeout=8.0, follow_redirects=True, trust_env=True)
+            return httpx.AsyncClient(timeout=10.0, follow_redirects=True, verify=context, trust_env=True)
+        return httpx.AsyncClient(timeout=10.0, follow_redirects=True, trust_env=True)
 
     async def _fetch_html(self, url: str, max_retries: int = 3) -> str:
         last_exception = None
@@ -821,7 +821,7 @@ class FabiaoqingFetcher:
         if self._session is None:
             # 采用渐进式 TLS 策略：默认使用系统最强加密，若失败则降级到 SECLEVEL=1
             self._session = httpx.AsyncClient(
-                timeout=8.0, 
+                timeout=10.0, 
                 follow_redirects=True, 
                 trust_env=True,
             )
@@ -857,14 +857,14 @@ class FabiaoqingFetcher:
                 logger.warning(f"设置 SECLEVEL=1 失败: {e}")
             
             return httpx.AsyncClient(
-                timeout=8.0, 
+                timeout=10.0, 
                 follow_redirects=True, 
                 verify=context,
                 trust_env=True
             )
         else:
             return httpx.AsyncClient(
-                timeout=8.0, 
+                timeout=10.0, 
                 follow_redirects=True, 
                 trust_env=True
             )
