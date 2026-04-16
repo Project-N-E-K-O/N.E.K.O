@@ -1241,12 +1241,15 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
     # 标记实际返回的歌曲为已播放（写入缓存）
     music_cache.mark_as_played(final_results)
     
+    netease_crawler = all_crawlers.get('netease')
     return {
-        'success': True, 
-        'data': final_results, 
+        'success': True,
+        'data': final_results,
         'diversity': diversity_info,
         'best_match': best_match,
-        'netease_cookie_invalid': all_crawlers.get('netease', NeteaseCrawler())._cookie_invalid if all_results else False
+        'netease_cookie_invalid': netease_crawler._cookie_invalid 
+        if netease_crawler and all_results 
+        else False
     }
 
 def expand_style_keyword(keyword: str) -> List[str]:
