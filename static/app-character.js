@@ -458,6 +458,10 @@
             console.log('[猫娘切换] 检测到模型类型:', modelType, '有效类型:', effectiveModelType);
             if (!supportsLocalModelRuntime()) {
                 console.log('[猫娘切换] 当前页面不加载本地模型，跳过模型热切换');
+                // chat.html 不走模型分支，在此显式恢复 composer（兜底 onclose 路径）
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
             } else if (effectiveModelType === 'vrm') {
                 // 加载 VRM 模型
                 console.log('[猫娘切换] 进入VRM加载分支');
@@ -841,6 +845,9 @@
                 console.log('[猫娘切换] VRM - 恢复对话框 - chatContainer存在:', !!chatContainerVrm, '当前类:', chatContainerVrm ? chatContainerVrm.className : 'N/A');
                 if (chatContainerVrm) chatContainerVrm.classList.remove('minimized');
                 if (textInputArea) textInputArea.classList.remove('hidden');
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
                 console.log('[猫娘切换] VRM - 对话框已恢复，当前类:', chatContainerVrm ? chatContainerVrm.className : 'N/A');
 
                 // 确保 VRM 按钮和锁图标可见
@@ -1043,6 +1050,9 @@
                 const textInputAreaMmd = document.getElementById('text-input-area');
                 if (chatContainerMmd) chatContainerMmd.classList.remove('minimized');
                 if (textInputAreaMmd) textInputAreaMmd.classList.remove('hidden');
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
 
                 // 延时显示 MMD 浮动按钮和锁图标
                 setTimeout(() => {
@@ -1197,6 +1207,9 @@
                 const textInputAreaL2d = document.getElementById('text-input-area');
                 if (chatContainerL2d) chatContainerL2d.classList.remove('minimized');
                 if (textInputAreaL2d) textInputAreaL2d.classList.remove('hidden');
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
 
                 // 延时重启 Ticker 和显示按钮（双重保险）
                 setTimeout(() => {

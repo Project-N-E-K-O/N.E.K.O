@@ -922,6 +922,33 @@
     }
 
     // =====================================================================
+    // Voice chat composer sync (cross-window)
+    // =====================================================================
+
+    /**
+     * Sync voice chat state to local React composer AND broadcast to other windows.
+     * Called from app-buttons.js / app-audio-capture.js whenever voice chat starts/stops.
+     *
+     * @param {boolean} hidden - true = voice chat active, hide composer; false = show composer
+     */
+    function syncVoiceChatComposerHidden(hidden) {
+        hidden = !!hidden;
+        // Update local React composer
+        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setComposerHidden === 'function') {
+            window.reactChatWindowHost.setComposerHidden(hidden);
+        }
+        // Broadcast to other windows (chat.html ↔ index.html)
+        if (nekoBroadcastChannel) {
+            nekoBroadcastChannel.postMessage({
+                action: 'voice_chat_active',
+                active: hidden,
+                lanlan_name: (window.lanlan_config && window.lanlan_config.lanlan_name) || '',
+                timestamp: Date.now()
+            });
+        }
+    }
+
+    // =====================================================================
     // BroadcastChannel initialisation
     // =====================================================================
 
@@ -957,6 +984,26 @@
                     case 'memory_edited':
                         await handleMemoryEdited(event.data.catgirl_name);
                         break;
+                    case 'voice_chat_active': {
+                        // 来自另一个窗口的语音对话状态变更，同步本地 React composer 隐藏状态
+                        // 校验 lanlan_name：多角色场景下避免串状态
+                        var vcCurrentName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+                        if (event.data.lanlan_name && (!vcCurrentName || event.data.lanlan_name !== vcCurrentName)) break;
+                        var vcHidden = !!event.data.active;
+                        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setComposerHidden === 'function') {
+                            window.reactChatWindowHost.setComposerHidden(vcHidden);
+                        }
+                        // 同步旧版 text-input-area（兜底）
+                        var vcTextInput = document.getElementById('text-input-area');
+                        if (vcTextInput) {
+                            if (vcHidden) {
+                                vcTextInput.classList.add('hidden');
+                            } else {
+                                vcTextInput.classList.remove('hidden');
+                            }
+                        }
+                        break;
+                    }
                     case 'avatar_updated': {
                         // 从 Pet 窗口接收头像数据，注入到 Chat 窗口
                         // 校验 lanlan_name：多角色场景下避免串头像
@@ -1134,6 +1181,7 @@
     mod.cleanupLive2DOverlayUI = cleanupLive2DOverlayUI;
     mod.cleanupVRMOverlayUI = cleanupVRMOverlayUI;
     mod.cleanupMMDOverlayUI = cleanupMMDOverlayUI;
+    mod.syncVoiceChatComposerHidden = syncVoiceChatComposerHidden;
 
     // Backward-compatible window globals
     window.handleModelReload = handleModelReload;
@@ -1142,6 +1190,7 @@
     window.cleanupLive2DOverlayUI = cleanupLive2DOverlayUI;
     window.cleanupVRMOverlayUI = cleanupVRMOverlayUI;
     window.cleanupMMDOverlayUI = cleanupMMDOverlayUI;
+    window.syncVoiceChatComposerHidden = syncVoiceChatComposerHidden;
 
     window.appInterpage = mod;
 })();
