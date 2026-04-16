@@ -12,8 +12,12 @@ from urllib.parse import quote, quote_plus, urljoin, urlparse
 
 # 全局的表情包图源白名单注册表，由爬虫层维护并供其他模块引用
 MEME_ALLOWED_HOSTS = [
-    'qn.doutub.com', 'img.soutula.com', 'i.imgflip.com',
-    'doutub.com', 'fabiaoqing.com', 'soutula.com'
+    # 2026-04-16: doutub.com 域名易主挂黑产博彩页，已停用
+    # 'qn.doutub.com',
+    # 'doutub.com',
+    'img.soutula.com', 'i.imgflip.com',
+    'fabiaoqing.com', 'soutula.com',
+    'img.doutupk.com', 'doutupk.com',
 ]
 
 try:
@@ -115,7 +119,7 @@ class MemeFetcher:
     async def __aenter__(self) -> "MemeFetcher":
         """进入异步上下文，初始化持久 Session"""
         if self._session is None:
-            self._session = httpx.AsyncClient(timeout=15.0, follow_redirects=True, trust_env=True)
+            self._session = httpx.AsyncClient(timeout=8.0, follow_redirects=True, trust_env=True)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -178,7 +182,7 @@ class MemeFetcher:
                     response = await session.get(url, params=params, headers=headers)
                 else:
                     # 使用临时 Client
-                    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, trust_env=True) as client:
+                    async with httpx.AsyncClient(timeout=8.0, follow_redirects=True, trust_env=True) as client:
                         response = await client.get(url, params=params, headers=headers)
                     
                 if response.status_code == 429:
@@ -354,6 +358,9 @@ def _is_valid_meme_url(url: str) -> bool:
             return False
     return True
 
+# ⚠️ 2026-04-16: doutub.com 域名易主（RDAP last changed 同日），真实 IP 挂博彩黑产页，
+# 官方无新域名公告。该抓取类已在调度层停用（见 CN_FETCHERS 和 main）。保留类定义仅供参考，
+# 如斗图吧启用新域名再行恢复，务必同步更新 MEME_ALLOWED_HOSTS 和 referer_map。
 class DoutubFetcher:
     """
     斗图吧 (doutub.com) 表情包爬取类
@@ -389,7 +396,7 @@ class DoutubFetcher:
 
     async def __aenter__(self) -> "DoutubFetcher":
         if self._session is None:
-            self._session = httpx.AsyncClient(timeout=15.0, follow_redirects=True, trust_env=True)
+            self._session = httpx.AsyncClient(timeout=8.0, follow_redirects=True, trust_env=True)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -420,14 +427,14 @@ class DoutubFetcher:
                 logger.warning(f"设置 SECLEVEL=1 失败: {e}")
             
             return httpx.AsyncClient(
-                timeout=15.0, 
+                timeout=8.0, 
                 follow_redirects=True, 
                 verify=context,
                 trust_env=True
             )
         else:
             return httpx.AsyncClient(
-                timeout=15.0, 
+                timeout=8.0, 
                 follow_redirects=True, 
                 trust_env=True
             )
@@ -625,6 +632,181 @@ class DoutubFetcher:
             return []
 
 
+class DoutupkFetcher:
+    """
+    斗图啦 (doutupk.com) 表情包爬取类
+    国内网站，HTML 直出 + 图片懒加载。2026-04-16 接入以替代已停用的斗图吧。
+    """
+    def __init__(self):
+        self.base_url = "https://www.doutupk.com"
+        self.search_url = f"{self.base_url}/search"
+        self._session: Optional[httpx.AsyncClient] = None
+
+    async def __aenter__(self) -> "DoutupkFetcher":
+        if self._session is None:
+            self._session = httpx.AsyncClient(
+                timeout=8.0,
+                follow_redirects=True,
+                trust_env=True,
+            )
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        await self.close()
+
+    async def close(self):
+        session = self._session
+        if session:
+            await session.aclose()
+            self._session = None
+
+    def _get_headers(self) -> Dict[str, str]:
+        return {
+            "User-Agent": get_random_user_agent(),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Referer": f"{self.base_url}/",
+            "Connection": "keep-alive",
+        }
+
+    def _create_client(self, seclevel1: bool = False) -> httpx.AsyncClient:
+        if seclevel1:
+            context = ssl.create_default_context()
+            try:
+                context.set_ciphers('DEFAULT@SECLEVEL=1')
+            except Exception as e:
+                logger.warning(f"设置 SECLEVEL=1 失败: {e}")
+            return httpx.AsyncClient(timeout=8.0, follow_redirects=True, verify=context, trust_env=True)
+        return httpx.AsyncClient(timeout=8.0, follow_redirects=True, trust_env=True)
+
+    async def _fetch_html(self, url: str, max_retries: int = 3) -> str:
+        last_exception = None
+        backoff_factor = random.uniform(1.0, 1.5)
+
+        for attempt in range(max_retries):
+            try:
+                if attempt == 0:
+                    await asyncio.sleep(random.uniform(0.1, 0.3))
+
+                headers = self._get_headers()
+
+                try:
+                    if self._session:
+                        response = await self._session.get(url, headers=headers)
+                    else:
+                        async with self._create_client(seclevel1=False) as temp_client:
+                            response = await temp_client.get(url, headers=headers)
+                    response.raise_for_status()
+                    return response.text
+                except ssl.SSLError as e:
+                    logger.warning(f"斗图啦 HTTPS SSL握手失败，尝试降低安全级别重试 (第{attempt+1}次): {e}")
+                    try:
+                        if self._session:
+                            await self.close()
+                            self._session = self._create_client(seclevel1=True)
+                            response = await self._session.get(url, headers=headers)
+                        else:
+                            async with self._create_client(seclevel1=True) as temp_client:
+                                response = await temp_client.get(url, headers=headers)
+                        response.raise_for_status()
+                        return response.text
+                    except Exception as inner_e:
+                        logger.warning(f"斗图啦降级请求依然失败 (第{attempt+1}次): {inner_e}")
+                        last_exception = inner_e
+                except (httpx.TransportError, httpx.ConnectError) as e:
+                    is_ssl_error = isinstance(e.__cause__, ssl.SSLError) or "SSL" in str(e) or "handshake" in str(e).lower()
+                    if is_ssl_error:
+                        logger.warning(f"检测到可能的 TLS 握手异常，尝试降级重试 (第{attempt+1}次): {e}")
+                        try:
+                            if self._session:
+                                await self.close()
+                                self._session = self._create_client(seclevel1=True)
+                                response = await self._session.get(url, headers=headers)
+                            else:
+                                async with self._create_client(seclevel1=True) as temp_client:
+                                    response = await temp_client.get(url, headers=headers)
+                            response.raise_for_status()
+                            return response.text
+                        except Exception as inner_e:
+                            logger.warning(f"斗图啦降级重试依然失败: {inner_e}")
+                            last_exception = inner_e
+                    else:
+                        logger.warning(f"斗图啦 HTTPS 网络传输异常 (第{attempt+1}次): {e}")
+                        last_exception = e
+
+            except (httpx.ConnectError, httpx.TimeoutException, ssl.SSLError) as e:
+                logger.warning(f"斗图啦网络连接异常 (尝试 {attempt + 1}/{max_retries}): {e}")
+                last_exception = e
+            except httpx.HTTPStatusError as e:
+                logger.error(f"斗图啦HTTP错误 (状态码 {e.response.status_code}): {e}")
+                last_exception = e
+            except Exception as e:
+                logger.error(f"斗图啦发生非预期异常: {e}")
+                last_exception = e
+
+            if attempt < max_retries - 1:
+                delay = backoff_factor * (2 ** attempt)
+                await asyncio.sleep(delay)
+
+        raise last_exception or Exception(f"达到最大重试次数 ({max_retries})，抓取失败")
+
+    async def search(self, keyword: str, limit: int = 10) -> List[Dict[str, Any]]:
+        if not keyword:
+            return []
+
+        search_url = f"{self.search_url}?keyword={quote(keyword, safe='')}"
+        try:
+            html = await self._fetch_html(search_url)
+            if not html:
+                return []
+
+            soup = BeautifulSoup(html, 'html.parser')
+            results: List[Dict[str, Any]] = []
+
+            # 懒加载结构：img.image_dtb[data-original=真实URL]，src 是 loader 占位图
+            for img in soup.select('img.image_dtb'):
+                if len(results) >= limit:
+                    break
+
+                src = img.get('data-original') or img.get('data-backup') or ''
+                # 过滤占位图（loader.gif / gif.png 等都属 static.doutupk.com 装饰性资源）
+                if not src or 'static.doutupk.com' in src or not _is_valid_meme_url(src):
+                    continue
+
+                # 统一升级为 https，避免 mixed content 与部分 client 强校验
+                if src.startswith('http://'):
+                    src = 'https://' + src[len('http://'):]
+                elif src.startswith('//'):
+                    src = 'https:' + src
+
+                # 详情页 URL 可做点击跳转的 page_url
+                parent_a = img.find_parent('a')
+                page_url = parent_a.get('href') if parent_a and parent_a.get('href') else search_url
+
+                title = img.get('alt') or img.get('title') or ''
+                if not title:
+                    title = f"表情包_{len(results) + 1}"
+
+                item_id = src.rsplit('/', 1)[-1].split('.')[0] if '/' in src else ''
+                img_type = 'gif' if '.gif' in src.lower() else 'meme'
+
+                results.append({
+                    "type": img_type,
+                    "id": item_id,
+                    "url": src,
+                    "page_url": page_url,
+                    "title": title,
+                    "source": "斗图啦",
+                })
+
+            logger.info(f"斗图啦搜索 '{keyword}' 完成，获得 {len(results)} 条结果")
+            return results
+
+        except Exception as e:
+            logger.error(f"解析斗图啦搜索结果时出错: {e}")
+            return []
+
+
 class FabiaoqingFetcher:
     """
     发表情 (fabiaoqing.com) 表情包爬取类
@@ -639,7 +821,7 @@ class FabiaoqingFetcher:
         if self._session is None:
             # 采用渐进式 TLS 策略：默认使用系统最强加密，若失败则降级到 SECLEVEL=1
             self._session = httpx.AsyncClient(
-                timeout=15.0, 
+                timeout=8.0, 
                 follow_redirects=True, 
                 trust_env=True,
             )
@@ -675,14 +857,14 @@ class FabiaoqingFetcher:
                 logger.warning(f"设置 SECLEVEL=1 失败: {e}")
             
             return httpx.AsyncClient(
-                timeout=15.0, 
+                timeout=8.0, 
                 follow_redirects=True, 
                 verify=context,
                 trust_env=True
             )
         else:
             return httpx.AsyncClient(
-                timeout=15.0, 
+                timeout=8.0, 
                 follow_redirects=True, 
                 trust_env=True
             )
@@ -847,7 +1029,9 @@ async def fetch_meme_content(keyword: str = '', limit: int = 5) -> dict:
     source_name = ""
     
     CN_FETCHERS = [
-        (DoutubFetcher, "斗图吧"),
+        # 2026-04-16: doutub.com 域名易主挂黑产，停用斗图吧源，改用 doutupk.com（斗图啦）
+        # (DoutubFetcher, "斗图吧"),
+        (DoutupkFetcher, "斗图啦"),
         (FabiaoqingFetcher, "发表情"),
     ]
     
@@ -931,15 +1115,25 @@ async def main():
     """单元测试功能"""
     test_keywords_cn = ["搞笑", "猫", "熊猫头"]
     
-    print("=== 斗图吧 Meme Fetcher Test ===")
-    async with DoutubFetcher() as fetcher:
+    # 2026-04-16: doutub.com 域名易主挂黑产，注释掉斗图吧测试
+    # print("=== 斗图吧 Meme Fetcher Test ===")
+    # async with DoutubFetcher() as fetcher:
+    #     for kw in test_keywords_cn[:2]:
+    #         print(f"\nSearching 斗图吧 for '{kw}'...")
+    #         results = await fetcher.search(kw, limit=2)
+    #         print(f"Total results: {len(results)}")
+    #         for r in results:
+    #             print(f"  - {r['title']}: {r['url']}")
+
+    print("=== 斗图啦 Meme Fetcher Test ===")
+    async with DoutupkFetcher() as fetcher:
         for kw in test_keywords_cn[:2]:
-            print(f"\nSearching 斗图吧 for '{kw}'...")
+            print(f"\nSearching 斗图啦 for '{kw}'...")
             results = await fetcher.search(kw, limit=2)
             print(f"Total results: {len(results)}")
             for r in results:
                 print(f"  - {r['title']}: {r['url']}")
-    
+
     print("\n=== 发表情 Meme Fetcher Test ===")
     async with FabiaoqingFetcher() as fetcher:
         for kw in test_keywords_cn[:2]:

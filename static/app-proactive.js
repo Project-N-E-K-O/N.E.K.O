@@ -932,7 +932,8 @@
                 }
             }
             if (!isMemeLink && link.url) {
-                var memeDomains = ['qn.doutub.com', 'img.soutula.com', 'i.imgflip.com', 'doutub.com', 'fabiaoqing.com', 'soutula.com'];
+                // 2026-04-16: doutub.com 域名易主挂黑产，停用（'qn.doutub.com', 'doutub.com'）；新增 doutupk.com（斗图啦）
+                var memeDomains = ['img.soutula.com', 'i.imgflip.com', 'fabiaoqing.com', 'soutula.com', 'img.doutupk.com', 'doutupk.com'];
                 var linkHost = '';
                 try {
                     var tempUrl = new URL(String(link.url), window.location.origin);

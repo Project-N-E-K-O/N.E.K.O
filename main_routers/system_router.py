@@ -1862,11 +1862,14 @@ async def proxy_meme_image(url: str):
         referer_map = {
             'img.soutula.com': 'https://fabiaoqing.com/',
             'fabiaoqing.com': 'https://fabiaoqing.com/',
-            'qn.doutub.com': 'https://www.doutub.com/',
-            'doutub.com': 'https://www.doutub.com/',
+            # 2026-04-16: doutub.com 域名易主挂黑产，停用
+            # 'qn.doutub.com': 'https://www.doutub.com/',
+            # 'doutub.com': 'https://www.doutub.com/',
             'i.imgflip.com': 'https://imgflip.com/',
             'imgflip.com': 'https://imgflip.com/',
             'soutula.com': 'https://fabiaoqing.com/',
+            'img.doutupk.com': 'https://www.doutupk.com/',
+            'doutupk.com': 'https://www.doutupk.com/',
         }
         referer = referer_map.get(hostname, f'{parsed.scheme}://{hostname}/')
         headers = {
@@ -1880,7 +1883,9 @@ async def proxy_meme_image(url: str):
 
         # 已知 SSL 证书有问题的 CDN 域名（如七牛 CDN hostname mismatch），
         # 对这些域名首次请求即使用宽松 SSL，避免白白浪费一次超时。
-        _SSL_RELAXED_HOSTS = {'qn.doutub.com'}
+        # 2026-04-16: qn.doutub.com 随 doutub.com 域名易主停用；白名单当前为空，
+        # 其它域名仍走 ssl.SSLError 降级分支兜底。
+        _SSL_RELAXED_HOSTS: set[str] = set()
         need_relaxed_ssl = hostname in _SSL_RELAXED_HOSTS
 
         def _make_client(relaxed: bool = False) -> httpx.AsyncClient:
