@@ -355,9 +355,10 @@ class LLMSessionManager:
         调用方必须已持有 ``self.tts_cache_lock``（与现有 put 调用点一致）。
         对于 ws_bistream 类 provider（qwen / step / cosyvoice），文本碎片直接
         发给服务端处理，跳过 normalizer 以避免 pending_spaces 延迟和 CJK 边界
-        空格删除干扰服务端合成节奏。控制信号（``__interrupt__`` /
-        ``(None, None)``）请继续用 ``tts_request_queue.put`` 直接发送，
-        并在合适时机调用 ``_reset_tts_stream_normalizer``。
+        空格删除干扰服务端合成节奏。控制信号（``__interrupt__`` 打断 /
+        ``(None, None)`` 本轮 utterance 结束-flush / ``("__shutdown__", None)``
+        worker 退出）请继续用 ``tts_request_queue.put`` 直接发送，并在合适
+        时机调用 ``_reset_tts_stream_normalizer``。
         """
         if self._tts_normalize_enabled:
             if speech_id != self._tts_norm_speech_id:
@@ -1035,7 +1036,9 @@ class LLMSessionManager:
 
         if thread_ref and thread_ref.is_alive():
             try:
-                req_queue_ref.put((None, None))
+                # 使用独立的 shutdown sentinel；(None, None) 在 worker 里是
+                # "本轮 utterance 结束、flush 缓冲区"，并不会让 worker 退出。
+                req_queue_ref.put(("__shutdown__", None))
                 await asyncio.to_thread(thread_ref.join, 2.0)
             except Exception as e:
                 logger.error(f"💥 关闭TTS线程时出错: {e}")
@@ -1391,7 +1394,7 @@ class LLMSessionManager:
         if not self.use_tts and self.tts_thread and self.tts_thread.is_alive():
             logger.info("当前模式不需要TTS，关闭TTS线程")
             try:
-                self.tts_request_queue.put((None, None))  # 通知线程退出
+                self.tts_request_queue.put(("__shutdown__", None))  # 通知线程退出
                 self.tts_thread.join(timeout=1.0)  # 等待线程结束
             except Exception as e:
                 logger.error(f"关闭TTS线程时出错: {e}")
