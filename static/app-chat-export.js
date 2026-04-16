@@ -23,7 +23,7 @@
     var state = {
         isPreparingPreview: false,
         isExporting: false,
-        exportFormat: 'markdown',
+        exportFormat: 'image',
         imageExportFormat: 'png',
         imageExportStyle: 'neko',
         selectedIds: null,          // Set<string> of ChatMessage.id
@@ -1852,7 +1852,7 @@
         var copyButton = document.createElement('button');
         copyButton.type = 'button';
         copyButton.className = 'chat-export-preview-action chat-export-preview-action-copy';
-        copyButton.textContent = translateLabel('chat.copyMarkdown', 'Copy Markdown');
+        copyButton.textContent = translateLabel('chat.copyToClipboard', 'Copy to Clipboard');
 
         var openWindowButton = document.createElement('button');
         openWindowButton.type = 'button';
@@ -1961,9 +1961,7 @@
             selectAllButton.textContent = translateLabel('chat.exportSelectAll', 'Select All');
             selectNoneButton.textContent = translateLabel('chat.exportSelectNone', 'Clear');
             selectInvertButton.textContent = translateLabel('chat.exportSelectInvert', 'Invert');
-            copyButton.textContent = state.exportFormat === 'image'
-                ? translateLabel('chat.copyImage', 'Copy Image')
-                : translateLabel('chat.copyMarkdown', 'Copy Markdown');
+            copyButton.textContent = translateLabel('chat.copyToClipboard', 'Copy to Clipboard');
             openWindowButton.textContent = translateLabel('chat.previewOpenWindow', 'Open In Window');
         };
         window.addEventListener('localechange', localeHandler);
@@ -2123,9 +2121,7 @@
 
         // update copy button label based on format
         modal.copyButton.disabled = false;
-        modal.copyButton.textContent = state.exportFormat === 'image'
-            ? translateLabel('chat.copyImage', 'Copy Image')
-            : translateLabel('chat.copyMarkdown', 'Copy Markdown');
+        modal.copyButton.textContent = translateLabel('chat.copyToClipboard', 'Copy to Clipboard');
 
         // update download button label
         var currentFormat = getCurrentExportFormat();
@@ -2216,9 +2212,7 @@
                 modal.selectAllButton.textContent = translateLabel('chat.exportSelectAll', 'Select All');
                 modal.selectNoneButton.textContent = translateLabel('chat.exportSelectNone', 'Clear');
                 modal.selectInvertButton.textContent = translateLabel('chat.exportSelectInvert', 'Invert');
-                modal.copyButton.textContent = state.exportFormat === 'image'
-                    ? translateLabel('chat.copyImage', 'Copy Image')
-                    : translateLabel('chat.copyMarkdown', 'Copy Markdown');
+                modal.copyButton.textContent = translateLabel('chat.copyToClipboard', 'Copy to Clipboard');
                 modal.openWindowButton.textContent = translateLabel('chat.previewOpenWindow', 'Open In Window');
             };
             window.addEventListener('localechange', localeHandler);

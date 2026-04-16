@@ -649,7 +649,7 @@
         "copyMarkdown": "Copy Markdown",
         "copyMarkdownSuccess": "Markdown copied to clipboard.",
         "copyMarkdownFailed": "Failed to copy Markdown.",
-        "copyImage": "Copy Image",
+        "copyToClipboard": "Copy to Clipboard",
         "copyImageSuccess": "Image copied to clipboard.",
         "copyImageFailed": "Failed to copy image to clipboard.",
         "exportEmpty": "There is no conversation to export yet.",
