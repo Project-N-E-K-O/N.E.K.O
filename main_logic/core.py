@@ -584,14 +584,20 @@ class LLMSessionManager:
             try:
                 too_long_text = "唔主人你让人家想太多了，人家想不过来了啦！"
 
-                # 发送文本到前端显示
-                await self.send_lanlan_response(too_long_text, is_first_chunk=True)
-
-                # 喂给 TTS 管线用角色音色念
                 if self.use_tts:
                     async with self.lock:
                         self.current_speech_id = str(uuid4())
                         self._tts_done_queued_for_turn = False
+
+                # 发送文本到前端显示
+                await self.send_lanlan_response(too_long_text, is_first_chunk=True)
+
+                from utils.llm_client import AIMessage as _AIMsg
+                if self.session and hasattr(self.session, '_conversation_history'):
+                    self.session._conversation_history.append(_AIMsg(content=too_long_text))
+
+                # 喂给 TTS 管线用角色音色念
+                if self.use_tts:
                     await self.feed_tts_chunk(too_long_text)
                     # TTS 结束信号
                     if self.tts_thread and self.tts_thread.is_alive():

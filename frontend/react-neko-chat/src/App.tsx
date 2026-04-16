@@ -66,9 +66,11 @@ export default function App({
   useEffect(() => {
     if (rollbackDraft && _rollbackKey && _rollbackKey !== lastRollbackKeyRef.current) {
       lastRollbackKeyRef.current = _rollbackKey;
-      setDraft(rollbackDraft);
+      if (!draft || draft.trim() === '') {
+        setDraft(rollbackDraft);
+      }
     }
-  }, [rollbackDraft, _rollbackKey]);
+  }, [rollbackDraft, _rollbackKey, draft]);
   const resolvedImportImageAriaLabel = importImageButtonAriaLabel || importImageButtonLabel;
   const resolvedScreenshotAriaLabel = screenshotButtonAriaLabel || screenshotButtonLabel;
   const resolvedTranslateAriaLabel = translateButtonAriaLabel || translateButtonLabel;

@@ -363,7 +363,7 @@
 
     function buildRenderProps() {
         if (state.rollbackDraft) {
-            console.log('[ROLLBACK] buildRenderProps: rollbackDraft=' + state.rollbackDraft.slice(0, 30) + ' key=' + state._rollbackKey);
+            console.log('[ROLLBACK] buildRenderProps: rollbackDraftPresent=true length=' + state.rollbackDraft.length + ' key=' + state._rollbackKey);
         }
         return Object.assign({}, ensureViewProps(), {
             messages: state.messages,
@@ -618,12 +618,10 @@
         if (!detail.text.trim() && !hasAttachments) return;
 
         // Store last submitted text for rollback on RESPONSE_TOO_LONG
-        if (detail.text.trim()) {
-            state.lastSubmittedText = detail.text.trim();
-        }
+        state.lastSubmittedText = detail.text.trim();
         // Clear any stale rollback so it won't overwrite this new draft
         if (state.rollbackDraft) {
-            console.log('[ROLLBACK] handleComposerSubmit: clearing rollbackDraft (was "' + state.rollbackDraft.slice(0, 30) + '")');
+            console.log('[ROLLBACK] handleComposerSubmit: clearing rollbackDraft length=' + state.rollbackDraft.length + ' key=' + state._rollbackKey);
         }
         state.rollbackDraft = '';
 
@@ -706,7 +704,7 @@
         // Use a unique key each time so React useEffect can distinguish invocations
         state.rollbackDraft = state.lastSubmittedText;
         state._rollbackKey = 'rb-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
-        console.log('[ROLLBACK] rollbackLastDraft: key=' + state._rollbackKey + ' text=' + state.rollbackDraft.slice(0, 30));
+        console.log('[ROLLBACK] rollbackLastDraft: rollbackDraftPresent=true length=' + state.rollbackDraft.length + ' key=' + state._rollbackKey);
         renderWindow();
     }
 
