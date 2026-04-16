@@ -534,6 +534,7 @@
         "AGENT_CU_AUTO_CLOSED": "Computer Use 模組未載入，已自動關閉",
         "AGENT_CU_CAPABILITY_LOST": "Computer Use 不可用：$t(agent.precheck.{{reason_code}})",
         "TTS_CONNECTION_FAILED": "TTS服務連接失敗: {{msg}}",
+        "UPSTREAM_SERVER_BUSY": "抱歉喵，上游營運商伺服器繁忙，請稍後重試~",
         "TTS_RECONNECTING": "🔄 語音服務正在自動重連，請稍候...",
         "TTS_WATERMARK_DETECTED": "⚠️ 偵測到智譜CogTTS音訊浮水印（嗶嗶聲），如需去除浮水印請前往智譜控制台手動配置。",
         "TTS_CUSTOM_URL_NOT_CONFIGURED": "未配置 GPT-SoVITS API URL，請先在 API 設置中啟用並配置自訂 TTS",

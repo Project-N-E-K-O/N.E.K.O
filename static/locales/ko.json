@@ -534,6 +534,7 @@
         "AGENT_CU_AUTO_CLOSED": "Computer Use 모듈이 로드되지 않아 자동 비활성화되었습니다",
         "AGENT_CU_CAPABILITY_LOST": "Computer Use를 사용할 수 없습니다: $t(agent.precheck.{{reason_code}})",
         "TTS_CONNECTION_FAILED": "TTS 서비스 연결 실패: {{msg}}",
+        "UPSTREAM_SERVER_BUSY": "죄송해요냥, 상위 서버가 바쁩니다. 잠시 후 다시 시도해 주세요~",
         "TTS_RECONNECTING": "🔄 음성 서비스가 자동 재연결 중입니다. 잠시만 기다려주세요...",
         "TTS_WATERMARK_DETECTED": "⚠️ CogTTS 오디오 워터마크(비프음)가 감지되었습니다. 워터마크를 비활성화하려면 Zhipu 콘솔에서 수동으로 설정하세요.",
         "TTS_CUSTOM_URL_NOT_CONFIGURED": "GPT-SoVITS API URL이 설정되지 않았습니다. API 설정에서 커스텀 TTS를 활성화하고 설정하세요.",

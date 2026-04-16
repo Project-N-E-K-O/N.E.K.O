@@ -1643,6 +1643,8 @@ class LLMSessionManager:
                     await self.send_status(json.dumps({"code": "API_KEY_REJECTED"}))
                 elif '429' in error_str:
                     await self.send_status(json.dumps({"code": "API_RATE_LIMIT_SESSION"}))
+                elif 'HTTP 503' in error_str:
+                    await self.send_status(json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
                 elif 'All connection attempts failed' in error_str:
                     await self.send_status(json.dumps({"code": "LLM_CONNECTION_FAILED"}))
                 else:
@@ -3166,6 +3168,7 @@ class LLMSessionManager:
                             'API_ARREARS', 'API_QUOTA_TIME', 'API_KEY_REJECTED',
                             'API_RATE_LIMIT', 'API_POLICY_VIOLATION',
                             'API_1008_FALLBACK', 'TTS_CONNECTION_FAILED',
+                            'UPSTREAM_SERVER_BUSY',
                         }
                         _parsed_code = None
                         _keyword_target = error_msg_text  # 非 JSON 错误时回退使用

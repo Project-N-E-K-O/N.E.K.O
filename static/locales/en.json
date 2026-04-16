@@ -534,6 +534,7 @@
         "AGENT_CU_AUTO_CLOSED": "Computer Use module not loaded, auto-disabled",
         "AGENT_CU_CAPABILITY_LOST": "Computer Use unavailable: $t(agent.precheck.{{reason_code}})",
         "TTS_CONNECTION_FAILED": "TTS service connection failed: {{msg}}",
+        "UPSTREAM_SERVER_BUSY": "Sorry, the upstream server is busy. Please try again later~",
         "TTS_RECONNECTING": "🔄 TTS service is reconnecting, please wait...",
         "TTS_WATERMARK_DETECTED": "⚠️ CogTTS audio watermark (beep) detected. To disable the watermark, go to the Zhipu console and configure it manually.",
         "TTS_CUSTOM_URL_NOT_CONFIGURED": "GPT-SoVITS API URL not configured. Please enable and configure custom TTS in API settings.",

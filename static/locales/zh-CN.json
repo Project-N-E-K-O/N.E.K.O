@@ -534,6 +534,7 @@
         "AGENT_CU_AUTO_CLOSED": "Computer Use 模块未加载，已自动关闭",
         "AGENT_CU_CAPABILITY_LOST": "Computer Use 不可用：$t(agent.precheck.{{reason_code}})",
         "TTS_CONNECTION_FAILED": "TTS服务连接失败: {{msg}}",
+        "UPSTREAM_SERVER_BUSY": "抱歉喵，上游运营商服务器繁忙，请稍后重试~",
         "TTS_RECONNECTING": "🔄 语音服务正在自动重连，请稍候...",
         "TTS_WATERMARK_DETECTED": "⚠️ 检测到智谱CogTTS音频水印（滴滴声），如需去除水印请前往智谱控制台手动配置。",
         "TTS_CUSTOM_URL_NOT_CONFIGURED": "未配置 GPT-SoVITS API URL，请先在 API 设置中启用并配置自定义 TTS",

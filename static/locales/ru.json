@@ -534,6 +534,7 @@
         "AGENT_CU_AUTO_CLOSED": "Модуль Computer Use не загружен, автоматически отключён",
         "AGENT_CU_CAPABILITY_LOST": "Computer Use недоступен: $t(agent.precheck.{{reason_code}})",
         "TTS_CONNECTION_FAILED": "Ошибка подключения к TTS-сервису: {{msg}}",
+        "UPSTREAM_SERVER_BUSY": "Извините, ня, сервер провайдера перегружен. Попробуйте позже~",
         "TTS_RECONNECTING": "🔄 Служба TTS автоматически переподключается, подождите...",
         "TTS_WATERMARK_DETECTED": "⚠️ Обнаружен водяной знак CogTTS (звуковой сигнал). Чтобы отключить водяной знак, настройте это вручную в консоли Zhipu.",
         "TTS_CUSTOM_URL_NOT_CONFIGURED": "URL GPT-SoVITS API не настроен. Включите и настройте пользовательский TTS в настройках API.",

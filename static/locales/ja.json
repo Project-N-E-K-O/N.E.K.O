@@ -534,6 +534,7 @@
         "AGENT_CU_AUTO_CLOSED": "Computer Use モジュール未ロード、自動無効化されました",
         "AGENT_CU_CAPABILITY_LOST": "Computer Use が利用できません：$t(agent.precheck.{{reason_code}})",
         "TTS_CONNECTION_FAILED": "TTSサービス接続失敗: {{msg}}",
+        "UPSTREAM_SERVER_BUSY": "ごめんなさいにゃ、上流サーバーが混雑しています。しばらくしてからもう一度お試しください~",
         "TTS_RECONNECTING": "🔄 音声サービスが自動再接続中です。しばらくお待ちください...",
         "TTS_WATERMARK_DETECTED": "⚠️ CogTTSの音声ウォーターマーク（ビープ音）を検出しました。ウォーターマークを無効にするには、智譜コンソールで手動設定してください。",
         "TTS_CUSTOM_URL_NOT_CONFIGURED": "GPT-SoVITS API URLが設定されていません。API設定でカスタムTTSを有効にして設定してください。",
