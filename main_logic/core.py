@@ -1910,7 +1910,7 @@ class LLMSessionManager:
             
             initial_prompt = await self._build_initial_prompt()
             self.initial_cache_snapshot_len = len(self.message_cache_for_new_session)
-            async with httpx.AsyncClient(timeout=2.0, proxy=None, trust_env=False) as client:
+            async with httpx.AsyncClient(timeout=3.0, proxy=None, trust_env=False) as client:
                 resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}")
                 if not resp.is_success:
                     raise ConnectionError(f"❌ 记忆服务热切换时返回非2xx状态 {resp.status_code}: {resp.text[:200]}")
@@ -3144,6 +3144,10 @@ class LLMSessionManager:
                                     logger.info("🔄 TTS 延迟重试：尝试重新拉起 Worker...")
                                     self._respawn_tts_worker()
                                 self._tts_respawn_task = asyncio.ensure_future(_delayed_respawn())
+                        continue
+                    elif data[0] == "__warning__":
+                        # TTS worker 发来的提示性消息（如水印检测），直接转发前端
+                        self._fire_task(self.send_status(data[1]))
                         continue
                     elif data[0] == "__reconnecting__":
                         self._tts_retry_notify_count += 1

@@ -269,6 +269,15 @@
             ? safeT(notice.code, localeFallback)
             : localeFallback;
 
+        // Electron 桌面宠物模式下 body 为 pointer-events:none，
+        // 导致 preload 轮询器的 elementFromPoint 无法检测到 overlay，
+        // 窗口穿透不会解除，按钮点不了。显示期间临时恢复 body pointer-events。
+        const bodyPE = document.body.style.pointerEvents;
+        const needRestoreBodyPE = getComputedStyle(document.body).pointerEvents === 'none';
+        if (needRestoreBodyPE) {
+            document.body.style.pointerEvents = 'auto';
+        }
+
         const overlay = document.createElement('div');
         overlay.id = 'prominent-notice-overlay';
         overlay.style.cssText = `
@@ -350,6 +359,10 @@
             overlay.style.animation = 'pnOverlayOut 0.2s ease forwards';
             setTimeout(() => {
                 overlay.remove();
+                // 恢复 body pointer-events
+                if (needRestoreBodyPE) {
+                    document.body.style.pointerEvents = bodyPE;
+                }
                 if (prevActive && document.contains(prevActive)) {
                     prevActive.focus();
                 }

@@ -3379,20 +3379,26 @@ window.Jukebox = {
       Jukebox.State._dragCleanup();
       Jukebox.State._dragCleanup = null;
     }
-    
+
+    // 断开独立窗口拖拽层守护 observer
+    if (Jukebox.State._dragGuard) {
+      try { Jukebox.State._dragGuard.disconnect(); } catch (_) {}
+      Jukebox.State._dragGuard = null;
+    }
+
     if (Jukebox.State.container) {
       Jukebox.State.container.remove();
       Jukebox.State.container = null;
     }
-    
+
     if (Jukebox.State.styleElement) {
       Jukebox.State.styleElement.remove();
       Jukebox.State.styleElement = null;
     }
-    
+
     Jukebox.State.isOpen = false;
     Jukebox.State.isHidden = false;
-    
+
     // 清理 BroadcastChannel
     try {
       if (Jukebox._broadcastChannel) {
@@ -3424,17 +3430,23 @@ window.Jukebox = {
       Jukebox.State._dragCleanup();
       Jukebox.State._dragCleanup = null;
     }
-    
+
+    // 断开独立窗口拖拽层守护 observer
+    if (Jukebox.State._dragGuard) {
+      try { Jukebox.State._dragGuard.disconnect(); } catch (_) {}
+      Jukebox.State._dragGuard = null;
+    }
+
     if (Jukebox.State.container) {
       Jukebox.State.container.remove();
       Jukebox.State.container = null;
     }
-    
+
     if (Jukebox.State.styleElement) {
       Jukebox.State.styleElement.remove();
       Jukebox.State.styleElement = null;
     }
-    
+
     if (Jukebox.State.observer) {
       Jukebox.State.observer.disconnect();
       Jukebox.State.observer = null;
@@ -3458,6 +3470,7 @@ window.Jukebox = {
     jukeboxContainer.className = 'jukebox-container';
     jukeboxContainer.innerHTML = `
       <div class="jukebox-header">
+        <div class="jukebox-drag-overlay"></div>
         <div class="jukebox-header-left">
           <h3>${window.t('Jukebox.title', '点歌台')}</h3>
           <span id="jukebox-status-text" class="jukebox-status-text">${window.t('Jukebox.ready', '准备就绪')}</span>
@@ -3541,14 +3554,67 @@ window.Jukebox = {
     document.body.appendChild(sidePanel);
     Jukebox.State.container = wrapper;
     
-    // 独立窗口模式由 preload 注入 -webkit-app-region: drag 处理拖拽，
+    // 独立窗口模式下由下方的专属拖拽层（.jukebox-drag-overlay）处理原生窗口拖拽，
     // JS 拖拽会因 preventDefault 与原生拖拽冲突，且 inset:0!important 阻止 wrapper 移动
     if (!window.__NEKO_JUKEBOX_STANDALONE__) {
       Jukebox.bindWindowDrag(wrapper, jukeboxContainer);
       Jukebox.bindPanelDrag(sidePanel);
     }
-    
+
     Jukebox.injectStyles();
+
+    // 独立窗口：使用专属拖拽层（.jukebox-drag-overlay）处理原生窗口拖拽，
+    // 容器内除 overlay 以外的任何元素都强制 no-drag，防止 preload 注入 drag 污染。
+    // 这种"兄弟层"方案彻底规避 Chromium -webkit-app-region 命中测试缓存 bug：
+    // 拖拽层与按钮不是父子关系，Chromium 不会把按钮区域错误地归入拖拽区域。
+    if (window.__NEKO_JUKEBOX_STANDALONE__) {
+      // 立即设置：拖拽层 drag，其它全部 no-drag
+      var _applyDragRegions = function() {
+        var overlay = jukeboxContainer.querySelector('.jukebox-drag-overlay');
+        if (overlay && overlay.style.webkitAppRegion !== 'drag') {
+          overlay.style.webkitAppRegion = 'drag';
+        }
+        // 容器本身 + 所有后代（除 overlay）都标 no-drag
+        if (jukeboxContainer.style.webkitAppRegion !== 'no-drag') {
+          jukeboxContainer.style.webkitAppRegion = 'no-drag';
+        }
+        jukeboxContainer.querySelectorAll('*').forEach(function(el) {
+          if (el === overlay) return;
+          if (el.style.webkitAppRegion !== 'no-drag') {
+            el.style.webkitAppRegion = 'no-drag';
+          }
+        });
+      };
+      _applyDragRegions();
+
+      // MutationObserver 守护：如果 preload 后续往任何非 overlay 元素重新注入 drag，立即纠正
+      try {
+        var _dragGuard = new MutationObserver(function(mutations) {
+          for (var i = 0; i < mutations.length; i++) {
+            var m = mutations[i];
+            if (m.type !== 'attributes' || m.attributeName !== 'style') continue;
+            var el = m.target;
+            // overlay 本身必须保持 drag，其它一律改回 no-drag
+            if (el.classList && el.classList.contains('jukebox-drag-overlay')) {
+              if (el.style.webkitAppRegion !== 'drag') {
+                el.style.webkitAppRegion = 'drag';
+              }
+            } else if (el.style && el.style.webkitAppRegion !== 'no-drag') {
+              el.style.webkitAppRegion = 'no-drag';
+            }
+          }
+        });
+        _dragGuard.observe(jukeboxContainer, {
+          attributes: true,
+          attributeFilter: ['style'],
+          subtree: true
+        });
+        // 保存引用以便 close/destroy 时断开，避免泄漏
+        Jukebox.State._dragGuard = _dragGuard;
+      } catch (e) {
+        console.warn('[Jukebox] drag guard init failed', e);
+      }
+    }
   },
   
   // 窗口拖拽功能
@@ -3770,6 +3836,22 @@ window.Jukebox = {
         cursor: grab;
         user-select: none;
         -webkit-user-select: none;
+        position: relative;
+      }
+
+      /* 专属拖拽层：绝对定位覆盖整个 header，与按钮是兄弟关系而非父子关系，
+         规避 Chromium -webkit-app-region 命中测试缓存 bug。
+         只有需要点击的按钮抬到 overlay 之上，标题/状态文字让 overlay 盖住，
+         这样除按钮外的整个 header 区域都是原生拖拽热区。 */
+      .jukebox-drag-overlay {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+      }
+
+      .jukebox-header-buttons {
+        position: relative;
+        z-index: 1;
       }
       
       .jukebox-header:active {

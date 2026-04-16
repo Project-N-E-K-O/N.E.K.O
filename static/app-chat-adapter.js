@@ -320,9 +320,16 @@
                 }
             }
         } finally {
-            window._isProcessingRealisticQueue = false;
-            if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
-                processRealisticQueue(window._realisticGeminiVersion || 0);
+            // 如果 lock 还是 true，说明没有任何外部路径（discard / audio-capture）
+            // 接管过 —— 无论 version 是否变化，我们都是当前唯一持有者，必须释放锁，
+            // 否则队列会卡死。
+            // 如果 lock 已经是 false，说明外部路径已经重置锁并可能启动了新 processor，
+            // 我们不能再递归也不能再动锁。
+            if (window._isProcessingRealisticQueue) {
+                window._isProcessingRealisticQueue = false;
+                if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
+                    processRealisticQueue(window._realisticGeminiVersion || 0);
+                }
             }
         }
     }

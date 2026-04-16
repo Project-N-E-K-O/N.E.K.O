@@ -1267,6 +1267,194 @@ body.react-chat-window-dragging {
     cursor: progress;
 }
 
+/* ──── Avatar Cropper (inline in popup) ──── */
+.chat-avatar-preview-crop-body {
+    display: none;
+    flex-direction: column;
+    gap: 10px;
+}
+#chat-avatar-preview-popup.is-cropping .chat-avatar-preview-card-body { display: none; }
+#chat-avatar-preview-popup.is-cropping .chat-avatar-preview-crop-body { display: flex; }
+#chat-avatar-preview-popup.is-cropping { width: auto; max-width: calc(100vw - 24px); }
+
+.avatar-cropper-canvas-wrap {
+    position: relative;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+    overflow: hidden;
+    border-radius: 8px;
+    background: #0a0a0a;
+    align-self: center;
+}
+
+.avatar-cropper-source-img {
+    display: block;
+    pointer-events: none;
+}
+
+.avatar-cropper-mask {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+
+.avatar-cropper-crop-box {
+    position: absolute;
+    cursor: move;
+    box-sizing: border-box;
+    border: 2px solid rgba(255, 255, 255, 0.85);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.3);
+    overflow: visible;
+}
+
+.avatar-cropper-viewfinder {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    overflow: hidden;
+}
+
+.avatar-cropper-grid-line {
+    position: absolute;
+    background: rgba(255, 255, 255, 0.35);
+}
+.avatar-cropper-grid-line.h1 { top: 33.33%; left: 0; right: 0; height: 1px; }
+.avatar-cropper-grid-line.h2 { top: 66.66%; left: 0; right: 0; height: 1px; }
+.avatar-cropper-grid-line.v1 { left: 33.33%; top: 0; bottom: 0; width: 1px; }
+.avatar-cropper-grid-line.v2 { left: 66.66%; top: 0; bottom: 0; width: 1px; }
+
+.avatar-cropper-circle-guide {
+    position: absolute;
+    inset: 4%;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    pointer-events: none;
+}
+
+/* 手柄：完全定位在 crop-box 外侧角落 */
+.avatar-cropper-handle {
+    position: absolute;
+    width: 24px;
+    height: 24px;
+    z-index: 2;
+}
+.avatar-cropper-handle::before,
+.avatar-cropper-handle::after {
+    content: '';
+    position: absolute;
+    background: #fff;
+    box-shadow: 0 0 5px rgba(0, 0, 0, 0.7);
+    border-radius: 1px;
+}
+.avatar-cropper-handle.tl { top: -26px; left: -26px; cursor: nwse-resize; }
+.avatar-cropper-handle.tr { top: -26px; right: -26px; cursor: nesw-resize; }
+.avatar-cropper-handle.bl { bottom: -26px; left: -26px; cursor: nesw-resize; }
+.avatar-cropper-handle.br { bottom: -26px; right: -26px; cursor: nwse-resize; }
+
+.avatar-cropper-handle.tl::before { bottom: 0; right: 0; width: 20px; height: 5px; }
+.avatar-cropper-handle.tl::after  { bottom: 0; right: 0; width: 5px; height: 20px; }
+.avatar-cropper-handle.tr::before { bottom: 0; left: 0; width: 20px; height: 5px; }
+.avatar-cropper-handle.tr::after  { bottom: 0; left: 0; width: 5px; height: 20px; }
+.avatar-cropper-handle.bl::before { top: 0; right: 0; width: 20px; height: 5px; }
+.avatar-cropper-handle.bl::after  { top: 0; right: 0; width: 5px; height: 20px; }
+.avatar-cropper-handle.br::before { top: 0; left: 0; width: 20px; height: 5px; }
+.avatar-cropper-handle.br::after  { top: 0; left: 0; width: 5px; height: 20px; }
+
+/* 右侧控制面板 */
+.avatar-cropper-controls {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    align-self: center;
+    flex-shrink: 0;
+}
+.avatar-cropper-controls-row {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+}
+.avatar-cropper-ctrl-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.35);
+    color: rgba(255, 255, 255, 0.85);
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s;
+    padding: 0;
+}
+.avatar-cropper-ctrl-btn:hover {
+    background: rgba(68, 183, 254, 0.25);
+    border-color: rgba(68, 183, 254, 0.4);
+}
+.avatar-cropper-ctrl-btn:active {
+    background: rgba(68, 183, 254, 0.4);
+}
+.avatar-cropper-ctrl-btn svg {
+    width: 16px;
+    height: 16px;
+    fill: currentColor;
+}
+.avatar-cropper-ctrl-divider {
+    height: 6px;
+}
+
+.avatar-cropper-area {
+    display: flex;
+    gap: 10px;
+    align-items: stretch;
+}
+
+.avatar-cropper-buttons {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+}
+
+.avatar-cropper-btn {
+    padding: 6px 14px;
+    border-radius: 999px;
+    border: 1px solid rgba(68, 183, 254, 0.24);
+    background: rgba(68, 183, 254, 0.08);
+    color: #215f90;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+.avatar-cropper-btn:hover {
+    background: rgba(68, 183, 254, 0.14);
+    border-color: rgba(68, 183, 254, 0.38);
+}
+.avatar-cropper-btn.primary {
+    background: rgba(68, 183, 254, 0.22);
+    border-color: rgba(68, 183, 254, 0.4);
+    color: #127dbc;
+}
+.avatar-cropper-btn.primary:hover {
+    background: rgba(68, 183, 254, 0.32);
+}
+[data-theme="dark"] .avatar-cropper-btn {
+    color: #8fd4ff;
+    border-color: rgba(68, 183, 254, 0.22);
+    background: rgba(68, 183, 254, 0.06);
+}
+[data-theme="dark"] .avatar-cropper-btn:hover {
+    background: rgba(68, 183, 254, 0.14);
+}
+[data-theme="dark"] .avatar-cropper-btn.primary {
+    background: rgba(68, 183, 254, 0.18);
+    border-color: rgba(68, 183, 254, 0.38);
+}
+
 /* 旧的 .subtitle-prompt-message 注入式提示已下线：
  * 字幕翻译开关现在常驻在 React 聊天窗口的 composer 工具栏，
  * 由 frontend/react-neko-chat 渲染。 */

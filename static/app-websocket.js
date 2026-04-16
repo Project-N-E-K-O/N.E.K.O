@@ -667,7 +667,12 @@
                     }
 
                     var translatedMessage = window.translateStatusMessage ? window.translateStatusMessage(response.message) : response.message;
-                    if (typeof window.showStatusToast === 'function') window.showStatusToast(translatedMessage, 4000, { important: isCriticalError });
+
+                    // TTS 水印提示需要更长显示时间和更高优先级，避免被后续消息覆盖
+                    var stickyInfoCodes = ['TTS_WATERMARK_DETECTED'];
+                    var isStickyInfo = statusCode && stickyInfoCodes.indexOf(statusCode) !== -1;
+
+                    if (typeof window.showStatusToast === 'function') window.showStatusToast(translatedMessage, isStickyInfo ? 8000 : 4000, { important: isCriticalError, priority: isStickyInfo ? 50 : undefined });
 
                     if (statusCode === 'CHARACTER_DISCONNECTED') {
                         if (S.isRecording === false && !S.isTextSessionActive) {
