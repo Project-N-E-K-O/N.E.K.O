@@ -10,7 +10,7 @@
     const DEFAULT_STEP_DELAY_MS = 120;
     const DEFAULT_SCENE_SETTLE_MS = 260;
     const DEFAULT_CURSOR_DURATION_MS = 520;
-    const INTRO_PRACTICE_TEXT = '完现在来可以试试跟我说说话吧，看看我们是不是超有默契的喵～';
+    const INTRO_PRACTICE_TEXT = '现在来可以试试跟我说说话吧，看看我们是不是超有默契的喵～';
     const INTRO_SKIP_ACTION_ID = 'yui-guide-intro-skip-chat';
     const REACT_CHAT_ACTION_EVENT = 'react-chat-window:action';
     const REACT_CHAT_SUBMIT_EVENT = 'react-chat-window:submit';
@@ -1947,10 +1947,128 @@
 
             return new Promise((resolve) => {
                 const startedAt = Date.now();
+                const initialHost = window.reactChatWindowHost;
+                const initialSnapshot = initialHost && typeof initialHost.getState === 'function'
+                    ? initialHost.getState()
+                    : null;
+                const knownAssistantMessageIds = new Set(
+                    initialSnapshot && Array.isArray(initialSnapshot.messages)
+                        ? initialSnapshot.messages.reduce((ids, message) => {
+                            if (!message || message.role !== 'assistant') {
+                                return ids;
+                            }
+                            const messageId = typeof message.id === 'string' ? message.id : '';
+                            if (messageId && messageId.indexOf('yui-guide-') !== 0) {
+                                ids.push(messageId);
+                            }
+                            return ids;
+                        }, [])
+                        : []
+                );
+                let seenReplyMessage = null;
+                let settled = false;
+                let replyTurnId = null;
+                let replyTurnStartedAt = 0;
+                let replyTurnEnded = false;
+                let replySpeechStarted = false;
+
+                const finish = (replyMessage) => {
+                    if (settled) {
+                        return;
+                    }
+                    settled = true;
+                    window.removeEventListener('neko-assistant-turn-start', handleAssistantTurnStart, true);
+                    window.removeEventListener('neko-assistant-speech-start', handleAssistantSpeechStart, true);
+                    window.removeEventListener('neko-assistant-speech-end', handleAssistantSpeechEnd, true);
+                    window.removeEventListener('neko-assistant-turn-end', handleAssistantTurnEnd, true);
+                    if (this.introReplyPollTimer) {
+                        window.clearTimeout(this.introReplyPollTimer);
+                        this.introReplyPollTimer = null;
+                    }
+                    resolve(replyMessage || seenReplyMessage || null);
+                };
+
+                const handleAssistantTurnStart = (event) => {
+                    const detail = event && event.detail ? event.detail : null;
+                    const turnId = detail && detail.turnId ? String(detail.turnId) : '';
+                    const timestamp = detail && Number.isFinite(detail.timestamp)
+                        ? detail.timestamp
+                        : Date.now();
+                    if (!turnId) {
+                        return;
+                    }
+                    if (timestamp < replyStartAt) {
+                        return;
+                    }
+                    if (replyTurnId && replyTurnId !== turnId) {
+                        return;
+                    }
+                    replyTurnId = turnId;
+                    replyTurnStartedAt = timestamp;
+                };
+
+                const handleAssistantSpeechStart = (event) => {
+                    const detail = event && event.detail ? event.detail : null;
+                    const turnId = detail && detail.turnId ? String(detail.turnId) : '';
+                    const timestamp = detail && Number.isFinite(detail.timestamp)
+                        ? detail.timestamp
+                        : Date.now();
+                    if (!turnId || timestamp < replyStartAt) {
+                        return;
+                    }
+                    if (replyTurnId && replyTurnId !== turnId) {
+                        return;
+                    }
+                    replyTurnId = turnId;
+                    replySpeechStarted = true;
+                };
+
+                const handleAssistantSpeechEnd = (event) => {
+                    const detail = event && event.detail ? event.detail : null;
+                    const turnId = detail && detail.turnId ? String(detail.turnId) : '';
+                    const timestamp = detail && Number.isFinite(detail.timestamp)
+                        ? detail.timestamp
+                        : Date.now();
+                    if (!turnId || timestamp < replyStartAt) {
+                        return;
+                    }
+                    if (replyTurnId && turnId !== replyTurnId) {
+                        return;
+                    }
+                    replyTurnId = turnId;
+                    finish(seenReplyMessage || null);
+                };
+
+                const handleAssistantTurnEnd = (event) => {
+                    const detail = event && event.detail ? event.detail : null;
+                    const turnId = detail && detail.turnId ? String(detail.turnId) : '';
+                    const timestamp = detail && Number.isFinite(detail.timestamp)
+                        ? detail.timestamp
+                        : Date.now();
+                    if (!turnId || timestamp < replyStartAt) {
+                        return;
+                    }
+                    if (replyTurnId && turnId !== replyTurnId) {
+                        return;
+                    }
+                    if (replyTurnStartedAt && timestamp < replyTurnStartedAt) {
+                        return;
+                    }
+                    replyTurnId = turnId;
+                    replyTurnEnded = true;
+                    if (!replySpeechStarted && seenReplyMessage && seenReplyMessage.status === 'sent') {
+                        finish(seenReplyMessage);
+                    }
+                };
+
+                window.addEventListener('neko-assistant-turn-start', handleAssistantTurnStart, true);
+                window.addEventListener('neko-assistant-speech-start', handleAssistantSpeechStart, true);
+                window.addEventListener('neko-assistant-speech-end', handleAssistantSpeechEnd, true);
+                window.addEventListener('neko-assistant-turn-end', handleAssistantTurnEnd, true);
+
                 const poll = () => {
                     if (this.destroyed) {
-                        this.introReplyPollTimer = null;
-                        resolve(null);
+                        finish(null);
                         return;
                     }
 
@@ -1972,23 +2090,28 @@
                             return false;
                         }
 
+                        if (knownAssistantMessageIds.has(messageId)) {
+                            return false;
+                        }
+
                         const createdAt = Number.isFinite(message.createdAt) ? message.createdAt : 0;
                         if (createdAt < replyStartAt) {
                             return false;
                         }
 
-                        return message.status === 'sent';
+                        return true;
                     }) || null;
 
                     if (replyMessage) {
-                        this.introReplyPollTimer = null;
-                        resolve(replyMessage);
-                        return;
+                        seenReplyMessage = replyMessage;
+                        if (replyTurnEnded && !replySpeechStarted && replyMessage.status === 'sent') {
+                            finish(replyMessage);
+                            return;
+                        }
                     }
 
                     if ((Date.now() - startedAt) >= maxWaitMs) {
-                        this.introReplyPollTimer = null;
-                        resolve(null);
+                        finish(seenReplyMessage);
                         return;
                     }
 
