@@ -97,20 +97,23 @@ export default function App({
     const text = draft.trim();
     if (!text && composerAttachments.length === 0) return;
     submittingRef.current = true;
-    const now = new Date();
-    const time = [now.getHours(), now.getMinutes(), now.getSeconds()]
-      .map(n => String(n).padStart(2, '0')).join(':');
-    if (text) {
-      setPendingDrafts(prev => [...prev, {
-        id: `pending-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        text,
-        time,
-        lastMsgId: messages.length > 0 ? messages[messages.length - 1].id : null,
-      }]);
+    try {
+      const now = new Date();
+      const time = [now.getHours(), now.getMinutes(), now.getSeconds()]
+        .map(n => String(n).padStart(2, '0')).join(':');
+      if (text) {
+        setPendingDrafts(prev => [...prev, {
+          id: `pending-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          text,
+          time,
+          lastMsgId: messages.length > 0 ? messages[messages.length - 1].id : null,
+        }]);
+      }
+      onComposerSubmit?.({ text });
+      setDraft('');
+    } finally {
+      requestAnimationFrame(() => { submittingRef.current = false; });
     }
-    onComposerSubmit?.({ text });
-    setDraft('');
-    requestAnimationFrame(() => { submittingRef.current = false; });
   }
 
   return (
