@@ -1106,14 +1106,19 @@ class OmniRealtimeClient:
     async def prime_context(self, text: str, skipped: bool = False) -> None:
         """Append context to session instructions at startup.
 
-        与 OmniOfflineClient.prime_context 语义一致：仅追加到系统指令，
-        不创建用户消息，不触发模型响应。热切换完成后用户开口说话时，
-        模型自然会基于更新后的 instructions 进行回复。
+        热切换时注入增量上下文。行为取决于 skipped 参数：
+
+        - ``skipped=True``：仅追加到系统指令，不触发模型响应。
+          用户下次开口时模型自然基于更新后的 instructions 回复。
+        - ``skipped=False``：追加到系统指令后，额外触发一次模型响应
+          （用于任务结果主动汇报）。对于支持 conversation.item.create
+          的提供商（GPT/GLM/Step）通过 create_response 实现；
+          Qwen 不支持该事件，仅更新 instructions。
 
         Args:
             text: Context to inject (incremental cache + summary/ready).
-            skipped: Accepted for interface compatibility; not used here
-                     since no response is triggered.
+            skipped: If True, only update instructions without triggering
+                     a response. If False, also trigger model response.
         """
         if not text or not text.strip():
             logger.info("prime_context: skipping empty content")
@@ -1126,8 +1131,15 @@ class OmniRealtimeClient:
             await self._create_response_gemini(text)
             return
 
+        # 所有 WebSocket 提供商：先更新 session instructions
         await self.update_session({"instructions": self.instructions + '\n' + text})
         logger.info("prime_context: updated session instructions")
+
+        # skipped=False 时需要触发模型主动响应（任务结果汇报等场景）
+        if not skipped and "qwen" not in self._model_lower:
+            # 通过 conversation.item.create + response.create 触发响应
+            # Qwen 不支持 conversation.item.create，跳过
+            await self.create_response(text)
 
     async def create_response(self, instructions: str, skipped: bool = False) -> None:
         """Inject a persistent user message and trigger an LLM response.
