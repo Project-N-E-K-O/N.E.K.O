@@ -1084,17 +1084,17 @@ class OmniRealtimeClient:
     # Three distinct channels mirror the OmniOfflineClient interface:
     #
     #   prime_context(text, skipped)
-    #       Session-start context priming.  Delegates to create_response()
-    #       because Realtime APIs have no separate "append to system
-    #       prompt" mechanism.
+    #       Session-start context priming.  通过 session.update 追加到
+    #       系统指令，不创建用户消息，不触发模型响应。
+    #       与 OmniOfflineClient.prime_context 语义一致。
     #       Typical caller: core._perform_final_swap_sequence()
     #
     #   create_response(text, skipped)
     #       Mid-conversation persistent message + trigger LLM response.
+    #       会创建 user 角色消息并触发 response.create。
     #       Behaviour varies by provider:
-    #         OpenAI  → conversation.item.create(role=user) + response.create
-    #         Qwen    → update_session(instructions += text) + response.create
-    #         Gemini  → send_client_content(role=user)
+    #         OpenAI / GLM / Step → conversation.item.create(role=user) + response.create
+    #         Gemini              → send_client_content(role=user)
     #
     #   prompt_ephemeral(instruction, *, language)
     #       Fire-and-forget audio nudge.  Injects a short WAV clip via
@@ -1104,29 +1104,45 @@ class OmniRealtimeClient:
     # ------------------------------------------------------------------
 
     async def prime_context(self, text: str, skipped: bool = False) -> None:
-        """Append context to the session at startup (delegates to create_response).
+        """Append context to session instructions at startup.
 
-        Realtime APIs lack a dedicated "append to system prompt" mechanism,
-        so this simply delegates to ``create_response()``.  Semantically
-        identical to the OmniOfflineClient counterpart — called only at
-        session start during hot-swap to inject incremental conversation
-        cache and task summaries.
+        与 OmniOfflineClient.prime_context 语义一致：仅追加到系统指令，
+        不创建用户消息，不触发模型响应。热切换完成后用户开口说话时，
+        模型自然会基于更新后的 instructions 进行回复。
 
         Args:
             text: Context to inject (incremental cache + summary/ready).
-            skipped: If True, the next response will be silently discarded.
+            skipped: Accepted for interface compatibility; not used here
+                     since no response is triggered.
         """
-        await self.create_response(text, skipped=skipped)
+        if not text or not text.strip():
+            logger.info("prime_context: skipping empty content")
+            if self.on_response_done:
+                await self.on_response_done()
+            return
+
+        if self._is_gemini:
+            await self._create_response_gemini(text)
+            return
+
+        await self.update_session({"instructions": self.instructions + '\n' + text})
+        logger.info("prime_context: updated session instructions")
+        if self.on_response_done:
+            await self.on_response_done()
 
     async def create_response(self, instructions: str, skipped: bool = False) -> None:
-        """Inject a persistent message and trigger an LLM response.
+        """Inject a persistent user message and trigger an LLM response.
+
+        与 ``prime_context`` (追加到系统指令) 不同，此方法会创建一条
+        user 角色的会话消息并触发模型响应。适用于需要模型立即回复的
+        mid-conversation 场景。
+
+        注意：需要会话中已有 user 消息或所用 API 支持
+        ``conversation.item.create``，否则可能触发 1007 错误。
 
         Behaviour varies by provider:
-          - **OpenAI**: ``conversation.item.create(role=user)`` +
-            ``response.create``
-          - **Qwen**: appends to session instructions only (Qwen Realtime
-            不支持 ``conversation.item.create``，且无 user 消息时
-            ``response.create`` 会触发 1007 错误)
+          - **OpenAI / GLM / Step**: ``conversation.item.create(role=user)``
+            + ``response.create``
           - **Gemini**: ``send_client_content(role=user)``
 
         See ``prime_context()`` (session-start priming) and
@@ -1148,18 +1164,7 @@ class OmniRealtimeClient:
                 await self.on_response_done()
             return
 
-        if "qwen" in self._model_lower:
-            # Qwen: 只更新 session instructions 注入上下文，不发送 response.create
-            # DashScope API 要求 response.create 前必须存在 user 消息，
-            # 但预热阶段尚无用户对话，发送 response.create 会导致 1007 错误：
-            # "The input messages do not contain elements with the role of user"
-            await self.update_session({"instructions": self.instructions + '\n' + instructions})
-            logger.info("Qwen: updated session instructions (skipped response.create)")
-            if self.on_response_done:
-                await self.on_response_done()
-            return
-
-        # 其他提供商：通过 conversation.item.create 添加用户消息，再触发响应
+        # 通过 conversation.item.create 添加用户消息，再触发响应
         item_event = {
             "type": "conversation.item.create",
             "item": {
