@@ -232,7 +232,7 @@ class DirectTaskExecutor:
         try:
             llm = self._get_llm(temperature=0, max_completion_tokens=150)
             for p in to_generate:
-                quota_error = self._check_agent_quota("task_executor.ensure_short_desc")
+                quota_error = await self._check_agent_quota("task_executor.ensure_short_desc")
                 if quota_error:
                     logger.debug("[Agent] Stopping short_description generation: quota exceeded")
                     break
@@ -352,9 +352,9 @@ class DirectTaskExecutor:
         except RuntimeError:
             logger.debug("[Agent] No running event loop, skipping async LLM close")
 
-    def _check_agent_quota(self, source: str) -> Optional[str]:
-        """免费版 Agent 模型每日 300 次本地限流。"""
-        ok, info = self._config_manager.consume_agent_daily_quota(source=source, units=1)
+    async def _check_agent_quota(self, source: str) -> Optional[str]:
+        """免费版 Agent 模型每日 300 次本地限流（async，避免事件循环阻塞）。"""
+        ok, info = await self._config_manager.aconsume_agent_daily_quota(source=source, units=1)
         if ok:
             return None
         return json.dumps({"code": "AGENT_QUOTA_EXCEEDED", "details": {"used": info.get('used', 0), "limit": info.get('limit', 300)}})
@@ -484,7 +484,7 @@ class DirectTaskExecutor:
                     {"role": "user", "content": user_prompt},
                 ]
 
-                quota_error = self._check_agent_quota("task_executor.assess_unified")
+                quota_error = await self._check_agent_quota("task_executor.assess_unified")
                 if quota_error:
                     return UnifiedChannelDecision()
 
@@ -630,7 +630,7 @@ class DirectTaskExecutor:
                 {"role": "user", "content": user_text},
             ]
 
-            quota_error = self._check_agent_quota("task_executor.coarse_screen")
+            quota_error = await self._check_agent_quota("task_executor.coarse_screen")
             if quota_error:
                 return []
 
@@ -706,8 +706,9 @@ class DirectTaskExecutor:
                     len(plugins_desc), len(plugin_list),
                 )
 
-                # BM25 + keyword filter
-                bm25_filtered, _ = stage1_filter(
+                # BM25 + keyword filter（纯 CPU，offload 到线程）
+                bm25_filtered, _ = await asyncio.to_thread(
+                    stage1_filter,
                     user_intent or conversation,
                     plugin_list,
                     bm25_top_k=10,
@@ -765,7 +766,7 @@ class DirectTaskExecutor:
                     {"role": "user", "content": user_prompt},
                 ]
 
-                quota_error = self._check_agent_quota("task_executor.assess_user_plugin")
+                quota_error = await self._check_agent_quota("task_executor.assess_user_plugin")
                 if quota_error:
                     return UserPluginDecision(
                         has_task=False,
@@ -1002,7 +1003,8 @@ class DirectTaskExecutor:
         cu_available = False
         if computer_use_enabled:
             try:
-                cu_available = self.computer_use.is_available().get('ready', False)
+                cu_status = await asyncio.to_thread(self.computer_use.is_available)
+                cu_available = cu_status.get('ready', False) if isinstance(cu_status, dict) else False
                 logger.info("[TaskExecutor] ComputerUse available: %s", cu_available)
             except Exception as e:
                 logger.warning("[TaskExecutor] Failed to check ComputerUse: %s", e)
@@ -1010,7 +1012,8 @@ class DirectTaskExecutor:
         browser_available = False
         if browser_use_enabled:
             try:
-                browser_available = self.browser_use.is_available().get("ready", False)
+                bu_status = await asyncio.to_thread(self.browser_use.is_available)
+                browser_available = bu_status.get("ready", False) if isinstance(bu_status, dict) else False
                 logger.info("[TaskExecutor] BrowserUse available: %s", browser_available)
             except Exception as e:
                 logger.warning("[TaskExecutor] Failed to check BrowserUse: %s", e)
@@ -1026,7 +1029,9 @@ class DirectTaskExecutor:
         copaw_available = False
         if openclaw_enabled and self.openclaw:
             try:
-                copaw_available = self.openclaw.is_available().get("ready", False)
+                # openclaw.is_available 内部走 sync httpx，必须 offload
+                oc_status = await asyncio.to_thread(self.openclaw.is_available)
+                copaw_available = oc_status.get("ready", False) if isinstance(oc_status, dict) else False
                 logger.info("[TaskExecutor] CoPaw available: %s", copaw_available)
             except Exception as e:
                 logger.warning("[TaskExecutor] Failed to check CoPaw: %s", e)

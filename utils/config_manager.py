@@ -2115,6 +2115,13 @@ class ConfigManager:
                 "source": source or "",
             }
 
+    async def aconsume_agent_daily_quota(self, source: str = "", units: int = 1) -> tuple[bool, dict]:
+        """Async wrapper of ``consume_agent_daily_quota``.
+
+        事件循环上禁止直接走同步版本（会 open+fsync 阻塞）。
+        """
+        return await asyncio.to_thread(self.consume_agent_daily_quota, source, units)
+
     def load_json_config(self, filename, default_value=None):
         """
         加载JSON配置文件

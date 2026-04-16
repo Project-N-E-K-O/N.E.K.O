@@ -50,7 +50,7 @@ class TaskDeduper:
         
         for attempt in range(max_retries):
             try:
-                ok, info = get_config_manager().consume_agent_daily_quota(
+                ok, info = await get_config_manager().aconsume_agent_daily_quota(
                     source="deduper.judge",
                     units=1,
                 )

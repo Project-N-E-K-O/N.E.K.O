@@ -694,7 +694,7 @@ class BrowserUseAdapter:
 
         from browser_use import Agent
 
-        ok, info = self._config_manager.consume_agent_daily_quota(
+        ok, info = await self._config_manager.aconsume_agent_daily_quota(
             source="browser_use.run_instruction",
             units=1,
         )

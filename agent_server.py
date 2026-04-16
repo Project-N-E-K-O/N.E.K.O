@@ -3258,7 +3258,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
                 asyncio.ensure_future(_fire_agent_llm_connectivity_check())
             else:
                 try:
-                    avail = Modules.computer_use.is_available()
+                    avail = await asyncio.to_thread(Modules.computer_use.is_available)
                     reasons = avail.get('reasons', []) if isinstance(avail, dict) else []
                     _set_capability("computer_use", bool(avail.get("ready")) if isinstance(avail, dict) else False, reasons[0] if reasons else "")
                     if avail.get("ready"):
