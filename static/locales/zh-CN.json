@@ -3010,6 +3010,13 @@
         "exportSettings": "仅导出设定",
         "exporting": "导出中...",
         "exportError": "导出失败: ",
-        "back": "返回"
+        "back": "返回",
+        "importSticker": "导入自定义贴纸",
+        "removeCustomSticker": "删除贴纸",
+        "stickerSizeTitle": "贴纸图片过大",
+        "stickerSizeWarning": "该图片较大（超过 5MB），压缩后可永久保存。\n选择「取消」将作为临时贴纸使用（关闭页面后消失）。",
+        "compressAndSave": "压缩并保存",
+        "useTemporary": "临时使用",
+        "tempBadge": "临时"
     }
 }

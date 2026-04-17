@@ -408,6 +408,25 @@ body {
     background: #e53935;
 }
 
+.sticker-temp-badge {
+    position: absolute;
+    bottom: 2px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 9px;
+    line-height: 1;
+    padding: 1px 4px;
+    border-radius: 3px;
+    background: rgba(255, 152, 0, 0.85);
+    color: #fff;
+    white-space: nowrap;
+    pointer-events: none;
+}
+
+.sticker-temporary {
+    opacity: 0.75;
+}
+
 /* --- 贴纸覆盖层 --- */
 #sticker-overlay,
 #sticker-overlay-below {

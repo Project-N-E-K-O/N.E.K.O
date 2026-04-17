@@ -676,6 +676,30 @@
         loadCustomStickers();
     }
 
+    const STICKER_SIZE_LIMIT = 5 * 1024 * 1024; // 5MB
+
+    function compressStickerImage(dataUrl, maxSize = 1024) {
+        return new Promise((resolve) => {
+            const img = new Image();
+            img.onload = () => {
+                let { width, height } = img;
+                if (width > maxSize || height > maxSize) {
+                    const ratio = Math.min(maxSize / width, maxSize / height);
+                    width = Math.round(width * ratio);
+                    height = Math.round(height * ratio);
+                }
+                const canvas = document.createElement('canvas');
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, width, height);
+                resolve(canvas.toDataURL('image/png'));
+            };
+            img.onerror = () => resolve(dataUrl);
+            img.src = dataUrl;
+        });
+    }
+
     function importCustomSticker() {
         const input = document.createElement('input');
         input.type = 'file';
@@ -685,8 +709,28 @@
             const file = input.files[0];
             if (!file) return;
             const reader = new FileReader();
-            reader.onload = (e) => {
-                addCustomStickerToGrid(e.target.result);
+            reader.onload = async (e) => {
+                const dataUrl = e.target.result;
+                const byteSize = dataUrl.length * 3 / 4; // base64 → 实际字节估算
+                if (byteSize > STICKER_SIZE_LIMIT) {
+                    const choice = await showConfirm(
+                        t('cardExport.stickerSizeWarning',
+                          '该图片较大（超过 5MB），压缩后可永久保存。\n选择「取消」将作为临时贴纸使用（关闭页面后消失）。'),
+                        t('cardExport.stickerSizeTitle', '贴纸图片过大'),
+                        {
+                            okText: t('cardExport.compressAndSave', '压缩并保存'),
+                            cancelText: t('cardExport.useTemporary', '临时使用')
+                        }
+                    );
+                    if (choice) {
+                        const compressed = await compressStickerImage(dataUrl);
+                        addCustomStickerToGrid(compressed, true);
+                    } else {
+                        addCustomStickerToGrid(dataUrl, false, true);
+                    }
+                } else {
+                    addCustomStickerToGrid(dataUrl, true);
+                }
             };
             reader.readAsDataURL(file);
             input.remove();
@@ -695,18 +739,26 @@
         input.click();
     }
 
-    function addCustomStickerToGrid(dataUrl, save = true) {
+    function addCustomStickerToGrid(dataUrl, save = true, temporary = false) {
         const grid = $('#sticker-grid');
         const importBtn = grid.querySelector('.sticker-import-btn');
         if (!grid) return;
 
         const item = document.createElement('div');
-        item.className = 'sticker-item sticker-custom';
+        item.className = 'sticker-item sticker-custom' + (temporary ? ' sticker-temporary' : '');
 
         const img = document.createElement('img');
         img.src = dataUrl;
         img.draggable = false;
         item.appendChild(img);
+
+        // 临时贴纸标识
+        if (temporary) {
+            const badge = document.createElement('span');
+            badge.className = 'sticker-temp-badge';
+            badge.textContent = t('cardExport.tempBadge', '临时');
+            item.appendChild(badge);
+        }
 
         // 右上角删除按钮
         const delBtn = document.createElement('button');
@@ -716,7 +768,7 @@
         delBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             item.remove();
-            saveCustomStickers();
+            if (!temporary) saveCustomStickers();
         });
         item.appendChild(delBtn);
 
@@ -724,29 +776,80 @@
 
         // 插入到"+"按钮前面
         grid.insertBefore(item, importBtn);
-        if (save) saveCustomStickers();
+        if (save && !temporary) saveCustomStickers();
     }
 
-    function saveCustomStickers() {
-        const items = document.querySelectorAll('.sticker-custom img');
-        const urls = Array.from(items).map(img => img.src);
+    // ====== IndexedDB 贴纸存储 ======
+    const STICKER_DB_NAME = 'neko_stickers_db';
+    const STICKER_DB_VERSION = 1;
+    const STICKER_STORE_NAME = 'custom_stickers';
+
+    function openStickerDB() {
+        return new Promise((resolve, reject) => {
+            const req = indexedDB.open(STICKER_DB_NAME, STICKER_DB_VERSION);
+            req.onupgradeneeded = () => {
+                const db = req.result;
+                if (!db.objectStoreNames.contains(STICKER_STORE_NAME)) {
+                    db.createObjectStore(STICKER_STORE_NAME, { keyPath: 'id', autoIncrement: true });
+                }
+            };
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+        });
+    }
+
+    async function saveCustomStickers() {
         try {
-            localStorage.setItem('neko_custom_stickers', JSON.stringify(urls));
+            const items = document.querySelectorAll('.sticker-custom:not(.sticker-temporary) img');
+            const urls = Array.from(items).map(img => img.src);
+            const db = await openStickerDB();
+            const tx = db.transaction(STICKER_STORE_NAME, 'readwrite');
+            const store = tx.objectStore(STICKER_STORE_NAME);
+            store.clear();
+            urls.forEach(url => store.add({ data: url }));
+            await new Promise((resolve, reject) => {
+                tx.oncomplete = resolve;
+                tx.onerror = () => reject(tx.error);
+            });
         } catch (e) {
             console.warn('[CardExport] 保存自定义贴纸失败:', e);
         }
     }
 
-    function loadCustomStickers() {
+    async function loadCustomStickers() {
         try {
-            const data = localStorage.getItem('neko_custom_stickers');
-            if (!data) return;
-            const urls = JSON.parse(data);
-            if (!Array.isArray(urls)) return;
-            urls.forEach(url => addCustomStickerToGrid(url, false));
+            // 从旧 localStorage 迁移到 IndexedDB
+            const legacy = localStorage.getItem('neko_custom_stickers');
+            if (legacy) {
+                const legacyUrls = JSON.parse(legacy);
+                if (Array.isArray(legacyUrls) && legacyUrls.length > 0) {
+                    const db = await openStickerDB();
+                    const tx = db.transaction(STICKER_STORE_NAME, 'readwrite');
+                    const store = tx.objectStore(STICKER_STORE_NAME);
+                    legacyUrls.forEach(url => store.add({ data: url }));
+                    await new Promise((resolve, reject) => {
+                        tx.oncomplete = resolve;
+                        tx.onerror = () => reject(tx.error);
+                    });
+                }
+                localStorage.removeItem('neko_custom_stickers');
+            }
+
+            const db = await openStickerDB();
+            const tx = db.transaction(STICKER_STORE_NAME, 'readonly');
+            const store = tx.objectStore(STICKER_STORE_NAME);
+            const req = store.getAll();
+            const rows = await new Promise((resolve, reject) => {
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+            if (Array.isArray(rows)) {
+                rows.forEach(row => addCustomStickerToGrid(row.data, false));
+            }
         } catch (e) {
             console.warn('[CardExport] 加载自定义贴纸失败:', e);
-        }    }
+        }
+    }
 
     function addSticker(src) {
         const overlay = $('#sticker-overlay');

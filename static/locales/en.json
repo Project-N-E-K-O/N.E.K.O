@@ -3010,6 +3010,13 @@
         "exportSettings": "Export Settings Only",
         "exporting": "Exporting...",
         "exportError": "Export failed: ",
-        "back": "Back"
+        "back": "Back",
+        "importSticker": "Import Custom Sticker",
+        "removeCustomSticker": "Remove Sticker",
+        "stickerSizeTitle": "Sticker Image Too Large",
+        "stickerSizeWarning": "This image is large (over 5MB). It can be permanently saved after compression.\nChoose \"Cancel\" to use it as a temporary sticker (disappears after closing the page).",
+        "compressAndSave": "Compress & Save",
+        "useTemporary": "Use Temporarily",
+        "tempBadge": "Temp"
     }
 }

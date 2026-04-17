@@ -3010,6 +3010,13 @@
         "exportSettings": "設定のみエクスポート",
         "exporting": "エクスポート中...",
         "exportError": "エクスポート失敗: ",
-        "back": "戻る"
+        "back": "戻る",
+        "importSticker": "カスタムスタンプをインポート",
+        "removeCustomSticker": "スタンプを削除",
+        "stickerSizeTitle": "スタンプ画像が大きすぎます",
+        "stickerSizeWarning": "この画像は大きいです（5MB超）。圧縮すると永久に保存できます。\n「キャンセル」を選択すると一時スタンプとして使用されます（ページを閉じると消えます）。",
+        "compressAndSave": "圧縮して保存",
+        "useTemporary": "一時的に使用",
+        "tempBadge": "一時"
     }
 }
