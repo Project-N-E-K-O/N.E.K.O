@@ -1258,7 +1258,7 @@ class ConfigManager:
         tts_config = self.get_model_api_config('tts_custom')
         base_url = tts_config.get('base_url', '')
         is_local_tts = tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://'))
-        
+
         if is_local_tts:
             api_key = '__LOCAL_TTS__'
         else:
@@ -1743,6 +1743,15 @@ class ConfigManager:
         # 自定义API配置映射（使用大写下划线形式的内部键，且在未提供时保留已有默认值）
         enable_custom_api = core_cfg.get('enableCustomApi', False)
         config['ENABLE_CUSTOM_API'] = enable_custom_api
+
+        # 禁用TTS
+        _raw_disable_tts = core_cfg.get('disableTts', False)
+        if isinstance(_raw_disable_tts, bool):
+            config['DISABLE_TTS'] = _raw_disable_tts
+        elif isinstance(_raw_disable_tts, str):
+            config['DISABLE_TTS'] = _raw_disable_tts.lower() in ('true', '1', 'yes', 'on')
+        else:
+            config['DISABLE_TTS'] = False
 
         # 文本模式回复长度守卫上限（字/词数，超限会丢弃并重试）
         try:

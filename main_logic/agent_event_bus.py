@@ -319,7 +319,7 @@ async def publish_analyze_request_reliably(
     trigger: str,
     messages: list[dict],
     *,
-    ack_timeout_s: float = 0.5,
+    ack_timeout_s: float = 0.8,
     retries: int = 1,
     conversation_id: Optional[str] = None,
 ) -> bool:

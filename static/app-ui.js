@@ -1966,6 +1966,9 @@
             if (textInputArea) {
                 textInputArea.classList.remove('hidden');
             }
+            if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                window.syncVoiceChatComposerHidden(false);
+            }
 
             // 标记文本会话为非活跃状态
             S.isTextSessionActive = false;

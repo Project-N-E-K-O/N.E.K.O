@@ -1419,6 +1419,8 @@ async def unsubscribe_workshop_item(request: Request):
             # 设置一个延迟的后备清理机制（如果回调在5秒内没有触发）
             def delayed_cleanup():
                 import time
+                # noqa: BLOCKING-OK - 此函数仅通过 threading.Thread(daemon=True) 在后台线程运行
+                # （见下方 cleanup_thread），不会阻塞 FastAPI 主事件循环。
                 time.sleep(5)  # 等待5秒
                 logger.info(f"延迟清理检查: 如果回调未触发，执行备用清理...")
                 # 注意：这里不能直接调用，因为无法知道回调是否已执行
@@ -2043,7 +2045,7 @@ async def prepare_workshop_upload(request: Request):
             
             # 安全检查：防止路径穿越
             if '..' in model_name:
-                shutil.rmtree(temp_item_dir, ignore_errors=True)
+                await asyncio.to_thread(shutil.rmtree, temp_item_dir, ignore_errors=True)
                 return JSONResponse({
                     "success": False,
                     "error": "非法模型路径"
@@ -2079,7 +2081,7 @@ async def prepare_workshop_upload(request: Request):
                 
                 if source_file and source_file.exists():
                     vrm_dest = os.path.join(temp_item_dir, vrm_filename)
-                    shutil.copy2(str(source_file), vrm_dest)
+                    await asyncio.to_thread(shutil.copy2, str(source_file), vrm_dest)
                     logger.info(f"VRM模型文件已复制到临时目录: {vrm_dest}")
                     model_copied = True
                     
@@ -2097,7 +2099,7 @@ async def prepare_workshop_upload(request: Request):
                     source_dir = mmd_base / mmd_dir_name
                     if source_dir.exists() and source_dir.is_dir():
                         model_dest_dir = os.path.join(temp_item_dir, mmd_dir_name)
-                        shutil.copytree(str(source_dir), model_dest_dir, dirs_exist_ok=True)
+                        await asyncio.to_thread(shutil.copytree, str(source_dir), model_dest_dir, dirs_exist_ok=True)
                         logger.info(f"MMD模型目录已复制到临时目录: {model_dest_dir}")
                         model_copied = True
                 elif model_name.startswith('/user_mmd/') and len(path_parts) == 2:
@@ -2107,7 +2109,7 @@ async def prepare_workshop_upload(request: Request):
                     source_file = mmd_base / mmd_filename
                     if source_file.exists():
                         mmd_dest = os.path.join(temp_item_dir, mmd_filename)
-                        shutil.copy2(str(source_file), mmd_dest)
+                        await asyncio.to_thread(shutil.copy2, str(source_file), mmd_dest)
                         logger.info(f"MMD模型文件已复制到临时目录: {mmd_dest}")
                         model_copied = True
                 elif model_name.startswith('/static/mmd/'):
@@ -2119,7 +2121,7 @@ async def prepare_workshop_upload(request: Request):
                         source_dir = source_file.parent
                         dest_name = source_dir.name
                         model_dest_dir = os.path.join(temp_item_dir, dest_name)
-                        shutil.copytree(str(source_dir), model_dest_dir, dirs_exist_ok=True)
+                        await asyncio.to_thread(shutil.copytree, str(source_dir), model_dest_dir, dirs_exist_ok=True)
                         logger.info(f"MMD模型目录已复制到临时目录: {model_dest_dir}")
                         model_copied = True
                 elif model_name.startswith('/workshop/'):
@@ -2140,13 +2142,13 @@ async def prepare_workshop_upload(request: Request):
                                             source_dir = source_file.parent
                                             dest_name = source_dir.name
                                             model_dest_dir = os.path.join(temp_item_dir, dest_name)
-                                            shutil.copytree(str(source_dir), model_dest_dir, dirs_exist_ok=True)
+                                            await asyncio.to_thread(shutil.copytree, str(source_dir), model_dest_dir, dirs_exist_ok=True)
                                             logger.info(f"Workshop MMD模型目录已复制到临时目录: {model_dest_dir}")
                                             model_copied = True
                                     break
             
             if not model_copied:
-                shutil.rmtree(temp_item_dir, ignore_errors=True)
+                await asyncio.to_thread(shutil.rmtree, temp_item_dir, ignore_errors=True)
                 return JSONResponse({
                     "success": False,
                     "error": f"模型文件不存在: {model_name}"
@@ -2156,7 +2158,7 @@ async def prepare_workshop_upload(request: Request):
             model_dir, _ = find_model_directory(model_name)
             if not model_dir or not os.path.exists(model_dir):
                 # 清理临时目录
-                shutil.rmtree(temp_item_dir, ignore_errors=True)
+                await asyncio.to_thread(shutil.rmtree, temp_item_dir, ignore_errors=True)
                 return JSONResponse({
                     "success": False,
                     "error": f"模型目录不存在: {model_name}"
@@ -2164,7 +2166,7 @@ async def prepare_workshop_upload(request: Request):
             
             # 复制整个模型目录到临时目录
             model_dest_dir = os.path.join(temp_item_dir, model_name)
-            shutil.copytree(model_dir, model_dest_dir, dirs_exist_ok=True)
+            await asyncio.to_thread(shutil.copytree, model_dir, model_dest_dir, dirs_exist_ok=True)
             logger.info(f"模型文件已复制到临时目录: {model_dest_dir}")
         
         # 读取 .workshop_meta.json（如果存在）
@@ -2232,7 +2234,7 @@ async def cleanup_temp_folder(request: Request):
         
         # 删除临时目录
         if os.path.exists(temp_folder):
-            shutil.rmtree(temp_folder, ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, temp_folder, ignore_errors=True)
             logger.info(f"临时目录已删除: {temp_folder}")
             return JSONResponse({
                 "success": True,
@@ -2377,7 +2379,7 @@ async def publish_to_workshop(request: Request):
                 # 复制预览图片到内容文件夹
                 try:
                     import shutil
-                    shutil.copy2(preview_image, new_preview_path)
+                    await asyncio.to_thread(shutil.copy2, preview_image, new_preview_path)
                     logger.info(f'预览图片已复制到内容文件夹并统一命名: {new_preview_path}')
                     # 使用新的统一命名的预览图片路径
                     preview_image = new_preview_path
@@ -2401,7 +2403,7 @@ async def publish_to_workshop(request: Request):
                         new_preview_path = os.path.join(content_folder, f'preview{file_extension}')
                         try:
                             import shutil
-                            shutil.copy2(preview_image, new_preview_path)
+                            await asyncio.to_thread(shutil.copy2, preview_image, new_preview_path)
                             logger.info(f'自动找到的预览图片已统一命名: {new_preview_path}')
                             preview_image = new_preview_path
                         except Exception as e:
@@ -2642,6 +2644,9 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
                         steamworks.run_callbacks()
                     except Exception as e:
                         logger.error(f"执行Steam回调时出错: {str(e)}")
+                    # noqa: BLOCKING-OK - _publish_workshop_item 是同步函数，上层通过
+                    # loop.run_in_executor(None, lambda: _publish_workshop_item(...)) 调度到线程池，
+                    # 因此此处 time.sleep 只阻塞 executor 工作线程，不阻塞主事件循环。
                     time.sleep(0.1)  # 每100毫秒检查一次
             
                 if not created_event.is_set():
@@ -2771,6 +2776,8 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
                                     last_progress = current_progress
                 except Exception as e:
                     logger.error(f"执行Steam回调时出错: {str(e)}")
+                # noqa: BLOCKING-OK - 同 Site 2，_publish_workshop_item 在 run_in_executor
+                # 线程池中运行，此 sleep 只阻塞 executor 工作线程，不阻塞主事件循环。
                 time.sleep(0.5)  # 每500毫秒检查一次，减少日志量
             
             if not update_event.is_set():

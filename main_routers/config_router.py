@@ -588,6 +588,7 @@ async def get_core_config_api():
             },
             "gptsovitsEnabled": core_cfg.get('gptsovitsEnabled'),
             "ttsVoiceId": core_cfg.get('ttsVoiceId', ''),
+            "disableTts": core_cfg.get('disableTts', False) is True or str(core_cfg.get('disableTts', False)).lower() in ('true', '1', 'yes', 'on'),
             "success": True
         }
     except Exception as e:
@@ -679,6 +680,10 @@ async def update_core_config(request: Request):
             core_cfg['enableCustomApi'] = data['enableCustomApi']
         if 'gptsovitsEnabled' in data:
             core_cfg['gptsovitsEnabled'] = data['gptsovitsEnabled']
+        if 'disableTts' in data:
+            if not isinstance(data['disableTts'], bool):
+                return {"success": False, "error": "disableTts must be a boolean"}
+            core_cfg['disableTts'] = data['disableTts']
 
         # 自定义API配置（Provider / Url / Id / ApiKey per model type）
         _model_types = [

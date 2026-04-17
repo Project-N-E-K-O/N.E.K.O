@@ -649,6 +649,9 @@
         "copyMarkdown": "Markdown をコピー",
         "copyMarkdownSuccess": "Markdown をクリップボードにコピーしました。",
         "copyMarkdownFailed": "Markdown のコピーに失敗しました。",
+        "copyToClipboard": "クリップボードにコピー",
+        "copyImageSuccess": "クリップボードにコピーしました。",
+        "copyImageFailed": "クリップボードへのコピーに失敗しました。",
         "exportEmpty": "エクスポート可能な会話がまだありません。",
         "exportSelectionEmpty": "エクスポートするメッセージを 1 件以上選択してください。",
         "exportSuccess": "会話のエクスポートに成功しました",
@@ -825,6 +828,8 @@
         "assistApiSelectLabel": "アシストAPIプロバイダー",
         "assistApiKeyLabel": "アシストAPIキー",
         "assistApiAutoFillHint": "空欄時は管理簿のキーを自動使用、手動入力すると独立して保存されます",
+        "disableTts": "TTSを無効化",
+        "disableTtsHint": "有効にすると音声合成サービスを呼び出しません",
         "keyBookTitle": "API管理簿",
         "keyBookDescription": "すべてのAPIキーを一元管理。コア/アシストAPIのプロバイダー切替時にここからキーが自動入力され、入力したキーもここに自動保存されます。",
         "keyBookPlaceholder": "APIプロバイダー設定を読み込み中...",
@@ -2809,7 +2814,8 @@
         "ended": "終了",
         "unknownState": "不明な状態",
         "volume": "音量: ",
-        "unsafeSource": "安全でない音源をブロックしました: {{domain}}"
+        "unsafeSource": "安全でない音源をブロックしました: {{domain}}",
+        "cookieExpired": "音楽Cookieの有効期限が切れました"
     },
     "Jukebox": {
         "title": "ジュークボックス",
