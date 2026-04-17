@@ -3228,6 +3228,10 @@ async def proactive_chat(request: Request):
                 "message": "主动搭话条件未满足（用户近期活跃或语音会话正在进行）"
             })
 
+        # 记录本轮主动搭话起始的 speech_id；abort 时若该 id 已变，说明用户已打断并接管，
+        # 此时再调 handle_new_message() 会把用户正常回复的 TTS 也一起清掉。
+        proactive_sid = mgr.current_speech_id
+
         # --- 构建 LLM + messages (static/dynamic 分离) ---
         phase2_use_vision = bool(screenshot_b64_for_phase2 and has_vision_model)
 
@@ -3366,8 +3370,11 @@ async def proactive_chat(request: Request):
         # --- 结果处理 ---
         print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output (aborted={aborted}, tag={source_tag}): {(buffer + full_text)[:300]}\n")
         if aborted or not full_text.strip():
-            await mgr.handle_new_message()
-            logger.debug(f"[{lanlan_name}] Phase 2 abort，已中断 TTS + 前端音频")
+            if mgr.current_speech_id == proactive_sid:
+                await mgr.handle_new_message()
+                logger.debug(f"[{lanlan_name}] Phase 2 abort，已中断 TTS + 前端音频")
+            else:
+                logger.info(f"[{lanlan_name}] Phase 2 abort 但用户已接管 (sid changed)，跳过 TTS 清理避免误伤正常回复")
             return JSONResponse({
                 "success": True,
                 "action": "pass",
@@ -3400,7 +3407,10 @@ async def proactive_chat(request: Request):
         
         # 【加固补齐】如果触发了降级拦截（aborted），立即返回
         if aborted:
-            await mgr.handle_new_message()
+            if mgr.current_speech_id == proactive_sid:
+                await mgr.handle_new_message()
+            else:
+                logger.info(f"[{lanlan_name}] 降级拦截 abort 但用户已接管 (sid changed)，跳过 TTS 清理")
             return JSONResponse({
                 "success": True,
                 "action": "pass",
