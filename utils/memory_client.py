@@ -61,11 +61,12 @@ def get_memory_client() -> httpx.AsyncClient:
 async def aclose_memory_client() -> None:
     """在 FastAPI shutdown 钩子中调用，释放连接池。"""
     global _client
-    if _client is not None and not _client.is_closed:
+    if _client is None:
+        return
+    if not _client.is_closed:
         try:
             await _client.aclose()
             logger.debug("[memory_client] shared AsyncClient closed")
         except Exception as e:
             logger.debug(f"[memory_client] close failed: {e}")
-        finally:
-            _client = None
+    _client = None

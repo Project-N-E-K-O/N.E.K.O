@@ -698,12 +698,13 @@ class LLMSessionManager:
                 self.message_cache_for_new_session[-1]['text'] += text_clean
 
         # WS 发送（可能失败，但 sync/cache 已保存）
-        # [DIAG] 切换猫娘后对话框空白问题：记录每次尝试送给前端的 gemini_response
-        logger.info(
-            "[%s] send_lanlan_response first=%s len=%d ws_state=%s",
-            self.lanlan_name, is_first_chunk, len(text_clean),
-            getattr(self.websocket, 'client_state', None),
-        )
+        # [DIAG] 切换猫娘后对话框空白问题：仅首 chunk 记录，避免流式刷屏
+        if is_first_chunk:
+            logger.info(
+                "[%s] send_lanlan_response first=%s len=%d ws_state=%s",
+                self.lanlan_name, is_first_chunk, len(text_clean),
+                getattr(self.websocket, 'client_state', None),
+            )
         try:
             async def _do_send():
                 if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
@@ -1347,6 +1348,9 @@ class LLMSessionManager:
         # 防止赢家初始化期间第三个协程穿过 guard 浪费 LLM 连接。
         _llm_concurrent_aborted = False
         _diag_start = time.time()
+        # 预创建的 /new_dialog 任务：若 start_llm_session 之前就抛异常，
+        # finally 会负责 cancel + await，避免孤儿 task 残留连接。
+        _new_dialog_task = None
 
         try:
             # 回收残留的热切换资源，防止 main + pending + new-main 叠到 >2 个 session
@@ -1805,6 +1809,15 @@ class LLMSessionManager:
             # 赢家完成（成功或异常）后会通过自己的 finally 或 cleanup 清理 guard。
             if not _llm_concurrent_aborted:
                 self._starting_session_count = max(0, self._starting_session_count - 1)
+            # 保险：若 /new_dialog 预取任务早期异常后仍在跑（gather 没来得及
+            # await 它就异常退出），这里统一 cancel + await，避免 "Task exception
+            # was never retrieved" warning 和连接池泄漏。
+            if _new_dialog_task is not None and not _new_dialog_task.done():
+                _new_dialog_task.cancel()
+                try:
+                    await _new_dialog_task
+                except (asyncio.CancelledError, Exception):
+                    pass
 
     async def send_user_activity(self, interrupted_speech_id: Optional[str] = None):
         """发送用户活动信号，附带被打断的 speech_id 用于精确打断控制"""
@@ -2060,10 +2073,15 @@ class LLMSessionManager:
             self.initial_cache_snapshot_len = len(self.message_cache_for_new_session)
             from utils.memory_client import get_memory_client
             _hs_client = get_memory_client()
-            resp = await _hs_client.get(
-                f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}",
-                timeout=5.0,
-            )
+            try:
+                resp = await _hs_client.get(
+                    f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}",
+                    timeout=5.0,
+                )
+            except httpx.ConnectError:
+                raise ConnectionError(f"❌ 记忆服务未启动！请先启动记忆服务 (端口 {self.memory_server_port})")
+            except httpx.TimeoutException:
+                raise ConnectionError(f"❌ 记忆服务响应超时！请检查记忆服务是否正常运行 (端口 {self.memory_server_port})")
             if not resp.is_success:
                 raise ConnectionError(f"❌ 记忆服务热切换时返回非2xx状态 {resp.status_code}: {resp.text[:200]}")
             initial_prompt += resp.text + self._convert_cache_to_str(self.message_cache_for_new_session)
