@@ -307,6 +307,7 @@ class AsyncBlockingChecker(ast.NodeVisitor):
         path: Path,
         source: str,
         risky_helpers: dict[str, tuple[str, int, str]] | None = None,
+        ambiguous_async_names: set[str] | None = None,
     ) -> None:
         self.path = path
         self.source_lines = source.splitlines()
@@ -314,6 +315,15 @@ class AsyncBlockingChecker(ast.NodeVisitor):
         self._func_stack: list[str] = []
         self.violations: list[tuple[int, int, str]] = []
         self._risky = risky_helpers or {}
+        # Names defined as BOTH a risky sync helper and an ``async def``
+        # somewhere in scope. At an ``await foo(...)`` site we cannot
+        # statically tell which one the receiver binds to, so transitive
+        # checks on those sites are skipped — but only when awaited.
+        # A bare ``foo(...)`` (no await) is still checked against the
+        # risky entry, since calling a coroutine without awaiting is a
+        # separate bug and the sync variant is the only one that
+        # runs-and-blocks when called unawaited.
+        self._ambiguous_async_names = ambiguous_async_names or set()
         # ids of Call nodes that are the direct target of an ``await`` —
         # suppresses ONLY the queue/thread/socket tail-name heuristics in
         # ``_check_attribute_call``. Those heuristics guess at the
@@ -382,7 +392,7 @@ class AsyncBlockingChecker(ast.NodeVisitor):
             # regardless of await — a sync helper that blocks before
             # returning an awaitable still blocks the loop thread.
             self._check_direct_blocking_call(node)
-            self._check_transitive_sync_helper(node)
+            self._check_transitive_sync_helper(node, awaited=awaited)
         self.generic_visit(node)
 
     def _check_direct_blocking_call(self, call: ast.Call) -> None:
@@ -407,16 +417,26 @@ class AsyncBlockingChecker(ast.NodeVisitor):
             f"{reason} blocks the event loop; wrap in await asyncio.to_thread(...).",
         )
 
-    def _check_transitive_sync_helper(self, call: ast.Call) -> None:
+    def _check_transitive_sync_helper(self, call: ast.Call, *, awaited: bool) -> None:
         """Depth-1: flag ``foo(...)`` or ``obj.foo(...)`` where ``foo``
         is the name of an indexed risky sync helper. We intentionally
         match on tail name only — resolving receivers would need import
         tracking, and in this repo the helper names we care about
         (``compress_screenshot``, ``load_cookies_from_file``, etc.) are
         distinctive enough that collisions are rare.
+
+        When ``awaited`` is True and the name also exists as an
+        ``async def`` somewhere in scope, we skip — the receiver most
+        likely binds to the async variant (awaiting the sync variant's
+        non-awaitable return is a runtime TypeError). Non-awaited
+        calls are still checked: a bare ``foo(...)`` invocation of a
+        sync blocking helper is exactly the case this pass was
+        designed to catch.
         """
         name = _tail_name(call.func)
         if not name:
+            return
+        if awaited and name in self._ambiguous_async_names:
             return
         hit = self._risky.get(name)
         if hit is None:
@@ -529,8 +549,14 @@ def check_file(
     source: str,
     tree: ast.Module,
     risky_helpers: dict[str, tuple[str, int, str]] | None = None,
+    ambiguous_async_names: set[str] | None = None,
 ) -> list[tuple[int, int, str]]:
-    checker = AsyncBlockingChecker(path, source, risky_helpers=risky_helpers)
+    checker = AsyncBlockingChecker(
+        path,
+        source,
+        risky_helpers=risky_helpers,
+        ambiguous_async_names=ambiguous_async_names,
+    )
     checker.visit(tree)
     return checker.violations
 
@@ -566,22 +592,29 @@ def main(argv: list[str] | None = None) -> int:
             indexer.risky.setdefault(name, info)
         async_names |= _collect_async_def_names(tree)
 
-    # Drop risky names that also exist as an ``async def`` somewhere in
-    # scope. At a call site ``await foo(...)`` we cannot statically tell
-    # which definition the receiver binds to, and real async methods
-    # with the same tail name as an unrelated sync helper (e.g. multiple
-    # agent adapters expose ``async def run_instruction`` while
-    # ``brain/computer_use.py`` defines a sync one) would otherwise
-    # produce a wave of false positives. The cost is we no longer flag
-    # direct calls to the sync variant from async code — a rename is
-    # the right fix if that case arises.
-    for name in async_names:
-        indexer.risky.pop(name, None)
+    # Build the "ambiguous" set — names that exist as BOTH a risky
+    # sync helper and an ``async def`` somewhere in scope. Used by
+    # visit_Call to skip the transitive check only at ``await foo(...)``
+    # sites where the receiver could bind either way. Non-awaited
+    # ``foo(...)`` calls are still checked against the risky entry:
+    # even if there's an async variant somewhere, a bare call that
+    # hits the sync one blocks, and our report should surface it.
+    # Example trigger: ``brain/computer_use.py`` defines a sync
+    # ``run_instruction`` while openclaw/openfang/browser_use adapters
+    # expose ``async def run_instruction`` — ``await adapter.run_X()``
+    # is fine, a hypothetical bare ``run_instruction(...)`` is not.
+    ambiguous_async_names = async_names & set(indexer.risky)
 
     # Pass 2: walk async bodies for direct blocking + depth-1 transitive.
     total = 0
     for file, source, tree in parsed:
-        for lineno, col, msg in check_file(file, source, tree, risky_helpers=indexer.risky):
+        for lineno, col, msg in check_file(
+            file,
+            source,
+            tree,
+            risky_helpers=indexer.risky,
+            ambiguous_async_names=ambiguous_async_names,
+        ):
             rel = file.relative_to(REPO_ROOT) if file.is_relative_to(REPO_ROOT) else file
             print(f"{rel}:{lineno}:{col}  {CODE}  {msg}")
             total += 1
