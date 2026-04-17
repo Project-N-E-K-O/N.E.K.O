@@ -285,13 +285,22 @@
 
     // ======================== processRealisticQueue（覆盖） ========================
 
+    function createRealisticQueueOwnerToken() {
+        return 'realistic-queue-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+    }
+
     async function processRealisticQueue(queueVersion) {
         queueVersion = queueVersion || (window._realisticGeminiVersion || 0);
-        if (window._isProcessingRealisticQueue) return;
+        if (window._realisticProcessingOwner) return;
+        var processingOwner = createRealisticQueueOwnerToken();
+        window._realisticProcessingOwner = processingOwner;
         window._isProcessingRealisticQueue = true;
 
         try {
             while (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
+                if (window._realisticProcessingOwner !== processingOwner) {
+                    break;
+                }
                 // 版本变更说明新一轮已开始（isNewMessage），旧队列
                 // 已由 _flushPendingRealisticQueue 同步渲染完毕，此处
                 // 仅需退出，不再处理任何剩余项。
@@ -312,6 +321,9 @@
                         queueVersion, window._realisticGeminiVersion || 0);
                     break;
                 }
+                if (window._realisticProcessingOwner !== processingOwner) {
+                    break;
+                }
 
                 var s = window._realisticGeminiQueue.shift();
                 if (s && (window._realisticGeminiVersion || 0) === queueVersion) {
@@ -320,9 +332,12 @@
                 }
             }
         } finally {
-            window._isProcessingRealisticQueue = false;
-            if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
-                processRealisticQueue(window._realisticGeminiVersion || 0);
+            if (window._realisticProcessingOwner === processingOwner) {
+                window._realisticProcessingOwner = null;
+                window._isProcessingRealisticQueue = false;
+                if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
+                    processRealisticQueue(window._realisticGeminiVersion || 0);
+                }
             }
         }
     }
@@ -394,6 +409,7 @@
         window._realisticGeminiQueue = [];
         // 重置并发锁，让下次 processRealisticQueue 可以正常启动
         window._isProcessingRealisticQueue = false;
+        window._realisticProcessingOwner = null;
     }
 
     // ======================== appendMessage（覆盖核心） ========================

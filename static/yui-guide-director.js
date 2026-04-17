@@ -19,13 +19,6 @@
     const PLUGIN_DASHBOARD_READY_EVENT = 'neko:yui-guide:plugin-dashboard:ready';
     const PLUGIN_DASHBOARD_DONE_EVENT = 'neko:yui-guide:plugin-dashboard:done';
     const DEFAULT_TUTORIAL_MODEL_MANAGER_LANLAN_NAME = 'ATLS';
-    const PREVIEW_ITEMS = Object.freeze([
-        'WebSearch',
-        'B站弹幕',
-        '米家控制',
-        '智能家居',
-        '日程提醒'
-    ]);
     const TAKEOVER_CAPTURE_SELECTORS = Object.freeze({
         catPaw: '[alt="猫爪"]',
         agentMaster: 'div[aria-label="猫爪总开关"][title="猫爪总开关"]',
@@ -2912,6 +2905,9 @@
 
             await wait(90);
             await this.clickCursorAndWait(180);
+            // clickAgentSidePanelAction 会把窗口打开交给按钮点击链路处理；
+            // 这里优先依赖 waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME) 等待副作用结果，
+            // 只有点击链路没有拉起窗口时才回退 openPluginDashboardWindow。
             const clicked = await this.clickAgentSidePanelAction('agent-user-plugin', 'management-panel');
             if (!clicked && runId === this.sceneRunId && !this.destroyed && !this.angryExitTriggered) {
                 const pluginDashboardWindow = await this.openPluginDashboardWindow();
@@ -2940,6 +2936,7 @@
                     12000,
                     42000
                 );
+                const targetOrigin = window.location.origin;
                 const handoff = {
                     sessionId: sessionId,
                     windowRef: windowRef,
@@ -2985,7 +2982,7 @@
                                 type: PLUGIN_DASHBOARD_HANDOFF_EVENT,
                                 sessionId: sessionId,
                                 payload: payload || {}
-                            }, '*');
+                            }, targetOrigin);
                         } catch (error) {
                             console.warn('[YuiGuide] 向插件面板发送 handoff 消息失败:', error);
                         }
@@ -3007,7 +3004,9 @@
                         handoff.resolve(false);
                         return;
                     }
-                    handoff.post();
+                    if (!handoff.ready) {
+                        handoff.post();
+                    }
                 }, 450);
                 handoff.timeoutId = window.setTimeout(() => {
                     handoff.resolve(false);
@@ -4291,157 +4290,35 @@
                 this.disableInterrupts();
             }
 
-            let handledPostMove = false;
-
-            if (stepId === 'takeover_plugin_preview') {
-                handledPostMove = true;
-                this.cursor.click();
-                await this.openAgentPanel();
-                if (runId !== this.sceneRunId || this.destroyed) {
-                    return;
-                }
-                this.overlay.showPluginPreview(PREVIEW_ITEMS, {
-                    title: '插件管理预演'
+            if (performance.bubbleText && shouldNarrateAfterMove && !shouldNarrateInChat) {
+                this.overlay.showBubble(performance.bubbleText, {
+                    title: 'Yui',
+                    emotion: performance.emotion || 'neutral',
+                    anchorRect: anchorRect
                 });
-                this.highlightChatWindow();
-                if (performance.emotion) {
-                    this.emotionBridge.apply(performance.emotion);
-                }
-                if (performance.bubbleText) {
+            } else if (shouldNarrateAfterMove) {
+                this.overlay.hideBubble();
+            }
+
+            if (performance.emotion && shouldNarrateAfterMove) {
+                this.emotionBridge.apply(performance.emotion);
+            }
+
+            if (!shouldNarrateDuringMove) {
+                if (performance.bubbleText && shouldNarrateInChat) {
                     this.appendGuideChatMessage(performance.bubbleText);
+                    this.overlay.hideBubble();
                 }
                 await this.speakLineAndWait(performance.bubbleText || '');
                 if (runId !== this.sceneRunId || this.destroyed) {
                     return;
                 }
-                this.highlightChatWindow();
             }
 
-            if (stepId === 'takeover_settings_peek') {
-                handledPostMove = true;
+            if (performance.cursorAction === 'click' && !shouldOpenPanelAfterNarration) {
                 this.cursor.click();
-                await this.closeAgentPanel();
-                const settingsMenuId = this.normalizeSettingsMenuId(performance.settingsMenuId || 'character');
-                const settingsButtonTarget = this.resolveElement(performance.cursorTarget || this.currentStep && this.currentStep.anchor || '');
-                const menuVisible = await this.ensureSettingsMenuVisible(settingsMenuId);
-                if (runId !== this.sceneRunId || this.destroyed) {
-                    return;
-                }
-
-                if (settingsButtonTarget) {
-                    this.overlay.activateSpotlight(settingsButtonTarget);
-                }
-                this.highlightChatWindow();
-                if (performance.emotion) {
-                    this.emotionBridge.apply(performance.emotion);
-                }
-                if (performance.bubbleText) {
-                    this.appendGuideChatMessage(performance.bubbleText);
-                }
-
-                const characterPhrase = '你看，这里可以穿我的新衣服、给我换一个好听的声音';
-                const highlightStartIndex = typeof performance.bubbleText === 'string'
-                    ? performance.bubbleText.indexOf(characterPhrase)
-                    : -1;
-                let settingsMenuHighlighted = false;
-                let settingsMenuFallbackTimer = 0;
-
-                const activateSettingsMenuSpotlight = () => {
-                    if (settingsMenuHighlighted) {
-                        return;
-                    }
-
-                    const spotlightTarget = menuVisible
-                        ? this.getSettingsMenuElement(settingsMenuId)
-                        : (this.isManagedPanelVisible('settings') ? this.getManagedPanelElement('settings') : null);
-                    if (!spotlightTarget) {
-                        return;
-                    }
-
-                    settingsMenuHighlighted = true;
-                    this.overlay.activateSecondarySpotlight(spotlightTarget);
-                };
-
-                if (highlightStartIndex >= 0 && performance.bubbleText) {
-                    const estimatedDurationMs = Math.max(
-                        estimateSpeechDurationMs(performance.bubbleText),
-                        3000
-                    );
-                    const highlightDelayMs = clamp(
-                        Math.round((highlightStartIndex / Math.max(performance.bubbleText.length, 1)) * estimatedDurationMs),
-                        200,
-                        Math.max(estimatedDurationMs - 200, 200)
-                    );
-                    settingsMenuFallbackTimer = window.setTimeout(() => {
-                        settingsMenuFallbackTimer = 0;
-                        if (runId !== this.sceneRunId || this.destroyed) {
-                            return;
-                        }
-                        activateSettingsMenuSpotlight();
-                    }, highlightDelayMs);
-                }
-
-                try {
-                    await this.speakLineAndWait(performance.bubbleText || '', {
-                        onBoundary: (event) => {
-                            if (settingsMenuHighlighted || highlightStartIndex < 0) {
-                                return;
-                            }
-
-                            const absoluteCharIndex = event && Number.isFinite(event.absoluteCharIndex)
-                                ? event.absoluteCharIndex
-                                : -1;
-                            if (absoluteCharIndex < highlightStartIndex) {
-                                return;
-                            }
-
-                            activateSettingsMenuSpotlight();
-                        }
-                    });
-                } finally {
-                    if (settingsMenuFallbackTimer) {
-                        window.clearTimeout(settingsMenuFallbackTimer);
-                        settingsMenuFallbackTimer = 0;
-                    }
-                }
-                if (runId !== this.sceneRunId || this.destroyed) {
-                    return;
-                }
-                this.overlay.clearActionSpotlight();
-                this.highlightChatWindow();
-            }
-
-            if (!handledPostMove) {
-                if (performance.bubbleText && shouldNarrateAfterMove && !shouldNarrateInChat) {
-                    this.overlay.showBubble(performance.bubbleText, {
-                        title: 'Yui',
-                        emotion: performance.emotion || 'neutral',
-                        anchorRect: anchorRect
-                    });
-                } else if (shouldNarrateAfterMove) {
-                    this.overlay.hideBubble();
-                }
-
-                if (performance.emotion && shouldNarrateAfterMove) {
-                    this.emotionBridge.apply(performance.emotion);
-                }
-
-                if (!shouldNarrateDuringMove) {
-                    if (performance.bubbleText && shouldNarrateInChat) {
-                        this.appendGuideChatMessage(performance.bubbleText);
-                        this.overlay.hideBubble();
-                    }
-                    await this.speakLineAndWait(performance.bubbleText || '');
-                    if (runId !== this.sceneRunId || this.destroyed) {
-                        return;
-                    }
-                }
-
-                if (performance.cursorAction === 'click' && !shouldOpenPanelAfterNarration) {
-                    this.cursor.click();
-                } else if (performance.cursorAction === 'wobble') {
-                    this.cursor.wobble();
-                }
+            } else if (performance.cursorAction === 'wobble') {
+                this.cursor.wobble();
             }
 
             if (stepId === 'takeover_return_control') {

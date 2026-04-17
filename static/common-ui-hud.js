@@ -181,7 +181,17 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
 
         // 侧边快捷入口（用户插件管理面板 / OpenClaw 接入教程）
         if ((toggle.id === 'agent-user-plugin' || toggle.id === 'agent-openclaw') && typeof this._createSidePanelContainer === 'function') {
+            document.querySelectorAll(`[data-neko-sidepanel-type="${toggle.id}-actions"]`).forEach((element) => {
+                if (element && typeof element.remove === 'function') {
+                    element.remove();
+                }
+            });
+            const existingSidePanelById = document.getElementById(`${toggle.id}-actions`);
+            if (existingSidePanelById && typeof existingSidePanelById.remove === 'function') {
+                existingSidePanelById.remove();
+            }
             const sidePanel = this._createSidePanelContainer();
+            sidePanel.id = `${toggle.id}-actions`;
             sidePanel.setAttribute('data-neko-sidepanel-type', `${toggle.id}-actions`);
             sidePanel.style.flexDirection = 'column';
             sidePanel.style.alignItems = 'stretch';
@@ -209,6 +219,10 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                     windowName: 'neko_openclaw_guide',
                     forceReloadOnReuse: true
                 };
+            const existingActionButton = document.getElementById(`neko-sidepanel-action-${toggle.id}-${actionConfig.actionId}`);
+            if (existingActionButton && typeof existingActionButton.remove === 'function') {
+                existingActionButton.remove();
+            }
             configBtn.id = `neko-sidepanel-action-${toggle.id}-${actionConfig.actionId}`;
             configBtn.setAttribute('data-neko-sidepanel-action', actionConfig.actionId);
             configBtn.setAttribute('data-neko-sidepanel-toggle', toggle.id);

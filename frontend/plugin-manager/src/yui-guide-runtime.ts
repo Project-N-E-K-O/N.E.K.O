@@ -8,6 +8,7 @@ const DONE_EVENT = 'neko:yui-guide:plugin-dashboard:done'
 const ROOT_ID = 'yui-guide-plugin-dashboard-runtime'
 const SVG_NS = 'http://www.w3.org/2000/svg'
 const BACKDROP_MASK_ID = `${ROOT_ID}-mask`
+const ALLOWED_ORIGINS = new Set([window.location.origin])
 
 type StartPayload = {
   line?: string
@@ -656,12 +657,24 @@ class PluginDashboardGuideRuntime {
 
 export function initPluginDashboardYuiGuideRuntime() {
   const runtime = new PluginDashboardGuideRuntime()
+  let expectedSource: MessageEventSource | null = window.opener || null
 
   window.addEventListener('message', (event: MessageEvent) => {
     const data = event.data
     if (!data || typeof data !== 'object' || data.type !== START_EVENT) {
       return
     }
+
+    if (!ALLOWED_ORIGINS.has(event.origin)) {
+      return
+    }
+
+    const openerSource = window.opener || null
+    const validSource = expectedSource || openerSource
+    if (!validSource || event.source !== validSource) {
+      return
+    }
+    expectedSource = validSource
 
     const sessionId = typeof data.sessionId === 'string' ? data.sessionId : ''
     if (!sessionId) {

@@ -98,9 +98,10 @@
         }
 
         _activeWindows[fullName] = childWin;
-        if (window._openedWindows) {
-            window._openedWindows[fullName] = childWin;
+        if (!window._openedWindows) {
+            window._openedWindows = {};
         }
+        window._openedWindows[fullName] = childWin;
 
         try {
             childWin.focus();
@@ -803,21 +804,8 @@
             }
 
             if (toggleId === 'agent-user-plugin' && actionId === 'management-panel') {
-                return openPluginDashboard().then(function (childWin) {
-                    if (childWin) {
-                        try {
-                            button.dispatchEvent(new MouseEvent('mousedown', {
-                                bubbles: true,
-                                cancelable: true,
-                                view: window
-                            }));
-                            button.dispatchEvent(new MouseEvent('mouseup', {
-                                bubbles: true,
-                                cancelable: true,
-                                view: window
-                            }));
-                        } catch (_) {}
-                    }
+                button.click();
+                return waitForWindowOpen('plugin_dashboard', 6000).then(function (childWin) {
                     return !!childWin;
                 });
             }
@@ -899,7 +887,11 @@
         window.dispatchEvent(new CustomEvent(prefix + '-return-click'));
     }
 
-    function cleanupTutorialPopups() {
+    function cleanupTutorialPopups(event) {
+        var detail = event && event.detail ? event.detail : null;
+        if (detail && detail.page !== 'home') {
+            return;
+        }
         closeAgentPanel();
         closeSettingsPanel();
         clearHandoffToken();
@@ -954,8 +946,11 @@
         }
     });
 
-    window.addEventListener('neko:yui-guide:tutorial-end', function () {
-        cleanupTutorialPopups();
+    window.addEventListener('neko:yui-guide:tutorial-end', function (event) {
+        if (!event || !event.detail || event.detail.page !== 'home') {
+            return;
+        }
+        cleanupTutorialPopups(event);
     });
 
     var handoff = Object.freeze({

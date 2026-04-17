@@ -685,9 +685,11 @@ interface YuiGuideDirector {
 
 等待页面：
 
-- `http://127.0.0.1:48916/ui/`
+- `${UI_ORIGIN}/ui/`
 
-完全加载后，执行 `/ui` 页面演出：
+其中 `UI_ORIGIN` 为环境可配置的前端页面源地址，文档只约定路由 `/ui/`，不写死 `127.0.0.1`。
+
+完全加载后，执行 `/ui/` 页面演出：
 
 - 给 `/ui` 页面添加全屏遮罩
 - 高亮【插件管理】按钮
@@ -732,7 +734,9 @@ interface YuiGuideDirector {
 
 新页面目标为：
 
-- `http://localhost:48911/model_manager?lanlan_name=ATLS`
+- `${APP_ORIGIN}/model_manager?lanlan_name=ATLS`
+
+其中 `APP_ORIGIN` 为环境可配置的主应用源地址。
 
 本段语音全部播放完毕后：
 
