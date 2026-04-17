@@ -2187,11 +2187,19 @@ class LLMSessionManager:
             self._tts_done_queued_for_turn = False
         return True
 
-    async def feed_tts_chunk(self, text: str):
-        """只把文本喂给 TTS 管线，不发送到前端显示。"""
+    async def feed_tts_chunk(self, text: str, expected_speech_id: str | None = None):
+        """只把文本喂给 TTS 管线，不发送到前端显示。
+
+        expected_speech_id: 若不为 None 且与当前 current_speech_id 不匹配（说明
+        调用者所属轮次已被其他路径接管，例如主动搭话流式期间用户打断），丢弃本
+        chunk 并返回。lock 内判定以保证与 enqueue 原子，避免 proactive 文本被错
+        打上新轮次的 speech_id 流入用户正常回复音频。
+        """
         if not self.use_tts:
             return
         async with self.tts_cache_lock:
+            if expected_speech_id is not None and self.current_speech_id != expected_speech_id:
+                return
             if self.tts_ready and self.tts_thread and self.tts_thread.is_alive():
                 try:
                     self._enqueue_tts_text_chunk(self.current_speech_id, text)

@@ -3267,6 +3267,12 @@ async def proactive_chat(request: Request):
             nonlocal pipe_count, full_text, aborted
             if not text:
                 return False
+            # sid 已被换掉说明用户已打断并接管本轮，立刻 abort 以停止 LLM stream；
+            # feed_tts_chunk 下面还有 lock 内二次校验兜底，防止 await 期间的 race。
+            if mgr.current_speech_id != proactive_sid:
+                print(f"[{lanlan_name}] Phase 2 检测到 sid 变更（用户已接管），abort")
+                aborted = True
+                return True
             for ch in text:
                 if ch in ('|', '｜'):
                     pipe_count += 1
@@ -3279,7 +3285,7 @@ async def proactive_chat(request: Request):
                 aborted = True
                 return True
             full_text += text
-            await mgr.feed_tts_chunk(text)
+            await mgr.feed_tts_chunk(text, expected_speech_id=proactive_sid)
             return False
         
         try:
