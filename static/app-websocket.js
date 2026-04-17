@@ -309,32 +309,7 @@
      * @param {number} timeoutMs  timeout in ms (default 5000)
      * @returns {Promise<void>}
      */
-    function ensureWebSocketOpen(timeoutMs) {
-        // 切换猫娘期间 handleCatgirlSwitch 独家负责 rebuild socket，且会穿插
-        // Live2D/VRM/MMD 模型加载 + memory_server 冷加载，综合延迟常常 >5s。
-        // 以下任一条件成立都把默认 5s 放宽到 20s：
-        //   a) isSwitchingCatgirl 仍为 true（切换逻辑未完）
-        //   b) S.socket 处于 CONNECTING（切换已把 isSwitchingCatgirl 清掉，
-        //      但新 ws 还在握手，此时 5s polling 仍可能超时）
-        // 避免误报 "Start failed: WebSocket not connected"。
-        var _socketConnecting = !!(S.socket && S.socket.readyState === WebSocket.CONNECTING);
-        var _isSwitching = !!(window.appState && window.appState.isSwitchingCatgirl);
-        var effectiveTimeout;
-        if (typeof timeoutMs === 'number') {
-            effectiveTimeout = timeoutMs;
-        } else if (_isSwitching || _socketConnecting) {
-            effectiveTimeout = 20000;
-        } else {
-            effectiveTimeout = 5000;
-        }
-        // [DIAG] 方便下次复现时看到进入时的状态
-        try {
-            console.log('[ensureWebSocketOpen] enter socket=' +
-                (S.socket ? S.socket.readyState : 'null') +
-                ' isSwitching=' + _isSwitching +
-                ' connecting=' + _socketConnecting +
-                ' effectiveTimeout=' + effectiveTimeout);
-        } catch (_e) { /* ignore */ }
+    function ensureWebSocketOpen(timeoutMs = 5000) {
         return new Promise(function (resolve, reject) {
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
                 return resolve();
@@ -353,7 +328,7 @@
             // Timeout
             timer = setTimeout(function () {
                 settle(reject, new Error(window.t ? window.t('app.websocketNotConnectedError') : 'WebSocket未连接'));
-            }, effectiveTimeout);
+            }, timeoutMs);
 
             // Attach listener to current or future socket
             var attachOpenListener = function (ws) {
@@ -529,8 +504,6 @@
 
                 // -------- gemini_response --------
                 if (response.type === 'gemini_response') {
-                    // [DIAG] 切换猫娘后气泡不显示排查
-                    console.log('[WS] gemini_response recv len=' + ((response.text || '').length) + ' isNew=' + response.isNewMessage + ' turn=' + response.turn_id);
                     var isNewMessage = response.isNewMessage || false;
                     if (isNewMessage) {
                         // voice chat 中，AI 新消息到来时若上一条人类消息为纯空白则替换为 ...
@@ -675,8 +648,6 @@
 
                 // -------- user_transcript --------
                 } else if (response.type === 'user_transcript') {
-                    // [DIAG] 切换猫娘后气泡不显示排查
-                    console.log('[WS] user_transcript recv len=' + ((response.text || '').length));
                     // 收到 transcription，清除 session 初始 5 秒计时器
                     if (S._voiceSessionInitialTimer) {
                         clearTimeout(S._voiceSessionInitialTimer);
