@@ -156,9 +156,9 @@
         }
 
         function syncStickerSizeUI(s) {
-            if (stickerWRange) stickerWRange.value = Math.min(s.w, 500);
+            if (stickerWRange) stickerWRange.value = Math.min(s.w, 2000);
             if (stickerWNum) stickerWNum.value = s.w;
-            if (stickerHRange) stickerHRange.value = Math.min(s.h, 500);
+            if (stickerHRange) stickerHRange.value = Math.min(s.h, 2000);
             if (stickerHNum) stickerHNum.value = s.h;
         }
 
@@ -553,8 +553,8 @@
                 const s = getSelectedSticker();
                 if (!s) return;
                 const factor = e.deltaY > 0 ? 0.95 : 1.05;
-                s.w = Math.max(1, Math.round(s.w * factor));
-                s.h = Math.max(1, Math.round(s.h * factor));
+                s.w = clamp(Math.round(s.w * factor), 1, 2000);
+                s.h = clamp(Math.round(s.h * factor), 1, 2000);
                 _syncStickerSizeUI(s);
                 updateStickerElement(s);
             }
