@@ -330,11 +330,20 @@ async def startup_event_handler():
     try:
         character_data = _config_manager.load_characters()
         catgirl_names = list(character_data.get('猫娘', {}).keys())
-        # 各角色的 persona 文件互相独立，并行迁移检查避免 N 倍串行磁盘 IO
+        # 各角色的 persona 文件互相独立，并行迁移检查避免 N 倍串行磁盘 IO。
+        # return_exceptions=True：避免 fail-fast 取消其它角色正在写盘的协程，
+        # 造成 persona 文件半写入；出错的角色单独记日志。
         if catgirl_names:
-            await asyncio.gather(
-                *(persona_manager.aensure_persona(n) for n in catgirl_names)
+            results = await asyncio.gather(
+                *(persona_manager.aensure_persona(n) for n in catgirl_names),
+                return_exceptions=True,
             )
+            for name, result in zip(catgirl_names, results):
+                if isinstance(result, Exception):
+                    logger.warning(
+                        f"[Memory] Persona 迁移检查失败: {name}: {result}",
+                        exc_info=result,
+                    )
         logger.info(f"[Memory] Persona 迁移检查完成，角色数: {len(catgirl_names)}")
     except Exception as e:
         logger.warning(f"[Memory] Persona 迁移检查失败: {e}")

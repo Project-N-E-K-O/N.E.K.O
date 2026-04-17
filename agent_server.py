@@ -2151,10 +2151,11 @@ async def startup():
             Modules.browser_use = bu
             Modules.task_executor.browser_use = bu
             logger.info("[Agent] BrowserUseAdapter ready (background init)")
-            try:
-                await _fire_agent_llm_connectivity_check()
-            except Exception:
-                logger.debug("[Agent] Post-browser-init capability refresh failed", exc_info=True)
+            # fire-and-forget capability 刷新：check_connectivity 可能因网络不稳
+            # 走到几十秒级的重试，绝不能把 OpenFang 初始化链 gate 在它上面。
+            _refresh_task = asyncio.create_task(_fire_agent_llm_connectivity_check())
+            Modules._persistent_tasks.add(_refresh_task)
+            _refresh_task.add_done_callback(Modules._persistent_tasks.discard)
         except Exception as exc:
             logger.error("[Agent] BrowserUseAdapter background init failed: %s", exc)
 
