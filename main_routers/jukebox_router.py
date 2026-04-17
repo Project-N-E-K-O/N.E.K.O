@@ -1053,7 +1053,7 @@ async def export_config(
         )
     except Exception:
         # 发生异常时清理临时目录
-        cleanup_temp_path(str(temp_dir))
+        await asyncio.to_thread(cleanup_temp_path, str(temp_dir))
         raise
 
 
@@ -1427,5 +1427,5 @@ async def pack_folder(files: List[UploadFile] = File(...)):
         )
     except Exception:
         # 发生异常时清理临时目录
-        cleanup_temp_path(str(temp_dir))
+        await asyncio.to_thread(cleanup_temp_path, str(temp_dir))
         raise

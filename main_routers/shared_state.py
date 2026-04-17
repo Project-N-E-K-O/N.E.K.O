@@ -25,6 +25,9 @@ _state = {
     'config_manager': _UNSET,
     'logger': _UNSET,
     'initialize_character_data': _UNSET,  # Function reference
+    'switch_current_catgirl_fast': _UNSET,  # Fast path for current-catgirl switch
+    'init_one_catgirl': _UNSET,             # Fast path for add/update single catgirl
+    'remove_one_catgirl': _UNSET,           # Fast path for delete single catgirl
 }
 
 
@@ -40,6 +43,9 @@ def init_shared_state(
     config_manager,
     logger,
     initialize_character_data=None,
+    switch_current_catgirl_fast=None,
+    init_one_catgirl=None,
+    remove_one_catgirl=None,
 ):
     """Initialize shared state from main_server.py"""
     _state['sync_message_queue'] = sync_message_queue
@@ -53,6 +59,9 @@ def init_shared_state(
     _state['config_manager'] = config_manager
     _state['logger'] = logger
     _state['initialize_character_data'] = initialize_character_data
+    _state['switch_current_catgirl_fast'] = switch_current_catgirl_fast
+    _state['init_one_catgirl'] = init_one_catgirl
+    _state['remove_one_catgirl'] = remove_one_catgirl
 
 def _check_initialized(key: str) -> None:
     """Validate that a state key has been initialized via init_shared_state."""
@@ -137,3 +146,21 @@ def get_initialize_character_data():
     """Get the initialize_character_data function reference"""
     _check_initialized('initialize_character_data')
     return _state['initialize_character_data']
+
+
+def get_switch_current_catgirl_fast():
+    """Fast path: current-catgirl switch (no per-k work, just refresh globals)."""
+    _check_initialized('switch_current_catgirl_fast')
+    return _state['switch_current_catgirl_fast']
+
+
+def get_init_one_catgirl():
+    """Fast path: add / update a single catgirl (per-k init without scanning all)."""
+    _check_initialized('init_one_catgirl')
+    return _state['init_one_catgirl']
+
+
+def get_remove_one_catgirl():
+    """Fast path: delete a single catgirl (stop its thread, clean dicts)."""
+    _check_initialized('remove_one_catgirl')
+    return _state['remove_one_catgirl']
