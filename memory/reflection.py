@@ -78,8 +78,9 @@ class ReflectionEngine:
     # ── persistence ──────────────────────────────────────────────────
 
     @staticmethod
-    def _filter_reflections(data, include_archived: bool) -> list[dict]:
+    def _filter_reflections(data, include_archived: bool, path: str) -> list[dict]:
         if not isinstance(data, list):
+            logger.warning(f"[Reflection] reflections 文件不是列表，忽略: {path}")
             return []
         items = [item for item in data if isinstance(item, dict) and 'id' in item]
         if not include_archived:
@@ -92,7 +93,7 @@ class ReflectionEngine:
             try:
                 with open(path, encoding='utf-8') as f:
                     data = json.load(f)
-                return self._filter_reflections(data, include_archived)
+                return self._filter_reflections(data, include_archived, path)
             except (json.JSONDecodeError, OSError) as e:
                 logger.warning(f"[Reflection] 加载失败: {e}")
         return []
@@ -106,7 +107,7 @@ class ReflectionEngine:
         except (json.JSONDecodeError, OSError) as e:
             logger.warning(f"[Reflection] 加载失败: {e}")
             return []
-        return self._filter_reflections(data, include_archived)
+        return self._filter_reflections(data, include_archived, path)
 
     def _prepare_save_reflections(
         self, name: str, reflections: list[dict], all_on_disk: list[dict],

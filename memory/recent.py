@@ -153,6 +153,17 @@ class CompressedRecentHistoryManager:
             self.user_histories[lanlan_name].extend(new_messages)
             logger.debug(f"[RecentHistory] {lanlan_name} 添加了 {len(new_messages)} 条新消息，当前共 {len(self.user_histories[lanlan_name])} 条")
 
+            # 先把 extend 后的未压缩状态落盘，再进入耗时的 compress_history。
+            # compress_history 会走 LLM，耗时数秒到数十秒，期间进程崩溃或 task 被 cancel
+            # （CancelledError 穿透下面的 except Exception）会导致本批 new_messages 丢失。
+            await asyncio.to_thread(os.makedirs, os.path.dirname(file_path), exist_ok=True)
+            await atomic_write_json_async(
+                file_path,
+                messages_to_dict(self.user_histories[lanlan_name]),
+                indent=2,
+                ensure_ascii=False,
+            )
+
             if compress and len(self.user_histories[lanlan_name]) > self.compress_threshold:
                 to_compress = self.user_histories[lanlan_name][:-self.max_history_length+1]
                 compressed = [(await self.compress_history(to_compress, lanlan_name, detailed))[0]]
