@@ -4,6 +4,7 @@
 TTS部分使用了两个队列，原本只需要一个，但是阿里的TTS API回调函数只支持同步函数，所以增加了一个response queue来异步向前端发送音频数据。
 """
 import asyncio
+import contextvars
 import json
 import struct  # For packing audio data
 import re
@@ -53,6 +54,17 @@ import httpx
 
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
+
+# 主动搭话（proactive）调用 prompt_ephemeral 时设置的 sid 期望值。
+# 目的：prompt_ephemeral 内部通过 on_text_delta=handle_text_data 回调 enqueue TTS，
+# 中间可能被用户输入抢占（user stream_text 清 queue + 换 current_speech_id）。
+# handle_text_data / handle_output_transcript 检查此 contextvar：若已设置且与
+# current_speech_id 不符，说明本路径生成的 chunk 已不属于当前轮次，必须丢弃
+# 以免 proactive 文本被错打上用户新 sid 混进用户回复 TTS。
+# contextvar 是 per-task 隔离，不会泄漏到用户 stream_text 所在的独立任务。
+_proactive_expected_sid: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    '_proactive_expected_sid', default=None,
+)
 
 # TTS 错误码：不可恢复，禁止 respawn（欠费 / API Key 无效）
 NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_KEY_REJECTED'}
@@ -416,6 +428,19 @@ class LLMSessionManager:
     async def handle_text_data(self, text: str, is_first_chunk: bool = False):
         """文本回调：处理文本显示和TTS（用于文本模式）"""
 
+        # 主动搭话 race guard：prompt_ephemeral 路径会设置 _proactive_expected_sid
+        # contextvar。若其与 current_speech_id 不一致，说明用户已在 proactive
+        # 生成期间打断并换了 sid，本 chunk 属于已被作废的 proactive 轮次，必须
+        # 整体丢弃（含前端显示和 TTS），避免污染用户当前轮次。user stream_text
+        # 在自己的 task 里 contextvar 为 None，不受影响。
+        expected_sid = _proactive_expected_sid.get()
+        if expected_sid is not None and expected_sid != self.current_speech_id:
+            logger.debug(
+                "handle_text_data drop: expected_sid=%s current_sid=%s len=%d",
+                expected_sid, self.current_speech_id, len(text),
+            )
+            return
+
         # 如果是新消息的第一个chunk，清空TTS队列和缓存以打断之前的语音
         if is_first_chunk and self.use_tts:
             async with self.tts_cache_lock:
@@ -638,7 +663,16 @@ class LLMSessionManager:
         # 否则会导致前端把同一轮 AI 语音误判为新轮次, 出现首包被重置/吞掉的问题.
 
     async def handle_output_transcript(self, text: str, is_first_chunk: bool = False):
-        """输出转录回调：处理文本显示和TTS（用于语音模式）"""        
+        """输出转录回调：处理文本显示和TTS（用于语音模式）"""
+        # 同 handle_text_data：proactive 路径设置的 sid 期望值若与 current 不符，
+        # 丢弃本 chunk，避免 proactive 文本被错插进用户新轮次。
+        expected_sid = _proactive_expected_sid.get()
+        if expected_sid is not None and expected_sid != self.current_speech_id:
+            logger.debug(
+                "handle_output_transcript drop: expected_sid=%s current_sid=%s len=%d",
+                expected_sid, self.current_speech_id, len(text),
+            )
+            return
         # 无论是否使用TTS，都要发送文本到前端显示
         await self.send_lanlan_response(text, is_first_chunk)
         
@@ -2199,6 +2233,10 @@ class LLMSessionManager:
             return
         async with self.tts_cache_lock:
             if expected_speech_id is not None and self.current_speech_id != expected_speech_id:
+                logger.debug(
+                    "feed_tts_chunk drop: expected_sid=%s current_sid=%s len=%d",
+                    expected_speech_id, self.current_speech_id, len(text),
+                )
                 return
             if self.tts_ready and self.tts_thread and self.tts_thread.is_alive():
                 try:
@@ -2211,9 +2249,22 @@ class LLMSessionManager:
                 if self.tts_thread and not self.tts_thread.is_alive():
                     self._respawn_tts_worker()
 
-    async def finish_proactive_delivery(self, full_text: str):
-        """流式完成后收尾：一次性投递完整文本 + 记录历史 + TTS/turn end 信号。"""
+    async def finish_proactive_delivery(self, full_text: str, expected_speech_id: str | None = None):
+        """流式完成后收尾：一次性投递完整文本 + 记录历史 + TTS/turn end 信号。
+
+        expected_speech_id: 若不为 None 且在进入 _proactive_write_lock 后与当前
+        current_speech_id 不符，说明 Phase 2 流结束到 finish 之间用户已打断并
+        接管本轮（stream_text 清了 queue + 换了 sid）。此时前端/history/TTS
+        结束信号都必须跳过，否则 proactive 文本气泡会插在用户回复后面、
+        history 被污染、TTS done 会误结束用户正在进行的回复。
+        """
         async with self._proactive_write_lock:
+            if expected_speech_id is not None and self.current_speech_id != expected_speech_id:
+                logger.info(
+                    "[%s] finish_proactive_delivery skip: sid changed (expected=%s current=%s)，用户已接管本轮",
+                    self.lanlan_name, expected_speech_id, self.current_speech_id,
+                )
+                return
             await self.send_lanlan_response(full_text, is_first_chunk=True)
 
             from utils.llm_client import AIMessage as _AIMsg
@@ -2303,12 +2354,19 @@ class LLMSessionManager:
                     async with self.lock:
                         self.current_speech_id = str(uuid4())
                         self._tts_done_queued_for_turn = False
+                        proactive_sid = self.current_speech_id
                     logger.debug("[%s] trigger_agent_callbacks: text session ready, calling prompt_ephemeral", self.lanlan_name)
                     # 更新字数限制（可能用户在对话期间修改了设置）
                     if hasattr(self.session, 'update_max_response_length'):
                         self.session.update_max_response_length(self._get_text_guard_max_length())
                     self.pending_agent_callbacks.clear()
-                    delivered = await self.session.prompt_ephemeral(instruction)
+                    # 设置 per-task contextvar，让 prompt_ephemeral 回调链里的
+                    # handle_text_data 能识别本路径 chunk 并在 sid 被用户抢走后丢弃。
+                    _sid_token = _proactive_expected_sid.set(proactive_sid)
+                    try:
+                        delivered = await self.session.prompt_ephemeral(instruction)
+                    finally:
+                        _proactive_expected_sid.reset(_sid_token)
                     logger.debug("[%s] trigger_agent_callbacks: text session prompt_ephemeral delivered=%s", self.lanlan_name, delivered)
                     if delivered:
                         self.pending_extra_replies.clear()
@@ -2327,11 +2385,16 @@ class LLMSessionManager:
                         async with self.lock:
                             self.current_speech_id = str(uuid4())
                             self._tts_done_queued_for_turn = False
+                            proactive_sid = self.current_speech_id
                         # 更新字数限制（可能用户在对话期间修改了设置）
                         if hasattr(self.session, 'update_max_response_length'):
                             self.session.update_max_response_length(self._get_text_guard_max_length())
                         self.pending_agent_callbacks.clear()
-                        delivered = await self.session.prompt_ephemeral(instruction)
+                        _sid_token = _proactive_expected_sid.set(proactive_sid)
+                        try:
+                            delivered = await self.session.prompt_ephemeral(instruction)
+                        finally:
+                            _proactive_expected_sid.reset(_sid_token)
                         if delivered:
                             self.pending_extra_replies.clear()
                         else:
@@ -2449,7 +2512,12 @@ class LLMSessionManager:
             async with self.lock:
                 self.current_speech_id = str(uuid4())
                 self._tts_done_queued_for_turn = False
-            delivered = await self.session.prompt_ephemeral(instruction)
+                proactive_sid = self.current_speech_id
+            _sid_token = _proactive_expected_sid.set(proactive_sid)
+            try:
+                delivered = await self.session.prompt_ephemeral(instruction)
+            finally:
+                _proactive_expected_sid.reset(_sid_token)
             logger.info("[%s] trigger_greeting: delivered=%s", self.lanlan_name, delivered)
             # 投递成功后才真正消费节日/周末预算
             # commit 内部会 atomic_write_json 消费预算文件，offload 以免阻塞事件循环

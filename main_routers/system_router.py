@@ -3455,7 +3455,9 @@ async def proactive_chat(request: Request):
                 _append_music_recommendations(source_links, music_content)
         
         # 一次性投递完整文本 + 记录历史 + TTS end + turn end
-        await mgr.finish_proactive_delivery(response_text)
+        # 传 proactive_sid：若 Phase 2 流结束到这里之间用户已打断（换了 sid），
+        # finish 内部会跳过所有写入，避免 proactive 文本污染用户当前轮次。
+        await mgr.finish_proactive_delivery(response_text, expected_speech_id=proactive_sid)
 
         # 记录主动搭话
         _record_proactive_chat(lanlan_name, response_text, primary_channel)
