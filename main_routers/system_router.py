@@ -3457,7 +3457,24 @@ async def proactive_chat(request: Request):
         # 一次性投递完整文本 + 记录历史 + TTS end + turn end
         # 传 proactive_sid：若 Phase 2 流结束到这里之间用户已打断（换了 sid），
         # finish 内部会跳过所有写入，避免 proactive 文本污染用户当前轮次。
-        await mgr.finish_proactive_delivery(response_text, expected_speech_id=proactive_sid)
+        committed = await mgr.finish_proactive_delivery(
+            response_text, expected_speech_id=proactive_sid
+        )
+        if not committed:
+            # Proactive 内容未真正落库（用户已接管本轮），所有下游副作用必须跳过：
+            # 否则 _record_proactive_chat 会把未送达内容计入去重历史、topic usage
+            # 会误记已用，前端拿到 "chat" action 会以为搭话成功。
+            logger.info(
+                "[%s] 主动搭话被用户接管，短路下游写入（topic/memory/response）",
+                lanlan_name,
+            )
+            return JSONResponse({
+                "success": True,
+                "action": "pass",
+                "message": "proactive delivery skipped: user took over turn",
+                "lanlan_name": lanlan_name,
+                "turn_id": mgr.current_speech_id,
+            })
 
         # 记录主动搭话
         _record_proactive_chat(lanlan_name, response_text, primary_channel)

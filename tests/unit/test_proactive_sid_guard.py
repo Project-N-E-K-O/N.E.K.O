@@ -189,12 +189,13 @@ async def test_handle_output_transcript_contextvar_mismatch_drops():
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def test_finish_proactive_delivery_no_expected_sid_runs_all():
-    """向后兼容：不传 expected_speech_id 照常投递。"""
+    """向后兼容：不传 expected_speech_id 照常投递，并返回 True。"""
     mgr = _make_mgr()
     mgr.current_speech_id = "anything"
     mgr.session = MagicMock()
     mgr.session._conversation_history = []
-    await LLMSessionManager.finish_proactive_delivery(mgr, "done")
+    result = await LLMSessionManager.finish_proactive_delivery(mgr, "done")
+    assert result is True
     mgr.send_lanlan_response.assert_called_once()
     assert len(mgr.session._conversation_history) == 1
     assert mgr._tts_done_queued_for_turn is True
@@ -205,22 +206,28 @@ async def test_finish_proactive_delivery_sid_match_runs_all():
     mgr.current_speech_id = "s_proactive"
     mgr.session = MagicMock()
     mgr.session._conversation_history = []
-    await LLMSessionManager.finish_proactive_delivery(
+    result = await LLMSessionManager.finish_proactive_delivery(
         mgr, "done", expected_speech_id="s_proactive",
     )
+    assert result is True
     mgr.send_lanlan_response.assert_called_once()
     assert len(mgr.session._conversation_history) == 1
 
 
 async def test_finish_proactive_delivery_sid_mismatch_skips_all_writes():
-    """关键：Phase 2 结束→finish 之间用户打断，finish 内所有副作用必须跳过。"""
+    """关键：Phase 2 结束→finish 之间用户打断，finish 内所有副作用必须跳过，且返回 False。
+
+    路由层依赖 False 这个返回值来短路 _record_proactive_chat / topic usage /
+    surfaced reflection 等下游副作用，避免"未送达内容"被记为已送达。
+    """
     mgr = _make_mgr()
     mgr.current_speech_id = "s_user"  # 用户接管
     mgr.session = MagicMock()
     mgr.session._conversation_history = []
-    await LLMSessionManager.finish_proactive_delivery(
+    result = await LLMSessionManager.finish_proactive_delivery(
         mgr, "orphan proactive", expected_speech_id="s_proactive",
     )
+    assert result is False
     mgr.send_lanlan_response.assert_not_called()
     assert mgr.session._conversation_history == []
     assert mgr._tts_done_queued_for_turn is False

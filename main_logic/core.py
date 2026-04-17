@@ -2249,7 +2249,7 @@ class LLMSessionManager:
                 if self.tts_thread and not self.tts_thread.is_alive():
                     self._respawn_tts_worker()
 
-    async def finish_proactive_delivery(self, full_text: str, expected_speech_id: str | None = None):
+    async def finish_proactive_delivery(self, full_text: str, expected_speech_id: str | None = None) -> bool:
         """流式完成后收尾：一次性投递完整文本 + 记录历史 + TTS/turn end 信号。
 
         expected_speech_id: 若不为 None 且在进入 _proactive_write_lock 后与当前
@@ -2257,6 +2257,10 @@ class LLMSessionManager:
         接管本轮（stream_text 清了 queue + 换了 sid）。此时前端/history/TTS
         结束信号都必须跳过，否则 proactive 文本气泡会插在用户回复后面、
         history 被污染、TTS done 会误结束用户正在进行的回复。
+
+        返回 True 表示真正落库，False 表示因 sid 变化被跳过。调用方据此短路
+        下游副作用（_record_proactive_chat / topic usage / surfaced reflection 等），
+        避免把未送达的内容记成"已送达"。
         """
         async with self._proactive_write_lock:
             if expected_speech_id is not None and self.current_speech_id != expected_speech_id:
@@ -2264,7 +2268,7 @@ class LLMSessionManager:
                     "[%s] finish_proactive_delivery skip: sid changed (expected=%s current=%s)，用户已接管本轮",
                     self.lanlan_name, expected_speech_id, self.current_speech_id,
                 )
-                return
+                return False
             await self.send_lanlan_response(full_text, is_first_chunk=True)
 
             from utils.llm_client import AIMessage as _AIMsg
@@ -2287,6 +2291,7 @@ class LLMSessionManager:
             except Exception:
                 pass
         logger.info("[%s] Proactive stream delivered: %.40s…", self.lanlan_name, full_text)
+        return True
 
     async def trigger_agent_callbacks(self) -> None:
         """Proactively deliver pending agent task results via LLM rephrase.
