@@ -2158,9 +2158,6 @@ async def startup():
         except Exception as exc:
             logger.error("[Agent] BrowserUseAdapter background init failed: %s", exc)
 
-    _bu_task = asyncio.create_task(_init_browser_use_background())
-    Modules._persistent_tasks.add(_bu_task)
-    _bu_task.add_done_callback(Modules._persistent_tasks.discard)
     try:
         await _start_embedded_user_plugin_server()
     except Exception as e:
@@ -2232,9 +2229,16 @@ async def startup():
             logger.error("[OpenFang] background init failed: %s", exc)
             _set_capability("openfang", False, str(exc))
 
-    _of_task = asyncio.create_task(_init_openfang_background())
-    Modules._persistent_tasks.add(_of_task)
-    _of_task.add_done_callback(Modules._persistent_tasks.discard)
+    # BrowserUse 与 OpenFang 都涉及较重的初始化（CPU 密集模块加载 / 进程连通性轮询），
+    # 放在同一个后台任务里串行执行，避免两者并发时启动期 CPU 双峰。LLM connectivity
+    # probe 是轻量 HTTP，独立 task 与这条串行链并行。
+    async def _init_heavy_adapters_serial():
+        await _init_browser_use_background()
+        await _init_openfang_background()
+
+    _heavy_adapters_task = asyncio.create_task(_init_heavy_adapters_serial())
+    Modules._persistent_tasks.add(_heavy_adapters_task)
+    _heavy_adapters_task.add_done_callback(Modules._persistent_tasks.discard)
 
     # Both CUA and BrowserUse share the agent LLM — default to "not connected"
     # and probe in background.  The single check updates both capability caches.
