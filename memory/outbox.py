@@ -156,6 +156,9 @@ class Outbox:
             op_id = rec.get('op_id')
             status = rec.get('status')
             if not op_id:
+                logger.warning(
+                    f"[Outbox] 跳过缺 op_id 的记录（字段集: {sorted(rec.keys())!r}）"
+                )
                 continue
             if status == 'pending':
                 pending[op_id] = rec

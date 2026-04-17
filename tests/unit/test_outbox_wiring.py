@@ -34,6 +34,8 @@ def _install_fresh_memory_state(tmpdir: str):
 
     memory_server.outbox = ob
     memory_server._config_manager = mock_cm
+    # Reset event-loop-bound semaphore so each test gets a fresh one
+    memory_server._replay_semaphore = None
     return ob, mock_cm
 
 
@@ -117,13 +119,11 @@ async def test_replay_reinvokes_pending_handler(tmp_path):
         {OP_EXTRACT_FACTS: _replay_handler},
         clear=False,
     ):
-        await memory_server._replay_pending_outbox()
-        # 等待 spawn 的任务跑完
-        await asyncio.sleep(0)
-        # 拿 background task 集合的强引用等全部完成
-        pending_tasks = list(memory_server._BACKGROUND_TASKS)
-        if pending_tasks:
-            await asyncio.gather(*pending_tasks, return_exceptions=True)
+        # _replay_pending_outbox 直接返回 spawn 的 task 列表，无需扫
+        # _BACKGROUND_TASKS 快照（之前的 sleep(0) drain 模式脆弱）
+        spawned = await memory_server._replay_pending_outbox()
+        if spawned:
+            await asyncio.gather(*spawned, return_exceptions=True)
 
     assert len(replay_calls) == 1
     assert replay_calls[0][0] == "小天"
@@ -142,15 +142,100 @@ async def test_replay_skips_unknown_op_type(tmp_path):
 
     # clear handlers to ensure this type isn't registered
     with patch.dict(memory_server._OUTBOX_HANDLERS, {}, clear=True):
-        await memory_server._replay_pending_outbox()
-        pending_tasks = list(memory_server._BACKGROUND_TASKS)
-        if pending_tasks:
-            await asyncio.gather(*pending_tasks, return_exceptions=True)
+        spawned = await memory_server._replay_pending_outbox()
+        if spawned:
+            await asyncio.gather(*spawned, return_exceptions=True)
 
     # 仍 pending（handler 没跑、也没 append_done）
     pending = await ob.apending_ops("小天")
     assert len(pending) == 1
     assert pending[0]["op_id"] == op_id
+
+
+@pytest.mark.asyncio
+async def test_replay_respects_concurrency_semaphore(tmp_path):
+    """启动补跑不应无限 fan-out：_REPLAY_CONCURRENCY=4 应限制同时在飞 handler 数。"""
+    ob, _ = _install_fresh_memory_state(str(tmp_path))
+    import memory_server
+    from memory.outbox import OP_EXTRACT_FACTS
+
+    # 登记 10 个 pending op
+    for i in range(10):
+        await ob.aappend_pending("小天", OP_EXTRACT_FACTS, {"i": i})
+
+    in_flight = 0
+    max_in_flight = 0
+
+    async def _slow_handler(name: str, payload: dict):
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        # 让调度器给其他 task 机会启动（多次 yield）
+        for _ in range(3):
+            await asyncio.sleep(0)
+        in_flight -= 1
+
+    with patch.dict(
+        memory_server._OUTBOX_HANDLERS,
+        {OP_EXTRACT_FACTS: _slow_handler},
+        clear=False,
+    ):
+        spawned = await memory_server._replay_pending_outbox()
+        await asyncio.gather(*spawned, return_exceptions=True)
+
+    assert max_in_flight <= memory_server._REPLAY_CONCURRENCY, \
+        f"观察到 {max_in_flight} 个同时在飞，超出 {memory_server._REPLAY_CONCURRENCY}"
+    assert await ob.apending_ops("小天") == []
+
+
+@pytest.mark.asyncio
+async def test_end_to_end_kill_then_replay_persists_side_effect(tmp_path):
+    """端到端：handler 把 fact 写入假 FactStore 但在 append_done 前"崩溃"，
+    新进程加载 outbox → 重跑 → side effect 最终落盘。"""
+    ob, _ = _install_fresh_memory_state(str(tmp_path))
+    import memory_server
+    from memory.outbox import OP_EXTRACT_FACTS
+
+    # 第一跑：handler 写"fact"到 side-effect 状态但在 append_done 前进程死
+    side_effect_log: list[str] = []
+
+    async def _handler_run1(name: str, payload: dict):
+        side_effect_log.append(f"run1:{name}:{payload.get('tag')}")
+        raise RuntimeError("process killed")  # 模拟 append_done 前崩
+
+    with patch.dict(
+        memory_server._OUTBOX_HANDLERS,
+        {OP_EXTRACT_FACTS: _handler_run1},
+        clear=False,
+    ):
+        await ob.aappend_pending("小天", OP_EXTRACT_FACTS, {"tag": "rebuttal_msg"})
+        # 直接触发一次 replay 模拟 "崩溃发生在第一次 replay 调用期间"
+        spawned = await memory_server._replay_pending_outbox()
+        await asyncio.gather(*spawned, return_exceptions=True)
+
+    assert side_effect_log == ["run1:小天:rebuttal_msg"]
+    # op 仍 pending：因为 handler raise，_run_outbox_op 不会 append_done
+    pending = await ob.apending_ops("小天")
+    assert len(pending) == 1
+
+    # 第二跑：新进程（fresh outbox 实例 + handler 改为正常版本）
+    fresh_ob, _ = _install_fresh_memory_state(str(tmp_path))
+
+    async def _handler_run2(name: str, payload: dict):
+        side_effect_log.append(f"run2:{name}:{payload.get('tag')}")
+
+    with patch.dict(
+        memory_server._OUTBOX_HANDLERS,
+        {OP_EXTRACT_FACTS: _handler_run2},
+        clear=False,
+    ):
+        spawned = await memory_server._replay_pending_outbox()
+        await asyncio.gather(*spawned, return_exceptions=True)
+
+    # side effect 在重启后被重放
+    assert "run2:小天:rebuttal_msg" in side_effect_log
+    # done 写入，不再 pending
+    assert await fresh_ob.apending_ops("小天") == []
 
 
 @pytest.mark.asyncio

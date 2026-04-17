@@ -32,6 +32,7 @@ import asyncio
 import logging
 import argparse
 from datetime import datetime, timedelta
+from typing import Awaitable, Callable
 from utils.frontend_utils import get_timestamp
 
 # 配置日志
@@ -198,16 +199,25 @@ def _spawn_background_task(coro) -> asyncio.Task:
 
 # ── Outbox handler registry + replay (P1.c) ────────────────────────
 
-# op_type → async handler(name: str, payload: dict). Handler 必须幂等。
-_OUTBOX_HANDLERS: dict[str, "callable"] = {}
+# op_type → async handler(name: str, payload: dict) -> None. Handler 必须幂等。
+OutboxHandler = Callable[[str, dict], Awaitable[None]]
+_OUTBOX_HANDLERS: dict[str, OutboxHandler] = {}
+
+# 启动期补跑 fan-out 并发上限：防止 24h 停机后的 outbox 洪水冲击 LLM 后端。
+_REPLAY_CONCURRENCY = 4
+_replay_semaphore: asyncio.Semaphore | None = None  # 懒构造（event loop-bound）
 
 
-def register_outbox_handler(op_type: str, handler) -> None:
+def register_outbox_handler(op_type: str, handler: OutboxHandler) -> None:
     _OUTBOX_HANDLERS[op_type] = handler
 
 
-async def _run_outbox_op(name: str, op: dict) -> None:
-    """跑单条 outbox op 并在成功后 append_done。失败保持 pending 等下次启动补跑。"""
+async def _run_outbox_op(name: str, op: dict, sem: asyncio.Semaphore | None = None) -> None:
+    """跑单条 outbox op 并在成功后 append_done。失败保持 pending 等下次启动补跑。
+
+    `sem`：startup replay 路径传入共享 Semaphore 限制 LLM fan-out；日常单次
+    spawn 路径传 None 即不限流。
+    """
     op_id = op.get('op_id')
     op_type = op.get('type')
     payload = op.get('payload') or {}
@@ -215,16 +225,23 @@ async def _run_outbox_op(name: str, op: dict) -> None:
     if handler is None:
         logger.warning(f"[Outbox] {name}: 未注册的 op type {op_type}, 跳过 {op_id}")
         return
+    acquired = sem is not None
+    if acquired:
+        await sem.acquire()
     try:
-        await handler(name, payload)
-    except Exception as e:
-        logger.warning(f"[Outbox] {name}/{op_type}/{op_id} 执行失败（保持 pending）: {e}")
-        return
-    try:
-        await outbox.aappend_done(name, op_id)
-    except Exception as e:
-        # append_done 失败不致命：下次启动重放这个 op，handler 幂等。
-        logger.warning(f"[Outbox] {name}/{op_type}/{op_id}: append_done 失败: {e}")
+        try:
+            await handler(name, payload)
+        except Exception as e:
+            logger.warning(f"[Outbox] {name}/{op_type}/{op_id} 执行失败（保持 pending）: {e}")
+            return
+        try:
+            await outbox.aappend_done(name, op_id)
+        except Exception as e:
+            # append_done 失败不致命：下次启动重放这个 op，handler 幂等。
+            logger.warning(f"[Outbox] {name}/{op_type}/{op_id}: append_done 失败: {e}")
+    finally:
+        if acquired:
+            sem.release()
 
 
 async def _spawn_outbox_extract_facts(lanlan_name: str, messages: list) -> asyncio.Task:
@@ -249,14 +266,25 @@ async def _spawn_outbox_extract_facts(lanlan_name: str, messages: list) -> async
     return _spawn_background_task(_run_outbox_op(lanlan_name, op))
 
 
-async def _replay_pending_outbox() -> None:
-    """启动期扫描 outbox，补跑未完成 op。"""
+async def _replay_pending_outbox() -> list[asyncio.Task]:
+    """启动期扫描 outbox，补跑未完成 op。返回 spawn 出的 Task 列表。
+
+    返回值方便调用方（或测试）await 所有任务跑完，而不是靠
+    `_BACKGROUND_TASKS` 快照 + `asyncio.sleep(0)` 这种弱保证等法。
+    """
+    global _replay_semaphore
+    spawned: list[asyncio.Task] = []
     try:
         character_data = _config_manager.load_characters()
         catgirl_names = list(character_data.get('猫娘', {}).keys())
     except Exception as e:
         logger.warning(f"[Outbox] 启动补跑：加载角色列表失败: {e}")
-        return
+        return spawned
+
+    # Semaphore 在 event loop 里构造（不能在模块级构造）
+    if _replay_semaphore is None:
+        _replay_semaphore = asyncio.Semaphore(_REPLAY_CONCURRENCY)
+
     for name in catgirl_names:
         try:
             pending = await outbox.apending_ops(name)
@@ -274,7 +302,10 @@ async def _replay_pending_outbox() -> None:
             continue
         logger.info(f"[Outbox] {name}: 补跑 {len(pending)} 条未完成 op")
         for op in pending:
-            _spawn_background_task(_run_outbox_op(name, op))
+            spawned.append(
+                _spawn_background_task(_run_outbox_op(name, op, _replay_semaphore))
+            )
+    return spawned
 
 @app.post("/shutdown")
 async def shutdown_memory_server():

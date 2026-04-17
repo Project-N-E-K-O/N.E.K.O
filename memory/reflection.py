@@ -276,7 +276,9 @@ class ReflectionEngine:
         if len(unabsorbed) < MIN_FACTS_FOR_REFLECTION:
             return []
 
-        source_fact_ids = [f['id'] for f in unabsorbed]
+        # 排序一次：on-disk 字段与 _reflection_id_from_facts 内部 sorted 对齐，
+        # 消除 "hash 用 sorted，存盘不 sorted" 的隐式非对称
+        source_fact_ids = sorted(f['id'] for f in unabsorbed)
         rid = _reflection_id_from_facts(source_fact_ids)
 
         # 幂等 short-circuit：同一批 facts 的 reflection 已持久化 →
