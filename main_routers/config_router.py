@@ -774,6 +774,7 @@ async def update_core_config(request: Request):
             return {"success": False, "error": f"配置已保存但重新加载失败: {str(reload_error)}"}
         
         # 4. Notify agent_server to rebuild CUA adapter with fresh config
+        # per-call AsyncClient: 用户保存 API key 才触发，冷路径
         try:
             import httpx
             from config import TOOL_SERVER_PORT

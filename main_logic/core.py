@@ -1976,6 +1976,8 @@ class LLMSessionManager:
         """Query agent server for active tasks and return a prompt snippet."""
         if not self._is_agent_enabled():
             return ""
+        # per-call AsyncClient: agent mode 才跑，每次 session init 一次，目标是 TOOL_SERVER_PORT
+        # （非 memory_client 覆盖的 host），为此单独开共享 client 收益不值得
         try:
             async with httpx.AsyncClient(timeout=1.5, proxy=None, trust_env=False) as client:
                 resp = await client.get(f"http://127.0.0.1:{TOOL_SERVER_PORT}/tasks")
@@ -2504,13 +2506,19 @@ class LLMSessionManager:
             logger.info("[%s] trigger_greeting: voice session active/starting, skipping", self.lanlan_name)
             return
 
+        # 复用 memory_client 单例：session 启动路径，避开 AsyncClient 构造开销
+        # （Windows idle 157ms，事件循环压力下可达 1.1s，详见 utils/memory_client.py）
         try:
-            async with httpx.AsyncClient(timeout=2.0, proxy=None, trust_env=False) as client:
-                resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/last_conversation_gap/{self.lanlan_name}")
-                if not resp.is_success:
-                    logger.warning("[%s] trigger_greeting: memory server returned %s", self.lanlan_name, resp.status_code)
-                    return
-                gap_seconds = resp.json().get("gap_seconds", -1)
+            from utils.memory_client import get_memory_client
+            _mem_client = get_memory_client()
+            resp = await _mem_client.get(
+                f"http://127.0.0.1:{self.memory_server_port}/last_conversation_gap/{self.lanlan_name}",
+                timeout=2.0,
+            )
+            if not resp.is_success:
+                logger.warning("[%s] trigger_greeting: memory server returned %s", self.lanlan_name, resp.status_code)
+                return
+            gap_seconds = resp.json().get("gap_seconds", -1)
         except Exception as e:
             logger.warning("[%s] trigger_greeting: failed to query gap: %s", self.lanlan_name, e)
             return

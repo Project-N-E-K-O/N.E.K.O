@@ -1036,8 +1036,9 @@ def _sync_preload_modules():
     try:
         import httpx
         import asyncio
-        
+
         async def _warmup_httpx():
+            # per-call AsyncClient: 这就是 SSL warmup 本身，改共享 client 反而没意义
             async with httpx.AsyncClient(timeout=1.0, proxy=None, trust_env=False) as client:
                 # 发送一个简单请求预热 SSL 上下文
                 try:
@@ -1355,6 +1356,8 @@ async def shutdown_server_async():
         try:
             from config import MEMORY_SERVER_PORT
             shutdown_url = f"http://127.0.0.1:{MEMORY_SERVER_PORT}/shutdown"
+            # per-call AsyncClient: 每进程仅一次的 shutdown 路径；memory_client 单例
+            # 紧接着会在 on_shutdown 里被 aclose()，此处直接构造一次更稳妥
             async with httpx.AsyncClient(timeout=1, proxy=None, trust_env=False) as client:
                 response = await client.post(shutdown_url)
                 if response.status_code == 200:
