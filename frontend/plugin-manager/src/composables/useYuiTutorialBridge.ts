@@ -25,6 +25,7 @@ const QUERY_KEY_RESUME_SCENE = 'resume_scene'
 const QUERY_KEY_HANDOFF_TOKEN = 'handoff_token'
 
 const COMPLETE_MESSAGE_TYPE = 'neko:yui-guide:plugin-dashboard-complete'
+const DEFAULT_OPENER_ORIGIN = import.meta.env.VITE_YUI_TUTORIAL_OPENER_ORIGIN || ''
 
 const state = ref<YuiTutorialState>({
   isActive: false,
@@ -35,6 +36,14 @@ const state = ref<YuiTutorialState>({
 })
 
 let _initialized = false
+
+function resetState() {
+  state.value.isActive = false
+  state.value.flowId = ''
+  state.value.sourcePage = ''
+  state.value.resumeScene = ''
+  state.value.handoffToken = ''
+}
 
 function parseQueryParams(): Partial<YuiTutorialState> {
   const params = new URLSearchParams(window.location.search)
@@ -59,6 +68,31 @@ function cleanUrl() {
   url.searchParams.delete(QUERY_KEY_RESUME_SCENE)
   url.searchParams.delete(QUERY_KEY_HANDOFF_TOKEN)
   window.history.replaceState({}, '', url.toString())
+}
+
+function getTrustedOpenerOrigin() {
+  if (!window.opener || window.opener.closed) {
+    return ''
+  }
+
+  try {
+    const openerOrigin = window.opener.location.origin
+    if (openerOrigin) {
+      return openerOrigin
+    }
+  } catch {
+    // Cross-origin opener access is expected here.
+  }
+
+  if (document.referrer) {
+    try {
+      return new URL(document.referrer).origin
+    } catch {
+      // Ignore malformed referrer and continue to configured fallback.
+    }
+  }
+
+  return DEFAULT_OPENER_ORIGIN
 }
 
 export function useYuiTutorialBridge() {
@@ -86,20 +120,20 @@ export function useYuiTutorialBridge() {
       }
     }
 
-    if (window.opener && !window.opener.closed) {
+    const openerOrigin = getTrustedOpenerOrigin()
+    if (window.opener && !window.opener.closed && openerOrigin) {
       try {
-        window.opener.postMessage(payload, '*')
+        window.opener.postMessage(payload, openerOrigin)
       } catch {
         // cross-origin may block
       }
     }
 
-    state.value.isActive = false
-    state.value.handoffToken = ''
+    resetState()
   }
 
   function dismiss() {
-    state.value.isActive = false
+    resetState()
   }
 
   const isActive = computed(() => state.value.isActive)

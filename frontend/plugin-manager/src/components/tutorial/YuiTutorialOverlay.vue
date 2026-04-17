@@ -2,14 +2,22 @@
   <Teleport to="body">
     <Transition name="yui-tutorial-fade">
       <div v-if="isActive" class="yui-tutorial-overlay">
-        <div class="yui-tutorial-card">
+        <div
+          ref="dialogRef"
+          class="yui-tutorial-card"
+          role="dialog"
+          aria-modal="true"
+          :aria-labelledby="titleId"
+          tabindex="-1"
+          @keydown="handleKeydown"
+        >
           <div class="yui-tutorial-avatar">🐱</div>
           <div class="yui-tutorial-content">
-            <h3 class="yui-tutorial-title">{{ t('yuiTutorial.title') }}</h3>
+            <h3 :id="titleId" class="yui-tutorial-title">{{ t('yuiTutorial.title') }}</h3>
             <p class="yui-tutorial-text">{{ t('yuiTutorial.welcome') }}</p>
             <p class="yui-tutorial-text">{{ t('yuiTutorial.hint') }}</p>
           </div>
-          <div class="yui-tutorial-actions">
+          <div ref="actionsRef" class="yui-tutorial-actions">
             <el-button type="primary" @click="handleComplete">
               {{ t('yuiTutorial.complete') }}
             </el-button>
@@ -24,11 +32,34 @@
 </template>
 
 <script setup lang="ts">
+import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useYuiTutorialBridge } from '@/composables/useYuiTutorialBridge'
 
 const { t } = useI18n()
 const { isActive, complete, dismiss } = useYuiTutorialBridge()
+const titleId = 'yui-tutorial-title'
+const dialogRef = ref<HTMLElement | null>(null)
+const actionsRef = ref<HTMLElement | null>(null)
+const lastFocusedElement = ref<HTMLElement | null>(null)
+
+function focusDialog() {
+  const focusTarget = actionsRef.value?.querySelector<HTMLElement>(
+    'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+  )
+
+  if (focusTarget) {
+    focusTarget.focus()
+    return
+  }
+
+  dialogRef.value?.focus()
+}
+
+function restoreFocus() {
+  lastFocusedElement.value?.focus?.()
+  lastFocusedElement.value = null
+}
 
 function handleComplete() {
   complete({ action: 'explored' })
@@ -37,6 +68,38 @@ function handleComplete() {
 function handleDismiss() {
   dismiss()
 }
+
+function handleKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Escape' || !isActive.value) {
+    return
+  }
+
+  event.preventDefault()
+  handleDismiss()
+}
+
+watch(
+  isActive,
+  async (active, wasActive) => {
+    if (active) {
+      lastFocusedElement.value = document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null
+      await nextTick()
+      focusDialog()
+      return
+    }
+
+    if (wasActive) {
+      await nextTick()
+      restoreFocus()
+    }
+  }
+)
+
+onBeforeUnmount(() => {
+  restoreFocus()
+})
 </script>
 
 <style scoped>

@@ -151,6 +151,7 @@
     var HANDOFF_TOKEN_VERSION = 1;
     var HANDOFF_TOKEN_TTL_MS = 5 * 60 * 1000; // 5 分钟
     var HANDOFF_FLOW_ID = 'home_yui_guide_v1';
+    var DEFAULT_PLUGIN_DASHBOARD_ORIGIN = 'http://127.0.0.1:48916';
 
     function getPrefix() {
         if (typeof window.UniversalTutorialManager === 'function' &&
@@ -176,6 +177,22 @@
     function getPopup(buttonId, prefix) {
         var p = prefix || getPrefix();
         return document.getElementById(p + '-popup-' + buttonId);
+    }
+
+    function getPluginDashboardExpectedOrigin() {
+        if (window.YUI_GUIDE_PLUGIN_DASHBOARD_ORIGIN) {
+            return String(window.YUI_GUIDE_PLUGIN_DASHBOARD_ORIGIN);
+        }
+
+        if (window.NEKO_USER_PLUGIN_BASE) {
+            try {
+                return new URL(String(window.NEKO_USER_PLUGIN_BASE), window.location.href).origin;
+            } catch (e) {
+                console.warn('[YuiGuideHandoff] getPluginDashboardExpectedOrigin: NEKO_USER_PLUGIN_BASE 无效:', e);
+            }
+        }
+
+        return DEFAULT_PLUGIN_DASHBOARD_ORIGIN;
     }
 
     // ─── M3: Handoff Token CRUD ──────────────────────────────
@@ -361,6 +378,10 @@
      * @returns {Promise<Window|null>}
      */
     function openPageWithHandoff(targetPage, resumeScene, openUrl, windowName, features) {
+        if (targetPage === 'plugin_dashboard' || windowName === 'plugin_dashboard') {
+            return openPluginDashboard(resumeScene);
+        }
+
         var tokenObj = createHandoffToken(targetPage, resumeScene);
         if (!tokenObj) {
             console.warn('[YuiGuideHandoff] openPageWithHandoff: token 创建失败，回退到普通打开');
@@ -408,6 +429,8 @@
      */
     function openPluginDashboard(resumeScene) {
         var scene = resumeScene || 'plugin_dashboard_landing';
+        // 这里仍然创建并持久化首页侧 token，用于 consume/read/clear 的本地账本；
+        // 插件面板自身跨源读取不到 localStorage，实际消费依赖 URL 上的 handoff_token。
         var tokenObj = createHandoffToken('plugin_dashboard', scene);
         var tokenId = tokenObj ? tokenObj.token : '';
 
@@ -455,6 +478,11 @@
         function handler(event) {
             if (!event.data || typeof event.data !== 'object') return;
             if (event.data.type !== 'neko:yui-guide:plugin-dashboard-complete') return;
+            var expectedWindow = _activeWindows[normalizeWindowName('plugin_dashboard')];
+            var expectedOrigin = getPluginDashboardExpectedOrigin();
+            if (!expectedWindow || expectedWindow.closed) return;
+            if (event.source !== expectedWindow) return;
+            if (!expectedOrigin || event.origin !== expectedOrigin) return;
             onComplete(event.data.detail || {});
         }
 
