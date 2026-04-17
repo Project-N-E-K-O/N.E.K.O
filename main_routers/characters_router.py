@@ -1570,10 +1570,11 @@ async def delete_catgirl(name: str):
     try:
         memory_paths = [_config_manager.memory_dir, _config_manager.project_memory_dir]
         files_to_delete = [
-            f'semantic_memory_{name}',  # 语义记忆目录
-            f'time_indexed_{name}',     # 时间索引数据库文件
-            f'settings_{name}.json',    # 设置文件
-            f'recent_{name}.json',      # 最近聊天记录文件
+            f'semantic_memory_{name}',  # 语义记忆目录（旧布局）
+            f'time_indexed_{name}',     # 时间索引数据库文件（旧布局）
+            f'settings_{name}.json',    # 设置文件（旧布局）
+            f'recent_{name}.json',      # 最近聊天记录文件（旧布局）
+            name,                       # 新布局：memory/<name>/{recent,facts,reflections,persona,time_indexed.db,...}
         ]
 
         for base_dir in memory_paths:

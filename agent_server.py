@@ -3030,7 +3030,7 @@ async def openfang_availability():
     """检查 OpenFang 可用性。"""
     if not Modules.openfang:
         return {"enabled": False, "ready": False, "reason": "adapter 未加载"}
-    return Modules.openfang.is_available()
+    return await asyncio.to_thread(Modules.openfang.is_available)
 
 
 @app.get("/openclaw/availability")
@@ -3494,7 +3494,7 @@ async def computer_use_availability():
     if not getattr(Modules.computer_use, "init_ok", False):
         asyncio.ensure_future(_fire_agent_llm_connectivity_check())
 
-    status = Modules.computer_use.is_available()
+    status = await asyncio.to_thread(Modules.computer_use.is_available)
     reasons = status.get("reasons", []) if isinstance(status, dict) else []
     _set_capability("computer_use", bool(status.get("ready")) if isinstance(status, dict) else False, reasons[0] if reasons else "")
     
@@ -3555,7 +3555,7 @@ async def computer_use_run(payload: Dict[str, Any]):
     screenshot = base64.b64decode(screenshot_b64) if isinstance(screenshot_b64, str) else None
     # Preflight readiness check to avoid scheduling tasks that will fail immediately
     try:
-        avail = Modules.computer_use.is_available()
+        avail = await asyncio.to_thread(Modules.computer_use.is_available)
         if not avail.get("ready"):
             return JSONResponse(content={"success": False, "error": "ComputerUse not ready", "reasons": avail.get("reasons", [])}, status_code=503)
     except Exception as e:

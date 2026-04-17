@@ -1442,10 +1442,16 @@ class ConfigManager:
                     her_name,
                 )
                 character_data['当前猫娘'] = her_name
-                with self._characters_cache_lock:
-                    if self._characters_cache is not None:
-                        self._characters_cache['当前猫娘'] = her_name
-                    self._characters_dirty = True
+                # 罕见分支（仅配置损坏/删除猫娘后触发），同步落盘以保证重启后修正仍生效。
+                # save_characters 内部会刷新 cache，这里无需再手动同步。
+                try:
+                    self.save_characters(character_data)
+                except Exception as persist_err:
+                    logger.warning("自动纠正当前猫娘后写回失败，将仅保留内存修正: %s", persist_err)
+                    with self._characters_cache_lock:
+                        if self._characters_cache is not None:
+                            self._characters_cache['当前猫娘'] = her_name
+                        self._characters_dirty = True
 
         name_mapping = {'human': master_name, 'system': "SYSTEM_MESSAGE"}
         lanlan_prompt_map = {}

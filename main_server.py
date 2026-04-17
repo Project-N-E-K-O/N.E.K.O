@@ -940,7 +940,12 @@ async def on_startup():
     if _IS_MAIN_PROCESS:
         global steamworks, _preload_task, agent_event_bridge, _server_loop
         _server_loop = asyncio.get_running_loop()
-        _server_loop.slow_callback_duration = 0.05
+        # asyncio 的慢回调告警只在 loop debug 模式下输出。默认关闭，
+        # 需要排查事件循环停顿时设 NEKO_DEBUG_ASYNC=1 启用（会略微增加每 callback 开销）。
+        if os.environ.get("NEKO_DEBUG_ASYNC") == "1":
+            _server_loop.set_debug(True)
+            _server_loop.slow_callback_duration = 0.05
+            logger.info("[asyncio] debug mode enabled (slow_callback_duration=0.05s)")
         logger.info("正在初始化 Steamworks...")
         steamworks = initialize_steamworks()
         
