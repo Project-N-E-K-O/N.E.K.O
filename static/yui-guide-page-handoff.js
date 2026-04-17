@@ -590,6 +590,10 @@
             }
 
             if (typeof sidePanel._expand === 'function') {
+                if (sidePanel._hoverCollapseTimer) {
+                    clearTimeout(sidePanel._hoverCollapseTimer);
+                    sidePanel._hoverCollapseTimer = null;
+                }
                 sidePanel._expand();
             } else {
                 toggleItem.dispatchEvent(new MouseEvent('mouseenter', {
@@ -598,6 +602,19 @@
                     view: window
                 }));
             }
+
+            try {
+                toggleItem.dispatchEvent(new MouseEvent('mouseenter', {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window
+                }));
+                sidePanel.dispatchEvent(new MouseEvent('mouseenter', {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window
+                }));
+            } catch (_) {}
 
             return waitFor(function () {
                 return isSidePanelVisible(sidePanel) ? sidePanel : null;

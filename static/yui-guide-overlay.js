@@ -386,17 +386,20 @@
 
             const normalizedOptions = options || {};
             const allowMask = normalizedOptions.allowMask !== false;
+            const variant = normalizedOptions.variant || '';
 
             if (!spotlightRect) {
                 frame.hidden = true;
                 frame.classList.remove('is-visible');
                 frame.classList.remove('is-circular-mask');
+                frame.classList.remove('is-thin-variant');
                 return;
             }
 
             frame.hidden = false;
             frame.classList.add('is-visible');
             frame.classList.toggle('is-circular-mask', !!spotlightRect.isCircular && allowMask);
+            frame.classList.toggle('is-thin-variant', variant === 'thin');
             frame.style.left = spotlightRect.left + 'px';
             frame.style.top = spotlightRect.top + 'px';
             frame.style.width = spotlightRect.width + 'px';
@@ -463,9 +466,14 @@
                 if (!entry) {
                     return;
                 }
+                const sourceElement = this.extraSpotlightElements[index] || null;
+                const variant = sourceElement && typeof sourceElement.getAttribute === 'function'
+                    ? sourceElement.getAttribute('data-yui-guide-spotlight-variant')
+                    : '';
                 this.updateBackdropCutout(entry.cutout, rect || null);
                 this.updateSpotlightFrame(entry.frame, rect || null, {
-                    allowMask: false
+                    allowMask: false,
+                    variant: variant
                 });
             });
             for (let index = extraRects.length; index < this.extraSpotlightEntries.length; index += 1) {

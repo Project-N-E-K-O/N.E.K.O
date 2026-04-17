@@ -748,6 +748,7 @@
             this.chatIntroCleanupFns = [];
             this.virtualSpotlights = new Map();
             this.preciseHighlightElements = new Set();
+            this.spotlightVariantElements = new Set();
             this.retainedExtraSpotlightElements = [];
             this.sceneExtraSpotlightElements = [];
             this.pluginDashboardHandoff = null;
@@ -992,6 +993,31 @@
             });
         }
 
+        clearSpotlightVariantHints() {
+            this.spotlightVariantElements.forEach((element) => {
+                if (!element || typeof element.removeAttribute !== 'function') {
+                    return;
+                }
+
+                element.removeAttribute('data-yui-guide-spotlight-variant');
+            });
+            this.spotlightVariantElements.clear();
+        }
+
+        setSpotlightVariantHints(entries) {
+            this.clearSpotlightVariantHints();
+            (Array.isArray(entries) ? entries : []).forEach((entry) => {
+                const element = entry && entry.element;
+                const variant = entry && entry.variant;
+                if (!element || typeof element.setAttribute !== 'function' || !variant) {
+                    return;
+                }
+
+                element.setAttribute('data-yui-guide-spotlight-variant', String(variant));
+                this.spotlightVariantElements.add(element);
+            });
+        }
+
         syncExtraSpotlights() {
             const nextElements = [];
             const seen = new Set();
@@ -1210,18 +1236,28 @@
             const characterMenu = normalizeVisibleTarget(targets.characterMenu);
             const appearanceItem = normalizeVisibleTarget(targets.appearanceItem);
             const voiceCloneItem = normalizeVisibleTarget(targets.voiceCloneItem);
+            const characterChildrenBundle = (appearanceItem && voiceCloneItem)
+                ? this.createUnionSpotlight(
+                    'settings-character-children-bundle',
+                    [appearanceItem, voiceCloneItem],
+                    {
+                        padding: 10,
+                        radius: 18
+                    }
+                )
+                : null;
             this.setSceneExtraSpotlights([
                 settingsButtonTarget,
                 characterMenu,
-                appearanceItem,
-                voiceCloneItem
+                characterChildrenBundle
             ].filter(Boolean));
 
             return {
                 settingsButton: settingsButtonTarget,
                 characterMenu: characterMenu,
                 appearanceItem: appearanceItem,
-                voiceCloneItem: voiceCloneItem
+                voiceCloneItem: voiceCloneItem,
+                characterChildrenBundle: characterChildrenBundle
             };
         }
 
@@ -1494,6 +1530,75 @@
 
                 return null;
             }, timeoutMs);
+        }
+
+        waitForStableElementRect(element, timeoutMs) {
+            const normalizedTimeoutMs = Number.isFinite(timeoutMs) ? timeoutMs : 900;
+            if (!element) {
+                return Promise.resolve(null);
+            }
+
+            return new Promise((resolve) => {
+                const startedAt = Date.now();
+                let lastRect = null;
+                let stableCount = 0;
+
+                const tick = () => {
+                    if (this.destroyed) {
+                        resolve(null);
+                        return;
+                    }
+
+                    if (!this.isElementVisible(element)) {
+                        if ((Date.now() - startedAt) >= normalizedTimeoutMs) {
+                            resolve(null);
+                            return;
+                        }
+                        window.setTimeout(tick, 80);
+                        return;
+                    }
+
+                    const rect = element.getBoundingClientRect();
+                    if (!rect || rect.width <= 0 || rect.height <= 0) {
+                        if ((Date.now() - startedAt) >= normalizedTimeoutMs) {
+                            resolve(null);
+                            return;
+                        }
+                        window.setTimeout(tick, 80);
+                        return;
+                    }
+
+                    if (lastRect) {
+                        const delta = Math.max(
+                            Math.abs(rect.left - lastRect.left),
+                            Math.abs(rect.top - lastRect.top),
+                            Math.abs(rect.width - lastRect.width),
+                            Math.abs(rect.height - lastRect.height)
+                        );
+                        stableCount = delta <= 1 ? (stableCount + 1) : 0;
+                    }
+                    lastRect = {
+                        left: rect.left,
+                        top: rect.top,
+                        width: rect.width,
+                        height: rect.height
+                    };
+
+                    if (stableCount >= 2) {
+                        resolve(element);
+                        return;
+                    }
+
+                    if ((Date.now() - startedAt) >= normalizedTimeoutMs) {
+                        resolve(element);
+                        return;
+                    }
+
+                    window.setTimeout(tick, 80);
+                };
+
+                tick();
+            });
         }
 
         getChatIntroTarget() {
@@ -2126,6 +2231,10 @@
                 }
 
                 if (typeof sidePanel._expand === 'function') {
+                    if (sidePanel._hoverCollapseTimer) {
+                        window.clearTimeout(sidePanel._hoverCollapseTimer);
+                        sidePanel._hoverCollapseTimer = null;
+                    }
                     sidePanel._expand();
                 } else {
                     toggleItem.dispatchEvent(new MouseEvent('mouseenter', {
@@ -2134,6 +2243,19 @@
                         view: window
                     }));
                 }
+
+                try {
+                    toggleItem.dispatchEvent(new MouseEvent('mouseenter', {
+                        bubbles: true,
+                        cancelable: true,
+                        view: window
+                    }));
+                    sidePanel.dispatchEvent(new MouseEvent('mouseenter', {
+                        bubbles: true,
+                        cancelable: true,
+                        view: window
+                    }));
+                } catch (_) {}
 
                 const result = await this.waitForElement(() => {
                     return this.isAgentSidePanelVisible(toggleId) ? sidePanel : null;
@@ -2473,6 +2595,85 @@
             return true;
         }
 
+        async resolveElementCenterPoint(element, timeoutMs) {
+            const normalizedTimeoutMs = Number.isFinite(timeoutMs) ? timeoutMs : 800;
+            const startedAt = Date.now();
+
+            while ((Date.now() - startedAt) < normalizedTimeoutMs) {
+                if (this.destroyed || this.angryExitTriggered) {
+                    return null;
+                }
+
+                const rect = this.getElementRect(element);
+                if (rect) {
+                    return {
+                        x: rect.left + (rect.width / 2),
+                        y: rect.top + (rect.height / 2),
+                        rect: rect
+                    };
+                }
+
+                await wait(80);
+            }
+
+            const finalRect = this.getElementRect(element);
+            if (!finalRect) {
+                return null;
+            }
+
+            return {
+                x: finalRect.left + (finalRect.width / 2),
+                y: finalRect.top + (finalRect.height / 2),
+                rect: finalRect
+            };
+        }
+
+        async moveCursorToTrackedElement(element, durationMs, options) {
+            const normalizedOptions = options || {};
+            const totalDurationMs = Number.isFinite(durationMs) ? durationMs : DEFAULT_CURSOR_DURATION_MS;
+            const firstLegMs = Math.max(180, Math.round(totalDurationMs * 0.7));
+            const secondLegMs = Math.max(140, totalDurationMs - firstLegMs);
+            const recheckDelayMs = Number.isFinite(normalizedOptions.recheckDelayMs)
+                ? normalizedOptions.recheckDelayMs
+                : 320;
+            const settleDelayMs = Number.isFinite(normalizedOptions.settleDelayMs)
+                ? normalizedOptions.settleDelayMs
+                : 0;
+
+            const initialPoint = await this.resolveElementCenterPoint(element, 420);
+            if (!initialPoint) {
+                return false;
+            }
+            await this.cursor.moveToPoint(initialPoint.x, initialPoint.y, {
+                durationMs: firstLegMs
+            });
+
+            if (settleDelayMs > 0) {
+                await wait(settleDelayMs);
+            }
+            if (recheckDelayMs > 0) {
+                await wait(recheckDelayMs);
+            }
+            if (this.destroyed || this.angryExitTriggered) {
+                return false;
+            }
+
+            const finalPoint = await this.resolveElementCenterPoint(element, 420);
+            if (!finalPoint) {
+                return false;
+            }
+
+            await this.cursor.moveToPoint(finalPoint.x, finalPoint.y, {
+                durationMs: secondLegMs
+            });
+            return true;
+        }
+
+        async clickCursorAndWait(holdMs) {
+            this.cursor.click();
+            await wait(Number.isFinite(holdMs) ? holdMs : 180);
+        }
+
         hoverElement(element) {
             if (!element) {
                 return;
@@ -2647,19 +2848,39 @@
                 2600
             );
             if (!managementButton || guardFailed()) {
+                console.warn('[YuiGuide] 阶段四未找到管理面板按钮');
+                return null;
+            }
+
+            const stableManagementButton = await this.waitForStableElementRect(managementButton, 320);
+            const managementMovementTarget = stableManagementButton || managementButton;
+            if (!managementMovementTarget || guardFailed()) {
+                console.warn('[YuiGuide] 阶段四管理面板按钮不可用于移动');
                 return null;
             }
 
             // 11-13. 高亮管理面板 -> 移动到高亮中心点 -> 点击并同步打开真实页面
             this.addRetainedExtraSpotlight(managementButton);
-            await wait(120);
-            const movedToManagementButton = await this.moveCursorToElement(managementButton, 1900);
+            await wait(60);
+            const managementRectBeforeMove = this.getElementRect(managementMovementTarget);
+            console.info('[YuiGuide] 阶段四管理面板移动前 rect:', managementRectBeforeMove
+                ? {
+                    left: Math.round(managementRectBeforeMove.left),
+                    top: Math.round(managementRectBeforeMove.top),
+                    width: Math.round(managementRectBeforeMove.width),
+                    height: Math.round(managementRectBeforeMove.height)
+                }
+                : null);
+            const movedToManagementButton = await this.moveCursorToTrackedElement(managementMovementTarget, 1900, {
+                recheckDelayMs: 180
+            });
             if (!movedToManagementButton || guardFailed()) {
+                console.warn('[YuiGuide] 阶段四管理面板 Ghost Cursor 移动失败');
                 return null;
             }
 
             await wait(90);
-            this.cursor.click();
+            await this.clickCursorAndWait(180);
             const clicked = await this.clickAgentSidePanelAction('agent-user-plugin', 'management-panel');
             if (!clicked && runId === this.sceneRunId && !this.destroyed && !this.angryExitTriggered) {
                 const pluginDashboardWindow = await this.openPluginDashboardWindow();
@@ -2894,7 +3115,7 @@
                     return;
                 }
 
-                this.cursor.click();
+                await this.clickCursorAndWait(180);
                 const tutorialLanlanName = this.getTutorialModelManagerLanlanName();
                 const appearanceMenuId = this.getCharacterAppearanceMenuId();
                 openedModelManagerWindowName = this.getModelManagerWindowName(tutorialLanlanName, appearanceMenuId);
@@ -4394,6 +4615,7 @@
             this.cursor.hide();
             this.clearAllVirtualSpotlights();
             this.clearPreciseHighlights();
+            this.clearSpotlightVariantHints();
             this.clearAllExtraSpotlights();
             this.cleanupTutorialReturnButtons();
             this.customSecondarySpotlightTarget = null;
