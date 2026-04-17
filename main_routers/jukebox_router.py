@@ -342,7 +342,6 @@ class JukeboxConfig:
 
     async def asave(self):
         """异步 save 包装：事件循环上不能直接调用 save()（会阻塞）。"""
-        import asyncio
         await asyncio.to_thread(self.save)
 
     def get_next_id(self, prefix: str) -> str:
