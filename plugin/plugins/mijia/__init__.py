@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -199,10 +200,8 @@ class MijiaPlugin(NekoPluginBase):
         self.credential_path.parent.mkdir(parents=True, exist_ok=True)
         self.credential_path.write_text(credential.model_dump_json())
         # 设置文件权限（仅所有者可读写）
-        import sys
         if sys.platform == "win32":
             try:
-                import subprocess
                 username = subprocess.check_output(
                     ["cmd", "/c", "echo", "%USERNAME%"], text=True
                 ).strip()
@@ -381,7 +380,6 @@ class MijiaPlugin(NekoPluginBase):
         # 清空 data 文件夹
         data_dir = self.data_path()
         if data_dir and data_dir.exists():
-            import shutil
             deleted = 0
             for item in data_dir.iterdir():
                 try:
@@ -633,14 +631,15 @@ class MijiaPlugin(NekoPluginBase):
         """获取智能场景列表并缓存"""
         cache_path = self.data_path("scenes_cache.json")
 
-        # 如果不强制刷新，尝试从缓存读取
-        if not refresh and cache_path.exists():
+        # 如果不强制刷新，尝试从缓存读取（必须已登录，防止跨用户缓存泄露）
+        if not refresh and cache_path.exists() and self.api:
             try:
                 with open(cache_path, 'r', encoding='utf-8') as f:
                     cached = json.load(f)
                 cache_home_id = cached.get('home_id')
                 cache_user_id = cached.get('user_id')
-                current_user_id = self.api.credential.user_id if self.api and self.api.credential else None
+                current_user_id = self.api.credential.user_id if self.api.credential else None
+                # 归属不匹配：跳过缓存，继续走网络请求
                 if cache_home_id != home_id or (current_user_id and cache_user_id != current_user_id):
                     self.logger.warning(
                         f"场景缓存归属不匹配(user_id: {cache_user_id}→{current_user_id}, "
@@ -1038,9 +1037,9 @@ class MijiaPlugin(NekoPluginBase):
             "type": "object",
             "properties": {
                 "scene_id": {"type": "string", "description": "场景 ID"},
-                "home_id": {"type": "string", "description": "家庭 ID"}
+                "home_id": {"type": "string", "description": "家庭 ID（可选，留空自动用第一个家庭）"}
             },
-            "required": ["scene_id", "home_id"]
+            "required": ["scene_id"]
         },
         llm_result_fields=["message"]
     )

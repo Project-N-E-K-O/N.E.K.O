@@ -531,10 +531,18 @@
                         <div class="scene-name">${escapeHtml(s.name || '')}</div>
                         <div class="scene-id">ID: ${escapeHtml(s.id || '')}</div>
                     </div>
-                    <button class="btn-green" onclick="executeScene('${escapeHtml(s.id || '')}', '${escapeHtml(s.name || '')}')">执行</button>
+                    <button class="btn-green scene-exec-btn"
+                        data-scene-id="${escapeHtml(s.id || '')}"
+                        data-scene-name="${escapeHtml(s.name || '')}">执行</button>
                 </div>`;
             });
             sceneListEl.innerHTML = html;
+            // 事件委托，避免 onclick 字符串注入
+            sceneListEl.querySelectorAll('.scene-exec-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    executeScene(btn.dataset.sceneId, btn.dataset.sceneName);
+                });
+            });
         } catch (err) {
             sceneListEl.innerHTML = `<p class="info-text" style="color:#ff3b30">加载失败：${escapeHtml(err.message)}</p>`;
         }

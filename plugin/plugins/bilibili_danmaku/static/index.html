@@ -700,7 +700,7 @@
       <div class="slider-row">
         <input type="range" id="intervalSlider" min="5" max="180" value="10" step="5">
         <span class="slider-value" id="intervalDisplay">10s</span>
-        <button class="btn btn-ghost btn-sm" onclick="setInterval()">保存</button>
+        <button class="btn btn-ghost btn-sm" onclick="saveInterval()">保存</button>
       </div>
       <div class="slider-hint">弹幕推送给 AI 的时间间隔，建议 10-30 秒</div>
     </div>
@@ -913,10 +913,10 @@
     }
   }
 
-  async function setInterval() {
+  async function saveInterval() {
     const val = parseInt(document.getElementById('intervalSlider').value);
     try {
-      const data = await callPlugin('set_interval', { interval: val });
+      const data = await callPlugin('set_interval', { seconds: val });
       toast(data.message || `已设置为 ${val} 秒`, 'success');
     } catch (e) {
       toast('设置失败：' + e.message, 'error');
