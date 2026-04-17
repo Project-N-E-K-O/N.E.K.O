@@ -275,7 +275,7 @@ async def get_bilibili_cookies(_method: str = "manual") -> Optional[Dict[str, st
     print("\033[F\033[K" + "👉 请粘贴 Cookie: [已接收，已脱敏掩码]") 
     cookies = parse_cookie_string(cookie_string)
     if cookies:
-        save_cookies_to_file('bilibili', cookies)
+        save_cookies_to_file('bilibili', cookies)  # noqa: ASYNC_BLOCK — CLI-only path; outer fn already blocks on input()
     return cookies
 
 # ==========================================
@@ -288,7 +288,7 @@ async def get_douyin_cookies(_method: str = "manual") -> Optional[Dict[str, str]
     print("\033[F\033[K" + "👉 请粘贴 Cookie: [已接收，已脱敏掩码]")
     cookies = parse_cookie_string(cookie_string)
     if cookies:
-        save_cookies_to_file('douyin', cookies)
+        save_cookies_to_file('douyin', cookies)  # noqa: ASYNC_BLOCK — CLI-only path; outer fn already blocks on input()
     return cookies
 
 async def get_kuaishou_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
@@ -298,7 +298,7 @@ async def get_kuaishou_cookies(_method: str = "manual") -> Optional[Dict[str, st
     print("\033[F\033[K" + "👉 请粘贴 Cookie: [已接收，已脱敏掩码]")
     cookies = parse_cookie_string(cookie_string)
     if cookies:
-        save_cookies_to_file('kuaishou', cookies)
+        save_cookies_to_file('kuaishou', cookies)  # noqa: ASYNC_BLOCK — CLI-only path; outer fn already blocks on input()
     return cookies
 
 async def get_weibo_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
@@ -308,7 +308,7 @@ async def get_weibo_cookies(_method: str = "manual") -> Optional[Dict[str, str]]
     print("\033[F\033[K" + "👉 请粘贴 Cookie: [已接收，已脱敏掩码]")
     cookies = parse_cookie_string(cookie_string)
     if cookies:
-        save_cookies_to_file('weibo', cookies)
+        save_cookies_to_file('weibo', cookies)  # noqa: ASYNC_BLOCK — CLI-only path; outer fn already blocks on input()
     return cookies
 
 async def get_reddit_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
@@ -318,7 +318,7 @@ async def get_reddit_cookies(_method: str = "manual") -> Optional[Dict[str, str]
     print("\033[F\033[K" + "👉 请粘贴 Cookie: [已接收，已脱敏掩码]")
     cookies = parse_cookie_string(cookie_string)
     if cookies:
-        save_cookies_to_file('reddit', cookies)
+        save_cookies_to_file('reddit', cookies)  # noqa: ASYNC_BLOCK — CLI-only path; outer fn already blocks on input()
     return cookies
 
 async def get_twitter_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
@@ -328,7 +328,7 @@ async def get_twitter_cookies(_method: str = "manual") -> Optional[Dict[str, str
     print("\033[F\033[K" + "👉 请粘贴 Cookie: [已接收，已脱敏掩码]")
     cookies = parse_cookie_string(cookie_string)
     if cookies:
-        save_cookies_to_file('twitter', cookies)
+        save_cookies_to_file('twitter', cookies)  # noqa: ASYNC_BLOCK — CLI-only path; outer fn already blocks on input()
     return cookies
 
 async def get_netease_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
@@ -338,7 +338,7 @@ async def get_netease_cookies(_method: str = "manual") -> Optional[Dict[str, str
     print("\033[F\033[K" + "👉 请粘贴 Cookie: [已接收，已脱敏掩码]")
     cookies = parse_cookie_string(cookie_string)
     if cookies:
-        save_cookies_to_file('netease', cookies)
+        save_cookies_to_file('netease', cookies)  # noqa: ASYNC_BLOCK — CLI-only path; outer fn already blocks on input()
     return cookies
 
 # ==========================================
