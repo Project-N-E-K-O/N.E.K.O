@@ -5,28 +5,47 @@
         <template #header>
           <div class="workbench-header">
             <div class="workbench-header__copy">
-              <div class="selection-toolbar">
+              <div class="selection-toolbar" :class="{ 'selection-toolbar--active': multiSelectEnabled }">
                 <el-button
+                  class="selection-toolbar__trigger"
                   :type="multiSelectEnabled ? 'primary' : 'default'"
                   plain
                   @click="toggleMultiSelectMode"
                 >
+                  <span class="selection-toolbar__trigger-dot" aria-hidden="true"></span>
                   {{ multiSelectEnabled ? $t('plugins.exitMultiSelect') : $t('plugins.multiSelect') }}
                 </el-button>
                 <div
                   class="selection-toolbar__expanded"
                   :class="{ 'selection-toolbar__expanded--active': multiSelectEnabled }"
                 >
-                  <el-tag size="small" type="info">
-                    {{ $t('plugins.selectedCount', { count: selectedCount }) }}
+                  <el-tag class="selection-toolbar__count" size="small" type="info">
+                    <span class="selection-toolbar__count-label">
+                      {{ $t('plugins.selectedCount', { count: selectedCount }) }}
+                    </span>
                   </el-tag>
-                  <el-button text :tabindex="multiSelectEnabled ? 0 : -1" @click="selectAllVisible">
+                  <el-button
+                    class="selection-toolbar__action"
+                    text
+                    :tabindex="multiSelectEnabled ? 0 : -1"
+                    @click="selectAllVisible"
+                  >
                     {{ $t('plugins.selectAllVisible') }}
                   </el-button>
-                  <el-button text :tabindex="multiSelectEnabled ? 0 : -1" @click="invertVisibleSelection">
+                  <el-button
+                    class="selection-toolbar__action"
+                    text
+                    :tabindex="multiSelectEnabled ? 0 : -1"
+                    @click="invertVisibleSelection"
+                  >
                     {{ $t('plugins.invertVisibleSelection') }}
                   </el-button>
-                  <el-button text :tabindex="multiSelectEnabled ? 0 : -1" @click="clearSelection">
+                  <el-button
+                    class="selection-toolbar__action selection-toolbar__action--danger"
+                    text
+                    :tabindex="multiSelectEnabled ? 0 : -1"
+                    @click="clearSelection"
+                  >
                     {{ $t('plugins.clearSelection') }}
                   </el-button>
                 </div>
@@ -66,7 +85,50 @@
           <div class="filter-bar" @mouseenter="showFilter" @mouseleave="scheduleHideFilter">
             <Transition name="filter-fade" mode="out-in">
               <div v-if="filterVisible" key="controls" class="filter-controls">
+                <el-popover
+                  v-model:visible="filterRulesVisible"
+                  placement="bottom-start"
+                  :width="360"
+                  trigger="click"
+                  popper-class="filter-rules-popover"
+                >
+                  <template #reference>
+                    <el-button class="filter-rules-trigger" plain>
+                      <el-icon><Operation /></el-icon>
+                      {{ $t('plugins.filterRules') }}
+                    </el-button>
+                  </template>
+
+                  <div class="filter-rules-panel">
+                    <div class="filter-rules-panel__header">
+                      <div class="filter-rules-panel__title">{{ $t('plugins.filterRulesTitle') }}</div>
+                      <div class="filter-rules-panel__hint">{{ $t('plugins.filterRulesHint') }}</div>
+                    </div>
+
+                    <div
+                      v-for="group in filterRuleGroups"
+                      :key="group.key"
+                      class="filter-rules-group"
+                    >
+                      <div class="filter-rules-group__title">{{ group.title }}</div>
+                      <div class="filter-rules-group__list">
+                        <button
+                          v-for="rule in group.rules"
+                          :key="rule.token"
+                          type="button"
+                          class="filter-rule-chip"
+                          @click="appendFilterRule(rule.token)"
+                        >
+                          <span class="filter-rule-chip__token">{{ rule.token }}</span>
+                          <span class="filter-rule-chip__label">{{ rule.label }}</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </el-popover>
+
                 <el-input
+                  ref="filterInputRef"
                   v-model="filterText"
                   clearable
                   class="filter-input"
@@ -181,9 +243,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Expand } from '@element-plus/icons-vue'
+import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Expand, Operation } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
@@ -246,6 +308,8 @@ const {
 
 const loading = computed(() => pluginStore.loading)
 const filterVisible = ref(false)
+const filterRulesVisible = ref(false)
+const filterInputRef = ref<any>(null)
 const showMetrics = ref(false)
 let hideTimer: number | null = null
 let metricsRefreshTimer: number | null = null
@@ -272,6 +336,44 @@ const pluginSections = computed(() => [
     variant: 'extension' as const,
   },
 ])
+const filterRuleGroups = computed(() => [
+  {
+    key: 'state',
+    title: t('plugins.filterRuleGroups.state'),
+    rules: [
+      { token: 'is:running', label: t('plugins.filterRuleLabels.running') },
+      { token: 'is:stopped', label: t('plugins.filterRuleLabels.stopped') },
+      { token: 'is:disabled', label: t('plugins.filterRuleLabels.disabled') },
+      { token: 'is:selected', label: t('plugins.filterRuleLabels.selected') },
+      { token: 'is:manual', label: t('plugins.filterRuleLabels.manual') },
+      { token: 'is:auto', label: t('plugins.filterRuleLabels.auto') },
+    ],
+  },
+  {
+    key: 'type',
+    title: t('plugins.filterRuleGroups.type'),
+    rules: [
+      { token: 'type:plugin', label: t('plugins.filterRuleLabels.plugin') },
+      { token: 'type:adapter', label: t('plugins.filterRuleLabels.adapter') },
+      { token: 'type:extension', label: t('plugins.filterRuleLabels.extension') },
+      { token: 'is:ui', label: t('plugins.filterRuleLabels.ui') },
+      { token: 'has:entries', label: t('plugins.filterRuleLabels.entries') },
+      { token: 'has:host', label: t('plugins.filterRuleLabels.host') },
+    ],
+  },
+  {
+    key: 'meta',
+    title: t('plugins.filterRuleGroups.meta'),
+    rules: [
+      { token: 'name:', label: t('plugins.filterRuleLabels.name') },
+      { token: 'id:', label: t('plugins.filterRuleLabels.id') },
+      { token: 'host:', label: t('plugins.filterRuleLabels.hostTarget') },
+      { token: 'version:', label: t('plugins.filterRuleLabels.version') },
+      { token: 'entry:', label: t('plugins.filterRuleLabels.entry') },
+      { token: 'author:', label: t('plugins.filterRuleLabels.author') },
+    ],
+  },
+])
 
 function showFilter() {
   if (hideTimer) {
@@ -287,6 +389,16 @@ function scheduleHideFilter() {
     filterVisible.value = false
     hideTimer = null
   }, 1000)
+}
+
+function appendFilterRule(token: string) {
+  const current = filterText.value.trim()
+  const nextValue = current ? `${current} ${token}` : token
+  filterText.value = nextValue
+  filterRulesVisible.value = false
+  nextTick(() => {
+    filterInputRef.value?.focus?.()
+  })
 }
 
 async function handleRefresh() {
@@ -623,6 +735,72 @@ onUnmounted(() => {
   min-height: 32px;
   width: min(100%, 460px);
   min-width: 0;
+  padding: 6px;
+  border-radius: 999px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--el-fill-color-light) 82%, white), color-mix(in srgb, var(--el-color-primary) 5%, white));
+  border: 1px solid color-mix(in srgb, var(--el-color-primary) 10%, var(--el-border-color));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 72%, transparent),
+    0 10px 26px color-mix(in srgb, var(--el-text-color-primary) 6%, transparent);
+  transition:
+    border-color 0.24s ease,
+    box-shadow 0.28s ease,
+    background 0.28s ease,
+    transform 0.24s ease;
+}
+
+.selection-toolbar--active,
+.selection-toolbar:focus-within {
+  border-color: color-mix(in srgb, var(--el-color-primary) 28%, var(--el-border-color));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 82%, transparent),
+    0 14px 34px color-mix(in srgb, var(--el-color-primary) 12%, transparent);
+}
+
+.selection-toolbar__trigger {
+  --el-button-border-radius: 999px;
+  --el-button-bg-color: color-mix(in srgb, var(--el-bg-color) 92%, white);
+  --el-button-hover-bg-color: color-mix(in srgb, var(--el-color-primary-light-9) 72%, white);
+  --el-button-active-bg-color: color-mix(in srgb, var(--el-color-primary-light-8) 76%, white);
+  padding-inline: 16px;
+  min-width: 108px;
+  justify-content: center;
+  font-weight: 600;
+  box-shadow:
+    0 6px 14px color-mix(in srgb, var(--el-text-color-primary) 6%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 70%, transparent);
+  transition:
+    transform 0.22s ease,
+    box-shadow 0.22s ease,
+    background-color 0.22s ease,
+    border-color 0.22s ease;
+}
+
+.selection-toolbar__trigger:hover {
+  transform: translateY(-1px);
+}
+
+.selection-toolbar__trigger :deep(.el-button__text) {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.selection-toolbar__trigger-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--el-color-primary) 88%, white);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--el-color-primary) 16%, transparent);
+  transition:
+    transform 0.22s ease,
+    box-shadow 0.22s ease,
+    background 0.22s ease;
+}
+
+.selection-toolbar__trigger:hover .selection-toolbar__trigger-dot {
+  transform: scale(1.08);
 }
 
 .selection-toolbar__expanded {
@@ -633,12 +811,90 @@ onUnmounted(() => {
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
+  transform: translateX(-8px) scale(0.985);
+  transform-origin: left center;
+  transition:
+    opacity 0.24s ease,
+    transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.selection-toolbar__expanded > * {
+  opacity: 0;
+  transform: translateX(-6px);
+  transition:
+    opacity 0.2s ease,
+    transform 0.26s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .selection-toolbar__expanded--active {
   opacity: 1;
   visibility: visible;
   pointer-events: auto;
+  transform: translateX(0) scale(1);
+}
+
+.selection-toolbar__expanded--active > * {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.selection-toolbar__expanded--active > :nth-child(1) {
+  transition-delay: 30ms;
+}
+
+.selection-toolbar__expanded--active > :nth-child(2) {
+  transition-delay: 70ms;
+}
+
+.selection-toolbar__expanded--active > :nth-child(3) {
+  transition-delay: 110ms;
+}
+
+.selection-toolbar__expanded--active > :nth-child(4) {
+  transition-delay: 150ms;
+}
+
+.selection-toolbar__count {
+  border-radius: 999px;
+  padding-inline: 8px;
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid color-mix(in srgb, var(--el-color-info) 18%, var(--el-border-color));
+  background: color-mix(in srgb, var(--el-color-info-light-9) 72%, white);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 72%, transparent);
+}
+
+.selection-toolbar__count-label {
+  display: inline-flex;
+  align-items: center;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.selection-toolbar__action {
+  --el-button-text-color: var(--el-text-color-regular);
+  --el-button-hover-text-color: var(--el-color-primary);
+  --el-button-bg-color: transparent;
+  --el-button-hover-bg-color: color-mix(in srgb, var(--el-color-primary-light-9) 74%, white);
+  --el-button-active-bg-color: color-mix(in srgb, var(--el-color-primary-light-8) 78%, white);
+  min-height: 28px;
+  padding-inline: 10px;
+  border-radius: 999px;
+  font-weight: 500;
+  transition:
+    transform 0.2s ease,
+    background-color 0.22s ease,
+    color 0.22s ease;
+}
+
+.selection-toolbar__action:hover {
+  transform: translateY(-1px);
+}
+
+.selection-toolbar__action--danger {
+  --el-button-hover-text-color: var(--el-color-danger);
+  --el-button-hover-bg-color: color-mix(in srgb, var(--el-color-danger-light-9) 82%, white);
 }
 
 .header-actions {
@@ -673,6 +929,15 @@ onUnmounted(() => {
   width: 100%;
 }
 
+.filter-rules-trigger {
+  --el-button-border-radius: 999px;
+  flex-shrink: 0;
+  min-width: 110px;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 70%, transparent),
+    0 6px 16px color-mix(in srgb, var(--el-text-color-primary) 6%, transparent);
+}
+
 .filter-input {
   flex: 1;
   min-width: 220px;
@@ -694,6 +959,97 @@ onUnmounted(() => {
   font-style: italic;
   font-size: 14px;
   line-height: 32px;
+}
+
+:global(.filter-rules-popover) {
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--el-color-primary) 10%, var(--el-border-color));
+  box-shadow:
+    0 18px 40px color-mix(in srgb, var(--el-text-color-primary) 12%, transparent),
+    0 6px 14px color-mix(in srgb, var(--el-color-primary) 8%, transparent);
+}
+
+.filter-rules-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.filter-rules-panel__header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.filter-rules-panel__title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--el-text-color-primary);
+}
+
+.filter-rules-panel__hint {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.5;
+}
+
+.filter-rules-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.filter-rules-group__title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--el-text-color-secondary);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.filter-rules-group__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.filter-rule-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--el-color-primary) 10%, var(--el-border-color));
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--el-fill-color-light) 74%, white), var(--el-bg-color));
+  color: var(--el-text-color-primary);
+  cursor: pointer;
+  transition:
+    transform 0.18s ease,
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    background 0.18s ease;
+}
+
+.filter-rule-chip:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--el-color-primary) 28%, var(--el-border-color));
+  box-shadow: 0 10px 22px color-mix(in srgb, var(--el-color-primary) 10%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--el-color-primary-light-9) 72%, white), var(--el-bg-color));
+}
+
+.filter-rule-chip__token {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--el-color-primary);
+}
+
+.filter-rule-chip__label {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 
 .workbench-toolbar {

@@ -1,4 +1,5 @@
 import { computed, ref, toValue, type MaybeRefOrGetter } from 'vue'
+import { pinyin } from 'pinyin-pro'
 import type { PluginMeta } from '@/types/api'
 
 export type PluginWorkbenchLayoutMode = 'list' | 'single' | 'double' | 'compact'
@@ -9,7 +10,12 @@ export type PluginWorkbenchItem = PluginMeta & {
   type: PluginWorkbenchGroupType
   enabled?: boolean
   autoStart?: boolean
+  searchIndex?: string
 }
+
+type QueryToken =
+  | { kind: 'term'; value: string; negated: boolean }
+  | { kind: 'qualifier'; key: string; value: string; negated: boolean }
 
 const sharedFilterText = ref('')
 const sharedUseRegex = ref(false)
@@ -29,13 +35,230 @@ function uniqueIds(ids: string[]): string[] {
   return Array.from(new Set(ids.filter((id) => typeof id === 'string' && id)))
 }
 
-export function usePluginWorkbench<T extends PluginMeta & { type?: string; enabled?: boolean; autoStart?: boolean }>(
+function isCjkText(value: string): boolean {
+  return /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/.test(value)
+}
+
+function safePinyin(value: string, pattern: 'pinyin' | 'first'): string {
+  if (!value.trim() || !isCjkText(value)) {
+    return ''
+  }
+
+  try {
+    return pinyin(value, {
+      toneType: 'none',
+      type: 'string',
+      pattern,
+      nonZh: 'consecutive',
+      v: true,
+      traditional: true,
+    }).trim()
+  } catch {
+    return ''
+  }
+}
+
+function normalizeSearchPart(value?: string): string {
+  return (value || '').trim().toLowerCase()
+}
+
+function tokenizeQuery(input: string): QueryToken[] {
+  const matches = input.match(/"[^"]+"|\S+/g) || []
+  return matches
+    .map((rawToken) => {
+      const negated = rawToken.startsWith('-')
+      const baseToken = negated ? rawToken.slice(1) : rawToken
+      const token = baseToken.replace(/^"(.*)"$/, '$1').trim()
+      if (!token) {
+        return null
+      }
+
+      const separatorIndex = token.indexOf(':')
+      if (separatorIndex > 0) {
+        const key = token.slice(0, separatorIndex).trim().toLowerCase()
+        const value = token.slice(separatorIndex + 1).trim().toLowerCase()
+        if (key && value) {
+          return {
+            kind: 'qualifier' as const,
+            key,
+            value,
+            negated,
+          }
+        }
+      }
+
+      return {
+        kind: 'term' as const,
+        value: token.toLowerCase(),
+        negated,
+      }
+    })
+    .filter((token): token is QueryToken => !!token)
+}
+
+function hasUi(plugin: PluginWorkbenchItem): boolean {
+  return Array.isArray(plugin.list_actions) && plugin.list_actions.some((action) => action.kind === 'ui')
+}
+
+function qualifierMatches(plugin: PluginWorkbenchItem, key: string, value: string): boolean {
+  const normalizedValue = value.toLowerCase()
+  const entryText = (plugin.entries || [])
+    .flatMap((entry) => [entry.id, entry.name, entry.description])
+    .map(normalizeSearchPart)
+    .join('\n')
+  const dependencyText = (plugin.dependencies || [])
+    .flatMap((dependency) => [dependency.id, dependency.entry, dependency.custom_event])
+    .map(normalizeSearchPart)
+    .join('\n')
+  const authorText = [plugin.author?.name, plugin.author?.email].map(normalizeSearchPart).join('\n')
+
+  switch (key) {
+    case 'is': {
+      switch (normalizedValue) {
+        case 'running':
+        case 'stopped':
+        case 'crashed':
+        case 'pending':
+        case 'injected':
+        case 'disabled':
+        case 'load_failed':
+          return (plugin.status || '').toLowerCase() === normalizedValue
+        case 'enabled':
+          return plugin.enabled !== false
+        case 'selected':
+          return sharedSelectedPluginIds.value.includes(plugin.id)
+        case 'unselected':
+          return !sharedSelectedPluginIds.value.includes(plugin.id)
+        case 'manual':
+        case 'manual_start':
+          return plugin.autoStart === false
+        case 'auto':
+        case 'auto_start':
+          return plugin.autoStart !== false
+        case 'plugin':
+        case 'adapter':
+        case 'extension':
+          return plugin.type === normalizedValue
+        case 'ui':
+          return hasUi(plugin)
+        case 'hosted':
+          return !!plugin.host_plugin_id
+        case 'standalone':
+          return !plugin.host_plugin_id
+        default:
+          return false
+      }
+    }
+    case 'type':
+      return plugin.type === normalizedValue
+    case 'status':
+      return (plugin.status || '').toLowerCase().includes(normalizedValue)
+    case 'id':
+      return normalizeSearchPart(plugin.id).includes(normalizedValue)
+    case 'name':
+      return normalizeSearchPart(plugin.name).includes(normalizedValue)
+    case 'desc':
+    case 'description':
+      return normalizeSearchPart(plugin.description).includes(normalizedValue)
+    case 'host':
+      return normalizeSearchPart(plugin.host_plugin_id).includes(normalizedValue)
+    case 'version':
+      return normalizeSearchPart(plugin.version).includes(normalizedValue)
+    case 'entry':
+    case 'entries':
+      return entryText.includes(normalizedValue)
+    case 'dep':
+    case 'dependency':
+    case 'dependencies':
+      return dependencyText.includes(normalizedValue)
+    case 'author':
+      return authorText.includes(normalizedValue)
+    case 'sdk':
+      return [
+        plugin.sdk_version,
+        plugin.sdk_recommended,
+        plugin.sdk_supported,
+        plugin.sdk_untested,
+      ]
+        .map(normalizeSearchPart)
+        .join('\n')
+        .includes(normalizedValue)
+    case 'has': {
+      switch (normalizedValue) {
+        case 'description':
+          return !!plugin.description?.trim()
+        case 'entries':
+        case 'entry':
+          return (plugin.entries?.length || 0) > 0
+        case 'host':
+          return !!plugin.host_plugin_id
+        case 'dependencies':
+        case 'dependency':
+          return (plugin.dependencies?.length || 0) > 0
+        case 'schema':
+          return !!plugin.input_schema
+        case 'actions':
+          return (plugin.list_actions?.length || 0) > 0
+        case 'ui':
+          return hasUi(plugin)
+        case 'author':
+          return !!plugin.author?.name || !!plugin.author?.email
+        default:
+          return false
+      }
+    }
+    default:
+      return false
+  }
+}
+
+function matchesAdvancedQuery(plugin: PluginWorkbenchItem, input: string): boolean {
+  const tokens = tokenizeQuery(input)
+  if (tokens.length === 0) {
+    return true
+  }
+
+  return tokens.every((token) => {
+    const matches = token.kind === 'term'
+      ? (plugin.searchIndex || '').includes(token.value)
+      : qualifierMatches(plugin, token.key, token.value)
+    return token.negated ? !matches : matches
+  })
+}
+
+function buildSearchIndex(plugin: PluginMeta & { type?: string }): string {
+  const textParts = [
+    plugin.id,
+    plugin.name,
+    plugin.description,
+    plugin.type,
+    plugin.version,
+    plugin.host_plugin_id,
+  ]
+
+  const pinyinParts = [plugin.name, plugin.description].flatMap((value) => {
+    const source = value || ''
+    const full = safePinyin(source, 'pinyin').replace(/\s+/g, ' ').trim()
+    const initials = safePinyin(source, 'first').replace(/\s+/g, '').trim()
+    return [full, full.replace(/\s+/g, ''), initials]
+  })
+
+  return [...textParts, ...pinyinParts]
+    .map(normalizeSearchPart)
+    .filter(Boolean)
+    .join('\n')
+}
+
+export function usePluginWorkbench<
+  T extends PluginMeta & { type?: string; enabled?: boolean; autoStart?: boolean; searchIndex?: string }
+>(
   pluginsSource: MaybeRefOrGetter<T[]>,
 ) {
   const items = computed<PluginWorkbenchItem[]>(() =>
     toValue(pluginsSource).map((plugin) => ({
       ...plugin,
       type: normalizePluginType(plugin.type),
+      searchIndex: plugin.searchIndex || buildSearchIndex(plugin),
     })),
   )
 
@@ -63,10 +286,7 @@ export function usePluginWorkbench<T extends PluginMeta & { type?: string; enabl
       try {
         const re = new RegExp(text, 'i')
         const matches = (plugin: PluginWorkbenchItem) =>
-          re.test(plugin.id || '') ||
-          re.test(plugin.name || '') ||
-          re.test(plugin.description || '') ||
-          re.test(plugin.type || '')
+          re.test(plugin.searchIndex || '')
         return sharedFilterMode.value === 'blacklist'
           ? visibleByType.filter((plugin) => !matches(plugin))
           : visibleByType.filter(matches)
@@ -76,11 +296,7 @@ export function usePluginWorkbench<T extends PluginMeta & { type?: string; enabl
     }
 
     const lowered = text.toLowerCase()
-    const matches = (plugin: PluginWorkbenchItem) =>
-      (plugin.id || '').toLowerCase().includes(lowered) ||
-      (plugin.name || '').toLowerCase().includes(lowered) ||
-      (plugin.description || '').toLowerCase().includes(lowered) ||
-      (plugin.type || '').toLowerCase().includes(lowered)
+    const matches = (plugin: PluginWorkbenchItem) => matchesAdvancedQuery(plugin, lowered)
 
     return sharedFilterMode.value === 'blacklist'
       ? visibleByType.filter((plugin) => !matches(plugin))
