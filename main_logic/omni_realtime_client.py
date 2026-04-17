@@ -1287,7 +1287,13 @@ class OmniRealtimeClient:
             return False
         # A: 现有 _client_vad_active + grace 检查（sustained VAD 信号兜底）。
         # Grace 已从 2s 扩到 6s，覆盖自然停顿。
-        if self._rnnoise_vad_active:
+        # 门控条件：存在可靠 VAD 信号源。
+        #   - server-VAD 后端（Qwen/OpenAI）：server 的 speech_started/stopped 可靠，
+        #     不依赖 RNNoise。特别覆盖 16kHz 移动端长句 >8s 的场景（_user_recent_activity
+        #     在 speech_started 打点后 8s 过期，而用户还在说，需要 _client_vad_active 兜底）。
+        #   - RNNoise 客户端 VAD（48kHz 桌面 + Gemini/lanlan.app+free）
+        # RMS-only 路径（16kHz 无 server-VAD）信号太噪，不信任，依赖 _user_recent_activity。
+        if self._has_server_vad or self._rnnoise_vad_active:
             if self._client_vad_active:
                 logger.debug("prompt_ephemeral: skipped — user speaking (VAD active)")
                 return False
