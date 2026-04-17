@@ -1,0 +1,525 @@
+# -*- coding: utf-8 -*-
+"""
+Unit tests for memory.event_log.EventLog.
+
+P2.a.1: pure infrastructure tests. No production wiring is touched.
+Covers the resilience guarantees described in RFC §3.4 / §3.5 / §3.6.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import uuid
+from datetime import datetime, timedelta
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+
+def _fresh_log(tmpdir: str):
+    from memory.event_log import EventLog
+
+    mock_cm = MagicMock()
+    mock_cm.memory_dir = tmpdir
+    with patch("memory.event_log.get_config_manager", return_value=mock_cm):
+        log = EventLog()
+    log._config_manager = mock_cm
+    return log
+
+
+def _fresh_reconciler(tmpdir: str):
+    from memory.event_log import EventLog, Reconciler
+
+    log = _fresh_log(tmpdir)
+    return log, Reconciler(log)
+
+
+# ── append / read_since ──────────────────────────────────────────────
+
+
+def test_append_returns_unique_event_ids(tmp_path):
+    from memory.event_log import EVT_FACT_ADDED
+
+    log = _fresh_log(str(tmp_path))
+    id1 = log.append("小天", EVT_FACT_ADDED, {"fact_id": "f1"})
+    id2 = log.append("小天", EVT_FACT_ADDED, {"fact_id": "f2"})
+    assert id1 != id2
+    # Real UUIDs (parseable)
+    uuid.UUID(id1)
+    uuid.UUID(id2)
+
+
+def test_read_since_returns_events_after_sentinel(tmp_path):
+    from memory.event_log import EVT_FACT_ADDED
+
+    log = _fresh_log(str(tmp_path))
+    id1 = log.append("小天", EVT_FACT_ADDED, {"i": 1})
+    id2 = log.append("小天", EVT_FACT_ADDED, {"i": 2})
+    id3 = log.append("小天", EVT_FACT_ADDED, {"i": 3})
+
+    # After id1 → returns [event2, event3]
+    tail = log.read_since("小天", id1)
+    assert [r["event_id"] for r in tail] == [id2, id3]
+
+
+def test_read_since_null_sentinel_returns_all(tmp_path):
+    from memory.event_log import EVT_FACT_ADDED
+
+    log = _fresh_log(str(tmp_path))
+    id1 = log.append("小天", EVT_FACT_ADDED, {"i": 1})
+    id2 = log.append("小天", EVT_FACT_ADDED, {"i": 2})
+    assert [r["event_id"] for r in log.read_since("小天", None)] == [id1, id2]
+
+
+def test_read_since_unknown_sentinel_falls_back_to_full_replay(tmp_path):
+    """RFC §3.5 safe default: sentinel points to a compacted-away event →
+    replay everything currently in the body."""
+    from memory.event_log import EVT_FACT_ADDED
+
+    log = _fresh_log(str(tmp_path))
+    id1 = log.append("小天", EVT_FACT_ADDED, {"i": 1})
+    id2 = log.append("小天", EVT_FACT_ADDED, {"i": 2})
+
+    bogus_sentinel = str(uuid.uuid4())
+    tail = log.read_since("小天", bogus_sentinel)
+    assert [r["event_id"] for r in tail] == [id1, id2]
+
+
+def test_corrupt_line_skipped_with_warning(tmp_path):
+    from memory.event_log import EVT_FACT_ADDED
+
+    log = _fresh_log(str(tmp_path))
+    id1 = log.append("小天", EVT_FACT_ADDED, {"i": 1})
+    path = log._events_path("小天")
+    with open(path, "a", encoding="utf-8") as f:
+        f.write("this is not json\n")
+    id2 = log.append("小天", EVT_FACT_ADDED, {"i": 2})
+
+    tail = log.read_since("小天", None)
+    assert [r["event_id"] for r in tail] == [id1, id2]
+
+
+def test_record_missing_event_id_skipped(tmp_path):
+    from memory.event_log import EVT_FACT_ADDED
+
+    log = _fresh_log(str(tmp_path))
+    log.append("小天", EVT_FACT_ADDED, {"i": 1})
+    # Hand-craft a record without event_id
+    path = log._events_path("小天")
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps({"type": "fact.added", "ts": "2026-01-01"}) + "\n")
+    log.append("小天", EVT_FACT_ADDED, {"i": 2})
+
+    tail = log.read_since("小天", None)
+    assert len(tail) == 2
+
+
+# ── sentinel ─────────────────────────────────────────────────────────
+
+
+def test_read_sentinel_returns_none_when_missing(tmp_path):
+    log = _fresh_log(str(tmp_path))
+    assert log.read_sentinel("小天") is None
+
+
+def test_advance_sentinel_roundtrip(tmp_path):
+    log = _fresh_log(str(tmp_path))
+    eid = str(uuid.uuid4())
+    log.advance_sentinel("小天", eid)
+    assert log.read_sentinel("小天") == eid
+
+
+def test_corrupt_sentinel_treated_as_missing(tmp_path):
+    log = _fresh_log(str(tmp_path))
+    path = log._sentinel_path("小天")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("not json {{{{")
+    assert log.read_sentinel("小天") is None
+
+
+def test_sentinel_persists_across_fresh_instances(tmp_path):
+    log1 = _fresh_log(str(tmp_path))
+    eid = str(uuid.uuid4())
+    log1.advance_sentinel("小天", eid)
+
+    log2 = _fresh_log(str(tmp_path))
+    assert log2.read_sentinel("小天") == eid
+
+
+# ── compaction (RFC §3.6) ────────────────────────────────────────────
+
+
+def test_should_compact_false_when_empty(tmp_path):
+    log = _fresh_log(str(tmp_path))
+    assert log.should_compact("小天") is False
+
+
+def test_compact_if_needed_skips_below_threshold(tmp_path):
+    from memory.event_log import EVT_FACT_ADDED
+
+    log = _fresh_log(str(tmp_path))
+    for i in range(5):
+        log.append("小天", EVT_FACT_ADDED, {"i": i})
+    dropped = log.compact_if_needed("小天", lambda: [])
+    assert dropped == 0
+    # File still has the 5 events
+    tail = log.read_since("小天", None)
+    assert len(tail) == 5
+
+
+def test_compact_triggered_by_line_threshold(tmp_path):
+    """Force threshold low via monkeypatch to avoid writing 10K lines."""
+    from memory.event_log import EVT_FACT_ADDED
+
+    log = _fresh_log(str(tmp_path))
+    for i in range(10):
+        log.append("小天", EVT_FACT_ADDED, {"i": i})
+
+    with patch("memory.event_log._COMPACT_LINES_THRESHOLD", 5):
+        # Seed provider returns 2 snapshot-start events
+        seeds = [
+            (EVT_FACT_ADDED, {"fact_id": "f_seed1"}),
+            (EVT_FACT_ADDED, {"fact_id": "f_seed2"}),
+        ]
+        dropped = log.compact_if_needed("小天", lambda: seeds)
+
+    assert dropped == 10 - 2
+    tail = log.read_since("小天", None)
+    assert len(tail) == 2
+    assert {r["payload"]["fact_id"] for r in tail} == {"f_seed1", "f_seed2"}
+
+
+def test_compact_resets_sentinel_to_null(tmp_path):
+    from memory.event_log import EVT_FACT_ADDED
+
+    log = _fresh_log(str(tmp_path))
+    eid = log.append("小天", EVT_FACT_ADDED, {"i": 1})
+    log.advance_sentinel("小天", eid)
+    # Force compact
+    with patch("memory.event_log._COMPACT_LINES_THRESHOLD", 1):
+        log.compact_if_needed("小天", lambda: [(EVT_FACT_ADDED, {"seed": True})])
+    # Sentinel reset to null
+    assert log.read_sentinel("小天") is None
+
+
+def test_compact_atomicity_single_rename(tmp_path):
+    """RFC §3.6: no intermediate events.snapshot file is ever written."""
+    from memory.event_log import EVT_FACT_ADDED
+
+    log = _fresh_log(str(tmp_path))
+    for i in range(5):
+        log.append("小天", EVT_FACT_ADDED, {"i": i})
+
+    char_dir = os.path.join(str(tmp_path), "小天")
+    before = set(os.listdir(char_dir))
+    with patch("memory.event_log._COMPACT_LINES_THRESHOLD", 1):
+        log.compact_if_needed("小天", lambda: [(EVT_FACT_ADDED, {"seed": 1})])
+    after = set(os.listdir(char_dir))
+
+    # events.ndjson and events_applied.json — nothing else
+    assert after == {"events.ndjson", "events_applied.json"}
+    # No lingering tempfiles from atomic_write_text
+    assert not any(name.endswith(".tmp") for name in after)
+    # No events.snapshot file (deliberately eliminated in v2/v3)
+    assert "events.snapshot" not in after
+
+
+def test_compact_crash_between_swap_and_sentinel_reset_is_safe(tmp_path):
+    """Simulate: new body swapped in, but sentinel reset 'failed' — old
+    sentinel now points to an event_id that doesn't exist in the body.
+    On next boot read_since falls through to full replay (seed events)."""
+    from memory.event_log import EVT_FACT_ADDED
+
+    log = _fresh_log(str(tmp_path))
+    for i in range(5):
+        log.append("小天", EVT_FACT_ADDED, {"i": i})
+    stale_sentinel = log.append("小天", EVT_FACT_ADDED, {"i": 5})
+    log.advance_sentinel("小天", stale_sentinel)
+
+    # Crash simulation: swap body ourselves, leave old sentinel
+    with patch("memory.event_log._COMPACT_LINES_THRESHOLD", 1), \
+         patch.object(log, "advance_sentinel", side_effect=None) as _patched:
+        # Suppress the sentinel reset that compact_if_needed would do via
+        # atomic_write_json; force the legacy sentinel to linger
+        with patch("memory.event_log.atomic_write_json") as mock_aj:
+            log.compact_if_needed("小天", lambda: [(EVT_FACT_ADDED, {"seed": 1})])
+        # Body swap still happened via atomic_write_text; sentinel reset was blocked
+        # Sentinel still points to the (now-gone) old event
+        assert log.read_sentinel("小天") == stale_sentinel
+
+    # Next-boot simulation: read_since falls through to full body replay
+    tail = log.read_since("小天", stale_sentinel)
+    assert len(tail) == 1
+    assert tail[0]["payload"] == {"seed": 1}
+
+
+def test_scan_head_handles_corrupt_first_line(tmp_path):
+    """RFC §3.6 edge case: corrupt first line → age threshold disabled,
+    line-count threshold still works."""
+    from memory.event_log import EVT_FACT_ADDED
+
+    log = _fresh_log(str(tmp_path))
+    path = log._events_path("小天")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("garbage not json\n")
+        for i in range(3):
+            rec = {"event_id": str(uuid.uuid4()), "type": EVT_FACT_ADDED,
+                   "ts": datetime.now().isoformat(), "payload": {"i": i}}
+            f.write(json.dumps(rec) + "\n")
+
+    # should_compact should not crash on the corrupt head
+    result = log.should_compact("小天")
+    assert result is False  # 4 lines, no age info, under default threshold
+
+    with patch("memory.event_log._COMPACT_LINES_THRESHOLD", 2):
+        assert log.should_compact("小天") is True
+
+
+# ── record_and_save (the core write-ordering helper) ────────────────
+
+
+def test_record_and_save_runs_all_steps_in_order(tmp_path):
+    """load → mutate → append → save → sentinel advance, all inside lock."""
+    from memory.event_log import EVT_FACT_ADDED
+
+    log = _fresh_log(str(tmp_path))
+    call_order: list[str] = []
+    the_view = {"loaded": False, "mutated": False, "saved": False}
+
+    def load(name):
+        call_order.append("load")
+        the_view["loaded"] = True
+        return the_view
+
+    def mutate(view):
+        call_order.append("mutate")
+        view["mutated"] = True
+
+    def save(name, view):
+        call_order.append("save")
+        view["saved"] = True
+
+    eid = log.record_and_save(
+        "小天", EVT_FACT_ADDED, {"fact_id": "f1"},
+        sync_load_view=load, sync_mutate_view=mutate, sync_save_view=save,
+    )
+
+    assert call_order == ["load", "mutate", "save"]
+    assert the_view == {"loaded": True, "mutated": True, "saved": True}
+    # Event landed
+    tail = log.read_since("小天", None)
+    assert len(tail) == 1 and tail[0]["event_id"] == eid
+    # Sentinel advanced to this event
+    assert log.read_sentinel("小天") == eid
+
+
+def test_record_and_save_append_failure_skips_save_and_sentinel(tmp_path):
+    """If event append raises, view save must NOT happen, sentinel must NOT advance."""
+    from memory.event_log import EVT_FACT_ADDED
+
+    log = _fresh_log(str(tmp_path))
+    save_called = [False]
+
+    def load(name):
+        return {"x": 1}
+
+    def mutate(view):
+        view["x"] = 2
+
+    def save(name, view):
+        save_called[0] = True
+
+    with patch.object(log, "_append_unlocked", side_effect=IOError("disk full")):
+        with pytest.raises(IOError):
+            log.record_and_save(
+                "小天", EVT_FACT_ADDED, {"fact_id": "f1"},
+                sync_load_view=load, sync_mutate_view=mutate, sync_save_view=save,
+            )
+
+    assert save_called[0] is False
+    # Sentinel untouched
+    assert log.read_sentinel("小天") is None
+
+
+def test_record_and_save_serializes_concurrent_calls(tmp_path):
+    """Per-character lock must prevent two record_and_save calls from interleaving
+    their load/mutate/save sequences."""
+    import threading as real_threading
+    from memory.event_log import EVT_FACT_ADDED
+
+    log = _fresh_log(str(tmp_path))
+    interleave_log: list[str] = []
+    mutable_view = {"value": 0}
+
+    def make_callbacks(tag: str):
+        def load(name):
+            interleave_log.append(f"{tag}:load")
+            return mutable_view
+
+        def mutate(view):
+            interleave_log.append(f"{tag}:mutate")
+            current = view["value"]
+            # simulate mutation work
+            import time
+            time.sleep(0.01)
+            view["value"] = current + 1
+
+        def save(name, view):
+            interleave_log.append(f"{tag}:save")
+        return load, mutate, save
+
+    def worker(tag: str):
+        ld, mu, sv = make_callbacks(tag)
+        log.record_and_save(
+            "小天", EVT_FACT_ADDED, {"worker": tag},
+            sync_load_view=ld, sync_mutate_view=mu, sync_save_view=sv,
+        )
+
+    threads = [real_threading.Thread(target=worker, args=(f"w{i}",)) for i in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # Check sequential load→mutate→save per worker (no interleaving)
+    for i in range(0, len(interleave_log), 3):
+        chunk = interleave_log[i:i + 3]
+        tags = {entry.split(":", 1)[0] for entry in chunk}
+        assert len(tags) == 1, f"interleave detected: {chunk}"
+    # Final value matches concurrent increment count
+    assert mutable_view["value"] == 5
+
+
+# ── Reconciler scaffolding ──────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_reconciler_unknown_event_type_logs_and_skips(tmp_path):
+    """Forward-compat: events with types the reconciler doesn't know about
+    are logged and skipped (sentinel still advances)."""
+    from memory.event_log import EVT_FACT_ADDED
+
+    log, rec = _fresh_reconciler(str(tmp_path))
+    eid1 = log.append("小天", "future.unknown.type", {"v": 1})
+    eid2 = log.append("小天", EVT_FACT_ADDED, {"fact_id": "f1"})
+
+    applied_calls: list[str] = []
+
+    def handler(name, payload, view):
+        applied_calls.append(payload.get("fact_id"))
+        return True
+
+    rec.register(EVT_FACT_ADDED, handler)
+
+    applied = await rec.areconcile("小天", view_provider=lambda n, t: {})
+    assert applied == 1
+    assert applied_calls == ["f1"]
+    # Sentinel advanced past both events (unknown was skipped, known was applied)
+    assert log.read_sentinel("小天") == eid2
+
+
+@pytest.mark.asyncio
+async def test_reconciler_handler_exception_preserves_sentinel(tmp_path):
+    """If an apply handler raises, sentinel must NOT advance past the bad
+    event so next boot retries."""
+    from memory.event_log import EVT_FACT_ADDED
+
+    log, rec = _fresh_reconciler(str(tmp_path))
+    eid1 = log.append("小天", EVT_FACT_ADDED, {"fact_id": "f1"})
+    log.append("小天", EVT_FACT_ADDED, {"fact_id": "f2"})
+
+    call_count = {"n": 0}
+
+    def handler(name, payload, view):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return True  # first one ok
+        raise RuntimeError("simulated apply failure")
+
+    rec.register(EVT_FACT_ADDED, handler)
+
+    applied = await rec.areconcile("小天", view_provider=lambda n, t: {})
+    assert applied == 1
+    # Sentinel is advanced only past the successful event
+    assert log.read_sentinel("小天") == eid1
+
+
+@pytest.mark.asyncio
+async def test_reconciler_no_tail_is_noop(tmp_path):
+    from memory.event_log import EVT_FACT_ADDED
+
+    log, rec = _fresh_reconciler(str(tmp_path))
+    eid = log.append("小天", EVT_FACT_ADDED, {"fact_id": "f1"})
+    log.advance_sentinel("小天", eid)
+
+    applied = await rec.areconcile("小天", view_provider=lambda n, t: {})
+    assert applied == 0
+
+
+# ── async duals ──────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_async_duals_mirror_sync(tmp_path):
+    from memory.event_log import EVT_FACT_ADDED
+
+    log = _fresh_log(str(tmp_path))
+    eid = await log.aappend("小天", EVT_FACT_ADDED, {"fact_id": "f1"})
+    tail = await log.aread_since("小天", None)
+    assert [r["event_id"] for r in tail] == [eid]
+    await log.aadvance_sentinel("小天", eid)
+    assert await log.aread_sentinel("小天") == eid
+
+
+@pytest.mark.asyncio
+async def test_arecord_and_save_roundtrip(tmp_path):
+    from memory.event_log import EVT_FACT_ADDED
+
+    log = _fresh_log(str(tmp_path))
+    stored = {"facts": []}
+
+    def load(name):
+        return stored
+
+    def mutate(view):
+        view["facts"].append("f1")
+
+    def save(name, view):
+        pass  # no-op: in-memory test
+
+    eid = await log.arecord_and_save(
+        "小天", EVT_FACT_ADDED, {"fact_id": "f1"},
+        sync_load_view=load, sync_mutate_view=mutate, sync_save_view=save,
+    )
+    assert stored["facts"] == ["f1"]
+    assert await log.aread_sentinel("小天") == eid
+
+
+@pytest.mark.asyncio
+async def test_unicode_payload_roundtrip(tmp_path):
+    """Event payloads must preserve CJK / emoji content."""
+    from memory.event_log import EVT_REFLECTION_SYNTHESIZED
+
+    log = _fresh_log(str(tmp_path))
+    payload = {"reflection_id": "ref_abc", "text_sha256": "deadbeef",
+               "source_fact_ids": ["f1", "f2"], "note": "主人喜欢咖啡 ☕"}
+    await log.aappend("小天", EVT_REFLECTION_SYNTHESIZED, payload)
+    tail = await log.aread_since("小天", None)
+    assert tail[0]["payload"] == payload
+
+
+# ── per-character isolation ─────────────────────────────────────────
+
+
+def test_separate_characters_dont_share_body(tmp_path):
+    from memory.event_log import EVT_FACT_ADDED
+
+    log = _fresh_log(str(tmp_path))
+    id_a = log.append("小天", EVT_FACT_ADDED, {"k": "A"})
+    id_b = log.append("小雪", EVT_FACT_ADDED, {"k": "B"})
+
+    assert [r["event_id"] for r in log.read_since("小天", None)] == [id_a]
+    assert [r["event_id"] for r in log.read_since("小雪", None)] == [id_b]
