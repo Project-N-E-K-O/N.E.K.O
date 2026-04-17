@@ -443,8 +443,9 @@ async def test_swallow_subscriber_cancelled_error():
     try:
         await task
     except asyncio.CancelledError:
+        # 故意吞：这里只是把 task 驱动到 done 态供下面 _swallow_subscriber_exc
+        # 调用，CancelledError 本身就是测试期望的结果。
         pass
-    # 直接调用 done-callback；不该抛
     _swallow_subscriber_exc(task)
 
 
