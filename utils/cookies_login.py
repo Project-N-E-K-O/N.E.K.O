@@ -10,7 +10,6 @@
 4. 深度环境伪装：增加完整的 Origin/Referer 请求头，防止触发账号环境风控。
 """
 
-import asyncio
 import json
 import os
 import sys
@@ -268,7 +267,7 @@ def parse_cookie_string(cookie_string: str) -> Dict[str, str]:
 
  
 
-async def get_bilibili_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
+def get_bilibili_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
     print("\n" + "-" * 40)
     print("【B站手动导入】(注意：请勿在此界面外泄露您的 SESSDATA)")
     cookie_string = input("👉 请粘贴 Cookie: ").strip()
@@ -281,7 +280,7 @@ async def get_bilibili_cookies(_method: str = "manual") -> Optional[Dict[str, st
 # ==========================================
 # 其他平台登录逻辑 (纯手工导入)
 # ==========================================
-async def get_douyin_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
+def get_douyin_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
     print("\n" + "-" * 40)
     print("【抖音手动导入】(需包含 sessionid 和 ttwid 字段)")
     cookie_string = input("👉 请粘贴 Cookie: ").strip()
@@ -291,7 +290,7 @@ async def get_douyin_cookies(_method: str = "manual") -> Optional[Dict[str, str]
         save_cookies_to_file('douyin', cookies)
     return cookies
 
-async def get_kuaishou_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
+def get_kuaishou_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
     print("\n" + "-" * 40)
     print("【快手手动导入】(需包含 kuaishou.server.web_st 字段)")
     cookie_string = input("👉 请粘贴 Cookie: ").strip()
@@ -301,7 +300,7 @@ async def get_kuaishou_cookies(_method: str = "manual") -> Optional[Dict[str, st
         save_cookies_to_file('kuaishou', cookies)
     return cookies
 
-async def get_weibo_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
+def get_weibo_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
     print("\n" + "-" * 40)
     print("【微博手动导入】(需包含 SUB 字段)")
     cookie_string = input("👉 请粘贴 Cookie: ").strip()
@@ -311,7 +310,7 @@ async def get_weibo_cookies(_method: str = "manual") -> Optional[Dict[str, str]]
         save_cookies_to_file('weibo', cookies)
     return cookies
 
-async def get_reddit_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
+def get_reddit_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
     print("\n" + "-" * 40)
     print("【Reddit 手动导入】")
     cookie_string = input("👉 请粘贴 Cookie: ").strip()
@@ -321,7 +320,7 @@ async def get_reddit_cookies(_method: str = "manual") -> Optional[Dict[str, str]
         save_cookies_to_file('reddit', cookies)
     return cookies
 
-async def get_twitter_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
+def get_twitter_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
     print("\n" + "-" * 40)
     print("【Twitter/X 手动导入】")
     cookie_string = input("👉 请粘贴 Cookie: ").strip()
@@ -331,7 +330,7 @@ async def get_twitter_cookies(_method: str = "manual") -> Optional[Dict[str, str
         save_cookies_to_file('twitter', cookies)
     return cookies
 
-async def get_netease_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
+def get_netease_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
     print("\n" + "-" * 40)
     print("【网易云音乐手动导入】(需包含 MUSIC_U 字段)")
     cookie_string = input("👉 请粘贴 Cookie: ").strip()
@@ -356,9 +355,9 @@ class PlatformLoginManager:
             'twitter': {'name': 'Twitter/X', 'methods': ['manual'], 'func': get_twitter_cookies}
         }
     
-    async def login_platform(self, platform: str, method: str) -> Optional[Dict[str, str]]:
+    def login_platform(self, platform: str, method: str) -> Optional[Dict[str, str]]:
         if platform in self.platforms:
-            return await self.platforms[platform]['func'](method)
+            return self.platforms[platform]['func'](method)
         return None
     
     def get_supported_platforms(self) -> Dict[str, Dict[str, Any]]:
@@ -375,7 +374,7 @@ class PlatformLoginManager:
                 result[platform]['default_method'] = None
         return result
 
-async def interactive_login():
+def interactive_login():
     manager = PlatformLoginManager()
     platforms = list(manager.platforms.items())
     
@@ -414,7 +413,7 @@ async def interactive_login():
                         pass
                 
                 print(f"\n🚀 正在启动 {p_info['name']} 的 {method} 安全流程...")
-                await manager.login_platform(p_key, method)
+                manager.login_platform(p_key, method)
             else:
                 print("❌ 无效的序号。")
         except ValueError:
@@ -425,9 +424,7 @@ async def interactive_login():
 
 if __name__ == "__main__":
     try:
-        if sys.platform == 'win32':
-            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-        asyncio.run(interactive_login())
+        interactive_login()
     except KeyboardInterrupt:
         print("\n👋 终端已安全关闭。")
         sys.exit(0)
