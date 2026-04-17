@@ -3843,6 +3843,7 @@ async def export_catgirl_with_portrait(
                 portrait_img = Image.open(io.BytesIO(_portrait_data))
                 portrait_img.verify()
                 portrait_img = Image.open(io.BytesIO(_portrait_data))
+                portrait_img.load()  # 强制解码：把截断/损坏的像素错误提前到这里，与 _InvalidPortraitError 一起回 400 而不是后续 resize/save 时回 500
             except Exception as exc:
                 raise _InvalidPortraitError(str(exc)) from exc
 
