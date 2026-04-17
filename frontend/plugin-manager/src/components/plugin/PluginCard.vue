@@ -98,13 +98,17 @@ const entryCount = computed(() => {
 .plugin-card-header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
 }
 
 .plugin-info {
   display: flex;
   align-items: center;
-  gap: 12px;
+  align-content: flex-start;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .plugin-name {
@@ -112,6 +116,8 @@ const entryCount = computed(() => {
   font-size: 16px;
   font-weight: 600;
   color: var(--el-text-color-primary);
+  line-height: 1.35;
+  word-break: break-word;
 }
 
 .plugin-card-body {
@@ -153,6 +159,12 @@ const entryCount = computed(() => {
 
 .type-tag {
   flex-shrink: 0;
+}
+
+@media (max-width: 640px) {
+  .plugin-info {
+    align-items: flex-start;
+  }
 }
 
 .plugin-metrics-wrapper {

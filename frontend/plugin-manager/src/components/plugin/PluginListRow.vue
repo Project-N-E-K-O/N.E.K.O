@@ -8,15 +8,17 @@
     <div class="plugin-list-row-card__content">
       <div class="plugin-list-row-card__main">
         <div class="plugin-list-row-card__headline">
-          <el-tag size="small" effect="plain" :type="typeTagType">{{ typeLabel }}</el-tag>
-          <h3 class="plugin-list-row-card__name">{{ plugin.name }}</h3>
-          <StatusIndicator :status="plugin.status || 'stopped'" />
-          <el-tag v-if="plugin.enabled === false && plugin.type !== 'extension'" size="small" type="info">
-            {{ t('plugins.disabled') }}
-          </el-tag>
-          <el-tag v-else-if="plugin.autoStart === false && plugin.type !== 'extension'" size="small" type="warning">
-            {{ t('plugins.manualStart') }}
-          </el-tag>
+          <div class="plugin-list-row-card__heading-main">
+            <el-tag size="small" effect="plain" :type="typeTagType">{{ typeLabel }}</el-tag>
+            <h3 class="plugin-list-row-card__name">{{ plugin.name }}</h3>
+            <StatusIndicator :status="plugin.status || 'stopped'" />
+            <el-tag v-if="plugin.enabled === false && plugin.type !== 'extension'" size="small" type="info">
+              {{ t('plugins.disabled') }}
+            </el-tag>
+            <el-tag v-else-if="plugin.autoStart === false && plugin.type !== 'extension'" size="small" type="warning">
+              {{ t('plugins.manualStart') }}
+            </el-tag>
+          </div>
         </div>
 
         <p v-if="!showMetrics" class="plugin-list-row-card__description">
@@ -130,9 +132,17 @@ const typeTagType = computed<'primary' | 'success' | 'warning'>(() => {
 
 .plugin-list-row-card__headline {
   display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.plugin-list-row-card__heading-main {
+  display: flex;
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .plugin-list-row-card__name {
@@ -140,6 +150,8 @@ const typeTagType = computed<'primary' | 'success' | 'warning'>(() => {
   font-size: 16px;
   font-weight: 650;
   color: var(--el-text-color-primary);
+  line-height: 1.35;
+  word-break: break-word;
 }
 
 .plugin-list-row-card__description {
@@ -201,6 +213,10 @@ const typeTagType = computed<'primary' | 'success' | 'warning'>(() => {
 @media (max-width: 980px) {
   .plugin-list-row-card__content {
     grid-template-columns: 1fr;
+  }
+
+  .plugin-list-row-card__headline {
+    align-items: flex-start;
   }
 
   .plugin-list-row-card__meta {

@@ -862,8 +862,8 @@ onUnmounted(() => {
 
 .plugin-item__select {
   position: absolute;
-  top: 10px;
-  left: 10px;
+  top: -8px;
+  right: -8px;
   z-index: 2;
   display: inline-flex;
   align-items: center;
@@ -877,18 +877,9 @@ onUnmounted(() => {
 }
 
 .plugin-item--list-layout .plugin-item__select {
-  top: 50%;
-  left: 16px;
-  transform: translateY(-50%);
-}
-
-.plugin-item--selection-mode:not(.plugin-item--list-layout) :deep(.plugin-card .el-card__header),
-.plugin-item--selection-mode:not(.plugin-item--list-layout) :deep(.plugin-card .el-card__body) {
-  padding-left: 56px;
-}
-
-.plugin-item--list-layout.plugin-item--selection-mode :deep(.plugin-list-row-card .el-card__body) {
-  padding-left: 60px;
+  top: -8px;
+  right: -8px;
+  transform: none;
 }
 
 .plugin-item--selected :deep(.plugin-card) {
