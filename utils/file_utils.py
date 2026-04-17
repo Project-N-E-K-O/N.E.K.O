@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -86,3 +87,45 @@ def atomic_write_json(
         **json_kwargs,
     )
     atomic_write_text(path, content, encoding=encoding)
+
+
+def read_json(path: str | os.PathLike[str], *, encoding: str = "utf-8") -> Any:
+    with open(path, "r", encoding=encoding) as f:
+        return json.load(f)
+
+
+async def atomic_write_text_async(
+    path: str | os.PathLike[str],
+    content: str,
+    *,
+    encoding: str = "utf-8",
+) -> None:
+    await asyncio.to_thread(atomic_write_text, path, content, encoding=encoding)
+
+
+async def atomic_write_json_async(
+    path: str | os.PathLike[str],
+    data: Any,
+    *,
+    encoding: str = "utf-8",
+    ensure_ascii: bool = False,
+    indent: int | None = 2,
+    **json_kwargs: Any,
+) -> None:
+    await asyncio.to_thread(
+        atomic_write_json,
+        path,
+        data,
+        encoding=encoding,
+        ensure_ascii=ensure_ascii,
+        indent=indent,
+        **json_kwargs,
+    )
+
+
+async def read_json_async(
+    path: str | os.PathLike[str],
+    *,
+    encoding: str = "utf-8",
+) -> Any:
+    return await asyncio.to_thread(read_json, path, encoding=encoding)

@@ -9,6 +9,7 @@ Handles jukebox-related endpoints including:
 - Configuration import/export
 """
 
+import asyncio
 import io
 import json
 import hashlib
@@ -338,7 +339,11 @@ class JukeboxConfig:
                 user_data["md5Index"]["actions"][md5_key] = action_id
 
         atomic_write_json(self.config_file, user_data)
-    
+
+    async def asave(self):
+        """异步 save 包装：事件循环上不能直接调用 save()（会阻塞）。"""
+        await asyncio.to_thread(self.save)
+
     def get_next_id(self, prefix: str) -> str:
         """获取下一个 ID"""
         existing = self.data.get(f"{prefix}s", {})
@@ -428,7 +433,7 @@ async def upload_songs(
             target_path = jukebox_config.songs_dir / target_filename
 
             with open(target_path, "wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
+                await asyncio.to_thread(shutil.copyfileobj, file.file, buffer)
 
             # 计算 MD5
             file_md5 = calculate_md5(target_path)
@@ -469,7 +474,7 @@ async def upload_songs(
         finally:
             file.file.close()
     
-    jukebox_config.save()
+    await jukebox_config.asave()
     
     # 单首歌曲上传时直接返回结果，批量时返回结果列表
     if len(files) == 1:
@@ -493,7 +498,7 @@ async def delete_song(song_id: str):
         # 删除相关绑定
         if song_id in jukebox_config.data["bindings"]:
             del jukebox_config.data["bindings"][song_id]
-            jukebox_config.save()
+            await jukebox_config.asave()
             logger.info(f"删除内置歌曲的绑定关系: {song_id}")
         return {"success": True, "message": "内置歌曲的绑定关系已删除"}
 
@@ -514,7 +519,7 @@ async def delete_song(song_id: str):
 
     # 删除歌曲记录
     del jukebox_config.data["songs"][song_id]
-    jukebox_config.save()
+    await jukebox_config.asave()
 
     logger.info(f"删除歌曲: {song_id}")
     return {"success": True}
@@ -530,7 +535,7 @@ async def update_song_visibility(song_id: str, visible: bool = Form(...)):
         raise HTTPException(404, "歌曲不存在")
     
     jukebox_config.data["songs"][song_id]["visible"] = visible
-    jukebox_config.save()
+    await jukebox_config.asave()
     
     return {"success": True}
 
@@ -553,7 +558,7 @@ async def update_song_metadata(
     if artist is not None:
         jukebox_config.data["songs"][song_id]["artist"] = artist
     
-    jukebox_config.save()
+    await jukebox_config.asave()
     
     logger.info(f"更新歌曲元数据: {song_id}, name={name}, artist={artist}")
     return {"success": True}
@@ -572,7 +577,7 @@ async def update_action_metadata(
         raise HTTPException(404, "动画不存在")
     
     jukebox_config.data["actions"][action_id]["name"] = name
-    jukebox_config.save()
+    await jukebox_config.asave()
     
     logger.info(f"更新动画元数据: {action_id}, name={name}")
     return {"success": True}
@@ -602,7 +607,7 @@ async def set_song_default_action(
             raise HTTPException(400, "该动画未绑定到此歌曲")
     
     jukebox_config.data["songs"][song_id]["defaultAction"] = action_id
-    jukebox_config.save()
+    await jukebox_config.asave()
     
     logger.info(f"设置歌曲默认动画: {song_id} -> {action_id}")
     return {"success": True, "defaultAction": action_id}
@@ -660,7 +665,7 @@ async def upload_actions(
             target_path = jukebox_config.actions_dir / target_filename
 
             with open(target_path, "wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
+                await asyncio.to_thread(shutil.copyfileobj, file.file, buffer)
 
             # 计算 MD5
             file_md5 = calculate_md5(target_path)
@@ -699,7 +704,7 @@ async def upload_actions(
         finally:
             file.file.close()
     
-    jukebox_config.save()
+    await jukebox_config.asave()
     
     # 单个动画上传时直接返回结果，批量时返回结果列表
     if len(files) == 1:
@@ -732,7 +737,7 @@ async def delete_action(action_id: str):
             # 如果没有绑定了，删除空字典
             if not bindings:
                 del jukebox_config.data["bindings"][song_id]
-        jukebox_config.save()
+        await jukebox_config.asave()
         logger.info(f"删除内置动画的绑定关系: {action_id}")
         return {"success": True, "message": "内置动画的绑定关系已删除"}
 
@@ -762,7 +767,7 @@ async def delete_action(action_id: str):
 
     # 删除动画记录
     del jukebox_config.data["actions"][action_id]
-    jukebox_config.save()
+    await jukebox_config.asave()
 
     logger.info(f"删除动画: {action_id}")
     return {"success": True}
@@ -818,7 +823,7 @@ async def bind_song_action(
         song["defaultAction"] = actionId
         logger.info(f"设置默认动画: {songId} -> {actionId} (首次绑定)")
     
-    jukebox_config.save()
+    await jukebox_config.asave()
     
     logger.info(f"建立绑定: {songId} <-> {actionId}, offset={offset}")
     return {"success": True, "defaultAction": song.get("defaultAction", "")}
@@ -854,7 +859,7 @@ async def unbind_song_action(
                 song["defaultAction"] = ""
                 logger.info(f"清除默认动画: {songId} (解绑了默认动画 {actionId})")
             
-            jukebox_config.save()
+            await jukebox_config.asave()
             logger.info(f"解除绑定: {songId} <-> {actionId}")
             return {"success": True, "defaultAction": song.get("defaultAction", "")}
     
@@ -948,7 +953,7 @@ async def export_config(
             if src_path.exists():
                 dst_path = export_dir / song["audio"]
                 dst_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src_path, dst_path)
+                await asyncio.to_thread(shutil.copy2, src_path, dst_path)
 
         # 导出动画
         for action_id in action_ids_to_export:
@@ -975,7 +980,7 @@ async def export_config(
             if src_path.exists():
                 dst_path = export_dir / action["file"]
                 dst_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src_path, dst_path)
+                await asyncio.to_thread(shutil.copy2, src_path, dst_path)
 
         # 导出绑定关系（将ID绑定转换为MD5绑定，便于跨系统导入）
         # 本地存储格式: bindings[songId][actionId] = {"offset": 0}
@@ -1129,7 +1134,7 @@ async def import_config(file: UploadFile = File(...)):
         zip_path = temp_path / "import.zip"
 
         with open(zip_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+            await asyncio.to_thread(shutil.copyfileobj, file.file, buffer)
         
         extract_dir = temp_path / "extracted"
         extract_dir.mkdir()
@@ -1161,7 +1166,7 @@ async def import_config(file: UploadFile = File(...)):
                 else:
                     member_path.parent.mkdir(parents=True, exist_ok=True)
                     with zf.open(member) as src, open(member_path, 'wb') as dst:
-                        shutil.copyfileobj(src, dst)
+                        await asyncio.to_thread(shutil.copyfileobj, src, dst)
         
         config_path = extract_dir / "config.json"
         if not config_path.exists():
@@ -1215,7 +1220,7 @@ async def import_config(file: UploadFile = File(...)):
                     target_filename = get_unique_filename(jukebox_config.songs_dir, original_filename)
                     dst_audio = jukebox_config.songs_dir / target_filename
                     dst_audio.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src_audio, dst_audio)
+                    await asyncio.to_thread(shutil.copy2, src_audio, dst_audio)
 
                     new_id = sanitize_filename(target_filename)
                     base_id = new_id
@@ -1282,7 +1287,7 @@ async def import_config(file: UploadFile = File(...)):
                     target_filename = get_unique_filename(jukebox_config.actions_dir, original_filename)
                     dst_file = jukebox_config.actions_dir / target_filename
                     dst_file.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src_file, dst_file)
+                    await asyncio.to_thread(shutil.copy2, src_file, dst_file)
 
                     new_id = sanitize_filename(target_filename)
                     base_id = new_id
@@ -1371,7 +1376,7 @@ async def import_config(file: UploadFile = File(...)):
                 local_song["defaultAction"] = local_action_id
                 logger.info(f"导入映射默认动画: {local_song_id} -> {local_action_id}")
 
-        jukebox_config.save()
+        await jukebox_config.asave()
         
         logger.info(f"导入完成: {stats}")
         return {"success": True, "stats": stats}
@@ -1402,7 +1407,7 @@ async def pack_folder(files: List[UploadFile] = File(...)):
                 raise HTTPException(400, f"文件名包含非法路径: {file.filename}") from err
             file_path.parent.mkdir(parents=True, exist_ok=True)
             with open(file_path, "wb") as f:
-                shutil.copyfileobj(file.file, f)
+                await asyncio.to_thread(shutil.copyfileobj, file.file, f)
 
         # 创建 ZIP 文件
         zip_path = temp_path / "packed.zip"

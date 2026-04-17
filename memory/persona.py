@@ -17,6 +17,7 @@ Key features:
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -25,7 +26,12 @@ from datetime import datetime, timedelta
 
 from config import SETTING_PROPOSER_MODEL
 from utils.config_manager import get_config_manager
-from utils.file_utils import atomic_write_json, robust_json_loads
+from utils.file_utils import (
+    atomic_write_json,
+    atomic_write_json_async,
+    read_json_async,
+    robust_json_loads,
+)
 from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Memory")
@@ -159,6 +165,38 @@ class PersonaManager:
         self.save_persona(name, persona)
         return persona
 
+    async def aensure_persona(self, name: str) -> dict:
+        if name in self._personas:
+            if await self._async_sync_character_card(name, self._personas[name]):
+                await self.asave_persona(name, self._personas[name])
+            return self._personas[name]
+
+        path = self._persona_path(name)
+        if await asyncio.to_thread(os.path.exists, path):
+            try:
+                data = await read_json_async(path)
+                if isinstance(data, dict):
+                    migrated = self._migrate_v1_entity_keys(data)
+                    if self._is_persona_empty(data):
+                        await self._async_migrate_from_settings(name, data)
+                        migrated = True
+                    if await self._async_sync_character_card(name, data):
+                        migrated = True
+                    if migrated:
+                        await self.asave_persona(name, data)
+                    self._personas[name] = data
+                    return data
+                logger.warning(f"[Persona] {name}: persona 文件不是 dict，忽略")
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(f"[Persona] 加载失败: {e}")
+
+        persona = self._empty_persona()
+        await self._async_migrate_from_settings(name, persona)
+        await self._async_sync_character_card(name, persona)
+        self._personas[name] = persona
+        await self.asave_persona(name, persona)
+        return persona
+
     @staticmethod
     def _migrate_v1_entity_keys(persona: dict) -> bool:
         """One-time migration: rename v1 entity keys and unify inner key to 'facts'.
@@ -193,6 +231,58 @@ class PersonaManager:
         raw = f"{entity}:{field_name}"
         return f"card_{hashlib.sha256(raw.encode()).hexdigest()[:8]}"
 
+    def _resolve_settings_path(self, name: str) -> str | None:
+        from memory import ensure_character_dir
+        char_dir = ensure_character_dir(self._config_manager.memory_dir, name)
+        settings_path = os.path.join(char_dir, 'settings.json')
+        if not os.path.exists(settings_path):
+            old_path = os.path.join(str(self._config_manager.memory_dir), f'settings_{name}.json')
+            if os.path.exists(old_path):
+                return old_path
+            return None
+        return settings_path
+
+    def _apply_settings_migration(
+        self, name: str, persona: dict, master_name: str,
+        name_mapping: dict, old_settings: dict,
+    ) -> int:
+        def _is_migratable(val) -> bool:
+            if val is None:
+                return False
+            if isinstance(val, str):
+                return bool(val.strip())
+            if isinstance(val, (list, dict, set, tuple)):
+                return len(val) > 0
+            return True
+
+        def _existing_texts_for(facts_list):
+            return {e.get('text', '') for e in facts_list if isinstance(e, dict)}
+
+        migrated_count = 0
+        for section_key, facts_dict in old_settings.items():
+            if not isinstance(facts_dict, dict):
+                continue
+            if section_key == master_name or section_key == name_mapping.get('human', ''):
+                target = persona['master']['facts']
+            elif section_key == name:
+                target = persona['neko']['facts']
+            else:
+                target = persona['relationship']['facts']
+
+            seen = _existing_texts_for(target)
+            for k, v in facts_dict.items():
+                if _is_migratable(v):
+                    text = f"{k}: {v}"
+                    if text not in seen:
+                        entry = self._normalize_entry(text)
+                        content_hash = hashlib.sha256(text.encode()).hexdigest()[:8]
+                        entry['id'] = f"legacy_{content_hash}"
+                        entry['source'] = 'settings'
+                        target.append(entry)
+                        seen.add(text)
+                        migrated_count += 1
+        return migrated_count
+
     def _migrate_from_settings(self, name: str, persona: dict) -> None:
         """One-time migration from legacy settings.json to persona format.
 
@@ -200,66 +290,48 @@ class PersonaManager:
         角色卡数据（characters.json）的同步统一由 _sync_character_card() 负责，
         此方法不再处理角色卡，避免两处写入导致重复条目。
         """
-        from memory import ensure_character_dir
-
         _, _, _, _, name_mapping, _, _, _, _ = (
             self._config_manager.get_character_data()
         )
         master_name = name_mapping.get('human', '主人')
-        migrated_count = 0
 
-        # 确保 persona 有核心 entity 结构，防止 KeyError
         for section_key in ('neko', 'master', 'relationship'):
             persona.setdefault(section_key, {}).setdefault('facts', [])
 
-        def _is_migratable(val) -> bool:
-            """仅排除 None、空白字符串、空容器；保留 0/False 等标量假值。"""
-            if val is None:
-                return False
-            if isinstance(val, str):
-                return bool(val.strip())
-            if isinstance(val, (list, dict, set, tuple)):
-                return len(val) > 0
-            return True  # int 0, bool False 等合法标量
-
-        # ── 从 settings.json 迁移（LLM 提取的设定）──
-        char_dir = ensure_character_dir(self._config_manager.memory_dir, name)
-        settings_path = os.path.join(char_dir, 'settings.json')
-        if not os.path.exists(settings_path):
-            old_path = os.path.join(str(self._config_manager.memory_dir), f'settings_{name}.json')
-            if os.path.exists(old_path):
-                settings_path = old_path
-        if os.path.exists(settings_path):
+        settings_path = self._resolve_settings_path(name)
+        migrated_count = 0
+        if settings_path:
             try:
                 with open(settings_path, encoding='utf-8') as f:
                     old_settings = json.load(f)
                 if isinstance(old_settings, dict):
-                    # 按 target section 分别去重，避免跨 section 误去重
-                    def _existing_texts_for(facts_list):
-                        return {e.get('text', '') for e in facts_list if isinstance(e, dict)}
+                    migrated_count = self._apply_settings_migration(
+                        name, persona, master_name, name_mapping, old_settings,
+                    )
+            except Exception as e:
+                logger.warning(f"[Persona] {name}: settings.json 读取失败: {e}")
 
-                    for section_key, facts_dict in old_settings.items():
-                        if not isinstance(facts_dict, dict):
-                            continue
-                        if section_key == master_name or section_key == name_mapping.get('human', ''):
-                            target = persona['master']['facts']
-                        elif section_key == name:
-                            target = persona['neko']['facts']
-                        else:
-                            target = persona['relationship']['facts']
+        if migrated_count:
+            logger.info(f"[Persona] {name}: 迁移了 {migrated_count} 条 persona 数据（settings）")
 
-                        seen = _existing_texts_for(target)
-                        for k, v in facts_dict.items():
-                            if _is_migratable(v):
-                                text = f"{k}: {v}"
-                                if text not in seen:
-                                    entry = self._normalize_entry(text)
-                                    content_hash = hashlib.sha256(text.encode()).hexdigest()[:8]
-                                    entry['id'] = f"legacy_{content_hash}"
-                                    entry['source'] = 'settings'
-                                    target.append(entry)
-                                    seen.add(text)
-                                    migrated_count += 1
+    async def _async_migrate_from_settings(self, name: str, persona: dict) -> None:
+        _, _, _, _, name_mapping, _, _, _, _ = (
+            await self._config_manager.aget_character_data()
+        )
+        master_name = name_mapping.get('human', '主人')
+
+        for section_key in ('neko', 'master', 'relationship'):
+            persona.setdefault(section_key, {}).setdefault('facts', [])
+
+        settings_path = await asyncio.to_thread(self._resolve_settings_path, name)
+        migrated_count = 0
+        if settings_path:
+            try:
+                old_settings = await read_json_async(settings_path)
+                if isinstance(old_settings, dict):
+                    migrated_count = self._apply_settings_migration(
+                        name, persona, master_name, name_mapping, old_settings,
+                    )
             except Exception as e:
                 logger.warning(f"[Persona] {name}: settings.json 读取失败: {e}")
 
@@ -268,27 +340,11 @@ class PersonaManager:
 
     # ── character card 同步 ───────────────────────────────────────────
 
-    def _sync_character_card(self, name: str, persona: dict) -> bool:
-        """同步 character card 条目到 persona 头部，保持顺序与 characters.json 一致。
-
-        规则：
-        1. 读取当前 characters.json 的 neko/master 字段
-        2. 为每个字段生成确定性 ID (card_{entity}_{hash})
-        3. 与 persona 中 source=='character_card' 的条目对比
-        4. 更新文本变化的、新增缺少的、删除 card 中已移除的
-        5. card 条目始终排在 facts 列表头部，顺序与 card 一致
-
-        Returns True if any change was made.
-        """
+    def _apply_character_card_sync(
+        self, name: str, persona: dict,
+        master_basic_config, lanlan_basic_config,
+    ) -> bool:
         from config import CHARACTER_RESERVED_FIELDS
-
-        try:
-            _, _, master_basic_config, lanlan_basic_config, name_mapping, _, _, _, _ = (
-                self._config_manager.get_character_data()
-            )
-        except Exception:
-            return False
-
         excluded_fields = set(CHARACTER_RESERVED_FIELDS)
         changed = False
 
@@ -382,14 +438,56 @@ class PersonaManager:
 
         return changed
 
+    def _sync_character_card(self, name: str, persona: dict) -> bool:
+        """同步 character card 条目到 persona 头部，保持顺序与 characters.json 一致。
+
+        规则：
+        1. 读取当前 characters.json 的 neko/master 字段
+        2. 为每个字段生成确定性 ID (card_{entity}_{hash})
+        3. 与 persona 中 source=='character_card' 的条目对比
+        4. 更新文本变化的、新增缺少的、删除 card 中已移除的
+        5. card 条目始终排在 facts 列表头部，顺序与 card 一致
+
+        Returns True if any change was made.
+        """
+        try:
+            _, _, master_basic_config, lanlan_basic_config, _, _, _, _, _ = (
+                self._config_manager.get_character_data()
+            )
+        except Exception:
+            return False
+        return self._apply_character_card_sync(
+            name, persona, master_basic_config, lanlan_basic_config,
+        )
+
+    async def _async_sync_character_card(self, name: str, persona: dict) -> bool:
+        try:
+            _, _, master_basic_config, lanlan_basic_config, _, _, _, _, _ = (
+                await self._config_manager.aget_character_data()
+            )
+        except Exception:
+            return False
+        return self._apply_character_card_sync(
+            name, persona, master_basic_config, lanlan_basic_config,
+        )
+
     def save_persona(self, name: str, persona: dict | None = None) -> None:
         if persona is None:
             persona = self._personas.get(name, self._empty_persona())
         self._personas[name] = persona
         atomic_write_json(self._persona_path(name), persona, indent=2, ensure_ascii=False)
 
+    async def asave_persona(self, name: str, persona: dict | None = None) -> None:
+        if persona is None:
+            persona = self._personas.get(name, self._empty_persona())
+        self._personas[name] = persona
+        await atomic_write_json_async(self._persona_path(name), persona, indent=2, ensure_ascii=False)
+
     def get_persona(self, name: str) -> dict:
         return self.ensure_persona(name)
+
+    async def aget_persona(self, name: str) -> dict:
+        return await self.aensure_persona(name)
 
     # ── entry normalization ──────────────────────────────────────────
 
@@ -435,6 +533,37 @@ class PersonaManager:
     FACT_REJECTED_CARD = 'rejected_card'      # contradicts character_card → permanent
     FACT_QUEUED_CORRECTION = 'queued'         # contradicts non-card → correction queue
 
+    def _evaluate_fact_contradiction(
+        self, name: str, text: str, section_facts: list, stop_names: list[str],
+    ) -> tuple[str | None, str | None]:
+        """Returns (rejection_code, conflicting_text) or (None, None) if OK."""
+        for existing in section_facts:
+            if isinstance(existing, dict):
+                old_text = existing.get('text', '')
+                is_card = existing.get('source') == 'character_card'
+            else:
+                old_text = str(existing)
+                is_card = False
+            if self._texts_may_contradict(old_text, text, stop_names=stop_names):
+                if is_card:
+                    logger.info(
+                        f"[Persona] {name}: 新条目与角色卡矛盾，无条件拒绝: "
+                        f"card=\"{old_text[:40]}\" vs new=\"{text[:40]}\""
+                    )
+                    return self.FACT_REJECTED_CARD, old_text
+                return self.FACT_QUEUED_CORRECTION, old_text
+        return None, None
+
+    def _build_fact_entry(self, text: str, source: str, source_id: str | None) -> dict:
+        entry = self._normalize_entry(text)
+        if source == 'reflection' and source_id:
+            entry['id'] = f"prom_{source_id}"
+        else:
+            entry['id'] = f"manual_{datetime.now().strftime('%Y%m%d%H%M%S')}_{hashlib.sha256(text.encode()).hexdigest()[:8]}"
+        entry['source'] = source
+        entry['source_id'] = source_id
+        return entry
+
     def add_fact(self, name: str, text: str, entity: str = 'master',
                  source: str = 'manual', source_id: str | None = None) -> str:
         """Add a confirmed fact to persona. Checks for contradictions first.
@@ -452,32 +581,32 @@ class PersonaManager:
         section_facts = self._get_section_facts(persona, entity)
         stop_names = self._get_entity_stop_names()
 
-        for existing in section_facts:
-            if isinstance(existing, dict):
-                old_text = existing.get('text', '')
-                is_card = existing.get('source') == 'character_card'
-            else:
-                old_text = str(existing)
-                is_card = False
-            if self._texts_may_contradict(old_text, text, stop_names=stop_names):
-                if is_card:
-                    logger.info(
-                        f"[Persona] {name}: 新条目与角色卡矛盾，无条件拒绝: "
-                        f"card=\"{old_text[:40]}\" vs new=\"{text[:40]}\""
-                    )
-                    return self.FACT_REJECTED_CARD
-                self._queue_correction(name, old_text, text, entity)
-                return self.FACT_QUEUED_CORRECTION
+        code, old_text = self._evaluate_fact_contradiction(name, text, section_facts, stop_names)
+        if code == self.FACT_REJECTED_CARD:
+            return self.FACT_REJECTED_CARD
+        if code == self.FACT_QUEUED_CORRECTION:
+            self._queue_correction(name, old_text, text, entity)
+            return self.FACT_QUEUED_CORRECTION
 
-        entry = self._normalize_entry(text)
-        if source == 'reflection' and source_id:
-            entry['id'] = f"prom_{source_id}"
-        else:
-            entry['id'] = f"manual_{datetime.now().strftime('%Y%m%d%H%M%S')}_{hashlib.sha256(text.encode()).hexdigest()[:8]}"
-        entry['source'] = source
-        entry['source_id'] = source_id
-        section_facts.append(entry)
+        section_facts.append(self._build_fact_entry(text, source, source_id))
         self.save_persona(name, persona)
+        return self.FACT_ADDED
+
+    async def aadd_fact(self, name: str, text: str, entity: str = 'master',
+                        source: str = 'manual', source_id: str | None = None) -> str:
+        persona = await self.aensure_persona(name)
+        section_facts = self._get_section_facts(persona, entity)
+        stop_names = await self._aget_entity_stop_names()
+
+        code, old_text = self._evaluate_fact_contradiction(name, text, section_facts, stop_names)
+        if code == self.FACT_REJECTED_CARD:
+            return self.FACT_REJECTED_CARD
+        if code == self.FACT_QUEUED_CORRECTION:
+            await self._aqueue_correction(name, old_text, text, entity)
+            return self.FACT_QUEUED_CORRECTION
+
+        section_facts.append(self._build_fact_entry(text, source, source_id))
+        await self.asave_persona(name, persona)
         return self.FACT_ADDED
 
     def _get_section_facts(self, persona: dict, entity: str) -> list:
@@ -488,6 +617,20 @@ class PersonaManager:
         try:
             master_name, her_name, _, _, _, _, _, _, _ = (
                 self._config_manager.get_character_data()
+            )
+            names = []
+            if master_name:
+                names.append(master_name)
+            if her_name:
+                names.append(her_name)
+            return names
+        except Exception:
+            return []
+
+    async def _aget_entity_stop_names(self) -> list[str]:
+        try:
+            master_name, her_name, _, _, _, _, _, _, _ = (
+                await self._config_manager.aget_character_data()
             )
             names = []
             if master_name:
@@ -526,20 +669,38 @@ class PersonaManager:
 
     # ── contradiction queue ──────────────────────────────────────────
 
-    def _queue_correction(self, name: str, old_text: str, new_text: str, entity: str) -> None:
-        corrections = self.load_pending_corrections(name)
+    @staticmethod
+    def _build_correction_list(
+        corrections: list[dict], old_text: str, new_text: str, entity: str,
+    ) -> list[dict] | None:
+        """Returns the modified list or None if duplicate (no change needed)."""
         for existing in corrections:
             if (existing.get('old_text') == old_text
                     and existing.get('new_text') == new_text
                     and existing.get('entity') == entity):
-                return
+                return None
         corrections.append({
             'old_text': old_text,
             'new_text': new_text,
             'entity': entity,
             'created_at': datetime.now().isoformat(),
         })
-        atomic_write_json(self._corrections_path(name), corrections, indent=2, ensure_ascii=False)
+        return corrections
+
+    def _queue_correction(self, name: str, old_text: str, new_text: str, entity: str) -> None:
+        corrections = self.load_pending_corrections(name)
+        updated = self._build_correction_list(corrections, old_text, new_text, entity)
+        if updated is None:
+            return
+        atomic_write_json(self._corrections_path(name), updated, indent=2, ensure_ascii=False)
+        logger.info(f"[Persona] {name}: 发现潜在矛盾，加入审视队列")
+
+    async def _aqueue_correction(self, name: str, old_text: str, new_text: str, entity: str) -> None:
+        corrections = await self.aload_pending_corrections(name)
+        updated = self._build_correction_list(corrections, old_text, new_text, entity)
+        if updated is None:
+            return
+        await atomic_write_json_async(self._corrections_path(name), updated, indent=2, ensure_ascii=False)
         logger.info(f"[Persona] {name}: 发现潜在矛盾，加入审视队列")
 
     def load_pending_corrections(self, name: str) -> list[dict]:
@@ -554,6 +715,19 @@ class PersonaManager:
                 pass
         return []
 
+    async def aload_pending_corrections(self, name: str) -> list[dict]:
+        path = self._corrections_path(name)
+        if not await asyncio.to_thread(os.path.exists, path):
+            return []
+        try:
+            data = await read_json_async(path)
+            if isinstance(data, list):
+                return data
+        except (json.JSONDecodeError, OSError):
+            # 文件损坏或被并发进程替换：按空队列处理，下次 add_pending_correction 会重建
+            pass
+        return []
+
     async def resolve_corrections(self, name: str) -> int:
         """用 correction model 批量审视矛盾队列（单次 LLM 调用）。
 
@@ -562,7 +736,7 @@ class PersonaManager:
         """
         from config.prompts_memory import persona_correction_prompt
 
-        corrections = self.load_pending_corrections(name)
+        corrections = await self.aload_pending_corrections(name)
         if not corrections:
             return 0
 
@@ -607,7 +781,7 @@ class PersonaManager:
             return 0
 
         # 应用结果
-        persona = self.ensure_persona(name)
+        persona = await self.aensure_persona(name)
         resolved = 0
         for result in results:
             if not isinstance(result, dict):
@@ -652,7 +826,7 @@ class PersonaManager:
             resolved += 1
 
         if resolved:
-            self.save_persona(name, persona)
+            await self.asave_persona(name, persona)
             # Only remove processed corrections, keep unprocessed ones
             processed_indices: set[int] = set()
             for r in results:
@@ -664,19 +838,14 @@ class PersonaManager:
                 except (ValueError, TypeError):
                     continue
             remaining = [c for i, c in enumerate(corrections) if i not in processed_indices]
-            atomic_write_json(self._corrections_path(name), remaining,
-                              indent=2, ensure_ascii=False)
+            await atomic_write_json_async(self._corrections_path(name), remaining,
+                                          indent=2, ensure_ascii=False)
             logger.info(f"[Persona] {name}: 批量审视完成 {resolved} 条矛盾，剩余 {len(remaining)} 条")
         return resolved
 
     # ── 提及疲劳：记录 + 更新 suppress ───────────────────────────
 
-    def record_mentions(self, name: str, response_text: str) -> None:
-        """主动搭话投递后，扫描 response 中哪些 persona 条目被提及。
-
-        核心逻辑：5小时内提及 > SUPPRESS_MENTION_LIMIT 次 → suppress。
-        """
-        persona = self.ensure_persona(name)
+    def _apply_record_mentions(self, persona: dict, response_text: str) -> bool:
         now_str = datetime.now().isoformat()
         now = datetime.now()
         cutoff = now - timedelta(hours=SUPPRESS_WINDOW_HOURS)
@@ -686,29 +855,36 @@ class PersonaManager:
             if not isinstance(entry, dict):
                 continue
             if entry.get('protected'):
-                continue  # 硬编码条目不参与 suppress 计数
+                continue
             if not _is_mentioned(entry.get('text', ''), response_text):
                 continue
 
-            # 记录本次提及时间
             mentions = entry.get('recent_mentions', [])
             mentions.append(now_str)
-            # 清理窗口外的旧记录
             mentions = [t for t in mentions if self._in_window(t, cutoff)]
             entry['recent_mentions'] = mentions
 
-            # 窗口内超限 → suppress
             if not entry.get('suppress') and len(mentions) > SUPPRESS_MENTION_LIMIT:
                 entry['suppress'] = True
                 entry['suppressed_at'] = now_str
             changed = True
+        return changed
 
-        if changed:
+    def record_mentions(self, name: str, response_text: str) -> None:
+        """主动搭话投递后，扫描 response 中哪些 persona 条目被提及。
+
+        核心逻辑：5小时内提及 > SUPPRESS_MENTION_LIMIT 次 → suppress。
+        """
+        persona = self.ensure_persona(name)
+        if self._apply_record_mentions(persona, response_text):
             self.save_persona(name, persona)
 
-    def update_suppressions(self, name: str) -> None:
-        """刷新 suppress 状态：冷却期过 → 解除；清理窗口外的 recent_mentions。"""
-        persona = self.ensure_persona(name)
+    async def arecord_mentions(self, name: str, response_text: str) -> None:
+        persona = await self.aensure_persona(name)
+        if self._apply_record_mentions(persona, response_text):
+            await self.asave_persona(name, persona)
+
+    def _apply_update_suppressions(self, persona: dict) -> bool:
         now = datetime.now()
         cutoff = now - timedelta(hours=SUPPRESS_WINDOW_HOURS)
         changed = False
@@ -717,14 +893,12 @@ class PersonaManager:
             if not isinstance(entry, dict):
                 continue
 
-            # 清理窗口外的旧记录
             mentions = entry.get('recent_mentions', [])
             cleaned = [t for t in mentions if self._in_window(t, cutoff)]
             if len(cleaned) != len(mentions):
                 entry['recent_mentions'] = cleaned
                 changed = True
 
-            # suppress 冷却检查
             if entry.get('suppress'):
                 suppressed_str = entry.get('suppressed_at')
                 if suppressed_str:
@@ -737,9 +911,18 @@ class PersonaManager:
                             changed = True
                     except (ValueError, TypeError):
                         pass
+        return changed
 
-        if changed:
+    def update_suppressions(self, name: str) -> None:
+        """刷新 suppress 状态：冷却期过 → 解除；清理窗口外的 recent_mentions。"""
+        persona = self.ensure_persona(name)
+        if self._apply_update_suppressions(persona):
             self.save_persona(name, persona)
+
+    async def aupdate_suppressions(self, name: str) -> None:
+        persona = await self.aensure_persona(name)
+        if self._apply_update_suppressions(persona):
+            await self.asave_persona(name, persona)
 
     @staticmethod
     def _in_window(ts_str: str, cutoff: datetime) -> bool:
@@ -759,21 +942,13 @@ class PersonaManager:
 
     # ── rendering ────────────────────────────────────────────────────
 
-    def render_persona_markdown(self, name: str, pending_reflections: list[dict] | None = None,
-                                   confirmed_reflections: list[dict] | None = None) -> str:
-        """Render persona as markdown for LLM context injection.
-
-        Suppressed entries are rendered in a separate "暂不主动提及" section,
-        NOT in their original sections. suppress has highest priority.
-        """
-        # Refresh suppressions before rendering so expired cooldowns are released
-        self.update_suppressions(name)
-        persona = self.ensure_persona(name)
-        _, _, _, _, name_mapping, _, _, _, _ = self._config_manager.get_character_data()
+    def _compose_persona_markdown(
+        self, name: str, persona: dict, name_mapping: dict,
+        pending_reflections: list[dict] | None,
+        confirmed_reflections: list[dict] | None,
+    ) -> str:
         master_name = name_mapping.get('human', '主人')
         ai_name = name
-
-        # Entity key → section header mapping for known entities
         _headers = {
             'master': f"关于{master_name}",
             'neko': f"关于{ai_name}",
@@ -782,7 +957,6 @@ class PersonaManager:
 
         sections = []
 
-        # Collect suppressed items across all sections
         suppressed_lines = []
         for entry in self._collect_all_entries(persona):
             if isinstance(entry, dict) and entry.get('suppress'):
@@ -790,7 +964,6 @@ class PersonaManager:
                 if text:
                     suppressed_lines.append(f"- {text}")
 
-        # Render each entity section dynamically
         for entity_key, section in persona.items():
             if not isinstance(section, dict):
                 continue
@@ -800,7 +973,6 @@ class PersonaManager:
                 header = _headers.get(entity_key, entity_key)
                 sections.append(f"### {header}\n" + "\n".join(lines))
 
-        # Pending reflections (also exclude suppressed)
         if pending_reflections:
             pending_lines = []
             for r in pending_reflections:
@@ -813,7 +985,6 @@ class PersonaManager:
                     + "\n".join(pending_lines)
                 )
 
-        # Confirmed reflections (软 persona：比 pending 更稳固，但仍可修正)
         if confirmed_reflections:
             confirmed_lines = []
             for r in confirmed_reflections:
@@ -826,7 +997,6 @@ class PersonaManager:
                     + "\n".join(confirmed_lines)
                 )
 
-        # Suppressed section (記得但别主动提)
         if suppressed_lines:
             sections.append(
                 f"### 暂不主动提及的内容（{ai_name}记得，但最近提到太多次了，不要再主动提起）\n"
@@ -834,6 +1004,33 @@ class PersonaManager:
             )
 
         return "\n\n".join(sections) if sections else ""
+
+    def render_persona_markdown(self, name: str, pending_reflections: list[dict] | None = None,
+                                   confirmed_reflections: list[dict] | None = None) -> str:
+        """Render persona as markdown for LLM context injection.
+
+        Suppressed entries are rendered in a separate "暂不主动提及" section,
+        NOT in their original sections. suppress has highest priority.
+        """
+        # Refresh suppressions before rendering so expired cooldowns are released
+        self.update_suppressions(name)
+        persona = self.ensure_persona(name)
+        _, _, _, _, name_mapping, _, _, _, _ = self._config_manager.get_character_data()
+        return self._compose_persona_markdown(
+            name, persona, name_mapping, pending_reflections, confirmed_reflections,
+        )
+
+    async def arender_persona_markdown(
+        self, name: str,
+        pending_reflections: list[dict] | None = None,
+        confirmed_reflections: list[dict] | None = None,
+    ) -> str:
+        await self.aupdate_suppressions(name)
+        persona = await self.aensure_persona(name)
+        _, _, _, _, name_mapping, _, _, _, _ = await self._config_manager.aget_character_data()
+        return self._compose_persona_markdown(
+            name, persona, name_mapping, pending_reflections, confirmed_reflections,
+        )
 
     def _is_suppressed_text(self, persona: dict, text: str) -> bool:
         """Check if a given text matches any suppressed entry."""

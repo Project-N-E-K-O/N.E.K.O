@@ -140,6 +140,14 @@ def enqueue_voice_migration_notice(legacy_names: list) -> None:
     })
 
 
+# Sentinel returned by start_llm_session when CAS detects a concurrent start
+# already promoted its own session.  Returning a sentinel (instead of raising)
+# keeps the loser out of the generic error path — that path calls cleanup()
+# without an expected_session guard and would otherwise tear down the winner's
+# session/websocket while also inflating session_start_failure_count.
+_START_LLM_CONCURRENT_ABORTED = object()
+
+
 # --- 一个带有定期上下文压缩+在线热切换的语音会话管理器 ---
 class LLMSessionManager:
     def __init__(self, sync_message_queue, lanlan_name, lanlan_prompt):
@@ -347,9 +355,10 @@ class LLMSessionManager:
         调用方必须已持有 ``self.tts_cache_lock``（与现有 put 调用点一致）。
         对于 ws_bistream 类 provider（qwen / step / cosyvoice），文本碎片直接
         发给服务端处理，跳过 normalizer 以避免 pending_spaces 延迟和 CJK 边界
-        空格删除干扰服务端合成节奏。控制信号（``__interrupt__`` /
-        ``(None, None)``）请继续用 ``tts_request_queue.put`` 直接发送，
-        并在合适时机调用 ``_reset_tts_stream_normalizer``。
+        空格删除干扰服务端合成节奏。控制信号（``__interrupt__`` 打断 /
+        ``(None, None)`` 本轮 utterance 结束-flush / ``("__shutdown__", None)``
+        worker 退出）请继续用 ``tts_request_queue.put`` 直接发送，并在合适
+        时机调用 ``_reset_tts_stream_normalizer``。
         """
         if self._tts_normalize_enabled:
             if speech_id != self._tts_norm_speech_id:
@@ -1027,7 +1036,9 @@ class LLMSessionManager:
 
         if thread_ref and thread_ref.is_alive():
             try:
-                req_queue_ref.put((None, None))
+                # 使用独立的 shutdown sentinel；(None, None) 在 worker 里是
+                # "本轮 utterance 结束、flush 缓冲区"，并不会让 worker 退出。
+                req_queue_ref.put(("__shutdown__", None))
                 await asyncio.to_thread(thread_ref.join, 2.0)
             except Exception as e:
                 logger.error(f"💥 关闭TTS线程时出错: {e}")
@@ -1249,6 +1260,60 @@ class LLMSessionManager:
             return ""
         return text
 
+    async def _handle_session_start_exception(self, e: BaseException, input_mode: str, diag_start: float) -> None:
+        """统一的 session 启动失败收口：打日志、发状态码、send_session_failed、cleanup。
+
+        供 start_session 的外层 except 使用，覆盖 prelude（_cleanup_pending_session_resources /
+        end_session 等）和 gather 块两条路径，避免前端卡在 preparing。
+        """
+        self.session_start_failure_count += 1
+        self.session_start_last_failure_time = datetime.now()
+        logger.error(f"[语音会话诊断] start_session 失败 (总耗时: {time.time() - diag_start:.2f}秒): {e}")
+        error_str = str(e)
+
+        is_memory_server_error = isinstance(e, ConnectionError) and any(
+            kw in error_str.lower() for kw in ["memory server", "记忆服务"]
+        )
+
+        if is_memory_server_error:
+            logger.error(f"🧠 {error_str}")
+            await self.send_status(json.dumps({"code": "MEMORY_SERVER_NOT_RUNNING"}))
+            # Memory Server 错误不计入失败次数（这是配置问题而非网络问题）
+            self.session_start_failure_count -= 1
+            self._memory_error_retry_after = time.time() + self._memory_error_cooldown_seconds
+        else:
+            error_message = f"Error starting session: {e}"
+            logger.exception(f"💥 {error_message} (失败次数: {self.session_start_failure_count})")
+
+            if self.session_start_failure_count >= self.session_start_max_failures:
+                critical_message = f"⛔ Session启动连续失败{self.session_start_failure_count}次，已停止自动重试。请检查网络连接和API配置，然后刷新页面重试。"
+                logger.critical(critical_message)
+                await self.send_status(json.dumps({"code": "SESSION_START_CRITICAL", "details": {"count": self.session_start_failure_count}}))
+            else:
+                await self.send_status(json.dumps({"code": "SESSION_START_FAILED", "details": {"error": str(e), "count": self.session_start_failure_count}}))
+
+            if 'WinError 10061' in error_str or 'WinError 10054' in error_str:
+                if str(self.memory_server_port) in error_str or '48912' in error_str:
+                    await self.send_status(json.dumps({"code": "MEMORY_SERVER_CRASHED", "details": {"port": self.memory_server_port}}))
+                else:
+                    await self.send_status(json.dumps({"code": "CONNECTION_REFUSED"}))
+            elif ('401' in error_str or 'unauthorized' in error_str.lower()
+                    or 'authentication' in error_str.lower()
+                    or ('invalid' in error_str.lower() and 'key' in error_str.lower())):
+                await self.send_status(json.dumps({"code": "API_KEY_REJECTED"}))
+            elif '429' in error_str:
+                await self.send_status(json.dumps({"code": "API_RATE_LIMIT_SESSION"}))
+            elif 'HTTP 503' in error_str:
+                await self.send_status(json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
+            elif 'All connection attempts failed' in error_str:
+                await self.send_status(json.dumps({"code": "LLM_CONNECTION_FAILED"}))
+            else:
+                await self.send_status(json.dumps({"code": "CONNECTION_CLOSED_ABNORMAL", "details": {"error": error_str}}))
+
+        # 必须在 cleanup 之前发送，因为 cleanup 会清空 websocket 引用
+        await self.send_session_failed(input_mode)
+        await self.cleanup()
+
     async def start_session(self, websocket: WebSocket, new=False, input_mode='audio'):
         # 每次 start_session 都重新获取全局语言，确保 Steam/系统语言变更能即时生效
         self.user_language = normalize_language_code(get_global_language(), format='short')
@@ -1262,341 +1327,371 @@ class LLMSessionManager:
 
         # 标记正在启动（使用计数器，避免并发 start_session 的 finally 互相覆盖）
         self._starting_session_count += 1
-        
-        # 回收残留的热切换资源，防止 main + pending + new-main 叠到 >2 个 session
-        await self._cleanup_pending_session_resources()
-        await self._reset_preparation_state(clear_main_cache=False)
-        
+        # CAS 落败早退标志：True 时禁止 finally 递减 guard，
+        # 防止赢家初始化期间第三个协程穿过 guard 浪费 LLM 连接。
+        _llm_concurrent_aborted = False
         _diag_start = time.time()
-        logger.info(f"[语音会话诊断] 开始 start_session: input_mode={input_mode}, new={new}")
-        logger.info(f"启动新session: input_mode={input_mode}, new={new}")
-        self.websocket = websocket
-        self.input_mode = input_mode
-        
-        # 立即通知前端系统正在准备（静默期开始）
-        await self.send_session_preparing(input_mode)
-        
-        # 重新读取配置以支持热重载
-        # core_api_type 从 realtime 配置获取，支持自定义 realtime API 时自动设为 'local'
-        realtime_config = self._config_manager.get_model_api_config('realtime')
-        self.core_api_type = realtime_config.get('api_type', '') or self._config_manager.get_core_config().get('CORE_API_TYPE', '')
-        self.audio_api_key = self._config_manager.get_core_config()['AUDIO_API_KEY']
 
-        # 每次启动会话前都清理一次无效 voice_id，避免角色配置残留旧音色导致启动异常
         try:
-            cleaned_count, legacy_names = self._config_manager.cleanup_invalid_voice_ids()
-            if cleaned_count > 0:
-                logger.info(f"🧹 start_session 前已清理 {cleaned_count} 个无效 voice_id")
-            self._enqueue_voice_migration_notice(legacy_names)
-        except Exception as e:
-            logger.warning(f"⚠️ start_session 清理无效 voice_id 失败，继续启动会话: {e}")
-
-        # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
-        _, _, _, self.lanlan_basic_config, _, _, _, _, _ = self._config_manager.get_character_data()
-        old_voice_id = self.voice_id
-        raw_voice_id = self._get_voice_id()
-        block_free_preset = self._should_block_free_preset_voice(raw_voice_id, realtime_config.get('base_url', ''))
-        if block_free_preset:
-            self.voice_id = ''
-            self._is_free_preset_voice = False
-        else:
-            self.voice_id = raw_voice_id
-            self._is_free_preset_voice = self._is_preset_voice_id(self.voice_id)
-        if self._is_free_preset_voice and self.core_api_type != 'free':
-            self.voice_id = ''
-            self._is_free_preset_voice = False
+            # 回收残留的热切换资源，防止 main + pending + new-main 叠到 >2 个 session
+            await self._cleanup_pending_session_resources()
+            await self._reset_preparation_state(clear_main_cache=False)
         
-        # 如果角色没有设置 voice_id，尝试使用自定义API配置的 TTS_VOICE_ID 作为回退
-        if not self.voice_id:
-            core_config = self._config_manager.get_core_config()
-            tts_voice_id = core_config.get('TTS_VOICE_ID', '')
-            # 过滤掉 GPT-SoVITS 禁用时的占位符（格式: __gptsovits_disabled__|...）
-            if core_config.get('ENABLE_CUSTOM_API') and tts_voice_id and not tts_voice_id.startswith('__gptsovits_disabled__'):
-                self.voice_id = tts_voice_id
-                logger.info(f"🔄 使用自定义TTS回退音色: '{self.voice_id}'")
+            logger.info(f"[语音会话诊断] 开始 start_session: input_mode={input_mode}, new={new}")
+            logger.info(f"启动新session: input_mode={input_mode}, new={new}")
+            self.websocket = websocket
+            self.input_mode = input_mode
+        
+            # 立即通知前端系统正在准备（静默期开始）
+            await self.send_session_preparing(input_mode)
+        
+            # 重新读取配置以支持热重载
+            # core_api_type 从 realtime 配置获取，支持自定义 realtime API 时自动设为 'local'
+            realtime_config = self._config_manager.get_model_api_config('realtime')
+            self.core_api_type = realtime_config.get('api_type', '') or self._config_manager.get_core_config().get('CORE_API_TYPE', '')
+            self.audio_api_key = self._config_manager.get_core_config()['AUDIO_API_KEY']
+
+            # 每次启动会话前都清理一次无效 voice_id，避免角色配置残留旧音色导致启动异常
+            try:
+                cleaned_count, legacy_names = await asyncio.to_thread(self._config_manager.cleanup_invalid_voice_ids)
+                if cleaned_count > 0:
+                    logger.info(f"🧹 start_session 前已清理 {cleaned_count} 个无效 voice_id")
+                self._enqueue_voice_migration_notice(legacy_names)
+            except Exception as e:
+                logger.warning(f"⚠️ start_session 清理无效 voice_id 失败，继续启动会话: {e}")
+
+            # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
+            _, _, _, self.lanlan_basic_config, _, _, _, _, _ = self._config_manager.get_character_data()
+            old_voice_id = self.voice_id
+            raw_voice_id = self._get_voice_id()
+            block_free_preset = self._should_block_free_preset_voice(raw_voice_id, realtime_config.get('base_url', ''))
+            if block_free_preset:
+                self.voice_id = ''
+                self._is_free_preset_voice = False
+            else:
+                self.voice_id = raw_voice_id
+                self._is_free_preset_voice = self._is_preset_voice_id(self.voice_id)
+            if self._is_free_preset_voice and self.core_api_type != 'free':
+                self.voice_id = ''
                 self._is_free_preset_voice = False
         
-        if old_voice_id != self.voice_id:
-            logger.info(f"🔄 voice_id已更新: '{old_voice_id}' -> '{self.voice_id}'")
-        if self._is_free_preset_voice:
-            logger.info(f"🆓 当前使用免费预设音色: '{self.voice_id}'")
+            # 如果角色没有设置 voice_id，尝试使用自定义API配置的 TTS_VOICE_ID 作为回退
+            if not self.voice_id:
+                core_config = self._config_manager.get_core_config()
+                tts_voice_id = core_config.get('TTS_VOICE_ID', '')
+                # 过滤掉 GPT-SoVITS 禁用时的占位符（格式: __gptsovits_disabled__|...）
+                if core_config.get('ENABLE_CUSTOM_API') and tts_voice_id and not tts_voice_id.startswith('__gptsovits_disabled__'):
+                    self.voice_id = tts_voice_id
+                    logger.info(f"🔄 使用自定义TTS回退音色: '{self.voice_id}'")
+                    self._is_free_preset_voice = False
         
-        # 日志输出模型配置（直接从配置读取，避免创建不必要的实例变量）
-        _realtime_model = realtime_config.get('model', '')
-        _conversation_model = self._config_manager.get_model_api_config('conversation').get('model', '')
-        _vision_model = self._config_manager.get_model_api_config('vision').get('model', '')
-        logger.info(f"📌 已重新加载配置: core_api={self.core_api_type}, realtime_model={_realtime_model}, text_model={_conversation_model}, vision_model={_vision_model}, voice_id={self.voice_id}")
-        logger.info(f"[语音会话诊断] 配置加载完成 (耗时: {time.time() - _diag_start:.2f}秒)")
+            if old_voice_id != self.voice_id:
+                logger.info(f"🔄 voice_id已更新: '{old_voice_id}' -> '{self.voice_id}'")
+            if self._is_free_preset_voice:
+                logger.info(f"🆓 当前使用免费预设音色: '{self.voice_id}'")
         
-        # 重置TTS缓存状态
-        async with self.tts_cache_lock:
-            self.tts_ready = False
-            self.tts_pending_chunks.clear()
+            # 日志输出模型配置（直接从配置读取，避免创建不必要的实例变量）
+            _realtime_model = realtime_config.get('model', '')
+            _conversation_model = self._config_manager.get_model_api_config('conversation').get('model', '')
+            _vision_model = self._config_manager.get_model_api_config('vision').get('model', '')
+            logger.info(f"📌 已重新加载配置: core_api={self.core_api_type}, realtime_model={_realtime_model}, text_model={_conversation_model}, vision_model={_vision_model}, voice_id={self.voice_id}")
+            logger.info(f"[语音会话诊断] 配置加载完成 (耗时: {time.time() - _diag_start:.2f}秒)")
         
-        # 重置输入缓存状态
-        async with self.input_cache_lock:
-            self.session_ready = False
-            # 注意：不清空 pending_input_data，因为可能已有数据在缓存中
+            # 重置TTS缓存状态
+            async with self.tts_cache_lock:
+                self.tts_ready = False
+                self.tts_pending_chunks.clear()
         
-        # 根据 input_mode 设置 use_tts
-        # 检查是否有自定义 TTS 配置（URL 存在即表示配置了自定义 TTS）
-        core_config = self._config_manager.get_core_config()
-        has_custom_tts_config = (
-            core_config.get('ENABLE_CUSTOM_API') and 
-            core_config.get('TTS_MODEL_URL')
-        )
+            # 重置输入缓存状态
+            async with self.input_cache_lock:
+                self.session_ready = False
+                # 注意：不清空 pending_input_data，因为可能已有数据在缓存中
         
-        if input_mode == 'text':
-            # 文本模式总是需要 TTS（使用默认或自定义音色）
-            self.use_tts = True
-        elif self._is_free_preset_voice and self.core_api_type == 'free' and 'lanlan.tech' in realtime_config.get('base_url', ''):
-            # 免费预设音色直接传入 realtime session config 的 voice 字段，不需要外部 TTS
-            self.use_tts = False
-            logger.info(f"🆓 免费预设音色 '{self.voice_id}' 将直接传入 session config，不启动外部 TTS")
-        elif self.voice_id or has_custom_tts_config:
-            # 语音模式下：有自定义音色 或 配置了自定义TTS时，使用外部TTS
-            self.use_tts = True
-            if has_custom_tts_config and not self.voice_id:
-                logger.info("🔊 语音模式：检测到自定义TTS配置，将使用自定义TTS覆盖原生语音")
-        else:
-            # 语音模式下无自定义音色且无自定义TTS配置，使用 realtime API 原生语音
-            self.use_tts = False
+            # 根据 input_mode 设置 use_tts
+            # 检查是否有自定义 TTS 配置（URL 存在即表示配置了自定义 TTS）
+            core_config = self._config_manager.get_core_config()
+            has_custom_tts_config = (
+                core_config.get('ENABLE_CUSTOM_API') and 
+                core_config.get('TTS_MODEL_URL')
+            )
         
-        async with self.lock:
+            if input_mode == 'text':
+                # 文本模式总是需要 TTS（使用默认或自定义音色）
+                self.use_tts = True
+            elif self._is_free_preset_voice and self.core_api_type == 'free' and 'lanlan.tech' in realtime_config.get('base_url', ''):
+                # 免费预设音色直接传入 realtime session config 的 voice 字段，不需要外部 TTS
+                self.use_tts = False
+                logger.info(f"🆓 免费预设音色 '{self.voice_id}' 将直接传入 session config，不启动外部 TTS")
+            elif self.voice_id or has_custom_tts_config:
+                # 语音模式下：有自定义音色 或 配置了自定义TTS时，使用外部TTS
+                self.use_tts = True
+                if has_custom_tts_config and not self.voice_id:
+                    logger.info("🔊 语音模式：检测到自定义TTS配置，将使用自定义TTS覆盖原生语音")
+            else:
+                # 语音模式下无自定义音色且无自定义TTS配置，使用 realtime API 原生语音
+                self.use_tts = False
+        
+            async with self.lock:
+                if self.is_active:
+                    logger.warning("检测到活跃的旧session，正在清理...")
+                    # 释放锁后清理，避免死锁
+        
+            # 如果检测到旧 session，先清理
             if self.is_active:
-                logger.warning("检测到活跃的旧session，正在清理...")
-                # 释放锁后清理，避免死锁
+                # reset_starting_count=False：保留自己递增的 guard，防止 end_session 里
+                # 的 _starting_session_count=0 让并发第二次 start_session 穿过，产生孤儿 session。
+                await self.end_session(by_server=True, reset_starting_count=False)
+                # 等待一小段时间确保资源完全释放
+                await asyncio.sleep(0.5)
+                logger.info("旧session清理完成")
         
-        # 如果检测到旧 session，先清理
-        if self.is_active:
-            await self.end_session(by_server=True)
-            # 等待一小段时间确保资源完全释放
-            await asyncio.sleep(0.5)
-            logger.info("旧session清理完成")
-        
-        # 如果当前不需要TTS但TTS线程仍在运行，发送停止信号
-        if not self.use_tts and self.tts_thread and self.tts_thread.is_alive():
-            logger.info("当前模式不需要TTS，关闭TTS线程")
-            try:
-                self.tts_request_queue.put((None, None))  # 通知线程退出
-                self.tts_thread.join(timeout=1.0)  # 等待线程结束
-            except Exception as e:
-                logger.error(f"关闭TTS线程时出错: {e}")
-            finally:
-                self.tts_thread = None
+            # 如果当前不需要TTS但TTS线程仍在运行，发送停止信号
+            if not self.use_tts and self.tts_thread and self.tts_thread.is_alive():
+                logger.info("当前模式不需要TTS，关闭TTS线程")
+                try:
+                    self.tts_request_queue.put(("__shutdown__", None))  # 通知线程退出
+                    await asyncio.to_thread(self.tts_thread.join, 1.0)  # 等待线程结束
+                except Exception as e:
+                    logger.error(f"关闭TTS线程时出错: {e}")
+                finally:
+                    self.tts_thread = None
 
-        # 定义 TTS 启动协程（如果需要）
-        async def start_tts_if_needed():
-            """异步启动 TTS 进程并等待就绪"""
-            if not self.use_tts:
-                return True
+            # 定义 TTS 启动协程（如果需要）
+            async def start_tts_if_needed():
+                """异步启动 TTS 进程并等待就绪"""
+                if not self.use_tts:
+                    return True
 
-            # 启动TTS线程
-            tts_ready = False
-            if self.tts_thread is None or not self.tts_thread.is_alive():
-                self._start_tts_thread()
+                # 启动TTS线程
+                tts_ready = False
+                if self.tts_thread is None or not self.tts_thread.is_alive():
+                    self._start_tts_thread()
 
-                # 等待TTS进程发送就绪信号（最多等待12秒）
-                has_custom_tts = self._has_custom_tts()
-                tts_type = "free-preset-TTS" if self._is_free_preset_voice else ("custom-TTS" if has_custom_tts else f"{self.core_api_type}-default-TTS")
-                logger.info(f"🎤 TTS进程已启动，等待就绪... (使用: {tts_type})")
-                logger.info("[语音会话诊断] 开始等待 TTS 就绪信号 (超时: 12秒)")
-                start_time = time.time()
-                timeout = 12.0  # 最多等待12秒
-                _last_tts_log = 0.0
-                while time.time() - start_time < timeout:
-                    try:
-                        # 非阻塞检查队列
-                        if not self.tts_response_queue.empty():
-                            msg = self.tts_response_queue.get_nowait()
-                            # 检查是否是就绪信号
-                            if isinstance(msg, tuple) and len(msg) == 2 and msg[0] == "__ready__":
-                                tts_ready = msg[1]
-                                if tts_ready:
-                                    logger.info(f"✅ TTS进程已就绪 (用时: {time.time() - start_time:.2f}秒)")
-                                else:
-                                    logger.error("❌ TTS进程初始化失败")
-                                break
-                            else:
-                                # 不是就绪信号，放回队列
-                                self.tts_response_queue.put(msg)
-                                break
-                    except: # noqa
-                        pass
-                    # worker 线程已死亡则无需继续等待
-                    if not self.tts_thread.is_alive():
-                        # 尝试取出可能的 ready(False) 信号
+                    # 等待TTS进程发送就绪信号（最多等待12秒）
+                    has_custom_tts = self._has_custom_tts()
+                    tts_type = "free-preset-TTS" if self._is_free_preset_voice else ("custom-TTS" if has_custom_tts else f"{self.core_api_type}-default-TTS")
+                    logger.info(f"🎤 TTS进程已启动，等待就绪... (使用: {tts_type})")
+                    logger.info("[语音会话诊断] 开始等待 TTS 就绪信号 (超时: 12秒)")
+                    start_time = time.time()
+                    timeout = 12.0  # 最多等待12秒
+                    _last_tts_log = 0.0
+                    while time.time() - start_time < timeout:
                         try:
-                            msg = self.tts_response_queue.get_nowait()
-                            if isinstance(msg, tuple) and len(msg) == 2 and msg[0] == "__ready__":
-                                tts_ready = msg[1]
+                            # 非阻塞检查队列
+                            if not self.tts_response_queue.empty():
+                                msg = self.tts_response_queue.get_nowait()
+                                # 检查是否是就绪信号
+                                if isinstance(msg, tuple) and len(msg) == 2 and msg[0] == "__ready__":
+                                    tts_ready = msg[1]
+                                    if tts_ready:
+                                        logger.info(f"✅ TTS进程已就绪 (用时: {time.time() - start_time:.2f}秒)")
+                                    else:
+                                        logger.error("❌ TTS进程初始化失败")
+                                    break
+                                else:
+                                    # 不是就绪信号，放回队列
+                                    self.tts_response_queue.put(msg)
+                                    break
                         except: # noqa
                             pass
-                        if not tts_ready:
-                            logger.error("❌ TTS Worker 线程已退出，无法继续等待")
-                        break
-                    # 每约2秒输出一次诊断日志，便于定位卡在哪一阶段
-                    _elapsed = time.time() - start_time
-                    if _elapsed - _last_tts_log >= 2.0:
-                        _last_tts_log = _elapsed
-                        logger.info(f"[语音会话诊断] TTS 就绪等待中... 已等待 {_elapsed:.1f}秒 / {timeout}秒")
-                    # 小睡眠避免忙等
-                    await asyncio.sleep(0.05)
+                        # worker 线程已死亡则无需继续等待
+                        if not self.tts_thread.is_alive():
+                            # 尝试取出可能的 ready(False) 信号
+                            try:
+                                msg = self.tts_response_queue.get_nowait()
+                                if isinstance(msg, tuple) and len(msg) == 2 and msg[0] == "__ready__":
+                                    tts_ready = msg[1]
+                            except: # noqa
+                                pass
+                            if not tts_ready:
+                                logger.error("❌ TTS Worker 线程已退出，无法继续等待")
+                            break
+                        # 每约2秒输出一次诊断日志，便于定位卡在哪一阶段
+                        _elapsed = time.time() - start_time
+                        if _elapsed - _last_tts_log >= 2.0:
+                            _last_tts_log = _elapsed
+                            logger.info(f"[语音会话诊断] TTS 就绪等待中... 已等待 {_elapsed:.1f}秒 / {timeout}秒")
+                        # 小睡眠避免忙等
+                        await asyncio.sleep(0.05)
 
-                if not tts_ready:
-                    if time.time() - start_time >= timeout:
-                        logger.warning(f"⚠️ TTS进程就绪信号超时 ({timeout}秒)，继续执行...")
-                        logger.warning(f"[语音会话诊断] TTS 在 {timeout} 秒内未就绪，可能为 TTS 服务慢或网络问题")
-                    else:
-                        logger.error("❌ TTS进程初始化失败，但继续执行...")
-            else:
-                # TTS线程已存活，复用现有线程；保留上次的就绪状态（避免失败的 worker 被误标为就绪）
-                tts_ready = self.tts_ready
-                logger.info(f"🎤 TTS线程已在运行，复用现有线程 (ready={tts_ready})")
+                    if not tts_ready:
+                        if time.time() - start_time >= timeout:
+                            logger.warning(f"⚠️ TTS进程就绪信号超时 ({timeout}秒)，继续执行...")
+                            logger.warning(f"[语音会话诊断] TTS 在 {timeout} 秒内未就绪，可能为 TTS 服务慢或网络问题")
+                        else:
+                            logger.error("❌ TTS进程初始化失败，但继续执行...")
+                else:
+                    # TTS线程已存活，复用现有线程；保留上次的就绪状态（避免失败的 worker 被误标为就绪）
+                    tts_ready = self.tts_ready
+                    logger.info(f"🎤 TTS线程已在运行，复用现有线程 (ready={tts_ready})")
             
-            # 确保旧的 TTS handler task 已经停止
-            if self.tts_handler_task and not self.tts_handler_task.done():
-                logger.info("🎧 Cancelling old tts_handler_task...")
-                self.tts_handler_task.cancel()
+                # 确保旧的 TTS handler task 已经停止
+                if self.tts_handler_task and not self.tts_handler_task.done():
+                    logger.info("🎧 Cancelling old tts_handler_task...")
+                    self.tts_handler_task.cancel()
+                    try:
+                        await asyncio.wait_for(self.tts_handler_task, timeout=1.0)
+                    except (asyncio.CancelledError, asyncio.TimeoutError):
+                        pass
+            
+                # 启动新的 TTS handler task
+                logger.info(f"🎧 Creating tts_handler_task (response_queue id={id(self.tts_response_queue):#x})")
+                self.tts_handler_task = asyncio.create_task(self.tts_response_handler())
+            
+                # 仅在确认为就绪时才标记可发送，避免“假就绪”导致静默
+                async with self.tts_cache_lock:
+                    self.tts_ready = bool(tts_ready)
+
+                # 处理在TTS启动期间可能已经缓存的文本chunk
+                if tts_ready:
+                    await self._flush_tts_pending_chunks()
+                else:
+                    logger.warning("⚠️ TTS未就绪，当前回复将继续缓存，等待后续就绪信号")
+                return True
+
+            # 定义 LLM Session 启动协程
+            async def start_llm_session():
+                """异步创建并连接 LLM Session.
+
+                Uses connect-then-assign: a local new_session is created and connected
+                first.  Only after connect() succeeds is it promoted to self.session.
+                On failure the half-initialised session is closed and an exception raised.
+                """
+                # 强 CAS 语义：只允许在 self.session 为 None（start_session 已清场）
+                # 或已经是自己的 new_session 时赋值。任何其他状态都视为并发落败，
+                # 必须关闭本次 new_session，避免覆盖赢家造成孤儿。
+                #
+                # 反例：若仅对比"入口快照"，当赢家已把 self.session 置为 B、
+                # 落败者 A 早退后 guard 被 finally 放开，第三者 C 会把入口快照
+                # 记作 B，随后 CAS 通过 B==B 的自反检查覆盖 B，产生新的孤儿。
+                guard_max_length = self._get_text_guard_max_length()
+                _lang = normalize_language_code(self.user_language, format='short')
+                initial_prompt = await self._build_initial_prompt()
+            
+                # 连接 Memory Server 获取记忆上下文
+                _mem_start = time.time()
+                logger.info(f"[语音会话诊断] 开始获取记忆上下文 (端口 {self.memory_server_port})")
                 try:
-                    await asyncio.wait_for(self.tts_handler_task, timeout=1.0)
-                except (asyncio.CancelledError, asyncio.TimeoutError):
-                    pass
+                    async with httpx.AsyncClient(timeout=2.0, proxy=None, trust_env=False) as client:
+                        resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}")
+                        if not resp.is_success:
+                            raise ConnectionError(f"❌ 记忆服务返回非2xx状态 {resp.status_code}: {resp.text[:200]}")
+                        initial_prompt += resp.text + _loc(CONTEXT_SUMMARY_READY, _lang).format(name=self.lanlan_name, master=self.master_name)
+                    logger.info(f"[语音会话诊断] 记忆上下文获取完成 (耗时: {time.time() - _mem_start:.2f}秒)")
+                except httpx.ConnectError:
+                    raise ConnectionError(f"❌ 记忆服务未启动！请先启动记忆服务 (端口 {self.memory_server_port})")
+                except httpx.TimeoutException:
+                    raise ConnectionError(f"❌ 记忆服务响应超时！请检查记忆服务是否正常运行 (端口 {self.memory_server_port})")
+                except Exception as e:
+                    raise ConnectionError(f"❌ 记忆服务连接失败: {e} (端口 {self.memory_server_port})")
             
-            # 启动新的 TTS handler task
-            logger.info(f"🎧 Creating tts_handler_task (response_queue id={id(self.tts_response_queue):#x})")
-            self.tts_handler_task = asyncio.create_task(self.tts_response_handler())
+                logger.info(f"🤖 开始创建 LLM Session (input_mode={input_mode})")
+                logger.info("[语音会话诊断] 开始创建 LLM 连接 (realtime/text)...")
+                _llm_create_start = time.time()
             
-            # 仅在确认为就绪时才标记可发送，避免“假就绪”导致静默
-            async with self.tts_cache_lock:
-                self.tts_ready = bool(tts_ready)
+                # Create into a LOCAL variable — not self.session yet
+                new_session = None
+                if input_mode == 'text':
+                    conversation_config = self._config_manager.get_model_api_config('conversation')
+                    vision_config = self._config_manager.get_model_api_config('vision')
+                    new_session = OmniOfflineClient(
+                        base_url=conversation_config['base_url'],
+                        api_key=conversation_config['api_key'],
+                        model=conversation_config['model'],
+                        vision_model=vision_config['model'],
+                        vision_base_url=vision_config['base_url'],
+                        vision_api_key=vision_config['api_key'],
+                        on_text_delta=self.handle_text_data,
+                        on_input_transcript=self.handle_input_transcript,
+                        on_output_transcript=self.handle_output_transcript,
+                        on_connection_error=self.handle_connection_error,
+                        on_response_done=self.handle_response_complete,
+                        on_repetition_detected=self.handle_repetition_detected,
+                        on_response_discarded=self.handle_response_discarded,
+                        on_status_message=self.send_status,
+                        max_response_length=guard_max_length,
+                        lanlan_name=self.lanlan_name,
+                        master_name=self.master_name
+                    )
+                    new_session.on_proactive_done = self.handle_proactive_complete
+                else:
+                    realtime_config = self._config_manager.get_model_api_config('realtime')
+                    new_session = OmniRealtimeClient(
+                        base_url=realtime_config.get('base_url', ''),
+                        api_key=realtime_config['api_key'],
+                        model=realtime_config['model'],
+                        voice=self.voice_id if self._is_free_preset_voice and self.core_api_type == 'free' 
+                            and 'lanlan.tech' in realtime_config.get('base_url', '') else None,
+                        on_text_delta=self.handle_text_data,
+                        on_audio_delta=self.handle_audio_data,
+                        on_new_message=self.handle_new_message,
+                        on_input_transcript=self.handle_input_transcript,
+                        on_output_transcript=self.handle_output_transcript,
+                        on_connection_error=self.handle_connection_error,
+                        on_response_done=self.handle_response_complete,
+                        on_silence_timeout=self.handle_silence_timeout,
+                        on_status_message=self.send_status,
+                        on_repetition_detected=self.handle_repetition_detected,
+                        api_type=self.core_api_type
+                    )
+                    # Apply user's noise reduction preference to the AudioProcessor
+                    nr_enabled = load_global_conversation_settings().get('noiseReductionEnabled', True)
+                    if hasattr(new_session, '_audio_processor') and new_session._audio_processor:
+                        new_session._audio_processor.set_enabled(nr_enabled)
 
-            # 处理在TTS启动期间可能已经缓存的文本chunk
-            if tts_ready:
-                await self._flush_tts_pending_chunks()
-            else:
-                logger.warning("⚠️ TTS未就绪，当前回复将继续缓存，等待后续就绪信号")
-            return True
+                # Bind guarded callbacks BEFORE connect — connect() can invoke
+                # on_connection_error during the handshake, and without the guard
+                # it would run the raw unbound handler and potentially kill the
+                # current active session.
+                self._bind_session_lifecycle_callbacks(new_session)
 
-        # 定义 LLM Session 启动协程
-        async def start_llm_session():
-            """异步创建并连接 LLM Session.
-            
-            Uses connect-then-assign: a local new_session is created and connected
-            first.  Only after connect() succeeds is it promoted to self.session.
-            On failure the half-initialised session is closed and an exception raised.
-            """
-            guard_max_length = self._get_text_guard_max_length()
-            _lang = normalize_language_code(self.user_language, format='short')
-            initial_prompt = await self._build_initial_prompt()
-            
-            # 连接 Memory Server 获取记忆上下文
-            _mem_start = time.time()
-            logger.info(f"[语音会话诊断] 开始获取记忆上下文 (端口 {self.memory_server_port})")
-            try:
-                async with httpx.AsyncClient(timeout=2.0, proxy=None, trust_env=False) as client:
-                    resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}")
-                    if not resp.is_success:
-                        raise ConnectionError(f"❌ 记忆服务返回非2xx状态 {resp.status_code}: {resp.text[:200]}")
-                    initial_prompt += resp.text + _loc(CONTEXT_SUMMARY_READY, _lang).format(name=self.lanlan_name, master=self.master_name)
-                logger.info(f"[语音会话诊断] 记忆上下文获取完成 (耗时: {time.time() - _mem_start:.2f}秒)")
-            except httpx.ConnectError:
-                raise ConnectionError(f"❌ 记忆服务未启动！请先启动记忆服务 (端口 {self.memory_server_port})")
-            except httpx.TimeoutException:
-                raise ConnectionError(f"❌ 记忆服务响应超时！请检查记忆服务是否正常运行 (端口 {self.memory_server_port})")
-            except Exception as e:
-                raise ConnectionError(f"❌ 记忆服务连接失败: {e} (端口 {self.memory_server_port})")
-            
-            logger.info(f"🤖 开始创建 LLM Session (input_mode={input_mode})")
-            logger.info("[语音会话诊断] 开始创建 LLM 连接 (realtime/text)...")
-            _llm_create_start = time.time()
-            
-            # Create into a LOCAL variable — not self.session yet
-            new_session = None
-            if input_mode == 'text':
-                conversation_config = self._config_manager.get_model_api_config('conversation')
-                vision_config = self._config_manager.get_model_api_config('vision')
-                new_session = OmniOfflineClient(
-                    base_url=conversation_config['base_url'],
-                    api_key=conversation_config['api_key'],
-                    model=conversation_config['model'],
-                    vision_model=vision_config['model'],
-                    vision_base_url=vision_config['base_url'],
-                    vision_api_key=vision_config['api_key'],
-                    on_text_delta=self.handle_text_data,
-                    on_input_transcript=self.handle_input_transcript,
-                    on_output_transcript=self.handle_output_transcript,
-                    on_connection_error=self.handle_connection_error,
-                    on_response_done=self.handle_response_complete,
-                    on_repetition_detected=self.handle_repetition_detected,
-                    on_response_discarded=self.handle_response_discarded,
-                    on_status_message=self.send_status,
-                    max_response_length=guard_max_length,
-                    lanlan_name=self.lanlan_name,
-                    master_name=self.master_name
-                )
-                new_session.on_proactive_done = self.handle_proactive_complete
-            else:
-                realtime_config = self._config_manager.get_model_api_config('realtime')
-                new_session = OmniRealtimeClient(
-                    base_url=realtime_config.get('base_url', ''),
-                    api_key=realtime_config['api_key'],
-                    model=realtime_config['model'],
-                    voice=self.voice_id if self._is_free_preset_voice and self.core_api_type == 'free' 
-                        and 'lanlan.tech' in realtime_config.get('base_url', '') else None,
-                    on_text_delta=self.handle_text_data,
-                    on_audio_delta=self.handle_audio_data,
-                    on_new_message=self.handle_new_message,
-                    on_input_transcript=self.handle_input_transcript,
-                    on_output_transcript=self.handle_output_transcript,
-                    on_connection_error=self.handle_connection_error,
-                    on_response_done=self.handle_response_complete,
-                    on_silence_timeout=self.handle_silence_timeout,
-                    on_status_message=self.send_status,
-                    on_repetition_detected=self.handle_repetition_detected,
-                    api_type=self.core_api_type
-                )
-                # Apply user's noise reduction preference to the AudioProcessor
-                nr_enabled = load_global_conversation_settings().get('noiseReductionEnabled', True)
-                if hasattr(new_session, '_audio_processor') and new_session._audio_processor:
-                    new_session._audio_processor.set_enabled(nr_enabled)
-
-            # Bind guarded callbacks BEFORE connect — connect() can invoke
-            # on_connection_error during the handshake, and without the guard
-            # it would run the raw unbound handler and potentially kill the
-            # current active session.
-            self._bind_session_lifecycle_callbacks(new_session)
-
-            try:
-                await new_session.connect(initial_prompt, native_audio=not self.use_tts)
-            except Exception:
                 try:
-                    await new_session.close()
+                    await new_session.connect(initial_prompt, native_audio=not self.use_tts)
                 except Exception:
-                    pass
-                raise
-            
-            # Connect succeeded — promote to self.session
-            self.session = new_session
-            if not self.current_speech_id:
-                self.current_speech_id = str(uuid4())
-            logger.info("✅ LLM Session 已连接")
-            logger.info(f"[语音会话诊断] LLM 连接并 connect 完成 (耗时: {time.time() - _llm_create_start:.2f}秒)")
-            print(initial_prompt)  #只在控制台显示，不输出到日志文件
-            return True
-        
-        # 重置状态
-        if new:
-            self.message_cache_for_new_session = []
-            self.last_time = None
-            self.is_preparing_new_session = False
-            self.summary_triggered_time = None
-            self.initial_cache_snapshot_len = 0
-            # 清空输入缓存（新对话时不需要保留旧的输入）
-            async with self.input_cache_lock:
-                self.pending_input_data.clear()
+                    try:
+                        await new_session.close()
+                    except Exception:
+                        pass
+                    raise
 
-        try:
+                # 强 CAS 提升：仅在 self.session 为 None（已被 end_session 清场）
+                # 或已经是自己时才赋值，确保不会覆盖任何已就位的赢家 session。
+                concurrent_winner = False
+                async with self.lock:
+                    if self.session is None or self.session is new_session:
+                        self.session = new_session
+                        if not self.current_speech_id:
+                            self.current_speech_id = str(uuid4())
+                    else:
+                        concurrent_winner = True
+
+                if concurrent_winner:
+                    logger.warning("⚠️ start_llm_session: 检测到并发 start_session 已抢先建立 session，关闭本次 new_session 避免孤儿泄漏")
+                    try:
+                        await new_session.close()
+                    except Exception as _close_err:
+                        logger.error(f"💥 关闭并发落败的 new_session 失败: {_close_err}")
+                    # 返回哨兵（而非 raise）以绕开 start_session 的通用 except：后者会调
+                    # cleanup()（无 expected_session 守卫），反过来拆掉赢家的 session/ws，
+                    # 还会 +1 session_start_failure_count 并向前端发 SESSION_START_FAILED。
+                    return _START_LLM_CONCURRENT_ABORTED
+
+                logger.info("✅ LLM Session 已连接")
+                logger.info(f"[语音会话诊断] LLM 连接并 connect 完成 (耗时: {time.time() - _llm_create_start:.2f}秒)")
+                print(initial_prompt)  #只在控制台显示，不输出到日志文件
+                return True
+        
+            # 重置状态
+            if new:
+                self.message_cache_for_new_session = []
+                self.last_time = None
+                self.is_preparing_new_session = False
+                self.summary_triggered_time = None
+                self.initial_cache_snapshot_len = 0
+                # 清空输入缓存（新对话时不需要保留旧的输入）
+                async with self.input_cache_lock:
+                    self.pending_input_data.clear()
+
             # 并行启动 TTS 和 LLM Session
             logger.info("🚀 并行启动 TTS 和 LLM Session...")
             start_parallel_time = time.time()
@@ -1613,6 +1708,15 @@ class LLMSessionManager:
             # 检查是否有错误
             if isinstance(tts_result, Exception):
                 logger.error(f"TTS 启动失败: {tts_result}")
+            # 并发落败分支：赢家已持有 self.session / message_handler_task，
+            # 我们不能继续走 "if self.session" 分支（会覆盖 handler task、重复
+            # send_session_started），也不能 raise（会误触发 cleanup 杀掉赢家）。
+            # 同时设置 _llm_concurrent_aborted=True 让 finally 跳过 guard 递减：
+            # 赢家尚未完成初始化，必须保持 guard 以阻止第三个协程穿过。
+            if llm_result is _START_LLM_CONCURRENT_ABORTED:
+                logger.info("[语音会话诊断] start_session 因并发 CAS 落败早退，保持 guard 关闭")
+                _llm_concurrent_aborted = True
+                return
             if isinstance(llm_result, Exception):
                 raise llm_result  # LLM Session 失败是致命的
             
@@ -1651,64 +1755,16 @@ class LLMSessionManager:
                 raise Exception("Session not initialized")
         
         except Exception as e:
-            # 记录失败
-            self.session_start_failure_count += 1
-            self.session_start_last_failure_time = datetime.now()
-            logger.error(f"[语音会话诊断] start_session 失败 (总耗时: {time.time() - _diag_start:.2f}秒): {e}")
-            error_str = str(e)
-            
-            # 🔴 优先检查 Memory Server 错误（最常见的启动问题）
-            is_memory_server_error = isinstance(e, ConnectionError) and any(kw in error_str.lower() for kw in ["memory server", "记忆服务"])
-            
-            if is_memory_server_error:
-                # Memory Server 错误使用专门的日志格式
-                logger.error(f"🧠 {error_str}")
-                await self.send_status(json.dumps({"code": "MEMORY_SERVER_NOT_RUNNING"}))
-                # Memory Server 错误不计入失败次数（因为这是配置问题而非网络问题）
-                self.session_start_failure_count -= 1
-                # 设置 Memory 专属冷却，避免高频重试刷日志
-                self._memory_error_retry_after = time.time() + self._memory_error_cooldown_seconds
-            else:
-                error_message = f"Error starting session: {e}"
-                logger.exception(f"💥 {error_message} (失败次数: {self.session_start_failure_count})")
-                
-                # 如果达到最大失败次数，发送严重警告并通知前端
-                if self.session_start_failure_count >= self.session_start_max_failures:
-                    critical_message = f"⛔ Session启动连续失败{self.session_start_failure_count}次，已停止自动重试。请检查网络连接和API配置，然后刷新页面重试。"
-                    logger.critical(critical_message)
-                    await self.send_status(json.dumps({"code": "SESSION_START_CRITICAL", "details": {"count": self.session_start_failure_count}}))
-                else:
-                    await self.send_status(json.dumps({"code": "SESSION_START_FAILED", "details": {"error": str(e), "count": self.session_start_failure_count}}))
-                
-                # 检查其他类型的连接错误
-                if 'WinError 10061' in error_str or 'WinError 10054' in error_str:
-                    # 检查端口号是否为memory_server端口
-                    if str(self.memory_server_port) in error_str or '48912' in error_str:
-                        await self.send_status(json.dumps({"code": "MEMORY_SERVER_CRASHED", "details": {"port": self.memory_server_port}}))
-                    else:
-                        await self.send_status(json.dumps({"code": "CONNECTION_REFUSED"}))
-                elif ('401' in error_str or 'unauthorized' in error_str.lower()
-                        or 'authentication' in error_str.lower()
-                        or ('invalid' in error_str.lower() and 'key' in error_str.lower())):
-                    await self.send_status(json.dumps({"code": "API_KEY_REJECTED"}))
-                elif '429' in error_str:
-                    await self.send_status(json.dumps({"code": "API_RATE_LIMIT_SESSION"}))
-                elif 'HTTP 503' in error_str:
-                    await self.send_status(json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
-                elif 'All connection attempts failed' in error_str:
-                    await self.send_status(json.dumps({"code": "LLM_CONNECTION_FAILED"}))
-                else:
-                    await self.send_status(json.dumps({"code": "CONNECTION_CLOSED_ABNORMAL", "details": {"error": error_str}}))
-            
-            # 通知前端 session 启动失败，让前端重置状态
-            # 必须在 cleanup 之前发送，因为 cleanup 会清空 websocket 引用
-            await self.send_session_failed(input_mode)
-            
-            await self.cleanup()
-        
+            # prelude（_cleanup_pending_session_resources / end_session / asyncio.sleep 等）
+            # 与 gather 块的错误统一走这里收口：send_session_failed + cleanup，避免前端卡在 preparing。
+            # 注意：except Exception 不会捕获 CancelledError，shutdown 路径保持原语义。
+            await self._handle_session_start_exception(e, input_mode, _diag_start)
         finally:
-            # 无论成功还是失败，都递减启动计数器（而非直接置 False，防止覆盖并发的第二个 start_session）
-            self._starting_session_count = max(0, self._starting_session_count - 1)
+            # 例外：CAS 落败早退时不递减——赢家还在初始化，若此时放开 guard，
+            # 第三个协程会穿过并再次把入口快照当作"赢家"进而覆盖掉真正的赢家。
+            # 赢家完成（成功或异常）后会通过自己的 finally 或 cleanup 清理 guard。
+            if not _llm_concurrent_aborted:
+                self._starting_session_count = max(0, self._starting_session_count - 1)
 
     async def send_user_activity(self, interrupted_speech_id: Optional[str] = None):
         """发送用户活动信号，附带被打断的 speech_id 用于精确打断控制"""
@@ -1871,7 +1927,7 @@ class LLMSessionManager:
             
             # 热切换准备时同样清理无效 voice_id，防止旧版本 voice 残留进入热切换流程
             try:
-                cleaned_count, legacy_names = self._config_manager.cleanup_invalid_voice_ids()
+                cleaned_count, legacy_names = await asyncio.to_thread(self._config_manager.cleanup_invalid_voice_ids)
                 if cleaned_count > 0:
                     logger.info(f"🧹 热切换准备: 已清理 {cleaned_count} 个无效 voice_id")
                 self._enqueue_voice_migration_notice(legacy_names)
@@ -2277,7 +2333,7 @@ class LLMSessionManager:
 
     def _is_voice_session_active_or_starting(self) -> bool:
         """语音 session 正在启动或已经活跃时返回 True，用于阻止 greeting 干扰语音流。"""
-        if self.is_starting_session and self.input_mode == 'audio':
+        if self._starting_session_count > 0 and self.input_mode == 'audio':
             return True
         if self.is_active and self.input_mode == 'audio':
             return True
@@ -2381,8 +2437,9 @@ class LLMSessionManager:
             delivered = await self.session.prompt_ephemeral(instruction)
             logger.info("[%s] trigger_greeting: delivered=%s", self.lanlan_name, delivered)
             # 投递成功后才真正消费节日/周末预算
+            # commit 内部会 atomic_write_json 消费预算文件，offload 以免阻塞事件循环
             if delivered and _holiday_token is not None:
-                commit_holiday_or_weekend_hint(self.lanlan_name, _holiday_token)
+                await asyncio.to_thread(commit_holiday_or_weekend_hint, self.lanlan_name, _holiday_token)
 
     def enqueue_agent_callback(self, callback: dict) -> None:
         """Enqueue a structured agent task callback for LLM injection.
@@ -2920,7 +2977,7 @@ class LLMSessionManager:
             logger.error(f"💥 {error_message}")
             await self.send_status(json.dumps({"code": "API_UNKNOWN_ERROR", "details": {"msg": error_message}}))
 
-    async def end_session(self, by_server=False, *, expected_session=None):  # 与Core API断开连接
+    async def end_session(self, by_server=False, *, expected_session=None, reset_starting_count=True):  # 与Core API断开连接
         # Pre-check: no-side-effect guard before _init_renew_status which mutates
         # pending/prewarm state.  A stale callback must not nuke preparation state.
         _inactive_early = False
@@ -2970,8 +3027,11 @@ class LLMSessionManager:
             # 重置 _starting_session_count：如果 start_session 正在执行中（比如卡在预热），
             # 前端超时后发来 end_session，必须解除这个 guard，否则用户手动重试会被
             # 静默丢弃（_starting_session_count>0 → return），导致"必须重启应用才能恢复"。
-            # connect-then-assign 模式已保证不会出现 >2 个 session。
-            self._starting_session_count = 0
+            # 但 start_session 内部自己调 end_session 清理旧 session 时必须传
+            # reset_starting_count=False，否则 guard 被清零后并发的第二次 start_session
+            # 会穿过，产生孤儿 OmniRealtimeClient（silence_check_task/ws 泄漏）。
+            if reset_starting_count:
+                self._starting_session_count = 0
             
             # Snapshot all mutable resource refs while holding the lock,
             # then operate only on locals to prevent killing newly created resources.

@@ -384,8 +384,9 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
                     return;
                 }
                 const UseBlock = "default";
-                
+
                 // 滤波 毫秒
+                window.live2dManager.touchSetFilter = window.live2dManager.touchSetFilter || {};
                 if(!window.live2dManager.touchSetFilter[UseBlock]){
                     window.live2dManager.touchSetFilter[UseBlock]= Date.now();
                 }else{
@@ -1879,6 +1880,7 @@ Live2DManager.prototype.setupHitAreaInteraction = function(model) {
         window.live2dManager.touchSetHitEventLock = true
 
         // 滤波 毫秒
+        window.live2dManager.touchSetFilter = window.live2dManager.touchSetFilter || {};
         if(!window.live2dManager.touchSetFilter[hitAreas]){
             window.live2dManager.touchSetFilter[hitAreas]= Date.now();
         }else{

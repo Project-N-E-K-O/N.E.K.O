@@ -202,6 +202,7 @@ class MijiaPlugin(NekoPluginBase):
         # 设置文件权限（仅所有者可读写）
         if sys.platform == "win32":
             try:
+                import subprocess
 
                 def _apply_windows_acl() -> tuple[int, str]:
                     username = subprocess.check_output(

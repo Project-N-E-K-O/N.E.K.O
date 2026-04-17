@@ -256,10 +256,15 @@
     // 并继续按固定间隔 poll（见下面 scheduleProactiveChat 的两处 speaking 分支）。
     // S.isPlaying：audio chunks 入队到 drain 完这段期间为 true；
     // S.assistantSpeechActiveTurnId：active turn 有音频在跑时非空。
-    // 两者任一为真都视为在播，避免打断自己。
+    // assistantTurnId !== assistantTurnCompletedId：后端已发 turn-start
+    // 但还没发 turn-end —— 覆盖"文字已开始流、首个音频 chunk 还没解码"的空窗，
+    // 防止 proactive 在这段窗口里切入、让猫娘打断自己。
     function _isAssistantSpeaking() {
         try {
-            return !!(S && (S.isPlaying || S.assistantSpeechActiveTurnId));
+            if (!S) return false;
+            if (S.isPlaying || S.assistantSpeechActiveTurnId) return true;
+            if (S.assistantTurnId && S.assistantTurnId !== S.assistantTurnCompletedId) return true;
+            return false;
         } catch (_) {
             return false;
         }
@@ -932,7 +937,8 @@
                 }
             }
             if (!isMemeLink && link.url) {
-                var memeDomains = ['qn.doutub.com', 'img.soutula.com', 'i.imgflip.com', 'doutub.com', 'fabiaoqing.com', 'soutula.com'];
+                // 2026-04-16: doutub.com 域名易主挂黑产，停用（'qn.doutub.com', 'doutub.com'）；新增 doutupk.com（斗图啦）
+                var memeDomains = ['img.soutula.com', 'i.imgflip.com', 'fabiaoqing.com', 'soutula.com', 'img.doutupk.com', 'doutupk.com'];
                 var linkHost = '';
                 try {
                     var tempUrl = new URL(String(link.url), window.location.origin);
