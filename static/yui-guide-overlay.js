@@ -4,6 +4,7 @@
     const ROOT_ID = 'yui-guide-overlay';
     const SVG_NS = 'http://www.w3.org/2000/svg';
     const BACKDROP_MASK_ID = ROOT_ID + '-mask';
+    const EXTRA_SPOTLIGHT_ENTRY_COUNT = 6;
 
     function createElement(tagName, className) {
         const element = document.createElement(tagName);
@@ -27,6 +28,7 @@
             this.root = null;
             this.stage = null;
             this.backdrop = null;
+            this.backdropMask = null;
             this.backdropBase = null;
             this.backdropPersistentCutout = null;
             this.backdropActionCutout = null;
@@ -47,6 +49,8 @@
             this.persistentHighlightedElement = null;
             this.actionHighlightedElement = null;
             this.secondaryActionHighlightedElement = null;
+            this.extraSpotlightElements = [];
+            this.extraSpotlightEntries = [];
             this.highlightedElements = new Set();
             this.spotlightRefreshTimer = null;
             this.boundRefreshSpotlight = this.refreshSpotlight.bind(this);
@@ -94,6 +98,8 @@
                 backdropSecondaryActionCutout.setAttribute('fill', 'black');
                 backdropSecondaryActionCutout.hidden = true;
 
+                const extraSpotlightEntries = [];
+
                 const backdropFill = createSvgElement('rect', 'yui-guide-backdrop-fill');
                 backdropFill.setAttribute('fill', 'rgba(3, 7, 18, 0.76)');
                 backdropFill.setAttribute('mask', 'url(#' + BACKDROP_MASK_ID + ')');
@@ -117,6 +123,28 @@
                 const secondaryActionSpotlightFrame = createElement('div', 'yui-guide-spotlight-frame yui-guide-spotlight-frame-action yui-guide-spotlight-frame-action-secondary');
                 secondaryActionSpotlightFrame.hidden = true;
                 secondaryActionSpotlightFrame.setAttribute('data-yui-cursor-hidden', 'true');
+
+                for (let index = 0; index < EXTRA_SPOTLIGHT_ENTRY_COUNT; index += 1) {
+                    const cutout = createSvgElement(
+                        'rect',
+                        'yui-guide-backdrop-cutout yui-guide-backdrop-cutout-action yui-guide-backdrop-cutout-extra'
+                    );
+                    cutout.setAttribute('fill', 'black');
+                    cutout.hidden = true;
+                    cutout.setAttribute('data-yui-guide-extra-index', String(index));
+                    mask.appendChild(cutout);
+
+                    const frame = createElement(
+                        'div',
+                        'yui-guide-spotlight-frame yui-guide-spotlight-frame-action yui-guide-spotlight-frame-extra'
+                    );
+                    frame.hidden = true;
+                    frame.setAttribute('data-yui-cursor-hidden', 'true');
+                    frame.setAttribute('data-yui-guide-extra-index', String(index));
+                    stage.appendChild(frame);
+
+                    extraSpotlightEntries.push({ cutout: cutout, frame: frame });
+                }
 
                 const bubble = createElement('section', 'yui-guide-bubble');
                 bubble.hidden = true;
@@ -149,6 +177,7 @@
 
                 this.stage = stage;
                 this.backdrop = backdrop;
+                this.backdropMask = mask;
                 this.backdropBase = backdropBase;
                 this.backdropPersistentCutout = backdropPersistentCutout;
                 this.backdropActionCutout = backdropActionCutout;
@@ -165,9 +194,11 @@
                 this.previewList = previewList;
                 this.cursorShell = cursorShell;
                 this.cursorInner = cursorInner;
+                this.extraSpotlightEntries = extraSpotlightEntries;
             } else {
                 this.stage = root.querySelector('.yui-guide-stage');
                 this.backdrop = root.querySelector('.yui-guide-backdrop');
+                this.backdropMask = root.querySelector('mask#' + BACKDROP_MASK_ID);
                 this.backdropBase = root.querySelector('.yui-guide-backdrop-base');
                 this.backdropPersistentCutout = root.querySelector('.yui-guide-backdrop-cutout-persistent');
                 this.backdropActionCutout = root.querySelector('.yui-guide-backdrop-cutout-action');
@@ -184,10 +215,70 @@
                 this.previewList = root.querySelector('.yui-guide-preview-list');
                 this.cursorShell = root.querySelector('.yui-guide-cursor-shell');
                 this.cursorInner = root.querySelector('.yui-guide-cursor');
+                this.extraSpotlightEntries = [];
+                const cutouts = root.querySelectorAll('.yui-guide-backdrop-cutout-extra');
+                const frames = root.querySelectorAll('.yui-guide-spotlight-frame-extra');
+                const count = Math.max(cutouts.length, frames.length);
+                for (let index = 0; index < count; index += 1) {
+                    this.extraSpotlightEntries.push({
+                        cutout: cutouts[index] || null,
+                        frame: frames[index] || null
+                    });
+                }
             }
 
             this.root = root;
             return root;
+        }
+
+        ensureExtraSpotlightEntry(index) {
+            const normalizedIndex = Number(index);
+            if (!Number.isInteger(normalizedIndex) || normalizedIndex < 0) {
+                return null;
+            }
+
+            this.ensureRoot();
+            if (this.extraSpotlightEntries[normalizedIndex]) {
+                return this.extraSpotlightEntries[normalizedIndex];
+            }
+            return null;
+        }
+
+        setExtraSpotlights(elements) {
+            this.ensureRoot();
+            this.extraSpotlightElements = (Array.isArray(elements) ? elements : [])
+                .filter((element) => !!element && typeof element.getBoundingClientRect === 'function');
+            this.refreshSpotlight();
+            if (
+                this.persistentHighlightedElement
+                || this.actionHighlightedElement
+                || this.secondaryActionHighlightedElement
+                || this.extraSpotlightElements.length > 0
+            ) {
+                this.startSpotlightTracking();
+            } else {
+                this.stopSpotlightTracking();
+            }
+        }
+
+        clearExtraSpotlights() {
+            this.ensureRoot();
+            this.extraSpotlightElements = [];
+            this.extraSpotlightEntries.forEach((entry) => {
+                if (!entry) {
+                    return;
+                }
+                this.updateBackdropCutout(entry.cutout, null);
+                this.updateSpotlightFrame(entry.frame, null);
+            });
+            this.refreshSpotlight();
+            if (
+                !this.persistentHighlightedElement
+                && !this.actionHighlightedElement
+                && !this.secondaryActionHighlightedElement
+            ) {
+                this.stopSpotlightTracking();
+            }
         }
 
         syncBackdropViewport() {
@@ -338,13 +429,15 @@
             const persistentRect = this.getSpotlightRect(this.persistentHighlightedElement);
             const actionRect = this.getSpotlightRect(this.actionHighlightedElement);
             const secondaryActionRect = this.getSpotlightRect(this.secondaryActionHighlightedElement);
+            const extraRects = this.extraSpotlightElements.map((element) => this.getSpotlightRect(element));
             const persistentMaskRect = persistentRect && !persistentRect.isCircular ? persistentRect : null;
             const actionMaskRect = actionRect || null;
             const secondaryActionMaskRect = secondaryActionRect || null;
+            const extraMaskRects = extraRects.filter(Boolean);
 
             if (this.backdrop) {
                 this.syncBackdropViewport();
-                if (persistentMaskRect || actionMaskRect || secondaryActionMaskRect) {
+                if (persistentMaskRect || actionMaskRect || secondaryActionMaskRect || extraMaskRects.length > 0) {
                     this.backdrop.hidden = false;
                     this.backdrop.classList.add('is-visible');
                 } else {
@@ -365,6 +458,24 @@
             this.updateSpotlightFrame(this.secondaryActionSpotlightFrame, secondaryActionRect, {
                 allowMask: false
             });
+            extraRects.forEach((rect, index) => {
+                const entry = this.ensureExtraSpotlightEntry(index);
+                if (!entry) {
+                    return;
+                }
+                this.updateBackdropCutout(entry.cutout, rect || null);
+                this.updateSpotlightFrame(entry.frame, rect || null, {
+                    allowMask: false
+                });
+            });
+            for (let index = extraRects.length; index < this.extraSpotlightEntries.length; index += 1) {
+                const entry = this.extraSpotlightEntries[index];
+                if (!entry) {
+                    continue;
+                }
+                this.updateBackdropCutout(entry.cutout, null);
+                this.updateSpotlightFrame(entry.frame, null);
+            }
         }
 
         startSpotlightTracking() {
@@ -516,7 +627,7 @@
             this.secondaryActionHighlightedElement = null;
             this.syncHighlightedElementClasses();
             this.refreshSpotlight();
-            if (!this.persistentHighlightedElement) {
+            if (!this.persistentHighlightedElement && this.extraSpotlightElements.length === 0) {
                 this.stopSpotlightTracking();
             }
         }
@@ -526,7 +637,11 @@
             this.persistentHighlightedElement = null;
             this.syncHighlightedElementClasses();
             this.refreshSpotlight();
-            if (!this.actionHighlightedElement && !this.secondaryActionHighlightedElement) {
+            if (
+                !this.actionHighlightedElement
+                && !this.secondaryActionHighlightedElement
+                && this.extraSpotlightElements.length === 0
+            ) {
                 this.stopSpotlightTracking();
             }
         }
@@ -537,6 +652,7 @@
             this.persistentHighlightedElement = null;
             this.actionHighlightedElement = null;
             this.secondaryActionHighlightedElement = null;
+            this.extraSpotlightElements = [];
             this.syncHighlightedElementClasses();
 
             if (this.backdrop) {
@@ -546,9 +662,21 @@
             this.updateBackdropCutout(this.backdropPersistentCutout, null);
             this.updateBackdropCutout(this.backdropActionCutout, null);
             this.updateBackdropCutout(this.backdropSecondaryActionCutout, null);
+            this.extraSpotlightEntries.forEach((entry) => {
+                if (!entry) {
+                    return;
+                }
+                this.updateBackdropCutout(entry.cutout, null);
+            });
             this.updateSpotlightFrame(this.persistentSpotlightFrame, null);
             this.updateSpotlightFrame(this.actionSpotlightFrame, null);
             this.updateSpotlightFrame(this.secondaryActionSpotlightFrame, null);
+            this.extraSpotlightEntries.forEach((entry) => {
+                if (!entry) {
+                    return;
+                }
+                this.updateSpotlightFrame(entry.frame, null);
+            });
         }
 
         hasCursorPosition() {
@@ -666,6 +794,7 @@
             this.root = null;
             this.stage = null;
             this.backdrop = null;
+            this.backdropMask = null;
             this.backdropBase = null;
             this.backdropPersistentCutout = null;
             this.backdropActionCutout = null;
@@ -686,6 +815,8 @@
             this.persistentHighlightedElement = null;
             this.actionHighlightedElement = null;
             this.secondaryActionHighlightedElement = null;
+            this.extraSpotlightElements = [];
+            this.extraSpotlightEntries = [];
             this.highlightedElements = new Set();
         }
     }

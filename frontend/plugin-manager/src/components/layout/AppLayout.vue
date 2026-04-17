@@ -22,7 +22,7 @@
         <el-header height="60px" class="header-container">
           <Header />
         </el-header>
-        <el-main class="main-container">
+        <el-main class="main-container" data-yui-guide-id="plugin-main">
           <router-view v-slot="{ Component }">
             <transition name="fade" mode="out-in">
               <component :is="Component" />
@@ -139,4 +139,3 @@ function closeWindow() {
   opacity: 0;
 }
 </style>
-

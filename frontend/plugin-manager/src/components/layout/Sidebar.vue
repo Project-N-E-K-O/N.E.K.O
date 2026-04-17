@@ -9,15 +9,15 @@
       class="sidebar-menu"
       :collapse="false"
     >
-      <el-menu-item index="/">
+      <el-menu-item index="/" data-yui-guide-id="sidebar-dashboard">
         <el-icon><Odometer /></el-icon>
         <span>{{ $t('nav.dashboard') }}</span>
       </el-menu-item>
-      <el-menu-item index="/plugins">
+      <el-menu-item index="/plugins" data-yui-guide-id="sidebar-plugins">
         <el-icon><Box /></el-icon>
         <span>{{ $t('nav.plugins') }}</span>
       </el-menu-item>
-      <el-menu-item index="/runs">
+      <el-menu-item index="/runs" data-yui-guide-id="sidebar-runs">
         <el-icon><DataAnalysis /></el-icon>
         <span>{{ $t('nav.runs') }}</span>
       </el-menu-item>
@@ -108,4 +108,3 @@ onMounted(() => {
   border-right: none;
 }
 </style>
-
