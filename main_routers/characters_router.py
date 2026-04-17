@@ -1796,16 +1796,17 @@ async def get_voice_preview(voice_id: str):
         voices = _config_manager.get_voices_for_current_api()
         voice_data = voices.get(voice_id) if isinstance(voices, dict) else None
         provider = (voice_data or {}).get('provider', '')
-        core_config = await _config_manager.aget_core_config()
-        
+
         # 优先尝试从 tts_custom 获取 API Key
         try:
             tts_custom_config = _config_manager.get_model_api_config('tts_custom')
             audio_api_key = tts_custom_config.get('api_key', '')
         except Exception:
             audio_api_key = ''
-            
+
         # 如果没有，则回退到核心配置
+        # Codex review: 原先这里顶上还有一个 `core_config = ...`，从未被读取（死代码）。
+        # 全仓 async 化时把死读也改成了 await，反而白跑一次 IO，删。
         if not audio_api_key:
             core_config = await _config_manager.aget_core_config()
             audio_api_key = core_config.get('AUDIO_API_KEY', '')

@@ -579,8 +579,9 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                 return
             try:
                 await target.close()
-            except Exception:
-                pass
+            except Exception as e:
+                # 已进入重连/退出阶段，close 失败不影响后续流程；记 debug 方便排障
+                logger.debug(f"_safe_close: ignored exception during close: {e}")
 
         await asyncio.gather(
             _safe_close(sync_ws), _safe_close(binary_ws), _safe_close(bullet_ws),

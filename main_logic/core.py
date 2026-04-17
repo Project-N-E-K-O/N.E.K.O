@@ -906,8 +906,12 @@ class LLMSessionManager:
             async def _wait_one(t):
                 try:
                     await asyncio.wait_for(t, timeout=2.0)
-                except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    # 清理路径：cancel 后的任务必然抛这两者之一，吞掉即可
                     pass
+                except Exception as e:
+                    # 非预期异常不应阻塞准备状态重置，记 debug 方便排障
+                    logger.debug(f"_wait_one: ignored unexpected exception: {e}")
             await asyncio.gather(*(_wait_one(t) for t in tasks_to_await), return_exceptions=True)
         
         if self.background_preparation_task is bg_task_ref:

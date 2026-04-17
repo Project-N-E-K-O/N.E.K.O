@@ -16,7 +16,7 @@ import uvicorn
 from fastapi.templating import Jinja2Templates
 from utils.frontend_utils import find_models, find_model_config_file, find_model_directory
 from utils.workshop_utils import get_default_workshop_folder
-from utils.preferences import load_user_preferences, aload_user_preferences
+from utils.preferences import aload_user_preferences
 
 # Setup logger
 from utils.logger_config import setup_logging

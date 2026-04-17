@@ -2013,13 +2013,13 @@ async def proxy_meme_image(url: str):
 
 # 辅助函数
 
-@router.get('/steam/proxy-image')
 def _read_binary_file(path: str) -> bytes:
     """同步 binary read，给 asyncio.to_thread 调用。"""
     with open(path, 'rb') as f:
         return f.read()
 
 
+@router.get('/steam/proxy-image')
 async def proxy_image(image_path: str):
     """
     代理访问本地图片文件，支持绝对路径和相对路径，特别是Steam创意工坊目录

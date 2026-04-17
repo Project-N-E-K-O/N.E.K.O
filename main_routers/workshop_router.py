@@ -2516,7 +2516,9 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
             item_id = None
             if character_card_name:
                 try:
-                    meta_data = await asyncio.to_thread(read_workshop_meta, character_card_name)
+                    # 注意：_publish_workshop_item 是 sync def，在 worker 线程里跑，不能用 await。
+                    # 其它 async 调用点已全部走 asyncio.to_thread，lint 已覆盖。
+                    meta_data = read_workshop_meta(character_card_name)
                     if meta_data and meta_data.get('workshop_item_id'):
                         item_id = int(meta_data.get('workshop_item_id'))
                         logger.info(f"从 .workshop_meta.json 读取到物品ID: {item_id}")
