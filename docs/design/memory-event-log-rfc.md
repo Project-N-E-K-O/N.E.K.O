@@ -1,7 +1,7 @@
 # RFC: Memory subsystem event log + view derivation (P2)
 
-Status: **Draft v2** — revised after first design review; awaiting second
-review before implementation.
+Status: **Draft v3** — revised after second design review; awaiting
+third review before implementation.
 
 Branch context: `claude/awesome-goldberg-omrDx`, built on top of P0 (persistent
 rebuttal cursor) and P1 (reflection id determinism + outbox).
@@ -11,7 +11,24 @@ rebuttal cursor) and P1 (reflection id determinism + outbox).
 - **v1** (initial draft): 9 event types, single-file compaction with
   intermediate `events.snapshot`, `persona.fact_mentioned` bundled into
   `persona.fact_added`, per-batch sentinel advance proposed.
-- **v2** (this revision, after review round 1) — addresses 4 blockers:
+- **v3** (this revision, after review round 2) — addresses the two remaining
+  issues from v2:
+  1. §3.4 pseudocode rewritten: the critical section is now wrapped in a
+     single `asyncio.to_thread` hop, with the `threading.Lock` acquired
+     entirely inside the worker thread. Prior v2 code erroneously used
+     `async with threading.Lock()` which is not a valid async context
+     manager and contradicted §3.4.1's own prose.
+  2. §3.4.2 pseudocode rewritten to match the real control flow of
+     `aauto_promote_stale` (reflection.py:731-783). The new model is
+     "persona side first, then reflection side"; crash recovery converges
+     through the producer's retry loop, not a reconciler self-heal path.
+     This removes the sentinel-advance-during-self-heal ambiguity flagged
+     in review round 2.
+  Plus: compaction ordering relative to outbox replay spelled out (§3.5);
+  implementation plan split into 5 smaller commits (P2.a.1 / P2.a.2 /
+  P2.b.1 / P2.b.2 / P2.c); `_COMPACT_DAYS_THRESHOLD` wired to actual
+  check, not just declared.
+- **v2** (review round 1) — addressed 4 blockers:
   1. Compaction atomicity: eliminated intermediate `events.snapshot`; new
      body is written into `events.ndjson` via a single `os.replace` swap
      (§3.6). No dual-file reconciler ambiguity.
@@ -157,36 +174,58 @@ Payload rules:
 
 ### 3.4 Write order rule
 
-**Event is appended before the view is written, inside a per-character lock.**
+**Event is appended before the view is written, inside a per-character lock,
+the entire block wrapped in a single `asyncio.to_thread` worker.**
 
 ```python
-async def _record_and_save(lanlan_name, event_type, payload, save_view):
-    async with _character_lock(lanlan_name):  # see §3.4.1
-        await event_log.aappend(lanlan_name, event_type, payload)
-        await save_view()                      # atomic_write_json_async
-        await event_log.aadvance_sentinel(lanlan_name)  # see §3.5
+# Async entry point — called from memory_server handlers / periodic loops.
+# Single to_thread hop hands the whole critical section to a worker thread
+# where a synchronous per-character lock covers everything.
+async def _record_and_save(lanlan_name, event_type, payload, sync_save_view):
+    await asyncio.to_thread(
+        _sync_record_and_save,
+        lanlan_name, event_type, payload, sync_save_view,
+    )
+
+def _sync_record_and_save(lanlan_name, event_type, payload, sync_save_view):
+    with _character_lock(lanlan_name):   # threading.Lock — never held across await
+        event_log.append(lanlan_name, event_type, payload)  # returns event_id
+        sync_save_view()                                     # atomic_write_json
+        event_log.advance_sentinel(lanlan_name, event_id)
 ```
 
 Rationale: an event line in the log with no corresponding view update is
 "reconcilable on restart" (we know what to apply). A view change with no event
 line is "silent data — unrecoverable on audit". We prefer the former.
 
-Failure modes:
-- Event append fails → caller raises, no view change, no sentinel advance, no
-  partial state.
-- Event appended, view save fails (disk full mid-`os.replace`'s rename window
-  is impossible since atomic_write_json swaps in one syscall; but the
-  pre-rename tempfile write can fail) → reconciler on next startup applies
-  the event onto the stale view.
-- Event + view both succeed, sentinel advance fails → next startup re-applies
-  the tail; apply is idempotent (§3.4.3).
+The whole block is wrapped in **one** `asyncio.to_thread` hop, not three, so
+that:
+- The `threading.Lock` is acquired and released entirely inside the worker
+  thread, never held across an asyncio `await` boundary.
+- Sibling coroutines on the same event loop are never blocked waiting on
+  this critical section directly; they go through the thread pool like all
+  other I/O.
+- The lock holds for one load + one append + one `atomic_write_json` + one
+  sentinel write. Worst case on slow disks: a few tens of ms, dominated by
+  4 sequential fsyncs (§3.5 budget).
+
+Failure modes (as resolved by this structure):
+- Event append fails → function raises, no view change, no sentinel advance,
+  no partial state. Lock released by `with` exit.
+- Event appended, view save fails (pre-rename tempfile IO error) →
+  reconciler on next startup replays the event onto the stale view.
+- Event + view both succeed, sentinel advance fails → next startup
+  re-applies the tail; apply is idempotent (§3.4.3).
+- Event + view + sentinel all succeed, process killed right after the lock
+  releases but before the caller returns → consistent; next startup reads
+  the already-applied state.
 
 #### 3.4.1 Lock discipline
 
 Every event-emitting write site runs inside a per-character
 `threading.Lock` spanning **load → append event → save view → advance
-sentinel** (composed via `asyncio.to_thread`, never held across `await` at
-the asyncio level, matching the neko-guide rule).
+sentinel**, held inside the single `asyncio.to_thread` worker described
+above. Never held across `await` at the asyncio level.
 
 Current lock holders:
 - `FactStore._locks` — already exists (`memory/facts.py:49`).
@@ -206,37 +245,94 @@ never holds the lock across `await`.
 
 #### 3.4.2 Compound transactions
 
-Some state transitions emit more than one event. The canonical example: a
-reflection going `confirmed → promoted` transitively calls
-`PersonaManager.aadd_fact` (persona gains a new fact).
+Some state transitions emit more than one event. The canonical example:
+`ReflectionEngine.aauto_promote_stale` (reflection.py:731-783) walks reflections
+and for each `confirmed → promoted` transition calls
+`PersonaManager.aadd_fact`. The real code today interleaves:
 
-**Rule**: each `_record_and_save` call is independently atomic. Compound
-transitions emit events in causal order, each with its own save:
-
-```python
-# reflection.py: aauto_promote_stale, promotion branch
-async with _reflection_lock(name):
-    await _record_and_save(name, "reflection.state_changed",
-                           {"reflection_id": rid, "from": "confirmed", "to": "promoted"},
-                           save_reflections)
-async with _persona_lock(name):
-    await _record_and_save(name, "persona.fact_added",
-                           {"entity_key": ek, "fact": fact_text, "source_reflection_id": rid},
-                           save_persona)
+```
+for r in reflections:                       # in-memory iteration
+    if eligible_for_promote(r):
+        result = await persona.aadd_fact(...)  # persona-side mutation + save
+        if result == FACT_ADDED:
+            r.status = 'promoted'
+            ...
+# single asave_reflections at the END
 ```
 
-Crash between the two blocks: restart sees `reflection.state_changed(promoted)`
-in the log and `persona.fact_added` absent. Reconciler's `_apply_state_changed`
-checks: "is there a corresponding persona fact with `source_reflection_id=rid`?"
-If no, the reconciler invokes `PersonaManager.aadd_fact` directly (which
-emits its own event). This makes the state_changed handler structurally
-responsible for repair, not just playback. Tradeoff: reconciler handlers are
-slightly smarter than raw appliers, but recovery is automatic without
-introducing two-phase commit.
+So: persona is saved N times (once per promotion) while reflections are
+saved once at the end. P2.b must restructure this, because the event log
+requires each mutation's save to be in the same critical section as its
+event append. Proposed restructure:
 
-The alternative — a single batch event `reflection.promoted_with_persona_fact`
-— is rejected because it couples two subsystems' schemas and breaks the
-"each event is a minimal state-change record" principle.
+```python
+async def aauto_promote_stale(self, name):
+    reflections = await self.aload_reflections(name)
+    transitions = _compute_transitions_in_memory(reflections)  # pure func
+
+    for tr in transitions:
+        # pending → confirmed: one event + save reflections
+        if tr.kind == 'confirm':
+            await _record_and_save(
+                name, "reflection.state_changed",
+                {"reflection_id": tr.rid, "from": "pending", "to": "confirmed"},
+                lambda: _apply_confirmed_and_save_reflections(reflections, tr.rid),
+            )
+
+        # confirmed → promoted: first persona side, THEN reflection side.
+        # aadd_fact is itself a _record_and_save; it emits persona.fact_added
+        # under the persona lock and returns a status. Only if it succeeded
+        # do we emit the reflection state_changed.
+        elif tr.kind == 'promote':
+            result = await self._persona_manager.aadd_fact(
+                name, tr.text, entity=tr.entity,
+                source='reflection', source_id=tr.rid,
+            )  # may itself raise correction.queued via a side event
+            if result == PersonaManager.FACT_ADDED:
+                await _record_and_save(
+                    name, "reflection.state_changed",
+                    {"reflection_id": tr.rid, "from": "confirmed", "to": "promoted"},
+                    lambda: _apply_promoted_and_save_reflections(reflections, tr.rid),
+                )
+            elif result == PersonaManager.FACT_REJECTED_CARD:
+                await _record_and_save(
+                    name, "reflection.state_changed",
+                    {"reflection_id": tr.rid, "from": "confirmed", "to": "denied",
+                     "reason": "contradicts_character_card"},
+                    lambda: _apply_denied_and_save_reflections(reflections, tr.rid),
+                )
+            # else correction.queued branch: aadd_fact emitted the correction
+            # event internally; reflection stays 'confirmed' until the
+            # correction is resolved.
+```
+
+The ordering (persona first, then reflection) matches today's code where
+persona.fact_added must succeed before we mark the reflection promoted.
+Crash recovery:
+
+- Crash after `aadd_fact` but before reflection state_changed → restart
+  reads log tail = `persona.fact_added(source_reflection_id=R, status=ok)`.
+  Apply handler for `persona.fact_added` updates persona file (idempotent
+  via `source_reflection_id` dedup). Reflection still shows `confirmed`;
+  next `aauto_promote_stale` run finds `R` in `confirmed` state with
+  `(now - confirmed_at) >= AUTO_PROMOTE_DAYS`, calls `aadd_fact` again →
+  `source_id` dedup in `add_fact` returns `FACT_DUP` → no second persona
+  write, but reflection transitions to `promoted`, state_changed event is
+  logged. Converges.
+- Crash inside `aadd_fact` mid-save → standard `_record_and_save` recovery
+  applies (event logged OR nothing logged; never half-logged).
+
+**Reconciler self-heal is not needed** in the above design — convergence
+relies only on the retry loop of `aauto_promote_stale`. The apply
+handlers for `reflection.state_changed` and `persona.fact_added` are
+pure state-setters; they do NOT invoke `aadd_fact` from inside the
+reconciler. This removes the sentinel-advance-during-self-heal ambiguity
+flagged in review round 2.
+
+Chain depth: compound transitions fan out at most 2 levels
+(state_changed → fact_added; correction.queued → correction.resolved on
+a later user action). Unbounded recursion is impossible because apply
+handlers don't re-emit.
 
 #### 3.4.3 Idempotency contract per event type
 
@@ -248,7 +344,7 @@ Reconciler apply must be idempotent. Per-type guarantees:
 | `fact.absorbed` | `absorbed=True` set only if currently False | Already idempotent |
 | `fact.archived` | Move only if fact still in active list | |
 | `reflection.synthesized` | id dedup (P1.a) | Already idempotent |
-| `reflection.state_changed` | Overwrite `status` + `feedback` to target values | Monotonic forward, so re-apply is safe; handler re-checks compound-transaction invariants |
+| `reflection.state_changed` | Overwrite `status` + `feedback` to target values | Monotonic forward, so re-apply is safe; handler is a pure state-setter and does NOT invoke compound-transaction side effects (those converge via the producer's retry loop — §3.4.2) |
 | `reflection.surfaced` | Overwrite next cooldown to payload value | |
 | `reflection.rebutted` | Set `status=denied` (if not already), append deduped user excerpt hash | |
 | `persona.fact_added` | `source_reflection_id` / `source_correction_id` dedup | Add only if not present |
@@ -259,7 +355,20 @@ Reconciler apply must be idempotent. Per-type guarantees:
 
 ### 3.5 Startup reconciliation
 
-On `memory_server` startup, after P1 outbox replay, run:
+Startup order:
+1. Per-character `event_log.acompact_if_needed(name)` (§3.6) — runs FIRST.
+   This matters because post-compact the old body is gone; if we replayed
+   outbox ops before compaction, a replay handler's `aappend` would land
+   in the old body that is about to be swapped. Run compaction first so
+   subsequent appends land in the fresh body.
+2. Per-character `event_log.areconcile_views(name)` (this section).
+3. Per-character `outbox.apending_ops(name)` replay (P1.c behavior).
+
+The compaction → reconciliation → replay chain is all per-character and
+can be parallelized via `asyncio.gather` across characters, but within a
+character the three steps are strictly sequential.
+
+On `memory_server` startup, step 2 runs:
 
 ```python
 async def _reconcile_views(lanlan_name):
@@ -316,11 +425,32 @@ on an older binary) are **logged and skipped**, never crash reconciliation
 Thresholds (module-level constants in `memory/event_log.py`):
 
 ```python
-_COMPACT_LINES_THRESHOLD = 10_000
-_COMPACT_DAYS_THRESHOLD = 90
+_COMPACT_LINES_THRESHOLD = 10_000   # file line count
+_COMPACT_DAYS_THRESHOLD = 90        # age of oldest line (ts field)
 ```
 
-On every startup, if `events.ndjson` exceeds either threshold:
+Wiring both checks explicitly:
+
+```python
+def _should_compact(self, name: str) -> bool:
+    path = self._events_path(name)
+    if not os.path.exists(path):
+        return False
+    line_count, oldest_ts = self._scan_head_and_count(path)
+    if line_count >= _COMPACT_LINES_THRESHOLD:
+        return True
+    if oldest_ts is not None:
+        age_days = (datetime.now() - oldest_ts).total_seconds() / 86400
+        if age_days >= _COMPACT_DAYS_THRESHOLD:
+            return True
+    return False
+```
+
+`_scan_head_and_count` reads the first line (oldest — file is append-only) for
+its `ts`, then counts remaining lines without parsing payloads. O(n) on line
+count, O(1) on parse work.
+
+On every startup, if `_should_compact(name)` returns True:
 
 1. Read current views (facts.json / reflections.json / persona.json).
 2. Derive a starting-point event list: one `.*.snapshot_start` event per live
@@ -404,35 +534,53 @@ both the pattern and the zero-blocking constraint are load-bearing.
 
 ## 4. Implementation plan
 
-Phase 2 is intentionally three sub-phases to keep reviews small:
+Phase 2 is split into five commits/PRs to keep each blast radius small:
 
-- **P2.a**: `memory/event_log.py` + unit tests + add per-character lock to
-  `ReflectionEngine` and `PersonaManager` (see §3.4.1 — both currently lack
-  one and the event-log rules require it). Reconciler skeleton with handler
-  registry + unknown-type log-and-skip. Zero production call sites wired.
-  Pure infrastructure.
-- **P2.b**: Wire ALL 12 event types at their producers in one go. Rationale:
-  §3.4.2's compound-transaction rule means partial wiring creates a state
-  where `reflection.state_changed(promoted)` is logged but no corresponding
-  `persona.fact_added` event exists, and reconciler repair logic has to
-  special-case "the missing event happened in the old pre-P2.b world vs
-  the new world". Doing all 12 at once avoids two migration states.
-- **P2.c** (deferred, out-of-scope follow-up): memory-browser UI "history"
-  tab reading `events.ndjson`; optional `events_archive/` retention.
+- **P2.a.1**: `memory/event_log.py` module + unit tests. Pure new code, no
+  call sites wired. Tests cover: append/read_since/sentinel round-trip,
+  compaction atomicity (crash simulations), corrupt-file tolerance,
+  sync/async duality, unknown-event-type log-and-skip on reconciler.
+- **P2.a.2**: Add per-character `threading.Lock` to `ReflectionEngine` and
+  `PersonaManager` (they currently lack one — concurrent `/reflect` +
+  auto-promote race today even without event log). Zero event log wiring;
+  this is a standalone resilience improvement. Regression test:
+  concurrent `/reflect` + `/process` + `_periodic_auto_promote_loop` on
+  same character over 60s, no deadlock, no corrupted JSON.
+- **P2.b.1**: Wire the **8 non-compound event types** at their producers
+  (facts 1-3, reflection 4/6/7, persona 9/10, correction 11/12).
+  Reconciler handlers for these 8 types registered. Unknown-type log-
+  and-skip protects against the partial-wiring migration window for the
+  remaining 4 (reflection 5, persona 8). This is safe precisely because
+  an unwired producer simply never emits, and an unwired apply handler
+  silently ignores events it doesn't understand.
+- **P2.b.2**: Wire the **compound pair** (reflection 5 `state_changed` +
+  persona 8 `fact_added`). Restructure `ReflectionEngine.aauto_promote_stale`
+  per §3.4.2 pseudocode. Restructure `PersonaManager.resolve_corrections`
+  similarly. This commit is the only one that changes control flow of
+  existing production code; isolated for reviewability.
+- **P2.c** (deferred follow-up): memory-browser UI "history" tab reading
+  `events.ndjson`; optional `events_archive/` retention on compact.
 
-Tests required for P2.a/b merge:
+Tests required across P2.a.1 + P2.a.2 + P2.b.1 + P2.b.2 before merge to
+main:
 - Unit tests for each apply handler (idempotency contract from §3.4.3).
-- Integration test: force-kill between `aappend` and `asave_view` for each
+- Integration test: force-kill between `aappend` and `save_view` for each
   of the 4 write sites listed in §8 → restart → verify view consistency.
-- Compaction test: seed 10K+ events → trigger compaction → verify single
+- Compaction test: seed 10K+ events → trigger compaction → verify single-
   rename atomicity (no intermediate files remain, no double-apply on
   post-compact boot).
+- Deadlock regression for the new locks (P2.a.2).
+- Compound-transaction convergence test for P2.b.2: start a promotion,
+  kill after `aadd_fact` succeeds but before `reflection.state_changed`
+  emits, restart, run one more `aauto_promote_stale` cycle, verify
+  convergence (reflection ends up `promoted`, persona has exactly one
+  fact with `source_reflection_id`).
 
-Rationale for 3-way split revision from prior 3-way: the prior P2.b
-("wire 3 write sites") ignored the compound-transaction constraint
-introduced in §3.4.2. Doing fewer than all writers leaves orphan events
-with no matching apply handler — the reconciler's safe-default (skip
-unknown) would silently mask real wiring bugs. Either all or nothing.
+The "all-or-nothing" argument in v2 was wrong. Non-compound types can
+land safely before the compound pair, because reconciler unknown-type
+log-and-skip makes partial wiring forward-compatible at the schema level.
+The only real constraint is that P2.b.2 MUST land before P2.c (history
+UI) because the UI would otherwise show an incomplete timeline.
 
 ## 5. Migration
 
