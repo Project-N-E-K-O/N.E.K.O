@@ -27,6 +27,12 @@ def check_custom_tts_voice_allowed(
     if not suffix:
         return False
 
+    # gsv: 前缀的 voice_id 仅在 GPT-SoVITS 开关启用 且 endpoint 为 HTTP 时有效，
+    # ws:// (local CosyVoice) 用 `:` 做速度分隔符，不能接受 gsv: 前缀。
+    from utils.config_manager import get_config_manager
+    cm = get_config_manager()
+    if not cm.get_core_config().get('gptsovitsEnabled', False):
+        return False
     tts_config = get_model_api_config('tts_custom')
     base_url = tts_config.get('base_url') or ''
     return bool(tts_config.get('is_custom') and base_url.startswith(('http://', 'https://')))

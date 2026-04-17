@@ -649,6 +649,9 @@
         "copyMarkdown": "复制 Markdown",
         "copyMarkdownSuccess": "Markdown 已复制到剪贴板",
         "copyMarkdownFailed": "复制 Markdown 失败",
+        "copyToClipboard": "复制到剪贴板",
+        "copyImageSuccess": "已复制到剪贴板",
+        "copyImageFailed": "复制到剪贴板失败",
         "exportEmpty": "暂时没有可以导出的对话",
         "exportSelectionEmpty": "请至少选择一条消息",
         "exportSuccess": "对话已成功导出",
@@ -825,6 +828,8 @@
         "assistApiSelectLabel": "辅助API服务商",
         "assistApiKeyLabel": "辅助API Key",
         "assistApiAutoFillHint": "留空时自动使用管理簿中的Key，手动输入则独立保存",
+        "disableTts": "禁用TTS",
+        "disableTtsHint": "开启后不会调用任何语音合成服务",
         "keyBookTitle": "API 管理簿",
         "keyBookDescription": "统一管理所有API Key。核心API和辅助API切换服务商时会自动从此处读取Key，在核心/辅助区域输入的Key也会自动回写到此处。",
         "keyBookPlaceholder": "请先加载API服务商配置",
@@ -2809,7 +2814,8 @@
         "ended": "已结束",
         "unknownState": "未知状态",
         "volume": "音量: ",
-        "unsafeSource": "已拦截不安全音源: {{domain}}"
+        "unsafeSource": "已拦截不安全音源: {{domain}}",
+        "cookieExpired": "音乐Cookie已失效"
     },
     "Jukebox": {
         "title": "点歌台",

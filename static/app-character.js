@@ -135,6 +135,9 @@
         console.log('[猫娘切换] 从', oldCatgirl, '切换到', newCatgirl);
         console.log('[猫娘切换] isSwitchingCatgirl:', S.isSwitchingCatgirl);
         let mmdLoadingSessionId = '';
+        // 保存旧连接引用，finally 中确保关闭（防止 try 中途 throw 导致永久泄露）
+        let _switchOldSocket = null;
+        let _switchOldHeartbeat = null;
 
         if (S.isSwitchingCatgirl) {
             console.log('[猫娘切换] 正在切换中，忽略本次请求');
@@ -151,6 +154,8 @@
         // 确认切换到不同角色后，清空上一任的搜歌任务
         window.invalidatePendingMusicSearch();
         S.isSwitchingCatgirl = true;
+        _switchOldSocket = S.socket;
+        _switchOldHeartbeat = S.heartbeatInterval;
         console.log('[猫娘切换] 设置 isSwitchingCatgirl = true');
 
         try {
@@ -458,6 +463,10 @@
             console.log('[猫娘切换] 检测到模型类型:', modelType, '有效类型:', effectiveModelType);
             if (!supportsLocalModelRuntime()) {
                 console.log('[猫娘切换] 当前页面不加载本地模型，跳过模型热切换');
+                // chat.html 不走模型分支，在此显式恢复 composer（兜底 onclose 路径）
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
             } else if (effectiveModelType === 'vrm') {
                 // 加载 VRM 模型
                 console.log('[猫娘切换] 进入VRM加载分支');
@@ -841,6 +850,9 @@
                 console.log('[猫娘切换] VRM - 恢复对话框 - chatContainer存在:', !!chatContainerVrm, '当前类:', chatContainerVrm ? chatContainerVrm.className : 'N/A');
                 if (chatContainerVrm) chatContainerVrm.classList.remove('minimized');
                 if (textInputArea) textInputArea.classList.remove('hidden');
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
                 console.log('[猫娘切换] VRM - 对话框已恢复，当前类:', chatContainerVrm ? chatContainerVrm.className : 'N/A');
 
                 // 确保 VRM 按钮和锁图标可见
@@ -1043,6 +1055,9 @@
                 const textInputAreaMmd = document.getElementById('text-input-area');
                 if (chatContainerMmd) chatContainerMmd.classList.remove('minimized');
                 if (textInputAreaMmd) textInputAreaMmd.classList.remove('hidden');
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
 
                 // 延时显示 MMD 浮动按钮和锁图标
                 setTimeout(() => {
@@ -1197,6 +1212,9 @@
                 const textInputAreaL2d = document.getElementById('text-input-area');
                 if (chatContainerL2d) chatContainerL2d.classList.remove('minimized');
                 if (textInputAreaL2d) textInputAreaL2d.classList.remove('hidden');
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
 
                 // 延时重启 Ticker 和显示按钮（双重保险）
                 setTimeout(() => {
@@ -1285,7 +1303,41 @@
                 window.MMDLoadingOverlay?.fail(mmdLoadingSessionId, { detail: error?.message || String(error) });
             }
             showStatusToast(window.t ? window.t('app.switchCatgirlError', { error: error.message }) : `切换失败: ${error.message}`, 4000);
+
+            // 早期失败回滚：若新 socket 未接管（如 /api/characters fetch 抛错），
+            // try 开头的"紧急制动"已停掉 L2D ticker 和 VRM 动画，此处重启回旧模型的渲染循环，
+            // 否则用户看到的是切换失败 toast + 冻结画面。
+            if (_switchOldSocket && S.socket === _switchOldSocket) {
+                try {
+                    const ticker = window.live2dManager?.pixi_app?.ticker;
+                    if (ticker && !ticker.started) ticker.start();
+                } catch (_e) { /* ignore */ }
+                try {
+                    if (window.vrmManager
+                        && !window.vrmManager._animationFrameId
+                        && typeof window.vrmManager.startAnimation === 'function') {
+                        window.vrmManager.startAnimation();
+                    }
+                } catch (_e) { /* ignore */ }
+            }
         } finally {
+            // 双重保障：若新 socket 已接管，确保旧连接被关闭（即使 try 中途 throw）。
+            // 真正的 stale-onclose guard 在 app-websocket.js 的 onclose 早退
+            // (S.socket !== _thisSocket)，本层是第二道防线。
+            // 门闸 S.socket !== _switchOldSocket：切换早期失败（如 /api/characters fetch 抛错）时
+            // 新 socket 尚未建立，此时保留旧 socket 让用户继续与当前猫娘对话。
+            try {
+                if (_switchOldSocket
+                    && S.socket !== _switchOldSocket
+                    && _switchOldSocket.readyState !== WebSocket.CLOSED
+                    && _switchOldSocket.readyState !== WebSocket.CLOSING) {
+                    _switchOldSocket.close();
+                }
+                if (_switchOldHeartbeat && S.heartbeatInterval !== _switchOldHeartbeat) {
+                    clearInterval(_switchOldHeartbeat);
+                }
+            } catch (_e) { /* ignore */ }
+
             S.isSwitchingCatgirl = false;
             // 清理切换标识，取消所有 pending 的 applyLighting 定时器
             window._currentCatgirlSwitchId = null;

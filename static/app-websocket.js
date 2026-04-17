@@ -345,6 +345,11 @@
 
             if (S.socket && S.socket.readyState === WebSocket.CONNECTING) {
                 attachOpenListener(S.socket);
+            } else if (S.isSwitchingCatgirl) {
+                // 切换期间 handleCatgirlSwitch 独家负责新建 socket（close → sleep → connect）。
+                // 如果这里也发起 connectWebSocket，会和 handleCatgirlSwitch 的 connect 双重重连：
+                // 前一个新 socket 被后一个覆盖变成孤儿，polling 被迫重绑，5s 超时即报
+                // "WebSocket not connected"。改为仅靠下面的 polling 等新 socket 就位。
             } else {
                 // socket does not exist or CLOSED/CLOSING -> rebuild
                 if (S.autoReconnectTimeoutId) {
@@ -397,6 +402,7 @@
         var wsUrl = protocol + '://' + window.location.host + '/ws/' + currentLanlanName;
         console.log(window.t('console.websocketConnecting'), currentLanlanName, window.t('console.websocketUrl'), wsUrl);
         S.socket = new WebSocket(wsUrl);
+        var _thisSocket = S.socket; // 闭包捕获，供 onclose 判断是否已被替换
 
         // ---- onopen ----
         S.socket.onopen = function () {
@@ -934,6 +940,7 @@
 
                                     var tia = document.getElementById('text-input-area');
                                     if (tia) tia.classList.remove('hidden');
+                                    if (typeof window.syncVoiceChatComposerHidden === 'function') window.syncVoiceChatComposerHidden(false);
                                 }
                             }, 7500);
                         }
@@ -1406,6 +1413,7 @@
                         S.isSwitchingMode = false;
                         var _tia = document.getElementById('text-input-area');
                         if (_tia) _tia.classList.remove('hidden');
+                        if (typeof window.syncVoiceChatComposerHidden === 'function') window.syncVoiceChatComposerHidden(false);
                     }
                     S.sessionStartedResolver = null;
                     S.sessionStartedRejecter = null;
@@ -1452,6 +1460,7 @@
 
                     var _tia2 = document.getElementById('text-input-area');
                     if (_tia2) _tia2.classList.remove('hidden');
+                    if (typeof window.syncVoiceChatComposerHidden === 'function') window.syncVoiceChatComposerHidden(false);
 
                     if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(false);
                     if (typeof window.syncFloatingScreenButtonState === 'function') window.syncFloatingScreenButtonState(false);
@@ -1511,6 +1520,15 @@
                                         return;
                                     }
                                 }
+                                if (result.netease_cookie_invalid && typeof window.showStatusToast === 'function') {
+                                    var now2 = Date.now();
+                                    if (!window._cookieWarnLastTime || now2 - window._cookieWarnLastTime > 300000) {
+                                        var musiccookieWarnMsg2 = (window.t && window.t('music.cookieExpired')) || '音乐Cookie已失效';
+                                        window.showStatusToast(musiccookieWarnMsg2, 5000);
+                                        window._cookieWarnLastTime = now2;
+                                    }
+                                }
+
                                 if (result.success) {
                                     if (result.data && result.data.length > 0) {
                                         var track = result.data[0];
@@ -1576,6 +1594,15 @@
 
         // ---- onclose ----
         S.socket.onclose = function () {
+            // Stale onclose guard: background-tab throttling (or async scheduling) can
+            // delay an old socket's onclose until after a replacement connectWebSocket()
+            // has already run onopen and started a new session. In that case the mutations
+            // below (heartbeat clear, recording/session reset, button state, audio queue)
+            // would corrupt the live new session. Skip everything when this socket is stale.
+            if (S.socket !== _thisSocket) {
+                console.log('[WS] stale onclose skipped (socket already replaced)');
+                return;
+            }
             console.log(window.t('console.websocketClosed'));
             clearAssistantLifecycleOnDisconnect('socket_close');
 
@@ -1661,12 +1688,15 @@
 
             var _tia3 = document.getElementById('text-input-area');
             if (_tia3) _tia3.classList.remove('hidden');
+            if (typeof window.syncVoiceChatComposerHidden === 'function') window.syncVoiceChatComposerHidden(false);
 
             if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(false);
             if (typeof window.syncFloatingScreenButtonState === 'function') window.syncFloatingScreenButtonState(false);
 
-            // Auto-reconnect (unless switching catgirl)
-            if (!S.isSwitchingCatgirl) {
+            // Auto-reconnect: skip if switching catgirl OR this socket was already
+            // replaced by a newer connectWebSocket() call (prevents reconnect storm
+            // when the old socket's onclose fires after the switch completes).
+            if (!S.isSwitchingCatgirl && S.socket === _thisSocket) {
                 S.autoReconnectTimeoutId = setTimeout(connectWebSocket, 3000);
             }
         };

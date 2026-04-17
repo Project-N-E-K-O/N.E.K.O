@@ -82,6 +82,8 @@ class Live2DManager {
         this.isLocked = false;
         this.onModelLoaded = null;
         this.onStatusUpdate = null;
+        this.touchSetFilter = {};       // 点击/触摸滤波计数器（touch-config.js 会覆盖）
+        this.touchSetHitEventLock = false; // hit 事件锁（touch-config.js 会覆盖）
         this.modelName = null; // 记录当前模型目录名
         this.modelRootPath = null; // 记录当前模型根路径，如 /static/<modelName>
         this.savedModelParameters = null; // 保存的模型参数（从parameters.json加载），供定时器定期应用

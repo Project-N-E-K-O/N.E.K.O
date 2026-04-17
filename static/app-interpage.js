@@ -814,6 +814,17 @@
                 window.mmdManager.pauseRendering();
             }
 
+            // 停止 UI 更新循环（独立于渲染循环，pauseRendering 不会停止它们）
+            // 如果不停止，UI 循环每帧会覆盖下面设置的 display: none，导致按钮重新出现
+            if (window.vrmManager && window.vrmManager._uiUpdateLoopId != null) {
+                cancelAnimationFrame(window.vrmManager._uiUpdateLoopId);
+                window.vrmManager._uiUpdateLoopId = null;
+            }
+            if (window.mmdManager && window.mmdManager._uiUpdateLoopId != null) {
+                cancelAnimationFrame(window.mmdManager._uiUpdateLoopId);
+                window.mmdManager._uiUpdateLoopId = null;
+            }
+
             // 隐藏所有悬浮按钮、锁图标和返回按钮（它们挂载在 document.body 上，不随容器隐藏）
             document.querySelectorAll(
                 '#live2d-floating-buttons, #vrm-floating-buttons, #mmd-floating-buttons, ' +
@@ -862,6 +873,11 @@
                 if (window.vrmManager && typeof window.vrmManager.resumeRendering === 'function') {
                     window.vrmManager.resumeRendering();
                 }
+                // 重启 VRM UI 更新循环（被 handleHideMainUI 停止）
+                if (window.vrmManager && window.vrmManager._uiUpdateLoopId == null
+                    && typeof window.vrmManager._startUIUpdateLoop === 'function') {
+                    window.vrmManager._startUIUpdateLoop();
+                }
             } else if (currentModelType === 'live3d') {
                 // Live3D: determine sub-type from config
                 var live3dSubType = (window.lanlan_config && window.lanlan_config.live3d_sub_type || '').toLowerCase();
@@ -873,12 +889,20 @@
                         mmdContainerR.classList.remove('hidden');
                     }
                     var mmdCanvasR = document.getElementById('mmd-canvas');
-                    if (mmdCanvasR && !mmdRequestSessionId) {
+                    var hasActiveLoadingSession = mmdCanvasR && !!mmdCanvasR.dataset.mmdLoadingSessionId;
+                    if (mmdCanvasR && !hasActiveLoadingSession) {
                         mmdCanvasR.style.visibility = 'visible';
                         mmdCanvasR.style.pointerEvents = 'auto';
                     }
                     if (window.mmdManager && typeof window.mmdManager.resumeRendering === 'function') {
                         window.mmdManager.resumeRendering();
+                    }
+                    // 重启 MMD UI 更新循环（被 handleHideMainUI 停止）
+                    // UI 循环会自动管理浮动按钮和锁图标的显示/定位
+                    if (window.mmdManager && window.mmdManager._uiUpdateLoopId == null
+                        && typeof window.mmdManager._startUIUpdateLoop === 'function') {
+                        window.mmdManager._snapUIPosition = true;
+                        window.mmdManager._startUIUpdateLoop();
                     }
                 } else {
                     var vrmContainerR = document.getElementById('vrm-container');
@@ -893,6 +917,10 @@
                     }
                     if (window.vrmManager && typeof window.vrmManager.resumeRendering === 'function') {
                         window.vrmManager.resumeRendering();
+                    }
+                    if (window.vrmManager && window.vrmManager._uiUpdateLoopId == null
+                        && typeof window.vrmManager._startUIUpdateLoop === 'function') {
+                        window.vrmManager._startUIUpdateLoop();
                     }
                 }
             } else {
@@ -918,6 +946,33 @@
             }
         } catch (error) {
             console.error('[UI] 显示主界面失败:', error);
+        }
+    }
+
+    // =====================================================================
+    // Voice chat composer sync (cross-window)
+    // =====================================================================
+
+    /**
+     * Sync voice chat state to local React composer AND broadcast to other windows.
+     * Called from app-buttons.js / app-audio-capture.js whenever voice chat starts/stops.
+     *
+     * @param {boolean} hidden - true = voice chat active, hide composer; false = show composer
+     */
+    function syncVoiceChatComposerHidden(hidden) {
+        hidden = !!hidden;
+        // Update local React composer
+        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setComposerHidden === 'function') {
+            window.reactChatWindowHost.setComposerHidden(hidden);
+        }
+        // Broadcast to other windows (chat.html ↔ index.html)
+        if (nekoBroadcastChannel) {
+            nekoBroadcastChannel.postMessage({
+                action: 'voice_chat_active',
+                active: hidden,
+                lanlan_name: (window.lanlan_config && window.lanlan_config.lanlan_name) || '',
+                timestamp: Date.now()
+            });
         }
     }
 
@@ -957,6 +1012,26 @@
                     case 'memory_edited':
                         await handleMemoryEdited(event.data.catgirl_name);
                         break;
+                    case 'voice_chat_active': {
+                        // 来自另一个窗口的语音对话状态变更，同步本地 React composer 隐藏状态
+                        // 校验 lanlan_name：多角色场景下避免串状态
+                        var vcCurrentName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+                        if (event.data.lanlan_name && (!vcCurrentName || event.data.lanlan_name !== vcCurrentName)) break;
+                        var vcHidden = !!event.data.active;
+                        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setComposerHidden === 'function') {
+                            window.reactChatWindowHost.setComposerHidden(vcHidden);
+                        }
+                        // 同步旧版 text-input-area（兜底）
+                        var vcTextInput = document.getElementById('text-input-area');
+                        if (vcTextInput) {
+                            if (vcHidden) {
+                                vcTextInput.classList.add('hidden');
+                            } else {
+                                vcTextInput.classList.remove('hidden');
+                            }
+                        }
+                        break;
+                    }
                     case 'avatar_updated': {
                         // 从 Pet 窗口接收头像数据，注入到 Chat 窗口
                         // 校验 lanlan_name：多角色场景下避免串头像
@@ -1134,6 +1209,7 @@
     mod.cleanupLive2DOverlayUI = cleanupLive2DOverlayUI;
     mod.cleanupVRMOverlayUI = cleanupVRMOverlayUI;
     mod.cleanupMMDOverlayUI = cleanupMMDOverlayUI;
+    mod.syncVoiceChatComposerHidden = syncVoiceChatComposerHidden;
 
     // Backward-compatible window globals
     window.handleModelReload = handleModelReload;
@@ -1142,6 +1218,7 @@
     window.cleanupLive2DOverlayUI = cleanupLive2DOverlayUI;
     window.cleanupVRMOverlayUI = cleanupVRMOverlayUI;
     window.cleanupMMDOverlayUI = cleanupMMDOverlayUI;
+    window.syncVoiceChatComposerHidden = syncVoiceChatComposerHidden;
 
     window.appInterpage = mod;
 })();
