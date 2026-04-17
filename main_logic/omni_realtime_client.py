@@ -311,6 +311,18 @@ class OmniRealtimeClient:
         # prompt_ephemeral 在此窗口内直接放弃注入。
         self._user_recent_activity_time = 0.0
         self._user_recent_activity_window = 8.0
+        # 对称于 _user_recent_activity_time 的 AI 侧信号。任何一帧 AI 内容下发都打点。
+        # 与 _is_responding 正交 —— _is_responding 是 response 生命周期（server 侧
+        # response.created/done / Gemini turn_complete 驱动），但下列场景下 content
+        # 流与之不同步：
+        #   1. OpenAI response.created 到首 content chunk 之间的几百毫秒空窗
+        #   2. Gemini turn_complete 早于最后几帧音频送达 → late audio
+        #   3. Gemini 长回复被拆多 sub-turn，两个 sub-turn 之间 False 的瞬间
+        # prompt_ephemeral 和 Gemini turn 分配分别用此信号兜底 "fudge 打断 AI 自己"
+        # 和 "late audio 被当新 turn" 两个 race。不改 _is_responding 语义（它还有
+        # 8 个消费者：handle_interruption / QQ 插件 / system_router 409 等），只做正交增量。
+        self._ai_recent_activity_time = 0.0
+        self._ai_recent_activity_window = 3.0
 
         # 防止log刷屏机制（当websocket关闭后）
         self._last_ws_none_warning_time = 0.0  # 上次websocket为None警告的时间戳
@@ -485,6 +497,7 @@ class OmniRealtimeClient:
         self._speech_detect_start = 0.0
         self._rnnoise_vad_active = False
         self._user_recent_activity_time = 0.0
+        self._ai_recent_activity_time = 0.0
         if self._audio_processor is not None:
             self._audio_processor.reset()
 
@@ -1274,13 +1287,25 @@ class OmniRealtimeClient:
         if self._is_responding:
             logger.debug("prompt_ephemeral: skipped — already responding")
             return False
+        _now = time.time()
+        # ── AI-speech guard（对称于 _user_recent_activity_time）─────────
+        # _is_responding 已被 response.done / turn_complete flip False，但 AI 侧
+        # content 流可能还在滴水：
+        #   1. Gemini turn_complete 早于最后几帧音频送达
+        #   2. Gemini 长回复 sub-turn 间的 False 瞬间
+        #   3. response.created 到首 content chunk 的空窗（_is_responding 已 True
+        #      覆盖这一条，但加这层冗余保险无害）
+        # 3s 窗口覆盖上述抢跑 gap，避免 fudge 踩着 AI 尾巴打断自己。
+        if _now - self._ai_recent_activity_time < self._ai_recent_activity_window:
+            logger.debug("prompt_ephemeral: skipped — AI recently active (%.2fs ago)",
+                         _now - self._ai_recent_activity_time)
+            return False
         # ── User-speech guards ───────────────────────────────────────
         # B: 先用独立的 _user_recent_activity_time 判定近期是否有语音帧；
         # 此信号不依赖 sustain，覆盖用户说话首 500ms 与句间停顿缝隙。
         # 适用所有 VAD 源（RNNoise / server-VAD / RMS），所以不再门控在
         # _rnnoise_vad_active 下 —— RMS 阈值 500 已较保守，误触可接受，
         # 相比"fudge 切断用户说话"的体验损失值得。
-        _now = time.time()
         if _now - self._user_recent_activity_time < self._user_recent_activity_window:
             logger.debug("prompt_ephemeral: skipped — user recently active (%.2fs ago)",
                          _now - self._user_recent_activity_time)
@@ -1375,6 +1400,13 @@ class OmniRealtimeClient:
                     return False
                 if self._user_recent_activity_time > _inject_start:
                     logger.info("prompt_ephemeral: aborted — user started speaking during injection")
+                    await self.clear_audio_buffer()
+                    return False
+                # Gemini 首 content chunk 到达前 _is_responding 仍是 False（上面那条
+                # 拦不住），但 _ai_recent_activity_time 会在首 chunk 抵达瞬间更新到
+                # > _inject_start，此时 abort 避免和刚起的 AI 响应抢麦。
+                if self._ai_recent_activity_time > _inject_start:
+                    logger.info("prompt_ephemeral: aborted — AI started responding during injection")
                     await self.clear_audio_buffer()
                     return False
 
@@ -1644,6 +1676,7 @@ class OmniRealtimeClient:
                     if event_type in ["response.text.delta", "response.output_text.delta"]:
                         if self.on_text_delta:
                             if "glm" not in self._model_lower:
+                                self._ai_recent_activity_time = time.time()
                                 await self.on_text_delta(event["delta"], self._is_first_text_chunk)
                                 self._is_first_text_chunk = False
                     elif event_type in ["response.audio.delta", "response.output_audio.delta"]:
@@ -1652,6 +1685,7 @@ class OmniRealtimeClient:
                             logger.info(f"🔊 首个 audio.delta 已收到 (type={event_type}, bytes={len(event.get('delta',''))})")
                         if self.on_audio_delta:
                             audio_bytes = base64.b64decode(event["delta"])
+                            self._ai_recent_activity_time = time.time()
                             await self.on_audio_delta(audio_bytes)
                     elif event_type in ["response.audio_transcript.done", "response.output_audio_transcript.done"]:
                         if self.on_output_transcript and self._is_first_transcript_chunk:
@@ -1732,6 +1766,7 @@ class OmniRealtimeClient:
         self._speech_detect_start = 0.0
         self._rnnoise_vad_active = False
         self._user_recent_activity_time = 0.0
+        self._ai_recent_activity_time = 0.0
 
         # 保存 debug 音频（RNNoise 处理前后的对比音频）
         if self._audio_processor is not None:
@@ -1786,6 +1821,7 @@ class OmniRealtimeClient:
                 self._speech_detect_start = 0.0
                 self._rnnoise_vad_active = False
                 self._user_recent_activity_time = 0.0
+                self._ai_recent_activity_time = 0.0
 
                 # 重置音频处理器状态
                 if self._audio_processor is not None:
@@ -1852,16 +1888,29 @@ class OmniRealtimeClient:
                 
                 # ⚠️ 重要：检测 turn 开始 - 无论是 model_turn 还是 output_transcription 先到
                 if has_ai_content and not self._is_responding:
-                    # 在AI开始响应前，发送累积的用户输入
-                    if self._gemini_user_transcript and self.on_input_transcript:
-                        await self.on_input_transcript(self._gemini_user_transcript)
-                        self._gemini_user_transcript = ""  # 清空累积
-
+                    # 区分"真新 turn"与"上个 turn 的迟到帧"：Gemini turn_complete 会
+                    # 早于最后几帧音频送达（_ai_recent_activity_time 仍新鲜），这些迟到
+                    # 帧若当新 turn 处理会冒凭空新气泡、on_new_message 清 TTS queue
+                    # 打断正在播放的尾巴、并把 transcript 拆成两段。
+                    _is_new_turn = (
+                        time.time() - self._ai_recent_activity_time
+                        > self._ai_recent_activity_window
+                    )
                     self._is_responding = True
-                    self._is_first_text_chunk = True  # 重置第一个 chunk 标记
-                    self._gemini_current_transcript = ""  # 清空累积
-                    if not self._skip_until_next_response and self.on_new_message:
-                        await self.on_new_message()
+                    if _is_new_turn:
+                        # 在AI开始响应前，发送累积的用户输入
+                        if self._gemini_user_transcript and self.on_input_transcript:
+                            await self.on_input_transcript(self._gemini_user_transcript)
+                            self._gemini_user_transcript = ""  # 清空累积
+                        self._is_first_text_chunk = True  # 重置第一个 chunk 标记
+                        self._gemini_current_transcript = ""  # 清空累积
+                        if not self._skip_until_next_response and self.on_new_message:
+                            await self.on_new_message()
+                    else:
+                        logger.debug(
+                            "Gemini: late content after premature turn_complete (%.2fs ago), treating as continuation",
+                            time.time() - self._ai_recent_activity_time,
+                        )
 
                 # 处理输出转录 - 流式发送每个 chunk 到前端
                 # 不参与新 turn 检测；turn_complete 后到达的迟到转录会以 isNewMessage=false
@@ -1872,6 +1921,7 @@ class OmniRealtimeClient:
                         text = output_trans.text
                         self._gemini_current_transcript += text
                         if not self._skip_until_next_response and self.on_text_delta:
+                            self._ai_recent_activity_time = time.time()
                             await self.on_text_delta(text, self._is_first_text_chunk)
                             self._is_first_text_chunk = False
 
@@ -1886,6 +1936,7 @@ class OmniRealtimeClient:
                         if hasattr(part, 'inline_data') and part.inline_data:
                             if isinstance(part.inline_data.data, bytes):
                                 if not self._skip_until_next_response and self.on_audio_delta:
+                                    self._ai_recent_activity_time = time.time()
                                     await self.on_audio_delta(part.inline_data.data)
 
                 # 检查是否 turn 完成（用 getattr 防止 SDK 无该字段时抛错）
