@@ -560,8 +560,8 @@ async def get_core_config_api():
         # 但只能回退到与 coreApi / assistApi 匹配的服务商，
         # 以免将不兼容的 API Key 填充到其他服务商。
         fallback_key = api_key or ''
-        _core_api_provider = core_cfg.get('coreApi', 'qwen')
-        _assist_api_provider = core_cfg.get('assistApi', 'qwen')
+        _core_api_provider = core_cfg.get('coreApi') or 'qwen'
+        _assist_api_provider = core_cfg.get('assistApi') or 'qwen'
         _fallback_providers = {_core_api_provider, _assist_api_provider}
 
         def _fb(provider: str) -> str:
