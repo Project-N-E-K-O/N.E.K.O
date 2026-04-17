@@ -2240,10 +2240,17 @@ class LLMSessionManager:
                 import pyautogui
                 from utils.screenshot_utils import compress_screenshot, COMPRESS_TARGET_HEIGHT, COMPRESS_JPEG_QUALITY
                 import base64 as b64mod
-                shot = pyautogui.screenshot()
-                if shot.mode in ('RGBA', 'LA', 'P'):
-                    shot = shot.convert('RGB')
-                jpg_bytes = compress_screenshot(shot, target_h=COMPRESS_TARGET_HEIGHT, quality=COMPRESS_JPEG_QUALITY)
+                def _capture_and_compress() -> bytes:
+                    shot = pyautogui.screenshot()
+                    if shot.mode in ('RGBA', 'LA', 'P'):
+                        shot = shot.convert('RGB')
+                    return compress_screenshot(
+                        shot,
+                        target_h=COMPRESS_TARGET_HEIGHT,
+                        quality=COMPRESS_JPEG_QUALITY,
+                    )
+
+                jpg_bytes = await asyncio.to_thread(_capture_and_compress)
                 b64_str = b64mod.b64encode(jpg_bytes).decode('utf-8')
                 logger.info("[%s] request_fresh_screenshot: 后端 pyautogui 兜底成功 (%dKB)", self.lanlan_name, len(jpg_bytes) // 1024)
                 return b64_str
