@@ -103,6 +103,26 @@ class SessionStateMachine:
                 return True
         return False
 
+    def mark_user_input_preempt(self) -> None:
+        """同步翻起 ``_preempted`` sticky flag（仅当 proactive 处于活动阶段）。
+
+        用于 ``handle_new_message`` / ``stream_text`` 等 sid 轮换路径在持有
+        ``self.lock``（保护 ``current_speech_id`` 的锁）的同一临界区内原子地
+        翻起抢占标记。否则以下 race 成立喵：
+
+        T1 持 self.lock 写新 user sid → 释放 lock → 去 await fire(USER_INPUT) …
+        T2 正好这个窗口里拿到 self.lock（走 prepare_proactive_delivery 的 lock
+           内 preempt 复查），看到 ``_preempted=False`` 继续往下，把刚写好的
+           user sid 再覆盖成 proactive sid，用户这轮回复的 chunk/TTS 全带错 sid。
+
+        本方法不走 ``_write_lock``：同步布尔写 + 只读判定无需跨协程同步；并且允许
+        调用方在 ``self.lock`` 内无 await 完成"写 sid + 翻 flag"两步合一。完整的
+        ``SessionEvent.USER_INPUT`` 仍然需要在锁外 fire，以更新 owner/user_sid/
+        last_user_activity 并派发订阅者。
+        """
+        if self.phase in _PROACTIVE_ACTIVE_PHASES:
+            self._preempted = True
+
     async def reset(self) -> None:
         """Teardown hook：把 SM 复位到初始态，清掉可能泄漏的 proactive 残留。
 
@@ -175,14 +195,7 @@ class SessionStateMachine:
                 self._subscribers.get(_WILDCARD, ())
             )
 
-        for cb in snap_subs:
-            try:
-                res = cb(SessionEvent.PROACTIVE_START, {})
-            except Exception:
-                continue
-            if asyncio.iscoroutine(res):
-                task = asyncio.create_task(res)
-                task.add_done_callback(_swallow_subscriber_exc)
+        _dispatch_subscribers(snap_subs, SessionEvent.PROACTIVE_START, {})
         return True
 
     def snapshot(self) -> dict:
@@ -209,18 +222,7 @@ class SessionStateMachine:
                 self._subscribers.get(_WILDCARD, ())
             )
 
-        for cb in snap_subs:
-            try:
-                res = cb(event, payload)
-            except Exception:
-                # 订阅者异常不能影响事件流（同步路径）
-                continue
-            if asyncio.iscoroutine(res):
-                # 异步订阅者：用 create_task 派发，但挂 done_callback 静默吸收异常
-                # 避免 "Task exception was never retrieved" 刷屏。订阅者自己负责
-                # 在回调里做日志/上报。
-                task = asyncio.create_task(res)
-                task.add_done_callback(_swallow_subscriber_exc)
+        _dispatch_subscribers(snap_subs, event, payload)
 
     def _apply(self, event: SessionEvent, payload: dict) -> None:
         """内部状态转移。调用方已持 ``_write_lock``。"""
@@ -279,6 +281,33 @@ class SessionStateMachine:
         except (KeyError, ValueError):
             # idempotent unsubscribe：重复取消或取消未注册的 cb 视为 no-op
             return
+
+
+def _dispatch_subscribers(
+    subs: "list[Subscriber]",
+    event: SessionEvent,
+    payload: dict,
+) -> None:
+    """统一派发订阅者：同步抛异常静默；返回 awaitable（包括 coroutine、Task、
+    Future、自定义 awaitable）统一 ``ensure_future`` 包装并挂 done-callback，
+    避免 Task/Future 类型的异常绕过吞噬逻辑泄漏到事件循环。
+    """
+    for cb in subs:
+        try:
+            res = cb(event, payload)
+        except Exception:
+            # 订阅者同步异常不能影响事件流；订阅者自行日志/上报
+            continue
+        if res is None:
+            continue
+        if asyncio.iscoroutine(res) or asyncio.isfuture(res) or hasattr(res, "__await__"):
+            # ensure_future 对 coroutine 包成 Task；对 Future 原样返回；对自定义
+            # awaitable 通过 __await__ 包成 Task —— 三类都能挂 done-callback。
+            try:
+                fut = asyncio.ensure_future(res)
+            except Exception:
+                continue
+            fut.add_done_callback(_swallow_subscriber_exc)
 
 
 def _swallow_subscriber_exc(task: "asyncio.Task") -> None:

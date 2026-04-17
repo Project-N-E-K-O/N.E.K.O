@@ -433,8 +433,12 @@ class LLMSessionManager:
         async with self.lock:
             self.current_speech_id = str(uuid4())
             new_sid = self.current_speech_id
-        # 状态机：USER_INPUT 事件用于让正在跑的 proactive 流水线立刻观察到抢占。
-        # 必须在 sid 已写入后发射，保证订阅者看到的 current_speech_id 是新值。
+            # 必须在 self.lock 内同步翻 _preempted 标记，使新 sid + preempt 对
+            # 同样在 self.lock 内复查 is_proactive_preempted 的 prepare_proactive_delivery
+            # 原子可见；否则 proactive 会插到 lock 释放 ~ fire() 之间把 user sid
+            # 再覆盖成 proactive sid。完整 USER_INPUT 事件仍在锁外 fire，以更新
+            # owner/user_sid 并派发订阅者。
+            self.state.mark_user_input_preempt()
         await self.state.fire(SessionEvent.USER_INPUT, sid=new_sid)
 
     async def handle_text_data(self, text: str, is_first_chunk: bool = False):
@@ -3200,6 +3204,10 @@ class LLMSessionManager:
                         self.current_speech_id = str(uuid4())
                         self._tts_done_queued_for_turn = False
                         new_user_sid = self.current_speech_id
+                        # 与 handle_new_message 同理：sid 写入的同一锁段内同步翻
+                        # _preempted，避免 prepare_proactive_delivery 插到 lock
+                        # 释放 ~ fire() 之间再覆盖新 user sid。
+                        self.state.mark_user_input_preempt()
                     # 状态机：文本模式 stream_text 入口同样需要发射 USER_INPUT。
                     # handle_new_message 只在语音模式走到，这里是文本模式的对偶。
                     await self.state.fire(SessionEvent.USER_INPUT, sid=new_user_sid)

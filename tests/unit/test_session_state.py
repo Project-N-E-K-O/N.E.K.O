@@ -141,6 +141,48 @@ async def test_is_proactive_preempted_phase1_none_token_ok():
     assert sm.is_proactive_preempted(claim_token=None) is False
 
 
+async def test_mark_user_input_preempt_sync_flips_flag_during_active_phase():
+    """``mark_user_input_preempt`` 是 sid 轮换路径在 ``self.lock`` 内同步调用的
+    helper，保证 sid 写入 + preempt 翻起原子可见。活动阶段必须翻，idle 阶段不翻。
+    """
+    sm = _sm()
+    # idle 时 no-op
+    sm.mark_user_input_preempt()
+    assert sm._preempted is False
+
+    await sm.fire(SessionEvent.PROACTIVE_START)
+    assert sm._preempted is False
+    sm.mark_user_input_preempt()
+    assert sm._preempted is True
+
+    # PHASE2 / COMMITTING 同样覆盖
+    sm._preempted = False
+    await sm.fire(SessionEvent.PROACTIVE_PHASE2)
+    sm.mark_user_input_preempt()
+    assert sm._preempted is True
+
+    sm._preempted = False
+    await sm.fire(SessionEvent.PROACTIVE_COMMITTING)
+    sm.mark_user_input_preempt()
+    assert sm._preempted is True
+
+
+async def test_mark_user_input_preempt_atomically_visible_before_full_fire():
+    """回归 race：prepare_proactive_delivery 必须在 ``mark_user_input_preempt``
+    之后、``fire(USER_INPUT)`` 之前，也能从 ``is_proactive_preempted()`` 看到 True。
+    这模拟 core.py 里 sid 轮换的临界区语义。
+    """
+    sm = _sm()
+    await sm.fire(SessionEvent.PROACTIVE_START)
+    await sm.fire(SessionEvent.PROACTIVE_CLAIM, sid="claim_sid")
+
+    # 模拟 handle_new_message 持 self.lock 写新 sid + mark 翻 flag 的片段
+    sm.mark_user_input_preempt()
+    # 此刻 fire(USER_INPUT) 还没调用；但并发的 prepare_proactive_delivery 在
+    # 其 lock-held 复查点已能看到抢占，绝不会再误写 current_speech_id。
+    assert sm.is_proactive_preempted(claim_token="claim_sid") is True
+
+
 async def test_proactive_claim_dropped_if_preempted():
     """用户在 phase1 抢占后，即使 prepare_proactive_delivery 还是 fire 了
     CLAIM，proactive_sid 不应被填上 —— 否则 phase2 会误以为自己仍然持有 turn。"""
@@ -325,6 +367,44 @@ async def test_async_subscriber_coroutine_is_scheduled():
     sm.subscribe(SessionEvent.PROACTIVE_START, cb)
     await sm.fire(SessionEvent.PROACTIVE_START)
     await asyncio.wait_for(fired.wait(), timeout=1.0)
+
+
+async def test_async_subscriber_returning_task_is_also_awaited():
+    """订阅者若返回已创建的 Task（而非 coroutine），派发路径也要能接管它，
+    异常/取消才不会绕过 ``_swallow_subscriber_exc`` 泄漏到事件循环。
+    """
+    sm = _sm()
+    inner_fired = asyncio.Event()
+
+    async def inner():
+        inner_fired.set()
+
+    def cb(event, payload):
+        # 返回 Task 而非 coroutine；早先的 iscoroutine 分支会把它漏过去
+        return asyncio.create_task(inner())
+
+    sm.subscribe(SessionEvent.PROACTIVE_START, cb)
+    await sm.fire(SessionEvent.PROACTIVE_START)
+    await asyncio.wait_for(inner_fired.wait(), timeout=1.0)
+
+
+async def test_async_subscriber_returning_task_with_exception_is_swallowed():
+    """返回 Task 的订阅者，其任务抛异常不应产生 "Task exception was never
+    retrieved" warning（由 done-callback 静默吞下）。
+    """
+    sm = _sm()
+
+    async def inner_raises():
+        raise RuntimeError("boom")
+
+    def cb(event, payload):
+        return asyncio.create_task(inner_raises())
+
+    sm.subscribe(SessionEvent.PROACTIVE_START, cb)
+    await sm.fire(SessionEvent.PROACTIVE_START)
+    # 让 inner_raises 任务运行并被 done-callback 吞掉
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
