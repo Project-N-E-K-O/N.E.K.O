@@ -6,6 +6,7 @@ from memory import (
     CompressedRecentHistoryManager, ImportantSettingsManager, TimeIndexedMemory,
     FactStore, PersonaManager, ReflectionEngine,
 )
+from memory.cursors import CursorStore, CURSOR_REBUTTAL_CHECKED_UNTIL
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse, JSONResponse
 import json
@@ -81,6 +82,7 @@ time_manager = TimeIndexedMemory(recent_history_manager)
 fact_store = FactStore(time_indexed_memory=time_manager)
 persona_manager = PersonaManager()
 reflection_engine = ReflectionEngine(fact_store, persona_manager)
+cursor_store = CursorStore()
 
 # 用于保护重新加载操作的锁
 _reload_lock = asyncio.Lock()
@@ -91,7 +93,7 @@ async def reload_memory_components():
     使用锁保护重新加载操作，确保原子性交换，避免竞态条件。
     先创建所有新实例，然后原子性地交换引用。
     """
-    global recent_history_manager, settings_manager, time_manager, fact_store, persona_manager, reflection_engine
+    global recent_history_manager, settings_manager, time_manager, fact_store, persona_manager, reflection_engine, cursor_store
     async with _reload_lock:
         logger.info("[MemoryServer] 开始重新加载记忆组件配置...")
         try:
@@ -102,6 +104,7 @@ async def reload_memory_components():
             new_facts = FactStore(time_indexed_memory=new_time)
             new_persona = PersonaManager()
             new_reflection = ReflectionEngine(new_facts, new_persona)
+            new_cursor_store = CursorStore()
 
             # 然后原子性地交换引用
             recent_history_manager = new_recent
@@ -110,6 +113,7 @@ async def reload_memory_components():
             fact_store = new_facts
             persona_manager = new_persona
             reflection_engine = new_reflection
+            cursor_store = new_cursor_store
             
             logger.info("[MemoryServer] ✅ 记忆组件配置重新加载完成")
             return True
@@ -198,7 +202,7 @@ async def shutdown_memory_server():
         return {"status": "error", "message": str(e)}
 
 REBUTTAL_CHECK_INTERVAL = 300  # 5 分钟
-_last_rebuttal_check: dict[str, datetime] = {}  # per-character 上次检查时间戳
+REBUTTAL_FIRST_RUN_LOOKBACK_HOURS = 1  # 首次启动 / 时钟回拨兜底回扫窗口
 
 
 def _extract_user_messages_from_rows(rows: list) -> list[str]:
@@ -228,14 +232,40 @@ def _extract_user_messages_from_rows(rows: list) -> list[str]:
     return user_msgs
 
 
+async def _resolve_rebuttal_start_time(name: str, now: datetime):
+    """决定 rebuttal_loop 本轮查询的起始时间。
+
+    优先级：
+      1. 持久化的 CURSOR_REBUTTAL_CHECKED_UNTIL
+      2. 兜底回扫窗口（首次启动 / cursor 文件缺失）
+      3. 时钟回拨保护：cursor > now 视为脏数据，同样走兜底
+
+    独立成函数便于单测验证。
+    """
+    from datetime import timedelta as _td
+
+    cursor = await cursor_store.aget_cursor(name, CURSOR_REBUTTAL_CHECKED_UNTIL)
+    fallback = now - _td(hours=REBUTTAL_FIRST_RUN_LOOKBACK_HOURS)
+    if cursor is None:
+        return fallback
+    if cursor > now:
+        logger.warning(
+            f"[Rebuttal] {name}: 游标 {cursor.isoformat()} 晚于当前时间 "
+            f"{now.isoformat()}（时钟回拨?），回退到 {fallback.isoformat()}"
+        )
+        return fallback
+    return cursor
+
+
 async def _periodic_rebuttal_loop():
     """每 5 分钟检查 confirmed reflections 是否被近期对话反驳。
 
     通过 time_indexed SQL 查询上次检查之后的所有新对话消息，
     确保不遗漏任何未消费的用户回复。
-    """
-    from datetime import timedelta as _td
 
+    游标持久化（P0 修复）：`CURSOR_REBUTTAL_CHECKED_UNTIL` 写入 cursors.json，
+    关机→重启后从磁盘读取，消灭"默认只回扫 1 小时导致关机期间反驳丢失"的缺陷。
+    """
     while True:
         await asyncio.sleep(REBUTTAL_CHECK_INTERVAL)
         try:
@@ -252,20 +282,21 @@ async def _periodic_rebuttal_loop():
                 if not confirmed:
                     continue
 
-                # 确定查询起始时间：上次检查时间 or 1小时前（首次）
-                start_time = _last_rebuttal_check.get(
-                    name, now - _td(hours=1)
-                )
+                start_time = await _resolve_rebuttal_start_time(name, now)
                 rows = await time_manager.aretrieve_original_by_timeframe(
                     name, start_time, now,
                 )
                 if not rows:
-                    _last_rebuttal_check[name] = now
+                    await cursor_store.aset_cursor(
+                        name, CURSOR_REBUTTAL_CHECKED_UNTIL, now,
+                    )
                     continue
 
                 user_msgs = _extract_user_messages_from_rows(rows)
                 if not user_msgs:
-                    _last_rebuttal_check[name] = now
+                    await cursor_store.aset_cursor(
+                        name, CURSOR_REBUTTAL_CHECKED_UNTIL, now,
+                    )
                     continue
 
                 # 复用 check_feedback 判断反驳
@@ -273,12 +304,14 @@ async def _periodic_rebuttal_loop():
                     name, confirmed, user_msgs,
                 )
                 if feedbacks is None:
-                    # LLM 调用失败 → 不推进窗口，下次重试这批消息
-                    logger.warning(f"[Rebuttal] {name}: 反驳检查失败，保留窗口待重试")
+                    # LLM 调用失败 → 不推进游标，下次重试这批消息
+                    logger.warning(f"[Rebuttal] {name}: 反驳检查失败，保留游标待重试")
                     continue
 
-                # 成功才推进窗口
-                _last_rebuttal_check[name] = now
+                # 成功才推进游标并持久化
+                await cursor_store.aset_cursor(
+                    name, CURSOR_REBUTTAL_CHECKED_UNTIL, now,
+                )
                 for fb in feedbacks:
                     if isinstance(fb, dict) and fb.get('feedback') == 'denied':
                         rid = fb.get('reflection_id')
