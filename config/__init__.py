@@ -529,6 +529,7 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeyMinimax": "",
     "assistApiKeyClaude": "",
     "assistApiKeyGrok": "",
+    "assistApiKeyDoubao": "",
     "mcpToken": "",
     "agentModelUrl": "",
     "agentModelId": "",
@@ -676,6 +677,15 @@ DEFAULT_ASSIST_API_PROFILES = {
         'VISION_MODEL': "grok-4-1-fast-non-reasoning",
         'AGENT_MODEL': "grok-4-1-fast-non-reasoning",
     },
+    'doubao': {
+        'OPENROUTER_URL': "https://ark.cn-beijing.volces.com/api/v3",
+        'CONVERSATION_MODEL': "doubao-seed-2-0-lite-260215",
+        'SUMMARY_MODEL': "doubao-seed-2-0-lite-260215",
+        'CORRECTION_MODEL': "doubao-seed-2-0-lite-260215",
+        'EMOTION_MODEL': "doubao-seed-2-0-mini",
+        'VISION_MODEL': "doubao-seed-2-0-lite-260215",
+        'AGENT_MODEL': "doubao-seed-2-0-pro-260215",
+    },
 }
 
 DEFAULT_ASSIST_API_KEY_FIELDS = {
@@ -691,6 +701,7 @@ DEFAULT_ASSIST_API_KEY_FIELDS = {
     'claude': 'ASSIST_API_KEY_CLAUDE',
     'openrouter': 'ASSIST_API_KEY_OPENROUTER',
     'grok': 'ASSIST_API_KEY_GROK',
+    'doubao': 'ASSIST_API_KEY_DOUBAO',
 }
 
 DEFAULT_CONFIG_DATA = {

@@ -823,6 +823,7 @@ setup_configuration() {
   "assistApiKeyStep": "${NEKO_ASSIST_API_KEY_STEP:-}",
   "assistApiKeySilicon": "${NEKO_ASSIST_API_KEY_SILICON:-}",
   "assistApiKeyGrok": "${NEKO_ASSIST_API_KEY_GROK:-}",
+  "assistApiKeyDoubao": "${NEKO_ASSIST_API_KEY_DOUBAO:-}",
   "mcpToken": "${NEKO_MCP_TOKEN:-}"
 }
 EOF
