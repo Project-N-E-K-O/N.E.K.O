@@ -22,6 +22,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 from datetime import datetime, timedelta
 
 from config import SETTING_PROPOSER_MODEL
@@ -100,6 +101,20 @@ class PersonaManager:
     def __init__(self):
         self._config_manager = get_config_manager()
         self._personas: dict[str, dict] = {}
+        # Per-character asyncio.Lock (P2.a.2). Protects load→mutate→save
+        # sequences in add_fact / resolve_corrections / record_mentions /
+        # queue_correction. Lazily created to avoid event-loop binding at
+        # module-import time. threading.Lock guards the dict itself
+        # (pure-Python block, no await inside).
+        self._alocks: dict[str, asyncio.Lock] = {}
+        self._alocks_guard = threading.Lock()
+
+    def _get_alock(self, name: str) -> asyncio.Lock:
+        if name not in self._alocks:
+            with self._alocks_guard:
+                if name not in self._alocks:
+                    self._alocks[name] = asyncio.Lock()
+        return self._alocks[name]
 
     # ── file paths ───────────────────────────────────────────────────
 
@@ -594,20 +609,27 @@ class PersonaManager:
 
     async def aadd_fact(self, name: str, text: str, entity: str = 'master',
                         source: str = 'manual', source_id: str | None = None) -> str:
-        persona = await self.aensure_persona(name)
-        section_facts = self._get_section_facts(persona, entity)
-        stop_names = await self._aget_entity_stop_names()
+        """P2.a.2: 角色级 asyncio.Lock 串行化 add_fact / resolve_corrections /
+        record_mentions，避免 persona.json 竞写。
 
-        code, old_text = self._evaluate_fact_contradiction(name, text, section_facts, stop_names)
-        if code == self.FACT_REJECTED_CARD:
-            return self.FACT_REJECTED_CARD
-        if code == self.FACT_QUEUED_CORRECTION:
-            await self._aqueue_correction(name, old_text, text, entity)
-            return self.FACT_QUEUED_CORRECTION
+        Note: _aqueue_correction 被调用时已在本锁内，因此其独立锁使用
+        asyncio.Lock（可重入？不，asyncio.Lock 不可重入）→ 所以在锁内调用
+        _aqueue_correction 的 **unlocked** 版本。"""
+        async with self._get_alock(name):
+            persona = await self.aensure_persona(name)
+            section_facts = self._get_section_facts(persona, entity)
+            stop_names = await self._aget_entity_stop_names()
 
-        section_facts.append(self._build_fact_entry(text, source, source_id))
-        await self.asave_persona(name, persona)
-        return self.FACT_ADDED
+            code, old_text = self._evaluate_fact_contradiction(name, text, section_facts, stop_names)
+            if code == self.FACT_REJECTED_CARD:
+                return self.FACT_REJECTED_CARD
+            if code == self.FACT_QUEUED_CORRECTION:
+                await self._aqueue_correction_locked(name, old_text, text, entity)
+                return self.FACT_QUEUED_CORRECTION
+
+            section_facts.append(self._build_fact_entry(text, source, source_id))
+            await self.asave_persona(name, persona)
+            return self.FACT_ADDED
 
     def _get_section_facts(self, persona: dict, entity: str) -> list:
         return persona.setdefault(entity, {}).setdefault('facts', [])
@@ -696,6 +718,14 @@ class PersonaManager:
         logger.info(f"[Persona] {name}: 发现潜在矛盾，加入审视队列")
 
     async def _aqueue_correction(self, name: str, old_text: str, new_text: str, entity: str) -> None:
+        """Public async entry — acquires the per-character lock.
+        Callers already holding the lock must use _aqueue_correction_locked."""
+        async with self._get_alock(name):
+            await self._aqueue_correction_locked(name, old_text, new_text, entity)
+
+    async def _aqueue_correction_locked(self, name: str, old_text: str, new_text: str, entity: str) -> None:
+        """Inner body. Caller must hold self._get_alock(name).
+        Used by aadd_fact which already has the lock."""
         corrections = await self.aload_pending_corrections(name)
         updated = self._build_correction_list(corrections, old_text, new_text, entity)
         if updated is None:
@@ -733,7 +763,16 @@ class PersonaManager:
 
         将所有 pending corrections 合并为一个 prompt 发给 correction model，
         返回处理的矛盾数量。
+
+        P2.a.2: 角色级 asyncio.Lock 串行化；整个流程（load + LLM + write back）
+        都在锁内，避免 aadd_fact / arecord_mentions 并发写 persona.json。
         """
+        async with self._get_alock(name):
+            return await self._resolve_corrections_locked(name)
+
+    async def _resolve_corrections_locked(self, name: str) -> int:
+        """resolve_corrections 的内部实现。调用方必须已持有
+        self._get_alock(name)。"""
         from config.prompts_memory import persona_correction_prompt
 
         corrections = await self.aload_pending_corrections(name)
@@ -880,9 +919,10 @@ class PersonaManager:
             self.save_persona(name, persona)
 
     async def arecord_mentions(self, name: str, response_text: str) -> None:
-        persona = await self.aensure_persona(name)
-        if self._apply_record_mentions(persona, response_text):
-            await self.asave_persona(name, persona)
+        async with self._get_alock(name):
+            persona = await self.aensure_persona(name)
+            if self._apply_record_mentions(persona, response_text):
+                await self.asave_persona(name, persona)
 
     def _apply_update_suppressions(self, persona: dict) -> bool:
         now = datetime.now()

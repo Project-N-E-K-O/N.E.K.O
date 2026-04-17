@@ -22,6 +22,7 @@ import asyncio
 import hashlib
 import json
 import os
+import threading
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -76,6 +77,24 @@ class ReflectionEngine:
         self._config_manager = get_config_manager()
         self._fact_store = fact_store
         self._persona_manager = persona_manager
+        # Per-character asyncio.Lock (P2.a.2). ReflectionEngine's async mutating
+        # methods span multiple awaits (e.g. aauto_promote_stale calls
+        # persona.aadd_fact across an await boundary) — so asyncio.Lock is the
+        # right choice per CLAUDE rule "threading.Lock 持锁跨 await → 改用
+        # asyncio.Lock". Lock is lazily created to avoid event-loop binding
+        # at module-import time.
+        self._alocks: dict[str, asyncio.Lock] = {}
+        # threading.Lock guards the dict itself (reads/writes of _alocks are
+        # pure Python, no await inside this critical section).
+        self._alocks_guard = threading.Lock()
+
+    def _get_alock(self, name: str) -> asyncio.Lock:
+        """Get (or lazily create) the per-character asyncio.Lock."""
+        if name not in self._alocks:
+            with self._alocks_guard:
+                if name not in self._alocks:
+                    self._alocks[name] = asyncio.Lock()
+        return self._alocks[name]
 
     # ── file paths ───────────────────────────────────────────────────
 
@@ -267,7 +286,16 @@ class ReflectionEngine:
           3. save_reflections 亦按 id dedup，防 concurrent synth 双写。
           4. 始终在末尾 amark_absorbed，确保 save 成功但 mark 失败后的
              重启补跑能真正把 facts 的 absorbed 置为 True。
+
+        并发（P2.a.2）：整个方法在角色级 asyncio.Lock 下串行，避免与
+        aauto_promote_stale / aconfirm_promotion 竞写 reflections.json。
         """
+        async with self._get_alock(lanlan_name):
+            return await self._synthesize_reflections_locked(lanlan_name)
+
+    async def _synthesize_reflections_locked(self, lanlan_name: str) -> list[dict]:
+        """synthesize_reflections 的内部实现。调用方必须已持有
+        self._get_alock(lanlan_name)。"""
         from config.prompts_memory import get_reflection_prompt
         from utils.language_utils import get_global_language
         from utils.llm_client import create_chat_llm
@@ -470,16 +498,19 @@ class ReflectionEngine:
         self.save_surfaced(lanlan_name, surfaced)
 
     async def arecord_surfaced(self, lanlan_name: str, reflection_ids: list[str]) -> None:
+        """P2.a.2: per-character asyncio.Lock serializes reflections.json /
+        surfaced.json 写入，避免与 synth / promote 竞写。"""
         if not reflection_ids:
             return
-        surfaced = await self.aload_surfaced(lanlan_name)
-        reflections = await self.aload_reflections(lanlan_name)
-        cooldown_changed, surfaced = self._apply_record_surfaced(
-            reflection_ids, reflections, surfaced,
-        )
-        if cooldown_changed:
-            await self.asave_reflections(lanlan_name, reflections)
-        await self.asave_surfaced(lanlan_name, surfaced)
+        async with self._get_alock(lanlan_name):
+            surfaced = await self.aload_surfaced(lanlan_name)
+            reflections = await self.aload_reflections(lanlan_name)
+            cooldown_changed, surfaced = self._apply_record_surfaced(
+                reflection_ids, reflections, surfaced,
+            )
+            if cooldown_changed:
+                await self.asave_reflections(lanlan_name, reflections)
+            await self.asave_surfaced(lanlan_name, surfaced)
 
     async def check_feedback(self, lanlan_name: str, user_messages: list[str]) -> list[dict] | None:
         """Check if user's recent messages confirm/deny surfaced reflections.
@@ -617,12 +648,13 @@ class ReflectionEngine:
         self._mark_surfaced_handled(lanlan_name, reflection_id, 'confirmed')
 
     async def aconfirm_promotion(self, lanlan_name: str, reflection_id: str) -> None:
-        reflections = await self.aload_reflections(lanlan_name)
-        text = self._apply_promotion_status(reflections, reflection_id, 'confirmed')
-        if text is not None:
-            logger.info(f"[Reflection] {lanlan_name}: 反思已确认(软persona): {text[:50]}...")
-        await self.asave_reflections(lanlan_name, reflections)
-        await self._amark_surfaced_handled(lanlan_name, reflection_id, 'confirmed')
+        async with self._get_alock(lanlan_name):
+            reflections = await self.aload_reflections(lanlan_name)
+            text = self._apply_promotion_status(reflections, reflection_id, 'confirmed')
+            if text is not None:
+                logger.info(f"[Reflection] {lanlan_name}: 反思已确认(软persona): {text[:50]}...")
+            await self.asave_reflections(lanlan_name, reflections)
+            await self._amark_surfaced_handled(lanlan_name, reflection_id, 'confirmed')
 
     def reject_promotion(self, lanlan_name: str, reflection_id: str) -> None:
         """Mark a reflection as denied — won't be promoted."""
@@ -634,12 +666,13 @@ class ReflectionEngine:
         self._mark_surfaced_handled(lanlan_name, reflection_id, 'denied')
 
     async def areject_promotion(self, lanlan_name: str, reflection_id: str) -> None:
-        reflections = await self.aload_reflections(lanlan_name)
-        text = self._apply_promotion_status(reflections, reflection_id, 'denied')
-        if text is not None:
-            logger.info(f"[Reflection] {lanlan_name}: 反思被否定: {text[:50]}...")
-        await self.asave_reflections(lanlan_name, reflections)
-        await self._amark_surfaced_handled(lanlan_name, reflection_id, 'denied')
+        async with self._get_alock(lanlan_name):
+            reflections = await self.aload_reflections(lanlan_name)
+            text = self._apply_promotion_status(reflections, reflection_id, 'denied')
+            if text is not None:
+                logger.info(f"[Reflection] {lanlan_name}: 反思被否定: {text[:50]}...")
+            await self.asave_reflections(lanlan_name, reflections)
+            await self._amark_surfaced_handled(lanlan_name, reflection_id, 'denied')
 
     @staticmethod
     def _apply_mark_surfaced_handled(
@@ -729,6 +762,13 @@ class ReflectionEngine:
         return transitions
 
     async def aauto_promote_stale(self, lanlan_name: str) -> int:
+        """P2.a.2: 角色级 asyncio.Lock 串行化；与 synth / record_surfaced /
+        confirm / reject 在同一把锁下。锁顺序：本锁先、persona.aadd_fact
+        的 persona 锁后，避免死锁（persona 侧不会回调本类）。"""
+        async with self._get_alock(lanlan_name):
+            return await self._aauto_promote_stale_locked(lanlan_name)
+
+    async def _aauto_promote_stale_locked(self, lanlan_name: str) -> int:
         reflections = await self.aload_reflections(lanlan_name)
         now = datetime.now()
         transitions = 0
