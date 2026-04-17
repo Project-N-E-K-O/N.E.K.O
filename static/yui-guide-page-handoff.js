@@ -426,11 +426,18 @@
 
     function sendAgentCommand(command, payload) {
         var requestId = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+        var controller = typeof AbortController === 'function' ? new AbortController() : null;
+        var timeoutId = window.setTimeout(function () {
+            if (controller) {
+                controller.abort();
+            }
+        }, 4000);
         return fetch('/api/agent/command', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
+            signal: controller ? controller.signal : undefined,
             body: JSON.stringify(Object.assign({
                 request_id: requestId,
                 command: command
@@ -445,6 +452,14 @@
                 throw new Error((data && data.error) || 'command failed');
             }
             return data;
+        }).catch(function (error) {
+            console.warn('[YuiGuideHandoff] sendAgentCommand 失败:', command, error);
+            return {
+                success: false,
+                error: error && error.message ? error.message : 'command failed'
+            };
+        }).finally(function () {
+            window.clearTimeout(timeoutId);
         });
     }
 
@@ -684,7 +699,10 @@
     function setAgentMasterEnabled(enabled) {
         return sendAgentCommand('set_agent_enabled', {
             enabled: !!enabled
-        }).then(function () {
+        }).then(function (result) {
+            if (!result || result.success !== true) {
+                return false;
+            }
             dispatchSyntheticPress(getAgentToggleElement('agent-master'));
             syncAgentToggleDom('agent-master', !!enabled);
             if (!enabled) {
@@ -714,7 +732,10 @@
         return sendAgentCommand('set_flag', {
             key: key,
             value: !!enabled
-        }).then(function () {
+        }).then(function (result) {
+            if (!result || result.success !== true) {
+                return false;
+            }
             if (toggleMap[key]) {
                 dispatchSyntheticPress(getAgentToggleElement(toggleMap[key]));
                 syncAgentToggleDom(toggleMap[key], !!enabled);

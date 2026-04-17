@@ -10,7 +10,7 @@
     const DEFAULT_STEP_DELAY_MS = 120;
     const DEFAULT_SCENE_SETTLE_MS = 260;
     const DEFAULT_CURSOR_DURATION_MS = 520;
-    const INTRO_PRACTICE_TEXT = '现在来可以试试跟我说说话吧，看看我们是不是超有默契的喵～';
+    const INTRO_PRACTICE_TEXT = '现在你可以试试跟我说说话啦，看看我们是不是超有默契的喵～';
     const INTRO_SKIP_ACTION_ID = 'yui-guide-intro-skip-chat';
     const REACT_CHAT_ACTION_EVENT = 'react-chat-window:action';
     const REACT_CHAT_SUBMIT_EVENT = 'react-chat-window:submit';

@@ -293,10 +293,11 @@ class PluginDashboardGuideRuntime {
 
   notify(type: string, sessionId: string) {
     try {
+      const targetOrigin = ALLOWED_ORIGINS.values().next().value || window.location.origin
       window.opener?.postMessage({
         type,
         sessionId,
-      }, '*')
+      }, targetOrigin)
     } catch (_) {}
   }
 

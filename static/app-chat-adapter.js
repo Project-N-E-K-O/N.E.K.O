@@ -400,6 +400,9 @@
     // async processRealisticQueue 循环失效。
     // 用于 isNewMessage 开始新一轮或模式切换时，确保旧轮句子不被丢弃。
     function _flushPendingRealisticQueue() {
+        // 无论队列是否为空，都要先释放处理锁，避免 stale owner 阻塞下一轮。
+        window._isProcessingRealisticQueue = false;
+        window._realisticProcessingOwner = null;
         var queue = window._realisticGeminiQueue;
         if (!Array.isArray(queue) || queue.length === 0) return;
         // 同步创建所有待排队的 bubble
@@ -407,9 +410,6 @@
             try { createGeminiBubble(queue[i]); } catch (_) {}
         }
         window._realisticGeminiQueue = [];
-        // 重置并发锁，让下次 processRealisticQueue 可以正常启动
-        window._isProcessingRealisticQueue = false;
-        window._realisticProcessingOwner = null;
     }
 
     // ======================== appendMessage（覆盖核心） ========================
