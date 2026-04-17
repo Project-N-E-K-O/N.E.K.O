@@ -76,6 +76,7 @@
         sessionStartedResolver: null,
         sessionStartedRejecter: null,
         assistantTurnId: null,
+        assistantTurnStartedAt: 0,
         assistantPendingTurnServerId: null,
         assistantTurnAwaitingBubble: false,
         assistantTurnSeq: 0,

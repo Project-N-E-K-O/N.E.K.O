@@ -159,6 +159,7 @@
         S.assistantTurnId = allocateAssistantTurnId(
             serverTurnId === undefined ? S.assistantPendingTurnServerId : serverTurnId
         );
+        S.assistantTurnStartedAt = Date.now();
         clearPendingAssistantTurnStart();
         emitAssistantLifecycleEvent('neko-assistant-turn-start', {
             turnId: S.assistantTurnId,
