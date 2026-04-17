@@ -260,6 +260,26 @@ class RiskySyncDefIndexer(ast.NodeVisitor):
         self.risky.setdefault(node.name, (str(path), node.lineno, reason))
 
 
+def _collect_async_def_names(tree: ast.Module) -> set[str]:
+    """Collect top-level + one-level-nested ``async def`` names from a
+    module. Used to disambiguate name collisions: if a name is defined
+    as both a sync helper (risky) and an async method elsewhere in
+    scope, a call site ``await foo(...)`` is ambiguous under name-only
+    matching, so we drop that name from the risky index rather than
+    report false positives on the async side. Symmetric with the sync
+    indexer's scope — top-level defs + methods of top-level classes.
+    """
+    names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.AsyncFunctionDef):
+            names.add(node.name)
+        elif isinstance(node, ast.ClassDef):
+            for item in node.body:
+                if isinstance(item, ast.AsyncFunctionDef):
+                    names.add(item.name)
+    return names
+
+
 def _sync_body_has_blocking_call(func: ast.FunctionDef) -> str | None:
     """Scan ``func``'s body for a known-blocking call, descending into
     control-flow (if/for/with/try) but NOT into nested functions or
@@ -295,11 +315,16 @@ class AsyncBlockingChecker(ast.NodeVisitor):
         self.violations: list[tuple[int, int, str]] = []
         self._risky = risky_helpers or {}
         # ids of Call nodes that are the direct target of an ``await`` —
-        # ``await q.get()`` is cooperative regardless of whether the tail
-        # name matches a queue-like heuristic, and ``await adapter.run_X()``
-        # is an async method call even when a sync helper with the same
-        # tail name exists elsewhere in the tree. Indexed by id() to avoid
-        # mutating the AST.
+        # suppresses ONLY the queue/thread/socket tail-name heuristics in
+        # ``_check_attribute_call``. Those heuristics guess at the
+        # receiver's type from its identifier, and an ``await`` in front
+        # proves the receiver is an asyncio object (awaiting a blocking
+        # ``queue.Queue.get()`` is a TypeError at runtime). Direct
+        # blocking stdlib calls and depth-1 transitive sync-helper
+        # checks are *not* suppressed — a sync helper that blocks
+        # synchronously and then returns an awaitable would still run
+        # its blocking body on the event-loop thread before the await.
+        # Indexed by id() to avoid mutating the AST.
         self._awaited_call_ids: set[int] = set()
 
     # ── function tracking ────────────────────────────────────────────────
@@ -335,22 +360,27 @@ class AsyncBlockingChecker(ast.NodeVisitor):
         self.violations.append((lineno, col, message))
 
     def visit_Await(self, node: ast.Await) -> None:
-        # Mark the directly-awaited call so visit_Call skips it. A bare
-        # ``await X(...)`` is definitionally off the event loop — whatever
-        # X refers to must return an awaitable, so tail-name heuristics
-        # that happen to match a sync helper elsewhere are irrelevant.
-        # Arguments inside X(...) are NOT marked — a blocking call passed
-        # as an argument (``await gather(requests.get(...))``) is still
-        # evaluated synchronously before the await.
+        # Mark the directly-awaited call for targeted suppression in
+        # visit_Call (see _awaited_call_ids docstring). Arguments inside
+        # X(...) are NOT marked — a blocking call passed as an argument
+        # (``await gather(requests.get(...))``) is still evaluated
+        # synchronously before the await.
         if isinstance(node.value, ast.Call):
             self._awaited_call_ids.add(id(node.value))
         self.generic_visit(node)
 
     # ── the actual checks ────────────────────────────────────────────────
     def visit_Call(self, node: ast.Call) -> None:
-        if self._in_async_context() and id(node) not in self._awaited_call_ids:
-            if isinstance(node.func, ast.Attribute):
+        if self._in_async_context():
+            awaited = id(node) in self._awaited_call_ids
+            # queue/thread/socket heuristics are name-based type guesses;
+            # an ``await`` proves the receiver is an asyncio object.
+            if isinstance(node.func, ast.Attribute) and not awaited:
                 self._check_attribute_call(node)
+            # Direct blocking stdlib calls (requests.get, shutil.copy, …)
+            # and depth-1 transitive sync-helper dispatch are checked
+            # regardless of await — a sync helper that blocks before
+            # returning an awaitable still blocks the loop thread.
             self._check_direct_blocking_call(node)
             self._check_transitive_sync_helper(node)
         self.generic_visit(node)
@@ -520,6 +550,7 @@ def main(argv: list[str] | None = None) -> int:
     # Pass 1: parse every file once, build the risky-sync-def index.
     parsed: list[tuple[Path, str, ast.Module]] = []
     indexer = RiskySyncDefIndexer()
+    async_names: set[str] = set()
     for file in _iter_python_files(targets):
         parsed_file = _parse_file(file)
         if parsed_file is None:
@@ -533,6 +564,19 @@ def main(argv: list[str] | None = None) -> int:
         local_indexer.index_module(tree, rel)
         for name, info in local_indexer.risky.items():
             indexer.risky.setdefault(name, info)
+        async_names |= _collect_async_def_names(tree)
+
+    # Drop risky names that also exist as an ``async def`` somewhere in
+    # scope. At a call site ``await foo(...)`` we cannot statically tell
+    # which definition the receiver binds to, and real async methods
+    # with the same tail name as an unrelated sync helper (e.g. multiple
+    # agent adapters expose ``async def run_instruction`` while
+    # ``brain/computer_use.py`` defines a sync one) would otherwise
+    # produce a wave of false positives. The cost is we no longer flag
+    # direct calls to the sync variant from async code — a rename is
+    # the right fix if that case arises.
+    for name in async_names:
+        indexer.risky.pop(name, None)
 
     # Pass 2: walk async bodies for direct blocking + depth-1 transitive.
     total = 0
