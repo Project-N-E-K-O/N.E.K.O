@@ -43,7 +43,7 @@ from utils.voice_clone import (
     QwenVoiceCloneError,
     qwen_language_hints,
 )
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json_async
 from utils.frontend_utils import find_models, find_model_directory, is_user_imported_model
 from utils.language_utils import normalize_language_code
 from utils.logger_config import get_module_logger
@@ -624,7 +624,7 @@ async def update_catgirl_l2d(name: str, request: Request):
                 logger.debug(f"已保存角色 {name} 的模型 {live2d_model}")
         
         # 保存配置
-        _config_manager.save_characters(characters)
+        await _config_manager.asave_characters(characters)
         # 自动重新加载配置
         initialize_character_data = get_initialize_character_data()
         await initialize_character_data()
@@ -705,7 +705,7 @@ async def update_catgirl_touch_set(name: str, request: Request):
         existing_touch_set[model_name] = touch_set_data
         
         set_reserved(characters['猫娘'][name], 'touch_set', existing_touch_set)
-        _config_manager.save_characters(characters)
+        await _config_manager.asave_characters(characters)
         
         initialize_character_data = get_initialize_character_data()
         if initialize_character_data:
@@ -822,7 +822,7 @@ async def update_catgirl_lighting(name: str, request: Request):
             get_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'lighting', default=None),
         )
 
-        _config_manager.save_characters(characters)
+        await _config_manager.asave_characters(characters)
         
         if apply_runtime:
             initialize_character_data = get_initialize_character_data()
@@ -932,7 +932,7 @@ async def update_catgirl_mmd_settings(name: str, request: Request):
                 cursor_follow['enabled'] = _to_bool(cursor_follow['enabled'])
             set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'cursor_follow', cursor_follow)
 
-        _config_manager.save_characters(characters)
+        await _config_manager.asave_characters(characters)
 
         logger.info("已保存角色 %s 的MMD模型设置", name)
         return JSONResponse(content={
@@ -1025,7 +1025,7 @@ async def update_catgirl_voice_id(name: str, request: Request):
         }, status_code=400)
 
     set_reserved(characters['猫娘'][name], 'voice_id', voice_id)
-    _config_manager.save_characters(characters)
+    await _config_manager.asave_characters(characters)
     
     # 如果是当前活跃的猫娘，需要先通知前端，再关闭session
     is_current_catgirl = (name == characters.get('当前猫娘', ''))
@@ -1148,7 +1148,7 @@ async def rename_catgirl(old_name: str, request: Request):
     # 如果当前猫娘是被重命名的猫娘，也需要更新
     if is_current_catgirl:
         characters['当前猫娘'] = new_name
-    _config_manager.save_characters(characters)
+    await _config_manager.asave_characters(characters)
     # 自动重新加载配置
     initialize_character_data = get_initialize_character_data()
     await initialize_character_data()
@@ -1173,7 +1173,7 @@ async def unregister_voice(name: str):
         
         # COMPAT(v1->v2): 统一落到 _reserved.voice_id，旧平铺 voice_id 不再写入/删除。
         set_reserved(characters['猫娘'][name], 'voice_id', '')
-        _config_manager.save_characters(characters)
+        await _config_manager.asave_characters(characters)
 
         # 如果是当前活跃的猫娘，需要先通知前端，再关闭session
         is_current_catgirl = (name == characters.get('当前猫娘', ''))
@@ -1241,7 +1241,7 @@ async def set_current_catgirl(request: Request):
                     'error': '语音状态下无法切换角色，请先停止语音对话后再切换'
                 }, status_code=400)
     characters['当前猫娘'] = catgirl_name
-    _config_manager.save_characters(characters)
+    await _config_manager.asave_characters(characters)
     initialize_character_data = get_initialize_character_data()
     # 自动重新加载配置
     await initialize_character_data()
@@ -1315,7 +1315,7 @@ async def update_master(request: Request):
     initialize_character_data = get_initialize_character_data()
     characters = _config_manager.load_characters()
     characters['主人'] = {k: v for k, v in data.items() if v}
-    _config_manager.save_characters(characters)
+    await _config_manager.asave_characters(characters)
     # 自动重新加载配置
     await initialize_character_data()
     return {"success": True}
@@ -1352,7 +1352,7 @@ async def rename_master(old_name: str, request: Request):
             return JSONResponse({'success': False, 'error': '新档案名与已有猫娘名称冲突'}, status_code=400)
 
         characters['主人']['档案名'] = new_name
-        _config_manager.save_characters(characters)
+        await _config_manager.asave_characters(characters)
 
     try:
         initialize_character_data = get_initialize_character_data()
@@ -1411,7 +1411,7 @@ async def add_catgirl(request: Request):
                 catgirl_data[k] = v
 
     characters['猫娘'][key] = catgirl_data
-    _config_manager.save_characters(characters)
+    await _config_manager.asave_characters(characters)
     initialize_character_data = get_initialize_character_data()
     # 自动重新加载配置
     await initialize_character_data()
@@ -1504,7 +1504,7 @@ async def update_catgirl(name: str, request: Request):
     if model_type_in_payload and requested_model_type:
         set_reserved(characters['猫娘'][name], 'avatar', 'model_type', requested_model_type)
 
-    _config_manager.save_characters(characters)
+    await _config_manager.asave_characters(characters)
 
     new_voice_id = get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))
     voice_id_changed = voice_id_in_payload and old_voice_id != new_voice_id
@@ -1556,36 +1556,36 @@ async def update_catgirl(name: str, request: Request):
 
 @router.delete('/catgirl/{name}')
 async def delete_catgirl(name: str):
-    import shutil
     _config_manager = get_config_manager()
     characters = _config_manager.load_characters()
     if name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
-    
+
     # 检查是否是当前正在使用的猫娘
     current_catgirl = characters.get('当前猫娘', '')
     if name == current_catgirl:
         return JSONResponse({'success': False, 'error': '不能删除当前正在使用的猫娘！请先切换到其他猫娘后再删除。'}, status_code=400)
-    
+
     # 删除对应的记忆文件
     try:
         memory_paths = [_config_manager.memory_dir, _config_manager.project_memory_dir]
         files_to_delete = [
-            f'semantic_memory_{name}',  # 语义记忆目录
-            f'time_indexed_{name}',     # 时间索引数据库文件
-            f'settings_{name}.json',    # 设置文件
-            f'recent_{name}.json',      # 最近聊天记录文件
+            f'semantic_memory_{name}',  # 语义记忆目录（旧布局）
+            f'time_indexed_{name}',     # 时间索引数据库文件（旧布局）
+            f'settings_{name}.json',    # 设置文件（旧布局）
+            f'recent_{name}.json',      # 最近聊天记录文件（旧布局）
+            name,                       # 新布局：memory/<name>/{recent,facts,reflections,persona,time_indexed.db,...}
         ]
-        
+
         for base_dir in memory_paths:
             for file_name in files_to_delete:
                 file_path = base_dir / file_name
                 if file_path.exists():
                     try:
                         if file_path.is_dir():
-                            shutil.rmtree(file_path)
+                            await asyncio.to_thread(shutil.rmtree, file_path)
                         else:
-                            file_path.unlink()
+                            await asyncio.to_thread(file_path.unlink)
                         logger.info(f"已删除: {file_path}")
                     except Exception as e:
                         logger.warning(f"删除失败 {file_path}: {e}")
@@ -1594,7 +1594,7 @@ async def delete_catgirl(name: str):
     
     # 删除角色配置
     del characters['猫娘'][name]
-    _config_manager.save_characters(characters)
+    await _config_manager.asave_characters(characters)
     initialize_character_data = get_initialize_character_data()
     await initialize_character_data()
     return {"success": True}
@@ -1614,7 +1614,7 @@ async def clear_voice_ids():
                     set_reserved(characters['猫娘'][name], 'voice_id', '')
                     cleared_count += 1
         
-        _config_manager.save_characters(characters)
+        await _config_manager.asave_characters(characters)
         # 自动重新加载配置
         initialize_character_data = get_initialize_character_data()
         await initialize_character_data()
@@ -1699,7 +1699,7 @@ async def set_microphone(request: Request):
         characters_data['当前麦克风'] = microphone_id
         
         # 保存配置
-        _config_manager.save_characters(characters_data)
+        await _config_manager.asave_characters(characters_data)
         # 自动重新加载配置
         initialize_character_data = get_initialize_character_data()
         await initialize_character_data()
@@ -1919,7 +1919,7 @@ async def delete_voice(voice_id: str):
                             affected_active_names.append(name)
             
             if cleaned_count > 0:
-                _config_manager.save_characters(characters)
+                await _config_manager.asave_characters(characters)
                 
                 # 对于受影响的活跃角色，通知并结束 session
                 for name in affected_active_names:
@@ -2926,7 +2926,7 @@ async def save_catgirl_to_model_folder(request: Request):
             
         # 保存角色卡到模型文件夹
         file_path = os.path.join(model_folder_path, safe_name)
-        atomic_write_json(file_path, chara_data, ensure_ascii=False, indent=2)
+        await atomic_write_json_async(file_path, chara_data, ensure_ascii=False, indent=2)
         
         logger.info(f"角色卡已成功保存到模型文件夹: {file_path}")
         return {"success": True, "path": file_path, "modelFolderPath": model_folder_path}
@@ -2976,7 +2976,7 @@ async def save_character_card(request: Request):
         characters['猫娘'][chara_name] = catgirl_data
         
         # 保存到characters.json
-        _config_manager.save_characters(characters)
+        await _config_manager.asave_characters(characters)
         
         # 自动重新加载配置
         initialize_character_data = get_initialize_character_data()
@@ -3424,7 +3424,7 @@ async def import_character_card(zip_file: UploadFile = File(...)):
                         dest_path.parent.mkdir(parents=True, exist_ok=True)
                         total_uncompressed_size += member_size
                         with zf.open(member) as src, open(dest_path, 'wb') as dst:
-                            shutil.copyfileobj(src, dst, length=8192)
+                            await asyncio.to_thread(shutil.copyfileobj, src, dst, length=8192)
 
             # 读取角色设定（支持加密和非加密格式）
             character_json_path = extract_path / 'character.json'
@@ -3534,7 +3534,7 @@ async def import_character_card(zip_file: UploadFile = File(...)):
                                     counter += 1
 
                                 # 复制整个模型文件夹
-                                shutil.copytree(model_item, target_model_dir)
+                                await asyncio.to_thread(shutil.copytree, model_item, target_model_dir)
                                 logger.info(f'已导入MMD模型文件夹: {original_model_name} -> {model_name}')
 
                                 # 查找文件夹中的主模型文件（.pmx 或 .pmd）
@@ -3569,7 +3569,7 @@ async def import_character_card(zip_file: UploadFile = File(...)):
                                     counter += 1
 
                                 # 复制模型文件
-                                shutil.copytree(model_item, target_model_dir)
+                                await asyncio.to_thread(shutil.copytree, model_item, target_model_dir)
                                 logger.info(f'已导入Live2D模型: {original_model_name} -> {model_name}')
 
                                 # 查找复制后的 .model3.json 文件，保留相对路径
@@ -3606,7 +3606,7 @@ async def import_character_card(zip_file: UploadFile = File(...)):
                                     target_model_path = _config_manager.vrm_dir / f"{model_name}{model_ext}"
                                     counter += 1
 
-                                shutil.copy2(model_file, target_model_path)
+                                await asyncio.to_thread(shutil.copy2, model_file, target_model_path)
                                 logger.info(f'已导入VRM模型: {original_model_name} -> {model_name}')
 
                                 # 记录导入的模型信息
@@ -3658,7 +3658,7 @@ async def import_character_card(zip_file: UploadFile = File(...)):
             characters['猫娘'][character_name] = chara_data_to_save
 
             # 保存到文件
-            _config_manager.save_characters(characters)
+            await _config_manager.asave_characters(characters)
 
             # 刷新内存中的角色数据，确保磁盘和内存同步
             initialize_character_data = get_initialize_character_data()
@@ -3680,7 +3680,13 @@ async def import_character_card(zip_file: UploadFile = File(...)):
     finally:
         # 清理临时目录
         if temp_dir and os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir, ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
+
+
+class _InvalidPortraitError(ValueError):
+    """Raised by the character-card render helper when the user-supplied
+    portrait fails PIL's verify() check. Caught at the endpoint to map
+    to a 400 response (vs. 500 for genuine render errors)."""
 
 
 @router.post('/catgirl/{name}/export-with-portrait')
@@ -3827,113 +3833,101 @@ async def export_catgirl_with_portrait(
 
         logger.info(f"[导出角色卡] 接收到立绘图片，大小: {len(portrait_data)} bytes")
 
+        png_path = temp_path / 'character_card.png'
+
+        # 整段 PIL 渲染链（图片校验 + 卡片合成 + 字体扫描 + PNG 编码）放进 worker
+        # 线程，避免阻塞事件循环。校验失败用专属异常，让外层回 400 而不是 500。
+        def _render_card_png(_portrait_data: bytes, _name: str, _png_path) -> None:
+            try:
+                Image.MAX_IMAGE_PIXELS = 100_000_000  # 限制最大像素数防止解压炸弹
+                portrait_img = Image.open(io.BytesIO(_portrait_data))
+                portrait_img.verify()
+                portrait_img = Image.open(io.BytesIO(_portrait_data))
+                portrait_img.load()  # 强制解码：把截断/损坏的像素错误提前到这里，与 _InvalidPortraitError 一起回 400 而不是后续 resize/save 时回 500
+            except Exception as exc:
+                raise _InvalidPortraitError(str(exc)) from exc
+
+            logger.info(f"[导出角色卡] 立绘图片尺寸: {portrait_img.size}, 模式: {portrait_img.mode}")
+
+            if portrait_img.mode != 'RGBA':
+                portrait_img = portrait_img.convert('RGBA')
+
+            width, height = 600, 800
+            card_img = Image.new('RGBA', (width, height), color='#E8F4F8')
+            draw = ImageDraw.Draw(card_img)
+
+            header_height = height // 6
+            draw.rectangle([0, 0, width, header_height], fill='#40C5F1')
+
+            font_size = 42
+            font = None
+            font_candidates = [
+                ("msyhbd.ttc", font_size),
+                ("Microsoft YaHei Bold.ttf", font_size),
+                ("simhei.ttf", font_size),
+                ("simsun.ttc", font_size),
+                ("msyh.ttc", font_size),
+                ("Microsoft YaHei.ttf", font_size),
+            ]
+            for font_name, size in font_candidates:
+                try:
+                    font = ImageFont.truetype(font_name, size)
+                    logger.info(f"[导出角色卡] 使用字体: {font_name}")
+                    break
+                except Exception as e:
+                    logger.warning(f"[导出角色卡] 字体加载失败: {font_name}, 错误: {e}")
+                    continue
+            if font is None:
+                font = ImageFont.load_default()
+                logger.warning("[导出角色卡] 使用默认字体")
+
+            bbox = draw.textbbox((0, 0), _name, font=font)
+            text_height = bbox[3] - bbox[1]
+            text_x = 40
+            text_y = (header_height - text_height) // 2 - bbox[1]
+
+            shadow_offset = 2
+            draw.text((text_x + shadow_offset, text_y + shadow_offset), _name, fill='#00000040', font=font)
+            draw.text((text_x, text_y), _name, fill='white', font=font)
+
+            portrait_area_x = 20
+            portrait_area_y = header_height + 20
+            portrait_area_width = width - 40
+            portrait_area_height = height - header_height - 40
+            logger.info(f"[导出角色卡] 立绘区域: ({portrait_area_x}, {portrait_area_y}, {portrait_area_width}, {portrait_area_height})")
+
+            portrait_width, portrait_height = portrait_img.size
+            target_aspect = portrait_area_width / portrait_area_height
+            source_aspect = portrait_width / portrait_height
+            logger.info(f"[导出角色卡] 立绘原始尺寸: {portrait_width}x{portrait_height}, 目标比例: {target_aspect:.2f}, 源比例: {source_aspect:.2f}")
+
+            if source_aspect > target_aspect:
+                new_height = portrait_area_height
+                new_width = int(new_height * source_aspect)
+            else:
+                new_width = portrait_area_width
+                new_height = int(new_width / source_aspect)
+
+            portrait_resized = portrait_img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            logger.info(f"[导出角色卡] 立绘调整后尺寸: {new_width}x{new_height}")
+
+            paste_x = portrait_area_x + (portrait_area_width - new_width) // 2
+            paste_y = portrait_area_y + (portrait_area_height - new_height) // 2
+            logger.info(f"[导出角色卡] 立绘粘贴位置: ({paste_x}, {paste_y})")
+
+            card_img.paste(portrait_resized, (paste_x, paste_y), portrait_resized)
+            logger.info("[导出角色卡] 立绘粘贴完成")
+
+            final_img = Image.new('RGB', (width, height), color='#E8F4F8')
+            final_img.paste(card_img, (0, 0), card_img)
+
+            final_img.save(_png_path, 'PNG')
+
         try:
-            Image.MAX_IMAGE_PIXELS = 100_000_000  # 限制最大像素数防止解压炸弹
-            portrait_img = Image.open(io.BytesIO(portrait_data))
-            portrait_img.verify()
-            portrait_img = Image.open(io.BytesIO(portrait_data))  # verify()后需要重新打开
-        except Exception as e:
+            await asyncio.to_thread(_render_card_png, portrait_data, name, png_path)
+        except _InvalidPortraitError as e:
             logger.warning(f"[导出角色卡] 图片验证失败: {e}")
             return JSONResponse({'success': False, 'error': f'无效的图片文件: {str(e)}'}, status_code=400)
-
-        logger.info(f"[导出角色卡] 立绘图片尺寸: {portrait_img.size}, 模式: {portrait_img.mode}")
-
-        # 转换为RGBA模式（确保透明通道）
-        if portrait_img.mode != 'RGBA':
-            portrait_img = portrait_img.convert('RGBA')
-
-        # 3. 创建角色卡模板
-        width, height = 600, 800
-        card_img = Image.new('RGBA', (width, height), color='#E8F4F8')
-        draw = ImageDraw.Draw(card_img)
-
-        # 顶部1/6区域使用深蓝色
-        header_height = height // 6
-        draw.rectangle([0, 0, width, header_height], fill='#40C5F1')
-
-        # 在顶部左侧添加角色名称
-        # 尝试使用更美观的字体，并加粗显示
-        font_size = 42  # 增大字体
-        font = None
-
-        # 尝试多种中文字体，按优先级排序
-        font_candidates = [
-            ("msyhbd.ttc", font_size),      # 微软雅黑粗体
-            ("Microsoft YaHei Bold.ttf", font_size),  # 微软雅黑粗体（另一种名称）
-            ("simhei.ttf", font_size),      # 黑体
-            ("simsun.ttc", font_size),      # 宋体
-            ("msyh.ttc", font_size),        # 微软雅黑常规
-            ("Microsoft YaHei.ttf", font_size),  # 微软雅黑（另一种名称）
-        ]
-
-        for font_name, size in font_candidates:
-            try:
-                font = ImageFont.truetype(font_name, size)
-                logger.info(f"[导出角色卡] 使用字体: {font_name}")
-                break
-            except Exception as e:
-                logger.warning(f"[导出角色卡] 字体加载失败: {font_name}, 错误: {e}")
-                continue
-
-        if font is None:
-            font = ImageFont.load_default()
-            logger.warning("[导出角色卡] 使用默认字体")
-
-        text = name
-        bbox = draw.textbbox((0, 0), text, font=font)
-        text_width = bbox[2] - bbox[0]
-        text_height = bbox[3] - bbox[1]
-        text_x = 40  # 稍微增加左边距
-        text_y = (header_height - text_height) // 2 - bbox[1]
-
-        # 添加文字阴影效果增加可读性
-        shadow_offset = 2
-        draw.text((text_x + shadow_offset, text_y + shadow_offset), text, fill='#00000040', font=font)  # 半透明黑色阴影
-        draw.text((text_x, text_y), text, fill='white', font=font)  # 白色文字
-
-        # 4. 合成立绘到角色卡
-        # 立绘区域：顶部蓝色区域下方到卡片底部，左右留边距
-        portrait_area_x = 20
-        portrait_area_y = header_height + 20
-        portrait_area_width = width - 40
-        portrait_area_height = height - header_height - 40
-        logger.info(f"[导出角色卡] 立绘区域: ({portrait_area_x}, {portrait_area_y}, {portrait_area_width}, {portrait_area_height})")
-
-        # 计算缩放比例，保持比例，居中填充
-        portrait_width, portrait_height = portrait_img.size
-        target_aspect = portrait_area_width / portrait_area_height
-        source_aspect = portrait_width / portrait_height
-        logger.info(f"[导出角色卡] 立绘原始尺寸: {portrait_width}x{portrait_height}, 目标比例: {target_aspect:.2f}, 源比例: {source_aspect:.2f}")
-
-        if source_aspect > target_aspect:
-            # 源更宽，以高度为准
-            new_height = portrait_area_height
-            new_width = int(new_height * source_aspect)
-        else:
-            # 源更高，以宽度为准
-            new_width = portrait_area_width
-            new_height = int(new_width / source_aspect)
-
-        # 调整立绘大小
-        portrait_resized = portrait_img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-        logger.info(f"[导出角色卡] 立绘调整后尺寸: {new_width}x{new_height}")
-
-        # 计算居中位置
-        paste_x = portrait_area_x + (portrait_area_width - new_width) // 2
-        paste_y = portrait_area_y + (portrait_area_height - new_height) // 2
-        logger.info(f"[导出角色卡] 立绘粘贴位置: ({paste_x}, {paste_y})")
-
-        # 粘贴立绘（使用alpha通道）
-        card_img.paste(portrait_resized, (paste_x, paste_y), portrait_resized)
-        logger.info("[导出角色卡] 立绘粘贴完成")
-
-        # 转换为RGB模式（PNG不支持RGBA的某些特性）
-        final_img = Image.new('RGB', (width, height), color='#E8F4F8')
-        final_img.paste(card_img, (0, 0), card_img)
-
-        # 5. 保存PNG图片
-        png_path = temp_path / 'character_card.png'
-        final_img.save(png_path, 'PNG')
 
         # 6. 将压缩包数据嵌入 PNG 的 neKo 块（合法 PNG chunk，Electron 可正常预览）
         with open(png_path, 'rb') as f:
@@ -3971,4 +3965,4 @@ async def export_catgirl_with_portrait(
         return JSONResponse({'success': False, 'error': f'导出失败: {str(e)}'}, status_code=500)
     finally:
         if temp_dir and os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir, ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)

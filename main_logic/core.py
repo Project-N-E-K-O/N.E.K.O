@@ -2556,7 +2556,7 @@ class LLMSessionManager:
 
             # 每次启动会话前都清理一次无效 voice_id，避免角色配置残留旧音色导致启动异常
             try:
-                cleaned_count, legacy_names = self._config_manager.cleanup_invalid_voice_ids()
+                cleaned_count, legacy_names = await asyncio.to_thread(self._config_manager.cleanup_invalid_voice_ids)
                 if cleaned_count > 0:
                     logger.info(f"🧹 start_session 前已清理 {cleaned_count} 个无效 voice_id")
                 self._enqueue_voice_migration_notice(legacy_names)
@@ -3130,7 +3130,7 @@ class LLMSessionManager:
             
             # 热切换准备时同样清理无效 voice_id，防止旧版本 voice 残留进入热切换流程
             try:
-                cleaned_count, legacy_names = self._config_manager.cleanup_invalid_voice_ids()
+                cleaned_count, legacy_names = await asyncio.to_thread(self._config_manager.cleanup_invalid_voice_ids)
                 if cleaned_count > 0:
                     logger.info(f"🧹 热切换准备: 已清理 {cleaned_count} 个无效 voice_id")
                 self._enqueue_voice_migration_notice(legacy_names)
@@ -3336,10 +3336,17 @@ class LLMSessionManager:
                 import pyautogui
                 from utils.screenshot_utils import compress_screenshot, COMPRESS_TARGET_HEIGHT, COMPRESS_JPEG_QUALITY
                 import base64 as b64mod
-                shot = pyautogui.screenshot()
-                if shot.mode in ('RGBA', 'LA', 'P'):
-                    shot = shot.convert('RGB')
-                jpg_bytes = compress_screenshot(shot, target_h=COMPRESS_TARGET_HEIGHT, quality=COMPRESS_JPEG_QUALITY)
+                def _capture_and_compress() -> bytes:
+                    shot = pyautogui.screenshot()
+                    if shot.mode in ('RGBA', 'LA', 'P'):
+                        shot = shot.convert('RGB')
+                    return compress_screenshot(
+                        shot,
+                        target_h=COMPRESS_TARGET_HEIGHT,
+                        quality=COMPRESS_JPEG_QUALITY,
+                    )
+
+                jpg_bytes = await asyncio.to_thread(_capture_and_compress)
                 b64_str = b64mod.b64encode(jpg_bytes).decode('utf-8')
                 logger.info("[%s] request_fresh_screenshot: 后端 pyautogui 兜底成功 (%dKB)", self.lanlan_name, len(jpg_bytes) // 1024)
                 return b64_str
@@ -3765,8 +3772,9 @@ class LLMSessionManager:
             delivered = await self.session.prompt_ephemeral(instruction)
             logger.info("[%s] trigger_greeting: delivered=%s", self.lanlan_name, delivered)
             # 投递成功后才真正消费节日/周末预算
+            # commit 内部会 atomic_write_json 消费预算文件，offload 以免阻塞事件循环
             if delivered and _holiday_token is not None:
-                commit_holiday_or_weekend_hint(self.lanlan_name, _holiday_token)
+                await asyncio.to_thread(commit_holiday_or_weekend_hint, self.lanlan_name, _holiday_token)
 
     def enqueue_agent_callback(self, callback: dict) -> None:
         """Enqueue a structured agent task callback for LLM injection.

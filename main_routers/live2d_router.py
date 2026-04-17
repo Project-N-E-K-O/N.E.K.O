@@ -10,6 +10,7 @@ Handles Live2D model-related endpoints including:
 - Model upload
 """
 
+import asyncio
 import os
 import json
 import pathlib
@@ -19,7 +20,7 @@ from fastapi.responses import JSONResponse
 
 from .shared_state import get_config_manager
 from .workshop_router import get_subscribed_workshop_items
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json, atomic_write_json_async
 from utils.frontend_utils import find_models, find_model_directory, find_workshop_item_by_id
 from utils.logger_config import get_module_logger
 from utils.url_utils import encode_url_path
@@ -241,8 +242,8 @@ async def update_model_config(model_name: str, request: Request):
         if 'FileReferences' in data and 'Expressions' in data['FileReferences']:
             file_refs['Expressions'] = data['FileReferences']['Expressions']
 
-        atomic_write_json(model_json_path, current_config, ensure_ascii=False, indent=4)  # 使用 indent=4 保持格式
-            
+        await atomic_write_json_async(model_json_path, current_config, ensure_ascii=False, indent=4)  # 使用 indent=4 保持格式
+
         return {"success": True, "message": "模型配置已更新"}
     except Exception as e:
         logger.error(f"更新模型配置失败: {e}")
@@ -410,8 +411,8 @@ async def update_emotion_mapping(model_name: str, request: Request):
         config_data['EmotionMapping'] = data
 
         # 保存配置到文件
-        atomic_write_json(model_json_path, config_data, ensure_ascii=False, indent=2)
-        
+        await atomic_write_json_async(model_json_path, config_data, ensure_ascii=False, indent=2)
+
         logger.info(f"模型 {model_name} 的情绪映射配置已更新（已同步到 FileReferences）")
         return {"success": True, "message": "情绪映射配置已保存"}
     except Exception as e:
@@ -575,7 +576,7 @@ async def save_model_parameters(model_name: str, request: Request):
         
         # 保存到parameters.json文件
         parameters_file = os.path.join(model_dir, 'parameters.json')
-        atomic_write_json(parameters_file, parameters, indent=2, ensure_ascii=False)
+        await atomic_write_json_async(parameters_file, parameters, indent=2, ensure_ascii=False)
         
         logger.info(f"已保存模型参数到: {parameters_file}, 参数数量: {len(parameters)}")
         return {"success": True, "message": "参数保存成功"}
@@ -730,8 +731,8 @@ async def update_model_config_by_id(model_id: str, request: Request):
         if 'FileReferences' in data and 'Expressions' in data['FileReferences']:
             file_refs['Expressions'] = data['FileReferences']['Expressions']
 
-        atomic_write_json(model_json_path, current_config, ensure_ascii=False, indent=4)  # 使用 indent=4 保持格式
-            
+        await atomic_write_json_async(model_json_path, current_config, ensure_ascii=False, indent=4)  # 使用 indent=4 保持格式
+
         return {"success": True, "message": "模型配置已更新"}
     except Exception as e:
         logger.error(f"更新模型配置失败: {e}")
@@ -922,10 +923,10 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
                     })
                 else:
                     logger.info(f"清理残留的无效模型目录: {target_model_dir}")
-                    shutil.rmtree(target_model_dir, ignore_errors=True)
-            
+                    await asyncio.to_thread(shutil.rmtree, target_model_dir, ignore_errors=True)
+
             # 复制模型根目录到用户文档的live2d目录
-            shutil.copytree(model_root_dir, target_model_dir)
+            await asyncio.to_thread(shutil.copytree, model_root_dir, target_model_dir)
 
             # 上传后：遍历模型目录中的所有动作文件（*.motion3.json），
             # 将官方白名单参数及模型自身在 .model3.json 中声明为 LipSync 的参数的 Segments 清空为 []。
@@ -1015,7 +1016,7 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
 
                         if modified:
                             try:
-                                atomic_write_json(motion_path, motion_data, ensure_ascii=False, indent=4)
+                                await atomic_write_json_async(motion_path, motion_data, ensure_ascii=False, indent=4)
                                 logger.info(f"已清除口型参数：{motion_path}")
                             except Exception:
                                 # 写入失败则记录但不阻止上传
@@ -1038,7 +1039,7 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
         # 清理可能的残留目录
         try:
             if target_model_dir and target_model_dir.exists():
-                shutil.rmtree(target_model_dir)
+                await asyncio.to_thread(shutil.rmtree, target_model_dir)
                 logger.info(f"已清理导入失败的残留目录: {target_model_dir}")
         except Exception as cleanup_err:
             logger.warning(f"清理导入失败的残留目录时出错: {cleanup_err}")
