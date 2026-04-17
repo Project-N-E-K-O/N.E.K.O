@@ -71,6 +71,13 @@ DEFAULT_PATHS = [
     "main_logic",
     "main_routers",
     "utils",
+    # memory_server.py + its import chain (memory/ package)
+    "memory_server.py",
+    "memory",
+    # agent_server.py + its import chain (brain/ package; main_logic already
+    # in scope above)
+    "agent_server.py",
+    "brain",
 ]
 # NOTE: ``plugin/`` is intentionally NOT in the default scope. Plugin code uses
 # pyzmq sockets (``sock.connect`` / ``sock.recv`` via async zmq) and
@@ -287,6 +294,13 @@ class AsyncBlockingChecker(ast.NodeVisitor):
         self._func_stack: list[str] = []
         self.violations: list[tuple[int, int, str]] = []
         self._risky = risky_helpers or {}
+        # ids of Call nodes that are the direct target of an ``await`` —
+        # ``await q.get()`` is cooperative regardless of whether the tail
+        # name matches a queue-like heuristic, and ``await adapter.run_X()``
+        # is an async method call even when a sync helper with the same
+        # tail name exists elsewhere in the tree. Indexed by id() to avoid
+        # mutating the AST.
+        self._awaited_call_ids: set[int] = set()
 
     # ── function tracking ────────────────────────────────────────────────
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
@@ -320,9 +334,21 @@ class AsyncBlockingChecker(ast.NodeVisitor):
             return
         self.violations.append((lineno, col, message))
 
+    def visit_Await(self, node: ast.Await) -> None:
+        # Mark the directly-awaited call so visit_Call skips it. A bare
+        # ``await X(...)`` is definitionally off the event loop — whatever
+        # X refers to must return an awaitable, so tail-name heuristics
+        # that happen to match a sync helper elsewhere are irrelevant.
+        # Arguments inside X(...) are NOT marked — a blocking call passed
+        # as an argument (``await gather(requests.get(...))``) is still
+        # evaluated synchronously before the await.
+        if isinstance(node.value, ast.Call):
+            self._awaited_call_ids.add(id(node.value))
+        self.generic_visit(node)
+
     # ── the actual checks ────────────────────────────────────────────────
     def visit_Call(self, node: ast.Call) -> None:
-        if self._in_async_context():
+        if self._in_async_context() and id(node) not in self._awaited_call_ids:
             if isinstance(node.func, ast.Attribute):
                 self._check_attribute_call(node)
             self._check_direct_blocking_call(node)
