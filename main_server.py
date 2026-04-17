@@ -77,7 +77,7 @@ try:
     from main_logic.agent_event_bus import MainServerAgentBridge, notify_analyze_ack, set_main_bridge # noqa
     from fastapi.templating import Jinja2Templates # noqa
     from threading import Thread, Event as ThreadEvent # noqa
-    from queue import Queue # noqa
+    from queue import Queue, Empty as QueueEmpty # noqa
 except Exception as e:
     logger.exception(f"[Main] Module import failed during startup: {e}")
     raise
@@ -595,13 +595,12 @@ def _cleanup_character_dicts(k: str):
     """同步清理单个 catgirl 的 per-k dict 槽位。调用前确保对应线程已停或超时。"""
     # 清理队列（queue.Queue 没有 close/join_thread 方法）
     if k in sync_message_queue:
-        # while empty + get_nowait 是 racy idiom（另一线程可能抢先 drain），
-        # 正常终止只可能抛 queue.Empty，bare except 会吞 KeyboardInterrupt。
-        import queue as _queue
         try:
             while not sync_message_queue[k].empty():
                 sync_message_queue[k].get_nowait()
-        except _queue.Empty:
+        except QueueEmpty:
+            # while empty + get_nowait 本身是 racy idiom：另一线程可能先 drain 掉，
+            # 导致 get_nowait 抛 Empty。这里队列即将被 del 掉，忽略无害。
             pass
         del sync_message_queue[k]
 
