@@ -89,7 +89,21 @@ class ReflectionEngine:
         self._alocks_guard = threading.Lock()
 
     def _get_alock(self, name: str) -> asyncio.Lock:
-        """Get (or lazily create) the per-character asyncio.Lock."""
+        """Get (or lazily create) the per-character asyncio.Lock.
+
+        Thread-safety scope: this method is called from the single
+        FastAPI event-loop thread, never from asyncio.to_thread workers.
+        The outer `name not in self._alocks` check is therefore single-
+        threaded by construction. The inner check inside the guard is
+        for multi-loop robustness (e.g. test harnesses that spin up a
+        fresh loop per test). Matches the DCL pattern already used in
+        facts.py / outbox.py / cursors.py.
+
+        asyncio.Lock binding: on CPython 3.10+ Lock binds to the running
+        loop at first `acquire`/`__aenter__`, not at `__init__`. Lazy
+        construction here is defensive for 3.9 and cleaner for fresh-
+        loop tests; not strictly required on the target 3.11 runtime.
+        """
         if name not in self._alocks:
             with self._alocks_guard:
                 if name not in self._alocks:
@@ -516,7 +530,14 @@ class ReflectionEngine:
         """Check if user's recent messages confirm/deny surfaced reflections.
 
         Returns list of {reflection_id, feedback} dicts, or None on LLM/processing failure.
+
+        P2.a.2: 本方法会写回 surfaced.json（line 572），因此必须在角色锁下
+        与 arecord_surfaced / aconfirm_promotion / areject_promotion 串行。
         """
+        async with self._get_alock(lanlan_name):
+            return await self._check_feedback_locked(lanlan_name, user_messages)
+
+    async def _check_feedback_locked(self, lanlan_name: str, user_messages: list[str]) -> list[dict] | None:
         from config.prompts_memory import get_reflection_feedback_prompt
         from utils.language_utils import get_global_language
         from utils.llm_client import create_chat_llm

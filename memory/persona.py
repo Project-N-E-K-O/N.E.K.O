@@ -110,6 +110,12 @@ class PersonaManager:
         self._alocks_guard = threading.Lock()
 
     def _get_alock(self, name: str) -> asyncio.Lock:
+        """Per-character asyncio.Lock; lazy + DCL-guarded.
+
+        See reflection.py:_get_alock for full rationale. Thread-safety
+        scope: event-loop-only caller. asyncio.Lock binds to the running
+        loop at first acquire on CPython 3.10+.
+        """
         if name not in self._alocks:
             with self._alocks_guard:
                 if name not in self._alocks:
@@ -960,9 +966,12 @@ class PersonaManager:
             self.save_persona(name, persona)
 
     async def aupdate_suppressions(self, name: str) -> None:
-        persona = await self.aensure_persona(name)
-        if self._apply_update_suppressions(persona):
-            await self.asave_persona(name, persona)
+        """P2.a.2: persona.json 写回必须在角色锁下，避免与 aadd_fact /
+        arecord_mentions / aresolve_corrections 竞写。"""
+        async with self._get_alock(name):
+            persona = await self.aensure_persona(name)
+            if self._apply_update_suppressions(persona):
+                await self.asave_persona(name, persona)
 
     @staticmethod
     def _in_window(ts_str: str, cutoff: datetime) -> bool:
