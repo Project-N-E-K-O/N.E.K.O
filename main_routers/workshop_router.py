@@ -21,7 +21,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from .shared_state import get_steamworks, get_config_manager, get_initialize_character_data
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json, atomic_write_json_async, read_json_async
 from utils.workshop_utils import (
     ensure_workshop_folder_exists,
     get_workshop_path,
@@ -53,6 +53,12 @@ _ugc_sync_lock = asyncio.Lock()
 # 全局互斥锁，用于序列化 UGC 批量查询（CreateQuery → SendQuery → 回调），
 # 避免并发调用 override_callback=True 导致回调覆盖竞态
 _ugc_query_lock = asyncio.Lock()
+
+
+def _read_first_line(path: str, encoding: str = 'utf-8') -> str:
+    """同步读文件首行，供 asyncio.to_thread 调用（README.md / README.txt 元数据回退）。"""
+    with open(path, 'r', encoding=encoding) as f:
+        return f.readline()
 
 
 def _is_item_cache_valid(item_id: int) -> bool:
@@ -819,22 +825,21 @@ async def get_subscribed_workshop_items():
                         for config_path in config_files:
                             if os.path.exists(config_path):
                                 try:
-                                    with open(config_path, 'r', encoding='utf-8') as f:
-                                        if config_path.endswith('.json'):
-                                            config_data = json.load(f)
-                                            # 尝试从配置文件中提取标题和描述
-                                            if "title" in config_data and config_data["title"]:
-                                                item_info["title"] = config_data["title"]
-                                            elif "name" in config_data and config_data["name"]:
-                                                item_info["title"] = config_data["name"]
-                                            
-                                            if "description" in config_data and config_data["description"]:
-                                                item_info["description"] = config_data["description"]
-                                        else:
-                                            # 对于文本文件，将第一行作为标题
-                                            first_line = f.readline().strip()
-                                            if first_line and item_info['title'].startswith('未知物品_'):
-                                                item_info['title'] = first_line[:100]  # 限制长度
+                                    if config_path.endswith('.json'):
+                                        config_data = await read_json_async(config_path)
+                                        # 尝试从配置文件中提取标题和描述
+                                        if "title" in config_data and config_data["title"]:
+                                            item_info["title"] = config_data["title"]
+                                        elif "name" in config_data and config_data["name"]:
+                                            item_info["title"] = config_data["name"]
+                                        # description 作为 title/name 的同级分支，不应嵌在 elif name 下
+                                        if "description" in config_data and config_data["description"]:
+                                            item_info["description"] = config_data["description"]
+                                    else:
+                                        # README.md / README.txt：把首行当标题（offload sync IO）
+                                        first_line = (await asyncio.to_thread(_read_first_line, config_path)).strip()
+                                        if first_line and item_info['title'].startswith('未知物品_'):
+                                            item_info['title'] = first_line[:100]  # 限制长度
                                     logger.debug(f"从本地文件 {os.path.basename(config_path)} 成功获取物品 {item_id} 的信息")
                                     break
                                 except Exception as file_error:
@@ -1329,7 +1334,8 @@ async def unsubscribe_workshop_item(request: Request):
                             logger.info(f"已从characters.json中删除角色卡: {chara_name}")
                     
                     if deleted_count > 0:
-                        # 保存更新后的characters.json
+                        # 保存更新后的characters.json（perform_cleanup 是同步闭包，被
+                        # Steamworks 回调线程调用，这里直接走同步 save_characters）
                         config_mgr.save_characters(characters)
                         logger.info(f"已保存更新后的characters.json，删除了 {deleted_count} 个角色卡")
                         
@@ -1419,6 +1425,8 @@ async def unsubscribe_workshop_item(request: Request):
             # 设置一个延迟的后备清理机制（如果回调在5秒内没有触发）
             def delayed_cleanup():
                 import time
+                # noqa: BLOCKING-OK - 此函数仅通过 threading.Thread(daemon=True) 在后台线程运行
+                # （见下方 cleanup_thread），不会阻塞 FastAPI 主事件循环。
                 time.sleep(5)  # 等待5秒
                 logger.info(f"延迟清理检查: 如果回调未触发，执行备用清理...")
                 # 注意：这里不能直接调用，因为无法知道回调是否已执行
@@ -1477,7 +1485,7 @@ async def get_workshop_meta(character_name: str):
         decoded_name = unquote(character_name)
         
         # 读取元数据
-        meta_data = read_workshop_meta(decoded_name)
+        meta_data = await asyncio.to_thread(read_workshop_meta, decoded_name)
         
         if meta_data:
             return JSONResponse(content={
@@ -1509,7 +1517,7 @@ async def get_workshop_meta(character_name: str):
 async def get_workshop_config():
     try:
         from utils.workshop_utils import load_workshop_config
-        workshop_config_data = load_workshop_config()
+        workshop_config_data = await asyncio.to_thread(load_workshop_config)
         return {"success": True, "config": workshop_config_data}
     except Exception as e:
         logger.error(f"获取创意工坊配置失败: {str(e)}")
@@ -1524,7 +1532,7 @@ async def save_workshop_config_api(config_data: dict):
         from utils.workshop_utils import load_workshop_config, save_workshop_config, ensure_workshop_folder_exists
         
         # 先加载现有配置，避免使用全局变量导致的不一致问题
-        workshop_config_data = load_workshop_config() or {}
+        workshop_config_data = await asyncio.to_thread(load_workshop_config) or {}
         
         # 更新配置
         if 'default_workshop_folder' in config_data:
@@ -1558,7 +1566,7 @@ async def scan_local_workshop_items(request: Request):
         
         # 确保配置已加载
         from utils.workshop_utils import load_workshop_config
-        workshop_config_data = load_workshop_config()
+        workshop_config_data = await asyncio.to_thread(load_workshop_config)
         logger.info(f'创意工坊配置已加载: {workshop_config_data}')
         
         data = await request.json()
@@ -2004,7 +2012,7 @@ async def prepare_workshop_upload(request: Request):
 
         # 检查是否已存在workshop_meta.json文件（防止重复上传）
         if character_card_name:
-            meta_data = read_workshop_meta(character_card_name)
+            meta_data = await asyncio.to_thread(read_workshop_meta, character_card_name)
             if meta_data and meta_data.get('workshop_item_id'):
                 workshop_item_id = meta_data.get('workshop_item_id')
 
@@ -2032,7 +2040,7 @@ async def prepare_workshop_upload(request: Request):
         
         # 1. 复制角色卡JSON到临时目录(已验证为安全文件名)喵
         chara_file_path = os.path.join(temp_item_dir, safe_chara_name)
-        atomic_write_json(chara_file_path, chara_data, ensure_ascii=False, indent=2)
+        await atomic_write_json_async(chara_file_path, chara_data, ensure_ascii=False, indent=2)
         logger.info(f"角色卡已复制到临时目录: {chara_file_path}")
         
         # 2. 根据模型类型查找并复制模型文件
@@ -2043,7 +2051,7 @@ async def prepare_workshop_upload(request: Request):
             
             # 安全检查：防止路径穿越
             if '..' in model_name:
-                shutil.rmtree(temp_item_dir, ignore_errors=True)
+                await asyncio.to_thread(shutil.rmtree, temp_item_dir, ignore_errors=True)
                 return JSONResponse({
                     "success": False,
                     "error": "非法模型路径"
@@ -2079,7 +2087,7 @@ async def prepare_workshop_upload(request: Request):
                 
                 if source_file and source_file.exists():
                     vrm_dest = os.path.join(temp_item_dir, vrm_filename)
-                    shutil.copy2(str(source_file), vrm_dest)
+                    await asyncio.to_thread(shutil.copy2, str(source_file), vrm_dest)
                     logger.info(f"VRM模型文件已复制到临时目录: {vrm_dest}")
                     model_copied = True
                     
@@ -2097,7 +2105,7 @@ async def prepare_workshop_upload(request: Request):
                     source_dir = mmd_base / mmd_dir_name
                     if source_dir.exists() and source_dir.is_dir():
                         model_dest_dir = os.path.join(temp_item_dir, mmd_dir_name)
-                        shutil.copytree(str(source_dir), model_dest_dir, dirs_exist_ok=True)
+                        await asyncio.to_thread(shutil.copytree, str(source_dir), model_dest_dir, dirs_exist_ok=True)
                         logger.info(f"MMD模型目录已复制到临时目录: {model_dest_dir}")
                         model_copied = True
                 elif model_name.startswith('/user_mmd/') and len(path_parts) == 2:
@@ -2107,7 +2115,7 @@ async def prepare_workshop_upload(request: Request):
                     source_file = mmd_base / mmd_filename
                     if source_file.exists():
                         mmd_dest = os.path.join(temp_item_dir, mmd_filename)
-                        shutil.copy2(str(source_file), mmd_dest)
+                        await asyncio.to_thread(shutil.copy2, str(source_file), mmd_dest)
                         logger.info(f"MMD模型文件已复制到临时目录: {mmd_dest}")
                         model_copied = True
                 elif model_name.startswith('/static/mmd/'):
@@ -2119,7 +2127,7 @@ async def prepare_workshop_upload(request: Request):
                         source_dir = source_file.parent
                         dest_name = source_dir.name
                         model_dest_dir = os.path.join(temp_item_dir, dest_name)
-                        shutil.copytree(str(source_dir), model_dest_dir, dirs_exist_ok=True)
+                        await asyncio.to_thread(shutil.copytree, str(source_dir), model_dest_dir, dirs_exist_ok=True)
                         logger.info(f"MMD模型目录已复制到临时目录: {model_dest_dir}")
                         model_copied = True
                 elif model_name.startswith('/workshop/'):
@@ -2140,13 +2148,13 @@ async def prepare_workshop_upload(request: Request):
                                             source_dir = source_file.parent
                                             dest_name = source_dir.name
                                             model_dest_dir = os.path.join(temp_item_dir, dest_name)
-                                            shutil.copytree(str(source_dir), model_dest_dir, dirs_exist_ok=True)
+                                            await asyncio.to_thread(shutil.copytree, str(source_dir), model_dest_dir, dirs_exist_ok=True)
                                             logger.info(f"Workshop MMD模型目录已复制到临时目录: {model_dest_dir}")
                                             model_copied = True
                                     break
             
             if not model_copied:
-                shutil.rmtree(temp_item_dir, ignore_errors=True)
+                await asyncio.to_thread(shutil.rmtree, temp_item_dir, ignore_errors=True)
                 return JSONResponse({
                     "success": False,
                     "error": f"模型文件不存在: {model_name}"
@@ -2156,7 +2164,7 @@ async def prepare_workshop_upload(request: Request):
             model_dir, _ = find_model_directory(model_name)
             if not model_dir or not os.path.exists(model_dir):
                 # 清理临时目录
-                shutil.rmtree(temp_item_dir, ignore_errors=True)
+                await asyncio.to_thread(shutil.rmtree, temp_item_dir, ignore_errors=True)
                 return JSONResponse({
                     "success": False,
                     "error": f"模型目录不存在: {model_name}"
@@ -2164,13 +2172,13 @@ async def prepare_workshop_upload(request: Request):
             
             # 复制整个模型目录到临时目录
             model_dest_dir = os.path.join(temp_item_dir, model_name)
-            shutil.copytree(model_dir, model_dest_dir, dirs_exist_ok=True)
+            await asyncio.to_thread(shutil.copytree, model_dir, model_dest_dir, dirs_exist_ok=True)
             logger.info(f"模型文件已复制到临时目录: {model_dest_dir}")
         
         # 读取 .workshop_meta.json（如果存在）
         workshop_item_id = None
         if character_card_name:
-            meta_data = read_workshop_meta(character_card_name)
+            meta_data = await asyncio.to_thread(read_workshop_meta, character_card_name)
             if meta_data and meta_data.get('workshop_item_id'):
                 workshop_item_id = meta_data.get('workshop_item_id')
                 logger.info(f"检测到已存在的 Workshop 物品 ID: {workshop_item_id}")
@@ -2232,7 +2240,7 @@ async def cleanup_temp_folder(request: Request):
         
         # 删除临时目录
         if os.path.exists(temp_folder):
-            shutil.rmtree(temp_folder, ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, temp_folder, ignore_errors=True)
             logger.info(f"临时目录已删除: {temp_folder}")
             return JSONResponse({
                 "success": True,
@@ -2377,7 +2385,7 @@ async def publish_to_workshop(request: Request):
                 # 复制预览图片到内容文件夹
                 try:
                     import shutil
-                    shutil.copy2(preview_image, new_preview_path)
+                    await asyncio.to_thread(shutil.copy2, preview_image, new_preview_path)
                     logger.info(f'预览图片已复制到内容文件夹并统一命名: {new_preview_path}')
                     # 使用新的统一命名的预览图片路径
                     preview_image = new_preview_path
@@ -2401,7 +2409,7 @@ async def publish_to_workshop(request: Request):
                         new_preview_path = os.path.join(content_folder, f'preview{file_extension}')
                         try:
                             import shutil
-                            shutil.copy2(preview_image, new_preview_path)
+                            await asyncio.to_thread(shutil.copy2, preview_image, new_preview_path)
                             logger.info(f'自动找到的预览图片已统一命名: {new_preview_path}')
                             preview_image = new_preview_path
                         except Exception as e:
@@ -2449,9 +2457,8 @@ async def publish_to_workshop(request: Request):
                     import glob
                     chara_files = glob.glob(os.path.join(content_folder, "*.chara.json"))
                     if chara_files:
-                        with open(chara_files[0], 'r', encoding='utf-8') as f:
-                            chara_data = json.load(f)
-                            uploaded_snapshot['character_data'] = chara_data
+                        chara_data = await read_json_async(chara_files[0])
+                        uploaded_snapshot['character_data'] = chara_data
                         logger.info(f"已从临时文件夹读取角色卡数据")
                     
                     # 获取模型名称（从文件夹中查找模型目录）
@@ -2470,7 +2477,13 @@ async def publish_to_workshop(request: Request):
                     logger.warning(f"读取角色卡数据时出错: {read_error}")
                 
                 # 写入元数据文件（包含快照）
-                write_workshop_meta(character_card_name, published_file_id, content_hash, uploaded_snapshot)
+                await asyncio.to_thread(
+                    write_workshop_meta,
+                    character_card_name,
+                    published_file_id,
+                    content_hash,
+                    uploaded_snapshot,
+                )
                 logger.info(f"已更新角色卡 {character_card_name} 的 .workshop_meta.json（包含快照）")
             except Exception as e:
                 logger.error(f"更新 .workshop_meta.json 失败: {e}")
@@ -2509,6 +2522,8 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
             item_id = None
             if character_card_name:
                 try:
+                    # 注意：_publish_workshop_item 是 sync def，在 worker 线程里跑，不能用 await。
+                    # 其它 async 调用点已全部走 asyncio.to_thread，lint 已覆盖。
                     meta_data = read_workshop_meta(character_card_name)
                     if meta_data and meta_data.get('workshop_item_id'):
                         item_id = int(meta_data.get('workshop_item_id'))
@@ -2642,6 +2657,9 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
                         steamworks.run_callbacks()
                     except Exception as e:
                         logger.error(f"执行Steam回调时出错: {str(e)}")
+                    # noqa: BLOCKING-OK - _publish_workshop_item 是同步函数，上层通过
+                    # loop.run_in_executor(None, lambda: _publish_workshop_item(...)) 调度到线程池，
+                    # 因此此处 time.sleep 只阻塞 executor 工作线程，不阻塞主事件循环。
                     time.sleep(0.1)  # 每100毫秒检查一次
             
                 if not created_event.is_set():
@@ -2771,6 +2789,8 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
                                     last_progress = current_progress
                 except Exception as e:
                     logger.error(f"执行Steam回调时出错: {str(e)}")
+                # noqa: BLOCKING-OK - 同 Site 2，_publish_workshop_item 在 run_in_executor
+                # 线程池中运行，此 sleep 只阻塞 executor 工作线程，不阻塞主事件循环。
                 time.sleep(0.5)  # 每500毫秒检查一次，减少日志量
             
             if not update_event.is_set():
@@ -2847,7 +2867,7 @@ async def sync_workshop_character_cards() -> dict:
         
         # 使用全局锁序列化 load_characters -> save_characters 流程，防止并发覆写
         async with _ugc_sync_lock:
-            characters = config_mgr.load_characters()
+            characters = await config_mgr.aload_characters()
             if '猫娘' not in characters:
                 characters['猫娘'] = {}
             
@@ -2871,8 +2891,7 @@ async def sync_workshop_character_cards() -> dict:
                     
                     for chara_file_path in chara_files:
                         try:
-                            with open(chara_file_path, 'r', encoding='utf-8') as f:
-                                chara_data = json.load(f)
+                            chara_data = await read_json_async(chara_file_path)
                             
                             chara_name = chara_data.get('档案名') or chara_data.get('name')
                             if not chara_name:
@@ -2923,7 +2942,7 @@ async def sync_workshop_character_cards() -> dict:
             
             # 4. 保存并重新加载角色配置
             if need_save:
-                config_mgr.save_characters(characters)
+                await config_mgr.asave_characters(characters)
                 logger.info(f"sync_workshop_character_cards: 已保存，新增 {added_count} 个角色卡")
                 
                 try:

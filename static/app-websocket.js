@@ -159,6 +159,7 @@
         S.assistantTurnId = allocateAssistantTurnId(
             serverTurnId === undefined ? S.assistantPendingTurnServerId : serverTurnId
         );
+        S.assistantTurnStartedAt = Date.now();
         clearPendingAssistantTurnStart();
         emitAssistantLifecycleEvent('neko-assistant-turn-start', {
             turnId: S.assistantTurnId,
@@ -345,6 +346,11 @@
 
             if (S.socket && S.socket.readyState === WebSocket.CONNECTING) {
                 attachOpenListener(S.socket);
+            } else if (S.isSwitchingCatgirl) {
+                // 切换期间 handleCatgirlSwitch 独家负责新建 socket（close → sleep → connect）。
+                // 如果这里也发起 connectWebSocket，会和 handleCatgirlSwitch 的 connect 双重重连：
+                // 前一个新 socket 被后一个覆盖变成孤儿，polling 被迫重绑，5s 超时即报
+                // "WebSocket not connected"。改为仅靠下面的 polling 等新 socket 就位。
             } else {
                 // socket does not exist or CLOSED/CLOSING -> rebuild
                 if (S.autoReconnectTimeoutId) {

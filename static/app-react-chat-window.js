@@ -548,7 +548,10 @@
             shell.style.removeProperty('left');
             shell.style.removeProperty('top');
             shell.style.removeProperty('width');
-            shell.style.removeProperty('height');
+            // 不清 height：清掉会让 shell 瞬间回到 CSS 的 `height:auto;max-height:50vh`，
+            // grid `auto 1fr auto` 父容器塌缩会把 .message-list 的 clientHeight 挤到几十 px，
+            // 浏览器 clamp scrollTop → 0，下一帧 syncMobileContentLayout() 恢复 height 时已经来不及。
+            // 保留旧像素值，让紧随其后的 syncMobileContentLayout() 直接覆写，避免中间态。
             shell.style.removeProperty('transform');
             return;
         }

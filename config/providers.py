@@ -44,6 +44,10 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "glm-4.6v-flash": EXTRA_BODY_CLAUDE,
     "glm-4.7-flash": EXTRA_BODY_CLAUDE,
     "glm-4.6v": EXTRA_BODY_CLAUDE,
+    "glm-5.1": EXTRA_BODY_CLAUDE,
+    # Kimi系列
+    "kimi-k2-0905-preview": EXTRA_BODY_CLAUDE,
+    "kimi-k2.5": EXTRA_BODY_CLAUDE,
     # Silicon (zai-org) - 使用 Qwen 格式
     "zai-org/GLM-4.6V": EXTRA_BODY_OPENAI,
     # Step
@@ -51,10 +55,10 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     # Claude 系列
     "claude-sonnet-4-6": EXTRA_BODY_CLAUDE,
     "claude-haiku-4-5-20251001": EXTRA_BODY_CLAUDE,
-    "claude-opus-4-6": EXTRA_BODY_CLAUDE,
+    "claude-opus-4-7": EXTRA_BODY_CLAUDE,
     # Doubao Seed 2.0 系列
     "doubao-seed-2-0-lite-260215": EXTRA_BODY_CLAUDE,
-    "doubao-seed-2-0-mini": EXTRA_BODY_CLAUDE,
+    "doubao-seed-2-0-mini-260215": EXTRA_BODY_CLAUDE,
     "doubao-seed-2-0-pro-260215": EXTRA_BODY_CLAUDE,
     # Gemini 系列
     "gemini-2.5-flash": EXTRA_BODY_GEMINI,

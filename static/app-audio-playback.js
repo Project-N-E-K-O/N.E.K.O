@@ -490,6 +490,18 @@
 
         window.addEventListener('neko-assistant-speech-cancel', function () {
             clearAssistantTurnCompletion();
+            // [BUGFIX] 切换猫娘后语音模式 mic 永远 skip=focus 的根因：
+            // 原来只清 turn-tracking 标志，S.isPlaying 留在 true。
+            // 切换瞬间 emitAssistantSpeechCancel('character_switch') 被调，
+            // 但 S.isPlaying 没人重置，mic workletNode.onmessage 里 focus
+            // 模式把每一帧音频都 skip 掉，sent 永远是 0。
+            // 这里强制重置 isPlaying，并把 turn-bound 的音频状态一起收尾，
+            // 和正常 maybeFinalizeAssistantSpeech 的清理对齐。
+            if (S.isPlaying) {
+                S.isPlaying = false;
+            }
+            S.audioStartTime = 0;
+            try { stopActiveLipSync(); } catch (_e) { /* ignore */ }
         });
     }
 

@@ -512,3 +512,98 @@ def test_minimax_worker_incremental_synthesis_on_punctuation(monkeypatch):
     request_queue.close()
     thread.join(timeout=3.0)
     assert not thread.is_alive()
+
+
+# ---------------------------------------------------------------------------
+# Shutdown sentinel regression tests
+#
+# 历史：多进程时代关 worker 靠 process.terminate()，(None, None) 只是附送的
+# 提示。2025-12 改多线程后 .terminate() 被拿掉，但关闭路径没跟着换哨兵，导致
+# worker 把 (None, None) 当 end-of-utterance 处理，thread.join(2.0) 必然超时，
+# 线程泄漏。把 (None, None) 和 ("__shutdown__", None) 的语义钉死在测试里。
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_shutdown_sentinel_exits_minimax_worker(monkeypatch):
+    """minimax (走 _non_bistream_tts_main_loop) 收到 __shutdown__ 应在 2 秒内退出。"""
+    transport = FakeSSETransport(sse_events=[])
+
+    original_async_client = httpx.AsyncClient
+
+    def patched_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", patched_client)
+
+    request_queue = queue.Queue()
+    response_queue = queue.Queue()
+    thread = threading.Thread(
+        target=tts_client.minimax_tts_worker,
+        args=(request_queue, response_queue, "test-key", "v", "https://api.minimaxi.com"),
+        daemon=True,
+    )
+    thread.start()
+
+    _wait_for_queue_item(response_queue, lambda item: item == ("__ready__", True))
+
+    request_queue.put((tts_client.TTS_SHUTDOWN_SENTINEL, None))
+    thread.join(timeout=2.0)
+    assert not thread.is_alive(), "worker 未在 2 秒内响应 __shutdown__ 退出"
+
+
+@pytest.mark.unit
+def test_none_none_does_not_exit_minimax_worker(monkeypatch):
+    """(None, None) 是 end-of-utterance flush，不能让 worker 退出。"""
+    transport = FakeSSETransport(sse_events=[])
+
+    original_async_client = httpx.AsyncClient
+
+    def patched_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", patched_client)
+
+    request_queue = queue.Queue()
+    response_queue = queue.Queue()
+    thread = threading.Thread(
+        target=tts_client.minimax_tts_worker,
+        args=(request_queue, response_queue, "test-key", "v", "https://api.minimaxi.com"),
+        daemon=True,
+    )
+    thread.start()
+
+    _wait_for_queue_item(response_queue, lambda item: item == ("__ready__", True))
+
+    request_queue.put((None, None))
+    thread.join(timeout=1.0)
+    assert thread.is_alive(), "(None, None) 是 flush 信号，不应让 worker 退出"
+
+    request_queue.put((tts_client.TTS_SHUTDOWN_SENTINEL, None))
+    thread.join(timeout=2.0)
+    assert not thread.is_alive()
+
+
+@pytest.mark.unit
+def test_shutdown_sentinel_exits_dummy_worker():
+    """dummy worker：(None, None) continue；__shutdown__ 才退出。"""
+    request_queue = queue.Queue()
+    response_queue = queue.Queue()
+    thread = threading.Thread(
+        target=tts_client.dummy_tts_worker,
+        args=(request_queue, response_queue, "k", "v"),
+        daemon=True,
+    )
+    thread.start()
+
+    _wait_for_queue_item(response_queue, lambda item: item == ("__ready__", True))
+
+    request_queue.put((None, None))
+    thread.join(timeout=0.5)
+    assert thread.is_alive(), "dummy (None, None) 不应退出"
+
+    request_queue.put((tts_client.TTS_SHUTDOWN_SENTINEL, None))
+    thread.join(timeout=2.0)
+    assert not thread.is_alive()

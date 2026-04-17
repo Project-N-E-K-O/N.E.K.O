@@ -75,6 +75,8 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         return
     
     this_session_id = uuid.uuid4()
+    # [DIAG] stream_data 计数器：按连接独立，重连后 `#1` 首包可见
+    sd_log_counter = 0
     async with _lock:
         session_id = get_session_id()
         session_id[lanlan_name] = this_session_id
@@ -125,6 +127,16 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     await session_manager[lanlan_name].send_status(json.dumps({"code": "INVALID_INPUT_TYPE", "details": {"input_type": input_type}}))
 
             elif action == "stream_data":
+                # [DIAG] 切换猫娘后语音 STT 不触发的排查：确认前端是否送达音频
+                _input_type_dbg = message.get("input_type")
+                _data = message.get("data")
+                _data_len = len(_data) if isinstance(_data, (str, bytes, bytearray)) else -1
+                # 按连接计数，重连后 #1 首包仍可见；每 50 次打一条够判断通路是否活
+                sd_log_counter += 1
+                if sd_log_counter == 1 or sd_log_counter % 50 == 0:
+                    logger.info(
+                        f"[{lanlan_name}] stream_data #{sd_log_counter} input_type={_input_type_dbg} data_len={_data_len}"
+                    )
                 _fire_task(session_manager[lanlan_name].stream_data(message))
 
             elif action == "end_session":
