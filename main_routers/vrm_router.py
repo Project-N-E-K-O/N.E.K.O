@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse
 
 from .shared_state import get_config_manager
 from .workshop_router import get_subscribed_workshop_items
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json_async
 from utils.logger_config import get_module_logger
 
 router = APIRouter(prefix="/api/model/vrm", tags=["vrm"])
@@ -724,7 +724,7 @@ async def update_emotion_mapping(model_name: str, request: Request):
                 content={"success": False, "error": "无法创建配置目录"}
             )
 
-        atomic_write_json(config_path, normalized_data, ensure_ascii=False, indent=2)
+        await atomic_write_json_async(config_path, normalized_data, ensure_ascii=False, indent=2)
 
         logger.info(f"已保存VRM模型 {model_name} 的情感映射配置")
 

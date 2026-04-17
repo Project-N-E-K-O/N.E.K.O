@@ -612,10 +612,10 @@ class OpenFangAdapter:
         except Exception as e:
             logger.error("[OpenFang] HTTP config sync failed: %s", e)
 
-        # (3) Write config.toml
+        # (3) Write config.toml（同步文件 IO，offload 到线程）
         file_written = False
         try:
-            self._write_openfang_model_config(api_key, base_url, model)
+            await asyncio.to_thread(self._write_openfang_model_config, api_key, base_url, model)
             file_written = True
         except Exception as e:
             logger.debug("[OpenFang] config.toml write failed (non-fatal): %s", e)
@@ -819,9 +819,9 @@ class OpenFangAdapter:
             f'temperature = 0.3\n'
             f'max_tokens = 4096\n'
         )
-        # 写 .env 供 Electron 下次重启注入 OpenFang 环境
+        # 写 .env 供 Electron 下次重启注入 OpenFang 环境（同步 IO，offload）
         if neko_api_key and api_key_env:
-            self._ensure_openfang_env_var(api_key_env, neko_api_key)
+            await asyncio.to_thread(self._ensure_openfang_env_var, api_key_env, neko_api_key)
         # base_url: proxy URL (需要兼容性修补) 或直连 URL (原生支持的 provider)
         manifest_toml += f'base_url = "{effective_url}"\n'
         print(f"[OpenFang DEBUG] manifest_toml:\n{manifest_toml}")

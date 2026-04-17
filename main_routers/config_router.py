@@ -9,6 +9,7 @@ Handles configuration-related API endpoints including:
 - API providers
 """
 
+import asyncio
 import json
 import os
 import threading
@@ -19,7 +20,7 @@ from fastapi.responses import JSONResponse
 
 from .shared_state import get_config_manager, get_steamworks, get_session_manager, get_initialize_character_data
 from .characters_router import get_current_live2d_model
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json_async
 from utils.preferences import load_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top, load_global_conversation_settings, save_global_conversation_settings, GLOBAL_CONVERSATION_KEY
 from utils.logger_config import get_module_logger
 from utils.config_manager import get_reserved
@@ -348,8 +349,12 @@ async def save_preferences(request: Request):
                         width > 0 and height > 0):
                     viewport = None
 
-        # 更新偏好
-        if update_model_preferences(data['model_path'], data['position'], data['scale'], parameters, display, rotation, viewport, camera_position):
+        # 更新偏好（底层 atomic_write_json 会阻塞事件循环，offload 到线程池）
+        ok = await asyncio.to_thread(
+            update_model_preferences,
+            data['model_path'], data['position'], data['scale'], parameters, display, rotation, viewport, camera_position,
+        )
+        if ok:
             return {"success": True, "message": "偏好设置已保存"}
         else:
             return {"success": False, "error": "保存失败"}
@@ -395,7 +400,7 @@ async def save_conversation_settings(request: Request):
         if not isinstance(data, dict):
             return {"success": False, "error": "请求体必须为对象"}
 
-        if not save_global_conversation_settings(data):
+        if not await asyncio.to_thread(save_global_conversation_settings, data):
             return {"success": False, "error": "保存失败"}
 
         if 'noiseReductionEnabled' in data:
@@ -698,8 +703,8 @@ async def update_core_config(request: Request):
         if 'ttsVoiceId' in data:
             core_cfg['ttsVoiceId'] = data['ttsVoiceId']
         
-        atomic_write_json(core_config_path, core_cfg, indent=2, ensure_ascii=False)
-        
+        await atomic_write_json_async(core_config_path, core_cfg, indent=2, ensure_ascii=False)
+
         # API配置更新后，需要先通知所有客户端，再关闭session，最后重新加载配置
         logger.info("API配置已更新，准备通知客户端并重置所有session...")
         

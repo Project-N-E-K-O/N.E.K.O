@@ -8,6 +8,7 @@ import os
 import json
 import shutil
 import threading
+import asyncio
 import math
 from datetime import date
 from copy import deepcopy
@@ -488,6 +489,12 @@ class ConfigManager:
         self.chara_dir = self.app_docs_dir / "character_cards"
         self._workshop_config_lock = threading.Lock()
         self._workshop_config_cleanup_done = False
+
+        self._characters_cache: dict | None = None
+        self._characters_cache_mtime: float | None = None
+        self._characters_cache_path: str | None = None
+        self._characters_dirty: bool = False
+        self._characters_cache_lock = threading.Lock()
 
         self.project_config_dir = self._get_project_config_directory()
         self.project_memory_dir = self._get_project_memory_directory()
@@ -1008,15 +1015,33 @@ class ConfigManager:
         if character_json_path is None:
             character_json_path = str(self.get_config_path('characters.json'))
 
+        with self._characters_cache_lock:
+            cache = self._characters_cache
+            cache_path = self._characters_cache_path
+            cache_mtime = self._characters_cache_mtime
+        if cache is not None and cache_path == character_json_path:
+            try:
+                current_mtime = os.path.getmtime(character_json_path)
+            except OSError:
+                current_mtime = None
+            if current_mtime is not None and current_mtime == cache_mtime:
+                return deepcopy(cache)
+
         try:
             with open(character_json_path, 'r', encoding='utf-8') as f:
                 character_data = json.load(f)
+            try:
+                loaded_mtime = os.path.getmtime(character_json_path)
+            except OSError:
+                loaded_mtime = None
         except FileNotFoundError:
             logger.info("未找到猫娘配置文件 %s，使用默认配置。", character_json_path)
             character_data = self.get_default_characters()
+            loaded_mtime = None
         except Exception as e:
             logger.error("读取猫娘配置文件出错: %s，使用默认人设。", e)
             character_data = self.get_default_characters()
+            loaded_mtime = None
 
         migrated = False
         if not isinstance(character_data, dict):
@@ -1039,10 +1064,16 @@ class ConfigManager:
                 logger.info("检测到旧版角色保留字段，已自动迁移到 _reserved 结构。")
             except Exception as migrate_err:
                 logger.warning("自动迁移角色保留字段后写回失败: %s", migrate_err)
+        else:
+            with self._characters_cache_lock:
+                self._characters_cache = deepcopy(character_data)
+                self._characters_cache_mtime = loaded_mtime
+                self._characters_cache_path = character_json_path
+                self._characters_dirty = False
         return character_data
 
     def save_characters(self, data, character_json_path=None):
-        """保存角色配置"""
+        """保存角色配置（同步版本，会阻塞事件循环；async 路径请用 asave_characters）"""
         if character_json_path is None:
             character_json_path = str(self.get_config_path('characters.json'))
 
@@ -1050,6 +1081,19 @@ class ConfigManager:
         self.ensure_config_directory()
 
         atomic_write_json(character_json_path, data, ensure_ascii=False, indent=2)
+        try:
+            new_mtime = os.path.getmtime(character_json_path)
+        except OSError:
+            new_mtime = None
+        with self._characters_cache_lock:
+            self._characters_cache = deepcopy(data)
+            self._characters_cache_mtime = new_mtime
+            self._characters_cache_path = character_json_path
+            self._characters_dirty = False
+
+    async def asave_characters(self, data, character_json_path=None):
+        """async 包装：事件循环上禁止直接走同步版本（atomic_write_json 会阻塞）。"""
+        return await asyncio.to_thread(self.save_characters, data, character_json_path)
 
     # --- Voice storage helpers ---
 
@@ -1398,7 +1442,16 @@ class ConfigManager:
                     her_name,
                 )
                 character_data['当前猫娘'] = her_name
-                self.save_characters(character_data)
+                # 罕见分支（仅配置损坏/删除猫娘后触发），同步落盘以保证重启后修正仍生效。
+                # save_characters 内部会刷新 cache，这里无需再手动同步。
+                try:
+                    self.save_characters(character_data)
+                except Exception as persist_err:
+                    logger.warning("自动纠正当前猫娘后写回失败，将仅保留内存修正: %s", persist_err)
+                    with self._characters_cache_lock:
+                        if self._characters_cache is not None:
+                            self._characters_cache['当前猫娘'] = her_name
+                        self._characters_dirty = True
 
         name_mapping = {'human': master_name, 'system': "SYSTEM_MESSAGE"}
         lanlan_prompt_map = {}
@@ -1433,6 +1486,9 @@ class ConfigManager:
             setting_store,
             recent_log,
         )
+
+    async def aget_character_data(self):
+        return await asyncio.to_thread(self.get_character_data)
 
     # --- Core config helpers ---
 
@@ -2068,6 +2124,13 @@ class ConfigManager:
                 "remaining": max(0, limit - used),
                 "source": source or "",
             }
+
+    async def aconsume_agent_daily_quota(self, source: str = "", units: int = 1) -> tuple[bool, dict]:
+        """Async wrapper of ``consume_agent_daily_quota``.
+
+        事件循环上禁止直接走同步版本（会 open+fsync 阻塞）。
+        """
+        return await asyncio.to_thread(self.consume_agent_daily_quota, source, units)
 
     def load_json_config(self, filename, default_value=None):
         """
