@@ -135,7 +135,14 @@
                 {{ $t('plugins.pluginsSection') }} ({{ filteredPurePlugins.length }})
               </span>
             </div>
-            <TransitionGroup name="list" tag="div" class="plugin-grid" :class="pluginGridClass">
+            <TransitionGroup
+              name="list"
+              tag="div"
+              class="plugin-grid"
+              :class="pluginGridClass"
+              @before-leave="pinLeavingItem"
+              @after-leave="clearLeavingItemStyles"
+            >
               <div
                 v-for="plugin in filteredPurePlugins"
                 :key="plugin.id"
@@ -168,7 +175,14 @@
                 {{ $t('plugins.adaptersSection') }} ({{ filteredAdapters.length }})
               </span>
             </div>
-            <TransitionGroup name="list" tag="div" class="plugin-grid" :class="pluginGridClass">
+            <TransitionGroup
+              name="list"
+              tag="div"
+              class="plugin-grid"
+              :class="pluginGridClass"
+              @before-leave="pinLeavingItem"
+              @after-leave="clearLeavingItemStyles"
+            >
               <div
                 v-for="adapter in filteredAdapters"
                 :key="adapter.id"
@@ -201,7 +215,14 @@
                 {{ $t('plugins.extensionsSection') }} ({{ filteredExtensions.length }})
               </span>
             </div>
-            <TransitionGroup name="list" tag="div" class="plugin-grid" :class="pluginGridClass">
+            <TransitionGroup
+              name="list"
+              tag="div"
+              class="plugin-grid"
+              :class="pluginGridClass"
+              @before-leave="pinLeavingItem"
+              @after-leave="clearLeavingItemStyles"
+            >
               <div
                 v-for="ext in filteredExtensions"
                 :key="ext.id"
@@ -428,6 +449,22 @@ function handlePluginPrimaryAction(pluginId: string) {
 
 function toggleMultiSelectMode() {
   toggleMultiSelect()
+}
+
+function pinLeavingItem(element: Element) {
+  const node = element as HTMLElement
+  node.style.left = `${node.offsetLeft}px`
+  node.style.top = `${node.offsetTop}px`
+  node.style.width = `${node.offsetWidth}px`
+  node.style.height = `${node.offsetHeight}px`
+}
+
+function clearLeavingItemStyles(element: Element) {
+  const node = element as HTMLElement
+  node.style.left = ''
+  node.style.top = ''
+  node.style.width = ''
+  node.style.height = ''
 }
 
 function togglePackagePanel() {
@@ -691,7 +728,8 @@ onUnmounted(() => {
   align-items: center;
   gap: 12px;
   min-height: 32px;
-  min-width: min(100%, 520px);
+  width: min(100%, 460px);
+  min-width: 0;
 }
 
 .selection-toolbar__expanded {
@@ -714,8 +752,9 @@ onUnmounted(() => {
   display: flex;
   gap: 12px;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: flex-end;
+  min-width: 0;
 }
 
 .filter-bar {
@@ -834,6 +873,7 @@ onUnmounted(() => {
   display: grid;
   gap: 16px;
   align-items: stretch;
+  position: relative;
 }
 
 .plugin-grid--list,
@@ -854,6 +894,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   height: 100%;
+  will-change: transform, opacity;
 }
 
 .plugin-item--selection-mode {
@@ -946,21 +987,40 @@ onUnmounted(() => {
 
 .list-enter-active,
 .list-leave-active {
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition:
+    transform 0.34s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.24s ease,
+    filter 0.24s ease;
 }
 
 .list-enter-from {
   opacity: 0;
-  transform: scale(0.9) translateY(10px);
+  transform: scale(0.94) translateY(12px);
+  filter: blur(6px);
 }
 
 .list-leave-to {
   opacity: 0;
-  transform: scale(0.9) translateY(-10px);
+  transform: scale(0.94) translateY(-12px);
+  filter: blur(6px);
+}
+
+.list-enter-to,
+.list-leave-from {
+  opacity: 1;
+  transform: scale(1) translateY(0);
+  filter: blur(0);
+}
+
+.list-leave-active {
+  position: absolute;
+  z-index: 0;
+  pointer-events: none;
+  margin: 0;
 }
 
 .list-move {
-  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform 0.34s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 @media (max-width: 1280px) {
@@ -986,6 +1046,11 @@ onUnmounted(() => {
 
   .selection-toolbar {
     min-width: 0;
+    width: 100%;
+  }
+
+  .header-actions {
+    flex-wrap: wrap;
   }
 
   .plugin-grid--compact {
