@@ -1073,16 +1073,6 @@ window.Jukebox = {
       this.restorePanelScrollState(panel, scrollState);
     },
 
-    refreshAllPanels() {
-      const songsPanel = document.querySelector('.songs-panel .sam-panel-content');
-      if (songsPanel) this.renderSongs(songsPanel);
-
-      const actionsPanel = document.querySelector('.actions-panel .sam-panel-content');
-      if (actionsPanel) this.renderActions(actionsPanel);
-
-      const bindingsPanel = document.querySelector('.bindings-panel .sam-panel-content');
-      if (bindingsPanel) this.renderBindings(bindingsPanel);
-    },
     
     // 初始化选择集合
     initSelection() {

@@ -1,4 +1,5 @@
 import re
+import time
 from pathlib import Path
 
 import pytest
@@ -8,7 +9,9 @@ from playwright.sync_api import Page
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MANAGER_TEMPLATE = (REPO_ROOT / "templates" / "jukebox_manager.html").read_text(encoding="utf-8")
 INLINE_SCRIPTS = re.findall(r"<script\b(?![^>]*\bsrc=)[^>]*>(.*?)</script>", MANAGER_TEMPLATE, flags=re.S)
-MANAGER_SCRIPT = next(script for script in INLINE_SCRIPTS if "_bindManagerStandaloneDrag" in script)
+MANAGER_SCRIPT = next((script for script in INLINE_SCRIPTS if "_bindManagerStandaloneDrag" in script), None)
+if MANAGER_SCRIPT is None:
+    raise RuntimeError("manager template missing inline script containing '_bindManagerStandaloneDrag'")
 JUKEBOX_SCRIPT = (REPO_ROOT / "static" / "Jukebox.js").read_text(encoding="utf-8")
 
 HARNESS_HTML = """
@@ -151,6 +154,19 @@ def _bootstrap_manager_page(page: Page) -> None:
     page.wait_for_selector(".jukebox-sam-panel")
 
 
+def _wait_for_manager_drag_log(page: Page, timeout: float = 1.0, interval: float = 0.02):
+    deadline = time.monotonic() + timeout
+    drag_log = []
+
+    while time.monotonic() < deadline:
+        drag_log = page.evaluate("window.__managerLog")
+        if any(entry[0] == "setBounds" and (entry[1] != 100 or entry[2] != 120) for entry in drag_log):
+            return drag_log
+        time.sleep(interval)
+
+    return drag_log
+
+
 @pytest.mark.frontend
 def test_jukebox_manager_standalone_fast_drag_survives_async_bounds(mock_page: Page):
     _bootstrap_manager_page(mock_page)
@@ -166,8 +182,7 @@ def test_jukebox_manager_standalone_fast_drag_survives_async_bounds(mock_page: P
     body_class = mock_page.locator("body").get_attribute("class") or ""
     assert "neko-jukebox-manager-standalone-dragging" not in body_class
 
-    mock_page.wait_for_timeout(250)
-    drag_log = mock_page.evaluate("window.__managerLog")
+    drag_log = _wait_for_manager_drag_log(mock_page)
     assert any(entry[0] == "setBounds" and (entry[1] != 100 or entry[2] != 120) for entry in drag_log)
 
     body_class = mock_page.locator("body").get_attribute("class") or ""
@@ -202,7 +217,7 @@ def test_jukebox_manager_standalone_ignores_post_release_pointer_moves(mock_page
     mock_page.mouse.up()
     mock_page.mouse.move(after_release_x, after_release_y)
 
-    mock_page.wait_for_timeout(250)
+    _wait_for_manager_drag_log(mock_page)
 
     final_bounds = mock_page.evaluate("window.__bounds")
     assert final_bounds["x"] == expected_x
