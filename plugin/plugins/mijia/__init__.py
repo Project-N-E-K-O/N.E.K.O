@@ -7,10 +7,27 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
+from utils.file_utils import atomic_write_json_async, read_json_async
+
 from plugin.sdk.plugin import (
     NekoPluginBase, neko_plugin, plugin_entry, lifecycle, timer_interval,
     Ok, Err, SdkError, get_plugin_logger
 )
+
+
+# ── 同步 helper（避免 async def 内直接调 subprocess 阻塞事件循环）────────────
+def _open_url_in_browser(url: str) -> None:
+    """在默认浏览器打开 URL（同步调用，仅供 asyncio.to_thread 使用）"""
+    try:
+        if sys.platform == "win32":
+            subprocess.Popen(["cmd", "/c", "start", "", url], shell=False)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", url])
+        else:
+            subprocess.Popen(["xdg-open", url])
+    except Exception:
+        raise   # 抛到调用方统一 catch
+
 
 # 导入内嵌的 mijia_api
 from .mijia_api import create_async_api_client
@@ -101,12 +118,7 @@ class MijiaPlugin(NekoPluginBase):
         """打开浏览器配置页面（立即执行，无延迟）"""
         url = "http://localhost:48916/plugin/mijia/ui/"
         try:
-            if sys.platform == "win32":
-                subprocess.Popen(["cmd", "/c", "start", "", url], shell=False)
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", url])
-            else:
-                subprocess.Popen(["xdg-open", url])
+            await asyncio.to_thread(_open_url_in_browser, url)
             self.logger.info(f"已自动打开配置页面: {url}")
         except Exception as e:
             self.logger.warning(f"自动打开配置页面失败: {e}")
@@ -131,12 +143,7 @@ class MijiaPlugin(NekoPluginBase):
         """在浏览器中打开米家配置页面"""
         url = "http://localhost:48916/plugin/mijia/ui/"
         try:
-            if sys.platform == "win32":
-                subprocess.Popen(["cmd", "/c", "start", "", url], shell=False)
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", url])
-            else:
-                subprocess.Popen(["xdg-open", url])
+            await asyncio.to_thread(_open_url_in_browser, url)
             self.logger.info(f"已在浏览器中打开: {url}")
             return Ok({"success": True, "url": url, "message": "已在浏览器打开配置页面"})
         except Exception as e:
@@ -178,7 +185,8 @@ class MijiaPlugin(NekoPluginBase):
         if not self.credential_path or not self.credential_path.exists():
             return None
         try:
-            text = self.credential_path.read_text().strip()
+            text = await asyncio.to_thread(self.credential_path.read_text)
+            text = text.strip()
             if not text:
                 # 文件存在但内容为空，视同未登录
                 return None
@@ -197,13 +205,18 @@ class MijiaPlugin(NekoPluginBase):
         """保存凭据到文件,权限600"""
         if not self.credential_path:
             self.credential_path = self.data_path("credential.json")
-        self.credential_path.parent.mkdir(parents=True, exist_ok=True)
-        self.credential_path.write_text(credential.model_dump_json())
+
+        # 确保目录存在（使用 to_thread 避免阻塞）
+        await asyncio.to_thread(self.credential_path.parent.mkdir, parents=True, exist_ok=True)
+
+        # 写入凭据内容
+        await asyncio.to_thread(
+            self.credential_path.write_text, credential.model_dump_json()
+        )
+
         # 设置文件权限（仅所有者可读写）
         if sys.platform == "win32":
             try:
-                import subprocess
-
                 def _apply_windows_acl() -> tuple[int, str]:
                     username = subprocess.check_output(
                         ["cmd", "/c", "echo", "%USERNAME%"], text=True
@@ -227,7 +240,7 @@ class MijiaPlugin(NekoPluginBase):
             except Exception as e:
                 self.logger.warning(f"设置凭据文件权限失败(Windows): {e}")
         else:
-            self.credential_path.chmod(0o600)
+            await asyncio.to_thread(self.credential_path.chmod, 0o600)
         self.logger.info("凭据已保存")
 
     async def _refresh_credential(self, credential: Credential) -> Optional[Credential]:
@@ -381,22 +394,28 @@ class MijiaPlugin(NekoPluginBase):
         """清除本地凭据和数据"""
         # 删除凭据文件
         if self.credential_path and self.credential_path.exists():
-            self.credential_path.unlink()
-        
-        # 清空 data 文件夹
+            await asyncio.to_thread(self.credential_path.unlink)
+
+        # 清空 data 文件夹（使用线程避免阻塞）
         data_dir = self.data_path()
         if data_dir and data_dir.exists():
-            deleted = 0
-            for item in data_dir.iterdir():
-                try:
-                    if item.is_file():
-                        item.unlink()
-                        deleted += 1
-                    elif item.is_dir():
-                        shutil.rmtree(item)
-                        deleted += 1
-                except Exception as e:
-                    self.logger.warning(f"删除数据文件失败 {item}: {e}")
+
+            def _delete_all():
+                deleted = 0
+                for item in data_dir.iterdir():
+                    try:
+                        if item.is_file():
+                            item.unlink()
+                            deleted += 1
+                        elif item.is_dir():
+                            shutil.rmtree(item)
+                            deleted += 1
+                    except Exception as e:
+                        self.logger.warning(f"删除数据文件失败 {item}: {e}")
+                return deleted
+
+            deleted = await asyncio.to_thread(_delete_all)
+            self.logger.debug(f"已删除 {deleted} 个数据文件")
         
         # 关闭旧 client 再置 None，防止 HttpClient / CacheManager 资源泄漏
         old_api = self.api
@@ -458,34 +477,33 @@ class MijiaPlugin(NekoPluginBase):
     async def list_devices(self, home_id: str = None, refresh: bool = False, **_):
         """获取设备列表并缓存"""
         cache_path = self.data_path("devices_cache.json")
-        
-        # 如果不强制刷新，尝试从缓存读取
-        if not refresh and cache_path.exists():
+
+        # 如果不强制刷新，尝试从缓存读取（必须已登录，防止跨用户缓存泄露）
+        if not refresh and cache_path.exists() and self.api:
             try:
-                with open(cache_path, 'r', encoding='utf-8') as f:
-                    cached = json.load(f)
+                cached = await read_json_async(cache_path)
                 # 跨用户/家庭校验，防止缓存泄漏
                 cache_home_id = cached.get('home_id')
                 cache_user_id = cached.get('user_id')
-                current_user_id = self.api.credential.user_id if self.api and self.api.credential else None
-                if cache_home_id != home_id or (current_user_id and cache_user_id != current_user_id):
-                    self.logger.warning(
-                        f"缓存归属不匹配(user_id: {cache_user_id}→{current_user_id}, "
-                        f"home_id: {cache_home_id}→{home_id})，跳过缓存"
-                    )
-                else:
+                current_user_id = self.api.credential.user_id if self.api.credential else None
+                # 归属匹配才返回缓存；不匹配时跳过缓存，继续走网络请求
+                if cache_home_id == home_id and (not current_user_id or cache_user_id == current_user_id):
                     devices = cached.get('devices', [])
                     self.logger.info(f"从缓存读取设备列表: {len(devices)} 个设备")
-                    # 构建友好消息（与网络请求分支保持一致）
                     lines = [f"📱 共有 {len(devices)} 个设备（缓存）:"]
                     for d in devices:
                         status = "🟢" if d.get("is_online") else "🔴"
                         lines.append(f"  {status} {d.get('name')} (型号: {d.get('model')})")
                     message = "\n".join(lines)
                     return Ok({"success": True, "message": message, "devices": devices, "from_cache": True, "count": len(devices)})
+                else:
+                    self.logger.warning(
+                        f"缓存归属不匹配(user_id: {cache_user_id}→{current_user_id}, "
+                        f"home_id: {cache_home_id}→{home_id})，跳过缓存"
+                    )
             except Exception as e:
                 self.logger.warning(f"读取缓存失败: {e}")
-        
+
         if not self.api:
             return Err(SdkError("未登录"))
         
@@ -552,11 +570,15 @@ class MijiaPlugin(NekoPluginBase):
                 
                 result.append(device_info)
             
-            # 保存到缓存
+            # 保存到缓存（使用异步写入避免阻塞）
             try:
                 user_id = self.api.credential.user_id if self.api and self.api.credential else None
-                with open(cache_path, 'w', encoding='utf-8') as f:
-                    json.dump({"devices": result, "home_id": home_id, "user_id": user_id}, f, ensure_ascii=False, indent=2)
+                await atomic_write_json_async(
+                    cache_path,
+                    {"devices": result, "home_id": home_id, "user_id": user_id},
+                    ensure_ascii=False,
+                    indent=2
+                )
                 self.logger.info(f"设备列表已缓存: {len(result)} 个设备")
             except Exception as e:
                 self.logger.warning(f"保存缓存失败: {e}")
@@ -591,31 +613,31 @@ class MijiaPlugin(NekoPluginBase):
     async def get_cached_devices(self, refresh: bool = False, **_):
         """获取缓存的设备列表"""
         cache_path = self.data_path("devices_cache.json")
-        
-        if not refresh and cache_path.exists():
+
+        # 必须已登录才能读缓存，防止跨用户缓存泄露
+        if not refresh and cache_path.exists() and self.api:
             try:
-                with open(cache_path, 'r', encoding='utf-8') as f:
-                    cached = json.load(f)
+                cached = await read_json_async(cache_path)
                 # 跨用户校验，防止缓存泄漏
                 cache_user_id = cached.get('user_id')
-                current_user_id = self.api.credential.user_id if self.api and self.api.credential else None
-                if current_user_id and cache_user_id != current_user_id:
-                    self.logger.warning(
-                        f"缓存归属不匹配(user_id: {cache_user_id}→{current_user_id})，跳过缓存"
-                    )
-                else:
+                current_user_id = self.api.credential.user_id if self.api.credential else None
+                # 归属匹配才返回缓存；不匹配时跳过，继续走网络请求
+                if not current_user_id or cache_user_id == current_user_id:
                     devices = cached.get('devices', [])
                     self.logger.info(f"AI 从缓存读取设备列表: {len(devices)} 个设备")
-                    # 构建友好消息
                     lines = [f"📱 共有 {len(devices)} 个设备:"]
                     for d in devices:
                         status = "🟢" if d.get("is_online") else "🔴"
                         lines.append(f"  {status} {d.get('name')} (型号: {d.get('model')})")
                     message = "\n".join(lines)
                     return Ok({"success": True, "message": message, "devices": devices, "from_cache": True, "count": len(devices)})
+                else:
+                    self.logger.warning(
+                        f"缓存归属不匹配(user_id: {cache_user_id}→{current_user_id})，跳过缓存"
+                    )
             except Exception as e:
                 self.logger.warning(f"读取缓存失败: {e}")
-        
+
         # 缓存不存在或刷新，调用 list_devices
         return await self.list_devices(refresh=refresh)
 
@@ -640,18 +662,12 @@ class MijiaPlugin(NekoPluginBase):
         # 如果不强制刷新，尝试从缓存读取（必须已登录，防止跨用户缓存泄露）
         if not refresh and cache_path.exists() and self.api:
             try:
-                with open(cache_path, 'r', encoding='utf-8') as f:
-                    cached = json.load(f)
+                cached = await read_json_async(cache_path)
                 cache_home_id = cached.get('home_id')
                 cache_user_id = cached.get('user_id')
                 current_user_id = self.api.credential.user_id if self.api.credential else None
                 # 归属不匹配：跳过缓存，继续走网络请求
-                if cache_home_id != home_id or (current_user_id and cache_user_id != current_user_id):
-                    self.logger.warning(
-                        f"场景缓存归属不匹配(user_id: {cache_user_id}→{current_user_id}, "
-                        f"home_id: {cache_home_id}→{home_id})，跳过缓存"
-                    )
-                else:
+                if cache_home_id == home_id and (not current_user_id or cache_user_id == current_user_id):
                     scenes = cached.get('scenes', [])
                     self.logger.info(f"AI 从缓存读取场景列表: {len(scenes)} 个场景")
                     lines = [f"🎬 共有 {len(scenes)} 个智能场景:"]
@@ -659,6 +675,11 @@ class MijiaPlugin(NekoPluginBase):
                         lines.append(f"  • {s.get('name')} (ID: {s.get('id')})")
                     message = "\n".join(lines)
                     return Ok({"success": True, "message": message, "scenes": scenes, "from_cache": True, "count": len(scenes)})
+                else:
+                    self.logger.warning(
+                        f"场景缓存归属不匹配(user_id: {cache_user_id}→{current_user_id}, "
+                        f"home_id: {cache_home_id}→{home_id})，跳过缓存"
+                    )
             except Exception as e:
                 self.logger.warning(f"读取场景缓存失败: {e}")
 
@@ -680,11 +701,15 @@ class MijiaPlugin(NekoPluginBase):
             scenes = await self.api.get_scenes(home_id)
             result = [{"id": s.get("id"), "name": s.get("name"), "status": s.get("status")} for s in scenes if s.get("id")]
 
-            # 保存缓存
+            # 保存缓存（使用异步写入避免阻塞）
             try:
                 user_id = self.api.credential.user_id if self.api and self.api.credential else None
-                with open(cache_path, 'w', encoding='utf-8') as f:
-                    json.dump({"scenes": result, "home_id": home_id, "user_id": user_id}, f, ensure_ascii=False, indent=2)
+                await atomic_write_json_async(
+                    cache_path,
+                    {"scenes": result, "home_id": home_id, "user_id": user_id},
+                    ensure_ascii=False,
+                    indent=2
+                )
                 self.logger.info(f"场景列表已缓存: {len(result)} 个场景")
             except Exception as e:
                 self.logger.warning(f"保存场景缓存失败: {e}")
@@ -721,8 +746,7 @@ class MijiaPlugin(NekoPluginBase):
             return Err(SdkError("设备缓存不存在，请先获取设备列表"))
 
         try:
-            with open(cache_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
+            data = await read_json_async(cache_path)
             devices = data.get("devices", [])
             found = False
             for d in devices:
@@ -739,8 +763,7 @@ class MijiaPlugin(NekoPluginBase):
             if not found:
                 return Err(SdkError(f"未找到 DID 为 {did} 的设备"))
 
-            with open(cache_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            await atomic_write_json_async(cache_path, data, ensure_ascii=False, indent=2)
 
             return Ok({"success": True, "message": msg, "did": did, "alias": alias.strip() if alias else ""})
         except Exception as e:
@@ -759,8 +782,7 @@ class MijiaPlugin(NekoPluginBase):
             return Ok({"success": True, "aliases": {}, "message": "无缓存数据"})
 
         try:
-            with open(cache_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
+            data = await read_json_async(cache_path)
             devices = data.get("devices", [])
             aliases = {d.get("did"): d.get("alias", "") for d in devices if d.get("alias")}
             lines = [f"📝 共有 {len(aliases)} 个设备别名:"]
@@ -787,7 +809,7 @@ class MijiaPlugin(NekoPluginBase):
     async def find_device_by_name(self, name: str, **_):
         """根据名称查找设备"""
         cache_path = self.data_path("devices_cache.json")
-        
+
         if not cache_path.exists():
             # 缓存不存在，先获取设备列表
             result = await self.list_devices()
@@ -796,8 +818,7 @@ class MijiaPlugin(NekoPluginBase):
             devices = result.value.get('devices', [])
         else:
             try:
-                with open(cache_path, 'r', encoding='utf-8') as f:
-                    cached = json.load(f)
+                cached = await read_json_async(cache_path)
                 devices = cached.get('devices', [])
             except Exception as e:
                 return Err(SdkError(f"读取缓存失败: {e}"))
