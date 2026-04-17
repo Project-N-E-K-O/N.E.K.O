@@ -1600,8 +1600,13 @@ class OmniRealtimeClient:
                     # Priority 1: server VAD → sync to unified _client_vad_active
                     self._client_vad_active = True
                     self._client_vad_last_speech_time = self._last_speech_time
-                    # B: server-VAD 也喂给 _user_recent_activity，保持各 VAD 源对称
-                    self._user_recent_activity_time = self._last_speech_time
+                    # B: server-VAD 也喂给 _user_recent_activity，保持各 VAD 源对称。
+                    # 但 fudge 注入期间 server 会对我们自己 append 的 fudge 音频
+                    # 回 speech_started —— 这不是真用户活动，若打点 prompt_ephemeral
+                    # 循环会检测到 _user_recent_activity_time > _inject_start 而自 abort，
+                    # 并在之后 8s 内阻塞下一次 fudge（入口 guard 一起被污染）。
+                    if not self._proactive_injecting:
+                        self._user_recent_activity_time = self._last_speech_time
                     if self._is_responding:
                         logger.info("Handling interruption")
                         await self.handle_interruption()
@@ -1613,7 +1618,10 @@ class OmniRealtimeClient:
                     # Update timestamp so grace period starts from speech end
                     _now = time.time()
                     self._client_vad_last_speech_time = _now
-                    self._user_recent_activity_time = _now
+                    # 同 speech_started：fudge 自己的音频结束时 server 也会 emit
+                    # speech_stopped，不能当成真用户活动打点。
+                    if not self._proactive_injecting:
+                        self._user_recent_activity_time = _now
                 elif event_type == "conversation.item.input_audio_transcription.completed":
                     self._print_input_transcript = True
                     transcript = event.get("transcript", "")
