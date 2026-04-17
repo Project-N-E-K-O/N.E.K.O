@@ -3205,7 +3205,11 @@
         beginTerminationVisualCleanup() {
             this.clearSceneTimers();
             this.disableInterrupts();
+            this.cancelActiveNarration();
+            this.voiceQueue.stop();
+            this.clearAllVirtualSpotlights();
             this.clearPreciseHighlights();
+            this.clearSpotlightVariantHints();
             this.clearAllExtraSpotlights();
             this.cleanupTutorialReturnButtons();
             this.customSecondarySpotlightTarget = null;

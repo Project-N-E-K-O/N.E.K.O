@@ -2598,6 +2598,14 @@ class UniversalTutorialManager {
             if (e && typeof e.stopPropagation === 'function') {
                 e.stopPropagation();
             }
+            const director = this.isYuiGuideEnabledForPage(this.currentPage)
+                ? this.ensureYuiGuideDirector()
+                : null;
+            if (director && typeof director.skip === 'function') {
+                this.callYuiGuideDirector('skip', 'skip', 'skip');
+                return;
+            }
+
             this.requestTutorialDestroy('skip');
         };
 

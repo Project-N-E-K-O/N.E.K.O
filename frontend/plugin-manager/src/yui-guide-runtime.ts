@@ -577,6 +577,10 @@ class PluginDashboardGuideRuntime {
     if (this.root && this.root.parentNode) {
       this.root.parentNode.removeChild(this.root)
     }
+    const runtimeStyle = document.getElementById(`${ROOT_ID}-style`)
+    if (runtimeStyle && runtimeStyle.parentNode) {
+      runtimeStyle.parentNode.removeChild(runtimeStyle)
+    }
     this.root = null
     this.backdrop = null
     this.backdropBase = null
