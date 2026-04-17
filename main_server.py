@@ -567,7 +567,8 @@ async def _init_character_resources(k: str, is_new_character: bool):
             sync_process[k].start()
             logger.info(f"✅ 已为角色 {k} 启动同步连接器线程 ({sync_process[k].name})")
             await asyncio.sleep(0.1)  # 线程启动更快，减少等待时间
-            if not sync_process[k].is_alive():
+            # 与上面 L533 的 is_alive 检查保持一致，走 to_thread 避免任何潜在阻塞
+            if not await asyncio.to_thread(sync_process[k].is_alive):
                 logger.error(f"❌ 同步连接器线程 {k} ({sync_process[k].name}) 启动后立即退出！")
             else:
                 logger.info(f"✅ 同步连接器线程 {k} ({sync_process[k].name}) 正在运行")
@@ -613,6 +614,9 @@ def _cleanup_character_dicts(k: str):
         del session_id[k]
     if k in sync_process:
         del sync_process[k]
+    # 与 _ensure_character_slots 对称：避免反复增删同名角色时累积 Lock 对象
+    if k in websocket_locks:
+        del websocket_locks[k]
 
 
 async def initialize_character_data():

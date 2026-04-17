@@ -1551,7 +1551,12 @@ async def update_catgirl(name: str, request: Request):
             await init_one_catgirl(name, is_new=False)
             logger.info("配置已重新加载，新的voice_id已生效")
         else:
-            logger.info(f"切换的是其他猫娘 {name} 的音色，跳过重新加载以避免影响当前猫娘的session")
+            # 非当前猫娘：原来靠下次 switch 的全量 init 顺带 rescue。切换改走 fast path
+            # 后 rescue 不再发生，所以这里必须显式刷 session_manager[name]。
+            # init_one_catgirl 只写 session_manager[name] 的 prompt/voice_id，不碰当前 session。
+            init_one_catgirl = get_init_one_catgirl()
+            await init_one_catgirl(name, is_new=False)
+            logger.info(f"非当前猫娘 {name} 的音色已更新并同步到 session_manager")
     else:
         # Fast path：普通字段编辑，只刷新被编辑角色。
         init_one_catgirl = get_init_one_catgirl()
