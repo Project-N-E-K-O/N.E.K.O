@@ -2888,30 +2888,33 @@ async def get_character_cards():
         # 确保character_cards目录存在
         config_mgr.ensure_chara_directory()
         
-        character_cards = []
-        
-        # 遍历character_cards目录下的所有.chara.json文件
-        for filename in os.listdir(config_mgr.chara_dir):
-            if filename.endswith('.chara.json'):
-                try:
-                    file_path = os.path.join(config_mgr.chara_dir, filename)
-                    
-                    # 读取文件内容
-                    data = await read_json_async(file_path)
-                    
-                    # 检查是否包含基本信息
-                    if data and data.get('name'):
-                        character_cards.append({
-                            'id': filename[:-11],  # 去掉.chara.json后缀
-                            'name': data['name'],
-                            'description': data.get('description', ''),
-                            'tags': data.get('tags', []),
-                            'rawData': data,
-                            'path': file_path
-                        })
-                except Exception as e:
-                    logger.error(f"读取角色卡文件 {filename} 时出错: {e}")
-        
+        # 遍历 character_cards 目录下的所有 .chara.json 文件，并行读取
+        # （角色卡多时串行 await 会 N 次线程切换 + JSON 解析，整条接口延迟线性增长）
+        candidate_filenames = [f for f in os.listdir(config_mgr.chara_dir) if f.endswith('.chara.json')]
+
+        async def _read_one_card(filename: str):
+            file_path = os.path.join(config_mgr.chara_dir, filename)
+            try:
+                data = await read_json_async(file_path)
+                if data and data.get('name'):
+                    return {
+                        'id': filename[:-11],  # 去掉 .chara.json 后缀
+                        'name': data['name'],
+                        'description': data.get('description', ''),
+                        'tags': data.get('tags', []),
+                        'rawData': data,
+                        'path': file_path,
+                    }
+            except Exception as e:
+                logger.error(f"读取角色卡文件 {filename} 时出错: {e}")
+            return None
+
+        results = await asyncio.gather(
+            *(_read_one_card(fn) for fn in candidate_filenames),
+            return_exceptions=False,
+        )
+        character_cards = [r for r in results if r is not None]
+
         logger.info(f"已加载 {len(character_cards)} 个角色卡")
         return {"success": True, "character_cards": character_cards}
     except Exception as e:

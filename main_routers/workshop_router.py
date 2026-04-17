@@ -55,6 +55,12 @@ _ugc_sync_lock = asyncio.Lock()
 _ugc_query_lock = asyncio.Lock()
 
 
+def _read_first_line(path: str, encoding: str = 'utf-8') -> str:
+    """同步读文件首行，供 asyncio.to_thread 调用（README.md / README.txt 元数据回退）。"""
+    with open(path, 'r', encoding=encoding) as f:
+        return f.readline()
+
+
 def _is_item_cache_valid(item_id: int) -> bool:
     """检查单个 UGC 缓存条目是否在有效期内"""
     entry = _ugc_details_cache.get(item_id)
@@ -826,14 +832,14 @@ async def get_subscribed_workshop_items():
                                             item_info["title"] = config_data["title"]
                                         elif "name" in config_data and config_data["name"]:
                                             item_info["title"] = config_data["name"]
-                                            
-                                            if "description" in config_data and config_data["description"]:
-                                                item_info["description"] = config_data["description"]
-                                        else:
-                                            # 对于文本文件，将第一行作为标题
-                                            first_line = f.readline().strip()
-                                            if first_line and item_info['title'].startswith('未知物品_'):
-                                                item_info['title'] = first_line[:100]  # 限制长度
+                                        # description 作为 title/name 的同级分支，不应嵌在 elif name 下
+                                        if "description" in config_data and config_data["description"]:
+                                            item_info["description"] = config_data["description"]
+                                    else:
+                                        # README.md / README.txt：把首行当标题（offload sync IO）
+                                        first_line = (await asyncio.to_thread(_read_first_line, config_path)).strip()
+                                        if first_line and item_info['title'].startswith('未知物品_'):
+                                            item_info['title'] = first_line[:100]  # 限制长度
                                     logger.debug(f"从本地文件 {os.path.basename(config_path)} 成功获取物品 {item_id} 的信息")
                                     break
                                 except Exception as file_error:
