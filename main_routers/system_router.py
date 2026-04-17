@@ -2369,21 +2369,21 @@ async def proactive_chat(request: Request):
             return JSONResponse({"success": False, "error": f"角色 {lanlan_name} 不存在"}, status_code=404)
         
         # 检查能否发起新一轮主动搭话：状态机统一把 "AI 正在响应"（_is_responding）、
-        # "用户持有 turn"（owner）、"另一轮 proactive 在跑"（phase != IDLE）三个信号
-        # 收拢到 can_start_proactive 一个 O(1) 判定。mgr.is_active 仅用于判断 session
-        # 是否已实例化，故仍需保留（can_start_proactive 对 session=None 容错）。
+        # "另一轮 proactive 在跑"（phase != IDLE）两个信号收拢到 O(1) 判定。
+        # mgr.is_active 仅用于判断 session 是否已实例化，故仍需保留。
         probe_session = mgr.session if mgr.is_active else None
-        if not mgr.state.can_start_proactive(session=probe_session):
-            return JSONResponse({
-                "success": False,
-                "error": "AI正在响应中，无法主动搭话",
-                "message": "请等待当前响应完成",
-                "state": mgr.state.snapshot(),
-            }, status_code=409)
 
         # ========== Voice mode fast path ==========
-        # 语音模式下不走 Phase1/Phase2，直接注入预录音频触发 AI 回复
+        # 语音模式下不走 Phase1/Phase2，不占 SM 的 proactive phase；先用只读
+        # can_start_proactive 做 409 判定即可。
         if data.get('voice_mode') and mgr.is_active and isinstance(mgr.session, OmniRealtimeClient):
+            if not mgr.state.can_start_proactive(session=probe_session):
+                return JSONResponse({
+                    "success": False,
+                    "error": "AI正在响应中，无法主动搭话",
+                    "message": "请等待当前响应完成",
+                    "state": mgr.state.snapshot(),
+                }, status_code=409)
             delivered = await mgr.trigger_voice_proactive_nudge()
             return JSONResponse({
                 "success": True,
@@ -2391,12 +2391,18 @@ async def proactive_chat(request: Request):
                 "message": "voice proactive triggered" if delivered else "voice proactive skipped (guard)",
             })
 
-        # ========== Text-mode proactive：进入状态机管理 ==========
-        # PROACTIVE_START 让状态机翻到 PHASE1；之后 phase1/phase2 全部走
-        # mgr.state.is_proactive_preempted() 做 O(1) 抢占检查。所有退出路径
-        # 必须经过 _end_proactive() 发出 PROACTIVE_DONE，以复位状态机。
+        # ========== Text-mode proactive：原子 "检查 + 占坑" ==========
+        # try_start_proactive 在 _write_lock 内完成 can_start_proactive 判定 + 翻
+        # IDLE→PHASE1 + 订阅派发，避免并发请求双双通过 can_start_proactive 后
+        # 各自 fire(PROACTIVE_START) 导致两路 proactive 同时进入 PHASE1。
         from main_logic.session_state import SessionEvent as _SE
-        await mgr.state.fire(_SE.PROACTIVE_START)
+        if not await mgr.state.try_start_proactive(session=probe_session):
+            return JSONResponse({
+                "success": False,
+                "error": "AI正在响应中，无法主动搭话",
+                "message": "请等待当前响应完成",
+                "state": mgr.state.snapshot(),
+            }, status_code=409)
         _proactive_done_emitted = False
 
         async def _end_proactive(resp: JSONResponse) -> JSONResponse:

@@ -2447,6 +2447,13 @@ class LLMSessionManager:
 
     async def prepare_proactive_delivery(self, min_idle_secs: float = 30.0) -> bool:
         """Phase 2 流式输出前的前置检查 + speech_id 生成。返回 True 表示可以继续。"""
+        # 早期抢占检查：auto-start 分支会走到 start_session → _init_renew_status，
+        # 其中的 state.reset() 会吹掉 proactive phase（reset 本身已对活动 phase 做
+        # no-op，但我们仍希望在任何 await / sid 改写前快速短路），以及防止用户刚
+        # 在入口之后抢占，后续 self.current_speech_id 写入覆盖用户的 user_sid。
+        if self.state.is_proactive_preempted():
+            logger.info("[%s] prepare_proactive_delivery: preempted before claim", self.lanlan_name)
+            return False
         if self.last_user_activity_time is not None:
             if time.time() - self.last_user_activity_time < min_idle_secs:
                 logger.info("[%s] prepare_proactive_delivery: user active recently", self.lanlan_name)
@@ -2470,7 +2477,16 @@ class LLMSessionManager:
                 return False
             if not self.session or not hasattr(self.session, '_conversation_history'):
                 return False
+            # auto-start 期间耗时 await；再次确认 proactive 未被用户抢占
+            if self.state.is_proactive_preempted():
+                logger.info("[%s] prepare_proactive_delivery: preempted during auto-start", self.lanlan_name)
+                return False
         async with self.lock:
+            # lock 内二次复查：USER_INPUT 在 self.lock 内 rotate sid，sticky preempt
+            # flag 先于 sid mutation 翻起；此处若已被抢占则不写 current_speech_id。
+            if self.state.is_proactive_preempted():
+                logger.info("[%s] prepare_proactive_delivery: preempted in claim lock", self.lanlan_name)
+                return False
             self.current_speech_id = str(uuid4())
             self._tts_done_queued_for_turn = False
             claim_sid = self.current_speech_id

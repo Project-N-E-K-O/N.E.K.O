@@ -359,6 +359,95 @@ async def test_concurrent_user_input_and_proactive_start_converges():
     assert sm_b._preempted is True
 
 
+async def test_try_start_proactive_atomic_only_one_winner():
+    """并发 try_start_proactive：只有一路拿到 turn 所有权，其余都返回 False。
+
+    这是"检查 + 占坑"合成原子操作的核心保证：若分裂为 can_start_proactive +
+    fire(PROACTIVE_START) 两步，两个请求都能在 IDLE 时通过 can_start，进而各自
+    fire 进 PHASE1，claim/commit 互相踩 turn。
+    """
+    sm = _sm()
+
+    results = await asyncio.gather(
+        sm.try_start_proactive(),
+        sm.try_start_proactive(),
+        sm.try_start_proactive(),
+    )
+    assert results.count(True) == 1
+    assert results.count(False) == 2
+    assert sm.phase is ProactivePhase.PHASE1
+    assert sm.owner is TurnOwner.PROACTIVE
+
+
+async def test_try_start_proactive_refuses_when_session_is_responding():
+    """AI 正在为用户回复时（session._is_responding=True），即使 SM phase=IDLE，
+    try_start_proactive 也必须返回 False（与 can_start_proactive 语义对齐）。
+    """
+    sm = _sm()
+
+    class _Resp:
+        _is_responding = True
+
+    ok = await sm.try_start_proactive(session=_Resp())
+    assert ok is False
+    assert sm.phase is ProactivePhase.IDLE
+    assert sm.owner is TurnOwner.NONE
+
+
+async def test_try_start_proactive_dispatches_subscribers():
+    """try_start_proactive 抢到所有权时也要派发 PROACTIVE_START 订阅者，
+    与直接 fire(PROACTIVE_START) 行为一致。
+    """
+    sm = _sm()
+    hits: list[SessionEvent] = []
+
+    def cb(event, payload):
+        hits.append(event)
+
+    sm.subscribe(SessionEvent.PROACTIVE_START, cb)
+    ok = await sm.try_start_proactive()
+    assert ok is True
+    await asyncio.sleep(0)
+    assert hits == [SessionEvent.PROACTIVE_START]
+
+
+async def test_try_start_proactive_false_does_not_dispatch():
+    """try_start_proactive 败者（第二名）不应误触发 PROACTIVE_START 订阅者，
+    否则订阅者会以为有两轮 proactive 在跑。
+    """
+    sm = _sm()
+    await sm.fire(SessionEvent.PROACTIVE_START)  # 先占坑
+    hits: list[SessionEvent] = []
+
+    def cb(event, payload):
+        hits.append(event)
+
+    sm.subscribe(SessionEvent.PROACTIVE_START, cb)
+    ok = await sm.try_start_proactive()
+    assert ok is False
+    await asyncio.sleep(0)
+    assert hits == []
+
+
+async def test_swallow_subscriber_cancelled_error():
+    """异步订阅者被取消时，done-callback 必须吞掉 CancelledError，
+    否则 "Task exception was never retrieved" warning 会刷屏。
+    """
+    from main_logic.session_state import _swallow_subscriber_exc
+
+    async def never_returns():
+        await asyncio.sleep(10)
+
+    task = asyncio.create_task(never_returns())
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    # 直接调用 done-callback；不该抛
+    _swallow_subscriber_exc(task)
+
+
 async def test_fire_is_serialized_by_write_lock():
     """并发 fire 应被 write_lock 串行化，内部状态永远一致。"""
     sm = _sm()
@@ -399,18 +488,17 @@ async def test_user_activity_updates_timestamp_without_owner_flip():
 # reset() —— teardown hook，防止跨 session 状态泄漏
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def test_reset_clears_proactive_leftover_state():
-    """若上一轮 proactive 在 PHASE1/PHASE2 中途 WS 断开，PROACTIVE_DONE 没 fire，
-    phase/_preempted/proactive_sid 会粘着；reset 必须清干净。"""
+async def test_reset_clears_state_after_proactive_done():
+    """PROACTIVE_DONE fire 后，reset 应把所有 per-session 字段回零。"""
     sm = _sm()
     await sm.fire(SessionEvent.PROACTIVE_START)
-    await sm.fire(SessionEvent.PROACTIVE_CLAIM, sid="orphan_sid")
-    await sm.fire(SessionEvent.PROACTIVE_PHASE2)
-    await sm.fire(SessionEvent.USER_INPUT, sid="user_sid_mid_stream")
-    # 模拟 WS 断开：proactive_chat 协程被取消，PROACTIVE_DONE 没 fire
-    # 此时 SM 卡在 PHASE2 + _preempted=True
-    assert sm.phase is ProactivePhase.PHASE2
-    assert sm._preempted is True
+    await sm.fire(SessionEvent.PROACTIVE_CLAIM, sid="sid_x")
+    await sm.fire(SessionEvent.USER_INPUT, sid="u")
+    await sm.fire(SessionEvent.PROACTIVE_DONE)
+
+    # 此刻 owner=USER（被抢占后的正常状态），phase=IDLE
+    assert sm.phase is ProactivePhase.IDLE
+    assert sm.owner is TurnOwner.USER
 
     await sm.reset()
 
@@ -419,8 +507,28 @@ async def test_reset_clears_proactive_leftover_state():
     assert sm.proactive_sid is None
     assert sm.user_sid is None
     assert sm._preempted is False
-    # reset 后 can_start_proactive 必须放行，否则新 session 永远起不了 proactive
     assert sm.can_start_proactive() is True
+
+
+async def test_reset_is_noop_during_active_proactive_phase():
+    """reset 在 PROACTIVE_ACTIVE 阶段必须 no-op：若 ``prepare_proactive_delivery``
+    的 auto-start 子路径通过 ``start_session → end_session → _init_renew_status``
+    间接触发 reset，不能把当前正在跑的 proactive 状态（phase/_preempted）一并吹掉，
+    否则后续 phase1/phase2 的抢占检测会失效。
+    """
+    sm = _sm()
+    await sm.fire(SessionEvent.PROACTIVE_START)
+    await sm.fire(SessionEvent.PROACTIVE_CLAIM, sid="live_sid")
+    await sm.fire(SessionEvent.USER_INPUT, sid="preempt_sid")
+    assert sm._preempted is True
+
+    await sm.reset()
+
+    # 活动阶段 reset 不生效，phase/_preempted/sids 保持不变
+    assert sm.phase is ProactivePhase.PHASE1
+    assert sm._preempted is True
+    assert sm.proactive_sid == "live_sid"
+    assert sm.user_sid == "preempt_sid"
 
 
 async def test_reset_preserves_subscribers():

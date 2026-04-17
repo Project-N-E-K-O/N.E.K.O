@@ -114,8 +114,17 @@ class SessionStateMachine:
 
         保留 ``_subscribers`` 和 ``last_user_activity`` —— 前者是应用层注册的
         钩子不该无故吹飞，后者跨会话单调递增有诊断价值。
+
+        注意：当 proactive 流水线正处于活动阶段（PHASE1/PHASE2/COMMITTING）时，
+        本方法是 **no-op**。这是因为 ``prepare_proactive_delivery`` 在没有现成
+        session 时会 auto-start，该路径进入 ``start_session → _init_renew_status``，
+        若此处无脑复位就会把 proactive 刚翻起的 phase/sticky flag 全吹掉，使后续
+        phase1/phase2 的 ``is_proactive_preempted`` 彻底失效。
         """
         async with self._write_lock:
+            if self.phase in _PROACTIVE_ACTIVE_PHASES:
+                # 活动中的 proactive 自身负责 PROACTIVE_DONE 清理；此处跳过
+                return
             self.owner = TurnOwner.NONE
             self.phase = ProactivePhase.IDLE
             self.proactive_sid = None
@@ -144,6 +153,36 @@ class SessionStateMachine:
             return False
         if session is not None and getattr(session, "_is_responding", False):
             return False
+        return True
+
+    async def try_start_proactive(self, session: Any = None) -> bool:
+        """原子地"检查 + 占坑"：仅当 ``can_start_proactive`` 返回 True 时才翻
+        ``IDLE → PHASE1``，避免两次无锁检查之间的 TOCTOU 窗口导致两路并发 proactive
+        同时进入 PHASE1。
+
+        返回 True 表示本次调用抢到了 turn 所有权（已翻 PHASE1，订阅者已收到
+        ``PROACTIVE_START``）；返回 False 表示另一路 proactive 抢先或 AI 正在响应，
+        调用方应直接返回 409（不需要再 fire ``PROACTIVE_DONE``，因为 ``PROACTIVE_START``
+        没发出）。
+        """
+        async with self._write_lock:
+            if self.phase is not ProactivePhase.IDLE:
+                return False
+            if session is not None and getattr(session, "_is_responding", False):
+                return False
+            self._apply(SessionEvent.PROACTIVE_START, {})
+            snap_subs = list(self._subscribers.get(SessionEvent.PROACTIVE_START, ())) + list(
+                self._subscribers.get(_WILDCARD, ())
+            )
+
+        for cb in snap_subs:
+            try:
+                res = cb(SessionEvent.PROACTIVE_START, {})
+            except Exception:
+                continue
+            if asyncio.iscoroutine(res):
+                task = asyncio.create_task(res)
+                task.add_done_callback(_swallow_subscriber_exc)
         return True
 
     def snapshot(self) -> dict:
@@ -243,9 +282,16 @@ class SessionStateMachine:
 
 
 def _swallow_subscriber_exc(task: "asyncio.Task") -> None:
-    """异步订阅者抛异常时静默（只取一次结果避免 warning），由订阅者自行负责上报。"""
+    """异步订阅者抛异常时静默（只取一次结果避免 warning），由订阅者自行负责上报。
+
+    ``asyncio.CancelledError`` 是 ``BaseException`` 子类，不被 ``except Exception``
+    捕获；进程关停 / 任务 cancel 路径下若不单独捕获会绕过 done-callback 继续冒泡
+    触发 "Task exception was never retrieved" warning。
+    """
     try:
         task.result()
+    except asyncio.CancelledError:
+        return
     except Exception:
         # 故意吞：避免订阅者异常冒泡污染事件流，也避免 "Task exception was
         # never retrieved" 刷屏。订阅者自己负责在 callback 内部落日志。
