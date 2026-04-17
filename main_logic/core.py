@@ -18,7 +18,7 @@ from utils.screenshot_utils import process_screen_data
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.tts_client import get_tts_worker, dummy_tts_worker, TTS_PROVIDER_REGISTRY
-from utils.preferences import load_global_conversation_settings
+from utils.preferences import load_global_conversation_settings, aload_global_conversation_settings
 from config import MEMORY_SERVER_PORT, TOOL_SERVER_PORT
 from config.prompts_sys import (
     _loc,
@@ -901,11 +901,14 @@ class LLMSessionManager:
         if swap_task_ref and not swap_task_ref.done():
             swap_task_ref.cancel()
             tasks_to_await.append(swap_task_ref)
-        for task in tasks_to_await:
-            try:
-                await asyncio.wait_for(task, timeout=2.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
-                pass
+        # 并行 wait：bg 和 swap task 已 cancel，串行最坏 4s 墙钟，gather 后 2s 封顶
+        if tasks_to_await:
+            async def _wait_one(t):
+                try:
+                    await asyncio.wait_for(t, timeout=2.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                    pass
+            await asyncio.gather(*(_wait_one(t) for t in tasks_to_await), return_exceptions=True)
         
         if self.background_preparation_task is bg_task_ref:
             self.background_preparation_task = None
@@ -1348,8 +1351,10 @@ class LLMSessionManager:
             # 重新读取配置以支持热重载
             # core_api_type 从 realtime 配置获取，支持自定义 realtime API 时自动设为 'local'
             realtime_config = self._config_manager.get_model_api_config('realtime')
-            self.core_api_type = realtime_config.get('api_type', '') or self._config_manager.get_core_config().get('CORE_API_TYPE', '')
-            self.audio_api_key = self._config_manager.get_core_config()['AUDIO_API_KEY']
+            # 合并两次同步 IO：core_config 一次 read 即可，avoid 双倍 json.load
+            core_config_snapshot = await self._config_manager.aget_core_config()
+            self.core_api_type = realtime_config.get('api_type', '') or core_config_snapshot.get('CORE_API_TYPE', '')
+            self.audio_api_key = core_config_snapshot['AUDIO_API_KEY']
 
             # 每次启动会话前都清理一次无效 voice_id，避免角色配置残留旧音色导致启动异常
             try:
@@ -1361,7 +1366,7 @@ class LLMSessionManager:
                 logger.warning(f"⚠️ start_session 清理无效 voice_id 失败，继续启动会话: {e}")
 
             # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
-            _, _, _, self.lanlan_basic_config, _, _, _, _, _ = self._config_manager.get_character_data()
+            _, _, _, self.lanlan_basic_config, _, _, _, _, _ = await self._config_manager.aget_character_data()
             old_voice_id = self.voice_id
             raw_voice_id = self._get_voice_id()
             block_free_preset = self._should_block_free_preset_voice(raw_voice_id, realtime_config.get('base_url', ''))
@@ -1377,7 +1382,7 @@ class LLMSessionManager:
         
             # 如果角色没有设置 voice_id，尝试使用自定义API配置的 TTS_VOICE_ID 作为回退
             if not self.voice_id:
-                core_config = self._config_manager.get_core_config()
+                core_config = await self._config_manager.aget_core_config()
                 tts_voice_id = core_config.get('TTS_VOICE_ID', '')
                 # 过滤掉 GPT-SoVITS 禁用时的占位符（格式: __gptsovits_disabled__|...）
                 if core_config.get('ENABLE_CUSTOM_API') and tts_voice_id and not tts_voice_id.startswith('__gptsovits_disabled__'):
@@ -1409,7 +1414,7 @@ class LLMSessionManager:
         
             # 根据 input_mode 设置 use_tts
             # 检查是否有自定义 TTS 配置（URL 存在即表示配置了自定义 TTS）
-            core_config = self._config_manager.get_core_config()
+            core_config = await self._config_manager.aget_core_config()
             has_custom_tts_config = (
                 core_config.get('ENABLE_CUSTOM_API') and 
                 core_config.get('TTS_MODEL_URL')
@@ -1635,7 +1640,7 @@ class LLMSessionManager:
                         api_type=self.core_api_type
                     )
                     # Apply user's noise reduction preference to the AudioProcessor
-                    nr_enabled = load_global_conversation_settings().get('noiseReductionEnabled', True)
+                    nr_enabled = (await aload_global_conversation_settings()).get('noiseReductionEnabled', True)
                     if hasattr(new_session, '_audio_processor') and new_session._audio_processor:
                         new_session._audio_processor.set_enabled(nr_enabled)
 
@@ -1922,9 +1927,11 @@ class LLMSessionManager:
             # 重新读取配置以支持热重载
             # core_api_type 从 realtime 配置获取，支持自定义 realtime API 时自动设为 'local'
             realtime_config = self._config_manager.get_model_api_config('realtime')
-            self.core_api_type = realtime_config.get('api_type', '') or self._config_manager.get_core_config().get('CORE_API_TYPE', '')
-            self.audio_api_key = self._config_manager.get_core_config()['AUDIO_API_KEY']
-            
+            # 合并两次同步 IO：core_config 一次 read 即可
+            core_config_snapshot = await self._config_manager.aget_core_config()
+            self.core_api_type = realtime_config.get('api_type', '') or core_config_snapshot.get('CORE_API_TYPE', '')
+            self.audio_api_key = core_config_snapshot['AUDIO_API_KEY']
+
             # 热切换准备时同样清理无效 voice_id，防止旧版本 voice 残留进入热切换流程
             try:
                 cleaned_count, legacy_names = await asyncio.to_thread(self._config_manager.cleanup_invalid_voice_ids)
@@ -1935,7 +1942,7 @@ class LLMSessionManager:
                 logger.warning(f"⚠️ 热切换准备: 清理无效 voice_id 失败，继续准备会话: {e}")
 
             # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
-            _, _, _, self.lanlan_basic_config, _, _, _, _, _ = self._config_manager.get_character_data()
+            _, _, _, self.lanlan_basic_config, _, _, _, _, _ = await self._config_manager.aget_character_data()
             old_voice_id = self.voice_id
             raw_voice_id = self._get_voice_id()
             block_free_preset = self._should_block_free_preset_voice(raw_voice_id, realtime_config.get('base_url', ''))
@@ -1951,7 +1958,7 @@ class LLMSessionManager:
             
             # 如果角色没有设置 voice_id，尝试使用自定义API配置的 TTS_VOICE_ID 作为回退
             if not self.voice_id:
-                core_config = self._config_manager.get_core_config()
+                core_config = await self._config_manager.aget_core_config()
                 tts_voice_id = core_config.get('TTS_VOICE_ID', '')
                 # 过滤掉 GPT-SoVITS 禁用时的占位符（格式: __gptsovits_disabled__|...）
                 if core_config.get('ENABLE_CUSTOM_API') and tts_voice_id and not tts_voice_id.startswith('__gptsovits_disabled__'):
@@ -2011,7 +2018,7 @@ class LLMSessionManager:
                     api_type=self.core_api_type
                 )
                 # Apply user's noise reduction preference to the AudioProcessor
-                nr_enabled = load_global_conversation_settings().get('noiseReductionEnabled', True)
+                nr_enabled = (await aload_global_conversation_settings()).get('noiseReductionEnabled', True)
                 if hasattr(self.pending_session, '_audio_processor') and self.pending_session._audio_processor:
                     self.pending_session._audio_processor.set_enabled(nr_enabled)
                 logger.info("🔄 热切换准备: 创建语音模式 OmniRealtimeClient")

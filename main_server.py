@@ -265,18 +265,26 @@ def _select_fallback_session_manager():
 
 
 async def _broadcast_to_all_connected(event_payload: dict) -> int:
-    """Broadcast an event to all connected WebSocket sessions asynchronously."""
-    delivered_count = 0
+    """Broadcast an event to all connected WebSocket sessions in parallel.
+    每秒可能多次（agent status），串行 await 会让一个慢的 ws 拖累其它会话。"""
     # Take a snapshot to avoid RuntimeError from concurrent dict mutation
-    for name, mgr in list(_iter_session_managers()):
-        ws = getattr(mgr, "websocket", None)
-        if _is_websocket_connected(ws) and hasattr(ws, "send_json"):
-            try:
-                await ws.send_json(event_payload)
-                delivered_count += 1
-            except Exception as e:
-                logger.debug("[EventBus] broadcast to %s failed: %s", name, e)
-    return delivered_count
+    targets = [
+        (name, getattr(mgr, "websocket", None))
+        for name, mgr in list(_iter_session_managers())
+        if mgr
+    ]
+    targets = [(n, ws) for n, ws in targets if _is_websocket_connected(ws) and hasattr(ws, "send_json")]
+
+    async def _send_one(name, ws):
+        try:
+            await ws.send_json(event_payload)
+            return True
+        except Exception as e:
+            logger.debug("[EventBus] broadcast to %s failed: %s", name, e)
+            return False
+
+    results = await asyncio.gather(*(_send_one(n, ws) for n, ws in targets), return_exceptions=False)
+    return sum(1 for r in results if r is True)
 
 
 async def _handle_agent_event(event: dict):
@@ -327,15 +335,19 @@ async def _handle_agent_event(event: dict):
         elif event_type == "music_allowlist_add":
             # Music allowlist is a global UI state, broadcast to all active sessions
             targets = [mgr] if mgr else [m for _, m in _iter_session_managers()]
-            for target_mgr in targets:
+            payload = {
+                "type": "music_allowlist_add",
+                "domains": event.get("domains") or event.get("metadata", {}).get("domains", [])
+            }
+
+            async def _send_allowlist(target_mgr):
                 if target_mgr and target_mgr.websocket and hasattr(target_mgr.websocket, "send_json"):
                     try:
-                        await target_mgr.websocket.send_json({
-                            "type": "music_allowlist_add",
-                            "domains": event.get("domains") or event.get("metadata", {}).get("domains", [])
-                        })
+                        await target_mgr.websocket.send_json(payload)
                     except Exception as e:
                         logger.debug("[EventBus] music_allowlist_add broadcast failed: %s", e)
+
+            await asyncio.gather(*(_send_allowlist(t) for t in targets), return_exceptions=True)
             if targets:
                 logger.info("[EventBus] music_allowlist_add broadcasted to %d sessions", len(targets))
             return
@@ -343,17 +355,21 @@ async def _handle_agent_event(event: dict):
         elif event_type == "music_play_url":
             # Music playback is a global UI action, broadcast to all active sessions
             targets = [mgr] if mgr else [m for _, m in _iter_session_managers()]
-            for target_mgr in targets:
+            payload = {
+                "type": "music_play_url",
+                "url": event.get("url"),
+                "name": event.get("name") or "Plugin Music",
+                "artist": event.get("artist") or "External"
+            }
+
+            async def _send_play(target_mgr):
                 if target_mgr and target_mgr.websocket and hasattr(target_mgr.websocket, "send_json"):
                     try:
-                        await target_mgr.websocket.send_json({
-                            "type": "music_play_url",
-                            "url": event.get("url"),
-                            "name": event.get("name") or "Plugin Music",
-                            "artist": event.get("artist") or "External"
-                        })
+                        await target_mgr.websocket.send_json(payload)
                     except Exception as e:
                         logger.debug("[EventBus] music_play_url broadcast failed: %s", e)
+
+            await asyncio.gather(*(_send_play(t) for t in targets), return_exceptions=True)
             if targets:
                 logger.info("[EventBus] music_play_url broadcasted to %d sessions", len(targets))
             return

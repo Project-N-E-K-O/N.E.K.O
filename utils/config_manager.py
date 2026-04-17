@@ -1490,6 +1490,16 @@ class ConfigManager:
     async def aget_character_data(self):
         return await asyncio.to_thread(self.get_character_data)
 
+    async def aload_characters(self, character_json_path=None):
+        """异步包装 load_characters：cache hit 也要 deepcopy 整个字典，
+        N 个 catgirl 时拷贝可达数 ms，offload 避免阻塞事件循环。"""
+        return await asyncio.to_thread(self.load_characters, character_json_path)
+
+    async def aget_core_config(self):
+        """异步包装 get_core_config：内部 open()+json.load() 读 core_config.json，
+        async endpoint 调用时必须 offload，避免事件循环阻塞。"""
+        return await asyncio.to_thread(self.get_core_config)
+
     # --- Core config helpers ---
 
     # Combined region cache (None = not checked, True = non-mainland, False = mainland)
