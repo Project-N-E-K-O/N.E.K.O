@@ -7,6 +7,7 @@ Handles memory-related endpoints including:
 - Memory review configuration
 """
 
+import asyncio
 import os
 import re
 import json
@@ -467,7 +468,7 @@ async def update_catgirl_name(request: Request):
             and resolved_old_file_path.is_relative_to(user_memory_dir)
         ):
             if old_file_path.is_dir():
-                shutil.rmtree(old_file_path)
+                await asyncio.to_thread(shutil.rmtree, old_file_path)
             else:
                 old_file_path.unlink()
         

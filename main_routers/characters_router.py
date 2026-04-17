@@ -1583,7 +1583,7 @@ async def delete_catgirl(name: str):
                 if file_path.exists():
                     try:
                         if file_path.is_dir():
-                            shutil.rmtree(file_path)
+                            await asyncio.to_thread(shutil.rmtree, file_path)
                         else:
                             file_path.unlink()
                         logger.info(f"已删除: {file_path}")
@@ -3424,7 +3424,7 @@ async def import_character_card(zip_file: UploadFile = File(...)):
                         dest_path.parent.mkdir(parents=True, exist_ok=True)
                         total_uncompressed_size += member_size
                         with zf.open(member) as src, open(dest_path, 'wb') as dst:
-                            shutil.copyfileobj(src, dst, length=8192)
+                            await asyncio.to_thread(shutil.copyfileobj, src, dst, length=8192)
 
             # 读取角色设定（支持加密和非加密格式）
             character_json_path = extract_path / 'character.json'
@@ -3534,7 +3534,7 @@ async def import_character_card(zip_file: UploadFile = File(...)):
                                     counter += 1
 
                                 # 复制整个模型文件夹
-                                shutil.copytree(model_item, target_model_dir)
+                                await asyncio.to_thread(shutil.copytree, model_item, target_model_dir)
                                 logger.info(f'已导入MMD模型文件夹: {original_model_name} -> {model_name}')
 
                                 # 查找文件夹中的主模型文件（.pmx 或 .pmd）
@@ -3569,7 +3569,7 @@ async def import_character_card(zip_file: UploadFile = File(...)):
                                     counter += 1
 
                                 # 复制模型文件
-                                shutil.copytree(model_item, target_model_dir)
+                                await asyncio.to_thread(shutil.copytree, model_item, target_model_dir)
                                 logger.info(f'已导入Live2D模型: {original_model_name} -> {model_name}')
 
                                 # 查找复制后的 .model3.json 文件，保留相对路径
@@ -3606,7 +3606,7 @@ async def import_character_card(zip_file: UploadFile = File(...)):
                                     target_model_path = _config_manager.vrm_dir / f"{model_name}{model_ext}"
                                     counter += 1
 
-                                shutil.copy2(model_file, target_model_path)
+                                await asyncio.to_thread(shutil.copy2, model_file, target_model_path)
                                 logger.info(f'已导入VRM模型: {original_model_name} -> {model_name}')
 
                                 # 记录导入的模型信息
@@ -3680,7 +3680,7 @@ async def import_character_card(zip_file: UploadFile = File(...)):
     finally:
         # 清理临时目录
         if temp_dir and os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir, ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
 
 
 @router.post('/catgirl/{name}/export-with-portrait')
@@ -3971,4 +3971,4 @@ async def export_catgirl_with_portrait(
         return JSONResponse({'success': False, 'error': f'导出失败: {str(e)}'}, status_code=500)
     finally:
         if temp_dir and os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir, ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)

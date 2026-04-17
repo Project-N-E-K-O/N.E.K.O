@@ -13,6 +13,7 @@ import asyncio
 import time
 import pickle
 import aiohttp
+from queue import Empty
 from config import MONITOR_SERVER_PORT, MEMORY_SERVER_PORT, COMMENTER_SERVER_PORT
 from datetime import datetime
 import json
@@ -40,7 +41,7 @@ async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str,
             lanlan_name=lanlan_name,
             trigger=trigger,
             messages=messages,
-            ack_timeout_s=0.5,
+            ack_timeout_s=0.8,
             retries=1,
             conversation_id=conversation_id,
         )
@@ -171,7 +172,10 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
             try:
                 # 检查消息队列
                 while not message_queue.empty():
-                    message = message_queue.get()
+                    try:
+                        message = message_queue.get_nowait()
+                    except Empty:
+                        break
 
                     if message["type"] == "json":
                         # Forward to monitor if enabled

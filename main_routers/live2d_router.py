@@ -10,6 +10,7 @@ Handles Live2D model-related endpoints including:
 - Model upload
 """
 
+import asyncio
 import os
 import json
 import pathlib
@@ -922,10 +923,10 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
                     })
                 else:
                     logger.info(f"清理残留的无效模型目录: {target_model_dir}")
-                    shutil.rmtree(target_model_dir, ignore_errors=True)
-            
+                    await asyncio.to_thread(shutil.rmtree, target_model_dir, ignore_errors=True)
+
             # 复制模型根目录到用户文档的live2d目录
-            shutil.copytree(model_root_dir, target_model_dir)
+            await asyncio.to_thread(shutil.copytree, model_root_dir, target_model_dir)
 
             # 上传后：遍历模型目录中的所有动作文件（*.motion3.json），
             # 将官方白名单参数及模型自身在 .model3.json 中声明为 LipSync 的参数的 Segments 清空为 []。
@@ -1038,7 +1039,7 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
         # 清理可能的残留目录
         try:
             if target_model_dir and target_model_dir.exists():
-                shutil.rmtree(target_model_dir)
+                await asyncio.to_thread(shutil.rmtree, target_model_dir)
                 logger.info(f"已清理导入失败的残留目录: {target_model_dir}")
         except Exception as cleanup_err:
             logger.warning(f"清理导入失败的残留目录时出错: {cleanup_err}")

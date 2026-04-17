@@ -3600,58 +3600,9 @@ window.Jukebox = {
 
     Jukebox.injectStyles();
 
-    // 独立窗口：使用专属拖拽层（.jukebox-drag-overlay）处理原生窗口拖拽，
-    // 所有交互区域显式 no-drag，防止后续样式注入把这些区域重新污染成 drag。
-    // 这里保持 #798 的热区范围：按钮仍然可点，标题文字区域不再被 overlay 强行接管，
-    // 避免 Steam 桌面端在快速拖动时重新命中到不稳定的原生 drag 热区。
-    if (window.__NEKO_JUKEBOX_STANDALONE__) {
-      var _noDragSelector =
-        '.jukebox-header, .jukebox-header-left, .jukebox-header-buttons, ' +
-        '.jukebox-content, .jukebox-controls-row, ' +
-        '.jukebox-calibration-section, .jukebox-notice';
+    // Standalone 点歌台的桌面端拖拽/缩放统一交给 static/jukebox-standalone.js，
+    // 避免在 open() 首帧先写入旧的 app-region 热区，导致标题按钮命中缓存异常。
 
-      // 立即设置：拖拽层 drag，交互区域 no-drag
-      var _applyDragRegions = function() {
-        var overlay = jukeboxContainer.querySelector('.jukebox-drag-overlay');
-        if (overlay && overlay.style.webkitAppRegion !== 'drag') {
-          overlay.style.webkitAppRegion = 'drag';
-        }
-        jukeboxContainer.querySelectorAll(_noDragSelector).forEach(function(el) {
-          if (el.style.webkitAppRegion !== 'no-drag') {
-            el.style.webkitAppRegion = 'no-drag';
-          }
-        });
-      };
-      _applyDragRegions();
-
-      // MutationObserver 守护：如果后续有样式注入把这些交互区重新改成 drag，立即纠正
-      try {
-        var _dragGuard = new MutationObserver(function(mutations) {
-          for (var i = 0; i < mutations.length; i++) {
-            var m = mutations[i];
-            if (m.type !== 'attributes' || m.attributeName !== 'style') continue;
-            var el = m.target;
-            if (el.classList && el.classList.contains('jukebox-drag-overlay')) {
-              if (el.style.webkitAppRegion !== 'drag') {
-                el.style.webkitAppRegion = 'drag';
-              }
-            } else if (el.matches && el.matches(_noDragSelector) &&
-                       el.style.webkitAppRegion !== 'no-drag') {
-              el.style.webkitAppRegion = 'no-drag';
-            }
-          }
-        });
-        _dragGuard.observe(jukeboxContainer, {
-          attributes: true,
-          attributeFilter: ['style'],
-          subtree: true
-        });
-        // 保存引用以便 close/destroy 时断开，避免泄漏
-        Jukebox.State._dragGuard = _dragGuard;
-      } catch (e) {
-        console.warn('[Jukebox] drag guard init failed', e);
-      }
-    }
   },
   
   // 窗口拖拽功能
