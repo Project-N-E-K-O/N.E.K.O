@@ -70,6 +70,24 @@ def compress_screenshot(
     return buf.getvalue()
 
 
+def decode_and_compress_screenshot_b64(
+    b64_raw: str,
+    target_h: int = COMPRESS_TARGET_HEIGHT,
+    quality: int = COMPRESS_JPEG_QUALITY,
+) -> str:
+    """Decode a base64-encoded screenshot, normalize to RGB, and return a
+    base64 JPEG string (without the ``data:`` prefix).
+
+    Entirely synchronous and CPU/IO-bound — callers in async contexts MUST
+    invoke via ``await asyncio.to_thread(...)`` to keep the event loop free.
+    """
+    img = Image.open(BytesIO(base64.b64decode(b64_raw)))
+    if img.mode in ("RGBA", "LA", "P"):
+        img = img.convert("RGB")
+    jpg_bytes = compress_screenshot(img, target_h=target_h, quality=quality)
+    return base64.b64encode(jpg_bytes).decode("utf-8")
+
+
 async def process_screen_data(data: str) -> Optional[str]:
     """
     处理前端发送的屏幕分享数据流
@@ -92,12 +110,12 @@ async def process_screen_data(data: str) -> Optional[str]:
             return None
         
         img_bytes = base64.b64decode(img_b64)
-        
-        image = _validate_image_data(img_bytes)
+
+        image = await asyncio.to_thread(_validate_image_data, img_bytes)
         if image is None:
             logger.error("无效的图片数据")
             return None
-        
+
         w, h = image.size
         logger.debug(f"屏幕数据验证完成: 尺寸 {w}x{h}")
         
@@ -240,16 +258,21 @@ async def analyze_screenshot_from_data_url(data_url: str, window_title: str = ''
         # 验证图片有效性并转换为JPEG
         try:
             image_bytes = base64.b64decode(base64_data)
-            image = _validate_image_data(image_bytes)
+            image = await asyncio.to_thread(_validate_image_data, image_bytes)
             if image is None:
                 logger.error("无效的图片数据")
                 return None
-            
+
             # 统一压缩为 JPEG（含 resize）
             if image.mode in ('RGBA', 'LA', 'P'):
                 image = image.convert('RGB')
             orig_w, orig_h = image.size
-            jpg_bytes = compress_screenshot(image, target_h=COMPRESS_TARGET_HEIGHT, quality=COMPRESS_JPEG_QUALITY)
+            jpg_bytes = await asyncio.to_thread(
+                compress_screenshot,
+                image,
+                target_h=COMPRESS_TARGET_HEIGHT,
+                quality=COMPRESS_JPEG_QUALITY,
+            )
             base64_data = base64.b64encode(jpg_bytes).decode('utf-8')
             new_size = len(jpg_bytes)
             logger.info(f"截图验证成功: {orig_w}x{orig_h} → 压缩后 {new_size//1024}KB")

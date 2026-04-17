@@ -3829,9 +3829,9 @@ async def export_catgirl_with_portrait(
 
         try:
             Image.MAX_IMAGE_PIXELS = 100_000_000  # 限制最大像素数防止解压炸弹
-            portrait_img = Image.open(io.BytesIO(portrait_data))
+            portrait_img = Image.open(io.BytesIO(portrait_data))  # noqa: ASYNC_BLOCK — cold path, user-triggered character card export; full PIL chain below should also be off-loaded as a follow-up
             portrait_img.verify()
-            portrait_img = Image.open(io.BytesIO(portrait_data))  # verify()后需要重新打开
+            portrait_img = Image.open(io.BytesIO(portrait_data))  # noqa: ASYNC_BLOCK — cold path, user-triggered character card export; see above
         except Exception as e:
             logger.warning(f"[导出角色卡] 图片验证失败: {e}")
             return JSONResponse({'success': False, 'error': f'无效的图片文件: {str(e)}'}, status_code=400)

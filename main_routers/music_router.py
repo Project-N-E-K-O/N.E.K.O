@@ -1,5 +1,7 @@
 # 音乐路由
 
+import asyncio
+
 from fastapi import APIRouter, Query
 from fastapi.responses import RedirectResponse, Response, JSONResponse, StreamingResponse
 from cachetools import TTLCache
@@ -340,7 +342,7 @@ async def play_netease_music(song_id: str):
 
     try:
         # 加载 Cookie 并同步到 pyncm_async 会话
-        cookies = load_cookies_from_file('netease')
+        cookies = await asyncio.to_thread(load_cookies_from_file, 'netease')
         if cookies:
             session = pyncm_async.GetCurrentSession()
             # 兼容性处理：pyncm_async 内部使用 httpx，直接注入 cookiejar

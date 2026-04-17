@@ -55,7 +55,12 @@ from config.prompts_proactive import (
     MUSIC_SEARCH_RESULT_TEXTS,
 )
 from utils.workshop_utils import get_workshop_path
-from utils.screenshot_utils import compress_screenshot, COMPRESS_TARGET_HEIGHT, COMPRESS_JPEG_QUALITY
+from utils.screenshot_utils import (
+    compress_screenshot,
+    decode_and_compress_screenshot_b64,
+    COMPRESS_TARGET_HEIGHT,
+    COMPRESS_JPEG_QUALITY,
+)
 from utils.language_utils import detect_language, translate_text, normalize_language_code, get_global_language
 from utils.web_scraper import (
     fetch_trending_content, format_trending_content,
@@ -2244,7 +2249,7 @@ async def backend_screenshot(request: Request):
         return JSONResponse({"success": False, "error": "pyautogui not installed"}, status_code=501)
 
     try:
-        shot = pyautogui.screenshot()
+        shot = await asyncio.to_thread(pyautogui.screenshot)
         if shot.mode in ('RGBA', 'LA', 'P'):
             shot = shot.convert('RGB')
 
@@ -2390,14 +2395,15 @@ async def proactive_chat(request: Request):
                 # 截图将在 Phase 2 由 vision_model 直接读取原图，这里只做压缩。
                 compressed_b64 = ''
                 try:
-                    from PIL import Image as _PILImage
                     b64_raw = screenshot_data.split(',', 1)[1] if ',' in screenshot_data else screenshot_data
-                    img = _PILImage.open(BytesIO(base64.b64decode(b64_raw)))
-                    if img.mode in ('RGBA', 'LA', 'P'):
-                        img = img.convert('RGB')
-                    jpg_bytes = compress_screenshot(img, target_h=COMPRESS_TARGET_HEIGHT, quality=COMPRESS_JPEG_QUALITY)
-                    compressed_b64 = base64.b64encode(jpg_bytes).decode('utf-8')
-                    print(f"[{lanlan_name}] Vision 通道: 截图压缩完成 {len(jpg_bytes)//1024}KB (Phase 2 将直接分析)")
+                    compressed_b64 = await asyncio.to_thread(
+                        decode_and_compress_screenshot_b64,
+                        b64_raw,
+                        COMPRESS_TARGET_HEIGHT,
+                        COMPRESS_JPEG_QUALITY,
+                    )
+                    jpg_size_kb = len(compressed_b64) * 3 // 4 // 1024
+                    print(f"[{lanlan_name}] Vision 通道: 截图压缩完成 {jpg_size_kb}KB (Phase 2 将直接分析)")
                 except Exception as compress_err:
                     logger.warning(f"[{lanlan_name}] 截图压缩失败（Phase 2 将无法使用截图）: {compress_err}")
                 return (mode, {'window_title': window_title, 'screenshot_b64': compressed_b64})
