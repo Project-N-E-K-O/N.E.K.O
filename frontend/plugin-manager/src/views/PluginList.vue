@@ -5,25 +5,32 @@
         <template #header>
           <div class="workbench-header">
             <div class="workbench-header__copy">
-              <el-button
-                :type="multiSelectEnabled ? 'primary' : 'default'"
-                plain
-                @click="toggleMultiSelectMode"
-              >
-                {{ multiSelectEnabled ? $t('plugins.exitMultiSelect') : $t('plugins.multiSelect') }}
-              </el-button>
-              <el-tag v-if="multiSelectEnabled" size="small" type="info">
-                {{ $t('plugins.selectedCount', { count: selectedCount }) }}
-              </el-tag>
-              <el-button v-if="multiSelectEnabled" text @click="selectAllVisible">
-                {{ $t('plugins.selectAllVisible') }}
-              </el-button>
-              <el-button v-if="multiSelectEnabled" text @click="invertVisibleSelection">
-                {{ $t('plugins.invertVisibleSelection') }}
-              </el-button>
-              <el-button v-if="multiSelectEnabled" text @click="clearSelection">
-                {{ $t('plugins.clearSelection') }}
-              </el-button>
+              <div class="selection-toolbar">
+                <el-button
+                  :type="multiSelectEnabled ? 'primary' : 'default'"
+                  plain
+                  @click="toggleMultiSelectMode"
+                >
+                  {{ multiSelectEnabled ? $t('plugins.exitMultiSelect') : $t('plugins.multiSelect') }}
+                </el-button>
+                <div
+                  class="selection-toolbar__expanded"
+                  :class="{ 'selection-toolbar__expanded--active': multiSelectEnabled }"
+                >
+                  <el-tag size="small" type="info">
+                    {{ $t('plugins.selectedCount', { count: selectedCount }) }}
+                  </el-tag>
+                  <el-button text :tabindex="multiSelectEnabled ? 0 : -1" @click="selectAllVisible">
+                    {{ $t('plugins.selectAllVisible') }}
+                  </el-button>
+                  <el-button text :tabindex="multiSelectEnabled ? 0 : -1" @click="invertVisibleSelection">
+                    {{ $t('plugins.invertVisibleSelection') }}
+                  </el-button>
+                  <el-button text :tabindex="multiSelectEnabled ? 0 : -1" @click="clearSelection">
+                    {{ $t('plugins.clearSelection') }}
+                  </el-button>
+                </div>
+              </div>
             </div>
 
             <div class="header-actions">
@@ -623,6 +630,7 @@ onUnmounted(() => {
 <style scoped>
 .plugin-workbench {
   --plugin-entry-radius: 18px;
+  --package-panel-width: clamp(420px, 42vw, 620px);
   display: flex;
   align-items: flex-start;
   gap: 20px;
@@ -632,16 +640,10 @@ onUnmounted(() => {
 .plugin-workbench__main {
   flex: 1 1 auto;
   min-width: 0;
-  transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.plugin-workbench--package-open .plugin-workbench__main {
-  transform: translateX(-6px);
 }
 
 .plugin-workbench__side {
   flex: 0 0 0;
-  width: 0;
   min-width: 0;
   max-width: 0;
   opacity: 0;
@@ -650,16 +652,15 @@ onUnmounted(() => {
   transform: translateX(28px) scale(0.985);
   transform-origin: right center;
   transition:
+    flex-basis 0.32s cubic-bezier(0.22, 1, 0.36, 1),
     max-width 0.32s cubic-bezier(0.22, 1, 0.36, 1),
     opacity 0.26s ease,
     transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .plugin-workbench__side--visible {
-  flex-basis: min(620px, 42vw);
-  width: min(620px, 42vw);
-  min-width: min(420px, 100%);
-  max-width: min(620px, 42vw);
+  flex-basis: var(--package-panel-width);
+  max-width: var(--package-panel-width);
   opacity: 1;
   overflow: visible;
   pointer-events: auto;
@@ -671,20 +672,42 @@ onUnmounted(() => {
 }
 
 .workbench-header {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: flex-start;
   gap: 16px;
-  flex-wrap: wrap;
 }
 
 .workbench-header__copy {
   display: flex;
   align-items: center;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.selection-toolbar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-height: 32px;
+  min-width: min(100%, 520px);
+}
+
+.selection-toolbar__expanded {
+  display: flex;
+  align-items: center;
   gap: 12px;
   min-width: 0;
-  flex-wrap: wrap;
-  flex: 1 1 auto;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.selection-toolbar__expanded--active {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
 }
 
 .header-actions {
@@ -823,7 +846,7 @@ onUnmounted(() => {
 }
 
 .plugin-grid--compact {
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .plugin-item {
@@ -834,33 +857,34 @@ onUnmounted(() => {
 }
 
 .plugin-item--selection-mode {
-  padding-top: 10px;
+  padding-top: 0;
 }
 
 .plugin-item__select {
   position: absolute;
-  top: 14px;
-  left: 14px;
+  top: 10px;
+  left: 10px;
   z-index: 2;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 30px;
-  min-height: 30px;
+  min-width: 32px;
+  min-height: 32px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--el-bg-color) 78%, white);
+  background: color-mix(in srgb, var(--el-bg-color) 86%, white);
   box-shadow: 0 8px 18px color-mix(in srgb, var(--el-text-color-primary) 10%, transparent);
   backdrop-filter: blur(10px);
-}
-
-.plugin-item--list-layout.plugin-item--selection-mode {
-  padding-top: 0;
 }
 
 .plugin-item--list-layout .plugin-item__select {
   top: 50%;
   left: 16px;
   transform: translateY(-50%);
+}
+
+.plugin-item--selection-mode:not(.plugin-item--list-layout) :deep(.plugin-card .el-card__header),
+.plugin-item--selection-mode:not(.plugin-item--list-layout) :deep(.plugin-card .el-card__body) {
+  padding-left: 56px;
 }
 
 .plugin-item--list-layout.plugin-item--selection-mode :deep(.plugin-list-row-card .el-card__body) {
@@ -953,20 +977,34 @@ onUnmounted(() => {
     flex-direction: column;
   }
 
-  .plugin-workbench--package-open .plugin-workbench__main {
-    transform: none;
+  .workbench-header {
+    grid-template-columns: 1fr;
   }
 
   .plugin-workbench__side,
   .plugin-workbench__side--visible {
-    width: 100%;
     max-width: 100%;
     min-width: 0;
+    flex-basis: auto;
     transform: translateY(16px) scale(0.99);
   }
 
   .plugin-workbench__side--visible {
     transform: translateY(0) scale(1);
+  }
+
+  .selection-toolbar {
+    min-width: 0;
+  }
+
+  .plugin-grid--compact {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1180px) {
+  .plugin-grid--compact {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
