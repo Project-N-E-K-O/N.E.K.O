@@ -1373,6 +1373,14 @@ class LLMSessionManager:
         await self.send_session_failed(input_mode)
         await self.cleanup()
 
+    @property
+    def is_starting(self) -> bool:
+        """start_session 协程正在运行但 is_active 尚未置 True 的窗口。
+        外部（如切猫娘路径）据此判断是否应保留当前 manager 实例，
+        避免替换掉一个正在初始化的 manager 造成孤儿 session 泄漏。
+        """
+        return self._starting_session_count > 0
+
     async def start_session(self, websocket: WebSocket, new=False, input_mode='audio'):
         # 每次 start_session 都重新获取全局语言，确保 Steam/系统语言变更能即时生效
         self.user_language = normalize_language_code(get_global_language(), format='short')

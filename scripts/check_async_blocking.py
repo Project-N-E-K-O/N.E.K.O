@@ -115,6 +115,7 @@ RISKY_ATTR_PAIRS: dict[tuple[str, str], str] = {
     # PIL
     ("Image", "open"): "PIL.Image.open",
     ("_PILImage", "open"): "PIL.Image.open",
+    ("PILImage", "open"): "PIL.Image.open",
     ("PIL", "open"): "PIL.Image.open",
     # pyautogui (screen capture goes through native code, blocks for tens
     # of ms on each frame)

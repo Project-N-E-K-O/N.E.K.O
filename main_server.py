@@ -544,7 +544,13 @@ async def _init_character_resources(k: str, is_new_character: bool):
         # 如果旧session_manager有活跃session，保留它，只更新配置相关的字段
 
         # 先检查会话状态（在锁内检查避免竞态条件）
-        has_active_session = rs.session_manager is not None and rs.session_manager.is_active
+        # 同时覆盖 "正在启动" 窗口：_starting_session_count>0 但 is_active=False
+        # 的期间，start_session 协程仍持有对当前 manager 的引用；如果此时替换
+        # 实例，旧 manager 会在后台完成启动并挂起 OmniRealtimeClient / TTS 线程 /
+        # message_handler_task，永远没人调用 end_session — 造成资源泄漏。
+        mgr = rs.session_manager
+        has_active_session = mgr is not None and mgr.is_active
+        has_starting_session = mgr is not None and mgr.is_starting and not mgr.is_active
 
         if has_active_session:
             # 有活跃session，不重新创建session_manager，只更新配置
@@ -565,6 +571,17 @@ async def _init_character_resources(k: str, is_new_character: bool):
                 logger.error(f"更新 {k} 的活跃session配置失败: {e}", exc_info=True)
                 # 配置更新失败，但为了不影响正在运行的session，继续使用旧配置
                 # 如果确实需要更新配置，可以考虑在下次session重启时再应用
+        elif has_starting_session:
+            # start_session 正在执行中：只保留实例避免孤儿泄漏，但绝对不热改
+            # lanlan_prompt / voice_id — start_session 会在 core.py 内用
+            # self.lanlan_prompt 拼装首帧 session prompt，并基于当前 self.voice_id
+            # 计算音色/TTS 分支。本轮写入会让正在进行的启动拿到半旧半新配置
+            # （用户侧看到启动出来的会话 prompt / 音色与最新配置不一致）。
+            # 本轮的新 prompt / 音色由下一次 start_session 应用。
+            logger.info(
+                f"{k} session 正在启动中（is_starting），保留现有 session_manager，"
+                "本轮不热更新 prompt/voice_id 以免污染 in-flight 启动"
+            )
         else:
             # 没有活跃session，可以安全地重新创建session_manager
             new_mgr = core.LLMSessionManager(
