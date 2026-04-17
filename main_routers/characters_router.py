@@ -3683,6 +3683,12 @@ async def import_character_card(zip_file: UploadFile = File(...)):
             await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
 
 
+class _InvalidPortraitError(ValueError):
+    """Raised by the character-card render helper when the user-supplied
+    portrait fails PIL's verify() check. Caught at the endpoint to map
+    to a 400 response (vs. 500 for genuine render errors)."""
+
+
 @router.post('/catgirl/{name}/export-with-portrait')
 async def export_catgirl_with_portrait(
     name: str,
@@ -3827,113 +3833,101 @@ async def export_catgirl_with_portrait(
 
         logger.info(f"[导出角色卡] 接收到立绘图片，大小: {len(portrait_data)} bytes")
 
+        png_path = temp_path / 'character_card.png'
+
+        # 整段 PIL 渲染链（图片校验 + 卡片合成 + 字体扫描 + PNG 编码）放进 worker
+        # 线程，避免阻塞事件循环。校验失败用专属异常，让外层回 400 而不是 500。
+        def _render_card_png(_portrait_data: bytes, _name: str, _png_path) -> None:
+            try:
+                Image.MAX_IMAGE_PIXELS = 100_000_000  # 限制最大像素数防止解压炸弹
+                portrait_img = Image.open(io.BytesIO(_portrait_data))
+                portrait_img.verify()
+                portrait_img = Image.open(io.BytesIO(_portrait_data))
+            except Exception as exc:
+                raise _InvalidPortraitError(str(exc)) from exc
+
+            logger.info(f"[导出角色卡] 立绘图片尺寸: {portrait_img.size}, 模式: {portrait_img.mode}")
+
+            if portrait_img.mode != 'RGBA':
+                portrait_img = portrait_img.convert('RGBA')
+
+            width, height = 600, 800
+            card_img = Image.new('RGBA', (width, height), color='#E8F4F8')
+            draw = ImageDraw.Draw(card_img)
+
+            header_height = height // 6
+            draw.rectangle([0, 0, width, header_height], fill='#40C5F1')
+
+            font_size = 42
+            font = None
+            font_candidates = [
+                ("msyhbd.ttc", font_size),
+                ("Microsoft YaHei Bold.ttf", font_size),
+                ("simhei.ttf", font_size),
+                ("simsun.ttc", font_size),
+                ("msyh.ttc", font_size),
+                ("Microsoft YaHei.ttf", font_size),
+            ]
+            for font_name, size in font_candidates:
+                try:
+                    font = ImageFont.truetype(font_name, size)
+                    logger.info(f"[导出角色卡] 使用字体: {font_name}")
+                    break
+                except Exception as e:
+                    logger.warning(f"[导出角色卡] 字体加载失败: {font_name}, 错误: {e}")
+                    continue
+            if font is None:
+                font = ImageFont.load_default()
+                logger.warning("[导出角色卡] 使用默认字体")
+
+            bbox = draw.textbbox((0, 0), _name, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+            text_x = 40
+            text_y = (header_height - text_height) // 2 - bbox[1]
+
+            shadow_offset = 2
+            draw.text((text_x + shadow_offset, text_y + shadow_offset), _name, fill='#00000040', font=font)
+            draw.text((text_x, text_y), _name, fill='white', font=font)
+
+            portrait_area_x = 20
+            portrait_area_y = header_height + 20
+            portrait_area_width = width - 40
+            portrait_area_height = height - header_height - 40
+            logger.info(f"[导出角色卡] 立绘区域: ({portrait_area_x}, {portrait_area_y}, {portrait_area_width}, {portrait_area_height})")
+
+            portrait_width, portrait_height = portrait_img.size
+            target_aspect = portrait_area_width / portrait_area_height
+            source_aspect = portrait_width / portrait_height
+            logger.info(f"[导出角色卡] 立绘原始尺寸: {portrait_width}x{portrait_height}, 目标比例: {target_aspect:.2f}, 源比例: {source_aspect:.2f}")
+
+            if source_aspect > target_aspect:
+                new_height = portrait_area_height
+                new_width = int(new_height * source_aspect)
+            else:
+                new_width = portrait_area_width
+                new_height = int(new_width / source_aspect)
+
+            portrait_resized = portrait_img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            logger.info(f"[导出角色卡] 立绘调整后尺寸: {new_width}x{new_height}")
+
+            paste_x = portrait_area_x + (portrait_area_width - new_width) // 2
+            paste_y = portrait_area_y + (portrait_area_height - new_height) // 2
+            logger.info(f"[导出角色卡] 立绘粘贴位置: ({paste_x}, {paste_y})")
+
+            card_img.paste(portrait_resized, (paste_x, paste_y), portrait_resized)
+            logger.info("[导出角色卡] 立绘粘贴完成")
+
+            final_img = Image.new('RGB', (width, height), color='#E8F4F8')
+            final_img.paste(card_img, (0, 0), card_img)
+
+            final_img.save(_png_path, 'PNG')
+
         try:
-            Image.MAX_IMAGE_PIXELS = 100_000_000  # 限制最大像素数防止解压炸弹
-            portrait_img = Image.open(io.BytesIO(portrait_data))  # noqa: ASYNC_BLOCK — cold path, user-triggered character card export; full PIL chain below should also be off-loaded as a follow-up
-            portrait_img.verify()
-            portrait_img = Image.open(io.BytesIO(portrait_data))  # noqa: ASYNC_BLOCK — cold path, user-triggered character card export; see above
-        except Exception as e:
+            await asyncio.to_thread(_render_card_png, portrait_data, name, png_path)
+        except _InvalidPortraitError as e:
             logger.warning(f"[导出角色卡] 图片验证失败: {e}")
             return JSONResponse({'success': False, 'error': f'无效的图片文件: {str(e)}'}, status_code=400)
-
-        logger.info(f"[导出角色卡] 立绘图片尺寸: {portrait_img.size}, 模式: {portrait_img.mode}")
-
-        # 转换为RGBA模式（确保透明通道）
-        if portrait_img.mode != 'RGBA':
-            portrait_img = portrait_img.convert('RGBA')
-
-        # 3. 创建角色卡模板
-        width, height = 600, 800
-        card_img = Image.new('RGBA', (width, height), color='#E8F4F8')
-        draw = ImageDraw.Draw(card_img)
-
-        # 顶部1/6区域使用深蓝色
-        header_height = height // 6
-        draw.rectangle([0, 0, width, header_height], fill='#40C5F1')
-
-        # 在顶部左侧添加角色名称
-        # 尝试使用更美观的字体，并加粗显示
-        font_size = 42  # 增大字体
-        font = None
-
-        # 尝试多种中文字体，按优先级排序
-        font_candidates = [
-            ("msyhbd.ttc", font_size),      # 微软雅黑粗体
-            ("Microsoft YaHei Bold.ttf", font_size),  # 微软雅黑粗体（另一种名称）
-            ("simhei.ttf", font_size),      # 黑体
-            ("simsun.ttc", font_size),      # 宋体
-            ("msyh.ttc", font_size),        # 微软雅黑常规
-            ("Microsoft YaHei.ttf", font_size),  # 微软雅黑（另一种名称）
-        ]
-
-        for font_name, size in font_candidates:
-            try:
-                font = ImageFont.truetype(font_name, size)
-                logger.info(f"[导出角色卡] 使用字体: {font_name}")
-                break
-            except Exception as e:
-                logger.warning(f"[导出角色卡] 字体加载失败: {font_name}, 错误: {e}")
-                continue
-
-        if font is None:
-            font = ImageFont.load_default()
-            logger.warning("[导出角色卡] 使用默认字体")
-
-        text = name
-        bbox = draw.textbbox((0, 0), text, font=font)
-        text_width = bbox[2] - bbox[0]
-        text_height = bbox[3] - bbox[1]
-        text_x = 40  # 稍微增加左边距
-        text_y = (header_height - text_height) // 2 - bbox[1]
-
-        # 添加文字阴影效果增加可读性
-        shadow_offset = 2
-        draw.text((text_x + shadow_offset, text_y + shadow_offset), text, fill='#00000040', font=font)  # 半透明黑色阴影
-        draw.text((text_x, text_y), text, fill='white', font=font)  # 白色文字
-
-        # 4. 合成立绘到角色卡
-        # 立绘区域：顶部蓝色区域下方到卡片底部，左右留边距
-        portrait_area_x = 20
-        portrait_area_y = header_height + 20
-        portrait_area_width = width - 40
-        portrait_area_height = height - header_height - 40
-        logger.info(f"[导出角色卡] 立绘区域: ({portrait_area_x}, {portrait_area_y}, {portrait_area_width}, {portrait_area_height})")
-
-        # 计算缩放比例，保持比例，居中填充
-        portrait_width, portrait_height = portrait_img.size
-        target_aspect = portrait_area_width / portrait_area_height
-        source_aspect = portrait_width / portrait_height
-        logger.info(f"[导出角色卡] 立绘原始尺寸: {portrait_width}x{portrait_height}, 目标比例: {target_aspect:.2f}, 源比例: {source_aspect:.2f}")
-
-        if source_aspect > target_aspect:
-            # 源更宽，以高度为准
-            new_height = portrait_area_height
-            new_width = int(new_height * source_aspect)
-        else:
-            # 源更高，以宽度为准
-            new_width = portrait_area_width
-            new_height = int(new_width / source_aspect)
-
-        # 调整立绘大小
-        portrait_resized = portrait_img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-        logger.info(f"[导出角色卡] 立绘调整后尺寸: {new_width}x{new_height}")
-
-        # 计算居中位置
-        paste_x = portrait_area_x + (portrait_area_width - new_width) // 2
-        paste_y = portrait_area_y + (portrait_area_height - new_height) // 2
-        logger.info(f"[导出角色卡] 立绘粘贴位置: ({paste_x}, {paste_y})")
-
-        # 粘贴立绘（使用alpha通道）
-        card_img.paste(portrait_resized, (paste_x, paste_y), portrait_resized)
-        logger.info("[导出角色卡] 立绘粘贴完成")
-
-        # 转换为RGB模式（PNG不支持RGBA的某些特性）
-        final_img = Image.new('RGB', (width, height), color='#E8F4F8')
-        final_img.paste(card_img, (0, 0), card_img)
-
-        # 5. 保存PNG图片
-        png_path = temp_path / 'character_card.png'
-        final_img.save(png_path, 'PNG')
 
         # 6. 将压缩包数据嵌入 PNG 的 neKo 块（合法 PNG chunk，Electron 可正常预览）
         with open(png_path, 'rb') as f:

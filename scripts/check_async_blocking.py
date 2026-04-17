@@ -158,6 +158,10 @@ RISKY_ATTR_PAIRS: dict[tuple[str, str], str] = {
 RISKY_BARE_CALLS: dict[str, str] = {
     "urlopen": "urllib.request.urlopen",
     "rmtree": "shutil.rmtree",
+    # ``from time import sleep`` — distinctive enough; await asyncio.sleep
+    # is an attribute call (``asyncio.sleep``) so it won't be confused with
+    # this bare ``sleep`` form.
+    "sleep": "time.sleep",
 }
 
 

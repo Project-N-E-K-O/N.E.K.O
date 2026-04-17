@@ -2249,9 +2249,13 @@ async def backend_screenshot(request: Request):
         return JSONResponse({"success": False, "error": "pyautogui not installed"}, status_code=501)
 
     try:
-        shot = await asyncio.to_thread(pyautogui.screenshot)
-        if shot.mode in ('RGBA', 'LA', 'P'):
-            shot = shot.convert('RGB')
+        def _capture_rgb_screenshot():
+            shot = pyautogui.screenshot()
+            if shot.mode in ('RGBA', 'LA', 'P'):
+                shot = shot.convert('RGB')
+            return shot
+
+        shot = await asyncio.to_thread(_capture_rgb_screenshot)
 
         # macOS 黑屏检测：仅在 macOS 上执行——未授权 Screen Recording 时 pyautogui 返回全黑图片
         # 其他平台（Windows/Linux）全黑截图属正常内容，不应拦截
@@ -2266,7 +2270,9 @@ async def backend_screenshot(request: Request):
             except Exception:
                 logger.debug("macOS blank-screen detection failed, skipping check", exc_info=True)
 
-        jpg_bytes = compress_screenshot(shot, target_h=COMPRESS_TARGET_HEIGHT, quality=COMPRESS_JPEG_QUALITY)
+        jpg_bytes = await asyncio.to_thread(
+            compress_screenshot, shot, target_h=COMPRESS_TARGET_HEIGHT, quality=COMPRESS_JPEG_QUALITY,
+        )
         b64 = base64.b64encode(jpg_bytes).decode('utf-8')
         data_url = f"data:image/jpeg;base64,{b64}"
         return JSONResponse({"success": True, "data": data_url, "size": len(jpg_bytes)})
