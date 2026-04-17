@@ -30,7 +30,7 @@ import re
 import asyncio
 import logging
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta
 from utils.frontend_utils import get_timestamp
 
 # 配置日志
@@ -89,9 +89,15 @@ _reload_lock = asyncio.Lock()
 
 async def reload_memory_components():
     """重新加载记忆组件配置（用于新角色创建后）
-    
+
     使用锁保护重新加载操作，确保原子性交换，避免竞态条件。
     先创建所有新实例，然后原子性地交换引用。
+
+    注意：reload 期间旧 cursor_store 已启动的 async 任务可能与新实例并发
+    读写同一份 cursors.json。整个架构假设"per-character 单写者"，重载是
+    管理员操作（角色新增），不会与后台 rebuttal_loop 高频冲突；
+    atomic_write_json 保证单次写原子，极端 last-writer-wins 场景下最多
+    损失一次 cursor 推进——下一轮 tick 即恢复。
     """
     global recent_history_manager, settings_manager, time_manager, fact_store, persona_manager, reflection_engine, cursor_store
     async with _reload_lock:
@@ -238,21 +244,28 @@ async def _resolve_rebuttal_start_time(name: str, now: datetime):
     优先级：
       1. 持久化的 CURSOR_REBUTTAL_CHECKED_UNTIL
       2. 兜底回扫窗口（首次启动 / cursor 文件缺失）
-      3. 时钟回拨保护：cursor > now 视为脏数据，同样走兜底
+      3. 时钟回拨保护：cursor > now 视为脏数据，走兜底并**立刻重写**游标
+
+    rollback 分支立即覆写游标的原因：若只在主循环 success branch 才覆写，
+    遇上 LLM 持续失败 + 时钟回拨，主循环每轮都会命中 fallback 并告警，
+    但游标永远停留在未来时间，无法自愈；这里直接写回 now 打破死循环。
 
     独立成函数便于单测验证。
     """
-    from datetime import timedelta as _td
-
     cursor = await cursor_store.aget_cursor(name, CURSOR_REBUTTAL_CHECKED_UNTIL)
-    fallback = now - _td(hours=REBUTTAL_FIRST_RUN_LOOKBACK_HOURS)
+    fallback = now - timedelta(hours=REBUTTAL_FIRST_RUN_LOOKBACK_HOURS)
     if cursor is None:
         return fallback
     if cursor > now:
         logger.warning(
             f"[Rebuttal] {name}: 游标 {cursor.isoformat()} 晚于当前时间 "
-            f"{now.isoformat()}（时钟回拨?），回退到 {fallback.isoformat()}"
+            f"{now.isoformat()}（时钟回拨?），回退到 {fallback.isoformat()} 并覆写"
         )
+        # 自愈：把游标拉回 now，使后续 tick 不再反复命中该分支
+        try:
+            await cursor_store.aset_cursor(name, CURSOR_REBUTTAL_CHECKED_UNTIL, now)
+        except Exception as e:
+            logger.debug(f"[Rebuttal] {name}: rollback 自愈写入失败（将在下轮重试）: {e}")
         return fallback
     return cursor
 

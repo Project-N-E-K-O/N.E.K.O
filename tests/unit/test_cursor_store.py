@@ -24,13 +24,18 @@ def _make_mock_cm(tmpdir: str):
 
 
 def _fresh_store(tmpdir: str):
-    """返回一个全新的 CursorStore，模拟进程重启（no in-memory cache）。"""
+    """返回一个全新的 CursorStore，模拟进程重启（no in-memory cache）。
+
+    注意：cursors.py 里用的是 `from utils.config_manager import get_config_manager`，
+    import 发生在模块级，所以要 patch `memory.cursors.get_config_manager` 才
+    命中构造函数里的调用（不是 patch 原模块）。
+    """
     from memory.cursors import CursorStore
     mock_cm = _make_mock_cm(tmpdir)
-    with patch("utils.config_manager.get_config_manager", return_value=mock_cm):
+    with patch("memory.cursors.get_config_manager", return_value=mock_cm):
         store = CursorStore()
-        # 保险：即便 import 时机导致 _config_manager 被抓到别处也强制注入
-        store._config_manager = mock_cm
+    # 双保险：即便 patch 漏了，直接替换实例字段也能让测试独立运行
+    store._config_manager = mock_cm
     return store
 
 

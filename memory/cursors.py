@@ -46,6 +46,7 @@ class CursorStore:
     # ── path / lock ─────────────────────────────────────────────
 
     def _cursor_path(self, name: str) -> str:
+        # 延迟 import 避开 memory/__init__.py ↔ memory/cursors.py 循环依赖
         from memory import ensure_character_dir
         return os.path.join(
             ensure_character_dir(self._config_manager.memory_dir, name),
@@ -101,12 +102,20 @@ class CursorStore:
             return data.get(key)
 
     def set_cursor(self, name: str, key: str, value: datetime) -> None:
-        """写入游标并原子落盘。多个 key 共存，单个 key 的更新不会覆盖其它。"""
+        """写入游标并原子落盘。多个 key 共存，单个 key 的更新不会覆盖其它。
+
+        原子性：先构造 serialized dict 写盘，**成功后**再更新内存 cache。
+        若 atomic_write_json 抛异常，cache 保持旧值——避免 cache 与磁盘发散
+        导致同进程后续 get_cursor 读到未持久化的脏值。
+        """
         with self._get_lock(name):
             data = self._load_unlocked(name)
-            data[key] = value
-            serialized: dict[str, str] = {k: v.isoformat() for k, v in data.items()}
+            serialized: dict[str, str] = {
+                k: v.isoformat() for k, v in data.items() if k != key
+            }
+            serialized[key] = value.isoformat()
             atomic_write_json(self._cursor_path(name), serialized)
+            data[key] = value
 
     # ── public API (async) ──────────────────────────────────────
 
