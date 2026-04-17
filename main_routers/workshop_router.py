@@ -1419,6 +1419,8 @@ async def unsubscribe_workshop_item(request: Request):
             # 设置一个延迟的后备清理机制（如果回调在5秒内没有触发）
             def delayed_cleanup():
                 import time
+                # noqa: BLOCKING-OK - 此函数仅通过 threading.Thread(daemon=True) 在后台线程运行
+                # （见下方 cleanup_thread），不会阻塞 FastAPI 主事件循环。
                 time.sleep(5)  # 等待5秒
                 logger.info(f"延迟清理检查: 如果回调未触发，执行备用清理...")
                 # 注意：这里不能直接调用，因为无法知道回调是否已执行
@@ -2642,6 +2644,9 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
                         steamworks.run_callbacks()
                     except Exception as e:
                         logger.error(f"执行Steam回调时出错: {str(e)}")
+                    # noqa: BLOCKING-OK - _publish_workshop_item 是同步函数，上层通过
+                    # loop.run_in_executor(None, lambda: _publish_workshop_item(...)) 调度到线程池，
+                    # 因此此处 time.sleep 只阻塞 executor 工作线程，不阻塞主事件循环。
                     time.sleep(0.1)  # 每100毫秒检查一次
             
                 if not created_event.is_set():
@@ -2771,6 +2776,8 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
                                     last_progress = current_progress
                 except Exception as e:
                     logger.error(f"执行Steam回调时出错: {str(e)}")
+                # noqa: BLOCKING-OK - 同 Site 2，_publish_workshop_item 在 run_in_executor
+                # 线程池中运行，此 sleep 只阻塞 executor 工作线程，不阻塞主事件循环。
                 time.sleep(0.5)  # 每500毫秒检查一次，减少日志量
             
             if not update_event.is_set():

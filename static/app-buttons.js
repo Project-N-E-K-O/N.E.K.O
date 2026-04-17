@@ -972,10 +972,13 @@
                 await new Promise(function (resolve) { setTimeout(resolve, 1500); });
             }
 
-            // Hide text input area (desktop only)
+            // Hide text input area (desktop only) + React composer + IPC
             var textInputArea = document.getElementById('text-input-area');
             if (!U.isMobile()) {
                 textInputArea.classList.add('hidden');
+            }
+            if (!U.isMobile() && typeof window.syncVoiceChatComposerHidden === 'function') {
+                window.syncVoiceChatComposerHidden(true);
             }
 
             // Disable all voice buttons
@@ -1108,6 +1111,9 @@
                 stopButton.disabled = true;
                 resetSessionButton.disabled = false;
                 textInputArea.classList.remove('hidden');
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
                 window.showStatusToast(window.t ? window.t('app.startFailed', { error: error.message }) : '\u542F\u52A8\u5931\u8D25: ' + error.message, 5000);
 
                 window.isMicStarting = false;
@@ -1192,6 +1198,9 @@
 
                 var textInputArea = document.getElementById('text-input-area');
                 textInputArea.classList.remove('hidden');
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
 
                 micButton.disabled = false;
                 textSendButton.disabled = false;
@@ -1211,6 +1220,9 @@
 
                 var textInputArea = document.getElementById('text-input-area');
                 textInputArea.classList.add('hidden');
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(true);
+                }
 
                 micButton.disabled = true;
                 textSendButton.disabled = true;
@@ -1262,6 +1274,9 @@
                 var textInputArea = document.getElementById('text-input-area');
                 if (textInputArea) {
                     textInputArea.classList.remove('hidden');
+                }
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
                 }
 
                 window.showStatusToast(window.t ? window.t('app.initializingText') : '\u6B63\u5728\u521D\u59CB\u5316\u6587\u672C\u5BF9\u8BDD...', 3000);

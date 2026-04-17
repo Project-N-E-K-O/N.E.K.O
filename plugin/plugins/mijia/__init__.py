@@ -150,19 +150,24 @@ class MijiaPlugin(NekoPluginBase):
         if sys.platform == "win32":
             try:
                 import subprocess
-                username = subprocess.check_output(
-                    ["cmd", "/c", "echo", "%USERNAME%"], text=True
-                ).strip()
-                path_str = str(self.credential_path)
-                # 先移除所有继承权限，再授权当前用户完全控制
-                result = subprocess.run(
-                    ["icacls", path_str, "/inheritance:r", "/grant:r", f"{username}:F"],
-                    check=False, capture_output=True, text=True
-                )
-                if result.returncode != 0:
+
+                def _apply_windows_acl() -> tuple[int, str]:
+                    username = subprocess.check_output(
+                        ["cmd", "/c", "echo", "%USERNAME%"], text=True
+                    ).strip()
+                    path_str = str(self.credential_path)
+                    # 先移除所有继承权限，再授权当前用户完全控制
+                    result = subprocess.run(
+                        ["icacls", path_str, "/inheritance:r", "/grant:r", f"{username}:F"],
+                        check=False, capture_output=True, text=True
+                    )
+                    return result.returncode, (result.stderr or "").strip()
+
+                returncode, stderr = await asyncio.to_thread(_apply_windows_acl)
+                if returncode != 0:
                     self.logger.warning(
-                        f"设置凭据文件权限失败(Windows): icacls 返回码 {result.returncode}"
-                        + (f", stderr: {result.stderr.strip()}" if result.stderr.strip() else "")
+                        f"设置凭据文件权限失败(Windows): icacls 返回码 {returncode}"
+                        + (f", stderr: {stderr}" if stderr else "")
                     )
                 else:
                     self.logger.debug("凭据文件权限已设置（仅当前用户）")

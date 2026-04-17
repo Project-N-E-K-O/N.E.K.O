@@ -519,6 +519,17 @@ class OmniOfflineClient:
                     if attempt < max_retries - 1:
                         wait_time = retry_delays[attempt]
                         logger.warning(f"OmniOfflineClient: LLM调用失败 (尝试 {attempt + 1}/{max_retries})，{wait_time}秒后重试: {e}")
+                        # 如果 attempt 已经向前端吐过 chunk，通知前端清除废气泡，
+                        # 否则 retry 的新流会接在旧气泡后面，产生两段不同内容拼接。
+                        if assistant_message and self.on_response_discarded:
+                            await self._notify_response_discarded(
+                                f"api_error:{error_type}",
+                                attempt + 1,
+                                max_retries,
+                                will_retry=True,
+                                message=None,
+                            )
+                        assistant_message = ""
                         await asyncio.sleep(wait_time)
                         continue
                     else:

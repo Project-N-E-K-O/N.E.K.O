@@ -567,6 +567,10 @@ async def get_holiday_or_weekend_hint(lang: str, character: str) -> str | None:
 
     Returns ``None`` if budget exhausted or no event — caller should
     produce **no** placeholder text.
+
+    This is a convenience wrapper that **immediately** consumes the budget.
+    For deferred consumption (e.g. greeting with abort checkpoints), use
+    :func:`preview_holiday_or_weekend_hint` + :func:`commit_holiday_or_weekend_hint`.
     """
     proximity = await get_nearest_holiday(lang)
 
@@ -594,6 +598,96 @@ async def get_holiday_or_weekend_hint(lang: str, character: str) -> str | None:
         return _WEEKEND_HINT.get(lang, _WEEKEND_HINT.get('en', ''))
 
     return None
+
+
+# ── preview / commit (deferred consumption) ────────────────────────
+
+def _has_holiday_budget(character: str, proximity: HolidayProximity) -> bool:
+    """Check whether budget is available WITHOUT consuming or mutating state."""
+    rec = _consumption_data.get(character)
+    if rec is None:
+        return True  # no record → full budget
+    period_key = proximity.period.start.isoformat()
+    period_rec = rec.get("periods", {}).get(period_key)
+    if period_rec is None:
+        return True  # not initialised → full budget
+
+    if not proximity.is_today:
+        return period_rec.get("period", _BUDGET_PERIOD) > 0
+    if proximity.period.is_nominal_day(date.today()):
+        return period_rec.get("holiday", _BUDGET_HOLIDAY) > 0
+    return period_rec.get("period", _BUDGET_PERIOD) > 0
+
+
+def _has_weekend_budget(character: str) -> bool:
+    """Check whether weekend budget is available WITHOUT consuming or mutating state."""
+    rec = _consumption_data.get(character)
+    if rec is None:
+        return True  # no record → full budget
+    today_iso = date.today().isoformat()
+    if rec.get("weekend_date") != today_iso:
+        return True  # new day → full budget
+    return rec.get("weekend", 0) > 0
+
+
+def _build_holiday_hint_text(lang: str, proximity: HolidayProximity) -> str:
+    """Build hint text from a proximity object (no side effects)."""
+    name = proximity.period.display_name
+    lang_key = lang if lang in _HOLIDAY_HINT_TODAY else 'en'
+    if proximity.is_today:
+        tpl = _HOLIDAY_HINT_TODAY.get(lang_key, _HOLIDAY_HINT_TODAY['en'])
+        return tpl.format(name=name)
+    elif proximity.days_away <= 3:
+        tpl = _HOLIDAY_HINT_SOON.get(lang_key, _HOLIDAY_HINT_SOON['en'])
+        return tpl.format(name=name, days=proximity.days_away)
+    else:
+        tpl = _HOLIDAY_HINT_WEEK.get(lang_key, _HOLIDAY_HINT_WEEK['en'])
+        return tpl.format(name=name)
+
+
+# Token: ("holiday", HolidayProximity) | ("weekend",)
+
+async def preview_holiday_or_weekend_hint(
+    lang: str, character: str,
+) -> tuple[str | None, tuple | None]:
+    """Get hint text WITHOUT consuming budget.
+
+    Returns ``(hint_text, token)``.  Pass *token* to
+    :func:`commit_holiday_or_weekend_hint` after successful delivery.
+    ``(None, None)`` when no event or budget exhausted.
+    """
+    proximity = await get_nearest_holiday(lang)
+
+    if proximity is not None:
+        if not _has_holiday_budget(character, proximity):
+            return None, None
+        return _build_holiday_hint_text(lang, proximity), ("holiday", proximity)
+
+    # No holiday → check weekend
+    if datetime.now().weekday() >= 5:
+        if not _has_weekend_budget(character):
+            return None, None
+        text = _WEEKEND_HINT.get(lang, _WEEKEND_HINT.get('en', ''))
+        return text, ("weekend",)
+
+    return None, None
+
+
+def commit_holiday_or_weekend_hint(character: str, token: tuple) -> bool:
+    """Consume budget for a previously previewed hint.
+
+    Returns ``True`` if the budget was successfully decremented.
+    Should be called only once per preview, after the hint was actually
+    delivered to the user.
+    """
+    if not token:
+        return False
+    kind = token[0]
+    if kind == "holiday":
+        return try_consume_holiday(character, token[1])
+    if kind == "weekend":
+        return try_consume_weekend(character)
+    return False
 
 
 # =====================================================================

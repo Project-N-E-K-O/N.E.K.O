@@ -543,8 +543,10 @@ async def initialize_character_data():
             # 线程已停止，需要重启
             need_start_thread = True
             try:
-                sync_process[k].join(timeout=0.1)
-            except: # noqa: E722
+                await asyncio.to_thread(sync_process[k].join, timeout=0.1)
+            except Exception:
+                # 注意不要写成 bare except：to_thread 是 cancellation point，
+                # 如果 catch 了 BaseException 会吞掉 asyncio.CancelledError
                 pass
         
         if need_start_thread:
@@ -593,7 +595,7 @@ async def initialize_character_data():
                 logger.info(f"正在停止已删除角色 {k} 的同步连接器线程...")
                 if k in sync_shutdown_event:
                     sync_shutdown_event[k].set()
-                sync_process[k].join(timeout=3)  # 等待线程正常结束
+                await asyncio.to_thread(sync_process[k].join, timeout=3)  # 等待线程正常结束
                 if sync_process[k].is_alive():
                     logger.warning(f"⚠️ 同步连接器线程 {k} 未能在超时内停止，将作为daemon线程自动清理")
                 else:

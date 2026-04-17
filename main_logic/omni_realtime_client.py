@@ -482,7 +482,10 @@ class OmniRealtimeClient:
         headers = {
             "Authorization": f"Bearer {self.api_key}"
         }
-        self.ws = await websockets.connect(url, additional_headers=headers)
+        # close_timeout=0.5 缩短 close handshake 的等待上限：默认 10s 会把
+        # end_session 协程挂住数百毫秒~数秒（Qwen 回 CLOSE 帧偶尔很慢），
+        # 超时后 websockets 内部会 transport.abort() 强制关闭。
+        self.ws = await websockets.connect(url, additional_headers=headers, close_timeout=0.5)
         # Clear fatal flag so send_event/update_session work on this new
         # connection (flag may be leftover from a previous failed session
         # when the same OmniRealtimeClient instance is reused).
@@ -1084,17 +1087,17 @@ class OmniRealtimeClient:
     # Three distinct channels mirror the OmniOfflineClient interface:
     #
     #   prime_context(text, skipped)
-    #       Session-start context priming.  Delegates to create_response()
-    #       because Realtime APIs have no separate "append to system
-    #       prompt" mechanism.
+    #       Session-start context priming.  通过 session.update 追加到
+    #       系统指令，不创建用户消息，不触发模型响应。
+    #       与 OmniOfflineClient.prime_context 语义一致。
     #       Typical caller: core._perform_final_swap_sequence()
     #
     #   create_response(text, skipped)
     #       Mid-conversation persistent message + trigger LLM response.
+    #       会创建 user 角色消息并触发 response.create。
     #       Behaviour varies by provider:
-    #         OpenAI  → conversation.item.create(role=user) + response.create
-    #         Qwen    → update_session(instructions += text) + response.create
-    #         Gemini  → send_client_content(role=user)
+    #         OpenAI / GLM / Step → conversation.item.create(role=user) + response.create
+    #         Gemini              → send_client_content(role=user)
     #
     #   prompt_ephemeral(instruction, *, language)
     #       Fire-and-forget audio nudge.  Injects a short WAV clip via
@@ -1104,67 +1107,103 @@ class OmniRealtimeClient:
     # ------------------------------------------------------------------
 
     async def prime_context(self, text: str, skipped: bool = False) -> None:
-        """Append context to the session at startup (delegates to create_response).
+        """Inject context during hot-swap.
 
-        Realtime APIs lack a dedicated "append to system prompt" mechanism,
-        so this simply delegates to ``create_response()``.  Semantically
-        identical to the OmniOfflineClient counterpart — called only at
-        session start during hot-swap to inject incremental conversation
-        cache and task summaries.
+        行为取决于 skipped 参数和提供商：
+
+        - ``skipped=True`` (或 Qwen)：通过 ``session.update`` 追加到
+          系统指令，不触发模型响应。
+        - ``skipped=False`` (GPT/GLM/Step)：通过 ``create_response``
+          注入一条一次性 user 消息并触发模型响应（用于任务结果主动
+          汇报）。注意：此路径不写入 session instructions，文本是
+          瞬态的，不要改为持久化到 instructions。
+        - Gemini：无论 skipped 值，均通过 ``send_client_content``
+          注入（SDK 限制，无 session.update 机制）。skipped=True 时
+          通过 ``_skip_until_next_response`` 静默丢弃响应。
 
         Args:
             text: Context to inject (incremental cache + summary/ready).
-            skipped: If True, the next response will be silently discarded.
+            skipped: If True, only update instructions without triggering
+                     a response. If False, also trigger model response.
         """
-        await self.create_response(text, skipped=skipped)
+        if not text or not text.strip():
+            logger.info("prime_context: skipping empty content")
+            return
+
+        if self._is_gemini:
+            # Gemini Live API 没有 session.update 机制，只能通过
+            # send_client_content 注入上下文（会创建 user turn）。
+            # on_response_done 由 _handle_messages_gemini 自然触发。
+            if skipped:
+                self._skip_until_next_response = True
+            await self._create_response_gemini(text)
+            return
+
+        if not skipped and "qwen" not in self._model_lower:
+            # skipped=False：需要模型主动响应（任务结果汇报）
+            # 通过 create_response 注入 user 消息 + 触发响应
+            # Qwen 不支持 conversation.item.create，走下方 update_session
+            await self.create_response(text)
+        else:
+            # skipped=True 或 Qwen：仅追加到 session instructions
+            await self.update_session({"instructions": self.instructions + '\n' + text})
+            logger.info("prime_context: updated session instructions")
 
     async def create_response(self, instructions: str, skipped: bool = False) -> None:
-        """Inject a persistent message and trigger an LLM response.
+        """Inject a persistent user message and trigger an LLM response.
+
+        与 ``prime_context`` (追加到系统指令) 不同，此方法会创建一条
+        user 角色的会话消息并触发模型响应。适用于需要模型立即回复的
+        mid-conversation 场景。
+
+        注意：需要会话中已有 user 消息或所用 API 支持
+        ``conversation.item.create``，否则可能触发 1007 错误。
 
         Behaviour varies by provider:
-          - **OpenAI**: ``conversation.item.create(role=user)`` +
-            ``response.create``
-          - **Qwen**: appends to session instructions + ``response.create``
-            (Qwen Realtime doesn't support ``conversation.item.create``)
+          - **OpenAI / GLM / Step**: ``conversation.item.create(role=user)``
+            + ``response.create``
           - **Gemini**: ``send_client_content(role=user)``
 
         See ``prime_context()`` (session-start priming) and
         ``prompt_ephemeral()`` (fire-and-forget audio nudge) for the other
         two injection channels.
         """
-        if skipped:
-            self._skip_until_next_response = True
-        
         # Gemini 使用 send_client_content 发送文本内容
         if self._is_gemini:
+            if not instructions or not instructions.strip():
+                logger.info("Gemini: skipping empty content in create_response")
+                return
+            if skipped:
+                self._skip_until_next_response = True
             await self._create_response_gemini(instructions)
             return
 
-        if "qwen" in self._model_lower:
-            await self.update_session({"instructions": self.instructions + '\n' + instructions})
+        # 跳过空内容的发送，避免触发 API 错误
+        if not instructions or not instructions.strip():
+            logger.info("Skipping empty content in create_response")
+            return
 
-            logger.info("Creating response with instructions override")
-            await self.send_event({"type": "response.create"})
-        else:
-            # 先通过 conversation.item.create 添加系统消息（增量）
-            item_event = {
-                "type": "conversation.item.create",
-                "item": {
-                    "type": "message",
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": instructions
-                        }
-                    ]
-                }
+        if skipped:
+            self._skip_until_next_response = True
+
+        # 通过 conversation.item.create 添加用户消息，再触发响应
+        item_event = {
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": instructions
+                    }
+                ]
             }
-            await self.send_event(item_event)
-            
-            # 然后调用 response.create，不带 instructions（避免替换 session instructions）
-            logger.info("Creating response without instructions override")
-            await self.send_event({"type": "response.create"})
+        }
+        await self.send_event(item_event)
+
+        logger.info("Creating response with user message")
+        await self.send_event({"type": "response.create"})
     
     async def _create_response_gemini(self, instructions: str) -> None:
         """Send text content to Gemini and trigger response."""
@@ -1172,13 +1211,9 @@ class OmniRealtimeClient:
             logger.warning("Gemini session not available for create_response")
             return
         
-        # 🔧 修复：跳过空内容的发送，避免预热时污染 Gemini 对话历史
-        # 预热时 instructions 为空字符串，发送空 turn 会导致首轮对话被吞掉
+        # 跳过空内容的发送，避免预热时污染 Gemini 对话历史
         if not instructions or not instructions.strip():
             logger.info("Gemini: skipping empty content (warmup or empty message)")
-            # 直接触发 response_done 回调，让预热逻辑正常完成
-            if self.on_response_done:
-                await self.on_response_done()
             return
         
         try:
@@ -1659,7 +1694,9 @@ class OmniRealtimeClient:
         
         if self.ws:
             try:
-                # 尝试关闭websocket连接
+                # 连接时已设 close_timeout=0.5s：远端超时未回 CLOSE 帧时，
+                # websockets 内部会自行 abort transport 强制关闭，
+                # 保证 end_session 快速返回、主事件循环心跳不受影响。
                 await self.ws.close()
             except Exception as e:
                 logger.error(f"Error closing websocket: {e}")
@@ -1761,13 +1798,13 @@ class OmniRealtimeClient:
                     if self._gemini_user_transcript and self.on_input_transcript:
                         await self.on_input_transcript(self._gemini_user_transcript)
                         self._gemini_user_transcript = ""  # 清空累积
-                    
+
                     self._is_responding = True
                     self._is_first_text_chunk = True  # 重置第一个 chunk 标记
                     self._gemini_current_transcript = ""  # 清空累积
-                    if self.on_new_message:
+                    if not self._skip_until_next_response and self.on_new_message:
                         await self.on_new_message()
-                
+
                 # 处理输出转录 - 流式发送每个 chunk 到前端
                 # 不参与新 turn 检测；turn_complete 后到达的迟到转录会以 isNewMessage=false
                 # 追加到当前轮次的气泡（正确行为）
@@ -1776,23 +1813,23 @@ class OmniRealtimeClient:
                     if hasattr(output_trans, 'text') and output_trans.text:
                         text = output_trans.text
                         self._gemini_current_transcript += text
-                        if self.on_text_delta:
+                        if not self._skip_until_next_response and self.on_text_delta:
                             await self.on_text_delta(text, self._is_first_text_chunk)
                             self._is_first_text_chunk = False
-                
+
                 # 处理模型输出 (音频)
                 if server_content.model_turn:
                     for part in server_content.model_turn.parts:
                         # 跳过 thinking/thought 部分
                         if hasattr(part, 'thought') and part.thought:
                             continue
-                        
+
                         # 处理音频
                         if hasattr(part, 'inline_data') and part.inline_data:
                             if isinstance(part.inline_data.data, bytes):
-                                if self.on_audio_delta:
+                                if not self._skip_until_next_response and self.on_audio_delta:
                                     await self.on_audio_delta(part.inline_data.data)
-                
+
                 # 检查是否 turn 完成（用 getattr 防止 SDK 无该字段时抛错）
                 if getattr(server_content, 'turn_complete', False):
                     # Gemini Live API 不返回 token 数，仅记录调用次数
@@ -1807,12 +1844,17 @@ class OmniRealtimeClient:
                     except Exception:
                         pass
                     self._is_responding = False
-                    # 不再调用 on_output_transcript（已通过 on_text_delta 流式发送）
-                    if self.on_response_done:
+                    if self._skip_until_next_response:
+                        self._skip_until_next_response = False
+                        logger.info("Gemini: skipped response (prime_context priming)")
+                    elif self.on_response_done:
                         await self.on_response_done()
                 
                 # 检查是否被中断
                 if hasattr(server_content, 'interrupted') and server_content.interrupted:
+                    if self._skip_until_next_response:
+                        self._skip_until_next_response = False
+                        logger.info("Gemini: skipped response interrupted, reset skip flag")
                     self._interrupted = True
                     self._is_responding = False
                     # 被中断时也发送已累积的用户输入

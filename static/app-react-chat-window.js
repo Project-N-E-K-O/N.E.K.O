@@ -29,6 +29,7 @@
         viewProps: null,
         messages: [],
         composerAttachments: [],
+        composerHidden: false,
         onMessageAction: null,
         onComposerImportImage: null,
         onComposerScreenshot: null,
@@ -364,6 +365,7 @@
         return Object.assign({}, ensureViewProps(), {
             messages: state.messages,
             composerAttachments: state.composerAttachments,
+            composerHidden: state.composerHidden,
             onMessageAction: handleMessageAction,
             onComposerImportImage: handleComposerImportImage,
             onComposerScreenshot: handleComposerScreenshot,
@@ -548,7 +550,10 @@
             shell.style.removeProperty('left');
             shell.style.removeProperty('top');
             shell.style.removeProperty('width');
-            shell.style.removeProperty('height');
+            // 不清 height：清掉会让 shell 瞬间回到 CSS 的 `height:auto;max-height:50vh`，
+            // grid `auto 1fr auto` 父容器塌缩会把 .message-list 的 clientHeight 挤到几十 px，
+            // 浏览器 clamp scrollTop → 0，下一帧 syncMobileContentLayout() 恢复 height 时已经来不及。
+            // 保留旧像素值，让紧随其后的 syncMobileContentLayout() 直接覆写，避免中间态。
             shell.style.removeProperty('transform');
             return;
         }
@@ -867,6 +872,11 @@
         return state.messages;
     }
 
+    function setComposerHidden(hidden) {
+        state.composerHidden = !!hidden;
+        renderWindow();
+    }
+
     function setComposerAttachments(attachments) {
         state.composerAttachments = Array.isArray(attachments)
             ? attachments.map(function (attachment, index) {
@@ -934,7 +944,8 @@
             minimized: minimized,
             viewProps: Object.assign({}, ensureViewProps()),
             messages: state.messages.map(cloneMessage),
-            composerAttachments: state.composerAttachments.slice()
+            composerAttachments: state.composerAttachments.slice(),
+            composerHidden: state.composerHidden
         };
     }
 
@@ -1580,6 +1591,10 @@
         window.addEventListener(EVENT_PREFIX + 'set-composer-attachments', function (event) {
             setComposerAttachments(event.detail && event.detail.attachments);
         });
+
+        window.addEventListener(EVENT_PREFIX + 'set-composer-hidden', function (event) {
+            setComposerHidden(event.detail && event.detail.hidden);
+        });
     }
 
     function init() {
@@ -1703,6 +1718,7 @@
         setViewProps: setViewProps,
         setMessages: setMessages,
         setComposerAttachments: setComposerAttachments,
+        setComposerHidden: setComposerHidden,
         appendMessage: appendMessage,
         updateMessage: updateMessage,
         removeMessage: removeMessage,
