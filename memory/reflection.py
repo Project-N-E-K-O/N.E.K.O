@@ -127,6 +127,7 @@ class ReflectionEngine:
                     to_archive.append(r)
                     continue
             except (ValueError, TypeError):
+                # 时间戳缺失/格式异常：不归档，落回 main 保守保留
                 pass
             keep_in_main.append(r)
         merged = reflections + keep_in_main

@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse
 
 from .shared_state import get_config_manager
 from .workshop_router import get_subscribed_workshop_items
-from utils.file_utils import atomic_write_json, atomic_write_json_async
+from utils.file_utils import atomic_write_json_async
 from utils.logger_config import get_module_logger
 
 router = APIRouter(prefix="/api/model/vrm", tags=["vrm"])

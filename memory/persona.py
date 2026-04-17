@@ -724,6 +724,7 @@ class PersonaManager:
             if isinstance(data, list):
                 return data
         except (json.JSONDecodeError, OSError):
+            # 文件损坏或被并发进程替换：按空队列处理，下次 add_pending_correction 会重建
             pass
         return []
 

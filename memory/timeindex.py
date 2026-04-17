@@ -187,7 +187,9 @@ class TimeIndexedMemory:
         return []
 
     def retrieve_original_by_timeframe(self, lanlan_name, start_time, end_time):
-        if lanlan_name not in self.engines:
+        # 懒加载：首次访问时（例如重启后立刻读取）需要注册 engine，
+        # 否则 rebuttal loop 会静默跳过，直到 store_conversation 才触发建表
+        if not self._ensure_engine_exists(lanlan_name):
             return []
         table_name = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
         # 查询指定时间范围内的对话
