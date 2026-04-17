@@ -393,6 +393,77 @@
         });
     }
 
+    // ─── M4: 插件面板跨域 handoff ─────────────────────────────
+
+    /**
+     * 打开插件面板并携带 handoff 信号。
+     *
+     * 插件面板 /ui/ 运行在独立的 user_plugin_server（不同端口/源），
+     * localStorage handoff token 无法跨源读取，因此通过 URL 查询参数传递。
+     *
+     * 流程: 首页 → /api/agent/user_plugin/dashboard?yui_guide=1&... → 重定向到 /ui/?yui_guide=1&...
+     *
+     * @param {string} [resumeScene] - 恢复场景 ID，默认 'plugin_dashboard_landing'
+     * @returns {Promise<Window|null>}
+     */
+    function openPluginDashboard(resumeScene) {
+        var scene = resumeScene || 'plugin_dashboard_landing';
+        var tokenObj = createHandoffToken('plugin_dashboard', scene);
+        var tokenId = tokenObj ? tokenObj.token : '';
+
+        var params = [
+            'yui_guide=1',
+            'flow_id=' + encodeURIComponent(HANDOFF_FLOW_ID),
+            'source_page=home',
+            'resume_scene=' + encodeURIComponent(scene)
+        ];
+        if (tokenId) {
+            params.push('handoff_token=' + encodeURIComponent(tokenId));
+        }
+
+        var openUrl = '/api/agent/user_plugin/dashboard?' + params.join('&');
+
+        window.dispatchEvent(new CustomEvent('neko:yui-guide:handoff-sent', {
+            detail: {
+                token: tokenId,
+                target_page: 'plugin_dashboard',
+                resume_scene: scene
+            }
+        }));
+
+        return openPage(openUrl, 'plugin_dashboard').then(function (childWin) {
+            if (!childWin && tokenObj) {
+                var current = readHandoffToken();
+                if (current && !current.consumed && current.token === tokenId) {
+                    clearHandoffToken();
+                }
+            }
+            return childWin;
+        });
+    }
+
+    /**
+     * 监听来自插件面板的 postMessage 完成信号。
+     * 插件面板教程结束时通过 postMessage 通知首页。
+     *
+     * @param {Function} onComplete - 教程完成回调
+     * @returns {Function} 清理函数，调用以移除监听器
+     */
+    function listenPluginDashboardComplete(onComplete) {
+        if (typeof onComplete !== 'function') return function () {};
+
+        function handler(event) {
+            if (!event.data || typeof event.data !== 'object') return;
+            if (event.data.type !== 'neko:yui-guide:plugin-dashboard-complete') return;
+            onComplete(event.data.detail || {});
+        }
+
+        window.addEventListener('message', handler);
+        return function () {
+            window.removeEventListener('message', handler);
+        };
+    }
+
     // ─── M2: 首页交互包装 API ────────────────────────────────
 
     /**
@@ -607,7 +678,10 @@
         readHandoffToken: readHandoffToken,
         consumeHandoffToken: consumeHandoffToken,
         clearHandoffToken: clearHandoffToken,
-        openPageWithHandoff: openPageWithHandoff
+        openPageWithHandoff: openPageWithHandoff,
+        // M4 — 插件面板跨域 handoff
+        openPluginDashboard: openPluginDashboard,
+        listenPluginDashboardComplete: listenPluginDashboardComplete
     });
 
     function getHomeInteractionApi() {

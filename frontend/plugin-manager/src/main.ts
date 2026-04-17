@@ -6,10 +6,15 @@ import ElementPlus from 'element-plus'
 import 'element-plus/dist/index.css'
 import 'element-plus/theme-chalk/dark/css-vars.css'
 import { initDarkMode } from './composables/useDarkMode'
+import { useYuiTutorialBridge } from './composables/useYuiTutorialBridge'
 
 // 初始化深色模式（在应用挂载前）
 // 这样可以避免页面闪烁，并确保状态在应用启动时就正确初始化
 initDarkMode()
+
+// 初始化 Yui 教程桥（检测 URL 中的 handoff 参数）
+const tutorialBridge = useYuiTutorialBridge()
+tutorialBridge.init()
 import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 import zhCn from 'element-plus/dist/locale/zh-cn.mjs'
 import zhTw from 'element-plus/dist/locale/zh-tw.mjs'

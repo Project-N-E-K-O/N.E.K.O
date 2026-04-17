@@ -113,7 +113,7 @@
 
     steps.takeover_plugin_preview = createBaseStep('takeover_plugin_preview', 'home', '#${p}-btn-agent');
     steps.takeover_plugin_preview.tutorial.title = '插件预演';
-    steps.takeover_plugin_preview.tutorial.description = '第一阶段只在首页做插件能力预演，不直接跳到 /ui。';
+    steps.takeover_plugin_preview.tutorial.description = '首页插件能力预演，M4 后可接力到真实 /ui 插件面板。';
     steps.takeover_plugin_preview.performance.bubbleText = '还没完呢！你快看快看，这里还有超～～多好玩的插件呢！有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～';
     steps.takeover_plugin_preview.performance.voiceKey = 'takeover_plugin_preview';
     steps.takeover_plugin_preview.performance.emotion = 'happy';
@@ -212,9 +212,9 @@
     steps.handoff_plugin_dashboard.performance.voiceKey = 'handoff_plugin_dashboard';
     steps.handoff_plugin_dashboard.performance.cursorAction = 'click';
     steps.handoff_plugin_dashboard.performance.cursorTarget = '#${p}-btn-agent';
-    steps.handoff_plugin_dashboard.navigation.openUrl = '/api/agent/user_plugin/dashboard';
+    steps.handoff_plugin_dashboard.navigation.openUrl = '/api/agent/user_plugin/dashboard?yui_guide=1';
     steps.handoff_plugin_dashboard.navigation.windowName = 'plugin_dashboard';
-    steps.handoff_plugin_dashboard.navigation.resumeScene = null;
+    steps.handoff_plugin_dashboard.navigation.resumeScene = 'plugin_dashboard_landing';
 
     const sceneOrder = {
         home: HOME_SCENE_ORDER.slice(),

@@ -326,5 +326,12 @@ export default {
   },
   app: {
     titleSuffix: 'N.E.K.O Plugin Manager'
+  },
+  yuiTutorial: {
+    title: 'Welcome to the Plugin Manager!',
+    welcome: 'This is where you manage all your plugins! You can view, start, and configure plugins to make me even more powerful~',
+    hint: 'Take a look around, and let me know when you\'re done~',
+    complete: 'All done~',
+    dismiss: 'Skip for now'
   }
 }
