@@ -20,8 +20,8 @@ from fastapi.responses import JSONResponse
 
 from .shared_state import get_config_manager, get_steamworks, get_session_manager, get_initialize_character_data
 from .characters_router import get_current_live2d_model
-from utils.file_utils import atomic_write_json_async
-from utils.preferences import load_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top, load_global_conversation_settings, save_global_conversation_settings, GLOBAL_CONVERSATION_KEY
+from utils.file_utils import atomic_write_json_async, read_json_async
+from utils.preferences import aload_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top, aload_global_conversation_settings, save_global_conversation_settings, GLOBAL_CONVERSATION_KEY
 from utils.logger_config import get_module_logger
 from utils.config_manager import get_reserved
 from config import (
@@ -205,7 +205,7 @@ async def get_page_config(lanlan_name: str = ""):
     try:
         # 获取角色数据
         _config_manager = get_config_manager()
-        master_name, her_name, master_basic_config, lanlan_basic_config, _, _, _, _, _ = _config_manager.get_character_data()
+        master_name, her_name, master_basic_config, lanlan_basic_config, _, _, _, _, _ = await _config_manager.aget_character_data()
         master_display_name = _resolve_master_display_name(master_basic_config, master_name)
         
         # 如果提供了 lanlan_name 参数，使用它；否则使用当前角色
@@ -306,7 +306,7 @@ async def get_page_config(lanlan_name: str = ""):
 @router.get("/preferences")
 async def get_preferences():
     """获取用户偏好设置"""
-    preferences = load_user_preferences()
+    preferences = await aload_user_preferences()
     return preferences
 
 
@@ -385,7 +385,7 @@ async def set_preferred_model(request: Request):
 async def get_conversation_settings():
     """获取全局对话设置（从 user_preferences.json 同步备份中读取）"""
     try:
-        settings = load_global_conversation_settings()
+        settings = await aload_global_conversation_settings()
         return {"success": True, "settings": settings}
     except Exception as e:
         logger.exception(f"获取对话设置失败: {e}")
@@ -545,13 +545,12 @@ async def get_core_config_api():
             from utils.config_manager import get_config_manager
             config_manager = get_config_manager()
             core_config_path = str(config_manager.get_config_path('core_config.json'))
-            with open(core_config_path, 'r', encoding='utf-8') as f:
-                core_cfg = json.load(f)
-                api_key = core_cfg.get('coreApiKey', '')
+            core_cfg = await read_json_async(core_config_path)
+            api_key = core_cfg.get('coreApiKey', '')
         except FileNotFoundError:
             # 如果文件不存在，返回当前配置中的CORE_API_KEY
             _config_manager = get_config_manager()
-            core_config = _config_manager.get_core_config()
+            core_config = await _config_manager.aget_core_config()
             api_key = core_config.get('CORE_API_KEY','')
             # 创建空的配置对象用于返回默认值
             core_cfg = {}
@@ -708,33 +707,61 @@ async def update_core_config(request: Request):
         # API配置更新后，需要先通知所有客户端，再关闭session，最后重新加载配置
         logger.info("API配置已更新，准备通知客户端并重置所有session...")
         
-        # 1. 先通知所有连接的客户端即将刷新（WebSocket还连着）
-        notification_count = 0
+        # 1. 并行通知所有连接的客户端即将刷新（WebSocket还连着）
+        # 重要：snapshot (name, mgr, session) 三元组，让 notify 和 end_session 两阶段
+        # 操作同一组 mgr **+** 同一份 session：
+        # - mgr 维度防新 mgr 被加入第二阶段误杀
+        # - session 维度防同一 mgr 在两阶段之间已 rotate 到新 session 被误杀
+        #   （前端 reload 后立即重连 → 触发新 session → 第二阶段不应关掉新 session）
+        # end_session 内部已有 expected_session stale guard（core.py:3013/3026），
+        # 这里把 snapshot 时的 session 传下去即可触发该 guard。
         session_manager = get_session_manager()
-        for lanlan_name, mgr in session_manager.items():
-            if mgr.is_active and mgr.websocket:
-                try:
-                    await mgr.websocket.send_text(json.dumps({
-                        "type": "reload_page",
-                        "message": "API配置已更新，页面即将刷新"
-                    }))
-                    notification_count += 1
-                    logger.info(f"已通知 {lanlan_name} 的前端刷新页面")
-                except Exception as e:
-                    logger.warning(f"通知 {lanlan_name} 的WebSocket失败: {e}")
-        
+        mgr_snapshot = [
+            (name, mgr, getattr(mgr, "session", None))
+            for name, mgr in session_manager.items()
+        ]
+        reload_payload = json.dumps({
+            "type": "reload_page",
+            "message": "API配置已更新，页面即将刷新"
+        })
+
+        async def _notify(lanlan_name, mgr):
+            if not (mgr.is_active and mgr.websocket):
+                return False
+            try:
+                await mgr.websocket.send_text(reload_payload)
+                logger.info(f"已通知 {lanlan_name} 的前端刷新页面")
+                return True
+            except Exception as e:
+                logger.warning(f"通知 {lanlan_name} 的WebSocket失败: {e}")
+                return False
+
+        _notify_results = await asyncio.gather(
+            *(_notify(n, m) for n, m, _session in mgr_snapshot),
+            return_exceptions=True,
+        )
+        notification_count = sum(1 for r in _notify_results if r is True)
         logger.info(f"已通知 {notification_count} 个客户端")
-        
-        # 2. 立刻关闭所有活跃的session（这会断开所有WebSocket）
-        sessions_ended = []
-        for lanlan_name, mgr in session_manager.items():
-            if mgr.is_active:
-                try:
-                    await mgr.end_session(by_server=True)
-                    sessions_ended.append(lanlan_name)
-                    logger.info(f"{lanlan_name} 的session已结束")
-                except Exception as e:
-                    logger.error(f"结束 {lanlan_name} 的session时出错: {e}")
+
+        # 2. 并行关闭所有活跃的 session（每个 end_session ≈ 1s，串行 N 秒，gather 后 ≈ 1s）
+        # 复用上一阶段的 (mgr, session) snapshot，确保不会误杀重连进来的新 mgr，
+        # 也不会误杀同一 mgr 在中途 rotate 出来的新 session。
+        async def _end(lanlan_name, mgr, expected_session):
+            if not mgr.is_active or expected_session is None:
+                return None
+            try:
+                await mgr.end_session(by_server=True, expected_session=expected_session)
+                logger.info(f"{lanlan_name} 的session已结束")
+                return lanlan_name
+            except Exception as e:
+                logger.error(f"结束 {lanlan_name} 的session时出错: {e}")
+                return None
+
+        _end_results = await asyncio.gather(
+            *(_end(n, m, s) for n, m, s in mgr_snapshot),
+            return_exceptions=True,
+        )
+        sessions_ended = [r for r in _end_results if isinstance(r, str)]
         
         # 3. 重新加载配置并重建session manager
         logger.info("正在重新加载配置...")

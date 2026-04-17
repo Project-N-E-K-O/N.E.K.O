@@ -395,6 +395,12 @@
 
         // 如果音量超过阈值(0.01),认为检测到声音
         if (rms > 0.01) {
+            // C: 为前端 proactive guard 持续打点"最近一次有声音"。
+            // 阈值与下面 hasSoundDetected 共用 0.01；这里每帧都写（~16ms 一次），
+            // 不做去抖，保证 proactive tick 能读到最新值。与后端
+            // _user_recent_activity_time 对称：不等 sustain、不等 VAD 判定，
+            // 只要麦克风真的收到过声音就算"用户可能在说话"。
+            S.userRecentSpeechTime = Date.now();
             if (!S.hasSoundDetected) {
                 S.hasSoundDetected = true;
                 console.log('麦克风静音检测：检测到声音，RMS =', rms);

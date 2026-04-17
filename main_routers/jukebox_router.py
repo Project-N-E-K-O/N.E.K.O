@@ -26,7 +26,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from starlette.background import BackgroundTask
 
 from .shared_state import get_config_manager
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json, read_json_async
 from utils.logger_config import get_module_logger
 
 router = APIRouter(prefix="/api/jukebox", tags=["jukebox"])
@@ -436,7 +436,8 @@ async def upload_songs(
                 await asyncio.to_thread(shutil.copyfileobj, file.file, buffer)
 
             # 计算 MD5
-            file_md5 = calculate_md5(target_path)
+            # 大文件 hash 整文件读取，offload 避免阻塞事件循环
+            file_md5 = await asyncio.to_thread(calculate_md5, target_path)
 
             # 检查重复（基于MD5）
             existing_song_id = jukebox_config.data["md5Index"]["songs"].get(file_md5)
@@ -668,7 +669,8 @@ async def upload_actions(
                 await asyncio.to_thread(shutil.copyfileobj, file.file, buffer)
 
             # 计算 MD5
-            file_md5 = calculate_md5(target_path)
+            # 大文件 hash 整文件读取，offload 避免阻塞事件循环
+            file_md5 = await asyncio.to_thread(calculate_md5, target_path)
 
             # 检查重复（基于MD5）
             existing_action_id = jukebox_config.data["md5Index"]["actions"].get(file_md5)
@@ -1173,8 +1175,7 @@ async def import_config(file: UploadFile = File(...)):
             raise HTTPException(400, "导入包中缺少 config.json")
         
         try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                import_data = json.load(f)
+            import_data = await read_json_async(config_path)
         except json.JSONDecodeError as err:
             raise HTTPException(400, "config.json 不是有效的 JSON") from err
         
@@ -1203,7 +1204,7 @@ async def import_config(file: UploadFile = File(...)):
 
             # 始终从实际文件计算 MD5，不信任配置中的值
             if src_audio.exists():
-                file_md5 = calculate_md5(src_audio)
+                file_md5 = await asyncio.to_thread(calculate_md5, src_audio)
                 song["audioMd5"] = file_md5
             else:
                 file_md5 = song.get("audioMd5", "")
@@ -1270,7 +1271,7 @@ async def import_config(file: UploadFile = File(...)):
 
             # 始终从实际文件计算 MD5，不信任配置中的值
             if src_file.exists():
-                file_md5 = calculate_md5(src_file)
+                file_md5 = await asyncio.to_thread(calculate_md5, src_file)
                 action["fileMd5"] = file_md5
             else:
                 file_md5 = action.get("fileMd5", "")

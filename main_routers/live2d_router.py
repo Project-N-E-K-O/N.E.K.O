@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 
 from .shared_state import get_config_manager
 from .workshop_router import get_subscribed_workshop_items
-from utils.file_utils import atomic_write_json, atomic_write_json_async
+from utils.file_utils import atomic_write_json, atomic_write_json_async, read_json_async
 from utils.frontend_utils import find_models, find_model_directory, find_workshop_item_by_id
 from utils.logger_config import get_module_logger
 from utils.url_utils import encode_url_path
@@ -232,9 +232,8 @@ async def update_model_config(model_name: str, request: Request):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
         
         # 为了安全，只允许修改 Motions 和 Expressions
-        with open(model_json_path, 'r', encoding='utf-8') as f:
-            current_config = json.load(f)
-            
+        current_config = await read_json_async(model_json_path)
+
         file_refs = current_config.setdefault("FileReferences", {})
         if 'FileReferences' in data and 'Motions' in data['FileReferences']:
             file_refs['Motions'] = data['FileReferences']['Motions']
@@ -345,8 +344,7 @@ async def update_emotion_mapping(model_name: str, request: Request):
         if not model_json_path or not os.path.exists(model_json_path):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
 
-        with open(model_json_path, 'r', encoding='utf-8') as f:
-            config_data = json.load(f)
+        config_data = await read_json_async(model_json_path)
 
         # 统一写入到标准 Cubism 结构（FileReferences.Motions / FileReferences.Expressions）
         file_refs = config_data.setdefault('FileReferences', {})
@@ -721,13 +719,12 @@ async def update_model_config_by_id(model_id: str, request: Request):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
         
         # 为了安全，只允许修改 Motions 和 Expressions
-        with open(model_json_path, 'r', encoding='utf-8') as f:
-            current_config = json.load(f)
-            
+        current_config = await read_json_async(model_json_path)
+
         file_refs = current_config.setdefault("FileReferences", {})
         if 'FileReferences' in data and 'Motions' in data['FileReferences']:
             file_refs['Motions'] = data['FileReferences']['Motions']
-            
+
         if 'FileReferences' in data and 'Expressions' in data['FileReferences']:
             file_refs['Expressions'] = data['FileReferences']['Expressions']
 
