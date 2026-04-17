@@ -772,6 +772,10 @@
             document.addEventListener('click', this.skipButtonClickHandler, true);
         }
 
+        isStopping() {
+            return !!(this.destroyed || this.angryExitTriggered || this.terminationRequested);
+        }
+
         getPreludeSceneIds() {
             if (this.tutorialManager && typeof this.tutorialManager.getYuiGuidePreludeSceneIds === 'function') {
                 return this.tutorialManager.getYuiGuidePreludeSceneIds(this.page) || [];
@@ -1404,7 +1408,7 @@
             return new Promise((resolve) => {
                 const startedAt = Date.now();
                 const tick = () => {
-                    if (this.destroyed) {
+                    if (this.isStopping()) {
                         resolve(null);
                         return;
                     }
@@ -2772,7 +2776,7 @@
             if (!moved) {
                 return false;
             }
-            if (normalized.runId !== this.sceneRunId || this.destroyed || this.angryExitTriggered) {
+            if (normalized.runId !== this.sceneRunId || this.isStopping()) {
                 return false;
             }
 
@@ -2792,7 +2796,7 @@
             this.clearRetainedExtraSpotlights();
 
             const guardFailed = () => {
-                return runId !== this.sceneRunId || this.destroyed || this.angryExitTriggered;
+                return runId !== this.sceneRunId || this.isStopping();
             };
 
             const catPawButtonImage = await this.waitForDocumentSelector(TAKEOVER_CAPTURE_SELECTORS.catPaw, 2200);
@@ -3036,14 +3040,14 @@
             }
 
             let dashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 2200);
-            if (!dashboardWindow && runId === this.sceneRunId && !this.destroyed && !this.angryExitTriggered) {
+            if (!dashboardWindow && runId === this.sceneRunId && !this.isStopping()) {
                 const reopened = await this.clickAgentSidePanelAction('agent-user-plugin', 'management-panel');
                 if (!reopened) {
                     await this.openPluginDashboardWindow();
                 }
                 dashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 5000);
             }
-            if (!dashboardWindow || runId !== this.sceneRunId || this.destroyed || this.angryExitTriggered) {
+            if (!dashboardWindow || runId !== this.sceneRunId || this.isStopping()) {
                 return;
             }
 
@@ -3060,7 +3064,7 @@
             this.clearVirtualSpotlight('plugin-management-entry');
             await this.closeNamedWindow(PLUGIN_DASHBOARD_WINDOW_NAME);
             await this.waitForHomeMainUIReady(3600);
-            if (runId !== this.sceneRunId || this.destroyed || this.angryExitTriggered) {
+            if (runId !== this.sceneRunId || this.isStopping()) {
                 return;
             }
 
@@ -3084,7 +3088,7 @@
             if (!openedSettings) {
                 return;
             }
-            if (runId !== this.sceneRunId || this.destroyed || this.angryExitTriggered) {
+            if (runId !== this.sceneRunId || this.isStopping()) {
                 return;
             }
 
@@ -3106,7 +3110,7 @@
             let voiceCloneItem = await this.waitForVisibleTarget([
                 () => this.getSettingsPeekTargets().voiceCloneItem
             ], 2200);
-            if (!appearanceItem || !voiceCloneItem || runId !== this.sceneRunId || this.destroyed || this.angryExitTriggered) {
+            if (!appearanceItem || !voiceCloneItem || runId !== this.sceneRunId || this.isStopping()) {
                 return;
             }
             this.overlay.clearActionSpotlight();
@@ -3143,10 +3147,12 @@
                 this.clearPreciseHighlights();
                 this.customSecondarySpotlightTarget = null;
                 this.overlay.clearActionSpotlight();
-                this.highlightChatWindow();
+                if (!this.isStopping()) {
+                    this.highlightChatWindow();
+                }
             };
             const narrationPromise = this.speakLineAndWait(performance.bubbleText || '').finally(() => {
-                if (runId !== this.sceneRunId || this.destroyed || this.angryExitTriggered) {
+                if (runId !== this.sceneRunId || this.isStopping()) {
                     return;
                 }
 
@@ -3154,12 +3160,12 @@
             });
             const actionPromise = (async () => {
                 await wait(2000);
-                if (!appearanceItem || runId !== this.sceneRunId || this.destroyed || this.angryExitTriggered) {
+                if (!appearanceItem || runId !== this.sceneRunId || this.isStopping()) {
                     return;
                 }
 
                 await this.moveCursorToElement(appearanceItem, 780);
-                if (runId !== this.sceneRunId || this.destroyed || this.angryExitTriggered) {
+                if (runId !== this.sceneRunId || this.isStopping()) {
                     return;
                 }
 
@@ -3174,7 +3180,7 @@
                 this.cleanupTutorialReturnButtons();
                 await wait(180);
                 await this.ensureCharacterSettingsSidePanelVisible();
-                if (settingsPeekHighlightsCleared || runId !== this.sceneRunId || this.destroyed || this.angryExitTriggered) {
+                if (settingsPeekHighlightsCleared || runId !== this.sceneRunId || this.isStopping()) {
                     return;
                 }
                 ({
@@ -3186,6 +3192,19 @@
             })();
 
             await Promise.all([narrationPromise, actionPromise]);
+            if (runId !== this.sceneRunId || this.isStopping()) {
+                if (openedModelManagerWindowName) {
+                    await this.closeNamedWindow(openedModelManagerWindowName);
+                } else if (openedModelManagerWindow && !openedModelManagerWindow.closed) {
+                    try {
+                        openedModelManagerWindow.close();
+                    } catch (error) {
+                        console.warn('[YuiGuide] 终止阶段六时关闭模型管理页失败:', error);
+                    }
+                }
+                return;
+            }
+
             if (openedModelManagerWindowName) {
                 await this.closeNamedWindow(openedModelManagerWindowName);
             } else if (openedModelManagerWindow && !openedModelManagerWindow.closed) {
@@ -3197,15 +3216,24 @@
             }
 
             await this.waitForHomeMainUIReady(3600);
+            if (runId !== this.sceneRunId || this.isStopping()) {
+                return;
+            }
             this.cleanupTutorialReturnButtons();
             await this.ensureCharacterSettingsSidePanelVisible();
+            if (runId !== this.sceneRunId || this.isStopping()) {
+                return;
+            }
             clearSettingsPeekHighlights();
         }
 
         beginTerminationVisualCleanup() {
+            this.sceneRunId += 1;
+            this.setCurrentScene(null, null);
             this.clearSceneTimers();
             this.disableInterrupts();
             this.cancelActiveNarration();
+            this.clearIntroFlow();
             this.voiceQueue.stop();
             this.clearAllVirtualSpotlights();
             this.clearPreciseHighlights();
@@ -3239,7 +3267,7 @@
         }
 
         async runTakeoverMainFlow() {
-            if (this.takeoverFlowStarted || this.destroyed || this.angryExitTriggered) {
+            if (this.takeoverFlowStarted || this.isStopping()) {
                 return this.takeoverFlowPromise;
             }
 
@@ -3248,36 +3276,36 @@
                 await this.playManagedScene('takeover_capture_cursor', {
                     source: 'auto-takeover'
                 });
-                if (this.destroyed || this.angryExitTriggered) {
+                if (this.isStopping()) {
                     return;
                 }
 
                 await wait(360);
-                if (this.destroyed || this.angryExitTriggered) {
+                if (this.isStopping()) {
                     return;
                 }
 
                 await this.playManagedScene('takeover_plugin_preview', {
                     source: 'auto-takeover'
                 });
-                if (this.destroyed || this.angryExitTriggered) {
+                if (this.isStopping()) {
                     return;
                 }
 
                 await wait(1200);
-                if (this.destroyed || this.angryExitTriggered) {
+                if (this.isStopping()) {
                     return;
                 }
 
                 await this.playManagedScene('takeover_settings_peek', {
                     source: 'auto-takeover'
                 });
-                if (this.destroyed || this.angryExitTriggered) {
+                if (this.isStopping()) {
                     return;
                 }
 
                 await wait(1400);
-                if (this.destroyed || this.angryExitTriggered) {
+                if (this.isStopping()) {
                     return;
                 }
 
@@ -3285,7 +3313,7 @@
                     source: 'auto-takeover'
                 });
                 this.takeoverFlowCompleted = true;
-                if (this.destroyed || this.angryExitTriggered) {
+                if (this.isStopping()) {
                     return;
                 }
                 this.requestTermination('complete', 'complete');
@@ -3753,7 +3781,7 @@
                 window.addEventListener('neko-assistant-turn-end', handleAssistantTurnEnd, true);
 
                 const poll = () => {
-                    if (this.destroyed) {
+                    if (this.isStopping()) {
                         finish(null);
                         return;
                     }
@@ -3809,7 +3837,7 @@
         }
 
         resolveChatIntroChoice(mode, options) {
-            if (this.destroyed || !this.introChoicePending) {
+            if (this.isStopping() || !this.introChoicePending) {
                 return;
             }
 
@@ -3833,7 +3861,7 @@
 
             if (normalizedMode === 'chat') {
                 this.waitForFirstAssistantReplyAfter(submittedAt).then(() => {
-                    if (this.destroyed) {
+                    if (this.isStopping()) {
                         return;
                     }
 
@@ -3842,7 +3870,7 @@
                     });
                 }).catch((error) => {
                     console.warn('[YuiGuide] 等待首次聊天回复失败:', error);
-                    if (this.destroyed) {
+                    if (this.isStopping()) {
                         return;
                     }
 
@@ -3873,12 +3901,15 @@
                         this.emotionBridge.apply(proactiveStep.performance.emotion);
                     }
                     await this.speakLineAndWait(proactiveText);
+                    if (this.isStopping()) {
+                        return;
+                    }
                     if (!this.cursor.hasPosition()) {
                         const origin = this.getDefaultCursorOrigin();
                         this.cursor.showAt(origin.x, origin.y);
                     }
                 }
-                if (this.destroyed) {
+                if (this.isStopping()) {
                     return;
                 }
 
@@ -3891,7 +3922,7 @@
                     });
                 }
 
-                if (this.destroyed) {
+                if (this.isStopping()) {
                     return;
                 }
 
@@ -3904,15 +3935,20 @@
                     await this.speakLineAndWait(catPawText);
                 }
 
+                if (this.isStopping()) {
+                    return;
+                }
                 this.introFlowCompleted = true;
                 this.schedule(() => {
-                    this.runTakeoverMainFlow();
+                    if (!this.isStopping()) {
+                        this.runTakeoverMainFlow();
+                    }
                 }, 320);
             })();
         }
 
         async runChatIntroPrelude() {
-            if (this.introFlowStarted || this.destroyed) {
+            if (this.introFlowStarted || this.isStopping()) {
                 return;
             }
 
@@ -3934,13 +3970,13 @@
             await this.speakLineAndWait(introText, {
                 minDurationMs: 4200
             });
-            if (this.destroyed) {
+            if (this.isStopping()) {
                 return;
             }
 
             this.highlightChatWindow();
             await wait(240);
-            if (this.destroyed) {
+            if (this.isStopping()) {
                 return;
             }
 
@@ -3961,7 +3997,7 @@
             await this.speakLineAndWait(INTRO_PRACTICE_TEXT, {
                 minDurationMs: 3600
             });
-            if (this.destroyed) {
+            if (this.isStopping()) {
                 return;
             }
             this.introFlowCompleted = true;
