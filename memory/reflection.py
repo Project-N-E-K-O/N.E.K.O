@@ -111,11 +111,8 @@ class ReflectionEngine:
 
     def _prepare_save_reflections(
         self, name: str, reflections: list[dict], all_on_disk: list[dict],
-    ) -> tuple[list[dict] | None, list[dict], list[dict]]:
-        """Pure logic: compute (merged_main, to_archive, existing_archive_after_merge).
-
-        Returns (None, [], []) to signal abort. Reads archive file if needed.
-        """
+    ) -> tuple[list[dict], list[dict], list[dict]]:
+        """Pure logic: compute (merged_main, to_archive, keep_in_main)."""
         active_ids = {r['id'] for r in reflections if 'id' in r}
         finished = [r for r in all_on_disk if r.get('id') not in active_ids
                     and r.get('status') in ('promoted', 'denied')]
@@ -152,8 +149,6 @@ class ReflectionEngine:
                 return
 
         merged, to_archive, _ = self._prepare_save_reflections(name, reflections, all_on_disk)
-        if merged is None:
-            return
 
         if to_archive:
             archive_path = self._reflections_archive_path(name)
@@ -188,8 +183,6 @@ class ReflectionEngine:
                 return
 
         merged, to_archive, _ = self._prepare_save_reflections(name, reflections, all_on_disk)
-        if merged is None:
-            return
 
         if to_archive:
             archive_path = self._reflections_archive_path(name)
