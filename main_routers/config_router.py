@@ -708,7 +708,10 @@ async def update_core_config(request: Request):
         logger.info("API配置已更新，准备通知客户端并重置所有session...")
         
         # 1. 并行通知所有连接的客户端即将刷新（WebSocket还连着）
+        # 重要：先 snapshot 一份成员列表，让 notify 和 end_session 两阶段操作同一组 mgr。
+        # 否则前端收到 reload_page 后立即重连进来的新 mgr，会被第二阶段误杀（CodeRabbit P1）。
         session_manager = get_session_manager()
+        mgr_snapshot = list(session_manager.items())
         reload_payload = json.dumps({
             "type": "reload_page",
             "message": "API配置已更新，页面即将刷新"
@@ -726,13 +729,14 @@ async def update_core_config(request: Request):
                 return False
 
         _notify_results = await asyncio.gather(
-            *(_notify(n, m) for n, m in session_manager.items()),
+            *(_notify(n, m) for n, m in mgr_snapshot),
             return_exceptions=True,
         )
         notification_count = sum(1 for r in _notify_results if r is True)
         logger.info(f"已通知 {notification_count} 个客户端")
 
         # 2. 并行关闭所有活跃的 session（每个 end_session ≈ 1s，串行 N 秒，gather 后 ≈ 1s）
+        # 复用上一阶段的 snapshot，确保不会误杀新重连进来的 mgr。
         async def _end(lanlan_name, mgr):
             if not mgr.is_active:
                 return None
@@ -745,7 +749,7 @@ async def update_core_config(request: Request):
                 return None
 
         _end_results = await asyncio.gather(
-            *(_end(n, m) for n, m in session_manager.items()),
+            *(_end(n, m) for n, m in mgr_snapshot),
             return_exceptions=True,
         )
         sessions_ended = [r for r in _end_results if isinstance(r, str)]
