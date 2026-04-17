@@ -75,7 +75,9 @@ class SessionStateMachine:
     user_sid: Optional[str] = None
     last_user_activity: float = 0.0
     _preempted: bool = False
-    _subscribers: dict = field(default_factory=lambda: defaultdict(list))
+    _subscribers: "dict[Union[SessionEvent, str], list[Subscriber]]" = field(
+        default_factory=lambda: defaultdict(list)
+    )
     _write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     # ── 读路径（O(1)，热路径）─────────────────────────────────────────
