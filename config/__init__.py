@@ -528,6 +528,7 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeyQwenIntl": "",
     "assistApiKeyMinimax": "",
     "assistApiKeyClaude": "",
+    "assistApiKeyGrok": "",
     "mcpToken": "",
     "agentModelUrl": "",
     "agentModelId": "",
@@ -666,6 +667,15 @@ DEFAULT_ASSIST_API_PROFILES = {
         'VISION_MODEL': "openai/gpt-4.1",
         'AGENT_MODEL': "openai/gpt-4.1",
     },
+    'grok': {
+        'OPENROUTER_URL': "https://api.x.ai/v1",
+        'CONVERSATION_MODEL': "grok-4-1-fast-non-reasoning",
+        'SUMMARY_MODEL': "grok-4-1-fast-non-reasoning",
+        'CORRECTION_MODEL': "grok-4-1-fast-non-reasoning",
+        'EMOTION_MODEL': "grok-3-mini-fast",
+        'VISION_MODEL': "grok-4-1-fast-non-reasoning",
+        'AGENT_MODEL': "grok-4-1-fast-non-reasoning",
+    },
 }
 
 DEFAULT_ASSIST_API_KEY_FIELDS = {
@@ -680,6 +690,7 @@ DEFAULT_ASSIST_API_KEY_FIELDS = {
     'minimax': 'ASSIST_API_KEY_MINIMAX',
     'claude': 'ASSIST_API_KEY_CLAUDE',
     'openrouter': 'ASSIST_API_KEY_OPENROUTER',
+    'grok': 'ASSIST_API_KEY_GROK',
 }
 
 DEFAULT_CONFIG_DATA = {

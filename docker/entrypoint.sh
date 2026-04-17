@@ -822,6 +822,7 @@ setup_configuration() {
   "assistApiKeyGlm": "${NEKO_ASSIST_API_KEY_GLM:-}",
   "assistApiKeyStep": "${NEKO_ASSIST_API_KEY_STEP:-}",
   "assistApiKeySilicon": "${NEKO_ASSIST_API_KEY_SILICON:-}",
+  "assistApiKeyGrok": "${NEKO_ASSIST_API_KEY_GROK:-}",
   "mcpToken": "${NEKO_MCP_TOKEN:-}"
 }
 EOF
