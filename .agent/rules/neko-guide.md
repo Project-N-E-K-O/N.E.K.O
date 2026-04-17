@@ -44,4 +44,4 @@ trigger: always_on
 
 配置写入遵循对偶模式：`ConfigManager.save_characters` / `JukeboxConfig.save()` 等同步版留给启动期 & sync 迁移；async 路径一律走 `asave_characters` / `asave()` 之类的 `a*` 版本，内部就是 `asyncio.to_thread(self.<sync>, ...)`。新增写磁盘方法时请保持这个对偶。
 
-事件循环上默认 `loop.slow_callback_duration = 0.05`，超过 50ms 的 sync 回调会打 `Executing ... took X seconds` warning。提 PR 前请扫一眼启动日志。
+事件循环慢回调检测需要开启 asyncio debug 模式才会触发（设置 `NEKO_DEBUG_ASYNC=1`；`PYTHONASYNCIODEBUG=1` 或 `python -X dev` 也可）。启用后 `main_server.py` 会把 `loop.slow_callback_duration` 收紧到 50ms，超过的 sync 回调会打 `Executing ... took X seconds` warning。提 PR 前请在调试模式下扫一眼启动日志。
