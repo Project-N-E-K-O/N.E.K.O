@@ -5,13 +5,24 @@
         <template #header>
           <div class="workbench-header">
             <div class="workbench-header__copy">
-              <span class="workbench-header__title">{{ $t('plugins.title') }}</span>
               <el-button
                 :type="multiSelectEnabled ? 'primary' : 'default'"
                 plain
                 @click="toggleMultiSelectMode"
               >
                 {{ multiSelectEnabled ? $t('plugins.exitMultiSelect') : $t('plugins.multiSelect') }}
+              </el-button>
+              <el-tag v-if="multiSelectEnabled" size="small" type="info">
+                {{ $t('plugins.selectedCount', { count: selectedCount }) }}
+              </el-tag>
+              <el-button v-if="multiSelectEnabled" text @click="selectAllVisible">
+                {{ $t('plugins.selectAllVisible') }}
+              </el-button>
+              <el-button v-if="multiSelectEnabled" text @click="invertVisibleSelection">
+                {{ $t('plugins.invertVisibleSelection') }}
+              </el-button>
+              <el-button v-if="multiSelectEnabled" text @click="clearSelection">
+                {{ $t('plugins.clearSelection') }}
               </el-button>
             </div>
 
@@ -21,16 +32,7 @@
                 plain
                 @click="togglePackagePanel"
               >
-                {{ packagePanelVisible ? '收起包管理' : '包管理' }}
-              </el-button>
-              <el-tag v-if="multiSelectEnabled" size="small" type="info">
-                {{ $t('plugins.selectedCount', { count: selectedCount }) }}
-              </el-tag>
-              <el-button v-if="multiSelectEnabled" text @click="selectAllVisible">
-                {{ $t('plugins.selectAllVisible') }}
-              </el-button>
-              <el-button v-if="multiSelectEnabled" text @click="clearSelection">
-                {{ $t('plugins.clearSelection') }}
+                {{ packagePanelVisible ? $t('plugins.closePackageManager') : $t('plugins.openPackageManager') }}
               </el-button>
               <el-button
                 :type="showMetrics ? 'success' : 'default'"
@@ -110,13 +112,6 @@
             </div>
           </div>
         </template>
-
-        <div v-if="packagePanelVisible" class="package-panel-indicator">
-          <el-tag size="small" type="primary">包管理已展开</el-tag>
-          <span class="package-panel-indicator__text">
-            当前筛选和多选结果会直接同步到右侧包管理面板。
-          </span>
-        </div>
 
         <LoadingSpinner
           v-if="loading && rawPlugins.length === 0"
@@ -320,6 +315,7 @@ const {
   isSelected,
   togglePlugin: togglePluginSelection,
   selectAllVisible,
+  invertVisibleSelection,
   clearSelection,
   pruneSelection,
   toggleMultiSelect,
@@ -626,6 +622,7 @@ onUnmounted(() => {
 
 <style scoped>
 .plugin-workbench {
+  --plugin-entry-radius: 18px;
   display: flex;
   align-items: flex-start;
   gap: 20px;
@@ -664,6 +661,7 @@ onUnmounted(() => {
   min-width: min(420px, 100%);
   max-width: min(620px, 42vw);
   opacity: 1;
+  overflow: visible;
   pointer-events: auto;
   transform: translateX(0) scale(1);
 }
@@ -686,12 +684,7 @@ onUnmounted(() => {
   gap: 12px;
   min-width: 0;
   flex-wrap: wrap;
-}
-
-.workbench-header__title {
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--el-text-color-primary);
+  flex: 1 1 auto;
 }
 
 .header-actions {
@@ -794,23 +787,6 @@ onUnmounted(() => {
   color: var(--el-text-color-secondary);
   letter-spacing: 0.04em;
   text-transform: uppercase;
-}
-
-.package-panel-indicator {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin-bottom: 18px;
-  padding: 12px 14px;
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--el-color-primary-light-9) 60%, white);
-  border: 1px solid color-mix(in srgb, var(--el-color-primary) 10%, var(--el-border-color));
-}
-
-.package-panel-indicator__text {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
 }
 
 .section-header {

@@ -4,6 +4,7 @@
     width="min(1180px, 92vw)"
     top="6vh"
     destroy-on-close
+    append-to-body
     class="package-result-dialog"
     @update:model-value="$emit('update:visible', $event)"
   >

@@ -15,7 +15,7 @@ const sharedFilterText = ref('')
 const sharedUseRegex = ref(false)
 const sharedFilterMode = ref<PluginWorkbenchFilterMode>('whitelist')
 const sharedSelectedTypes = ref<PluginWorkbenchGroupType[]>(['plugin', 'adapter', 'extension'])
-const sharedLayoutMode = ref<PluginWorkbenchLayoutMode>('double')
+const sharedLayoutMode = ref<PluginWorkbenchLayoutMode>('compact')
 const sharedSelectedPluginIds = ref<string[]>([])
 const sharedMultiSelectEnabled = ref(false)
 
@@ -122,6 +122,14 @@ export function usePluginWorkbench<T extends PluginMeta & { type?: string; enabl
     ])
   }
 
+  function invertVisibleSelection() {
+    const visibleIds = filteredItems.value.map((plugin) => plugin.id)
+    const visibleIdSet = new Set(visibleIds)
+    const preservedHiddenIds = sharedSelectedPluginIds.value.filter((pluginId) => !visibleIdSet.has(pluginId))
+    const invertedVisibleIds = visibleIds.filter((pluginId) => !sharedSelectedPluginIds.value.includes(pluginId))
+    sharedSelectedPluginIds.value = uniqueIds([...preservedHiddenIds, ...invertedVisibleIds])
+  }
+
   function clearSelection() {
     sharedSelectedPluginIds.value = []
   }
@@ -161,6 +169,7 @@ export function usePluginWorkbench<T extends PluginMeta & { type?: string; enabl
     setSelectedPluginIds,
     togglePlugin,
     selectAllVisible,
+    invertVisibleSelection,
     clearSelection,
     pruneSelection,
     setMultiSelectEnabled,

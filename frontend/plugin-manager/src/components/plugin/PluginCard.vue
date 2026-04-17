@@ -82,6 +82,7 @@ const entryCount = computed(() => {
 <style scoped>
 .plugin-card {
   cursor: pointer;
+  border-radius: var(--plugin-entry-radius, 18px);
   transition: all 0.3s ease;
 }
 

@@ -95,7 +95,7 @@ const typeTagType = computed<'primary' | 'success' | 'warning'>(() => {
 <style scoped>
 .plugin-list-row-card {
   cursor: pointer;
-  border-radius: 18px;
+  border-radius: var(--plugin-entry-radius, 18px);
   transition:
     transform 0.24s ease,
     box-shadow 0.24s ease,
