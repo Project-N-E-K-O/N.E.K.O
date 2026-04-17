@@ -1888,14 +1888,24 @@ class OmniRealtimeClient:
                 
                 # ⚠️ 重要：检测 turn 开始 - 无论是 model_turn 还是 output_transcription 先到
                 if has_ai_content and not self._is_responding:
-                    # 区分"真新 turn"与"上个 turn 的迟到帧"：Gemini turn_complete 会
-                    # 早于最后几帧音频送达（_ai_recent_activity_time 仍新鲜），这些迟到
-                    # 帧若当新 turn 处理会冒凭空新气泡、on_new_message 清 TTS queue
-                    # 打断正在播放的尾巴、并把 transcript 拆成两段。
-                    _is_new_turn = (
-                        time.time() - self._ai_recent_activity_time
-                        > self._ai_recent_activity_window
+                    # 区分"真新 turn"与"上个 turn 的迟到帧"。双判据合取：
+                    #   A. 用户在 AI 最后一帧之后发过声 → 必然新 turn（back-and-forth）
+                    #   B. AI 最后一帧距今超过 window → 静默够久也算新 turn
+                    # 仅当两条都不满足（短静默 + 用户全程没发声）才视为
+                    # late continuation —— 这正是 Gemini turn_complete 抢跑的迟到
+                    # 音频、或同一长回复被拆 sub-turn 的场景。
+                    # 早期版本只用时间窗，会把快速一问一答（AI→用户→AI in <3s）
+                    # 误判 late continuation 导致气泡合并 / user_transcript flush 延迟
+                    # （Codex P1 反馈）。加用户发声比较后合并两种场景均正确。
+                    _user_spoke_after_ai = (
+                        self._user_recent_activity_time > self._ai_recent_activity_time
                     )
+                    _still_within_ai_window = (
+                        self._ai_recent_activity_time > 0
+                        and time.time() - self._ai_recent_activity_time
+                        <= self._ai_recent_activity_window
+                    )
+                    _is_new_turn = _user_spoke_after_ai or not _still_within_ai_window
                     self._is_responding = True
                     if _is_new_turn:
                         # 在AI开始响应前，发送累积的用户输入
