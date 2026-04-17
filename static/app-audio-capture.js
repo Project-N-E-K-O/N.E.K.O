@@ -518,6 +518,13 @@
             // 连接节点：gainNode → workletNode（音频经过增益处理后发送）
             S.micGainNode.connect(S.workletNode);
 
+            // 用户主动开麦，意味着要讲话；focus mode 的 isPlaying guard 此刻必须让路。
+            // 切档案后自动触发的 greeting 音频播完如果没把 isPlaying 复位（finalize
+            // 路径的前置条件没兜住就会粘住），下一次开麦每一帧都会被 focus 拦掉，
+            // 表现为"Electron 显示可以说话但 STT 无反应"。用户此刻的意图是明确的，
+            // 不管 flag 是粘住还是真在播 AI 音频，都应该让位给用户输入。
+            S.isPlaying = false;
+
             // 所有初始化成功后，才标记为录音状态
             S.isRecording = true;
             window.isRecording = true;
