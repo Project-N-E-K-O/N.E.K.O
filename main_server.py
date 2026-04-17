@@ -1033,6 +1033,41 @@ async def on_startup():
             _server_loop.set_debug(True)
             _server_loop.slow_callback_duration = 0.05
             logger.info("[asyncio] debug mode enabled (slow_callback_duration=0.05s)")
+
+        # 事件循环心跳：每 200ms 打一个点。当 /new_dialog 或其他 async 操作
+        # 莫名其妙变慢时，看心跳是否缺席 —— 缺席 = 事件循环被阻塞，这段时间
+        # 内所有 async 都没机会跑。心跳日志仅在开启 NEKO_DEBUG_HEARTBEAT=1
+        # 时输出到 stdout，避免日志刷屏。
+        if os.environ.get("NEKO_DEBUG_HEARTBEAT") == "1":
+            async def _event_loop_heartbeat():
+                import time as _t
+                _last = _t.perf_counter()
+                while True:
+                    await asyncio.sleep(0.2)
+                    _now = _t.perf_counter()
+                    _gap_ms = int((_now - _last) * 1000)
+                    # 只打异常的心跳（间隔 > 300ms），正常跳过
+                    if _gap_ms > 300:
+                        print(f"[{_t.strftime('%H:%M:%S')}] [heartbeat] stall {_gap_ms}ms (expected ~200ms)", flush=True)
+                    _last = _now
+            asyncio.create_task(_event_loop_heartbeat())
+            logger.info("[asyncio] heartbeat enabled (stalls > 300ms will be logged)")
+
+        # 预热重量级模块导入，避免 TTS worker 线程第一次启动时在
+        # 工作线程里触发同步 import 阻塞事件循环（实测 dashscope
+        # 首次 import 会吃 GIL 3-7 秒，导致此期间 /new_dialog 响应
+        # 解析无法及时完成，表现为 "memory 服务响应超时"）。
+        # 放 to_thread 里跑，不阻塞 startup 本身。
+        async def _prewarm_heavy_imports():
+            import importlib
+            for mod in ("dashscope", "dashscope.audio.tts_v2"):
+                try:
+                    await asyncio.to_thread(importlib.import_module, mod)
+                    logger.debug(f"[prewarm] imported {mod}")
+                except Exception as e:
+                    logger.debug(f"[prewarm] import {mod} failed (ignored): {e}")
+        asyncio.create_task(_prewarm_heavy_imports())
+
         logger.info("正在初始化 Steamworks...")
         steamworks = initialize_steamworks()
         
@@ -1170,12 +1205,21 @@ async def on_shutdown():
             from utils.music_crawlers import close_all_crawlers
             # 【核心修改】增加 1 秒超时兜底。如果 1 秒内关不完，直接抛弃，保障服务器顺利退出
             await asyncio.wait_for(close_all_crawlers(), timeout=1.0)
-            
+
         except asyncio.TimeoutError:
             # 单独捕获超时异常，记录警告但放行
             logger.warning("音乐爬虫连接池清理超时，已强制跳过以保证服务正常退出。")
         except Exception as e:
             logger.debug(f"音乐爬虫清理失败: {e}", exc_info=True)
+
+        # 关闭 memory_server 共享 httpx 连接池
+        try:
+            from utils.memory_client import aclose_memory_client
+            await asyncio.wait_for(aclose_memory_client(), timeout=1.0)
+        except asyncio.TimeoutError:
+            logger.warning("memory_client 清理超时，已强制跳过。")
+        except Exception as e:
+            logger.debug(f"memory_client 清理失败: {e}", exc_info=True)
 
 # 使用 FastAPI 的 app.state 来管理启动配置
 def get_start_config():

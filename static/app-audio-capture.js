@@ -489,25 +489,62 @@
             });
 
             // 监听处理器发送的消息
+            // [DIAG] 切换猫娘后 STT 不触发排查：统计 mic→ws 的发送次数和跳过原因
+            if (!window._micDiag) {
+                window._micDiag = { sent: 0, skipMuted: 0, skipFocus: 0, skipNoRecord: 0, skipNoSocket: 0, skipWsState: 0, lastLog: 0 };
+            }
             S.workletNode.port.onmessage = (event) => {
                 const audioData = event.data;
+                const _d = window._micDiag;
 
                 if (S.isMicMuted) {
+                    _d.skipMuted++;
+                    _maybeLogMicDiag();
                     return;
                 }
 
                 if (S.focusModeEnabled === true && S.isPlaying === true) {
+                    _d.skipFocus++;
+                    _maybeLogMicDiag();
                     return;
                 }
 
-                if (S.isRecording && S.socket && S.socket.readyState === WebSocket.OPEN) {
-                    S.socket.send(JSON.stringify({
-                        action: 'stream_data',
-                        data: Array.from(audioData),
-                        input_type: 'audio'
-                    }));
+                if (!S.isRecording) {
+                    _d.skipNoRecord++;
+                    _maybeLogMicDiag();
+                    return;
                 }
+                if (!S.socket) {
+                    _d.skipNoSocket++;
+                    _maybeLogMicDiag();
+                    return;
+                }
+                if (S.socket.readyState !== WebSocket.OPEN) {
+                    _d.skipWsState++;
+                    _maybeLogMicDiag();
+                    return;
+                }
+
+                S.socket.send(JSON.stringify({
+                    action: 'stream_data',
+                    data: Array.from(audioData),
+                    input_type: 'audio'
+                }));
+                _d.sent++;
+                _maybeLogMicDiag();
             };
+
+            function _maybeLogMicDiag() {
+                const _d = window._micDiag;
+                const now = Date.now();
+                // 每 2 秒最多打一条，汇总近期情况
+                if (now - _d.lastLog > 2000) {
+                    _d.lastLog = now;
+                    console.log('[Mic→WS] sent=' + _d.sent + ' muted=' + _d.skipMuted +
+                        ' focus=' + _d.skipFocus + ' noRecord=' + _d.skipNoRecord +
+                        ' noSocket=' + _d.skipNoSocket + ' wsState!=OPEN=' + _d.skipWsState);
+                }
+            }
 
             // 连接节点：gainNode → workletNode（音频经过增益处理后发送）
             S.micGainNode.connect(S.workletNode);

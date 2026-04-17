@@ -581,7 +581,19 @@
 
     function renderWindow() {
         var overlay = getOverlay();
-        if (!overlay || overlay.hidden) return;
+        if (!overlay) return;
+        // [DIAG] 切换猫娘后对话框空白排查：即使 overlay 隐藏也继续 mount，
+        // 这样 React 挂载点里会有新消息，用户再打开时能立即看到；
+        // 旧行为是 hidden 时 early return，导致切换后消息堆在 state
+        // 但 React 从未 mount，气泡永远不显示。
+        if (overlay.hidden) {
+            try {
+                if (!window._renderWindowHiddenLogged || Date.now() - window._renderWindowHiddenLogged > 2000) {
+                    console.warn('[ChatWindow] renderWindow called with overlay.hidden=true; will still mount to keep React state in sync. Call openWindow() to show.');
+                    window._renderWindowHiddenLogged = Date.now();
+                }
+            } catch (_e) { /* ignore */ }
+        }
         mountWindow();
         scheduleMobileContentLayout();
     }
@@ -878,12 +890,27 @@
 
     function appendMessage(message) {
         var normalized = normalizeMessage(message, _sortKeySeq++);
-        if (!normalized) return null;
+        if (!normalized) {
+            // [DIAG] 切换猫娘后对话框空白排查
+            try { console.warn('[ChatWindow.host] appendMessage: normalizeMessage returned null, message=', message); } catch (_e) {}
+            return null;
+        }
 
         state.messages = sortMessages(state.messages.concat([normalized]));
         if (state.messages.length > MAX_MESSAGES) {
             state.messages = state.messages.slice(-MAX_MESSAGES);
         }
+        // [DIAG] 节流打点：每 5 条打一次，以及 state 涨到 1/2/3 时打
+        try {
+            var _n = state.messages.length;
+            if (_n <= 3 || _n % 5 === 0) {
+                var _overlay = getOverlay();
+                console.log('[ChatWindow.host] appendMessage id=' + normalized.id +
+                    ' role=' + normalized.role + ' state.messages.length=' + _n +
+                    ' overlay.hidden=' + (_overlay ? _overlay.hidden : 'no-overlay') +
+                    ' mounted=' + mounted);
+            }
+        } catch (_e) { /* ignore */ }
         renderWindow();
         return normalized;
     }

@@ -125,6 +125,17 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     await session_manager[lanlan_name].send_status(json.dumps({"code": "INVALID_INPUT_TYPE", "details": {"input_type": input_type}}))
 
             elif action == "stream_data":
+                # [DIAG] 切换猫娘后语音 STT 不触发的排查：确认前端是否送达音频
+                _input_type_dbg = message.get("input_type")
+                _data = message.get("data")
+                _data_len = len(_data) if isinstance(_data, (str, bytes, bytearray)) else -1
+                # 按采样计数一下，避免每包都打；每 50 次打一条够判断通路是否活
+                _sd_counter = getattr(session_manager[lanlan_name], "_sd_log_counter", 0) + 1
+                session_manager[lanlan_name]._sd_log_counter = _sd_counter
+                if _sd_counter == 1 or _sd_counter % 50 == 0:
+                    logger.info(
+                        f"[{lanlan_name}] stream_data #{_sd_counter} input_type={_input_type_dbg} data_len={_data_len}"
+                    )
                 _fire_task(session_manager[lanlan_name].stream_data(message))
 
             elif action == "end_session":

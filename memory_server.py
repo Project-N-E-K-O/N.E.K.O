@@ -788,7 +788,7 @@ async def cancel_correction(lanlan_name: str):
 async def new_dialog(lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
     global correction_tasks, correction_cancel_flags
-    
+
     # 检查角色是否存在于配置中
     try:
         character_data = _config_manager.load_characters()

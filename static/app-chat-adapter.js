@@ -264,7 +264,7 @@
             host.appendMessage(msg);
         } else if (msg) {
             // host 尚未初始化，放入待重发队列而非静默丢弃
-            console.warn('[ChatAdapter] host not ready, queuing message', msgId);
+            console.warn('[ChatAdapter] host not ready, queuing message', msgId, 'pendingQueueLen=' + _pendingHostMessages.length);
             _pendingHostMessages.push(msg);
         }
 
@@ -296,8 +296,9 @@
                 // 已由 _flushPendingRealisticQueue 同步渲染完毕，此处
                 // 仅需退出，不再处理任何剩余项。
                 if ((window._realisticGeminiVersion || 0) !== queueVersion) {
-                    console.warn('[RealisticQueue] version mismatch (got %d, current %d), exiting loop',
-                        queueVersion, window._realisticGeminiVersion || 0);
+                    console.warn('[RealisticQueue] version mismatch (got %d, current %d) queueLen=%d, exiting loop',
+                        queueVersion, window._realisticGeminiVersion || 0,
+                        (window._realisticGeminiQueue || []).length);
                     break;
                 }
 
@@ -308,8 +309,9 @@
                 }
 
                 if ((window._realisticGeminiVersion || 0) !== queueVersion) {
-                    console.warn('[RealisticQueue] version changed during sleep (got %d, current %d), exiting',
-                        queueVersion, window._realisticGeminiVersion || 0);
+                    console.warn('[RealisticQueue] version changed during sleep (got %d, current %d) queueLen=%d, exiting',
+                        queueVersion, window._realisticGeminiVersion || 0,
+                        (window._realisticGeminiQueue || []).length);
                     break;
                 }
 
@@ -393,13 +395,22 @@
     // 用于 isNewMessage 开始新一轮或模式切换时，确保旧轮句子不被丢弃。
     function _flushPendingRealisticQueue() {
         var queue = window._realisticGeminiQueue;
-        if (!Array.isArray(queue) || queue.length === 0) return;
         // 同步创建所有待排队的 bubble
-        for (var i = 0; i < queue.length; i++) {
-            try { createGeminiBubble(queue[i]); } catch (_) {}
+        if (Array.isArray(queue) && queue.length > 0) {
+            for (var i = 0; i < queue.length; i++) {
+                try { createGeminiBubble(queue[i]); } catch (_) {}
+            }
+            window._realisticGeminiQueue = [];
         }
-        window._realisticGeminiQueue = [];
-        // 重置并发锁，让下次 processRealisticQueue 可以正常启动
+        // [BUGFIX] 即使队列已空也必须解锁。
+        // 之前的 early return 会在队空时漏掉解锁，导致：
+        //   1) 老 processRealisticQueue 在 sleep 中已把队列 shift 空
+        //   2) 新 isNew=true 到达 → flush 看到空队列直接 return → 锁仍为 true
+        //   3) version 被 bump，新 sentences 入队，调 processRealisticQueue(新)
+        //   4) guard `if (_isProcessingRealisticQueue) return` 把新调用直接挡掉
+        //   5) 老处理器事后 wake 发现 version mismatch break 出，虽然 finally 会解锁，
+        //      但新队列已经错过启动时机，直到下一条消息才会再被调度
+        //      —— 在单轮回复是最后一条的场景下，所有句子永远不被渲染
         window._isProcessingRealisticQueue = false;
     }
 
@@ -412,6 +423,28 @@
         var host = getHost();
         var bubbleCountBefore = window.currentTurnGeminiBubbles ? window.currentTurnGeminiBubbles.length : 0;
         var createdVisibleBubble = false;
+
+        // [DIAG] 切换猫娘后对话框空白排查 —— 关键断点。
+        // 节流：首 chunk 以及每 10 个 chunk 打一条，避免刷屏。
+        try {
+            if (!window._appendMsgDiagCount) window._appendMsgDiagCount = 0;
+            window._appendMsgDiagCount++;
+            if (isNewMessage || window._appendMsgDiagCount % 10 === 0 || sender !== 'gemini') {
+                var _merge = isMergeMessagesEnabled();
+                var _branch;
+                if (sender !== 'gemini') _branch = 'non-gemini';
+                else if (!_merge) _branch = 'realistic';
+                else if (isNewMessage) _branch = 'merge-new';
+                else _branch = 'merge-continue';
+                var _hostReady = !!(host && typeof host.appendMessage === 'function');
+                var _curMsg = window.currentGeminiMessage;
+                var _curMsgId = _curMsg && _curMsg.dataset ? _curMsg.dataset.reactChatMessageId : null;
+                console.log('[Adapter] appendMessage #' + window._appendMsgDiagCount +
+                    ' sender=' + sender + ' isNew=' + isNewMessage +
+                    ' len=' + (text || '').length + ' branch=' + _branch +
+                    ' hostReady=' + _hostReady + ' curBubbleId=' + _curMsgId);
+            }
+        } catch (_e) { /* ignore */ }
 
         // 维护"本轮 AI 回复"的完整文本（emotion analysis / subtitle 需要）
         if (sender === 'gemini') {

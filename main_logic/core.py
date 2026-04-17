@@ -614,6 +614,16 @@ class LLMSessionManager:
         
         # 只在语音模式（OmniRealtimeClient）下发送到前端显示用户转录
         # 文本模式下前端会自己显示，无需后端发送，避免重复
+        # [DIAG] 切换猫娘后对话框空白问题：记录是否触发、session 类型、ws 状态
+        _ws_connected_dbg = bool(
+            self.websocket
+            and hasattr(self.websocket, 'client_state')
+            and self.websocket.client_state == self.websocket.client_state.CONNECTED
+        )
+        logger.info(
+            "[%s] voice user_transcript session=%s ws_connected=%s len=%d",
+            self.lanlan_name, type(self.session).__name__, _ws_connected_dbg, len(transcript.strip()),
+        )
         if isinstance(self.session, OmniRealtimeClient):
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 try:
@@ -688,6 +698,12 @@ class LLMSessionManager:
                 self.message_cache_for_new_session[-1]['text'] += text_clean
 
         # WS 发送（可能失败，但 sync/cache 已保存）
+        # [DIAG] 切换猫娘后对话框空白问题：记录每次尝试送给前端的 gemini_response
+        logger.info(
+            "[%s] send_lanlan_response first=%s len=%d ws_state=%s",
+            self.lanlan_name, is_first_chunk, len(text_clean),
+            getattr(self.websocket, 'client_state', None),
+        )
         try:
             async def _do_send():
                 if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
@@ -1549,6 +1565,37 @@ class LLMSessionManager:
                     logger.warning("⚠️ TTS未就绪，当前回复将继续缓存，等待后续就绪信号")
                 return True
 
+            # —— 提前发起 /new_dialog，避免被 TTS worker 线程的 dashscope
+            # import 抢 GIL 拖慢。在 gather 之前就 create_task，让 httpx 先
+            # 和 server 建好连接、收到响应；gather 时 start_llm_session 只
+            # await 现成的结果即可。
+            _dlg_lanlan = self.lanlan_name
+            _dlg_port = self.memory_server_port
+
+            async def _fetch_new_dialog():
+                """独立任务：取 /new_dialog 响应。在 gather 之前就 kick off，
+                主动避开 TTS worker 启动时的 GIL 争用窗口。"""
+                from utils.memory_client import get_memory_client
+                _mem_client = get_memory_client()
+                try:
+                    resp = await _mem_client.get(
+                        f"http://127.0.0.1:{_dlg_port}/new_dialog/{_dlg_lanlan}",
+                        timeout=5.0,
+                    )
+                except httpx.ConnectError:
+                    raise ConnectionError(f"❌ 记忆服务未启动！请先启动记忆服务 (端口 {_dlg_port})")
+                except httpx.TimeoutException:
+                    raise ConnectionError(f"❌ 记忆服务响应超时！请检查记忆服务是否正常运行 (端口 {_dlg_port})")
+                except Exception as e:
+                    raise ConnectionError(f"❌ 记忆服务连接失败: {e} (端口 {_dlg_port})")
+                if not resp.is_success:
+                    raise ConnectionError(f"❌ 记忆服务返回非2xx状态 {resp.status_code}: {resp.text[:200]}")
+                return resp.text
+
+            logger.info(f"[语音会话诊断] 开始获取记忆上下文 (端口 {self.memory_server_port})")
+            _mem_start = time.time()
+            _new_dialog_task = asyncio.create_task(_fetch_new_dialog())
+
             # 定义 LLM Session 启动协程
             async def start_llm_session():
                 """异步创建并连接 LLM Session.
@@ -1567,21 +1614,14 @@ class LLMSessionManager:
                 guard_max_length = self._get_text_guard_max_length()
                 _lang = normalize_language_code(self.user_language, format='short')
                 initial_prompt = await self._build_initial_prompt()
-            
-                # 连接 Memory Server 获取记忆上下文
-                _mem_start = time.time()
-                logger.info(f"[语音会话诊断] 开始获取记忆上下文 (端口 {self.memory_server_port})")
+
+                # 等待上面预先发出的 /new_dialog 完成
                 try:
-                    async with httpx.AsyncClient(timeout=2.0, proxy=None, trust_env=False) as client:
-                        resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}")
-                        if not resp.is_success:
-                            raise ConnectionError(f"❌ 记忆服务返回非2xx状态 {resp.status_code}: {resp.text[:200]}")
-                        initial_prompt += resp.text + _loc(CONTEXT_SUMMARY_READY, _lang).format(name=self.lanlan_name, master=self.master_name)
+                    _nd_text = await _new_dialog_task
+                    initial_prompt += _nd_text + _loc(CONTEXT_SUMMARY_READY, _lang).format(name=self.lanlan_name, master=self.master_name)
                     logger.info(f"[语音会话诊断] 记忆上下文获取完成 (耗时: {time.time() - _mem_start:.2f}秒)")
-                except httpx.ConnectError:
-                    raise ConnectionError(f"❌ 记忆服务未启动！请先启动记忆服务 (端口 {self.memory_server_port})")
-                except httpx.TimeoutException:
-                    raise ConnectionError(f"❌ 记忆服务响应超时！请检查记忆服务是否正常运行 (端口 {self.memory_server_port})")
+                except ConnectionError:
+                    raise
                 except Exception as e:
                     raise ConnectionError(f"❌ 记忆服务连接失败: {e} (端口 {self.memory_server_port})")
             
@@ -2018,11 +2058,15 @@ class LLMSessionManager:
             
             initial_prompt = await self._build_initial_prompt()
             self.initial_cache_snapshot_len = len(self.message_cache_for_new_session)
-            async with httpx.AsyncClient(timeout=5.0, proxy=None, trust_env=False) as client:
-                resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}")
-                if not resp.is_success:
-                    raise ConnectionError(f"❌ 记忆服务热切换时返回非2xx状态 {resp.status_code}: {resp.text[:200]}")
-                initial_prompt += resp.text + self._convert_cache_to_str(self.message_cache_for_new_session)
+            from utils.memory_client import get_memory_client
+            _hs_client = get_memory_client()
+            resp = await _hs_client.get(
+                f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}",
+                timeout=5.0,
+            )
+            if not resp.is_success:
+                raise ConnectionError(f"❌ 记忆服务热切换时返回非2xx状态 {resp.status_code}: {resp.text[:200]}")
+            initial_prompt += resp.text + self._convert_cache_to_str(self.message_cache_for_new_session)
             print(initial_prompt)
             self._bind_session_lifecycle_callbacks(self.pending_session)
             await self.pending_session.connect(initial_prompt, native_audio = not self.use_tts)

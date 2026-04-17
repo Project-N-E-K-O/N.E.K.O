@@ -2510,13 +2510,17 @@ async def proactive_chat(request: Request):
         
         raw_memory_context = ""
         try:
-            async with httpx.AsyncClient(proxy=None, trust_env=False) as client:
-                resp = await client.get(f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{lanlan_name}", timeout=5.0)
-                resp.raise_for_status()  # Check for HTTP errors explicitly
-                if resp.status_code == 200:
-                    raw_memory_context = resp.text
-                else:
-                    logger.warning(f"[{lanlan_name}] 记忆服务返回非200状态: {resp.status_code}，使用空上下文")
+            from utils.memory_client import get_memory_client
+            _pt_client = get_memory_client()
+            resp = await _pt_client.get(
+                f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{lanlan_name}",
+                timeout=5.0,
+            )
+            resp.raise_for_status()  # Check for HTTP errors explicitly
+            if resp.status_code == 200:
+                raw_memory_context = resp.text
+            else:
+                logger.warning(f"[{lanlan_name}] 记忆服务返回非200状态: {resp.status_code}，使用空上下文")
         except Exception as e:
             logger.warning(f"[{lanlan_name}] 获取记忆上下文失败，使用空上下文: {e}")
         
