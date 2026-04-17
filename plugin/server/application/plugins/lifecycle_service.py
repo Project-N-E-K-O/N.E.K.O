@@ -13,8 +13,6 @@ from typing import Protocol, runtime_checkable
 from fastapi import HTTPException
 
 from plugin._types.exceptions import PluginError
-from plugin._types.models import PluginAuthor, PluginMeta
-from plugin._types.version import SDK_VERSION
 from plugin.core.host import PluginProcessHost
 from plugin.core.registry import (
     _collect_plugin_python_requirements,
@@ -23,13 +21,13 @@ from plugin.core.registry import (
     _find_missing_python_requirements,
     _parse_plugin_dependencies,
     _resolve_plugin_id_conflict,
-    register_plugin,
     scan_static_metadata,
 )
 from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.server.domain import IO_RUNTIME_ERRORS, RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
+from plugin.server.application.plugins.registry_service import PluginRegistryService
 from plugin.server.infrastructure.config_resolver import resolve_plugin_config_from_path
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
 from plugin.settings import PLUGIN_CONFIG_ROOTS, PLUGIN_SHUTDOWN_TIMEOUT
@@ -37,6 +35,7 @@ from plugin.utils import parse_bool_config
 
 logger = get_logger("server.application.plugins.lifecycle")
 _PLUGIN_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
+plugin_registry_service = PluginRegistryService()
 
 
 @runtime_checkable
@@ -179,6 +178,12 @@ def _set_plugin_runtime_metadata_sync(
         raw_meta["runtime_auto_start"] = runtime_auto_start
         if entries_preview is not None:
             raw_meta["entries_preview"] = entries_preview
+        raw_meta.pop("runtime_load_state", None)
+        raw_meta.pop("runtime_load_error_type", None)
+        raw_meta.pop("runtime_load_error_message", None)
+        raw_meta.pop("runtime_load_error_phase", None)
+        raw_meta.pop("runtime_load_error_time", None)
+        raw_meta.pop("runtime_source_missing", None)
         state.plugins[plugin_id] = raw_meta
     state.invalidate_snapshot_cache("plugins")
 
@@ -210,21 +215,6 @@ def _register_or_replace_host_sync(plugin_id: str, host: PluginHostContract) -> 
     return current_count
 
 
-def _remap_entries_preview_plugin_id(
-    entries_preview: list[dict[str, object]],
-    *,
-    plugin_id: str,
-) -> list[dict[str, object]]:
-    remapped: list[dict[str, object]] = []
-    for item in entries_preview:
-        entry_copy = dict(item)
-        entry_id_obj = entry_copy.get("id")
-        if isinstance(entry_id_obj, str) and entry_id_obj:
-            entry_copy["event_key"] = f"{plugin_id}.{entry_id_obj}"
-        remapped.append(entry_copy)
-    return remapped
-
-
 def _read_plugin_config_sync(config_path: Path) -> dict[str, object]:
     with config_path.open("rb") as file_obj:
         raw_conf = tomllib.load(file_obj)
@@ -233,23 +223,18 @@ def _read_plugin_config_sync(config_path: Path) -> dict[str, object]:
     return _normalize_mapping(raw_conf, context=f"plugin_config[{config_path}]")
 
 
-def _resolve_plugin_author(pdata: dict[str, object]) -> PluginAuthor | None:
-    raw_author = pdata.get("author")
-    if not isinstance(raw_author, Mapping):
+def _resolve_registered_config_path_sync(plugin_meta: dict[str, object] | None) -> Path | None:
+    if not isinstance(plugin_meta, dict):
         return None
 
-    author_mapping = _normalize_mapping(raw_author, context="plugin.author")
-    raw_name = author_mapping.get("name")
-    raw_email = author_mapping.get("email")
-    name = str(raw_name) if isinstance(raw_name, str) else None
-    email = str(raw_email) if isinstance(raw_email, str) else None
-    return PluginAuthor(name=name, email=email)
+    config_path_obj = plugin_meta.get("config_path")
+    if not isinstance(config_path_obj, str) or not config_path_obj:
+        return None
 
-
-def _resolve_plugin_meta_type(raw_type: object) -> str:
-    if raw_type in ("plugin", "adapter", "script"):
-        return str(raw_type)
-    return "plugin"
+    try:
+        return Path(config_path_obj).resolve()
+    except Exception:
+        return Path(config_path_obj)
 
 
 async def _cleanup_started_host(plugin_id: str, host: PluginHostContract) -> None:
@@ -314,45 +299,75 @@ def _emit_lifecycle_event(
 
 
 class PluginLifecycleService:
-    async def start_plugin(self, plugin_id: str, restore_state: bool = False) -> dict[str, object]:
+    async def start_plugin(
+        self,
+        plugin_id: str,
+        restore_state: bool = False,
+        *,
+        refresh_registry: bool = True,
+    ) -> dict[str, object]:
         start_time = time_module.perf_counter()
         original_plugin_id = plugin_id
+        current_plugin_id = plugin_id
 
-        existing_host_obj = await asyncio.to_thread(_get_plugin_host_sync, plugin_id)
+        existing_host_obj = await asyncio.to_thread(_get_plugin_host_sync, current_plugin_id)
         if isinstance(existing_host_obj, PluginHostContract):
             if existing_host_obj.is_alive():
-                _emit_lifecycle_event(event_type="plugin_start_skipped", plugin_id=plugin_id)
+                _emit_lifecycle_event(event_type="plugin_start_skipped", plugin_id=current_plugin_id)
                 return {
                     "success": True,
-                    "plugin_id": plugin_id,
+                    "plugin_id": current_plugin_id,
                     "message": "Plugin is already running",
                 }
             # Stale host (process dead) — remove so re-start can proceed
-            await asyncio.to_thread(_pop_plugin_host_sync, plugin_id)
-            logger.info("removed stale host for plugin_id={} (process no longer alive)", plugin_id)
+            await asyncio.to_thread(_pop_plugin_host_sync, current_plugin_id)
+            logger.info("removed stale host for plugin_id={} (process no longer alive)", current_plugin_id)
 
-        if state.is_plugin_frozen(plugin_id) and not restore_state:
+        if state.is_plugin_frozen(current_plugin_id) and not restore_state:
             raise _to_domain_error(
                 code="PLUGIN_FROZEN",
-                message=f"Plugin '{plugin_id}' is frozen. Use unfreeze_plugin to restore it.",
+                message=f"Plugin '{current_plugin_id}' is frozen. Use unfreeze_plugin to restore it.",
                 status_code=409,
-                plugin_id=plugin_id,
+                plugin_id=current_plugin_id,
                 error_type="PluginFrozen",
             )
 
-        config_path = _get_plugin_config_path(plugin_id)
+        if refresh_registry:
+            try:
+                refresh_payload = await plugin_registry_service.refresh_plugin(current_plugin_id)
+                refreshed_plugin_id = refresh_payload.get("plugin_id")
+                if isinstance(refreshed_plugin_id, str) and refreshed_plugin_id:
+                    current_plugin_id = refreshed_plugin_id
+            except ServerDomainError as exc:
+                if exc.code == "PLUGIN_CONFIG_NOT_FOUND":
+                    logger.warning(
+                        "registry refresh skipped for plugin_id={} because config lookup disagreed with lifecycle path resolution",
+                        current_plugin_id,
+                    )
+                else:
+                    raise _to_domain_error(
+                        code=exc.code,
+                        message=exc.message,
+                        status_code=exc.status_code,
+                        plugin_id=current_plugin_id,
+                        error_type=str(exc.details.get("error_type", "RegistryRefreshFailed")) if isinstance(exc.details, dict) else "RegistryRefreshFailed",
+                    ) from exc
+
+        registered_meta = await asyncio.to_thread(_get_plugin_meta_sync, current_plugin_id)
+        config_path = await asyncio.to_thread(_resolve_registered_config_path_sync, registered_meta)
+        if config_path is None:
+            config_path = _get_plugin_config_path(current_plugin_id)
         if config_path is None:
             raise _to_domain_error(
                 code="PLUGIN_CONFIG_NOT_FOUND",
-                message=f"Plugin '{plugin_id}' configuration not found",
+                message=f"Plugin '{current_plugin_id}' configuration not found",
                 status_code=404,
-                plugin_id=plugin_id,
+                plugin_id=current_plugin_id,
                 error_type="ConfigNotFound",
             )
 
         host_obj: PluginHostContract | None = None
         registered_plugin_id: str | None = None
-        current_plugin_id = plugin_id
 
         try:
             conf = await asyncio.to_thread(_read_plugin_config_sync, config_path)
@@ -503,11 +518,13 @@ class PluginLifecycleService:
                 )
 
             _emit_lifecycle_event(event_type="plugin_start_requested", plugin_id=current_plugin_id)
+            extension_configs = await plugin_registry_service.list_extension_configs_for_host(current_plugin_id)
             created_host = await asyncio.to_thread(
                 PluginProcessHost,
                 plugin_id=current_plugin_id,
                 entry_point=entry,
                 config_path=config_path,
+                extension_configs=extension_configs or None,
             )
             if not isinstance(created_host, PluginHostContract):
                 raise _to_domain_error(
@@ -519,7 +536,6 @@ class PluginLifecycleService:
                 )
             host_obj = created_host
 
-            author = _resolve_plugin_author(pdata)
             dependencies = _parse_plugin_dependencies(conf, logger, current_plugin_id)
             for dep in dependencies:
                 satisfied, error_message = _check_plugin_dependency(dep, logger, current_plugin_id)
@@ -570,41 +586,6 @@ class PluginLifecycleService:
                 conf,
                 pdata,
             )
-
-            plugin_meta = PluginMeta(
-                id=current_plugin_id,
-                name=str(pdata.get("name")) if isinstance(pdata.get("name"), str) else current_plugin_id,
-                type=_resolve_plugin_meta_type(plugin_type_obj),
-                description=str(pdata.get("description")) if isinstance(pdata.get("description"), str) else "",
-                version=str(pdata.get("version")) if isinstance(pdata.get("version"), str) else "0.1.0",
-                sdk_version=SDK_VERSION,
-                author=author,
-                dependencies=dependencies,
-            )
-
-            final_plugin_id = register_plugin(
-                plugin_meta,
-                logger,
-                config_path=config_path,
-                entry_point=entry,
-            )
-            if final_plugin_id is None:
-                raise _to_domain_error(
-                    code="PLUGIN_ALREADY_REGISTERED",
-                    message=f"Plugin '{current_plugin_id}' is already registered (duplicate detected)",
-                    status_code=400,
-                    plugin_id=current_plugin_id,
-                    error_type="DuplicateRegister",
-                )
-
-            if final_plugin_id != current_plugin_id and hasattr(created_host, "plugin_id"):
-                setattr(created_host, "plugin_id", final_plugin_id)
-            if final_plugin_id != current_plugin_id:
-                entries_preview = _remap_entries_preview_plugin_id(
-                    entries_preview,
-                    plugin_id=final_plugin_id,
-                )
-            current_plugin_id = final_plugin_id
             await asyncio.to_thread(
                 _set_plugin_runtime_metadata_sync,
                 current_plugin_id,
@@ -758,6 +739,17 @@ class PluginLifecycleService:
         start_time = time_module.perf_counter()
         _emit_lifecycle_event(event_type="plugins_reload_all_requested")
 
+        try:
+            await plugin_registry_service.refresh_registry()
+        except ServerDomainError as exc:
+            raise _to_domain_error(
+                code=exc.code,
+                message=exc.message,
+                status_code=exc.status_code,
+                plugin_id=None,
+                error_type="RegistryRefreshFailed",
+            ) from exc
+
         running_plugin_ids = await asyncio.to_thread(_list_running_plugin_ids_sync)
         if not running_plugin_ids:
             return {
@@ -779,11 +771,10 @@ class PluginLifecycleService:
                 continue
             failed.append({"plugin_id": outcome.plugin_id, "error": outcome.error or "Stop failed"})
 
-        start_tasks = [self._safe_start_for_reload(plugin_id) for plugin_id in plugins_to_start]
-        start_outcomes = await asyncio.gather(*start_tasks)
-
         reloaded: list[str] = []
-        for outcome in start_outcomes:
+        ordered_plugin_ids = await plugin_registry_service.order_plugin_ids(plugins_to_start)
+        for plugin_id in ordered_plugin_ids:
+            outcome = await self._safe_start_for_reload(plugin_id)
             if outcome.success:
                 reloaded.append(outcome.plugin_id)
                 continue
@@ -976,7 +967,7 @@ class PluginLifecycleService:
 
     async def _safe_start_for_reload(self, plugin_id: str) -> _ReloadOutcome:
         try:
-            await self.start_plugin(plugin_id)
+            await self.start_plugin(plugin_id, refresh_registry=False)
             return _ReloadOutcome(plugin_id=plugin_id, success=True)
         except ServerDomainError as error:
             return _ReloadOutcome(plugin_id=plugin_id, success=False, error=error.message)

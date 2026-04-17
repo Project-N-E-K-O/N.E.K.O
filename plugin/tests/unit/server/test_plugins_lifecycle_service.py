@@ -16,10 +16,17 @@ from plugin.sdk.plugin.decorators import plugin_entry
 
 
 class _FakeProcessHost:
-    def __init__(self, plugin_id: str, entry_point: str, config_path: Path) -> None:
+    def __init__(
+        self,
+        plugin_id: str,
+        entry_point: str,
+        config_path: Path,
+        extension_configs: list | None = None,
+    ) -> None:
         self.plugin_id = plugin_id
         self.entry_point = entry_point
         self.config_path = config_path
+        self.extension_configs = extension_configs
         self.process = SimpleNamespace(is_alive=lambda: True, exitcode=None)
         self.started = False
         self.stopped = False
@@ -207,6 +214,83 @@ def test_parse_single_plugin_config_warns_on_noncanonical_fields(
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
+async def test_start_plugin_refreshes_registry_before_loading(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "refresh_adapter" / "plugin.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        "\n".join(
+            [
+                "[plugin]",
+                "id = 'refresh_adapter'",
+                "name = 'Refresh Adapter'",
+                "type = 'adapter'",
+                "entry = 'tests.fake_mcp:FakeAdapterPlugin'",
+                "",
+                "[plugin_runtime]",
+                "enabled = true",
+                "auto_start = false",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    handlers_backup = dict(module.state.event_handlers)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+    refresh_calls: list[str] = []
+
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+
+        async def _refresh_plugin(plugin_id: str) -> dict[str, object]:
+            refresh_calls.append(plugin_id)
+            return {"success": True, "plugin_id": plugin_id, "status": "added"}
+
+        monkeypatch.setattr(module.plugin_registry_service, "refresh_plugin", _refresh_plugin)
+        monkeypatch.setattr(module, "_get_plugin_config_path", lambda plugin_id: config_path)
+        monkeypatch.setattr(
+            module,
+            "resolve_plugin_config_from_path",
+            lambda *args, **kwargs: {
+                "effective_config": kwargs["base_config"],
+                "warnings": [],
+            },
+        )
+        monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
+        monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
+        monkeypatch.setattr(module.importlib, "import_module", lambda _: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin))
+        monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
+
+        service = module.PluginLifecycleService()
+        response = await service.start_plugin("refresh_adapter")
+
+        assert response["success"] is True
+        assert refresh_calls == ["refresh_adapter"]
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+            module.state.event_handlers.update(handlers_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
 async def test_start_plugin_persists_entries_preview_and_invalidates_stale_caches(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -221,6 +305,11 @@ async def test_start_plugin_persists_entries_preview_and_invalidates_stale_cache
                 "name = 'MCP Adapter'",
                 "type = 'adapter'",
                 "entry = 'tests.fake_mcp:FakeAdapterPlugin'",
+                "short_description = 'persist me'",
+                "keywords = ['mcp']",
+                "",
+                "[plugin.sdk]",
+                "supported = '>=0.1'",
                 "",
                 "[plugin_runtime]",
                 "enabled = true",
@@ -238,6 +327,18 @@ async def test_start_plugin_persists_entries_preview_and_invalidates_stale_cache
     try:
         with module.state.acquire_plugins_write_lock():
             module.state.plugins.clear()
+            module.state.plugins["mcp_adapter"] = {
+                "id": "mcp_adapter",
+                "name": "MCP Adapter",
+                "type": "adapter",
+                "description": "",
+                "version": "0.1.0",
+                "config_path": str(config_path),
+                "entry_point": "tests.fake_mcp:FakeAdapterPlugin",
+                "short_description": "persist me",
+                "keywords": ["mcp"],
+                "sdk_supported": ">=0.1",
+            }
         with module.state.acquire_plugin_hosts_write_lock():
             module.state.plugin_hosts.clear()
         with module.state.acquire_event_handlers_write_lock():
@@ -263,18 +364,6 @@ async def test_start_plugin_persists_entries_preview_and_invalidates_stale_cache
         monkeypatch.setattr(module.importlib, "import_module", lambda _: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin))
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
-        def _register_plugin(plugin_meta, logger, config_path=None, entry_point=None):
-            plugin_dump = plugin_meta.model_dump()
-            if config_path is not None:
-                plugin_dump["config_path"] = str(config_path)
-            if entry_point is not None:
-                plugin_dump["entry_point"] = entry_point
-            with module.state.acquire_plugins_write_lock():
-                module.state.plugins[plugin_meta.id] = plugin_dump
-            return plugin_meta.id
-
-        monkeypatch.setattr(module, "register_plugin", _register_plugin)
-
         service = module.PluginLifecycleService()
         response = await service.start_plugin("mcp_adapter")
 
@@ -291,6 +380,9 @@ async def test_start_plugin_persists_entries_preview_and_invalidates_stale_cache
         plugin_info = next(item for item in plugin_list if item["id"] == "mcp_adapter")
         assert plugin_info["status"] == "running"
         assert [entry["id"] for entry in plugin_info["entries"]] == ["list_servers"]
+        assert plugin_meta["short_description"] == "persist me"
+        assert plugin_meta["keywords"] == ["mcp"]
+        assert plugin_meta["sdk_supported"] == ">=0.1"
     finally:
         with module.state.acquire_plugins_write_lock():
             module.state.plugins.clear()
@@ -362,18 +454,6 @@ async def test_start_plugin_logs_structured_config_warnings_from_resolver(
         monkeypatch.setattr(module.importlib, "import_module", lambda _: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin))
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
         monkeypatch.setattr(module, "logger", capture_logger)
-
-        def _register_plugin(plugin_meta, logger, config_path=None, entry_point=None):
-            plugin_dump = plugin_meta.model_dump()
-            if config_path is not None:
-                plugin_dump["config_path"] = str(config_path)
-            if entry_point is not None:
-                plugin_dump["entry_point"] = entry_point
-            with module.state.acquire_plugins_write_lock():
-                module.state.plugins[plugin_meta.id] = plugin_dump
-            return plugin_meta.id
-
-        monkeypatch.setattr(module, "register_plugin", _register_plugin)
 
         service = module.PluginLifecycleService()
         response = await service.start_plugin("warn_adapter")
@@ -486,18 +566,6 @@ async def test_start_plugin_allows_retry_for_load_failed_plugin(
         monkeypatch.setattr(module.importlib, "import_module", lambda _: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin))
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
-        def _register_plugin(plugin_meta, logger, config_path=None, entry_point=None):
-            plugin_dump = plugin_meta.model_dump()
-            if config_path is not None:
-                plugin_dump["config_path"] = str(config_path)
-            if entry_point is not None:
-                plugin_dump["entry_point"] = entry_point
-            with module.state.acquire_plugins_write_lock():
-                module.state.plugins[plugin_meta.id] = plugin_dump
-            return plugin_meta.id
-
-        monkeypatch.setattr(module, "register_plugin", _register_plugin)
-
         service = module.PluginLifecycleService()
         response = await service.start_plugin("broken_adapter")
 
@@ -506,6 +574,128 @@ async def test_start_plugin_allows_retry_for_load_failed_plugin(
             plugin_meta = dict(module.state.plugins["broken_adapter"])
         assert plugin_meta["runtime_enabled"] is True
         assert "runtime_load_state" not in plugin_meta
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+            module.state.event_handlers.update(handlers_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_start_plugin_passes_prebuilt_extension_configs_to_host(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    host_config_path = tmp_path / "host_plugin" / "plugin.toml"
+    ext_config_path = tmp_path / "demo_ext" / "plugin.toml"
+    host_config_path.parent.mkdir(parents=True, exist_ok=True)
+    ext_config_path.parent.mkdir(parents=True, exist_ok=True)
+    host_config_path.write_text(
+        "\n".join(
+            [
+                "[plugin]",
+                "id = 'host_plugin'",
+                "name = 'Host Plugin'",
+                "type = 'plugin'",
+                "entry = 'tests.fake_mcp:FakeAdapterPlugin'",
+                "",
+                "[plugin_runtime]",
+                "enabled = true",
+                "auto_start = true",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    ext_config_path.write_text(
+        "\n".join(
+            [
+                "[plugin]",
+                "id = 'demo_ext'",
+                "name = 'Demo Extension'",
+                "type = 'extension'",
+                "entry = 'tests.fake_ext:DemoExtRouter'",
+                "",
+                "[plugin.host]",
+                "plugin_id = 'host_plugin'",
+                "prefix = '/demo'",
+                "",
+                "[plugin_runtime]",
+                "enabled = true",
+                "auto_start = true",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    handlers_backup = dict(module.state.event_handlers)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins["host_plugin"] = {
+                "id": "host_plugin",
+                "name": "Host Plugin",
+                "type": "plugin",
+                "description": "",
+                "version": "0.1.0",
+                "config_path": str(host_config_path),
+                "entry_point": "tests.fake_mcp:FakeAdapterPlugin",
+                "short_description": "keep me",
+                "keywords": ["host"],
+                "sdk_supported": ">=0.1",
+                "runtime_enabled": True,
+                "runtime_auto_start": True,
+            }
+            module.state.plugins["demo_ext"] = {
+                "id": "demo_ext",
+                "name": "Demo Extension",
+                "type": "extension",
+                "config_path": str(ext_config_path),
+                "entry_point": "tests.fake_ext:DemoExtRouter",
+                "host_plugin_id": "host_plugin",
+                "runtime_enabled": True,
+                "runtime_auto_start": False,
+            }
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+
+        monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
+        monkeypatch.setattr(module.importlib, "import_module", lambda _: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin))
+        monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
+
+        service = module.PluginLifecycleService()
+        response = await service.start_plugin("host_plugin", refresh_registry=False)
+
+        assert response["success"] is True
+        with module.state.acquire_plugin_hosts_read_lock():
+            host_obj = module.state.plugin_hosts["host_plugin"]
+        assert isinstance(host_obj, _FakeProcessHost)
+        assert host_obj.extension_configs == [
+            {
+                "ext_id": "demo_ext",
+                "ext_entry": "tests.fake_ext:DemoExtRouter",
+                "prefix": "/demo",
+            }
+        ]
+
+        with module.state.acquire_plugins_read_lock():
+            plugin_meta = dict(module.state.plugins["host_plugin"])
+        assert plugin_meta["short_description"] == "keep me"
+        assert plugin_meta["keywords"] == ["host"]
+        assert plugin_meta["sdk_supported"] == ">=0.1"
     finally:
         with module.state.acquire_plugins_write_lock():
             module.state.plugins.clear()
