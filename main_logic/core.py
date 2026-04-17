@@ -2547,10 +2547,17 @@ class LLMSessionManager:
                     self.lanlan_name, expected_speech_id, self.current_speech_id,
                 )
                 return False
+            # 冻结 commit 用的 turn_id：current_speech_id 由 self.lock 保护，不在
+            # _proactive_write_lock 范围内，下面 send_lanlan_response 之前若用户经
+            # handle_new_message/stream_text 抢占完成 sid 轮换，再让 send_lanlan_response
+            # 默认从 self.current_speech_id 取值会把这条 proactive 气泡打到用户新
+            # turn 上、前端分组串掉。expected_speech_id 在 phase2 已经一路传到这里
+            # 并且刚校验过，作为冻结快照最稳。
+            commit_sid = expected_speech_id or self.current_speech_id
             # 状态机：进入 COMMITTING 阶段；期间若用户抢占仍会 sticky 到 _preempted，
             # 但本处 lock 内 sid 已校验过，commit 本身安全。
             await self.state.fire(SessionEvent.PROACTIVE_COMMITTING)
-            await self.send_lanlan_response(full_text, is_first_chunk=True)
+            await self.send_lanlan_response(full_text, is_first_chunk=True, turn_id=commit_sid)
 
             from utils.llm_client import AIMessage as _AIMsg
             if self.session and hasattr(self.session, '_conversation_history'):
