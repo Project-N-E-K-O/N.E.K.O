@@ -762,8 +762,7 @@ class OmniOfflineClient:
                         await self.on_text_delta(flush_text, is_first_chunk)
                     is_first_chunk = False
         except Exception as e:
-            error_msg = f"OmniOfflineClient.prompt_ephemeral error: {e}"
-            logger.error(error_msg)
+            logger.error("OmniOfflineClient.prompt_ephemeral error: %s", e, exc_info=True)
             if self.on_status_message:
                 await self.on_status_message(json.dumps({"code": "PROACTIVE_GEN_FAILED", "details": {"error_type": type(e).__name__, "error": str(e)}}))
             assistant_message = ""

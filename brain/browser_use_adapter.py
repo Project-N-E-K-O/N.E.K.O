@@ -990,10 +990,10 @@ class BrowserUseAdapter:
                 await asyncio.wait_for(self._browser_session.stop(), timeout=10)
             except asyncio.TimeoutError:
                 logger.warning("[BrowserUse] _browser_session.stop() timed out after 10s")
-                self._force_kill_browser(browser_pid)
+                await asyncio.to_thread(self._force_kill_browser, browser_pid)
             except Exception as exc:
                 logger.warning("[BrowserUse] _browser_session.stop() raised: %s", exc)
-                self._force_kill_browser(browser_pid)
+                await asyncio.to_thread(self._force_kill_browser, browser_pid)
 
             self._browser_session = None
         self._session_ever_started = False
