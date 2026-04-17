@@ -25,7 +25,14 @@ import httpx
 import dashscope
 from dashscope.audio.tts_v2 import SpeechSynthesizer
 
-from .shared_state import get_config_manager, get_session_manager, get_initialize_character_data
+from .shared_state import (
+    get_config_manager,
+    get_session_manager,
+    get_initialize_character_data,
+    get_switch_current_catgirl_fast,
+    get_init_one_catgirl,
+    get_remove_one_catgirl,
+)
 from .workshop_router import _ugc_sync_lock
 from main_logic.tts_client import get_custom_tts_voices, CustomTTSVoiceFetchError
 from utils.config_manager import get_reserved, set_reserved, flatten_reserved
@@ -1242,9 +1249,10 @@ async def set_current_catgirl(request: Request):
                 }, status_code=400)
     characters['当前猫娘'] = catgirl_name
     await _config_manager.asave_characters(characters)
-    initialize_character_data = get_initialize_character_data()
-    # 自动重新加载配置
-    await initialize_character_data()
+    # Fast path：切换只改变 `当前猫娘` 字段，per-k 的 prompt / voice_id / thread 都不变，
+    # 只需刷新 globals 即可。N=20 只猫娘时从 O(N) 降到 O(1)。
+    switch_current_catgirl_fast = get_switch_current_catgirl_fast()
+    await switch_current_catgirl_fast()
     
     # 通过WebSocket通知所有连接的客户端
     # 使用session_manager中的websocket，但需要确保websocket已设置
@@ -1412,9 +1420,9 @@ async def add_catgirl(request: Request):
 
     characters['猫娘'][key] = catgirl_data
     await _config_manager.asave_characters(characters)
-    initialize_character_data = get_initialize_character_data()
-    # 自动重新加载配置
-    await initialize_character_data()
+    # Fast path：新增只需为 `key` 这一个 catgirl 分配资源 + 启动线程，不影响其它角色。
+    init_one_catgirl = get_init_one_catgirl()
+    await init_one_catgirl(key, is_new=True)
 
     # 通知记忆服务器重新加载配置
     try:
@@ -1537,14 +1545,17 @@ async def update_catgirl(name: str, request: Request):
                 logger.error(f"结束session时出错: {e}")
 
         if is_current_catgirl:
-            initialize_character_data = get_initialize_character_data()
-            await initialize_character_data()
+            # Fast path：只刷新被编辑角色的 session_manager（prompt/voice_id），
+            # 其它 N-1 个 catgirl 不动。
+            init_one_catgirl = get_init_one_catgirl()
+            await init_one_catgirl(name, is_new=False)
             logger.info("配置已重新加载，新的voice_id已生效")
         else:
             logger.info(f"切换的是其他猫娘 {name} 的音色，跳过重新加载以避免影响当前猫娘的session")
     else:
-        initialize_character_data = get_initialize_character_data()
-        await initialize_character_data()
+        # Fast path：普通字段编辑，只刷新被编辑角色。
+        init_one_catgirl = get_init_one_catgirl()
+        await init_one_catgirl(name, is_new=False)
 
     return {
         "success": True,
@@ -1595,8 +1606,9 @@ async def delete_catgirl(name: str):
     # 删除角色配置
     del characters['猫娘'][name]
     await _config_manager.asave_characters(characters)
-    initialize_character_data = get_initialize_character_data()
-    await initialize_character_data()
+    # Fast path：只停该角色的线程 + 清 dict + 刷 globals，不遍历其它 N-1 个。
+    remove_one_catgirl = get_remove_one_catgirl()
+    await remove_one_catgirl(name)
     return {"success": True}
 
 @router.post('/clear_voice_ids')
