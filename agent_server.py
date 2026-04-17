@@ -627,7 +627,7 @@ async def _fire_user_plugin_capability_check() -> None:
 _llm_check_lock = asyncio.Lock()
 
 
-async def _fire_agent_llm_connectivity_check() -> None:
+async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
     """Probe the shared Agent-LLM endpoint in a background thread.
 
     Both ComputerUse and BrowserUse rely on the same ``agent`` model config,
@@ -636,8 +636,17 @@ async def _fire_agent_llm_connectivity_check() -> None:
     *both* computer_use and browser_use.
 
     Uses a lock to prevent concurrent probes from racing.
+
+    ``queue=False`` (default): early-return if another probe is in flight.
+      Right for spammy event-driven callers (UI toggles / flag flips) where a
+      second probe would just duplicate the in-flight one.
+
+    ``queue=True``: wait for the lock and run anyway.  Right when the caller
+      represents a *state change* that must be reflected on capability (e.g.
+      BrowserUse just became available), where early-return would silently
+      drop the refresh.
     """
-    if _llm_check_lock.locked():
+    if not queue and _llm_check_lock.locked():
         return
 
     async with _llm_check_lock:
@@ -2153,7 +2162,11 @@ async def startup():
             logger.info("[Agent] BrowserUseAdapter ready (background init)")
             # fire-and-forget capability 刷新：check_connectivity 可能因网络不稳
             # 走到几十秒级的重试，绝不能把 OpenFang 初始化链 gate 在它上面。
-            _refresh_task = asyncio.create_task(_fire_agent_llm_connectivity_check())
+            # queue=True：这是"BU 刚就绪"这种状态变化触发，不能被启动期 LLM probe
+            # 持锁时的早退路径吞掉，否则 browser_use capability 会停在 PENDING。
+            _refresh_task = asyncio.create_task(
+                _fire_agent_llm_connectivity_check(queue=True)
+            )
             Modules._persistent_tasks.add(_refresh_task)
             _refresh_task.add_done_callback(Modules._persistent_tasks.discard)
         except Exception as exc:
