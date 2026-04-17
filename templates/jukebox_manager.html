@@ -167,6 +167,8 @@
 
                 if (state.mode === 'pending') {
                     state.released = true;
+                    document.body.classList.remove('neko-jukebox-manager-standalone-dragging');
+                    state = null;
                     return;
                 }
 
@@ -228,6 +230,12 @@
                 workArea = resolved[1] || workArea;
 
                 if (!state || state.token !== token) {
+                    return;
+                }
+
+                if (state.released) {
+                    document.body.classList.remove('neko-jukebox-manager-standalone-dragging');
+                    state = null;
                     return;
                 }
 

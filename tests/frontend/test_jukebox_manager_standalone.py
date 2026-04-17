@@ -7,8 +7,9 @@ from playwright.sync_api import Page
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MANAGER_TEMPLATE = (REPO_ROOT / "templates" / "jukebox_manager.html").read_text(encoding="utf-8")
-INLINE_SCRIPTS = re.findall(r"<script>(.*?)</script>", MANAGER_TEMPLATE, flags=re.S)
-MANAGER_SCRIPT = INLINE_SCRIPTS[-1]
+INLINE_SCRIPTS = re.findall(r"<script\b(?![^>]*\bsrc=)[^>]*>(.*?)</script>", MANAGER_TEMPLATE, flags=re.S)
+MANAGER_SCRIPT = next(script for script in INLINE_SCRIPTS if "_bindManagerStandaloneDrag" in script)
+JUKEBOX_SCRIPT = (REPO_ROOT / "static" / "Jukebox.js").read_text(encoding="utf-8")
 
 HARNESS_HTML = """
 <!DOCTYPE html>
@@ -83,6 +84,7 @@ def _bootstrap_manager_page(page: Page) -> None:
                   window.__closeClicks += 1;
                 });
 
+                this.element = panel;
                 return panel;
               },
               getStyles() {
@@ -160,8 +162,11 @@ def test_jukebox_manager_standalone_fast_drag_survives_async_bounds(mock_page: P
     mock_page.mouse.down()
     mock_page.mouse.move(gap["x"] + 180, gap["y"] + 120)
     mock_page.mouse.up()
-    mock_page.wait_for_timeout(250)
 
+    body_class = mock_page.locator("body").get_attribute("class") or ""
+    assert "neko-jukebox-manager-standalone-dragging" not in body_class
+
+    mock_page.wait_for_timeout(250)
     drag_log = mock_page.evaluate("window.__managerLog")
     assert any(entry[0] == "setBounds" and (entry[1] != 100 or entry[2] != 120) for entry in drag_log)
 
@@ -172,3 +177,110 @@ def test_jukebox_manager_standalone_fast_drag_survives_async_bounds(mock_page: P
     mock_page.click("#closeBtn")
     assert mock_page.evaluate("window.__closeClicks") == 1
     assert mock_page.evaluate("window.__managerLog") == []
+
+
+@pytest.mark.frontend
+def test_jukebox_manager_select_all_checkbox_toggles_state(mock_page: Page):
+    mock_page.set_viewport_size({"width": 900, "height": 700})
+    mock_page.set_content(HARNESS_HTML)
+    mock_page.evaluate(
+        """
+        () => {
+          window.t = (key, fallback) => typeof fallback === 'string' ? fallback : key;
+          window.fetch = () => Promise.reject(new Error('fetch should not be called in this test'));
+        }
+        """
+    )
+    mock_page.add_script_tag(content=JUKEBOX_SCRIPT)
+    mock_page.evaluate(
+        """
+        () => {
+          const SAM = window.Jukebox.SongActionManager;
+          SAM.data = {
+            songs: {
+              song1: { name: 'Song 1', artist: 'A', visible: true },
+              song2: { name: 'Song 2', artist: 'B', visible: true }
+            },
+            actions: {},
+            bindings: {}
+          };
+          SAM.selectedSongs = new Set();
+          SAM.selectedActions = new Set();
+          SAM.showHiddenSongs = true;
+          SAM.bindDragEvents = function() {};
+          SAM.bindFileDropEvents = function() {};
+          SAM.updateSelectionInfo = function() {};
+
+          const panel = document.createElement('div');
+          panel.className = 'songs-panel';
+          document.body.appendChild(panel);
+          SAM.renderSongs(panel);
+        }
+        """
+    )
+
+    mock_page.click("#select-all-songs")
+    assert mock_page.locator("#select-all-songs").is_checked()
+    assert mock_page.locator(".sam-song-select:checked").count() == 2
+
+    mock_page.click("#select-all-songs")
+    assert not mock_page.locator("#select-all-songs").is_checked()
+    assert mock_page.locator(".sam-song-select:checked").count() == 0
+
+
+@pytest.mark.frontend
+def test_jukebox_manager_binding_selections_are_decoupled(mock_page: Page):
+    mock_page.set_viewport_size({"width": 900, "height": 700})
+    mock_page.set_content(HARNESS_HTML)
+    mock_page.evaluate(
+        """
+        () => {
+          window.t = (key, fallback) => typeof fallback === 'string' ? fallback : key;
+          window.fetch = () => Promise.reject(new Error('fetch should not be called in this test'));
+        }
+        """
+    )
+    mock_page.add_script_tag(content=JUKEBOX_SCRIPT)
+    mock_page.evaluate(
+        """
+        () => {
+          const SAM = window.Jukebox.SongActionManager;
+          SAM.data = {
+            songs: {
+              song1: { name: 'Song 1', artist: 'A', visible: true },
+              song2: { name: 'Song 2', artist: 'B', visible: true }
+            },
+            actions: {
+              action1: { name: 'Action 1', format: 'vmd' },
+              action2: { name: 'Action 2', format: 'vmd' }
+            },
+            bindings: {
+              song1: { action1: { offset: 0 } },
+              song2: { action2: { offset: 0 } }
+            }
+          };
+          SAM.selectedSongs = new Set();
+          SAM.selectedActions = new Set();
+          SAM.bindingSelectedSongs = new Set();
+          SAM.bindingSelectedActions = new Set();
+          SAM.updateSelectionInfo = function() {};
+
+          const panel = document.createElement('div');
+          panel.className = 'bindings-panel';
+          document.body.appendChild(panel);
+          SAM.renderBindings(panel);
+        }
+        """
+    )
+
+    mock_page.locator('.sam-binding-item[data-song-id="song1"] input[type="checkbox"]').click()
+    assert mock_page.locator('.sam-binding-item[data-song-id="song1"] input[type="checkbox"]').is_checked()
+    assert not mock_page.locator('.sam-binding-item[data-action-id="action1"] input[type="checkbox"]').is_checked()
+    assert not mock_page.locator('#select-all-binding-actions').is_checked()
+
+    mock_page.click('#select-all-binding-actions')
+    assert mock_page.locator('#select-all-binding-actions').is_checked()
+    assert mock_page.locator('.sam-binding-item[data-action-id="action1"] input[type="checkbox"]').is_checked()
+    assert mock_page.locator('.sam-binding-item[data-action-id="action2"] input[type="checkbox"]').is_checked()
+    assert mock_page.locator('.sam-binding-item[data-song-id="song2"] input[type="checkbox"]').count() == 1
+    assert not mock_page.locator('.sam-binding-item[data-song-id="song2"] input[type="checkbox"]').is_checked()
