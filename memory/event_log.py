@@ -1,30 +1,27 @@
 # -*- coding: utf-8 -*-
 """
-EventLog — per-character append-only audit + reconciliation log.
+EventLog — per-character append-only 审计 + 重放日志（P2 基础设施）。
 
-Why this exists (P2, per memory-event-log-rfc.md):
-  P0 persisted the rebuttal cursor; P1 added the outbox so background tasks
-  can be replayed after a kill. The remaining structural problem is that
-  views (facts.json / reflections.json / persona.json) are the ONLY record
-  of state transitions — there is no ordered history, so partial view
-  writes are invisible and cross-file invariants are not verifiable.
+为什么存在（对应 docs/design/memory-event-log-rfc.md）：
+  P0 持久化了 rebuttal 游标；P1 加了 outbox 让后台 task 被 kill 后可以
+  补跑。剩下的结构性问题是：视图（facts.json / reflections.json /
+  persona.json）是"状态转移"的唯一记录——没有有序历史，所以"写视图一半
+  崩"是不可见的，跨文件不变量也无法核查。
 
-  This module adds events.ndjson per character: every state transition is
-  recorded **before** the view changes. On startup the reconciler compares
-  the log tail against a sentinel (events_applied.json) and replays any
-  events whose view side didn't make it to disk.
+  本模块加 events.ndjson（per character）：每次状态转移**先**写事件、
+  再写视图。启动期 reconciler 对比 log tail 与哨兵
+  (events_applied.json)，把 view 没落盘的事件重放到视图里。
 
-Non-goals:
-  - Not full event sourcing (views remain the hand-editable truth).
-  - Not a rule engine or state machine DSL.
-  - Not cross-character (per-character file; single-writer assumed).
+非目标：
+  - 不是完整的 event sourcing（视图仍是可手写的"真相源"）。
+  - 不是规则引擎或状态机 DSL。
+  - 不是跨角色的（per character 文件；架构假设单写者）。
 
-Writing discipline (RFC §3.4):
-  Every event-emitting write site MUST go through _record_and_save, which
-  runs the whole load → mutate → append → save → sentinel-advance sequence
-  inside a per-character threading.Lock, inside a single asyncio.to_thread
-  worker. No asyncio.Lock across multiple await boundaries — follows the
-  outbox / cursors pattern.
+写入纪律（RFC §3.4）：
+  所有会发事件的写点必须走 record_and_save，它把
+  load → mutate → append → save → sentinel-advance 五步放进一把
+  per-character threading.Lock 里，整体包在一个 asyncio.to_thread
+  worker 中。不跨 await 持锁——延续 outbox / cursors 的模式。
 """
 from __future__ import annotations
 
@@ -277,7 +274,10 @@ class EventLog:
             logger.warning(f"[EventLog] {path} 读取失败（跳过 compact）: {e}")
             return 0, None
 
-    def should_compact(self, name: str) -> bool:
+    def _should_compact_unlocked(self, name: str) -> bool:
+        """Lock-free version. Caller must already hold self._get_lock(name),
+        OR call from a path where concurrent mutation is impossible (e.g.
+        startup before handlers are registered)."""
         line_count, oldest_ts = self._scan_head_and_count(self._events_path(name))
         if line_count >= _COMPACT_LINES_THRESHOLD:
             return True
@@ -286,6 +286,12 @@ class EventLog:
             if age_days >= _COMPACT_DAYS_THRESHOLD:
                 return True
         return False
+
+    def should_compact(self, name: str) -> bool:
+        """Public check. Acquires the per-character lock before reading,
+        so the line-count + head-scan see a consistent file."""
+        with self._get_lock(name):
+            return self._should_compact_unlocked(name)
 
     def compact_if_needed(
         self,
@@ -340,16 +346,6 @@ class EventLog:
         if dropped < 0:
             dropped = 0
         return dropped
-
-    def _should_compact_unlocked(self, name: str) -> bool:
-        line_count, oldest_ts = self._scan_head_and_count(self._events_path(name))
-        if line_count >= _COMPACT_LINES_THRESHOLD:
-            return True
-        if oldest_ts is not None:
-            age_days = (datetime.now() - oldest_ts).total_seconds() / 86400
-            if age_days >= _COMPACT_DAYS_THRESHOLD:
-                return True
-        return False
 
     def _count_lines_unlocked(self, name: str) -> int:
         path = self._events_path(name)
@@ -462,19 +458,18 @@ class Reconciler:
         self._handlers[event_type] = handler
 
     async def areconcile(self, name: str, view_provider: Callable[[str, str], object]) -> int:
-        """Apply all tail events to views. Returns number of events applied.
+        """P2.a.1 scaffold: dispatch tail events to registered handlers,
+        advance sentinel per event, preserve sentinel on handler raise.
+        P2.b wires concrete save paths.
 
-        view_provider(name, event_type) returns the relevant view object for
-        applying this event (e.g., load_facts / load_reflections / load_persona).
-        The handler mutates view_provider's return and the caller is expected
-        to save afterwards — but because the normal event-emission path
-        already saved the view when the event was first written, reconcile
-        is only triggered when that save FAILED. In that case the caller
-        must save-after-apply; this scaffold returns the mutated views
-        through the handler's True/False return.
-
-        For P2.a.1 scope this is a handler-dispatch skeleton only. P2.b.1/2
-        wire concrete handlers.
+        Failure semantics (intentional): if a handler raises, we STOP the
+        whole reconcile loop for this character and leave the sentinel on
+        the last successfully-applied event. Rationale — compound
+        transitions (reflection.state_changed followed by persona.fact_added)
+        have a causal dependency; applying downstream events past a failed
+        upstream one would produce an inconsistent view. Per-character
+        reconciliation resumes on next boot. Unknown event types are NOT
+        failures; they log-and-skip and keep advancing.
         """
         last_applied = await self._event_log.aread_sentinel(name)
         tail = await self._event_log.aread_since(name, last_applied)

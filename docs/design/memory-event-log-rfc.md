@@ -651,6 +651,13 @@ Module-level event-type constants (`EVT_FACT_ADDED`, etc.) mirror `OP_*` in
 `outbox.py`. The sync/async pairing mirrors `CursorStore` and `Outbox`;
 both the pattern and the zero-blocking constraint are load-bearing.
 
+Note: the final P2.a.1 implementation renames `snapshot_and_compact` to
+`compact_if_needed` (plus async twin `acompact_if_needed`). The new name
+reflects that the method does threshold check + compact in one call; the
+standalone "compact without threshold check" entry point is the private
+`_should_compact_unlocked` + body swap, not exposed. RFC API signatures
+above are kept for historical continuity of the design review.
+
 ## 4. Implementation plan
 
 Phase 2 is split into five commits/PRs to keep each blast radius small:

@@ -238,16 +238,14 @@ def test_compact_crash_between_swap_and_sentinel_reset_is_safe(tmp_path):
     stale_sentinel = log.append("小天", EVT_FACT_ADDED, {"i": 5})
     log.advance_sentinel("小天", stale_sentinel)
 
-    # Crash simulation: swap body ourselves, leave old sentinel
+    # Crash simulation: body swap happens, sentinel reset does NOT (blocked
+    # atomic_write_json — the only code path used for sentinel writes inside
+    # compact_if_needed). Body is still rewritten via atomic_write_text.
     with patch("memory.event_log._COMPACT_LINES_THRESHOLD", 1), \
-         patch.object(log, "advance_sentinel", side_effect=None) as _patched:
-        # Suppress the sentinel reset that compact_if_needed would do via
-        # atomic_write_json; force the legacy sentinel to linger
-        with patch("memory.event_log.atomic_write_json") as mock_aj:
-            log.compact_if_needed("小天", lambda: [(EVT_FACT_ADDED, {"seed": 1})])
-        # Body swap still happened via atomic_write_text; sentinel reset was blocked
-        # Sentinel still points to the (now-gone) old event
-        assert log.read_sentinel("小天") == stale_sentinel
+         patch("memory.event_log.atomic_write_json") as _mock_aj:
+        log.compact_if_needed("小天", lambda: [(EVT_FACT_ADDED, {"seed": 1})])
+    # Sentinel reset was blocked → still points to the (now-gone) old event
+    assert log.read_sentinel("小天") == stale_sentinel
 
     # Next-boot simulation: read_since falls through to full body replay
     tail = log.read_since("小天", stale_sentinel)
@@ -345,30 +343,31 @@ def test_record_and_save_append_failure_skips_save_and_sentinel(tmp_path):
 
 
 def test_record_and_save_serializes_concurrent_calls(tmp_path):
-    """Per-character lock must prevent two record_and_save calls from interleaving
-    their load/mutate/save sequences."""
+    """Per-character lock must prevent two record_and_save calls from
+    interleaving their load/mutate/save sequences.
+
+    The strongest oracle is `mutable_view["value"] == 5` — an unlocked RMW
+    would lose updates when two workers both read 0 before either writes 1.
+    The chunk check is a secondary diagnostic.
+    """
+    import time
     import threading as real_threading
     from memory.event_log import EVT_FACT_ADDED
 
     log = _fresh_log(str(tmp_path))
-    interleave_log: list[str] = []
     mutable_view = {"value": 0}
 
     def make_callbacks(tag: str):
         def load(name):
-            interleave_log.append(f"{tag}:load")
             return mutable_view
 
         def mutate(view):
-            interleave_log.append(f"{tag}:mutate")
             current = view["value"]
-            # simulate mutation work
-            import time
-            time.sleep(0.01)
+            time.sleep(0.05)   # widen the race window (50ms)
             view["value"] = current + 1
 
         def save(name, view):
-            interleave_log.append(f"{tag}:save")
+            return
         return load, mutate, save
 
     def worker(tag: str):
@@ -378,19 +377,105 @@ def test_record_and_save_serializes_concurrent_calls(tmp_path):
             sync_load_view=ld, sync_mutate_view=mu, sync_save_view=sv,
         )
 
+    t0 = time.monotonic()
+    threads = [real_threading.Thread(target=worker, args=(f"w{i}",)) for i in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    elapsed = time.monotonic() - t0
+
+    # Primary oracle: no lost updates despite 50ms mutation window overlap.
+    # Without the lock two or more workers would observe value=0 before
+    # either wrote value=1, so the final count would be < 5.
+    assert mutable_view["value"] == 5
+    # Secondary: wallclock >= 5 * sleep confirms the mutations actually
+    # serialized (each took its full 50ms before the next could start).
+    # Allow a little slack for timer resolution.
+    assert elapsed >= 5 * 0.05 * 0.9, f"wallclock {elapsed:.3f}s < expected serial floor"
+
+
+def test_serialization_oracle_rejects_unlocked_mode(tmp_path):
+    """Diagnostic-power check: with the lock patched out, the previous
+    test's oracle MUST fail — proves the assertion isn't passing by
+    accident of scheduling."""
+    import time
+    import threading as real_threading
+    from contextlib import nullcontext
+    from memory.event_log import EVT_FACT_ADDED
+
+    log = _fresh_log(str(tmp_path))
+    # Replace per-character lock with a no-op context manager
+    log._get_lock = lambda name: nullcontext()
+
+    mutable_view = {"value": 0}
+
+    def mutate(view):
+        current = view["value"]
+        time.sleep(0.05)
+        view["value"] = current + 1
+
+    def worker(tag: str):
+        log.record_and_save(
+            "小天", EVT_FACT_ADDED, {"worker": tag},
+            sync_load_view=lambda n: mutable_view,
+            sync_mutate_view=mutate,
+            sync_save_view=lambda n, v: None,
+        )
+
     threads = [real_threading.Thread(target=worker, args=(f"w{i}",)) for i in range(5)]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
 
-    # Check sequential load→mutate→save per worker (no interleaving)
-    for i in range(0, len(interleave_log), 3):
-        chunk = interleave_log[i:i + 3]
-        tags = {entry.split(":", 1)[0] for entry in chunk}
-        assert len(tags) == 1, f"interleave detected: {chunk}"
-    # Final value matches concurrent increment count
-    assert mutable_view["value"] == 5
+    # With no lock, at least two workers race → lost updates → final < 5
+    assert mutable_view["value"] < 5, \
+        f"expected lost updates without lock, got {mutable_view['value']}"
+
+
+def test_concurrent_append_during_compact_preserves_events(tmp_path):
+    """Per-character lock must block append during compaction and vice-versa.
+    Regression guard: catches future changes that move body-swap outside the lock."""
+    import time
+    import threading as real_threading
+    from memory.event_log import EVT_FACT_ADDED
+
+    log = _fresh_log(str(tmp_path))
+    # Seed a handful of events so compact has something to drop
+    for i in range(3):
+        log.append("小天", EVT_FACT_ADDED, {"i": i, "source": "seed"})
+
+    append_errors: list[Exception] = []
+    appended_ids: list[str] = []
+    stop_flag = real_threading.Event()
+
+    def appender():
+        while not stop_flag.is_set():
+            try:
+                appended_ids.append(log.append("小天", EVT_FACT_ADDED, {"source": "parallel"}))
+            except Exception as e:
+                append_errors.append(e)
+
+    t = real_threading.Thread(target=appender, daemon=True)
+    t.start()
+    time.sleep(0.02)  # let appender get going
+
+    with patch("memory.event_log._COMPACT_LINES_THRESHOLD", 1):
+        log.compact_if_needed("小天", lambda: [(EVT_FACT_ADDED, {"seed": "kept"})])
+
+    stop_flag.set()
+    t.join(timeout=2.0)
+
+    assert append_errors == [], f"append raised under concurrent compact: {append_errors}"
+    # Body is not corrupt: read_since returns valid JSON for every record
+    tail = log.read_since("小天", None)
+    assert all(isinstance(r.get("event_id"), str) and isinstance(r.get("type"), str)
+               for r in tail)
+    # At least the seed from compact must be present — appends that happened
+    # AFTER the body swap land on the fresh body
+    seed_ids = [r["event_id"] for r in tail if r["payload"].get("seed") == "kept"]
+    assert len(seed_ids) == 1, f"expected exactly one compact seed, got {seed_ids}"
 
 
 # ── Reconciler scaffolding ──────────────────────────────────────────
