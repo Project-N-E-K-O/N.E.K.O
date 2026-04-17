@@ -411,8 +411,8 @@ async def test_async_subscriber_returning_task_with_exception_is_swallowed():
 # 并发
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def test_concurrent_user_input_and_proactive_start_converges():
-    """USER_INPUT 和 PROACTIVE_START 并发 fire：无论谁先，终态都自洽。
+async def test_interleaved_user_input_and_proactive_start_converges():
+    """USER_INPUT 和 PROACTIVE_START 两种交错顺序：无论谁先 fire，终态都自洽。
 
     - USER_INPUT 先：owner=USER，PROACTIVE_START 后 owner 被改成 PROACTIVE，
       phase=PHASE1，此时 is_proactive_preempted=False（因为 sticky 在 START
