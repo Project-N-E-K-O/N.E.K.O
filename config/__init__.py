@@ -682,7 +682,7 @@ DEFAULT_ASSIST_API_PROFILES = {
         'CONVERSATION_MODEL': "doubao-seed-2-0-lite-260215",
         'SUMMARY_MODEL': "doubao-seed-2-0-lite-260215",
         'CORRECTION_MODEL': "doubao-seed-2-0-lite-260215",
-        'EMOTION_MODEL': "doubao-seed-2-0-mini",
+        'EMOTION_MODEL': "doubao-seed-2-0-mini-260215",
         'VISION_MODEL': "doubao-seed-2-0-lite-260215",
         'AGENT_MODEL': "doubao-seed-2-0-pro-260215",
     },
