@@ -254,16 +254,26 @@
      */
     // AI 是否正在播放语音：proactive timer 到点时如果还在播，就跳过本次 nudge
     // 并继续按固定间隔 poll（见下面 scheduleProactiveChat 的两处 speaking 分支）。
-    // S.isPlaying：audio chunks 入队到 drain 完这段期间为 true；
-    // S.assistantSpeechActiveTurnId：active turn 有音频在跑时非空。
-    // assistantTurnId !== assistantTurnCompletedId：后端已发 turn-start
-    // 但还没发 turn-end —— 覆盖"文字已开始流、首个音频 chunk 还没解码"的空窗，
-    // 防止 proactive 在这段窗口里切入、让猫娘打断自己。
+    //
+    // 分支 1（isPlaying / speechActiveTurnId）：覆盖"首个 PCM chunk 入队 → drain 完"。
+    // 分支 2（turnId !== completedId + 时间窗）：覆盖"text 已开始流、首个音频 chunk
+    //   还没解码"那几百毫秒空窗。PR #839 原本只靠 `turnId !== completedId` 自释放，
+    //   但 drain 完时 clearAssistantTurnCompletion 会把 completedId 清回 null 而
+    //   turnId 仍留着，这条件会一直 TRUE、proactive 永不触发。
+    //   加 `elapsed < PROACTIVE_TURN_STARTUP_GRACE_MS` 作为硬上限：那段空窗通常只有
+    //   几百毫秒，5s 已经是数量级的余裕；超出就让分支 1 的自释放信号接管。
+    var PROACTIVE_TURN_STARTUP_GRACE_MS = 5000;
+
     function _isAssistantSpeaking() {
         try {
             if (!S) return false;
             if (S.isPlaying || S.assistantSpeechActiveTurnId) return true;
-            if (S.assistantTurnId && S.assistantTurnId !== S.assistantTurnCompletedId) return true;
+            if (S.assistantTurnId && S.assistantTurnId !== S.assistantTurnCompletedId) {
+                var startedAt = S.assistantTurnStartedAt || 0;
+                if (startedAt && Date.now() - startedAt < PROACTIVE_TURN_STARTUP_GRACE_MS) {
+                    return true;
+                }
+            }
             return false;
         } catch (_) {
             return false;
