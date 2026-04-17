@@ -2496,12 +2496,31 @@ class UniversalTutorialManager {
         // 明确设置点击区域，防止 CEF 继承父元素 pointer-events 导致无法点击
         btn.style.pointerEvents = 'auto';
         btn.style.position = 'fixed';
-        btn.style.zIndex = '100005';
+        btn.style.zIndex = '100007';
         btn.style.touchAction = 'manipulation'; // 消除 CEF 的 300ms 点击延迟
 
+        let skipHandled = false;
+        const handleSkipRequest = (e) => {
+            if (skipHandled) {
+                return;
+            }
+            skipHandled = true;
+            if (e && typeof e.preventDefault === 'function') {
+                e.preventDefault();
+            }
+            if (e && typeof e.stopImmediatePropagation === 'function') {
+                e.stopImmediatePropagation();
+            }
+            if (e && typeof e.stopPropagation === 'function') {
+                e.stopPropagation();
+            }
+            this.requestTutorialDestroy('skip');
+        };
+
+        btn.addEventListener('pointerdown', handleSkipRequest);
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
-            this.requestTutorialDestroy('skip');
+            handleSkipRequest(e);
         });
         document.body.appendChild(btn);
         console.log('[Tutorial] 跳过按钮已显示');

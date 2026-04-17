@@ -1680,10 +1680,7 @@
             }
 
             if (stepId === 'takeover_settings_peek') {
-                if (this.isManagedPanelVisible('settings')) {
-                    return null;
-                }
-                return fallbackTarget;
+                return this.getChatWindowTarget() || this.getChatInputTarget() || null;
             }
 
             if (this.shouldNarrateInChat(stepId)) {
@@ -3062,7 +3059,7 @@
             }
 
             this.overlay.clearActionSpotlight();
-            this.overlay.clearPersistentSpotlight();
+            this.highlightChatWindow();
 
             let characterMenu = await this.waitForVisibleTarget([
                 () => this.getSettingsPeekTargets().characterMenu
@@ -3103,7 +3100,28 @@
 
             let openedModelManagerWindow = null;
             let openedModelManagerWindowName = null;
-            const narrationPromise = this.speakLineAndWait(performance.bubbleText || '');
+            let settingsPeekHighlightsCleared = false;
+            const clearSettingsPeekHighlights = () => {
+                if (settingsPeekHighlightsCleared) {
+                    return;
+                }
+
+                settingsPeekHighlightsCleared = true;
+                this.clearSceneExtraSpotlights();
+                this.clearVirtualSpotlight('settings-character-children-bundle');
+                this.clearVirtualSpotlight('settings-entry-bundle');
+                this.clearPreciseHighlights();
+                this.customSecondarySpotlightTarget = null;
+                this.overlay.clearActionSpotlight();
+                this.highlightChatWindow();
+            };
+            const narrationPromise = this.speakLineAndWait(performance.bubbleText || '').finally(() => {
+                if (runId !== this.sceneRunId || this.destroyed || this.angryExitTriggered) {
+                    return;
+                }
+
+                clearSettingsPeekHighlights();
+            });
             const actionPromise = (async () => {
                 await wait(2000);
                 if (!appearanceItem || runId !== this.sceneRunId || this.destroyed || this.angryExitTriggered) {
@@ -3126,6 +3144,9 @@
                 this.cleanupTutorialReturnButtons();
                 await wait(180);
                 await this.ensureCharacterSettingsSidePanelVisible();
+                if (settingsPeekHighlightsCleared || runId !== this.sceneRunId || this.destroyed || this.angryExitTriggered) {
+                    return;
+                }
                 ({
                     settingsButton: settingsButtonTarget,
                     characterMenu,
@@ -3148,14 +3169,7 @@
             await this.waitForHomeMainUIReady(3600);
             this.cleanupTutorialReturnButtons();
             await this.ensureCharacterSettingsSidePanelVisible();
-            this.refreshSettingsPeekSpotlights(settingsButton);
-
-            this.clearVirtualSpotlight('settings-character-children-bundle');
-            this.clearVirtualSpotlight('settings-entry-bundle');
-            this.clearPreciseHighlights();
-            this.customSecondarySpotlightTarget = null;
-            this.overlay.clearActionSpotlight();
-            this.highlightChatWindow();
+            clearSettingsPeekHighlights();
         }
 
         beginTerminationVisualCleanup() {
