@@ -708,10 +708,18 @@ async def update_core_config(request: Request):
         logger.info("API配置已更新，准备通知客户端并重置所有session...")
         
         # 1. 并行通知所有连接的客户端即将刷新（WebSocket还连着）
-        # 重要：先 snapshot 一份成员列表，让 notify 和 end_session 两阶段操作同一组 mgr。
-        # 否则前端收到 reload_page 后立即重连进来的新 mgr，会被第二阶段误杀（CodeRabbit P1）。
+        # 重要：snapshot (name, mgr, session) 三元组，让 notify 和 end_session 两阶段
+        # 操作同一组 mgr **+** 同一份 session：
+        # - mgr 维度防新 mgr 被加入第二阶段误杀
+        # - session 维度防同一 mgr 在两阶段之间已 rotate 到新 session 被误杀
+        #   （前端 reload 后立即重连 → 触发新 session → 第二阶段不应关掉新 session）
+        # end_session 内部已有 expected_session stale guard（core.py:3013/3026），
+        # 这里把 snapshot 时的 session 传下去即可触发该 guard。
         session_manager = get_session_manager()
-        mgr_snapshot = list(session_manager.items())
+        mgr_snapshot = [
+            (name, mgr, getattr(mgr, "session", None))
+            for name, mgr in session_manager.items()
+        ]
         reload_payload = json.dumps({
             "type": "reload_page",
             "message": "API配置已更新，页面即将刷新"
@@ -729,19 +737,20 @@ async def update_core_config(request: Request):
                 return False
 
         _notify_results = await asyncio.gather(
-            *(_notify(n, m) for n, m in mgr_snapshot),
+            *(_notify(n, m) for n, m, _session in mgr_snapshot),
             return_exceptions=True,
         )
         notification_count = sum(1 for r in _notify_results if r is True)
         logger.info(f"已通知 {notification_count} 个客户端")
 
         # 2. 并行关闭所有活跃的 session（每个 end_session ≈ 1s，串行 N 秒，gather 后 ≈ 1s）
-        # 复用上一阶段的 snapshot，确保不会误杀新重连进来的 mgr。
-        async def _end(lanlan_name, mgr):
-            if not mgr.is_active:
+        # 复用上一阶段的 (mgr, session) snapshot，确保不会误杀重连进来的新 mgr，
+        # 也不会误杀同一 mgr 在中途 rotate 出来的新 session。
+        async def _end(lanlan_name, mgr, expected_session):
+            if not mgr.is_active or expected_session is None:
                 return None
             try:
-                await mgr.end_session(by_server=True)
+                await mgr.end_session(by_server=True, expected_session=expected_session)
                 logger.info(f"{lanlan_name} 的session已结束")
                 return lanlan_name
             except Exception as e:
@@ -749,7 +758,7 @@ async def update_core_config(request: Request):
                 return None
 
         _end_results = await asyncio.gather(
-            *(_end(n, m) for n, m in mgr_snapshot),
+            *(_end(n, m, s) for n, m, s in mgr_snapshot),
             return_exceptions=True,
         )
         sessions_ended = [r for r in _end_results if isinstance(r, str)]
