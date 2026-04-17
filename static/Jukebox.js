@@ -994,6 +994,7 @@ window.Jukebox = {
         await this.api.deleteSong(songId);
         // 从选择集合中移除
         if (this.selectedSongs) this.selectedSongs.delete(songId);
+        if (this.bindingSourceSongs) this.bindingSourceSongs.delete(songId);
         if (this.bindingSelectedSongs) this.bindingSelectedSongs.delete(songId);
         delete this.data.songs[songId];
         delete this.data.bindings[songId];
@@ -1015,6 +1016,7 @@ window.Jukebox = {
         await this.api.deleteAction(actionId);
         // 从选择集合中移除
         if (this.selectedActions) this.selectedActions.delete(actionId);
+        if (this.bindingSourceActions) this.bindingSourceActions.delete(actionId);
         if (this.bindingSelectedActions) this.bindingSelectedActions.delete(actionId);
         delete this.data.actions[actionId];
 
@@ -1088,9 +1090,16 @@ window.Jukebox = {
       if (!this.selectedActions) this.selectedActions = new Set();
     },
 
-    initBindingSelection() {
+    ensureBindingSelectionState() {
       if (!this.bindingSelectedSongs) this.bindingSelectedSongs = new Set();
       if (!this.bindingSelectedActions) this.bindingSelectedActions = new Set();
+      if (!this.bindingSourceSongs) this.bindingSourceSongs = new Set(this.bindingSelectedSongs);
+      if (!this.bindingSourceActions) this.bindingSourceActions = new Set(this.bindingSelectedActions);
+    },
+
+    initBindingSelection() {
+      this.ensureBindingSelectionState();
+      this.syncBindingSelection();
     },
 
     getVisibleSongEntries() {
@@ -1148,38 +1157,44 @@ window.Jukebox = {
       checkbox.indeterminate = !!indeterminate;
     },
 
-    getBindingBundleSelection() {
-      this.initBindingSelection();
+    syncBindingSelection() {
+      this.ensureBindingSelectionState();
 
       const songIds = new Set();
       const actionIds = new Set();
-      const pendingSongs = Array.from(this.bindingSelectedSongs || []);
-      const pendingActions = Array.from(this.bindingSelectedActions || []);
 
-      while (pendingSongs.length > 0 || pendingActions.length > 0) {
-        while (pendingSongs.length > 0) {
-          const songId = pendingSongs.pop();
-          if (songIds.has(songId) || !this.data.songs[songId]) continue;
-          songIds.add(songId);
-          this.getSongBindings(songId).forEach(actionId => {
-            if (!actionIds.has(actionId)) pendingActions.push(actionId);
-          });
-        }
+      this.bindingSourceSongs.forEach(songId => {
+        if (!this.data.songs[songId]) return;
+        songIds.add(songId);
+        this.getSongBindings(songId).forEach(actionId => {
+          if (this.data.actions[actionId]) {
+            actionIds.add(actionId);
+          }
+        });
+      });
 
-        while (pendingActions.length > 0) {
-          const actionId = pendingActions.pop();
-          if (actionIds.has(actionId) || !this.data.actions[actionId]) continue;
-          actionIds.add(actionId);
-          this.getActionBindings(actionId).forEach(songId => {
-            if (!songIds.has(songId)) pendingSongs.push(songId);
-          });
-        }
-      }
+      this.bindingSourceActions.forEach(actionId => {
+        if (!this.data.actions[actionId]) return;
+        actionIds.add(actionId);
+        this.getActionBindings(actionId).forEach(songId => {
+          if (this.data.songs[songId]) {
+            songIds.add(songId);
+          }
+        });
+      });
+
+      this.bindingSelectedSongs = songIds;
+      this.bindingSelectedActions = actionIds;
 
       return {
         songIds: Array.from(songIds),
         actionIds: Array.from(actionIds)
       };
+    },
+
+    getBindingBundleSelection() {
+      this.initBindingSelection();
+      return this.syncBindingSelection();
     },
 
     selectBindingBundle() {
@@ -1247,27 +1262,29 @@ window.Jukebox = {
 
     // 绑定Tab勾选歌曲：联动勾选/取消该歌曲绑定的所有动画
     toggleBindingSongSelect(songId, checked) {
-      this.initBindingSelection();
+      this.ensureBindingSelectionState();
       
       if (checked) {
-        this.bindingSelectedSongs.add(songId);
+        this.bindingSourceSongs.add(songId);
       } else {
-        this.bindingSelectedSongs.delete(songId);
+        this.bindingSourceSongs.delete(songId);
       }
-      
+
+      this.syncBindingSelection();
       this.refreshAllPanels();
     },
 
     // 绑定Tab勾选动画：联动勾选/取消该动画绑定的所有歌曲
     toggleBindingActionSelect(actionId, checked) {
-      this.initBindingSelection();
+      this.ensureBindingSelectionState();
       
       if (checked) {
-        this.bindingSelectedActions.add(actionId);
+        this.bindingSourceActions.add(actionId);
       } else {
-        this.bindingSelectedActions.delete(actionId);
+        this.bindingSourceActions.delete(actionId);
       }
-      
+
+      this.syncBindingSelection();
       this.refreshAllPanels();
     },
 
@@ -1304,31 +1321,33 @@ window.Jukebox = {
 
     // 绑定Tab全选歌曲（使用合集逻辑：只勾选满足条件的歌曲）
     toggleSelectAllBindingSongs(checked) {
-      this.initBindingSelection();
+      this.ensureBindingSelectionState();
       
       Object.keys(this.data.songs).forEach(songId => {
         if (checked) {
-          this.bindingSelectedSongs.add(songId);
+          this.bindingSourceSongs.add(songId);
         } else {
-          this.bindingSelectedSongs.delete(songId);
+          this.bindingSourceSongs.delete(songId);
         }
       });
-      
+
+      this.syncBindingSelection();
       this.refreshAllPanels();
     },
 
     // 绑定Tab全选动画（使用合集逻辑：只勾选满足条件的动画）
     toggleSelectAllBindingActions(checked) {
-      this.initBindingSelection();
+      this.ensureBindingSelectionState();
       
       Object.keys(this.data.actions).forEach(actionId => {
         if (checked) {
-          this.bindingSelectedActions.add(actionId);
+          this.bindingSourceActions.add(actionId);
         } else {
-          this.bindingSelectedActions.delete(actionId);
+          this.bindingSourceActions.delete(actionId);
         }
       });
-      
+
+      this.syncBindingSelection();
       this.refreshAllPanels();
     },
 
@@ -1376,12 +1395,13 @@ window.Jukebox = {
       const bindingSelectBtn = document.querySelector('.sam-btn-binding-select');
       const bindingExportBtn = document.querySelector('.sam-btn-binding-export');
       const hasBindingSelection = bindingSongCount > 0 || bindingActionCount > 0;
+      const hasActiveSelection = activeTab === 'bindings' ? hasBindingSelection : hasSelection;
       
       exportAllBtns.forEach(btn => {
-        btn.style.display = hasSelection ? 'none' : '';
+        btn.style.display = hasActiveSelection ? 'none' : '';
       });
       if (exportSelectedBtn) {
-        exportSelectedBtn.style.display = hasSelection && activeTab !== 'bindings' ? '' : 'none';
+        exportSelectedBtn.style.display = hasActiveSelection ? '' : 'none';
       }
       if (bindingSelectBtn) {
         bindingSelectBtn.style.display = activeTab === 'bindings' && hasBindingSelection ? '' : 'none';
@@ -1428,6 +1448,18 @@ window.Jukebox = {
     },
 
     async exportSelected() {
+      const activeTab = this.element?.querySelector('.sam-tab.active')?.dataset.tab || 'songs';
+      if (activeTab === 'bindings') {
+        const bundle = this.getBindingBundleSelection();
+        if (bundle.songIds.length === 0 && bundle.actionIds.length === 0) {
+          alert(window.t('Jukebox.selectExportFirst', '请先选择要导出的歌曲或动画'));
+          return;
+        }
+
+        await this.exportByIds(bundle.songIds, bundle.actionIds, 'jukebox_binding_selected');
+        return;
+      }
+
       const songIds = Array.from(this.selectedSongs);
       const actionIds = Array.from(this.selectedActions);
 

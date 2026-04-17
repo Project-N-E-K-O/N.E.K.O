@@ -229,7 +229,82 @@ def test_jukebox_manager_select_all_checkbox_toggles_state(mock_page: Page):
 
 
 @pytest.mark.frontend
-def test_jukebox_manager_binding_selections_are_decoupled(mock_page: Page):
+def test_jukebox_manager_binding_selection_links_only_one_hop(mock_page: Page):
+    mock_page.set_viewport_size({"width": 900, "height": 700})
+    mock_page.set_content(HARNESS_HTML)
+    mock_page.evaluate(
+        """
+        () => {
+          window.t = (key, fallback) => typeof fallback === 'string' ? fallback : key;
+          window.fetch = () => Promise.reject(new Error('fetch should not be called in this test'));
+        }
+        """
+    )
+    mock_page.add_script_tag(content=JUKEBOX_SCRIPT)
+    mock_page.evaluate(
+        """
+        () => {
+          const SAM = window.Jukebox.SongActionManager;
+          SAM.data = {
+            songs: {
+              song1: { name: 'Song 1', artist: 'A', visible: true },
+              song2: { name: 'Song 2', artist: 'B', visible: true },
+              song3: { name: 'Song 3', artist: 'C', visible: true }
+            },
+            actions: {
+              action1: { name: 'Action 1', format: 'vmd' },
+              action2: { name: 'Action 2', format: 'vmd' }
+            },
+            bindings: {
+              song1: { action1: { offset: 0 } },
+              song2: { action1: { offset: 0 }, action2: { offset: 0 } }
+            }
+          };
+          SAM.selectedSongs = new Set();
+          SAM.selectedActions = new Set();
+          SAM.bindingSelectedSongs = new Set();
+          SAM.bindingSelectedActions = new Set();
+          SAM.bindingSourceSongs = new Set();
+          SAM.bindingSourceActions = new Set();
+          SAM.updateSelectionInfo = function() {};
+
+          const panel = document.createElement('div');
+          panel.className = 'bindings-panel';
+          document.body.appendChild(panel);
+          SAM.renderBindings(panel);
+        }
+        """
+    )
+
+    mock_page.locator('.sam-binding-item[data-song-id="song1"] input[type="checkbox"]').click()
+    assert mock_page.locator('.sam-binding-item[data-song-id="song1"] input[type="checkbox"]').is_checked()
+    assert mock_page.locator('.sam-binding-item[data-action-id="action1"] input[type="checkbox"]').is_checked()
+    assert not mock_page.locator('.sam-binding-item[data-song-id="song2"] input[type="checkbox"]').is_checked()
+    assert not mock_page.locator('.sam-binding-item[data-action-id="action2"] input[type="checkbox"]').is_checked()
+
+    mock_page.evaluate(
+        """
+        () => {
+          const SAM = window.Jukebox.SongActionManager;
+          SAM.bindingSelectedSongs = new Set();
+          SAM.bindingSelectedActions = new Set();
+          SAM.bindingSourceSongs = new Set();
+          SAM.bindingSourceActions = new Set();
+          SAM.renderBindings(document.querySelector('.bindings-panel'));
+        }
+        """
+    )
+
+    mock_page.locator('.sam-binding-item[data-action-id="action1"] input[type="checkbox"]').click()
+    assert mock_page.locator('.sam-binding-item[data-action-id="action1"] input[type="checkbox"]').is_checked()
+    assert mock_page.locator('.sam-binding-item[data-song-id="song1"] input[type="checkbox"]').is_checked()
+    assert mock_page.locator('.sam-binding-item[data-song-id="song2"] input[type="checkbox"]').is_checked()
+    assert not mock_page.locator('.sam-binding-item[data-action-id="action2"] input[type="checkbox"]').is_checked()
+    assert not mock_page.locator('.sam-binding-item[data-song-id="song3"] input[type="checkbox"]').is_checked()
+
+
+@pytest.mark.frontend
+def test_jukebox_manager_binding_select_all_links_only_one_hop(mock_page: Page):
     mock_page.set_viewport_size({"width": 900, "height": 700})
     mock_page.set_content(HARNESS_HTML)
     mock_page.evaluate(
@@ -255,14 +330,15 @@ def test_jukebox_manager_binding_selections_are_decoupled(mock_page: Page):
               action2: { name: 'Action 2', format: 'vmd' }
             },
             bindings: {
-              song1: { action1: { offset: 0 } },
-              song2: { action2: { offset: 0 } }
+              song1: { action1: { offset: 0 } }
             }
           };
           SAM.selectedSongs = new Set();
           SAM.selectedActions = new Set();
           SAM.bindingSelectedSongs = new Set();
           SAM.bindingSelectedActions = new Set();
+          SAM.bindingSourceSongs = new Set();
+          SAM.bindingSourceActions = new Set();
           SAM.updateSelectionInfo = function() {};
 
           const panel = document.createElement('div');
@@ -273,17 +349,94 @@ def test_jukebox_manager_binding_selections_are_decoupled(mock_page: Page):
         """
     )
 
-    mock_page.locator('.sam-binding-item[data-song-id="song1"] input[type="checkbox"]').click()
+    mock_page.click('#select-all-binding-songs')
     assert mock_page.locator('.sam-binding-item[data-song-id="song1"] input[type="checkbox"]').is_checked()
-    assert not mock_page.locator('.sam-binding-item[data-action-id="action1"] input[type="checkbox"]').is_checked()
-    assert not mock_page.locator('#select-all-binding-actions').is_checked()
+    assert mock_page.locator('.sam-binding-item[data-song-id="song2"] input[type="checkbox"]').is_checked()
+    assert mock_page.locator('.sam-binding-item[data-action-id="action1"] input[type="checkbox"]').is_checked()
+    assert not mock_page.locator('.sam-binding-item[data-action-id="action2"] input[type="checkbox"]').is_checked()
+
+    mock_page.evaluate(
+        """
+        () => {
+          const SAM = window.Jukebox.SongActionManager;
+          SAM.bindingSelectedSongs = new Set();
+          SAM.bindingSelectedActions = new Set();
+          SAM.bindingSourceSongs = new Set();
+          SAM.bindingSourceActions = new Set();
+          SAM.renderBindings(document.querySelector('.bindings-panel'));
+        }
+        """
+    )
 
     mock_page.click('#select-all-binding-actions')
-    assert mock_page.locator('#select-all-binding-actions').is_checked()
     assert mock_page.locator('.sam-binding-item[data-action-id="action1"] input[type="checkbox"]').is_checked()
     assert mock_page.locator('.sam-binding-item[data-action-id="action2"] input[type="checkbox"]').is_checked()
-    assert mock_page.locator('.sam-binding-item[data-song-id="song2"] input[type="checkbox"]').count() == 1
+    assert mock_page.locator('.sam-binding-item[data-song-id="song1"] input[type="checkbox"]').is_checked()
     assert not mock_page.locator('.sam-binding-item[data-song-id="song2"] input[type="checkbox"]').is_checked()
+
+
+@pytest.mark.frontend
+def test_jukebox_manager_binding_export_selected_uses_one_hop(mock_page: Page):
+    mock_page.set_viewport_size({"width": 900, "height": 700})
+    mock_page.set_content(HARNESS_HTML)
+    mock_page.evaluate(
+        """
+        () => {
+          window.t = (key, fallback) => typeof fallback === 'string' ? fallback : key;
+          window.fetch = () => Promise.reject(new Error('fetch should not be called in this test'));
+        }
+        """
+    )
+    mock_page.add_script_tag(content=JUKEBOX_SCRIPT)
+    export_state = mock_page.evaluate(
+        """
+        async () => {
+          const SAM = window.Jukebox.SongActionManager;
+          SAM.data = {
+            songs: {
+              song1: { name: 'Song 1', artist: 'A', visible: true },
+              song2: { name: 'Song 2', artist: 'B', visible: true }
+            },
+            actions: {
+              action1: { name: 'Action 1', format: 'vmd' },
+              action2: { name: 'Action 2', format: 'vmd' }
+            },
+            bindings: {
+              song1: { action1: { offset: 0 } },
+              song2: { action1: { offset: 0 }, action2: { offset: 0 } }
+            }
+          };
+          SAM.selectedSongs = new Set();
+          SAM.selectedActions = new Set();
+          SAM.bindingSelectedSongs = new Set();
+          SAM.bindingSelectedActions = new Set();
+          SAM.bindingSourceSongs = new Set(['song1']);
+          SAM.bindingSourceActions = new Set();
+
+          const element = document.createElement('div');
+          element.innerHTML = '<button class="sam-tab active" data-tab="bindings"></button>';
+          SAM.element = element;
+
+          let capture = null;
+          SAM.exportByIds = async (songIds, actionIds, filenamePrefix) => {
+            capture = {
+              songIds: [...songIds].sort(),
+              actionIds: [...actionIds].sort(),
+              filenamePrefix
+            };
+          };
+
+          await SAM.exportSelected();
+          return capture;
+        }
+        """
+    )
+
+    assert export_state == {
+        "songIds": ["song1"],
+        "actionIds": ["action1"],
+        "filenamePrefix": "jukebox_binding_selected",
+    }
 
 
 @pytest.mark.frontend
