@@ -286,3 +286,85 @@ async def test_list_autostart_plugin_ids_uses_dependency_order(
             module.state.plugins.update(plugins_backup)
         with module.state._snapshot_cache_lock:
             module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.asyncio
+async def test_refresh_registry_registers_duplicate_declared_plugin_ids_with_runtime_suffix(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "plugins"
+    first_dir = root / "demo"
+    second_dir = root / "demo_1"
+    first_dir.mkdir(parents=True, exist_ok=True)
+    second_dir.mkdir(parents=True, exist_ok=True)
+
+    (tmp_path / "demo_entry.py").write_text(
+        "\n".join(
+            [
+                "class DemoPlugin:",
+                "    pass",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    for plugin_dir in (first_dir, second_dir):
+        (plugin_dir / "plugin.toml").write_text(
+            "\n".join(
+                [
+                    "[plugin]",
+                    "id = 'demo'",
+                    "name = 'demo'",
+                    "type = 'plugin'",
+                    "entry = 'demo_entry:DemoPlugin'",
+                    "version = '0.1.0'",
+                    "",
+                    "[plugin_runtime]",
+                    "enabled = true",
+                    "auto_start = false",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+
+        monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (root,))
+
+        service = module.PluginRegistryService()
+        result = await service.refresh_registry()
+        second_result = await service.refresh_registry()
+        refreshed_duplicate = await service.refresh_plugin("demo_1")
+
+        assert result["success"] is True
+        assert result["failed"] == []
+        assert result["added"] == ["demo", "demo_1"]
+        assert second_result["success"] is True
+        assert second_result["failed"] == []
+        assert second_result["added"] == []
+        assert second_result["unchanged"] == ["demo", "demo_1"]
+        assert refreshed_duplicate["success"] is True
+        assert refreshed_duplicate["plugin_id"] == "demo_1"
+        assert refreshed_duplicate["status"] == "unchanged"
+
+        with module.state.acquire_plugins_read_lock():
+            first_meta = dict(module.state.plugins["demo"])
+            second_meta = dict(module.state.plugins["demo_1"])
+
+        assert Path(first_meta["config_path"]).parent.name == "demo"
+        assert Path(second_meta["config_path"]).parent.name == "demo_1"
+        assert first_meta["id"] == "demo"
+        assert second_meta["id"] == "demo_1"
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup

@@ -596,13 +596,16 @@ export function usePackageManager() {
   async function refreshPluginSources() {
     pluginsLoading.value = true
     try {
-      await pluginStore.fetchPlugins()
+      const syncResult = await pluginStore.syncRegistryAndFetch()
       const response = await getPluginCliPlugins()
       localPluginIds.value = response.plugins
       if (selectedPluginIds.value.length === 0) {
         selectedPluginIds.value = response.plugins.slice(0, 1)
       } else {
         selectedPluginIds.value = selectedPluginIds.value.filter((pluginId) => response.plugins.includes(pluginId))
+      }
+      if (syncResult.warningMessage) {
+        ElMessage.warning(syncResult.warningMessage)
       }
     } catch (error) {
       console.error('Failed to refresh plugin sources:', error)

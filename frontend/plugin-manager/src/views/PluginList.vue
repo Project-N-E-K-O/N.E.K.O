@@ -281,8 +281,10 @@ const showMetrics = ref(false)
 let metricsRefreshTimer: number | null = null
 
 async function handleRefresh() {
+  let warningMessage = ''
   try {
-    await pluginStore.fetchPlugins()
+    const syncResult = await pluginStore.syncRegistryAndFetch()
+    warningMessage = syncResult.warningMessage || ''
     await pluginStore.fetchPluginStatus()
   } catch (error) {
     console.warn('Failed to refresh plugin data:', error)
@@ -293,6 +295,9 @@ async function handleRefresh() {
     } catch (error) {
       console.warn('Failed to refresh metrics:', error)
     }
+  }
+  if (warningMessage) {
+    ElMessage.warning(warningMessage)
   }
 }
 
@@ -599,4 +604,3 @@ onUnmounted(() => {
 }
 
 </style>
-

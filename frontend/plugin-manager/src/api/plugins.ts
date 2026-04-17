@@ -17,6 +17,22 @@ export function getPlugins(): Promise<{ plugins: PluginMeta[]; message: string }
 }
 
 /**
+ * 刷新插件注册表
+ */
+export function refreshPluginsRegistry(): Promise<{
+  success: boolean
+  added: string[]
+  updated: string[]
+  removed: string[]
+  removed_running: string[]
+  unchanged: string[]
+  failed: Array<{ plugin_id: string; config_path: string; error: string }>
+  scanned_count: number
+}> {
+  return post('/plugins/refresh')
+}
+
+/**
  * 获取插件状态
  */
 export function getPluginStatus(pluginId?: string): Promise<PluginStatusData | { plugins: Record<string, PluginStatusData> }> {
@@ -106,4 +122,3 @@ export function getServerInfo(): Promise<{
 }> {
   return get('/server/info')
 }
-

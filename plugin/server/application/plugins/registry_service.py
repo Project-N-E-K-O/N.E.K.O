@@ -17,6 +17,7 @@ from plugin.core.registry import (
     _find_missing_python_requirements,
     _parse_single_plugin_config,
     _prepare_plugin_import_roots,
+    _resolve_plugin_id_conflict,
     register_plugin,
 )
 from plugin.core.state import state
@@ -161,6 +162,25 @@ def _resolve_meta_config_path(meta: dict[str, object] | None) -> Path | None:
         return Path(config_path_obj)
 
 
+def _resolve_config_path(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except Exception:
+        return path
+
+
+def _find_existing_runtime_plugin_id_by_config_path(
+    config_path: Path,
+    existing_snapshot: dict[str, dict[str, object]],
+) -> str | None:
+    resolved_config_path = _resolve_config_path(config_path)
+    for plugin_id, meta in existing_snapshot.items():
+        meta_config_path = _resolve_meta_config_path(meta)
+        if meta_config_path is not None and meta_config_path == resolved_config_path:
+            return plugin_id
+    return None
+
+
 def _read_extension_prefix_sync(config_path: Path) -> str:
     try:
         with config_path.open("rb") as file_obj:
@@ -273,7 +293,6 @@ def _build_ordered_plugin_ids_sync(candidate_plugin_ids: set[str] | None = None)
 
 def _discover_registry_snapshot_sync(roots: tuple[Path, ...]) -> PluginDiscoverySnapshot:
     processed_paths: set[Path] = set()
-    seen_plugin_ids: set[str] = set()
     records: list[PluginDiscoveryRecord] = []
     failures: list[PluginDiscoveryFailure] = []
     config_paths: set[Path] = set()
@@ -326,17 +345,6 @@ def _discover_registry_snapshot_sync(roots: tuple[Path, ...]) -> PluginDiscovery
                 )
                 continue
 
-            if ctx.pid in seen_plugin_ids:
-                failures.append(
-                    PluginDiscoveryFailure(
-                        plugin_id=ctx.pid,
-                        config_path=config_path,
-                        error=f"duplicate plugin id '{ctx.pid}' discovered during registry refresh",
-                    )
-                )
-                continue
-
-            seen_plugin_ids.add(ctx.pid)
             records.append(_build_discovery_record_from_context(ctx))
 
     return PluginDiscoverySnapshot(
@@ -478,11 +486,42 @@ def _build_discovery_record_from_context(ctx: PluginContext) -> PluginDiscoveryR
     )
 
 
-def _apply_discovery_record_sync(record: PluginDiscoveryRecord) -> tuple[str, dict[str, object]]:
+def _apply_discovery_record_sync(
+    record: PluginDiscoveryRecord,
+    *,
+    existing_snapshot: dict[str, dict[str, object]] | None = None,
+    preferred_runtime_plugin_id: str | None = None,
+) -> tuple[str, dict[str, object]]:
+    target_plugin_id = preferred_runtime_plugin_id
+    if target_plugin_id is None and existing_snapshot is not None:
+        target_plugin_id = _find_existing_runtime_plugin_id_by_config_path(
+            record.config_path,
+            existing_snapshot,
+        )
+    if target_plugin_id is None:
+        target_plugin_id = record.plugin_id
+
+    runtime_plugin_id = _resolve_plugin_id_conflict(
+        target_plugin_id,
+        logger,
+        config_path=record.config_path,
+        entry_point=record.entry_point,
+        plugin_data=record.meta_payload,
+        purpose="register",
+        enable_rename=True,
+    )
+    if runtime_plugin_id is None:
+        raise ServerDomainError(
+            code="PLUGIN_REGISTRY_CONFLICT",
+            message=f"Plugin '{record.plugin_id}' could not be registered due to an ID conflict",
+            status_code=409,
+            details={"plugin_id": record.plugin_id},
+        )
+
     plugin_meta = _build_plugin_meta(
-        record.plugin_id,
+        runtime_plugin_id,
         {
-            "name": record.meta_payload.get("name", record.plugin_id),
+            "name": record.meta_payload.get("name", runtime_plugin_id),
             "type": record.meta_payload.get("type", record.plugin_type),
             "description": record.meta_payload.get("description", ""),
             "short_description": record.meta_payload.get("short_description", ""),
@@ -631,8 +670,17 @@ class PluginRegistryService:
 
         for record in snapshot.records:
             try:
-                previous_managed = _select_managed_fields(existing_snapshot.get(record.plugin_id, {}))
-                resolved_id, payload = _apply_discovery_record_sync(record)
+                previous_runtime_plugin_id = _find_existing_runtime_plugin_id_by_config_path(
+                    record.config_path,
+                    existing_snapshot,
+                )
+                previous_plugin_id = previous_runtime_plugin_id or record.plugin_id
+                previous_managed = _select_managed_fields(existing_snapshot.get(previous_plugin_id, {}))
+                resolved_id, payload = _apply_discovery_record_sync(
+                    record,
+                    existing_snapshot=existing_snapshot,
+                    preferred_runtime_plugin_id=previous_runtime_plugin_id,
+                )
                 current_managed = _select_managed_fields(payload)
                 if resolved_id not in existing_snapshot:
                     added.append(resolved_id)
@@ -710,11 +758,20 @@ class PluginRegistryService:
             )
 
         record = _build_discovery_record_from_context(ctx)
-        previous_managed = _select_managed_fields(existing_snapshot.get(normalized_plugin_id, {}))
-        resolved_id, payload = _apply_discovery_record_sync(record)
+        previous_runtime_plugin_id = _find_existing_runtime_plugin_id_by_config_path(
+            config_path,
+            existing_snapshot,
+        )
+        previous_plugin_id = previous_runtime_plugin_id or normalized_plugin_id
+        previous_managed = _select_managed_fields(existing_snapshot.get(previous_plugin_id, {}))
+        resolved_id, payload = _apply_discovery_record_sync(
+            record,
+            existing_snapshot=existing_snapshot,
+            preferred_runtime_plugin_id=previous_runtime_plugin_id,
+        )
         current_managed = _select_managed_fields(payload)
         status = "added"
-        if normalized_plugin_id in existing_snapshot:
+        if previous_plugin_id in existing_snapshot:
             status = "unchanged" if previous_managed == current_managed else "updated"
 
         return {
