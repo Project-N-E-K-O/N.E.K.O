@@ -48,7 +48,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
     _config_manager = get_config_manager()
     session_manager = get_session_manager()
     await websocket.accept()
-    
+
     # 检查角色是否存在，如果不存在则通知前端并关闭连接
     if lanlan_name not in session_manager:
         logger.warning(f"❌ 角色 {lanlan_name} 不存在，当前可用角色: {list(session_manager.keys())}")

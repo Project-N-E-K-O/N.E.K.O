@@ -1258,18 +1258,18 @@ async def set_current_catgirl(request: Request):
     # 使用session_manager中的websocket，但需要确保websocket已设置
     notification_count = 0
     logger.info(f"开始通知WebSocket客户端：猫娘从 {old_catgirl} 切换到 {catgirl_name}")
-    
+
     message = json.dumps({
         "type": "catgirl_switched",
         "new_catgirl": catgirl_name,
         "old_catgirl": old_catgirl
     })
-    
+
     # 遍历所有session_manager，尝试发送消息
     for lanlan_name, mgr in list(session_manager.items()):
         ws = mgr.websocket
         logger.info(f"检查 {lanlan_name} 的WebSocket: websocket存在={ws is not None}")
-        
+
         if ws:
             try:
                 await ws.send_text(message)
