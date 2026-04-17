@@ -62,6 +62,14 @@ async def stop_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[s
         raise_http_from_domain(error, logger=logger)
 
 
+@router.delete("/plugin/{plugin_id}")
+async def delete_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
+    try:
+        return await lifecycle_service.delete_plugin(plugin_id)
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
+
+
 @router.post("/plugins/refresh")
 async def refresh_plugins_endpoint(_: str = require_admin) -> dict[str, object]:
     try:

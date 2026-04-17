@@ -160,9 +160,26 @@ export default {
     typePlugin: 'Plugin',
     typeAdapter: 'Adapter',
     typeExtension: 'Extension',
+    contextSections: {
+      navigation: 'Browse',
+      runtime: 'Runtime',
+      plugin: 'Plugin Extras'
+    },
+    pack: 'Package Plugin',
+    delete: 'Delete Plugin',
     disableExtension: 'Disable Extension',
     enableExtension: 'Enable Extension',
+    dangerDialog: {
+      title: 'Confirm Destructive Action',
+      warningTitle: 'This action cannot be undone',
+      deleteMessage: 'Deleting "{pluginName}" will remove its plugin directory and refresh the list immediately.',
+      hint: 'To avoid accidental clicks, press and hold the button below to continue.',
+      holdIdle: 'Press and hold to delete',
+      holdActive: 'Keep holding to confirm…',
+      loading: 'Deleting plugin...'
+    },
     ui: {
+      open: 'Open UI',
       loading: 'Loading plugin UI...',
       loadError: 'Failed to load plugin UI',
       noUI: 'This plugin has no custom UI'
@@ -267,9 +284,13 @@ export default {
     pluginStarted: 'Plugin started successfully',
     pluginStopped: 'Plugin stopped',
     pluginReloaded: 'Plugin reloaded successfully',
+    pluginPacked: 'Plugin packaged: {packageName}',
+    pluginDeleted: 'Plugin deleted',
     startFailed: 'Failed to start',
     stopFailed: 'Failed to stop',
     reloadFailed: 'Failed to reload',
+    packFailed: 'Failed to package plugin',
+    deleteFailed: 'Failed to delete plugin',
     pluginDisabled: 'Plugin is disabled. Please enable it first.',
     pluginLoadFailed: 'Plugin load failed and cannot be started.',
     confirmDisableExt: 'Disable this extension? Its functionality will be unloaded from the host plugin.',

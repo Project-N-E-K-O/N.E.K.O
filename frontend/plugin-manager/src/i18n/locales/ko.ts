@@ -160,9 +160,26 @@ export default {
     typePlugin: '플러그인',
     typeAdapter: '어댑터',
     typeExtension: '확장 기능',
+    contextSections: {
+      navigation: '탐색',
+      runtime: '실행',
+      plugin: '확장 기능'
+    },
+    pack: '플러그인 패키징',
+    delete: '플러그인 삭제',
     disableExtension: '확장 기능 비활성화',
     enableExtension: '확장 기능 활성화',
+    dangerDialog: {
+      title: '위험 작업 확인',
+      warningTitle: '되돌릴 수 없는 작업',
+      deleteMessage: '"{pluginName}"을 삭제하면 플러그인 디렉터리가 제거되고 목록도 즉시 새로고침됩니다.',
+      hint: '오작동을 막기 위해 아래 버튼을 길게 눌러 확인해 주세요.',
+      holdIdle: '길게 눌러 삭제',
+      holdActive: '계속 누르면 확인됩니다…',
+      loading: '플러그인을 삭제하는 중...'
+    },
     ui: {
+      open: 'UI 열기',
       loading: '플러그인 UI 로딩 중...',
       loadError: '플러그인 UI를 불러오지 못했습니다',
       noUI: '이 플러그인에는 사용자 정의 UI가 없습니다'
@@ -267,9 +284,13 @@ export default {
     pluginStarted: '플러그인이 시작되었습니다',
     pluginStopped: '플러그인이 정지되었습니다',
     pluginReloaded: '플러그인을 리로드했습니다',
+    pluginPacked: '플러그인이 패키징되었습니다: {packageName}',
+    pluginDeleted: '플러그인이 삭제되었습니다',
     startFailed: '시작에 실패했습니다',
     stopFailed: '정지에 실패했습니다',
     reloadFailed: '리로드에 실패했습니다',
+    packFailed: '플러그인 패키징에 실패했습니다',
+    deleteFailed: '플러그인 삭제에 실패했습니다',
     pluginDisabled: '플러그인이 비활성화되어 있습니다. 먼저 활성화하세요.',
     pluginLoadFailed: '플러그인 로드에 실패하여 시작할 수 없습니다.',
     confirmDisableExt: '이 확장 기능을 비활성화하시겠습니까? 호스트 플러그인의 확장 기능이 언로드됩니다.',

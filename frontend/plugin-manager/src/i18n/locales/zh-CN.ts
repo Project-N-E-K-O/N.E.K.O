@@ -160,9 +160,26 @@ export default {
     typePlugin: '插件',
     typeAdapter: '适配器',
     typeExtension: '扩展',
+    contextSections: {
+      navigation: '浏览',
+      runtime: '运行',
+      plugin: '扩展功能'
+    },
+    pack: '打包插件',
+    delete: '删除插件',
     disableExtension: '禁用扩展',
     enableExtension: '启用扩展',
+    dangerDialog: {
+      title: '危险操作确认',
+      warningTitle: '不可逆操作',
+      deleteMessage: '删除插件“{pluginName}”后，其目录会被移除，当前列表也会立即刷新。',
+      hint: '为避免误触，请按住下方按钮完成确认。',
+      holdIdle: '按住以确认删除',
+      holdActive: '继续按住，正在确认…',
+      loading: '正在删除插件…'
+    },
     ui: {
+      open: '打开界面',
       loading: '加载插件界面中...',
       loadError: '加载插件界面失败',
       noUI: '该插件没有自定义界面'
@@ -267,9 +284,13 @@ export default {
     pluginStarted: '插件启动成功',
     pluginStopped: '插件已停止',
     pluginReloaded: '插件重载成功',
+    pluginPacked: '插件已打包：{packageName}',
+    pluginDeleted: '插件已删除',
     startFailed: '启动失败',
     stopFailed: '停止失败',
     reloadFailed: '重载失败',
+    packFailed: '打包插件失败',
+    deleteFailed: '删除插件失败',
     pluginDisabled: '插件已禁用，请先启用',
     pluginLoadFailed: '插件加载失败，当前不可启动',
     confirmDisableExt: '确认禁用此扩展？宿主插件中的扩展功能将被卸载。',

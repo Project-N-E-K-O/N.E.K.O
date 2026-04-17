@@ -1,5 +1,10 @@
 <template>
-  <el-card class="plugin-card" :class="{ 'plugin-card--selected': isSelected }" @click="$emit('click')">
+  <el-card
+    class="plugin-card"
+    :class="{ 'plugin-card--selected': isSelected }"
+    @click="$emit('click')"
+    @contextmenu.prevent="$emit('contextmenu', $event)"
+  >
     <template #header>
       <div class="plugin-card-header">
         <div class="plugin-info">
@@ -66,6 +71,7 @@ const { t } = useI18n()
 
 defineEmits<{
   click: []
+  contextmenu: [event: MouseEvent]
 }>()
 
 const entryCount = computed(() => {
@@ -193,4 +199,3 @@ const entryCount = computed(() => {
   transform: translateY(0);
 }
 </style>
-

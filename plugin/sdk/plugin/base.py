@@ -32,6 +32,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         self._memory_client = None
         self._system_info_client = None
         self._static_ui_config: dict[str, Any] | None = None
+        self._list_actions: list[dict[str, Any]] = []
         self._dynamic_entries: dict[str, dict[str, Any]] = {}
 
     @property
@@ -144,6 +145,13 @@ class NekoPluginBase(_SharedNekoPluginBase):
             "config": dict(config),
         })
 
+    def _notify_list_actions_updated(self, actions: list[dict[str, Any]]) -> None:
+        self._notify_host_comm({
+            "type": "LIST_ACTIONS_UPDATE",
+            "plugin_id": self.plugin_id,
+            "actions": [dict(action) for action in actions],
+        })
+
     def _notify_dynamic_entry_registered(self, entry_id: str, meta: EventMeta, *, enabled: bool = True) -> None:
         meta_dict: dict[str, object] = {
             "id": getattr(meta, "id", entry_id),
@@ -191,6 +199,37 @@ class NekoPluginBase(_SharedNekoPluginBase):
 
     def get_static_ui_config(self) -> dict[str, Any] | None:
         return self._static_ui_config
+
+    def set_list_actions(self, actions: list[Mapping[str, Any]]) -> bool:
+        normalized: list[dict[str, Any]] = []
+        for index, action in enumerate(actions):
+            if not isinstance(action, Mapping):
+                raise TypeError(f"list action at index {index} must be a mapping")
+            action_id = action.get("id")
+            if not isinstance(action_id, str) or not action_id.strip():
+                raise ValueError(f"list action at index {index} must define a non-empty 'id'")
+            normalized.append({str(key): value for key, value in action.items() if isinstance(key, str)})
+        self._list_actions = normalized
+        self._notify_list_actions_updated(self._list_actions)
+        return True
+
+    def register_list_action(self, action: Mapping[str, Any]) -> bool:
+        if not isinstance(action, Mapping):
+            raise TypeError("action must be a mapping")
+        action_id = action.get("id")
+        if not isinstance(action_id, str) or not action_id.strip():
+            raise ValueError("action must define a non-empty 'id'")
+        normalized = {str(key): value for key, value in action.items() if isinstance(key, str)}
+        next_actions = [item for item in self._list_actions if item.get("id") != action_id]
+        next_actions.append(normalized)
+        return self.set_list_actions(next_actions)
+
+    def clear_list_actions(self) -> None:
+        self._list_actions = []
+        self._notify_list_actions_updated([])
+
+    def get_list_actions(self) -> list[dict[str, Any]]:
+        return [dict(action) for action in self._list_actions]
 
     def register_dynamic_entry(
         self,

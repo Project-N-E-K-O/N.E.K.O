@@ -160,9 +160,26 @@ export default {
     typePlugin: '外掛',
     typeAdapter: '適配器',
     typeExtension: '擴充功能',
+    contextSections: {
+      navigation: '瀏覽',
+      runtime: '執行',
+      plugin: '擴充功能'
+    },
+    pack: '打包外掛',
+    delete: '刪除外掛',
     disableExtension: '停用擴充功能',
     enableExtension: '啟用擴充功能',
+    dangerDialog: {
+      title: '危險操作確認',
+      warningTitle: '不可逆操作',
+      deleteMessage: '刪除外掛「{pluginName}」後，外掛目錄也會被移除，列表會立即更新。',
+      hint: '為避免誤觸，請長按下方按鈕完成確認。',
+      holdIdle: '長按以確認刪除',
+      holdActive: '繼續長按以完成確認…',
+      loading: '正在刪除外掛…'
+    },
     ui: {
+      open: '開啟介面',
       loading: '載入外掛介面中...',
       loadError: '載入外掛介面失敗',
       noUI: '該外掛沒有自訂介面'
@@ -267,9 +284,13 @@ export default {
     pluginStarted: '外掛啟動成功',
     pluginStopped: '外掛已停止',
     pluginReloaded: '外掛重新載入成功',
+    pluginPacked: '外掛已打包：{packageName}',
+    pluginDeleted: '外掛已刪除',
     startFailed: '啟動失敗',
     stopFailed: '停止失敗',
     reloadFailed: '重新載入失敗',
+    packFailed: '打包外掛失敗',
+    deleteFailed: '刪除外掛失敗',
     pluginDisabled: '外掛已停用，請先啟用',
     pluginLoadFailed: '外掛載入失敗，目前不可啟動',
     confirmDisableExt: '確認停用此擴充功能？宿主外掛中的擴充功能將被卸載。',

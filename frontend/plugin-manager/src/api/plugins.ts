@@ -1,7 +1,7 @@
 /**
  * 插件相关 API
  */
-import { get, post } from './index'
+import { del, get, post } from './index'
 import type {
   PluginMeta,
   PluginStatusData,
@@ -83,6 +83,21 @@ export function reloadAllPlugins(): Promise<{
   message: string
 }> {
   return post('/plugins/reload')
+}
+
+/**
+ * 删除插件目录并刷新注册表
+ */
+export function deletePlugin(pluginId: string): Promise<{
+  success: boolean
+  plugin_id: string
+  plugin_dir: string
+  deleted_from_disk: boolean
+  host_plugin_id?: string
+  message: string
+}> {
+  const safeId = encodeURIComponent(pluginId)
+  return del(`/plugin/${safeId}`)
 }
 
 /**

@@ -33,6 +33,7 @@ def test_build_plugin_list_reports_source_missing_status(monkeypatch: pytest.Mon
             "runtime_source_missing": True,
             "status": "source_missing",
             "entries": [],
+            "list_actions": [],
         }
     ]
 

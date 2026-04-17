@@ -780,3 +780,298 @@ def test_parse_single_plugin_config_uses_resolver_effective_config_and_logs_warn
         in message
         for message in capture_logger.messages
     )
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_delete_plugin_removes_directory_and_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    plugin_dir = tmp_path / "demo_plugin"
+    config_path = plugin_dir / "plugin.toml"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("[plugin]\nid='demo_plugin'\nentry='tests.fake:Plugin'\n", encoding="utf-8")
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    handlers_backup = dict(module.state.event_handlers)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+    refresh_calls: list[str] = []
+    events: list[dict[str, object]] = []
+
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins["demo_plugin"] = {
+                "id": "demo_plugin",
+                "name": "Demo Plugin",
+                "type": "plugin",
+                "config_path": str(config_path),
+                "entry_point": "tests.fake:Plugin",
+            }
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+            module.state.event_handlers["demo_plugin.plugin_entry:run"] = object()
+
+        async def _refresh_registry() -> dict[str, object]:
+            refresh_calls.append("refresh")
+            return {"success": True}
+
+        monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (tmp_path,))
+        monkeypatch.setattr(module.plugin_registry_service, "refresh_registry", _refresh_registry)
+        monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: events.append(dict(event)))
+
+        service = module.PluginLifecycleService()
+        response = await service.delete_plugin("demo_plugin")
+
+        assert response["success"] is True
+        assert response["plugin_id"] == "demo_plugin"
+        assert response["deleted_from_disk"] is True
+        assert refresh_calls == ["refresh"]
+        assert plugin_dir.exists() is False
+        with module.state.acquire_plugins_read_lock():
+            assert "demo_plugin" not in module.state.plugins
+        with module.state.acquire_event_handlers_read_lock():
+            assert "demo_plugin.plugin_entry:run" not in module.state.event_handlers
+        assert any(event.get("type") == "plugin_deleted" for event in events)
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+            module.state.event_handlers.update(handlers_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_delete_plugin_stops_running_host_before_removing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    plugin_dir = tmp_path / "running_plugin"
+    config_path = plugin_dir / "plugin.toml"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("[plugin]\nid='running_plugin'\nentry='tests.fake:Plugin'\n", encoding="utf-8")
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    handlers_backup = dict(module.state.event_handlers)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+    stop_calls: list[str] = []
+
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins["running_plugin"] = {
+                "id": "running_plugin",
+                "name": "Running Plugin",
+                "type": "plugin",
+                "config_path": str(config_path),
+                "entry_point": "tests.fake:Plugin",
+            }
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts["running_plugin"] = _FakeProcessHost(
+                plugin_id="running_plugin",
+                entry_point="tests.fake:Plugin",
+                config_path=config_path,
+            )
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+
+        async def _refresh_registry() -> dict[str, object]:
+            return {"success": True}
+
+        original_stop_plugin = module.PluginLifecycleService.stop_plugin
+
+        async def _tracked_stop(self, plugin_id: str) -> dict[str, object]:
+            stop_calls.append(plugin_id)
+            return await original_stop_plugin(self, plugin_id)
+
+        monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (tmp_path,))
+        monkeypatch.setattr(module.PluginLifecycleService, "stop_plugin", _tracked_stop)
+        monkeypatch.setattr(module.plugin_registry_service, "refresh_registry", _refresh_registry)
+        monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
+
+        service = module.PluginLifecycleService()
+        response = await service.delete_plugin("running_plugin")
+
+        assert response["success"] is True
+        assert stop_calls == ["running_plugin"]
+        assert plugin_dir.exists() is False
+        with module.state.acquire_plugin_hosts_read_lock():
+            assert "running_plugin" not in module.state.plugin_hosts
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+            module.state.event_handlers.update(handlers_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_delete_extension_disables_runtime_when_host_is_running(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    ext_dir = tmp_path / "demo_ext"
+    config_path = ext_dir / "plugin.toml"
+    ext_dir.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        "\n".join(
+            [
+                "[plugin]",
+                "id = 'demo_ext'",
+                "type = 'extension'",
+                "entry = 'tests.fake_ext:Plugin'",
+                "",
+                "[plugin.host]",
+                "plugin_id = 'host_plugin'",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    handlers_backup = dict(module.state.event_handlers)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+    disabled_calls: list[str] = []
+
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins["demo_ext"] = {
+                "id": "demo_ext",
+                "name": "Demo Extension",
+                "type": "extension",
+                "config_path": str(config_path),
+                "entry_point": "tests.fake_ext:Plugin",
+                "host_plugin_id": "host_plugin",
+                "runtime_enabled": True,
+            }
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts["host_plugin"] = _FakeProcessHost(
+                plugin_id="host_plugin",
+                entry_point="tests.fake:Host",
+                config_path=tmp_path / "host_plugin" / "plugin.toml",
+            )
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+
+        async def _refresh_registry() -> dict[str, object]:
+            return {"success": True}
+
+        original_disable_extension = module.PluginLifecycleService.disable_extension
+
+        async def _tracked_disable(self, ext_id: str) -> dict[str, object]:
+            disabled_calls.append(ext_id)
+            return await original_disable_extension(self, ext_id)
+
+        monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (tmp_path,))
+        monkeypatch.setattr(module.PluginLifecycleService, "disable_extension", _tracked_disable)
+        monkeypatch.setattr(module.plugin_registry_service, "refresh_registry", _refresh_registry)
+        monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
+
+        service = module.PluginLifecycleService()
+        response = await service.delete_plugin("demo_ext")
+
+        assert response["success"] is True
+        assert response["host_plugin_id"] == "host_plugin"
+        assert disabled_calls == ["demo_ext"]
+        assert ext_dir.exists() is False
+        with module.state.acquire_plugins_read_lock():
+            assert "demo_ext" not in module.state.plugins
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+            module.state.event_handlers.update(handlers_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_delete_plugin_rejects_host_with_bound_extensions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    host_dir = tmp_path / "host_plugin"
+    host_config_path = host_dir / "plugin.toml"
+    host_dir.mkdir(parents=True, exist_ok=True)
+    host_config_path.write_text("[plugin]\nid='host_plugin'\nentry='tests.fake:Host'\n", encoding="utf-8")
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    handlers_backup = dict(module.state.event_handlers)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins["host_plugin"] = {
+                "id": "host_plugin",
+                "name": "Host Plugin",
+                "type": "plugin",
+                "config_path": str(host_config_path),
+                "entry_point": "tests.fake:Host",
+            }
+            module.state.plugins["demo_ext"] = {
+                "id": "demo_ext",
+                "name": "Demo Extension",
+                "type": "extension",
+                "config_path": str(tmp_path / "demo_ext" / "plugin.toml"),
+                "entry_point": "tests.fake_ext:Plugin",
+                "host_plugin_id": "host_plugin",
+                "runtime_enabled": True,
+            }
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+
+        monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (tmp_path,))
+
+        service = module.PluginLifecycleService()
+        with pytest.raises(ServerDomainError) as exc_info:
+            await service.delete_plugin("host_plugin")
+
+        assert exc_info.value.code == "PLUGIN_DELETE_BLOCKED_BY_EXTENSIONS"
+        assert exc_info.value.status_code == 409
+        assert "demo_ext" in exc_info.value.message
+        assert host_dir.exists() is True
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+            module.state.event_handlers.update(handlers_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup

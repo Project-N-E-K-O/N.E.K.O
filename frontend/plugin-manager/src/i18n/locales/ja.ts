@@ -160,9 +160,26 @@ export default {
     typePlugin: 'プラグイン',
     typeAdapter: 'アダプター',
     typeExtension: '拡張機能',
+    contextSections: {
+      navigation: '閲覧',
+      runtime: '実行',
+      plugin: '拡張機能'
+    },
+    pack: 'プラグインをパッケージ化',
+    delete: 'プラグインを削除',
     disableExtension: '拡張機能を無効化',
     enableExtension: '拡張機能を有効化',
+    dangerDialog: {
+      title: '危険な操作の確認',
+      warningTitle: '元に戻せない操作',
+      deleteMessage: '「{pluginName}」を削除すると、プラグインディレクトリも消去され、一覧がすぐに更新されます。',
+      hint: '誤操作を避けるため、下のボタンを長押しして確定してください。',
+      holdIdle: '長押しして削除',
+      holdActive: 'そのまま長押しして確定…',
+      loading: 'プラグインを削除しています...'
+    },
     ui: {
+      open: 'UIを開く',
       loading: 'プラグインUIを読み込み中...',
       loadError: 'プラグインUIの読み込みに失敗しました',
       noUI: 'このプラグインにはカスタムUIがありません'
@@ -267,9 +284,13 @@ export default {
     pluginStarted: 'プラグインが起動しました',
     pluginStopped: 'プラグインが停止しました',
     pluginReloaded: 'プラグインをリロードしました',
+    pluginPacked: 'プラグインをパッケージ化しました: {packageName}',
+    pluginDeleted: 'プラグインを削除しました',
     startFailed: '起動に失敗しました',
     stopFailed: '停止に失敗しました',
     reloadFailed: 'リロードに失敗しました',
+    packFailed: 'プラグインのパッケージ化に失敗しました',
+    deleteFailed: 'プラグインの削除に失敗しました',
     pluginDisabled: 'プラグインが無効です。先に有効化してください。',
     pluginLoadFailed: 'プラグインの読み込みに失敗したため、起動できません。',
     confirmDisableExt: 'この拡張機能を無効化しますか？ホストプラグインの拡張機能がアンロードされます。',

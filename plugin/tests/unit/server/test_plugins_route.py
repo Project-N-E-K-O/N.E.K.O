@@ -42,3 +42,20 @@ async def test_plugins_refresh_routes_delegate_to_registry_service(
         one_response = await client.post("/plugin/demo/refresh")
         assert one_response.status_code == 200
         assert one_response.json()["plugin_id"] == "demo"
+
+
+@pytest.mark.asyncio
+async def test_delete_plugin_route_delegates_to_lifecycle_service(
+    plugin_route_test_app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _delete_plugin(plugin_id: str) -> dict[str, object]:
+        return {"success": True, "plugin_id": plugin_id, "message": "deleted"}
+
+    monkeypatch.setattr(route_module.lifecycle_service, "delete_plugin", _delete_plugin)
+
+    transport = ASGITransport(app=plugin_route_test_app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.delete("/plugin/demo")
+        assert response.status_code == 200
+        assert response.json()["plugin_id"] == "demo"

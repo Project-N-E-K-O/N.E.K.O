@@ -1,5 +1,12 @@
 <template>
   <div class="package-manager">
+    <div class="toolbar-row">
+      <el-button class="history-button" plain @click="openResultDialog">
+        执行记录
+        <el-badge v-if="resultHistory.length > 0" :value="resultHistory.length" class="history-badge" />
+      </el-button>
+    </div>
+
     <div class="main-grid">
       <PluginSelectorPanel
         :loading="pluginsLoading"
@@ -25,13 +32,6 @@
       />
 
       <div class="content-stack">
-        <div class="toolbar-row">
-          <el-button class="history-button" plain @click="openResultDialog">
-            执行记录
-            <el-badge v-if="resultHistory.length > 0" :value="resultHistory.length" class="history-badge" />
-          </el-button>
-        </div>
-
         <el-card class="operations-card">
           <template #header>
             <div class="card-header">
@@ -277,6 +277,7 @@ const {
 .package-manager {
   display: flex;
   flex-direction: column;
+  gap: 16px;
 }
 
 .main-grid {
@@ -295,6 +296,7 @@ const {
 .toolbar-row {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
 }
 
 .history-button {

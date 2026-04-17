@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import re
+import shutil
 import time as time_module
 import tomllib
 from collections.abc import Mapping
@@ -201,6 +202,74 @@ def _get_plugin_config_path(plugin_id: str) -> Path | None:
         if config_file.exists():
             return config_file
     return None
+
+
+def _resolve_plugin_dir_sync(plugin_id: str, plugin_meta: dict[str, object] | None) -> Path | None:
+    config_path = _resolve_registered_config_path_sync(plugin_meta)
+    if config_path is None:
+        config_path = _get_plugin_config_path(plugin_id)
+    if config_path is None:
+        return None
+    try:
+        return config_path.parent.resolve()
+    except Exception:
+        return config_path.parent
+
+
+def _path_within_plugin_roots_sync(path: Path) -> bool:
+    try:
+        resolved_path = path.resolve()
+    except Exception:
+        resolved_path = path
+
+    for root in PLUGIN_CONFIG_ROOTS:
+        try:
+            resolved_root = root.resolve()
+        except Exception:
+            resolved_root = root
+        if resolved_path == resolved_root or resolved_root in resolved_path.parents:
+            return True
+    return False
+
+
+def _list_bound_extensions_sync(host_plugin_id: str) -> list[str]:
+    bound_extensions: list[str] = []
+    with state.acquire_plugins_read_lock():
+        snapshot = {
+            plugin_id: dict(meta)
+            for plugin_id, meta in state.plugins.items()
+            if isinstance(plugin_id, str) and isinstance(meta, dict)
+        }
+
+    for plugin_id, meta in snapshot.items():
+        if meta.get("type") != "extension":
+            continue
+        if meta.get("host_plugin_id") != host_plugin_id:
+            continue
+        if meta.get("runtime_source_missing") is True:
+            continue
+        bound_extensions.append(plugin_id)
+
+    bound_extensions.sort()
+    return bound_extensions
+
+
+def _remove_plugin_metadata_sync(plugin_id: str) -> bool:
+    removed = False
+    with state.acquire_plugins_write_lock():
+        if plugin_id in state.plugins:
+            state.plugins.pop(plugin_id, None)
+            removed = True
+    if removed:
+        state.invalidate_snapshot_cache("plugins")
+    return removed
+
+
+def _delete_plugin_directory_sync(plugin_dir: Path) -> bool:
+    if not plugin_dir.exists():
+        return False
+    shutil.rmtree(plugin_dir)
+    return True
 
 
 def _register_or_replace_host_sync(plugin_id: str, host: PluginHostContract) -> int:
@@ -804,6 +873,104 @@ class PluginLifecycleService:
             "skipped": [],
             "message": message,
         }
+
+    async def delete_plugin(self, plugin_id: str) -> dict[str, object]:
+        plugin_meta = await asyncio.to_thread(_get_plugin_meta_sync, plugin_id)
+        if plugin_meta is None:
+            raise _to_domain_error(
+                code="PLUGIN_NOT_FOUND",
+                message=f"Plugin '{plugin_id}' not found",
+                status_code=404,
+                plugin_id=plugin_id,
+                error_type="PluginNotFound",
+            )
+
+        plugin_dir = await asyncio.to_thread(_resolve_plugin_dir_sync, plugin_id, plugin_meta)
+        if plugin_dir is None:
+            raise _to_domain_error(
+                code="PLUGIN_CONFIG_NOT_FOUND",
+                message=f"Plugin '{plugin_id}' configuration not found",
+                status_code=404,
+                plugin_id=plugin_id,
+                error_type="ConfigNotFound",
+            )
+
+        path_allowed = await asyncio.to_thread(_path_within_plugin_roots_sync, plugin_dir)
+        if not path_allowed:
+            raise _to_domain_error(
+                code="PLUGIN_DELETE_FORBIDDEN_PATH",
+                message=f"Plugin '{plugin_id}' path is outside managed plugin roots",
+                status_code=403,
+                plugin_id=plugin_id,
+                error_type="ForbiddenDeletePath",
+            )
+
+        plugin_type = plugin_meta.get("type")
+        if plugin_type == "extension":
+            ext_meta, host_plugin_id, host_obj = await self._validate_extension(plugin_id)
+            runtime_enabled = parse_bool_config(ext_meta.get("runtime_enabled"), default=True)
+            if runtime_enabled and host_obj is not None and host_obj.is_alive():
+                await self.disable_extension(plugin_id)
+        else:
+            bound_extensions = await asyncio.to_thread(_list_bound_extensions_sync, plugin_id)
+            if bound_extensions:
+                raise _to_domain_error(
+                    code="PLUGIN_DELETE_BLOCKED_BY_EXTENSIONS",
+                    message=(
+                        f"Plugin '{plugin_id}' has bound extensions and cannot be deleted yet: "
+                        f"{', '.join(bound_extensions)}"
+                    ),
+                    status_code=409,
+                    plugin_id=plugin_id,
+                    error_type="BoundExtensionsExist",
+                )
+
+            is_running = await asyncio.to_thread(_plugin_is_running_sync, plugin_id)
+            if is_running:
+                await self.stop_plugin(plugin_id)
+
+        try:
+            deleted_from_disk = await asyncio.to_thread(_delete_plugin_directory_sync, plugin_dir)
+            await asyncio.to_thread(_pop_plugin_host_sync, plugin_id)
+            await asyncio.to_thread(_remove_event_handlers_sync, plugin_id)
+            await asyncio.to_thread(_remove_plugin_metadata_sync, plugin_id)
+            await plugin_registry_service.refresh_registry()
+        except ServerDomainError:
+            raise
+        except IO_RUNTIME_ERRORS as exc:
+            logger.error(
+                "delete_plugin failed: plugin_id={}, plugin_dir={}, err_type={}, err={}",
+                plugin_id,
+                str(plugin_dir),
+                type(exc).__name__,
+                str(exc),
+            )
+            raise _to_domain_error(
+                code="PLUGIN_DELETE_FAILED",
+                message=f"Failed to delete plugin '{plugin_id}'",
+                status_code=500,
+                plugin_id=plugin_id,
+                error_type=type(exc).__name__,
+            ) from exc
+
+        _emit_lifecycle_event(
+            event_type="plugin_deleted",
+            plugin_id=plugin_id,
+            data={
+                "plugin_dir": str(plugin_dir),
+                "deleted_from_disk": deleted_from_disk,
+            },
+        )
+        response: dict[str, object] = {
+            "success": True,
+            "plugin_id": plugin_id,
+            "plugin_dir": str(plugin_dir),
+            "deleted_from_disk": deleted_from_disk,
+            "message": "Plugin deleted successfully",
+        }
+        if plugin_type == "extension" and isinstance(host_plugin_id, str) and host_plugin_id:
+            response["host_plugin_id"] = host_plugin_id
+        return response
 
     async def disable_extension(self, ext_id: str) -> dict[str, object]:
         _ext_meta, host_plugin_id, host_obj = await self._validate_extension(ext_id)

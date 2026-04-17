@@ -94,6 +94,7 @@
                     :plugin="plugin"
                     :show-metrics="showMetrics"
                     @click="handlePluginClick(plugin.id)"
+                    @contextmenu="handlePluginContextMenu($event, plugin)"
                   />
                 </div>
               </TransitionGroup>
@@ -116,6 +117,7 @@
                     :plugin="adapter"
                     :show-metrics="showMetrics"
                     @click="handlePluginClick(adapter.id)"
+                    @contextmenu="handlePluginContextMenu($event, adapter)"
                   />
                 </div>
               </TransitionGroup>
@@ -138,12 +140,40 @@
                     :plugin="ext"
                     :show-metrics="showMetrics"
                     @click="handlePluginClick(ext.id)"
+                    @contextmenu="handlePluginContextMenu($event, ext)"
                   />
                 </div>
               </TransitionGroup>
             </template>
           </template>
         </el-card>
+
+        <PluginContextMenu
+          :visible="contextMenuVisible"
+          :x="contextMenuPosition.x"
+          :y="contextMenuPosition.y"
+          :actions="contextMenuActions"
+          @close="closePluginContextMenu"
+          @select="handleContextActionSelect"
+        />
+
+        <PluginDangerConfirmDialog
+          :visible="dangerDialogVisible"
+          :loading="dangerDialogLoading"
+          :title="t('plugins.dangerDialog.title')"
+          :message="pendingDangerAction?.confirm_message || t('plugins.dangerDialog.deleteMessage', {
+            pluginName: pendingDangerPlugin?.name || pendingDangerPlugin?.id || '',
+          })"
+          :hint="t('plugins.dangerDialog.hint')"
+          :action-label="pendingDangerAction?.label || t('plugins.delete')"
+          :warning-title="t('plugins.dangerDialog.warningTitle')"
+          :cancel-label="t('common.cancel')"
+          :loading-label="t('plugins.dangerDialog.loading')"
+          :hold-idle-label="t('plugins.dangerDialog.holdIdle')"
+          :hold-active-label="t('plugins.dangerDialog.holdActive')"
+          @close="closeDangerDialog"
+          @confirm="handleDangerActionConfirm"
+        />
       </el-tab-pane>
 
       <el-tab-pane label="包管理" name="packages">
@@ -161,21 +191,34 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
 import PluginCard from '@/components/plugin/PluginCard.vue'
+import PluginContextMenu from '@/components/plugin/PluginContextMenu.vue'
+import PluginDangerConfirmDialog from '@/components/plugin/PluginDangerConfirmDialog.vue'
 import PackageManagerPanel from '@/components/plugin/PackageManagerPanel.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import { reloadAllPlugins } from '@/api/plugins'
+import { usePluginListContextActions, type ResolvedPluginListAction } from '@/composables/usePluginListContextActions'
 import { METRICS_REFRESH_INTERVAL } from '@/utils/constants'
 import { useI18n } from 'vue-i18n'
+import type { PluginMeta } from '@/types/api'
 
 const route = useRoute()
 const router = useRouter()
 const pluginStore = usePluginStore()
 const metricsStore = useMetricsStore()
 const { t } = useI18n()
+const { buildActions, executeAction, shouldUseHoldConfirm } = usePluginListContextActions()
 
 const activeWorkbenchTab = ref<string>('plugins')
 const reloadingAll = ref(false)
+const contextMenuVisible = ref(false)
+const contextMenuPosition = ref({ x: 0, y: 0 })
+const contextMenuPlugin = ref<(PluginMeta & { status?: string; enabled?: boolean; autoStart?: boolean }) | null>(null)
+const contextMenuActions = ref<ResolvedPluginListAction[]>([])
+const dangerDialogVisible = ref(false)
+const dangerDialogLoading = ref(false)
+const pendingDangerAction = ref<ResolvedPluginListAction | null>(null)
+const pendingDangerPlugin = ref<(PluginMeta & { status?: string; enabled?: boolean; autoStart?: boolean }) | null>(null)
 
 const rawPlugins = computed(() => pluginStore.pluginsWithStatus)
 const rawNormalPlugins = computed(() => pluginStore.normalPlugins)
@@ -339,6 +382,97 @@ function handlePluginClick(pluginId: string) {
   router.push(`/plugins/${safeId}`)
 }
 
+function closePluginContextMenu() {
+  contextMenuVisible.value = false
+}
+
+function closeDangerDialog() {
+  if (dangerDialogLoading.value) {
+    return
+  }
+  dangerDialogVisible.value = false
+  pendingDangerAction.value = null
+  pendingDangerPlugin.value = null
+}
+
+function openDangerDialog(
+  action: ResolvedPluginListAction,
+  plugin: PluginMeta & { status?: string; enabled?: boolean; autoStart?: boolean },
+) {
+  pendingDangerAction.value = action
+  pendingDangerPlugin.value = plugin
+  dangerDialogVisible.value = true
+}
+
+function resolveActionErrorMessage(error: any): string {
+  return error?.response?.data?.detail || error?.message || t('messages.requestFailed')
+}
+
+function shouldShowLocalError(error: any): boolean {
+  const status = error?.response?.status
+  if (status === 401 || status === 403 || status === 404) {
+    return true
+  }
+  return !error?.response
+}
+
+function handlePluginContextMenu(
+  event: MouseEvent,
+  plugin: PluginMeta & { status?: string; enabled?: boolean; autoStart?: boolean },
+) {
+  contextMenuPlugin.value = plugin
+  contextMenuActions.value = buildActions(plugin)
+  contextMenuPosition.value = {
+    x: event.clientX,
+    y: event.clientY,
+  }
+  contextMenuVisible.value = contextMenuActions.value.length > 0
+}
+
+async function handleContextActionSelect(action: ResolvedPluginListAction) {
+  const plugin = contextMenuPlugin.value
+  closePluginContextMenu()
+  if (!plugin) {
+    return
+  }
+  if (shouldUseHoldConfirm(action)) {
+    openDangerDialog(action, plugin)
+    return
+  }
+  try {
+    await executeAction(action, plugin)
+  } catch (error: any) {
+    console.error('Failed to execute plugin context action:', error)
+    if (shouldShowLocalError(error)) {
+      ElMessage.error(resolveActionErrorMessage(error))
+    }
+  }
+}
+
+async function handleDangerActionConfirm() {
+  const action = pendingDangerAction.value
+  const plugin = pendingDangerPlugin.value
+  if (!action || !plugin) {
+    closeDangerDialog()
+    return
+  }
+
+  dangerDialogLoading.value = true
+  try {
+    await executeAction(action, plugin)
+    dangerDialogVisible.value = false
+    pendingDangerAction.value = null
+    pendingDangerPlugin.value = null
+  } catch (error: any) {
+    console.error('Failed to execute dangerous plugin action:', error)
+    if (shouldShowLocalError(error)) {
+      ElMessage.error(resolveActionErrorMessage(error))
+    }
+  } finally {
+    dangerDialogLoading.value = false
+  }
+}
+
 // 获取运行中的普通插件列表（排除 extension）
 const runningPlugins = computed(() => {
   return rawNormalPlugins.value.filter(p => p.status === 'running' && p.enabled !== false)
@@ -405,6 +539,7 @@ onMounted(async () => {
 })
 
 watch(activeWorkbenchTab, (tab) => {
+  closePluginContextMenu()
   const nextQuery = { ...route.query }
   if (tab === 'packages') {
     nextQuery.tab = 'packages'
@@ -415,6 +550,8 @@ watch(activeWorkbenchTab, (tab) => {
 })
 
 onUnmounted(() => {
+  closePluginContextMenu()
+  closeDangerDialog()
   stopMetricsAutoRefresh()
   if (hideTimer) {
     clearTimeout(hideTimer)
