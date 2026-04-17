@@ -649,6 +649,9 @@
         "copyMarkdown": "Копировать Markdown",
         "copyMarkdownSuccess": "Markdown скопирован в буфер обмена.",
         "copyMarkdownFailed": "Не удалось скопировать Markdown.",
+        "copyToClipboard": "Копировать в буфер обмена",
+        "copyImageSuccess": "Скопировано в буфер обмена.",
+        "copyImageFailed": "Не удалось скопировать в буфер обмена.",
         "exportEmpty": "Пока нет диалога для экспорта.",
         "exportSelectionEmpty": "Выберите хотя бы одно сообщение для экспорта.",
         "exportSuccess": "Диалог успешно экспортирован",
@@ -825,6 +828,8 @@
         "assistApiSelectLabel": "Провайдер вспомогательного API",
         "assistApiKeyLabel": "Ключ вспомогательного API",
         "assistApiAutoFillHint": "При пустом поле используется ключ из справочника; введённый вручную сохраняется отдельно",
+        "disableTts": "Отключить TTS",
+        "disableTtsHint": "При включении служба синтеза речи не будет вызываться",
         "keyBookTitle": "Справочник API",
         "keyBookDescription": "Управление всеми API-ключами в одном месте. Ключи автоматически подставляются при смене провайдера в основном/вспомогательном API, а введённые ключи автоматически сохраняются сюда.",
         "keyBookPlaceholder": "Загрузка конфигурации провайдеров API...",
@@ -1888,8 +1893,19 @@
             "changeFailed": "Не удалось изменить анимацию ожидания"
         },
         "managerInitFailed": "Не удалось инициализировать менеджер MMD",
+        "moduleLoading": "Загрузка модулей MMD...",
         "modelLoading": "Загрузка модели MMD...",
-        "modelLoaded": "Модель MMD успешно загружена"
+        "modelLoaded": "Модель MMD успешно загружена",
+        "modelLoadFailed": "Не удалось загрузить модель MMD: {{error}}",
+        "loadingOverlay": {
+            "engine": "Подготовка движка MMD...",
+            "settings": "Загрузка настроек MMD...",
+            "model": "Загрузка ресурсов модели...",
+            "physics": "Инициализация физики...",
+            "idle": "Загрузка idle-анимации...",
+            "done": "MMD готова",
+            "failed": "Не удалось загрузить MMD"
+        }
     },
     "modelManager": {
         "vrmLoadingDependencies": "[VRM] Начало загрузки зависимых модулей",
@@ -2798,7 +2814,8 @@
         "ended": "Завершено",
         "unknownState": "Неизвестное состояние",
         "volume": "Громкость: ",
-        "unsafeSource": "Небезопасный источник аудио заблокирован: {{domain}}"
+        "unsafeSource": "Небезопасный источник аудио заблокирован: {{domain}}",
+        "cookieExpired": "Срок действия музыкального cookie истек"
     },
     "Jukebox": {
         "title": "Музыкальный автомат",

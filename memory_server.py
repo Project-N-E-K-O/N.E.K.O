@@ -248,7 +248,7 @@ async def _periodic_rebuttal_loop():
         now = datetime.now()
         for name in catgirl_names:
             try:
-                confirmed = reflection_engine.get_confirmed_reflections(name)
+                confirmed = await reflection_engine.aget_confirmed_reflections(name)
                 if not confirmed:
                     continue
 
@@ -256,7 +256,7 @@ async def _periodic_rebuttal_loop():
                 start_time = _last_rebuttal_check.get(
                     name, now - _td(hours=1)
                 )
-                rows = time_manager.retrieve_original_by_timeframe(
+                rows = await time_manager.aretrieve_original_by_timeframe(
                     name, start_time, now,
                 )
                 if not rows:
@@ -283,7 +283,7 @@ async def _periodic_rebuttal_loop():
                     if isinstance(fb, dict) and fb.get('feedback') == 'denied':
                         rid = fb.get('reflection_id')
                         if rid:
-                            reflection_engine.reject_promotion(name, rid)
+                            await reflection_engine.areject_promotion(name, rid)
                             logger.info(f"[Rebuttal] {name}: confirmed 反思被反驳: {rid}")
             except Exception as e:
                 logger.debug(f"[Rebuttal] {name}: 处理失败，跳过: {e}")
@@ -307,7 +307,7 @@ async def _periodic_auto_promote_loop():
 
         for name in catgirl_names:
             try:
-                transitions = reflection_engine.auto_promote_stale(name)
+                transitions = await reflection_engine.aauto_promote_stale(name)
                 if transitions:
                     logger.info(f"[AutoPromote] {name}: {transitions} 条状态迁移")
             except Exception as e:
@@ -330,8 +330,20 @@ async def startup_event_handler():
     try:
         character_data = _config_manager.load_characters()
         catgirl_names = list(character_data.get('猫娘', {}).keys())
-        for name in catgirl_names:
-            persona_manager.ensure_persona(name)
+        # 各角色的 persona 文件互相独立，并行迁移检查避免 N 倍串行磁盘 IO。
+        # return_exceptions=True：避免 fail-fast 取消其它角色正在写盘的协程，
+        # 造成 persona 文件半写入；出错的角色单独记日志。
+        if catgirl_names:
+            results = await asyncio.gather(
+                *(persona_manager.aensure_persona(n) for n in catgirl_names),
+                return_exceptions=True,
+            )
+            for name, result in zip(catgirl_names, results):
+                if isinstance(result, Exception):
+                    logger.warning(
+                        f"[Memory] Persona 迁移检查失败: {name}: {result}",
+                        exc_info=result,
+                    )
         logger.info(f"[Memory] Persona 迁移检查完成，角色数: {len(catgirl_names)}")
     except Exception as e:
         logger.warning(f"[Memory] Persona 迁移检查失败: {e}")
@@ -423,7 +435,7 @@ async def api_reflect(lanlan_name: str):
     auto_transitions = 0
     reflection_result = None
     try:
-        auto_transitions = reflection_engine.auto_promote_stale(lanlan_name)
+        auto_transitions = await reflection_engine.aauto_promote_stale(lanlan_name)
     except Exception as e:
         logger.debug(f"[ReflectAPI] {lanlan_name}: auto_promote_stale 失败: {e}")
     try:
@@ -441,7 +453,7 @@ async def api_followup_topics(lanlan_name: str):
     """获取回调话题候选（不标记 surfaced，调用方需后续调 /record_surfaced）。"""
     lanlan_name = validate_lanlan_name(lanlan_name)
     try:
-        topics = reflection_engine.get_followup_topics(lanlan_name)
+        topics = await reflection_engine.aget_followup_topics(lanlan_name)
     except Exception as e:
         logger.debug(f"[ReflectAPI] {lanlan_name}: get_followup_topics 失败: {e}")
         topics = []
@@ -457,7 +469,7 @@ async def api_record_surfaced(request: Request, lanlan_name: str):
     if not reflection_ids:
         return {"ok": True}
     try:
-        reflection_engine.record_surfaced(lanlan_name, reflection_ids)
+        await reflection_engine.arecord_surfaced(lanlan_name, reflection_ids)
     except Exception as e:
         logger.debug(f"[ReflectAPI] {lanlan_name}: record_surfaced 失败: {e}")
     return {"ok": True}
@@ -478,13 +490,13 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
         # 2. 全局复读嗅探：扫描 AI 回复中是否重复提及 persona 条目
         ai_response = _extract_ai_response(messages)
         if ai_response:
-            persona_manager.record_mentions(lanlan_name, ai_response)
+            await persona_manager.arecord_mentions(lanlan_name, ai_response)
     except Exception as e:
         logger.warning(f"[MemoryServer] 复读嗅探失败: {e}")
 
     try:
         # 3. 检查用户对之前 surfaced 反思的反馈（宽松确认）
-        surfaced = reflection_engine.load_surfaced(lanlan_name)
+        surfaced = await reflection_engine.aload_surfaced(lanlan_name)
         pending_surfaced = [s for s in surfaced if s.get('feedback') is None]
         if pending_surfaced:
             user_msgs = _extract_user_messages(messages)
@@ -503,10 +515,10 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
                     for s in pending_surfaced:
                         rid = s.get('reflection_id')
                         if rid in denied_ids:
-                            reflection_engine.reject_promotion(lanlan_name, rid)
+                            await reflection_engine.areject_promotion(lanlan_name, rid)
                         else:
                             # 宽松确认：用户有回复 + 未被 denied → 自动 confirm
-                            reflection_engine.confirm_promotion(lanlan_name, rid)
+                            await reflection_engine.aconfirm_promotion(lanlan_name, rid)
     except Exception as e:
         logger.warning(f"[MemoryServer] 反馈检查失败: {e}")
 
@@ -558,7 +570,7 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
         # 旧模块已禁用（性能不足）：
         # await settings_manager.extract_and_update_settings(input_history, lanlan_name)
         # await semantic_manager.store_conversation(uid, input_history, lanlan_name)
-        await time_manager.store_conversation(uid, input_history, lanlan_name)
+        await time_manager.astore_conversation(uid, input_history, lanlan_name)
 
         # 异步事实提取（不阻塞返回，失败静默跳过）
         _spawn_background_task(_extract_facts_and_check_feedback(input_history, lanlan_name))
@@ -601,7 +613,7 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
         # 首轮摘要带锁：阻塞 /new_dialog 直到摘要+时间戳写入完成
         async with _get_settle_lock(lanlan_name):
             await recent_history_manager.update_history(input_history, lanlan_name, detailed=True)
-            await time_manager.store_conversation(uid, input_history, lanlan_name)
+            await time_manager.astore_conversation(uid, input_history, lanlan_name)
 
         # 以下操作在锁外执行，不阻塞 /new_dialog
         # 异步事实提取
@@ -642,7 +654,7 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
 
         async with _get_settle_lock(lanlan_name):
             if input_history:
-                await time_manager.store_conversation(uid, input_history, lanlan_name)
+                await time_manager.astore_conversation(uid, input_history, lanlan_name)
             await recent_history_manager.update_history([], lanlan_name, detailed=True)
 
         if input_history:
@@ -664,7 +676,7 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
 
 
 @app.get("/get_recent_history/{lanlan_name}")
-def get_recent_history(lanlan_name: str):
+async def get_recent_history(lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
     # 检查角色是否存在于配置中
     try:
@@ -676,8 +688,8 @@ def get_recent_history(lanlan_name: str):
     except Exception as e:
         logger.error(f"检查角色配置失败: {e}")
         return "开始聊天前，没有历史记录。\n"
-    
-    history = recent_history_manager.get_recent_history(lanlan_name)
+
+    history = await recent_history_manager.aget_recent_history(lanlan_name)
     _, _, _, _, name_mapping, _, _, _, _ = _config_manager.get_character_data()
     name_mapping['ai'] = lanlan_name
     result = f"开始聊天前，{lanlan_name}又在脑海内整理了近期发生的事情。\n"
@@ -704,7 +716,7 @@ async def get_memory(query: str, lanlan_name: str):
     )
 
 @app.get("/get_settings/{lanlan_name}")
-def get_settings(lanlan_name: str):
+async def get_settings(lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
     # 检查角色是否存在于配置中
     try:
@@ -718,23 +730,22 @@ def get_settings(lanlan_name: str):
         return f"{lanlan_name}记得{{}}"
 
     # 优先使用 persona markdown 渲染（与 /new_dialog 保持一致），回退到旧 settings 格式
-    pending_reflections = reflection_engine.get_pending_reflections(lanlan_name)
-    confirmed_reflections = reflection_engine.get_confirmed_reflections(lanlan_name)
-    persona_md = persona_manager.render_persona_markdown(
+    pending_reflections = await reflection_engine.aget_pending_reflections(lanlan_name)
+    confirmed_reflections = await reflection_engine.aget_confirmed_reflections(lanlan_name)
+    persona_md = await persona_manager.arender_persona_markdown(
         lanlan_name, pending_reflections, confirmed_reflections,
     )
     if persona_md:
         return persona_md
     # 兼容回退（自然语言格式）
     return _format_legacy_settings_as_text(settings_manager.get_settings(lanlan_name), lanlan_name)
-    return result
 
 
 @app.get("/get_persona/{lanlan_name}")
-def get_persona(lanlan_name: str):
+async def get_persona(lanlan_name: str):
     """返回完整 persona JSON（供 UI / memory_browser 使用）。"""
     lanlan_name = validate_lanlan_name(lanlan_name)
-    return persona_manager.get_persona(lanlan_name)
+    return await persona_manager.aget_persona(lanlan_name)
 
 @app.post("/reload")
 async def reload_config():
@@ -814,10 +825,10 @@ async def new_dialog(lanlan_name: str):
 
         # ── [静态前缀] Persona 长期记忆（变化极少 → 最大化 prefix cache） ──
     # pending + confirmed 反思也注入上下文（分区标注）
-        pending_reflections = reflection_engine.get_pending_reflections(lanlan_name)
-        confirmed_reflections = reflection_engine.get_confirmed_reflections(lanlan_name)
+        pending_reflections = await reflection_engine.aget_pending_reflections(lanlan_name)
+        confirmed_reflections = await reflection_engine.aget_confirmed_reflections(lanlan_name)
         result = _loc(PERSONA_HEADER, _lang).format(name=lanlan_name)
-        persona_md = persona_manager.render_persona_markdown(
+        persona_md = await persona_manager.arender_persona_markdown(
             lanlan_name, pending_reflections, confirmed_reflections,
         )
         if persona_md:
@@ -833,7 +844,7 @@ async def new_dialog(lanlan_name: str):
             time=get_timestamp(),
         )
 
-        for i in recent_history_manager.get_recent_history(lanlan_name):
+        for i in await recent_history_manager.aget_recent_history(lanlan_name):
             if isinstance(i.content, str):
                 cleaned_content = brackets_pattern.sub('', i.content).strip()
                 result += f"{name_mapping[i.type]} | {cleaned_content}\n"
@@ -844,7 +855,7 @@ async def new_dialog(lanlan_name: str):
         # ── 距上次聊天间隔提示（放在最末尾，紧接 CONTEXT_SUMMARY_READY 之前） ──
         try:
             from datetime import datetime as _dt
-            last_time = time_manager.get_last_conversation_time(lanlan_name)
+            last_time = await time_manager.aget_last_conversation_time(lanlan_name)
             if last_time:
                 gap = _dt.now() - last_time
                 gap_seconds = gap.total_seconds()
@@ -877,7 +888,7 @@ async def last_conversation_gap(lanlan_name: str):
     """返回距上次对话的间隔秒数，供主服务判断是否触发主动搭话。"""
     lanlan_name = validate_lanlan_name(lanlan_name)
     try:
-        last_time = time_manager.get_last_conversation_time(lanlan_name)
+        last_time = await time_manager.aget_last_conversation_time(lanlan_name)
         if last_time is None:
             return {"gap_seconds": -1}
         gap = (datetime.now() - last_time).total_seconds()

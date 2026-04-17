@@ -649,6 +649,9 @@
         "copyMarkdown": "Copy Markdown",
         "copyMarkdownSuccess": "Markdown copied to clipboard.",
         "copyMarkdownFailed": "Failed to copy Markdown.",
+        "copyToClipboard": "Copy to Clipboard",
+        "copyImageSuccess": "Image copied to clipboard.",
+        "copyImageFailed": "Failed to copy image to clipboard.",
         "exportEmpty": "There is no conversation to export yet.",
         "exportSelectionEmpty": "Select at least one message to export.",
         "exportSuccess": "Conversation exported successfully",
@@ -825,6 +828,8 @@
         "assistApiSelectLabel": "Assist API Provider",
         "assistApiKeyLabel": "Assist API Key",
         "assistApiAutoFillHint": "Auto-fills from Key Book when empty; manually entered keys are saved independently",
+        "disableTts": "Disable TTS",
+        "disableTtsHint": "When enabled, no text-to-speech service will be called",
         "keyBookTitle": "API Key Book",
         "keyBookDescription": "Manage all API Keys in one place. Keys are auto-filled when switching providers in Core/Assist API, and keys entered there are auto-saved back here.",
         "keyBookPlaceholder": "Loading API provider config...",
@@ -1888,8 +1893,19 @@
             "changeFailed": "Failed to change idle animation"
         },
         "managerInitFailed": "MMD manager initialization failed",
+        "moduleLoading": "Loading MMD modules...",
         "modelLoading": "Loading MMD model...",
-        "modelLoaded": "MMD model loaded successfully"
+        "modelLoaded": "MMD model loaded successfully",
+        "modelLoadFailed": "Failed to load MMD model: {{error}}",
+        "loadingOverlay": {
+            "engine": "Preparing MMD engine...",
+            "settings": "Loading MMD settings...",
+            "model": "Loading model resources...",
+            "physics": "Initializing physics...",
+            "idle": "Loading idle animation...",
+            "done": "MMD ready",
+            "failed": "Failed to load MMD"
+        }
     },
     "modelManager": {
         "vrmLoadingDependencies": "[VRM] Starting to load dependency modules",
@@ -2798,7 +2814,8 @@
         "ended": "Ended",
         "unknownState": "Unknown state",
         "volume": "Volume: ",
-        "unsafeSource": "Blocked unsafe audio source: {{domain}}"
+        "unsafeSource": "Blocked unsafe audio source: {{domain}}",
+        "cookieExpired": "Music cookie has expired"
     },
     "Jukebox": {
         "title": "Jukebox",

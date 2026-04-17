@@ -108,7 +108,7 @@ class Modules:
 import threading
 _plugin_name_cache: Dict[str, str] = {}
 _plugin_name_cache_time: float = 0.0
-_plugin_name_cache_lock = threading.Lock()
+_plugin_name_cache_lock = asyncio.Lock()
 PLUGIN_NAME_CACHE_TTL: float = 30.0  # 缓存 30 秒
 TASK_REGISTRY_CLEANUP_TTL: float = 300.0  # 已完成任务保留 5 分钟
 DEFERRED_TASK_TIMEOUT: float = 3600.0  # deferred 任务超时 1 小时
@@ -379,30 +379,27 @@ def _bind_deferred_task(plugin_id: str, reminder_id: str, agent_task_id: str) ->
         logger.warning("[Deferred] bind failed: plugin=%s reminder=%s error=%s", plugin_id, reminder_id, e)
 
 
-def _get_plugin_friendly_name(plugin_id: str) -> str | None:
+async def _get_plugin_friendly_name(plugin_id: str) -> str | None:
     """获取插件的友好名称（用于 HUD 显示）
 
     通过 HTTP 调用嵌入式插件服务的 /plugins 端点获取插件列表，
-    并使用缓存减少请求次数。使用线程锁保证多线程安全。
+    并使用缓存减少请求次数。
     """
     global _plugin_name_cache, _plugin_name_cache_time
 
-    # 检查缓存（加锁读取）
     now = time.time()
-    with _plugin_name_cache_lock:
+    async with _plugin_name_cache_lock:
         if _plugin_name_cache and (now - _plugin_name_cache_time) < PLUGIN_NAME_CACHE_TTL:
             return _plugin_name_cache.get(plugin_id)
 
-    # 缓存过期或为空，从嵌入式插件服务获取
     new_cache = {}
     cache_time = now
     try:
-        with httpx.Client(timeout=1.0, proxy=None, trust_env=False) as client:
-            resp = client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins")
+        async with httpx.AsyncClient(timeout=1.0, proxy=None, trust_env=False) as client:
+            resp = await client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins")
             if resp.status_code == 200:
                 data = resp.json()
                 plugins = data.get("plugins", [])
-                # 构建新缓存
                 for p in plugins:
                     if isinstance(p, dict):
                         pid = p.get("id")
@@ -411,8 +408,7 @@ def _get_plugin_friendly_name(plugin_id: str) -> str | None:
                             new_cache[pid] = pname
                         elif pid:
                             new_cache[pid] = pid
-                # 更新全局缓存（加锁写入）
-                with _plugin_name_cache_lock:
+                async with _plugin_name_cache_lock:
                     _plugin_name_cache = new_cache
                     _plugin_name_cache_time = cache_time
                 return new_cache.get(plugin_id)
@@ -631,7 +627,7 @@ async def _fire_user_plugin_capability_check() -> None:
 _llm_check_lock = asyncio.Lock()
 
 
-async def _fire_agent_llm_connectivity_check() -> None:
+async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
     """Probe the shared Agent-LLM endpoint in a background thread.
 
     Both ComputerUse and BrowserUse rely on the same ``agent`` model config,
@@ -640,8 +636,17 @@ async def _fire_agent_llm_connectivity_check() -> None:
     *both* computer_use and browser_use.
 
     Uses a lock to prevent concurrent probes from racing.
+
+    ``queue=False`` (default): early-return if another probe is in flight.
+      Right for spammy event-driven callers (UI toggles / flag flips) where a
+      second probe would just duplicate the in-flight one.
+
+    ``queue=True``: wait for the lock and run anyway.  Right when the caller
+      represents a *state change* that must be reflected on capability (e.g.
+      BrowserUse just became available), where early-return would silently
+      drop the refresh.
     """
-    if _llm_check_lock.locked():
+    if not queue and _llm_check_lock.locked():
         return
 
     async with _llm_check_lock:
@@ -852,8 +857,8 @@ def _check_agent_api_gate() -> Dict[str, Any]:
         return {"ready": False, "reasons": [f"Agent API check failed: {e}"], "is_free_version": False}
 
 
-def _get_plugin_display_id(plugin_id: str) -> str:
-    return _get_plugin_friendly_name(plugin_id) or plugin_id
+async def _get_plugin_display_id(plugin_id: str) -> str:
+    return (await _get_plugin_friendly_name(plugin_id)) or plugin_id
 
 
 async def _emit_main_event(event_type: str, lanlan_name: Optional[str], **payload) -> None:
@@ -1350,7 +1355,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 entry_id = result.entry_id
                 up_start = _now_iso()
                 # 获取插件友好名称（用于 HUD 显示）
-                plugin_name = _get_plugin_friendly_name(plugin_id)
+                plugin_name = await _get_plugin_friendly_name(plugin_id)
                 logger.info(
                     "[TaskExecutor] Dispatching UserPlugin: plugin_id=%s, entry_id=%s, plugin_name=%s",
                     plugin_id, entry_id, plugin_name,
@@ -1468,7 +1473,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             logger.info(f"[TaskExecutor] ✅ UserPlugin completed: {plugin_id}")
                             if not _suppress_reply:
                                 _lang = _rp_lang(None)
-                                display_id = _get_plugin_display_id(plugin_id)
+                                display_id = await _get_plugin_display_id(plugin_id)
                                 summary = _rp_phrase('plugin_done_with', _lang, id=display_id, detail=detail) if detail else _rp_phrase('plugin_done', _lang, id=display_id)
                                 try:
                                     await _emit_task_result(
@@ -1492,7 +1497,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             if not _suppress_reply:
                                 _lang = _rp_lang(None)
                                 try:
-                                    display_id = _get_plugin_display_id(plugin_id)
+                                    display_id = await _get_plugin_display_id(plugin_id)
                                     _fail_summary = _rp_phrase('plugin_failed_with', _lang, id=display_id, detail=detail) if detail else _rp_phrase('plugin_failed', _lang, id=display_id)
                                     await _emit_task_result(
                                         lanlan_name,
@@ -2155,16 +2160,18 @@ async def startup():
             Modules.browser_use = bu
             Modules.task_executor.browser_use = bu
             logger.info("[Agent] BrowserUseAdapter ready (background init)")
-            try:
-                await _fire_agent_llm_connectivity_check()
-            except Exception:
-                logger.debug("[Agent] Post-browser-init capability refresh failed", exc_info=True)
+            # fire-and-forget capability 刷新：check_connectivity 可能因网络不稳
+            # 走到几十秒级的重试，绝不能把 OpenFang 初始化链 gate 在它上面。
+            # queue=True：这是"BU 刚就绪"这种状态变化触发，不能被启动期 LLM probe
+            # 持锁时的早退路径吞掉，否则 browser_use capability 会停在 PENDING。
+            _refresh_task = asyncio.create_task(
+                _fire_agent_llm_connectivity_check(queue=True)
+            )
+            Modules._persistent_tasks.add(_refresh_task)
+            _refresh_task.add_done_callback(Modules._persistent_tasks.discard)
         except Exception as exc:
             logger.error("[Agent] BrowserUseAdapter background init failed: %s", exc)
 
-    _bu_task = asyncio.create_task(_init_browser_use_background())
-    Modules._persistent_tasks.add(_bu_task)
-    _bu_task.add_done_callback(Modules._persistent_tasks.discard)
     try:
         await _start_embedded_user_plugin_server()
     except Exception as e:
@@ -2236,9 +2243,16 @@ async def startup():
             logger.error("[OpenFang] background init failed: %s", exc)
             _set_capability("openfang", False, str(exc))
 
-    _of_task = asyncio.create_task(_init_openfang_background())
-    Modules._persistent_tasks.add(_of_task)
-    _of_task.add_done_callback(Modules._persistent_tasks.discard)
+    # BrowserUse 与 OpenFang 都涉及较重的初始化（CPU 密集模块加载 / 进程连通性轮询），
+    # 放在同一个后台任务里串行执行，避免两者并发时启动期 CPU 双峰。LLM connectivity
+    # probe 是轻量 HTTP，独立 task 与这条串行链并行。
+    async def _init_heavy_adapters_serial():
+        await _init_browser_use_background()
+        await _init_openfang_background()
+
+    _heavy_adapters_task = asyncio.create_task(_init_heavy_adapters_serial())
+    Modules._persistent_tasks.add(_heavy_adapters_task)
+    _heavy_adapters_task.add_done_callback(Modules._persistent_tasks.discard)
 
     # Both CUA and BrowserUse share the agent LLM — default to "not connected"
     # and probe in background.  The single check updates both capability caches.
@@ -2470,7 +2484,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
     logger.info(f"[Plugin] Direct execute request: plugin_id={plugin_id}, entry_id={entry_id}, lanlan={lanlan_name}")
 
     # 获取插件友好名称（用于 HUD 显示）
-    plugin_name = _get_plugin_friendly_name(plugin_id)
+    plugin_name = await _get_plugin_friendly_name(plugin_id)
     task_params = {"plugin_id": plugin_id, "entry_id": entry_id, "args": args}
     if plugin_name:
         task_params["plugin_name"] = plugin_name
@@ -2556,7 +2570,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                     if not res.success:
                         info["error"] = (detail or str(res.error or ""))[:500]
                     _lang = _rp_lang(None)
-                    display_id = _get_plugin_display_id(plugin_id)
+                    display_id = await _get_plugin_display_id(plugin_id)
                     if res.success:
                         summary = _rp_phrase('plugin_done_with', _lang, id=display_id, detail=detail) if detail else _rp_phrase('plugin_done', _lang, id=display_id)
                     else:
@@ -3034,7 +3048,7 @@ async def openfang_availability():
     """检查 OpenFang 可用性。"""
     if not Modules.openfang:
         return {"enabled": False, "ready": False, "reason": "adapter 未加载"}
-    return Modules.openfang.is_available()
+    return await asyncio.to_thread(Modules.openfang.is_available)
 
 
 @app.get("/openclaw/availability")
@@ -3262,7 +3276,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
                 asyncio.ensure_future(_fire_agent_llm_connectivity_check())
             else:
                 try:
-                    avail = Modules.computer_use.is_available()
+                    avail = await asyncio.to_thread(Modules.computer_use.is_available)
                     reasons = avail.get('reasons', []) if isinstance(avail, dict) else []
                     _set_capability("computer_use", bool(avail.get("ready")) if isinstance(avail, dict) else False, reasons[0] if reasons else "")
                     if avail.get("ready"):
@@ -3498,7 +3512,7 @@ async def computer_use_availability():
     if not getattr(Modules.computer_use, "init_ok", False):
         asyncio.ensure_future(_fire_agent_llm_connectivity_check())
 
-    status = Modules.computer_use.is_available()
+    status = await asyncio.to_thread(Modules.computer_use.is_available)
     reasons = status.get("reasons", []) if isinstance(status, dict) else []
     _set_capability("computer_use", bool(status.get("ready")) if isinstance(status, dict) else False, reasons[0] if reasons else "")
     
@@ -3559,7 +3573,7 @@ async def computer_use_run(payload: Dict[str, Any]):
     screenshot = base64.b64decode(screenshot_b64) if isinstance(screenshot_b64, str) else None
     # Preflight readiness check to avoid scheduling tasks that will fail immediately
     try:
-        avail = Modules.computer_use.is_available()
+        avail = await asyncio.to_thread(Modules.computer_use.is_available)
         if not avail.get("ready"):
             return JSONResponse(content={"success": False, "error": "ComputerUse not ready", "reasons": avail.get("reasons", [])}, status_code=503)
     except Exception as e:

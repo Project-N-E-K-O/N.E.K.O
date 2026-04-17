@@ -22,6 +22,12 @@ from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Main")
 
+# 关闭哨兵：core.py 通过 request_queue.put((TTS_SHUTDOWN_SENTINEL, None))
+# 通知 worker 退出主循环。不能复用 (None, None)，因为它已被用作"本轮 utterance
+# 结束、flush/commit 缓冲区"的信号（见 _non_bistream_tts_main_loop、step/qwen
+# worker 的 sid is None 分支）。两种语义必须分开。
+TTS_SHUTDOWN_SENTINEL = "__shutdown__"
+
 
 def _record_tts_telemetry(model_name: str, text: str):
     """Record TTS usage telemetry via TokenTracker."""
@@ -640,6 +646,9 @@ async def _non_bistream_tts_main_loop(
         except Exception:
             break
 
+        if sid == TTS_SHUTDOWN_SENTINEL:
+            break
+
         if sid == "__interrupt__":
             await _cancel_all()
             sentence_buf.clear()
@@ -903,6 +912,9 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                 except Exception:
                     break
 
+                if sid == TTS_SHUTDOWN_SENTINEL:
+                    break
+
                 if sid == "__interrupt__":
                     # 打断：立即关闭连接，不发 tts.text.done、不等服务器确认
                     if ws:
@@ -923,7 +935,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     current_speech_id = None
                     text_done_sent = False
                     continue
-                
+
                 if sid is None:
                     # 正常结束（非阻塞）：发送完成信号，但不等待服务器确认、不关闭连接
                     # 音频继续通过 receive_task 流入 response_queue，
@@ -1257,6 +1269,9 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         sid, tts_text = await loop.run_in_executor(None, request_queue.get)
                     except Exception:
                         break
+
+                if sid == TTS_SHUTDOWN_SENTINEL:
+                    break
 
                 if sid == "__interrupt__":
                     # 打断：立即关闭连接，不发 commit、不等服务器确认
@@ -1656,6 +1671,9 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
 
         sid, tts_text = request_queue.get()
 
+        if sid == TTS_SHUTDOWN_SENTINEL:
+            break
+
         if sid == "__interrupt__":
             # 打断：立即静音回调 → 关闭 synthesizer → 清理状态
             # 先 mute 再 close，确保旧 SDK websocket 线程不再往 response_queue 灌数据
@@ -1769,6 +1787,19 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                     last_streaming_call_time = None
                     callback.accepted_speech_id = None
                     callback.reset_bootstrap_state()
+
+    # 收到 TTS_SHUTDOWN_SENTINEL 退出循环后：静音回调并关闭 synthesizer，
+    # 避免 SDK 内部 WebSocket 线程继续往 response_queue 写数据。
+    callback._muted = True
+    if synthesizer is not None:
+        try:
+            synthesizer.close()
+        except Exception:
+            # best-effort：关闭路径不 raise，与文件内其他 synthesizer.close()
+            # 块保持一致（L1644 / 1683 / 1718 / 1770）。SDK WS 在关闭时通常
+            # 已被服务端回收，异常既常见又不可恢复，log 只会增噪。
+            pass
+        synthesizer = None
 
 
 def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
@@ -2047,8 +2078,8 @@ def openai_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
         while True:
             try:
                 sid, _ = request_queue.get()
-                if sid is None:
-                    continue
+                if sid == TTS_SHUTDOWN_SENTINEL:
+                    break
             except Exception:
                 break
         return
@@ -2275,6 +2306,9 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                 try:
                     sid, tts_text = await loop.run_in_executor(None, request_queue.get)
                 except Exception:
+                    break
+
+                if sid == TTS_SHUTDOWN_SENTINEL:
                     break
 
                 if sid == "__interrupt__":
@@ -2609,7 +2643,10 @@ def dummy_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
         try:
             # 持续清空队列以避免阻塞，但不做任何处理
             sid, tts_text = request_queue.get()
-            if sid is None or sid == "__interrupt__":
+            if sid == TTS_SHUTDOWN_SENTINEL:
+                break
+            # sid is None 是 end-of-utterance 信号，dummy 不做任何处理
+            if sid == "__interrupt__" or sid is None:
                 continue
         except Exception as e:
             logger.error(f"Dummy TTS Worker 错误: {e}")
@@ -2677,9 +2714,14 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
         tts_config = cm.get_model_api_config('tts_custom')
         if tts_config.get('is_custom'):
             base_url = tts_config.get('base_url') or ''
-            if base_url.startswith('http://') or base_url.startswith('https://'):
+            # GPT-SoVITS / local CosyVoice 需要用户显式启用 gptsovitsEnabled 开关，
+            # 仅 enableCustomApi + http URL 不应自动路由到 GPT-SoVITS。
+            core_cfg = cm.get_core_config()
+            gsv_enabled = core_cfg.get('gptsovitsEnabled', False)
+            if gsv_enabled and (base_url.startswith('http://') or base_url.startswith('https://')):
                 return gptsovits_tts_worker, None, 'gptsovits'
-            return local_cosyvoice_worker, None, 'local_cosyvoice'
+            if gsv_enabled and (base_url.startswith('ws://') or base_url.startswith('wss://')):
+                return local_cosyvoice_worker, None, 'local_cosyvoice'
     except Exception as e:
         logger.warning(f'TTS调度器检查报告:{e}')
 
@@ -2746,8 +2788,8 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
         while True:
             try:
                 sid, _ = request_queue.get()
-                if sid is None:
-                    continue
+                if sid == TTS_SHUTDOWN_SENTINEL:
+                    break
             except Exception:
                 break
         return
@@ -2853,6 +2895,9 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                 sid, tts_text = await loop.run_in_executor(None, request_queue.get)
             except Exception as e:
                 logger.error(f'队列获取异常: {e}')
+                break
+
+            if sid == TTS_SHUTDOWN_SENTINEL:
                 break
 
             if sid == "__interrupt__":
