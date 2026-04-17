@@ -500,11 +500,11 @@ async def upload_mmd_zip(file: UploadFile = File(...)):
                 for n in decoded_names
             ):
                 # ZIP 已含同名目录结构，直接解压到 mmd_dir
-                _extract_zip_with_encoding(zf, mmd_dir, name_map)
+                await asyncio.to_thread(_extract_zip_with_encoding, zf, mmd_dir, name_map)
             else:
                 # 解压到 target_dir
                 target_dir.mkdir(parents=True, exist_ok=True)
-                _extract_zip_with_encoding(zf, target_dir, name_map)
+                await asyncio.to_thread(_extract_zip_with_encoding, zf, target_dir, name_map)
 
         # 找到解压后的 PMX 路径
         pmx_candidates = []
