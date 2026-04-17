@@ -19,6 +19,7 @@ automatically promoted to persona.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 from datetime import datetime, timedelta
@@ -44,6 +45,21 @@ logger = get_module_logger(__name__, "Memory")
 
 # Minimum unabsorbed facts to trigger reflection synthesis
 MIN_FACTS_FOR_REFLECTION = 5
+
+
+def _reflection_id_from_facts(source_fact_ids: list[str]) -> str:
+    """根据 source fact ids 生成确定性 reflection id（P1 幂等性核心）。
+
+    同一批 facts 的重复合成产生相同 id，save_reflections + mark_absorbed
+    这对"半原子"操作在 kill 后重启重跑时可基于 id 去重——消灭致命点 3。
+
+    取 sha256 前 16 字符（64 bit）。单角色 reflection 规模远低于生日碰撞阈值。
+    """
+    h = hashlib.sha256()
+    for fid in sorted(source_fact_ids):
+        h.update(fid.encode('utf-8'))
+        h.update(b'\x00')  # 分隔符防 "ab" + "c" 与 "a" + "bc" 冲突
+    return f"ref_{h.hexdigest()[:16]}"
 # Days without denial → auto state transition
 AUTO_CONFIRM_DAYS = 3       # pending → confirmed
 AUTO_PROMOTE_DAYS = 3       # confirmed → promoted (persona)
@@ -243,6 +259,14 @@ class ReflectionEngine:
         """Synthesize pending reflections from accumulated unabsorbed facts.
 
         Called during proactive chat. Returns newly created reflections.
+
+        幂等性（P1 修复致命点 3）：
+          1. reflection id 由 source_fact_ids 决定（_reflection_id_from_facts）。
+          2. LLM 调用前先查：同一批 unabsorbed facts 对应的 id 若已在
+             reflections.json 中存在 → 跳过 LLM、仅补跑 mark_absorbed（幂等）。
+          3. save_reflections 亦按 id dedup，防 concurrent synth 双写。
+          4. 始终在末尾 amark_absorbed，确保 save 成功但 mark 失败后的
+             重启补跑能真正把 facts 的 absorbed 置为 True。
         """
         from config.prompts_memory import get_reflection_prompt
         from utils.language_utils import get_global_language
@@ -250,6 +274,21 @@ class ReflectionEngine:
 
         unabsorbed = await self._fact_store.aget_unabsorbed_facts(lanlan_name)
         if len(unabsorbed) < MIN_FACTS_FOR_REFLECTION:
+            return []
+
+        source_fact_ids = [f['id'] for f in unabsorbed]
+        rid = _reflection_id_from_facts(source_fact_ids)
+
+        # 幂等 short-circuit：同一批 facts 的 reflection 已持久化 →
+        # 不重复调 LLM，仅补跑 mark_absorbed（致命点 3 的重启补救路径）
+        existing_reflections = await self.aload_reflections(lanlan_name)
+        existing = next((r for r in existing_reflections if r.get('id') == rid), None)
+        if existing is not None:
+            await self._fact_store.amark_absorbed(lanlan_name, source_fact_ids)
+            logger.info(
+                f"[Reflection] {lanlan_name}: 检测到同批 facts 已合成过 reflection "
+                f"{rid}，跳过 LLM，补跑 mark_absorbed"
+            )
             return []
 
         _, _, _, _, name_mapping, _, _, _, _ = await self._config_manager.aget_character_data()
@@ -295,27 +334,33 @@ class ReflectionEngine:
         if not reflection_text:
             return []
 
-        # Create pending reflection
+        # Create pending reflection — id 已在函数开头由 source_fact_ids 决定
         now = datetime.now()
         reflection = {
-            'id': f"ref_{now.strftime('%Y%m%d%H%M%S')}",
+            'id': rid,
             'text': reflection_text,
             'entity': reflection_entity,
             'status': 'pending',  # pending | confirmed | denied | promoted | archived
-            'source_fact_ids': [f['id'] for f in unabsorbed],
+            'source_fact_ids': source_fact_ids,
             'created_at': now.isoformat(),
             'feedback': None,
             'next_eligible_at': (now + timedelta(minutes=REFLECTION_COOLDOWN_MINUTES)).isoformat(),
         }
 
+        # 再次 load：LLM 调用期间可能有并发 synth；用最新 list 做 id dedup 追加
         reflections = await self.aload_reflections(lanlan_name)
-        reflections.append(reflection)
-        await self.asave_reflections(lanlan_name, reflections)
+        if any(r.get('id') == rid for r in reflections):
+            logger.info(
+                f"[Reflection] {lanlan_name}: reflection {rid} 已被并发 synth 写入，跳过重复 append"
+            )
+        else:
+            reflections.append(reflection)
+            await self.asave_reflections(lanlan_name, reflections)
 
-        # Mark source facts as absorbed
-        await self._fact_store.amark_absorbed(lanlan_name, reflection['source_fact_ids'])
+        # 无条件 mark_absorbed：幂等，且覆盖 save 成功后但在此崩溃的补跑情况
+        await self._fact_store.amark_absorbed(lanlan_name, source_fact_ids)
 
-        logger.info(f"[Reflection] {lanlan_name}: 合成了新反思: {reflection_text[:50]}...")
+        logger.info(f"[Reflection] {lanlan_name}: 合成了新反思 {rid}: {reflection_text[:50]}...")
         return [reflection]
 
     # alias for backward compat (system_router calls .reflect())
