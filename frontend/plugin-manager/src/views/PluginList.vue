@@ -1,185 +1,263 @@
 <template>
-  <div class="plugin-list">
-    <el-tabs v-model="activeWorkbenchTab" class="workbench-tabs">
-      <el-tab-pane :label="$t('plugins.title')" name="plugins">
-        <el-card>
-          <template #header>
-            <div class="card-header">
-              <span>{{ $t('plugins.title') }}</span>
-              <div class="header-actions">
-                <el-button text @click="openPackageTab">包管理</el-button>
-                <el-button
-                  :type="showMetrics ? 'success' : 'default'"
-                  :icon="DataAnalysis"
-                  @click="toggleMetrics"
-                >
-                  {{ showMetrics ? $t('plugins.hideMetrics') : $t('plugins.showMetrics') }}
-                </el-button>
-                <el-button
-                  type="warning"
-                  :icon="RefreshRight"
-                  :loading="reloadingAll"
-                  :disabled="runningPlugins.length === 0"
-                  @click="handleReloadAll"
-                >
-                  {{ $t('plugins.reloadAll') }}
-                </el-button>
-                <el-button type="primary" :icon="Refresh" @click="handleRefresh" :loading="loading">
-                  {{ $t('common.refresh') }}
-                </el-button>
+  <div class="plugin-workbench" :class="{ 'plugin-workbench--package-open': packagePanelVisible }">
+    <section class="plugin-workbench__main">
+      <el-card class="plugin-list-card">
+        <template #header>
+          <div class="workbench-header">
+            <div class="workbench-header__copy">
+              <span class="workbench-header__title">{{ $t('plugins.title') }}</span>
+              <el-button
+                :type="multiSelectEnabled ? 'primary' : 'default'"
+                plain
+                @click="toggleMultiSelectMode"
+              >
+                {{ multiSelectEnabled ? $t('plugins.exitMultiSelect') : $t('plugins.multiSelect') }}
+              </el-button>
+            </div>
+
+            <div class="header-actions">
+              <el-button
+                :type="packagePanelVisible ? 'primary' : 'default'"
+                plain
+                @click="togglePackagePanel"
+              >
+                {{ packagePanelVisible ? '收起包管理' : '包管理' }}
+              </el-button>
+              <el-tag v-if="multiSelectEnabled" size="small" type="info">
+                {{ $t('plugins.selectedCount', { count: selectedCount }) }}
+              </el-tag>
+              <el-button v-if="multiSelectEnabled" text @click="selectAllVisible">
+                {{ $t('plugins.selectAllVisible') }}
+              </el-button>
+              <el-button v-if="multiSelectEnabled" text @click="clearSelection">
+                {{ $t('plugins.clearSelection') }}
+              </el-button>
+              <el-button
+                :type="showMetrics ? 'success' : 'default'"
+                :icon="DataAnalysis"
+                @click="toggleMetrics"
+              >
+                {{ showMetrics ? $t('plugins.hideMetrics') : $t('plugins.showMetrics') }}
+              </el-button>
+              <el-button
+                type="warning"
+                :icon="RefreshRight"
+                :loading="reloadingAll"
+                :disabled="runningPlugins.length === 0"
+                @click="handleReloadAll"
+              >
+                {{ $t('plugins.reloadAll') }}
+              </el-button>
+              <el-button type="primary" :icon="Refresh" :loading="loading" @click="handleRefresh">
+                {{ $t('common.refresh') }}
+              </el-button>
+            </div>
+          </div>
+
+          <div class="filter-bar" @mouseenter="showFilter" @mouseleave="scheduleHideFilter">
+            <Transition name="filter-fade" mode="out-in">
+              <div v-if="filterVisible" key="controls" class="filter-controls">
+                <el-input
+                  v-model="filterText"
+                  clearable
+                  class="filter-input"
+                  :placeholder="$t('plugins.filterPlaceholder')"
+                />
+                <el-switch
+                  v-model="useRegex"
+                  class="filter-switch"
+                  active-text="Regex"
+                  inactive-text="Text"
+                />
+                <el-radio-group v-model="filterMode" size="small" class="filter-mode">
+                  <el-radio-button label="whitelist">{{ $t('plugins.filterWhitelist') }}</el-radio-button>
+                  <el-radio-button label="blacklist">{{ $t('plugins.filterBlacklist') }}</el-radio-button>
+                </el-radio-group>
+                <span v-if="regexError" class="filter-error">{{ $t('plugins.invalidRegex') }}</span>
               </div>
-            </div>
+              <span v-else key="placeholder" class="filter-placeholder">
+                {{ $t('plugins.hoverToShowFilter') }}
+              </span>
+            </Transition>
+          </div>
 
-            <div class="filter-bar" @mouseenter="showFilter" @mouseleave="scheduleHideFilter">
-          <Transition name="filter-fade" mode="out-in">
-            <div v-if="filterVisible" key="controls" class="filter-controls">
-              <el-input
-                v-model="filterText"
-                clearable
-                class="filter-input"
-                :placeholder="$t('plugins.filterPlaceholder')"
-              />
-              <el-switch
-                v-model="useRegex"
-                class="filter-switch"
-                active-text="Regex"
-                inactive-text="Text"
-              />
-              <el-radio-group v-model="filterMode" size="small" class="filter-mode">
-                <el-radio-button label="whitelist">{{ $t('plugins.filterWhitelist') }}</el-radio-button>
-                <el-radio-button label="blacklist">{{ $t('plugins.filterBlacklist') }}</el-radio-button>
-              </el-radio-group>
-              <span v-if="regexError" class="filter-error">{{ $t('plugins.invalidRegex') }}</span>
-            </div>
-            <span v-else key="placeholder" class="filter-placeholder">{{ $t('plugins.hoverToShowFilter') }}</span>
-          </Transition>
-        </div>
-
-        <div class="type-filter-bar">
-          <el-checkbox-group v-model="selectedTypes" class="type-filter-group">
-            <el-checkbox-button label="plugin">
-              <el-icon><Box /></el-icon>
-              {{ $t('plugins.typePlugin') }} ({{ pluginCount }})
-            </el-checkbox-button>
-            <el-checkbox-button label="adapter">
-              <el-icon><Connection /></el-icon>
-              {{ $t('plugins.typeAdapter') }} ({{ adapterCount }})
-            </el-checkbox-button>
-            <el-checkbox-button label="extension">
-              <el-icon><Expand /></el-icon>
-              {{ $t('plugins.typeExtension') }} ({{ extensionCount }})
-            </el-checkbox-button>
-          </el-checkbox-group>
-        </div>
-          </template>
-
-          <LoadingSpinner v-if="loading && rawPlugins.length === 0" :loading="true" :text="$t('common.loading')" />
-          <EmptyState v-else-if="rawPlugins.length === 0" :description="$t('plugins.noPlugins')" />
-          
-          <template v-else>
-            <template v-if="filteredPurePlugins.length > 0">
-              <div class="section-header">
-                <span class="section-title">
+          <div class="workbench-toolbar">
+            <div class="type-filter-bar">
+              <el-checkbox-group v-model="selectedTypes" class="type-filter-group">
+                <el-checkbox-button label="plugin">
                   <el-icon><Box /></el-icon>
-                  {{ $t('plugins.pluginsSection') }} ({{ filteredPurePlugins.length }})
-                </span>
-              </div>
-              <TransitionGroup name="list" tag="div" class="plugin-grid">
-                <div
-                  v-for="plugin in filteredPurePlugins"
-                  :key="plugin.id"
-                  class="plugin-item"
-                >
-                  <PluginCard
-                    :plugin="plugin"
-                    :show-metrics="showMetrics"
-                    @click="handlePluginClick(plugin.id)"
-                    @contextmenu="handlePluginContextMenu($event, plugin)"
-                  />
-                </div>
-              </TransitionGroup>
-            </template>
-
-            <template v-if="filteredAdapters.length > 0">
-              <div class="section-header section-header--adapter">
-                <span class="section-title">
+                  {{ $t('plugins.typePlugin') }} ({{ pluginCount }})
+                </el-checkbox-button>
+                <el-checkbox-button label="adapter">
                   <el-icon><Connection /></el-icon>
-                  {{ $t('plugins.adaptersSection') }} ({{ filteredAdapters.length }})
-                </span>
-              </div>
-              <TransitionGroup name="list" tag="div" class="plugin-grid">
-                <div
-                  v-for="adapter in filteredAdapters"
-                  :key="adapter.id"
-                  class="plugin-item"
-                >
-                  <PluginCard
-                    :plugin="adapter"
-                    :show-metrics="showMetrics"
-                    @click="handlePluginClick(adapter.id)"
-                    @contextmenu="handlePluginContextMenu($event, adapter)"
-                  />
-                </div>
-              </TransitionGroup>
-            </template>
-
-            <template v-if="filteredExtensions.length > 0">
-              <div class="section-header section-header--ext">
-                <span class="section-title">
+                  {{ $t('plugins.typeAdapter') }} ({{ adapterCount }})
+                </el-checkbox-button>
+                <el-checkbox-button label="extension">
                   <el-icon><Expand /></el-icon>
-                  {{ $t('plugins.extensionsSection') }} ({{ filteredExtensions.length }})
-                </span>
-              </div>
-              <TransitionGroup name="list" tag="div" class="plugin-grid">
-                <div
-                  v-for="ext in filteredExtensions"
-                  :key="ext.id"
-                  class="plugin-item"
-                >
-                  <PluginCard
-                    :plugin="ext"
-                    :show-metrics="showMetrics"
-                    @click="handlePluginClick(ext.id)"
-                    @contextmenu="handlePluginContextMenu($event, ext)"
+                  {{ $t('plugins.typeExtension') }} ({{ extensionCount }})
+                </el-checkbox-button>
+              </el-checkbox-group>
+            </div>
+
+            <div class="layout-toolbar">
+              <span class="layout-toolbar__label">视图</span>
+              <el-radio-group v-model="layoutMode" size="small">
+                <el-radio-button label="list">列表</el-radio-button>
+                <el-radio-button label="single">单排</el-radio-button>
+                <el-radio-button label="double">双排</el-radio-button>
+                <el-radio-button label="compact">紧凑</el-radio-button>
+              </el-radio-group>
+            </div>
+          </div>
+        </template>
+
+        <div v-if="packagePanelVisible" class="package-panel-indicator">
+          <el-tag size="small" type="primary">包管理已展开</el-tag>
+          <span class="package-panel-indicator__text">
+            当前筛选和多选结果会直接同步到右侧包管理面板。
+          </span>
+        </div>
+
+        <LoadingSpinner
+          v-if="loading && rawPlugins.length === 0"
+          :loading="true"
+          :text="$t('common.loading')"
+        />
+        <EmptyState v-else-if="rawPlugins.length === 0" :description="$t('plugins.noPlugins')" />
+
+        <template v-else>
+          <template v-if="filteredPurePlugins.length > 0">
+            <div class="section-header">
+              <span class="section-title">
+                <el-icon><Box /></el-icon>
+                {{ $t('plugins.pluginsSection') }} ({{ filteredPurePlugins.length }})
+              </span>
+            </div>
+            <TransitionGroup name="list" tag="div" class="plugin-grid" :class="pluginGridClass">
+              <div
+                v-for="plugin in filteredPurePlugins"
+                :key="plugin.id"
+                class="plugin-item"
+                :class="pluginItemClass(plugin.id)"
+              >
+                <div v-if="multiSelectEnabled" class="plugin-item__select">
+                  <el-checkbox
+                    :model-value="isSelected(plugin.id)"
+                    @click.stop
+                    @change="togglePluginSelection(plugin.id)"
                   />
                 </div>
-              </TransitionGroup>
-            </template>
+                <component
+                  :is="layoutMode === 'list' ? PluginListRow : PluginCard"
+                  :plugin="plugin"
+                  :is-selected="multiSelectEnabled && isSelected(plugin.id)"
+                  :show-metrics="showMetrics"
+                  @click="handlePluginPrimaryAction(plugin.id)"
+                  @contextmenu="handlePluginContextMenu($event, plugin)"
+                />
+              </div>
+            </TransitionGroup>
           </template>
-        </el-card>
 
-        <PluginContextMenu
-          :visible="contextMenuVisible"
-          :x="contextMenuPosition.x"
-          :y="contextMenuPosition.y"
-          :actions="contextMenuActions"
-          @close="closePluginContextMenu"
-          @select="handleContextActionSelect"
-        />
+          <template v-if="filteredAdapters.length > 0">
+            <div class="section-header section-header--adapter">
+              <span class="section-title">
+                <el-icon><Connection /></el-icon>
+                {{ $t('plugins.adaptersSection') }} ({{ filteredAdapters.length }})
+              </span>
+            </div>
+            <TransitionGroup name="list" tag="div" class="plugin-grid" :class="pluginGridClass">
+              <div
+                v-for="adapter in filteredAdapters"
+                :key="adapter.id"
+                class="plugin-item"
+                :class="pluginItemClass(adapter.id)"
+              >
+                <div v-if="multiSelectEnabled" class="plugin-item__select">
+                  <el-checkbox
+                    :model-value="isSelected(adapter.id)"
+                    @click.stop
+                    @change="togglePluginSelection(adapter.id)"
+                  />
+                </div>
+                <component
+                  :is="layoutMode === 'list' ? PluginListRow : PluginCard"
+                  :plugin="adapter"
+                  :is-selected="multiSelectEnabled && isSelected(adapter.id)"
+                  :show-metrics="showMetrics"
+                  @click="handlePluginPrimaryAction(adapter.id)"
+                  @contextmenu="handlePluginContextMenu($event, adapter)"
+                />
+              </div>
+            </TransitionGroup>
+          </template>
 
-        <PluginDangerConfirmDialog
-          :visible="dangerDialogVisible"
-          :loading="dangerDialogLoading"
-          :title="t('plugins.dangerDialog.title')"
-          :message="pendingDangerAction?.confirm_message || t('plugins.dangerDialog.deleteMessage', {
-            pluginName: pendingDangerPlugin?.name || pendingDangerPlugin?.id || '',
-          })"
-          :hint="t('plugins.dangerDialog.hint')"
-          :action-label="pendingDangerAction?.label || t('plugins.delete')"
-          :warning-title="t('plugins.dangerDialog.warningTitle')"
-          :cancel-label="t('common.cancel')"
-          :loading-label="t('plugins.dangerDialog.loading')"
-          :hold-idle-label="t('plugins.dangerDialog.holdIdle')"
-          :hold-active-label="t('plugins.dangerDialog.holdActive')"
-          @close="closeDangerDialog"
-          @confirm="handleDangerActionConfirm"
-        />
-      </el-tab-pane>
+          <template v-if="filteredExtensions.length > 0">
+            <div class="section-header section-header--ext">
+              <span class="section-title">
+                <el-icon><Expand /></el-icon>
+                {{ $t('plugins.extensionsSection') }} ({{ filteredExtensions.length }})
+              </span>
+            </div>
+            <TransitionGroup name="list" tag="div" class="plugin-grid" :class="pluginGridClass">
+              <div
+                v-for="ext in filteredExtensions"
+                :key="ext.id"
+                class="plugin-item"
+                :class="pluginItemClass(ext.id)"
+              >
+                <div v-if="multiSelectEnabled" class="plugin-item__select">
+                  <el-checkbox
+                    :model-value="isSelected(ext.id)"
+                    @click.stop
+                    @change="togglePluginSelection(ext.id)"
+                  />
+                </div>
+                <component
+                  :is="layoutMode === 'list' ? PluginListRow : PluginCard"
+                  :plugin="ext"
+                  :is-selected="multiSelectEnabled && isSelected(ext.id)"
+                  :show-metrics="showMetrics"
+                  @click="handlePluginPrimaryAction(ext.id)"
+                  @contextmenu="handlePluginContextMenu($event, ext)"
+                />
+              </div>
+            </TransitionGroup>
+          </template>
+        </template>
+      </el-card>
+    </section>
 
-      <el-tab-pane label="包管理" name="packages">
-        <PackageManagerPanel />
-      </el-tab-pane>
-    </el-tabs>
+    <aside class="plugin-workbench__side" :class="{ 'plugin-workbench__side--visible': packagePanelVisible }">
+      <PackageManagerPanel embedded @close="closePackagePanel" />
+    </aside>
+
+    <PluginContextMenu
+      :visible="contextMenuVisible"
+      :x="contextMenuPosition.x"
+      :y="contextMenuPosition.y"
+      :actions="contextMenuActions"
+      @close="closePluginContextMenu"
+      @select="handleContextActionSelect"
+    />
+
+    <PluginDangerConfirmDialog
+      :visible="dangerDialogVisible"
+      :loading="dangerDialogLoading"
+      :title="t('plugins.dangerDialog.title')"
+      :message="pendingDangerAction?.confirm_message || t('plugins.dangerDialog.deleteMessage', {
+        pluginName: pendingDangerPlugin?.name || pendingDangerPlugin?.id || '',
+      })"
+      :hint="t('plugins.dangerDialog.hint')"
+      :action-label="pendingDangerAction?.label || t('plugins.delete')"
+      :warning-title="t('plugins.dangerDialog.warningTitle')"
+      :cancel-label="t('common.cancel')"
+      :loading-label="t('plugins.dangerDialog.loading')"
+      :hold-idle-label="t('plugins.dangerDialog.holdIdle')"
+      :hold-active-label="t('plugins.dangerDialog.holdActive')"
+      @close="closeDangerDialog"
+      @confirm="handleDangerActionConfirm"
+    />
   </div>
 </template>
 
@@ -191,6 +269,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
 import PluginCard from '@/components/plugin/PluginCard.vue'
+import PluginListRow from '@/components/plugin/PluginListRow.vue'
 import PluginContextMenu from '@/components/plugin/PluginContextMenu.vue'
 import PluginDangerConfirmDialog from '@/components/plugin/PluginDangerConfirmDialog.vue'
 import PackageManagerPanel from '@/components/plugin/PackageManagerPanel.vue'
@@ -198,6 +277,7 @@ import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import { reloadAllPlugins } from '@/api/plugins'
 import { usePluginListContextActions, type ResolvedPluginListAction } from '@/composables/usePluginListContextActions'
+import { usePluginWorkbench } from '@/composables/usePluginWorkbench'
 import { METRICS_REFRESH_INTERVAL } from '@/utils/constants'
 import { useI18n } from 'vue-i18n'
 import type { PluginMeta } from '@/types/api'
@@ -209,8 +289,8 @@ const metricsStore = useMetricsStore()
 const { t } = useI18n()
 const { buildActions, executeAction, shouldUseHoldConfirm } = usePluginListContextActions()
 
-const activeWorkbenchTab = ref<string>('plugins')
 const reloadingAll = ref(false)
+const packagePanelVisible = ref(false)
 const contextMenuVisible = ref(false)
 const contextMenuPosition = ref({ x: 0, y: 0 })
 const contextMenuPlugin = ref<(PluginMeta & { status?: string; enabled?: boolean; autoStart?: boolean }) | null>(null)
@@ -222,39 +302,43 @@ const pendingDangerPlugin = ref<(PluginMeta & { status?: string; enabled?: boole
 
 const rawPlugins = computed(() => pluginStore.pluginsWithStatus)
 const rawNormalPlugins = computed(() => pluginStore.normalPlugins)
-const rawExtensions = computed(() => pluginStore.extensions)
+const {
+  filterText,
+  useRegex,
+  filterMode,
+  selectedTypes,
+  layoutMode,
+  selectedCount,
+  multiSelectEnabled,
+  regexError,
+  pluginCount,
+  adapterCount,
+  extensionCount,
+  filteredPurePlugins,
+  filteredAdapters,
+  filteredExtensions,
+  isSelected,
+  togglePlugin: togglePluginSelection,
+  selectAllVisible,
+  clearSelection,
+  pruneSelection,
+  toggleMultiSelect,
+} = usePluginWorkbench(rawPlugins)
 
-// 类型过滤
-const selectedTypes = ref<string[]>(['plugin', 'adapter', 'extension'])
-
-// 判断插件类型（仅依赖 type 字段，避免基于名称的不可靠猜测）
-function getPluginType(plugin: any): 'plugin' | 'adapter' | 'extension' {
-  if (plugin.type === 'extension') return 'extension'
-  if (plugin.type === 'adapter') return 'adapter'
-  return 'plugin'
-}
-
-// 各类型数量
-const pluginCount = computed(() => 
-  rawPlugins.value.filter(p => getPluginType(p) === 'plugin').length
-)
-const adapterCount = computed(() => 
-  rawPlugins.value.filter(p => getPluginType(p) === 'adapter').length
-)
-const extensionCount = computed(() => 
-  rawPlugins.value.filter(p => getPluginType(p) === 'extension').length
-)
-
-// 按类型过滤的插件列表
-const rawAdapters = computed(() => 
-  rawPlugins.value.filter(p => getPluginType(p) === 'adapter')
-)
-const rawPurePlugins = computed(() => 
-  rawPlugins.value.filter(p => getPluginType(p) === 'plugin')
-)
-
+const loading = computed(() => pluginStore.loading)
+const pluginGridClass = computed(() => `plugin-grid--${layoutMode.value}`)
 const filterVisible = ref(false)
+const showMetrics = ref(false)
 let hideTimer: number | null = null
+let metricsRefreshTimer: number | null = null
+
+function pluginItemClass(pluginId: string) {
+  return {
+    'plugin-item--selection-mode': multiSelectEnabled.value,
+    'plugin-item--selected': multiSelectEnabled.value && isSelected(pluginId),
+    'plugin-item--list-layout': layoutMode.value === 'list',
+  }
+}
 
 function showFilter() {
   if (hideTimer) {
@@ -271,57 +355,6 @@ function scheduleHideFilter() {
     hideTimer = null
   }, 1000)
 }
-const filterText = ref('')
-const useRegex = ref(false)
-const filterMode = ref<'whitelist' | 'blacklist'>('whitelist')
-const regexError = ref(false)
-function applyFilter<T extends { id: string; name: string; description: string }>(list: T[]): T[] {
-  const text = filterText.value.trim()
-  if (!text) {
-    regexError.value = false
-    return list
-  }
-
-  if (useRegex.value) {
-    try {
-      const re = new RegExp(text, 'i')
-      regexError.value = false
-      const matches = (p: T) => re.test(p.id || '') || re.test(p.name || '') || re.test(p.description || '')
-      return filterMode.value === 'blacklist' ? list.filter(p => !matches(p)) : list.filter(p => matches(p))
-    } catch {
-      regexError.value = true
-      return list
-    }
-  }
-
-  regexError.value = false
-  const lower = text.toLowerCase()
-  const match = (p: T) => {
-    return (p.id || '').toLowerCase().includes(lower) ||
-           (p.name || '').toLowerCase().includes(lower) ||
-           (p.description || '').toLowerCase().includes(lower)
-  }
-  return filterMode.value === 'blacklist' ? list.filter(p => !match(p)) : list.filter(p => match(p))
-}
-
-// 应用文本过滤和类型过滤
-const filteredPurePlugins = computed(() => {
-  if (!selectedTypes.value.includes('plugin')) return []
-  return applyFilter(rawPurePlugins.value || [])
-})
-const filteredAdapters = computed(() => {
-  if (!selectedTypes.value.includes('adapter')) return []
-  return applyFilter(rawAdapters.value || [])
-})
-const filteredExtensions = computed(() => {
-  if (!selectedTypes.value.includes('extension')) return []
-  return applyFilter(rawExtensions.value || [])
-})
-// 兼容旧代码
-const filteredNormalPlugins = computed(() => [...filteredPurePlugins.value, ...filteredAdapters.value])
-const loading = computed(() => pluginStore.loading)
-const showMetrics = ref(false)
-let metricsRefreshTimer: number | null = null
 
 async function handleRefresh() {
   let warningMessage = ''
@@ -380,6 +413,26 @@ function stopMetricsAutoRefresh() {
 function handlePluginClick(pluginId: string) {
   const safeId = encodeURIComponent(pluginId)
   router.push(`/plugins/${safeId}`)
+}
+
+function handlePluginPrimaryAction(pluginId: string) {
+  if (multiSelectEnabled.value) {
+    togglePluginSelection(pluginId)
+    return
+  }
+  handlePluginClick(pluginId)
+}
+
+function toggleMultiSelectMode() {
+  toggleMultiSelect()
+}
+
+function togglePackagePanel() {
+  packagePanelVisible.value = !packagePanelVisible.value
+}
+
+function closePackagePanel() {
+  packagePanelVisible.value = false
 }
 
 function closePluginContextMenu() {
@@ -473,12 +526,10 @@ async function handleDangerActionConfirm() {
   }
 }
 
-// 获取运行中的普通插件列表（排除 extension）
 const runningPlugins = computed(() => {
-  return rawNormalPlugins.value.filter(p => p.status === 'running' && p.enabled !== false)
+  return rawNormalPlugins.value.filter((plugin) => plugin.status === 'running' && plugin.enabled !== false)
 })
 
-// 全局重载所有运行中的插件（使用后端批量 API）
 async function handleReloadAll() {
   const plugins = runningPlugins.value
   if (plugins.length === 0) return
@@ -490,8 +541,8 @@ async function handleReloadAll() {
       {
         confirmButtonText: t('common.confirm'),
         cancelButtonText: t('common.cancel'),
-        type: 'warning'
-      }
+        type: 'warning',
+      },
     )
   } catch {
     return
@@ -500,14 +551,11 @@ async function handleReloadAll() {
   reloadingAll.value = true
 
   try {
-    // 使用后端批量 API，避免锁竞争导致超时
     const result = await reloadAllPlugins()
-    
     const successCount = result.reloaded.length
     const failCount = result.failed.length
 
-    // 记录失败的插件
-    result.failed.forEach(item => {
+    result.failed.forEach((item) => {
       console.error(`Failed to reload plugin ${item.plugin_id}:`, item.error)
     })
 
@@ -523,30 +571,46 @@ async function handleReloadAll() {
     reloadingAll.value = false
   }
 
-  // 刷新列表
   await handleRefresh()
 }
 
-function openPackageTab() {
-  activeWorkbenchTab.value = 'packages'
-}
+watch(
+  rawPlugins,
+  (plugins) => {
+    pruneSelection(plugins.map((plugin) => plugin.id))
+  },
+  { immediate: true },
+)
 
-onMounted(async () => {
-  if (route.query.tab === 'packages') {
-    activeWorkbenchTab.value = 'packages'
-  }
-  await handleRefresh()
-})
+watch(
+  () => route.query.tab,
+  (tab) => {
+    const shouldOpen = tab === 'packages'
+    if (packagePanelVisible.value !== shouldOpen) {
+      packagePanelVisible.value = shouldOpen
+    }
+  },
+  { immediate: true },
+)
 
-watch(activeWorkbenchTab, (tab) => {
+watch(packagePanelVisible, (visible) => {
   closePluginContextMenu()
   const nextQuery = { ...route.query }
-  if (tab === 'packages') {
+  if (visible) {
     nextQuery.tab = 'packages'
   } else {
     delete nextQuery.tab
   }
+  const currentTab = typeof route.query.tab === 'string' ? route.query.tab : undefined
+  const nextTab = typeof nextQuery.tab === 'string' ? nextQuery.tab : undefined
+  if (currentTab === nextTab) {
+    return
+  }
   router.replace({ path: route.path, query: nextQuery })
+})
+
+onMounted(async () => {
+  await handleRefresh()
 })
 
 onUnmounted(() => {
@@ -561,36 +625,96 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.plugin-workbench {
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+  min-width: 0;
+}
+
+.plugin-workbench__main {
+  flex: 1 1 auto;
+  min-width: 0;
+  transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.plugin-workbench--package-open .plugin-workbench__main {
+  transform: translateX(-6px);
+}
+
+.plugin-workbench__side {
+  flex: 0 0 0;
+  width: 0;
+  min-width: 0;
+  max-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  transform: translateX(28px) scale(0.985);
+  transform-origin: right center;
+  transition:
+    max-width 0.32s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.26s ease,
+    transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.plugin-workbench__side--visible {
+  flex-basis: min(620px, 42vw);
+  width: min(620px, 42vw);
+  min-width: min(420px, 100%);
+  max-width: min(620px, 42vw);
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0) scale(1);
+}
+
+.plugin-list-card {
+  border-radius: 24px;
+}
+
+.workbench-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.workbench-header__copy {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.workbench-header__title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--el-text-color-primary);
+}
+
+.header-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .filter-bar {
   margin-top: 16px;
-  padding: 12px;
-  background-color: var(--el-fill-color-light);
-  border-radius: 4px;
+  padding: 14px 16px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--el-fill-color-light) 78%, white), color-mix(in srgb, var(--el-color-primary) 4%, white));
+  border: 1px solid color-mix(in srgb, var(--el-color-primary) 8%, var(--el-border-color));
+  border-radius: 18px;
   display: flex;
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
-  min-height: 56px;
+  min-height: 62px;
   box-sizing: border-box;
-}
-
-.filter-input {
-  flex: 1;
-  min-width: 200px;
-}
-
-.filter-switch {
-  flex-shrink: 0;
-}
-
-.filter-mode {
-  flex-shrink: 0;
-}
-
-.filter-error {
-  color: var(--el-color-danger);
-  font-size: 12px;
-  flex-shrink: 0;
 }
 
 .filter-controls {
@@ -601,11 +725,211 @@ onUnmounted(() => {
   width: 100%;
 }
 
+.filter-input {
+  flex: 1;
+  min-width: 220px;
+}
+
+.filter-switch,
+.filter-mode {
+  flex-shrink: 0;
+}
+
+.filter-error {
+  color: var(--el-color-danger);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
 .filter-placeholder {
   color: var(--el-text-color-placeholder);
   font-style: italic;
   font-size: 14px;
   line-height: 32px;
+}
+
+.workbench-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  padding: 12px 16px;
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--el-fill-color-light) 72%, white);
+}
+
+.type-filter-bar {
+  flex: 1 1 420px;
+  min-width: 0;
+}
+
+.type-filter-group {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.type-filter-group .el-checkbox-button {
+  --el-checkbox-button-checked-bg-color: var(--el-color-primary);
+}
+
+.type-filter-group .el-checkbox-button__inner {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.layout-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.layout-toolbar__label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--el-text-color-secondary);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.package-panel-indicator {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--el-color-primary-light-9) 60%, white);
+  border: 1px solid color-mix(in srgb, var(--el-color-primary) 10%, var(--el-border-color));
+}
+
+.package-panel-indicator__text {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.section-header {
+  margin-bottom: 12px;
+}
+
+.section-header--adapter,
+.section-header--ext {
+  margin-top: 24px;
+}
+
+.section-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.plugin-grid {
+  display: grid;
+  gap: 16px;
+  align-items: stretch;
+}
+
+.plugin-grid--list,
+.plugin-grid--single {
+  grid-template-columns: 1fr;
+}
+
+.plugin-grid--double {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.plugin-grid--compact {
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+}
+
+.plugin-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.plugin-item--selection-mode {
+  padding-top: 10px;
+}
+
+.plugin-item__select {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  min-height: 30px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--el-bg-color) 78%, white);
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--el-text-color-primary) 10%, transparent);
+  backdrop-filter: blur(10px);
+}
+
+.plugin-item--list-layout.plugin-item--selection-mode {
+  padding-top: 0;
+}
+
+.plugin-item--list-layout .plugin-item__select {
+  top: 50%;
+  left: 16px;
+  transform: translateY(-50%);
+}
+
+.plugin-item--list-layout.plugin-item--selection-mode :deep(.plugin-list-row-card .el-card__body) {
+  padding-left: 60px;
+}
+
+.plugin-item--selected :deep(.plugin-card) {
+  border-color: var(--el-color-primary);
+  box-shadow:
+    0 16px 32px color-mix(in srgb, var(--el-color-primary) 16%, transparent),
+    0 6px 14px color-mix(in srgb, var(--el-text-color-primary) 8%, transparent);
+}
+
+.plugin-item--selected :deep(.plugin-list-row-card) {
+  border-color: var(--el-color-primary);
+}
+
+.plugin-item--list-layout :deep(.plugin-list-row-card) {
+  min-height: 0;
+}
+
+.plugin-item :deep(.plugin-card) {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  transition:
+    transform 0.24s ease,
+    box-shadow 0.24s ease,
+    border-color 0.24s ease;
+}
+
+.plugin-item:hover :deep(.plugin-card) {
+  transform: translateY(-3px);
+}
+
+.plugin-item :deep(.el-card__body) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.plugin-card-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
 }
 
 .filter-fade-enter-active,
@@ -629,98 +953,6 @@ onUnmounted(() => {
   transform: translateY(0);
 }
 
-.plugin-list {
-  padding: 0;
-}
-
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.header-actions {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.workbench-tabs :deep(.el-tabs__header) {
-  margin-bottom: 16px;
-}
-
-.section-header {
-  margin-bottom: 12px;
-}
-
-.section-header--ext {
-  margin-top: 24px;
-}
-
-.section-header--adapter {
-  margin-top: 24px;
-}
-
-.type-filter-bar {
-  margin-top: 12px;
-  padding: 8px 0;
-}
-
-.type-filter-group {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.type-filter-group .el-checkbox-button {
-  --el-checkbox-button-checked-bg-color: var(--el-color-primary);
-}
-
-.type-filter-group .el-checkbox-button__inner {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.section-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--el-text-color-primary);
-}
-
-.plugin-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 16px;
-  align-items: stretch;
-}
-
-.plugin-item {
-  display: flex;
-  flex-direction: column;
-  height: 100%; /* 确保项目占满网格单元格高度 */
-}
-
-.plugin-item :deep(.plugin-card) {
-  height: 100%; /* 让卡片占满容器高度 */
-  display: flex;
-  flex-direction: column;
-}
-
-.plugin-item :deep(.el-card__body) {
-  flex: 1; /* 让卡片内容区域自动填充剩余空间 */
-  display: flex;
-  flex-direction: column;
-}
-
-.plugin-card-body {
-  flex: 1; /* 让卡片主体内容区域自动填充 */
-  display: flex;
-  flex-direction: column;
-}
-
-/* 列表项过渡动画 */
 .list-enter-active,
 .list-leave-active {
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
@@ -740,4 +972,32 @@ onUnmounted(() => {
   transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+@media (max-width: 1280px) {
+  .plugin-workbench {
+    flex-direction: column;
+  }
+
+  .plugin-workbench--package-open .plugin-workbench__main {
+    transform: none;
+  }
+
+  .plugin-workbench__side,
+  .plugin-workbench__side--visible {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    transform: translateY(16px) scale(0.99);
+  }
+
+  .plugin-workbench__side--visible {
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (max-width: 900px) {
+  .plugin-grid--double,
+  .plugin-grid--compact {
+    grid-template-columns: 1fr;
+  }
+}
 </style>

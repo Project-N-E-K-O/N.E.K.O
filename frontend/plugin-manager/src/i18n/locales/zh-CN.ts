@@ -160,6 +160,11 @@ export default {
     typePlugin: '插件',
     typeAdapter: '适配器',
     typeExtension: '扩展',
+    multiSelect: '多选',
+    exitMultiSelect: '退出多选',
+    selectedCount: '已选 {count} 项',
+    selectAllVisible: '全选当前',
+    clearSelection: '清空选择',
     contextSections: {
       navigation: '浏览',
       runtime: '运行',

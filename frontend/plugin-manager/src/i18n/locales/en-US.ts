@@ -160,6 +160,11 @@ export default {
     typePlugin: 'Plugin',
     typeAdapter: 'Adapter',
     typeExtension: 'Extension',
+    multiSelect: 'Multi-select',
+    exitMultiSelect: 'Exit Multi-select',
+    selectedCount: '{count} selected',
+    selectAllVisible: 'Select Visible',
+    clearSelection: 'Clear Selection',
     contextSections: {
       navigation: 'Browse',
       runtime: 'Runtime',

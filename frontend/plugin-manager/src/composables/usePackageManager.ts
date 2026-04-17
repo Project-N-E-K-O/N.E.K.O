@@ -16,18 +16,19 @@ import {
   type PluginCliUnpackRequest,
 } from '@/api/pluginCli'
 import { usePluginStore } from '@/stores/plugin'
-import type { PluginMeta } from '@/types/api'
+import {
+  usePluginWorkbench,
+  type PluginWorkbenchGroupType,
+  type PluginWorkbenchItem,
+  type PluginWorkbenchLayoutMode,
+} from '@/composables/usePluginWorkbench'
 
-export type LayoutMode = 'list' | 'single' | 'double' | 'compact'
+export type LayoutMode = PluginWorkbenchLayoutMode
 export type PackMode = PluginCliPackMode
-export type PluginGroupType = 'plugin' | 'adapter' | 'extension'
+export type PluginGroupType = PluginWorkbenchGroupType
 export type PackageResultKind = '' | 'pack' | 'inspect' | 'verify' | 'unpack' | 'analyze'
 
-export type SelectablePlugin = PluginMeta & {
-  type: PluginGroupType
-  enabled?: boolean
-  autoStart?: boolean
-}
+export type SelectablePlugin = PluginWorkbenchItem
 
 export type PackageResultRecord = {
   id: string
@@ -45,12 +46,8 @@ export function usePackageManager() {
   const pluginStore = usePluginStore()
 
   const activeTab = ref('pack')
-  const layoutMode = ref<LayoutMode>('double')
   const packMode = ref<PackMode>('selected')
-  const pluginFilter = ref('')
   const localPluginIds = ref<string[]>([])
-  const selectedPluginIds = ref<string[]>([])
-  const selectedTypes = ref<PluginGroupType[]>(['plugin', 'adapter', 'extension'])
   const pluginsLoading = ref(false)
   const packagesLoading = ref(false)
   const localPackages = ref<PluginCliLocalPackageItem[]>([])
@@ -131,32 +128,25 @@ export function usePackageManager() {
       )
     })
   })
-
-  const filteredPlugins = computed(() => {
-    const keyword = pluginFilter.value.trim().toLowerCase()
-    return selectablePlugins.value.filter((plugin) => {
-      if (!selectedTypes.value.includes(plugin.type)) {
-        return false
-      }
-      if (!keyword) {
-        return true
-      }
-      return (
-        plugin.id.toLowerCase().includes(keyword) ||
-        plugin.name.toLowerCase().includes(keyword) ||
-        plugin.description.toLowerCase().includes(keyword) ||
-        plugin.type.toLowerCase().includes(keyword)
-      )
-    })
-  })
-
-  const pluginCount = computed(() => selectablePlugins.value.filter((plugin) => plugin.type === 'plugin').length)
-  const adapterCount = computed(() => selectablePlugins.value.filter((plugin) => plugin.type === 'adapter').length)
-  const extensionCount = computed(() => selectablePlugins.value.filter((plugin) => plugin.type === 'extension').length)
-
-  const filteredPurePlugins = computed(() => filteredPlugins.value.filter((plugin) => plugin.type === 'plugin'))
-  const filteredAdapters = computed(() => filteredPlugins.value.filter((plugin) => plugin.type === 'adapter'))
-  const filteredExtensions = computed(() => filteredPlugins.value.filter((plugin) => plugin.type === 'extension'))
+  const {
+    filterText: pluginFilter,
+    useRegex,
+    filterMode,
+    selectedTypes,
+    layoutMode,
+    selectedPluginIds,
+    regexError,
+    pluginCount,
+    adapterCount,
+    extensionCount,
+    filteredPurePlugins,
+    filteredAdapters,
+    filteredExtensions,
+    setSelectedPluginIds,
+    togglePlugin: toggleWorkbenchPlugin,
+    selectAllVisible,
+    clearSelection,
+  } = usePluginWorkbench(selectablePlugins)
 
   const resolvedPackTargets = computed(() => {
     if (packMode.value === 'all') {
@@ -576,21 +566,7 @@ export function usePackageManager() {
   }
 
   function togglePlugin(pluginId: string) {
-    if (selectedPluginIds.value.includes(pluginId)) {
-      selectedPluginIds.value = selectedPluginIds.value.filter((item) => item !== pluginId)
-      return
-    }
-    selectedPluginIds.value = [...selectedPluginIds.value, pluginId]
-  }
-
-  function selectAllVisible() {
-    selectedPluginIds.value = Array.from(
-      new Set([...selectedPluginIds.value, ...filteredPlugins.value.map((plugin) => plugin.id)])
-    )
-  }
-
-  function clearSelection() {
-    selectedPluginIds.value = []
+    toggleWorkbenchPlugin(pluginId)
   }
 
   async function refreshPluginSources() {
@@ -599,11 +575,7 @@ export function usePackageManager() {
       const syncResult = await pluginStore.syncRegistryAndFetch()
       const response = await getPluginCliPlugins()
       localPluginIds.value = response.plugins
-      if (selectedPluginIds.value.length === 0) {
-        selectedPluginIds.value = response.plugins.slice(0, 1)
-      } else {
-        selectedPluginIds.value = selectedPluginIds.value.filter((pluginId) => response.plugins.includes(pluginId))
-      }
+      setSelectedPluginIds(selectedPluginIds.value.filter((pluginId) => response.plugins.includes(pluginId)))
       if (syncResult.warningMessage) {
         ElMessage.warning(syncResult.warningMessage)
       }
@@ -853,7 +825,10 @@ export function usePackageManager() {
     layoutMode,
     packMode,
     pluginFilter,
+    useRegex,
+    filterMode,
     selectedTypes,
+    regexError,
     pluginsLoading,
     packagesLoading,
     localPackages,

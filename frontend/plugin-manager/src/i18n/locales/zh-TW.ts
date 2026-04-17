@@ -160,6 +160,11 @@ export default {
     typePlugin: '外掛',
     typeAdapter: '適配器',
     typeExtension: '擴充功能',
+    multiSelect: '多選',
+    exitMultiSelect: '退出多選',
+    selectedCount: '已選 {count} 項',
+    selectAllVisible: '全選目前顯示',
+    clearSelection: '清空選取',
     contextSections: {
       navigation: '瀏覽',
       runtime: '執行',

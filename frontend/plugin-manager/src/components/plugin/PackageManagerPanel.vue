@@ -1,18 +1,38 @@
 <template>
-  <div class="package-manager">
-    <div class="toolbar-row">
-      <el-button class="history-button" plain @click="openResultDialog">
+  <div class="package-manager" :class="{ 'package-manager--embedded': embedded }">
+    <div class="toolbar-row" :class="{ 'toolbar-row--embedded': embedded }">
+      <div v-if="embedded" class="embedded-heading">
+        <div class="embedded-heading__copy">
+          <span class="embedded-heading__title">包管理</span>
+          <span class="embedded-heading__hint">复用左侧插件列表的筛选、多选和分类结果</span>
+        </div>
+        <div class="embedded-heading__actions">
+          <el-button class="history-button" plain @click="openResultDialog">
+            执行记录
+            <el-badge v-if="resultHistory.length > 0" :value="resultHistory.length" class="history-badge" />
+          </el-button>
+          <el-button text circle @click="$emit('close')">
+            <el-icon><Close /></el-icon>
+          </el-button>
+        </div>
+      </div>
+
+      <el-button v-else class="history-button" plain @click="openResultDialog">
         执行记录
         <el-badge v-if="resultHistory.length > 0" :value="resultHistory.length" class="history-badge" />
       </el-button>
     </div>
 
-    <div class="main-grid">
+    <div class="main-grid" :class="{ 'main-grid--embedded': embedded }">
       <PluginSelectorPanel
+        v-if="!embedded"
         :loading="pluginsLoading"
         :total-count="selectablePlugins.length"
         :selected-count="selectedPluginIds.length"
         :plugin-filter="pluginFilter"
+        :use-regex="useRegex"
+        :filter-mode="filterMode"
+        :regex-error="regexError"
         :selected-types="selectedTypes"
         :layout-mode="layoutMode"
         :plugin-count="pluginCount"
@@ -27,11 +47,21 @@
         @clear-selection="clearSelection"
         @toggle-plugin="togglePlugin"
         @update:plugin-filter="pluginFilter = $event"
+        @update:use-regex="useRegex = $event"
+        @update:filter-mode="filterMode = $event"
         @update:selected-types="selectedTypes = $event"
         @update:layout-mode="layoutMode = $event"
       />
 
       <div class="content-stack">
+        <div v-if="embedded" class="embedded-selection-summary">
+          <el-tag size="small" type="primary">已选 {{ selectedPluginIds.length }}</el-tag>
+          <el-tag size="small" type="info">可打包 {{ selectablePlugins.length }}</el-tag>
+          <span class="embedded-selection-summary__text">
+            打包和整合分析默认使用左侧当前可见范围与已选插件。
+          </span>
+        </div>
+
         <el-card class="operations-card">
           <template #header>
             <div class="card-header">
@@ -215,16 +245,33 @@
 </template>
 
 <script setup lang="ts">
+import { Close } from '@element-plus/icons-vue'
 import PackageArchiveListPanel from '@/components/plugin/PackageArchiveListPanel.vue'
 import PackageResultPanel from '@/components/plugin/PackageResultPanel.vue'
 import PluginSelectorPanel from '@/components/plugin/PluginSelectorPanel.vue'
 import { usePackageManager } from '@/composables/usePackageManager'
+
+withDefaults(
+  defineProps<{
+    embedded?: boolean
+  }>(),
+  {
+    embedded: false,
+  },
+)
+
+defineEmits<{
+  close: []
+}>()
 
 const {
   activeTab,
   layoutMode,
   packMode,
   pluginFilter,
+  useRegex,
+  filterMode,
+  regexError,
   selectedTypes,
   pluginsLoading,
   packagesLoading,
@@ -280,11 +327,20 @@ const {
   gap: 16px;
 }
 
+.package-manager--embedded {
+  gap: 14px;
+}
+
 .main-grid {
   display: grid;
   grid-template-columns: 440px minmax(0, 1fr);
   gap: 20px;
   align-items: start;
+}
+
+.main-grid--embedded {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
 }
 
 .content-stack {
@@ -297,6 +353,63 @@ const {
   display: flex;
   justify-content: flex-end;
   align-items: center;
+}
+
+.toolbar-row--embedded {
+  justify-content: stretch;
+}
+
+.embedded-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--el-color-primary) 10%, white), color-mix(in srgb, var(--el-color-info) 9%, white));
+  border: 1px solid color-mix(in srgb, var(--el-color-primary) 12%, var(--el-border-color));
+}
+
+.embedded-heading__copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.embedded-heading__title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--el-text-color-primary);
+}
+
+.embedded-heading__hint {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.embedded-heading__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.embedded-selection-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--el-fill-color-light) 78%, white);
+  border: 1px solid color-mix(in srgb, var(--el-color-info) 10%, var(--el-border-color));
+}
+
+.embedded-selection-summary__text {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 
 .history-button {
@@ -333,6 +446,17 @@ const {
 @media (max-width: 1380px) {
   .main-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .embedded-heading {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .embedded-heading__actions {
+    justify-content: space-between;
   }
 }
 </style>

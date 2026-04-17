@@ -160,6 +160,11 @@ export default {
     typePlugin: 'プラグイン',
     typeAdapter: 'アダプター',
     typeExtension: '拡張機能',
+    multiSelect: '複数選択',
+    exitMultiSelect: '複数選択を終了',
+    selectedCount: '{count} 件を選択中',
+    selectAllVisible: '表示中をすべて選択',
+    clearSelection: '選択をクリア',
     contextSections: {
       navigation: '閲覧',
       runtime: '実行',

@@ -13,9 +13,28 @@
         <el-input
           :model-value="pluginFilter"
           clearable
-          placeholder="搜索插件名称、ID、描述"
+          :placeholder="t('plugins.filterPlaceholder')"
           @update:model-value="$emit('update:pluginFilter', $event)"
         />
+
+        <div class="selector-filter-row">
+          <el-switch
+            :model-value="useRegex"
+            class="selector-filter-switch"
+            active-text="Regex"
+            inactive-text="Text"
+            @update:model-value="$emit('update:useRegex', $event)"
+          />
+          <el-radio-group
+            :model-value="filterMode"
+            size="small"
+            @update:model-value="$emit('update:filterMode', $event)"
+          >
+            <el-radio-button label="whitelist">{{ t('plugins.filterWhitelist') }}</el-radio-button>
+            <el-radio-button label="blacklist">{{ t('plugins.filterBlacklist') }}</el-radio-button>
+          </el-radio-group>
+          <span v-if="regexError" class="selector-filter-error">{{ t('plugins.invalidRegex') }}</span>
+        </div>
 
         <div class="type-filter-bar">
           <el-checkbox-group
@@ -102,11 +121,13 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import PluginCard from '@/components/plugin/PluginCard.vue'
 import type { PluginMeta } from '@/types/api'
 
 type LayoutMode = 'list' | 'single' | 'double' | 'compact'
 type PluginGroupType = 'plugin' | 'adapter' | 'extension'
+type FilterMode = 'whitelist' | 'blacklist'
 
 type SelectablePlugin = PluginMeta & {
   type: PluginGroupType
@@ -119,6 +140,9 @@ const props = defineProps<{
   totalCount: number
   selectedCount: number
   pluginFilter: string
+  useRegex: boolean
+  filterMode: FilterMode
+  regexError: boolean
   selectedTypes: PluginGroupType[]
   layoutMode: LayoutMode
   pluginCount: number
@@ -136,9 +160,13 @@ defineEmits<{
   clearSelection: []
   togglePlugin: [pluginId: string]
   'update:pluginFilter': [value: string]
+  'update:useRegex': [value: boolean]
+  'update:filterMode': [value: FilterMode]
   'update:selectedTypes': [value: PluginGroupType[]]
   'update:layoutMode': [value: LayoutMode]
 }>()
+
+const { t } = useI18n()
 
 const layoutClass = computed(() => `plugin-selector-grid--${props.layoutMode}`)
 const totalFilteredCount = computed(
@@ -192,6 +220,22 @@ function isSelected(pluginId: string): boolean {
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
+}
+
+.selector-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.selector-filter-switch {
+  flex-shrink: 0;
+}
+
+.selector-filter-error {
+  color: var(--el-color-danger);
+  font-size: 12px;
 }
 
 .selector-actions {

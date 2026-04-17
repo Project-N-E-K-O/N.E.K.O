@@ -160,6 +160,11 @@ export default {
     typePlugin: '플러그인',
     typeAdapter: '어댑터',
     typeExtension: '확장 기능',
+    multiSelect: '다중 선택',
+    exitMultiSelect: '다중 선택 종료',
+    selectedCount: '{count}개 선택됨',
+    selectAllVisible: '현재 보이는 항목 전체 선택',
+    clearSelection: '선택 지우기',
     contextSections: {
       navigation: '탐색',
       runtime: '실행',

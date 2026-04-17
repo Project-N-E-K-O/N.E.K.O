@@ -160,6 +160,11 @@ export default {
     typePlugin: 'Плагин',
     typeAdapter: 'Адаптер',
     typeExtension: 'Расширение',
+    multiSelect: 'Множественный выбор',
+    exitMultiSelect: 'Выйти из выбора',
+    selectedCount: 'Выбрано: {count}',
+    selectAllVisible: 'Выбрать видимые',
+    clearSelection: 'Очистить выбор',
     contextSections: {
       navigation: 'Навигация',
       runtime: 'Управление',
