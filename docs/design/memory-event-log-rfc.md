@@ -1,7 +1,7 @@
 # RFC: Memory subsystem event log + view derivation (P2)
 
-Status: **Draft v3** — revised after second design review; awaiting
-third review before implementation.
+Status: **Draft v4** — revised after third design review; awaiting
+fourth review before implementation.
 
 Branch context: `claude/awesome-goldberg-omrDx`, built on top of P0 (persistent
 rebuttal cursor) and P1 (reflection id determinism + outbox).
@@ -11,8 +11,27 @@ rebuttal cursor) and P1 (reflection id determinism + outbox).
 - **v1** (initial draft): 9 event types, single-file compaction with
   intermediate `events.snapshot`, `persona.fact_mentioned` bundled into
   `persona.fact_added`, per-batch sentinel advance proposed.
-- **v3** (this revision, after review round 2) — addresses the two remaining
-  issues from v2:
+- **v4** (this revision, after review round 3) — addresses the two
+  remaining blockers from v3:
+  1. §3.4 pseudocode rewritten again: load NOW happens inside the lock
+     via `sync_load_view` callable (was outside in v3, reintroducing the
+     RMW race the lock was supposed to close). `_record_and_save` now
+     takes three callbacks: `sync_load_view`, `sync_mutate_view`,
+     `sync_save_view`. The actual mutation of the view is described as
+     a function, not pre-applied data captured from enclosing scope.
+  2. §3.4.2.1 added: specs a **new idempotency code** —
+     `FACT_ALREADY_PRESENT` — on `PersonaManager.(a)add_fact`, with a
+     pre-append dedup check on `id = "prom_<source_id>"` for the
+     reflection-promotion call site. v3's claim that `FACT_DUP` dedup
+     already existed was false (reviewer confirmed by reading
+     persona.py:567-610). The dedup is now explicit P2.b.2 code work.
+  Plus: §3.4.2.2 cites the `_build_correction_list` dedup
+  (persona.py:677-681) as the convergence mechanism for the
+  `FACT_QUEUED_CORRECTION` branch. §3.6 `_scan_head_and_count` edge cases
+  (empty / corrupt first line). P2.b.1 persona.fact_added nuance (wire
+  manual/correction-resolve call sites only; reflection-promotion wires
+  in P2.b.2). §3.4 explicit note about sync-vs-async twin requirement.
+- **v3** (review round 2) — addressed two remaining issues from v2:
   1. §3.4 pseudocode rewritten: the critical section is now wrapped in a
      single `asyncio.to_thread` hop, with the `threading.Lock` acquired
      entirely inside the worker thread. Prior v2 code erroneously used
@@ -174,46 +193,73 @@ Payload rules:
 
 ### 3.4 Write order rule
 
-**Event is appended before the view is written, inside a per-character lock,
-the entire block wrapped in a single `asyncio.to_thread` worker.**
+**Load, event append, mutate, save, and sentinel advance all run in one
+critical section — the entire block wrapped in a single `asyncio.to_thread`
+worker, with a per-character `threading.Lock` acquired inside.**
+
+The load **MUST** happen inside the lock. If the call site loads the view
+upfront and hands a pre-loaded object to the critical section, two
+coroutines can each `aload`, each mutate their own copy, and the second
+save clobbers the first — reintroducing the exact RMW race the lock is
+there to eliminate.
+
+The mutation is described as a callable, not pre-applied data:
 
 ```python
 # Async entry point — called from memory_server handlers / periodic loops.
-# Single to_thread hop hands the whole critical section to a worker thread
-# where a synchronous per-character lock covers everything.
-async def _record_and_save(lanlan_name, event_type, payload, sync_save_view):
-    await asyncio.to_thread(
+# Single to_thread hop hands the whole critical section to a worker thread;
+# the synchronous per-character lock covers load → mutate → append → save →
+# sentinel advance.
+async def _record_and_save(
+    lanlan_name: str,
+    event_type: str,
+    payload: dict,
+    *,
+    sync_load_view,        # callable: (name) -> view_obj
+    sync_mutate_view,      # callable: (view_obj) -> None (mutate in-place)
+    sync_save_view,        # callable: (name, view_obj) -> None
+) -> str:
+    return await asyncio.to_thread(
         _sync_record_and_save,
-        lanlan_name, event_type, payload, sync_save_view,
+        lanlan_name, event_type, payload,
+        sync_load_view, sync_mutate_view, sync_save_view,
     )
 
-def _sync_record_and_save(lanlan_name, event_type, payload, sync_save_view):
-    with _character_lock(lanlan_name):   # threading.Lock — never held across await
-        event_log.append(lanlan_name, event_type, payload)  # returns event_id
-        sync_save_view()                                     # atomic_write_json
-        event_log.advance_sentinel(lanlan_name, event_id)
+def _sync_record_and_save(
+    name, event_type, payload,
+    sync_load_view, sync_mutate_view, sync_save_view,
+) -> str:
+    with _character_lock(name):   # threading.Lock — never held across await
+        view = sync_load_view(name)            # fresh read under lock
+        sync_mutate_view(view)                 # in-memory mutation
+        event_id = event_log.append(name, event_type, payload)
+        sync_save_view(name, view)             # atomic_write_json
+        event_log.advance_sentinel(name, event_id)
+        return event_id
 ```
 
-Rationale: an event line in the log with no corresponding view update is
-"reconcilable on restart" (we know what to apply). A view change with no event
-line is "silent data — unrecoverable on audit". We prefer the former.
+**On sync-vs-async twins**: `sync_load_view` / `sync_save_view` must be the
+**synchronous** twins (`FactStore.load_facts` / `save_facts`, not
+`aload_facts` / `asave_facts`). Using them inside an `asyncio.to_thread`
+worker is safe — we're on a worker thread, not the event loop — and the
+sync twins avoid a pointless `asyncio.to_thread` re-hop. Every memory
+manager already exposes both twins (neko-guide.md rule on 对偶性); the
+sync twins currently exist but are used only in migration paths.
 
-The whole block is wrapped in **one** `asyncio.to_thread` hop, not three, so
-that:
+Rationale for the whole-block-in-one-to_thread approach:
 - The `threading.Lock` is acquired and released entirely inside the worker
   thread, never held across an asyncio `await` boundary.
-- Sibling coroutines on the same event loop are never blocked waiting on
-  this critical section directly; they go through the thread pool like all
-  other I/O.
-- The lock holds for one load + one append + one `atomic_write_json` + one
-  sentinel write. Worst case on slow disks: a few tens of ms, dominated by
-  4 sequential fsyncs (§3.5 budget).
+- Sibling coroutines on the same event loop are never blocked directly;
+  they go through the thread pool like all other I/O.
+- The lock holds for one load + one mutate + one append + one
+  `atomic_write_json` + one sentinel write. Worst case on slow disks: a
+  few tens of ms, dominated by 4 sequential fsyncs (§3.5 budget).
 
-Failure modes (as resolved by this structure):
-- Event append fails → function raises, no view change, no sentinel advance,
-  no partial state. Lock released by `with` exit.
+Failure modes:
+- Event append fails → raises, no view change (save hasn't run), no
+  sentinel advance. Lock released by `with` exit.
 - Event appended, view save fails (pre-rename tempfile IO error) →
-  reconciler on next startup replays the event onto the stale view.
+  reconciler on next startup replays the event onto the old view.
 - Event + view both succeed, sentinel advance fails → next startup
   re-applies the tail; apply is idempotent (§3.4.3).
 - Event + view + sentinel all succeed, process killed right after the lock
@@ -261,78 +307,143 @@ for r in reflections:                       # in-memory iteration
 ```
 
 So: persona is saved N times (once per promotion) while reflections are
-saved once at the end. P2.b must restructure this, because the event log
-requires each mutation's save to be in the same critical section as its
-event append. Proposed restructure:
+saved once at the end. P2.b.2 must restructure this so each mutation's
+save is in the same critical section as its event append. Additionally,
+**P2.b.2 must add a new idempotency code to `PersonaManager.add_fact` /
+`aadd_fact`**: see §3.4.2.1.
+
+Proposed restructured loop. Note each transition only carries the
+`(reflection_id, target_state)` tuple out of the computation phase —
+the actual load + mutate happens inside `_record_and_save` (§3.4):
 
 ```python
 async def aauto_promote_stale(self, name):
-    reflections = await self.aload_reflections(name)
-    transitions = _compute_transitions_in_memory(reflections)  # pure func
+    # Phase 1: decide what transitions should happen, pure (no I/O after aload).
+    initial = await self.aload_reflections(name)
+    transitions = _compute_transitions(initial, now=datetime.now())
+    # -> list[Transition(kind='confirm'|'promote', rid=..., entity=..., text=...)]
 
+    applied = 0
     for tr in transitions:
-        # pending → confirmed: one event + save reflections
         if tr.kind == 'confirm':
+            # single _record_and_save: load/append/mutate/save/sentinel under lock
             await _record_and_save(
-                name, "reflection.state_changed",
-                {"reflection_id": tr.rid, "from": "pending", "to": "confirmed"},
-                lambda: _apply_confirmed_and_save_reflections(reflections, tr.rid),
+                name,
+                event_type="reflection.state_changed",
+                payload={"reflection_id": tr.rid, "from": "pending", "to": "confirmed"},
+                sync_load_view=self.load_reflections,
+                sync_mutate_view=lambda view, rid=tr.rid: _mark_status(view, rid, "confirmed"),
+                sync_save_view=self.save_reflections,
             )
+            applied += 1
 
-        # confirmed → promoted: first persona side, THEN reflection side.
-        # aadd_fact is itself a _record_and_save; it emits persona.fact_added
-        # under the persona lock and returns a status. Only if it succeeded
-        # do we emit the reflection state_changed.
         elif tr.kind == 'promote':
+            # Persona side FIRST. aadd_fact is itself a _record_and_save that
+            # emits persona.fact_added under the persona lock. It returns an
+            # idempotency-aware status code (see §3.4.2.1).
             result = await self._persona_manager.aadd_fact(
                 name, tr.text, entity=tr.entity,
                 source='reflection', source_id=tr.rid,
-            )  # may itself raise correction.queued via a side event
-            if result == PersonaManager.FACT_ADDED:
+            )
+            if result in (PersonaManager.FACT_ADDED,
+                          PersonaManager.FACT_ALREADY_PRESENT):  # new code
+                # Persona side is now reconciled with the promotion intent
+                # (either we just added or it was already there from a
+                # previously-crashed attempt). Emit the reflection side.
                 await _record_and_save(
-                    name, "reflection.state_changed",
-                    {"reflection_id": tr.rid, "from": "confirmed", "to": "promoted"},
-                    lambda: _apply_promoted_and_save_reflections(reflections, tr.rid),
+                    name,
+                    event_type="reflection.state_changed",
+                    payload={"reflection_id": tr.rid, "from": "confirmed", "to": "promoted"},
+                    sync_load_view=self.load_reflections,
+                    sync_mutate_view=lambda view, rid=tr.rid: _mark_status(view, rid, "promoted"),
+                    sync_save_view=self.save_reflections,
                 )
+                applied += 1
             elif result == PersonaManager.FACT_REJECTED_CARD:
                 await _record_and_save(
-                    name, "reflection.state_changed",
-                    {"reflection_id": tr.rid, "from": "confirmed", "to": "denied",
-                     "reason": "contradicts_character_card"},
-                    lambda: _apply_denied_and_save_reflections(reflections, tr.rid),
+                    name,
+                    event_type="reflection.state_changed",
+                    payload={"reflection_id": tr.rid, "from": "confirmed", "to": "denied",
+                             "reason": "contradicts_character_card"},
+                    sync_load_view=self.load_reflections,
+                    sync_mutate_view=lambda view, rid=tr.rid: _mark_denied_card(view, rid),
+                    sync_save_view=self.save_reflections,
                 )
-            # else correction.queued branch: aadd_fact emitted the correction
-            # event internally; reflection stays 'confirmed' until the
-            # correction is resolved.
+                applied += 1
+            # result == FACT_QUEUED_CORRECTION: aadd_fact already emitted
+            # correction.queued under its own lock; reflection stays in
+            # 'confirmed' until the correction is resolved. Convergence is
+            # via the correction-queue's own dedup (§3.4.2.2).
+    return applied
 ```
 
-The ordering (persona first, then reflection) matches today's code where
-persona.fact_added must succeed before we mark the reflection promoted.
-Crash recovery:
+Crash recovery, explicit:
+- Crash after `aadd_fact` success but before reflection state_changed
+  emits. Restart reads event log tail — there is a
+  `persona.fact_added(source_reflection_id=R)` with no matching
+  `reflection.state_changed(R, promoted)`. Reconciler applies the
+  `persona.fact_added` event (idempotent by `source_id` dedup in the
+  apply handler). Reflection still shows `confirmed`. Next
+  `aauto_promote_stale` cycle finds `R` in `confirmed` state,
+  time-eligible, calls `aadd_fact(..., source_id=R)` — which now returns
+  `FACT_ALREADY_PRESENT` (§3.4.2.1) instead of inserting a duplicate.
+  Loop then emits the reflection `state_changed`. Converges.
+- Crash inside `aadd_fact` mid-save → standard `_record_and_save`
+  recovery applies: event logged OR nothing logged; never half-logged.
 
-- Crash after `aadd_fact` but before reflection state_changed → restart
-  reads log tail = `persona.fact_added(source_reflection_id=R, status=ok)`.
-  Apply handler for `persona.fact_added` updates persona file (idempotent
-  via `source_reflection_id` dedup). Reflection still shows `confirmed`;
-  next `aauto_promote_stale` run finds `R` in `confirmed` state with
-  `(now - confirmed_at) >= AUTO_PROMOTE_DAYS`, calls `aadd_fact` again →
-  `source_id` dedup in `add_fact` returns `FACT_DUP` → no second persona
-  write, but reflection transitions to `promoted`, state_changed event is
-  logged. Converges.
-- Crash inside `aadd_fact` mid-save → standard `_record_and_save` recovery
-  applies (event logged OR nothing logged; never half-logged).
-
-**Reconciler self-heal is not needed** in the above design — convergence
-relies only on the retry loop of `aauto_promote_stale`. The apply
-handlers for `reflection.state_changed` and `persona.fact_added` are
-pure state-setters; they do NOT invoke `aadd_fact` from inside the
-reconciler. This removes the sentinel-advance-during-self-heal ambiguity
-flagged in review round 2.
+**Reconciler self-heal is not needed.** The apply handlers for
+`reflection.state_changed` and `persona.fact_added` are pure state-setters;
+they do NOT invoke `aadd_fact` from inside the reconciler. Convergence is
+the `aauto_promote_stale` retry loop's responsibility.
 
 Chain depth: compound transitions fan out at most 2 levels
-(state_changed → fact_added; correction.queued → correction.resolved on
-a later user action). Unbounded recursion is impossible because apply
+(state_changed → fact_added; correction.queued → correction.resolved on a
+later user action). Unbounded recursion is impossible because apply
 handlers don't re-emit.
+
+#### 3.4.2.1 New idempotency code on `PersonaManager.add_fact`
+
+P2.b.2 must add a new return code and a pre-append dedup check in
+`memory/persona.py:add_fact` / `aadd_fact`:
+
+```python
+FACT_ALREADY_PRESENT = 'already_present'  # new, alongside FACT_ADDED etc.
+
+# inside (a)add_fact, before appending:
+if source == 'reflection' and source_id:
+    expected_id = f"prom_{source_id}"
+    if any(entry.get('id') == expected_id for entry in section_facts):
+        return self.FACT_ALREADY_PRESENT
+```
+
+This makes `add_fact` idempotent under `(source, source_id)` — a repeated
+call with the same `source_id` returns `FACT_ALREADY_PRESENT` without
+creating a duplicate persona entry. The field `id = "prom_<source_id>"`
+is already produced by `_build_fact_entry` (persona.py:559-560), so the
+dedup key already exists on disk.
+
+Callers (currently only `aauto_promote_stale`) must treat
+`FACT_ALREADY_PRESENT` as equivalent to `FACT_ADDED` for the purpose of
+"should I emit the reflection state_changed event?" (both mean persona
+is in the desired state).
+
+No behavior change for the manual-add / correction-resolve call sites:
+they pass `source='manual'` or `source='correction'`, neither of which
+has a stable source_id for dedup; the check is skipped and the old
+append-always path is preserved.
+
+#### 3.4.2.2 Correction-queue convergence
+
+For the `FACT_QUEUED_CORRECTION` branch: `aauto_promote_stale` keeps the
+reflection in `confirmed` state. `aadd_fact` called `_aqueue_correction`
+internally, which dedups by `(old_text, new_text, entity)` tuple
+(persona.py:677-681 — `_build_correction_list` filters duplicates).
+Repeated calls from the `aauto_promote_stale` retry loop will not double-
+queue the same correction. The reflection only leaves `confirmed` when
+the user resolves (or the LLM auto-resolves) the correction via
+`resolve_corrections`, which emits `correction.resolved` and then
+either re-promotes (via another `aadd_fact` that now succeeds since
+the contradicting fact is gone) or sticks with the older fact.
 
 #### 3.4.3 Idempotency contract per event type
 
@@ -450,6 +561,14 @@ def _should_compact(self, name: str) -> bool:
 its `ts`, then counts remaining lines without parsing payloads. O(n) on line
 count, O(1) on parse work.
 
+Edge cases:
+- Empty file → `(0, None)`; neither threshold triggers; compaction skipped.
+- First line missing or unparseable → return `(line_count, None)`; only the
+  line-count threshold applies (age check is unavailable). Log a warning so
+  the corruption is visible.
+- Unreadable file → return `(0, None)` + log warning; compaction skipped
+  (best to not touch an already-unreadable file).
+
 On every startup, if `_should_compact(name)` returns True:
 
 1. Read current views (facts.json / reflections.json / persona.json).
@@ -550,9 +669,18 @@ Phase 2 is split into five commits/PRs to keep each blast radius small:
   (facts 1-3, reflection 4/6/7, persona 9/10, correction 11/12).
   Reconciler handlers for these 8 types registered. Unknown-type log-
   and-skip protects against the partial-wiring migration window for the
-  remaining 4 (reflection 5, persona 8). This is safe precisely because
-  an unwired producer simply never emits, and an unwired apply handler
-  silently ignores events it doesn't understand.
+  remaining 4 (reflection 5 `state_changed`, persona 8 `fact_added`).
+  This is safe precisely because an unwired producer simply never emits,
+  and an unwired apply handler silently ignores events it doesn't
+  understand.
+
+  Nuance: `persona.fact_added` has two call-site categories —
+  (a) manual-add / correction-resolve (non-compound), and
+  (b) reflection-promotion (compound, depends on §3.4.2 restructure).
+  P2.b.1 wires (a) only. Call site (b) is wired as part of P2.b.2 so the
+  compound pair lands together. Concretely: `PersonaManager.add_fact`
+  called with `source='manual'` or `source='correction'` emits the event
+  in P2.b.1; the `source='reflection'` path emits only in P2.b.2.
 - **P2.b.2**: Wire the **compound pair** (reflection 5 `state_changed` +
   persona 8 `fact_added`). Restructure `ReflectionEngine.aauto_promote_stale`
   per §3.4.2 pseudocode. Restructure `PersonaManager.resolve_corrections`
