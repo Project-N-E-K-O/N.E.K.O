@@ -110,13 +110,15 @@ class SessionStateMachine:
                 应拒绝 proactive。这一步把原来散在 router 里直读 session 字段
                 的检查收拢到 SM。
 
-        返回 False 的三种情况：
-            - owner == USER（用户持有 turn）
+        返回 False 的两种情况：
             - phase != IDLE（另一轮 proactive 在跑 / 正在 commit）
             - session._is_responding == True（AI 正在为用户回复）
+
+        注意：**不**基于 ``owner == USER`` 判拒。USER_INPUT 事件把 owner 翻到
+        USER 之后没有 AI_RESPONSE_END 事件将其复位（Stage 2 未做该项迁移），
+        若此处卡 owner == USER 会导致用户发第一条消息后所有 proactive 都被
+        永久 409 掉。owner 目前只用于 sticky preempt 的语义，不用于 gating。
         """
-        if self.owner is TurnOwner.USER:
-            return False
         if self.phase is not ProactivePhase.IDLE:
             return False
         if session is not None and getattr(session, "_is_responding", False):

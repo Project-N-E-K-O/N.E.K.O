@@ -162,10 +162,20 @@ async def test_can_start_proactive_false_when_phase1():
     assert sm.can_start_proactive() is False
 
 
-async def test_can_start_proactive_false_when_user_owns():
+async def test_can_start_proactive_true_after_user_turn_completes():
+    """Regression: owner == USER 不能永久阻塞 proactive。
+
+    USER_INPUT 会把 owner 翻到 USER，但没有 AI_RESPONSE_END 事件将其复位
+    （Stage 2 未做该项迁移）。can_start_proactive 若卡 owner == USER，用户
+    发第一条消息后所有后续 proactive 都会被永久 409 掉 —— 这是 Codex review
+    发现的 P1 bug。正确语义：只看 phase 和 session._is_responding。
+    """
     sm = _sm()
     await sm.fire(SessionEvent.USER_INPUT, sid="u")
-    assert sm.can_start_proactive() is False
+    # 用户发完了，AI 也不在响应（session=None），proactive 必须能起
+    assert sm.can_start_proactive(session=None) is True
+    # 即使传 session，只要 _is_responding=False 就能起
+    assert sm.can_start_proactive(session=_FakeSession(is_responding=False)) is True
 
 
 async def test_can_start_proactive_true_after_done():
