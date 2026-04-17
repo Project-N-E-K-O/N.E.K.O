@@ -24,7 +24,7 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Awaitable, Callable, Iterable, Optional, Union
+from typing import Any, Awaitable, Callable, Optional, Union
 
 
 class TurnOwner(Enum):
@@ -215,7 +215,8 @@ class SessionStateMachine:
         try:
             self._subscribers[key].remove(cb)
         except (KeyError, ValueError):
-            pass
+            # idempotent unsubscribe：重复取消或取消未注册的 cb 视为 no-op
+            return
 
 
 def _swallow_subscriber_exc(task: "asyncio.Task") -> None:
@@ -223,7 +224,9 @@ def _swallow_subscriber_exc(task: "asyncio.Task") -> None:
     try:
         task.result()
     except Exception:
-        pass
+        # 故意吞：避免订阅者异常冒泡污染事件流，也避免 "Task exception was
+        # never retrieved" 刷屏。订阅者自己负责在 callback 内部落日志。
+        return
 
 
 # 不对外导出 —— 内部哨兵，用于 ``subscribe(None, ...)``
