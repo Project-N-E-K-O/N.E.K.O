@@ -15,7 +15,12 @@ from config.prompts_memory import (
 from utils.language_utils import get_global_language
 
 # Setup logger
-from utils.file_utils import atomic_write_json, robust_json_loads
+from utils.file_utils import (
+    atomic_write_json,
+    atomic_write_json_async,
+    read_json_async,
+    robust_json_loads,
+)
 from utils.logger_config import setup_logging
 logger, log_config = setup_logging(service_name="Memory", log_level=logging.INFO)
 
@@ -56,6 +61,14 @@ class CompressedRecentHistoryManager:
         except Exception as reset_error:
             logger.error(f"[RecentHistory] 重置 {lanlan_name} 的历史记录文件失败: {reset_error}", exc_info=True)
 
+    async def _areset_history_file(self, file_path, lanlan_name, reason):
+        try:
+            await asyncio.to_thread(os.makedirs, os.path.dirname(file_path), exist_ok=True)
+            await atomic_write_json_async(file_path, [], indent=2, ensure_ascii=False)
+            logger.warning(f"[RecentHistory] {lanlan_name} 的历史记录文件无效（{reason}），已重置为空列表: {file_path}")
+        except Exception as reset_error:
+            logger.error(f"[RecentHistory] 重置 {lanlan_name} 的历史记录文件失败: {reset_error}", exc_info=True)
+
     def _load_history_from_file(self, file_path, lanlan_name):
         """安全读取 recent 文件，遇到空文件或非法 JSON 时自动重置。"""
         try:
@@ -78,6 +91,29 @@ class CompressedRecentHistoryManager:
         except Exception as e:
             logger.warning(f"读取 {lanlan_name} 的历史记录文件失败: {e}，使用空列表")
             return []
+
+    async def _aload_history_from_file(self, file_path, lanlan_name):
+        try:
+            raw_content = await asyncio.to_thread(self._read_text, file_path)
+            if not raw_content.strip():
+                await self._areset_history_file(file_path, lanlan_name, "文件为空")
+                return []
+            file_content = json.loads(raw_content)
+            if not isinstance(file_content, list):
+                await self._areset_history_file(file_path, lanlan_name, "JSON 根节点不是列表")
+                return []
+            return messages_from_dict(file_content)
+        except json.JSONDecodeError as e:
+            await self._areset_history_file(file_path, lanlan_name, f"JSON 解析失败: {e}")
+            return []
+        except Exception as e:
+            logger.warning(f"读取 {lanlan_name} 的历史记录文件失败: {e}，使用空列表")
+            return []
+
+    @staticmethod
+    def _read_text(file_path: str) -> str:
+        with open(file_path, encoding='utf-8') as f:
+            return f.read()
     
     def _get_llm(self):
         """动态获取LLM实例以支持配置热重载"""
@@ -97,38 +133,36 @@ class CompressedRecentHistoryManager:
 
     async def update_history(self, new_messages, lanlan_name, detailed=False, compress=True):
         try:
-            _, _, _, _, _, _, _, _, recent_log = self._config_manager.get_character_data()
+            _, _, _, _, _, _, _, _, recent_log = await self._config_manager.aget_character_data()
             self.log_file_path = recent_log
         except Exception as e:
             logger.error(f"获取角色配置失败: {e}")
 
         self._ensure_path_for_character(lanlan_name)
 
-        # 确保角色在 user_histories 中
         if lanlan_name not in self.user_histories:
             self.user_histories[lanlan_name] = []
-        
-        # 如果文件存在，加载历史记录
-        if lanlan_name in self.log_file_path and os.path.exists(self.log_file_path[lanlan_name]):
-            self.user_histories[lanlan_name] = self._load_history_from_file(
-                self.log_file_path[lanlan_name],
-                lanlan_name
+
+        file_path = self.log_file_path[lanlan_name]
+        if await asyncio.to_thread(os.path.exists, file_path):
+            self.user_histories[lanlan_name] = await self._aload_history_from_file(
+                file_path, lanlan_name,
             )
 
         try:
             self.user_histories[lanlan_name].extend(new_messages)
             logger.debug(f"[RecentHistory] {lanlan_name} 添加了 {len(new_messages)} 条新消息，当前共 {len(self.user_histories[lanlan_name])} 条")
 
-            # 确保文件目录存在
-            file_path = self.log_file_path[lanlan_name]
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
-
-            atomic_write_json(
+            # 先把 extend 后的未压缩状态落盘，再进入耗时的 compress_history。
+            # compress_history 会走 LLM，耗时数秒到数十秒，期间进程崩溃或 task 被 cancel
+            # （CancelledError 穿透下面的 except Exception）会导致本批 new_messages 丢失。
+            await asyncio.to_thread(os.makedirs, os.path.dirname(file_path), exist_ok=True)
+            await atomic_write_json_async(
                 file_path,
                 messages_to_dict(self.user_histories[lanlan_name]),
                 indent=2,
                 ensure_ascii=False,
-            )  # Save the updated history to file before compressing
+            )
 
             if compress and len(self.user_histories[lanlan_name]) > self.compress_threshold:
                 to_compress = self.user_histories[lanlan_name][:-self.max_history_length+1]
@@ -136,26 +170,12 @@ class CompressedRecentHistoryManager:
                 self.user_histories[lanlan_name] = compressed + self.user_histories[lanlan_name][-self.max_history_length+1:]
         except Exception as e:
             logger.error(f"[RecentHistory] 更新历史记录时出错: {e}", exc_info=True)
-            # 即使出错，也尝试保存当前状态
-            try:
-                file_path = self.log_file_path[lanlan_name]
-                os.makedirs(os.path.dirname(file_path), exist_ok=True)
-                atomic_write_json(
-                    file_path,
-                    messages_to_dict(self.user_histories.get(lanlan_name, [])),
-                    indent=2,
-                    ensure_ascii=False,
-                )
-            except Exception as save_error:
-                logger.error(f"[RecentHistory] 保存历史记录失败: {save_error}", exc_info=True)
 
-        # 统一保存
         try:
-            file_path = self.log_file_path[lanlan_name]
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
-            atomic_write_json(
+            await asyncio.to_thread(os.makedirs, os.path.dirname(file_path), exist_ok=True)
+            await atomic_write_json_async(
                 file_path,
-                messages_to_dict(self.user_histories[lanlan_name]),
+                messages_to_dict(self.user_histories.get(lanlan_name, [])),
                 indent=2,
                 ensure_ascii=False,
             )
@@ -293,14 +313,34 @@ class CompressedRecentHistoryManager:
         # 确保角色在 user_histories 中
         if lanlan_name not in self.user_histories:
             self.user_histories[lanlan_name] = []
-        
+
         # 如果文件存在，加载历史记录
         if lanlan_name in self.log_file_path and os.path.exists(self.log_file_path[lanlan_name]):
             self.user_histories[lanlan_name] = self._load_history_from_file(
                 self.log_file_path[lanlan_name],
                 lanlan_name
             )
-        
+
+        return self.user_histories.get(lanlan_name, [])
+
+    async def aget_recent_history(self, lanlan_name):
+        try:
+            _, _, _, _, _, _, _, _, recent_log = await self._config_manager.aget_character_data()
+            self.log_file_path = recent_log
+        except Exception as e:
+            logger.error(f"获取角色配置失败: {e}")
+
+        self._ensure_path_for_character(lanlan_name)
+
+        if lanlan_name not in self.user_histories:
+            self.user_histories[lanlan_name] = []
+
+        file_path = self.log_file_path[lanlan_name]
+        if await asyncio.to_thread(os.path.exists, file_path):
+            self.user_histories[lanlan_name] = await self._aload_history_from_file(
+                file_path, lanlan_name,
+            )
+
         return self.user_histories.get(lanlan_name, [])
 
     async def review_history(self, lanlan_name, cancel_event=None):
@@ -319,18 +359,17 @@ class CompressedRecentHistoryManager:
             from utils.config_manager import get_config_manager
             config_manager = get_config_manager()
             config_path = str(config_manager.get_config_path('core_config.json'))
-            if os.path.exists(config_path):
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    config_data = json.load(f)
-                    if 'recent_memory_auto_review' in config_data and not config_data['recent_memory_auto_review']:
-                        print(f"{lanlan_name} 的自动记忆整理已禁用，跳过审阅")
-                        return False
+            if await asyncio.to_thread(os.path.exists, config_path):
+                config_data = await read_json_async(config_path)
+                if 'recent_memory_auto_review' in config_data and not config_data['recent_memory_auto_review']:
+                    print(f"{lanlan_name} 的自动记忆整理已禁用，跳过审阅")
+                    return False
         except Exception as e:
             print(f"读取配置文件失败：{e}，继续执行审阅")
-        
+
         # 获取当前历史记录
-        
-        current_history = self.get_recent_history(lanlan_name)
+
+        current_history = await self.aget_recent_history(lanlan_name)
         
         if not current_history:
             print(f"{lanlan_name} 的历史记录为空，无需审阅")
@@ -419,9 +458,9 @@ class CompressedRecentHistoryManager:
                     
                     # 更新历史记录
                     self.user_histories[lanlan_name] = corrected_messages
-                    
+
                     # 保存到文件
-                    atomic_write_json(
+                    await atomic_write_json_async(
                         self.log_file_path[lanlan_name],
                         messages_to_dict(corrected_messages),
                         indent=2,

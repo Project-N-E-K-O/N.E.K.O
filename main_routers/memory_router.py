@@ -16,7 +16,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Request
 from utils.character_name import validate_character_name
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json_async
 from utils.logger_config import get_module_logger
 from fastapi.responses import JSONResponse
 
@@ -330,7 +330,7 @@ async def save_recent_file(request: Request):
             }
         })
     try:
-        atomic_write_json(resolved_path, arr, ensure_ascii=False, indent=2)
+        await atomic_write_json_async(resolved_path, arr, ensure_ascii=False, indent=2)
         
         if catgirl_name:
             # 中断 memory_server 的 review 任务
@@ -458,19 +458,22 @@ async def update_catgirl_name(request: Request):
                         data['content'] = content
         
         # 保存更新后的内容；写入成功后再删除旧路径，避免改名过程中数据丢失
-        atomic_write_json(new_file_path, file_content, ensure_ascii=False, indent=2)
+        await atomic_write_json_async(new_file_path, file_content, ensure_ascii=False, indent=2)
 
-        user_memory_dir = Path(cm.memory_dir).resolve()
+        allowed_roots = [
+            Path(cm.memory_dir).resolve(),
+            Path(cm.project_memory_dir).resolve(),
+        ]
         resolved_old_file_path = old_file_path.resolve()
         if (
             resolved_old_file_path != new_file_path.resolve()
             and old_file_path.exists()
-            and resolved_old_file_path.is_relative_to(user_memory_dir)
+            and any(resolved_old_file_path.is_relative_to(root) for root in allowed_roots)
         ):
             if old_file_path.is_dir():
                 await asyncio.to_thread(shutil.rmtree, old_file_path)
             else:
-                old_file_path.unlink()
+                await asyncio.to_thread(old_file_path.unlink)
         
         logger.info(f"已更新猫娘名称从 '{old_name}' 到 '{new_name}' 的记忆文件")
         return {"success": True}
@@ -520,7 +523,7 @@ async def update_review_config(request: Request):
         config_data['recent_memory_auto_review'] = enabled
         
         # 保存配置
-        atomic_write_json(config_path, config_data, ensure_ascii=False, indent=2)
+        await atomic_write_json_async(config_path, config_data, ensure_ascii=False, indent=2)
         
         logger.info(f"记忆整理配置已更新: enabled={enabled}")
         return {"success": True, "enabled": enabled}

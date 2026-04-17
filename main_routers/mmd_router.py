@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 
 from .shared_state import get_config_manager
 from .workshop_router import get_subscribed_workshop_items
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json_async
 from utils.logger_config import get_module_logger
 
 router = APIRouter(prefix="/api/model/mmd", tags=["mmd"])
@@ -792,7 +792,7 @@ async def update_emotion_mapping(request: Request):
         if not config_file.resolve().is_relative_to(config_path.resolve()):
             return JSONResponse(status_code=400, content={"success": False, "error": "无效的模型名称"})
 
-        atomic_write_json(config_file, mapping)
+        await atomic_write_json_async(config_file, mapping)
 
         logger.info(f"更新 MMD 情感映射: {safe_name}")
         return JSONResponse(content={"success": True, "message": "情感映射已更新"})
