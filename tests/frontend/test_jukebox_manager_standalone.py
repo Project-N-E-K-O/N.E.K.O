@@ -284,3 +284,125 @@ def test_jukebox_manager_binding_selections_are_decoupled(mock_page: Page):
     assert mock_page.locator('.sam-binding-item[data-action-id="action2"] input[type="checkbox"]').is_checked()
     assert mock_page.locator('.sam-binding-item[data-song-id="song2"] input[type="checkbox"]').count() == 1
     assert not mock_page.locator('.sam-binding-item[data-song-id="song2"] input[type="checkbox"]').is_checked()
+
+
+@pytest.mark.frontend
+def test_jukebox_manager_song_selection_keeps_scroll_position(mock_page: Page):
+    mock_page.set_viewport_size({"width": 900, "height": 700})
+    mock_page.set_content(HARNESS_HTML)
+    mock_page.evaluate(
+        """
+        () => {
+          window.t = (key, fallback) => typeof fallback === 'string' ? fallback : key;
+          window.fetch = () => Promise.reject(new Error('fetch should not be called in this test'));
+        }
+        """
+    )
+    mock_page.add_script_tag(content=JUKEBOX_SCRIPT)
+    scroll_state = mock_page.evaluate(
+        """
+        () => {
+          const SAM = window.Jukebox.SongActionManager;
+          const songs = {};
+          for (let i = 1; i <= 40; i += 1) {
+            songs[`song${i}`] = { name: `Song ${i}`, artist: `Artist ${i}`, visible: true };
+          }
+
+          const style = document.createElement('style');
+          style.textContent = SAM.getStyles();
+          document.head.appendChild(style);
+
+          SAM.data = { songs, actions: {}, bindings: {} };
+          SAM.selectedSongs = new Set();
+          SAM.selectedActions = new Set();
+          SAM.bindingSelectedSongs = new Set();
+          SAM.bindingSelectedActions = new Set();
+          SAM.showHiddenSongs = true;
+          SAM.bindDragEvents = function() {};
+          SAM.bindFileDropEvents = function() {};
+
+          const panel = document.createElement('div');
+          panel.className = 'songs-panel';
+          panel.style.height = '220px';
+          panel.style.overflowY = 'auto';
+          document.body.appendChild(panel);
+          SAM.renderSongs(panel);
+
+          panel.scrollTop = panel.scrollHeight;
+          const before = panel.scrollTop;
+          panel.querySelector('.sam-song-select[data-id="song40"]').click();
+
+          return {
+            before,
+            after: panel.scrollTop,
+            selectedCount: SAM.selectedSongs.size
+          };
+        }
+        """
+    )
+
+    assert scroll_state["before"] > 0
+    assert scroll_state["selectedCount"] == 1
+    assert scroll_state["after"] >= scroll_state["before"] - 40
+
+
+@pytest.mark.frontend
+def test_jukebox_manager_binding_selection_keeps_nested_scroll_position(mock_page: Page):
+    mock_page.set_viewport_size({"width": 900, "height": 700})
+    mock_page.set_content(HARNESS_HTML)
+    mock_page.evaluate(
+        """
+        () => {
+          window.t = (key, fallback) => typeof fallback === 'string' ? fallback : key;
+          window.fetch = () => Promise.reject(new Error('fetch should not be called in this test'));
+        }
+        """
+    )
+    mock_page.add_script_tag(content=JUKEBOX_SCRIPT)
+    scroll_state = mock_page.evaluate(
+        """
+        () => {
+          const SAM = window.Jukebox.SongActionManager;
+          const songs = {};
+          const actions = {};
+          const bindings = {};
+
+          for (let i = 1; i <= 30; i += 1) {
+            songs[`song${i}`] = { name: `Song ${i}`, artist: `Artist ${i}`, visible: true };
+            actions[`action${i}`] = { name: `Action ${i}`, format: 'vmd' };
+            bindings[`song${i}`] = { [`action${i}`]: { offset: 0 } };
+          }
+
+          const style = document.createElement('style');
+          style.textContent = SAM.getStyles();
+          document.head.appendChild(style);
+
+          SAM.data = { songs, actions, bindings };
+          SAM.selectedSongs = new Set();
+          SAM.selectedActions = new Set();
+          SAM.bindingSelectedSongs = new Set();
+          SAM.bindingSelectedActions = new Set();
+          SAM.bindBindingDragEvents = function() {};
+
+          const panel = document.createElement('div');
+          panel.className = 'bindings-panel';
+          document.body.appendChild(panel);
+          SAM.renderBindings(panel);
+
+          const songsList = panel.querySelector('.songs-for-drop');
+          songsList.scrollTop = songsList.scrollHeight;
+          const before = songsList.scrollTop;
+          songsList.querySelector('.sam-binding-item[data-song-id="song30"] input[type="checkbox"]').click();
+
+          return {
+            before,
+            after: panel.querySelector('.songs-for-drop').scrollTop,
+            selectedCount: SAM.bindingSelectedSongs.size
+          };
+        }
+        """
+    )
+
+    assert scroll_state["before"] > 0
+    assert scroll_state["selectedCount"] == 1
+    assert scroll_state["after"] >= scroll_state["before"] - 40
