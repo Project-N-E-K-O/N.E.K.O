@@ -21,6 +21,7 @@
         quality: 0.92,
         includeBlob: false,
         includeDataUrl: false,
+        includeSourceDataUrl: false,
         modelType: null,
         // 新增：裁剪模式
         // 'headshot' - 头像模式（默认，聚焦头部）
@@ -478,6 +479,24 @@
         };
     }
 
+    function cropRectToTargetAspect(rect, targetWidth, targetHeight) {
+        const targetAspect = targetWidth / Math.max(targetHeight, 1);
+        const currentAspect = rect.width / Math.max(rect.height, 1);
+        if (Math.abs(currentAspect - targetAspect) < 0.005) return rect;
+
+        const result = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+        if (currentAspect > targetAspect) {
+            const newWidth = result.height * targetAspect;
+            result.x += (result.width - newWidth) * 0.5;
+            result.width = newWidth;
+        } else {
+            const newHeight = result.width / targetAspect;
+            result.y += (result.height - newHeight) * 0.3;
+            result.height = newHeight;
+        }
+        return result;
+    }
+
     function cssRectToPixelRect(rect, metrics) {
         return {
             x: Math.round(rect.x * metrics.pixelRatioX),
@@ -710,7 +729,97 @@
         }, metrics);
     }
 
+    function normalizeLive2dGeometryRectToCss(rect, metrics) {
+        const left = finiteOr(rect?.left, NaN);
+        const top = finiteOr(rect?.top, NaN);
+        const width = finiteOr(rect?.width, NaN);
+        const height = finiteOr(rect?.height, NaN);
+        if (!Number.isFinite(left) || !Number.isFinite(top) ||
+            !Number.isFinite(width) || !Number.isFinite(height) ||
+            width <= 0 || height <= 0) {
+            return null;
+        }
+        return sanitizeCssRect({
+            x: left,
+            y: top,
+            width,
+            height
+        }, metrics);
+    }
+
+    function normalizeLive2dGeometryPointToCss(point, metrics) {
+        const x = finiteOr(point?.x, NaN);
+        const y = finiteOr(point?.y, NaN);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) {
+            return null;
+        }
+        return {
+            x: clamp(x, -metrics.cssWidth, metrics.cssWidth * 2),
+            y: clamp(y, -metrics.cssHeight, metrics.cssHeight * 2)
+        };
+    }
+
+    function buildLive2dHeadAnchorFromInfo(headInfo) {
+        const rect = headInfo?.rect;
+        if (!rect) {
+            return null;
+        }
+        return {
+            x: rect.x + rect.width * 0.5,
+            y: rect.y + rect.height * (headInfo.mode === 'head' ? 0.5 : 0.42)
+        };
+    }
+
+    function getLive2dHeadRectInfoFromBubbleGeometry(model, metrics) {
+        const manager = global.live2dManager;
+        if (!manager || typeof manager.getBubbleAnchorGeometryInfo !== 'function') {
+            return null;
+        }
+
+        const managerModel = typeof manager.getCurrentModel === 'function'
+            ? manager.getCurrentModel()
+            : manager.currentModel;
+        if (managerModel !== model) {
+            return null;
+        }
+
+        let geometryInfo = null;
+        try {
+            geometryInfo = manager.getBubbleAnchorGeometryInfo();
+        } catch (error) {
+            console.warn('[avatar-portrait] 读取 Live2D 气泡几何失败，回退旧头像头框逻辑:', error);
+            return null;
+        }
+
+        const rect = normalizeLive2dGeometryRectToCss(geometryInfo?.headRect, metrics);
+        if (!rect) {
+            return null;
+        }
+
+        const mode = geometryInfo?.headMode === 'head' ? 'head' : 'face';
+        const source = typeof geometryInfo?.headSource === 'string' && geometryInfo.headSource
+            ? geometryInfo.headSource
+            : null;
+        const anchor = normalizeLive2dGeometryPointToCss(
+            geometryInfo?.headAnchor || geometryInfo?.rawHeadAnchor || null,
+            metrics
+        );
+
+        return {
+            rect,
+            mode,
+            source,
+            reliable: geometryInfo?.reliableHeadRect === true,
+            anchor: anchor || buildLive2dHeadAnchorFromInfo({ rect, mode })
+        };
+    }
+
     function getLive2dHeadRectInfo(model, metrics) {
+        const bubbleGeometryInfo = getLive2dHeadRectInfoFromBubbleGeometry(model, metrics);
+        if (bubbleGeometryInfo && bubbleGeometryInfo.rect) {
+            return bubbleGeometryInfo;
+        }
+
         const internalModel = model?.internalModel;
         const rawHitAreas = internalModel?.hitAreas;
         if (!rawHitAreas || typeof rawHitAreas !== 'object') {
@@ -750,7 +859,10 @@
 
         return {
             rect,
-            mode
+            mode,
+            source: 'hitArea',
+            reliable: false,
+            anchor: buildLive2dHeadAnchorFromInfo({ rect, mode })
         };
     }
 
@@ -980,7 +1092,9 @@
                 for (let pass = 0; pass < 3; pass += 1) {
                     renderer.render(tempStage);
 
-                    const headRect = getLive2dHeadRectInfo(model, viewportMetrics)?.rect || null;
+                    const headInfo = getLive2dHeadRectInfo(model, viewportMetrics);
+                    const headRect = headInfo?.rect || null;
+                    const headAnchor = headInfo?.anchor || buildLive2dHeadAnchorFromInfo(headInfo);
                     const bounds = sanitizeCssRect(model.getBounds(), viewportMetrics);
                     const activeHeadRect = headRect || {
                         x: bounds.x + bounds.width * 0.28,
@@ -997,9 +1111,16 @@
                         renderer.render(tempStage);
                     }
 
-                    const adjustedHeadRect = getLive2dHeadRectInfo(model, viewportMetrics)?.rect || activeHeadRect;
-                    const adjustedHeadCenterX = adjustedHeadRect.x + adjustedHeadRect.width / 2;
-                    const adjustedHeadCenterY = adjustedHeadRect.y + adjustedHeadRect.height * 0.42;
+                    const adjustedHeadInfo = getLive2dHeadRectInfo(model, viewportMetrics);
+                    const adjustedHeadRect = adjustedHeadInfo?.rect || activeHeadRect;
+                    const adjustedHeadAnchor = adjustedHeadInfo?.anchor ||
+                        headAnchor ||
+                        buildLive2dHeadAnchorFromInfo(adjustedHeadInfo) || {
+                            x: adjustedHeadRect.x + adjustedHeadRect.width / 2,
+                            y: adjustedHeadRect.y + adjustedHeadRect.height * 0.42
+                        };
+                    const adjustedHeadCenterX = adjustedHeadAnchor.x;
+                    const adjustedHeadCenterY = adjustedHeadAnchor.y;
 
                     model.x += targetHeadCenterX - adjustedHeadCenterX;
                     model.y += targetHeadCenterY - adjustedHeadCenterY;
@@ -1407,12 +1528,13 @@
                 clipOutputShape(outputCtx, outputCanvas.width, outputCanvas.height, finalOptions);
                 maybeFillBackground(outputCtx, outputCanvas.width, outputCanvas.height, finalOptions.background);
 
-                const sourceCropRect = renderedSource.cropRectPixels || {
+                const sourceCropRectRaw = renderedSource.cropRectPixels || {
                     x: 0,
                     y: 0,
                     width: renderedSource.canvas.width,
                     height: renderedSource.canvas.height
                 };
+                const sourceCropRect = cropRectToTargetAspect(sourceCropRectRaw, outputCanvas.width, outputCanvas.height);
                 outputCtx.drawImage(
                     renderedSource.canvas,
                     sourceCropRect.x,
@@ -1450,6 +1572,9 @@
                 if (finalOptions.includeDataUrl) {
                     result.dataUrl = canvasToDataUrl(outputCanvas, finalOptions.mimeType, finalOptions.quality);
                 }
+                if (finalOptions.includeSourceDataUrl) {
+                    result.sourceDataUrl = canvasToDataUrl(result.sourceCanvas, finalOptions.mimeType, finalOptions.quality);
+                }
 
                 return result;
             }
@@ -1463,7 +1588,8 @@
 
         const sourceMetrics = getCanvasMetrics(sourceCanvas);
         const cssCropRect = adapter.getCropRect(context, finalOptions);
-        const pixelCropRect = cssRectToPixelRect(cssCropRect, sourceMetrics);
+        const pixelCropRectRaw = cssRectToPixelRect(cssCropRect, sourceMetrics);
+        const pixelCropRect = cropRectToTargetAspect(pixelCropRectRaw, finalOptions.width, finalOptions.height);
         const outputCanvas = createOutputCanvas(finalOptions.width, finalOptions.height);
         const outputCtx = outputCanvas.getContext('2d');
 
@@ -1500,6 +1626,14 @@
         }
         if (finalOptions.includeDataUrl) {
             result.dataUrl = canvasToDataUrl(outputCanvas, finalOptions.mimeType, finalOptions.quality);
+        }
+        if (finalOptions.includeSourceDataUrl) {
+            const srcCopy = createOutputCanvas(sourceCanvas.width, sourceCanvas.height);
+            const srcCtx = srcCopy.getContext('2d');
+            if (srcCtx) {
+                srcCtx.drawImage(sourceCanvas, 0, 0);
+                result.sourceDataUrl = canvasToDataUrl(srcCopy, finalOptions.mimeType, finalOptions.quality);
+            }
         }
 
         return result;

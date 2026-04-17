@@ -57,7 +57,14 @@
             "档案名": "Profile Name",
             "性别": "Gender",
             "年龄": "Age",
-            "昵称": "Nickname"
+            "昵称": "Nickname",
+            "性格原型": "Personality Archetype",
+            "种族": "Race",
+            "自称": "Self-Reference",
+            "核心特质": "Core Traits",
+            "行为特点": "Behavioral Traits",
+            "厌恶": "Dislikes",
+            "一句话台词": "Signature Line"
         }
     },
     "steam": {
@@ -527,7 +534,9 @@
         "AGENT_CU_AUTO_CLOSED": "Computer Use module not loaded, auto-disabled",
         "AGENT_CU_CAPABILITY_LOST": "Computer Use unavailable: $t(agent.precheck.{{reason_code}})",
         "TTS_CONNECTION_FAILED": "TTS service connection failed: {{msg}}",
+        "UPSTREAM_SERVER_BUSY": "Sorry, the upstream server is busy. Please try again later~",
         "TTS_RECONNECTING": "🔄 TTS service is reconnecting, please wait...",
+        "TTS_WATERMARK_DETECTED": "⚠️ CogTTS audio watermark (beep) detected. To disable the watermark, go to the Zhipu console and configure it manually.",
         "TTS_CUSTOM_URL_NOT_CONFIGURED": "GPT-SoVITS API URL not configured. Please enable and configure custom TTS in API settings.",
         "TTS_CUSTOM_URL_LOCALHOST_ONLY": "GPT-SoVITS API URL must be localhost",
         "TTS_AUDIO_API_KEY_MISSING": "Audio API key (AUDIO_API_KEY) not configured",
@@ -576,6 +585,18 @@
         "avatarPreviewRefreshing": "Refreshing current avatar...",
         "avatarPreviewGenerating": "Generating current avatar...",
         "avatarPreviewFailed": "Failed to generate avatar",
+        "avatarCropperTitle": "Adjust avatar crop area",
+        "avatarPreviewCropping": "Please adjust the crop area",
+        "avatarPreviewCropCancelled": "Manual crop cancelled, keeping the original avatar.",
+        "avatarCropMoveUp": "Move up",
+        "avatarCropMoveDown": "Move down",
+        "avatarCropMoveLeft": "Move left",
+        "avatarCropMoveRight": "Move right",
+        "avatarCropCenter": "Center",
+        "avatarCropZoomIn": "Zoom in",
+        "avatarCropZoomOut": "Zoom out",
+        "avatarCropCancel": "Cancel",
+        "avatarCropSave": "Save",
         "emptyState": "Messages will appear here after the chat feed is connected.",
         "messageStreaming": "Generating",
         "messageFailed": "Send failed",
@@ -628,6 +649,9 @@
         "copyMarkdown": "Copy Markdown",
         "copyMarkdownSuccess": "Markdown copied to clipboard.",
         "copyMarkdownFailed": "Failed to copy Markdown.",
+        "copyToClipboard": "Copy to Clipboard",
+        "copyImageSuccess": "Image copied to clipboard.",
+        "copyImageFailed": "Failed to copy image to clipboard.",
         "exportEmpty": "There is no conversation to export yet.",
         "exportSelectionEmpty": "Select at least one message to export.",
         "exportSuccess": "Conversation exported successfully",
@@ -764,7 +788,7 @@
         "assistApiKeyGemini": "Assist API Key - Gemini",
         "assistApiKeyKimi": "Assist API Key - Kimi",
         "assistApiKeyHint": "(Only required when Assist API is {{provider}})",
-        "assistApiKeyPlaceholder": "Optional, defaults to Core API Key",
+        "assistApiKeyPlaceholder": "Auto-fills from Key Book when empty",
         "providerNames": {
             "ali": "Alibaba",
             "openai": "OpenAI",
@@ -778,7 +802,7 @@
             "qwen": "Qwen-Omni (Alibaba Bailian, Fastest Speed, Recommended)",
             "qwen_intl": "Qwen-Omni (Alibaba Intl)",
             "openai": "GPT-Realtime (OpenAI)",
-            "glm": "GLM-realtime (GLM)",
+            "glm": "GLM-Realtime (GLM, free quota, voice watermark removable via console)",
             "step": "Step-2-Audio (StepFun)",
             "gemini": "Gemini Live (Google, the BEST in the market)"
         },
@@ -797,12 +821,15 @@
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Intl)",
             "claude": "Claude (Anthropic)",
-            "grok": "Grok (xAI)"
+            "grok": "Grok (xAI)",
+            "openrouter": "OpenRouter (Model Aggregator)"
         },
         "coreApiAutoFillHint": "Key auto-filled from API Key Book, or enter directly",
         "assistApiSelectLabel": "Assist API Provider",
         "assistApiKeyLabel": "Assist API Key",
-        "assistApiAutoFillHint": "Key auto-filled from API Key Book, or enter directly",
+        "assistApiAutoFillHint": "Auto-fills from Key Book when empty; manually entered keys are saved independently",
+        "disableTts": "Disable TTS",
+        "disableTtsHint": "When enabled, no text-to-speech service will be called",
         "keyBookTitle": "API Key Book",
         "keyBookDescription": "Manage all API Keys in one place. Keys are auto-filled when switching providers in Core/Assist API, and keys entered there are auto-saved back here.",
         "keyBookPlaceholder": "Loading API provider config...",
@@ -829,14 +856,15 @@
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Intl)",
             "claude": "Claude (Anthropic)",
-            "grok": "Grok (xAI)"
+            "grok": "Grok (xAI)",
+            "openrouter": "OpenRouter"
         },
         "freeVersionNoApiKey": "Free version does not require API Key",
         "pleaseEnterApiKey": "Please enter your API Key",
         "freeVersionOnlyWhenCoreFree": "Free Version (Only available when Core API is Free Version)",
         "freeVersionConfig": "Free Version Configuration: Supports audio/video chat, text chat, and memory management. Custom voice and Agent mode not supported",
         "qwenRecommendation": "When Alibaba is the Core API, it's recommended to also select Alibaba as Assist API for the best custom voice experience",
-        "glmRecommendation": "GLM's audio/video chat model GLM-Realtime has been temporarily discontinued and cannot be used as Core API",
+        "glmRecommendation": "When GLM is the Core API, it offers a free quota and supports web search. Voice audio contains a watermark beep by default (can be disabled manually in the Zhipu console). It's recommended to select Alibaba as Assist API for custom voice support",
         "openaiRecommendation": "When OpenAI is the Core API, it's recommended to select Alibaba as Assist API to support custom voice functionality",
         "stepRecommendation": "When StepFun is the Core API, it's recommended to select Alibaba as Assist API to support custom voice functionality",
         "geminiRecommendation": "When Gemini is the Core API, it's recommended to select Alibaba as Assist API to support custom voice functionality",
@@ -1267,6 +1295,8 @@
         "prefixShouldBeEnglishLetterAndNumber": "Prefix should be English letters and numbers",
         "invalidApiKeyProvided": "Invalid API-key provided",
         "requestError": "Request error: {{error}}",
+        "serverNonJsonError": "Server returned a non-JSON response (HTTP {{status}}): {{snippet}}",
+        "serverRouteNotFound": "API route not found (HTTP {{status}}). Please ensure the server is deployed and restarted.",
         "voiceIdSaveFailed": "Failed to automatically save voice_id: {{error}}",
         "voiceIdSaved": "voice_id has been automatically saved to character",
         "pageWillRefresh": "Current page will automatically refresh to apply new voice",
@@ -1670,6 +1700,7 @@
             "openfang": "Her Desktop",
             "userPluginAdapting": "User Plugin (Developing)",
             "openclawConnect": "OpenClaw",
+            "openclawGuide": "OpenClaw Setup Guide",
             "chatSettings": "Chat Settings",
             "animationSettings": "Animation Settings",
             "renderQuality": "Quality",
@@ -1693,10 +1724,20 @@
             "textGuardNote": "Applies to text replies only; does not affect voice sessions"
         }
     },
+    "openclawGuide": {
+        "windowTitle": "OpenClaw Setup Guide - N.E.K.O.",
+        "pageTitle": "OpenClaw Setup Guide",
+        "pageSubtitle": "Connect CoPaw installation, channel placement, health checks, and N.E.K.O configuration in one clear path.",
+        "sourceLabel": "Guide Source",
+        "contentLanguageNotice": "The guide body switches with the selected language.",
+        "languageLabel": "Language",
+        "guideUnavailable": "Guide content is empty."
+    },
     "subtitle": {
         "title": "Real-time Subtitles",
         "enable": "Subtitle Translation",
-        "enableAriaLabel": "Toggle subtitle translation"
+        "enableAriaLabel": "Toggle subtitle translation",
+        "markdownPlaceholder": "[formatted content]"
     },
     "viewer": {
         "title": "Viewer - Project N.E.K.O."
@@ -1850,6 +1891,20 @@
             "selectedCount": "{{count}} selected",
             "changed": "Idle animation changed",
             "changeFailed": "Failed to change idle animation"
+        },
+        "managerInitFailed": "MMD manager initialization failed",
+        "moduleLoading": "Loading MMD modules...",
+        "modelLoading": "Loading MMD model...",
+        "modelLoaded": "MMD model loaded successfully",
+        "modelLoadFailed": "Failed to load MMD model: {{error}}",
+        "loadingOverlay": {
+            "engine": "Preparing MMD engine...",
+            "settings": "Loading MMD settings...",
+            "model": "Loading model resources...",
+            "physics": "Initializing physics...",
+            "idle": "Loading idle animation...",
+            "done": "MMD ready",
+            "failed": "Failed to load MMD"
         }
     },
     "modelManager": {
@@ -2759,7 +2814,8 @@
         "ended": "Ended",
         "unknownState": "Unknown state",
         "volume": "Volume: ",
-        "unsafeSource": "Blocked unsafe audio source: {{domain}}"
+        "unsafeSource": "Blocked unsafe audio source: {{domain}}",
+        "cookieExpired": "Music cookie has expired"
     },
     "Jukebox": {
         "title": "Jukebox",
@@ -2783,14 +2839,14 @@
         "play": "Play",
         "playError": "Music player not initialized",
         "notFound": "Song not found",
-        "mp3Ended": "mp3 playback ended",
+        "audioEnded": "Audio playback ended",
         "vmdNotInit": "MMD Manager not initialized, skipping animation",
         "vmdPlayFailed": "VMD playback failed",
         "vmdPlayed": "VMD animation played",
-        "useAPlayer": "Using APlayer to play mp3 file",
-        "startPlay": "Starting mp3 audio playback",
-        "nonMp3Error": "Attempting to play non-mp3 format file",
-        "nonMp3Info": "Non-mp3 audio info",
+        "useAPlayer": "Playing audio file with APlayer",
+        "startPlay": "Starting audio playback",
+        "nonMp3Error": "Attempting to play an unsupported audio format",
+        "nonMp3Info": "Unsupported audio format info",
         "btnNotFound": "Jukebox button not found, waiting...",
         "btnBound": "Jukebox button bound",
         "minimizeBtnNotFound": "Minimize button not found, waiting...",
@@ -2817,7 +2873,7 @@
         "idleRestoreFailed": "Failed to restore idle animation",
         "btnNotFoundGiveUp": "Jukebox button not found after retries, giving up",
         "minimizeBtnNotFoundGiveUp": "Minimize button not found after retries, giving up",
-        "noticeDance": "💃 Dance service is currently only available when an MMD avatar is loaded. More interactions coming soon",
+        "noticeDance": "💃 Dance service is currently only available when a 3D model (MMD / VRM) is loaded. More interactions coming soon",
         "noticeMusic": "⚠️ Current songs are for testing only — copyrighted tracks will be removed in future versions, please import your own",
         "manager": "Manager",
         "managerTitle": "Manager",
@@ -2833,7 +2889,7 @@
         "dragZipHint": "Drag and drop ZIP files or folders here to import",
         "unifiedDropHint": "Drag and drop songs, animations, or import packages here",
         "clickToAdd": "Click to add",
-        "dragMp3Hint": "Drag MP3 files here to add songs",
+        "dragMp3Hint": "Drag audio files here to add songs",
         "dragVmdHint": "Drag VMD files here to add animations",
         "showHiddenSongs": "Show hidden songs",
         "selectAll": "Select All",

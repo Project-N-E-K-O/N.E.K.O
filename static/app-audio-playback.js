@@ -24,8 +24,10 @@
     }
 
     const ASSISTANT_TURN_COMPLETION_FALLBACK_MS = 700;
+    const ASSISTANT_AUDIO_HEADER_STALL_MS = 1800;
     let _assistantTurnCompletionFallbackTimer = 0;
     let _assistantTurnCompletionFallbackTurnId = null;
+    let _pendingAudioMetaStallTimer = 0;
 
     function audioTraceEnabled() {
         return window.NEKO_DEBUG_BUBBLE_LIFECYCLE === true;
@@ -57,6 +59,108 @@
                 timestamp: Date.now()
             }, detail || {})
         }));
+    }
+
+    function clearPendingAudioMetaStallTimer() {
+        if (_pendingAudioMetaStallTimer) {
+            clearTimeout(_pendingAudioMetaStallTimer);
+            _pendingAudioMetaStallTimer = 0;
+        }
+    }
+
+    function pruneStalledPendingAudioMetaQueue(nowMs) {
+        var currentTimeMs = Number.isFinite(nowMs) ? nowMs : Date.now();
+        if (!Array.isArray(S.pendingAudioChunkMetaQueue) || S.pendingAudioChunkMetaQueue.length === 0) {
+            return [];
+        }
+
+        var retained = [];
+        var removed = [];
+        S.pendingAudioChunkMetaQueue.forEach(function (item) {
+            if (!item) {
+                return;
+            }
+
+            if (item.shouldSkip) {
+                removed.push(item);
+                return;
+            }
+
+            if (item.epoch !== S.incomingAudioEpoch ||
+                !Number.isFinite(item.receivedAt)) {
+                retained.push(item);
+                return;
+            }
+
+            if (currentTimeMs - item.receivedAt >= ASSISTANT_AUDIO_HEADER_STALL_MS) {
+                removed.push(item);
+                return;
+            }
+
+            retained.push(item);
+        });
+
+        if (removed.length === 0) {
+            return removed;
+        }
+
+        S.pendingAudioChunkMetaQueue = retained;
+        if (removed.some(function (item) { return item && item.speechId && item.speechId === S.currentPlayingSpeechId; }) &&
+            S.scheduledSources.length === 0 &&
+            S.audioBufferQueue.length === 0 &&
+            S.incomingAudioBlobQueue.length === 0 &&
+            !S.assistantSpeechActiveTurnId) {
+            S.currentPlayingSpeechId = null;
+        }
+
+        logAudioLifecycle('pruneStalledPendingAudioMetaQueue:removed', {
+            removedCount: removed.length,
+            stallMs: ASSISTANT_AUDIO_HEADER_STALL_MS,
+            turnIds: removed.map(function (item) { return item && item.turnId ? String(item.turnId) : null; }),
+            speechIds: removed.map(function (item) { return item && item.speechId ? String(item.speechId) : null; })
+        });
+        return removed;
+    }
+
+    function schedulePendingAudioMetaStallCheck() {
+        clearPendingAudioMetaStallTimer();
+
+        var nextDueAt = 0;
+        S.pendingAudioChunkMetaQueue.forEach(function (item) {
+            if (!item ||
+                item.shouldSkip ||
+                item.epoch !== S.incomingAudioEpoch ||
+                !Number.isFinite(item.receivedAt)) {
+                return;
+            }
+
+            var dueAt = item.receivedAt + ASSISTANT_AUDIO_HEADER_STALL_MS;
+            if (!nextDueAt || dueAt < nextDueAt) {
+                nextDueAt = dueAt;
+            }
+        });
+
+        if (!nextDueAt) {
+            return;
+        }
+
+        _pendingAudioMetaStallTimer = window.setTimeout(function () {
+            _pendingAudioMetaStallTimer = 0;
+            var removed = pruneStalledPendingAudioMetaQueue(Date.now());
+            if (removed.length > 0) {
+                var candidateTurnId = null;
+                removed.some(function (item) {
+                    candidateTurnId = resolveAssistantAudioTurnId(item && item.turnId, item && item.speechId);
+                    return !!candidateTurnId;
+                });
+                if (candidateTurnId) {
+                    maybeFinalizeAssistantSpeech(candidateTurnId);
+                } else {
+                    maybeFinalizeAssistantSpeech();
+                }
+            }
+            schedulePendingAudioMetaStallCheck();
+        }, Math.max(0, nextDueAt - Date.now()));
     }
 
     function dispatchAssistantSpeechStart(turnId) {
@@ -95,6 +199,8 @@
     }
 
     function resolveAssistantSpeechCancelTurnId() {
+        pruneStalledPendingAudioMetaQueue(Date.now());
+        schedulePendingAudioMetaStallCheck();
         var normalizedTurnId = normalizeAssistantTurnId(S.assistantSpeechActiveTurnId);
         if (normalizedTurnId) {
             return normalizedTurnId;
@@ -225,6 +331,8 @@
     }
 
     function isAssistantTurnPlaybackDrained(turnId) {
+        pruneStalledPendingAudioMetaQueue(Date.now());
+        schedulePendingAudioMetaStallCheck();
         var normalizedTurnId = normalizeAssistantTurnId(turnId);
         if (!normalizedTurnId) {
             return false;
@@ -399,12 +507,15 @@
     async function clearAudioQueue() {
         dispatchAssistantSpeechCancel('clear_audio_queue');
         clearAssistantTurnCompletion();
+        clearPendingAudioMetaStallTimer();
         S.scheduledSources.forEach(function (source) {
             try { source.stop(); } catch (_) { /* noop */ }
         });
         stopActiveLipSync();
         S.scheduledSources = [];
         S.audioBufferQueue = [];
+        S.pendingAudioChunkMetaQueue = [];
+        S.incomingAudioBlobQueue = [];
         S.isPlaying = false;
         S.audioStartTime = 0;
         S.nextChunkTime = 0;
@@ -420,12 +531,15 @@
     function clearAudioQueueWithoutDecoderReset() {
         dispatchAssistantSpeechCancel('clear_audio_queue_without_decoder_reset');
         clearAssistantTurnCompletion();
+        clearPendingAudioMetaStallTimer();
         S.scheduledSources.forEach(function (source) {
             try { source.stop(); } catch (_) { /* noop */ }
         });
         stopActiveLipSync();
         S.scheduledSources = [];
         S.audioBufferQueue = [];
+        S.pendingAudioChunkMetaQueue = [];
+        S.incomingAudioBlobQueue = [];
         S.isPlaying = false;
         S.audioStartTime = 0;
         S.nextChunkTime = 0;
@@ -539,16 +653,18 @@
             // If init still failed, fall back to connecting sources directly to destination
             var hasAnalyser = !!S.globalAnalyser;
 
-            // Clamp nextChunkTime to now so stale values never cause past-scheduled
-            // (and therefore simultaneously playing) audio chunks.
-            var now = S.audioPlayerContext.currentTime;
-            if (S.nextChunkTime < now) {
-                S.nextChunkTime = now;
-            }
-
-            // Pre-schedule all chunks within the lookahead window
+            // Pre-schedule all chunks within the lookahead window.
+            // 只在有 chunk 可 schedule 时才 clamp nextChunkTime，
+            // 避免空转循环中把 nextChunkTime 无谓前推——对于 qwen-tts 等
+            // server_commit 模式 provider，服务端在韵律边界有天然的处理间隙
+            // （200-300ms），空转 clamp 会把这个间隙转化为用户可感知的停顿。
             while (S.nextChunkTime < S.audioPlayerContext.currentTime + scheduleAheadTime) {
                 if (S.audioBufferQueue.length > 0) {
+                    // Clamp: 防止 stale nextChunkTime 导致多个 chunk 被 schedule 到过去
+                    // （Web Audio 会同时播放过去时刻的 source），只在真正要 schedule 时才修正。
+                    if (S.nextChunkTime < S.audioPlayerContext.currentTime) {
+                        S.nextChunkTime = S.audioPlayerContext.currentTime;
+                    }
                     var item = S.audioBufferQueue.shift();
                     var nextBuffer = item.buffer;
                     if (window.DEBUG_AUDIO) {
@@ -735,7 +851,24 @@
     // ======================== Incoming audio blob queue ========================
 
     function enqueueIncomingAudioBlob(blob) {
-        var meta = S.pendingAudioChunkMetaQueue.shift();
+        pruneStalledPendingAudioMetaQueue(Date.now());
+        var meta = null;
+        while (S.pendingAudioChunkMetaQueue.length > 0) {
+            meta = S.pendingAudioChunkMetaQueue.shift();
+            if (!meta) {
+                continue;
+            }
+            if (meta.shouldSkip) {
+                logAudioLifecycle('enqueueIncomingAudioBlob:discard_skip_meta', {
+                    turnId: meta.turnId || null,
+                    speechId: meta.speechId || null
+                });
+                meta = null;
+                continue;
+            }
+            break;
+        }
+        schedulePendingAudioMetaStallCheck();
         if (!meta) {
             logAudioLifecycle('enqueueIncomingAudioBlob:missing_meta');
             if (window.DEBUG_AUDIO) {
@@ -818,6 +951,7 @@
         } finally {
             S.isProcessingIncomingAudioBlob = false;
             maybeFinalizeAssistantSpeech();
+            schedulePendingAudioMetaStallCheck();
             if (S.incomingAudioBlobQueue.length > 0) {
                 void processIncomingAudioBlobQueue();
             }
@@ -895,6 +1029,7 @@
     mod.handleAudioBlob = handleAudioBlob;
     mod.enqueueIncomingAudioBlob = enqueueIncomingAudioBlob;
     mod.processIncomingAudioBlobQueue = processIncomingAudioBlobQueue;
+    mod.schedulePendingAudioMetaStallCheck = schedulePendingAudioMetaStallCheck;
     mod.saveSpeakerVolumeSetting = saveSpeakerVolumeSetting;
     mod.loadSpeakerVolumeSetting = loadSpeakerVolumeSetting;
 
@@ -910,6 +1045,7 @@
     window.handleAudioBlob = handleAudioBlob;
     window.enqueueIncomingAudioBlob = enqueueIncomingAudioBlob;
     window.processIncomingAudioBlobQueue = processIncomingAudioBlobQueue;
+    window.schedulePendingAudioMetaStallCheck = schedulePendingAudioMetaStallCheck;
     window.saveSpeakerVolumeSetting = saveSpeakerVolumeSetting;
     window.loadSpeakerVolumeSetting = loadSpeakerVolumeSetting;
 

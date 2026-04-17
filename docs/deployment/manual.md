@@ -19,11 +19,23 @@ uv sync
 
 ## Build Frontend
 
-The project has two frontend projects under `frontend/` that must be built before running:
+The project has two frontend projects under `frontend/` that must be built before running.
+
+**Recommended** — use the convenience script from the project root. This is the officially supported build path:
+
+```bash
+# Windows
+build_frontend.bat
+
+# Linux / macOS
+./build_frontend.sh
+```
+
+If you need to run the commands manually, they must match what the script does:
 
 ```bash
 cd frontend/react-neko-chat && npm install && npm run build && cd ../..
-cd frontend/plugin-manager && npm install && npm run build && cd ../..
+cd frontend/plugin-manager && npm install && npm run build-only && cd ../..
 ```
 
 ## Running

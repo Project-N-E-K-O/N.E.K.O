@@ -57,7 +57,14 @@
             "档案名": "档案名",
             "性别": "性别",
             "年龄": "年龄",
-            "昵称": "昵称"
+            "昵称": "昵称",
+            "性格原型": "性格原型",
+            "种族": "种族",
+            "自称": "自称",
+            "核心特质": "核心特质",
+            "行为特点": "行为特点",
+            "厌恶": "厌恶",
+            "一句话台词": "一句话台词"
         }
     },
     "steam": {
@@ -527,7 +534,9 @@
         "AGENT_CU_AUTO_CLOSED": "Computer Use 模块未加载，已自动关闭",
         "AGENT_CU_CAPABILITY_LOST": "Computer Use 不可用：$t(agent.precheck.{{reason_code}})",
         "TTS_CONNECTION_FAILED": "TTS服务连接失败: {{msg}}",
+        "UPSTREAM_SERVER_BUSY": "抱歉喵，上游运营商服务器繁忙，请稍后重试~",
         "TTS_RECONNECTING": "🔄 语音服务正在自动重连，请稍候...",
+        "TTS_WATERMARK_DETECTED": "⚠️ 检测到智谱CogTTS音频水印（滴滴声），如需去除水印请前往智谱控制台手动配置。",
         "TTS_CUSTOM_URL_NOT_CONFIGURED": "未配置 GPT-SoVITS API URL，请先在 API 设置中启用并配置自定义 TTS",
         "TTS_CUSTOM_URL_LOCALHOST_ONLY": "GPT-SoVITS API URL 必须为 localhost",
         "TTS_AUDIO_API_KEY_MISSING": "未配置音频 API 密钥 (AUDIO_API_KEY)",
@@ -576,6 +585,18 @@
         "avatarPreviewRefreshing": "正在刷新当前头像...",
         "avatarPreviewGenerating": "正在生成当前头像...",
         "avatarPreviewFailed": "生成头像失败",
+        "avatarCropperTitle": "调整头像裁剪区域",
+        "avatarPreviewCropping": "请调整裁剪区域",
+        "avatarPreviewCropCancelled": "已取消手动裁剪，保持原头像不变。",
+        "avatarCropMoveUp": "上移",
+        "avatarCropMoveDown": "下移",
+        "avatarCropMoveLeft": "左移",
+        "avatarCropMoveRight": "右移",
+        "avatarCropCenter": "居中",
+        "avatarCropZoomIn": "放大",
+        "avatarCropZoomOut": "缩小",
+        "avatarCropCancel": "取消",
+        "avatarCropSave": "保存",
         "emptyState": "聊天内容接入后会显示在这里。",
         "messageStreaming": "生成中",
         "messageFailed": "发送失败",
@@ -628,6 +649,9 @@
         "copyMarkdown": "复制 Markdown",
         "copyMarkdownSuccess": "Markdown 已复制到剪贴板",
         "copyMarkdownFailed": "复制 Markdown 失败",
+        "copyToClipboard": "复制到剪贴板",
+        "copyImageSuccess": "已复制到剪贴板",
+        "copyImageFailed": "复制到剪贴板失败",
         "exportEmpty": "暂时没有可以导出的对话",
         "exportSelectionEmpty": "请至少选择一条消息",
         "exportSuccess": "对话已成功导出",
@@ -764,7 +788,7 @@
         "assistApiKeyGemini": "辅助API Key - Gemini",
         "assistApiKeyKimi": "辅助API Key - Kimi",
         "assistApiKeyHint": "（仅当辅助API为{{provider}}时需要填写）",
-        "assistApiKeyPlaceholder": "可选，默认为核心API Key",
+        "assistApiKeyPlaceholder": "留空使用管理簿对应 Key",
         "providerNames": {
             "ali": "阿里",
             "openai": "OpenAI",
@@ -778,7 +802,7 @@
             "qwen": "Qwen-Omni（阿里百炼，速度最快，推荐⭐）",
             "qwen_intl": "Qwen-Omni（阿里国际版）",
             "openai": "GPT-Realtime（OpenAI）",
-            "glm": "GLM-realtime（智谱）",
+            "glm": "GLM-Realtime（智谱，有免费额度，语音含水印需去控制台设置去除）",
             "step": "Step-2-Audio（阶跃星辰）",
             "gemini": "Gemini Live（谷歌，效果最好，国内版不支持）"
         },
@@ -797,12 +821,15 @@
             "minimax": "MiniMax（国服）",
             "minimax_intl": "MiniMax（国际服）",
             "claude": "Claude（Anthropic，国内无法使用）",
-            "grok": "Grok（xAI）"
+            "grok": "Grok（xAI）",
+            "openrouter": "OpenRouter（模型聚合，国内无法使用）"
         },
         "coreApiAutoFillHint": "Key从API管理簿自动填充，也可在此直接输入",
         "assistApiSelectLabel": "辅助API服务商",
         "assistApiKeyLabel": "辅助API Key",
-        "assistApiAutoFillHint": "Key从API管理簿自动填充，也可在此直接输入",
+        "assistApiAutoFillHint": "留空时自动使用管理簿中的Key，手动输入则独立保存",
+        "disableTts": "禁用TTS",
+        "disableTtsHint": "开启后不会调用任何语音合成服务",
         "keyBookTitle": "API 管理簿",
         "keyBookDescription": "统一管理所有API Key。核心API和辅助API切换服务商时会自动从此处读取Key，在核心/辅助区域输入的Key也会自动回写到此处。",
         "keyBookPlaceholder": "请先加载API服务商配置",
@@ -829,14 +856,15 @@
             "minimax": "MiniMax（国服）",
             "minimax_intl": "MiniMax（国际服）",
             "claude": "Claude（Anthropic）",
-            "grok": "Grok（xAI）"
+            "grok": "Grok（xAI）",
+            "openrouter": "OpenRouter"
         },
         "freeVersionNoApiKey": "免费版无需API Key",
         "pleaseEnterApiKey": "请输入您的API Key",
         "freeVersionOnlyWhenCoreFree": "免费版（仅核心API为免费版时可用）",
         "freeVersionConfig": "免费版配置：支持音视频对话、文本对话和记忆管理，不支持自定义语音、Agent模式",
         "qwenRecommendation": "阿里作为核心API时，建议辅助API也选择阿里以获得最佳的自定义语音体验",
-        "glmRecommendation": "智谱的音视频对话模型GLM-Realtime已暂时下架，无法作为核心API使用",
+        "glmRecommendation": "智谱作为核心API时，有免费额度，支持联网搜索。语音默认含水印滴滴声（可在智谱控制台手动关闭）。建议辅助API选择阿里以支持自定义语音功能",
         "openaiRecommendation": "OpenAI作为核心API时，建议辅助API选择阿里以支持自定义语音功能",
         "stepRecommendation": "阶跃星辰作为核心API时，建议辅助API选择阿里以支持自定义语音功能",
         "geminiRecommendation": "Gemini作为核心API时，建议辅助API选择阿里以支持自定义语音功能",
@@ -1267,6 +1295,8 @@
         "prefixShouldBeEnglishLetterAndNumber": "前缀应为英文字母和数字",
         "invalidApiKeyProvided": "提供的API密钥无效",
         "requestError": "请求出错：{{error}}",
+        "serverNonJsonError": "服务端返回了非JSON响应 (HTTP {{status}})：{{snippet}}",
+        "serverRouteNotFound": "接口未找到 (HTTP {{status}})，请确认服务端已正确部署并重启",
         "voiceIdSaveFailed": "voice_id自动保存失败: {{error}}",
         "voiceIdSaved": "voice_id已自动保存到角色",
         "pageWillRefresh": "当前页面即将自动刷新以应用新语音",
@@ -1670,6 +1700,7 @@
             "openfang": "专属桌面",
             "userPluginAdapting": "用户插件（开发中）",
             "openclawConnect": "OpenClaw",
+            "openclawGuide": "OpenClaw 接入教程",
             "chatSettings": "对话设置",
             "animationSettings": "动画设置",
             "renderQuality": "画质",
@@ -1693,10 +1724,20 @@
             "textGuardNote": "仅对文本回复有效，不影响语音对话"
         }
     },
+    "openclawGuide": {
+        "windowTitle": "OpenClaw 接入教程 - N.E.K.O.",
+        "pageTitle": "OpenClaw 接入教程",
+        "pageSubtitle": "把 OpenClaw 安装、通道放置、健康检查与 N.E.K.O 配置串起来，按一条路径接通。",
+        "sourceLabel": "教程来源",
+        "contentLanguageNotice": "语言切换会同时更新页面控件文案和正文内容。",
+        "languageLabel": "语言",
+        "guideUnavailable": "教程内容为空。"
+    },
     "subtitle": {
         "title": "实时字幕",
         "enable": "字幕翻译",
-        "enableAriaLabel": "字幕翻译开关"
+        "enableAriaLabel": "字幕翻译开关",
+        "markdownPlaceholder": "[格式化内容]"
     },
     "viewer": {
         "title": "Viewer - Project N.E.K.O."
@@ -1850,6 +1891,20 @@
             "selectedCount": "已选 {{count}} 个",
             "changed": "待机动作已切换",
             "changeFailed": "切换待机动作失败"
+        },
+        "managerInitFailed": "MMD 管理器初始化失败",
+        "moduleLoading": "正在加载MMD模块...",
+        "modelLoading": "正在加载 MMD 模型...",
+        "modelLoaded": "MMD 模型加载成功",
+        "modelLoadFailed": "MMD模型加载失败: {{error}}",
+        "loadingOverlay": {
+            "engine": "正在准备 MMD 引擎...",
+            "settings": "正在读取 MMD 设置...",
+            "model": "正在加载模型资源...",
+            "physics": "正在初始化物理...",
+            "idle": "正在加载待机动作...",
+            "done": "MMD 已就绪",
+            "failed": "MMD 加载失败"
         }
     },
     "modelManager": {
@@ -2759,7 +2814,8 @@
         "ended": "已结束",
         "unknownState": "未知状态",
         "volume": "音量: ",
-        "unsafeSource": "已拦截不安全音源: {{domain}}"
+        "unsafeSource": "已拦截不安全音源: {{domain}}",
+        "cookieExpired": "音乐Cookie已失效"
     },
     "Jukebox": {
         "title": "点歌台",
@@ -2783,12 +2839,12 @@
         "play": "播放",
         "playError": "音乐播放器未初始化",
         "notFound": "找不到歌曲",
-        "mp3Ended": "mp3播放结束",
+        "audioEnded": "音频播放结束",
         "vmdNotInit": "MMD Manager 未初始化，跳过动画",
         "vmdPlayFailed": "VMD 播放失败",
         "vmdPlayed": "VMD 动画已播放",
-        "useAPlayer": "使用APlayer播放mp3文件",
-        "startPlay": "开始播放mp3音频",
+        "useAPlayer": "使用APlayer播放音频文件",
+        "startPlay": "开始播放音频",
         "nonMp3Error": "试图播放非mp3格式文件",
         "nonMp3Info": "非mp3音频信息",
         "btnNotFound": "点歌台按钮不存在，等待加载...",
@@ -2817,7 +2873,7 @@
         "idleRestoreFailed": "恢复待机动画失败",
         "btnNotFoundGiveUp": "点歌台按钮在重试后仍未找到，放弃绑定",
         "minimizeBtnNotFoundGiveUp": "最小化按钮在重试后仍未找到，放弃监听",
-        "noticeDance": "💃 伴舞服务目前仅在载入 MMD 形象时可用，后续会增加更多互动",
+        "noticeDance": "💃 伴舞服务目前仅在载入 3D 模型（MMD / VRM）时可用，后续会增加更多互动",
         "noticeMusic": "⚠️ 当前歌曲仅供测试，后续版本将清除版权音乐，请自行导入",
         "manager": "管理器",
         "managerTitle": "管理器",

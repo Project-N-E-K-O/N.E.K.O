@@ -63,14 +63,14 @@
         // avatar-popup-common, avatar-ui-popup, avatar-ui-popup-config, avatar-ui-buttons
         // 已由 model_manager.html 静态 <script> 加载，此处不再重复加载
         const mmdModules = [
+            '/static/mmd-init.js',
             '/static/mmd-core.js',
             '/static/mmd-animation.js',
             '/static/mmd-expression.js',
             '/static/mmd-interaction.js',
             '/static/mmd-cursor-follow.js',
             '/static/mmd-manager.js',
-            '/static/mmd-ui-buttons.js',
-            '/static/mmd-init.js'
+            '/static/mmd-ui-buttons.js'
         ];
 
         const failedModules = [];
@@ -91,9 +91,16 @@
 
         if (failedModules.length > 0) {
             window.mmdModuleLoaded = false;
+            window._mmdModulesLoading = false;
+            window._mmdModulesFailed = failedModules.slice();
             console.error('[MMD] 以下模块加载失败:', failedModules);
+            window.dispatchEvent(new CustomEvent('mmd-modules-failed', {
+                detail: { failedModules }
+            }));
         } else {
             window.mmdModuleLoaded = true;
+            window._mmdModulesLoading = false;
+            window._mmdModulesFailed = null;
             window.dispatchEvent(new CustomEvent('mmd-modules-ready'));
         }
     };
@@ -1007,6 +1014,78 @@ document.addEventListener('DOMContentLoaded', async () => {
     const _idleRotationTimers = { vrm: null, mmd: null };
     const _idleRotationLast = { vrm: null, mmd: null };
     const _idleLoopCleanup = { vrm: null, mmd: null };
+    // MMD 待机动作切换期间临时禁用物理，防止头发/裙摆因瞬时姿态跳变而飞甩。
+    // MMD 无 crossfade（loadAnimation 一步落位），骨架会单帧跳变 → MMDPhysics 积分为冲击。
+    // VRM 侧走 crossfade + 跨 clip 同半球对齐，骨骼每帧位移极小，SpringBone 无冲击，不走这条路径。
+    const _idleMmdPhysicsRestoreTimer = { mmd: null };
+    const _idleMmdPhysicsSavedState = { mmd: null };
+    // VRM 待机动作 crossfade 时长（秒）。mixer 对每根骨做加权 slerp，把单帧姿态跳变稀释成
+    // 逐帧小幅位移，避开 LookAt 奇点 / 四元数跨半球长路径 / 物理飞甩。
+    // previousAction 的延迟 stop 已下沉到 vrm-animation.js `_playAction` 的每次 fadeOut，
+    // 跟 idle/手动切换路径解耦，不在此处维护 pending 槽。
+    //
+    // 0.35s 选型理由：aa2458e 之后的保护（LookAt proxy 永久 no-op / _alignClipToCurrentPose
+    // 跨 clip 同半球对齐）都是根因修复，与 fadeDuration 无关，窗口可自由放宽。配合下方
+    // 视觉 fade：fade-in 在 ~370ms 完成，若 crossfade 仍取 0.15s（300ms 结束），用户第一眼
+    // 看到的是已定格的新 pose —— 正是主诉「硬直」的来源。拉到 0.35s 让 fade-in 完成后仍有
+    // ~130ms 可见 slerp 尾巴，用户看到的第一帧是「正在微动」而不是「突然定格」，才真正
+    // 消除硬直感。再长（>0.6s）无视觉 fade 配合会暴露两段无关 pose 中间态的「融化感」。
+    const IDLE_VRM_FADE_SEC = 0.35;
+
+    // 待机动作切换的视觉渐隐渐显（material opacity），仅 VRM 使用。
+    // 骨骼 crossfade 只平滑骨旋转，无法掩盖两段不相关待机 clip 之间的「pose 跳变感」
+    // （用户主诉的 VRM 硬直），所以 VRM 叠一层 fade-out → 切换 → fade-in 遮盖过渡。
+    //
+    // MMD 不走 visual fade：OutlineEffect 把描边作为独立 pass 渲染，主材质 opacity 归零时
+    // 描边仍全不透明，会出现「只剩描边」的视觉 bug；强制 transparent=true 还会让 MMDToonMaterial
+    // 从不透明走 alpha blend 排序、face/hair/body 多层 z-sort 错乱。原本 MMD fade 要遮盖的
+    // T-pose 闪帧已在 mmd-init.js 移除 stopAnimation 调用后根治（loadAnimation 内部的
+    // skeleton.pose() → mixer.update(0) 是同步块，RAF 无法插入）。
+    const IDLE_VRM_VISUAL_FADE_OUT_MS = 150;
+    const IDLE_VRM_VISUAL_FADE_IN_MS = 220;
+    const IDLE_MMD_PHYSICS_RESTORE_MS = 250;
+
+    function markMMDCanvasLoadingSession(canvas, loadingSessionId) {
+        if (!canvas) return;
+        canvas.dataset.mmdLoadingSessionId = String(loadingSessionId);
+        canvas.style.display = 'block';
+        canvas.style.visibility = 'hidden';
+        canvas.style.pointerEvents = 'none';
+    }
+
+    function restoreMMDCanvasForLoadingSession(canvas, loadingSessionId) {
+        if (!canvas) return false;
+        if (canvas.dataset.mmdLoadingSessionId !== String(loadingSessionId)) {
+            return false;
+        }
+        delete canvas.dataset.mmdLoadingSessionId;
+        canvas.style.visibility = 'visible';
+        canvas.style.pointerEvents = 'auto';
+        return true;
+    }
+
+    function isMMDLoadingSessionActive(canvas, loadingSessionId) {
+        return !!canvas && canvas.dataset.mmdLoadingSessionId === String(loadingSessionId);
+    }
+
+    function showStatusForMMDLoadingSession(canvas, loadingSessionId, message, timeout) {
+        if (!isMMDLoadingSessionActive(canvas, loadingSessionId)) {
+            return false;
+        }
+        showStatus(message, 0);
+        if (timeout > 0) {
+            setTimeout(() => {
+                if (!isMMDLoadingSessionActive(canvas, loadingSessionId)) {
+                    return;
+                }
+                if (currentModelInfo) {
+                    const modelMsg = t('live2d.currentModel', `当前模型: ${currentModelInfo.name}`, { model: currentModelInfo.name });
+                    updateStatusText(modelMsg);
+                }
+            }, timeout);
+        }
+        return true;
+    }
 
     // 更新模型类型按钮文字的函数（使用统一管理器）
     function updateModelTypeButtonText() {
@@ -2249,9 +2328,25 @@ document.addEventListener('DOMContentLoaded', async () => {
             // VRM 表情组仅在 VRM 子类型时显示（MMD 子类型时隐藏）
             if (vrmExpressionGroup) vrmExpressionGroup.style.display = (currentLive3dSubType !== 'mmd') ? 'flex' : 'none';
             if (live2dContainer) live2dContainer.style.display = 'none';
+            // 【修复】MMD 子类型时保持 VRM 容器隐藏，避免 VRM 场景中缓存的模型（如 sister1.0）
+            // 在切换过程中被浏览器绘制，导致短暂闪现；同时显示 MMD 容器作为前台画布。
             if (vrmContainer) {
-                vrmContainer.classList.remove('hidden');
-                vrmContainer.style.display = 'block';
+                if (currentLive3dSubType === 'mmd') {
+                    vrmContainer.classList.add('hidden');
+                    vrmContainer.style.display = 'none';
+                } else {
+                    vrmContainer.classList.remove('hidden');
+                    vrmContainer.style.display = 'block';
+                }
+            }
+            if (mmdContainer) {
+                if (currentLive3dSubType === 'mmd') {
+                    mmdContainer.classList.remove('hidden');
+                    mmdContainer.style.display = 'block';
+                } else {
+                    mmdContainer.classList.add('hidden');
+                    mmdContainer.style.display = 'none';
+                }
             }
             // 更新VRM选择器按钮文字
             if (typeof updateVRMAnimationSelectButtonText === 'function') {
@@ -2343,22 +2438,26 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (parameterEditorGroup) parameterEditorGroup.style.display = 'none';
 
             // 初始化 VRM 管理器
+            // 【修复】仅在 VRM 子类型时初始化 VRM 场景。MMD 子类型时若调用 initThreeJS，
+            // 会强制显示 vrm-container（见 vrm-manager.js initThreeJS），导致 VRM 场景中缓存的
+            // 模型（如 sister1.0）被浏览器绘制并短暂闪现。
+            if (currentLive3dSubType !== 'mmd') {
             // 1. 如果 vrmManager 不存在，创建实例
             if (!vrmManager) {
                 try {
                     /**
                      * ===== 代码质量改进：修复 VRM 初始化竞争条件 =====
-                     * 
+                     *
                      * 问题：
                      * - 如果 'vrm-modules-ready' 事件在监听器附加之前触发，会导致无限等待
                      * - 缺少超时机制可能导致用户界面卡死
-                     * 
+                     *
                      * 解决方案：
                      * 1. 首先检查模块是否已加载（window.VRMManager 或 window.vrmModuleLoaded）
                      *    如果已加载，立即 resolve，避免等待已发生的事件
                      * 2. 使用 once: true 确保事件监听器只触发一次
                      * 3. 添加 8 秒超时机制，提供更快的反馈和防止无限等待
-                     * 
+                     *
                      * 使用位置：
                      * - switchModelDisplay() 函数中的 VRM 初始化
                      * - vrmModelSelect change 事件监听器中的 VRM 初始化
@@ -2440,9 +2539,47 @@ document.addEventListener('DOMContentLoaded', async () => {
                     console.log('[模型管理] VRM 场景初始化成功');
                     showStatus(t('live2d.vrmInitialized', 'VRM 管理器初始化成功'));
                 }
+                // 【修复】对称恢复：从 MMD 子类型切回 VRM 时，MMD 分支会把 canvas 隐藏并
+                // 暂停渲染循环。若场景已初始化则 initThreeJS 不会被调用，需要在此显式
+                // 恢复 canvas 可见性并重启渲染循环，避免预览空白或卡在旧帧。
+                if (vrmManager && vrmManager.renderer && vrmManager.renderer.domElement) {
+                    vrmManager.renderer.domElement.style.display = 'block';
+                }
+                if (vrmManager && typeof vrmManager.resumeRendering === 'function') {
+                    try { vrmManager.resumeRendering(); } catch (_) { /* ignore */ }
+                }
             } catch (error) {
                 console.error('VRM 场景初始化失败:', error);
                 showStatus(t('live2d.vrmInitFailed', `VRM 场景初始化失败: ${error.message}`));
+            }
+            } else {
+                // MMD 子类型：暂停 VRM 渲染循环，避免后台仍然绘制已缓存的 VRM 模型
+                // （即使容器 display:none，某些浏览器在过渡/重排时仍可能短暂显示 canvas）
+                //
+                // 【修复 MMD→VRM 切换闪现】额外把当前 VRM 模型节点隐藏：
+                // 仅靠 pauseRendering + canvas display:none 不足以覆盖从 MMD 切回 VRM 的缝隙。
+                // 切回 VRM 时，switchModelDisplay 的 VRM 分支会显式 resumeRendering +
+                // 显示 canvas（见上方"对称恢复"），而真正替换模型的 vrmManager.loadModel
+                // 要等到 switchModelDisplay 之后才被 vrmModelSelect handler 调用。
+                // 期间 loadLive3DModels / loadIdleAnimationOptions / restoreVrmIdleAnimation
+                // 等多处 await 都会让浏览器绘制若干帧，此时旧 sister1.0 仍留在 scene 中
+                // 就会被画出来。把 scene.visible 置 false 后，即便 canvas 可见也画不出内容
+                // （renderer 使用 alpha:true，画面为透明）；新模型加载时 disposeVRM 会清掉
+                // 旧节点，新节点走自己的 visible=false → fadeIn 流水线，不受影响。
+                if (vrmManager && vrmManager.currentModel &&
+                    vrmManager.currentModel.vrm && vrmManager.currentModel.vrm.scene) {
+                    vrmManager.currentModel.vrm.scene.visible = false;
+                }
+                if (vrmManager && typeof vrmManager.pauseRendering === 'function') {
+                    try { vrmManager.pauseRendering(); } catch (_) { /* ignore */ }
+                }
+                // 【修复】清除 VRM canvas 缓存帧，防止 canvas 内容在容器短暂可见时被绘制
+                if (vrmManager && vrmManager.renderer) {
+                    try { vrmManager.renderer.clear(); } catch (_) { /* ignore */ }
+                }
+                if (vrmManager && vrmManager.renderer && vrmManager.renderer.domElement) {
+                    vrmManager.renderer.domElement.style.display = 'none';
+                }
             }
 
             // 加载模型列表
@@ -2824,9 +2961,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                 // 更新 sub_type 并刷新控件可见性
                 stopIdleRotation('vrm');
+                // 【修复】MMD→MMD 同类型切换时跳过冗余的 switchModelDisplay，
+                // 避免触发 loadLive3DModels 等异步操作和 VRM 场景重建，减少切换闪烁窗口期。
+                const wasAlreadyMmd = currentLive3dSubType === 'mmd';
                 currentLive3dSubType = 'mmd';
                 localStorage.setItem('live3dSubType', 'mmd');
-                await switchModelDisplay('live3d', 'mmd');
+                if (!wasAlreadyMmd) {
+                    await switchModelDisplay('live3d', 'mmd');
+                }
 
                 // switchModelDisplay 重建了 vrmModelSelect，需要重新选中当前模型
                 if (vrmModelSelect) {
@@ -3073,19 +3215,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
 
                 // 使用 URL 加载模型，而不是本地文件路径（浏览器不允许加载 file:// 路径）
-                // 传入 { autoPlay: false } 以便在此处统一播放待机动画，避免先露出 T-pose
+                // 把 wait03 交给 loadModel 内部的 autoPlay 流水线，由它保证"先起动画、再淡入"，
+                // 避免外部 await 造成 showAndFadeIn 先于动画播放、让 T-pose 露出的竞态。
+                // 用户保存的 idle 选择由 loadCharacterLighting 恢复后通过 startIdleRotation 覆盖。
                 //增加 addShadow: false
                 // 【注意】朝向会自动从preferences中加载（在vrm-core.js的loadModel中处理）
-                await vrmManager.loadModel(modelUrl, { autoPlay: false, addShadow: false });
-                // 加载后立即播内置 wait03 防 T-pose; 用户保存的 idle 选择
-                // 由 loadCharacterLighting 恢复后通过 startIdleRotation 覆盖
-                if (vrmManager.animation) {
-                    try {
-                        await vrmManager.playVRMAAnimation('/static/vrm/animation/wait03.vrma', { loop: true, immediate: true, isIdle: true });
-                    } catch (e) {
-                        console.warn('[VRM] 播放 wait03 待机动画失败:', e);
-                    }
-                }
+                await vrmManager.loadModel(modelUrl, {
+                    addShadow: false,
+                    idleAnimation: '/static/vrm/animation/wait03.vrma'
+                });
                 // 加载新模型后，重置播放状态
                 isVrmAnimationPlaying = false;
                 updateVRMAnimationPlayButtonIcon();
@@ -3957,27 +4095,77 @@ document.addEventListener('DOMContentLoaded', async () => {
             const modelPath = e.target.value;
             updateMMDModelSelectButtonText();
             if (!modelPath) return;
+            const mmdCanvas = document.getElementById('mmd-canvas');
+            const loadingSessionId = window._createMMDLoadingSessionId
+                ? window._createMMDLoadingSessionId('mmd-manager')
+                : `mmd-manager-${Date.now()}`;
+            if (window.MMDLoadingOverlay) {
+                window.MMDLoadingOverlay.begin(loadingSessionId, { stage: 'engine' });
+            }
 
             // 加载 MMD 前，隐藏 VRM 容器（VRM/MMD 使用独立画布，仅需 CSS 切换）
             if (vrmContainer) {
                 vrmContainer.classList.add('hidden');
                 vrmContainer.style.display = 'none';
             }
+            // 【修复】清除 VRM canvas 缓存帧，防止旧 VRM 模型在切换窗口期短暂闪现
+            if (window.vrmManager && window.vrmManager.renderer) {
+                try { window.vrmManager.renderer.clear(); } catch (_) { /* ignore */ }
+            }
             // 显示 MMD 容器
             if (mmdContainer) {
                 mmdContainer.classList.remove('hidden');
                 mmdContainer.style.display = 'block';
             }
+            if (mmdCanvas) {
+                // 预览页加载 MMD 时，物理初始化会持续一段时间；
+                // 在 ready 之前保持 canvas 不可见，避免模型从 overlay 背后透出。
+                markMMDCanvasLoadingSession(mmdCanvas, loadingSessionId);
+            }
 
             try {
                 // 等待 MMD 模块加载
                 if (!window.mmdModuleLoaded && !window.MMDManager) {
-                    showStatus('正在加载MMD模块...', 0);
-                    await new Promise((resolve, reject) => {
-                        if (window.MMDManager || window.mmdModuleLoaded) return resolve();
-                        window.addEventListener('mmd-modules-ready', resolve, { once: true });
-                        setTimeout(() => reject(new Error('MMD Module Load Timeout')), 8000);
-                    });
+                    showStatusForMMDLoadingSession(mmdCanvas, loadingSessionId, t('mmd.moduleLoading', '正在加载MMD模块...'), 0);
+                    if (window._waitForMMDModules) {
+                        await window._waitForMMDModules(8000);
+                    } else {
+                        await new Promise((resolve, reject) => {
+                            if (window.MMDManager || window.mmdModuleLoaded) return resolve();
+                            const failedModules = window._mmdModulesFailed || window.mmdModulesFailed;
+                            if (failedModules) {
+                                const modules = Array.isArray(failedModules) ? failedModules.join(', ') : failedModules;
+                                return reject(new Error(`MMD modules failed: ${modules}`));
+                            }
+
+                            let timeoutId = null;
+                            const cleanup = () => {
+                                if (timeoutId) {
+                                    clearTimeout(timeoutId);
+                                    timeoutId = null;
+                                }
+                                window.removeEventListener('mmd-modules-ready', onReady);
+                                window.removeEventListener('mmd-modules-failed', onFailed);
+                            };
+                            const onReady = () => {
+                                cleanup();
+                                resolve();
+                            };
+                            const onFailed = (event) => {
+                                cleanup();
+                                const failed = event?.detail?.failedModules || window._mmdModulesFailed || window.mmdModulesFailed || [];
+                                const modules = Array.isArray(failed) ? failed.join(', ') : failed;
+                                reject(new Error(`MMD modules failed: ${modules}`));
+                            };
+
+                            window.addEventListener('mmd-modules-ready', onReady, { once: true });
+                            window.addEventListener('mmd-modules-failed', onFailed, { once: true });
+                            timeoutId = setTimeout(() => {
+                                cleanup();
+                                reject(new Error('MMD Module Load Timeout'));
+                            }, 8000);
+                        });
+                    }
                 }
 
                 // 初始化 mmdManager（如果尚未存在）
@@ -3988,11 +4176,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
 
                 if (!window.mmdManager) {
-                    showStatus('MMD管理器初始化失败', 3000);
+                    if (window.MMDLoadingOverlay) {
+                        window.MMDLoadingOverlay.fail(loadingSessionId, {
+                            detail: t('mmd.managerInitFailed', 'MMD管理器初始化失败')
+                        });
+                    }
+                    showStatusForMMDLoadingSession(mmdCanvas, loadingSessionId, t('mmd.managerInitFailed', 'MMD管理器初始化失败'), 3000);
                     return;
                 }
 
-                showStatus('正在加载MMD模型...', 0);
+                showStatusForMMDLoadingSession(mmdCanvas, loadingSessionId, t('mmd.modelLoading', '正在加载MMD模型...'), 0);
                 if (mmdContainer) mmdContainer.classList.remove('hidden');
 
                 // 在加载新模型前，重置动画播放状态
@@ -4014,6 +4207,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                     await _mmdSettingsLoadPromise;
                 }
                 try {
+                    if (window.MMDLoadingOverlay) {
+                        window.MMDLoadingOverlay.update(loadingSessionId, { stage: 'settings' });
+                    }
                     const savedMmdSettings = localStorage.getItem('mmdSettings');
                     if (savedMmdSettings) {
                         const s = JSON.parse(savedMmdSettings);
@@ -4022,12 +4218,18 @@ document.addEventListener('DOMContentLoaded', async () => {
                         }
                     }
                 } catch (e) { /* ignore */ }
-                await window.mmdManager.loadModel(modelPath);
-                showStatus('MMD模型加载成功', 2000);
+                if (window.MMDLoadingOverlay) {
+                    window.MMDLoadingOverlay.update(loadingSessionId, { stage: 'model' });
+                }
+                await window.mmdManager.loadModel(modelPath, { loadingSessionId });
+                showStatusForMMDLoadingSession(mmdCanvas, loadingSessionId, t('mmd.modelLoaded', 'MMD模型加载成功'), 2000);
 
                 // 加载后立即播内置 wait03 防 T-pose; 用户保存的 idle 选择
                 // 由 loadCharacterLighting 恢复后通过 startIdleRotation 覆盖
                 try {
+                    if (window.MMDLoadingOverlay) {
+                        window.MMDLoadingOverlay.update(loadingSessionId, { stage: 'idle' });
+                    }
                     await window.mmdManager.loadAnimation('/static/mmd/animation/wait03.vmd');
                     window.mmdManager.playAnimation();
                     isMmdIdlePlaying = true;
@@ -4037,9 +4239,29 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
 
                 await loadCharacterLighting();
+                if (window.MMDLoadingOverlay) {
+                    window.MMDLoadingOverlay.update(loadingSessionId, { stage: 'done' });
+                }
+                if (window._waitForMMDRenderFrame) {
+                    await window._waitForMMDRenderFrame(window.mmdManager);
+                }
+                if (window.MMDLoadingOverlay) {
+                    window.MMDLoadingOverlay.end(loadingSessionId);
+                }
+                restoreMMDCanvasForLoadingSession(mmdCanvas, loadingSessionId);
             } catch (error) {
                 console.error('加载MMD模型失败:', error);
-                showStatus(`MMD模型加载失败: ${error.message}`, 3000);
+                if (window.MMDLoadingOverlay) {
+                    window.MMDLoadingOverlay.fail(loadingSessionId, {
+                        detail: error?.message || String(error)
+                    });
+                }
+                showStatusForMMDLoadingSession(
+                    mmdCanvas,
+                    loadingSessionId,
+                    t('mmd.modelLoadFailed', 'MMD模型加载失败: {{error}}', { error: error.message }),
+                    3000
+                );
             }
         });
     }
@@ -4550,6 +4772,219 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
+    /**
+     * 冻结 MMD 物理以渡过待机动作切换。MMD 无 crossfade，loadAnimation 一步就把骨架姿态
+     * 推到新动画的 t=0，MMDPhysics 会把单帧大位移积分成高速冲击 → 头发/裙摆飞甩。
+     * 若用户本来就关闭了物理则保持现状（saved=null 表示无需恢复，避免覆盖用户设置）。
+     */
+    function _freezeMmdIdlePhysics() {
+        if (_idleMmdPhysicsRestoreTimer.mmd) {
+            clearTimeout(_idleMmdPhysicsRestoreTimer.mmd);
+            _idleMmdPhysicsRestoreTimer.mmd = null;
+        }
+        const mmd = window.mmdManager;
+        if (!mmd || !mmd.currentModel) return;
+        if (_idleMmdPhysicsSavedState.mmd === null && mmd.enablePhysics) {
+            _idleMmdPhysicsSavedState.mmd = true;
+        }
+        mmd.enablePhysics = false;
+    }
+
+    /**
+     * 把 MMDPhysics 初始态对齐到当前骨架姿态，再按 savedState 恢复 enablePhysics。
+     * 不 reset 直接开物理，旧模拟状态会撞上新骨架姿态（正是这个机制想避免的）。
+     */
+    function _alignAndRestoreMmdIdlePhysics() {
+        try {
+            const mmd = window.mmdManager;
+            const model = mmd?.currentModel;
+            if (model?.physics && typeof model.physics.reset === 'function') {
+                if (model.mesh) model.mesh.updateMatrixWorld(true);
+                try { model.physics.reset(); } catch (e) { /* noop */ }
+            }
+            if (_idleMmdPhysicsSavedState.mmd === true && mmd) {
+                mmd.enablePhysics = true;
+            }
+            _idleMmdPhysicsSavedState.mmd = null;
+        } catch (err) {
+            console.warn('[MMD IdleAnimation] 恢复物理失败:', err);
+        }
+    }
+
+    /** 延迟 IDLE_MMD_PHYSICS_RESTORE_MS 让 mixer 把新动画首帧应用到骨架，再对齐 MMDPhysics 并解冻。 */
+    function _scheduleRestoreMmdIdlePhysics() {
+        if (_idleMmdPhysicsRestoreTimer.mmd) {
+            clearTimeout(_idleMmdPhysicsRestoreTimer.mmd);
+        }
+        _idleMmdPhysicsRestoreTimer.mmd = setTimeout(() => {
+            _idleMmdPhysicsRestoreTimer.mmd = null;
+            _alignAndRestoreMmdIdlePhysics();
+        }, IDLE_MMD_PHYSICS_RESTORE_MS);
+    }
+
+    // ═══════════════════ 待机动作视觉渐隐渐显 ═══════════════════
+    // 每个材质保存 {mat, origOpacity, origTransparent}，tween 期间临时翻 transparent=true
+    // 让 opacity 真正生效；结束在 alpha=1 时还原 transparent，避免 MToon/MMDToonShader
+    // 长期开 transparent 后的 z-sort 混乱。按 scene root uuid 验证材质身份，模型换装时
+    // 旧快照自动作废（避免 setOpacity 打到已 dispose 的材质）。
+    const _idleFadeState = { vrm: null, mmd: null };
+
+    function _getFadeSceneRootUuid(type) {
+        if (type === 'vrm') return vrmManager?.currentModel?.vrm?.scene?.uuid || null;
+        if (type === 'mmd') return window.mmdManager?.currentModel?.mesh?.uuid || null;
+        return null;
+    }
+
+    function _collectFadeMaterials(type) {
+        const mats = [];
+        if (type === 'vrm') {
+            const scene = vrmManager?.currentModel?.vrm?.scene;
+            if (!scene) return mats;
+            scene.traverse(obj => {
+                if (!obj.material) return;
+                const arr = Array.isArray(obj.material) ? obj.material : [obj.material];
+                for (const m of arr) {
+                    if (m && typeof m.opacity === 'number') mats.push(m);
+                }
+            });
+        } else if (type === 'mmd') {
+            const mesh = window.mmdManager?.currentModel?.mesh;
+            if (!mesh || !mesh.material) return mats;
+            const arr = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+            for (const m of arr) {
+                if (m && typeof m.opacity === 'number') mats.push(m);
+            }
+        }
+        return mats;
+    }
+
+    // 同时取消：rAF tween / 延迟 fade-in setTimeout / 未决的 _fadeAlpha Promise。
+    //
+    // 关键点：不 resolve pendingResolve 的话，上一轮 `await _fadeAlpha(...)` 会
+    // 永远挂住，调用方（_playIdleAnimation）的 try/finally 永远不执行 → MMD
+    // 物理冻结无法恢复 / loop 监听器无法注册 / 回退定时器无法启动（Codex PR#774 P1）。
+    // 延迟 fade-in 的 setTimeout 若不清，过期回调会在下一轮 fade-out 期间触发
+    // `_fadeAlpha(type, 1, ...)`，cancel 当前 tween 并让新 await 挂住（Codex PR#774 P2）。
+    function _cancelFadeTween(type) {
+        const st = _idleFadeState[type];
+        if (!st) return;
+        if (st.rafId) {
+            cancelAnimationFrame(st.rafId);
+            st.rafId = null;
+        }
+        if (st.delayTimerId) {
+            clearTimeout(st.delayTimerId);
+            st.delayTimerId = null;
+        }
+        if (st.pendingResolve) {
+            const r = st.pendingResolve;
+            st.pendingResolve = null;
+            try { r(); } catch (_) { /* resolve 不应抛，防御性忽略 */ }
+        }
+    }
+
+    function _ensureFadeState(type) {
+        const rootUuid = _getFadeSceneRootUuid(type);
+        if (!rootUuid) return null;
+
+        const existing = _idleFadeState[type];
+        if (existing && existing.rootUuid === rootUuid && existing.targets.length > 0) {
+            return existing;
+        }
+        // 根节点换了（模型切换）：丢弃旧快照，旧材质已随旧 scene 一起释放
+        if (existing) _cancelFadeTween(type);
+
+        const mats = _collectFadeMaterials(type);
+        if (mats.length === 0) return null;
+
+        _idleFadeState[type] = {
+            rootUuid,
+            rafId: null,
+            targets: mats.map(m => ({
+                mat: m,
+                origOpacity: m.opacity,
+                origTransparent: m.transparent,
+            })),
+        };
+        return _idleFadeState[type];
+    }
+
+    /** 立即把所有材质还原到原始 opacity/transparent，清空快照。 */
+    function _restoreFadeMaterials(type) {
+        _cancelFadeTween(type);
+        const st = _idleFadeState[type];
+        if (!st) return;
+        for (const t of st.targets) {
+            if (!t.mat) continue;
+            try {
+                t.mat.opacity = t.origOpacity;
+                t.mat.transparent = t.origTransparent;
+            } catch (_) { /* 材质已 dispose，忽略 */ }
+        }
+        _idleFadeState[type] = null;
+    }
+
+    /**
+     * 把指定模型的材质 opacity 在 durationMs 内 tween 到 toAlpha * origOpacity。
+     * toAlpha: 0 = 完全不可见，1 = 还原原始 opacity。
+     * 到达 alpha=1 时自动还原 transparent 标志，避免长期开 transparent 导致的 z-sort 问题。
+     * 返回 Promise，tween 完成或被取消时都会 resolve（被 `_cancelFadeTween` 取消时
+     * 由 cancel 端 drain pendingResolve，防止 await 挂住调用方的 try/finally）。
+     */
+    function _fadeAlpha(type, toAlpha, durationMs) {
+        return new Promise(resolve => {
+            const state = _ensureFadeState(type);
+            if (!state) { resolve(); return; }
+            // 先 cancel 上一次（包括 drain 其 pendingResolve），再把自己的 resolve 装进 state
+            _cancelFadeTween(type);
+            state.pendingResolve = resolve;
+
+            // tween 期间强制 transparent=true，否则 opacity 在不透明材质上无视觉效果
+            for (const t of state.targets) {
+                if (t.mat && !t.mat.transparent) t.mat.transparent = true;
+            }
+
+            const startTs = performance.now();
+            const startAlphas = state.targets.map(t =>
+                (t.mat && t.origOpacity > 0) ? Math.max(0, Math.min(1, t.mat.opacity / t.origOpacity)) : 0
+            );
+
+            const safeDur = Math.max(1, durationMs);
+            const step = (now) => {
+                const elapsed = now - startTs;
+                const p = Math.min(1, elapsed / safeDur);
+                // ease-in-out cubic
+                const eased = p < 0.5
+                    ? 4 * p * p * p
+                    : 1 - Math.pow(-2 * p + 2, 3) / 2;
+
+                for (let i = 0; i < state.targets.length; i++) {
+                    const t = state.targets[i];
+                    if (!t.mat) continue;
+                    const a = startAlphas[i] + (toAlpha - startAlphas[i]) * eased;
+                    const clamped = Math.max(0, Math.min(1, a));
+                    try { t.mat.opacity = t.origOpacity * clamped; } catch (_) {}
+                }
+
+                if (p < 1) {
+                    state.rafId = requestAnimationFrame(step);
+                } else {
+                    state.rafId = null;
+                    // 先把 pendingResolve 摘下来再做 restore（_restoreFadeMaterials 会调
+                    // _cancelFadeTween，若 pendingResolve 还在 state 上会被再 resolve 一次
+                    // —— Promise 第二次 resolve 是 no-op，但避免顺序混乱更清楚）
+                    state.pendingResolve = null;
+                    if (toAlpha >= 1) {
+                        // 完全不透明：还原 transparent，清空快照，下次 fade 重新 ensure
+                        _restoreFadeMaterials(type);
+                    }
+                    resolve();
+                }
+            };
+            state.rafId = requestAnimationFrame(step);
+        });
+    }
+
     /** 停止待机动作轮换 */
     function stopIdleRotation(type) {
         if (_idleRotationTimers[type]) {
@@ -4557,6 +4992,18 @@ document.addEventListener('DOMContentLoaded', async () => {
             _idleRotationTimers[type] = null;
         }
         _cleanupIdleLoopListener(type);
+        if (type === 'mmd') {
+            // 若 MMD 物理仍处于冻结状态，立即对齐+恢复，避免跳过 physics.reset 直接开物理
+            // 让旧模拟状态撞上新骨架姿态
+            if (_idleMmdPhysicsRestoreTimer.mmd) {
+                clearTimeout(_idleMmdPhysicsRestoreTimer.mmd);
+                _idleMmdPhysicsRestoreTimer.mmd = null;
+            }
+            _alignAndRestoreMmdIdlePhysics();
+        }
+        // 若 _playIdleAnimation 被中途打断（用户手动切换动画/禁用轮换），
+        // 材质可能停留在 opacity<1 的半透明状态。立即还原，避免模型永久半隐。
+        _restoreFadeMaterials(type);
         _idleRotationLast[type] = null;
     }
 
@@ -4657,19 +5104,69 @@ document.addEventListener('DOMContentLoaded', async () => {
         // 播放新动画前先清理旧的 loop 监听器
         _cleanupIdleLoopListener(type);
 
+        // VRM 侧：crossfade + 跨 clip 同半球对齐（_alignClipToCurrentPose）已经把骨骼
+        // 逐帧位移稀释到无害范围，SpringBone/LookAt 都不会被单帧跳变激发，无需冻结物理。
+        // MMD 侧：loadAnimation 一步落位，仍需 freeze → reset → unfreeze 以防飞甩。
+        let mmdFrozen = false;
+        if (type === 'mmd') {
+            _freezeMmdIdlePhysics();
+            mmdFrozen = true;
+        }
+
+        // 视觉渐隐：仅 VRM 走这条路径，遮盖两段待机 clip 姿态差异造成的「硬直」感
+        // （mixer 0.35s slerp 视觉上仍突兀）。失败分支（guard return / model 未就绪）
+        // 会在 finally 里 fade-in 还原，不留残影。
+        //
+        // MMD 不再走 visual fade：
+        //   1. OutlineEffect 把描边作为独立 pass 用内部 outline material 渲染，不会跟着
+        //      `mesh.material[i].opacity` 一起 fade，tween 到 0 时就会出现「只剩描边」的视觉 bug。
+        //   2. 强制 `transparent=true` 会让 MMDToonMaterial 从不透明走 alpha blend 排序，
+        //      face/hair/body 多层材质之间的 z-sort 会错乱。
+        //   3. 原本这个 fade 要遮盖的 T-pose 闪帧，根源在主页面 _startMmdIdleRotation 调用
+        //      `stopAnimation()`（skeleton.pose() → T-pose）后才 `await loadAnimation`；该问题
+        //      已在 mmd-init.js 移除 stopAnimation 修复，loadAnimation 内部 pose() → mixer.update(0)
+        //      是同步的，RAF 无法插入，不会暴露 T-pose。
+        //   4. MMD 物理飞甩由 freeze → physics.reset → unfreeze 独立覆盖，与视觉 fade 无关。
+        if (type === 'vrm') {
+            await _fadeAlpha('vrm', 0, IDLE_VRM_VISUAL_FADE_OUT_MS);
+        }
+
+        // await 期间可能发生：stopIdleRotation 清空轮换（会 drain pendingResolve 唤醒这里）/
+        // 用户手动播 VRMA/VMD / 切模式。原先 `_cancelFadeTween` 不 resolve Promise，await
+        // 永挂成事实上的 stop gate；Codex PR#774 P1 修复后必须显式重校 guards，否则会
+        // 绕过 stopIdleRotation 继续激活 mixer、注册 loop 监听器、启动回退定时器。
+        // aborted 分支走完 try 仍进 finally：played=false → _alignAndRestoreMmdIdlePhysics
+        // (idempotent) + fade-in（materials 已被 stopIdleRotation 还原则是 1→1 的 no-op tween）。
+        const aborted = !_isIdleTypeActive(type) ||
+                        (type === 'vrm' && isVrmAnimationPlaying) ||
+                        (type === 'mmd' && isMmdAnimationPlaying);
+
+        let played = false;
         try {
-            if (type === 'vrm') {
+            if (aborted) {
+                console.debug(`[${type.toUpperCase()} IdleAnimation] fade-out 期间被打断，跳过动画切换`);
+            } else if (type === 'vrm') {
                 if (vrmManager && vrmManager.animation && vrmManager.currentModel) {
-                    if (vrmManager.vrmaAction) {
-                        vrmManager.stopVRMAAnimation();
-                    }
-                    await vrmManager.playVRMAAnimation(url, { loop: true, immediate: true, isIdle: true });
+                    // 不再先 stopVRMAAnimation（它会 0.5s fadeOut，过长且是为手动动画设计的），
+                    // 改由 _playAction 的 crossfade 分支直接 fadeOut(old) + fadeIn(new)。
+                    // previousAction 的延迟 stop 在 vrm-animation.js `_playAction` 内部按本次
+                    // fadeDuration schedule，不再依赖 idle 轮换路径来 drain。
+                    await vrmManager.playVRMAAnimation(url, {
+                        loop: true,
+                        immediate: false,
+                        fadeDuration: IDLE_VRM_FADE_SEC,
+                        isIdle: true,
+                    });
+                    played = true;
                     console.log('[VRM IdleAnimation] 待机动作已切换:', url.split('/').pop());
 
-                    // 注册 loop 事件监听：动画一轮播完时自动切换
+                    // 注册 loop 事件监听：动画一轮播完时自动切换。
+                    // 仅响应当前 action 的 loop，忽略 fadeOut 中的旧 action（权重 0 也会触发 loop）。
                     const mixer = vrmManager.animation?.vrmaMixer;
                     if (mixer) {
-                        const handler = () => {
+                        const handler = (event) => {
+                            const cur = vrmManager.animation?.currentAction;
+                            if (cur && event.action !== cur) return;
                             console.debug('[VRM IdleAnimation] 动画循环完成，切换下一个');
                             _triggerIdleSwitch('vrm');
                         };
@@ -4685,6 +5182,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (window.mmdManager && window.mmdManager.currentModel) {
                     await window.mmdManager.loadAnimation(url);
                     window.mmdManager.playAnimation();
+                    played = true;
                     isMmdIdlePlaying = true;
                     console.log('[MMD IdleAnimation] 待机动作已切换:', url.split('/').pop());
 
@@ -4698,6 +5196,30 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         } catch (err) {
             console.warn(`[${type.toUpperCase()} IdleAnimation] 切换待机动作失败:`, err);
+        } finally {
+            if (mmdFrozen) {
+                if (played) {
+                    _scheduleRestoreMmdIdlePhysics();
+                } else {
+                    // 切换未发生（模型未就绪等）：立即对齐+解冻，姿态没变则 physics.reset 基本 no-op
+                    if (_idleMmdPhysicsRestoreTimer.mmd) {
+                        clearTimeout(_idleMmdPhysicsRestoreTimer.mmd);
+                        _idleMmdPhysicsRestoreTimer.mmd = null;
+                    }
+                    _alignAndRestoreMmdIdlePhysics();
+                }
+            }
+
+            // 视觉渐显：仅 VRM 走这条路径。playVRMAAnimation 已 await 返回，currentAction
+            // 已是新 action，立即淡入即可。失败分支（played=false）也淡入还原，防止模型永久不可见。
+            //
+            // MMD 不走 visual fade（原因见 fade-out 处注释）。头发/裙摆 physics.reset
+            // 瞬间的跳变本身由 _freezeMmdIdlePhysics / _scheduleRestoreMmdIdlePhysics
+            // 的冻结窗口覆盖：冻结期间物理完全不推进，reset 在窗口末端执行后解冻，用户不会看到
+            // 物理飞甩，也就不需要用视觉 fade 掩盖。
+            if (type === 'vrm') {
+                _fadeAlpha('vrm', 1, IDLE_VRM_VISUAL_FADE_IN_MS);
+            }
         }
     }
 
@@ -5167,6 +5689,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 应用打光值到UI和场景
     function applyLightingValues(lighting) {
+        // 【修复】非 VRM 子类型不应用 VRM 打光配置：
+        // MMD 子类型时 switchModelDisplay 会跳过 VRM 初始化（避免 sister1.0 闪现），
+        // 此时 vrmManager.ambientLight 等永远不存在，若继续执行会陷入每 100ms 的
+        // setTimeout 重试循环，造成后台定时器长期挂起。
+        if (currentModelType !== 'live3d' || currentLive3dSubType === 'mmd') {
+            return;
+        }
         const ui = {
             ambientLightSlider: document.getElementById('ambient-light-slider'),
             mainLightSlider: document.getElementById('main-light-slider'),
@@ -5300,8 +5829,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             // 加载待机动作选项并恢复保存的选择（多选）
+            // 优先读取 snake_case `idle_animation`，这是主保存路径（见 line 1822）实际写入的字段；
+            // 再兼容历史的 `idleAnimations` / `idleAnimation`。与 restoreVrmIdleAnimation 保持一致，
+            // 否则我的 loadModel bootstrap (wait03) 会在此后无法被用户保存的 idle 列表覆盖。
             await loadIdleAnimationOptions();
-            let vrmIdleAnims = charData?.idleAnimations ?? charData?.idleAnimation;
+            let vrmIdleAnims = charData?.idle_animation ?? charData?.idleAnimations ?? charData?.idleAnimation;
             if (vrmIdleAnims != null) {
                 // 向前兼容: string -> array
                 if (typeof vrmIdleAnims === 'string') vrmIdleAnims = vrmIdleAnims ? [vrmIdleAnims] : [];
@@ -7689,6 +8221,10 @@ window.addEventListener('beforeunload', (e) => {
     }
 
     if (window.opener) {
+        // 如果用户已保存过设置，通知主页重载模型（兜底：用户可能直接关闭窗口而非点击返回按钮）
+        if (window._modelManagerHasSaved && window._modelManagerLanlanName && window._modelManagerLanlanName.trim() !== '') {
+            sendMessageToMainPage('reload_model', { lanlan_name: window._modelManagerLanlanName });
+        }
         sendMessageToMainPage('show_main_ui');
     }
 

@@ -883,7 +883,9 @@ class CursorFollowController {
         } else if (this._isIdleAnimPlaying()) {
             this._targetHeadWeight = D.headWeightIdleAnim;     // 待机动画 → 0.7（加成叠加）
         } else {
-            this._targetHeadWeight = D.headWeightIdle;         // 纯静止 → 1.0
+            // 无动画运行时（T-pose / 静止态），不驱动头部跟踪，
+            // 避免身体静止但头部跟随鼠标转动的不自然效果
+            this._targetHeadWeight = 0;
         }
 
         // 平滑过渡

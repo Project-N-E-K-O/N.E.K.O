@@ -9,6 +9,7 @@ Handles configuration-related API endpoints including:
 - API providers
 """
 
+import asyncio
 import json
 import os
 import threading
@@ -19,7 +20,7 @@ from fastapi.responses import JSONResponse
 
 from .shared_state import get_config_manager, get_steamworks, get_session_manager, get_initialize_character_data
 from .characters_router import get_current_live2d_model
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json_async
 from utils.preferences import load_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top, load_global_conversation_settings, save_global_conversation_settings, GLOBAL_CONVERSATION_KEY
 from utils.logger_config import get_module_logger
 from utils.config_manager import get_reserved
@@ -218,6 +219,7 @@ async def get_page_config(lanlan_name: str = ""):
             model_type = 'live3d'
         
         model_path = ""
+        lighting = None
         # live3d_sub_type: 前端用于区分 Live3D 模式下加载 VRM 还是 MMD 渲染器
         live3d_sub_type = ""
         
@@ -230,6 +232,16 @@ async def get_page_config(lanlan_name: str = ""):
                 model_path = _resolve_vrm_path(vrm_path, _config_manager, target_name)
             else:
                 logger.warning(f"角色 {target_name} 的VRM模型路径为空")
+            saved_lighting = get_reserved(
+                catgirl_config,
+                'avatar',
+                'vrm',
+                'lighting',
+                default=None,
+                legacy_keys=('lighting',),
+            )
+            if isinstance(saved_lighting, dict):
+                lighting = dict(saved_lighting)
         elif model_type == 'live3d' and _get_live3d_sub_type(catgirl_config) == 'mmd':
             live3d_sub_type = 'mmd'
             # MMD模型：处理路径转换
@@ -270,7 +282,8 @@ async def get_page_config(lanlan_name: str = ""):
             "master_nickname": str(master_basic_config.get('昵称', '') or ''),
             "master_display_name": master_display_name or "",
             "model_path": model_path,
-            "model_type": model_type
+            "model_type": model_type,
+            "lighting": lighting,
         }
         if model_type == 'live3d':
             result["live3d_sub_type"] = live3d_sub_type
@@ -336,8 +349,12 @@ async def save_preferences(request: Request):
                         width > 0 and height > 0):
                     viewport = None
 
-        # 更新偏好
-        if update_model_preferences(data['model_path'], data['position'], data['scale'], parameters, display, rotation, viewport, camera_position):
+        # 更新偏好（底层 atomic_write_json 会阻塞事件循环，offload 到线程池）
+        ok = await asyncio.to_thread(
+            update_model_preferences,
+            data['model_path'], data['position'], data['scale'], parameters, display, rotation, viewport, camera_position,
+        )
+        if ok:
             return {"success": True, "message": "偏好设置已保存"}
         else:
             return {"success": False, "error": "保存失败"}
@@ -383,7 +400,7 @@ async def save_conversation_settings(request: Request):
         if not isinstance(data, dict):
             return {"success": False, "error": "请求体必须为对象"}
 
-        if not save_global_conversation_settings(data):
+        if not await asyncio.to_thread(save_global_conversation_settings, data):
             return {"success": False, "error": "保存失败"}
 
         if 'noiseReductionEnabled' in data:
@@ -539,24 +556,29 @@ async def get_core_config_api():
             # 创建空的配置对象用于返回默认值
             core_cfg = {}
         
+        # 旧版本 core_config.json 可能只有 coreApiKey 而没有各 assistApiKey* 字段，
+        # 需要与 ConfigManager.get_core_config() 保持一致的回退逻辑，
+        # 以免升级后声音克隆页面误报"没有可用API"。
+        fallback_key = api_key or ''
         return {
             "api_key": api_key,
             "coreApi": core_cfg.get('coreApi', 'qwen'),
             "assistApi": core_cfg.get('assistApi', 'qwen'),
-            "assistApiKeyQwen": core_cfg.get('assistApiKeyQwen', ''),
+            "assistApiKeyQwen": core_cfg.get('assistApiKeyQwen', '') or fallback_key,
             "assistApiKeyQwenIntl": core_cfg.get('assistApiKeyQwenIntl', ''),
-            "assistApiKeyOpenai": core_cfg.get('assistApiKeyOpenai', ''),
-            "assistApiKeyGlm": core_cfg.get('assistApiKeyGlm', ''),
-            "assistApiKeyStep": core_cfg.get('assistApiKeyStep', ''),
-            "assistApiKeySilicon": core_cfg.get('assistApiKeySilicon', ''),
-            "assistApiKeyGemini": core_cfg.get('assistApiKeyGemini', ''),
-            "assistApiKeyKimi": core_cfg.get('assistApiKeyKimi', ''),
-            "assistApiKeyDeepseek": core_cfg.get('assistApiKeyDeepseek', ''),
-            "assistApiKeyDoubao": core_cfg.get('assistApiKeyDoubao', ''),
+            "assistApiKeyOpenai": core_cfg.get('assistApiKeyOpenai', '') or fallback_key,
+            "assistApiKeyGlm": core_cfg.get('assistApiKeyGlm', '') or fallback_key,
+            "assistApiKeyStep": core_cfg.get('assistApiKeyStep', '') or fallback_key,
+            "assistApiKeySilicon": core_cfg.get('assistApiKeySilicon', '') or fallback_key,
+            "assistApiKeyGemini": core_cfg.get('assistApiKeyGemini', '') or fallback_key,
+            "assistApiKeyKimi": core_cfg.get('assistApiKeyKimi', '') or fallback_key,
+            "assistApiKeyDeepseek": core_cfg.get('assistApiKeyDeepseek', '') or fallback_key,
+            "assistApiKeyDoubao": core_cfg.get('assistApiKeyDoubao', '') or fallback_key,
             "assistApiKeyMinimax": core_cfg.get('assistApiKeyMinimax', ''),
             "assistApiKeyMinimaxIntl": core_cfg.get('assistApiKeyMinimaxIntl', ''),
-            "assistApiKeyGrok": core_cfg.get('assistApiKeyGrok', ''),
-            "assistApiKeyClaude": core_cfg.get('assistApiKeyClaude', ''),
+            "assistApiKeyGrok": core_cfg.get('assistApiKeyGrok', '') or fallback_key,
+            "assistApiKeyClaude": core_cfg.get('assistApiKeyClaude', '') or fallback_key,
+            "assistApiKeyOpenrouter": core_cfg.get('assistApiKeyOpenrouter', '') or fallback_key,
             "mcpToken": core_cfg.get('mcpToken', ''),
             "openclawUrl": core_cfg.get('openclawUrl'),
             "openclawTimeout": core_cfg.get('openclawTimeout'),
@@ -571,6 +593,7 @@ async def get_core_config_api():
             },
             "gptsovitsEnabled": core_cfg.get('gptsovitsEnabled'),
             "ttsVoiceId": core_cfg.get('ttsVoiceId', ''),
+            "disableTts": core_cfg.get('disableTts', False) is True or str(core_cfg.get('disableTts', False)).lower() in ('true', '1', 'yes', 'on'),
             "success": True
         }
     except Exception as e:
@@ -645,7 +668,7 @@ async def update_core_config(request: Request):
             'assistApiKeyGlm', 'assistApiKeyStep', 'assistApiKeySilicon',
             'assistApiKeyGemini', 'assistApiKeyKimi', 'assistApiKeyDoubao',
             'assistApiKeyMinimax', 'assistApiKeyMinimaxIntl', 'assistApiKeyGrok',
-            'assistApiKeyClaude',
+            'assistApiKeyClaude', 'assistApiKeyOpenrouter',
         ]
         for field in _api_key_fields:
             if field in data:
@@ -662,6 +685,10 @@ async def update_core_config(request: Request):
             core_cfg['enableCustomApi'] = data['enableCustomApi']
         if 'gptsovitsEnabled' in data:
             core_cfg['gptsovitsEnabled'] = data['gptsovitsEnabled']
+        if 'disableTts' in data:
+            if not isinstance(data['disableTts'], bool):
+                return {"success": False, "error": "disableTts must be a boolean"}
+            core_cfg['disableTts'] = data['disableTts']
 
         # 自定义API配置（Provider / Url / Id / ApiKey per model type）
         _model_types = [
@@ -676,8 +703,8 @@ async def update_core_config(request: Request):
         if 'ttsVoiceId' in data:
             core_cfg['ttsVoiceId'] = data['ttsVoiceId']
         
-        atomic_write_json(core_config_path, core_cfg, indent=2, ensure_ascii=False)
-        
+        await atomic_write_json_async(core_config_path, core_cfg, indent=2, ensure_ascii=False)
+
         # API配置更新后，需要先通知所有客户端，再关闭session，最后重新加载配置
         logger.info("API配置已更新，准备通知客户端并重置所有session...")
         

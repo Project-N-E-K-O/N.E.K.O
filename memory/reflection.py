@@ -18,6 +18,7 @@ automatically promoted to persona.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from datetime import datetime, timedelta
@@ -25,7 +26,12 @@ from typing import TYPE_CHECKING
 
 from config import SETTING_PROPOSER_MODEL
 from utils.config_manager import get_config_manager
-from utils.file_utils import atomic_write_json, robust_json_loads
+from utils.file_utils import (
+    atomic_write_json,
+    atomic_write_json_async,
+    read_json_async,
+    robust_json_loads,
+)
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
 from memory.persona import PersonaManager
@@ -71,49 +77,45 @@ class ReflectionEngine:
 
     # ── persistence ──────────────────────────────────────────────────
 
+    @staticmethod
+    def _filter_reflections(data, include_archived: bool, path: str) -> list[dict]:
+        if not isinstance(data, list):
+            logger.warning(f"[Reflection] reflections 文件不是列表，忽略: {path}")
+            return []
+        items = [item for item in data if isinstance(item, dict) and 'id' in item]
+        if not include_archived:
+            items = [r for r in items if r.get('status') not in ('promoted', 'denied')]
+        return items
+
     def load_reflections(self, name: str, include_archived: bool = False) -> list[dict]:
         path = self._reflections_path(name)
         if os.path.exists(path):
             try:
                 with open(path, encoding='utf-8') as f:
                     data = json.load(f)
-                if isinstance(data, list):
-                    items = [item for item in data if isinstance(item, dict) and 'id' in item]
-                    if not include_archived:
-                        # Exclude promoted/denied (archived) from active operations
-                        items = [r for r in items if r.get('status') not in ('promoted', 'denied')]
-                    return items
-                logger.warning(f"[Reflection] reflections 文件不是列表，忽略: {path}")
+                return self._filter_reflections(data, include_archived, path)
             except (json.JSONDecodeError, OSError) as e:
                 logger.warning(f"[Reflection] 加载失败: {e}")
         return []
 
-    def save_reflections(self, name: str, reflections: list[dict]) -> None:
-        """Save reflections, merging with archived entries on disk.
-
-        promoted/denied 超过 _REFLECTION_ARCHIVE_DAYS 的条目自动移入归档文件。
-        """
+    async def aload_reflections(self, name: str, include_archived: bool = False) -> list[dict]:
         path = self._reflections_path(name)
-        # Load all (including archived) to preserve them
-        all_on_disk = []
-        if os.path.exists(path):
-            try:
-                with open(path, encoding='utf-8') as f:
-                    data = json.load(f)
-                if isinstance(data, list):
-                    all_on_disk = [r for r in data if isinstance(r, dict)]
-            except (json.JSONDecodeError, OSError) as e:
-                # 读取失败 → 中止保存，避免覆盖磁盘上的 promoted/denied 条目
-                logger.warning(f"[Reflection] {name}: 读取现有 reflections 失败，中止保存以保护归档数据: {e}")
-                return
+        if not await asyncio.to_thread(os.path.exists, path):
+            return []
+        try:
+            data = await read_json_async(path)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"[Reflection] 加载失败: {e}")
+            return []
+        return self._filter_reflections(data, include_archived, path)
 
-        # Build id→entry map from active list
+    def _prepare_save_reflections(
+        self, name: str, reflections: list[dict], all_on_disk: list[dict],
+    ) -> tuple[list[dict], list[dict], list[dict]]:
+        """Pure logic: compute (merged_main, to_archive, keep_in_main)."""
         active_ids = {r['id'] for r in reflections if 'id' in r}
-        # Keep archived entries that aren't in the active list
         finished = [r for r in all_on_disk if r.get('id') not in active_ids
-                     and r.get('status') in ('promoted', 'denied')]
-
-        # 分离需要归档的旧条目
+                    and r.get('status') in ('promoted', 'denied')]
         cutoff = datetime.now() - timedelta(days=_REFLECTION_ARCHIVE_DAYS)
         keep_in_main, to_archive = [], []
         for r in finished:
@@ -123,10 +125,31 @@ class ReflectionEngine:
                     to_archive.append(r)
                     continue
             except (ValueError, TypeError):
+                # 时间戳缺失/格式异常：不归档，落回 main 保守保留
                 pass
             keep_in_main.append(r)
+        merged = reflections + keep_in_main
+        return merged, to_archive, keep_in_main
 
-        # 归档到独立文件
+    def save_reflections(self, name: str, reflections: list[dict]) -> None:
+        """Save reflections, merging with archived entries on disk.
+
+        promoted/denied 超过 _REFLECTION_ARCHIVE_DAYS 的条目自动移入归档文件。
+        """
+        path = self._reflections_path(name)
+        all_on_disk = []
+        if os.path.exists(path):
+            try:
+                with open(path, encoding='utf-8') as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    all_on_disk = [r for r in data if isinstance(r, dict)]
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(f"[Reflection] {name}: 读取现有 reflections 失败，中止保存以保护归档数据: {e}")
+                return
+
+        merged, to_archive, _ = self._prepare_save_reflections(name, reflections, all_on_disk)
+
         if to_archive:
             archive_path = self._reflections_archive_path(name)
             existing: list[dict] = []
@@ -137,17 +160,48 @@ class ReflectionEngine:
                     if isinstance(data, list):
                         existing = data
                 except (json.JSONDecodeError, OSError) as e:
-                    # 归档文件损坏 → 放弃本次归档，保留在主文件中，避免覆盖丢数据
                     logger.warning(f"[Reflection] {name}: 读取归档文件失败，跳过本次归档: {e}")
-                    keep_in_main.extend(to_archive)
+                    merged = merged + to_archive
                     to_archive = []
             if to_archive:
                 existing.extend(to_archive)
                 atomic_write_json(archive_path, existing, indent=2, ensure_ascii=False)
                 logger.info(f"[Reflection] {name}: 归档 {len(to_archive)} 条旧 reflections")
 
-        merged = reflections + keep_in_main
         atomic_write_json(path, merged, indent=2, ensure_ascii=False)
+
+    async def asave_reflections(self, name: str, reflections: list[dict]) -> None:
+        path = self._reflections_path(name)
+        all_on_disk = []
+        if await asyncio.to_thread(os.path.exists, path):
+            try:
+                data = await read_json_async(path)
+                if isinstance(data, list):
+                    all_on_disk = [r for r in data if isinstance(r, dict)]
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(f"[Reflection] {name}: 读取现有 reflections 失败，中止保存以保护归档数据: {e}")
+                return
+
+        merged, to_archive, _ = self._prepare_save_reflections(name, reflections, all_on_disk)
+
+        if to_archive:
+            archive_path = self._reflections_archive_path(name)
+            existing: list[dict] = []
+            if await asyncio.to_thread(os.path.exists, archive_path):
+                try:
+                    data = await read_json_async(archive_path)
+                    if isinstance(data, list):
+                        existing = data
+                except (json.JSONDecodeError, OSError) as e:
+                    logger.warning(f"[Reflection] {name}: 读取归档文件失败，跳过本次归档: {e}")
+                    merged = merged + to_archive
+                    to_archive = []
+            if to_archive:
+                existing.extend(to_archive)
+                await atomic_write_json_async(archive_path, existing, indent=2, ensure_ascii=False)
+                logger.info(f"[Reflection] {name}: 归档 {len(to_archive)} 条旧 reflections")
+
+        await atomic_write_json_async(path, merged, indent=2, ensure_ascii=False)
 
     def load_surfaced(self, name: str) -> list[dict]:
         """Load the list of reflections that were surfaced in proactive chat."""
@@ -157,15 +211,31 @@ class ReflectionEngine:
                 with open(path, encoding='utf-8') as f:
                     data = json.load(f)
                 if isinstance(data, list):
-                    # Filter to dicts only; drop corrupted entries
                     return [item for item in data if isinstance(item, dict)]
                 logger.warning(f"[Reflection] surfaced 文件不是列表，忽略: {path}")
             except (json.JSONDecodeError, OSError) as e:
                 logger.warning(f"[Reflection] 加载 surfaced 失败: {e}")
         return []
 
+    async def aload_surfaced(self, name: str) -> list[dict]:
+        path = self._surfaced_path(name)
+        if not await asyncio.to_thread(os.path.exists, path):
+            return []
+        try:
+            data = await read_json_async(path)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"[Reflection] 加载 surfaced 失败: {e}")
+            return []
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        logger.warning(f"[Reflection] surfaced 文件不是列表，忽略: {path}")
+        return []
+
     def save_surfaced(self, name: str, surfaced: list[dict]) -> None:
         atomic_write_json(self._surfaced_path(name), surfaced, indent=2, ensure_ascii=False)
+
+    async def asave_surfaced(self, name: str, surfaced: list[dict]) -> None:
+        await atomic_write_json_async(self._surfaced_path(name), surfaced, indent=2, ensure_ascii=False)
 
     # ── synthesis ────────────────────────────────────────────────────
 
@@ -178,11 +248,11 @@ class ReflectionEngine:
         from utils.language_utils import get_global_language
         from utils.llm_client import create_chat_llm
 
-        unabsorbed = self._fact_store.get_unabsorbed_facts(lanlan_name)
+        unabsorbed = await self._fact_store.aget_unabsorbed_facts(lanlan_name)
         if len(unabsorbed) < MIN_FACTS_FOR_REFLECTION:
             return []
 
-        _, _, _, _, name_mapping, _, _, _, _ = self._config_manager.get_character_data()
+        _, _, _, _, name_mapping, _, _, _, _ = await self._config_manager.aget_character_data()
         master_name = name_mapping.get('human', '主人')
 
         facts_text = "\n".join(f"- {f['text']} (importance: {f.get('importance', 5)})" for f in unabsorbed)
@@ -238,12 +308,12 @@ class ReflectionEngine:
             'next_eligible_at': (now + timedelta(minutes=REFLECTION_COOLDOWN_MINUTES)).isoformat(),
         }
 
-        reflections = self.load_reflections(lanlan_name)
+        reflections = await self.aload_reflections(lanlan_name)
         reflections.append(reflection)
-        self.save_reflections(lanlan_name, reflections)
+        await self.asave_reflections(lanlan_name, reflections)
 
         # Mark source facts as absorbed
-        self._fact_store.mark_absorbed(lanlan_name, reflection['source_fact_ids'])
+        await self._fact_store.amark_absorbed(lanlan_name, reflection['source_fact_ids'])
 
         logger.info(f"[Reflection] {lanlan_name}: 合成了新反思: {reflection_text[:50]}...")
         return [reflection]
@@ -261,18 +331,21 @@ class ReflectionEngine:
         reflections = self.load_reflections(lanlan_name)
         return [r for r in reflections if r.get('status') == 'pending']
 
+    async def aget_pending_reflections(self, lanlan_name: str) -> list[dict]:
+        reflections = await self.aload_reflections(lanlan_name)
+        return [r for r in reflections if r.get('status') == 'pending']
+
     def get_confirmed_reflections(self, lanlan_name: str) -> list[dict]:
         """Get all confirmed (soft persona) reflections."""
         reflections = self.load_reflections(lanlan_name)
         return [r for r in reflections if r.get('status') == 'confirmed']
 
-    def get_followup_topics(self, lanlan_name: str) -> list[dict]:
-        """Get pending reflections suitable for natural mention in proactive chat.
+    async def aget_confirmed_reflections(self, lanlan_name: str) -> list[dict]:
+        reflections = await self.aload_reflections(lanlan_name)
+        return [r for r in reflections if r.get('status') == 'confirmed']
 
-        Returns candidates that have passed their cooldown period.
-        Does NOT persist anything — call record_surfaced() after reply is sent.
-        """
-        pending = self.get_pending_reflections(lanlan_name)
+    @staticmethod
+    def _filter_followup_candidates(pending: list[dict]) -> list[dict]:
         if not pending:
             return []
         now = datetime.now()
@@ -282,11 +355,55 @@ class ReflectionEngine:
             if next_eligible:
                 try:
                     if datetime.fromisoformat(next_eligible) > now:
-                        continue  # still in cooldown
+                        continue
                 except (ValueError, TypeError):
                     pass
             eligible.append(r)
         return eligible[:2]
+
+    def get_followup_topics(self, lanlan_name: str) -> list[dict]:
+        """Get pending reflections suitable for natural mention in proactive chat.
+
+        Returns candidates that have passed their cooldown period.
+        Does NOT persist anything — call record_surfaced() after reply is sent.
+        """
+        return self._filter_followup_candidates(self.get_pending_reflections(lanlan_name))
+
+    async def aget_followup_topics(self, lanlan_name: str) -> list[dict]:
+        pending = await self.aget_pending_reflections(lanlan_name)
+        return self._filter_followup_candidates(pending)
+
+    def _apply_record_surfaced(
+        self, reflection_ids: list[str], reflections: list[dict], surfaced: list[dict],
+    ) -> tuple[bool, list[dict]]:
+        now = datetime.now()
+        now_str = now.isoformat()
+        next_eligible = (now + timedelta(minutes=REFLECTION_COOLDOWN_MINUTES)).isoformat()
+
+        id_to_text = {r['id']: r.get('text', '') for r in reflections}
+        cooldown_changed = False
+        for r in reflections:
+            if r.get('id') in reflection_ids:
+                r['next_eligible_at'] = next_eligible
+                cooldown_changed = True
+
+        for rid in reflection_ids:
+            found = False
+            for s in surfaced:
+                if s.get('reflection_id') == rid:
+                    s['surfaced_at'] = now_str
+                    s['text'] = id_to_text.get(rid, s.get('text', ''))
+                    s['feedback'] = None
+                    found = True
+                    break
+            if not found:
+                surfaced.append({
+                    'reflection_id': rid,
+                    'text': id_to_text.get(rid, ''),
+                    'surfaced_at': now_str,
+                    'feedback': None,
+                })
+        return cooldown_changed, surfaced
 
     def record_surfaced(self, lanlan_name: str, reflection_ids: list[str]) -> None:
         """Record which reflections were actually mentioned in proactive chat.
@@ -297,39 +414,25 @@ class ReflectionEngine:
         if not reflection_ids:
             return
         surfaced = self.load_surfaced(lanlan_name)
-        now = datetime.now()
-        now_str = now.isoformat()
-        next_eligible = (now + timedelta(minutes=REFLECTION_COOLDOWN_MINUTES)).isoformat()
-
-        # Load and update reflections (refresh cooldown)
         reflections = self.load_reflections(lanlan_name)
-        id_to_text = {r['id']: r.get('text', '') for r in reflections}
-        cooldown_changed = False
-        for r in reflections:
-            if r.get('id') in reflection_ids:
-                r['next_eligible_at'] = next_eligible
-                cooldown_changed = True
+        cooldown_changed, surfaced = self._apply_record_surfaced(
+            reflection_ids, reflections, surfaced,
+        )
         if cooldown_changed:
             self.save_reflections(lanlan_name, reflections)
-
-        for rid in reflection_ids:
-            # If already surfaced, refresh timestamp and clear feedback for re-check
-            found = False
-            for s in surfaced:
-                if s.get('reflection_id') == rid:
-                    s['surfaced_at'] = now_str
-                    s['text'] = id_to_text.get(rid, s.get('text', ''))
-                    s['feedback'] = None  # re-enable feedback collection
-                    found = True
-                    break
-            if not found:
-                surfaced.append({
-                    'reflection_id': rid,
-                    'text': id_to_text.get(rid, ''),
-                    'surfaced_at': now_str,
-                    'feedback': None,
-                })
         self.save_surfaced(lanlan_name, surfaced)
+
+    async def arecord_surfaced(self, lanlan_name: str, reflection_ids: list[str]) -> None:
+        if not reflection_ids:
+            return
+        surfaced = await self.aload_surfaced(lanlan_name)
+        reflections = await self.aload_reflections(lanlan_name)
+        cooldown_changed, surfaced = self._apply_record_surfaced(
+            reflection_ids, reflections, surfaced,
+        )
+        if cooldown_changed:
+            await self.asave_reflections(lanlan_name, reflections)
+        await self.asave_surfaced(lanlan_name, surfaced)
 
     async def check_feedback(self, lanlan_name: str, user_messages: list[str]) -> list[dict] | None:
         """Check if user's recent messages confirm/deny surfaced reflections.
@@ -340,7 +443,7 @@ class ReflectionEngine:
         from utils.language_utils import get_global_language
         from utils.llm_client import create_chat_llm
 
-        surfaced = self.load_surfaced(lanlan_name)
+        surfaced = await self.aload_surfaced(lanlan_name)
         pending_surfaced = [s for s in surfaced if s.get('feedback') is None]
         if not pending_surfaced:
             return []
@@ -388,7 +491,7 @@ class ReflectionEngine:
                 for s in surfaced:
                     if s.get('reflection_id') == rid:
                         s['feedback'] = feedback
-        self.save_surfaced(lanlan_name, surfaced)
+        await self.asave_surfaced(lanlan_name, surfaced)
 
         return feedbacks
 
@@ -440,6 +543,18 @@ class ReflectionEngine:
             logger.warning(f"[Reflection] 反驳检查失败: {e}")
             return None
 
+    @staticmethod
+    def _apply_promotion_status(
+        reflections: list[dict], reflection_id: str, status: str,
+    ) -> str | None:
+        now_str = datetime.now().isoformat()
+        for r in reflections:
+            if r.get('id') == reflection_id:
+                r['status'] = status
+                r[f'{status}_at'] = now_str
+                return r.get('text', '')
+        return None
+
     def confirm_promotion(self, lanlan_name: str, reflection_id: str) -> None:
         """Mark reflection as confirmed (soft persona). Does NOT write to persona yet.
 
@@ -448,39 +563,62 @@ class ReflectionEngine:
         upgrades them to real persona entries.
         """
         reflections = self.load_reflections(lanlan_name)
-        for r in reflections:
-            if r.get('id') == reflection_id:
-                r['status'] = 'confirmed'
-                r['confirmed_at'] = datetime.now().isoformat()
-                logger.info(f"[Reflection] {lanlan_name}: 反思已确认(软persona): {r['text'][:50]}...")
-                break
+        text = self._apply_promotion_status(reflections, reflection_id, 'confirmed')
+        if text is not None:
+            logger.info(f"[Reflection] {lanlan_name}: 反思已确认(软persona): {text[:50]}...")
         self.save_reflections(lanlan_name, reflections)
         self._mark_surfaced_handled(lanlan_name, reflection_id, 'confirmed')
+
+    async def aconfirm_promotion(self, lanlan_name: str, reflection_id: str) -> None:
+        reflections = await self.aload_reflections(lanlan_name)
+        text = self._apply_promotion_status(reflections, reflection_id, 'confirmed')
+        if text is not None:
+            logger.info(f"[Reflection] {lanlan_name}: 反思已确认(软persona): {text[:50]}...")
+        await self.asave_reflections(lanlan_name, reflections)
+        await self._amark_surfaced_handled(lanlan_name, reflection_id, 'confirmed')
 
     def reject_promotion(self, lanlan_name: str, reflection_id: str) -> None:
         """Mark a reflection as denied — won't be promoted."""
         reflections = self.load_reflections(lanlan_name)
-        for r in reflections:
-            if r.get('id') == reflection_id:
-                r['status'] = 'denied'
-                r['denied_at'] = datetime.now().isoformat()
-                logger.info(f"[Reflection] {lanlan_name}: 反思被否定: {r['text'][:50]}...")
-                break
+        text = self._apply_promotion_status(reflections, reflection_id, 'denied')
+        if text is not None:
+            logger.info(f"[Reflection] {lanlan_name}: 反思被否定: {text[:50]}...")
         self.save_reflections(lanlan_name, reflections)
         self._mark_surfaced_handled(lanlan_name, reflection_id, 'denied')
+
+    async def areject_promotion(self, lanlan_name: str, reflection_id: str) -> None:
+        reflections = await self.aload_reflections(lanlan_name)
+        text = self._apply_promotion_status(reflections, reflection_id, 'denied')
+        if text is not None:
+            logger.info(f"[Reflection] {lanlan_name}: 反思被否定: {text[:50]}...")
+        await self.asave_reflections(lanlan_name, reflections)
+        await self._amark_surfaced_handled(lanlan_name, reflection_id, 'denied')
+
+    @staticmethod
+    def _apply_mark_surfaced_handled(
+        surfaced: list[dict], reflection_id: str, feedback: str,
+    ) -> bool:
+        now_str = datetime.now().isoformat()
+        changed = False
+        for s in surfaced:
+            if s.get('reflection_id') == reflection_id and s.get('feedback') is None:
+                s['feedback'] = feedback
+                s['feedback_at'] = now_str
+                changed = True
+        return changed
 
     def _mark_surfaced_handled(self, lanlan_name: str, reflection_id: str, feedback: str) -> None:
         """Mark surfaced record as handled so check_feedback won't reprocess it."""
         surfaced = self.load_surfaced(lanlan_name)
-        changed = False
-        now = datetime.now().isoformat()
-        for s in surfaced:
-            if s.get('reflection_id') == reflection_id and s.get('feedback') is None:
-                s['feedback'] = feedback
-                s['feedback_at'] = now
-                changed = True
-        if changed:
+        if self._apply_mark_surfaced_handled(surfaced, reflection_id, feedback):
             self.save_surfaced(lanlan_name, surfaced)
+
+    async def _amark_surfaced_handled(
+        self, lanlan_name: str, reflection_id: str, feedback: str,
+    ) -> None:
+        surfaced = await self.aload_surfaced(lanlan_name)
+        if self._apply_mark_surfaced_handled(surfaced, reflection_id, feedback):
+            await self.asave_surfaced(lanlan_name, surfaced)
 
     def auto_promote_stale(self, lanlan_name: str) -> int:
         """Process two automatic state transitions:
@@ -500,7 +638,6 @@ class ReflectionEngine:
             status = r.get('status')
             try:
                 if status == 'pending':
-                    # pending → confirmed after AUTO_CONFIRM_DAYS
                     created = datetime.fromisoformat(r.get('created_at', ''))
                     if (now - created).total_seconds() / 86400 >= AUTO_CONFIRM_DAYS:
                         r['status'] = 'confirmed'
@@ -511,7 +648,6 @@ class ReflectionEngine:
                         logger.info(f"[Reflection] {lanlan_name}: pending→confirmed({AUTO_CONFIRM_DAYS}天): {r['text'][:50]}...")
 
                 elif status == 'confirmed':
-                    # confirmed → promoted after AUTO_PROMOTE_DAYS
                     confirmed_at = datetime.fromisoformat(r.get('confirmed_at', ''))
                     if (now - confirmed_at).total_seconds() / 86400 >= AUTO_PROMOTE_DAYS:
                         result = self._persona_manager.add_fact(
@@ -545,8 +681,75 @@ class ReflectionEngine:
                 self._batch_mark_surfaced_handled(lanlan_name, promoted_ids, 'promoted')
         return transitions
 
+    async def aauto_promote_stale(self, lanlan_name: str) -> int:
+        reflections = await self.aload_reflections(lanlan_name)
+        now = datetime.now()
+        transitions = 0
+        confirmed_ids: list[str] = []
+        promoted_ids: list[str] = []
+
+        for r in reflections:
+            status = r.get('status')
+            try:
+                if status == 'pending':
+                    created = datetime.fromisoformat(r.get('created_at', ''))
+                    if (now - created).total_seconds() / 86400 >= AUTO_CONFIRM_DAYS:
+                        r['status'] = 'confirmed'
+                        r['confirmed_at'] = now.isoformat()
+                        r['auto_confirmed'] = True
+                        confirmed_ids.append(r['id'])
+                        transitions += 1
+                        logger.info(f"[Reflection] {lanlan_name}: pending→confirmed({AUTO_CONFIRM_DAYS}天): {r['text'][:50]}...")
+
+                elif status == 'confirmed':
+                    confirmed_at = datetime.fromisoformat(r.get('confirmed_at', ''))
+                    if (now - confirmed_at).total_seconds() / 86400 >= AUTO_PROMOTE_DAYS:
+                        result = await self._persona_manager.aadd_fact(
+                            lanlan_name, r['text'],
+                            entity=r.get('entity', 'relationship'),
+                            source='reflection',
+                            source_id=r['id'],
+                        )
+                        if result == PersonaManager.FACT_ADDED:
+                            r['status'] = 'promoted'
+                            r['promoted_at'] = now.isoformat()
+                            promoted_ids.append(r['id'])
+                            transitions += 1
+                            logger.info(f"[Reflection] {lanlan_name}: confirmed→persona({AUTO_PROMOTE_DAYS}天): {r['text'][:50]}...")
+                        elif result == PersonaManager.FACT_REJECTED_CARD:
+                            r['status'] = 'denied'
+                            r['denied_at'] = now.isoformat()
+                            r['denied_reason'] = 'contradicts_character_card'
+                            transitions += 1
+                            logger.info(f"[Reflection] {lanlan_name}: confirmed→denied(与角色卡矛盾): {r['text'][:50]}...")
+                        else:
+                            logger.info(f"[Reflection] {lanlan_name}: confirmed→persona 暂缓(进入矛盾审视队列): {r['text'][:50]}...")
+            except (ValueError, TypeError):
+                continue
+
+        if transitions:
+            await self.asave_reflections(lanlan_name, reflections)
+            if confirmed_ids:
+                await self._abatch_mark_surfaced_handled(lanlan_name, confirmed_ids, 'auto_confirmed')
+            if promoted_ids:
+                await self._abatch_mark_surfaced_handled(lanlan_name, promoted_ids, 'promoted')
+        return transitions
+
     # 允许从这些 feedback 状态转换到新状态（用于 promoted 覆盖 confirmed/auto_confirmed）
     _UPGRADABLE_FEEDBACK = {None, 'confirmed', 'auto_confirmed'}
+
+    def _apply_batch_mark(
+        self, surfaced: list[dict], reflection_ids: list[str], feedback: str,
+    ) -> bool:
+        id_set = set(reflection_ids)
+        changed = False
+        now = datetime.now().isoformat()
+        for s in surfaced:
+            if s.get('reflection_id') in id_set and s.get('feedback') in self._UPGRADABLE_FEEDBACK:
+                s['feedback'] = feedback
+                s['feedback_at'] = now
+                changed = True
+        return changed
 
     def _batch_mark_surfaced_handled(
         self, lanlan_name: str, reflection_ids: list[str], feedback: str,
@@ -559,13 +762,14 @@ class ReflectionEngine:
         if not reflection_ids:
             return
         surfaced = self.load_surfaced(lanlan_name)
-        id_set = set(reflection_ids)
-        changed = False
-        now = datetime.now().isoformat()
-        for s in surfaced:
-            if s.get('reflection_id') in id_set and s.get('feedback') in self._UPGRADABLE_FEEDBACK:
-                s['feedback'] = feedback
-                s['feedback_at'] = now
-                changed = True
-        if changed:
+        if self._apply_batch_mark(surfaced, reflection_ids, feedback):
             self.save_surfaced(lanlan_name, surfaced)
+
+    async def _abatch_mark_surfaced_handled(
+        self, lanlan_name: str, reflection_ids: list[str], feedback: str,
+    ) -> None:
+        if not reflection_ids:
+            return
+        surfaced = await self.aload_surfaced(lanlan_name)
+        if self._apply_batch_mark(surfaced, reflection_ids, feedback):
+            await self.asave_surfaced(lanlan_name, surfaced)

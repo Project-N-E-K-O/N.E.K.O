@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import MessageList from './MessageList';
 import { i18n } from './i18n';
 import {
@@ -30,6 +30,7 @@ export default function App({
   chatWindowAriaLabel = i18n('chat.reactWindowAriaLabel', 'Neko chat window'),
   messageListAriaLabel = i18n('chat.messageListAriaLabel', 'Chat messages'),
   composerToolsAriaLabel = i18n('chat.composerToolsAriaLabel', 'Composer tools'),
+  composerHidden = false,
   composerAttachments = [],
   composerAttachmentsAriaLabel = i18n('chat.pendingImagesAriaLabel', 'Pending attachments'),
   importImageButtonLabel = i18n('chat.importImage', 'Import Image'),
@@ -53,6 +54,7 @@ export default function App({
 }: ChatWindowProps) {
   const [draft, setDraft] = useState('');
   const [pendingDrafts, setPendingDrafts] = useState<Array<{ id: string; text: string; time: string; lastMsgId: string | null }>>([]);
+  const submittingRef = useRef(false);
   const canSubmit = draft.trim().length > 0 || composerAttachments.length > 0;
   const resolvedImportImageAriaLabel = importImageButtonAriaLabel || importImageButtonLabel;
   const resolvedScreenshotAriaLabel = screenshotButtonAriaLabel || screenshotButtonLabel;
@@ -92,21 +94,27 @@ export default function App({
   }, [messages, pendingDrafts, lastUserAuthor]);
 
   function submitDraft() {
+    if (submittingRef.current) return;
     const text = draft.trim();
     if (!text && composerAttachments.length === 0) return;
-    const now = new Date();
-    const time = [now.getHours(), now.getMinutes(), now.getSeconds()]
-      .map(n => String(n).padStart(2, '0')).join(':');
-    if (text) {
-      setPendingDrafts(prev => [...prev, {
-        id: `pending-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        text,
-        time,
-        lastMsgId: messages.length > 0 ? messages[messages.length - 1].id : null,
-      }]);
+    submittingRef.current = true;
+    try {
+      const now = new Date();
+      const time = [now.getHours(), now.getMinutes(), now.getSeconds()]
+        .map(n => String(n).padStart(2, '0')).join(':');
+      if (text) {
+        setPendingDrafts(prev => [...prev, {
+          id: `pending-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          text,
+          time,
+          lastMsgId: messages.length > 0 ? messages[messages.length - 1].id : null,
+        }]);
+      }
+      onComposerSubmit?.({ text });
+      setDraft('');
+    } finally {
+      requestAnimationFrame(() => { submittingRef.current = false; });
     }
-    onComposerSubmit?.({ text });
-    setDraft('');
   }
 
   return (
@@ -131,7 +139,7 @@ export default function App({
           />
         </section>
 
-        <footer className="composer-panel">
+        <footer className="composer-panel" style={composerHidden ? { display: 'none' } : undefined}>
           <div id="music-player-mount" />
           {composerAttachments.length > 0 ? (
             <div className="composer-attachments" aria-label={composerAttachmentsAriaLabel}>

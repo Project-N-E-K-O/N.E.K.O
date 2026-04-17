@@ -179,8 +179,8 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
         const toggleItem = this._createToggleItem(toggle, popup);
         popup.appendChild(toggleItem);
 
-        // 用户插件侧边面板
-        if (toggle.id === 'agent-user-plugin' && typeof this._createSidePanelContainer === 'function') {
+        // 侧边快捷入口（用户插件管理面板 / OpenClaw 接入教程）
+        if ((toggle.id === 'agent-user-plugin' || toggle.id === 'agent-openclaw') && typeof this._createSidePanelContainer === 'function') {
             const sidePanel = this._createSidePanelContainer();
             sidePanel.style.flexDirection = 'column';
             sidePanel.style.alignItems = 'stretch';
@@ -190,8 +190,22 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
             sidePanel._popupElement = popup;
 
             const configBtn = document.createElement('div');
-            const LABEL_KEY = 'settings.toggles.pluginManagementPanel';
-            const LABEL_FALLBACK = '管理面板';
+            const actionConfig = toggle.id === 'agent-user-plugin'
+                ? {
+                    labelKey: 'settings.toggles.pluginManagementPanel',
+                    labelFallback: '管理面板',
+                    icon: '⚙',
+                    url: '/api/agent/user_plugin/dashboard',
+                    windowName: 'neko_plugin_dashboard'
+                }
+                : {
+                    labelKey: 'settings.toggles.openclawGuide',
+                    labelFallback: 'OpenClaw 接入教程',
+                    icon: '📘',
+                    url: '/api/agent/openclaw/guide',
+                    windowName: 'neko_openclaw_guide',
+                    forceReloadOnReuse: true
+                };
             Object.assign(configBtn.style, {
                 display: 'flex',
                 alignItems: 'center',
@@ -205,11 +219,11 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                 transition: 'background 0.15s ease'
             });
             const configIcon = document.createElement('span');
-            configIcon.textContent = '⚙';
+            configIcon.textContent = actionConfig.icon;
             configIcon.style.fontSize = '13px';
             const configLabel = document.createElement('span');
-            configLabel.textContent = window.t ? window.t(LABEL_KEY) : LABEL_FALLBACK;
-            configLabel.setAttribute('data-i18n', LABEL_KEY);
+            configLabel.textContent = window.t ? window.t(actionConfig.labelKey) : actionConfig.labelFallback;
+            configLabel.setAttribute('data-i18n', actionConfig.labelKey);
             configLabel.style.userSelect = 'none';
             const configArrow = document.createElement('span');
             configArrow.textContent = '↗';
@@ -232,16 +246,26 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                 e.stopPropagation();
                 if (isOpening) return;
                 isOpening = true;
-                const dashboardUrl = '/api/agent/user_plugin/dashboard';
                 const width = Math.min(1280, Math.round(screen.width * 0.8));
                 const height = Math.min(900, Math.round(screen.height * 0.8));
                 const left = Math.max(0, Math.floor((screen.width - width) / 2));
                 const top = Math.max(0, Math.floor((screen.height - height) / 2));
                 const features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
-                if (typeof window.openOrFocusWindow === 'function') {
-                    window.openOrFocusWindow(dashboardUrl, 'neko_plugin_dashboard', features);
+                const targetUrl = actionConfig.forceReloadOnReuse
+                    ? `${actionConfig.url}?v=${Date.now()}`
+                    : actionConfig.url;
+                const existingWindow = window._openedWindows && window._openedWindows[actionConfig.windowName];
+                if (actionConfig.forceReloadOnReuse && existingWindow && !existingWindow.closed) {
+                    try {
+                        existingWindow.location.replace(targetUrl);
+                    } catch (_) {
+                        existingWindow.location.href = targetUrl;
+                    }
+                    existingWindow.focus();
+                } else if (typeof window.openOrFocusWindow === 'function') {
+                    window.openOrFocusWindow(targetUrl, actionConfig.windowName, features);
                 } else {
-                    window.open(dashboardUrl, 'neko_plugin_dashboard', features);
+                    window.open(targetUrl, actionConfig.windowName, features);
                 }
                 setTimeout(() => { isOpening = false; }, 500);
             });
