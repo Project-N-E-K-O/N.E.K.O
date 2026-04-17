@@ -3881,7 +3881,6 @@ async def export_catgirl_with_portrait(
                 logger.warning("[导出角色卡] 使用默认字体")
 
             bbox = draw.textbbox((0, 0), _name, font=font)
-            text_width = bbox[2] - bbox[0]
             text_height = bbox[3] - bbox[1]
             text_x = 40
             text_y = (header_height - text_height) // 2 - bbox[1]
