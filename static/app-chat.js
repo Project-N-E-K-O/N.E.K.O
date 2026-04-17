@@ -415,10 +415,16 @@
                 }
             }
         } finally {
-            window._isProcessingRealisticQueue = false;
-            // 兜底检查：如果在循环结束到重置标志位之间又有新消息进入队列，递归触发
-            if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
-                processRealisticQueue(window._realisticGeminiVersion || 0);
+            // 如果 lock 还是 true，说明没有任何外部路径（discard / audio-capture）
+            // 接管过 —— 无论 version 是否变化，我们都是当前唯一持有者，必须释放锁，
+            // 否则队列会卡死。
+            // 如果 lock 已经是 false，说明外部路径已经重置锁并可能启动了新 processor，
+            // 我们不能再递归也不能再动锁。
+            if (window._isProcessingRealisticQueue) {
+                window._isProcessingRealisticQueue = false;
+                if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
+                    processRealisticQueue(window._realisticGeminiVersion || 0);
+                }
             }
         }
     }
@@ -625,6 +631,15 @@
                     if (myEpoch !== window._musicSearchEpoch) {
                         console.log('[Music] 指令搜索结果过时，已丢弃: "' + query + '"');
                         continue;
+                    }
+
+                    if (result.netease_cookie_invalid && typeof window.showStatusToast === 'function') {
+                        var now = Date.now();
+                        if (!window._cookieWarnLastTime || now - window._cookieWarnLastTime > 300000) {
+                            var musiccookieWarnMsg = (window.t && window.t('music.cookieExpired')) || '音乐Cookie已失效';
+                            window.showStatusToast(musiccookieWarnMsg, 5000);
+                            window._cookieWarnLastTime = now;
+                        }
                     }
 
                     if (!result.success) {

@@ -663,6 +663,15 @@ DEFAULT_ASSIST_API_PROFILES = {
         'VISION_MODEL': "claude-sonnet-4-6",
         'AGENT_MODEL': "claude-opus-4-6",
     },
+    'openrouter': {
+        'OPENROUTER_URL': "https://openrouter.ai/api/v1",
+        'CONVERSATION_MODEL': "openai/gpt-4.1",
+        'SUMMARY_MODEL': "openai/gpt-4.1-mini",
+        'CORRECTION_MODEL': "openai/gpt-4.1-mini",
+        'EMOTION_MODEL': "openai/gpt-4.1-nano",
+        'VISION_MODEL': "openai/gpt-4.1",
+        'AGENT_MODEL': "openai/gpt-4.1",
+    },
 }
 
 DEFAULT_ASSIST_API_KEY_FIELDS = {
@@ -676,6 +685,7 @@ DEFAULT_ASSIST_API_KEY_FIELDS = {
     'qwen_intl': 'ASSIST_API_KEY_QWEN_INTL',
     'minimax': 'ASSIST_API_KEY_MINIMAX',
     'claude': 'ASSIST_API_KEY_CLAUDE',
+    'openrouter': 'ASSIST_API_KEY_OPENROUTER',
 }
 
 DEFAULT_CONFIG_DATA = {

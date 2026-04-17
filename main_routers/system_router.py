@@ -25,6 +25,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from openai import APIConnectionError, InternalServerError, RateLimitError
 from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm
+import ssl
 import httpx
 from cachetools import TTLCache
 
@@ -1861,11 +1862,14 @@ async def proxy_meme_image(url: str):
         referer_map = {
             'img.soutula.com': 'https://fabiaoqing.com/',
             'fabiaoqing.com': 'https://fabiaoqing.com/',
-            'qn.doutub.com': 'https://www.doutub.com/',
-            'doutub.com': 'https://www.doutub.com/',
+            # 2026-04-16: doutub.com 域名易主挂黑产，停用
+            # 'qn.doutub.com': 'https://www.doutub.com/',
+            # 'doutub.com': 'https://www.doutub.com/',
             'i.imgflip.com': 'https://imgflip.com/',
             'imgflip.com': 'https://imgflip.com/',
             'soutula.com': 'https://fabiaoqing.com/',
+            'img.doutupk.com': 'https://www.doutupk.com/',
+            'doutupk.com': 'https://www.doutupk.com/',
         }
         referer = referer_map.get(hostname, f'{parsed.scheme}://{hostname}/')
         headers = {
@@ -1876,8 +1880,27 @@ async def proxy_meme_image(url: str):
 
         # 使用流式下载以严格控制资源大小，防止内存溢出或大文件攻击
         MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10MB 限制
-        
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
+
+        # 已知 SSL 证书有问题的 CDN 域名（如七牛 CDN hostname mismatch），
+        # 对这些域名首次请求即使用宽松 SSL，避免白白浪费一次超时。
+        # 2026-04-16: qn.doutub.com 随 doutub.com 域名易主停用；白名单当前为空，
+        # 其它域名仍走 ssl.SSLError 降级分支兜底。
+        _SSL_RELAXED_HOSTS: set[str] = set()
+        need_relaxed_ssl = hostname in _SSL_RELAXED_HOSTS
+
+        def _make_client(relaxed: bool = False) -> httpx.AsyncClient:
+            if relaxed:
+                ctx = ssl.create_default_context()
+                try:
+                    ctx.set_ciphers('DEFAULT@SECLEVEL=1')
+                except Exception as e:
+                    logger.debug("[Meme Proxy] set_ciphers SECLEVEL=1 不可用，使用默认密码套件: %s", e)
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                return httpx.AsyncClient(timeout=15.0, follow_redirects=False, verify=ctx)
+            return httpx.AsyncClient(timeout=15.0, follow_redirects=False)
+
+        async with _make_client(relaxed=need_relaxed_ssl) as client:
             current_url = decoded_url
             for _ in range(4):  # 最多跟随 3 次重定向 (4次请求)
                 async with client.stream("GET", current_url, headers=headers) as resp:
@@ -1949,6 +1972,35 @@ async def proxy_meme_image(url: str):
 
     except httpx.TimeoutException:
         return JSONResponse(content={"success": False, "error": "请求超时"}, status_code=504)
+    except (ssl.SSLError, httpx.ConnectError) as e:
+        # SSL 握手失败：对白名单内的表情包域名降级重试（宽松 SSL）
+        is_ssl = isinstance(e, ssl.SSLError) or 'SSL' in str(e) or 'certificate' in str(e).lower()
+        if is_ssl and not need_relaxed_ssl:
+            logger.warning(f"[Meme Proxy] SSL 失败，降级重试: {hostname} ({e})")
+            try:
+                async with _make_client(relaxed=True) as fallback_client:
+                    async with fallback_client.stream("GET", decoded_url, headers=headers) as resp:
+                        resp.raise_for_status()
+                        raw_ct = resp.headers.get('Content-Type', '').lower()
+                        ct = raw_ct.split(';', 1)[0].strip()
+                        allowed_ct = {'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/avif', 'image/bmp'}
+                        if ct not in allowed_ct:
+                            return JSONResponse(content={"success": False, "error": "格式不支持"}, status_code=403)
+                        body = bytearray()
+                        async for chunk in resp.aiter_bytes():
+                            body.extend(chunk)
+                            if len(body) > MAX_IMAGE_SIZE:
+                                return JSONResponse(content={"success": False, "error": "资源超过大小限制"}, status_code=413)
+                        MEME_PROXY_CACHE[cache_key] = {'body': bytes(body), 'content_type': ct}
+                        return Response(
+                            content=bytes(body), media_type=ct,
+                            headers={'Cache-Control': 'public, max-age=86400', 'X-Cache': 'MISS-SSL-FALLBACK', 'X-Content-Type-Options': 'nosniff'}
+                        )
+            except Exception as fallback_e:
+                logger.error(f"[Meme Proxy] SSL 降级重试也失败: {fallback_e}")
+                return JSONResponse(content={"success": False, "error": str(fallback_e)}, status_code=500)
+        logger.error(f"[Meme Proxy] 代理失败: {str(e)}")
+        return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
     except Exception as e:
         logger.error(f"[Meme Proxy] 代理失败: {str(e)}")
         return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
@@ -2228,7 +2280,7 @@ def build_proactive_response(source_tag: str, ctx: dict) -> tuple[str, list]:
     
     match source_tag:
         case 'CHAT':
-            primary_channel = 'vision'
+            primary_channel = 'chat'
         case 'WEB':
             # 使用细粒度 web 子通道（news/video/home/personal），fallback 到 'web'
             web_link = ctx.get('selected_web_link')
@@ -2959,6 +3011,7 @@ async def proactive_chat(request: Request):
                     )
                     if _is_recent_topic_used(lanlan_name, music_topic_key):
                         print(f"[{lanlan_name}]- Phase 1 音乐话题去重命中，跳过: {track_name}")
+                        music_content = None  # 彻底清空，防止去重后的残留数据泄漏到 fallback 逻辑
                     else:
                         logger.debug(f"[{lanlan_name}]- Phase 1 音乐话题已添加: {music_topic[:100]}...")
                         selected_music_link = {
@@ -3085,14 +3138,14 @@ async def proactive_chat(request: Request):
         
         music_section = ""
         # 如果正在放歌或处于冷却期，强行屏蔽音乐素材推荐，避免 AI 误触
+        # （冷却期时 music_content 已在上游被清空，music_topic 必为 None，此分支不会命中）
         if music_topic and not is_playing_music and not music_cooldown:
             # 【优化】使用独立的标识符，防止模型将音乐素材误认为普通的外部 WEB 话题
             msh = _loc(MUSIC_SECTION_HEADER, proactive_lang)
             msf = _loc(MUSIC_SECTION_FOOTER, proactive_lang)
             music_section = f"{msh}\n{music_topic}\n{msf}"
-        elif is_playing_music or music_cooldown:
-            reason = "正在播放音乐" if is_playing_music else "音乐冷却期"
-            print(f"[{lanlan_name}] {reason}，已屏蔽音乐推荐素材（仅保留 playing_hint）")
+        elif is_playing_music:
+            print(f"[{lanlan_name}] 正在播放音乐，已屏蔽音乐推荐素材（仅保留 playing_hint）")
             music_section = ""
         
         # 构建表情包段（meme 通道）
@@ -3149,8 +3202,10 @@ async def proactive_chat(request: Request):
             if raw_data.get('best_match', {}).get('status') == 'fuzzy':
                 dynamic_context_for_phase2 += get_proactive_music_failsafe_hint(proactive_lang)
 
-        if is_playing_music or music_cooldown:
+        if is_playing_music:
             dynamic_context_for_phase2 += get_proactive_music_strict_constraint(proactive_lang)
+        # music_cooldown 时不再注入 strict_constraint —— 此时 music 通道已被前端/后端
+        # 完全剔除，不应向模型暴露任何音乐相关指令，以免干扰其他 source 的选择。
         print(f"[{lanlan_name}] Phase 2 prompt 长度: {len(generate_prompt)}, 动态上下文: {len(dynamic_context_for_phase2)} 字符")
 
         # --- 前置检查：用户是否空闲、WebSocket 是否在线、session 是否可用 ---
@@ -3187,6 +3242,29 @@ async def proactive_chat(request: Request):
         full_text = ""
         pipe_count = 0
         aborted = False
+        # 滚动尾部缓冲区：保留最近 5 个字符以检测跨 chunk 的 "[PASS]"（长度 6）
+        pass_probe = ""
+        _PASS_PROBE_LEN = 5  # len("[PASS]") - 1
+
+        async def _emit_safe(text: str) -> bool:
+            """通过 fence/长度检查后送入 TTS。返回 True 表示应 abort。"""
+            nonlocal pipe_count, full_text, aborted
+            if not text:
+                return False
+            for ch in text:
+                if ch in ('|', '｜'):
+                    pipe_count += 1
+                    if pipe_count >= 2:
+                        print(f"[{lanlan_name}] Phase 2 fence 触发 (pipe_count={pipe_count})，abort")
+                        aborted = True
+                        return True
+            if len(full_text) + len(text) > 400:
+                print(f"[{lanlan_name}] Phase 2 长度超限 ({len(full_text)+len(text)} > 400)，abort")
+                aborted = True
+                return True
+            full_text += text
+            await mgr.feed_tts_chunk(text)
+            return False
         
         try:
             async with asyncio.timeout(25.0):
@@ -3220,37 +3298,43 @@ async def proactive_chat(request: Request):
                                 aborted = True
                                 break
                             
-                            # 缓冲中剩余的文本作为首批内容
+                            # 缓冲中剩余的文本经由 pass_probe 逻辑输出
                             if cleaned.strip():
-                                full_text += cleaned
-                                await mgr.feed_tts_chunk(cleaned)
+                                combined = pass_probe + cleaned
+                                if '[PASS]' in combined.upper():
+                                    print(f"[{lanlan_name}] Phase 2 流式检测到 [PASS]，abort")
+                                    aborted = True
+                                    break
+                                safe_text = combined[:-_PASS_PROBE_LEN] if len(combined) > _PASS_PROBE_LEN else ''
+                                pass_probe = combined[-_PASS_PROBE_LEN:] if len(combined) >= _PASS_PROBE_LEN else combined
+                                if await _emit_safe(safe_text):
+                                    break
                             continue
                         
-                        # --- 在线拦截: fence ---
-                        fence_hit = False
-                        for ch in content:
-                            if ch in ('|', '｜'):
-                                pipe_count += 1
-                                if pipe_count >= 2:
-                                    fence_hit = True
-                                    break
-                        if fence_hit:
-                            print(f"[{lanlan_name}] Phase 2 流式 fence 触发 (pipe_count={pipe_count})，abort")
+                        # --- 在线拦截: [PASS]（含跨 chunk 检测）---
+                        combined = pass_probe + content
+                        if '[PASS]' in combined.upper():
+                            print(f"[{lanlan_name}] Phase 2 流式检测到内嵌 [PASS]，abort")
                             aborted = True
                             break
+                        # 将本次 chunk 的尾部保留到 pass_probe，可安全输出的部分为去掉尾部的前段
+                        safe_text = combined[:-_PASS_PROBE_LEN] if len(combined) > _PASS_PROBE_LEN else ''
+                        pass_probe = combined[-_PASS_PROBE_LEN:] if len(combined) >= _PASS_PROBE_LEN else combined
                         
-                        # --- 在线拦截: 长度 ---
-                        if len(full_text) + len(content) > 400:
-                            print(f"[{lanlan_name}] Phase 2 流式长度超限 ({len(full_text)+len(content)} > 400)，abort")
-                            aborted = True
+                        if safe_text and await _emit_safe(safe_text):
                             break
-                        
-                        full_text += content
-                        await mgr.feed_tts_chunk(content)
         
         except (asyncio.TimeoutError, Exception) as e:
             logger.warning(f"[{lanlan_name}] Phase 2 流式调用异常: {type(e).__name__}: {e}")
             aborted = True
+        
+        # --- 流结束后：flush pass_probe 残留 ---
+        if pass_probe and not aborted:
+            if '[PASS]' in pass_probe.upper():
+                aborted = True
+            else:
+                await _emit_safe(pass_probe)
+        pass_probe = ""
         
         # --- 流结束后 buffer 未 flush 的兜底处理 ---
         if not tag_parsed and buffer and not aborted:
@@ -3265,8 +3349,7 @@ async def proactive_chat(request: Request):
             if source_tag == 'PASS' or '[PASS]' in cleaned.upper():
                 aborted = True
             elif cleaned.strip():
-                full_text += cleaned
-                await mgr.feed_tts_chunk(cleaned)
+                await _emit_safe(cleaned)
         
         # --- 结果处理 ---
         print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output (aborted={aborted}, tag={source_tag}): {(buffer + full_text)[:300]}\n")
@@ -3285,16 +3368,23 @@ async def proactive_chat(request: Request):
 
         has_music_topic = 'music' in active_channels
 
-        # 【加固】数据级锁：如果正在同步播放音乐，哪怕 AI 产生了音乐标签，也强制降级/忽略
+        # 【加固】数据级锁：如果正在播放音乐，哪怕 AI 产生了音乐标签，也强制降级/忽略
         is_music_used = has_music_topic and source_tag == 'MUSIC'
         ai_wants_music = source_tag == 'MUSIC'
 
-        if (is_playing_music or music_cooldown) and ai_wants_music:
-            print(f"[{lanlan_name}] 数据级锁触发：{'播放中' if is_playing_music else '冷却期'}尝试推荐新歌，已强制拦截并清空曲目列表")
+        if is_playing_music and ai_wants_music:
+            print(f"[{lanlan_name}] 数据级锁触发：播放中尝试推荐新歌，已强制拦截并清空曲目列表")
             is_music_used = False
             music_content = None
             source_tag = 'PASS'
             aborted = True
+        elif music_cooldown and ai_wants_music:
+            # 冷却期：music 通道本不应出现在上下文中，但模型仍输出了 [MUSIC] 标签。
+            # 降级为普通 CHAT 而非 abort 整轮搭话，避免浪费其他 source 的有效内容。
+            print(f"[{lanlan_name}] 音乐冷却期模型输出 [MUSIC]，降级为 CHAT（不中止搭话）")
+            is_music_used = False
+            music_content = None
+            source_tag = 'CHAT'
         
         # 【加固补齐】如果触发了降级拦截（aborted），立即返回
         if aborted:

@@ -3,7 +3,7 @@ core_config.txt
 test.py
 mcp_server/servers.json
 tests/api_keys.json
-tests/test_inputs/*.wav
+tests/test_inputs/
 
 # 忽略日志文件
 *.log
@@ -165,3 +165,4 @@ static/jukebox/*.vmd
 static/jukebox/*.vrma
 static/jukebox/*.bvh
 static/jukebox/*.fbx
+tests/prompt_dump.json

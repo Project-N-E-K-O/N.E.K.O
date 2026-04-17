@@ -1608,7 +1608,7 @@ class ConfigManager:
         tts_config = self.get_model_api_config('tts_custom')
         base_url = tts_config.get('base_url', '')
         is_local_tts = tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://'))
-        
+
         if is_local_tts:
             api_key = '__LOCAL_TTS__'
         else:
@@ -1956,6 +1956,7 @@ class ConfigManager:
             'ASSIST_API_KEY_MINIMAX': '',
             'ASSIST_API_KEY_MINIMAX_INTL': '',
             'ASSIST_API_KEY_GROK': DEFAULT_CORE_API_KEY,
+            'ASSIST_API_KEY_OPENROUTER': DEFAULT_CORE_API_KEY,
             'IS_FREE_VERSION': False,
             'VISION_MODEL': DEFAULT_VISION_MODEL,
             'AGENT_MODEL': DEFAULT_AGENT_MODEL,
@@ -2018,6 +2019,7 @@ class ConfigManager:
         config['ASSIST_API_KEY_MINIMAX_INTL'] = core_cfg.get('assistApiKeyMinimaxIntl', '')
         config['ASSIST_API_KEY_GROK'] = core_cfg.get('assistApiKeyGrok', '') or config['CORE_API_KEY']
         config['ASSIST_API_KEY_CLAUDE'] = core_cfg.get('assistApiKeyClaude', '') or config['CORE_API_KEY']
+        config['ASSIST_API_KEY_OPENROUTER'] = core_cfg.get('assistApiKeyOpenrouter', '') or config['CORE_API_KEY']
 
         if core_cfg.get('mcpToken'):
             config['MCP_ROUTER_API_KEY'] = core_cfg['mcpToken']
@@ -2091,6 +2093,15 @@ class ConfigManager:
         # 自定义API配置映射（使用大写下划线形式的内部键，且在未提供时保留已有默认值）
         enable_custom_api = core_cfg.get('enableCustomApi', False)
         config['ENABLE_CUSTOM_API'] = enable_custom_api
+
+        # 禁用TTS
+        _raw_disable_tts = core_cfg.get('disableTts', False)
+        if isinstance(_raw_disable_tts, bool):
+            config['DISABLE_TTS'] = _raw_disable_tts
+        elif isinstance(_raw_disable_tts, str):
+            config['DISABLE_TTS'] = _raw_disable_tts.lower() in ('true', '1', 'yes', 'on')
+        else:
+            config['DISABLE_TTS'] = False
 
         # 文本模式回复长度守卫上限（字/词数，超限会丢弃并重试）
         try:

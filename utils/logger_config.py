@@ -639,8 +639,10 @@ HTTPX_SUPPRESSED_PATTERNS = [
     "bandcamp.com",
     # Crawler domains — memes (meme_fetcher.py)
     "imgflip.com",
-    "doutub.com",
+    # 2026-04-16: doutub.com 域名易主挂黑产，停用
+    # "doutub.com",
     "fabiaoqing.com",
+    "doutupk.com",
     # Crawler domains — web scraper (web_scraper.py)
     "bilibili.com",
     "reddit.com",
