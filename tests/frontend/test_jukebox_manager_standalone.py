@@ -180,6 +180,36 @@ def test_jukebox_manager_standalone_fast_drag_survives_async_bounds(mock_page: P
 
 
 @pytest.mark.frontend
+def test_jukebox_manager_standalone_ignores_post_release_pointer_moves(mock_page: Page):
+    _bootstrap_manager_page(mock_page)
+
+    gap = mock_page.locator("#contentGap").bounding_box()
+    assert gap is not None
+
+    start_x = gap["x"] + 24
+    start_y = gap["y"] + 24
+    release_x = gap["x"] + 180
+    release_y = gap["y"] + 120
+    after_release_x = gap["x"] + 320
+    after_release_y = gap["y"] + 220
+
+    expected_x = 100 + int(release_x - start_x)
+    expected_y = 120 + int(release_y - start_y)
+
+    mock_page.mouse.move(start_x, start_y)
+    mock_page.mouse.down()
+    mock_page.mouse.move(release_x, release_y)
+    mock_page.mouse.up()
+    mock_page.mouse.move(after_release_x, after_release_y)
+
+    mock_page.wait_for_timeout(250)
+
+    final_bounds = mock_page.evaluate("window.__bounds")
+    assert final_bounds["x"] == expected_x
+    assert final_bounds["y"] == expected_y
+
+
+@pytest.mark.frontend
 def test_jukebox_manager_select_all_checkbox_toggles_state(mock_page: Page):
     mock_page.set_viewport_size({"width": 900, "height": 700})
     mock_page.set_content(HARNESS_HTML)

@@ -245,7 +245,7 @@
             }
 
             function onPointerMove(e) {
-                if (!state) return;
+                if (!state || state.released) return;
                 e.preventDefault();
                 _managerQueueDragBounds(state, _managerGetEventScreenPoint(e), scheduler);
             }

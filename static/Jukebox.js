@@ -1197,31 +1197,6 @@ window.Jukebox = {
       return this.syncBindingSelection();
     },
 
-    selectBindingBundle() {
-      const bundle = this.getBindingBundleSelection();
-      if (bundle.songIds.length === 0 && bundle.actionIds.length === 0) {
-        alert(window.t('Jukebox.selectBindingBundleFirst', '请先在绑定页选择歌曲或动画'));
-        return;
-      }
-
-      this.selectedSongs = new Set(bundle.songIds);
-      this.selectedActions = new Set(bundle.actionIds);
-      this.refreshAllPanels();
-      this.showStatusHint([
-        `已按绑定集合选择 ${bundle.songIds.length} 首歌曲、${bundle.actionIds.length} 个动画`
-      ], 4000);
-    },
-
-    async exportBindingBundle() {
-      const bundle = this.getBindingBundleSelection();
-      if (bundle.songIds.length === 0 && bundle.actionIds.length === 0) {
-        alert(window.t('Jukebox.selectBindingBundleFirst', '请先在绑定页选择歌曲或动画'));
-        return;
-      }
-
-      await this.exportByIds(bundle.songIds, bundle.actionIds, 'jukebox_binding_bundle');
-    },
-
     // 检查歌曲在绑定Tab是否应该显示勾选（合集逻辑：歌曲被勾选且其所有绑定的动画都被勾选）
     isSongFullySelectedInBindings(songId) {
       this.initBindingSelection();
@@ -1392,8 +1367,6 @@ window.Jukebox = {
       const hasSelection = songCount > 0 || actionCount > 0;
       const exportAllBtns = document.querySelectorAll('.sam-btn-export-all');
       const exportSelectedBtn = document.querySelector('.sam-btn-export-selected');
-      const bindingSelectBtn = document.querySelector('.sam-btn-binding-select');
-      const bindingExportBtn = document.querySelector('.sam-btn-binding-export');
       const hasBindingSelection = bindingSongCount > 0 || bindingActionCount > 0;
       const hasActiveSelection = activeTab === 'bindings' ? hasBindingSelection : hasSelection;
       
@@ -1402,12 +1375,6 @@ window.Jukebox = {
       });
       if (exportSelectedBtn) {
         exportSelectedBtn.style.display = hasActiveSelection ? '' : 'none';
-      }
-      if (bindingSelectBtn) {
-        bindingSelectBtn.style.display = activeTab === 'bindings' && hasBindingSelection ? '' : 'none';
-      }
-      if (bindingExportBtn) {
-        bindingExportBtn.style.display = activeTab === 'bindings' && hasBindingSelection ? '' : 'none';
       }
     },
     
