@@ -1006,6 +1006,10 @@ class LLMSessionManager:
         self.session_start_time = None
         await self._cleanup_pending_session_resources()  # close()后再置None，避免泄漏
         self.is_hot_swap_imminent = False
+        # 状态机是 per-manager 的，跨 start_session/end_session 复用同一实例。
+        # 若上一轮 proactive 在 PHASE1/PHASE2 中途 WS 断开、PROACTIVE_DONE 来不及
+        # fire，phase/_preempted 会泄漏到新会话，堵死 can_start_proactive。
+        await self.state.reset()
 
     def _has_custom_tts(self) -> bool:
         """判断当前会话是否使用自定义 TTS（克隆音色或自定义 TTS URL）。"""

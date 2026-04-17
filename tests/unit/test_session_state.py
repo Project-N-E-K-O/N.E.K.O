@@ -395,6 +395,61 @@ async def test_user_activity_updates_timestamp_without_owner_flip():
 # snapshot
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+# reset() —— teardown hook，防止跨 session 状态泄漏
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_reset_clears_proactive_leftover_state():
+    """若上一轮 proactive 在 PHASE1/PHASE2 中途 WS 断开，PROACTIVE_DONE 没 fire，
+    phase/_preempted/proactive_sid 会粘着；reset 必须清干净。"""
+    sm = _sm()
+    await sm.fire(SessionEvent.PROACTIVE_START)
+    await sm.fire(SessionEvent.PROACTIVE_CLAIM, sid="orphan_sid")
+    await sm.fire(SessionEvent.PROACTIVE_PHASE2)
+    await sm.fire(SessionEvent.USER_INPUT, sid="user_sid_mid_stream")
+    # 模拟 WS 断开：proactive_chat 协程被取消，PROACTIVE_DONE 没 fire
+    # 此时 SM 卡在 PHASE2 + _preempted=True
+    assert sm.phase is ProactivePhase.PHASE2
+    assert sm._preempted is True
+
+    await sm.reset()
+
+    assert sm.phase is ProactivePhase.IDLE
+    assert sm.owner is TurnOwner.NONE
+    assert sm.proactive_sid is None
+    assert sm.user_sid is None
+    assert sm._preempted is False
+    # reset 后 can_start_proactive 必须放行，否则新 session 永远起不了 proactive
+    assert sm.can_start_proactive() is True
+
+
+async def test_reset_preserves_subscribers():
+    """reset 是 teardown hook，不该把应用层注册的订阅钩子吹掉。"""
+    sm = _sm()
+    hits: list[SessionEvent] = []
+
+    def cb(event, payload):
+        hits.append(event)
+
+    sm.subscribe(SessionEvent.PROACTIVE_START, cb)
+    await sm.fire(SessionEvent.PROACTIVE_START)
+    await sm.reset()
+    await sm.fire(SessionEvent.PROACTIVE_START)
+    await asyncio.sleep(0)
+    # 两次 START 都触发了订阅者
+    assert hits == [SessionEvent.PROACTIVE_START, SessionEvent.PROACTIVE_START]
+
+
+async def test_reset_preserves_last_user_activity():
+    """reset 不该把 last_user_activity 吹回 0：跨 session 的活跃度追踪还要用。"""
+    sm = _sm()
+    await sm.fire(SessionEvent.USER_INPUT, sid="u")
+    activity = sm.last_user_activity
+    assert activity > 0
+    await sm.reset()
+    assert sm.last_user_activity == activity
+
+
 async def test_snapshot_fields():
     sm = _sm()
     await sm.fire(SessionEvent.PROACTIVE_START)

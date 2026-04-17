@@ -3310,6 +3310,15 @@ async def proactive_chat(request: Request):
         # 完全剔除，不应向模型暴露任何音乐相关指令，以免干扰其他 source 的选择。
         print(f"[{lanlan_name}] Phase 2 prompt 长度: {len(generate_prompt)}, 动态上下文: {len(dynamic_context_for_phase2)} 字符")
 
+        # Phase 1 preempt check (final)：request_fresh_screenshot 最多 await 3s，
+        # 是 prepare_proactive_delivery 之前唯一剩下的可打断窗口。若此处用户已
+        # 接管，继续走 prepare 会让其内部的 `current_speech_id = uuid4()` 覆盖
+        # 用户轮次的 sid —— 即使 SM 的 PROACTIVE_CLAIM 在 _preempted=True 时不
+        # 回写 proactive_sid，mgr.current_speech_id 已经被物理换掉，用户的
+        # 回复 TTS 会被错贴上一个陌生 sid。
+        if mgr.state.is_proactive_preempted():
+            return await _end_proactive(JSONResponse(_proactive_preempted_json("phase1_pre_prepare")))
+
         # --- 前置检查：用户是否空闲、WebSocket 是否在线、session 是否可用 ---
         if not await mgr.prepare_proactive_delivery(min_idle_secs=30.0):
             return await _end_proactive(JSONResponse({

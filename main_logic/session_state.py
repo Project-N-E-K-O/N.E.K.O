@@ -101,6 +101,25 @@ class SessionStateMachine:
                 return True
         return False
 
+    async def reset(self) -> None:
+        """Teardown hook：把 SM 复位到初始态，清掉可能泄漏的 proactive 残留。
+
+        ``LLMSessionManager`` 跨多次 ``start_session()`` / ``end_session()`` 复用
+        同一个 SM 实例。若上一轮 proactive 在 PHASE1/PHASE2 时 WebSocket 意外
+        断开、``PROACTIVE_DONE`` 来不及 fire，``phase`` 和 ``_preempted`` 会
+        粘到下一轮会话，导致 ``can_start_proactive`` 永远返回 False。本方法
+        由 ``_init_renew_status`` 调用，保证新会话拿到干净 SM。
+
+        保留 ``_subscribers`` 和 ``last_user_activity`` —— 前者是应用层注册的
+        钩子不该无故吹飞，后者跨会话单调递增有诊断价值。
+        """
+        async with self._write_lock:
+            self.owner = TurnOwner.NONE
+            self.phase = ProactivePhase.IDLE
+            self.proactive_sid = None
+            self.user_sid = None
+            self._preempted = False
+
     def can_start_proactive(self, session: Any = None) -> bool:
         """能否发起新一轮主动搭话（入口 409 前置判定用）。
 
