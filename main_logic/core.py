@@ -19,6 +19,7 @@ from utils.screenshot_utils import process_screen_data
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.tts_client import get_tts_worker, dummy_tts_worker, TTS_PROVIDER_REGISTRY
+from main_logic.session_state import SessionStateMachine, SessionEvent
 from utils.preferences import load_global_conversation_settings, aload_global_conversation_settings
 from config import MEMORY_SERVER_PORT, TOOL_SERVER_PORT
 from config.prompts_sys import (
@@ -310,6 +311,12 @@ class LLMSessionManager:
         
         # 用户活动时间戳：用于主动搭话检测最近是否有用户输入
         self.last_user_activity_time = None  # float timestamp or None
+
+        # 事件驱动状态机：收口 "谁占用当前 turn" 的所有信号，供 proactive 流水线
+        # 零成本（O(1) 读）频繁询问 is_proactive_preempted。事件发射点分布在
+        # handle_new_message / stream_text 入口 / prepare_proactive_delivery /
+        # finish_proactive_delivery / system_router.proactive_chat 等处。
+        self.state = SessionStateMachine(lanlan_name=lanlan_name)
         
         # 用户语言设置（由 start_session 或前端 set_user_language() 设置，初始为 None）
         self.user_language = None
@@ -425,6 +432,10 @@ class LLMSessionManager:
         # 新回复的 audio_chunk 也不会被错误丢弃
         async with self.lock:
             self.current_speech_id = str(uuid4())
+            new_sid = self.current_speech_id
+        # 状态机：USER_INPUT 事件用于让正在跑的 proactive 流水线立刻观察到抢占。
+        # 必须在 sid 已写入后发射，保证订阅者看到的 current_speech_id 是新值。
+        await self.state.fire(SessionEvent.USER_INPUT, sid=new_sid)
 
     async def handle_text_data(self, text: str, is_first_chunk: bool = False):
         """文本回调：处理文本显示和TTS（用于文本模式）"""
@@ -2458,6 +2469,10 @@ class LLMSessionManager:
         async with self.lock:
             self.current_speech_id = str(uuid4())
             self._tts_done_queued_for_turn = False
+            claim_sid = self.current_speech_id
+        # 状态机：正式 claim turn。订阅者（诊断、frontend sync 等）在此之后
+        # 观察到 proactive_sid 已与 current_speech_id 一致。
+        await self.state.fire(SessionEvent.PROACTIVE_CLAIM, sid=claim_sid)
         return True
 
     async def feed_tts_chunk(self, text: str, expected_speech_id: str | None = None):
@@ -2508,6 +2523,9 @@ class LLMSessionManager:
                     self.lanlan_name, expected_speech_id, self.current_speech_id,
                 )
                 return False
+            # 状态机：进入 COMMITTING 阶段；期间若用户抢占仍会 sticky 到 _preempted，
+            # 但本处 lock 内 sid 已校验过，commit 本身安全。
+            await self.state.fire(SessionEvent.PROACTIVE_COMMITTING)
             await self.send_lanlan_response(full_text, is_first_chunk=True)
 
             from utils.llm_client import AIMessage as _AIMsg
@@ -3161,6 +3179,10 @@ class LLMSessionManager:
                     async with self.lock:
                         self.current_speech_id = str(uuid4())
                         self._tts_done_queued_for_turn = False
+                        new_user_sid = self.current_speech_id
+                    # 状态机：文本模式 stream_text 入口同样需要发射 USER_INPUT。
+                    # handle_new_message 只在语音模式走到，这里是文本模式的对偶。
+                    await self.state.fire(SessionEvent.USER_INPUT, sid=new_user_sid)
 
                     should_handoff, openclaw_messages = await self._should_handoff_text_to_openclaw(data)
                     if should_handoff:

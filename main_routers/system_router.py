@@ -76,6 +76,25 @@ from utils.logger_config import get_module_logger
 router = APIRouter(prefix="/api", tags=["system"])
 logger = get_module_logger(__name__, "Main")
 
+
+async def _safe_fire_proactive_done(scope: dict) -> None:
+    """从 proactive_chat 的异常处理路径安全复位状态机。
+
+    异常可能发生在 PROACTIVE_START 之前（mgr 未绑定、_SE 未 import）或之后，
+    这里统一用 locals() dict 查找避免 NameError。状态机 fire 本身 idempotent：
+    状态已经是 IDLE 时 PROACTIVE_DONE 只是空操作。
+    """
+    mgr = scope.get("mgr")
+    se = scope.get("_SE")
+    emitted = scope.get("_proactive_done_emitted", False)
+    if mgr is None or se is None or emitted:
+        return
+    try:
+        await mgr.state.fire(se.PROACTIVE_DONE)
+    except Exception as err:  # 状态机不该抛，但兜底 swallow
+        logger.warning("safe_fire_proactive_done 异常: %s", err)
+
+
 # 统一的表情包图源白名单由 utils.meme_fetcher 维护，本文件仅用于引入
 
 _EMOTION_LABEL_ALIASES = {
@@ -2349,12 +2368,17 @@ async def proactive_chat(request: Request):
         if not mgr:
             return JSONResponse({"success": False, "error": f"角色 {lanlan_name} 不存在"}, status_code=404)
         
-        # 检查是否正在响应中（如果正在说话，不打断）
-        if mgr.is_active and hasattr(mgr.session, '_is_responding') and mgr.session._is_responding:
+        # 检查能否发起新一轮主动搭话：状态机统一把 "AI 正在响应"（_is_responding）、
+        # "用户持有 turn"（owner）、"另一轮 proactive 在跑"（phase != IDLE）三个信号
+        # 收拢到 can_start_proactive 一个 O(1) 判定。mgr.is_active 仅用于判断 session
+        # 是否已实例化，故仍需保留（can_start_proactive 对 session=None 容错）。
+        probe_session = mgr.session if mgr.is_active else None
+        if not mgr.state.can_start_proactive(session=probe_session):
             return JSONResponse({
                 "success": False,
                 "error": "AI正在响应中，无法主动搭话",
-                "message": "请等待当前响应完成"
+                "message": "请等待当前响应完成",
+                "state": mgr.state.snapshot(),
             }, status_code=409)
 
         # ========== Voice mode fast path ==========
@@ -2366,6 +2390,36 @@ async def proactive_chat(request: Request):
                 "action": "chat" if delivered else "pass",
                 "message": "voice proactive triggered" if delivered else "voice proactive skipped (guard)",
             })
+
+        # ========== Text-mode proactive：进入状态机管理 ==========
+        # PROACTIVE_START 让状态机翻到 PHASE1；之后 phase1/phase2 全部走
+        # mgr.state.is_proactive_preempted() 做 O(1) 抢占检查。所有退出路径
+        # 必须经过 _end_proactive() 发出 PROACTIVE_DONE，以复位状态机。
+        from main_logic.session_state import SessionEvent as _SE
+        await mgr.state.fire(_SE.PROACTIVE_START)
+        _proactive_done_emitted = False
+
+        async def _end_proactive(resp: JSONResponse) -> JSONResponse:
+            """包装所有 proactive 正常/短路退出：幂等地 fire PROACTIVE_DONE。"""
+            nonlocal _proactive_done_emitted
+            if not _proactive_done_emitted:
+                _proactive_done_emitted = True
+                try:
+                    await mgr.state.fire(_SE.PROACTIVE_DONE)
+                except Exception as _done_err:
+                    logger.warning("[%s] PROACTIVE_DONE fire 异常: %s", lanlan_name, _done_err)
+            return resp
+
+        def _proactive_preempted_json(where: str) -> dict:
+            logger.info(
+                "[%s] proactive %s preempted by user takeover (state=%s)",
+                lanlan_name, where, mgr.state.snapshot(),
+            )
+            return {
+                "success": True,
+                "action": "pass",
+                "message": f"proactive {where} preempted by user takeover",
+            }
 
         print(f"[{lanlan_name}] 开始主动搭话流程（两阶段架构）...")
         
@@ -2497,12 +2551,16 @@ async def proactive_chat(request: Request):
             sources[mode] = content
         
         if not sources:
-            return JSONResponse({
+            return await _end_proactive(JSONResponse({
                 "success": False,
                 "error": "所有信息源获取失败",
                 "action": "pass"
-            }, status_code=500)
-        
+            }, status_code=500))
+
+        # Phase 1 preempt check：信息源并行 fetch 完，正式进入 LLM 前先瞄一眼
+        if mgr.state.is_proactive_preempted():
+            return await _end_proactive(JSONResponse(_proactive_preempted_json("phase1_post_fetch")))
+
         print(f"[{lanlan_name}] 成功获取 {len(sources)} 个信息源: {list(sources.keys())}")
 
         # ========== 1. 获取记忆上下文 (New Dialog) ==========
@@ -2553,7 +2611,13 @@ async def proactive_chat(request: Request):
             return text, ""
 
         memory_context, inner_thoughts = _parse_new_dialog(raw_memory_context)
-        
+
+        # Phase 1 preempt check：memory_server new_dialog 是 phase1 里首次大 await
+        # （httpx timeout 5s）。用户在这期间打断只能等超时才有下一次 check，
+        # 这里补一刀。
+        if mgr.state.is_proactive_preempted():
+            return await _end_proactive(JSONResponse(_proactive_preempted_json("phase1_post_memory")))
+
         # ========== 2. 选择语言 ==========
         try:
             request_lang = data.get('language') or data.get('lang') or data.get('i18n_language')
@@ -2601,6 +2665,12 @@ async def proactive_chat(request: Request):
         except Exception as e:
             logger.debug(f"[{lanlan_name}] 反思/回调话题获取失败（不影响主流程）: {e}")
 
+        # Phase 1 preempt check：reflection POST(15s) + followup GET(5s) 是又一段
+        # 可能拖很久的 await 串，整段裸跑会让用户打断后继续跑完 LLM 配置和
+        # 后续步骤，再到 pre-LLM check 才识破。这里补一刀。
+        if mgr.state.is_proactive_preempted():
+            return await _end_proactive(JSONResponse(_proactive_preempted_json("phase1_post_reflect")))
+
         # ========== 4. 获取 LLM 配置 ==========
         try:
             correction_config = _config_manager.get_model_api_config('correction')
@@ -2610,11 +2680,11 @@ async def proactive_chat(request: Request):
             
             if not correction_model or not correction_api_key:
                 logger.error("纠错模型配置缺失: model或api_key未设置")
-                return JSONResponse({
+                return await _end_proactive(JSONResponse({
                     "success": False,
                     "error": "纠错模型配置缺失",
                     "detail": "请在设置中配置纠错模型的model和api_key"
-                }, status_code=500)
+                }, status_code=500))
             
             vision_config = _config_manager.get_model_api_config('vision')
             vision_model_name = vision_config.get('model', '')
@@ -2625,12 +2695,12 @@ async def proactive_chat(request: Request):
                 logger.info("Vision 模型未配置，Phase 2 将退回使用 correction 模型")
         except Exception as e:
             logger.error(f"获取模型配置失败: {e}")
-            return JSONResponse({
+            return await _end_proactive(JSONResponse({
                 "success": False,
                 "error": "模型配置异常",
                 "detail": str(e)
-            }, status_code=500)
-        
+            }, status_code=500))
+
         def _make_llm(temperature: float = 1.0, max_tokens: int = 1536,
                       use_vision: bool = False, disable_thinking: bool = True):
             """
@@ -2887,6 +2957,10 @@ async def proactive_chat(request: Request):
             enriched_memory_context = memory_context + "\n" + followup_topics_prompt
 
         if has_web_task or has_music_task or has_meme_task:
+            # Phase 1 preempt check：拨号前最后一次检查。大头 LLM 调用即将开始，
+            # 此后等待期间用户抢占只能靠流结束后的兜底识别。
+            if mgr.state.is_proactive_preempted():
+                return await _end_proactive(JSONResponse(_proactive_preempted_json("phase1_pre_llm")))
             try:
                 from config.prompts_proactive import build_unified_phase1_prompt
                 unified_prompt = build_unified_phase1_prompt(
@@ -2992,6 +3066,9 @@ async def proactive_chat(request: Request):
             fetch_labels.append('meme')
 
         if fetch_tasks_p1:
+            # Phase 1 preempt check：unified LLM 刚回，music/meme 后置 fetch 前再瞄
+            if mgr.state.is_proactive_preempted():
+                return await _end_proactive(JSONResponse(_proactive_preempted_json("phase1_post_llm")))
             fetch_results_p1 = await asyncio.gather(*fetch_tasks_p1, return_exceptions=True)
             for label_p1, result_p1 in zip(fetch_labels, fetch_results_p1):
                 if isinstance(result_p1, Exception):
@@ -3088,11 +3165,15 @@ async def proactive_chat(request: Request):
         
         if not phase1_topics and not vision_content:
             print(f"[{lanlan_name}] Phase 1 所有通道均无可用话题")
-            return JSONResponse({
+            return await _end_proactive(JSONResponse({
                 "success": True,
                 "action": "pass",
                 "message": "所有信息源筛选后均不值得搭话"
-            })
+            }))
+
+        # Phase 1 preempt check：topic assembly 完，进入 Phase 2 前最后一次瞄
+        if mgr.state.is_proactive_preempted():
+            return await _end_proactive(JSONResponse(_proactive_preempted_json("phase1_pre_phase2")))
         
         # 收集各通道结果
         active_channels = [ch for ch, _ in phase1_topics]
@@ -3231,15 +3312,18 @@ async def proactive_chat(request: Request):
 
         # --- 前置检查：用户是否空闲、WebSocket 是否在线、session 是否可用 ---
         if not await mgr.prepare_proactive_delivery(min_idle_secs=30.0):
-            return JSONResponse({
+            return await _end_proactive(JSONResponse({
                 "success": True,
                 "action": "pass",
                 "message": "主动搭话条件未满足（用户近期活跃或语音会话正在进行）"
-            })
+            }))
 
         # 记录本轮主动搭话起始的 speech_id；abort 时若该 id 已变，说明用户已打断并接管，
         # 此时再调 handle_new_message() 会把用户正常回复的 TTS 也一起清掉。
+        # prepare_proactive_delivery 已经 fire(PROACTIVE_CLAIM, sid=...)；这里把
+        # 状态机翻到 PHASE2，后续 astream 循环的抢占检查基于此阶段。
         proactive_sid = mgr.current_speech_id
+        await mgr.state.fire(_SE.PROACTIVE_PHASE2)
 
         # --- 构建 LLM + messages (static/dynamic 分离) ---
         phase2_use_vision = bool(screenshot_b64_for_phase2 and has_vision_model)
@@ -3276,10 +3360,13 @@ async def proactive_chat(request: Request):
             nonlocal pipe_count, full_text, aborted
             if not text:
                 return False
-            # sid 已被换掉说明用户已打断并接管本轮，立刻 abort 以停止 LLM stream；
-            # feed_tts_chunk 下面还有 lock 内二次校验兜底，防止 await 期间的 race。
-            if mgr.current_speech_id != proactive_sid:
-                print(f"[{lanlan_name}] Phase 2 检测到 sid 变更（用户已接管），abort")
+            # 状态机 preempt check：O(1) 读 sticky flag + sid 比较。用户抢占
+            # （handle_new_message 或 text stream_text 入口）会 fire USER_INPUT，
+            # 在 PHASE2 阶段 sticky 把 _preempted 翻到 True；同时 current_speech_id
+            # 被轮换，proactive_sid != 新 sid 兜底覆盖竞态窗口。
+            # feed_tts_chunk 下面还有 lock 内 expected_speech_id 二次校验。
+            if mgr.state.is_proactive_preempted(proactive_sid):
+                print(f"[{lanlan_name}] Phase 2 检测到用户接管（state 抢占），abort")
                 aborted = True
                 return True
             for ch in text:
@@ -3303,6 +3390,12 @@ async def proactive_chat(request: Request):
                 async with _make_llm(temperature=1.0, max_tokens=1536,
                                     use_vision=phase2_use_vision, disable_thinking=True) as llm:
                     async for chunk in llm.astream(messages):
+                        # Phase 2 preempt check：每 chunk 顶端做 O(1) 状态机读，
+                        # 用户抢占立刻跳出；_emit_safe 里还有一次保险。
+                        if mgr.state.is_proactive_preempted(proactive_sid):
+                            print(f"[{lanlan_name}] Phase 2 astream chunk 前检测到抢占，abort")
+                            aborted = True
+                            break
                         content = chunk.content if hasattr(chunk, 'content') else ''
                         if not content:
                             continue
@@ -3385,16 +3478,19 @@ async def proactive_chat(request: Request):
         # --- 结果处理 ---
         print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output (aborted={aborted}, tag={source_tag}): {(buffer + full_text)[:300]}\n")
         if aborted or not full_text.strip():
-            if mgr.current_speech_id == proactive_sid:
+            # 只有当用户没接管时才调 handle_new_message 清 TTS —— 否则会把
+            # 用户正常回复的 TTS 也清掉（PR #862 修的 bug）。状态机的
+            # is_proactive_preempted 是权威信号，sid 比较作为最后一道兜底。
+            if not mgr.state.is_proactive_preempted(proactive_sid):
                 await mgr.handle_new_message()
                 logger.debug(f"[{lanlan_name}] Phase 2 abort，已中断 TTS + 前端音频")
             else:
-                logger.info(f"[{lanlan_name}] Phase 2 abort 但用户已接管 (sid changed)，跳过 TTS 清理避免误伤正常回复")
-            return JSONResponse({
+                logger.info(f"[{lanlan_name}] Phase 2 abort 但用户已接管 (state preempted)，跳过 TTS 清理避免误伤正常回复")
+            return await _end_proactive(JSONResponse({
                 "success": True,
                 "action": "pass",
                 "message": "Phase 2 流式输出被拦截或为空"
-            })
+            }))
         
         response_text = full_text.strip()
         logger.debug(f"[{lanlan_name}] Phase 2 流式完成 (vision={phase2_use_vision}): {response_text[:120]}...")
@@ -3422,15 +3518,15 @@ async def proactive_chat(request: Request):
         
         # 【加固补齐】如果触发了降级拦截（aborted），立即返回
         if aborted:
-            if mgr.current_speech_id == proactive_sid:
+            if not mgr.state.is_proactive_preempted(proactive_sid):
                 await mgr.handle_new_message()
             else:
-                logger.info(f"[{lanlan_name}] 降级拦截 abort 但用户已接管 (sid changed)，跳过 TTS 清理")
-            return JSONResponse({
+                logger.info(f"[{lanlan_name}] 降级拦截 abort 但用户已接管 (state preempted)，跳过 TTS 清理")
+            return await _end_proactive(JSONResponse({
                 "success": True,
                 "action": "pass",
                 "message": f"[{lanlan_name}] 播放中推荐拦截触发，动作已取消"
-            })
+            }))
 
         # 使用纯函数构建响应
         primary_channel, source_links = build_proactive_response(source_tag, {
@@ -3477,13 +3573,13 @@ async def proactive_chat(request: Request):
                 "[%s] 主动搭话被用户接管，短路下游写入（topic/memory/response）",
                 lanlan_name,
             )
-            return JSONResponse({
+            return await _end_proactive(JSONResponse({
                 "success": True,
                 "action": "pass",
                 "message": "proactive delivery skipped: user took over turn",
                 "lanlan_name": lanlan_name,
                 "turn_id": mgr.current_speech_id,
-            })
+            }))
 
         # 记录主动搭话
         _record_proactive_chat(lanlan_name, response_text, primary_channel)
@@ -3543,7 +3639,7 @@ async def proactive_chat(request: Request):
             _record_topic_usage(lanlan_name, selected_meme_topic_key)
             print(f"[{lanlan_name}] 已记录表情包话题去重: {selected_meme_topic_key[:60]}")
 
-        return JSONResponse({
+        return await _end_proactive(JSONResponse({
             "success": True,
             "action": "chat",
             "message": "主动搭话已发送",
@@ -3553,16 +3649,18 @@ async def proactive_chat(request: Request):
             "active_channels": active_channels,
             "source_links": source_links,
             "turn_id": mgr.current_speech_id
-        })
-        
+        }))
+
     except asyncio.TimeoutError:
         logger.error("主动搭话超时")
+        await _safe_fire_proactive_done(locals())
         return JSONResponse({
             "success": False,
             "error": "AI处理超时"
         }, status_code=504)
     except Exception as e:
         logger.error(f"主动搭话接口异常: {e}")
+        await _safe_fire_proactive_done(locals())
         return JSONResponse({
             "success": False,
             "error": "服务器内部错误",
