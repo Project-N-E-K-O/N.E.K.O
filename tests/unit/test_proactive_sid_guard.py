@@ -14,8 +14,6 @@ import sys
 from queue import Queue
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 from main_logic.core import LLMSessionManager, _proactive_expected_sid
