@@ -128,125 +128,21 @@
         <EmptyState v-else-if="rawPlugins.length === 0" :description="$t('plugins.noPlugins')" />
 
         <template v-else>
-          <template v-if="filteredPurePlugins.length > 0">
-            <div class="section-header">
-              <span class="section-title">
-                <el-icon><Box /></el-icon>
-                {{ $t('plugins.pluginsSection') }} ({{ filteredPurePlugins.length }})
-              </span>
-            </div>
-            <TransitionGroup
-              name="list"
-              tag="div"
-              class="plugin-grid"
-              :class="pluginGridClass"
-              @before-leave="pinLeavingItem"
-              @after-leave="clearLeavingItemStyles"
-            >
-              <div
-                v-for="plugin in filteredPurePlugins"
-                :key="plugin.id"
-                class="plugin-item"
-                :class="pluginItemClass(plugin.id)"
-              >
-                <div v-if="multiSelectEnabled" class="plugin-item__select">
-                  <el-checkbox
-                    :model-value="isSelected(plugin.id)"
-                    @click.stop
-                    @change="togglePluginSelection(plugin.id)"
-                  />
-                </div>
-                <component
-                  :is="layoutMode === 'list' ? PluginListRow : PluginCard"
-                  :plugin="plugin"
-                  :is-selected="multiSelectEnabled && isSelected(plugin.id)"
-                  :show-metrics="showMetrics"
-                  @click="handlePluginPrimaryAction(plugin.id)"
-                  @contextmenu="handlePluginContextMenu($event, plugin)"
-                />
-              </div>
-            </TransitionGroup>
-          </template>
-
-          <template v-if="filteredAdapters.length > 0">
-            <div class="section-header section-header--adapter">
-              <span class="section-title">
-                <el-icon><Connection /></el-icon>
-                {{ $t('plugins.adaptersSection') }} ({{ filteredAdapters.length }})
-              </span>
-            </div>
-            <TransitionGroup
-              name="list"
-              tag="div"
-              class="plugin-grid"
-              :class="pluginGridClass"
-              @before-leave="pinLeavingItem"
-              @after-leave="clearLeavingItemStyles"
-            >
-              <div
-                v-for="adapter in filteredAdapters"
-                :key="adapter.id"
-                class="plugin-item"
-                :class="pluginItemClass(adapter.id)"
-              >
-                <div v-if="multiSelectEnabled" class="plugin-item__select">
-                  <el-checkbox
-                    :model-value="isSelected(adapter.id)"
-                    @click.stop
-                    @change="togglePluginSelection(adapter.id)"
-                  />
-                </div>
-                <component
-                  :is="layoutMode === 'list' ? PluginListRow : PluginCard"
-                  :plugin="adapter"
-                  :is-selected="multiSelectEnabled && isSelected(adapter.id)"
-                  :show-metrics="showMetrics"
-                  @click="handlePluginPrimaryAction(adapter.id)"
-                  @contextmenu="handlePluginContextMenu($event, adapter)"
-                />
-              </div>
-            </TransitionGroup>
-          </template>
-
-          <template v-if="filteredExtensions.length > 0">
-            <div class="section-header section-header--ext">
-              <span class="section-title">
-                <el-icon><Expand /></el-icon>
-                {{ $t('plugins.extensionsSection') }} ({{ filteredExtensions.length }})
-              </span>
-            </div>
-            <TransitionGroup
-              name="list"
-              tag="div"
-              class="plugin-grid"
-              :class="pluginGridClass"
-              @before-leave="pinLeavingItem"
-              @after-leave="clearLeavingItemStyles"
-            >
-              <div
-                v-for="ext in filteredExtensions"
-                :key="ext.id"
-                class="plugin-item"
-                :class="pluginItemClass(ext.id)"
-              >
-                <div v-if="multiSelectEnabled" class="plugin-item__select">
-                  <el-checkbox
-                    :model-value="isSelected(ext.id)"
-                    @click.stop
-                    @change="togglePluginSelection(ext.id)"
-                  />
-                </div>
-                <component
-                  :is="layoutMode === 'list' ? PluginListRow : PluginCard"
-                  :plugin="ext"
-                  :is-selected="multiSelectEnabled && isSelected(ext.id)"
-                  :show-metrics="showMetrics"
-                  @click="handlePluginPrimaryAction(ext.id)"
-                  @contextmenu="handlePluginContextMenu($event, ext)"
-                />
-              </div>
-            </TransitionGroup>
-          </template>
+          <PluginGridSection
+            v-for="section in pluginSections"
+            :key="section.key"
+            :title="section.title"
+            :icon="section.icon"
+            :items="section.items"
+            :layout-mode="layoutMode"
+            :multi-select-enabled="multiSelectEnabled"
+            :selected-plugin-ids="selectedPluginIds"
+            :show-metrics="showMetrics"
+            :variant="section.variant"
+            @item-click="handlePluginPrimaryAction"
+            @item-contextmenu="handlePluginContextMenu"
+            @toggle-selection="togglePluginSelection"
+          />
         </template>
       </el-card>
     </section>
@@ -291,8 +187,7 @@ import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Expand } from '@e
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
-import PluginCard from '@/components/plugin/PluginCard.vue'
-import PluginListRow from '@/components/plugin/PluginListRow.vue'
+import PluginGridSection from '@/components/plugin/PluginGridSection.vue'
 import PluginContextMenu from '@/components/plugin/PluginContextMenu.vue'
 import PluginDangerConfirmDialog from '@/components/plugin/PluginDangerConfirmDialog.vue'
 import PackageManagerPanel from '@/components/plugin/PackageManagerPanel.vue'
@@ -340,7 +235,7 @@ const {
   filteredPurePlugins,
   filteredAdapters,
   filteredExtensions,
-  isSelected,
+  selectedPluginIds,
   togglePlugin: togglePluginSelection,
   selectAllVisible,
   invertVisibleSelection,
@@ -350,19 +245,33 @@ const {
 } = usePluginWorkbench(rawPlugins)
 
 const loading = computed(() => pluginStore.loading)
-const pluginGridClass = computed(() => `plugin-grid--${layoutMode.value}`)
 const filterVisible = ref(false)
 const showMetrics = ref(false)
 let hideTimer: number | null = null
 let metricsRefreshTimer: number | null = null
-
-function pluginItemClass(pluginId: string) {
-  return {
-    'plugin-item--selection-mode': multiSelectEnabled.value,
-    'plugin-item--selected': multiSelectEnabled.value && isSelected(pluginId),
-    'plugin-item--list-layout': layoutMode.value === 'list',
-  }
-}
+const pluginSections = computed(() => [
+  {
+    key: 'plugin',
+    title: t('plugins.pluginsSection'),
+    icon: Box,
+    items: filteredPurePlugins.value,
+    variant: 'default' as const,
+  },
+  {
+    key: 'adapter',
+    title: t('plugins.adaptersSection'),
+    icon: Connection,
+    items: filteredAdapters.value,
+    variant: 'adapter' as const,
+  },
+  {
+    key: 'extension',
+    title: t('plugins.extensionsSection'),
+    icon: Expand,
+    items: filteredExtensions.value,
+    variant: 'extension' as const,
+  },
+])
 
 function showFilter() {
   if (hideTimer) {
@@ -449,22 +358,6 @@ function handlePluginPrimaryAction(pluginId: string) {
 
 function toggleMultiSelectMode() {
   toggleMultiSelect()
-}
-
-function pinLeavingItem(element: Element) {
-  const node = element as HTMLElement
-  node.style.left = `${node.offsetLeft}px`
-  node.style.top = `${node.offsetTop}px`
-  node.style.width = `${node.offsetWidth}px`
-  node.style.height = `${node.offsetHeight}px`
-}
-
-function clearLeavingItemStyles(element: Element) {
-  const node = element as HTMLElement
-  node.style.left = ''
-  node.style.top = ''
-  node.style.width = ''
-  node.style.height = ''
 }
 
 function togglePackagePanel() {
@@ -851,119 +744,6 @@ onUnmounted(() => {
   text-transform: uppercase;
 }
 
-.section-header {
-  margin-bottom: 12px;
-}
-
-.section-header--adapter,
-.section-header--ext {
-  margin-top: 24px;
-}
-
-.section-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--el-text-color-primary);
-}
-
-.plugin-grid {
-  display: grid;
-  gap: 16px;
-  align-items: stretch;
-  position: relative;
-}
-
-.plugin-grid--list,
-.plugin-grid--single {
-  grid-template-columns: 1fr;
-}
-
-.plugin-grid--double {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.plugin-grid--compact {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
-.plugin-item {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  will-change: transform, opacity;
-}
-
-.plugin-item--selection-mode {
-  padding-top: 0;
-}
-
-.plugin-item__select {
-  position: absolute;
-  top: -8px;
-  right: -8px;
-  z-index: 2;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 32px;
-  min-height: 32px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--el-bg-color) 86%, white);
-  box-shadow: 0 8px 18px color-mix(in srgb, var(--el-text-color-primary) 10%, transparent);
-  backdrop-filter: blur(10px);
-}
-
-.plugin-item--list-layout .plugin-item__select {
-  top: -8px;
-  right: -8px;
-  transform: none;
-}
-
-.plugin-item--selected :deep(.plugin-card) {
-  border-color: var(--el-color-primary);
-  box-shadow:
-    0 16px 32px color-mix(in srgb, var(--el-color-primary) 16%, transparent),
-    0 6px 14px color-mix(in srgb, var(--el-text-color-primary) 8%, transparent);
-}
-
-.plugin-item--selected :deep(.plugin-list-row-card) {
-  border-color: var(--el-color-primary);
-}
-
-.plugin-item--list-layout :deep(.plugin-list-row-card) {
-  min-height: 0;
-}
-
-.plugin-item :deep(.plugin-card) {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  transition:
-    transform 0.24s ease,
-    box-shadow 0.24s ease,
-    border-color 0.24s ease;
-}
-
-.plugin-item:hover :deep(.plugin-card) {
-  transform: translateY(-3px);
-}
-
-.plugin-item :deep(.el-card__body) {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-}
-
-.plugin-card-body {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-}
-
 .filter-fade-enter-active,
 .filter-fade-leave-active {
   transition: opacity 0.25s ease, transform 0.25s ease;
@@ -983,44 +763,6 @@ onUnmounted(() => {
 .filter-fade-leave-from {
   opacity: 1;
   transform: translateY(0);
-}
-
-.list-enter-active,
-.list-leave-active {
-  transition:
-    transform 0.34s cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 0.24s ease,
-    filter 0.24s ease;
-}
-
-.list-enter-from {
-  opacity: 0;
-  transform: scale(0.94) translateY(12px);
-  filter: blur(6px);
-}
-
-.list-leave-to {
-  opacity: 0;
-  transform: scale(0.94) translateY(-12px);
-  filter: blur(6px);
-}
-
-.list-enter-to,
-.list-leave-from {
-  opacity: 1;
-  transform: scale(1) translateY(0);
-  filter: blur(0);
-}
-
-.list-leave-active {
-  position: absolute;
-  z-index: 0;
-  pointer-events: none;
-  margin: 0;
-}
-
-.list-move {
-  transition: transform 0.34s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 @media (max-width: 1280px) {
@@ -1051,23 +793,6 @@ onUnmounted(() => {
 
   .header-actions {
     flex-wrap: wrap;
-  }
-
-  .plugin-grid--compact {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 1180px) {
-  .plugin-grid--compact {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 900px) {
-  .plugin-grid--double,
-  .plugin-grid--compact {
-    grid-template-columns: 1fr;
   }
 }
 </style>
