@@ -325,6 +325,7 @@ class LLMSessionManager:
         self._last_tts_error_code: str = ''  # 上次 TTS 错误码
         self._tts_retry_notify_count: int = 0  # TTS 重试通知计数，前3次不通知前端
         self._tts_done_queued_for_turn: bool = False  # 防止同一轮次多次排入 TTS 结束信号
+        self._tts_done_pending_until_ready: bool = False  # TTS未就绪时延迟到 flush 后再排入结束信号
         self._active_text_request_id: Optional[str] = None
         
         # 输入数据缓存机制：确保session初始化期间的输入不丢失
@@ -417,6 +418,44 @@ class LLMSessionManager:
         self._tts_stream_normalizer.reset()
         self._tts_norm_speech_id = None
 
+    def _request_tts_done_locked(self) -> str:
+        """请求为当前轮次排入 TTS 结束信号。
+
+        调用方必须已持有 ``self.tts_cache_lock``。若文本仍在 pending 或 worker
+        尚未 ready，则只记录 deferred 状态，待 `_flush_tts_pending_chunks()`
+        在 ready 后统一补发，避免 `(None, None)` 早于文本 chunk 入队。
+        """
+        if self._tts_done_queued_for_turn:
+            return "already"
+
+        worker_alive = bool(self.tts_thread and self.tts_thread.is_alive())
+        if not worker_alive:
+            return "no_worker"
+
+        if not self.tts_ready or self.tts_pending_chunks:
+            self._tts_done_pending_until_ready = True
+            return "deferred"
+
+        self.tts_request_queue.put((None, None))
+        self._tts_done_queued_for_turn = True
+        self._tts_done_pending_until_ready = False
+        return "queued"
+
+    async def _request_tts_done_for_turn(self, source: str) -> str:
+        """线程安全地为当前轮次请求 TTS 结束信号。"""
+        if not self.use_tts:
+            return "disabled"
+
+        async with self.tts_cache_lock:
+            status = self._request_tts_done_locked()
+
+        if status == "already":
+            logger.debug("%s: TTS done 已排入队列，跳过重复信号", source)
+        elif status == "deferred":
+            logger.debug("%s: TTS 未就绪或仍有 pending chunk，延迟排入 done 信号", source)
+
+        return status
+
     async def _clear_tts_pipeline(self):
         """清空 TTS 请求/响应队列和待处理缓存，停止当前合成。"""
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
@@ -440,6 +479,7 @@ class LLMSessionManager:
                     break
         async with self.tts_cache_lock:
             self.tts_pending_chunks.clear()
+            self._tts_done_pending_until_ready = False
 
     async def handle_new_message(self):
         """处理新模型输出：清空TTS队列并通知前端"""
@@ -447,6 +487,7 @@ class LLMSessionManager:
         self.audio_resampler.clear()
         await self._clear_tts_pipeline()
         self._tts_done_queued_for_turn = False  # 新轮次重置 TTS 结束信号标记
+        self._tts_done_pending_until_ready = False
 
         await self.send_user_activity()
 
@@ -503,14 +544,10 @@ class LLMSessionManager:
         exclusively to user-initiated conversation turns.
         """
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
-            if self._tts_done_queued_for_turn:
-                logger.debug("handle_proactive_complete: TTS done 已排入队列，跳过重复信号")
-            else:
-                try:
-                    self.tts_request_queue.put((None, None))
-                    self._tts_done_queued_for_turn = True
-                except Exception as e:
-                    logger.warning(f"⚠️ 发送TTS结束信号失败 (proactive): {e}")
+            try:
+                await self._request_tts_done_for_turn("handle_proactive_complete")
+            except Exception as e:
+                logger.warning(f"⚠️ 发送TTS结束信号失败 (proactive): {e}")
         if self.sync_message_queue:
             self.sync_message_queue.put({'type': 'system', 'data': 'turn end agent_callback'})
         try:
@@ -527,15 +564,11 @@ class LLMSessionManager:
         active_request_id = self._active_text_request_id
 
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
-            if self._tts_done_queued_for_turn:
-                logger.debug("📨 Response complete: TTS done 已排入队列，跳过重复信号")
-            else:
-                logger.info("📨 Response complete (LLM 回复结束)")
-                try:
-                    self.tts_request_queue.put((None, None))
-                    self._tts_done_queued_for_turn = True
-                except Exception as e:
-                    logger.warning(f"⚠️ 发送TTS结束信号失败: {e}")
+            logger.info("📨 Response complete (LLM 回复结束)")
+            try:
+                await self._request_tts_done_for_turn("handle_response_complete")
+            except Exception as e:
+                logger.warning(f"⚠️ 发送TTS结束信号失败: {e}")
         self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
 
         # 直接向前端发送turn end消息
@@ -652,6 +685,7 @@ class LLMSessionManager:
                     async with self.lock:
                         self.current_speech_id = str(uuid4())
                         self._tts_done_queued_for_turn = False
+                        self._tts_done_pending_until_ready = False
 
                 # 发送文本到前端显示
                 await self.send_lanlan_response(too_long_text, is_first_chunk=True)
@@ -662,10 +696,7 @@ class LLMSessionManager:
                 # 喂给 TTS 管线用角色音色念
                 if self.use_tts:
                     await self.feed_tts_chunk(too_long_text)
-                    # TTS 结束信号
-                    if self.tts_thread and self.tts_thread.is_alive():
-                        self.tts_request_queue.put((None, None))
-                        self._tts_done_queued_for_turn = True
+                    await self._request_tts_done_for_turn("handle_response_discarded:too_long_final")
 
                 # turn end
                 self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
@@ -1123,6 +1154,7 @@ class LLMSessionManager:
         self._last_tts_respawn_time = 0.0
         self._tts_retry_notify_count = 0
         self._tts_done_queued_for_turn = False
+        self._tts_done_pending_until_ready = False
 
     async def _teardown_tts_runtime(self, handler_task_ref, thread_ref,
                                      req_queue_ref, resp_queue_ref):
@@ -1216,22 +1248,25 @@ class LLMSessionManager:
     async def _flush_tts_pending_chunks(self):
         """将缓存的TTS文本chunk发送到TTS队列"""
         async with self.tts_cache_lock:
-            if not self.tts_pending_chunks:
-                return
-            
-            chunk_count = len(self.tts_pending_chunks)
-            logger.info(f"TTS就绪，开始处理缓存的 {chunk_count} 个文本chunk...")
-            
-            if self.tts_thread and self.tts_thread.is_alive():
-                for speech_id, text in self.tts_pending_chunks:
-                    try:
-                        self._enqueue_tts_text_chunk(speech_id, text)
-                    except Exception as e:
-                        logger.error(f"💥 发送缓存的TTS请求失败: {e}")
-                        break
-            
-            # 清空缓存
-            self.tts_pending_chunks.clear()
+            if self.tts_pending_chunks:
+                chunk_count = len(self.tts_pending_chunks)
+                logger.info(f"TTS就绪，开始处理缓存的 {chunk_count} 个文本chunk...")
+
+                if self.tts_thread and self.tts_thread.is_alive():
+                    for speech_id, text in self.tts_pending_chunks:
+                        try:
+                            self._enqueue_tts_text_chunk(speech_id, text)
+                        except Exception as e:
+                            logger.error(f"💥 发送缓存的TTS请求失败: {e}")
+                            break
+
+                # 清空缓存
+                self.tts_pending_chunks.clear()
+
+            if self._tts_done_pending_until_ready:
+                status = self._request_tts_done_locked()
+                if status == "queued":
+                    logger.debug("_flush_tts_pending_chunks: pending 文本已刷出，补发 TTS done 信号")
     
     async def _flush_pending_input_data(self):
         """将缓存的输入数据发送到session"""
@@ -2292,6 +2327,7 @@ class LLMSessionManager:
         async with self.lock:
             self.current_speech_id = str(uuid4())
             self._tts_done_queued_for_turn = False
+            self._tts_done_pending_until_ready = False
         return True
 
     async def feed_tts_chunk(self, text: str):
@@ -2320,8 +2356,7 @@ class LLMSessionManager:
 
             if self.use_tts and self.tts_thread and self.tts_thread.is_alive() and not self._tts_done_queued_for_turn:
                 try:
-                    self.tts_request_queue.put((None, None))
-                    self._tts_done_queued_for_turn = True
+                    await self._request_tts_done_for_turn("finish_proactive_delivery")
                 except Exception:
                     pass
 
@@ -2401,6 +2436,7 @@ class LLMSessionManager:
                     async with self.lock:
                         self.current_speech_id = str(uuid4())
                         self._tts_done_queued_for_turn = False
+                        self._tts_done_pending_until_ready = False
                     logger.debug("[%s] trigger_agent_callbacks: text session ready, calling prompt_ephemeral", self.lanlan_name)
                     # 更新字数限制（可能用户在对话期间修改了设置）
                     if hasattr(self.session, 'update_max_response_length'):
@@ -2425,6 +2461,7 @@ class LLMSessionManager:
                         async with self.lock:
                             self.current_speech_id = str(uuid4())
                             self._tts_done_queued_for_turn = False
+                            self._tts_done_pending_until_ready = False
                         # 更新字数限制（可能用户在对话期间修改了设置）
                         if hasattr(self.session, 'update_max_response_length'):
                             self.session.update_max_response_length(self._get_text_guard_max_length())
@@ -2547,6 +2584,7 @@ class LLMSessionManager:
             async with self.lock:
                 self.current_speech_id = str(uuid4())
                 self._tts_done_queued_for_turn = False
+                self._tts_done_pending_until_ready = False
             delivered = await self.session.prompt_ephemeral(instruction)
             logger.info("[%s] trigger_greeting: delivered=%s", self.lanlan_name, delivered)
             # 投递成功后才真正消费节日/周末预算
@@ -2688,6 +2726,7 @@ class LLMSessionManager:
             self.session = self.pending_session
             self.current_speech_id = str(uuid4())
             self._tts_done_queued_for_turn = False
+            self._tts_done_pending_until_ready = False
             self.session_start_time = datetime.now()
             self._session_turn_count = 0
             
@@ -2907,6 +2946,7 @@ class LLMSessionManager:
                     async with self.lock:
                         self.current_speech_id = str(uuid4())
                         self._tts_done_queued_for_turn = False
+                        self._tts_done_pending_until_ready = False
 
                     # 文本模式：在发送用户输入前，将挂起的 agent 任务回调通过
                     # prompt_ephemeral 注入 — 指令不持久化，只保留 AI 回复。
@@ -2925,6 +2965,7 @@ class LLMSessionManager:
                                 async with self.lock:
                                     self.current_speech_id = str(uuid4())
                                     self._tts_done_queued_for_turn = False
+                                    self._tts_done_pending_until_ready = False
                         except Exception as _cb_err:
                             logger.warning(f"⚠️ Agent callback injection failed: {_cb_err}")
 
