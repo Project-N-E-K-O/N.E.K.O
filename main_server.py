@@ -595,10 +595,13 @@ def _cleanup_character_dicts(k: str):
     """同步清理单个 catgirl 的 per-k dict 槽位。调用前确保对应线程已停或超时。"""
     # 清理队列（queue.Queue 没有 close/join_thread 方法）
     if k in sync_message_queue:
+        # while empty + get_nowait 是 racy idiom（另一线程可能抢先 drain），
+        # 正常终止只可能抛 queue.Empty，bare except 会吞 KeyboardInterrupt。
+        import queue as _queue
         try:
             while not sync_message_queue[k].empty():
                 sync_message_queue[k].get_nowait()
-        except: # noqa
+        except _queue.Empty:
             pass
         del sync_message_queue[k]
 
