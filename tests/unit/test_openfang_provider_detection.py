@@ -85,11 +85,15 @@ class TestDetectProviderInfo:
         r = _detect_provider_info("https://openrouter.ai/api/v1", "gemini-2.5-flash")
         assert r["provider"] == "openai"
         assert r["needs_proxy"] is True
+        assert r["api_key_env"] == "OPENAI_API_KEY"
+        assert r["effective_url"] != "https://openrouter.ai/api/v1"
 
     def test_openrouter_with_deepseek_model(self):
         r = _detect_provider_info("https://openrouter.ai/api/v1", "deepseek/deepseek-r1")
         assert r["provider"] == "openai"
         assert r["needs_proxy"] is True
+        assert r["api_key_env"] == "OPENAI_API_KEY"
+        assert r["effective_url"] != "https://openrouter.ai/api/v1"
 
     # -- Ollama: loopback, LAN, non-standard port --
 
