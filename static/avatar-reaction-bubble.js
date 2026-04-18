@@ -130,6 +130,7 @@
         lastHeadAnchor: null,
         lastLive2dHeadAnchor: null,
         lastHeadRect: null,
+        lastBubbleHeadRect: null,
         lastHeadMode: null,
         lastHeadSource: null,
         lastBodyRect: null,
@@ -150,6 +151,7 @@
     let contentEl = null;
     let debugOverlayEl = null;
     let debugPanelEl = null;
+    let debugPanelHintEl = null;
     let debugPanelBodyEl = null;
     let debugAnchorEl = null;
     let debugGuideLineEl = null;
@@ -159,7 +161,7 @@
     let debugBubbleRectEl = null;
 
     function resolveInitialDebugOverlayEnabled() {
-        return false;
+        return window.NEKO_DEBUG_BUBBLE_OVERLAY === true;
     }
 
     state.debugOverlayEnabled = resolveInitialDebugOverlayEnabled();
@@ -323,6 +325,7 @@
         state.lastHeadAnchor = null;
         state.lastLive2dHeadAnchor = null;
         state.lastHeadRect = null;
+        state.lastBubbleHeadRect = null;
         state.lastHeadMode = null;
         state.lastHeadSource = null;
         state.lastBodyRect = null;
@@ -407,9 +410,9 @@
         debugPanelTitleEl.className = 'avatar-reaction-bubble-debug-title';
         debugPanelTitleEl.textContent = 'Bubble Debug';
 
-        var debugPanelHintEl = document.createElement('div');
+        debugPanelHintEl = document.createElement('div');
         debugPanelHintEl.className = 'avatar-reaction-bubble-debug-hint';
-        debugPanelHintEl.textContent = 'Debug disabled';
+        debugPanelHintEl.textContent = 'Debug enabled';
 
         debugPanelBodyEl = document.createElement('pre');
         debugPanelBodyEl.className = 'avatar-reaction-bubble-debug-body';
@@ -532,6 +535,9 @@
         var enabled = debugOverlayEnabled();
         debugOverlayEl.classList.toggle('is-hidden', !enabled);
         debugOverlayEl.setAttribute('aria-hidden', enabled ? 'false' : 'true');
+        if (debugPanelHintEl) {
+            debugPanelHintEl.textContent = enabled ? 'Debug enabled' : 'Debug disabled';
+        }
     }
 
     function formatDebugSnapshot(snapshot) {
@@ -558,6 +564,10 @@
         lines.push('headRect: ' + (snapshot.headRect
             ? Math.round(snapshot.headRect.left) + ', ' + Math.round(snapshot.headRect.top) +
                 '  ' + Math.round(snapshot.headRect.width) + 'x' + Math.round(snapshot.headRect.height)
+            : 'n/a'));
+        lines.push('bubbleHeadRect: ' + (snapshot.bubbleHeadRect
+            ? Math.round(snapshot.bubbleHeadRect.left) + ', ' + Math.round(snapshot.bubbleHeadRect.top) +
+                '  ' + Math.round(snapshot.bubbleHeadRect.width) + 'x' + Math.round(snapshot.bubbleHeadRect.height)
             : 'n/a'));
         lines.push('bodyRect: ' + (snapshot.bodyRect
             ? Math.round(snapshot.bodyRect.left) + ', ' + Math.round(snapshot.bodyRect.top) +
@@ -618,18 +628,19 @@
 
         var bounds = anchorInfo.bounds;
         var headRect = anchorInfo.headRect || null;
+        var bubbleHeadRect = getResolvedLive2dPlacementHeadRect(anchorInfo);
         var bodyRect = anchorInfo.bodyRect || null;
         var headMode = anchorInfo.headMode || null;
         var headSource = anchorInfo.headSource || null;
         var reliableLive2dHeadRect = anchorInfo.type === 'live2d'
             ? (typeof anchorInfo.reliableLive2dHeadRect === 'boolean'
                 ? anchorInfo.reliableLive2dHeadRect
-                : isReliableLive2dHeadRect(headRect, bounds, bodyRect, headSource))
+                : isReliableLive2dHeadRect(bubbleHeadRect || headRect, bounds, bodyRect, headSource))
             : false;
         var live2dHeadAnchor = anchorInfo.type === 'live2d'
             ? (anchorInfo.live2dHeadAnchor || (
                 reliableLive2dHeadRect
-                    ? (getLive2dHeadAnchorFromRect(headRect, headMode, headSource) || anchorInfo.head)
+                    ? (getLive2dHeadAnchorFromRect(bubbleHeadRect || headRect, headMode, headSource) || anchorInfo.head)
                     : anchorInfo.head
             ))
             : (anchorInfo.head || null);
@@ -647,6 +658,7 @@
             preciseLive2dDisplayInfoRect: !!preciseLive2dDisplayInfoRect,
             bounds: createDebugRect(bounds),
             headRect: createDebugRect(headRect),
+            bubbleHeadRect: createDebugRect(bubbleHeadRect),
             bodyRect: createDebugRect(bodyRect),
             anchor: createDebugPoint(live2dHeadAnchor || anchorInfo.head || null),
             bubbleRect: state.visible && Number.isFinite(state.lastRenderX) && Number.isFinite(state.lastRenderY) &&
@@ -903,6 +915,7 @@
             rawHeadAnchor: normalizePointLike(info.rawHeadAnchor),
             headAnchor: normalizePointLike(info.headAnchor),
             headRect: normalizeRectLike(info.headRect),
+            bubbleHeadRect: normalizeRectLike(info.bubbleHeadRect),
             headMode: info.headMode === 'head' ? 'head' : 'face',
             headSource: typeof info.headSource === 'string' && info.headSource
                 ? info.headSource
@@ -915,6 +928,20 @@
             preciseLive2dDisplayInfoRect: info.preciseDisplayInfoRect === true,
             coarseHitAreaHeadRect: info.coarseHitAreaHeadRect === true
         };
+    }
+
+    function getResolvedLive2dPlacementHeadRect(anchorInfo) {
+        if (!anchorInfo) {
+            return null;
+        }
+
+        if (hasValidRect(anchorInfo.bubbleHeadRect)) {
+            return anchorInfo.bubbleHeadRect;
+        }
+
+        return hasValidRect(anchorInfo.headRect)
+            ? anchorInfo.headRect
+            : null;
     }
 
     function hasValidRect(rect) {
@@ -984,7 +1011,7 @@
             }
         }
 
-        var headRect = hasValidRect(anchorInfo.headRect) ? anchorInfo.headRect : null;
+        var headRect = getResolvedLive2dPlacementHeadRect(anchorInfo);
         if (headRect) {
             var headRight = rectRight(headRect);
             var headBottom = rectBottom(headRect);
@@ -1231,13 +1258,17 @@
             return anchorInfo;
         }
 
-        if (anchorInfo.reliableLive2dHeadRect !== true || !hasValidRect(anchorInfo.headRect)) {
+        var placementHeadRect = getResolvedLive2dPlacementHeadRect(anchorInfo);
+        var previousPlacementHeadRect = hasValidRect(state.lastBubbleHeadRect)
+            ? state.lastBubbleHeadRect
+            : state.lastHeadRect;
+        if (anchorInfo.reliableLive2dHeadRect !== true || !hasValidRect(placementHeadRect)) {
             return anchorInfo;
         }
 
         if (state.lastAnchorType !== 'live2d' ||
             state.lastReliableLive2dHeadRect !== true ||
-            !hasValidRect(state.lastHeadRect)) {
+            !hasValidRect(previousPlacementHeadRect)) {
             return anchorInfo;
         }
 
@@ -1249,13 +1280,21 @@
             return anchorInfo;
         }
 
-        if (!isWithinLive2dRectDeadzone(anchorInfo.headRect, state.lastHeadRect)) {
+        if (!isWithinLive2dRectDeadzone(placementHeadRect, previousPlacementHeadRect)) {
             return anchorInfo;
         }
 
-        var nextAnchorInfo = Object.assign({}, anchorInfo, {
-            headRect: cloneBounds(state.lastHeadRect)
-        });
+        var nextAnchorInfo = Object.assign({}, anchorInfo);
+        if (hasValidRect(anchorInfo.headRect) &&
+            hasValidRect(state.lastHeadRect) &&
+            isWithinLive2dRectDeadzone(anchorInfo.headRect, state.lastHeadRect)) {
+            nextAnchorInfo.headRect = cloneBounds(state.lastHeadRect);
+        }
+        if (hasValidRect(anchorInfo.bubbleHeadRect) &&
+            hasValidRect(state.lastBubbleHeadRect) &&
+            isWithinLive2dRectDeadzone(anchorInfo.bubbleHeadRect, state.lastBubbleHeadRect)) {
+            nextAnchorInfo.bubbleHeadRect = cloneBounds(state.lastBubbleHeadRect);
+        }
 
         if (hasValidRect(anchorInfo.bodyRect) &&
             hasValidRect(state.lastBodyRect) &&
@@ -1309,6 +1348,7 @@
                     head: live2dGeometryInfo.rawHeadAnchor || live2dGeometryInfo.headAnchor || null,
                     live2dHeadAnchor: live2dGeometryInfo.headAnchor || null,
                     headRect: live2dGeometryInfo.headRect,
+                    bubbleHeadRect: live2dGeometryInfo.bubbleHeadRect || live2dGeometryInfo.headRect || null,
                     headMode: live2dGeometryInfo.headMode,
                     headSource: live2dGeometryInfo.headSource,
                     bodyRect: live2dGeometryInfo.bodyRect,
@@ -1375,6 +1415,7 @@
             state.lastHeadAnchor = clonePoint(anchorInfo.head);
             state.lastLive2dHeadAnchor = clonePoint(anchorInfo.live2dHeadAnchor);
             state.lastHeadRect = cloneBounds(anchorInfo.headRect);
+            state.lastBubbleHeadRect = cloneBounds(anchorInfo.bubbleHeadRect);
             state.lastHeadMode = anchorInfo.headMode || null;
             state.lastHeadSource = anchorInfo.headSource || null;
             state.lastBodyRect = cloneBounds(anchorInfo.bodyRect);
@@ -1399,16 +1440,22 @@
         var headAnchor = anchorInfo && anchorInfo.bounds ? anchorInfo.head : state.lastHeadAnchor;
         var live2dHeadAnchor = anchorInfo && anchorInfo.bounds ? anchorInfo.live2dHeadAnchor : state.lastLive2dHeadAnchor;
         var headRect = anchorInfo && anchorInfo.bounds ? anchorInfo.headRect : state.lastHeadRect;
+        var bubbleHeadRect = anchorInfo && anchorInfo.bounds ? anchorInfo.bubbleHeadRect : state.lastBubbleHeadRect;
+        var placementHeadRect = avatarType === 'live2d'
+            ? (hasValidRect(bubbleHeadRect) ? bubbleHeadRect : headRect)
+            : headRect;
         var headMode = anchorInfo && anchorInfo.bounds ? anchorInfo.headMode : state.lastHeadMode;
         var headSource = anchorInfo && anchorInfo.bounds ? anchorInfo.headSource : state.lastHeadSource;
         var bodyRect = anchorInfo && anchorInfo.bounds ? anchorInfo.bodyRect : state.lastBodyRect;
         var bodySource = anchorInfo && anchorInfo.bounds ? anchorInfo.bodySource : state.lastBodySource;
+        var hasNormalizedLive2dGeometry = avatarType === 'live2d' &&
+            !!(anchorInfo && anchorInfo.bounds && anchorInfo.hasNormalizedLive2dGeometry === true);
         var reliableLive2dHeadRect = avatarType === 'live2d'
             ? ((anchorInfo && anchorInfo.bounds && typeof anchorInfo.reliableLive2dHeadRect === 'boolean')
                 ? anchorInfo.reliableLive2dHeadRect
                 : (state.lastReliableLive2dHeadRect !== null
                     ? state.lastReliableLive2dHeadRect
-                    : isReliableLive2dHeadRect(headRect, bounds, bodyRect, headSource)))
+                    : isReliableLive2dHeadRect(placementHeadRect, bounds, bodyRect, headSource)))
             : false;
         var preciseLive2dDisplayInfoRect = avatarType === 'live2d'
             ? ((anchorInfo && anchorInfo.bounds && typeof anchorInfo.preciseLive2dDisplayInfoRect === 'boolean')
@@ -1423,19 +1470,19 @@
                 : (state.lastCoarseHitAreaHeadRect !== null
                     ? state.lastCoarseHitAreaHeadRect
                     : (headSource === 'hitArea' &&
-                        hasValidRect(headRect) &&
+                        hasValidRect(placementHeadRect) &&
                         headAnchor &&
                         Number.isFinite(headAnchor.y) &&
-                        headAnchor.y >= headRect.top + headRect.height * 0.82)))
+                        headAnchor.y >= placementHeadRect.top + placementHeadRect.height * 0.82)))
             : false;
         if (avatarType === 'live2d' && !live2dHeadAnchor && reliableLive2dHeadRect) {
-            live2dHeadAnchor = getLive2dHeadAnchorFromRect(headRect, headMode, headSource) || headAnchor;
+            live2dHeadAnchor = getLive2dHeadAnchorFromRect(placementHeadRect, headMode, headSource) || headAnchor;
         }
         if (coarseHitAreaHeadRect && headAnchor) {
             live2dHeadAnchor = headAnchor;
         }
         var live2dLayoutMetrics = avatarType === 'live2d'
-            ? getLive2dLayoutMetrics(bounds, headRect, bodyRect, reliableLive2dHeadRect, headSource)
+            ? getLive2dLayoutMetrics(bounds, placementHeadRect, bodyRect, reliableLive2dHeadRect, headSource)
             : null;
         var layoutBounds = live2dLayoutMetrics && live2dLayoutMetrics.effectiveBounds
             ? live2dLayoutMetrics.effectiveBounds
@@ -1463,36 +1510,47 @@
         if (avatarType === 'live2d' &&
             preciseLive2dDisplayInfoRect &&
             reliableLive2dHeadRect &&
-            hasValidRect(headRect) &&
+            hasValidRect(placementHeadRect) &&
             bodySource === 'drawableHeuristic') {
             headSpan = Math.min(
                 headSpan,
-                Math.max(headRect.width, headRect.height) * 1.24
+                Math.max(placementHeadRect.width, placementHeadRect.height) * 1.24
             );
         } else if (avatarType === 'live2d' &&
             preciseLive2dDisplayInfoRect &&
             reliableLive2dHeadRect &&
-            hasValidRect(headRect) &&
+            hasValidRect(placementHeadRect) &&
             hasValidRect(bodyRect)) {
             headSpan = Math.min(
                 headSpan,
-                Math.max(headRect.width, headRect.height) * TIMING.live2dDisplayInfoBodyAwareHeadSpanMaxMultiplier
+                Math.max(placementHeadRect.width, placementHeadRect.height) * TIMING.live2dDisplayInfoBodyAwareHeadSpanMaxMultiplier
             );
         } else if (avatarType === 'live2d' &&
             preciseLive2dDisplayInfoRect &&
             reliableLive2dHeadRect &&
-            hasValidRect(headRect) &&
+            hasValidRect(placementHeadRect) &&
             !hasValidRect(bodyRect)) {
             headSpan = Math.min(
                 headSpan,
-                Math.max(headRect.width, headRect.height) * 2.1
+                Math.max(placementHeadRect.width, placementHeadRect.height) * 2.1
+            );
+        } else if (avatarType === 'live2d' &&
+            !hasNormalizedLive2dGeometry &&
+            reliableLive2dHeadRect &&
+            hasValidRect(placementHeadRect)) {
+            headSpan = Math.max(
+                headSpan,
+                Math.max(
+                    layoutBounds.width * 0.44,
+                    layoutBounds.height * 0.22
+                )
             );
         }
         var viewportCap = Math.round(Math.min(viewportWidth, viewportHeight) * 0.42);
         var headBubbleScaleMultiplier = TIMING.headBubbleScaleMultiplier;
         if (avatarType === 'live2d' &&
             reliableLive2dHeadRect &&
-            hasValidRect(headRect)) {
+            hasValidRect(placementHeadRect)) {
             if (preciseLive2dDisplayInfoRect) {
                 headBubbleScaleMultiplier = TIMING.live2dPreciseDisplayInfoHeadBubbleScaleMultiplier;
             } else {
@@ -1512,18 +1570,18 @@
         var height = Math.max(74, Math.round(headSize * 1.02) - TIMING.baseHeightShrinkPx);
         var useReliableLive2dHeadCenterX = avatarType === 'live2d' &&
             reliableLive2dHeadRect &&
-            hasValidRect(headRect) &&
+            hasValidRect(placementHeadRect) &&
             headSource !== 'hitArea' &&
-            Number.isFinite(headRect.centerX);
+            Number.isFinite(placementHeadRect.centerX);
         var headCenterX = useReliableLive2dHeadCenterX
-            ? headRect.centerX
+            ? placementHeadRect.centerX
             : bounds.left + bounds.width * 0.5;
         var sideOffsetPx = layoutBounds.width * 0.13;
         if (useReliableLive2dHeadCenterX) {
             sideOffsetPx = clamp(
                 sideOffsetPx,
-                headRect.width * TIMING.live2dHeadSideOffsetMinHeadWidthRatio,
-                headRect.width * TIMING.live2dHeadSideOffsetMaxHeadWidthRatio
+                placementHeadRect.width * TIMING.live2dHeadSideOffsetMinHeadWidthRatio,
+                placementHeadRect.width * TIMING.live2dHeadSideOffsetMaxHeadWidthRatio
             );
         }
         var rightAnchorX = headCenterX + sideOffsetPx;
@@ -1550,7 +1608,7 @@
         if (avatarType === 'live2d' &&
             preciseLive2dDisplayInfoRect &&
             reliableLive2dHeadRect &&
-            hasValidRect(headRect) &&
+            hasValidRect(placementHeadRect) &&
             !hasValidRect(bodyRect)) {
             modelOffsetRatio = Math.max(modelOffsetRatio, -0.06);
         }
@@ -1635,16 +1693,16 @@
             if (reliableLive2dHeadRect) {
                 if (preciseLive2dDisplayInfoRect) {
                     var live2dDisplayInfoGapPx = Math.max(
-                        headRect.height * TIMING.live2dDisplayInfoGapHeadRatio,
+                        placementHeadRect.height * TIMING.live2dDisplayInfoGapHeadRatio,
                         height * TIMING.live2dDisplayInfoGapBubbleRatio,
                         hasValidRect(bodyRect) ? bodyRect.height * TIMING.live2dDisplayInfoGapBodyRatio : 0
                     );
-                    live2dTopTargetY = headRect.top - height * (headMode === 'face'
+                    live2dTopTargetY = placementHeadRect.top - height * (headMode === 'face'
                         ? TIMING.live2dDisplayInfoTopOffsetRatio
                         : TIMING.live2dDisplayInfoHeadTopOffsetRatio) - live2dDisplayInfoGapPx;
                     live2dTopTargetActsAsCeiling = true;
                 } else {
-                    live2dTopTargetY = headRect.top - height * (headMode === 'face'
+                    live2dTopTargetY = placementHeadRect.top - height * (headMode === 'face'
                         ? TIMING.live2dFaceTopOffsetRatio
                         : TIMING.live2dHeadTopOffsetRatio);
                     if (headSource === 'drawableHeuristic') {
@@ -1744,6 +1802,7 @@
                 coarseHitAreaHeadRect: coarseHitAreaHeadRect,
                 bounds: createDebugRect(bounds),
                 headRect: createDebugRect(headRect),
+                bubbleHeadRect: createDebugRect(placementHeadRect),
                 bodyRect: createDebugRect(bodyRect),
                 layoutBounds: createDebugRect(layoutBounds),
                 headAnchor: createDebugPoint(headAnchor),
@@ -1814,6 +1873,7 @@
                 coarseHitAreaHeadRect: !!coarseHitAreaHeadRect,
                 bounds: createDebugRect(bounds),
                 headRect: createDebugRect(headRect),
+                bubbleHeadRect: createDebugRect(placementHeadRect),
                 bodyRect: createDebugRect(bodyRect),
                 layoutBounds: createDebugRect(layoutBounds),
                 anchor: createDebugPoint({
@@ -1977,9 +2037,11 @@
         state.lastAnchorBounds = null;
         state.lastHeadAnchor = null;
         state.lastHeadRect = null;
+        state.lastBubbleHeadRect = null;
         state.lastHeadMode = null;
         state.lastHeadSource = null;
         state.lastBodyRect = null;
+        state.lastBodySource = null;
         state.lastBoundsCenterX = null;
         state.lastBoundsCenterY = null;
         state.lastDebugSnapshot = null;
@@ -2355,15 +2417,15 @@
     }
 
     function setDebugOverlayEnabled(enabled) {
-        state.debugOverlayEnabled = false;
-        window.NEKO_DEBUG_BUBBLE_OVERLAY = false;
+        state.debugOverlayEnabled = enabled === true;
+        window.NEKO_DEBUG_BUBBLE_OVERLAY = state.debugOverlayEnabled;
         syncDebugOverlayVisibility();
         ensureDebugOverlayLoop();
         syncDebugOverlaySnapshot();
     }
 
     function toggleDebugOverlay() {
-        setDebugOverlayEnabled(false);
+        setDebugOverlayEnabled(!debugOverlayEnabled());
     }
 
     function init() {
@@ -2421,6 +2483,8 @@
 
     window.avatarReactionBubble = {
         forceHide: function () { forceHide(true); },
+        setDebugOverlayEnabled: setDebugOverlayEnabled,
+        toggleDebugOverlay: toggleDebugOverlay,
         getState: function () {
             return Object.assign({}, state);
         },
