@@ -1038,9 +1038,17 @@ def _normalize_avatar_interaction_payload(payload: dict) -> Optional[dict]:
     pointer_payload = payload.get("pointer")
     pointer: Optional[dict[str, float]] = None
     if isinstance(pointer_payload, dict):
+        # dict.get(key, default) 只在 key 缺失时走 default；如果 client_x 显式
+        # 传成 None，就不会回落到 clientX。显式判断两个键，真 None 也能降级。
+        raw_x = pointer_payload.get("client_x")
+        if raw_x is None:
+            raw_x = pointer_payload.get("clientX")
+        raw_y = pointer_payload.get("client_y")
+        if raw_y is None:
+            raw_y = pointer_payload.get("clientY")
         try:
-            client_x = float(pointer_payload.get("client_x", pointer_payload.get("clientX")))
-            client_y = float(pointer_payload.get("client_y", pointer_payload.get("clientY")))
+            client_x = float(raw_x)
+            client_y = float(raw_y)
             if np.isfinite(client_x) and np.isfinite(client_y):
                 pointer = {
                     "client_x": client_x,
