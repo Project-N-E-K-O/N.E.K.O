@@ -22,6 +22,8 @@ from utils.config_manager import get_config_manager
 # OpenFang LLM proxy — 运行在 agent_server 上，补全 OpenAI 兼容性字段
 _LLM_PROXY_BASE_URL = f"http://127.0.0.1:{TOOL_SERVER_PORT}/openfang-llm-proxy"
 
+logger = logging.getLogger("openfang_adapter")
+
 # ── Provider 检测 ──────────────────────────────────────────
 # OpenFang 原生支持多种 provider: anthropic, openai, groq, gemini, deepseek, ollama 等
 # 根据用户配置的 agent API base_url 推断最合适的 provider 和是否需要 proxy
@@ -160,7 +162,6 @@ def _detect_provider_info(base_url: str, model: str) -> dict:
         "api_key_env": "OPENAI_API_KEY",
     }
 
-logger = logging.getLogger("openfang_adapter")
 
 
 # ──────────────────────────────────────────────────────────────
