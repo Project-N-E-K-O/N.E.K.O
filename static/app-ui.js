@@ -1271,6 +1271,9 @@
                 !Number.isFinite(width) || !Number.isFinite(height)) {
                 return null;
             }
+            if (width <= 0 || height <= 0) {
+                return null;
+            }
             return { x, y, width, height };
         }
 
@@ -1432,6 +1435,8 @@
                 container.style.right = '';
                 container.style.bottom = '';
                 container.style.transform = 'none';
+            } else {
+                restoreSavedBallStyle();
             }
 
             restoreBallVisibility(dragToken);
