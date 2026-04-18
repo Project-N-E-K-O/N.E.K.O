@@ -126,10 +126,10 @@ def _get_system_language() -> str:
             if lang:
                 return lang
 
-        return 'zh'  # 默认中文
+        return 'en'  # 默认英文
     except Exception as e:
-        logger.warning(f"获取系统语言失败: {e}，使用默认中文")
-        return 'zh'
+        logger.warning(f"获取系统语言失败: {e}，使用默认英文")
+        return 'en'
 
 
 def _get_steam_language() -> Optional[str]:
