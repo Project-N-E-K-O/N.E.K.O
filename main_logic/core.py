@@ -2887,25 +2887,17 @@ class LLMSessionManager:
             logger.info("Final Swap Sequence: Starting actual session swap...")
             old_main_session = self.session
             old_main_message_handler_task = self.message_handler_task
-            
-            # 执行session切换
-            # 热切换完成后，立即将缓存的音频数据发送到新session
-            await self._flush_hot_swap_audio_cache()
-            self.session = self.pending_session
-            self.current_speech_id = str(uuid4())
-            self._tts_done_queued_for_turn = False
-            self.session_start_time = datetime.now()
-            self._session_turn_count = 0
-            
-            # !!CRITICAL!! 立即清除pending_session引用，防止异常处理器误关闭新session
-            # 此时self.session和self.pending_session指向同一对象（新session）
-            # 如果在此之后发生异常，_cleanup_pending_session_resources()会关闭pending_session
-            # 导致新session的websocket被关闭，引发 'NoneType' object has no attribute 'send' 错误
+            # 立即用局部变量持有新 session，并清空 self.pending_session。
+            # 必须在任何 await 之前完成：后续 cancel/close 的 await 若触发
+            # CancelledError，异常处理器会调 _cleanup_pending_session_resources()，
+            # 它检查 self.pending_session；若不提前清零，会把新 session 的 ws 关掉。
+            new_session = self.pending_session
             self.pending_session = None
 
-            # 先取消旧session的消息处理任务，确保旧 WebSocket 上没有 recv() 在运行。
-            # 必须在 old_main_session.close() 之前完成：ws.close() 内部会执行关闭握手（等待服务端 CLOSE 帧），
-            # 这本质上也是一次 recv()。若旧 task 仍在 async for 的 recv() 中，就会产生
+            # ── 步骤 1：先停旧 listener ────────────────────────────────────────────
+            # 必须在 old_main_session.close() 之前完成：ws.close() 内部执行关闭握手
+            # （等待服务端 CLOSE 帧），本质上是一次 recv()。若旧 task 仍在
+            # async for 的 recv() 中，就会产生
             # "cannot call recv while another coroutine is already running recv" 并发冲突。
             if old_main_message_handler_task and not old_main_message_handler_task.done():
                 old_main_message_handler_task.cancel()
@@ -2919,21 +2911,35 @@ class LLMSessionManager:
                 except Exception as e:
                     logger.warning(f"Final Swap Sequence: Old task exited with error: {e}")
 
-            # 旧 task 已停止，现在安全关闭旧 session（ws.close() 握手时无并发 recv() 竞争）
+            # ── 步骤 2：旧 task 已停，安全关闭旧 session ─────────────────────────
             if old_main_session:
                 try:
                     await old_main_session.close()
                 except Exception as e:
                     logger.error(f"💥 Final Swap Sequence: Error closing old session: {e}")
 
+            # ── 步骤 3：promote 新 session ────────────────────────────────────────
+            # 旧 listener 已停、旧 session 已关，现在切换 self.session；
+            # 此后旧 task 的任何回调若再执行也已看不到旧 ws。
+            self.session = new_session
+            self.current_speech_id = str(uuid4())
+            self._tts_done_queued_for_turn = False
+            self.session_start_time = datetime.now()
+            self._session_turn_count = 0
+
             # 验证新session的WebSocket是否仍然有效（可能在swap过程中被服务器断开）
             if isinstance(self.session, OmniRealtimeClient) and not self.session.ws:
-                # 旧session已关闭无法回滚，抛出异常让 except 块走 end_session 重建流程
+                # 旧session已关闭无法回滚，抛出异常让 except 块走重建流程
                 raise RuntimeError("新session的WebSocket在swap后已失效，热切换失败")
 
-            # 旧资源完全清理后，再启动新session的消息监听
+            # ── 步骤 4：启动新 listener ───────────────────────────────────────────
             if self.session and hasattr(self.session, 'handle_messages'):
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
+
+            # ── 步骤 5：flush 热切换音频缓存到新 session ─────────────────────────
+            # 必须在 promote 之后调用：_flush_hot_swap_audio_cache 使用 self.session
+            # 发送音频，此时 self.session 已是新 session，音频会正确发往新会话。
+            await self._flush_hot_swap_audio_cache()
 
         
             # Reset all preparation states and clear the *main* cache now that it's fully transferred
