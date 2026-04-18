@@ -40,6 +40,18 @@
 
     <!-- 左侧：卡片预览与编辑区域 -->
     <div id="card-edit-area">
+        <!-- 图层列表面板 -->
+        <div id="layer-panel">
+            <div id="layer-panel-header">
+                <span data-i18n="cardExport.layers">图层</span>
+            </div>
+            <div id="layer-list">
+                <!-- 图层项由 JS 动态生成 -->
+            </div>
+            <div id="layer-panel-footer">
+                <button id="clear-stickers-btn" class="layer-clear-btn" data-i18n="cardExport.clearStickers">清除全部</button>
+            </div>
+        </div>
         <div id="card-preview">
             <div id="card-header-area">
                 <span id="card-preview-name"></span>
@@ -48,6 +60,9 @@
                 <div id="sticker-overlay-below"></div>
                 <canvas id="card-portrait-canvas"></canvas>
                 <div id="sticker-overlay"></div>
+                <div class="sticker-rotate-handle" id="sticker-rotate-handle">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+                </div>
                 <div id="portrait-placeholder" data-i18n="cardExport.adjustHint">选择角色后可在此预览和调整构图</div>
             </div>
         </div>
@@ -106,18 +121,21 @@
             <div class="control-section" id="sticker-controls" style="display:none;">
                 <label data-i18n="cardExport.stickerAdjust">贴纸调整</label>
                 <div class="control-row">
+                    <span data-i18n="cardExport.stickerRotation">旋转</span>
+                    <input type="range" id="sticker-rotation" min="-180" max="180" value="0" step="1">
+                    <span id="sticker-rotation-val" class="range-val">0°</span>
+                </div>
+                <div class="control-row">
                     <span data-i18n="cardExport.stickerWidth">宽</span>
                     <input type="range" id="sticker-w" min="10" max="2000" value="60" step="1">
-                    <input type="number" id="sticker-w-num" min="1" max="9999" value="60" step="1" class="num-input">
-                    <span class="range-unit">px</span>
+                    <span id="sticker-w-val" class="range-val">60px</span>
                 </div>
                 <div class="control-row">
                     <span data-i18n="cardExport.stickerHeight">高</span>
                     <input type="range" id="sticker-h" min="10" max="2000" value="60" step="1">
-                    <input type="number" id="sticker-h-num" min="1" max="9999" value="60" step="1" class="num-input">
-                    <span class="range-unit">px</span>
+                    <span id="sticker-h-val" class="range-val">60px</span>
                 </div>
-                <div class="control-row" style="justify-content:flex-end;">
+                <div class="control-row">
                     <button type="button" id="sticker-lock-ratio" class="lock-ratio-btn active" title="锁定比例">
                         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <rect x="3" y="11" width="18" height="11" rx="2"/>
@@ -125,19 +143,6 @@
                         </svg>
                         <span data-i18n="cardExport.lockRatio">锁定比例</span>
                     </button>
-                </div>
-                <div class="control-row">
-                    <span data-i18n="cardExport.stickerRotation">旋转</span>
-                    <input type="range" id="sticker-rotation" min="-180" max="180" value="0" step="1">
-                    <span id="sticker-rotation-val" class="range-val">0°</span>
-                </div>
-                <div class="control-row">
-                    <span data-i18n="cardExport.stickerLayer">图层</span>
-                    <button id="sticker-layer-toggle" class="btn-secondary layer-toggle" data-i18n="cardExport.layerAbove">模型上方</button>
-                </div>
-                <div class="control-row">
-                    <button id="remove-sticker-btn" class="btn-secondary" data-i18n="cardExport.removeSticker">删除选中</button>
-                    <button id="clear-stickers-btn" class="btn-secondary" data-i18n="cardExport.clearStickers">清除全部</button>
                 </div>
             </div>
         </div>

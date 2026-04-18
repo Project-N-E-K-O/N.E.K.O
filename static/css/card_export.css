@@ -182,6 +182,160 @@ body {
     min-width: 0;
 }
 
+/* --- 图层列表面板 --- */
+#layer-panel {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    z-index: 50;
+    width: 160px;
+    max-height: 300px;
+    background: rgba(255, 255, 255, 0.92);
+    backdrop-filter: blur(8px);
+    border: 1.5px solid #b3e5fc;
+    border-radius: 10px;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+    display: none;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+#layer-panel.visible {
+    display: flex;
+}
+
+#layer-panel-header {
+    padding: 6px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #40C5F1;
+    border-bottom: 1px solid #e0f0fa;
+    user-select: none;
+}
+
+#layer-list {
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    padding: 4px 0;
+}
+
+.layer-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    font-size: 12px;
+    color: #555;
+    cursor: grab;
+    user-select: none;
+    transition: background 0.15s;
+    border-left: 3px solid transparent;
+}
+
+.layer-item:hover {
+    background: rgba(64, 197, 241, 0.08);
+}
+
+.layer-item.selected {
+    background: rgba(64, 197, 241, 0.15);
+    border-left-color: #40C5F1;
+    color: #333;
+}
+
+.layer-item.drag-over-top {
+    border-top: 2px solid #40C5F1;
+}
+
+.layer-item.drag-over-bottom {
+    border-bottom: 2px solid #40C5F1;
+}
+
+.layer-item.is-model {
+    font-weight: 600;
+    color: #40C5F1;
+    cursor: grab;
+}
+
+.layer-item-thumb {
+    width: 24px;
+    height: 24px;
+    object-fit: contain;
+    border-radius: 3px;
+    flex-shrink: 0;
+    background: rgba(179, 229, 252, 0.2);
+    pointer-events: none;
+}
+
+.layer-item-icon {
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.layer-item-name {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    pointer-events: none;
+}
+
+.layer-delete-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    color: #b0b0b0;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: color 0.15s, background 0.15s;
+    opacity: 0;
+}
+
+.layer-item:hover .layer-delete-btn {
+    opacity: 1;
+}
+
+.layer-delete-btn:hover {
+    color: #e53935;
+    background: rgba(229, 57, 53, 0.1);
+}
+
+.layer-drag-handle {
+    color: #b0b0b0;
+    font-size: 14px;
+    cursor: grab;
+    flex-shrink: 0;
+    pointer-events: none;
+}
+
+#layer-panel-footer {
+    padding: 4px 8px 6px;
+    border-top: 1px solid #e0f0fa;
+}
+
+.layer-clear-btn {
+    width: 100%;
+    padding: 4px 0;
+    font-size: 11px;
+    color: #e53935;
+    background: transparent;
+    border: 1px solid rgba(229, 57, 53, 0.25);
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.layer-clear-btn:hover {
+    background: rgba(229, 57, 53, 0.08);
+}
+
 #card-preview {
     height: min(88vh, 640px);
     aspect-ratio: 3 / 4;
@@ -343,9 +497,10 @@ body {
 .range-val {
     font-size: 12px;
     color: #888;
-    min-width: 40px;
-    text-align: right;
+    min-width: 32px;
+    text-align: left;
     font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
 }
 
 /* --- 按钮 --- */
@@ -438,6 +593,11 @@ body {
     border-radius: 10px;
     padding: 10px;
     background: rgba(179, 229, 252, 0.08);
+    max-height: 380px;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(64, 197, 241, 0.3) transparent;
 }
 
 .sticker-item {
@@ -562,22 +722,59 @@ body {
     outline-color: #40C5F1;
 }
 
+.model-focused .sticker-placed,
+.model-focused .sticker-placed:hover,
+.model-focused .sticker-placed.selected {
+    outline-color: transparent;
+    pointer-events: none;
+}
+
 .sticker-placed:active {
     cursor: grabbing;
 }
 
-/* --- 图层切换按钮 --- */
-.layer-toggle {
-    flex: 1;
-    font-size: 12px;
-    padding: 6px 10px;
+/* --- 贴纸旋转手柄 --- */
+.sticker-rotate-handle {
+    position: absolute;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: #40C5F1;
+    border: 2px solid #fff;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+    cursor: grab;
+    z-index: 100;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    pointer-events: auto;
+    touch-action: none;
+}
+
+.sticker-rotate-handle.visible {
+    display: flex;
+}
+
+.sticker-rotate-handle:hover {
+    background: #29b6f6;
+    transform: scale(1.15);
+}
+
+.sticker-rotate-handle:active {
+    cursor: grabbing;
+}
+
+.sticker-rotate-handle svg {
+    pointer-events: none;
 }
 
 /* --- 锁定比例按钮 --- */
 .lock-ratio-btn {
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: 4px;
+    width: 100%;
     font-size: 12px;
     padding: 4px 10px;
     border: 1.5px solid #ccc;
@@ -587,6 +784,7 @@ body {
     cursor: pointer;
     transition: all 0.2s;
     user-select: none;
+    box-sizing: border-box;
 }
 
 .lock-ratio-btn.active {
@@ -602,7 +800,7 @@ body {
 /* --- 滚动条 --- */
 #control-panel {
     scrollbar-width: thin;
-    scrollbar-color: rgba(0, 0, 0, 0.12) transparent;
+    scrollbar-color: rgba(64, 197, 241, 0.3) transparent;
 }
 
 #control-panel::-webkit-scrollbar {
@@ -614,12 +812,46 @@ body {
 }
 
 #control-panel::-webkit-scrollbar-thumb {
-    background: rgba(0, 0, 0, 0.12);
+    background: rgba(64, 197, 241, 0.3);
     border-radius: 3px;
 }
 
 #control-panel::-webkit-scrollbar-thumb:hover {
-    background: rgba(0, 0, 0, 0.2);
+    background: rgba(64, 197, 241, 0.5);
+}
+
+#sticker-grid::-webkit-scrollbar {
+    width: 4px;
+}
+
+#sticker-grid::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+#sticker-grid::-webkit-scrollbar-thumb {
+    background: rgba(64, 197, 241, 0.3);
+    border-radius: 3px;
+}
+
+#sticker-grid::-webkit-scrollbar-thumb:hover {
+    background: rgba(64, 197, 241, 0.5);
+}
+
+#layer-list::-webkit-scrollbar {
+    width: 3px;
+}
+
+#layer-list::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+#layer-list::-webkit-scrollbar-thumb {
+    background: rgba(64, 197, 241, 0.3);
+    border-radius: 3px;
+}
+
+#layer-list::-webkit-scrollbar-thumb:hover {
+    background: rgba(64, 197, 241, 0.5);
 }
 
 /* --- 数值输入框 --- */
@@ -680,6 +912,61 @@ body {
 
 [data-theme="dark"] #card-edit-area {
     background: #0f0f23;
+}
+
+[data-theme="dark"] #layer-panel {
+    background: rgba(22, 33, 62, 0.92);
+    border-color: #0f3460;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme="dark"] #layer-panel-header {
+    color: #4aa3df;
+    border-bottom-color: #0f3460;
+}
+
+[data-theme="dark"] .layer-item {
+    color: #b0b8c0;
+}
+
+[data-theme="dark"] .layer-item:hover {
+    background: rgba(74, 163, 223, 0.1);
+}
+
+[data-theme="dark"] .layer-item.selected {
+    background: rgba(74, 163, 223, 0.2);
+    border-left-color: #4aa3df;
+    color: #e0e0e0;
+}
+
+[data-theme="dark"] .layer-item.is-model {
+    color: #4aa3df;
+}
+
+[data-theme="dark"] .layer-item-thumb {
+    background: rgba(15, 52, 96, 0.3);
+}
+
+[data-theme="dark"] .layer-delete-btn {
+    color: #666;
+}
+
+[data-theme="dark"] .layer-delete-btn:hover {
+    color: #ef5350;
+    background: rgba(239, 83, 80, 0.15);
+}
+
+[data-theme="dark"] #layer-panel-footer {
+    border-top-color: #0f3460;
+}
+
+[data-theme="dark"] .layer-clear-btn {
+    color: #ef5350;
+    border-color: rgba(239, 83, 80, 0.3);
+}
+
+[data-theme="dark"] .layer-clear-btn:hover {
+    background: rgba(239, 83, 80, 0.1);
 }
 
 [data-theme="dark"] #card-preview {
@@ -790,11 +1077,27 @@ body {
 }
 
 [data-theme="dark"] #control-panel::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.15);
+    background: rgba(74, 163, 223, 0.25);
 }
 
 [data-theme="dark"] #control-panel::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.25);
+    background: rgba(74, 163, 223, 0.4);
+}
+
+[data-theme="dark"] #sticker-grid::-webkit-scrollbar-thumb {
+    background: rgba(74, 163, 223, 0.25);
+}
+
+[data-theme="dark"] #sticker-grid::-webkit-scrollbar-thumb:hover {
+    background: rgba(74, 163, 223, 0.4);
+}
+
+[data-theme="dark"] #layer-list::-webkit-scrollbar-thumb {
+    background: rgba(74, 163, 223, 0.25);
+}
+
+[data-theme="dark"] #layer-list::-webkit-scrollbar-thumb:hover {
+    background: rgba(74, 163, 223, 0.4);
 }
 
 @media (max-width: 768px) {

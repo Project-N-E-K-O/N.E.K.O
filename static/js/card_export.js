@@ -25,6 +25,7 @@
     const stickers = [];           // { id, src, x, y, w, h, rotation, layer, imgEl }
     let stickerIdCounter = 0;
     let selectedStickerId = null;
+    let modelLayerSelected = false;  // 图层面板中模型是否被选中
 
     // 当前激活的标签页: 'model-tab' | 'decor-tab'
     let activeTab = 'model-tab';
@@ -114,6 +115,7 @@
                 if (activeTab === 'model-tab') {
                     selectSticker(null);
                 }
+                refreshLayerPanel();
             });
         });
 
@@ -122,9 +124,9 @@
 
         // 贴纸控件
         const stickerWRange = $('#sticker-w');
-        const stickerWNum   = $('#sticker-w-num');
+        const stickerWVal   = $('#sticker-w-val');
         const stickerHRange = $('#sticker-h');
-        const stickerHNum   = $('#sticker-h-num');
+        const stickerHVal   = $('#sticker-h-val');
         const lockRatioBox  = $('#sticker-lock-ratio');
         const stickerRotInput = $('#sticker-rotation');
 
@@ -157,15 +159,13 @@
 
         function syncStickerSizeUI(s) {
             if (stickerWRange) stickerWRange.value = Math.min(s.w, 2000);
-            if (stickerWNum) stickerWNum.value = s.w;
+            if (stickerWVal) stickerWVal.textContent = s.w + 'px';
             if (stickerHRange) stickerHRange.value = Math.min(s.h, 2000);
-            if (stickerHNum) stickerHNum.value = s.h;
+            if (stickerHVal) stickerHVal.textContent = s.h + 'px';
         }
 
         if (stickerWRange) stickerWRange.addEventListener('input', () => applyStickerSize('w', Number(stickerWRange.value)));
-        if (stickerWNum) stickerWNum.addEventListener('input', () => { let v = Number(stickerWNum.value); if (!isNaN(v)) applyStickerSize('w', v); });
         if (stickerHRange) stickerHRange.addEventListener('input', () => applyStickerSize('h', Number(stickerHRange.value)));
-        if (stickerHNum) stickerHNum.addEventListener('input', () => { let v = Number(stickerHNum.value); if (!isNaN(v)) applyStickerSize('h', v); });
         if (stickerRotInput) {
             stickerRotInput.addEventListener('input', () => {
                 const s = getSelectedSticker();
@@ -175,23 +175,12 @@
                 updateStickerElement(s);
             });
         }
-        const layerToggle = $('#sticker-layer-toggle');
-        if (layerToggle) {
-            layerToggle.addEventListener('click', () => {
-                const s = getSelectedSticker();
-                if (!s) return;
-                s.layer = (s.layer === 'above') ? 'below' : 'above';
-                updateLayerToggleUI(s);
-                updateStickerOverlayOrder();
-            });
-        }
-        const removeBtn = $('#remove-sticker-btn');
         const clearBtn = $('#clear-stickers-btn');
-        if (removeBtn) removeBtn.addEventListener('click', removeSelectedSticker);
         if (clearBtn) clearBtn.addEventListener('click', clearAllStickers);
 
         // 支持在卡片预览区域拖拽偏移
         setupPreviewDrag();
+        setupRotateHandle();
     }
 
     // ====== 角色加载 ======
@@ -515,7 +504,7 @@
 
         previewEl.addEventListener('pointerdown', (e) => {
             if (!isModelLoaded) return;
-            if (activeTab !== 'model-tab') return;
+            if (activeTab !== 'model-tab' && !modelLayerSelected) return;
             dragging = true;
             startX = e.clientX;
             startY = e.clientY;
@@ -541,10 +530,10 @@
         previewEl.addEventListener('pointerup', stopDrag);
         previewEl.addEventListener('pointercancel', stopDrag);
 
-        // 滚轮：模型 tab 缩放模型，装饰 tab 缩放选中贴纸
+        // 滚轮：模型 tab 缩放模型，装饰 tab 缩放选中贴纸或模型
         previewEl.addEventListener('wheel', (e) => {
             e.preventDefault();
-            if (activeTab === 'model-tab') {
+            if (activeTab === 'model-tab' || modelLayerSelected) {
                 const delta = e.deltaY > 0 ? -5 : 5;
                 composition.scale = clamp(composition.scale + delta, 50, 300);
                 scaleInput.value = composition.scale;
@@ -872,6 +861,7 @@
         // 选中新贴纸
         selectSticker(id);
         updateStickerOverlayOrder();
+        refreshLayerPanel();
 
         // 贴纸拖拽
         setupStickerDrag(sticker, el);
@@ -885,16 +875,81 @@
         el.style.left = `calc(${s.x}% - ${s.w / 2}px)`;
         el.style.top = `calc(${s.y}% - ${s.h / 2}px)`;
         el.style.transform = `rotate(${s.rotation}deg)`;
+        if (s.id === selectedStickerId) updateRotateHandle(s);
+    }
+
+    /** 更新旋转手柄位置 */
+    function updateRotateHandle(s) {
+        const handle = $('#sticker-rotate-handle');
+        if (!handle) return;
+        if (!s) {
+            handle.classList.remove('visible');
+            return;
+        }
+        handle.classList.add('visible');
+        // 手柄定位到贴纸左上角 (考虑旋转)
+        const rad = s.rotation * Math.PI / 180;
+        const halfW = s.w / 2, halfH = s.h / 2;
+        // 左上角相对贴纸中心偏移 (-halfW, -halfH)，旋转后
+        const rx = -halfW * Math.cos(rad) - (-halfH) * Math.sin(rad);
+        const ry = -halfW * Math.sin(rad) + (-halfH) * Math.cos(rad);
+        handle.style.left = `calc(${s.x}% + ${rx - 10}px)`;
+        handle.style.top = `calc(${s.y}% + ${ry - 10}px)`;
+    }
+
+    /** 设置旋转手柄拖拽 */
+    function setupRotateHandle() {
+        const handle = $('#sticker-rotate-handle');
+        if (!handle) return;
+
+        let rotating = false;
+
+        handle.addEventListener('pointerdown', (e) => {
+            const s = getSelectedSticker();
+            if (!s) return;
+            e.preventDefault();
+            e.stopPropagation();
+            rotating = true;
+            handle.setPointerCapture(e.pointerId);
+        });
+
+        handle.addEventListener('pointermove', (e) => {
+            if (!rotating) return;
+            e.stopPropagation();
+            const s = getSelectedSticker();
+            if (!s) return;
+            const area = $('#card-portrait-area');
+            const rect = area.getBoundingClientRect();
+            // 贴纸中心在视口中的位置
+            const cx = rect.left + (s.x / 100) * rect.width;
+            const cy = rect.top + (s.y / 100) * rect.height;
+            const angle = Math.atan2(e.clientY - cy, e.clientX - cx) * 180 / Math.PI;
+            // 左上角自然角度是 -135°，偏移使手柄角度对应旋转 0°
+            s.rotation = Math.round(angle + 135);
+            // 归一化到 -180 ~ 180
+            while (s.rotation > 180) s.rotation -= 360;
+            while (s.rotation < -180) s.rotation += 360;
+            updateStickerElement(s);
+            // 同步滑块
+            const rotInput = $('#sticker-rotation');
+            const rotVal = $('#sticker-rotation-val');
+            if (rotInput) rotInput.value = s.rotation;
+            if (rotVal) rotVal.textContent = s.rotation + '°';
+        });
+
+        const stop = () => { rotating = false; };
+        handle.addEventListener('pointerup', stop);
+        handle.addEventListener('pointercancel', stop);
     }
 
     /** 同步贴纸尺寸到右侧滑块/数值框（模块级） */
     function _syncStickerSizeUI(s) {
-        const wr = $('#sticker-w'), wn = $('#sticker-w-num');
-        const hr = $('#sticker-h'), hn = $('#sticker-h-num');
-        if (wr) wr.value = Math.min(s.w, 500);
-        if (wn) wn.value = s.w;
-        if (hr) hr.value = Math.min(s.h, 500);
-        if (hn) hn.value = s.h;
+        const wr = $('#sticker-w'), wv = $('#sticker-w-val');
+        const hr = $('#sticker-h'), hv = $('#sticker-h-val');
+        if (wr) wr.value = Math.min(s.w, 2000);
+        if (wv) wv.textContent = s.w + 'px';
+        if (hr) hr.value = Math.min(s.h, 2000);
+        if (hv) hv.textContent = s.h + 'px';
     }
 
     /** 根据当前活动标签页切换贴纸的可交互性 */
@@ -908,6 +963,13 @@
         if (preview) {
             preview.style.cursor = (activeTab === 'model-tab') ? 'grab' : 'default';
         }
+        // 非装饰模式隐藏旋转手柄
+        if (!enabled) {
+            updateRotateHandle(null);
+            modelLayerSelected = false;
+            const area = $('#card-portrait-area');
+            if (area) area.classList.remove('model-focused');
+        }
     }
 
     function setupStickerDrag(sticker, el) {
@@ -916,6 +978,7 @@
 
         el.addEventListener('pointerdown', (e) => {
             if (activeTab !== 'decor-tab') return;
+            if (modelLayerSelected) return;
             e.stopPropagation();
             dragging = true;
             startX = e.clientX;
@@ -945,6 +1008,11 @@
 
     function selectSticker(id) {
         selectedStickerId = id;
+        if (id != null) {
+            modelLayerSelected = false;
+            const area = $('#card-portrait-area');
+            if (area) area.classList.remove('model-focused');
+        }
         // 更新视觉选中状态
         document.querySelectorAll('.sticker-placed').forEach(el => {
             el.classList.toggle('selected', Number(el.dataset.stickerId) === id);
@@ -955,29 +1023,18 @@
         if (s && controls) {
             controls.style.display = '';
             // 同步宽高 UI
-            const wr = $('#sticker-w'), wn = $('#sticker-w-num');
-            const hr = $('#sticker-h'), hn = $('#sticker-h-num');
-            if (wr) wr.value = Math.min(s.w, 500);
-            if (wn) wn.value = s.w;
-            if (hr) hr.value = Math.min(s.h, 500);
-            if (hn) hn.value = s.h;
+            const wr = $('#sticker-w'), wv = $('#sticker-w-val');
+            const hr = $('#sticker-h'), hv = $('#sticker-h-val');
+            if (wr) wr.value = Math.min(s.w, 2000);
+            if (wv) wv.textContent = s.w + 'px';
+            if (hr) hr.value = Math.min(s.h, 2000);
+            if (hv) hv.textContent = s.h + 'px';
             $('#sticker-rotation').value = s.rotation;
             $('#sticker-rotation-val').textContent = s.rotation + '°';
-            updateLayerToggleUI(s);
+            updateRotateHandle(s);
         } else if (controls) {
             controls.style.display = 'none';
-        }
-    }
-
-    function updateLayerToggleUI(s) {
-        const btn = $('#sticker-layer-toggle');
-        if (!btn) return;
-        if (s.layer === 'above') {
-            btn.textContent = t('cardExport.layerAbove', '模型上方');
-            btn.title = t('cardExport.layerToggleHint', '点击切换到模型下方');
-        } else {
-            btn.textContent = t('cardExport.layerBelow', '模型下方');
-            btn.title = t('cardExport.layerToggleHint', '点击切换到模型上方');
+            updateRotateHandle(null);
         }
     }
 
@@ -1002,14 +1059,22 @@
         return stickers.find(s => s.id === selectedStickerId) || null;
     }
 
-    function removeSelectedSticker() {
-        const idx = stickers.findIndex(s => s.id === selectedStickerId);
+    function removeStickerById(id) {
+        const idx = stickers.findIndex(s => s.id === id);
         if (idx === -1) return;
         stickers[idx].imgEl.remove();
         stickers.splice(idx, 1);
-        selectedStickerId = null;
-        selectSticker(null);
+        if (selectedStickerId === id) {
+            selectedStickerId = null;
+            selectSticker(null);
+        }
         updateStickerOverlayOrder();
+        refreshLayerPanel();
+    }
+
+    function removeSelectedSticker() {
+        if (selectedStickerId == null) return;
+        removeStickerById(selectedStickerId);
     }
 
     function clearAllStickers() {
@@ -1017,6 +1082,7 @@
         stickers.length = 0;
         selectedStickerId = null;
         selectSticker(null);
+        refreshLayerPanel();
     }
 
     /**
@@ -1146,5 +1212,206 @@
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
+    }
+    // ====== 图层列表面板 ======
+
+    // 内部有序列表：从上到下排列的项目（贴纸或 'model' 哨兵）
+    // 初始只有 model，贴纸添加时插入到 model 前面（above）
+    const layerOrder = [{ type: 'model' }];
+
+    /**
+     * 刷新图层面板 UI
+     */
+    function refreshLayerPanel() {
+        const panel = $('#layer-panel');
+        const list = $('#layer-list');
+        if (!panel || !list) return;
+
+        if (activeTab !== 'decor-tab' || stickers.length === 0) {
+            panel.classList.remove('visible');
+            return;
+        }
+        panel.classList.add('visible');
+        list.innerHTML = '';
+
+        // 同步 layerOrder：移除已删除的贴纸，添加新贴纸
+        syncLayerOrder();
+
+        layerOrder.forEach((entry, idx) => {
+            if (entry.type === 'model') {
+                list.appendChild(createModelLayerItem(idx));
+            } else {
+                const s = stickers.find(st => st.id === entry.id);
+                if (s) list.appendChild(createStickerLayerItem(s, idx));
+            }
+        });
+
+        setupLayerDrag();
+    }
+
+    /** 保持 layerOrder 与 stickers 数组同步 */
+    function syncLayerOrder() {
+        // 移除已不存在的贴纸
+        for (let i = layerOrder.length - 1; i >= 0; i--) {
+            if (layerOrder[i].type === 'sticker') {
+                if (!stickers.find(s => s.id === layerOrder[i].id)) {
+                    layerOrder.splice(i, 1);
+                }
+            }
+        }
+        // 添加不在 layerOrder 中的新贴纸（默认插到模型上方）
+        const modelIdx = layerOrder.findIndex(e => e.type === 'model');
+        stickers.forEach(s => {
+            if (!layerOrder.find(e => e.type === 'sticker' && e.id === s.id)) {
+                layerOrder.splice(modelIdx, 0, { type: 'sticker', id: s.id });
+            }
+        });
+    }
+
+    /** 根据 layerOrder 更新所有贴纸的 layer 属性和 DOM */
+    function applyLayerOrderToStickers() {
+        const modelIdx = layerOrder.findIndex(e => e.type === 'model');
+        layerOrder.forEach((entry, idx) => {
+            if (entry.type !== 'sticker') return;
+            const s = stickers.find(st => st.id === entry.id);
+            if (!s) return;
+            s.layer = (idx < modelIdx) ? 'above' : 'below';
+        });
+        updateStickerOverlayOrder();
+    }
+
+    function createModelLayerItem(orderIdx) {
+        const item = document.createElement('div');
+        item.className = 'layer-item is-model' + (modelLayerSelected ? ' selected' : '');
+        item.dataset.layerIdx = orderIdx;
+        item.draggable = true;
+        item.innerHTML = `<span class="layer-item-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="12" cy="10" r="3"/><path d="M6 21v-1a6 6 0 0112 0v1"/></svg></span><span class="layer-item-name">${t('cardExport.modelLayer', '模型')}</span><span class="layer-drag-handle">⠿</span>`;
+
+        item.addEventListener('click', () => {
+            modelLayerSelected = true;
+            selectedStickerId = null;
+            // 取消贴纸选中状态
+            document.querySelectorAll('.sticker-placed').forEach(el => el.classList.remove('selected'));
+            updateRotateHandle(null);
+            const controls = $('#sticker-controls');
+            if (controls) controls.style.display = 'none';
+            // 标记模型聚焦，禁用贴纸交互
+            const area = $('#card-portrait-area');
+            if (area) area.classList.add('model-focused');
+            refreshLayerPanel();
+        });
+
+        return item;
+    }
+
+    function createStickerLayerItem(s, orderIdx) {
+        const item = document.createElement('div');
+        item.className = 'layer-item' + (s.id === selectedStickerId ? ' selected' : '');
+        item.dataset.stickerId = s.id;
+        item.dataset.layerIdx = orderIdx;
+        item.draggable = true;
+
+        const thumb = document.createElement('img');
+        thumb.className = 'layer-item-thumb';
+        thumb.src = s.src;
+        thumb.draggable = false;
+
+        const name = document.createElement('span');
+        name.className = 'layer-item-name';
+        name.textContent = t('cardExport.sticker', '贴纸') + ' #' + s.id;
+
+        const delBtn = document.createElement('span');
+        delBtn.className = 'layer-delete-btn';
+        delBtn.title = t('cardExport.removeSticker', '删除选中');
+        delBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+        delBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            removeStickerById(s.id);
+        });
+
+        const handle = document.createElement('span');
+        handle.className = 'layer-drag-handle';
+        handle.textContent = '⠿';
+
+        item.appendChild(thumb);
+        item.appendChild(name);
+        item.appendChild(delBtn);
+        item.appendChild(handle);
+
+        item.addEventListener('click', () => {
+            selectSticker(s.id);
+            refreshLayerPanel();
+        });
+
+        return item;
+    }
+
+    function setupLayerDrag() {
+        const list = $('#layer-list');
+        if (!list) return;
+
+        let dragItem = null;
+        let dropPosition = 'before'; // 'before' or 'after'
+
+        function clearIndicators() {
+            list.querySelectorAll('.layer-item').forEach(el => {
+                el.classList.remove('drag-over-top', 'drag-over-bottom');
+            });
+        }
+
+        list.querySelectorAll('.layer-item').forEach(item => {
+            item.addEventListener('dragstart', (e) => {
+                dragItem = item;
+                item.style.opacity = '0.4';
+                e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/plain', item.dataset.layerIdx);
+            });
+
+            item.addEventListener('dragend', () => {
+                item.style.opacity = '';
+                dragItem = null;
+                clearIndicators();
+            });
+
+            item.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                if (item === dragItem) return;
+
+                clearIndicators();
+                const rect = item.getBoundingClientRect();
+                const midY = rect.top + rect.height / 2;
+                if (e.clientY < midY) {
+                    item.classList.add('drag-over-top');
+                    dropPosition = 'before';
+                } else {
+                    item.classList.add('drag-over-bottom');
+                    dropPosition = 'after';
+                }
+            });
+
+            item.addEventListener('dragleave', () => {
+                item.classList.remove('drag-over-top', 'drag-over-bottom');
+            });
+
+            item.addEventListener('drop', (e) => {
+                e.preventDefault();
+                clearIndicators();
+                if (!dragItem || dragItem === item) return;
+
+                const fromIdx = Number(dragItem.dataset.layerIdx);
+                let toIdx = Number(item.dataset.layerIdx);
+                if (isNaN(fromIdx) || isNaN(toIdx)) return;
+
+                const [moved] = layerOrder.splice(fromIdx, 1);
+                // 移除后索引可能偏移，重新计算目标位置
+                if (fromIdx < toIdx) toIdx--;
+                const insertIdx = dropPosition === 'after' ? toIdx + 1 : toIdx;
+                layerOrder.splice(insertIdx, 0, moved);
+
+                applyLayerOrderToStickers();
+                refreshLayerPanel();
+            });
+        });
     }
 })();
