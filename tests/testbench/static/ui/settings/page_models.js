@@ -83,13 +83,16 @@ function renderGroupCard(groupKey, current, providers, keysStatus) {
 
   // 本地 draft — 初始化为 current 的浅拷贝.
   // 注意: current 里的 api_key 是 masked (只告诉我们"有没有"); 编辑时需要用户重新输入或维持空字符串.
+  // temperature/max_tokens: null = "不发送此字段给模型端, 由模型自决"; 对
+  // o1/o3/gpt-5-thinking/Claude extended-thinking 这种拒绝 temperature 的
+  // 端点是**必须**的. 后端 `_params` 只在非 None 时才把它写进请求体.
   const draft = {
     provider: current.provider ?? null,
     base_url: current.base_url ?? '',
     api_key: '',                          // 永远从空白开始, 避免把 masked 值当明文回写
     api_key_was_configured: !!current.api_key_configured,
     model: current.model ?? '',
-    temperature: current.temperature ?? 1.0,
+    temperature: current.temperature ?? null,
     max_tokens: current.max_tokens ?? null,
     timeout: current.timeout ?? 60,
   };
@@ -114,6 +117,10 @@ function renderGroupCard(groupKey, current, providers, keysStatus) {
   const presetRow = el('div', { className: 'row' }, providerSel, applyBtn);
 
   // 各字段 input.
+  // temperature / max_tokens / timeout 三者都接受"空字符串 = null = 不发送",
+  // 这样用户可以显式关掉 temperature (o1/gpt-5-thinking 必需) 或让模型自定
+  // max_tokens. 空值必须存成 `null`, **不是** 0 / 1.0 回填默认 — 否则又变成
+  // "强制发送" 的旧行为.
   const inputs = {
     base_url:    el('input', { type: 'text', value: draft.base_url,
                                placeholder: i18n('settings.models.placeholder.base_url'),
@@ -125,21 +132,30 @@ function renderGroupCard(groupKey, current, providers, keysStatus) {
                                placeholder: i18n('settings.models.placeholder.model'),
                                onInput: (ev) => { draft.model = ev.target.value; } }),
     temperature: el('input', { type: 'number', step: '0.1', min: '0', max: '2',
-                               value: draft.temperature,
+                               value: draft.temperature ?? '',
+                               placeholder: i18n('settings.models.placeholder.temperature'),
                                onInput: (ev) => {
-                                 const v = parseFloat(ev.target.value);
-                                 draft.temperature = Number.isFinite(v) ? v : 1.0;
+                                 const raw = ev.target.value.trim();
+                                 if (!raw) { draft.temperature = null; return; }
+                                 const v = parseFloat(raw);
+                                 draft.temperature = Number.isFinite(v) ? v : null;
                                } }),
     max_tokens:  el('input', { type: 'number', step: '1', min: '1',
                                value: draft.max_tokens ?? '',
+                               placeholder: i18n('settings.models.placeholder.max_tokens'),
                                onInput: (ev) => {
-                                 const v = ev.target.value ? parseInt(ev.target.value, 10) : null;
+                                 const raw = ev.target.value.trim();
+                                 if (!raw) { draft.max_tokens = null; return; }
+                                 const v = parseInt(raw, 10);
                                  draft.max_tokens = Number.isFinite(v) ? v : null;
                                } }),
     timeout:     el('input', { type: 'number', step: '1', min: '1',
                                value: draft.timeout ?? '',
+                               placeholder: i18n('settings.models.placeholder.timeout'),
                                onInput: (ev) => {
-                                 const v = ev.target.value ? parseFloat(ev.target.value) : null;
+                                 const raw = ev.target.value.trim();
+                                 if (!raw) { draft.timeout = null; return; }
+                                 const v = parseFloat(raw);
                                  draft.timeout = Number.isFinite(v) ? v : null;
                                } }),
   };
@@ -150,9 +166,12 @@ function renderGroupCard(groupKey, current, providers, keysStatus) {
     field(i18n('settings.models.fields.model'),    inputs.model,     { wide: true }),
     field(i18n('settings.models.fields.api_key'),  inputs.api_key,
           { wide: true, hint: describeApiKeyState(draft, providers, keysStatus) }),
-    field(i18n('settings.models.fields.temperature'), inputs.temperature),
-    field(i18n('settings.models.fields.max_tokens'),  inputs.max_tokens),
-    field(i18n('settings.models.fields.timeout'),     inputs.timeout),
+    field(i18n('settings.models.fields.temperature'), inputs.temperature,
+          { hint: i18n('settings.models.hint.temperature') }),
+    field(i18n('settings.models.fields.max_tokens'),  inputs.max_tokens,
+          { hint: i18n('settings.models.hint.max_tokens') }),
+    field(i18n('settings.models.fields.timeout'),     inputs.timeout,
+          { hint: i18n('settings.models.hint.timeout') }),
   );
   card.append(grid);
 
@@ -176,7 +195,7 @@ function renderGroupCard(groupKey, current, providers, keysStatus) {
 function applyPreset(groupKey, draft, providerKey, providers, inputs) {
   if (!providerKey) {
     draft.provider = null;
-    toast.info('已切换到自定义模式');
+    toast.info(i18n('settings.models.toast.switched_manual'));
     return;
   }
   const p = providers.find((x) => x.key === providerKey);
@@ -192,11 +211,36 @@ function applyPreset(groupKey, draft, providerKey, providers, inputs) {
     draft.model = recommend;
     inputs.model.value = recommend;
   }
-  toast.ok(`已应用预设: ${p.name}`);
+  // 免费预设自带 api_key → 提示用户不用再填.
+  // 这里不把明文塞进前端 input (后端 resolve 会自己兜底, 保持明文"只在服务端"
+  // 的安全约定). applyPreset 只是告诉用户这一步已经搞定了.
+  if (p.is_free_version || p.preset_api_key_bundled) {
+    toast.ok(i18n('settings.models.toast.applied_free', p.name));
+  } else {
+    toast.ok(i18n('settings.models.toast.applied', p.name));
+  }
 }
 
+/** 根据 draft 当前状态决定 api_key 行的 hint 文案.
+ *
+ * 优先级 (高→低):
+ *   1. 用户已手动填了 api_key (draft.api_key 非空) → "已填写"
+ *   2. 当前 provider 是免费预设 / 自带 api_key → "此预设内置 API Key"
+ *   3. 当前 provider 对应的 tests/api_keys.json 里已配置 → "将使用 <field>"
+ *   4. 后端记录里之前有过 api_key → "已配置"
+ *   5. 否则 → "缺失"
+ *
+ * 这是纯展示逻辑; 真正的兜底链在后端 `resolve_group_config` 里, 前端不需要
+ * (也不该) 复制那套判断. 这里只是让用户知道: "这个预设即使不填也能工作".
+ */
 function describeApiKeyState(draft, providers, keysStatus) {
   if (draft.api_key) return i18n('settings.models.api_key_status.configured');
+  const preset = draft.provider
+    ? providers.find((p) => p.key === draft.provider)
+    : null;
+  if (preset?.is_free_version || preset?.preset_api_key_bundled) {
+    return i18n('settings.models.api_key_status.bundled_by_preset');
+  }
   if (draft.provider && keysStatus) {
     const field = keysStatus.provider_map?.[draft.provider];
     const present = field && keysStatus.known?.[field];
@@ -207,7 +251,11 @@ function describeApiKeyState(draft, providers, keysStatus) {
 }
 
 async function onSave(groupKey, draft, statusLine) {
-  // 若用户没填 api_key 但之前后端已记录, 保留; 否则发送空字符串.
+  // 若用户没填 api_key 但之前后端已记录, 保留 (不发送 api_key 字段, 后端按
+  // exclude_unset 合并); 否则发送空字符串.
+  // temperature / max_tokens / timeout 三者 **显式发送 null**: 代表"用户明确
+  // 选择不设此参数". exclude_unset 在 PUT 上保留旧值的语义只适用于"完全不
+  // 发送"的字段 — 要把 1.0 改回 null 必须显式发 null.
   const body = {
     provider: draft.provider,
     base_url: draft.base_url,

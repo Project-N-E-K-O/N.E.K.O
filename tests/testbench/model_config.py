@@ -42,19 +42,41 @@ class ModelGroupConfig(BaseModel):
     base_url: str = Field(default="", description="OpenAI-compatible base URL.")
     api_key: str = Field(
         default="",
-        description="Plaintext API key. Persistence layer redacts on save.",
+        description=(
+            "Plaintext API key. Empty is OK when the picked ``provider`` is a"
+            " free-tier preset (``config/api_providers.json`` ships its own"
+            " key) or when ``tests/api_keys.json`` already holds one for"
+            " this provider. Persistence layer redacts on save."
+        ),
     )
     model: str = Field(default="", description="Model name to send in request body.")
-    temperature: float = Field(default=1.0, ge=0.0, le=2.0)
+    temperature: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=2.0,
+        description=(
+            "Optional sampling temperature. ``None`` means \"do not send a"
+            " temperature field in the request body\" — required for models"
+            " that reject the parameter entirely (o1 / o3 / gpt-5-thinking /"
+            " Claude extended-thinking). UI exposes an empty input = None."
+        ),
+    )
     max_tokens: int | None = Field(
         default=None,
         ge=1,
-        description="Optional hard cap on response tokens.",
+        description=(
+            "Optional hard cap on response tokens. ``None`` = no cap sent,"
+            " model decides its own default."
+        ),
     )
     timeout: float | None = Field(
         default=60.0,
         ge=1.0,
-        description="Seconds before a single request gives up.",
+        description=(
+            "Client-side request timeout in seconds. Not a wire parameter;"
+            " only affects the httpx client. ``None`` delegates to the SDK"
+            " default."
+        ),
     )
 
     @field_validator("base_url")

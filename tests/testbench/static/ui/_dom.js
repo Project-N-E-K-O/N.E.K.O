@@ -32,7 +32,14 @@ export function el(tag, attrs = {}, ...children) {
     else if (k.startsWith('data-') || k.startsWith('aria-')) node.setAttribute(k, v);
     else if (k === 'title')         node.title = v;
     else if (k === 'html')          node.innerHTML = v;
-    else node[k] = v;
+    else {
+      // 绝大多数情况属性赋值 (node.value / node.disabled / ...) 最自然. 但 DOM 上一
+      // 些名字和 HTML 属性同名却是只读 getter (input.list 返回关联 datalist;
+      // input.labels / form / validity 同理). 尝试赋值 → 抛 TypeError 就退回
+      // setAttribute, 避免整个渲染链崩溃.
+      try { node[k] = v; }
+      catch { node.setAttribute(k, v); }
+    }
   }
   for (const c of children.flat()) {
     if (c == null || c === false) continue;

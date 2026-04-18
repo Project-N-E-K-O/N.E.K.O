@@ -593,6 +593,293 @@ code, .mono {
 /* 可选 secondary badge (meta "共 N 条" 用). */
 .badge.secondary { color: var(--text-secondary); border-color: var(--border); }
 
+/* ============================================================
+ * Memory 编辑器 · 双视图 (P07 补丁: 结构化 + Raw)
+ * ============================================================ */
+
+/* 顶部 Structured / Raw tab — 复用 tabbar 视觉但局部化, 避免和全局 #tabbar
+   冲突. segmented-ish 风格, 贴在 textarea / struct-root 上方. */
+.memory-editor-tabs {
+  display: flex;
+  gap: 2px;
+  margin-top: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.memory-editor-tabs button.tab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 6px 14px;
+  font-size: 13px;
+}
+.memory-editor-tabs button.tab:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+.memory-editor-tabs button.tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  background: transparent;
+}
+.memory-editor-view { margin-top: 10px; }
+
+/* 结构化视图的 "根容器" — 条目卡片的垂直列表.
+   max-width 720px 是编辑文本内容的合理最大阅读宽度; 大屏上不让卡片摊到 1200px+,
+   避免里面三个短 input ("master" / "5" / "标签1") 被各自撑成 300px 空洞. */
+.memory-struct-root {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* persona 下一个 entity 的块 (master/neko/自定义). */
+.memory-entity-group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.memory-entity-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px dashed var(--border);
+  padding-bottom: 6px;
+}
+.memory-entity-header > .spacer { flex: 1 1 auto; }
+.memory-entity-name {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 13px;
+  color: var(--text-primary);
+  padding: 1px 6px;
+  background: var(--bg-raised);
+  border-radius: var(--radius-sm);
+}
+
+/* 单个条目卡片 — 文本 + 一行次要字段 + 高级折叠.
+   position: relative 给右上角的删除按钮 (.memory-item-delete-corner) 当锚点.
+   padding-right 额外 60px 留出 "删除" 文字按钮的位置, 避免覆盖内容. */
+.memory-item-card {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input, var(--bg-panel));
+  padding: 6px 60px 6px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* 嵌在 entity-group 里的卡片用稍浅底色, 层次不过深. */
+.memory-entity-group .memory-item-card {
+  background: var(--bg-raised, var(--bg-panel));
+}
+
+.memory-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 120px;
+  flex: 1 1 160px;
+}
+/* Narrow 变体: 给 importance / status / type 这种只存 1-2 个字符的短字段用,
+   不让它们和 tags / entity 平分行宽被撑成 300px 空壳. */
+.memory-field.narrow {
+  flex: 0 1 110px;
+  min-width: 90px;
+  max-width: 140px;
+}
+.memory-field > label {
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* Inline field: checkbox/radio 紧贴 label, 不撑宽. */
+.memory-field-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+  user-select: none;
+}
+.memory-field-inline:hover { background: var(--bg-raised); }
+.memory-field-inline > input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
+}
+.memory-field-inline > span {
+  font-size: 12.5px;
+  color: var(--text-primary);
+}
+
+/* Checkbox 行 — 多个 inlineField 排列, 左靠齐. */
+.memory-checkbox-row {
+  gap: 12px;
+  padding: 2px 0;
+}
+.memory-field input[type="text"],
+.memory-field input[type="number"],
+.memory-field select,
+.memory-field textarea {
+  width: 100%;
+  box-sizing: border-box;
+  /* 卡片底色是 --bg-input / --bg-raised, 输入控件再用 --bg-input 就糊成一片,
+     强制用最暗的 --bg-panel 拉出"凹陷感". */
+  background: var(--bg-panel);
+}
+.memory-field textarea {
+  font-family: inherit;
+  font-size: 13px;
+  /* 空态 / 短文本时这个 padding + line-height 让 textarea 差不多和普通 input 一样
+     高 (~24px), 不再浮现一片灰色空地; 内容长了 autosize 会自然撑开. */
+  padding: 3px 8px;
+  line-height: 1.4;
+  /* autosize 由 JS 控 height / overflow-y, 禁手动 resize 和默认内部滚动. */
+  resize: none;
+  overflow-y: hidden;
+}
+
+.memory-field-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.memory-field-hint {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 2px 2px 0;
+}
+
+/* autosize textarea: 包一层 flex column, 下方挂"展开/折叠"按钮 (仅超长才可见). */
+.memory-textarea-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+}
+.memory-textarea-auto {
+  /* 给 JS 的 resize() 做标记, 样式细节已在 .memory-field textarea 里. */
+  transition: height 120ms ease;
+}
+.memory-textarea-toggle {
+  align-self: flex-start;
+  font-size: 11px;
+  padding: 1px 8px;
+  color: var(--text-tertiary);
+  background: transparent;
+  border: 1px dashed var(--border);
+}
+.memory-textarea-toggle:hover {
+  color: var(--text-primary);
+  border-style: solid;
+}
+
+.memory-advanced {
+  border-top: 1px dashed var(--border);
+  padding-top: 6px;
+}
+.memory-advanced > summary {
+  cursor: pointer;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  list-style: none;
+  padding: 2px 0;
+}
+.memory-advanced > summary::-webkit-details-marker { display: none; }
+.memory-advanced > summary::before {
+  content: '▸ ';
+  color: var(--text-tertiary);
+}
+.memory-advanced[open] > summary::before { content: '▾ '; }
+.memory-advanced > .memory-field,
+.memory-advanced > .memory-field-row {
+  margin-top: 6px;
+}
+
+/* Ghost (幽灵) 按钮 — 用于删除等低频/危险动作, 平时不抢眼, 悬浮变显眼. */
+button.ghost {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-tertiary);
+}
+button.ghost:hover {
+  color: var(--text-primary);
+  background: var(--bg-raised);
+  border-color: var(--border);
+}
+
+/* 右上角的"删除"文字按钮. 绝对定位, 不占卡片正常流, 省下卡片底部一整行 ~40px.
+   用明文 (用户反馈"✕"字符不够直观, 需要保留明文标识). ghost 风格平时不抢眼. */
+.memory-item-delete-corner {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+.memory-item-delete-corner:hover {
+  color: var(--err);
+  border-color: var(--err);
+  background: var(--bg-raised);
+}
+
+/* 同名的实体标题里的删除按钮 (persona entity 级别) 仍是行内小文本按钮. */
+button.memory-item-delete:hover {
+  color: var(--err);
+  border-color: var(--err);
+}
+
+/* "+ 添加 ..." 虚线幽灵按钮. 全宽, 视觉上与实际操作按钮完全区分. */
+.memory-add-button {
+  width: 100%;
+  padding: 6px 10px;
+  background: transparent;
+  border: 1px dashed var(--border);
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background 120ms, color 120ms, border-color 120ms;
+  border-radius: var(--radius-sm);
+  margin-top: 4px;
+}
+.memory-add-button:hover {
+  background: var(--bg-raised);
+  color: var(--accent, var(--text-primary));
+  border-style: solid;
+}
+
+/* Inline warning banner (recent 子页顶部提示). */
+.memory-inline-warn {
+  color: var(--text-secondary);
+  background: rgba(255, 180, 90, 0.08);
+  border-left: 3px solid var(--warn, #dda86a);
+  border-radius: 2px;
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  margin-bottom: 10px;
+}
+
+button.tiny.danger { color: var(--err); }
+.empty-state.tiny { padding: var(--density-sm); font-size: 12px; }
+
 /* Persona 预览折叠块 (P05 补强). */
 .preview-summary {
   cursor: pointer;
@@ -826,6 +1113,489 @@ table.tbl .tbl-key-field {
 
 /* Smaller hint text under a form row; gray + 11.5px */
 .tiny { font-size: 11.5px; }
+
+/* =====================================================================
+ * Chat workspace (P08 + P09) — 两栏: 消息流 + Composer | Prompt Preview
+ * ===================================================================== */
+
+.workspace.chat-layout.active {
+  display: grid;
+  grid-template-columns: minmax(360px, 1fr) minmax(380px, 42%);
+  gap: var(--density-md);
+  align-items: start;
+  padding: var(--density-md);
+  /* 预览面板常常很长, 给一个稳定的可滚动高度 */
+  max-height: calc(100vh - 140px);
+}
+.chat-main {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  min-height: 320px;
+  height: 100%;
+  display: grid;
+  grid-template-rows: 1fr auto;
+  overflow: hidden;  /* 内部 stream-list 自己滚 */
+}
+.chat-stream-host {
+  min-height: 0;  /* 让 flex 子元素能 overflow-y:auto */
+  display: flex;
+}
+.chat-composer-host {
+  border-top: 1px solid var(--border);
+  background: var(--bg-input, var(--bg-panel));
+}
+.chat-sidebar {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--density-md);
+  overflow-y: auto;
+  height: 100%;
+}
+
+/* Prompt Preview 面板 ---------------------------------------------- */
+.preview-panel-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--density-sm);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: var(--density-sm);
+  margin-bottom: var(--density-sm);
+}
+.preview-panel-header h3 {
+  margin: 0;
+  margin-right: auto;
+  font-size: 14px;
+}
+.preview-panel .view-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.preview-panel .view-toggle .view-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  border-right: 1px solid var(--border);
+}
+.preview-panel .view-toggle .view-btn:last-child { border-right: none; }
+.preview-panel .view-toggle .view-btn:hover { background: var(--bg-hover); }
+.preview-panel .view-toggle .view-btn.active {
+  background: var(--bg-active);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.preview-status {
+  font-size: 12px;
+  margin-bottom: var(--density-sm);
+}
+
+.preview-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin-bottom: var(--density-sm);
+}
+.meta-badge {
+  font-size: 11.5px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-input, var(--bg-panel));
+  color: var(--text-secondary);
+}
+.meta-badge .meta-label { color: var(--text-tertiary); }
+.meta-badge .meta-value { color: var(--text-primary); font-family: var(--font-mono); }
+
+.preview-warnings {
+  border: 1px solid #5d4a1f;
+  background: rgba(255, 193, 77, 0.08);
+  color: var(--warn, #d69f3d);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  margin-bottom: var(--density-sm);
+  font-size: 12.5px;
+}
+.preview-warnings .warn-heading {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.preview-warnings .warn-item {
+  padding: 2px 0;
+  line-height: 1.4;
+}
+
+.preview-dirty-banner {
+  border: 1px dashed var(--accent);
+  background: rgba(100, 180, 255, 0.06);
+  color: var(--accent);
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--density-sm);
+  font-size: 12px;
+}
+
+.preview-hint {
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--density-sm);
+  line-height: 1.5;
+}
+.preview-hint.info {
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  background: var(--bg-input, var(--bg-panel));
+}
+.preview-hint.warn {
+  border: 1px solid #5d4a1f;
+  color: var(--warn, #d69f3d);
+  background: rgba(255, 193, 77, 0.05);
+}
+
+.preview-view {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.raw-actions {
+  display: flex;
+  gap: 6px;
+  margin-bottom: var(--density-sm);
+}
+
+.recent-history {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+.recent-entry {
+  padding: 3px 0;
+  border-bottom: 1px dashed var(--border);
+  line-height: 1.5;
+  word-break: break-word;
+}
+.recent-entry:last-child { border-bottom: none; }
+.recent-speaker { color: var(--accent); font-weight: 600; }
+.recent-sep { color: var(--text-tertiary); }
+
+/* Raw wire 里不同 role 的色带, 让 system / user / assistant 一眼区分 */
+.wire-list { display: flex; flex-direction: column; gap: 4px; }
+.wire-role-system .cb-header { border-left: 3px solid var(--accent); padding-left: 6px; }
+.wire-role-user .cb-header   { border-left: 3px solid #4aa05a; padding-left: 6px; }
+.wire-role-assistant .cb-header { border-left: 3px solid #b56ad0; padding-left: 6px; }
+
+/* 按钮密度修饰 (chat 面板里到处用) */
+button.small { font-size: 12px; padding: 3px 10px; }
+button.small.subtle { color: var(--text-tertiary); background: transparent; }
+button.small.subtle:hover { color: var(--text-primary); background: var(--bg-hover); }
+button.small.danger { color: var(--err); }
+button.small.danger:hover { background: rgba(255, 107, 107, 0.1); }
+button.primary.small { font-size: 12px; padding: 3px 12px; }
+
+/* =====================================================================
+ * Chat message stream (P09)
+ * ---------------------------------------------------------------------
+ * .chat-stream 是 grid 子节点, 高度由 .chat-main 的 row 1fr 决定; 内部
+ * toolbar 固定, list 自己 overflow-y:auto, empty 作为 list 空态叠加层.
+ * ===================================================================== */
+
+.chat-stream {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: var(--density-sm) var(--density-md) 0;
+  width: 100%;
+}
+.chat-stream-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--density-sm);
+  padding: 4px 0 var(--density-sm);
+  border-bottom: 1px solid var(--border);
+}
+.chat-stream-toolbar .spacer { flex: 1 1 auto; }
+.chat-stream-count { font-size: 12px; }
+.chat-stream-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--density-sm) 2px var(--density-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--density-sm);
+}
+.chat-stream-empty {
+  padding: var(--density-lg) var(--density-md);
+  text-align: center;
+  font-size: 13px;
+}
+.chat-stream-empty p { margin: 4px 0; }
+.chat-stream-empty .hint {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  line-height: 1.6;
+}
+
+/* 时间分隔条 — 中间一行浅色文字, 两侧横线 */
+.time-sep {
+  display: flex;
+  align-items: center;
+  margin: 4px 0;
+  color: var(--text-tertiary);
+  font-size: 11.5px;
+  gap: var(--density-sm);
+}
+.time-sep::before,
+.time-sep::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+/* 单条消息气泡 ---------------------------------------------------- */
+.chat-message {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px 8px;
+  background: var(--bg-panel);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.chat-message[data-role="user"] {
+  border-left: 3px solid #4aa05a;
+  background: rgba(74, 160, 90, 0.04);
+}
+.chat-message[data-role="assistant"] {
+  border-left: 3px solid #b56ad0;
+  background: rgba(181, 106, 208, 0.04);
+}
+.chat-message[data-role="system"] {
+  border-left: 3px solid var(--accent);
+  background: rgba(233, 208, 255, 0.04);
+}
+
+.msg-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+}
+.msg-header .spacer { flex: 1 1 auto; }
+.msg-role {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.msg-role.role-user      { color: #4aa05a; }
+.msg-role.role-assistant { color: #b56ad0; }
+.msg-role.role-system    { color: var(--accent); }
+
+.msg-source {
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  background: var(--bg-input, var(--bg-panel));
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.chat-message[data-source="llm"] .msg-source     { color: #b56ad0; border-color: rgba(181, 106, 208, 0.4); }
+.chat-message[data-source="manual"] .msg-source  { color: var(--text-secondary); }
+.chat-message[data-source="inject"] .msg-source  { color: var(--accent); border-color: rgba(255, 193, 77, 0.4); }
+.chat-message[data-source="simuser"] .msg-source { color: #4aa05a; border-color: rgba(74, 160, 90, 0.4); }
+.chat-message[data-source="script"] .msg-source,
+.chat-message[data-source="auto"] .msg-source    { color: var(--text-secondary); }
+
+.msg-timestamp {
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+
+.msg-body {
+  font-size: 13px;
+  line-height: 1.55;
+}
+.msg-content {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.msg-streaming {
+  color: var(--text-secondary);
+  min-height: 1em;
+}
+.msg-streaming .dots {
+  display: inline-block;
+  animation: msg-dots 1s ease-in-out infinite;
+  opacity: 0.6;
+}
+@keyframes msg-dots {
+  0%, 100% { opacity: 0.3; }
+  50%      { opacity: 0.9; }
+}
+
+/* 消息右上角 [⋯] 菜单 -------------------------------------------- */
+.msg-menu-wrap { position: relative; }
+.msg-menu-trigger {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-secondary);
+  padding: 0 6px;
+  line-height: 18px;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.msg-menu-trigger:hover {
+  background: var(--bg-hover);
+  border-color: var(--border);
+}
+.msg-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 2px);
+  display: none;
+  flex-direction: column;
+  min-width: 140px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  z-index: 50;
+  padding: 4px 0;
+}
+.msg-menu.open { display: flex; }
+.msg-menu-item {
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  text-align: left;
+  padding: 5px 12px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.msg-menu-item:hover { background: var(--bg-hover); }
+.msg-menu-item.danger { color: var(--err); }
+.msg-menu-item.danger:hover { background: rgba(255, 107, 107, 0.1); }
+
+/* =====================================================================
+ * Chat composer (P09)
+ * ---------------------------------------------------------------------
+ * 两行扁平; row 1 meta chips 可换行, row 2 textarea + 右侧按钮竖向对齐.
+ * ===================================================================== */
+
+.chat-composer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--density-sm);
+  padding: var(--density-sm) var(--density-md) var(--density-md);
+}
+.composer-row {
+  display: flex;
+  align-items: center;
+  gap: var(--density-sm);
+  flex-wrap: wrap;
+}
+.composer-row.row-meta {
+  font-size: 12px;
+  min-height: 26px;
+}
+.composer-row.row-meta > * { flex: 0 0 auto; }
+
+.clock-chip {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+.clock-chip .clock-now { color: var(--text-primary); margin-left: 4px; }
+
+.next-turn-group,
+.role-group,
+.mode-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.next-turn-group button.small { padding: 2px 8px; }
+.role-select {
+  background: var(--bg-input, var(--bg-panel));
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  font-size: 12px;
+}
+.mode-value { color: var(--text-primary); font-weight: 500; }
+.mode-deferred { color: var(--text-tertiary); font-size: 11.5px; cursor: help; }
+
+.pending-badge {
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 193, 77, 0.4);
+  background: rgba(255, 193, 77, 0.08);
+  color: var(--accent);
+  font-size: 11.5px;
+  font-family: var(--font-mono);
+}
+
+/* 切到 role=system 时才显示的一行歧义消除说明 (Send vs Inject sys). */
+.composer-hint {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--warn);
+  background: rgba(255, 193, 77, 0.08);
+  border: 1px solid rgba(255, 193, 77, 0.3);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+}
+
+.composer-row.row-input {
+  align-items: stretch;
+}
+.composer-textarea {
+  flex: 1 1 auto;
+  min-height: 60px;
+  resize: vertical;
+  background: var(--bg-input, var(--bg-panel));
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.composer-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.composer-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  justify-content: flex-end;
+  min-width: 90px;
+}
+.composer-buttons button[disabled] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
 
 /* =====================================================================
  * Misc

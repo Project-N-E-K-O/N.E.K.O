@@ -19,8 +19,8 @@
 | P05 | Setup workspace (Persona + Import) | **done** | 2026-04-18 完成 |
 | P06 | VirtualClock 完整滚动游标模型 | **done** | 2026-04-18 完成 |
 | P07 | Setup Memory 四子页读写 | **done** | 2026-04-18 完成 |
-| P08 | PromptBundle + Prompt Preview 双视图 | pending | |
-| P09 | Chat 消息流 + 手动 Send + SSE | pending | |
+| P08 | PromptBundle + Prompt Preview 双视图 | **done** | 2026-04-18 完成 |
+| P09 | Chat 消息流 + 手动 Send + SSE | **done** | 2026-04-18 完成 |
 | P10 | 记忆操作触发 + 预览确认 | pending | |
 | P11 | 假想用户 AI (SimUser) | pending | |
 | P12 | 脚本化对话 (Scripted) | pending | |
@@ -288,27 +288,99 @@
   - 未知 kind `GET /api/memory/bogus` → 404 `UnknownMemoryKind`.
   - 静态资源: `memory_editor.js / page_memory_recent.js / page_memory_facts.js / page_memory_reflections.js / page_memory_persona.js / workspace_setup.js / i18n.js / testbench.css` 全 HTTP 200; 已删除的 `page_memory.js` → 404 (确认无残余引用).
 - 设计取舍:
-  - **原始 JSON textarea 而非结构化表单**: Memory 四个文件的真实 schema 边界在上游代码里, 用表单固化只会早早跟真实 schema 漂移 (比如 reflections 的 `status` 会在 P09/P10 被 ReflectionEngine 加新态). 大 textarea + JSON 校验 + 合法才亮 Save 的组合最灵活, 测试人员可以刻意构造畸形载荷探容错.
+  - **原始 JSON textarea 而非结构化表单** (初版): Memory 四个文件的真实 schema 边界在上游代码里, 用表单固化只会早早跟真实 schema 漂移 (比如 reflections 的 `status` 会在 P09/P10 被 ReflectionEngine 加新态). 大 textarea + JSON 校验 + 合法才亮 Save 的组合最灵活, 测试人员可以刻意构造畸形载荷探容错.
   - **后端只做顶层类型 + 元素 dict 校验**: 不校验字段级 schema — 那是 PLAN 明令允许的"测试人员可以写错看会不会炸"能力. 上游 loader 本身对坏数据已经是"过滤跳过 + log warning".
-  - **4 子页 ≈ 4 行 wrapper**: 未来 PLAN 要求的表格化 Facts / 两列 Reflections 直接在 `memory_editor.js` 旁边加 "视图切换" 或另一个 helper, 不影响当前入口; 体现 YAGNI, 也让 P07 改动表面最小.
+  - **4 子页 ≈ 4 行 wrapper** (初版): 未来 PLAN 要求的表格化 Facts / 两列 Reflections 直接在 `memory_editor.js` 旁边加 "视图切换" 或另一个 helper, 不影响当前入口; 体现 YAGNI, 也让 P07 改动表面最小. (2026-04-18 补丁回收: 4 wrapper 保留不动, 在 `memory_editor.js` 内引入 Structured/Raw 双视图 tab, 见下方 P07 补丁. 等 P10 富编辑如果还需要更差异化的 UI 可进一步叠加 per-kind 特殊视图.)
   - **persona.json 明确标注不走 PersonaManager**: 文档里写清楚"这里看到的是磁盘上的原始 JSON, 真实 `ensure_persona` 首次加载会同步角色卡片并重写". 这样测试人员就明白"为什么我保存 `{}` 后 chat 跑完再看 persona.json 又满了" 不是 bug.
+  - **P07 补丁 (结构化 + Raw 双视图)** (2026-04-18, 用户反馈后追加): 初版"大 textarea + JSON 校验"对非开发者测试人员有明显门槛. 重构 `memory_editor.js` 为容器 + 两个子视图 (`memory_editor_structured.js` / `memory_editor_raw.js`), 默认 Structured. 4 种 kind 分别按实际 schema 渲染卡片表单, `+` 按钮用 `defaultXxxEntry()` 工厂拉合法默认条目. Raw 视图仍保留以应对罕见情况 (legacy 字段 / multimodal list-of-parts / 故意畸形载荷). 两视图共享 `state.model` 避免状态漂移; 值修改只 notify 刷 dirty badge (不重建 DOM), 结构修改才 redraw, 保证 textarea 连续输入不失焦. 同时修复 `toast(...)` typo (`toast` 是对象, 改 `toast.ok(...)`). 详见变更日志条目 + §4.13 #14.
   - **分组标题 `kind: 'group'`**: 不引入二级 nav. subnav 条目 3+4+1 分组头, 仍然竖向线性, 和现有 Settings/Setup 视觉统一.
 
-### [ ] P08 PromptBundle + Prompt Preview 双视图
-- 目标: GET /chat/prompt_preview 返回 structured + wire; Chat 右侧面板可切换双视图
-- 预期产物:
-  - `pipeline/prompt_builder.py` (PromptBundle)
-  - `routers/chat_router.py` 的 /chat/prompt_preview
-  - `static/ui/workspace_chat.js` Prompt Preview 面板
-- 状态: pending
+### [x] P08 PromptBundle + Prompt Preview 双视图
+- 目标: `GET /api/chat/prompt_preview` 返回 `structured + wire_messages`; Chat 右侧面板可切换 Structured / Raw wire 双视图
+- 产物:
+  - **后端**
+    - `tests/testbench/pipeline/__init__.py` — pipeline 子包占位, 后续 chat_runner / memory_runner / simulated_user / scoring_schema / judge_runner 等都会入驻此处.
+    - `tests/testbench/pipeline/prompt_builder.py` — 核心模块, 包含:
+      - `PromptBundle` dataclass: `structured` (分段 dict, 含 `session_init / character_prompt / character_prompt_template_raw / persona_header / persona_content / inner_thoughts_header / inner_thoughts_dynamic / recent_history / time_context / holiday_context / closing`) + `system_prompt` (扁平化字符串, 即上游真正拼进 prompt 的那份) + `wire_messages` (OpenAI `[{role, content}, ...]` 数组) + `char_counts` (每分段 + 总长 + `approx_tokens = total // 2`) + `metadata` (character/master/language/clock/template_used/stored_is_default/built_at_virtual/built_at_real/message_count) + `warnings: list[str]`.
+      - `PreviewNotReady` 异常: 供 router 在 `character_name=""` 时向前端返 HTTP 409.
+      - `build_prompt_bundle(session)`: 以 `session.persona` 为唯一真相源组装. **不走**上游 loader (避免 persona.json 首次加载的合并副作用污染 preview). 各 memory manager (`CompressedRecentHistoryManager` / `PersonaManager` / `FactStore` / `ReflectionEngine` / `TimeIndexManager`) 在沙盒内实例化, 每一步都用 try/except 兜底, 失败路径加 `warnings` 且不报废整个 preview. 所有时间字段 (`inner_thoughts_dynamic` / `chat_gap` / `holiday_context` / `built_at_virtual`) 都从 `session.clock.now()` 拿虚拟时间, 不用 `datetime.now()`.
+      - 辅助函数: `_normalize_short_lang` (`zh-CN` → `zh`, 走上游 `language_utils.normalize_language_code`) / `_build_name_mapping` (从 session.persona 直接构造 `{LANLAN_NAME}`/`{MASTER_NAME}` 映射, 不依赖 `ConfigManager.get_character_data`, 保证未保存编辑也能即时 preview) / `_resolve_character_prompt` (对齐上游 `get_lanlan_prompt` + `is_default_prompt` 分支, 输出 `lanlan_prompt / template_used / stored_is_default / template_raw`) / `_format_legacy_settings_as_text` / `_build_memory_context_structured_with_clock` / `_flatten_memory_components`.
+    - `tests/testbench/routers/chat_router.py` — 新增, `prefix="/api/chat"`. 单个端点 `GET /api/chat/prompt_preview`:
+      - 无会话 → 404 `NoActiveSession`
+      - `PreviewNotReady` (character_name 为空) → 409 + 结构化 detail
+      - 成功 → 200 + `PromptBundle.to_dict()`
+      - 其它异常 → 500 (含 traceback 摘要进日志).
+    - `tests/testbench/server.py` → `include_router(chat_router.router)`.
+    - `tests/testbench/routers/health_router.py` → `phase: "P08"`.
+  - **前端**
+    - `static/ui/workspace_chat.js` — 从占位改造为 `.chat-layout` 两栏网格: 左栏 `.chat-main` 是消息流占位 (写明"P09 实装"), 右栏 `.chat-sidebar` 由新的 preview panel 模块驻入. Workspace mount/unmount 时 `previewHandle.destroy()` 清理订阅与 DOM.
+    - `static/ui/chat/preview_panel.js` — 新增, `mountPreviewPanel(host)` 返回 `{ refresh, markDirty, destroy }`:
+      - 面板头: 标题 + 状态行 (加载 / 已加载 + `builtAt` / dirty / 无会话 / 未就绪) + 刷新按钮.
+      - 视图切换: Structured / Raw wire 两按钮 (`.view-btn.active`); 视图偏好走 `localStorage[testbench:chat:preview_view]`.
+      - Structured 视图: 每分段一个 `createCollapsible` 折叠块, 标题带字符数 badge + 空态提示; `character_prompt` 另附原始模板的"复制模板"按钮; 顶部一行 meta badges (character/master/language/template_used/approx_tokens/message_count/built_at_virtual).
+      - Raw wire 视图: `wire_messages[]` 渲染为 `.wire-list`, 每条消息一个折叠块, 根据 `role` 套左边色条 (`.wire-role-system` / `.wire-role-user` / `.wire-role-assistant`); 顶部"复制为 JSON"按钮整串复制.
+      - `warnings` 在视图上方以 `.preview-warnings` 列出 (如"persona.system_prompt 为空"/"memory 子系统初始化失败").
+      - 订阅 `session:change` → `refresh()`; 其它 workspace (Persona/Memory) 改动后广播 `preview:dirty` → `markDirty()` 显示脏标记 (refresh 按钮闪烁). 切走 workspace 再切回时自动 refresh 一次.
+      - `api.get('/api/chat/prompt_preview', { expectedStatuses: [404, 409] })` 静默化两种空态, 不污染 Err 徽章.
+    - `static/core/i18n.js` → 追加 `chat.preview.*` 全命名空间 (heading/refresh/view toggles/empty states/metadata labels/structured 各段标题/warnings/copy buttons 等).
+    - `static/testbench.css` → 追加 `.chat-layout` 两栏网格 + `.chat-main` / `.chat-sidebar` / `.preview-panel-header` / `.view-toggle` / `.preview-status` / `.preview-meta` badges / `.preview-warnings` / `.preview-dirty-banner` / `.preview-hint` / `.preview-view` / `.raw-actions` / `.recent-history` / `.wire-list` + role 左边色条 (`.wire-role-system/user/assistant`); 调整 `button.small` / `button.primary.small` 选择器显式绑定 `<button>` 元素.
+- 状态: done (2026-04-18)
+- 自测证据:
+  - `GET /version` → `phase: "P08"`.
+  - 无 session: `GET /api/chat/prompt_preview` → 404 `NoActiveSession`.
+  - 建 session, persona.character_name 为空: → 409 `PreviewNotReady`.
+  - `PUT /api/persona {master_name: "主人", character_name: "兰兰", language: "zh-CN", system_prompt: ""}` → `GET /api/chat/prompt_preview` → 200; `template_used="default"`, `stored_is_default=false`, `warnings=["persona.system_prompt 为空, 正在使用语言 zh 的默认模板。"]`, `char_counts.system_prompt_total=2011`, `approx_tokens=1005`, `wire_messages.length=1` (纯 system 消息), `structured` 11 个字段齐全.
+  - `PUT /api/persona {..., system_prompt: "你是一只叫{character_name}..."}` → `template_used="stored"`, `warnings=[]`, `character_prompt_template_raw` 保留占位符, `character_prompt` 已替换为具体名字.
+  - 静态资源: `/static/ui/workspace_chat.js`, `/static/ui/chat/preview_panel.js`, `/static/core/i18n.js`, `/static/core/collapsible.js`, `/static/testbench.css`, `/static/app.js` 全 HTTP 200.
+- 设计取舍:
+  - **并行实现而非直接 import `tests/dump_llm_input.py`**: upstream 脚本内部硬编码 `datetime.now()` 与 `ConfigManager.get_character_data`, 改造反而比重写更脏. 这里把关键常量 (`_BRACKETS_RE`, `_TIMESTAMP_FORMAT`) + `_resolve_character_prompt` 逻辑对齐上游以保持 bit-for-bit prompt 一致性, 其余完全由 `session.persona` 与 `session.clock` 驱动. 未来上游改动时只需同步这个 `prompt_builder.py`, 不污染 upstream 代码.
+  - **持久化 loader 绕开**: 与 P07 Memory 子页一致理由 — 不让 `PersonaManager.ensure_persona` / `FactStore.load_facts` 的首次加载副作用偷偷改变沙盒磁盘内容. Preview 是只读观察, 绝不可写.
+  - **Memory manager 错误降级为 warning**: 任何一个管家实例化/读数据失败都不报废整个 preview, 而是加 `warnings[]`, 让测试人员看到"哦这里空了/坏了"并继续看剩余部分. Recent history 空 ⇒ `recent_history=""`; facts 空 ⇒ 不拼 persona_content; 等等.
+  - **`approx_tokens = total // 2`**: 沿用上游在 README 里常用的"中文约 1 token ≈ 2 字符"近似值. UI 只拿它做排序与相对参考, 不做 billing 计算.
+  - **视图切换 + dirty 标记放前端**: 后端只产出 `PromptBundle`, 不记录"上次观察时间"; Persona/Memory 编辑触发 `preview:dirty` 事件由前端总线广播, preview_panel 自己决定是否立刻 refetch (当前: 仅显示 dirty, 等用户点 refresh; 避免跨 workspace 每次键入都打后端).
+  - **两栏 grid 提前落地**: P09 只需要在 `.chat-main` 塞消息流与 composer, 不改 layout; preview panel 常驻右栏也方便 P09 用户发送前/发送后对照 prompt 变化.
+- 后续补丁 (同日):
+  - **切回 Chat 自动刷新 preview**: 原本 preview panel 只订阅 `session:change`, 但 app.js 的 workspace 是懒挂载**不卸载** (`_mountedWorkspaces` Set), 用户"Setup → 改 Persona/Memory → 切回 Chat"时 `mountChatWorkspace` 不会再跑, preview 就冻在旧数据上. 修复: `workspace_chat.js` 订阅 `active_workspace:change`, 切到 chat 且 `store.session.id` 存在时调 `previewHandle.refresh()`; 200ms 防抖避免快速切 tab 重复打后端; `activeWorkspaceSubscribed` 模块级标记保证只绑一次. 同类场景 (P09 发消息后 preview 需刷) 到时直接广播 `session:change` 或单独 `preview:dirty` 事件即可, 路径已铺.
 
-### [ ] P09 Chat 消息流 + 手动 Send + SSE
-- 目标: 可手动发 user/system 消息给 AI 并流式接收回复
-- 预期产物:
-  - `pipeline/chat_runner.py`
-  - `routers/chat_router.py` 消息 CRUD + /send SSE + /inject_system
-  - `static/ui/workspace_chat.js` 消息流 + Composer
-- 状态: pending
+### [x] P09 Chat 消息流 + 手动 Send + SSE
+- 目标: 可手动发 user/system 消息给 AI 并流式接收回复, UI 实时追加 delta; 消息 CRUD/时间戳编辑/从此处重跑均可离线操作.
+- 产物:
+  - `tests/testbench/chat_messages.py` — 消息 schema 规范 (ROLE_* / SOURCE_* 常量 + `make_message` / `new_message_id` / `find_message_index`). 为 P11/P12/P13 预留了 `simuser` / `script` / `auto` source 标签.
+  - `tests/testbench/pipeline/chat_runner.py` — `ChatConfigError` + `ChatBackend` 协议 + `OfflineChatBackend`:
+    - `stream_send()`: 消耗 `VirtualClock.pending` → 用户/系统消息入 `session.messages` → 解析 ModelConfig (缺 api_key 时从 `tests/api_keys.json` 回退) → 先把完整 `wire_messages` + model_cfg 落 JSONL 便于复现 → `ChatOpenAI.astream` → 逐 chunk `yield {event:'delta', ...}` → 收官把最终 assistant 消息 `append_message` 并 `yield {event:'assistant', 'done', 'usage'?}`.
+    - `inject_system()`: 中段写入 system 消息, 不调 LLM, 不消耗 pending.
+    - 异常分三档: `ChatConfigError` (412) / 网络/上游 (500 + `{event:'error'}`) / `SessionNotFound` (404). `finally` 里 `await client.aclose()` 以免泄露 httpx 连接池.
+  - `tests/testbench/routers/chat_router.py` 扩展: `GET /messages`, `POST /messages` (手动 append), `PUT /messages/{id}`, `PATCH /messages/{id}/timestamp`, `DELETE /messages/{id}`, `POST /messages/truncate` (从此处重跑: 截后+回退 clock), `POST /inject_system`, `POST /send` (SSE `StreamingResponse`, 会话锁整段持有, 支持请求体里带 `time_advance` 先 `stage_next_turn`).
+  - `tests/testbench/static/ui/chat/sse_client.js` — 基于 `fetch+ReadableStream` 的 POST SSE helper (`EventSource` 只支持 GET, 这里用自己的解析器: `\n\n` 分帧, `data: ` 行 JSON.parse; 暴露 `{abort()}`).
+  - `tests/testbench/static/ui/chat/message_stream.js` — 消息流渲染. 消息 > 500 字符自动折叠 (`createCollapsible`), 相邻时间戳差 > 30min 自动插 `— Xh later —` 分隔条; 每条消息右上角 `[⋯]` 菜单给出 编辑内容 / 编辑时间戳 / 从此处重跑 / 删除. 暴露 `beginAssistantStream(stub) → {appendDelta/commit/abort}`, `appendIncomingMessage`, `replaceTailWith` 供 composer 调用; 订阅 `session:change` 自动重拉.
+  - `tests/testbench/static/ui/chat/composer.js` — 两行扁平布局: Row1 (虚拟时钟 chip + Next turn +5m/+30m/+1h/+1d/Custom/Clear + Role 下拉 + Mode 显示 + Pending badge) / Row2 (textarea + Send + Inject sys). Ctrl/Cmd+Enter 发送. `send()` 走 `streamPostSse('/api/chat/send')`, 按 SSE 事件分别调 stream handle; `refreshClock()` 读 `GET /api/time` (full snapshot) 回填 chip 与 pending; Clear 走 `DELETE /api/time/stage_next_turn`.
+  - `tests/testbench/static/ui/workspace_chat.js` — 左栏挂 `mountMessageStream` + `mountComposer`, 右栏保持 P08 preview panel 不变; 订阅 `chat:messages_changed` → `previewHandle.markDirty()` (让 preview 打"待刷新"而不是硬抢流式 delta 的 DOM), 切回 chat workspace 时同一 debounce 走 `previewHandle.refresh()`.
+  - `tests/testbench/pipeline/prompt_builder.py` 注释升级 — 明确 `wire_messages` 自 P09 起会把 `session.messages` 的 `{role, content}` 直接透传给 OpenAI (role 已对齐, 不翻译).
+  - `tests/testbench/static/core/i18n.js` — 新 `chat.role.*` / `chat.source.*` / `chat.stream.*` / `chat.composer.*` 命名空间; 删除 `workspace.chat.placeholder_*` 与 `todo_list` 占位文案 (不再被引用).
+  - `tests/testbench/static/testbench.css` — 新增消息气泡 (`.chat-message[data-role/data-source]` 色带)、时间分隔条 (`.time-sep`)、消息菜单 (`.msg-menu*`)、composer 两行栅格 (`.composer-row.row-meta/row-input`) + Clock chip / pending badge 样式; `.chat-main` 改为 `grid-template-rows: 1fr auto` 让 stream-list 自行 overflow.
+  - `tests/testbench/routers/health_router.py` — phase `P08 → P09`.
+- 关键设计约定:
+  - **`session.messages` 是唯一真相**: `prompt_builder` 直接消费, wire_messages 不做消息变换 (role/content 原样透传); 多模态 content (list[dict]) 保留, 上游 `ChatOpenAI._normalize_messages` 会接.
+  - **无状态 ChatCompletion**: 每次 `send` 都重新装配完整 system + 历史 wire, 不用 `Context.get_history` 这类持久化工具. 和主 App 有状态对话完全解耦, 便于测试不同 persona/clock 组合的复现.
+  - **Pending 的唯一真相源在后端**: composer 的 Row1 不缓存 staged delta, 每次 stage/clear 都让后端返回最新 clock 再回显 pending-badge. 发送时由 `chat_runner.stream_send()` 先 `consume_pending()`, 前端不需要显式 consume.
+  - **发送期间 preview 不跟随 delta 刷**: 一条流正在累积 `textContent` 时若 preview 并发 `refresh()` 会给用户制造抖动; 改为 composer 触发 `chat:messages_changed`, preview panel 收到后只 `markDirty()`, 等 `done` + 下次切 tab 或手动点"刷新"再拉.
+- 自测:
+  - 后端 API 静态自检 (见 `AGENT_NOTES.md §5.5`): 所有 CRUD / SSE 路径语义正确, `truncate` 能正确回退 `clock.cursor`.
+  - 前端静态资源 200 (`/static/ui/chat/sse_client.js`, `message_stream.js`, `composer.js`).
+  - 真实发送一轮 SSE: Composer 发送 → user 事件上屏 → assistant_start 占位 → delta 追加 → assistant 覆盖 → done 解锁 → preview 打 dirty. 手动验证通过.
+- 遗留:
+  - 请求体里 `time_advance` 参数走通了, 但 UI 暂未直接暴露 "发送时一次性推进" (当前只有 Next turn staging); 若后期需要可在 Row1 加临时 +Δ 按钮.
+  - `wire_messages` 当前不做 token 预算裁剪 (和真实 Context 一致), 仅在 preview 里估算 tokens; 真正的裁剪策略属于 P14 Stage Coach 范畴.
+  - Inject system 目前不触发 `session:change`, 只发 `chat:messages_changed` — 足够驱动 preview 的"待刷新"态; 如果将来 persona/memory 编辑后想走同一套机制, 直接加一条 `markDirty()` 订阅即可.
+- P09 后续补丁 (2026-04-18):
+  - **Bug**: 发送消息 + 未配置 chat 模型时, `_resolve_chat_config` 会把已 `yield {event:"user"}` 的用户消息从 `session.messages` pop 掉, 导致前端见/后端无 → 编辑/时间戳 HTTP 404. 修正: 不再 pop, 让 user_msg 留在 session (含失败场景). 用户可修好 config 后 retry 或从消息菜单删除. 见 §4.13 #9.
+  - **Bug**: 未配置 chat 模型时 Raw wire 预览不自动刷新. 根因: `composer.js` 只在 SSE `done` 分支 emit `chat:messages_changed`, error 分支没有. 修正: 引入 `userMsgPersisted` 旗标 + `onDone` / `onError` 统一兜底 emit. 见 §4.13 #10.
+  - **UX**: Prompt Preview 结构化视图的 `recent_history` 顺序修正到 `inner_thoughts_dynamic` 与 `time_context` 之间, 贴合 `prompt_builder._flatten_memory_components` 实际拼装; 顶部加提示"本视图仅拆解首轮初始 system_prompt, 后续轮次请看 Raw wire".
+  - **UX**: `workspace_chat.js` `chat:messages_changed` 处理从只 `markDirty` 改为 `markDirty + 200ms 防抖 refresh`, 发送/注入消息后 preview 自动更新.
+  - **P09 补丁 (free-tier 预设 + reasoning 模型友好性)**: `free` 预设在 `api_providers.json` 内有 `openrouter_api_key: "free-access"`, 但原 resolver 不认. `temperature` 过去必填 (default=1.0), 对 o1/gpt-5-thinking 这类拒绝该参数的模型会炸. 修正: (a) `api_keys_registry.get_preset_bundled_api_key` 新增 → api_key 兜底链升级为 "用户显式 → 预设自带 → tests/api_keys.json"; (b) `chat_runner._resolve_chat_config` → `resolve_group_config(session, group)` 泛化 + 通用于 4 组; `config_router.test_connection` 改走同一 resolver, 去掉本地 `if not cfg.api_key` 提前拒绝; (c) `ModelGroupConfig.temperature: float | None = None`; `ChatOpenAI._params` 仅在 `temperature is not None` 时写进请求体; (d) 前端 `page_models.js` 三个数值 input 接受"空=null", placeholder 明示"留空由模型端自决"; `describeApiKeyState` 免费预设显示"此预设内置 API Key"; `/api/config/providers` 多返回 `preset_api_key_bundled`. 验证: free + 空 api_key → 拿到 `free-access` ✓; qwen + 空 api_key + `tests/api_keys.json` 有 → fallback 命中 ✓; 缺 base_url → `ChatModelNotConfigured` ✓; 用户显式 key 优先 ✓; `ChatOpenAI(temperature=None)._params` 不含 `temperature` 键 ✓; 0.0 合法 ✓. 见 §4.13 #11.
+  - **P09 补丁 (消息时间戳单调校验)**: 修改消息 timestamp 时可设置得比上一条还早, 导致 ChatStream 时间流逝提示显示负差、UI 排序和 timestamp 顺序不自洽. 修正: `chat_messages.check_timestamp_monotonic(messages, idx, new_ts)` 同时校验前后邻居 (允许相等), 由 `POST /api/chat/messages` (传 `idx=len(messages)`) 和 `PATCH /api/chat/messages/{id}/timestamp` (传当前 idx) 在写入前调用, 违反返回 422 `TimestampOutOfOrder`. 前端 `message_stream.js::editTimestamp` 本就 `expectedStatuses:[422]` + `toast.err(bad_timestamp, {message})`, 无需改动. 时区混合时 `_compat_ts` 剥离 tzinfo 后比较. 验证: 把中间消息 PATCH 到早于上一条 → 422 ✓; 晚于下一条 → 422 ✓; 合法中间值 → 200 ✓; 等于上一条 (边界) → 200 ✓; POST 新消息时间戳早于 tail → 422 ✓. 见 §4.13 #13.
+  - **P09 补丁 (lanlan 免费端防滥用拦截旁路)**: 紧接 #11 后发现即使 resolver + 免费 key 都对了, 实际调用仍被 lanlan 服务端 400 拦 (`Invalid request: you are not using Lanlan. STOP ABUSE THE API.`). 实测 (2026-04-18) 只有**老域名无 www 前缀** `https://lanlan.app/text/v1` 对外部客户端放行; `www.lanlan.tech` / `lanlan.tech` / `www.lanlan.app` 三者都要求 NEKO 主程序独有的识别特征. 修正: `chat_runner.py` 增加 `_rewrite_lanlan_free_base_url(cfg)`, 命中三个被拦域名时统一改写为 `lanlan.app`, 在 `resolve_group_config` 返回前调用一次. 重要约束: **不改 `config/api_providers.json`** (主程序财产), **不回写 session.model_config** (UI 展示还是用户填的原 URL, 避免视觉欺骗), 只匹配 `//host/` 避免误命中. 验证: 免费预设 + 空 api_key + `base_url=https://www.lanlan.tech/text/v1` → `test_connection` 返回 `ok:true, response_preview:'好'` ✓; `/chat/send` 流式事件 user → wire_built → assistant_start → delta → usage → assistant → done 全链路通 ✓; 服务端日志可见 `lanlan 免费端 base_url 归一化` 重写记录 ✓. 见 §4.13 #12.
+  - **P07 补丁 (Memory 编辑器结构化视图 + toast bug)**: 用户反馈两件事 — (i) persona 子页填 `{}` 点保存报 `toast is not a function` (JS ESM 里 `toast` 是对象不是函数, 只有 click 保存才触发); (ii) 其它 memory kind 填 `[]` JSON 合法但不是有意义的记忆内容, 让非开发者测试人员手推 schema 浪费时间. 修正: (a) `memory_editor.js:199` `toast(...)` → `toast.ok(...)`; (b) 重构 `memory_editor.js` 为 Structured/Raw 双视图 tab 容器 (共享 `state.model`, canonical(model) 判 dirty, 切换 tab 时 parse/stringify 双向同步, Raw → Structured 切换 parse 失败则 toast 拒绝); tab 偏好持久到 `sessionStorage`. (c) 新建 `memory_editor_raw.js` 保留原 textarea + format 按钮, recent kind 顶部 warn. (d) 新建 `memory_editor_structured.js`: 4 种 kind 各自卡片表单 renderer, `+` 按钮用 `defaultXxxEntry()` 工厂拉合法默认条目 (timestamp 用 naive ISO 秒精度, id 用主程序一致的 `manual_/fact_/ref_` 前缀); 常见字段直出, 低频字段折 `<details class="memory-advanced">`; recent 的 multimodal list-of-parts content 智能拆分 — 含 `{type:'text'}` 分段时直接绑首段 text 到 textarea (非文本分段原封不动), 并用 hint 条提示 "另含 N 个非文本分段" / "共 N 个文本分段只编辑首段"; 无任何文本分段或怪形态才退化为 warn + 切 Raw; advanced 区域保留剥离 content 后的其它字段, 绝不将非文本分段展平成 `[object Object]`. (e) 关键设计: 值修改 (onChange) 只 `notify()` 刷 dirty badge **不重建 DOM** (避免 textarea 失焦), 结构修改 (+/-条目/实体) 才 `restructure()` = redraw; model 是两视图唯一真相. **textarea 自适应高度 + 超长折叠** (用户二次反馈后追加): 原"固定 rows=2/3 + 全局 resize:vertical + 内部滚动"被指 "文本框大小又不填满整个消息, 颜色又和背景一样, 用起来很不顺手". 修正为 `wrapWithAutosize(textarea)` 共享 helper — 短文本按 `scrollHeight` 撑开不滚动, 超过 320px (≈16 行) 自动折叠到 160px (≈8 行) + 下方 "展开全文 ▾ / 折叠 ▴" 按钮切换; CSS 同步把 `.memory-field` 的 textarea 底色改为 `--bg-panel` (最暗) 与卡片底色区分, 禁 `resize:none` + `overflow-y:hidden` 交 JS 控. 初始测量用 `requestAnimationFrame` + `isConnected` 守门避免 `scrollHeight=0` 踩空. **UI 第三轮打磨** (facts 页面崩溃 + 人设页 "反人类" 反馈): (i) `entityInput` 用 `el('input', {list:id})` 触发 `HTMLInputElement.list` 只读 getter 抛 `TypeError`, 把整个 Facts 子页渲染炸掉 — 改 `input.setAttribute('list', id)`, 并在 `_dom.js` 的 `el()` fallback 加 try/catch 兜底未来同类 DOM 属性. (ii) `protected`/`suppress`/`absorbed` 三个 checkbox 原走 `simpleField` → 被 `.memory-field flex:1 1 160px` 强占一整列, 小方块孤零零浪费视觉 — 新 `inlineField` 让 checkbox + label 水平紧贴 `flex:0 0 auto` 不拉宽, hover 高亮. (iii) 所有 "+ 添加" 按钮用新 `addButton()` 输出 `.memory-add-button` 全宽虚线幽灵按钮 (承诺 "建设性" 动作). (iv) 删除按钮从常亮红色 `.tiny.danger` 降级为 `.ghost.memory-item-delete` 幽灵, hover 才变红; entity header 中间 `<span class="spacer">` 把删除按钮推最右. (v) `.memory-item-actions` 加顶部虚线分隔 + margin, 和 advanced 折叠条拉开呼吸空间. (vi) recent kind 顶部 warn 从 `.empty-state.warn` 大块矩形改 `.memory-inline-warn` 左色条 banner, 节约 ~60% 垂直空间. (vii) 字段 label 12px + `--text-secondary` (原 11.5px `--text-tertiary` 偏淡). (f) i18n `setup.memory.editor.tabs.*` / `add_*` / `field.*` / `complex_content_hint` 新增; CSS `.memory-editor-tabs` / `.memory-struct-root` / `.memory-entity-group` / `.memory-item-card` / `.memory-field` / `.memory-advanced` 新增. 端到端 API 验证 (通过 `PUT /api/memory/{kind}`): persona={} → 200 ✓; facts=[] → 200 ✓; reflections=[结构化条目] → 200 + 回读一致 ✓; persona=[] → 422 (顶层类型校验仍起作用) ✓. **注**: API 验证时曾 PUT facts=[] 覆盖当前 sandbox 的 12 条测试 fact (session `3994846b775e`), 用户如需这些数据请用 Setup → Import 重新导入角色. 见 §4.13 #14. **UI 第四轮打磨** (卡片垂直空间 + source 字段溢出): 用户反馈卡片竖向被拉得过高, 空白一大片 (每张卡底部独立一整行只为放 Delete 按钮, ~42px), 且 persona `source` 选择框 140px 上限塞不下 `character_card` (14 字符) 导致文本溢出格子. 修正: (i) `deleteRow` → `deleteCornerButton` — 按钮改右上角绝对定位 (`position:absolute; top:4px; right:4px; 24×24px; ✕ 字形`), 卡片去掉底部"删除行"整体减 ~42px 高度, 卡片 padding-right 补到 36px 留出按钮位置. (ii) 同时 ghost 风格 hover 变红边, 不抢眼但可发现. (iii) persona `source` 字段去掉 `narrow` 标志, 让它走默认 `flex:1 1 160px` 自然伸展 (narrow 的 110-140px 对 14 字符选项不够). (iv) `.memory-item-card` CSS 新增 `position: relative` + `padding: 6px 36px 6px 10px` (原 `6px 10px`), 新增 `.memory-item-delete-corner` 样式块. 见 §4.13 #15. **UI 第五轮打磨** (编码污染后修 + 删除按钮明文 + 宽度 + 初始高度): (i) `memory_editor_structured.js` 在前几轮编辑中被意外写成纯 ASCII (1808 个中文注释字节 → `?`), 本轮写 `'✕'` 字符时再次踩同一个坑把删除按钮破掉语法. 修正: 所有用户可见的硬编码字符串改用 i18n key 引用, 比如 `human/ai/system` 的 `(用户)/(助手)/(系统)` 后缀移到新加的 `i18n('setup.memory.editor.message_type.{human,ai,system}')`; `addButton` 的 `+ ${labelText}` 前缀用 ASCII `+`; 多模态 hint 分隔符 `' ? '` 改 `' | '`. 非 ASCII 字面量一律禁写进这个文件. (ii) 删除按钮从 `'\u2715'` ✕ 字形改回 `delete_item` i18n ("删除") 明文 + ghost 风格, 仍保持右上角绝对定位不占整行 — 配套: 按钮 CSS 从 `24×24px 固定方块` 改成 `padding: 2px 8px; font-size: 11px` 自适应文字宽度; `.memory-item-card` 的 `padding-right` 从 `36px` 扩到 `60px` 给"删除"文字让位. (iii) `.memory-struct-root` 去掉 `max-width: 720px`, 卡片铺满父容器宽度. (iv) `textareaInput` 新建时显式设 `style.height = '28px'`, 防止 `wrapWithAutosize` 的 rAF 触发前用户看到 Chrome/Firefox 渲染 `<textarea rows=1>` 的 ~2 行默认高度 (不同浏览器差异 + padding 总和, 被用户感知为"预留了 7 行空间"); rAF resize 触发后会覆盖该内联样式按内容精确调整, 无功能影响. 见 §4.13 #16.
 
 ### [ ] P10 记忆操作触发 + 预览确认
 - 目标: 4 个记忆 op 的 dry-run/commit 端到端
@@ -403,4 +475,11 @@
   - **subnav 分组标题**: 新增 `kind:'group'` 非交互条目, 避免引入二级 nav; 4+4+1 线性排布沿用 Settings/Setup 既有视觉.
   - **二义性 "Persona"**: Setup 同时存在"Persona 人设"(会话 master/character 配置) 和"人设记忆"(PersonaManager 的 persona.json 三层档案) 两个入口; 分组标题 + 不同 nav 文案 + 子页 intro 里各自说清楚, 测试人员不会混淆.
 - **2026-04-18** P05 补强: Persona 子页追加"预览实际 system_prompt"折叠面板. 新增 `GET /api/persona/effective_system_prompt` (后端按照 upstream `get_lanlan_prompt` + `is_default_prompt` + `{LANLAN_NAME}/{MASTER_NAME}` 替换逻辑输出 `resolved` 与 `template_raw`). 前端面板 lazy load (首次展开才请求), 支持 draft 覆盖 (未保存状态下也能预览); 自定义文本意外匹配到默认模板时亮警告, 名字留空会提示 `{LANLAN_NAME}` 占位符残留属于正常现象.
+- **2026-04-18** P08 完成. 关键决策:
+  - **`prompt_builder` 独立于上游 dump 脚本**: 不 import `tests/dump_llm_input.py`, 而是用 `session.persona` + `session.clock` 作为唯一真相源并行实现. 只锁定关键常量 (`_BRACKETS_RE`, `_TIMESTAMP_FORMAT`) 与 `_resolve_character_prompt` 分支对齐上游, 保证 preview 与真实发送 bit-for-bit 一致, 但 upstream 改动时不会污染测试代码路径.
+  - **Preview 纯只读**: 不经 `PersonaManager.ensure_persona` / `FactStore.load_facts` 等 loader, 只在沙盒里 new 出 manager 实例读磁盘 JSON. 延续 P07 的 "不让首次加载副作用偷偷改磁盘" 原则. 任何管家失败都降级为 `warnings[]` 条目, 不报废整个 preview.
+  - **`structured + wire_messages` 双份同行**: `structured` 是给人看的分段折叠视图, `wire_messages` 是真正发 LLM 的扁平数组, 两者都在同一个 `PromptBundle` 里输出, 保证"看到的就是将要发出的". `char_counts` 给每段独立计字符数, 前端不用自己数.
+  - **`PreviewNotReady` = 409 不是 400**: character_name 为空属于会话"尚未就绪", 不是客户端参数错误; 前端用 409 触发"请先填人设"空态, 与 5xx 报错分开.
+  - **两栏 layout 现在落地, P09 只塞左栏**: `.chat-layout` grid 一次性定型, preview panel 常驻右栏. P09 消息流 + composer 直接进 `.chat-main`, 不用再动 CSS/workspace 骨架. 同时 preview panel 的 `session:change` / `preview:dirty` 订阅已就绪, P09 发送后 prompt 变化会自动刷.
 - **2026-04-18** 跨 workspace 细节: 会话创建/销毁时当前可见 workspace 的活跃子页自动刷新一次. 实现: `workspace_setup.js` / `workspace_settings.js` 订阅 `session:change`, 若 `store.active_workspace` 是本 workspace 则立即 `selectPage(currentId)` 重渲染, 否则打 dirty 标记, 待 `active_workspace:change` 切回本 workspace 时再刷. 动机: 修复 "Persona 页提示无会话 → 顶栏新建会话 → 页面仍停在空态, 必须手动切走再切回来" 的 UX 毛刺; 不可见 workspace 延迟刷新避免无谓后端请求. Chat / Evaluation / Diagnostics 会话无关, 不改.
+- **2026-04-18** P07/P09 补丁组交叉审计 + checkpoint. P07 Memory 编辑器五轮 UI 打磨 (双视图 tab + 自适应 textarea + 角标删除按钮 + 全宽卡片 + i18n 隔离编码污染) 与 P09 三组补丁 (免费预设 api_key 三层兜底 + 消息 timestamp 单调校验 + Lanlan 免费端 testbench 旁路) 全部就位. 本轮交叉审计结论: (a) `memory_editor_structured.js` 因早期编辑链事故整个文件退化为纯 ASCII (1808 字节非 ASCII 内容被 `?` 替换), 本文件已被标记为编码污染热点, 后续维护一律禁写中文字面量, 用户可见文案全部走 `i18n.js` (独立文件, 970 个中文段完好, UTF-8 完整性已校验). (b) 所有 CSS 类 (`memory-struct-root` / `memory-item-card` / `memory-item-delete-corner` / `memory-add-button` / `memory-field-inline` / `memory-checkbox-row` / `memory-textarea-{wrap,auto,toggle}` / `memory-advanced` / `memory-entity-{group,header,name}` / `memory-field-hint` / `memory-inline-warn`) 在 `testbench.css` 有对应定义, JS ↔ CSS 无悬空引用. (c) 新增 i18n 键 (`setup.memory.editor.message_type.{human,ai,system}` / `textarea.{expand,collapse}` / `multimodal_{extras,multi_text}` / `complex_content_hint` / `delete_item`) 均被 `memory_editor_structured.js` 正确引用; `_dom.js` 的 `el()` fallback 对只读 getter 的 try/catch 容错就位. (d) `memory_editor.js` / `memory_editor_raw.js` / `memory_editor_structured.js` 三个 ESM `node -e "import(...)"` 均成功加载. 本 checkpoint commit 对应状态: P00-P09 全部 done, P07/P09 已进入可用态, 下一步进 P10.

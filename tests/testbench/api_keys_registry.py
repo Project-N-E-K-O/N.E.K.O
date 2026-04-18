@@ -161,6 +161,67 @@ class ApiKeysRegistry:
         }
 
 
+# ── module-level helpers (not tied to the api_keys.json registry) ───
+#
+# These read ``config/api_providers.json`` via ``utils.api_config_loader``
+# and intentionally live *outside* :class:`ApiKeysRegistry` — the registry's
+# contract is "mirror tests/api_keys.json"; preset-bundled keys come from a
+# different file and shouldn't inherit the registry's cache/reload cycle.
+
+
+def get_preset_bundled_api_key(provider_key: str) -> str | None:
+    """Return the api_key that ships INSIDE ``config/api_providers.json`` for
+    an assist-tier preset, if any.
+
+    Rationale: some presets carry their own canonical api_key string that
+    the backend (or the vendor) recognizes as a "no-auth" token. The
+    ``free`` preset is the canonical case — it ships
+    ``openrouter_api_key: "free-access"``, and upstream
+    ``utils/config_manager.py`` treats this literal as the free-tier marker.
+    Testers who pick this preset should not be forced to type a key.
+
+    We also defensively check ``audio_api_key`` as a secondary fallback
+    (the realtime / TTS path uses it). Returns ``None`` if neither key is
+    present on the preset or if the loader cannot be imported.
+
+    Never called during module import so ``api_config_loader`` stays lazy;
+    the registry itself does not depend on ``config/api_providers.json``.
+    """
+    if not provider_key:
+        return None
+    try:
+        from utils.api_config_loader import get_config
+    except Exception:
+        # Shouldn't happen outside bootstrap, but don't crash the request
+        # path just because api_providers.json can't be parsed.
+        return None
+    try:
+        raw = get_config()
+    except Exception:
+        return None
+    assist = (raw or {}).get("assist_api_providers", {}) or {}
+    profile = assist.get(provider_key) or {}
+    # ``openrouter_api_key`` is the assist-tier field the chat backend would
+    # actually use; ``audio_api_key`` is a belt-and-braces fallback (same
+    # string for the "free" preset today).
+    for field_name in ("openrouter_api_key", "audio_api_key"):
+        candidate = profile.get(field_name)
+        if isinstance(candidate, str):
+            stripped = candidate.strip()
+            if stripped:
+                return stripped
+    return None
+
+
+def preset_has_bundled_api_key(provider_key: str) -> bool:
+    """Cheap boolean view for UI — does this preset ship its own api_key?
+
+    Used by ``GET /api/config/providers`` so the UI can render
+    "此预设内置 API Key, 无需填写" instead of the default "未配置" status.
+    """
+    return bool(get_preset_bundled_api_key(provider_key))
+
+
 # ── module-level singleton ──────────────────────────────────────────
 
 _registry: ApiKeysRegistry | None = None
@@ -179,4 +240,6 @@ __all__ = [
     "KNOWN_KEY_FIELDS",
     "PROVIDER_TO_KEY_FIELD",
     "get_api_keys_registry",
+    "get_preset_bundled_api_key",
+    "preset_has_bundled_api_key",
 ]

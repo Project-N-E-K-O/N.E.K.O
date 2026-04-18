@@ -27,8 +27,8 @@ todos:
     content: "P07 Setup Memory 四子页 (Recent/Facts/Reflections/Persona) 只读渲染 + 手动编辑 (表格/表单); 沙盒文件 GET/PUT API; memory_router 的读写部分 (尚不含 trigger). 注: P07 落地形态为 raw JSON textarea 编辑器 (+合法性校验/dirty 徽章/Reload/Format/Revert), 而非富表格; PLAN 原先所述 Facts 表格 / Reflections 两列等富编辑 UI 推迟到 P10 记忆操作触发落地后再叠在同一 editor 旁, 避免在上游 schema 尚会微调时提前固化表单."
     status: done
   - id: p08_prompt_bundle_preview
-    content: "P08 PromptBundle + Prompt Preview 双视图: pipeline/prompt_builder.py 复用 dump_llm_input 并注入 VirtualClock; 返回 PromptBundle (structured + system_prompt 扁平串 + wire_messages + char_counts); chat_router 的 GET /chat/prompt_preview; Chat workspace 右侧 Prompt Preview 面板 (Structured / Raw wire toggle + 分区 CollapsibleBlock + Copy 按钮 + 待刷新提示)"
-    status: pending
+    content: "P08 PromptBundle + Prompt Preview 双视图: pipeline/prompt_builder.py 复用 dump_llm_input 并注入 VirtualClock; 返回 PromptBundle (structured + system_prompt 扁平串 + wire_messages + char_counts); chat_router 的 GET /chat/prompt_preview; Chat workspace 右侧 Prompt Preview 面板 (Structured / Raw wire toggle + 分区 CollapsibleBlock + Copy 按钮 + 待刷新提示). 实际落地: 并行实现 (不 import upstream dump 脚本), 以 session.persona + session.clock 为唯一真相源, memory manager 错误降级为 warnings; Chat workspace 采用 .chat-layout 两栏 grid (左 .chat-main 为 P09 消息流占位, 右 .chat-sidebar 常驻 preview panel); PreviewNotReady=409 区别于 5xx."
+    status: done
   - id: p09_chat_messages_and_send
     content: "P09 Chat 消息流 + 手动 Send: 消息流渲染 (timestamp + 时间分隔条 > 30min + 来源 tag + ref✓ + 长消息折叠); 每条 [⋯] 菜单 (Edit/Delete/Evaluate/Re-run from here/Add reference/Edit timestamp); chat_router 消息 CRUD + PATCH timestamp + Re-run from here 截断逻辑; Composer 两行扁平 (Manual 模式 + Role User/System + Next turn 时间控件); SSE /chat/send 消费 wire_messages + 发送前落盘日志; /chat/inject_system"
     status: pending

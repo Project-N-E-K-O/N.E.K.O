@@ -32,6 +32,7 @@ from pydantic import BaseModel
 from tests.testbench.api_keys_registry import (
     PROVIDER_TO_KEY_FIELD,
     get_api_keys_registry,
+    preset_has_bundled_api_key,
 )
 from tests.testbench.logger import python_logger
 from tests.testbench.model_config import (
@@ -39,6 +40,10 @@ from tests.testbench.model_config import (
     GroupKey,
     ModelConfigBundle,
     ModelGroupConfig,
+)
+from tests.testbench.pipeline.chat_runner import (
+    ChatConfigError,
+    resolve_group_config,
 )
 from tests.testbench.session_store import (
     SessionConflictError,
@@ -226,6 +231,12 @@ async def list_providers() -> dict[str, Any]:
     providers: list[dict[str, Any]] = []
     for key, profile in assist.items():
         key_field = PROVIDER_TO_KEY_FIELD.get(key)
+        # ``preset_has_bundled_api_key`` is True when the preset ships its
+        # own api_key (the ``free`` preset carries ``openrouter_api_key:
+        # "free-access"``). UI uses this to display "此预设内置 API Key,
+        # 无需填写" instead of the generic "未配置" warning for free tier.
+        # Value itself is never echoed — only the boolean — to keep the
+        # endpoint plaintext-free.
         providers.append({
             "key": profile.get("key", key),
             "name": profile.get("name", key),
@@ -242,6 +253,7 @@ async def list_providers() -> dict[str, Any]:
             "is_free_version": bool(profile.get("is_free_version", False)),
             "api_key_field": key_field,
             "api_key_configured": registry.is_present(key_field) if key_field else False,
+            "preset_api_key_bundled": preset_has_bundled_api_key(key),
         })
     return {"providers": providers}
 
@@ -296,23 +308,27 @@ async def test_connection(
             state=SessionState.BUSY,
         ):
             session = get_session_store().require()
-            bundle = _load_bundle(session)
-            cfg = bundle.get(group)
-            if not cfg.is_configured():
+            # 走 chat_runner.resolve_group_config 统一三层兜底:
+            #   1) 用户显式填 api_key
+            #   2) 预设自带 api_key (free → "free-access")
+            #   3) tests/api_keys.json 里的 provider 映射
+            # 任一层命中即可. 只有三层都失败 (真的没 key) 才提示 MissingApiKey.
+            # 过去这里手写了 `if not cfg.api_key: return MissingApiKey`, 导致免
+            # 费预设即使后端能连也被前端拒绝.
+            try:
+                cfg = resolve_group_config(session, group)
+            except ChatConfigError as exc:
+                # 把 chat_runner 的错误码映射到 UI 期望的字段名 — 前端现有
+                # toast 逻辑认 NotConfigured / MissingApiKey 这两个标签.
+                error_type = {
+                    "ChatModelNotConfigured": "NotConfigured",
+                    "ChatApiKeyMissing": "MissingApiKey",
+                }.get(exc.code, exc.code)
                 return {
                     "ok": False,
                     "error": {
-                        "type": "NotConfigured",
-                        "message": "base_url 和 model 必填后再测试",
-                    },
-                    "latency_ms": 0,
-                }
-            if not cfg.api_key:
-                return {
-                    "ok": False,
-                    "error": {
-                        "type": "MissingApiKey",
-                        "message": "api_key 为空, 请填入或从 API Keys 页面选一个预设",
+                        "type": error_type,
+                        "message": exc.message,
                     },
                     "latency_ms": 0,
                 }

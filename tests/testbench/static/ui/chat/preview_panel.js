@@ -1,0 +1,402 @@
+/**
+ * chat/preview_panel.js — Prompt Preview 右侧面板 (P08).
+ *
+ * 消费 `GET /api/chat/prompt_preview` 返回的 PromptBundle, 提供两种视图:
+ *
+ *   - **Structured**  — 每个 "逻辑分节" 独立 CollapsibleBlock. 给测试人员看
+ *     "哪一段是从哪来的". 带来源 tag (session_init/character_prompt/memory/...)
+ *     和字符数徽章. 其中 recent_history 是 list<{speaker,content}>, 会展开
+ *     成一组小块 (不再嵌套折叠, 避免三层 caret).
+ *   - **Raw wire**   — 真正送到 LLM 的 `messages: [{role, content}, ...]`
+ *     数组. 首条 system 一定是"session_init + character_prompt +
+ *     memory_flat + closing"连起来的大字符串 (PLAN §3). 顶部固定条提示
+ *     "这是真正送到 AI 的内容, Structured 仅人类视图".
+ *
+ * 与会话状态的联动:
+ *   - 第一次 `mount` 默认不触发请求 (尊重 Chat workspace 的 lazy-load 语义),
+ *     用户点击 [刷新] 或切到 Chat workspace 后展开 panel 时再拉.
+ *   - 订阅 `session:change` — 无论是新建还是销毁, 都把 "data" 区清空, 改贴
+ *     空态提示 (避免旧会话的 preview 残留到新会话). 不自动预载新 preview,
+ *     因为新会话大概率 persona_name 还没填, 主动请求只会换来一个 409.
+ *   - P09 之后会加 "持久化消息列表 → 需要重新刷新" 的脏标; 这里先留 hook
+ *     (`markDirty()` 暴露在返回对象上) 但不调用.
+ *
+ * 没有 401 / 403 走的必要: 端点自身除了 404 NoActiveSession / 409
+ * PersonaNotReady 之外不会"业务预期性失败". 404/409 都走 expectedStatuses
+ * 路径不吐 toast, 改成面板内空态提示.
+ */
+
+import { api } from '../../core/api.js';
+import { i18n } from '../../core/i18n.js';
+import { toast } from '../../core/toast.js';
+import { on, store } from '../../core/state.js';
+import { createCollapsible, mountContainerToolbar } from '../../core/collapsible.js';
+import { el } from '../_dom.js';
+
+/**
+ * 挂载预览面板到给定 host.
+ *
+ * 返回对象暴露 `refresh()` 和 `markDirty()`, 供父 workspace 后续接会话事件
+ * (比如 P09 发送消息完要重刷) 时调用.
+ */
+export function mountPreviewPanel(host) {
+  host.innerHTML = '';
+  host.classList.add('preview-panel');
+
+  // ── header ─────────────────────────────────────────────────────
+  const header = el('div', { className: 'preview-panel-header' });
+  header.append(
+    el('h3', {}, i18n('chat.preview.heading')),
+  );
+
+  const viewToggle = el('div', { className: 'view-toggle' });
+  const btnStructured = el('button', {
+    type: 'button',
+    className: 'view-btn active',
+    'data-view': 'structured',
+  }, i18n('chat.preview.view.structured'));
+  const btnRaw = el('button', {
+    type: 'button',
+    className: 'view-btn',
+    'data-view': 'raw',
+  }, i18n('chat.preview.view.raw'));
+  viewToggle.append(btnStructured, btnRaw);
+  header.append(viewToggle);
+
+  const refreshBtn = el('button', {
+    type: 'button',
+    className: 'primary small',
+  }, i18n('chat.preview.refresh_btn'));
+  header.append(refreshBtn);
+
+  host.append(header);
+
+  // ── status line ────────────────────────────────────────────────
+  const statusLine = el('div', { className: 'preview-status muted' },
+    i18n('chat.preview.status.not_loaded'));
+  host.append(statusLine);
+
+  // ── body (content host) ────────────────────────────────────────
+  const body = el('div', { className: 'preview-body' });
+  host.append(body);
+
+  // ── state ──────────────────────────────────────────────────────
+  let currentBundle = null;
+  let currentView = 'structured';
+  let dirty = false;
+
+  function setView(view) {
+    currentView = view;
+    for (const btn of viewToggle.querySelectorAll('.view-btn')) {
+      btn.classList.toggle('active', btn.dataset.view === view);
+    }
+    renderBody();
+  }
+
+  btnStructured.addEventListener('click', () => setView('structured'));
+  btnRaw.addEventListener('click', () => setView('raw'));
+
+  refreshBtn.addEventListener('click', () => { refresh(); });
+
+  /** 渲染空态 (无会话 / 缺 character_name / 出错). */
+  function renderEmpty(messageKey, extra = null) {
+    body.innerHTML = '';
+    const box = el('div', { className: 'empty-state' },
+      el('p', {}, i18n(messageKey)),
+    );
+    if (extra) box.append(extra);
+    body.append(box);
+  }
+
+  function renderIdle() {
+    body.innerHTML = '';
+    body.append(el('div', { className: 'empty-state muted' },
+      el('p', {}, i18n('chat.preview.status.click_to_load')),
+    ));
+  }
+
+  /** 拉一次 preview + 渲染. */
+  async function refresh() {
+    statusLine.textContent = i18n('chat.preview.status.loading');
+    const res = await api.get('/api/chat/prompt_preview', {
+      expectedStatuses: [404, 409],
+    });
+    if (!res.ok) {
+      currentBundle = null;
+      if (res.status === 404) {
+        statusLine.textContent = i18n('chat.preview.status.no_session');
+        renderEmpty('chat.preview.empty.no_session');
+        return;
+      }
+      if (res.status === 409) {
+        statusLine.textContent = i18n('chat.preview.status.not_ready');
+        renderEmpty('chat.preview.empty.no_character',
+          el('p', { className: 'muted' }, res.error?.message || ''));
+        return;
+      }
+      statusLine.textContent = i18n('chat.preview.status.load_failed');
+      renderEmpty('chat.preview.empty.error',
+        el('p', { className: 'muted' }, res.error?.message || `HTTP ${res.status}`));
+      return;
+    }
+    currentBundle = res.data;
+    dirty = false;
+    const now = new Date().toLocaleTimeString();
+    statusLine.textContent = i18n('chat.preview.status.loaded', now);
+    renderBody();
+  }
+
+  /** 根据 currentBundle + currentView 重绘 body. */
+  function renderBody() {
+    body.innerHTML = '';
+    if (!currentBundle) {
+      renderIdle();
+      return;
+    }
+
+    // ── metadata strip ──
+    const meta = currentBundle.metadata || {};
+    const metaStrip = el('div', { className: 'preview-meta' });
+    metaStrip.append(
+      metaBadge(i18n('chat.preview.meta.character'), meta.character_name || '-'),
+      metaBadge(i18n('chat.preview.meta.master'), meta.master_name || '-'),
+      metaBadge(i18n('chat.preview.meta.language'), meta.language_short || '-'),
+      metaBadge(
+        i18n('chat.preview.meta.template'),
+        meta.template_used === 'default'
+          ? i18n('chat.preview.meta.template_default')
+          : i18n('chat.preview.meta.template_stored'),
+      ),
+      metaBadge(
+        i18n('chat.preview.meta.system_chars'),
+        String(currentBundle.char_counts?.system_prompt_total ?? 0),
+      ),
+      metaBadge(
+        i18n('chat.preview.meta.approx_tokens'),
+        String(currentBundle.char_counts?.approx_tokens ?? 0),
+      ),
+      metaBadge(
+        i18n('chat.preview.meta.virtual_now'),
+        (meta.built_at_virtual || '').replace('T', ' '),
+      ),
+    );
+    body.append(metaStrip);
+
+    // ── warnings ──
+    const warnings = currentBundle.warnings || [];
+    if (warnings.length) {
+      const warnBox = el('div', { className: 'preview-warnings' });
+      warnBox.append(el('div', { className: 'warn-heading' },
+        i18n('chat.preview.warnings_heading', warnings.length)));
+      for (const w of warnings) {
+        warnBox.append(el('div', { className: 'warn-item' }, w));
+      }
+      body.append(warnBox);
+    }
+
+    if (dirty) {
+      body.append(el('div', { className: 'preview-dirty-banner' },
+        i18n('chat.preview.status.dirty')));
+    }
+
+    // ── main view ──
+    if (currentView === 'structured') {
+      body.append(renderStructured(currentBundle));
+    } else {
+      body.append(renderRawWire(currentBundle));
+    }
+  }
+
+  function metaBadge(label, value) {
+    return el('span', { className: 'meta-badge' },
+      el('span', { className: 'meta-label' }, label + ': '),
+      el('span', { className: 'meta-value' }, value),
+    );
+  }
+
+  /** Structured 视图: 各分节独立折叠块. */
+  function renderStructured(bundle) {
+    const { structured = {}, char_counts = {} } = bundle;
+    const container = el('div', { className: 'preview-view structured-view' });
+
+    // 顶部固定提示: 本视图仅展示首轮 system_prompt, 不含后续 user/assistant
+    // 轮次. 切到 Raw wire 才能看真实的 wire_messages 流水.
+    container.append(el('div', { className: 'preview-hint info' },
+      i18n('chat.preview.hint.structured')));
+
+    // section 顺序严格镜像 system_prompt 真实拼装顺序 (见
+    // prompt_builder._flatten_memory_components):
+    //   session_init + character_prompt
+    //     + persona_header + persona_content
+    //     + inner_thoughts_header + inner_thoughts_dynamic
+    //     + recent_history (list → 行拼接)
+    //     + time_context + holiday_context
+    //   + closing
+    // recent_history 早期为方便实现放在了 closing 之后, 容易让测试人员误以
+    // 为"最近对话是 system_prompt 的结尾". 现在按真实顺序放回中段.
+    const renderText = (key) => {
+      const text = structured[key] || '';
+      return createCollapsible({
+        blockId: `preview-structured-${key}`,
+        title: i18n(`chat.preview.section.${key}`),
+        content: text,
+        lengthBadge: i18n('chat.preview.length_badge', text.length),
+        defaultCollapsed: _defaultCollapsedFor(key, text),
+        copyable: true,
+      });
+    };
+
+    container.append(renderText('session_init'));
+    container.append(renderText('character_prompt'));
+    container.append(renderText('persona_header'));
+    container.append(renderText('persona_content'));
+    container.append(renderText('inner_thoughts_header'));
+    container.append(renderText('inner_thoughts_dynamic'));
+
+    // recent_history 是 list, 单独用 speaker|content 表格渲染.
+    const recent = structured.recent_history || [];
+    const recentBody = el('div', { className: 'recent-history' });
+    if (!recent.length) {
+      recentBody.append(el('div', { className: 'muted' },
+        i18n('chat.preview.section.recent_history_empty')));
+    } else {
+      for (const e of recent) {
+        recentBody.append(el('div', { className: 'recent-entry' },
+          el('span', { className: 'recent-speaker' }, e.speaker || '?'),
+          el('span', { className: 'recent-sep' }, ' | '),
+          el('span', { className: 'recent-content' }, e.content || ''),
+        ));
+      }
+    }
+    container.append(createCollapsible({
+      blockId: 'preview-structured-recent_history',
+      title: i18n('chat.preview.section.recent_history'),
+      content: recentBody,
+      summary: recent.length
+        ? i18n('chat.preview.recent_summary', recent.length)
+        : i18n('chat.preview.section.recent_history_empty'),
+      lengthBadge: i18n('chat.preview.recent_badge',
+        recent.length, char_counts.recent_history ?? 0),
+      defaultCollapsed: true,
+      copyable: false,
+    }));
+
+    container.append(renderText('time_context'));
+    container.append(renderText('holiday_context'));
+    container.append(renderText('closing'));
+
+    // toolbar 挂最顶
+    mountContainerToolbar(container);
+    return container;
+  }
+
+  /** Raw wire 视图: 真正送去模型的 messages 数组. */
+  function renderRawWire(bundle) {
+    const container = el('div', { className: 'preview-view raw-view' });
+
+    container.append(el('div', { className: 'preview-hint warn' },
+      i18n('chat.preview.hint.raw')));
+
+    // 顶部 Copy 按钮群.
+    const actions = el('div', { className: 'raw-actions' });
+    actions.append(
+      el('button', {
+        type: 'button',
+        className: 'small',
+        onClick: () => copyText(
+          JSON.stringify(bundle.wire_messages, null, 2),
+          'chat.preview.copied_wire',
+        ),
+      }, i18n('chat.preview.copy_wire_json')),
+      el('button', {
+        type: 'button',
+        className: 'small',
+        onClick: () => copyText(bundle.system_prompt || '', 'chat.preview.copied_system'),
+      }, i18n('chat.preview.copy_system_string')),
+    );
+    container.append(actions);
+
+    const wire = bundle.wire_messages || [];
+    if (!wire.length) {
+      container.append(el('div', { className: 'empty-state' },
+        i18n('chat.preview.empty.no_wire')));
+      return container;
+    }
+
+    const list = el('div', { className: 'wire-list' });
+    wire.forEach((msg, idx) => {
+      const role = msg.role || '?';
+      const content = typeof msg.content === 'string'
+        ? msg.content
+        : JSON.stringify(msg.content);
+      // system 作为首条, 默认折叠 (长, 只想对照结构时无需展开).
+      const isSystem = role === 'system';
+      const title = i18n('chat.preview.wire.title',
+        idx, role.toUpperCase());
+      const block = createCollapsible({
+        blockId: `preview-wire-${idx}`,
+        title,
+        content,
+        lengthBadge: i18n('chat.preview.length_badge', content.length),
+        defaultCollapsed: isSystem || content.length > 500,
+        copyable: true,
+      });
+      // 用 role 给块加 class 以便 CSS 染色.
+      block.classList.add(`wire-role-${role}`);
+      list.append(block);
+    });
+    container.append(list);
+
+    mountContainerToolbar(container);
+    return container;
+  }
+
+  async function copyText(text, okKey) {
+    try {
+      await navigator.clipboard.writeText(text || '');
+      toast.ok(i18n(okKey));
+    } catch (err) {
+      toast.err(i18n('collapsible.copy_fail'), { message: String(err) });
+    }
+  }
+
+  function _defaultCollapsedFor(key, text) {
+    // 短的 header / closing 默认展开方便读; 长的 persona_content 默认折叠.
+    if (key === 'session_init' || key === 'closing') return false;
+    if (!text) return true;
+    return text.length > 200;
+  }
+
+  // ── lifecycle ──────────────────────────────────────────────────
+
+  // 首次挂载: 如果已有会话, 自动拉一次; 否则显示空态提示.
+  if (store.session?.id) {
+    refresh();
+  } else {
+    renderIdle();
+  }
+
+  // 会话变更: 清空 currentBundle (旧数据无效); 如果新会话存在则自动刷新一次.
+  // destroy 走的路径 session=null → 渲染空态.
+  const offSession = on('session:change', (s) => {
+    currentBundle = null;
+    if (s?.id) {
+      refresh();
+    } else {
+      statusLine.textContent = i18n('chat.preview.status.not_loaded');
+      renderEmpty('chat.preview.empty.no_session');
+    }
+  });
+
+  return {
+    refresh,
+    markDirty() {
+      if (!currentBundle) return;
+      dirty = true;
+      renderBody();
+    },
+    destroy() {
+      offSession();
+    },
+  };
+}
