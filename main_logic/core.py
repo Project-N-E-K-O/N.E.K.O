@@ -2927,11 +2927,9 @@ class LLMSessionManager:
                     logger.error(f"💥 Final Swap Sequence: Error closing old session: {e}")
 
             # 验证新session的WebSocket是否仍然有效（可能在swap过程中被服务器断开）
-            if isinstance(self.session, OmniRealtimeClient):
-                if not self.session.ws:
-                    logger.error("💥 Final Swap Sequence: 新session的WebSocket在swap后已失效，热切换失败")
-                    # 不强制回滚，让系统通过现有错误处理机制自动重建session
-                    # 注意：此时旧session已关闭，无法回滚
+            if isinstance(self.session, OmniRealtimeClient) and not self.session.ws:
+                # 旧session已关闭无法回滚，抛出异常让 except 块走 end_session 重建流程
+                raise RuntimeError("新session的WebSocket在swap后已失效，热切换失败")
 
             # 旧资源完全清理后，再启动新session的消息监听
             if self.session and hasattr(self.session, 'handle_messages'):
@@ -2961,6 +2959,11 @@ class LLMSessionManager:
             await self.send_status(json.dumps({"code": "INTERNAL_UPDATE_FAILED", "details": {"error": str(e)}}))
             await self._cleanup_pending_session_resources()
             await self._reset_preparation_state(clear_main_cache=True)  # Clear all state for clean restart after error
+            # 若 self.session 的 ws 已失效（swap 因 ws invalid 失败），清除会话状态；
+            # 否则 is_active=True + ws=None 会让后续输入进入坏会话。
+            if self.session and isinstance(self.session, OmniRealtimeClient) and not self.session.ws:
+                self.session = None
+                self.is_active = False
             if self.is_active and self.session and hasattr(self.session, 'handle_messages') and (not self.message_handler_task or self.message_handler_task.done()):
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
         finally:
