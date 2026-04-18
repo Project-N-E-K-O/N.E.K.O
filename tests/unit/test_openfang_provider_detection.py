@@ -184,7 +184,7 @@ class TestSyncConfigKeyFreeProvider:
     """Test that sync_config allows Ollama (no API key) to proceed."""
 
     def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
+        return asyncio.run(coro)
 
     @patch("brain.openfang_adapter.get_config_manager")
     def test_ollama_no_key_proceeds(self, mock_get_cm):
