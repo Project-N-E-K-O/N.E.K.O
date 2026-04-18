@@ -1256,6 +1256,9 @@
                             );
                         }
                     };
+                    reader.onerror = function () {
+                        console.warn('[粘贴] 读取剪贴板图片失败');
+                    };
                     reader.readAsDataURL(blob);
                     break;
                 }
