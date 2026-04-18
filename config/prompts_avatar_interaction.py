@@ -45,10 +45,30 @@ _AVATAR_INTERACTION_TOOL_LABELS = {
         "fist": "猫爪",
         "hammer": "锤子",
     },
+    "zh-TW": {
+        "lollipop": "棒棒糖",
+        "fist": "貓爪",
+        "hammer": "槌子",
+    },
     "en": {
         "lollipop": "lollipop",
         "fist": "cat paw",
         "hammer": "hammer",
+    },
+    "ja": {
+        "lollipop": "ペロペロキャンディ",
+        "fist": "猫の肉球",
+        "hammer": "ハンマー",
+    },
+    "ko": {
+        "lollipop": "막대사탕",
+        "fist": "고양이 발",
+        "hammer": "망치",
+    },
+    "ru": {
+        "lollipop": "леденец",
+        "fist": "кошачья лапка",
+        "hammer": "молоток",
     },
 }
 _AVATAR_INTERACTION_ACTION_LABELS = {
@@ -65,6 +85,19 @@ _AVATAR_INTERACTION_ACTION_LABELS = {
             "bonk": "锤击",
         },
     },
+    "zh-TW": {
+        "lollipop": {
+            "offer": "第一口",
+            "tease": "第二口",
+            "tap_soft": "連續投餵",
+        },
+        "fist": {
+            "poke": "輕觸",
+        },
+        "hammer": {
+            "bonk": "槌擊",
+        },
+    },
     "en": {
         "lollipop": {
             "offer": "first bite",
@@ -78,6 +111,45 @@ _AVATAR_INTERACTION_ACTION_LABELS = {
             "bonk": "hammer hit",
         },
     },
+    "ja": {
+        "lollipop": {
+            "offer": "ひとくち目",
+            "tease": "ふたくち目",
+            "tap_soft": "連続で食べさせる",
+        },
+        "fist": {
+            "poke": "軽く触れる",
+        },
+        "hammer": {
+            "bonk": "ハンマーでゴツン",
+        },
+    },
+    "ko": {
+        "lollipop": {
+            "offer": "첫 한입",
+            "tease": "두 번째 한입",
+            "tap_soft": "연속 먹이기",
+        },
+        "fist": {
+            "poke": "가볍게 톡",
+        },
+        "hammer": {
+            "bonk": "망치질",
+        },
+    },
+    "ru": {
+        "lollipop": {
+            "offer": "первый кусочек",
+            "tease": "второй кусочек",
+            "tap_soft": "повторное угощение",
+        },
+        "fist": {
+            "poke": "лёгкое касание",
+        },
+        "hammer": {
+            "bonk": "удар молотком",
+        },
+    },
 }
 _AVATAR_INTERACTION_INTENSITY_LABELS = {
     "zh": {
@@ -86,11 +158,35 @@ _AVATAR_INTERACTION_INTENSITY_LABELS = {
         "burst": "连续爆发",
         "easter_egg": "彩蛋爆发",
     },
+    "zh-TW": {
+        "normal": "正常",
+        "rapid": "偏高頻",
+        "burst": "連續爆發",
+        "easter_egg": "彩蛋爆發",
+    },
     "en": {
         "normal": "normal",
         "rapid": "rapid",
         "burst": "burst",
         "easter_egg": "easter egg",
+    },
+    "ja": {
+        "normal": "通常",
+        "rapid": "高頻度",
+        "burst": "連続ラッシュ",
+        "easter_egg": "イースターエッグ",
+    },
+    "ko": {
+        "normal": "보통",
+        "rapid": "빠름",
+        "burst": "연속 폭발",
+        "easter_egg": "이스터에그",
+    },
+    "ru": {
+        "normal": "обычно",
+        "rapid": "часто",
+        "burst": "серия",
+        "easter_egg": "пасхалка",
     },
 }
 _AVATAR_INTERACTION_TOUCH_ZONE_LABELS = {
@@ -100,11 +196,35 @@ _AVATAR_INTERACTION_TOUCH_ZONE_LABELS = {
         "face": "脸侧/嘴边",
         "body": "身前/肩侧",
     },
+    "zh-TW": {
+        "ear": "耳側",
+        "head": "頭頂",
+        "face": "臉側/嘴邊",
+        "body": "身前/肩側",
+    },
     "en": {
         "ear": "ear side",
         "head": "top of the head",
         "face": "cheek / mouth side",
         "body": "front body / shoulder side",
+    },
+    "ja": {
+        "ear": "耳の横",
+        "head": "頭のてっぺん",
+        "face": "頬 / 口元",
+        "body": "体の前 / 肩の横",
+    },
+    "ko": {
+        "ear": "귀 옆",
+        "head": "머리 위",
+        "face": "볼 / 입가",
+        "body": "몸 앞 / 어깨 옆",
+    },
+    "ru": {
+        "ear": "возле уха",
+        "head": "макушка",
+        "face": "щека / край рта",
+        "body": "перед корпусом / плечо",
     },
 }
 _AVATAR_INTERACTION_SYSTEM_WRAPPER = {
@@ -112,9 +232,25 @@ _AVATAR_INTERACTION_SYSTEM_WRAPPER = {
         "prefix": "======[系统通知：以下是一次刚刚发生的道具互动，请将其视为即时互动引导，不要直接复述字段名或系统描述]======",
         "suffix": "======[系统通知结束：请直接以当前角色口吻输出即时反应]======",
     },
+    "zh-TW": {
+        "prefix": "======[系統通知：以下是一次剛剛發生的道具互動，請將其視為即時互動引導，不要直接複述欄位名或系統描述]======",
+        "suffix": "======[系統通知結束：請直接以當前角色口吻輸出即時反應]======",
+    },
     "en": {
         "prefix": "======[System notice: the following tool interaction just happened. Treat it as an immediate interaction cue and do not repeat field names or system wording]======",
         "suffix": "======[System notice end: respond directly in character with the immediate reaction only]======",
+    },
+    "ja": {
+        "prefix": "======[システム通知: 以下はたった今発生した道具インタラクションです。即時の反応のきっかけとして扱い、項目名やシステム文言をそのまま繰り返さないでください]======",
+        "suffix": "======[システム通知終了: 現在のキャラクター口調で即時反応だけを返してください]======",
+    },
+    "ko": {
+        "prefix": "======[시스템 알림: 아래는 방금 발생한 도구 상호작용입니다. 즉시 반응해야 하는 단서로만 사용하고, 항목명이나 시스템 문구를 그대로 반복하지 마세요]======",
+        "suffix": "======[시스템 알림 종료: 현재 캐릭터 말투로 즉각적인 반응만 출력하세요]======",
+    },
+    "ru": {
+        "prefix": "======[Системное уведомление: ниже описано только что произошедшее взаимодействие с инструментом. Считайте это сигналом для мгновенной реакции и не повторяйте названия полей или системные формулировки]======",
+        "suffix": "======[Конец системного уведомления: ответьте только мгновенной реакцией в текущем образе персонажа]======",
     },
 }
 _AVATAR_INTERACTION_REACTION_PROFILES = {
@@ -242,199 +378,6 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
             },
         },
     },
-}
-_AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
-    "zh": {
-        "lollipop": {
-            "offer": "[主人喂了你一口棒棒糖]",
-            "tease": "[主人又喂了你一口棒棒糖]",
-            "tap_soft": "[主人连续拿棒棒糖喂你]",
-        },
-        "fist": {
-            "poke": "[主人摸了摸你的头]",
-            "rapid": "[主人连续摸了摸你的头]",
-        },
-        "hammer": {
-            "bonk": "[主人用锤子敲了敲你的头]",
-            "rapid": "[主人连续敲了你好几下]",
-            "easter_egg": "[主人用锤子重重敲了你的头]",
-        },
-    },
-    "en": {
-        "lollipop": {
-            "offer": "[Your master fed you a bite of lollipop]",
-            "tease": "[Your master fed you another bite of lollipop]",
-            "tap_soft": "[Your master kept feeding you the lollipop]",
-        },
-        "fist": {
-            "poke": "[Your master gave your head a gentle pat]",
-            "rapid": "[Your master repeatedly patted your head]",
-        },
-        "hammer": {
-            "bonk": "[Your master bonked your head with a hammer]",
-            "rapid": "[Your master bonked you several times]",
-            "easter_egg": "[Your master hit your head hard with a hammer]",
-        },
-    },
-}
-_AVATAR_INTERACTION_DEFAULT_REACTION_PROFILES = {
-    "zh": {
-        "reaction_focus": "保持即时、贴合角色的反应。",
-        "style_hint": "短促、自然、贴合当场反应。",
-    },
-    "en": {
-        "reaction_focus": "Keep the reaction immediate and in character.",
-        "style_hint": "Short, natural, and grounded in the moment.",
-    },
-}
-
-_AVATAR_INTERACTION_TOOL_LABELS.update({
-    "zh-TW": {
-        "lollipop": "棒棒糖",
-        "fist": "貓爪",
-        "hammer": "槌子",
-    },
-    "ja": {
-        "lollipop": "ペロペロキャンディ",
-        "fist": "猫の肉球",
-        "hammer": "ハンマー",
-    },
-    "ko": {
-        "lollipop": "막대사탕",
-        "fist": "고양이 발",
-        "hammer": "망치",
-    },
-    "ru": {
-        "lollipop": "леденец",
-        "fist": "кошачья лапка",
-        "hammer": "молоток",
-    },
-})
-_AVATAR_INTERACTION_ACTION_LABELS.update({
-    "zh-TW": {
-        "lollipop": {
-            "offer": "第一口",
-            "tease": "第二口",
-            "tap_soft": "連續投餵",
-        },
-        "fist": {
-            "poke": "輕觸",
-        },
-        "hammer": {
-            "bonk": "槌擊",
-        },
-    },
-    "ja": {
-        "lollipop": {
-            "offer": "ひとくち目",
-            "tease": "ふたくち目",
-            "tap_soft": "連続で食べさせる",
-        },
-        "fist": {
-            "poke": "軽く触れる",
-        },
-        "hammer": {
-            "bonk": "ハンマーでゴツン",
-        },
-    },
-    "ko": {
-        "lollipop": {
-            "offer": "첫 한입",
-            "tease": "두 번째 한입",
-            "tap_soft": "연속 먹이기",
-        },
-        "fist": {
-            "poke": "가볍게 톡",
-        },
-        "hammer": {
-            "bonk": "망치질",
-        },
-    },
-    "ru": {
-        "lollipop": {
-            "offer": "первый кусочек",
-            "tease": "второй кусочек",
-            "tap_soft": "повторное угощение",
-        },
-        "fist": {
-            "poke": "лёгкое касание",
-        },
-        "hammer": {
-            "bonk": "удар молотком",
-        },
-    },
-})
-_AVATAR_INTERACTION_INTENSITY_LABELS.update({
-    "zh-TW": {
-        "normal": "正常",
-        "rapid": "偏高頻",
-        "burst": "連續爆發",
-        "easter_egg": "彩蛋爆發",
-    },
-    "ja": {
-        "normal": "通常",
-        "rapid": "高頻度",
-        "burst": "連続ラッシュ",
-        "easter_egg": "イースターエッグ",
-    },
-    "ko": {
-        "normal": "보통",
-        "rapid": "빠름",
-        "burst": "연속 폭발",
-        "easter_egg": "이스터에그",
-    },
-    "ru": {
-        "normal": "обычно",
-        "rapid": "часто",
-        "burst": "серия",
-        "easter_egg": "пасхалка",
-    },
-})
-_AVATAR_INTERACTION_TOUCH_ZONE_LABELS.update({
-    "zh-TW": {
-        "ear": "耳側",
-        "head": "頭頂",
-        "face": "臉側/嘴邊",
-        "body": "身前/肩側",
-    },
-    "ja": {
-        "ear": "耳の横",
-        "head": "頭のてっぺん",
-        "face": "頬 / 口元",
-        "body": "体の前 / 肩の横",
-    },
-    "ko": {
-        "ear": "귀 옆",
-        "head": "머리 위",
-        "face": "볼 / 입가",
-        "body": "몸 앞 / 어깨 옆",
-    },
-    "ru": {
-        "ear": "возле уха",
-        "head": "макушка",
-        "face": "щека / край рта",
-        "body": "перед корпусом / плечо",
-    },
-})
-_AVATAR_INTERACTION_SYSTEM_WRAPPER.update({
-    "zh-TW": {
-        "prefix": "======[系統通知：以下是一次剛剛發生的道具互動，請將其視為即時互動引導，不要直接複述欄位名或系統描述]======",
-        "suffix": "======[系統通知結束：請直接以當前角色口吻輸出即時反應]======",
-    },
-    "ja": {
-        "prefix": "======[システム通知: 以下はたった今発生した道具インタラクションです。即時の反応のきっかけとして扱い、項目名やシステム文言をそのまま繰り返さないでください]======",
-        "suffix": "======[システム通知終了: 現在のキャラクター口調で即時反応だけを返してください]======",
-    },
-    "ko": {
-        "prefix": "======[시스템 알림: 아래는 방금 발생한 도구 상호작용입니다. 즉시 반응해야 하는 단서로만 사용하고, 항목명이나 시스템 문구를 그대로 반복하지 마세요]======",
-        "suffix": "======[시스템 알림 종료: 현재 캐릭터 말투로 즉각적인 반응만 출력하세요]======",
-    },
-    "ru": {
-        "prefix": "======[Системное уведомление: ниже описано только что произошедшее взаимодействие с инструментом. Считайте это сигналом для мгновенной реакции и не повторяйте названия полей или системные формулировки]======",
-        "suffix": "======[Конец системного уведомления: ответьте только мгновенной реакцией в текущем образе персонажа]======",
-    },
-})
-_AVATAR_INTERACTION_REACTION_PROFILES.update({
     "zh-TW": {
         "lollipop": {
             "offer": {
@@ -683,8 +626,40 @@ _AVATAR_INTERACTION_REACTION_PROFILES.update({
             },
         },
     },
-})
-_AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES.update({
+}
+_AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
+    "zh": {
+        "lollipop": {
+            "offer": "[主人喂了你一口棒棒糖]",
+            "tease": "[主人又喂了你一口棒棒糖]",
+            "tap_soft": "[主人连续拿棒棒糖喂你]",
+        },
+        "fist": {
+            "poke": "[主人摸了摸你的头]",
+            "rapid": "[主人连续摸了摸你的头]",
+        },
+        "hammer": {
+            "bonk": "[主人用锤子敲了敲你的头]",
+            "rapid": "[主人连续敲了你好几下]",
+            "easter_egg": "[主人用锤子重重敲了你的头]",
+        },
+    },
+    "en": {
+        "lollipop": {
+            "offer": "[Your master fed you a bite of lollipop]",
+            "tease": "[Your master fed you another bite of lollipop]",
+            "tap_soft": "[Your master kept feeding you the lollipop]",
+        },
+        "fist": {
+            "poke": "[Your master gave your head a gentle pat]",
+            "rapid": "[Your master repeatedly patted your head]",
+        },
+        "hammer": {
+            "bonk": "[Your master bonked your head with a hammer]",
+            "rapid": "[Your master bonked you several times]",
+            "easter_egg": "[Your master hit your head hard with a hammer]",
+        },
+    },
     "zh-TW": {
         "lollipop": {
             "offer": "[主人餵了你一口棒棒糖]",
@@ -749,8 +724,16 @@ _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES.update({
             "easter_egg": "[Хозяин сильно ударил тебя молотком по голове]",
         },
     },
-})
-_AVATAR_INTERACTION_DEFAULT_REACTION_PROFILES.update({
+}
+_AVATAR_INTERACTION_DEFAULT_REACTION_PROFILES = {
+    "zh": {
+        "reaction_focus": "保持即时、贴合角色的反应。",
+        "style_hint": "短促、自然、贴合当场反应。",
+    },
+    "en": {
+        "reaction_focus": "Keep the reaction immediate and in character.",
+        "style_hint": "Short, natural, and grounded in the moment.",
+    },
     "zh-TW": {
         "reaction_focus": "保持即時、貼合角色的反應。",
         "style_hint": "短促、自然、貼合當場反應。",
@@ -767,7 +750,7 @@ _AVATAR_INTERACTION_DEFAULT_REACTION_PROFILES.update({
         "reaction_focus": "Реакция должна быть мгновенной и в образе персонажа.",
         "style_hint": "Коротко, естественно и с ощущением текущего момента.",
     },
-})
+}
 _AVATAR_INTERACTION_PROMPT_TEXT = {
     "zh": {
         "actor_line": "你是{lanlan_name}，正在和{master_name}互动。",
