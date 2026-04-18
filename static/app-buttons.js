@@ -1086,6 +1086,7 @@
         var NEKO_UI_IDS = [
             'live2d-container', 'vrm-container', 'mmd-container',
             'chat-container', 'react-chat-window-overlay',
+            'chat-avatar-preview-popup',
             'avatar-reaction-bubble', 'subtitle-display', 'status-toast',
             'live2d-floating-buttons', 'vrm-floating-buttons', 'mmd-floating-buttons',
             'live2d-lock-icon', 'vrm-lock-icon', 'mmd-lock-icon',
@@ -1113,31 +1114,55 @@
 
         async function recaptureWithoutNeko() {
             var saved = hideNekoUI();
-            // Brief delay for repaints
             await new Promise(function (r) { setTimeout(r, 200); });
             try {
-                try {
-                    if (S.screenCaptureStream && S.screenCaptureStream.active) {
-                        var tracks = S.screenCaptureStream.getVideoTracks();
-                        if (tracks.length > 0 && tracks.some(function (t) { return t.readyState === 'live'; })) {
-                            var cachedFrame = await window.captureFrameFromStream(S.screenCaptureStream, 0.8);
-                            if (cachedFrame && cachedFrame.dataUrl) return cachedFrame.dataUrl;
-                        }
-                    }
-                } catch (e) { /* fallback below */ }
-
-                if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
-                    var stream = await navigator.mediaDevices.getDisplayMedia({ video: { cursor: 'always' }, audio: false });
+                // Priority 1: Electron direct capture (mirrors main flow)
+                var selectedSourceId = S.selectedScreenSourceId;
+                if (selectedSourceId && window.electronDesktopCapturer
+                    && typeof window.electronDesktopCapturer.captureSourceAsDataUrl === 'function') {
                     try {
-                        var frame = await window.captureFrameFromStream(stream, 0.8);
-                        if (frame && frame.dataUrl) return frame.dataUrl;
-                    } finally {
-                        stream.getTracks().forEach(function (t) { t.stop(); });
-                    }
+                        var direct = await window.electronDesktopCapturer.captureSourceAsDataUrl(selectedSourceId);
+                        if (direct && direct.success && direct.dataUrl) {
+                            var scaled = await downscaleDataUrlTo720p(direct.dataUrl);
+                            if (scaled && scaled.dataUrl) return scaled.dataUrl;
+                        }
+                    } catch (e) { /* fallback below */ }
                 }
 
+                // Priority 2: acquireOrReuseCachedStream / cached stream
+                if (typeof window.acquireOrReuseCachedStream === 'function') {
+                    try {
+                        var acqStream = await window.acquireOrReuseCachedStream({ allowPrompt: false });
+                        if (acqStream) {
+                            var isCached = (acqStream === S.screenCaptureStream);
+                            try {
+                                var frame = await window.captureFrameFromStream(acqStream, 0.8);
+                                if (frame && frame.dataUrl) return frame.dataUrl;
+                            } finally {
+                                if (!isCached && acqStream instanceof MediaStream) {
+                                    acqStream.getTracks().forEach(function (t) { try { t.stop(); } catch (e) {} });
+                                }
+                            }
+                        }
+                    } catch (e) { /* fallback below */ }
+                } else {
+                    try {
+                        if (S.screenCaptureStream && S.screenCaptureStream.active) {
+                            var tracks = S.screenCaptureStream.getVideoTracks();
+                            if (tracks.length > 0 && tracks.some(function (t) { return t.readyState === 'live'; })) {
+                                var cachedFrame = await window.captureFrameFromStream(S.screenCaptureStream, 0.8);
+                                if (cachedFrame && cachedFrame.dataUrl) return cachedFrame.dataUrl;
+                            }
+                        }
+                    } catch (e) { /* fallback below */ }
+                }
+
+                // Priority 3: backend pyautogui
                 var result = await window.fetchBackendScreenshot();
-                if (result && result.dataUrl) return result.dataUrl;
+                if (result && result.dataUrl) {
+                    var beScaled = await downscaleDataUrlTo720p(result.dataUrl);
+                    return (beScaled && beScaled.dataUrl) || null;
+                }
                 return null;
             } finally {
                 restoreNekoUI(saved);

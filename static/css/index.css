@@ -1768,7 +1768,7 @@ body.react-chat-window-dragging {
 .crop-overlay {
     position: fixed;
     inset: 0;
-    z-index: 100000;
+    z-index: 100040;
     display: flex;
     flex-direction: column;
     background: #111;
@@ -1876,7 +1876,7 @@ body.react-chat-window-dragging {
     position: fixed;
     display: flex;
     gap: 4px;
-    z-index: 100001;
+    z-index: 100041;
     pointer-events: auto;
     animation: crop-fade-in 0.15s ease;
 }
