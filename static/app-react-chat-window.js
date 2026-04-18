@@ -1582,7 +1582,8 @@
             if (!target || !target.dataset || !target.dataset.resizeDir) return;
             if (!event.touches || event.touches.length === 0) return;
             startResize(event.touches[0].clientX, event.touches[0].clientY, target.dataset.resizeDir);
-            event.preventDefault();
+            // 只在确实进入 resize 状态后才吞事件（手机端非 n 方向 / 最小化态会 bail out）
+            if (resizeState) event.preventDefault();
         }, { passive: false });
 
         document.addEventListener('mousemove', function (event) {
