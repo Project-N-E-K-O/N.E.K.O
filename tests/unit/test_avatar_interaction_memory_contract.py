@@ -1,6 +1,6 @@
 import pytest
 
-from main_logic.core import _build_avatar_interaction_memory_meta
+from config.prompts_avatar_interaction import _build_avatar_interaction_memory_meta
 from main_logic.cross_server import _should_persist_avatar_interaction_memory
 
 
