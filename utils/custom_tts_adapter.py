@@ -31,8 +31,10 @@ def check_custom_tts_voice_allowed(
     # ws:// (local CosyVoice) 用 `:` 做速度分隔符，不能接受 gsv: 前缀。
     from utils.config_manager import get_config_manager
     cm = get_config_manager()
-    if not cm.get_core_config().get('gptsovitsEnabled', False):
+    gptsovits_enabled = cm.get_core_config().get('GPTSOVITS_ENABLED', False)
+    if not gptsovits_enabled:
         return False
     tts_config = get_model_api_config('tts_custom')
     base_url = tts_config.get('base_url') or ''
-    return bool(tts_config.get('is_custom') and base_url.startswith(('http://', 'https://')))
+    is_custom = tts_config.get('is_custom', False)
+    return bool(is_custom and base_url.startswith(('http://', 'https://')))

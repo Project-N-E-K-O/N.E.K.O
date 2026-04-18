@@ -532,7 +532,7 @@ DEFAULT_CORE_CONFIG = {
     "agentModelUrl": "",
     "agentModelId": "",
     "agentModelApiKey": "",
-    "openclawUrl": "http://127.0.0.1:8089",
+    "openclawUrl": "http://127.0.0.1:8088",
     "openclawTimeout": 300.0,
     "openclawDefaultSenderId": "neko_user",
     "textGuardMaxLength": 300,

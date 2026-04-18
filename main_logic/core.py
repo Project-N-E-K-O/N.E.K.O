@@ -51,6 +51,7 @@ from uuid import uuid4
 import numpy as np
 import soxr
 import httpx
+from main_logic.agent_event_bus import publish_analyze_request_reliably
 
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
@@ -1006,7 +1007,7 @@ class LLMSessionManager:
         return bool(
             core_config.get('ENABLE_CUSTOM_API')
             and core_config.get('TTS_MODEL_URL')
-            and core_config.get('gptsovitsEnabled')
+            and core_config.get('GPTSOVITS_ENABLED')
         )
 
     def _start_tts_thread(self):
@@ -2180,6 +2181,164 @@ class LLMSessionManager:
         except Exception:
             pass
 
+    @staticmethod
+    def _extract_openclaw_history_entry(message_obj) -> Optional[dict]:
+        role_name = type(message_obj).__name__
+        if role_name == "HumanMessage":
+            role = "user"
+        elif role_name == "AIMessage":
+            role = "assistant"
+        else:
+            return None
+
+        raw_content = getattr(message_obj, "content", None)
+        text_parts: list[str] = []
+        attachments: list[dict] = []
+
+        if isinstance(raw_content, str):
+            if raw_content.strip():
+                text_parts.append(raw_content.strip())
+        elif isinstance(raw_content, list):
+            for item in raw_content:
+                if not isinstance(item, dict):
+                    continue
+                item_type = str(item.get("type") or "").strip()
+                if item_type in {"text", "input_text", "output_text"}:
+                    text = str(item.get("text") or "").strip()
+                    if text:
+                        text_parts.append(text)
+                elif item_type == "image_url":
+                    image_url = item.get("image_url")
+                    if isinstance(image_url, dict):
+                        url = str(image_url.get("url") or "").strip()
+                    else:
+                        url = str(item.get("url") or "").strip()
+                    if url:
+                        attachments.append({"type": "image_url", "url": url})
+
+        if not text_parts and not attachments:
+            return None
+
+        entry = {
+            "role": role,
+            "content": "\n".join(text_parts).strip(),
+        }
+        if attachments:
+            entry["attachments"] = attachments
+        return entry
+
+    def _build_openclaw_handoff_messages(self, user_text: str) -> list[dict]:
+        messages: list[dict] = []
+        history = getattr(self.session, "_conversation_history", None)
+        if isinstance(history, list):
+            for item in history[-6:]:
+                entry = self._extract_openclaw_history_entry(item)
+                if entry:
+                    messages.append(entry)
+
+        attachments: list[dict] = []
+        pending_images = getattr(self.session, "_pending_images", None)
+        if isinstance(pending_images, list):
+            for image_b64 in pending_images:
+                image_b64 = str(image_b64 or "").strip()
+                if image_b64:
+                    attachments.append({
+                        "type": "image_url",
+                        "url": f"data:image/jpeg;base64,{image_b64}",
+                    })
+
+        current = {"role": "user", "content": str(user_text or "").strip()}
+        if attachments:
+            current["attachments"] = attachments
+        if current["content"] or attachments:
+            messages.append(current)
+        return messages[-6:]
+
+    def _fallback_should_handoff_to_openclaw(self, user_text: str) -> bool:
+        pending_images = getattr(self.session, "_pending_images", None)
+        if isinstance(pending_images, list) and any(str(item or "").strip() for item in pending_images):
+            return True
+
+        text = str(user_text or "").strip().lower()
+        if not text:
+            return False
+
+        strong_keywords = (
+            "帮我查", "查下", "查一下", "查一查", "找下", "找一下", "搜一下", "搜索",
+            "打开", "浏览", "查看", "整理", "下载", "截图", "图片", "照片",
+            "文件", "文件夹", "桌面", "代码", "报错", "修复", "天气", "新闻",
+            "search", "find", "look up", "browse", "open ", "openclaw", "qwenpaw",
+        )
+        return any(token in text for token in strong_keywords)
+
+    async def _should_handoff_text_to_openclaw(self, user_text: str) -> tuple[bool, list[dict]]:
+        if not (
+            self._is_agent_enabled()
+            and self.agent_flags.get("openclaw_enabled", False)
+            and isinstance(self.session, OmniOfflineClient)
+        ):
+            return False, []
+
+        messages = self._build_openclaw_handoff_messages(user_text)
+        if not messages:
+            return False, []
+
+        payload = {
+            "lanlan_name": self.lanlan_name,
+            "messages": messages,
+            "conversation_id": uuid4().hex,
+            "lang": normalize_language_code(self.user_language, format='short') or "zh",
+        }
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(12.0, connect=2.0),
+                proxy=None,
+                trust_env=False,
+            ) as client:
+                resp = await client.post(
+                    f"http://127.0.0.1:{TOOL_SERVER_PORT}/openclaw/preflight",
+                    json=payload,
+                )
+                if resp.status_code != 200:
+                    logger.debug(
+                        "[%s] openclaw preflight rejected: status=%s",
+                        self.lanlan_name,
+                        resp.status_code,
+                    )
+                    return self._fallback_should_handoff_to_openclaw(user_text), messages
+                data = resp.json() if resp.content else {}
+                return bool(data.get("should_handoff")), messages
+        except Exception as e:
+            logger.debug("[%s] openclaw preflight failed: %s", self.lanlan_name, e)
+            return self._fallback_should_handoff_to_openclaw(user_text), messages
+
+    async def _dispatch_openclaw_handoff(self, user_text: str, messages: list[dict]) -> bool:
+        if not messages:
+            return False
+
+        try:
+            sent = await publish_analyze_request_reliably(
+                lanlan_name=self.lanlan_name,
+                trigger="text_preflight_openclaw",
+                messages=messages,
+                ack_timeout_s=0.8,
+                retries=1,
+                conversation_id=uuid4().hex,
+            )
+        except Exception as e:
+            logger.info("[%s] openclaw handoff publish failed: %s", self.lanlan_name, e)
+            return False
+
+        if not sent:
+            return False
+
+        await self.handle_input_transcript(user_text)
+        pending_images = getattr(self.session, "_pending_images", None)
+        if isinstance(pending_images, list):
+            pending_images.clear()
+        return True
+
     # ------------------------------------------------------------------
     # Voice-chat proactive audio nudge (dedicated path)
     # ------------------------------------------------------------------
@@ -2954,6 +3113,14 @@ class LLMSessionManager:
                     async with self.lock:
                         self.current_speech_id = str(uuid4())
                         self._tts_done_queued_for_turn = False
+
+                    should_handoff, openclaw_messages = await self._should_handoff_text_to_openclaw(data)
+                    if should_handoff:
+                        handed_off = await self._dispatch_openclaw_handoff(data, openclaw_messages)
+                        if handed_off:
+                            logger.info("[%s] text input handed off to openclaw, skipping local LLM reply", self.lanlan_name)
+                            return
+                        logger.info("[%s] openclaw handoff fallback: publish failed, continue local LLM reply", self.lanlan_name)
 
                     # 文本模式：在发送用户输入前，将挂起的 agent 任务回调通过
                     # prompt_ephemeral 注入 — 指令不持久化，只保留 AI 回复。

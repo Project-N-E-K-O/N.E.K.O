@@ -13,6 +13,7 @@ import math
 from datetime import date
 from copy import deepcopy
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
 from config import (
     APP_NAME,
@@ -1713,7 +1714,7 @@ class ConfigManager:
             'REALTIME_MODEL_API_KEY': DEFAULT_REALTIME_MODEL_API_KEY,
             'TTS_MODEL_URL': DEFAULT_TTS_MODEL_URL,
             'TTS_MODEL_API_KEY': DEFAULT_TTS_MODEL_API_KEY,
-            'OPENCLAW_URL': "http://127.0.0.1:8089",
+            'OPENCLAW_URL': "http://127.0.0.1:8088",
             'OPENCLAW_TIMEOUT': 300.0,
             'OPENCLAW_DEFAULT_SENDER_ID': "neko_user",
         }
@@ -1770,6 +1771,36 @@ class ConfigManager:
             config['MCP_ROUTER_API_KEY'] = core_cfg['mcpToken']
 
         openclaw_url = core_cfg.get('openclawUrl')
+        if isinstance(openclaw_url, str) and openclaw_url.strip():
+            normalized_openclaw_url = openclaw_url.strip().rstrip('/')
+            try:
+                parsed_openclaw_url = urlparse(normalized_openclaw_url)
+            except Exception:
+                parsed_openclaw_url = None
+            if parsed_openclaw_url and parsed_openclaw_url.netloc:
+                try:
+                    if parsed_openclaw_url.port == 8089:
+                        host = parsed_openclaw_url.hostname or ""
+                        if ":" in host and not host.startswith("["):
+                            host = f"[{host}]"
+                        userinfo = ""
+                        if parsed_openclaw_url.username:
+                            userinfo = parsed_openclaw_url.username
+                            if parsed_openclaw_url.password:
+                                userinfo += f":{parsed_openclaw_url.password}"
+                            userinfo += "@"
+                        migrated_openclaw_url = urlunparse(
+                            parsed_openclaw_url._replace(netloc=f"{userinfo}{host}:8088")
+                        )
+                        core_cfg['openclawUrl'] = migrated_openclaw_url
+                        openclaw_url = migrated_openclaw_url
+                        try:
+                            self.save_json_config('core_config.json', core_cfg)
+                            logger.info("已自动将 openclawUrl 从 8089 迁移到 8088: %s", migrated_openclaw_url)
+                        except Exception as exc:
+                            logger.warning("自动迁移 openclawUrl 到 8088 失败: %s", exc)
+                except ValueError:
+                    pass
         if isinstance(openclaw_url, str) and openclaw_url.strip():
             config['OPENCLAW_URL'] = openclaw_url.strip()
         try:
@@ -1838,6 +1869,9 @@ class ConfigManager:
         # 自定义API配置映射（使用大写下划线形式的内部键，且在未提供时保留已有默认值）
         enable_custom_api = core_cfg.get('enableCustomApi', False)
         config['ENABLE_CUSTOM_API'] = enable_custom_api
+
+        # GPT-SoVITS 配置映射
+        config['GPTSOVITS_ENABLED'] = core_cfg.get('gptsovitsEnabled', False)
 
         # 禁用TTS
         _raw_disable_tts = core_cfg.get('disableTts', False)

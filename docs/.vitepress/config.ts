@@ -59,6 +59,9 @@ function architectureSidebar(lang: 'en' | 'zh-CN' | 'ja') {
     },
   }[lang]
   const p = lang === 'en' ? '' : `/${lang}`
+  const zhCNOnlyItems = lang === 'zh-CN'
+    ? [{ text: 'Neko x QwenPaw 接入规范', link: `${p}/architecture/neko-qwenpaw-integration` }]
+    : []
   return [
     {
       text: t.group,
@@ -70,6 +73,7 @@ function architectureSidebar(lang: 'en' | 'zh-CN' | 'ja') {
         { text: t.memory, link: `${p}/architecture/memory-system` },
         { text: t.agent, link: `${p}/architecture/agent-system` },
         { text: t.tts, link: `${p}/architecture/tts-pipeline` },
+        ...zhCNOnlyItems,
       ],
     },
   ]
