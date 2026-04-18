@@ -1561,6 +1561,7 @@
         "initializingVoice": "Инициализация голосового чата...",
         "initializingMic": "Инициализация микрофона...",
         "startFailed": "Ошибка запуска: {{error}}",
+        "sendFailed": "Ошибка отправки: {{error}}",
         "sessionEnded": "Сессия завершена",
         "returning": "{{name}} вернулась! Переподключение...",
         "websocketNotConnected": "WebSocket не подключён!",

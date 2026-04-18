@@ -1561,6 +1561,7 @@
         "initializingVoice": "音声チャットを初期化中...",
         "initializingMic": "マイクを初期化中...",
         "startFailed": "起動失敗: {{error}}",
+        "sendFailed": "送信失敗: {{error}}",
         "sessionEnded": "セッション終了",
         "returning": "{{name}}が戻りました！再接続中...",
         "websocketNotConnected": "WebSocket未接続！",
