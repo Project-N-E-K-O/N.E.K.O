@@ -1561,6 +1561,7 @@
         "initializingVoice": "正在初始化语音对话...",
         "initializingMic": "正在初始化麦克风...",
         "startFailed": "启动失败: {{error}}",
+        "sendFailed": "发送失败: {{error}}",
         "sessionEnded": "会话已结束",
         "returning": "{{name}}回来了！正在重新连接...",
         "websocketNotConnected": "WebSocket未连接！",

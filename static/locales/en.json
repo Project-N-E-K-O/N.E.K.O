@@ -1561,6 +1561,7 @@
         "initializingVoice": "Initializing voice chat...",
         "initializingMic": "Initializing microphone...",
         "startFailed": "Start failed: {{error}}",
+        "sendFailed": "Send failed: {{error}}",
         "sessionEnded": "Session ended",
         "returning": "{{name}} is back! Reconnecting...",
         "websocketNotConnected": "WebSocket not connected!",
