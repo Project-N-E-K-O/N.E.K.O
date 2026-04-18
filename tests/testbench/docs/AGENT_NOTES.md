@@ -118,7 +118,31 @@
 2. testbench 内部模块避免直接 `from config import ...`; 通过 `get_config_manager()` 或其他间接方式取
 3. 如果未来必须在 testbench 代码中引用根 `config` 包, 先确认 sys.path 已清理, 并在 import 失败时给清晰错误
 
-### 4.9 mermaid 图语法
+### 4.9 `_characters_cache` 现在有锁 (上游 2026-04 新增)
+
+`utils/config_manager.py` 的 `_characters_cache / _mtime / _path / _dirty` 读写已统一走 `self._characters_cache_lock: threading.Lock()`. testbench 的 `sandbox.apply/restore` 目前直接赋值这 4 个字段 (**没拿锁**), 依赖"沙盒切换窗口内不会有别的线程调 `load_characters_config`"这个事实.
+
+- 单会话 asyncio 下成立 → 目前无 bug
+- 如果未来引入后台线程 (例如 P18 快照异步导出里意外触发 `load_characters_config`), 需要在 sandbox 里包 `with cm._characters_cache_lock: ...`
+- 如果上游哪天把这 4 个字段改成必须通过 method 访问, `_PATCHED_ATTRS` 策略会失效, 需要重写 sandbox
+
+### 4.11 临时 Errors 面板 (P04 夹带, P19 替换)
+
+当前 `static/ui/workspace_diagnostics.js` 是**简化临时版**, **不是** PLAN 中 P19 的完整交付:
+
+- 只渲染 Errors 列表 (折叠条目 + JSON detail), 没有 Logs / Snapshots / Paths / Reset 四子页
+- 没有后端 JSONL 日志拉取, 只有前端运行时错误
+- 错误收集层 `static/core/errors_bus.js` 是面向 P19 设计的, **P19 实施时不要重写它**, 直接让正式 Errors 子页继续订阅 `errors:change` 即可
+- P19 正式实施时的动作:
+  1. 拆分 `workspace_diagnostics.js` 为左 subnav + 5 子页 (参考 Settings 的 `ui/settings/page_*.js` 组织方式)
+  2. 实现 `static/ui/diagnostics/page_errors.js` 替换当前视图 (复用 `errors_bus.js`, 追加"按来源过滤"等高级功能)
+  3. 新增 Logs 子页 + 后端 `logger.py` 暴露的 tail/filter 端点
+  4. 全局 FastAPI 异常中间件把后端异常也 push 到前端 (HTTP 响应 + 前端 api.js 已经通过 `http:error` 转发到 errors_bus)
+- PLAN.md P19 条目末尾已留迁移说明, PROGRESS.md P04 条目的"夹带"段列出了所有涉及文件
+
+**不要**把这个临时面板当作 P19 已部分完成. P19 状态仍是 `pending`.
+
+### 4.10 mermaid 图语法
 如果修改 PLAN.md 里的 mermaid 图, 注意:
 - subgraph id 不能有空格
 - 节点 label 里的特殊字符 (括号/冒号) 要加双引号
@@ -197,3 +221,11 @@ uv run python tests/testbench/run_testbench.py --port 48920
 - **2026-04-17** 初始版本, 完成 P00.
 - **2026-04-18** 完成 P02. 新增 §4.8 `config` 命名冲突说明. P02 产物: `virtual_clock.py` / `sandbox.py` / `session_store.py` / `routers/session_router.py`; 端到端自测 `POST/GET/DELETE /api/session` + 沙盒目录创建/销毁全部通过.
 - **2026-04-18** 完成 P03. 前端骨架 (原生 ES modules, 无构建): `static/{testbench.css, app.js, core/{i18n,state,api,toast,collapsible}.js, ui/{topbar,workspace_placeholder,workspace_{setup,chat,evaluation,diagnostics,settings}}.js}` + `templates/index.html` 重构为三段 grid. 顶栏 Session dropdown 已接入 `/api/session`; Stage/Timeline/Menu 未实装项显式 toast 提示下一 phase. 所有 15 个静态资源 HTTP 200.
+- **2026-04-18** 合并上游 `NEKO-dev/main` 12 个 commit. `utils/config_manager.py` 有 48 行变更 (qwen_intl/minimax fallback, assistApiKey 回退, 部分 perf 优化), sandbox 依赖的 14 个路径属性 + 4 个 characters cache 字段全部保留. 新增 §4.9 记录 `_characters_cache_lock` 的隐式约束.
+- **2026-04-18** 完成 P04 Settings workspace. 新增 `model_config.py` (Pydantic ModelGroupConfig/Bundle) / `api_keys_registry.py` / `routers/config_router.py` (7 端点) / `static/ui/settings/*` (5 子页). 关键决策: api_key 在 HTTP 响应永远 masked, 前端 draft 每次重新渲染从空白开始; test_connection 走 `ChatOpenAI.ainvoke` + 捕获所有异常→结构化, 锁粒度 `session_operation(BUSY)` 与 chat/send 同. "两栏 workspace" CSS 做成通用 (Setup/Diagnostics 后续复用).
+- **2026-04-18** P04 夹带 (side-quest): 临时前端错误总线 + 诊断 Errors 面板. 新增 `static/core/errors_bus.js` 统一收 `http:error` / `sse:error` / `window.error` / `unhandledrejection` → `store.errors` (ring buffer cap=100) + 广播 `errors:change`; `static/ui/topbar.js` Err 徽章改为纯 `errors:change` 订阅, 点击直跳 Diagnostics; `static/ui/workspace_diagnostics.js` 从 placeholder 升级为**临时** Errors 面板 (工具栏 + 可折叠条目 + 完整 JSON detail). **注: 这是 P19 之前的调试辅助, 不是 P19 的部分交付**; PLAN/PROGRESS 里 P19 状态仍为 pending, 本临时面板在 P19 到来时整体替换为正式 Errors 子页 + 新增 Logs 子页, `errors_bus.js` 保留沿用. 新增 §4.11 交代临时模块边界.
+- **2026-04-18** 完成 P05 Setup workspace (Persona + Import 子页). 后端: `persona_config.py` (PersonaConfig Pydantic) / `sandbox.real_paths()` 暴露 patch 前路径 / `Session.persona: dict` / `routers/persona_router.py` 四端点 (GET/PUT/PATCH /api/persona + GET /real_characters + POST /import_from_real/{name}); 前端: `static/ui/_dom.js` 从 settings 目录提升共享 / `workspace_setup.js` 重构为 two-col + 4 子页 nav / `setup/page_persona.js` 表单 + Save/Revert / `setup/page_import.js` 真实角色列表 + 一键导入 / `setup/page_{memory,virtual_clock}.js` 占位; i18n `setup.*` + CSS `.badge.primary / .meta-card / .import-list / .import-row`. 关键设计: Import 读 `sandbox._originals` (即 patch 前的真实文档目录), 写 `cm.config_dir / cm.memory_dir` (即当前沙盒) — 单向 "读真实 / 写沙盒" 严格遵守; Persona 编辑仅存 session 内存, 与 `characters.json` 解耦以绕开上游 `migrate_catgirl_reserved` 迁移链, P08 Prompt 合成再整合; Import 时例外写 `sandbox/config/characters.json` (三键: 主人/猫娘/当前猫娘) 好让 P07 Memory 子页 + 上游 `PersonaManager / FactStore` 直接可用. 错误处理: Persona/Import 子页均为 `/api/...` 404 注入 `expectedStatuses: [404]`, 未建会话不误报.
+- **2026-04-18** 完成 P07 Setup Memory 四子页. 后端: `routers/memory_router.py` 新增, 6 端点 (`GET /api/memory/state` 四文件 stat / `GET /api/memory/{kind}` 读原始 JSON + 空态 / `PUT /api/memory/{kind}` 原子写 + 顶层类型校验, kind ∈ recent|facts|reflections|persona); 前置: 无 session → 404, session.persona.character_name 空 → 409 `NoCharacterSelected`; 直接读写磁盘 JSON, 不经 `PersonaManager.ensure_persona`/`FactStore.save_facts` 等 loader 避免偷偷触发 character_card 合并副作用. 前端: 共用组件 `setup/memory_editor.js` (raw JSON textarea + 合法性徽章 + dirty 徽章 + 条目数 + Save/Reload/Format/Revert 四按钮) + 4 个薄 wrapper `page_memory_{recent,facts,reflections,persona}.js` + `workspace_setup.js` 重构左 nav 支持 `kind:'group'` 非交互分组标题, 加"记忆"分组 + 4 子项; i18n `setup.memory.*` 完整重写, CSS 追加 `.subnav-group` / `.json-editor` / `.badge.secondary`; 删除 `page_memory.js` 占位. 关键取舍: (1) 本期仅 raw JSON 编辑器, 不做 Facts 表格化 / Reflections 两列等富 UI — schema 还在 P09/P10 漂移期, 提前固化表单只会早早跟真实 schema 脱节; (2) 后端仅校验顶层 list/dict 与元素是 dict 的"最低骨架", 字段级 schema 交给上游 loader (故意允许 tester 写坏来探容错); (3) `PersonaManager` 的 character_card 同步是首次 `ensure_persona` 的副作用, 文档明确标注 P07 看到的是磁盘原始 JSON, chat 跑完 persona.json 被重写不是 bug. PLAN `p07_memory_rw` 状态同步改 done, content 字段补注"富表单推迟到 P10 叠加".
+- **2026-04-18** 完成 P06 VirtualClock 完整滚动游标模型. `virtual_clock.py` 扩完整 API (cursor / bootstrap_at / initial_last_gap_seconds / per_turn_default_seconds / pending_advance / pending_set, 配套 now / gap_to / advance / set_bootstrap / set_per_turn_default / stage_next_turn / consume_pending / reset); `routers/time_router.py` 8 端点 (`/api/time` GET snapshot + `/cursor` GET/PUT + `/advance` + `/bootstrap` + `/per_turn_default` + `/stage_next_turn` POST/DELETE + `/reset`), 每个 mutate 都经 `session_operation` 锁并回传完整 clock; 前端新增共享工具 `static/core/time_utils.js` (秒 ↔ "1h30m" 文本 ↔ `<input type="datetime-local">` 本地 wallclock), `api.js` 补 `api.request` 通用逃生口, `setup/page_virtual_clock.js` 从占位升级为 5 张卡片 (Live cursor 含 1Hz 本地 tick 自熄火 / Bootstrap 分字段清除 / Per-turn default / Pending stage / Reset). 关键取舍: (1) pending.advance 与 pending.set 互斥, 都给时 absolute 胜; (2) `set_bootstrap` 用 `_UNSET` 哨兵 + Pydantic `model_fields_set` 区分 "未传 / 显式 null", 三个清除按钮都只发 `PUT + {field: null}` 而非单独 DELETE 子路由; (3) consume_pending 已就位但 P06 无 caller — 真正消费在 P09 /chat/send 开头, 避免本阶段写个会被拆掉的手动端点. 注: PLAN 里"消息 timestamp 迷你时间轴"推迟到 P09 (Chat 消息流就位) 再接入.
+- **2026-04-18** P05 补强: Persona 子页新增"预览实际 system_prompt"折叠面板. `routers/persona_router.py` 增 `GET /api/persona/effective_system_prompt` (复用 upstream `config.prompts_chara.get_lanlan_prompt` + `is_default_prompt`, 并做 `{LANLAN_NAME}/{MASTER_NAME}` 替换), 支持 `lang / master_name / character_name / system_prompt` query 参数以便在未 Save 的 draft 上预览; 前端 `setup/page_persona.js` 追加 `renderPreviewCard(draft)` (折叠 details, lazy load on first open, [刷新] 按钮, 显示 source = default/stored + 两段 code block `resolved` / `template_raw`, 自定义文本意外匹配默认模板亮 warn, 名字留空警告占位符未替换). i18n `setup.persona.preview.*` + CSS `.preview-summary/.preview-details/.preview-body/.preview-code/.empty-state.warn/.button.tiny`.
+- **2026-04-18** UX 细节: 会话创建/销毁自动刷新当前可见子页. `workspace_setup.js` / `workspace_settings.js` 订阅 `session:change`, 当前 workspace 可见则立即 `selectPage(currentId)` 重渲染, 否则打 `dirty` 标, 下次 `active_workspace:change` 切回本 workspace 时再刷. 动机: 修复 "Persona 子页提示无会话 → 顶栏新建会话 → 页面仍停留在空态, 必须手动切走再切回" 的 UX 毛刺. 延迟刷新避免不可见 workspace 产生无谓请求. Chat/Evaluation/Diagnostics 会话无关, 不加订阅.

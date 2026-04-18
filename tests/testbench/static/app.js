@@ -12,6 +12,7 @@
 
 import { hydrateI18n, i18n } from './core/i18n.js';
 import { store, set, on } from './core/state.js';
+import { initErrorsBus } from './core/errors_bus.js';
 
 import { mountTopbar }            from './ui/topbar.js';
 import { mountSetupWorkspace }    from './ui/workspace_setup.js';
@@ -83,6 +84,9 @@ function applyActiveWorkspace(id) {
 
 function boot() {
   document.title = i18n('app.name');
+
+  // 错误总线必须在任何 fetch / UI 之前启动, 才能捕获启动阶段就发生的错误.
+  initErrorsBus();
 
   hydrateI18n(document);
 

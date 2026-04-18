@@ -514,6 +514,320 @@ code, .mono {
 .row { display: flex; gap: var(--density-sm); align-items: center; flex-wrap: wrap; }
 
 /* =====================================================================
+ * Sub-workspace layout (Settings / Setup / Diagnostics 共用)
+ *
+ * 两栏网格: 左侧 sub-nav (类似 Excel 的 sheet tab, 纵向) + 右侧 sub-content.
+ * workspace_*.js 可直接复用 `.subnav` + `.subnav-item` + `.subpage`.
+ * ===================================================================== */
+
+/* 注意: 必须带 .active 限定, 否则会覆盖 `.workspace { display: none }`
+ * 基础规则, 导致切到别的 tab 仍然显示. */
+.workspace.two-col.active {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: var(--density-md);
+  align-items: start;
+  padding: var(--density-md);
+}
+.subnav {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 4px;
+  position: sticky;
+  top: 0;
+}
+.subnav-item {
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.subnav-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+.subnav-item.active {
+  background: var(--bg-active);
+  color: var(--accent);
+  font-weight: 600;
+}
+/* 非交互分组标题 (P07 Setup 侧栏加入"记忆"分组). */
+.subnav-group {
+  text-transform: none;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: var(--text-secondary);
+  padding: 10px 10px 4px;
+  border-top: 1px solid var(--border);
+  margin-top: 6px;
+  user-select: none;
+}
+.subnav-group:first-child {
+  border-top: none;
+  margin-top: 0;
+}
+
+/* Memory JSON 编辑器 (P07). 大号等宽 textarea, 可纵向拉伸. */
+.json-editor {
+  width: 100%;
+  min-height: 320px;
+  height: 60vh;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.45;
+  padding: 10px 12px;
+  resize: vertical;
+  tab-size: 2;
+  white-space: pre;
+  background: var(--bg-input, var(--bg-panel));
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.json-editor:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
+
+/* 可选 secondary badge (meta "共 N 条" 用). */
+.badge.secondary { color: var(--text-secondary); border-color: var(--border); }
+
+/* Persona 预览折叠块 (P05 补强). */
+.preview-summary {
+  cursor: pointer;
+  padding: 4px 2px;
+  list-style: revert;
+  color: var(--text-primary);
+}
+.preview-summary:hover { color: var(--accent); }
+.preview-details[open] .preview-summary { margin-bottom: 8px; }
+.preview-body { display: flex; flex-direction: column; gap: 6px; }
+.preview-code {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--bg-input, var(--bg-panel));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;        /* 包含长行也能换行, 不水平溢出 */
+  word-break: break-word;
+  max-height: 360px;
+  overflow: auto;
+}
+.empty-state.warn {
+  color: var(--warn);
+  border-color: #5d4a1f;
+}
+button.tiny {
+  font-size: 11px;
+  padding: 2px 8px;
+  height: auto;
+}
+.subpage {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--density-lg);
+  min-height: 240px;
+  display: none;
+}
+.subpage.active { display: block; }
+.subpage h2 { margin-top: 0; }
+.subpage .intro {
+  color: var(--text-secondary);
+  margin: 0 0 var(--density-md) 0;
+  line-height: 1.6;
+}
+
+/* 卡片 + 表格 ---------------------------------------------------- */
+.card {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--density-md);
+  margin-bottom: var(--density-md);
+}
+.card h3 {
+  margin: 0 0 var(--density-xs) 0;
+  font-size: 14.5px;
+  color: var(--text-primary);
+}
+.card .card-hint {
+  color: var(--text-tertiary);
+  font-size: 12.5px;
+  margin-bottom: var(--density-sm);
+}
+
+table.tbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+table.tbl th,
+table.tbl td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+table.tbl th {
+  color: var(--text-tertiary);
+  font-weight: 500;
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+table.tbl tr:last-child td { border-bottom: none; }
+table.tbl .tbl-key-field {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--text-primary);
+}
+.badge {
+  display: inline-block;
+  font-size: 11.5px;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+}
+.badge.ok      { color: var(--ok);   border-color: #2f5d3b; }
+.badge.err     { color: var(--err);  border-color: #663434; }
+.badge.warn    { color: var(--warn); border-color: #5d4a1f; }
+.badge.info    { color: var(--link); border-color: #2d3f66; }
+.badge.primary { color: var(--accent); border-color: var(--accent); }
+
+/* Settings → Models 表单网格 ---------------------------------- */
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--density-sm) var(--density-md);
+}
+.form-grid .field.wide { grid-column: 1 / -1; }
+.status-line {
+  color: var(--text-tertiary);
+  font-size: 12.5px;
+  margin-top: var(--density-xs);
+}
+.status-line.ok  { color: var(--ok); }
+.status-line.err { color: var(--err); }
+
+/* About 页面杂项 ----------------------------------------------- */
+.kv-list {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px var(--density-md);
+  font-size: 13px;
+}
+.kv-list dt { color: var(--text-tertiary); }
+.kv-list dd { margin: 0; color: var(--text-primary); font-family: var(--font-mono); }
+
+/* Setup → Import 列表 + 路径溯源卡 ------------------------------ */
+.meta-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--density-sm) var(--density-md);
+  margin-bottom: var(--density-md);
+  background: var(--bg-panel);
+  font-size: 12.5px;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+}
+.meta-card-title {
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 4px;
+}
+.meta-card-row { word-break: break-all; }
+
+.import-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--density-sm);
+}
+.import-row {
+  display: grid;
+  grid-template-columns: 1fr 2fr auto;
+  gap: var(--density-md);
+  align-items: center;
+  padding: var(--density-sm) var(--density-md);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+}
+.import-row-name {
+  font-weight: 600;
+  color: var(--text-primary);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.import-row-files {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-tertiary);
+  word-break: break-all;
+}
+.import-row-actions { justify-self: end; }
+
+/* Virtual Clock page — 行式表单 + 大字 now + tiny hint ---------------- */
+.form-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--density-sm);
+  align-items: center;
+  margin: var(--density-sm) 0;
+}
+.form-row > label {
+  color: var(--text-secondary);
+  font-size: 13px;
+  min-width: 80px;
+}
+.form-row input[type="text"],
+.form-row input[type="datetime-local"],
+.form-row input[type="number"] {
+  min-width: 200px;
+}
+
+.now-row {
+  display: flex;
+  gap: var(--density-sm);
+  align-items: baseline;
+  margin: var(--density-sm) 0;
+}
+.now-row .label {
+  color: var(--text-tertiary);
+  font-size: 12.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.big-now {
+  font-family: var(--font-mono);
+  font-size: 20px;
+  color: var(--text-primary);
+  letter-spacing: 0.02em;
+}
+
+.inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: var(--density-xs) 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+/* Smaller hint text under a form row; gray + 11.5px */
+.tiny { font-size: 11.5px; }
+
+/* =====================================================================
  * Misc
  * ===================================================================== */
 

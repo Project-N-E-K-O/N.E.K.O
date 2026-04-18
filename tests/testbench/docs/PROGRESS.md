@@ -15,10 +15,10 @@
 | P01 | 后端骨架 + 目录分离 | **done** | 2026-04-17 完成 |
 | P02 | 会话/沙盒/时钟最小实现 | **done** | 2026-04-18 完成 |
 | P03 | 前端骨架 + i18n + CollapsibleBlock | **done** | 2026-04-18 完成 |
-| P04 | Settings workspace | **in_progress** | 2026-04-18 开始 |
-| P05 | Setup workspace (Persona + Import) | pending | |
-| P06 | VirtualClock 完整滚动游标模型 | pending | |
-| P07 | Setup Memory 四子页读写 | pending | |
+| P04 | Settings workspace | **done** | 2026-04-18 完成 |
+| P05 | Setup workspace (Persona + Import) | **done** | 2026-04-18 完成 |
+| P06 | VirtualClock 完整滚动游标模型 | **done** | 2026-04-18 完成 |
+| P07 | Setup Memory 四子页读写 | **done** | 2026-04-18 完成 |
 | P08 | PromptBundle + Prompt Preview 双视图 | pending | |
 | P09 | Chat 消息流 + 手动 Send + SSE | pending | |
 | P10 | 记忆操作触发 + 预览确认 | pending | |
@@ -30,7 +30,7 @@
 | P16 | 四类 Judger + Run 子页 | pending | |
 | P17 | Results + Aggregate 子页 + 导出报告 | pending | |
 | P18 | 快照/时间线/回退 | pending | |
-| P19 | Diagnostics 错误+日志核心 | pending | |
+| P19 | Diagnostics 错误+日志核心 | pending | P04 期间已先行铺了临时 `errors_bus` + 诊断 Errors 临时视图 |
 | P20 | Diagnostics Paths/Snapshots/Reset | pending | |
 | P21 | 保存/加载核心 (persistence) | pending | |
 | P22 | 自动保存 + 启动时断点续跑 | pending | |
@@ -129,34 +129,170 @@
   - `GET /` 返回 845 字节最小 HTML 外壳, 真正 UI 由 `static/app.js` 客户端渲染
 - 遗留: 无 (Stage/Timeline/Menu 若干项按计划占位, 显式 toast `"P14/P18/P21 后实装"`)
 
-### [ ] P04 Settings workspace
-- 目标: 可配置四组模型 (chat/simuser/judge/memory), 测试连通性
-- 预期产物:
-  - `static/ui/workspace_settings.js` 完整实现
-  - `routers/config_router.py` (GET/PUT 四组 + /providers + /api_keys_status + /test_connection)
-- 状态: pending
+### [x] P04 Settings workspace
+- 目标: 可配置四组模型 (chat/simuser/judge/memory), 测试连通性; 只读展示 providers 与 api_keys.json 状态
+- 产物:
+  - `tests/testbench/model_config.py` (`ModelGroupConfig` Pydantic + `ModelConfigBundle` 4 组 + `from_session_value` 兼容空 dict 入口)
+  - `tests/testbench/api_keys_registry.py` (只读包装 `tests/api_keys.json`, lazy cache + `reload()` + provider→字段映射, `is_present` 剔除 `sk-...` 占位)
+  - `tests/testbench/routers/config_router.py`:
+    - `GET /api/config/model_config` 返回 4 组 summary (api_key 永不回显明文)
+    - `PUT /api/config/model_config` 整体替换 (pydantic 校验失败→422)
+    - `PUT /api/config/model_config/{group}` 增量 patch, `exclude_unset` 不覆盖未填字段
+    - `GET /api/config/providers` flatten `assist_api_providers` + 每项标注 `api_key_field`/`api_key_configured`
+    - `GET /api/config/api_keys_status` 返回 known/extra/path/last_mtime/provider_map
+    - `POST /api/config/api_keys/reload` 强制 re-read
+    - `POST /api/config/test_connection/{group}` 通过 `ChatOpenAI.ainvoke` 实发一轮短 prompt, 捕获全部异常为结构化 `{ok, latency_ms, error, response_preview}`
+    - 所有修改型端点走 `session_operation(...)`, 冲突→409 带 `state/busy_op`; 无会话→404
+  - `tests/testbench/server.py` 挂载 `config_router`
+  - `tests/testbench/routers/health_router.py` phase 改 `P04`
+  - `static/testbench.css` 追加 `.workspace.two-col` + `.subnav/.subpage/.card/.tbl/.badge/.form-grid/.kv-list/.status-line`
+  - `static/core/i18n.js` 追加 `settings.*` 全部文案 (含 `api_key_status.from_preset(name)` 函数式文案)
+  - `static/ui/workspace_settings.js` 二栏骨架: 左 subnav 5 子页 + `localStorage:testbench:settings:active_subpage` 记忆选中页
+  - `static/ui/settings/_dom.js` `el()/field()` 工具 (避免每个子页都写 createElement)
+  - `static/ui/settings/page_models.js` 4 组卡片: provider select + Apply preset 自动填 base_url/推荐 model (memory 组用 summary_model 其余用 conversation_model) + Save/Revert/Test 三按钮; api_key 输入框 `type=password`, 空时 hint 自动显示"将使用 tests/api_keys.json 的 xxx 字段"
+  - `static/ui/settings/page_api_keys.js` 表格列出 known 字段 + 关联 provider + 徽章状态 + 额外字段 + Reload 按钮
+  - `static/ui/settings/page_providers.js` 只读表格, 每行显示 key/name/base_url/conversation_model/summary_model/api_key 状态, free 版标 badge
+  - `static/ui/settings/page_ui.js` 本期占位 (Language/Theme/Snapshot limit 均 disabled), 唯一功能: 清除当前会话 localStorage fold 键
+  - `static/ui/settings/page_about.js` 读 `/version` + i18n 列出本期限制声明
+- 状态: done (2026-04-18)
+- 自测证据:
+  - `GET /version` → `phase: P04`
+  - `GET /api/config/providers` → 17 个 provider, 每个带 `base_url / suggested_models / api_key_configured`
+  - `GET /api/config/api_keys_status` → `{known: {...6个 true, kimi: false}, provider_map: {8 项}, extra: []}`
+  - `POST /api/session` → 建会话
+  - `PUT /api/config/model_config/chat` (qwen 预设 + 假 key) → 200, 返回 masked summary
+  - `POST /api/config/test_connection/chat` → 200, `ok: false, latency_ms: 562, error.type: AuthenticationError` (真的打到了阿里百炼, 401 属意料之中)
+  - `DELETE /api/session` → 沙盒恢复; 之后 `GET /api/config/model_config` → 404 detail `NoActiveSession`
+  - 所有 10 个 P04 新增/修改静态资源 HTTP 200 下发
+- 遗留: api_key 脱敏的"保存会话" (P21) / UI 偏好真实落盘 (P22) / test_connection SSE 版 (不需要, 本期同步即可)
+- 夹带 (side-quest, 已完成, P19 前的临时方案):
+  - `static/core/errors_bus.js` 统一收 `http:error` / `sse:error` / `window.error` / `unhandledrejection` 四类错误到 `store.errors` 环形缓冲 (cap=100) + 广播 `errors:change`.
+  - `static/ui/topbar.js` Err 徽章改为纯 `errors:change` 订阅 (不再直接监听 `http:error`), 点击直接跳 Diagnostics (不再 toast 中转).
+  - `static/ui/workspace_diagnostics.js` 从 placeholder 改为"**临时** Errors 面板": 工具栏 (计数 / 制造测试错误 / 展开全部 / 折叠全部 / 清空) + 每条错误可折叠 (标题: 时间·来源·类型·摘要; 展开: 完整 JSON detail).
+  - `static/core/i18n.js` 追加 `diagnostics.errors.*` 文案.
+  - `static/app.js` 在 `boot()` 一开头 (`hydrateI18n` 之前) 调 `initErrorsBus()`, 保证能捕获启动期错误.
+  - **P19 迁移路径**: P19 把 Diagnostics 拆成 Logs/Errors/Snapshots/Paths/Reset 五子页时, 本"临时 Errors 面板"直接替换为完整 Errors 子页; `errors_bus.js` 继续保留, Errors 子页订阅同一个 `errors:change` + 追加服务端日志拉取即可, 无需重写收集层.
 
-### [ ] P05 Setup workspace (Persona + Import 子页)
-- 目标: Persona 编辑表单可改可存; Import 能从真实角色拷贝到沙盒
-- 预期产物:
-  - `static/ui/workspace_setup.js` (左 nav + Persona + Import 子页)
-  - `routers/persona_router.py` (GET/PUT + /import_from_real/{name})
-- 状态: pending
+### [x] P05 Setup workspace (Persona + Import 子页)
+- 目标: Persona 编辑表单可改可存; Import 能从真实角色一键拷贝到沙盒 (memory 子目录 + system_prompt)
+- 产物:
+  - **后端**
+    - `tests/testbench/persona_config.py` — `PersonaConfig` Pydantic 模型 (`master_name` / `character_name` / `language` / `system_prompt`) + `from_session_value()` 归一化, `summary()` 面向 API 输出.
+    - `tests/testbench/sandbox.py` — 新增 `real_paths()`, 返回 ConfigManager **patch 前**的 `docs_dir / app_docs_dir / config_dir / memory_dir / chara_dir`; Import 用它读主 App 真实目录, sandbox 未 apply 时返回空 dict (调用方视为"建会话后再来").
+    - `tests/testbench/session_store.py::Session` — 新增 `persona: dict` 字段 (默认空 dict, 代表"未编辑过, 表单为空"); 不进 `describe()` — 避免把 system_prompt 大文本塞进 `/api/session` 高频查询.
+    - `tests/testbench/routers/persona_router.py` — 四个端点:
+      - `GET  /api/persona` 读当前 persona
+      - `PUT  /api/persona` 整体替换 (Pydantic 校验)
+      - `PATCH /api/persona` 局部合并 (未指定字段保留)
+      - `GET  /api/persona/real_characters` 枚举主 App `characters.json` 中的猫娘 (返回 `name / is_current / has_system_prompt / memory_dir_exists / memory_files`)
+      - `POST /api/persona/import_from_real/{name}` 拷贝 `memory_dir/{name}/*` → 沙盒 + 写 `sandbox/config/characters.json` (三键: 主人/猫娘/当前猫娘, 与上游 `ConfigManager.load_characters` 兼容) + 用真实 `_reserved.system_prompt` 回填 `session.persona`.
+    - 写入目标始终经由当前 `cm.config_dir / cm.memory_dir` (即沙盒路径), 从不触碰主 App 文档目录, 实现**读真实 / 写沙盒**严格单向.
+    - `routers/health_router.py` `phase: "P05"`; `server.py` `include_router(persona_router.router)`.
+  - **前端**
+    - `static/ui/_dom.js` — 从 `static/ui/settings/_dom.js` 提升到 `ui/` 层, 供 Settings + Setup 共用 `el` / `field` 帮手. Settings 侧 6 处 import 已同步改成 `../_dom.js`.
+    - `static/ui/workspace_setup.js` — 从占位改造成 `.workspace.two-col` (左 nav 四项: Persona / Import / Virtual Clock / Memory; 右栏 `.subpage`), 跟 Settings 同款骨架; 通过 `localStorage[testbench:setup:active_subpage]` 记忆最后打开的子页.
+    - `static/ui/setup/page_persona.js` — 表单 (master_name / character_name / language `<select>` / system_prompt `<textarea rows=14>`), [Save] → `PUT /api/persona`, [Revert] 还原到最近一次服务器返回. 无会话时 `/api/persona` 返回 404 → 渲染"先建会话"空态 (并通过 `expectedStatuses: [404]` 抑制 toast/errors_bus).
+    - `static/ui/setup/page_import.js` — 顶部"数据源"卡片 (主 App `config_dir / memory_dir / 主人`), 下方每个真实猫娘一行: 名称 + 徽章 (`当前 / prompt ✓/✗ / 无 memory 目录`) + memory 文件清单 + [导入到当前会话] 按钮. 点击后 POST `/api/persona/import_from_real/{name}`, 成功 toast 提示复制几个文件; 无会话时渲染引导空态.
+    - `static/ui/setup/page_virtual_clock.js` / `page_memory.js` — 友好占位, 文案指向 P06 / P07.
+    - `static/core/i18n.js` — 追加 `setup.*` 命名空间 (nav / no_session / persona / import / memory / virtual_clock).
+    - `static/testbench.css` — 追加 `.badge.primary` + `.meta-card*` + `.import-list / .import-row*` 样式, 复用既有 `.card / .form-grid / .status-line / .empty-state`.
+- 状态: done (2026-04-18)
+- 自测 (手工):
+  - 静态资源全 200 (`/static/ui/_dom.js`, `/static/ui/setup/*.js`, `/static/testbench.css`).
+  - 无 session: Setup → Persona 渲染空态, Setup → Import 渲染空态, 右上 Err 徽章保持 0 (`expectedStatuses` 生效).
+  - 新建 session → Setup → Persona: 默认 `language=zh-CN`, 其它空; 填字段 [Save] → toast "已保存", [Revert] 还原; 刷新页保留.
+  - Setup → Import: 显示主 App 真实猫娘 (若有) + 路径溯源; 点击 [导入到当前会话] 后 Persona 子页 refresh 可见回填的 master_name / system_prompt.
+  - 沙盒下 `characters.json` / `memory/{name}/` 由 Import 写入; 主 App 真实目录文件修改时间不变.
+- 设计取舍:
+  - **编辑 vs 上游 characters.json 解耦**: 本期 Persona 编辑*不*回写 `characters.json`, 以避开 `ConfigManager.migrate_catgirl_reserved` 一大串迁移逻辑; P08 Prompt 合成直接读 `session.persona`. Import 时例外 — 写 `characters.json` 是为了让 P07 Memory 子页打开时 `PersonaManager / FactStore` 能原样工作.
+  - **Real paths 通过 sandbox 私有快照读**: 简化理由是 `Sandbox.restore()` 调用后 `_originals` 被清空, 所以只在 `_applied=True` 窗口可用; 足够本期场景 (所有 API 先 `_require_session` 确认会话存在).
+  - **覆盖式 import**: 重复点同一角色的 [导入] 会覆盖沙盒内同名 memory 文件; 本期不加 confirm (沙盒本就是可抛弃态), P07 Memory 编辑后可能需要补对话框, 届时再处理.
 
-### [ ] P06 VirtualClock 完整滚动游标模型
-- 目标: bootstrap / cursor / per_turn_default / pending_next_turn 全链路; Setup → Virtual Clock 三块 UI
-- 预期产物:
-  - `virtual_clock.py` 扩展完整 API
-  - `routers/time_router.py` 全套端点
-  - `static/ui/workspace_setup.js` Virtual Clock 子页
-- 状态: pending
+### [x] P06 VirtualClock 完整滚动游标模型
+- 目标: bootstrap / cursor / per_turn_default / pending_next_turn 全链路; Setup → Virtual Clock 可见可调
+- 产物:
+  - **后端**
+    - `tests/testbench/virtual_clock.py` — 扩展完整滚动游标模型:
+      - 字段: `cursor` (live now) / `bootstrap_at` (session 起点) / `initial_last_gap_seconds` (首条消息前的"上次对话 X 秒前") / `per_turn_default_seconds` (默认每轮 +Δt) / `pending_advance` + `pending_set` (互斥的"下一轮 stage").
+      - 方法: `now` / `gap_to(earlier) -> timedelta` / `advance(delta)` / `set_now(dt|None)` / `set_bootstrap(..., sync_cursor=True)` (分字段更新, `_UNSET` 哨兵区分"不变 vs 清除") / `set_per_turn_default` / `stage_next_turn(delta=, absolute=)` (两个都给时 `absolute` 胜) / `clear_pending` / `consume_pending` (`/chat/send` 开头调用) / `reset` (回到裸构造态).
+      - `to_dict / from_dict` 全兼容 P02 老快照 (pending / bootstrap_at 字段缺失时按"未设"处理).
+    - `tests/testbench/routers/time_router.py` — 8 个端点, 全部走 `session_operation` 锁:
+      - `GET  /api/time`                       完整快照 (session_id + full clock dict)
+      - `GET  /api/time/cursor`                轻量 "live now" (1Hz UI tick 用)
+      - `PUT  /api/time/cursor`                绝对设置 (`absolute=null` 释放回真实时间)
+      - `POST /api/time/advance`               相对推进 (`delta_seconds`, 可负)
+      - `PUT  /api/time/bootstrap`             分字段更新; 用 Pydantic `model_fields_set` 区分"字段未给 / 显式 null", 只改客户端声明了的那部分; `sync_cursor=True` (默认) 把 `bootstrap_at` 同步到 `cursor`.
+      - `PUT  /api/time/per_turn_default`      `{seconds: int|null}`, null 清除.
+      - `POST /api/time/stage_next_turn`       `{delta_seconds|absolute}`, 二选一互斥 (`model_validator` 兜底).
+      - `DELETE /api/time/stage_next_turn`     清 pending 的专用路由 (REST 语义更干净).
+      - `POST /api/time/reset`                 一键清 cursor + bootstrap + per_turn_default + pending; 不影响消息和记忆.
+      - 所有响应统一返回 `{session_id, clock: <to_dict>}`; 无 session → 404 (前端侧 `expectedStatuses: [404]` 消声).
+    - `routers/health_router.py` `phase: "P06"`; `server.py` include `time_router.router`.
+  - **前端**
+    - `static/core/time_utils.js` — 共享工具: `parseDurationText('1h30m'|'45s'|'-2d 4h'|'120')` → 秒数 (接受纯数字按秒); `secondsToLabel` → 规范 `"1h 30m"`; `datetimeLocalValue` / `datetimeLocalToISO` 把 `<input type="datetime-local">` 和后端 naive isoformat 串接 (双方都当 local wallclock, 匹配上游 `datetime.now()` 语义); `formatIsoReadable` 给人看. 以后 Chat composer P09 / Scripted P12 可直接复用, 避免各模块独立实现解析分歧.
+    - `static/core/api.js` — 新增 `api.request(url, {method, body, headers, expectedStatuses})` 通用逃生口; `PUT` + `PATCH` 同步加上 `expectedStatuses` 转发 (P04/P05 漏网); 原 5 个简写方法不变.
+    - `static/ui/setup/page_virtual_clock.js` — 从占位升级为 5 张卡片:
+      1. **Live cursor**: 大字 `now` + `real time / virtual` 徽章; `real_time=true` 时 1Hz 本地 tick 自动刷新 (`label.isConnected === false` 自动熄火, 切子页无 `setInterval` 泄漏); 绝对设置 / Release / 相对推进 (输入 "1h30m" 或 "-2d" 或 "+5m/+1h/+1d" 预设按钮).
+      2. **Bootstrap**: `bootstrap_at` + `initial_last_gap` 输入 + "同时同步 live cursor"复选; [Set bootstrap] / [Clear bootstrap_at] / [Clear initial_last_gap] 分字段独立清除.
+      3. **Per-turn default**: `+Δt` 默认值, 输入空白时 Save = 清除.
+      4. **Pending**: 显示当前 pending (delta / absolute / none), 三个按钮 Stage delta / Stage absolute / Clear pending.
+      5. **Reset**: confirm 对话框后 `/api/time/reset`.
+      - `mutate(ctx, ...)` helper 在每次成功 mutate 后直接用响应里的 clock 快照整页 re-render, 保证各块数据永远同步.
+    - `static/core/i18n.js` — `setup.virtual_clock.*` 完整扩表 (heading / intro / live / bootstrap / per_turn_default / pending / reset / status); 原 placeholder 命名空间被替换.
+    - `static/testbench.css` — 追加 `.form-row` (label + inputs + 按钮平铺 flex) / `.now-row` + `.big-now` (等宽大字显 now) / `.inline-check` / `.tiny`.
+- 状态: done (2026-04-18)
+- 自测 (手工):
+  - 无 session: Setup → Virtual Clock 渲染"先建会话"空态, 右上 Err 徽章保持 0.
+  - 建 session → `GET /api/time`: `cursor=null, is_real_time=true, bootstrap_at=null, per_turn_default=null, pending={advance_seconds:null, absolute:null}`.
+  - `PUT /api/time/cursor {absolute:"2026-04-18T09:00:00"}` → 响应 `is_real_time=false, cursor="2026-04-18T09:00:00"`; 大字数字冻结 (不再 tick).
+  - `POST /api/time/advance {delta_seconds: 3600}` → cursor 前进 1h.
+  - `PUT /api/time/cursor {absolute:null}` → 释放; 大字恢复 1Hz tick.
+  - `PUT /api/time/bootstrap {bootstrap_at:"2026-04-17T08:00:00", initial_last_gap_seconds:3600, sync_cursor:true}` → cursor 同步; 再发 `{bootstrap_at:null, sync_cursor:false}` 只清 bootstrap, `initial_last_gap` 保持.
+  - `POST /api/time/stage_next_turn {delta_seconds: 1800}` → `pending.advance_seconds=1800`; 再发 `{absolute:"2026-04-19T09:00:00"}` → `pending.absolute=...` 且 `advance_seconds=null` (互斥).
+  - `DELETE /api/time/stage_next_turn` → 全 null.
+  - `POST /api/time/reset` → 全部回到初始.
+- 设计取舍:
+  - **秒 (int) 做主单位**: 传输层用 `delta_seconds`, UI 用文本 "1h30m" 前端自解析; JS `Number` 对合理 turn 长度完全精确, 比 ISO duration `PT1H30M` 省掉一层解析库.
+  - **Bootstrap 字段独立清除**: 用 Pydantic `model_fields_set` 而非单独的 `DELETE` 子路由; 三个清除按钮都只需调用 `PUT` + `{field: null}`, 路由表不膨胀.
+  - **响应统一回传完整 clock**: 避免 UI 每个 mutate 后追发 `GET /api/time`, 降低抖动与竞态 (下一轮 send 与时钟编辑抢锁时, 409 就直接显"等一下").
+  - **Virtual 游标不自 tick**: 只在 `cursor === null` 时本地 1Hz tick; 虚拟 now 是静态冻结值, 只有 advance/stage/consume_pending 才动. 这样 UI 和 `clock.now()` 语义严格一致.
+  - **P06 只做 stage + reset, 不做"pending 消费"**: `consume_pending` 方法已就位, 但没有路由调用 — 真正消费发生在 P09 `/chat/send` 开头. 这里先保证数据模型与 UI 可观测, 避免本阶段写一个会在 P09 被拆掉的 "手动 consume" 端点.
 
-### [ ] P07 Setup Memory 四子页读写
-- 目标: 可查看/编辑沙盒内 recent/facts/reflections/persona 文件
-- 预期产物:
-  - `routers/memory_router.py` (GET/PUT 四子资源)
-  - `static/ui/workspace_setup.js` Memory 四子页
-- 状态: pending
+### [x] P07 Setup Memory 四子页读写
+- 目标: 可查看/编辑沙盒内 recent/facts/reflections/persona 四个 JSON 文件 (原始 JSON 编辑器; 触发类按钮留给 P10)
+- 产物:
+  - **后端**
+    - `tests/testbench/routers/memory_router.py` — 新增, 共 6 端点:
+      - `GET  /api/memory/state`                landing 探针, 对 4 个文件做 stat (exists / size_bytes / mtime), 不读内容.
+      - `GET  /api/memory/{kind}`               返回 `{kind, path, character_name, exists, data}`; 文件缺失时 `exists=false, data` 为该 kind 的默认空值 (list → `[]`, dict → `{}`).
+      - `PUT  /api/memory/{kind}`               body `{data: ...}`; 顶层类型/元素 dict 形状检查, `tmp + os.replace` 原子写; 经 `session_operation("memory.write:{kind}")` 加锁.
+      - `kind ∈ {recent, facts, reflections, persona}`; 未知 kind → 404 `UnknownMemoryKind`.
+      - 前置: 无 session → 404 `NoActiveSession`; session 有但 `persona.character_name=""` → 409 `NoCharacterSelected`.
+      - **非加工**: 不经 `PersonaManager.ensure_persona` / `FactStore.save_facts` 等上游 loader, 直接读写磁盘 JSON. 避免 persona.json 首次加载的 `character_card` 合并副作用偷偷改变"测试人员刚保存的内容". 上游的迁移会在 P09 真实 chat 跑时再触发.
+    - `routers/health_router.py` → `phase: "P07"`; `server.py` → `include_router(memory_router.router)`.
+  - **前端**
+    - `static/ui/setup/memory_editor.js` — 共用 JSON 编辑器组件: meta 条 (文件路径 + exists 徽章) + 顶部徽章 (合法/非法 JSON / dirty / 条目数) + 大号 `.json-editor` textarea + 4 按钮 (Save / Reload / Format / Revert) + 状态行. 用 `api.get(..., expectedStatuses: [404, 409])` 静默化"无会话/无角色"的引导空态, 不污染 Err 徽章.
+    - `static/ui/setup/page_memory_recent.js` / `page_memory_facts.js` / `page_memory_reflections.js` / `page_memory_persona.js` — 4 个薄包装, 各自 `renderMemoryEditor(host, '<kind>')` 一行出页; PLAN 里提到的表格化/两列 UI 等富编辑留给 P10 触发按钮成型后再叠加.
+    - `static/ui/workspace_setup.js` — 重构: 左侧 nav 支持 `kind: 'group'` 非交互分组标题, 在 Virtual Clock 之后追加"记忆 (Memory)"分组 + 4 项子页 (最近对话 / 事实 / 反思 / 人设记忆). `firstPage()` 帮手兼顾读 `localStorage[testbench:setup:active_subpage]` 时的合法校验.
+    - `static/core/i18n.js` — 替换 `setup.nav.memory` 占位为 `memory_group` + 4 个子页 key; 重写 `setup.memory.*` 为完整编辑器文案 (editor.recent/facts/reflections/persona 各自 heading+intro, 共用 buttons/badges/status).
+    - `static/testbench.css` — 追加 `.subnav-group` 非交互分组标题样式 + `.json-editor` 大号等宽可纵向拉伸 textarea + `.badge.secondary`.
+    - 删除 `static/ui/setup/page_memory.js` 占位 (被 4 个子页取代).
+- 状态: done (2026-04-18)
+- 自测 (API + 静态资源):
+  - `GET /version` → `phase: "P07"`.
+  - 无 session: `GET /api/memory/recent` → 404, `GET /api/memory/state` → 404, Err 徽章保持 0.
+  - 建 session (character 未设): `GET /api/memory/recent` → 409 `NoCharacterSelected`.
+  - `PUT /api/persona {character_name}` 后: `GET /api/memory/state` → 200, 4 个文件 `exists=false`.
+  - `PUT /api/memory/facts` (合法 list), `PUT /api/memory/reflections`, `PUT /api/memory/recent`, `PUT /api/memory/persona` (合法 dict) 全 200, roundtrip 数据一致, 磁盘 `memory_dir/{char}/{kind}.json` 生成.
+  - 422 触发: 给 facts (list-kind) 传 dict / 给 recent 传字符串列表 / 给 persona 传 `{entity: "string"}` → 分别 `InvalidRootType / InvalidListItem / InvalidDictValue`.
+  - 未知 kind `GET /api/memory/bogus` → 404 `UnknownMemoryKind`.
+  - 静态资源: `memory_editor.js / page_memory_recent.js / page_memory_facts.js / page_memory_reflections.js / page_memory_persona.js / workspace_setup.js / i18n.js / testbench.css` 全 HTTP 200; 已删除的 `page_memory.js` → 404 (确认无残余引用).
+- 设计取舍:
+  - **原始 JSON textarea 而非结构化表单**: Memory 四个文件的真实 schema 边界在上游代码里, 用表单固化只会早早跟真实 schema 漂移 (比如 reflections 的 `status` 会在 P09/P10 被 ReflectionEngine 加新态). 大 textarea + JSON 校验 + 合法才亮 Save 的组合最灵活, 测试人员可以刻意构造畸形载荷探容错.
+  - **后端只做顶层类型 + 元素 dict 校验**: 不校验字段级 schema — 那是 PLAN 明令允许的"测试人员可以写错看会不会炸"能力. 上游 loader 本身对坏数据已经是"过滤跳过 + log warning".
+  - **4 子页 ≈ 4 行 wrapper**: 未来 PLAN 要求的表格化 Facts / 两列 Reflections 直接在 `memory_editor.js` 旁边加 "视图切换" 或另一个 helper, 不影响当前入口; 体现 YAGNI, 也让 P07 改动表面最小.
+  - **persona.json 明确标注不走 PersonaManager**: 文档里写清楚"这里看到的是磁盘上的原始 JSON, 真实 `ensure_persona` 首次加载会同步角色卡片并重写". 这样测试人员就明白"为什么我保存 `{}` 后 chat 跑完再看 persona.json 又满了" 不是 bug.
+  - **分组标题 `kind: 'group'`**: 不引入二级 nav. subnav 条目 3+4+1 分组头, 仍然竖向线性, 和现有 Settings/Setup 视觉统一.
 
 ### [ ] P08 PromptBundle + Prompt Preview 双视图
 - 目标: GET /chat/prompt_preview 返回 structured + wire; Chat 右侧面板可切换双视图
@@ -217,6 +353,7 @@
 ### [ ] P19 Diagnostics 错误+日志核心
 - 预期产物: 全局异常中间件 + Diagnostics Errors/Logs 子页
 - 状态: pending
+- 注: P04 已先行交付**临时** Errors 视图 (`static/ui/workspace_diagnostics.js` + `core/errors_bus.js`), 本阶段把它替换成正式的 Errors + Logs 双子页即可, `errors_bus.js` 可直接保留沿用 (前端层面收集逻辑不需要重写).
 
 ### [ ] P20 Diagnostics Paths/Snapshots/Reset
 - 预期产物: Paths 子页 + health_router /system/paths /system/open_path + Snapshots 子页 + Reset 子页 (三级)
@@ -247,3 +384,23 @@
 - **2026-04-17** 初始版本, 依据 [PLAN.md](./PLAN.md) 创建.
 - **2026-04-18** P02 完成. 发现并修复 `tests/testbench/config.py` 与根 `config/` 包的命名冲突 (启动脚本移除 `tests/testbench/` 出 sys.path + `sandbox.py` 改用 `get_config_manager().app_name` 代替 `from config import APP_NAME`).
 - **2026-04-18** P03 完成. 前端采用原生 ES modules + 单 store + 事件总线, 无构建步骤. 约定: 所有面向测试人员的 UI 文案走 `i18n(key)` 或 DOM 上的 `data-i18n=...` 属性; 新 workspace 实装时直接替换对应 `workspace_*.js` 的 `mount()` 即可, 不影响 tab 路由.
+- **2026-04-18** P04 完成. 决策:
+  - Settings 子页放在 `static/ui/settings/page_*.js` 单独模块 (而非塞进 `workspace_settings.js`), 其它 workspace 如 Setup/Diagnostics 以后同法.
+  - "两栏 workspace" 样式 (`.workspace.two-col` + `.subnav/.subpage`) 做成**通用**类, Setup/Diagnostics 以后直接复用.
+  - api_key 在 HTTP 响应里**永远** masked (`api_key_configured: bool`), 只在服务端建 LLM 请求时取明文. 前端 `draft.api_key` 每次重新渲染卡片都从空白开始, 避免把 masked 值当成明文回写.
+  - `test_connection` 用 `ChatOpenAI.ainvoke` 同步跑一轮短 prompt + 捕获全部异常 → 结构化 `{ok, latency_ms, error, response_preview}`; 走 `session_operation(BUSY)` 避免与 chat/send (P09) 抢锁.
+  - "Apply preset" 按钮的模型推荐策略: `memory` 组用 `summary_model`, 其他 3 组用 `conversation_model`; 不自动填 api_key (那是 test_connection 阶段临机从 registry 查).
+- **2026-04-18** P04 夹带: **临时** Diagnostics Errors 面板 + 前端 `errors_bus.js` 统一错误总线 (详见 P04 夹带段). 动机: P04 测试时顶栏 Err 徽章已会亮, 但 Diagnostics 还是占位, 无法排查. 原则: 不伪造 P19 的全套产物, 只实现**最小可视化**, 且在 PLAN/PROGRESS/AGENT_NOTES 里显式标出"临时"与"P19 迁移路径", 避免未来误以为 P19 已部分完成.
+- **2026-04-18** P06 完成. 关键决策:
+  - `virtual_clock` 的 `set_bootstrap` 用内部 `_UNSET` 哨兵 + 命名参数, 让 router 能只改客户端声明的那部分字段 (Pydantic `model_fields_set` 区分 "未传 / 显式 null").
+  - `pending_advance` 与 `pending_set` 互斥; `stage_next_turn(delta=X, absolute=Y)` 两者并给时 `absolute` 胜 — 与 "testers' most explicit intent" 原则一致, 避免悄悄累加.
+  - 共享 `static/core/time_utils.js` (秒 ↔ "1h30m" 文本 ↔ `datetime-local`) 一次性固化解析规则, 杜绝 P09/P12 自行实现引起的分歧.
+  - `api.request` 通用逃生口补上 (兼容 PATCH / 动态 method), 原 `api.put` / `api.patch` 也同步加上 `expectedStatuses` 转发 (P04/P05 漏网).
+- **2026-04-18** P07 完成. 关键决策:
+  - **原始 JSON 而非富表单**: P07 四子页都走"大 textarea + 合法性徽章 + Save/Reload/Format/Revert"; PLAN 里 Facts 表格 / Reflections 两列等富 UI 推迟到 P10 触发按钮就位后再叠加. 动机: memory 的各字段 schema 在 P09/P10 还会随 ReflectionEngine/FactStore 迭代微调, 提前固化表单只会早早跟真实 schema 脱节.
+  - **不走上游 loader**: `memory_router` 直接 JSON 读写, 不经 `PersonaManager.ensure_persona` / `FactStore.load_facts`, 避免 persona.json 首次加载的 `character_card` 合并副作用把"测试人员刚保存的内容"悄悄覆盖. 上游迁移会在 P09 真实 chat 跑时自然触发.
+  - **最小 shape 校验**: 后端仅验证顶层 list/dict 与元素是 dict, 字段级 schema 交给上游 loader — 明确允许 tester 构造畸形载荷探容错.
+  - **subnav 分组标题**: 新增 `kind:'group'` 非交互条目, 避免引入二级 nav; 4+4+1 线性排布沿用 Settings/Setup 既有视觉.
+  - **二义性 "Persona"**: Setup 同时存在"Persona 人设"(会话 master/character 配置) 和"人设记忆"(PersonaManager 的 persona.json 三层档案) 两个入口; 分组标题 + 不同 nav 文案 + 子页 intro 里各自说清楚, 测试人员不会混淆.
+- **2026-04-18** P05 补强: Persona 子页追加"预览实际 system_prompt"折叠面板. 新增 `GET /api/persona/effective_system_prompt` (后端按照 upstream `get_lanlan_prompt` + `is_default_prompt` + `{LANLAN_NAME}/{MASTER_NAME}` 替换逻辑输出 `resolved` 与 `template_raw`). 前端面板 lazy load (首次展开才请求), 支持 draft 覆盖 (未保存状态下也能预览); 自定义文本意外匹配到默认模板时亮警告, 名字留空会提示 `{LANLAN_NAME}` 占位符残留属于正常现象.
+- **2026-04-18** 跨 workspace 细节: 会话创建/销毁时当前可见 workspace 的活跃子页自动刷新一次. 实现: `workspace_setup.js` / `workspace_settings.js` 订阅 `session:change`, 若 `store.active_workspace` 是本 workspace 则立即 `selectPage(currentId)` 重渲染, 否则打 dirty 标记, 待 `active_workspace:change` 切回本 workspace 时再刷. 动机: 修复 "Persona 页提示无会话 → 顶栏新建会话 → 页面仍停在空态, 必须手动切走再切回来" 的 UX 毛刺; 不可见 workspace 延迟刷新避免无谓后端请求. Chat / Evaluation / Diagnostics 会话无关, 不改.

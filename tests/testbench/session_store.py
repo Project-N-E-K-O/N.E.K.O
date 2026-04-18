@@ -87,6 +87,8 @@ class Session:
     snapshots: list[dict[str, Any]] = field(default_factory=list)
     eval_results: list[dict[str, Any]] = field(default_factory=list)
     model_config: dict[str, Any] = field(default_factory=dict)
+    # Filled by /api/persona in P05; empty dict means "never edited, form blank".
+    persona: dict[str, Any] = field(default_factory=dict)
     stage: str = "persona_setup"
 
     # Mutated directly by SessionStore under its own lock.

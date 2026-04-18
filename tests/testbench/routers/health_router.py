@@ -24,7 +24,7 @@ async def version() -> dict:
     return {
         "name": "N.E.K.O. Testbench",
         "version": "0.1.0",
-        "phase": "P03",
+        "phase": "P07",
         "host": tb_config.DEFAULT_HOST,
         "port": tb_config.DEFAULT_PORT,
     }

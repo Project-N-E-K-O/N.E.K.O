@@ -19,13 +19,13 @@ todos:
     status: pending
   - id: p05_setup_persona_import
     content: "P05 Setup workspace (Persona + Import 子页): Setup 左 nav 布局; Persona 表单 + system_prompt textarea; Import 子页从真实角色一键拷贝 persona+memory 到沙盒; persona_router (GET/PUT/Import)"
-    status: pending
+    status: done
   - id: p06_virtual_clock_full
-    content: "P06 虚拟时钟完整滚动游标模型: VirtualClock 加 bootstrap/per_turn_default/pending_next_turn + consume_pending + gap_to; time_router 全套 (/time/bootstrap, /time/cursor GET/PUT, /time/advance, /time/per_turn_default, /time/stage_next_turn); Setup → Virtual Clock 子页三块 UI (Bootstrap / Live cursor 含消息 timestamp 迷你时间轴 / Per-turn default)"
-    status: pending
+    content: "P06 虚拟时钟完整滚动游标模型: VirtualClock 加 bootstrap/per_turn_default/pending_next_turn + consume_pending + gap_to; time_router 全套 (/time/bootstrap, /time/cursor GET/PUT, /time/advance, /time/per_turn_default, /time/stage_next_turn); Setup → Virtual Clock 子页三块 UI (Bootstrap / Live cursor 含消息 timestamp 迷你时间轴 / Per-turn default). 注: 本期消息时间轴推迟到 P09 (Chat 消息流就位) 再接入; `consume_pending` 方法已实现但暂无 caller, 在 P09 /chat/send 才被实际消费."
+    status: done
   - id: p07_memory_rw
-    content: "P07 Setup Memory 四子页 (Recent/Facts/Reflections/Persona) 只读渲染 + 手动编辑 (表格/表单); 沙盒文件 GET/PUT API; memory_router 的读写部分 (尚不含 trigger)"
-    status: pending
+    content: "P07 Setup Memory 四子页 (Recent/Facts/Reflections/Persona) 只读渲染 + 手动编辑 (表格/表单); 沙盒文件 GET/PUT API; memory_router 的读写部分 (尚不含 trigger). 注: P07 落地形态为 raw JSON textarea 编辑器 (+合法性校验/dirty 徽章/Reload/Format/Revert), 而非富表格; PLAN 原先所述 Facts 表格 / Reflections 两列等富编辑 UI 推迟到 P10 记忆操作触发落地后再叠在同一 editor 旁, 避免在上游 schema 尚会微调时提前固化表单."
+    status: done
   - id: p08_prompt_bundle_preview
     content: "P08 PromptBundle + Prompt Preview 双视图: pipeline/prompt_builder.py 复用 dump_llm_input 并注入 VirtualClock; 返回 PromptBundle (structured + system_prompt 扁平串 + wire_messages + char_counts); chat_router 的 GET /chat/prompt_preview; Chat workspace 右侧 Prompt Preview 面板 (Structured / Raw wire toggle + 分区 CollapsibleBlock + Copy 按钮 + 待刷新提示)"
     status: pending
@@ -60,7 +60,7 @@ todos:
     content: "P18 快照/时间线/回退: snapshot.py (Snapshot dataclass 含 messages/memory_files/model_config/stage/clock/eval_results); session_store 自动建快照拦截 (send/edit/memory_op/stage_advance/persona 改动 5s 防抖); rewind_to 实现 (含 pre_rewind_backup + 截断后续时间线); 内存上限 + 压缩落盘; session_router 快照 CRUD; 顶栏 Timeline chip (折叠/最近 10 + 查看全部跳 Diagnostics)"
     status: pending
   - id: p19_diagnostics_errors_logs
-    content: "P19 Diagnostics 错误与日志核心: 全局 FastAPI 异常中间件返回结构化错误 (含 session_state) + 写入会话 JSONL 日志; 顶栏 !Err 徽章; Diagnostics → Errors 子页 (CollapsibleBlock trace + Clear); Diagnostics → Logs 子页 (tail + 级别过滤 + 关键字 + 导出 + 每条 CollapsibleBlock)"
+    content: "P19 Diagnostics 错误与日志核心: 全局 FastAPI 异常中间件返回结构化错误 (含 session_state) + 写入会话 JSONL 日志; 顶栏 !Err 徽章; Diagnostics → Errors 子页 (CollapsibleBlock trace + Clear); Diagnostics → Logs 子页 (tail + 级别过滤 + 关键字 + 导出 + 每条 CollapsibleBlock). 注: P04 已夹带**临时**版本 (`static/core/errors_bus.js` 前端错误总线 + `static/ui/workspace_diagnostics.js` 临时 Errors 面板), P19 到来时直接替换为正式 Errors 子页 + 新增 Logs 子页; `errors_bus.js` 可保留继续消费前端运行时错误 (http/sse/window.error/unhandledrejection), 只需要 Errors 子页额外拉后端 JSONL 即可."
     status: pending
   - id: p20_diagnostics_paths_reset_snapshots
     content: "P20 Diagnostics 剩余子页: Paths 子页 (所有 testbench_data 子路径 + 大小 + Copy + 在文件管理器中打开); Snapshots 子页 (完整时间线表格 + 重命名/删除/Rewind/手动建); Reset 子页 (三级 Soft/Medium/Hard 独立按钮 + pre_reset_backup 自动快照 + 二次确认); health_router 的 /system/paths 与 /system/open_path (白名单仅 testbench_data 子路径)"

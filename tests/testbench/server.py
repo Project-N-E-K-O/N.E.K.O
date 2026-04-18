@@ -15,7 +15,14 @@ from fastapi.templating import Jinja2Templates
 
 from tests.testbench import config as tb_config
 from tests.testbench.logger import anon_logger, python_logger
-from tests.testbench.routers import health_router, session_router
+from tests.testbench.routers import (
+    config_router,
+    health_router,
+    memory_router,
+    persona_router,
+    session_router,
+    time_router,
+)
 from tests.testbench.session_store import get_session_store
 
 
@@ -84,6 +91,10 @@ def create_app() -> FastAPI:
     # Routers -------------------------------------------------------------
     app.include_router(health_router.router)
     app.include_router(session_router.router)
+    app.include_router(config_router.router)
+    app.include_router(persona_router.router)
+    app.include_router(time_router.router)
+    app.include_router(memory_router.router)
 
     # Shutdown hook: release the ConfigManager singleton + sandbox so a
     # subsequent uvicorn --reload cycle doesn't leave stale paths wired in.

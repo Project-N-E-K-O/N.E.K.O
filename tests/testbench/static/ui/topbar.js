@@ -228,14 +228,8 @@ function mountErrBadge(host) {
       : i18n('topbar.error_badge.title_some', n);
   }
 
+  // 收集逻辑集中在 core/errors_bus.js, 这里只消费 `errors:change`.
   on('errors:change', update);
-  on('http:error', (payload) => {
-    const errs = [...(store.errors || []), {
-      at: new Date().toISOString(),
-      ...payload,
-    }].slice(-50); // 保留最近 50 条
-    set('errors', errs);
-  });
 
   chip.addEventListener('click', (ev) => {
     ev.stopPropagation();
@@ -243,13 +237,8 @@ function mountErrBadge(host) {
     if (n === 0) {
       toast.info(i18n('topbar.error_badge.empty'));
     } else {
-      toast.info(i18n('topbar.error_badge.title_some', n), {
-        message: i18n('topbar.menu.diagnostics'),
-        actions: [{
-          label: i18n('topbar.error_badge.view_all'),
-          onClick: () => set('active_workspace', 'diagnostics'),
-        }],
-      });
+      // 直接跳 Diagnostics, 不再用 toast 中转.
+      set('active_workspace', 'diagnostics');
     }
   });
 

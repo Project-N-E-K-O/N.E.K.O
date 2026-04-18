@@ -196,3 +196,25 @@ class Sandbox:
             "app_docs": str(self._app_docs),
             "applied": "yes" if self._applied else "no",
         }
+
+    def real_paths(self) -> dict[str, Path]:
+        """Return **pre-patch** ConfigManager paths (memory/config/chara).
+
+        Used by the "Import from real character" flow (P05) which needs to
+        read the tester's actual Documents/-hosted character cards and memory
+        files *while the sandbox is active*. Reading ``cm.memory_dir`` during
+        that window would wrongly return the sandbox path.
+
+        Returns an empty dict when the sandbox is not currently applied —
+        callers should treat that as "nothing to import from" and tell the
+        user to create a session first.
+        """
+        if not self._applied or not self._originals:
+            return {}
+        return {
+            "docs_dir": Path(self._originals["docs_dir"]),
+            "app_docs_dir": Path(self._originals["app_docs_dir"]),
+            "config_dir": Path(self._originals["config_dir"]),
+            "memory_dir": Path(self._originals["memory_dir"]),
+            "chara_dir": Path(self._originals["chara_dir"]),
+        }
