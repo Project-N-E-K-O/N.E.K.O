@@ -2050,11 +2050,13 @@ async def fetch_bilibili_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
         url = "https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/all"
         headers = {"User-Agent": get_random_user_agent(), "Referer": "https://t.bilibili.com/"}
         await asyncio.sleep(random.uniform(0.1, 0.5))
-        
-        client = get_external_http_client()
-        response = await client.get(url, headers=headers, cookies=credential.get_cookies(), timeout=10.0)
-        response.raise_for_status()
-        data = response.json()
+
+        # per-call AsyncClient: 带用户鉴权 cookie —— 不能走共享 client，否则
+        # 响应的 Set-Cookie 会自动提取进共享 jar，跨请求污染（httpx 默认行为）
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers, cookies=credential.get_cookies(), timeout=10.0)
+            response.raise_for_status()
+            data = response.json()
 
         if not isinstance(data, dict) or data.get("code") != 0:
             logger.error(f"获取B站动态失败，API返回: {data}")
@@ -2226,10 +2228,11 @@ async def fetch_douyin_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
 
         await asyncio.sleep(random.uniform(0.1, 0.5))
 
-        client = get_external_http_client()
-        response = await client.get(url, params=params, headers=headers, cookies=cookies, timeout=10.0)
-        response.raise_for_status()
-        data = response.json()
+        # per-call AsyncClient: 带用户鉴权 cookie，见 bilibili 同款理由
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            response = await client.get(url, params=params, headers=headers, cookies=cookies, timeout=10.0)
+            response.raise_for_status()
+            data = response.json()
 
         if data.get("status_code") != 0:
             logger.error(f"抖音API返回异常，可能触发风控: {data}")
@@ -2320,10 +2323,11 @@ async def fetch_kuaishou_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
 
         await asyncio.sleep(random.uniform(0.1, 0.5))
 
-        client = get_external_http_client()
-        response = await client.post(url, headers=headers, json=payload, cookies=cookies, timeout=10.0)
-        response.raise_for_status()
-        data = response.json()
+        # per-call AsyncClient: 带用户鉴权 cookie，见 bilibili 同款理由
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            response = await client.post(url, headers=headers, json=payload, cookies=cookies, timeout=10.0)
+            response.raise_for_status()
+            data = response.json()
 
         if data.get("errors"):
             logger.error(f"快手GraphQL返回异常: {data['errors']}")
@@ -2412,14 +2416,15 @@ async def fetch_weibo_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
         await asyncio.sleep(random.uniform(0.1, 0.5))
 
         # 4. 移动端 API 非常宽容，直接用普通的 httpx 即可稳定发包
-        client = get_external_http_client()
-        response = await client.get(url, headers=headers, cookies=req_cookies, timeout=10.0)
+        # per-call AsyncClient: 带用户鉴权 cookie，见 bilibili 同款理由
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            response = await client.get(url, headers=headers, cookies=req_cookies, timeout=10.0)
 
-        if response.status_code != 200:
-            logger.error(f"❌ 移动端微博接口异常，状态码: {response.status_code}")
-            return {'success': False, 'error': f"API请求失败，状态码: {response.status_code}"}
+            if response.status_code != 200:
+                logger.error(f"❌ 移动端微博接口异常，状态码: {response.status_code}")
+                return {'success': False, 'error': f"API请求失败，状态码: {response.status_code}"}
 
-        data = response.json()
+            data = response.json()
 
         # 移动端如果未登录，通常会返回 ok: 0 或者重定向
         if data.get('ok') != 1:
@@ -2501,9 +2506,10 @@ async def fetch_reddit_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
         headers = {'User-Agent': get_random_user_agent(), 'Accept': 'application/json'}
         await asyncio.sleep(random.uniform(0.1, 0.5))
 
-        client = get_external_http_client()
-        response = await client.get(url, headers=headers, cookies=reddit_cookies, timeout=10.0)
-        data = response.json()
+        # per-call AsyncClient: 带用户鉴权 cookie，见 bilibili 同款理由
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            response = await client.get(url, headers=headers, cookies=reddit_cookies, timeout=10.0)
+            data = response.json()
         posts = [
             {
                 'title': pd.get('title', ''), 'subreddit': f"r/{pd.get('subreddit', '')}",
@@ -2527,8 +2533,9 @@ async def _fetch_twitter_personal_web_scraping(limit: int = 10, cookies: Optiona
     try:
         url = "https://twitter.com/home"
         headers = {'User-Agent': get_random_user_agent()}
-        client = get_external_http_client()
-        res = await client.get(url, headers=headers, cookies=cookies, timeout=10.0)
+        # per-call AsyncClient: 带用户鉴权 cookie，见 bilibili 同款理由
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            res = await client.get(url, headers=headers, cookies=cookies, timeout=10.0)
 
         # 如果被重定向到了登录页，说明 Cookie 彻底失效了
         if "login" in str(res.url) or "logout" in str(res.url):
@@ -2603,16 +2610,17 @@ async def fetch_twitter_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
         
         await asyncio.sleep(random.uniform(0.1, 0.5))
 
-        client = get_external_http_client()
-        response = await client.get(url, headers=headers, cookies=twitter_cookies, timeout=10.0)
+        # per-call AsyncClient: 带用户鉴权 cookie，见 bilibili 同款理由
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            response = await client.get(url, headers=headers, cookies=twitter_cookies, timeout=10.0)
 
-        # 状态码非 200 时，平滑降级到备用网页刮削方案
-        if response.status_code != 200: 
-            logger.warning(f"Twitter API 拒绝访问 (状态码: {response.status_code})，回退到网页刮削...")
-            return await _fetch_twitter_personal_web_scraping(limit, twitter_cookies)
+            # 状态码非 200 时，平滑降级到备用网页刮削方案
+            if response.status_code != 200:
+                logger.warning(f"Twitter API 拒绝访问 (状态码: {response.status_code})，回退到网页刮削...")
+                return await _fetch_twitter_personal_web_scraping(limit, twitter_cookies)
 
-        # 真正去解析返回的推文数据，替换掉之前的占位符
-        data = response.json()
+            # 真正去解析返回的推文数据，替换掉之前的占位符
+            data = response.json()
         if not isinstance(data, list):
             return {'success': False, 'error': 'API 返回数据格式异常'}
 
