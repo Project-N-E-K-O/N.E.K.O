@@ -20,6 +20,7 @@ import ruLocale from 'element-plus/dist/locale/ru.mjs'
 import router from './router'
 import { i18n, getLocale } from './i18n'
 import App from './App.vue'
+import { initPluginDashboardYuiGuideRuntime } from './yui-guide-runtime'
 
 console.log('🚀 Starting N.E.K.O Plugin Management System...')
 
@@ -60,6 +61,7 @@ console.log('✅ Mounting app to #app...')
 app.mount('#app')
 
 console.log('✅ App mounted successfully!')
+initPluginDashboardYuiGuideRuntime()
 
 // 启动连接健康检查
 import { useConnectionStore } from './stores/connection'

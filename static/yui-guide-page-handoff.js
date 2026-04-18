@@ -33,9 +33,27 @@
 
     var WINDOW_NAME_PREFIX = 'neko_';
     var WINDOW_CHECK_INTERVAL_MS = 1000;
+    var DEFAULT_TUTORIAL_MODEL_MANAGER_LANLAN_NAME = 'ATLS';
 
     var _activeWindows = {};
     var _activeTimers = {};
+
+    function syncMainUIVisibility() {
+        var hasOpenWindow = Object.keys(_activeWindows).some(function (key) {
+            var win = _activeWindows[key];
+            return !!(win && !win.closed);
+        });
+
+        if (hasOpenWindow) {
+            return;
+        }
+
+        if (typeof window.handleShowMainUI === 'function') {
+            try {
+                window.handleShowMainUI();
+            } catch (_) {}
+        }
+    }
 
     /**
      * 规范化窗口名称：简写自动补 neko_ 前缀。
@@ -62,20 +80,32 @@
             console.warn('[YuiGuideHandoff] windowName 为空，取消打开');
             return Promise.resolve(null);
         }
+        var targetUrl = openUrl;
+        try {
+            targetUrl = new URL(openUrl, window.location.origin).toString();
+        } catch (_) {}
         var childWin;
 
         if (typeof window.openOrFocusWindow === 'function') {
-            childWin = window.openOrFocusWindow(openUrl, fullName, features);
+            childWin = window.openOrFocusWindow(targetUrl, fullName, features);
         } else {
-            childWin = window.open(openUrl, fullName, features);
+            childWin = window.open(targetUrl, fullName, features);
         }
 
         if (!childWin) {
-            console.warn('[YuiGuideHandoff] 窗口打开失败或被拦截:', openUrl);
+            console.warn('[YuiGuideHandoff] 窗口打开失败或被拦截:', targetUrl);
             return Promise.resolve(null);
         }
 
         _activeWindows[fullName] = childWin;
+        if (!window._openedWindows) {
+            window._openedWindows = {};
+        }
+        window._openedWindows[fullName] = childWin;
+
+        try {
+            childWin.focus();
+        } catch (_) {}
 
         if (typeof window.handleHideMainUI === 'function') {
             window.handleHideMainUI();
@@ -97,6 +127,7 @@
         if (!win) return false;
         if (win.closed) {
             delete _activeWindows[fullName];
+            syncMainUIVisibility();
             return false;
         }
         return true;
@@ -122,6 +153,7 @@
 
         if (!win || win.closed) {
             delete _activeWindows[fullName];
+            syncMainUIVisibility();
             if (typeof onReturn === 'function') onReturn();
             return;
         }
@@ -134,6 +166,7 @@
                     delete _activeWindows[fullName];
                 }
                 delete _activeTimers[fullName];
+                syncMainUIVisibility();
                 if (typeof onReturn === 'function') onReturn();
             }
         }, WINDOW_CHECK_INTERVAL_MS);
@@ -142,15 +175,12 @@
     // ─── 内部：弹层工具 ──────────────────────────────────────
 
     var POPUP_OPEN_ANIMATION_MS = 250;
-    var _popupsOpenedByTutorial = {};
-
-    // ─── M3: Handoff Token 常量 ──────────────────────────────
-
     var HANDOFF_STORAGE_KEY = 'neko_yui_guide_handoff_token';
     var HANDOFF_CONSUMED_NOTIFY_KEY = 'neko_yui_guide_handoff_consumed';
     var HANDOFF_TOKEN_VERSION = 1;
-    var HANDOFF_TOKEN_TTL_MS = 5 * 60 * 1000; // 5 分钟
+    var HANDOFF_TOKEN_TTL_MS = 5 * 60 * 1000;
     var HANDOFF_FLOW_ID = 'home_yui_guide_v1';
+    var HANDOFF_SESSION_ID = 'h_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 10);
 
     function getPrefix() {
         if (typeof window.UniversalTutorialManager === 'function' &&
@@ -178,16 +208,10 @@
         return document.getElementById(p + '-popup-' + buttonId);
     }
 
-    // ─── M3: Handoff Token CRUD ──────────────────────────────
-
-    /**
-     * 生成简易唯一 ID。
-     */
-    function generateTokenId() {
-        return 'h_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 10);
+    function getFloatingButton(buttonId, prefix) {
+        var p = prefix || getPrefix();
+        return document.getElementById(p + '-btn-' + buttonId);
     }
-
-    var HANDOFF_SESSION_ID = generateTokenId();
 
     function getHandoffTokenSignature(tokenObj) {
         if (!tokenObj) return '';
@@ -195,9 +219,8 @@
     }
 
     function dispatchHandoffConsumedEvent(detail) {
-        var payload = detail || {};
         window.dispatchEvent(new CustomEvent('neko:yui-guide:handoff-consumed', {
-            detail: payload
+            detail: detail || {}
         }));
     }
 
@@ -210,22 +233,15 @@
                 emitted_at: Date.now(),
                 sessionId: HANDOFF_SESSION_ID
             }));
-        } catch (e) {
-            console.warn('[YuiGuideHandoff] notifyHandoffConsumed: 广播失败:', e);
+        } catch (error) {
+            console.warn('[YuiGuideHandoff] notifyHandoffConsumed: 广播失败:', error);
         }
     }
 
-    /**
-     * 创建 handoff token 并写入 localStorage。
-     *
-     * @param {string} targetPage - 目标页面标识，如 'api_key'
-     * @param {string} [resumeScene] - 恢复场景 ID，如 'handoff_api_key'，可为 null
-     * @returns {Object|null} token 对象，失败返回 null
-     */
     function createHandoffToken(targetPage, resumeScene) {
         var now = Date.now();
         var tokenObj = {
-            token: generateTokenId(),
+            token: 'h_' + now.toString(36) + '_' + Math.random().toString(36).substring(2, 10),
             token_version: HANDOFF_TOKEN_VERSION,
             flow_id: HANDOFF_FLOW_ID,
             source_page: 'home',
@@ -234,45 +250,45 @@
             created_at: now,
             expires_at: now + HANDOFF_TOKEN_TTL_MS
         };
+
         try {
             localStorage.setItem(HANDOFF_STORAGE_KEY, JSON.stringify(tokenObj));
-        } catch (e) {
-            console.error('[YuiGuideHandoff] createHandoffToken: 存储失败:', e);
+        } catch (error) {
+            console.error('[YuiGuideHandoff] createHandoffToken: 存储失败:', error);
             return null;
         }
+
         return tokenObj;
     }
 
-    /**
-     * 读取并校验 handoff token（不消费）。
-     *
-     * @returns {Object|null} 有效 token 对象，无则返回 null
-     */
+    function clearHandoffToken() {
+        try {
+            localStorage.removeItem(HANDOFF_STORAGE_KEY);
+        } catch (_) {}
+    }
+
     function readHandoffToken() {
         try {
             var raw = localStorage.getItem(HANDOFF_STORAGE_KEY);
             if (!raw) return null;
+
             var tokenObj = JSON.parse(raw);
             if (!tokenObj || !tokenObj.token || tokenObj.token_version !== HANDOFF_TOKEN_VERSION) {
                 return null;
             }
+
             if (Date.now() > tokenObj.expires_at) {
                 clearHandoffToken();
                 return null;
             }
+
             return tokenObj;
-        } catch (e) {
-            console.error('[YuiGuideHandoff] readHandoffToken: 读取失败:', e);
+        } catch (error) {
+            console.error('[YuiGuideHandoff] readHandoffToken: 读取失败:', error);
             return null;
         }
     }
 
-    /**
-     * 消费 handoff token（单次语义：读取 + 校验页面 + 清除）。
-     *
-     * @param {string} [expectedPage] - 期望的目标页面标识，不匹配则不消费
-     * @returns {Object|null} 有效 token 对象，失败或不匹配返回 null
-     */
     function consumeHandoffToken(expectedPage) {
         var tokenObj = readHandoffToken();
         if (!tokenObj) return null;
@@ -310,8 +326,8 @@
 
         try {
             localStorage.setItem(HANDOFF_STORAGE_KEY, JSON.stringify(consumedTokenObj));
-        } catch (e) {
-            console.error('[YuiGuideHandoff] consumeHandoffToken: 标记消费失败:', e);
+        } catch (error) {
+            console.error('[YuiGuideHandoff] consumeHandoffToken: 标记消费失败:', error);
             return null;
         }
 
@@ -340,57 +356,181 @@
         return storedTokenObj;
     }
 
-    /**
-     * 清除 localStorage 中的 handoff token。
-     */
-    function clearHandoffToken() {
-        try {
-            localStorage.removeItem(HANDOFF_STORAGE_KEY);
-        } catch (e) { /* ignore */ }
+    function waitFor(condition, timeoutMs, intervalMs) {
+        var timeout = Number.isFinite(timeoutMs) ? timeoutMs : 4000;
+        var interval = Number.isFinite(intervalMs) ? intervalMs : 80;
+        var startedAt = Date.now();
+
+        return new Promise(function (resolve) {
+            function tick() {
+                var result = null;
+                try {
+                    result = condition();
+                } catch (_) {
+                    result = null;
+                }
+
+                if (result) {
+                    resolve(result);
+                    return;
+                }
+
+                if ((Date.now() - startedAt) >= timeout) {
+                    resolve(null);
+                    return;
+                }
+
+                setTimeout(tick, interval);
+            }
+
+            tick();
+        });
     }
 
-    /**
-     * 打开目标页面并携带 handoff token。
-     * token 创建失败时回退到普通打开。
-     *
-     * @param {string} targetPage - 目标页面标识
-     * @param {string} [resumeScene] - 恢复场景 ID
-     * @param {string} openUrl - 目标页面 URL
-     * @param {string} windowName - 窗口名称简写
-     * @param {string} [features] - window.open features
-     * @returns {Promise<Window|null>}
-     */
-    function openPageWithHandoff(targetPage, resumeScene, openUrl, windowName, features) {
-        var tokenObj = createHandoffToken(targetPage, resumeScene);
-        if (!tokenObj) {
-            console.warn('[YuiGuideHandoff] openPageWithHandoff: token 创建失败，回退到普通打开');
-            return openPage(openUrl, windowName, features);
+    function getAgentToggleElement(toggleId) {
+        var prefix = getPrefix();
+        return document.getElementById(prefix + '-toggle-' + toggleId);
+    }
+
+    function getAgentToggleCheckbox(toggleId) {
+        var prefix = getPrefix();
+        return document.getElementById(prefix + '-' + toggleId);
+    }
+
+    function getAgentSidePanel(toggleId) {
+        return document.querySelector('[data-neko-sidepanel-type="' + toggleId + '-actions"]');
+    }
+
+    function isSidePanelVisible(sidePanel) {
+        return !!(sidePanel && sidePanel.style.display === 'flex' && sidePanel.style.opacity !== '0');
+    }
+
+    function getAgentSidePanelAction(toggleId, actionId) {
+        if (!toggleId || !actionId) return null;
+        return document.getElementById('neko-sidepanel-action-' + toggleId + '-' + actionId);
+    }
+
+    function getOpenedWindow(fullName) {
+        if (!fullName) return null;
+        var tracked = _activeWindows[fullName];
+        if (tracked && !tracked.closed) {
+            return tracked;
         }
 
-        window.dispatchEvent(new CustomEvent('neko:yui-guide:handoff-sent', {
-            detail: {
-                token: tokenObj.token,
-                target_page: targetPage,
-                resume_scene: resumeScene
-            }
-        }));
+        if (window._openedWindows && window._openedWindows[fullName] && !window._openedWindows[fullName].closed) {
+            return window._openedWindows[fullName];
+        }
 
-        return openPage(openUrl, windowName, features).then(function (childWin) {
-            if (childWin) {
-                return childWin;
-            }
+        return null;
+    }
 
-            var currentTokenObj = readHandoffToken();
-            if (
-                currentTokenObj &&
-                !currentTokenObj.consumed &&
-                getHandoffTokenSignature(currentTokenObj) === getHandoffTokenSignature(tokenObj)
-            ) {
-                clearHandoffToken();
+    function sendAgentCommand(command, payload) {
+        var requestId = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+        var controller = typeof AbortController === 'function' ? new AbortController() : null;
+        var timeoutId = window.setTimeout(function () {
+            if (controller) {
+                controller.abort();
             }
-
-            return null;
+        }, 4000);
+        return fetch('/api/agent/command', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            signal: controller ? controller.signal : undefined,
+            body: JSON.stringify(Object.assign({
+                request_id: requestId,
+                command: command
+            }, payload || {}))
+        }).then(function (response) {
+            if (!response.ok) {
+                throw new Error('command status ' + response.status);
+            }
+            return response.json();
+        }).then(function (data) {
+            if (!data || data.success !== true) {
+                throw new Error((data && data.error) || 'command failed');
+            }
+            return data;
+        }).catch(function (error) {
+            console.warn('[YuiGuideHandoff] sendAgentCommand 失败:', command, error);
+            return {
+                success: false,
+                error: error && error.message ? error.message : 'command failed'
+            };
+        }).finally(function () {
+            window.clearTimeout(timeoutId);
         });
+    }
+
+    function syncAgentToggleDom(toggleId, checked) {
+        var checkbox = getAgentToggleCheckbox(toggleId);
+        var toggleItem = getAgentToggleElement(toggleId);
+        if (!checkbox || !toggleItem) {
+            return;
+        }
+
+        checkbox.checked = !!checked;
+        toggleItem.setAttribute('aria-checked', checked ? 'true' : 'false');
+        if (typeof checkbox._updateStyle === 'function') {
+            checkbox._updateStyle();
+        }
+    }
+
+    function dispatchSyntheticPress(element) {
+        if (!element) {
+            return;
+        }
+
+        try {
+            element.dispatchEvent(new MouseEvent('mouseenter', {
+                bubbles: true,
+                cancelable: true,
+                view: window
+            }));
+            element.dispatchEvent(new MouseEvent('mousedown', {
+                bubbles: true,
+                cancelable: true,
+                view: window
+            }));
+            element.dispatchEvent(new MouseEvent('mouseup', {
+                bubbles: true,
+                cancelable: true,
+                view: window
+            }));
+        } catch (_) {}
+    }
+
+    function buildCenteredWindowFeatures(width, height) {
+        var w = Number.isFinite(width) ? width : Math.min(1280, Math.round(screen.width * 0.8));
+        var h = Number.isFinite(height) ? height : Math.min(900, Math.round(screen.height * 0.8));
+        var left = Math.max(0, Math.floor((screen.width - w) / 2));
+        var top = Math.max(0, Math.floor((screen.height - h) / 2));
+        return 'width=' + w + ',height=' + h + ',left=' + left + ',top=' + top + ',menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes';
+    }
+
+    function getTutorialModelManagerLanlanName() {
+        var explicitName = typeof window.NEKO_YUI_GUIDE_MODEL_MANAGER_LANLAN_NAME === 'string'
+            ? window.NEKO_YUI_GUIDE_MODEL_MANAGER_LANLAN_NAME.trim()
+            : '';
+        if (explicitName) {
+            return explicitName;
+        }
+
+        return DEFAULT_TUTORIAL_MODEL_MANAGER_LANLAN_NAME;
+    }
+
+    function getModelManagerWindowName(name, prefix) {
+        var normalizedName = typeof name === 'string' && name.trim()
+            ? name.trim()
+            : getTutorialModelManagerLanlanName();
+        var modelPrefix = prefix || getPrefix();
+        var stem = modelPrefix === 'vrm'
+            ? 'vrm-manage_'
+            : modelPrefix === 'mmd'
+            ? 'mmd-manage_'
+            : 'live2d-manage_';
+        return stem + encodeURIComponent(normalizedName);
     }
 
     // ─── M2: 首页交互包装 API ────────────────────────────────
@@ -405,6 +545,7 @@
         var prefix = getPrefix();
         var manager = getManager(prefix);
         var popup = getPopup('settings', prefix);
+        var button = getFloatingButton('settings', prefix);
 
         if (!manager || !popup || typeof manager.showPopup !== 'function') {
             console.warn('[YuiGuideHandoff] openSettingsPanel: manager/showPopup 不可用');
@@ -415,13 +556,11 @@
             return Promise.resolve(true);
         }
 
+        dispatchSyntheticPress(button);
         manager.showPopup('settings', popup);
 
         return new Promise(function (resolve) {
             setTimeout(function () {
-                if (popup.style.display === 'flex') {
-                    _popupsOpenedByTutorial['settings'] = true;
-                }
                 resolve(popup.style.display === 'flex');
             }, POPUP_OPEN_ANIMATION_MS);
         });
@@ -438,25 +577,7 @@
             return Promise.resolve(false);
         }
         manager.closePopupById('settings');
-        delete _popupsOpenedByTutorial['settings'];
         var popup = getPopup('settings');
-        var closed = !popup || popup.style.display !== 'flex';
-        return Promise.resolve(closed);
-    }
-
-    /**
-     * 关闭 Agent / 猫爪弹层。
-     *
-     * @returns {Promise<boolean>} 弹层是否成功关闭
-     */
-    function closeAgentPanel() {
-        var manager = getManager();
-        if (!manager || typeof manager.closePopupById !== 'function') {
-            return Promise.resolve(false);
-        }
-        manager.closePopupById('agent');
-        delete _popupsOpenedByTutorial.agent;
-        var popup = getPopup('agent');
         var closed = !popup || popup.style.display !== 'flex';
         return Promise.resolve(closed);
     }
@@ -471,6 +592,7 @@
         var prefix = getPrefix();
         var manager = getManager(prefix);
         var popup = getPopup('agent', prefix);
+        var button = getFloatingButton('agent', prefix);
 
         if (!manager || !popup || typeof manager.showPopup !== 'function') {
             console.warn('[YuiGuideHandoff] openAgentPanel: manager/showPopup 不可用');
@@ -481,16 +603,25 @@
             return Promise.resolve(true);
         }
 
+        dispatchSyntheticPress(button);
         manager.showPopup('agent', popup);
 
         return new Promise(function (resolve) {
             setTimeout(function () {
-                if (popup.style.display === 'flex') {
-                    _popupsOpenedByTutorial['agent'] = true;
-                }
                 resolve(popup.style.display === 'flex');
             }, POPUP_OPEN_ANIMATION_MS);
         });
+    }
+
+    function closeAgentPanel() {
+        var manager = getManager();
+        if (!manager || typeof manager.closePopupById !== 'function') {
+            return Promise.resolve(false);
+        }
+        manager.closePopupById('agent');
+        var popup = getPopup('agent');
+        var closed = !popup || popup.style.display !== 'flex';
+        return Promise.resolve(closed);
     }
 
     /**
@@ -523,15 +654,248 @@
         });
     }
 
-    // ─── M2: "请她离开/回来" 包装 ────────────────────────────
+    function ensureAgentToggleChecked(toggleId, checked) {
+        var desiredChecked = checked !== false;
+        if (!toggleId) return Promise.resolve(false);
 
-    /**
-     * 触发 Yui 离开流程。
-     * 所有模型类型（Live2D/VRM/MMD）的 goodbye 按钮统一派发 'live2d-goodbye-click'，
-     * 此处保持一致。
-     *
-     * @param {string} [reason] - 可选离开原因，用于日志
-     */
+        return openAgentPanel().then(function (opened) {
+            if (!opened) return false;
+
+            return waitFor(function () {
+                var checkbox = getAgentToggleCheckbox(toggleId);
+                var toggleItem = getAgentToggleElement(toggleId);
+                if (!checkbox || !toggleItem) {
+                    return null;
+                }
+
+                if (checkbox.disabled) {
+                    return null;
+                }
+
+                return {
+                    checkbox: checkbox,
+                    toggleItem: toggleItem
+                };
+            }, 5000).then(function (parts) {
+                if (!parts || !parts.checkbox || !parts.toggleItem) {
+                    console.warn('[YuiGuideHandoff] ensureAgentToggleChecked: toggle 不可用:', toggleId);
+                    return false;
+                }
+
+                if (!!parts.checkbox.checked === desiredChecked) {
+                    return true;
+                }
+
+                parts.toggleItem.click();
+                return waitFor(function () {
+                    return !!parts.checkbox.checked === desiredChecked ? true : null;
+                }, 1500).then(function (result) {
+                    return !!result;
+                });
+            });
+        });
+    }
+
+    function setAgentMasterEnabled(enabled) {
+        return sendAgentCommand('set_agent_enabled', {
+            enabled: !!enabled
+        }).then(function (result) {
+            if (!result || result.success !== true) {
+                return false;
+            }
+            dispatchSyntheticPress(getAgentToggleElement('agent-master'));
+            syncAgentToggleDom('agent-master', !!enabled);
+            if (!enabled) {
+                syncAgentToggleDom('agent-user-plugin', false);
+            }
+            return true;
+        }).catch(function (error) {
+            console.warn('[YuiGuideHandoff] setAgentMasterEnabled 失败:', error);
+            return false;
+        });
+    }
+
+    function setAgentFlagEnabled(flagKey, enabled) {
+        var key = typeof flagKey === 'string' ? flagKey.trim() : '';
+        if (!key) {
+            return Promise.resolve(false);
+        }
+
+        var toggleMap = {
+            user_plugin_enabled: 'agent-user-plugin',
+            computer_use_enabled: 'agent-keyboard',
+            browser_use_enabled: 'agent-browser',
+            openclaw_enabled: 'agent-openclaw',
+            openfang_enabled: 'agent-openfang'
+        };
+
+        return sendAgentCommand('set_flag', {
+            key: key,
+            value: !!enabled
+        }).then(function (result) {
+            if (!result || result.success !== true) {
+                return false;
+            }
+            if (toggleMap[key]) {
+                dispatchSyntheticPress(getAgentToggleElement(toggleMap[key]));
+                syncAgentToggleDom(toggleMap[key], !!enabled);
+            }
+            return true;
+        }).catch(function (error) {
+            console.warn('[YuiGuideHandoff] setAgentFlagEnabled 失败:', key, error);
+            return false;
+        });
+    }
+
+    function ensureAgentSidePanelVisible(toggleId) {
+        if (!toggleId) return Promise.resolve(false);
+
+        return openAgentPanel().then(function (opened) {
+            if (!opened) return false;
+
+            var toggleItem = getAgentToggleElement(toggleId);
+            var sidePanel = getAgentSidePanel(toggleId);
+            if (!toggleItem || !sidePanel) {
+                console.warn('[YuiGuideHandoff] ensureAgentSidePanelVisible: side panel 不存在:', toggleId);
+                return false;
+            }
+
+            if (typeof sidePanel._expand === 'function') {
+                if (sidePanel._hoverCollapseTimer) {
+                    clearTimeout(sidePanel._hoverCollapseTimer);
+                    sidePanel._hoverCollapseTimer = null;
+                }
+                sidePanel._expand();
+            } else {
+                toggleItem.dispatchEvent(new MouseEvent('mouseenter', {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window
+                }));
+            }
+
+            try {
+                toggleItem.dispatchEvent(new MouseEvent('mouseenter', {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window
+                }));
+                sidePanel.dispatchEvent(new MouseEvent('mouseenter', {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window
+                }));
+            } catch (_) {}
+
+            return waitFor(function () {
+                return isSidePanelVisible(sidePanel) ? sidePanel : null;
+            }, 1500).then(function (panel) {
+                return !!panel;
+            });
+        });
+    }
+
+    function ensureAgentSidePanelActionVisible(toggleId, actionId, timeoutMs) {
+        if (!toggleId || !actionId) return Promise.resolve(null);
+        var normalizedTimeoutMs = Number.isFinite(timeoutMs) ? timeoutMs : 1800;
+
+        return ensureAgentSidePanelVisible(toggleId).then(function (visible) {
+            if (!visible) return null;
+
+            return waitFor(function () {
+                var sidePanel = getAgentSidePanel(toggleId);
+                var button = getAgentSidePanelAction(toggleId, actionId);
+                if (!sidePanel || !button || !isSidePanelVisible(sidePanel)) {
+                    return null;
+                }
+                return button.offsetParent !== null ? button : null;
+            }, normalizedTimeoutMs).then(function (button) {
+                return button || null;
+            });
+        });
+    }
+
+    function clickAgentSidePanelAction(toggleId, actionId) {
+        if (!toggleId || !actionId) return Promise.resolve(false);
+
+        return ensureAgentSidePanelActionVisible(toggleId, actionId).then(function (button) {
+            if (!button || typeof button.click !== 'function') {
+                console.warn('[YuiGuideHandoff] clickAgentSidePanelAction: action 不存在:', toggleId, actionId);
+                return false;
+            }
+
+            if (toggleId === 'agent-user-plugin' && actionId === 'management-panel') {
+                button.click();
+                return waitForWindowOpen('plugin_dashboard', 6000).then(function (childWin) {
+                    return !!childWin;
+                });
+            }
+
+            button.click();
+            return true;
+        });
+    }
+
+    function waitForWindowOpen(windowName, timeoutMs) {
+        var fullName = normalizeWindowName(windowName);
+        if (!fullName) return Promise.resolve(null);
+
+        return waitFor(function () {
+            return getOpenedWindow(fullName);
+        }, timeoutMs || 6000, 120);
+    }
+
+    function closeWindow(windowName) {
+        var fullName = normalizeWindowName(windowName);
+        if (!fullName) return Promise.resolve(false);
+
+        var target = getOpenedWindow(fullName);
+        if (!target) {
+            delete _activeWindows[fullName];
+            if (window._openedWindows) {
+                delete window._openedWindows[fullName];
+            }
+            syncMainUIVisibility();
+            return Promise.resolve(true);
+        }
+
+        try {
+            target.close();
+        } catch (error) {
+            console.warn('[YuiGuideHandoff] closeWindow 失败:', fullName, error);
+            return Promise.resolve(false);
+        }
+
+        delete _activeWindows[fullName];
+        if (window._openedWindows) {
+            delete window._openedWindows[fullName];
+        }
+        syncMainUIVisibility();
+        return Promise.resolve(true);
+    }
+
+    function openPluginDashboard() {
+        return openPage(
+            '/api/agent/user_plugin/dashboard',
+            'plugin_dashboard',
+            buildCenteredWindowFeatures()
+        );
+    }
+
+    function openModelManagerPage(lanlanName) {
+        var name = typeof lanlanName === 'string' && lanlanName.trim()
+            ? lanlanName.trim()
+            : getTutorialModelManagerLanlanName();
+        var url = '/model_manager?lanlan_name=' + encodeURIComponent(name);
+        var prefix = getPrefix();
+        var windowName = getModelManagerWindowName(name, prefix);
+        return openPage(
+            url,
+            windowName,
+            buildCenteredWindowFeatures(1280, 900)
+        );
+    }
+
     function triggerGoodbye(reason) {
         if (reason) {
             console.log('[YuiGuideHandoff] triggerGoodbye, reason:', reason);
@@ -539,51 +903,76 @@
         window.dispatchEvent(new CustomEvent('live2d-goodbye-click'));
     }
 
-    /**
-     * 触发 Yui 回来流程。
-     * 包装现有的 ${prefix}-return-click 事件。
-     */
     function triggerReturn() {
         var prefix = getPrefix();
         window.dispatchEvent(new CustomEvent(prefix + '-return-click'));
     }
 
-    // ─── M2: 教程结束清理 ────────────────────────────────────
-
-    /**
-     * 关闭教程期间打开的所有弹层，恢复页面干净状态。
-     */
-    function cleanupTutorialPopups() {
-        var manager = getManager();
-
-        if (manager && typeof manager.closePopupById === 'function') {
-            Object.keys(_popupsOpenedByTutorial).forEach(function (buttonId) {
-                manager.closePopupById(buttonId);
-            });
+    function cleanupTutorialPopups(event) {
+        var detail = event && event.detail ? event.detail : null;
+        if (detail && detail.page !== 'home') {
+            return;
         }
-        _popupsOpenedByTutorial = {};
+        closeAgentPanel();
+        closeSettingsPanel();
+        clearHandoffToken();
+    }
+
+    function openPageWithHandoff(targetPage, resumeScene, openUrl, windowName, features) {
+        var tokenObj = createHandoffToken(targetPage, resumeScene);
+        if (!tokenObj) {
+            console.warn('[YuiGuideHandoff] openPageWithHandoff: token 创建失败，回退到普通打开');
+            return openPage(openUrl, windowName, features);
+        }
+
+        window.dispatchEvent(new CustomEvent('neko:yui-guide:handoff-sent', {
+            detail: {
+                token: tokenObj.token,
+                target_page: targetPage || '',
+                resume_scene: resumeScene || null
+            }
+        }));
+
+        return openPage(openUrl, windowName, features).then(function (childWin) {
+            if (childWin) {
+                return childWin;
+            }
+
+            var currentTokenObj = readHandoffToken();
+            if (
+                currentTokenObj
+                && !currentTokenObj.consumed
+                && getHandoffTokenSignature(currentTokenObj) === getHandoffTokenSignature(tokenObj)
+            ) {
+                clearHandoffToken();
+            }
+
+            return null;
+        });
     }
 
     window.addEventListener('storage', function (event) {
         if (event.key !== HANDOFF_CONSUMED_NOTIFY_KEY || !event.newValue) {
             return;
         }
+
         try {
             var payload = JSON.parse(event.newValue);
             if (!payload || payload.sessionId === HANDOFF_SESSION_ID) {
                 return;
             }
             dispatchHandoffConsumedEvent(payload.detail || {});
-        } catch (e) {
-            console.warn('[YuiGuideHandoff] handoff_consumed storage payload 无法解析:', e);
+        } catch (error) {
+            console.warn('[YuiGuideHandoff] handoff_consumed storage payload 无法解析:', error);
         }
     });
 
-    window.addEventListener('neko:yui-guide:tutorial-end', function () {
-        cleanupTutorialPopups();
+    window.addEventListener('neko:yui-guide:tutorial-end', function (event) {
+        if (!event || !event.detail || event.detail.page !== 'home') {
+            return;
+        }
+        cleanupTutorialPopups(event);
     });
-
-    // ─── 导出 ─────────────────────────────────────────────────
 
     var handoff = Object.freeze({
         // M1
@@ -591,23 +980,30 @@
         isWindowOpen: isWindowOpen,
         resumeOnReturn: resumeOnReturn,
         normalizeWindowName: normalizeWindowName,
-        // M2 — 弹层
+        // M2
         openSettingsPanel: openSettingsPanel,
         closeSettingsPanel: closeSettingsPanel,
         openAgentPanel: openAgentPanel,
         closeAgentPanel: closeAgentPanel,
         ensureSettingsMenuVisible: ensureSettingsMenuVisible,
-        // M2 — 离开/回来
         triggerGoodbye: triggerGoodbye,
         triggerReturn: triggerReturn,
-        // M2 — 清理
         cleanupTutorialPopups: cleanupTutorialPopups,
-        // M3 — 跨页 handoff
+        ensureAgentToggleChecked: ensureAgentToggleChecked,
+        setAgentMasterEnabled: setAgentMasterEnabled,
+        setAgentFlagEnabled: setAgentFlagEnabled,
+        ensureAgentSidePanelVisible: ensureAgentSidePanelVisible,
+        ensureAgentSidePanelActionVisible: ensureAgentSidePanelActionVisible,
+        clickAgentSidePanelAction: clickAgentSidePanelAction,
         createHandoffToken: createHandoffToken,
         readHandoffToken: readHandoffToken,
         consumeHandoffToken: consumeHandoffToken,
         clearHandoffToken: clearHandoffToken,
-        openPageWithHandoff: openPageWithHandoff
+        openPageWithHandoff: openPageWithHandoff,
+        openPluginDashboard: openPluginDashboard,
+        openModelManagerPage: openModelManagerPage,
+        waitForWindowOpen: waitForWindowOpen,
+        closeWindow: closeWindow
     });
 
     function getHomeInteractionApi() {

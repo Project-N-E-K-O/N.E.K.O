@@ -1630,6 +1630,7 @@ function createCheckIndicator(manager, prefix) {
 function createToggleItem(manager, prefix, toggle, popup) {
     const toggleItem = document.createElement('div');
     toggleItem.className = `${prefix}-toggle-item`;
+    toggleItem.id = `${prefix}-toggle-${toggle.id}`;
     toggleItem.setAttribute('role', 'switch');
     toggleItem.setAttribute('tabIndex', toggle.initialDisabled ? '-1' : '0');
     toggleItem.setAttribute('aria-checked', 'false');
