@@ -130,11 +130,19 @@ def _normalize_pending_user_attachments(pending_user_images: list) -> list[dict]
     return attachments
 
 
-def _build_recent_analyze_messages(chat_history: list, pending_user_images: list, limit: int = 6) -> list[dict]:
+def _build_recent_analyze_messages(
+    chat_history: list,
+    pending_user_images: list,
+    limit: int = 6,
+    *,
+    allow_attach_to_last_user: bool = False,
+) -> list[dict]:
     recent: list[dict] = []
     last_user_idx: int | None = None
+    last_user_source_idx: int | None = None
+    slice_start = max(0, len(chat_history) - limit)
 
-    for item in chat_history[-limit:]:
+    for source_idx, item in enumerate(chat_history[-limit:], start=slice_start):
         if item.get('role') not in ['user', 'assistant']:
             continue
         try:
@@ -147,10 +155,16 @@ def _build_recent_analyze_messages(chat_history: list, pending_user_images: list
         recent.append({'role': item.get('role'), 'content': txt})
         if item.get('role') == 'user':
             last_user_idx = len(recent) - 1
+            last_user_source_idx = source_idx
 
     attachments = _normalize_pending_user_attachments(pending_user_images)
     if attachments:
-        if last_user_idx is None:
+        if (
+            not allow_attach_to_last_user
+            or last_user_idx is None
+            or last_user_source_idx is None
+            or last_user_source_idx < slice_start
+        ):
             recent.append({
                 'role': 'user',
                 'content': '',
@@ -385,7 +399,11 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 if not shutdown_event.is_set():
                                     try:
                                         # 构造最近的消息摘要，并保留本轮最近的图片附件
-                                        recent = _build_recent_analyze_messages(chat_history, pending_user_images)
+                                        recent = _build_recent_analyze_messages(
+                                            chat_history,
+                                            pending_user_images,
+                                            allow_attach_to_last_user=had_user_input_this_turn,
+                                        )
                                         has_user = any(m.get('role') == 'user' for m in recent)
                                         logger.info(
                                             f"[{lanlan_name}] turn_end analyze check: "
@@ -459,7 +477,11 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 if not shutdown_event.is_set():
                                     try:
                                         # 构造最近的消息摘要，并保留本轮最近的图片附件
-                                        recent = _build_recent_analyze_messages(chat_history, pending_user_images)
+                                        recent = _build_recent_analyze_messages(
+                                            chat_history,
+                                            pending_user_images,
+                                            allow_attach_to_last_user=had_user_input_this_turn,
+                                        )
                                         has_user = any(m.get('role') == 'user' for m in recent)
                                         if recent and has_user:
                                             sent = await _publish_analyze_request_with_fallback(

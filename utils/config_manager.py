@@ -13,6 +13,7 @@ import math
 from datetime import date
 from copy import deepcopy
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
 from config import (
     APP_NAME,
@@ -1743,15 +1744,34 @@ class ConfigManager:
         openclaw_url = core_cfg.get('openclawUrl')
         if isinstance(openclaw_url, str) and openclaw_url.strip():
             normalized_openclaw_url = openclaw_url.strip().rstrip('/')
-            if normalized_openclaw_url.endswith(':8089'):
-                migrated_openclaw_url = f"{normalized_openclaw_url[:-5]}:8088"
-                core_cfg['openclawUrl'] = migrated_openclaw_url
-                openclaw_url = migrated_openclaw_url
+            try:
+                parsed_openclaw_url = urlparse(normalized_openclaw_url)
+            except Exception:
+                parsed_openclaw_url = None
+            if parsed_openclaw_url and parsed_openclaw_url.netloc:
                 try:
-                    self.save_json_config('core_config.json', core_cfg)
-                    logger.info("已自动将 openclawUrl 从 8089 迁移到 8088: %s", migrated_openclaw_url)
-                except Exception as exc:
-                    logger.warning("自动迁移 openclawUrl 到 8088 失败: %s", exc)
+                    if parsed_openclaw_url.port == 8089:
+                        host = parsed_openclaw_url.hostname or ""
+                        if ":" in host and not host.startswith("["):
+                            host = f"[{host}]"
+                        userinfo = ""
+                        if parsed_openclaw_url.username:
+                            userinfo = parsed_openclaw_url.username
+                            if parsed_openclaw_url.password:
+                                userinfo += f":{parsed_openclaw_url.password}"
+                            userinfo += "@"
+                        migrated_openclaw_url = urlunparse(
+                            parsed_openclaw_url._replace(netloc=f"{userinfo}{host}:8088")
+                        )
+                        core_cfg['openclawUrl'] = migrated_openclaw_url
+                        openclaw_url = migrated_openclaw_url
+                        try:
+                            self.save_json_config('core_config.json', core_cfg)
+                            logger.info("已自动将 openclawUrl 从 8089 迁移到 8088: %s", migrated_openclaw_url)
+                        except Exception as exc:
+                            logger.warning("自动迁移 openclawUrl 到 8088 失败: %s", exc)
+                except ValueError:
+                    pass
         if isinstance(openclaw_url, str) and openclaw_url.strip():
             config['OPENCLAW_URL'] = openclaw_url.strip()
         try:

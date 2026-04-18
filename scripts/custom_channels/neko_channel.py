@@ -45,7 +45,7 @@ from qwenpaw.config import get_config_path
 logger = logging.getLogger(__name__)
 
 DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8089
+DEFAULT_PORT = 8088
 DEFAULT_REPLY_TIMEOUT = 300.0
 LEGACY_CHANNEL_NAME = "openclaw"
 _PROGRESS_REPLY_MARKERS = (

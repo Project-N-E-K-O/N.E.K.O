@@ -375,22 +375,25 @@ async def _cancel_openclaw_tasks_for_stop(
         info["end_time"] = _now_iso()
         cancelled_task_ids.append(task_id)
 
-        try:
-            await _emit_main_event(
-                "task_update",
-                info.get("lanlan_name"),
-                task={
-                    "id": task_id,
-                    "status": "cancelled",
-                    "type": "openclaw",
-                    "start_time": info.get("start_time"),
-                    "end_time": info.get("end_time"),
-                    "params": info.get("params", {}),
-                    "error": "Cancelled by user",
-                },
-            )
-        except Exception:
-            logger.debug("[OpenClaw] emit task_update(cancelled by /stop) failed: task_id=%s", task_id, exc_info=True)
+        # Let the task coroutine emit the cancelled update when it is still
+        # alive; only emit here when there is no active background handle.
+        if not (bg and not bg.done()):
+            try:
+                await _emit_main_event(
+                    "task_update",
+                    info.get("lanlan_name"),
+                    task={
+                        "id": task_id,
+                        "status": "cancelled",
+                        "type": "openclaw",
+                        "start_time": info.get("start_time"),
+                        "end_time": info.get("end_time"),
+                        "params": info.get("params", {}),
+                        "error": "Cancelled by user",
+                    },
+                )
+            except Exception:
+                logger.debug("[OpenClaw] emit task_update(cancelled by /stop) failed: task_id=%s", task_id, exc_info=True)
 
     return cancelled_task_ids
 

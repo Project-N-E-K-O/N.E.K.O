@@ -92,7 +92,7 @@ N.E.K.O 当前内部已同时兼容这两种入口。下面给出与现有实现
 
 1. **状态隔离**：`user_id` 与 `qwenpaw_session_id` 的映射由适配器层维护，可存于内存或本地持久化文件。
 2. **稳定复用**：普通任务调用与魔法命令调用都使用同一个 `qwenpaw_session_id`，从而让 QwenPaw 的上下文持续稳定。
-3. **重置触发**：当用户明确发出“新话题”意图并触发 `/new` 时，适配器先向后台发送 `/new`，随后在本地重新生成一个新的 `qwenpaw_session_id` 覆写旧值。
+3. **重置触发**：当用户明确发出“新话题”意图并触发 `/new` 时，适配器先在本地重新生成一个新的 `qwenpaw_session_id`，再带着这个新会话 ID 向后台发送 `/new`。
 4. **与内部链路解耦**：Neko 原有的 `conversation_id` 保持现状，继续承担分析链路和事件追踪职责；适配器不依赖它来维持 QwenPaw 会话连续性。
 
 > 实现注记：在 N.E.K.O 当前代码里，`openclaw` 分发链路尚未完整贯通一个独立的上游 `user_id` 字段，因此现阶段以消息中的 `sender_id / user_id` 作为实际映射主键；若消息内未携带，则回退到适配器默认 `sender_id`。这保证了现有链路不改动的前提下，QwenPaw 侧仍能获得稳定会话标识。
@@ -264,10 +264,27 @@ async def rewrite_as_catgirl(user_input, tool_result):
 3. Neko 原有 `conversation_id` 不参与 QwenPaw 会话稳定性控制，只用于内部链路追踪。
 
 ```python
+import asyncio
 import requests
 import uuid
 
 user_qwenpaw_sessions = {}
+
+def _send_magic_command_sync(current_q_session: str, user_id: str, magic_cmd: str):
+    requests.post(
+        "http://127.0.0.1:8088/api/agent/process",
+        json={
+            "session_id": current_q_session,
+            "user_id": user_id,
+            "stream": False,
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "text", "text": magic_cmd}],
+            }],
+        },
+        timeout=3,
+    )
 
 def get_current_qwenpaw_session(user_id: str) -> str:
     if user_id not in user_qwenpaw_sessions:
@@ -296,20 +313,7 @@ async def process_user_input(
 
         # 静默发送魔法命令给 QwenPaw API，阻断正常的转述链路
         try:
-            requests.post(
-                "http://127.0.0.1:8088/api/agent/process",
-                json={
-                    "session_id": current_q_session,
-                    "user_id": user_id,
-                    "stream": False,
-                    "input": [{
-                        "type": "message",
-                        "role": "user",
-                        "content": [{"type": "text", "text": magic_cmd}],
-                    }],
-                },
-                timeout=3,
-            )
+            await asyncio.to_thread(_send_magic_command_sync, current_q_session, user_id, magic_cmd)
         except Exception as e:
             print(f"后台指令执行异常: {e}")
 
