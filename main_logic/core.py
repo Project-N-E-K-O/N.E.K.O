@@ -333,6 +333,12 @@ class LLMSessionManager:
         self._last_avatar_interaction_speak_at = 0
         self.avatar_interaction_cooldown_ms = 600
         self.avatar_interaction_speak_cooldown_ms = 1500
+        # 下一次 handle_response_complete 发出的 turn end 要携带的 meta。
+        # 在 handle_avatar_interaction 等需要标记特殊轮次的入口里设置，
+        # 由 handle_response_complete 读取并清空。比独立的
+        # sync_message_queue 控制消息更原子：meta 与 turn end 事件
+        # 同生共死，不会因为两条消息的时序错乱而把 avatar 轮当成 proactive。
+        self._pending_turn_meta: Optional[dict] = None
 
     def _fire_task(self, coro):
         """Create a background task with GC protection (prevent Python 3.11+ from collecting it)."""
@@ -552,7 +558,12 @@ class LLMSessionManager:
                     self._tts_done_queued_for_turn = True
                 except Exception as e:
                     logger.warning(f"⚠️ 发送TTS结束信号失败: {e}")
-        self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
+        turn_end_msg: dict = {'type': 'system', 'data': 'turn end'}
+        pending_meta = self._pending_turn_meta
+        if pending_meta:
+            turn_end_msg['meta'] = pending_meta
+            self._pending_turn_meta = None
+        self.sync_message_queue.put(turn_end_msg)
 
         # 直接向前端发送turn end消息
         try:
@@ -2645,18 +2656,17 @@ class LLMSessionManager:
             if hasattr(self.session, 'update_max_response_length'):
                 self.session.update_max_response_length(self._get_text_guard_max_length())
 
-            if self.sync_message_queue:
-                # Let cross_server persist a simplified memory note for this
-                # proactive turn without ever syncing the raw payload/instruction.
-                self.sync_message_queue.put({
-                    "type": "avatar_interaction_memory",
-                    "data": {
-                        "interaction_id": interaction_id,
-                        "memory_note": memory_note,
-                        "memory_dedupe_key": memory_meta["memory_dedupe_key"],
-                        "memory_dedupe_rank": memory_meta["memory_dedupe_rank"],
-                    },
-                })
+            # 后端打标：把 avatar interaction 元数据挂在 session manager 上，
+            # 等 prompt_ephemeral 触发 handle_response_complete 时随 turn end
+            # 原子地下发。不再走独立的 sync_message_queue 控制消息，避免
+            # meta 与 turn end 两条消息时序错乱导致本轮被误判成 proactive。
+            self._pending_turn_meta = {
+                "kind": "avatar_interaction",
+                "interaction_id": interaction_id,
+                "memory_note": memory_note,
+                "memory_dedupe_key": memory_meta["memory_dedupe_key"],
+                "memory_dedupe_rank": memory_meta["memory_dedupe_rank"],
+            }
 
             current_turn_id = self.current_speech_id
             try:
@@ -2672,6 +2682,9 @@ class LLMSessionManager:
                     interaction_id,
                     e,
                 )
+                # prompt_ephemeral 抛错时 handle_response_complete 不会被触发，
+                # 必须主动清掉 meta，避免泄漏到下一轮。
+                self._pending_turn_meta = None
                 await self.send_avatar_interaction_ack(interaction_id, False, "error")
                 return {"accepted": False, "reason": "error", "interaction_id": interaction_id}
             if delivered:
@@ -2682,6 +2695,12 @@ class LLMSessionManager:
                 "delivered" if delivered else "empty_response",
                 turn_id=current_turn_id if delivered else "",
             )
+
+        # 未 delivered 时 handle_response_complete 不一定被触发，留下的 meta
+        # 会被下一轮 turn end 误消费；在这里兜底清掉。delivered=True 时
+        # handle_response_complete 已经消费并清空，这里是幂等 no-op。
+        if not delivered:
+            self._pending_turn_meta = None
 
         if delivered:
             logger.info(

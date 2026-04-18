@@ -282,7 +282,6 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
         last_screen = None
         pending_user_images = []
         last_synced_index = 0  # 用于 turn end 时仅同步新增消息到 memory，避免 memory_browser 不更新
-        pending_avatar_interaction_meta = None
         avatar_interaction_memory_cache: dict[str, dict[str, int | str]] = {}
 
         while not shutdown_event.is_set():
@@ -365,10 +364,6 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 if len(pending_user_images) > 3:
                                     del pending_user_images[:-3]
 
-                    elif message["type"] == "avatar_interaction_memory":
-                        payload = message.get("data")
-                        pending_avatar_interaction_meta = payload if isinstance(payload, dict) else None
-
                     elif message["type"] == "system":
                         try:
                             if message["data"] == "google disconnected":
@@ -399,11 +394,10 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                     chat_history.append(
                                             {'role': 'assistant', 'content': [{'type': 'text', 'text': text_output_cache}]})
                                 text_output_cache = ''
-                                pending_avatar_interaction_meta = None
                                 current_turn_start_index = len(chat_history)
                                 # 合并未同步的连续主动搭话消息
                                 merge_unsynced_tail_assistants(chat_history, last_synced_index)
-                                
+
                                 # 再次检查关闭状态
                                 if shutdown_event.is_set():
                                     logger.info(f"[{lanlan_name}] 进程正在关闭，跳过memory_server请求")
@@ -453,7 +447,17 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                     chat_history.append(
                                         {'role': 'assistant', 'content': [{'type': 'text', 'text': text_output_cache}]})
                                 text_output_cache = ''
-                                is_avatar_interaction_turn = pending_avatar_interaction_meta is not None and not had_user_input_this_turn
+                                # 后端打标：meta 与 turn end 事件原子绑定，不再依赖独立通道
+                                # 的 pending_* 状态。kind == 'avatar_interaction' 才进入隔离
+                                # 路径，其它情况按 proactive / normal 处理。
+                                turn_end_meta = message.get("meta") if isinstance(message, dict) else None
+                                if not isinstance(turn_end_meta, dict):
+                                    turn_end_meta = None
+                                is_avatar_interaction_turn = (
+                                    turn_end_meta is not None
+                                    and turn_end_meta.get("kind") == "avatar_interaction"
+                                    and not had_user_input_this_turn
+                                )
                                 avatar_turn_start_index = min(current_turn_start_index, len(chat_history))
                                 avatar_turn_slice = chat_history[avatar_turn_start_index:] if is_avatar_interaction_turn else []
                                 avatar_turn_assistant_text = ''
@@ -468,9 +472,9 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                     # Avatar tool turns are handled in an isolated
                                     # memory path so they never leak into analyzer
                                     # requests or later session-end bulk syncs.
-                                    memory_note = str((pending_avatar_interaction_meta or {}).get('memory_note') or '').strip()
-                                    memory_dedupe_key = str((pending_avatar_interaction_meta or {}).get('memory_dedupe_key') or '').strip()
-                                    memory_dedupe_rank = (pending_avatar_interaction_meta or {}).get('memory_dedupe_rank', 1)
+                                    memory_note = str(turn_end_meta.get('memory_note') or '').strip()
+                                    memory_dedupe_key = str(turn_end_meta.get('memory_dedupe_key') or '').strip()
+                                    memory_dedupe_rank = turn_end_meta.get('memory_dedupe_rank', 1)
                                     should_persist_avatar_turn = (
                                         bool(avatar_turn_assistant_text)
                                         and _should_persist_avatar_interaction_memory(
@@ -503,7 +507,6 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                         if last_synced_index > len(chat_history):
                                             last_synced_index = len(chat_history)
 
-                                    pending_avatar_interaction_meta = None
                                     current_turn_start_index = len(chat_history)
                                     continue
                                 # 非阻塞地向tool_server发送最近对话，供分析器识别潜在任务。
@@ -581,11 +584,10 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                     chat_history.append(
                                         {'role': 'assistant', 'content': [{'type': 'text', 'text': text_output_cache}]})
                                 text_output_cache = ''
-                                pending_avatar_interaction_meta = None
                                 current_turn_start_index = len(chat_history)
                                 # 合并未同步的连续主动搭话消息
                                 merge_unsynced_tail_assistants(chat_history, last_synced_index)
-                                
+
                                 # 向tool_server发送最近对话，供分析器识别潜在任务（与turn end逻辑相同）
                                 # 再次检查关闭状态
                                 if not shutdown_event.is_set():
