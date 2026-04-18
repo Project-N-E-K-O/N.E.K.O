@@ -1111,6 +1111,12 @@ async def _run_computer_use_task(
             info["status"] = "cancelled"
         else:
             info["status"] = "completed" if success else "failed"
+        # If the CU thread managed to return normally *after* cancel_task flipped
+        # the registry, keep the downstream task_update / task_result consistent:
+        # force success=False so the emits below don't mix status="cancelled"
+        # with success=True / error=None.
+        if info.get("status") == "cancelled":
+            success = False
         info["end_time"] = _now_iso()
         # 记录任务完成状态供 analyzer 去重
         _task_tracker.record_completed(
@@ -1413,6 +1419,12 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     *, progress=None, stage=None, message=None, step=None, step_total=None,
                 ):
                     """Forward run progress updates to NEKO frontend via task_update."""
+                    # If cancel_task already flipped the registry to a terminal
+                    # state, a late progress callback would otherwise clobber
+                    # "cancelled" with a fresh "running" update on the HUD.
+                    _reg = Modules.task_registry.get(result.task_id)
+                    if _reg and _reg.get("status") != "running":
+                        return
                     task_payload: Dict[str, Any] = {
                         "id": result.task_id, "status": "running", "type": "user_plugin",
                         "start_time": up_start,
@@ -2564,6 +2576,12 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
         async def _on_plugin_progress(
             *, progress=None, stage=None, message=None, step=None, step_total=None,
         ):
+            # If cancel_task already flipped the registry to a terminal state,
+            # swallow the progress callback — otherwise it would clobber
+            # "cancelled" with a fresh "running" update on the HUD.
+            _reg = Modules.task_registry.get(task_id)
+            if _reg and _reg.get("status") != "running":
+                return
             task_payload: Dict[str, Any] = {
                 "id": task_id,
                 "status": "running",
@@ -3186,6 +3204,10 @@ async def openfang_run(payload: Dict[str, Any]):
             def _on_progress(info):
                 try:
                     reg = Modules.task_registry.get(task_id, {})
+                    # cancel_task pre-marks status="cancelled" and we must not
+                    # let a late progress tick overwrite it with "running".
+                    if reg.get("status") and reg.get("status") != "running":
+                        return
                     reg["status"] = info.get("status", reg.get("status", "running"))
                     reg["elapsed"] = info.get("elapsed", 0)
                     asyncio.create_task(_emit_main_event(
