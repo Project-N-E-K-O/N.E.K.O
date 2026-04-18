@@ -1812,50 +1812,42 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     lanlan_name, task_id=result.task_id, method="openclaw",
                     desc=result.task_description or instruction or "",
                 )
-                if not magic_command:
-                    try:
-                        await _emit_main_event(
-                            "task_update",
-                            lanlan_name,
-                            task={
-                                "id": result.task_id,
-                                "status": "running",
-                                "type": "openclaw",
-                                "start_time": nk_start,
-                                "params": task_params,
-                            },
-                        )
-                    except Exception as emit_err:
-                        logger.debug("[OpenClaw] emit task_update(running) failed: task_id=%s error=%s", result.task_id, emit_err)
-                if not magic_command:
-                    try:
-                        await _emit_main_event(
-                            "proactive_message",
-                            lanlan_name,
-                            text="我试试",
-                            detail="我试试",
-                            direct_reply=True,
-                            timestamp=_now_iso(),
-                        )
-                    except Exception as emit_err:
-                        logger.debug("[OpenClaw] emit proactive_message(ack) failed: task_id=%s error=%s", result.task_id, emit_err)
+                try:
+                    await _emit_main_event(
+                        "task_update",
+                        lanlan_name,
+                        task={
+                            "id": result.task_id,
+                            "status": "running",
+                            "type": "openclaw",
+                            "start_time": nk_start,
+                            "params": task_params,
+                        },
+                    )
+                except Exception as emit_err:
+                    logger.debug("[OpenClaw] emit task_update(running) failed: task_id=%s error=%s", result.task_id, emit_err)
+                try:
+                    ack_text = _rp_phrase("openclaw_try", _rp_lang(None))
+                    await _emit_main_event(
+                        "proactive_message",
+                        lanlan_name,
+                        text=ack_text,
+                        detail=ack_text,
+                        direct_reply=True,
+                        timestamp=_now_iso(),
+                    )
+                except Exception as emit_err:
+                    logger.debug("[OpenClaw] emit proactive_message(ack) failed: task_id=%s error=%s", result.task_id, emit_err)
                 async def _run_openclaw_dispatch():
                     try:
-                        if magic_command:
-                            nk_result = await Modules.openclaw.run_magic_command(
-                                magic_command,
-                                sender_id=nk_sender_id,
-                                role_name=lanlan_name,
-                            )
-                        else:
-                            nk_result = await Modules.openclaw.run_instruction(
-                                instruction,
-                                attachments=attachments,
-                                sender_id=nk_sender_id,
-                                session_id=nk_session_id,
-                                conversation_id=conversation_id,
-                                role_name=lanlan_name,
-                            )
+                        nk_result = await Modules.openclaw.run_instruction(
+                            instruction,
+                            attachments=attachments,
+                            sender_id=nk_sender_id,
+                            session_id=nk_session_id,
+                            conversation_id=conversation_id,
+                            role_name=lanlan_name,
+                        )
                         success = bool(nk_result.get("success"))
                         reply = str(nk_result.get("reply") or "")
                         _reg = Modules.task_registry.get(result.task_id)
@@ -1890,20 +1882,19 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 summary=_rp_phrase('openclaw_failed', _rp_lang(None)),
                                 error_message=str(nk_result.get("error") or "")[:500],
                             )
-                        if not magic_command:
-                            await _emit_main_event(
-                                "task_update",
-                                lanlan_name,
-                                task={
-                                    "id": result.task_id,
-                                    "status": "completed" if success else "failed",
-                                    "type": "openclaw",
-                                    "start_time": nk_start,
-                                    "end_time": _now_iso(),
-                                    "params": task_params,
-                                    "error": str(nk_result.get("error") or "")[:500] if not success else None,
-                                },
-                            )
+                        await _emit_main_event(
+                            "task_update",
+                            lanlan_name,
+                            task={
+                                "id": result.task_id,
+                                "status": "completed" if success else "failed",
+                                "type": "openclaw",
+                                "start_time": nk_start,
+                                "end_time": _now_iso(),
+                                "params": task_params,
+                                "error": str(nk_result.get("error") or "")[:500] if not success else None,
+                            },
+                        )
                     except asyncio.CancelledError as e:
                         cancel_msg = str(e)[:500] if str(e) else "cancelled"
                         _reg = Modules.task_registry.get(result.task_id)
@@ -1926,23 +1917,22 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             )
                         except Exception:
                             pass
-                        if not magic_command:
-                            try:
-                                await _emit_main_event(
-                                    "task_update",
-                                    lanlan_name,
-                                    task={
-                                        "id": result.task_id,
-                                        "status": "cancelled",
-                                        "type": "openclaw",
-                                        "start_time": nk_start,
-                                        "end_time": _now_iso(),
-                                        "params": task_params,
-                                        "error": cancel_msg,
-                                    },
-                                )
-                            except Exception:
-                                pass
+                        try:
+                            await _emit_main_event(
+                                "task_update",
+                                lanlan_name,
+                                task={
+                                    "id": result.task_id,
+                                    "status": "cancelled",
+                                    "type": "openclaw",
+                                    "start_time": nk_start,
+                                    "end_time": _now_iso(),
+                                    "params": task_params,
+                                    "error": cancel_msg,
+                                },
+                            )
+                        except Exception:
+                            pass
                         raise
                     except Exception as e:
                         logger.exception("[OpenClaw] dispatch failed: %s", e)
@@ -1966,23 +1956,22 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             )
                         except Exception:
                             pass
-                        if not magic_command:
-                            try:
-                                await _emit_main_event(
-                                    "task_update",
-                                    lanlan_name,
-                                    task={
-                                        "id": result.task_id,
-                                        "status": "failed",
-                                        "type": "openclaw",
-                                        "start_time": nk_start,
-                                        "end_time": _now_iso(),
-                                        "params": task_params,
-                                        "error": str(e)[:500],
-                                    },
-                                )
-                            except Exception:
-                                pass
+                        try:
+                            await _emit_main_event(
+                                "task_update",
+                                lanlan_name,
+                                task={
+                                    "id": result.task_id,
+                                    "status": "failed",
+                                    "type": "openclaw",
+                                    "start_time": nk_start,
+                                    "end_time": _now_iso(),
+                                    "params": task_params,
+                                    "error": str(e)[:500],
+                                },
+                            )
+                        except Exception:
+                            pass
 
                 nk_task = asyncio.create_task(_run_openclaw_dispatch())
                 Modules.task_async_handles[result.task_id] = nk_task

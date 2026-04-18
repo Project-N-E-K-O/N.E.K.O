@@ -1,15 +1,15 @@
-# Neko x Qwenpaw 接入与实现规范 (V1.3)
+# Neko x QwenPaw 接入与实现规范 (V1.3)
 
 ## 1. 核心架构说明
 
-本项目采用“感性前端 + 理性后端”的解耦架构，通过 Qwenpaw 的本地 RESTful API 实现 Neko 桌宠的功能扩展。
+本项目采用“感性前端 + 理性后端”的解耦架构，通过 QwenPaw 的本地 RESTful API 实现 Neko 桌宠的功能扩展。
 
 - **Neko (前端/大脑)**：作为用户交互的唯一入口，负责情感表达、意图识别，并将后端执行的枯燥结果重写为“猫娘语气”。
-- **Qwenpaw (后端/工具臂)**：作为纯粹的任务执行器，负责系统操作（文件/命令）、多模态解析（视觉/截图）及工具调用。
+- **QwenPaw (后端/工具臂)**：作为纯粹的任务执行器，负责系统操作（文件/命令）、多模态解析（视觉/截图）及工具调用。
 
-## 2. Qwenpaw 侧：系统人设配置
+## 2. QwenPaw 侧：系统人设配置
 
-在安装 Qwenpaw 时，请将以下文案保存并替换其默认的智能体系统提示词（System Prompt），以确保其输出结果的纯净度。
+在安装 QwenPaw 时，请将以下文案保存并替换其默认的智能体系统提示词（System Prompt），以确保其输出结果的纯净度。
 
 ### 角色设定文案 (`qwenpaw_rational_persona.md`)
 
@@ -47,7 +47,7 @@ QwenPaw 在不同运行配置下可能暴露两种风格的接口：
 
 N.E.K.O 当前内部已同时兼容这两种入口。下面给出与现有实现更接近的 `process` 版本示例。
 
-当 Neko 截取屏幕或接收用户发送的图片时，使用以下结构发送给 Qwenpaw：
+当 Neko 截取屏幕或接收用户发送的图片时，使用以下结构发送给 QwenPaw：
 
 ```json
 {
@@ -101,9 +101,10 @@ N.E.K.O 当前内部已同时兼容这两种入口。下面给出与现有实现
 
 ### 4.1 代码实现示例（Python）
 
-Neko 侧需要封装一个调用 Qwenpaw 并进行二次加工的逻辑。关键点在于：**发送给 QwenPaw 的 `session_id` 应来自适配器层维护的稳定 `qwenpaw_session_id`，而不是 Neko 内部频繁变化的 `conversation_id`。**
+Neko 侧需要封装一个调用 QwenPaw 并进行二次加工的逻辑。关键点在于：**发送给 QwenPaw 的 `session_id` 应来自适配器层维护的稳定 `qwenpaw_session_id`，而不是 Neko 内部频繁变化的 `conversation_id`。**
 
 ```python
+import asyncio
 import base64
 import json
 import requests
@@ -111,6 +112,19 @@ import uuid
 
 # 示例：以 user_id 为键维护 QwenPaw 专属会话
 user_qwenpaw_sessions = {}
+
+def _call_qwenpaw_sync(qwenpaw_url: str, payload: dict) -> str:
+    response = requests.post(qwenpaw_url, json=payload, timeout=60)
+    response.raise_for_status()
+    response_json = response.json()
+    raw_result = ""
+    for item in response_json.get("output", []):
+        if item.get("type") != "message":
+            continue
+        for part in item.get("content", []):
+            if part.get("type") == "output_text" and part.get("text"):
+                raw_result += part["text"]
+    return raw_result or "执行完毕。"
 
 def get_current_qwenpaw_session(user_id: str) -> str:
     if user_id not in user_qwenpaw_sessions:
@@ -123,18 +137,18 @@ async def handle_neko_workflow(
     attachment_paths: list = None,
 ):
     """
-    Neko 主处理逻辑：意图识别 -> 调用 Qwenpaw -> 转述结果
+    Neko 主处理逻辑：意图识别 -> 调用 QwenPaw -> 转述结果
     """
     current_q_session = get_current_qwenpaw_session(user_id)
 
-    # 1. 判断是否需要动用 Qwenpaw (意图识别)
+    # 1. 判断是否需要动用 QwenPaw (意图识别)
     is_task = check_if_needs_tool(user_text) or bool(attachment_paths)
 
     if is_task:
         # 播放 Neko 的“努力工作中”动画
         neko_ui.play_animation("working")
 
-        # 2. 准备 Qwenpaw 请求负载
+        # 2. 准备 QwenPaw 请求负载
         qwenpaw_url = "http://127.0.0.1:8088/api/agent/process"
         payload = {
             "session_id": current_q_session,
@@ -164,19 +178,9 @@ async def handle_neko_workflow(
                 "content": [{"type": "text", "text": user_text}],
             }]
 
-        # 3. 同步调用 Qwenpaw
+        # 3. 在工作线程中同步调用 QwenPaw，避免阻塞事件循环
         try:
-            response = requests.post(qwenpaw_url, json=payload, timeout=60)
-            response.raise_for_status()
-            response_json = response.json()
-            raw_result = ""
-            for item in response_json.get("output", []):
-                if item.get("type") != "message":
-                    continue
-                for part in item.get("content", []):
-                    if part.get("type") == "output_text" and part.get("text"):
-                        raw_result += part["text"]
-            raw_result = raw_result or "执行完毕。"
+            raw_result = await asyncio.to_thread(_call_qwenpaw_sync, qwenpaw_url, payload)
         except Exception as e:
             raw_result = f"后台好像开小差了：{str(e)}"
 
@@ -201,7 +205,7 @@ async def rewrite_as_catgirl(user_input, tool_result):
 
     请根据上述结论，用你撒娇、俏皮、充满动力的猫娘口吻转述给主人。
     注意：
-    1. 严禁提到“后台”、“Qwenpaw”、“程序”或“接口”。
+    1. 严禁提到“后台”、“QwenPaw”、“程序”或“接口”。
     2. 要表现得像是你亲手为主人完成的一样，并以此向主人讨夸奖。
     3. 如果涉及文件保存，请明确说出文件已经乖乖躺在“桌面”上了。
     """
@@ -211,7 +215,7 @@ async def rewrite_as_catgirl(user_input, tool_result):
 
 ### 4.2 补充模块：魔法命令集成与意图识别规范
 
-为了让 Neko 能够灵活地控制后台状态（如清空记忆、停止耗时任务），系统集成了 Qwenpaw 的底层魔法命令（Magic Commands）。为防止误触，推荐采用“高准确率意图拦截 + 阻断转述”的架构。
+为了让 Neko 能够灵活地控制后台状态（如清空记忆、停止耗时任务），系统集成了 QwenPaw 的底层魔法命令（Magic Commands）。为防止误触，推荐采用“高准确率意图拦截 + 阻断转述”的架构。
 
 在 OpenClaw 选项开启时，可额外使用一个极速辅助模型专门判断用户输入是否属于系统控制意图。该辅助模型只做分类，不负责转述和任务执行。
 
@@ -230,7 +234,7 @@ async def rewrite_as_catgirl(user_input, tool_result):
 
 #### 4.2.2 前置意图识别层（High Precision Prompt）
 
-在用户输入到达 Qwenpaw 之前，必须先经过 Neko 的意图分析中枢。可将以下 Prompt 用于辅助意图分类模型：
+在用户输入到达 QwenPaw 之前，必须先经过 Neko 的意图分析中枢。可将以下 Prompt 用于辅助意图分类模型：
 
 ```text
 # Role
@@ -256,7 +260,7 @@ async def rewrite_as_catgirl(user_input, tool_result):
 这里的关键是：
 
 1. 魔法命令发送给 QwenPaw 时，仍然使用当前稳定的 `qwenpaw_session_id`。
-2. 当命令为 `/new` 时，适配器层在后台命令执行完成后，本地生成新的 `qwenpaw_session_id`，从而切断旧上下文。
+2. 当命令为 `/new` 时，适配器层应先在本地生成新的 `qwenpaw_session_id`，再带着这个新会话 ID 向后台发送命令，从而把会话轮换与后台回执成功解耦。
 3. Neko 原有 `conversation_id` 不参与 QwenPaw 会话稳定性控制，只用于内部链路追踪。
 
 ```python
@@ -275,6 +279,8 @@ async def process_user_input(
     user_id: str,
     is_openclaw_enabled: bool,
 ):
+    allowed_commands = {"/clear", "/new", "/stop", "/daemon approve"}
+
     # 1. 前置意图识别
     current_q_session = get_current_qwenpaw_session(user_id)
     intent_json = await call_auxiliary_model(user_text)
@@ -282,8 +288,13 @@ async def process_user_input(
     # 2. 拦截并处理魔法命令
     if is_openclaw_enabled and intent_json.get("is_magic_intent"):
         magic_cmd = intent_json.get("command")
+        if magic_cmd not in allowed_commands:
+            return await handle_neko_workflow(user_text, user_id)
 
-        # 静默发送魔法命令给 Qwenpaw API，阻断正常的转述链路
+        if magic_cmd == "/new":
+            current_q_session = user_qwenpaw_sessions[user_id] = uuid.uuid4().hex
+
+        # 静默发送魔法命令给 QwenPaw API，阻断正常的转述链路
         try:
             requests.post(
                 "http://127.0.0.1:8088/api/agent/process",
@@ -301,10 +312,6 @@ async def process_user_input(
             )
         except Exception as e:
             print(f"后台指令执行异常: {e}")
-
-        # /new 是唯一需要在适配器本地切换 QwenPaw 会话 ID 的命令
-        if magic_cmd == "/new":
-            user_qwenpaw_sessions[user_id] = uuid.uuid4().hex
 
         # 3. 直接触发 Neko 的特色回应
         return execute_neko_reaction(magic_cmd)
@@ -332,10 +339,10 @@ def execute_neko_reaction(command: str):
 
 ## 5. 关键注意事项
 
-1. **结果提取过滤**：Qwenpaw 的非流式返回主要在 `output[].content[]` 中提取 `output_text`。若返回文本中混入 `Thought:`、`Action:` 或 `<think>` 之类思考轨迹，Neko 侧需要在转述前清洗掉。
+1. **结果提取过滤**：QwenPaw 的非流式返回主要在 `output[].content[]` 中提取 `output_text`。若返回文本中混入 `Thought:`、`Action:` 或 `<think>` 之类思考轨迹，Neko 侧需要在转述前清洗掉。
 2. **多模态预处理**：Neko 传图前建议将图片压缩至 1MB 以内（或长边 1024px），以确保同步 API 调用不会因传输巨大 Base64 而导致 HTTP 连接超时。
-3. **超时占位回复**：因为关闭了流式输出，Neko 在等待 Qwenpaw 返回期间（通常 3-10 秒），应主动触发一句占位语音（如：“唔... 这个有点复杂，主人等我一下下喵~”），防止交互中断感。
-4. **桌面路径透明化**：由于 Qwenpaw 人设已强制要求保存至桌面，Neko 在转述时只需提取结果中的文件名，无需关心底层复杂的绝对路径。
+3. **超时占位回复**：因为关闭了流式输出，Neko 在等待 QwenPaw 返回期间（通常 3-10 秒），应主动触发一句占位语音（如：“唔... 这个有点复杂，主人等我一下下喵~”），防止交互中断感。
+4. **桌面路径透明化**：由于 QwenPaw 人设已强制要求保存至桌面，Neko 在转述时只需提取结果中的文件名，无需关心底层复杂的绝对路径。
 5. **魔法命令短超时**：`/clear`、`/new`、`/stop` 这类控制指令通常执行极快，建议使用比普通任务更短的超时时间，并在异常时优先保证 Neko 前端反馈不断线。
 6. **不要把 `conversation_id` 当作 QwenPaw 主会话 ID**：N.E.K.O 当前内部的 `conversation_id` 主要服务于分析链路和事件追踪，可能高频变化。若直接把它传给 QwenPaw 作为 `session_id`，会导致后台记忆频繁断裂。
 7. **适配器本地维护稳定状态**：`openclaw_adapter` 应以 `user_id -> qwenpaw_session_id` 的映射方式独立维护 QwenPaw 会话，不依赖 Neko 内部 `conversation_id` 的更新规则。

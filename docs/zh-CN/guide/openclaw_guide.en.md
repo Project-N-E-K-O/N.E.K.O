@@ -90,4 +90,4 @@ Follow this order:
 4. Turn on the `OpenClaw` sub-switch
 5. Wait for the availability check to pass
 
-N.E.K.O will try the QwenPaw compatible endpoint first and automatically fall back to the main `process` endpoint when needed. No custom channel setup is required for the main integration path.
+N.E.K.O will try the QwenPaw-compatible endpoint first and automatically fall back to the main `process` endpoint when needed. No custom channel setup is required for the main integration path.

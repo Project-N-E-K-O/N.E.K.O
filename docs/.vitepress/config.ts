@@ -60,7 +60,7 @@ function architectureSidebar(lang: 'en' | 'zh-CN' | 'ja') {
   }[lang]
   const p = lang === 'en' ? '' : `/${lang}`
   const zhCNOnlyItems = lang === 'zh-CN'
-    ? [{ text: 'Neko x Qwenpaw 接入规范', link: `${p}/architecture/neko-qwenpaw-integration` }]
+    ? [{ text: 'Neko x QwenPaw 接入规范', link: `${p}/architecture/neko-qwenpaw-integration` }]
     : []
   return [
     {

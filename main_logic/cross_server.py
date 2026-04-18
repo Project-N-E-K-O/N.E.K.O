@@ -284,10 +284,14 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                             last_screen = data
                             if data:
                                 pending_user_images.append(data)
+                                if len(pending_user_images) > 3:
+                                    del pending_user_images[:-3]
                         elif input_type == "camera":
                             last_screen = data
                             if data:
                                 pending_user_images.append(data)
+                                if len(pending_user_images) > 3:
+                                    del pending_user_images[:-3]
 
                     elif message["type"] == "system":
                         try:

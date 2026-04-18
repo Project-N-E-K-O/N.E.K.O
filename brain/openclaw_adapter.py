@@ -75,7 +75,9 @@ def _resolve_qwenpaw_urls(raw_url: str) -> tuple[str, str, str, str]:
 
     api_root = normalized
     for suffix in (
+        QWENPAW_PROCESS_ENDPOINT_PATH,
         QWENPAW_RESPONSES_ENDPOINT_PATH,
+        QWENPAW_HEALTH_ENDPOINT_PATH,
         QWENPAW_API_PREFIX,
         "/api",
     ):
@@ -475,33 +477,42 @@ class OpenClawAdapter:
         return candidate if removed_trace and candidate else cleaned
 
     def _extract_reply_text(self, data: Dict[str, Any]) -> str:
-        output = data.get("output")
         collected: list[str] = []
 
+        def _collect_message_content(message_item: Any) -> None:
+            if not isinstance(message_item, dict):
+                return
+            role = str(message_item.get("role") or "").strip().lower()
+            if role and role != "assistant":
+                return
+            content = message_item.get("content")
+            if not isinstance(content, list):
+                return
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                part_type = str(part.get("type") or "").strip()
+                if part_type in {"output_text", "text", "input_text"}:
+                    text = str(part.get("text") or "").strip()
+                    if text:
+                        collected.append(text)
+                elif part_type == "refusal":
+                    refusal = str(part.get("refusal") or "").strip()
+                    if refusal:
+                        collected.append(refusal)
+
+        output = data.get("output")
         if isinstance(output, list):
             for item in output:
                 if not isinstance(item, dict):
                     continue
                 if item.get("type") != "message":
                     continue
-                role = str(item.get("role") or "").strip().lower()
-                if role and role != "assistant":
-                    continue
-                content = item.get("content")
-                if not isinstance(content, list):
-                    continue
-                for part in content:
-                    if not isinstance(part, dict):
-                        continue
-                    part_type = str(part.get("type") or "").strip()
-                    if part_type in {"output_text", "text", "input_text"}:
-                        text = str(part.get("text") or "").strip()
-                        if text:
-                            collected.append(text)
-                    elif part_type == "refusal":
-                        refusal = str(part.get("refusal") or "").strip()
-                        if refusal:
-                            collected.append(refusal)
+                _collect_message_content(item)
+
+        message = data.get("message")
+        if isinstance(message, dict):
+            _collect_message_content(message)
 
         if not collected:
             raw_text = data.get("output_text")
@@ -754,15 +765,22 @@ class OpenClawAdapter:
             return {"success": False, "error": f"Unsupported magic command: {command}"}
 
         sender = sender_id or self.default_sender_id
-        current_session_id = await asyncio.to_thread(
-            self.get_or_create_persistent_session_id,
-            role_name=role_name,
-            sender_id=sender,
-        )
+        if normalized == "/new":
+            active_session_id = await asyncio.to_thread(
+                self.reset_persistent_session_id,
+                role_name=role_name,
+                sender_id=sender,
+            )
+        else:
+            active_session_id = await asyncio.to_thread(
+                self.get_or_create_persistent_session_id,
+                role_name=role_name,
+                sender_id=sender,
+            )
         backend_result = await self.run_instruction(
             normalized,
             sender_id=sender,
-            session_id=current_session_id,
+            session_id=active_session_id,
             role_name=role_name,
         )
         if not backend_result.get("success"):
@@ -771,14 +789,6 @@ class OpenClawAdapter:
                 "command": normalized,
                 "display_reply": "",
             }
-
-        active_session_id = current_session_id
-        if normalized == "/new":
-            active_session_id = await asyncio.to_thread(
-                self.reset_persistent_session_id,
-                role_name=role_name,
-                sender_id=sender,
-            )
 
         display_reply = self.get_magic_command_feedback(normalized)
         return {
