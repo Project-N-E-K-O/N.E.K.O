@@ -941,8 +941,14 @@ class BrowserUseAdapter:
                 if browser_session:
                     try:
                         await self._remove_overlay(browser_session)
-                    except Exception:
-                        pass
+                    except Exception as overlay_err:
+                        # CDP may already be torn down by _close_browser() — the
+                        # overlay is cosmetic and failing to remove it must not
+                        # mask the cancellation.
+                        logger.debug(
+                            "[BrowserUse] overlay removal during cancel failed: %s",
+                            overlay_err,
+                        )
                 if session_id and session_id in self._agents:
                     del self._agents[session_id]
                 # Re-raise so the dispatch wrapper hits its CancelledError branch
