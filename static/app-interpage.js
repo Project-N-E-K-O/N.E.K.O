@@ -583,6 +583,15 @@
                             mmdRequestSessionId = '';
                             activeMmdLoadingSessionId = '';
                         }
+
+                        // 重启 UI 更新循环（被 handleHideMainUI 停止）。
+                        // handleShowMainUI 在 _modelReloadInFlight 为 true 时会跳过，
+                        // 因此必须在模型加载完成后手动重启，否则悬浮按钮不会重新出现。
+                        if (window.mmdManager && window.mmdManager._uiUpdateLoopId == null
+                            && typeof window.mmdManager._startUIUpdateLoop === 'function') {
+                            window.mmdManager._snapUIPosition = true;
+                            window.mmdManager._startUIUpdateLoop();
+                        }
                     } else {
                         console.error('[Model] MMD 管理器初始化失败');
                         throw new Error('MMD 管理器初始化失败');
