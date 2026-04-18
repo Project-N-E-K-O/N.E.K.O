@@ -1600,12 +1600,73 @@ body.react-chat-window-dragging {
     to   { opacity: 1; }
 }
 
+/* Top bar with tabs */
+.crop-topbar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 0 12px;
+    background: rgba(0, 0, 0, 0.85);
+    border-bottom: 1px solid rgba(68, 183, 254, 0.3);
+    z-index: 2;
+    user-select: none;
+}
+
+.crop-tab {
+    padding: 5px 16px;
+    border: none;
+    border-radius: 4px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    cursor: pointer;
+    color: rgba(255, 255, 255, 0.6);
+    background: transparent;
+    transition: background 0.15s, color 0.15s;
+}
+
+.crop-tab:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+}
+
+.crop-tab-active {
+    background: rgba(68, 183, 254, 0.25);
+    color: #44b7fe;
+}
+
+.crop-tab-active:hover {
+    background: rgba(68, 183, 254, 0.35);
+}
+
+.crop-tab-cancel {
+    margin-left: auto;
+    color: #ff6b7a;
+}
+
+.crop-tab-cancel:hover {
+    background: rgba(220, 53, 69, 0.2);
+    color: #ff8a97;
+}
+
+.crop-tab:disabled {
+    opacity: 0.5;
+    cursor: wait;
+}
+
+/* Background image + canvas positioned below topbar */
 .crop-bg-image {
     position: absolute;
-    inset: 0;
-    bottom: 52px;
+    top: 40px;
+    left: 0;
+    right: 0;
+    bottom: 0;
     width: 100%;
-    height: calc(100% - 52px);
+    height: calc(100% - 40px);
     object-fit: contain;
     pointer-events: none;
     user-select: none;
@@ -1614,122 +1675,87 @@ body.react-chat-window-dragging {
 
 .crop-canvas {
     position: absolute;
-    inset: 0;
+    top: 40px;
+    left: 0;
     width: 100%;
-    height: calc(100% - 52px);
+    height: calc(100% - 40px);
     cursor: crosshair;
     touch-action: none;
-}
-
-.crop-toolbar {
-    position: absolute;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    height: 52px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0 16px;
-    background: rgba(0, 0, 0, 0.85);
-    border-top: 1px solid rgba(68, 183, 254, 0.3);
     z-index: 1;
 }
 
-.crop-hint {
-    font-size: 0.85rem;
-    color: rgba(255, 255, 255, 0.7);
-    user-select: none;
-}
-
-.crop-btn-group {
+/* Floating ✓ / × buttons near selection */
+.crop-action-btns {
+    position: fixed;
     display: flex;
-    gap: 8px;
+    gap: 4px;
+    z-index: 100001;
+    pointer-events: auto;
+    animation: crop-fade-in 0.15s ease;
 }
 
-.crop-btn {
-    padding: 6px 16px;
+.crop-action-btn {
+    width: 32px;
+    height: 32px;
+    border: none;
     border-radius: 6px;
-    border: 1px solid transparent;
-    font-size: 0.85rem;
-    font-weight: 500;
+    font-size: 1.1rem;
+    font-weight: 700;
     cursor: pointer;
-    transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s, transform 0.1s;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
-.crop-btn-full {
-    background: rgba(255, 255, 255, 0.12);
-    color: #fff;
-    border-color: rgba(255, 255, 255, 0.25);
-}
-
-.crop-btn-full:hover {
-    background: rgba(255, 255, 255, 0.22);
-}
-
-.crop-btn-cancel {
-    background: rgba(220, 53, 69, 0.15);
-    color: #ff6b7a;
-    border-color: rgba(220, 53, 69, 0.4);
-}
-
-.crop-btn-cancel:hover {
-    background: rgba(220, 53, 69, 0.3);
-}
-
-.crop-btn-confirm {
+.crop-action-confirm {
     background: #44b7fe;
     color: #fff;
-    border-color: #44b7fe;
 }
 
-.crop-btn-confirm:hover:not(:disabled) {
+.crop-action-confirm:hover {
     background: #2fa8f5;
+    transform: scale(1.08);
 }
 
-.crop-btn-confirm:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
+.crop-action-cancel {
+    background: rgba(255, 255, 255, 0.15);
+    color: #ff6b7a;
+    border: 1px solid rgba(220, 53, 69, 0.4);
 }
 
-.crop-btn-confirm.active {
-    opacity: 1;
-    animation: crop-confirm-pulse 0.3s ease;
-}
-
-@keyframes crop-confirm-pulse {
-    0%   { transform: scale(1); }
-    50%  { transform: scale(1.06); }
-    100% { transform: scale(1); }
+.crop-action-cancel:hover {
+    background: rgba(220, 53, 69, 0.25);
+    transform: scale(1.08);
 }
 
 /* Mobile adjustments */
 @media (max-width: 768px) {
-    .crop-toolbar {
+    .crop-topbar {
+        height: 36px;
         padding: 0 8px;
-        height: 48px;
     }
 
-    .crop-hint {
-        font-size: 0.75rem;
-        max-width: 120px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-    }
-
-    .crop-btn {
-        padding: 5px 10px;
+    .crop-tab {
+        padding: 4px 10px;
         font-size: 0.78rem;
     }
 
     .crop-bg-image {
-        height: calc(100% - 48px);
-        bottom: 48px;
+        top: 36px;
+        height: calc(100% - 36px);
     }
 
     .crop-canvas {
-        height: calc(100% - 48px);
+        top: 36px;
+        height: calc(100% - 36px);
+    }
+
+    .crop-action-btn {
+        width: 36px;
+        height: 36px;
+        font-size: 1.2rem;
     }
 }
 
