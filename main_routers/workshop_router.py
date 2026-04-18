@@ -1315,7 +1315,7 @@ async def get_workshop_voice_reference(item_id: str):
         }, status_code=404)
 
     try:
-        voice_ref = _resolve_workshop_voice_reference(install_folder)
+        voice_ref = await asyncio.to_thread(_resolve_workshop_voice_reference, install_folder)
     except FileNotFoundError as e:
         return JSONResponse({
             "success": False,
@@ -1371,7 +1371,7 @@ async def get_workshop_voice_reference_audio(item_id: str):
         }, status_code=404)
 
     try:
-        voice_ref = _resolve_workshop_voice_reference(install_folder)
+        voice_ref = await asyncio.to_thread(_resolve_workshop_voice_reference, install_folder)
     except FileNotFoundError as e:
         return JSONResponse({
             "success": False,
@@ -2827,7 +2827,7 @@ async def publish_to_workshop(request: Request):
                             logger.warning(f'继续使用原始预览图片路径: {preview_image}')
 
         try:
-            voice_ref = _resolve_workshop_voice_reference(content_folder)
+            voice_ref = await asyncio.to_thread(_resolve_workshop_voice_reference, content_folder)
             if voice_ref:
                 logger.info(f"检测到参考语音清单: {voice_ref['manifest']['reference_audio']}")
         except (ValueError, FileNotFoundError) as e:
