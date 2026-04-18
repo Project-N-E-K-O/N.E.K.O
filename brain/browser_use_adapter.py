@@ -416,9 +416,37 @@ class BrowserUseAdapter:
         return None, None
 
     def cancel_running(self) -> None:
-        """Signal the currently running task to stop at the next step boundary."""
+        """Signal the currently running task to stop at the next step boundary.
+
+        This only flips the flag checked in ``_on_step_end``; if the agent is
+        stuck inside an LLM call, CDP round-trip, or page wait (i.e. between
+        steps), it will not wake up. For hard cancellation from an async
+        context, use :meth:`cancel` instead — it additionally rips the browser
+        session so every in-flight browser-use await fails fast with
+        ``ConnectionError`` and lands in the disconnect handler.
+        """
         self._cancelled = True
         logger.info("[BrowserUse] cancel_running called, task will abort at next step")
+
+    async def cancel(self, *, close_timeout: float = 12.0) -> None:
+        """Hard-cancel: flip flag + tear down CDP so all pending awaits fail fast.
+
+        Safe to call concurrently with an in-progress ``run_instruction``. The
+        in-flight dispatch's exception handler will observe the CDP teardown,
+        clean up, and return a failure result (or raise ``CancelledError`` if
+        the wrapping task was also cancelled).
+        """
+        self._cancelled = True
+        if self._browser_session is None:
+            return
+        try:
+            await asyncio.wait_for(self._close_browser(), timeout=close_timeout)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[BrowserUse] cancel: _close_browser timed out after %.1fs", close_timeout
+            )
+        except Exception as exc:
+            logger.warning("[BrowserUse] cancel: _close_browser raised: %s", exc)
 
     def is_available(self) -> Dict[str, Any]:
         ready = self._ready_import
@@ -911,10 +939,22 @@ class BrowserUseAdapter:
             except asyncio.CancelledError:
                 logger.info("[BrowserUse] Task cancelled by user")
                 if browser_session:
-                    await self._remove_overlay(browser_session)
+                    try:
+                        await self._remove_overlay(browser_session)
+                    except Exception as overlay_err:
+                        # CDP may already be torn down by _close_browser() — the
+                        # overlay is cosmetic and failing to remove it must not
+                        # mask the cancellation.
+                        logger.debug(
+                            "[BrowserUse] overlay removal during cancel failed: %s",
+                            overlay_err,
+                        )
                 if session_id and session_id in self._agents:
                     del self._agents[session_id]
-                return {"success": False, "error": "Task cancelled by user"}
+                # Re-raise so the dispatch wrapper hits its CancelledError branch
+                # and marks the task as "cancelled" (not "failed"). Swallowing
+                # cancels here caused the HUD to show a cancel as a failure.
+                raise
             except asyncio.TimeoutError:
                 logger.warning("[BrowserUse] Task timed out after %ss", timeout_s)
                 if browser_session:
