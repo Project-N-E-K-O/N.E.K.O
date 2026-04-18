@@ -228,7 +228,7 @@ def get_global_language() -> str:
         if not _global_language_initialized:
             return initialize_global_language()
         
-        return _global_language or 'zh'
+        return _global_language or 'en'
 
 
 def get_global_language_full() -> str:
@@ -245,7 +245,7 @@ def get_global_language_full() -> str:
         if not _global_language_initialized:
             initialize_global_language()
         
-        return _global_language_full or _global_language or 'zh'
+        return _global_language_full or _global_language or 'en'
 
 
 def set_global_language(language: str) -> None:
@@ -343,10 +343,7 @@ def normalize_language_code(lang: str, format: str = 'short') -> str:
         归一化后的语言代码，如果无法识别则返回默认值 ('zh' 或 'zh-CN')
     """
     if not lang:
-        if format == 'short':
-            return 'zh'
-        else:
-            return 'zh-CN'
+        return 'en'
     
     lang_lower = lang.lower().strip()
     
@@ -405,10 +402,7 @@ def normalize_language_code(lang: str, format: str = 'short') -> str:
     else:
         # 无法识别的语言代码，返回默认值
         logger.debug(f"无法识别的语言代码: {lang}，返回默认值")
-        if format == 'short':
-            return 'zh'
-        else:
-            return 'zh-CN'
+        return 'en'
 
 
 # ============================================================================
@@ -907,27 +901,27 @@ def get_user_language() -> str:
     获取用户的语言偏好
     
     Returns:
-        用户语言代码 ('zh', 'en', 'ja', 'ko')，默认返回 'zh'
+        用户语言代码 ('zh', 'en', 'ja', 'ko')，默认返回 'en'
     """
     try:
         return get_global_language()
     except Exception as e:
-        logger.warning(f"获取全局语言失败: {e}，使用默认中文")
-        return 'zh'  # 默认中文
+        logger.warning(f"获取全局语言失败: {e}，使用默认英文")
+        return 'en'
 
 
 async def get_user_language_async() -> str:
     """
     异步获取用户的语言偏好（使用全局语言管理模块）
-    
+
     Returns:
-        用户语言代码 ('zh', 'en', 'ja', 'ko')，默认返回 'zh'
+        用户语言代码 ('zh', 'en', 'ja', 'ko')，默认返回 'en'
     """
     try:
         return get_global_language()
     except Exception as e:
-        logger.warning(f"获取全局语言失败: {e}，使用默认中文")
-        return 'zh'  # 默认中文
+        logger.warning(f"获取全局语言失败: {e}，使用默认英文")
+        return 'en'
 
 
 # ============================================================================
