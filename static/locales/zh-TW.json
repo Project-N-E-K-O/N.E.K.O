@@ -1561,6 +1561,7 @@
         "initializingVoice": "正在初始化語音對話...",
         "initializingMic": "正在初始化麥剋風...",
         "startFailed": "啓動失敗: {{error}}",
+        "sendFailed": "發送失敗: {{error}}",
         "sessionEnded": "會話已結束",
         "returning": "{{name}}迴來瞭！正在重新連接...",
         "websocketNotConnected": "WebSocket未連接！",
