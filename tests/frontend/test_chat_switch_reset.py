@@ -12,6 +12,9 @@ def _open_chat_page(mock_page: Page, running_server: str) -> None:
         " && window.connectWebSocket"
         " && window.reactChatWindowHost"
         " && typeof window.appendMessage === 'function'"
+        " && typeof window.createGeminiBubble === 'function'"
+        " && typeof window._tryFlushPendingHostMessages === 'function'"
+        " && typeof window._resetReactChatSwitchState === 'function'"
         " && window.appState"
     )
 
@@ -79,7 +82,17 @@ def test_chat_switch_clears_dom_react_and_pending_adapter_messages(
             window.invalidatePendingMusicSearch = () => {};
 
             window.reactChatWindowHost.clearMessages();
-            window.reactChatWindowHost.appendMessage({
+            window._resetReactChatSwitchState();
+
+            const host = window.reactChatWindowHost;
+            const originalAppendMessage = host.appendMessage;
+            window.__postSwitchForcedFlushAppends = 0;
+            host.appendMessage = (message) => {
+                window.__postSwitchForcedFlushAppends += 1;
+                return originalAppendMessage.call(host, message);
+            };
+
+            host.appendMessage({
                 id: 'old-react-message',
                 role: 'assistant',
                 author: oldCatgirl,
@@ -87,6 +100,7 @@ def test_chat_switch_clears_dom_react_and_pending_adapter_messages(
                 blocks: [{ type: 'text', text: 'old react message' }],
                 status: 'sent'
             });
+            window.__postSwitchForcedFlushAppends = 0;
 
             const chatContainer = document.getElementById('chatContainer');
             if (chatContainer) {
@@ -97,17 +111,26 @@ def test_chat_switch_clears_dom_react_and_pending_adapter_messages(
                 chatContainer.appendChild(oldBubble);
             }
 
-            const host = window.reactChatWindowHost;
-            delete window.reactChatWindowHost;
-            window.appendMessage('queued stale message。', 'gemini', true);
+            window.reactChatWindowHost = null;
+            const queuedRef = window.createGeminiBubble('queued stale message');
             window.reactChatWindowHost = host;
+            const queuedMessageId = queuedRef && queuedRef.dataset
+                ? queuedRef.dataset.reactChatMessageId || ''
+                : '';
+            const preSwitchReactMessages = host.getState().messages.length;
 
             await window.handleCatgirlSwitch(newCatgirl, oldCatgirl);
+            window._tryFlushPendingHostMessages();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            host.appendMessage = originalAppendMessage;
 
             return {
                 oldCatgirl,
                 newCatgirl,
                 currentCatgirl: window.lanlan_config.lanlan_name,
+                queuedMessageId,
+                preSwitchReactMessages,
+                postSwitchForcedFlushAppends: window.__postSwitchForcedFlushAppends,
                 reactMessages: window.reactChatWindowHost.getState().messages.length,
                 domMessages: document.querySelectorAll('#chatContainer .message').length,
                 connectCalls: window.__switchConnectCalls,
@@ -122,6 +145,9 @@ def test_chat_switch_clears_dom_react_and_pending_adapter_messages(
 
     assert "error" not in result, result
     assert result["currentCatgirl"] == result["newCatgirl"]
+    assert result["queuedMessageId"]
+    assert result["preSwitchReactMessages"] == 1
+    assert result["postSwitchForcedFlushAppends"] == 0
     assert result["reactMessages"] == 0
     assert result["domMessages"] == 0
     assert result["connectCalls"] == 1
@@ -233,6 +259,12 @@ def test_stale_socket_onmessage_does_not_replay_old_messages_or_audio(
                     type: 'gemini_response',
                     text: 'live should remain。',
                     isNewMessage: true
+                })
+            });
+            liveSocket.onmessage({
+                data: JSON.stringify({
+                    type: 'system',
+                    data: 'turn end'
                 })
             });
             liveSocket.onmessage({ data: new Blob(['live-audio']) });

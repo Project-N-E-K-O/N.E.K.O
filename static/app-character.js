@@ -418,6 +418,11 @@
             // 3. 准备新环境
             showStatusToast(window.t ? window.t('app.switchingCatgirl', { name: newCatgirl }) : `正在切换到 ${newCatgirl}...`, 3000);
 
+            // 先退役旧 socket，让它后续的 onmessage / onclose 在清空会话期间直接走 stale guard。
+            if (_switchOldSocket && S.socket === _switchOldSocket) {
+                S.socket = null;
+            }
+
             // 清空聊天记录和相关全局状态
             const chatContainer = document.getElementById('chatContainer');
             if (chatContainer) {
