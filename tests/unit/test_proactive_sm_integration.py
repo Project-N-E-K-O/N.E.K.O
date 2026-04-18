@@ -207,8 +207,8 @@ async def test_contextvar_reset_after_delivery():
 # mutual exclusion：text trigger 和 router proactive 之间
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def test_concurrent_agent_callback_and_router_proactive_one_wins():
-    """trigger_agent_callbacks 和 router try_start_proactive 并发：只有一路进 PHASE1。"""
+async def test_already_claimed_denies_agent_callback():
+    """router 已占 phase1 时，后续 agent callback 不能进 prompt_ephemeral。"""
     sess = _FakeOmniOffline(delivered=True)
     mgr = _make_mgr(session=sess)
     mgr.pending_agent_callbacks = [{"status": "completed", "summary": "race"}]
@@ -216,14 +216,98 @@ async def test_concurrent_agent_callback_and_router_proactive_one_wins():
     router_won = await mgr.state.try_start_proactive(session=sess)
     assert router_won is True
 
-    # 并发的 agent callback 必须被 SM 挡住 —— router 已占 phase1
     await LLMSessionManager.trigger_agent_callbacks(mgr)
 
-    # router 占用未被干扰
     assert mgr.state.phase is ProactivePhase.PHASE1
     assert sess.called_with == []
-    # callbacks 保留
     assert mgr.pending_agent_callbacks == [{"status": "completed", "summary": "race"}]
+
+
+async def test_concurrent_claim_only_one_winner():
+    """真·并发：两路 contender 用同一个 barrier 放行，
+    原子 check-and-claim 保证只有一个 winner 进入 prompt_ephemeral。"""
+    sess = _FakeOmniOffline(delivered=True)
+    mgr = _make_mgr(session=sess)
+    mgr.pending_agent_callbacks = [{"status": "completed", "summary": "race"}]
+
+    barrier = asyncio.Event()
+    router_won = asyncio.Future()
+
+    async def router_contender():
+        await barrier.wait()
+        router_won.set_result(await mgr.state.try_start_proactive(session=sess))
+
+    async def agent_contender():
+        await barrier.wait()
+        await LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    t1 = asyncio.create_task(router_contender())
+    t2 = asyncio.create_task(agent_contender())
+    # 两个 task 都阻塞在 barrier 上，再一起放行
+    await asyncio.sleep(0)
+    barrier.set()
+    await asyncio.gather(t1, t2)
+
+    # 恰好一个 winner：router_won 为 True → agent 被拒；False → agent 成功
+    if router_won.result() is True:
+        # router winner：agent 不能进 prompt_ephemeral
+        assert sess.called_with == []
+        assert mgr.pending_agent_callbacks == [{"status": "completed", "summary": "race"}]
+        assert mgr.state.phase is ProactivePhase.PHASE1
+    else:
+        # agent winner：router 拒绝，agent 跑完 prompt_ephemeral → phase 回 IDLE
+        assert len(sess.called_with) == 1
+        assert mgr.pending_agent_callbacks == []
+        assert mgr.state.phase is ProactivePhase.IDLE
+
+
+async def test_user_input_between_claim_and_lock_is_detected():
+    """CodeRabbit 关键回归：``try_start_proactive`` 返回 True 到获取 ``self.lock``
+    之间，USER_INPUT 可能 mark_user_input_preempt() 并轮换 user sid。此时
+    ``_deliver_agent_callbacks_text`` 必须在 lock 内复查 sticky preempt，不能
+    把用户刚写好的 sid 再覆盖成 proactive sid。"""
+    sess_wait = asyncio.Event()
+
+    class _SlowSess(OmniOfflineClient):
+        _is_responding = False
+
+        def __init__(self):
+            pass
+
+        async def prompt_ephemeral(self, instruction):
+            await sess_wait.wait()
+            return True
+
+        def update_max_response_length(self, *_a, **_kw):
+            pass
+
+    sess = _SlowSess()
+    mgr = _make_mgr(session=sess)
+    mgr.pending_agent_callbacks = [{"status": "completed", "summary": "slow"}]
+
+    # SM claim 成功（phase → PHASE1）
+    assert await mgr.state.try_start_proactive(session=sess) is True
+
+    # 模拟 claim 后、_deliver 之前用户抢占：在 self.lock 内翻 preempt + 换 sid
+    async with mgr.lock:
+        pre_user_sid = "user_fresh_sid"
+        mgr.current_speech_id = pre_user_sid
+        mgr.state.mark_user_input_preempt()
+    await mgr.state.fire(SessionEvent.USER_INPUT, sid=pre_user_sid)
+
+    # 现在直接调 _deliver_agent_callbacks_text（绕过 trigger_agent_callbacks
+    # 的 claim，因为我们已经手动模拟了 claim + user 抢占）
+    callbacks_snapshot = [{"status": "completed", "summary": "slow"}]
+    await LLMSessionManager._deliver_agent_callbacks_text(mgr, "instr", callbacks_snapshot)
+
+    # 关键断言：current_speech_id 保留为用户的 sid，没被 proactive 覆盖
+    assert mgr.current_speech_id == pre_user_sid
+    # prompt_ephemeral 未调用
+    sess_wait.set()  # defensive：万一被调用也不会无限阻塞
+    # 给它一个 tick 证明 prompt_ephemeral 确实没跑
+    await asyncio.sleep(0)
+    # callbacks_snapshot 被恢复回 pending（bail 路径的语义）
+    assert {"status": "completed", "summary": "slow"} in mgr.pending_agent_callbacks
 
 
 # ─────────────────────────────────────────────────────────────────────────────

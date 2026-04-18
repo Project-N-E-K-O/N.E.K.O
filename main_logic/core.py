@@ -2673,9 +2673,22 @@ class LLMSessionManager:
     async def _deliver_agent_callbacks_text(self, instruction: str, callbacks_snapshot: list) -> None:
         """Execute prompt_ephemeral on an OmniOfflineClient session inside the
         proactive write lock. Caller holds the SM proactive claim (PHASE1).
+
+        返回 True 当且仅当真正投递。返回 False 的情况：claim 到 lock 之间用户
+        抢占（``mark_user_input_preempt`` 在 ``self.lock`` 内翻起 ``_preempted``
+        且已轮换 ``current_speech_id`` 到新 user sid），此时不能再覆盖。
         """
         async with self._proactive_write_lock:
             async with self.lock:
+                # sticky preempt 复查：与 prepare_proactive_delivery 同样，在持有
+                # self.lock 的临界区内判定。USER_INPUT 路径在本锁段内翻 flag 和
+                # 写 user sid 是原子的，如果此处 preempt==True 说明用户已抢到
+                # 本轮 turn，必须放弃本次 proactive（否则会把用户刚写好的 sid
+                # 再覆盖成 proactive sid，污染 TTS/chunk 分发）。
+                if self.state.is_proactive_preempted():
+                    logger.info("[%s] trigger_agent_callbacks: preempted before sid claim, skipping", self.lanlan_name)
+                    self.pending_agent_callbacks.extend(callbacks_snapshot)
+                    return
                 self.current_speech_id = str(uuid4())
                 self._tts_done_queued_for_turn = False
                 proactive_sid = self.current_speech_id
@@ -2812,6 +2825,12 @@ class LLMSessionManager:
                     logger.info("[%s] trigger_greeting: voice session took over while waiting for write lock, skipping", self.lanlan_name)
                     return
                 async with self.lock:
+                    # sticky preempt 复查：USER_INPUT 路径在本锁段内翻 flag 和写
+                    # user sid 是原子的；若 preempt==True 说明用户已抢到本轮 turn，
+                    # 不能再覆盖 current_speech_id 成 proactive sid。
+                    if self.state.is_proactive_preempted():
+                        logger.info("[%s] trigger_greeting: preempted before sid claim, skipping", self.lanlan_name)
+                        return
                     self.current_speech_id = str(uuid4())
                     self._tts_done_queued_for_turn = False
                     proactive_sid = self.current_speech_id
