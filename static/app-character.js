@@ -418,10 +418,21 @@
             // 3. 准备新环境
             showStatusToast(window.t ? window.t('app.switchingCatgirl', { name: newCatgirl }) : `正在切换到 ${newCatgirl}...`, 3000);
 
+            // 先退役旧 socket，让它后续的 onmessage / onclose 在清空会话期间直接走 stale guard。
+            if (_switchOldSocket && S.socket === _switchOldSocket) {
+                S.socket = null;
+            }
+
             // 清空聊天记录和相关全局状态
             const chatContainer = document.getElementById('chatContainer');
             if (chatContainer) {
                 chatContainer.innerHTML = '';
+            }
+            if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearMessages === 'function') {
+                window.reactChatWindowHost.clearMessages();
+            }
+            if (typeof window._resetReactChatSwitchState === 'function') {
+                window._resetReactChatSwitchState();
             }
             // 重置聊天相关的全局状态
             window.currentGeminiMessage = null;
@@ -434,9 +445,15 @@
             window._pendingMusicCommand = '';
             window._realisticGeminiTimestamp = null;
             window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
+            window._isProcessingRealisticQueue = false;
+            window.realisticGeminiCurrentTurnId = null;
             // 重置语音模式用户转录合并追踪
             S.lastVoiceUserMessage = null;
             S.lastVoiceUserMessageTime = 0;
+            // 丢弃切换前已经入站但尚未消费的旧 TTS 数据
+            S.incomingAudioEpoch += 1;
+            S.incomingAudioBlobQueue = [];
+            S.pendingAudioChunkMetaQueue = [];
 
             // 清理连接与状态
             if (S.autoReconnectTimeoutId) clearTimeout(S.autoReconnectTimeoutId);
