@@ -36,13 +36,12 @@
 
         /* 整个面板可拖拽，内容区域和交互按钮排除 */
         .jukebox-sam-panel {
-            -webkit-app-region: drag;
+            -webkit-app-region: no-drag !important;
+            cursor: grab;
         }
-        .sam-content,
-        .sam-footer,
-        .sam-close-btn,
-        .sam-tab {
-            -webkit-app-region: no-drag;
+
+        body.neko-jukebox-manager-standalone-dragging .jukebox-sam-panel {
+            cursor: grabbing;
         }
     </style>
 </head>
@@ -55,6 +54,212 @@
     <script src="/static/Jukebox.js"></script>
     <script>
         // 管理器独立窗口初始化
+        function _managerReadWindowBounds() {
+            return {
+                x: typeof window.screenX === 'number' ? window.screenX : 0,
+                y: typeof window.screenY === 'number' ? window.screenY : 0,
+                width: typeof window.outerWidth === 'number' ? window.outerWidth : document.documentElement.clientWidth,
+                height: typeof window.outerHeight === 'number' ? window.outerHeight : document.documentElement.clientHeight
+            };
+        }
+
+        function _managerReadWorkArea() {
+            var screenObj = window.screen || {};
+            return {
+                x: typeof screenObj.availLeft === 'number' ? screenObj.availLeft : 0,
+                y: typeof screenObj.availTop === 'number' ? screenObj.availTop : 0,
+                width: typeof screenObj.availWidth === 'number' ? screenObj.availWidth : (screenObj.width || _managerReadWindowBounds().width),
+                height: typeof screenObj.availHeight === 'number' ? screenObj.availHeight : (screenObj.height || _managerReadWindowBounds().height)
+            };
+        }
+
+        function _managerClampBounds(bounds, workArea) {
+            var next = {
+                x: Math.round(bounds.x),
+                y: Math.round(bounds.y),
+                width: Math.round(bounds.width),
+                height: Math.round(bounds.height)
+            };
+
+            if (!workArea) {
+                return next;
+            }
+
+            var maxRight = workArea.x + workArea.width;
+            var maxBottom = workArea.y + workArea.height;
+            next.x = Math.max(workArea.x, Math.min(next.x, maxRight - next.width));
+            next.y = Math.max(workArea.y, Math.min(next.y, maxBottom - next.height));
+            return next;
+        }
+
+        function _managerGetEventScreenPoint(e) {
+            var point = e.touches ? e.touches[0] : e;
+            return {
+                x: typeof point.screenX === 'number' ? point.screenX : point.clientX,
+                y: typeof point.screenY === 'number' ? point.screenY : point.clientY
+            };
+        }
+
+        function _managerSetWindowBounds(bounds) {
+            if (window.nekoJukeboxWindow && typeof window.nekoJukeboxWindow.setBounds === 'function') {
+                window.nekoJukeboxWindow.setBounds(bounds.x, bounds.y, bounds.width, bounds.height);
+                return;
+            }
+
+            if (typeof window.moveTo === 'function') {
+                window.moveTo(bounds.x, bounds.y);
+            }
+        }
+
+        function _managerCreateRafScheduler(flush) {
+            var rafId = 0;
+            return {
+                queue: function() {
+                    if (rafId) return;
+                    rafId = requestAnimationFrame(function() {
+                        rafId = 0;
+                        flush();
+                    });
+                },
+                cancel: function() {
+                    if (!rafId) return;
+                    cancelAnimationFrame(rafId);
+                    rafId = 0;
+                }
+            };
+        }
+
+        function _managerQueueDragBounds(state, point, scheduler) {
+            if (!state) return;
+
+            state.latestPoint = point;
+            if (!state.startBounds) {
+                return;
+            }
+
+            state.pendingBounds = _managerClampBounds({
+                x: state.startBounds.x + (point.x - state.startPointerX),
+                y: state.startBounds.y + (point.y - state.startPointerY),
+                width: state.startBounds.width,
+                height: state.startBounds.height
+            }, state.workArea);
+            scheduler.queue();
+        }
+
+        function _bindManagerStandaloneDrag(panel) {
+            if (!panel || panel.__nekoManagerStandaloneDragBound) return;
+            panel.__nekoManagerStandaloneDragBound = true;
+
+            var state = null;
+            var scheduler = _managerCreateRafScheduler(function() {
+                if (!state || !state.pendingBounds) return;
+                var pending = state.pendingBounds;
+                state.pendingBounds = null;
+                _managerSetWindowBounds(pending);
+            });
+            var interactiveSelector =
+                'button, input, a, select, textarea, label, [contenteditable="true"], ' +
+                '.sam-tab, .sam-close-btn, .sam-item, .sam-binding-item, .sam-checkbox, ' +
+                '.sam-unbind-btn, .sam-add-binding-btn, .sam-click-add, .sam-file-drop-zone';
+
+            function finishDrag() {
+                if (!state) return;
+
+                if (state.mode === 'pending') {
+                    state.released = true;
+                    document.body.classList.remove('neko-jukebox-manager-standalone-dragging');
+                    return;
+                }
+
+                scheduler.cancel();
+
+                if (state.pendingBounds) {
+                    _managerSetWindowBounds(state.pendingBounds);
+                }
+
+                state = null;
+                document.body.classList.remove('neko-jukebox-manager-standalone-dragging');
+            }
+
+            async function onPointerDown(e) {
+                if (typeof e.button === 'number' && e.button !== 0) return;
+                if (e.target.closest(interactiveSelector)) return;
+
+                e.preventDefault();
+                e.stopPropagation();
+
+                document.body.classList.add('neko-jukebox-manager-standalone-dragging');
+
+                var point = _managerGetEventScreenPoint(e);
+                var token = {};
+                state = {
+                    mode: 'pending',
+                    token: token,
+                    startPointerX: point.x,
+                    startPointerY: point.y,
+                    startBounds: null,
+                    workArea: null,
+                    latestPoint: null,
+                    released: false,
+                    pendingBounds: null
+                };
+
+                var startBounds = _managerReadWindowBounds();
+                var workArea = _managerReadWorkArea();
+
+                var pendingReads = [
+                    Promise.resolve(startBounds),
+                    Promise.resolve(workArea)
+                ];
+
+                if (window.nekoJukeboxWindow && typeof window.nekoJukeboxWindow.getBounds === 'function') {
+                    pendingReads[0] = Promise.resolve(window.nekoJukeboxWindow.getBounds()).catch(function() {
+                        return startBounds;
+                    });
+                }
+
+                if (window.nekoJukeboxWindow && typeof window.nekoJukeboxWindow.getWorkArea === 'function') {
+                    pendingReads[1] = Promise.resolve(window.nekoJukeboxWindow.getWorkArea()).catch(function() {
+                        return workArea;
+                    });
+                }
+
+                var resolved = await Promise.all(pendingReads);
+                startBounds = resolved[0] || startBounds;
+                workArea = resolved[1] || workArea;
+
+                if (!state || state.token !== token) {
+                    return;
+                }
+
+                state.mode = 'manual';
+                state.startBounds = startBounds || _managerReadWindowBounds();
+                state.workArea = workArea || _managerReadWorkArea();
+
+                if (state.latestPoint) {
+                    _managerQueueDragBounds(state, state.latestPoint, scheduler);
+                }
+                if (state.released) {
+                    finishDrag();
+                }
+            }
+
+            function onPointerMove(e) {
+                if (!state || state.released) return;
+                e.preventDefault();
+                _managerQueueDragBounds(state, _managerGetEventScreenPoint(e), scheduler);
+            }
+
+            panel.addEventListener('mousedown', onPointerDown);
+            panel.addEventListener('touchstart', onPointerDown, { passive: false });
+            document.addEventListener('mousemove', onPointerMove);
+            document.addEventListener('touchmove', onPointerMove, { passive: false });
+            document.addEventListener('mouseup', finishDrag);
+            document.addEventListener('touchend', finishDrag);
+            document.addEventListener('touchcancel', finishDrag);
+            window.addEventListener('blur', finishDrag);
+        }
+
         async function _initManager() {
             if (!window.Jukebox || !window.Jukebox.SongActionManager) return;
 
@@ -63,6 +268,7 @@
             // 创建管理器面板 DOM
             var panel = SAM.create();
             document.body.appendChild(panel);
+            _bindManagerStandaloneDrag(panel);
 
             // 注入管理器样式
             var style = document.createElement('style');
@@ -115,7 +321,16 @@
             if (!_mgrInitDone) {
                 _mgrInitDone = true;
                 if (typeof window.t !== 'function') {
-                    window.t = function(key, fallback) { return typeof fallback === 'string' ? fallback : key; };
+                    window.t = function(key, opts) {
+                        if (typeof opts === 'string') return opts;
+                        if (opts && typeof opts === 'object') {
+                            var tpl = typeof opts.defaultValue === 'string' ? opts.defaultValue : key;
+                            return tpl.replace(/\{\{(\w+)\}\}/g, function(_, name) {
+                                return opts[name] != null ? opts[name] : '{{' + name + '}}';
+                            });
+                        }
+                        return key;
+                    };
                 }
                 _initManager().catch(function(e) { console.error('[JukeboxManager] init failed:', e); });
             }

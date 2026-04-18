@@ -21,7 +21,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from .shared_state import get_steamworks, get_config_manager, get_initialize_character_data
-from utils.file_utils import atomic_write_json, atomic_write_json_async
+from utils.file_utils import atomic_write_json, atomic_write_json_async, read_json_async
 from utils.workshop_utils import (
     ensure_workshop_folder_exists,
     get_workshop_path,
@@ -53,6 +53,12 @@ _ugc_sync_lock = asyncio.Lock()
 # 全局互斥锁，用于序列化 UGC 批量查询（CreateQuery → SendQuery → 回调），
 # 避免并发调用 override_callback=True 导致回调覆盖竞态
 _ugc_query_lock = asyncio.Lock()
+
+
+def _read_first_line(path: str, encoding: str = 'utf-8') -> str:
+    """同步读文件首行，供 asyncio.to_thread 调用（README.md / README.txt 元数据回退）。"""
+    with open(path, 'r', encoding=encoding) as f:
+        return f.readline()
 
 
 def _is_item_cache_valid(item_id: int) -> bool:
@@ -819,22 +825,21 @@ async def get_subscribed_workshop_items():
                         for config_path in config_files:
                             if os.path.exists(config_path):
                                 try:
-                                    with open(config_path, 'r', encoding='utf-8') as f:
-                                        if config_path.endswith('.json'):
-                                            config_data = json.load(f)
-                                            # 尝试从配置文件中提取标题和描述
-                                            if "title" in config_data and config_data["title"]:
-                                                item_info["title"] = config_data["title"]
-                                            elif "name" in config_data and config_data["name"]:
-                                                item_info["title"] = config_data["name"]
-                                            
-                                            if "description" in config_data and config_data["description"]:
-                                                item_info["description"] = config_data["description"]
-                                        else:
-                                            # 对于文本文件，将第一行作为标题
-                                            first_line = f.readline().strip()
-                                            if first_line and item_info['title'].startswith('未知物品_'):
-                                                item_info['title'] = first_line[:100]  # 限制长度
+                                    if config_path.endswith('.json'):
+                                        config_data = await read_json_async(config_path)
+                                        # 尝试从配置文件中提取标题和描述
+                                        if "title" in config_data and config_data["title"]:
+                                            item_info["title"] = config_data["title"]
+                                        elif "name" in config_data and config_data["name"]:
+                                            item_info["title"] = config_data["name"]
+                                        # description 作为 title/name 的同级分支，不应嵌在 elif name 下
+                                        if "description" in config_data and config_data["description"]:
+                                            item_info["description"] = config_data["description"]
+                                    else:
+                                        # README.md / README.txt：把首行当标题（offload sync IO）
+                                        first_line = (await asyncio.to_thread(_read_first_line, config_path)).strip()
+                                        if first_line and item_info['title'].startswith('未知物品_'):
+                                            item_info['title'] = first_line[:100]  # 限制长度
                                     logger.debug(f"从本地文件 {os.path.basename(config_path)} 成功获取物品 {item_id} 的信息")
                                     break
                                 except Exception as file_error:
@@ -1480,7 +1485,7 @@ async def get_workshop_meta(character_name: str):
         decoded_name = unquote(character_name)
         
         # 读取元数据
-        meta_data = read_workshop_meta(decoded_name)
+        meta_data = await asyncio.to_thread(read_workshop_meta, decoded_name)
         
         if meta_data:
             return JSONResponse(content={
@@ -1512,7 +1517,7 @@ async def get_workshop_meta(character_name: str):
 async def get_workshop_config():
     try:
         from utils.workshop_utils import load_workshop_config
-        workshop_config_data = load_workshop_config()
+        workshop_config_data = await asyncio.to_thread(load_workshop_config)
         return {"success": True, "config": workshop_config_data}
     except Exception as e:
         logger.error(f"获取创意工坊配置失败: {str(e)}")
@@ -1527,7 +1532,7 @@ async def save_workshop_config_api(config_data: dict):
         from utils.workshop_utils import load_workshop_config, save_workshop_config, ensure_workshop_folder_exists
         
         # 先加载现有配置，避免使用全局变量导致的不一致问题
-        workshop_config_data = load_workshop_config() or {}
+        workshop_config_data = await asyncio.to_thread(load_workshop_config) or {}
         
         # 更新配置
         if 'default_workshop_folder' in config_data:
@@ -1561,7 +1566,7 @@ async def scan_local_workshop_items(request: Request):
         
         # 确保配置已加载
         from utils.workshop_utils import load_workshop_config
-        workshop_config_data = load_workshop_config()
+        workshop_config_data = await asyncio.to_thread(load_workshop_config)
         logger.info(f'创意工坊配置已加载: {workshop_config_data}')
         
         data = await request.json()
@@ -2007,7 +2012,7 @@ async def prepare_workshop_upload(request: Request):
 
         # 检查是否已存在workshop_meta.json文件（防止重复上传）
         if character_card_name:
-            meta_data = read_workshop_meta(character_card_name)
+            meta_data = await asyncio.to_thread(read_workshop_meta, character_card_name)
             if meta_data and meta_data.get('workshop_item_id'):
                 workshop_item_id = meta_data.get('workshop_item_id')
 
@@ -2173,7 +2178,7 @@ async def prepare_workshop_upload(request: Request):
         # 读取 .workshop_meta.json（如果存在）
         workshop_item_id = None
         if character_card_name:
-            meta_data = read_workshop_meta(character_card_name)
+            meta_data = await asyncio.to_thread(read_workshop_meta, character_card_name)
             if meta_data and meta_data.get('workshop_item_id'):
                 workshop_item_id = meta_data.get('workshop_item_id')
                 logger.info(f"检测到已存在的 Workshop 物品 ID: {workshop_item_id}")
@@ -2452,9 +2457,8 @@ async def publish_to_workshop(request: Request):
                     import glob
                     chara_files = glob.glob(os.path.join(content_folder, "*.chara.json"))
                     if chara_files:
-                        with open(chara_files[0], 'r', encoding='utf-8') as f:
-                            chara_data = json.load(f)
-                            uploaded_snapshot['character_data'] = chara_data
+                        chara_data = await read_json_async(chara_files[0])
+                        uploaded_snapshot['character_data'] = chara_data
                         logger.info(f"已从临时文件夹读取角色卡数据")
                     
                     # 获取模型名称（从文件夹中查找模型目录）
@@ -2518,6 +2522,8 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
             item_id = None
             if character_card_name:
                 try:
+                    # 注意：_publish_workshop_item 是 sync def，在 worker 线程里跑，不能用 await。
+                    # 其它 async 调用点已全部走 asyncio.to_thread，lint 已覆盖。
                     meta_data = read_workshop_meta(character_card_name)
                     if meta_data and meta_data.get('workshop_item_id'):
                         item_id = int(meta_data.get('workshop_item_id'))
@@ -2861,7 +2867,7 @@ async def sync_workshop_character_cards() -> dict:
         
         # 使用全局锁序列化 load_characters -> save_characters 流程，防止并发覆写
         async with _ugc_sync_lock:
-            characters = config_mgr.load_characters()
+            characters = await config_mgr.aload_characters()
             if '猫娘' not in characters:
                 characters['猫娘'] = {}
             
@@ -2885,8 +2891,7 @@ async def sync_workshop_character_cards() -> dict:
                     
                     for chara_file_path in chara_files:
                         try:
-                            with open(chara_file_path, 'r', encoding='utf-8') as f:
-                                chara_data = json.load(f)
+                            chara_data = await read_json_async(chara_file_path)
                             
                             chara_name = chara_data.get('档案名') or chara_data.get('name')
                             if not chara_name:

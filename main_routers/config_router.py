@@ -20,8 +20,8 @@ from fastapi.responses import JSONResponse
 
 from .shared_state import get_config_manager, get_steamworks, get_session_manager, get_initialize_character_data
 from .characters_router import get_current_live2d_model
-from utils.file_utils import atomic_write_json_async
-from utils.preferences import load_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top, load_global_conversation_settings, save_global_conversation_settings, GLOBAL_CONVERSATION_KEY
+from utils.file_utils import atomic_write_json_async, read_json_async
+from utils.preferences import aload_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top, aload_global_conversation_settings, save_global_conversation_settings, GLOBAL_CONVERSATION_KEY
 from utils.logger_config import get_module_logger
 from utils.config_manager import get_reserved
 from config import (
@@ -205,7 +205,7 @@ async def get_page_config(lanlan_name: str = ""):
     try:
         # 获取角色数据
         _config_manager = get_config_manager()
-        master_name, her_name, master_basic_config, lanlan_basic_config, _, _, _, _, _ = _config_manager.get_character_data()
+        master_name, her_name, master_basic_config, lanlan_basic_config, _, _, _, _, _ = await _config_manager.aget_character_data()
         master_display_name = _resolve_master_display_name(master_basic_config, master_name)
         
         # 如果提供了 lanlan_name 参数，使用它；否则使用当前角色
@@ -306,7 +306,7 @@ async def get_page_config(lanlan_name: str = ""):
 @router.get("/preferences")
 async def get_preferences():
     """获取用户偏好设置"""
-    preferences = load_user_preferences()
+    preferences = await aload_user_preferences()
     return preferences
 
 
@@ -385,7 +385,7 @@ async def set_preferred_model(request: Request):
 async def get_conversation_settings():
     """获取全局对话设置（从 user_preferences.json 同步备份中读取）"""
     try:
-        settings = load_global_conversation_settings()
+        settings = await aload_global_conversation_settings()
         return {"success": True, "settings": settings}
     except Exception as e:
         logger.exception(f"获取对话设置失败: {e}")
@@ -545,40 +545,51 @@ async def get_core_config_api():
             from utils.config_manager import get_config_manager
             config_manager = get_config_manager()
             core_config_path = str(config_manager.get_config_path('core_config.json'))
-            with open(core_config_path, 'r', encoding='utf-8') as f:
-                core_cfg = json.load(f)
-                api_key = core_cfg.get('coreApiKey', '')
+            core_cfg = await read_json_async(core_config_path)
+            api_key = core_cfg.get('coreApiKey', '')
         except FileNotFoundError:
             # 如果文件不存在，返回当前配置中的CORE_API_KEY
             _config_manager = get_config_manager()
-            core_config = _config_manager.get_core_config()
+            core_config = await _config_manager.aget_core_config()
             api_key = core_config.get('CORE_API_KEY','')
             # 创建空的配置对象用于返回默认值
             core_cfg = {}
         
         # 旧版本 core_config.json 可能只有 coreApiKey 而没有各 assistApiKey* 字段，
         # 需要与 ConfigManager.get_core_config() 保持一致的回退逻辑，
-        # 以免升级后声音克隆页面误报"没有可用API"。
+        # 但只能回退到与 coreApi / assistApi 匹配的服务商，
+        # 以免将不兼容的 API Key 填充到其他服务商。
         fallback_key = api_key or ''
+        _core_api_provider = core_cfg.get('coreApi') or 'qwen'
+        _assist_api_provider = core_cfg.get('assistApi') or 'qwen'
+        _fallback_providers = {_core_api_provider, _assist_api_provider}
+
+        def _fb(provider: str) -> str:
+            """仅当 provider 与用户选择的 coreApi/assistApi 一致时才回退到 coreApiKey"""
+            return fallback_key if provider in _fallback_providers else ''
+
         return {
             "api_key": api_key,
-            "coreApi": core_cfg.get('coreApi', 'qwen'),
-            "assistApi": core_cfg.get('assistApi', 'qwen'),
-            "assistApiKeyQwen": core_cfg.get('assistApiKeyQwen', '') or fallback_key,
-            "assistApiKeyQwenIntl": core_cfg.get('assistApiKeyQwenIntl', ''),
-            "assistApiKeyOpenai": core_cfg.get('assistApiKeyOpenai', '') or fallback_key,
-            "assistApiKeyGlm": core_cfg.get('assistApiKeyGlm', '') or fallback_key,
-            "assistApiKeyStep": core_cfg.get('assistApiKeyStep', '') or fallback_key,
-            "assistApiKeySilicon": core_cfg.get('assistApiKeySilicon', '') or fallback_key,
-            "assistApiKeyGemini": core_cfg.get('assistApiKeyGemini', '') or fallback_key,
-            "assistApiKeyKimi": core_cfg.get('assistApiKeyKimi', '') or fallback_key,
-            "assistApiKeyDeepseek": core_cfg.get('assistApiKeyDeepseek', '') or fallback_key,
-            "assistApiKeyDoubao": core_cfg.get('assistApiKeyDoubao', '') or fallback_key,
+            "coreApi": _core_api_provider,
+            "assistApi": _assist_api_provider,
+            "assistApiKeyQwen": core_cfg.get('assistApiKeyQwen', '') or _fb('qwen'),
+            "assistApiKeyQwenIntl": core_cfg.get('assistApiKeyQwenIntl', '') or _fb('qwen_intl'),
+            "assistApiKeyOpenai": core_cfg.get('assistApiKeyOpenai', '') or _fb('openai'),
+            "assistApiKeyGlm": core_cfg.get('assistApiKeyGlm', '') or _fb('glm'),
+            "assistApiKeyStep": core_cfg.get('assistApiKeyStep', '') or _fb('step'),
+            "assistApiKeySilicon": core_cfg.get('assistApiKeySilicon', '') or _fb('silicon'),
+            "assistApiKeyGemini": core_cfg.get('assistApiKeyGemini', '') or _fb('gemini'),
+            "assistApiKeyKimi": core_cfg.get('assistApiKeyKimi', '') or _fb('kimi'),
+            "assistApiKeyDeepseek": core_cfg.get('assistApiKeyDeepseek', '') or _fb('deepseek'),
+            "assistApiKeyDoubao": core_cfg.get('assistApiKeyDoubao', '') or _fb('doubao'),
+            # MiniMax 是 assist-only（TTS 专用），不在 coreApi 候选集里，
+            # coreApiKey 永远不是 minimax 兼容的；不 fallback，以免把无效 key
+            # 塞进 TTS 凭证槽位导致 401，掩盖"未配置 minimax key"的真实提示。
             "assistApiKeyMinimax": core_cfg.get('assistApiKeyMinimax', ''),
             "assistApiKeyMinimaxIntl": core_cfg.get('assistApiKeyMinimaxIntl', ''),
-            "assistApiKeyGrok": core_cfg.get('assistApiKeyGrok', '') or fallback_key,
-            "assistApiKeyClaude": core_cfg.get('assistApiKeyClaude', '') or fallback_key,
-            "assistApiKeyOpenrouter": core_cfg.get('assistApiKeyOpenrouter', '') or fallback_key,
+            "assistApiKeyGrok": core_cfg.get('assistApiKeyGrok', '') or _fb('grok'),
+            "assistApiKeyClaude": core_cfg.get('assistApiKeyClaude', '') or _fb('claude'),
+            "assistApiKeyOpenrouter": core_cfg.get('assistApiKeyOpenrouter', '') or _fb('openrouter'),
             "mcpToken": core_cfg.get('mcpToken', ''),
             "openclawUrl": core_cfg.get('openclawUrl'),
             "openclawTimeout": core_cfg.get('openclawTimeout'),
@@ -708,33 +719,61 @@ async def update_core_config(request: Request):
         # API配置更新后，需要先通知所有客户端，再关闭session，最后重新加载配置
         logger.info("API配置已更新，准备通知客户端并重置所有session...")
         
-        # 1. 先通知所有连接的客户端即将刷新（WebSocket还连着）
-        notification_count = 0
+        # 1. 并行通知所有连接的客户端即将刷新（WebSocket还连着）
+        # 重要：snapshot (name, mgr, session) 三元组，让 notify 和 end_session 两阶段
+        # 操作同一组 mgr **+** 同一份 session：
+        # - mgr 维度防新 mgr 被加入第二阶段误杀
+        # - session 维度防同一 mgr 在两阶段之间已 rotate 到新 session 被误杀
+        #   （前端 reload 后立即重连 → 触发新 session → 第二阶段不应关掉新 session）
+        # end_session 内部已有 expected_session stale guard（core.py:3013/3026），
+        # 这里把 snapshot 时的 session 传下去即可触发该 guard。
         session_manager = get_session_manager()
-        for lanlan_name, mgr in session_manager.items():
-            if mgr.is_active and mgr.websocket:
-                try:
-                    await mgr.websocket.send_text(json.dumps({
-                        "type": "reload_page",
-                        "message": "API配置已更新，页面即将刷新"
-                    }))
-                    notification_count += 1
-                    logger.info(f"已通知 {lanlan_name} 的前端刷新页面")
-                except Exception as e:
-                    logger.warning(f"通知 {lanlan_name} 的WebSocket失败: {e}")
-        
+        mgr_snapshot = [
+            (name, mgr, getattr(mgr, "session", None))
+            for name, mgr in session_manager.items()
+        ]
+        reload_payload = json.dumps({
+            "type": "reload_page",
+            "message": "API配置已更新，页面即将刷新"
+        })
+
+        async def _notify(lanlan_name, mgr):
+            if not (mgr.is_active and mgr.websocket):
+                return False
+            try:
+                await mgr.websocket.send_text(reload_payload)
+                logger.info(f"已通知 {lanlan_name} 的前端刷新页面")
+                return True
+            except Exception as e:
+                logger.warning(f"通知 {lanlan_name} 的WebSocket失败: {e}")
+                return False
+
+        _notify_results = await asyncio.gather(
+            *(_notify(n, m) for n, m, _session in mgr_snapshot),
+            return_exceptions=True,
+        )
+        notification_count = sum(1 for r in _notify_results if r is True)
         logger.info(f"已通知 {notification_count} 个客户端")
-        
-        # 2. 立刻关闭所有活跃的session（这会断开所有WebSocket）
-        sessions_ended = []
-        for lanlan_name, mgr in session_manager.items():
-            if mgr.is_active:
-                try:
-                    await mgr.end_session(by_server=True)
-                    sessions_ended.append(lanlan_name)
-                    logger.info(f"{lanlan_name} 的session已结束")
-                except Exception as e:
-                    logger.error(f"结束 {lanlan_name} 的session时出错: {e}")
+
+        # 2. 并行关闭所有活跃的 session（每个 end_session ≈ 1s，串行 N 秒，gather 后 ≈ 1s）
+        # 复用上一阶段的 (mgr, session) snapshot，确保不会误杀重连进来的新 mgr，
+        # 也不会误杀同一 mgr 在中途 rotate 出来的新 session。
+        async def _end(lanlan_name, mgr, expected_session):
+            if not mgr.is_active or expected_session is None:
+                return None
+            try:
+                await mgr.end_session(by_server=True, expected_session=expected_session)
+                logger.info(f"{lanlan_name} 的session已结束")
+                return lanlan_name
+            except Exception as e:
+                logger.error(f"结束 {lanlan_name} 的session时出错: {e}")
+                return None
+
+        _end_results = await asyncio.gather(
+            *(_end(n, m, s) for n, m, s in mgr_snapshot),
+            return_exceptions=True,
+        )
+        sessions_ended = [r for r in _end_results if isinstance(r, str)]
         
         # 3. 重新加载配置并重建session manager
         logger.info("正在重新加载配置...")
