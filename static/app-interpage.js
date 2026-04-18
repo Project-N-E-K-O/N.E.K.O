@@ -441,6 +441,15 @@
                                 });
                             }
                         }
+
+                        // 重启 UI 更新循环（被 handleHideMainUI 停止）。
+                        // handleShowMainUI 在 _modelReloadInFlight 为 true 时会跳过，
+                        // 因此必须在模型加载完成后手动重启，否则悬浮按钮不会重新出现。
+                        if (window.vrmManager && window.vrmManager._uiUpdateLoopId == null
+                            && typeof window.vrmManager._startUIUpdateLoop === 'function') {
+                            window.vrmManager._snapUIPosition = true;
+                            window.vrmManager._startUIUpdateLoop();
+                        }
                     } else {
                         console.error('[Model] VRM 管理器初始化失败');
                     }
