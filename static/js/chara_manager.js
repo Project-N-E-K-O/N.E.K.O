@@ -1286,7 +1286,9 @@ function setupMasterFormListeners() {
             const textareaEl = document.createElement('textarea');
             textareaEl.name = key;
             textareaEl.rows = 1;
-            textareaEl.placeholder = '可输入详细描述';
+            textareaEl.placeholder = (window.t && typeof window.t === 'function')
+                ? window.t('character.detailDescriptionPlaceholder')
+                : '可输入详细描述';
             row.appendChild(textareaEl);
 
             // 将field-row添加到wrapper
@@ -1906,7 +1908,9 @@ function showCatgirlForm(key, container) {
             const textareaEl = document.createElement('textarea');
             textareaEl.name = k;
             textareaEl.rows = 1;
-            textareaEl.placeholder = '可输入详细描述';
+            textareaEl.placeholder = (window.t && typeof window.t === 'function')
+                ? window.t('character.detailDescriptionPlaceholder')
+                : '可输入详细描述';
             textareaEl.value = cat[k];
             fieldRow.appendChild(textareaEl);
 
@@ -2289,7 +2293,9 @@ function showCatgirlForm(key, container) {
         const textareaEl = document.createElement('textarea');
         textareaEl.name = key;
         textareaEl.rows = 1;
-        textareaEl.placeholder = '可输入详细描述';
+        textareaEl.placeholder = (window.t && typeof window.t === 'function')
+            ? window.t('character.detailDescriptionPlaceholder')
+            : '可输入详细描述';
         fieldRow.appendChild(textareaEl);
 
         wrapper.appendChild(fieldRow);
@@ -3663,6 +3669,17 @@ async function closeCharaManagerPage() {
         } catch (error) {
             await showAlert(window.t ? window.t('character.autoSaveFailed') : '自动保存失败，请手动保存后再关闭页面');
             return;
+        }
+    }
+
+    // 先显式关闭从本页打开的子窗口（如 model_manager），
+    // 避免浏览器级联关闭时 beforeunload 不触发、主页收不到 show_main_ui
+    if (window._openSettingsWindows) {
+        for (const [key, win] of Object.entries(window._openSettingsWindows)) {
+            if (win && !win.closed) {
+                win.close();
+            }
+            delete window._openSettingsWindows[key];
         }
     }
 

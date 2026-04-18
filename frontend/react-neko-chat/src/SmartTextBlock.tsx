@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
@@ -38,7 +39,67 @@ function CodeBlock({ inline, className, children }: {
   );
 }
 
-export default function SmartTextBlock({ text }: { text: string }) {
+/**
+ * Streaming text with chunk-based reveal animation.
+ *
+ * Text is split into "settled" (plain text) and "fresh" (a single <span> with
+ * a CSS fade-in).  Every ~200 ms the current batch settles and a new span
+ * starts, giving a continuous "materialising" cadence similar to ChatGPT /
+ * Claude.ai.
+ *
+ * Key design choices:
+ * - Timer is managed via refs so that incoming streaming updates (text.length
+ *   changes) do NOT cancel an in-flight timer.  The old useEffect-cleanup
+ *   approach reset the 200 ms timer on every token, meaning settledLen never
+ *   advanced during fast streaming.
+ * - When the timer fires it reads textLenRef.current (the LATEST length), so
+ *   each batch captures exactly 200 ms worth of tokens.
+ * - `key={settledLen}` on the span forces React to create a fresh DOM node
+ *   each batch, which re-triggers the CSS animation.
+ */
+function StreamingText({ text }: { text: string }) {
+  const [settledLen, setSettledLen] = useState(0);
+  const textLenRef = useRef(text.length);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  textLenRef.current = text.length;
+
+  // Kick off a 200 ms settle timer whenever fresh text exists and no timer is
+  // already running.  Runs after every render but the guard makes it cheap.
+  useEffect(() => {
+    if (textLenRef.current > settledLen && timerRef.current === null) {
+      timerRef.current = setTimeout(() => {
+        timerRef.current = null;
+        setSettledLen(textLenRef.current);   // snapshot at fire-time
+      }, 200);
+    }
+  });
+
+  // Clear timer on unmount only
+  useEffect(() => () => {
+    if (timerRef.current !== null) clearTimeout(timerRef.current);
+  }, []);
+
+  const fresh = text.slice(settledLen);
+
+  if (!fresh) {
+    return <div className="message-block message-block-text">{text}</div>;
+  }
+
+  return (
+    <div className="message-block message-block-text">
+      {text.slice(0, settledLen)}
+      <span key={settledLen} className="text-chunk-reveal">{fresh}</span>
+    </div>
+  );
+}
+
+export default function SmartTextBlock({ text, isStreaming }: { text: string; isStreaming?: boolean }) {
+  // Streaming: always use StreamingText for per-batch fade-in, regardless of
+  // markdown content.  Once streaming ends, fall through to markdown rendering.
+  if (isStreaming) {
+    return <StreamingText text={text} />;
+  }
+
   if (!looksLikeRichText(text)) {
     return <div className="message-block message-block-text">{text}</div>;
   }

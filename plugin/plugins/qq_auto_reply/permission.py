@@ -106,6 +106,18 @@ class PermissionManager:
             return True
         return False
 
+    def find_users_by_nickname(self, nickname: str) -> List[Dict[str, str]]:
+        """按配置昵称查找用户（精确匹配）"""
+        target = str(nickname or "").strip()
+        if not target:
+            return []
+        result = []
+        for qq, saved_nickname in self._nicknames.items():
+            if saved_nickname == target and qq in self._users:
+                user_info = {"qq": qq, "level": self._users[qq], "nickname": saved_nickname}
+                result.append(user_info)
+        return result
+
     def is_admin(self, qq_number: str) -> bool:
         """检查是否是管理员"""
         return self.get_permission_level(qq_number) == "admin"

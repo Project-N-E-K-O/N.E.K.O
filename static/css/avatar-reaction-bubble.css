@@ -197,6 +197,138 @@
     --bubble-emotion-image: url('/static/icons/surprise_cat.png');
 }
 
+#avatar-reaction-bubble-debug-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 99991;
+    pointer-events: none;
+}
+
+#avatar-reaction-bubble-debug-overlay.is-hidden {
+    display: none;
+}
+
+#avatar-reaction-bubble-debug-overlay .avatar-reaction-bubble-debug-rect {
+    position: fixed;
+    border: 2px solid;
+    border-radius: 12px;
+    background: transparent;
+    box-sizing: border-box;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.24) inset;
+}
+
+#avatar-reaction-bubble-debug-overlay .avatar-reaction-bubble-debug-rect::after {
+    content: attr(data-label);
+    position: absolute;
+    left: 0;
+    top: -24px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    color: #fff7ea;
+    font: 600 11px/1.2 "Trebuchet MS", "Verdana", sans-serif;
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+}
+
+#avatar-reaction-bubble-debug-overlay .avatar-reaction-bubble-debug-rect.is-hidden,
+#avatar-reaction-bubble-debug-overlay .avatar-reaction-bubble-debug-anchor.is-hidden,
+#avatar-reaction-bubble-debug-overlay .avatar-reaction-bubble-debug-guide.is-hidden {
+    display: none;
+}
+
+#avatar-reaction-bubble-debug-overlay .avatar-reaction-bubble-debug-rect.is-bounds {
+    border-color: rgba(255, 180, 71, 0.95);
+    background: rgba(255, 180, 71, 0.06);
+}
+
+#avatar-reaction-bubble-debug-overlay .avatar-reaction-bubble-debug-rect.is-bounds::after {
+    background: rgba(255, 180, 71, 0.9);
+}
+
+#avatar-reaction-bubble-debug-overlay .avatar-reaction-bubble-debug-rect.is-head {
+    border-color: rgba(61, 214, 161, 0.98);
+    background: rgba(61, 214, 161, 0.08);
+}
+
+#avatar-reaction-bubble-debug-overlay .avatar-reaction-bubble-debug-rect.is-head::after {
+    background: rgba(31, 170, 125, 0.92);
+}
+
+#avatar-reaction-bubble-debug-overlay .avatar-reaction-bubble-debug-rect.is-body {
+    border-color: rgba(61, 137, 255, 0.98);
+    background: rgba(61, 137, 255, 0.06);
+}
+
+#avatar-reaction-bubble-debug-overlay .avatar-reaction-bubble-debug-rect.is-body::after {
+    background: rgba(39, 103, 214, 0.92);
+}
+
+#avatar-reaction-bubble-debug-overlay .avatar-reaction-bubble-debug-rect.is-bubble {
+    border-color: rgba(255, 88, 111, 0.98);
+    background: rgba(255, 88, 111, 0.05);
+}
+
+#avatar-reaction-bubble-debug-overlay .avatar-reaction-bubble-debug-rect.is-bubble::after {
+    background: rgba(220, 57, 81, 0.94);
+}
+
+#avatar-reaction-bubble-debug-overlay .avatar-reaction-bubble-debug-anchor {
+    position: fixed;
+    width: 14px;
+    height: 14px;
+    margin-left: -7px;
+    margin-top: -7px;
+    border-radius: 50%;
+    background: #ffe168;
+    box-shadow: 0 0 0 3px rgba(255, 225, 104, 0.28);
+}
+
+#avatar-reaction-bubble-debug-overlay .avatar-reaction-bubble-debug-guide {
+    position: fixed;
+    height: 2px;
+    transform-origin: 0 50%;
+    background:
+        linear-gradient(
+            90deg,
+            rgba(255, 225, 104, 0.95) 0%,
+            rgba(255, 225, 104, 0.95) 45%,
+            rgba(255, 112, 136, 0.95) 100%
+        );
+    opacity: 0.88;
+}
+
+#avatar-reaction-bubble-debug-overlay .avatar-reaction-bubble-debug-panel {
+    position: fixed;
+    right: 16px;
+    top: 16px;
+    width: min(320px, calc(100vw - 32px));
+    padding: 12px 13px;
+    border-radius: 18px;
+    background: rgba(17, 23, 35, 0.86);
+    color: #eef6ff;
+    box-shadow: 0 18px 40px rgba(8, 13, 24, 0.32);
+    backdrop-filter: blur(12px);
+}
+
+#avatar-reaction-bubble-debug-overlay .avatar-reaction-bubble-debug-title {
+    font: 700 13px/1.2 "Trebuchet MS", "Verdana", sans-serif;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+#avatar-reaction-bubble-debug-overlay .avatar-reaction-bubble-debug-hint {
+    margin-top: 4px;
+    color: rgba(227, 237, 251, 0.72);
+    font: 500 11px/1.2 "Trebuchet MS", "Verdana", sans-serif;
+}
+
+#avatar-reaction-bubble-debug-overlay .avatar-reaction-bubble-debug-body {
+    margin: 10px 0 0;
+    color: #f4f8ff;
+    font: 500 11px/1.55 "SFMono-Regular", "Consolas", "Menlo", monospace;
+    white-space: pre-wrap;
+}
+
 @keyframes neko-bubble-thinking {
     0%,
     100% {
@@ -359,5 +491,13 @@
     #avatar-reaction-bubble .avatar-reaction-bubble-content {
         max-width: 78%;
         font-size: calc(var(--bubble-height) * 0.18);
+    }
+
+    #avatar-reaction-bubble-debug-overlay .avatar-reaction-bubble-debug-panel {
+        right: 10px;
+        top: 10px;
+        width: min(280px, calc(100vw - 20px));
+        padding: 10px 11px;
+        border-radius: 14px;
     }
 }

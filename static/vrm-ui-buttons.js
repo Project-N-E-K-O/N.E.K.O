@@ -26,6 +26,12 @@ VRMManager.prototype.setupFloatingButtons = function() {
         return;
     }
 
+    // 防御性检查：当前模型类型不是 VRM 时不创建按钮（防止过时的异步回调）
+    var cfgType = (window.lanlan_config && window.lanlan_config.model_type || '').toLowerCase();
+    var cfgSub = (window.lanlan_config && window.lanlan_config.live3d_sub_type || '').toLowerCase();
+    var isVrm = cfgType === 'vrm' || (cfgType === 'live3d' && cfgSub === 'vrm');
+    if (cfgType && !isVrm) return;
+
     // 基础框架初始化
     const buttonsContainer = this.setupFloatingButtonsBase();
 
@@ -183,21 +189,23 @@ VRMManager.prototype.setupFloatingButtons = function() {
         }
 
         // 处理弹窗
+        let triggerBtn = null;
+        let triggerImg = null;
         if (config.hasPopup && config.separatePopupTrigger) {
             if (window.isMobileWidth() && config.id === 'mic') {
                 buttonsContainer.appendChild(btnWrapper);
-                this._floatingButtons[config.id] = { button: btn, imgOff, imgOn };
+                this._floatingButtons[config.id] = { button: btn, imgOff, imgOn, triggerButton: null, triggerImg: null };
                 return;
             }
 
             const popup = this.createPopup(config.id);
-            const triggerBtn = document.createElement('button');
+            triggerBtn = document.createElement('button');
             triggerBtn.type = 'button';
             triggerBtn.className = 'vrm-trigger-btn';
             triggerBtn.setAttribute('aria-label', 'Open popup');
 
             const iconVersion = window.APP_VERSION ? `?v=${window.APP_VERSION}` : '?v=1.0.0';
-            const triggerImg = document.createElement('img');
+            triggerImg = document.createElement('img');
             triggerImg.src = '/static/icons/play_trigger_icon.png' + iconVersion;
             triggerImg.alt = '';
             triggerImg.className = `vrm-trigger-icon-${config.id}`;
@@ -223,16 +231,57 @@ VRMManager.prototype.setupFloatingButtons = function() {
 
             triggerBtn.addEventListener('click', async (e) => {
                 e.stopPropagation();
+                const isCurrentPopupVisible = (showToken = popup._showToken) => {
+                    const currentPopup = document.getElementById(`${prefix}-popup-${config.id}`);
+                    return currentPopup === popup &&
+                        popup.isConnected &&
+                        popup._showToken === showToken &&
+                        popup.style.display === 'flex' &&
+                        popup.style.opacity === '1';
+                };
+                const repositionPopup = () => {
+                    const popupUi = window.AvatarPopupUI || null;
+                    if (!popupUi || typeof popupUi.positionPopup !== 'function') return;
+                    popupUi.positionPopup(popup, {
+                        buttonId: config.id,
+                        buttonPrefix: `${prefix}-btn-`,
+                        triggerPrefix: `${prefix}-trigger-icon-`,
+                        rightMargin: 20,
+                        bottomMargin: 60,
+                        topMargin: 8,
+                        gap: 8,
+                        sidePanelWidth: (config.id === 'settings' || config.id === 'agent') ? 320 : 0
+                    });
+                };
                 const isPopupVisible = popup.style.display === 'flex' && popup.style.opacity === '1';
-                if (config.id === 'mic' && !isPopupVisible) {
+                if (isPopupVisible) {
+                    this.showPopup(config.id, popup);
+                    return;
+                }
+
+                this.showPopup(config.id, popup);
+                const showToken = popup._showToken;
+                await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                if (!isCurrentPopupVisible(showToken)) {
+                    return;
+                }
+
+                if (config.id === 'mic') {
                     if (typeof window.renderFloatingMicList === 'function') {
-                        await window.renderFloatingMicList(popup);
+                        const didRender = await window.renderFloatingMicList(popup);
+                        if (didRender === false || !isCurrentPopupVisible(showToken)) {
+                            return;
+                        }
+                        repositionPopup();
                     }
                 }
-                if (config.id === 'screen' && !isPopupVisible) {
-                    await this.renderScreenSourceList(popup);
+                if (config.id === 'screen') {
+                    const didRender = await this.renderScreenSourceList(popup);
+                    if (didRender === false || !isCurrentPopupVisible(showToken)) {
+                        return;
+                    }
+                    repositionPopup();
                 }
-                this.showPopup(config.id, popup);
             });
 
             const triggerWrapper = document.createElement('div');
@@ -292,7 +341,13 @@ VRMManager.prototype.setupFloatingButtons = function() {
         }
 
         buttonsContainer.appendChild(btnWrapper);
-        this._floatingButtons[config.id] = { button: btn, imgOff, imgOn };
+        this._floatingButtons[config.id] = {
+            button: btn,
+            imgOff,
+            imgOn,
+            triggerButton: (config.hasPopup && config.separatePopupTrigger && !window.isMobileWidth()) ? triggerBtn : null,
+            triggerImg: (config.hasPopup && config.separatePopupTrigger && !window.isMobileWidth()) ? triggerImg : null
+        };
     });
 
     // 处理"请她离开"事件
@@ -538,7 +593,8 @@ VRMManager.prototype._startUIUpdateLoop = function() {
                         ? popupUi.hasVisibleOverlay('vrm')
                         : Array.from(document.querySelectorAll('[id^="vrm-popup-"]'))
                             .some(popup => popup.style.display === 'flex' && popup.style.opacity !== '0');
-                    const shouldShowButtons = !isLocked && (this._vrmUiNearModel || hoveringButtons || hasOpenOverlay);
+                    const inTutorial = buttonsContainer.dataset.inTutorial === 'true' || window.isInTutorial === true;
+                    const shouldShowButtons = inTutorial || (!isLocked && (this._vrmUiNearModel || hoveringButtons || hasOpenOverlay));
                     buttonsContainer.style.display = shouldShowButtons ? 'flex' : 'none';
                 }
                 buttonsContainer.style.transform = `scale(${scale})`;

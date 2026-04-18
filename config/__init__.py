@@ -528,11 +528,13 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeyQwenIntl": "",
     "assistApiKeyMinimax": "",
     "assistApiKeyClaude": "",
+    "assistApiKeyGrok": "",
+    "assistApiKeyDoubao": "",
     "mcpToken": "",
     "agentModelUrl": "",
     "agentModelId": "",
     "agentModelApiKey": "",
-    "openclawUrl": "http://127.0.0.1:8089",
+    "openclawUrl": "http://127.0.0.1:8088",
     "openclawTimeout": 300.0,
     "openclawDefaultSenderId": "neko_user",
     "textGuardMaxLength": 300,
@@ -545,7 +547,7 @@ DEFAULT_VOICE_STORAGE = {}
 # 默认API配置（供 utils.api_config_loader 作为回退选项使用）
 DEFAULT_CORE_API_PROFILES = {
     'free': {
-        'CORE_URL': "wss://api.lanlan.tech/core",
+        'CORE_URL': "wss://www.lanlan.tech/core",
         'CORE_MODEL': "free-model",
         'CORE_API_KEY': "free-access",
         'IS_FREE_VERSION': True,
@@ -574,7 +576,7 @@ DEFAULT_CORE_API_PROFILES = {
 
 DEFAULT_ASSIST_API_PROFILES = {
     'free': {
-        'OPENROUTER_URL': "https://api.lanlan.tech/text/v1",
+        'OPENROUTER_URL': "https://www.lanlan.tech/text/v1",
         'CONVERSATION_MODEL' : "free-model" ,
         'SUMMARY_MODEL': "free-model",
         'CORRECTION_MODEL': "free-model",
@@ -657,6 +659,33 @@ DEFAULT_ASSIST_API_PROFILES = {
         'VISION_MODEL': "claude-sonnet-4-6",
         'AGENT_MODEL': "claude-opus-4-6",
     },
+    'openrouter': {
+        'OPENROUTER_URL': "https://openrouter.ai/api/v1",
+        'CONVERSATION_MODEL': "openai/gpt-4.1",
+        'SUMMARY_MODEL': "openai/gpt-4.1-mini",
+        'CORRECTION_MODEL': "openai/gpt-4.1-mini",
+        'EMOTION_MODEL': "openai/gpt-4.1-nano",
+        'VISION_MODEL': "openai/gpt-4.1",
+        'AGENT_MODEL': "openai/gpt-4.1",
+    },
+    'grok': {
+        'OPENROUTER_URL': "https://api.x.ai/v1",
+        'CONVERSATION_MODEL': "grok-4-1-fast-non-reasoning",
+        'SUMMARY_MODEL': "grok-4-1-fast-non-reasoning",
+        'CORRECTION_MODEL': "grok-4-1-fast-non-reasoning",
+        'EMOTION_MODEL': "grok-3-mini-fast",
+        'VISION_MODEL': "grok-4-1-fast-non-reasoning",
+        'AGENT_MODEL': "grok-4-1-fast-non-reasoning",
+    },
+    'doubao': {
+        'OPENROUTER_URL': "https://ark.cn-beijing.volces.com/api/v3",
+        'CONVERSATION_MODEL': "doubao-seed-2-0-lite-260215",
+        'SUMMARY_MODEL': "doubao-seed-2-0-lite-260215",
+        'CORRECTION_MODEL': "doubao-seed-2-0-lite-260215",
+        'EMOTION_MODEL': "doubao-seed-2-0-mini-260215",
+        'VISION_MODEL': "doubao-seed-2-0-lite-260215",
+        'AGENT_MODEL': "doubao-seed-2-0-pro-260215",
+    },
 }
 
 DEFAULT_ASSIST_API_KEY_FIELDS = {
@@ -670,6 +699,9 @@ DEFAULT_ASSIST_API_KEY_FIELDS = {
     'qwen_intl': 'ASSIST_API_KEY_QWEN_INTL',
     'minimax': 'ASSIST_API_KEY_MINIMAX',
     'claude': 'ASSIST_API_KEY_CLAUDE',
+    'openrouter': 'ASSIST_API_KEY_OPENROUTER',
+    'grok': 'ASSIST_API_KEY_GROK',
+    'doubao': 'ASSIST_API_KEY_DOUBAO',
 }
 
 DEFAULT_CONFIG_DATA = {

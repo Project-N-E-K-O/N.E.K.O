@@ -31,6 +31,21 @@ textarea {
   font: inherit;
 }
 
+button,
+[role="button"] {
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+}
+
+button * {
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+}
+
 .app-shell {
   width: 100%;
   height: 100%;
@@ -211,6 +226,26 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  /* 滚动条：细线 + 半透明，参考 Discord / Slack */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(140, 152, 172, 0.25) transparent;
+}
+
+.message-list::-webkit-scrollbar {
+  width: 5px;
+}
+
+.message-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.message-list::-webkit-scrollbar-thumb {
+  background: rgba(140, 152, 172, 0.25);
+  border-radius: 3px;
+}
+
+.message-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(140, 152, 172, 0.45);
 }
 
 .message-empty-state {
@@ -228,12 +263,24 @@ textarea {
   gap: 8px;
 }
 
+/* 消息气泡进场动效 */
+@keyframes slideFromLeft {
+  from { opacity: 0; transform: translateX(-14px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes slideFromRight {
+  from { opacity: 0.5; transform: translateX(8px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
 .message-row-user {
   justify-content: flex-end;
+  animation: slideFromRight 0.15s ease-out both;
 }
 
 .message-row-assistant {
   justify-content: flex-start;
+  animation: slideFromLeft 0.25s ease-out both;
 }
 
 .message-row-user .avatar {
@@ -331,6 +378,16 @@ textarea {
   min-width: 0;
 }
 
+/* 流式文字分块渐现 — 每批新文本整体淡入，参考 ChatGPT / Claude.ai */
+@keyframes textChunkReveal {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.text-chunk-reveal {
+  animation: textChunkReveal 0.18s ease-out both;
+}
+
 .message-block-text {
   white-space: pre-wrap;
 }
@@ -341,11 +398,11 @@ textarea {
   line-height: 1.58;
 }
 
-.message-block-markdown > :first-child {
+.message-block-markdown> :first-child {
   margin-top: 0;
 }
 
-.message-block-markdown > :last-child {
+.message-block-markdown> :last-child {
   margin-bottom: 0;
 }
 
@@ -390,7 +447,7 @@ textarea {
   padding-left: 1.2rem;
 }
 
-.message-block-markdown li + li {
+.message-block-markdown li+li {
   margin-top: 0.22rem;
 }
 
@@ -408,7 +465,7 @@ textarea {
 }
 
 .message-markdown-inline-code,
-.message-block-markdown :not(pre) > code {
+.message-block-markdown :not(pre)>code {
   padding: 0.12rem 0.35rem;
   border-radius: 6px;
   background: rgba(91, 111, 145, 0.12);
@@ -489,7 +546,7 @@ textarea {
 
 .message-block-image {
   margin: 0;
-  width: min(280px, 100%);
+  max-width: 280px;
   overflow: hidden;
   border-radius: 12px;
   background: rgba(220, 228, 240, 0.85);
@@ -669,6 +726,7 @@ textarea {
   gap: 4px;
   padding: 6px;
   position: relative;
+  z-index: 15;
   background: rgba(255, 255, 255, 0.91);
 }
 
@@ -733,7 +791,7 @@ textarea {
   padding: 0 16px;
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.91);
-  border: 1px solid rgba(127, 144, 170, 0.16);
+  border: 1.5px solid rgba(127, 144, 170, 0.25);
   transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.78),
@@ -779,7 +837,8 @@ textarea {
 }
 
 .composer-input::placeholder {
-  color: #66758d;
+  color: rgba(102, 117, 141, 0.5);
+  font-size: 0.85em;
   line-height: 1.34;
 }
 
@@ -948,11 +1007,9 @@ textarea {
 
 [data-theme="dark"] .window-topbar {
   background:
-    linear-gradient(
-      180deg,
+    linear-gradient(180deg,
       rgba(50, 50, 72, 0.6) 0%,
-      rgba(38, 38, 58, 0.5) 100%
-    );
+      rgba(38, 38, 58, 0.5) 100%);
   border-bottom-color: rgba(255, 255, 255, 0.12);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.1),
@@ -962,14 +1019,12 @@ textarea {
 
 [data-theme="dark"] .window-topbar::before {
   background:
-    linear-gradient(
-      105deg,
-      rgba(255, 255, 255, 0)    0%,
+    linear-gradient(105deg,
+      rgba(255, 255, 255, 0) 0%,
       rgba(255, 255, 255, 0.06) 35%,
-      rgba(255, 255, 255, 0)    50%,
+      rgba(255, 255, 255, 0) 50%,
       rgba(140, 180, 255, 0.04) 70%,
-      rgba(255, 255, 255, 0)    100%
-    );
+      rgba(255, 255, 255, 0) 100%);
 }
 
 [data-theme="dark"] .window-title {
@@ -1005,6 +1060,19 @@ textarea {
 
 [data-theme="dark"] .chat-body {
   background: rgba(28, 28, 46, 0.91);
+}
+
+/* --- 消息列表滚动条 --- */
+[data-theme="dark"] .message-list {
+  scrollbar-color: rgba(200, 210, 230, 0.15) transparent;
+}
+
+[data-theme="dark"] .message-list::-webkit-scrollbar-thumb {
+  background: rgba(200, 210, 230, 0.15);
+}
+
+[data-theme="dark"] .message-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(200, 210, 230, 0.3);
 }
 
 /* --- 消息列表 --- */
@@ -1072,7 +1140,7 @@ textarea {
 
 /* --- 行内代码 --- */
 [data-theme="dark"] .message-markdown-inline-code,
-[data-theme="dark"] .message-block-markdown :not(pre) > code {
+[data-theme="dark"] .message-block-markdown :not(pre)>code {
   background: rgba(100, 120, 160, 0.18);
   color: #c0cce0;
 }

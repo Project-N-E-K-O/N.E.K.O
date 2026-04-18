@@ -430,7 +430,7 @@ async def fetch_weibo_trending(limit: int = 10) -> Dict[str, Any]:
     """
     try:
         # 动态获取平台 Cookie，拒绝硬编码
-        weibo_cookies = _get_platform_cookies('weibo')
+        weibo_cookies = await asyncio.to_thread(_get_platform_cookies, 'weibo')
         sub_cookie = weibo_cookies.get('SUB') or weibo_cookies.get('sub', '')
         if sub_cookie:
             cookie_header = f"SUB={sub_cookie}"
@@ -2201,7 +2201,7 @@ async def fetch_douyin_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
     try:
         from utils.cookies_login import validate_cookies
         
-        cookies = _get_platform_cookies('douyin')
+        cookies = await asyncio.to_thread(_get_platform_cookies, 'douyin')
         if not cookies:
             return {'success': False, 'error': '未找到抖音 Cookie 配置'}
         
@@ -2293,7 +2293,7 @@ async def fetch_kuaishou_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
     try:
         from utils.cookies_login import validate_cookies
         
-        cookies = _get_platform_cookies('kuaishou')
+        cookies = await asyncio.to_thread(_get_platform_cookies, 'kuaishou')
         if not cookies:
             return {'success': False, 'error': '未找到快手 Cookie 配置'}
         
@@ -2378,7 +2378,7 @@ async def fetch_weibo_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
     try:
         from utils.cookies_login import validate_cookies
         
-        weibo_cookies = _get_platform_cookies('weibo')
+        weibo_cookies = await asyncio.to_thread(_get_platform_cookies, 'weibo')
         if not weibo_cookies:
             return {'success': False, 'error': '未找到 config/weibo_cookies.json'}
         
@@ -2493,7 +2493,7 @@ async def fetch_reddit_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
     获取Reddit推送的动态帖子
     """
     try:
-        reddit_cookies = _get_platform_cookies('reddit')
+        reddit_cookies = await asyncio.to_thread(_get_platform_cookies, 'reddit')
         if not reddit_cookies: 
             return {'success': False, 'error': '未配置 config/reddit_cookies.json'}
         url = f"https://www.reddit.com/hot.json?limit={limit}"
@@ -2565,7 +2565,7 @@ async def fetch_twitter_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
     try:
         from utils.cookies_login import validate_cookies
         
-        twitter_cookies = _get_platform_cookies('twitter')
+        twitter_cookies = await asyncio.to_thread(_get_platform_cookies, 'twitter')
         if not twitter_cookies:
              return {'success': False, 'error': '未配置 config/twitter_cookies.json'}
         

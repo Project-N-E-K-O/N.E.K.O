@@ -164,6 +164,9 @@
                 if (textInputArea) {
                     textInputArea.classList.remove('hidden');
                 }
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
 
                 // 清理资源
                 if (typeof window.stopScreening === 'function') {
@@ -392,6 +395,12 @@
 
         // 如果音量超过阈值(0.01),认为检测到声音
         if (rms > 0.01) {
+            // C: 为前端 proactive guard 持续打点"最近一次有声音"。
+            // 阈值与下面 hasSoundDetected 共用 0.01；这里每帧都写（~16ms 一次），
+            // 不做去抖，保证 proactive tick 能读到最新值。与后端
+            // _user_recent_activity_time 对称：不等 sustain、不等 VAD 判定，
+            // 只要麦克风真的收到过声音就算"用户可能在说话"。
+            S.userRecentSpeechTime = Date.now();
             if (!S.hasSoundDetected) {
                 S.hasSoundDetected = true;
                 console.log('麦克风静音检测：检测到声音，RMS =', rms);
@@ -509,6 +518,13 @@
             // 连接节点：gainNode → workletNode（音频经过增益处理后发送）
             S.micGainNode.connect(S.workletNode);
 
+            // 用户主动开麦，意味着要讲话；focus mode 的 isPlaying guard 此刻必须让路。
+            // 切档案后自动触发的 greeting 音频播完如果没把 isPlaying 复位（finalize
+            // 路径的前置条件没兜住就会粘住），下一次开麦每一帧都会被 focus 拦掉，
+            // 表现为"Electron 显示可以说话但 STT 无反应"。用户此刻的意图是明确的，
+            // 不管 flag 是粘住还是真在播 AI 音频，都应该让位给用户输入。
+            S.isPlaying = false;
+
             // 所有初始化成功后，才标记为录音状态
             S.isRecording = true;
             window.isRecording = true;
@@ -539,6 +555,9 @@
             const textInputArea = document.getElementById('text-input-area');
             if (textInputArea && !window.appUtils.isMobile()) {
                 textInputArea.classList.add('hidden');
+            }
+            if (!window.appUtils.isMobile() && typeof window.syncVoiceChatComposerHidden === 'function') {
+                window.syncVoiceChatComposerHidden(true);
             }
 
             if (!S.audioPlayerContext) {
@@ -621,6 +640,9 @@
             if (textInputArea) {
                 textInputArea.classList.remove('hidden');
             }
+            if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                window.syncVoiceChatComposerHidden(false);
+            }
 
             // 失败时移除录音状态类
             if (_mic) {
@@ -690,6 +712,9 @@
         // 显示文本输入区
         const textInputArea = document.getElementById('text-input-area');
         if (textInputArea) textInputArea.classList.remove('hidden');
+        if (typeof window.syncVoiceChatComposerHidden === 'function') {
+            window.syncVoiceChatComposerHidden(false);
+        }
 
         // 停止录音后，重置主动搭话退避级别并开始定时
         if (S.proactiveChatEnabled && typeof window.hasAnyChatModeEnabled === 'function' && window.hasAnyChatModeEnabled()) {
@@ -1052,9 +1077,17 @@
     window.renderFloatingMicList = async function (popupArg) {
         var micPopup = popupArg || document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic') || document.getElementById('mmd-popup-mic');
         if (!micPopup) return false;
+        var popupId = micPopup.id;
+        var isPopupAvailable = function () {
+            if (!micPopup || !micPopup.isConnected) return false;
+            if (popupId && document.getElementById(popupId) !== micPopup) return false;
+            return micPopup.style.display === 'flex' && micPopup.style.opacity !== '0';
+        };
+        if (!isPopupAvailable()) return false;
 
         try {
             var audioInputs = await ensureMicrophonePermission();
+            if (!isPopupAvailable()) return false;
             micPopup.innerHTML = '';
 
             if (audioInputs.length === 0) {
@@ -1064,7 +1097,7 @@
                 noMicItem.style.color = 'var(--neko-popup-text-sub)';
                 noMicItem.style.fontSize = '13px';
                 micPopup.appendChild(noMicItem);
-                return false;
+                return true;
             }
 
             // ===== 双栏布局 =====
@@ -1320,13 +1353,14 @@
             startMicVolumeVisualization();
             return true;
         } catch (error) {
+            if (!isPopupAvailable()) return false;
             console.error('渲染麦克风列表失败:', error);
             micPopup.innerHTML = '';
             var errorItem = document.createElement('div');
             errorItem.textContent = window.t ? window.t('microphone.loadFailed') : '获取麦克风列表失败';
             Object.assign(errorItem.style, { padding: '8px 12px', color: '#dc3545', fontSize: '13px' });
             micPopup.appendChild(errorItem);
-            return false;
+            return true;
         }
     };
 

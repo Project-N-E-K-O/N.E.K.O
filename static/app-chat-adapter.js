@@ -178,16 +178,11 @@
         return S && S.mergeMessagesEnabled;
     }
 
-    // ======================== 结构化文本检测（从 app-chat.js 复刻） ========================
+    // ======================== 结构化文本检测（委托给共享 util） ========================
 
     function looksLikeStructuredRichText(text) {
-        var s = normalizeGeminiText(text || '');
-        return /```[\s\S]*```/.test(s)
-            || /(?:^|\n)```/.test(s)
-            || /\$\$[\s\S]*\$\$/.test(s)
-            || /(?<!\$)\$(?!\$)[^$\n]+(?<!\$)\$(?!\$)/.test(s)
-            || /(?:^|\n)\s{0,3}(?:#{1,6}\s|[-*+]\s|\d+\.\s|>\s)/.test(s)
-            || /(?:^|\n)\|.+\|.+(?:\n|\r\n)\|(?:[-: ]+\|){1,}/.test(s);
+        // 统一复用 app-chat-text-utils.js 里的唯一实现，避免与 DOM 路径分叉。
+        return window.appChatTextUtils.looksLikeStructuredRichText(text);
     }
 
     // ======================== 音乐指令清洗（从 app-chat.js 复刻） ========================
@@ -212,6 +207,58 @@
 
     // ======================== createGeminiBubble（覆盖） ========================
 
+    // ---- host 未就绪时的待重发队列 ----
+    var _pendingHostMessages = [];
+    var _pendingFlushTimer = null;
+
+    function _tryFlushPendingHostMessages() {
+        var host = getHost();
+        if (_pendingHostMessages.length === 0) {
+            // 队列已空，停止重试
+            if (_pendingFlushTimer) { clearInterval(_pendingFlushTimer); _pendingFlushTimer = null; }
+            return;
+        }
+        if (!host || typeof host.appendMessage !== 'function') {
+            // host 尚未就绪，启动轮询重试（200ms 间隔，最多重试 50 次 ≈ 10s）
+            if (!_pendingFlushTimer) {
+                var _retryCount = 0;
+                _pendingFlushTimer = setInterval(function () {
+                    _retryCount++;
+                    if (_retryCount > 50 || _pendingHostMessages.length === 0) {
+                        clearInterval(_pendingFlushTimer); _pendingFlushTimer = null;
+                        return;
+                    }
+                    _tryFlushPendingHostMessages();
+                }, 200);
+            }
+            return;
+        }
+        // host 就绪，flush 全部并停止重试
+        if (_pendingFlushTimer) { clearInterval(_pendingFlushTimer); _pendingFlushTimer = null; }
+        var batch = _pendingHostMessages.splice(0);
+        for (var i = 0; i < batch.length; i++) {
+            try { host.appendMessage(batch[i]); } catch (_) {}
+        }
+    }
+
+    // 供 response_discarded 等外部逻辑按 msgId 清理待发队列
+    function _clearPendingHostMessagesByIds(idsToRemove) {
+        if (!idsToRemove || idsToRemove.length === 0 || _pendingHostMessages.length === 0) return;
+        var idSet = {};
+        for (var i = 0; i < idsToRemove.length; i++) { idSet[idsToRemove[i]] = true; }
+        _pendingHostMessages = _pendingHostMessages.filter(function (m) {
+            return !(m && m.id && idSet[m.id]);
+        });
+    }
+
+    function _resetReactChatSwitchState() {
+        _pendingHostMessages = [];
+        if (_pendingFlushTimer) {
+            clearInterval(_pendingFlushTimer);
+            _pendingFlushTimer = null;
+        }
+    }
+
     function createGeminiBubble(sentence) {
         var host = getHost();
         var cleanSentence = (sentence || '').replace(/\[play_music:[^\]]*(\]|$)/g, '');
@@ -220,7 +267,13 @@
         var msg = buildMessage(msgId, 'assistant', getCurrentAssistantName(), timeStr, cleanSentence, 'streaming');
 
         if (msg && host && typeof host.appendMessage === 'function') {
+            // host 就绪，先重放待发队列，再追加新消息
+            _tryFlushPendingHostMessages();
             host.appendMessage(msg);
+        } else if (msg) {
+            // host 尚未初始化，放入待重发队列而非静默丢弃
+            console.warn('[ChatAdapter] host not ready, queuing message', msgId);
+            _pendingHostMessages.push(msg);
         }
 
         var ref = createVirtualBubbleRef(msgId);
@@ -235,11 +288,6 @@
             window.ensureAssistantTurnStarted('create_gemini_bubble');
         }
 
-        // 字幕检测
-        if (typeof window.checkAndShowSubtitlePrompt === 'function') {
-            window.checkAndShowSubtitlePrompt(cleanSentence);
-        }
-
         return ref;
     }
 
@@ -252,7 +300,14 @@
 
         try {
             while (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
-                if ((window._realisticGeminiVersion || 0) !== queueVersion) break;
+                // 版本变更说明新一轮已开始（isNewMessage），旧队列
+                // 已由 _flushPendingRealisticQueue 同步渲染完毕，此处
+                // 仅需退出，不再处理任何剩余项。
+                if ((window._realisticGeminiVersion || 0) !== queueVersion) {
+                    console.warn('[RealisticQueue] version mismatch (got %d, current %d), exiting loop',
+                        queueVersion, window._realisticGeminiVersion || 0);
+                    break;
+                }
 
                 var now = Date.now();
                 var timeSinceLastBubble = now - (window._lastBubbleTime || 0);
@@ -260,7 +315,11 @@
                     await new Promise(function (resolve) { setTimeout(resolve, 2000 - timeSinceLastBubble); });
                 }
 
-                if ((window._realisticGeminiVersion || 0) !== queueVersion) break;
+                if ((window._realisticGeminiVersion || 0) !== queueVersion) {
+                    console.warn('[RealisticQueue] version changed during sleep (got %d, current %d), exiting',
+                        queueVersion, window._realisticGeminiVersion || 0);
+                    break;
+                }
 
                 var s = window._realisticGeminiQueue.shift();
                 if (s && (window._realisticGeminiVersion || 0) === queueVersion) {
@@ -269,9 +328,16 @@
                 }
             }
         } finally {
-            window._isProcessingRealisticQueue = false;
-            if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
-                processRealisticQueue(window._realisticGeminiVersion || 0);
+            // 如果 lock 还是 true，说明没有任何外部路径（discard / audio-capture）
+            // 接管过 —— 无论 version 是否变化，我们都是当前唯一持有者，必须释放锁，
+            // 否则队列会卡死。
+            // 如果 lock 已经是 false，说明外部路径已经重置锁并可能启动了新 processor，
+            // 我们不能再递归也不能再动锁。
+            if (window._isProcessingRealisticQueue) {
+                window._isProcessingRealisticQueue = false;
+                if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
+                    processRealisticQueue(window._realisticGeminiVersion || 0);
+                }
             }
         }
     }
@@ -329,6 +395,22 @@
         }
     }
 
+    // ======================== _flushPendingRealisticQueue（新增辅助函数） ========================
+    // 同步渲染 realistic 队列中所有待处理句子，并使正在运行的
+    // async processRealisticQueue 循环失效。
+    // 用于 isNewMessage 开始新一轮或模式切换时，确保旧轮句子不被丢弃。
+    function _flushPendingRealisticQueue() {
+        var queue = window._realisticGeminiQueue;
+        if (!Array.isArray(queue) || queue.length === 0) return;
+        // 同步创建所有待排队的 bubble
+        for (var i = 0; i < queue.length; i++) {
+            try { createGeminiBubble(queue[i]); } catch (_) {}
+        }
+        window._realisticGeminiQueue = [];
+        // 重置并发锁，让下次 processRealisticQueue 可以正常启动
+        window._isProcessingRealisticQueue = false;
+    }
+
     // ======================== appendMessage（覆盖核心） ========================
 
     function appendMessage(text, sender, isNewMessage, options) {
@@ -342,15 +424,42 @@
         // 维护"本轮 AI 回复"的完整文本（emotion analysis / subtitle 需要）
         if (sender === 'gemini') {
             if (isNewMessage) {
+                // 修复：新一轮开始前，同步渲染旧队列中所有待处理句子，
+                // 防止 processRealisticQueue 的 async 循环因 version 变更而
+                // 静默丢弃队列中剩余的句子（语音打断时的高频触发场景）。
+                _flushPendingRealisticQueue();
                 window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
                 window._geminiTurnFullText = '';
                 window._pendingMusicCommand = '';
                 window._structuredGeminiStreaming = false;
+                window._turnIsStructured = false;
                 window.currentTurnGeminiBubbles = [];
                 window.currentTurnGeminiAttachments = [];
+                // 提前复位字幕 turn 状态：neko-assistant-turn-start 事件要等
+                // 首个可见气泡创建后才发，而 updateSubtitleStreamingText 在
+                // 首个 chunk 就会被调用，必须在此解锁 isCurrentTurnFinalized
+                // 闸门，否则上一轮结束留下的 true 会把本轮首个 chunk 吞掉。
+                if (typeof window.beginSubtitleTurn === 'function') {
+                    window.beginSubtitleTurn();
+                }
             }
             var prevFull = typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : '';
             window._geminiTurnFullText = prevFull + normalizeGeminiText(text);
+
+            // 常驻字幕流式写入（adapter 是生产常驻路径；PR #777 漏了这段，导致 React
+            // 聊天窗口下字幕只能等 turn_end 才首次出现，视觉上像"一口气显示"）。
+            // 结构化命中时改走 [markdown] 占位，turn_end 跳过翻译。
+            var streamingText = window._geminiTurnFullText.replace(/\[play_music:[^\]]*(\]|$)/g, '');
+            if (!window._turnIsStructured && looksLikeStructuredRichText(streamingText)) {
+                window._turnIsStructured = true;
+            }
+            if (window._turnIsStructured) {
+                if (typeof window.markSubtitleStructured === 'function') {
+                    window.markSubtitleStructured();
+                }
+            } else if (typeof window.updateSubtitleStreamingText === 'function') {
+                window.updateSubtitleStreamingText(streamingText);
+            }
         }
 
         // ---------- gemini + realistic 模式 ----------
@@ -504,12 +613,12 @@
 
     function appendReactUserMessage(payload) {
         var host = getHost();
-        if (!host || typeof host.appendMessage !== 'function') return;
+        if (!host || typeof host.appendMessage !== 'function') return null;
 
         payload = payload || {};
         var text = String(payload.text || '').trim();
         var imageUrls = Array.isArray(payload.imageUrls) ? payload.imageUrls.filter(Boolean) : [];
-        if (!text && imageUrls.length === 0) return;
+        if (!text && imageUrls.length === 0) return null;
 
         var author = getCurrentUserName();
         var blocks = [];
@@ -519,22 +628,23 @@
         }
 
         imageUrls.forEach(function (url, index) {
+            var translatedAlt = window.t ? window.t('chat.pendingImageAlt', { index: index + 1 }) : '';
             blocks.push({
                 type: 'image',
                 url: String(url),
-                alt: (window.t ? window.t('chat.pendingImageAlt', { index: index + 1 }) : '\u56FE\u7247 ' + (index + 1))
+                alt: (typeof translatedAlt === 'string' && translatedAlt ? translatedAlt : '\u56FE\u7247 ' + (index + 1))
             });
         });
 
-        host.appendMessage({
-            id: nextReactMessageId('user'),
+        return host.appendMessage({
+            id: payload.id ? String(payload.id) : nextReactMessageId('user'),
             role: 'user',
             author: author,
-            time: getCurrentTimeString(),
+            time: payload.time ? String(payload.time) : getCurrentTimeString(),
             createdAt: Date.now(),
             avatarLabel: String(author).trim().slice(0, 1).toUpperCase(),
             blocks: blocks,
-            status: 'sent'
+            status: payload.status ? String(payload.status) : 'sent'
         });
     }
 
@@ -558,6 +668,9 @@
     window.createGeminiBubble = createGeminiBubble;
     window.processRealisticQueue = processRealisticQueue;
     window.setReactMessageStatus = setReactMessageStatus;
+    window._tryFlushPendingHostMessages = _tryFlushPendingHostMessages;
+    window._clearPendingHostMessagesByIds = _clearPendingHostMessagesByIds;
+    window._resetReactChatSwitchState = _resetReactChatSwitchState;
 
     // 覆盖 appChat 上的方法
     if (window.appChat) {
@@ -571,6 +684,12 @@
     // 头像更新事件
     window.addEventListener('chat-avatar-preview-updated', refreshReactAssistantAvatars);
     window.addEventListener('chat-avatar-preview-cleared', refreshReactAssistantAvatars);
+
+    // init() 的 chat-avatar-preview-updated 事件可能在本脚本或 reactChatWindowHost 就绪前触发，
+    // 延迟到所有同步脚本加载完成后主动刷新一次
+    setTimeout(refreshReactAssistantAvatars, 0);
+    // 同时尝试重放 host 未就绪期间缓存的消息
+    setTimeout(_tryFlushPendingHostMessages, 0);
 
     // ======================== 隐藏旧 chat container ========================
 

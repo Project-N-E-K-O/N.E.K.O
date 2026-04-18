@@ -155,6 +155,13 @@ async def get_jukebox_page(request: Request):
     return templates.TemplateResponse("templates/jukebox.html", {"request": request})
 
 
+@router.get("/jukebox/manager", response_class=HTMLResponse)
+async def get_jukebox_manager_page(request: Request):
+    """Jukebox 管理器独立窗口页面 (从点歌台打开)"""
+    templates = get_templates()
+    return templates.TemplateResponse("templates/jukebox_manager.html", {"request": request})
+
+
 @router.get("/toast", response_class=HTMLResponse)
 async def get_toast_page(request: Request):
     """Toast 通知独立窗口页面（Electron 加载）"""

@@ -16,13 +16,15 @@
     'use strict';
 
     var MAX_EXPORT_SELECTION = 100;
+    var DEFAULT_USER_EXPORT_AVATAR = '/static/icons/avatar/master-avatar.png';
 
     // ======================== State ========================
 
     var state = {
         isPreparingPreview: false,
         isExporting: false,
-        exportFormat: 'markdown',
+        isCopying: false,
+        exportFormat: 'image',
         imageExportFormat: 'png',
         imageExportStyle: 'neko',
         selectedIds: null,          // Set<string> of ChatMessage.id
@@ -277,6 +279,14 @@
         var author = message.author ? String(message.author) : '';
         var time = message.time ? String(message.time) : '';
         var header = [author, time].filter(Boolean).join(' · ');
+        var avatarUrl = message.avatarUrl ? String(message.avatarUrl) : '';
+        if (!avatarUrl && message.role === 'user') {
+            avatarUrl = DEFAULT_USER_EXPORT_AVATAR;
+        }
+        var avatarLabel = message.avatarLabel ? String(message.avatarLabel) : '';
+        if (!avatarLabel) {
+            avatarLabel = (author || role || '?').trim().slice(0, 2).toUpperCase();
+        }
         return {
             id: String(message.id),
             role: role,
@@ -284,6 +294,8 @@
             time: time,
             header: header,
             rawRole: message.role,
+            avatarUrl: avatarUrl,
+            avatarLabel: avatarLabel,
             textContent: extractBlocksPlainText(message.blocks),
             markdownContent: blocksToMarkdown(message.blocks),
             mediaDescriptors: collectImageDescriptors(message.blocks),
@@ -543,6 +555,19 @@
             var mediaList = entry.mediaDescriptors || [];
             var imageDescriptors = [];
             var promises = [];
+            var avatarPromise = null;
+            if (entry.avatarUrl) {
+                avatarPromise = cache.get('avatar:' + entry.avatarUrl);
+                if (!avatarPromise) {
+                    avatarPromise = inlineImageSourceToDataUrl(entry.avatarUrl)
+                        .then(loadImageElement)
+                        .catch(function (error) {
+                            logExportError('resolveImageEntryAvatar', error);
+                            return null;
+                        });
+                    cache.set('avatar:' + entry.avatarUrl, avatarPromise);
+                }
+            }
             for (var j = 0; j < mediaList.length; j += 1) {
                 var descriptor = mediaList[j];
                 if (!descriptor || descriptor.type !== 'image') continue;
@@ -573,12 +598,15 @@
                     });
                 }
             }
+            var avatarImage = avatarPromise ? await avatarPromise : null;
             resolved.push({
                 id: entry.id,
                 role: entry.role,
                 author: entry.author,
                 time: entry.time,
                 rawRole: entry.rawRole,
+                avatarLabel: entry.avatarLabel,
+                avatarImage: avatarImage,
                 textContent: entry.textContent,
                 media: loaded
             });
@@ -621,6 +649,19 @@
         return y + lines.length * lineHeight;
     }
 
+    function drawWrappedTextAligned(ctx, lines, x, y, lineHeight, align, maxWidth) {
+        var resolvedAlign = align === 'right' ? 'right' : 'left';
+        var width = Number.isFinite(maxWidth) ? maxWidth : 0;
+        lines.forEach(function (line, index) {
+            var drawX = x;
+            if (resolvedAlign === 'right' && width > 0) {
+                drawX = x + width - ctx.measureText(line).width;
+            }
+            ctx.fillText(line, drawX, y + index * lineHeight);
+        });
+        return y + lines.length * lineHeight;
+    }
+
     function drawRoundedRect(ctx, x, y, width, height, radius) {
         var r = Math.max(0, Math.min(radius, Math.min(width, height) / 2));
         ctx.beginPath();
@@ -649,6 +690,52 @@
         return { width: Math.round(w), height: Math.round(h) };
     }
 
+    function drawAvatarCircle(ctx, x, y, size, options) {
+        options = options || {};
+        var radius = size / 2;
+        var image = options.image || null;
+        var label = String(options.label || '?').trim().slice(0, 2) || '?';
+        var background = options.background || '#e5e7eb';
+        var textColor = options.textColor || '#111827';
+        var borderColor = options.borderColor || 'rgba(255,255,255,0.4)';
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(x + radius, y + radius, radius, 0, Math.PI * 2);
+        ctx.closePath();
+        ctx.clip();
+        if (image) {
+            try {
+                ctx.drawImage(image, x, y, size, size);
+            } catch (_) {
+                ctx.fillStyle = background;
+                ctx.fillRect(x, y, size, size);
+            }
+        } else {
+            ctx.fillStyle = background;
+            ctx.fillRect(x, y, size, size);
+        }
+        ctx.restore();
+
+        ctx.save();
+        ctx.strokeStyle = borderColor;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(x + radius, y + radius, Math.max(0, radius - 0.75), 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+
+        if (!image) {
+            ctx.save();
+            ctx.font = '700 ' + Math.max(12, Math.floor(size * 0.38)) + 'px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
+            ctx.fillStyle = textColor;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(label, x + radius, y + radius + 1);
+            ctx.restore();
+        }
+    }
+
     // ======================== Image export — 4 styles ========================
     //
     // Each renderer takes `resolvedEntries` (the output of resolveImageEntryMedia)
@@ -672,13 +759,20 @@
     function getPosterTheme() {
         var dark = isDarkTheme();
         return {
-            gradientTop: dark ? '#1e1b4b' : '#fde68a',
-            gradientMid: dark ? '#312e81' : '#fca5a5',
-            gradientBot: dark ? '#4c1d95' : '#f472b6',
-            card:       dark ? 'rgba(15,23,42,0.85)' : 'rgba(255,255,255,0.92)',
+            gradientTop: dark ? '#1e1b4b' : '#fff3bf',
+            gradientMid: dark ? '#312e81' : '#ffd6e7',
+            gradientBot: dark ? '#4c1d95' : '#ffb4d4',
             textPrimary: dark ? '#fff8e7' : '#1f2937',
-            textSecondary: dark ? '#e5e7eb' : '#4b5563',
-            accent:     dark ? '#facc15' : '#db2777'
+            textSecondary: dark ? '#e5e7eb' : '#5b6472',
+            headerAccent: dark ? '#f9a8d4' : '#db2777',
+            assistantCard: dark ? 'rgba(50,22,45,0.82)' : 'rgba(255,247,251,0.95)',
+            assistantBorder: dark ? 'rgba(244,114,182,0.34)' : 'rgba(236,72,153,0.30)',
+            assistantText: dark ? '#ffb3d1' : '#be185d',
+            assistantMeta: dark ? 'rgba(255,205,226,0.84)' : '#be5b8f',
+            userCard: dark ? 'rgba(64,50,18,0.82)' : 'rgba(255,251,235,0.95)',
+            userBorder: dark ? 'rgba(250,204,21,0.30)' : 'rgba(245,158,11,0.32)',
+            userText: dark ? '#ffe082' : '#9a6700',
+            userMeta: dark ? 'rgba(255,234,158,0.82)' : '#a67c12'
         };
     }
 
@@ -724,11 +818,15 @@
         ctx.font = bodyFont;
         var segments = [];
         var height = 0;
+        var widthUsed = 0;
 
         if (entry.textContent) {
             var lines = wrapTextLines(ctx, entry.textContent, maxWidth);
             segments.push({ kind: 'text', lines: lines, lineHeight: bodyLineHeight });
             height += lines.length * bodyLineHeight;
+            lines.forEach(function (line) {
+                widthUsed = Math.max(widthUsed, ctx.measureText(line).width);
+            });
         }
 
         if (includeImages && entry.media && entry.media.length > 0) {
@@ -737,35 +835,45 @@
                     var size = fitImageToWidth(item.image, maxWidth, maxImageHeight || 240);
                     segments.push({ kind: 'image', width: size.width, height: size.height, image: item.image });
                     height += size.height + 8;
+                    widthUsed = Math.max(widthUsed, size.width);
                 } else if (item.type === 'note' && item.text) {
                     var noteLines = wrapTextLines(ctx, item.text, maxWidth);
                     segments.push({ kind: 'note', lines: noteLines, lineHeight: bodyLineHeight });
                     height += noteLines.length * bodyLineHeight + 4;
+                    noteLines.forEach(function (line) {
+                        widthUsed = Math.max(widthUsed, ctx.measureText(line).width);
+                    });
                 }
             });
         }
 
-        return { segments: segments, height: height };
+        return { segments: segments, height: height, width: Math.ceil(widthUsed) };
     }
 
     function drawSegments(ctx, segments, x, y, options) {
         options = options || {};
         var noteColor = options.noteColor;
+        var textAlign = options.align === 'right' ? 'right' : 'left';
+        var maxWidth = Number.isFinite(options.maxWidth) ? options.maxWidth : 0;
         segments.forEach(function (segment) {
             if (segment.kind === 'text') {
-                y = drawWrappedText(ctx, segment.lines, x, y, segment.lineHeight);
+                y = drawWrappedTextAligned(ctx, segment.lines, x, y, segment.lineHeight, textAlign, maxWidth);
             } else if (segment.kind === 'image') {
-                try { ctx.drawImage(segment.image, x, y, segment.width, segment.height); }
+                var imageX = x;
+                if (textAlign === 'right' && maxWidth > 0) {
+                    imageX = x + Math.max(0, maxWidth - segment.width);
+                }
+                try { ctx.drawImage(segment.image, imageX, y, segment.width, segment.height); }
                 catch (_) { /* draw failed, skip */ }
                 y += segment.height + 8;
             } else if (segment.kind === 'note') {
                 if (noteColor) {
                     var prev = ctx.fillStyle;
                     ctx.fillStyle = noteColor;
-                    y = drawWrappedText(ctx, segment.lines, x, y, segment.lineHeight) + 4;
+                    y = drawWrappedTextAligned(ctx, segment.lines, x, y, segment.lineHeight, textAlign, maxWidth) + 4;
                     ctx.fillStyle = prev;
                 } else {
-                    y = drawWrappedText(ctx, segment.lines, x, y, segment.lineHeight) + 4;
+                    y = drawWrappedTextAligned(ctx, segment.lines, x, y, segment.lineHeight, textAlign, maxWidth) + 4;
                 }
             }
         });
@@ -1034,10 +1142,10 @@
     async function renderPosterStyleCanvas(resolvedEntries, now) {
         var theme = getPosterTheme();
         var scale = 2;
-        var width = 900;
-        var padding = 60;
-        var heroHeight = 220;
-        var cardPadding = 26;
+        var width = 760;
+        var padding = 42;
+        var heroHeight = 200;
+        var cardPadding = 22;
         var cardGap = 18;
         var titleFont = '800 42px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
         var kickerFont = '700 14px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
@@ -1045,19 +1153,73 @@
         var bodyFont = '500 17px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
         var metaFont = '500 12px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
         var bodyLineHeight = 28;
-        var cardMaxBodyWidth = width - padding * 2 - cardPadding * 2;
+        var avatarSize = 34;
+        var avatarGap = 12;
+        var maxTrackWidth = width - padding * 2;
+        var cardMaxWidth = Math.floor(maxTrackWidth * 0.82);
+        var cardMinWidth = 200;
+        var cardInnerMaxWidth = cardMaxWidth - cardPadding * 2;
+        var contentMaxWidth = Math.floor(cardInnerMaxWidth * 0.88);
+        var overlapDepth = 28;
 
         var measureCanvas = document.createElement('canvas');
         var measureCtx = measureCanvas.getContext('2d');
         var measured = resolvedEntries.map(function (entry) {
             measureCtx.font = bodyFont;
-            var body = measureEntryBody(measureCtx, entry, bodyFont, bodyLineHeight, cardMaxBodyWidth, true, 260);
+            var body = measureEntryBody(measureCtx, entry, bodyFont, bodyLineHeight, contentMaxWidth, true, 240);
+            measureCtx.font = authorFont;
+            var authorWidth = measureCtx.measureText(entry.author || entry.role || '').width;
+            measureCtx.font = metaFont;
+            var metaWidth = measureCtx.measureText([entry.role, entry.time].filter(Boolean).join(' · ')).width;
+            var headerTextWidth = Math.max(authorWidth, metaWidth);
+            var bodyWidth = Math.max(0, body.width || 0);
+            var headerWidth = avatarSize + avatarGap + headerTextWidth;
+            var innerWidth = Math.max(bodyWidth, headerWidth);
+            var cardWidth = Math.max(cardMinWidth, Math.min(cardMaxWidth, Math.ceil(innerWidth + cardPadding * 2)));
             var cardHeight = cardPadding * 2 + 30 + 6 + body.height;
-            return { entry: entry, body: body, cardHeight: cardHeight };
+            return { entry: entry, body: body, cardHeight: cardHeight, cardWidth: cardWidth };
         });
-        var cardsHeight = measured.reduce(function (sum, m) { return sum + m.cardHeight + cardGap; }, 0);
+        var layouts = [];
+        var cursorY = heroHeight;
+        var maxBottom = heroHeight;
+        measured.forEach(function (m, index) {
+            var isUser = m.entry.rawRole === 'user';
+            var cardX = isUser
+                ? (padding + maxTrackWidth - m.cardWidth)
+                : padding;
+            var cardY = cursorY;
+            if (index > 0) {
+                var prev = layouts[index - 1];
+                if (prev && prev.isUser !== isUser) {
+                    var overlap = Math.min(overlapDepth, Math.floor(Math.min(prev.cardH, m.cardHeight) * 0.24));
+                    cardY = Math.max(heroHeight, cardY - overlap);
+                }
+            }
+            var layout = {
+                entry: m.entry,
+                body: m.body,
+                isUser: isUser,
+                cardX: cardX,
+                cardY: cardY,
+                cardW: m.cardWidth,
+                cardH: m.cardHeight
+            };
+            layouts.push(layout);
+            cursorY = cardY + m.cardHeight + cardGap;
+            maxBottom = Math.max(maxBottom, cardY + m.cardHeight);
+        });
+        var decorIcons = await Promise.all([
+            loadImageElement('/static/icons/paw_ui.png', 4000).catch(function () { return null; }),
+            loadImageElement('/static/icons/chat_bubble.png', 4000).catch(function () { return null; }),
+            loadImageElement('/static/icons/star.png', 4000).catch(function () { return null; }),
+            loadImageElement('/static/icons/cat_icon.png', 4000).catch(function () { return null; })
+        ]);
+        var pawIcon = decorIcons[0];
+        var bubbleIcon = decorIcons[1];
+        var starIcon = decorIcons[2];
+        var catIcon = decorIcons[3];
         var footerBlock = 50;
-        var totalHeight = heroHeight + cardsHeight + padding + footerBlock;
+        var totalHeight = maxBottom + padding + footerBlock;
 
         var canvas = document.createElement('canvas');
         canvas.width = width * scale;
@@ -1077,7 +1239,7 @@
 
         // hero area
         ctx.font = kickerFont;
-        ctx.fillStyle = theme.accent;
+        ctx.fillStyle = theme.headerAccent;
         ctx.textBaseline = 'top';
         ctx.fillText(
             translateLabel('chat.exportPosterSubtitle', 'Shared from N.E.K.O').toUpperCase(),
@@ -1089,56 +1251,120 @@
         var titleLines = wrapTextLines(ctx, title, width - padding * 2);
         drawWrappedText(ctx, titleLines, padding, padding + 30, 48);
 
+        if (pawIcon) {
+            ctx.save();
+            ctx.globalAlpha = 0.95;
+            ctx.drawImage(pawIcon, padding + 250, padding - 6, 28, 28);
+            ctx.restore();
+        }
+        if (starIcon) {
+            ctx.save();
+            ctx.globalAlpha = 0.82;
+            ctx.drawImage(starIcon, padding + 292, padding + 18, 18, 18);
+            ctx.restore();
+        }
+        if (bubbleIcon) {
+            ctx.save();
+            ctx.globalAlpha = 0.18;
+            ctx.drawImage(bubbleIcon, width - padding - 88, padding + 6, 52, 52);
+            ctx.restore();
+        }
+        if (catIcon) {
+            ctx.save();
+            ctx.globalAlpha = 0.16;
+            ctx.drawImage(catIcon, width - padding - 132, padding + 56, 78, 78);
+            ctx.restore();
+        }
+
         ctx.font = '500 14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif';
         ctx.fillStyle = theme.textSecondary;
         ctx.fillText(buildDisplayTimestamp(now), padding, padding + 30 + titleLines.length * 48 + 4);
 
         // cards
-        var y = heroHeight;
-        measured.forEach(function (m) {
-            var entry = m.entry;
-            var cardX = padding;
-            var cardY = y;
-            var cardW = width - padding * 2;
-            var cardH = m.cardHeight;
+        layouts.forEach(function (layout) {
+            var entry = layout.entry;
+            var isUser = layout.isUser;
+            var cardX = layout.cardX;
+            var cardY = layout.cardY;
+            var cardW = layout.cardW;
+            var cardH = layout.cardH;
+            var maxInnerWidth = Math.max(0, cardW - cardPadding * 2);
+            var textMaxWidth = Math.max(64, Math.min(Math.max(0, layout.body.width || 0), maxInnerWidth));
+            if (!layout.body.width) {
+                textMaxWidth = maxInnerWidth;
+            }
+            var textX = isUser
+                ? (cardX + cardW - cardPadding - textMaxWidth)
+                : (cardX + cardPadding);
+            var avatarX = isUser
+                ? (cardX + cardW - cardPadding - avatarSize)
+                : textX;
+            var avatarY = cardY + cardPadding - 2;
+            var authorAnchorX = isUser
+                ? (avatarX - avatarGap)
+                : (avatarX + avatarSize + avatarGap);
 
             ctx.save();
             ctx.shadowColor = 'rgba(0,0,0,0.15)';
             ctx.shadowBlur = 18;
             ctx.shadowOffsetY = 6;
-            ctx.fillStyle = theme.card;
+            ctx.fillStyle = isUser ? theme.userCard : theme.assistantCard;
             drawRoundedRect(ctx, cardX, cardY, cardW, cardH, 16);
             ctx.fill();
             ctx.restore();
+            ctx.strokeStyle = isUser ? theme.userBorder : theme.assistantBorder;
+            ctx.lineWidth = 1;
+            drawRoundedRect(ctx, cardX + 0.5, cardY + 0.5, cardW - 1, cardH - 1, 16);
+            ctx.stroke();
+
+            drawAvatarCircle(ctx, avatarX, avatarY, avatarSize, {
+                image: layout.entry.avatarImage,
+                label: layout.entry.avatarLabel || layout.entry.author || layout.entry.role,
+                background: isUser ? 'rgba(255,232,163,0.95)' : 'rgba(255,210,228,0.95)',
+                textColor: isUser ? '#8a5a00' : '#9f1853',
+                borderColor: isUser ? theme.userBorder : theme.assistantBorder
+            });
 
             // author
             ctx.font = authorFont;
-            ctx.fillStyle = theme.accent;
-            ctx.fillText(entry.author || entry.role || '', cardX + cardPadding, cardY + cardPadding);
+            ctx.fillStyle = isUser ? theme.userText : theme.assistantText;
+            ctx.textAlign = isUser ? 'right' : 'left';
+            ctx.fillText(
+                entry.author || entry.role || '',
+                authorAnchorX,
+                cardY + cardPadding
+            );
 
             // meta
             ctx.font = metaFont;
-            ctx.fillStyle = theme.textSecondary;
-            ctx.fillText([entry.role, entry.time].filter(Boolean).join(' · '),
-                cardX + cardPadding, cardY + cardPadding + 20);
+            ctx.fillStyle = isUser ? theme.userMeta : theme.assistantMeta;
+            ctx.textAlign = isUser ? 'right' : 'left';
+            ctx.fillText(
+                [entry.role, entry.time].filter(Boolean).join(' · '),
+                authorAnchorX,
+                cardY + cardPadding + 20
+            );
 
             // body
             ctx.font = bodyFont;
-            ctx.fillStyle = theme.textPrimary;
+            ctx.fillStyle = isUser ? theme.userText : theme.assistantText;
+            ctx.textAlign = 'left';
             drawSegments(
                 ctx,
-                m.body.segments,
-                cardX + cardPadding,
+                layout.body.segments,
+                textX,
                 cardY + cardPadding + 40,
-                { noteColor: theme.textSecondary }
+                {
+                    noteColor: isUser ? theme.userMeta : theme.assistantMeta,
+                    align: isUser ? 'right' : 'left',
+                    maxWidth: textMaxWidth
+                }
             );
-
-            y += cardH + cardGap;
         });
 
         // footer
         ctx.font = '700 12px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif';
-        ctx.fillStyle = theme.accent;
+        ctx.fillStyle = theme.headerAccent;
         ctx.textAlign = 'center';
         ctx.fillText('N.E.K.O.', width / 2, totalHeight - 34);
         ctx.textAlign = 'start';
@@ -1405,6 +1631,43 @@
         }
     }
 
+    async function copyImageToClipboard(blob) {
+        if (!navigator.clipboard || typeof navigator.clipboard.write !== 'function') {
+            return false;
+        }
+        try {
+            var pngBlob = blob;
+            if (blob.type !== 'image/png') {
+                // Clipboard API requires image/png — convert via canvas round-trip
+                var img = new Image();
+                var loaded = new Promise(function (resolve, reject) {
+                    img.onload = resolve;
+                    img.onerror = reject;
+                });
+                var blobUrl = URL.createObjectURL(blob);
+                try {
+                    img.src = blobUrl;
+                    await loaded;
+                    var cvs = document.createElement('canvas');
+                    cvs.width = img.naturalWidth;
+                    cvs.height = img.naturalHeight;
+                    cvs.getContext('2d').drawImage(img, 0, 0);
+                    pngBlob = await new Promise(function (resolve, reject) {
+                        cvs.toBlob(function (b) { b ? resolve(b) : reject(new Error('toBlob failed')); }, 'image/png');
+                    });
+                } finally {
+                    URL.revokeObjectURL(blobUrl);
+                }
+            }
+            await navigator.clipboard.write([
+                new ClipboardItem({ 'image/png': pngBlob })
+            ]);
+            return true;
+        } catch (_) {
+            return false;
+        }
+    }
+
     // ======================== Preview cache ========================
 
     function buildPreviewCacheKey(entries, formatId) {
@@ -1593,7 +1856,7 @@
         var copyButton = document.createElement('button');
         copyButton.type = 'button';
         copyButton.className = 'chat-export-preview-action chat-export-preview-action-copy';
-        copyButton.textContent = translateLabel('chat.copyMarkdown', 'Copy Markdown');
+        copyButton.textContent = translateLabel('chat.copyToClipboard', 'Copy to Clipboard');
 
         var openWindowButton = document.createElement('button');
         openWindowButton.type = 'button';
@@ -1702,7 +1965,7 @@
             selectAllButton.textContent = translateLabel('chat.exportSelectAll', 'Select All');
             selectNoneButton.textContent = translateLabel('chat.exportSelectNone', 'Clear');
             selectInvertButton.textContent = translateLabel('chat.exportSelectInvert', 'Invert');
-            copyButton.textContent = translateLabel('chat.copyMarkdown', 'Copy Markdown');
+            copyButton.textContent = translateLabel('chat.copyToClipboard', 'Copy to Clipboard');
             openWindowButton.textContent = translateLabel('chat.previewOpenWindow', 'Open In Window');
         };
         window.addEventListener('localechange', localeHandler);
@@ -1860,9 +2123,9 @@
             modal.imageOptions.appendChild(formatGroup2);
         }
 
-        // update copy button enabled state
-        modal.copyButton.disabled = state.exportFormat !== 'markdown';
-        modal.copyButton.textContent = translateLabel('chat.copyMarkdown', 'Copy Markdown');
+        // update copy button label based on format
+        modal.copyButton.disabled = state.isCopying;
+        modal.copyButton.textContent = translateLabel('chat.copyToClipboard', 'Copy to Clipboard');
 
         // update download button label
         var currentFormat = getCurrentExportFormat();
@@ -1953,7 +2216,7 @@
                 modal.selectAllButton.textContent = translateLabel('chat.exportSelectAll', 'Select All');
                 modal.selectNoneButton.textContent = translateLabel('chat.exportSelectNone', 'Clear');
                 modal.selectInvertButton.textContent = translateLabel('chat.exportSelectInvert', 'Invert');
-                modal.copyButton.textContent = translateLabel('chat.copyMarkdown', 'Copy Markdown');
+                modal.copyButton.textContent = translateLabel('chat.copyToClipboard', 'Copy to Clipboard');
                 modal.openWindowButton.textContent = translateLabel('chat.previewOpenWindow', 'Open In Window');
             };
             window.addEventListener('localechange', localeHandler);
@@ -2029,20 +2292,38 @@
     }
 
     async function handleCopyClick() {
-        if (state.exportFormat !== 'markdown') return;
+        if (state.isCopying) return;
         var entries = getSelectedEntries();
         if (entries.length === 0) {
             showToast('chat.exportSelectionEmpty', 'Select at least one message to export.');
             return;
         }
+        state.isCopying = true;
+        var modal = state.previewModal;
+        if (modal) modal.copyButton.disabled = true;
         try {
-            var payload = await getOrBuildPreviewPayload(entries, 'markdown');
-            var ok = await copyTextToClipboard(payload.exportData.content);
-            if (ok) showToast('chat.copyMarkdownSuccess', 'Markdown copied to clipboard.');
-            else showToast('chat.copyMarkdownFailed', 'Failed to copy Markdown.', 4000);
+            if (state.exportFormat === 'image') {
+                var imgPayload = await getOrBuildPreviewPayload(entries, 'image');
+                var imgBlob = imgPayload.exportData.previewBlob || imgPayload.exportData.content;
+                var imgOk = await copyImageToClipboard(imgBlob);
+                if (imgOk) showToast('chat.copyImageSuccess', 'Image copied to clipboard.');
+                else showToast('chat.copyImageFailed', 'Failed to copy image to clipboard.', 4000);
+            } else {
+                var mdPayload = await getOrBuildPreviewPayload(entries, 'markdown');
+                var mdOk = await copyTextToClipboard(mdPayload.exportData.content);
+                if (mdOk) showToast('chat.copyMarkdownSuccess', 'Markdown copied to clipboard.');
+                else showToast('chat.copyMarkdownFailed', 'Failed to copy Markdown.', 4000);
+            }
         } catch (error) {
             logExportError('handleCopyClick', error);
-            showToast('chat.copyMarkdownFailed', 'Failed to copy Markdown.', 4000);
+            if (state.exportFormat === 'image') {
+                showToast('chat.copyImageFailed', 'Failed to copy image to clipboard.', 4000);
+            } else {
+                showToast('chat.copyMarkdownFailed', 'Failed to copy Markdown.', 4000);
+            }
+        } finally {
+            state.isCopying = false;
+            if (modal) modal.copyButton.disabled = false;
         }
     }
 

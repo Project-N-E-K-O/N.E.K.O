@@ -23,11 +23,13 @@
     var minimized = false;
     var savedShellSize = null;
     var savedShellPosition = null; // {left, top} before minimize – used to fly back on expand
+    var _sortKeySeq = 0; // monotonically increasing sortKey counter
 
     var state = {
         viewProps: null,
         messages: [],
         composerAttachments: [],
+        composerHidden: false,
         onMessageAction: null,
         onComposerImportImage: null,
         onComposerScreenshot: null,
@@ -35,11 +37,20 @@
         onComposerSubmit: null
     };
 
+    var MOBILE_MAX_HEIGHT_RATIO = 0.5;
+    var MOBILE_MESSAGE_MIN_HEIGHT = 60;
+    var mobileLayoutFrame = 0;
+
     function $(id) {
         return document.getElementById(id);
     }
 
     function isMobileWidth() {
+        // chat.html 是 Electron 独立窗口，始终按 PC 行为处理（即使用户把窗口拖窄到 <768px），
+        // 通过 <body class="electron-chat-window"> 从"手机端布局"中排除。
+        if (document.body && document.body.classList.contains('electron-chat-window')) {
+            return false;
+        }
         return window.innerWidth <= 768;
     }
 
@@ -65,6 +76,77 @@
 
     function getRoot() {
         return $('react-chat-window-root');
+    }
+
+    function clearMobileContentCap() {
+        var shell = getShell();
+        if (!shell) return;
+
+        shell.classList.remove('is-mobile-content-capped');
+        if (shell.dataset.mobileAutoHeight === 'true') {
+            shell.style.removeProperty('height');
+            delete shell.dataset.mobileAutoHeight;
+        }
+    }
+
+    function resetMobileContentLayoutState(shell, topbar, composer, messageList) {
+        [topbar, composer, messageList].forEach(function (element) {
+            if (!element) return;
+            element.style.removeProperty('height');
+            if (element.dataset && element.dataset.mobileAutoHeight) {
+                delete element.dataset.mobileAutoHeight;
+            }
+        });
+
+        if (!shell) return;
+
+        shell.classList.remove('is-mobile-content-capped');
+        shell.style.removeProperty('height');
+        if (shell.dataset.mobileAutoHeight) {
+            delete shell.dataset.mobileAutoHeight;
+        }
+    }
+
+    function syncMobileContentLayout() {
+        var overlay = getOverlay();
+        var shell = getShell();
+        var root = getRoot();
+        if (!overlay || overlay.hidden || !shell || !root || minimized || !isMobileWidth()) {
+            clearMobileContentCap();
+            return;
+        }
+
+        var topbar = root.querySelector('.window-topbar');
+        var composer = root.querySelector('.composer-panel');
+        var messageList = root.querySelector('.message-list');
+        if (!topbar || !composer || !messageList) {
+            resetMobileContentLayoutState(shell, topbar, composer, messageList);
+            return;
+        }
+
+        var maxHeight = Math.max(0, Math.floor(window.innerHeight * MOBILE_MAX_HEIGHT_RATIO));
+        if (!maxHeight) return;
+
+        var desiredMessageHeight = Math.max(MOBILE_MESSAGE_MIN_HEIGHT, messageList.scrollHeight);
+        var desiredHeight = Math.ceil(
+            topbar.getBoundingClientRect().height
+            + composer.getBoundingClientRect().height
+            + desiredMessageHeight
+        );
+        var nextHeight = Math.min(maxHeight, desiredHeight);
+
+        shell.style.height = nextHeight + 'px';
+        shell.dataset.mobileAutoHeight = 'true';
+        shell.classList.toggle('is-mobile-content-capped', desiredHeight > maxHeight);
+    }
+
+    function scheduleMobileContentLayout() {
+        if (mobileLayoutFrame) return;
+
+        mobileLayoutFrame = window.requestAnimationFrame(function () {
+            mobileLayoutFrame = 0;
+            syncMobileContentLayout();
+        });
     }
 
     function getI18nText(key, fallback) {
@@ -282,6 +364,7 @@
         return Object.assign({}, ensureViewProps(), {
             messages: state.messages,
             composerAttachments: state.composerAttachments,
+            composerHidden: state.composerHidden,
             onMessageAction: handleMessageAction,
             onComposerImportImage: handleComposerImportImage,
             onComposerScreenshot: handleComposerScreenshot,
@@ -465,7 +548,10 @@
             shell.style.removeProperty('left');
             shell.style.removeProperty('top');
             shell.style.removeProperty('width');
-            shell.style.removeProperty('height');
+            // 不清 height：清掉会让 shell 瞬间回到 CSS 的 `height:auto;max-height:50vh`，
+            // grid `auto 1fr auto` 父容器塌缩会把 .message-list 的 clientHeight 挤到几十 px，
+            // 浏览器 clamp scrollTop → 0，下一帧 syncMobileContentLayout() 恢复 height 时已经来不及。
+            // 保留旧像素值，让紧随其后的 syncMobileContentLayout() 直接覆写，避免中间态。
             shell.style.removeProperty('transform');
             return;
         }
@@ -497,6 +583,7 @@
         var overlay = getOverlay();
         if (!overlay || overlay.hidden) return;
         mountWindow();
+        scheduleMobileContentLayout();
     }
 
     function dispatchHostEvent(name, detail) {
@@ -689,13 +776,15 @@
 
     function handleAvatarGeneratorClick() {
         try {
-            // Prefer legacy button if it exists (index.html); absent in chat.html
-            var legacyBtn = document.getElementById('avatarPreviewButton');
-            if (legacyBtn) {
-                legacyBtn.click();
+            // 统一走独立头像预览弹窗；弹窗模块自行处理缓存与 IPC 回退。
+            if (window.appChatAvatar && typeof window.appChatAvatar.showPopup === 'function') {
+                var anchor = document.getElementById('avatarPreviewHeaderButton')
+                    || document.getElementById('avatarPreviewButton')
+                    || null;
+                window.appChatAvatar.showPopup(anchor);
                 return;
             }
-            // React-first mode or standalone chat window — capture directly
+            // 极端兜底：弹窗模块加载失败时仍保持原有直采逻辑。
             captureAvatarDirect();
         } finally {
             dispatchHostEvent('avatar-generator-click', {});
@@ -742,14 +831,32 @@
     }
 
     function setMessages(messages) {
+        // Compute fallback start past any explicit sortKey in incoming batch
+        var maxIncomingSortKey = Array.isArray(messages)
+            ? messages.reduce(function (max, message) {
+                var key = message && typeof message.sortKey === 'number' && Number.isFinite(message.sortKey)
+                    ? message.sortKey : null;
+                return (key !== null && key > max) ? key : max;
+            }, -1)
+            : -1;
+        var nextSortKey = Math.max(_sortKeySeq, maxIncomingSortKey + 1);
         var normalized = Array.isArray(messages)
-            ? messages.map(function (message, index) {
-                return normalizeMessage(message, index);
+            ? messages.map(function (message) {
+                return normalizeMessage(message, nextSortKey++);
             }).filter(Boolean)
             : [];
         state.messages = sortMessages(normalized);
+        _sortKeySeq = nextSortKey;
+        if (state.messages.length > MAX_MESSAGES) {
+            state.messages = state.messages.slice(-MAX_MESSAGES);
+        }
         renderWindow();
         return state.messages;
+    }
+
+    function setComposerHidden(hidden) {
+        state.composerHidden = !!hidden;
+        renderWindow();
     }
 
     function setComposerAttachments(attachments) {
@@ -767,11 +874,16 @@
         return state.composerAttachments;
     }
 
+    var MAX_MESSAGES = 50;
+
     function appendMessage(message) {
-        var normalized = normalizeMessage(message, state.messages.length);
+        var normalized = normalizeMessage(message, _sortKeySeq++);
         if (!normalized) return null;
 
         state.messages = sortMessages(state.messages.concat([normalized]));
+        if (state.messages.length > MAX_MESSAGES) {
+            state.messages = state.messages.slice(-MAX_MESSAGES);
+        }
         renderWindow();
         return normalized;
     }
@@ -804,6 +916,7 @@
 
     function clearMessages() {
         state.messages = [];
+        _sortKeySeq = 0;
         renderWindow();
     }
 
@@ -813,13 +926,45 @@
             minimized: minimized,
             viewProps: Object.assign({}, ensureViewProps()),
             messages: state.messages.map(cloneMessage),
-            composerAttachments: state.composerAttachments.slice()
+            composerAttachments: state.composerAttachments.slice(),
+            composerHidden: state.composerHidden
         };
     }
 
-    var MINIMIZED_SIZE = 50;
+    var MINIMIZED_SIZE = 50;            // 桌面：圆球直径
+    var MOBILE_CAPSULE_HEIGHT = 48;     // 手机：底部胶囊高度
+    var MOBILE_CAPSULE_MARGIN = 6;      // 手机：胶囊离屏幕边距
     var isMinimizeTransitioning = false;
     var activeAnimationCleanup = null; // 当前进行中动画的清理函数
+
+    // 返回最小化后 shell 应达到的像素几何。
+    // 桌面：50x50 圆球，锚定在对话框原左下角（clamp 到视口内）。
+    // 手机：全宽底部胶囊，贴屏幕底边（类似移动 App 的底栏收起态）。
+    // 由于 collapse/expand 动画的 transform-origin = 0% 100%（左下角），
+    // target.left 应等于 rect.left 同列，target 底边应与 rect 底边对齐
+    // （即 target.top = rect.bottom - target.height），这样动画过程中底边不漂移。
+    function getMinimizedTarget(rect) {
+        if (isMobileWidth()) {
+            var mobileWidth = Math.max(0, window.innerWidth - MOBILE_CAPSULE_MARGIN * 2);
+            // 胶囊四周保持 MOBILE_CAPSULE_MARGIN 间距（与左右 6px 对称）
+            var mobileBottomTop = Math.max(0, window.innerHeight - MOBILE_CAPSULE_HEIGHT - MOBILE_CAPSULE_MARGIN);
+            return {
+                width: mobileWidth,
+                height: MOBILE_CAPSULE_HEIGHT,
+                left: MOBILE_CAPSULE_MARGIN,
+                top: Math.max(0, Math.min(
+                    rect.bottom - MOBILE_CAPSULE_HEIGHT,
+                    mobileBottomTop
+                ))
+            };
+        }
+        return {
+            width: MINIMIZED_SIZE,
+            height: MINIMIZED_SIZE,
+            left: Math.max(0, Math.min(rect.left, window.innerWidth - MINIMIZED_SIZE)),
+            top: Math.max(0, Math.min(rect.bottom - MINIMIZED_SIZE, window.innerHeight - MINIMIZED_SIZE))
+        };
+    }
 
     function cancelActiveAnimation() {
         if (activeAnimationCleanup) {
@@ -884,13 +1029,14 @@
             shell.style.left = rect.left + 'px';
             shell.style.top = rect.top + 'px';
 
-            // 2. 球的目标位置 = 对话框自身的左下角（clamp 到视口内）
-            var targetLeft = Math.max(0, Math.min(rect.left, window.innerWidth - MINIMIZED_SIZE));
-            var targetTop = Math.max(0, Math.min(rect.bottom - MINIMIZED_SIZE, window.innerHeight - MINIMIZED_SIZE));
+            // 2. 最小化后的目标几何：桌面=50px 圆球 / 手机=全宽底部胶囊
+            var target = getMinimizedTarget(rect);
+            var targetLeft = target.left;
+            var targetTop = target.top;
 
             // 3. 计算缩放比（transform-origin 为 0% 100% 即左下角，无需 translate）
-            var sx = rect.width > 0 ? MINIMIZED_SIZE / rect.width : 1;
-            var sy = rect.height > 0 ? MINIMIZED_SIZE / rect.height : 1;
+            var sx = rect.width > 0 ? target.width / rect.width : 1;
+            var sy = rect.height > 0 ? target.height / rect.height : 1;
 
             // 4. 初始 transform = identity，添加过渡类
             shell.style.transform = 'scale(1, 1)';
@@ -918,6 +1064,7 @@
                 // 清除内联尺寸，让 .is-minimized 的 CSS 生效
                 shell.style.removeProperty('width');
                 shell.style.removeProperty('height');
+                shell.classList.remove('is-mobile-content-capped');
                 // 将位置设为对话框左下角
                 shell.style.left = targetLeft + 'px';
                 shell.style.top = targetTop + 'px';
@@ -941,14 +1088,28 @@
             };
 
         } else {
-            // ---- 展开动画：从球位置向右上角展开 ----
+            // ---- 展开动画：从最小化态（桌面圆球 / 手机底部胶囊）展开 ----
             var curRect = shell.getBoundingClientRect();
             var ballLeft = curRect.left;
+            // 桌面圆球的 height≈50，手机胶囊的 height≈48；curRect 直接反映真实值
             var ballBottom = curRect.top + (curRect.height || MINIMIZED_SIZE);
 
             // 恢复保存的尺寸
             shell.classList.remove('is-minimized');
-            if (savedShellSize) {
+            if (isMobileWidth()) {
+                // 手机端：宽度永远是全宽（由 CSS 对非动画态的 `.is-minimized`/展开态
+                // 双向 !important 覆盖），所以忽略 savedShellSize.width —— 否则旋屏
+                // (portrait→landscape) 后 savedSize.width < curRect.width，
+                // expandedRect 被 savedSize 缩窄，sx2 > 1，动画反向缩小。
+                // 高度按当前视口 50vh 重新 clamp，避免旋屏或视口变短后超出上限。
+                shell.style.width = Math.max(0, window.innerWidth - MOBILE_CAPSULE_MARGIN * 2) + 'px';
+                var maxMobileHeight = Math.max(0, Math.floor(window.innerHeight * MOBILE_MAX_HEIGHT_RATIO));
+                var savedHeightPx = savedShellSize ? parseFloat(savedShellSize.height) : NaN;
+                var restoreHeight = isFinite(savedHeightPx) && savedHeightPx > 0
+                    ? Math.min(savedHeightPx, maxMobileHeight)
+                    : maxMobileHeight;
+                if (restoreHeight > 0) shell.style.height = restoreHeight + 'px';
+            } else if (savedShellSize) {
                 if (savedShellSize.width) shell.style.width = savedShellSize.width;
                 if (savedShellSize.height) shell.style.height = savedShellSize.height;
             }
@@ -995,9 +1156,10 @@
             expandedRect = shell.getBoundingClientRect();
 
             // 计算初始缩放：transform-origin 为左下角 (0% 100%)
-            // 缩放到 MINIMIZED_SIZE 时，视觉上的左下角保持不变
-            var sx2 = MINIMIZED_SIZE / expandedRect.width;
-            var sy2 = MINIMIZED_SIZE / expandedRect.height;
+            // 从当前最小化态的真实尺寸缩回（桌面 50x50 / 手机 full-width x 48），
+            // 视觉上的左下角保持不变。
+            var sx2 = curRect.width > 0 ? curRect.width / expandedRect.width : 1;
+            var sy2 = curRect.height > 0 ? curRect.height / expandedRect.height : 1;
 
             // 设置初始 transform（看起来还是左下角的小圆）
             shell.style.transform = 'scale(' + sx2 + ', ' + sy2 + ')';
@@ -1025,6 +1187,7 @@
                 savedShellSize = null;
                 savedShellPosition = null;
                 isMinimizeTransitioning = false;
+                scheduleMobileContentLayout();
                 // 确保位置不溢出；全屏模式（/chat）不持久化，
                 // 否则 (0,0) 会覆盖 index.html 中用户保存的窗口位置
                 requestAnimationFrame(function () {
@@ -1081,10 +1244,18 @@
         setMinimized(!minimized);
     }
 
+    function prewarmUserDisplayName() {
+        if (!window.appChat || typeof window.appChat.ensureUserDisplayName !== 'function') return;
+        Promise.resolve(window.appChat.ensureUserDisplayName()).catch(function (error) {
+            console.warn('[ReactChatWindow] preload user display name failed:', error);
+        });
+    }
+
     function openWindow() {
         var overlay = getOverlay();
         if (!overlay) return;
 
+        prewarmUserDisplayName();
         ensureBundleLoaded()
             .then(function () {
                 if (!mountWindow()) {
@@ -1099,10 +1270,12 @@
                     overlay.hidden = false;
                     document.body.classList.add('react-chat-window-open');
                     setMinimized(false);
+                    scheduleMobileContentLayout();
                 } else {
                     overlay.hidden = false;
                     document.body.classList.add('react-chat-window-open');
                     restorePosition();
+                    scheduleMobileContentLayout();
                 }
             })
             .catch(function (error) {
@@ -1139,13 +1312,15 @@
 
         overlay.hidden = true;
         document.body.classList.remove('react-chat-window-open');
+        clearMobileContentCap();
     }
 
     var CLICK_THRESHOLD = 5; // px – 移动距离低于此值视为点击
 
     function startDrag(clientX, clientY) {
         var shell = getShell();
-        if (!shell || isMobileWidth()) return;
+        if (!shell) return;
+        if (isMobileWidth() && !minimized) return;
 
         var rect = shell.getBoundingClientRect();
         dragState = {
@@ -1406,6 +1581,10 @@
         window.addEventListener(EVENT_PREFIX + 'set-composer-attachments', function (event) {
             setComposerAttachments(event.detail && event.detail.attachments);
         });
+
+        window.addEventListener(EVENT_PREFIX + 'set-composer-hidden', function (event) {
+            setComposerHidden(event.detail && event.detail.hidden);
+        });
     }
 
     function init() {
@@ -1416,6 +1595,7 @@
         var avatarHeaderButton = $('avatarPreviewHeaderButton');
 
         ensureViewProps();
+        prewarmUserDisplayName();
 
         if (trigger) {
             trigger.addEventListener('click', openWindow);
@@ -1429,14 +1609,12 @@
                 toggleMinimized();
             });
         }
+        // Note: the avatarPreviewHeaderButton click is bound by app-chat-avatar.js
+        // (it owns the standalone avatar preview popup and toggling behavior).
+        // We only fire the host event here for external listeners/analytics.
         if (avatarHeaderButton) {
-            avatarHeaderButton.addEventListener('click', function (event) {
-                event.stopPropagation();
-                // Notify external listeners/analytics/extensions first
+            avatarHeaderButton.addEventListener('click', function () {
                 dispatchHostEvent('avatar-generator-click', {});
-                // Always use direct capture — the legacy avatarPreviewButton opens
-                // the old-chat preview card which is hidden behind the React overlay.
-                captureAvatarDirect();
             });
         }
         if (backdrop) {
@@ -1483,12 +1661,23 @@
             var overlay = getOverlay();
             if (overlay && !overlay.hidden) {
                 if (minimized) {
-                    // 球留在当前位置，只需确保不溢出屏幕
+                    // 最小化态下，根据当前布局（桌面圆球 / 手机胶囊）重新贴到视口内。
+                    // 手机胶囊宽度由 CSS !important 控制（width: calc(100vw - 12px)），
+                    // 这里只需修正左上角坐标，避免旋转屏或拖窗后溢出。
                     var shell = getShell();
                     if (shell) {
                         var r = shell.getBoundingClientRect();
-                        var safeLeft = Math.max(0, Math.min(r.left, window.innerWidth - MINIMIZED_SIZE));
-                        var safeTop = Math.max(0, Math.min(r.top, window.innerHeight - MINIMIZED_SIZE));
+                        var minW = r.width || MINIMIZED_SIZE;
+                        var minH = r.height || MINIMIZED_SIZE;
+                        var safeLeft, safeTop;
+                        if (isMobileWidth()) {
+                            // 胶囊始终贴屏幕底部中心，左右留 6px
+                            safeLeft = MOBILE_CAPSULE_MARGIN;
+                            safeTop = Math.max(0, window.innerHeight - MOBILE_CAPSULE_HEIGHT - MOBILE_CAPSULE_MARGIN);
+                        } else {
+                            safeLeft = Math.max(0, Math.min(r.left, window.innerWidth - minW));
+                            safeTop = Math.max(0, Math.min(r.top, window.innerHeight - minH));
+                        }
                         if (safeLeft !== r.left || safeTop !== r.top) {
                             shell.style.left = safeLeft + 'px';
                             shell.style.top = safeTop + 'px';
@@ -1496,6 +1685,7 @@
                     }
                 } else {
                     restorePosition();
+                    scheduleMobileContentLayout();
                 }
             }
         });
@@ -1519,6 +1709,7 @@
         setViewProps: setViewProps,
         setMessages: setMessages,
         setComposerAttachments: setComposerAttachments,
+        setComposerHidden: setComposerHidden,
         appendMessage: appendMessage,
         updateMessage: updateMessage,
         removeMessage: removeMessage,

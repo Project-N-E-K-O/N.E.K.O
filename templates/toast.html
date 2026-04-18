@@ -6,6 +6,8 @@
     <title>N.E.K.O. Toast</title>
     <link rel="stylesheet" href="/static/css/index.css">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
+    <!-- i18next 加载器（复用 index.html 的 i18n 基础设施） -->
+    <script src="/static/i18n-i18next.js"></script>
     <style>
         html, body {
             margin: 0; padding: 0;
@@ -27,6 +29,34 @@
     <script>
     (function() {
         'use strict';
+
+        // ===== i18n 就绪等待机制 =====
+        // i18n-i18next.js 异步初始化，IPC 消息可能在 window.t 就绪前到达。
+        // localechange 在 exportNormalFunctions/exportFallbackFunctions 中 dispatch，
+        // 但由于 localechange 在 window.t 赋值之前同步触发，需要 setTimeout(0)
+        // 推迟到当前调用栈结束后再 flush，确保 window.t 已被设置。
+        var _i18nReady = (typeof window.t === 'function');
+        var _i18nQueue = [];
+
+        function _flushI18nQueue() {
+            if (_i18nReady) return;
+            _i18nReady = true;
+            var q = _i18nQueue;
+            _i18nQueue = [];
+            for (var i = 0; i < q.length; i++) q[i]();
+        }
+
+        if (!_i18nReady) {
+            window.addEventListener('localechange', function onLocale() {
+                window.removeEventListener('localechange', onLocale);
+                setTimeout(_flushI18nQueue, 0);
+            });
+        }
+
+        function whenI18nReady(fn) {
+            if (_i18nReady) fn();
+            else _i18nQueue.push(fn);
+        }
 
         // ===== Toast API（由 preload-toast.js 注入）=====
         var api = window.nekoToastAPI;
@@ -164,7 +194,7 @@
             img.alt = 'ready';
             var span = document.createElement('span');
             span.style.cssText = 'display:flex;align-items:center;';
-            span.textContent = message || 'You can start talking!';
+            span.textContent = message || window.t('app.readyToSpeak');
             toast.appendChild(img);
             toast.appendChild(span);
 
@@ -257,7 +287,7 @@
 
             var hasMore = pnQueue.length > 0;
             var btn = document.createElement('button');
-            btn.textContent = hasMore ? '下一个' : '确认';
+            btn.textContent = hasMore ? window.t('common.next') : window.t('common.confirm');
             btn.style.cssText = [
                 'background:#3b82f6', 'color:#fff', 'border:none',
                 'border-radius:10px', 'padding:10px 48px',
@@ -295,6 +325,7 @@
 
         // ===== IPC 监听（Electron 环境下由 preload-toast.js 注入 API）=====
         if (api) {
+            // status toast / voice preparing：文本由调用方传入，不依赖 i18n
             api.onShowStatusToast(function(data) {
                 showStatusToast(data.message, data.duration);
             });
@@ -304,11 +335,12 @@
             api.onHideVoicePreparing(function() {
                 hideVoicePreparing();
             });
+            // ready-to-speak / prominent notice：需要 window.t()，等待 i18n 就绪
             api.onShowReadyToSpeak(function(data) {
-                showReadyToSpeak(data.message);
+                whenI18nReady(function() { showReadyToSpeak(data.message); });
             });
             api.onShowProminentNotice(function(data) {
-                showProminentNotice(data);
+                whenI18nReady(function() { showProminentNotice(data); });
             });
         }
 

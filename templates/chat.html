@@ -33,12 +33,123 @@
         }
         #react-chat-window-backdrop { display: none !important; }
         #react-chat-window-shell:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
-            position: fixed !important; inset: 0 !important;
-            width: 100% !important; height: 100% !important;
+            position: fixed !important;
+            inset: 20px !important;
+            width: auto !important; height: auto !important;
             max-width: none !important; max-height: none !important;
-            left: 0 !important; top: 0 !important;
             transform: none !important;
-            border-radius: 8px !important;
+            border-radius: 22px !important;
+            background: transparent !important;
+            /* 液态边缘反光 — 顶部最亮，左次之，模拟顶光 */
+            border-top: 2px solid rgba(255, 255, 255, 0.7) !important;
+            border-left: 1px solid rgba(255, 255, 255, 0.35) !important;
+            border-right: 1px solid rgba(255, 255, 255, 0.15) !important;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06) !important;
+            /* 外阴影 + 内高光带 */
+            box-shadow:
+                0 4px 16px rgba(12, 20, 34, 0.18),
+                0 1px 4px rgba(12, 20, 34, 0.1),
+                inset 0 2px 4px rgba(255, 255, 255, 0.5),
+                inset 0 -1px 2px rgba(255, 255, 255, 0.08) !important;
+        }
+        /* 顶栏：降低透明度 + 减小高度（原 min-height:54px + padding:10px 14px 8px） */
+        .window-topbar {
+            background: rgba(255, 255, 255, 0.35) !important;
+            min-height: 45px !important;
+            height: 45px !important;
+            padding: 0 12px !important;
+            box-sizing: border-box !important;
+        }
+        .window-topbar-actions,
+        .window-topbar-actions > * {
+            display: flex !important;
+            align-items: center !important;
+        }
+        /* 右上角四个按钮居中对齐 topbar（原 top:10px 基于 54px 高度，现适配 45px） */
+        #react-chat-window-header-actions {
+            top: 5px !important;
+        }
+        #reactChatWindowCloseButton {
+            position: relative !important;
+            top: -2px !important;
+        }
+        /* Chat 字体优化（覆盖 6 语：中简/繁/英/日/韩/俄） */
+        #react-chat-window-root {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter',
+                         'Noto Sans', 'PingFang SC', 'Microsoft YaHei',
+                         'Hiragino Sans', 'Malgun Gothic', sans-serif !important;
+            font-weight: 400 !important;
+        }
+        [data-theme="dark"] .window-topbar {
+            background: rgba(50, 50, 72, 0.35) !important;
+        }
+        /* 四边透明度渐变带：窄边（~10px），让边缘内容淡出露出高光 */
+        #react-chat-window-root {
+            -webkit-mask-image:
+                linear-gradient(to bottom, rgba(0,0,0,0.3) 0px, black 10px, black calc(100% - 10px), rgba(0,0,0,0.6) 100%),
+                linear-gradient(to right, rgba(0,0,0,0.4) 0px, black 8px, black calc(100% - 8px), rgba(0,0,0,0.4) 100%) !important;
+            -webkit-mask-composite: source-in !important;
+        }
+        @keyframes liquidFlow {
+            0%    { background-position:   0%   0%,  80%  10%,  40%  30%,  90%  50%,  20%  70%,  60%  85%,  95%  90%; }
+            12%   { background-position:  50%  15%,  20%  60%,  80%  10%,  40%  80%,  70%   5%,  10%  50%,  55%  35%; }
+            25%   { background-position:  90%  55%,  50%  90%,  15%  65%,  75%  20%,  45%  85%,  85%  15%,  20%  70%; }
+            38%   { background-position:  30%  85%,  85%  30%,  60%  95%,  10%  45%,  90%  40%,  40%  70%,  70%  10%; }
+            50%   { background-position:  70%  40%,  10%  75%,  95%  20%,  55%  90%,  15%  30%,  75%  55%,  35%  80%; }
+            63%   { background-position:  15%  70%,  65%  15%,  30%  50%,  85%  65%,  55%  95%,  25%  25%,  80%  50%; }
+            75%   { background-position:  80%  25%,  35%  85%,  70%  40%,  20%  10%,  85%  60%,  50%  90%,  10%  30%; }
+            88%   { background-position:  45%  90%,  90%  45%,  10%  75%,  60%  35%,  30%  50%,  80%  10%,  50%  65%; }
+            100%  { background-position:   0%   0%,  80%  10%,  40%  30%,  90%  50%,  20%  70%,  60%  85%,  95%  90%; }
+        }
+        /* 对角光带扫过 */
+        @keyframes lightSweep {
+            0%   { background-position: -150% -150%; }
+            100% { background-position: 250% 250%; }
+        }
+        /* 静态边缘高光层 — 在内容之下 */
+        #react-chat-window-shell:not(.is-minimized)::before {
+            content: '' !important;
+            position: absolute !important;
+            inset: 0 !important;
+            border-radius: 22px !important;
+            pointer-events: none !important;
+            z-index: 0 !important;
+            /* 边缘高光 */
+            box-shadow:
+                inset 0 2px 6px rgba(255, 255, 255, 0.5),
+                inset 0 -1px 3px rgba(255, 255, 255, 0.1),
+                inset 2px 0 4px rgba(255, 255, 255, 0.15),
+                inset -2px 0 4px rgba(255, 255, 255, 0.08) !important;
+            /* 顶部弧形高光（静态） */
+            background: linear-gradient(
+                180deg,
+                rgba(255, 255, 255, 0.25) 0%,
+                rgba(255, 255, 255, 0.08) 8%,
+                transparent 20%,
+                transparent 85%,
+                rgba(255, 255, 255, 0.04) 100%
+            ) !important;
+        }
+        /* 流动光斑层 — 三色径向渐变缓慢漂移，模拟玻璃折射
+           用 background-image 而非 background 简写，避免 !important 锁死 background-position */
+        #react-chat-window-shell:not(.is-minimized)::after {
+            content: '' !important;
+            position: absolute !important;
+            inset: 0 !important;
+            border-radius: 22px !important;
+            pointer-events: none !important;
+            z-index: 10 !important;
+            background-image:
+                radial-gradient(circle at 15% 10%, rgba(100,180,255,0.14) 0%, transparent 22%),
+                radial-gradient(circle at 75% 15%, rgba(180,140,255,0.11) 0%, transparent 20%),
+                radial-gradient(circle at 40% 35%, rgba(220,140,240,0.12) 0%, transparent 18%),
+                radial-gradient(circle at 85% 50%, rgba(120,200,255,0.13) 0%, transparent 20%),
+                radial-gradient(circle at 25% 65%, rgba(200,160,255,0.10) 0%, transparent 19%),
+                radial-gradient(circle at 60% 80%, rgba(100,190,255,0.12) 0%, transparent 21%),
+                radial-gradient(circle at 90% 85%, rgba(240,150,200,0.10) 0%, transparent 17%) !important;
+            background-size: 200% 200%, 200% 200%, 200% 200%, 200% 200%, 200% 200%, 200% 200%, 200% 200% !important;
+            background-repeat: no-repeat !important;
+            animation: liquidFlow 20s ease-in-out infinite !important;
         }
         /* 折叠/展开动画期间：允许 JS 控制 position/size/transform */
         #react-chat-window-shell.is-collapsing,
@@ -51,6 +162,32 @@
         #react-chat-window-shell.is-minimized {
             inset: auto !important;
             max-width: none !important; max-height: none !important;
+        }
+        /* 输入区提到光晕层之上，保持原始不透明度 */
+        .composer-panel {
+            position: relative !important;
+            z-index: 15 !important;
+        }
+        /* 输入框描边加粗 */
+        .composer-input-shell {
+            border: 1.5px solid rgba(127, 144, 170, 0.25) !important;
+        }
+        /* placeholder 样式：淡色小字 */
+        .composer-input::placeholder {
+            color: rgba(102, 117, 141, 0.5) !important;
+            font-size: 0.85em !important;
+        }
+        /* 消息气泡进场动效 —— 由 neko-chat-window.css 统一定义，此处不重复声明。
+           旧版在此处用 !important 重复声明 @keyframes + animation 规则，会导致浏览器
+           对同名 @keyframes 做二次解析，且 !important 阻止 prefers-reduced-motion
+           等未来覆盖，已移除。 */
+
+        /* Electron 独立窗口始终显示全部工具按钮（覆盖 index.css 768px 媒体查询隐藏） */
+        #react-chat-window-shell .composer-bottom-tools > .composer-tool-btn:last-child {
+            display: inline-flex !important;
+        }
+        #react-chat-window-shell .composer-bottom-tools > .composer-tool-divider:nth-last-child(2) {
+            display: inline !important;
         }
         /* 隐藏旧版 chat */
         #chat-container { display: none !important; }
@@ -206,7 +343,7 @@
         }
     </style>
 </head>
-<body>
+<body class="electron-chat-window">
 
     <div id="status-toast"></div>
 
@@ -253,11 +390,20 @@
         <div id="neko-resize-handle"></div>
     </div>
 
+    <!--
+        ⚠️ 以下按钮永远不会显示，但绝对不能删除！
+        JS 层（app-buttons.js / app-websocket.js / app-screen.js 等）通过
+        getElementById 获取这些元素的引用，用来：
+          1. 绑定 click 事件 → 触发 WebSocket 后端调用（start_session / end_session / stream_data）
+          2. 读写 disabled / active / recording 等状态 → 判断当前会话模式
+        删除这些元素会导致 getElementById 返回 null，所有语音、屏幕共享、会话管理功能静默失败。
+        因为用户永远看不到这些按钮，所以也不需要做 i18n 翻译。
+    -->
     <div id="sidebar" style="display:none;">
         <button id="micButton">开始语音</button>
-        <button id="muteButton">暂停</button>
-        <button id="screenButton">屏幕</button>
-        <button id="stopButton">停止</button>
+        <button id="muteButton" disabled>暂停</button>
+        <button id="screenButton" disabled>屏幕</button>
+        <button id="stopButton" disabled>停止</button>
         <button id="resetSessionButton">重置</button>
         <button id="returnSessionButton">返回</button>
     </div>
@@ -292,6 +438,64 @@
         </div>
     </div>
 
+    <!-- 独立头像预览弹窗（chat.html / index.html 共用）-->
+    <div id="chat-avatar-preview-popup" class="chat-avatar-preview-popup" role="dialog" aria-modal="false" aria-labelledby="chat-avatar-preview-popup-title" hidden>
+        <div class="chat-avatar-preview-card-header">
+            <div class="chat-avatar-preview-card-title-group">
+                <div id="chat-avatar-preview-popup-title" class="chat-avatar-preview-card-title" data-i18n="chat.avatarPreviewCardTitle">当前头像</div>
+                <div id="chat-avatar-preview-status" class="chat-avatar-preview-card-status" data-i18n="chat.avatarPreviewCardStatus">点击上方按钮生成当前模型头像</div>
+            </div>
+            <button id="chatAvatarPreviewCloseButton" class="chat-avatar-preview-card-close" type="button" data-i18n-title="chat.avatarPreviewClose" data-i18n-aria="chat.avatarPreviewClose" aria-label="关闭头像预览">×</button>
+        </div>
+        <div class="chat-avatar-preview-card-body">
+            <div id="chat-avatar-preview-image-shell" class="chat-avatar-preview-image-shell is-empty">
+                <img id="chat-avatar-preview-image" class="chat-avatar-preview-image" data-i18n-alt="chat.avatarPreviewImageAlt" alt="当前头像预览" hidden>
+                <div id="chat-avatar-preview-placeholder" class="chat-avatar-preview-placeholder" data-i18n="chat.avatarPreviewPlaceholder">AVATAR</div>
+            </div>
+            <div class="chat-avatar-preview-card-meta">
+                <div id="chat-avatar-preview-note" class="chat-avatar-preview-card-note" data-i18n="chat.avatarPreviewCardNote">将基于当前显示中的 Live2D / VRM / MMD 模型生成头像。</div>
+                <button id="chatAvatarPreviewRefreshButton" class="chat-avatar-preview-refresh-btn" type="button" data-i18n="chat.avatarPreviewRefresh">刷新头像</button>
+            </div>
+        </div>
+        <div class="chat-avatar-preview-crop-body">
+            <div class="avatar-cropper-area">
+                <div id="avatar-cropper-wrap" class="avatar-cropper-canvas-wrap">
+                    <img id="avatar-cropper-img" class="avatar-cropper-source-img" alt="">
+                    <svg id="avatar-cropper-mask" class="avatar-cropper-mask"></svg>
+                    <div id="avatar-cropper-box" class="avatar-cropper-crop-box">
+                        <div class="avatar-cropper-viewfinder">
+                            <div class="avatar-cropper-grid-line h1"></div>
+                            <div class="avatar-cropper-grid-line h2"></div>
+                            <div class="avatar-cropper-grid-line v1"></div>
+                            <div class="avatar-cropper-grid-line v2"></div>
+                            <div class="avatar-cropper-circle-guide"></div>
+                        </div>
+                        <div class="avatar-cropper-handle tl" data-handle="tl"></div>
+                        <div class="avatar-cropper-handle tr" data-handle="tr"></div>
+                        <div class="avatar-cropper-handle bl" data-handle="bl"></div>
+                        <div class="avatar-cropper-handle br" data-handle="br"></div>
+                    </div>
+                </div>
+                <div class="avatar-cropper-controls">
+                    <button class="avatar-cropper-ctrl-btn" data-crop-action="up" data-i18n-title="chat.avatarCropMoveUp" title="上移"><svg viewBox="0 0 16 16"><path d="M8 3L2 10h12z"/></svg></button>
+                    <div class="avatar-cropper-controls-row">
+                        <button class="avatar-cropper-ctrl-btn" data-crop-action="left" data-i18n-title="chat.avatarCropMoveLeft" title="左移"><svg viewBox="0 0 16 16"><path d="M3 8l7-6v12z"/></svg></button>
+                        <button class="avatar-cropper-ctrl-btn" data-crop-action="center" data-i18n-title="chat.avatarCropCenter" title="居中"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="3"/><path d="M8 1v3M8 12v3M1 8h3M12 8h3" stroke="currentColor" stroke-width="1.5" fill="none"/></svg></button>
+                        <button class="avatar-cropper-ctrl-btn" data-crop-action="right" data-i18n-title="chat.avatarCropMoveRight" title="右移"><svg viewBox="0 0 16 16"><path d="M13 8L6 2v12z"/></svg></button>
+                    </div>
+                    <button class="avatar-cropper-ctrl-btn" data-crop-action="down" data-i18n-title="chat.avatarCropMoveDown" title="下移"><svg viewBox="0 0 16 16"><path d="M8 13l6-7H2z"/></svg></button>
+                    <div class="avatar-cropper-ctrl-divider"></div>
+                    <button class="avatar-cropper-ctrl-btn" data-crop-action="bigger" data-i18n-title="chat.avatarCropZoomIn" title="放大"><svg viewBox="0 0 16 16"><path d="M3 8h10M8 3v10" stroke="currentColor" stroke-width="2" fill="none"/></svg></button>
+                    <button class="avatar-cropper-ctrl-btn" data-crop-action="smaller" data-i18n-title="chat.avatarCropZoomOut" title="缩小"><svg viewBox="0 0 16 16"><path d="M3 8h10" stroke="currentColor" stroke-width="2" fill="none"/></svg></button>
+                </div>
+            </div>
+            <div class="avatar-cropper-buttons">
+                <button id="avatar-cropper-cancel" class="avatar-cropper-btn" type="button" data-i18n="chat.avatarCropCancel">取消</button>
+                <button id="avatar-cropper-save" class="avatar-cropper-btn primary" type="button" data-i18n="chat.avatarCropSave">保存</button>
+            </div>
+        </div>
+    </div>
+
     <!-- 跳过：Live2D/VRM/Three.js、common_ui.js(DOM拖拽不兼容)、touch-config、tutorial -->
     <script src="/static/libs/ogg-opus-decoder.min.js"></script>
     <script src="/static/music_ui.js"></script>
@@ -304,6 +508,7 @@
     <!-- app 模块（与 index.html 完全相同的加载顺序）-->
     <script src="/static/app-state.js"></script>
     <script src="/static/app-ui.js"></script>
+    <script src="/static/app-chat-text-utils.js"></script>
     <script src="/static/app-chat.js"></script>
     <script src="/static/app-chat-avatar.js"></script>
     <script src="/static/app-audio-playback.js"></script>
