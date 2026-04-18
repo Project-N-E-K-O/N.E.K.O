@@ -981,7 +981,8 @@
             'avatar-reaction-bubble', 'subtitle-display', 'status-toast',
             'live2d-floating-buttons', 'vrm-floating-buttons', 'mmd-floating-buttons',
             'live2d-lock-icon', 'vrm-lock-icon', 'mmd-lock-icon',
-            'live2d-return-button-container', 'vrm-return-button-container', 'mmd-return-button-container'
+            'live2d-return-button-container', 'vrm-return-button-container', 'mmd-return-button-container',
+            'crop-overlay'
         ];
 
         function hideNekoUI() {
@@ -1020,9 +1021,13 @@
 
                 if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
                     stream = await navigator.mediaDevices.getDisplayMedia({ video: { cursor: 'always' }, audio: false });
-                    var frame = await window.captureFrameFromStream(stream, 0.8);
-                    stream.getTracks().forEach(function (t) { t.stop(); });
-                    if (frame && frame.dataUrl) return frame.dataUrl;
+                    try {
+                        var frame = await window.captureFrameFromStream(stream, 0.8);
+                        if (frame && frame.dataUrl) return frame.dataUrl;
+                    } finally {
+                        stream.getTracks().forEach(function (t) { t.stop(); });
+                        stream = null;
+                    }
                 }
 
                 var result = await window.fetchBackendScreenshot();

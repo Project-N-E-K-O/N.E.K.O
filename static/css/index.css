@@ -1658,6 +1658,12 @@ body.react-chat-window-dragging {
     cursor: wait;
 }
 
+.crop-tab:focus-visible,
+.crop-action-btn:focus-visible {
+    outline: 2px solid rgba(68, 183, 254, 0.85);
+    outline-offset: 2px;
+}
+
 /* Background image + canvas positioned below topbar */
 .crop-bg-image {
     position: absolute;
