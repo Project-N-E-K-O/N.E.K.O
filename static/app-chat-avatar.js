@@ -524,7 +524,15 @@
             var drag = null;
 
             function initLayout() {
-                var maxW = Math.min(360, window.innerWidth - 64);
+                // 计算可用宽度：需扣除控制面板宽度、弹窗 padding/border
+                // popup max-width: calc(100vw - 24px), padding: 14px×2, border: 1px×2
+                var controlsEl = popup.querySelector('.avatar-cropper-controls');
+                var controlsWidth = controlsEl ? controlsEl.offsetWidth : 0;
+                var areaEl = wrap.parentElement;
+                var areaGap = areaEl ? (parseFloat(getComputedStyle(areaEl).gap) || 0) : 0;
+                var popupContentW = window.innerWidth - 24 - 28 - 2;
+                var maxW = Math.min(360, popupContentW - controlsWidth - areaGap);
+                if (maxW < MIN_SIZE) maxW = MIN_SIZE;
                 var maxH = Math.min(360, window.innerHeight - 180);
                 var aspect = sourceWidth / sourceHeight;
                 if (aspect >= 1) {

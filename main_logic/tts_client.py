@@ -2717,7 +2717,7 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
             # GPT-SoVITS / local CosyVoice 需要用户显式启用 gptsovitsEnabled 开关，
             # 仅 enableCustomApi + http URL 不应自动路由到 GPT-SoVITS。
             core_cfg = cm.get_core_config()
-            gsv_enabled = core_cfg.get('gptsovitsEnabled', False)
+            gsv_enabled = core_cfg.get('GPTSOVITS_ENABLED', False)
             if gsv_enabled and (base_url.startswith('http://') or base_url.startswith('https://')):
                 return gptsovits_tts_worker, None, 'gptsovits'
             if gsv_enabled and (base_url.startswith('ws://') or base_url.startswith('wss://')):

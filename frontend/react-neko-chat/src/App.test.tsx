@@ -69,6 +69,19 @@ describe('App', () => {
     expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Test send' });
   });
 
+  it('does not render a local optimistic user bubble before the host echoes messages', () => {
+    const onComposerSubmit = vi.fn();
+    render(<App onComposerSubmit={onComposerSubmit} />);
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: 'No local optimistic bubble' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'No local optimistic bubble' });
+    expect(screen.queryByText('No local optimistic bubble')).not.toBeInTheDocument();
+    expect(screen.queryByText('You')).not.toBeInTheDocument();
+  });
+
   it('renders composer tool buttons and calls the React callbacks', () => {
     const onComposerImportImage = vi.fn();
     const onComposerScreenshot = vi.fn();
