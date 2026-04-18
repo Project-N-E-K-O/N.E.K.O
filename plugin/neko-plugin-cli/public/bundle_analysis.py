@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 
 from packaging.requirements import Requirement
-from packaging.specifiers import SpecifierSet
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import Version, InvalidVersion
 
 from .models import BundleAnalysisResult, BundleSdkAnalysis, PluginSource, SharedDependency
@@ -139,7 +139,7 @@ def _candidate_versions(specifier_texts: list[str], *, current_sdk_version: str 
             continue
         try:
             specifier_set = SpecifierSet(text)
-        except Exception:
+        except InvalidSpecifier:
             continue
 
         for item in specifier_set:

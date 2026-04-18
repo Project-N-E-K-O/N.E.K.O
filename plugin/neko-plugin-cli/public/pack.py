@@ -30,14 +30,18 @@ class PackPaths:
     @classmethod
     def create(cls, *, package_id: str) -> PackPaths:
         staging_root = Path(tempfile.mkdtemp(prefix=f"neko_pack_{package_id}_")).resolve()
-        payload_dir = staging_root / "payload"
-        plugins_dir = payload_dir / "plugins"
-        profiles_dir = payload_dir / "profiles"
-        manifest_path = staging_root / "manifest.toml"
-        metadata_path = staging_root / "metadata.toml"
+        try:
+            payload_dir = staging_root / "payload"
+            plugins_dir = payload_dir / "plugins"
+            profiles_dir = payload_dir / "profiles"
+            manifest_path = staging_root / "manifest.toml"
+            metadata_path = staging_root / "metadata.toml"
 
-        plugins_dir.mkdir(parents=True, exist_ok=True)
-        profiles_dir.mkdir(parents=True, exist_ok=True)
+            plugins_dir.mkdir(parents=True, exist_ok=True)
+            profiles_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            shutil.rmtree(staging_root, ignore_errors=True)
+            raise
 
         return cls(
             staging_root=staging_root,

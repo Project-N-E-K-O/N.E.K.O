@@ -121,16 +121,24 @@ class ServerLifecycleService:
             logger.warning("message_plane health check returned false; it may still be starting")
 
     async def _refresh_registry_and_start_autostart_plugins(self) -> None:
-        refresh_result = await self._plugin_registry_service.refresh_registry()
-        logger.info(
-            "plugin registry refresh completed: added={}, updated={}, removed={}, failed={}",
-            len(refresh_result.get("added", [])),
-            len(refresh_result.get("updated", [])),
-            len(refresh_result.get("removed", [])),
-            len(refresh_result.get("failed", [])),
-        )
+        try:
+            refresh_result = await self._plugin_registry_service.refresh_registry()
+            logger.info(
+                "plugin registry refresh completed: added={}, updated={}, removed={}, failed={}",
+                len(refresh_result.get("added", [])),
+                len(refresh_result.get("updated", [])),
+                len(refresh_result.get("removed", [])),
+                len(refresh_result.get("failed", [])),
+            )
+            autostart_plugin_ids = await self._plugin_registry_service.list_autostart_plugin_ids()
+        except Exception as exc:
+            logger.error(
+                "plugin registry refresh failed at startup: err_type={}, err={}",
+                type(exc).__name__,
+                str(exc),
+            )
+            return
 
-        autostart_plugin_ids = await self._plugin_registry_service.list_autostart_plugin_ids()
         if not autostart_plugin_ids:
             logger.warning("no autostart plugins discovered at startup; plugins may need manual start")
             return

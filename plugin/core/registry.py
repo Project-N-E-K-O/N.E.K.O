@@ -972,7 +972,11 @@ def _parse_single_plugin_config(
                 include_effective_config=True,
                 validate_schema=True,
             )
-            conf = cast(Dict[str, Any], resolved_conf["effective_config"])
+            effective = resolved_conf.get("effective_config")
+            if isinstance(effective, dict):
+                conf = cast(Dict[str, Any], effective)
+                # Refresh pdata from post-overlay config so new fields (passive, keywords, etc.) pick up overrides
+                pdata = conf.get("plugin") or pdata
             for warning in resolved_conf.get("warnings", []):
                 if isinstance(warning, dict):
                     logger.warning(
@@ -981,8 +985,8 @@ def _parse_single_plugin_config(
                         warning.get("field"),
                         warning.get("message"),
                     )
-            # Refresh pdata from post-overlay config so new fields (passive, keywords, etc.) pick up overrides
-            pdata = conf.get("plugin") or pdata
+                elif warning:
+                    logger.warning("Plugin config warning: {}", warning)
     except Exception as e:
         logger.warning(
             "Plugin {}: failed to apply user config profile overlay: {}. Using base config only.",

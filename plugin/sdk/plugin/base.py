@@ -219,7 +219,9 @@ class NekoPluginBase(_SharedNekoPluginBase):
         action_id = action.get("id")
         if not isinstance(action_id, str) or not action_id.strip():
             raise ValueError("action must define a non-empty 'id'")
+        action_id = action_id.strip()
         normalized = {str(key): value for key, value in action.items() if isinstance(key, str)}
+        normalized["id"] = action_id
         next_actions = [item for item in self._list_actions if item.get("id") != action_id]
         next_actions.append(normalized)
         return self.set_list_actions(next_actions)

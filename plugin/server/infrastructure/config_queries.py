@@ -59,7 +59,7 @@ def load_plugin_config_toml(plugin_id: str) -> dict[str, object]:
     resolved = resolve_plugin_config(
         plugin_id,
         include_effective_config=False,
-        validate_schema=True,
+        validate_schema=False,
     )
     config_path = Path(str(resolved["config_path"]))
     try:

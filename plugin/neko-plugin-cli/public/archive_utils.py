@@ -40,6 +40,8 @@ def read_metadata(archive: zipfile.ZipFile) -> dict[str, object] | None:
 
 
 def safe_archive_path(name: str) -> PurePosixPath:
+    if "\\" in name or (len(name) >= 2 and name[1] == ":"):
+        raise ValueError(f"archive entry must use posix paths: {name}")
     path = PurePosixPath(name)
     if path.is_absolute():
         raise ValueError(f"archive entry must not be absolute: {name}")

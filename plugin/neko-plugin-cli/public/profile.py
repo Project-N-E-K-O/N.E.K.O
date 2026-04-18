@@ -27,12 +27,6 @@ def write_default_profile(source: PluginSource, profiles_dir: Path) -> list[Path
 
     runtime_config = extract_runtime_config(source)
     if runtime_config:
-        lines.extend(
-            [
-                "",
-                f"[plugin.{toml_bare_or_quoted_key(source.plugin_id)}.{toml_bare_or_quoted_key(source.plugin_id)}]",
-            ]
-        )
         lines.extend(dump_mapping(runtime_config))
 
     profile_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
@@ -67,12 +61,6 @@ def write_bundle_profile(sources: list[PluginSource], profiles_dir: Path) -> lis
 
         runtime_config = extract_runtime_config(source)
         if runtime_config:
-            lines.extend(
-                [
-                    "",
-                    f"[plugin.{toml_bare_or_quoted_key(source.plugin_id)}.{toml_bare_or_quoted_key(source.plugin_id)}]",
-                ]
-            )
             lines.extend(dump_mapping(runtime_config))
 
     profile_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")

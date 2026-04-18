@@ -22,6 +22,15 @@ from public import analyze_bundle_plugins, inspect_package, pack_bundle, pack_pl
 logger = get_logger("server.application.plugin_cli")
 
 
+def _require_within(path: Path, root: Path, *, field: str) -> Path:
+    resolved = path.resolve()
+    try:
+        resolved.relative_to(root.resolve())
+    except ValueError as exc:
+        raise ValueError(f"{field} must be inside {root}") from exc
+    return resolved
+
+
 class PluginCliService:
     async def list_local_plugins(self) -> dict[str, object]:
         return await asyncio.to_thread(self._list_local_plugins_sync)
@@ -143,6 +152,7 @@ class PluginCliService:
         try:
             plugin_dirs = self._resolve_plugin_dirs(mode=mode, plugin=plugin, plugins=plugins or [])
             resolved_target_dir = Path(target_dir).expanduser().resolve() if target_dir else _TARGET_ROOT
+            _require_within(resolved_target_dir, _TARGET_ROOT, field="target_dir")
             resolved_target_dir.mkdir(parents=True, exist_ok=True)
 
             if out and mode != "bundle" and len(plugin_dirs) != 1:
@@ -151,7 +161,7 @@ class PluginCliService:
             if mode == "bundle":
                 resolved_bundle_id = bundle_id or "__".join(sorted(item.name for item in plugin_dirs))
                 output_path = (
-                    Path(out).expanduser().resolve()
+                    _require_within(Path(out).expanduser().resolve(), _TARGET_ROOT, field="out")
                     if out
                     else resolved_target_dir / f"{resolved_bundle_id}.neko-bundle"
                 )
@@ -177,7 +187,7 @@ class PluginCliService:
             failed: list[dict[str, object]] = []
             for plugin_dir in plugin_dirs:
                 output_path = (
-                    Path(out).expanduser().resolve()
+                    _require_within(Path(out).expanduser().resolve(), _TARGET_ROOT, field="out")
                     if out
                     else resolved_target_dir / f"{plugin_dir.name}.neko-plugin"
                 )
@@ -228,10 +238,20 @@ class PluginCliService:
         on_conflict: str,
     ) -> dict[str, object]:
         try:
+            plugins_root_path = (
+                _require_within(Path(plugins_root).expanduser().resolve(), _RUNTIME_PLUGINS_ROOT, field="plugins_root")
+                if plugins_root
+                else _RUNTIME_PLUGINS_ROOT
+            )
+            profiles_root_path = (
+                _require_within(Path(profiles_root).expanduser().resolve(), _RUNTIME_PROFILES_ROOT, field="profiles_root")
+                if profiles_root
+                else _RUNTIME_PROFILES_ROOT
+            )
             result = unpack_package(
                 self._resolve_package_path(package),
-                plugins_root=plugins_root or _RUNTIME_PLUGINS_ROOT,
-                profiles_root=profiles_root or _RUNTIME_PROFILES_ROOT,
+                plugins_root=plugins_root_path,
+                profiles_root=profiles_root_path,
                 on_conflict=on_conflict,
             )
             return result.model_dump(mode="json")
@@ -280,6 +300,7 @@ class PluginCliService:
     def _resolve_plugin_dir_candidate(self, raw: str) -> Path:
         candidate = Path(raw).expanduser()
         plugin_dir = candidate.resolve() if candidate.exists() else (_RUNTIME_PLUGINS_ROOT / raw).resolve()
+        _require_within(plugin_dir, _RUNTIME_PLUGINS_ROOT, field=f"plugin '{raw}'")
         plugin_toml = plugin_dir / "plugin.toml"
         if not plugin_toml.is_file():
             raise FileNotFoundError(f"plugin.toml not found for plugin '{raw}': {plugin_toml}")
@@ -288,10 +309,13 @@ class PluginCliService:
     def _resolve_package_path(self, raw: str) -> Path:
         candidate = Path(raw).expanduser()
         if candidate.exists():
-            return candidate.resolve()
+            resolved = candidate.resolve()
+            _require_within(resolved, _TARGET_ROOT, field=f"package '{raw}'")
+            return resolved
 
         target_candidate = (_TARGET_ROOT / raw).resolve()
         if target_candidate.exists():
+            _require_within(target_candidate, _TARGET_ROOT, field=f"package '{raw}'")
             return target_candidate
 
         raise FileNotFoundError(f"package file not found: {raw}")

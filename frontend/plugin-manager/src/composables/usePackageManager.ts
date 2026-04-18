@@ -168,190 +168,6 @@ export function usePackageManager() {
     return localPackages.value.filter((pkg) => inferPackageType(pkg) === packageFilterType.value)
   })
 
-  const primaryPackResult = computed<Record<string, any> | null>(() => {
-    const data = resultData.value
-    if (!data || resultKind.value !== 'pack') return null
-    const packed = Array.isArray(data.packed) ? data.packed : []
-    if (packed.length === 1) {
-      return packed[0] as Record<string, any>
-    }
-    return null
-  })
-
-  const summaryMetrics = computed(() => {
-    const data = resultData.value
-    if (!data) return []
-
-    if (resultKind.value === 'pack') {
-      const primaryPacked = primaryPackResult.value
-      return [
-        {
-          label: '类型',
-          value: primaryPacked?.package_type === 'bundle' ? '整合包' : '插件包',
-        },
-        { label: '成功', value: String(data.packed_count ?? 0) },
-        { label: '失败', value: String(data.failed_count ?? 0) },
-        {
-          label: primaryPacked?.package_type === 'bundle' ? '包含插件' : '状态',
-          value: primaryPacked?.package_type === 'bundle'
-            ? String(primaryPacked?.plugin_ids?.length ?? 0)
-            : data.ok ? '完成' : '部分失败',
-        },
-      ]
-    }
-
-    if (resultKind.value === 'inspect' || resultKind.value === 'verify') {
-      return [
-        { label: '插件数', value: String(data.plugin_count ?? 0) },
-        { label: 'Profiles', value: String(data.profile_count ?? 0) },
-        { label: 'Hash', value: formatHashStatus(data.payload_hash_verified) },
-      ]
-    }
-
-    if (resultKind.value === 'unpack') {
-      return [
-        { label: '已处理插件', value: String(data.unpacked_plugin_count ?? 0) },
-        { label: '冲突策略', value: String(data.conflict_strategy ?? '-') },
-        { label: 'Hash', value: formatHashStatus(data.payload_hash_verified) },
-      ]
-    }
-
-    if (resultKind.value === 'analyze') {
-      return [
-        { label: '插件数', value: String(data.plugin_count ?? 0) },
-        { label: '共同依赖', value: String(data.common_dependencies?.length ?? 0) },
-        { label: '共享依赖', value: String(data.shared_dependencies?.length ?? 0) },
-      ]
-    }
-
-    return []
-  })
-
-  const summaryHighlights = computed(() => {
-    const data = resultData.value
-    if (!data) return []
-
-    if (resultKind.value === 'pack') {
-      const primaryPacked = primaryPackResult.value
-      const firstPacked = data.packed?.[0]
-      const latestPacked = data.packed?.[data.packed?.length - 1]
-      if (primaryPacked?.package_type === 'bundle') {
-        return [
-          primaryPacked?.plugin_id ? { label: '整合包 ID', value: primaryPacked.plugin_id } : null,
-          primaryPacked?.package_name ? { label: '整合包名称', value: primaryPacked.package_name } : null,
-          primaryPacked?.version ? { label: '整合包版本', value: primaryPacked.version } : null,
-          latestPacked?.package_path ? { label: '输出路径', value: latestPacked.package_path } : null,
-        ].filter(Boolean) as Array<{ label: string; value: string }>
-      }
-      return [
-        firstPacked?.plugin_id ? { label: '首个插件', value: firstPacked.plugin_id } : null,
-        latestPacked?.package_path ? { label: '最新包路径', value: latestPacked.package_path } : null,
-      ].filter(Boolean) as Array<{ label: string; value: string }>
-    }
-
-    if (resultKind.value === 'inspect' || resultKind.value === 'verify') {
-      return [
-        data.package_id ? { label: '包 ID', value: data.package_id } : null,
-        data.package_type ? { label: '包类型', value: data.package_type } : null,
-        data.version ? { label: '版本', value: data.version } : null,
-      ].filter(Boolean) as Array<{ label: string; value: string }>
-    }
-
-    if (resultKind.value === 'unpack') {
-      return [
-        data.package_id ? { label: '包 ID', value: data.package_id } : null,
-        data.plugins_root ? { label: '插件目录', value: data.plugins_root } : null,
-        data.profile_dir ? { label: 'Profiles 目录', value: data.profile_dir } : null,
-      ].filter(Boolean) as Array<{ label: string; value: string }>
-    }
-
-    if (resultKind.value === 'analyze') {
-      const sdkSupported = data.sdk_supported_analysis
-      const sdkRecommended = data.sdk_recommended_analysis
-      return [
-        sdkSupported?.current_sdk_version
-          ? {
-              label: '当前 SDK 支持',
-              value: sdkSupported.current_sdk_supported_by_all ? `${sdkSupported.current_sdk_version} 全部支持` : `${sdkSupported.current_sdk_version} 存在不兼容`,
-            }
-          : null,
-        sdkRecommended?.matching_versions?.length
-          ? { label: '推荐交集', value: sdkRecommended.matching_versions.join(', ') }
-          : null,
-      ].filter(Boolean) as Array<{ label: string; value: string }>
-    }
-
-    return []
-  })
-
-  const summaryListItems = computed(() => {
-    const data = resultData.value
-    if (!data) return []
-
-    if (resultKind.value === 'pack') {
-      const primaryPacked = primaryPackResult.value
-      if (primaryPacked?.package_type === 'bundle') {
-        return (primaryPacked.plugin_ids ?? []).map((pluginId: string) => `plugin:${pluginId}`)
-      }
-      return (data.packed ?? []).map((item: Record<string, any>) => `${item.plugin_id} -> ${item.package_path}`)
-    }
-
-    if (resultKind.value === 'inspect' || resultKind.value === 'verify') {
-      return [
-        ...(data.plugins ?? []).map((item: Record<string, any>) => item.plugin_id),
-        ...(data.profile_names ?? []).map((name: string) => `profile:${name}`),
-      ]
-    }
-
-    if (resultKind.value === 'unpack') {
-      return (data.unpacked_plugins ?? []).map((item: Record<string, any>) => {
-        const suffix = item.renamed ? ' (renamed)' : ''
-        return `${item.target_plugin_id}${suffix}`
-      })
-    }
-
-    if (resultKind.value === 'analyze') {
-      return (data.common_dependencies ?? []).map((item: Record<string, any>) => `${item.name} (${item.plugin_count})`)
-    }
-
-    return []
-  })
-
-  const summaryWarnings = computed(() => {
-    const data = resultData.value
-    if (!data) return []
-
-    if (resultKind.value === 'pack') {
-      const warnings = (data.failed ?? []).map((item: Record<string, any>) => `${item.plugin}: ${item.error}`)
-      const primaryPacked = primaryPackResult.value
-      if (primaryPacked?.package_type === 'bundle' && (primaryPacked.plugin_ids?.length ?? 0) < 2) {
-        warnings.push('整合包通常应至少包含两个插件')
-      }
-      return warnings
-    }
-
-    if (resultKind.value === 'verify' && data.ok === false) {
-      return ['包未通过 hash 校验，请不要直接导入运行环境']
-    }
-
-    if (resultKind.value === 'inspect' && data.payload_hash_verified === false) {
-      return ['当前包 hash 校验失败，内容可能已被修改']
-    }
-
-    if (resultKind.value === 'analyze') {
-      const warnings: string[] = []
-      if (data.sdk_supported_analysis && data.sdk_supported_analysis.current_sdk_supported_by_all === false) {
-        warnings.push('当前 SDK 版本不被所有插件共同支持')
-      }
-      if ((data.shared_dependencies?.length ?? 0) > 0) {
-        warnings.push(`检测到 ${data.shared_dependencies.length} 个共享依赖，整合时需要重点检查版本约束`)
-      }
-      return warnings
-    }
-
-    return []
-  })
-
   const activeResultRecord = computed<PackageResultRecord | null>(() => {
     if (resultHistory.value.length === 0) {
       return null
@@ -734,6 +550,8 @@ export function usePackageManager() {
       inspectResult.value = response
       setResult('inspect', response)
       ElMessage.success('包检查完成')
+    } catch (error) {
+      ElMessage.error(`包检查失败：${error instanceof Error ? error.message : String(error)}`)
     } finally {
       inspecting.value = false
     }
@@ -750,6 +568,8 @@ export function usePackageManager() {
       inspectResult.value = response
       setResult('verify', response)
       ElMessage[response.ok ? 'success' : 'warning'](response.ok ? '包校验通过' : '包未通过校验')
+    } catch (error) {
+      ElMessage.error(`包校验失败：${error instanceof Error ? error.message : String(error)}`)
     } finally {
       verifying.value = false
     }
@@ -772,6 +592,8 @@ export function usePackageManager() {
       setResult('unpack', response)
       await refreshPluginSources()
       ElMessage.success(`解包完成，处理了 ${response.unpacked_plugin_count} 个插件`)
+    } catch (error) {
+      ElMessage.error(`解包失败：${error instanceof Error ? error.message : String(error)}`)
     } finally {
       unpacking.value = false
     }
@@ -791,6 +613,8 @@ export function usePackageManager() {
       })
       setResult('analyze', response)
       ElMessage.success('分析完成')
+    } catch (error) {
+      ElMessage.error(`分析失败：${error instanceof Error ? error.message : String(error)}`)
     } finally {
       analyzing.value = false
     }
@@ -860,10 +684,6 @@ export function usePackageManager() {
     selectedPluginIds,
     resolvedPackTargets,
     filteredLocalPackages,
-    summaryMetrics,
-    summaryHighlights,
-    summaryListItems,
-    summaryWarnings,
     setActiveResult,
     openResultDialog,
     togglePlugin,

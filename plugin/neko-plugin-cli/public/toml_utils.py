@@ -41,12 +41,36 @@ def toml_bool(value: bool) -> str:
     return "true" if value else "false"
 
 
+_TOML_STRING_ESCAPES = {
+    "\\": "\\\\",
+    '"': '\\"',
+    "\b": "\\b",
+    "\t": "\\t",
+    "\n": "\\n",
+    "\f": "\\f",
+    "\r": "\\r",
+}
+
+_BARE_KEY_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+)
+
+
 def escape_string(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"')
+    result: list[str] = []
+    for ch in value:
+        escaped = _TOML_STRING_ESCAPES.get(ch)
+        if escaped is not None:
+            result.append(escaped)
+        elif ord(ch) < 0x20 or ord(ch) == 0x7F:
+            result.append(f"\\u{ord(ch):04X}")
+        else:
+            result.append(ch)
+    return "".join(result)
 
 
 def toml_bare_or_quoted_key(key: str) -> str:
-    if key and all(ch.isalnum() or ch in ("_", "-") for ch in key):
+    if key and all(ch in _BARE_KEY_CHARS for ch in key):
         return key
     return f'"{escape_string(key)}"'
 
