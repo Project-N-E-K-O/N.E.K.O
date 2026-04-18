@@ -4000,6 +4000,7 @@ async function loadMmdPreview(modelPath, rawData) {
             if (idleAnimation && typeof workshopMmdManager.loadAnimation === 'function') {
                 try {
                     await workshopMmdManager.loadAnimation(idleAnimation);
+                    workshopMmdManager.playAnimation();
                 } catch (e) {
                     console.warn('[Workshop MMD] idle 动画加载失败:', e);
                 }

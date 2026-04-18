@@ -254,17 +254,54 @@
      */
     // AI 是否正在播放语音：proactive timer 到点时如果还在播，就跳过本次 nudge
     // 并继续按固定间隔 poll（见下面 scheduleProactiveChat 的两处 speaking 分支）。
-    // S.isPlaying：audio chunks 入队到 drain 完这段期间为 true；
-    // S.assistantSpeechActiveTurnId：active turn 有音频在跑时非空。
-    // 两者任一为真都视为在播，避免打断自己。
+    //
+    // 分支 1（isPlaying / speechActiveTurnId）：覆盖"首个 PCM chunk 入队 → drain 完"。
+    // 分支 2（turnId !== completedId + 时间窗）：覆盖"text 已开始流、首个音频 chunk
+    //   还没解码"那几百毫秒空窗。PR #839 原本只靠 `turnId !== completedId` 自释放，
+    //   但 drain 完时 clearAssistantTurnCompletion 会把 completedId 清回 null 而
+    //   turnId 仍留着，这条件会一直 TRUE、proactive 永不触发。
+    //   加 `elapsed < PROACTIVE_TURN_STARTUP_GRACE_MS` 作为硬上限：那段空窗通常只有
+    //   几百毫秒，5s 已经是数量级的余裕；超出就让分支 1 的自释放信号接管。
+    var PROACTIVE_TURN_STARTUP_GRACE_MS = 5000;
+
+    // C: 用户最近发声的窗口（ms）。和后端 _user_recent_activity_window (8s) 对齐，
+    // 网络来回有延迟时前端守门先挡住，请求根本不发出去，省一个 round-trip。
+    // `S.userRecentSpeechTime` 由 app-audio-capture.js 里的 monitorInputVolume 持续
+    // 写入（RMS > 0.01 每帧打点），这里用一个稍宽于后端的窗口，保证"前端没挡住但
+    // 后端挡住"的 race 不至于频繁发生（fudge 空跑成本低，但可以省则省）。
+    var USER_RECENT_SPEECH_WINDOW_MS = 8000;
+
     function _isAssistantSpeaking() {
         try {
-            return !!(S && (S.isPlaying || S.assistantSpeechActiveTurnId));
+            if (!S) return false;
+            if (S.isPlaying || S.assistantSpeechActiveTurnId) return true;
+            if (S.assistantTurnId && S.assistantTurnId !== S.assistantTurnCompletedId) {
+                var startedAt = S.assistantTurnStartedAt || 0;
+                if (startedAt && Date.now() - startedAt < PROACTIVE_TURN_STARTUP_GRACE_MS) {
+                    return true;
+                }
+            }
+            return false;
         } catch (_) {
             return false;
         }
     }
     mod._isAssistantSpeaking = _isAssistantSpeaking;
+
+    // C: 判断用户是否最近在发声。仅在 voice 模式下使用（文本模式没有麦克风打点），
+    // 用来在前端层面拦住 proactive tick，与后端 prompt_ephemeral 的
+    // _user_recent_activity_time 防线形成对称冗余。
+    function _isUserRecentlySpeaking() {
+        try {
+            if (!S || !S.isRecording) return false;
+            var last = S.userRecentSpeechTime || 0;
+            if (!last) return false;
+            return (Date.now() - last) < USER_RECENT_SPEECH_WINDOW_MS;
+        } catch (_) {
+            return false;
+        }
+    }
+    mod._isUserRecentlySpeaking = _isUserRecentlySpeaking;
 
     function canTriggerProactively() {
         // 「请她离开」状态下禁止一切主动搭话
@@ -363,6 +400,15 @@
                     scheduleProactiveChat();
                     return;
                 }
+                // C: 前端麦克风 RMS 最近 8s 内超过语音阈值 → 用户正在说话或
+                // 刚说完，不发 fudge。与后端 _user_recent_activity_time guard
+                // 对称（8s 窗口），请求根本不出门，省一次 round-trip。
+                // 同 AI-speaking 分支：不计入 no-response 计数，仍推进下一 tick。
+                if (_isUserRecentlySpeaking()) {
+                    console.log('[ProactiveChat] 语音模式：用户最近在发声，本次 nudge 跳过（不计数），继续下一 tick');
+                    scheduleProactiveChat();
+                    return;
+                }
                 S.isProactiveChatRunning = true;
                 try {
                     await triggerProactiveChat();
@@ -382,13 +428,66 @@
             return;
         }
 
-        // 文本模式：指数退避（带小幅随机指数浮动，避免节奏过于机械）
-        var baseInterval = S.proactiveChatInterval;
+        // ── 文本模式：三段式自适应退避 ──
+        //
+        // 常量:
+        //   BACKOFF_TARGET  = 120s (收敛目标)
+        //   BACKOFF_M1      = 1.09167 (tier 1 固定倍率, = 1 + (120 - 10) / 1200)
+        //   BACKOFF_M2      = 1.55 (tier 2/3 倍率)
+        //   BACKOFF_SLOW    = 4 (慢区级数)
+        //   BACKOFF_P_SLOW  = 0.09 (慢区升级概率)
+        //   BACKOFF_HARD_CAP = 3600s (硬顶 60min)
+        //
+        // 自适应参数 (由 base 决定):
+        //   cap1 = ceil(log(TARGET / base) / log(M1))   — tier 1 总级数
+        //   cap2 = cap1 + SLOW                          — 慢区终点
+        //
+        // Delay 函数:
+        //   level < cap1:  base × M1^level × (1 ± 12%)                   (tier 1: 每 tick 必升)
+        //   level ≥ cap1:  base × M1^cap1 × M2^(level - cap1) × (1 ± 12%)  (tier 2/3)
+        //   min(上式, HARD_CAP)
+        //
+        // Level 推进:
+        //   level < cap1         → level++          (确定性)
+        //   cap1 ≤ level < cap2  → 9% 概率 level++  (慢区)
+        //   level ≥ cap2         → level++          (快区)
+        //
+        // 单调性: 固定 M1 使 delay(T) ≈ base + T×(M1-1)，
+        //         ∂delay/∂base = 1 > 0，base 越高期望 delay 越高。
 
-        // 在指数上叠加 ±0.125 的随机漂移 → 实际倍率波动约 [0.89x, 1.12x]，幅度很小但有变化
-        var expJitter = (Math.random() - 0.5) * 0.25;
-        var effectiveExp = S.proactiveChatBackoffLevel + expJitter;
-        var delay = (baseInterval * 1000) * Math.pow(2.5, effectiveExp);
+        var baseInterval = S.proactiveChatInterval;
+        var BACKOFF_TARGET = 120;
+        var BACKOFF_M1 = 1.09167;
+        var BACKOFF_M2 = 1.55;
+        var BACKOFF_SLOW = 4;
+        var BACKOFF_P_SLOW = 0.09;
+        var BACKOFF_HARD_CAP_MS = 3600 * 1000;
+
+        function computeBackoffCaps(baseIntervalSeconds) {
+            var c1 = (baseIntervalSeconds >= BACKOFF_TARGET) ? 0
+                : Math.ceil(Math.log(BACKOFF_TARGET / baseIntervalSeconds) / Math.log(BACKOFF_M1));
+            return { cap1: c1, cap2: c1 + BACKOFF_SLOW };
+        }
+
+        var caps = computeBackoffCaps(baseInterval);
+        var cap1 = caps.cap1;
+        var cap2 = caps.cap2;
+
+        var level = S.proactiveChatBackoffLevel;
+        var delay;
+
+        if (level < cap1) {
+            // Tier 1: base × M1^level，确定性爬升
+            delay = (baseInterval * 1000) * Math.pow(BACKOFF_M1, level);
+        } else {
+            // Tier 2/3: 从收敛点开始用 M2 爬升
+            var convergenceDelay = baseInterval * Math.pow(BACKOFF_M1, cap1);
+            delay = convergenceDelay * 1000 * Math.pow(BACKOFF_M2, level - cap1);
+            delay = Math.min(delay, BACKOFF_HARD_CAP_MS);
+        }
+
+        // 对 delay 做 ±12% 乘性随机抖动，避免节奏过于机械
+        delay *= 1 + (Math.random() - 0.5) * 0.24;
 
         // 首次启动时额外等待 6 秒，避免程序刚启动就触发音乐推荐。
         // 用一次性 flag 而非 backoffLevel === 0 —— 后者在 user_input reset 或
@@ -401,12 +500,7 @@
         }
         delay += startupDelay;
 
-        // Clamp：level 长期上爬后 (level ≥ ~13 @ base=30s) `2.5^level` 会把 delay
-        // 顶到超过 setTimeout 的 int32 上限 0x7fffffff ≈ 24.8 天，实际被截断成
-        // "1ms 后立刻 fire"。加个硬上限保险，实际封顶在 ~24 天，已足够长。
-        delay = Math.min(delay, 0x7fffffff);
-
-        console.log('主动搭话：' + (delay / 1000).toFixed(1) + '秒后触发（基础间隔：' + S.proactiveChatInterval + '秒，退避级别：' + S.proactiveChatBackoffLevel + '，指数漂移：' + expJitter.toFixed(2) + '，启动延迟：' + (startupDelay / 1000) + '秒）');
+        console.log('主动搭话：' + (delay / 1000).toFixed(1) + '秒后触发（基础间隔：' + baseInterval + '秒，退避级别：' + level + '，cap1：' + cap1 + '，cap2：' + cap2 + '，启动延迟：' + (startupDelay / 1000) + '秒）');
 
         S.proactiveChatTimer = setTimeout(async function () {
             // 双重检查锁：定时器触发时再次检查是否正在执行
@@ -429,23 +523,32 @@
             console.log('触发主动搭话...');
             S.isProactiveChatRunning = true; // 加锁
 
+            var triggered = false;
             try {
-                await triggerProactiveChat();
+                triggered = await triggerProactiveChat();
             } finally {
                 S.isProactiveChatRunning = false; // 解锁
             }
 
-            // 增加退避级别：
-            //   level < 2 时每次必升（30s → 75s → 187s ≈ 3min），快速拉开间隔；
-            //   level ≥ 2 后改为 30% 概率升级，让"长期无人搭理"的情况间隔能继续慢慢变长，
-            //     但大多数轮次仍停在当前档位，避免一次跳太远。
-            //   注：硬上限从原设计的 level 3 降到 2，因为同批改动里去掉了 turn_end reset，
-            //   整体退避会更猛 —— 先降一级做软着陆，让用户不至于突然觉得搭话显著变少。
-            if (S.proactiveChatBackoffLevel < 2) {
-                S.proactiveChatBackoffLevel++;
-            } else if (Math.random() < 0.3) {
-                S.proactiveChatBackoffLevel++;
-                console.log('[ProactiveChat] 高档位概率升级命中，退避级别升至 ' + S.proactiveChatBackoffLevel);
+            // 三段式 level 推进（仅在实际发送了请求时才推进）：
+            //   tier 1 (level < cap1): 每次必升 — 确定性爬升阶段
+            //   tier 2 (cap1 ≤ level < cap2): 9% 概率升级 — 慢区，长时间停留
+            //   tier 3 (level ≥ cap2): 每次必升 — 快区，快速逼近 60min 硬顶
+            if (triggered) {
+                var currentCaps = computeBackoffCaps(S.proactiveChatInterval);
+                var currentCap1 = currentCaps.cap1;
+                var currentCap2 = currentCaps.cap2;
+
+                if (S.proactiveChatBackoffLevel < currentCap1) {
+                    S.proactiveChatBackoffLevel++;
+                } else if (S.proactiveChatBackoffLevel < currentCap2) {
+                    if (Math.random() < BACKOFF_P_SLOW) {
+                        S.proactiveChatBackoffLevel++;
+                        console.log('[ProactiveChat] 慢区概率升级命中，退避级别升至 ' + S.proactiveChatBackoffLevel);
+                    }
+                } else {
+                    S.proactiveChatBackoffLevel++;
+                }
             }
 
             // 安排下一次
@@ -487,6 +590,7 @@
     // ======================== triggerProactiveChat ========================
 
     async function triggerProactiveChat() {
+        var requestSent = false;
         try {
             // 主备协调：本窗口非 leader 时不触发，避免和 Pet 主窗口重复发请求。
             // 这里再 guard 一次是为了防止 leader 切换后旧定时器仍然触发。
@@ -516,10 +620,11 @@
                         voice_mode: true
                     })
                 });
+                requestSent = true;
                 var result = await resp.json();
                 S._voiceProactiveLastResult = result.action || 'unknown';
                 console.log('[ProactiveChat] 语音模式结果:', S._voiceProactiveLastResult);
-                return;
+                return true;
             }
 
             var availableModes = [];
@@ -554,11 +659,17 @@
                 }
             }
 
-            // 音乐搭话
+            // 音乐搭话（正在播放或冷却期内不发送 music 模式，避免后端搜歌浪费 + 污染模型上下文）
             console.log('[ProactiveChat] 检查音乐模式: proactiveMusicEnabled=' + S.proactiveMusicEnabled + ', proactiveChatEnabled=' + S.proactiveChatEnabled);
             if (S.proactiveMusicEnabled && S.proactiveChatEnabled) {
-                console.log('[ProactiveChat] 音乐模式已启用');
-                availableModes.push('music');
+                var musicPlaying = (typeof window.isMusicPlaying === 'function') && window.isMusicPlaying();
+                var musicCooldown = (typeof window.isMusicCooldown === 'function') && window.isMusicCooldown();
+                if (musicPlaying || musicCooldown) {
+                    console.log('[ProactiveChat] 音乐模式跳过: playing=' + musicPlaying + ', cooldown=' + musicCooldown);
+                } else {
+                    console.log('[ProactiveChat] 音乐模式已启用');
+                    availableModes.push('music');
+                }
             }
 
             // Meme搭话
@@ -641,9 +752,13 @@
                 if (S.proactivePersonalChatEnabled && S.proactiveChatEnabled) {
                     latestModes.push('personal');
                 }
-                // 音乐搭话
+                // 音乐搭话（重新检查冷却状态，await 期间可能变化）
                 if (S.proactiveMusicEnabled && S.proactiveChatEnabled) {
-                    latestModes.push('music');
+                    var musicPlayingNow = (typeof window.isMusicPlaying === 'function') && window.isMusicPlaying();
+                    var musicCooldownNow = (typeof window.isMusicCooldown === 'function') && window.isMusicCooldown();
+                    if (!musicPlayingNow && !musicCooldownNow) {
+                        latestModes.push('music');
+                    }
                 }
                 // Meme搭话
                 if (S.proactiveMemeEnabled && S.proactiveChatEnabled) {
@@ -717,6 +832,7 @@
                 },
                 body: JSON.stringify(requestBody)
             });
+            requestSent = true;
 
             var result = await response.json();
 
@@ -785,8 +901,10 @@
             } else {
                 console.warn('主动搭话失败:', result.error);
             }
+            return true;
         } catch (error) {
             console.error('主动搭话触发失败:', error);
+            return requestSent;
         }
     }
     mod.triggerProactiveChat = triggerProactiveChat;
@@ -860,7 +978,8 @@
                 }
             }
             if (!isMemeLink && link.url) {
-                var memeDomains = ['qn.doutub.com', 'img.soutula.com', 'i.imgflip.com', 'doutub.com', 'fabiaoqing.com', 'soutula.com'];
+                // 2026-04-16: doutub.com 域名易主挂黑产，停用（'qn.doutub.com', 'doutub.com'）；新增 doutupk.com（斗图啦）
+                var memeDomains = ['img.soutula.com', 'i.imgflip.com', 'fabiaoqing.com', 'soutula.com', 'img.doutupk.com', 'doutupk.com'];
                 var linkHost = '';
                 try {
                     var tempUrl = new URL(String(link.url), window.location.origin);

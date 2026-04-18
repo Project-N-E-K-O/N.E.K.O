@@ -25,6 +25,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from openai import APIConnectionError, InternalServerError, RateLimitError
 from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm
+import ssl
 import httpx
 from cachetools import TTLCache
 
@@ -54,7 +55,12 @@ from config.prompts_proactive import (
     MUSIC_SEARCH_RESULT_TEXTS,
 )
 from utils.workshop_utils import get_workshop_path
-from utils.screenshot_utils import compress_screenshot, COMPRESS_TARGET_HEIGHT, COMPRESS_JPEG_QUALITY
+from utils.screenshot_utils import (
+    compress_screenshot,
+    decode_and_compress_screenshot_b64,
+    COMPRESS_TARGET_HEIGHT,
+    COMPRESS_JPEG_QUALITY,
+)
 from utils.language_utils import detect_language, translate_text, normalize_language_code, get_global_language
 from utils.web_scraper import (
     fetch_trending_content, format_trending_content,
@@ -1861,11 +1867,14 @@ async def proxy_meme_image(url: str):
         referer_map = {
             'img.soutula.com': 'https://fabiaoqing.com/',
             'fabiaoqing.com': 'https://fabiaoqing.com/',
-            'qn.doutub.com': 'https://www.doutub.com/',
-            'doutub.com': 'https://www.doutub.com/',
+            # 2026-04-16: doutub.com 域名易主挂黑产，停用
+            # 'qn.doutub.com': 'https://www.doutub.com/',
+            # 'doutub.com': 'https://www.doutub.com/',
             'i.imgflip.com': 'https://imgflip.com/',
             'imgflip.com': 'https://imgflip.com/',
             'soutula.com': 'https://fabiaoqing.com/',
+            'img.doutupk.com': 'https://www.doutupk.com/',
+            'doutupk.com': 'https://www.doutupk.com/',
         }
         referer = referer_map.get(hostname, f'{parsed.scheme}://{hostname}/')
         headers = {
@@ -1876,8 +1885,27 @@ async def proxy_meme_image(url: str):
 
         # 使用流式下载以严格控制资源大小，防止内存溢出或大文件攻击
         MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10MB 限制
-        
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
+
+        # 已知 SSL 证书有问题的 CDN 域名（如七牛 CDN hostname mismatch），
+        # 对这些域名首次请求即使用宽松 SSL，避免白白浪费一次超时。
+        # 2026-04-16: qn.doutub.com 随 doutub.com 域名易主停用；白名单当前为空，
+        # 其它域名仍走 ssl.SSLError 降级分支兜底。
+        _SSL_RELAXED_HOSTS: set[str] = set()
+        need_relaxed_ssl = hostname in _SSL_RELAXED_HOSTS
+
+        def _make_client(relaxed: bool = False) -> httpx.AsyncClient:
+            if relaxed:
+                ctx = ssl.create_default_context()
+                try:
+                    ctx.set_ciphers('DEFAULT@SECLEVEL=1')
+                except Exception as e:
+                    logger.debug("[Meme Proxy] set_ciphers SECLEVEL=1 不可用，使用默认密码套件: %s", e)
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                return httpx.AsyncClient(timeout=15.0, follow_redirects=False, verify=ctx)
+            return httpx.AsyncClient(timeout=15.0, follow_redirects=False)
+
+        async with _make_client(relaxed=need_relaxed_ssl) as client:
             current_url = decoded_url
             for _ in range(4):  # 最多跟随 3 次重定向 (4次请求)
                 async with client.stream("GET", current_url, headers=headers) as resp:
@@ -1949,12 +1977,47 @@ async def proxy_meme_image(url: str):
 
     except httpx.TimeoutException:
         return JSONResponse(content={"success": False, "error": "请求超时"}, status_code=504)
+    except (ssl.SSLError, httpx.ConnectError) as e:
+        # SSL 握手失败：对白名单内的表情包域名降级重试（宽松 SSL）
+        is_ssl = isinstance(e, ssl.SSLError) or 'SSL' in str(e) or 'certificate' in str(e).lower()
+        if is_ssl and not need_relaxed_ssl:
+            logger.warning(f"[Meme Proxy] SSL 失败，降级重试: {hostname} ({e})")
+            try:
+                async with _make_client(relaxed=True) as fallback_client:
+                    async with fallback_client.stream("GET", decoded_url, headers=headers) as resp:
+                        resp.raise_for_status()
+                        raw_ct = resp.headers.get('Content-Type', '').lower()
+                        ct = raw_ct.split(';', 1)[0].strip()
+                        allowed_ct = {'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/avif', 'image/bmp'}
+                        if ct not in allowed_ct:
+                            return JSONResponse(content={"success": False, "error": "格式不支持"}, status_code=403)
+                        body = bytearray()
+                        async for chunk in resp.aiter_bytes():
+                            body.extend(chunk)
+                            if len(body) > MAX_IMAGE_SIZE:
+                                return JSONResponse(content={"success": False, "error": "资源超过大小限制"}, status_code=413)
+                        MEME_PROXY_CACHE[cache_key] = {'body': bytes(body), 'content_type': ct}
+                        return Response(
+                            content=bytes(body), media_type=ct,
+                            headers={'Cache-Control': 'public, max-age=86400', 'X-Cache': 'MISS-SSL-FALLBACK', 'X-Content-Type-Options': 'nosniff'}
+                        )
+            except Exception as fallback_e:
+                logger.error(f"[Meme Proxy] SSL 降级重试也失败: {fallback_e}")
+                return JSONResponse(content={"success": False, "error": str(fallback_e)}, status_code=500)
+        logger.error(f"[Meme Proxy] 代理失败: {str(e)}")
+        return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
     except Exception as e:
         logger.error(f"[Meme Proxy] 代理失败: {str(e)}")
         return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
 
 
 # 辅助函数
+
+def _read_binary_file(path: str) -> bytes:
+    """同步 binary read，给 asyncio.to_thread 调用。"""
+    with open(path, 'rb') as f:
+        return f.read()
+
 
 @router.get('/steam/proxy-image')
 async def proxy_image(image_path: str):
@@ -2134,14 +2197,13 @@ async def proxy_image(image_path: str):
         
         # 检查文件大小是否超过50MB限制
         MAX_IMAGE_SIZE = 50 * 1024 * 1024  # 50MB
-        file_size = os.path.getsize(final_path)
+        file_size = await asyncio.to_thread(os.path.getsize, final_path)
         if file_size > MAX_IMAGE_SIZE:
             logger.warning(f"图片文件大小超过限制: {final_path} ({file_size / 1024 / 1024:.2f}MB > 50MB)")
             return JSONResponse(content={"success": False, "error": f"图片文件大小超过50MB限制 ({file_size / 1024 / 1024:.2f}MB)"}, status_code=413)
-        
-        # 读取图片文件
-        with open(final_path, 'rb') as f:
-            image_data = f.read()
+
+        # 读取图片文件 —— 最多 50MB，事件循环上同步 read 会卡几十毫秒
+        image_data = await asyncio.to_thread(_read_binary_file, final_path)
         
         # 根据文件扩展名设置MIME类型
         ext = os.path.splitext(final_path)[1].lower()
@@ -2192,9 +2254,13 @@ async def backend_screenshot(request: Request):
         return JSONResponse({"success": False, "error": "pyautogui not installed"}, status_code=501)
 
     try:
-        shot = pyautogui.screenshot()
-        if shot.mode in ('RGBA', 'LA', 'P'):
-            shot = shot.convert('RGB')
+        def _capture_rgb_screenshot():
+            shot = pyautogui.screenshot()
+            if shot.mode in ('RGBA', 'LA', 'P'):
+                shot = shot.convert('RGB')
+            return shot
+
+        shot = await asyncio.to_thread(_capture_rgb_screenshot)
 
         # macOS 黑屏检测：仅在 macOS 上执行——未授权 Screen Recording 时 pyautogui 返回全黑图片
         # 其他平台（Windows/Linux）全黑截图属正常内容，不应拦截
@@ -2209,7 +2275,9 @@ async def backend_screenshot(request: Request):
             except Exception:
                 logger.debug("macOS blank-screen detection failed, skipping check", exc_info=True)
 
-        jpg_bytes = compress_screenshot(shot, target_h=COMPRESS_TARGET_HEIGHT, quality=COMPRESS_JPEG_QUALITY)
+        jpg_bytes = await asyncio.to_thread(
+            compress_screenshot, shot, target_h=COMPRESS_TARGET_HEIGHT, quality=COMPRESS_JPEG_QUALITY,
+        )
         b64 = base64.b64encode(jpg_bytes).decode('utf-8')
         data_url = f"data:image/jpeg;base64,{b64}"
         return JSONResponse({"success": True, "data": data_url, "size": len(jpg_bytes)})
@@ -2228,7 +2296,7 @@ def build_proactive_response(source_tag: str, ctx: dict) -> tuple[str, list]:
     
     match source_tag:
         case 'CHAT':
-            primary_channel = 'vision'
+            primary_channel = 'chat'
         case 'WEB':
             # 使用细粒度 web 子通道（news/video/home/personal），fallback 到 'web'
             web_link = ctx.get('selected_web_link')
@@ -2268,7 +2336,7 @@ async def proactive_chat(request: Request):
         _config_manager = get_config_manager()
         session_manager = get_session_manager()
         # 获取当前角色数据（包括完整人设）
-        master_name_current, her_name_current, _, _, _, lanlan_prompt_map, _, _, _ = _config_manager.get_character_data()
+        master_name_current, her_name_current, _, _, _, lanlan_prompt_map, _, _, _ = await _config_manager.aget_character_data()
         
         data = await request.json()
         lanlan_name = data.get('lanlan_name') or her_name_current
@@ -2338,14 +2406,15 @@ async def proactive_chat(request: Request):
                 # 截图将在 Phase 2 由 vision_model 直接读取原图，这里只做压缩。
                 compressed_b64 = ''
                 try:
-                    from PIL import Image as _PILImage
                     b64_raw = screenshot_data.split(',', 1)[1] if ',' in screenshot_data else screenshot_data
-                    img = _PILImage.open(BytesIO(base64.b64decode(b64_raw)))
-                    if img.mode in ('RGBA', 'LA', 'P'):
-                        img = img.convert('RGB')
-                    jpg_bytes = compress_screenshot(img, target_h=COMPRESS_TARGET_HEIGHT, quality=COMPRESS_JPEG_QUALITY)
-                    compressed_b64 = base64.b64encode(jpg_bytes).decode('utf-8')
-                    print(f"[{lanlan_name}] Vision 通道: 截图压缩完成 {len(jpg_bytes)//1024}KB (Phase 2 将直接分析)")
+                    compressed_b64 = await asyncio.to_thread(
+                        decode_and_compress_screenshot_b64,
+                        b64_raw,
+                        COMPRESS_TARGET_HEIGHT,
+                        COMPRESS_JPEG_QUALITY,
+                    )
+                    jpg_size_kb = len(compressed_b64) * 3 // 4 // 1024
+                    print(f"[{lanlan_name}] Vision 通道: 截图压缩完成 {jpg_size_kb}KB (Phase 2 将直接分析)")
                 except Exception as compress_err:
                     logger.warning(f"[{lanlan_name}] 截图压缩失败（Phase 2 将无法使用截图）: {compress_err}")
                 return (mode, {'window_title': window_title, 'screenshot_b64': compressed_b64})
@@ -2446,13 +2515,17 @@ async def proactive_chat(request: Request):
         
         raw_memory_context = ""
         try:
-            async with httpx.AsyncClient(proxy=None, trust_env=False) as client:
-                resp = await client.get(f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{lanlan_name}", timeout=5.0)
-                resp.raise_for_status()  # Check for HTTP errors explicitly
-                if resp.status_code == 200:
-                    raw_memory_context = resp.text
-                else:
-                    logger.warning(f"[{lanlan_name}] 记忆服务返回非200状态: {resp.status_code}，使用空上下文")
+            from utils.memory_client import get_memory_client
+            _pt_client = get_memory_client()
+            resp = await _pt_client.get(
+                f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{lanlan_name}",
+                timeout=5.0,
+            )
+            resp.raise_for_status()  # Check for HTTP errors explicitly
+            if resp.status_code == 200:
+                raw_memory_context = resp.text
+            else:
+                logger.warning(f"[{lanlan_name}] 记忆服务返回非200状态: {resp.status_code}，使用空上下文")
         except Exception as e:
             logger.warning(f"[{lanlan_name}] 获取记忆上下文失败，使用空上下文: {e}")
         
@@ -2959,6 +3032,7 @@ async def proactive_chat(request: Request):
                     )
                     if _is_recent_topic_used(lanlan_name, music_topic_key):
                         print(f"[{lanlan_name}]- Phase 1 音乐话题去重命中，跳过: {track_name}")
+                        music_content = None  # 彻底清空，防止去重后的残留数据泄漏到 fallback 逻辑
                     else:
                         logger.debug(f"[{lanlan_name}]- Phase 1 音乐话题已添加: {music_topic[:100]}...")
                         selected_music_link = {
@@ -3085,14 +3159,14 @@ async def proactive_chat(request: Request):
         
         music_section = ""
         # 如果正在放歌或处于冷却期，强行屏蔽音乐素材推荐，避免 AI 误触
+        # （冷却期时 music_content 已在上游被清空，music_topic 必为 None，此分支不会命中）
         if music_topic and not is_playing_music and not music_cooldown:
             # 【优化】使用独立的标识符，防止模型将音乐素材误认为普通的外部 WEB 话题
             msh = _loc(MUSIC_SECTION_HEADER, proactive_lang)
             msf = _loc(MUSIC_SECTION_FOOTER, proactive_lang)
             music_section = f"{msh}\n{music_topic}\n{msf}"
-        elif is_playing_music or music_cooldown:
-            reason = "正在播放音乐" if is_playing_music else "音乐冷却期"
-            print(f"[{lanlan_name}] {reason}，已屏蔽音乐推荐素材（仅保留 playing_hint）")
+        elif is_playing_music:
+            print(f"[{lanlan_name}] 正在播放音乐，已屏蔽音乐推荐素材（仅保留 playing_hint）")
             music_section = ""
         
         # 构建表情包段（meme 通道）
@@ -3149,8 +3223,10 @@ async def proactive_chat(request: Request):
             if raw_data.get('best_match', {}).get('status') == 'fuzzy':
                 dynamic_context_for_phase2 += get_proactive_music_failsafe_hint(proactive_lang)
 
-        if is_playing_music or music_cooldown:
+        if is_playing_music:
             dynamic_context_for_phase2 += get_proactive_music_strict_constraint(proactive_lang)
+        # music_cooldown 时不再注入 strict_constraint —— 此时 music 通道已被前端/后端
+        # 完全剔除，不应向模型暴露任何音乐相关指令，以免干扰其他 source 的选择。
         print(f"[{lanlan_name}] Phase 2 prompt 长度: {len(generate_prompt)}, 动态上下文: {len(dynamic_context_for_phase2)} 字符")
 
         # --- 前置检查：用户是否空闲、WebSocket 是否在线、session 是否可用 ---
@@ -3160,6 +3236,10 @@ async def proactive_chat(request: Request):
                 "action": "pass",
                 "message": "主动搭话条件未满足（用户近期活跃或语音会话正在进行）"
             })
+
+        # 记录本轮主动搭话起始的 speech_id；abort 时若该 id 已变，说明用户已打断并接管，
+        # 此时再调 handle_new_message() 会把用户正常回复的 TTS 也一起清掉。
+        proactive_sid = mgr.current_speech_id
 
         # --- 构建 LLM + messages (static/dynamic 分离) ---
         phase2_use_vision = bool(screenshot_b64_for_phase2 and has_vision_model)
@@ -3196,6 +3276,12 @@ async def proactive_chat(request: Request):
             nonlocal pipe_count, full_text, aborted
             if not text:
                 return False
+            # sid 已被换掉说明用户已打断并接管本轮，立刻 abort 以停止 LLM stream；
+            # feed_tts_chunk 下面还有 lock 内二次校验兜底，防止 await 期间的 race。
+            if mgr.current_speech_id != proactive_sid:
+                print(f"[{lanlan_name}] Phase 2 检测到 sid 变更（用户已接管），abort")
+                aborted = True
+                return True
             for ch in text:
                 if ch in ('|', '｜'):
                     pipe_count += 1
@@ -3208,7 +3294,7 @@ async def proactive_chat(request: Request):
                 aborted = True
                 return True
             full_text += text
-            await mgr.feed_tts_chunk(text)
+            await mgr.feed_tts_chunk(text, expected_speech_id=proactive_sid)
             return False
         
         try:
@@ -3299,8 +3385,11 @@ async def proactive_chat(request: Request):
         # --- 结果处理 ---
         print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output (aborted={aborted}, tag={source_tag}): {(buffer + full_text)[:300]}\n")
         if aborted or not full_text.strip():
-            await mgr.handle_new_message()
-            logger.debug(f"[{lanlan_name}] Phase 2 abort，已中断 TTS + 前端音频")
+            if mgr.current_speech_id == proactive_sid:
+                await mgr.handle_new_message()
+                logger.debug(f"[{lanlan_name}] Phase 2 abort，已中断 TTS + 前端音频")
+            else:
+                logger.info(f"[{lanlan_name}] Phase 2 abort 但用户已接管 (sid changed)，跳过 TTS 清理避免误伤正常回复")
             return JSONResponse({
                 "success": True,
                 "action": "pass",
@@ -3313,20 +3402,30 @@ async def proactive_chat(request: Request):
 
         has_music_topic = 'music' in active_channels
 
-        # 【加固】数据级锁：如果正在同步播放音乐，哪怕 AI 产生了音乐标签，也强制降级/忽略
+        # 【加固】数据级锁：如果正在播放音乐，哪怕 AI 产生了音乐标签，也强制降级/忽略
         is_music_used = has_music_topic and source_tag == 'MUSIC'
         ai_wants_music = source_tag == 'MUSIC'
 
-        if (is_playing_music or music_cooldown) and ai_wants_music:
-            print(f"[{lanlan_name}] 数据级锁触发：{'播放中' if is_playing_music else '冷却期'}尝试推荐新歌，已强制拦截并清空曲目列表")
+        if is_playing_music and ai_wants_music:
+            print(f"[{lanlan_name}] 数据级锁触发：播放中尝试推荐新歌，已强制拦截并清空曲目列表")
             is_music_used = False
             music_content = None
             source_tag = 'PASS'
             aborted = True
+        elif music_cooldown and ai_wants_music:
+            # 冷却期：music 通道本不应出现在上下文中，但模型仍输出了 [MUSIC] 标签。
+            # 降级为普通 CHAT 而非 abort 整轮搭话，避免浪费其他 source 的有效内容。
+            print(f"[{lanlan_name}] 音乐冷却期模型输出 [MUSIC]，降级为 CHAT（不中止搭话）")
+            is_music_used = False
+            music_content = None
+            source_tag = 'CHAT'
         
         # 【加固补齐】如果触发了降级拦截（aborted），立即返回
         if aborted:
-            await mgr.handle_new_message()
+            if mgr.current_speech_id == proactive_sid:
+                await mgr.handle_new_message()
+            else:
+                logger.info(f"[{lanlan_name}] 降级拦截 abort 但用户已接管 (sid changed)，跳过 TTS 清理")
             return JSONResponse({
                 "success": True,
                 "action": "pass",
@@ -3365,7 +3464,26 @@ async def proactive_chat(request: Request):
                 _append_music_recommendations(source_links, music_content)
         
         # 一次性投递完整文本 + 记录历史 + TTS end + turn end
-        await mgr.finish_proactive_delivery(response_text)
+        # 传 proactive_sid：若 Phase 2 流结束到这里之间用户已打断（换了 sid），
+        # finish 内部会跳过所有写入，避免 proactive 文本污染用户当前轮次。
+        committed = await mgr.finish_proactive_delivery(
+            response_text, expected_speech_id=proactive_sid
+        )
+        if not committed:
+            # Proactive 内容未真正落库（用户已接管本轮），所有下游副作用必须跳过：
+            # 否则 _record_proactive_chat 会把未送达内容计入去重历史、topic usage
+            # 会误记已用，前端拿到 "chat" action 会以为搭话成功。
+            logger.info(
+                "[%s] 主动搭话被用户接管，短路下游写入（topic/memory/response）",
+                lanlan_name,
+            )
+            return JSONResponse({
+                "success": True,
+                "action": "pass",
+                "message": "proactive delivery skipped: user took over turn",
+                "lanlan_name": lanlan_name,
+                "turn_id": mgr.current_speech_id,
+            })
 
         # 记录主动搭话
         _record_proactive_chat(lanlan_name, response_text, primary_channel)

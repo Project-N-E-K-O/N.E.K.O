@@ -22,6 +22,7 @@ EXTRA_BODY_OPENAI = {"enable_thinking": False}
 EXTRA_BODY_CLAUDE = {"thinking": {"type": "disabled"}}
 EXTRA_BODY_GEMINI = {"extra_body": {"google": {"thinking_config": {"thinking_budget": 0}}}}
 EXTRA_BODY_GEMINI_3 = {"extra_body": {"google": {"thinking_config": {"thinking_level": "low", "include_thoughts": False}}}}
+EXTRA_BODY_OPENROUTER = {"reasoning": {"effort": "none"}}
 
 # Agent 调用统一开关：是否加载 extra_body。
 # 默认开启，配合 MODELS_EXTRA_BODY_MAP 实现默认关闭 thinking。
@@ -43,6 +44,10 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "glm-4.6v-flash": EXTRA_BODY_CLAUDE,
     "glm-4.7-flash": EXTRA_BODY_CLAUDE,
     "glm-4.6v": EXTRA_BODY_CLAUDE,
+    "glm-5.1": EXTRA_BODY_CLAUDE,
+    # Kimi系列
+    "kimi-k2-0905-preview": EXTRA_BODY_CLAUDE,
+    "kimi-k2.5": EXTRA_BODY_CLAUDE,
     # Silicon (zai-org) - 使用 Qwen 格式
     "zai-org/GLM-4.6V": EXTRA_BODY_OPENAI,
     # Step
@@ -50,15 +55,20 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     # Claude 系列
     "claude-sonnet-4-6": EXTRA_BODY_CLAUDE,
     "claude-haiku-4-5-20251001": EXTRA_BODY_CLAUDE,
-    "claude-opus-4-6": EXTRA_BODY_CLAUDE,
+    "claude-opus-4-7": EXTRA_BODY_CLAUDE,
     # Doubao Seed 2.0 系列
     "doubao-seed-2-0-lite-260215": EXTRA_BODY_CLAUDE,
-    "doubao-seed-2-0-mini": EXTRA_BODY_CLAUDE,
+    "doubao-seed-2-0-mini-260215": EXTRA_BODY_CLAUDE,
     "doubao-seed-2-0-pro-260215": EXTRA_BODY_CLAUDE,
     # Gemini 系列
     "gemini-2.5-flash": EXTRA_BODY_GEMINI,
     "gemini-2.5-flash-lite": EXTRA_BODY_GEMINI,
     "gemini-3-flash-preview": EXTRA_BODY_GEMINI_3,
+    # OpenRouter 格式 (provider/model) — OpenRouter 使用统一的 reasoning 参数
+    "google/gemini-2.5-flash": EXTRA_BODY_OPENROUTER,
+    "google/gemini-2.5-flash-lite": EXTRA_BODY_OPENROUTER,
+    "google/gemini-3-flash-preview": EXTRA_BODY_OPENROUTER,
+    "qwen/qwen3.5-9b": EXTRA_BODY_OPENROUTER,
 }
 
 

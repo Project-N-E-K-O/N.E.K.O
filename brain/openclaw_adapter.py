@@ -8,6 +8,7 @@ going through the user plugin runtime.
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import uuid
 from typing import Any, Dict, Optional
@@ -162,7 +163,8 @@ class OpenClawAdapter:
     ) -> Dict[str, Any]:
         self.reload_config()
         sender = sender_id or self.default_sender_id
-        resolved_session_id = session_id or self.get_or_create_persistent_session_id(
+        resolved_session_id = session_id or await asyncio.to_thread(
+            self.get_or_create_persistent_session_id,
             role_name=role_name,
             sender_id=sender,
         )
@@ -218,7 +220,8 @@ class OpenClawAdapter:
     ) -> Dict[str, Any]:
         self.reload_config()
         sender = sender_id or self.default_sender_id
-        resolved_session_id = session_id or self.get_or_create_persistent_session_id(
+        resolved_session_id = session_id or await asyncio.to_thread(
+            self.get_or_create_persistent_session_id,
             role_name=role_name,
             sender_id=sender,
         )

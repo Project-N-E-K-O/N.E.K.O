@@ -331,10 +331,13 @@
                 await new Promise(function (resolve) { setTimeout(resolve, 1500); });
             }
 
-            // Hide text input area (desktop only)
+            // Hide text input area (desktop only) + React composer + IPC
             var textInputArea = document.getElementById('text-input-area');
             if (!U.isMobile()) {
                 textInputArea.classList.add('hidden');
+            }
+            if (!U.isMobile() && typeof window.syncVoiceChatComposerHidden === 'function') {
+                window.syncVoiceChatComposerHidden(true);
             }
 
             // Disable all voice buttons
@@ -467,6 +470,9 @@
                 stopButton.disabled = true;
                 resetSessionButton.disabled = false;
                 textInputArea.classList.remove('hidden');
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
                 window.showStatusToast(window.t ? window.t('app.startFailed', { error: error.message }) : '\u542F\u52A8\u5931\u8D25: ' + error.message, 5000);
 
                 window.isMicStarting = false;
@@ -551,6 +557,9 @@
 
                 var textInputArea = document.getElementById('text-input-area');
                 textInputArea.classList.remove('hidden');
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
 
                 micButton.disabled = false;
                 textSendButton.disabled = false;
@@ -570,6 +579,9 @@
 
                 var textInputArea = document.getElementById('text-input-area');
                 textInputArea.classList.add('hidden');
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(true);
+                }
 
                 micButton.disabled = true;
                 textSendButton.disabled = true;
@@ -622,8 +634,14 @@
                 if (textInputArea) {
                     textInputArea.classList.remove('hidden');
                 }
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
 
-                window.showStatusToast(window.t ? window.t('app.initializingText') : '\u6B63\u5728\u521D\u59CB\u5316\u6587\u672C\u5BF9\u8BDD...', 3000);
+                // 切换猫娘期间会话建立耗时常 >5s（模型加载 + 后端冷加载），
+                // 默认 3s toast 在真空期间消失会让用户误以为"没反应就报错"。
+                var initToastMs1 = (S.isSwitchingCatgirl) ? 8000 : 3000;
+                window.showStatusToast(window.t ? window.t('app.initializingText') : '\u6B63\u5728\u521D\u59CB\u5316\u6587\u672C\u5BF9\u8BDD...', initToastMs1);
 
                 // Wait for session_started
                 var sessionStartPromise = new Promise(function (resolve, reject) {
@@ -763,7 +781,9 @@
                 screenshotButton.disabled = true;
                 resetSessionButton.disabled = false;
 
-                window.showStatusToast(window.t ? window.t('app.initializingText') : '\u6B63\u5728\u521D\u59CB\u5316\u6587\u672C\u5BF9\u8BDD...', 3000);
+                // 同上：切换期间的初始化窗口比默认 3s 更长，延长 toast 避免真空感
+                var initToastMs2 = (S.isSwitchingCatgirl) ? 8000 : 3000;
+                window.showStatusToast(window.t ? window.t('app.initializingText') : '\u6B63\u5728\u521D\u59CB\u5316\u6587\u672C\u5BF9\u8BDD...', initToastMs2);
 
                 try {
                     var sessionStartPromise = new Promise(function (resolve, reject) {

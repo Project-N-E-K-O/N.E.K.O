@@ -7,6 +7,7 @@ Handles memory-related endpoints including:
 - Memory review configuration
 """
 
+import asyncio
 import os
 import re
 import json
@@ -15,7 +16,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Request
 from utils.character_name import validate_character_name
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.logger_config import get_module_logger
 from fastapi.responses import JSONResponse
 
@@ -280,9 +281,14 @@ async def get_recent_file(filename: str):
         status_code = path_error_status_code(path_error_code)
         return JSONResponse({"success": False, "error": path_error}, status_code=status_code)
     
-    with open(resolved_path, 'r', encoding='utf-8') as f:
-        content = f.read()
+    # offload 同步 read 到线程池：recent.json 单文件可达数 MB
+    content = await asyncio.to_thread(_read_text_file, resolved_path)
     return {"content": content}
+
+
+def _read_text_file(path: str, encoding: str = 'utf-8') -> str:
+    with open(path, 'r', encoding=encoding) as f:
+        return f.read()
 
 
 @router.post('/recent_file/save')
@@ -329,7 +335,7 @@ async def save_recent_file(request: Request):
             }
         })
     try:
-        atomic_write_json(resolved_path, arr, ensure_ascii=False, indent=2)
+        await atomic_write_json_async(resolved_path, arr, ensure_ascii=False, indent=2)
         
         if catgirl_name:
             # 中断 memory_server 的 review 任务
@@ -408,8 +414,7 @@ async def update_catgirl_name(request: Request):
         new_file_path = Path(new_file_path)
 
         # 2. 先完整读取旧文件，确认可解析后再写入新路径，避免中途失败导致源文件丢失
-        with open(old_file_path, 'r', encoding='utf-8') as f:
-            file_content = json.load(f)
+        file_content = await read_json_async(old_file_path)
         
         # 遍历所有消息，仅在特定字段中更新猫娘名称
         for item in file_content:
@@ -457,19 +462,22 @@ async def update_catgirl_name(request: Request):
                         data['content'] = content
         
         # 保存更新后的内容；写入成功后再删除旧路径，避免改名过程中数据丢失
-        atomic_write_json(new_file_path, file_content, ensure_ascii=False, indent=2)
+        await atomic_write_json_async(new_file_path, file_content, ensure_ascii=False, indent=2)
 
-        user_memory_dir = Path(cm.memory_dir).resolve()
+        allowed_roots = [
+            Path(cm.memory_dir).resolve(),
+            Path(cm.project_memory_dir).resolve(),
+        ]
         resolved_old_file_path = old_file_path.resolve()
         if (
             resolved_old_file_path != new_file_path.resolve()
             and old_file_path.exists()
-            and resolved_old_file_path.is_relative_to(user_memory_dir)
+            and any(resolved_old_file_path.is_relative_to(root) for root in allowed_roots)
         ):
             if old_file_path.is_dir():
-                shutil.rmtree(old_file_path)
+                await asyncio.to_thread(shutil.rmtree, old_file_path)
             else:
-                old_file_path.unlink()
+                await asyncio.to_thread(old_file_path.unlink)
         
         logger.info(f"已更新猫娘名称从 '{old_name}' 到 '{new_name}' 的记忆文件")
         return {"success": True}
@@ -486,10 +494,9 @@ async def get_review_config():
         config_manager = get_config_manager()
         config_path = str(config_manager.get_config_path('core_config.json'))
         if os.path.exists(config_path):
-            with open(config_path, 'r', encoding='utf-8') as f:
-                config_data = json.load(f)
-                # 如果配置中没有这个键，默认返回True（开启）
-                return {"enabled": config_data.get('recent_memory_auto_review', True)}
+            config_data = await read_json_async(config_path)
+            # 如果配置中没有这个键，默认返回True（开启）
+            return {"enabled": config_data.get('recent_memory_auto_review', True)}
         else:
             # 如果配置文件不存在，默认返回True（开启）
             return {"enabled": True}
@@ -512,14 +519,13 @@ async def update_review_config(request: Request):
         
         # 读取现有配置
         if os.path.exists(config_path):
-            with open(config_path, 'r', encoding='utf-8') as f:
-                config_data = json.load(f)
+            config_data = await read_json_async(config_path)
         
         # 更新配置
         config_data['recent_memory_auto_review'] = enabled
         
         # 保存配置
-        atomic_write_json(config_path, config_data, ensure_ascii=False, indent=2)
+        await atomic_write_json_async(config_path, config_data, ensure_ascii=False, indent=2)
         
         logger.info(f"记忆整理配置已更新: enabled={enabled}")
         return {"success": True, "enabled": enabled}

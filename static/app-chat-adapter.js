@@ -334,9 +334,11 @@
         } finally {
             if (window._realisticProcessingOwner === processingOwner) {
                 window._realisticProcessingOwner = null;
-                window._isProcessingRealisticQueue = false;
-                if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
-                    processRealisticQueue(window._realisticGeminiVersion || 0);
+                if (window._isProcessingRealisticQueue) {
+                    window._isProcessingRealisticQueue = false;
+                    if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
+                        processRealisticQueue(window._realisticGeminiVersion || 0);
+                    }
                 }
             }
         }

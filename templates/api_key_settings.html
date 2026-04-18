@@ -187,9 +187,17 @@
                             </label>
                             <input type="text" id="assistApiKeyInput"
                                 data-i18n-placeholder="api.assistApiKeyPlaceholder"
-                                placeholder="Optional, defaults to Core API Key" value=""
+                                placeholder="留空使用管理簿对应 Key" value=""
                                 style="max-width: 600px; width: 100%;">
-                            <em data-i18n="api.coreApiAutoFillHint" style="font-weight: normal; color: #888; font-size: 0.85em;">Key从API管理簿自动填充，也可在此直接输入</em>
+                            <em data-i18n="api.assistApiAutoFillHint" style="font-weight: normal; color: #888; font-size: 0.85em;">留空时自动使用管理簿中的Key，手动输入则独立保存</em>
+                        </div>
+                        <div class="field-row" style="margin-top: 10px;">
+                            <label class="disable-tts-toggle">
+                                <input type="checkbox" id="disableTts" aria-describedby="disableTtsHintText">
+                                <span class="disable-tts-slider"></span>
+                                <span data-i18n="api.disableTts">禁用TTS</span>
+                            </label>
+                            <em id="disableTtsHintText" data-i18n="api.disableTtsHint" style="font-weight: normal; color: #888; font-size: 0.85em;">开启后不会调用任何语音合成服务</em>
                         </div>
                     </div>
 

@@ -667,6 +667,12 @@ class BiliDanmakuPlugin(NekoPluginBase):
     # AI 可调用入口
     # ==========================================
 
+    def _get_connection_info(self) -> dict:
+        """获取连接详情（内部方法）"""
+        if self._listener:
+            return self._listener.get_connection_state()
+        return {"state": "disconnected", "server": "", "viewer_count": 0, "room_id": self._room_id}
+
     @plugin_entry(
         id="get_danmaku",
         name="获取直播间弹幕",
@@ -690,6 +696,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
     async def get_danmaku(self, max_count: int = 10, include_gifts: bool = True, **_):
         """获取缓冲区中的弹幕，格式化返回给 AI"""
         is_listening = self._listener is not None and self._listener.is_running()
+        conn_info = self._get_connection_info()
 
         if not is_listening:
             if self._connecting:
@@ -703,6 +710,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
                     "logged_in": self._is_logged_in,
                     "interval": self._interval,
                     "queue_size": len(self._ui_danmaku_queue),
+                    "connection": conn_info,
                     "stats": {
                         "received": self._total_received,
                         "filtered": self._total_filtered,
@@ -720,6 +728,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
                     "logged_in": self._is_logged_in,
                     "interval": self._interval,
                     "queue_size": len(self._ui_danmaku_queue),
+                    "connection": conn_info,
                     "stats": {
                         "received": self._total_received,
                         "filtered": self._total_filtered,
@@ -752,6 +761,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
                 "logged_in": self._is_logged_in,
                 "interval": self._interval,
                 "queue_size": len(self._ui_danmaku_queue),
+                "connection": conn_info,
                 "stats": {
                     "received": self._total_received,
                     "filtered": self._total_filtered,
@@ -807,6 +817,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
             "danmaku": danmaku_list,
             "superchat": sc_list,
             "gifts": gift_list,
+            "connection": conn_info,
             "stats": {
                 "received": self._total_received,
                 "filtered": self._total_filtered,
@@ -1027,11 +1038,30 @@ class BiliDanmakuPlugin(NekoPluginBase):
         else:
             listen_status = "🔴 未监听"
 
+        # 获取详细连接状态
+        conn_state = {}
+        if self._listener:
+            conn_state = self._listener.get_connection_state()
+            # 映射状态为中文
+            state_map = {
+                "disconnected": "🔴 未连接",
+                "connecting": "🟡 连接中",
+                "authenticating": "🟡 认证中",
+                "receiving": "🟢 接收中",
+                "reconnecting": "🟠 重连中",
+            }
+            conn_state["state_desc"] = state_map.get(conn_state.get("state", ""), conn_state.get("state", ""))
+        else:
+            conn_state = {"state": "disconnected", "server": "", "viewer_count": 0, "room_id": self._room_id, "state_desc": "🔴 未初始化"}
+
         lines = [
             "📡 B站弹幕插件状态",
             "",
             f"直播间: {self._room_id if self._room_id > 0 else '未配置'}",
             f"监听状态: {listen_status}",
+            f"连接状态: {conn_state.get('state_desc', '未知')}",
+            f"弹幕服务器: {conn_state.get('server', 'N/A')}",
+            f"当前人气: {conn_state.get('viewer_count', 0):,}",
             f"账号状态: {'🔐 已登录' if self._is_logged_in else '👤 游客模式'}",
             f"过滤模式: {self._filter.describe_mode() if self._filter else '未初始化'}",
             f"推送间隔: {self._interval}s",
@@ -1057,6 +1087,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
             "target_lanlan": self._target_lanlan,
             "danmaku_max_length": self._danmaku_max_length,
             "queue_size": len(self._danmaku_queue),
+            "connection": conn_state,
             "stats": {
                 "received": self._total_received,
                 "filtered": self._total_filtered,

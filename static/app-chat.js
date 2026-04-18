@@ -388,6 +388,7 @@
 
         const processingOwner = createRealisticQueueOwnerToken();
         window._realisticProcessingOwner = processingOwner;
+        window._isProcessingRealisticQueue = true;
 
         const chatContainer = S.dom.chatContainer;
 
@@ -427,13 +428,15 @@
                 }
             }
         } finally {
-            // 只有当前 owner 仍然匹配时，才说明没有任何外部路径（discard / audio-capture）
-            // 在处理中途接管过队列；这时我们才能释放自己的锁并决定是否递归拉起新 processor。
-            // 如果 owner 已经变化，说明已经有新的 processor 接管，当前实例不能再动锁也不能再递归。
+            // 只有当前 owner 仍然匹配时，才说明处理中没有被外部路径接管。
+            // 这时才允许当前实例释放 owner/lock 并决定是否继续拉起下一轮处理。
             if (window._realisticProcessingOwner === processingOwner) {
                 window._realisticProcessingOwner = null;
-                if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
-                    processRealisticQueue(window._realisticGeminiVersion || 0);
+                if (window._isProcessingRealisticQueue) {
+                    window._isProcessingRealisticQueue = false;
+                    if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
+                        processRealisticQueue(window._realisticGeminiVersion || 0);
+                    }
                 }
             }
         }
@@ -641,6 +644,15 @@
                     if (myEpoch !== window._musicSearchEpoch) {
                         console.log('[Music] 指令搜索结果过时，已丢弃: "' + query + '"');
                         continue;
+                    }
+
+                    if (result.netease_cookie_invalid && typeof window.showStatusToast === 'function') {
+                        var now = Date.now();
+                        if (!window._cookieWarnLastTime || now - window._cookieWarnLastTime > 300000) {
+                            var musiccookieWarnMsg = (window.t && window.t('music.cookieExpired')) || '音乐Cookie已失效';
+                            window.showStatusToast(musiccookieWarnMsg, 5000);
+                            window._cookieWarnLastTime = now;
+                        }
                     }
 
                     if (!result.success) {
