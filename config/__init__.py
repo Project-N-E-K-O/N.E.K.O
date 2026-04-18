@@ -507,6 +507,9 @@ def get_localized_default_characters(language: str | None = None) -> dict:
         localized_config = {}
         for key, value in char_config.items():
             localized_config[key] = translate_value(value)
+        reserved = localized_config.get('_reserved')
+        if isinstance(reserved, dict) and 'system_prompt' in reserved:
+            reserved['system_prompt'] = get_lanlan_prompt(language)
         localized_catgirl[char_name] = localized_config
     result['猫娘'] = localized_catgirl
     
