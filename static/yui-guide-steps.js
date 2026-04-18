@@ -181,7 +181,7 @@
     steps.handoff_api_key.performance.cursorTarget = '#${p}-menu-api-keys';
     steps.handoff_api_key.navigation.openUrl = '/api_key';
     steps.handoff_api_key.navigation.windowName = 'api_key';
-    steps.handoff_api_key.navigation.resumeScene = null;
+    steps.handoff_api_key.navigation.resumeScene = 'api_key_intro';
 
     steps.handoff_memory_browser = createBaseStep('handoff_memory_browser', 'home', '#${p}-menu-memory');
     steps.handoff_memory_browser.tutorial.title = '接力到记忆浏览';
@@ -192,7 +192,7 @@
     steps.handoff_memory_browser.performance.cursorTarget = '#${p}-menu-memory';
     steps.handoff_memory_browser.navigation.openUrl = '/memory_browser';
     steps.handoff_memory_browser.navigation.windowName = 'memory_browser';
-    steps.handoff_memory_browser.navigation.resumeScene = null;
+    steps.handoff_memory_browser.navigation.resumeScene = 'memory_browser_intro';
 
     steps.handoff_steam_workshop = createBaseStep('handoff_steam_workshop', 'home', '#${p}-menu-steam-workshop');
     steps.handoff_steam_workshop.tutorial.title = '接力到创意工坊';
@@ -203,7 +203,7 @@
     steps.handoff_steam_workshop.performance.cursorTarget = '#${p}-menu-steam-workshop';
     steps.handoff_steam_workshop.navigation.openUrl = '/steam_workshop_manager';
     steps.handoff_steam_workshop.navigation.windowName = 'steam_workshop';
-    steps.handoff_steam_workshop.navigation.resumeScene = null;
+    steps.handoff_steam_workshop.navigation.resumeScene = 'steam_workshop_intro';
 
     steps.handoff_plugin_dashboard = createBaseStep('handoff_plugin_dashboard', 'home', '#${p}-btn-agent');
     steps.handoff_plugin_dashboard.tutorial.title = '接力到插件面板';
@@ -216,11 +216,38 @@
     steps.handoff_plugin_dashboard.navigation.windowName = 'plugin_dashboard';
     steps.handoff_plugin_dashboard.navigation.resumeScene = 'plugin_dashboard_landing';
 
+    steps.api_key_intro = createBaseStep('api_key_intro', 'api_key', '#coreApiSelect-dropdown-trigger');
+    steps.api_key_intro.tutorial.title = 'API 密钥入口';
+    steps.api_key_intro.tutorial.description = '从首页接力后，先确认核心 API 服务商入口。';
+    steps.api_key_intro.performance.bubbleText = '到啦，这里就是 API 密钥设置页。先把核心服务商选好，我就能更稳地陪你聊天啦。';
+    steps.api_key_intro.performance.voiceKey = 'api_key_intro';
+    steps.api_key_intro.performance.emotion = 'happy';
+    steps.api_key_intro.performance.cursorAction = 'wobble';
+    steps.api_key_intro.performance.cursorTarget = '#coreApiSelect-dropdown-trigger';
+
+    steps.memory_browser_intro = createBaseStep('memory_browser_intro', 'memory_browser', '#memory-file-list');
+    steps.memory_browser_intro.tutorial.title = '记忆浏览入口';
+    steps.memory_browser_intro.tutorial.description = '从首页接力后，先查看猫娘记忆库。';
+    steps.memory_browser_intro.performance.bubbleText = '这里会整理我们聊过的重要内容喵。先从左边这份记忆库开始看起吧。';
+    steps.memory_browser_intro.performance.voiceKey = 'memory_browser_intro';
+    steps.memory_browser_intro.performance.emotion = 'happy';
+    steps.memory_browser_intro.performance.cursorAction = 'wobble';
+    steps.memory_browser_intro.performance.cursorTarget = '#memory-file-list';
+
+    steps.steam_workshop_intro = createBaseStep('steam_workshop_intro', 'steam_workshop', '#workshop-tabs');
+    steps.steam_workshop_intro.tutorial.title = '创意工坊入口';
+    steps.steam_workshop_intro.tutorial.description = '从首页接力后，先确认创意工坊分区入口。';
+    steps.steam_workshop_intro.performance.bubbleText = '这里就是创意工坊管理页，先从上面的分区开始，我带你看订阅内容和角色卡。';
+    steps.steam_workshop_intro.performance.voiceKey = 'steam_workshop_intro';
+    steps.steam_workshop_intro.performance.emotion = 'happy';
+    steps.steam_workshop_intro.performance.cursorAction = 'wobble';
+    steps.steam_workshop_intro.performance.cursorTarget = '#workshop-tabs';
+
     const sceneOrder = {
         home: HOME_SCENE_ORDER.slice(),
-        api_key: [],
-        memory_browser: [],
-        steam_workshop: [],
+        api_key: ['api_key_intro'],
+        memory_browser: ['memory_browser_intro'],
+        steam_workshop: ['steam_workshop_intro'],
         plugin_dashboard: []
     };
 

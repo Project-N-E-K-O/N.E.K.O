@@ -98,26 +98,113 @@ class UniversalTutorialManager {
         return window.YuiGuidePageHandoff || null;
     }
 
-    getYuiGuideHandoffExpectedPages() {
+    getYuiGuidePageKey(page = this.currentPage) {
         const path = window.location.pathname || '';
+        const normalizedPage = typeof page === 'string' ? page : '';
 
-        if (this.currentPage === 'settings') {
-            if (path.includes('api_key')) {
-                return ['api_key', 'settings'];
-            }
-
-            return ['settings'];
+        if (normalizedPage === 'settings' && path.includes('api_key')) {
+            return 'api_key';
         }
 
-        if (this.currentPage === 'memory_browser') {
+        if (
+            normalizedPage === 'plugin_dashboard' ||
+            path.includes('/api/agent/user_plugin/dashboard') ||
+            path === '/ui' ||
+            path.startsWith('/ui/')
+        ) {
+            return 'plugin_dashboard';
+        }
+
+        return normalizedPage;
+    }
+
+    getYuiGuidePageOrder(page = this.currentPage) {
+        const registry = this.getYuiGuideRegistry();
+        if (!registry || !registry.sceneOrder) {
+            return [];
+        }
+
+        const pageKey = this.getYuiGuidePageKey(page);
+        const pageOrder = Array.isArray(registry.sceneOrder[pageKey]) ? registry.sceneOrder[pageKey] : [];
+        return pageOrder.slice();
+    }
+
+    getPendingYuiGuideResumeScene(page = this.currentPage) {
+        const token = this._yuiGuideHandoffToken;
+        if (!token) {
+            return null;
+        }
+
+        const resumeScene = typeof token.resume_scene === 'string'
+            ? token.resume_scene.trim()
+            : '';
+        if (!resumeScene) {
+            return null;
+        }
+
+        const guideStep = this.getYuiGuideStepDefinition(resumeScene);
+        if (!guideStep) {
+            console.warn('[Tutorial] Yui Guide handoff resume_scene 未注册:', resumeScene);
+            return null;
+        }
+
+        const expectedPage = this.getYuiGuidePageKey(page);
+        if (guideStep.page && guideStep.page !== expectedPage) {
+            console.warn('[Tutorial] Yui Guide handoff resume_scene 页面不匹配:', resumeScene, guideStep.page, expectedPage);
+            return null;
+        }
+
+        return resumeScene;
+    }
+
+    applyYuiGuideResumeScene(validSteps) {
+        if (!Array.isArray(validSteps) || validSteps.length === 0) {
+            return validSteps;
+        }
+
+        const pageKey = this.getYuiGuidePageKey();
+        if (!pageKey || pageKey === 'home') {
+            return validSteps;
+        }
+
+        const resumeSceneId = this.getPendingYuiGuideResumeScene(pageKey);
+        if (!resumeSceneId) {
+            return validSteps;
+        }
+
+        const resumeIndex = validSteps.findIndex(stepConfig => (
+            this.getYuiGuideSceneIdForStep(stepConfig) === resumeSceneId
+        ));
+
+        if (resumeIndex < 0) {
+            console.warn('[Tutorial] 当前页面步骤中未找到 handoff resume_scene，保留原始顺序:', pageKey, resumeSceneId);
+            return validSteps;
+        }
+
+        if (resumeIndex === 0) {
+            return validSteps;
+        }
+
+        console.log('[Tutorial] 根据 handoff resume_scene 恢复教程步骤:', pageKey, resumeSceneId, resumeIndex);
+        return validSteps.slice(resumeIndex);
+    }
+
+    getYuiGuideHandoffExpectedPages() {
+        const pageKey = this.getYuiGuidePageKey();
+
+        if (pageKey === 'api_key') {
+            return ['api_key', 'settings'];
+        }
+
+        if (pageKey === 'memory_browser') {
             return ['memory_browser'];
         }
 
-        if (this.currentPage === 'steam_workshop') {
+        if (pageKey === 'steam_workshop') {
             return ['steam_workshop'];
         }
 
-        if (this.currentPage === 'plugin_dashboard' || path.includes('/api/agent/user_plugin/dashboard') || path === '/ui' || path.startsWith('/ui/')) {
+        if (pageKey === 'plugin_dashboard') {
             return ['plugin_dashboard'];
         }
 
@@ -156,12 +243,24 @@ class UniversalTutorialManager {
     }
 
     isYuiGuideEnabledForPage(page = this.currentPage) {
-        const registry = this.getYuiGuideRegistry();
-        if (!registry || !registry.sceneOrder) {
+        const pageKey = this.getYuiGuidePageKey(page);
+        const pageOrder = this.getYuiGuidePageOrder(pageKey);
+        if (pageOrder.length === 0) {
             return false;
         }
 
-        const pageOrder = Array.isArray(registry.sceneOrder[page]) ? registry.sceneOrder[page] : [];
+        if (pageKey === 'home') {
+            return true;
+        }
+
+        if (pageKey === 'plugin_dashboard') {
+            return false;
+        }
+
+        if (!this._yuiGuideHandoffToken) {
+            return false;
+        }
+
         return pageOrder.length > 0;
     }
 
@@ -195,12 +294,7 @@ class UniversalTutorialManager {
     }
 
     getYuiGuidePreludeSceneIds(page = this.currentPage, validSteps = this.cachedValidSteps) {
-        const registry = this.getYuiGuideRegistry();
-        if (!registry || !registry.sceneOrder) {
-            return [];
-        }
-
-        const pageOrder = Array.isArray(registry.sceneOrder[page]) ? registry.sceneOrder[page] : [];
+        const pageOrder = this.getYuiGuidePageOrder(page);
         const mappedSceneIds = new Set(this.getYuiGuideMappedSceneIds(validSteps));
 
         return pageOrder.filter(stepId => (
@@ -234,8 +328,9 @@ class UniversalTutorialManager {
         }
 
         const guideStep = typeof registry.getStep === 'function' ? registry.getStep(sceneId) : null;
-        if (guideStep && guideStep.page && guideStep.page !== this.currentPage) {
-            console.warn(`[Tutorial] Yui Guide 场景页面不匹配: ${sceneId} -> ${guideStep.page}`);
+        const expectedPage = this.getYuiGuidePageKey();
+        if (guideStep && guideStep.page && guideStep.page !== expectedPage) {
+            console.warn(`[Tutorial] Yui Guide 场景页面不匹配: ${sceneId} -> ${guideStep.page} (expected ${expectedPage})`);
         }
 
         return sceneId;
@@ -269,7 +364,7 @@ class UniversalTutorialManager {
 
             const director = window.createYuiGuideDirector({
                 tutorialManager: this,
-                page: this.currentPage,
+                page: this.getYuiGuidePageKey(),
                 registry: this.getYuiGuideRegistry(),
                 homeInteractionApi: homeInteractionApi
             });
@@ -298,6 +393,7 @@ class UniversalTutorialManager {
 
         const payload = Object.assign({
             currentPage: this.currentPage,
+            yuiGuidePage: this.getYuiGuidePageKey(),
             tutorialManager: this,
             timestamp: Date.now()
         }, detail);
@@ -311,7 +407,8 @@ class UniversalTutorialManager {
         const sceneId = this.getYuiGuideSceneIdForStep(stepConfig);
 
         return {
-            page: this.currentPage,
+            page: this.getYuiGuidePageKey(),
+            runtimePage: this.currentPage,
             source: source,
             sceneId: sceneId,
             stepIndex: stepIndex,
@@ -348,7 +445,8 @@ class UniversalTutorialManager {
         this._yuiGuideLastSceneId = null;
 
         const detail = {
-            page: this.currentPage,
+            page: this.getYuiGuidePageKey(),
+            runtimePage: this.currentPage,
             validSteps: Array.isArray(validSteps) ? validSteps : [],
             preludeSceneIds: this.getYuiGuidePreludeSceneIds(this.currentPage, validSteps)
         };
@@ -384,7 +482,8 @@ class UniversalTutorialManager {
         }
 
         const detail = {
-            page: this.currentPage,
+            page: this.getYuiGuidePageKey(),
+            runtimePage: this.currentPage,
             source: source,
             sceneId: sceneId,
             stepIndex: stepIndex,
@@ -413,7 +512,8 @@ class UniversalTutorialManager {
         }
 
         this.dispatchYuiGuideEvent('tutorial-end', {
-            page: this.currentPage,
+            page: this.getYuiGuidePageKey(),
+            runtimePage: this.currentPage,
             reason: normalizedReason,
             rawReason: rawReason
         });
@@ -421,6 +521,9 @@ class UniversalTutorialManager {
         this.yuiGuideDirector = null;
         this._yuiGuideLastSceneId = null;
         this._yuiGuideLifecycleActive = false;
+        if (this.getYuiGuidePageKey() !== 'home') {
+            this._yuiGuideHandoffToken = null;
+        }
     }
 
     normalizeTutorialEndRawReason(reason) {
@@ -1606,7 +1709,8 @@ class UniversalTutorialManager {
                 popover: {
                     title: this.t('tutorial.settings.step2.title', '🔑 核心 API 服务商'),
                     description: this.t('tutorial.settings.step2.desc', '这是最重要的设置。核心 API 负责对话功能。\n\n• 免费版：完全免费，无需 API Key，适合新手体验\n• 阿里：有免费额度，功能全面\n• 智谱：有免费额度，支持联网搜索\n• OpenAI：智能水平最高，但需要翻墙且价格昂贵'),
-                }
+                },
+                yuiGuideSceneId: 'api_key_intro'
             },
             {
                 element: '#apiKeyInput',
@@ -1671,7 +1775,8 @@ class UniversalTutorialManager {
                 popover: {
                     title: this.t('tutorial.steam_workshop.step1.title', '🧭 创意工坊分区'),
                     description: this.t('tutorial.steam_workshop.step1.desc', '这里可以在订阅内容和角色卡之间切换，后续管理 Workshop 内容都会从这里展开。'),
-                }
+                },
+                yuiGuideSceneId: 'steam_workshop_intro'
             },
             {
                 element: '#subscriptions-list',
@@ -1693,7 +1798,8 @@ class UniversalTutorialManager {
                 popover: {
                     title: this.t('tutorial.memory_browser.step2.title', '🐱 猫娘记忆库'),
                     description: this.t('tutorial.memory_browser.step2.desc', '这里列出了所有猫娘的记忆库。点击一个猫娘的名称可以查看和编辑她的对话历史。'),
-                }
+                },
+                yuiGuideSceneId: 'memory_browser_intro'
             },
             {
                 element: '#memory-chat-edit',
@@ -2196,7 +2302,9 @@ class UniversalTutorialManager {
                 return true;
             });
 
-            if (validSteps.length === 0) {
+            const resumedSteps = this.applyYuiGuideResumeScene(validSteps);
+
+            if (resumedSteps.length === 0) {
                 console.warn('[Tutorial] 没有有效的引导步骤');
                 return;
             }
@@ -2214,10 +2322,10 @@ class UniversalTutorialManager {
 
             if (pagesNeedingFullscreen.includes(this.currentPage)) {
                 // 显示全屏提示
-                this.showFullscreenPrompt(validSteps);
+                this.showFullscreenPrompt(resumedSteps);
             } else {
                 // 直接启动引导，不显示全屏提示
-                this.startTutorialSteps(validSteps);
+                this.startTutorialSteps(resumedSteps);
             }
         } catch (error) {
             console.error('[Tutorial] 启动引导失败:', error);
