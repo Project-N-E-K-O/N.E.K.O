@@ -1006,7 +1006,7 @@ class LLMSessionManager:
         return bool(
             core_config.get('ENABLE_CUSTOM_API')
             and core_config.get('TTS_MODEL_URL')
-            and core_config.get('gptsovitsEnabled')
+            and core_config.get('GPTSOVITS_ENABLED')
         )
 
     def _start_tts_thread(self):

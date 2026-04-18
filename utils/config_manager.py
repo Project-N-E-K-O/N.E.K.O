@@ -1839,6 +1839,9 @@ class ConfigManager:
         enable_custom_api = core_cfg.get('enableCustomApi', False)
         config['ENABLE_CUSTOM_API'] = enable_custom_api
 
+        # GPT-SoVITS 配置映射
+        config['GPTSOVITS_ENABLED'] = core_cfg.get('gptsovitsEnabled', False)
+
         # 禁用TTS
         _raw_disable_tts = core_cfg.get('disableTts', False)
         if isinstance(_raw_disable_tts, bool):
