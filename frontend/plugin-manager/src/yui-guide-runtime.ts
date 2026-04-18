@@ -253,7 +253,7 @@ class PluginDashboardGuideRuntime {
 
     const backdropCutout = createSvgElement('rect', 'yui-guide-plugin-backdrop-cutout')
     backdropCutout.setAttribute('fill', 'black')
-    backdropCutout.hidden = true
+    backdropCutout.setAttribute('visibility', 'hidden')
 
     const backdropFill = createSvgElement('rect')
     backdropFill.setAttribute('fill', 'rgba(3, 7, 18, 0.76)')
@@ -330,6 +330,11 @@ class PluginDashboardGuideRuntime {
       return null
     }
 
+    const htmlElement = element instanceof HTMLElement ? element : null
+    if (!htmlElement) {
+      return null
+    }
+
     const padding = 12
     const left = Math.max(0, Math.floor(rect.left - padding))
     const top = Math.max(0, Math.floor(rect.top - padding))
@@ -340,7 +345,7 @@ class PluginDashboardGuideRuntime {
 
     let radius = 18
     try {
-      const computed = window.getComputedStyle(element)
+      const computed = window.getComputedStyle(htmlElement)
       const parsedRadius = Number.parseFloat(computed.borderTopLeftRadius || computed.borderRadius || '')
       if (Number.isFinite(parsedRadius) && parsedRadius > 0) {
         radius = parsedRadius + 12
@@ -378,7 +383,7 @@ class PluginDashboardGuideRuntime {
     }
 
     if (!spotlightRect) {
-      this.backdropCutout.hidden = true
+      this.backdropCutout.setAttribute('visibility', 'hidden')
       this.backdropCutout.setAttribute('x', '0')
       this.backdropCutout.setAttribute('y', '0')
       this.backdropCutout.setAttribute('width', '0')
@@ -388,7 +393,7 @@ class PluginDashboardGuideRuntime {
       return
     }
 
-    this.backdropCutout.hidden = false
+    this.backdropCutout.setAttribute('visibility', 'visible')
     this.backdropCutout.setAttribute('x', String(spotlightRect.left))
     this.backdropCutout.setAttribute('y', String(spotlightRect.top))
     this.backdropCutout.setAttribute('width', String(spotlightRect.width))

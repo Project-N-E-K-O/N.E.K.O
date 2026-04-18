@@ -180,7 +180,13 @@
     var HANDOFF_TOKEN_VERSION = 1;
     var HANDOFF_TOKEN_TTL_MS = 5 * 60 * 1000;
     var HANDOFF_FLOW_ID = 'home_yui_guide_v1';
-    var HANDOFF_SESSION_ID = 'h_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 10);
+    var DEFAULT_PLUGIN_DASHBOARD_ORIGIN = 'http://127.0.0.1:48916';
+
+    function generateTokenId() {
+        return 'h_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 10);
+    }
+
+    var HANDOFF_SESSION_ID = generateTokenId();
 
     function getPrefix() {
         if (typeof window.UniversalTutorialManager === 'function' &&
@@ -211,6 +217,22 @@
     function getFloatingButton(buttonId, prefix) {
         var p = prefix || getPrefix();
         return document.getElementById(p + '-btn-' + buttonId);
+    }
+
+    function getPluginDashboardExpectedOrigin() {
+        if (window.YUI_GUIDE_PLUGIN_DASHBOARD_ORIGIN) {
+            return String(window.YUI_GUIDE_PLUGIN_DASHBOARD_ORIGIN);
+        }
+
+        if (window.NEKO_USER_PLUGIN_BASE) {
+            try {
+                return new URL(String(window.NEKO_USER_PLUGIN_BASE), window.location.href).origin;
+            } catch (e) {
+                console.warn('[YuiGuideHandoff] getPluginDashboardExpectedOrigin: NEKO_USER_PLUGIN_BASE 无效:', e);
+            }
+        }
+
+        return DEFAULT_PLUGIN_DASHBOARD_ORIGIN;
     }
 
     function getHandoffTokenSignature(tokenObj) {
@@ -874,12 +896,71 @@
         return Promise.resolve(true);
     }
 
-    function openPluginDashboard() {
+    function openPluginDashboard(resumeScene) {
+        var scene = resumeScene || 'plugin_dashboard_landing';
+        var tokenObj = createHandoffToken('plugin_dashboard', scene);
+        var tokenId = tokenObj ? tokenObj.token : '';
+        var params = [
+            'yui_guide=1',
+            'flow_id=' + encodeURIComponent(HANDOFF_FLOW_ID),
+            'source_page=home',
+            'resume_scene=' + encodeURIComponent(scene)
+        ];
+
+        if (tokenId) {
+            params.push('handoff_token=' + encodeURIComponent(tokenId));
+        }
+
+        var openUrl = '/api/agent/user_plugin/dashboard?' + params.join('&');
+
+        window.dispatchEvent(new CustomEvent('neko:yui-guide:handoff-sent', {
+            detail: {
+                token: tokenId,
+                target_page: 'plugin_dashboard',
+                resume_scene: scene
+            }
+        }));
+
         return openPage(
-            '/api/agent/user_plugin/dashboard',
+            openUrl,
             'plugin_dashboard',
             buildCenteredWindowFeatures()
-        );
+        ).then(function (childWin) {
+            if (!childWin && tokenObj) {
+                var currentTokenObj = readHandoffToken();
+                if (
+                    currentTokenObj
+                    && !currentTokenObj.consumed
+                    && getHandoffTokenSignature(currentTokenObj) === getHandoffTokenSignature(tokenObj)
+                ) {
+                    clearHandoffToken();
+                }
+            }
+
+            return childWin;
+        });
+    }
+
+    function listenPluginDashboardComplete(onComplete) {
+        if (typeof onComplete !== 'function') return function () {};
+
+        function handler(event) {
+            if (!event.data || typeof event.data !== 'object') return;
+            if (event.data.type !== 'neko:yui-guide:plugin-dashboard-complete') return;
+
+            var expectedWindow = getOpenedWindow(normalizeWindowName('plugin_dashboard'));
+            var expectedOrigin = getPluginDashboardExpectedOrigin();
+            if (!expectedWindow || expectedWindow.closed) return;
+            if (event.source !== expectedWindow) return;
+            if (!expectedOrigin || event.origin !== expectedOrigin) return;
+
+            onComplete(event.data.detail || {});
+        }
+
+        window.addEventListener('message', handler);
+        return function () {
+            window.removeEventListener('message', handler);
+        };
     }
 
     function openModelManagerPage(lanlanName) {
@@ -919,6 +1000,10 @@
     }
 
     function openPageWithHandoff(targetPage, resumeScene, openUrl, windowName, features) {
+        if (targetPage === 'plugin_dashboard' || windowName === 'plugin_dashboard') {
+            return openPluginDashboard(resumeScene);
+        }
+
         var tokenObj = createHandoffToken(targetPage, resumeScene);
         if (!tokenObj) {
             console.warn('[YuiGuideHandoff] openPageWithHandoff: token 创建失败，回退到普通打开');
@@ -1001,6 +1086,7 @@
         clearHandoffToken: clearHandoffToken,
         openPageWithHandoff: openPageWithHandoff,
         openPluginDashboard: openPluginDashboard,
+        listenPluginDashboardComplete: listenPluginDashboardComplete,
         openModelManagerPage: openModelManagerPage,
         waitForWindowOpen: waitForWindowOpen,
         closeWindow: closeWindow
