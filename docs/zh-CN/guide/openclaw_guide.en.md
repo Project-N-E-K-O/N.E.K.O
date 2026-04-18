@@ -4,7 +4,7 @@
 
 ### Step 1: Install
 
-You do not need to configure Python manually. One command completes the setup automatically. The script downloads `uv` (the Python package manager), creates a virtual environment, and installs QwenPaw with its dependencies, including Node.js and frontend assets. Note: this may not work in some network environments or under enterprise permission restrictions.
+You do not need to configure Python manually. One command installs `uv`, creates a virtual environment, and installs QwenPaw with its dependencies. Note: this may not work in some network environments or under enterprise permission restrictions.
 
 macOS / Linux:
 
@@ -26,13 +26,9 @@ After installation finishes, open a new terminal and run:
 qwenpaw init --defaults
 ```
 
-This step includes a thoughtful safety warning. QwenPaw clearly tells you:
+During initialization, QwenPaw shows a security warning explaining that the assistant runs in your local environment and that multiple users of the same instance would share access to files, commands, and secrets. Read it and type `yes` to continue.
 
-> This is a personal assistant running in your local environment. It can connect to channels, run commands, and call APIs. If multiple people use the same QwenPaw instance, they will share the same permissions, including files, commands, and secrets.
-
-![Enable Neko channel step image 1](assets/openclaw_guide/image1.png)
-
-You need to choose `yes` to confirm that you understand before continuing.
+![QwenPaw initialization security prompt](assets/openclaw_guide/image1.png)
 
 ### Step 3: Start
 
@@ -40,7 +36,7 @@ You need to choose `yes` to confirm that you understand before continuing.
 qwenpaw app
 ```
 
-If startup succeeds, the last line in the terminal will show:
+If startup succeeds, the last line in the terminal will usually be:
 
 ```text
 INFO:     Uvicorn running on http://127.0.0.1:8088 (Press CTRL+C to quit)
@@ -48,31 +44,50 @@ INFO:     Uvicorn running on http://127.0.0.1:8088 (Press CTRL+C to quit)
 
 After the service starts, visit `http://127.0.0.1:8088` to open the QwenPaw console.
 
-## Configure the NEKO Channel: Connect NEKO to QwenPaw
+### Step 4: Replace Persona Files (Optional)
 
-After initialization, QwenPaw automatically creates its configuration directory. On Windows, the default path is `C:\Users\YourUsername\.qwenpaw`. On macOS, the default path is `~/.qwenpaw`. All built-in skills are enabled by default.
+After initialization, QwenPaw creates its configuration directory automatically:
 
-Find that directory. Because `.qwenpaw` is hidden:
+- Windows default: `C:\Users\YourUsername\.qwenpaw`
+- macOS default: `~/.qwenpaw`
 
-- Windows users should open File Explorer from the taskbar, choose `View > Show`, and then enable hidden items.
-- macOS users should open Finder, go to their Home folder, and press `Command + Shift + .` at the same time.
+Because `.qwenpaw` is hidden:
 
-Copy the prepared channel configuration file `custom_channels` into the `.qwenpaw` folder.
+- On Windows, enable hidden items in File Explorer
+- On macOS, press `Command + Shift + .` in Finder
 
-Copy the [files from the character folder](assets/openclaw_guide/%E6%9B%BF%E6%8D%A2%E5%86%85%E5%AE%B9.zip) into `.qwenpaw/workspaces/default`, then delete `BOOTSTRAP.md`.
+If you want QwenPaw to behave like a clean backend executor for N.E.K.O, download this package:
 
-Next, press `CTRL+C` in the terminal to stop qwenpaw, and run `qwenpaw app` again to restart it.
+- [Replacement Files.zip](assets/openclaw_guide/替换文件.zip)
 
-Then follow the steps in the image to enable the Neko channel.
+Copy `SOUL.md`, `AGENTS.md`, and `PROFILE.md` from the archive into `.qwenpaw/workspaces/default`, overwrite the existing files, and delete `BOOTSTRAP.md` from that directory.
 
-![Enable Neko channel step image 2](assets/openclaw_guide/image2.png)
+Then stop QwenPaw with `CTRL+C` and restart it:
+
+```bash
+qwenpaw app
+```
 
 ## Basic Setup: Model Configuration
 
-Click Model, then choose DashScope. You can also choose a different model based on your API key. Open Settings, enter your Alibaba Cloud Bailian API key, and save it.
+Open the QwenPaw console, go to the Model page, and choose the provider you want to use. `DashScope` is a common beginner choice, but you can select another provider if your API key is for a different service.
 
-![Enable Neko channel step image 3](assets/openclaw_guide/image3.png)
+Open the provider settings, enter your API key, and save.
 
-After saving, go back to the chat page and you will be able to select the configured model.
+![QwenPaw model configuration page](assets/openclaw_guide/image2.png)
 
-Return to N.E.K.O and you can start using openclaw.
+After saving, return to the chat page and select the configured model.
+
+## Enable OpenClaw in N.E.K.O
+
+N.E.K.O still uses the internal name `openclaw`, so the `OpenClaw` toggle in the UI actually means QwenPaw.
+
+Follow this order:
+
+1. Open the Agent panel in N.E.K.O
+2. Turn on the main `Agent` switch
+3. Make sure `openclawUrl` points to `http://127.0.0.1:8088`
+4. Turn on the `OpenClaw` sub-switch
+5. Wait for the availability check to pass
+
+N.E.K.O will try the QwenPaw compatible endpoint first and automatically fall back to the main `process` endpoint when needed. No custom channel setup is required for the main integration path.

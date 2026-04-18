@@ -1727,9 +1727,9 @@
     "openclawGuide": {
         "windowTitle": "OpenClaw 연동 가이드 - N.E.K.O.",
         "pageTitle": "OpenClaw 연동 가이드",
-        "pageSubtitle": "CoPaw 설치, 채널 배치, 헬스 체크, N.E.K.O 설정을 한 흐름으로 연결합니다.",
+        "pageSubtitle": "QwenPaw 설치, 모델 설정, 교체 파일, N.E.K.O 설정을 한 흐름으로 연결합니다.",
         "sourceLabel": "가이드 출처",
-        "contentLanguageNotice": "본문은 현재 중국어 문서를 표시합니다. 언어 전환은 페이지 컨트롤 문구에만 적용됩니다.",
+        "contentLanguageNotice": "언어 전환은 페이지 컨트롤 문구와 본문 모두에 적용됩니다.",
         "languageLabel": "언어",
         "guideUnavailable": "가이드 내용이 비어 있습니다."
     },

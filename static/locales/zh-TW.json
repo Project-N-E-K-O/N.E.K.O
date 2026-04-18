@@ -1727,7 +1727,7 @@
     "openclawGuide": {
         "windowTitle": "OpenClaw 接入教學 - N.E.K.O.",
         "pageTitle": "OpenClaw 接入教學",
-        "pageSubtitle": "把 CoPaw 安裝、通道放置、健康檢查與 N.E.K.O 設定串起來，沿著一條清楚路徑接通。",
+        "pageSubtitle": "把 QwenPaw 安裝、模型設定、替換文件與 N.E.K.O 設定串起來，沿著一條清楚路徑接通。",
         "sourceLabel": "教學來源",
         "contentLanguageNotice": "語言切換會同時更新頁面控制文案和正文內容。",
         "languageLabel": "語言",
