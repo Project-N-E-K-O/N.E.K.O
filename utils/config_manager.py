@@ -1729,7 +1729,7 @@ class ConfigManager:
             return config['CORE_API_KEY'] if provider in _fallback_providers else ''
 
         config['ASSIST_API_KEY_QWEN'] = core_cfg.get('assistApiKeyQwen', '') or _fb('qwen')
-        config['ASSIST_API_KEY_QWEN_INTL'] = core_cfg.get('assistApiKeyQwenIntl', '')
+        config['ASSIST_API_KEY_QWEN_INTL'] = core_cfg.get('assistApiKeyQwenIntl', '') or _fb('qwen_intl')
         config['ASSIST_API_KEY_OPENAI'] = core_cfg.get('assistApiKeyOpenai', '') or _fb('openai')
         config['ASSIST_API_KEY_GLM'] = core_cfg.get('assistApiKeyGlm', '') or _fb('glm')
         config['ASSIST_API_KEY_STEP'] = core_cfg.get('assistApiKeyStep', '') or _fb('step')
@@ -1738,6 +1738,9 @@ class ConfigManager:
         config['ASSIST_API_KEY_KIMI'] = core_cfg.get('assistApiKeyKimi', '') or _fb('kimi')
         config['ASSIST_API_KEY_DEEPSEEK'] = core_cfg.get('assistApiKeyDeepseek', '') or _fb('deepseek')
         config['ASSIST_API_KEY_DOUBAO'] = core_cfg.get('assistApiKeyDoubao', '') or _fb('doubao')
+        # MiniMax 是 assist-only（TTS 专用），不在 coreApi 候选集里，
+        # coreApiKey 永远不是 minimax 兼容的；不 fallback，以免把无效 key
+        # 塞进 TTS 凭证槽位导致 401，掩盖"未配置 minimax key"的真实提示。
         config['ASSIST_API_KEY_MINIMAX'] = core_cfg.get('assistApiKeyMinimax', '')
         config['ASSIST_API_KEY_MINIMAX_INTL'] = core_cfg.get('assistApiKeyMinimaxIntl', '')
         config['ASSIST_API_KEY_GROK'] = core_cfg.get('assistApiKeyGrok', '') or _fb('grok')
