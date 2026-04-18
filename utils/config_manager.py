@@ -1717,25 +1717,32 @@ class ConfigManager:
             if not isinstance(core_cfg, dict):
                 core_cfg = deepcopy(DEFAULT_CONFIG_DATA['core_config.json'])
 
-        # API Keys
+        # API Keys — 仅对与 coreApi/assistApi 匹配的服务商回退到 CORE_API_KEY
         if core_cfg.get('coreApiKey'):
             config['CORE_API_KEY'] = core_cfg['coreApiKey']
 
-        config['ASSIST_API_KEY_QWEN'] = core_cfg.get('assistApiKeyQwen', '') or config['CORE_API_KEY']
+        _core_api_provider = core_cfg.get('coreApi') or 'qwen'
+        _assist_api_provider = core_cfg.get('assistApi') or 'qwen'
+        _fallback_providers = {_core_api_provider, _assist_api_provider}
+
+        def _fb(provider: str) -> str:
+            return config['CORE_API_KEY'] if provider in _fallback_providers else ''
+
+        config['ASSIST_API_KEY_QWEN'] = core_cfg.get('assistApiKeyQwen', '') or _fb('qwen')
         config['ASSIST_API_KEY_QWEN_INTL'] = core_cfg.get('assistApiKeyQwenIntl', '')
-        config['ASSIST_API_KEY_OPENAI'] = core_cfg.get('assistApiKeyOpenai', '') or config['CORE_API_KEY']
-        config['ASSIST_API_KEY_GLM'] = core_cfg.get('assistApiKeyGlm', '') or config['CORE_API_KEY']
-        config['ASSIST_API_KEY_STEP'] = core_cfg.get('assistApiKeyStep', '') or config['CORE_API_KEY']
-        config['ASSIST_API_KEY_SILICON'] = core_cfg.get('assistApiKeySilicon', '') or config['CORE_API_KEY']
-        config['ASSIST_API_KEY_GEMINI'] = core_cfg.get('assistApiKeyGemini', '') or config['CORE_API_KEY']
-        config['ASSIST_API_KEY_KIMI'] = core_cfg.get('assistApiKeyKimi', '') or config['CORE_API_KEY']
-        config['ASSIST_API_KEY_DEEPSEEK'] = core_cfg.get('assistApiKeyDeepseek', '') or config['CORE_API_KEY']
-        config['ASSIST_API_KEY_DOUBAO'] = core_cfg.get('assistApiKeyDoubao', '') or config['CORE_API_KEY']
+        config['ASSIST_API_KEY_OPENAI'] = core_cfg.get('assistApiKeyOpenai', '') or _fb('openai')
+        config['ASSIST_API_KEY_GLM'] = core_cfg.get('assistApiKeyGlm', '') or _fb('glm')
+        config['ASSIST_API_KEY_STEP'] = core_cfg.get('assistApiKeyStep', '') or _fb('step')
+        config['ASSIST_API_KEY_SILICON'] = core_cfg.get('assistApiKeySilicon', '') or _fb('silicon')
+        config['ASSIST_API_KEY_GEMINI'] = core_cfg.get('assistApiKeyGemini', '') or _fb('gemini')
+        config['ASSIST_API_KEY_KIMI'] = core_cfg.get('assistApiKeyKimi', '') or _fb('kimi')
+        config['ASSIST_API_KEY_DEEPSEEK'] = core_cfg.get('assistApiKeyDeepseek', '') or _fb('deepseek')
+        config['ASSIST_API_KEY_DOUBAO'] = core_cfg.get('assistApiKeyDoubao', '') or _fb('doubao')
         config['ASSIST_API_KEY_MINIMAX'] = core_cfg.get('assistApiKeyMinimax', '')
         config['ASSIST_API_KEY_MINIMAX_INTL'] = core_cfg.get('assistApiKeyMinimaxIntl', '')
-        config['ASSIST_API_KEY_GROK'] = core_cfg.get('assistApiKeyGrok', '') or config['CORE_API_KEY']
-        config['ASSIST_API_KEY_CLAUDE'] = core_cfg.get('assistApiKeyClaude', '') or config['CORE_API_KEY']
-        config['ASSIST_API_KEY_OPENROUTER'] = core_cfg.get('assistApiKeyOpenrouter', '') or config['CORE_API_KEY']
+        config['ASSIST_API_KEY_GROK'] = core_cfg.get('assistApiKeyGrok', '') or _fb('grok')
+        config['ASSIST_API_KEY_CLAUDE'] = core_cfg.get('assistApiKeyClaude', '') or _fb('claude')
+        config['ASSIST_API_KEY_OPENROUTER'] = core_cfg.get('assistApiKeyOpenrouter', '') or _fb('openrouter')
 
         if core_cfg.get('mcpToken'):
             config['MCP_ROUTER_API_KEY'] = core_cfg['mcpToken']

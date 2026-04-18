@@ -1116,8 +1116,7 @@ async def rename_catgirl(old_name: str, request: Request):
     if new_name in characters['猫娘']:
         return JSONResponse({'success': False, 'error': '新档案名已存在'}, status_code=400)
     
-    # 如果当前猫娘是被重命名的猫娘，需要先保存WebSocket连接并发送通知
-    # 必须在 initialize_character_data() 之前发送，因为那个函数会删除旧的 session_manager 条目
+    # 如果当前猫娘是被重命名的猫娘，需要先保存WebSocket连接引用，重命名完成后再发送通知
     is_current_catgirl = characters.get('当前猫娘') == old_name
     
     # 检查当前角色是否有活跃的语音session
@@ -1133,22 +1132,10 @@ async def rename_catgirl(old_name: str, request: Request):
                     'success': False, 
                     'error': '语音状态下无法修改角色名称，请先停止语音对话后再修改'
                 }, status_code=400)
-    if is_current_catgirl:
-        logger.info(f"开始通知WebSocket客户端：猫娘从 {old_name} 重命名为 {new_name}")
-        message = json.dumps({
-            "type": "catgirl_switched",
-            "new_catgirl": new_name,
-            "old_catgirl": old_name
-        })
-        # 在 initialize_character_data() 之前发送消息，因为之后旧的 session_manager 会被删除
-        if old_name in session_manager:
-            ws = session_manager[old_name].websocket
-            if ws:
-                try:
-                    await ws.send_text(message)
-                    logger.info(f"已向 {old_name} 发送重命名通知")
-                except Exception as e:
-                    logger.warning(f"发送重命名通知给 {old_name} 失败: {e}")
+    # 先保存 WebSocket 引用，因为 initialize_character_data() 会删除旧的 session_manager 条目
+    saved_ws = None
+    if is_current_catgirl and old_name in session_manager:
+        saved_ws = session_manager[old_name].websocket
     
     # 重命名
     characters['猫娘'][new_name] = characters['猫娘'].pop(old_name)
@@ -1159,6 +1146,20 @@ async def rename_catgirl(old_name: str, request: Request):
     # 自动重新加载配置
     initialize_character_data = get_initialize_character_data()
     await initialize_character_data()
+    
+    # 在数据更新完成后再通知前端，避免前端 fetch /api/characters 时新名称尚未就绪
+    if is_current_catgirl and saved_ws:
+        logger.info(f"开始通知WebSocket客户端：猫娘从 {old_name} 重命名为 {new_name}")
+        message = json.dumps({
+            "type": "catgirl_switched",
+            "new_catgirl": new_name,
+            "old_catgirl": old_name
+        })
+        try:
+            await saved_ws.send_text(message)
+            logger.info(f"已向 {old_name} 发送重命名通知")
+        except Exception as e:
+            logger.warning(f"发送重命名通知给 {old_name} 失败: {e}")
     
     return {"success": True}
 

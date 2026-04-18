@@ -138,8 +138,15 @@
 
             _jbInitDone = true;
             if (typeof window.t !== 'function') {
-                window.t = function(key, fallback) {
-                    return fallback || key;
+                window.t = function(key, opts) {
+                    if (typeof opts === 'string') return opts;
+                    if (opts && typeof opts === 'object') {
+                        var tpl = typeof opts.defaultValue === 'string' ? opts.defaultValue : key;
+                        return tpl.replace(/\{\{(\w+)\}\}/g, function(_, name) {
+                            return opts[name] != null ? opts[name] : '{{' + name + '}}';
+                        });
+                    }
+                    return key;
                 };
             }
             _initJukebox();

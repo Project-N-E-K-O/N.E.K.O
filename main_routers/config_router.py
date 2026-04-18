@@ -557,27 +557,36 @@ async def get_core_config_api():
         
         # 旧版本 core_config.json 可能只有 coreApiKey 而没有各 assistApiKey* 字段，
         # 需要与 ConfigManager.get_core_config() 保持一致的回退逻辑，
-        # 以免升级后声音克隆页面误报"没有可用API"。
+        # 但只能回退到与 coreApi / assistApi 匹配的服务商，
+        # 以免将不兼容的 API Key 填充到其他服务商。
         fallback_key = api_key or ''
+        _core_api_provider = core_cfg.get('coreApi') or 'qwen'
+        _assist_api_provider = core_cfg.get('assistApi') or 'qwen'
+        _fallback_providers = {_core_api_provider, _assist_api_provider}
+
+        def _fb(provider: str) -> str:
+            """仅当 provider 与用户选择的 coreApi/assistApi 一致时才回退到 coreApiKey"""
+            return fallback_key if provider in _fallback_providers else ''
+
         return {
             "api_key": api_key,
-            "coreApi": core_cfg.get('coreApi', 'qwen'),
-            "assistApi": core_cfg.get('assistApi', 'qwen'),
-            "assistApiKeyQwen": core_cfg.get('assistApiKeyQwen', '') or fallback_key,
+            "coreApi": _core_api_provider,
+            "assistApi": _assist_api_provider,
+            "assistApiKeyQwen": core_cfg.get('assistApiKeyQwen', '') or _fb('qwen'),
             "assistApiKeyQwenIntl": core_cfg.get('assistApiKeyQwenIntl', ''),
-            "assistApiKeyOpenai": core_cfg.get('assistApiKeyOpenai', '') or fallback_key,
-            "assistApiKeyGlm": core_cfg.get('assistApiKeyGlm', '') or fallback_key,
-            "assistApiKeyStep": core_cfg.get('assistApiKeyStep', '') or fallback_key,
-            "assistApiKeySilicon": core_cfg.get('assistApiKeySilicon', '') or fallback_key,
-            "assistApiKeyGemini": core_cfg.get('assistApiKeyGemini', '') or fallback_key,
-            "assistApiKeyKimi": core_cfg.get('assistApiKeyKimi', '') or fallback_key,
-            "assistApiKeyDeepseek": core_cfg.get('assistApiKeyDeepseek', '') or fallback_key,
-            "assistApiKeyDoubao": core_cfg.get('assistApiKeyDoubao', '') or fallback_key,
+            "assistApiKeyOpenai": core_cfg.get('assistApiKeyOpenai', '') or _fb('openai'),
+            "assistApiKeyGlm": core_cfg.get('assistApiKeyGlm', '') or _fb('glm'),
+            "assistApiKeyStep": core_cfg.get('assistApiKeyStep', '') or _fb('step'),
+            "assistApiKeySilicon": core_cfg.get('assistApiKeySilicon', '') or _fb('silicon'),
+            "assistApiKeyGemini": core_cfg.get('assistApiKeyGemini', '') or _fb('gemini'),
+            "assistApiKeyKimi": core_cfg.get('assistApiKeyKimi', '') or _fb('kimi'),
+            "assistApiKeyDeepseek": core_cfg.get('assistApiKeyDeepseek', '') or _fb('deepseek'),
+            "assistApiKeyDoubao": core_cfg.get('assistApiKeyDoubao', '') or _fb('doubao'),
             "assistApiKeyMinimax": core_cfg.get('assistApiKeyMinimax', ''),
             "assistApiKeyMinimaxIntl": core_cfg.get('assistApiKeyMinimaxIntl', ''),
-            "assistApiKeyGrok": core_cfg.get('assistApiKeyGrok', '') or fallback_key,
-            "assistApiKeyClaude": core_cfg.get('assistApiKeyClaude', '') or fallback_key,
-            "assistApiKeyOpenrouter": core_cfg.get('assistApiKeyOpenrouter', '') or fallback_key,
+            "assistApiKeyGrok": core_cfg.get('assistApiKeyGrok', '') or _fb('grok'),
+            "assistApiKeyClaude": core_cfg.get('assistApiKeyClaude', '') or _fb('claude'),
+            "assistApiKeyOpenrouter": core_cfg.get('assistApiKeyOpenrouter', '') or _fb('openrouter'),
             "mcpToken": core_cfg.get('mcpToken', ''),
             "openclawUrl": core_cfg.get('openclawUrl'),
             "openclawTimeout": core_cfg.get('openclawTimeout'),
