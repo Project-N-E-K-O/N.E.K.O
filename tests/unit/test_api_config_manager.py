@@ -78,31 +78,49 @@ class TestKeybookSaveLoad:
             )
 
     @pytest.mark.unit
-    def test_missing_keys_fallback_to_core_key(self, config_manager):
-        """Unset assist keys (except minimax) fall back to CORE_API_KEY."""
+    def test_missing_keys_gated_fallback_to_core_key(self, config_manager):
+        """仅用户选中的 coreApi/assistApi 对应的槽位会回退到 CORE_API_KEY，
+        其余槽位保持空字符串，避免主 Key 被广播到 Key Book 所有栏位。"""
         _write_core_config(config_manager, {
             'coreApiKey': 'sk-core-master',
             'coreApi': 'qwen',
-            'assistApi': 'qwen',
+            'assistApi': 'openai',
         })
         cfg = config_manager.get_core_config()
 
-        # These should fall back to CORE_API_KEY
-        for upper in ['ASSIST_API_KEY_QWEN', 'ASSIST_API_KEY_OPENAI',
-                       'ASSIST_API_KEY_GLM', 'ASSIST_API_KEY_STEP',
+        # 选中的两个 provider 应该 fallback
+        assert cfg['ASSIST_API_KEY_QWEN'] == 'sk-core-master'
+        assert cfg['ASSIST_API_KEY_OPENAI'] == 'sk-core-master'
+
+        # 其余所有槽位保持空，不应被 CORE_API_KEY 污染
+        for upper in ['ASSIST_API_KEY_GLM', 'ASSIST_API_KEY_STEP',
                        'ASSIST_API_KEY_SILICON', 'ASSIST_API_KEY_GEMINI',
                        'ASSIST_API_KEY_KIMI', 'ASSIST_API_KEY_DEEPSEEK',
-                       'ASSIST_API_KEY_DOUBAO', 'ASSIST_API_KEY_GROK']:
-            assert cfg[upper] == 'sk-core-master', (
-                f'{upper} should fall back to CORE_API_KEY'
+                       'ASSIST_API_KEY_DOUBAO', 'ASSIST_API_KEY_GROK',
+                       'ASSIST_API_KEY_CLAUDE', 'ASSIST_API_KEY_OPENROUTER',
+                       'ASSIST_API_KEY_QWEN_INTL',
+                       'ASSIST_API_KEY_MINIMAX', 'ASSIST_API_KEY_MINIMAX_INTL']:
+            assert cfg[upper] == '', (
+                f'{upper} 未被选中，不应 fallback 到 CORE_API_KEY'
             )
 
-        # MiniMax should NOT fall back
-        assert cfg['ASSIST_API_KEY_MINIMAX'] == '', (
-            'MINIMAX must NOT fall back to CORE_API_KEY'
-        )
-        assert cfg['ASSIST_API_KEY_MINIMAX_INTL'] == '', (
-            'MINIMAX_INTL must NOT fall back to CORE_API_KEY'
+    @pytest.mark.unit
+    @pytest.mark.parametrize('provider,upper', [
+        ('qwen_intl', 'ASSIST_API_KEY_QWEN_INTL'),
+        ('minimax', 'ASSIST_API_KEY_MINIMAX'),
+        ('minimax_intl', 'ASSIST_API_KEY_MINIMAX_INTL'),
+    ])
+    def test_special_providers_fallback_when_selected(self, config_manager, provider, upper):
+        """qwen_intl / minimax / minimax_intl 被选中时也要能 fallback，
+        保持与其他 provider 的对偶性。"""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core-master',
+            'coreApi': provider,
+            'assistApi': provider,
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg[upper] == 'sk-core-master', (
+            f'{upper} 在 coreApi={provider} 时应 fallback 到 CORE_API_KEY'
         )
 
 
