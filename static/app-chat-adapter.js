@@ -251,6 +251,14 @@
         });
     }
 
+    function _resetReactChatSwitchState() {
+        _pendingHostMessages = [];
+        if (_pendingFlushTimer) {
+            clearInterval(_pendingFlushTimer);
+            _pendingFlushTimer = null;
+        }
+    }
+
     function createGeminiBubble(sentence) {
         var host = getHost();
         var cleanSentence = (sentence || '').replace(/\[play_music:[^\]]*(\]|$)/g, '');
@@ -672,6 +680,7 @@
     window.setReactMessageStatus = setReactMessageStatus;
     window._tryFlushPendingHostMessages = _tryFlushPendingHostMessages;
     window._clearPendingHostMessagesByIds = _clearPendingHostMessagesByIds;
+    window._resetReactChatSwitchState = _resetReactChatSwitchState;
 
     // 覆盖 appChat 上的方法
     if (window.appChat) {

@@ -503,6 +503,11 @@
 
         // ---- onmessage ----
         S.socket.onmessage = function (event) {
+            if (S.socket !== _thisSocket) {
+                console.log('[WS] stale onmessage skipped (socket already replaced)');
+                return;
+            }
+
             // Binary audio data
             if (event.data instanceof Blob) {
                 if (window.DEBUG_AUDIO) {
