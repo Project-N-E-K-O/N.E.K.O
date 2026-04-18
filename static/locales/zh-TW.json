@@ -2927,6 +2927,7 @@
         "selectedActions": "已選擇 {{count}} 個動畫",
         "selectedSeparator": "，",
         "selectedInfo": "已選擇 {{songCount}} 首歌曲，{{actionCount}} 個動畫",
+        "bindingsSelected": "綁定頁已選 {{bindingSongCount}} 首歌曲、{{bindingActionCount}} 個動畫；綁定集合共 {{bundleSongCount}} 首歌曲、{{bundleActionCount}} 個動畫",
         "missing": "缺失",
         "unknownError": "未知錯誤",
         "calibration": "校準動畫",

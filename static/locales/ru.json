@@ -2927,6 +2927,7 @@
         "selectedActions": "Выбрано {{count}} анимаций",
         "selectedSeparator": ", ",
         "selectedInfo": "Выбрано {{songCount}} песен, {{actionCount}} анимаций",
+        "bindingsSelected": "На вкладке привязок выбрано: {{bindingSongCount}} песен, {{bindingActionCount}} анимаций; всего в наборе: {{bundleSongCount}} песен, {{bundleActionCount}} анимаций",
         "missing": "Отсутствует",
         "unknownError": "Неизвестная ошибка",
         "calibration": "Калибровка анимации",

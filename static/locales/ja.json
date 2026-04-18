@@ -2927,6 +2927,7 @@
         "selectedActions": "{{count}}アニメーション選択中",
         "selectedSeparator": "、",
         "selectedInfo": "{{songCount}}曲、{{actionCount}}アニメーション選択中",
+        "bindingsSelected": "バインディングタブで{{bindingSongCount}}曲、{{bindingActionCount}}アニメーション選択中；バンドル合計{{bundleSongCount}}曲、{{bundleActionCount}}アニメーション",
         "missing": "欠落",
         "unknownError": "不明なエラー",
         "calibration": "アニメーションをキャリブレーション",

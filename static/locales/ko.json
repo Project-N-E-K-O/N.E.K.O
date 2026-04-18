@@ -2927,6 +2927,7 @@
         "selectedActions": "{{count}}개 애니메이션 선택됨",
         "selectedSeparator": ", ",
         "selectedInfo": "{{songCount}}개 노래, {{actionCount}}개 애니메이션 선택됨",
+        "bindingsSelected": "바인딩 탭에서 {{bindingSongCount}}개 노래, {{bindingActionCount}}개 애니메이션 선택됨; 번들 합계 {{bundleSongCount}}개 노래, {{bundleActionCount}}개 애니메이션",
         "missing": "누락",
         "unknownError": "알 수 없는 오류",
         "calibration": "애니메이션 보정",

@@ -1345,10 +1345,19 @@ window.Jukebox = {
 
       let text = '';
       if (activeTab === 'bindings' && (bindingSongCount > 0 || bindingActionCount > 0)) {
-        text = `绑定页已选 ${bindingSongCount} 首歌曲、${bindingActionCount} 个动画；绑定集合共 ${bindingBundle.songIds.length} 首歌曲、${bindingBundle.actionIds.length} 个动画`;
+        text = window.t('Jukebox.bindingsSelected', {
+          defaultValue: '绑定页已选 {{bindingSongCount}} 首歌曲、{{bindingActionCount}} 个动画；绑定集合共 {{bundleSongCount}} 首歌曲、{{bundleActionCount}} 个动画',
+          bindingSongCount,
+          bindingActionCount,
+          bundleSongCount: bindingBundle.songIds.length,
+          bundleActionCount: bindingBundle.actionIds.length,
+        });
       } else if (songCount > 0 || actionCount > 0) {
-        const template = window.t('Jukebox.selectedInfo', '已选择 {{songCount}} 首歌曲，{{actionCount}} 个动画');
-        text = template.replace('{{songCount}}', songCount).replace('{{actionCount}}', actionCount);
+        text = window.t('Jukebox.selectedInfo', {
+          defaultValue: '已选择 {{songCount}} 首歌曲，{{actionCount}} 个动画',
+          songCount,
+          actionCount,
+        });
       }
 
       infoEl.textContent = text;
