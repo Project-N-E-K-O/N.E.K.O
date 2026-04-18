@@ -1102,7 +1102,15 @@ async def _run_computer_use_task(
         info["error"] = str(e)
         logger.error("[ComputerUse] Task %s failed: %s", task_id, e)
     finally:
-        info["status"] = "cancelled" if info.get("error") == "Task was cancelled" else ("completed" if success else "failed")
+        # cancel_task may have pre-marked status="cancelled" before this dispatch
+        # observed the cancellation; preserve that signal regardless of whether
+        # the CU thread returned normally or raised CancelledError.
+        if info.get("status") == "cancelled":
+            pass  # already cancelled by cancel_task
+        elif info.get("error") == "Task was cancelled":
+            info["status"] = "cancelled"
+        else:
+            info["status"] = "completed" if success else "failed"
         info["end_time"] = _now_iso()
         # 记录任务完成状态供 analyzer 去重
         _task_tracker.record_completed(
@@ -1446,6 +1454,9 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         is_deferred = isinstance(run_data, dict) and run_data.get("deferred") is True
                         # Update task_registry（deferred 任务保持 running，不写 terminal 状态）
                         _reg = Modules.task_registry.get(result.task_id)
+                        if _reg and _reg.get("status") == "cancelled":
+                            # cancel_task pre-marked cancelled; don't clobber with a late terminal write.
+                            return
                         if _reg and not (up_result.success and is_deferred):
                             _reg["status"] = up_terminal
                             _reg["end_time"] = _now_iso()
@@ -1555,8 +1566,10 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             logger.debug("[TaskExecutor] emit task_update(cancelled) failed: task_id=%s error=%s", result.task_id, emit_err)
                         raise
                     except Exception as e:
-                        logger.exception("[TaskExecutor] UserPlugin dispatch failed: %s", e)
                         _reg = Modules.task_registry.get(result.task_id)
+                        if _reg and _reg.get("status") == "cancelled":
+                            return
+                        logger.exception("[TaskExecutor] UserPlugin dispatch failed: %s", e)
                         if _reg:
                             _reg["status"] = "failed"
                             _reg["error"] = str(e)[:500]
@@ -1661,6 +1674,9 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         success = bool(nk_result.get("success"))
                         reply = str(nk_result.get("reply") or "")
                         _reg = Modules.task_registry.get(result.task_id)
+                        if _reg and _reg.get("status") == "cancelled":
+                            # cancel_task already marked cancelled; skip terminal writes
+                            return
                         if _reg:
                             _reg["status"] = "completed" if success else "failed"
                             _reg["end_time"] = _now_iso()
@@ -1744,8 +1760,10 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             pass
                         raise
                     except Exception as e:
-                        logger.exception("[OpenClaw] dispatch failed: %s", e)
                         _reg = Modules.task_registry.get(result.task_id)
+                        if _reg and _reg.get("status") == "cancelled":
+                            return
+                        logger.exception("[OpenClaw] dispatch failed: %s", e)
                         if _reg:
                             _reg["status"] = "failed"
                             _reg["error"] = str(e)[:500]
@@ -1833,6 +1851,11 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             result.task_description,
                             session_id=bu_session.session_id,
                         )
+                        if bu_info.get("status") == "cancelled":
+                            # cancel_task set the terminal state before run_instruction
+                            # returned (e.g. via fire-and-forget CDP teardown winning
+                            # the race against bg.cancel()). Don't clobber it.
+                            return
                         success = bres.get("success", False) if isinstance(bres, dict) else False
                         _bu_ok, bu_parsed = parse_browser_use_result(bres)
                         _lang = _rp_lang(None)
@@ -1902,6 +1925,11 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             logger.debug("[BrowserUse] emit task_update(cancelled) failed: task_id=%s error=%s", bu_task_id, emit_err)
                         raise
                     except Exception as e:
+                        if bu_info.get("status") == "cancelled":
+                            # cancel_task already marked cancelled; treat incidental
+                            # errors (e.g. ConnectionError from CDP teardown) as the
+                            # cancel signal instead of clobbering with "failed".
+                            return
                         logger.warning(f"[BrowserUse] Failed: {e}")
                         bu_info["status"] = "failed"
                         bu_info["end_time"] = _now_iso()
@@ -2001,6 +2029,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             logger.debug("[OpenFang] error: %s", of_res.get("error"))
                             logger.debug("[OpenFang] artifacts=%s", of_res.get("artifacts"))
                             logger.debug("[OpenFang] ==============================")
+                            if of_info.get("status") == "cancelled":
+                                return
                             success = of_res.get("success", False)
                             of_result_text = of_res.get("result", "") or ""
                             of_error_text = of_res.get("error", "") or ""
@@ -2074,6 +2104,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 logger.debug("[OpenFang] emit task_update(cancelled) failed: task_id=%s", of_task_id, exc_info=True)
                             raise
                         except Exception as e:
+                            if of_info.get("status") == "cancelled":
+                                return
                             logger.warning(f"[OpenFang] Task failed: {e}")
                             of_info["status"] = "failed"
                             of_info["end_time"] = _now_iso()
@@ -2553,6 +2585,9 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                 conversation_id=conversation_id,
                 on_progress=_on_plugin_progress,
             )
+            if info.get("status") == "cancelled":
+                # cancel_task pre-marked cancelled; skip terminal clobber + emits.
+                return
             info["result"] = res.result
             info["status"] = "completed" if res.success else "failed"
             info["end_time"] = _now_iso()
@@ -2609,6 +2644,8 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                 logger.debug("[Plugin] emit task_result(cancelled) failed: task_id=%s plugin_id=%s error=%s", task_id, plugin_id, emit_err)
             raise
         except Exception as e:
+            if info.get("status") == "cancelled":
+                return
             info["status"] = "failed"
             info["end_time"] = _now_iso()
             info["error"] = str(e)[:500]
@@ -2661,9 +2698,39 @@ async def get_task(task_id: str):
     raise HTTPException(404, "task not found")
 
 
+def _spawn_background_cancel(coro, *, label: str) -> None:
+    """Fire-and-forget a long-running cancel/teardown coroutine.
+
+    cancel_task must return quickly so the HUD button is responsive regardless
+    of how long the underlying provider takes to actually stop (browser process
+    tree teardown, remote /stop HTTP, etc.). We track the task in
+    _background_tasks so it is not garbage-collected mid-run.
+    """
+    async def _runner():
+        try:
+            await coro
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("[Cancel:%s] background cleanup failed: %s", label, exc)
+
+    t = asyncio.create_task(_runner())
+    Modules._background_tasks.add(t)
+    t.add_done_callback(Modules._background_tasks.discard)
+
+
 @app.post("/tasks/{task_id}/cancel")
 async def cancel_task(task_id: str):
-    """Cancel a specific running task."""
+    """Cancel a specific running task.
+
+    Cancellation is a two-phase operation:
+      1. Mark the task "cancelled" in the registry and cancel the wrapping
+         asyncio task synchronously. This is what the dispatch coroutines
+         observe first, so they take the cancelled code path.
+      2. Fire-and-forget the provider-specific teardown (browser process tree
+         kill, remote /stop HTTP, etc.) so this endpoint returns to the
+         frontend immediately instead of blocking on a slow remote.
+    """
     info = Modules.task_registry.get(task_id)
     if not info:
         raise HTTPException(404, "task not found")
@@ -2671,53 +2738,47 @@ async def cancel_task(task_id: str):
         return {"success": False, "error": "task is not active"}
 
     task_type = info.get("type")
+    # Mark cancelled up front so any late terminal writes from the dispatch
+    # coroutine can see it and skip clobbering the status (see _run_*_dispatch
+    # terminal guards).
+    info["status"] = "cancelled"
+    info["error"] = "Cancelled by user"
+
     bg = Modules.task_async_handles.get(task_id)
     if bg and not bg.done():
         bg.cancel()
+
     if task_type == "computer_use":
         if Modules.computer_use:
             Modules.computer_use.cancel_running()
         if Modules.active_computer_use_task_id == task_id and Modules.active_computer_use_async_task:
             Modules.active_computer_use_async_task.cancel()
-        info["status"] = "cancelled"
-        info["error"] = "Cancelled by user"
     elif task_type == "browser_use":
         if Modules.browser_use:
-            Modules.browser_use.cancel_running()
-        info["status"] = "cancelled"
-        info["error"] = "Cancelled by user"
+            _spawn_background_cancel(
+                Modules.browser_use.cancel(), label=f"browser_use:{task_id}"
+            )
+        if Modules.active_browser_use_task_id == task_id:
+            Modules.active_browser_use_task_id = None
     elif task_type == "openfang":
         if Modules.openfang:
-            try:
-                await Modules.openfang.cancel_running(task_id)
-            except Exception as e:
-                logger.warning("[OpenFang] cancel_running failed for %s: %s", task_id, e)
+            _spawn_background_cancel(
+                Modules.openfang.cancel_running(task_id),
+                label=f"openfang:{task_id}",
+            )
             Modules.openfang.unregister_local_task(task_id)
-        info["status"] = "cancelled"
-        info["error"] = "Cancelled by user"
     elif task_type == "openclaw":
         if Modules.openclaw:
-            try:
-                stop_result = await Modules.openclaw.stop_running(
+            _spawn_background_cancel(
+                Modules.openclaw.stop_running(
                     sender_id=info.get("sender_id"),
                     session_id=info.get("session_id"),
                     conversation_id=info.get("session_id"),
                     role_name=info.get("lanlan_name"),
                     task_id=task_id,
-                )
-                if not stop_result.get("success"):
-                    logger.warning(
-                        "[OpenClaw] stop_running failed for %s: %s",
-                        task_id,
-                        stop_result.get("error"),
-                    )
-            except Exception as e:
-                logger.warning("[OpenClaw] stop_running failed for %s: %s", task_id, e)
-        info["status"] = "cancelled"
-        info["error"] = "Cancelled by user"
-    else:
-        info["status"] = "cancelled"
-        info["error"] = "Cancelled by user"
+                ),
+                label=f"openclaw:{task_id}",
+            )
 
     lanlan_name = info.get("lanlan_name")
     try:
@@ -3122,8 +3183,10 @@ async def openfang_run(payload: Dict[str, Any]):
                 on_progress=_on_progress,
                 local_task_id=task_id,
             )
-            final_status = "completed" if result.get("success") else "failed"
             reg = Modules.task_registry[task_id]
+            if reg.get("status") == "cancelled":
+                return
+            final_status = "completed" if result.get("success") else "failed"
             reg["status"] = final_status
             reg["result"] = result
             reg["end_time"] = datetime.now(timezone.utc).isoformat()
@@ -3153,8 +3216,10 @@ async def openfang_run(payload: Dict[str, Any]):
             except Exception:
                 logger.debug("[OpenFang] terminal task_update emit failed", exc_info=True)
         except Exception as e:
-            logger.error("[OpenFang] Task %s failed: %s", task_id, e)
             reg = Modules.task_registry[task_id]
+            if reg.get("status") == "cancelled":
+                return
+            logger.error("[OpenFang] Task %s failed: %s", task_id, e)
             reg["status"] = "failed"
             reg["error"] = str(e)
             reg["end_time"] = datetime.now(timezone.utc).isoformat()
