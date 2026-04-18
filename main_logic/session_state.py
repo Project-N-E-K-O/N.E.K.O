@@ -123,7 +123,7 @@ class SessionStateMachine:
         if self.phase in _PROACTIVE_ACTIVE_PHASES:
             self._preempted = True
 
-    async def reset(self) -> None:
+    async def reset(self, *, force: bool = False) -> None:
         """Teardown hook：把 SM 复位到初始态，清掉可能泄漏的 proactive 残留。
 
         ``LLMSessionManager`` 跨多次 ``start_session()`` / ``end_session()`` 复用
@@ -135,14 +135,18 @@ class SessionStateMachine:
         保留 ``_subscribers`` 和 ``last_user_activity`` —— 前者是应用层注册的
         钩子不该无故吹飞，后者跨会话单调递增有诊断价值。
 
-        注意：当 proactive 流水线正处于活动阶段（PHASE1/PHASE2/COMMITTING）时，
-        本方法是 **no-op**。这是因为 ``prepare_proactive_delivery`` 在没有现成
-        session 时会 auto-start，该路径进入 ``start_session → _init_renew_status``，
-        若此处无脑复位就会把 proactive 刚翻起的 phase/sticky flag 全吹掉，使后续
-        phase1/phase2 的 ``is_proactive_preempted`` 彻底失效。
+        Args:
+            force: 若为 ``False``（默认），在 proactive 活动阶段（PHASE1/PHASE2/
+                COMMITTING）本方法是 **no-op**，由活动中的 proactive 自身负责
+                ``PROACTIVE_DONE`` 清理——这是保护 ``prepare_proactive_delivery``
+                在某些并发场景（例如 auto-start 期间偶发错误回收）下不被误清。
+                若为 ``True``，**强制**复位一切状态，不管当前 phase。真正的会话
+                teardown（WS 断开、``end_session``）必须用 ``force=True``——否则
+                活动中的 proactive 卡死导致的 phase/preempt 泄漏会堵死下一轮
+                ``can_start_proactive``。
         """
         async with self._write_lock:
-            if self.phase in _PROACTIVE_ACTIVE_PHASES:
+            if not force and self.phase in _PROACTIVE_ACTIVE_PHASES:
                 # 活动中的 proactive 自身负责 PROACTIVE_DONE 清理；此处跳过
                 return
             self.owner = TurnOwner.NONE

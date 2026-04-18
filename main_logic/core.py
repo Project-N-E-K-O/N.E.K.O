@@ -1013,7 +1013,9 @@ class LLMSessionManager:
         # 状态机是 per-manager 的，跨 start_session/end_session 复用同一实例。
         # 若上一轮 proactive 在 PHASE1/PHASE2 中途 WS 断开、PROACTIVE_DONE 来不及
         # fire，phase/_preempted 会泄漏到新会话，堵死 can_start_proactive。
-        await self.state.reset()
+        # teardown 必须用 force=True：默认 reset() 会在活动 phase 上 no-op（保护
+        # auto-start 不被误清），但 end_session 语义就是整轮收尾，必须强制清场。
+        await self.state.reset(force=True)
 
     def _has_custom_tts(self) -> bool:
         """判断当前会话是否使用自定义 TTS（克隆音色或自定义 TTS URL）。"""
@@ -2451,10 +2453,11 @@ class LLMSessionManager:
 
     async def prepare_proactive_delivery(self, min_idle_secs: float = 30.0) -> bool:
         """Phase 2 流式输出前的前置检查 + speech_id 生成。返回 True 表示可以继续。"""
-        # 早期抢占检查：auto-start 分支会走到 start_session → _init_renew_status，
-        # 其中的 state.reset() 会吹掉 proactive phase（reset 本身已对活动 phase 做
-        # no-op，但我们仍希望在任何 await / sid 改写前快速短路），以及防止用户刚
-        # 在入口之后抢占，后续 self.current_speech_id 写入覆盖用户的 user_sid。
+        # 早期抢占检查：在任何 await / sid 改写前快速短路，防止用户刚在入口之后
+        # 抢占而后续 self.current_speech_id 写入覆盖用户的 user_sid。默认 reset()
+        # 对活动 phase no-op（保护 auto-start 期间偶发并发 reset），但 end_session
+        # 走 force=True 强制清场——这里短路不依赖 reset() 的语义差异，单纯是为
+        # 了更早放弃已被抢占的 proactive 轮次。
         if self.state.is_proactive_preempted():
             logger.info("[%s] prepare_proactive_delivery: preempted before claim", self.lanlan_name)
             return False

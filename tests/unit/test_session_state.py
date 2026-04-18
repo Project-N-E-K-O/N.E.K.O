@@ -612,6 +612,29 @@ async def test_reset_is_noop_during_active_proactive_phase():
     assert sm.user_sid == "preempt_sid"
 
 
+async def test_reset_force_clears_state_even_during_active_proactive():
+    """reset(force=True) 是真正的 teardown（WS 断开 / end_session）：即便 proactive
+    还卡在 PHASE1/PHASE2，也必须强制清场，否则 phase/_preempted 会泄漏到下一轮
+    session，彻底堵死 can_start_proactive 的 IDLE 判定。
+    """
+    sm = _sm()
+    await sm.fire(SessionEvent.PROACTIVE_START)
+    await sm.fire(SessionEvent.PROACTIVE_CLAIM, sid="live_sid")
+    await sm.fire(SessionEvent.USER_INPUT, sid="preempt_sid")
+    assert sm.phase is ProactivePhase.PHASE1
+    assert sm._preempted is True
+
+    await sm.reset(force=True)
+
+    # force=True 绕过活动 phase 保护，全部字段复位
+    assert sm.phase is ProactivePhase.IDLE
+    assert sm._preempted is False
+    assert sm.proactive_sid is None
+    assert sm.user_sid is None
+    assert sm.owner is TurnOwner.NONE
+    assert sm.can_start_proactive() is True
+
+
 async def test_reset_preserves_subscribers():
     """reset 是 teardown hook，不该把应用层注册的订阅钩子吹掉。"""
     sm = _sm()
