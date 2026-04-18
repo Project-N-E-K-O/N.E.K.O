@@ -214,6 +214,18 @@
     // =====================================================================
 
     /**
+     * Capability check: does the current page host the full model UI?
+     * index.html (served at / and /{lanlan_name}) has live2d-container,
+     * vrm-container AND mmd-container. Other pages (chat, subtitle, etc.)
+     * lack the complete set and must not run model reload / hide / show.
+     */
+    function _isModelHostPage() {
+        return !!(document.getElementById('live2d-container')
+              && document.getElementById('vrm-container')
+              && document.getElementById('mmd-container'));
+    }
+
+    /**
      * Handle model hot-swap triggered from another tab (model_manager).
      *
      * Concurrency-safe: if a reload is already in flight, the new request
@@ -224,10 +236,10 @@
     async function handleModelReload(targetLanlanName) {
         targetLanlanName = targetLanlanName || '';
 
-        // 只有主窗口（/）才处理模型重载；Chat 等子窗口没有渲染基础设施，
+        // 只有承载完整模型 UI 的页面才处理重载；Chat 等子窗口缺少渲染容器，
         // 执行会导致异常并弹出误导性的"模型切换失败"toast。
-        if (window.location.pathname !== '/' && window.location.pathname !== '/index.html') {
-            console.log('[Model] 非主窗口，跳过模型重载:', window.location.pathname);
+        if (!_isModelHostPage()) {
+            console.log('[Model] 当前页面无模型容器，跳过模型重载');
             return;
         }
 
@@ -785,7 +797,7 @@
      * Hide main-page model rendering (entering model manager).
      */
     function handleHideMainUI() {
-        if (window.location.pathname !== '/' && window.location.pathname !== '/index.html') return;
+        if (!_isModelHostPage()) return;
         console.log('[UI] 隐藏主界面并暂停渲染');
 
         try {
@@ -866,7 +878,7 @@
      * Show main-page model rendering (returning to main page).
      */
     function handleShowMainUI() {
-        if (window.location.pathname !== '/' && window.location.pathname !== '/index.html') return;
+        if (!_isModelHostPage()) return;
         // 模型重载进行中时跳过：handleModelReload 自己会正确切换容器，
         // 此时 lanlan_config.model_type 尚未更新，handleShowMainUI 会
         // 错误地恢复旧模型类型的容器，导致需要切换两次才能成功。
