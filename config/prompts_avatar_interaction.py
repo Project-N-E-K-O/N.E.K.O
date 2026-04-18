@@ -11,9 +11,8 @@ from __future__ import annotations
 import json
 import re
 import time
+import math
 from typing import Optional
-
-import numpy as np
 
 from utils.language_utils import normalize_language_code, get_global_language_full
 
@@ -1032,7 +1031,7 @@ def _normalize_avatar_interaction_payload(payload: dict) -> Optional[dict]:
         try:
             client_x = float(raw_x)
             client_y = float(raw_y)
-            if np.isfinite(client_x) and np.isfinite(client_y):
+            if math.isfinite(client_x) and math.isfinite(client_y):
                 pointer = {
                     "client_x": client_x,
                     "client_y": client_y,
