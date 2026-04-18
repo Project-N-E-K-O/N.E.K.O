@@ -2515,8 +2515,8 @@ async def proactive_chat(request: Request):
         
         raw_memory_context = ""
         try:
-            from utils.memory_client import get_memory_client
-            _pt_client = get_memory_client()
+            from utils.internal_http_client import get_internal_http_client
+            _pt_client = get_internal_http_client()
             resp = await _pt_client.get(
                 f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{lanlan_name}",
                 timeout=5.0,
@@ -2571,11 +2571,11 @@ async def proactive_chat(request: Request):
         # 认知框架：Facts → Reflection(pending) → 主动搭话自然提及 → 用户反馈 → Persona
         followup_topics_prompt = ""
         _surfaced_reflection_ids = []  # 记录本次搭话提及了哪些 pending 反思
-        # 复用 memory_client 单例：proactive_chat 每次主动搭话都走此路径
+        # 复用 internal_http_client 单例：proactive_chat 每次主动搭话都走此路径
         try:
-            from utils.memory_client import get_memory_client
+            from utils.internal_http_client import get_internal_http_client
             _mem_base = f"http://127.0.0.1:{MEMORY_SERVER_PORT}"
-            _mem_client = get_memory_client()
+            _mem_client = get_internal_http_client()
             # 1. 自动状态迁移 + 反思合成（集中在 memory_server 进程内执行）
             _reflect_resp = await _mem_client.post(
                 f"{_mem_base}/reflect/{lanlan_name}", timeout=15.0,
@@ -3490,11 +3490,11 @@ async def proactive_chat(request: Request):
         # 记录主动搭话
         _record_proactive_chat(lanlan_name, response_text, primary_channel)
 
-        # 后台长期记忆维护（通过 memory_server API）：复用 memory_client 单例
+        # 后台长期记忆维护（通过 memory_server API）：复用 internal_http_client 单例
         try:
-            from utils.memory_client import get_memory_client
+            from utils.internal_http_client import get_internal_http_client
             _mem_base = f"http://127.0.0.1:{MEMORY_SERVER_PORT}"
-            _mem_client = get_memory_client()
+            _mem_client = get_internal_http_client()
             # 保存本次搭话实际提及的 pending 反思 ID（供下次 /process 做反馈检查）
             if _surfaced_reflection_ids:
                 await _mem_client.post(

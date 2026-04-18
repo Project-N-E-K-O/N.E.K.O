@@ -7,6 +7,7 @@
 """
 import asyncio
 import httpx
+from utils.external_http_client import get_external_http_client
 import random
 import re
 import platform
@@ -350,51 +351,51 @@ async def fetch_reddit_popular(limit: int = 10) -> Dict[str, Any]:
         
         await asyncio.sleep(random.uniform(0.1, 0.5))
         
-        async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-            
-            posts = []
-            children = data.get('data', {}).get('children', [])
-            
-            for item in children[:limit]:
-                post_data = item.get('data', {})
-                
-                # 跳过NSFW内容
-                if post_data.get('over_18'):
-                    continue
-                
-                subreddit = post_data.get('subreddit', '')
-                title = post_data.get('title', '')
-                score = post_data.get('score', 0)
-                num_comments = post_data.get('num_comments', 0)
-                permalink = post_data.get('permalink', '')
-                
-                posts.append({
-                    'title': title,
-                    'subreddit': f"r/{subreddit}",
-                    'score': _format_score(score),
-                    'comments': _format_score(num_comments),
-                })
-                if permalink:
-                    posts[-1]['url'] = f"https://www.reddit.com{permalink}"
-                else:
-                    posts[-1]['url'] = ''
-            
-            if posts:
-                logger.info(f"从Reddit获取到{len(posts)}条热门帖子")
-                return {
-                    'success': True,
-                    'posts': posts
-                }
+        client = get_external_http_client()
+        response = await client.get(url, headers=headers, timeout=5.0)
+        response.raise_for_status()
+        data = response.json()
+
+        posts = []
+        children = data.get('data', {}).get('children', [])
+
+        for item in children[:limit]:
+            post_data = item.get('data', {})
+
+            # 跳过NSFW内容
+            if post_data.get('over_18'):
+                continue
+
+            subreddit = post_data.get('subreddit', '')
+            title = post_data.get('title', '')
+            score = post_data.get('score', 0)
+            num_comments = post_data.get('num_comments', 0)
+            permalink = post_data.get('permalink', '')
+
+            posts.append({
+                'title': title,
+                'subreddit': f"r/{subreddit}",
+                'score': _format_score(score),
+                'comments': _format_score(num_comments),
+            })
+            if permalink:
+                posts[-1]['url'] = f"https://www.reddit.com{permalink}"
             else:
-                return {
-                    'success': False,
-                    'error': 'Reddit返回空数据',
-                    'posts': []
-                }
-                
+                posts[-1]['url'] = ''
+
+        if posts:
+            logger.info(f"从Reddit获取到{len(posts)}条热门帖子")
+            return {
+                'success': True,
+                'posts': posts
+            }
+        else:
+            return {
+                'success': False,
+                'error': 'Reddit返回空数据',
+                'posts': []
+            }
+
     except httpx.TimeoutException:
         logger.exception("获取Reddit热门超时")
         return {
@@ -452,80 +453,80 @@ async def fetch_weibo_trending(limit: int = 10) -> Dict[str, Any]:
         # 添加随机延迟
         await asyncio.sleep(random.uniform(0.1, 0.5))
         
-        async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            
-            # 检查是否重定向到登录页面
-            if 'passport' in str(response.url):
-                logger.warning("微博Cookie可能已过期，回退到公开API")
-                return await _fetch_weibo_trending_fallback(limit)
-            
-            html = response.text
-            soup = BeautifulSoup(html, 'html.parser')
-            
-            # 解析热搜列表 (td-02 class)
-            td_items = soup.find_all('td', class_='td-02')
-            
-            if not td_items:
-                logger.warning("未找到热搜数据，回退到公开API")
-                return await _fetch_weibo_trending_fallback(limit)
-            
-            trending_list = []
-            for i, td in enumerate(td_items):
-                if len(trending_list) >= limit:
-                    break
-                    
-                a_tag = td.find('a')
-                span = td.find('span')
-                
-                if a_tag:
-                    word = a_tag.get_text(strip=True)
-                    if not word:
-                        continue
-                    
-                    # 获取链接
-                    href = a_tag.get('href', '')
-                    # 构建完整URL（相对链接需要加上域名）
-                    if href and not href.startswith('http'):
-                        href = f"https://s.weibo.com{href}"
-                    
-                    # 解析热度值
-                    if span:
-                        hot_text = span.get_text(strip=True)
-                    else:
-                        hot_text = ''
-                    # 热度可能包含类型标签如"剧集 336075"，需要提取数字
-                    import re
-                    hot_match = re.search(r'(\d+)', hot_text)
-                    if hot_match:
-                        raw_hot = int(hot_match.group(1))
-                    else:
-                        raw_hot = 0
-                    
-                    # 提取标签（如"剧集"、"晚会"等）
-                    if hot_text:
-                        note = re.sub(r'\d+', '', hot_text).strip()
-                    else:
-                        note = ''
-                    
-                    trending_list.append({
-                        'word': word,
-                        'raw_hot': raw_hot,
-                        'note': note,
-                        'rank': i + 1,
-                        'url': href
-                    })
-            
-            if trending_list:
-                logger.info(f"成功从s.weibo.com获取{len(trending_list)}条热搜")
-                return {
-                    'success': True,
-                    'trending': trending_list
-                }
-            else:
-                return await _fetch_weibo_trending_fallback(limit)
-                
+        client = get_external_http_client()
+        response = await client.get(url, headers=headers, timeout=5.0)
+        response.raise_for_status()
+
+        # 检查是否重定向到登录页面
+        if 'passport' in str(response.url):
+            logger.warning("微博Cookie可能已过期，回退到公开API")
+            return await _fetch_weibo_trending_fallback(limit)
+
+        html = response.text
+        soup = BeautifulSoup(html, 'html.parser')
+
+        # 解析热搜列表 (td-02 class)
+        td_items = soup.find_all('td', class_='td-02')
+
+        if not td_items:
+            logger.warning("未找到热搜数据，回退到公开API")
+            return await _fetch_weibo_trending_fallback(limit)
+
+        trending_list = []
+        for i, td in enumerate(td_items):
+            if len(trending_list) >= limit:
+                break
+
+            a_tag = td.find('a')
+            span = td.find('span')
+
+            if a_tag:
+                word = a_tag.get_text(strip=True)
+                if not word:
+                    continue
+
+                # 获取链接
+                href = a_tag.get('href', '')
+                # 构建完整URL（相对链接需要加上域名）
+                if href and not href.startswith('http'):
+                    href = f"https://s.weibo.com{href}"
+
+                # 解析热度值
+                if span:
+                    hot_text = span.get_text(strip=True)
+                else:
+                    hot_text = ''
+                # 热度可能包含类型标签如"剧集 336075"，需要提取数字
+                import re
+                hot_match = re.search(r'(\d+)', hot_text)
+                if hot_match:
+                    raw_hot = int(hot_match.group(1))
+                else:
+                    raw_hot = 0
+
+                # 提取标签（如"剧集"、"晚会"等）
+                if hot_text:
+                    note = re.sub(r'\d+', '', hot_text).strip()
+                else:
+                    note = ''
+
+                trending_list.append({
+                    'word': word,
+                    'raw_hot': raw_hot,
+                    'note': note,
+                    'rank': i + 1,
+                    'url': href
+                })
+
+        if trending_list:
+            logger.info(f"成功从s.weibo.com获取{len(trending_list)}条热搜")
+            return {
+                'success': True,
+                'trending': trending_list
+            }
+        else:
+            return await _fetch_weibo_trending_fallback(limit)
+
     except Exception as e:
         logger.warning(f"s.weibo.com热搜获取失败: {e}，回退到公开API")
         return await _fetch_weibo_trending_fallback(limit)
@@ -552,45 +553,45 @@ async def _fetch_weibo_trending_fallback(limit: int = 10) -> Dict[str, Any]:
         
         await asyncio.sleep(random.uniform(0.1, 0.5))
         
-        async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-            
-            if data.get('ok') == 1:
-                trending_list = []
-                realtime_list = data.get('data', {}).get('realtime', [])
-                
-                for item in realtime_list[:limit]:
-                    if item.get('is_ad'):
-                        continue
-                    
-                    word = item.get('word', '')
-                    # 构建搜索URL
-                    if word:
-                        search_url = f"https://s.weibo.com/weibo?q={quote(word)}"
-                    else:
-                        search_url = ''
-                    
-                    trending_list.append({
-                        'word': word,
-                        'raw_hot': item.get('raw_hot', 0),
-                        'note': item.get('note', ''),
-                        'rank': item.get('rank', 0),
-                        'url': search_url
-                    })
-                
-                return {
-                    'success': True,
-                    'trending': trending_list[:limit]
-                }
-            else:
-                logger.error("微博公开API返回错误")
-                return {
-                    'success': False,
-                    'error': '微博API返回错误'
-                }
-                
+        client = get_external_http_client()
+        response = await client.get(url, headers=headers, timeout=5.0)
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get('ok') == 1:
+            trending_list = []
+            realtime_list = data.get('data', {}).get('realtime', [])
+
+            for item in realtime_list[:limit]:
+                if item.get('is_ad'):
+                    continue
+
+                word = item.get('word', '')
+                # 构建搜索URL
+                if word:
+                    search_url = f"https://s.weibo.com/weibo?q={quote(word)}"
+                else:
+                    search_url = ''
+
+                trending_list.append({
+                    'word': word,
+                    'raw_hot': item.get('raw_hot', 0),
+                    'note': item.get('note', ''),
+                    'rank': item.get('rank', 0),
+                    'url': search_url
+                })
+
+            return {
+                'success': True,
+                'trending': trending_list[:limit]
+            }
+        else:
+            logger.error("微博公开API返回错误")
+            return {
+                'success': False,
+                'error': '微博API返回错误'
+            }
+
     except httpx.TimeoutException:
         logger.exception("获取微博热议话题超时")
         return {
@@ -631,51 +632,51 @@ async def fetch_twitter_trending(limit: int = 10) -> Dict[str, Any]:
         
         await asyncio.sleep(random.uniform(0.1, 0.5))
         
-        async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            html_content = response.text
-            
-            # 从页面解析热门话题
-            trending_list = []
-            
-            # 尝试从页面的JSON数据中提取热门话题
-            trend_pattern = r'"trend":\{[^}]*"name":"([^"]+)"'
-            tweet_count_pattern = r'"tweetCount":"([^"]+)"'
-            
-            trends = re.findall(trend_pattern, html_content)
-            tweet_counts = re.findall(tweet_count_pattern, html_content)
-            
-            for i, trend in enumerate(trends[:limit]):
-                if trend and not trend.startswith('#'):
-                    if not trend.startswith('@'):
-                        trend = '#' + trend
-                
-                # 构建搜索URL
-                if trend:
-                    search_url = f"https://twitter.com/search?q={quote(trend)}"
-                else:
-                    search_url = ''
-                
-                trending_list.append({
-                    'word': trend,
-                })
-                if i < len(tweet_counts):
-                    trending_list[-1]['tweet_count'] = tweet_counts[i]
-                else:
-                    trending_list[-1]['tweet_count'] = 'N/A'
-                trending_list[-1]['note'] = ''
-                trending_list[-1]['rank'] = i + 1
-                trending_list[-1]['url'] = search_url
-            
-            if trending_list:
-                return {
-                    'success': True,
-                    'trending': trending_list
-                }
+        client = get_external_http_client()
+        response = await client.get(url, headers=headers, timeout=5.0)
+        response.raise_for_status()
+        html_content = response.text
+
+        # 从页面解析热门话题
+        trending_list = []
+
+        # 尝试从页面的JSON数据中提取热门话题
+        trend_pattern = r'"trend":\{[^}]*"name":"([^"]+)"'
+        tweet_count_pattern = r'"tweetCount":"([^"]+)"'
+
+        trends = re.findall(trend_pattern, html_content)
+        tweet_counts = re.findall(tweet_count_pattern, html_content)
+
+        for i, trend in enumerate(trends[:limit]):
+            if trend and not trend.startswith('#'):
+                if not trend.startswith('@'):
+                    trend = '#' + trend
+
+            # 构建搜索URL
+            if trend:
+                search_url = f"https://twitter.com/search?q={quote(trend)}"
             else:
-                return await _fetch_twitter_trending_fallback(limit)
-                
+                search_url = ''
+
+            trending_list.append({
+                'word': trend,
+            })
+            if i < len(tweet_counts):
+                trending_list[-1]['tweet_count'] = tweet_counts[i]
+            else:
+                trending_list[-1]['tweet_count'] = 'N/A'
+            trending_list[-1]['note'] = ''
+            trending_list[-1]['rank'] = i + 1
+            trending_list[-1]['url'] = search_url
+
+        if trending_list:
+            return {
+                'success': True,
+                'trending': trending_list
+            }
+        else:
+            return await _fetch_twitter_trending_fallback(limit)
+
     except httpx.TimeoutException:
         logger.exception("获取Twitter热门超时")
         return {
@@ -752,20 +753,20 @@ async def _fetch_twitter_trending_fallback(limit: int = 10) -> Dict[str, Any]:
         try:
             await asyncio.sleep(random.uniform(0.1, 0.3))
             
-            async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
-                response = await client.get(source['url'], headers=headers)
-                
-                if response.status_code == 200:
-                    soup = BeautifulSoup(response.text, 'html.parser')
-                    trending_list = source['parser'](soup, limit)
-                    
-                    if trending_list:
-                        logger.info(f"从{source['name']}获取到{len(trending_list)}条Twitter热门")
-                        return {
-                            'success': True,
-                            'trending': trending_list,
-                            'source': source['name'].lower().replace(' ', '')
-                        }
+            client = get_external_http_client()
+            response = await client.get(source['url'], headers=headers, timeout=5.0)
+
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                trending_list = source['parser'](soup, limit)
+
+                if trending_list:
+                    logger.info(f"从{source['name']}获取到{len(trending_list)}条Twitter热门")
+                    return {
+                        'success': True,
+                        'trending': trending_list,
+                        'source': source['name'].lower().replace(' ', '')
+                    }
         except Exception as e:
             logger.warning(f"{source['name']}获取失败: {e}")
             continue
@@ -1406,27 +1407,27 @@ async def search_google(query: str, limit: int = 10) -> Dict[str, Any]:
         # 添加随机延迟
         await asyncio.sleep(random.uniform(0.2, 0.5))
         
-        async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            html_content = response.text
-            
-            # 解析搜索结果
-            results = parse_google_results(html_content, limit)
-            
-            if results:
-                return {
-                    'success': True,
-                    'query': query,
-                    'results': results
-                }
-            else:
-                return {
-                    'success': False,
-                    'error': '未能解析到搜索结果',
-                    'query': query
-                }
-                
+        client = get_external_http_client()
+        response = await client.get(url, headers=headers, timeout=5.0)
+        response.raise_for_status()
+        html_content = response.text
+
+        # 解析搜索结果
+        results = parse_google_results(html_content, limit)
+
+        if results:
+            return {
+                'success': True,
+                'query': query,
+                'results': results
+            }
+        else:
+            return {
+                'success': False,
+                'error': '未能解析到搜索结果',
+                'query': query
+            }
+
     except httpx.TimeoutException:
         logger.exception("Google搜索超时")
         return {
@@ -1560,27 +1561,27 @@ async def search_baidu(query: str, limit: int = 5) -> Dict[str, Any]:
         # 添加随机延迟
         await asyncio.sleep(random.uniform(0.2, 0.5))
         
-        async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            html_content = response.text
-            
-            # 解析搜索结果
-            results = parse_baidu_results(html_content, limit)
-            
-            if results:
-                return {
-                    'success': True,
-                    'query': query,
-                    'results': results
-                }
-            else:
-                return {
-                    'success': False,
-                    'error': '未能解析到搜索结果',
-                    'query': query
-                }
-                
+        client = get_external_http_client()
+        response = await client.get(url, headers=headers, timeout=5.0)
+        response.raise_for_status()
+        html_content = response.text
+
+        # 解析搜索结果
+        results = parse_baidu_results(html_content, limit)
+
+        if results:
+            return {
+                'success': True,
+                'query': query,
+                'results': results
+            }
+        else:
+            return {
+                'success': False,
+                'error': '未能解析到搜索结果',
+                'query': query
+            }
+
     except httpx.TimeoutException:
         logger.exception("百度搜索超时")
         return {
@@ -2050,10 +2051,10 @@ async def fetch_bilibili_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
         headers = {"User-Agent": get_random_user_agent(), "Referer": "https://t.bilibili.com/"}
         await asyncio.sleep(random.uniform(0.1, 0.5))
         
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url, headers=headers, cookies=credential.get_cookies(), timeout=10.0)
-            response.raise_for_status()
-            data = response.json()
+        client = get_external_http_client()
+        response = await client.get(url, headers=headers, cookies=credential.get_cookies(), timeout=10.0)
+        response.raise_for_status()
+        data = response.json()
 
         if not isinstance(data, dict) or data.get("code") != 0:
             logger.error(f"获取B站动态失败，API返回: {data}")
@@ -2225,60 +2226,60 @@ async def fetch_douyin_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
 
         await asyncio.sleep(random.uniform(0.1, 0.5))
 
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            response = await client.get(url, params=params, headers=headers, cookies=cookies)
-            response.raise_for_status()
-            data = response.json()
+        client = get_external_http_client()
+        response = await client.get(url, params=params, headers=headers, cookies=cookies, timeout=10.0)
+        response.raise_for_status()
+        data = response.json()
 
-            if data.get("status_code") != 0:
-                logger.error(f"抖音API返回异常，可能触发风控: {data}")
-                return {'success': False, 'error': "API请求失败，可能需要更新 Cookie 或补全 X-Bogus 签名"}
+        if data.get("status_code") != 0:
+            logger.error(f"抖音API返回异常，可能触发风控: {data}")
+            return {'success': False, 'error': "API请求失败，可能需要更新 Cookie 或补全 X-Bogus 签名"}
 
-            dynamic_list = []
-            # 兼容不同的数据返回结构，归一化为 list
-            raw_data = data.get("data")
-            if isinstance(raw_data, list):
-                aweme_list = raw_data
-            elif isinstance(raw_data, dict):
-                aweme_list = (
-                    raw_data.get("list")
-                    or raw_data.get("aweme_list")
-                    or raw_data.get("items")
-                    or data.get("aweme_list")
-                    or []
-                )
-            else:
-                aweme_list = data.get("aweme_list") or []
+        dynamic_list = []
+        # 兼容不同的数据返回结构，归一化为 list
+        raw_data = data.get("data")
+        if isinstance(raw_data, list):
+            aweme_list = raw_data
+        elif isinstance(raw_data, dict):
+            aweme_list = (
+                raw_data.get("list")
+                or raw_data.get("aweme_list")
+                or raw_data.get("items")
+                or data.get("aweme_list")
+                or []
+            )
+        else:
+            aweme_list = data.get("aweme_list") or []
 
-            for item in aweme_list[:limit]:
-                try:
-                    if not isinstance(item, dict):
-                        logger.warning(f"抖音动态数据项类型异常: {type(item).__name__}，跳过")
-                        continue
-                    author = item.get("author", {}).get("nickname", "未知博主")
-                    desc = item.get("desc") or "[分享了视频]"
-                    aweme_id = item.get("aweme_id", "")
-                    
-                    clean_desc = desc.replace('\n', ' ').strip()
-                    final_content = f"博主【{author}】: {clean_desc}"
-
-                    dynamic_list.append({
-                        'author': author,
-                        'content': final_content,
-                        'timestamp': item.get("create_time", "刚刚"),
-                    })
-                    if aweme_id:
-                        dynamic_list[-1]['url'] = f"https://www.douyin.com/video/{aweme_id}"
-                    else:
-                        dynamic_list[-1]['url'] = "https://www.douyin.com/"
-                except Exception as item_err:
-                    logger.warning(f"解析抖音动态项失败，跳过: {item_err}")
+        for item in aweme_list[:limit]:
+            try:
+                if not isinstance(item, dict):
+                    logger.warning(f"抖音动态数据项类型异常: {type(item).__name__}，跳过")
                     continue
+                author = item.get("author", {}).get("nickname", "未知博主")
+                desc = item.get("desc") or "[分享了视频]"
+                aweme_id = item.get("aweme_id", "")
 
-            if dynamic_list:
-                logger.info(f"✅ 成功获取到 {len(dynamic_list)} 条抖音关注动态")
-                return {'success': True, 'dynamics': dynamic_list}
-            return {'success': False, 'error': '未解析到抖音动态数据'}
+                clean_desc = desc.replace('\n', ' ').strip()
+                final_content = f"博主【{author}】: {clean_desc}"
+
+                dynamic_list.append({
+                    'author': author,
+                    'content': final_content,
+                    'timestamp': item.get("create_time", "刚刚"),
+                })
+                if aweme_id:
+                    dynamic_list[-1]['url'] = f"https://www.douyin.com/video/{aweme_id}"
+                else:
+                    dynamic_list[-1]['url'] = "https://www.douyin.com/"
+            except Exception as item_err:
+                logger.warning(f"解析抖音动态项失败，跳过: {item_err}")
+                continue
+
+        if dynamic_list:
+            logger.info(f"✅ 成功获取到 {len(dynamic_list)} 条抖音关注动态")
+            return {'success': True, 'dynamics': dynamic_list}
+        return {'success': False, 'error': '未解析到抖音动态数据'}
 
     except Exception as e:
         logger.error(f"获取抖音动态失败: {e}")
@@ -2319,48 +2320,48 @@ async def fetch_kuaishou_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
 
         await asyncio.sleep(random.uniform(0.1, 0.5))
 
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            response = await client.post(url, headers=headers, json=payload, cookies=cookies)
-            response.raise_for_status()
-            data = response.json()
+        client = get_external_http_client()
+        response = await client.post(url, headers=headers, json=payload, cookies=cookies, timeout=10.0)
+        response.raise_for_status()
+        data = response.json()
 
-            if data.get("errors"):
-                logger.error(f"快手GraphQL返回异常: {data['errors']}")
-                return {'success': False, 'error': "GraphQL查询报错，可能是 Cookie 失效"}
+        if data.get("errors"):
+            logger.error(f"快手GraphQL返回异常: {data['errors']}")
+            return {'success': False, 'error': "GraphQL查询报错，可能是 Cookie 失效"}
 
-            feeds = data.get("data", {}).get("visionFollowFeed", {}).get("feeds", [])
-            dynamic_list = []
+        feeds = data.get("data", {}).get("visionFollowFeed", {}).get("feeds", [])
+        dynamic_list = []
 
-            for item in feeds[:limit]:
-                try:
-                    if not isinstance(item, dict):
-                        logger.warning(f"快手动态数据项类型异常: {type(item).__name__}，跳过")
-                        continue
-                    author = item.get("author", {}).get("name", "未知老铁")
-                    photo = item.get("photo", {})
-                    caption = photo.get("caption") or "[分享了作品]"
-                    photo_id = photo.get("id", "")
-                    
-                    clean_caption = caption.replace('\n', ' ').strip()
-                    final_content = f"老铁【{author}】: {clean_caption}"
-
-                    dynamic_list.append({
-                        'author': author,
-                        'content': final_content,
-                        'timestamp': photo.get("timestamp", "刚刚"),
-                    })
-                    if photo_id:
-                        dynamic_list[-1]['url'] = f"https://www.kuaishou.com/short-video/{photo_id}"
-                    else:
-                        dynamic_list[-1]['url'] = "https://www.kuaishou.com/"
-                except Exception as item_err:
-                    logger.warning(f"解析快手动态项失败，跳过: {item_err}")
+        for item in feeds[:limit]:
+            try:
+                if not isinstance(item, dict):
+                    logger.warning(f"快手动态数据项类型异常: {type(item).__name__}，跳过")
                     continue
+                author = item.get("author", {}).get("name", "未知老铁")
+                photo = item.get("photo", {})
+                caption = photo.get("caption") or "[分享了作品]"
+                photo_id = photo.get("id", "")
 
-            if dynamic_list:
-                logger.info(f"✅ 成功获取到 {len(dynamic_list)} 条快手关注动态")
-                return {'success': True, 'dynamics': dynamic_list}
-            return {'success': False, 'error': '未解析到快手动态数据'}
+                clean_caption = caption.replace('\n', ' ').strip()
+                final_content = f"老铁【{author}】: {clean_caption}"
+
+                dynamic_list.append({
+                    'author': author,
+                    'content': final_content,
+                    'timestamp': photo.get("timestamp", "刚刚"),
+                })
+                if photo_id:
+                    dynamic_list[-1]['url'] = f"https://www.kuaishou.com/short-video/{photo_id}"
+                else:
+                    dynamic_list[-1]['url'] = "https://www.kuaishou.com/"
+            except Exception as item_err:
+                logger.warning(f"解析快手动态项失败，跳过: {item_err}")
+                continue
+
+        if dynamic_list:
+            logger.info(f"✅ 成功获取到 {len(dynamic_list)} 条快手关注动态")
+            return {'success': True, 'dynamics': dynamic_list}
+        return {'success': False, 'error': '未解析到快手动态数据'}
 
     except Exception as e:
         logger.error(f"获取快手动态失败: {e}")
@@ -2411,79 +2412,79 @@ async def fetch_weibo_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
         await asyncio.sleep(random.uniform(0.1, 0.5))
 
         # 4. 移动端 API 非常宽容，直接用普通的 httpx 即可稳定发包
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            response = await client.get(url, headers=headers, cookies=req_cookies)
-            
-            if response.status_code != 200:
-                logger.error(f"❌ 移动端微博接口异常，状态码: {response.status_code}")
-                return {'success': False, 'error': f"API请求失败，状态码: {response.status_code}"}
-                
-            data = response.json()
-            
-            # 移动端如果未登录，通常会返回 ok: 0 或者重定向
-            if data.get('ok') != 1:
-                logger.error("❌ 微博拦截：返回 ok=0，说明你的 SUB 凭证已过期！")
-                return {'success': False, 'error': "微博凭证已过期，请去浏览器重新获取"}
-            
-            cards = data.get('data', {}).get('cards', [])
-            weibo_list = []
-            
-            for card in cards:
-                # card_type == 9 代表这是一条正常的微博博文卡片
-                if card.get('card_type') != 9:
-                    continue
-                    
-                mblog = card.get('mblog')
-                if not mblog:
-                    continue
-                    
-                user = mblog.get('user', {})
-                author = user.get('screen_name') or '未知博主'
-                
-                # 提取正文并清理 HTML 标签
-                text = str(mblog.get('text') or '')
-                clean_text = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', '', text)).strip()
-                
-                # 兼容并缝合转发内容
-                if mblog.get('retweeted_status'):
-                    retweet = mblog['retweeted_status']
-                    rt_author = retweet.get('user', {}).get('screen_name') or '原博主'
-                    rt_text = str(retweet.get('text') or '')
-                    rt_clean_text = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', '', rt_text)).strip()
-                    clean_text = f"{clean_text} // [转发动态] @{rt_author}: {rt_clean_text}"
-                
-                if clean_text:
-                    display_text = clean_text
-                else:
-                    display_text = "[分享了图片/动态]"
-                final_content = f"博主【{author}】: {display_text}"
-                mid = mblog.get('mid') or mblog.get('id', '')
-                
-                weibo_list.append({
-                    'author': author,
-                    'content': final_content,
-                    'timestamp': mblog.get('created_at') or '',
-                    'url': f"https://m.weibo.cn/detail/{mid}" # 使用移动端 URL
-                })
-                
-                if len(weibo_list) >= limit:
-                    break
+        client = get_external_http_client()
+        response = await client.get(url, headers=headers, cookies=req_cookies, timeout=10.0)
 
-            if weibo_list: 
-                logger.info(f"✅ 成功通过移动端接口获取到 {len(weibo_list)} 条微博个人动态")
-                logger.info("微博动态:")  # 统一对齐 B站 的提示词
-                for i, weibo in enumerate(weibo_list, 1):
-                    content = weibo.get('content', '')
-                    # 稍微放宽一点截断长度，保证显示效果更好
-                    if len(content) > 50:
-                        content = content[:50] + "..."
-                    # 去掉冗余的时间和作者，直接干干净净地打印 content
-                    logger.info(f"  - {content}")
-                
-                return {'success': True, 'statuses': weibo_list}
+        if response.status_code != 200:
+            logger.error(f"❌ 移动端微博接口异常，状态码: {response.status_code}")
+            return {'success': False, 'error': f"API请求失败，状态码: {response.status_code}"}
+
+        data = response.json()
+
+        # 移动端如果未登录，通常会返回 ok: 0 或者重定向
+        if data.get('ok') != 1:
+            logger.error("❌ 微博拦截：返回 ok=0，说明你的 SUB 凭证已过期！")
+            return {'success': False, 'error': "微博凭证已过期，请去浏览器重新获取"}
+
+        cards = data.get('data', {}).get('cards', [])
+        weibo_list = []
+
+        for card in cards:
+            # card_type == 9 代表这是一条正常的微博博文卡片
+            if card.get('card_type') != 9:
+                continue
+
+            mblog = card.get('mblog')
+            if not mblog:
+                continue
+
+            user = mblog.get('user', {})
+            author = user.get('screen_name') or '未知博主'
+
+            # 提取正文并清理 HTML 标签
+            text = str(mblog.get('text') or '')
+            clean_text = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', '', text)).strip()
+
+            # 兼容并缝合转发内容
+            if mblog.get('retweeted_status'):
+                retweet = mblog['retweeted_status']
+                rt_author = retweet.get('user', {}).get('screen_name') or '原博主'
+                rt_text = str(retweet.get('text') or '')
+                rt_clean_text = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', '', rt_text)).strip()
+                clean_text = f"{clean_text} // [转发动态] @{rt_author}: {rt_clean_text}"
+
+            if clean_text:
+                display_text = clean_text
             else:
-                return {'success': False, 'error': '未解析到微博内容'}
-                
+                display_text = "[分享了图片/动态]"
+            final_content = f"博主【{author}】: {display_text}"
+            mid = mblog.get('mid') or mblog.get('id', '')
+
+            weibo_list.append({
+                'author': author,
+                'content': final_content,
+                'timestamp': mblog.get('created_at') or '',
+                'url': f"https://m.weibo.cn/detail/{mid}" # 使用移动端 URL
+            })
+
+            if len(weibo_list) >= limit:
+                break
+
+        if weibo_list: 
+            logger.info(f"✅ 成功通过移动端接口获取到 {len(weibo_list)} 条微博个人动态")
+            logger.info("微博动态:")  # 统一对齐 B站 的提示词
+            for i, weibo in enumerate(weibo_list, 1):
+                content = weibo.get('content', '')
+                # 稍微放宽一点截断长度，保证显示效果更好
+                if len(content) > 50:
+                    content = content[:50] + "..."
+                # 去掉冗余的时间和作者，直接干干净净地打印 content
+                logger.info(f"  - {content}")
+
+            return {'success': True, 'statuses': weibo_list}
+        else:
+            return {'success': False, 'error': '未解析到微博内容'}
+
     except Exception as e: 
         logger.error(f"微博动态解析发生错误: {e}")
         return {'success': False, 'error': str(e)}
@@ -2500,21 +2501,21 @@ async def fetch_reddit_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
         headers = {'User-Agent': get_random_user_agent(), 'Accept': 'application/json'}
         await asyncio.sleep(random.uniform(0.1, 0.5))
 
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            response = await client.get(url, headers=headers, cookies=reddit_cookies)
-            data = response.json()
-            posts = [
-                {
-                    'title': pd.get('title', ''), 'subreddit': f"r/{pd.get('subreddit', '')}",
-                    'score': _format_score(pd.get('score', 0)), 
-                    'url': f"https://www.reddit.com{pd.get('permalink', '')}"
-                }
-                for item in data.get('data', {}).get('children', [])[:limit]
-                if not (pd := item.get('data', {})).get('over_18')
-            ]
-            if posts:
-                logger.info(f"✅ 成功获取到 {len(posts)} 条Reddit订阅帖子")
-            return {'success': True, 'posts': posts}
+        client = get_external_http_client()
+        response = await client.get(url, headers=headers, cookies=reddit_cookies, timeout=10.0)
+        data = response.json()
+        posts = [
+            {
+                'title': pd.get('title', ''), 'subreddit': f"r/{pd.get('subreddit', '')}",
+                'score': _format_score(pd.get('score', 0)), 
+                'url': f"https://www.reddit.com{pd.get('permalink', '')}"
+            }
+            for item in data.get('data', {}).get('children', [])[:limit]
+            if not (pd := item.get('data', {})).get('over_18')
+        ]
+        if posts:
+            logger.info(f"✅ 成功获取到 {len(posts)} 条Reddit订阅帖子")
+        return {'success': True, 'posts': posts}
     except Exception as e: 
         return {'success': False, 'error': str(e)}
 
@@ -2526,33 +2527,33 @@ async def _fetch_twitter_personal_web_scraping(limit: int = 10, cookies: Optiona
     try:
         url = "https://twitter.com/home"
         headers = {'User-Agent': get_random_user_agent()}
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            res = await client.get(url, headers=headers, cookies=cookies)
-            
-            # 如果被重定向到了登录页，说明 Cookie 彻底失效了
-            if "login" in str(res.url) or "logout" in str(res.url):
-                return {'success': False, 'error': 'Twitter Cookie 已过期，网页端拒绝访问'}
-                
-            tweets = []
-            tweet_texts = re.findall(r'"tweet":\{[^}]*"full_text":"([^"]+)"', res.text)
-            screen_names = re.findall(r'"screen_name":"([^"]+)"', res.text)
-            
-            for i, text in enumerate(tweet_texts[:limit]):
-                clean_text = re.sub(r'https://t\.co/\w+', '', text).strip()
-                if i < len(screen_names):
-                    author_str = screen_names[i]
-                else:
-                    author_str = 'Unknown'
-                tweets.append({
-                    'author': f"@{author_str}", 
-                    'content': clean_text,
-                    'timestamp': '刚刚'  # 保持与主 API 数据字典格式的统一
-                })
-                
-            if tweets:
-                return {'success': True, 'tweets': tweets}
+        client = get_external_http_client()
+        res = await client.get(url, headers=headers, cookies=cookies, timeout=10.0)
+
+        # 如果被重定向到了登录页，说明 Cookie 彻底失效了
+        if "login" in str(res.url) or "logout" in str(res.url):
+            return {'success': False, 'error': 'Twitter Cookie 已过期，网页端拒绝访问'}
+
+        tweets = []
+        tweet_texts = re.findall(r'"tweet":\{[^}]*"full_text":"([^"]+)"', res.text)
+        screen_names = re.findall(r'"screen_name":"([^"]+)"', res.text)
+
+        for i, text in enumerate(tweet_texts[:limit]):
+            clean_text = re.sub(r'https://t\.co/\w+', '', text).strip()
+            if i < len(screen_names):
+                author_str = screen_names[i]
             else:
-                return {'success': False, 'error': '网页正则抓取失败，页面结构可能已变更'}
+                author_str = 'Unknown'
+            tweets.append({
+                'author': f"@{author_str}", 
+                'content': clean_text,
+                'timestamp': '刚刚'  # 保持与主 API 数据字典格式的统一
+            })
+
+        if tweets:
+            return {'success': True, 'tweets': tweets}
+        else:
+            return {'success': False, 'error': '网页正则抓取失败，页面结构可能已变更'}
     except Exception as e: 
         logger.error(f"Twitter 网页抓取 fallback 失败: {e}")
         return {'success': False, 'error': str(e)}
@@ -2602,48 +2603,48 @@ async def fetch_twitter_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
         
         await asyncio.sleep(random.uniform(0.1, 0.5))
 
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            response = await client.get(url, headers=headers, cookies=twitter_cookies)
-            
-            # 状态码非 200 时，平滑降级到备用网页刮削方案
-            if response.status_code != 200: 
-                logger.warning(f"Twitter API 拒绝访问 (状态码: {response.status_code})，回退到网页刮削...")
-                return await _fetch_twitter_personal_web_scraping(limit, twitter_cookies)
-                
-            # 真正去解析返回的推文数据，替换掉之前的占位符
-            data = response.json()
-            if not isinstance(data, list):
-                return {'success': False, 'error': 'API 返回数据格式异常'}
-                
-            tweets = []
-            for tweet in data[:limit]:
-                user = tweet.get('user', {})
-                author = user.get('screen_name') or 'Unknown'
-                # tweet_mode=extended 时，正文在 full_text 里
-                text = str(tweet.get('full_text') or tweet.get('text') or '')
-                
-                # 清理推文末尾自带的分享短链接 (https://t.co/xxx)
-                clean_text = re.sub(r'https://t\.co/\w+', '', text).strip()
-                
-                # 处理转推 (Retweet) 的前缀拼接
-                if 'retweeted_status' in tweet:
-                    rt_user = tweet['retweeted_status'].get('user', {}).get('screen_name', 'Unknown')
-                    rt_text = str(tweet['retweeted_status'].get('full_text') or '')
-                    rt_clean_text = re.sub(r'https://t\.co/\w+', '', rt_text).strip()
-                    clean_text = f"RT @{rt_user}: {rt_clean_text}"
-                
-                tweets.append({
-                    'author': f"@{author}", 
-                    'content': clean_text,
-                    'timestamp': tweet.get('created_at', '')
-                })
-                
-            if tweets:
-                logger.info(f"✅ 成功获取到 {len(tweets)} 条 Twitter 个人时间线动态")
-                return {'success': True, 'tweets': tweets}
-            else:
-                return {'success': False, 'error': '未解析到推文内容'}
-                
+        client = get_external_http_client()
+        response = await client.get(url, headers=headers, cookies=twitter_cookies, timeout=10.0)
+
+        # 状态码非 200 时，平滑降级到备用网页刮削方案
+        if response.status_code != 200: 
+            logger.warning(f"Twitter API 拒绝访问 (状态码: {response.status_code})，回退到网页刮削...")
+            return await _fetch_twitter_personal_web_scraping(limit, twitter_cookies)
+
+        # 真正去解析返回的推文数据，替换掉之前的占位符
+        data = response.json()
+        if not isinstance(data, list):
+            return {'success': False, 'error': 'API 返回数据格式异常'}
+
+        tweets = []
+        for tweet in data[:limit]:
+            user = tweet.get('user', {})
+            author = user.get('screen_name') or 'Unknown'
+            # tweet_mode=extended 时，正文在 full_text 里
+            text = str(tweet.get('full_text') or tweet.get('text') or '')
+
+            # 清理推文末尾自带的分享短链接 (https://t.co/xxx)
+            clean_text = re.sub(r'https://t\.co/\w+', '', text).strip()
+
+            # 处理转推 (Retweet) 的前缀拼接
+            if 'retweeted_status' in tweet:
+                rt_user = tweet['retweeted_status'].get('user', {}).get('screen_name', 'Unknown')
+                rt_text = str(tweet['retweeted_status'].get('full_text') or '')
+                rt_clean_text = re.sub(r'https://t\.co/\w+', '', rt_text).strip()
+                clean_text = f"RT @{rt_user}: {rt_clean_text}"
+
+            tweets.append({
+                'author': f"@{author}", 
+                'content': clean_text,
+                'timestamp': tweet.get('created_at', '')
+            })
+
+        if tweets:
+            logger.info(f"✅ 成功获取到 {len(tweets)} 条 Twitter 个人时间线动态")
+            return {'success': True, 'tweets': tweets}
+        else:
+            return {'success': False, 'error': '未解析到推文内容'}
+
     except Exception as e: 
         logger.error(f"Twitter API 获取失败: {e}")
         return {'success': False, 'error': str(e)}
