@@ -2834,6 +2834,7 @@ class LLMSessionManager:
 
         try:
             new_session = None  # 提前初始化，确保 except 块安全访问（实际赋值在 PERFORM ACTUAL HOT SWAP 段）
+            old_listener_cancel_timed_out = False  # 旧 listener 取消超时标志，供 except 块做 fail-close 决策
             incremental_cache = self.message_cache_for_new_session[self.initial_cache_snapshot_len:]
             # 1. Send incremental cache (or a heartbeat) to PENDING session for its *second* ignored response
             if incremental_cache:
@@ -2907,7 +2908,8 @@ class LLMSessionManager:
                     logger.info("Final Swap Sequence: Old message handler task stopped")
                 except asyncio.TimeoutError:
                     # 旧 task 仍占着 recv()，继续往下 close() 会重演并发 recv 冲突。
-                    # 关闭 new_session 防止 ws 泄漏，然后中止 swap。
+                    # 关闭 new_session 防止 ws 泄漏，标记超时后中止 swap。
+                    old_listener_cancel_timed_out = True
                     logger.error("Final Swap Sequence: 旧 listener 取消超时，中止热切换")
                     try:
                         await new_session.close()
@@ -2985,6 +2987,14 @@ class LLMSessionManager:
                     logger.debug(f"Final Swap Sequence: 异常路径关闭 new_session 失败（可忽略）: {_e}")
             await self._cleanup_pending_session_resources()
             await self._reset_preparation_state(clear_main_cache=True)
+            if old_listener_cancel_timed_out:
+                # 旧 listener 取消超时：旧 task 可能在本函数返回后才真正退出，
+                # 此时无法安全判断 task.done() 并补建 listener，会留下"活跃但无监听"状态。
+                # 直接 fail-close：清除会话状态让前端重连，优于让后续输入陷入僵局。
+                self.session = None
+                self.message_handler_task = None
+                self.is_active = False
+                return
             # 若 self.session 的 ws 已失效（promote 后 ws invalid），清除会话状态，
             # 防止 is_active=True + ws=None 让后续输入进入坏会话。
             if self.session and isinstance(self.session, OmniRealtimeClient) and not self.session.ws:
