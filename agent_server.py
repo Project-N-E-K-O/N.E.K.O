@@ -1192,6 +1192,13 @@ async def _computer_use_scheduler_loop():
             tid = next_task.get("task_id")
             if not tid or tid not in Modules.task_registry:
                 continue
+            # If cancel_task already flipped the entry to "cancelled" (or any
+            # non-queued terminal state) while it was still sitting in the
+            # queue, don't resurrect it — otherwise _run_computer_use_task
+            # would reset status back to "running" and the cancel is lost.
+            reg = Modules.task_registry.get(tid, {})
+            if reg.get("status") != "queued":
+                continue
             Modules.active_computer_use_async_task = asyncio.create_task(_run_computer_use_task(
                 tid, next_task.get("instruction", ""),
             ))
@@ -1630,6 +1637,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     "lanlan_name": lanlan_name,
                     "sender_id": nk_sender_id,
                     "session_id": nk_session_id,
+                    "conversation_id": conversation_id,
                     "result": None,
                     "error": None,
                 }
@@ -2784,7 +2792,7 @@ async def cancel_task(task_id: str):
                 Modules.openclaw.stop_running(
                     sender_id=info.get("sender_id"),
                     session_id=info.get("session_id"),
-                    conversation_id=info.get("session_id"),
+                    conversation_id=info.get("conversation_id") or info.get("session_id"),
                     role_name=info.get("lanlan_name"),
                     task_id=task_id,
                 ),
