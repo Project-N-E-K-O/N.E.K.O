@@ -395,6 +395,12 @@
 
         // 如果音量超过阈值(0.01),认为检测到声音
         if (rms > 0.01) {
+            // C: 为前端 proactive guard 持续打点"最近一次有声音"。
+            // 阈值与下面 hasSoundDetected 共用 0.01；这里每帧都写（~16ms 一次），
+            // 不做去抖，保证 proactive tick 能读到最新值。与后端
+            // _user_recent_activity_time 对称：不等 sustain、不等 VAD 判定，
+            // 只要麦克风真的收到过声音就算"用户可能在说话"。
+            S.userRecentSpeechTime = Date.now();
             if (!S.hasSoundDetected) {
                 S.hasSoundDetected = true;
                 console.log('麦克风静音检测：检测到声音，RMS =', rms);
@@ -511,6 +517,13 @@
 
             // 连接节点：gainNode → workletNode（音频经过增益处理后发送）
             S.micGainNode.connect(S.workletNode);
+
+            // 用户主动开麦，意味着要讲话；focus mode 的 isPlaying guard 此刻必须让路。
+            // 切档案后自动触发的 greeting 音频播完如果没把 isPlaying 复位（finalize
+            // 路径的前置条件没兜住就会粘住），下一次开麦每一帧都会被 focus 拦掉，
+            // 表现为"Electron 显示可以说话但 STT 无反应"。用户此刻的意图是明确的，
+            // 不管 flag 是粘住还是真在播 AI 音频，都应该让位给用户输入。
+            S.isPlaying = false;
 
             // 所有初始化成功后，才标记为录音状态
             S.isRecording = true;

@@ -239,18 +239,21 @@ async def _periodic_rebuttal_loop():
     while True:
         await asyncio.sleep(REBUTTAL_CHECK_INTERVAL)
         try:
-            character_data = _config_manager.load_characters()
+            character_data = await _config_manager.aload_characters()
             catgirl_names = list(character_data.get('猫娘', {}).keys())
         except Exception as e:
             logger.debug(f"[Rebuttal] 加载角色列表失败: {e}")
             continue
 
         now = datetime.now()
-        for name in catgirl_names:
+
+        async def _check_one_rebuttal(name: str):
+            """单个 catgirl 的反驳检查。各角色互相独立，外层 gather 并行。
+            内部对 feedbacks 仍串行 areject_promotion（同 reflection 不能并发处理）。"""
             try:
                 confirmed = await reflection_engine.aget_confirmed_reflections(name)
                 if not confirmed:
-                    continue
+                    return
 
                 # 确定查询起始时间：上次检查时间 or 1小时前（首次）
                 start_time = _last_rebuttal_check.get(
@@ -261,12 +264,12 @@ async def _periodic_rebuttal_loop():
                 )
                 if not rows:
                     _last_rebuttal_check[name] = now
-                    continue
+                    return
 
                 user_msgs = _extract_user_messages_from_rows(rows)
                 if not user_msgs:
                     _last_rebuttal_check[name] = now
-                    continue
+                    return
 
                 # 复用 check_feedback 判断反驳
                 feedbacks = await reflection_engine.check_feedback_for_confirmed(
@@ -275,7 +278,7 @@ async def _periodic_rebuttal_loop():
                 if feedbacks is None:
                     # LLM 调用失败 → 不推进窗口，下次重试这批消息
                     logger.warning(f"[Rebuttal] {name}: 反驳检查失败，保留窗口待重试")
-                    continue
+                    return
 
                 # 成功才推进窗口
                 _last_rebuttal_check[name] = now
@@ -288,6 +291,12 @@ async def _periodic_rebuttal_loop():
             except Exception as e:
                 logger.debug(f"[Rebuttal] {name}: 处理失败，跳过: {e}")
 
+        if catgirl_names:
+            await asyncio.gather(
+                *(_check_one_rebuttal(name) for name in catgirl_names),
+                return_exceptions=True,
+            )
+
 
 AUTO_PROMOTE_CHECK_INTERVAL = 300  # 5 分钟
 
@@ -299,19 +308,25 @@ async def _periodic_auto_promote_loop():
     while True:
         await asyncio.sleep(AUTO_PROMOTE_CHECK_INTERVAL)
         try:
-            character_data = _config_manager.load_characters()
+            character_data = await _config_manager.aload_characters()
             catgirl_names = list(character_data.get('猫娘', {}).keys())
         except Exception as e:
             logger.debug(f"[AutoPromote] 加载角色列表失败: {e}")
             continue
 
-        for name in catgirl_names:
+        async def _promote_one(name: str):
             try:
                 transitions = await reflection_engine.aauto_promote_stale(name)
                 if transitions:
                     logger.info(f"[AutoPromote] {name}: {transitions} 条状态迁移")
             except Exception as e:
                 logger.debug(f"[AutoPromote] {name}: 处理失败: {e}")
+
+        if catgirl_names:
+            await asyncio.gather(
+                *(_promote_one(name) for name in catgirl_names),
+                return_exceptions=True,
+            )
 
 
 @app.on_event("startup")
@@ -328,7 +343,7 @@ async def startup_event_handler():
     # 自动迁移 settings → persona（如 persona 文件不存在）
     # 注：目录结构迁移已在模块级完成（在组件实例化之前）
     try:
-        character_data = _config_manager.load_characters()
+        character_data = await _config_manager.aload_characters()
         catgirl_names = list(character_data.get('猫娘', {}).keys())
         # 各角色的 persona 文件互相独立，并行迁移检查避免 N 倍串行磁盘 IO。
         # return_exceptions=True：避免 fail-fast 取消其它角色正在写盘的协程，
@@ -556,7 +571,7 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
     try:
         # 检查角色是否存在于配置中，如果不存在则记录信息但继续处理（允许新角色）
         try:
-            character_data = _config_manager.load_characters()
+            character_data = await _config_manager.aload_characters()
             catgirl_names = list(character_data.get('猫娘', {}).keys())
             if lanlan_name not in catgirl_names:
                 logger.info(f"[MemoryServer] 角色 '{lanlan_name}' 不在配置中，但继续处理（可能是新创建的角色）")
@@ -600,7 +615,7 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
     try:
         # 检查角色是否存在于配置中，如果不存在则记录信息但继续处理（允许新角色）
         try:
-            character_data = _config_manager.load_characters()
+            character_data = await _config_manager.aload_characters()
             catgirl_names = list(character_data.get('猫娘', {}).keys())
             if lanlan_name not in catgirl_names:
                 logger.info(f"[MemoryServer] renew: 角色 '{lanlan_name}' 不在配置中，但继续处理（可能是新创建的角色）")
@@ -680,7 +695,7 @@ async def get_recent_history(lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
     # 检查角色是否存在于配置中
     try:
-        character_data = _config_manager.load_characters()
+        character_data = await _config_manager.aload_characters()
         catgirl_names = list(character_data.get('猫娘', {}).keys())
         if lanlan_name not in catgirl_names:
             logger.warning(f"角色 '{lanlan_name}' 不在配置中，返回空历史记录")
@@ -690,7 +705,7 @@ async def get_recent_history(lanlan_name: str):
         return "开始聊天前，没有历史记录。\n"
 
     history = await recent_history_manager.aget_recent_history(lanlan_name)
-    _, _, _, _, name_mapping, _, _, _, _ = _config_manager.get_character_data()
+    _, _, _, _, name_mapping, _, _, _, _ = await _config_manager.aget_character_data()
     name_mapping['ai'] = lanlan_name
     result = f"开始聊天前，{lanlan_name}又在脑海内整理了近期发生的事情。\n"
     for i in history:
@@ -720,7 +735,7 @@ async def get_settings(lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
     # 检查角色是否存在于配置中
     try:
-        character_data = _config_manager.load_characters()
+        character_data = await _config_manager.aload_characters()
         catgirl_names = list(character_data.get('猫娘', {}).keys())
         if lanlan_name not in catgirl_names:
             logger.warning(f"角色 '{lanlan_name}' 不在配置中，返回空设置")
@@ -738,7 +753,8 @@ async def get_settings(lanlan_name: str):
     if persona_md:
         return persona_md
     # 兼容回退（自然语言格式）
-    return _format_legacy_settings_as_text(settings_manager.get_settings(lanlan_name), lanlan_name)
+    legacy_settings = await asyncio.to_thread(settings_manager.get_settings, lanlan_name)
+    return _format_legacy_settings_as_text(legacy_settings, lanlan_name)
 
 
 @app.get("/get_persona/{lanlan_name}")
@@ -788,10 +804,10 @@ async def cancel_correction(lanlan_name: str):
 async def new_dialog(lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
     global correction_tasks, correction_cancel_flags
-    
+
     # 检查角色是否存在于配置中
     try:
-        character_data = _config_manager.load_characters()
+        character_data = await _config_manager.aload_characters()
         catgirl_names = list(character_data.get('猫娘', {}).keys())
         if lanlan_name not in catgirl_names:
             logger.warning(f"角色 '{lanlan_name}' 不在配置中，返回空上下文")
@@ -819,7 +835,7 @@ async def new_dialog(lanlan_name: str):
 
         # 正则表达式：删除所有类型括号及其内容（包括[]、()、{}、<>、【】、（）等）
         brackets_pattern = re.compile(r'(\[.*?\]|\(.*?\)|（.*?）|【.*?】|\{.*?\}|<.*?>)')
-        master_name, _, _, _, name_mapping, _, _, _, _ = _config_manager.get_character_data()
+        master_name, _, _, _, name_mapping, _, _, _, _ = await _config_manager.aget_character_data()
         name_mapping['ai'] = lanlan_name
         _lang = get_global_language()
 
@@ -835,7 +851,9 @@ async def new_dialog(lanlan_name: str):
             result += persona_md
         else:
             # 兼容回退：使用旧 settings（自然语言格式）
-            result += _format_legacy_settings_as_text(settings_manager.get_settings(lanlan_name), lanlan_name) + "\n"
+            # get_settings 内部 open() + json.load()，offload 避免阻塞（冷回退路径，但触发时多文件 IO）
+            legacy_settings = await asyncio.to_thread(settings_manager.get_settings, lanlan_name)
+            result += _format_legacy_settings_as_text(legacy_settings, lanlan_name) + "\n"
 
         # ── [动态部分] 内心活动（每次变化） ──
         result += _loc(INNER_THOUGHTS_HEADER, _lang).format(name=lanlan_name)

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 from typing import Dict, Any, Optional, List
@@ -36,6 +37,17 @@ def load_user_preferences() -> List[Dict[str, Any]]:
     except Exception as e:
         print(f"加载用户偏好失败: {e}")
     return []
+
+
+async def aload_user_preferences() -> List[Dict[str, Any]]:
+    """异步版 load_user_preferences：供 async endpoint 调用，避免同步 open()+json.load() 阻塞事件循环。
+
+    共享 load_user_preferences 的 dict→list 兼容处理。
+    """
+    def _sync_load():
+        return load_user_preferences()
+    return await asyncio.to_thread(_sync_load)
+
 
 def save_user_preferences(preferences: List[Dict[str, Any]]) -> bool:
     """
@@ -303,6 +315,11 @@ def load_global_conversation_settings() -> Dict[str, Any]:
     except Exception as e:
         print(f"加载全局对话设置失败: {e}")
     return {}
+
+
+async def aload_global_conversation_settings() -> Dict[str, Any]:
+    """异步版 load_global_conversation_settings：供 async 路径调用，offload sync IO。"""
+    return await asyncio.to_thread(load_global_conversation_settings)
 
 
 def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:

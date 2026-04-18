@@ -254,22 +254,54 @@
      */
     // AI 是否正在播放语音：proactive timer 到点时如果还在播，就跳过本次 nudge
     // 并继续按固定间隔 poll（见下面 scheduleProactiveChat 的两处 speaking 分支）。
-    // S.isPlaying：audio chunks 入队到 drain 完这段期间为 true；
-    // S.assistantSpeechActiveTurnId：active turn 有音频在跑时非空。
-    // assistantTurnId !== assistantTurnCompletedId：后端已发 turn-start
-    // 但还没发 turn-end —— 覆盖"文字已开始流、首个音频 chunk 还没解码"的空窗，
-    // 防止 proactive 在这段窗口里切入、让猫娘打断自己。
+    //
+    // 分支 1（isPlaying / speechActiveTurnId）：覆盖"首个 PCM chunk 入队 → drain 完"。
+    // 分支 2（turnId !== completedId + 时间窗）：覆盖"text 已开始流、首个音频 chunk
+    //   还没解码"那几百毫秒空窗。PR #839 原本只靠 `turnId !== completedId` 自释放，
+    //   但 drain 完时 clearAssistantTurnCompletion 会把 completedId 清回 null 而
+    //   turnId 仍留着，这条件会一直 TRUE、proactive 永不触发。
+    //   加 `elapsed < PROACTIVE_TURN_STARTUP_GRACE_MS` 作为硬上限：那段空窗通常只有
+    //   几百毫秒，5s 已经是数量级的余裕；超出就让分支 1 的自释放信号接管。
+    var PROACTIVE_TURN_STARTUP_GRACE_MS = 5000;
+
+    // C: 用户最近发声的窗口（ms）。和后端 _user_recent_activity_window (8s) 对齐，
+    // 网络来回有延迟时前端守门先挡住，请求根本不发出去，省一个 round-trip。
+    // `S.userRecentSpeechTime` 由 app-audio-capture.js 里的 monitorInputVolume 持续
+    // 写入（RMS > 0.01 每帧打点），这里用一个稍宽于后端的窗口，保证"前端没挡住但
+    // 后端挡住"的 race 不至于频繁发生（fudge 空跑成本低，但可以省则省）。
+    var USER_RECENT_SPEECH_WINDOW_MS = 8000;
+
     function _isAssistantSpeaking() {
         try {
             if (!S) return false;
             if (S.isPlaying || S.assistantSpeechActiveTurnId) return true;
-            if (S.assistantTurnId && S.assistantTurnId !== S.assistantTurnCompletedId) return true;
+            if (S.assistantTurnId && S.assistantTurnId !== S.assistantTurnCompletedId) {
+                var startedAt = S.assistantTurnStartedAt || 0;
+                if (startedAt && Date.now() - startedAt < PROACTIVE_TURN_STARTUP_GRACE_MS) {
+                    return true;
+                }
+            }
             return false;
         } catch (_) {
             return false;
         }
     }
     mod._isAssistantSpeaking = _isAssistantSpeaking;
+
+    // C: 判断用户是否最近在发声。仅在 voice 模式下使用（文本模式没有麦克风打点），
+    // 用来在前端层面拦住 proactive tick，与后端 prompt_ephemeral 的
+    // _user_recent_activity_time 防线形成对称冗余。
+    function _isUserRecentlySpeaking() {
+        try {
+            if (!S || !S.isRecording) return false;
+            var last = S.userRecentSpeechTime || 0;
+            if (!last) return false;
+            return (Date.now() - last) < USER_RECENT_SPEECH_WINDOW_MS;
+        } catch (_) {
+            return false;
+        }
+    }
+    mod._isUserRecentlySpeaking = _isUserRecentlySpeaking;
 
     function canTriggerProactively() {
         // 「请她离开」状态下禁止一切主动搭话
@@ -365,6 +397,15 @@
                 // 结果：播放完成到下一次 nudge 的等待 ∈ [0, interval)，带随机感，更自然。
                 if (_isAssistantSpeaking()) {
                     console.log('[ProactiveChat] 语音模式：AI 正在播放语音，本次 nudge 跳过（不计数），继续下一 tick');
+                    scheduleProactiveChat();
+                    return;
+                }
+                // C: 前端麦克风 RMS 最近 8s 内超过语音阈值 → 用户正在说话或
+                // 刚说完，不发 fudge。与后端 _user_recent_activity_time guard
+                // 对称（8s 窗口），请求根本不出门，省一次 round-trip。
+                // 同 AI-speaking 分支：不计入 no-response 计数，仍推进下一 tick。
+                if (_isUserRecentlySpeaking()) {
+                    console.log('[ProactiveChat] 语音模式：用户最近在发声，本次 nudge 跳过（不计数），继续下一 tick');
                     scheduleProactiveChat();
                     return;
                 }

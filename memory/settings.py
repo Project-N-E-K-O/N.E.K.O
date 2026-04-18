@@ -152,9 +152,9 @@ class ImportantSettingsManager:
 
         # 检测并解决矛盾
         if len(new_settings)>0:
-            self.load_settings()
+            await asyncio.to_thread(self.load_settings)
             self.settings[lanlan_name] = await self.detect_and_resolve_contradictions(self.settings[lanlan_name], new_settings, lanlan_name)
-            self.save_settings(lanlan_name)
+            await asyncio.to_thread(self.save_settings, lanlan_name)
 
     def get_settings(self, lanlan_name):
         self.load_settings()

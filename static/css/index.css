@@ -1286,6 +1286,7 @@ body.react-chat-window-dragging {
     border-radius: 8px;
     background: #0a0a0a;
     align-self: center;
+    flex-shrink: 0;
 }
 
 .avatar-cropper-source-img {

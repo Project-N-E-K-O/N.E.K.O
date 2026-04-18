@@ -118,10 +118,11 @@
         return Array.from(screenshotsList.children).map(function (item, index) {
             var img = item.querySelector('.screenshot-thumbnail');
             if (!img || !img.src) return null;
+            var translatedAlt = window.t ? window.t('chat.pendingImageAlt', { index: index + 1 }) : '';
             return {
                 id: String(item.dataset.attachmentId || item.dataset.index || ('attachment-' + index)),
                 url: img.src,
-                alt: img.alt || (window.t ? window.t('chat.pendingImageAlt', { index: index + 1 }) : '图片 ' + (index + 1))
+                alt: img.alt || (typeof translatedAlt === 'string' && translatedAlt ? translatedAlt : '图片 ' + (index + 1))
             };
         }).filter(Boolean);
     };
@@ -638,7 +639,10 @@
                     window.syncVoiceChatComposerHidden(false);
                 }
 
-                window.showStatusToast(window.t ? window.t('app.initializingText') : '\u6B63\u5728\u521D\u59CB\u5316\u6587\u672C\u5BF9\u8BDD...', 3000);
+                // 切换猫娘期间会话建立耗时常 >5s（模型加载 + 后端冷加载），
+                // 默认 3s toast 在真空期间消失会让用户误以为"没反应就报错"。
+                var initToastMs1 = (S.isSwitchingCatgirl) ? 8000 : 3000;
+                window.showStatusToast(window.t ? window.t('app.initializingText') : '\u6B63\u5728\u521D\u59CB\u5316\u6587\u672C\u5BF9\u8BDD...', initToastMs1);
 
                 // Wait for session_started
                 var sessionStartPromise = new Promise(function (resolve, reject) {
@@ -764,12 +768,44 @@
             options = options || {};
             var text = String(typeof rawText === 'string' ? rawText : '').trim();
             var hasScreenshots = screenshotsList.children.length > 0;
+            var isReactWindowSource = options.source === 'react-chat-window';
+            var reactOptimisticMessageId = '';
+            var reactOptimisticMessageAppended = null;
 
             if (!text && !hasScreenshots) return;
 
             // Record user input time and reset proactive chat
             window.lastUserInputTime = Date.now();
             window.resetProactiveChatBackoff();
+
+            if (isReactWindowSource && window.appChat && typeof window.appChat.appendReactUserMessage === 'function') {
+                reactOptimisticMessageId = 'user-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+                reactOptimisticMessageAppended = window.appChat.appendReactUserMessage({
+                    id: reactOptimisticMessageId,
+                    time: (typeof window.getCurrentTimeString === 'function')
+                        ? window.getCurrentTimeString()
+                        : new Date().toLocaleTimeString('en-US', {
+                            hour12: false,
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            second: '2-digit'
+                        }),
+                    status: 'sending',
+                    text: text,
+                    imageUrls: mod.getPendingComposerAttachments().map(function (attachment) {
+                        return attachment && attachment.url ? String(attachment.url) : '';
+                    }).filter(Boolean)
+                });
+            }
+
+            function updateReactOptimisticMessageStatus(status) {
+                if (reactOptimisticMessageAppended === null || !reactOptimisticMessageId) return;
+                if (window.reactChatWindowHost && typeof window.reactChatWindowHost.updateMessage === 'function') {
+                    window.reactChatWindowHost.updateMessage(reactOptimisticMessageId, {
+                        status: status
+                    });
+                }
+            }
 
             // If no active text session, start one first
             if (!S.isTextSessionActive) {
@@ -778,7 +814,9 @@
                 screenshotButton.disabled = true;
                 resetSessionButton.disabled = false;
 
-                window.showStatusToast(window.t ? window.t('app.initializingText') : '\u6B63\u5728\u521D\u59CB\u5316\u6587\u672C\u5BF9\u8BDD...', 3000);
+                // 同上：切换期间的初始化窗口比默认 3s 更长，延长 toast 避免真空感
+                var initToastMs2 = (S.isSwitchingCatgirl) ? 8000 : 3000;
+                window.showStatusToast(window.t ? window.t('app.initializingText') : '\u6B63\u5728\u521D\u59CB\u5316\u6587\u672C\u5BF9\u8BDD...', initToastMs2);
 
                 try {
                     var sessionStartPromise = new Promise(function (resolve, reject) {
@@ -847,105 +885,124 @@
                     textInputBox.disabled = false;
                     screenshotButton.disabled = false;
 
+                    updateReactOptimisticMessageStatus('failed');
                     return; // Don't send if session start failed
                 }
             }
 
             // Send message
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
-                var sentImageUrls = [];
+                try {
+                    var sentImageUrls = [];
 
-                // Send screenshots first
-                if (hasScreenshots) {
-                    var screenshotItems = Array.from(screenshotsList.children);
-                    for (var i = 0; i < screenshotItems.length; i++) {
-                        var img = screenshotItems[i].querySelector('.screenshot-thumbnail');
-                        if (img && img.src) {
-                            sentImageUrls.push(img.src);
-                            S.socket.send(JSON.stringify({
-                                action: 'stream_data',
-                                data: img.src,
-                                input_type: U.isMobile() ? 'camera' : 'screen'
-                            }));
+                    // Send screenshots first
+                    if (hasScreenshots) {
+                        var screenshotItems = Array.from(screenshotsList.children);
+                        for (var i = 0; i < screenshotItems.length; i++) {
+                            var img = screenshotItems[i].querySelector('.screenshot-thumbnail');
+                            if (img && img.src) {
+                                sentImageUrls.push(img.src);
+                                S.socket.send(JSON.stringify({
+                                    action: 'stream_data',
+                                    data: img.src,
+                                    input_type: U.isMobile() ? 'camera' : 'screen'
+                                }));
+                            }
+                        }
+
+                        if (!isReactWindowSource) {
+                            var screenshotItemCount = screenshotItems.length;
+                            window.appendMessage('\uD83D\uDCF8 [\u5DF2\u53D1\u9001' + screenshotItemCount + '\u5F20\u622A\u56FE]', 'user', true, {
+                                skipReactSync: true
+                            });
+                        }
+
+                        // Achievement: send image
+                        if (window.unlockAchievement) {
+                            window.unlockAchievement('ACH_SEND_IMAGE').catch(function (err) {
+                                console.error('\u89E3\u9501\u53D1\u9001\u56FE\u7247\u6210\u5C31\u5931\u8D25:', err);
+                            });
+                        }
+
+                        // Clear screenshot list
+                        screenshotsList.innerHTML = '';
+                        screenshotThumbnailContainer.classList.remove('show');
+                        mod.updateScreenshotCount();
+                        mod.syncPendingComposerAttachments();
+                    }
+
+                    // Then send text (if any)
+                    if (text) {
+                        if (!isReactWindowSource && window.appChat && typeof window.appChat.ensureUserDisplayName === 'function') {
+                            try {
+                                await window.appChat.ensureUserDisplayName();
+                            } catch (nameError) {
+                                console.warn('[Chat] preload user display name failed:', nameError);
+                            }
+                        }
+
+                        S.socket.send(JSON.stringify({
+                            action: 'stream_data',
+                            data: text,
+                            input_type: 'text'
+                        }));
+
+                        if (!options.preserveInputValue) {
+                            textInputBox.value = '';
+                        }
+                        if (!isReactWindowSource) {
+                            window.appendMessage(text, 'user', true, {
+                                skipReactSync: sentImageUrls.length > 0
+                            });
+                        }
+
+                        // Achievement: meow detection
+                        if (window.incrementAchievementCounter) {
+                            var meowPattern = /\u55B5|miao|meow|nya[no]?|\u306B\u3083|\uB0E5|\u043C\u044F\u0443/i;
+                            if (meowPattern.test(text)) {
+                                try {
+                                    window.incrementAchievementCounter('meowCount');
+                                } catch (error) {
+                                    console.debug('\u589E\u52A0\u55B5\u55B5\u8BA1\u6570\u5931\u8D25:', error);
+                                }
+                            }
+                        }
+
+                        // First user input check
+                        if (window.appChat && window.appChat.isFirstUserInput()) {
+                            window.appChat.markFirstUserInput();
+                            console.log(window.t('console.userFirstInputDetected'));
+                            window.checkAndUnlockFirstDialogueAchievement();
                         }
                     }
 
-                    var screenshotItemCount = screenshotItems.length;
-                    window.appendMessage('\uD83D\uDCF8 [\u5DF2\u53D1\u9001' + screenshotItemCount + '\u5F20\u622A\u56FE]', 'user', true, {
-                        skipReactSync: true
-                    });
-
-                    // Achievement: send image
-                    if (window.unlockAchievement) {
-                        window.unlockAchievement('ACH_SEND_IMAGE').catch(function (err) {
-                            console.error('\u89E3\u9501\u53D1\u9001\u56FE\u7247\u6210\u5C31\u5931\u8D25:', err);
+                    if (!isReactWindowSource && window.appChat && typeof window.appChat.appendReactUserMessage === 'function' && sentImageUrls.length > 0) {
+                        window.appChat.appendReactUserMessage({
+                            text: text,
+                            imageUrls: sentImageUrls
                         });
                     }
 
-                    // Clear screenshot list
-                    screenshotsList.innerHTML = '';
-                    screenshotThumbnailContainer.classList.remove('show');
-                    mod.updateScreenshotCount();
-                    mod.syncPendingComposerAttachments();
-                }
+                    updateReactOptimisticMessageStatus('sent');
 
-                // Then send text (if any)
-                if (text) {
-                    if (window.appChat && typeof window.appChat.ensureUserDisplayName === 'function') {
-                        try {
-                            await window.appChat.ensureUserDisplayName();
-                        } catch (nameError) {
-                            console.warn('[Chat] preload user display name failed:', nameError);
-                        }
+                    // Reset proactive chat timer
+                    if (S.proactiveChatEnabled && window.hasAnyChatModeEnabled()) {
+                        window.resetProactiveChatBackoff();
                     }
 
-                    S.socket.send(JSON.stringify({
-                        action: 'stream_data',
-                        data: text,
-                        input_type: 'text'
-                    }));
-
-                    if (!options.preserveInputValue) {
-                        textInputBox.value = '';
-                    }
-                    window.appendMessage(text, 'user', true, {
-                        skipReactSync: sentImageUrls.length > 0
-                    });
-
-                    // Achievement: meow detection
-                    if (window.incrementAchievementCounter) {
-                        var meowPattern = /\u55B5|miao|meow|nya[no]?|\u306B\u3083|\uB0E5|\u043C\u044F\u0443/i;
-                        if (meowPattern.test(text)) {
-                            try {
-                                window.incrementAchievementCounter('meowCount');
-                            } catch (error) {
-                                console.debug('\u589E\u52A0\u55B5\u55B5\u8BA1\u6570\u5931\u8D25:', error);
-                            }
-                        }
-                    }
-
-                    // First user input check
-                    if (window.appChat && window.appChat.isFirstUserInput()) {
-                        window.appChat.markFirstUserInput();
-                        console.log(window.t('console.userFirstInputDetected'));
-                        window.checkAndUnlockFirstDialogueAchievement();
-                    }
+                    window.showStatusToast(window.t ? window.t('app.textChattingShort') : '\u6B63\u5728\u6587\u672C\u804A\u5929\u4E2D', 2000);
+                } catch (sendError) {
+                    console.error('[Chat] send text payload failed:', sendError);
+                    updateReactOptimisticMessageStatus('failed');
+                    window.showStatusToast(
+                        window.t
+                            ? window.t('app.sendFailed', { error: sendError.message })
+                            : '\u53D1\u9001\u5931\u8D25: ' + sendError.message,
+                        5000
+                    );
                 }
-
-                if (window.appChat && typeof window.appChat.appendReactUserMessage === 'function' && sentImageUrls.length > 0) {
-                    window.appChat.appendReactUserMessage({
-                        text: text,
-                        imageUrls: sentImageUrls
-                    });
-                }
-
-                // Reset proactive chat timer
-                if (S.proactiveChatEnabled && window.hasAnyChatModeEnabled()) {
-                    window.resetProactiveChatBackoff();
-                }
-
-                window.showStatusToast(window.t ? window.t('app.textChattingShort') : '\u6B63\u5728\u6587\u672C\u804A\u5929\u4E2D', 2000);
             } else {
+                updateReactOptimisticMessageStatus('failed');
                 window.showStatusToast(window.t ? window.t('app.websocketNotConnected') : 'WebSocket\u672A\u8FDE\u63A5\uFF01', 4000);
             }
         }
