@@ -1561,6 +1561,7 @@
         "initializingVoice": "음성 채팅 초기화 중...",
         "initializingMic": "마이크 초기화 중...",
         "startFailed": "시작 실패: {{error}}",
+        "sendFailed": "전송 실패: {{error}}",
         "sessionEnded": "세션이 종료되었습니다.",
         "returning": "{{name}}이 돌아왔습니다! 다시 연결하는 중...",
         "websocketNotConnected": "WebSocket이 연결되지 않았습니다!",

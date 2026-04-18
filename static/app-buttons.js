@@ -118,10 +118,11 @@
         return Array.from(screenshotsList.children).map(function (item, index) {
             var img = item.querySelector('.screenshot-thumbnail');
             if (!img || !img.src) return null;
+            var translatedAlt = window.t ? window.t('chat.pendingImageAlt', { index: index + 1 }) : '';
             return {
                 id: String(item.dataset.attachmentId || item.dataset.index || ('attachment-' + index)),
                 url: img.src,
-                alt: img.alt || (window.t ? window.t('chat.pendingImageAlt', { index: index + 1 }) : '图片 ' + (index + 1))
+                alt: img.alt || (typeof translatedAlt === 'string' && translatedAlt ? translatedAlt : '图片 ' + (index + 1))
             };
         }).filter(Boolean);
     };
@@ -995,7 +996,7 @@
                     updateReactOptimisticMessageStatus('failed');
                     window.showStatusToast(
                         window.t
-                            ? window.t('app.startFailed', { error: sendError.message })
+                            ? window.t('app.sendFailed', { error: sendError.message })
                             : '\u53D1\u9001\u5931\u8D25: ' + sendError.message,
                         5000
                     );

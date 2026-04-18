@@ -235,10 +235,11 @@
         }
 
         imageUrls.forEach(function (url, index) {
+            var translatedAlt = window.t ? window.t('chat.pendingImageAlt', { index: index + 1 }) : '';
             blocks.push({
                 type: 'image',
                 url: String(url),
-                alt: (window.t ? window.t('chat.pendingImageAlt', { index: index + 1 }) : '图片 ' + (index + 1))
+                alt: (typeof translatedAlt === 'string' && translatedAlt ? translatedAlt : '图片 ' + (index + 1))
             });
         });
 

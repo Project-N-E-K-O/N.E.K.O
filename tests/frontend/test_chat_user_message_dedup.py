@@ -46,7 +46,8 @@ def _install_chat_send_harness(
             window.__chatTest = {
                 failSessionStart,
                 resolveDelayMs,
-                sentPayloads: []
+                sentPayloads: [],
+                fireSessionStart: null
             };
 
             window.appState.isTextSessionActive = false;
@@ -70,6 +71,17 @@ def _install_chat_send_harness(
                     this.sent.push(parsed);
                     window.__chatTest.sentPayloads.push(parsed);
                     if (parsed.action === 'start_session') {
+                        if (window.__chatTest.resolveDelayMs < 0) {
+                            window.__chatTest.fireSessionStart = () => {
+                                if (window.appState.sessionStartedResolver) {
+                                    const resolver = window.appState.sessionStartedResolver;
+                                    window.appState.sessionStartedResolver = null;
+                                    window.appState.sessionStartedRejecter = null;
+                                    resolver();
+                                }
+                            };
+                            return;
+                        }
                         setTimeout(() => {
                             if (window.__chatTest.failSessionStart) {
                                 if (window.appState.sessionStartedRejecter) {
@@ -112,7 +124,7 @@ def test_react_composer_text_submit_uses_single_stable_user_message(
     running_server: str,
 ):
     _open_react_chat_page(mock_page, running_server)
-    _install_chat_send_harness(mock_page)
+    _install_chat_send_harness(mock_page, resolve_delay_ms=-1)
 
     composer = mock_page.locator(".composer-input")
     composer.fill("Hello from React")
@@ -145,6 +157,11 @@ def test_react_composer_text_submit_uses_single_stable_user_message(
     assert snapshot["userDomRows"] == 1
 
     mock_page.wait_for_function(
+        "() => window.__chatTest && typeof window.__chatTest.fireSessionStart === 'function'"
+    )
+    mock_page.evaluate("() => window.__chatTest.fireSessionStart()")
+
+    mock_page.wait_for_function(
         "() => {"
         "  const state = window.reactChatWindowHost.getState();"
         "  return state.messages.length === 1 && state.messages[0] && state.messages[0].status === 'sent';"
@@ -158,7 +175,7 @@ def test_react_composer_text_submit_uses_single_stable_user_message(
                 count: state.messages.length,
                 author: state.messages[0] && state.messages[0].author,
                 status: state.messages[0] && state.messages[0].status,
-                sentPayloadCount: window.__chatTest.sentPayloads.length
+                sentPayloads: window.__chatTest.sentPayloads
             };
         }"""
     )
@@ -166,7 +183,13 @@ def test_react_composer_text_submit_uses_single_stable_user_message(
     assert after_send["count"] == 1
     assert after_send["author"] == "Alice"
     assert after_send["status"] == "sent"
-    assert after_send["sentPayloadCount"] == 2
+    assert "start_session" in [payload["action"] for payload in after_send["sentPayloads"]]
+    assert any(
+        payload["action"] == "stream_data"
+        and payload.get("input_type") == "text"
+        and payload.get("data") == "Hello from React"
+        for payload in after_send["sentPayloads"]
+    )
 
 
 @pytest.mark.frontend
