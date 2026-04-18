@@ -2762,11 +2762,22 @@ async def cancel_task(task_id: str):
             Modules.active_browser_use_task_id = None
     elif task_type == "openfang":
         if Modules.openfang:
+            # unregister_local_task must run AFTER cancel_running, not before:
+            # OpenFangAdapter.cancel_running looks up the remote task_id in
+            # _active_tasks and no-ops if missing. Unregistering first would
+            # turn the remote /cancel call into a silent no-op and leave the
+            # VM task running even though we report success locally.
+            async def _openfang_cancel_then_unregister(
+                adapter=Modules.openfang, tid=task_id
+            ):
+                try:
+                    await adapter.cancel_running(tid)
+                finally:
+                    adapter.unregister_local_task(tid)
             _spawn_background_cancel(
-                Modules.openfang.cancel_running(task_id),
+                _openfang_cancel_then_unregister(),
                 label=f"openfang:{task_id}",
             )
-            Modules.openfang.unregister_local_task(task_id)
     elif task_type == "openclaw":
         if Modules.openclaw:
             _spawn_background_cancel(
