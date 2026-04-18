@@ -153,6 +153,15 @@ RISKY_ATTR_PAIRS: dict[tuple[str, str], str] = {
     ("shutil", "copytree"): "shutil.copytree",
     ("shutil", "move"): "shutil.move",
     ("shutil", "rmtree"): "shutil.rmtree",
+    # json: load() reads from a file handle (always blocks on read);
+    # loads() is in-memory string parse (NOT blocking, NOT flagged).
+    # NOTE: kept high-signal entries here. We deliberately do NOT add
+    # ``open`` (builtin), ``os.listdir`` / ``os.makedirs`` / ``os.path.getmtime``
+    # / ``os.path.getsize`` / ``Thread.is_alive`` here — they each have
+    # legitimate hot-path patterns (sync file create + offloaded copyfileobj,
+    # microsecond-scale stat / GIL checks) that would force noisy noqas.
+    # Add them later if the FP cost gets cheaper (per-pattern context filter).
+    ("json", "load"): "json.load (reads from file handle)",
 }
 
 # Bare-name (no receiver) function calls that indicate blocking —
@@ -218,6 +227,12 @@ def _describe_blocking_call(call: ast.Call) -> str | None:
             return "queue.Queue.get()"
         if attr == "join" and _tail_matches(receiver_tail, THREAD_EXACT, THREAD_SUFFIX):
             return "Thread/Process.join()"
+        # NOTE: ``is_alive()`` deliberately NOT flagged. It takes the GIL for
+        # microseconds (vs. join() which can block indefinitely). Wrapping in
+        # ``await asyncio.to_thread(t.is_alive)`` adds ~100µs roundtrip
+        # overhead, which is a net regression in the per-audio-chunk TTS
+        # watchdog loop where this pattern dominates. If a future hot loop
+        # needs flagging, narrow the rule to "inside for/while body" only.
         if _tail_matches(receiver_tail, SOCKET_EXACT, SOCKET_SUFFIX) and attr in {"recv", "accept", "connect"}:
             return f"blocking socket.{attr}()"
         return None
@@ -408,9 +423,10 @@ class AsyncBlockingChecker(ast.NodeVisitor):
             return
         # Avoid duplicating with the existing queue/thread/socket flags —
         # those carry richer messages from _check_attribute_call.
-        if reason in ("queue.Queue.get()", "Thread/Process.join()") or reason.startswith(
-            "blocking socket."
-        ):
+        if reason in (
+            "queue.Queue.get()",
+            "Thread/Process.join()",
+        ) or reason.startswith("blocking socket."):
             return
         self._flag(
             call,

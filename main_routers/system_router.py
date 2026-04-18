@@ -2013,6 +2013,12 @@ async def proxy_meme_image(url: str):
 
 # 辅助函数
 
+def _read_binary_file(path: str) -> bytes:
+    """同步 binary read，给 asyncio.to_thread 调用。"""
+    with open(path, 'rb') as f:
+        return f.read()
+
+
 @router.get('/steam/proxy-image')
 async def proxy_image(image_path: str):
     """
@@ -2191,14 +2197,13 @@ async def proxy_image(image_path: str):
         
         # 检查文件大小是否超过50MB限制
         MAX_IMAGE_SIZE = 50 * 1024 * 1024  # 50MB
-        file_size = os.path.getsize(final_path)
+        file_size = await asyncio.to_thread(os.path.getsize, final_path)
         if file_size > MAX_IMAGE_SIZE:
             logger.warning(f"图片文件大小超过限制: {final_path} ({file_size / 1024 / 1024:.2f}MB > 50MB)")
             return JSONResponse(content={"success": False, "error": f"图片文件大小超过50MB限制 ({file_size / 1024 / 1024:.2f}MB)"}, status_code=413)
-        
-        # 读取图片文件
-        with open(final_path, 'rb') as f:
-            image_data = f.read()
+
+        # 读取图片文件 —— 最多 50MB，事件循环上同步 read 会卡几十毫秒
+        image_data = await asyncio.to_thread(_read_binary_file, final_path)
         
         # 根据文件扩展名设置MIME类型
         ext = os.path.splitext(final_path)[1].lower()
@@ -2331,7 +2336,7 @@ async def proactive_chat(request: Request):
         _config_manager = get_config_manager()
         session_manager = get_session_manager()
         # 获取当前角色数据（包括完整人设）
-        master_name_current, her_name_current, _, _, _, lanlan_prompt_map, _, _, _ = _config_manager.get_character_data()
+        master_name_current, her_name_current, _, _, _, lanlan_prompt_map, _, _, _ = await _config_manager.aget_character_data()
         
         data = await request.json()
         lanlan_name = data.get('lanlan_name') or her_name_current
@@ -2510,13 +2515,17 @@ async def proactive_chat(request: Request):
         
         raw_memory_context = ""
         try:
-            async with httpx.AsyncClient(proxy=None, trust_env=False) as client:
-                resp = await client.get(f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{lanlan_name}", timeout=5.0)
-                resp.raise_for_status()  # Check for HTTP errors explicitly
-                if resp.status_code == 200:
-                    raw_memory_context = resp.text
-                else:
-                    logger.warning(f"[{lanlan_name}] 记忆服务返回非200状态: {resp.status_code}，使用空上下文")
+            from utils.memory_client import get_memory_client
+            _pt_client = get_memory_client()
+            resp = await _pt_client.get(
+                f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{lanlan_name}",
+                timeout=5.0,
+            )
+            resp.raise_for_status()  # Check for HTTP errors explicitly
+            if resp.status_code == 200:
+                raw_memory_context = resp.text
+            else:
+                logger.warning(f"[{lanlan_name}] 记忆服务返回非200状态: {resp.status_code}，使用空上下文")
         except Exception as e:
             logger.warning(f"[{lanlan_name}] 获取记忆上下文失败，使用空上下文: {e}")
         

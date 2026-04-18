@@ -265,18 +265,26 @@ def _select_fallback_session_manager():
 
 
 async def _broadcast_to_all_connected(event_payload: dict) -> int:
-    """Broadcast an event to all connected WebSocket sessions asynchronously."""
-    delivered_count = 0
+    """Broadcast an event to all connected WebSocket sessions in parallel.
+    每秒可能多次（agent status），串行 await 会让一个慢的 ws 拖累其它会话。"""
     # Take a snapshot to avoid RuntimeError from concurrent dict mutation
-    for name, mgr in list(_iter_session_managers()):
-        ws = getattr(mgr, "websocket", None)
-        if _is_websocket_connected(ws) and hasattr(ws, "send_json"):
-            try:
-                await ws.send_json(event_payload)
-                delivered_count += 1
-            except Exception as e:
-                logger.debug("[EventBus] broadcast to %s failed: %s", name, e)
-    return delivered_count
+    targets = [
+        (name, getattr(mgr, "websocket", None))
+        for name, mgr in list(_iter_session_managers())
+        if mgr
+    ]
+    targets = [(n, ws) for n, ws in targets if _is_websocket_connected(ws) and hasattr(ws, "send_json")]
+
+    async def _send_one(name, ws):
+        try:
+            await ws.send_json(event_payload)
+            return True
+        except Exception as e:
+            logger.debug("[EventBus] broadcast to %s failed: %s", name, e)
+            return False
+
+    results = await asyncio.gather(*(_send_one(n, ws) for n, ws in targets), return_exceptions=False)
+    return sum(1 for r in results if r is True)
 
 
 async def _handle_agent_event(event: dict):
@@ -327,15 +335,19 @@ async def _handle_agent_event(event: dict):
         elif event_type == "music_allowlist_add":
             # Music allowlist is a global UI state, broadcast to all active sessions
             targets = [mgr] if mgr else [m for _, m in _iter_session_managers()]
-            for target_mgr in targets:
+            payload = {
+                "type": "music_allowlist_add",
+                "domains": event.get("domains") or event.get("metadata", {}).get("domains", [])
+            }
+
+            async def _send_allowlist(target_mgr):
                 if target_mgr and target_mgr.websocket and hasattr(target_mgr.websocket, "send_json"):
                     try:
-                        await target_mgr.websocket.send_json({
-                            "type": "music_allowlist_add",
-                            "domains": event.get("domains") or event.get("metadata", {}).get("domains", [])
-                        })
+                        await target_mgr.websocket.send_json(payload)
                     except Exception as e:
                         logger.debug("[EventBus] music_allowlist_add broadcast failed: %s", e)
+
+            await asyncio.gather(*(_send_allowlist(t) for t in targets), return_exceptions=True)
             if targets:
                 logger.info("[EventBus] music_allowlist_add broadcasted to %d sessions", len(targets))
             return
@@ -343,17 +355,21 @@ async def _handle_agent_event(event: dict):
         elif event_type == "music_play_url":
             # Music playback is a global UI action, broadcast to all active sessions
             targets = [mgr] if mgr else [m for _, m in _iter_session_managers()]
-            for target_mgr in targets:
+            payload = {
+                "type": "music_play_url",
+                "url": event.get("url"),
+                "name": event.get("name") or "Plugin Music",
+                "artist": event.get("artist") or "External"
+            }
+
+            async def _send_play(target_mgr):
                 if target_mgr and target_mgr.websocket and hasattr(target_mgr.websocket, "send_json"):
                     try:
-                        await target_mgr.websocket.send_json({
-                            "type": "music_play_url",
-                            "url": event.get("url"),
-                            "name": event.get("name") or "Plugin Music",
-                            "artist": event.get("artist") or "External"
-                        })
+                        await target_mgr.websocket.send_json(payload)
                     except Exception as e:
                         logger.debug("[EventBus] music_play_url broadcast failed: %s", e)
+
+            await asyncio.gather(*(_send_play(t) for t in targets), return_exceptions=True)
             if targets:
                 logger.info("[EventBus] music_play_url broadcasted to %d sessions", len(targets))
             return
@@ -1062,6 +1078,41 @@ async def on_startup():
             _server_loop.set_debug(True)
             _server_loop.slow_callback_duration = 0.05
             logger.info("[asyncio] debug mode enabled (slow_callback_duration=0.05s)")
+
+        # 事件循环心跳：每 200ms 打一个点。当 /new_dialog 或其他 async 操作
+        # 莫名其妙变慢时，看心跳是否缺席 —— 缺席 = 事件循环被阻塞，这段时间
+        # 内所有 async 都没机会跑。心跳日志仅在开启 NEKO_DEBUG_HEARTBEAT=1
+        # 时输出到 stdout，避免日志刷屏。
+        if os.environ.get("NEKO_DEBUG_HEARTBEAT") == "1":
+            async def _event_loop_heartbeat():
+                import time as _t
+                _last = _t.perf_counter()
+                while True:
+                    await asyncio.sleep(0.2)
+                    _now = _t.perf_counter()
+                    _gap_ms = int((_now - _last) * 1000)
+                    # 只打异常的心跳（间隔 > 300ms），正常跳过
+                    if _gap_ms > 300:
+                        print(f"[{_t.strftime('%H:%M:%S')}] [heartbeat] stall {_gap_ms}ms (expected ~200ms)", flush=True)
+                    _last = _now
+            asyncio.create_task(_event_loop_heartbeat())
+            logger.info("[asyncio] heartbeat enabled (stalls > 300ms will be logged)")
+
+        # 预热重量级模块导入，避免 TTS worker 线程第一次启动时在
+        # 工作线程里触发同步 import 阻塞事件循环（实测 dashscope
+        # 首次 import 会吃 GIL 3-7 秒，导致此期间 /new_dialog 响应
+        # 解析无法及时完成，表现为 "memory 服务响应超时"）。
+        # 放 to_thread 里跑，不阻塞 startup 本身。
+        async def _prewarm_heavy_imports():
+            import importlib
+            for mod in ("dashscope", "dashscope.audio.tts_v2"):
+                try:
+                    await asyncio.to_thread(importlib.import_module, mod)
+                    logger.debug(f"[prewarm] imported {mod}")
+                except Exception as e:
+                    logger.debug(f"[prewarm] import {mod} failed (ignored): {e}")
+        asyncio.create_task(_prewarm_heavy_imports())
+
         logger.info("正在初始化 Steamworks...")
         steamworks = initialize_steamworks()
         
@@ -1199,12 +1250,21 @@ async def on_shutdown():
             from utils.music_crawlers import close_all_crawlers
             # 【核心修改】增加 1 秒超时兜底。如果 1 秒内关不完，直接抛弃，保障服务器顺利退出
             await asyncio.wait_for(close_all_crawlers(), timeout=1.0)
-            
+
         except asyncio.TimeoutError:
             # 单独捕获超时异常，记录警告但放行
             logger.warning("音乐爬虫连接池清理超时，已强制跳过以保证服务正常退出。")
         except Exception as e:
             logger.debug(f"音乐爬虫清理失败: {e}", exc_info=True)
+
+        # 关闭 memory_server 共享 httpx 连接池
+        try:
+            from utils.memory_client import aclose_memory_client
+            await asyncio.wait_for(aclose_memory_client(), timeout=1.0)
+        except asyncio.TimeoutError:
+            logger.warning("memory_client 清理超时，已强制跳过。")
+        except Exception as e:
+            logger.debug(f"memory_client 清理失败: {e}", exc_info=True)
 
 # 使用 FastAPI 的 app.state 来管理启动配置
 def get_start_config():
