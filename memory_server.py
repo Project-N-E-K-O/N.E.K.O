@@ -763,10 +763,10 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
 
 @app.post("/cache/{lanlan_name}")
 async def cache_conversation(request: HistoryRequest, lanlan_name: str):
-    lanlan_name = validate_lanlan_name(lanlan_name)
-    _touch_activity()
     """轻量级缓存：仅将新消息追加到 recent history，不触发 time_manager / review 等 LLM 操作。
     供 cross_server 在每轮 turn end 时调用，保持 memory_browser 实时可见。"""
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    _touch_activity()
     try:
         input_history = convert_to_messages(json.loads(request.input_history))
         if not input_history:
