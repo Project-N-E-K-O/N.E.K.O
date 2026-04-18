@@ -16,7 +16,7 @@ import uvicorn
 from fastapi.templating import Jinja2Templates
 from utils.frontend_utils import find_models, find_model_config_file, find_model_directory
 from utils.workshop_utils import get_default_workshop_folder
-from utils.preferences import load_user_preferences
+from utils.preferences import aload_user_preferences
 
 # Setup logger
 from utils.logger_config import setup_logging
@@ -74,7 +74,7 @@ async def get_page_config(lanlan_name: str = ""):
     """获取页面配置（lanlan_name 和 model_path）"""
     try:
         # 获取角色数据
-        _, her_name, _, lanlan_basic_config, _, _, _, _, _ = _config_manager.get_character_data()
+        _, her_name, _, lanlan_basic_config, _, _, _, _, _ = await _config_manager.aget_character_data()
         
         # 如果提供了 lanlan_name 参数，使用它；否则使用当前角色
         target_name = lanlan_name if lanlan_name else her_name
@@ -114,7 +114,7 @@ async def get_page_config(lanlan_name: str = ""):
 @app.get("/api/config/preferences")
 async def get_preferences():
     """获取用户偏好设置（与main_server.py保持一致）"""
-    preferences = load_user_preferences()
+    preferences = await aload_user_preferences()
     return preferences
 
 @app.get('/api/live2d/emotion_mapping/{model_name}')

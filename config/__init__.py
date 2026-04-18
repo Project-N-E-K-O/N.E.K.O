@@ -528,11 +528,13 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeyQwenIntl": "",
     "assistApiKeyMinimax": "",
     "assistApiKeyClaude": "",
+    "assistApiKeyGrok": "",
+    "assistApiKeyDoubao": "",
     "mcpToken": "",
     "agentModelUrl": "",
     "agentModelId": "",
     "agentModelApiKey": "",
-    "openclawUrl": "http://127.0.0.1:8089",
+    "openclawUrl": "http://127.0.0.1:8088",
     "openclawTimeout": 300.0,
     "openclawDefaultSenderId": "neko_user",
     "textGuardMaxLength": 300,
@@ -666,6 +668,24 @@ DEFAULT_ASSIST_API_PROFILES = {
         'VISION_MODEL': "openai/gpt-4.1",
         'AGENT_MODEL': "openai/gpt-4.1",
     },
+    'grok': {
+        'OPENROUTER_URL': "https://api.x.ai/v1",
+        'CONVERSATION_MODEL': "grok-4-1-fast-non-reasoning",
+        'SUMMARY_MODEL': "grok-4-1-fast-non-reasoning",
+        'CORRECTION_MODEL': "grok-4-1-fast-non-reasoning",
+        'EMOTION_MODEL': "grok-3-mini-fast",
+        'VISION_MODEL': "grok-4-1-fast-non-reasoning",
+        'AGENT_MODEL': "grok-4-1-fast-non-reasoning",
+    },
+    'doubao': {
+        'OPENROUTER_URL': "https://ark.cn-beijing.volces.com/api/v3",
+        'CONVERSATION_MODEL': "doubao-seed-2-0-lite-260215",
+        'SUMMARY_MODEL': "doubao-seed-2-0-lite-260215",
+        'CORRECTION_MODEL': "doubao-seed-2-0-lite-260215",
+        'EMOTION_MODEL': "doubao-seed-2-0-mini-260215",
+        'VISION_MODEL': "doubao-seed-2-0-lite-260215",
+        'AGENT_MODEL': "doubao-seed-2-0-pro-260215",
+    },
 }
 
 DEFAULT_ASSIST_API_KEY_FIELDS = {
@@ -680,6 +700,8 @@ DEFAULT_ASSIST_API_KEY_FIELDS = {
     'minimax': 'ASSIST_API_KEY_MINIMAX',
     'claude': 'ASSIST_API_KEY_CLAUDE',
     'openrouter': 'ASSIST_API_KEY_OPENROUTER',
+    'grok': 'ASSIST_API_KEY_GROK',
+    'doubao': 'ASSIST_API_KEY_DOUBAO',
 }
 
 DEFAULT_CONFIG_DATA = {

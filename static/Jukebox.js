@@ -586,13 +586,13 @@ window.Jukebox = {
       
       switch (tabName) {
         case 'songs':
-          this.renderSongs(panel);
+          this.rerenderPanel(panel, () => this.renderSongs(panel));
           break;
         case 'actions':
-          this.renderActions(panel);
+          this.rerenderPanel(panel, () => this.renderActions(panel));
           break;
         case 'bindings':
-          this.renderBindings(panel);
+          this.rerenderPanel(panel, () => this.renderBindings(panel));
           break;
       }
       this.updateSelectionInfo();
@@ -600,12 +600,14 @@ window.Jukebox = {
     
     renderSongs(panel) {
       const showHidden = this.showHiddenSongs !== false;
-      const songs = Object.entries(this.data.songs).filter(([id, song]) => showHidden || song.visible !== false);
+      const songs = this.getVisibleSongEntries();
+      const allSongsSelected = this.areAllSongsSelected();
+      const hasAnySongsSelected = this.hasAnySongsSelected();
 
       panel.innerHTML = `
         <div class="sam-list-header">
           <label class="sam-checkbox">
-            <input type="checkbox" id="select-all-songs" onchange="Jukebox.SongActionManager.toggleSelectAllSongs(this.checked)">
+            <input type="checkbox" id="select-all-songs" ${allSongsSelected ? 'checked' : ''} onchange="Jukebox.SongActionManager.toggleSelectAllSongs(this.checked)">
             <span>${window.t('Jukebox.selectAll', '全选')}</span>
           </label>
           <label class="sam-checkbox sam-checkbox-right">
@@ -659,16 +661,19 @@ window.Jukebox = {
               `).join('')}
           </div>
       `;
+      this.syncCheckboxState(panel.querySelector('#select-all-songs'), allSongsSelected, hasAnySongsSelected && !allSongsSelected);
       this.bindDragEvents(panel);
       this.bindFileDropEvents(panel, 'audio');
     },
 
     renderActions(panel) {
       const actions = Object.entries(this.data.actions);
+      const allActionsSelected = this.areAllActionsSelected();
+      const hasAnyActionsSelected = this.hasAnyActionsSelected();
       panel.innerHTML = `
         <div class="sam-list-header">
           <label class="sam-checkbox">
-            <input type="checkbox" id="select-all-actions" onchange="Jukebox.SongActionManager.toggleSelectAllActions(this.checked)">
+            <input type="checkbox" id="select-all-actions" ${allActionsSelected ? 'checked' : ''} onchange="Jukebox.SongActionManager.toggleSelectAllActions(this.checked)">
             <span>${window.t('Jukebox.selectAll', '全选')}</span>
           </label>
           <span></span>
@@ -703,12 +708,18 @@ window.Jukebox = {
               `}).join('')}
           </div>
       `;
+      this.syncCheckboxState(panel.querySelector('#select-all-actions'), allActionsSelected, hasAnyActionsSelected && !allActionsSelected);
       this.bindDragEvents(panel);
       this.bindFileDropEvents(panel, 'action');
     },
 
     renderBindings(panel) {
       this.initSelection();
+      this.initBindingSelection();
+      const allBindingSongsSelected = this.areAllBindingSongsSelected();
+      const hasAnyBindingSongsSelected = this.hasAnyBindingSongsSelected();
+      const allBindingActionsSelected = this.areAllBindingActionsSelected();
+      const hasAnyBindingActionsSelected = this.hasAnyBindingActionsSelected();
 
       panel.innerHTML = `
         <div class="sam-bindings-container">
@@ -716,7 +727,7 @@ window.Jukebox = {
             <div class="sam-bindings-header">
               <h4>${window.t('Jukebox.songList', '歌曲列表 (拖拽到右侧)')}</h4>
               <label class="sam-checkbox">
-                <input type="checkbox" id="select-all-binding-songs" onchange="Jukebox.SongActionManager.toggleSelectAllBindingSongs(this.checked)">
+                <input type="checkbox" id="select-all-binding-songs" ${allBindingSongsSelected ? 'checked' : ''} onchange="Jukebox.SongActionManager.toggleSelectAllBindingSongs(this.checked)">
                 <span>${window.t('Jukebox.selectAll', '全选')}</span>
               </label>
             </div>
@@ -724,14 +735,13 @@ window.Jukebox = {
               ${Object.entries(this.data.songs).length === 0 ? `<div class="sam-empty">${window.t('Jukebox.noSongs', '暂无歌曲')}</div>` :
                 Object.entries(this.data.songs).map(([id, song], index) => {
                   const boundActions = this.getSongBindings(id);
-                  const isFullySelected = this.isSongFullySelectedInBindings(id);
-                  const isPartiallySelected = this.selectedSongs.has(id) && !isFullySelected;
+                  const isSelected = this.bindingSelectedSongs.has(id);
                   const songIndex = index + 1;
                   return `
-                <div class="sam-binding-item ${isFullySelected ? 'sam-binding-item-selected' : ''} ${isPartiallySelected ? 'sam-binding-item-partial' : ''}" data-song-id="${id}" draggable="true" data-index="${songIndex}">
+                <div class="sam-binding-item ${isSelected ? 'sam-binding-item-selected' : ''}" data-song-id="${id}" draggable="true" data-index="${songIndex}">
                   <div class="sam-binding-item-main">
                     <label class="sam-checkbox sam-item-checkbox">
-                      <input type="checkbox" ${isFullySelected ? 'checked' : ''} onchange="Jukebox.SongActionManager.toggleBindingSongSelect('${id}', this.checked)">
+                      <input type="checkbox" ${isSelected ? 'checked' : ''} onchange="Jukebox.SongActionManager.toggleBindingSongSelect('${id}', this.checked)">
                     </label>
                     <span class="sam-binding-item-index">${songIndex}</span>
                     <span class="sam-binding-item-name">${song.name}</span>
@@ -739,7 +749,7 @@ window.Jukebox = {
                   <div class="sam-binding-item-tags">
                     ${boundActions.map(actionId => {
                       const action = this.data.actions[actionId];
-                      const isActionSelected = this.selectedActions.has(actionId);
+                      const isActionSelected = this.bindingSelectedActions.has(actionId);
                       const isDefault = song.defaultAction === actionId;
                       const format = action?.format || 'vmd';
                       const formatColor = this.getFormatColor(format);
@@ -766,7 +776,7 @@ window.Jukebox = {
             <div class="sam-bindings-header">
               <h4>${window.t('Jukebox.actionList', '动画列表 (拖拽到左侧)')}</h4>
               <label class="sam-checkbox">
-                <input type="checkbox" id="select-all-binding-actions" onchange="Jukebox.SongActionManager.toggleSelectAllBindingActions(this.checked)">
+                <input type="checkbox" id="select-all-binding-actions" ${allBindingActionsSelected ? 'checked' : ''} onchange="Jukebox.SongActionManager.toggleSelectAllBindingActions(this.checked)">
                 <span>${window.t('Jukebox.selectAll', '全选')}</span>
               </label>
             </div>
@@ -774,16 +784,15 @@ window.Jukebox = {
               ${Object.entries(this.data.actions).length === 0 ? `<div class="sam-empty">${window.t('Jukebox.noActions', '暂无动画')}</div>` :
                 Object.entries(this.data.actions).map(([id, action], index) => {
                   const boundSongs = this.getActionBindings(id);
-                  const isFullySelected = this.isActionFullySelectedInBindings(id);
-                  const isPartiallySelected = this.selectedActions.has(id) && !isFullySelected;
+                  const isSelected = this.bindingSelectedActions.has(id);
                   const format = action.format || 'vmd';
                   const formatColor = this.getFormatColor(format);
                   const actionIndex = index + 1;
                   return `
-                <div class="sam-binding-item ${isFullySelected ? 'sam-binding-item-selected' : ''} ${isPartiallySelected ? 'sam-binding-item-partial' : ''}" data-action-id="${id}" draggable="true" data-index="${actionIndex}">
+                <div class="sam-binding-item ${isSelected ? 'sam-binding-item-selected' : ''}" data-action-id="${id}" draggable="true" data-index="${actionIndex}">
                   <div class="sam-binding-item-main">
                     <label class="sam-checkbox sam-item-checkbox">
-                      <input type="checkbox" ${isFullySelected ? 'checked' : ''} onchange="Jukebox.SongActionManager.toggleBindingActionSelect('${id}', this.checked)">
+                      <input type="checkbox" ${isSelected ? 'checked' : ''} onchange="Jukebox.SongActionManager.toggleBindingActionSelect('${id}', this.checked)">
                     </label>
                     <span class="sam-binding-item-index">${actionIndex}</span>
                     <span class="sam-format-dot" style="background-color: ${formatColor};"></span>
@@ -792,7 +801,7 @@ window.Jukebox = {
                   <div class="sam-binding-item-tags">
                     ${boundSongs.map(songId => {
                       const song = this.data.songs[songId];
-                      const isSongSelected = this.selectedSongs.has(songId);
+                      const isSongSelected = this.bindingSelectedSongs.has(songId);
                       const offset = this.data.bindings[songId]?.[id]?.offset || 0;
                       const titleText = `${window.t('Jukebox.offset', '偏移')}: ${offset}${window.t('Jukebox.frame', '帧')}`;
                       return song ? `
@@ -809,6 +818,8 @@ window.Jukebox = {
           </div>
         </div>
       `;
+      this.syncCheckboxState(panel.querySelector('#select-all-binding-songs'), allBindingSongsSelected, hasAnyBindingSongsSelected && !allBindingSongsSelected);
+      this.syncCheckboxState(panel.querySelector('#select-all-binding-actions'), allBindingActionsSelected, hasAnyBindingActionsSelected && !allBindingActionsSelected);
       this.bindBindingDragEvents(panel);
     },
     
@@ -816,7 +827,7 @@ window.Jukebox = {
       this.showHiddenSongs = checked;
       const songsPanel = document.querySelector('.songs-panel');
       if (songsPanel) {
-        this.renderSongs(songsPanel);
+        this.rerenderPanel(songsPanel, () => this.renderSongs(songsPanel));
       }
     },
     
@@ -831,7 +842,7 @@ window.Jukebox = {
         
         const songsPanel = document.querySelector('.songs-panel');
         if (songsPanel) {
-          this.renderSongs(songsPanel);
+          this.rerenderPanel(songsPanel, () => this.renderSongs(songsPanel));
         }
         
         // 通知主UI刷新歌曲列表
@@ -861,7 +872,7 @@ window.Jukebox = {
         // 恢复原值
         const songsPanel = document.querySelector('.songs-panel');
         if (songsPanel) {
-          this.renderSongs(songsPanel);
+          this.rerenderPanel(songsPanel, () => this.renderSongs(songsPanel));
         }
       }
     },
@@ -882,7 +893,7 @@ window.Jukebox = {
         // 恢复原值
         const songsPanel = document.querySelector('.songs-panel');
         if (songsPanel) {
-          this.renderSongs(songsPanel);
+          this.rerenderPanel(songsPanel, () => this.renderSongs(songsPanel));
         }
       }
     },
@@ -904,7 +915,7 @@ window.Jukebox = {
         // 恢复原值
         const actionsPanel = document.querySelector('.actions-panel');
         if (actionsPanel) {
-          this.renderActions(actionsPanel);
+          this.rerenderPanel(actionsPanel, () => this.renderActions(actionsPanel));
         }
       }
     },
@@ -930,13 +941,13 @@ window.Jukebox = {
           // 刷新歌曲面板
           const songsPanel = document.querySelector('.songs-panel');
           if (songsPanel) {
-            this.renderSongs(songsPanel);
+            this.rerenderPanel(songsPanel, () => this.renderSongs(songsPanel));
           }
 
           // 刷新绑定面板（如果打开的话）
           const bindingsPanel = document.querySelector('.bindings-panel');
           if (bindingsPanel && bindingsPanel.innerHTML.trim()) {
-            this.renderBindings(bindingsPanel);
+            this.rerenderPanel(bindingsPanel, () => this.renderBindings(bindingsPanel));
           }
 
           // 通知主UI重新加载配置
@@ -983,6 +994,8 @@ window.Jukebox = {
         await this.api.deleteSong(songId);
         // 从选择集合中移除
         if (this.selectedSongs) this.selectedSongs.delete(songId);
+        if (this.bindingSourceSongs) this.bindingSourceSongs.delete(songId);
+        if (this.bindingSelectedSongs) this.bindingSelectedSongs.delete(songId);
         delete this.data.songs[songId];
         delete this.data.bindings[songId];
 
@@ -1003,6 +1016,8 @@ window.Jukebox = {
         await this.api.deleteAction(actionId);
         // 从选择集合中移除
         if (this.selectedActions) this.selectedActions.delete(actionId);
+        if (this.bindingSourceActions) this.bindingSourceActions.delete(actionId);
+        if (this.bindingSelectedActions) this.bindingSelectedActions.delete(actionId);
         delete this.data.actions[actionId];
 
         // 从所有绑定中移除
@@ -1026,16 +1041,38 @@ window.Jukebox = {
     },
 
     // 刷新所有面板
-    refreshAllPanels() {
-      const songsPanel = document.querySelector('.songs-panel .sam-panel-content');
-      if (songsPanel) this.renderSongs(songsPanel);
+    capturePanelScrollState(panel) {
+      if (!panel) return null;
 
-      const actionsPanel = document.querySelector('.actions-panel .sam-panel-content');
-      if (actionsPanel) this.renderActions(actionsPanel);
-
-      const bindingsPanel = document.querySelector('.bindings-panel .sam-panel-content');
-      if (bindingsPanel) this.renderBindings(bindingsPanel);
+      return {
+        panelScrollTop: panel.scrollTop,
+        nestedScrolls: Array.from(panel.querySelectorAll('.sam-list, .sam-bindings-list')).map((el, index) => ({
+          index,
+          scrollTop: el.scrollTop
+        }))
+      };
     },
+
+    restorePanelScrollState(panel, state) {
+      if (!panel || !state) return;
+
+      panel.scrollTop = state.panelScrollTop || 0;
+      const nestedLists = panel.querySelectorAll('.sam-list, .sam-bindings-list');
+      state.nestedScrolls?.forEach(({ index, scrollTop }) => {
+        if (nestedLists[index]) {
+          nestedLists[index].scrollTop = scrollTop;
+        }
+      });
+    },
+
+    rerenderPanel(panel, renderFn) {
+      if (!panel || typeof renderFn !== 'function') return;
+
+      const scrollState = this.capturePanelScrollState(panel);
+      renderFn();
+      this.restorePanelScrollState(panel, scrollState);
+    },
+
     
     // 初始化选择集合
     initSelection() {
@@ -1043,26 +1080,123 @@ window.Jukebox = {
       if (!this.selectedActions) this.selectedActions = new Set();
     },
 
+    ensureBindingSelectionState() {
+      if (!this.bindingSelectedSongs) this.bindingSelectedSongs = new Set();
+      if (!this.bindingSelectedActions) this.bindingSelectedActions = new Set();
+      if (!this.bindingSourceSongs) this.bindingSourceSongs = new Set(this.bindingSelectedSongs);
+      if (!this.bindingSourceActions) this.bindingSourceActions = new Set(this.bindingSelectedActions);
+    },
+
+    initBindingSelection() {
+      this.ensureBindingSelectionState();
+      this.syncBindingSelection();
+    },
+
+    getVisibleSongEntries() {
+      const showHidden = this.showHiddenSongs !== false;
+      return Object.entries(this.data.songs).filter(([id, song]) => showHidden || song.visible !== false);
+    },
+
+    areAllSongsSelected() {
+      this.initSelection();
+      const songs = this.getVisibleSongEntries();
+      return songs.length > 0 && songs.every(([id]) => this.selectedSongs.has(id));
+    },
+
+    hasAnySongsSelected() {
+      this.initSelection();
+      return this.getVisibleSongEntries().some(([id]) => this.selectedSongs.has(id));
+    },
+
+    areAllActionsSelected() {
+      this.initSelection();
+      const actionIds = Object.keys(this.data.actions);
+      return actionIds.length > 0 && actionIds.every(id => this.selectedActions.has(id));
+    },
+
+    hasAnyActionsSelected() {
+      this.initSelection();
+      return Object.keys(this.data.actions).some(id => this.selectedActions.has(id));
+    },
+
+    areAllBindingSongsSelected() {
+      this.initBindingSelection();
+      const songIds = Object.keys(this.data.songs);
+      return songIds.length > 0 && songIds.every(songId => this.bindingSelectedSongs.has(songId));
+    },
+
+    hasAnyBindingSongsSelected() {
+      this.initBindingSelection();
+      return Object.keys(this.data.songs).some(songId => this.bindingSelectedSongs.has(songId));
+    },
+
+    areAllBindingActionsSelected() {
+      this.initBindingSelection();
+      const actionIds = Object.keys(this.data.actions);
+      return actionIds.length > 0 && actionIds.every(actionId => this.bindingSelectedActions.has(actionId));
+    },
+
+    hasAnyBindingActionsSelected() {
+      this.initBindingSelection();
+      return Object.keys(this.data.actions).some(actionId => this.bindingSelectedActions.has(actionId));
+    },
+
+    syncCheckboxState(checkbox, checked, indeterminate) {
+      if (!checkbox) return;
+      checkbox.checked = !!checked;
+      checkbox.indeterminate = !!indeterminate;
+    },
+
+    syncBindingSelection() {
+      this.ensureBindingSelectionState();
+
+      const songIds = new Set();
+      const actionIds = new Set();
+
+      this.bindingSourceSongs.forEach(songId => {
+        if (!this.data.songs[songId]) return;
+        songIds.add(songId);
+        this.getSongBindings(songId).forEach(actionId => {
+          if (this.data.actions[actionId]) {
+            actionIds.add(actionId);
+          }
+        });
+      });
+
+      this.bindingSourceActions.forEach(actionId => {
+        if (!this.data.actions[actionId]) return;
+        actionIds.add(actionId);
+        this.getActionBindings(actionId).forEach(songId => {
+          if (this.data.songs[songId]) {
+            songIds.add(songId);
+          }
+        });
+      });
+
+      this.bindingSelectedSongs = songIds;
+      this.bindingSelectedActions = actionIds;
+
+      return {
+        songIds: Array.from(songIds),
+        actionIds: Array.from(actionIds)
+      };
+    },
+
+    getBindingBundleSelection() {
+      this.initBindingSelection();
+      return this.syncBindingSelection();
+    },
+
     // 检查歌曲在绑定Tab是否应该显示勾选（合集逻辑：歌曲被勾选且其所有绑定的动画都被勾选）
     isSongFullySelectedInBindings(songId) {
-      this.initSelection();
-      if (!this.selectedSongs.has(songId)) return false;
-      
-      const boundActions = this.getSongBindings(songId);
-      if (boundActions.length === 0) return true; // 没有绑定动画时，只检查歌曲本身
-      
-      return boundActions.every(actionId => this.selectedActions.has(actionId));
+      this.initBindingSelection();
+      return this.bindingSelectedSongs.has(songId);
     },
 
     // 检查动画在绑定Tab是否应该显示勾选（合集逻辑：动画被勾选且其所有绑定的歌曲都被勾选）
     isActionFullySelectedInBindings(actionId) {
-      this.initSelection();
-      if (!this.selectedActions.has(actionId)) return false;
-      
-      const boundSongs = this.getActionBindings(actionId);
-      if (boundSongs.length === 0) return true; // 没有绑定歌曲时，只检查动画本身
-      
-      return boundSongs.every(songId => this.selectedSongs.has(songId));
+      this.initBindingSelection();
+      return this.bindingSelectedActions.has(actionId);
     },
 
     // 歌曲Tab：只勾选歌曲本身，不联动
@@ -1093,48 +1227,36 @@ window.Jukebox = {
 
     // 绑定Tab勾选歌曲：联动勾选/取消该歌曲绑定的所有动画
     toggleBindingSongSelect(songId, checked) {
-      this.initSelection();
+      this.ensureBindingSelectionState();
       
       if (checked) {
-        this.selectedSongs.add(songId);
-        // 联动勾选该歌曲绑定的所有动画
-        const boundActions = this.getSongBindings(songId);
-        boundActions.forEach(actionId => this.selectedActions.add(actionId));
+        this.bindingSourceSongs.add(songId);
       } else {
-        this.selectedSongs.delete(songId);
-        // 联动取消勾选该歌曲绑定的所有动画
-        const boundActions = this.getSongBindings(songId);
-        boundActions.forEach(actionId => this.selectedActions.delete(actionId));
+        this.bindingSourceSongs.delete(songId);
       }
-      
+
+      this.syncBindingSelection();
       this.refreshAllPanels();
     },
 
     // 绑定Tab勾选动画：联动勾选/取消该动画绑定的所有歌曲
     toggleBindingActionSelect(actionId, checked) {
-      this.initSelection();
+      this.ensureBindingSelectionState();
       
       if (checked) {
-        this.selectedActions.add(actionId);
-        // 联动勾选该动画绑定的所有歌曲
-        const boundSongs = this.getActionBindings(actionId);
-        boundSongs.forEach(songId => this.selectedSongs.add(songId));
+        this.bindingSourceActions.add(actionId);
       } else {
-        this.selectedActions.delete(actionId);
-        // 联动取消勾选该动画绑定的所有歌曲
-        const boundSongs = this.getActionBindings(actionId);
-        boundSongs.forEach(songId => this.selectedSongs.delete(songId));
+        this.bindingSourceActions.delete(actionId);
       }
-      
+
+      this.syncBindingSelection();
       this.refreshAllPanels();
     },
 
     // 歌曲Tab全选：只勾选歌曲本身
     toggleSelectAllSongs(checked) {
       this.initSelection();
-      
-      const showHidden = this.showHiddenSongs !== false;
-      const songs = Object.entries(this.data.songs).filter(([id, song]) => showHidden || song.visible !== false);
+      const songs = this.getVisibleSongEntries();
       
       songs.forEach(([id]) => {
         if (checked) {
@@ -1164,44 +1286,46 @@ window.Jukebox = {
 
     // 绑定Tab全选歌曲（使用合集逻辑：只勾选满足条件的歌曲）
     toggleSelectAllBindingSongs(checked) {
-      this.initSelection();
+      this.ensureBindingSelectionState();
       
       Object.keys(this.data.songs).forEach(songId => {
         if (checked) {
-          this.selectedSongs.add(songId);
+          this.bindingSourceSongs.add(songId);
         } else {
-          this.selectedSongs.delete(songId);
+          this.bindingSourceSongs.delete(songId);
         }
       });
-      
+
+      this.syncBindingSelection();
       this.refreshAllPanels();
     },
 
     // 绑定Tab全选动画（使用合集逻辑：只勾选满足条件的动画）
     toggleSelectAllBindingActions(checked) {
-      this.initSelection();
+      this.ensureBindingSelectionState();
       
       Object.keys(this.data.actions).forEach(actionId => {
         if (checked) {
-          this.selectedActions.add(actionId);
+          this.bindingSourceActions.add(actionId);
         } else {
-          this.selectedActions.delete(actionId);
+          this.bindingSourceActions.delete(actionId);
         }
       });
-      
+
+      this.syncBindingSelection();
       this.refreshAllPanels();
     },
 
     // 刷新所有面板
     refreshAllPanels() {
       const songsPanel = document.querySelector('.songs-panel');
-      if (songsPanel) this.renderSongs(songsPanel);
+      if (songsPanel) this.rerenderPanel(songsPanel, () => this.renderSongs(songsPanel));
       
       const actionsPanel = document.querySelector('.actions-panel');
-      if (actionsPanel) this.renderActions(actionsPanel);
+      if (actionsPanel) this.rerenderPanel(actionsPanel, () => this.renderActions(actionsPanel));
       
       const bindingsPanel = document.querySelector('.bindings-panel');
-      if (bindingsPanel) this.renderBindings(bindingsPanel);
+      if (bindingsPanel) this.rerenderPanel(bindingsPanel, () => this.renderBindings(bindingsPanel));
       
       this.updateSelectionInfo();
     },
@@ -1212,11 +1336,28 @@ window.Jukebox = {
 
       const songCount = this.selectedSongs?.size || 0;
       const actionCount = this.selectedActions?.size || 0;
+      const bindingSongCount = this.bindingSelectedSongs?.size || 0;
+      const bindingActionCount = this.bindingSelectedActions?.size || 0;
+      const activeTab = this.element?.querySelector('.sam-tab.active')?.dataset.tab || 'songs';
+      const bindingBundle = (bindingSongCount > 0 || bindingActionCount > 0)
+        ? this.getBindingBundleSelection()
+        : { songIds: [], actionIds: [] };
 
       let text = '';
-      if (songCount > 0 || actionCount > 0) {
-        const template = window.t('Jukebox.selectedInfo', '已选择 {{songCount}} 首歌曲，{{actionCount}} 个动画');
-        text = template.replace('{{songCount}}', songCount).replace('{{actionCount}}', actionCount);
+      if (activeTab === 'bindings' && (bindingSongCount > 0 || bindingActionCount > 0)) {
+        text = window.t('Jukebox.bindingsSelected', {
+          defaultValue: '绑定页已选 {{bindingSongCount}} 首歌曲、{{bindingActionCount}} 个动画；绑定集合共 {{bundleSongCount}} 首歌曲、{{bundleActionCount}} 个动画',
+          bindingSongCount,
+          bindingActionCount,
+          bundleSongCount: bindingBundle.songIds.length,
+          bundleActionCount: bindingBundle.actionIds.length,
+        });
+      } else if (songCount > 0 || actionCount > 0) {
+        text = window.t('Jukebox.selectedInfo', {
+          defaultValue: '已选择 {{songCount}} 首歌曲，{{actionCount}} 个动画',
+          songCount,
+          actionCount,
+        });
       }
 
       infoEl.textContent = text;
@@ -1225,12 +1366,14 @@ window.Jukebox = {
       const hasSelection = songCount > 0 || actionCount > 0;
       const exportAllBtns = document.querySelectorAll('.sam-btn-export-all');
       const exportSelectedBtn = document.querySelector('.sam-btn-export-selected');
+      const hasBindingSelection = bindingSongCount > 0 || bindingActionCount > 0;
+      const hasActiveSelection = activeTab === 'bindings' ? hasBindingSelection : hasSelection;
       
       exportAllBtns.forEach(btn => {
-        btn.style.display = hasSelection ? 'none' : '';
+        btn.style.display = hasActiveSelection ? 'none' : '';
       });
       if (exportSelectedBtn) {
-        exportSelectedBtn.style.display = hasSelection ? '' : 'none';
+        exportSelectedBtn.style.display = hasActiveSelection ? '' : 'none';
       }
     },
     
@@ -1271,15 +1414,31 @@ window.Jukebox = {
     },
 
     async exportSelected() {
-      try {
-        const songIds = Array.from(this.selectedSongs);
-        const actionIds = Array.from(this.selectedActions);
-
-        if (songIds.length === 0 && actionIds.length === 0) {
+      const activeTab = this.element?.querySelector('.sam-tab.active')?.dataset.tab || 'songs';
+      if (activeTab === 'bindings') {
+        const bundle = this.getBindingBundleSelection();
+        if (bundle.songIds.length === 0 && bundle.actionIds.length === 0) {
           alert(window.t('Jukebox.selectExportFirst', '请先选择要导出的歌曲或动画'));
           return;
         }
 
+        await this.exportByIds(bundle.songIds, bundle.actionIds, 'jukebox_binding_selected');
+        return;
+      }
+
+      const songIds = Array.from(this.selectedSongs);
+      const actionIds = Array.from(this.selectedActions);
+
+      if (songIds.length === 0 && actionIds.length === 0) {
+        alert(window.t('Jukebox.selectExportFirst', '请先选择要导出的歌曲或动画'));
+        return;
+      }
+
+      await this.exportByIds(songIds, actionIds, 'jukebox_selected');
+    },
+
+    async exportByIds(songIds, actionIds, filenamePrefix) {
+      try {
         const formData = new FormData();
         formData.append('songIds', JSON.stringify(songIds));
         formData.append('actionIds', JSON.stringify(actionIds));
@@ -1298,7 +1457,7 @@ window.Jukebox = {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `jukebox_selected_${new Date().toISOString().slice(0, 10)}.zip`;
+        a.download = `${filenamePrefix || 'jukebox_selected'}_${new Date().toISOString().slice(0, 10)}.zip`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);

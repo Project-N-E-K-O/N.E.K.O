@@ -1262,10 +1262,18 @@
         setMinimized(!minimized);
     }
 
+    function prewarmUserDisplayName() {
+        if (!window.appChat || typeof window.appChat.ensureUserDisplayName !== 'function') return;
+        Promise.resolve(window.appChat.ensureUserDisplayName()).catch(function (error) {
+            console.warn('[ReactChatWindow] preload user display name failed:', error);
+        });
+    }
+
     function openWindow() {
         var overlay = getOverlay();
         if (!overlay) return;
 
+        prewarmUserDisplayName();
         ensureBundleLoaded()
             .then(function () {
                 if (!mountWindow()) {
@@ -1605,6 +1613,7 @@
         var avatarHeaderButton = $('avatarPreviewHeaderButton');
 
         ensureViewProps();
+        prewarmUserDisplayName();
 
         if (trigger) {
             trigger.addEventListener('click', openWindow);

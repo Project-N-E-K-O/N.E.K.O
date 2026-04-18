@@ -1565,6 +1565,7 @@
         "initializingVoice": "音声チャットを初期化中...",
         "initializingMic": "マイクを初期化中...",
         "startFailed": "起動失敗: {{error}}",
+        "sendFailed": "送信失敗: {{error}}",
         "sessionEnded": "セッション終了",
         "returning": "{{name}}が戻りました！再接続中...",
         "websocketNotConnected": "WebSocket未接続！",
@@ -1731,9 +1732,9 @@
     "openclawGuide": {
         "windowTitle": "OpenClaw 接続ガイド - N.E.K.O.",
         "pageTitle": "OpenClaw 接続ガイド",
-        "pageSubtitle": "CoPaw の導入、チャンネル配置、ヘルスチェック、N.E.K.O 設定をひとつの流れでつなぎます。",
+        "pageSubtitle": "QwenPaw の導入、モデル設定、置き換えファイル、N.E.K.O 設定をひとつの流れでつなぎます。",
         "sourceLabel": "ガイドソース",
-        "contentLanguageNotice": "本文は現在中国語ドキュメントを表示しています。言語切り替えはページ操作文言のみに反映されます。",
+        "contentLanguageNotice": "言語切り替えはページ操作文言と本文の両方に反映されます。",
         "languageLabel": "言語",
         "guideUnavailable": "ガイド内容が空です。"
     },
@@ -2931,6 +2932,7 @@
         "selectedActions": "{{count}}アニメーション選択中",
         "selectedSeparator": "、",
         "selectedInfo": "{{songCount}}曲、{{actionCount}}アニメーション選択中",
+        "bindingsSelected": "バインディングタブで{{bindingSongCount}}曲、{{bindingActionCount}}アニメーション選択中；バンドル合計{{bundleSongCount}}曲、{{bundleActionCount}}アニメーション",
         "missing": "欠落",
         "unknownError": "不明なエラー",
         "calibration": "アニメーションをキャリブレーション",

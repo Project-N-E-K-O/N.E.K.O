@@ -25,6 +25,9 @@ class DummyConfigManager:
     def load_characters(self):
         return copy.deepcopy(self.characters)
 
+    async def aload_characters(self, character_json_path=None):
+        return copy.deepcopy(self.characters)
+
     def save_characters(self, characters, character_json_path=None):
         self.saved_characters = copy.deepcopy(characters)
         self.characters = copy.deepcopy(characters)

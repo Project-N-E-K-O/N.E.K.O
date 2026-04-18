@@ -171,6 +171,65 @@ def _should_persist_avatar_interaction_memory(
     return True
 
 
+def _normalize_pending_user_attachments(pending_user_images: list) -> list[dict]:
+    attachments = []
+    for raw in pending_user_images or []:
+        url = str(raw or "").strip()
+        if not url:
+            continue
+        attachments.append({
+            "type": "image_url",
+            "url": url,
+        })
+    return attachments
+
+
+def _build_recent_analyze_messages(
+    chat_history: list,
+    pending_user_images: list,
+    limit: int = 6,
+    *,
+    allow_attach_to_last_user: bool = False,
+) -> list[dict]:
+    recent: list[dict] = []
+    last_user_idx: int | None = None
+    last_user_source_idx: int | None = None
+    slice_start = max(0, len(chat_history) - limit)
+
+    for source_idx, item in enumerate(chat_history[-limit:], start=slice_start):
+        if item.get('role') not in ['user', 'assistant']:
+            continue
+        try:
+            txt = item['content'][0]['text'] if item.get('content') else ''
+        except Exception:
+            txt = ''
+        txt = str(txt or '')
+        if txt == '':
+            continue
+        recent.append({'role': item.get('role'), 'content': txt})
+        if item.get('role') == 'user':
+            last_user_idx = len(recent) - 1
+            last_user_source_idx = source_idx
+
+    attachments = _normalize_pending_user_attachments(pending_user_images)
+    if attachments:
+        if (
+            not allow_attach_to_last_user
+            or last_user_idx is None
+            or last_user_source_idx is None
+            or last_user_source_idx < slice_start
+        ):
+            recent.append({
+                'role': 'user',
+                'content': '',
+                'attachments': attachments,
+            })
+        else:
+            recent[last_user_idx]['attachments'] = attachments
+
+    return [msg for msg in recent if msg.get('content') or msg.get('attachments')]
+
+
 async def keep_reader(ws: aiohttp.ClientWebSocketResponse):
     """保持 WebSocket 连接活跃的读取循环"""
     try:
@@ -221,6 +280,7 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
         had_user_input_this_turn = False  # 当前 turn 是否有用户输入（False = 主动搭话）
         current_turn_start_index = 0
         last_screen = None
+        pending_user_images = []
         last_synced_index = 0  # 用于 turn end 时仅同步新增消息到 memory，避免 memory_browser 不更新
         pending_avatar_interaction_meta = None
         avatar_interaction_memory_cache: dict[str, dict[str, int | str]] = {}
@@ -294,6 +354,16 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 await sync_ws.send_json({'type': 'user_transcript', 'text': data})
                         elif input_type == "screen":
                             last_screen = data
+                            if data:
+                                pending_user_images.append(data)
+                                if len(pending_user_images) > 3:
+                                    del pending_user_images[:-3]
+                        elif input_type == "camera":
+                            last_screen = data
+                            if data:
+                                pending_user_images.append(data)
+                                if len(pending_user_images) > 3:
+                                    del pending_user_images[:-3]
 
                     elif message["type"] == "avatar_interaction_memory":
                         payload = message.get("data")
@@ -440,17 +510,12 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 # 仅 agent-callback 专用通道会显式跳过，避免任务结果回调引发二次分析。
                                 if not shutdown_event.is_set():
                                     try:
-                                        # 构造最近的消息摘要
-                                        recent = []
-                                        for item in chat_history[-6:]:
-                                            if item.get('role') in ['user', 'assistant']:
-                                                try:
-                                                    txt = item['content'][0]['text'] if item.get('content') else ''
-                                                except Exception:
-                                                    txt = ''
-                                                if txt == '':
-                                                    continue
-                                                recent.append({'role': item.get('role'), 'content': txt})
+                                        # 构造最近的消息摘要，并保留本轮最近的图片附件
+                                        recent = _build_recent_analyze_messages(
+                                            chat_history,
+                                            pending_user_images,
+                                            allow_attach_to_last_user=had_user_input_this_turn,
+                                        )
                                         has_user = any(m.get('role') == 'user' for m in recent)
                                         logger.info(
                                             f"[{lanlan_name}] turn_end analyze check: "
@@ -478,7 +543,9 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                             logger.debug(f"[{lanlan_name}] 发送到analyzer失败: {e}")
                                     except Exception as e:
                                         logger.debug(f"[{lanlan_name}] 发送到analyzer失败: {e}")
-                                
+                                    finally:
+                                        pending_user_images = []
+
                                 # Turn end 轻量缓存：仅写入 recent history，不触发 LLM 摘要/整理
                                 # 主动搭话不写缓存——等用户回应后随下一轮正常 turn 一起入库
                                 if had_user_input_this_turn and not shutdown_event.is_set() and last_synced_index < len(chat_history):
@@ -523,17 +590,12 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 # 再次检查关闭状态
                                 if not shutdown_event.is_set():
                                     try:
-                                        # 构造最近的消息摘要
-                                        recent = []
-                                        for item in chat_history[-6:]:
-                                            if item.get('role') in ['user', 'assistant']:
-                                                try:
-                                                    txt = item['content'][0]['text'] if item.get('content') else ''
-                                                except Exception:
-                                                    txt = ''
-                                                if txt == '':
-                                                    continue
-                                                recent.append({'role': item.get('role'), 'content': txt})
+                                        # 构造最近的消息摘要，并保留本轮最近的图片附件
+                                        recent = _build_recent_analyze_messages(
+                                            chat_history,
+                                            pending_user_images,
+                                            allow_attach_to_last_user=had_user_input_this_turn,
+                                        )
                                         has_user = any(m.get('role') == 'user' for m in recent)
                                         if recent and has_user:
                                             sent = await _publish_analyze_request_with_fallback(
@@ -555,6 +617,8 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                             logger.debug(f"[{lanlan_name}] 发送到analyzer失败: {e} (session end)")
                                     except Exception as e:
                                         logger.debug(f"[{lanlan_name}] 发送到analyzer失败: {e} (session end)")
+                                    finally:
+                                        pending_user_images = []
                                 
                                 # 再次检查关闭状态
                                 if shutdown_event.is_set():
@@ -687,19 +751,21 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                 bullet_ws = None
                 await asyncio.sleep(0.03)  # 重连前等待
 
-        # 关闭资源
-        for ws in [sync_ws, binary_ws, bullet_ws]:
-            if ws:
-                try:
-                    await ws.close()
-                except Exception:
-                    pass
-        for sess in [sync_session, binary_session, bullet_session]:
-            if sess:
-                try:
-                    await sess.close()
-                except Exception:
-                    pass
+        # 关闭资源（并行：3 个 ws + 3 个 session 互相独立）
+        async def _safe_close(target):
+            if target is None:
+                return
+            try:
+                await target.close()
+            except Exception as e:
+                # 已进入重连/退出阶段，close 失败不影响后续流程；记 debug 方便排障
+                logger.debug(f"_safe_close: ignored exception during close: {e}")
+
+        await asyncio.gather(
+            _safe_close(sync_ws), _safe_close(binary_ws), _safe_close(bullet_ws),
+            _safe_close(sync_session), _safe_close(binary_session), _safe_close(bullet_session),
+            return_exceptions=True,
+        )
         for rdr in [sync_reader, binary_reader, bullet_reader]:
             if rdr:
                 try:

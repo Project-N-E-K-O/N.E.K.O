@@ -13,6 +13,7 @@ import math
 from datetime import date
 from copy import deepcopy
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
 from config import (
     APP_NAME,
@@ -495,6 +496,7 @@ class ConfigManager:
         self._characters_cache_path: str | None = None
         self._characters_dirty: bool = False
         self._characters_cache_lock = threading.Lock()
+        self._characters_reload_lock = threading.Lock()
 
         self.project_config_dir = self._get_project_config_directory()
         self.project_memory_dir = self._get_project_memory_directory()
@@ -1027,50 +1029,68 @@ class ConfigManager:
             if current_mtime is not None and current_mtime == cache_mtime:
                 return deepcopy(cache)
 
-        try:
-            with open(character_json_path, 'r', encoding='utf-8') as f:
-                character_data = json.load(f)
-            try:
-                loaded_mtime = os.path.getmtime(character_json_path)
-            except OSError:
-                loaded_mtime = None
-        except FileNotFoundError:
-            logger.info("未找到猫娘配置文件 %s，使用默认配置。", character_json_path)
-            character_data = self.get_default_characters()
-            loaded_mtime = None
-        except Exception as e:
-            logger.error("读取猫娘配置文件出错: %s，使用默认人设。", e)
-            character_data = self.get_default_characters()
-            loaded_mtime = None
-
-        migrated = False
-        if not isinstance(character_data, dict):
-            logger.warning("角色配置文件结构异常（非 dict），使用默认配置。")
-            character_data = self.get_default_characters()
-        catgirl_map = character_data.get("猫娘")
-        if isinstance(catgirl_map, dict):
-            for name, catgirl_data in catgirl_map.items():
-                if not isinstance(catgirl_data, dict):
-                    logger.warning("角色 '%s' 配置非 dict，跳过迁移。", name)
-                    continue
-                if migrate_catgirl_reserved(catgirl_data):
-                    migrated = True
-                reserved_errors = validate_reserved_schema(catgirl_data.get("_reserved"))
-                if reserved_errors:
-                    logger.warning("检测到角色 _reserved 字段结构异常: %s", "; ".join(reserved_errors))
-        if migrated:
-            try:
-                self.save_characters(character_data, character_json_path=character_json_path)
-                logger.info("检测到旧版角色保留字段，已自动迁移到 _reserved 结构。")
-            except Exception as migrate_err:
-                logger.warning("自动迁移角色保留字段后写回失败: %s", migrate_err)
-        else:
+        # 慢路径：独占锁，防止多个线程同时读文件、重复触发迁移和校验警告。
+        with self._characters_reload_lock:
+            # 双检：进锁后重新核对 mtime，另一个线程可能已经完成了加载。
             with self._characters_cache_lock:
-                self._characters_cache = deepcopy(character_data)
-                self._characters_cache_mtime = loaded_mtime
-                self._characters_cache_path = character_json_path
-                self._characters_dirty = False
-        return character_data
+                cache = self._characters_cache
+                cache_path = self._characters_cache_path
+                cache_mtime = self._characters_cache_mtime
+            if cache is not None and cache_path == character_json_path:
+                try:
+                    current_mtime = os.path.getmtime(character_json_path)
+                except OSError:
+                    current_mtime = None
+                if current_mtime is not None and current_mtime == cache_mtime:
+                    return deepcopy(cache)
+
+            try:
+                with open(character_json_path, 'r', encoding='utf-8') as f:
+                    character_data = json.load(f)
+                try:
+                    loaded_mtime = os.path.getmtime(character_json_path)
+                except OSError:
+                    loaded_mtime = None
+            except FileNotFoundError:
+                logger.info("未找到猫娘配置文件 %s，使用默认配置。", character_json_path)
+                character_data = self.get_default_characters()
+                loaded_mtime = None
+            except Exception as e:
+                logger.error("读取猫娘配置文件出错: %s，使用默认人设。", e)
+                character_data = self.get_default_characters()
+                loaded_mtime = None
+
+            migrated = False
+            if not isinstance(character_data, dict):
+                logger.warning("角色配置文件结构异常（非 dict），使用默认配置。")
+                character_data = self.get_default_characters()
+            catgirl_map = character_data.get("猫娘")
+            if isinstance(catgirl_map, dict):
+                all_schema_errors: list[str] = []
+                for name, catgirl_data in catgirl_map.items():
+                    if not isinstance(catgirl_data, dict):
+                        logger.warning("角色 '%s' 配置非 dict，跳过迁移。", name)
+                        continue
+                    if migrate_catgirl_reserved(catgirl_data):
+                        migrated = True
+                    reserved_errors = validate_reserved_schema(catgirl_data.get("_reserved"))
+                    for err in reserved_errors:
+                        all_schema_errors.append(f"{name}: {err}")
+                if all_schema_errors:
+                    logger.warning("检测到角色 _reserved 字段结构异常: %s", "; ".join(all_schema_errors))
+            if migrated:
+                try:
+                    self.save_characters(character_data, character_json_path=character_json_path)
+                    logger.info("检测到旧版角色保留字段，已自动迁移到 _reserved 结构。")
+                except Exception as migrate_err:
+                    logger.warning("自动迁移角色保留字段后写回失败: %s", migrate_err)
+            else:
+                with self._characters_cache_lock:
+                    self._characters_cache = deepcopy(character_data)
+                    self._characters_cache_mtime = loaded_mtime
+                    self._characters_cache_path = character_json_path
+                    self._characters_dirty = False
+            return character_data
 
     def save_characters(self, data, character_json_path=None):
         """保存角色配置（同步版本，会阻塞事件循环；async 路径请用 asave_characters）"""
@@ -1490,6 +1510,16 @@ class ConfigManager:
     async def aget_character_data(self):
         return await asyncio.to_thread(self.get_character_data)
 
+    async def aload_characters(self, character_json_path=None):
+        """异步包装 load_characters：cache hit 也要 deepcopy 整个字典，
+        N 个 catgirl 时拷贝可达数 ms，offload 避免阻塞事件循环。"""
+        return await asyncio.to_thread(self.load_characters, character_json_path)
+
+    async def aget_core_config(self):
+        """异步包装 get_core_config：内部 open()+json.load() 读 core_config.json，
+        async endpoint 调用时必须 offload，避免事件循环阻塞。"""
+        return await asyncio.to_thread(self.get_core_config)
+
     # --- Core config helpers ---
 
     # Combined region cache (None = not checked, True = non-mainland, False = mainland)
@@ -1684,7 +1714,7 @@ class ConfigManager:
             'REALTIME_MODEL_API_KEY': DEFAULT_REALTIME_MODEL_API_KEY,
             'TTS_MODEL_URL': DEFAULT_TTS_MODEL_URL,
             'TTS_MODEL_API_KEY': DEFAULT_TTS_MODEL_API_KEY,
-            'OPENCLAW_URL': "http://127.0.0.1:8089",
+            'OPENCLAW_URL': "http://127.0.0.1:8088",
             'OPENCLAW_TIMEOUT': 300.0,
             'OPENCLAW_DEFAULT_SENDER_ID': "neko_user",
         }
@@ -1707,30 +1737,70 @@ class ConfigManager:
             if not isinstance(core_cfg, dict):
                 core_cfg = deepcopy(DEFAULT_CONFIG_DATA['core_config.json'])
 
-        # API Keys
+        # API Keys — 仅对与 coreApi/assistApi 匹配的服务商回退到 CORE_API_KEY
         if core_cfg.get('coreApiKey'):
             config['CORE_API_KEY'] = core_cfg['coreApiKey']
 
-        config['ASSIST_API_KEY_QWEN'] = core_cfg.get('assistApiKeyQwen', '') or config['CORE_API_KEY']
-        config['ASSIST_API_KEY_QWEN_INTL'] = core_cfg.get('assistApiKeyQwenIntl', '')
-        config['ASSIST_API_KEY_OPENAI'] = core_cfg.get('assistApiKeyOpenai', '') or config['CORE_API_KEY']
-        config['ASSIST_API_KEY_GLM'] = core_cfg.get('assistApiKeyGlm', '') or config['CORE_API_KEY']
-        config['ASSIST_API_KEY_STEP'] = core_cfg.get('assistApiKeyStep', '') or config['CORE_API_KEY']
-        config['ASSIST_API_KEY_SILICON'] = core_cfg.get('assistApiKeySilicon', '') or config['CORE_API_KEY']
-        config['ASSIST_API_KEY_GEMINI'] = core_cfg.get('assistApiKeyGemini', '') or config['CORE_API_KEY']
-        config['ASSIST_API_KEY_KIMI'] = core_cfg.get('assistApiKeyKimi', '') or config['CORE_API_KEY']
-        config['ASSIST_API_KEY_DEEPSEEK'] = core_cfg.get('assistApiKeyDeepseek', '') or config['CORE_API_KEY']
-        config['ASSIST_API_KEY_DOUBAO'] = core_cfg.get('assistApiKeyDoubao', '') or config['CORE_API_KEY']
+        _core_api_provider = core_cfg.get('coreApi') or 'qwen'
+        _assist_api_provider = core_cfg.get('assistApi') or 'qwen'
+        _fallback_providers = {_core_api_provider, _assist_api_provider}
+
+        def _fb(provider: str) -> str:
+            return config['CORE_API_KEY'] if provider in _fallback_providers else ''
+
+        config['ASSIST_API_KEY_QWEN'] = core_cfg.get('assistApiKeyQwen', '') or _fb('qwen')
+        config['ASSIST_API_KEY_QWEN_INTL'] = core_cfg.get('assistApiKeyQwenIntl', '') or _fb('qwen_intl')
+        config['ASSIST_API_KEY_OPENAI'] = core_cfg.get('assistApiKeyOpenai', '') or _fb('openai')
+        config['ASSIST_API_KEY_GLM'] = core_cfg.get('assistApiKeyGlm', '') or _fb('glm')
+        config['ASSIST_API_KEY_STEP'] = core_cfg.get('assistApiKeyStep', '') or _fb('step')
+        config['ASSIST_API_KEY_SILICON'] = core_cfg.get('assistApiKeySilicon', '') or _fb('silicon')
+        config['ASSIST_API_KEY_GEMINI'] = core_cfg.get('assistApiKeyGemini', '') or _fb('gemini')
+        config['ASSIST_API_KEY_KIMI'] = core_cfg.get('assistApiKeyKimi', '') or _fb('kimi')
+        config['ASSIST_API_KEY_DEEPSEEK'] = core_cfg.get('assistApiKeyDeepseek', '') or _fb('deepseek')
+        config['ASSIST_API_KEY_DOUBAO'] = core_cfg.get('assistApiKeyDoubao', '') or _fb('doubao')
+        # MiniMax 是 assist-only（TTS 专用），不在 coreApi 候选集里，
+        # coreApiKey 永远不是 minimax 兼容的；不 fallback，以免把无效 key
+        # 塞进 TTS 凭证槽位导致 401，掩盖"未配置 minimax key"的真实提示。
         config['ASSIST_API_KEY_MINIMAX'] = core_cfg.get('assistApiKeyMinimax', '')
         config['ASSIST_API_KEY_MINIMAX_INTL'] = core_cfg.get('assistApiKeyMinimaxIntl', '')
-        config['ASSIST_API_KEY_GROK'] = core_cfg.get('assistApiKeyGrok', '') or config['CORE_API_KEY']
-        config['ASSIST_API_KEY_CLAUDE'] = core_cfg.get('assistApiKeyClaude', '') or config['CORE_API_KEY']
-        config['ASSIST_API_KEY_OPENROUTER'] = core_cfg.get('assistApiKeyOpenrouter', '') or config['CORE_API_KEY']
+        config['ASSIST_API_KEY_GROK'] = core_cfg.get('assistApiKeyGrok', '') or _fb('grok')
+        config['ASSIST_API_KEY_CLAUDE'] = core_cfg.get('assistApiKeyClaude', '') or _fb('claude')
+        config['ASSIST_API_KEY_OPENROUTER'] = core_cfg.get('assistApiKeyOpenrouter', '') or _fb('openrouter')
 
         if core_cfg.get('mcpToken'):
             config['MCP_ROUTER_API_KEY'] = core_cfg['mcpToken']
 
         openclaw_url = core_cfg.get('openclawUrl')
+        if isinstance(openclaw_url, str) and openclaw_url.strip():
+            normalized_openclaw_url = openclaw_url.strip().rstrip('/')
+            try:
+                parsed_openclaw_url = urlparse(normalized_openclaw_url)
+            except Exception:
+                parsed_openclaw_url = None
+            if parsed_openclaw_url and parsed_openclaw_url.netloc:
+                try:
+                    if parsed_openclaw_url.port == 8089:
+                        host = parsed_openclaw_url.hostname or ""
+                        if ":" in host and not host.startswith("["):
+                            host = f"[{host}]"
+                        userinfo = ""
+                        if parsed_openclaw_url.username:
+                            userinfo = parsed_openclaw_url.username
+                            if parsed_openclaw_url.password:
+                                userinfo += f":{parsed_openclaw_url.password}"
+                            userinfo += "@"
+                        migrated_openclaw_url = urlunparse(
+                            parsed_openclaw_url._replace(netloc=f"{userinfo}{host}:8088")
+                        )
+                        core_cfg['openclawUrl'] = migrated_openclaw_url
+                        openclaw_url = migrated_openclaw_url
+                        try:
+                            self.save_json_config('core_config.json', core_cfg)
+                            logger.info("已自动将 openclawUrl 从 8089 迁移到 8088: %s", migrated_openclaw_url)
+                        except Exception as exc:
+                            logger.warning("自动迁移 openclawUrl 到 8088 失败: %s", exc)
+                except ValueError:
+                    pass
         if isinstance(openclaw_url, str) and openclaw_url.strip():
             config['OPENCLAW_URL'] = openclaw_url.strip()
         try:
@@ -1799,6 +1869,9 @@ class ConfigManager:
         # 自定义API配置映射（使用大写下划线形式的内部键，且在未提供时保留已有默认值）
         enable_custom_api = core_cfg.get('enableCustomApi', False)
         config['ENABLE_CUSTOM_API'] = enable_custom_api
+
+        # GPT-SoVITS 配置映射
+        config['GPTSOVITS_ENABLED'] = core_cfg.get('gptsovitsEnabled', False)
 
         # 禁用TTS
         _raw_disable_tts = core_cfg.get('disableTts', False)

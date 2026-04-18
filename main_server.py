@@ -77,7 +77,9 @@ try:
     from main_logic.agent_event_bus import MainServerAgentBridge, notify_analyze_ack, set_main_bridge # noqa
     from fastapi.templating import Jinja2Templates # noqa
     from threading import Thread, Event as ThreadEvent # noqa
-    from queue import Queue # noqa
+    from queue import Queue, Empty as QueueEmpty # noqa
+    from dataclasses import dataclass # noqa
+    from typing import Any, Optional # noqa
 except Exception as e:
     logger.exception(f"[Main] Module import failed during startup: {e}")
     raise
@@ -161,26 +163,50 @@ _server_loop: asyncio.AbstractEventLoop | None = None
 
 _config_manager = get_config_manager()
 
+@dataclass
+class RoleState:
+    """单个 catgirl 的 per-k 运行态容器。
+
+    把之前 6 张并列 module-global dict（sync_message_queue / sync_shutdown_event /
+    session_id / sync_process / websocket_locks / session_manager）合并成一个
+    record，由 role_state[k] 统一持有，避免半初始化状态 + 维护成本分散。
+    见 issue #857 / PR #855 review。
+
+    不变量：
+    - sync_message_queue / sync_shutdown_event / websocket_lock 在
+      _ensure_character_slots 一次性构造，之后**永不替换**。特别是
+      websocket_lock —— 替换会让已经 ``async with`` 进来的协程阻塞在一把
+      孤立的旧 Lock 上；如果任何逻辑需要整体重建 role_state[k]，必须
+      把旧 lock 原样传过去。
+    - session_id / sync_process / session_manager 初始为 None，分别由
+      websocket_router / _init_character_resources 后续赋值。
+    """
+    sync_message_queue: Queue
+    sync_shutdown_event: ThreadEvent
+    websocket_lock: asyncio.Lock
+    session_id: Optional[str] = None
+    sync_process: Optional[Thread] = None
+    # 用 Any 而非 core.LLMSessionManager：避免 dataclass 运行时求值 annotation
+    # 时踩到 forward-ref / 循环引用边界
+    session_manager: Optional[Any] = None
+
+
+# 角色名 -> RoleState 的主存储；所有 per-k 同步资源都通过它访问
+role_state: dict[str, RoleState] = {}
+
+
 def cleanup():
     """通知所有同步线程停止"""
     logger.info("正在关闭同步线程...")
-    for k in sync_shutdown_event:
+    for rs in role_state.values():
         try:
-            sync_shutdown_event[k].set()
+            rs.sync_shutdown_event.set()
         except Exception:
             pass
 
 # 只在主进程中注册 cleanup 函数，防止子进程退出时执行清理
 if _IS_MAIN_PROCESS:
     atexit.register(cleanup)
-
-sync_message_queue = {}
-sync_shutdown_event = {}
-session_manager = {}
-session_id = {}
-sync_process = {}
-# 每个角色的websocket操作锁，用于防止preserve/restore与cleanup()之间的竞争
-websocket_locks = {}
 # 角色数据全局变量（会在重载时更新）
 master_name = None
 her_name = None
@@ -207,12 +233,29 @@ def _is_websocket_connected(ws) -> bool:
         return False
 
 
+def _iter_session_managers():
+    """Yield (name, session_manager) for every role with a live session_manager.
+
+    Replaces the old ``session_manager.items()`` pattern after the per-k dicts
+    were consolidated into ``role_state``.
+    """
+    for name, rs in role_state.items():
+        if rs.session_manager is not None:
+            yield name, rs.session_manager
+
+
+def _get_session_manager(name):
+    """Return ``role_state[name].session_manager`` or None — dict.get() equivalent."""
+    if not name:
+        return None
+    rs = role_state.get(name)
+    return rs.session_manager if rs is not None else None
+
+
 def _select_fallback_session_manager():
     """Return a single connected session manager as a safe fallback, if unambiguous."""
     connected = []
-    for name, mgr in session_manager.items():
-        if not mgr:
-            continue
+    for name, mgr in _iter_session_managers():
         ws = getattr(mgr, "websocket", None)
         if _is_websocket_connected(ws):
             connected.append((name, mgr))
@@ -222,20 +265,26 @@ def _select_fallback_session_manager():
 
 
 async def _broadcast_to_all_connected(event_payload: dict) -> int:
-    """Broadcast an event to all connected WebSocket sessions asynchronously."""
-    delivered_count = 0
+    """Broadcast an event to all connected WebSocket sessions in parallel.
+    每秒可能多次（agent status），串行 await 会让一个慢的 ws 拖累其它会话。"""
     # Take a snapshot to avoid RuntimeError from concurrent dict mutation
-    for name, mgr in list(session_manager.items()):
-        if not mgr:
-            continue
-        ws = getattr(mgr, "websocket", None)
-        if _is_websocket_connected(ws) and hasattr(ws, "send_json"):
-            try:
-                await ws.send_json(event_payload)
-                delivered_count += 1
-            except Exception as e:
-                logger.debug("[EventBus] broadcast to %s failed: %s", name, e)
-    return delivered_count
+    targets = [
+        (name, getattr(mgr, "websocket", None))
+        for name, mgr in list(_iter_session_managers())
+        if mgr
+    ]
+    targets = [(n, ws) for n, ws in targets if _is_websocket_connected(ws) and hasattr(ws, "send_json")]
+
+    async def _send_one(name, ws):
+        try:
+            await ws.send_json(event_payload)
+            return True
+        except Exception as e:
+            logger.debug("[EventBus] broadcast to %s failed: %s", name, e)
+            return False
+
+    results = await asyncio.gather(*(_send_one(n, ws) for n, ws in targets), return_exceptions=False)
+    return sum(1 for r in results if r is True)
 
 
 async def _handle_agent_event(event: dict):
@@ -259,8 +308,9 @@ async def _handle_agent_event(event: dict):
                 "type": "agent_status_update",
                 "snapshot": event.get("snapshot", {}),
             }
-            if lanlan and lanlan in session_manager:
-                mgr = session_manager.get(lanlan)
+            mgr_for_status = _get_session_manager(lanlan)
+            if lanlan and mgr_for_status is not None:
+                mgr = mgr_for_status
                 ws = getattr(mgr, "websocket", None) if mgr else None
                 if _is_websocket_connected(ws):
                     try:
@@ -272,7 +322,7 @@ async def _handle_agent_event(event: dict):
             return
 
         # Resolve target session manager; fallback to broadcast if lanlan is unknown
-        mgr = session_manager.get(lanlan) if lanlan else None
+        mgr = _get_session_manager(lanlan)
         if not mgr and event_type == "task_update":
             # Broadcast task_update to all connected sessions when lanlan is unresolvable
             task_payload = {"type": "agent_task_update", "task": event.get("task", {})}
@@ -284,34 +334,42 @@ async def _handle_agent_event(event: dict):
         # --- Music Global Broadcasts (Must come before early 'if not mgr' returns) ---
         elif event_type == "music_allowlist_add":
             # Music allowlist is a global UI state, broadcast to all active sessions
-            targets = [mgr] if mgr else list(session_manager.values())
-            for target_mgr in targets:
+            targets = [mgr] if mgr else [m for _, m in _iter_session_managers()]
+            payload = {
+                "type": "music_allowlist_add",
+                "domains": event.get("domains") or event.get("metadata", {}).get("domains", [])
+            }
+
+            async def _send_allowlist(target_mgr):
                 if target_mgr and target_mgr.websocket and hasattr(target_mgr.websocket, "send_json"):
                     try:
-                        await target_mgr.websocket.send_json({
-                            "type": "music_allowlist_add",
-                            "domains": event.get("domains") or event.get("metadata", {}).get("domains", [])
-                        })
+                        await target_mgr.websocket.send_json(payload)
                     except Exception as e:
                         logger.debug("[EventBus] music_allowlist_add broadcast failed: %s", e)
+
+            await asyncio.gather(*(_send_allowlist(t) for t in targets), return_exceptions=True)
             if targets:
                 logger.info("[EventBus] music_allowlist_add broadcasted to %d sessions", len(targets))
             return
 
         elif event_type == "music_play_url":
             # Music playback is a global UI action, broadcast to all active sessions
-            targets = [mgr] if mgr else list(session_manager.values())
-            for target_mgr in targets:
+            targets = [mgr] if mgr else [m for _, m in _iter_session_managers()]
+            payload = {
+                "type": "music_play_url",
+                "url": event.get("url"),
+                "name": event.get("name") or "Plugin Music",
+                "artist": event.get("artist") or "External"
+            }
+
+            async def _send_play(target_mgr):
                 if target_mgr and target_mgr.websocket and hasattr(target_mgr.websocket, "send_json"):
                     try:
-                        await target_mgr.websocket.send_json({
-                            "type": "music_play_url",
-                            "url": event.get("url"),
-                            "name": event.get("name") or "Plugin Music",
-                            "artist": event.get("artist") or "External"
-                        })
+                        await target_mgr.websocket.send_json(payload)
                     except Exception as e:
                         logger.debug("[EventBus] music_play_url broadcast failed: %s", e)
+
+            await asyncio.gather(*(_send_play(t) for t in targets), return_exceptions=True)
             if targets:
                 logger.info("[EventBus] music_play_url broadcasted to %d sessions", len(targets))
             return
@@ -332,7 +390,7 @@ async def _handle_agent_event(event: dict):
                     "[EventBus] %s dropped: no target session for lanlan=%s, active_sessions=%s",
                     event_type,
                     lanlan,
-                    list(session_manager.keys()),
+                    [name for name, _ in _iter_session_managers()],
                 )
                 return
         if not mgr:
@@ -430,200 +488,293 @@ async def _handle_agent_event(event: dict):
     except Exception as e:
         logger.debug(f"handle_agent_event error: {e}")
 
-async def initialize_character_data():
-    """初始化或重新加载角色配置数据"""
+async def _refresh_character_globals():
+    """刷新角色相关 module globals（从 config 重新拉一次 aget_character_data）。
+
+    所有 fast-path 入口都必须先走这一步，确保 set_current_catgirl / update_catgirl
+    等操作后，后续读 her_name / lanlan_prompt / lanlan_basic_config 的代码看到最新值。
+    """
     global master_name, her_name, master_basic_config, lanlan_basic_config
     global name_mapping, lanlan_prompt, time_store, setting_store, recent_log
-    global catgirl_names, sync_message_queue, sync_shutdown_event, session_manager, session_id, sync_process, websocket_locks
-    
+    global catgirl_names
+    master_name, her_name, master_basic_config, lanlan_basic_config, name_mapping, lanlan_prompt, time_store, setting_store, recent_log = await _config_manager.aget_character_data()
+    catgirl_names = list(lanlan_prompt.keys())
+
+
+def _ensure_character_slots(k: str) -> bool:
+    """为单个 catgirl 预备 per-k 同步资源槽位。返回是否为新建角色（决定后续要不要强制启动线程）。
+
+    纯内存的原子操作：要么 role_state[k] 已经存在（什么都不做），要么一次性
+    把 queue / shutdown_event / websocket_lock 三件全部填好。避免旧代码里
+    6 张 dict 用两种不同 sentinel（sync_message_queue vs websocket_locks）
+    各自判断 "角色是否已有槽位" 造成的半初始化风险。
+    """
+    if k not in role_state:
+        role_state[k] = RoleState(
+            sync_message_queue=Queue(),
+            sync_shutdown_event=ThreadEvent(),
+            websocket_lock=asyncio.Lock(),
+        )
+        logger.info(f"为角色 {k} 初始化新资源")
+        return True
+    return False
+
+
+async def _init_character_resources(k: str, is_new_character: bool):
+    """为单个 catgirl 完成 session_manager 更新 + 同步连接器线程检查/重启。
+
+    依赖 module globals: master_name, lanlan_prompt, lanlan_basic_config（调用方负责先刷新）。
+    写入 per-k 槽位: role_state[k].session_manager / sync_process —— 不同 k 之间
+    不共享状态，可安全并行。
+    """
+    rs = role_state[k]  # 调用方必须先 _ensure_character_slots，保证这里可直接索引
+    # 更新或创建session manager（使用最新的prompt）
+    # 使用锁保护websocket的preserve/restore操作，防止与cleanup()竞争
+    async with rs.websocket_lock:
+        # 如果已存在且已有websocket连接，保留websocket引用
+        old_websocket = None
+        if rs.session_manager is not None and rs.session_manager.websocket:
+            old_websocket = rs.session_manager.websocket
+            logger.info(f"保留 {k} 的现有WebSocket连接")
+
+        # 注意：不在这里清理旧session，因为：
+        # 1. 切换当前角色音色时，已在API层面关闭了session
+        # 2. 切换其他角色音色时，已跳过重新加载
+        # 3. 其他场景不应该影响正在使用的session
+        # 如果旧session_manager有活跃session，保留它，只更新配置相关的字段
+
+        # 先检查会话状态（在锁内检查避免竞态条件）
+        # 同时覆盖 "正在启动" 窗口：_starting_session_count>0 但 is_active=False
+        # 的期间，start_session 协程仍持有对当前 manager 的引用；如果此时替换
+        # 实例，旧 manager 会在后台完成启动并挂起 OmniRealtimeClient / TTS 线程 /
+        # message_handler_task，永远没人调用 end_session — 造成资源泄漏。
+        mgr = rs.session_manager
+        has_active_session = mgr is not None and mgr.is_active
+        has_starting_session = mgr is not None and mgr.is_starting and not mgr.is_active
+
+        if has_active_session:
+            # 有活跃session，不重新创建session_manager，只更新配置
+            # 这是为了防止重新创建session_manager时破坏正在运行的session
+            try:
+                old_mgr = rs.session_manager
+                # 更新prompt
+                old_mgr.lanlan_prompt = lanlan_prompt[k].replace('{LANLAN_NAME}', k).replace('{MASTER_NAME}', master_name)
+                # 直接读 module global lanlan_basic_config，避免重复 load + deepcopy
+                old_mgr.voice_id = get_reserved(
+                    lanlan_basic_config[k],
+                    'voice_id',
+                    default='',
+                    legacy_keys=('voice_id',),
+                )
+                logger.info(f"{k} 有活跃session，只更新配置，不重新创建session_manager")
+            except Exception as e:
+                logger.error(f"更新 {k} 的活跃session配置失败: {e}", exc_info=True)
+                # 配置更新失败，但为了不影响正在运行的session，继续使用旧配置
+                # 如果确实需要更新配置，可以考虑在下次session重启时再应用
+        elif has_starting_session:
+            # start_session 正在执行中：只保留实例避免孤儿泄漏，但绝对不热改
+            # lanlan_prompt / voice_id — start_session 会在 core.py 内用
+            # self.lanlan_prompt 拼装首帧 session prompt，并基于当前 self.voice_id
+            # 计算音色/TTS 分支。本轮写入会让正在进行的启动拿到半旧半新配置
+            # （用户侧看到启动出来的会话 prompt / 音色与最新配置不一致）。
+            # 本轮的新 prompt / 音色由下一次 start_session 应用。
+            logger.info(
+                f"{k} session 正在启动中（is_starting），保留现有 session_manager，"
+                "本轮不热更新 prompt/voice_id 以免污染 in-flight 启动"
+            )
+        else:
+            # 没有活跃session，可以安全地重新创建session_manager
+            new_mgr = core.LLMSessionManager(
+                rs.sync_message_queue,
+                k,
+                lanlan_prompt[k].replace('{LANLAN_NAME}', k).replace('{MASTER_NAME}', master_name)
+            )
+
+            # 将websocket锁存储到session manager中，供cleanup()使用
+            new_mgr.websocket_lock = rs.websocket_lock
+
+            # 恢复websocket引用（如果存在）
+            if old_websocket:
+                new_mgr.websocket = old_websocket
+                logger.info(f"已恢复 {k} 的WebSocket连接")
+
+            rs.session_manager = new_mgr
+
+    # 检查并启动同步连接器线程
+    # 如果是新角色，或者线程不存在/已停止，需要启动线程
+    need_start_thread = False
+    if is_new_character:
+        need_start_thread = True
+    elif rs.sync_process is None:
+        need_start_thread = True
+    elif hasattr(rs.sync_process, 'is_alive') and not await asyncio.to_thread(rs.sync_process.is_alive):
+        need_start_thread = True
+        try:
+            await asyncio.to_thread(rs.sync_process.join, timeout=0.1)
+        except Exception:
+            # 注意不要写成 bare except：to_thread 是 cancellation point，
+            # 如果 catch 了 BaseException 会吞掉 asyncio.CancelledError
+            pass
+
+    if need_start_thread:
+        try:
+            _char_name = k
+            def _make_status_cb(char_name):
+                def _cb(msg):
+                    mgr = _get_session_manager(char_name)
+                    if not mgr:
+                        return
+                    loop = _server_loop
+                    if loop is None or loop.is_closed():
+                        return
+                    ws = mgr.websocket
+                    if ws and hasattr(ws, 'client_state') and ws.client_state == ws.client_state.CONNECTED:
+                        import json as _json
+                        data = _json.dumps({"type": "status", "message": msg})
+                        asyncio.run_coroutine_threadsafe(ws.send_text(data), loop)
+                return _cb
+            _status_cb = _make_status_cb(_char_name)
+
+            new_thread = Thread(
+                target=cross_server.sync_connector_process,
+                args=(rs.sync_message_queue, rs.sync_shutdown_event, k, f"ws://127.0.0.1:{MONITOR_SERVER_PORT}", {'bullet': False, 'monitor': True}, _status_cb),
+                daemon=True,
+                name=f"SyncConnector-{k}"
+            )
+            rs.sync_process = new_thread
+            new_thread.start()
+            logger.info(f"✅ 已为角色 {k} 启动同步连接器线程 ({new_thread.name})")
+            await asyncio.sleep(0.1)  # 线程启动更快，减少等待时间
+            # 与上面 is_alive 检查保持一致，走 to_thread 避免任何潜在阻塞
+            if not await asyncio.to_thread(new_thread.is_alive):
+                logger.error(f"❌ 同步连接器线程 {k} ({new_thread.name}) 启动后立即退出！")
+            else:
+                logger.info(f"✅ 同步连接器线程 {k} ({new_thread.name}) 正在运行")
+        except Exception as e:
+            logger.error(f"❌ 启动角色 {k} 的同步连接器线程失败: {e}", exc_info=True)
+
+
+async def _stop_character_thread(k: str):
+    """停止单个 catgirl 的同步连接器线程（最多 3s join）。dict 清理留给调用方顺序做。"""
+    rs = role_state.get(k)
+    if rs is None or rs.sync_process is None:
+        return
+    try:
+        logger.info(f"正在停止角色 {k} 的同步连接器线程...")
+        rs.sync_shutdown_event.set()
+        await asyncio.to_thread(rs.sync_process.join, timeout=3)  # 等待线程正常结束
+        if await asyncio.to_thread(rs.sync_process.is_alive):
+            logger.warning(f"⚠️ 同步连接器线程 {k} 未能在超时内停止，将作为daemon线程自动清理")
+        else:
+            logger.info(f"✅ 已停止角色 {k} 的同步连接器线程")
+    except Exception as e:
+        logger.warning(f"停止角色 {k} 的同步连接器线程时出错: {e}")
+
+
+def _cleanup_character_dicts(k: str):
+    """同步清理单个 catgirl 的 per-k 槽位。调用前确保对应线程已停或超时。"""
+    rs = role_state.get(k)
+    if rs is None:
+        return
+    # 清理队列（queue.Queue 没有 close/join_thread 方法）
+    try:
+        while not rs.sync_message_queue.empty():
+            rs.sync_message_queue.get_nowait()
+    except QueueEmpty:
+        # while empty + get_nowait 本身是 racy idiom：另一线程可能先 drain 掉，
+        # 导致 get_nowait 抛 Empty。这里 role_state[k] 即将被 del 掉，忽略无害。
+        pass
+    # 一次 del 原子清掉所有 6 个字段 —— 替代旧代码里 6 张 dict 分别 del 的对称清理
+    del role_state[k]
+
+
+async def initialize_character_data():
+    """全量刷新：加载 config + 对所有 catgirl 做 per-k init + 清理已删除的。
+
+    冷路径（启动 / 主人名编辑 / 大规模批量导入）。per-catgirl 编辑请走
+    init_one_catgirl / remove_one_catgirl / switch_current_catgirl_fast 这些 fast path。
+    """
     logger.info("正在加载角色配置...")
-    
+
     # 清理无效的voice_id引用；如果发现旧版 CosyVoice 音色，推入通知缓冲池等前端连接后弹出
     # cleanup_invalid_voice_ids 内部涉及同步 IO（load/save characters），offload 以免阻塞事件循环
     _cleaned, _legacy_names = await asyncio.to_thread(_config_manager.cleanup_invalid_voice_ids)
     if _legacy_names:
         core.enqueue_voice_migration_notice(_legacy_names)
-    
-    # 加载最新的角色数据
-    master_name, her_name, master_basic_config, lanlan_basic_config, name_mapping, lanlan_prompt, time_store, setting_store, recent_log = _config_manager.get_character_data()
-    catgirl_names = list(lanlan_prompt.keys())
-    
-    # 为新增的角色初始化资源
-    for k in catgirl_names:
-        is_new_character = False
-        if k not in sync_message_queue:
-            sync_message_queue[k] = Queue()
-            sync_shutdown_event[k] = ThreadEvent()
-            session_id[k] = None
-            sync_process[k] = None
-            logger.info(f"为角色 {k} 初始化新资源")
-            is_new_character = True
-        
-        # 确保该角色有websocket锁
-        if k not in websocket_locks:
-            websocket_locks[k] = asyncio.Lock()
-        
-        # 更新或创建session manager（使用最新的prompt）
-        # 使用锁保护websocket的preserve/restore操作，防止与cleanup()竞争
-        async with websocket_locks[k]:
-            # 如果已存在且已有websocket连接，保留websocket引用
-            old_websocket = None
-            if k in session_manager and session_manager[k].websocket:
-                old_websocket = session_manager[k].websocket
-                logger.info(f"保留 {k} 的现有WebSocket连接")
-            
-            # 注意：不在这里清理旧session，因为：
-            # 1. 切换当前角色音色时，已在API层面关闭了session
-            # 2. 切换其他角色音色时，已跳过重新加载
-            # 3. 其他场景不应该影响正在使用的session
-            # 如果旧session_manager有活跃session，保留它，只更新配置相关的字段
-            
-            # 先检查会话状态（在锁内检查避免竞态条件）
-            has_active_session = k in session_manager and session_manager[k].is_active
-            
-            if has_active_session:
-                # 有活跃session，不重新创建session_manager，只更新配置
-                # 这是为了防止重新创建session_manager时破坏正在运行的session
-                try:
-                    old_mgr = session_manager[k]
-                    # 更新prompt
-                    old_mgr.lanlan_prompt = lanlan_prompt[k].replace('{LANLAN_NAME}', k).replace('{MASTER_NAME}', master_name)
-                    # 重新读取角色配置以更新voice_id等字段
-                    (
-                        _,
-                        _,
-                        _,
-                        lanlan_basic_config_updated,
-                        _,
-                        _,
-                        _,
-                        _,
-                        _
-                    ) = _config_manager.get_character_data()
-                    # 更新voice_id（这是切换音色时需要的）
-                    old_mgr.voice_id = get_reserved(
-                        lanlan_basic_config_updated[k],
-                        'voice_id',
-                        default='',
-                        legacy_keys=('voice_id',),
-                    )
-                    logger.info(f"{k} 有活跃session，只更新配置，不重新创建session_manager")
-                except Exception as e:
-                    logger.error(f"更新 {k} 的活跃session配置失败: {e}", exc_info=True)
-                    # 配置更新失败，但为了不影响正在运行的session，继续使用旧配置
-                    # 如果确实需要更新配置，可以考虑在下次session重启时再应用
-            else:
-                # 没有活跃session，可以安全地重新创建session_manager
-                session_manager[k] = core.LLMSessionManager(
-                    sync_message_queue[k],
-                    k,
-                    lanlan_prompt[k].replace('{LANLAN_NAME}', k).replace('{MASTER_NAME}', master_name)
-                )
-                
-                # 将websocket锁存储到session manager中，供cleanup()使用
-                session_manager[k].websocket_lock = websocket_locks[k]
-                
-                # 恢复websocket引用（如果存在）
-                if old_websocket:
-                    session_manager[k].websocket = old_websocket
-                    logger.info(f"已恢复 {k} 的WebSocket连接")
-        
-        # 检查并启动同步连接器线程
-        # 如果是新角色，或者线程不存在/已停止，需要启动线程
-        if k not in sync_process:
-            sync_process[k] = None
-        
-        need_start_thread = False
-        if is_new_character:
-            # 新角色，需要启动线程
-            need_start_thread = True
-        elif sync_process[k] is None:
-            # 线程为None，需要启动
-            need_start_thread = True
-        elif hasattr(sync_process[k], 'is_alive') and not await asyncio.to_thread(sync_process[k].is_alive):
-            # 线程已停止，需要重启
-            need_start_thread = True
-            try:
-                await asyncio.to_thread(sync_process[k].join, timeout=0.1)
-            except Exception:
-                # 注意不要写成 bare except：to_thread 是 cancellation point，
-                # 如果 catch 了 BaseException 会吞掉 asyncio.CancelledError
-                pass
-        
-        if need_start_thread:
-            try:
-                _char_name = k
-                def _make_status_cb(char_name):
-                    def _cb(msg):
-                        mgr = session_manager.get(char_name)
-                        if not mgr:
-                            return
-                        loop = _server_loop
-                        if loop is None or loop.is_closed():
-                            return
-                        ws = mgr.websocket
-                        if ws and hasattr(ws, 'client_state') and ws.client_state == ws.client_state.CONNECTED:
-                            import json as _json
-                            data = _json.dumps({"type": "status", "message": msg})
-                            asyncio.run_coroutine_threadsafe(ws.send_text(data), loop)
-                    return _cb
-                _status_cb = _make_status_cb(_char_name)
 
-                sync_process[k] = Thread(
-                    target=cross_server.sync_connector_process,
-                    args=(sync_message_queue[k], sync_shutdown_event[k], k, f"ws://127.0.0.1:{MONITOR_SERVER_PORT}", {'bullet': False, 'monitor': True}, _status_cb),
-                    daemon=True,
-                    name=f"SyncConnector-{k}"
-                )
-                sync_process[k].start()
-                logger.info(f"✅ 已为角色 {k} 启动同步连接器线程 ({sync_process[k].name})")
-                await asyncio.sleep(0.1)  # 线程启动更快，减少等待时间
-                if not sync_process[k].is_alive():
-                    logger.error(f"❌ 同步连接器线程 {k} ({sync_process[k].name}) 启动后立即退出！")
-                else:
-                    logger.info(f"✅ 同步连接器线程 {k} ({sync_process[k].name}) 正在运行")
-            except Exception as e:
-                logger.error(f"❌ 启动角色 {k} 的同步连接器线程失败: {e}", exc_info=True)
-    
+    # 加载最新的角色数据（offload，避免同步 IO + deepcopy 阻塞事件循环）
+    await _refresh_character_globals()
+
+    # 为所有 catgirl 预备 per-k 同步资源槽位
+    is_new_map: dict[str, bool] = {k: _ensure_character_slots(k) for k in catgirl_names}
+
+    # 每个角色的初始化相互独立（只读共享 prompt / master_name，写各自的 session_manager[k] 等 per-key 槽位）。
+    # 用 gather 并行，消除 O(N) × (thread roundtrip + 0.1s sleep) 的串行墙钟。
+    # return_exceptions=True：某个角色初始化失败不应导致其它角色被取消。
+    _init_results = await asyncio.gather(
+        *[_init_character_resources(k, is_new_map[k]) for k in catgirl_names],
+        return_exceptions=True,
+    )
+    for k, res in zip(catgirl_names, _init_results):
+        if isinstance(res, BaseException):
+            logger.error(f"❌ 初始化角色 {k} 失败: {res}", exc_info=res)
+
     # 清理已删除角色的资源
-    removed_names = [k for k in session_manager.keys() if k not in catgirl_names]
+    removed_names = [k for k in role_state.keys() if k not in catgirl_names]
+
+    # N 个 join(timeout=3) 串行最坏要 3N 秒；并行化后墙钟 ≈ 3 秒。
+    if removed_names:
+        await asyncio.gather(
+            *[_stop_character_thread(k) for k in removed_names],
+            return_exceptions=True,
+        )
+
+    # 线程都已停/超时，再在事件循环里顺序清理 dict —— 这些操作都是纯内存，不需要并行。
     for k in removed_names:
         logger.info(f"清理已删除角色 {k} 的资源")
-        
-        # 先停止同步连接器线程（线程只能协作式终止，不能强制kill）
-        if k in sync_process and sync_process[k] is not None:
-            try:
-                logger.info(f"正在停止已删除角色 {k} 的同步连接器线程...")
-                if k in sync_shutdown_event:
-                    sync_shutdown_event[k].set()
-                await asyncio.to_thread(sync_process[k].join, timeout=3)  # 等待线程正常结束
-                if await asyncio.to_thread(sync_process[k].is_alive):
-                    logger.warning(f"⚠️ 同步连接器线程 {k} 未能在超时内停止，将作为daemon线程自动清理")
-                else:
-                    logger.info(f"✅ 已停止角色 {k} 的同步连接器线程")
-            except Exception as e:
-                logger.warning(f"停止角色 {k} 的同步连接器线程时出错: {e}")
-        
-        # 清理队列（queue.Queue 没有 close/join_thread 方法）
-        if k in sync_message_queue:
-            try:
-                while not sync_message_queue[k].empty():
-                    sync_message_queue[k].get_nowait()
-            except: # noqa
-                pass
-            del sync_message_queue[k]
-        
-        # 清理其他资源
-        if k in sync_shutdown_event:
-            del sync_shutdown_event[k]
-        if k in session_manager:
-            del session_manager[k]
-        if k in session_id:
-            del session_id[k]
-        if k in sync_process:
-            del sync_process[k]
-    
+        _cleanup_character_dicts(k)
+
     logger.info(f"角色配置加载完成，当前角色: {catgirl_names}，主人: {master_name}")
+
+
+# ─────────────────────────────────────────────────────────────
+# Fast-path helpers — 只处理受影响的单个 catgirl，避免全量遍历
+# ─────────────────────────────────────────────────────────────
+
+async def switch_current_catgirl_fast():
+    """当前猫娘切换（`当前猫娘` 字段变更）专用 fast path。
+
+    关键前提：切换只影响 `her_name` 这一个 global，per-k 的 prompt / voice_id / thread
+    状态完全不变。所以这里**只刷 globals**，不做任何 per-k 工作。
+
+    墙钟：一次 aget_character_data（~数 ms）即全部。
+    """
+    await _refresh_character_globals()
+    logger.info(f"[fast-switch] 已刷新 globals，当前猫娘: {her_name}")
+
+
+async def init_one_catgirl(name: str, *, is_new: bool = False):
+    """新增 / 编辑单个 catgirl 的 fast path。
+
+    - is_new=True：新增，强制启动同步连接器线程
+    - is_new=False：编辑（prompt / voice_id 等）—— 只刷新 session_manager 的 prompt/voice_id，
+                    不会重启线程
+    """
+    await _refresh_character_globals()
+    if name not in lanlan_prompt:
+        logger.warning(f"[init-one] '{name}' 不在 config 中，跳过（可能是并发删除）")
+        return
+    slot_new = _ensure_character_slots(name)
+    await _init_character_resources(name, is_new_character=is_new or slot_new)
+
+
+async def remove_one_catgirl(name: str):
+    """删除单个 catgirl 的 fast path：停该角色的线程 + 清 dict + 刷 globals。"""
+    await _stop_character_thread(name)
+    _cleanup_character_dicts(name)
+    # config 文件已由调用方写入，这里刷新 globals 让 catgirl_names 等反映删除
+    await _refresh_character_globals()
+    logger.info(f"[fast-remove] 已移除角色 {name}")
 
 # 初始化角色数据（使用asyncio.run在模块级别执行async函数）
 # 只在主进程中执行，防止 Windows 上子进程重复导入时再次启动子进程
@@ -741,17 +892,15 @@ from main_routers.shared_state import init_shared_state # noqa
 # 注意：steamworks 会在 startup 事件中初始化后更新
 if _IS_MAIN_PROCESS:
     init_shared_state(
-        sync_message_queue=sync_message_queue,
-        sync_shutdown_event=sync_shutdown_event,
-        session_manager=session_manager,
-        session_id=session_id,
-        sync_process=sync_process,
-        websocket_locks=websocket_locks,
+        role_state=role_state,
         steamworks=None,  # 延迟初始化，会在 startup 事件中设置
         templates=templates,
         config_manager=_config_manager,
         logger=logger,
         initialize_character_data=initialize_character_data,
+        switch_current_catgirl_fast=switch_current_catgirl_fast,
+        init_one_catgirl=init_one_catgirl,
+        remove_one_catgirl=remove_one_catgirl,
     )
 
 
@@ -946,6 +1095,41 @@ async def on_startup():
             _server_loop.set_debug(True)
             _server_loop.slow_callback_duration = 0.05
             logger.info("[asyncio] debug mode enabled (slow_callback_duration=0.05s)")
+
+        # 事件循环心跳：每 200ms 打一个点。当 /new_dialog 或其他 async 操作
+        # 莫名其妙变慢时，看心跳是否缺席 —— 缺席 = 事件循环被阻塞，这段时间
+        # 内所有 async 都没机会跑。心跳日志仅在开启 NEKO_DEBUG_HEARTBEAT=1
+        # 时输出到 stdout，避免日志刷屏。
+        if os.environ.get("NEKO_DEBUG_HEARTBEAT") == "1":
+            async def _event_loop_heartbeat():
+                import time as _t
+                _last = _t.perf_counter()
+                while True:
+                    await asyncio.sleep(0.2)
+                    _now = _t.perf_counter()
+                    _gap_ms = int((_now - _last) * 1000)
+                    # 只打异常的心跳（间隔 > 300ms），正常跳过
+                    if _gap_ms > 300:
+                        print(f"[{_t.strftime('%H:%M:%S')}] [heartbeat] stall {_gap_ms}ms (expected ~200ms)", flush=True)
+                    _last = _now
+            asyncio.create_task(_event_loop_heartbeat())
+            logger.info("[asyncio] heartbeat enabled (stalls > 300ms will be logged)")
+
+        # 预热重量级模块导入，避免 TTS worker 线程第一次启动时在
+        # 工作线程里触发同步 import 阻塞事件循环（实测 dashscope
+        # 首次 import 会吃 GIL 3-7 秒，导致此期间 /new_dialog 响应
+        # 解析无法及时完成，表现为 "memory 服务响应超时"）。
+        # 放 to_thread 里跑，不阻塞 startup 本身。
+        async def _prewarm_heavy_imports():
+            import importlib
+            for mod in ("dashscope", "dashscope.audio.tts_v2"):
+                try:
+                    await asyncio.to_thread(importlib.import_module, mod)
+                    logger.debug(f"[prewarm] imported {mod}")
+                except Exception as e:
+                    logger.debug(f"[prewarm] import {mod} failed (ignored): {e}")
+        asyncio.create_task(_prewarm_heavy_imports())
+
         logger.info("正在初始化 Steamworks...")
         steamworks = initialize_steamworks()
         
@@ -1054,7 +1238,7 @@ async def on_shutdown():
         
         # 释放 soxr ResampleStream（nanobind C 扩展），避免解释器退出时泄漏警告
         try:
-            for mgr in session_manager.values():
+            for _, mgr in _iter_session_managers():
                 if hasattr(mgr, 'audio_resampler'):
                     mgr.audio_resampler = None
         except Exception as e:
@@ -1083,12 +1267,21 @@ async def on_shutdown():
             from utils.music_crawlers import close_all_crawlers
             # 【核心修改】增加 1 秒超时兜底。如果 1 秒内关不完，直接抛弃，保障服务器顺利退出
             await asyncio.wait_for(close_all_crawlers(), timeout=1.0)
-            
+
         except asyncio.TimeoutError:
             # 单独捕获超时异常，记录警告但放行
             logger.warning("音乐爬虫连接池清理超时，已强制跳过以保证服务正常退出。")
         except Exception as e:
             logger.debug(f"音乐爬虫清理失败: {e}", exc_info=True)
+
+        # 关闭 memory_server 共享 httpx 连接池
+        try:
+            from utils.memory_client import aclose_memory_client
+            await asyncio.wait_for(aclose_memory_client(), timeout=1.0)
+        except asyncio.TimeoutError:
+            logger.warning("memory_client 清理超时，已强制跳过。")
+        except Exception as e:
+            logger.debug(f"memory_client 清理失败: {e}", exc_info=True)
 
 # 使用 FastAPI 的 app.state 来管理启动配置
 def get_start_config():

@@ -1565,6 +1565,7 @@
         "initializingVoice": "음성 채팅 초기화 중...",
         "initializingMic": "마이크 초기화 중...",
         "startFailed": "시작 실패: {{error}}",
+        "sendFailed": "전송 실패: {{error}}",
         "sessionEnded": "세션이 종료되었습니다.",
         "returning": "{{name}}이 돌아왔습니다! 다시 연결하는 중...",
         "websocketNotConnected": "WebSocket이 연결되지 않았습니다!",
@@ -1731,9 +1732,9 @@
     "openclawGuide": {
         "windowTitle": "OpenClaw 연동 가이드 - N.E.K.O.",
         "pageTitle": "OpenClaw 연동 가이드",
-        "pageSubtitle": "CoPaw 설치, 채널 배치, 헬스 체크, N.E.K.O 설정을 한 흐름으로 연결합니다.",
+        "pageSubtitle": "QwenPaw 설치, 모델 설정, 교체 파일, N.E.K.O 설정을 한 흐름으로 연결합니다.",
         "sourceLabel": "가이드 출처",
-        "contentLanguageNotice": "본문은 현재 중국어 문서를 표시합니다. 언어 전환은 페이지 컨트롤 문구에만 적용됩니다.",
+        "contentLanguageNotice": "언어 전환은 페이지 컨트롤 문구와 본문 모두에 적용됩니다.",
         "languageLabel": "언어",
         "guideUnavailable": "가이드 내용이 비어 있습니다."
     },
@@ -2931,6 +2932,7 @@
         "selectedActions": "{{count}}개 애니메이션 선택됨",
         "selectedSeparator": ", ",
         "selectedInfo": "{{songCount}}개 노래, {{actionCount}}개 애니메이션 선택됨",
+        "bindingsSelected": "바인딩 탭에서 {{bindingSongCount}}개 노래, {{bindingActionCount}}개 애니메이션 선택됨; 번들 합계 {{bundleSongCount}}개 노래, {{bundleActionCount}}개 애니메이션",
         "missing": "누락",
         "unknownError": "알 수 없는 오류",
         "calibration": "애니메이션 보정",

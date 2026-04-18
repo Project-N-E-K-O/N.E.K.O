@@ -4,7 +4,7 @@
 
 ### 1단계: 설치
 
-Python을 수동으로 설정할 필요가 없습니다. 한 줄 명령으로 설치가 자동으로 완료됩니다. 스크립트가 `uv`(Python 패키지 관리자)를 자동으로 내려받고, 가상 환경을 만들고, QwenPaw와 의존성까지 설치합니다. Node.js와 프런트엔드 리소스도 함께 포함됩니다. 단, 일부 네트워크 환경이나 기업 권한 정책에서는 사용할 수 없을 수 있습니다.
+Python 을 수동으로 설정할 필요가 없습니다. 한 줄 명령으로 `uv` 설치, 가상 환경 생성, QwenPaw 및 의존성 설치까지 자동으로 완료됩니다. 단, 일부 네트워크 환경이나 기업 권한 정책에서는 사용할 수 없을 수 있습니다.
 
 macOS / Linux:
 
@@ -26,13 +26,9 @@ irm https://qwenpaw.agentscope.io/install.ps1 | iex
 qwenpaw init --defaults
 ```
 
-여기에는 친절한 보안 경고가 있습니다. QwenPaw는 다음 내용을 분명하게 알려줍니다.
+초기화 과정에서는 보안 경고가 표시됩니다. QwenPaw 는 로컬 환경에서 실행되며, 같은 인스턴스를 여러 사람이 공유하면 파일, 명령, 비밀 정보 접근 권한도 함께 공유된다고 안내합니다. 내용을 확인한 뒤 `yes` 를 입력해 계속 진행하세요.
 
-> 이것은 로컬 환경에서 실행되는 개인 비서입니다. 여러 채널에 연결하고, 명령을 실행하고, API를 호출할 수 있습니다. 여러 사람이 같은 QwenPaw 인스턴스를 사용하면 파일, 명령, 비밀 정보를 포함한 동일한 권한을 함께 공유하게 됩니다.
-
-![Neko 채널 활성화 단계 이미지 1](assets/openclaw_guide/image1.png)
-
-계속하려면 내용을 이해했다는 뜻으로 `yes` 를 선택해야 합니다.
+![QwenPaw 초기화 보안 경고](assets/openclaw_guide/image1.png)
 
 ### 3단계: 실행
 
@@ -40,39 +36,58 @@ qwenpaw init --defaults
 qwenpaw app
 ```
 
-정상적으로 시작되면 터미널 마지막 줄에 다음이 표시됩니다.
+정상적으로 시작되면 터미널 마지막 줄에 보통 다음이 표시됩니다.
 
 ```text
 INFO:     Uvicorn running on http://127.0.0.1:8088 (Press CTRL+C to quit)
 ```
 
-서비스가 시작된 뒤 `http://127.0.0.1:8088` 에 접속하면 QwenPaw 콘솔 화면을 볼 수 있습니다.
+시작 후 `http://127.0.0.1:8088` 에 접속하면 QwenPaw 콘솔을 열 수 있습니다.
 
-## NEKO 채널 설정: NEKO를 QwenPaw에 연결하기
+### 4단계: 페르소나 파일 교체 (선택)
 
-초기화가 끝나면 QwenPaw가 자동으로 설정 디렉터리를 만듭니다. Windows 기본 경로는 `C:\Users\사용자이름\.qwenpaw`, macOS 기본 경로는 `~/.qwenpaw` 입니다. 모든 내장 스킬도 기본으로 활성화됩니다.
+초기화가 끝나면 QwenPaw 는 설정 디렉터리를 자동으로 만듭니다.
 
-해당 경로를 찾으세요. `.qwenpaw` 는 숨김 폴더이므로 다음이 필요합니다.
+- Windows 기본 경로: `C:\Users\사용자이름\.qwenpaw`
+- macOS 기본 경로: `~/.qwenpaw`
 
-- Windows 사용자는 작업 표시줄에서 파일 탐색기를 열고 `보기 > 표시` 에서 숨김 항목을 표시해야 합니다.
-- macOS 사용자는 Finder를 열고 홈 폴더로 이동한 뒤 `Command + Shift + .` 를 동시에 누르세요.
+`.qwenpaw` 는 숨김 폴더이므로 필요하면 표시를 켜야 합니다.
 
-준비해 둔 채널 설정 파일 `custom_channels` 를 `.qwenpaw` 폴더에 복사합니다.
+- Windows: 파일 탐색기에서 숨김 항목 표시
+- macOS: Finder 에서 `Command + Shift + .`
 
-[캐릭터 폴더 안의 파일](assets/openclaw_guide/%E6%9B%BF%E6%8D%A2%E5%86%85%E5%AE%B9.zip)을 `.qwenpaw/workspaces/default` 로 복사하고 `BOOTSTRAP.md` 를 삭제합니다.
+QwenPaw 를 N.E.K.O 용의 순수한 백엔드 실행기로 쓰고 싶다면 아래 교체 파일을 내려받으세요.
 
-그다음 터미널에서 `CTRL+C` 를 눌러 qwenpaw를 종료하고, 다시 `qwenpaw app` 을 입력해 재시작합니다.
+- [교체 파일.zip](assets/openclaw_guide/替换文件.zip)
 
-이후 이미지의 단계에 따라 Neko 채널을 활성화하세요.
+압축 파일 안의 `SOUL.md`, `AGENTS.md`, `PROFILE.md` 를 `.qwenpaw/workspaces/default` 에 복사해 덮어쓰고, 그 디렉터리의 `BOOTSTRAP.md` 는 삭제하세요.
 
-![Neko 채널 활성화 단계 이미지 2](assets/openclaw_guide/image2.png)
+그다음 `CTRL+C` 로 QwenPaw 를 멈춘 뒤 다시 실행합니다.
+
+```bash
+qwenpaw app
+```
 
 ## 기본 설정: 모델 설정
 
-모델을 클릭한 뒤 DashScope를 선택하세요. API Key에 따라 다른 모델을 선택해도 됩니다. 설정을 열고 Alibaba Cloud Bailian API Key를 입력한 뒤 저장합니다.
+QwenPaw 콘솔을 열고 모델 페이지로 이동한 다음 사용할 제공자를 선택하세요. 초보자에게는 `DashScope` 가 가장 흔한 선택이지만, API Key 에 따라 다른 제공자를 사용해도 됩니다.
 
-![Neko 채널 활성화 단계 이미지 3](assets/openclaw_guide/image3.png)
+설정을 열고 API Key 를 입력한 뒤 저장하세요.
 
-저장한 뒤 채팅 화면으로 돌아가면 설정한 모델을 선택할 수 있습니다.
+![QwenPaw 모델 설정 화면](assets/openclaw_guide/image2.png)
 
-이제 N.E.K.O 로 돌아가면 openclaw를 사용할 수 있습니다.
+저장 후 채팅 화면으로 돌아가면 설정한 모델을 선택할 수 있습니다.
+
+## N.E.K.O 에서 OpenClaw 활성화하기
+
+N.E.K.O 내부 이름은 여전히 `openclaw` 이므로, UI 에 보이는 `OpenClaw` 토글은 곧 QwenPaw 를 의미합니다.
+
+다음 순서로 진행하세요.
+
+1. N.E.K.O 의 Agent 패널을 엽니다
+2. 먼저 `Agent` 메인 스위치를 켭니다
+3. `openclawUrl` 이 `http://127.0.0.1:8088` 을 가리키는지 확인합니다
+4. 그다음 `OpenClaw` 하위 스위치를 켭니다
+5. 사용 가능 여부 확인이 통과될 때까지 기다립니다
+
+N.E.K.O 는 먼저 QwenPaw 호환 엔드포인트를 시도하고, 필요하면 자동으로 `process` 엔드포인트로 폴백합니다. 메인 연결 경로에서는 커스텀 채널 설정이 필요하지 않습니다.
