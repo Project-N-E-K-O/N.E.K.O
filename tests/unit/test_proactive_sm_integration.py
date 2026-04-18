@@ -14,7 +14,6 @@
 import asyncio
 import os
 import sys
-from queue import Queue
 from unittest.mock import AsyncMock, MagicMock
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
@@ -59,7 +58,6 @@ class _FakeOmniOffline(OmniOfflineClient):
 
 
 def _make_mgr(session=None) -> LLMSessionManager:
-    import main_logic.core as core_module
     mgr = LLMSessionManager.__new__(LLMSessionManager)
     mgr.lanlan_name = "Test"
     mgr.master_name = "Master"
@@ -235,7 +233,6 @@ async def test_concurrent_agent_callback_and_router_proactive_one_wins():
 async def test_user_input_during_agent_delivery_sets_preempted():
     """text 投递期间 USER_INPUT 到达：sticky _preempted 翻起，phase 复位后仍可感知。"""
     sess_wait = asyncio.Event()
-    outer_loop = asyncio.get_event_loop()
 
     class _SlowSess(OmniOfflineClient):
         _is_responding = False
