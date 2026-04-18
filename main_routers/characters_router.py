@@ -50,7 +50,7 @@ from utils.voice_clone import (
     QwenVoiceCloneError,
     qwen_language_hints,
 )
-from utils.file_utils import atomic_write_json_async
+from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.frontend_utils import find_models, find_model_directory, is_user_imported_model
 from utils.language_utils import normalize_language_code
 from utils.logger_config import get_module_logger
@@ -160,7 +160,7 @@ async def get_characters(request: Request):
     """获取角色数据，支持根据用户语言自动翻译人设"""
     _config_manager = get_config_manager()
     # 创建深拷贝，避免修改原始配置数据
-    characters_data = copy.deepcopy(_config_manager.load_characters())
+    characters_data = copy.deepcopy(await _config_manager.aload_characters())
     if isinstance(characters_data.get('猫娘'), dict):
         # COMPAT(v1->v2): 前端仍依赖旧平铺字段，接口层按需展开。
         for cat_name, cat_data in list(characters_data['猫娘'].items()):
@@ -225,7 +225,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
     """
     try:
         _config_manager = get_config_manager()
-        characters = _config_manager.load_characters()
+        characters = await _config_manager.aload_characters()
         
         # 如果没有指定角色名称，使用当前猫娘
         if not catgirl_name:
@@ -504,7 +504,7 @@ async def update_catgirl_l2d(name: str, request: Request):
         
         # 加载当前角色配置
         _config_manager = get_config_manager()
-        characters = _config_manager.load_characters()
+        characters = await _config_manager.aload_characters()
         
         # 确保猫娘配置存在
         if '猫娘' not in characters:
@@ -696,7 +696,7 @@ async def update_catgirl_touch_set(name: str, request: Request):
             )
         
         _config_manager = get_config_manager()
-        characters = _config_manager.load_characters()
+        characters = await _config_manager.aload_characters()
         
         if '猫娘' not in characters or name not in characters['猫娘']:
             return JSONResponse(
@@ -753,7 +753,7 @@ async def update_catgirl_lighting(name: str, request: Request):
             apply_runtime = query_params.get('apply_runtime', '').lower() in ('true', '1', 'yes')
 
         _config_manager = get_config_manager()
-        characters = _config_manager.load_characters()
+        characters = await _config_manager.aload_characters()
 
         if '猫娘' not in characters or name not in characters['猫娘']:
             return JSONResponse(content={
@@ -873,7 +873,7 @@ async def update_catgirl_mmd_settings(name: str, request: Request):
         data = await request.json()
 
         _config_manager = get_config_manager()
-        characters = _config_manager.load_characters()
+        characters = await _config_manager.aload_characters()
 
         if '猫娘' not in characters or name not in characters['猫娘']:
             return JSONResponse(content={
@@ -960,7 +960,7 @@ async def get_catgirl_mmd_settings(name: str):
     """获取指定角色的MMD模型设置"""
     try:
         _config_manager = get_config_manager()
-        characters = _config_manager.load_characters()
+        characters = await _config_manager.aload_characters()
 
         if '猫娘' not in characters or name not in characters['猫娘']:
             return JSONResponse(content={
@@ -1005,7 +1005,7 @@ async def update_catgirl_voice_id(name: str, request: Request):
         return {"success": True, "session_restarted": False, "voice_id_changed": False}
     _config_manager = get_config_manager()
     session_manager = get_session_manager()
-    characters = _config_manager.load_characters()
+    characters = await _config_manager.aload_characters()
     if name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
     voice_id = str(data.get('voice_id') or '').strip()
@@ -1071,7 +1071,7 @@ async def get_catgirl_voice_mode_status(name: str):
     """检查指定角色是否在语音模式下"""
     _config_manager = get_config_manager()
     session_manager = get_session_manager()
-    characters = _config_manager.load_characters()
+    characters = await _config_manager.aload_characters()
     is_current = characters.get('当前猫娘') == name
     
     if name not in session_manager:
@@ -1110,14 +1110,13 @@ async def rename_catgirl(old_name: str, request: Request):
     err = _validate_profile_name(new_name)
     if err:
         return JSONResponse({'success': False, 'error': err.replace('档案名', '新档案名')}, status_code=400)
-    characters = _config_manager.load_characters()
+    characters = await _config_manager.aload_characters()
     if old_name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '原猫娘不存在'}, status_code=404)
     if new_name in characters['猫娘']:
         return JSONResponse({'success': False, 'error': '新档案名已存在'}, status_code=400)
     
-    # 如果当前猫娘是被重命名的猫娘，需要先保存WebSocket连接并发送通知
-    # 必须在 initialize_character_data() 之前发送，因为那个函数会删除旧的 session_manager 条目
+    # 如果当前猫娘是被重命名的猫娘，需要先保存WebSocket连接引用，重命名完成后再发送通知
     is_current_catgirl = characters.get('当前猫娘') == old_name
     
     # 检查当前角色是否有活跃的语音session
@@ -1133,22 +1132,10 @@ async def rename_catgirl(old_name: str, request: Request):
                     'success': False, 
                     'error': '语音状态下无法修改角色名称，请先停止语音对话后再修改'
                 }, status_code=400)
-    if is_current_catgirl:
-        logger.info(f"开始通知WebSocket客户端：猫娘从 {old_name} 重命名为 {new_name}")
-        message = json.dumps({
-            "type": "catgirl_switched",
-            "new_catgirl": new_name,
-            "old_catgirl": old_name
-        })
-        # 在 initialize_character_data() 之前发送消息，因为之后旧的 session_manager 会被删除
-        if old_name in session_manager:
-            ws = session_manager[old_name].websocket
-            if ws:
-                try:
-                    await ws.send_text(message)
-                    logger.info(f"已向 {old_name} 发送重命名通知")
-                except Exception as e:
-                    logger.warning(f"发送重命名通知给 {old_name} 失败: {e}")
+    # 先保存 WebSocket 引用，因为 initialize_character_data() 会删除旧的 session_manager 条目
+    saved_ws = None
+    if is_current_catgirl and old_name in session_manager:
+        saved_ws = session_manager[old_name].websocket
     
     # 重命名
     characters['猫娘'][new_name] = characters['猫娘'].pop(old_name)
@@ -1160,6 +1147,20 @@ async def rename_catgirl(old_name: str, request: Request):
     initialize_character_data = get_initialize_character_data()
     await initialize_character_data()
     
+    # 在数据更新完成后再通知前端，避免前端 fetch /api/characters 时新名称尚未就绪
+    if is_current_catgirl and saved_ws:
+        logger.info(f"开始通知WebSocket客户端：猫娘从 {old_name} 重命名为 {new_name}")
+        message = json.dumps({
+            "type": "catgirl_switched",
+            "new_catgirl": new_name,
+            "old_catgirl": old_name
+        })
+        try:
+            await saved_ws.send_text(message)
+            logger.info(f"已向 {old_name} 发送重命名通知")
+        except Exception as e:
+            logger.warning(f"发送重命名通知给 {old_name} 失败: {e}")
+    
     return {"success": True}
 
 
@@ -1169,7 +1170,7 @@ async def unregister_voice(name: str):
     try:
         _config_manager = get_config_manager()
         session_manager = get_session_manager()
-        characters = _config_manager.load_characters()
+        characters = await _config_manager.aload_characters()
         if name not in characters.get('猫娘', {}):
             return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
         
@@ -1213,7 +1214,7 @@ async def unregister_voice(name: str):
 async def get_current_catgirl():
     """获取当前使用的猫娘名称"""
     _config_manager = get_config_manager()
-    characters = _config_manager.load_characters()
+    characters = await _config_manager.aload_characters()
     current_catgirl = characters.get('当前猫娘', '')
     return JSONResponse(content={'current_catgirl': current_catgirl})
 
@@ -1228,7 +1229,7 @@ async def set_current_catgirl(request: Request):
     
     _config_manager = get_config_manager()
     session_manager = get_session_manager()
-    characters = _config_manager.load_characters()
+    characters = await _config_manager.aload_characters()
     if catgirl_name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '指定的猫娘不存在'}, status_code=404)
     
@@ -1265,21 +1266,32 @@ async def set_current_catgirl(request: Request):
         "old_catgirl": old_catgirl
     })
     
-    # 遍历所有session_manager，尝试发送消息
-    for lanlan_name, mgr in list(session_manager.items()):
+    # 并行通知所有 session_manager —— 每个 send_text 独立，per-mgr 失败时只清自己的 ws，
+    # 串行版本里一个慢/卡的 ws 会拖累后面的通知。
+    snapshot = list(session_manager.items())
+    for lanlan_name, mgr in snapshot:
+        logger.info(f"检查 {lanlan_name} 的WebSocket: websocket存在={mgr.websocket is not None}")
+
+    async def _notify_one(lanlan_name, mgr):
         ws = mgr.websocket
-        logger.info(f"检查 {lanlan_name} 的WebSocket: websocket存在={ws is not None}")
-        
-        if ws:
-            try:
-                await ws.send_text(message)
-                notification_count += 1
-                logger.info(f"✅ 已通过WebSocket通知 {lanlan_name} 的连接：猫娘已从 {old_catgirl} 切换到 {catgirl_name}")
-            except Exception as e:
-                logger.warning(f"❌ 通知 {lanlan_name} 的连接失败: {e}")
-                # 如果发送失败，可能是连接已断开，清空websocket引用
-                if mgr.websocket == ws:
-                    mgr.websocket = None
+        if not ws:
+            return False
+        try:
+            await ws.send_text(message)
+            logger.info(f"✅ 已通过WebSocket通知 {lanlan_name} 的连接：猫娘已从 {old_catgirl} 切换到 {catgirl_name}")
+            return True
+        except Exception as e:
+            logger.warning(f"❌ 通知 {lanlan_name} 的连接失败: {e}")
+            # 如果发送失败，可能是连接已断开，清空websocket引用
+            if mgr.websocket == ws:
+                mgr.websocket = None
+            return False
+
+    _notify_results = await asyncio.gather(
+        *(_notify_one(n, m) for n, m in snapshot),
+        return_exceptions=True,
+    )
+    notification_count = sum(1 for r in _notify_results if r is True)
     
     if notification_count > 0:
         logger.info(f"✅ 已通过WebSocket通知 {notification_count} 个连接的客户端：猫娘已从 {old_catgirl} 切换到 {catgirl_name}")
@@ -1321,7 +1333,7 @@ async def update_master(request: Request):
     data['档案名'] = str(profile_name).strip()
     _config_manager = get_config_manager()
     initialize_character_data = get_initialize_character_data()
-    characters = _config_manager.load_characters()
+    characters = await _config_manager.aload_characters()
     characters['主人'] = {k: v for k, v in data.items() if v}
     await _config_manager.asave_characters(characters)
     # 自动重新加载配置
@@ -1348,7 +1360,7 @@ async def rename_master(old_name: str, request: Request):
         return JSONResponse({'success': False, 'error': err.replace('档案名', '新档案名')}, status_code=400)
 
     async with _ugc_sync_lock:
-        characters = _config_manager.load_characters()
+        characters = await _config_manager.aload_characters()
         if '主人' not in characters or not characters['主人']:
             return JSONResponse({'success': False, 'error': '主人档案不存在'}, status_code=404)
 
@@ -1395,7 +1407,7 @@ async def add_catgirl(request: Request):
     data['档案名'] = str(profile_name).strip()
 
     _config_manager = get_config_manager()
-    characters = _config_manager.load_characters()
+    characters = await _config_manager.aload_characters()
     key = data['档案名']
 
     # 检查是否已存在同名角色，使用 Windows 风格的命名 (x)
@@ -1474,7 +1486,7 @@ async def update_catgirl(name: str, request: Request):
 
     data = _filter_mutable_catgirl_fields(raw_data)
     _config_manager = get_config_manager()
-    characters = _config_manager.load_characters()
+    characters = await _config_manager.aload_characters()
     if name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
 
@@ -1573,7 +1585,7 @@ async def update_catgirl(name: str, request: Request):
 @router.delete('/catgirl/{name}')
 async def delete_catgirl(name: str):
     _config_manager = get_config_manager()
-    characters = _config_manager.load_characters()
+    characters = await _config_manager.aload_characters()
     if name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
 
@@ -1593,18 +1605,21 @@ async def delete_catgirl(name: str):
             name,                       # 新布局：memory/<name>/{recent,facts,reflections,persona,time_indexed.db,...}
         ]
 
-        for base_dir in memory_paths:
-            for file_name in files_to_delete:
-                file_path = base_dir / file_name
-                if file_path.exists():
-                    try:
-                        if file_path.is_dir():
-                            await asyncio.to_thread(shutil.rmtree, file_path)
-                        else:
-                            await asyncio.to_thread(file_path.unlink)
-                        logger.info(f"已删除: {file_path}")
-                    except Exception as e:
-                        logger.warning(f"删除失败 {file_path}: {e}")
+        # 展平 product 后并行：2 个目录 × 5 个名字 = 10 个独立 IO，串行 to_thread 是 10× round-trip
+        async def _delete_one(file_path):
+            if not file_path.exists():
+                return
+            try:
+                if file_path.is_dir():
+                    await asyncio.to_thread(shutil.rmtree, file_path)
+                else:
+                    await asyncio.to_thread(file_path.unlink)
+                logger.info(f"已删除: {file_path}")
+            except Exception as e:
+                logger.warning(f"删除失败 {file_path}: {e}")
+
+        delete_targets = [base_dir / file_name for base_dir in memory_paths for file_name in files_to_delete]
+        await asyncio.gather(*(_delete_one(p) for p in delete_targets), return_exceptions=True)
     except Exception as e:
         logger.error(f"删除记忆文件时出错: {e}")
     
@@ -1621,7 +1636,7 @@ async def clear_voice_ids():
     """清除所有角色的本地Voice ID记录"""
     try:
         _config_manager = get_config_manager()
-        characters = _config_manager.load_characters()
+        characters = await _config_manager.aload_characters()
         cleared_count = 0
         
         # 清除所有猫娘的voice_id
@@ -1710,7 +1725,7 @@ async def set_microphone(request: Request):
         
         # 使用标准的load/save函数
         _config_manager = get_config_manager()
-        characters_data = _config_manager.load_characters()
+        characters_data = await _config_manager.aload_characters()
         
         # 添加或更新麦克风选择
         characters_data['当前麦克风'] = microphone_id
@@ -1732,7 +1747,7 @@ async def get_microphone():
     try:
         _config_manager = get_config_manager()
         # 使用配置管理器加载角色配置
-        characters_data = _config_manager.load_characters()
+        characters_data = await _config_manager.aload_characters()
         
         # 获取保存的麦克风选择
         microphone_id = characters_data.get('当前麦克风')
@@ -1749,7 +1764,7 @@ async def get_voices():
     _config_manager = get_config_manager()
     result = {"voices": _config_manager.get_voices_for_current_api()}
     
-    core_config = _config_manager.get_core_config()
+    core_config = await _config_manager.aget_core_config()
     if core_config.get('IS_FREE_VERSION'):
         core_url = core_config.get('CORE_URL', '')
         openrouter_url = core_config.get('OPENROUTER_URL', '')
@@ -1760,7 +1775,7 @@ async def get_voices():
                 result["free_voices"] = free_voices
     
     # 构建 voice_id → 使用该音色的角色名列表，用于前端显示
-    characters = _config_manager.load_characters()
+    characters = await _config_manager.aload_characters()
     voice_owners = {}
     for catgirl_name, catgirl_config in characters.get('猫娘', {}).items():
         if not isinstance(catgirl_config, dict):
@@ -1782,18 +1797,19 @@ async def get_voice_preview(voice_id: str):
         voices = _config_manager.get_voices_for_current_api()
         voice_data = voices.get(voice_id) if isinstance(voices, dict) else None
         provider = (voice_data or {}).get('provider', '')
-        core_config = _config_manager.get_core_config()
-        
+
         # 优先尝试从 tts_custom 获取 API Key
         try:
             tts_custom_config = _config_manager.get_model_api_config('tts_custom')
             audio_api_key = tts_custom_config.get('api_key', '')
         except Exception:
             audio_api_key = ''
-            
+
         # 如果没有，则回退到核心配置
+        # Codex review: 原先这里顶上还有一个 `core_config = ...`，从未被读取（死代码）。
+        # 全仓 async 化时把死读也改成了 await，反而白跑一次 IO，删。
         if not audio_api_key:
-            core_config = _config_manager.get_core_config()
+            core_config = await _config_manager.aget_core_config()
             audio_api_key = core_config.get('AUDIO_API_KEY', '')
 
         logger.info(f"正在为音色 {voice_id} 生成预览音频...")
@@ -1921,7 +1937,7 @@ async def delete_voice(voice_id: str):
             # 清理所有角色中使用该音色的引用
             _config_manager = get_config_manager()
             session_manager = get_session_manager()
-            characters = _config_manager.load_characters()
+            characters = await _config_manager.aload_characters()
             cleaned_count = 0
             affected_active_names = []
             
@@ -1938,8 +1954,8 @@ async def delete_voice(voice_id: str):
             if cleaned_count > 0:
                 await _config_manager.asave_characters(characters)
                 
-                # 对于受影响的活跃角色，通知并结束 session
-                for name in affected_active_names:
+                # 对于受影响的活跃角色，并行通知 + 结束 session（每个 end_session ≈ 1s）
+                async def _refresh_one(name):
                     logger.info(f"检测到活跃角色 {name} 的 voice_id 已被删除，准备刷新...")
                     # 1. 发送刷新通知
                     await send_reload_page_notice(session_manager[name], "音色已删除，页面即将刷新")
@@ -1949,6 +1965,12 @@ async def delete_voice(voice_id: str):
                         logger.info(f"已结束受影响角色 {name} 的 session")
                     except Exception as e:
                         logger.error(f"结束受影响角色 {name} 的 session 时出错: {e}")
+
+                if affected_active_names:
+                    await asyncio.gather(
+                        *(_refresh_one(name) for name in affected_active_names),
+                        return_exceptions=True,
+                    )
 
                 # 自动重新加载配置
                 initialize_character_data = get_initialize_character_data()
@@ -2867,31 +2889,33 @@ async def get_character_cards():
         # 确保character_cards目录存在
         config_mgr.ensure_chara_directory()
         
-        character_cards = []
-        
-        # 遍历character_cards目录下的所有.chara.json文件
-        for filename in os.listdir(config_mgr.chara_dir):
-            if filename.endswith('.chara.json'):
-                try:
-                    file_path = os.path.join(config_mgr.chara_dir, filename)
-                    
-                    # 读取文件内容
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                    
-                    # 检查是否包含基本信息
-                    if data and data.get('name'):
-                        character_cards.append({
-                            'id': filename[:-11],  # 去掉.chara.json后缀
-                            'name': data['name'],
-                            'description': data.get('description', ''),
-                            'tags': data.get('tags', []),
-                            'rawData': data,
-                            'path': file_path
-                        })
-                except Exception as e:
-                    logger.error(f"读取角色卡文件 {filename} 时出错: {e}")
-        
+        # 遍历 character_cards 目录下的所有 .chara.json 文件，并行读取
+        # （角色卡多时串行 await 会 N 次线程切换 + JSON 解析，整条接口延迟线性增长）
+        candidate_filenames = [f for f in os.listdir(config_mgr.chara_dir) if f.endswith('.chara.json')]
+
+        async def _read_one_card(filename: str):
+            file_path = os.path.join(config_mgr.chara_dir, filename)
+            try:
+                data = await read_json_async(file_path)
+                if data and data.get('name'):
+                    return {
+                        'id': filename[:-11],  # 去掉 .chara.json 后缀
+                        'name': data['name'],
+                        'description': data.get('description', ''),
+                        'tags': data.get('tags', []),
+                        'rawData': data,
+                        'path': file_path,
+                    }
+            except Exception as e:
+                logger.error(f"读取角色卡文件 {filename} 时出错: {e}")
+            return None
+
+        results = await asyncio.gather(
+            *(_read_one_card(fn) for fn in candidate_filenames),
+            return_exceptions=False,
+        )
+        character_cards = [r for r in results if r is not None]
+
         logger.info(f"已加载 {len(character_cards)} 个角色卡")
         return {"success": True, "character_cards": character_cards}
     except Exception as e:
@@ -2967,7 +2991,7 @@ async def save_character_card(request: Request):
         _config_manager = get_config_manager()
         
         # 加载现有的characters.json
-        characters = _config_manager.load_characters()
+        characters = await _config_manager.aload_characters()
         
         # 确保'猫娘'键存在
         if '猫娘' not in characters:
@@ -3027,7 +3051,7 @@ async def export_catgirl_card(name: str):
 
     try:
         _config_manager = get_config_manager()
-        characters = _config_manager.load_characters()
+        characters = await _config_manager.aload_characters()
 
         if name not in characters.get('猫娘', {}):
             return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
@@ -3281,7 +3305,7 @@ async def export_catgirl_settings_only(name: str):
 
     try:
         _config_manager = get_config_manager()
-        characters = _config_manager.load_characters()
+        characters = await _config_manager.aload_characters()
 
         if name not in characters.get('猫娘', {}):
             return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
@@ -3450,8 +3474,7 @@ async def import_character_card(zip_file: UploadFile = File(...)):
             if character_json_path.exists():
                 # 非加密格式
                 try:
-                    with open(character_json_path, 'r', encoding='utf-8') as f:
-                        character_data = json.load(f)
+                    character_data = await read_json_async(character_json_path)
                 except json.JSONDecodeError as e:
                     logger.warning(f"[导入角色卡] 解析 character.json 失败: {e}")
                     return JSONResponse({'success': False, 'error': f'角色卡解析失败: {str(e)}'}, status_code=400)
@@ -3488,15 +3511,14 @@ async def import_character_card(zip_file: UploadFile = File(...)):
             metadata_path = extract_path / 'metadata.json'
             metadata = {}
             if metadata_path.exists():
-                with open(metadata_path, 'r', encoding='utf-8') as f:
-                    metadata = json.load(f)
+                metadata = await read_json_async(metadata_path)
 
         character_name = character_data.get('档案名', '未命名角色')
 
         _config_manager = get_config_manager()
 
         async with _ugc_sync_lock:
-            characters = _config_manager.load_characters()
+            characters = await _config_manager.aload_characters()
 
             # 检查是否已存在同名角色，使用 Windows 风格的命名 (x)
             if character_name in characters.get('猫娘', {}):
@@ -3729,7 +3751,7 @@ async def export_catgirl_with_portrait(
     temp_dir = None
     try:
         _config_manager = get_config_manager()
-        characters = _config_manager.load_characters()
+        characters = await _config_manager.aload_characters()
 
         if name not in characters.get('猫娘', {}):
             return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)

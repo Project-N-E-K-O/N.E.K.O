@@ -2927,6 +2927,7 @@
         "selectedActions": "{{count}} animations selected",
         "selectedSeparator": ", ",
         "selectedInfo": "{{songCount}} songs and {{actionCount}} animations selected",
+        "bindingsSelected": "Bindings tab: {{bindingSongCount}} songs, {{bindingActionCount}} animations selected; bundle total: {{bundleSongCount}} songs, {{bundleActionCount}} animations",
         "missing": "Missing",
         "unknownError": "Unknown error",
         "calibration": "Calibrate Animation",

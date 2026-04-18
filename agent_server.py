@@ -2379,10 +2379,13 @@ async def shutdown():
     if bridge is not None:
         try:
             bridge._stop.set()
-            # 等 recv 线程退出（RCVTIMEO=1s，最多等 2s），避免 close 与 recv 竞态
-            for _t in (getattr(bridge, '_recv_thread', None), getattr(bridge, '_analyze_recv_thread', None)):
-                if _t is not None:
-                    await asyncio.to_thread(_t.join, 2.0)
+            # 等 recv 线程退出（RCVTIMEO=1s，最多等 2s）—— 两个线程并行 join，避免串行 4s
+            _recv_threads = [t for t in (getattr(bridge, '_recv_thread', None), getattr(bridge, '_analyze_recv_thread', None)) if t is not None]
+            if _recv_threads:
+                await asyncio.gather(
+                    *(asyncio.to_thread(_t.join, 2.0) for _t in _recv_threads),
+                    return_exceptions=True,
+                )
             try:
                 import zmq as _zmq
 

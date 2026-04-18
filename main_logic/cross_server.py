@@ -573,19 +573,21 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                 bullet_ws = None
                 await asyncio.sleep(0.03)  # 重连前等待
 
-        # 关闭资源
-        for ws in [sync_ws, binary_ws, bullet_ws]:
-            if ws:
-                try:
-                    await ws.close()
-                except Exception:
-                    pass
-        for sess in [sync_session, binary_session, bullet_session]:
-            if sess:
-                try:
-                    await sess.close()
-                except Exception:
-                    pass
+        # 关闭资源（并行：3 个 ws + 3 个 session 互相独立）
+        async def _safe_close(target):
+            if target is None:
+                return
+            try:
+                await target.close()
+            except Exception as e:
+                # 已进入重连/退出阶段，close 失败不影响后续流程；记 debug 方便排障
+                logger.debug(f"_safe_close: ignored exception during close: {e}")
+
+        await asyncio.gather(
+            _safe_close(sync_ws), _safe_close(binary_ws), _safe_close(bullet_ws),
+            _safe_close(sync_session), _safe_close(binary_session), _safe_close(bullet_session),
+            return_exceptions=True,
+        )
         for rdr in [sync_reader, binary_reader, bullet_reader]:
             if rdr:
                 try:

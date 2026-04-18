@@ -638,7 +638,10 @@
                     window.syncVoiceChatComposerHidden(false);
                 }
 
-                window.showStatusToast(window.t ? window.t('app.initializingText') : '\u6B63\u5728\u521D\u59CB\u5316\u6587\u672C\u5BF9\u8BDD...', 3000);
+                // 切换猫娘期间会话建立耗时常 >5s（模型加载 + 后端冷加载），
+                // 默认 3s toast 在真空期间消失会让用户误以为"没反应就报错"。
+                var initToastMs1 = (S.isSwitchingCatgirl) ? 8000 : 3000;
+                window.showStatusToast(window.t ? window.t('app.initializingText') : '\u6B63\u5728\u521D\u59CB\u5316\u6587\u672C\u5BF9\u8BDD...', initToastMs1);
 
                 // Wait for session_started
                 var sessionStartPromise = new Promise(function (resolve, reject) {
@@ -778,7 +781,9 @@
                 screenshotButton.disabled = true;
                 resetSessionButton.disabled = false;
 
-                window.showStatusToast(window.t ? window.t('app.initializingText') : '\u6B63\u5728\u521D\u59CB\u5316\u6587\u672C\u5BF9\u8BDD...', 3000);
+                // 同上：切换期间的初始化窗口比默认 3s 更长，延长 toast 避免真空感
+                var initToastMs2 = (S.isSwitchingCatgirl) ? 8000 : 3000;
+                window.showStatusToast(window.t ? window.t('app.initializingText') : '\u6B63\u5728\u521D\u59CB\u5316\u6587\u672C\u5BF9\u8BDD...', initToastMs2);
 
                 try {
                     var sessionStartPromise = new Promise(function (resolve, reject) {
