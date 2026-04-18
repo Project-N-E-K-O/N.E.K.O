@@ -343,6 +343,9 @@ async def test_user_input_during_agent_delivery_sets_preempted():
         await asyncio.sleep(0.01)
         if mgr.state.phase in (ProactivePhase.PHASE1, ProactivePhase.PHASE2):
             break
+    assert mgr.state.phase in (ProactivePhase.PHASE1, ProactivePhase.PHASE2), (
+        "等待 trigger_agent_callbacks 进入 proactive phase 超时"
+    )
 
     await mgr.state.fire(SessionEvent.USER_INPUT, sid="user_new_sid")
     # sticky flag 应已翻
