@@ -378,15 +378,24 @@
 
     // ======================== 拟真输出队列 ========================
 
+    function createRealisticQueueOwnerToken() {
+        return 'realistic-queue-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+    }
+
     async function processRealisticQueue(queueVersion) {
         queueVersion = queueVersion || (window._realisticGeminiVersion || 0);
-        if (window._isProcessingRealisticQueue) return;
-        window._isProcessingRealisticQueue = true;
+        if (window._realisticProcessingOwner) return;
+
+        const processingOwner = createRealisticQueueOwnerToken();
+        window._realisticProcessingOwner = processingOwner;
 
         const chatContainer = S.dom.chatContainer;
 
         try {
             while (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
+                if (window._realisticProcessingOwner !== processingOwner) {
+                    break;
+                }
                 if ((window._realisticGeminiVersion || 0) !== queueVersion) {
                     break;
                 }
@@ -398,6 +407,9 @@
                 }
 
                 if ((window._realisticGeminiVersion || 0) !== queueVersion) {
+                    break;
+                }
+                if (window._realisticProcessingOwner !== processingOwner) {
                     break;
                 }
 
@@ -415,10 +427,14 @@
                 }
             }
         } finally {
-            window._isProcessingRealisticQueue = false;
-            // 兜底检查：如果在循环结束到重置标志位之间又有新消息进入队列，递归触发
-            if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
-                processRealisticQueue(window._realisticGeminiVersion || 0);
+            // 只有当前 owner 仍然匹配时，才说明没有任何外部路径（discard / audio-capture）
+            // 在处理中途接管过队列；这时我们才能释放自己的锁并决定是否递归拉起新 processor。
+            // 如果 owner 已经变化，说明已经有新的 processor 接管，当前实例不能再动锁也不能再递归。
+            if (window._realisticProcessingOwner === processingOwner) {
+                window._realisticProcessingOwner = null;
+                if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
+                    processRealisticQueue(window._realisticGeminiVersion || 0);
+                }
             }
         }
     }

@@ -847,6 +847,14 @@
                     window.live2dManager.resumeRendering();
                 }
             }
+
+            document.querySelectorAll(
+                '#live2d-floating-buttons, #vrm-floating-buttons, #mmd-floating-buttons, ' +
+                '#live2d-lock-icon, #vrm-lock-icon, #mmd-lock-icon, ' +
+                '#live2d-return-button-container, #vrm-return-button-container, #mmd-return-button-container'
+            ).forEach(function (el) {
+                el.style.display = '';
+            });
         } catch (error) {
             console.error('[UI] 显示主界面失败:', error);
         }
