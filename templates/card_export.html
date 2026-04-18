@@ -15,6 +15,16 @@
     <script src="/static/theme-manager.js"></script>
 </head>
 <body>
+    <!-- 页面标题栏 - 支持拖动窗口 -->
+    <div class="page-title-bar">
+        <h2 data-i18n="cardExport.title" data-text="角色卡导出">角色卡导出</h2>
+        <button id="back-btn" class="close-btn" data-i18n-title="cardExport.back" title="返回">
+            <img src="/static/icons/close_button.png" data-i18n-alt="common.close" alt="关闭">
+        </button>
+    </div>
+
+    <!-- 主内容区域 -->
+    <div id="main-content">
     <!-- 隐藏的模型渲染区域（全屏尺寸，保持正确宽高比） -->
     <div id="model-viewport">
         <div id="live2d-container">
@@ -49,13 +59,6 @@
 
     <!-- 右侧：控制面板 -->
     <div id="control-panel">
-        <div id="panel-header">
-            <h2 data-i18n="cardExport.title">角色卡导出</h2>
-            <button id="back-btn" class="btn-icon" data-i18n-title="cardExport.back" title="返回">
-                <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
-            </button>
-        </div>
-
         <!-- 标签页切换 -->
         <div id="panel-tabs">
             <button class="panel-tab active" data-tab="model-tab" data-i18n="cardExport.modelTab">模型调整</button>
@@ -143,6 +146,7 @@
         <div class="control-section export-actions">
             <button id="export-full-btn" class="btn-primary" data-i18n="cardExport.exportFull">导出角色卡</button>
         </div>
+    </div>
     </div>
 
     <!-- Live2D SDK -->

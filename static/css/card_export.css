@@ -18,7 +18,129 @@ html, body {
 
 body {
     display: flex;
+    flex-direction: column;
+}
+
+/* --- 页面标题栏 --- */
+.page-title-bar {
+    background: linear-gradient(to right, #4BD4FD, #17A7FF);
+    padding: 18px 24px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-radius: 0;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    flex-shrink: 0;
+    -webkit-app-region: drag;
+}
+
+.page-title-bar .close-btn {
+    -webkit-app-region: no-drag;
+}
+
+.page-title-bar h2 {
+    margin: 0;
+    font-size: clamp(0.9rem, 2.5vw, 1.5rem);
+    font-weight: 600;
+    position: relative;
+    font-family: 'Comic Neue', 'Source Han Sans CN', 'Noto Sans SC', sans-serif;
+    letter-spacing: 1px;
+    color: transparent;
+    white-space: nowrap;
+    --button-text-stroke-color: #22b3ff;
+}
+
+.page-title-bar h2::before {
+    content: attr(data-text);
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    z-index: -1;
+    color: var(--button-text-stroke-color);
+    -webkit-text-stroke: 1px var(--button-text-stroke-color);
+    text-shadow:
+        2px 0 0 var(--button-text-stroke-color),
+        0 2px 0 var(--button-text-stroke-color),
+        -2px 0 0 var(--button-text-stroke-color),
+        0 -2px 0 var(--button-text-stroke-color),
+        1.4px 1.4px 0 var(--button-text-stroke-color),
+        -1.4px 1.4px 0 var(--button-text-stroke-color),
+        1.4px -1.4px 0 var(--button-text-stroke-color),
+        -1.4px -1.4px 0 var(--button-text-stroke-color),
+        1.8px 0.8px 0 var(--button-text-stroke-color),
+        -1.8px 0.8px 0 var(--button-text-stroke-color),
+        1.8px -0.8px 0 var(--button-text-stroke-color),
+        -1.8px -0.8px 0 var(--button-text-stroke-color),
+        0.8px 1.8px 0 var(--button-text-stroke-color),
+        -0.8px 1.8px 0 var(--button-text-stroke-color),
+        0.8px -1.8px 0 var(--button-text-stroke-color),
+        -0.8px -1.8px 0 var(--button-text-stroke-color),
+        1px 0 0 var(--button-text-stroke-color),
+        -1px 0 0 var(--button-text-stroke-color),
+        0 1px 0 var(--button-text-stroke-color),
+        0 -1px 0 var(--button-text-stroke-color);
+    white-space: nowrap;
+}
+
+.page-title-bar h2::after {
+    content: attr(data-text);
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 10;
+    background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    text-shadow: none;
+    white-space: nowrap;
+}
+
+.page-title-bar .close-btn {
+    background: transparent;
+    border: none;
+    color: #fff;
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+    border-radius: 4px;
+    transition: background 0.2s, transform 0.1s ease;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.page-title-bar .close-btn img {
+    width: 32px;
+    height: 32px;
+    display: block;
+}
+
+.page-title-bar .close-btn:hover {
+    background: rgba(255, 255, 255, 0.2);
+    transform: translateY(-1px);
+}
+
+.page-title-bar .close-btn:active {
+    background: rgba(255, 255, 255, 0.3);
+    transform: translateY(1px) scale(0.95);
+    opacity: 0.9;
+}
+
+/* --- 主内容区域 --- */
+#main-content {
+    display: flex;
     flex-direction: row;
+    flex: 1;
+    min-height: 0;
 }
 
 /* --- 隐藏的模型渲染层 --- */
@@ -177,36 +299,9 @@ body {
     display: flex;
     flex-direction: column;
     overflow-y: auto;
-    overflow-y: overlay;
+    scrollbar-gutter: stable;
     padding: 20px;
     gap: 16px;
-}
-
-#panel-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-}
-
-#panel-header h2 {
-    font-size: 18px;
-    font-weight: 600;
-    color: #40C5F1;
-}
-
-.btn-icon {
-    background: none;
-    border: none;
-    color: #90a4ae;
-    cursor: pointer;
-    padding: 6px;
-    border-radius: 6px;
-    transition: background 0.2s, color 0.2s;
-}
-
-.btn-icon:hover {
-    background: rgba(64, 197, 241, 0.15);
-    color: #40C5F1;
 }
 
 /* --- 控制分区 --- */
@@ -327,6 +422,7 @@ body {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
+    scrollbar-gutter: stable;
 }
 
 .tab-content.active {
@@ -338,6 +434,10 @@ body {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
     gap: 8px;
+    border: 2px solid #b3e5fc;
+    border-radius: 10px;
+    padding: 10px;
+    background: rgba(179, 229, 252, 0.08);
 }
 
 .sticker-item {
@@ -550,7 +650,7 @@ body {
 
 /* --- 移动端适配 --- */
 @media (max-width: 768px) {
-    body { flex-direction: column; }
+    #main-content { flex-direction: column; }
 
     #card-edit-area {
         flex: none;
@@ -648,6 +748,11 @@ body {
 
 [data-theme="dark"] .sticker-item {
     background: rgba(15, 52, 96, 0.3);
+}
+
+[data-theme="dark"] #sticker-grid {
+    border-color: #0f3460;
+    background: rgba(15, 52, 96, 0.15);
 }
 
 [data-theme="dark"] .sticker-delete-btn {
