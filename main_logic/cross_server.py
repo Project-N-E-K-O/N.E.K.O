@@ -453,10 +453,12 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 turn_end_meta = message.get("meta") if isinstance(message, dict) else None
                                 if not isinstance(turn_end_meta, dict):
                                     turn_end_meta = None
+                                # meta 由 core 端 turn end 原子打标；avatar 互动若被用户
+                                # 接管则 core 会清空 meta，所以这里不再需要 had_user_input
+                                # 二次兜底，避免"用户语音缓存刚好先入队"误落回普通路径。
                                 is_avatar_interaction_turn = (
                                     turn_end_meta is not None
                                     and turn_end_meta.get("kind") == "avatar_interaction"
-                                    and not had_user_input_this_turn
                                 )
                                 avatar_turn_start_index = min(current_turn_start_index, len(chat_history))
                                 avatar_turn_slice = chat_history[avatar_turn_start_index:] if is_avatar_interaction_turn else []
@@ -475,6 +477,10 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                     memory_note = str(turn_end_meta.get('memory_note') or '').strip()
                                     memory_dedupe_key = str(turn_end_meta.get('memory_dedupe_key') or '').strip()
                                     memory_dedupe_rank = turn_end_meta.get('memory_dedupe_rank', 1)
+                                    # 先快照 dedupe 槽位，/cache 失败时回滚，避免 8s 窗口内后续
+                                    # 真实互动被误判为"已记录"丢失。
+                                    dedupe_rollback_key = (memory_dedupe_key or memory_note).strip()
+                                    dedupe_prior_entry = avatar_interaction_memory_cache.get(dedupe_rollback_key)
                                     should_persist_avatar_turn = (
                                         bool(avatar_turn_assistant_text)
                                         and _should_persist_avatar_interaction_memory(
@@ -489,6 +495,7 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                             {'role': 'user', 'content': [{'type': 'text', 'text': memory_note}]},
                                             {'role': 'assistant', 'content': [{'type': 'text', 'text': avatar_turn_assistant_text}]},
                                         ]
+                                        cache_persist_failed = False
                                         try:
                                             async with aiohttp.ClientSession() as session:
                                                 async with session.post(
@@ -498,9 +505,16 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                                 ) as response:
                                                     result = await response.json()
                                                     if result.get('status') == 'error':
+                                                        cache_persist_failed = True
                                                         logger.debug(f"[{lanlan_name}] avatar interaction cache skipped: {result.get('message', 'unknown error')}")
                                         except Exception as e:
+                                            cache_persist_failed = True
                                             logger.debug(f"[{lanlan_name}] avatar interaction cache failed: {e}")
+                                        if cache_persist_failed and dedupe_rollback_key:
+                                            if dedupe_prior_entry is not None:
+                                                avatar_interaction_memory_cache[dedupe_rollback_key] = dedupe_prior_entry
+                                            else:
+                                                avatar_interaction_memory_cache.pop(dedupe_rollback_key, None)
 
                                     if avatar_turn_slice:
                                         del chat_history[avatar_turn_start_index:]
@@ -508,6 +522,9 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                             last_synced_index = len(chat_history)
 
                                     current_turn_start_index = len(chat_history)
+                                    # avatar 分支 continue 会跳过正常 finally 的 pending_user_images
+                                    # 清理，陈旧截图/摄像帧若留到下一轮 analyzer 会变成"跨轮污染"。
+                                    pending_user_images = []
                                     continue
                                 # 非阻塞地向tool_server发送最近对话，供分析器识别潜在任务。
                                 # 仅 agent-callback 专用通道会显式跳过，避免任务结果回调引发二次分析。
