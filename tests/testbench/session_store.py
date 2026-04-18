@@ -91,6 +91,13 @@ class Session:
     persona: dict[str, Any] = field(default_factory=dict)
     stage: str = "persona_setup"
 
+    # P10: memory op preview cache. Key = op id (e.g. "facts.extract"), value =
+    # a dict ``{created_at: datetime, payload: dict, params: dict}``. A given
+    # op has at most one pending preview; re-triggering overwrites. Entries
+    # older than ``MEMORY_PREVIEW_TTL_SECONDS`` are evicted on access. Lives
+    # in-memory only (not persisted) — previews are intentionally transient.
+    memory_previews: dict[str, dict[str, Any]] = field(default_factory=dict)
+
     # Mutated directly by SessionStore under its own lock.
     state: SessionState = SessionState.IDLE
     busy_op: str | None = None

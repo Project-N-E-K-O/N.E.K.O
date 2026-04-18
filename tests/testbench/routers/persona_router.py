@@ -1,17 +1,23 @@
-"""Setup workspace backend — session persona + import from real character.
+"""Setup workspace backend — session persona + character imports.
 
-Scope (PLAN §Workspace 1 + §Setup workspace):
+Scope (PLAN §Workspace 1 + §Setup workspace + P10 preset 补丁):
 
-- ``GET  /api/persona``                         full persona of active session.
-- ``PUT  /api/persona``                         replace persona (whole body).
-- ``PATCH /api/persona``                        patch persona (partial body).
-- ``GET  /api/persona/real_characters``         list cat girls defined in
-                                                the tester's *real* (un-sandboxed)
-                                                ``characters.json`` so the UI
-                                                can populate the Import list.
-- ``POST /api/persona/import_from_real/{name}`` copy memory/ files + persona
-                                                metadata from a real character
-                                                into the current sandbox.
+- ``GET   /api/persona``                              full persona of active session.
+- ``PUT   /api/persona``                              replace persona (whole body).
+- ``PATCH /api/persona``                              patch persona (partial body).
+- ``GET   /api/persona/effective_system_prompt``      resolve + placeholder-replace.
+- ``GET   /api/persona/real_characters``              list cat girls in the tester's
+                                                      *real* (un-sandboxed)
+                                                      ``characters.json``.
+- ``POST  /api/persona/import_from_real/{name}``      copy memory/ files + persona
+                                                      metadata from a real character
+                                                      into the current sandbox.
+- ``GET   /api/persona/builtin_presets``              list git-tracked character
+                                                      presets bundled with testbench
+                                                      (``tests/testbench/presets/``).
+- ``POST  /api/persona/import_builtin_preset/{id}``   apply a bundled preset — also
+                                                      serves as "reset sandbox to
+                                                      known state" when re-applied.
 
 All mutating endpoints hold the per-session lock via
 :meth:`SessionStore.session_operation`; reads bypass the lock because they
@@ -22,16 +28,22 @@ Implementation notes:
       the session's scratch tree. To read the tester's real character files
       during an active session we grab :meth:`Sandbox.real_paths` which
       returns the pre-patch values.
-    * Import is **filesystem-first**: we recursively copy the real
-      character's memory subdirectory into the sandbox so upstream code
-      (``PersonaManager`` / ``FactStore`` / …) can operate unchanged in
-      P07+. The persona metadata form fields (``master_name`` / prompt) are
-      pulled from the real ``characters.json`` to keep the Setup UI in sync.
+    * Import (both *real* and *builtin preset*) is **filesystem-first**: we
+      recursively copy the source character's memory subdirectory into the
+      sandbox so upstream code (``PersonaManager`` / ``FactStore`` / …) can
+      operate unchanged in P07+. The persona metadata form fields
+      (``master_name`` / prompt) are pulled from the source ``characters.json``
+      to keep the Setup UI in sync.
+    * Built-in presets share the same write path as real-character imports —
+      only the *source directory* differs. This keeps "whatever was imported"
+      indistinguishable from the sandbox's POV, so downstream code never
+      needs to branch on import origin.
     * Nothing in this router ever writes to the *real* (un-sandboxed)
       filesystem — the whole design treats the host filesystem as read-only.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -45,6 +57,7 @@ from utils.config_manager import get_config_manager
 
 from tests.testbench.logger import python_logger
 from tests.testbench.persona_config import PersonaConfig
+from tests.testbench.presets import PRESETS_ROOT
 from tests.testbench.session_store import (
     SessionConflictError,
     get_session_store,
@@ -515,6 +528,314 @@ async def import_from_real(name: str) -> dict[str, Any]:
                 "known_files": known,
                 "extra_files": extra,
                 "sandbox_memory_dir": str(sb_memory_dir / name),
+            }
+    except SessionConflictError as exc:
+        raise _session_conflict_to_http(exc) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail={"message": str(exc)}) from exc
+
+
+# ── built-in preset discovery / import ──────────────────────────────
+#
+# Preset 与 real-character 导入**共享** `_write_sandbox_characters_json` +
+# `_copytree_safe` + session.persona 回填逻辑, 只是数据源换成仓库里的
+# `tests/testbench/presets/<preset_id>/`. 设计成"内置虚拟 real"而不是另一套
+# endpoint + service, 是为了保证:
+#   (a) 测试人员感知一致 — 两种来源的导入效果完全相同 (覆盖 characters.json +
+#       覆盖 memory/<char>/ 文件 + 更新 session.persona);
+#   (b) 未来新增 "从 Hugging Face 拉" / "从压缩包导入" 时能复用这条管线;
+#   (c) 不留"只灌 memory 不灌 characters.json"之类的半成品调用路径.
+
+
+def _load_preset_meta(preset_id: str) -> dict[str, Any] | None:
+    """Read ``presets/<id>/meta.json``; return None if missing/invalid.
+
+    ``meta.json`` schema::
+
+        {
+          "id": "<preset_id>",                ← 必须与目录名一致
+          "display_name": "<人类可读名>",
+          "description": "<一句话说明>",
+          "language": "zh-CN" | "en" | ...,
+          "character_name": "<在 characters.json 里的 key>"
+        }
+    """
+    meta_path = PRESETS_ROOT / preset_id / "meta.json"
+    if not meta_path.exists():
+        return None
+    try:
+        with meta_path.open("r", encoding="utf-8") as fp:
+            data = json.load(fp)
+    except (OSError, json.JSONDecodeError) as exc:
+        python_logger().warning(
+            "persona_router: failed to read preset meta %s: %s", meta_path, exc,
+        )
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def _iter_preset_dirs() -> list[tuple[str, Path]]:
+    """Enumerate ``presets/*/`` subdirs that contain a ``meta.json``.
+
+    返回按 id 字典序排好的 ``(preset_id, preset_dir)`` 列表. 忽略
+    ``__pycache__``、``__init__.py`` 这类非预设条目.
+    """
+    if not PRESETS_ROOT.exists():
+        return []
+    items: list[tuple[str, Path]] = []
+    for child in sorted(PRESETS_ROOT.iterdir()):
+        if not child.is_dir():
+            continue
+        if child.name.startswith("_") or child.name.startswith("."):
+            continue
+        if not (child / "meta.json").exists():
+            continue
+        items.append((child.name, child))
+    return items
+
+
+def _normalize_preset_facts(facts: Any) -> Any:
+    """Fill in missing ``hash`` fields for seed facts.
+
+    主程序 ``FactStore`` 用 ``sha256(text)[:16]`` 做 dedup key; 预设文件里我们
+    故意把 ``hash`` 留空字符串, 导入时现算 — 这样维护预设不用手算哈希, 也
+    避免复制时文本微调却忘改 hash 造成 dedup 混乱.
+    """
+    if not isinstance(facts, list):
+        return facts
+    for fact in facts:
+        if not isinstance(fact, dict):
+            continue
+        text = fact.get("text")
+        if not isinstance(text, str) or not text:
+            continue
+        current_hash = fact.get("hash")
+        if isinstance(current_hash, str) and current_hash:
+            continue
+        fact["hash"] = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    return facts
+
+
+def _read_preset_characters_json(preset_dir: Path) -> dict[str, Any] | None:
+    """Load the preset's ``characters.json`` (same shape as real one)."""
+    path = preset_dir / "characters.json"
+    if not path.exists():
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as fp:
+            data = json.load(fp)
+    except (OSError, json.JSONDecodeError) as exc:
+        python_logger().warning(
+            "persona_router: preset %s has broken characters.json: %s",
+            preset_dir.name, exc,
+        )
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _summarize_preset(preset_id: str, preset_dir: Path) -> dict[str, Any] | None:
+    """Produce a UI-facing summary for ``GET /api/persona/builtin_presets``.
+
+    Invalid presets (missing meta / bad characters.json / character_name
+    mismatch) return None so the caller can filter them out of the list.
+    """
+    meta = _load_preset_meta(preset_id)
+    if meta is None:
+        return None
+    raw = _read_preset_characters_json(preset_dir)
+    if raw is None:
+        return None
+    character_name = str(meta.get("character_name", "") or "")
+    entry = _extract_catgirl_entry(raw, character_name) if character_name else None
+    if entry is None:
+        return None
+
+    mem_dir = preset_dir / "memory" / character_name
+    has_mem_dir = mem_dir.is_dir()
+    present = sorted(p.name for p in mem_dir.iterdir()) if has_mem_dir else []
+
+    master_entry = raw.get("主人") if isinstance(raw.get("主人"), dict) else {}
+    master_name = str(master_entry.get("档案名", "") or "")
+
+    return {
+        "id": preset_id,
+        "display_name": str(meta.get("display_name") or preset_id),
+        "description": str(meta.get("description") or ""),
+        "language": str(meta.get("language") or "zh-CN"),
+        "character_name": character_name,
+        "master_name": master_name,
+        "has_system_prompt": bool(_get_reserved_system_prompt(entry)),
+        "memory_files": present,
+    }
+
+
+def _copytree_safe_with_normalization(src: Path, dst: Path) -> list[str]:
+    """Like :func:`_copytree_safe` but post-process ``facts.json`` to fill hashes.
+
+    Only ``facts.json`` is touched; everything else is verbatim ``copy2``.
+    """
+    copied = _copytree_safe(src, dst)
+    facts_path = dst / "facts.json"
+    if facts_path.exists():
+        try:
+            with facts_path.open("r", encoding="utf-8") as fp:
+                data = json.load(fp)
+            _normalize_preset_facts(data)
+            with facts_path.open("w", encoding="utf-8") as fp:
+                json.dump(data, fp, ensure_ascii=False, indent=2)
+        except (OSError, json.JSONDecodeError) as exc:
+            python_logger().warning(
+                "persona_router: normalize facts.json in %s failed: %s",
+                facts_path, exc,
+            )
+    return copied
+
+
+@router.get("/builtin_presets")
+async def list_builtin_presets() -> dict[str, Any]:
+    """Enumerate git-tracked character presets bundled with the testbench.
+
+    用于 Setup → Import 页渲染"内置预设"区. 无需 sandbox / session — 即使空会话
+    也可看列表, 这样用户可以在"建会话 → 灌预设"两步之间先预览有哪些预设.
+    """
+    summaries: list[dict[str, Any]] = []
+    for preset_id, preset_dir in _iter_preset_dirs():
+        summary = _summarize_preset(preset_id, preset_dir)
+        if summary is not None:
+            summaries.append(summary)
+    return {"presets": summaries}
+
+
+@router.post("/import_builtin_preset/{preset_id}")
+async def import_builtin_preset(preset_id: str) -> dict[str, Any]:
+    """Apply a built-in preset to the active session sandbox.
+
+    Side effects (mirror :func:`import_from_real`):
+      * Writes ``sandbox/config/characters.json`` from the preset
+      * Copies ``presets/<id>/memory/<character>/`` → ``sandbox/memory/<character>/``
+        (覆盖同名文件, 其他文件保留)
+      * Fills empty ``hash`` fields in copied ``facts.json``
+      * Updates ``session.persona`` with preset's master/character/system_prompt
+
+    用户反复调用同一个 preset 相当于**一键清零为预设状态**: characters.json 会
+    被整体覆写, memory 里同名 JSON 会被覆盖 (facts/persona/recent 都是源头真
+    相). 但**额外**存在于 sandbox (preset 里没有) 的文件 — 例如用户自己新建的
+    ``reflections.json`` / ``persona_corrections.json`` / ``surfaced.json`` /
+    ``time_indexed.db`` — 不会被动, 需要用户自己去 memory 子页或磁盘上清. 这是
+    故意的: "覆盖性 reset" 而不是 "清空式 reset", 避免丢失用户手动加进去的
+    调试数据.
+    """
+    preset_id = preset_id.strip()
+    if not preset_id:
+        raise HTTPException(status_code=400, detail={"message": "Empty preset id"})
+
+    preset_dir = PRESETS_ROOT / preset_id
+    if not preset_dir.is_dir():
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error_type": "UnknownPreset",
+                "message": f"No built-in preset named {preset_id!r}",
+            },
+        )
+
+    meta = _load_preset_meta(preset_id)
+    if meta is None:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error_type": "BrokenPreset",
+                "message": f"Preset {preset_id!r} has missing or invalid meta.json",
+            },
+        )
+    character_name = str(meta.get("character_name", "") or "").strip()
+    if not character_name:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error_type": "BrokenPreset",
+                "message": f"Preset {preset_id!r} meta.json missing 'character_name'",
+            },
+        )
+
+    raw = _read_preset_characters_json(preset_dir)
+    if raw is None:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error_type": "BrokenPreset",
+                "message": f"Preset {preset_id!r} has missing or invalid characters.json",
+            },
+        )
+    entry = _extract_catgirl_entry(raw, character_name)
+    if entry is None:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error_type": "BrokenPreset",
+                "message": (
+                    f"Preset {preset_id!r} characters.json has no entry for "
+                    f"{character_name!r}"
+                ),
+            },
+        )
+
+    master_entry = raw.get("主人") if isinstance(raw.get("主人"), dict) else {}
+    master_name = str(master_entry.get("档案名", "") or "")
+    system_prompt = _get_reserved_system_prompt(entry)
+    preset_language = str(meta.get("language") or "") or None
+
+    store = get_session_store()
+    try:
+        async with store.session_operation(f"persona.import_preset:{preset_id}") as session:
+            cm = get_config_manager()
+            sb_config_dir = Path(cm.config_dir)
+            sb_memory_dir = Path(cm.memory_dir)
+
+            _write_sandbox_characters_json(
+                sandbox_config_dir=sb_config_dir,
+                master_entry=master_entry,
+                character_name=character_name,
+                character_entry=entry,
+            )
+            copied = _copytree_safe_with_normalization(
+                preset_dir / "memory" / character_name,
+                sb_memory_dir / character_name,
+            )
+
+            persona = PersonaConfig(
+                master_name=master_name,
+                character_name=character_name,
+                language=preset_language or session.persona.get("language") or "zh-CN",
+                system_prompt=system_prompt,
+            )
+            _store(session, persona)
+            session.logger.log_sync(
+                "persona.import_builtin_preset",
+                payload={
+                    "preset_id": preset_id,
+                    "character_name": character_name,
+                    "master_name": master_name,
+                    "files_copied": copied,
+                },
+            )
+            python_logger().info(
+                "persona import built-in preset: %s -> sandbox %s (%d files)",
+                preset_id, session.sandbox.root, len(copied),
+            )
+
+            known = [f for f in copied if f in _KNOWN_MEMORY_FILES]
+            extra = [f for f in copied if f not in _KNOWN_MEMORY_FILES]
+            return {
+                "ok": True,
+                "preset_id": preset_id,
+                "persona": persona.summary(),
+                "copied_files": copied,
+                "known_files": known,
+                "extra_files": extra,
+                "sandbox_memory_dir": str(sb_memory_dir / character_name),
             }
     except SessionConflictError as exc:
         raise _session_conflict_to_http(exc) from exc

@@ -29,6 +29,7 @@ import { toast } from '../../core/toast.js';
 import { el } from '../_dom.js';
 import { renderRawView } from './memory_editor_raw.js';
 import { renderStructuredView } from './memory_editor_structured.js';
+import { renderTriggerPanel } from './memory_trigger_panel.js';
 
 // ── public entry ─────────────────────────────────────────────────────
 
@@ -142,6 +143,31 @@ function mountEditor(host, kind, snapshot) {
       saveBtn, reloadBtn, revertBtn,
     ),
   );
+
+  // ── P10: 触发操作面板 (放在工具条下方, 作为独立 section 不参与 dirty) ───
+  //
+  // commit 成功后由面板回调触发 "reload" 逻辑, 保证编辑器里的数据与磁盘同步
+  // (不复用 reloadBtn 的 click handler, 因为那里会跳 confirm_overwrite; 这里
+  // 是我们主动触发的写入, 测试人员已经明确 Accept 过, 不该再弹框).
+  const triggerHost = el('div', { className: 'memory-trigger-host' });
+  host.append(triggerHost);
+  renderTriggerPanel(triggerHost, kind, {
+    onCommitted: async () => {
+      const res = await api.get(`/api/memory/${kind}`, { expectedStatuses: [404, 409] });
+      if (!res.ok) {
+        statusLine.textContent = res.error?.message || `HTTP ${res.status}`;
+        return;
+      }
+      state.meta = res.data;
+      state.model = res.data.data;
+      state.baseline = canonical(state.model);
+      state.rawText = state.baseline;
+      state.rawValid = true;
+      renderMeta();
+      mountView();
+      statusLine.textContent = i18n('setup.memory.trigger.reloaded_after_commit');
+    },
+  });
 
   // ── badge / meta renderers ────────────────────────────────────────
   function renderMeta() {

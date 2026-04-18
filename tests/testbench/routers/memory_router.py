@@ -50,6 +50,7 @@ from pydantic import BaseModel
 from utils.config_manager import get_config_manager
 
 from tests.testbench.logger import python_logger
+from tests.testbench.pipeline import memory_runner
 from tests.testbench.session_store import (
     SessionConflictError,
     get_session_store,
@@ -265,6 +266,30 @@ async def memory_state() -> dict[str, Any]:
     }
 
 
+# IMPORTANT: ``/previews`` must be declared BEFORE the ``/{kind}`` wildcard
+# so FastAPI's path-matcher doesn't capture it as ``kind="previews"`` and
+# return ``UnknownMemoryKind`` (the wildcard has no static-vs-dynamic
+# preference — whoever declares first wins).
+
+
+@router.get("/previews")
+async def list_memory_previews() -> dict[str, Any]:
+    """Return the session's pending previews for UI badges (P10).
+
+    Does NOT require ``session_operation`` — it's a read of the in-memory
+    cache only. Expired entries (older than
+    :data:`memory_runner.MEMORY_PREVIEW_TTL_SECONDS`) are pruned in the
+    same call so the UI always sees fresh state.
+    """
+    session = _require_session()
+    memory_runner.prune_expired_previews(session)
+    return {
+        "session_id": session.id,
+        "ttl_seconds": memory_runner.MEMORY_PREVIEW_TTL_SECONDS,
+        "previews": memory_runner.list_previews(session),
+    }
+
+
 @router.get("/{kind}")
 async def read_memory(kind: str) -> dict[str, Any]:
     """Return the JSON content of one memory file + metadata envelope.
@@ -311,3 +336,119 @@ async def write_memory(kind: str, body: MemoryWritePayload) -> dict[str, Any]:
             }
     except SessionConflictError as exc:
         raise _wrap_conflict(exc) from exc
+
+
+# ── P10: trigger / commit / discard for memory ops ──────────────────
+#
+# Routing convention:
+#   POST /api/memory/trigger/{op}   body: {params: {...}}
+#   POST /api/memory/commit/{op}    body: {edits: {...}}
+#   POST /api/memory/discard/{op}   body: (empty)
+#   GET  /api/memory/previews
+#
+# We keep these under the same ``/api/memory`` prefix so the UI only
+# needs one base URL for everything memory-related. ``trigger`` and
+# ``commit`` both acquire ``session_operation`` (busy=memory.{op}:{phase})
+# so the single-session lock is honored, matching chat.send / memory.write.
+
+
+def _wrap_memory_op_error(exc: memory_runner.MemoryOpError) -> HTTPException:
+    """Translate :class:`MemoryOpError` to FastAPI's HTTPException.
+
+    Error shape intentionally mirrors the existing handlers (``error_type``
+    + ``message``) so the UI toast renderer stays uniform.
+    """
+    return HTTPException(
+        status_code=exc.status,
+        detail={
+            "error_type": exc.code,
+            "message": exc.message,
+        },
+    )
+
+
+class MemoryTriggerPayload(BaseModel):
+    """Body for ``POST /api/memory/trigger/{op}``.
+
+    All op-specific parameters live inside ``params`` so the wire shape
+    stays stable even as individual ops add/rename knobs. Unknown keys
+    are forwarded as-is to the op handler — handlers document their own
+    contract (see :mod:`tests.testbench.pipeline.memory_runner`).
+    """
+
+    params: dict[str, Any] = {}
+
+
+class MemoryCommitPayload(BaseModel):
+    """Body for ``POST /api/memory/commit/{op}``.
+
+    ``edits`` is an optional dict with a subset of the preview payload
+    fields the tester wants to override before write. Each op's commit
+    handler documents which fields it honors (e.g. ``edits.extracted``
+    for facts.extract, ``edits.reflection.text`` for reflect, ...).
+    Omitting ``edits`` commits the original preview unchanged.
+    """
+
+    edits: dict[str, Any] = {}
+
+
+def _require_op(op: str) -> None:
+    if not memory_runner.is_valid_op(op):
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error_type": "UnknownMemoryOp",
+                "message": (
+                    f"未知 memory op: {op!r}; 合法值: "
+                    f"{', '.join(memory_runner.ALL_OPS)}"
+                ),
+            },
+        )
+
+
+@router.post("/trigger/{op}")
+async def trigger_memory_op(op: str, body: MemoryTriggerPayload) -> dict[str, Any]:
+    """Run the dry-run for ``op`` and cache the result on the session.
+
+    Takes the session lock for the duration of the LLM call (typical
+    memory ops take 2-10 s). Returns the preview payload directly; the
+    UI drawer renders it, lets the tester edit, then POSTs to
+    ``/commit/{op}``. Re-triggering the same op overwrites the cache.
+    """
+    _require_op(op)
+    store = get_session_store()
+    try:
+        async with store.session_operation(f"memory.{op}:preview") as session:
+            result = await memory_runner.trigger_op(session, op, body.params)
+            return result.to_dict()
+    except memory_runner.MemoryOpError as exc:
+        raise _wrap_memory_op_error(exc) from exc
+    except SessionConflictError as exc:
+        raise _wrap_conflict(exc) from exc
+
+
+@router.post("/commit/{op}")
+async def commit_memory_op(op: str, body: MemoryCommitPayload) -> dict[str, Any]:
+    """Write the (possibly tester-edited) cached preview to disk.
+
+    Clears the cache entry on success (and on non-retryable failure —
+    see ``memory_runner.commit_op`` docstring for the rationale).
+    """
+    _require_op(op)
+    store = get_session_store()
+    try:
+        async with store.session_operation(f"memory.{op}:commit") as session:
+            return await memory_runner.commit_op(session, op, body.edits)
+    except memory_runner.MemoryOpError as exc:
+        raise _wrap_memory_op_error(exc) from exc
+    except SessionConflictError as exc:
+        raise _wrap_conflict(exc) from exc
+
+
+@router.post("/discard/{op}")
+async def discard_memory_op(op: str) -> dict[str, Any]:
+    """Drop the cached preview without writing. Idempotent."""
+    _require_op(op)
+    session = _require_session()
+    dropped = memory_runner.discard_op(session, op)
+    return {"op": op, "discarded": dropped}

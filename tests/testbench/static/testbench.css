@@ -865,6 +865,224 @@ button.memory-item-delete:hover {
   border-style: solid;
 }
 
+/* =====================================================================
+ * P10 · 记忆合成触发面板 + 预览 drawer
+ *   — 挂在 memory editor 下方作为独立 section, 视觉上与编辑器解耦:
+ *     较浅的容器 / 次级标题 / buttons row / 可展开的 drawer.
+ *   — drawer 内字段统一用 .memory-preview-field (label + control 上下排).
+ * ===================================================================== */
+
+.memory-trigger-host {
+  margin-top: var(--density-md);
+}
+.memory-trigger-panel {
+  margin-top: var(--density-md);
+  padding: var(--density-md);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.memory-trigger-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 0 0 4px 0;
+  letter-spacing: 0.02em;
+}
+.memory-trigger-buttons {
+  margin-top: 8px;
+  gap: var(--density-sm);
+  flex-wrap: wrap;
+}
+
+.memory-preview-drawer-host {
+  margin-top: 10px;
+}
+.memory-preview-drawer {
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  padding: var(--density-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--density-sm);
+  box-shadow: var(--shadow-sm);
+}
+.memory-preview-drawer.err {
+  border-color: var(--err);
+  background: rgba(255, 107, 107, 0.06);
+}
+.memory-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--density-sm);
+  margin-bottom: 2px;
+}
+.memory-preview-header > strong { font-size: 13.5px; }
+.memory-preview-close {
+  font-size: 11px;
+  padding: 2px 8px;
+  color: var(--text-tertiary);
+}
+.memory-preview-error-type {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--err);
+  margin: 0;
+}
+
+.memory-preview-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--density-sm);
+}
+.memory-preview-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.memory-preview-field > label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+.memory-preview-field input[type="text"],
+.memory-preview-field input[type="number"],
+.memory-preview-field select,
+.memory-preview-field textarea {
+  width: 100%;
+  padding: 4px 8px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: 12.5px;
+}
+.memory-preview-field textarea {
+  resize: vertical;
+  font-family: var(--font-mono);
+  line-height: 1.5;
+  min-height: 40px;
+}
+.memory-preview-field textarea[readonly] {
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  cursor: default;
+}
+.memory-preview-field .muted.tiny { margin-top: 1px; }
+
+.memory-preview-stat-row {
+  display: flex;
+  gap: var(--density-md);
+  flex-wrap: wrap;
+  align-items: center;
+  padding: 4px 0;
+  border-bottom: 1px dashed var(--border);
+}
+.memory-preview-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 70px;
+}
+.memory-preview-stat-value {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--text-primary);
+}
+.memory-preview-code-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.memory-preview-warnings {
+  background: rgba(255, 194, 104, 0.08);
+  border-left: 3px solid var(--warn);
+  border-radius: 2px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.memory-preview-warn-row { white-space: pre-wrap; }
+.memory-preview-params {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.memory-preview-edit { display: flex; flex-direction: column; gap: var(--density-sm); }
+.memory-preview-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--density-sm);
+}
+.memory-preview-item {
+  /* 内部节点重用 .memory-item-card 已有的盒子感. 这里只做微调. */
+  padding: 8px 10px;
+  position: relative;
+}
+.memory-preview-drop {
+  align-self: flex-start;
+  font-size: 11px;
+  padding: 2px 10px;
+  color: var(--text-tertiary);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-top: 2px;
+}
+.memory-preview-drop:hover {
+  color: var(--err);
+  border-color: var(--err);
+}
+
+.memory-preview-details {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  font-size: 12px;
+}
+.memory-preview-details > summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  padding: 2px 0;
+}
+.memory-preview-readonly-row {
+  color: var(--text-secondary);
+  padding: 2px 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  white-space: pre-wrap;
+}
+.memory-preview-raw {
+  background: var(--bg-page);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font-size: 11.5px;
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.memory-preview-actions {
+  margin-top: 6px;
+  gap: var(--density-sm);
+}
+
+.memory-entity-input {
+  display: inline-block;
+  width: 100%;
+}
+.memory-entity-input > input {
+  width: 100%;
+}
+
 /* Inline warning banner (recent 子页顶部提示). */
 .memory-inline-warn {
   color: var(--text-secondary);
@@ -1063,6 +1281,41 @@ table.tbl .tbl-key-field {
   word-break: break-all;
 }
 .import-row-actions { justify-self: end; }
+
+/* Setup → Import 里 "内置预设" section + divider + 预设卡片特殊布局 -------- */
+.import-section { margin-top: var(--density-md); }
+.import-section:first-child { margin-top: 0; }
+.import-section-heading {
+  margin: 0 0 2px 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.import-divider {
+  border: none;
+  border-top: 1px dashed var(--border);
+  margin: var(--density-lg) 0 var(--density-md) 0;
+}
+/* 内置预设卡多信息密度: 名字 / 描述 / meta / 文件 / 按钮 - 改用纵向布局, 不走
+   grid (否则 description 那一行会撑歪 columns). 按钮放右下角浮动. */
+.import-row.preset-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  position: relative;
+  padding-right: 160px; /* 给右侧按钮留位 */
+}
+.preset-row-desc {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.import-row.preset-row > .import-row-actions {
+  position: absolute;
+  top: var(--density-sm);
+  right: var(--density-md);
+  justify-self: auto;
+}
 
 /* Virtual Clock page — 行式表单 + 大字 now + tiny hint ---------------- */
 .form-row {

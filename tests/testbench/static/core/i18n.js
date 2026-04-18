@@ -178,8 +178,23 @@ export const I18N = {
         },
       },
       import: {
-        heading: '从真实角色导入',
-        intro: '列出主 App 文档目录下的所有猫娘, 点击"导入"即把其 memory 子目录 + system_prompt 拷贝进当前沙盒. 不会写回主 App.',
+        heading: '导入角色',
+        intro: '把一个可用的角色灌进当前沙盒. 有两种来源: (1) testbench 自带的内置预设, 一键即可用, 也可用来清零本会话; (2) 从主 App 文档目录里的真实角色复制. 两种都**只写沙盒**, 不会回写主 App.',
+        // 内置预设 (git 追踪的 seed 数据).
+        builtin: {
+          heading: '内置预设 (testbench 自带)',
+          intro: '仓库里带的最小完整示例角色. 适合: 新会话快速起点; 把乱七八糟的沙盒一键覆盖回已知状态 (characters.json + persona.json + facts.json + recent.json 都会被重写). 多次点击会重复覆盖, 不会累积.',
+          empty: '暂无内置预设 (tests/testbench/presets/ 里没有任何合法子目录).',
+          button_apply: '一键载入',
+          button_applying: '载入中…',
+          apply_ok: (name, count) => `已载入预设 ${name} (${count} 个文件)`,
+          apply_failed: '载入预设失败',
+        },
+        // 真实角色导入 (从主 App characters.json).
+        real: {
+          heading: '从主 App 真实角色导入',
+          intro: '列出 ~/Documents/N.E.K.O/config/characters.json 里的所有猫娘. 只读真实目录, 复制到沙盒.',
+        },
         no_session: '需要先建会话才能读取真实角色目录.',
         no_real: '主 App 文档目录下没找到 characters.json, 或暂无角色.',
         columns: {
@@ -308,6 +323,140 @@ export const I18N = {
             human: 'human (用户)',
             ai: 'ai (助手)',
             system: 'system (系统)',
+          },
+        },
+        // P10 触发面板: 在 editor 下方让测试人员手动跑记忆合成操作, 查看
+        // dry-run 预览, 确认后再写入磁盘. 全部 LLM 调用走本会话 memory 组.
+        trigger: {
+          section_title: '手动触发记忆合成',
+          reloaded_after_commit: '已应用并重新加载磁盘',
+          params_title: op => `参数配置 · ${op}`,
+          preview_title: op => `预览 · ${op}`,
+          failed_title: op => `触发失败 · ${op}`,
+          close: '关闭',
+          no_params: '此操作无可配置参数, 点\u300c执行\u300d直接跑.',
+          run_button: '执行 (Dry-run)',
+          cancel: '取消',
+          running: '正在调用模型, 请稍候...',
+          accept: '应用到磁盘',
+          reject: '丢弃此次预览',
+          committing: '写入中...',
+          committed: op => `${op} 已应用到磁盘`,
+          drop_item: '从本次提交中剔除',
+          recent: {
+            intro: '把 recent.json 尾部若干条消息压成一条 system 摘要, 节省 context. 只影响 recent.json, 不动 facts/reflections.',
+            compress: { label: '压缩尾部消息' },
+            params: {
+              tail_count: '压缩条数',
+              tail_count_ph: '默认按历史长度阈值自动算',
+              tail_count_help: '要送进 LLM 压缩的末尾消息数. 留空=按 max_history_length 自动推导.',
+              detailed: '详细摘要',
+              detailed_help: '勾选后生成\u300c详细版\u300d摘要 (篇幅更长, 保留更多细节), 否则用简洁版.',
+            },
+            stats: {
+              total_before: '压缩前条数',
+              tail_count: '本次压缩',
+              kept_count: '保留原样',
+              total_after: '压缩后条数',
+            },
+            preview: {
+              memo: '注入 recent 尾部的 system 消息',
+              memo_help: '写入时会替换为单条 system 消息挂在 kept 之前. 可在此直接修改.',
+              raw_summary: 'LLM 原始摘要输出',
+              raw_summary_help: '仅参考. 实际写入的是上面的 system 消息文本.',
+            },
+          },
+          facts: {
+            intro: '从本会话消息 (或 recent.json) 中抽取可复用事实. 可逐条剔除/微调后再写入 facts.json.',
+            extract: { label: '从对话抽事实' },
+            params: {
+              source: '来源',
+              source_session: '本会话 Messages (Chat 页)',
+              source_recent: '磁盘上的 recent.json',
+              source_help: '默认用 Chat 工作区当前对话. 选 recent.json 则读磁盘.',
+              min_importance: '最小重要度',
+              min_importance_help: '低于此值的事实会被丢弃 (0-10, 默认 5).',
+            },
+            stats: {
+              message_count: '扫描消息',
+              extracted_count: '本次抽出',
+              total_existing: '原有事实数',
+            },
+            fields: {
+              text: '事实正文',
+              entity: '实体',
+              importance: '重要度 (0-10)',
+              tags: '标签 (逗号分隔)',
+            },
+            preview: {
+              empty: '模型没有抽到任何新事实 (可能已全部重复或未达最小重要度).',
+            },
+          },
+          reflections: {
+            intro: '把多条未吸收的事实合成为一条反思. 合成后相关事实会标记 absorbed, 反思进入 pending 等待裁决.',
+          },
+          reflect: {
+            label: '合成反思',
+            params: {
+              min_facts: '最少事实数',
+              min_facts_help: '未吸收事实少于此值时跳过合成. 默认 5.',
+            },
+            stats: {
+              unabsorbed: '可用未吸收事实',
+              source_count: '引用事实数',
+            },
+            fields: {
+              text: '反思正文',
+              entity: '归属实体',
+              entity_master: 'master (主人)',
+              entity_neko: 'neko (自己)',
+              entity_relationship: 'relationship (关系)',
+            },
+            source_facts_title: n => `引用的事实 (${n})`,
+          },
+          persona: {
+            intro: '手动添加一条 persona 事实. 若与现有 persona 或角色卡冲突, 会进入矛盾队列或直接拒绝.',
+            add_fact: { label: '添加 persona 事实' },
+            resolve_corrections: { label: '裁决矛盾队列' },
+            params: {
+              text: '事实内容',
+              entity: '归属实体',
+            },
+            code: {
+              added: '将直接写入',
+              rejected_card: '与角色卡冲突 · 将被永久拒绝',
+              queued: '与现有条目冲突 · 进入矛盾队列',
+            },
+            preview: {
+              code_label: '预期结果',
+              existing_count: '该实体现有条目',
+              conflicting: '冲突条目原文',
+              conflicting_help: '仅展示, 裁决将在矛盾队列阶段完成.',
+              text: '即将写入的正文',
+              text_help: '可在此微调文案 (不会触发重新跑矛盾检测).',
+              entity: '归属实体',
+              section_preview_title: n => `写入后该 entity 内容 (${n} 条)`,
+            },
+          },
+          resolve: {
+            stats: {
+              queue_size: '队列规模',
+              action_count: 'LLM 建议动作数',
+            },
+            empty: '矛盾队列为空, 没有需要裁决的条目.',
+            fields: {
+              old_text: '原条目',
+              new_text: '待评估新条目',
+              action: '建议动作',
+              merged_text: '合并后文本',
+              merged_text_help: 'action=replace/keep_new/keep_both 时会用到, 可手动改写.',
+            },
+            action: {
+              replace: 'replace · 新替旧',
+              keep_new: 'keep_new · 丢弃旧',
+              keep_old: 'keep_old · 丢弃新',
+              keep_both: 'keep_both · 两条都留',
+            },
           },
         },
       },
