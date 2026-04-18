@@ -2833,6 +2833,7 @@ class LLMSessionManager:
                 return
 
         try:
+            new_session = None  # 提前初始化，确保 except 块安全访问（实际赋值在 PERFORM ACTUAL HOT SWAP 段）
             incremental_cache = self.message_cache_for_new_session[self.initial_cache_snapshot_len:]
             # 1. Send incremental cache (or a heartbeat) to PENDING session for its *second* ignored response
             if incremental_cache:
@@ -2905,7 +2906,14 @@ class LLMSessionManager:
                     await asyncio.wait_for(old_main_message_handler_task, timeout=2.0)
                     logger.info("Final Swap Sequence: Old message handler task stopped")
                 except asyncio.TimeoutError:
-                    logger.warning("Final Swap Sequence: Old message handler task cancellation timeout")
+                    # 旧 task 仍占着 recv()，继续往下 close() 会重演并发 recv 冲突。
+                    # 关闭 new_session 防止 ws 泄漏，然后中止 swap。
+                    logger.error("Final Swap Sequence: 旧 listener 取消超时，中止热切换")
+                    try:
+                        await new_session.close()
+                    except Exception:
+                        pass
+                    raise RuntimeError("旧 listener 取消超时，热切换中止")
                 except asyncio.CancelledError:
                     pass
                 except Exception as e:
@@ -2951,22 +2959,34 @@ class LLMSessionManager:
 
         except asyncio.CancelledError:
             logger.info("Final Swap Sequence: Task cancelled.")
-            # If cancelled mid-swap, state could be inconsistent. Prioritize cleaning pending.
-            self.is_hot_swap_imminent = False  # Reset flag immediately
+            self.is_hot_swap_imminent = False
+            # new_session 在 self.pending_session = None 后由局部变量持有。
+            # 若 swap 在 promote 之前被取消，_cleanup_pending_session_resources 不再持有它，
+            # 必须在此手动关闭，防止 ws 泄漏。
+            if new_session is not None and new_session is not self.session:
+                try:
+                    await new_session.close()
+                except Exception:
+                    pass
             await self._cleanup_pending_session_resources()
-            await self._reset_preparation_state(clear_main_cache=True)  # Clear all state for clean restart after cancellation
-            # The old main session listener might have been cancelled, needs robust restart if still active
+            await self._reset_preparation_state(clear_main_cache=True)
             if self.is_active and self.session and hasattr(self.session, 'handle_messages') and (not self.message_handler_task or self.message_handler_task.done()):
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
 
         except Exception as e:
             logger.error(f"💥 Final Swap Sequence: Error: {e}")
-            self.is_hot_swap_imminent = False  # Reset flag immediately
+            self.is_hot_swap_imminent = False
             await self.send_status(json.dumps({"code": "INTERNAL_UPDATE_FAILED", "details": {"error": str(e)}}))
+            # 同上：new_session 若未完成 promote，需手动关闭防 ws 泄漏。
+            if new_session is not None and new_session is not self.session:
+                try:
+                    await new_session.close()
+                except Exception:
+                    pass
             await self._cleanup_pending_session_resources()
-            await self._reset_preparation_state(clear_main_cache=True)  # Clear all state for clean restart after error
-            # 若 self.session 的 ws 已失效（swap 因 ws invalid 失败），清除会话状态；
-            # 否则 is_active=True + ws=None 会让后续输入进入坏会话。
+            await self._reset_preparation_state(clear_main_cache=True)
+            # 若 self.session 的 ws 已失效（promote 后 ws invalid），清除会话状态，
+            # 防止 is_active=True + ws=None 让后续输入进入坏会话。
             if self.session and isinstance(self.session, OmniRealtimeClient) and not self.session.ws:
                 self.session = None
                 self.is_active = False
