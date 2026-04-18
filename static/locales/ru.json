@@ -517,6 +517,7 @@
         "RESPONSE_TIMEOUT": "💥 Таймаут подключения (Response timeout), голосовой диалог прерван.",
         "CONNECTION_TIMEOUT": "💥 Таймаут подключения. Проверьте сетевое соединение.",
         "RESPONSE_TOO_LONG": "Ответ слишком длинный, вывод отброшен (можно увеличить TEXT_GUARD_MAX_LENGTH в настройках)",
+        "INPUT_TOO_LONG": "Ввод слишком длинный, пожалуйста, сократите и повторите",
         "RESPONSE_INVALID": "Ответ AI не соответствует требованиям, вывод отброшен",
         "NO_USER_MESSAGE": "⚠️ В истории диалога нет сообщений пользователя, невозможно сгенерировать ответ",
         "LLM_RETRY": "⚠️ LLM {{error_type}}, повторная попытка ({{attempt}}/{{max_retries}})...",
@@ -553,8 +554,7 @@
         "TTS_VOICE_NOT_REGISTERED": "У этого персонажа нет зарегистрированного голоса",
         "TTS_VOICE_REGISTER_MISSING_PARAMS": "Отсутствуют обязательные параметры",
         "TTS_GPT_SOVITS_URL_REQUIRED": "Введите URL GPT-SoVITS API",
-        "TTS_GPT_SOVITS_URL_INVALID": "Недопустимый URL GPT-SoVITS API",
-        "INPUT_TOO_LONG": "Ввод слишком длинный, пожалуйста, сократите и повторите"
+        "TTS_GPT_SOVITS_URL_INVALID": "Недопустимый URL GPT-SoVITS API"
     },
     "camera": {
         "iosPermissionHint": "Проверьте в Настройках iOS → Safari → Камера, что разрешение установлено на «Разрешить»",
@@ -567,6 +567,8 @@
         "tooltip": "Область чата",
         "textInputPlaceholder": "Нажмите Enter для отправки, Shift+Enter для новой строки",
         "send": "Отправить",
+        "inputTooLong": "Сообщение слишком длинное ({{count}}/{{max}}), пожалуйста, сократите и повторите",
+        "responseTooLong": "Господин, вы заставили меня слишком много думать, я не справляюсь, мяу!",
         "importImage": "Импортировать изображение",
         "importImageAriaLabel": "Импортировать изображение",
         "screenshot": "Скриншот",
@@ -676,9 +678,7 @@
         "exportSelectAll": "Выбрать всё",
         "exportSelectNone": "Снять",
         "exportSelectInvert": "Инверсия",
-        "exportSelectionCount": "Выбрано {{selected}} из {{total}}",
-        "inputTooLong": "Сообщение слишком длинное ({{count}}/{{max}}), пожалуйста, сократите и повторите",
-        "responseTooLong": "Господин, вы заставили меня слишком много думать, я не справляюсь, мяу!"
+        "exportSelectionCount": "Выбрано {{selected}} из {{total}}"
     },
     "voiceControl": {
         "startVoice": "Начать голос",

@@ -517,6 +517,7 @@
         "RESPONSE_TIMEOUT": "💥 연결 시간 초과 (Response timeout), 음성 대화가 중단되었습니다.",
         "CONNECTION_TIMEOUT": "💥 연결 시간 초과. 네트워크 연결을 확인하세요.",
         "RESPONSE_TOO_LONG": "응답이 너무 길어 출력이 폐기되었습니다 (설정에서 TEXT_GUARD_MAX_LENGTH를 늘릴 수 있습니다)",
+        "INPUT_TOO_LONG": "입력이 너무 깁니다. 줄여서 다시 시도해 주세요",
         "RESPONSE_INVALID": "AI 응답이 요구사항을 충족하지 않아 출력이 폐기되었습니다",
         "NO_USER_MESSAGE": "⚠️ 대화 기록에 사용자 메시지가 없어 응답을 생성할 수 없습니다",
         "LLM_RETRY": "⚠️ LLM {{error_type}}, 재시도 중 ({{attempt}}/{{max_retries}})...",
@@ -553,8 +554,7 @@
         "TTS_VOICE_NOT_REGISTERED": "이 캐릭터에 등록된 음성이 없습니다",
         "TTS_VOICE_REGISTER_MISSING_PARAMS": "필수 매개변수가 누락되었습니다",
         "TTS_GPT_SOVITS_URL_REQUIRED": "GPT-SoVITS API URL을 입력하세요",
-        "TTS_GPT_SOVITS_URL_INVALID": "잘못된 GPT-SoVITS API URL",
-        "INPUT_TOO_LONG": "입력이 너무 깁니다. 줄여서 다시 시도해 주세요"
+        "TTS_GPT_SOVITS_URL_INVALID": "잘못된 GPT-SoVITS API URL"
     },
     "camera": {
         "iosPermissionHint": "iOS 설정 → Safari → 카메라 권한이 \"허용\"으로 설정되어 있는지 확인하세요",
@@ -567,6 +567,8 @@
         "tooltip": "채팅 영역",
         "textInputPlaceholder": "보내려면 Enter를 누르고, 줄을 바꾸려면 Shift+Enter를 누르세요.",
         "send": "보내기",
+        "inputTooLong": "메시지가 너무 깁니다 ({{count}}/{{max}}). 줄여서 다시 시도해 주세요",
+        "responseTooLong": "주인님이 너무 많이 생각하게 해서 머리가 따라가지 못해요냥!",
         "importImage": "이미지 가져오기",
         "importImageAriaLabel": "이미지 가져오기",
         "screenshot": "스크린샷",
@@ -676,9 +678,7 @@
         "exportSelectAll": "모두 선택",
         "exportSelectNone": "해제",
         "exportSelectInvert": "반전",
-        "exportSelectionCount": "{{selected}} / {{total}} 선택됨",
-        "inputTooLong": "메시지가 너무 깁니다 ({{count}}/{{max}}). 줄여서 다시 시도해 주세요",
-        "responseTooLong": "주인님이 너무 많이 생각하게 해서 머리가 따라가지 못해요냥!"
+        "exportSelectionCount": "{{selected}} / {{total}} 선택됨"
     },
     "voiceControl": {
         "startVoice": "음성 시작",
