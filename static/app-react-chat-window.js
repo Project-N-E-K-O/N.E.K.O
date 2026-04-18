@@ -52,10 +52,16 @@
         return document.getElementById(id);
     }
 
+    function isElectronChatWindow() {
+        // chat.html 用 <body class="electron-chat-window">；Electron 独立聊天窗口。
+        // 本 PR 的所有移动端改动都必须对它无感，作为显式隔离在全局 touch 处理里用来短路。
+        return !!(document.body && document.body.classList.contains('electron-chat-window'));
+    }
+
     function isMobileWidth() {
         // chat.html 是 Electron 独立窗口，始终按 PC 行为处理（即使用户把窗口拖窄到 <768px），
         // 通过 <body class="electron-chat-window"> 从"手机端布局"中排除。
-        if (document.body && document.body.classList.contains('electron-chat-window')) {
+        if (isElectronChatWindow()) {
             return false;
         }
         return window.innerWidth <= 768;
@@ -1423,7 +1429,8 @@
 
         document.addEventListener('touchmove', function (event) {
             if (!dragState || !event.touches || event.touches.length === 0) return;
-            event.preventDefault();
+            // chat.html 不走 mobile 路径，保留原 passive: true 语义，不吞原生滚动。
+            if (!isElectronChatWindow()) event.preventDefault();
             updateDrag(event.touches[0].clientX, event.touches[0].clientY);
         }, { passive: false });
 
@@ -1582,8 +1589,8 @@
             if (!target || !target.dataset || !target.dataset.resizeDir) return;
             if (!event.touches || event.touches.length === 0) return;
             startResize(event.touches[0].clientX, event.touches[0].clientY, target.dataset.resizeDir);
-            // 只在确实进入 resize 状态后才吞事件（手机端非 n 方向 / 最小化态会 bail out）
-            if (resizeState) event.preventDefault();
+            // chat.html 保留原 passive 语义；只在真正进入 resize（非 chat.html）才吞事件。
+            if (resizeState && !isElectronChatWindow()) event.preventDefault();
         }, { passive: false });
 
         document.addEventListener('mousemove', function (event) {
@@ -1593,7 +1600,7 @@
 
         document.addEventListener('touchmove', function (event) {
             if (!resizeState || !event.touches || event.touches.length === 0) return;
-            event.preventDefault();
+            if (!isElectronChatWindow()) event.preventDefault();
             updateResize(event.touches[0].clientX, event.touches[0].clientY);
         }, { passive: false });
 
