@@ -37,9 +37,7 @@ class STS2ApiClient:
     def _build_action_payload(self, action_name: str, **kwargs: Any) -> Dict[str, Any]:
         payload: Dict[str, Any] = {"action": action_name}
         for key, value in kwargs.items():
-            if value is None or key == "type":
-                continue
-            if key == "action" and isinstance(value, dict):
+            if value is None or key in {"type", "action"}:
                 continue
             payload[key] = value
         return payload
@@ -56,8 +54,11 @@ class STS2ApiClient:
         except ValueError as exc:
             raise STS2ClientError(f"STS2-Agent 返回了无效 JSON: {url}") from exc
 
+        if not isinstance(payload, dict):
+            raise STS2ClientError(f"STS2-Agent 返回了非对象 JSON: {url}")
+
         if response.status_code >= 400 or payload.get("ok") is False:
-            error = payload.get("error") if isinstance(payload, dict) else None
+            error = payload.get("error")
             if isinstance(error, dict):
                 raise STS2ClientError(str(error.get("message") or error.get("code") or f"HTTP {response.status_code}"))
             raise STS2ClientError(f"STS2-Agent 请求失败: HTTP {response.status_code}")

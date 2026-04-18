@@ -414,6 +414,9 @@ class QQAutoReplyPlugin(NekoPluginBase):
                 self.logger.debug(f"Ignored group message without @: {group_id}")
                 return
         elif group_level == "open":
+            if not is_at_bot and random.random() >= self._truth_reply_probability:
+                self.logger.debug(f"Skipped open group truth reply by probability: {group_id}")
+                return
             self.logger.debug(f"Open group message allowed without @: {group_id}")
 
         # 生成回复（群聊中不检查用户权限）
@@ -1474,6 +1477,12 @@ class QQAutoReplyPlugin(NekoPluginBase):
         session_key = self._build_session_key(sender_id=qq_number, is_group=False)
 
         async def _invalidate() -> None:
+            user_data = self._user_sessions.get(session_key)
+            if user_data and user_data.get("memory_enabled"):
+                finalized = await self._finalize_user_memory_session(session_key, reason="permission_change")
+                if finalized:
+                    return
+
             user_data = self._user_sessions.pop(session_key, None)
             session = user_data.get("session") if user_data else None
             if session:
@@ -1526,12 +1535,15 @@ class QQAutoReplyPlugin(NekoPluginBase):
 
     async def _send_private_message_impl(self, target_qq: str, outbound_prompt: str, *, resolved_nickname: Optional[str] = None, raw_target: Optional[str] = None):
         self._ensure_qq_client_connected()
+        permission_level = self.permission_mgr.get_permission_level(target_qq) if self.permission_mgr else "none"
+        is_admin_target = permission_level == "admin"
+        effective_permission_level = "admin" if is_admin_target else "trusted"
         ai_reply = await self._generate_reply(
             outbound_prompt,
-            "admin",
+            effective_permission_level,
             target_qq,
             is_group=False,
-            use_memory_context=True,
+            use_memory_context=is_admin_target,
             persist_memory=False,
             ephemeral_session=True,
         )

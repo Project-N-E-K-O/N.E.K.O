@@ -236,7 +236,7 @@ http://127.0.0.1:8765/mcp
 
 - `character_strategy`：会经过名称标准化后匹配 `strategies/<name>.md`；例如 `defect` 会匹配 `strategies/defect.md`
 
-### 14. `sts2_set_speed`
+### 13. `sts2_set_speed`
 设置速度参数，并写回本地 `plugin.toml`。
 
 参数：

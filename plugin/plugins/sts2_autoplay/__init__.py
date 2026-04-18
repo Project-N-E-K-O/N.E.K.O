@@ -25,7 +25,6 @@ class STS2AutoplayPlugin(NekoPluginBase):
         cfg = await self.config.dump(timeout=5.0)
         cfg = cfg if isinstance(cfg, dict) else {}
         self._cfg = cfg.get("sts2", {}) if isinstance(cfg.get("sts2"), dict) else {}
-        self._load_speed_overrides()
         await self._service.startup(self._cfg)
         return Ok({"status": "ready", "result": await self._service.get_status()})
 
@@ -33,9 +32,6 @@ class STS2AutoplayPlugin(NekoPluginBase):
     async def shutdown(self, **_):
         await self._service.shutdown()
         return Ok({"status": "shutdown"})
-
-    def _load_speed_overrides(self) -> None:
-        return
 
     def _push_frontend_notification(self, *, content: str, description: str, metadata: Dict[str, Any], priority: int = 5) -> None:
         self.push_message(
@@ -93,7 +89,9 @@ class STS2AutoplayPlugin(NekoPluginBase):
     async def sts2_get_status(self, **_):
         try:
             payload = await self._service.get_status()
-            payload["message"] = f"{payload['server']['state']} | autoplay={payload['autoplay']['state']}"
+            server_state = str((payload.get("server") or {}).get("state") or "unknown")
+            autoplay_state = str((payload.get("autoplay") or {}).get("state") or "unknown")
+            payload["message"] = f"{server_state} | autoplay={autoplay_state}"
             return Ok(payload)
         except Exception as e:
             return Err(str(e))

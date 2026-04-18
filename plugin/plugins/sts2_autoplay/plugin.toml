@@ -31,7 +31,6 @@ post_action_delay_seconds = 0.5
 autoplay_on_start = false
 mode = "half-program"
 character_strategy = "defect"
-strategy = "defect"
 max_consecutive_errors = 3
 push_notifications = true
 event_stream_enabled = false
