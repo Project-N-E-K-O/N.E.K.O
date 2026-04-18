@@ -2911,8 +2911,8 @@ class LLMSessionManager:
                     logger.error("Final Swap Sequence: 旧 listener 取消超时，中止热切换")
                     try:
                         await new_session.close()
-                    except Exception:
-                        pass
+                    except Exception as _e:
+                        logger.debug(f"Final Swap Sequence: 超时中止时关闭 new_session 失败（可忽略）: {_e}")
                     raise RuntimeError("旧 listener 取消超时，热切换中止")
                 except asyncio.CancelledError:
                     pass
@@ -2966,8 +2966,8 @@ class LLMSessionManager:
             if new_session is not None and new_session is not self.session:
                 try:
                     await new_session.close()
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logger.debug(f"Final Swap Sequence: CancelledError 路径关闭 new_session 失败（可忽略）: {_e}")
             await self._cleanup_pending_session_resources()
             await self._reset_preparation_state(clear_main_cache=True)
             if self.is_active and self.session and hasattr(self.session, 'handle_messages') and (not self.message_handler_task or self.message_handler_task.done()):
@@ -2981,8 +2981,8 @@ class LLMSessionManager:
             if new_session is not None and new_session is not self.session:
                 try:
                     await new_session.close()
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logger.debug(f"Final Swap Sequence: 异常路径关闭 new_session 失败（可忽略）: {_e}")
             await self._cleanup_pending_session_resources()
             await self._reset_preparation_state(clear_main_cache=True)
             # 若 self.session 的 ws 已失效（promote 后 ws invalid），清除会话状态，
