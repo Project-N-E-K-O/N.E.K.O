@@ -220,6 +220,13 @@ class TestSyncConfigKeyFreeProvider:
         assert result is True
         # Provider should be detected as ollama
         assert adapter._provider_info["provider"] == "ollama"
+        # Critical: must NOT push to /api/providers/{provider}/key for local providers
+        for call in mock_client.post.call_args_list:
+            url = call.args[0] if call.args else call.kwargs.get("url", "")
+            assert "/api/providers/ollama/key" not in url, \
+                f"Local provider should not push key, but got POST to {url}"
+            assert "/api/providers/openai/key" not in url, \
+                f"Local provider should not fall back to openai key push, got POST to {url}"
 
     @patch("brain.openfang_adapter.get_config_manager")
     def test_cloud_provider_no_key_blocked(self, mock_get_cm):
