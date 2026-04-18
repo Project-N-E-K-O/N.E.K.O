@@ -2903,10 +2903,29 @@ class LLMSessionManager:
             # 导致新session的websocket被关闭，引发 'NoneType' object has no attribute 'send' 错误
             self.pending_session = None
 
-            # Start the main listener for the NEWLY PROMOTED self.session
-            if self.session and hasattr(self.session, 'handle_messages'):
-                self.message_handler_task = asyncio.create_task(self.session.handle_messages())
-            
+            # 先取消旧session的消息处理任务，确保旧 WebSocket 上没有 recv() 在运行。
+            # 必须在 old_main_session.close() 之前完成：ws.close() 内部会执行关闭握手（等待服务端 CLOSE 帧），
+            # 这本质上也是一次 recv()。若旧 task 仍在 async for 的 recv() 中，就会产生
+            # "cannot call recv while another coroutine is already running recv" 并发冲突。
+            if old_main_message_handler_task and not old_main_message_handler_task.done():
+                old_main_message_handler_task.cancel()
+                try:
+                    await asyncio.wait_for(old_main_message_handler_task, timeout=2.0)
+                    logger.info("Final Swap Sequence: Old message handler task stopped")
+                except asyncio.TimeoutError:
+                    logger.warning("Final Swap Sequence: Old message handler task cancellation timeout")
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    logger.warning(f"Final Swap Sequence: Old task exited with error: {e}")
+
+            # 旧 task 已停止，现在安全关闭旧 session（ws.close() 握手时无并发 recv() 竞争）
+            if old_main_session:
+                try:
+                    await old_main_session.close()
+                except Exception as e:
+                    logger.error(f"💥 Final Swap Sequence: Error closing old session: {e}")
+
             # 验证新session的WebSocket是否仍然有效（可能在swap过程中被服务器断开）
             if isinstance(self.session, OmniRealtimeClient):
                 if not self.session.ws:
@@ -2914,27 +2933,9 @@ class LLMSessionManager:
                     # 不强制回滚，让系统通过现有错误处理机制自动重建session
                     # 注意：此时旧session已关闭，无法回滚
 
-            # 关闭旧session - 必须先关闭WebSocket再取消task
-            # 因为handle_messages使用 async for message in self.ws，只有关闭ws才能让循环退出
-            if old_main_session:
-                try:
-                    # 先关闭WebSocket，让async for循环自然退出
-                    await old_main_session.close()
-                except Exception as e:
-                    logger.error(f"💥 Final Swap Sequence: Error closing old session: {e}")
-            
-            # 然后取消和等待旧session的消息处理任务完成
-            if old_main_message_handler_task and not old_main_message_handler_task.done():
-                old_main_message_handler_task.cancel()
-                try:
-                    await asyncio.wait_for(old_main_message_handler_task, timeout=2.0)
-                    logger.info("Final Swap Sequence: Old message handler task stopped")
-                except asyncio.TimeoutError:
-                    logger.warning("Final Swap Sequence: Old message handler task cancellation timeout (should not happen now)")
-                except asyncio.CancelledError:
-                    pass
-                except Exception as e:
-                    logger.error(f"💥 Final Swap Sequence: Error during old message handler cleanup: {e}")
+            # 旧资源完全清理后，再启动新session的消息监听
+            if self.session and hasattr(self.session, 'handle_messages'):
+                self.message_handler_task = asyncio.create_task(self.session.handle_messages())
 
         
             # Reset all preparation states and clear the *main* cache now that it's fully transferred
@@ -3381,7 +3382,8 @@ class LLMSessionManager:
             except asyncio.TimeoutError:
                 logger.warning("End Session: Warning: Listener task cancellation timeout.")
             except Exception as e:
-                logger.error(f"💥 End Session: Error during listener task cancellation: {e}")
+                # 任务可能已因并发 recv() 冲突等原因提前退出，此处只是发现既成事实
+                logger.warning(f"End Session: Listener task had prior error: {e}")
             if self.message_handler_task is message_handler_task_ref:
                 self.message_handler_task = None
 
