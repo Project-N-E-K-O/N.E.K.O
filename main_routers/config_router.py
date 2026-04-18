@@ -582,8 +582,11 @@ async def get_core_config_api():
             "assistApiKeyKimi": core_cfg.get('assistApiKeyKimi', '') or _fb('kimi'),
             "assistApiKeyDeepseek": core_cfg.get('assistApiKeyDeepseek', '') or _fb('deepseek'),
             "assistApiKeyDoubao": core_cfg.get('assistApiKeyDoubao', '') or _fb('doubao'),
-            "assistApiKeyMinimax": core_cfg.get('assistApiKeyMinimax', '') or _fb('minimax'),
-            "assistApiKeyMinimaxIntl": core_cfg.get('assistApiKeyMinimaxIntl', '') or _fb('minimax_intl'),
+            # MiniMax 是 assist-only（TTS 专用），不在 coreApi 候选集里，
+            # coreApiKey 永远不是 minimax 兼容的；不 fallback，以免把无效 key
+            # 塞进 TTS 凭证槽位导致 401，掩盖"未配置 minimax key"的真实提示。
+            "assistApiKeyMinimax": core_cfg.get('assistApiKeyMinimax', ''),
+            "assistApiKeyMinimaxIntl": core_cfg.get('assistApiKeyMinimaxIntl', ''),
             "assistApiKeyGrok": core_cfg.get('assistApiKeyGrok', '') or _fb('grok'),
             "assistApiKeyClaude": core_cfg.get('assistApiKeyClaude', '') or _fb('claude'),
             "assistApiKeyOpenrouter": core_cfg.get('assistApiKeyOpenrouter', '') or _fb('openrouter'),

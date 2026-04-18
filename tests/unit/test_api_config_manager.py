@@ -105,23 +105,29 @@ class TestKeybookSaveLoad:
             )
 
     @pytest.mark.unit
-    @pytest.mark.parametrize('provider,upper', [
-        ('qwen_intl', 'ASSIST_API_KEY_QWEN_INTL'),
-        ('minimax', 'ASSIST_API_KEY_MINIMAX'),
-        ('minimax_intl', 'ASSIST_API_KEY_MINIMAX_INTL'),
-    ])
-    def test_special_providers_fallback_when_selected(self, config_manager, provider, upper):
-        """qwen_intl / minimax / minimax_intl 被选中时也要能 fallback，
-        保持与其他 provider 的对偶性。"""
+    def test_qwen_intl_fallback_when_selected(self, config_manager):
+        """qwen_intl 是合法的 coreApi，被选中时应 fallback，对偶其他 provider。"""
         _write_core_config(config_manager, {
             'coreApiKey': 'sk-core-master',
-            'coreApi': provider,
-            'assistApi': provider,
+            'coreApi': 'qwen_intl',
+            'assistApi': 'qwen_intl',
         })
         cfg = config_manager.get_core_config()
-        assert cfg[upper] == 'sk-core-master', (
-            f'{upper} 在 coreApi={provider} 时应 fallback 到 CORE_API_KEY'
-        )
+        assert cfg['ASSIST_API_KEY_QWEN_INTL'] == 'sk-core-master'
+
+    @pytest.mark.unit
+    def test_minimax_never_fallbacks(self, config_manager):
+        """MiniMax 是 assist-only（TTS 专用），不在 coreApi 候选集里，
+        coreApiKey 永远不是 minimax 兼容的 key。即使 assistApi=minimax 也不应 fallback，
+        以免把无效 key 塞进 TTS 凭证槽位导致 401。"""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core-master',
+            'coreApi': 'qwen',
+            'assistApi': 'minimax',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['ASSIST_API_KEY_MINIMAX'] == ''
+        assert cfg['ASSIST_API_KEY_MINIMAX_INTL'] == ''
 
 
 # ---------------------------------------------------------------------------
