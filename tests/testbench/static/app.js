@@ -1,0 +1,111 @@
+/**
+ * app.js — 前端入口.
+ *
+ * 负责:
+ *   1. 启动时把 DOM 中的 i18n 占位翻成中文
+ *   2. 挂载顶栏 + tab 路由
+ *   3. 根据 `active_workspace` 事件切换 workspace 的可见区域
+ *
+ * 每个 workspace 懒挂载: 首次切到该 tab 才调用对应 mount 函数填充 DOM,
+ * 切走不卸载 (会话数据量通常很小, 重建成本高于保留).
+ */
+
+import { hydrateI18n, i18n } from './core/i18n.js';
+import { store, set, on } from './core/state.js';
+
+import { mountTopbar }            from './ui/topbar.js';
+import { mountSetupWorkspace }    from './ui/workspace_setup.js';
+import { mountChatWorkspace }     from './ui/workspace_chat.js';
+import { mountEvaluationWorkspace } from './ui/workspace_evaluation.js';
+import { mountDiagnosticsWorkspace } from './ui/workspace_diagnostics.js';
+import { mountSettingsWorkspace }  from './ui/workspace_settings.js';
+
+/** Tab 声明 — 顺序即渲染顺序. */
+const WORKSPACES = [
+  { id: 'setup',       labelKey: 'tabs.setup',       mount: mountSetupWorkspace       },
+  { id: 'chat',        labelKey: 'tabs.chat',        mount: mountChatWorkspace        },
+  { id: 'evaluation',  labelKey: 'tabs.evaluation',  mount: mountEvaluationWorkspace  },
+  { id: 'diagnostics', labelKey: 'tabs.diagnostics', mount: mountDiagnosticsWorkspace },
+  { id: 'settings',    labelKey: 'tabs.settings',    mount: mountSettingsWorkspace    },
+];
+
+const _mountedWorkspaces = new Set();
+
+function mountTabbar(hostEl) {
+  hostEl.innerHTML = '';
+  for (const ws of WORKSPACES) {
+    const btn = document.createElement('button');
+    btn.className = 'tab';
+    btn.type = 'button';
+    btn.dataset.workspace = ws.id;
+    btn.textContent = i18n(ws.labelKey);
+    btn.addEventListener('click', () => set('active_workspace', ws.id));
+    hostEl.append(btn);
+  }
+}
+
+function renderWorkspaces(hostEl) {
+  hostEl.innerHTML = '';
+  for (const ws of WORKSPACES) {
+    const section = document.createElement('section');
+    section.className = 'workspace';
+    section.dataset.workspace = ws.id;
+    hostEl.append(section);
+  }
+}
+
+function ensureMounted(id) {
+  if (_mountedWorkspaces.has(id)) return;
+  const ws = WORKSPACES.find((w) => w.id === id);
+  if (!ws) return;
+  const section = document.querySelector(`section.workspace[data-workspace="${id}"]`);
+  if (!section) return;
+  try {
+    ws.mount(section);
+    _mountedWorkspaces.add(id);
+  } catch (err) {
+    console.error(`[app] mount ${id} failed:`, err);
+    section.innerHTML = `<div class="empty-state">${i18n('errors.unknown')}: ${err.message}</div>`;
+  }
+}
+
+function applyActiveWorkspace(id) {
+  const tabbar = document.getElementById('tabbar');
+  for (const btn of tabbar.querySelectorAll('button.tab')) {
+    btn.classList.toggle('active', btn.dataset.workspace === id);
+  }
+  const host = document.getElementById('workspace-host');
+  for (const sec of host.querySelectorAll('section.workspace')) {
+    sec.classList.toggle('active', sec.dataset.workspace === id);
+  }
+  ensureMounted(id);
+}
+
+function boot() {
+  document.title = i18n('app.name');
+
+  hydrateI18n(document);
+
+  const topbar = document.getElementById('topbar');
+  const tabbar = document.getElementById('tabbar');
+  const host   = document.getElementById('workspace-host');
+  if (!topbar || !tabbar || !host) {
+    console.error('[app] required host elements missing');
+    return;
+  }
+
+  mountTopbar(topbar);
+  mountTabbar(tabbar);
+  renderWorkspaces(host);
+
+  on('active_workspace:change', applyActiveWorkspace);
+  applyActiveWorkspace(store.active_workspace || 'setup');
+
+  console.info('[app] testbench UI ready');
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', boot, { once: true });
+} else {
+  boot();
+}

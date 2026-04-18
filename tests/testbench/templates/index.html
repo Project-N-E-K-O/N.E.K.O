@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>{{ app_name }}</title>
+    <link rel="stylesheet" href="/static/testbench.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header id="topbar" role="banner">
+        <!-- mounted by ui/topbar.js -->
+      </header>
+      <nav id="tabbar" role="tablist">
+        <!-- mounted by app.js -->
+      </nav>
+      <main id="workspace-host">
+        <!-- sections injected by app.js; filled by workspace_*.js on demand -->
+      </main>
+    </div>
+
+    <!-- Global toast stack host (created on demand by toast.js if missing) -->
+    <div id="toast-stack"></div>
+
+    <script type="module" src="/static/app.js"></script>
+  </body>
+</html>
