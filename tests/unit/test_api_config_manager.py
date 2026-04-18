@@ -116,14 +116,16 @@ class TestKeybookSaveLoad:
         assert cfg['ASSIST_API_KEY_QWEN_INTL'] == 'sk-core-master'
 
     @pytest.mark.unit
-    def test_minimax_never_fallbacks(self, config_manager):
+    @pytest.mark.parametrize('assist_api', ['minimax', 'minimax_intl'])
+    def test_minimax_never_fallbacks(self, config_manager, assist_api):
         """MiniMax 是 assist-only（TTS 专用），不在 coreApi 候选集里，
-        coreApiKey 永远不是 minimax 兼容的 key。即使 assistApi=minimax 也不应 fallback，
-        以免把无效 key 塞进 TTS 凭证槽位导致 401。"""
+        coreApiKey 永远不是 minimax 兼容的 key。即使 assistApi=minimax* 也不应 fallback，
+        以免把无效 key 塞进 TTS 凭证槽位导致 401。
+        parametrize 两个变体防止"仅国际版误回退"的偏置回归。"""
         _write_core_config(config_manager, {
             'coreApiKey': 'sk-core-master',
             'coreApi': 'qwen',
-            'assistApi': 'minimax',
+            'assistApi': assist_api,
         })
         cfg = config_manager.get_core_config()
         assert cfg['ASSIST_API_KEY_MINIMAX'] == ''
