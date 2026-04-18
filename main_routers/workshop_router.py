@@ -1165,7 +1165,10 @@ async def get_subscribed_workshop_items():
 
                 voice_reference_summary = None
                 if install_folder and os.path.exists(install_folder):
-                    voice_reference_summary = _build_workshop_voice_reference_summary(install_folder)
+                    voice_reference_summary = await asyncio.to_thread(
+                        _build_workshop_voice_reference_summary,
+                        install_folder,
+                    )
                 item_info['voiceReferenceAvailable'] = bool(voice_reference_summary)
                 if voice_reference_summary:
                     item_info['voiceReference'] = voice_reference_summary

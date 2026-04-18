@@ -188,7 +188,7 @@
         "voiceReferenceDisplayName": "Отображаемое имя эталонного голоса",
         "voiceReferenceDisplayNamePlaceholder": "например: мягкий китайский голос кошкодевочки",
         "voiceReferencePrefix": "Префикс по умолчанию",
-        "voiceReferencePrefixPlaceholder": "Только буквы и цифры, не более 10 символов",
+        "voiceReferencePrefixPlaceholder": "Только латинские буквы и цифры, не более 10 символов",
         "voiceReferenceLanguage": "Язык эталонного голоса",
         "voiceReferenceProviderHint": "Рекомендуемый провайдер",
         "uploadTip": "Вы можете выбрать предметы в «Управлении локальными предметами» для автозаполнения путей, или ввести полные пути к папке содержимого и изображению предпросмотра вручную.",
