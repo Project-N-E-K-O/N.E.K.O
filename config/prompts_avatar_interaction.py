@@ -1160,7 +1160,11 @@ def _build_avatar_interaction_memory_meta(language: str | None, payload: dict) -
 
     if tool_id == "lollipop":
         dedupe_key = "lollipop_feed"
-        if action_id == "tap_soft" and intensity in {"rapid", "burst"}:
+        if action_id == "tap_soft":
+            # 前端设计上 tap_soft 只会发 rapid/burst；但 intensity normalizer 在拿到
+            # 非法值时会降级成 "normal"，之前的代码会把这种异常路径落到 offer 分支，
+            # 和真正的第一口 offer 互相覆盖 dedupe rank。此处按 action_id 先分，
+            # 保证"连续投喂"语义始终走 tap_soft 模板。
             memory_note = templates.get("lollipop", {}).get("tap_soft", "")
             dedupe_rank = 4 if intensity == "burst" else 3
         elif action_id == "tease":

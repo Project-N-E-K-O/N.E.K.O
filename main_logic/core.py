@@ -2669,40 +2669,58 @@ class LLMSessionManager:
             }
 
             current_turn_id = self.current_speech_id
+            # 主动搭话 race guard：prompt_ephemeral 运行期间若用户发起新输入
+            # 会换 current_speech_id + 清 TTS queue，本路径产生的 text delta
+            # 必须靠 _proactive_expected_sid 在 handle_text_data/handle_output_transcript
+            # 里判同，不一致就丢。和 trigger_agent_callbacks 走同一套保护。
+            _sid_token = _proactive_expected_sid.set(current_turn_id)
             try:
-                delivered = await self.session.prompt_ephemeral(
-                    instruction,
-                    completion_mode="response",
-                    persist_response=False,
-                )
-            except Exception as e:
-                logger.exception(
-                    "[%s] handle_avatar_interaction: prompt_ephemeral failed interaction_id=%s: %s",
-                    self.lanlan_name,
-                    interaction_id,
-                    e,
-                )
-                # prompt_ephemeral 抛错时 handle_response_complete 不会被触发，
-                # 必须主动清掉 meta，避免泄漏到下一轮。
+                try:
+                    delivered = await self.session.prompt_ephemeral(
+                        instruction,
+                        completion_mode="response",
+                        persist_response=False,
+                    )
+                except Exception as e:
+                    logger.exception(
+                        "[%s] handle_avatar_interaction: prompt_ephemeral failed interaction_id=%s: %s",
+                        self.lanlan_name,
+                        interaction_id,
+                        e,
+                    )
+                    # prompt_ephemeral 抛错时 handle_response_complete 不会被触发，
+                    # 必须主动清掉 meta，避免泄漏到下一轮。
+                    self._pending_turn_meta = None
+                    await self.send_avatar_interaction_ack(interaction_id, False, "error")
+                    return {"accepted": False, "reason": "error", "interaction_id": interaction_id}
+            finally:
+                _proactive_expected_sid.reset(_sid_token)
+
+            # Prompt 跑完后若 current_speech_id 已换（用户中途接管），
+            # 本轮 avatar 响应算未送达：meta 不该挂到用户的新 turn end 上，
+            # ack 也要汇报 interrupted 而非 delivered。
+            interrupted = self.current_speech_id != current_turn_id
+            accepted = bool(delivered) and not interrupted
+            if interrupted:
                 self._pending_turn_meta = None
-                await self.send_avatar_interaction_ack(interaction_id, False, "error")
-                return {"accepted": False, "reason": "error", "interaction_id": interaction_id}
-            if delivered:
+            if accepted:
                 self._last_avatar_interaction_speak_at = int(time.time() * 1000)
+            ack_reason = "delivered" if accepted else ("interrupted" if interrupted else "empty_response")
             await self.send_avatar_interaction_ack(
                 interaction_id,
-                bool(delivered),
-                "delivered" if delivered else "empty_response",
-                turn_id=current_turn_id if delivered else "",
+                accepted,
+                ack_reason,
+                turn_id=current_turn_id if accepted else "",
             )
 
-        # 未 delivered 时 handle_response_complete 不一定被触发，留下的 meta
-        # 会被下一轮 turn end 误消费；在这里兜底清掉。delivered=True 时
-        # handle_response_complete 已经消费并清空，这里是幂等 no-op。
-        if not delivered:
+        # 未 accepted 时 handle_response_complete 不一定被触发（或者触发在用户
+        # 的新 turn 上已被 interrupted 分支清空），留下的 meta 可能被下一轮
+        # turn end 误消费；在这里兜底清掉。accepted=True 时 meta 已被
+        # handle_response_complete 消费，这里是幂等 no-op。
+        if not accepted:
             self._pending_turn_meta = None
 
-        if delivered:
+        if accepted:
             logger.info(
                 "[%s] handle_avatar_interaction: delivered interaction_id=%s tool=%s action=%s",
                 self.lanlan_name,
@@ -2712,8 +2730,11 @@ class LLMSessionManager:
             )
             return {"accepted": True, "interaction_id": interaction_id}
 
-        logger.debug("[%s] handle_avatar_interaction: prompt_ephemeral produced no response", self.lanlan_name)
-        return {"accepted": False, "reason": "empty_response", "interaction_id": interaction_id}
+        logger.debug(
+            "[%s] handle_avatar_interaction: not accepted interaction_id=%s reason=%s",
+            self.lanlan_name, interaction_id, ack_reason,
+        )
+        return {"accepted": False, "reason": ack_reason, "interaction_id": interaction_id}
 
     async def trigger_agent_callbacks(self) -> None:
         """Proactively deliver pending agent task results via LLM rephrase.
