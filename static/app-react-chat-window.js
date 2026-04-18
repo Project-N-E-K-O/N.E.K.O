@@ -37,12 +37,16 @@
         onComposerSubmit: null
     };
 
-    var MOBILE_MAX_HEIGHT_RATIO = 0.5;
+    var MOBILE_MAX_HEIGHT_RATIO = 0.85;
     var MOBILE_MESSAGE_MIN_HEIGHT = 60;
     var MOBILE_MIN_HEIGHT = 150;
     var MOBILE_HEIGHT_STORAGE_KEY = 'neko.reactChatWindow.mobileHeight';
     var mobileUserHeight = 0; // 用户手动设置的手机端高度（0 = 自动）
     var mobileLayoutFrame = 0;
+
+    function getMobileMaxHeight() {
+        return Math.max(MOBILE_MIN_HEIGHT, Math.floor(window.innerHeight * MOBILE_MAX_HEIGHT_RATIO));
+    }
 
     function $(id) {
         return document.getElementById(id);
@@ -124,8 +128,7 @@
 
         // 如果用户手动设置了高度，使用用户高度，不自动计算
         if (mobileUserHeight > 0) {
-            var maxH = Math.max(MOBILE_MIN_HEIGHT, Math.floor(window.innerHeight * 0.85));
-            var h = Math.min(mobileUserHeight, maxH);
+            var h = Math.min(mobileUserHeight, getMobileMaxHeight());
             shell.style.height = h + 'px';
             shell.dataset.mobileAutoHeight = 'false';
             shell.classList.remove('is-mobile-content-capped');
@@ -140,7 +143,7 @@
             return;
         }
 
-        var maxHeight = Math.max(0, Math.floor(window.innerHeight * MOBILE_MAX_HEIGHT_RATIO));
+        var maxHeight = getMobileMaxHeight();
         if (!maxHeight) return;
 
         var desiredMessageHeight = Math.max(MOBILE_MESSAGE_MIN_HEIGHT, messageList.scrollHeight);
@@ -561,14 +564,21 @@
         if (!shell) return;
 
         if (isMobileWidth()) {
-            shell.style.removeProperty('left');
-            shell.style.removeProperty('top');
+            // 宽度由 CSS calc(100vw - 12px) 控制；transform 的 translate 会污染 applyPosition 坐标。
             shell.style.removeProperty('width');
-            // 不清 height：清掉会让 shell 瞬间回到 CSS 的 `height:auto;max-height:50vh`，
+            shell.style.removeProperty('transform');
+            // 不清 height：清掉会让 shell 瞬间回到 CSS 的 `height:auto;max-height:85vh`，
             // grid `auto 1fr auto` 父容器塌缩会把 .message-list 的 clientHeight 挤到几十 px，
             // 浏览器 clamp scrollTop → 0，下一帧 syncMobileContentLayout() 恢复 height 时已经来不及。
             // 保留旧像素值，让紧随其后的 syncMobileContentLayout() 直接覆写，避免中间态。
-            shell.style.removeProperty('transform');
+            // 不清 left/top：手机端允许 expanded 在任意位置飘；只按新视口 clamp 一次，避免旋屏/键盘后溢出。
+            if (shell.style.left || shell.style.top) {
+                var rect = shell.getBoundingClientRect();
+                var clampedLeft = Math.max(0, Math.min(rect.left, window.innerWidth - rect.width));
+                var clampedTop = Math.max(0, Math.min(rect.top, window.innerHeight - rect.height));
+                shell.style.left = clampedLeft + 'px';
+                shell.style.top = clampedTop + 'px';
+            }
             return;
         }
 
@@ -1101,7 +1111,7 @@
                 // 手机端：宽度由 CSS calc(100vw - 12px) 控制，清除内联宽度
                 shell.style.removeProperty('width');
                 // 高度：优先使用用户手动设置的高度，否则自动计算上限 85vh
-                var mobileMaxH = Math.max(MOBILE_MIN_HEIGHT, Math.floor(window.innerHeight * 0.85));
+                var mobileMaxH = getMobileMaxHeight();
                 var savedHeightPx = savedShellSize ? parseFloat(savedShellSize.height) : NaN;
                 var restoreHeight;
                 if (mobileUserHeight > 0) {
@@ -1109,7 +1119,7 @@
                 } else if (isFinite(savedHeightPx) && savedHeightPx > 0) {
                     restoreHeight = Math.min(savedHeightPx, mobileMaxH);
                 } else {
-                    restoreHeight = Math.max(MOBILE_MIN_HEIGHT, Math.floor(window.innerHeight * 0.85));
+                    restoreHeight = mobileMaxH;
                 }
                 if (restoreHeight > 0) shell.style.height = restoreHeight + 'px';
             } else if (savedShellSize) {
@@ -1393,6 +1403,8 @@
             event.preventDefault();
         });
 
+        // touchstart 不 preventDefault：让浏览器自行决定是滚动还是点击，
+        // 真正进入拖拽后由 touchmove（passive: false）阻止滚动即可。
         header.addEventListener('touchstart', function (event) {
             var closeButton = $('reactChatWindowCloseButton');
             if (closeButton && closeButton.contains(event.target)) return;
@@ -1402,8 +1414,7 @@
             if (avatarHeaderBtn && avatarHeaderBtn.contains(event.target)) return;
             if (!event.touches || event.touches.length === 0) return;
             startDrag(event.touches[0].clientX, event.touches[0].clientY);
-            event.preventDefault();
-        }, { passive: false });
+        }, { passive: true });
 
         document.addEventListener('mousemove', function (event) {
             if (!dragState) return;
@@ -1512,7 +1523,7 @@
 
         if (mobile) {
             // 手机端：更新高度和 top，保持 CSS 控制的 left/width
-            var maxMobileH = Math.floor(window.innerHeight * 0.85);
+            var maxMobileH = getMobileMaxHeight();
             var clampedH = Math.min(newHeight, maxMobileH);
             // 高度被截断时重新计算 top，保持面板底部不动
             if (clampedH < newHeight) {
