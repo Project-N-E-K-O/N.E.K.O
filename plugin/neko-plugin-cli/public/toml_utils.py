@@ -31,10 +31,17 @@ def require_string(data: dict[str, object], key: str, source_path: Path) -> str:
 
 
 def optional_string(data: dict[str, object], key: str) -> str | None:
-    value = data.get(key)
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    return None
+    if key not in data:
+        return None
+    value = data[key]
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError(
+            f"'{key}' must be a string; got {type(value).__name__} ({value!r})"
+        )
+    stripped = value.strip()
+    return stripped or None
 
 
 def toml_bool(value: bool) -> str:

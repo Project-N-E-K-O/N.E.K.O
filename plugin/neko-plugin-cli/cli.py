@@ -127,8 +127,8 @@ def handle_pack(args: argparse.Namespace) -> int:
     target_dir = Path(args.target_dir).expanduser().resolve()
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.out and not args.bundle and len(plugin_dirs) != 1:
-        print("[FAIL] --out can only be used when packing a single plugin", file=sys.stderr)
+    if args.out and not (args.bundle or len(plugin_dirs) == 1):
+        print("[FAIL] --out requires a single plugin or --bundle mode", file=sys.stderr)
         return 1
 
     if args.bundle or len(plugin_dirs) > 1:

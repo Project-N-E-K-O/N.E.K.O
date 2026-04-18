@@ -37,8 +37,8 @@ def load_plugin_config(plugin_id: str, *, validate: bool = True) -> dict[str, ob
         include_effective_config=True,
         validate_schema=validate,
     )
-    validation_errors = resolved.get("schema_validation_errors")
-    if isinstance(validation_errors, list) and validation_errors:
+    validation_errors = resolved["schema_validation_errors"]
+    if validation_errors:
         logger.warning(
             "Plugin {}: config schema validation warnings: {}",
             plugin_id,
