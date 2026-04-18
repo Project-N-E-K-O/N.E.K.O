@@ -770,7 +770,7 @@
             var hasScreenshots = screenshotsList.children.length > 0;
             var isReactWindowSource = options.source === 'react-chat-window';
             var reactOptimisticMessageId = '';
-            var reactOptimisticMessageAppended = false;
+            var reactOptimisticMessageAppended = null;
 
             if (!text && !hasScreenshots) return;
 
@@ -780,7 +780,7 @@
 
             if (isReactWindowSource && window.appChat && typeof window.appChat.appendReactUserMessage === 'function') {
                 reactOptimisticMessageId = 'user-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
-                reactOptimisticMessageAppended = !!window.appChat.appendReactUserMessage({
+                reactOptimisticMessageAppended = window.appChat.appendReactUserMessage({
                     id: reactOptimisticMessageId,
                     time: (typeof window.getCurrentTimeString === 'function')
                         ? window.getCurrentTimeString()
@@ -799,7 +799,7 @@
             }
 
             function updateReactOptimisticMessageStatus(status) {
-                if (!reactOptimisticMessageAppended || !reactOptimisticMessageId) return;
+                if (reactOptimisticMessageAppended === null || !reactOptimisticMessageId) return;
                 if (window.reactChatWindowHost && typeof window.reactChatWindowHost.updateMessage === 'function') {
                     window.reactChatWindowHost.updateMessage(reactOptimisticMessageId, {
                         status: status
