@@ -20,6 +20,7 @@ from utils.screenshot_utils import process_screen_data
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.tts_client import get_tts_worker, dummy_tts_worker, TTS_PROVIDER_REGISTRY
+from main_logic.session_state import SessionStateMachine, SessionEvent
 from utils.preferences import load_global_conversation_settings, aload_global_conversation_settings
 from config import MEMORY_SERVER_PORT, TOOL_SERVER_PORT
 from config.prompts_sys import (
@@ -316,6 +317,12 @@ class LLMSessionManager:
         
         # 用户活动时间戳：用于主动搭话检测最近是否有用户输入
         self.last_user_activity_time = None  # float timestamp or None
+
+        # 事件驱动状态机：收口 "谁占用当前 turn" 的所有信号，供 proactive 流水线
+        # 零成本（O(1) 读）频繁询问 is_proactive_preempted。事件发射点分布在
+        # handle_new_message / stream_text 入口 / prepare_proactive_delivery /
+        # finish_proactive_delivery / system_router.proactive_chat 等处。
+        self.state = SessionStateMachine(lanlan_name=lanlan_name)
         
         # 用户语言设置（由 start_session 或前端 set_user_language() 设置，初始为 None）
         self.user_language = None
@@ -462,6 +469,14 @@ class LLMSessionManager:
         # 新回复的 audio_chunk 也不会被错误丢弃
         async with self.lock:
             self.current_speech_id = str(uuid4())
+            new_sid = self.current_speech_id
+            # 必须在 self.lock 内同步翻 _preempted 标记，使新 sid + preempt 对
+            # 同样在 self.lock 内复查 is_proactive_preempted 的 prepare_proactive_delivery
+            # 原子可见；否则 proactive 会插到 lock 释放 ~ fire() 之间把 user sid
+            # 再覆盖成 proactive sid。完整 USER_INPUT 事件仍在锁外 fire，以更新
+            # owner/user_sid 并派发订阅者。
+            self.state.mark_user_input_preempt()
+        await self.state.fire(SessionEvent.USER_INPUT, sid=new_sid)
 
     async def handle_text_data(self, text: str, is_first_chunk: bool = False):
         """文本回调：处理文本显示和TTS（用于文本模式）"""
@@ -1040,6 +1055,12 @@ class LLMSessionManager:
         self.session_start_time = None
         await self._cleanup_pending_session_resources()  # close()后再置None，避免泄漏
         self.is_hot_swap_imminent = False
+        # 状态机是 per-manager 的，跨 start_session/end_session 复用同一实例。
+        # 若上一轮 proactive 在 PHASE1/PHASE2 中途 WS 断开、PROACTIVE_DONE 来不及
+        # fire，phase/_preempted 会泄漏到新会话，堵死 can_start_proactive。
+        # teardown 必须用 force=True：默认 reset() 会在活动 phase 上 no-op（保护
+        # auto-start 不被误清），但 end_session 语义就是整轮收尾，必须强制清场。
+        await self.state.reset(force=True)
 
     def _has_custom_tts(self) -> bool:
         """判断当前会话是否使用自定义 TTS（克隆音色或自定义 TTS URL）。"""
@@ -2477,6 +2498,14 @@ class LLMSessionManager:
 
     async def prepare_proactive_delivery(self, min_idle_secs: float = 30.0) -> bool:
         """Phase 2 流式输出前的前置检查 + speech_id 生成。返回 True 表示可以继续。"""
+        # 早期抢占检查：在任何 await / sid 改写前快速短路，防止用户刚在入口之后
+        # 抢占而后续 self.current_speech_id 写入覆盖用户的 user_sid。默认 reset()
+        # 对活动 phase no-op（保护 auto-start 期间偶发并发 reset），但 end_session
+        # 走 force=True 强制清场——这里短路不依赖 reset() 的语义差异，单纯是为
+        # 了更早放弃已被抢占的 proactive 轮次。
+        if self.state.is_proactive_preempted():
+            logger.info("[%s] prepare_proactive_delivery: preempted before claim", self.lanlan_name)
+            return False
         if self.last_user_activity_time is not None:
             if time.time() - self.last_user_activity_time < min_idle_secs:
                 logger.info("[%s] prepare_proactive_delivery: user active recently", self.lanlan_name)
@@ -2500,9 +2529,22 @@ class LLMSessionManager:
                 return False
             if not self.session or not hasattr(self.session, '_conversation_history'):
                 return False
+            # auto-start 期间耗时 await；再次确认 proactive 未被用户抢占
+            if self.state.is_proactive_preempted():
+                logger.info("[%s] prepare_proactive_delivery: preempted during auto-start", self.lanlan_name)
+                return False
         async with self.lock:
+            # lock 内二次复查：USER_INPUT 在 self.lock 内 rotate sid，sticky preempt
+            # flag 先于 sid mutation 翻起；此处若已被抢占则不写 current_speech_id。
+            if self.state.is_proactive_preempted():
+                logger.info("[%s] prepare_proactive_delivery: preempted in claim lock", self.lanlan_name)
+                return False
             self.current_speech_id = str(uuid4())
             self._tts_done_queued_for_turn = False
+            claim_sid = self.current_speech_id
+        # 状态机：正式 claim turn。订阅者（诊断、frontend sync 等）在此之后
+        # 观察到 proactive_sid 已与 current_speech_id 一致。
+        await self.state.fire(SessionEvent.PROACTIVE_CLAIM, sid=claim_sid)
         return True
 
     async def feed_tts_chunk(self, text: str, expected_speech_id: str | None = None):
@@ -2553,7 +2595,17 @@ class LLMSessionManager:
                     self.lanlan_name, expected_speech_id, self.current_speech_id,
                 )
                 return False
-            await self.send_lanlan_response(full_text, is_first_chunk=True)
+            # 冻结 commit 用的 turn_id：current_speech_id 由 self.lock 保护，不在
+            # _proactive_write_lock 范围内，下面 send_lanlan_response 之前若用户经
+            # handle_new_message/stream_text 抢占完成 sid 轮换，再让 send_lanlan_response
+            # 默认从 self.current_speech_id 取值会把这条 proactive 气泡打到用户新
+            # turn 上、前端分组串掉。expected_speech_id 在 phase2 已经一路传到这里
+            # 并且刚校验过，作为冻结快照最稳。
+            commit_sid = expected_speech_id or self.current_speech_id
+            # 状态机：进入 COMMITTING 阶段；期间若用户抢占仍会 sticky 到 _preempted，
+            # 但本处 lock 内 sid 已校验过，commit 本身安全。
+            await self.state.fire(SessionEvent.PROACTIVE_COMMITTING)
+            await self.send_lanlan_response(full_text, is_first_chunk=True, turn_id=commit_sid)
 
             from utils.llm_client import AIMessage as _AIMsg
             if self.session and hasattr(self.session, '_conversation_history'):
@@ -3365,6 +3417,14 @@ class LLMSessionManager:
                     async with self.lock:
                         self.current_speech_id = str(uuid4())
                         self._tts_done_queued_for_turn = False
+                        new_user_sid = self.current_speech_id
+                        # 与 handle_new_message 同理：sid 写入的同一锁段内同步翻
+                        # _preempted，避免 prepare_proactive_delivery 插到 lock
+                        # 释放 ~ fire() 之间再覆盖新 user sid。
+                        self.state.mark_user_input_preempt()
+                    # 状态机：文本模式 stream_text 入口同样需要发射 USER_INPUT。
+                    # handle_new_message 只在语音模式走到，这里是文本模式的对偶。
+                    await self.state.fire(SessionEvent.USER_INPUT, sid=new_user_sid)
 
                     should_handoff, openclaw_messages = await self._should_handoff_text_to_openclaw(data)
                     if should_handoff:
