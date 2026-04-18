@@ -495,6 +495,7 @@ class ConfigManager:
         self._characters_cache_path: str | None = None
         self._characters_dirty: bool = False
         self._characters_cache_lock = threading.Lock()
+        self._characters_reload_lock = threading.Lock()
 
         self.project_config_dir = self._get_project_config_directory()
         self.project_memory_dir = self._get_project_memory_directory()
@@ -1027,50 +1028,68 @@ class ConfigManager:
             if current_mtime is not None and current_mtime == cache_mtime:
                 return deepcopy(cache)
 
-        try:
-            with open(character_json_path, 'r', encoding='utf-8') as f:
-                character_data = json.load(f)
-            try:
-                loaded_mtime = os.path.getmtime(character_json_path)
-            except OSError:
-                loaded_mtime = None
-        except FileNotFoundError:
-            logger.info("未找到猫娘配置文件 %s，使用默认配置。", character_json_path)
-            character_data = self.get_default_characters()
-            loaded_mtime = None
-        except Exception as e:
-            logger.error("读取猫娘配置文件出错: %s，使用默认人设。", e)
-            character_data = self.get_default_characters()
-            loaded_mtime = None
-
-        migrated = False
-        if not isinstance(character_data, dict):
-            logger.warning("角色配置文件结构异常（非 dict），使用默认配置。")
-            character_data = self.get_default_characters()
-        catgirl_map = character_data.get("猫娘")
-        if isinstance(catgirl_map, dict):
-            for name, catgirl_data in catgirl_map.items():
-                if not isinstance(catgirl_data, dict):
-                    logger.warning("角色 '%s' 配置非 dict，跳过迁移。", name)
-                    continue
-                if migrate_catgirl_reserved(catgirl_data):
-                    migrated = True
-                reserved_errors = validate_reserved_schema(catgirl_data.get("_reserved"))
-                if reserved_errors:
-                    logger.warning("检测到角色 _reserved 字段结构异常: %s", "; ".join(reserved_errors))
-        if migrated:
-            try:
-                self.save_characters(character_data, character_json_path=character_json_path)
-                logger.info("检测到旧版角色保留字段，已自动迁移到 _reserved 结构。")
-            except Exception as migrate_err:
-                logger.warning("自动迁移角色保留字段后写回失败: %s", migrate_err)
-        else:
+        # 慢路径：独占锁，防止多个线程同时读文件、重复触发迁移和校验警告。
+        with self._characters_reload_lock:
+            # 双检：进锁后重新核对 mtime，另一个线程可能已经完成了加载。
             with self._characters_cache_lock:
-                self._characters_cache = deepcopy(character_data)
-                self._characters_cache_mtime = loaded_mtime
-                self._characters_cache_path = character_json_path
-                self._characters_dirty = False
-        return character_data
+                cache = self._characters_cache
+                cache_path = self._characters_cache_path
+                cache_mtime = self._characters_cache_mtime
+            if cache is not None and cache_path == character_json_path:
+                try:
+                    current_mtime = os.path.getmtime(character_json_path)
+                except OSError:
+                    current_mtime = None
+                if current_mtime is not None and current_mtime == cache_mtime:
+                    return deepcopy(cache)
+
+            try:
+                with open(character_json_path, 'r', encoding='utf-8') as f:
+                    character_data = json.load(f)
+                try:
+                    loaded_mtime = os.path.getmtime(character_json_path)
+                except OSError:
+                    loaded_mtime = None
+            except FileNotFoundError:
+                logger.info("未找到猫娘配置文件 %s，使用默认配置。", character_json_path)
+                character_data = self.get_default_characters()
+                loaded_mtime = None
+            except Exception as e:
+                logger.error("读取猫娘配置文件出错: %s，使用默认人设。", e)
+                character_data = self.get_default_characters()
+                loaded_mtime = None
+
+            migrated = False
+            if not isinstance(character_data, dict):
+                logger.warning("角色配置文件结构异常（非 dict），使用默认配置。")
+                character_data = self.get_default_characters()
+            catgirl_map = character_data.get("猫娘")
+            if isinstance(catgirl_map, dict):
+                all_schema_errors: list[str] = []
+                for name, catgirl_data in catgirl_map.items():
+                    if not isinstance(catgirl_data, dict):
+                        logger.warning("角色 '%s' 配置非 dict，跳过迁移。", name)
+                        continue
+                    if migrate_catgirl_reserved(catgirl_data):
+                        migrated = True
+                    reserved_errors = validate_reserved_schema(catgirl_data.get("_reserved"))
+                    for err in reserved_errors:
+                        all_schema_errors.append(f"{name}: {err}")
+                if all_schema_errors:
+                    logger.warning("检测到角色 _reserved 字段结构异常: %s", "; ".join(all_schema_errors))
+            if migrated:
+                try:
+                    self.save_characters(character_data, character_json_path=character_json_path)
+                    logger.info("检测到旧版角色保留字段，已自动迁移到 _reserved 结构。")
+                except Exception as migrate_err:
+                    logger.warning("自动迁移角色保留字段后写回失败: %s", migrate_err)
+            else:
+                with self._characters_cache_lock:
+                    self._characters_cache = deepcopy(character_data)
+                    self._characters_cache_mtime = loaded_mtime
+                    self._characters_cache_path = character_json_path
+                    self._characters_dirty = False
+            return character_data
 
     def save_characters(self, data, character_json_path=None):
         """保存角色配置（同步版本，会阻塞事件循环；async 路径请用 asave_characters）"""
