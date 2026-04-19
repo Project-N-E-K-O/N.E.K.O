@@ -47,58 +47,75 @@
             </div>
           </div>
 
-          <div class="filter-bar" @mouseenter="showFilter" @mouseleave="scheduleHideFilter">
-            <Transition name="filter-fade" mode="out-in">
-              <div v-if="filterVisible" key="controls" class="filter-controls">
-                <el-popover
-                  v-model:visible="filterRulesVisible"
-                  placement="bottom-start"
-                  :width="360"
-                  trigger="click"
-                  popper-class="filter-rules-popover"
+          <div class="filter-bar">
+            <div class="filter-controls">
+              <div
+                ref="filterRulesAnchorRef"
+                class="filter-rules-anchor"
+              >
+                <button
+                  class="filter-rules-trigger"
+                  :class="{ 'filter-rules-trigger--active': filterRulesVisible }"
+                  type="button"
+                  @click.stop="toggleFilterRules"
                 >
-                  <template #reference>
-                    <el-button class="filter-rules-trigger" plain>
-                      <el-icon><Operation /></el-icon>
-                      {{ $t('plugins.filterRules') }}
-                    </el-button>
-                  </template>
+                  <el-icon><Operation /></el-icon>
+                  <span>{{ $t('plugins.filterRules') }}</span>
+                  <svg class="filter-rules-trigger__arrow" viewBox="0 0 12 12" fill="none">
+                    <path d="M3 5L6 8L9 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </button>
+              </div>
 
-                  <div class="filter-rules-panel">
-                    <div class="filter-rules-panel__header">
-                      <div class="filter-rules-panel__title">{{ $t('plugins.filterRulesTitle') }}</div>
-                      <div class="filter-rules-panel__hint">{{ $t('plugins.filterRulesHint') }}</div>
-                    </div>
+              <Teleport to="body">
+                <Transition name="rules-panel">
+                  <div
+                    v-if="filterRulesVisible"
+                    ref="filterRulesPanelRef"
+                    class="filter-rules-dropdown"
+                    :style="rulesDropdownStyle"
+                  >
+                    <div class="filter-rules-panel">
+                      <div class="filter-rules-panel__header">
+                        <div class="filter-rules-panel__title">{{ $t('plugins.filterRulesTitle') }}</div>
+                        <div class="filter-rules-panel__hint">{{ $t('plugins.filterRulesHint') }}</div>
+                      </div>
 
-                    <div
-                      v-for="group in filterRuleGroups"
-                      :key="group.key"
-                      class="filter-rules-group"
-                    >
-                      <div class="filter-rules-group__title">{{ group.title }}</div>
-                      <div class="filter-rules-group__list">
-                        <button
-                          v-for="rule in group.rules"
-                          :key="rule.token"
-                          type="button"
-                          class="filter-rule-chip"
-                          @click="appendFilterRule(rule.token)"
-                        >
-                          <span class="filter-rule-chip__token">{{ rule.token }}</span>
-                          <span class="filter-rule-chip__label">{{ rule.label }}</span>
-                        </button>
+                      <div
+                        v-for="(group, gi) in filterRuleGroups"
+                        :key="group.key"
+                        class="filter-rules-group"
+                        :style="{ '--group-index': gi }"
+                      >
+                        <div class="filter-rules-group__title">{{ group.title }}</div>
+                        <div class="filter-rules-group__list">
+                          <button
+                            v-for="(rule, ri) in group.rules"
+                            :key="rule.token"
+                            type="button"
+                            class="filter-rule-chip"
+                            :style="{ '--chip-index': gi * 6 + ri }"
+                            @click="appendFilterRule(rule.token)"
+                          >
+                            <span class="filter-rule-chip__token">{{ rule.token }}</span>
+                            <span class="filter-rule-chip__label">{{ rule.label }}</span>
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </div>
-                </el-popover>
+                </Transition>
+              </Teleport>
 
-                <el-input
-                  ref="filterInputRef"
-                  v-model="filterText"
-                  clearable
-                  class="filter-input"
-                  :placeholder="$t('plugins.filterPlaceholder')"
-                />
+              <el-input
+                ref="filterInputRef"
+                v-model="filterText"
+                clearable
+                class="filter-input"
+                :placeholder="$t('plugins.filterPlaceholder')"
+              />
+
+              <div class="filter-toggles">
                 <el-switch
                   v-model="useRegex"
                   class="filter-switch"
@@ -109,12 +126,12 @@
                   <el-radio-button label="whitelist">{{ $t('plugins.filterWhitelist') }}</el-radio-button>
                   <el-radio-button label="blacklist">{{ $t('plugins.filterBlacklist') }}</el-radio-button>
                 </el-radio-group>
-                <span v-if="regexError" class="filter-error">{{ $t('plugins.invalidRegex') }}</span>
               </div>
-              <span v-else key="placeholder" class="filter-placeholder">
-                {{ $t('plugins.hoverToShowFilter') }}
-              </span>
-            </Transition>
+
+              <Transition name="filter-error-fade">
+                <span v-if="regexError" class="filter-error">{{ $t('plugins.invalidRegex') }}</span>
+              </Transition>
+            </div>
           </div>
 
           <div class="workbench-toolbar">
@@ -136,7 +153,7 @@
             </div>
 
             <div class="layout-toolbar">
-              <span class="layout-toolbar__label">视图</span>
+              <el-icon class="layout-toolbar__icon"><Grid /></el-icon>
               <el-radio-group v-model="layoutMode" size="small">
                 <el-radio-button label="list">列表</el-radio-button>
                 <el-radio-button label="single">单排</el-radio-button>
@@ -246,7 +263,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Expand, Operation, Finished, Sort, CircleClose, Close } from '@element-plus/icons-vue'
+import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Expand, Operation, Finished, Sort, CircleClose, Close, Grid } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
@@ -308,12 +325,13 @@ const {
 } = usePluginWorkbench(rawPlugins)
 
 const loading = computed(() => pluginStore.loading)
-const filterVisible = ref(false)
 const filterRulesVisible = ref(false)
 const filterInputRef = ref<any>(null)
+const filterRulesAnchorRef = ref<HTMLElement | null>(null)
+const filterRulesPanelRef = ref<HTMLElement | null>(null)
 const showMetrics = ref(false)
-let hideTimer: number | null = null
 let metricsRefreshTimer: number | null = null
+let rulesHideTimer: number | null = null
 const pluginSections = computed(() => [
   {
     key: 'plugin',
@@ -376,20 +394,100 @@ const filterRuleGroups = computed(() => [
   },
 ])
 
-function showFilter() {
-  if (hideTimer) {
-    clearTimeout(hideTimer)
-    hideTimer = null
+const rulesDropdownPos = ref({ top: 0, left: 0 })
+const rulesDropdownStyle = computed(() => ({
+  position: 'fixed' as const,
+  top: `${rulesDropdownPos.value.top}px`,
+  left: `${rulesDropdownPos.value.left}px`,
+}))
+
+function updateRulesDropdownPos() {
+  const anchor = filterRulesAnchorRef.value
+  if (!anchor) return
+  const rect = anchor.getBoundingClientRect()
+  rulesDropdownPos.value = {
+    top: rect.bottom + 8,
+    left: rect.left,
   }
-  filterVisible.value = true
 }
 
-function scheduleHideFilter() {
-  if (hideTimer) clearTimeout(hideTimer)
-  hideTimer = window.setTimeout(() => {
-    filterVisible.value = false
-    hideTimer = null
+function getRulesUnionRect(pad: number) {
+  const rects: DOMRect[] = []
+  if (filterRulesAnchorRef.value) rects.push(filterRulesAnchorRef.value.getBoundingClientRect())
+  if (filterRulesPanelRef.value) rects.push(filterRulesPanelRef.value.getBoundingClientRect())
+  if (rects.length === 0) return null
+  return {
+    left: Math.min(...rects.map((r) => r.left)) - pad,
+    top: Math.min(...rects.map((r) => r.top)) - pad,
+    right: Math.max(...rects.map((r) => r.right)) + pad,
+    bottom: Math.max(...rects.map((r) => r.bottom)) + pad,
+  }
+}
+
+function isInsideRulesArea(x: number, y: number) {
+  const union = getRulesUnionRect(40)
+  if (!union) return false
+  return x >= union.left && x <= union.right && y >= union.top && y <= union.bottom
+}
+
+function clearRulesHideTimer() {
+  if (rulesHideTimer) {
+    clearTimeout(rulesHideTimer)
+    rulesHideTimer = null
+  }
+}
+
+function scheduleRulesHide() {
+  clearRulesHideTimer()
+  rulesHideTimer = window.setTimeout(() => {
+    filterRulesVisible.value = false
+    rulesHideTimer = null
   }, 1000)
+}
+
+function onDocumentMouseMove(event: MouseEvent) {
+  if (!filterRulesVisible.value) return
+  if (isInsideRulesArea(event.clientX, event.clientY)) {
+    clearRulesHideTimer()
+  } else if (!rulesHideTimer) {
+    scheduleRulesHide()
+  }
+}
+
+function onDocumentMouseDown(event: MouseEvent) {
+  if (!filterRulesVisible.value) return
+  const anchor = filterRulesAnchorRef.value
+  const panel = filterRulesPanelRef.value
+  const target = event.target as Node
+  if (anchor?.contains(target) || panel?.contains(target)) return
+  filterRulesVisible.value = false
+  clearRulesHideTimer()
+}
+
+function startRulesListeners() {
+  document.addEventListener('mousemove', onDocumentMouseMove)
+  document.addEventListener('mousedown', onDocumentMouseDown, true)
+}
+
+function stopRulesListeners() {
+  document.removeEventListener('mousemove', onDocumentMouseMove)
+  document.removeEventListener('mousedown', onDocumentMouseDown, true)
+  clearRulesHideTimer()
+}
+
+watch(filterRulesVisible, (visible) => {
+  if (visible) {
+    startRulesListeners()
+  } else {
+    stopRulesListeners()
+  }
+})
+
+function toggleFilterRules() {
+  if (!filterRulesVisible.value) {
+    updateRulesDropdownPos()
+  }
+  filterRulesVisible.value = !filterRulesVisible.value
 }
 
 function appendFilterRule(token: string) {
@@ -663,10 +761,7 @@ onUnmounted(() => {
   closePluginContextMenu()
   closeDangerDialog()
   stopMetricsAutoRefresh()
-  if (hideTimer) {
-    clearTimeout(hideTimer)
-    hideTimer = null
-  }
+  stopRulesListeners()
 })
 </script>
 
@@ -911,41 +1006,56 @@ onUnmounted(() => {
   min-width: 0;
 }
 
+/* ── Filter bar ── */
 .filter-bar {
-  margin-top: 16px;
-  padding: 14px 16px;
-  background:
-    linear-gradient(135deg, color-mix(in srgb, var(--el-fill-color-light) 78%, white), color-mix(in srgb, var(--el-color-primary) 4%, white));
-  border: 1px solid color-mix(in srgb, var(--el-color-primary) 8%, var(--el-border-color));
-  border-radius: 18px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  min-height: 62px;
-  box-sizing: border-box;
+  margin-top: 14px;
+  padding: 10px 14px;
+  background: color-mix(in srgb, var(--el-bg-color) 78%, transparent);
+  backdrop-filter: blur(16px) saturate(1.4);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  border: 1px solid color-mix(in srgb, var(--el-border-color) 50%, transparent);
+  border-radius: 16px;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 30%, transparent),
+    0 4px 16px color-mix(in srgb, var(--el-text-color-primary) 4%, transparent);
 }
 
 .filter-controls {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   flex-wrap: wrap;
   width: 100%;
 }
 
-.filter-rules-trigger {
-  --el-button-border-radius: 999px;
-  flex-shrink: 0;
-  min-width: 110px;
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, white 70%, transparent),
-    0 6px 16px color-mix(in srgb, var(--el-text-color-primary) 6%, transparent);
-}
-
 .filter-input {
   flex: 1;
-  min-width: 220px;
+  min-width: 200px;
+}
+
+.filter-input :deep(.el-input__wrapper) {
+  border-radius: 12px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--el-border-color) 50%, transparent) inset;
+  transition:
+    box-shadow 0.2s ease,
+    border-color 0.2s ease;
+}
+
+.filter-input :deep(.el-input__wrapper:hover) {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--el-color-primary) 30%, var(--el-border-color)) inset;
+}
+
+.filter-input :deep(.el-input__wrapper.is-focus) {
+  box-shadow:
+    0 0 0 1px var(--el-color-primary) inset,
+    0 0 0 3px color-mix(in srgb, var(--el-color-primary) 12%, transparent);
+}
+
+.filter-toggles {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
 }
 
 .filter-switch,
@@ -956,56 +1066,177 @@ onUnmounted(() => {
 .filter-error {
   color: var(--el-color-danger);
   font-size: 12px;
+  font-weight: 500;
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--el-color-danger) 8%, transparent);
+}
+
+.filter-error-fade-enter-active,
+.filter-error-fade-leave-active {
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.filter-error-fade-enter-from,
+.filter-error-fade-leave-to {
+  opacity: 0;
+  transform: translateX(-4px);
+}
+
+/* ── Filter rules dropdown ── */
+.filter-rules-anchor {
+  position: relative;
   flex-shrink: 0;
 }
 
-.filter-placeholder {
-  color: var(--el-text-color-placeholder);
-  font-style: italic;
-  font-size: 14px;
-  line-height: 32px;
+.filter-rules-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border: 1px solid color-mix(in srgb, var(--el-border-color) 60%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--el-bg-color) 90%, white);
+  color: var(--el-text-color-regular);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease,
+    transform 0.18s ease,
+    box-shadow 0.2s ease;
 }
 
-:global(.filter-rules-popover) {
-  padding: 14px;
-  border-radius: 18px;
-  border: 1px solid color-mix(in srgb, var(--el-color-primary) 10%, var(--el-border-color));
+.filter-rules-trigger .el-icon {
+  font-size: 15px;
+}
+
+.filter-rules-trigger__arrow {
+  width: 12px;
+  height: 12px;
+  margin-left: 2px;
+  transition: transform 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.filter-rules-trigger--active .filter-rules-trigger__arrow {
+  transform: rotate(180deg);
+}
+
+.filter-rules-trigger:hover,
+.filter-rules-trigger--active {
+  border-color: color-mix(in srgb, var(--el-color-primary) 30%, var(--el-border-color));
+  color: var(--el-color-primary);
+  background: color-mix(in srgb, var(--el-color-primary) 6%, var(--el-bg-color));
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--el-color-primary) 10%, transparent);
+}
+
+.filter-rules-trigger--active {
+  transform: translateY(0);
   box-shadow:
-    0 18px 40px color-mix(in srgb, var(--el-text-color-primary) 12%, transparent),
-    0 6px 14px color-mix(in srgb, var(--el-color-primary) 8%, transparent);
+    0 0 0 2px color-mix(in srgb, var(--el-color-primary) 14%, transparent),
+    0 4px 12px color-mix(in srgb, var(--el-color-primary) 10%, transparent);
 }
 
-.filter-rules-panel {
+/* ── Filter rules dropdown (teleported to body, needs :global) ── */
+:global(.filter-rules-dropdown) {
+  z-index: 2100;
+  width: 400px;
+  padding: 16px;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--el-border-color) 40%, transparent);
+  background: color-mix(in srgb, var(--el-bg-color) 86%, transparent);
+  backdrop-filter: blur(24px) saturate(1.8);
+  -webkit-backdrop-filter: blur(24px) saturate(1.8);
+  box-shadow:
+    0 24px 64px color-mix(in srgb, var(--el-text-color-primary) 16%, transparent),
+    0 8px 24px color-mix(in srgb, var(--el-color-primary) 6%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 30%, transparent);
+  transform-origin: top left;
+}
+
+/* ── Rules panel transition ── */
+:global(.rules-panel-enter-active) {
+  transition:
+    opacity 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.32s cubic-bezier(0.34, 1.56, 0.64, 1),
+    filter 0.28s ease;
+}
+
+:global(.rules-panel-leave-active) {
+  transition:
+    opacity 0.2s ease,
+    transform 0.2s cubic-bezier(0.55, 0, 1, 0.45),
+    filter 0.2s ease;
+}
+
+:global(.rules-panel-enter-from) {
+  opacity: 0;
+  transform: scale(0.92) translateY(-6px);
+  filter: blur(8px);
+}
+
+:global(.rules-panel-leave-to) {
+  opacity: 0;
+  transform: scale(0.95) translateY(-4px);
+  filter: blur(4px);
+}
+
+:global(.rules-panel-enter-to),
+:global(.rules-panel-leave-from) {
+  opacity: 1;
+  transform: scale(1) translateY(0);
+  filter: blur(0);
+}
+
+:global(.filter-rules-panel) {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
 }
 
-.filter-rules-panel__header {
+:global(.filter-rules-panel__header) {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
-.filter-rules-panel__title {
+:global(.filter-rules-panel__title) {
   font-size: 14px;
   font-weight: 700;
   color: var(--el-text-color-primary);
 }
 
-.filter-rules-panel__hint {
+:global(.filter-rules-panel__hint) {
   font-size: 12px;
   color: var(--el-text-color-secondary);
   line-height: 1.5;
 }
 
-.filter-rules-group {
+:global(.filter-rules-group) {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  animation: group-slide-in 0.32s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  animation-delay: calc(var(--group-index, 0) * 60ms + 80ms);
 }
 
-.filter-rules-group__title {
+@keyframes group-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+:global(.filter-rules-group__title) {
   font-size: 11px;
   font-weight: 700;
   color: var(--el-text-color-secondary);
@@ -1013,117 +1244,149 @@ onUnmounted(() => {
   text-transform: uppercase;
 }
 
-.filter-rules-group__list {
+:global(.filter-rules-group__list) {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
 }
 
-.filter-rule-chip {
+:global(.filter-rule-chip) {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border: 1px solid color-mix(in srgb, var(--el-color-primary) 10%, var(--el-border-color));
-  border-radius: 14px;
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--el-fill-color-light) 74%, white), var(--el-bg-color));
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid color-mix(in srgb, var(--el-border-color) 50%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--el-bg-color) 90%, white);
   color: var(--el-text-color-primary);
+  font-size: 12px;
   cursor: pointer;
+  animation: chip-pop-in 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) backwards;
+  animation-delay: calc(var(--chip-index, 0) * 25ms + 120ms);
   transition:
     transform 0.18s ease,
     border-color 0.18s ease,
     box-shadow 0.18s ease,
-    background 0.18s ease;
+    background 0.18s ease,
+    color 0.18s ease;
 }
 
-.filter-rule-chip:hover {
-  transform: translateY(-1px);
-  border-color: color-mix(in srgb, var(--el-color-primary) 28%, var(--el-border-color));
-  box-shadow: 0 10px 22px color-mix(in srgb, var(--el-color-primary) 10%, transparent);
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--el-color-primary-light-9) 72%, white), var(--el-bg-color));
+@keyframes chip-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.85) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
 }
 
-.filter-rule-chip__token {
+:global(.filter-rule-chip:hover) {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--el-color-primary) 30%, var(--el-border-color));
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--el-color-primary) 12%, transparent);
+  background: color-mix(in srgb, var(--el-color-primary) 8%, var(--el-bg-color));
+}
+
+:global(.filter-rule-chip:active) {
+  transform: translateY(0) scale(0.96);
+  transition-duration: 0.08s;
+}
+
+:global(.filter-rule-chip__token) {
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 600;
   color: var(--el-color-primary);
 }
 
-.filter-rule-chip__label {
-  font-size: 12px;
+:global(.filter-rule-chip__label) {
+  font-size: 11.5px;
   color: var(--el-text-color-secondary);
 }
 
+/* ── Workbench toolbar (type filter + layout) ── */
 .workbench-toolbar {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
-  gap: 16px;
+  align-items: center;
+  gap: 12px;
   flex-wrap: wrap;
-  margin-top: 14px;
-  padding: 12px 16px;
-  border-radius: 18px;
-  background: color-mix(in srgb, var(--el-fill-color-light) 72%, white);
+  margin-top: 10px;
+  padding: 8px 14px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--el-bg-color) 78%, transparent);
+  backdrop-filter: blur(16px) saturate(1.4);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  border: 1px solid color-mix(in srgb, var(--el-border-color) 40%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 24%, transparent),
+    0 2px 8px color-mix(in srgb, var(--el-text-color-primary) 3%, transparent);
 }
 
 .type-filter-bar {
-  flex: 1 1 420px;
+  flex: 1 1 auto;
   min-width: 0;
 }
 
 .type-filter-group {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
 }
 
-.type-filter-group .el-checkbox-button {
+.type-filter-group :deep(.el-checkbox-button) {
   --el-checkbox-button-checked-bg-color: var(--el-color-primary);
 }
 
-.type-filter-group .el-checkbox-button__inner {
+.type-filter-group :deep(.el-checkbox-button__inner) {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
+  border-radius: 10px;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  border: 1px solid color-mix(in srgb, var(--el-border-color) 50%, transparent);
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease,
+    box-shadow 0.2s ease,
+    transform 0.18s ease;
+}
+
+.type-filter-group :deep(.el-checkbox-button__inner:hover) {
+  transform: translateY(-1px);
+}
+
+.type-filter-group :deep(.el-checkbox-button.is-checked .el-checkbox-button__inner) {
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--el-color-primary) 24%, transparent);
+  border-color: transparent;
 }
 
 .layout-toolbar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
-.layout-toolbar__label {
-  font-size: 12px;
-  font-weight: 600;
+.layout-toolbar__icon {
+  font-size: 15px;
   color: var(--el-text-color-secondary);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
 }
 
-.filter-fade-enter-active,
-.filter-fade-leave-active {
-  transition: opacity 0.25s ease, transform 0.25s ease;
-}
-
-.filter-fade-enter-from {
-  opacity: 0;
-  transform: translateY(-4px);
-}
-
-.filter-fade-leave-to {
-  opacity: 0;
-  transform: translateY(4px);
-}
-
-.filter-fade-enter-to,
-.filter-fade-leave-from {
-  opacity: 1;
-  transform: translateY(0);
+.layout-toolbar :deep(.el-radio-button__inner) {
+  border-radius: 8px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease,
+    box-shadow 0.2s ease;
 }
 
 @media (max-width: 1280px) {
