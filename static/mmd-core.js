@@ -394,9 +394,23 @@ class MMDCore {
         // 自定义 LoadingManager: 追踪加载失败的纹理 URL
         const loadManager = new THREE.LoadingManager();
         loadManager._failedUrls = [];
+        loadManager._allResourcesLoaded = false;
         loadManager.onError = (url) => {
             console.warn(`[MMD Core] 资源加载失败: ${url}`);
             loadManager._failedUrls.push(url);
+        };
+        // 所有资源（含失败的）加载完成后，检查并修复缺失纹理
+        loadManager.onLoad = () => {
+            loadManager._allResourcesLoaded = true;
+            console.log('[MMD Core] 所有资源加载完成，检查纹理状态');
+            if (this.manager.currentModel) {
+                // 清除兜底定时器
+                if (this._fixMissingTexturesTimer) {
+                    clearTimeout(this._fixMissingTexturesTimer);
+                    this._fixMissingTexturesTimer = null;
+                }
+                this._fixMissingTextures(this.manager.currentModel);
+            }
         };
         this.manager._loadManager = loadManager;
 
@@ -565,8 +579,16 @@ class MMDCore {
         }
         console.log(`[MMD Core] 材质后处理完成: ${materialCount} 个材质`);
 
-        // 延迟检查纹理加载状态，为加载失败的纹理提供白色 fallback
-        setTimeout(() => this._fixMissingTextures(mmd), 3000);
+        // 兜底：如果 LoadingManager.onLoad 30 秒内未触发，强制检查纹理状态
+        // （正常情况下 onLoad 会在所有资源加载完后触发，此定时器仅防极端情况）
+        this._fixMissingTexturesTimer = setTimeout(() => {
+            this._fixMissingTexturesTimer = null;
+            const loadManager = this.manager._loadManager;
+            if (loadManager && !loadManager._allResourcesLoaded) {
+                console.warn('[MMD Core] 纹理加载兜底超时（30s），强制检查纹理状态');
+                this._fixMissingTextures(mmd);
+            }
+        }, 30000);
     }
 
     /**
@@ -787,6 +809,12 @@ class MMDCore {
     _clearModel() {
         const mmd = this.manager.currentModel;
         if (!mmd) return;
+
+        // 清理纹理修复兜底定时器
+        if (this._fixMissingTexturesTimer) {
+            clearTimeout(this._fixMissingTexturesTimer);
+            this._fixMissingTexturesTimer = null;
+        }
 
         // 停止动画
         if (this.manager.animationModule) {
