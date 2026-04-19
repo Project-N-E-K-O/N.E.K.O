@@ -2725,11 +2725,557 @@ async function loadCharacterCards() {
     // 将角色卡列表保存到全局变量（已使用window.characterCards，这里保持兼容）
     globalCharacterCards = window.characterCards || [];
 
+    // 获取当前猫娘
+    try {
+        const currentResp = await fetch('/api/characters/current_catgirl');
+        const currentData = await currentResp.json();
+        window._workshopCurrentCatgirl = currentData.current_catgirl || '';
+    } catch (e) {
+        window._workshopCurrentCatgirl = '';
+    }
+
+    // 渲染卡片/列表视图
+    renderCharaCardsView();
+
     // 显示刷新成功消息
     if (window.characterCards && window.characterCards.length > 0) {
         showMessage(window.t ? window.t('steam.characterCardsRefreshed', { count: window.characterCards.length }) : `已刷新角色卡列表，共 ${window.characterCards.length} 个角色卡`, 'success');
     } else {
         showMessage(window.t ? window.t('steam.characterCardsRefreshedEmpty') : '已刷新角色卡列表，暂无角色卡', 'info');
+    }
+}
+
+// ===== 角色卡 卡片/列表 视图 =====
+
+// 当前视图模式
+let charaCardsViewMode = localStorage.getItem('charaCardsViewMode') || 'card';
+
+// 切换视图
+function switchCharaCardsView(mode) {
+    charaCardsViewMode = mode;
+    localStorage.setItem('charaCardsViewMode', mode);
+    // 更新按钮状态
+    document.getElementById('chara-view-card-btn')?.classList.toggle('active', mode === 'card');
+    document.getElementById('chara-view-list-btn')?.classList.toggle('active', mode === 'list');
+    renderCharaCardsView();
+}
+window.switchCharaCardsView = switchCharaCardsView;
+
+// 搜索过滤
+let _charaSearchQuery = '';
+
+function filterCharaCards(query) {
+    _charaSearchQuery = (query || '').trim().toLowerCase();
+    renderCharaCardsView();
+}
+window.filterCharaCards = filterCharaCards;
+
+// 渲染角色卡视图
+function renderCharaCardsView() {
+    const container = document.getElementById('chara-cards-container');
+    if (!container) return;
+
+    let cards = window.characterCards || [];
+
+    // 应用搜索过滤
+    if (_charaSearchQuery) {
+        cards = cards.filter(card => {
+            const name = (card.originalName || card.name || '').toLowerCase();
+            return name.includes(_charaSearchQuery);
+        });
+    }
+
+    if (cards.length === 0) {
+        container.innerHTML = '<div class="empty-state"><p>' +
+            (window.t ? window.t('steam.noCharacterCards') : '暂无角色卡') + '</p></div>';
+        return;
+    }
+
+    const currentCatgirl = window._workshopCurrentCatgirl || '';
+
+    if (charaCardsViewMode === 'card') {
+        renderCharaCardsGrid(container, cards, currentCatgirl);
+    } else {
+        renderCharaCardsList(container, cards, currentCatgirl);
+    }
+
+    // 恢复按钮激活状态
+    document.getElementById('chara-view-card-btn')?.classList.toggle('active', charaCardsViewMode === 'card');
+    document.getElementById('chara-view-list-btn')?.classList.toggle('active', charaCardsViewMode === 'list');
+}
+
+// 卡片视图渲染
+function renderCharaCardsGrid(container, cards, currentCatgirl) {
+    const grid = document.createElement('div');
+    grid.className = 'chara-cards-grid';
+
+    cards.forEach(card => {
+        const name = card.originalName || card.name;
+        const isCurrent = name === currentCatgirl;
+
+        const item = document.createElement('div');
+        item.className = 'chara-card-item' + (isCurrent ? ' active' : '');
+        item.style.cursor = 'pointer';
+        item.onclick = function (e) {
+            if (e.target.closest('.card-action-btn')) return;
+            openCatgirlPanel(card, item);
+        };
+
+        // 角色卡图片
+        const avatar = document.createElement('div');
+        avatar.className = 'card-avatar';
+        const placeholderSpan = document.createElement('span');
+        placeholderSpan.className = 'card-avatar-placeholder';
+        placeholderSpan.textContent = window.t ? window.t('steam.noCardImage') : '暂未设置\n角色卡图片';
+        avatar.appendChild(placeholderSpan);
+        item.appendChild(avatar);
+
+        // 名称
+        const nameDiv = document.createElement('div');
+        nameDiv.className = 'card-name';
+        nameDiv.textContent = name;
+        item.appendChild(nameDiv);
+
+        // 当前猫娘标记
+        if (isCurrent) {
+            const badge = document.createElement('span');
+            badge.className = 'card-badge';
+            badge.textContent = window.t ? window.t('character.currentCatgirl') : '当前猫娘';
+            item.appendChild(badge);
+        }
+
+        // 操作按钮
+        const actionsRow = document.createElement('div');
+        actionsRow.className = 'card-actions-row';
+
+        const switchBtn = document.createElement('button');
+        switchBtn.className = 'card-action-btn switch-btn';
+        switchBtn.textContent = window.t ? window.t('character.switchCatgirl') : '切换';
+        switchBtn.disabled = isCurrent;
+        switchBtn.onclick = function (e) {
+            e.stopPropagation();
+            workshopSwitchCatgirl(name);
+        };
+        actionsRow.appendChild(switchBtn);
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'card-action-btn delete-btn';
+        deleteBtn.textContent = window.t ? window.t('character.deleteCatgirl') : '删除';
+        deleteBtn.onclick = function (e) {
+            e.stopPropagation();
+            workshopDeleteCatgirl(name);
+        };
+        actionsRow.appendChild(deleteBtn);
+
+        item.appendChild(actionsRow);
+        grid.appendChild(item);
+    });
+
+    container.innerHTML = '';
+    container.appendChild(grid);
+}
+
+// 列表视图渲染
+function renderCharaCardsList(container, cards, currentCatgirl) {
+    const list = document.createElement('div');
+    list.className = 'chara-cards-list';
+
+    cards.forEach(card => {
+        const name = card.originalName || card.name;
+        const isCurrent = name === currentCatgirl;
+
+        const item = document.createElement('div');
+        item.className = 'chara-list-item' + (isCurrent ? ' active' : '');
+        item.style.cursor = 'pointer';
+        item.onclick = function (e) {
+            if (e.target.closest('.list-action-btn')) return;
+            openCatgirlPanel(card, item);
+        };
+
+        // 名称
+        const nameDiv = document.createElement('div');
+        nameDiv.className = 'list-name';
+        nameDiv.textContent = name;
+        item.appendChild(nameDiv);
+
+        // 当前猫娘标记
+        if (isCurrent) {
+            const badge = document.createElement('span');
+            badge.className = 'list-badge';
+            badge.textContent = window.t ? window.t('character.currentCatgirl') : '当前猫娘';
+            item.appendChild(badge);
+        }
+
+        // 操作按钮
+        const actions = document.createElement('div');
+        actions.className = 'list-actions';
+
+        const switchBtn = document.createElement('button');
+        switchBtn.className = 'list-action-btn switch-btn';
+        switchBtn.textContent = window.t ? window.t('character.switchCatgirl') : '切换';
+        switchBtn.disabled = isCurrent;
+        switchBtn.onclick = function (e) {
+            e.stopPropagation();
+            workshopSwitchCatgirl(name);
+        };
+        actions.appendChild(switchBtn);
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'list-action-btn delete-btn';
+        deleteBtn.textContent = window.t ? window.t('character.deleteCatgirl') : '删除';
+        deleteBtn.onclick = function (e) {
+            e.stopPropagation();
+            workshopDeleteCatgirl(name);
+        };
+        actions.appendChild(deleteBtn);
+
+        item.appendChild(actions);
+        list.appendChild(item);
+    });
+
+    container.innerHTML = '';
+    container.appendChild(list);
+}
+
+// ===== 角色卡详情面板 =====
+
+let _catgirlPanelOpen = false;
+
+function openCatgirlPanel(card, originEl) {
+    if (_catgirlPanelOpen) return;
+    _catgirlPanelOpen = true;
+
+    const name = card ? (card.originalName || card.name) : null;
+    const rawData = card ? (card.rawData || {}) : {};
+    const isNew = !name;
+
+    // 创建遮罩层
+    const overlay = document.createElement('div');
+    overlay.className = 'catgirl-panel-overlay';
+    overlay.onclick = function (e) {
+        if (e.target === overlay) closeCatgirlPanel();
+    };
+
+    // 创建面板容器
+    const wrapper = document.createElement('div');
+    wrapper.className = 'catgirl-panel-wrapper';
+    wrapper.id = 'catgirl-panel-wrapper';
+
+    // 设置动画起点
+    if (originEl) {
+        const rect = originEl.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        wrapper.style.transformOrigin = cx + 'px ' + cy + 'px';
+    }
+
+    // 关闭按钮
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'catgirl-panel-close';
+    closeBtn.innerHTML = '&times;';
+    closeBtn.onclick = closeCatgirlPanel;
+    wrapper.appendChild(closeBtn);
+
+    // 左侧：卡片预览
+    const leftSection = document.createElement('div');
+    leftSection.className = 'catgirl-panel-left';
+
+    const cardImage = document.createElement('div');
+    cardImage.className = 'catgirl-panel-card-image';
+    const imgPlaceholder = document.createElement('span');
+    imgPlaceholder.className = 'card-avatar-placeholder';
+    imgPlaceholder.textContent = window.t ? window.t('steam.noCardImage') : '暂未设置\n角色卡图片';
+    cardImage.appendChild(imgPlaceholder);
+    leftSection.appendChild(cardImage);
+
+    const cardNameDiv = document.createElement('div');
+    cardNameDiv.className = 'catgirl-panel-card-name';
+    cardNameDiv.textContent = name || (window.t ? window.t('steam.newCatgirl') : '新猫娘');
+    leftSection.appendChild(cardNameDiv);
+
+    if (!isNew && name === window._workshopCurrentCatgirl) {
+        const badge = document.createElement('div');
+        badge.className = 'catgirl-panel-badge';
+        badge.textContent = window.t ? window.t('character.currentCatgirl') : '当前猫娘';
+        leftSection.appendChild(badge);
+    }
+
+    wrapper.appendChild(leftSection);
+
+    // 右侧：编辑表单
+    const rightSection = document.createElement('div');
+    rightSection.className = 'catgirl-panel-right';
+    buildCatgirlDetailForm(name, rawData, isNew, rightSection);
+    wrapper.appendChild(rightSection);
+
+    overlay.appendChild(wrapper);
+    document.body.appendChild(overlay);
+
+    // 动画 Phase 1: 移动到中间
+    requestAnimationFrame(() => {
+        overlay.classList.add('active');
+        wrapper.classList.add('phase-center');
+        // Phase 2: 向左展开表单
+        setTimeout(() => {
+            wrapper.classList.remove('phase-center');
+            wrapper.classList.add('phase-expand');
+        }, 500);
+    });
+}
+window.openCatgirlPanel = openCatgirlPanel;
+
+function openNewCatgirlPanel() {
+    openCatgirlPanel(null, null);
+}
+window.openNewCatgirlPanel = openNewCatgirlPanel;
+
+function closeCatgirlPanel() {
+    const overlay = document.querySelector('.catgirl-panel-overlay');
+    if (!overlay) return;
+
+    const wrapper = overlay.querySelector('.catgirl-panel-wrapper');
+    if (wrapper) {
+        wrapper.classList.remove('phase-expand');
+        wrapper.classList.add('phase-center');
+    }
+
+    setTimeout(() => {
+        overlay.classList.remove('active');
+        if (wrapper) wrapper.classList.remove('phase-center');
+        setTimeout(() => {
+            overlay.remove();
+            _catgirlPanelOpen = false;
+        }, 400);
+    }, 300);
+}
+window.closeCatgirlPanel = closeCatgirlPanel;
+
+function buildCatgirlDetailForm(name, rawData, isNew, container) {
+    const form = document.createElement('form');
+    form.className = 'catgirl-detail-form';
+    form.onsubmit = function (e) { e.preventDefault(); };
+
+    // 标题
+    const title = document.createElement('h3');
+    title.className = 'catgirl-form-title';
+    title.textContent = isNew
+        ? (window.t ? window.t('steam.newCatgirl') : '新增猫娘')
+        : (window.t ? window.t('steam.editCatgirl') : '编辑猫娘');
+    form.appendChild(title);
+
+    // 档案名
+    const nameGroup = document.createElement('div');
+    nameGroup.className = 'catgirl-form-group';
+    const nameLabel = document.createElement('label');
+    nameLabel.className = 'catgirl-form-label';
+    nameLabel.textContent = window.t ? window.t('character.profileName') : '档案名';
+    nameGroup.appendChild(nameLabel);
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.name = '档案名';
+    nameInput.className = 'catgirl-form-input';
+    nameInput.value = name || '';
+    nameInput.required = true;
+    nameInput.placeholder = window.t ? window.t('character.enterProfileName') : '输入档案名...';
+    if (!isNew) nameInput.readOnly = true;
+    nameGroup.appendChild(nameInput);
+    form.appendChild(nameGroup);
+
+    // 自定义字段
+    const ALL_RESERVED = typeof getWorkshopHiddenFields === 'function' ? ['档案名', ...getWorkshopHiddenFields()] : ['档案名'];
+    Object.keys(rawData).forEach(k => {
+        if (ALL_RESERVED.includes(k)) return;
+        const val = rawData[k];
+        if (val === null || val === undefined) return;
+
+        const group = document.createElement('div');
+        group.className = 'catgirl-form-group';
+        const label = document.createElement('label');
+        label.className = 'catgirl-form-label';
+        label.textContent = k;
+        group.appendChild(label);
+
+        const textarea = document.createElement('textarea');
+        textarea.name = k;
+        textarea.className = 'catgirl-form-textarea';
+        textarea.value = typeof val === 'object' ? JSON.stringify(val, null, 2) : String(val);
+        textarea.rows = 3;
+        group.appendChild(textarea);
+
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'catgirl-form-del-field';
+        delBtn.textContent = '\u00d7';
+        delBtn.title = window.t ? window.t('character.deleteField') : '删除字段';
+        delBtn.onclick = function () { group.remove(); };
+        group.appendChild(delBtn);
+
+        form.appendChild(group);
+    });
+
+    // 添加字段按钮
+    const addFieldBtn = document.createElement('button');
+    addFieldBtn.type = 'button';
+    addFieldBtn.className = 'catgirl-form-add-field';
+    addFieldBtn.textContent = window.t ? window.t('character.addField') : '+ 添加字段';
+    addFieldBtn.onclick = function () {
+        const group = document.createElement('div');
+        group.className = 'catgirl-form-group';
+        const fnInput = document.createElement('input');
+        fnInput.type = 'text';
+        fnInput.className = 'catgirl-form-input catgirl-form-field-name';
+        fnInput.placeholder = window.t ? window.t('character.fieldName') : '字段名';
+        const textarea = document.createElement('textarea');
+        textarea.className = 'catgirl-form-textarea';
+        textarea.placeholder = window.t ? window.t('character.fieldValue') : '字段值';
+        textarea.rows = 3;
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'catgirl-form-del-field';
+        delBtn.textContent = '\u00d7';
+        delBtn.onclick = function () { group.remove(); };
+        group.appendChild(fnInput);
+        group.appendChild(textarea);
+        group.appendChild(delBtn);
+        form.insertBefore(group, addFieldBtn);
+    };
+    form.appendChild(addFieldBtn);
+
+    // 保存/取消按钮
+    const btnRow = document.createElement('div');
+    btnRow.className = 'catgirl-form-buttons';
+
+    const saveBtn = document.createElement('button');
+    saveBtn.type = 'button';
+    saveBtn.className = 'catgirl-form-save-btn';
+    saveBtn.textContent = isNew
+        ? (window.t ? window.t('character.confirmNewCatgirl') : '确认新猫娘')
+        : (window.t ? window.t('character.saveChanges') : '保存修改');
+    saveBtn.onclick = function () { saveCatgirlFromPanel(form, name, isNew); };
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'catgirl-form-cancel-btn';
+    cancelBtn.textContent = window.t ? window.t('character.cancel') : '取消';
+    cancelBtn.onclick = closeCatgirlPanel;
+
+    btnRow.appendChild(saveBtn);
+    btnRow.appendChild(cancelBtn);
+    form.appendChild(btnRow);
+
+    container.appendChild(form);
+}
+
+async function saveCatgirlFromPanel(form, originalName, isNew) {
+    const data = {};
+
+    // 收集表单数据
+    const nameInput = form.querySelector('input[name="档案名"]');
+    if (!nameInput || !nameInput.value.trim()) {
+        showMessage(window.t ? window.t('character.profileNameRequired') : '请输入档案名', 'error');
+        return;
+    }
+    data['档案名'] = nameInput.value.trim();
+
+    // 收集已有字段
+    form.querySelectorAll('textarea[name]').forEach(ta => {
+        if (ta.name && ta.value.trim()) {
+            data[ta.name] = ta.value.trim();
+        }
+    });
+
+    // 收集新增字段
+    form.querySelectorAll('.catgirl-form-field-name').forEach(nameEl => {
+        const fieldName = nameEl.value.trim();
+        const textarea = nameEl.parentElement.querySelector('textarea');
+        if (fieldName && textarea && textarea.value.trim()) {
+            data[fieldName] = textarea.value.trim();
+        }
+    });
+
+    try {
+        const url = '/api/characters/catgirl' + (isNew ? '' : '/' + encodeURIComponent(originalName));
+        const response = await fetch(url, {
+            method: isNew ? 'POST' : 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        const result = await response.json();
+        if (result.success || (response.ok && !result.error)) {
+            showMessage(isNew
+                ? (window.t ? window.t('character.newCatgirlSuccess') : '新猫娘创建成功')
+                : (window.t ? window.t('character.saveSuccess') : '保存成功'), 'success');
+            closeCatgirlPanel();
+            await loadCharacterCards();
+        } else {
+            showMessage(result.error || (window.t ? window.t('character.saveFailed') : '保存失败'), 'error');
+        }
+    } catch (error) {
+        console.error('保存猫娘失败:', error);
+        showMessage(window.t ? window.t('character.saveError') : '保存时发生错误', 'error');
+    }
+}
+
+// 切换猫娘
+async function workshopSwitchCatgirl(name) {
+    try {
+        const response = await fetch('/api/characters/current_catgirl', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ catgirl_name: name })
+        });
+        const result = await response.json();
+        if (result.success) {
+            window._workshopCurrentCatgirl = name;
+            renderCharaCardsView();
+            showMessage(window.t ? window.t('character.switchSuccess') : '切换成功', 'success');
+        } else {
+            showMessage(result.error || (window.t ? window.t('character.switchFailed') : '切换失败'), 'error');
+        }
+    } catch (error) {
+        console.error('切换猫娘失败:', error);
+        showMessage(window.t ? window.t('character.switchError') : '切换猫娘时发生错误', 'error');
+    }
+}
+
+// 删除猫娘
+async function workshopDeleteCatgirl(name) {
+    // 检查是否为当前猫娘
+    if (name === window._workshopCurrentCatgirl) {
+        showMessage(window.t ? window.t('character.cannotDeleteCurrentCatgirl') : '不能删除当前正在使用的猫娘', 'error');
+        return;
+    }
+
+    // 确认删除
+    let confirmMsg;
+    if (window.t) {
+        const translated = window.t('character.confirmDeleteCatgirl', { name: name });
+        confirmMsg = (translated && translated.includes('{name}'))
+            ? `确定要删除猫娘"${name}"？`
+            : (translated || `确定要删除猫娘"${name}"？`);
+    } else {
+        confirmMsg = `确定要删除猫娘"${name}"？`;
+    }
+
+    if (typeof showConfirm === 'function') {
+        const confirmTitle = window.t ? window.t('character.deleteCatgirlTitle') : '删除猫娘';
+        if (!await showConfirm(confirmMsg, confirmTitle, { danger: true })) return;
+    } else if (typeof showConfirmModal === 'function') {
+        const confirmed = await new Promise(resolve => {
+            showConfirmModal(confirmMsg, () => resolve(true), () => resolve(false));
+        });
+        if (!confirmed) return;
+    } else {
+        if (!confirm(confirmMsg)) return;
+    }
+
+    try {
+        await fetch('/api/characters/catgirl/' + encodeURIComponent(name), { method: 'DELETE' });
+        // 重新加载角色卡列表
+        await loadCharacterCards();
+    } catch (error) {
+        console.error('删除猫娘失败:', error);
+        showMessage(window.t ? window.t('character.deleteError') : '删除猫娘时发生错误', 'error');
     }
 }
 
