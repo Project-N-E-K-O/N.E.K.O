@@ -5,7 +5,7 @@
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title data-i18n="steam.workshopManager">Steam 创意工坊管理 - Project N.E.K.O.</title>
+    <title data-i18n="steam.workshopManagerBackup">Steam 创意工坊管理（备份） - Project N.E.K.O.</title>
     <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
     <script src="/static/i18n-i18next.js"></script>
     <script src="/static/common_dialogs.js"></script>
@@ -18,13 +18,12 @@
 <body>
     <!-- 页面标题栏 - 支持拖动窗口 -->
     <div class="page-title-bar">
-        <h2 data-i18n="steam.workshopManager" data-text="Steam 创意工坊管理">Steam 创意工坊管理 - Project N.E.K.O.</h2>
+        <h2 data-i18n="steam.workshopManagerBackup" data-text="Steam 创意工坊管理（备份）">Steam 创意工坊管理（备份） - Project N.E.K.O.</h2>
         <button class="close-btn" onclick="window.close(); window.history.back();" data-i18n-title="common.close" title="关闭">
             <img src="/static/icons/close_button.png" data-i18n-alt="common.close">
         </button>
     </div>
 
-    <!-- 侧边栏 -->
     <!-- 布局容器 -->
     <div class="layout-container" style="margin-top: 0; padding-top: 0;">
         <!-- 侧边栏 -->
@@ -36,12 +35,7 @@
                      <button class="tab active" onclick="switchTab('character-cards-content', event)" data-i18n="steam.characterCards">角色卡</button>
                      <button class="tab" onclick="switchTab('subscriptions-content', event)" data-i18n="steam.subscriptions">订阅内容</button>
                   </div>
-                
-                <!-- 修复的自定义tooltip实现 -->
-                
 </div>
-
-
 
 <!-- 关于创意工坊集成说明 -->
 <div class="menu-section workshop-integration-info">
@@ -70,8 +64,7 @@
 
 <!-- 主内容区域 -->
 <div class="main-content">
-<!-- 标题已移除 -->
-        
+
 <!-- 标签内容容器 -->
 <div class="tab-contents">
 <!-- 订阅内容标签页 -->
@@ -83,7 +76,6 @@
                     
 <div class="filter-controls">
 <div class="filter-group search-group">
-<!--<div class="filter-label" data-i18n="steam.search">搜索：</div>-->
 <div class="search-input-wrapper">
     <input type="text" id="search-subscription" class="control-input" placeholder="" onkeyup="filterSubscriptions(this.value)" data-i18n-placeholder="steam.searchPlaceholder" aria-label="搜索订阅内容" data-i18n-aria="steam.searchAriaLabel">
     <img src="/static/icons/search_icon.png" class="search-icon" alt="" aria-hidden="true">
@@ -132,9 +124,9 @@
 </div>
 </div>
 </div>
+
 <!-- 本地内容标签页 -->
 <div id="local-items-content" class="tab-content" style="display: none;">
-                
 <div class="section-card">
 <div class="section-header">
 <h2 data-i18n="steam.localItems">管理本地物品</h2>
@@ -169,11 +161,10 @@
 </div>
 </div>
 </div>
-            
+
 <!-- 角色卡标签页 -->
 <div id="character-cards-content" class="tab-content active">
 <!-- 角色卡列表 -->
-
 <div class="section-card">
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 15px;">
 <span data-i18n="steam.characterCardsList" style="white-space: nowrap; margin: 0; line-height: 1; font-size: 20px; font-weight: 600;">角色卡列表</span>
@@ -409,7 +400,7 @@
 <span data-i18n="steam.noUploadableModels">没有可上传的模型，请先在角色管理页面创建自定义模型</span>
 </div>
                                 
-<!-- 按钮行：两个按钮并排 - 样式参考 workshop-card，各自独立包裹 -->
+<!-- 按钮行：两个按钮并排 -->
 <div class="character-card-buttons-row">
 <div class="btn-wrapper">
 <button id="upload-to-workshop-btn" class="btn" onclick="handleUploadToWorkshop()" disabled style="display: flex; align-items: center; justify-content: center; gap: 6px;">
@@ -433,7 +424,7 @@
 
 
 </div>
-            
+
 <!-- 上传内容标签页 -->
 <div id="upload-content" class="tab-content" style="display: none;">
 <!-- 已移除重复的上传页面，统一使用本地物品标签页中的上传功能 -->
@@ -451,7 +442,6 @@
 </div>
 <div class="modal-body">
 <div id="itemDetailContent" class="item-detail-container">
-<!-- 物品详情内容将通过JavaScript动态加载 -->
 <div class="empty-state">
 <p data-i18n="steam.loadingItemDetails">正在加载物品详情...</p>
 </div>
@@ -483,7 +473,6 @@
 <div id="item-description" class="control-input" style="background-color: #f5f5f5; padding: 8px 12px; border-radius: 4px; min-height: 60px; white-space: pre-wrap;"></div>
 </div>
                 
-<!-- Content Folder Path 已隐藏，但保留元素供 JS 使用 -->
 <input type="hidden" id="content-folder">
                 
 <div class="control-group">
@@ -540,7 +529,6 @@
                 
 <div class="control-group">
 <div class="control-label" data-i18n="steam.tags">标签</div>
-<!-- 标签输入框已隐藏，标签通过 tags-container 显示 -->
 <input type="hidden" id="item-tags">
 <div id="tags-container" class="tags-container"></div>
 </div>
@@ -729,7 +717,6 @@
             var base = Array.from(text);
             var chars = base.concat(base).concat(base);
 
-            // 先算 totalSlots，再据此推算半径，确保字符不重叠
             var groupSize = base.length;
             var gapExtra = 0.3;
             var totalSlots = chars.length + gapExtra * 3;
@@ -737,21 +724,17 @@
             var placeholder = container.closest('.preview-placeholder');
             var availH = placeholder ? placeholder.clientHeight : 0;
             var availW = placeholder ? placeholder.clientWidth : 0;
-            // 上限：基于字符数量的名义半径（防止长文本圆环过大）
             var nominalRadius = Math.ceil(totalSlots * 50 / (2 * Math.PI));
-            // 容器尺寸驱动：宽高各留 50px 边距后再计算，取较小值，最小 200px
             var limits = [];
             if (availH > 80) limits.push((availH - 50) * 0.65);
             if (availW > 80) limits.push((availW - 50 - 42) / 2);
             var containerDriven = limits.length ? Math.max(200, Math.min.apply(null, limits)) : 200;
             var radius = Math.min(nominalRadius, containerDriven);
 
-            // 若半径被压缩（如英/俄等长文本），同步缩小字号防止重叠
             var arcPerSlot = radius * 2 * Math.PI / totalSlots;
             var fontSize = Math.max(14, Math.min(42, Math.floor(arcPerSlot) - 4));
             container.style.setProperty('--ring-char-size', fontSize + 'px');
 
-            // 小幅补偿 rotateX(-10deg) 导致前侧字符视觉偏高
             var yComp = Math.round(radius * Math.sin(10 * Math.PI / 180) * -0.1);
             var tiltDiv = container.closest('.preview-ring-tilt');
             if (tiltDiv) {
