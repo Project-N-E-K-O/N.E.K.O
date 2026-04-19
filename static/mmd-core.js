@@ -807,14 +807,14 @@ class MMDCore {
     // ═══════════════════ 模型清理 ═══════════════════
 
     _clearModel() {
-        const mmd = this.manager.currentModel;
-        if (!mmd) return;
-
-        // 清理纹理修复兜底定时器
+        // 清理纹理修复兜底定时器（必须在早退之前，防止 currentModel 被外部提前置空时 timer 泄漏）
         if (this._fixMissingTexturesTimer) {
             clearTimeout(this._fixMissingTexturesTimer);
             this._fixMissingTexturesTimer = null;
         }
+
+        const mmd = this.manager.currentModel;
+        if (!mmd) return;
 
         // 停止动画
         if (this.manager.animationModule) {
