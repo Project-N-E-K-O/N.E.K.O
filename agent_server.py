@@ -108,7 +108,7 @@ class Modules:
 import threading
 _plugin_name_cache: Dict[str, str] = {}
 _plugin_name_cache_time: float = 0.0
-_plugin_name_cache_lock = threading.Lock()
+_plugin_name_cache_lock = asyncio.Lock()
 PLUGIN_NAME_CACHE_TTL: float = 30.0  # 缓存 30 秒
 TASK_REGISTRY_CLEANUP_TTL: float = 300.0  # 已完成任务保留 5 分钟
 DEFERRED_TASK_TIMEOUT: float = 3600.0  # deferred 任务超时 1 小时
@@ -283,6 +283,121 @@ def _default_openclaw_task_description() -> str:
     return _rp_phrase('openclaw_processing', _rp_lang(None))
 
 
+def _resolve_openclaw_sender_id(messages: list[dict[str, Any]] | None) -> str:
+    if not isinstance(messages, list):
+        return ""
+
+    for message in reversed(messages[-10:]):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+
+        candidates: list[Any] = [
+            message.get("sender_id"),
+            message.get("user_id"),
+        ]
+        for container_key in ("meta", "metadata", "_ctx"):
+            container = message.get(container_key)
+            if isinstance(container, dict):
+                candidates.extend([
+                    container.get("sender_id"),
+                    container.get("user_id"),
+                ])
+
+        for candidate in candidates:
+            resolved = str(candidate or "").strip()
+            if resolved:
+                return resolved
+    return ""
+
+
+def _collect_active_openclaw_task_ids(
+    *,
+    sender_id: Optional[str] = None,
+    lanlan_name: Optional[str] = None,
+    exclude_task_id: Optional[str] = None,
+) -> list[str]:
+    task_ids: list[str] = []
+    for task_id, info in Modules.task_registry.items():
+        if task_id == exclude_task_id or not isinstance(info, dict):
+            continue
+        if info.get("type") != "openclaw":
+            continue
+        if info.get("status") not in {"queued", "running"}:
+            continue
+        if sender_id and str(info.get("sender_id") or "").strip() != str(sender_id).strip():
+            continue
+        if lanlan_name and str(info.get("lanlan_name") or "").strip() != str(lanlan_name).strip():
+            continue
+        task_ids.append(task_id)
+    return task_ids
+
+
+async def _cancel_openclaw_tasks_for_stop(
+    *,
+    sender_id: Optional[str],
+    lanlan_name: Optional[str],
+    exclude_task_id: Optional[str] = None,
+) -> list[str]:
+    cancelled_task_ids: list[str] = []
+    for task_id in _collect_active_openclaw_task_ids(
+        sender_id=sender_id,
+        lanlan_name=lanlan_name,
+        exclude_task_id=exclude_task_id,
+    ):
+        info = Modules.task_registry.get(task_id)
+        if not isinstance(info, dict):
+            continue
+
+        bg = Modules.task_async_handles.get(task_id)
+        if bg and not bg.done():
+            bg.cancel()
+
+        if Modules.openclaw:
+            try:
+                stop_result = await Modules.openclaw.stop_running(
+                    sender_id=info.get("sender_id"),
+                    session_id=info.get("session_id"),
+                    conversation_id=info.get("session_id"),
+                    role_name=info.get("lanlan_name"),
+                    task_id=task_id,
+                )
+                if not stop_result.get("success"):
+                    logger.warning(
+                        "[OpenClaw] stop_running failed during /stop for %s: %s",
+                        task_id,
+                        stop_result.get("error"),
+                    )
+            except Exception as exc:
+                logger.warning("[OpenClaw] stop_running failed during /stop for %s: %s", task_id, exc)
+
+        info["status"] = "cancelled"
+        info["error"] = "Cancelled by user"
+        info["end_time"] = _now_iso()
+        cancelled_task_ids.append(task_id)
+
+        # Let the task coroutine emit the cancelled update when it is still
+        # alive; only emit here when there is no active background handle.
+        if not (bg and not bg.done()):
+            try:
+                await _emit_main_event(
+                    "task_update",
+                    info.get("lanlan_name"),
+                    task={
+                        "id": task_id,
+                        "status": "cancelled",
+                        "type": "openclaw",
+                        "start_time": info.get("start_time"),
+                        "end_time": info.get("end_time"),
+                        "params": info.get("params", {}),
+                        "error": "Cancelled by user",
+                    },
+                )
+            except Exception:
+                logger.debug("[OpenClaw] emit task_update(cancelled by /stop) failed: task_id=%s", task_id, exc_info=True)
+
+    return cancelled_task_ids
+
+
 def _cleanup_task_registry() -> List[Dict[str, Any]]:
     """清理 task_registry 中超过 5 分钟的已完成/失败/取消任务，防止内存泄漏；同时检查 deferred 任务超时
 
@@ -379,30 +494,27 @@ def _bind_deferred_task(plugin_id: str, reminder_id: str, agent_task_id: str) ->
         logger.warning("[Deferred] bind failed: plugin=%s reminder=%s error=%s", plugin_id, reminder_id, e)
 
 
-def _get_plugin_friendly_name(plugin_id: str) -> str | None:
+async def _get_plugin_friendly_name(plugin_id: str) -> str | None:
     """获取插件的友好名称（用于 HUD 显示）
 
     通过 HTTP 调用嵌入式插件服务的 /plugins 端点获取插件列表，
-    并使用缓存减少请求次数。使用线程锁保证多线程安全。
+    并使用缓存减少请求次数。
     """
     global _plugin_name_cache, _plugin_name_cache_time
 
-    # 检查缓存（加锁读取）
     now = time.time()
-    with _plugin_name_cache_lock:
+    async with _plugin_name_cache_lock:
         if _plugin_name_cache and (now - _plugin_name_cache_time) < PLUGIN_NAME_CACHE_TTL:
             return _plugin_name_cache.get(plugin_id)
 
-    # 缓存过期或为空，从嵌入式插件服务获取
     new_cache = {}
     cache_time = now
     try:
-        with httpx.Client(timeout=1.0, proxy=None, trust_env=False) as client:
-            resp = client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins")
+        async with httpx.AsyncClient(timeout=1.0, proxy=None, trust_env=False) as client:
+            resp = await client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins")
             if resp.status_code == 200:
                 data = resp.json()
                 plugins = data.get("plugins", [])
-                # 构建新缓存
                 for p in plugins:
                     if isinstance(p, dict):
                         pid = p.get("id")
@@ -411,8 +523,7 @@ def _get_plugin_friendly_name(plugin_id: str) -> str | None:
                             new_cache[pid] = pname
                         elif pid:
                             new_cache[pid] = pid
-                # 更新全局缓存（加锁写入）
-                with _plugin_name_cache_lock:
+                async with _plugin_name_cache_lock:
                     _plugin_name_cache = new_cache
                     _plugin_name_cache_time = cache_time
                 return new_cache.get(plugin_id)
@@ -631,7 +742,7 @@ async def _fire_user_plugin_capability_check() -> None:
 _llm_check_lock = asyncio.Lock()
 
 
-async def _fire_agent_llm_connectivity_check() -> None:
+async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
     """Probe the shared Agent-LLM endpoint in a background thread.
 
     Both ComputerUse and BrowserUse rely on the same ``agent`` model config,
@@ -640,8 +751,17 @@ async def _fire_agent_llm_connectivity_check() -> None:
     *both* computer_use and browser_use.
 
     Uses a lock to prevent concurrent probes from racing.
+
+    ``queue=False`` (default): early-return if another probe is in flight.
+      Right for spammy event-driven callers (UI toggles / flag flips) where a
+      second probe would just duplicate the in-flight one.
+
+    ``queue=True``: wait for the lock and run anyway.  Right when the caller
+      represents a *state change* that must be reflected on capability (e.g.
+      BrowserUse just became available), where early-return would silently
+      drop the refresh.
     """
-    if _llm_check_lock.locked():
+    if not queue and _llm_check_lock.locked():
         return
 
     async with _llm_check_lock:
@@ -852,8 +972,8 @@ def _check_agent_api_gate() -> Dict[str, Any]:
         return {"ready": False, "reasons": [f"Agent API check failed: {e}"], "is_free_version": False}
 
 
-def _get_plugin_display_id(plugin_id: str) -> str:
-    return _get_plugin_friendly_name(plugin_id) or plugin_id
+async def _get_plugin_display_id(plugin_id: str) -> str:
+    return (await _get_plugin_friendly_name(plugin_id)) or plugin_id
 
 
 async def _emit_main_event(event_type: str, lanlan_name: Optional[str], **payload) -> None:
@@ -934,8 +1054,23 @@ def _build_user_turn_fingerprint(messages: Any) -> Optional[str]:
         if m.get("role") != "user":
             continue
         text = str(m.get("text") or m.get("content") or "").strip()
-        if text:
-            user_parts.append(text)
+        attachments = m.get("attachments") or []
+        attachment_urls: list[str] = []
+        if isinstance(attachments, list):
+            for item in attachments:
+                if isinstance(item, str):
+                    url = item.strip()
+                elif isinstance(item, dict):
+                    url = str(item.get("url") or item.get("image_url") or "").strip()
+                else:
+                    url = ""
+                if url:
+                    attachment_urls.append(url)
+        if text or attachment_urls:
+            part = text
+            if attachment_urls:
+                part = f"{part}\n[attachments]\n" + "\n".join(attachment_urls)
+            user_parts.append(part.strip())
     if not user_parts:
         return None
     payload = "\n".join(user_parts).encode("utf-8", errors="ignore")
@@ -1097,7 +1232,21 @@ async def _run_computer_use_task(
         info["error"] = str(e)
         logger.error("[ComputerUse] Task %s failed: %s", task_id, e)
     finally:
-        info["status"] = "cancelled" if info.get("error") == "Task was cancelled" else ("completed" if success else "failed")
+        # cancel_task may have pre-marked status="cancelled" before this dispatch
+        # observed the cancellation; preserve that signal regardless of whether
+        # the CU thread returned normally or raised CancelledError.
+        if info.get("status") == "cancelled":
+            pass  # already cancelled by cancel_task
+        elif info.get("error") == "Task was cancelled":
+            info["status"] = "cancelled"
+        else:
+            info["status"] = "completed" if success else "failed"
+        # If the CU thread managed to return normally *after* cancel_task flipped
+        # the registry, keep the downstream task_update / task_result consistent:
+        # force success=False so the emits below don't mix status="cancelled"
+        # with success=True / error=None.
+        if info.get("status") == "cancelled":
+            success = False
         info["end_time"] = _now_iso()
         # 记录任务完成状态供 analyzer 去重
         _task_tracker.record_completed(
@@ -1178,6 +1327,13 @@ async def _computer_use_scheduler_loop():
             next_task = await Modules.computer_use_queue.get()
             tid = next_task.get("task_id")
             if not tid or tid not in Modules.task_registry:
+                continue
+            # If cancel_task already flipped the entry to "cancelled" (or any
+            # non-queued terminal state) while it was still sitting in the
+            # queue, don't resurrect it — otherwise _run_computer_use_task
+            # would reset status back to "running" and the cancel is lost.
+            reg = Modules.task_registry.get(tid, {})
+            if reg.get("status") != "queued":
                 continue
             Modules.active_computer_use_async_task = asyncio.create_task(_run_computer_use_task(
                 tid, next_task.get("instruction", ""),
@@ -1350,7 +1506,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 entry_id = result.entry_id
                 up_start = _now_iso()
                 # 获取插件友好名称（用于 HUD 显示）
-                plugin_name = _get_plugin_friendly_name(plugin_id)
+                plugin_name = await _get_plugin_friendly_name(plugin_id)
                 logger.info(
                     "[TaskExecutor] Dispatching UserPlugin: plugin_id=%s, entry_id=%s, plugin_name=%s",
                     plugin_id, entry_id, plugin_name,
@@ -1393,6 +1549,12 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     *, progress=None, stage=None, message=None, step=None, step_total=None,
                 ):
                     """Forward run progress updates to NEKO frontend via task_update."""
+                    # If cancel_task already flipped the registry to a terminal
+                    # state, a late progress callback would otherwise clobber
+                    # "cancelled" with a fresh "running" update on the HUD.
+                    _reg = Modules.task_registry.get(result.task_id)
+                    if _reg and _reg.get("status") != "running":
+                        return
                     task_payload: Dict[str, Any] = {
                         "id": result.task_id, "status": "running", "type": "user_plugin",
                         "start_time": up_start,
@@ -1441,6 +1603,9 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         is_deferred = isinstance(run_data, dict) and run_data.get("deferred") is True
                         # Update task_registry（deferred 任务保持 running，不写 terminal 状态）
                         _reg = Modules.task_registry.get(result.task_id)
+                        if _reg and _reg.get("status") == "cancelled":
+                            # cancel_task pre-marked cancelled; don't clobber with a late terminal write.
+                            return
                         if _reg and not (up_result.success and is_deferred):
                             _reg["status"] = up_terminal
                             _reg["end_time"] = _now_iso()
@@ -1468,7 +1633,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             logger.info(f"[TaskExecutor] ✅ UserPlugin completed: {plugin_id}")
                             if not _suppress_reply:
                                 _lang = _rp_lang(None)
-                                display_id = _get_plugin_display_id(plugin_id)
+                                display_id = await _get_plugin_display_id(plugin_id)
                                 summary = _rp_phrase('plugin_done_with', _lang, id=display_id, detail=detail) if detail else _rp_phrase('plugin_done', _lang, id=display_id)
                                 try:
                                     await _emit_task_result(
@@ -1492,7 +1657,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             if not _suppress_reply:
                                 _lang = _rp_lang(None)
                                 try:
-                                    display_id = _get_plugin_display_id(plugin_id)
+                                    display_id = await _get_plugin_display_id(plugin_id)
                                     _fail_summary = _rp_phrase('plugin_failed_with', _lang, id=display_id, detail=detail) if detail else _rp_phrase('plugin_failed', _lang, id=display_id)
                                     await _emit_task_result(
                                         lanlan_name,
@@ -1550,8 +1715,10 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             logger.debug("[TaskExecutor] emit task_update(cancelled) failed: task_id=%s error=%s", result.task_id, emit_err)
                         raise
                     except Exception as e:
-                        logger.exception("[TaskExecutor] UserPlugin dispatch failed: %s", e)
                         _reg = Modules.task_registry.get(result.task_id)
+                        if _reg and _reg.get("status") == "cancelled":
+                            return
+                        logger.exception("[TaskExecutor] UserPlugin dispatch failed: %s", e)
                         if _reg:
                             _reg["status"] = "failed"
                             _reg["error"] = str(e)[:500]
@@ -1595,10 +1762,71 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
             if Modules.agent_flags.get("openclaw_enabled", False) and Modules.openclaw:
                 nk_start = _now_iso()
                 instruction = ""
+                attachments = []
+                magic_command = None
+                direct_reply = False
                 if isinstance(result.tool_args, dict):
                     instruction = str(result.tool_args.get("instruction") or "")
-                task_params = {"description": result.task_description or _default_openclaw_task_description()}
-                nk_sender_id = Modules.openclaw.default_sender_id
+                    attachments = result.tool_args.get("attachments") or []
+                    magic_command = Modules.openclaw.normalize_magic_command(result.tool_args.get("magic_command"))
+                    direct_reply = bool(result.tool_args.get("direct_reply"))
+                task_params = {
+                    "description": result.task_description or _default_openclaw_task_description(),
+                    "attachment_count": len(attachments) if isinstance(attachments, list) else 0,
+                }
+                if magic_command:
+                    task_params["magic_command"] = magic_command
+                nk_sender_id = _resolve_openclaw_sender_id(messages) or Modules.openclaw.default_sender_id
+                if magic_command:
+                    if magic_command == "/stop":
+                        cancelled_task_ids = await _cancel_openclaw_tasks_for_stop(
+                            sender_id=nk_sender_id,
+                            lanlan_name=lanlan_name,
+                            exclude_task_id=result.task_id,
+                        )
+                        if cancelled_task_ids:
+                            task_params["cancelled_task_ids"] = cancelled_task_ids
+                    try:
+                        nk_result = await Modules.openclaw.run_magic_command(
+                            magic_command,
+                            sender_id=nk_sender_id,
+                            role_name=lanlan_name,
+                        )
+                        success = bool(nk_result.get("success"))
+                        reply = str(nk_result.get("reply") or "")
+                        if success:
+                            await _emit_task_result(
+                                lanlan_name,
+                                channel="openclaw",
+                                task_id=str(result.task_id or ""),
+                                success=True,
+                                summary=reply[:500] if reply else _rp_phrase('openclaw_done', _rp_lang(None)),
+                                detail=reply,
+                                direct_reply=direct_reply,
+                            )
+                        else:
+                            await _emit_task_result(
+                                lanlan_name,
+                                channel="openclaw",
+                                task_id=str(result.task_id or ""),
+                                success=False,
+                                summary=_rp_phrase('openclaw_failed', _rp_lang(None)),
+                                error_message=str(nk_result.get("error") or "")[:500],
+                            )
+                    except Exception as e:
+                        logger.exception("[OpenClaw] magic command dispatch failed: %s", e)
+                        try:
+                            await _emit_task_result(
+                                lanlan_name,
+                                channel="openclaw",
+                                task_id=str(result.task_id or ""),
+                                success=False,
+                                summary=_rp_phrase('openclaw_dispatch_failed', _rp_lang(None)),
+                                error_message=str(e)[:500],
+                            )
+                        except Exception:
+                            pass
+                    return
                 nk_session_id = Modules.openclaw.get_or_create_persistent_session_id(
                     role_name=lanlan_name,
                     sender_id=nk_sender_id,
@@ -1612,6 +1840,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     "lanlan_name": lanlan_name,
                     "sender_id": nk_sender_id,
                     "session_id": nk_session_id,
+                    "conversation_id": conversation_id,
                     "result": None,
                     "error": None,
                 }
@@ -1634,11 +1863,12 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 except Exception as emit_err:
                     logger.debug("[OpenClaw] emit task_update(running) failed: task_id=%s error=%s", result.task_id, emit_err)
                 try:
+                    ack_text = _rp_phrase("openclaw_try", _rp_lang(None))
                     await _emit_main_event(
                         "proactive_message",
                         lanlan_name,
-                        text="我试试",
-                        detail="我试试",
+                        text=ack_text,
+                        detail=ack_text,
                         direct_reply=True,
                         timestamp=_now_iso(),
                     )
@@ -1648,6 +1878,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     try:
                         nk_result = await Modules.openclaw.run_instruction(
                             instruction,
+                            attachments=attachments,
                             sender_id=nk_sender_id,
                             session_id=nk_session_id,
                             conversation_id=conversation_id,
@@ -1656,10 +1887,14 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         success = bool(nk_result.get("success"))
                         reply = str(nk_result.get("reply") or "")
                         _reg = Modules.task_registry.get(result.task_id)
+                        if _reg and _reg.get("status") == "cancelled":
+                            # cancel_task already marked cancelled; skip terminal writes
+                            return
                         if _reg:
                             _reg["status"] = "completed" if success else "failed"
                             _reg["end_time"] = _now_iso()
                             _reg["result"] = nk_result
+                            _reg["session_id"] = str(nk_result.get("session_id") or _reg.get("session_id") or "")
                             if not success:
                                 _reg["error"] = str(nk_result.get("error") or "")[:500]
                         _task_tracker.record_completed(
@@ -1675,7 +1910,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 success=True,
                                 summary=reply[:500] if reply else _rp_phrase('openclaw_done', _rp_lang(None)),
                                 detail=reply,
-                                direct_reply=False,
+                                direct_reply=direct_reply,
                             )
                         else:
                             await _emit_task_result(
@@ -1739,8 +1974,10 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             pass
                         raise
                     except Exception as e:
-                        logger.exception("[OpenClaw] dispatch failed: %s", e)
                         _reg = Modules.task_registry.get(result.task_id)
+                        if _reg and _reg.get("status") == "cancelled":
+                            return
+                        logger.exception("[OpenClaw] dispatch failed: %s", e)
                         if _reg:
                             _reg["status"] = "failed"
                             _reg["error"] = str(e)[:500]
@@ -1828,6 +2065,11 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             result.task_description,
                             session_id=bu_session.session_id,
                         )
+                        if bu_info.get("status") == "cancelled":
+                            # cancel_task set the terminal state before run_instruction
+                            # returned (e.g. via fire-and-forget CDP teardown winning
+                            # the race against bg.cancel()). Don't clobber it.
+                            return
                         success = bres.get("success", False) if isinstance(bres, dict) else False
                         _bu_ok, bu_parsed = parse_browser_use_result(bres)
                         _lang = _rp_lang(None)
@@ -1897,6 +2139,11 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             logger.debug("[BrowserUse] emit task_update(cancelled) failed: task_id=%s error=%s", bu_task_id, emit_err)
                         raise
                     except Exception as e:
+                        if bu_info.get("status") == "cancelled":
+                            # cancel_task already marked cancelled; treat incidental
+                            # errors (e.g. ConnectionError from CDP teardown) as the
+                            # cancel signal instead of clobbering with "failed".
+                            return
                         logger.warning(f"[BrowserUse] Failed: {e}")
                         bu_info["status"] = "failed"
                         bu_info["end_time"] = _now_iso()
@@ -1996,6 +2243,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             logger.debug("[OpenFang] error: %s", of_res.get("error"))
                             logger.debug("[OpenFang] artifacts=%s", of_res.get("artifacts"))
                             logger.debug("[OpenFang] ==============================")
+                            if of_info.get("status") == "cancelled":
+                                return
                             success = of_res.get("success", False)
                             of_result_text = of_res.get("result", "") or ""
                             of_error_text = of_res.get("error", "") or ""
@@ -2069,6 +2318,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 logger.debug("[OpenFang] emit task_update(cancelled) failed: task_id=%s", of_task_id, exc_info=True)
                             raise
                         except Exception as e:
+                            if of_info.get("status") == "cancelled":
+                                return
                             logger.warning(f"[OpenFang] Task failed: {e}")
                             of_info["status"] = "failed"
                             of_info["end_time"] = _now_iso()
@@ -2155,16 +2406,18 @@ async def startup():
             Modules.browser_use = bu
             Modules.task_executor.browser_use = bu
             logger.info("[Agent] BrowserUseAdapter ready (background init)")
-            try:
-                await _fire_agent_llm_connectivity_check()
-            except Exception:
-                logger.debug("[Agent] Post-browser-init capability refresh failed", exc_info=True)
+            # fire-and-forget capability 刷新：check_connectivity 可能因网络不稳
+            # 走到几十秒级的重试，绝不能把 OpenFang 初始化链 gate 在它上面。
+            # queue=True：这是"BU 刚就绪"这种状态变化触发，不能被启动期 LLM probe
+            # 持锁时的早退路径吞掉，否则 browser_use capability 会停在 PENDING。
+            _refresh_task = asyncio.create_task(
+                _fire_agent_llm_connectivity_check(queue=True)
+            )
+            Modules._persistent_tasks.add(_refresh_task)
+            _refresh_task.add_done_callback(Modules._persistent_tasks.discard)
         except Exception as exc:
             logger.error("[Agent] BrowserUseAdapter background init failed: %s", exc)
 
-    _bu_task = asyncio.create_task(_init_browser_use_background())
-    Modules._persistent_tasks.add(_bu_task)
-    _bu_task.add_done_callback(Modules._persistent_tasks.discard)
     try:
         await _start_embedded_user_plugin_server()
     except Exception as e:
@@ -2236,9 +2489,16 @@ async def startup():
             logger.error("[OpenFang] background init failed: %s", exc)
             _set_capability("openfang", False, str(exc))
 
-    _of_task = asyncio.create_task(_init_openfang_background())
-    Modules._persistent_tasks.add(_of_task)
-    _of_task.add_done_callback(Modules._persistent_tasks.discard)
+    # BrowserUse 与 OpenFang 都涉及较重的初始化（CPU 密集模块加载 / 进程连通性轮询），
+    # 放在同一个后台任务里串行执行，避免两者并发时启动期 CPU 双峰。LLM connectivity
+    # probe 是轻量 HTTP，独立 task 与这条串行链并行。
+    async def _init_heavy_adapters_serial():
+        await _init_browser_use_background()
+        await _init_openfang_background()
+
+    _heavy_adapters_task = asyncio.create_task(_init_heavy_adapters_serial())
+    Modules._persistent_tasks.add(_heavy_adapters_task)
+    _heavy_adapters_task.add_done_callback(Modules._persistent_tasks.discard)
 
     # Both CUA and BrowserUse share the agent LLM — default to "not connected"
     # and probe in background.  The single check updates both capability caches.
@@ -2365,10 +2625,13 @@ async def shutdown():
     if bridge is not None:
         try:
             bridge._stop.set()
-            # 等 recv 线程退出（RCVTIMEO=1s，最多等 2s），避免 close 与 recv 竞态
-            for _t in (getattr(bridge, '_recv_thread', None), getattr(bridge, '_analyze_recv_thread', None)):
-                if _t is not None:
-                    await asyncio.to_thread(_t.join, 2.0)
+            # 等 recv 线程退出（RCVTIMEO=1s，最多等 2s）—— 两个线程并行 join，避免串行 4s
+            _recv_threads = [t for t in (getattr(bridge, '_recv_thread', None), getattr(bridge, '_analyze_recv_thread', None)) if t is not None]
+            if _recv_threads:
+                await asyncio.gather(
+                    *(asyncio.to_thread(_t.join, 2.0) for _t in _recv_threads),
+                    return_exceptions=True,
+                )
             try:
                 import zmq as _zmq
 
@@ -2436,6 +2699,68 @@ async def health():
     )
 
 
+@app.post("/openclaw/preflight")
+async def openclaw_preflight(payload: Dict[str, Any]):
+    """快速判断当前输入是否应由 OpenClaw(QwenPaw) 接管。"""
+    if not Modules.task_executor:
+        raise HTTPException(503, "Task executor not ready")
+
+    if not Modules.analyzer_enabled:
+        return {
+            "success": True,
+            "should_handoff": False,
+            "reason": "analyzer_disabled",
+        }
+
+    if not Modules.agent_flags.get("openclaw_enabled", False):
+        return {
+            "success": True,
+            "should_handoff": False,
+            "reason": "openclaw_disabled",
+        }
+
+    messages = (payload or {}).get("messages") or []
+    if not isinstance(messages, list) or not messages:
+        raise HTTPException(400, "messages required")
+
+    lanlan_name = (payload or {}).get("lanlan_name")
+    conversation_id = (payload or {}).get("conversation_id")
+    lang = str((payload or {}).get("lang") or "en")
+
+    flags = {
+        "computer_use_enabled": False,
+        "browser_use_enabled": False,
+        "user_plugin_enabled": False,
+        "openclaw_enabled": True,
+        "openfang_enabled": False,
+    }
+
+    result = await Modules.task_executor.analyze_and_execute(
+        messages=messages,
+        lanlan_name=lanlan_name,
+        agent_flags=flags,
+        conversation_id=conversation_id,
+        lang=lang,
+    )
+
+    should_handoff = bool(
+        result
+        and getattr(result, "has_task", False)
+        and getattr(result, "execution_method", "") == "openclaw"
+    )
+    tool_args = result.tool_args if isinstance(getattr(result, "tool_args", None), dict) else {}
+
+    return {
+        "success": True,
+        "should_handoff": should_handoff,
+        "execution_method": getattr(result, "execution_method", None) if result else None,
+        "task_description": getattr(result, "task_description", "") if result else "",
+        "reason": getattr(result, "reason", "") if result else "",
+        "magic_command": tool_args.get("magic_command"),
+        "direct_reply": bool(tool_args.get("direct_reply")) if tool_args else False,
+    }
+
+
 # 插件直接触发路由（放在顶层，确保不在其它函数体内）
 @app.post("/plugin/execute")
 async def plugin_execute_direct(payload: Dict[str, Any]):
@@ -2470,7 +2795,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
     logger.info(f"[Plugin] Direct execute request: plugin_id={plugin_id}, entry_id={entry_id}, lanlan={lanlan_name}")
 
     # 获取插件友好名称（用于 HUD 显示）
-    plugin_name = _get_plugin_friendly_name(plugin_id)
+    plugin_name = await _get_plugin_friendly_name(plugin_id)
     task_params = {"plugin_id": plugin_id, "entry_id": entry_id, "args": args}
     if plugin_name:
         task_params["plugin_name"] = plugin_name
@@ -2507,6 +2832,12 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
         async def _on_plugin_progress(
             *, progress=None, stage=None, message=None, step=None, step_total=None,
         ):
+            # If cancel_task already flipped the registry to a terminal state,
+            # swallow the progress callback — otherwise it would clobber
+            # "cancelled" with a fresh "running" update on the HUD.
+            _reg = Modules.task_registry.get(task_id)
+            if _reg and _reg.get("status") != "running":
+                return
             task_payload: Dict[str, Any] = {
                 "id": task_id,
                 "status": "running",
@@ -2536,6 +2867,9 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                 conversation_id=conversation_id,
                 on_progress=_on_plugin_progress,
             )
+            if info.get("status") == "cancelled":
+                # cancel_task pre-marked cancelled; skip terminal clobber + emits.
+                return
             info["result"] = res.result
             info["status"] = "completed" if res.success else "failed"
             info["end_time"] = _now_iso()
@@ -2556,7 +2890,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                     if not res.success:
                         info["error"] = (detail or str(res.error or ""))[:500]
                     _lang = _rp_lang(None)
-                    display_id = _get_plugin_display_id(plugin_id)
+                    display_id = await _get_plugin_display_id(plugin_id)
                     if res.success:
                         summary = _rp_phrase('plugin_done_with', _lang, id=display_id, detail=detail) if detail else _rp_phrase('plugin_done', _lang, id=display_id)
                     else:
@@ -2592,6 +2926,8 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                 logger.debug("[Plugin] emit task_result(cancelled) failed: task_id=%s plugin_id=%s error=%s", task_id, plugin_id, emit_err)
             raise
         except Exception as e:
+            if info.get("status") == "cancelled":
+                return
             info["status"] = "failed"
             info["end_time"] = _now_iso()
             info["error"] = str(e)[:500]
@@ -2644,9 +2980,39 @@ async def get_task(task_id: str):
     raise HTTPException(404, "task not found")
 
 
+def _spawn_background_cancel(coro, *, label: str) -> None:
+    """Fire-and-forget a long-running cancel/teardown coroutine.
+
+    cancel_task must return quickly so the HUD button is responsive regardless
+    of how long the underlying provider takes to actually stop (browser process
+    tree teardown, remote /stop HTTP, etc.). We track the task in
+    _background_tasks so it is not garbage-collected mid-run.
+    """
+    async def _runner():
+        try:
+            await coro
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("[Cancel:%s] background cleanup failed: %s", label, exc)
+
+    t = asyncio.create_task(_runner())
+    Modules._background_tasks.add(t)
+    t.add_done_callback(Modules._background_tasks.discard)
+
+
 @app.post("/tasks/{task_id}/cancel")
 async def cancel_task(task_id: str):
-    """Cancel a specific running task."""
+    """Cancel a specific running task.
+
+    Cancellation is a two-phase operation:
+      1. Mark the task "cancelled" in the registry and cancel the wrapping
+         asyncio task synchronously. This is what the dispatch coroutines
+         observe first, so they take the cancelled code path.
+      2. Fire-and-forget the provider-specific teardown (browser process tree
+         kill, remote /stop HTTP, etc.) so this endpoint returns to the
+         frontend immediately instead of blocking on a slow remote.
+    """
     info = Modules.task_registry.get(task_id)
     if not info:
         raise HTTPException(404, "task not found")
@@ -2654,53 +3020,58 @@ async def cancel_task(task_id: str):
         return {"success": False, "error": "task is not active"}
 
     task_type = info.get("type")
+    # Mark cancelled up front so any late terminal writes from the dispatch
+    # coroutine can see it and skip clobbering the status (see _run_*_dispatch
+    # terminal guards).
+    info["status"] = "cancelled"
+    info["error"] = "Cancelled by user"
+
     bg = Modules.task_async_handles.get(task_id)
     if bg and not bg.done():
         bg.cancel()
+
     if task_type == "computer_use":
         if Modules.computer_use:
             Modules.computer_use.cancel_running()
         if Modules.active_computer_use_task_id == task_id and Modules.active_computer_use_async_task:
             Modules.active_computer_use_async_task.cancel()
-        info["status"] = "cancelled"
-        info["error"] = "Cancelled by user"
     elif task_type == "browser_use":
         if Modules.browser_use:
-            Modules.browser_use.cancel_running()
-        info["status"] = "cancelled"
-        info["error"] = "Cancelled by user"
+            _spawn_background_cancel(
+                Modules.browser_use.cancel(), label=f"browser_use:{task_id}"
+            )
+        if Modules.active_browser_use_task_id == task_id:
+            Modules.active_browser_use_task_id = None
     elif task_type == "openfang":
         if Modules.openfang:
-            try:
-                await Modules.openfang.cancel_running(task_id)
-            except Exception as e:
-                logger.warning("[OpenFang] cancel_running failed for %s: %s", task_id, e)
-            Modules.openfang.unregister_local_task(task_id)
-        info["status"] = "cancelled"
-        info["error"] = "Cancelled by user"
+            # unregister_local_task must run AFTER cancel_running, not before:
+            # OpenFangAdapter.cancel_running looks up the remote task_id in
+            # _active_tasks and no-ops if missing. Unregistering first would
+            # turn the remote /cancel call into a silent no-op and leave the
+            # VM task running even though we report success locally.
+            async def _openfang_cancel_then_unregister(
+                adapter=Modules.openfang, tid=task_id
+            ):
+                try:
+                    await adapter.cancel_running(tid)
+                finally:
+                    adapter.unregister_local_task(tid)
+            _spawn_background_cancel(
+                _openfang_cancel_then_unregister(),
+                label=f"openfang:{task_id}",
+            )
     elif task_type == "openclaw":
         if Modules.openclaw:
-            try:
-                stop_result = await Modules.openclaw.stop_running(
+            _spawn_background_cancel(
+                Modules.openclaw.stop_running(
                     sender_id=info.get("sender_id"),
                     session_id=info.get("session_id"),
-                    conversation_id=info.get("session_id"),
+                    conversation_id=info.get("conversation_id") or info.get("session_id"),
                     role_name=info.get("lanlan_name"),
                     task_id=task_id,
-                )
-                if not stop_result.get("success"):
-                    logger.warning(
-                        "[OpenClaw] stop_running failed for %s: %s",
-                        task_id,
-                        stop_result.get("error"),
-                    )
-            except Exception as e:
-                logger.warning("[OpenClaw] stop_running failed for %s: %s", task_id, e)
-        info["status"] = "cancelled"
-        info["error"] = "Cancelled by user"
-    else:
-        info["status"] = "cancelled"
-        info["error"] = "Cancelled by user"
+                ),
+                label=f"openclaw:{task_id}",
+            )
 
     lanlan_name = info.get("lanlan_name")
     try:
@@ -3034,7 +3405,7 @@ async def openfang_availability():
     """检查 OpenFang 可用性。"""
     if not Modules.openfang:
         return {"enabled": False, "ready": False, "reason": "adapter 未加载"}
-    return Modules.openfang.is_available()
+    return await asyncio.to_thread(Modules.openfang.is_available)
 
 
 @app.get("/openclaw/availability")
@@ -3089,6 +3460,10 @@ async def openfang_run(payload: Dict[str, Any]):
             def _on_progress(info):
                 try:
                     reg = Modules.task_registry.get(task_id, {})
+                    # cancel_task pre-marks status="cancelled" and we must not
+                    # let a late progress tick overwrite it with "running".
+                    if reg.get("status") and reg.get("status") != "running":
+                        return
                     reg["status"] = info.get("status", reg.get("status", "running"))
                     reg["elapsed"] = info.get("elapsed", 0)
                     asyncio.create_task(_emit_main_event(
@@ -3105,8 +3480,10 @@ async def openfang_run(payload: Dict[str, Any]):
                 on_progress=_on_progress,
                 local_task_id=task_id,
             )
-            final_status = "completed" if result.get("success") else "failed"
             reg = Modules.task_registry[task_id]
+            if reg.get("status") == "cancelled":
+                return
+            final_status = "completed" if result.get("success") else "failed"
             reg["status"] = final_status
             reg["result"] = result
             reg["end_time"] = datetime.now(timezone.utc).isoformat()
@@ -3136,8 +3513,10 @@ async def openfang_run(payload: Dict[str, Any]):
             except Exception:
                 logger.debug("[OpenFang] terminal task_update emit failed", exc_info=True)
         except Exception as e:
-            logger.error("[OpenFang] Task %s failed: %s", task_id, e)
             reg = Modules.task_registry[task_id]
+            if reg.get("status") == "cancelled":
+                return
+            logger.error("[OpenFang] Task %s failed: %s", task_id, e)
             reg["status"] = "failed"
             reg["error"] = str(e)
             reg["end_time"] = datetime.now(timezone.utc).isoformat()
@@ -3262,7 +3641,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
                 asyncio.ensure_future(_fire_agent_llm_connectivity_check())
             else:
                 try:
-                    avail = Modules.computer_use.is_available()
+                    avail = await asyncio.to_thread(Modules.computer_use.is_available)
                     reasons = avail.get('reasons', []) if isinstance(avail, dict) else []
                     _set_capability("computer_use", bool(avail.get("ready")) if isinstance(avail, dict) else False, reasons[0] if reasons else "")
                     if avail.get("ready"):
@@ -3498,7 +3877,7 @@ async def computer_use_availability():
     if not getattr(Modules.computer_use, "init_ok", False):
         asyncio.ensure_future(_fire_agent_llm_connectivity_check())
 
-    status = Modules.computer_use.is_available()
+    status = await asyncio.to_thread(Modules.computer_use.is_available)
     reasons = status.get("reasons", []) if isinstance(status, dict) else []
     _set_capability("computer_use", bool(status.get("ready")) if isinstance(status, dict) else False, reasons[0] if reasons else "")
     
@@ -3559,7 +3938,7 @@ async def computer_use_run(payload: Dict[str, Any]):
     screenshot = base64.b64decode(screenshot_b64) if isinstance(screenshot_b64, str) else None
     # Preflight readiness check to avoid scheduling tasks that will fail immediately
     try:
-        avail = Modules.computer_use.is_available()
+        avail = await asyncio.to_thread(Modules.computer_use.is_available)
         if not avail.get("ready"):
             return JSONResponse(content={"success": False, "error": "ComputerUse not ready", "reasons": avail.get("reasons", [])}, status_code=503)
     except Exception as e:

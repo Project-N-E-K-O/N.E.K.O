@@ -7,6 +7,7 @@ Handles memory-related endpoints including:
 - Memory review configuration
 """
 
+import asyncio
 import os
 import re
 import json
@@ -19,7 +20,7 @@ from utils.character_memory import (
     rename_character_memory_storage,
 )
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json_async
 from utils.logger_config import get_module_logger
 from fastapi.responses import JSONResponse
 
@@ -284,9 +285,14 @@ async def get_recent_file(filename: str):
         status_code = path_error_status_code(path_error_code)
         return JSONResponse({"success": False, "error": path_error}, status_code=status_code)
     
-    with open(resolved_path, 'r', encoding='utf-8') as f:
-        content = f.read()
+    # offload 同步 read 到线程池：recent.json 单文件可达数 MB
+    content = await asyncio.to_thread(_read_text_file, resolved_path)
     return {"content": content}
+
+
+def _read_text_file(path: str, encoding: str = 'utf-8') -> str:
+    with open(path, 'r', encoding=encoding) as f:
+        return f.read()
 
 
 @router.post('/recent_file/save')
@@ -343,12 +349,13 @@ async def save_recent_file(request: Request):
             }
         })
     try:
-        atomic_write_json(resolved_path, arr, ensure_ascii=False, indent=2)
+        await atomic_write_json_async(resolved_path, arr, ensure_ascii=False, indent=2)
         
         if catgirl_name:
             # 中断 memory_server 的 review 任务
             import httpx
             from config import MEMORY_SERVER_PORT
+            # per-call AsyncClient: 用户手动保存最近对话触发，冷路径
             try:
                 async with httpx.AsyncClient(proxy=None, trust_env=False) as client:
                     await client.post(

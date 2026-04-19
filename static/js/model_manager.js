@@ -1014,6 +1014,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const _idleRotationTimers = { vrm: null, mmd: null };
     const _idleRotationLast = { vrm: null, mmd: null };
     const _idleLoopCleanup = { vrm: null, mmd: null };
+    const _idleFadeState = { vrm: null, mmd: null };
     // MMD 待机动作切换期间临时禁用物理，防止头发/裙摆因瞬时姿态跳变而飞甩。
     // MMD 无 crossfade（loadAnimation 一步落位），骨架会单帧跳变 → MMDPhysics 积分为冲击。
     // VRM 侧走 crossfade + 跨 clip 同半球对齐，骨骼每帧位移极小，SpringBone 无冲击，不走这条路径。
@@ -4827,8 +4828,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 让 opacity 真正生效；结束在 alpha=1 时还原 transparent，避免 MToon/MMDToonShader
     // 长期开 transparent 后的 z-sort 混乱。按 scene root uuid 验证材质身份，模型换装时
     // 旧快照自动作废（避免 setOpacity 打到已 dispose 的材质）。
-    const _idleFadeState = { vrm: null, mmd: null };
-
     function _getFadeSceneRootUuid(type) {
         if (type === 'vrm') return vrmManager?.currentModel?.vrm?.scene?.uuid || null;
         if (type === 'mmd') return window.mmdManager?.currentModel?.mesh?.uuid || null;

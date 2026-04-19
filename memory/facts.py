@@ -22,7 +22,10 @@ from config.prompts_memory import get_fact_extraction_prompt
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.language_utils import get_global_language
 from utils.config_manager import get_config_manager
-from utils.file_utils import atomic_write_json, robust_json_loads
+from utils.file_utils import (
+    atomic_write_json,
+    robust_json_loads,
+)
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
 
@@ -94,6 +97,11 @@ class FactStore:
             self._facts[name] = []
             return self._facts[name]
 
+    async def aload_facts(self, name: str) -> list[dict]:
+        if name in self._facts:
+            return self._facts[name]
+        return await asyncio.to_thread(self.load_facts, name)
+
     @classmethod
     def _migrate_v1_entity_values(cls, facts: list[dict]) -> bool:
         """Rename v1 entity values ('user'→'master', 'ai'→'neko') in-place."""
@@ -151,6 +159,9 @@ class FactStore:
                     f.write(datetime.now().isoformat())
             except Exception:
                 pass
+
+    async def asave_facts(self, name: str) -> None:
+        await asyncio.to_thread(self.save_facts, name)
 
     def _facts_archive_path(self, name: str) -> str:
         from memory import ensure_character_dir
@@ -211,7 +222,7 @@ class FactStore:
         from openai import APIConnectionError, InternalServerError, RateLimitError
         from utils.llm_client import create_chat_llm
 
-        _, _, _, _, name_mapping, _, _, _, _ = self._config_manager.get_character_data()
+        _, _, _, _, name_mapping, _, _, _, _ = await self._config_manager.aget_character_data()
         name_mapping['ai'] = lanlan_name
 
         # Build conversation text
@@ -290,7 +301,7 @@ class FactStore:
 
         # Deduplicate and store
         new_facts = []
-        existing_facts = self.load_facts(lanlan_name)
+        existing_facts = await self.aload_facts(lanlan_name)
         existing_hashes = {f.get('hash') for f in existing_facts if f.get('hash')}
 
         for fact in extracted:
@@ -311,7 +322,7 @@ class FactStore:
 
             # Stage 2: FTS5 semantic dedup (lightweight, no LLM)
             if self._time_indexed is not None:
-                similar = self._time_indexed.search_facts(lanlan_name, text, limit=3)
+                similar = await self._time_indexed.asearch_facts(lanlan_name, text, 3)
                 is_dup = False
                 for fid, score in similar:
                     if score < -5:
@@ -336,10 +347,10 @@ class FactStore:
 
             # Index in FTS5
             if self._time_indexed is not None:
-                self._time_indexed.index_fact(lanlan_name, fact_entry['id'], text)
+                await self._time_indexed.aindex_fact(lanlan_name, fact_entry['id'], text)
 
         if new_facts:
-            self.save_facts(lanlan_name)
+            await self.asave_facts(lanlan_name)
             print(f"📝 [FactStore] {lanlan_name}: 提取了 {len(new_facts)} 条新事实")
             for nf in new_facts:
                 print(f"   - [{nf.get('entity','?')}] {nf.get('text','')[:80]}")
@@ -352,6 +363,13 @@ class FactStore:
     def get_unabsorbed_facts(self, name: str, min_importance: int = 5) -> list[dict]:
         """Get facts that haven't been consumed by a reflection yet."""
         facts = self.load_facts(name)
+        return [
+            f for f in facts
+            if not f.get('absorbed') and f.get('importance', 0) >= min_importance
+        ]
+
+    async def aget_unabsorbed_facts(self, name: str, min_importance: int = 5) -> list[dict]:
+        facts = await self.aload_facts(name)
         return [
             f for f in facts
             if not f.get('absorbed') and f.get('importance', 0) >= min_importance
@@ -372,3 +390,6 @@ class FactStore:
                 changed = True
         if changed:
             self.save_facts(name)
+
+    async def amark_absorbed(self, name: str, fact_ids: list[str]) -> None:
+        await asyncio.to_thread(self.mark_absorbed, name, fact_ids)

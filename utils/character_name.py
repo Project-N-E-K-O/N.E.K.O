@@ -46,6 +46,7 @@ RESERVED_ROUTE_NAMES = frozenset({
     "subtitle",
     "agenthud",
     "toast",
+    "card_export",
     # 静态资源 / 挂载路径
     "static",
     "user_live2d",

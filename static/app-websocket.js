@@ -57,6 +57,12 @@
         }));
     }
 
+    function getRenderableAssistantChunkText(text) {
+        return String(text || '')
+            .replace(/\[play_music:[^\]]*(\]|$)/g, '')
+            .trim();
+    }
+
     function websocketTraceEnabled() {
         return window.NEKO_DEBUG_BUBBLE_LIFECYCLE === true;
     }
@@ -159,6 +165,7 @@
         S.assistantTurnId = allocateAssistantTurnId(
             serverTurnId === undefined ? S.assistantPendingTurnServerId : serverTurnId
         );
+        S.assistantTurnStartedAt = Date.now();
         clearPendingAssistantTurnStart();
         emitAssistantLifecycleEvent('neko-assistant-turn-start', {
             turnId: S.assistantTurnId,
@@ -386,20 +393,38 @@
         var currentLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name)
             ? window.lanlan_config.lanlan_name
             : '';
+        // 进入 connectWebSocket 即意味着"当前已经在主动重连"，排队中的 auto-reconnect 不再需要。
+        // 切换档案时 Chat 窗口曾出现这样的 stale 序列：handleCatgirlSwitch 刚 connect 的新代理被
+        // 旧 WS 生命周期的 CLOSED IPC 误触发 close，onclose 排了一个 3s auto-reconnect；紧接着
+        // READY IPC 让代理变 OPEN 恢复正常，但 3s 到期后这个 stale 定时器又跑一次 connectWebSocket，
+        // 产出一个永远停在 CONNECTING 的僵尸代理，直接复现 "Start failed: WebSocket not connected"。
+        if (S.autoReconnectTimeoutId) {
+            clearTimeout(S.autoReconnectTimeoutId);
+            S.autoReconnectTimeoutId = null;
+        }
         if (!currentLanlanName) {
             console.warn('[WebSocket] lanlan_name is empty, wait for page config and retry');
-            if (S.autoReconnectTimeoutId) {
-                clearTimeout(S.autoReconnectTimeoutId);
-            }
             S.autoReconnectTimeoutId = setTimeout(connectWebSocket, 500);
+            return;
+        }
+
+        var protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+        // 对 lanlan_name 做 percent-encode：WebSocket.url 会把非 ASCII 字符（中文角色名）
+        // 编成 %XX，下面幂等守卫用 S.socket.url === wsUrl 比对，两侧编码口径必须一致，
+        // 否则中文名时守卫永远失败、造不出真正的幂等。
+        var wsUrl = protocol + '://' + window.location.host + '/ws/' + encodeURIComponent(currentLanlanName);
+
+        // 幂等兜底：如果当前 socket 已经 OPEN 且指向同一个 URL，说明有 stale 路径
+        // （比如 Chat 窗口里被误触发 onclose 排队的 auto-reconnect）到了这一步。
+        // 此时再 new WebSocket 等同于主动造一个僵尸 socket：旧的 OPEN 失去引用、
+        // 新的在 CONNECTING 里干等（Chat 代理不会再收 READY）。直接跳过即可。
+        if (S.socket && S.socket.readyState === WebSocket.OPEN && S.socket.url === wsUrl) {
             return;
         }
 
         // 新连接重置模型就绪标志，等待模型重新加载
         S._modelReady = false;
 
-        var protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-        var wsUrl = protocol + '://' + window.location.host + '/ws/' + currentLanlanName;
         console.log(window.t('console.websocketConnecting'), currentLanlanName, window.t('console.websocketUrl'), wsUrl);
         S.socket = new WebSocket(wsUrl);
         var _thisSocket = S.socket; // 闭包捕获，供 onclose 判断是否已被替换
@@ -484,6 +509,11 @@
 
         // ---- onmessage ----
         S.socket.onmessage = function (event) {
+            if (S.socket !== _thisSocket) {
+                console.log('[WS] stale onmessage skipped (socket already replaced)');
+                return;
+            }
+
             // Binary audio data
             if (event.data instanceof Blob) {
                 if (window.DEBUG_AUDIO) {
@@ -515,6 +545,11 @@
                         S.assistantTurnId = null;
                         S.assistantPendingTurnServerId = normalizeAssistantTurnId(response.turn_id);
                         S.assistantTurnAwaitingBubble = true;
+                    }
+                    if (!S.assistantTurnId
+                            && S.assistantTurnAwaitingBubble
+                            && getRenderableAssistantChunkText(response.text)) {
+                        ensureAssistantTurnStarted('gemini_response_first_chunk', response.turn_id);
                     }
                     var createdVisibleBubble = false;
                     if (typeof window.appendMessage === 'function') {
@@ -1021,6 +1056,15 @@
                         }
                     } catch (_e) { /* ignore */ }
 
+                // -------- avatar_interaction_ack --------
+                } else if (response.type === 'avatar_interaction_ack') {
+                    emitAssistantLifecycleEvent('neko-avatar-interaction-ack', {
+                        interactionId: response.interaction_id || '',
+                        accepted: response.accepted === true,
+                        reason: response.reason || '',
+                        turnId: response.turn_id || ''
+                    });
+
                 // -------- agent_notification --------
                 } else if (response.type === 'agent_notification') {
                     var notifMsg = typeof response.text === 'string' ? response.text : '';
@@ -1362,6 +1406,7 @@
                 // -------- session_started --------
                 } else if (response.type === 'session_started') {
                     console.log(window.t('console.sessionStartedReceived'), response.input_mode);
+                    S.isTextSessionActive = response.input_mode === 'text';
                     setTimeout(function () {
                         if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
                         if (S.sessionStartedResolver) {

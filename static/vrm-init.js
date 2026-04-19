@@ -395,8 +395,8 @@ function cleanupLive2DUIElements() {
 window.addEventListener('vrm-modules-ready', () => {
     initializeVRMManager();
 
-    // 如果不是管理页面，尝试自动加载模型
-    if (!isModelManagerPage()) {
+    // 如果不是管理页面或角色卡导出页，尝试自动加载模型
+    if (!isModelManagerPage() && !window._cardExportPage) {
         initVRMModel();
     }
 });
@@ -728,6 +728,8 @@ window.forceUnlockVRM = function () {
 
 // 手动触发主页VRM模型检查的函数
 window.checkAndLoadVRM = async function () {
+    // 角色卡导出页不自动加载
+    if (window._cardExportPage) return;
     // 使用共享锁，避免与 initVRMModel 并发
     if (window._isVRMLoading) return;
     window._isVRMLoading = true;
@@ -874,7 +876,7 @@ window.checkAndLoadVRM = async function () {
 // 监听器必须放在函数外面！
 const handleVisibilityChange = () => {
     if (document.visibilityState === 'visible') {
-        if (!isModelManagerPage() && window.checkAndLoadVRM) {
+        if (!isModelManagerPage() && !window._cardExportPage && window.checkAndLoadVRM) {
             window.checkAndLoadVRM();
         }
     }

@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import TypedDict
@@ -205,6 +206,8 @@ def _build_periods(entries: list[HolidayEntry]) -> list[HolidayPeriod]:
 async def _fetch_nager(country: str, year: int) -> list[HolidayEntry]:
     """Fetch from Nager.Date API (JP / KR / RU / US etc.)."""
     url = f"{_NAGER_API}/PublicHolidays/{year}/{country}"
+    # per-call AsyncClient: 每年每国家只拉一次（lazy warmup），且刻意 trust_env=False
+    # 绕开本地代理 —— 与 external_http_client（trust_env=True）配置不一致
     async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT, proxy=None, trust_env=False) as client:
         resp = await client.get(url)
         resp.raise_for_status()
@@ -214,6 +217,7 @@ async def _fetch_nager(country: str, year: int) -> list[HolidayEntry]:
 async def _fetch_cn(year: int) -> list[HolidayEntry]:
     """Fetch from timor.tech API for China — complete with 调休."""
     url = f"{_TIMOR_API}/{year}"
+    # per-call AsyncClient: 同上，每年一次，trust_env=False 绕开代理
     async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT, proxy=None, trust_env=False) as client:
         resp = await client.get(url)
         resp.raise_for_status()
@@ -394,6 +398,11 @@ async def get_nearest_holiday(lang: str) -> HolidayProximity | None:
 _CONSUMPTION_FILENAME = "holiday_consumption.json"
 _consumption_data: dict[str, dict] = {}
 _consumption_path: Path | None = None
+# Protects RMW on _consumption_data + atomic_write_json; covers both the
+# immediate-consume (get_holiday_or_weekend_hint) and deferred-commit
+# (commit_holiday_or_weekend_hint via asyncio.to_thread) paths against
+# concurrent writers in worker threads.
+_consumption_lock = threading.Lock()
 
 _BUDGET_HOLIDAY = 3   # statutory day budget (shared across all 假日 days)
 _BUDGET_PERIOD = 3    # 调休 day budget (shared across all 调休 days)
@@ -459,23 +468,24 @@ def _get_period_bucket(character: str, period: HolidayPeriod,
 def _consume_period_bucket(character: str, period: HolidayPeriod,
                            bucket: str, budget: int) -> bool:
     """Try to consume 1 use from a period bucket. Returns True if successful."""
-    rec = _get_char_record(character)
-    period_key = period.start.isoformat()
-    if period_key not in rec["periods"]:
-        rec["periods"][period_key] = {}
-    period_rec = rec["periods"][period_key]
+    with _consumption_lock:
+        rec = _get_char_record(character)
+        period_key = period.start.isoformat()
+        if period_key not in rec["periods"]:
+            rec["periods"][period_key] = {}
+        period_rec = rec["periods"][period_key]
 
-    remaining = period_rec.get(bucket)
-    if remaining is None:
-        # First use → initialise
-        period_rec[bucket] = budget - 1
-        _save_consumption()
-        return True
-    if remaining > 0:
-        period_rec[bucket] = remaining - 1
-        _save_consumption()
-        return True
-    return False
+        remaining = period_rec.get(bucket)
+        if remaining is None:
+            # First use → initialise
+            period_rec[bucket] = budget - 1
+            _save_consumption()
+            return True
+        if remaining > 0:
+            period_rec[bucket] = remaining - 1
+            _save_consumption()
+            return True
+        return False
 
 
 def try_consume_holiday(character: str, proximity: HolidayProximity) -> bool:
@@ -500,22 +510,23 @@ def try_consume_holiday(character: str, proximity: HolidayProximity) -> bool:
 
 def try_consume_weekend(character: str) -> bool:
     """Try to consume 1 use for a weekend hint. Budget 2, resets daily."""
-    rec = _get_char_record(character)
-    today_iso = date.today().isoformat()
+    with _consumption_lock:
+        rec = _get_char_record(character)
+        today_iso = date.today().isoformat()
 
-    if rec.get("weekend_date") != today_iso:
-        # New day → reset
-        rec["weekend_date"] = today_iso
-        rec["weekend"] = _BUDGET_WEEKEND - 1
-        _save_consumption()
-        return True
+        if rec.get("weekend_date") != today_iso:
+            # New day → reset
+            rec["weekend_date"] = today_iso
+            rec["weekend"] = _BUDGET_WEEKEND - 1
+            _save_consumption()
+            return True
 
-    remaining = rec.get("weekend", 0)
-    if remaining > 0:
-        rec["weekend"] = remaining - 1
-        _save_consumption()
-        return True
-    return False
+        remaining = rec.get("weekend", 0)
+        if remaining > 0:
+            rec["weekend"] = remaining - 1
+            _save_consumption()
+            return True
+        return False
 
 
 # Startup: load persisted data

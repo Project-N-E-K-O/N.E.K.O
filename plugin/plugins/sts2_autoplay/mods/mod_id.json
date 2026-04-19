@@ -1,0 +1,10 @@
+{
+  "id": "STS2AIAgent",
+  "name": "STS2 AI Agent",
+  "author": "CharTyr",
+  "description": "Minimal HTTP bootstrap mod for STS2 AI Agent.",
+  "version": "0.5.3",
+  "has_pck": true,
+  "has_dll": true,
+  "dependencies": []
+}

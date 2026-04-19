@@ -28,7 +28,14 @@ import httpx
 import dashscope
 from dashscope.audio.tts_v2 import SpeechSynthesizer
 
-from .shared_state import get_config_manager, get_session_manager, get_initialize_character_data
+from .shared_state import (
+    get_config_manager,
+    get_session_manager,
+    get_initialize_character_data,
+    get_switch_current_catgirl_fast,
+    get_init_one_catgirl,
+    get_remove_one_catgirl,
+)
 from .workshop_router import _ugc_sync_lock
 from main_logic.tts_client import get_custom_tts_voices, CustomTTSVoiceFetchError
 from utils.character_memory import (
@@ -43,15 +50,17 @@ from utils.voice_clone import (
     MinimaxVoiceCloneClient,
     MinimaxVoiceCloneError,
     minimax_normalize_language,
+    sanitize_minimax_voice_prefix,
     MINIMAX_VOICE_STORAGE_KEY,
     MINIMAX_INTL_VOICE_STORAGE_KEY,
+    MINIMAX_PREFIX_MAX_LENGTH,
     get_minimax_base_url,
     get_minimax_storage_prefix,
     QwenVoiceCloneClient,
     QwenVoiceCloneError,
     qwen_language_hints,
 )
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.frontend_utils import find_models, find_model_directory, is_user_imported_model
 from utils.language_utils import normalize_language_code
 from utils.logger_config import get_module_logger
@@ -324,6 +333,25 @@ def _filter_mutable_catgirl_fields(data: dict) -> dict:
     }
 
 
+def _build_minimax_request_prefix(prefix: str, provider_label: str) -> tuple[str, str]:
+    """将用户输入的前缀规范化为 MiniMax 可接受的安全前缀。"""
+    import uuid
+
+    original_prefix = str(prefix or '').strip()
+    safe_prefix = sanitize_minimax_voice_prefix(
+        original_prefix,
+        max_length=MINIMAX_PREFIX_MAX_LENGTH,
+    )
+    if safe_prefix != original_prefix:
+        logger.info(
+            "%s 音色前缀已规范化: %r -> %r",
+            provider_label,
+            original_prefix,
+            safe_prefix,
+        )
+    return original_prefix, f"{safe_prefix}{uuid.uuid4().hex[:8]}"
+
+
 async def send_reload_page_notice(session, message_text: str = "语音已更新，页面即将刷新"):
     """
     发送页面刷新通知给前端（通过 WebSocket）
@@ -552,7 +580,7 @@ async def get_characters(request: Request):
     """获取角色数据，支持根据用户语言自动翻译人设"""
     _config_manager = get_config_manager()
     # 创建深拷贝，避免修改原始配置数据
-    characters_data = copy.deepcopy(_config_manager.load_characters())
+    characters_data = copy.deepcopy(await _config_manager.aload_characters())
     if isinstance(characters_data.get('猫娘'), dict):
         # COMPAT(v1->v2): 前端仍依赖旧平铺字段，接口层按需展开。
         for cat_name, cat_data in list(characters_data['猫娘'].items()):
@@ -617,7 +645,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
     """
     try:
         _config_manager = get_config_manager()
-        characters = _config_manager.load_characters()
+        characters = await _config_manager.aload_characters()
         
         # 如果没有指定角色名称，使用当前猫娘
         if not catgirl_name:
@@ -919,7 +947,7 @@ async def update_catgirl_l2d(name: str, request: Request):
         
         # 加载当前角色配置
         _config_manager = get_config_manager()
-        characters = _config_manager.load_characters()
+        characters = await _config_manager.aload_characters()
         
         # 确保猫娘配置存在
         if '猫娘' not in characters:
@@ -1059,7 +1087,7 @@ async def update_catgirl_l2d(name: str, request: Request):
                 logger.debug(f"已保存角色 {name} 的模型 {live2d_model}，asset_source={resolved_asset_source or 'local_imported'}")
         
         # 保存配置
-        _config_manager.save_characters(characters)
+        await _config_manager.asave_characters(characters)
         # 自动重新加载配置
         initialize_character_data = get_initialize_character_data()
         await initialize_character_data()
@@ -1126,7 +1154,7 @@ async def update_catgirl_touch_set(name: str, request: Request):
             )
         
         _config_manager = get_config_manager()
-        characters = _config_manager.load_characters()
+        characters = await _config_manager.aload_characters()
         
         if '猫娘' not in characters or name not in characters['猫娘']:
             return JSONResponse(
@@ -1142,7 +1170,7 @@ async def update_catgirl_touch_set(name: str, request: Request):
         existing_touch_set[model_name] = touch_set_data
         
         set_reserved(characters['猫娘'][name], 'touch_set', existing_touch_set)
-        _config_manager.save_characters(characters)
+        await _config_manager.asave_characters(characters)
         
         initialize_character_data = get_initialize_character_data()
         if initialize_character_data:
@@ -1183,7 +1211,7 @@ async def update_catgirl_lighting(name: str, request: Request):
             apply_runtime = query_params.get('apply_runtime', '').lower() in ('true', '1', 'yes')
 
         _config_manager = get_config_manager()
-        characters = _config_manager.load_characters()
+        characters = await _config_manager.aload_characters()
 
         if '猫娘' not in characters or name not in characters['猫娘']:
             return JSONResponse(content={
@@ -1259,7 +1287,7 @@ async def update_catgirl_lighting(name: str, request: Request):
             get_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'lighting', default=None),
         )
 
-        _config_manager.save_characters(characters)
+        await _config_manager.asave_characters(characters)
         
         if apply_runtime:
             initialize_character_data = get_initialize_character_data()
@@ -1303,7 +1331,7 @@ async def update_catgirl_mmd_settings(name: str, request: Request):
         data = await request.json()
 
         _config_manager = get_config_manager()
-        characters = _config_manager.load_characters()
+        characters = await _config_manager.aload_characters()
 
         if '猫娘' not in characters or name not in characters['猫娘']:
             return JSONResponse(content={
@@ -1369,7 +1397,7 @@ async def update_catgirl_mmd_settings(name: str, request: Request):
                 cursor_follow['enabled'] = _to_bool(cursor_follow['enabled'])
             set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'cursor_follow', cursor_follow)
 
-        _config_manager.save_characters(characters)
+        await _config_manager.asave_characters(characters)
 
         logger.info("已保存角色 %s 的MMD模型设置", name)
         return JSONResponse(content={
@@ -1390,7 +1418,7 @@ async def get_catgirl_mmd_settings(name: str):
     """获取指定角色的MMD模型设置"""
     try:
         _config_manager = get_config_manager()
-        characters = _config_manager.load_characters()
+        characters = await _config_manager.aload_characters()
 
         if '猫娘' not in characters or name not in characters['猫娘']:
             return JSONResponse(content={
@@ -1435,7 +1463,7 @@ async def update_catgirl_voice_id(name: str, request: Request):
         return {"success": True, "session_restarted": False, "voice_id_changed": False}
     _config_manager = get_config_manager()
     session_manager = get_session_manager()
-    characters = _config_manager.load_characters()
+    characters = await _config_manager.aload_characters()
     if name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
     voice_id = str(data.get('voice_id') or '').strip()
@@ -1462,7 +1490,7 @@ async def update_catgirl_voice_id(name: str, request: Request):
         }, status_code=400)
 
     set_reserved(characters['猫娘'][name], 'voice_id', voice_id)
-    _config_manager.save_characters(characters)
+    await _config_manager.asave_characters(characters)
     
     # 如果是当前活跃的猫娘，需要先通知前端，再关闭session
     is_current_catgirl = (name == characters.get('当前猫娘', ''))
@@ -1501,7 +1529,7 @@ async def get_catgirl_voice_mode_status(name: str):
     """检查指定角色是否在语音模式下"""
     _config_manager = get_config_manager()
     session_manager = get_session_manager()
-    characters = _config_manager.load_characters()
+    characters = await _config_manager.aload_characters()
     is_current = characters.get('当前猫娘') == name
     
     if name not in session_manager:
@@ -1540,7 +1568,7 @@ async def rename_catgirl(old_name: str, request: Request):
     err = _validate_profile_name(new_name)
     if err:
         return JSONResponse({'success': False, 'error': err.replace('档案名', '新档案名')}, status_code=400)
-    characters = _config_manager.load_characters()
+    characters = await _config_manager.aload_characters()
     if old_name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '原猫娘不存在'}, status_code=404)
     if new_name in characters['猫娘']:
@@ -1573,7 +1601,7 @@ async def rename_catgirl(old_name: str, request: Request):
                 "new_catgirl": new_name,
                 "old_catgirl": old_name
             })
-    
+
     assert_cloudsave_writable(
         _config_manager,
         operation="rename",
@@ -1612,7 +1640,7 @@ async def rename_catgirl(old_name: str, request: Request):
             # 如果当前猫娘是被重命名的猫娘，也需要更新
             if is_current_catgirl:
                 characters['当前猫娘'] = new_name
-            _config_manager.save_characters(characters)
+            await _config_manager.asave_characters(characters)
 
             # 自动重新加载配置
             initialize_character_data = get_initialize_character_data()
@@ -1666,6 +1694,7 @@ async def rename_catgirl(old_name: str, request: Request):
                 error_message = f"{error_message}; 回滚失败: {rollback_error}"
             return JSONResponse({"success": False, "error": error_message}, status_code=500)
 
+    # 数据更新+重载完成后再通知前端，避免前端 fetch /api/characters 时新名称尚未就绪
     if memory_server_reloaded and rename_notification_ws and rename_notification_message:
         try:
             await rename_notification_ws.send_text(rename_notification_message)
@@ -1686,7 +1715,7 @@ async def unregister_voice(name: str):
     try:
         _config_manager = get_config_manager()
         session_manager = get_session_manager()
-        characters = _config_manager.load_characters()
+        characters = await _config_manager.aload_characters()
         if name not in characters.get('猫娘', {}):
             return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
         
@@ -1697,7 +1726,7 @@ async def unregister_voice(name: str):
         
         # COMPAT(v1->v2): 统一落到 _reserved.voice_id，旧平铺 voice_id 不再写入/删除。
         set_reserved(characters['猫娘'][name], 'voice_id', '')
-        _config_manager.save_characters(characters)
+        await _config_manager.asave_characters(characters)
 
         # 如果是当前活跃的猫娘，需要先通知前端，再关闭session
         is_current_catgirl = (name == characters.get('当前猫娘', ''))
@@ -1730,7 +1759,7 @@ async def unregister_voice(name: str):
 async def get_current_catgirl():
     """获取当前使用的猫娘名称"""
     _config_manager = get_config_manager()
-    characters = _config_manager.load_characters()
+    characters = await _config_manager.aload_characters()
     current_catgirl = characters.get('当前猫娘', '')
     return _json_no_store_response({'current_catgirl': current_catgirl})
 
@@ -1745,7 +1774,7 @@ async def set_current_catgirl(request: Request):
     
     _config_manager = get_config_manager()
     session_manager = get_session_manager()
-    characters = _config_manager.load_characters()
+    characters = await _config_manager.aload_characters()
     if catgirl_name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '指定的猫娘不存在'}, status_code=404)
     
@@ -1765,10 +1794,11 @@ async def set_current_catgirl(request: Request):
                     'error': '语音状态下无法切换角色，请先停止语音对话后再切换'
                 }, status_code=400)
     characters['当前猫娘'] = catgirl_name
-    _config_manager.save_characters(characters)
-    initialize_character_data = get_initialize_character_data()
-    # 自动重新加载配置
-    await initialize_character_data()
+    await _config_manager.asave_characters(characters)
+    # Fast path：切换只改变 `当前猫娘` 字段，per-k 的 prompt / voice_id / thread 都不变，
+    # 只需刷新 globals 即可。N=20 只猫娘时从 O(N) 降到 O(1)。
+    switch_current_catgirl_fast = get_switch_current_catgirl_fast()
+    await switch_current_catgirl_fast()
     
     # 通过WebSocket通知所有连接的客户端
     # 使用session_manager中的websocket，但需要确保websocket已设置
@@ -1781,21 +1811,32 @@ async def set_current_catgirl(request: Request):
         "old_catgirl": old_catgirl
     })
     
-    # 遍历所有session_manager，尝试发送消息
-    for lanlan_name, mgr in list(session_manager.items()):
+    # 并行通知所有 session_manager —— 每个 send_text 独立，per-mgr 失败时只清自己的 ws，
+    # 串行版本里一个慢/卡的 ws 会拖累后面的通知。
+    snapshot = list(session_manager.items())
+    for lanlan_name, mgr in snapshot:
+        logger.info(f"检查 {lanlan_name} 的WebSocket: websocket存在={mgr.websocket is not None}")
+
+    async def _notify_one(lanlan_name, mgr):
         ws = mgr.websocket
-        logger.info(f"检查 {lanlan_name} 的WebSocket: websocket存在={ws is not None}")
-        
-        if ws:
-            try:
-                await ws.send_text(message)
-                notification_count += 1
-                logger.info(f"✅ 已通过WebSocket通知 {lanlan_name} 的连接：猫娘已从 {old_catgirl} 切换到 {catgirl_name}")
-            except Exception as e:
-                logger.warning(f"❌ 通知 {lanlan_name} 的连接失败: {e}")
-                # 如果发送失败，可能是连接已断开，清空websocket引用
-                if mgr.websocket == ws:
-                    mgr.websocket = None
+        if not ws:
+            return False
+        try:
+            await ws.send_text(message)
+            logger.info(f"✅ 已通过WebSocket通知 {lanlan_name} 的连接：猫娘已从 {old_catgirl} 切换到 {catgirl_name}")
+            return True
+        except Exception as e:
+            logger.warning(f"❌ 通知 {lanlan_name} 的连接失败: {e}")
+            # 如果发送失败，可能是连接已断开，清空websocket引用
+            if mgr.websocket == ws:
+                mgr.websocket = None
+            return False
+
+    _notify_results = await asyncio.gather(
+        *(_notify_one(n, m) for n, m in snapshot),
+        return_exceptions=True,
+    )
+    notification_count = sum(1 for r in _notify_results if r is True)
     
     if notification_count > 0:
         logger.info(f"✅ 已通过WebSocket通知 {notification_count} 个连接的客户端：猫娘已从 {old_catgirl} 切换到 {catgirl_name}")
@@ -1837,9 +1878,9 @@ async def update_master(request: Request):
     data['档案名'] = str(profile_name).strip()
     _config_manager = get_config_manager()
     initialize_character_data = get_initialize_character_data()
-    characters = _config_manager.load_characters()
+    characters = await _config_manager.aload_characters()
     characters['主人'] = {k: v for k, v in data.items() if v}
-    _config_manager.save_characters(characters)
+    await _config_manager.asave_characters(characters)
     # 自动重新加载配置
     await initialize_character_data()
     return {"success": True}
@@ -1864,7 +1905,7 @@ async def rename_master(old_name: str, request: Request):
         return JSONResponse({'success': False, 'error': err.replace('档案名', '新档案名')}, status_code=400)
 
     async with _ugc_sync_lock:
-        characters = _config_manager.load_characters()
+        characters = await _config_manager.aload_characters()
         if '主人' not in characters or not characters['主人']:
             return JSONResponse({'success': False, 'error': '主人档案不存在'}, status_code=404)
 
@@ -1876,7 +1917,7 @@ async def rename_master(old_name: str, request: Request):
             return JSONResponse({'success': False, 'error': '新档案名与已有猫娘名称冲突'}, status_code=400)
 
         characters['主人']['档案名'] = new_name
-        _config_manager.save_characters(characters)
+        await _config_manager.asave_characters(characters)
 
     try:
         initialize_character_data = get_initialize_character_data()
@@ -1911,7 +1952,7 @@ async def add_catgirl(request: Request):
     data['档案名'] = str(profile_name).strip()
 
     _config_manager = get_config_manager()
-    characters = _config_manager.load_characters()
+    characters = await _config_manager.aload_characters()
     key = data['档案名']
 
     # 检查是否已存在同名角色，使用 Windows 风格的命名 (x)
@@ -1935,10 +1976,10 @@ async def add_catgirl(request: Request):
                 catgirl_data[k] = v
 
     characters['猫娘'][key] = catgirl_data
-    _config_manager.save_characters(characters)
-    initialize_character_data = get_initialize_character_data()
-    # 自动重新加载配置
-    await initialize_character_data()
+    await _config_manager.asave_characters(characters)
+    # Fast path：新增只需为 `key` 这一个 catgirl 分配资源 + 启动线程，不影响其它角色。
+    init_one_catgirl = get_init_one_catgirl()
+    await init_one_catgirl(key, is_new=True)
 
     memory_server_reloaded = await notify_memory_server_reload(reason=f"新角色: {key}")
 
@@ -1981,7 +2022,7 @@ async def update_catgirl(name: str, request: Request):
 
     data = _filter_mutable_catgirl_fields(raw_data)
     _config_manager = get_config_manager()
-    characters = _config_manager.load_characters()
+    characters = await _config_manager.aload_characters()
     if name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
 
@@ -2019,7 +2060,7 @@ async def update_catgirl(name: str, request: Request):
     if model_type_in_payload and requested_model_type:
         set_reserved(characters['猫娘'][name], 'avatar', 'model_type', requested_model_type)
 
-    _config_manager.save_characters(characters)
+    await _config_manager.asave_characters(characters)
 
     new_voice_id = get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))
     voice_id_changed = voice_id_in_payload and old_voice_id != new_voice_id
@@ -2052,14 +2093,22 @@ async def update_catgirl(name: str, request: Request):
                 logger.error(f"结束session时出错: {e}")
 
         if is_current_catgirl:
-            initialize_character_data = get_initialize_character_data()
-            await initialize_character_data()
+            # Fast path：只刷新被编辑角色的 session_manager（prompt/voice_id），
+            # 其它 N-1 个 catgirl 不动。
+            init_one_catgirl = get_init_one_catgirl()
+            await init_one_catgirl(name, is_new=False)
             logger.info("配置已重新加载，新的voice_id已生效")
         else:
-            logger.info(f"切换的是其他猫娘 {name} 的音色，跳过重新加载以避免影响当前猫娘的session")
+            # 非当前猫娘：原来靠下次 switch 的全量 init 顺带 rescue。切换改走 fast path
+            # 后 rescue 不再发生，所以这里必须显式刷 session_manager[name]。
+            # init_one_catgirl 只写 session_manager[name] 的 prompt/voice_id，不碰当前 session。
+            init_one_catgirl = get_init_one_catgirl()
+            await init_one_catgirl(name, is_new=False)
+            logger.info(f"非当前猫娘 {name} 的音色已更新并同步到 session_manager")
     else:
-        initialize_character_data = get_initialize_character_data()
-        await initialize_character_data()
+        # Fast path：普通字段编辑，只刷新被编辑角色。
+        init_one_catgirl = get_init_one_catgirl()
+        await init_one_catgirl(name, is_new=False)
 
     return {
         "success": True,
@@ -2072,10 +2121,10 @@ async def update_catgirl(name: str, request: Request):
 @router.delete('/catgirl/{name}')
 async def delete_catgirl(name: str):
     _config_manager = get_config_manager()
-    characters = _config_manager.load_characters()
+    characters = await _config_manager.aload_characters()
     if name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
-    
+
     # 检查是否是当前正在使用的猫娘
     current_catgirl = characters.get('当前猫娘', '')
     if name == current_catgirl:
@@ -2123,9 +2172,10 @@ async def delete_catgirl(name: str):
 
             # 删除角色配置
             del characters['猫娘'][name]
-            _config_manager.save_characters(characters)
-            initialize_character_data = get_initialize_character_data()
-            await initialize_character_data()
+            await _config_manager.asave_characters(characters)
+            # Fast path：只停该角色的线程 + 清 dict + 刷 globals，不遍历其它 N-1 个。
+            remove_one_catgirl = get_remove_one_catgirl()
+            await remove_one_catgirl(name)
             memory_server_reloaded = await notify_memory_server_reload(reason=f"删除角色: {name}")
             if not memory_server_reloaded:
                 raise RuntimeError("notify_memory_server_reload returned False")
@@ -2168,7 +2218,7 @@ async def clear_voice_ids():
     """清除所有角色的本地Voice ID记录"""
     try:
         _config_manager = get_config_manager()
-        characters = _config_manager.load_characters()
+        characters = await _config_manager.aload_characters()
         cleared_count = 0
         
         # 清除所有猫娘的voice_id
@@ -2178,7 +2228,7 @@ async def clear_voice_ids():
                     set_reserved(characters['猫娘'][name], 'voice_id', '')
                     cleared_count += 1
         
-        _config_manager.save_characters(characters)
+        await _config_manager.asave_characters(characters)
         # 自动重新加载配置
         initialize_character_data = get_initialize_character_data()
         await initialize_character_data()
@@ -2257,13 +2307,13 @@ async def set_microphone(request: Request):
         
         # 使用标准的load/save函数
         _config_manager = get_config_manager()
-        characters_data = _config_manager.load_characters()
+        characters_data = await _config_manager.aload_characters()
         
         # 添加或更新麦克风选择
         characters_data['当前麦克风'] = microphone_id
         
         # 保存配置
-        _config_manager.save_characters(characters_data)
+        await _config_manager.asave_characters(characters_data)
         # 自动重新加载配置
         initialize_character_data = get_initialize_character_data()
         await initialize_character_data()
@@ -2279,7 +2329,7 @@ async def get_microphone():
     try:
         _config_manager = get_config_manager()
         # 使用配置管理器加载角色配置
-        characters_data = _config_manager.load_characters()
+        characters_data = await _config_manager.aload_characters()
         
         # 获取保存的麦克风选择
         microphone_id = characters_data.get('当前麦克风')
@@ -2296,7 +2346,7 @@ async def get_voices():
     _config_manager = get_config_manager()
     result = {"voices": _config_manager.get_voices_for_current_api()}
     
-    core_config = _config_manager.get_core_config()
+    core_config = await _config_manager.aget_core_config()
     if core_config.get('IS_FREE_VERSION'):
         core_url = core_config.get('CORE_URL', '')
         openrouter_url = core_config.get('OPENROUTER_URL', '')
@@ -2307,7 +2357,7 @@ async def get_voices():
                 result["free_voices"] = free_voices
     
     # 构建 voice_id → 使用该音色的角色名列表，用于前端显示
-    characters = _config_manager.load_characters()
+    characters = await _config_manager.aload_characters()
     voice_owners = {}
     for catgirl_name, catgirl_config in characters.get('猫娘', {}).items():
         if not isinstance(catgirl_config, dict):
@@ -2329,18 +2379,19 @@ async def get_voice_preview(voice_id: str):
         voices = _config_manager.get_voices_for_current_api()
         voice_data = voices.get(voice_id) if isinstance(voices, dict) else None
         provider = (voice_data or {}).get('provider', '')
-        core_config = _config_manager.get_core_config()
-        
+
         # 优先尝试从 tts_custom 获取 API Key
         try:
             tts_custom_config = _config_manager.get_model_api_config('tts_custom')
             audio_api_key = tts_custom_config.get('api_key', '')
         except Exception:
             audio_api_key = ''
-            
+
         # 如果没有，则回退到核心配置
+        # Codex review: 原先这里顶上还有一个 `core_config = ...`，从未被读取（死代码）。
+        # 全仓 async 化时把死读也改成了 await，反而白跑一次 IO，删。
         if not audio_api_key:
-            core_config = _config_manager.get_core_config()
+            core_config = await _config_manager.aget_core_config()
             audio_api_key = core_config.get('AUDIO_API_KEY', '')
 
         logger.info(f"正在为音色 {voice_id} 生成预览音频...")
@@ -2468,7 +2519,7 @@ async def delete_voice(voice_id: str):
             # 清理所有角色中使用该音色的引用
             _config_manager = get_config_manager()
             session_manager = get_session_manager()
-            characters = _config_manager.load_characters()
+            characters = await _config_manager.aload_characters()
             cleaned_count = 0
             affected_active_names = []
             
@@ -2483,10 +2534,10 @@ async def delete_voice(voice_id: str):
                             affected_active_names.append(name)
             
             if cleaned_count > 0:
-                _config_manager.save_characters(characters)
+                await _config_manager.asave_characters(characters)
                 
-                # 对于受影响的活跃角色，通知并结束 session
-                for name in affected_active_names:
+                # 对于受影响的活跃角色，并行通知 + 结束 session（每个 end_session ≈ 1s）
+                async def _refresh_one(name):
                     logger.info(f"检测到活跃角色 {name} 的 voice_id 已被删除，准备刷新...")
                     # 1. 发送刷新通知
                     await send_reload_page_notice(session_manager[name], "音色已删除，页面即将刷新")
@@ -2496,6 +2547,12 @@ async def delete_voice(voice_id: str):
                         logger.info(f"已结束受影响角色 {name} 的 session")
                     except Exception as e:
                         logger.error(f"结束受影响角色 {name} 的 session 时出错: {e}")
+
+                if affected_active_names:
+                    await asyncio.gather(
+                        *(_refresh_one(name) for name in affected_active_names),
+                        return_exceptions=True,
+                    )
 
                 # 自动重新加载配置
                 initialize_character_data = get_initialize_character_data()
@@ -2847,7 +2904,8 @@ async def voice_clone(
                 'speaker_id': prefix,
                 'prompt_text': f"<|{ref_language}|>" if ref_language != 'ch' else "希望你以后能够做的比我还好呦。"
             }
-            
+
+            # per-call AsyncClient: 用户手动上传音色文件触发，冷路径
             async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
                 resp = await client.post(register_url, data=data, files=files)
                 
@@ -2962,11 +3020,8 @@ async def voice_clone(
     # ---------- 按 provider 调用对应克隆 API ----------
     try:
         if provider in ('minimax', 'minimax_intl'):
-            # 为MiniMax生成带随机数的前缀（避免重复）
-            import uuid
-            original_prefix = prefix  # 保存原始前缀用于显示
-            minimax_prefix = f"{prefix}_{uuid.uuid4().hex[:8]}"  # 添加8位随机数
-            
+            original_prefix, minimax_prefix = _build_minimax_request_prefix(prefix, provider_label)
+
             minimax_lang = minimax_normalize_language(ref_language)
             client = MinimaxVoiceCloneClient(api_key=api_key, base_url=base_url)
             voice_id = await client.clone_voice(
@@ -2977,8 +3032,8 @@ async def voice_clone(
             )
             voice_data = {
                 'voice_id': voice_id,
-                'prefix': original_prefix,  # 保存原始前缀（不含随机数）用于显示
-                'minimax_prefix': minimax_prefix,  # 保存实际使用的带随机数前缀
+                'prefix': original_prefix,  # 保存原始前缀用于显示
+                'minimax_prefix': minimax_prefix,  # 保存实际提交给 MiniMax 的安全前缀
                 'audio_md5': audio_md5,
                 'ref_language': ref_language,
                 'minimax_language': minimax_lang,
@@ -3169,6 +3224,7 @@ async def voice_clone_direct(request: Request):
         provider_label = '阿里云CosyVoice'
 
     # 验证直链是否可访问（HEAD失败时回退到GET）
+    # per-call AsyncClient: 用户粘贴直链触发的一次性克隆流程，冷路径（外部 CDN 主机）
     try:
         async with httpx.AsyncClient(timeout=30, proxy=None, trust_env=False) as client:
             head_resp = await client.head(direct_link, follow_redirects=True)
@@ -3192,7 +3248,8 @@ async def voice_clone_direct(request: Request):
             # 1. 下载音频文件（使用流式读取避免内存问题）
             logger.info(f"开始下载直链音频: {direct_link}")
             MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB限制
-            
+
+            # per-call AsyncClient: 用户一次性直链下载，冷路径
             async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
                 async with client.stream('GET', direct_link, follow_redirects=True) as download_resp:
                     if download_resp.status_code != 200:
@@ -3257,11 +3314,8 @@ async def voice_clone_direct(request: Request):
                 original_buffer, filename
             )
             
-            # 3. 为MiniMax生成带随机数的前缀（避免重复）
-            import uuid
-            original_prefix = prefix  # 保存原始前缀用于显示
-            minimax_prefix = f"{prefix}_{uuid.uuid4().hex[:8]}"  # 添加8位随机数
-            
+            original_prefix, minimax_prefix = _build_minimax_request_prefix(prefix, provider_label)
+
             # 4. 使用 MinimaxVoiceCloneClient 上传并注册音色
             minimax_lang = minimax_normalize_language(ref_language)
             client = MinimaxVoiceCloneClient(api_key=api_key, base_url=base_url)
@@ -3275,8 +3329,8 @@ async def voice_clone_direct(request: Request):
             
             voice_data = {
                 'voice_id': voice_id,
-                'prefix': original_prefix,  # 保存原始前缀（不含随机数）用于显示
-                'minimax_prefix': minimax_prefix,  # 保存实际使用的带随机数前缀
+                'prefix': original_prefix,  # 保存原始前缀用于显示
+                'minimax_prefix': minimax_prefix,  # 保存实际提交给 MiniMax 的安全前缀
                 'direct_link': direct_link,
                 'audio_md5': audio_md5,
                 'ref_language': ref_language,
@@ -3294,7 +3348,8 @@ async def voice_clone_direct(request: Request):
             # 1. 下载音频文件以计算内容MD5（使用流式读取避免内存问题）
             logger.info(f"开始下载直链音频用于CosyVoice: {direct_link}")
             MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB限制
-            
+
+            # per-call AsyncClient: 用户一次性直链下载，冷路径
             async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
                 async with client.stream('GET', direct_link, follow_redirects=True) as download_resp:
                     if download_resp.status_code != 200:
@@ -3414,31 +3469,33 @@ async def get_character_cards():
         # 确保character_cards目录存在
         config_mgr.ensure_chara_directory()
         
-        character_cards = []
-        
-        # 遍历character_cards目录下的所有.chara.json文件
-        for filename in os.listdir(config_mgr.chara_dir):
-            if filename.endswith('.chara.json'):
-                try:
-                    file_path = os.path.join(config_mgr.chara_dir, filename)
-                    
-                    # 读取文件内容
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                    
-                    # 检查是否包含基本信息
-                    if data and data.get('name'):
-                        character_cards.append({
-                            'id': filename[:-11],  # 去掉.chara.json后缀
-                            'name': data['name'],
-                            'description': data.get('description', ''),
-                            'tags': data.get('tags', []),
-                            'rawData': data,
-                            'path': file_path
-                        })
-                except Exception as e:
-                    logger.error(f"读取角色卡文件 {filename} 时出错: {e}")
-        
+        # 遍历 character_cards 目录下的所有 .chara.json 文件，并行读取
+        # （角色卡多时串行 await 会 N 次线程切换 + JSON 解析，整条接口延迟线性增长）
+        candidate_filenames = [f for f in os.listdir(config_mgr.chara_dir) if f.endswith('.chara.json')]
+
+        async def _read_one_card(filename: str):
+            file_path = os.path.join(config_mgr.chara_dir, filename)
+            try:
+                data = await read_json_async(file_path)
+                if data and data.get('name'):
+                    return {
+                        'id': filename[:-11],  # 去掉 .chara.json 后缀
+                        'name': data['name'],
+                        'description': data.get('description', ''),
+                        'tags': data.get('tags', []),
+                        'rawData': data,
+                        'path': file_path,
+                    }
+            except Exception as e:
+                logger.error(f"读取角色卡文件 {filename} 时出错: {e}")
+            return None
+
+        results = await asyncio.gather(
+            *(_read_one_card(fn) for fn in candidate_filenames),
+            return_exceptions=False,
+        )
+        character_cards = [r for r in results if r is not None]
+
         logger.info(f"已加载 {len(character_cards)} 个角色卡")
         return {"success": True, "character_cards": character_cards}
     except Exception as e:
@@ -3490,7 +3547,7 @@ async def save_catgirl_to_model_folder(request: Request):
             
         # 保存角色卡到模型文件夹
         file_path = os.path.join(model_folder_path, safe_name)
-        atomic_write_json(file_path, chara_data, ensure_ascii=False, indent=2)
+        await atomic_write_json_async(file_path, chara_data, ensure_ascii=False, indent=2)
         
         logger.info(f"角色卡已成功保存到模型文件夹: {file_path}")
         return {"success": True, "path": file_path, "modelFolderPath": model_folder_path}
@@ -3514,7 +3571,7 @@ async def save_character_card(request: Request):
         _config_manager = get_config_manager()
         
         # 加载现有的characters.json
-        characters = _config_manager.load_characters()
+        characters = await _config_manager.aload_characters()
         
         # 确保'猫娘'键存在
         if '猫娘' not in characters:
@@ -3540,7 +3597,7 @@ async def save_character_card(request: Request):
         characters['猫娘'][chara_name] = catgirl_data
         
         # 保存到characters.json
-        _config_manager.save_characters(characters)
+        await _config_manager.asave_characters(characters)
         
         # 自动重新加载配置
         initialize_character_data = get_initialize_character_data()
@@ -3574,7 +3631,7 @@ async def export_catgirl_card(name: str):
 
     try:
         _config_manager = get_config_manager()
-        characters = _config_manager.load_characters()
+        characters = await _config_manager.aload_characters()
 
         if name not in characters.get('猫娘', {}):
             return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
@@ -3828,7 +3885,7 @@ async def export_catgirl_settings_only(name: str):
 
     try:
         _config_manager = get_config_manager()
-        characters = _config_manager.load_characters()
+        characters = await _config_manager.aload_characters()
 
         if name not in characters.get('猫娘', {}):
             return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
@@ -3988,7 +4045,7 @@ async def import_character_card(zip_file: UploadFile = File(...)):
                         dest_path.parent.mkdir(parents=True, exist_ok=True)
                         total_uncompressed_size += member_size
                         with zf.open(member) as src, open(dest_path, 'wb') as dst:
-                            shutil.copyfileobj(src, dst, length=8192)
+                            await asyncio.to_thread(shutil.copyfileobj, src, dst, length=8192)
 
             # 读取角色设定（支持加密和非加密格式）
             character_json_path = extract_path / 'character.json'
@@ -3997,8 +4054,7 @@ async def import_character_card(zip_file: UploadFile = File(...)):
             if character_json_path.exists():
                 # 非加密格式
                 try:
-                    with open(character_json_path, 'r', encoding='utf-8') as f:
-                        character_data = json.load(f)
+                    character_data = await read_json_async(character_json_path)
                 except json.JSONDecodeError as e:
                     logger.warning(f"[导入角色卡] 解析 character.json 失败: {e}")
                     return JSONResponse({'success': False, 'error': f'角色卡解析失败: {str(e)}'}, status_code=400)
@@ -4035,15 +4091,14 @@ async def import_character_card(zip_file: UploadFile = File(...)):
             metadata_path = extract_path / 'metadata.json'
             metadata = {}
             if metadata_path.exists():
-                with open(metadata_path, 'r', encoding='utf-8') as f:
-                    metadata = json.load(f)
+                metadata = await read_json_async(metadata_path)
 
         character_name = character_data.get('档案名', '未命名角色')
 
         _config_manager = get_config_manager()
 
         async with _ugc_sync_lock:
-            characters = _config_manager.load_characters()
+            characters = await _config_manager.aload_characters()
 
             # 检查是否已存在同名角色，使用 Windows 风格的命名 (x)
             if character_name in characters.get('猫娘', {}):
@@ -4098,7 +4153,7 @@ async def import_character_card(zip_file: UploadFile = File(...)):
                                     counter += 1
 
                                 # 复制整个模型文件夹
-                                shutil.copytree(model_item, target_model_dir)
+                                await asyncio.to_thread(shutil.copytree, model_item, target_model_dir)
                                 logger.info(f'已导入MMD模型文件夹: {original_model_name} -> {model_name}')
 
                                 # 查找文件夹中的主模型文件（.pmx 或 .pmd）
@@ -4133,7 +4188,7 @@ async def import_character_card(zip_file: UploadFile = File(...)):
                                     counter += 1
 
                                 # 复制模型文件
-                                shutil.copytree(model_item, target_model_dir)
+                                await asyncio.to_thread(shutil.copytree, model_item, target_model_dir)
                                 logger.info(f'已导入Live2D模型: {original_model_name} -> {model_name}')
 
                                 # 查找复制后的 .model3.json 文件，保留相对路径
@@ -4170,7 +4225,7 @@ async def import_character_card(zip_file: UploadFile = File(...)):
                                     target_model_path = _config_manager.vrm_dir / f"{model_name}{model_ext}"
                                     counter += 1
 
-                                shutil.copy2(model_file, target_model_path)
+                                await asyncio.to_thread(shutil.copy2, model_file, target_model_path)
                                 logger.info(f'已导入VRM模型: {original_model_name} -> {model_name}')
 
                                 # 记录导入的模型信息
@@ -4222,7 +4277,7 @@ async def import_character_card(zip_file: UploadFile = File(...)):
             characters['猫娘'][character_name] = chara_data_to_save
 
             # 保存到文件
-            _config_manager.save_characters(characters)
+            await _config_manager.asave_characters(characters)
 
             # 刷新内存中的角色数据，确保磁盘和内存同步
             initialize_character_data = get_initialize_character_data()
@@ -4244,7 +4299,13 @@ async def import_character_card(zip_file: UploadFile = File(...)):
     finally:
         # 清理临时目录
         if temp_dir and os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir, ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
+
+
+class _InvalidPortraitError(ValueError):
+    """Raised by the character-card render helper when the user-supplied
+    portrait fails PIL's verify() check. Caught at the endpoint to map
+    to a 400 response (vs. 500 for genuine render errors)."""
 
 
 @router.post('/catgirl/{name}/export-with-portrait')
@@ -4270,7 +4331,7 @@ async def export_catgirl_with_portrait(
     temp_dir = None
     try:
         _config_manager = get_config_manager()
-        characters = _config_manager.load_characters()
+        characters = await _config_manager.aload_characters()
 
         if name not in characters.get('猫娘', {}):
             return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
@@ -4391,113 +4452,87 @@ async def export_catgirl_with_portrait(
 
         logger.info(f"[导出角色卡] 接收到立绘图片，大小: {len(portrait_data)} bytes")
 
+        png_path = temp_path / 'character_card.png'
+
+        # 整段 PIL 渲染链（图片校验 + 卡片合成 + 字体扫描 + PNG 编码）放进 worker
+        # 线程，避免阻塞事件循环。校验失败用专属异常，让外层回 400 而不是 500。
+        def _render_card_png(_portrait_data: bytes, _name: str, _png_path) -> None:
+            try:
+                Image.MAX_IMAGE_PIXELS = 100_000_000  # 限制最大像素数防止解压炸弹
+                portrait_img = Image.open(io.BytesIO(_portrait_data))
+                portrait_img.verify()
+                portrait_img = Image.open(io.BytesIO(_portrait_data))
+                portrait_img.load()  # 强制解码：把截断/损坏的像素错误提前到这里，与 _InvalidPortraitError 一起回 400 而不是后续 resize/save 时回 500
+            except Exception as exc:
+                raise _InvalidPortraitError(str(exc)) from exc
+
+            logger.info(f"[导出角色卡] 立绘图片尺寸: {portrait_img.size}, 模式: {portrait_img.mode}")
+
+            if portrait_img.mode != 'RGBA':
+                portrait_img = portrait_img.convert('RGBA')
+
+            width, height = 600, 800
+            card_img = Image.new('RGBA', (width, height), color='#E8F4F8')
+            draw = ImageDraw.Draw(card_img)
+
+            header_height = height // 6
+            draw.rectangle([0, 0, width, header_height], fill='#40C5F1')
+
+            font_size = 42
+            font = None
+            font_candidates = [
+                ("msyhbd.ttc", font_size),
+                ("Microsoft YaHei Bold.ttf", font_size),
+                ("simhei.ttf", font_size),
+                ("simsun.ttc", font_size),
+                ("msyh.ttc", font_size),
+                ("Microsoft YaHei.ttf", font_size),
+            ]
+            for font_name, size in font_candidates:
+                try:
+                    font = ImageFont.truetype(font_name, size)
+                    logger.info(f"[导出角色卡] 使用字体: {font_name}")
+                    break
+                except Exception as e:
+                    logger.warning(f"[导出角色卡] 字体加载失败: {font_name}, 错误: {e}")
+                    continue
+            if font is None:
+                font = ImageFont.load_default()
+                logger.warning("[导出角色卡] 使用默认字体")
+
+            bbox = draw.textbbox((0, 0), _name, font=font)
+            text_height = bbox[3] - bbox[1]
+            text_x = 40
+            text_y = (header_height - text_height) // 2 - bbox[1]
+
+            shadow_offset = 2
+            draw.text((text_x + shadow_offset, text_y + shadow_offset), _name, fill='#00000040', font=font)
+            draw.text((text_x, text_y), _name, fill='white', font=font)
+
+            # 4. 合成立绘到角色卡
+            # 立绘区域：紧贴顶部蓝色区域下方到卡片底部，与前端预览一致
+            portrait_area_y = header_height
+            portrait_area_width = width
+            portrait_area_height = height - header_height
+
+            # 前端已按 (width × portrait_area_height) 渲染立绘，直接缩放到目标尺寸后粘贴
+            portrait_resized = portrait_img.resize((portrait_area_width, portrait_area_height), Image.Resampling.LANCZOS)
+            logger.info(f"[导出角色卡] 立绘调整后尺寸: {portrait_resized.size}, 粘贴位置: (0, {portrait_area_y})")
+
+            # 粘贴立绘（使用alpha通道）
+            card_img.paste(portrait_resized, (0, portrait_area_y), portrait_resized)
+            logger.info("[导出角色卡] 立绘粘贴完成")
+
+            final_img = Image.new('RGB', (width, height), color='#E8F4F8')
+            final_img.paste(card_img, (0, 0), card_img)
+
+            final_img.save(_png_path, 'PNG')
+
         try:
-            Image.MAX_IMAGE_PIXELS = 100_000_000  # 限制最大像素数防止解压炸弹
-            portrait_img = Image.open(io.BytesIO(portrait_data))
-            portrait_img.verify()
-            portrait_img = Image.open(io.BytesIO(portrait_data))  # verify()后需要重新打开
-        except Exception as e:
+            await asyncio.to_thread(_render_card_png, portrait_data, name, png_path)
+        except _InvalidPortraitError as e:
             logger.warning(f"[导出角色卡] 图片验证失败: {e}")
             return JSONResponse({'success': False, 'error': f'无效的图片文件: {str(e)}'}, status_code=400)
-
-        logger.info(f"[导出角色卡] 立绘图片尺寸: {portrait_img.size}, 模式: {portrait_img.mode}")
-
-        # 转换为RGBA模式（确保透明通道）
-        if portrait_img.mode != 'RGBA':
-            portrait_img = portrait_img.convert('RGBA')
-
-        # 3. 创建角色卡模板
-        width, height = 600, 800
-        card_img = Image.new('RGBA', (width, height), color='#E8F4F8')
-        draw = ImageDraw.Draw(card_img)
-
-        # 顶部1/6区域使用深蓝色
-        header_height = height // 6
-        draw.rectangle([0, 0, width, header_height], fill='#40C5F1')
-
-        # 在顶部左侧添加角色名称
-        # 尝试使用更美观的字体，并加粗显示
-        font_size = 42  # 增大字体
-        font = None
-
-        # 尝试多种中文字体，按优先级排序
-        font_candidates = [
-            ("msyhbd.ttc", font_size),      # 微软雅黑粗体
-            ("Microsoft YaHei Bold.ttf", font_size),  # 微软雅黑粗体（另一种名称）
-            ("simhei.ttf", font_size),      # 黑体
-            ("simsun.ttc", font_size),      # 宋体
-            ("msyh.ttc", font_size),        # 微软雅黑常规
-            ("Microsoft YaHei.ttf", font_size),  # 微软雅黑（另一种名称）
-        ]
-
-        for font_name, size in font_candidates:
-            try:
-                font = ImageFont.truetype(font_name, size)
-                logger.info(f"[导出角色卡] 使用字体: {font_name}")
-                break
-            except Exception as e:
-                logger.warning(f"[导出角色卡] 字体加载失败: {font_name}, 错误: {e}")
-                continue
-
-        if font is None:
-            font = ImageFont.load_default()
-            logger.warning("[导出角色卡] 使用默认字体")
-
-        text = name
-        bbox = draw.textbbox((0, 0), text, font=font)
-        text_width = bbox[2] - bbox[0]
-        text_height = bbox[3] - bbox[1]
-        text_x = 40  # 稍微增加左边距
-        text_y = (header_height - text_height) // 2 - bbox[1]
-
-        # 添加文字阴影效果增加可读性
-        shadow_offset = 2
-        draw.text((text_x + shadow_offset, text_y + shadow_offset), text, fill='#00000040', font=font)  # 半透明黑色阴影
-        draw.text((text_x, text_y), text, fill='white', font=font)  # 白色文字
-
-        # 4. 合成立绘到角色卡
-        # 立绘区域：顶部蓝色区域下方到卡片底部，左右留边距
-        portrait_area_x = 20
-        portrait_area_y = header_height + 20
-        portrait_area_width = width - 40
-        portrait_area_height = height - header_height - 40
-        logger.info(f"[导出角色卡] 立绘区域: ({portrait_area_x}, {portrait_area_y}, {portrait_area_width}, {portrait_area_height})")
-
-        # 计算缩放比例，保持比例，居中填充
-        portrait_width, portrait_height = portrait_img.size
-        target_aspect = portrait_area_width / portrait_area_height
-        source_aspect = portrait_width / portrait_height
-        logger.info(f"[导出角色卡] 立绘原始尺寸: {portrait_width}x{portrait_height}, 目标比例: {target_aspect:.2f}, 源比例: {source_aspect:.2f}")
-
-        if source_aspect > target_aspect:
-            # 源更宽，以高度为准
-            new_height = portrait_area_height
-            new_width = int(new_height * source_aspect)
-        else:
-            # 源更高，以宽度为准
-            new_width = portrait_area_width
-            new_height = int(new_width / source_aspect)
-
-        # 调整立绘大小
-        portrait_resized = portrait_img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-        logger.info(f"[导出角色卡] 立绘调整后尺寸: {new_width}x{new_height}")
-
-        # 计算居中位置
-        paste_x = portrait_area_x + (portrait_area_width - new_width) // 2
-        paste_y = portrait_area_y + (portrait_area_height - new_height) // 2
-        logger.info(f"[导出角色卡] 立绘粘贴位置: ({paste_x}, {paste_y})")
-
-        # 粘贴立绘（使用alpha通道）
-        card_img.paste(portrait_resized, (paste_x, paste_y), portrait_resized)
-        logger.info("[导出角色卡] 立绘粘贴完成")
-
-        # 转换为RGB模式（PNG不支持RGBA的某些特性）
-        final_img = Image.new('RGB', (width, height), color='#E8F4F8')
-        final_img.paste(card_img, (0, 0), card_img)
-
-        # 5. 保存PNG图片
-        png_path = temp_path / 'character_card.png'
-        final_img.save(png_path, 'PNG')
 
         # 6. 将压缩包数据嵌入 PNG 的 neKo 块（合法 PNG chunk，Electron 可正常预览）
         with open(png_path, 'rb') as f:
@@ -4535,4 +4570,4 @@ async def export_catgirl_with_portrait(
         return JSONResponse({'success': False, 'error': f'导出失败: {str(e)}'}, status_code=500)
     finally:
         if temp_dir and os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir, ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)

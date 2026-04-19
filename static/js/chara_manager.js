@@ -465,7 +465,7 @@ const RESERVED_ROUTE_NAMES = new Set([
     'l2d', 'model_manager', 'live2d_parameter_editor', 'live2d_emotion_manager',
     'vrm_emotion_manager', 'mmd_emotion_manager', 'chara_manager', 'voice_clone',
     'api_key', 'steam_workshop_manager', 'memory_browser', 'cookies_login',
-    'chat', 'subtitle', 'agenthud', 'toast',
+    'chat', 'subtitle', 'agenthud', 'toast', 'card_export',
     'static', 'user_live2d', 'user_live2d_local', 'user_vrm', 'user_mmd',
     'user_mods', 'workshop',
     'api', 'ws', 'health',
@@ -1502,9 +1502,6 @@ function renderCatgirls() {
         exportBtn.style.background = '#40C5F1';
         exportBtn.style.minWidth = '120px';
         exportBtn.style.marginRight = '8px';
-        if (!isCurrentCatgirl) {
-            exportBtn.style.display = 'none';
-        }
         const exportIconSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;margin-right:4px;vertical-align:middle;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
         const exportText = (window.t && typeof window.t === 'function') ? `${exportIconSvg}<span data-i18n="character.exportCard">${window.t('character.exportCard')}</span>` : `${exportIconSvg}导出角色卡`;
         exportBtn.innerHTML = exportText;
@@ -3383,11 +3380,7 @@ function updateSwitchButtons() {
 
                 const exportBtn = document.getElementById(`export-btn-${name}`);
                 if (exportBtn) {
-                    if (name === currentCatgirl) {
-                        exportBtn.style.display = '';
-                    } else {
-                        exportBtn.style.display = 'none';
-                    }
+                    exportBtn.style.display = '';
                 }
 
                 const hideBtn = block ? block.querySelector('.catgirl-hide') : null;
@@ -3983,13 +3976,24 @@ function showExportOptionsModal(catgirlName) {
         };
         footer.appendChild(settingsBtn);
 
-        // 导出角色卡按钮
+        // 导出角色卡按钮（打开独立导出页面弹窗）
         const exportBtn = document.createElement('button');
         exportBtn.className = 'modal-btn modal-btn-primary';
         exportBtn.textContent = window.t ? window.t('character.exportFull') : '导出角色卡';
         exportBtn.onclick = () => {
             closeModal();
-            resolve('full');
+            resolve(null);  // 不走原有流程
+            const w = 1400, h = 820;
+            const left = Math.round((screen.width - w) / 2);
+            const top = Math.round((screen.height - h) / 2);
+            const win = window.open(
+                `/card_export?name=${encodeURIComponent(catgirlName)}`,
+                'card_export',
+                `width=${w},height=${h},left=${left},top=${top},resizable=yes,scrollbars=yes`
+            );
+            if (!win) {
+                window.showAlert(window.t ? window.t('cardExport.popupBlocked') : '弹窗被阻止，请允许弹窗后重试');
+            }
         };
         footer.appendChild(exportBtn);
 
@@ -4014,119 +4018,26 @@ function showExportOptionsModal(catgirlName) {
     });
 }
 
-// 导出角色卡函数
+// 导出角色卡函数（现在仅处理"仅导出设定"，完整角色卡通过 card_export 页面导出）
 async function exportCharacterCard(catgirlName) {
-    let exportType = null; // 声明在函数顶部，以便在 catch 块中访问
+    let exportType = null;
     try {
         // 显示导出选项弹窗
         exportType = await showExportOptionsModal(catgirlName);
         if (!exportType) {
-            return; // 用户取消
+            return; // 用户取消或选择了"导出角色卡"（已由弹窗打开独立页面）
         }
 
-        // 显示加载提示
-        const loadingText = exportType === 'settings-only'
-            ? (window.t ? window.t('character.exportingSettings') : '正在导出设定...')
-            : (window.t ? window.t('character.exportingCard') : '正在导出角色卡...');
+        // 仅导出设定
+        const loadingText = window.t ? window.t('character.exportingSettings') : '正在导出设定...';
         showPersistentAutoSaveToast();
         if (autoSaveToastElement) {
             autoSaveToastElement.querySelector('span').textContent = loadingText;
         }
 
-        let response;
-
-        if (exportType === 'full') {
-            // 导出完整角色卡（包含立绘）
-            // 1. 首先捕获立绘
-            let portraitBlob = null;
-            let portraitCaptured = false;
-
-            // 检查是否支持立绘捕获
-            // 角色管理页面本身不渲染模型，需要通过 window.opener 访问主页面的 avatarPortrait
-            const mainWindow = window.opener || window.parent;
-            const portraitApi = (mainWindow && typeof mainWindow.avatarPortrait !== 'undefined' && mainWindow.avatarPortrait.capture)
-                ? mainWindow.avatarPortrait
-                : null;
-
-            console.log('[角色卡导出] 检查立绘捕获支持:', {
-                hasOpener: !!window.opener,
-                hasParent: !!(window.parent && window.parent !== window),
-                mainWindowExists: !!mainWindow,
-                avatarPortraitExists: !!(mainWindow && typeof mainWindow.avatarPortrait !== 'undefined'),
-                canCapture: portraitApi ? portraitApi.canCapture() : false
-            });
-
-            if (portraitApi && portraitApi.canCapture()) {
-                try {
-                    // 更新加载提示
-                    if (autoSaveToastElement) {
-                        autoSaveToastElement.querySelector('span').textContent = window.t
-                            ? window.t('character.capturingPortrait') || '正在捕获立绘...'
-                            : '正在捕获立绘...';
-                    }
-
-                    console.log('[角色卡导出] 开始捕获立绘...');
-
-                    // 捕获立绘 - 使用 3:4 比例（450x600），立绘模式
-                    const portraitResult = await portraitApi.capture({
-                        width: 450,
-                        height: 600,
-                        includeBlob: true,
-                        mimeType: 'image/png',
-                        cropMode: 'portrait'  // 使用立绘模式（全身）而非头像模式
-                    });
-
-                    console.log('[角色卡导出] 立绘捕获结果:', {
-                        hasResult: !!portraitResult,
-                        hasBlob: !!(portraitResult && portraitResult.blob),
-                        hasCanvas: !!(portraitResult && portraitResult.canvas),
-                        modelType: portraitResult?.modelType
-                    });
-
-                    if (portraitResult && portraitResult.blob) {
-                        portraitBlob = portraitResult.blob;
-                        portraitCaptured = true;
-                        console.log('[角色卡导出] 立绘捕获成功，blob大小:', portraitBlob.size);
-                    } else {
-                        console.warn('[角色卡导出] 立绘捕获成功但没有返回blob');
-                    }
-                } catch (captureError) {
-                    console.warn('[角色卡导出] 立绘捕获失败，将使用无立绘的角色卡:', captureError);
-                }
-            } else {
-                console.log('[角色卡导出] 当前页面不支持立绘捕获，将使用无立绘的角色卡');
-            }
-
-            // 2. 根据是否捕获到立绘选择API端点
-            if (portraitCaptured && portraitBlob) {
-                // 使用带立绘的导出API
-                const formData = new FormData();
-                formData.append('portrait', portraitBlob, 'portrait.png');
-                formData.append('include_model', 'true');
-
-                // 更新加载提示
-                    if (autoSaveToastElement) {
-                        autoSaveToastElement.querySelector('span').textContent = window.t
-                            ? window.t('character.generatingCard') || '正在生成角色卡...'
-                            : '正在生成角色卡...';
-                    }
-
-                response = await fetch(`/api/characters/catgirl/${encodeURIComponent(catgirlName)}/export-with-portrait`, {
-                    method: 'POST',
-                    body: formData
-                });
-            } else {
-                // 使用无立绘的导出API（原有API）
-                response = await fetch(`/api/characters/catgirl/${encodeURIComponent(catgirlName)}/export`, {
-                    method: 'GET'
-                });
-            }
-        } else {
-            // 仅导出设定
-            response = await fetch(`/api/characters/catgirl/${encodeURIComponent(catgirlName)}/export-settings`, {
-                method: 'GET'
-            });
-        }
+        const response = await fetch(`/api/characters/catgirl/${encodeURIComponent(catgirlName)}/export-settings`, {
+            method: 'GET'
+        });
 
         if (!response.ok) {
             const errorData = await response.json().catch(() => ({ error: '导出失败' }));
@@ -4138,9 +4049,7 @@ async function exportCharacterCard(catgirlName) {
 
         // 从 Content-Disposition 头解析文件名
         const contentDisposition = response.headers.get('Content-Disposition');
-        let filename = exportType === 'settings-only'
-            ? `${catgirlName}_设定.nekocfg`
-            : `${catgirlName}_角色卡.png`;
+        let filename = `${catgirlName}_设定.nekocfg`;
 
         if (contentDisposition) {
             const filenameStarMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
@@ -4163,12 +4072,9 @@ async function exportCharacterCard(catgirlName) {
             if ('showSaveFilePicker' in window) {
                 const fileHandle = await window.showSaveFilePicker({
                     suggestedName: filename,
-                    types: exportType === 'settings-only' ? [{
+                    types: [{
                         description: 'NEKO 设定文件',
                         accept: { 'application/octet-stream': ['.nekocfg'] }
-                    }] : [{
-                        description: 'PNG 图片',
-                        accept: { 'image/png': ['.png'] }
                     }]
                 });
 
@@ -4204,21 +4110,11 @@ async function exportCharacterCard(catgirlName) {
         }
 
         // 显示成功提示
-        const successText = exportType === 'settings-only'
-            ? (window.t ? window.t('character.exportSettingsSuccess') : '设定导出成功')
-            : (window.t ? window.t('character.exportCardSuccess') : '角色卡导出成功');
-
+        const successText = window.t ? window.t('character.exportSettingsSuccess') : '设定导出成功';
         showAutoSaveToast(false, successText);
     } catch (error) {
         console.error('导出角色卡失败:', error);
-        let errorText;
-        if (exportType === 'settings-only') {
-            errorText = window.t ? window.t('character.exportSettingsFailed', { error: error.message }) : `导出设定失败: ${error.message}`;
-        } else if (exportType === 'full') {
-            errorText = window.t ? window.t('character.exportCardFailed', { error: error.message }) : `导出角色卡失败: ${error.message}`;
-        } else {
-            errorText = window.t ? window.t('character.exportCardFailed', { error: error.message }) : `导出失败: ${error.message}`;
-        }
+        const errorText = window.t ? window.t('character.exportSettingsFailed', { error: error.message }) : `导出设定失败: ${error.message}`;
         await showAlert(errorText);
         hideAutoSaveToast();
     }
