@@ -42,6 +42,25 @@
         "toneMappingAgX": "AgX",
         "toneMappingNeutral": "Neutral"
     },
+    "autostartPrompt": {
+        "title": "N.E.K.O를 시작 시 자동 실행할까요?",
+        "message": "다음에 컴퓨터를 켜면 N.E.K.O가 자동으로 준비되어 직접 실행하지 않아도 됩니다.",
+        "note": "현재 사용자에게만 적용되며 나중에 언제든지 끌 수 있습니다.",
+        "startNow": "자동 실행 켜기",
+        "later": "나중에",
+        "never": "다시 묻지 않기",
+        "enableFailed": "지금은 시작 시 자동 실행을 켤 수 없습니다. 잠시 후 다시 시도해 주세요.",
+        "requiresApproval": "먼저 시스템 설정에서 자동 실행을 승인해야 합니다. 승인 후 적용됩니다."
+    },
+    "tutorialPrompt": {
+        "title": "홈 튜토리얼을 시작할까요?",
+        "message": "홈 화면의 핵심 진입점을 빠르게 안내해 드려 N.E.K.O를 가장 짧은 경로로 시작할 수 있게 도와드릴게요.",
+        "note": "진행 중 언제든지 건너뛸 수 있고, 나중에 메모리 브라우저에서 다시 열 수도 있습니다.",
+        "startNow": "튜토리얼 시작",
+        "later": "나중에",
+        "never": "다시 묻지 않기",
+        "startFailed": "지금은 튜토리얼을 시작할 수 없습니다. 잠시 후 다시 시도해 주세요."
+    },
     "characterProfile": {
         "gender": "성별",
         "age": "나이",
@@ -517,6 +536,7 @@
         "RESPONSE_TIMEOUT": "💥 연결 시간 초과 (Response timeout), 음성 대화가 중단되었습니다.",
         "CONNECTION_TIMEOUT": "💥 연결 시간 초과. 네트워크 연결을 확인하세요.",
         "RESPONSE_TOO_LONG": "응답이 너무 길어 출력이 폐기되었습니다 (설정에서 TEXT_GUARD_MAX_LENGTH를 늘릴 수 있습니다)",
+        "INPUT_TOO_LONG": "입력이 너무 깁니다. 줄여서 다시 시도해 주세요",
         "RESPONSE_INVALID": "AI 응답이 요구사항을 충족하지 않아 출력이 폐기되었습니다",
         "NO_USER_MESSAGE": "⚠️ 대화 기록에 사용자 메시지가 없어 응답을 생성할 수 없습니다",
         "LLM_RETRY": "⚠️ LLM {{error_type}}, 재시도 중 ({{attempt}}/{{max_retries}})...",
@@ -566,6 +586,8 @@
         "tooltip": "채팅 영역",
         "textInputPlaceholder": "보내려면 Enter를 누르고, 줄을 바꾸려면 Shift+Enter를 누르세요.",
         "send": "보내기",
+        "inputTooLong": "메시지가 너무 깁니다 ({{count}}/{{max}}). 줄여서 다시 시도해 주세요",
+        "responseTooLong": "주인님이 너무 많이 생각하게 해서 머리가 따라가지 못해요냥!",
         "importImage": "이미지 가져오기",
         "importImageAriaLabel": "이미지 가져오기",
         "screenshot": "스크린샷",

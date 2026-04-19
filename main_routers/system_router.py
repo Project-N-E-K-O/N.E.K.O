@@ -16,10 +16,12 @@ import base64
 import difflib
 import math
 import re
+import secrets
 import time
 from collections import deque
 from io import BytesIO
-from urllib.parse import unquote
+from typing import Any
+from urllib.parse import unquote, urlsplit
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
@@ -31,7 +33,12 @@ from cachetools import TTLCache
 
 from .shared_state import get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
 from main_logic.omni_realtime_client import OmniRealtimeClient
-from config import MEMORY_SERVER_PORT
+from config import (
+    AUTOSTART_ALLOWED_ORIGINS,
+    AUTOSTART_CSRF_TOKEN,
+    MEMORY_SERVER_PORT,
+    get_extra_body,
+)
 from config.prompts_sys import _loc
 from config.prompts_emotion import get_outward_emotion_analysis_prompt
 from config.prompts_memory import PROACTIVE_FOLLOWUP_HEADER
@@ -72,9 +79,120 @@ from utils.web_scraper import (
 from utils.music_crawlers import fetch_music_content
 from utils.meme_fetcher import fetch_meme_content, MEME_ALLOWED_HOSTS
 from utils.logger_config import get_module_logger
+from utils.autostart_prompt_state import (
+    get_autostart_prompt_state_response,
+    process_autostart_prompt_heartbeat,
+    record_autostart_prompt_shown,
+    record_autostart_prompt_decision,
+)
+from utils.tutorial_prompt_state import (
+    get_tutorial_prompt_state_response,
+    process_tutorial_prompt_heartbeat,
+    record_tutorial_prompt_shown,
+    record_tutorial_prompt_decision,
+    record_tutorial_started,
+    record_tutorial_completed,
+)
 
 router = APIRouter(prefix="/api", tags=["system"])
 logger = get_module_logger(__name__, "Main")
+_AUTOSTART_CSRF_HEADER = "X-CSRF-Token"
+
+
+def _build_public_error_response(
+    *,
+    error_code: str,
+    status_code: int,
+    result: dict | None = None,
+    defaults: dict | None = None,
+):
+    public_messages = {
+        "status_failed": "Failed to read autostart status",
+        "enable_failed": "Failed to enable autostart",
+        "disable_failed": "Failed to disable autostart",
+        "unsupported_platform": "Autostart is not supported on this platform",
+        "launch_command_unavailable": "Autostart launch command is unavailable",
+        "csrf_validation_failed": "Request could not be verified",
+    }
+
+    content = {}
+    if defaults:
+        content.update(defaults)
+    if result:
+        content.update(result)
+
+    content["ok"] = False
+    content["error_code"] = error_code
+    content["error"] = public_messages.get(error_code, "Operation failed")
+    return JSONResponse(status_code=status_code, content=content)
+
+
+def _normalize_origin_value(raw_value: str | None) -> str:
+    if not raw_value:
+        return ""
+
+    try:
+        parsed = urlsplit(raw_value.strip())
+    except ValueError:
+        return ""
+
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+
+    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}".rstrip("/")
+
+
+def _get_request_origin(request: Request) -> str:
+    origin = _normalize_origin_value(request.headers.get("origin"))
+    if origin:
+        return origin
+    return _normalize_origin_value(request.headers.get("referer"))
+
+
+def _get_allowed_local_origins(request: Request) -> set[str]:
+    allowed_origins = {
+        normalized_origin
+        for origin in AUTOSTART_ALLOWED_ORIGINS
+        if isinstance(origin, str)
+        if (normalized_origin := _normalize_origin_value(origin))
+    }
+    request_origin = _normalize_origin_value(str(request.base_url))
+    if request_origin:
+        allowed_origins.add(request_origin)
+    return allowed_origins
+
+
+def _validate_local_mutation_request(
+    request: Request,
+    *,
+    error_defaults: dict[str, Any] | None = None,
+) -> JSONResponse | None:
+    csrf_token = request.headers.get(_AUTOSTART_CSRF_HEADER, "")
+    has_valid_csrf = bool(
+        csrf_token
+        and AUTOSTART_CSRF_TOKEN
+        and secrets.compare_digest(csrf_token, AUTOSTART_CSRF_TOKEN)
+    )
+    request_origin = _get_request_origin(request)
+    allowed_origins = _get_allowed_local_origins(request)
+    has_valid_origin = bool(request_origin and request_origin in allowed_origins)
+
+    if has_valid_csrf and has_valid_origin:
+        return None
+
+    logger.warning(
+        "Rejected local mutation request due to failed CSRF/origin validation: "
+        "origin=%r allowed_origins=%r has_csrf=%s referer=%r",
+        request_origin,
+        sorted(allowed_origins),
+        has_valid_csrf,
+        request.headers.get("referer"),
+    )
+    return _build_public_error_response(
+        error_code="csrf_validation_failed",
+        status_code=403,
+        defaults=error_defaults,
+    )
 
 
 async def _safe_fire_proactive_done(scope: dict) -> None:
@@ -535,6 +653,154 @@ async def ack_pending_notices(request: Request):
         cursor = 0
     drain_prominent_notices(cursor)
     return {"ok": True}
+
+
+@router.get("/tutorial-prompt/state")
+async def get_tutorial_prompt_state():
+    """返回新手引导提示状态快照。"""
+    return get_tutorial_prompt_state_response(config_manager=get_config_manager())
+
+
+@router.post("/tutorial-prompt/heartbeat")
+async def post_tutorial_prompt_heartbeat(request: Request):
+    """记录主页空闲与互动状态，并判断是否需要提示新手引导。"""
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    return process_tutorial_prompt_heartbeat(payload, config_manager=get_config_manager())
+
+
+@router.post("/tutorial-prompt/shown")
+async def post_tutorial_prompt_shown(request: Request):
+    """记录新手引导提示已实际展示给用户。"""
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    try:
+        return record_tutorial_prompt_shown(payload, config_manager=get_config_manager())
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+
+
+@router.post("/tutorial-prompt/decision")
+async def post_tutorial_prompt_decision(request: Request):
+    """记录用户对新手引导提示的选择。"""
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    try:
+        return record_tutorial_prompt_decision(payload, config_manager=get_config_manager())
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+
+
+@router.get("/autostart-prompt/state")
+async def get_autostart_prompt_state():
+    """返回开机自启动提示状态快照。"""
+    return get_autostart_prompt_state_response(config_manager=get_config_manager())
+
+
+@router.post("/autostart-prompt/heartbeat")
+async def post_autostart_prompt_heartbeat(request: Request):
+    """记录主页空闲与互动状态，并判断是否需要提示开机自启动。"""
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    return process_autostart_prompt_heartbeat(payload, config_manager=get_config_manager())
+
+
+@router.post("/autostart-prompt/shown")
+async def post_autostart_prompt_shown(request: Request):
+    """记录开机自启动提示已实际展示给用户。"""
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    try:
+        return record_autostart_prompt_shown(payload, config_manager=get_config_manager())
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+
+
+@router.post("/autostart-prompt/decision")
+async def post_autostart_prompt_decision(request: Request):
+    """记录用户对开机自启动提示的选择。"""
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    try:
+        return record_autostart_prompt_decision(payload, config_manager=get_config_manager())
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+
+
+@router.post("/tutorial-prompt/tutorial-started")
+async def post_tutorial_started(request: Request):
+    """记录主页新手引导已实际开始。"""
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    try:
+        return record_tutorial_started(payload, config_manager=get_config_manager())
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+
+
+@router.post("/tutorial-prompt/tutorial-completed")
+async def post_tutorial_completed(request: Request):
+    """记录主页新手引导已完成。"""
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    try:
+        return record_tutorial_completed(payload, config_manager=get_config_manager())
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
 
 
 # --- 版本更新日志 ---

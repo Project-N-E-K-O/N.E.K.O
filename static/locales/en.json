@@ -42,6 +42,25 @@
         "toneMappingAgX": "AgX",
         "toneMappingNeutral": "Neutral"
     },
+    "autostartPrompt": {
+        "title": "Want N.E.K.O to launch at startup?",
+        "message": "It will be ready automatically the next time you turn on your computer, so you won't need to launch it manually.",
+        "note": "This only enables launch at login for the current user, and you can turn it off later.",
+        "startNow": "Enable auto launch",
+        "later": "Maybe later",
+        "never": "Don't remind me",
+        "enableFailed": "Auto launch couldn't be enabled right now. Please try again later.",
+        "requiresApproval": "Approve auto launch in your system settings first. It will take effect after approval."
+    },
+    "tutorialPrompt": {
+        "title": "Want to start the home tutorial?",
+        "message": "I can quickly show you the main entry points on the home screen so you can get started with N.E.K.O right away.",
+        "note": "You can skip it at any time, or reopen it later from Memory Browser.",
+        "startNow": "Start tutorial",
+        "later": "Maybe later",
+        "never": "Don't remind me",
+        "startFailed": "The tutorial couldn't be started right now. Please try again later."
+    },
     "characterProfile": {
         "gender": "Gender",
         "age": "Age",
@@ -517,6 +536,7 @@
         "RESPONSE_TIMEOUT": "💥 Connection timeout (Response timeout), voice conversation interrupted.",
         "CONNECTION_TIMEOUT": "💥 Connection timeout. Please check your network connection.",
         "RESPONSE_TOO_LONG": "Response too long, output discarded (you can increase TEXT_GUARD_MAX_LENGTH in settings)",
+        "INPUT_TOO_LONG": "Input too long, please shorten and retry",
         "RESPONSE_INVALID": "AI response did not meet requirements, output discarded",
         "NO_USER_MESSAGE": "⚠️ No user message in conversation history, cannot generate response",
         "LLM_RETRY": "⚠️ LLM {{error_type}}, retrying ({{attempt}}/{{max_retries}})...",
@@ -566,6 +586,8 @@
         "tooltip": "Chat Area",
         "textInputPlaceholder": "Press Enter to send, Shift+Enter for new line",
         "send": "Send",
+        "inputTooLong": "Message too long ({{count}}/{{max}}), please shorten and retry",
+        "responseTooLong": "Response too long and was discarded; your input has been restored.",
         "importImage": "Import Image",
         "importImageAriaLabel": "Import image",
         "screenshot": "Screenshot",

@@ -42,6 +42,25 @@
         "toneMappingAgX": "AgX",
         "toneMappingNeutral": "Neutral"
     },
+    "autostartPrompt": {
+        "title": "N.E.K.O を起動時に自動起動しますか？",
+        "message": "次回パソコンを起動したときに N.E.K.O が自動で準備されるので、手動で起動する手間がなくなります。",
+        "note": "現在のユーザーに対してのみ有効になり、後からいつでもオフにできます。",
+        "startNow": "自動起動を有効にする",
+        "later": "あとで",
+        "never": "今後は表示しない",
+        "enableFailed": "今は自動起動を有効にできませんでした。しばらくしてからもう一度お試しください。",
+        "requiresApproval": "先にシステム設定で自動起動を許可してください。許可後に有効になります。"
+    },
+    "tutorialPrompt": {
+        "title": "ホームのチュートリアルを始めますか？",
+        "message": "ホーム画面の主要な入口をすばやく案内して、最短で N.E.K.O を使い始められるようにします。",
+        "note": "途中でいつでもスキップでき、あとからメモリブラウザから再度開くこともできます。",
+        "startNow": "チュートリアルを開始",
+        "later": "あとで",
+        "never": "今後は表示しない",
+        "startFailed": "今はチュートリアルを開始できません。しばらくしてからもう一度お試しください。"
+    },
     "characterProfile": {
         "gender": "性別",
         "age": "年齢",
@@ -517,6 +536,7 @@
         "RESPONSE_TIMEOUT": "💥 接続タイムアウト (Response timeout)、音声会話が中断されました。",
         "CONNECTION_TIMEOUT": "💥 接続タイムアウト。ネットワーク接続を確認してください。",
         "RESPONSE_TOO_LONG": "回答が長すぎるため、出力を破棄しました（設定で TEXT_GUARD_MAX_LENGTH を増やすことができます）",
+        "INPUT_TOO_LONG": "入力が長すぎます。短くしてから再試行してください",
         "RESPONSE_INVALID": "AIの回答が要件を満たしていないため、出力を破棄しました",
         "NO_USER_MESSAGE": "⚠️ 会話履歴にユーザーメッセージがないため、応答を生成できません",
         "LLM_RETRY": "⚠️ LLM {{error_type}}、リトライ中（{{attempt}}/{{max_retries}}）...",
@@ -566,6 +586,8 @@
         "tooltip": "チャットエリア",
         "textInputPlaceholder": "Enterで送信、Shift+Enterで改行",
         "send": "送信",
+        "inputTooLong": "メッセージが長すぎます（{{count}}/{{max}}）。短くしてから再試行してください",
+        "responseTooLong": "ご主人様、考えすぎちゃってもう頭が追いつかないにゃ～！",
         "importImage": "画像を取り込む",
         "importImageAriaLabel": "画像を取り込む",
         "screenshot": "スクリーンショット",
