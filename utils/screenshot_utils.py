@@ -302,16 +302,7 @@ async def analyze_screenshot_from_data_url(data_url: str, window_title: str = ''
 # Avatar annotation overlay — 在截图上叠加 Avatar 文字注解
 # ============================================================================
 
-# i18n translations for the avatar annotation text (3 lines)
-_AVATAR_ANNOTATION_I18N: Dict[str, tuple] = {
-    'zh':    ('这是{name}在桌面上的虚拟形象,', '请{name}不要主动提及', '请{name}不要主动提及'),
-    'zh-CN': ('这是{name}在桌面上的虚拟形象,', '请{name}不要主动提及', '请{name}不要主动提及'),
-    'zh-TW': ('這是{name}在桌面上的虛擬形象,', '請{name}不要主動提及', '請{name}不要主動提及'),
-    'en':    ("This is {name}'s virtual avatar on the desktop,", "Please don't mention it, {name}", "Please don't mention it, {name}"),
-    'ja':    ('これはデスクトップ上の{name}の仮想アバターです,', '{name}は自分から言及しないでください', '{name}は自分から言及しないでください'),
-    'ko':    ('이것은 바탕화면의 {name} 가상 아바타입니다,', '{name}은(는) 스스로 언급하지 마세요', '{name}은(는) 스스로 언급하지 마세요'),
-    'ru':    ('Это виртуальный аватар {name} на рабочем столе,', 'Пожалуйста, {name}, не упоминай это', 'Пожалуйста, {name}, не упоминай это'),
-}
+from config.prompts_sys import AVATAR_ANNOTATION_TEXT as _AVATAR_ANNOTATION_I18N
 
 # Lazy-loaded CJK font cache
 _avatar_font_cache: Dict[int, ImageFont.FreeTypeFont] = {}
