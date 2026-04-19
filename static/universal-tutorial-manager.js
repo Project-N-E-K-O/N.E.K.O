@@ -108,6 +108,8 @@ class UniversalTutorialManager {
      */
     startTutorialWhenI18nReady(delayMs = 0) {
         if (this.isTutorialRunning || window.isInTutorial) {
+            // 已在引导中：消耗掉本次启动意图，避免遗留到下次刷新
+            this.consumeTutorialStartSource();
             return;
         }
 
@@ -1839,6 +1841,10 @@ class UniversalTutorialManager {
         }
 
         try {
+            // 在 early-return 之前先消耗 pendingTutorialStartSource 和 manual_intent
+            // localStorage 标记，避免页面无步骤/无有效步骤时把用户的"启动"意图遗留到下次。
+            this.currentTutorialStartSource = this.consumeTutorialStartSource();
+
             const steps = this.getStepsForPage();
 
             if (steps.length === 0) {
@@ -1873,8 +1879,6 @@ class UniversalTutorialManager {
                 console.warn('[Tutorial] 没有有效的引导步骤');
                 return;
             }
-
-            this.currentTutorialStartSource = this.consumeTutorialStartSource();
 
             // 标记引导正在运行
             this.isTutorialRunning = true;
@@ -2982,11 +2986,6 @@ class UniversalTutorialManager {
             page: this.currentPage,
             source: completedSource
         });
-        console.log('[Tutorial] onTutorialEnd 写入存储键:', storageKey, '当前页面:', this.currentPage);
-        if (storageKey.includes('model_manager')) {
-            console.trace('[Tutorial] model_manager 存储键写入调用栈');
-        }
-
         console.log('[Tutorial] 引导已完成，页面:', this.currentPage);
     }
 
