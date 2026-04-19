@@ -11,7 +11,9 @@
         class="stat-card"
         :class="`stat-card--${stat.key}`"
       >
-        <div class="stat-card__icon">{{ stat.icon }}</div>
+        <div class="stat-card__icon">
+          <el-icon :size="24"><component :is="stat.icon" /></el-icon>
+        </div>
         <div class="stat-card__body">
           <span class="stat-card__value">{{ stat.value }}</span>
           <span class="stat-card__label">{{ stat.label }}</span>
@@ -31,7 +33,7 @@
         <div class="panel__header">
           <span class="panel__title">{{ $t('dashboard.globalMetrics') }}</span>
           <button class="panel__action" :disabled="metricsLoading" @click="handleRefreshMetrics">
-            <span :class="{ 'spin': metricsLoading }">↻</span>
+            <el-icon :class="{ 'spin': metricsLoading }"><Refresh /></el-icon>
           </button>
         </div>
 
@@ -67,13 +69,13 @@
           </div>
 
           <div class="metric-mini">
-            <span class="metric-mini__icon">🧵</span>
+            <el-icon :size="20" class="metric-mini__icon"><Connection /></el-icon>
             <span class="metric-mini__value">{{ globalMetrics.total_threads }}</span>
             <span class="metric-mini__label">{{ $t('dashboard.totalThreads') }}</span>
           </div>
 
           <div class="metric-mini">
-            <span class="metric-mini__icon">⚡</span>
+            <el-icon :size="20" class="metric-mini__icon"><Lightning /></el-icon>
             <span class="metric-mini__value">{{ globalMetrics.active_plugins }}</span>
             <span class="metric-mini__label">{{ $t('dashboard.activePlugins') }}</span>
           </div>
@@ -96,7 +98,7 @@
         </div>
 
         <div v-if="serverInfoLoading" class="panel__loading">
-          <span class="spin">↻</span>
+          <el-icon class="spin"><Refresh /></el-icon>
           <span>{{ $t('common.loading') }}</span>
         </div>
 
@@ -131,6 +133,7 @@ import { useMetricsStore } from '@/stores/metrics'
 import { getServerInfo } from '@/api/plugins'
 import { PluginStatus, METRICS_REFRESH_INTERVAL } from '@/utils/constants'
 import type { ServerInfo, GlobalMetrics } from '@/types/api'
+import { Box, VideoPlay, CloseBold, WarningFilled, Connection, Lightning, Refresh } from '@element-plus/icons-vue'
 import dayjs from 'dayjs'
 
 const { t } = useI18n()
@@ -152,10 +155,10 @@ const stoppedCount = computed(() => pluginStore.pluginsWithStatus.filter((p) => 
 const crashedCount = computed(() => pluginStore.pluginsWithStatus.filter((p) => p.status === PluginStatus.CRASHED).length)
 
 const statCards = computed(() => [
-  { key: 'total', icon: '📦', value: totalPlugins.value, label: t('dashboard.totalPlugins') },
-  { key: 'running', icon: '🟢', value: runningCount.value, label: t('dashboard.running') },
-  { key: 'stopped', icon: '⏸️', value: stoppedCount.value, label: t('dashboard.stopped') },
-  { key: 'crashed', icon: '🔴', value: crashedCount.value, label: t('dashboard.crashed') },
+  { key: 'total', icon: Box, value: totalPlugins.value, label: t('dashboard.totalPlugins') },
+  { key: 'running', icon: VideoPlay, value: runningCount.value, label: t('dashboard.running') },
+  { key: 'stopped', icon: CloseBold, value: stoppedCount.value, label: t('dashboard.stopped') },
+  { key: 'crashed', icon: WarningFilled, value: crashedCount.value, label: t('dashboard.crashed') },
 ])
 
 // ── Gauge math ────────────────────────────────────────────────────────
@@ -291,10 +294,19 @@ onUnmounted(() => {
 }
 
 .stat-card__icon {
-  font-size: 28px;
-  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
   flex-shrink: 0;
+  color: var(--el-color-primary);
 }
+
+.stat-card--running .stat-card__icon { color: var(--el-color-success); }
+.stat-card--stopped .stat-card__icon { color: var(--el-color-info); }
+.stat-card--crashed .stat-card__icon { color: var(--el-color-danger); }
 
 .stat-card__body {
   display: flex;
@@ -508,8 +520,7 @@ onUnmounted(() => {
 }
 
 .metric-mini__icon {
-  font-size: 18px;
-  line-height: 1;
+  color: var(--el-text-color-secondary);
 }
 
 .metric-mini__value {

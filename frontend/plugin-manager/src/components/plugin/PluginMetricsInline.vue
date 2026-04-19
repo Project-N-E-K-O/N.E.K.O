@@ -11,27 +11,27 @@
     <div v-if="shouldShow" class="metrics-bar">
       <div class="metrics-bar__cells">
         <div class="metrics-cell">
-          <span class="metrics-cell__icon">⚡</span>
+          <el-icon class="metrics-cell__icon" :size="13"><Lightning /></el-icon>
           <span class="metrics-cell__value">{{ cpuDisplay }}</span>
           <span class="metrics-cell__label">CPU</span>
         </div>
         <div class="metrics-cell">
-          <span class="metrics-cell__icon">💾</span>
+          <el-icon class="metrics-cell__icon" :size="13"><Coin /></el-icon>
           <span class="metrics-cell__value">{{ memDisplay }}</span>
           <span class="metrics-cell__label">{{ t('metrics.memory') }}</span>
         </div>
         <div class="metrics-cell">
-          <span class="metrics-cell__icon">🧵</span>
+          <el-icon class="metrics-cell__icon" :size="13"><Connection /></el-icon>
           <span class="metrics-cell__value">{{ metrics!.num_threads }}</span>
           <span class="metrics-cell__label">{{ t('metrics.threads') }}</span>
         </div>
         <div v-if="metrics!.pending_requests != null" class="metrics-cell">
-          <span class="metrics-cell__icon">📨</span>
+          <el-icon class="metrics-cell__icon" :size="13"><Message /></el-icon>
           <span class="metrics-cell__value">{{ metrics!.pending_requests }}</span>
           <span class="metrics-cell__label">{{ t('metrics.pendingRequests') }}</span>
         </div>
         <div v-if="metrics!.total_executions != null" class="metrics-cell">
-          <span class="metrics-cell__icon">📊</span>
+          <el-icon class="metrics-cell__icon" :size="13"><DataAnalysis /></el-icon>
           <span class="metrics-cell__value">{{ metrics!.total_executions }}</span>
           <span class="metrics-cell__label">{{ t('metrics.totalExecutions') }}</span>
         </div>
@@ -43,6 +43,7 @@
 <script setup lang="ts">
 import { computed, watch, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { Lightning, Coin, Connection, Message, DataAnalysis } from '@element-plus/icons-vue'
 import { useMetricsStore } from '@/stores/metrics'
 import type { PluginMetrics } from '@/types/api'
 
@@ -206,9 +207,8 @@ watch(() => props.pluginId, (newId) => {
 }
 
 .metrics-cell__icon {
-  font-size: 11px;
-  line-height: 1;
   flex-shrink: 0;
+  color: var(--el-text-color-secondary);
 }
 
 .metrics-cell__value {

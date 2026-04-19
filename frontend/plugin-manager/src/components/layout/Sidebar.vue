@@ -1,82 +1,79 @@
 <template>
-  <div class="sidebar">
-    <div class="sidebar-header">
-      <h2 class="sidebar-title">N.E.K.O</h2>
+  <nav class="sidebar">
+    <div class="sidebar-brand">
+      <img src="@/assets/neko-logo.png" alt="N.E.K.O" class="sidebar-brand__logo" />
+      <span class="sidebar-brand__text">N.E.K.O</span>
     </div>
-    <el-menu
-      :default-active="activeRoute"
-      router
-      class="sidebar-menu"
-      :collapse="false"
-    >
-      <el-menu-item index="/">
-        <el-icon><Odometer /></el-icon>
-        <span>{{ $t('nav.dashboard') }}</span>
-      </el-menu-item>
-      <el-menu-item index="/plugins">
-        <el-icon><Box /></el-icon>
-        <span>{{ $t('nav.plugins') }}</span>
-      </el-menu-item>
-      <el-menu-item index="/runs">
-        <el-icon><DataAnalysis /></el-icon>
-        <span>{{ $t('nav.runs') }}</span>
-      </el-menu-item>
-      <el-menu-item index="/logs/_server">
-        <el-icon><Monitor /></el-icon>
-        <span>{{ $t('nav.serverLogs') }}</span>
-      </el-menu-item>
 
-      <!-- 适配器分组 -->
-      <el-sub-menu v-if="adapters.length > 0" index="adapters">
-        <template #title>
-          <el-icon><Connection /></el-icon>
-          <span>{{ $t('nav.adapters') }}</span>
-        </template>
-        <el-menu-item
+    <div class="sidebar-nav">
+      <router-link
+        v-for="item in navItems"
+        :key="item.path"
+        :to="item.path"
+        custom
+        v-slot="{ isActive, navigate }"
+      >
+        <button
+          class="nav-item"
+          :class="{ 'nav-item--active': isActive || isRouteActive(item.path) }"
+          @click="navigate"
+        >
+          <el-icon class="nav-item__icon"><component :is="item.icon" /></el-icon>
+          <span class="nav-item__label">{{ item.label }}</span>
+        </button>
+      </router-link>
+
+      <!-- Adapters group -->
+      <template v-if="adapters.length > 0">
+        <div class="nav-divider" />
+        <span class="nav-group-label">{{ $t('nav.adapters') }}</span>
+        <router-link
           v-for="adapter in adapters"
           :key="adapter.id"
-          :index="`/adapter/${adapter.id}/ui`"
+          :to="`/adapter/${adapter.id}/ui`"
+          custom
+          v-slot="{ isActive, navigate }"
         >
-          <el-icon><Link /></el-icon>
-          <span>{{ adapter.name }}</span>
-        </el-menu-item>
-      </el-sub-menu>
-    </el-menu>
-  </div>
+          <button
+            class="nav-item nav-item--sub"
+            :class="{ 'nav-item--active': isActive }"
+            @click="navigate"
+          >
+            <el-icon class="nav-item__icon"><Link /></el-icon>
+            <span class="nav-item__label">{{ adapter.name }}</span>
+          </button>
+        </router-link>
+      </template>
+    </div>
+  </nav>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, type Component } from 'vue'
 import { useRoute } from 'vue-router'
-import { Odometer, Box, Monitor, DataAnalysis, Connection, Link } from '@element-plus/icons-vue'
+import { useI18n } from 'vue-i18n'
 import { usePluginStore } from '@/stores/plugin'
+import { Odometer, Box, VideoPlay, Monitor, Link } from '@element-plus/icons-vue'
 
 const route = useRoute()
+const { t } = useI18n()
 const pluginStore = usePluginStore()
 
-// 获取所有适配器
-const adapters = computed(() => {
-  return pluginStore.pluginsWithStatus.filter(p => p.type === 'adapter')
-})
+const adapters = computed(() => pluginStore.pluginsWithStatus.filter((p) => p.type === 'adapter'))
 
-const activeRoute = computed(() => {
-  if (route.path.startsWith('/adapter/')) {
-    return route.path
-  }
-  if (route.path.startsWith('/plugins')) {
-    return '/plugins'
-  }
-  if (route.path.startsWith('/runs')) {
-    return '/runs'
-  }
-  if (route.path.startsWith('/logs')) {
-    return '/logs/_server'
-  }
-  return route.path
-})
+const navItems = computed(() => [
+  { path: '/', icon: Odometer, label: t('nav.dashboard') },
+  { path: '/plugins', icon: Box, label: t('nav.plugins') },
+  { path: '/runs', icon: VideoPlay, label: t('nav.runs') },
+  { path: '/logs/_server', icon: Monitor, label: t('nav.serverLogs') },
+])
+
+function isRouteActive(path: string): boolean {
+  if (path === '/') return route.path === '/'
+  return route.path.startsWith(path)
+}
 
 onMounted(() => {
-  // 确保插件列表已加载
   if (pluginStore.pluginsWithStatus.length === 0) {
     pluginStore.fetchPlugins()
   }
@@ -88,24 +85,113 @@ onMounted(() => {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background-color: var(--el-bg-color);
+  padding: 14px 10px;
+  gap: 6px;
+  background: color-mix(in srgb, var(--el-bg-color) 92%, transparent);
+  backdrop-filter: blur(12px);
 }
 
-.sidebar-header {
-  padding: 20px;
-  border-bottom: 1px solid var(--el-border-color-light);
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px 16px;
 }
 
-.sidebar-title {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 600;
+.sidebar-brand__logo {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.sidebar-brand__text {
+  font-size: 17px;
+  font-weight: 800;
   color: var(--el-text-color-primary);
+  letter-spacing: 0.5px;
 }
 
-.sidebar-menu {
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   flex: 1;
-  border-right: none;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 14px;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--el-text-color-regular);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+  position: relative;
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease,
+    transform 0.18s ease,
+    box-shadow 0.2s ease;
+}
+
+.nav-item:hover {
+  background: color-mix(in srgb, var(--el-color-primary) 6%, transparent);
+  color: var(--el-color-primary);
+  transform: translateX(2px);
+}
+
+.nav-item--active {
+  background: color-mix(in srgb, var(--el-color-primary) 12%, transparent);
+  color: var(--el-color-primary);
+  font-weight: 600;
+  box-shadow: inset 3px 0 0 var(--el-color-primary);
+}
+
+.nav-item--active:hover {
+  transform: none;
+}
+
+.nav-item--sub {
+  padding-left: 22px;
+  font-size: 13px;
+}
+
+.nav-item__icon {
+  font-size: 17px;
+  flex-shrink: 0;
+  width: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: inherit;
+}
+
+.nav-item__label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nav-divider {
+  height: 1px;
+  margin: 8px 12px;
+  background: color-mix(in srgb, var(--el-border-color) 40%, transparent);
+}
+
+.nav-group-label {
+  padding: 4px 14px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--el-text-color-secondary);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 </style>
-
