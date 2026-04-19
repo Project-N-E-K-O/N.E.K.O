@@ -169,6 +169,55 @@ def test_task_executor_format_messages_marks_latest_user_request():
     assert "assistant: 已经打开了" in output
 
 
+def test_task_executor_format_messages_mentions_image_attachments():
+    from brain.task_executor import DirectTaskExecutor
+
+    executor = object.__new__(DirectTaskExecutor)
+    conversation = [
+        {
+            "role": "user",
+            "content": "帮我看看这张图哪里报错了",
+            "attachments": [{"type": "image_url", "url": "data:image/png;base64,abc"}],
+        }
+    ]
+    output = executor._format_messages(conversation)
+    assert "LATEST_USER_REQUEST: 帮我看看这张图哪里报错了 [Attached images: 1]" in output
+
+
+def test_agent_server_user_turn_fingerprint_includes_attachments():
+    source = Path("agent_server.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    fn_src = None
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "_build_user_turn_fingerprint":
+            fn_src = ast.get_source_segment(source, node)
+            break
+    assert fn_src is not None
+
+    ns = {}
+    exec("import hashlib\nfrom typing import Any, Optional\n" + fn_src, ns)
+    fingerprint = ns["_build_user_turn_fingerprint"]
+
+    text_only = fingerprint([{"role": "user", "content": "看图"}])
+    with_attachment = fingerprint([
+        {
+            "role": "user",
+            "content": "看图",
+            "attachments": [{"type": "image_url", "url": "data:image/png;base64,abc"}],
+        }
+    ])
+    image_only = fingerprint([
+        {
+            "role": "user",
+            "content": "",
+            "attachments": [{"type": "image_url", "url": "data:image/png;base64,abc"}],
+        }
+    ])
+
+    assert text_only != with_attachment
+    assert image_only is not None
+
+
 @pytest.mark.asyncio
 async def test_task_executor_routes_openclaw_as_independent_execution_method():
     from unittest.mock import AsyncMock, MagicMock, patch
@@ -186,9 +235,9 @@ async def test_task_executor_routes_openclaw_as_independent_execution_method():
     mock_openclaw.is_available.return_value = {"ready": True}
     executor.openclaw = mock_openclaw
 
-    # mock 统一渠道评估，让 LLM 选择 copaw
+    # mock 统一渠道评估，让 LLM 选择 qwenpaw
     mock_decision = UnifiedChannelDecision()
-    mock_decision.copaw = {"can_execute": True, "task_description": "搜索天气并截图", "reason": "需要浏览器操作"}
+    mock_decision.qwenpaw = {"can_execute": True, "task_description": "搜索天气并截图", "reason": "需要浏览器操作"}
 
     with patch.object(DirectTaskExecutor, "_assess_unified_channels", new_callable=AsyncMock, return_value=mock_decision):
         result = await executor.analyze_and_execute(
@@ -206,6 +255,258 @@ async def test_task_executor_routes_openclaw_as_independent_execution_method():
     assert result.execution_method == "openclaw"
     assert result.tool_args is not None
     assert "instruction" in result.tool_args
+
+
+@pytest.mark.asyncio
+async def test_task_executor_routes_openclaw_with_image_attachments():
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from brain.task_executor import DirectTaskExecutor, UnifiedChannelDecision
+
+    executor = object.__new__(DirectTaskExecutor)
+    executor.computer_use = None
+    executor.browser_use = None
+    executor.openfang = None
+    executor.plugin_list = []
+    executor._external_plugin_provider = None
+
+    mock_openclaw = MagicMock()
+    mock_openclaw.is_available.return_value = {"ready": True}
+    executor.openclaw = mock_openclaw
+
+    mock_decision = UnifiedChannelDecision()
+    mock_decision.qwenpaw = {"can_execute": True, "task_description": "分析图片并修复报错", "reason": "需要多模态能力"}
+
+    with patch.object(DirectTaskExecutor, "_assess_unified_channels", new_callable=AsyncMock, return_value=mock_decision):
+        result = await executor.analyze_and_execute(
+            [{
+                "role": "user",
+                "content": "帮我修这个报错",
+                "attachments": [{"type": "image_url", "url": "data:image/png;base64,abc"}],
+            }],
+            agent_flags={
+                "computer_use_enabled": False,
+                "browser_use_enabled": False,
+                "user_plugin_enabled": False,
+                "openclaw_enabled": True,
+                "openfang_enabled": False,
+            },
+        )
+
+    assert result is not None
+    assert result.execution_method == "openclaw"
+    assert result.tool_args is not None
+    assert result.tool_args["attachments"][0]["url"] == "data:image/png;base64,abc"
+
+
+def test_openclaw_session_mapping_is_stable_per_sender_and_resettable():
+    import threading
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    adapter = object.__new__(OpenClawAdapter)
+    adapter._session_lock = threading.Lock()
+    adapter._session_cache = {}
+    adapter._save_session_cache = lambda: None
+
+    sid_one = adapter.get_or_create_persistent_session_id(role_name="LanLan", sender_id="user_a")
+    sid_two = adapter.get_or_create_persistent_session_id(role_name="OtherRole", sender_id="user_a")
+    sid_three = adapter.get_or_create_persistent_session_id(role_name="LanLan", sender_id="user_b")
+    sid_reset = adapter.reset_persistent_session_id(role_name="LanLan", sender_id="user_a")
+
+    assert sid_one == sid_two
+    assert sid_three != sid_one
+    assert sid_reset != sid_one
+    assert adapter.get_or_create_persistent_session_id(role_name="LanLan", sender_id="user_a") == sid_reset
+
+
+def test_openclaw_responses_payload_uses_stable_session_id_for_conversation():
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    adapter = object.__new__(OpenClawAdapter)
+    payload = adapter._build_responses_payload(
+        session_id="stable-session",
+        user_id="user_a",
+        channel="console",
+        instruction="帮我看下桌面文件",
+        attachments=None,
+    )
+
+    assert payload["session_id"] == "stable-session"
+    assert payload["conversation"]["id"] == "stable-session"
+    assert payload["user_id"] == "user_a"
+    assert payload["channel"] == "console"
+
+
+def test_openclaw_process_payload_includes_channel():
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    adapter = object.__new__(OpenClawAdapter)
+    payload = adapter._build_process_payload(
+        session_id="stable-session",
+        channel="console",
+        instruction="/stop",
+        attachments=None,
+    )
+
+    assert payload["session_id"] == "stable-session"
+    assert payload["channel"] == "console"
+
+
+@pytest.mark.asyncio
+async def test_openclaw_stop_running_falls_back_to_persistent_session():
+    import threading
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    adapter = object.__new__(OpenClawAdapter)
+    adapter._session_lock = threading.Lock()
+    adapter._session_cache = {}
+    adapter._save_session_cache = lambda: None
+    adapter.default_sender_id = "user_a"
+    adapter.last_error = None
+
+    session_id = adapter.get_or_create_persistent_session_id(role_name="LanLan", sender_id="user_a")
+    result = await adapter.stop_running(sender_id="user_a", role_name="LanLan", task_id="task-1")
+
+    assert result["success"] is True
+    assert result["sender_id"] == "user_a"
+    assert result["session_id"] == session_id
+    assert result["task_id"] == "task-1"
+
+
+@pytest.mark.asyncio
+async def test_openclaw_run_magic_command_rotates_session_after_new():
+    import threading
+    from unittest.mock import AsyncMock
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    adapter = object.__new__(OpenClawAdapter)
+    adapter._session_lock = threading.Lock()
+    adapter._session_cache = {}
+    adapter._save_session_cache = lambda: None
+    adapter.default_sender_id = "user_a"
+    adapter.run_instruction = AsyncMock(return_value={"success": True, "reply": "backend ok", "raw": {"ok": True}})
+
+    initial_session = adapter.get_or_create_persistent_session_id(role_name="LanLan", sender_id="user_a")
+    result = await adapter.run_magic_command("/new", sender_id="user_a", role_name="LanLan")
+    current_session = adapter.get_or_create_persistent_session_id(role_name="LanLan", sender_id="user_a")
+
+    assert result["success"] is True
+    assert result["command"] == "/new"
+    assert result["reply"] == "好的喵！旧的话题存档啦，主人想聊点什么新鲜事？"
+    assert result["session_id"] != initial_session
+    assert current_session == result["session_id"]
+
+
+@pytest.mark.asyncio
+async def test_task_executor_magic_intent_routes_to_openclaw_before_unified_assessment():
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from brain.task_executor import DirectTaskExecutor
+
+    executor = object.__new__(DirectTaskExecutor)
+    executor.computer_use = None
+    executor.browser_use = None
+    executor.openfang = None
+    executor.plugin_list = []
+    executor._external_plugin_provider = None
+
+    mock_openclaw = MagicMock()
+    mock_openclaw.is_available.return_value = {"ready": True}
+    mock_openclaw.classify_magic_intent = AsyncMock(return_value={"is_magic_intent": True, "command": "/new", "source": "test"})
+    mock_openclaw.get_magic_command_task_description.return_value = "开启新的 QwenPaw 话题会话"
+    executor.openclaw = mock_openclaw
+
+    with patch.object(DirectTaskExecutor, "_assess_unified_channels", new_callable=AsyncMock) as mock_assess:
+        result = await executor.analyze_and_execute(
+            [{"role": "user", "content": "我们换个话题吧"}],
+            agent_flags={
+                "computer_use_enabled": False,
+                "browser_use_enabled": False,
+                "user_plugin_enabled": False,
+                "openclaw_enabled": True,
+                "openfang_enabled": False,
+            },
+        )
+
+    assert result is not None
+    assert result.execution_method == "openclaw"
+    assert result.tool_args["magic_command"] == "/new"
+    assert result.tool_args["direct_reply"] is True
+    mock_assess.assert_not_called()
+
+
+def test_agent_server_openclaw_sender_id_prefers_latest_user_identity():
+    source = Path("agent_server.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    fn_src = None
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "_resolve_openclaw_sender_id":
+            fn_src = ast.get_source_segment(source, node)
+            break
+    assert fn_src is not None
+
+    ns = {}
+    exec("from typing import Any\n" + fn_src, ns)
+    resolver = ns["_resolve_openclaw_sender_id"]
+
+    result = resolver([
+        {"role": "user", "content": "旧消息", "sender_id": "first_user"},
+        {"role": "assistant", "content": "处理中"},
+        {"role": "user", "content": "最新消息", "metadata": {"user_id": "latest_user"}},
+    ])
+
+    assert result == "latest_user"
+
+
+def test_agent_server_collects_active_openclaw_tasks_for_same_sender():
+    source = Path("agent_server.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    fn_src = None
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "_collect_active_openclaw_task_ids":
+            fn_src = ast.get_source_segment(source, node)
+            break
+    assert fn_src is not None
+
+    ns = {
+        "Optional": __import__("typing").Optional,
+        "Modules": type(
+            "Modules",
+            (),
+            {
+                "task_registry": {
+                    "openclaw-running": {
+                        "type": "openclaw",
+                        "status": "running",
+                        "sender_id": "user_a",
+                        "lanlan_name": "LanLan",
+                    },
+                    "openclaw-completed": {
+                        "type": "openclaw",
+                        "status": "completed",
+                        "sender_id": "user_a",
+                        "lanlan_name": "LanLan",
+                    },
+                    "openclaw-other-user": {
+                        "type": "openclaw",
+                        "status": "running",
+                        "sender_id": "user_b",
+                        "lanlan_name": "LanLan",
+                    },
+                    "browser-running": {
+                        "type": "browser_use",
+                        "status": "running",
+                        "sender_id": "user_a",
+                        "lanlan_name": "LanLan",
+                    },
+                }
+            },
+        ),
+    }
+    exec(fn_src, ns)
+    collector = ns["_collect_active_openclaw_task_ids"]
+
+    result = collector(sender_id="user_a", lanlan_name="LanLan", exclude_task_id="magic-stop")
+
+    assert result == ["openclaw-running"]
 
 
 def test_cross_server_analyze_request_no_http_fallback_endpoint():

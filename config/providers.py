@@ -216,6 +216,26 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
         min_cache_tokens=1024,
         cached_token_field="prompt_cache_hit_tokens",
     ),
+    "grok": CacheProviderConfig(
+        provider_id="grok",
+        name="xAI Grok",
+        base_url="https://api.x.ai/v1",
+        base_url_pattern="api.x.ai",
+        cache_mode="auto",
+        requires_header=False,
+        min_cache_tokens=1024,
+        cached_token_field="prompt_tokens_details.cached_tokens",  # 与 OpenAI 相同
+    ),
+    "doubao": CacheProviderConfig(
+        provider_id="doubao",
+        name="豆包（字节跳动）",
+        base_url="https://ark.cn-beijing.volces.com/api/v3",
+        base_url_pattern="ark.cn-beijing.volces.com",
+        cache_mode="auto",
+        requires_header=False,
+        min_cache_tokens=1024,
+        cached_token_field="prompt_tokens_details.cached_tokens",
+    ),
 }
 
 

@@ -810,9 +810,13 @@ class OmniRealtimeClient:
                 payload = json.dumps(event)
                 # Guard: Qwen/GLM/Step servers enforce 256KB max frame; for
                 # oversized image payloads, try to re-compress the JPEG at
-                # lower quality before dropping.
+                # lower quality before dropping. PIL decode + JPEG re-encode
+                # is CPU-heavy (50-150ms on a 4K screenshot), so off-load to
+                # a thread to keep the event loop responsive.
                 if len(payload) > 250000:
-                    payload = self._try_shrink_image_payload(event, payload)
+                    payload = await asyncio.to_thread(
+                        self._try_shrink_image_payload, event, payload
+                    )
                     if payload is None:
                         return
                 await self.ws.send(payload)
