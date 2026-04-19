@@ -76,8 +76,9 @@ def validate_lanlan_name(name: str) -> str:
     return result.normalized
 
 # 初始化组件（迁移必须在实例化之前，否则旧路径文件找不到）
+# 注：cloudsave 目录 bootstrap 延迟到 startup hook，避免磁盘满/只读 FS
+# 场景下 import 阶段裸抛 OSError 导致整个 FastAPI 起不来。
 _config_manager = get_config_manager()
-bootstrap_local_cloudsave_environment(_config_manager)
 try:
     from memory import migrate_to_character_dirs
     _config_manager.ensure_memory_directory()
@@ -586,6 +587,15 @@ async def _periodic_idle_maintenance_loop():
 @app.on_event("startup")
 async def startup_event_handler():
     """应用启动时初始化"""
+    # cloudsave 目录 bootstrap：失败（磁盘满/只读 FS/权限问题）降级为警告，
+    # 不阻断 startup 剩余步骤。后续依赖 cloudsave 的操作会各自返回错误。
+    try:
+        bootstrap_local_cloudsave_environment(_config_manager)
+    except OSError as e:
+        logger.warning(f"[Memory] cloudsave 目录 bootstrap 失败，跳过: {e}")
+    except Exception as e:
+        logger.warning(f"[Memory] cloudsave 目录 bootstrap 异常: {e}")
+
     try:
         from utils.token_tracker import TokenTracker, install_hooks
         install_hooks()
