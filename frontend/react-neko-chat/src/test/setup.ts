@@ -1,31 +1,30 @@
 import '@testing-library/jest-dom/vitest';
 
 if (!HTMLElement.prototype.scrollTo) {
-  HTMLElement.prototype.scrollTo = function scrollTo(options?: number | ScrollToOptions, y?: number) {
+  HTMLElement.prototype.scrollTo = function scrollTo(options?: ScrollToOptions | number, _y?: number) {
     if (typeof options === 'number') {
       this.scrollLeft = options;
-      this.scrollTop = typeof y === 'number' ? y : this.scrollTop;
+      if (typeof _y === 'number') {
+        this.scrollTop = _y;
+      }
       return;
     }
-
-    if (options && typeof options.top === 'number') {
+    if (options && typeof options === 'object' && typeof options.top === 'number') {
       this.scrollTop = options.top;
     }
-    if (options && typeof options.left === 'number') {
+    if (options && typeof options === 'object' && typeof options.left === 'number') {
       this.scrollLeft = options.left;
     }
   };
 }
 
 if (typeof window.ResizeObserver === 'undefined') {
-  class ResizeObserverMock {
+  class ResizeObserverStub {
     observe() {}
-
     unobserve() {}
-
     disconnect() {}
   }
 
-  window.ResizeObserver = ResizeObserverMock as typeof ResizeObserver;
-  globalThis.ResizeObserver = ResizeObserverMock as typeof ResizeObserver;
+  window.ResizeObserver = ResizeObserverStub as typeof ResizeObserver;
+  globalThis.ResizeObserver = ResizeObserverStub as typeof ResizeObserver;
 }

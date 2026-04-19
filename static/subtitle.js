@@ -240,9 +240,11 @@ function resetSubtitleTurnState() {
  * updateSubtitleStreamingText 调用之前先行触发的复位入口。
  *
  * 为什么不能只靠事件：
- *   neko-assistant-turn-start 事件要等 ensureAssistantTurnStarted 确认
- *   首个可见气泡创建后才会派发（app-websocket.js:385），比首个 chunk
- *   进入 appendMessage 晚一拍。如果只在事件里解锁，上一轮残留的
+ *   neko-assistant-turn-start 事件的派发时机取决于首个 chunk 是否可渲染：
+ *   可渲染时 app-websocket.js 会在 `gemini_response_first_chunk` 分支
+ *   （进入 appendMessage 之前）就派发；不可渲染时要等 appendMessage 创建
+ *   出可见气泡（`gemini_response_visible_bubble` 分支）才派发，比首个
+ *   chunk 晚一拍。如果只在事件里解锁，后一条路径上轮残留的
  *   isCurrentTurnFinalized=true 会把本轮首个 chunk / 单 chunk 回复的
  *   流式写入全部吞掉。
  */

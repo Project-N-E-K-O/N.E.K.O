@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""CoPaw custom N.E.K.O channel for N.E.K.O.
+"""QwenPaw custom N.E.K.O channel for N.E.K.O.
 
 This channel starts a small local HTTP bridge that exposes:
 
@@ -8,7 +8,7 @@ This channel starts a small local HTTP bridge that exposes:
 
 N.E.K.O can call this bridge with either plain text or multimodal
 ``content_parts`` payloads. The channel then forwards the request into the
-current CoPaw agent pipeline and waits for the final reply before returning
+current QwenPaw agent pipeline and waits for the final reply before returning
 JSON to the caller.
 """
 from __future__ import annotations
@@ -38,14 +38,14 @@ from agentscope_runtime.engine.schemas.agent_schemas import (
     VideoContent,
 )
 
-from copaw.app.channels.base import BaseChannel, OutgoingContentPart
-from copaw.app.channels.schema import ChannelType
-from copaw.config import get_config_path
+from qwenpaw.app.channels.base import BaseChannel, OutgoingContentPart
+from qwenpaw.app.channels.schema import ChannelType
+from qwenpaw.config import get_config_path
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8089
+DEFAULT_PORT = 8088
 DEFAULT_REPLY_TIMEOUT = 300.0
 LEGACY_CHANNEL_NAME = "openclaw"
 _PROGRESS_REPLY_MARKERS = (
@@ -176,13 +176,13 @@ def _update_json_file_channel_config(
 
 
 def _bootstrap_neko_channel_config() -> None:
-    """Seed the active CoPaw agent config before channel loading.
+    """Seed the active QwenPaw agent config before channel loading.
 
-    CoPaw discovers custom channel modules before it instantiates channel
+    QwenPaw discovers custom channel modules before it instantiates channel
     classes, but it still requires the channel key to already exist in the
     active agent's channels config. We therefore patch the active agent's
     `agent.json` during module import so first-time setup works without
-    touching CoPaw core code.
+    touching QwenPaw core code.
     """
 
     try:
@@ -1113,7 +1113,7 @@ class NekoChannel(BaseChannel):
         except asyncio.TimeoutError as exc:
             raise HTTPException(
                 status_code=504,
-                detail=f"Timed out waiting for CoPaw reply after {reply_timeout}s",
+                detail=f"Timed out waiting for QwenPaw reply after {reply_timeout}s",
             ) from exc
         finally:
             self._pending_replies.pop(reply_token, None)

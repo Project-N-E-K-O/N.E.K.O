@@ -14,7 +14,7 @@ from config import USER_PLUGIN_SERVER_PORT
 from utils.llm_client import create_chat_llm, ChatOpenAI
 from config.prompts_agent import (
     UNIFIED_CHANNEL_SYSTEM_PROMPT,
-    CHANNEL_DESC_COPAW,
+    CHANNEL_DESC_QWENPAW,
     CHANNEL_DESC_OPENFANG,
     CHANNEL_DESC_BROWSER_USE,
     CHANNEL_DESC_COMPUTER_USE,
@@ -162,16 +162,16 @@ class OpenClawDecision:
 @dataclass
 class UnifiedChannelDecision:
     """统一渠道评估结果 — 每个渠道为 dict 或 None"""
-    copaw: Optional[Dict[str, Any]] = None       # {"can_execute": bool, "task_description": str, "reason": str}
+    qwenpaw: Optional[Dict[str, Any]] = None     # {"can_execute": bool, "task_description": str, "reason": str}
     openfang: Optional[Dict[str, Any]] = None
     browser_use: Optional[Dict[str, Any]] = None
     computer_use: Optional[Dict[str, Any]] = None
 
 
-# 优先级：copaw > openfang > browser_use > computer_use
-_CHANNEL_PRIORITY = ["copaw", "openfang", "browser_use", "computer_use"]
+# 优先级：qwenpaw > openfang > browser_use > computer_use
+_CHANNEL_PRIORITY = ["qwenpaw", "openfang", "browser_use", "computer_use"]
 _CHANNEL_TO_METHOD = {
-    "copaw": "openclaw",
+    "qwenpaw": "openclaw",
     "openfang": "openfang",
     "browser_use": "browser_use",
     "computer_use": "computer_use",
@@ -364,10 +364,35 @@ class DirectTaskExecutor:
         def _extract_text(m: dict) -> str:
             return str(m.get('text') or m.get('content') or '').strip()
 
+        def _extract_attachments(m: dict) -> list[dict]:
+            raw = m.get("attachments") or []
+            if not isinstance(raw, list):
+                return []
+            normalized = []
+            for item in raw:
+                if isinstance(item, str):
+                    url = item.strip()
+                elif isinstance(item, dict):
+                    url = str(item.get("url") or item.get("image_url") or "").strip()
+                else:
+                    url = ""
+                if url:
+                    normalized.append({"type": "image_url", "url": url})
+            return normalized
+
+        def _describe_user_message(text: str, attachments: list[dict]) -> str:
+            if text:
+                if attachments:
+                    return f"{text} [Attached images: {len(attachments)}]"
+                return text
+            if attachments:
+                return f"[User attached {len(attachments)} image(s) without text]"
+            return ""
+
         latest_user_text = ""
         for m in reversed(messages[-10:]):
             if m.get('role') == 'user':
-                latest_user_text = _extract_text(m)
+                latest_user_text = _describe_user_message(_extract_text(m), _extract_attachments(m))
                 if latest_user_text:
                     break
         lines = []
@@ -375,10 +400,37 @@ class DirectTaskExecutor:
             lines.append(f"LATEST_USER_REQUEST: {latest_user_text}")
         for m in messages[-10:]:
             role = m.get('role', 'user')
-            text = _extract_text(m)
+            text = _describe_user_message(_extract_text(m), _extract_attachments(m))
             if text:
                 lines.append(f"{role}: {text}")
         return "\n".join(lines)
+
+    def _extract_latest_user_payload(self, messages: List[Dict[str, Any]]) -> tuple[str, list[dict]]:
+        latest_text = ""
+        latest_attachments: list[dict] = []
+        for m in reversed(messages[-10:]):
+            if not isinstance(m, dict) or m.get("role") != "user":
+                continue
+            latest_text = str(m.get("text") or m.get("content") or "").strip()
+            raw_attachments = m.get("attachments") or []
+            if isinstance(raw_attachments, list):
+                for item in raw_attachments:
+                    if isinstance(item, str):
+                        url = item.strip()
+                    elif isinstance(item, dict):
+                        url = str(item.get("url") or item.get("image_url") or "").strip()
+                    else:
+                        url = ""
+                    if url:
+                        latest_attachments.append({
+                            "type": "image_url",
+                            "url": url,
+                        })
+            if latest_text or latest_attachments:
+                break
+        if not latest_text and latest_attachments:
+            latest_text = "请分析用户提供的图片内容，并根据图片完成任务。"
+        return latest_text, latest_attachments
     
     def _format_tools(self, capabilities: Dict[str, Dict[str, Any]]) -> str:
         """格式化工具列表供 LLM 参考"""
@@ -423,13 +475,13 @@ class DirectTaskExecutor:
         self,
         conversation: str,
         *,
-        copaw_available: bool = False,
+        qwenpaw_available: bool = False,
         openfang_available: bool = False,
         browser_available: bool = False,
         cu_available: bool = False,
         lang: str = "en",
     ) -> UnifiedChannelDecision:
-        """一次 LLM 调用评估所有非 plugin 渠道（copaw / openfang / browser / computer）。
+        """一次 LLM 调用评估所有非 plugin 渠道（qwenpaw / openfang / browser / computer）。
 
         根据 available 标志动态组装 prompt，要求 LLM 选出最合适的渠道。
         如果 LLM 输出多个 can_execute=true，由调用方按优先级选取。
@@ -438,9 +490,9 @@ class DirectTaskExecutor:
         channel_descs: List[str] = []
         available_keys: List[str] = []
 
-        if copaw_available:
-            available_keys.append("copaw")
-            channel_descs.append(_loc(CHANNEL_DESC_COPAW, lang))
+        if qwenpaw_available:
+            available_keys.append("qwenpaw")
+            channel_descs.append(_loc(CHANNEL_DESC_QWENPAW, lang))
 
         if openfang_available:
             available_keys.append("openfang")
@@ -970,7 +1022,7 @@ class DirectTaskExecutor:
     ) -> Optional[TaskResult]:
         """
         评估各渠道可行性，返回 Decision（不执行）。
-        Plugin 单独判定；copaw/openfang/browser/computer 合并为一次 LLM 调用。
+        Plugin 单独判定；qwenpaw/openfang/browser/computer 合并为一次 LLM 调用。
         实际执行由 agent_server 统一 dispatch。
         """
         import uuid
@@ -1026,15 +1078,48 @@ class DirectTaskExecutor:
             except Exception as e:
                 logger.warning("[TaskExecutor] Failed to check OpenFang: %s", e)
 
-        copaw_available = False
+        qwenpaw_available = False
         if openclaw_enabled and self.openclaw:
             try:
                 # openclaw.is_available 内部走 sync httpx，必须 offload
                 oc_status = await asyncio.to_thread(self.openclaw.is_available)
-                copaw_available = oc_status.get("ready", False) if isinstance(oc_status, dict) else False
-                logger.info("[TaskExecutor] CoPaw available: %s", copaw_available)
+                qwenpaw_available = oc_status.get("ready", False) if isinstance(oc_status, dict) else False
+                logger.info("[TaskExecutor] QwenPaw available: %s", qwenpaw_available)
             except Exception as e:
-                logger.warning("[TaskExecutor] Failed to check CoPaw: %s", e)
+                logger.warning("[TaskExecutor] Failed to check QwenPaw: %s", e)
+
+        # ── 魔法命令前置拦截（仅对 openclaw/qwenpaw）──────────────────────
+        user_intent, user_attachments = self._extract_latest_user_payload(messages)
+        if not user_intent:
+            user_intent = self._extract_latest_user_intent(conversation)
+        if qwenpaw_available and self.openclaw and user_intent and not user_attachments:
+            try:
+                magic_intent = await self.openclaw.classify_magic_intent(user_intent)
+            except Exception as e:
+                logger.warning("[TaskExecutor] Failed to classify magic intent: %s", e)
+                magic_intent = {"is_magic_intent": False, "command": None}
+            if magic_intent.get("is_magic_intent") and magic_intent.get("command"):
+                magic_command = str(magic_intent["command"])
+                logger.info(
+                    "[TaskExecutor] Magic intent intercepted: command=%s source=%s",
+                    magic_command,
+                    magic_intent.get("source", "unknown"),
+                )
+                return TaskResult(
+                    task_id=task_id,
+                    has_task=True,
+                    task_description=self.openclaw.get_magic_command_task_description(magic_command),
+                    execution_method="openclaw",
+                    success=False,
+                    tool_args={
+                        "instruction": magic_command,
+                        "attachments": [],
+                        "magic_command": magic_command,
+                        "original_user_text": user_intent,
+                        "direct_reply": True,
+                    },
+                    reason=f"magic_intent:{magic_intent.get('source', 'unknown')}",
+                )
 
         # ── 并行执行：plugin 单独 + 统一渠道评估 ──────────────
         parallel_tasks: List[tuple] = []   # [(key, coro), ...]
@@ -1047,12 +1132,12 @@ class DirectTaskExecutor:
         if user_plugin_enabled and plugins:
             parallel_tasks.append(('up', self._assess_user_plugin(conversation, plugins, lang=lang)))
 
-        # 统一渠道评估（copaw / openfang / browser / computer）
-        has_any_unified = copaw_available or of_available or browser_available or cu_available
+        # 统一渠道评估（qwenpaw / openfang / browser / computer）
+        has_any_unified = qwenpaw_available or of_available or browser_available or cu_available
         if has_any_unified:
             parallel_tasks.append(('unified', self._assess_unified_channels(
                 conversation,
-                copaw_available=copaw_available,
+                qwenpaw_available=qwenpaw_available,
                 openfang_available=of_available,
                 browser_available=browser_available,
                 cu_available=cu_available,
@@ -1107,10 +1192,8 @@ class DirectTaskExecutor:
                 reason=up_decision.reason,
             )
 
-        # 2. 统一渠道 — 按优先级 copaw > openfang > browser_use > computer_use
+        # 2. 统一渠道 — 按优先级 qwenpaw > openfang > browser_use > computer_use
         if isinstance(unified, UnifiedChannelDecision):
-            user_intent = self._extract_latest_user_intent(conversation)
-
             for ch_key in _CHANNEL_PRIORITY:
                 ch_info = getattr(unified, ch_key, None)
                 if not isinstance(ch_info, dict) or not ch_info.get("can_execute"):
@@ -1123,7 +1206,7 @@ class DirectTaskExecutor:
 
                 tool_args = None
                 if method == "openclaw":
-                    tool_args = {"instruction": user_intent}
+                    tool_args = {"instruction": user_intent, "attachments": user_attachments}
 
                 return TaskResult(
                     task_id=task_id,

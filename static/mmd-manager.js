@@ -101,7 +101,7 @@ class MMDManager {
         }
 
         // 设置浮动按钮
-        if (typeof this.setupFloatingButtons === 'function') {
+        if (typeof this.setupFloatingButtons === 'function' && !window._cardExportPage) {
             this.setupFloatingButtons();
         }
 
