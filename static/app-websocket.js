@@ -1208,7 +1208,24 @@
                                 dataUrl = await window.captureProactiveChatScreenshot();
                             }
                             if (dataUrl && S.socket && S.socket.readyState === WebSocket.OPEN) {
-                                S.socket.send(JSON.stringify({ action: 'screenshot_response', data: dataUrl }));
+                                var respMsg = { action: 'screenshot_response', data: dataUrl };
+                                // Determine capture type for correct coordinate mapping
+                                // null = 窗口截图或无法确定 → 不叠加；仅无流无源时默认 'screen'
+                                var captureType = null;
+                                if (typeof window.detectScreenshotCaptureType === 'function') {
+                                    captureType = window.detectScreenshotCaptureType(
+                                        S.screenCaptureStream, S.selectedScreenSourceId
+                                    );
+                                }
+                                if (captureType === null && !S.screenCaptureStream && !S.selectedScreenSourceId) {
+                                    captureType = 'screen';
+                                }
+                                var avatarPos = typeof window.getAvatarScreenPosition === 'function'
+                                    ? window.getAvatarScreenPosition(captureType) : null;
+                                if (avatarPos) {
+                                    respMsg.avatar_position = avatarPos;
+                                }
+                                S.socket.send(JSON.stringify(respMsg));
                             }
                         } catch (e2) {
                             console.warn('[App] request_screenshot capture failed:', e2);

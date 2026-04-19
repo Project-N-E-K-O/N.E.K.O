@@ -775,6 +775,23 @@
                     var screenshotDataUrl = results[screenshotIndex];
                     if (screenshotDataUrl) {
                         requestBody.screenshot_data = screenshotDataUrl;
+                        // Determine capture type: cached stream → check displaySurface;
+                        // null 表示窗口截图或无法确定 → 不叠加
+                        // 仅当完全没有流/源（pyautogui 兜底）时才默认 'screen'
+                        var captureType = null;
+                        if (typeof window.detectScreenshotCaptureType === 'function') {
+                            captureType = window.detectScreenshotCaptureType(
+                                S.screenCaptureStream, S.selectedScreenSourceId
+                            );
+                        }
+                        if (captureType === null && !S.screenCaptureStream && !S.selectedScreenSourceId) {
+                            captureType = 'screen'; // 无流无源 → pyautogui 全屏兜底
+                        }
+                        var avatarPos = typeof window.getAvatarScreenPosition === 'function'
+                            ? window.getAvatarScreenPosition(captureType) : null;
+                        if (avatarPos) {
+                            requestBody.avatar_position = avatarPos;
+                        }
                         if (window.unlockAchievement) {
                             window.unlockAchievement('ACH_SEND_IMAGE').catch(function (err) {
                                 console.error('解锁发送图片成就失败:', err);

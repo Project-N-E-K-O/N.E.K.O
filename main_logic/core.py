@@ -18,7 +18,7 @@ from websockets import exceptions as web_exceptions
 from fastapi import WebSocket, WebSocketDisconnect
 from utils.frontend_utils import contains_chinese, replace_blank, replace_corner_mark, remove_bracket, \
     is_only_punctuation, TtsStreamNormalizer
-from utils.screenshot_utils import process_screen_data
+from utils.screenshot_utils import process_screen_data, overlay_avatar_annotation
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.tts_client import get_tts_worker, dummy_tts_worker, TTS_PROVIDER_REGISTRY
@@ -238,6 +238,7 @@ class LLMSessionManager:
         self.websocket_lock = None  # websocket操作的共享锁，由main_server设置
         self._bg_tasks: set = set()  # 防止 fire-and-forget 任务被 GC 回收
         self._screenshot_future: asyncio.Future | None = None
+        self._avatar_position: dict | None = None  # 前端传来的 Avatar 归一化坐标 {centerX, centerY, width, height}
         self.current_speech_id = None
         self.emoji_pattern = re.compile(r'[^\w\u4e00-\u9fff\s>][^\w\u4e00-\u9fff\s]{2,}[^\w\u4e00-\u9fff\s<]', flags=re.UNICODE)
         self.emoji_pattern2 = re.compile("["
@@ -3765,20 +3766,36 @@ class LLMSessionManager:
                 try:
                     # 使用统一的屏幕分享工具处理数据（只验证，不缩放）
                     image_b64 = await process_screen_data(data)
-                    
+
                     if image_b64:
+                        # 叠加 Avatar 文字注解（仅当本条消息携带了位置元数据时）
+                        # 不回退到 self._avatar_position：前端未附带位置说明该截图不应叠加
+                        # （如窗口截图、手机相机等场景）
+                        av_pos = message.get('avatar_position')
+                        if av_pos and isinstance(av_pos, dict):
+                            try:
+                                from utils.language_utils import get_global_language_full
+                                image_b64 = await asyncio.to_thread(
+                                    overlay_avatar_annotation,
+                                    image_b64, av_pos, self.lanlan_name,
+                                    get_global_language_full(),
+                                )
+                            except Exception as ann_err:
+                                logger.warning("[%s] avatar annotation failed, sending original: %s",
+                                               self.lanlan_name, ann_err)
+
                         # 如果是文本模式（OmniOfflineClient），只存储图片，不立即发送
                         if isinstance(self.session, OmniOfflineClient):
                             # 只添加到待发送队列，等待与文本一起发送
                             await self.session.stream_image(image_b64)
-                        
+
                         # 如果是语音模式（OmniRealtimeClient），检查是否支持视觉并直接发送
                         elif isinstance(self.session, OmniRealtimeClient):
                             # 检查WebSocket连接
                             if not hasattr(self.session, 'ws') or not self.session.ws:
                                 logger.error("💥 Stream: Session websocket not available")
                                 return
-                            
+
                             # 语音模式直接发送图片
                             await self.session.stream_image(image_b64)
                     else:
