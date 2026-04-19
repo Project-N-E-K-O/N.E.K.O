@@ -198,6 +198,46 @@
     <!-- Floating multi-select action bar -->
     <Transition name="float-bar">
       <div v-if="multiSelectEnabled" class="floating-select-bar">
+        <!-- Batch operations row (visible when plugins are selected) -->
+        <Transition name="batch-row">
+          <div v-if="selectedCount > 0" class="floating-select-bar__batch">
+            <button
+              class="fab-action fab-action--batch fab-action--success"
+              :disabled="batchBusy"
+              @click="handleBatchStart"
+            >
+              <el-icon><VideoPlay /></el-icon>
+              <span>{{ $t('plugins.start') }}</span>
+            </button>
+            <button
+              class="fab-action fab-action--batch fab-action--warn"
+              :disabled="batchBusy"
+              @click="handleBatchStop"
+            >
+              <el-icon><VideoPause /></el-icon>
+              <span>{{ $t('plugins.stop') }}</span>
+            </button>
+            <button
+              class="fab-action fab-action--batch"
+              :disabled="batchBusy"
+              @click="handleBatchReload"
+            >
+              <el-icon><RefreshRight /></el-icon>
+              <span>{{ $t('plugins.reload') }}</span>
+            </button>
+            <div class="floating-select-bar__batch-divider" />
+            <button
+              class="fab-action fab-action--batch fab-action--danger"
+              :disabled="batchBusy"
+              @click="handleBatchDelete"
+            >
+              <el-icon><Delete /></el-icon>
+              <span>{{ $t('plugins.delete') }}</span>
+            </button>
+          </div>
+        </Transition>
+
+        <!-- Selection controls row -->
         <div class="floating-select-bar__inner">
           <div class="floating-select-bar__count">
             <span class="floating-select-bar__count-num">{{ selectedCount }}</span>
@@ -263,7 +303,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Expand, Operation, Finished, Sort, CircleClose, Close, Grid } from '@element-plus/icons-vue'
+import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Expand, Operation, Finished, Sort, CircleClose, Close, Grid, VideoPlay, VideoPause, Delete } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
@@ -273,7 +313,7 @@ import PluginDangerConfirmDialog from '@/components/plugin/PluginDangerConfirmDi
 import PackageManagerPanel from '@/components/plugin/PackageManagerPanel.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
-import { reloadAllPlugins } from '@/api/plugins'
+import { reloadAllPlugins, deletePlugin } from '@/api/plugins'
 import { usePluginListContextActions, type ResolvedPluginListAction } from '@/composables/usePluginListContextActions'
 import { usePluginWorkbench } from '@/composables/usePluginWorkbench'
 import { METRICS_REFRESH_INTERVAL } from '@/utils/constants'
@@ -288,6 +328,7 @@ const { t } = useI18n()
 const { buildActions, executeAction, shouldUseHoldConfirm } = usePluginListContextActions()
 
 const reloadingAll = ref(false)
+const batchBusy = ref(false)
 const packagePanelVisible = ref(false)
 const contextMenuVisible = ref(false)
 const contextMenuPosition = ref({ x: 0, y: 0 })
@@ -674,6 +715,108 @@ const runningPlugins = computed(() => {
   return rawNormalPlugins.value.filter((plugin) => plugin.status === 'running' && plugin.enabled !== false)
 })
 
+function getSelectedPlugins() {
+  return rawPlugins.value.filter((p) => selectedPluginIds.value.includes(p.id))
+}
+
+async function handleBatchStart() {
+  const plugins = getSelectedPlugins().filter((p) => p.status !== 'running' && p.status !== 'disabled')
+  if (plugins.length === 0) {
+    ElMessage.info(t('plugins.batchNoStartable'))
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      t('plugins.batchStartConfirm', { count: plugins.length }),
+      t('common.confirm'),
+      { type: 'info' },
+    )
+  } catch { return }
+
+  batchBusy.value = true
+  let ok = 0; let fail = 0
+  for (const p of plugins) {
+    try { await pluginStore.start(p.id); ok++ } catch { fail++ }
+  }
+  batchBusy.value = false
+  if (fail === 0) ElMessage.success(t('plugins.batchStartSuccess', { count: ok }))
+  else ElMessage.warning(t('plugins.batchPartial', { success: ok, fail }))
+  await handleRefresh()
+}
+
+async function handleBatchStop() {
+  const plugins = getSelectedPlugins().filter((p) => p.status === 'running')
+  if (plugins.length === 0) {
+    ElMessage.info(t('plugins.batchNoStoppable'))
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      t('plugins.batchStopConfirm', { count: plugins.length }),
+      t('common.confirm'),
+      { type: 'warning' },
+    )
+  } catch { return }
+
+  batchBusy.value = true
+  let ok = 0; let fail = 0
+  for (const p of plugins) {
+    try { await pluginStore.stop(p.id); ok++ } catch { fail++ }
+  }
+  batchBusy.value = false
+  if (fail === 0) ElMessage.success(t('plugins.batchStopSuccess', { count: ok }))
+  else ElMessage.warning(t('plugins.batchPartial', { success: ok, fail }))
+  await handleRefresh()
+}
+
+async function handleBatchReload() {
+  const plugins = getSelectedPlugins().filter((p) => p.status === 'running')
+  if (plugins.length === 0) {
+    ElMessage.info(t('plugins.batchNoReloadable'))
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      t('plugins.batchReloadConfirm', { count: plugins.length }),
+      t('common.confirm'),
+      { type: 'warning' },
+    )
+  } catch { return }
+
+  batchBusy.value = true
+  let ok = 0; let fail = 0
+  for (const p of plugins) {
+    try { await pluginStore.reload(p.id); ok++ } catch { fail++ }
+  }
+  batchBusy.value = false
+  if (fail === 0) ElMessage.success(t('plugins.batchReloadSuccess', { count: ok }))
+  else ElMessage.warning(t('plugins.batchPartial', { success: ok, fail }))
+  await handleRefresh()
+}
+
+async function handleBatchDelete() {
+  const plugins = getSelectedPlugins()
+  if (plugins.length === 0) return
+  try {
+    await ElMessageBox.confirm(
+      t('plugins.batchDeleteConfirm', { count: plugins.length }),
+      t('common.confirm'),
+      { type: 'error', confirmButtonText: t('common.delete') },
+    )
+  } catch { return }
+
+  batchBusy.value = true
+  let ok = 0; let fail = 0
+  for (const p of plugins) {
+    try { await deletePlugin(p.id); ok++ } catch { fail++ }
+  }
+  batchBusy.value = false
+  clearSelection()
+  if (fail === 0) ElMessage.success(t('plugins.batchDeleteSuccess', { count: ok }))
+  else ElMessage.warning(t('plugins.batchPartial', { success: ok, fail }))
+  await handleRefresh()
+}
+
 async function handleReloadAll() {
   const plugins = runningPlugins.value
   if (plugins.length === 0) return
@@ -861,6 +1004,94 @@ onUnmounted(() => {
   transform: translateX(-50%);
   z-index: 2000;
   pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ── Batch operations row ── */
+.floating-select-bar__batch {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  border-radius: var(--radius-panel);
+  background: color-mix(in srgb, var(--el-bg-color) 78%, transparent);
+  backdrop-filter: blur(20px) saturate(1.6);
+  -webkit-backdrop-filter: blur(20px) saturate(1.6);
+  border: 1px solid color-mix(in srgb, var(--el-border-color) 40%, transparent);
+  box-shadow:
+    0 12px 40px color-mix(in srgb, var(--el-text-color-primary) 12%, transparent),
+    0 4px 16px color-mix(in srgb, var(--el-color-primary) 6%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 30%, transparent);
+}
+
+.floating-select-bar__batch-divider {
+  width: 1px;
+  height: 20px;
+  background: color-mix(in srgb, var(--el-border-color) 50%, transparent);
+  flex-shrink: 0;
+  margin: 0 2px;
+}
+
+.fab-action--batch {
+  font-size: 12.5px;
+  padding: 6px 12px;
+  gap: 5px;
+}
+
+.fab-action--batch .el-icon {
+  font-size: 15px;
+}
+
+.fab-action--batch:disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.fab-action--success:hover {
+  background: color-mix(in srgb, var(--el-color-success) 10%, transparent);
+  color: var(--el-color-success);
+}
+
+.fab-action--warn:hover {
+  background: color-mix(in srgb, var(--el-color-warning) 10%, transparent);
+  color: var(--el-color-warning);
+}
+
+/* ── Batch row transition ── */
+.batch-row-enter-active {
+  transition:
+    opacity 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.32s cubic-bezier(0.34, 1.56, 0.64, 1),
+    max-height 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.batch-row-leave-active {
+  transition:
+    opacity 0.18s ease,
+    transform 0.2s ease,
+    max-height 0.2s ease;
+}
+
+.batch-row-enter-from {
+  opacity: 0;
+  transform: translateY(8px) scale(0.95);
+  max-height: 0;
+}
+
+.batch-row-leave-to {
+  opacity: 0;
+  transform: translateY(4px) scale(0.97);
+  max-height: 0;
+}
+
+.batch-row-enter-to,
+.batch-row-leave-from {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  max-height: 60px;
 }
 
 .floating-select-bar__inner {
