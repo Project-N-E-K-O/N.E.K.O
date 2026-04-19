@@ -42,6 +42,25 @@
         "toneMappingAgX": "AgX",
         "toneMappingNeutral": "Neutral"
     },
+    "autostartPrompt": {
+        "title": "要不要让 N.E.K.O 开机自动启动？",
+        "message": "这样下次打开电脑后，N.E.K.O 会自动准备好，不用你再手动启动。",
+        "note": "只会为当前用户开启，之后也可以随时关闭。",
+        "startNow": "开启自启动",
+        "later": "稍后再说",
+        "never": "不再提示",
+        "enableFailed": "暂时无法开启开机自启动，请稍后再试",
+        "requiresApproval": "需要先在系统设置里批准开机自启动，批准后会自动生效"
+    },
+    "tutorialPrompt": {
+        "title": "要不要开始主页新手引导？",
+        "message": "我可以带你快速认识主页上的核心入口，用最短路径上手 N.E.K.O。",
+        "note": "整个过程随时都可以跳过，也可以之后再从记忆浏览里重新打开。",
+        "startNow": "开始引导",
+        "later": "稍后再说",
+        "never": "不再提示",
+        "startFailed": "暂时无法开始新手引导，请稍后再试"
+    },
     "characterProfile": {
         "gender": "性别",
         "age": "年龄",

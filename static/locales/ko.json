@@ -42,6 +42,25 @@
         "toneMappingAgX": "AgX",
         "toneMappingNeutral": "Neutral"
     },
+    "autostartPrompt": {
+        "title": "N.E.K.O를 시작 시 자동 실행할까요?",
+        "message": "다음에 컴퓨터를 켜면 N.E.K.O가 자동으로 준비되어 직접 실행하지 않아도 됩니다.",
+        "note": "현재 사용자에게만 적용되며 나중에 언제든지 끌 수 있습니다.",
+        "startNow": "자동 실행 켜기",
+        "later": "나중에",
+        "never": "다시 묻지 않기",
+        "enableFailed": "지금은 시작 시 자동 실행을 켤 수 없습니다. 잠시 후 다시 시도해 주세요.",
+        "requiresApproval": "먼저 시스템 설정에서 자동 실행을 승인해야 합니다. 승인 후 적용됩니다."
+    },
+    "tutorialPrompt": {
+        "title": "홈 튜토리얼을 시작할까요?",
+        "message": "홈 화면의 핵심 진입점을 빠르게 안내해 드려 N.E.K.O를 가장 짧은 경로로 시작할 수 있게 도와드릴게요.",
+        "note": "진행 중 언제든지 건너뛸 수 있고, 나중에 메모리 브라우저에서 다시 열 수도 있습니다.",
+        "startNow": "튜토리얼 시작",
+        "later": "나중에",
+        "never": "다시 묻지 않기",
+        "startFailed": "지금은 튜토리얼을 시작할 수 없습니다. 잠시 후 다시 시도해 주세요."
+    },
     "characterProfile": {
         "gender": "성별",
         "age": "나이",

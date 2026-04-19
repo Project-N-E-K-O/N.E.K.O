@@ -1078,6 +1078,8 @@
                     window.monitorInputVolume();
                 }, 1000);
 
+                window.dispatchEvent(new CustomEvent('neko:voice-session-started'));
+
                 window.isMicStarting = false;
                 S.isSwitchingMode = false;
 
@@ -1423,6 +1425,7 @@
             var isReactWindowSource = options.source === 'react-chat-window';
             var reactOptimisticMessageId = '';
             var reactOptimisticMessageAppended = null;
+            var sentUserContent = false;
 
             if (!text && !hasScreenshots) return false;
 
@@ -1568,6 +1571,7 @@
                                 skipReactSync: true
                             });
                         }
+                        sentUserContent = true;
 
                         // Achievement: send image
                         if (window.unlockAchievement) {
@@ -1608,6 +1612,7 @@
                                 skipReactSync: sentImageUrls.length > 0
                             });
                         }
+                        sentUserContent = true;
 
                         // Achievement: meow detection
                         if (window.incrementAchievementCounter) {
@@ -1637,6 +1642,10 @@
                     }
 
                     updateReactOptimisticMessageStatus('sent');
+
+                    if (sentUserContent) {
+                        window.dispatchEvent(new CustomEvent('neko:user-content-sent'));
+                    }
 
                     // Reset proactive chat timer
                     if (S.proactiveChatEnabled && window.hasAnyChatModeEnabled()) {

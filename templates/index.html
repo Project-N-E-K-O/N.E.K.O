@@ -305,6 +305,8 @@
     <script src="/static/app-character.js"></script>
     <script src="/static/app-websocket.js"></script>
     <script src="/static/app-buttons.js"></script>
+    <script src="/static/app-autostart-provider.js"></script>
+    <script src="/static/app-tutorial-prompt.js"></script>
     <script src="/static/app.js"></script>
     <script src="/static/react/neko-chat/neko-chat-window.iife.js"></script>
     <script src="/static/app-react-chat-window.js"></script>
@@ -320,7 +322,9 @@
                 const apiUrl = lanlanNameFromUrl
                     ? `/api/config/page_config?lanlan_name=${encodeURIComponent(lanlanNameFromUrl)}`
                     : '/api/config/page_config';
-                const response = await fetch(apiUrl);
+                const response = await fetch(apiUrl, {
+                    cache: 'no-store',
+                });
                 const data = await response.json();
 
                 if (data && data.success) {
