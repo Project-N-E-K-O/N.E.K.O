@@ -767,8 +767,13 @@ onUnmounted(() => {
 
 <style scoped>
 .plugin-workbench {
-  --plugin-entry-radius: 18px;
+  --plugin-entry-radius: var(--radius-card);
   --package-panel-width: clamp(420px, 42vw, 620px);
+  /* ── Unified radius system ── */
+  --radius-card: 16px;       /* large containers: card, dropdown */
+  --radius-panel: 14px;      /* medium panels: filter bar, toolbar, floating bar */
+  --radius-control: 10px;    /* buttons, inputs, interactive controls */
+  --radius-chip: 8px;        /* small chips, tags, badges */
   display: flex;
   align-items: flex-start;
   gap: 20px;
@@ -807,7 +812,7 @@ onUnmounted(() => {
 }
 
 .plugin-list-card {
-  border-radius: 24px;
+  border-radius: var(--radius-card);
 }
 
 .workbench-header {
@@ -826,7 +831,7 @@ onUnmounted(() => {
 
 /* ── Multi-select trigger button (top) ── */
 .multi-select-trigger {
-  --el-button-border-radius: 12px;
+  --el-button-border-radius: var(--radius-control);
   font-weight: 600;
   padding: 8px 18px;
   gap: 6px;
@@ -863,7 +868,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 6px;
   padding: 8px 12px;
-  border-radius: 20px;
+  border-radius: var(--radius-panel);
   background: color-mix(in srgb, var(--el-bg-color) 78%, transparent);
   backdrop-filter: blur(20px) saturate(1.6);
   -webkit-backdrop-filter: blur(20px) saturate(1.6);
@@ -889,7 +894,7 @@ onUnmounted(() => {
   min-width: 28px;
   height: 28px;
   padding: 0 8px;
-  border-radius: 10px;
+  border-radius: var(--radius-chip);
   background: var(--el-color-primary);
   color: #fff;
   font-size: 14px;
@@ -927,7 +932,7 @@ onUnmounted(() => {
   gap: 6px;
   padding: 8px 14px;
   border: none;
-  border-radius: 12px;
+  border-radius: var(--radius-control);
   background: transparent;
   color: var(--el-text-color-regular);
   font-size: 13px;
@@ -1006,6 +1011,10 @@ onUnmounted(() => {
   min-width: 0;
 }
 
+.header-actions :deep(.el-button) {
+  --el-button-border-radius: var(--radius-control);
+}
+
 /* ── Filter bar ── */
 .filter-bar {
   margin-top: 14px;
@@ -1014,7 +1023,7 @@ onUnmounted(() => {
   backdrop-filter: blur(16px) saturate(1.4);
   -webkit-backdrop-filter: blur(16px) saturate(1.4);
   border: 1px solid color-mix(in srgb, var(--el-border-color) 50%, transparent);
-  border-radius: 16px;
+  border-radius: var(--radius-panel);
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, white 30%, transparent),
     0 4px 16px color-mix(in srgb, var(--el-text-color-primary) 4%, transparent);
@@ -1034,7 +1043,7 @@ onUnmounted(() => {
 }
 
 .filter-input :deep(.el-input__wrapper) {
-  border-radius: 12px;
+  border-radius: var(--radius-control);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--el-border-color) 50%, transparent) inset;
   transition:
     box-shadow 0.2s ease,
@@ -1063,13 +1072,17 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
+.filter-mode :deep(.el-radio-button__inner) {
+  border-radius: var(--radius-chip);
+}
+
 .filter-error {
   color: var(--el-color-danger);
   font-size: 12px;
   font-weight: 500;
   flex-shrink: 0;
   padding: 2px 8px;
-  border-radius: 8px;
+  border-radius: var(--radius-chip);
   background: color-mix(in srgb, var(--el-color-danger) 8%, transparent);
 }
 
@@ -1096,7 +1109,7 @@ onUnmounted(() => {
   gap: 6px;
   padding: 7px 14px;
   border: 1px solid color-mix(in srgb, var(--el-border-color) 60%, transparent);
-  border-radius: 12px;
+  border-radius: var(--radius-control);
   background: color-mix(in srgb, var(--el-bg-color) 90%, white);
   color: var(--el-text-color-regular);
   font-size: 13px;
@@ -1147,7 +1160,7 @@ onUnmounted(() => {
   z-index: 2100;
   width: 400px;
   padding: 16px;
-  border-radius: 16px;
+  border-radius: var(--radius-card);
   border: 1px solid color-mix(in srgb, var(--el-border-color) 40%, transparent);
   background: color-mix(in srgb, var(--el-bg-color) 86%, transparent);
   backdrop-filter: blur(24px) saturate(1.8);
@@ -1256,7 +1269,7 @@ onUnmounted(() => {
   gap: 6px;
   padding: 6px 10px;
   border: 1px solid color-mix(in srgb, var(--el-border-color) 50%, transparent);
-  border-radius: 10px;
+  border-radius: var(--radius-chip);
   background: color-mix(in srgb, var(--el-bg-color) 90%, white);
   color: var(--el-text-color-primary);
   font-size: 12px;
@@ -1315,7 +1328,7 @@ onUnmounted(() => {
   flex-wrap: wrap;
   margin-top: 10px;
   padding: 8px 14px;
-  border-radius: 14px;
+  border-radius: var(--radius-panel);
   background: color-mix(in srgb, var(--el-bg-color) 78%, transparent);
   backdrop-filter: blur(16px) saturate(1.4);
   -webkit-backdrop-filter: blur(16px) saturate(1.4);
@@ -1344,7 +1357,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 5px;
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   padding: 6px 14px;
   font-size: 13px;
   font-weight: 500;
@@ -1379,7 +1392,7 @@ onUnmounted(() => {
 }
 
 .layout-toolbar :deep(.el-radio-button__inner) {
-  border-radius: 8px;
+  border-radius: var(--radius-chip);
   padding: 5px 12px;
   font-size: 12px;
   font-weight: 500;
