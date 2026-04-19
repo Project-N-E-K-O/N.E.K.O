@@ -1901,12 +1901,7 @@ class UniversalTutorialManager {
     }
 
     resetTutorialStartState() {
-        this.isTutorialRunning = false;
-        this.cachedValidSteps = null;
-        this.currentTutorialStartSource = 'auto';
-        window.isInTutorial = false;
-        this.unlockBodyScroll();
-        this.restoreTutorialInteractionState();
+        this._teardownTutorialUI();
         this.setTutorialMarkersVisible(true);
     }
 
@@ -2964,6 +2959,43 @@ class UniversalTutorialManager {
      * 引导结束时的回调
      */
     onTutorialEnd() {
+        const completedSource = this.currentTutorialStartSource;
+
+        this._teardownTutorialUI();
+
+        // 标记用户已看过该页面的引导
+        const storageKey = this.getStorageKey();
+        localStorage.setItem(storageKey, 'true');
+        if (this.currentPage === 'model_manager') {
+            const commonStorageKey = getTutorialStorageKeyForPage('model_manager_common');
+            localStorage.setItem(commonStorageKey, 'true');
+            console.log('[Tutorial] 已标记模型管理通用步骤为已看过');
+        }
+
+        window.dispatchEvent(new CustomEvent('neko:tutorial-completed', {
+            detail: {
+                page: this.currentPage,
+                source: completedSource
+            }
+        }));
+        this.logPromptFlow('tutorial-completed', {
+            page: this.currentPage,
+            source: completedSource
+        });
+        console.log('[Tutorial] onTutorialEnd 写入存储键:', storageKey, '当前页面:', this.currentPage);
+        if (storageKey.includes('model_manager')) {
+            console.trace('[Tutorial] model_manager 存储键写入调用栈');
+        }
+
+        console.log('[Tutorial] 引导已完成，页面:', this.currentPage);
+    }
+
+    /**
+     * 拆除引导期间安装的 UI 状态（定时器、临时样式、监听器等）。
+     * 不写入"已看过"存储，也不派发 tutorial-completed 事件，
+     * 因此既能给正常结束（onTutorialEnd）复用，也能给启动失败的回退路径复用。
+     */
+    _teardownTutorialUI() {
         // 重置运行标志
         this.isTutorialRunning = false;
         this.clearNextButtonGuard();
@@ -3008,38 +3040,12 @@ class UniversalTutorialManager {
             this.cleanupCharaManagerTutorialIds();
         }
 
-        // 标记用户已看过该页面的引导
-        const storageKey = this.getStorageKey();
-        localStorage.setItem(storageKey, 'true');
-        window.dispatchEvent(new CustomEvent('neko:tutorial-completed', {
-            detail: {
-                page: this.currentPage,
-                source: this.currentTutorialStartSource
-            }
-        }));
-        this.logPromptFlow('tutorial-completed', {
-            page: this.currentPage,
-            source: this.currentTutorialStartSource
-        });
-        console.log('[Tutorial] onTutorialEnd 写入存储键:', storageKey, '当前页面:', this.currentPage);
-        if (storageKey.includes('model_manager')) {
-            console.trace('[Tutorial] model_manager 存储键写入调用栈');
-        }
-
         if (this.currentPage === 'model_manager') {
             this.clearModelManagerTutorialRecheckTimer();
         }
 
-        // 对于模型管理页面，同时标记通用步骤为已看过
-        if (this.currentPage === 'model_manager') {
-            const commonStorageKey = getTutorialStorageKeyForPage('model_manager_common');
-            localStorage.setItem(commonStorageKey, 'true');
-            console.log('[Tutorial] 已标记模型管理通用步骤为已看过');
-        }
-
         // 清除全局引导标记
         window.isInTutorial = false;
-        console.log('[Tutorial] 清除全局引导标记');
 
         // 恢复页面滚动
         this.unlockBodyScroll();
@@ -3124,8 +3130,6 @@ class UniversalTutorialManager {
         // 恢复所有在引导中修改过的元素的原始样式
         this.restoreAllModifiedElements();
         this.restoreTutorialInteractionState();
-
-        console.log('[Tutorial] 引导已完成，页面:', this.currentPage);
     }
 
     /**

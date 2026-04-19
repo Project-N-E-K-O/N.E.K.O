@@ -303,6 +303,7 @@ async def get_page_config(response: Response, lanlan_name: str = ""):
             "master_profile_name": "",
             "master_nickname": "",
             "master_display_name": "",
+            "autostart_csrf_token": AUTOSTART_CSRF_TOKEN,
             "model_path": "",
             "model_type": ""
         }
