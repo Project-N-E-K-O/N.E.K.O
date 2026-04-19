@@ -289,6 +289,7 @@ async def api_get_qr_code(
     try:
         import time
         ts = str(int(time.time() * 1000))
+        # per-call AsyncClient: 用户扫码登录触发，冷路径（且每次访问外部平台 host 不同）
         async with httpx.AsyncClient() as client:
             req_method = config.get("method", "GET").upper()
             raw_get_params = config.get("get_params", {})
@@ -378,11 +379,12 @@ async def api_qr_login_poll(
         raw_poll_params = config.get("poll_params", {"qrcode_key": "{{qrcode_key}}"})
         processed_params = {k: (v.replace("{{qrcode_key}}", qrcode_key).replace("{{timestamp}}", ts) if isinstance(v, str) else v) for k, v in raw_poll_params.items()}
 
+        # per-call AsyncClient: 扫码轮询登录，用户触发冷路径
         async with httpx.AsyncClient() as client:
             if req_method == "POST":
                 response = await client.post(
-                    url=config["login"], 
-                    data=processed_params, 
+                    url=config["login"],
+                    data=processed_params,
                     headers=config["headers"],
                     timeout=10
                 )

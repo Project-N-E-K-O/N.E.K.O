@@ -1458,6 +1458,7 @@ async def add_catgirl(request: Request):
     await init_one_catgirl(key, is_new=True)
 
     # 通知记忆服务器重新加载配置
+    # per-call AsyncClient: 用户手动新建猫娘触发，典型冷路径
     try:
             async with httpx.AsyncClient(proxy=None, trust_env=False) as client:
                         resp = await client.post(f"http://127.0.0.1:{MEMORY_SERVER_PORT}/reload", timeout=5.0)
@@ -2343,7 +2344,8 @@ async def voice_clone(
                 'speaker_id': prefix,
                 'prompt_text': f"<|{ref_language}|>" if ref_language != 'ch' else "希望你以后能够做的比我还好呦。"
             }
-            
+
+            # per-call AsyncClient: 用户手动上传音色文件触发，冷路径
             async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
                 resp = await client.post(register_url, data=data, files=files)
                 
@@ -2662,6 +2664,7 @@ async def voice_clone_direct(request: Request):
         provider_label = '阿里云CosyVoice'
 
     # 验证直链是否可访问（HEAD失败时回退到GET）
+    # per-call AsyncClient: 用户粘贴直链触发的一次性克隆流程，冷路径（外部 CDN 主机）
     try:
         async with httpx.AsyncClient(timeout=30, proxy=None, trust_env=False) as client:
             head_resp = await client.head(direct_link, follow_redirects=True)
@@ -2685,7 +2688,8 @@ async def voice_clone_direct(request: Request):
             # 1. 下载音频文件（使用流式读取避免内存问题）
             logger.info(f"开始下载直链音频: {direct_link}")
             MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB限制
-            
+
+            # per-call AsyncClient: 用户一次性直链下载，冷路径
             async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
                 async with client.stream('GET', direct_link, follow_redirects=True) as download_resp:
                     if download_resp.status_code != 200:
@@ -2784,7 +2788,8 @@ async def voice_clone_direct(request: Request):
             # 1. 下载音频文件以计算内容MD5（使用流式读取避免内存问题）
             logger.info(f"开始下载直链音频用于CosyVoice: {direct_link}")
             MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB限制
-            
+
+            # per-call AsyncClient: 用户一次性直链下载，冷路径
             async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
                 async with client.stream('GET', direct_link, follow_redirects=True) as download_resp:
                     if download_resp.status_code != 200:
@@ -3944,32 +3949,18 @@ async def export_catgirl_with_portrait(
             draw.text((text_x + shadow_offset, text_y + shadow_offset), _name, fill='#00000040', font=font)
             draw.text((text_x, text_y), _name, fill='white', font=font)
 
-            portrait_area_x = 20
-            portrait_area_y = header_height + 20
-            portrait_area_width = width - 40
-            portrait_area_height = height - header_height - 40
-            logger.info(f"[导出角色卡] 立绘区域: ({portrait_area_x}, {portrait_area_y}, {portrait_area_width}, {portrait_area_height})")
+            # 4. 合成立绘到角色卡
+            # 立绘区域：紧贴顶部蓝色区域下方到卡片底部，与前端预览一致
+            portrait_area_y = header_height
+            portrait_area_width = width
+            portrait_area_height = height - header_height
 
-            portrait_width, portrait_height = portrait_img.size
-            target_aspect = portrait_area_width / portrait_area_height
-            source_aspect = portrait_width / portrait_height
-            logger.info(f"[导出角色卡] 立绘原始尺寸: {portrait_width}x{portrait_height}, 目标比例: {target_aspect:.2f}, 源比例: {source_aspect:.2f}")
+            # 前端已按 (width × portrait_area_height) 渲染立绘，直接缩放到目标尺寸后粘贴
+            portrait_resized = portrait_img.resize((portrait_area_width, portrait_area_height), Image.Resampling.LANCZOS)
+            logger.info(f"[导出角色卡] 立绘调整后尺寸: {portrait_resized.size}, 粘贴位置: (0, {portrait_area_y})")
 
-            if source_aspect > target_aspect:
-                new_height = portrait_area_height
-                new_width = int(new_height * source_aspect)
-            else:
-                new_width = portrait_area_width
-                new_height = int(new_width / source_aspect)
-
-            portrait_resized = portrait_img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-            logger.info(f"[导出角色卡] 立绘调整后尺寸: {new_width}x{new_height}")
-
-            paste_x = portrait_area_x + (portrait_area_width - new_width) // 2
-            paste_y = portrait_area_y + (portrait_area_height - new_height) // 2
-            logger.info(f"[导出角色卡] 立绘粘贴位置: ({paste_x}, {paste_y})")
-
-            card_img.paste(portrait_resized, (paste_x, paste_y), portrait_resized)
+            # 粘贴立绘（使用alpha通道）
+            card_img.paste(portrait_resized, (0, portrait_area_y), portrait_resized)
             logger.info("[导出角色卡] 立绘粘贴完成")
 
             final_img = Image.new('RGB', (width, height), color='#E8F4F8')

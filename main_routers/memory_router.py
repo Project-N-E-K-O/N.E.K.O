@@ -341,6 +341,7 @@ async def save_recent_file(request: Request):
             # 中断 memory_server 的 review 任务
             import httpx
             from config import MEMORY_SERVER_PORT
+            # per-call AsyncClient: 用户手动保存最近对话触发，冷路径
             try:
                 async with httpx.AsyncClient(proxy=None, trust_env=False) as client:
                     await client.post(

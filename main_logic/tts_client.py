@@ -2591,6 +2591,7 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
         agg_flush_bytes = 4096
 
         # 连通性探测
+        # per-call AsyncClient: 一次性 probe，紧接着下面会构造 per-worker 持久 client
         async with httpx.AsyncClient(timeout=httpx.Timeout(10, connect=10)) as probe:
             probe_resp = await probe.post(
                 api_url, headers=headers,
