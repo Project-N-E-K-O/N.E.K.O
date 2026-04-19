@@ -414,14 +414,17 @@ async def notify_memory_server_reload(*, reason: str = "") -> bool:
 
 async def release_memory_server_character(character_name: str, *, reason: str = "") -> bool:
     from urllib.parse import quote
+    from utils.internal_http_client import get_internal_http_client
 
     try:
         encoded_name = quote(character_name, safe="")
-        async with httpx.AsyncClient(proxy=None, trust_env=False) as client:
-            response = await client.post(
-                f"http://127.0.0.1:{MEMORY_SERVER_PORT}/release_character/{encoded_name}",
-                timeout=5.0,
-            )
+        # 复用进程级 internal_http_client 单例（同样保证 proxy=None / trust_env=False）。
+        # 关停路径的并发 release 不再为每个角色付一次 SSLContext 初始化开销。
+        client = get_internal_http_client()
+        response = await client.post(
+            f"http://127.0.0.1:{MEMORY_SERVER_PORT}/release_character/{encoded_name}",
+            timeout=5.0,
+        )
         if response.status_code != 200:
             logger.warning(
                 "⚠️ 释放记忆服务器角色句柄失败，status=%s, character=%s, reason=%s",
