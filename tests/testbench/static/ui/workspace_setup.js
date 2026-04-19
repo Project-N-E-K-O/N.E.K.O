@@ -5,6 +5,7 @@
  *   - Persona            — P05 实装; 编辑当前会话 persona 元数据
  *   - Import             — P05 实装; 从真实 characters.json 拷贝
  *   - Virtual Clock      — P06 实装; 虚拟时钟完整滚动游标
+ *   - Scripts            — P12.5 实装; 对话剧本模板编辑器 (dialog_templates)
  *   - [分组: 记忆]       — P07 加入, 下辖 4 子页:
  *       · Recent         — recent.json 原始对话
  *       · Facts          — facts.json 事实池
@@ -23,6 +24,7 @@ import { el } from './_dom.js';
 import { renderPersonaPage } from './setup/page_persona.js';
 import { renderImportPage } from './setup/page_import.js';
 import { renderVirtualClockPage } from './setup/page_virtual_clock.js';
+import { renderScriptsPage } from './setup/page_scripts.js';
 import { renderMemoryRecentPage } from './setup/page_memory_recent.js';
 import { renderMemoryFactsPage } from './setup/page_memory_facts.js';
 import { renderMemoryReflectionsPage } from './setup/page_memory_reflections.js';
@@ -33,6 +35,7 @@ const PAGES = [
   { kind: 'page',  id: 'persona',            render: renderPersonaPage,            navKey: 'setup.nav.persona' },
   { kind: 'page',  id: 'import',             render: renderImportPage,             navKey: 'setup.nav.import' },
   { kind: 'page',  id: 'virtual_clock',      render: renderVirtualClockPage,       navKey: 'setup.nav.virtual_clock' },
+  { kind: 'page',  id: 'scripts',            render: renderScriptsPage,            navKey: 'setup.nav.scripts' },
   { kind: 'group', navKey: 'setup.nav.memory_group' },
   { kind: 'page',  id: 'memory_recent',      render: renderMemoryRecentPage,       navKey: 'setup.nav.memory_recent' },
   { kind: 'page',  id: 'memory_facts',       render: renderMemoryFactsPage,        navKey: 'setup.nav.memory_facts' },

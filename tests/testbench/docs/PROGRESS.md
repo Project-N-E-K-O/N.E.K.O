@@ -22,8 +22,9 @@
 | P08 | PromptBundle + Prompt Preview 双视图 | **done** | 2026-04-18 完成 |
 | P09 | Chat 消息流 + 手动 Send + SSE | **done** | 2026-04-18 完成 |
 | P10 | 记忆操作触发 + 预览确认 | **done** | 2026-04-18 完成 (+ 内置人设预设补丁 2026-04-18) |
-| P11 | 假想用户 AI (SimUser) | pending | |
-| P12 | 脚本化对话 (Scripted) | pending | |
+| P11 | 假想用户 AI (SimUser) | **done** | 2026-04-19 完成 |
+| P12 | 脚本化对话 (Scripted) | **done** | 2026-04-19 完成 |
+| P12.5 | Setup → Scripts 子页 (脚本模板编辑器) | **done** | 2026-04-19 完成 (+ 验收期两条小补丁: DOM null 文本 / 移除冗余 [校验] 按钮) |
 | P13 | 双 AI 自动对话 (Auto-Dialog) | pending | |
 | P14 | Stage Coach 流水线引导 | pending | |
 | P15 | ScoringSchema + Schemas 子页 | pending | |
@@ -407,13 +408,135 @@
 - 后续遗留: (i) 未接入 P19 Diagnostics Errors 视图, 失败 trace 目前只在 drawer 内显示; (ii) persona `resolve_corrections` 需要会话先有矛盾队列条目 (`queued` 状态) 才能测, 当前靠手测 persona.add_fact 先灌入冲突条目; (iii) recent.compress commit 会重写 recent.json 但不触发 facts 再抽取 (正交), 测试人员需手动在 facts 子页跑 `facts.extract`.
 - **P10 补丁 (内置人设预设 · 快速起点 + 一键清零)**: 用户反馈新建会话后想快速开测往往卡在"先得去 Persona 填角色名/prompt, 再去 Import 找一个能用的真实角色"这一步, 而且测试中沙盒状态被搞乱后没有便捷的回退办法. 修正方案: 新增 git 追踪的 `tests/testbench/presets/<preset_id>/` 目录承载内置示例角色, 首个预设 `default_character` 是最小完整角色 (小天: master + character card + system_prompt + persona/facts/recent 示例条目). 后端 `persona_router` 加 `GET /api/persona/builtin_presets` (列出可用预设) 和 `POST /api/persona/import_builtin_preset/{preset_id}` (应用到会话) 两端点, 数据源换成仓库里的 preset 文件但复用 real-character 导入流程的 `_write_sandbox_characters_json` + `_copytree_safe` + session.persona 回填. 前端 `page_import.js` 拆成两段: "内置预设" section (git 示例, 无会话也可查看列表) + "从主 App 真实角色导入" section (原有流程); i18n 全部 `setup.import.builtin.*` + `setup.import.real.*` 分树; CSS `.import-section` / `.import-divider` / `.import-row.preset-row` 独立布局 (纵向 flex + 右上角按钮绝对定位), 不走原 3-col grid 以容纳描述 + meta 两行. **设计决策**: (a) 导入 = 覆盖 (characters.json + memory 内同名文件), 用户多次点同一预设就是"回到预设状态", 不 confirm — 明确点了就是他要的效果, 符合 P10 "预览即承诺" 一致的干脆语义. (b) 预设 memory 里**不触及** reflections.json / persona_corrections.json / surfaced.json / time_indexed.db — 它们是用户测试过程中生成的工作数据, 保留让"一键清零"是"覆盖性"而不是"清空式"的, 避免丢调试痕迹; 要彻底清就去 memory 各子页手删. (c) `facts.json` 里 `hash` 字段在预设文件里故意留空, 后端 `_normalize_preset_facts` 导入时用 `sha256(text)[:16]` 填回 — 这样维护预设不用手算哈希, 文本微调也不会忘改 hash 造成 dedup 错乱. (d) `_reserved.system_prompt` 里保留 `{LANLAN_NAME}` / `{MASTER_NAME}` 占位符, 运行期由 `get_effective_system_prompt` 替换成 persona 里的实际值. (e) 架构上 preset 是"虚拟 real_characters", 未来多预设 (`presets/english_preset/` / `presets/minimal_no_prompt/` ...) 只需放目录即可, 列表端点自动发现. 验证: `GET /api/persona/builtin_presets` → `{presets: [{id, display_name, description, character_name, master_name, has_system_prompt, memory_files}]}` ✓; `POST /api/persona/import_builtin_preset/default_character` (无 session) → `404 {error_type: "NoActiveSession"}` ✓; 有 session → `{ok:true, persona, copied_files:[facts/persona/recent.json]}` ✓; 重复点同一 preset → 二次返回 ok + 相同 3 个文件列表 ✓ (幂等); `POST /api/persona/import_builtin_preset/nonexistent` → `404 {error_type:"UnknownPreset"}` ✓; 沙盒磁盘 characters.json + memory/小天/*.json 已写入且中文编码正确 ✓; facts.json 的 hash 已用 sha256 自动填回 ✓. 见 §4.15 #23.
 
-### [ ] P11 假想用户 AI
-- 预期产物: `pipeline/simulated_user.py` + SimUser 模式 UI + /chat/simulate_user
-- 状态: pending
+### [x] P11 假想用户 AI (SimUser)
+- 目标: 让测试人员在 Chat composer 里切到 "假想用户" 模式, 由一个独立 LLM 按风格预设 + 可选自定义人设 + 翻转后的历史上下文, 生成一条"下一轮要说的"用户消息草稿, 填进 textarea 供编辑后再发送. 完整实现 PLAN §P11 "独立 LLM 实例 + user_persona_prompt + 风格预设 (友好/好奇/挑剔/情绪化); Composer SimUser 模式; POST /chat/simulate_user (生成到 textarea 供编辑再发送)".
+- 产物:
+  - **后端**
+    - `tests/testbench/pipeline/simulated_user.py` — 新增核心模块:
+      - `SimUserError(code, message, status)`: 错误域同 `ChatConfigError` / `MemoryOpError` 风格 (稳定机器码 + zh-CN 文案 + 建议 HTTP). `code ∈ {NoActiveSession, SimuserModelNotConfigured, SimuserApiKeyMissing, InvalidGroup, LlmFailed}`.
+      - `STYLE_PRESETS: dict[str, str]` 闭集 4 种 (`friendly` / `curious` / `picky` / `emotional`), 每个是"你是…"第二人称的 behaviour 指令块; `DEFAULT_STYLE = "friendly"`. `MAX_HISTORY_MESSAGES = 40` 上限保护.
+      - `_resolve_simuser_cfg(session)` 走 `chat_runner.resolve_group_config(session, "simuser")` 共享三层 api_key 回退 (user-typed → preset-bundled → `tests/api_keys.json`) + Lanlan 免费端旁路, 但把 code `ChatModelNotConfigured/ChatApiKeyMissing` 重映射为 `SimuserModelNotConfigured/SimuserApiKeyMissing` 以便前端 toast 区分.
+      - `_flip_history(messages)` **翻转角色**: 历史 `user→assistant` (SimUser 自己已说过), `assistant→user` (目标 AI 说给它的), `system→丢弃` (那是给目标 AI 的注入指令, SimUser 不该看). 空 content 条目也丢弃 (避免 placeholder 污染上下文). 最后按倒序切最末 40 条再恢复升序.
+      - `_build_system_prompt(session, style_key, user_persona_prompt, extra_hint, first_turn)`: 组装 system 指令, 包含 "场景身份 + 风格设定 + (可选) 额外人设/背景 + 输出规则 + (首轮) 场景开场 + (可选) 本轮临时指示". `target_alias` = `persona.character_name or "对方"`, `self_alias` = `persona.master_name or "你"`, 空值时换泛称避免 LLM 把 `{LANLAN_NAME}` 字面串当真. 输出规则显式禁止 LLM 写 "我:"/"用户:" 前缀、引号包裹、旁白动作描写, 允许沉默 (空串) 表示 "应当沉默或结束对话".
+      - `_postprocess_draft(raw)` 兜底清洗: 多重 strip 前缀 (`用户:`/`User:`/`me:`/`我:` 及中文冒号变体, 顺序敏感先长后短), 再去首尾成对引号 (`"'` / U+201C-U+201D / U+300C-U+300D). 清洗非平凡时追加 warning.
+      - `generate_simuser_message(session, *, style, user_persona_prompt, extra_hint) -> SimUserDraft`: 无副作用 async 核心 — 不读写 `session.messages`, 不消耗/修改 `clock.pending_*`, 不调记忆 manager; 只写 JSONL 日志 (`simuser.generate.begin/end/error`). `SimUserDraft.to_dict()` 包 `{content, style, elapsed_ms, token_usage, warnings, wire_messages_preview}`.
+      - `list_style_presets() -> list[{id, prompt}]`: 供 UI 发现; 独立函数不直接暴露 dict, 便于后续加 label / description 字段时不破坏端点形状.
+    - `tests/testbench/routers/chat_router.py` 扩展:
+      - `GET /api/chat/simulate_user/styles` → `{styles: [{id, prompt}], default}` 用于前端发现风格预设.
+      - `POST /api/chat/simulate_user` → 调 `generate_simuser_message`, 返回 `SimUserDraft.to_dict()`. 使用 `session_operation("chat.simulate_user", state=BUSY)` 与 `/chat/send` **同锁粒度**, 避免并发调 LLM 与流式 UI 打架; 代价是 /send 流式中点生成会 409. 错误码映射: 404 NoActiveSession / 409 SessionConflict / 412 Simuser*NotConfigured / 502 LlmFailed.
+    - `tests/testbench/routers/health_router.py` (改动): `phase` 字段 `P10 → P11`.
+  - **前端**
+    - `tests/testbench/static/ui/chat/composer.js`: Composer 从"只有 Manual 一个模式的占位显示"改为真正的 Mode select:
+      - `modeSelect`: `<select>` 含 Manual / SimUser 两个 enabled 选项 + Script(P12) / Auto(P13) 两个 disabled 占位 (保留入口但明示 phase).
+      - `simuserControls`: 折叠条 (style select / 自定义 persona 按钮 / 生成按钮), 仅 mode=simuser 显示, 用 `border-left: dashed` 与主控件视觉分段.
+      - `personaEditor`: 独立折叠 textarea 承载 `user_persona_prompt` (会话级临时人设, 不持久化). 默认隐藏, 点按钮展开.
+      - `ensureStylesLoaded()`: lazy 拉 `/api/chat/simulate_user/styles` 首次填充 styleSelect; 端点失败时 fallback 到硬编码 `['friendly']` 让 UI 仍可工作.
+      - `generateDraft()`: (a) 非 simuser 模式 / 无会话 / pending 都直接 return; (b) textarea 已有内容时 `window.confirm` 覆盖警告; (c) POST simulate_user 端点, `expectedStatuses: [404,409,412,502]` 让业务级错误走 toast 而非全局异常; (d) 成功后把 content 填入 textarea + `draftOrigin = 'simuser'` + 光标置末尾; (e) 若 `content` 为空 (SimUser 沉默) 不清 textarea, 只 toast 提示; (f) warnings 非空时 toast ok + message 摘要.
+      - `draftOrigin` 状态机: SimUser 生成后记 `'simuser'`, textarea `input` 事件 (用户手改一个字) 立即退回 `null`. Send 时依此决定 `source: 'simuser' | 'manual'`. 同时 Send / Inject sys / 切出 SimUser 模式都会清回 null.
+      - `syncModeUI()`: mode=simuser 时把 `roleSelect` 强制切到 `user` 并 disabled (SimUser 只产生 user 消息, system 语义保留给手动路径). 切出时 role 恢复 enabled 且自动收起 persona 编辑区.
+      - `syncGenerateBtn()`: 按 pending / generating / 是否 simuser 联动按钮禁用.
+    - `tests/testbench/static/core/i18n.js`:
+      - `chat.composer.mode` 拆 `simuser / script_deferred / auto_deferred`, 原 `deferred` 字段保留为 "(Scripted / Auto — P12-P13)" 以免其他引用断链.
+      - 新增整颗 `chat.composer.simuser.*` 树: `style_prefix / style.{friendly,curious,picky,emotional} / persona_toggle / persona_toggle_title / persona_placeholder / persona_intro / generate / generating / generate_title / generate_failed / generated_ok / generated_empty / confirm_overwrite`.
+    - `tests/testbench/static/testbench.css`:
+      - `.role-select` 选择器合并 `.mode-select` / `.simuser-style-select` 共享样式; 追加 `.role-select[disabled]` 的半透明提示.
+      - 新增 `.simuser-controls` (inline-flex + left-dashed-border 分段) 和 `.simuser-persona-editor` (柔色背景 + 1px 边框的折叠块) / `.simuser-persona-textarea` 样式.
+- 验证:
+  - `GET /version` → `"phase": "P11"` ✓.
+  - `GET /api/chat/simulate_user/styles` 返回 4 种风格 + default=friendly ✓.
+  - `POST /api/chat/simulate_user` 无会话 → 404 `NoActiveSession` ✓; simuser 组未填 base_url/model → 412 `SimuserModelNotConfigured` ✓; 配置齐全但 LLM 超时 → 502 `LlmFailed` + 原 exception 类型附在 message ✓; 正常流 → `{content, style, elapsed_ms, token_usage, warnings, wire_messages_preview}` ✓.
+  - JSONL 日志 `simuser.generate.begin/end` 在会话 logger 中落盘, `wire_messages` 完整可复现 ✓.
+  - 翻转历史: 对一段 user/assistant 交替的会话, wire_messages 里 role 确实翻转且不含 system 消息 ✓.
+  - 前端切 mode=simuser 后, role select 强制 user + disabled; 切回 manual 后恢复 ✓; style select 首次切入时 lazy 加载 4 项 ✓; persona toggle 展开折叠且切出模式自动收起 ✓; 点生成后 textarea 填充 + 光标末尾 + toast ok ✓; 手改一个字后再 Send, 网络面板看请求体 `source: "manual"` ✓; 不改直接 Send, `source: "simuser"` ✓.
+  - 风格预设 prompt 文本不含非 ASCII 硬编码文字 (全部走 `\uXXXX` / 正常中文 + 由 i18n.js 单独管理) ✓.
+  - 无 lint 错误 (ReadLints 覆盖 `simulated_user.py` / `chat_router.py` / `composer.js` / `i18n.js`) ✓.
+- 设计备注:
+  - **为什么生成这一步不落盘?** PLAN 明确要求"生成到 composer textarea 供编辑再发送". 落盘会让"预览/编辑"语义丢失, 也会导致"用户只是想看看 SimUser 大概会说什么"变成"每点一次就多一条垃圾 user 消息". 当前路径 (生成→填 textarea→编辑→Send) 等价于 Manual 模式的 "手打一条然后点发送", 只是 user 内容来自 LLM; 时钟推进/wire_messages 重建/流式响应/preview 刷新全部沿用 /chat/send 一条老路, 零新分支.
+  - **为什么翻转历史而不是直接塞给 SimUser?** 不翻转则 SimUser LLM 看到的 user 消息是它"自己之前说的", assistant 消息是"对方". 对绝大部分模型这是反直觉的: 它会认为"对方" = assistant 就是它自己, 于是可能产出"帮对方圆场"式的回应, 而不是"用户视角的新话". 翻转后 SimUser 眼中的 conversation 就和"真实用户与 AI 对话"的拓扑完全对齐. 踩过类似坑的项目很多 (LangChain roleplay, openai-evals sim_user); 我们直接走翻转以避免该类迷思.
+  - **为什么风格定死 4 种 + 自定义 persona 是追加, 而不是做成"风格完全用户自定义"?** 闭集预设给 UI 一个**可发现** (discoverable) 的入口, 测试人员不用自己编 prompt 就能快速切到 4 种典型用户行为. 再额外开一个自定义 persona 入口, 覆盖剩下的长尾需求 (如"用户是个 30 岁程序员, 专业背景提外行问题"). 这样 "常见 → 一键切 / 特殊 → 补一段文本" 双档位都有, 不会让新人被一个大空白 textarea 吓到.
+  - **为什么 simuser 组和 chat/memory 组共用同一个三层 api_key 回退 resolver?** 避免测试人员"每个 group 都要填一遍 API Key". 免费预设用 preset-bundled key, 付费预设用 `tests/api_keys.json` 兜底, 直到本 group 填了才用本 group 的. 这条语义测试人员在 chat/memory 组已经建立过直觉, simuser 组直接复刻避免产生二套语义.
+  - **为什么 draftOrigin 在 `input` 事件里就退回 null, 而不是等 Send 时再检查 diff?** Diff 需要在 Send 时临时存一份"生成出来的原稿"做对比, 成本低但语义更复杂 (完全相同=simuser, 改了一个字就=manual?). 直接在 `input` 事件里立即退回 null 等于"只要你编辑过就算手动", 更符合测试人员"看到我动过这条草稿就不是 LLM 的原产了"的直觉. 同时实现上只需一个布尔字段, 不占内存, 切换模式时 reset 也干净.
+  - **为什么 Script / Auto 保留为 disabled 选项而不是直接不显示?** UI 可发现性: 测试人员看到 select 里有 4 个 option (2 enabled + 2 disabled + phase 提示文案) 能立刻知道 "这个下拉将来还会有更多模式, 目前只有前两个可用", 不用翻文档. 也给 P12/P13 接入时留清晰的插槽, 改 disabled=false 就接上了.
+- 后续遗留: (i) SimUser 支持的 `extra_hint` 字段后端已预留, 前端本期没暴露 UI (等 P14 Stage Coach 接入时再放在 Stage 面板里做"本轮特殊指令"); (ii) 风格预设目前是硬编码常量, P15 ScoringSchema 一等公民落地后考虑把 "(style_id, prompt_text, description)" 迁到 JSON schema 让用户自定义; (iii) 未接入 P19 Diagnostics Errors 视图, LlmFailed 的 trace 目前只在 toast + JSONL 日志可见.
+- **P11 补丁 (Gemini 空 contents 400 · 2026-04-19)**: 首轮点生成返回 502 `LlmFailed: Error code: 400 - Model input cannot be empty`, 但 test_connection/simuser 通过. 根因: Lanlan 免费端后端是 Vertex AI Gemini, 它把 `system` 分流到 `systemInstruction` 字段而 `contents` 只装 user/model 对话; 首轮 wire = 只有 system → `contents == []` 直接 400 `INVALID_ARGUMENT`. OpenAI 兼容端点对"只 system"宽容接受 (产出一段独白), 所以 test_connection 里的 `{role:"user",content:"ping"}` 走得通, 掩盖了问题. Gemini 另还要求 `contents` 以 `user` 结尾; 翻转后若末尾是 assistant (真实用户最后一句还没被目标 AI 回复) 也会被拒. 修正: `simulated_user.generate_simuser_message` 组完 `wire_messages = [system] + flipped_history` 后加自适应 nudge — `flipped_history` 为空或末尾非 user 则追加一条 `role=user` 消息 ("请按上述风格与人设...作为用户说出你接下来要说的这一句话, 只输出原话"; 首轮用略不同的"开话头"版本). OpenAI/Claude/Lanlan 收到 nudge 只是冗余强调, 无害. 见 §4.16 #32 延伸教训: **test_connection 只证明网络+鉴权+模型名有效, 不证明日常 wire 格式合法**; 后续 P12/P13/P16 任何 LLM 调用点开发阶段都要独立跑"空 history"和"末尾是 assistant"两个边界; **按最严 provider=Gemini 组 wire 三规则 (非空 + 末尾 user + 不连发同角色) 就能同时 OK 掉所有 provider**. 验证: 首轮点生成 → 200 `{content:"...", style:"friendly", ...}` ✓; 模块 docstring 也补上了 Gemini 兼容垫片说明.
 
-### [ ] P12 脚本化对话
-- 预期产物: `pipeline/script_runner.py` + dialog_templates 合并加载 + Scripted 模式 UI + sample_*.json 2-3 个
-- 状态: pending
+### [x] P12 脚本化对话 (Scripted)
+- 目标: 让测试人员可以在 Chat composer 选一个**预置对话剧本** (JSON), 按 `Next turn` 逐轮推进或 `Run all` 一键跑完; 剧本里 `turns[].time` 自动消费到 virtual clock, `bootstrap` 用来重设会话起点, `role=assistant` 的 `expected` 字段自动回填到紧随其后的真实 AI 回复的 `reference_content`, 供 P15+ ComparativeJudger 对照打分.
+- 预期产物:
+  - `tests/testbench/pipeline/script_runner.py` (新增):
+    - `ScriptError(code, message, status)` — 错误码 `NoActiveSession` / `ScriptNotFound` / `ScriptSchemaInvalid` / `ScriptNotLoaded` / `ScriptExhausted` / `ScriptTurnFailed`.
+    - `list_templates()` — 合并 `tests/testbench/dialog_templates/*.json` (builtin) + `tests/testbench_data/dialog_templates/*.json` (user), 同 name 时 user 覆盖 builtin 并标 `overriding_builtin: True`; 返回 `[{name, description, user_persona_hint, turns_count, source, path, overriding_builtin}]`.
+    - `load_template(name)` → 读校验后的完整 dict (`{name, description, user_persona_hint, bootstrap?, turns[]}`).
+    - `apply_bootstrap(session, bootstrap)` — 读取 `virtual_now` (ISO) 与 `last_gap_minutes`, 调 `session.clock.set_bootstrap(...)`. 只在 `session.messages` 为空时生效, 非空时返回一条 warning 让 UI 提示"此会话已有消息, bootstrap 未应用".
+    - `apply_turn_time(session, time_dict)` — 消费 `{advance: "1h30m"}` / `{advance_seconds: int}` / `{at: "ISO"}`, 转成 `clock.stage_next_turn(delta=/absolute=)`; 省略则用 `per_turn_default_seconds` 的默认行为 (由 `chat_runner.stream_send` 自行处理).
+    - `advance_one_user_turn(session)` → async generator (SSE 事件): 从 `script_state.cursor` 起跳过所有 `role=assistant` 的 turn (把 `expected` 合并存入 `pending_reference`, cursor+=1), 遇到 `role=user` 就: (a) 应用 `time`; (b) 转发 `chat_runner.get_chat_backend().stream_send(session, user_content, source='script')` 的 SSE 事件; (c) 在 `{event:'assistant'}` 出现时把 `pending_reference` 回填到刚提交的 assistant 消息的 `reference_content` (并清零 pending); (d) 推进 cursor 到下一条; (e) yield `{event:'script_turn_done', cursor, turns_count}`; 末尾检查是否耗尽, 耗尽则多 yield 一条 `{event:'script_exhausted'}`.
+    - `run_all_turns(session)` → async generator: 反复调 `advance_one_user_turn` 并原样转发事件; 遇到 error/exhausted 立即停.
+  - `tests/testbench/session_store.py` (Session 扩字段): `script_state: dict | None = None`, 结构 `{template_name, cursor, pending_reference, turns_count, loaded_at}`. 加载脚本时覆写, `/chat/script/unload` 或 `POST /session` 重建会话时置空.
+  - `tests/testbench/routers/chat_router.py` (扩展):
+    - `GET /api/chat/script/templates` — 返回合并列表.
+    - `POST /api/chat/script/load {name}` — 读模板, 应用 bootstrap, 初始化 `session.script_state`; 返回 `{script_state, warnings[]}`.
+    - `POST /api/chat/script/unload` — 清空 script_state.
+    - `GET /api/chat/script/state` — 当前 `script_state` 或 `null`.
+    - `POST /api/chat/script/next` — SSE `text/event-stream`, 跑一个 user turn (内部可能跨过任意个 assistant turn 来收集 pending_reference).
+    - `POST /api/chat/script/run_all` — SSE, 循环跑到 `script_exhausted` 或 `error`.
+  - `tests/testbench/dialog_templates/sample_*.json` (预置):
+    - `sample_greeting_then_complaint.json` — PLAN §8 给出的原型 (4 轮, 跨一天的情绪转折).
+    - `sample_fact_probe.json` — 多轮追问事实记忆 (测试 facts memory 召回).
+    - `sample_emotional_support.json` — 情绪化用户 + 共情测试 (测试 persona_consistency / empathy).
+  - `tests/testbench/static/ui/chat/composer.js`: mode=script 的下拉选项解除 disabled; 新增 `scriptControls` 段 (模板 select + [加载] + [下一轮] + [跑完] + [卸载] + 进度 badge `cursor/N`); SSE 复用 `streamPostSse`; Run-all 时 sendBtn/Next 禁用, 按 Stop (刷新页面临时方案).
+  - `tests/testbench/static/ui/chat/message_stream.js`: assistant 消息若存在 `reference_content`, 在气泡下追加一个 "参考回复" 可折叠块 (灰色虚线边框, 暂不做 diff 高亮 — 留给 P15 ComparativeJudger 的评分 UI).
+  - `tests/testbench/static/core/i18n.js`: 追加 `chat.composer.script.*` 命名空间 (template_prefix / load / loaded / unload / next / run_all / running / exhausted / progress / no_template / confirm_overwrite_history / turn_failed / schema_invalid 等).
+  - `tests/testbench/static/testbench.css`: `.script-controls` (虚线左边框, 与 simuser-controls 一致的视觉分组) + `.script-reference-block` (灰底小号字体) + `.script-progress-badge`.
+  - `tests/testbench/routers/health_router.py`: `phase` 字段 `P11 → P12`.
+- 设计决策:
+  - **脚本游标在 turn 数组上移动, 不混进 session.messages 索引**: 脚本里 `role=assistant` 的 turn 只是"expected 的载体"而不是一个真实要发送的消息, 不占 `session.messages` 一格. 如果把游标和消息下标绑在一起, 混跑 `inject_system` / 编辑消息就会立即错位. 采用**独立游标** + 每次 `advance_one_user_turn` 把 assistant turn 的 expected 先暂存 `pending_reference` 等下次 LLM 回复落盘时回填, 这样对消息编辑无感.
+  - **多条 assistant turn 的 expected 合并策略**: 极少见但合法 (模板里同一位置写两条 assistant 都给 expected), 合并成 `expected1\n---\nexpected2` 存入 `reference_content`, 让 tester 后续自行挑.
+  - **run_all 必须整段独占锁**: 否则中途有人点 `/chat/send` 或 `/chat/simulate_user` 就会错乱脚本游标. 通过 `session_operation("chat.script.run_all", state=BUSY)` 在整个 SSE 生命周期里持锁, 与 `/chat/send` 同一机制.
+  - **bootstrap 与已有消息的冲突**: 如果 `session.messages` 非空就不重设时钟, 只给 warning — 测试人员手工继续已有会话时, 强行覆盖 clock 会让后续消息出现负时间差.
+  - **expected 只回填到"脚本驱动产生"的 assistant 消息**: 走 `advance_one_user_turn` 时 `stream_send(source='script')`, 产出的 assistant 消息才会被写 `reference_content`. 用户在脚本模式下手点 Send 发出去的 assistant 不算脚本轮次, 不触发回填, 与当下 cursor 无关.
+- 状态: done (2026-04-19)
+- 自测 (manual): 建会话 → Chat 页切到 Mode=脚本化 (Scripted) → 下拉列出 3 个 builtin 剧本, 含 `[内置]` 标签与 turns_count; 点 [刷新列表] 重扫 dialog_templates 目录. 选 `sample_greeting_then_complaint` → [加载] 提示 "剧本 ... 已加载, 共 4 轮.", `bootstrap` 把虚拟时钟推到模板声明的 "09:00", 进度 badge 显示 `[sample_...] 0/4`. 点 [下一轮] → 脚本跳过 cursor=0 的 assistant turn (仅暂存 expected), cursor=1 的 user 发到目标 AI → AI 回复落盘, 消息气泡下方多出"参考回复"折叠块 (`role=assistant` 才显示), reference_content 与 expected 完全一致; cursor 推到 2, 进度 `1/4`. 再点 [跑完] → 循环剩余 user turn, SSE 中间按序出现 `script_turn_done` / `script_exhausted`, 所有 AI 回复都正确挂 `reference_content`. 重新 [加载] 同一剧本 (`session.messages` 非空) → toast warning "bootstrap 已跳过, 因会话有消息", 虚拟时钟保持不变. [卸载] → `script_state` 清空, 下拉保留选中. 切到手动模式后所有脚本控件隐藏, [发送] 恢复可用. Diagnostics 日志正常落 `script.reference.fill` / `script.turn_done` 事件.
+- 后续遗留: (i) run_all 期间的 Stop 按钮暂未实装, 需要刷新页面中断 (next-gen Stage Coach P14 会补); (ii) expected diff 高亮留给 P15 ComparativeJudger; (iii) 用户自定义剧本的模板编辑器 UI 未做, 当前必须手写 JSON 到 `tests/testbench_data/dialog_templates/` 后点"刷新列表" → **已转入 P12.5 补做**.
+
+### [x] P12.5 Setup → Scripts 子页 (脚本模板编辑器)
+- 目标: 在 Setup workspace 补一个扁平子页 `Scripts`, 允许测试人员在浏览器里**阅览 / 复制 / 编辑 / 新建 / 删除 / 导出** 对话剧本模板, 不再需要外部文本编辑器改 `dialog_templates/*.json`. 评分 prompt / 评分维度仍归 P15 Evaluation → Schemas 子页, **不进本子页**, 两者概念分离 (脚本 = 测试输入素材, schema = 测试标准).
+- 预期产物 (代码):
+  - **后端**:
+    - `pipeline/script_runner.py` 补 5 个纯逻辑函数, 不污染现有 `load_template` 的加载/校验链路:
+      - `read_template_raw(name, source)` → 返回 `{name, source, path, raw: <完整 dict>}`, builtin/user 双目录都可读
+      - `save_user_template(raw_dict)` → 先 `validate_template_dict(raw)`, 通过就以 `<raw.name>.json` 写到 `testbench_data/dialog_templates/`, 原子写 (tmp+rename); `name` 不能与 builtin 的 `name` 冲突时走"override builtin"语义, UI 要给明显提示
+      - `delete_user_template(name)` → 只删 user 目录, builtin 不可删; 删之后若正好是 session.script_state.template_name 则给 warning 让前端提示 "当前已加载的剧本文件被删了, 仍可继续跑完, 但刷新列表后就看不到了"
+      - `validate_template_dict(raw)` → 复用现有 schema 校验 (name/turns 必填, role 合法, bootstrap 合法, expected 仅 assistant 才有意义), 返回 `{ok: bool, errors: [{path, message}]}`; 不 raise, 给 UI 友好清单
+      - `duplicate_builtin_to_user(builtin_name, target_name)` → 深拷贝 builtin 模板, 改 `name=target_name`, 调 `save_user_template`, 返回新模板的 `read_template_raw` 结果
+  - `routers/chat_router.py` 新增 5 个端点 (都放在 `/api/chat/script/templates` 命名空间下, 与现有 `GET /templates` 并列):
+    - `GET  /api/chat/script/templates/{name}` → `{template: read_template_raw(...)}`, 404 NotFound
+    - `POST /api/chat/script/templates` → body = 完整模板 dict, 422 `ScriptSchemaInvalid` (带 errors 列表) / 200 `{template, overriding_builtin: bool}`
+    - `DELETE /api/chat/script/templates/{name}` → 404 / 403 BuiltinNotDeletable / 200 `{warnings: [...]}`
+    - `POST /api/chat/script/templates/validate` → body = 模板 dict (可不完整), 200 `{ok, errors}`, 永不 422 (校验报错走字段而非 HTTP)
+    - `POST /api/chat/script/templates/duplicate` → body `{source_name, target_name}`, 404/409 冲突/200 同 POST
+  - **前端**:
+    - `static/ui/setup/page_scripts.js` (新建): 双栅布局 (复用 `.two-col` 已有变体)
+      - 左栅: 模板列表 (builtin 灰底 + `[内置]` 徽章 + `[复制为可编辑]` 按钮; user 白底 + 可直接点选择 + `[删除]` 按钮; 覆盖 builtin 的 user 版本额外加 `[覆盖中]` 徽章); 顶部 `[刷新]` `[+ 新建空白模板]`
+      - 右栅: 编辑器 (当前无选中时给空态提示 "从左栏挑一个剧本, 或点 [+ 新建空白模板]")
+        - 基本信息: `name` (builtin 只读, user 可改, 改名等于 save-as); `description` 单行; `user_persona_hint` 多行 textarea
+        - `bootstrap`: `virtual_now` (ISO8601 input, 可留空) / `last_gap_minutes` (数字 input, 可留空); 下方一行浅色提示"加载此剧本时, 若 session 为空, 虚拟时钟会被重置到这里"
+        - `turns` 编辑区: 每 turn 一张小卡片, 头部是 role 下拉 (user/assistant) + 序号 + `[↑] [↓] [删除]`, 展开后是 `content` textarea (user 必填, assistant 可为空当占位) / `expected` textarea (仅 assistant 显示, 否则隐藏) / `time.advance` 与 `time.set` 两个可选字段 (首 turn 通常不需要); 底部 `[+ 添加 user turn] [+ 添加 assistant expected]` 两个快捷按钮
+        - 工具栏 (编辑器顶部右侧): `[Validate]` / `[Save]` (dirty 时高亮) / `[Save As…]` (改 name 另存) / `[Export]` (下载 JSON) / `[Reload]` (丢弃当前未保存改动) / `[Delete]` (user 模板才显示)
+    - `workspace_setup.js` `PAGES` 在 `virtual_clock` 之后、`memory_group` 分组之前插一行 `{kind:'page', id:'scripts', render: renderScriptsPage, navKey: 'setup.nav.scripts'}`
+    - `core/i18n.js` 补 `setup.nav.scripts` + `setup.scripts.*` 命名空间 (约 30 个键, 覆盖标题/按钮/字段标签/校验错误/toast)
+    - `testbench.css` 补 `.script-editor-*` 样式 (模板卡片、turn 卡片、dirty 徽章等, 约 50 行)
+- 设计决策:
+  - **builtin 模板不可原地编辑**: 测试人员只能 "复制为 user 版本" 再改, 防止 git 管的 builtin 被改坏; UI 对 builtin 选中时编辑器所有输入框置 readonly, 右上角显示警示 "只读, 点 [复制为可编辑] 创建用户副本".
+  - **name 即文件名**: user 模板文件名固定为 `<name>.json`, 改 name 等价于 "新建一份并删掉老的" (UI 执行 Save As 流程: 先 save 新 name, 再 delete 旧 name, 原子性要在前端 try/catch 保证, 后端不提供 rename 语义). builtin 的 `sample_*.json` 前缀仅文件名惯例, 不是 name 字段一部分.
+  - **覆盖 builtin 语义**: user 目录里 `name` 与 builtin 相同时, 加载器 (`script_runner.list_templates`) 已有 user 优先逻辑. UI 在列表里给"覆盖 builtin"徽章让 tester 知晓. 新建时如果用 builtin 的 name, 弹 confirm "将覆盖内置模板 X, 确定吗?".
+  - **编辑器即时校验, 保存前必 validate**: 用户输入过程中不校验 (太吵), Save 按钮按下时才调 `/validate` 一次, 422 列出具体字段错误清单 + 行号/路径, 定位到对应 turn 卡片并红框高亮; 校验通过才实际写盘.
+  - **不做脚本试跑按钮**: 脚本的"试跑"天然就是回 Chat workspace 点 Composer 的 [加载] + [下一轮]. 本子页专注"写", 不重复"跑". 如果未来想要, 作为 P13 Auto-Dialog 的扩展再加.
+  - **评分 prompt / 评分维度不进本子页**: 两者完全是另一个概念 (测试**标准**而非测试**输入**), PLAN 里归 P15 Evaluation → Schemas 子页, 本子页只管脚本 + 参考回复. 参考回复 (`expected`) 仍归脚本 (因为它是"对应哪个 user turn 的理想回复"这种结构化信息, 脱离 turn 上下文没意义).
+- 自测 (manual, 后续补): 建会话 → Setup 导航到 `Scripts` 子页 → 左栏列出 3 个 builtin + 任何已有 user 模板. 点 `sample_greeting_then_complaint` → 右栏表单只读渲染, 顶部提示"只读". 点 `[复制为可编辑]` → 弹 prompt 输新 name, 确认后列表顶部出现 user 版本, 自动选中并进入编辑态. 修改其中一个 assistant turn 的 expected → dirty 徽章亮, Save 按钮高亮. 随便删掉一个 turn 让 turns 数为奇数 → 点 Save → 后端返回 422, 错误清单指出"turns 应成对 (user → assistant) 或至少最后一条是 user" (等具体校验规则以 script_runner 为准). 修复后 Save 成功, toast "已保存到 testbench_data/dialog_templates/xxx.json". 切回 Chat workspace 点 [刷新列表] → 新 name 出现在下拉里, 选中 [加载] 能正常跑. 再回 Scripts 点 `[删除]` → confirm 后 user 模板消失, builtin 版本 (如果被覆盖过) 重新出现在列表里.
+- 后续遗留 (先留到真正开工时补): (i) turn 卡片拖拽排序; (ii) 多人协作场景下的版本冲突处理 (testbench 本来就单用户, 默认不考虑); (iii) import 从外部 JSON 文件拖入 (可并入 P23 导入流程).
+- **2026-04-19 验收期补丁 (小改)**:
+  - **DOM "null" 文本残影**: `page_scripts.js::renderEditor` 里 `pane.append(renderEditorErrors(state))` 遇到 `renderEditorErrors` 返回 `null` 时会把字符串 `"null"` 塞进 DOM (`Node.prototype.append` 对非 Node 参数一律 `String(x)`). 同类问题在编辑器头部按钮组 `buttons.append(..., state.details.has_user ? el(...) : null)` 也中招. 统一改成 `const n = ...; if (n) parent.append(n);` 或 `if (state.details.has_user) buttons.append(...)` 分支形式. 细节见 AGENT_NOTES §4.17 #42 + 新抽的跨项目 skill `~/.cursor/skills-cursor/dom-append-null-gotcha/SKILL.md`.
+  - **[校验] 按钮下线**: `POST /script/templates` 本来就是 "先 `validate_template_dict` 再落盘" 的原子语义, 失败返回 422 + `detail.errors`, 前端 `saveDraft` 已经有完整的字段级红框/toast 回流, 独立 [校验] 按钮纯噪音. 改动: (a) `page_scripts.js` 删 [校验] 按钮 + `validateDraft` 函数, docstring 第 4 条改写为 "校验隐式内嵌在 Save"; (b) `chat_router.py` 删 `POST /script/templates/validate` 路由 + `_ScriptValidateRequest` 模型 + `validate_script_template` import (pipeline 层的 `validate_template_dict` 函数保留, save 内部还要用); (c) `i18n.js` 删 4 个 key (`buttons.validate` / `toast.validate_ok`/`_errors`/`_failed`). **注意**: 本节 "预期产物" 里 `POST /api/chat/script/templates/validate` 端点 + 工具栏 `[Validate]` 按钮描述**已失效**, 以本补丁为准.
 
 ### [ ] P13 双 AI 自动对话
 - 预期产物: `pipeline/auto_dialog.py` + Auto-Dialog 模式 UI + /chat/auto_dialog/* SSE

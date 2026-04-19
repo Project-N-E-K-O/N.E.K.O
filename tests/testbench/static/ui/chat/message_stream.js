@@ -170,6 +170,29 @@ export function mountMessageStream(host) {
       pre.textContent = text;
       body.append(pre);
     }
+
+    // P12: assistant 消息如果有 reference_content (脚本 expected 回填 / 测试人员
+    // 手工写的"理想人类回复"), 在气泡下追加一个可折叠块. 收起 → 一个小徽章,
+    // 展开 → 显示参考文本 + hint. 不做 diff 高亮 (留给 P15 ComparativeJudger
+    // 的评分 UI).
+    const ref = (msg.role === 'assistant' ? (msg.reference_content || '') : '').toString();
+    if (ref.trim()) {
+      const refWrap = el('div', { className: 'msg-reference-wrap' });
+      const refBlock = createCollapsible({
+        blockId: `ref-${msg.id}`,
+        title: i18n('chat.stream.reference_title'),
+        content: ref,
+        lengthBadge: i18n('chat.preview.length_badge', ref.length),
+        defaultCollapsed: true,
+        copyable: true,
+      });
+      refBlock.classList.add('msg-reference-block');
+      const hint = el('div', { className: 'muted msg-reference-hint' },
+        i18n('chat.stream.reference_hint'));
+      refWrap.append(refBlock, hint);
+      body.append(refWrap);
+    }
+
     node.append(body);
     return node;
   }

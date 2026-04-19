@@ -21,6 +21,30 @@ Endpoints
 * **P09** ``POST   /api/chat/send``                    — SSE (text/event-stream);
                                                          body: ``{content, role?,
                                                          source?, time_advance?}``.
+* **P11** ``GET    /api/chat/simulate_user/styles``    — 风格预设列表.
+* **P11** ``POST   /api/chat/simulate_user``           — 调 simuser LLM
+                                                         生成一条"用户消息
+                                                         草稿"; **不落盘**,
+                                                         供 composer 填充后
+                                                         再走 /chat/send.
+* **P12** ``GET    /api/chat/script/templates``        — 合并 builtin/user
+                                                         两个目录, 返回可用
+                                                         脚本 meta 列表.
+* **P12** ``POST   /api/chat/script/load``             — 加载指定脚本到会话;
+                                                         body: ``{name}``.
+                                                         应用 bootstrap, 初始
+                                                         化 ``script_state``.
+* **P12** ``POST   /api/chat/script/unload``           — 清空 ``script_state``.
+* **P12** ``GET    /api/chat/script/state``            — 当前脚本加载状态.
+* **P12** ``POST   /api/chat/script/next``             — SSE; 跑一个 user
+                                                         turn (自动累积 expected
+                                                         到下次 AI 回复).
+* **P12.5** ``GET    /api/chat/script/templates/{name}`` — 读模板详情 (编辑器用).
+* **P12.5** ``POST   /api/chat/script/templates``        — 保存用户模板.
+* **P12.5** ``DELETE /api/chat/script/templates/{name}`` — 删用户模板 (builtin 不可删).
+* **P12.5** ``POST   /api/chat/script/templates/duplicate`` — 复制模板到用户目录.
+* **P12** ``POST   /api/chat/script/run_all``          — SSE; 循环 Next 直到
+                                                         脚本耗尽或 error.
 
 Design notes
 ------------
@@ -70,6 +94,24 @@ from tests.testbench.pipeline.chat_runner import (
 from tests.testbench.pipeline.prompt_builder import (
     PreviewNotReady,
     build_prompt_bundle,
+)
+from tests.testbench.pipeline.script_runner import (
+    ScriptError,
+    advance_one_user_turn,
+    delete_user_template as delete_user_script_template,
+    describe_script_state,
+    duplicate_builtin_to_user as duplicate_script_template,
+    list_templates as list_script_templates,
+    load_script_into_session,
+    read_template as read_script_template,
+    run_all_turns,
+    save_user_template as save_user_script_template,
+    unload_script_from_session,
+)
+from tests.testbench.pipeline.simulated_user import (
+    SimUserError,
+    generate_simuser_message,
+    list_style_presets,
 )
 from tests.testbench.session_store import (
     Session,
@@ -675,6 +717,418 @@ async def send_chat(body: _SendRequest) -> StreamingResponse:
         _send_event_stream(body),
         media_type="text/event-stream",
         headers=headers,
+    )
+
+
+# ── /simulate_user (P11) ─────────────────────────────────────────────
+
+
+class _SimulateUserRequest(BaseModel):
+    """Body for ``POST /api/chat/simulate_user``.
+
+    All fields are optional; 空都给就是 "friendly 预设 + 不带额外人设 +
+    没有临时提示" 的默认行为.
+    """
+
+    style: str | None = Field(
+        default=None,
+        description="风格 key (friendly / curious / picky / emotional); 未知值回落到 friendly.",
+    )
+    user_persona_prompt: str = Field(
+        default="",
+        description="自定义人设/背景, 追加到 system prompt.",
+    )
+    extra_hint: str = Field(
+        default="",
+        description="单次临时指示, 只对本次生成生效, 不写回任何持久状态.",
+    )
+
+
+@router.get("/simulate_user/styles")
+async def simulate_user_styles() -> dict[str, Any]:
+    """Return the closed-set style presets for the composer UI.
+
+    Shape: ``{styles: [{id, prompt}, ...], default: str}``. 前端 i18n
+    负责把 ``id`` 映射到中文 label, 这里只吐 id + prompt 文本.
+    """
+    from tests.testbench.pipeline.simulated_user import DEFAULT_STYLE
+
+    return {"styles": list_style_presets(), "default": DEFAULT_STYLE}
+
+
+@router.post("/simulate_user")
+async def simulate_user(body: _SimulateUserRequest) -> dict[str, Any]:
+    """Generate one user-message draft; **do not** persist it.
+
+    Rationale: PLAN §P11 约定"生成到 composer textarea 供编辑再发送" —
+    所以本端点**只**跑 LLM 拿文本返回, 不动 ``session.messages``、不动
+    ``session.clock``. 用户编辑完后再点 Send, 走 ``/api/chat/send``
+    (source=simuser) 那条老路写入会话、推进时钟、同步前端消息流.
+
+    会话锁: 使用 ``BUSY`` 状态锁, 原因是 (a) SimUser 与 Chat.send 共享
+    session.messages 读视角, 并发调 LLM 会让前端的流式 UI 和 composer
+    互相干扰; (b) 后续 P12/P13 脚本/自动对话会复用同一锁粒度, 这里提前
+    对齐. 代价是如果正在 /chat/send 流式进行中调 /simulate_user 会返回
+    409, 前端 composer 自行禁用按钮避免误触.
+
+    错误码映射:
+        * 404 NoActiveSession — 还没建会话.
+        * 409 SessionConflict — 并发调用.
+        * 412 SimuserModelNotConfigured / SimuserApiKeyMissing — simuser
+          组 base_url/model/api_key 缺失.
+        * 502 LlmFailed — LLM 调用真的挂了 (超时/上游 500/认证失败).
+    """
+    store = get_session_store()
+    try:
+        async with store.session_operation(
+            "chat.simulate_user",
+            state=SessionState.BUSY,
+        ) as session:
+            try:
+                draft = await generate_simuser_message(
+                    session,
+                    style=body.style,
+                    user_persona_prompt=body.user_persona_prompt,
+                    extra_hint=body.extra_hint,
+                )
+            except SimUserError as exc:
+                raise HTTPException(
+                    status_code=exc.status,
+                    detail={"error_type": exc.code, "message": exc.message},
+                ) from exc
+            return draft.to_dict()
+    except SessionConflictError as exc:
+        raise _session_conflict_to_http(exc) from exc
+    except LookupError as exc:
+        raise _lookup_error_to_http(exc) from exc
+
+
+# ── /script (P12) ────────────────────────────────────────────────────
+
+
+class _ScriptLoadRequest(BaseModel):
+    """Body for ``POST /api/chat/script/load``."""
+
+    name: str = Field(..., description="脚本模板 name (对应 JSON 里的 name 字段).")
+
+
+def _script_error_to_http(exc: ScriptError) -> HTTPException:
+    """ScriptError → HTTPException, 把可能挂载的 ``errors`` 字段一并透出.
+
+    P12.5 保存/校验接口需要把字段级错误清单透到前端红框高亮. ScriptError 的
+    默认签名只接 message, 422 的场景下我们在 ``save_user_template`` 里 attach
+    了 ``exc.errors``, 这里透传.
+    """
+    detail: dict[str, Any] = {"error_type": exc.code, "message": exc.message}
+    errors = getattr(exc, "errors", None)
+    if errors:
+        detail["errors"] = errors
+    return HTTPException(status_code=exc.status, detail=detail)
+
+
+@router.get("/script/templates")
+async def script_templates() -> dict[str, Any]:
+    """Return merged builtin + user dialog-template meta list.
+
+    Shape: ``{templates: [{name, description, user_persona_hint, turns_count,
+    source, path, overriding_builtin}], count: int}``. 前端 composer 用
+    ``name`` / ``description`` / ``turns_count`` / ``source`` 渲染下拉;
+    ``path`` 仅供 Diagnostics 未来链接到文件位置.
+
+    不需要会话 — 刚启动 UI 还没建 session 时就能预览可用脚本.
+    """
+    templates = list_script_templates()
+    return {"templates": templates, "count": len(templates)}
+
+
+# ── P12.5: Setup → Scripts 子页 CRUD ──────────────────────────────
+#
+# 这五个端点都不需要 session (脚本模板是全局资产, 测试人员没建会话也可以
+# 编辑模板). 保持纯 IO, 不碰 session_store.
+
+
+class _ScriptSaveRequest(BaseModel):
+    """Body for ``POST /api/chat/script/templates``.
+
+    模型故意松散 — 详细字段校验归 ``validate_template_dict`` 做软校验, UI
+    想要"保存半成品"时有更友好的错误清单反馈. pydantic 只拦 "不是 dict"
+    / "name 都没传" 这种粗粒度.
+    """
+
+    name: str = Field(..., description="模板 name (= 文件名).")
+    description: str | None = Field(default=None)
+    user_persona_hint: str | None = Field(default=None)
+    bootstrap: dict[str, Any] | None = Field(default=None)
+    turns: list[dict[str, Any]] = Field(default_factory=list)
+
+    model_config = {"extra": "allow"}
+
+
+class _ScriptDuplicateRequest(BaseModel):
+    """Body for ``POST /api/chat/script/templates/duplicate``."""
+
+    source_name: str = Field(..., description="要复制的源模板 name (builtin 或 user 都行).")
+    target_name: str = Field(..., description="新 user 模板的 name.")
+    overwrite: bool = Field(
+        default=False,
+        description="target_name 已存在的 user 模板时是否覆盖. 默认 False → 409.",
+    )
+
+
+@router.get("/script/templates/{name}")
+async def script_template_read(name: str) -> dict[str, Any]:
+    """Return the active template + builtin/user co-existence flags.
+
+    Shape: ``{template, has_builtin, has_user, overriding_builtin}``.
+    前端编辑器打开时先拉一次, 决定 readonly (builtin-only) / 可编辑 (user).
+    """
+    try:
+        details = read_script_template(name)
+    except ScriptError as exc:
+        raise _script_error_to_http(exc) from exc
+    return {
+        "template": details["active"],
+        "has_builtin": details["has_builtin"],
+        "has_user": details["has_user"],
+        "overriding_builtin": details["overriding_builtin"],
+    }
+
+
+@router.post("/script/templates")
+async def script_template_save(body: _ScriptSaveRequest) -> dict[str, Any]:
+    """Create or overwrite a user dialog template.
+
+    - 422 ScriptSchemaInvalid (detail 含 ``errors`` 清单) — 字段校验失败.
+    - 200 ``{template, overriding_builtin, path}`` — 写盘成功.
+
+    不需要 session. 写完如果跟当前 session 加载中的脚本同 name, UI 端应该
+    自己决定是否提示 "当前加载的剧本已被改写" — 后端不自动失效, 因为
+    session.script_state.turns 是加载时的 snapshot, 改磁盘不影响已跑起来的
+    脚本 (语义跟"锁定快照"一致, 避免跑到一半切底).
+    """
+    payload = body.model_dump(exclude_unset=False)
+    try:
+        return save_user_script_template(payload)
+    except ScriptError as exc:
+        raise _script_error_to_http(exc) from exc
+
+
+@router.delete("/script/templates/{name}")
+async def script_template_delete(name: str) -> dict[str, Any]:
+    """Delete a user template by name.
+
+    - 404 ScriptNotFound — user 目录没有这个 name (builtin 本来就不能删).
+    - 200 ``{deleted_name, resurfaces_builtin, warnings}``.
+
+    若当前 session 正加载同名脚本, 塞一条 warning 提示"磁盘被删, 内存中
+    的快照还会继续跑完, 但下次 list 看不到了".
+    """
+    warnings: list[str] = []
+    try:
+        result = delete_user_script_template(name)
+    except ScriptError as exc:
+        raise _script_error_to_http(exc) from exc
+    sess = get_session_store().get()
+    if sess is not None and sess.script_state is not None:
+        if sess.script_state.get("template_name") == name:
+            warnings.append(
+                f"当前会话正加载脚本 {name!r} 的内存快照 — 磁盘版本已删, 可继续"
+                f" Next / Run all 跑完当前快照, 但重新 [刷新列表] 就看不到了."
+            )
+    result["warnings"] = warnings
+    return result
+
+
+@router.post("/script/templates/duplicate")
+async def script_template_duplicate(body: _ScriptDuplicateRequest) -> dict[str, Any]:
+    """Copy a template (usually builtin) into the user directory under a new name.
+
+    200 返回跟 save 一样 ``{template, overriding_builtin, path}``.  409 =
+    target_name 已被占且没带 overwrite=true.
+    """
+    try:
+        return duplicate_script_template(
+            body.source_name, body.target_name, overwrite=body.overwrite,
+        )
+    except ScriptError as exc:
+        raise _script_error_to_http(exc) from exc
+
+
+@router.post("/script/load")
+async def script_load(body: _ScriptLoadRequest) -> dict[str, Any]:
+    """Install ``body.name`` as the session's current script.
+
+    副作用:
+        * 读模板 → 应用 bootstrap (若 ``session.messages`` 为空) → 初始化
+          ``session.script_state``. 已有脚本加载时直接覆盖, 不要求先 unload.
+        * ``warnings`` 里可能包含 "bootstrap 跳过 (已有消息)" 等提示, 前端
+          弹 toast 让测试人员知道.
+
+    错误码映射:
+        * 404 NoActiveSession / ScriptNotFound.
+        * 409 SessionConflict.
+        * 422 ScriptSchemaInvalid — JSON 读上来但 schema 错.
+    """
+    store = get_session_store()
+    try:
+        async with store.session_operation("chat.script.load") as session:
+            try:
+                state, warnings = load_script_into_session(session, body.name)
+            except ScriptError as exc:
+                raise _script_error_to_http(exc) from exc
+            return {"script_state": state, "warnings": warnings}
+    except SessionConflictError as exc:
+        raise _session_conflict_to_http(exc) from exc
+    except LookupError as exc:
+        raise _lookup_error_to_http(exc) from exc
+
+
+@router.post("/script/unload")
+async def script_unload() -> dict[str, Any]:
+    """Clear ``session.script_state``. No-op if no script is loaded."""
+    store = get_session_store()
+    try:
+        async with store.session_operation("chat.script.unload") as session:
+            unload_script_from_session(session)
+            return {"script_state": None}
+    except SessionConflictError as exc:
+        raise _session_conflict_to_http(exc) from exc
+    except LookupError as exc:
+        raise _lookup_error_to_http(exc) from exc
+
+
+@router.get("/script/state")
+async def script_state() -> dict[str, Any]:
+    """Return the current ``script_state`` or ``null`` if nothing loaded."""
+    session = _require_session()
+    return {"script_state": describe_script_state(session)}
+
+
+async def _script_next_event_stream() -> AsyncIterator[str]:
+    """SSE generator for ``/script/next`` — exactly one user turn."""
+    store = get_session_store()
+    try:
+        async with store.session_operation(
+            "chat.script.next",
+            state=SessionState.BUSY,
+        ) as session:
+            try:
+                async for event in advance_one_user_turn(session):
+                    yield _sse_frame(event)
+            except ScriptError as exc:
+                yield _sse_frame({
+                    "event": "error",
+                    "error": {"type": exc.code, "message": exc.message},
+                })
+            except Exception as exc:  # noqa: BLE001
+                python_logger().exception(
+                    "script.next stream crashed (session=%s): %s",
+                    session.id, exc,
+                )
+                yield _sse_frame({
+                    "event": "error",
+                    "error": {
+                        "type": type(exc).__name__,
+                        "message": f"脚本下一轮执行失败: {exc}",
+                    },
+                })
+    except SessionConflictError as exc:
+        yield _sse_frame({
+            "event": "error",
+            "error": {
+                "type": "SessionConflict",
+                "message": str(exc),
+                "state": exc.state.value,
+                "busy_op": exc.busy_op,
+            },
+        })
+    except LookupError as exc:
+        yield _sse_frame({
+            "event": "error",
+            "error": {"type": "NoActiveSession", "message": str(exc)},
+        })
+
+
+async def _script_run_all_event_stream() -> AsyncIterator[str]:
+    """SSE generator for ``/script/run_all`` — loop until exhausted or error."""
+    store = get_session_store()
+    try:
+        async with store.session_operation(
+            "chat.script.run_all",
+            state=SessionState.BUSY,
+        ) as session:
+            try:
+                async for event in run_all_turns(session):
+                    yield _sse_frame(event)
+            except ScriptError as exc:
+                yield _sse_frame({
+                    "event": "error",
+                    "error": {"type": exc.code, "message": exc.message},
+                })
+            except Exception as exc:  # noqa: BLE001
+                python_logger().exception(
+                    "script.run_all stream crashed (session=%s): %s",
+                    session.id, exc,
+                )
+                yield _sse_frame({
+                    "event": "error",
+                    "error": {
+                        "type": type(exc).__name__,
+                        "message": f"脚本连续执行失败: {exc}",
+                    },
+                })
+    except SessionConflictError as exc:
+        yield _sse_frame({
+            "event": "error",
+            "error": {
+                "type": "SessionConflict",
+                "message": str(exc),
+                "state": exc.state.value,
+                "busy_op": exc.busy_op,
+            },
+        })
+    except LookupError as exc:
+        yield _sse_frame({
+            "event": "error",
+            "error": {"type": "NoActiveSession", "message": str(exc)},
+        })
+
+
+def _sse_headers() -> dict[str, str]:
+    return {
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+        "Connection": "keep-alive",
+    }
+
+
+@router.post("/script/next")
+async def script_next() -> StreamingResponse:
+    """Stream one scripted user turn as ``text/event-stream``.
+
+    事件 (在 :func:`advance_one_user_turn` 文档里详述): 用 user / assistant_start
+    / delta / assistant / done / usage / wire_built 与手动 /chat/send 保持一致,
+    另追加 script_turn_warnings / script_turn_done / script_exhausted.
+
+    整条 SSE 期间持有会话 BUSY 锁, 防止 /chat/send 同时改 session.messages.
+    """
+    return StreamingResponse(
+        _script_next_event_stream(),
+        media_type="text/event-stream",
+        headers=_sse_headers(),
+    )
+
+
+@router.post("/script/run_all")
+async def script_run_all() -> StreamingResponse:
+    """Stream a full script run until ``script_exhausted`` or ``error``.
+
+    前端一旦看到 ``script_exhausted`` / ``error`` 就认定循环结束.
+    """
+    return StreamingResponse(
+        _script_run_all_event_stream(),
+        media_type="text/event-stream",
+        headers=_sse_headers(),
     )
 
 

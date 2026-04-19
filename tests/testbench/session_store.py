@@ -98,6 +98,24 @@ class Session:
     # in-memory only (not persisted) — previews are intentionally transient.
     memory_previews: dict[str, dict[str, Any]] = field(default_factory=dict)
 
+    # P12: currently loaded dialog script state (None = 没加载脚本). Shape:
+    #   {
+    #     "template_name": str,              # 当前加载的脚本 name
+    #     "template_source": "builtin"|"user",
+    #     "turns": [ {role, content?, expected?, time?}, ... ],  # 完整 turns
+    #     "cursor": int,                     # 0-based, 指向"下一条待处理"
+    #     "turns_count": int,                # len(turns), 便于前端展示 N
+    #     "pending_reference": str | None,   # 跨 role=assistant turn 累积的
+    #                                        # expected 文本, 等下次 LLM 回
+    #                                        # 复落盘时回填 reference_content
+    #     "loaded_at": ISO str (virtual clock),
+    #     "description": str,
+    #     "user_persona_hint": str,
+    #   }
+    # 不挪进 sandbox (bootstrap 已经作用到 clock 上), 也不自动持久化 — 脚本
+    # 只是一次性运行时状态; 会话被 destroy/重建时随之清空.
+    script_state: dict[str, Any] | None = None
+
     # Mutated directly by SessionStore under its own lock.
     state: SessionState = SessionState.IDLE
     busy_op: str | None = None
