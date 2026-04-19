@@ -101,6 +101,7 @@ class Live2DManager {
         this._lastPIXIContext = { canvasId: null, containerId: null };
         this._displayInfo = null;
         this._autoNamedHitAreaIds = new Set();
+        this._bubbleGeometryCache = null;
 
         // 常驻表情：使用官方 expression 播放并在清理后自动重放
         this.persistentExpressionNames = [];
@@ -789,6 +790,46 @@ class Live2DManager {
         };
     }
 
+    _screenRectToLogical(screenRect, modelBounds, modelLogicalRect) {
+        if (!screenRect || !modelBounds || !modelLogicalRect) { return null; }
+        const bw = Math.max(1, modelBounds.width);
+        const bh = Math.max(1, modelBounds.height);
+        const lw = Math.max(1, modelLogicalRect.width);
+        const lh = Math.max(1, modelLogicalRect.height);
+        return {
+            x: modelLogicalRect.x + (screenRect.left - modelBounds.left) / bw * lw,
+            y: modelLogicalRect.y + (screenRect.top - modelBounds.top) / bh * lh,
+            width: screenRect.width / bw * lw,
+            height: screenRect.height / bh * lh
+        };
+    }
+
+    _logicalRectToScreenRect(logicalRect, modelLogicalRect, modelBounds) {
+        const mapped = this._mapLogicalRectToScreen(logicalRect, modelLogicalRect, modelBounds);
+        if (!mapped) { return null; }
+        return this._createScreenRect(mapped.left, mapped.top, mapped.left + mapped.width, mapped.top + mapped.height);
+    }
+
+    _screenPointToLogical(point, modelBounds, modelLogicalRect) {
+        if (!point || !modelBounds || !modelLogicalRect) { return null; }
+        const bw = Math.max(1, modelBounds.width);
+        const bh = Math.max(1, modelBounds.height);
+        return {
+            x: modelLogicalRect.x + (point.x - modelBounds.left) / bw * modelLogicalRect.width,
+            y: modelLogicalRect.y + (point.y - modelBounds.top) / bh * modelLogicalRect.height
+        };
+    }
+
+    _logicalPointToScreen(logicalPoint, modelLogicalRect, modelBounds) {
+        if (!logicalPoint || !modelLogicalRect || !modelBounds) { return null; }
+        const lw = Math.max(1, modelLogicalRect.width);
+        const lh = Math.max(1, modelLogicalRect.height);
+        return {
+            x: modelBounds.left + (logicalPoint.x - modelLogicalRect.x) / lw * modelBounds.width,
+            y: modelBounds.top + (logicalPoint.y - modelLogicalRect.y) / lh * modelBounds.height
+        };
+    }
+
     _createScreenRect(left, top, right, bottom) {
         const width = right - left;
         const height = bottom - top;
@@ -829,6 +870,66 @@ class Live2DManager {
             mode,
             source
         };
+    }
+
+    _cacheBubbleGeometryResult(result, modelBounds, modelLogicalRect) {
+        if (!result || !result.reliableHeadRect || !modelBounds || !modelLogicalRect) { return; }
+        const headRect = result.headRect ? this._screenRectToLogical(result.headRect, modelBounds, modelLogicalRect) : null;
+        const bubbleHeadRect = result.bubbleHeadRect ? this._screenRectToLogical(result.bubbleHeadRect, modelBounds, modelLogicalRect) : null;
+        const bodyRect = result.bodyRect ? this._screenRectToLogical(result.bodyRect, modelBounds, modelLogicalRect) : null;
+        const rawHeadAnchor = result.rawHeadAnchor ? this._screenPointToLogical(result.rawHeadAnchor, modelBounds, modelLogicalRect) : null;
+        const headAnchor = result.headAnchor ? this._screenPointToLogical(result.headAnchor, modelBounds, modelLogicalRect) : null;
+        if (!bubbleHeadRect && !headRect) { return; }
+        this._bubbleGeometryCache = {
+            modelPath: this.modelRootPath,
+            modelLogicalRect: { x: modelLogicalRect.x, y: modelLogicalRect.y, width: modelLogicalRect.width, height: modelLogicalRect.height },
+            headMode: result.headMode,
+            headSource: result.headSource,
+            bodySource: result.bodySource,
+            reliableHeadRect: result.reliableHeadRect,
+            preciseDisplayInfoRect: result.preciseDisplayInfoRect || false,
+            coarseHitAreaHeadRect: result.coarseHitAreaHeadRect || false,
+            headRect,
+            bubbleHeadRect,
+            bodyRect,
+            rawHeadAnchor,
+            headAnchor
+        };
+    }
+
+    _getCachedBubbleGeometryResult() {
+        const cache = this._bubbleGeometryCache;
+        if (!cache) { return null; }
+        if (cache.modelPath !== this.modelRootPath) {
+            this._bubbleGeometryCache = null;
+            return null;
+        }
+        const bounds = this.getModelScreenBounds();
+        if (!bounds) { return null; }
+        const mlr = cache.modelLogicalRect;
+        const headRect = cache.headRect ? this._logicalRectToScreenRect(cache.headRect, mlr, bounds) : null;
+        const bubbleHeadRect = cache.bubbleHeadRect ? this._logicalRectToScreenRect(cache.bubbleHeadRect, mlr, bounds) : null;
+        const bodyRect = cache.bodyRect ? this._logicalRectToScreenRect(cache.bodyRect, mlr, bounds) : null;
+        const rawHeadAnchor = cache.rawHeadAnchor ? this._logicalPointToScreen(cache.rawHeadAnchor, mlr, bounds) : null;
+        const headAnchor = cache.headAnchor ? this._logicalPointToScreen(cache.headAnchor, mlr, bounds) : null;
+        return {
+            bounds,
+            rawHeadAnchor,
+            headAnchor,
+            headRect,
+            bubbleHeadRect: bubbleHeadRect || headRect,
+            headMode: cache.headMode,
+            headSource: cache.headSource,
+            bodyRect,
+            bodySource: cache.bodySource,
+            reliableHeadRect: cache.reliableHeadRect,
+            preciseDisplayInfoRect: cache.preciseDisplayInfoRect,
+            coarseHitAreaHeadRect: cache.coarseHitAreaHeadRect
+        };
+    }
+
+    _invalidateBubbleGeometryCache() {
+        this._bubbleGeometryCache = null;
     }
 
     _getDrawableScreenRect(drawableIndex, modelLogicalRect = null, modelBounds = null, skipTransformSync = false) {
@@ -3035,6 +3136,11 @@ class Live2DManager {
             return null;
         }
 
+        const cached = this._getCachedBubbleGeometryResult();
+        if (cached) {
+            return cached;
+        }
+
         const headInfo = this.getHeadScreenRectInfo();
         const bodyInfo = this.getBodyScreenRectInfo(headInfo);
         const rawHeadAnchor = this.getHeadScreenAnchor(headInfo);
@@ -3078,7 +3184,7 @@ class Live2DManager {
             headAnchor = rawHeadAnchor;
         }
 
-        return this._applyBubbleGeometryOverride({
+        const result = this._applyBubbleGeometryOverride({
             bounds,
             rawHeadAnchor: rawHeadAnchor || null,
             headAnchor: headAnchor || rawHeadAnchor || null,
@@ -3092,6 +3198,15 @@ class Live2DManager {
             preciseDisplayInfoRect,
             coarseHitAreaHeadRect
         });
+
+        if (result.reliableHeadRect) {
+            const modelLogicalRect = this._getModelLogicalRect();
+            if (modelLogicalRect) {
+                this._cacheBubbleGeometryResult(result, bounds, modelLogicalRect);
+            }
+        }
+
+        return result;
     }
 
     getHeadScreenAnchor(headScreenInfo = undefined) {

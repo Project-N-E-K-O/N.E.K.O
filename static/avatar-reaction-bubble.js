@@ -35,8 +35,6 @@
         live2dReliableHeadBubbleScaleMultiplier: 1.3,
         live2dPreciseDisplayInfoHeadBubbleScaleMultiplier: 1.42,
         live2dDrawableHeadBubbleScaleMultiplier: 1.36,
-        baseWidthShrinkPx: 92,
-        baseHeightShrinkPx: 66,
         verticalOffsetPx: 0,
         modelOverlapRatio: 0.28,
         compactModelAspectRatio: 1.15,
@@ -1559,15 +1557,16 @@
                     : TIMING.live2dReliableHeadBubbleScaleMultiplier;
             }
         }
+        var minBubbleDim = Math.max(bounds.height * 0.14, 24);
         var headSize = Math.max(
-            96,
+            minBubbleDim,
             Math.min(
                 viewportCap,
                 Math.round(headSpan * 1.38 * headBubbleScaleMultiplier)
             )
         );
-        var width = Math.max(96, Math.round(headSize * 1.34) - TIMING.baseWidthShrinkPx);
-        var height = Math.max(74, Math.round(headSize * 1.02) - TIMING.baseHeightShrinkPx);
+        var width = Math.max(minBubbleDim, Math.round(headSize * 0.82));
+        var height = Math.max(minBubbleDim * 0.77, Math.round(headSize * 0.64));
         var useReliableLive2dHeadCenterX = avatarType === 'live2d' &&
             reliableLive2dHeadRect &&
             hasValidRect(placementHeadRect) &&
@@ -2012,6 +2011,7 @@
         if (!state.visible) {
             return;
         }
+        resetPositionTracking();
         syncPositionOnce();
         keepFollowingWhileVisible();
     }
