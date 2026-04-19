@@ -952,7 +952,8 @@
                         S.socket.send(JSON.stringify({
                             action: 'stream_data',
                             data: text,
-                            input_type: 'text'
+                            input_type: 'text',
+                            request_id: requestId
                         }));
 
                         if (!options.preserveInputValue) {
@@ -996,39 +997,6 @@
                     // Reset proactive chat timer
                     if (S.proactiveChatEnabled && window.hasAnyChatModeEnabled()) {
                         window.resetProactiveChatBackoff();
-                    }
-
-                    S.socket.send(JSON.stringify({
-                        action: 'stream_data',
-                        data: text,
-                        input_type: 'text',
-                        request_id: requestId
-                    }));
-
-                    if (!options.preserveInputValue) {
-                        textInputBox.value = '';
-                    }
-                    window.appendMessage(text, 'user', true, {
-                        skipReactSync: sentImageUrls.length > 0
-                    });
-
-                    // Achievement: meow detection
-                    if (window.incrementAchievementCounter) {
-                        var meowPattern = /\u55B5|miao|meow|nya[no]?|\u306B\u3083|\uB0E5|\u043C\u044F\u0443/i;
-                        if (meowPattern.test(text)) {
-                            try {
-                                window.incrementAchievementCounter('meowCount');
-                            } catch (error) {
-                                console.debug('\u589E\u52A0\u55B5\u55B5\u8BA1\u6570\u5931\u8D25:', error);
-                            }
-                        }
-                    }
-
-                    // First user input check
-                    if (window.appChat && window.appChat.isFirstUserInput()) {
-                        window.appChat.markFirstUserInput();
-                        console.log(window.t('console.userFirstInputDetected'));
-                        window.checkAndUnlockFirstDialogueAchievement();
                     }
 
                     window.showStatusToast(window.t ? window.t('app.textChattingShort') : '\u6B63\u5728\u6587\u672C\u804A\u5929\u4E2D', 2000);

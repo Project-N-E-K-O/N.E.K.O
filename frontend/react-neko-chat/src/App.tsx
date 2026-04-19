@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import MessageList from './MessageList';
 import { i18n } from './i18n';
 import {

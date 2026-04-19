@@ -35,7 +35,7 @@
         onComposerScreenshot: null,
         onComposerRemoveAttachment: null,
         onComposerSubmit: null,
-        pendingRollbackDrafts: {},
+        pendingRollbackDrafts: Object.create(null),
         rollbackDraft: ''
     };
 
@@ -746,7 +746,9 @@
      * Called when backend discards response due to RESPONSE_TOO_LONG.
      */
     function rollbackLastDraft(requestId) {
-        var rollbackText = requestId ? state.pendingRollbackDrafts[requestId] : '';
+        var rollbackText = (requestId && Object.prototype.hasOwnProperty.call(state.pendingRollbackDrafts, requestId))
+            ? state.pendingRollbackDrafts[requestId]
+            : '';
         if (!rollbackText) return;
         // Use a unique key each time so React useEffect can distinguish invocations
         state.rollbackDraft = rollbackText;
