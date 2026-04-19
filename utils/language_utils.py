@@ -63,46 +63,73 @@ def _is_china_region() -> bool:
         return False
 
 
+def _get_windows_locale() -> Optional[str]:
+    """
+    通过 Windows API GetUserDefaultLocaleName 获取用户 locale（如 'en-US'、'zh-CN'）。
+    仅在 Windows 上有效，其他平台返回 None。
+
+    locale.getlocale() 只反映 Python 进程内已设置的 locale，Windows 启动时不会自动注入，
+    因此在 Windows 上几乎总是返回 (None, None)。此函数直接读 Windows 用户 locale 状态。
+    """
+    import platform
+    if platform.system() != 'Windows':
+        return None
+    try:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(85)
+        ctypes.windll.kernel32.GetUserDefaultLocaleName(buf, 85)
+        return buf.value or None
+    except Exception:
+        return None
+
+
 def _get_system_language() -> str:
     """
     从系统设置获取语言
-    
+
     Returns:
         语言代码 ('zh', 'en', 'ja', 'ko', 'ru')，默认返回 'zh'
     """
+    def _parse_locale(s: str) -> Optional[str]:
+        s = s.lower()
+        if s.startswith('zh') or 'chinese' in s:
+            return 'zh'
+        if s.startswith('ja') or 'japanese' in s:
+            return 'ja'
+        if s.startswith('ko') or 'korean' in s:
+            return 'ko'
+        if s.startswith('ru') or 'russian' in s:
+            return 'ru'
+        if s.startswith('en') or 'english' in s:
+            return 'en'
+        return None
+
     try:
-        # 获取系统 locale（使用 locale.getlocale() 替代已弃用的 getdefaultlocale()）
-        # locale.getlocale() 返回 (language_code, encoding) 元组
+        # 优先：Windows API（locale.getlocale() 在 Windows 上几乎总是 (None, None)）
+        windows_locale = _get_windows_locale()
+        if windows_locale:
+            lang = _parse_locale(windows_locale)
+            if lang:
+                return lang
+
+        # 次选：Python locale（Unix / 少数 Windows 场景有效）
         system_locale = locale.getlocale()[0]
         if system_locale:
-            system_locale_lower = system_locale.lower()
-            if system_locale_lower.startswith('zh') or 'chinese' in system_locale_lower:
-                return 'zh'
-            elif system_locale_lower.startswith('ja'):
-                return 'ja'
-            elif system_locale_lower.startswith('ko') or 'korean' in system_locale_lower:
-                return 'ko'
-            elif system_locale_lower.startswith('ru') or 'russian' in system_locale_lower:
-                return 'ru'
-            elif system_locale_lower.startswith('en'):
-                return 'en'
+            lang = _parse_locale(system_locale)
+            if lang:
+                return lang
 
-        lang_env = os.environ.get('LANG', '').lower()
-        if lang_env.startswith('zh') or 'chinese' in lang_env:
-            return 'zh'
-        elif lang_env.startswith('ja'):
-            return 'ja'
-        elif lang_env.startswith('ko'):
-            return 'ko'
-        elif lang_env.startswith('ru'):
-            return 'ru'
-        elif lang_env.startswith('en'):
-            return 'en'
+        # 末选：LANG 环境变量（Unix 常见）
+        lang_env = os.environ.get('LANG', '')
+        if lang_env:
+            lang = _parse_locale(lang_env)
+            if lang:
+                return lang
 
-        return 'zh'  # 默认中文
+        return 'en'  # 默认英文
     except Exception as e:
-        logger.warning(f"获取系统语言失败: {e}，使用默认中文")
-        return 'zh'
+        logger.warning(f"获取系统语言失败: {e}，使用默认英文")
+        return 'en'
 
 
 def _get_steam_language() -> Optional[str]:
@@ -201,7 +228,7 @@ def get_global_language() -> str:
         if not _global_language_initialized:
             return initialize_global_language()
         
-        return _global_language or 'zh'
+        return _global_language or 'en'
 
 
 def get_global_language_full() -> str:
@@ -218,7 +245,7 @@ def get_global_language_full() -> str:
         if not _global_language_initialized:
             initialize_global_language()
         
-        return _global_language_full or _global_language or 'zh'
+        return _global_language_full or _global_language or 'en'
 
 
 def set_global_language(language: str) -> None:
@@ -316,10 +343,7 @@ def normalize_language_code(lang: str, format: str = 'short') -> str:
         归一化后的语言代码，如果无法识别则返回默认值 ('zh' 或 'zh-CN')
     """
     if not lang:
-        if format == 'short':
-            return 'zh'
-        else:
-            return 'zh-CN'
+        return 'en'
     
     lang_lower = lang.lower().strip()
     
@@ -378,10 +402,7 @@ def normalize_language_code(lang: str, format: str = 'short') -> str:
     else:
         # 无法识别的语言代码，返回默认值
         logger.debug(f"无法识别的语言代码: {lang}，返回默认值")
-        if format == 'short':
-            return 'zh'
-        else:
-            return 'zh-CN'
+        return 'en'
 
 
 # ============================================================================
@@ -880,27 +901,27 @@ def get_user_language() -> str:
     获取用户的语言偏好
     
     Returns:
-        用户语言代码 ('zh', 'en', 'ja', 'ko')，默认返回 'zh'
+        用户语言代码 ('zh', 'en', 'ja', 'ko')，默认返回 'en'
     """
     try:
         return get_global_language()
     except Exception as e:
-        logger.warning(f"获取全局语言失败: {e}，使用默认中文")
-        return 'zh'  # 默认中文
+        logger.warning(f"获取全局语言失败: {e}，使用默认英文")
+        return 'en'
 
 
 async def get_user_language_async() -> str:
     """
     异步获取用户的语言偏好（使用全局语言管理模块）
-    
+
     Returns:
-        用户语言代码 ('zh', 'en', 'ja', 'ko')，默认返回 'zh'
+        用户语言代码 ('zh', 'en', 'ja', 'ko')，默认返回 'en'
     """
     try:
         return get_global_language()
     except Exception as e:
-        logger.warning(f"获取全局语言失败: {e}，使用默认中文")
-        return 'zh'  # 默认中文
+        logger.warning(f"获取全局语言失败: {e}，使用默认英文")
+        return 'en'
 
 
 # ============================================================================

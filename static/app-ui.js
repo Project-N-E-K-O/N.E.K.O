@@ -1139,6 +1139,350 @@
     //     (app.js lines 6078-6785)
     // ================================================================
 
+    const MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE = 80;
+    let multiWindowReturnBallDragState = null;
+
+    function getVisibleReturnBallContainer() {
+        const containerIds = [
+            'mmd-return-button-container',
+            'vrm-return-button-container',
+            'live2d-return-button-container',
+        ];
+        for (const id of containerIds) {
+            const el = document.getElementById(id);
+            if (!el) continue;
+            const style = window.getComputedStyle ? window.getComputedStyle(el) : null;
+            if (style && (style.display === 'none' || style.visibility === 'hidden')) continue;
+            return el;
+        }
+        return null;
+    }
+
+    function clearMultiWindowReturnBallDeferredWork(state) {
+        if (!state) return;
+        if (state.positionFallbackTimer) {
+            clearTimeout(state.positionFallbackTimer);
+            state.positionFallbackTimer = null;
+        }
+        if (state.transitionCleanupTimer) {
+            clearTimeout(state.transitionCleanupTimer);
+            state.transitionCleanupTimer = null;
+        }
+        if (state.positionBallOnResize) {
+            window.removeEventListener('resize', state.positionBallOnResize);
+            state.positionBallOnResize = null;
+        }
+    }
+
+    function cleanupMultiWindowReturnBallDrag() {
+        const state = multiWindowReturnBallDragState;
+        if (!state) return;
+
+        state.dragSessionToken += 1;
+        clearMultiWindowReturnBallDeferredWork(state);
+        if (state.container) {
+            state.container.removeEventListener('mousedown', state.handleMouseDown, true);
+            state.container.removeEventListener('touchstart', state.handleTouchStart, true);
+        }
+        document.removeEventListener('mousemove', state.handleMouseMove);
+        document.removeEventListener('mouseup', state.handleMouseUp);
+        document.removeEventListener('touchmove', state.handleTouchMove);
+        document.removeEventListener('touchend', state.handleTouchEnd);
+        document.removeEventListener('touchcancel', state.handleTouchEnd);
+
+        delete document.body.dataset.nekoBallDrag;
+        if (window.DragHelpers) window.DragHelpers.isDragging = false;
+        multiWindowReturnBallDragState = null;
+    }
+
+    function ensureMultiWindowReturnBallDrag(container) {
+        if (!window.__NEKO_MULTI_WINDOW__ || !window.nekoPetDrag || !container) {
+            cleanupMultiWindowReturnBallDrag();
+            return;
+        }
+
+        if (multiWindowReturnBallDragState &&
+            multiWindowReturnBallDragState.container === container &&
+            container.isConnected) {
+            return;
+        }
+
+        cleanupMultiWindowReturnBallDrag();
+
+        const CLICK_THRESHOLD = 5;
+        const state = {
+            container,
+            isDragging: false,
+            hasMoved: false,
+            startScreenX: 0,
+            startScreenY: 0,
+            releaseScreenX: 0,
+            releaseScreenY: 0,
+            savedWindowW: 0,
+            savedWindowH: 0,
+            savedBallStyle: null,
+            savedBallWidth: 64,
+            savedBallHeight: 64,
+            positionBallOnResize: null,
+            positionFallbackTimer: null,
+            transitionCleanupTimer: null,
+            dragSessionToken: 0,
+            handleMouseDown: null,
+            handleMouseMove: null,
+            handleMouseUp: null,
+            handleTouchStart: null,
+            handleTouchMove: null,
+            handleTouchEnd: null,
+        };
+
+        function getTouchScreenPoint(touch) {
+            if (!touch) return null;
+            return {
+                x: typeof touch.screenX === 'number' ? touch.screenX : window.screenX + touch.clientX,
+                y: typeof touch.screenY === 'number' ? touch.screenY : window.screenY + touch.clientY,
+            };
+        }
+
+        function restoreSavedBallStyle() {
+            const savedStyle = state.savedBallStyle;
+            if (!savedStyle) return;
+            container.style.left = savedStyle.left;
+            container.style.top = savedStyle.top;
+            container.style.right = savedStyle.right;
+            container.style.bottom = savedStyle.bottom;
+            container.style.transform = savedStyle.transform;
+            container.style.opacity = savedStyle.opacity;
+            container.style.transition = savedStyle.transition;
+            container.style.willChange = savedStyle.willChange;
+            state.savedBallStyle = null;
+        }
+
+        function getSavedBallStyleValue(key) {
+            return state.savedBallStyle ? state.savedBallStyle[key] : '';
+        }
+
+        function normalizeWindowBounds(bounds) {
+            if (!bounds) return null;
+            const x = Number(bounds.x);
+            const y = Number(bounds.y);
+            const width = Number(bounds.width);
+            const height = Number(bounds.height);
+            if (!Number.isFinite(x) || !Number.isFinite(y) ||
+                !Number.isFinite(width) || !Number.isFinite(height)) {
+                return null;
+            }
+            if (width <= 0 || height <= 0) {
+                return null;
+            }
+            return { x, y, width, height };
+        }
+
+        function isActiveDragToken(token) {
+            return multiWindowReturnBallDragState === state && state.dragSessionToken === token;
+        }
+
+        function restoreBallVisibility(dragToken) {
+            if (!isActiveDragToken(dragToken)) return;
+            requestAnimationFrame(() => {
+                if (!isActiveDragToken(dragToken)) return;
+                container.style.opacity = getSavedBallStyleValue('opacity');
+                state.transitionCleanupTimer = setTimeout(() => {
+                    state.transitionCleanupTimer = null;
+                    if (!isActiveDragToken(dragToken)) return;
+                    container.style.transition = getSavedBallStyleValue('transition');
+                    container.style.willChange = getSavedBallStyleValue('willChange');
+                    state.savedBallStyle = null;
+                }, 180);
+            });
+            container.setAttribute('data-dragging', 'false');
+        }
+
+        async function resolveFinalWindowBounds(screenX, screenY, dragToken) {
+            let bounds = null;
+            try {
+                bounds = normalizeWindowBounds(await window.nekoPetDrag.stop(screenX, screenY));
+            } catch (error) {
+                console.warn('[App] 返回球停止拖拽后获取窗口边界失败:', error);
+            }
+
+            if (!isActiveDragToken(dragToken)) return null;
+            if (bounds) return bounds;
+
+            if (!window.nekoPetDrag || typeof window.nekoPetDrag.getBounds !== 'function') {
+                return null;
+            }
+
+            try {
+                bounds = normalizeWindowBounds(await window.nekoPetDrag.getBounds());
+            } catch (error) {
+                console.warn('[App] 返回球 fallback 获取窗口边界失败:', error);
+            }
+
+            if (!isActiveDragToken(dragToken)) return null;
+            return bounds;
+        }
+
+        function beginDrag(screenX, screenY, event) {
+            clearMultiWindowReturnBallDeferredWork(state);
+            state.dragSessionToken += 1;
+
+            state.isDragging = true;
+            state.hasMoved = false;
+            state.startScreenX = screenX;
+            state.startScreenY = screenY;
+            state.releaseScreenX = screenX;
+            state.releaseScreenY = screenY;
+            state.savedWindowW = window.innerWidth;
+            state.savedWindowH = window.innerHeight;
+
+            const rect = container.getBoundingClientRect();
+            state.savedBallWidth = Math.round(rect.width) || 64;
+            state.savedBallHeight = Math.round(rect.height) || 64;
+            state.savedBallStyle = {
+                left: container.style.left,
+                top: container.style.top,
+                right: container.style.right,
+                bottom: container.style.bottom,
+                transform: container.style.transform,
+                opacity: container.style.opacity,
+                transition: container.style.transition,
+                willChange: container.style.willChange,
+            };
+
+            const centeredLeft = Math.max(0, Math.round((MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE - state.savedBallWidth) / 2));
+            const centeredTop = Math.max(0, Math.round((MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE - state.savedBallHeight) / 2));
+
+            container.style.left = `${centeredLeft}px`;
+            container.style.top = `${centeredTop}px`;
+            container.style.right = '';
+            container.style.bottom = '';
+            container.style.transform = 'none';
+            container.style.opacity = getSavedBallStyleValue('opacity');
+            container.style.transition = '';
+            container.style.willChange = 'opacity';
+            container.setAttribute('data-dragging', 'false');
+
+            document.documentElement.style.setProperty('background', 'transparent', 'important');
+            document.body.style.setProperty('background', 'transparent', 'important');
+            if (!document.getElementById('_neko-ball-drag-style')) {
+                const styleEl = document.createElement('style');
+                styleEl.id = '_neko-ball-drag-style';
+                styleEl.textContent = [
+                    'body[data-neko-ball-drag], body[data-neko-ball-drag] * { background:transparent!important; background-color:transparent!important; box-shadow:none!important; }',
+                    'body[data-neko-ball-drag] > *:not([id$="-return-button-container"]) { display:none!important; }',
+                ].join('\n');
+                document.head.appendChild(styleEl);
+            }
+            document.body.dataset.nekoBallDrag = '1';
+            if (window.DragHelpers) window.DragHelpers.isDragging = true;
+            window.nekoPetDrag.start(screenX, screenY);
+
+            if (event) {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+            }
+        }
+
+        function updateDrag(screenX, screenY) {
+            if (!state.isDragging) return;
+            state.releaseScreenX = screenX;
+            state.releaseScreenY = screenY;
+            if (state.hasMoved) return;
+
+            const dx = screenX - state.startScreenX;
+            const dy = screenY - state.startScreenY;
+            if (Math.abs(dx) > CLICK_THRESHOLD || Math.abs(dy) > CLICK_THRESHOLD) {
+                state.hasMoved = true;
+                container.setAttribute('data-dragging', 'true');
+            }
+        }
+
+        async function finishDrag(screenX, screenY) {
+            if (!state.isDragging) return;
+
+            state.isDragging = false;
+            state.releaseScreenX = screenX;
+            state.releaseScreenY = screenY;
+            const dragToken = state.dragSessionToken;
+
+            delete document.body.dataset.nekoBallDrag;
+            if (window.DragHelpers) window.DragHelpers.isDragging = false;
+
+            if (!state.hasMoved) {
+                Promise.resolve(window.nekoPetDrag.stop(screenX, screenY)).catch((error) => {
+                    console.warn('[App] 返回球点击结束时恢复窗口失败:', error);
+                });
+                restoreSavedBallStyle();
+                container.setAttribute('data-dragging', 'false');
+                return;
+            }
+
+            container.style.opacity = '0';
+            container.style.transition = 'opacity 0.15s ease';
+            const finalBounds = await resolveFinalWindowBounds(screenX, screenY, dragToken);
+            if (!isActiveDragToken(dragToken)) return;
+
+            if (finalBounds) {
+                const width = state.savedBallWidth || container.offsetWidth || 64;
+                const height = state.savedBallHeight || container.offsetHeight || 64;
+                const maxLeft = Math.max(0, finalBounds.width - width);
+                const maxTop = Math.max(0, finalBounds.height - height);
+                const newLeft = Math.max(0, Math.min(Math.round(screenX - finalBounds.x - width / 2), maxLeft));
+                const newTop = Math.max(0, Math.min(Math.round(screenY - finalBounds.y - height / 2), maxTop));
+
+                container.style.left = `${newLeft}px`;
+                container.style.top = `${newTop}px`;
+                container.style.right = '';
+                container.style.bottom = '';
+                container.style.transform = 'none';
+            } else {
+                restoreSavedBallStyle();
+            }
+
+            restoreBallVisibility(dragToken);
+        }
+
+        state.handleMouseDown = (event) => {
+            if (event.button !== 0) return;
+            beginDrag(event.screenX, event.screenY, event);
+        };
+        state.handleMouseMove = (event) => {
+            updateDrag(event.screenX, event.screenY);
+        };
+        state.handleMouseUp = (event) => {
+            void finishDrag(event.screenX, event.screenY);
+        };
+        state.handleTouchStart = (event) => {
+            const point = getTouchScreenPoint(event.touches[0]);
+            if (!point) return;
+            beginDrag(point.x, point.y, event);
+        };
+        state.handleTouchMove = (event) => {
+            if (!state.isDragging) return;
+            const point = getTouchScreenPoint(event.touches[0]);
+            if (!point) return;
+            event.preventDefault();
+            updateDrag(point.x, point.y);
+        };
+        state.handleTouchEnd = (event) => {
+            const point = getTouchScreenPoint(event.changedTouches && event.changedTouches[0]);
+            void finishDrag(
+                point ? point.x : state.releaseScreenX,
+                point ? point.y : state.releaseScreenY
+            );
+        };
+
+        container.addEventListener('mousedown', state.handleMouseDown, true);
+        container.addEventListener('touchstart', state.handleTouchStart, true);
+        document.addEventListener('mousemove', state.handleMouseMove);
+        document.addEventListener('mouseup', state.handleMouseUp);
+        document.addEventListener('touchmove', state.handleTouchMove, { passive: false });
+        document.addEventListener('touchend', state.handleTouchEnd);
+        document.addEventListener('touchcancel', state.handleTouchEnd);
+
+        multiWindowReturnBallDragState = state;
+    }
+
     /**
      * Wire up floating-button event listeners.
      * Must be called once after DOM elements are available (from init_app).
@@ -1533,6 +1877,8 @@
                 vrmReturnButtonContainer.style.display = 'none';
             }
 
+            ensureMultiWindowReturnBallDrag(getVisibleReturnBallContainer());
+
             // 隐藏 side-btn 按钮和侧边栏
             const sidebar = document.getElementById('sidebar');
             const sidebarbox = document.getElementById('sidebarbox');
@@ -1608,6 +1954,10 @@
         // 请她回来按钮（统一处理函数）
         const handleReturnClick = async (event) => {
             console.log('[App] 请她回来按钮被点击，开始恢复所有界面');
+            if (multiWindowReturnBallDragState) {
+                multiWindowReturnBallDragState.dragSessionToken += 1;
+                clearMultiWindowReturnBallDeferredWork(multiWindowReturnBallDragState);
+            }
 
             // 取消延迟隐藏定时器
             if (window._goodbyeHideTimerId) {

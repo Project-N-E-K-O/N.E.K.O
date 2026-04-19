@@ -224,6 +224,32 @@
             flex-wrap: wrap;
             margin-top: 16px;
         }
+        .scene-list {
+            margin-top: 12px;
+        }
+        .scene-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 6px 0;
+            border-bottom: 1px solid #f0f0f0;
+        }
+        .scene-item:last-child {
+            border-bottom: none;
+        }
+        .scene-name {
+            font-weight: 500;
+        }
+        .scene-id {
+            font-size: 0.75rem;
+            color: #8e8e93;
+        }
+        .btn-green {
+            background: #34c759;
+        }
+        .btn-green:hover {
+            background: #248a3d;
+        }
     </style>
 </head>
 <body>
@@ -256,6 +282,15 @@
             <div id="homeList"></div>
             <div id="deviceList" class="device-list"></div>
             <button id="refreshStatusBtn" class="secondary" style="margin-top: 16px;">刷新状态</button>
+        </div>
+
+        <!-- 场景列表区 -->
+        <div class="card" id="sceneCard">
+            <div class="flex-between">
+                <h3>🎬 智能场景</h3>
+                <button id="refreshScenesBtn" class="secondary">刷新场景</button>
+            </div>
+            <div id="sceneList" class="scene-list"></div>
         </div>
     </div>
 </div>
@@ -371,6 +406,8 @@
                 showMessage('❌ 未登录或没有家庭，请先登录', 'error');
                 document.getElementById('userInfo').innerHTML = '';
                 document.getElementById('deviceList').innerHTML = '';
+                // 未登录时自动触发扫码登录
+                startQrLogin();
             }
         } catch (err) {
             console.error(err);
@@ -405,6 +442,12 @@
             document.getElementById('qrDisplay').classList.remove('hidden');
             showMessage('请使用米家APP扫描二维码', 'info');
 
+            // 自动在新标签页打开网页授权页面
+            if (qrData.login_url) {
+                window.open(qrData.login_url, '_blank');
+                showMessage('已自动打开登录页面，请在浏览器中完成授权', 'info');
+            }
+
             // 废弃旧轮询并开启新一轮
             if (pollInterval) clearInterval(pollInterval);
             isPollingInFlight = false;
@@ -428,6 +471,7 @@
                         document.getElementById('qrDisplay').classList.add('hidden');
                         document.getElementById('cancelPollBtn').classList.add('hidden');
                         await loadStatus();
+                        loadScenes();
                     } else if (result.message && result.message.includes('超时')) {
                         clearInterval(pollInterval);
                         pollInterval = null;
@@ -469,6 +513,56 @@
         }
     }
 
+    // 加载场景列表
+    async function loadScenes(refresh = false) {
+        const sceneListEl = document.getElementById('sceneList');
+        sceneListEl.innerHTML = '<span class="loading"></span> 加载中...';
+        try {
+            const result = await callPlugin('list_scenes', { refresh: refresh });
+            const scenes = result.scenes || [];
+            if (scenes.length === 0) {
+                sceneListEl.innerHTML = '<p class="info-text">暂无可用场景</p>';
+                return;
+            }
+            let html = '';
+            scenes.forEach(s => {
+                html += `<div class="scene-item">
+                    <div>
+                        <div class="scene-name">${escapeHtml(s.name || '')}</div>
+                        <div class="scene-id">ID: ${escapeHtml(s.id || '')}</div>
+                    </div>
+                    <button class="btn-green scene-exec-btn"
+                        data-scene-id="${escapeHtml(s.id || '')}"
+                        data-scene-name="${escapeHtml(s.name || '')}">执行</button>
+                </div>`;
+            });
+            sceneListEl.innerHTML = html;
+            // 事件委托，避免 onclick 字符串注入
+            sceneListEl.querySelectorAll('.scene-exec-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    executeScene(btn.dataset.sceneId, btn.dataset.sceneName);
+                });
+            });
+        } catch (err) {
+            sceneListEl.innerHTML = `<p class="info-text" style="color:#ff3b30">加载失败：${escapeHtml(err.message)}</p>`;
+        }
+    }
+
+    // 执行场景
+    async function executeScene(sceneId, sceneName) {
+        try {
+            showMessage(`正在执行「${sceneName}」...`, 'info');
+            const result = await callPlugin('execute_scene', { scene_id: sceneId, home_id: '' });
+            if (result.success) {
+                showMessage(`✅「${sceneName}」执行成功！`, 'success');
+            } else {
+                showMessage(`❌「${sceneName}」执行失败：${result.message || '未知错误'}`, 'error');
+            }
+        } catch (err) {
+            showMessage(`❌ 执行失败：${err.message}`, 'error');
+        }
+    }
+
     // 登出
     async function logout() {
         try {
@@ -477,6 +571,7 @@
             document.getElementById('userInfo').innerHTML = '';
             document.getElementById('deviceList').innerHTML = '';
             document.getElementById('homeList').innerHTML = '';
+            document.getElementById('sceneList').innerHTML = '';
         } catch (err) {
             showMessage(`登出失败：${err.message}`, 'error');
         }
@@ -488,6 +583,7 @@
         document.getElementById('cancelPollBtn').addEventListener('click', stopPolling);
         document.getElementById('logoutBtn').addEventListener('click', logout);
         document.getElementById('refreshStatusBtn').addEventListener('click', loadStatus);
+        document.getElementById('refreshScenesBtn').addEventListener('click', () => loadScenes(true));
         loadStatus();
     });
 </script>
