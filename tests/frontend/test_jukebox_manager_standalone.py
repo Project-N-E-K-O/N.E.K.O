@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,7 @@ from playwright.sync_api import Page
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MANAGER_TEMPLATE = (REPO_ROOT / "templates" / "jukebox_manager.html").read_text(encoding="utf-8")
 JUKEBOX_SCRIPT = (REPO_ROOT / "static" / "Jukebox.js").read_text(encoding="utf-8")
+JUKEBOX_STANDALONE_SCRIPT = (REPO_ROOT / "static" / "jukebox-standalone.js").read_text(encoding="utf-8")
 
 HARNESS_HTML = """
 <!DOCTYPE html>
@@ -31,15 +33,16 @@ def test_jukebox_manager_standalone_uses_native_drag_regions():
 
     改回 JS 驱动拖动会让这个测试失败。
     """
-    # 面板本体必须声明为 drag 区域
-    assert "-webkit-app-region: drag !important;" in MANAGER_TEMPLATE
+    # 面板本体必须声明为 drag 区域（放宽空白容忍 CSS 格式化工具）
+    assert re.search(r"-webkit-app-region:\s*drag\s*!important", MANAGER_TEMPLATE)
     # 交互元素必须声明为 no-drag，否则点击会被原生拖动吃掉
-    assert ".jukebox-sam-panel button," in MANAGER_TEMPLATE
-    assert ".jukebox-sam-panel .sam-close-btn," in MANAGER_TEMPLATE
-    assert "-webkit-app-region: no-drag !important;" in MANAGER_TEMPLATE
-    # 不应再注册 JS mousedown 拖动（旧实现的标志函数）
-    assert "_bindManagerStandaloneDrag" not in MANAGER_TEMPLATE
-    assert "neko-jukebox-manager-standalone-dragging" not in MANAGER_TEMPLATE
+    assert re.search(r"\.jukebox-sam-panel\s+button\b", MANAGER_TEMPLATE)
+    assert re.search(r"\.jukebox-sam-panel\s+\.sam-close-btn\b", MANAGER_TEMPLATE)
+    assert re.search(r"-webkit-app-region:\s*no-drag\s*!important", MANAGER_TEMPLATE)
+    # 不应再注册 JS mousedown 拖动（旧实现的标志函数）——模板和外部 JS 文件都要拦
+    for source in (MANAGER_TEMPLATE, JUKEBOX_STANDALONE_SCRIPT, JUKEBOX_SCRIPT):
+        assert "_bindManagerStandaloneDrag" not in source
+        assert "neko-jukebox-manager-standalone-dragging" not in source
 
 
 @pytest.mark.frontend
