@@ -22,7 +22,7 @@ from .shared_state import get_config_manager, get_steamworks, get_session_manage
 from .characters_router import get_current_live2d_model
 from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.preferences import aload_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top, aload_global_conversation_settings, save_global_conversation_settings, GLOBAL_CONVERSATION_KEY
-from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
+from utils.cloudsave_runtime import MaintenanceModeError
 from utils.logger_config import get_module_logger
 from utils.config_manager import get_reserved
 from config import (
@@ -721,8 +721,11 @@ async def update_core_config(request: Request):
         if 'ttsVoiceId' in data:
             core_cfg['ttsVoiceId'] = data['ttsVoiceId']
         
-        assert_cloudsave_writable(config_manager, operation="save", target="core_config.json")
-        await atomic_write_json_async(core_config_path, core_cfg, indent=2, ensure_ascii=False)
+        # save_json_config 内部已调用 assert_cloudsave_writable + ensure_config_directory
+        # + atomic_write_json，不需要再显式栅栏 / 手工拼 core_config_path
+        await asyncio.to_thread(
+            config_manager.save_json_config, 'core_config.json', core_cfg
+        )
 
 
         # API配置更新后，需要先通知所有客户端，再关闭session，最后重新加载配置
