@@ -48,6 +48,37 @@ const composerAttachmentSchema = z.object({
   alt: z.string().optional(),
 });
 
+const avatarInteractionPayloadBaseSchema = z.object({
+  interactionId: z.string().min(1),
+  target: z.literal('avatar'),
+  pointer: z.object({
+    clientX: z.number().finite(),
+    clientY: z.number().finite(),
+  }),
+  textContext: z.string().optional(),
+  timestamp: z.number().finite(),
+  intensity: z.enum(['normal', 'rapid', 'burst', 'easter_egg']).optional(),
+});
+
+export const avatarInteractionPayloadSchema = z.discriminatedUnion('toolId', [
+  avatarInteractionPayloadBaseSchema.extend({
+    toolId: z.literal('lollipop'),
+    actionId: z.enum(['offer', 'tease', 'tap_soft']),
+  }).strict(),
+  avatarInteractionPayloadBaseSchema.extend({
+    toolId: z.literal('fist'),
+    actionId: z.enum(['poke']),
+    touchZone: z.enum(['ear', 'head', 'face', 'body']).optional(),
+    rewardDrop: z.boolean().optional(),
+  }).strict(),
+  avatarInteractionPayloadBaseSchema.extend({
+    toolId: z.literal('hammer'),
+    actionId: z.enum(['bonk']),
+    touchZone: z.enum(['ear', 'head', 'face', 'body']).optional(),
+    easterEgg: z.boolean().optional(),
+  }).strict(),
+]);
+
 export const messageBlockSchema = z.discriminatedUnion('type', [
   textBlockSchema,
   imageBlockSchema,
@@ -72,6 +103,7 @@ export const chatMessageSchema = z.object({
 
 export const composerSubmitSchema = z.object({
   text: z.string(),
+  requestId: z.string().optional(),
 });
 
 export const chatWindowPropsSchema = z.object({
@@ -93,6 +125,8 @@ export const chatWindowPropsSchema = z.object({
   removeAttachmentButtonAriaLabel: z.string().optional(),
   failedStatusLabel: z.string().optional(),
   inputHint: z.string().optional(),
+  rollbackDraft: z.string().optional(),
+  _rollbackKey: z.string().optional(),
   jukeboxButtonLabel: z.string().optional(),
   jukeboxButtonAriaLabel: z.string().optional(),
   avatarGeneratorButtonLabel: z.string().optional(),
@@ -121,6 +155,10 @@ export const chatWindowPropsSchema = z.object({
     .args(composerSubmitSchema)
     .returns(z.void())
     .optional(),
+  onAvatarInteraction: z.function()
+    .args(avatarInteractionPayloadSchema)
+    .returns(z.void())
+    .optional(),
   onJukeboxClick: z.function()
     .args()
     .returns(z.void())
@@ -143,6 +181,7 @@ export type LinkBlock = z.infer<typeof linkBlockSchema>;
 export type StatusBlock = z.infer<typeof statusBlockSchema>;
 export type ButtonGroupBlock = z.infer<typeof buttonGroupBlockSchema>;
 export type ComposerAttachment = z.infer<typeof composerAttachmentSchema>;
+export type AvatarInteractionPayload = z.infer<typeof avatarInteractionPayloadSchema>;
 export type MessageBlock = z.infer<typeof messageBlockSchema>;
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
 export type ComposerSubmitPayload = z.infer<typeof composerSubmitSchema>;

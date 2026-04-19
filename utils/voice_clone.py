@@ -56,6 +56,7 @@ _MINIMAX_LANGUAGE_CODE_MAP = {
 MINIMAX_VOICE_STORAGE_KEY = '__MINIMAX__'
 # voice_storage 中标识 MiniMax 国际服音色的前缀
 MINIMAX_INTL_VOICE_STORAGE_KEY = '__MINIMAX_INTL__'
+MINIMAX_PREFIX_MAX_LENGTH = 10
 
 
 class MinimaxVoiceCloneError(VoiceCloneError):
@@ -79,6 +80,29 @@ def get_minimax_storage_prefix(provider: str = 'minimax') -> str:
     if provider == 'minimax_intl':
         return MINIMAX_INTL_VOICE_STORAGE_KEY
     return MINIMAX_VOICE_STORAGE_KEY
+
+
+def sanitize_minimax_voice_prefix(
+    prefix: str,
+    default_prefix: str = 'voice',
+    *,
+    max_length: Optional[int] = MINIMAX_PREFIX_MAX_LENGTH,
+) -> str:
+    """将 MiniMax 前缀限制为 ASCII 字母数字。
+
+    MiniMax 创建音色时对 ``voice_id`` 的字符集更严格。
+    这里统一只保留英文字母和数字；当结果为空时回退到 ``voice``。
+    """
+    normalized = ''.join(ch for ch in str(prefix or '') if ch.isascii() and ch.isalnum())
+    if max_length is not None:
+        normalized = normalized[:max_length]
+    if normalized:
+        return normalized
+
+    fallback = ''.join(ch for ch in str(default_prefix or '') if ch.isascii() and ch.isalnum())
+    if max_length is not None:
+        fallback = fallback[:max_length]
+    return fallback or 'voice'
 
 
 class MinimaxVoiceCloneClient:
@@ -290,13 +314,14 @@ class MinimaxVoiceCloneClient:
     ) -> str:
         """上传音频并创建音色（组合两步），返回 voice_id。"""
         file_id = await self.upload_file(audio_buffer, filename)
-        voice_id = f"custom_{prefix}"
+        safe_prefix = sanitize_minimax_voice_prefix(prefix, max_length=None)
+        voice_id = f"custom{safe_prefix}"
         return await self.create_voice(
             file_id=file_id,
             voice_id=voice_id,
-            voice_name=prefix,
+            voice_name=safe_prefix,
             language=language,
-            voice_description=f"Cloned by N.E.K.O - {prefix}",
+            voice_description=f"Cloned by N.E.K.O - {safe_prefix}",
         )
 
 

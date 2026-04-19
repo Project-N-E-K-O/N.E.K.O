@@ -16,10 +16,12 @@ import base64
 import difflib
 import math
 import re
+import secrets
 import time
 from collections import deque
 from io import BytesIO
-from urllib.parse import unquote
+from typing import Any
+from urllib.parse import unquote, urlsplit
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
@@ -31,7 +33,12 @@ from cachetools import TTLCache
 
 from .shared_state import get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
 from main_logic.omni_realtime_client import OmniRealtimeClient
-from config import MEMORY_SERVER_PORT
+from config import (
+    AUTOSTART_ALLOWED_ORIGINS,
+    AUTOSTART_CSRF_TOKEN,
+    MEMORY_SERVER_PORT,
+    get_extra_body,
+)
 from config.prompts_sys import _loc
 from config.prompts_emotion import get_outward_emotion_analysis_prompt
 from config.prompts_memory import PROACTIVE_FOLLOWUP_HEADER
@@ -72,9 +79,139 @@ from utils.web_scraper import (
 from utils.music_crawlers import fetch_music_content
 from utils.meme_fetcher import fetch_meme_content, MEME_ALLOWED_HOSTS
 from utils.logger_config import get_module_logger
+from utils.autostart_prompt_state import (
+    get_autostart_prompt_state_response,
+    process_autostart_prompt_heartbeat,
+    record_autostart_prompt_shown,
+    record_autostart_prompt_decision,
+)
+from utils.tutorial_prompt_state import (
+    get_tutorial_prompt_state_response,
+    process_tutorial_prompt_heartbeat,
+    record_tutorial_prompt_shown,
+    record_tutorial_prompt_decision,
+    record_tutorial_started,
+    record_tutorial_completed,
+)
 
 router = APIRouter(prefix="/api", tags=["system"])
 logger = get_module_logger(__name__, "Main")
+_AUTOSTART_CSRF_HEADER = "X-CSRF-Token"
+
+
+def _build_public_error_response(
+    *,
+    error_code: str,
+    status_code: int,
+    result: dict | None = None,
+    defaults: dict | None = None,
+):
+    public_messages = {
+        "status_failed": "Failed to read autostart status",
+        "enable_failed": "Failed to enable autostart",
+        "disable_failed": "Failed to disable autostart",
+        "unsupported_platform": "Autostart is not supported on this platform",
+        "launch_command_unavailable": "Autostart launch command is unavailable",
+        "csrf_validation_failed": "Request could not be verified",
+    }
+
+    content = {}
+    if defaults:
+        content.update(defaults)
+    if result:
+        content.update(result)
+
+    content["ok"] = False
+    content["error_code"] = error_code
+    content["error"] = public_messages.get(error_code, "Operation failed")
+    return JSONResponse(status_code=status_code, content=content)
+
+
+def _normalize_origin_value(raw_value: str | None) -> str:
+    if not raw_value:
+        return ""
+
+    try:
+        parsed = urlsplit(raw_value.strip())
+    except ValueError:
+        return ""
+
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+
+    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}".rstrip("/")
+
+
+def _get_request_origin(request: Request) -> str:
+    origin = _normalize_origin_value(request.headers.get("origin"))
+    if origin:
+        return origin
+    return _normalize_origin_value(request.headers.get("referer"))
+
+
+def _get_allowed_local_origins(request: Request) -> set[str]:
+    allowed_origins = {
+        normalized_origin
+        for origin in AUTOSTART_ALLOWED_ORIGINS
+        if isinstance(origin, str)
+        if (normalized_origin := _normalize_origin_value(origin))
+    }
+    request_origin = _normalize_origin_value(str(request.base_url))
+    if request_origin:
+        allowed_origins.add(request_origin)
+    return allowed_origins
+
+
+def _validate_local_mutation_request(
+    request: Request,
+    *,
+    error_defaults: dict[str, Any] | None = None,
+) -> JSONResponse | None:
+    csrf_token = request.headers.get(_AUTOSTART_CSRF_HEADER, "")
+    has_valid_csrf = bool(
+        csrf_token
+        and AUTOSTART_CSRF_TOKEN
+        and secrets.compare_digest(csrf_token, AUTOSTART_CSRF_TOKEN)
+    )
+    request_origin = _get_request_origin(request)
+    allowed_origins = _get_allowed_local_origins(request)
+    has_valid_origin = bool(request_origin and request_origin in allowed_origins)
+
+    if has_valid_csrf and has_valid_origin:
+        return None
+
+    logger.warning(
+        "Rejected local mutation request due to failed CSRF/origin validation: "
+        "origin=%r allowed_origins=%r has_csrf=%s referer=%r",
+        request_origin,
+        sorted(allowed_origins),
+        has_valid_csrf,
+        request.headers.get("referer"),
+    )
+    return _build_public_error_response(
+        error_code="csrf_validation_failed",
+        status_code=403,
+        defaults=error_defaults,
+    )
+
+
+async def _safe_fire_proactive_done(scope: dict) -> None:
+    """从 proactive_chat 的异常处理路径安全复位状态机。
+
+    异常可能发生在 PROACTIVE_START 之前（mgr 未绑定、_SE 未 import）或之后，
+    这里统一用 locals() dict 查找避免 NameError。状态机 fire 本身 idempotent：
+    状态已经是 IDLE 时 PROACTIVE_DONE 只是空操作。
+    """
+    mgr = scope.get("mgr")
+    se = scope.get("_SE")
+    emitted = scope.get("_proactive_done_emitted", False)
+    if mgr is None or se is None or emitted:
+        return
+    try:
+        await mgr.state.fire(se.PROACTIVE_DONE)
+    except Exception as err:  # 状态机不该抛，但兜底 swallow
+        logger.warning("safe_fire_proactive_done 异常: %s", err)
+
 
 # 统一的表情包图源白名单由 utils.meme_fetcher 维护，本文件仅用于引入
 
@@ -516,6 +653,154 @@ async def ack_pending_notices(request: Request):
         cursor = 0
     drain_prominent_notices(cursor)
     return {"ok": True}
+
+
+@router.get("/tutorial-prompt/state")
+async def get_tutorial_prompt_state():
+    """返回新手引导提示状态快照。"""
+    return get_tutorial_prompt_state_response(config_manager=get_config_manager())
+
+
+@router.post("/tutorial-prompt/heartbeat")
+async def post_tutorial_prompt_heartbeat(request: Request):
+    """记录主页空闲与互动状态，并判断是否需要提示新手引导。"""
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    return process_tutorial_prompt_heartbeat(payload, config_manager=get_config_manager())
+
+
+@router.post("/tutorial-prompt/shown")
+async def post_tutorial_prompt_shown(request: Request):
+    """记录新手引导提示已实际展示给用户。"""
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    try:
+        return record_tutorial_prompt_shown(payload, config_manager=get_config_manager())
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+
+
+@router.post("/tutorial-prompt/decision")
+async def post_tutorial_prompt_decision(request: Request):
+    """记录用户对新手引导提示的选择。"""
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    try:
+        return record_tutorial_prompt_decision(payload, config_manager=get_config_manager())
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+
+
+@router.get("/autostart-prompt/state")
+async def get_autostart_prompt_state():
+    """返回开机自启动提示状态快照。"""
+    return get_autostart_prompt_state_response(config_manager=get_config_manager())
+
+
+@router.post("/autostart-prompt/heartbeat")
+async def post_autostart_prompt_heartbeat(request: Request):
+    """记录主页空闲与互动状态，并判断是否需要提示开机自启动。"""
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    return process_autostart_prompt_heartbeat(payload, config_manager=get_config_manager())
+
+
+@router.post("/autostart-prompt/shown")
+async def post_autostart_prompt_shown(request: Request):
+    """记录开机自启动提示已实际展示给用户。"""
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    try:
+        return record_autostart_prompt_shown(payload, config_manager=get_config_manager())
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+
+
+@router.post("/autostart-prompt/decision")
+async def post_autostart_prompt_decision(request: Request):
+    """记录用户对开机自启动提示的选择。"""
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    try:
+        return record_autostart_prompt_decision(payload, config_manager=get_config_manager())
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+
+
+@router.post("/tutorial-prompt/tutorial-started")
+async def post_tutorial_started(request: Request):
+    """记录主页新手引导已实际开始。"""
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    try:
+        return record_tutorial_started(payload, config_manager=get_config_manager())
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+
+
+@router.post("/tutorial-prompt/tutorial-completed")
+async def post_tutorial_completed(request: Request):
+    """记录主页新手引导已完成。"""
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    try:
+        return record_tutorial_completed(payload, config_manager=get_config_manager())
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
 
 
 # --- 版本更新日志 ---
@@ -2349,23 +2634,64 @@ async def proactive_chat(request: Request):
         if not mgr:
             return JSONResponse({"success": False, "error": f"角色 {lanlan_name} 不存在"}, status_code=404)
         
-        # 检查是否正在响应中（如果正在说话，不打断）
-        if mgr.is_active and hasattr(mgr.session, '_is_responding') and mgr.session._is_responding:
-            return JSONResponse({
-                "success": False,
-                "error": "AI正在响应中，无法主动搭话",
-                "message": "请等待当前响应完成"
-            }, status_code=409)
+        # 检查能否发起新一轮主动搭话：状态机统一把 "AI 正在响应"（_is_responding）、
+        # "另一轮 proactive 在跑"（phase != IDLE）两个信号收拢到 O(1) 判定。
+        # mgr.is_active 仅用于判断 session 是否已实例化，故仍需保留。
+        probe_session = mgr.session if mgr.is_active else None
 
         # ========== Voice mode fast path ==========
-        # 语音模式下不走 Phase1/Phase2，直接注入预录音频触发 AI 回复
+        # 语音模式下不走 Phase1/Phase2，不占 SM 的 proactive phase；先用只读
+        # can_start_proactive 做 409 判定即可。
         if data.get('voice_mode') and mgr.is_active and isinstance(mgr.session, OmniRealtimeClient):
+            if not mgr.state.can_start_proactive(session=probe_session):
+                return JSONResponse({
+                    "success": False,
+                    "error": "AI正在响应中，无法主动搭话",
+                    "message": "请等待当前响应完成",
+                    "state": mgr.state.snapshot(),
+                }, status_code=409)
             delivered = await mgr.trigger_voice_proactive_nudge()
             return JSONResponse({
                 "success": True,
                 "action": "chat" if delivered else "pass",
                 "message": "voice proactive triggered" if delivered else "voice proactive skipped (guard)",
             })
+
+        # ========== Text-mode proactive：原子 "检查 + 占坑" ==========
+        # try_start_proactive 在 _write_lock 内完成 can_start_proactive 判定 + 翻
+        # IDLE→PHASE1 + 订阅派发，避免并发请求双双通过 can_start_proactive 后
+        # 各自 fire(PROACTIVE_START) 导致两路 proactive 同时进入 PHASE1。
+        from main_logic.session_state import SessionEvent as _SE
+        if not await mgr.state.try_start_proactive(session=probe_session):
+            return JSONResponse({
+                "success": False,
+                "error": "AI正在响应中，无法主动搭话",
+                "message": "请等待当前响应完成",
+                "state": mgr.state.snapshot(),
+            }, status_code=409)
+        _proactive_done_emitted = False
+
+        async def _end_proactive(resp: JSONResponse) -> JSONResponse:
+            """包装所有 proactive 正常/短路退出：幂等地 fire PROACTIVE_DONE。"""
+            nonlocal _proactive_done_emitted
+            if not _proactive_done_emitted:
+                _proactive_done_emitted = True
+                try:
+                    await mgr.state.fire(_SE.PROACTIVE_DONE)
+                except Exception as _done_err:
+                    logger.warning("[%s] PROACTIVE_DONE fire 异常: %s", lanlan_name, _done_err)
+            return resp
+
+        def _proactive_preempted_json(where: str) -> dict:
+            logger.info(
+                "[%s] proactive %s preempted by user takeover (state=%s)",
+                lanlan_name, where, mgr.state.snapshot(),
+            )
+            return {
+                "success": True,
+                "action": "pass",
+                "message": f"proactive {where} preempted by user takeover",
+            }
 
         print(f"[{lanlan_name}] 开始主动搭话流程（两阶段架构）...")
         
@@ -2497,12 +2823,16 @@ async def proactive_chat(request: Request):
             sources[mode] = content
         
         if not sources:
-            return JSONResponse({
+            return await _end_proactive(JSONResponse({
                 "success": False,
                 "error": "所有信息源获取失败",
                 "action": "pass"
-            }, status_code=500)
-        
+            }, status_code=500))
+
+        # Phase 1 preempt check：信息源并行 fetch 完，正式进入 LLM 前先瞄一眼
+        if mgr.state.is_proactive_preempted():
+            return await _end_proactive(JSONResponse(_proactive_preempted_json("phase1_post_fetch")))
+
         print(f"[{lanlan_name}] 成功获取 {len(sources)} 个信息源: {list(sources.keys())}")
 
         # ========== 1. 获取记忆上下文 (New Dialog) ==========
@@ -2515,8 +2845,8 @@ async def proactive_chat(request: Request):
         
         raw_memory_context = ""
         try:
-            from utils.memory_client import get_memory_client
-            _pt_client = get_memory_client()
+            from utils.internal_http_client import get_internal_http_client
+            _pt_client = get_internal_http_client()
             resp = await _pt_client.get(
                 f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{lanlan_name}",
                 timeout=5.0,
@@ -2553,7 +2883,13 @@ async def proactive_chat(request: Request):
             return text, ""
 
         memory_context, inner_thoughts = _parse_new_dialog(raw_memory_context)
-        
+
+        # Phase 1 preempt check：memory_server new_dialog 是 phase1 里首次大 await
+        # （httpx timeout 5s）。用户在这期间打断只能等超时才有下一次 check，
+        # 这里补一刀。
+        if mgr.state.is_proactive_preempted():
+            return await _end_proactive(JSONResponse(_proactive_preempted_json("phase1_post_memory")))
+
         # ========== 2. 选择语言 ==========
         try:
             request_lang = data.get('language') or data.get('lang') or data.get('i18n_language')
@@ -2571,35 +2907,43 @@ async def proactive_chat(request: Request):
         # 认知框架：Facts → Reflection(pending) → 主动搭话自然提及 → 用户反馈 → Persona
         followup_topics_prompt = ""
         _surfaced_reflection_ids = []  # 记录本次搭话提及了哪些 pending 反思
+        # 复用 internal_http_client 单例：proactive_chat 每次主动搭话都走此路径
         try:
+            from utils.internal_http_client import get_internal_http_client
             _mem_base = f"http://127.0.0.1:{MEMORY_SERVER_PORT}"
-            async with httpx.AsyncClient(proxy=None, trust_env=False) as _mem_client:
-                # 1. 自动状态迁移 + 反思合成（集中在 memory_server 进程内执行）
-                _reflect_resp = await _mem_client.post(
-                    f"{_mem_base}/reflect/{lanlan_name}", timeout=15.0,
-                )
-                if _reflect_resp.status_code == 200:
-                    _reflect_data = _reflect_resp.json()
-                    if _reflect_data.get('auto_transitions'):
-                        print(f"[{lanlan_name}] 自动迁移 {_reflect_data['auto_transitions']} 条反思状态")
-                    if _reflect_data.get('reflection'):
-                        print(f"[{lanlan_name}] 反思完成(pending): {_reflect_data['reflection']['text'][:50]}...")
+            _mem_client = get_internal_http_client()
+            # 1. 自动状态迁移 + 反思合成（集中在 memory_server 进程内执行）
+            _reflect_resp = await _mem_client.post(
+                f"{_mem_base}/reflect/{lanlan_name}", timeout=15.0,
+            )
+            if _reflect_resp.status_code == 200:
+                _reflect_data = _reflect_resp.json()
+                if _reflect_data.get('auto_transitions'):
+                    print(f"[{lanlan_name}] 自动迁移 {_reflect_data['auto_transitions']} 条反思状态")
+                if _reflect_data.get('reflection'):
+                    print(f"[{lanlan_name}] 反思完成(pending): {_reflect_data['reflection']['text'][:50]}...")
 
-                # 2. 获取回调话题候选
-                _topics_resp = await _mem_client.get(
-                    f"{_mem_base}/followup_topics/{lanlan_name}", timeout=5.0,
-                )
-                if _topics_resp.status_code == 200:
-                    _followup_topics = _topics_resp.json().get('topics', [])
-                    if _followup_topics:
-                        followup_topics_prompt = _loc(PROACTIVE_FOLLOWUP_HEADER, proactive_lang)
-                        for topic in _followup_topics:
-                            followup_topics_prompt += f"- {topic['text']}\n"
-                            if topic.get('id'):
-                                _surfaced_reflection_ids.append(topic['id'])
-                        print(f"[{lanlan_name}] 回调话题候选: {len(_followup_topics)} 条")
+            # 2. 获取回调话题候选
+            _topics_resp = await _mem_client.get(
+                f"{_mem_base}/followup_topics/{lanlan_name}", timeout=5.0,
+            )
+            if _topics_resp.status_code == 200:
+                _followup_topics = _topics_resp.json().get('topics', [])
+                if _followup_topics:
+                    followup_topics_prompt = _loc(PROACTIVE_FOLLOWUP_HEADER, proactive_lang)
+                    for topic in _followup_topics:
+                        followup_topics_prompt += f"- {topic['text']}\n"
+                        if topic.get('id'):
+                            _surfaced_reflection_ids.append(topic['id'])
+                    print(f"[{lanlan_name}] 回调话题候选: {len(_followup_topics)} 条")
         except Exception as e:
             logger.debug(f"[{lanlan_name}] 反思/回调话题获取失败（不影响主流程）: {e}")
+
+        # Phase 1 preempt check：reflection POST(15s) + followup GET(5s) 是又一段
+        # 可能拖很久的 await 串，整段裸跑会让用户打断后继续跑完 LLM 配置和
+        # 后续步骤，再到 pre-LLM check 才识破。这里补一刀。
+        if mgr.state.is_proactive_preempted():
+            return await _end_proactive(JSONResponse(_proactive_preempted_json("phase1_post_reflect")))
 
         # ========== 4. 获取 LLM 配置 ==========
         try:
@@ -2610,11 +2954,11 @@ async def proactive_chat(request: Request):
             
             if not correction_model or not correction_api_key:
                 logger.error("纠错模型配置缺失: model或api_key未设置")
-                return JSONResponse({
+                return await _end_proactive(JSONResponse({
                     "success": False,
                     "error": "纠错模型配置缺失",
                     "detail": "请在设置中配置纠错模型的model和api_key"
-                }, status_code=500)
+                }, status_code=500))
             
             vision_config = _config_manager.get_model_api_config('vision')
             vision_model_name = vision_config.get('model', '')
@@ -2625,12 +2969,12 @@ async def proactive_chat(request: Request):
                 logger.info("Vision 模型未配置，Phase 2 将退回使用 correction 模型")
         except Exception as e:
             logger.error(f"获取模型配置失败: {e}")
-            return JSONResponse({
+            return await _end_proactive(JSONResponse({
                 "success": False,
                 "error": "模型配置异常",
                 "detail": str(e)
-            }, status_code=500)
-        
+            }, status_code=500))
+
         def _make_llm(temperature: float = 1.0, max_tokens: int = 1536,
                       use_vision: bool = False, disable_thinking: bool = True):
             """
@@ -2887,6 +3231,10 @@ async def proactive_chat(request: Request):
             enriched_memory_context = memory_context + "\n" + followup_topics_prompt
 
         if has_web_task or has_music_task or has_meme_task:
+            # Phase 1 preempt check：拨号前最后一次检查。大头 LLM 调用即将开始，
+            # 此后等待期间用户抢占只能靠流结束后的兜底识别。
+            if mgr.state.is_proactive_preempted():
+                return await _end_proactive(JSONResponse(_proactive_preempted_json("phase1_pre_llm")))
             try:
                 from config.prompts_proactive import build_unified_phase1_prompt
                 unified_prompt = build_unified_phase1_prompt(
@@ -2992,6 +3340,9 @@ async def proactive_chat(request: Request):
             fetch_labels.append('meme')
 
         if fetch_tasks_p1:
+            # Phase 1 preempt check：unified LLM 刚回，music/meme 后置 fetch 前再瞄
+            if mgr.state.is_proactive_preempted():
+                return await _end_proactive(JSONResponse(_proactive_preempted_json("phase1_post_llm")))
             fetch_results_p1 = await asyncio.gather(*fetch_tasks_p1, return_exceptions=True)
             for label_p1, result_p1 in zip(fetch_labels, fetch_results_p1):
                 if isinstance(result_p1, Exception):
@@ -3088,11 +3439,15 @@ async def proactive_chat(request: Request):
         
         if not phase1_topics and not vision_content:
             print(f"[{lanlan_name}] Phase 1 所有通道均无可用话题")
-            return JSONResponse({
+            return await _end_proactive(JSONResponse({
                 "success": True,
                 "action": "pass",
                 "message": "所有信息源筛选后均不值得搭话"
-            })
+            }))
+
+        # Phase 1 preempt check：topic assembly 完，进入 Phase 2 前最后一次瞄
+        if mgr.state.is_proactive_preempted():
+            return await _end_proactive(JSONResponse(_proactive_preempted_json("phase1_pre_phase2")))
         
         # 收集各通道结果
         active_channels = [ch for ch, _ in phase1_topics]
@@ -3229,17 +3584,29 @@ async def proactive_chat(request: Request):
         # 完全剔除，不应向模型暴露任何音乐相关指令，以免干扰其他 source 的选择。
         print(f"[{lanlan_name}] Phase 2 prompt 长度: {len(generate_prompt)}, 动态上下文: {len(dynamic_context_for_phase2)} 字符")
 
+        # Phase 1 preempt check (final)：request_fresh_screenshot 最多 await 3s，
+        # 是 prepare_proactive_delivery 之前唯一剩下的可打断窗口。若此处用户已
+        # 接管，继续走 prepare 会让其内部的 `current_speech_id = uuid4()` 覆盖
+        # 用户轮次的 sid —— 即使 SM 的 PROACTIVE_CLAIM 在 _preempted=True 时不
+        # 回写 proactive_sid，mgr.current_speech_id 已经被物理换掉，用户的
+        # 回复 TTS 会被错贴上一个陌生 sid。
+        if mgr.state.is_proactive_preempted():
+            return await _end_proactive(JSONResponse(_proactive_preempted_json("phase1_pre_prepare")))
+
         # --- 前置检查：用户是否空闲、WebSocket 是否在线、session 是否可用 ---
         if not await mgr.prepare_proactive_delivery(min_idle_secs=30.0):
-            return JSONResponse({
+            return await _end_proactive(JSONResponse({
                 "success": True,
                 "action": "pass",
                 "message": "主动搭话条件未满足（用户近期活跃或语音会话正在进行）"
-            })
+            }))
 
         # 记录本轮主动搭话起始的 speech_id；abort 时若该 id 已变，说明用户已打断并接管，
         # 此时再调 handle_new_message() 会把用户正常回复的 TTS 也一起清掉。
+        # prepare_proactive_delivery 已经 fire(PROACTIVE_CLAIM, sid=...)；这里把
+        # 状态机翻到 PHASE2，后续 astream 循环的抢占检查基于此阶段。
         proactive_sid = mgr.current_speech_id
+        await mgr.state.fire(_SE.PROACTIVE_PHASE2)
 
         # --- 构建 LLM + messages (static/dynamic 分离) ---
         phase2_use_vision = bool(screenshot_b64_for_phase2 and has_vision_model)
@@ -3276,10 +3643,13 @@ async def proactive_chat(request: Request):
             nonlocal pipe_count, full_text, aborted
             if not text:
                 return False
-            # sid 已被换掉说明用户已打断并接管本轮，立刻 abort 以停止 LLM stream；
-            # feed_tts_chunk 下面还有 lock 内二次校验兜底，防止 await 期间的 race。
-            if mgr.current_speech_id != proactive_sid:
-                print(f"[{lanlan_name}] Phase 2 检测到 sid 变更（用户已接管），abort")
+            # 状态机 preempt check：O(1) 读 sticky flag + sid 比较。用户抢占
+            # （handle_new_message 或 text stream_text 入口）会 fire USER_INPUT，
+            # 在 PHASE2 阶段 sticky 把 _preempted 翻到 True；同时 current_speech_id
+            # 被轮换，proactive_sid != 新 sid 兜底覆盖竞态窗口。
+            # feed_tts_chunk 下面还有 lock 内 expected_speech_id 二次校验。
+            if mgr.state.is_proactive_preempted(proactive_sid):
+                print(f"[{lanlan_name}] Phase 2 检测到用户接管（state 抢占），abort")
                 aborted = True
                 return True
             for ch in text:
@@ -3303,6 +3673,12 @@ async def proactive_chat(request: Request):
                 async with _make_llm(temperature=1.0, max_tokens=1536,
                                     use_vision=phase2_use_vision, disable_thinking=True) as llm:
                     async for chunk in llm.astream(messages):
+                        # Phase 2 preempt check：每 chunk 顶端做 O(1) 状态机读，
+                        # 用户抢占立刻跳出；_emit_safe 里还有一次保险。
+                        if mgr.state.is_proactive_preempted(proactive_sid):
+                            print(f"[{lanlan_name}] Phase 2 astream chunk 前检测到抢占，abort")
+                            aborted = True
+                            break
                         content = chunk.content if hasattr(chunk, 'content') else ''
                         if not content:
                             continue
@@ -3385,16 +3761,19 @@ async def proactive_chat(request: Request):
         # --- 结果处理 ---
         print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output (aborted={aborted}, tag={source_tag}): {(buffer + full_text)[:300]}\n")
         if aborted or not full_text.strip():
-            if mgr.current_speech_id == proactive_sid:
+            # 只有当用户没接管时才调 handle_new_message 清 TTS —— 否则会把
+            # 用户正常回复的 TTS 也清掉（PR #862 修的 bug）。状态机的
+            # is_proactive_preempted 是权威信号，sid 比较作为最后一道兜底。
+            if not mgr.state.is_proactive_preempted(proactive_sid):
                 await mgr.handle_new_message()
                 logger.debug(f"[{lanlan_name}] Phase 2 abort，已中断 TTS + 前端音频")
             else:
-                logger.info(f"[{lanlan_name}] Phase 2 abort 但用户已接管 (sid changed)，跳过 TTS 清理避免误伤正常回复")
-            return JSONResponse({
+                logger.info(f"[{lanlan_name}] Phase 2 abort 但用户已接管 (state preempted)，跳过 TTS 清理避免误伤正常回复")
+            return await _end_proactive(JSONResponse({
                 "success": True,
                 "action": "pass",
                 "message": "Phase 2 流式输出被拦截或为空"
-            })
+            }))
         
         response_text = full_text.strip()
         logger.debug(f"[{lanlan_name}] Phase 2 流式完成 (vision={phase2_use_vision}): {response_text[:120]}...")
@@ -3422,15 +3801,15 @@ async def proactive_chat(request: Request):
         
         # 【加固补齐】如果触发了降级拦截（aborted），立即返回
         if aborted:
-            if mgr.current_speech_id == proactive_sid:
+            if not mgr.state.is_proactive_preempted(proactive_sid):
                 await mgr.handle_new_message()
             else:
-                logger.info(f"[{lanlan_name}] 降级拦截 abort 但用户已接管 (sid changed)，跳过 TTS 清理")
-            return JSONResponse({
+                logger.info(f"[{lanlan_name}] 降级拦截 abort 但用户已接管 (state preempted)，跳过 TTS 清理")
+            return await _end_proactive(JSONResponse({
                 "success": True,
                 "action": "pass",
                 "message": f"[{lanlan_name}] 播放中推荐拦截触发，动作已取消"
-            })
+            }))
 
         # 使用纯函数构建响应
         primary_channel, source_links = build_proactive_response(source_tag, {
@@ -3477,32 +3856,33 @@ async def proactive_chat(request: Request):
                 "[%s] 主动搭话被用户接管，短路下游写入（topic/memory/response）",
                 lanlan_name,
             )
-            return JSONResponse({
+            return await _end_proactive(JSONResponse({
                 "success": True,
                 "action": "pass",
                 "message": "proactive delivery skipped: user took over turn",
                 "lanlan_name": lanlan_name,
                 "turn_id": mgr.current_speech_id,
-            })
+            }))
 
         # 记录主动搭话
         _record_proactive_chat(lanlan_name, response_text, primary_channel)
 
-        # 后台长期记忆维护（通过 memory_server API）
+        # 后台长期记忆维护（通过 memory_server API）：复用 internal_http_client 单例
         try:
+            from utils.internal_http_client import get_internal_http_client
             _mem_base = f"http://127.0.0.1:{MEMORY_SERVER_PORT}"
-            async with httpx.AsyncClient(proxy=None, trust_env=False) as _mem_client:
-                # 保存本次搭话实际提及的 pending 反思 ID（供下次 /process 做反馈检查）
-                if _surfaced_reflection_ids:
-                    await _mem_client.post(
-                        f"{_mem_base}/record_surfaced/{lanlan_name}",
-                        json={"reflection_ids": _surfaced_reflection_ids},
-                        timeout=5.0,
-                    )
-                    print(f"[{lanlan_name}] 记录 surfaced 反思: {len(_surfaced_reflection_ids)} 条")
+            _mem_client = get_internal_http_client()
+            # 保存本次搭话实际提及的 pending 反思 ID（供下次 /process 做反馈检查）
+            if _surfaced_reflection_ids:
+                await _mem_client.post(
+                    f"{_mem_base}/record_surfaced/{lanlan_name}",
+                    json={"reflection_ids": _surfaced_reflection_ids},
+                    timeout=5.0,
+                )
+                print(f"[{lanlan_name}] 记录 surfaced 反思: {len(_surfaced_reflection_ids)} 条")
 
-                # 记录 persona 提及次数（疲劳跟踪） — persona 文件由 memory_server 管理
-                # record_mentions 已在 memory_server 的 _extract_facts_and_check_feedback 中调用
+            # 记录 persona 提及次数（疲劳跟踪） — persona 文件由 memory_server 管理
+            # record_mentions 已在 memory_server 的 _extract_facts_and_check_feedback 中调用
         except Exception as e:
             logger.debug(f"[{lanlan_name}] 长期记忆后处理失败（不影响主流程）: {e}")
 
@@ -3543,7 +3923,7 @@ async def proactive_chat(request: Request):
             _record_topic_usage(lanlan_name, selected_meme_topic_key)
             print(f"[{lanlan_name}] 已记录表情包话题去重: {selected_meme_topic_key[:60]}")
 
-        return JSONResponse({
+        return await _end_proactive(JSONResponse({
             "success": True,
             "action": "chat",
             "message": "主动搭话已发送",
@@ -3553,16 +3933,18 @@ async def proactive_chat(request: Request):
             "active_channels": active_channels,
             "source_links": source_links,
             "turn_id": mgr.current_speech_id
-        })
-        
+        }))
+
     except asyncio.TimeoutError:
         logger.error("主动搭话超时")
+        await _safe_fire_proactive_done(locals())
         return JSONResponse({
             "success": False,
             "error": "AI处理超时"
         }, status_code=504)
     except Exception as e:
         logger.error(f"主动搭话接口异常: {e}")
+        await _safe_fire_proactive_done(locals())
         return JSONResponse({
             "success": False,
             "error": "服务器内部错误",

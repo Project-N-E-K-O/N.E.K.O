@@ -234,30 +234,6 @@
         });
     }
 
-    /**
-     * 轻量 markdown → HTML：# 标题转加粗、**加粗**、*斜体*、- 列表项、换行保留。
-     * 先转义 HTML 实体，再按顺序替换 markdown 标记。
-     */
-    function _miniMarkdown(text) {
-        let s = text
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;');
-        // # 标题 → 加粗（支持 1~6 级，去掉 #）
-        s = s.replace(/^#{1,6}\s+(.+)$/gm, '<strong>$1</strong>');
-        // **加粗**（先于 *斜体*）
-        s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-        // *斜体*
-        s = s.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>');
-        // - 列表项 → <li>（连续 <li> 后续用 CSS 处理）
-        s = s.replace(/^[-•]\s+(.+)$/gm, '<li style="margin-left:18px;list-style:disc;text-align:left;">$1</li>');
-        // 换行
-        s = s.replace(/\n/g, '<br>');
-        // 清理连续 <li> 之间多余的 <br>
-        s = s.replace(/<\/li><br><li/g, '</li><li');
-        return s;
-    }
-
     function _renderProminentNotice(notice, onDismiss) {
         // 回退文本优先级：按用户 locale 选择语言
         const _isChinese = (typeof _isUserRegionChina === 'function' && _isUserRegionChina())
@@ -328,7 +304,11 @@
 
         const textDiv = document.createElement('div');
         textDiv.style.cssText = 'font-size:16px;font-weight:600;line-height:1.7;margin-bottom:22px;text-align:left;';
-        textDiv.innerHTML = _miniMarkdown(displayText);
+        if (typeof window.renderMiniMarkdown === 'function') {
+            textDiv.innerHTML = window.renderMiniMarkdown(displayText);
+        } else {
+            textDiv.textContent = displayText;
+        }
 
         box.appendChild(icon);
         box.appendChild(textDiv);

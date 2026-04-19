@@ -129,6 +129,97 @@ _settle_locks: dict[str, asyncio.Lock] = {}
 # 强引用注册表：防止 fire-and-forget task 被 GC
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
 
+# ── 空闲维护相关 ────────────────────────────────────────────────────
+_last_activity_time: datetime = datetime.now()            # 最后一次对话活动时间
+IDLE_CHECK_INTERVAL = 40             # 空闲检查轮询间隔（秒，正常阶段）
+IDLE_CHECK_INTERVAL_STARTUP = 10     # 启动阶段高频轮询间隔
+IDLE_THRESHOLD = 10                  # 多少秒无活动视为空闲（匹配最低 proactive 间隔）
+REVIEW_MIN_INTERVAL = 300            # review（correction）最短间隔（秒）
+REVIEW_SKIP_HISTORY_LEN = 8          # 历史不足此数的角色跳过 review / correction
+
+# ── 持久化维护状态（跨重启保留 review_clean 标记） ──────────────────
+_maint_state: dict[str, dict] = {}   # {角色名: {"review_clean": bool, "last_review_ts": str}}
+
+
+def _maint_state_path() -> str:
+    return os.path.join(str(_config_manager.memory_dir), 'idle_maintenance_state.json')
+
+
+async def _aload_maint_state() -> None:
+    """启动时从磁盘加载维护状态。"""
+    from utils.file_utils import read_json_async
+    global _maint_state
+    path = _maint_state_path()
+    if not await asyncio.to_thread(os.path.exists, path):
+        _maint_state = {}
+        return
+    try:
+        data = await read_json_async(path)
+        if isinstance(data, dict):
+            _maint_state = data
+            logger.debug(f"[IdleMaint] 已加载维护状态: {len(_maint_state)} 个角色")
+            return
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning(f"[IdleMaint] 维护状态文件加载失败: {e}")
+    _maint_state = {}
+
+
+async def _asave_maint_state() -> None:
+    """将维护状态持久化到磁盘。"""
+    from utils.file_utils import atomic_write_json_async
+    try:
+        await atomic_write_json_async(_maint_state_path(), _maint_state,
+                                      indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.warning(f"[IdleMaint] 维护状态保存失败: {e}")
+
+
+def _is_review_clean(lanlan_name: str) -> bool:
+    """检查角色是否处于 review_clean 状态（已 review 且无新对话）。"""
+    return _maint_state.get(lanlan_name, {}).get('review_clean', False)
+
+
+async def _aclear_review_clean(lanlan_name: str) -> None:
+    """新 human 消息到达时清除 review_clean 标记。"""
+    state = _maint_state.get(lanlan_name, {})
+    if state.get('review_clean'):
+        state['review_clean'] = False
+        await _asave_maint_state()
+
+
+def _has_human_messages(messages) -> bool:
+    """检查消息列表中是否包含用户（human）消息。"""
+    for m in messages:
+        if getattr(m, 'type', '') == 'human':
+            return True
+    return False
+
+
+async def _ais_review_enabled() -> bool:
+    """检查配置中 correction/review 是否启用（走异步 IO）。"""
+    from utils.file_utils import read_json_async
+    try:
+        config_path = str(_config_manager.get_config_path('core_config.json'))
+        if not await asyncio.to_thread(os.path.exists, config_path):
+            return True
+        config_data = await read_json_async(config_path)
+        if isinstance(config_data, dict) and not config_data.get('recent_memory_auto_review', True):
+            return False
+    except Exception as e:
+        logger.debug(f"[IdleMaint] 读取 review 开关配置失败，默认启用: {e}")
+    return True
+
+
+def _touch_activity() -> None:
+    """记录一次对话活动，刷新空闲计时器。"""
+    global _last_activity_time
+    _last_activity_time = datetime.now()
+
+
+def _is_idle() -> bool:
+    """判断当前是否空闲（距上次活动超过阈值）。"""
+    return (datetime.now() - _last_activity_time).total_seconds() >= IDLE_THRESHOLD
+
 
 def _get_settle_lock(lanlan_name: str) -> asyncio.Lock:
     """获取指定角色的结算锁（懒创建）"""
@@ -329,6 +420,116 @@ async def _periodic_auto_promote_loop():
             )
 
 
+async def _periodic_idle_maintenance_loop():
+    """定期检查系统是否空闲，空闲时自动执行记忆维护任务。
+
+    启动阶段以 IDLE_CHECK_INTERVAL_STARTUP(10s) 高频轮询，尽快捕获启动后的
+    首个空闲窗口执行维护（用户上次强制退出导致的未完成任务在这里收尾）。
+    首轮维护完成或 recent_memory_auto_review 被禁用后恢复 IDLE_CHECK_INTERVAL(40s)。
+
+    每轮为每个角色依次执行：
+    1. 历史记录压缩 — 有需要就跑（history > max_history_length）
+    2. Persona 矛盾审视 — 有需要就跑（pending corrections 非空，history >= 8）
+    3. 记忆整理 review — review_clean 则跳过；受 REVIEW_MIN_INTERVAL 最短间隔；history < 8 跳过
+    """
+    startup_phase = True
+    while True:
+        await asyncio.sleep(IDLE_CHECK_INTERVAL_STARTUP if startup_phase else IDLE_CHECK_INTERVAL)
+
+        # correction 被禁用 → 无需高频轮询
+        if startup_phase and not await _ais_review_enabled():
+            startup_phase = False
+
+        if not _is_idle():
+            continue
+
+        try:
+            character_data = await _config_manager.aload_characters()
+            catgirl_names = list(character_data.get('猫娘', {}).keys())
+        except Exception as e:
+            logger.debug(f"[IdleMaint] 加载角色列表失败: {e}")
+            continue
+
+        review_enabled = await _ais_review_enabled()
+
+        for name in catgirl_names:
+            # 每处理一个角色前重新检查空闲，一旦变忙立即退出
+            if not _is_idle():
+                logger.debug("[IdleMaint] 检测到新活动，中断本轮维护")
+                break
+
+            try:
+                history = await recent_history_manager.aget_recent_history(name)
+                history_len = len(history)
+
+                # ── 子任务1: 历史记录压缩（有需要就跑，不受全局开关控制） ──
+                if history_len > recent_history_manager.max_history_length:
+                    logger.info(
+                        f"[IdleMaint] {name}: 历史记录过长 ({history_len} > "
+                        f"{recent_history_manager.max_history_length})，触发压缩"
+                    )
+                    try:
+                        # 传空消息列表仅触发压缩逻辑
+                        await recent_history_manager.update_history([], name, detailed=True)
+                        logger.info(f"[IdleMaint] {name}: 历史记录压缩完成")
+                    except Exception as e:
+                        logger.warning(f"[IdleMaint] {name}: 历史记录压缩失败: {e}")
+
+                # 历史不足 REVIEW_SKIP_HISTORY_LEN 条，或全局开关关闭 → 跳过矛盾审视和 review
+                if history_len < REVIEW_SKIP_HISTORY_LEN or not review_enabled:
+                    continue
+
+                # ── 子任务2: Persona 矛盾审视（有需要就跑） ──
+                if not _is_idle():
+                    break
+                try:
+                    pending_corrections = await persona_manager.aload_pending_corrections(name)
+                    if pending_corrections:
+                        logger.info(
+                            f"[IdleMaint] {name}: 发现 {len(pending_corrections)} 条未处理的 persona 矛盾，触发审视"
+                        )
+                        resolved = await persona_manager.resolve_corrections(name)
+                        if resolved:
+                            logger.info(f"[IdleMaint] {name}: 审视了 {resolved} 条 persona 矛盾")
+                except Exception as e:
+                    logger.warning(f"[IdleMaint] {name}: persona 矛盾审视失败: {e}")
+
+                # ── 子任务3: 记忆整理 review ──
+                if not _is_idle():
+                    break
+                # 已 review 且没有新对话 → 跳过
+                if _is_review_clean(name):
+                    continue
+                # 已有 review 任务在跑 → 跳过
+                if name in correction_tasks and not correction_tasks[name].done():
+                    continue
+                # 最短间隔限制
+                last_review = _maint_state.get(name, {}).get('last_review_ts')
+                if last_review:
+                    try:
+                        elapsed = (datetime.now() - datetime.fromisoformat(last_review)).total_seconds()
+                        if elapsed < REVIEW_MIN_INTERVAL:
+                            continue
+                    except (ValueError, TypeError):
+                        logger.debug(f"[IdleMaint] {name}: last_review_ts 格式无效，视为未 review 过")
+                logger.info(f"[IdleMaint] {name}: 空闲期间执行记忆整理")
+                try:
+                    cancel_event = asyncio.Event()
+                    correction_cancel_flags[name] = cancel_event
+                    task = asyncio.create_task(_run_review_in_background(name))
+                    correction_tasks[name] = task
+                except Exception as e:
+                    logger.warning(f"[IdleMaint] {name}: 记忆整理启动失败: {e}")
+
+            except Exception as e:
+                logger.debug(f"[IdleMaint] {name}: 处理失败，跳过: {e}")
+
+        # 首轮维护完成 → 恢复正常轮询间隔
+        if startup_phase:
+            startup_phase = False
+            logger.info("[IdleMaint] 启动阶段结束，恢复正常轮询间隔")
+
+
 @app.on_event("startup")
 async def startup_event_handler():
     """应用启动时初始化"""
@@ -339,6 +540,9 @@ async def startup_event_handler():
         TokenTracker.get_instance().record_app_start()
     except Exception as e:
         logger.warning(f"[Memory] Token tracker init failed: {e}")
+
+    # 加载持久化维护状态（review_clean 标记等）
+    await _aload_maint_state()
 
     # 自动迁移 settings → persona（如 persona 文件不存在）
     # 注：目录结构迁移已在模块级完成（在组件实例化之前）
@@ -367,6 +571,9 @@ async def startup_event_handler():
     _spawn_background_task(_periodic_rebuttal_loop())
     _spawn_background_task(_periodic_auto_promote_loop())
 
+    # 空闲时自动维护记忆（压缩、矛盾审视、review）
+    _spawn_background_task(_periodic_idle_maintenance_loop())
+
 
 @app.on_event("shutdown")
 async def shutdown_event_handler():
@@ -392,8 +599,16 @@ async def _run_review_in_background(lanlan_name: str):
     
     try:
         # 直接异步调用review_history方法
-        await recent_history_manager.review_history(lanlan_name, cancel_event)
-        logger.info(f"✅ {lanlan_name} 的记忆整理任务完成")
+        success = await recent_history_manager.review_history(lanlan_name, cancel_event)
+        if success:
+            logger.info(f"✅ {lanlan_name} 的记忆整理任务完成")
+            # 仅在 review 实际成功修正并保存时标记 clean + 记录时间
+            state = _maint_state.setdefault(lanlan_name, {})
+            state['review_clean'] = True
+            state['last_review_ts'] = datetime.now().isoformat()
+            await _asave_maint_state()
+        else:
+            logger.info(f"ℹ️ {lanlan_name} 的记忆整理未执行（被跳过或条件不满足）")
     except asyncio.CancelledError:
         logger.info(f"⚠️ {lanlan_name} 的记忆整理任务被取消")
     except Exception as e:
@@ -548,13 +763,16 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
 
 @app.post("/cache/{lanlan_name}")
 async def cache_conversation(request: HistoryRequest, lanlan_name: str):
-    lanlan_name = validate_lanlan_name(lanlan_name)
     """轻量级缓存：仅将新消息追加到 recent history，不触发 time_manager / review 等 LLM 操作。
     供 cross_server 在每轮 turn end 时调用，保持 memory_browser 实时可见。"""
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    _touch_activity()
     try:
         input_history = convert_to_messages(json.loads(request.input_history))
         if not input_history:
             return {"status": "cached", "count": 0}
+        if _has_human_messages(input_history):
+            await _aclear_review_clean(lanlan_name)
         logger.info(f"[MemoryServer] cache: {lanlan_name} +{len(input_history)} 条消息")
         async with _get_settle_lock(lanlan_name):
             await recent_history_manager.update_history(input_history, lanlan_name, compress=False)
@@ -567,6 +785,7 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
 @app.post("/process/{lanlan_name}")
 async def process_conversation(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
+    _touch_activity()
     global correction_tasks
     try:
         # 检查角色是否存在于配置中，如果不存在则记录信息但继续处理（允许新角色）
@@ -577,9 +796,11 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
                 logger.info(f"[MemoryServer] 角色 '{lanlan_name}' 不在配置中，但继续处理（可能是新创建的角色）")
         except Exception as e:
             logger.warning(f"检查角色配置失败: {e}，继续处理")
-        
+
         uid = str(uuid4())
         input_history = convert_to_messages(json.loads(request.input_history))
+        if _has_human_messages(input_history):
+            await _aclear_review_clean(lanlan_name)
         logger.info(f"[MemoryServer] 收到 {lanlan_name} 的对话历史处理请求，消息数: {len(input_history)}")
         await recent_history_manager.update_history(input_history, lanlan_name)
         # 旧模块已禁用（性能不足）：
@@ -611,6 +832,7 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
 @app.post("/renew/{lanlan_name}")
 async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
+    _touch_activity()
     global correction_tasks
     try:
         # 检查角色是否存在于配置中，如果不存在则记录信息但继续处理（允许新角色）
@@ -621,9 +843,11 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
                 logger.info(f"[MemoryServer] renew: 角色 '{lanlan_name}' 不在配置中，但继续处理（可能是新创建的角色）")
         except Exception as e:
             logger.warning(f"检查角色配置失败: {e}，继续处理")
-        
+
         uid = str(uuid4())
         input_history = convert_to_messages(json.loads(request.input_history))
+        if _has_human_messages(input_history):
+            await _aclear_review_clean(lanlan_name)
         logger.info(f"[MemoryServer] renew: 收到 {lanlan_name} 的对话历史处理请求，消息数: {len(input_history)}")
         # 首轮摘要带锁：阻塞 /new_dialog 直到摘要+时间戳写入完成
         async with _get_settle_lock(lanlan_name):
@@ -661,10 +885,13 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
     本端点补全这些操作。
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
+    _touch_activity()
     global correction_tasks
     try:
         uid = str(uuid4())
         input_history = convert_to_messages(json.loads(request.input_history))
+        if _has_human_messages(input_history):
+            await _aclear_review_clean(lanlan_name)
         logger.info(f"[MemoryServer] settle: 收到 {lanlan_name} 的结算请求，消息数: {len(input_history)}")
 
         async with _get_settle_lock(lanlan_name):
@@ -803,6 +1030,7 @@ async def cancel_correction(lanlan_name: str):
 @app.get("/new_dialog/{lanlan_name}")
 async def new_dialog(lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
+    _touch_activity()
     global correction_tasks, correction_cancel_flags
 
     # 检查角色是否存在于配置中
