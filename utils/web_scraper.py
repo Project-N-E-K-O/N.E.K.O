@@ -1893,14 +1893,10 @@ async def fetch_window_context_content(limit: int = 5) -> Dict[str, Any]:
         return {
             'success': True,
             'window_title': sanitized_title,
-            'region': '',
+            'region': 'china' if china_region else 'non-china',
             'search_queries': successful_queries,
             'search_results': unique_results,
         }
-        if china_region:
-            result['region'] = 'china'
-        else:
-            result['region'] = 'non-china'
         
     except Exception as e:
         if is_china_region():
@@ -2509,7 +2505,13 @@ async def fetch_reddit_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
         # per-call AsyncClient: 带用户鉴权 cookie，见 bilibili 同款理由
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
             response = await client.get(url, headers=headers, cookies=reddit_cookies, timeout=10.0)
-            data = response.json()
+            response.raise_for_status()
+            try:
+                data = response.json()
+            except json.JSONDecodeError as e:
+                return {'success': False, 'error': f'Reddit 响应 JSON 解析失败: {e}'}
+        if not isinstance(data, dict):
+            return {'success': False, 'error': 'Reddit API 返回格式异常（非 dict）'}
         posts = [
             {
                 'title': pd.get('title', ''), 'subreddit': f"r/{pd.get('subreddit', '')}",
