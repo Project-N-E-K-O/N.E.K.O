@@ -21,13 +21,15 @@
           </div>
         </div>
 
-        <p v-if="!showMetrics" class="plugin-list-row-card__description">
+        <p class="plugin-list-row-card__description">
           {{ plugin.description || t('common.noData') }}
         </p>
 
-        <div class="plugin-list-row-card__metrics" :class="{ 'plugin-list-row-card__metrics--visible': showMetrics }">
-          <PluginMetricsInline v-if="showMetrics" :plugin-id="plugin.id" />
-        </div>
+        <PluginMetricsInline
+          v-if="showMetrics"
+          :plugin-id="plugin.id"
+          :plugin-status="plugin.status || 'stopped'"
+        />
       </div>
 
       <div class="plugin-list-row-card__meta">
@@ -163,14 +165,6 @@ const typeTagType = computed<'primary' | 'success' | 'warning'>(() => {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-}
-
-.plugin-list-row-card__metrics {
-  min-width: 0;
-}
-
-.plugin-list-row-card__metrics--visible {
-  padding-top: 2px;
 }
 
 .plugin-list-row-card__meta {

@@ -597,15 +597,16 @@ async function handleRefresh() {
 
 async function toggleMetrics() {
   if (!showMetrics.value) {
-    try {
-      await metricsStore.fetchAllMetrics()
-      showMetrics.value = true
-      startMetricsAutoRefresh()
-    } catch (error) {
-      console.error('Failed to fetch metrics:', error)
-      showMetrics.value = false
-      stopMetricsAutoRefresh()
+    showMetrics.value = true
+    // Only fetch if there are running plugins
+    if (runningPlugins.value.length > 0) {
+      try {
+        await metricsStore.fetchAllMetrics()
+      } catch (error) {
+        console.warn('Failed to fetch initial metrics:', error)
+      }
     }
+    startMetricsAutoRefresh()
   } else {
     showMetrics.value = false
     stopMetricsAutoRefresh()
@@ -615,6 +616,8 @@ async function toggleMetrics() {
 function startMetricsAutoRefresh() {
   stopMetricsAutoRefresh()
   metricsRefreshTimer = window.setInterval(() => {
+    // Skip refresh if no running plugins
+    if (runningPlugins.value.length === 0) return
     metricsStore.fetchAllMetrics().catch((error) => {
       console.warn('Auto-refresh metrics failed:', error)
     })
