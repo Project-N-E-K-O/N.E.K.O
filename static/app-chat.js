@@ -817,10 +817,11 @@
                 // ========== 重置本轮气泡追踪 ==========
                 window.currentTurnGeminiBubbles = [];
                 window.currentTurnGeminiAttachments = [];
-                // 提前复位字幕 turn 状态：neko-assistant-turn-start 事件要等
-                // 首个可见气泡创建后才发，而 updateSubtitleStreamingText 在
-                // 首个 chunk 就会被调用，必须在此解锁 isCurrentTurnFinalized
-                // 闸门，否则上一轮结束留下的 true 会把本轮首个 chunk 吞掉。
+                // 提前复位字幕 turn 状态：neko-assistant-turn-start 事件在
+                // 首个 chunk 不可渲染时会延后到首个可见气泡创建才派发，而
+                // updateSubtitleStreamingText 在首个 chunk 就会被调用；必须
+                // 在此解锁 isCurrentTurnFinalized 闸门，否则上一轮结束留下
+                // 的 true 会把本轮首个 chunk 吞掉。
                 if (typeof window.beginSubtitleTurn === 'function') {
                     window.beginSubtitleTurn();
                 }
