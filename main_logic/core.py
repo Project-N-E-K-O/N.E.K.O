@@ -262,8 +262,6 @@ class LLMSessionManager:
         self.pending_extra_replies = []
         # 结构化 agent 任务回调队列（用于按会话类型注入）
         self.pending_agent_callbacks: list[dict] = []
-        # 防止 trigger_agent_callbacks 重入
-        self._agent_delivery_in_progress: bool = False
         # 防止 trigger_agent_callbacks 和 finish_proactive_delivery 并发写 WS/sync_message_queue
         self._proactive_write_lock = asyncio.Lock()
         # 由前端控制的Agent相关开关
@@ -1696,8 +1694,8 @@ class LLMSessionManager:
             async def _fetch_new_dialog():
                 """独立任务：取 /new_dialog 响应。在 gather 之前就 kick off，
                 主动避开 TTS worker 启动时的 GIL 争用窗口。"""
-                from utils.memory_client import get_memory_client
-                _mem_client = get_memory_client()
+                from utils.internal_http_client import get_internal_http_client
+                _mem_client = get_internal_http_client()
                 try:
                     resp = await _mem_client.get(
                         f"http://127.0.0.1:{_dlg_port}/new_dialog/{_dlg_lanlan}",
@@ -2051,31 +2049,36 @@ class LLMSessionManager:
         """Query agent server for active tasks and return a prompt snippet."""
         if not self._is_agent_enabled():
             return ""
+        # 复用 internal_http_client 单例：agent mode session init 走此路径，
+        # TOOL_SERVER_PORT 也是 127.0.0.1 内部服务
         try:
-            async with httpx.AsyncClient(timeout=1.5, proxy=None, trust_env=False) as client:
-                resp = await client.get(f"http://127.0.0.1:{TOOL_SERVER_PORT}/tasks")
-                if resp.status_code != 200:
-                    return ""
-                data = resp.json()
-                tasks = data.get("tasks", [])
-                active = [t for t in tasks if t.get("status") in ("running", "queued")]
-                if not active:
-                    return ""
-                _lang = normalize_language_code(self.user_language, format='short')
-                lines = []
-                for t in active:
-                    params = t.get("params") or {}
-                    desc = params.get("query") or params.get("instruction") or t.get("original_query") or t.get("id", "")[:8]
-                    status = _loc(AGENT_TASK_STATUS_RUNNING, _lang) if t.get("status") == "running" else _loc(AGENT_TASK_STATUS_QUEUED, _lang)
-                    lines.append(f"  - [{status}] {desc}")
-                if len(lines) > 0:
-                    return (
-                        _loc(AGENT_TASKS_HEADER, _lang)
-                        + "\n".join(lines)
-                        + _loc(AGENT_TASKS_NOTICE, _lang)
-                    )
-                else:
-                    return ""
+            from utils.internal_http_client import get_internal_http_client
+            client = get_internal_http_client()
+            resp = await client.get(
+                f"http://127.0.0.1:{TOOL_SERVER_PORT}/tasks", timeout=1.5,
+            )
+            if resp.status_code != 200:
+                return ""
+            data = resp.json()
+            tasks = data.get("tasks", [])
+            active = [t for t in tasks if t.get("status") in ("running", "queued")]
+            if not active:
+                return ""
+            _lang = normalize_language_code(self.user_language, format='short')
+            lines = []
+            for t in active:
+                params = t.get("params") or {}
+                desc = params.get("query") or params.get("instruction") or t.get("original_query") or t.get("id", "")[:8]
+                status = _loc(AGENT_TASK_STATUS_RUNNING, _lang) if t.get("status") == "running" else _loc(AGENT_TASK_STATUS_QUEUED, _lang)
+                lines.append(f"  - [{status}] {desc}")
+            if len(lines) > 0:
+                return (
+                    _loc(AGENT_TASKS_HEADER, _lang)
+                    + "\n".join(lines)
+                    + _loc(AGENT_TASKS_NOTICE, _lang)
+                )
+            else:
+                return ""
         except Exception:
             return ""
 
@@ -2190,8 +2193,8 @@ class LLMSessionManager:
             
             initial_prompt = await self._build_initial_prompt()
             self.initial_cache_snapshot_len = len(self.message_cache_for_new_session)
-            from utils.memory_client import get_memory_client
-            _hs_client = get_memory_client()
+            from utils.internal_http_client import get_internal_http_client
+            _hs_client = get_internal_http_client()
             try:
                 resp = await _hs_client.get(
                     f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}",
@@ -2792,22 +2795,22 @@ class LLMSessionManager:
         """Proactively deliver pending agent task results via LLM rephrase.
 
         Design:
-        - Text mode (OmniOfflineClient): calls session.prompt_ephemeral() so the
-          LLM generates a styled response in the character's voice.
+        - Text mode (OmniOfflineClient): claims proactive turn via
+          ``state.try_start_proactive()`` then calls ``prompt_ephemeral()`` so
+          the LLM generates a styled response in the character's voice.
         - Voice mode (OmniRealtimeClient): defers to hot-swap — callbacks are
-          kept in pending_extra_replies for injection via prime_context().
+          kept in pending_extra_replies for injection via prime_context()；
+          不参与 SM 状态机（hot-swap 有独立生命周期）。
         - On failure or when the session is busy, restores callbacks so the next
           handle_response_complete() call will retry automatically.
-        - Re-entrance guard prevents concurrent deliveries.
+        - 重入与"AI 正在回复"互斥由 SM 的原子 claim 承担；同时与
+          ``/api/proactive_chat`` / ``trigger_greeting`` 互为 mutual exclusion。
         """
         sess_type = type(self.session).__name__ if self.session else "None"
         logger.info(
-            "[%s] trigger_agent_callbacks enter: session=%s delivery_in_progress=%s pending=%d",
-            self.lanlan_name, sess_type, self._agent_delivery_in_progress, len(self.pending_agent_callbacks),
+            "[%s] trigger_agent_callbacks enter: session=%s phase=%s pending=%d",
+            self.lanlan_name, sess_type, self.state.phase.value, len(self.pending_agent_callbacks),
         )
-        if self._agent_delivery_in_progress:
-            logger.debug("[%s] trigger_agent_callbacks: skipped — delivery already in progress", self.lanlan_name)
-            return
         if not self.pending_agent_callbacks:
             return
 
@@ -2832,47 +2835,32 @@ class LLMSessionManager:
             self.pending_extra_replies.clear()
             return
 
+        # Voice mode 走 hot-swap，不进 SM proactive 流水线
+        if isinstance(self.session, OmniRealtimeClient):
+            self.pending_agent_callbacks.clear()
+            logger.debug("[%s] trigger_agent_callbacks: voice mode, deferring to hot-swap", self.lanlan_name)
+            return
+
         _lang = normalize_language_code(self.user_language, format='short')
         instruction = (
             _loc(SYSTEM_NOTIFICATION_TASKS_DONE, _lang).format(name=self.lanlan_name, master=self.master_name)
             + "\n".join(items)
         )
-
         callbacks_snapshot = list(self.pending_agent_callbacks)
 
-        self._agent_delivery_in_progress = True
+        # 原子 check-and-claim：若另一路 proactive（router/greeting）在跑或 AI
+        # 正在为用户回复，SM 拒绝本次投递，callbacks 留在 pending 下轮重试。
+        claim_session = self.session if isinstance(self.session, OmniOfflineClient) else None
+        if not await self.state.try_start_proactive(session=claim_session):
+            logger.debug(
+                "[%s] trigger_agent_callbacks: SM denied claim (phase=%s), re-queuing",
+                self.lanlan_name, self.state.phase.value,
+            )
+            return
+
         try:
-            if isinstance(self.session, OmniRealtimeClient):
-                self.pending_agent_callbacks.clear()
-                logger.debug("[%s] trigger_agent_callbacks: voice mode, deferring to hot-swap", self.lanlan_name)
-
-            elif isinstance(self.session, OmniOfflineClient):
-                if getattr(self.session, "_is_responding", False):
-                    logger.debug("[%s] trigger_agent_callbacks: text session busy (_is_responding=True), re-queuing", self.lanlan_name)
-                    return
-                async with self._proactive_write_lock:
-                    async with self.lock:
-                        self.current_speech_id = str(uuid4())
-                        self._tts_done_queued_for_turn = False
-                        proactive_sid = self.current_speech_id
-                    logger.debug("[%s] trigger_agent_callbacks: text session ready, calling prompt_ephemeral", self.lanlan_name)
-                    # 更新字数限制（可能用户在对话期间修改了设置）
-                    if hasattr(self.session, 'update_max_response_length'):
-                        self.session.update_max_response_length(self._get_text_guard_max_length())
-                    self.pending_agent_callbacks.clear()
-                    # 设置 per-task contextvar，让 prompt_ephemeral 回调链里的
-                    # handle_text_data 能识别本路径 chunk 并在 sid 被用户抢走后丢弃。
-                    _sid_token = _proactive_expected_sid.set(proactive_sid)
-                    try:
-                        delivered = await self.session.prompt_ephemeral(instruction)
-                    finally:
-                        _proactive_expected_sid.reset(_sid_token)
-                    logger.debug("[%s] trigger_agent_callbacks: text session prompt_ephemeral delivered=%s", self.lanlan_name, delivered)
-                    if delivered:
-                        self.pending_extra_replies.clear()
-                    else:
-                        self.pending_agent_callbacks.extend(callbacks_snapshot)
-
+            if isinstance(self.session, OmniOfflineClient):
+                await self._deliver_agent_callbacks_text(instruction, callbacks_snapshot)
             else:
                 ws = self.websocket
                 if ws and hasattr(ws, 'client_state') and ws.client_state == ws.client_state.CONNECTED:
@@ -2881,33 +2869,59 @@ class LLMSessionManager:
                     except Exception as e:
                         logger.warning("[%s] trigger_agent_callbacks: auto start_session failed: %s", self.lanlan_name, e)
                 if isinstance(self.session, OmniOfflineClient):
-                    async with self._proactive_write_lock:
-                        async with self.lock:
-                            self.current_speech_id = str(uuid4())
-                            self._tts_done_queued_for_turn = False
-                            proactive_sid = self.current_speech_id
-                        # 更新字数限制（可能用户在对话期间修改了设置）
-                        if hasattr(self.session, 'update_max_response_length'):
-                            self.session.update_max_response_length(self._get_text_guard_max_length())
-                        self.pending_agent_callbacks.clear()
-                        _sid_token = _proactive_expected_sid.set(proactive_sid)
-                        try:
-                            delivered = await self.session.prompt_ephemeral(instruction)
-                        finally:
-                            _proactive_expected_sid.reset(_sid_token)
-                        if delivered:
-                            self.pending_extra_replies.clear()
-                        else:
-                            self.pending_agent_callbacks.extend(callbacks_snapshot)
-                        logger.debug("[%s] trigger_agent_callbacks: auto text session, delivered=%s", self.lanlan_name, delivered)
+                    await self._deliver_agent_callbacks_text(instruction, callbacks_snapshot)
+                    logger.debug("[%s] trigger_agent_callbacks: auto text session delivered", self.lanlan_name)
                 else:
                     logger.debug("[%s] trigger_agent_callbacks: no websocket/session, keeping for later", self.lanlan_name)
-
         except Exception as e:
             logger.warning("[%s] trigger_agent_callbacks error: %s", self.lanlan_name, e)
             self.pending_agent_callbacks.extend(callbacks_snapshot)
         finally:
-            self._agent_delivery_in_progress = False
+            await self.state.fire(SessionEvent.PROACTIVE_DONE)
+
+    async def _deliver_agent_callbacks_text(self, instruction: str, callbacks_snapshot: list) -> None:
+        """Execute prompt_ephemeral on an OmniOfflineClient session inside the
+        proactive write lock. Caller holds the SM proactive claim (PHASE1).
+
+        返回 True 当且仅当真正投递。返回 False 的情况：claim 到 lock 之间用户
+        抢占（``mark_user_input_preempt`` 在 ``self.lock`` 内翻起 ``_preempted``
+        且已轮换 ``current_speech_id`` 到新 user sid），此时不能再覆盖。
+        """
+        async with self._proactive_write_lock:
+            async with self.lock:
+                # sticky preempt 复查：与 prepare_proactive_delivery 同样，在持有
+                # self.lock 的临界区内判定。USER_INPUT 路径在本锁段内翻 flag 和
+                # 写 user sid 是原子的，如果此处 preempt==True 说明用户已抢到
+                # 本轮 turn，必须放弃本次 proactive（否则会把用户刚写好的 sid
+                # 再覆盖成 proactive sid，污染 TTS/chunk 分发）。
+                if self.state.is_proactive_preempted():
+                    logger.info("[%s] trigger_agent_callbacks: preempted before sid claim, skipping", self.lanlan_name)
+                    self.pending_agent_callbacks.extend(callbacks_snapshot)
+                    return
+                self.current_speech_id = str(uuid4())
+                self._tts_done_queued_for_turn = False
+                proactive_sid = self.current_speech_id
+            # SM：发射 CLAIM（把 proactive_sid 写入 state，供诊断/订阅者观察）
+            # 随后立刻 PHASE2，因 prompt_ephemeral 没有可分离的 phase1/phase2 边界
+            await self.state.fire(SessionEvent.PROACTIVE_CLAIM, sid=proactive_sid)
+            await self.state.fire(SessionEvent.PROACTIVE_PHASE2)
+            logger.debug("[%s] trigger_agent_callbacks: text session ready, calling prompt_ephemeral", self.lanlan_name)
+            # 更新字数限制（可能用户在对话期间修改了设置）
+            if hasattr(self.session, 'update_max_response_length'):
+                self.session.update_max_response_length(self._get_text_guard_max_length())
+            self.pending_agent_callbacks.clear()
+            # per-task contextvar：prompt_ephemeral 回调链里 handle_text_data
+            # 识别本路径 chunk 并在 sid 被用户抢走后丢弃
+            _sid_token = _proactive_expected_sid.set(proactive_sid)
+            try:
+                delivered = await self.session.prompt_ephemeral(instruction)
+            finally:
+                _proactive_expected_sid.reset(_sid_token)
+            logger.debug("[%s] trigger_agent_callbacks: prompt_ephemeral delivered=%s", self.lanlan_name, delivered)
+            if delivered:
+                self.pending_extra_replies.clear()
+            else:
+                self.pending_agent_callbacks.extend(callbacks_snapshot)
 
     def _is_voice_session_active_or_starting(self) -> bool:
         """语音 session 正在启动或已经活跃时返回 True，用于阻止 greeting 干扰语音流。"""
@@ -2927,13 +2941,19 @@ class LLMSessionManager:
             logger.info("[%s] trigger_greeting: voice session active/starting, skipping", self.lanlan_name)
             return
 
+        # 复用 internal_http_client 单例：session 启动路径，避开 AsyncClient 构造开销
+        # （Windows idle 157ms，事件循环压力下可达 1.1s，详见 utils/internal_http_client.py）
         try:
-            async with httpx.AsyncClient(timeout=2.0, proxy=None, trust_env=False) as client:
-                resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/last_conversation_gap/{self.lanlan_name}")
-                if not resp.is_success:
-                    logger.warning("[%s] trigger_greeting: memory server returned %s", self.lanlan_name, resp.status_code)
-                    return
-                gap_seconds = resp.json().get("gap_seconds", -1)
+            from utils.internal_http_client import get_internal_http_client
+            _mem_client = get_internal_http_client()
+            resp = await _mem_client.get(
+                f"http://127.0.0.1:{self.memory_server_port}/last_conversation_gap/{self.lanlan_name}",
+                timeout=2.0,
+            )
+            if not resp.is_success:
+                logger.warning("[%s] trigger_greeting: memory server returned %s", self.lanlan_name, resp.status_code)
+                return
+            gap_seconds = resp.json().get("gap_seconds", -1)
         except Exception as e:
             logger.warning("[%s] trigger_greeting: failed to query gap: %s", self.lanlan_name, e)
             return
@@ -3004,25 +3024,45 @@ class LLMSessionManager:
             logger.info("[%s] trigger_greeting: voice session took over before delivery, skipping", self.lanlan_name)
             return
 
-        async with self._proactive_write_lock:
-            # 持锁后仍需检查：_proactive_write_lock 等待期间语音可能已启动
-            if self._is_voice_session_active_or_starting():
-                logger.info("[%s] trigger_greeting: voice session took over while waiting for write lock, skipping", self.lanlan_name)
-                return
-            async with self.lock:
-                self.current_speech_id = str(uuid4())
-                self._tts_done_queued_for_turn = False
-                proactive_sid = self.current_speech_id
-            _sid_token = _proactive_expected_sid.set(proactive_sid)
-            try:
-                delivered = await self.session.prompt_ephemeral(instruction)
-            finally:
-                _proactive_expected_sid.reset(_sid_token)
-            logger.info("[%s] trigger_greeting: delivered=%s", self.lanlan_name, delivered)
-            # 投递成功后才真正消费节日/周末预算
-            # commit 内部会 atomic_write_json 消费预算文件，offload 以免阻塞事件循环
-            if delivered and _holiday_token is not None:
-                await asyncio.to_thread(commit_holiday_or_weekend_hint, self.lanlan_name, _holiday_token)
+        # 原子 SM claim：与 trigger_agent_callbacks / /api/proactive_chat 互斥
+        # 并拦截"AI 正在为用户回复"（session._is_responding）的场景
+        if not await self.state.try_start_proactive(session=self.session):
+            logger.info(
+                "[%s] trigger_greeting: SM denied claim (phase=%s), skipping",
+                self.lanlan_name, self.state.phase.value,
+            )
+            return
+
+        try:
+            async with self._proactive_write_lock:
+                # 持锁后仍需检查：_proactive_write_lock 等待期间语音可能已启动
+                if self._is_voice_session_active_or_starting():
+                    logger.info("[%s] trigger_greeting: voice session took over while waiting for write lock, skipping", self.lanlan_name)
+                    return
+                async with self.lock:
+                    # sticky preempt 复查：USER_INPUT 路径在本锁段内翻 flag 和写
+                    # user sid 是原子的；若 preempt==True 说明用户已抢到本轮 turn，
+                    # 不能再覆盖 current_speech_id 成 proactive sid。
+                    if self.state.is_proactive_preempted():
+                        logger.info("[%s] trigger_greeting: preempted before sid claim, skipping", self.lanlan_name)
+                        return
+                    self.current_speech_id = str(uuid4())
+                    self._tts_done_queued_for_turn = False
+                    proactive_sid = self.current_speech_id
+                await self.state.fire(SessionEvent.PROACTIVE_CLAIM, sid=proactive_sid)
+                await self.state.fire(SessionEvent.PROACTIVE_PHASE2)
+                _sid_token = _proactive_expected_sid.set(proactive_sid)
+                try:
+                    delivered = await self.session.prompt_ephemeral(instruction)
+                finally:
+                    _proactive_expected_sid.reset(_sid_token)
+                logger.info("[%s] trigger_greeting: delivered=%s", self.lanlan_name, delivered)
+                # 投递成功后才真正消费节日/周末预算
+                # commit 内部会 atomic_write_json 消费预算文件，offload 以免阻塞事件循环
+                if delivered and _holiday_token is not None:
+                    await asyncio.to_thread(commit_holiday_or_weekend_hint, self.lanlan_name, _holiday_token)
+        finally:
+            await self.state.fire(SessionEvent.PROACTIVE_DONE)
 
     def enqueue_agent_callback(self, callback: dict) -> None:
         """Enqueue a structured agent task callback for LLM injection.
