@@ -199,7 +199,7 @@
         showAchievementNotification(achievement) {
             // 如果有 showStatusToast 函数，使用它
             if (typeof window.showStatusToast === 'function') {
-                window.showStatusToast(`🏆 成就解锁: ${achievement.description}`, 3000);
+                window.showStatusToast(window.t ? window.t('achievement.unlocked', { description: achievement.description }) : `🏆 成就解锁: ${achievement.description}`, 3000);
             }
 
             // 触发自定义事件，允许其他模块监听

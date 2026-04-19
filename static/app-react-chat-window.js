@@ -23,11 +23,13 @@
     var minimized = false;
     var savedShellSize = null;
     var savedShellPosition = null; // {left, top} before minimize – used to fly back on expand
+    var _sortKeySeq = 0; // monotonically increasing sortKey counter
 
     var state = {
         viewProps: null,
         messages: [],
         composerAttachments: [],
+        composerHidden: false,
         onMessageAction: null,
         onComposerImportImage: null,
         onComposerScreenshot: null,
@@ -35,11 +37,33 @@
         onComposerSubmit: null
     };
 
+    var MOBILE_MAX_HEIGHT_RATIO = 0.85;
+    var MOBILE_MESSAGE_MIN_HEIGHT = 60;
+    var MOBILE_MIN_HEIGHT = 150;
+    var MOBILE_HEIGHT_STORAGE_KEY = 'neko.reactChatWindow.mobileHeight';
+    var mobileUserHeight = 0; // 用户手动设置的手机端高度（0 = 自动）
+    var mobileLayoutFrame = 0;
+
+    function getMobileMaxHeight() {
+        return Math.max(MOBILE_MIN_HEIGHT, Math.floor(window.innerHeight * MOBILE_MAX_HEIGHT_RATIO));
+    }
+
     function $(id) {
         return document.getElementById(id);
     }
 
+    function isElectronChatWindow() {
+        // chat.html 用 <body class="electron-chat-window">；Electron 独立聊天窗口。
+        // 本 PR 的所有移动端改动都必须对它无感，作为显式隔离在全局 touch 处理里用来短路。
+        return !!(document.body && document.body.classList.contains('electron-chat-window'));
+    }
+
     function isMobileWidth() {
+        // chat.html 是 Electron 独立窗口，始终按 PC 行为处理（即使用户把窗口拖窄到 <768px），
+        // 通过 <body class="electron-chat-window"> 从"手机端布局"中排除。
+        if (isElectronChatWindow()) {
+            return false;
+        }
         return window.innerWidth <= 768;
     }
 
@@ -65,6 +89,89 @@
 
     function getRoot() {
         return $('react-chat-window-root');
+    }
+
+    function clearMobileContentCap() {
+        var shell = getShell();
+        if (!shell) return;
+
+        shell.classList.remove('is-mobile-content-capped');
+        if (shell.dataset.mobileAutoHeight !== undefined) {
+            shell.style.removeProperty('height');
+            delete shell.dataset.mobileAutoHeight;
+        }
+    }
+
+    function resetMobileContentLayoutState(shell, topbar, composer, messageList) {
+        [topbar, composer, messageList].forEach(function (element) {
+            if (!element) return;
+            element.style.removeProperty('height');
+            if (element.dataset && element.dataset.mobileAutoHeight) {
+                delete element.dataset.mobileAutoHeight;
+            }
+        });
+
+        if (!shell) return;
+
+        shell.classList.remove('is-mobile-content-capped');
+        shell.style.removeProperty('height');
+        if (shell.dataset.mobileAutoHeight) {
+            delete shell.dataset.mobileAutoHeight;
+        }
+    }
+
+    function syncMobileContentLayout() {
+        var overlay = getOverlay();
+        var shell = getShell();
+        var root = getRoot();
+        if (!overlay || overlay.hidden || !shell || !root || minimized || !isMobileWidth()) {
+            clearMobileContentCap();
+            return;
+        }
+
+        // 正在拖拽调整高度时不覆盖，等 stopResize() 结束后再同步
+        if (resizeState) return;
+
+        // 如果用户手动设置了高度，使用用户高度，不自动计算
+        if (mobileUserHeight > 0) {
+            var h = Math.min(mobileUserHeight, getMobileMaxHeight());
+            shell.style.height = h + 'px';
+            shell.dataset.mobileAutoHeight = 'false';
+            shell.classList.remove('is-mobile-content-capped');
+            return;
+        }
+
+        var topbar = root.querySelector('.window-topbar');
+        var composer = root.querySelector('.composer-panel');
+        var messageList = root.querySelector('.message-list');
+        if (!topbar || !composer || !messageList) {
+            resetMobileContentLayoutState(shell, topbar, composer, messageList);
+            return;
+        }
+
+        var maxHeight = getMobileMaxHeight();
+        if (!maxHeight) return;
+
+        var desiredMessageHeight = Math.max(MOBILE_MESSAGE_MIN_HEIGHT, messageList.scrollHeight);
+        var desiredHeight = Math.ceil(
+            topbar.getBoundingClientRect().height
+            + composer.getBoundingClientRect().height
+            + desiredMessageHeight
+        );
+        var nextHeight = Math.min(maxHeight, desiredHeight);
+
+        shell.style.height = nextHeight + 'px';
+        shell.dataset.mobileAutoHeight = 'true';
+        shell.classList.toggle('is-mobile-content-capped', desiredHeight > maxHeight);
+    }
+
+    function scheduleMobileContentLayout() {
+        if (mobileLayoutFrame) return;
+
+        mobileLayoutFrame = window.requestAnimationFrame(function () {
+            mobileLayoutFrame = 0;
+            syncMobileContentLayout();
+        });
     }
 
     function getI18nText(key, fallback) {
@@ -181,8 +288,8 @@
             translateEnabled: (window.appState && typeof window.appState.subtitleEnabled !== 'undefined')
                 ? !!window.appState.subtitleEnabled
                 : localStorage.getItem('subtitleEnabled') === 'true',
-            translateButtonLabel: getI18nText('subtitle.enable', '翻译'),
-            translateButtonAriaLabel: getI18nText('subtitle.enableAriaLabel', '翻译开关')
+            translateButtonLabel: getI18nText('subtitle.enable', '字幕翻译'),
+            translateButtonAriaLabel: getI18nText('subtitle.enableAriaLabel', '字幕翻译开关')
         };
     }
 
@@ -282,6 +389,7 @@
         return Object.assign({}, ensureViewProps(), {
             messages: state.messages,
             composerAttachments: state.composerAttachments,
+            composerHidden: state.composerHidden,
             onMessageAction: handleMessageAction,
             onComposerImportImage: handleComposerImportImage,
             onComposerScreenshot: handleComposerScreenshot,
@@ -438,7 +546,7 @@
 
     function applyPosition(left, top) {
         var shell = getShell();
-        if (!shell || isMobileWidth()) return;
+        if (!shell) return;
 
         var clamped = clampPosition(left, top);
         shell.style.left = clamped.left + 'px';
@@ -462,11 +570,21 @@
         if (!shell) return;
 
         if (isMobileWidth()) {
-            shell.style.removeProperty('left');
-            shell.style.removeProperty('top');
+            // 宽度由 CSS calc(100vw - 12px) 控制；transform 的 translate 会污染 applyPosition 坐标。
             shell.style.removeProperty('width');
-            shell.style.removeProperty('height');
             shell.style.removeProperty('transform');
+            // 不清 height：清掉会让 shell 瞬间回到 CSS 的 `height:auto;max-height:85vh`，
+            // grid `auto 1fr auto` 父容器塌缩会把 .message-list 的 clientHeight 挤到几十 px，
+            // 浏览器 clamp scrollTop → 0，下一帧 syncMobileContentLayout() 恢复 height 时已经来不及。
+            // 保留旧像素值，让紧随其后的 syncMobileContentLayout() 直接覆写，避免中间态。
+            // 不清 left/top：手机端允许 expanded 在任意位置飘；只按新视口 clamp 一次，避免旋屏/键盘后溢出。
+            if (shell.style.left || shell.style.top) {
+                var rect = shell.getBoundingClientRect();
+                var clampedLeft = Math.max(0, Math.min(rect.left, window.innerWidth - rect.width));
+                var clampedTop = Math.max(0, Math.min(rect.top, window.innerHeight - rect.height));
+                shell.style.left = clampedLeft + 'px';
+                shell.style.top = clampedTop + 'px';
+            }
             return;
         }
 
@@ -497,6 +615,7 @@
         var overlay = getOverlay();
         if (!overlay || overlay.hidden) return;
         mountWindow();
+        scheduleMobileContentLayout();
     }
 
     function dispatchHostEvent(name, detail) {
@@ -600,7 +719,10 @@
 
     function handleJukeboxClick() {
         try {
-            if (typeof window.Jukebox !== 'undefined' && typeof window.Jukebox.toggle === 'function') {
+            if (typeof window.__nekoJukeboxToggle === 'function') {
+                // Electron 多窗口模式：通过 IPC 打开独立 Jukebox 窗口
+                window.__nekoJukeboxToggle();
+            } else if (typeof window.Jukebox !== 'undefined' && typeof window.Jukebox.toggle === 'function') {
                 window.Jukebox.toggle();
             } else {
                 console.warn('[ReactChatWindow] Jukebox not available');
@@ -612,6 +734,46 @@
 
     function captureAvatarDirect() {
         if (!window.avatarPortrait || typeof window.avatarPortrait.capture !== 'function') {
+            // Electron 多窗口模式：通过 IPC 请求 Pet 窗口截取头像
+            if (window.__NEKO_MULTI_WINDOW__ && typeof window.__nekoRequestAvatarPreview === 'function') {
+                // 优先使用已缓存的外部头像
+                if (window.appChatAvatar && typeof window.appChatAvatar.getCurrentAvatarDataUrl === 'function') {
+                    var cached = window.appChatAvatar.getCurrentAvatarDataUrl();
+                    if (cached) {
+                        window.dispatchEvent(new CustomEvent('chat-avatar-preview-updated', {
+                            detail: { dataUrl: cached, source: 'cached' }
+                        }));
+                        showToast(getI18nText('chat.avatarPreviewReady', '头像已更新'), 2500);
+                        return;
+                    }
+                }
+                showToast(getI18nText('chat.avatarPreviewGenerating', '正在生成当前头像...'), 2000);
+                var finished = false;
+                var timerId = null;
+                var finish = function (success) {
+                    if (finished) return;
+                    finished = true;
+                    window.removeEventListener('neko:avatar-preview-ipc-result', onResult);
+                    if (timerId) { clearTimeout(timerId); timerId = null; }
+                    if (success) {
+                        showToast(getI18nText('chat.avatarPreviewReady', '头像已更新'), 2500);
+                    } else {
+                        showToast(getI18nText('chat.avatarPreviewFailed', '生成头像失败'), 3000);
+                    }
+                };
+                var onResult = function (e) {
+                    finish(!!(e.detail && e.detail.dataUrl));
+                };
+                window.addEventListener('neko:avatar-preview-ipc-result', onResult);
+                timerId = setTimeout(function () { finish(false); }, 10000);
+                try {
+                    window.__nekoRequestAvatarPreview();
+                } catch (err) {
+                    console.error('[ReactChatWindow] __nekoRequestAvatarPreview threw:', err);
+                    finish(false);
+                }
+                return;
+            }
             showToast(getI18nText('chat.avatarPreviewUnavailable', '头像预览功能尚未就绪。'), 3000);
             return;
         }
@@ -646,13 +808,15 @@
 
     function handleAvatarGeneratorClick() {
         try {
-            // Prefer legacy button if it exists (index.html); absent in chat.html
-            var legacyBtn = document.getElementById('avatarPreviewButton');
-            if (legacyBtn) {
-                legacyBtn.click();
+            // 统一走独立头像预览弹窗；弹窗模块自行处理缓存与 IPC 回退。
+            if (window.appChatAvatar && typeof window.appChatAvatar.showPopup === 'function') {
+                var anchor = document.getElementById('avatarPreviewHeaderButton')
+                    || document.getElementById('avatarPreviewButton')
+                    || null;
+                window.appChatAvatar.showPopup(anchor);
                 return;
             }
-            // React-first mode or standalone chat window — capture directly
+            // 极端兜底：弹窗模块加载失败时仍保持原有直采逻辑。
             captureAvatarDirect();
         } finally {
             dispatchHostEvent('avatar-generator-click', {});
@@ -699,14 +863,32 @@
     }
 
     function setMessages(messages) {
+        // Compute fallback start past any explicit sortKey in incoming batch
+        var maxIncomingSortKey = Array.isArray(messages)
+            ? messages.reduce(function (max, message) {
+                var key = message && typeof message.sortKey === 'number' && Number.isFinite(message.sortKey)
+                    ? message.sortKey : null;
+                return (key !== null && key > max) ? key : max;
+            }, -1)
+            : -1;
+        var nextSortKey = Math.max(_sortKeySeq, maxIncomingSortKey + 1);
         var normalized = Array.isArray(messages)
-            ? messages.map(function (message, index) {
-                return normalizeMessage(message, index);
+            ? messages.map(function (message) {
+                return normalizeMessage(message, nextSortKey++);
             }).filter(Boolean)
             : [];
         state.messages = sortMessages(normalized);
+        _sortKeySeq = nextSortKey;
+        if (state.messages.length > MAX_MESSAGES) {
+            state.messages = state.messages.slice(-MAX_MESSAGES);
+        }
         renderWindow();
         return state.messages;
+    }
+
+    function setComposerHidden(hidden) {
+        state.composerHidden = !!hidden;
+        renderWindow();
     }
 
     function setComposerAttachments(attachments) {
@@ -724,11 +906,16 @@
         return state.composerAttachments;
     }
 
+    var MAX_MESSAGES = 50;
+
     function appendMessage(message) {
-        var normalized = normalizeMessage(message, state.messages.length);
+        var normalized = normalizeMessage(message, _sortKeySeq++);
         if (!normalized) return null;
 
         state.messages = sortMessages(state.messages.concat([normalized]));
+        if (state.messages.length > MAX_MESSAGES) {
+            state.messages = state.messages.slice(-MAX_MESSAGES);
+        }
         renderWindow();
         return normalized;
     }
@@ -761,6 +948,7 @@
 
     function clearMessages() {
         state.messages = [];
+        _sortKeySeq = 0;
         renderWindow();
     }
 
@@ -770,13 +958,30 @@
             minimized: minimized,
             viewProps: Object.assign({}, ensureViewProps()),
             messages: state.messages.map(cloneMessage),
-            composerAttachments: state.composerAttachments.slice()
+            composerAttachments: state.composerAttachments.slice(),
+            composerHidden: state.composerHidden
         };
     }
 
-    var MINIMIZED_SIZE = 50;
+    var MINIMIZED_SIZE = 50;            // 桌面/手机：圆球直径
     var isMinimizeTransitioning = false;
     var activeAnimationCleanup = null; // 当前进行中动画的清理函数
+
+    // 返回最小化后 shell 应达到的像素几何。
+    // 桌面：50x50 圆球，锚定在对话框原左下角（clamp 到视口内）。
+    // 手机：全宽底部胶囊，贴屏幕底边（类似移动 App 的底栏收起态）。
+    // 由于 collapse/expand 动画的 transform-origin = 0% 100%（左下角），
+    // target.left 应等于 rect.left 同列，target 底边应与 rect 底边对齐
+    // （即 target.top = rect.bottom - target.height），这样动画过程中底边不漂移。
+    function getMinimizedTarget(rect) {
+        // 桌面端和移动端统一使用 50px 圆形悬浮球
+        return {
+            width: MINIMIZED_SIZE,
+            height: MINIMIZED_SIZE,
+            left: Math.max(0, Math.min(rect.left, window.innerWidth - MINIMIZED_SIZE)),
+            top: Math.max(0, Math.min(rect.bottom - MINIMIZED_SIZE, window.innerHeight - MINIMIZED_SIZE))
+        };
+    }
 
     function cancelActiveAnimation() {
         if (activeAnimationCleanup) {
@@ -841,13 +1046,14 @@
             shell.style.left = rect.left + 'px';
             shell.style.top = rect.top + 'px';
 
-            // 2. 球的目标位置 = 对话框自身的左下角（clamp 到视口内）
-            var targetLeft = Math.max(0, Math.min(rect.left, window.innerWidth - MINIMIZED_SIZE));
-            var targetTop = Math.max(0, Math.min(rect.bottom - MINIMIZED_SIZE, window.innerHeight - MINIMIZED_SIZE));
+            // 2. 最小化后的目标几何：桌面=50px 圆球 / 手机=全宽底部胶囊
+            var target = getMinimizedTarget(rect);
+            var targetLeft = target.left;
+            var targetTop = target.top;
 
             // 3. 计算缩放比（transform-origin 为 0% 100% 即左下角，无需 translate）
-            var sx = rect.width > 0 ? MINIMIZED_SIZE / rect.width : 1;
-            var sy = rect.height > 0 ? MINIMIZED_SIZE / rect.height : 1;
+            var sx = rect.width > 0 ? target.width / rect.width : 1;
+            var sy = rect.height > 0 ? target.height / rect.height : 1;
 
             // 4. 初始 transform = identity，添加过渡类
             shell.style.transform = 'scale(1, 1)';
@@ -875,6 +1081,7 @@
                 // 清除内联尺寸，让 .is-minimized 的 CSS 生效
                 shell.style.removeProperty('width');
                 shell.style.removeProperty('height');
+                shell.classList.remove('is-mobile-content-capped');
                 // 将位置设为对话框左下角
                 shell.style.left = targetLeft + 'px';
                 shell.style.top = targetTop + 'px';
@@ -898,14 +1105,30 @@
             };
 
         } else {
-            // ---- 展开动画：从球位置向右上角展开 ----
+            // ---- 展开动画：从最小化态（桌面圆球 / 手机底部胶囊）展开 ----
             var curRect = shell.getBoundingClientRect();
             var ballLeft = curRect.left;
+            // 桌面圆球的 height≈50，手机胶囊的 height≈48；curRect 直接反映真实值
             var ballBottom = curRect.top + (curRect.height || MINIMIZED_SIZE);
 
             // 恢复保存的尺寸
             shell.classList.remove('is-minimized');
-            if (savedShellSize) {
+            if (isMobileWidth()) {
+                // 手机端：宽度由 CSS calc(100vw - 12px) 控制，清除内联宽度
+                shell.style.removeProperty('width');
+                // 高度：优先使用用户手动设置的高度，否则自动计算上限 85vh
+                var mobileMaxH = getMobileMaxHeight();
+                var savedHeightPx = savedShellSize ? parseFloat(savedShellSize.height) : NaN;
+                var restoreHeight;
+                if (mobileUserHeight > 0) {
+                    restoreHeight = Math.min(mobileUserHeight, mobileMaxH);
+                } else if (isFinite(savedHeightPx) && savedHeightPx > 0) {
+                    restoreHeight = Math.min(savedHeightPx, mobileMaxH);
+                } else {
+                    restoreHeight = mobileMaxH;
+                }
+                if (restoreHeight > 0) shell.style.height = restoreHeight + 'px';
+            } else if (savedShellSize) {
                 if (savedShellSize.width) shell.style.width = savedShellSize.width;
                 if (savedShellSize.height) shell.style.height = savedShellSize.height;
             }
@@ -952,9 +1175,10 @@
             expandedRect = shell.getBoundingClientRect();
 
             // 计算初始缩放：transform-origin 为左下角 (0% 100%)
-            // 缩放到 MINIMIZED_SIZE 时，视觉上的左下角保持不变
-            var sx2 = MINIMIZED_SIZE / expandedRect.width;
-            var sy2 = MINIMIZED_SIZE / expandedRect.height;
+            // 从当前最小化态的真实尺寸缩回（桌面 50x50 / 手机 full-width x 48），
+            // 视觉上的左下角保持不变。
+            var sx2 = curRect.width > 0 ? curRect.width / expandedRect.width : 1;
+            var sy2 = curRect.height > 0 ? curRect.height / expandedRect.height : 1;
 
             // 设置初始 transform（看起来还是左下角的小圆）
             shell.style.transform = 'scale(' + sx2 + ', ' + sy2 + ')';
@@ -982,13 +1206,14 @@
                 savedShellSize = null;
                 savedShellPosition = null;
                 isMinimizeTransitioning = false;
+                scheduleMobileContentLayout();
                 // 确保位置不溢出；全屏模式（/chat）不持久化，
                 // 否则 (0,0) 会覆盖 index.html 中用户保存的窗口位置
                 requestAnimationFrame(function () {
                     var r = shell.getBoundingClientRect();
                     var clamped = clampPosition(r.left, r.top);
                     applyPosition(clamped.left, clamped.top);
-                    if (!window._chatAdapterActive) {
+                    if (!window._chatAdapterActive && !isMobileWidth()) {
                         persistPosition(clamped.left, clamped.top);
                     }
                 });
@@ -1038,10 +1263,18 @@
         setMinimized(!minimized);
     }
 
+    function prewarmUserDisplayName() {
+        if (!window.appChat || typeof window.appChat.ensureUserDisplayName !== 'function') return;
+        Promise.resolve(window.appChat.ensureUserDisplayName()).catch(function (error) {
+            console.warn('[ReactChatWindow] preload user display name failed:', error);
+        });
+    }
+
     function openWindow() {
         var overlay = getOverlay();
         if (!overlay) return;
 
+        prewarmUserDisplayName();
         ensureBundleLoaded()
             .then(function () {
                 if (!mountWindow()) {
@@ -1056,10 +1289,12 @@
                     overlay.hidden = false;
                     document.body.classList.add('react-chat-window-open');
                     setMinimized(false);
+                    scheduleMobileContentLayout();
                 } else {
                     overlay.hidden = false;
                     document.body.classList.add('react-chat-window-open');
                     restorePosition();
+                    scheduleMobileContentLayout();
                 }
             })
             .catch(function (error) {
@@ -1096,13 +1331,14 @@
 
         overlay.hidden = true;
         document.body.classList.remove('react-chat-window-open');
+        clearMobileContentCap();
     }
 
     var CLICK_THRESHOLD = 5; // px – 移动距离低于此值视为点击
 
     function startDrag(clientX, clientY) {
         var shell = getShell();
-        if (!shell || isMobileWidth()) return;
+        if (!shell) return;
 
         var rect = shell.getBoundingClientRect();
         dragState = {
@@ -1143,7 +1379,8 @@
             var rect = shell.getBoundingClientRect();
             // 最小化态下不持久化悬浮球坐标到展开态存储，
             // 否则 restorePosition 会把完整窗口放到悬浮球位置
-            if (!minimized) {
+            // 移动端坐标也不持久化，避免污染桌面端保存的位置
+            if (!minimized && !isMobileWidth()) {
                 persistPosition(rect.left, rect.top);
             }
         }
@@ -1172,6 +1409,8 @@
             event.preventDefault();
         });
 
+        // touchstart 不 preventDefault：让浏览器自行决定是滚动还是点击，
+        // 真正进入拖拽后由 touchmove（passive: false）阻止滚动即可。
         header.addEventListener('touchstart', function (event) {
             var closeButton = $('reactChatWindowCloseButton');
             if (closeButton && closeButton.contains(event.target)) return;
@@ -1190,8 +1429,10 @@
 
         document.addEventListener('touchmove', function (event) {
             if (!dragState || !event.touches || event.touches.length === 0) return;
+            // chat.html 不走 mobile 路径，保留原 passive: true 语义，不吞原生滚动。
+            if (!isElectronChatWindow()) event.preventDefault();
             updateDrag(event.touches[0].clientX, event.touches[0].clientY);
-        }, { passive: true });
+        }, { passive: false });
 
         document.addEventListener('mouseup', stopDrag);
         document.addEventListener('touchend', stopDrag);
@@ -1216,7 +1457,10 @@
 
     function startResize(clientX, clientY, direction) {
         var shell = getShell();
-        if (!shell || isMobileWidth()) return;
+        if (!shell) return;
+        // 手机端仅允许向上拖动调整高度（北侧边缘）
+        if (isMobileWidth() && direction !== 'n') return;
+        if (minimized) return;
 
         var rect = shell.getBoundingClientRect();
         resizeState = {
@@ -1247,10 +1491,13 @@
         var newWidth = resizeState.origWidth;
         var newHeight = resizeState.origHeight;
 
-        if (dir.indexOf('e') !== -1) {
+        // 手机端仅处理高度变化
+        var mobile = isMobileWidth();
+
+        if (!mobile && dir.indexOf('e') !== -1) {
             newWidth = Math.max(MIN_WIDTH, resizeState.origWidth + dx);
         }
-        if (dir.indexOf('w') !== -1) {
+        if (!mobile && dir.indexOf('w') !== -1) {
             var proposedWidth = resizeState.origWidth - dx;
             if (proposedWidth >= MIN_WIDTH) {
                 newWidth = proposedWidth;
@@ -1260,17 +1507,18 @@
                 newLeft = resizeState.origLeft + resizeState.origWidth - MIN_WIDTH;
             }
         }
-        if (dir.indexOf('s') !== -1) {
+        if (!mobile && dir.indexOf('s') !== -1) {
             newHeight = Math.max(MIN_HEIGHT, resizeState.origHeight + dy);
         }
         if (dir.indexOf('n') !== -1) {
+            var minH = mobile ? MOBILE_MIN_HEIGHT : MIN_HEIGHT;
             var proposedHeight = resizeState.origHeight - dy;
-            if (proposedHeight >= MIN_HEIGHT) {
+            if (proposedHeight >= minH) {
                 newHeight = proposedHeight;
                 newTop = resizeState.origTop + dy;
             } else {
-                newHeight = MIN_HEIGHT;
-                newTop = resizeState.origTop + resizeState.origHeight - MIN_HEIGHT;
+                newHeight = minH;
+                newTop = resizeState.origTop + resizeState.origHeight - minH;
             }
         }
 
@@ -1280,11 +1528,25 @@
         newWidth = Math.min(newWidth, window.innerWidth);
         newHeight = Math.min(newHeight, window.innerHeight);
 
-        shell.style.width = newWidth + 'px';
-        shell.style.height = newHeight + 'px';
-        shell.style.left = newLeft + 'px';
-        shell.style.top = newTop + 'px';
-        shell.style.transform = 'none';
+        if (mobile) {
+            // 手机端：更新高度和 top，保持 CSS 控制的 left/width
+            var maxMobileH = getMobileMaxHeight();
+            var clampedH = Math.min(newHeight, maxMobileH);
+            // 高度被截断时重新计算 top，保持面板底部不动
+            if (clampedH < newHeight) {
+                newTop = window.innerHeight - clampedH;
+            }
+            shell.style.height = clampedH + 'px';
+            // 设置 top 并清除 bottom，使北侧拖拽正确向上扩展
+            shell.style.top = newTop + 'px';
+            shell.style.bottom = 'auto';
+        } else {
+            shell.style.width = newWidth + 'px';
+            shell.style.height = newHeight + 'px';
+            shell.style.left = newLeft + 'px';
+            shell.style.top = newTop + 'px';
+            shell.style.transform = 'none';
+        }
     }
 
     function stopResize() {
@@ -1293,8 +1555,18 @@
         var shell = getShell();
         if (shell) {
             var rect = shell.getBoundingClientRect();
-            persistPosition(rect.left, rect.top);
-            persistSize(rect.width, rect.height);
+            if (isMobileWidth()) {
+                // 手机端：保存用户设置的高度，恢复底部锚定
+                mobileUserHeight = Math.round(rect.height);
+                shell.style.removeProperty('top');
+                shell.style.removeProperty('bottom');
+                try {
+                    localStorage.setItem(MOBILE_HEIGHT_STORAGE_KEY, String(mobileUserHeight));
+                } catch (_) {}
+            } else {
+                persistPosition(rect.left, rect.top);
+                persistSize(rect.width, rect.height);
+            }
         }
 
         resizeState = null;
@@ -1317,7 +1589,9 @@
             if (!target || !target.dataset || !target.dataset.resizeDir) return;
             if (!event.touches || event.touches.length === 0) return;
             startResize(event.touches[0].clientX, event.touches[0].clientY, target.dataset.resizeDir);
-        }, { passive: true });
+            // chat.html 保留原 passive 语义；只在真正进入 resize（非 chat.html）才吞事件。
+            if (resizeState && !isElectronChatWindow()) event.preventDefault();
+        }, { passive: false });
 
         document.addEventListener('mousemove', function (event) {
             if (!resizeState) return;
@@ -1326,8 +1600,9 @@
 
         document.addEventListener('touchmove', function (event) {
             if (!resizeState || !event.touches || event.touches.length === 0) return;
+            if (!isElectronChatWindow()) event.preventDefault();
             updateResize(event.touches[0].clientX, event.touches[0].clientY);
-        }, { passive: true });
+        }, { passive: false });
 
         document.addEventListener('mouseup', stopResize);
         document.addEventListener('touchend', stopResize);
@@ -1363,6 +1638,10 @@
         window.addEventListener(EVENT_PREFIX + 'set-composer-attachments', function (event) {
             setComposerAttachments(event.detail && event.detail.attachments);
         });
+
+        window.addEventListener(EVENT_PREFIX + 'set-composer-hidden', function (event) {
+            setComposerHidden(event.detail && event.detail.hidden);
+        });
     }
 
     function init() {
@@ -1373,6 +1652,7 @@
         var avatarHeaderButton = $('avatarPreviewHeaderButton');
 
         ensureViewProps();
+        prewarmUserDisplayName();
 
         if (trigger) {
             trigger.addEventListener('click', openWindow);
@@ -1386,14 +1666,12 @@
                 toggleMinimized();
             });
         }
+        // Note: the avatarPreviewHeaderButton click is bound by app-chat-avatar.js
+        // (it owns the standalone avatar preview popup and toggling behavior).
+        // We only fire the host event here for external listeners/analytics.
         if (avatarHeaderButton) {
-            avatarHeaderButton.addEventListener('click', function (event) {
-                event.stopPropagation();
-                // Notify external listeners/analytics/extensions first
+            avatarHeaderButton.addEventListener('click', function () {
                 dispatchHostEvent('avatar-generator-click', {});
-                // Always use direct capture — the legacy avatarPreviewButton opens
-                // the old-chat preview card which is hidden behind the React overlay.
-                captureAvatarDirect();
             });
         }
         if (backdrop) {
@@ -1410,6 +1688,17 @@
         createResizeEdges();
         bindResizing();
         bindBridgeEvents();
+
+        // 恢复手机端用户设置的高度
+        try {
+            var storedMobileHeight = localStorage.getItem(MOBILE_HEIGHT_STORAGE_KEY);
+            if (storedMobileHeight) {
+                var parsed = Number(storedMobileHeight);
+                if (Number.isFinite(parsed) && parsed >= MOBILE_MIN_HEIGHT) {
+                    mobileUserHeight = parsed;
+                }
+            }
+        } catch (_) {}
 
         // 悬浮球 hover 效果（参考原版 #chat-container 实现）
         var header = getHeader();
@@ -1440,12 +1729,23 @@
             var overlay = getOverlay();
             if (overlay && !overlay.hidden) {
                 if (minimized) {
-                    // 球留在当前位置，只需确保不溢出屏幕
+                    // 最小化态下，根据当前布局（桌面圆球 / 手机胶囊）重新贴到视口内。
+                    // 手机胶囊宽度由 CSS !important 控制（width: calc(100vw - 12px)），
+                    // 这里只需修正左上角坐标，避免旋转屏或拖窗后溢出。
                     var shell = getShell();
                     if (shell) {
                         var r = shell.getBoundingClientRect();
-                        var safeLeft = Math.max(0, Math.min(r.left, window.innerWidth - MINIMIZED_SIZE));
-                        var safeTop = Math.max(0, Math.min(r.top, window.innerHeight - MINIMIZED_SIZE));
+                        var minW = r.width || MINIMIZED_SIZE;
+                        var minH = r.height || MINIMIZED_SIZE;
+                        var safeLeft, safeTop;
+                        if (isMobileWidth()) {
+                            // 圆形悬浮球：保持用户拖拽位置，仅 clamp 到视口内
+                            safeLeft = Math.max(0, Math.min(r.left, window.innerWidth - minW));
+                            safeTop = Math.max(0, Math.min(r.top, window.innerHeight - minH));
+                        } else {
+                            safeLeft = Math.max(0, Math.min(r.left, window.innerWidth - minW));
+                            safeTop = Math.max(0, Math.min(r.top, window.innerHeight - minH));
+                        }
                         if (safeLeft !== r.left || safeTop !== r.top) {
                             shell.style.left = safeLeft + 'px';
                             shell.style.top = safeTop + 'px';
@@ -1453,6 +1753,7 @@
                     }
                 } else {
                     restorePosition();
+                    scheduleMobileContentLayout();
                 }
             }
         });
@@ -1476,6 +1777,7 @@
         setViewProps: setViewProps,
         setMessages: setMessages,
         setComposerAttachments: setComposerAttachments,
+        setComposerHidden: setComposerHidden,
         appendMessage: appendMessage,
         updateMessage: updateMessage,
         removeMessage: removeMessage,

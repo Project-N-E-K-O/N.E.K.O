@@ -6,7 +6,7 @@ from config import SETTING_PROPOSER_MODEL, SETTING_VERIFIER_MODEL
 from config import CHARACTER_RESERVED_FIELDS
 from utils.config_manager import get_config_manager
 from utils.token_tracker import set_call_type
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json, robust_json_loads
 from config.prompts_memory import settings_extractor_prompt, settings_verifier_prompt
 
 
@@ -90,9 +90,9 @@ class ImportantSettingsManager:
                 retries += 1
                 continue
             try:
-                merged_settings = json.loads(result)
+                merged_settings = robust_json_loads(result)
                 return merged_settings
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, ValueError):
                 # 如果解析失败，返回新设定
                 retries += 1
                 print(f"❌ Setting resolver返回值解析失败。返回值：{response.content}")
@@ -144,17 +144,17 @@ class ImportantSettingsManager:
                 result = response.content
                 if result.startswith("```"):
                     result = result .replace("```json", "").replace("```", "").strip()
-                new_settings = json.loads(result)
-            except json.JSONDecodeError:
+                new_settings = robust_json_loads(result)
+            except (json.JSONDecodeError, ValueError):
                 print(f"❌ Setting LLM返回的设定JSON解析失败。返回值：{response.content}")
                 retries += 1
             break
 
         # 检测并解决矛盾
         if len(new_settings)>0:
-            self.load_settings()
+            await asyncio.to_thread(self.load_settings)
             self.settings[lanlan_name] = await self.detect_and_resolve_contradictions(self.settings[lanlan_name], new_settings, lanlan_name)
-            self.save_settings(lanlan_name)
+            await asyncio.to_thread(self.save_settings, lanlan_name)
 
     def get_settings(self, lanlan_name):
         self.load_settings()

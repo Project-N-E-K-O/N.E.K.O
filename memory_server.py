@@ -129,6 +129,97 @@ _settle_locks: dict[str, asyncio.Lock] = {}
 # 强引用注册表：防止 fire-and-forget task 被 GC
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
 
+# ── 空闲维护相关 ────────────────────────────────────────────────────
+_last_activity_time: datetime = datetime.now()            # 最后一次对话活动时间
+IDLE_CHECK_INTERVAL = 40             # 空闲检查轮询间隔（秒，正常阶段）
+IDLE_CHECK_INTERVAL_STARTUP = 10     # 启动阶段高频轮询间隔
+IDLE_THRESHOLD = 10                  # 多少秒无活动视为空闲（匹配最低 proactive 间隔）
+REVIEW_MIN_INTERVAL = 300            # review（correction）最短间隔（秒）
+REVIEW_SKIP_HISTORY_LEN = 8          # 历史不足此数的角色跳过 review / correction
+
+# ── 持久化维护状态（跨重启保留 review_clean 标记） ──────────────────
+_maint_state: dict[str, dict] = {}   # {角色名: {"review_clean": bool, "last_review_ts": str}}
+
+
+def _maint_state_path() -> str:
+    return os.path.join(str(_config_manager.memory_dir), 'idle_maintenance_state.json')
+
+
+async def _aload_maint_state() -> None:
+    """启动时从磁盘加载维护状态。"""
+    from utils.file_utils import read_json_async
+    global _maint_state
+    path = _maint_state_path()
+    if not await asyncio.to_thread(os.path.exists, path):
+        _maint_state = {}
+        return
+    try:
+        data = await read_json_async(path)
+        if isinstance(data, dict):
+            _maint_state = data
+            logger.debug(f"[IdleMaint] 已加载维护状态: {len(_maint_state)} 个角色")
+            return
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning(f"[IdleMaint] 维护状态文件加载失败: {e}")
+    _maint_state = {}
+
+
+async def _asave_maint_state() -> None:
+    """将维护状态持久化到磁盘。"""
+    from utils.file_utils import atomic_write_json_async
+    try:
+        await atomic_write_json_async(_maint_state_path(), _maint_state,
+                                      indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.warning(f"[IdleMaint] 维护状态保存失败: {e}")
+
+
+def _is_review_clean(lanlan_name: str) -> bool:
+    """检查角色是否处于 review_clean 状态（已 review 且无新对话）。"""
+    return _maint_state.get(lanlan_name, {}).get('review_clean', False)
+
+
+async def _aclear_review_clean(lanlan_name: str) -> None:
+    """新 human 消息到达时清除 review_clean 标记。"""
+    state = _maint_state.get(lanlan_name, {})
+    if state.get('review_clean'):
+        state['review_clean'] = False
+        await _asave_maint_state()
+
+
+def _has_human_messages(messages) -> bool:
+    """检查消息列表中是否包含用户（human）消息。"""
+    for m in messages:
+        if getattr(m, 'type', '') == 'human':
+            return True
+    return False
+
+
+async def _ais_review_enabled() -> bool:
+    """检查配置中 correction/review 是否启用（走异步 IO）。"""
+    from utils.file_utils import read_json_async
+    try:
+        config_path = str(_config_manager.get_config_path('core_config.json'))
+        if not await asyncio.to_thread(os.path.exists, config_path):
+            return True
+        config_data = await read_json_async(config_path)
+        if isinstance(config_data, dict) and not config_data.get('recent_memory_auto_review', True):
+            return False
+    except Exception as e:
+        logger.debug(f"[IdleMaint] 读取 review 开关配置失败，默认启用: {e}")
+    return True
+
+
+def _touch_activity() -> None:
+    """记录一次对话活动，刷新空闲计时器。"""
+    global _last_activity_time
+    _last_activity_time = datetime.now()
+
+
+def _is_idle() -> bool:
+    """判断当前是否空闲（距上次活动超过阈值）。"""
+    return (datetime.now() - _last_activity_time).total_seconds() >= IDLE_THRESHOLD
+
 
 def _get_settle_lock(lanlan_name: str) -> asyncio.Lock:
     """获取指定角色的结算锁（懒创建）"""
@@ -239,34 +330,37 @@ async def _periodic_rebuttal_loop():
     while True:
         await asyncio.sleep(REBUTTAL_CHECK_INTERVAL)
         try:
-            character_data = _config_manager.load_characters()
+            character_data = await _config_manager.aload_characters()
             catgirl_names = list(character_data.get('猫娘', {}).keys())
         except Exception as e:
             logger.debug(f"[Rebuttal] 加载角色列表失败: {e}")
             continue
 
         now = datetime.now()
-        for name in catgirl_names:
+
+        async def _check_one_rebuttal(name: str):
+            """单个 catgirl 的反驳检查。各角色互相独立，外层 gather 并行。
+            内部对 feedbacks 仍串行 areject_promotion（同 reflection 不能并发处理）。"""
             try:
-                confirmed = reflection_engine.get_confirmed_reflections(name)
+                confirmed = await reflection_engine.aget_confirmed_reflections(name)
                 if not confirmed:
-                    continue
+                    return
 
                 # 确定查询起始时间：上次检查时间 or 1小时前（首次）
                 start_time = _last_rebuttal_check.get(
                     name, now - _td(hours=1)
                 )
-                rows = time_manager.retrieve_original_by_timeframe(
+                rows = await time_manager.aretrieve_original_by_timeframe(
                     name, start_time, now,
                 )
                 if not rows:
                     _last_rebuttal_check[name] = now
-                    continue
+                    return
 
                 user_msgs = _extract_user_messages_from_rows(rows)
                 if not user_msgs:
                     _last_rebuttal_check[name] = now
-                    continue
+                    return
 
                 # 复用 check_feedback 判断反驳
                 feedbacks = await reflection_engine.check_feedback_for_confirmed(
@@ -275,7 +369,7 @@ async def _periodic_rebuttal_loop():
                 if feedbacks is None:
                     # LLM 调用失败 → 不推进窗口，下次重试这批消息
                     logger.warning(f"[Rebuttal] {name}: 反驳检查失败，保留窗口待重试")
-                    continue
+                    return
 
                 # 成功才推进窗口
                 _last_rebuttal_check[name] = now
@@ -283,10 +377,16 @@ async def _periodic_rebuttal_loop():
                     if isinstance(fb, dict) and fb.get('feedback') == 'denied':
                         rid = fb.get('reflection_id')
                         if rid:
-                            reflection_engine.reject_promotion(name, rid)
+                            await reflection_engine.areject_promotion(name, rid)
                             logger.info(f"[Rebuttal] {name}: confirmed 反思被反驳: {rid}")
             except Exception as e:
                 logger.debug(f"[Rebuttal] {name}: 处理失败，跳过: {e}")
+
+        if catgirl_names:
+            await asyncio.gather(
+                *(_check_one_rebuttal(name) for name in catgirl_names),
+                return_exceptions=True,
+            )
 
 
 AUTO_PROMOTE_CHECK_INTERVAL = 300  # 5 分钟
@@ -299,19 +399,135 @@ async def _periodic_auto_promote_loop():
     while True:
         await asyncio.sleep(AUTO_PROMOTE_CHECK_INTERVAL)
         try:
-            character_data = _config_manager.load_characters()
+            character_data = await _config_manager.aload_characters()
             catgirl_names = list(character_data.get('猫娘', {}).keys())
         except Exception as e:
             logger.debug(f"[AutoPromote] 加载角色列表失败: {e}")
             continue
 
-        for name in catgirl_names:
+        async def _promote_one(name: str):
             try:
-                transitions = reflection_engine.auto_promote_stale(name)
+                transitions = await reflection_engine.aauto_promote_stale(name)
                 if transitions:
                     logger.info(f"[AutoPromote] {name}: {transitions} 条状态迁移")
             except Exception as e:
                 logger.debug(f"[AutoPromote] {name}: 处理失败: {e}")
+
+        if catgirl_names:
+            await asyncio.gather(
+                *(_promote_one(name) for name in catgirl_names),
+                return_exceptions=True,
+            )
+
+
+async def _periodic_idle_maintenance_loop():
+    """定期检查系统是否空闲，空闲时自动执行记忆维护任务。
+
+    启动阶段以 IDLE_CHECK_INTERVAL_STARTUP(10s) 高频轮询，尽快捕获启动后的
+    首个空闲窗口执行维护（用户上次强制退出导致的未完成任务在这里收尾）。
+    首轮维护完成或 recent_memory_auto_review 被禁用后恢复 IDLE_CHECK_INTERVAL(40s)。
+
+    每轮为每个角色依次执行：
+    1. 历史记录压缩 — 有需要就跑（history > max_history_length）
+    2. Persona 矛盾审视 — 有需要就跑（pending corrections 非空，history >= 8）
+    3. 记忆整理 review — review_clean 则跳过；受 REVIEW_MIN_INTERVAL 最短间隔；history < 8 跳过
+    """
+    startup_phase = True
+    while True:
+        await asyncio.sleep(IDLE_CHECK_INTERVAL_STARTUP if startup_phase else IDLE_CHECK_INTERVAL)
+
+        # correction 被禁用 → 无需高频轮询
+        if startup_phase and not await _ais_review_enabled():
+            startup_phase = False
+
+        if not _is_idle():
+            continue
+
+        try:
+            character_data = await _config_manager.aload_characters()
+            catgirl_names = list(character_data.get('猫娘', {}).keys())
+        except Exception as e:
+            logger.debug(f"[IdleMaint] 加载角色列表失败: {e}")
+            continue
+
+        review_enabled = await _ais_review_enabled()
+
+        for name in catgirl_names:
+            # 每处理一个角色前重新检查空闲，一旦变忙立即退出
+            if not _is_idle():
+                logger.debug("[IdleMaint] 检测到新活动，中断本轮维护")
+                break
+
+            try:
+                history = await recent_history_manager.aget_recent_history(name)
+                history_len = len(history)
+
+                # ── 子任务1: 历史记录压缩（有需要就跑，不受全局开关控制） ──
+                if history_len > recent_history_manager.max_history_length:
+                    logger.info(
+                        f"[IdleMaint] {name}: 历史记录过长 ({history_len} > "
+                        f"{recent_history_manager.max_history_length})，触发压缩"
+                    )
+                    try:
+                        # 传空消息列表仅触发压缩逻辑
+                        await recent_history_manager.update_history([], name, detailed=True)
+                        logger.info(f"[IdleMaint] {name}: 历史记录压缩完成")
+                    except Exception as e:
+                        logger.warning(f"[IdleMaint] {name}: 历史记录压缩失败: {e}")
+
+                # 历史不足 REVIEW_SKIP_HISTORY_LEN 条，或全局开关关闭 → 跳过矛盾审视和 review
+                if history_len < REVIEW_SKIP_HISTORY_LEN or not review_enabled:
+                    continue
+
+                # ── 子任务2: Persona 矛盾审视（有需要就跑） ──
+                if not _is_idle():
+                    break
+                try:
+                    pending_corrections = await persona_manager.aload_pending_corrections(name)
+                    if pending_corrections:
+                        logger.info(
+                            f"[IdleMaint] {name}: 发现 {len(pending_corrections)} 条未处理的 persona 矛盾，触发审视"
+                        )
+                        resolved = await persona_manager.resolve_corrections(name)
+                        if resolved:
+                            logger.info(f"[IdleMaint] {name}: 审视了 {resolved} 条 persona 矛盾")
+                except Exception as e:
+                    logger.warning(f"[IdleMaint] {name}: persona 矛盾审视失败: {e}")
+
+                # ── 子任务3: 记忆整理 review ──
+                if not _is_idle():
+                    break
+                # 已 review 且没有新对话 → 跳过
+                if _is_review_clean(name):
+                    continue
+                # 已有 review 任务在跑 → 跳过
+                if name in correction_tasks and not correction_tasks[name].done():
+                    continue
+                # 最短间隔限制
+                last_review = _maint_state.get(name, {}).get('last_review_ts')
+                if last_review:
+                    try:
+                        elapsed = (datetime.now() - datetime.fromisoformat(last_review)).total_seconds()
+                        if elapsed < REVIEW_MIN_INTERVAL:
+                            continue
+                    except (ValueError, TypeError):
+                        logger.debug(f"[IdleMaint] {name}: last_review_ts 格式无效，视为未 review 过")
+                logger.info(f"[IdleMaint] {name}: 空闲期间执行记忆整理")
+                try:
+                    cancel_event = asyncio.Event()
+                    correction_cancel_flags[name] = cancel_event
+                    task = asyncio.create_task(_run_review_in_background(name))
+                    correction_tasks[name] = task
+                except Exception as e:
+                    logger.warning(f"[IdleMaint] {name}: 记忆整理启动失败: {e}")
+
+            except Exception as e:
+                logger.debug(f"[IdleMaint] {name}: 处理失败，跳过: {e}")
+
+        # 首轮维护完成 → 恢复正常轮询间隔
+        if startup_phase:
+            startup_phase = False
+            logger.info("[IdleMaint] 启动阶段结束，恢复正常轮询间隔")
 
 
 @app.on_event("startup")
@@ -325,13 +541,28 @@ async def startup_event_handler():
     except Exception as e:
         logger.warning(f"[Memory] Token tracker init failed: {e}")
 
+    # 加载持久化维护状态（review_clean 标记等）
+    await _aload_maint_state()
+
     # 自动迁移 settings → persona（如 persona 文件不存在）
     # 注：目录结构迁移已在模块级完成（在组件实例化之前）
     try:
-        character_data = _config_manager.load_characters()
+        character_data = await _config_manager.aload_characters()
         catgirl_names = list(character_data.get('猫娘', {}).keys())
-        for name in catgirl_names:
-            persona_manager.ensure_persona(name)
+        # 各角色的 persona 文件互相独立，并行迁移检查避免 N 倍串行磁盘 IO。
+        # return_exceptions=True：避免 fail-fast 取消其它角色正在写盘的协程，
+        # 造成 persona 文件半写入；出错的角色单独记日志。
+        if catgirl_names:
+            results = await asyncio.gather(
+                *(persona_manager.aensure_persona(n) for n in catgirl_names),
+                return_exceptions=True,
+            )
+            for name, result in zip(catgirl_names, results):
+                if isinstance(result, Exception):
+                    logger.warning(
+                        f"[Memory] Persona 迁移检查失败: {name}: {result}",
+                        exc_info=result,
+                    )
         logger.info(f"[Memory] Persona 迁移检查完成，角色数: {len(catgirl_names)}")
     except Exception as e:
         logger.warning(f"[Memory] Persona 迁移检查失败: {e}")
@@ -339,6 +570,9 @@ async def startup_event_handler():
     # 启动定期后台任务
     _spawn_background_task(_periodic_rebuttal_loop())
     _spawn_background_task(_periodic_auto_promote_loop())
+
+    # 空闲时自动维护记忆（压缩、矛盾审视、review）
+    _spawn_background_task(_periodic_idle_maintenance_loop())
 
 
 @app.on_event("shutdown")
@@ -365,8 +599,16 @@ async def _run_review_in_background(lanlan_name: str):
     
     try:
         # 直接异步调用review_history方法
-        await recent_history_manager.review_history(lanlan_name, cancel_event)
-        logger.info(f"✅ {lanlan_name} 的记忆整理任务完成")
+        success = await recent_history_manager.review_history(lanlan_name, cancel_event)
+        if success:
+            logger.info(f"✅ {lanlan_name} 的记忆整理任务完成")
+            # 仅在 review 实际成功修正并保存时标记 clean + 记录时间
+            state = _maint_state.setdefault(lanlan_name, {})
+            state['review_clean'] = True
+            state['last_review_ts'] = datetime.now().isoformat()
+            await _asave_maint_state()
+        else:
+            logger.info(f"ℹ️ {lanlan_name} 的记忆整理未执行（被跳过或条件不满足）")
     except asyncio.CancelledError:
         logger.info(f"⚠️ {lanlan_name} 的记忆整理任务被取消")
     except Exception as e:
@@ -423,7 +665,7 @@ async def api_reflect(lanlan_name: str):
     auto_transitions = 0
     reflection_result = None
     try:
-        auto_transitions = reflection_engine.auto_promote_stale(lanlan_name)
+        auto_transitions = await reflection_engine.aauto_promote_stale(lanlan_name)
     except Exception as e:
         logger.debug(f"[ReflectAPI] {lanlan_name}: auto_promote_stale 失败: {e}")
     try:
@@ -441,7 +683,7 @@ async def api_followup_topics(lanlan_name: str):
     """获取回调话题候选（不标记 surfaced，调用方需后续调 /record_surfaced）。"""
     lanlan_name = validate_lanlan_name(lanlan_name)
     try:
-        topics = reflection_engine.get_followup_topics(lanlan_name)
+        topics = await reflection_engine.aget_followup_topics(lanlan_name)
     except Exception as e:
         logger.debug(f"[ReflectAPI] {lanlan_name}: get_followup_topics 失败: {e}")
         topics = []
@@ -457,7 +699,7 @@ async def api_record_surfaced(request: Request, lanlan_name: str):
     if not reflection_ids:
         return {"ok": True}
     try:
-        reflection_engine.record_surfaced(lanlan_name, reflection_ids)
+        await reflection_engine.arecord_surfaced(lanlan_name, reflection_ids)
     except Exception as e:
         logger.debug(f"[ReflectAPI] {lanlan_name}: record_surfaced 失败: {e}")
     return {"ok": True}
@@ -478,13 +720,13 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
         # 2. 全局复读嗅探：扫描 AI 回复中是否重复提及 persona 条目
         ai_response = _extract_ai_response(messages)
         if ai_response:
-            persona_manager.record_mentions(lanlan_name, ai_response)
+            await persona_manager.arecord_mentions(lanlan_name, ai_response)
     except Exception as e:
         logger.warning(f"[MemoryServer] 复读嗅探失败: {e}")
 
     try:
         # 3. 检查用户对之前 surfaced 反思的反馈（宽松确认）
-        surfaced = reflection_engine.load_surfaced(lanlan_name)
+        surfaced = await reflection_engine.aload_surfaced(lanlan_name)
         pending_surfaced = [s for s in surfaced if s.get('feedback') is None]
         if pending_surfaced:
             user_msgs = _extract_user_messages(messages)
@@ -503,10 +745,10 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
                     for s in pending_surfaced:
                         rid = s.get('reflection_id')
                         if rid in denied_ids:
-                            reflection_engine.reject_promotion(lanlan_name, rid)
+                            await reflection_engine.areject_promotion(lanlan_name, rid)
                         else:
                             # 宽松确认：用户有回复 + 未被 denied → 自动 confirm
-                            reflection_engine.confirm_promotion(lanlan_name, rid)
+                            await reflection_engine.aconfirm_promotion(lanlan_name, rid)
     except Exception as e:
         logger.warning(f"[MemoryServer] 反馈检查失败: {e}")
 
@@ -521,13 +763,16 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
 
 @app.post("/cache/{lanlan_name}")
 async def cache_conversation(request: HistoryRequest, lanlan_name: str):
-    lanlan_name = validate_lanlan_name(lanlan_name)
     """轻量级缓存：仅将新消息追加到 recent history，不触发 time_manager / review 等 LLM 操作。
     供 cross_server 在每轮 turn end 时调用，保持 memory_browser 实时可见。"""
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    _touch_activity()
     try:
         input_history = convert_to_messages(json.loads(request.input_history))
         if not input_history:
             return {"status": "cached", "count": 0}
+        if _has_human_messages(input_history):
+            await _aclear_review_clean(lanlan_name)
         logger.info(f"[MemoryServer] cache: {lanlan_name} +{len(input_history)} 条消息")
         async with _get_settle_lock(lanlan_name):
             await recent_history_manager.update_history(input_history, lanlan_name, compress=False)
@@ -540,25 +785,28 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
 @app.post("/process/{lanlan_name}")
 async def process_conversation(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
+    _touch_activity()
     global correction_tasks
     try:
         # 检查角色是否存在于配置中，如果不存在则记录信息但继续处理（允许新角色）
         try:
-            character_data = _config_manager.load_characters()
+            character_data = await _config_manager.aload_characters()
             catgirl_names = list(character_data.get('猫娘', {}).keys())
             if lanlan_name not in catgirl_names:
                 logger.info(f"[MemoryServer] 角色 '{lanlan_name}' 不在配置中，但继续处理（可能是新创建的角色）")
         except Exception as e:
             logger.warning(f"检查角色配置失败: {e}，继续处理")
-        
+
         uid = str(uuid4())
         input_history = convert_to_messages(json.loads(request.input_history))
+        if _has_human_messages(input_history):
+            await _aclear_review_clean(lanlan_name)
         logger.info(f"[MemoryServer] 收到 {lanlan_name} 的对话历史处理请求，消息数: {len(input_history)}")
         await recent_history_manager.update_history(input_history, lanlan_name)
         # 旧模块已禁用（性能不足）：
         # await settings_manager.extract_and_update_settings(input_history, lanlan_name)
         # await semantic_manager.store_conversation(uid, input_history, lanlan_name)
-        await time_manager.store_conversation(uid, input_history, lanlan_name)
+        await time_manager.astore_conversation(uid, input_history, lanlan_name)
 
         # 异步事实提取（不阻塞返回，失败静默跳过）
         _spawn_background_task(_extract_facts_and_check_feedback(input_history, lanlan_name))
@@ -584,24 +832,27 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
 @app.post("/renew/{lanlan_name}")
 async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
+    _touch_activity()
     global correction_tasks
     try:
         # 检查角色是否存在于配置中，如果不存在则记录信息但继续处理（允许新角色）
         try:
-            character_data = _config_manager.load_characters()
+            character_data = await _config_manager.aload_characters()
             catgirl_names = list(character_data.get('猫娘', {}).keys())
             if lanlan_name not in catgirl_names:
                 logger.info(f"[MemoryServer] renew: 角色 '{lanlan_name}' 不在配置中，但继续处理（可能是新创建的角色）")
         except Exception as e:
             logger.warning(f"检查角色配置失败: {e}，继续处理")
-        
+
         uid = str(uuid4())
         input_history = convert_to_messages(json.loads(request.input_history))
+        if _has_human_messages(input_history):
+            await _aclear_review_clean(lanlan_name)
         logger.info(f"[MemoryServer] renew: 收到 {lanlan_name} 的对话历史处理请求，消息数: {len(input_history)}")
         # 首轮摘要带锁：阻塞 /new_dialog 直到摘要+时间戳写入完成
         async with _get_settle_lock(lanlan_name):
             await recent_history_manager.update_history(input_history, lanlan_name, detailed=True)
-            await time_manager.store_conversation(uid, input_history, lanlan_name)
+            await time_manager.astore_conversation(uid, input_history, lanlan_name)
 
         # 以下操作在锁外执行，不阻塞 /new_dialog
         # 异步事实提取
@@ -634,15 +885,18 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
     本端点补全这些操作。
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
+    _touch_activity()
     global correction_tasks
     try:
         uid = str(uuid4())
         input_history = convert_to_messages(json.loads(request.input_history))
+        if _has_human_messages(input_history):
+            await _aclear_review_clean(lanlan_name)
         logger.info(f"[MemoryServer] settle: 收到 {lanlan_name} 的结算请求，消息数: {len(input_history)}")
 
         async with _get_settle_lock(lanlan_name):
             if input_history:
-                await time_manager.store_conversation(uid, input_history, lanlan_name)
+                await time_manager.astore_conversation(uid, input_history, lanlan_name)
             await recent_history_manager.update_history([], lanlan_name, detailed=True)
 
         if input_history:
@@ -664,11 +918,11 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
 
 
 @app.get("/get_recent_history/{lanlan_name}")
-def get_recent_history(lanlan_name: str):
+async def get_recent_history(lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
     # 检查角色是否存在于配置中
     try:
-        character_data = _config_manager.load_characters()
+        character_data = await _config_manager.aload_characters()
         catgirl_names = list(character_data.get('猫娘', {}).keys())
         if lanlan_name not in catgirl_names:
             logger.warning(f"角色 '{lanlan_name}' 不在配置中，返回空历史记录")
@@ -676,9 +930,9 @@ def get_recent_history(lanlan_name: str):
     except Exception as e:
         logger.error(f"检查角色配置失败: {e}")
         return "开始聊天前，没有历史记录。\n"
-    
-    history = recent_history_manager.get_recent_history(lanlan_name)
-    _, _, _, _, name_mapping, _, _, _, _ = _config_manager.get_character_data()
+
+    history = await recent_history_manager.aget_recent_history(lanlan_name)
+    _, _, _, _, name_mapping, _, _, _, _ = await _config_manager.aget_character_data()
     name_mapping['ai'] = lanlan_name
     result = f"开始聊天前，{lanlan_name}又在脑海内整理了近期发生的事情。\n"
     for i in history:
@@ -704,11 +958,11 @@ async def get_memory(query: str, lanlan_name: str):
     )
 
 @app.get("/get_settings/{lanlan_name}")
-def get_settings(lanlan_name: str):
+async def get_settings(lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
     # 检查角色是否存在于配置中
     try:
-        character_data = _config_manager.load_characters()
+        character_data = await _config_manager.aload_characters()
         catgirl_names = list(character_data.get('猫娘', {}).keys())
         if lanlan_name not in catgirl_names:
             logger.warning(f"角色 '{lanlan_name}' 不在配置中，返回空设置")
@@ -718,23 +972,23 @@ def get_settings(lanlan_name: str):
         return f"{lanlan_name}记得{{}}"
 
     # 优先使用 persona markdown 渲染（与 /new_dialog 保持一致），回退到旧 settings 格式
-    pending_reflections = reflection_engine.get_pending_reflections(lanlan_name)
-    confirmed_reflections = reflection_engine.get_confirmed_reflections(lanlan_name)
-    persona_md = persona_manager.render_persona_markdown(
+    pending_reflections = await reflection_engine.aget_pending_reflections(lanlan_name)
+    confirmed_reflections = await reflection_engine.aget_confirmed_reflections(lanlan_name)
+    persona_md = await persona_manager.arender_persona_markdown(
         lanlan_name, pending_reflections, confirmed_reflections,
     )
     if persona_md:
         return persona_md
     # 兼容回退（自然语言格式）
-    return _format_legacy_settings_as_text(settings_manager.get_settings(lanlan_name), lanlan_name)
-    return result
+    legacy_settings = await asyncio.to_thread(settings_manager.get_settings, lanlan_name)
+    return _format_legacy_settings_as_text(legacy_settings, lanlan_name)
 
 
 @app.get("/get_persona/{lanlan_name}")
-def get_persona(lanlan_name: str):
+async def get_persona(lanlan_name: str):
     """返回完整 persona JSON（供 UI / memory_browser 使用）。"""
     lanlan_name = validate_lanlan_name(lanlan_name)
-    return persona_manager.get_persona(lanlan_name)
+    return await persona_manager.aget_persona(lanlan_name)
 
 @app.post("/reload")
 async def reload_config():
@@ -776,11 +1030,12 @@ async def cancel_correction(lanlan_name: str):
 @app.get("/new_dialog/{lanlan_name}")
 async def new_dialog(lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
+    _touch_activity()
     global correction_tasks, correction_cancel_flags
-    
+
     # 检查角色是否存在于配置中
     try:
-        character_data = _config_manager.load_characters()
+        character_data = await _config_manager.aload_characters()
         catgirl_names = list(character_data.get('猫娘', {}).keys())
         if lanlan_name not in catgirl_names:
             logger.warning(f"角色 '{lanlan_name}' 不在配置中，返回空上下文")
@@ -808,23 +1063,25 @@ async def new_dialog(lanlan_name: str):
 
         # 正则表达式：删除所有类型括号及其内容（包括[]、()、{}、<>、【】、（）等）
         brackets_pattern = re.compile(r'(\[.*?\]|\(.*?\)|（.*?）|【.*?】|\{.*?\}|<.*?>)')
-        master_name, _, _, _, name_mapping, _, _, _, _ = _config_manager.get_character_data()
+        master_name, _, _, _, name_mapping, _, _, _, _ = await _config_manager.aget_character_data()
         name_mapping['ai'] = lanlan_name
         _lang = get_global_language()
 
         # ── [静态前缀] Persona 长期记忆（变化极少 → 最大化 prefix cache） ──
     # pending + confirmed 反思也注入上下文（分区标注）
-        pending_reflections = reflection_engine.get_pending_reflections(lanlan_name)
-        confirmed_reflections = reflection_engine.get_confirmed_reflections(lanlan_name)
+        pending_reflections = await reflection_engine.aget_pending_reflections(lanlan_name)
+        confirmed_reflections = await reflection_engine.aget_confirmed_reflections(lanlan_name)
         result = _loc(PERSONA_HEADER, _lang).format(name=lanlan_name)
-        persona_md = persona_manager.render_persona_markdown(
+        persona_md = await persona_manager.arender_persona_markdown(
             lanlan_name, pending_reflections, confirmed_reflections,
         )
         if persona_md:
             result += persona_md
         else:
             # 兼容回退：使用旧 settings（自然语言格式）
-            result += _format_legacy_settings_as_text(settings_manager.get_settings(lanlan_name), lanlan_name) + "\n"
+            # get_settings 内部 open() + json.load()，offload 避免阻塞（冷回退路径，但触发时多文件 IO）
+            legacy_settings = await asyncio.to_thread(settings_manager.get_settings, lanlan_name)
+            result += _format_legacy_settings_as_text(legacy_settings, lanlan_name) + "\n"
 
         # ── [动态部分] 内心活动（每次变化） ──
         result += _loc(INNER_THOUGHTS_HEADER, _lang).format(name=lanlan_name)
@@ -833,7 +1090,7 @@ async def new_dialog(lanlan_name: str):
             time=get_timestamp(),
         )
 
-        for i in recent_history_manager.get_recent_history(lanlan_name):
+        for i in await recent_history_manager.aget_recent_history(lanlan_name):
             if isinstance(i.content, str):
                 cleaned_content = brackets_pattern.sub('', i.content).strip()
                 result += f"{name_mapping[i.type]} | {cleaned_content}\n"
@@ -844,7 +1101,7 @@ async def new_dialog(lanlan_name: str):
         # ── 距上次聊天间隔提示（放在最末尾，紧接 CONTEXT_SUMMARY_READY 之前） ──
         try:
             from datetime import datetime as _dt
-            last_time = time_manager.get_last_conversation_time(lanlan_name)
+            last_time = await time_manager.aget_last_conversation_time(lanlan_name)
             if last_time:
                 gap = _dt.now() - last_time
                 gap_seconds = gap.total_seconds()
@@ -877,7 +1134,7 @@ async def last_conversation_gap(lanlan_name: str):
     """返回距上次对话的间隔秒数，供主服务判断是否触发主动搭话。"""
     lanlan_name = validate_lanlan_name(lanlan_name)
     try:
-        last_time = time_manager.get_last_conversation_time(lanlan_name)
+        last_time = await time_manager.aget_last_conversation_time(lanlan_name)
         if last_time is None:
             return {"gap_seconds": -1}
         gap = (datetime.now() - last_time).total_seconds()

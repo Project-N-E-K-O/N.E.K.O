@@ -1,5 +1,10 @@
 // 允许的来源列表
 const ALLOWED_ORIGINS = [window.location.origin];
+const MINIMAX_PREFIX_MAX_LENGTH = 10;
+let workshopReferenceFile = null;
+let workshopReferenceAudioUrl = '';
+let providerTouchedByUser = false;
+let suppressProviderTouchedTracking = false;
 
 // 打开API设置页（带弹窗拦截回退）
 function openApiSettings() {
@@ -10,6 +15,59 @@ function openApiSettings() {
     } else {
         location.href = '/api_key';
     }
+}
+
+// 安全地解析 fetch 响应：当后端/反向代理返回 HTML（404/502/504/网关错误等）时
+// 不应抛出 "Unexpected token '<', '<html>...' is not valid JSON"，而应返回带状态码的可读错误。
+async function safeReadResponse(res) {
+    const contentType = (res.headers.get('content-type') || '').toLowerCase();
+    // 识别 application/json 以及 RFC 6839 的结构化后缀（如 application/problem+json,
+    // application/vnd.api+json 等），它们都是合法 JSON。
+    const isJsonContentType = contentType.includes('application/json') || /\+json(\s*;|\s*$)/.test(contentType);
+    if (isJsonContentType) {
+        try {
+            return { data: await res.json(), nonJson: false, text: '' };
+        } catch (_) {
+            // Content-Type 声明 JSON 但解析失败，落到文本分支
+        }
+    }
+    let text = '';
+    try { text = await res.text(); } catch (_) { text = ''; }
+    return { data: null, nonJson: true, text };
+}
+
+function buildNonJsonError(res, text) {
+    // 去除 HTML 标签并截断，避免把整段 HTML 报告给用户
+    const snippet = text
+        ? text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120)
+        : '';
+    if (window.t) {
+        if (res.status === 404) {
+            return window.t('voice.serverRouteNotFound', { status: res.status });
+        }
+        return window.t('voice.serverNonJsonError', {
+            status: res.status,
+            snippet: snippet || res.statusText || ''
+        });
+    }
+    if (res.status === 404) {
+        return `接口未找到 (HTTP 404)，请确认服务端已正确部署并重启`;
+    }
+    return `服务端返回了非JSON响应 (HTTP ${res.status})${snippet ? ': ' + snippet : ''}`;
+}
+
+// 把后端错误响应体转成可读消息：
+// 只有在 errors.<code> 翻译确实存在时才使用 i18n，否则回退到响应自带文案，
+// 避免 i18next 的「缺失 key 回退成 key 本身」行为把 "errors.XXX_UNKNOWN" 直接丢给用户。
+function resolveBackendErrorMsg(data, status) {
+    if (data && data.code && window.t) {
+        const i18nKey = 'errors.' + data.code;
+        const translated = window.t(i18nKey, data.details || {});
+        if (translated && translated !== i18nKey) {
+            return translated;
+        }
+    }
+    return (data && (data.detail || data.message || data.error)) || `API returned ${status}`;
 }
 
 function parseVoiceRegisterError(errorObj) {
@@ -37,6 +95,78 @@ function parseVoiceRegisterError(errorObj) {
 
     return { displayError, shouldFlash };
 }
+
+function isMiniMaxProvider(provider) {
+    return provider === 'minimax' || provider === 'minimax_intl';
+}
+
+function sanitizeMiniMaxPrefix(prefix) {
+    return String(prefix || '')
+        .replace(/[^0-9a-z]/gi, '')
+        .slice(0, MINIMAX_PREFIX_MAX_LENGTH);
+}
+
+function normalizePrefixInputForProvider() {
+    const prefixInput = document.getElementById('prefix');
+    const provider = (document.getElementById('voiceProvider') || {}).value || 'cosyvoice';
+    if (!prefixInput) {
+        return '';
+    }
+
+    if (!isMiniMaxProvider(provider)) {
+        prefixInput.removeAttribute('maxlength');
+        return prefixInput.value.trim();
+    }
+
+    prefixInput.maxLength = MINIMAX_PREFIX_MAX_LENGTH;
+    const trimmedValue = prefixInput.value.trim();
+    const sanitized = sanitizeMiniMaxPrefix(trimmedValue);
+    if (trimmedValue !== sanitized || prefixInput.value !== sanitized) {
+        prefixInput.value = sanitized;
+    }
+    return sanitized;
+}
+
+function guessAudioMimeType(filename) {
+    return /\.mp3$/i.test(filename || '') ? 'audio/mpeg' : 'audio/wav';
+}
+
+function getEffectiveAudioFile() {
+    const fileInput = document.getElementById('audioFile');
+    if (fileInput && fileInput.files && fileInput.files.length) {
+        return fileInput.files[0];
+    }
+    return workshopReferenceFile;
+}
+
+function setWorkshopVoiceSourceStatus(message, isError = false) {
+    const statusEl = document.getElementById('workshopVoiceSourceStatus');
+    if (!statusEl) return;
+    statusEl.textContent = message || '';
+    statusEl.style.display = message ? 'block' : 'none';
+    statusEl.classList.toggle('error', !!message && isError);
+}
+
+function revokeWorkshopReferenceAudioUrl() {
+    if (workshopReferenceAudioUrl) {
+        URL.revokeObjectURL(workshopReferenceAudioUrl);
+        workshopReferenceAudioUrl = '';
+    }
+}
+
+function applyWorkshopProviderHint(providerHint) {
+    const providerSelect = document.getElementById('voiceProvider');
+    if (!providerSelect || !providerHint) return;
+    if (providerTouchedByUser) return;
+    if (providerSelect.value !== 'cosyvoice') return;
+
+    suppressProviderTouchedTracking = true;
+    providerSelect.value = providerHint;
+    providerSelect.dispatchEvent(new Event('change'));
+    suppressProviderTouchedTracking = false;
+}
+
+window.addEventListener('beforeunload', revokeWorkshopReferenceAudioUrl);
 
 // 关闭页面函数
 function closeVoiceClonePage() {
@@ -74,6 +204,11 @@ function updateFileDisplay() {
     }
     if (fileInput.files.length > 0) {
         fileNameDisplay.textContent = fileInput.files[0].name;
+    } else if (workshopReferenceFile) {
+        const workshopPreloadedSuffix = (window.t && typeof window.t === 'function')
+            ? window.t('voice.workshopPreloaded')
+            : '（创意工坊预载入）';
+        fileNameDisplay.textContent = `${workshopReferenceFile.name}${workshopPreloadedSuffix}`;
     } else {
         fileNameDisplay.textContent = window.t ? window.t('voice.noFileSelected') : '未选择文件';
     }
@@ -263,12 +398,15 @@ if (window.i18n && window.i18n.isInitialized) {
     } catch (e) {
         console.warn('检查克隆API Key失败:', e);
     }
+
+    await initWorkshopVoiceReference();
 })();
 
 // 服务商切换时更新提示横幅
 document.addEventListener('DOMContentLoaded', function initProviderSwitch() {
     const providerSelect = document.getElementById('voiceProvider');
     const noticeDiv = document.getElementById('provider-notice');
+    const prefixInput = document.getElementById('prefix');
     if (!providerSelect || !noticeDiv) return;
 
     function updateNotice() {
@@ -288,8 +426,20 @@ document.addEventListener('DOMContentLoaded', function initProviderSwitch() {
         // 若 window.t 不可用，保留 HTML 中的原始文本，不覆盖
     }
 
-    providerSelect.addEventListener('change', updateNotice);
+    providerSelect.addEventListener('change', () => {
+        if (!suppressProviderTouchedTracking) {
+            providerTouchedByUser = true;
+        }
+        updateNotice();
+        normalizePrefixInputForProvider();
+    });
+    if (prefixInput) {
+        prefixInput.addEventListener('input', () => {
+            normalizePrefixInputForProvider();
+        });
+    }
     updateNotice();
+    normalizePrefixInputForProvider();
 });
 
 // 当前克隆方式
@@ -329,6 +479,84 @@ function switchCloneMethod(method) {
     }
 }
 
+async function initWorkshopVoiceReference() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const workshopItemId = urlParams.get('workshop_item_id');
+    const source = urlParams.get('source');
+    if (!workshopItemId || source !== 'workshop') {
+        return;
+    }
+
+    const sourceCard = document.getElementById('workshopVoiceSource');
+    const sourceTitle = document.getElementById('workshopVoiceSourceTitle');
+    const sourceMeta = document.getElementById('workshopVoiceSourceMeta');
+    const previewAudio = document.getElementById('workshopVoicePreview');
+    const t = (key, fallback, options) => window.t ? window.t(key, options) : fallback;
+    const workshopSourceTitleText = t('voice.workshopSourceTitle', 'Workshop Reference Voice');
+    if (!sourceCard || !sourceTitle || !sourceMeta || !previewAudio) {
+        return;
+    }
+
+    sourceCard.style.display = 'block';
+    sourceTitle.textContent = workshopSourceTitleText;
+    sourceMeta.textContent = '';
+    setWorkshopVoiceSourceStatus(t('voice.workshopSourceLoading', 'Loading workshop reference voice...'));
+
+    try {
+        const manifestResponse = await fetch(`/api/steam/workshop/voice-reference/${encodeURIComponent(workshopItemId)}`);
+        const manifestData = await manifestResponse.json();
+        if (!manifestResponse.ok) {
+            throw new Error(manifestData.error || `HTTP ${manifestResponse.status}`);
+        }
+        if (!manifestData.available || !manifestData.manifest) {
+            throw new Error(t('voice.workshopSourceUnavailable', 'This workshop item has no available reference voice.'));
+        }
+
+        const audioResponse = await fetch(`/api/steam/workshop/voice-reference/${encodeURIComponent(workshopItemId)}/audio`);
+        if (!audioResponse.ok) {
+            const errorData = await audioResponse.json().catch(() => ({}));
+            throw new Error(errorData.error || `HTTP ${audioResponse.status}`);
+        }
+
+        const manifest = manifestData.manifest;
+        const audioBlob = await audioResponse.blob();
+        workshopReferenceFile = new File(
+            [audioBlob],
+            manifest.reference_audio,
+            { type: audioBlob.type || guessAudioMimeType(manifest.reference_audio) }
+        );
+        revokeWorkshopReferenceAudioUrl();
+        workshopReferenceAudioUrl = URL.createObjectURL(audioBlob);
+
+        sourceTitle.textContent = manifestData.title || manifest.display_name || workshopSourceTitleText;
+        sourceMeta.textContent = t('voice.workshopSourceMeta', 'Sample: {{sample}} | Prefix: {{prefix}} | Language: {{language}}', {
+            sample: manifest.display_name || manifest.reference_audio,
+            prefix: manifest.prefix,
+            language: manifest.ref_language
+        });
+        previewAudio.src = workshopReferenceAudioUrl;
+        previewAudio.style.display = 'block';
+        setWorkshopVoiceSourceStatus(t('voice.workshopSourceReady', 'Reference voice preloaded. Submission will use the file upload clone flow.'));
+
+        switchCloneMethod('file');
+        const prefixInput = document.getElementById('prefix');
+        const refLanguageSelect = document.getElementById('refLanguage');
+        if (prefixInput) prefixInput.value = manifest.prefix || '';
+        if (refLanguageSelect) refLanguageSelect.value = manifest.ref_language || 'ch';
+        applyWorkshopProviderHint(manifest.provider_hint);
+        updateFileDisplay();
+    } catch (error) {
+        workshopReferenceFile = null;
+        revokeWorkshopReferenceAudioUrl();
+        sourceTitle.textContent = workshopSourceTitleText;
+        sourceMeta.textContent = '';
+        previewAudio.removeAttribute('src');
+        previewAudio.style.display = 'none';
+        setWorkshopVoiceSourceStatus(error?.message || t('voice.workshopSourceLoadFailed', 'Failed to load workshop reference voice'), true);
+        updateFileDisplay();
+    }
+}
+
 function setFormDisabled(disabled) {
     const audioFile = document.getElementById('audioFile');
     const directLinkUrl = document.getElementById('directLinkUrl');
@@ -353,19 +581,19 @@ function registerVoice() {
     const fileInput = document.getElementById('audioFile');
     const directLinkUrl = document.getElementById('directLinkUrl');
     const refLanguage = document.getElementById('refLanguage').value;
-    const prefix = document.getElementById('prefix').value.trim();
     const resultDiv = document.getElementById('result');
+    const effectiveAudioFile = getEffectiveAudioFile();
+    const provider = (document.getElementById('voiceProvider') || {}).value || 'cosyvoice';
+    const prefix = normalizePrefixInputForProvider();
 
     // 清空现有内容并重置类名
     resultDiv.textContent = '';
     resultDiv.className = 'result';
 
-    const provider = (document.getElementById('voiceProvider') || {}).value || 'cosyvoice';
-
     // 根据克隆方式验证输入
     if (currentCloneMethod === 'file') {
         // 先检查文件
-        if (!fileInput.files.length) {
+        if (!effectiveAudioFile) {
             resultDiv.textContent = window.t ? window.t('voice.pleaseUploadFile') : '请选择音频文件';
             resultDiv.className = 'result error';
             return;
@@ -408,7 +636,7 @@ function registerVoice() {
     if (currentCloneMethod === 'file') {
         // 本地文件克隆
         const formData = new FormData();
-        formData.append('file', fileInput.files[0]);
+        formData.append('file', effectiveAudioFile, effectiveAudioFile.name);
         formData.append('ref_language', refLanguage);
         formData.append('prefix', prefix);
         formData.append('provider', provider);
@@ -436,11 +664,18 @@ function registerVoice() {
 
     fetch(apiUrl, requestOptions)
         .then(async res => {
-            const data = await res.json();
+            const { data, nonJson, text } = await safeReadResponse(res);
             if (!res.ok) {
-                // 从响应体中提取详细错误信息
-                const errorMsg = (data.code && window.t) ? window.t('errors.' + data.code, data.details || {}) : (data.error || data.detail || `API returned ${res.status}`);
-                throw new Error(errorMsg);
+                if (data) {
+                    // 从响应体中提取详细错误信息（优先已翻译的 errors.<code>，缺失则回退到 message/detail/error）
+                    throw new Error(resolveBackendErrorMsg(data, res.status));
+                }
+                // 后端/网关返回了 HTML（如 404/502/504），构造可读错误而不是 "Unexpected token '<'"
+                throw new Error(buildNonJsonError(res, text));
+            }
+            if (nonJson) {
+                // 状态码 2xx 但响应体不是 JSON——不应发生，但仍优雅处理
+                throw new Error(buildNonJsonError(res, text));
             }
             return data;
         })
@@ -494,11 +729,18 @@ function registerVoice() {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ voice_id: data.voice_id })
-                    }).then(resp => {
+                    }).then(async resp => {
+                        const { data: respData, nonJson, text } = await safeReadResponse(resp);
                         if (!resp.ok) {
-                            throw new Error(`API returned ${resp.status}`);
+                            if (respData && (respData.error || respData.detail)) {
+                                throw new Error(respData.error || respData.detail);
+                            }
+                            throw new Error(buildNonJsonError(resp, text));
                         }
-                        return resp.json();
+                        if (nonJson) {
+                            throw new Error(buildNonJsonError(resp, text));
+                        }
+                        return respData;
                     }).then(res => {
                         if (!res.success) {
                             const errorMsg = res.error || (window.t ? window.t('common.unknownError') : '未知错误');
@@ -534,9 +776,13 @@ function registerVoice() {
                             }
                         }
                     }).catch(e => {
+                        // e 可能携带 safeReadResponse/buildNonJsonError 构造的可读错误
+                        // （含 HTTP 状态和正文摘要），必须拼进最终提示，否则诊断信息被吞。
+                        const saveErrorMsg = e?.message || e?.toString() || (window.t ? window.t('common.unknownError') : '未知错误');
+                        const base = window.t ? window.t('voice.voiceIdSaveRequestError') : 'voice_id自动保存请求出错';
                         const errorSpan = document.createElement('span');
                         errorSpan.className = 'error';
-                        errorSpan.textContent = (window.t ? window.t('voice.voiceIdSaveRequestError') : 'voice_id自动保存请求出错');
+                        errorSpan.textContent = saveErrorMsg ? `${base}: ${saveErrorMsg}` : base;
                         resultDiv.appendChild(document.createElement('br'));
                         resultDiv.appendChild(errorSpan);
                     });
@@ -590,10 +836,16 @@ async function playPreview(voiceId, btn) {
         if (!audioSrc) {
             // 如果本地没有缓存，则从服务器获取
             const response = await fetch(`/api/characters/voice_preview?voice_id=${encodeURIComponent(voiceId)}`);
-            if (response.status === 404) {
-                throw new Error('API route not found (404). Please ensure the server has been restarted.');
+            const { data, nonJson, text } = await safeReadResponse(response);
+            if (!response.ok) {
+                if (data && (data.error || data.detail)) {
+                    throw new Error(data.error || data.detail);
+                }
+                throw new Error(buildNonJsonError(response, text));
             }
-            const data = await response.json();
+            if (nonJson) {
+                throw new Error(buildNonJsonError(response, text));
+            }
 
             if (data.success && data.audio) {
                 audioSrc = `data:${data.mime_type || 'audio/mpeg'};base64,${data.audio}`;
@@ -605,7 +857,7 @@ async function playPreview(voiceId, btn) {
                     // localStorage 可能满了，但我们仍然可以播放这一次生成的音频
                 }
             } else {
-                const _errMsg = (data.code && window.t) ? window.t('errors.' + data.code, data.details || {}) : (data.error || 'Failed to get preview');
+                const _errMsg = resolveBackendErrorMsg(data, response.status) || 'Failed to get preview';
                 throw new Error(_errMsg);
             }
         }
@@ -652,10 +904,16 @@ async function loadVoices() {
 
     try {
         const response = await fetch('/api/characters/voices');
+        const { data, nonJson, text } = await safeReadResponse(response);
         if (!response.ok) {
-            throw new Error(`API returned ${response.status}`);
+            if (data && (data.error || data.detail)) {
+                throw new Error(data.error || data.detail);
+            }
+            throw new Error(buildNonJsonError(response, text));
         }
-        const data = await response.json();
+        if (nonJson) {
+            throw new Error(buildNonJsonError(response, text));
+        }
 
         if ((!data.voices || Object.keys(data.voices).length === 0) &&
             (!data.free_voices || Object.keys(data.free_voices).length === 0)) {
@@ -860,7 +1118,15 @@ async function deleteVoice(voiceId, voiceName) {
             headers: { 'Content-Type': 'application/json' }
         });
 
-        const data = await response.json();
+        const { data: parsed, nonJson, text } = await safeReadResponse(response);
+        if (!response.ok && !parsed) {
+            // 后端/网关返回了 HTML（如 404/502），抛出可读错误
+            throw new Error(buildNonJsonError(response, text));
+        }
+        if (nonJson) {
+            throw new Error(buildNonJsonError(response, text));
+        }
+        const data = parsed || {};
 
         if (response.ok && data.success) {
             // 删除本地缓存的预览音频
@@ -922,4 +1188,3 @@ async function deleteVoice(voiceId, voiceName) {
         waitForI18n();
     }
 })();
-

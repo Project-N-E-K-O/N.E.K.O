@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import MessageList from './MessageList';
+import { i18n } from './i18n';
 import {
   type ChatMessage,
   type MessageAction,
@@ -21,26 +22,27 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
 const defaultMessages: ChatMessage[] = [];
 
 export default function App({
-  title = 'N.E.K.O Chat',
+  title = i18n('chat.title', 'N.E.K.O Chat'),
   iconSrc = '/static/icons/chat_icon.png',
   messages = defaultMessages,
-  inputPlaceholder = '输入消息...',
-  sendButtonLabel = '发送',
-  chatWindowAriaLabel = 'Neko chat window',
-  messageListAriaLabel = 'Chat messages',
-  composerToolsAriaLabel = 'Composer tools',
+  inputPlaceholder = i18n('chat.textInputPlaceholder', 'Type a message...'),
+  sendButtonLabel = i18n('chat.send', 'Send'),
+  chatWindowAriaLabel = i18n('chat.reactWindowAriaLabel', 'Neko chat window'),
+  messageListAriaLabel = i18n('chat.messageListAriaLabel', 'Chat messages'),
+  composerToolsAriaLabel = i18n('chat.composerToolsAriaLabel', 'Composer tools'),
+  composerHidden = false,
   composerAttachments = [],
-  composerAttachmentsAriaLabel = 'Pending attachments',
-  importImageButtonLabel = '导入图片',
-  screenshotButtonLabel = '截图',
+  composerAttachmentsAriaLabel = i18n('chat.pendingImagesAriaLabel', 'Pending attachments'),
+  importImageButtonLabel = i18n('chat.importImage', 'Import Image'),
+  screenshotButtonLabel = i18n('chat.screenshot', 'Screenshot'),
   importImageButtonAriaLabel,
   screenshotButtonAriaLabel,
-  removeAttachmentButtonAriaLabel = '移除图片',
-  failedStatusLabel = '发送失败',
-  jukeboxButtonLabel = '点歌台',
-  jukeboxButtonAriaLabel = '点歌台',
+  removeAttachmentButtonAriaLabel = i18n('chat.removePendingImage', 'Remove image'),
+  failedStatusLabel = i18n('chat.messageFailed', 'Failed'),
+  jukeboxButtonLabel = i18n('chat.jukeboxLabel', 'Jukebox'),
+  jukeboxButtonAriaLabel = i18n('chat.jukebox', 'Jukebox'),
   translateEnabled = false,
-  translateButtonLabel = '翻译',
+  translateButtonLabel = i18n('subtitle.enable', 'Subtitle Translation'),
   translateButtonAriaLabel,
   onMessageAction,
   onComposerImportImage,
@@ -51,16 +53,23 @@ export default function App({
   onTranslateToggle,
 }: ChatWindowProps) {
   const [draft, setDraft] = useState('');
+  const submittingRef = useRef(false);
   const canSubmit = draft.trim().length > 0 || composerAttachments.length > 0;
   const resolvedImportImageAriaLabel = importImageButtonAriaLabel || importImageButtonLabel;
   const resolvedScreenshotAriaLabel = screenshotButtonAriaLabel || screenshotButtonLabel;
   const resolvedTranslateAriaLabel = translateButtonAriaLabel || translateButtonLabel;
 
   function submitDraft() {
+    if (submittingRef.current) return;
     const text = draft.trim();
     if (!text && composerAttachments.length === 0) return;
-    onComposerSubmit?.({ text });
-    setDraft('');
+    submittingRef.current = true;
+    try {
+      onComposerSubmit?.({ text });
+      setDraft('');
+    } finally {
+      requestAnimationFrame(() => { submittingRef.current = false; });
+    }
   }
 
   return (
@@ -77,17 +86,6 @@ export default function App({
         </header>
 
         <section className="chat-body">
-          <button
-            id="reactJukeboxButton"
-            className="topbar-action-btn jukebox-floating"
-            type="button"
-            aria-label={jukeboxButtonAriaLabel}
-            title={jukeboxButtonLabel}
-            onClick={() => onJukeboxClick?.()}
-          >
-            <img className="topbar-action-icon-img" src="/static/icons/音符0.png" alt="" aria-hidden="true" />
-            <span className="topbar-action-label">{jukeboxButtonLabel}</span>
-          </button>
           <MessageList
             messages={messages}
             ariaLabel={messageListAriaLabel}
@@ -96,7 +94,7 @@ export default function App({
           />
         </section>
 
-        <footer className="composer-panel">
+        <footer className="composer-panel" style={composerHidden ? { display: 'none' } : undefined}>
           <div id="music-player-mount" />
           {composerAttachments.length > 0 ? (
             <div className="composer-attachments" aria-label={composerAttachmentsAriaLabel}>
@@ -172,7 +170,16 @@ export default function App({
                   >
                     <img src="/static/icons/translate_icon.png" alt="" aria-hidden="true" />
                   </button>
-                  {/* TODO: 表情按钮，下个版本启用 */}
+                  <span className="composer-tool-divider" aria-hidden="true">|</span>
+                  <button
+                    className="composer-tool-btn"
+                    type="button"
+                    aria-label={jukeboxButtonAriaLabel}
+                    title={jukeboxButtonLabel}
+                    onClick={() => onJukeboxClick?.()}
+                  >
+                    <img src="/static/icons/jukebox_icon.png" alt="" aria-hidden="true" />
+                  </button>
                 </div>
                 <button className="send-button-circle" type="submit" aria-label={sendButtonLabel} disabled={!canSubmit}>
                   <img src="/static/icons/send_new_icon.png" alt="" aria-hidden="true" />

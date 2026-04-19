@@ -483,12 +483,44 @@ class OmniOfflineClient:
                             
                 except (APIConnectionError, InternalServerError, RateLimitError) as e:
                     error_type = type(e).__name__
+                    error_str_lower = str(e).lower()
                     is_internal_error = isinstance(e, InternalServerError)
                     logger.info(f"ℹ️ 捕获到 {error_type} 错误")
+
+                    # 欠费/API Key 错误立即上报并终止；配额错误上报但继续重试
+                    if '欠费' in error_str_lower or 'standing' in error_str_lower:
+                        logger.error(f"OmniOfflineClient: 检测到欠费错误，直接上报: {e}")
+                        if self.on_status_message:
+                            await self.on_status_message(json.dumps({"code": "API_ARREARS"}))
+                            status_reported = True
+                        break
+                    elif ('401' in error_str_lower or 'unauthorized' in error_str_lower
+                            or 'authentication' in error_str_lower
+                            or ('invalid' in error_str_lower and 'key' in error_str_lower)):
+                        logger.error(f"OmniOfflineClient: 检测到 API Key 错误，直接上报: {e}")
+                        if self.on_status_message:
+                            await self.on_status_message(json.dumps({"code": "API_KEY_REJECTED"}))
+                            status_reported = True
+                        break
+                    elif 'quota' in error_str_lower or 'time limit' in error_str_lower:
+                        logger.warning(f"OmniOfflineClient: 检测到配额错误，上报前端: {e}")
+                        if self.on_status_message:
+                            await self.on_status_message(json.dumps({"code": "API_QUOTA_TIME"}))
+
                     if attempt < max_retries - 1:
                         wait_time = retry_delays[attempt]
                         logger.warning(f"OmniOfflineClient: LLM调用失败 (尝试 {attempt + 1}/{max_retries})，{wait_time}秒后重试: {e}")
-                        # 前3次重试不通知前端，仅在最终失败时发送
+                        # 如果 attempt 已经向前端吐过 chunk，通知前端清除废气泡，
+                        # 否则 retry 的新流会接在旧气泡后面，产生两段不同内容拼接。
+                        if assistant_message and self.on_response_discarded:
+                            await self._notify_response_discarded(
+                                f"api_error:{error_type}",
+                                attempt + 1,
+                                max_retries,
+                                will_retry=True,
+                                message=None,
+                            )
+                        assistant_message = ""
                         await asyncio.sleep(wait_time)
                         continue
                     else:
@@ -730,8 +762,7 @@ class OmniOfflineClient:
                         await self.on_text_delta(flush_text, is_first_chunk)
                     is_first_chunk = False
         except Exception as e:
-            error_msg = f"OmniOfflineClient.prompt_ephemeral error: {e}"
-            logger.error(error_msg)
+            logger.error("OmniOfflineClient.prompt_ephemeral error: %s", e, exc_info=True)
             if self.on_status_message:
                 await self.on_status_message(json.dumps({"code": "PROACTIVE_GEN_FAILED", "details": {"error_type": type(e).__name__, "error": str(e)}}))
             assistant_message = ""

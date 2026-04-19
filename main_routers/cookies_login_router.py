@@ -6,6 +6,7 @@ Handles authentication-related endpoints with strict validation and
 unified logic for credential management.
 """
 
+import asyncio
 import re
 import io
 import base64
@@ -140,7 +141,7 @@ async def save_cookie(data: CookieSubmit):
         
         # 3. 存储
         encrypt = data.encrypt if data.encrypt is not None else True
-        success = save_cookies_to_file(data.platform, cookies, encrypt=encrypt)
+        success = await asyncio.to_thread(save_cookies_to_file, data.platform, cookies, encrypt=encrypt)
         
         if success:
             return {
@@ -162,13 +163,16 @@ async def get_all_cookies_status():
     """返回每个支持平台的 Cookie 存在状态（前端个人动态功能使用）"""
     try:
         platforms = login_manager.get_supported_platforms()
-        result = {}
-        for platform_key in platforms:
-            cookies = load_cookies_from_file(platform_key)
-            result[platform_key] = {
+        loaded = await asyncio.gather(
+            *(asyncio.to_thread(load_cookies_from_file, p) for p in platforms)
+        )
+        result = {
+            platform_key: {
                 "has_cookies": bool(cookies),
                 "cookies_count": len(cookies) if cookies else 0,
             }
+            for platform_key, cookies in zip(platforms, loaded)
+        }
         return {"success": True, "data": result}
     except Exception as e:
         logger.error(f"获取所有 cookie 状态失败: {type(e).__name__}")
@@ -180,7 +184,7 @@ async def get_platform_cookies(platform: str):
     if platform not in supported:
         raise HTTPException(status_code=400, detail="平台无效")
             
-    cookies = load_cookies_from_file(platform)
+    cookies = await asyncio.to_thread(load_cookies_from_file, platform)
     if not cookies:
         return {"success": True, "data": {"platform": platform, "has_cookies": False}}
             
@@ -424,7 +428,7 @@ async def api_qr_login_poll(
             if cookies and cookie_fields:
                 filtered_cookies = {k: v for k, v in cookies.items() if k in cookie_fields}
                 if filtered_cookies:
-                    save_ok = save_cookies_to_file(platform, filtered_cookies)
+                    save_ok = await asyncio.to_thread(save_cookies_to_file, platform, filtered_cookies)
                     if save_ok:
                         logger.info(f"✅ {platform} QR 登录凭证已自动持久化")
                     else:

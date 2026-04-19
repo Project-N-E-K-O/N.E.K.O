@@ -23,6 +23,11 @@ AvatarButtonMixin.apply(MMDManager.prototype, 'mmd', {
 MMDManager.prototype.setupFloatingButtons = function() {
     if (window.location.pathname.includes('model_manager')) return;
 
+    // 防御性检查：当前模型类型不是 MMD 时不创建按钮（防止过时的异步回调）
+    var cfgType = (window.lanlan_config && window.lanlan_config.model_type || '').toLowerCase();
+    var cfgSub = (window.lanlan_config && window.lanlan_config.live3d_sub_type || '').toLowerCase();
+    if (!(cfgType === 'live3d' && cfgSub === 'mmd')) return;  // 仅 live3d + mmd 子类型时才创建 MMD 按钮
+
     // 基础框架初始化
     const buttonsContainer = this.setupFloatingButtonsBase();
 
@@ -150,20 +155,23 @@ MMDManager.prototype.setupFloatingButtons = function() {
         }
 
         // 处理弹窗
+        let triggerBtn = null;
+        let triggerImg = null;
         if (config.hasPopup && config.separatePopupTrigger) {
             if (window.isMobileWidth && window.isMobileWidth() && config.id === 'mic') {
                 buttonsContainer.appendChild(btnWrapper);
+                this._floatingButtons[config.id] = { button: btn, imgOff, imgOn, triggerButton: null, triggerImg: null };
                 return;
             }
 
             const popup = this.createPopup(config.id);
-            const triggerBtn = document.createElement('button');
+            triggerBtn = document.createElement('button');
             triggerBtn.type = 'button';
             triggerBtn.className = 'mmd-trigger-btn';
             triggerBtn.setAttribute('aria-label', 'Open popup');
 
             const iconVersion = window.APP_VERSION ? `?v=${window.APP_VERSION}` : '?v=1.0.0';
-            const triggerImg = document.createElement('img');
+            triggerImg = document.createElement('img');
             triggerImg.src = '/static/icons/play_trigger_icon.png' + iconVersion;
             triggerImg.alt = '';
             triggerImg.className = `mmd-trigger-icon-${config.id}`;
@@ -186,16 +194,46 @@ MMDManager.prototype.setupFloatingButtons = function() {
             const stopTriggerEvent = (e) => { e.stopPropagation(); };
             ['pointerdown', 'mousedown', 'touchstart'].forEach(evt => triggerBtn.addEventListener(evt, stopTriggerEvent));
 
+            const isPopupVisible = () => popup.style.display === 'flex' && popup.style.opacity === '1';
+            const repositionPopup = () => {
+                if (!isPopupVisible()) return;
+                const popupUi = window.AvatarPopupUI || null;
+                if (!popupUi || typeof popupUi.positionPopup !== 'function') return;
+                void popup.offsetHeight;
+                const pos = popupUi.positionPopup(popup, {
+                    buttonId: config.id,
+                    buttonPrefix: 'mmd-btn-',
+                    triggerPrefix: 'mmd-trigger-icon-',
+                    rightMargin: 20,
+                    bottomMargin: 60,
+                    topMargin: 8,
+                    gap: 8,
+                    sidePanelWidth: (config.id === 'settings' || config.id === 'agent') ? 320 : 0
+                });
+                popup.dataset.opensLeft = String(!!(pos && pos.opensLeft));
+            };
+
             triggerBtn.addEventListener('click', async (e) => {
                 e.stopPropagation();
-                const isPopupVisible = popup.style.display === 'flex' && popup.style.opacity === '1';
-                if (config.id === 'mic' && !isPopupVisible) {
-                    if (typeof window.renderFloatingMicList === 'function') await window.renderFloatingMicList(popup);
+                if (isPopupVisible()) {
+                    this.showPopup(config.id, popup);
+                    return;
                 }
-                if (config.id === 'screen' && !isPopupVisible) {
-                    await this.renderScreenSourceList(popup);
-                }
+
                 this.showPopup(config.id, popup);
+                await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                if (!isPopupVisible()) return;
+
+                if (config.id === 'mic') {
+                    if (typeof window.renderFloatingMicList === 'function') {
+                        await window.renderFloatingMicList(popup);
+                        repositionPopup();
+                    }
+                }
+                if (config.id === 'screen') {
+                    await this.renderScreenSourceList(popup);
+                    repositionPopup();
+                }
             });
 
             const triggerWrapper = document.createElement('div');
@@ -242,7 +280,13 @@ MMDManager.prototype.setupFloatingButtons = function() {
         }
 
         buttonsContainer.appendChild(btnWrapper);
-        this._floatingButtons[config.id] = { button: btn, imgOff, imgOn };
+        this._floatingButtons[config.id] = {
+            button: btn,
+            imgOff,
+            imgOn,
+            triggerButton: (config.hasPopup && config.separatePopupTrigger && !(window.isMobileWidth && window.isMobileWidth())) ? triggerBtn : null,
+            triggerImg: (config.hasPopup && config.separatePopupTrigger && !(window.isMobileWidth && window.isMobileWidth())) ? triggerImg : null
+        };
     });
 
     // 处理"请她离开"事件
@@ -657,7 +701,8 @@ MMDManager.prototype._startUIUpdateLoop = function() {
                         ? popupUi.hasVisibleOverlay('mmd')
                         : Array.from(document.querySelectorAll('[id^="mmd-popup-"], [data-neko-sidepanel-owner^="mmd-popup-"]'))
                             .some(isFallbackOverlayVisible);
-                    const shouldShowButtons = !isLocked && (this._mmdUiNearModel || hoveringButtons || hasOpenOverlay);
+                    const inTutorial = buttonsContainer.dataset.inTutorial === 'true' || window.isInTutorial === true;
+                    const shouldShowButtons = inTutorial || (!isLocked && (this._mmdUiNearModel || hoveringButtons || hasOpenOverlay));
                     buttonsContainer.style.display = shouldShowButtons ? 'flex' : 'none';
                 }
                 buttonsContainer.style.transform = `scale(${scale})`;

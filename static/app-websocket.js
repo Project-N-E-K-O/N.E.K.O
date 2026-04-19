@@ -16,6 +16,9 @@
     const mod = {};
     const S = window.appState;
     const C = window.appConst;
+    const USER_ACTIVITY_CANCEL_GRACE_MS = 700;
+    let _pendingUserActivityCancelTimer = 0;
+    let _pendingUserActivityCancelTurnId = null;
 
     // ---- DOM element shortcuts (resolved lazily / once) ----
     function $id(id) { return document.getElementById(id); }
@@ -79,6 +82,54 @@
         S.assistantTurnAwaitingBubble = false;
     }
 
+    function clearPendingUserActivityCancel() {
+        if (_pendingUserActivityCancelTimer) {
+            clearTimeout(_pendingUserActivityCancelTimer);
+            _pendingUserActivityCancelTimer = 0;
+        }
+        _pendingUserActivityCancelTurnId = null;
+    }
+
+    function hasBufferedAssistantAudioForTurn(turnId) {
+        var normalizedTurnId = normalizeAssistantTurnId(turnId);
+        if (!normalizedTurnId) {
+            return false;
+        }
+
+        if (S.scheduledSources.some(function (source) {
+            return normalizeAssistantTurnId(source && source._nekoAssistantTurnId) === normalizedTurnId;
+        })) {
+            return true;
+        }
+
+        if (S.audioBufferQueue.some(function (item) {
+            return normalizeAssistantTurnId(item && item.turnId) === normalizedTurnId;
+        })) {
+            return true;
+        }
+
+        return S.incomingAudioBlobQueue.some(function (item) {
+            return item &&
+                !item.shouldSkip &&
+                item.epoch === S.incomingAudioEpoch &&
+                normalizeAssistantTurnId(item.turnId) === normalizedTurnId;
+        });
+    }
+
+    function hasPendingAssistantAudioHeaderForTurn(turnId) {
+        var normalizedTurnId = normalizeAssistantTurnId(turnId);
+        if (!normalizedTurnId) {
+            return false;
+        }
+
+        return S.pendingAudioChunkMetaQueue.some(function (item) {
+            return item &&
+                !item.shouldSkip &&
+                item.epoch === S.incomingAudioEpoch &&
+                normalizeAssistantTurnId(item.turnId) === normalizedTurnId;
+        });
+    }
+
     function resolveAssistantLifecycleTurnId(turnId) {
         return normalizeAssistantTurnId(
             turnId ||
@@ -108,6 +159,7 @@
         S.assistantTurnId = allocateAssistantTurnId(
             serverTurnId === undefined ? S.assistantPendingTurnServerId : serverTurnId
         );
+        S.assistantTurnStartedAt = Date.now();
         clearPendingAssistantTurnStart();
         emitAssistantLifecycleEvent('neko-assistant-turn-start', {
             turnId: S.assistantTurnId,
@@ -140,7 +192,84 @@
         }
     }
 
+    function applyUserActivityCancel(interruptedSpeechId, source) {
+        clearPendingUserActivityCancel();
+        emitAssistantSpeechCancel(source || 'user_activity');
+        S.assistantTurnId = null;
+        clearPendingAssistantTurnStart();
+        S.interruptedSpeechId = interruptedSpeechId || null;
+        S.pendingDecoderReset = true;
+        S.skipNextAudioBlob = false;
+        S.incomingAudioEpoch += 1;
+        S.incomingAudioBlobQueue = [];
+        S.pendingAudioChunkMetaQueue = [];
+
+        if (typeof window.clearAudioQueueWithoutDecoderReset === 'function') {
+            window.clearAudioQueueWithoutDecoderReset();
+        }
+    }
+
+    function shouldDelayUserActivityCancel(turnId) {
+        var normalizedTurnId = normalizeAssistantTurnId(turnId);
+        if (!normalizedTurnId) {
+            return false;
+        }
+
+        if (normalizeAssistantTurnId(S.assistantSpeechActiveTurnId) === normalizedTurnId) {
+            return false;
+        }
+
+        if (hasBufferedAssistantAudioForTurn(normalizedTurnId)) {
+            return false;
+        }
+
+        if (hasPendingAssistantAudioHeaderForTurn(normalizedTurnId)) {
+            return true;
+        }
+
+        return normalizeAssistantTurnId(S.assistantTurnCompletedId) === normalizedTurnId;
+    }
+
+    function scheduleUserActivityCancel(turnId, interruptedSpeechId) {
+        clearPendingUserActivityCancel();
+
+        var normalizedTurnId = normalizeAssistantTurnId(turnId);
+        if (!normalizedTurnId) {
+            applyUserActivityCancel(interruptedSpeechId, 'user_activity');
+            return;
+        }
+
+        _pendingUserActivityCancelTurnId = normalizedTurnId;
+        logAssistantLifecycle('scheduleUserActivityCancel:scheduled', {
+            turnId: normalizedTurnId,
+            delayMs: USER_ACTIVITY_CANCEL_GRACE_MS
+        });
+        _pendingUserActivityCancelTimer = window.setTimeout(function () {
+            var pendingTurnId = _pendingUserActivityCancelTurnId;
+            _pendingUserActivityCancelTimer = 0;
+            _pendingUserActivityCancelTurnId = null;
+
+            if (!pendingTurnId || pendingTurnId !== normalizedTurnId) {
+                logAssistantLifecycle('scheduleUserActivityCancel:skip_turn_mismatch', {
+                    turnId: normalizedTurnId
+                });
+                return;
+            }
+
+            if (normalizeAssistantTurnId(S.assistantSpeechActiveTurnId) === pendingTurnId ||
+                hasBufferedAssistantAudioForTurn(pendingTurnId)) {
+                logAssistantLifecycle('scheduleUserActivityCancel:skip_audio_resumed', {
+                    turnId: pendingTurnId
+                });
+                return;
+            }
+
+            applyUserActivityCancel(interruptedSpeechId, 'user_activity_delayed');
+        }, USER_ACTIVITY_CANCEL_GRACE_MS);
+    }
+
     function clearAssistantLifecycleOnDisconnect(source) {
+        clearPendingUserActivityCancel();
         emitAssistantSpeechCancel(source || 'socket_close');
         S.assistantSpeechActiveTurnId = null;
         S.assistantTurnId = null;
@@ -158,6 +287,10 @@
             source: source || 'socket_close'
         });
     }
+
+    window.addEventListener('neko-assistant-turn-start', clearPendingUserActivityCancel);
+    window.addEventListener('neko-assistant-speech-start', clearPendingUserActivityCancel);
+    window.addEventListener('neko-assistant-speech-cancel', clearPendingUserActivityCancel);
 
     // ========================  Convenience helpers  ========================
 
@@ -213,6 +346,11 @@
 
             if (S.socket && S.socket.readyState === WebSocket.CONNECTING) {
                 attachOpenListener(S.socket);
+            } else if (S.isSwitchingCatgirl) {
+                // 切换期间 handleCatgirlSwitch 独家负责新建 socket（close → sleep → connect）。
+                // 如果这里也发起 connectWebSocket，会和 handleCatgirlSwitch 的 connect 双重重连：
+                // 前一个新 socket 被后一个覆盖变成孤儿，polling 被迫重绑，5s 超时即报
+                // "WebSocket not connected"。改为仅靠下面的 polling 等新 socket 就位。
             } else {
                 // socket does not exist or CLOSED/CLOSING -> rebuild
                 if (S.autoReconnectTimeoutId) {
@@ -249,22 +387,41 @@
         var currentLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name)
             ? window.lanlan_config.lanlan_name
             : '';
+        // 进入 connectWebSocket 即意味着"当前已经在主动重连"，排队中的 auto-reconnect 不再需要。
+        // 切换档案时 Chat 窗口曾出现这样的 stale 序列：handleCatgirlSwitch 刚 connect 的新代理被
+        // 旧 WS 生命周期的 CLOSED IPC 误触发 close，onclose 排了一个 3s auto-reconnect；紧接着
+        // READY IPC 让代理变 OPEN 恢复正常，但 3s 到期后这个 stale 定时器又跑一次 connectWebSocket，
+        // 产出一个永远停在 CONNECTING 的僵尸代理，直接复现 "Start failed: WebSocket not connected"。
+        if (S.autoReconnectTimeoutId) {
+            clearTimeout(S.autoReconnectTimeoutId);
+            S.autoReconnectTimeoutId = null;
+        }
         if (!currentLanlanName) {
             console.warn('[WebSocket] lanlan_name is empty, wait for page config and retry');
-            if (S.autoReconnectTimeoutId) {
-                clearTimeout(S.autoReconnectTimeoutId);
-            }
             S.autoReconnectTimeoutId = setTimeout(connectWebSocket, 500);
+            return;
+        }
+
+        var protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+        // 对 lanlan_name 做 percent-encode：WebSocket.url 会把非 ASCII 字符（中文角色名）
+        // 编成 %XX，下面幂等守卫用 S.socket.url === wsUrl 比对，两侧编码口径必须一致，
+        // 否则中文名时守卫永远失败、造不出真正的幂等。
+        var wsUrl = protocol + '://' + window.location.host + '/ws/' + encodeURIComponent(currentLanlanName);
+
+        // 幂等兜底：如果当前 socket 已经 OPEN 且指向同一个 URL，说明有 stale 路径
+        // （比如 Chat 窗口里被误触发 onclose 排队的 auto-reconnect）到了这一步。
+        // 此时再 new WebSocket 等同于主动造一个僵尸 socket：旧的 OPEN 失去引用、
+        // 新的在 CONNECTING 里干等（Chat 代理不会再收 READY）。直接跳过即可。
+        if (S.socket && S.socket.readyState === WebSocket.OPEN && S.socket.url === wsUrl) {
             return;
         }
 
         // 新连接重置模型就绪标志，等待模型重新加载
         S._modelReady = false;
 
-        var protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-        var wsUrl = protocol + '://' + window.location.host + '/ws/' + currentLanlanName;
         console.log(window.t('console.websocketConnecting'), currentLanlanName, window.t('console.websocketUrl'), wsUrl);
         S.socket = new WebSocket(wsUrl);
+        var _thisSocket = S.socket; // 闭包捕获，供 onclose 判断是否已被替换
 
         // ---- onopen ----
         S.socket.onopen = function () {
@@ -346,6 +503,11 @@
 
         // ---- onmessage ----
         S.socket.onmessage = function (event) {
+            if (S.socket !== _thisSocket) {
+                console.log('[WS] stale onmessage skipped (socket already replaced)');
+                return;
+            }
+
             // Binary audio data
             if (event.data instanceof Blob) {
                 if (window.DEBUG_AUDIO) {
@@ -395,6 +557,7 @@
 
                 // -------- response_discarded --------
                 } else if (response.type === 'response_discarded') {
+                    clearPendingUserActivityCancel();
                     window.invalidatePendingMusicSearch();
                     emitAssistantSpeechCancel('response_discarded');
                     S.assistantTurnId = null;
@@ -407,9 +570,22 @@
                     window._realisticGeminiBuffer = '';
                     window._pendingMusicCommand = '';
                     window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
+                    // 重置并发锁，确保正在 sleep 的 processRealisticQueue 循环
+                    // 醒来后通过 version 检查退出，且不会阻塞下一轮启动
+                    window._isProcessingRealisticQueue = false;
 
+                    // 同时清理 host 未就绪期间缓存的待发消息（防止 discard 的消息在 host ready 后被重放）
                     var hadTrackedBubbles = window.currentTurnGeminiBubbles && window.currentTurnGeminiBubbles.length > 0;
                     if (hadTrackedBubbles) {
+                        var _discardIds = [];
+                        window.currentTurnGeminiBubbles.forEach(function (bubble) {
+                            if (bubble && bubble.dataset && bubble.dataset.reactChatMessageId) {
+                                _discardIds.push(bubble.dataset.reactChatMessageId);
+                            }
+                        });
+                        if (_discardIds.length > 0 && typeof window._clearPendingHostMessagesByIds === 'function') {
+                            window._clearPendingHostMessagesByIds(_discardIds);
+                        }
                         var _discardHost = window.reactChatWindowHost;
                         window.currentTurnGeminiBubbles.forEach(function (bubble) {
                             // Remove paired React mirror message
@@ -527,24 +703,28 @@
 
                 // -------- user_activity --------
                 } else if (response.type === 'user_activity') {
-                    emitAssistantSpeechCancel('user_activity');
-                    S.assistantTurnId = null;
-                    clearPendingAssistantTurnStart();
-                    S.interruptedSpeechId = response.interrupted_speech_id || null;
-                    S.pendingDecoderReset = true;
-                    S.skipNextAudioBlob = false;
-                    S.incomingAudioEpoch += 1;
-                    S.incomingAudioBlobQueue = [];
-                    S.pendingAudioChunkMetaQueue = [];
-
-                    if (typeof window.clearAudioQueueWithoutDecoderReset === 'function') {
-                        window.clearAudioQueueWithoutDecoderReset();
+                    var userActivityTurnId = resolveAssistantLifecycleTurnId();
+                    if (shouldDelayUserActivityCancel(userActivityTurnId)) {
+                        logAssistantLifecycle('user_activity:delay_cancel', {
+                            turnId: userActivityTurnId,
+                            interruptedSpeechId: response.interrupted_speech_id || null
+                        });
+                        scheduleUserActivityCancel(userActivityTurnId, response.interrupted_speech_id || null);
+                    } else {
+                        logAssistantLifecycle('user_activity:immediate_cancel', {
+                            turnId: userActivityTurnId,
+                            interruptedSpeechId: response.interrupted_speech_id || null
+                        });
+                        applyUserActivityCancel(response.interrupted_speech_id || null, 'user_activity');
                     }
 
                 // -------- audio_chunk --------
                 } else if (response.type === 'audio_chunk') {
                     if (window.DEBUG_AUDIO) {
                         console.log(window.t('console.audioChunkHeaderReceived'), response);
+                    }
+                    if (!S.assistantTurnId && S.assistantTurnAwaitingBubble) {
+                        ensureAssistantTurnStarted('audio_chunk_header_fallback');
                     }
                     var speechId = response.speech_id;
                     var shouldSkip = false;
@@ -574,7 +754,8 @@
                         speechId: speechId || S.currentPlayingSpeechId || null,
                         turnId: resolveAssistantLifecycleTurnId(),
                         shouldSkip: shouldSkip,
-                        epoch: S.incomingAudioEpoch
+                        epoch: S.incomingAudioEpoch,
+                        receivedAt: Date.now()
                     });
                     logAssistantLifecycle('ws:audio_chunk_header', {
                         speechId: speechId || S.currentPlayingSpeechId || null,
@@ -582,6 +763,10 @@
                         shouldSkip: shouldSkip,
                         epoch: S.incomingAudioEpoch
                     });
+                    if (window.appAudioPlayback &&
+                        typeof window.appAudioPlayback.schedulePendingAudioMetaStallCheck === 'function') {
+                        window.appAudioPlayback.schedulePendingAudioMetaStallCheck();
+                    }
                     S.skipNextAudioBlob = false;
 
                 // -------- cozy_audio --------
@@ -654,7 +839,12 @@
                     }
 
                     var translatedMessage = window.translateStatusMessage ? window.translateStatusMessage(response.message) : response.message;
-                    if (typeof window.showStatusToast === 'function') window.showStatusToast(translatedMessage, 4000, { important: isCriticalError });
+
+                    // TTS 水印提示需要更长显示时间和更高优先级，避免被后续消息覆盖
+                    var stickyInfoCodes = ['TTS_WATERMARK_DETECTED'];
+                    var isStickyInfo = statusCode && stickyInfoCodes.indexOf(statusCode) !== -1;
+
+                    if (typeof window.showStatusToast === 'function') window.showStatusToast(translatedMessage, isStickyInfo ? 8000 : 4000, { important: isCriticalError, priority: isStickyInfo ? 50 : undefined });
 
                     if (statusCode === 'CHARACTER_DISCONNECTED') {
                         if (S.isRecording === false && !S.isTextSessionActive) {
@@ -774,6 +964,7 @@
 
                                     var tia = document.getElementById('text-input-area');
                                     if (tia) tia.classList.remove('hidden');
+                                    if (typeof window.syncVoiceChatComposerHidden === 'function') window.syncVoiceChatComposerHidden(false);
                                 }
                             }, 7500);
                         }
@@ -991,6 +1182,9 @@
                     } catch (e3) {
                         console.warn('[WS] turn end agent_callback flush failed:', e3);
                     }
+                    if (!S.assistantTurnId && S.assistantTurnAwaitingBubble) {
+                        ensureAssistantTurnStarted('turn_end_agent_callback_fallback');
+                    }
                     var agentCallbackTurnId = resolveAssistantLifecycleTurnId();
                     if (agentCallbackTurnId) {
                         logAssistantLifecycle('ws:turn_end_agent_callback:emit', {
@@ -1004,6 +1198,39 @@
                         logAssistantLifecycle('ws:turn_end_agent_callback:clear_pending');
                     }
                     clearPendingAssistantTurnStart();
+
+                    // 主动消息 / 热切换回调也产生了 AI 文本（来自 send_lanlan_response），
+                    // 同样需要为字幕翻译。情感分析 / proactive backoff 维持原行为不动。
+                    (function () {
+                        var bufferedFullText = typeof window._geminiTurnFullText === 'string'
+                            ? window._geminiTurnFullText
+                            : '';
+                        var fallbackFromBubble = (window.currentGeminiMessage &&
+                            window.currentGeminiMessage.nodeType === Node.ELEMENT_NODE &&
+                            window.currentGeminiMessage.isConnected &&
+                            typeof window.currentGeminiMessage.textContent === 'string')
+                            ? window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /, '')
+                            : '';
+                        var fullText = (bufferedFullText && bufferedFullText.trim()) ? bufferedFullText : fallbackFromBubble;
+                        fullText = fullText.replace(/\[play_music:[^\]]*(\]|$)/g, '').trim();
+                        if (!fullText) return;
+                        // 结构化 turn（markdown/code/table/latex）→ 字幕收尾为 [markdown] 占位，不翻译
+                        if (window._turnIsStructured) {
+                            if (typeof window.finalizeSubtitleAsStructured === 'function') {
+                                try { window.finalizeSubtitleAsStructured(); } catch (_) {}
+                            }
+                            return;
+                        }
+                        (async function () {
+                            try {
+                                if (typeof window.translateAndShowSubtitle === 'function') {
+                                    await window.translateAndShowSubtitle(fullText);
+                                }
+                            } catch (transError) {
+                                console.error('[Subtitle] agent_callback translate failed:', transError);
+                            }
+                        })();
+                    })();
 
                 // -------- system turn end --------
                 } else if (response.type === 'system' && response.data === 'turn end') {
@@ -1035,6 +1262,9 @@
                         }
                     } catch (e3) {
                         console.warn(window.t('console.turnEndFlushFailed'), e3);
+                    }
+                    if (!S.assistantTurnId && S.assistantTurnAwaitingBubble) {
+                        ensureAssistantTurnStarted('turn_end_fallback');
                     }
                     var assistantTurnId = resolveAssistantLifecycleTurnId();
                     if (assistantTurnId) {
@@ -1106,17 +1336,19 @@
                             }
                         }, 100);
 
-                        // Frontend translation
+                        // Frontend subtitle finalization: subtitle.js 内部根据开关决定是否
+                        // 真正发请求；不需要的语言会保留流式累积的原文，不会清空字幕。
+                        // 结构化 turn 收尾为 [markdown] 占位，跳过翻译链路。
+                        if (window._turnIsStructured) {
+                            if (typeof window.finalizeSubtitleAsStructured === 'function') {
+                                try { window.finalizeSubtitleAsStructured(); } catch (_) {}
+                            }
+                            return;
+                        }
                         (async function () {
                             try {
-                                if (typeof getUserLanguage === 'function') {
-                                    var _userLanguage = await getUserLanguage();
-                                    // Only translate subtitle when subtitle toggle is on
-                                    if (typeof subtitleEnabled !== 'undefined' && subtitleEnabled) {
-                                        if (typeof translateAndShowSubtitle === 'function') {
-                                            await translateAndShowSubtitle(fullText);
-                                        }
-                                    }
+                                if (typeof window.translateAndShowSubtitle === 'function') {
+                                    await window.translateAndShowSubtitle(fullText);
                                 }
                             } catch (transError) {
                                 console.error(window.t('console.translationProcessFailed'), {
@@ -1131,13 +1363,14 @@
                         })();
                     })();
 
-                    // Reset proactive chat backoff after AI turn completes
+                    // AI turn_end 后只 reschedule，不 reset backoff。
+                    // 理由：turn_end 无法区分"用户发话引发的 turn"和"proactive 自己引发的 turn"，
+                    // 如果一律 reset 会让 proactive 自己的 turn 把退避清零 → 指数退避形同虚设。
+                    // 用户真的说话时会由 sendTextPayload / 录音开关等路径单独 reset，
+                    // 不依赖 turn_end。语音模式本来就不退避，只是"从 turn end 开始算下一个间隔"。
                     var hasChatMode = (typeof window.hasAnyChatModeEnabled === 'function') ? window.hasAnyChatModeEnabled() : false;
                     if (S.proactiveChatEnabled && hasChatMode) {
-                        if (!S.isRecording) {
-                            if (typeof window.resetProactiveChatBackoff === 'function') window.resetProactiveChatBackoff();
-                        } else if (typeof window.scheduleProactiveChat === 'function') {
-                            // Voice mode also needs a turn-end fallback rearm in case TTS/playback completion never fires.
+                        if (typeof window.scheduleProactiveChat === 'function') {
                             window.scheduleProactiveChat();
                         }
                     }
@@ -1204,6 +1437,7 @@
                         S.isSwitchingMode = false;
                         var _tia = document.getElementById('text-input-area');
                         if (_tia) _tia.classList.remove('hidden');
+                        if (typeof window.syncVoiceChatComposerHidden === 'function') window.syncVoiceChatComposerHidden(false);
                     }
                     S.sessionStartedResolver = null;
                     S.sessionStartedRejecter = null;
@@ -1250,6 +1484,7 @@
 
                     var _tia2 = document.getElementById('text-input-area');
                     if (_tia2) _tia2.classList.remove('hidden');
+                    if (typeof window.syncVoiceChatComposerHidden === 'function') window.syncVoiceChatComposerHidden(false);
 
                     if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(false);
                     if (typeof window.syncFloatingScreenButtonState === 'function') window.syncFloatingScreenButtonState(false);
@@ -1309,6 +1544,15 @@
                                         return;
                                     }
                                 }
+                                if (result.netease_cookie_invalid && typeof window.showStatusToast === 'function') {
+                                    var now2 = Date.now();
+                                    if (!window._cookieWarnLastTime || now2 - window._cookieWarnLastTime > 300000) {
+                                        var musiccookieWarnMsg2 = (window.t && window.t('music.cookieExpired')) || '音乐Cookie已失效';
+                                        window.showStatusToast(musiccookieWarnMsg2, 5000);
+                                        window._cookieWarnLastTime = now2;
+                                    }
+                                }
+
                                 if (result.success) {
                                     if (result.data && result.data.length > 0) {
                                         var track = result.data[0];
@@ -1374,6 +1618,15 @@
 
         // ---- onclose ----
         S.socket.onclose = function () {
+            // Stale onclose guard: background-tab throttling (or async scheduling) can
+            // delay an old socket's onclose until after a replacement connectWebSocket()
+            // has already run onopen and started a new session. In that case the mutations
+            // below (heartbeat clear, recording/session reset, button state, audio queue)
+            // would corrupt the live new session. Skip everything when this socket is stale.
+            if (S.socket !== _thisSocket) {
+                console.log('[WS] stale onclose skipped (socket already replaced)');
+                return;
+            }
             console.log(window.t('console.websocketClosed'));
             clearAssistantLifecycleOnDisconnect('socket_close');
 
@@ -1459,12 +1712,15 @@
 
             var _tia3 = document.getElementById('text-input-area');
             if (_tia3) _tia3.classList.remove('hidden');
+            if (typeof window.syncVoiceChatComposerHidden === 'function') window.syncVoiceChatComposerHidden(false);
 
             if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(false);
             if (typeof window.syncFloatingScreenButtonState === 'function') window.syncFloatingScreenButtonState(false);
 
-            // Auto-reconnect (unless switching catgirl)
-            if (!S.isSwitchingCatgirl) {
+            // Auto-reconnect: skip if switching catgirl OR this socket was already
+            // replaced by a newer connectWebSocket() call (prevents reconnect storm
+            // when the old socket's onclose fires after the switch completes).
+            if (!S.isSwitchingCatgirl && S.socket === _thisSocket) {
                 S.autoReconnectTimeoutId = setTimeout(connectWebSocket, 3000);
             }
         };

@@ -1,5 +1,6 @@
 import clsx from 'clsx';
 import SmartTextBlock from './SmartTextBlock';
+import { i18n } from './i18n';
 import {
   type ChatMessage,
   type MessageAction,
@@ -46,14 +47,16 @@ function getAvatarClassName(message: ChatMessage) {
 function MessageBlockView({
   block,
   message,
+  isStreaming,
   onAction,
 }: {
   block: MessageBlock;
   message: ChatMessage;
+  isStreaming?: boolean;
   onAction?: (message: ChatMessage, action: MessageAction) => void;
 }) {
   if (block.type === 'text') {
-    return <SmartTextBlock text={block.text} />;
+    return <SmartTextBlock text={block.text} isStreaming={isStreaming} />;
   }
 
   if (block.type === 'image') {
@@ -121,7 +124,7 @@ function MessageBlockView({
 export default function MessageBubble({
   message,
   isGroupedWithPrevious = false,
-  failedStatusLabel = '发送失败',
+  failedStatusLabel = i18n('chat.messageFailed', 'Failed'),
   onAction,
 }: MessageBubbleProps) {
   const bubbleClassName = getBubbleClassName(message);
@@ -153,6 +156,8 @@ export default function MessageBubble({
       </article>
     );
   }
+
+  const streaming = message.status === 'streaming';
 
   return (
     <article
@@ -186,6 +191,7 @@ export default function MessageBubble({
               key={`${message.id}-${block.type}-${index}`}
               block={block}
               message={message}
+              isStreaming={streaming}
               onAction={onAction}
             />
           ))}

@@ -326,7 +326,8 @@ class NeteaseCrawler(BaseMusicCrawler):
         self._has_cookies = False
         self._is_vip = False
         self._vip_checked = False
-        self._cookie_file_mtime = 0.0  # 记录 Cookie 文件最后修改时间
+        self._cookie_file_mtime = 0.0   # 记录 Cookie 文件最后修改时间
+        self._cookie_invalid = False    # 音乐凭证有效性
         self._load_cookies()
 
     def _get_cookie_file_mtime(self) -> float:
@@ -367,7 +368,7 @@ class NeteaseCrawler(BaseMusicCrawler):
         if current_mtime != self._cookie_file_mtime:
             logger.info(f"[{self.platform_name}] 检测到凭证文件变动 (mtime: {self._cookie_file_mtime} → {current_mtime})，执行热重载")
             self._load_cookies()
-            # 凭证变了，VIP 身份需要重新探测
+            self._cookie_invalid = False
             self._is_vip = False
             self._vip_checked = False
 
@@ -376,26 +377,39 @@ class NeteaseCrawler(BaseMusicCrawler):
         if self._vip_checked:
             return
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(
-                    'https://music.163.com/api/vip/info',
-                    headers={
-                        'Referer': 'https://music.163.com/',
-                        'Cookie': self.client.headers.get('Cookie', ''),
-                        'User-Agent': self.client.headers.get('User-Agent', '')
-                    }
-                )
-                data = resp.json()
-                # vipType > 0 表示有 VIP 身份
-                self._is_vip = data.get('data', {}).get('vipType', 0) > 0
-                self._vip_checked = True
-                if self._is_vip:
-                    logger.info(f"[{self.platform_name}] 用户为 VIP 会员，已解锁完整曲库搜索")
+            resp = await self.client.get('https://music.163.com/api/nuser/account/get')
+            data = resp.json()
+            code = data.get('code')
+
+            if code != 200:
+                if code in (301, 302):
+                    logger.warning(f"[{self.platform_name}] 凭证失效 (code: {code}, 重定向)")
+                    self._cookie_invalid = True
+                    self._is_vip = False
+                    self._vip_checked = True
                 else:
-                    logger.info(f"[{self.platform_name}] 用户为普通账号，已登录但无 VIP")
+                    logger.warning(f"[{self.platform_name}] 接口异常 (code: {code})，允许重试")
+                return
+
+            profile = data.get('profile') or {}
+            data_field = data.get('data', {}) or {}
+
+            vip_type = profile.get('vipType', 0)
+            alt_vip_type = data_field.get('vipType', 0)
+
+            assoc = data_field.get('associator') or profile.get('associator') or {}
+            is_assoc_vip = assoc.get('isVip', False) or (assoc.get('vipCode', 0) > 0)
+
+            self._is_vip = (vip_type > 0) or (alt_vip_type > 0) or is_assoc_vip
+            self._vip_checked = True
+
+            if self._is_vip:
+                logger.info(f"[{self.platform_name}] VIP 身份探测成功 (VipType:{vip_type}, Assoc:{is_assoc_vip})")
+            else:
+                logger.info(f"[{self.platform_name}] 确认为普通账号 (无有效会员特征)")
+                logger.debug(f"[{self.platform_name}] 响应结构摘要: {list(data.keys())}")
         except Exception as e:
-            # 探测失败时不锁定状态，下次搜索会重试
-            logger.warning(f"[{self.platform_name}] VIP 状态检查失败 (下次搜索将重试): {e}")
+            logger.warning(f"[{self.platform_name}] VIP 状态检查链路异常: {e}")
 
     async def search(self, keyword: str, limit: int = 1) -> List[Dict[str, Any]]:
         self._refresh_user_agent()
@@ -1014,9 +1028,10 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
     all_results = []
     
     # 使用懒加载访问器获取爬虫实例
-    all_crawlers = get_music_crawlers() 
+    all_crawlers = get_music_crawlers()
+    netease_used = False
 
-    if keyword: 
+    if keyword:
         # 场景 A: 用户指定了明确关键词 -> 开启"梯队降级"机制
         kw_lower = keyword.lower()
         # 1. 【强古典词】确保正确路由至 Musopen
@@ -1065,7 +1080,7 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
         primary_tasks = []
         
         # --- 组建第一梯队（最优解竞速） ---
-        
+
         # 1. 古典乐意图判定：强古典词 OR (包含乐器词且非现代风格词)
         is_classical = any(kw in kw_lower for kw in strong_classical) or \
                        (any(kw in kw_lower for kw in instruments) and not any(kw in kw_lower for kw in modern_styles))
@@ -1078,6 +1093,7 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
         elif any(kw in kw_lower for kw in chinese_keywords):
             logger.info(f"[智能调度] 识别到华语检索意图，优先调度网易云: {keyword}")
             primary_tasks.append(all_crawlers['netease'].search(keyword, limit))
+            netease_used = True
 
         # 3. 独立/电子/Lofi 路由
         elif any(kw in kw_lower for kw in indie_keywords):
@@ -1091,6 +1107,7 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
         else:
             if china:
                 primary_tasks.append(all_crawlers['netease'].search(keyword, limit))
+                netease_used = True
             else:
                 # 非中文区默认首选
                 primary_tasks.append(all_crawlers['soundcloud'].search(keyword, limit))
@@ -1175,6 +1192,9 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
         for source, kw in selected_styles:
             if source == 'musopen':
                 tasks.append(all_crawlers['musopen'].search(limit=limit))
+            elif source == 'netease':
+                tasks.append(all_crawlers['netease'].search(kw, limit))
+                netease_used = True
             else:
                 tasks.append(all_crawlers[source].search(kw, limit))
                 
@@ -1184,9 +1204,17 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
                 all_results.extend(res)
 
     # 统一的去重与返回逻辑
+    netease_crawler = all_crawlers.get('netease')
+    netease_cookie_invalid = bool(netease_used and netease_crawler and netease_crawler._cookie_invalid)
+
     if not all_results:
         logger.warning("所有音乐源（含兜底）均未返回任何结果")
-        return {'success': False, 'error': '未能找到任何相关音乐', 'data': []}
+        return {
+            'success': False,
+            'error': '未能找到任何相关音乐',
+            'data': [],
+            'netease_cookie_invalid': netease_cookie_invalid,
+        }
 
     # URL级别去重
     seen_urls = set()
@@ -1202,7 +1230,12 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
     # 去重后可能为空，需要修正返回语义
     if not unique_results:
         logger.warning("去重后无可用音乐")
-        return {'success': False, 'error': '去重后无可用音乐', 'data': []}
+        return {
+            'success': False,
+            'error': '去重后无可用音乐',
+            'data': [],
+            'netease_cookie_invalid': netease_cookie_invalid,
+        }
     
     # 【核心优化】获取搜索结果后立即鉴别最佳匹配，并重排列表顺序
     best_match = identify_best_music_resource(target_song=keyword, search_results=unique_results)
@@ -1229,12 +1262,13 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
     
     # 标记实际返回的歌曲为已播放（写入缓存）
     music_cache.mark_as_played(final_results)
-    
+
     return {
-        'success': True, 
-        'data': final_results, 
+        'success': True,
+        'data': final_results,
         'diversity': diversity_info,
-        'best_match': best_match  # 将匹配状态透传给业务层，用于后续生成动态提示词
+        'best_match': best_match,
+        'netease_cookie_invalid': netease_cookie_invalid,
     }
 
 def expand_style_keyword(keyword: str) -> List[str]:

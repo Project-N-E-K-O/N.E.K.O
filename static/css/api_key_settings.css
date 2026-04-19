@@ -844,6 +844,61 @@ opacity: 0.95 !important;
 }
 
 /* 启用自定义API配置开关样式 */
+/* 禁用TTS开关样式 */
+.disable-tts-toggle {
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+    user-select: none;
+    gap: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-primary, #333);
+}
+
+.disable-tts-toggle input[type="checkbox"] {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    border: 0;
+    opacity: 0;
+}
+
+.disable-tts-slider {
+    position: relative;
+    width: 40px;
+    height: 22px;
+    background: #ccc;
+    border-radius: 11px;
+    transition: background 0.3s ease;
+    flex-shrink: 0;
+}
+
+.disable-tts-slider::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 18px;
+    height: 18px;
+    background: #fff;
+    border-radius: 50%;
+    transition: transform 0.3s ease;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+
+.disable-tts-toggle input[type="checkbox"]:checked + .disable-tts-slider {
+    background: #f44336;
+}
+
+.disable-tts-toggle input[type="checkbox"]:checked + .disable-tts-slider::after {
+    transform: translateX(18px);
+}
+
 .custom-api-toggle-wrapper {
 position: relative;
 margin-bottom: 20px;

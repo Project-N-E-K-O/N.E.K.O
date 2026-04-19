@@ -1,0 +1,38 @@
+[plugin]
+name = "尖塔自动游玩"
+description = "连接本地尖塔 Agent 服务，读取尖塔局面并执行自动游玩控制。"
+version = "0.1.0"
+id = "sts2_autoplay"
+type = "plugin"
+entry = "plugin.plugins.sts2_autoplay:STS2AutoplayPlugin"
+
+[plugin.author]
+name = "ZhaiJiu"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin_runtime]
+enabled = true
+auto_start = false
+
+[plugin.store]
+enabled = true
+
+[sts2]
+base_url = "http://127.0.0.1:8080"
+connect_timeout_seconds = 5
+request_timeout_seconds = 15
+poll_interval_idle_seconds = 3
+poll_interval_active_seconds = 1
+action_interval_seconds = 1.5
+post_action_delay_seconds = 0.5
+autoplay_on_start = false
+mode = "half-program"
+character_strategy = "defect"
+max_consecutive_errors = 3
+push_notifications = true
+event_stream_enabled = false
+llm_frontend_output_enabled = true
+llm_frontend_output_probability = 0.15

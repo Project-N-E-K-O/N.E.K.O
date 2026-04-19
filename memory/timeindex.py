@@ -4,6 +4,7 @@ from config import TIME_ORIGINAL_TABLE_NAME, TIME_COMPRESSED_TABLE_NAME
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
 from datetime import datetime
+import asyncio
 import os
 
 logger = get_module_logger(__name__, "Memory")
@@ -13,9 +14,7 @@ class TimeIndexedMemory:
         self.engines = {}  # 存储 {lanlan_name: engine}
         self.db_paths = {} # 存储 {lanlan_name: db_path}
         self.recent_history_manager = recent_history_manager
-        _, _, _, _, _, _, time_store, _, _ = get_config_manager().get_character_data()
-        for name in time_store:
-            self._ensure_engine_exists(name, time_store[name])
+        # 懒加载：不在构造器里同步初始化每角色 engine，首次访问时按需创建
 
     def _ensure_engine_exists(self, lanlan_name: str, db_path: str | None = None) -> bool:
         """确保指定角色的数据库引擎已初始化喵~"""
@@ -33,18 +32,30 @@ class TimeIndexedMemory:
                     db_path = os.path.join(ensure_character_dir(config_mgr.memory_dir, lanlan_name), 'time_indexed.db')
                     logger.info(f"[TimeIndexedMemory] 角色 '{lanlan_name}' 不在配置中，使用默认路径: {db_path}")
 
-            engine = create_engine(f"sqlite:///{db_path}")
-            connection_string = f"sqlite:///{db_path}"
+            # 确保数据库文件的父目录存在（兼容相对文件名路径）
+            normalized_db_path = os.path.abspath(db_path)
+            db_dir = os.path.dirname(normalized_db_path)
+            os.makedirs(db_dir, exist_ok=True)
+            # Windows 路径使用反斜杠，SQLite URI 需要正斜杠
+            uri_path = normalized_db_path.replace("\\", "/")
+            engine = create_engine(f"sqlite:///{uri_path}")
+            connection_string = f"sqlite:///{uri_path}"
             # 先完成所有初始化/迁移，再注册到 self.engines，
             # 避免失败后引擎被标记为"已初始化"而跳过后续修复
             self._ensure_tables_exist_with(engine, connection_string, lanlan_name)
             self._check_and_migrate_schema(engine, lanlan_name)
-            self.db_paths[lanlan_name] = db_path
+            self.db_paths[lanlan_name] = normalized_db_path
             self.engines[lanlan_name] = engine
             return True
         except Exception:
             logger.exception(f"初始化角色数据库引擎失败: {lanlan_name}")
             return False
+
+    async def _aensure_engine_exists(self, lanlan_name: str, db_path: str | None = None) -> bool:
+        """异步版本：把阻塞的 engine 创建丢到线程池。"""
+        if lanlan_name in self.engines and lanlan_name in self.db_paths:
+            return True
+        return await asyncio.to_thread(self._ensure_engine_exists, lanlan_name, db_path)
 
     def dispose_engine(self, lanlan_name: str):
         """释放指定角色的数据库引擎资源喵~"""
@@ -98,7 +109,7 @@ class TimeIndexedMemory:
             except Exception:
                 logger.exception(f"[TimeIndexedMemory] 迁移 {lanlan_name} 表 {table} 失败")
 
-    async def store_conversation(self, event_id, messages, lanlan_name, timestamp=None):
+    def store_conversation(self, event_id, messages, lanlan_name, timestamp=None):
         # 确保数据库引擎和路径存在
         if not self._ensure_engine_exists(lanlan_name):
             logger.error(f"严重错误：无法为角色 {lanlan_name} 创建任何数据库连接")
@@ -108,10 +119,11 @@ class TimeIndexedMemory:
             timestamp = datetime.now()
 
         db_path = self.db_paths[lanlan_name]
-        connection_string = f"sqlite:///{db_path}"
-        
+        uri_path = db_path.replace("\\", "/")
+        connection_string = f"sqlite:///{uri_path}"
+
         original_table = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
-        
+
         origin_history = SQLChatMessageHistory(
             connection_string=connection_string,
             session_id=event_id,
@@ -127,6 +139,11 @@ class TimeIndexedMemory:
                 {"timestamp": timestamp, "session_id": event_id}
             )
             conn.commit()
+
+    async def astore_conversation(self, event_id, messages, lanlan_name, timestamp=None):
+        await asyncio.to_thread(
+            self.store_conversation, event_id, messages, lanlan_name, timestamp
+        )
 
     def _validate_table_name(self, table_name: str) -> str:
         """验证表名是否合法，防止 SQL 注入喵~"""
@@ -159,12 +176,20 @@ class TimeIndexedMemory:
             logger.warning(f"[TimeIndexedMemory] 查询最后对话时间失败: {e}")
         return None
 
+    async def aget_last_conversation_time(self, lanlan_name: str) -> datetime | None:
+        return await asyncio.to_thread(self.get_last_conversation_time, lanlan_name)
+
     def retrieve_summary_by_timeframe(self, lanlan_name, start_time, end_time):
         """[已废弃] compressed table 不再写入，fact/reflection 已取代。"""
         return []
 
+    async def aretrieve_summary_by_timeframe(self, lanlan_name, start_time, end_time):
+        return []
+
     def retrieve_original_by_timeframe(self, lanlan_name, start_time, end_time):
-        if lanlan_name not in self.engines:
+        # 懒加载：首次访问时（例如重启后立刻读取）需要注册 engine，
+        # 否则 rebuttal loop 会静默跳过，直到 store_conversation 才触发建表
+        if not self._ensure_engine_exists(lanlan_name):
             return []
         table_name = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
         # 查询指定时间范围内的对话
@@ -174,6 +199,11 @@ class TimeIndexedMemory:
                 {"start_time": start_time, "end_time": end_time}
             )
             return result.fetchall()
+
+    async def aretrieve_original_by_timeframe(self, lanlan_name, start_time, end_time):
+        return await asyncio.to_thread(
+            self.retrieve_original_by_timeframe, lanlan_name, start_time, end_time
+        )
 
     # ── FTS5 事实索引 ─────────────────────────────────────────────
 
@@ -192,6 +222,9 @@ class TimeIndexedMemory:
                 conn.commit()
         except Exception as e:
             logger.warning(f"[TimeIndexedMemory] 创建 FTS5 表失败: {e}")
+
+    async def a_ensure_fts_table(self, lanlan_name: str) -> None:
+        await asyncio.to_thread(self._ensure_fts_table, lanlan_name)
 
     def index_fact(self, lanlan_name: str, fact_id: str, content: str) -> None:
         """将事实插入 FTS5 索引。"""
@@ -214,6 +247,9 @@ class TimeIndexedMemory:
                 conn.commit()
         except Exception as e:
             logger.warning(f"[TimeIndexedMemory] 索引事实失败: {e}")
+
+    async def aindex_fact(self, lanlan_name: str, fact_id: str, content: str) -> None:
+        await asyncio.to_thread(self.index_fact, lanlan_name, fact_id, content)
 
     def search_facts(self, lanlan_name: str, query: str, limit: int = 10) -> list[tuple[str, float]]:
         """通过 FTS5 BM25 搜索事实。返回 [(fact_id, bm25_score), ...]。
@@ -241,6 +277,9 @@ class TimeIndexedMemory:
             logger.debug(f"[TimeIndexedMemory] FTS5 搜索失败（可能是查询为空或语法）: {e}")
             return []
 
+    async def asearch_facts(self, lanlan_name: str, query: str, limit: int = 10) -> list[tuple[str, float]]:
+        return await asyncio.to_thread(self.search_facts, lanlan_name, query, limit)
+
     def delete_fact_from_index(self, lanlan_name: str, fact_id: str) -> None:
         """从 FTS5 索引中移除事实。"""
         if not self._ensure_engine_exists(lanlan_name):
@@ -255,3 +294,6 @@ class TimeIndexedMemory:
                 conn.commit()
         except Exception as e:
             logger.warning(f"[TimeIndexedMemory] 删除 FTS5 索引失败: {e}")
+
+    async def adelete_fact_from_index(self, lanlan_name: str, fact_id: str) -> None:
+        await asyncio.to_thread(self.delete_fact_from_index, lanlan_name, fact_id)

@@ -21,7 +21,10 @@ from config import SETTING_PROPOSER_MODEL
 from config.prompts_memory import get_fact_extraction_prompt
 from utils.language_utils import get_global_language
 from utils.config_manager import get_config_manager
-from utils.file_utils import atomic_write_json
+from utils.file_utils import (
+    atomic_write_json,
+    robust_json_loads,
+)
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
 
@@ -29,34 +32,6 @@ if TYPE_CHECKING:
     from memory.timeindex import TimeIndexedMemory
 
 logger = get_module_logger(__name__, "Memory")
-
-
-def _sanitize_json(raw: str) -> str:
-    """尝试修复 LLM 输出中常见的 JSON 格式问题。
-
-    处理：双花括号→单花括号、单引号→双引号、尾部逗号、Python 字面值等。
-    仅在标准 json.loads 失败后调用。
-    """
-    # LLM 模仿 prompt 模板中的 {{ }} 转义 → 还原为正常花括号
-    s = raw.replace("{{", "{").replace("}}", "}")
-    # Python 风格 True/False/None → JSON
-    s = s.replace("True", "true").replace("False", "false").replace("None", "null")
-    # 尾部逗号：,] 或 ,}
-    s = re.sub(r',\s*([}\]])', r'\1', s)
-    # 单引号→双引号（简单替换，适用于大多数 LLM 输出）
-    # 只在整个字符串不含双引号 key 时才做替换，避免破坏已正确的 JSON
-    if '"' not in s:
-        s = s.replace("'", '"')
-    else:
-        # 混合引号情况：逐步替换单引号 key/value
-        # 1) key: 'xxx': → "xxx":
-        s = re.sub(r"'([^']*?)'\s*:", r'"\1":', s)
-        # 2) value: : 'xxx' → : "xxx"
-        s = re.sub(r":\s*'([^']*?)'", r': "\1"', s)
-        # 3) 数组内单引号元素: ['a', 'b'] → ["a", "b"]
-        s = re.sub(r"'\s*([,\]\}])", r'"\1', s)
-        s = re.sub(r"([,\[\{])\s*'", r'\1"', s)
-    return s
 
 
 _ARCHIVE_AGE_DAYS = 7          # absorbed 且创建超过此天数的 facts 被归档
@@ -113,6 +88,11 @@ class FactStore:
             self._facts[name] = []
             return self._facts[name]
 
+    async def aload_facts(self, name: str) -> list[dict]:
+        if name in self._facts:
+            return self._facts[name]
+        return await asyncio.to_thread(self.load_facts, name)
+
     @classmethod
     def _migrate_v1_entity_values(cls, facts: list[dict]) -> bool:
         """Rename v1 entity values ('user'→'master', 'ai'→'neko') in-place."""
@@ -165,6 +145,9 @@ class FactStore:
                     f.write(datetime.now().isoformat())
             except Exception:
                 pass
+
+    async def asave_facts(self, name: str) -> None:
+        await asyncio.to_thread(self.save_facts, name)
 
     def _facts_archive_path(self, name: str) -> str:
         from memory import ensure_character_dir
@@ -220,7 +203,7 @@ class FactStore:
         from openai import APIConnectionError, InternalServerError, RateLimitError
         from utils.llm_client import create_chat_llm
 
-        _, _, _, _, name_mapping, _, _, _, _ = self._config_manager.get_character_data()
+        _, _, _, _, name_mapping, _, _, _, _ = await self._config_manager.aget_character_data()
         name_mapping['ai'] = lanlan_name
 
         # Build conversation text
@@ -266,12 +249,7 @@ class FactStore:
                         raw = match.group(1).strip()
                     else:
                         raw = raw.replace("```json", "").replace("```", "").strip()
-                try:
-                    extracted = json.loads(raw)
-                except json.JSONDecodeError:
-                    # 尝试修复常见 LLM 格式问题后重新解析
-                    sanitized = _sanitize_json(raw)
-                    extracted = json.loads(sanitized)
+                extracted = robust_json_loads(raw)
                 if not isinstance(extracted, list):
                     logger.warning(f"[FactStore] {lanlan_name}: LLM 返回非数组类型 {type(extracted).__name__}，重试")
                     retries += 1
@@ -304,7 +282,7 @@ class FactStore:
 
         # Deduplicate and store
         new_facts = []
-        existing_facts = self.load_facts(lanlan_name)
+        existing_facts = await self.aload_facts(lanlan_name)
         existing_hashes = {f.get('hash') for f in existing_facts if f.get('hash')}
 
         for fact in extracted:
@@ -325,7 +303,7 @@ class FactStore:
 
             # Stage 2: FTS5 semantic dedup (lightweight, no LLM)
             if self._time_indexed is not None:
-                similar = self._time_indexed.search_facts(lanlan_name, text, limit=3)
+                similar = await self._time_indexed.asearch_facts(lanlan_name, text, 3)
                 is_dup = False
                 for fid, score in similar:
                     if score < -5:
@@ -350,10 +328,10 @@ class FactStore:
 
             # Index in FTS5
             if self._time_indexed is not None:
-                self._time_indexed.index_fact(lanlan_name, fact_entry['id'], text)
+                await self._time_indexed.aindex_fact(lanlan_name, fact_entry['id'], text)
 
         if new_facts:
-            self.save_facts(lanlan_name)
+            await self.asave_facts(lanlan_name)
             print(f"📝 [FactStore] {lanlan_name}: 提取了 {len(new_facts)} 条新事实")
             for nf in new_facts:
                 print(f"   - [{nf.get('entity','?')}] {nf.get('text','')[:80]}")
@@ -366,6 +344,13 @@ class FactStore:
     def get_unabsorbed_facts(self, name: str, min_importance: int = 5) -> list[dict]:
         """Get facts that haven't been consumed by a reflection yet."""
         facts = self.load_facts(name)
+        return [
+            f for f in facts
+            if not f.get('absorbed') and f.get('importance', 0) >= min_importance
+        ]
+
+    async def aget_unabsorbed_facts(self, name: str, min_importance: int = 5) -> list[dict]:
+        facts = await self.aload_facts(name)
         return [
             f for f in facts
             if not f.get('absorbed') and f.get('importance', 0) >= min_importance
@@ -386,3 +371,6 @@ class FactStore:
                 changed = True
         if changed:
             self.save_facts(name)
+
+    async def amark_absorbed(self, name: str, fact_ids: list[str]) -> None:
+        await asyncio.to_thread(self.mark_absorbed, name, fact_ids)

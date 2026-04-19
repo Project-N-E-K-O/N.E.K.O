@@ -63,46 +63,73 @@ def _is_china_region() -> bool:
         return False
 
 
+def _get_windows_locale() -> Optional[str]:
+    """
+    通过 Windows API GetUserDefaultLocaleName 获取用户 locale（如 'en-US'、'zh-CN'）。
+    仅在 Windows 上有效，其他平台返回 None。
+
+    locale.getlocale() 只反映 Python 进程内已设置的 locale，Windows 启动时不会自动注入，
+    因此在 Windows 上几乎总是返回 (None, None)。此函数直接读 Windows 用户 locale 状态。
+    """
+    import platform
+    if platform.system() != 'Windows':
+        return None
+    try:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(85)
+        ctypes.windll.kernel32.GetUserDefaultLocaleName(buf, 85)
+        return buf.value or None
+    except Exception:
+        return None
+
+
 def _get_system_language() -> str:
     """
     从系统设置获取语言
-    
+
     Returns:
         语言代码 ('zh', 'en', 'ja', 'ko', 'ru')，默认返回 'zh'
     """
+    def _parse_locale(s: str) -> Optional[str]:
+        s = s.lower()
+        if s.startswith('zh') or 'chinese' in s:
+            return 'zh'
+        if s.startswith('ja') or 'japanese' in s:
+            return 'ja'
+        if s.startswith('ko') or 'korean' in s:
+            return 'ko'
+        if s.startswith('ru') or 'russian' in s:
+            return 'ru'
+        if s.startswith('en') or 'english' in s:
+            return 'en'
+        return None
+
     try:
-        # 获取系统 locale（使用 locale.getlocale() 替代已弃用的 getdefaultlocale()）
-        # locale.getlocale() 返回 (language_code, encoding) 元组
+        # 优先：Windows API（locale.getlocale() 在 Windows 上几乎总是 (None, None)）
+        windows_locale = _get_windows_locale()
+        if windows_locale:
+            lang = _parse_locale(windows_locale)
+            if lang:
+                return lang
+
+        # 次选：Python locale（Unix / 少数 Windows 场景有效）
         system_locale = locale.getlocale()[0]
         if system_locale:
-            system_locale_lower = system_locale.lower()
-            if system_locale_lower.startswith('zh') or 'chinese' in system_locale_lower:
-                return 'zh'
-            elif system_locale_lower.startswith('ja'):
-                return 'ja'
-            elif system_locale_lower.startswith('ko') or 'korean' in system_locale_lower:
-                return 'ko'
-            elif system_locale_lower.startswith('ru') or 'russian' in system_locale_lower:
-                return 'ru'
-            elif system_locale_lower.startswith('en'):
-                return 'en'
+            lang = _parse_locale(system_locale)
+            if lang:
+                return lang
 
-        lang_env = os.environ.get('LANG', '').lower()
-        if lang_env.startswith('zh') or 'chinese' in lang_env:
-            return 'zh'
-        elif lang_env.startswith('ja'):
-            return 'ja'
-        elif lang_env.startswith('ko'):
-            return 'ko'
-        elif lang_env.startswith('ru'):
-            return 'ru'
-        elif lang_env.startswith('en'):
-            return 'en'
+        # 末选：LANG 环境变量（Unix 常见）
+        lang_env = os.environ.get('LANG', '')
+        if lang_env:
+            lang = _parse_locale(lang_env)
+            if lang:
+                return lang
 
-        return 'zh'  # 默认中文
+        return 'en'  # 默认英文
     except Exception as e:
-        logger.warning(f"获取系统语言失败: {e}，使用默认中文")
-        return 'zh'
+        logger.warning(f"获取系统语言失败: {e}，使用默认英文")
+        return 'en'
 
 
 def _get_steam_language() -> Optional[str]:
@@ -201,7 +228,7 @@ def get_global_language() -> str:
         if not _global_language_initialized:
             return initialize_global_language()
         
-        return _global_language or 'zh'
+        return _global_language or 'en'
 
 
 def get_global_language_full() -> str:
@@ -218,7 +245,7 @@ def get_global_language_full() -> str:
         if not _global_language_initialized:
             initialize_global_language()
         
-        return _global_language_full or _global_language or 'zh'
+        return _global_language_full or _global_language or 'en'
 
 
 def set_global_language(language: str) -> None:
@@ -316,10 +343,7 @@ def normalize_language_code(lang: str, format: str = 'short') -> str:
         归一化后的语言代码，如果无法识别则返回默认值 ('zh' 或 'zh-CN')
     """
     if not lang:
-        if format == 'short':
-            return 'zh'
-        else:
-            return 'zh-CN'
+        return 'en'
     
     lang_lower = lang.lower().strip()
     
@@ -378,10 +402,7 @@ def normalize_language_code(lang: str, format: str = 'short') -> str:
     else:
         # 无法识别的语言代码，返回默认值
         logger.debug(f"无法识别的语言代码: {lang}，返回默认值")
-        if format == 'short':
-            return 'zh'
-        else:
-            return 'zh-CN'
+        return 'en'
 
 
 # ============================================================================
@@ -427,6 +448,34 @@ except ImportError as e:
 except Exception as e:
     TRANSLATEPY_AVAILABLE = False
     logger.warning(f"translatepy 导入失败（其他错误）: {e}，将跳过 translatepy 翻译")
+
+# 进程级 Google 翻译失败标记：一旦 Google 在本进程内失败过一次，
+# 后续直接跳过 Google，避免每个请求都等满超时。前端的 skip_google
+# 仅是会话级（刷新即丢），这里补足后端的进程级持久化，跨请求生效。
+_google_translate_failed_flag = False
+_google_translate_failed_lock = threading.Lock()
+
+
+def _is_google_marked_failed() -> bool:
+    with _google_translate_failed_lock:
+        return _google_translate_failed_flag
+
+
+def _mark_google_failed() -> None:
+    global _google_translate_failed_flag
+    with _google_translate_failed_lock:
+        if not _google_translate_failed_flag:
+            _google_translate_failed_flag = True
+            logger.info("⛔ [翻译服务] Google 翻译已被标记为不可用，本进程后续请求将直接跳过")
+
+
+def reset_google_translate_failure_flag() -> None:
+    """重置 Google 翻译失败标记（测试或网络恢复时使用）"""
+    global _google_translate_failed_flag
+    with _google_translate_failed_lock:
+        _google_translate_failed_flag = False
+        logger.info("🔄 [翻译服务] 已清除 Google 翻译失败标记")
+
 
 # 语言检测正则表达式
 CHINESE_PATTERN = re.compile(r'[\u4e00-\u9fff]')
@@ -658,51 +707,46 @@ def detect_language(text: str) -> str:
 async def translate_text(text: str, target_lang: str, source_lang: Optional[str] = None, skip_google: bool = False) -> Tuple[str, bool]:
     """
     翻译文本到目标语言
-    
+
     根据系统区域选择不同的翻译服务优先级：
-    - 中文区：Google 翻译（优先尝试，5秒超时，超时后立即降级）-> translatepy -> LLM 翻译
-    - 非中文区：Google 翻译 -> LLM 翻译（简化流程，去掉 translatepy）
-    
-    降级机制说明：
-    - 中文区使用超时机制（5秒）快速判断 Google 翻译是否可用
-    - 如果 Google 翻译在 5 秒内没有响应，立即降级到 translatepy，避免长时间等待
-    - 如果 skip_google=True，直接跳过 Google 翻译（用于会话级失败标记）
-    
+    - 中文区：直接 translatepy → LLM 翻译（不尝试 Google，避免每次等满超时）
+    - 非中文区：Google 翻译 → LLM 翻译（一旦 Google 失败，进程级标记后续请求直接跳过）
+
     Args:
         text: 要翻译的文本
-        target_lang: 目标语言代码 ('zh', 'en', 'ja', 'ko')
-        source_lang: 源语言代码，如果为None则自动检测
-        skip_google: 是否跳过 Google 翻译（会话级失败标记）
-        
+        target_lang: 目标语言代码 ('zh', 'en', 'ja', 'ko', 'ru')
+        source_lang: 源语言代码，如果为 None 则自动检测
+        skip_google: 是否跳过 Google 翻译（兼容旧调用方，与进程级标记取或）
+
     Returns:
-        (翻译后的文本, google_failed): 如果翻译失败则返回原文，google_failed 表示 Google 翻译是否失败
+        (翻译后的文本, google_failed): 翻译失败时返回原文；
+        google_failed 表示本次（或此前）Google 翻译是否被标记为不可用
     """
-    google_failed = False  # 记录 Google 翻译是否失败
-    
     if not text or not text.strip():
-        return text, google_failed
-    
+        return text, _is_google_marked_failed()
+
     # 自动检测源语言
     if source_lang is None:
         source_lang = detect_language(text)
-    
+
     # 如果源语言和目标语言相同，不需要翻译
     if source_lang == target_lang or source_lang == 'unknown':
         logger.debug(f"跳过翻译: 源语言({source_lang}) == 目标语言({target_lang}) 或源语言未知")
-        return text, google_failed
-    
+        return text, _is_google_marked_failed()
+
     # 判断当前区域，决定翻译服务优先级
     try:
         is_china = is_china_region()
     except Exception as e:
         logger.warning(f"获取区域信息失败: {e}，默认使用非中文区优先级")
         is_china = False
-    
-    if is_china:
-        region_str = '中文区'
-    else:
-        region_str = '非中文区'
+
+    region_str = '中文区' if is_china else '非中文区'
     logger.debug(f"🔄 [翻译服务] 开始翻译流程: {source_lang} -> {target_lang}, 文本长度: {len(text)}, 区域: {region_str}")
+
+    # 中文区：完全跳过 Google；非中文区：综合调用方意愿与进程级标记
+    skip_google_effective = is_china or skip_google or _is_google_marked_failed()
+    google_failed = _is_google_marked_failed()
     
     # 语言代码映射：我们的代码 -> Google Translate 代码
     GOOGLE_LANG_MAP = {
@@ -775,26 +819,10 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
     
     # 根据区域选择不同的优先级
     if is_china:
-        # 中文区：先尝试 Google 翻译（带超时），确认不能用后再降级到 translatepy
-        # 优先级1：尝试使用 Google 翻译（中文区优先尝试，5秒超时，超时后立即降级）
-        # 如果 skip_google=True，直接跳过 Google 翻译
-        if skip_google:
-            logger.debug("⏭️ [翻译服务] 跳过 Google 翻译（会话级失败标记），直接使用 translatepy")
-        elif GOOGLETRANS_AVAILABLE:
-            logger.debug(f"🌐 [翻译服务] 尝试 Google 翻译 (中文区优先，5秒超时): {source_lang} -> {target_lang}")
-            translated_text = await _try_google_translate(timeout=5.0)  # 5秒超时
-            if translated_text:
-                logger.info(f"✅ [翻译服务] Google翻译成功: {source_lang} -> {target_lang}")
-                return translated_text, google_failed
-            else:
-                logger.debug("❌ [翻译服务] Google翻译不可用（超时或失败），立即降级到 translatepy")
-                google_failed = True  # 标记 Google 翻译失败
-        else:
-            logger.debug("⚠️ [翻译服务] Google 翻译不可用（googletrans 未安装），尝试 translatepy")
-        
-        # 优先级2：尝试使用 translatepy（确认 Google 不能用后降级）
+        # 中文区：直接走 translatepy（不再尝试 Google，避免每次都等满超时）
+        logger.debug("⏭️ [翻译服务] 中文区，直接使用 translatepy")
         if TRANSLATEPY_AVAILABLE:
-            logger.debug(f"🌐 [翻译服务] 尝试 translatepy (中文区降级): {source_lang} -> {target_lang}")
+            logger.debug(f"🌐 [翻译服务] 尝试 translatepy (中文区): {source_lang} -> {target_lang}")
             try:
                 translated_text = await translate_with_translatepy(text, source_lang, target_lang)
                 if translated_text:
@@ -808,10 +836,9 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
             logger.debug("⚠️ [翻译服务] translatepy 不可用（未安装），回退到 LLM 翻译")
     else:
         # 非中文区：Google 翻译 → LLM 翻译（简化流程，去掉 translatepy）
-        # 优先级1：尝试使用 Google 翻译
-        # 如果 skip_google=True，直接跳过 Google 翻译
-        if skip_google:
-            logger.debug("⏭️ [翻译服务] 跳过 Google 翻译（会话级失败标记），直接使用 LLM 翻译")
+        # skip_google_effective 综合了调用方意愿与本进程的失败标记
+        if skip_google_effective:
+            logger.debug("⏭️ [翻译服务] 跳过 Google 翻译（已被标记不可用 / 调用方要求），直接使用 LLM 翻译")
         elif GOOGLETRANS_AVAILABLE:
             logger.debug(f"🌐 [翻译服务] 尝试 Google 翻译 (非中文区): {source_lang} -> {target_lang}")
             translated_text = await _try_google_translate()
@@ -820,7 +847,8 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
                 return translated_text, google_failed
             else:
                 logger.debug("❌ [翻译服务] Google翻译失败，回退到 LLM 翻译")
-                google_failed = True  # 标记 Google 翻译失败
+                _mark_google_failed()  # 进程级标记，本进程后续请求不再尝试
+                google_failed = True
         else:
             logger.debug("⚠️ [翻译服务] Google 翻译不可用（googletrans 未安装），回退到 LLM 翻译")
     
@@ -873,27 +901,27 @@ def get_user_language() -> str:
     获取用户的语言偏好
     
     Returns:
-        用户语言代码 ('zh', 'en', 'ja', 'ko')，默认返回 'zh'
+        用户语言代码 ('zh', 'en', 'ja', 'ko')，默认返回 'en'
     """
     try:
         return get_global_language()
     except Exception as e:
-        logger.warning(f"获取全局语言失败: {e}，使用默认中文")
-        return 'zh'  # 默认中文
+        logger.warning(f"获取全局语言失败: {e}，使用默认英文")
+        return 'en'
 
 
 async def get_user_language_async() -> str:
     """
     异步获取用户的语言偏好（使用全局语言管理模块）
-    
+
     Returns:
-        用户语言代码 ('zh', 'en', 'ja', 'ko')，默认返回 'zh'
+        用户语言代码 ('zh', 'en', 'ja', 'ko')，默认返回 'en'
     """
     try:
         return get_global_language()
     except Exception as e:
-        logger.warning(f"获取全局语言失败: {e}，使用默认中文")
-        return 'zh'  # 默认中文
+        logger.warning(f"获取全局语言失败: {e}，使用默认英文")
+        return 'en'
 
 
 # ============================================================================

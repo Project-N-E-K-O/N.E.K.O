@@ -418,9 +418,9 @@
                 console.log('[i18n] ✅ 初始化成功（手动加载模式）');
                 // 设置 HTML lang 属性，用于 CSS 语言特定样式
                 document.documentElement.lang = i18next.language;
+                exportNormalFunctions();
                 updatePageTexts();
                 window.dispatchEvent(new CustomEvent('localechange'));
-                exportNormalFunctions();
             });
         } catch (error) {
             console.error('[i18n] 手动加载翻译文件失败:', error);
@@ -452,6 +452,9 @@
         window.updateLive2DDynamicTexts = function () {
             console.warn('[i18n] Fallback updateLive2DDynamicTexts() called - no-op');
         };
+
+        // 通知所有 localechange 监听者（与正常初始化路径一致）
+        window.dispatchEvent(new CustomEvent('localechange'));
     }
 
     /**
@@ -524,9 +527,9 @@
                         initialized = true;
                         // 设置 HTML lang 属性，用于 CSS 语言特定样式
                         document.documentElement.lang = i18next.language;
+                        exportNormalFunctions();
                         updatePageTexts();
                         window.dispatchEvent(new CustomEvent('localechange'));
-                        exportNormalFunctions();
                     };
 
                     // 确保资源已经加载

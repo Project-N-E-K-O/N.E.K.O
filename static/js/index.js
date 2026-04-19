@@ -99,6 +99,9 @@ async function loadPageConfig() {
             lanlan_config.master_profile_name = data.master_profile_name || '';
             lanlan_config.master_nickname = data.master_nickname || '';
             lanlan_config.master_display_name = data.master_display_name || data.master_nickname || data.master_name || '';
+            lanlan_config.lighting = (data.lighting && typeof data.lighting === 'object')
+                ? Object.assign({}, data.lighting)
+                : null;
             window.master_name = lanlan_config.master_name;
             window.master_profile_name = lanlan_config.master_profile_name;
             window.master_nickname = lanlan_config.master_nickname;
@@ -152,6 +155,7 @@ async function loadPageConfig() {
             console.error('获取页面配置失败:', data.error);
             // 使用默认值
             lanlan_config.lanlan_name = "";
+            lanlan_config.lighting = null;
             cubism4Model = "";
             vrmModel = "";
             window.lanlan_config = lanlan_config;
@@ -163,6 +167,7 @@ async function loadPageConfig() {
         console.error('加载页面配置时出错:', error);
         // 使用默认值
         lanlan_config.lanlan_name = "";
+        lanlan_config.lighting = null;
         cubism4Model = "";
         vrmModel = "";
         window.lanlan_config = lanlan_config;
@@ -183,6 +188,9 @@ if (window.__NEKO_MULTI_WINDOW__ && window.location.pathname === '/chat') {
             lanlan_config.lanlan_name = d.lanlan_name || '';
             lanlan_config.model_type = (d.model_type || 'live2d').toLowerCase();
             lanlan_config.live3d_sub_type = (d.live3d_sub_type || '').toLowerCase();
+            lanlan_config.lighting = (d.lighting && typeof d.lighting === 'object')
+                ? Object.assign({}, d.lighting)
+                : null;
             window.lanlan_config = lanlan_config;
             // master 信息
             window.master_name = d.master_name || '';
