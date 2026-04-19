@@ -115,6 +115,56 @@ let currentTurnIsStructured = false;
 // 不再二次擦除 currentTurnOriginalText / 字幕文本。
 let turnBoundaryLatched = false;
 
+// --- 增量逐句翻译状态 ---
+let incrementalTranslatedCount = 0;
+let incrementalTranslatedSentences = [];
+let incrementalTranslateTimer = null;
+let incrementalAbortController = null;
+let incrementalRequestId = 0;
+
+/**
+ * 句子分割（用于增量翻译）。
+ * 逻辑源自 app-chat.js splitIntoSentences，自包含无外部依赖。
+ * 返回 { sentences: string[], rest: string }。
+ */
+function splitSubtitleSentences(buffer) {
+    var sentences = [];
+    var s = (buffer || '').replace(/\r\n/g, '\n');
+    var start = 0;
+
+    function isPunctForBoundary(ch) {
+        return ch === '\u3002' || ch === '\uFF01' || ch === '\uFF1F' ||
+               ch === '!' || ch === '?' || ch === '.' || ch === '\u2026';
+    }
+
+    function isBoundary(ch, next) {
+        if (ch === '\n') return true;
+        if (isPunctForBoundary(ch) && next && isPunctForBoundary(next)) return false;
+        if (isPunctForBoundary(ch) && !next) return false;
+        if (ch === '\u3002' || ch === '\uFF01' || ch === '\uFF1F') return true;
+        if (ch === '!' || ch === '?') return true;
+        if (ch === '\u2026') return true;
+        if (ch === '.') {
+            if (!next) return true;
+            return /\s|\n|["')\]]/.test(next);
+        }
+        return false;
+    }
+
+    for (var i = 0; i < s.length; i++) {
+        var ch = s[i];
+        var next = i + 1 < s.length ? s[i + 1] : '';
+        if (isBoundary(ch, next)) {
+            var piece = s.slice(start, i + 1);
+            var trimmed = piece.replace(/^\s+/, '').replace(/\s+$/, '');
+            if (trimmed) sentences.push(trimmed);
+            start = i + 1;
+        }
+    }
+
+    return { sentences: sentences, rest: s.slice(start) };
+}
+
 // 结构化/不可朗读内容的字幕占位符
 function getStructuredPlaceholder() {
     try {
@@ -154,34 +204,162 @@ function hideSubtitle() {
 
 /**
  * 写入字幕文本（不影响显示/隐藏状态）
+ * 长文本自动缩小字号以保持在可视范围内。
  */
+var _subtitleFontResizeTimer = null;
 function writeSubtitleText(text) {
     const subtitleText = document.getElementById('subtitle-text');
-    if (subtitleText) subtitleText.textContent = text || '';
+    if (!subtitleText) return;
+    subtitleText.textContent = text || '';
+
+    // 自适应字号：防抖测量，避免流式高频触发
+    if (_subtitleFontResizeTimer) clearTimeout(_subtitleFontResizeTimer);
+    if (!text || !text.trim()) {
+        subtitleText.style.fontSize = '';
+        return;
+    }
+    _subtitleFontResizeTimer = setTimeout(function() {
+        var display = document.getElementById('subtitle-display');
+        if (!display) return;
+        var maxH = display.offsetHeight || 200;
+        // 用隐藏元素测量实际高度
+        var m = document.createElement('span');
+        m.style.cssText = 'visibility:hidden;position:absolute;white-space:pre-wrap;overflow-wrap:break-word;' +
+            'font-size:17px;font-weight:500;line-height:1.5;max-width:' + (display.offsetWidth - 48) + 'px;';
+        m.textContent = text;
+        display.appendChild(m);
+        var fontSize = 17;
+        while (m.offsetHeight > maxH && fontSize > 12) {
+            fontSize--;
+            m.style.fontSize = fontSize + 'px';
+        }
+        display.removeChild(m);
+        subtitleText.style.fontSize = fontSize < 17 ? fontSize + 'px' : '';
+    }, 200);
+}
+
+/**
+ * 增量翻译核心：翻译新完成的句子并追加到字幕显示。
+ */
+async function translateNewSentencesIncremental(newSentences, requestSnapId) {
+    if (!newSentences || newSentences.length === 0) return;
+    if (!subtitleEnabled) return;
+    if (requestSnapId !== incrementalRequestId) return;
+
+    var textToTranslate = newSentences.join(' ');
+
+    if (incrementalAbortController) {
+        incrementalAbortController.abort();
+    }
+    incrementalAbortController = new AbortController();
+    var abortCtrl = incrementalAbortController;
+
+    try {
+        var response = await fetch('/api/translate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                text: textToTranslate,
+                target_lang: (userLanguage !== null ? userLanguage : 'zh'),
+                source_lang: null
+            }),
+            signal: abortCtrl.signal
+        });
+
+        if (!response.ok) {
+            appendIncrementalFallback(newSentences, requestSnapId);
+            return;
+        }
+
+        var result = await response.json();
+        if (requestSnapId !== incrementalRequestId) return;
+
+        if (result.success && result.translated_text &&
+            result.source_lang && result.target_lang &&
+            result.source_lang !== result.target_lang &&
+            result.source_lang !== 'unknown') {
+            incrementalTranslatedSentences.push(result.translated_text.trim());
+        } else {
+            for (var j = 0; j < newSentences.length; j++) {
+                incrementalTranslatedSentences.push(newSentences[j]);
+            }
+        }
+        incrementalTranslatedCount += newSentences.length;
+        updateIncrementalDisplay();
+    } catch (error) {
+        if (error.name === 'AbortError') return;
+        appendIncrementalFallback(newSentences, requestSnapId);
+    } finally {
+        if (incrementalAbortController === abortCtrl) {
+            incrementalAbortController = null;
+        }
+    }
+}
+
+function appendIncrementalFallback(sentences, requestSnapId) {
+    if (requestSnapId !== incrementalRequestId) return;
+    for (var i = 0; i < sentences.length; i++) {
+        incrementalTranslatedSentences.push(sentences[i]);
+    }
+    incrementalTranslatedCount += sentences.length;
+    updateIncrementalDisplay();
+}
+
+function updateIncrementalDisplay() {
+    if (!subtitleEnabled) return;
+    var fullText = incrementalTranslatedSentences.join(' ');
+    ensureSubtitleVisibleIfEnabled();
+    writeSubtitleText(fullText);
 }
 
 /**
  * 流式更新：本回合 AI 文本累积时调用。
- * 立即把原文显示到字幕里，跨多个气泡持续写入。
- * 仅在字幕开关开启时才上屏，但内部状态始终维护，方便用户中途打开开关时直接补显。
+ * 检测完整句子后防抖触发增量翻译，逐句显示。
  *
  * 竞态保护（PR #778）：
- *   - 已 finalize（收到 turn_end，翻译已起）后，丢弃后续流式写入，避免
- *     拟真模式 2s/气泡延迟导致的"迟到 bubble 把已翻译字幕刷回原文"。
+ *   - 已 finalize 后，丢弃后续流式写入。
  *   - 已判定为结构化的 turn 不接受原文写入，继续维持 [markdown] 占位。
  */
 function updateSubtitleStreamingText(text) {
     if (isCurrentTurnFinalized) return;
     if (currentTurnIsStructured) return;
 
-    const cleaned = (text || '').toString();
+    var cleaned = (text || '').toString();
     currentTurnOriginalText = cleaned;
 
     if (!subtitleEnabled) return;
-    if (!cleaned.trim()) return;
+    if (userLanguage === null) getUserLanguage();
 
-    ensureSubtitleVisibleIfEnabled();
-    writeSubtitleText(cleaned);
+    var splitResult = splitSubtitleSentences(cleaned);
+    var allSentences = splitResult.sentences;
+    var rest = splitResult.rest;
+    var newCount = allSentences.length - incrementalTranslatedCount;
+
+    if (newCount > 0) {
+        var newSentences = allSentences.slice(incrementalTranslatedCount);
+
+        if (incrementalTranslateTimer) clearTimeout(incrementalTranslateTimer);
+        var requestSnapId = ++incrementalRequestId;
+        incrementalTranslateTimer = setTimeout(function() {
+            incrementalTranslateTimer = null;
+            translateNewSentencesIncremental(newSentences, requestSnapId);
+        }, 300);
+
+        // 防抖期间先显示原文 preview
+        var preview = incrementalTranslatedSentences.slice();
+        for (var i = 0; i < newSentences.length; i++) {
+            preview.push(newSentences[i]);
+        }
+        if (rest.trim()) preview.push(rest.trim());
+        ensureSubtitleVisibleIfEnabled();
+        writeSubtitleText(preview.join(' '));
+    } else if (rest.trim()) {
+        // 无新句子但有尾部更新
+        var displayParts = incrementalTranslatedSentences.slice();
+        displayParts.push(rest.trim());
+        ensureSubtitleVisibleIfEnabled();
+        writeSubtitleText(displayParts.join(' '));
+    }
 }
 
 /**
@@ -233,6 +411,18 @@ function resetSubtitleTurnState() {
         currentTranslateAbortController.abort();
         currentTranslateAbortController = null;
     }
+    // 增量翻译状态复位
+    incrementalTranslatedCount = 0;
+    incrementalTranslatedSentences = [];
+    if (incrementalTranslateTimer) {
+        clearTimeout(incrementalTranslateTimer);
+        incrementalTranslateTimer = null;
+    }
+    if (incrementalAbortController) {
+        incrementalAbortController.abort();
+        incrementalAbortController = null;
+    }
+    incrementalRequestId = 0;
 }
 
 /**
@@ -280,48 +470,64 @@ function onAssistantTurnStart() {
 }
 
 /**
- * Turn 结束时调用：尝试翻译并替换字幕文本。
- * 如果不需要翻译（同语言 / 检测失败 / 用户禁用），保留原文。
+ * Turn 结束时调用：翻译剩余未处理部分并追加到增量翻译结果。
  */
 async function translateAndShowSubtitle(text) {
     if (!text || !text.trim()) {
         return;
     }
 
-    // 结构化 turn 走占位符分支：不翻译，不写原文，避免把大段 markdown/code 送去 LLM
+    // 结构化 turn 走占位符分支
     if (currentTurnIsStructured) {
         finalizeSubtitleAsStructured();
         return;
     }
 
-    // 快照本次请求归属的 turn 与 request 序号。响应回来时必须跟当前值匹配，
-    // 否则说明已被新 turn / 新请求抢占（哪怕原文字面量相同也要丢弃）。
     const requestTurnId = currentTurnId;
     const requestId = ++currentTranslationRequestId;
-    // 收到 turn-end 才算当前 turn 已结算；此后 updateSubtitleStreamingText 的
-    // 迟到调用会被丢弃，避免被延迟渲染的拟真 bubble 刷回原文（PR #778 修复）。
     isCurrentTurnFinalized = true;
+
+    // 取消 pending 的增量翻译定时器
+    if (incrementalTranslateTimer) {
+        clearTimeout(incrementalTranslateTimer);
+        incrementalTranslateTimer = null;
+    }
 
     if (userLanguage === null) {
         await getUserLanguage();
     }
 
-    // 请求之前再校验一次 — getUserLanguage 本身是 await，可能已经跨 turn
     if (requestTurnId !== currentTurnId || requestId !== currentTranslationRequestId) {
         return;
     }
 
-    // 始终把原文当作字幕基准
     currentTurnOriginalText = text;
-    if (subtitleEnabled) {
-        ensureSubtitleVisibleIfEnabled();
-        writeSubtitleText(text);
-    }
 
     if (!subtitleEnabled) {
-        return; // 开关关闭，不发翻译请求
+        return;
     }
 
+    // 计算剩余未翻译部分
+    var splitResult = splitSubtitleSentences(text);
+    var totalSentences = splitResult.sentences;
+    var trailingRest = splitResult.rest;
+    var remainingSentences = totalSentences.slice(incrementalTranslatedCount);
+    var remainingText = remainingSentences.join(' ');
+    if (trailingRest && trailingRest.trim()) {
+        remainingText = (remainingText ? remainingText + ' ' : '') + trailingRest.trim();
+    }
+
+    // 无剩余 → 直接显示已有的增量翻译
+    if (!remainingText.trim()) {
+        ensureSubtitleVisibleIfEnabled();
+        writeSubtitleText(incrementalTranslatedSentences.join(' ') || text);
+        return;
+    }
+
+    if (incrementalAbortController) {
+        incrementalAbortController.abort();
+        incrementalAbortController = null;
+    }
     if (currentTranslateAbortController) {
         currentTranslateAbortController.abort();
     }
@@ -333,7 +539,7 @@ async function translateAndShowSubtitle(text) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                text: text,
+                text: remainingText,
                 target_lang: (userLanguage !== null ? userLanguage : 'zh'),
                 source_lang: null
             }),
@@ -342,34 +548,44 @@ async function translateAndShowSubtitle(text) {
 
         if (!response.ok) {
             console.warn('字幕翻译请求失败:', response.status);
+            var fallbackParts = incrementalTranslatedSentences.slice();
+            if (remainingSentences.length) fallbackParts = fallbackParts.concat(remainingSentences);
+            if (trailingRest && trailingRest.trim()) fallbackParts.push(trailingRest.trim());
+            ensureSubtitleVisibleIfEnabled();
+            writeSubtitleText(fallbackParts.join(' ') || text);
             return;
         }
 
         const result = await response.json();
 
-        // 已经被新 turn / 新请求抢占，丢弃过期结果（用单调序号判断，不用原文）
         if (requestTurnId !== currentTurnId || requestId !== currentTranslationRequestId) {
             return;
         }
+        if (!subtitleEnabled) return;
 
-        if (!subtitleEnabled) {
-            return; // 翻译期间用户关掉了开关
-        }
-
-        // 真正发生了翻译才替换；同语言/未知语言/失败保留原文
         if (result.success && result.translated_text &&
             result.source_lang && result.target_lang &&
             result.source_lang !== result.target_lang &&
-            result.source_lang !== 'unknown' &&
-            result.translated_text !== text) {
+            result.source_lang !== 'unknown') {
+            incrementalTranslatedSentences.push(result.translated_text.trim());
             ensureSubtitleVisibleIfEnabled();
-            writeSubtitleText(result.translated_text);
-            console.log('字幕已翻译:', result.translated_text.substring(0, 50));
+            writeSubtitleText(incrementalTranslatedSentences.join(' '));
+            console.log('字幕翻译完成:', incrementalTranslatedSentences.join(' ').substring(0, 80));
+        } else {
+            if (remainingSentences.length) {
+                incrementalTranslatedSentences = incrementalTranslatedSentences.concat(remainingSentences);
+            }
+            if (trailingRest && trailingRest.trim()) {
+                incrementalTranslatedSentences.push(trailingRest.trim());
+            }
+            ensureSubtitleVisibleIfEnabled();
+            writeSubtitleText(incrementalTranslatedSentences.join(' '));
         }
-        // else: 不需要翻译，保留刚才写入的原文，什么也不做
     } catch (error) {
-        if (error.name === 'AbortError') {
-            return;
+        if (error.name === 'AbortError') return;
+        if (subtitleEnabled && requestTurnId === currentTurnId) {
+            ensureSubtitleVisibleIfEnabled();
+            writeSubtitleText(text);
         }
         console.error('字幕翻译异常:', {
             error: error.message,
@@ -386,6 +602,7 @@ async function translateAndShowSubtitle(text) {
 // 初始化字幕模块（DOM 就绪后绑定拖拽 & turn 事件）
 document.addEventListener('DOMContentLoaded', async function() {
     initSubtitleDrag();
+    initSubtitleSettings();
     await getUserLanguage();
     window.addEventListener('neko-assistant-turn-start', onAssistantTurnStart);
 
@@ -403,6 +620,113 @@ document.addEventListener('DOMContentLoaded', async function() {
         }
     }
 });
+
+// 同步设置面板 UI 状态
+function syncSettingsPanel() {
+    var toggle = document.getElementById('subtitle-translate-toggle');
+    var select = document.getElementById('subtitle-lang-select');
+    if (toggle) toggle.checked = subtitleEnabled;
+    if (select && userLanguage) select.value = userLanguage;
+}
+
+// 字幕设置面板
+function initSubtitleSettings() {
+    var settingsBtn = document.getElementById('subtitle-settings-btn');
+    var settingsPanel = document.getElementById('subtitle-settings-panel');
+    var langSelect = document.getElementById('subtitle-lang-select');
+    var opacitySlider = document.getElementById('subtitle-opacity-slider');
+    var opacityValue = document.getElementById('subtitle-opacity-value');
+
+    if (!settingsBtn || !settingsPanel || !langSelect) return;
+
+    // 同步初始语言
+    if (userLanguage) langSelect.value = userLanguage;
+
+    var subtitleDisplay = document.getElementById('subtitle-display');
+    var dragHandle = document.getElementById('subtitle-drag-handle');
+
+    // 不透明度：读取缓存并应用（只改背景透明度，文字保持不透明）
+    if (opacitySlider) {
+        function applyBackgroundOpacity(val) {
+            if (!subtitleDisplay) return;
+            var a = val / 100;
+            subtitleDisplay.style.background = 'linear-gradient(135deg, rgba(68,183,254,' + a + ') 0%, rgba(68,183,254,' + Math.max(0, a - 0.05) + ') 50%, rgba(100,200,255,' + a + ') 100%)';
+        }
+        var savedOpacity = localStorage.getItem('subtitleOpacity');
+        if (savedOpacity) {
+            opacitySlider.value = savedOpacity;
+            if (opacityValue) opacityValue.textContent = savedOpacity + '%';
+            applyBackgroundOpacity(savedOpacity);
+        }
+        opacitySlider.addEventListener('input', function() {
+            var val = opacitySlider.value;
+            if (opacityValue) opacityValue.textContent = val + '%';
+            applyBackgroundOpacity(val);
+            localStorage.setItem('subtitleOpacity', val);
+        });
+    }
+
+    // 拖动模式切换
+    var dragModeToggle = document.getElementById('subtitle-drag-mode-toggle');
+    if (dragModeToggle && subtitleDisplay) {
+        var savedDragMode = localStorage.getItem('subtitleDragAnywhere') === 'true';
+        dragModeToggle.checked = savedDragMode;
+        if (savedDragMode) {
+            subtitleDisplay.classList.add('drag-anywhere');
+            if (dragHandle) dragHandle.style.display = 'none';
+        }
+        dragModeToggle.addEventListener('change', function() {
+            var on = dragModeToggle.checked;
+            subtitleDisplay.classList.toggle('drag-anywhere', on);
+            if (dragHandle) dragHandle.style.display = on ? 'none' : '';
+            localStorage.setItem('subtitleDragAnywhere', on);
+        });
+    }
+
+    // 大小预设：小/中/大（调整 max-width / min-height）
+    var WEB_SIZES = { small: { maxW: '400px', minH: '60px' }, medium: { maxW: '600px', minH: '80px' }, large: { maxW: '800px', minH: '100px' } };
+    var savedWebSize = localStorage.getItem('subtitleSize') || 'medium';
+    var sizeBtns = document.querySelectorAll('.subtitle-size-btn');
+    if (sizeBtns.length > 0 && subtitleDisplay) {
+        function applyWebSize(size) {
+            var s = WEB_SIZES[size] || WEB_SIZES.medium;
+            subtitleDisplay.style.maxWidth = s.maxW;
+            subtitleDisplay.style.minHeight = s.minH;
+        }
+        sizeBtns.forEach(function(btn) {
+            if (btn.dataset.size === savedWebSize) {
+                btn.classList.add('active');
+            } else {
+                btn.classList.remove('active');
+            }
+            btn.addEventListener('click', function() {
+                sizeBtns.forEach(function(b) { b.classList.remove('active'); });
+                btn.classList.add('active');
+                var size = btn.dataset.size;
+                localStorage.setItem('subtitleSize', size);
+                applyWebSize(size);
+            });
+        });
+        applyWebSize(savedWebSize);
+    }
+
+    settingsBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        settingsPanel.classList.toggle('hidden');
+    });
+
+    document.addEventListener('mousedown', function(e) {
+        if (!settingsPanel.classList.contains('hidden') &&
+            !settingsPanel.contains(e.target) &&
+            !settingsBtn.contains(e.target)) {
+            settingsPanel.classList.add('hidden');
+        }
+    });
+
+    langSelect.addEventListener('change', function() {
+        window.subtitleBridge.setUserLanguage(langSelect.value);
+    });
+}
 
 // 字幕拖拽功能
 function initSubtitleDrag() {
@@ -515,6 +839,18 @@ function initSubtitleDrag() {
     dragHandle.addEventListener('mousedown', handleMouseDown);
     dragHandle.addEventListener('touchstart', handleTouchStart, { passive: false });
 
+    // 整体拖动模式：点击字幕框任意位置即可拖动
+    subtitleDisplay.addEventListener('mousedown', function(e) {
+        if (!subtitleDisplay.classList.contains('drag-anywhere')) return;
+        if (document.getElementById('subtitle-settings-panel') &&
+            document.getElementById('subtitle-settings-panel').contains(e.target)) return;
+        handleMouseDown(e);
+    });
+    subtitleDisplay.addEventListener('touchstart', function(e) {
+        if (!subtitleDisplay.classList.contains('drag-anywhere')) return;
+        handleTouchStart(e);
+    }, { passive: false });
+
     document.addEventListener('touchmove', handleTouchMove, { passive: false });
     document.addEventListener('touchend', handleTouchUp);
     document.addEventListener('touchcancel', handleTouchUp);
@@ -538,6 +874,14 @@ function initSubtitleDrag() {
 // ======================== 外部桥接接口 ========================
 // 供 app-settings.js / React 聊天窗口在合并服务器设置或用户点击开关时调用
 window.subtitleBridge = {
+    /** 供 preload-pet.js watchOriginalText 读取当前 turn 的完整原文 */
+    getCurrentTurnOriginalText: function() {
+        return currentTurnOriginalText || '';
+    },
+    /** 供 preload-pet.js 判断当前 turn 是否已完成（流式阶段不转发原文） */
+    isCurrentTurnFinalized: function() {
+        return isCurrentTurnFinalized;
+    },
     /** 仅同步状态，不做副作用（用于服务器设置回灌） */
     setSubtitleEnabled: function(enabled) {
         subtitleEnabled = !!enabled;
@@ -547,8 +891,12 @@ window.subtitleBridge = {
         localStorage.setItem('subtitleEnabled', subtitleEnabled.toString());
 
         if (subtitleEnabled) {
-            // 重新启用：把当前 turn 已有原文补显到字幕
-            if (currentTurnOriginalText && currentTurnOriginalText.trim()) {
+            // 优先显示已有的增量翻译，其次原文
+            var incrementalText = incrementalTranslatedSentences.join(' ');
+            if (incrementalText.trim()) {
+                ensureSubtitleVisibleIfEnabled();
+                writeSubtitleText(incrementalText);
+            } else if (currentTurnOriginalText && currentTurnOriginalText.trim()) {
                 ensureSubtitleVisibleIfEnabled();
                 writeSubtitleText(currentTurnOriginalText);
             } else {
@@ -579,12 +927,17 @@ window.subtitleBridge = {
             }
             hideSubtitle();
         } else {
-            // 立即把当前 turn 已有原文补显
-            if (currentTurnOriginalText && currentTurnOriginalText.trim()) {
+            // 优先显示已有的增量翻译
+            var incrementalText = incrementalTranslatedSentences.join(' ');
+            if (incrementalText.trim()) {
+                ensureSubtitleVisibleIfEnabled();
+                writeSubtitleText(incrementalText);
+                if (isCurrentTurnFinalized) {
+                    translateAndShowSubtitle(currentTurnOriginalText);
+                }
+            } else if (currentTurnOriginalText && currentTurnOriginalText.trim()) {
                 ensureSubtitleVisibleIfEnabled();
                 writeSubtitleText(currentTurnOriginalText);
-                // 仅当本 turn 已经收到 turn-end 时，才对缓存原文补发一次翻译；
-                // 流式途中打开开关时，让字幕跟随流式文本更新，避免"半句翻译 → 被后续 chunk 覆盖"的闪烁。
                 if (isCurrentTurnFinalized) {
                     translateAndShowSubtitle(currentTurnOriginalText);
                 }
@@ -593,6 +946,9 @@ window.subtitleBridge = {
                 writeSubtitleText('');
             }
         }
+
+        // 同步设置面板状态
+        syncSettingsPanel();
 
         return subtitleEnabled;
     },
@@ -605,6 +961,31 @@ window.subtitleBridge = {
             window.appState.userLanguage = userLanguage;
         }
         localStorage.setItem('userLanguage', userLanguage);
+
+        // 切换语言时重置增量状态，对当前文本重新翻译
+        incrementalTranslatedCount = 0;
+        incrementalTranslatedSentences = [];
+        if (incrementalTranslateTimer) {
+            clearTimeout(incrementalTranslateTimer);
+            incrementalTranslateTimer = null;
+        }
+        if (incrementalAbortController) {
+            incrementalAbortController.abort();
+            incrementalAbortController = null;
+        }
+        incrementalRequestId = 0;
+
+        if (subtitleEnabled && currentTurnOriginalText && currentTurnOriginalText.trim()) {
+            if (isCurrentTurnFinalized) {
+                // turn 已结束，整段重新翻译
+                isCurrentTurnFinalized = false;
+                translateAndShowSubtitle(currentTurnOriginalText);
+            } else {
+                // 流式中，用原文显示，等待新的增量翻译
+                ensureSubtitleVisibleIfEnabled();
+                writeSubtitleText(currentTurnOriginalText);
+            }
+        }
     },
     /** 供 app-chat.js / app-chat-adapter.js 在 isNewMessage 分支首个 chunk 前调用 */
     beginTurn: beginSubtitleTurn,

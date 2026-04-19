@@ -1482,7 +1482,7 @@ body.react-chat-window-dragging {
     white-space: normal;
     opacity: 0;
     visibility: hidden;
-    transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+    transition: opacity 0.4s cubic-bezier(0.34, 1.56, 0.64, 1), visibility 0.4s, max-width 0.3s ease, min-height 0.3s ease;
     pointer-events: none;
     box-shadow: 0 6px 24px rgba(68, 183, 254, 0.35),
         0 0 0 1px rgba(255, 255, 255, 0.3) inset;
@@ -1490,9 +1490,21 @@ body.react-chat-window-dragging {
     text-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
 }
 
+#subtitle-scroll {
+    max-height: 40vh;
+    overflow-y: auto;
+    scrollbar-width: none;
+    width: 100%;
+    padding: 4px 0 28px 0;
+}
+#subtitle-scroll::-webkit-scrollbar {
+    display: none;
+}
+
 #subtitle-text {
     display: block;
     margin-right: 24px;
+    padding: 4px 0 28px 0;
     white-space: pre-wrap;
     overflow-wrap: break-word;
 }
@@ -1501,12 +1513,187 @@ body.react-chat-window-dragging {
     display: none;
 }
 
+/* 设置按钮（右上角齿轮） */
+#subtitle-settings-btn {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 22px;
+    height: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    border-radius: 5px;
+    transition: all 0.2s ease;
+    pointer-events: auto;
+    background: rgba(255, 255, 255, 0.12);
+    opacity: 0;
+}
+#subtitle-settings-btn svg {
+    width: 13px;
+    height: 13px;
+    transition: transform 0.3s ease;
+}
+#subtitle-display:hover #subtitle-settings-btn,
+#subtitle-display.show #subtitle-settings-btn {
+    opacity: 1;
+}
+#subtitle-settings-btn:hover {
+    background: rgba(255, 255, 255, 0.32);
+}
+#subtitle-settings-btn:hover svg {
+    transform: rotate(60deg);
+}
+
+/* 设置面板 */
+#subtitle-settings-panel {
+    position: absolute;
+    top: 30px;
+    right: 4px;
+    min-width: 210px;
+    padding: 8px 10px;
+    background: rgba(0, 0, 0, 0.65);
+    backdrop-filter: blur(12px);
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+    pointer-events: auto;
+    z-index: 10;
+}
+#subtitle-settings-panel.hidden {
+    display: none;
+}
+
+.subtitle-settings-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 4px 0;
+    color: #fff;
+    font-size: 13px;
+    white-space: nowrap;
+}
+
+/* 语言下拉 */
+#subtitle-lang-select {
+    background: rgba(255, 255, 255, 0.18);
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    border-radius: 5px;
+    padding: 2px 4px;
+    font-size: 12px;
+    cursor: pointer;
+    outline: none;
+}
+#subtitle-lang-select option {
+    background: #333;
+    color: #fff;
+}
+
+/* 不透明度滑块 */
+#subtitle-opacity-slider {
+    width: 70px;
+    height: 4px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: rgba(255, 255, 255, 0.3);
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+}
+#subtitle-opacity-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    background: #fff;
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+#subtitle-opacity-value {
+    font-size: 11px;
+    min-width: 30px;
+    text-align: right;
+}
+
+/* 整体拖动开关 */
+.subtitle-settings-switch {
+    position: relative;
+    width: 36px;
+    height: 20px;
+    cursor: pointer;
+    display: inline-block;
+}
+.subtitle-settings-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+    position: absolute;
+}
+.subtitle-settings-track {
+    position: absolute;
+    inset: 0;
+    background: rgba(255, 255, 255, 0.25);
+    border-radius: 10px;
+    transition: 0.25s;
+}
+.subtitle-settings-track::before {
+    content: '';
+    position: absolute;
+    left: 2px;
+    top: 2px;
+    width: 16px;
+    height: 16px;
+    background: #fff;
+    border-radius: 50%;
+    transition: 0.25s;
+}
+.subtitle-settings-switch input:checked + .subtitle-settings-track {
+    background: rgba(100, 220, 130, 0.7);
+}
+.subtitle-settings-switch input:checked + .subtitle-settings-track::before {
+    transform: translateX(16px);
+}
+
+/* 整体拖动模式：光标变为可拖拽 */
+#subtitle-display.drag-anywhere {
+    cursor: grab;
+    pointer-events: auto;
+}
+#subtitle-display.drag-anywhere.dragging {
+    cursor: grabbing;
+}
+
+/* 大小预设按钮组 */
+.subtitle-size-group {
+    display: flex;
+    gap: 4px;
+}
+.subtitle-size-btn {
+    background: rgba(255, 255, 255, 0.18);
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+.subtitle-size-btn:hover {
+    background: rgba(255, 255, 255, 0.3);
+}
+.subtitle-size-btn.active {
+    background: rgba(255, 255, 255, 0.45);
+    border-color: rgba(255, 255, 255, 0.6);
+}
+
 /* 拖拽句柄（四散箭头） */
 #subtitle-drag-handle {
     position: absolute;
-    top: 50%;
+    bottom: 4px;
     right: 4px;
-    transform: translateY(-50%);
     width: 26px;
     height: 26px;
     display: flex;
