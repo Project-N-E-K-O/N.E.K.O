@@ -827,17 +827,24 @@ class PersonaManager:
 
         if resolved:
             await self.asave_persona(name, persona)
-            # Only remove processed corrections, keep unprocessed ones
-            processed_indices: set[int] = set()
+            # 收集已处理条目的 created_at 作为精确匹配键
+            processed_keys: set[str] = set()
             for r in results:
                 raw_idx = r.get('index')
                 if raw_idx is None:
                     continue
                 try:
-                    processed_indices.add(int(raw_idx))
+                    idx = int(raw_idx)
+                    if 0 <= idx < len(corrections):
+                        key = corrections[idx].get('created_at', '')
+                        if key:
+                            processed_keys.add(key)
                 except (ValueError, TypeError):
                     continue
-            remaining = [c for i, c in enumerate(corrections) if i not in processed_indices]
+            # 重新读取文件，仅删除已处理的条目，保留 LLM 期间新增的
+            # （防止并发 _aqueue_correction 新追加的矛盾被覆盖丢失）
+            current = await self.aload_pending_corrections(name)
+            remaining = [c for c in current if c.get('created_at', '') not in processed_keys]
             await atomic_write_json_async(self._corrections_path(name), remaining,
                                           indent=2, ensure_ascii=False)
             logger.info(f"[Persona] {name}: 批量审视完成 {resolved} 条矛盾，剩余 {len(remaining)} 条")

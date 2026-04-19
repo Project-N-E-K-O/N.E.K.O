@@ -1080,6 +1080,95 @@
             });
         }
 
+        // ----------------------------------------------------------------
+        // Hide NEKO UI, recapture screen, then restore
+        // ----------------------------------------------------------------
+        var NEKO_UI_IDS = [
+            'live2d-container', 'vrm-container', 'mmd-container',
+            'chat-container', 'react-chat-window-overlay',
+            'chat-avatar-preview-popup',
+            'avatar-reaction-bubble', 'subtitle-display', 'status-toast',
+            'live2d-floating-buttons', 'vrm-floating-buttons', 'mmd-floating-buttons',
+            'live2d-lock-icon', 'vrm-lock-icon', 'mmd-lock-icon',
+            'live2d-return-button-container', 'vrm-return-button-container', 'mmd-return-button-container',
+            'crop-overlay'
+        ];
+
+        function hideNekoUI() {
+            var saved = [];
+            NEKO_UI_IDS.forEach(function (id) {
+                var el = document.getElementById(id);
+                if (el) {
+                    saved.push({ el: el, prev: el.style.display });
+                    el.style.display = 'none';
+                }
+            });
+            return saved;
+        }
+
+        function restoreNekoUI(saved) {
+            saved.forEach(function (item) {
+                item.el.style.display = item.prev;
+            });
+        }
+
+        async function recaptureWithoutNeko() {
+            var saved = hideNekoUI();
+            await new Promise(function (r) { setTimeout(r, 200); });
+            try {
+                // Priority 1: Electron direct capture (mirrors main flow)
+                var selectedSourceId = S.selectedScreenSourceId;
+                if (selectedSourceId && window.electronDesktopCapturer
+                    && typeof window.electronDesktopCapturer.captureSourceAsDataUrl === 'function') {
+                    try {
+                        var direct = await window.electronDesktopCapturer.captureSourceAsDataUrl(selectedSourceId);
+                        if (direct && direct.success && direct.dataUrl) {
+                            var scaled = await downscaleDataUrlTo720p(direct.dataUrl);
+                            if (scaled && scaled.dataUrl) return scaled.dataUrl;
+                        }
+                    } catch (e) { /* fallback below */ }
+                }
+
+                // Priority 2: acquireOrReuseCachedStream / cached stream
+                if (typeof window.acquireOrReuseCachedStream === 'function') {
+                    try {
+                        var acqStream = await window.acquireOrReuseCachedStream({ allowPrompt: false });
+                        if (acqStream) {
+                            var isCached = (acqStream === S.screenCaptureStream);
+                            try {
+                                var frame = await window.captureFrameFromStream(acqStream, 0.8);
+                                if (frame && frame.dataUrl) return frame.dataUrl;
+                            } finally {
+                                if (!isCached && acqStream instanceof MediaStream) {
+                                    acqStream.getTracks().forEach(function (t) { try { t.stop(); } catch (e) {} });
+                                }
+                            }
+                        }
+                    } catch (e) { /* fallback below */ }
+                } else {
+                    try {
+                        if (S.screenCaptureStream && S.screenCaptureStream.active) {
+                            var tracks = S.screenCaptureStream.getVideoTracks();
+                            if (tracks.length > 0 && tracks.some(function (t) { return t.readyState === 'live'; })) {
+                                var cachedFrame = await window.captureFrameFromStream(S.screenCaptureStream, 0.8);
+                                if (cachedFrame && cachedFrame.dataUrl) return cachedFrame.dataUrl;
+                            }
+                        }
+                    } catch (e) { /* fallback below */ }
+                }
+
+                // Priority 3: backend pyautogui
+                var result = await window.fetchBackendScreenshot();
+                if (result && result.dataUrl) {
+                    var beScaled = await downscaleDataUrlTo720p(result.dataUrl);
+                    return (beScaled && beScaled.dataUrl) || null;
+                }
+                return null;
+            } finally {
+                restoreNekoUI(saved);
+            }
+        }
+
         mod.captureScreenshotToPendingList = async function captureScreenshotToPendingList() {
             // 桌面端优先级：
             //   1) 主进程直接 desktopCapturer 捕获选中源（最可靠，绕开所有 Chromium 桌面捕获管线问题）
@@ -1195,7 +1284,30 @@
                     console.log(window.t('console.screenshotSuccess'), width + 'x' + height);
                 }
 
-                mod.addScreenshotToList(dataUrl);
+                // Release one-time stream BEFORE opening crop overlay
+                // Only release if it's a one-time stream — cached streams are managed globally
+                if (!isCachedStream && acquiredStream instanceof MediaStream) {
+                    acquiredStream.getTracks().forEach(function (track) {
+                        try { track.stop(); } catch (e) { }
+                    });
+                    acquiredStream = null; // prevent double-release in finally
+                }
+
+                // Open crop overlay for region selection
+                if (window.appCrop && typeof window.appCrop.cropImage === 'function') {
+                    var croppedUrl = await window.appCrop.cropImage(dataUrl, {
+                        recaptureFn: function () { return recaptureWithoutNeko(); }
+                    });
+                    if (!croppedUrl) {
+                        // User cancelled cropping
+                        window.showStatusToast(window.t ? window.t('app.screenshotCancelled') : '\u5DF2\u53D6\u6D88\u622A\u56FE', 2000);
+                        return;
+                    }
+                    mod.addScreenshotToList(croppedUrl);
+                } else {
+                    // Fallback: no crop module available, add full screenshot directly
+                    mod.addScreenshotToList(dataUrl);
+                }
                 window.showStatusToast(window.t ? window.t('app.screenshotAdded') : '\u622A\u56FE\u5DF2\u6DFB\u52A0\uFF0C\u70B9\u51FB\u53D1\u9001\u4E00\u8D77\u53D1\u9001', 3000);
 
             } catch (err) {
@@ -1271,6 +1383,39 @@
                 return mod.removePendingAttachmentById(attachmentId);
             });
         }
+
+        // ----------------------------------------------------------------
+        // Clipboard paste → add image to pending screenshots
+        // ----------------------------------------------------------------
+        document.addEventListener('paste', function (e) {
+            if (!e.clipboardData || !e.clipboardData.items) return;
+            // Don't handle paste when crop overlay is open
+            var cropOverlay = document.getElementById('crop-overlay');
+            if (cropOverlay && cropOverlay.style.display !== 'none') return;
+            var items = e.clipboardData.items;
+            for (var i = 0; i < items.length; i++) {
+                if (items[i].type.indexOf('image/') === 0) {
+                    e.preventDefault();
+                    var blob = items[i].getAsFile();
+                    if (!blob) continue;
+                    var reader = new FileReader();
+                    reader.onload = function (ev) {
+                        if (ev.target && ev.target.result) {
+                            mod.addScreenshotToList(ev.target.result);
+                            window.showStatusToast(
+                                window.t ? window.t('app.screenshotAdded') : '\u622A\u56FE\u5DF2\u6DFB\u52A0\uFF0C\u70B9\u51FB\u53D1\u9001\u4E00\u8D77\u53D1\u9001',
+                                3000
+                            );
+                        }
+                    };
+                    reader.onerror = function () {
+                        console.warn('[粘贴] 读取剪贴板图片失败');
+                    };
+                    reader.readAsDataURL(blob);
+                    break;
+                }
+            }
+        });
 
         mod.ensureImportImageInput();
         mod.syncPendingComposerAttachments();
