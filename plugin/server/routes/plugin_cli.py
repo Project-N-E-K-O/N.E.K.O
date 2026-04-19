@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, File, Query, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, model_validator
 
 from plugin.logging_config import get_logger
@@ -136,6 +137,71 @@ async def plugin_cli_analyze(
         return await service.analyze(
             plugins=payload.plugins,
             current_sdk_version=payload.current_sdk_version,
+        )
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
+
+
+# ── Upload & Download ──────────────────────────────────────────────────
+
+
+class PluginCliUploadAndUnpackQuery(BaseModel):
+    on_conflict: str = Field(default="rename", pattern="^(rename|fail)$")
+
+
+@router.post("/plugin-cli/upload")
+async def plugin_cli_upload(
+    file: UploadFile = File(...),
+    _: str = require_admin,
+) -> dict[str, object]:
+    """Upload a plugin package file (.neko-plugin / .neko-bundle) to the server.
+
+    The file is saved to the packages target directory and can subsequently be
+    passed to ``/plugin-cli/unpack`` or ``/plugin-cli/inspect``.
+    """
+    try:
+        content = await file.read()
+        return await service.save_uploaded_package(
+            filename=file.filename or "unknown.neko-plugin",
+            content=content,
+        )
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
+
+
+@router.post("/plugin-cli/upload-and-unpack")
+async def plugin_cli_upload_and_unpack(
+    file: UploadFile = File(...),
+    on_conflict: str = Query(default="rename", pattern="^(rename|fail)$"),
+    _: str = require_admin,
+) -> dict[str, object]:
+    """Upload a plugin package and immediately unpack (install) it.
+
+    Combines upload + unpack into a single request for convenience.
+    """
+    try:
+        content = await file.read()
+        return await service.upload_and_unpack(
+            filename=file.filename or "unknown.neko-plugin",
+            content=content,
+            on_conflict=on_conflict,
+        )
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
+
+
+@router.get("/plugin-cli/download")
+async def plugin_cli_download(
+    package: str = Query(..., description="Package filename or path within the target directory"),
+    _: str = require_admin,
+) -> FileResponse:
+    """Download a plugin package file from the server."""
+    try:
+        resolved = service.resolve_download_path(package)
+        return FileResponse(
+            str(resolved),
+            filename=resolved.name,
+            media_type="application/octet-stream",
         )
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)

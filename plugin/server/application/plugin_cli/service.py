@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
@@ -13,6 +15,11 @@ _CLI_ROOT = _PLUGIN_ROOT / "neko-plugin-cli"
 _RUNTIME_PLUGINS_ROOT = _PLUGIN_ROOT / "plugins"
 _RUNTIME_PROFILES_ROOT = _PLUGIN_ROOT / ".neko-package-profiles"
 _TARGET_ROOT = _CLI_ROOT / "target"
+
+# Allowed extensions for uploaded plugin packages
+_ALLOWED_UPLOAD_SUFFIXES = frozenset({".neko-plugin", ".neko-bundle"})
+# Maximum upload size (200 MB)
+_UPLOAD_MAX_BYTES = 200 * 1024 * 1024
 
 if str(_CLI_ROOT) not in sys.path:
     sys.path.insert(0, str(_CLI_ROOT))
@@ -99,6 +106,49 @@ class PluginCliService:
             plugins=plugins,
             current_sdk_version=current_sdk_version,
         )
+
+    # ── Upload & Download ──────────────────────────────────────────────
+
+    async def save_uploaded_package(self, *, filename: str, content: bytes) -> dict[str, object]:
+        """Save an uploaded package file to the target directory.
+
+        Returns metadata about the saved file including its server-side path,
+        which can be passed to ``unpack`` or ``inspect``.
+        """
+        return await asyncio.to_thread(self._save_uploaded_package_sync, filename=filename, content=content)
+
+    async def upload_and_unpack(
+        self,
+        *,
+        filename: str,
+        content: bytes,
+        on_conflict: str = "rename",
+    ) -> dict[str, object]:
+        """Upload a package file and immediately unpack it.
+
+        Combines ``save_uploaded_package`` and ``unpack`` into a single operation
+        for convenience.
+        """
+        save_result = await self.save_uploaded_package(filename=filename, content=content)
+        saved_path = str(save_result["path"])
+        unpack_result = await self.unpack(package=saved_path, on_conflict=on_conflict)
+        return {
+            "upload": save_result,
+            "unpack": unpack_result,
+        }
+
+    def resolve_download_path(self, package: str) -> Path:
+        """Resolve and validate a package path for download.
+
+        Returns the absolute path to the package file.  Raises if the file
+        does not exist or is outside the target directory.
+        """
+        try:
+            return self._resolve_package_path(package)
+        except Exception as exc:
+            raise self._domain_error_from_exception(exc, action="download") from exc
+
+    # ── Sync helpers ───────────────────────────────────────────────────
 
     def _list_local_plugins_sync(self) -> dict[str, object]:
         try:
@@ -273,6 +323,63 @@ class PluginCliService:
             return result.model_dump(mode="json")
         except Exception as exc:
             raise self._domain_error_from_exception(exc, action="analyze") from exc
+
+    def _save_uploaded_package_sync(self, *, filename: str, content: bytes) -> dict[str, object]:
+        try:
+            # Validate file size
+            if len(content) > _UPLOAD_MAX_BYTES:
+                raise ValueError(
+                    f"File too large: {len(content)} bytes "
+                    f"(max {_UPLOAD_MAX_BYTES // (1024 * 1024)} MB)"
+                )
+
+            # Validate and sanitize filename
+            safe_name = Path(filename).name  # strip directory components
+            if not safe_name:
+                raise ValueError("Invalid filename")
+
+            # Check extension — must match one of the allowed suffixes
+            # Path.suffixes gives e.g. ['.neko', '-plugin'] for "foo.neko-plugin",
+            # but we need the compound suffix, so we check the name directly.
+            has_valid_suffix = any(safe_name.endswith(suffix) for suffix in _ALLOWED_UPLOAD_SUFFIXES)
+            if not has_valid_suffix:
+                allowed = ", ".join(sorted(_ALLOWED_UPLOAD_SUFFIXES))
+                raise ValueError(f"Unsupported file type. Allowed: {allowed}")
+
+            # Ensure target directory exists
+            _TARGET_ROOT.mkdir(parents=True, exist_ok=True)
+
+            # Avoid overwriting: if file exists, add a short UUID suffix
+            dest = _TARGET_ROOT / safe_name
+            if dest.exists():
+                stem = safe_name
+                suffix = ""
+                for allowed_suffix in sorted(_ALLOWED_UPLOAD_SUFFIXES, key=len, reverse=True):
+                    if stem.endswith(allowed_suffix):
+                        suffix = allowed_suffix
+                        stem = stem[: -len(allowed_suffix)]
+                        break
+                unique = uuid.uuid4().hex[:8]
+                dest = _TARGET_ROOT / f"{stem}_{unique}{suffix}"
+
+            # Write atomically: write to temp file then rename
+            tmp_path = dest.with_suffix(dest.suffix + ".uploading")
+            try:
+                tmp_path.write_bytes(content)
+                shutil.move(str(tmp_path), str(dest))
+            except Exception:
+                tmp_path.unlink(missing_ok=True)
+                raise
+
+            stat = dest.stat()
+            return {
+                "name": dest.name,
+                "path": str(dest.resolve()),
+                "size_bytes": stat.st_size,
+                "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+            }
+        except Exception as exc:
+            raise self._domain_error_from_exception(exc, action="upload") from exc
 
     def _resolve_plugin_dirs(self, *, mode: str, plugin: str | None, plugins: list[str]) -> list[Path]:
         if mode == "all":

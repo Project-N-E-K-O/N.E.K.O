@@ -2,6 +2,7 @@
  * neko-plugin-cli 相关 API
  */
 import { get, post } from './index'
+import { API_BASE_URL } from '@/utils/constants'
 
 export type PluginCliConflictStrategy = 'rename' | 'fail'
 export type PluginCliPackMode = 'selected' | 'single' | 'bundle' | 'all'
@@ -204,4 +205,73 @@ export function unpackPluginPackage(payload: PluginCliUnpackRequest): Promise<Pl
  */
 export function analyzePluginBundle(payload: PluginCliAnalyzeRequest): Promise<PluginCliAnalyzeResponse> {
   return post('/plugin-cli/analyze', payload)
+}
+
+// ── Upload & Download ─────────────────────────────────────────────────
+
+export interface PluginCliUploadResult {
+  name: string
+  path: string
+  size_bytes: number
+  modified_at: string
+}
+
+export interface PluginCliUploadAndUnpackResult {
+  upload: PluginCliUploadResult
+  unpack: PluginCliUnpackResponse
+}
+
+/**
+ * 上传插件包文件到服务器
+ */
+export function uploadPluginPackage(file: File): Promise<PluginCliUploadResult> {
+  const formData = new FormData()
+  formData.append('file', file)
+  return post('/plugin-cli/upload', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 120_000,
+  })
+}
+
+/**
+ * 上传插件包并立即解包安装
+ */
+export function uploadAndUnpackPlugin(
+  file: File,
+  options?: { onConflict?: PluginCliConflictStrategy },
+): Promise<PluginCliUploadAndUnpackResult> {
+  const formData = new FormData()
+  formData.append('file', file)
+  const params = new URLSearchParams()
+  if (options?.onConflict) {
+    params.set('on_conflict', options.onConflict)
+  }
+  const query = params.toString()
+  const url = `/plugin-cli/upload-and-unpack${query ? `?${query}` : ''}`
+  return post(url, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 120_000,
+  })
+}
+
+/**
+ * 构建插件包下载 URL（用于浏览器直接下载）
+ */
+export function getPluginPackageDownloadUrl(packageName: string): string {
+  const params = new URLSearchParams({ package: packageName })
+  return `${API_BASE_URL}/plugin-cli/download?${params.toString()}`
+}
+
+/**
+ * 触发浏览器下载插件包
+ */
+export function downloadPluginPackage(packageName: string): void {
+  const url = getPluginPackageDownloadUrl(packageName)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = packageName
+  link.style.display = 'none'
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
 }

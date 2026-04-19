@@ -18,32 +18,53 @@
             </div>
 
             <div class="header-actions">
-              <el-button
-                :type="packagePanelVisible ? 'primary' : 'default'"
-                plain
+              <button
+                class="header-btn header-btn--accent"
+                :disabled="importing"
+                @click="triggerImportFile"
+              >
+                <el-icon><Upload /></el-icon>
+                <span>{{ importing ? $t('plugins.importing') : $t('plugins.import') }}</span>
+              </button>
+              <input
+                ref="importFileInputRef"
+                type="file"
+                accept=".neko-plugin,.neko-bundle"
+                class="import-file-input"
+                @change="handleImportFileChange"
+              />
+              <button
+                class="header-btn"
+                :class="{ 'header-btn--active': packagePanelVisible }"
                 @click="togglePackagePanel"
               >
-                {{ packagePanelVisible ? $t('plugins.closePackageManager') : $t('plugins.openPackageManager') }}
-              </el-button>
-              <el-button
-                :type="showMetrics ? 'success' : 'default'"
-                :icon="DataAnalysis"
+                <el-icon><Box /></el-icon>
+                <span>{{ packagePanelVisible ? $t('plugins.closePackageManager') : $t('plugins.openPackageManager') }}</span>
+              </button>
+              <button
+                class="header-btn"
+                :class="{ 'header-btn--active header-btn--success': showMetrics }"
                 @click="toggleMetrics"
               >
-                {{ showMetrics ? $t('plugins.hideMetrics') : $t('plugins.showMetrics') }}
-              </el-button>
-              <el-button
-                type="warning"
-                :icon="RefreshRight"
-                :loading="reloadingAll"
-                :disabled="runningPlugins.length === 0"
+                <el-icon><DataAnalysis /></el-icon>
+                <span>{{ showMetrics ? $t('plugins.hideMetrics') : $t('plugins.showMetrics') }}</span>
+              </button>
+              <button
+                class="header-btn header-btn--warn"
+                :disabled="reloadingAll || runningPlugins.length === 0"
                 @click="handleReloadAll"
               >
-                {{ $t('plugins.reloadAll') }}
-              </el-button>
-              <el-button type="primary" :icon="Refresh" :loading="loading" @click="handleRefresh">
-                {{ $t('common.refresh') }}
-              </el-button>
+                <el-icon><RefreshRight /></el-icon>
+                <span>{{ $t('plugins.reloadAll') }}</span>
+              </button>
+              <button
+                class="header-btn header-btn--primary"
+                :disabled="loading"
+                @click="handleRefresh"
+              >
+                <el-icon><Refresh /></el-icon>
+                <span>{{ $t('common.refresh') }}</span>
+              </button>
             </div>
           </div>
 
@@ -234,6 +255,15 @@
               <el-icon><Delete /></el-icon>
               <span>{{ $t('plugins.delete') }}</span>
             </button>
+            <div class="floating-select-bar__batch-divider" />
+            <button
+              class="fab-action fab-action--batch fab-action--export"
+              :disabled="batchBusy"
+              @click="handleBatchExport"
+            >
+              <el-icon><Download /></el-icon>
+              <span>{{ $t('plugins.export') }}</span>
+            </button>
           </div>
         </Transition>
 
@@ -303,7 +333,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Expand, Operation, Finished, Sort, CircleClose, Close, Grid, VideoPlay, VideoPause, Delete } from '@element-plus/icons-vue'
+import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Expand, Operation, Finished, Sort, CircleClose, Close, Grid, VideoPlay, VideoPause, Delete, Upload, Download } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
@@ -314,6 +344,7 @@ import PackageManagerPanel from '@/components/plugin/PackageManagerPanel.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import { reloadAllPlugins, deletePlugin } from '@/api/plugins'
+import { uploadAndUnpackPlugin, packPluginCli, downloadPluginPackage } from '@/api/pluginCli'
 import { usePluginListContextActions, type ResolvedPluginListAction } from '@/composables/usePluginListContextActions'
 import { usePluginWorkbench } from '@/composables/usePluginWorkbench'
 import { METRICS_REFRESH_INTERVAL } from '@/utils/constants'
@@ -329,6 +360,8 @@ const { buildActions, executeAction, shouldUseHoldConfirm } = usePluginListConte
 
 const reloadingAll = ref(false)
 const batchBusy = ref(false)
+const importing = ref(false)
+const importFileInputRef = ref<HTMLInputElement | null>(null)
 const packagePanelVisible = ref(false)
 const contextMenuVisible = ref(false)
 const contextMenuPosition = ref({ x: 0, y: 0 })
@@ -715,6 +748,81 @@ const runningPlugins = computed(() => {
   return rawNormalPlugins.value.filter((plugin) => plugin.status === 'running' && plugin.enabled !== false)
 })
 
+// ── Import (upload + unpack) ───────────────────────────────────────────
+
+function triggerImportFile() {
+  importFileInputRef.value?.click()
+}
+
+async function handleImportFileChange(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+
+  // Reset input so the same file can be re-selected
+  input.value = ''
+
+  importing.value = true
+  try {
+    const result = await uploadAndUnpackPlugin(file)
+    const count = result.unpack.unpacked_plugin_count ?? 0
+    ElMessage.success(t('plugins.importSuccess', { name: file.name, count }))
+    await handleRefresh()
+  } catch (error: any) {
+    console.error('Failed to import plugin package:', error)
+    const detail = error?.response?.data?.detail || error?.message || ''
+    if (detail) {
+      ElMessage.error(t('plugins.importFailed') + ': ' + detail)
+    }
+  } finally {
+    importing.value = false
+  }
+}
+
+// ── Export (pack + download) ──────────────────────────────────────────
+
+async function handleBatchExport() {
+  const plugins = getSelectedPlugins()
+  if (plugins.length === 0) return
+
+  const ids = plugins.map((p) => p.id)
+  const isSingle = ids.length === 1
+
+  batchBusy.value = true
+  try {
+    const result = await packPluginCli(
+      isSingle
+        ? { mode: 'single', plugin: ids[0] }
+        : { mode: 'bundle', plugins: ids },
+    )
+
+    if (result.packed.length === 0) {
+      ElMessage.error(t('plugins.exportPackFailed'))
+      return
+    }
+
+    // Download each packed file
+    for (const packed of result.packed) {
+      const packagePath = packed.package_path
+      // Extract just the filename from the full path
+      const packageName = packagePath.split('/').pop() || packagePath.split('\\').pop() || packagePath
+      downloadPluginPackage(packageName)
+    }
+
+    ElMessage.success(t('plugins.exportSuccess', { count: result.packed.length }))
+  } catch (error: any) {
+    console.error('Failed to export plugins:', error)
+    const detail = error?.response?.data?.detail || error?.message || ''
+    if (detail) {
+      ElMessage.error(t('plugins.exportFailed') + ': ' + detail)
+    }
+  } finally {
+    batchBusy.value = false
+  }
+}
+
+// ── Batch operations ──────────────────────────────────────────────────
+
 function getSelectedPlugins() {
   return rawPlugins.value.filter((p) => selectedPluginIds.value.includes(p.id))
 }
@@ -996,6 +1104,118 @@ onUnmounted(() => {
     0 6px 16px color-mix(in srgb, var(--el-color-primary) 14%, transparent);
 }
 
+/* ── Header action buttons (unified) ── */
+.header-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border: 1px solid color-mix(in srgb, var(--el-border-color) 60%, transparent);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--el-bg-color) 92%, white);
+  color: var(--el-text-color-regular);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease,
+    transform 0.18s ease,
+    box-shadow 0.2s ease;
+}
+
+.header-btn .el-icon {
+  font-size: 15px;
+}
+
+.header-btn:hover {
+  border-color: color-mix(in srgb, var(--el-color-primary) 30%, var(--el-border-color));
+  color: var(--el-color-primary);
+  background: color-mix(in srgb, var(--el-color-primary) 6%, var(--el-bg-color));
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--el-color-primary) 10%, transparent);
+}
+
+.header-btn:active {
+  transform: translateY(0) scale(0.97);
+}
+
+.header-btn:disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+/* Active state (toggled on) */
+.header-btn--active {
+  border-color: color-mix(in srgb, var(--el-color-primary) 40%, var(--el-border-color));
+  color: var(--el-color-primary);
+  background: color-mix(in srgb, var(--el-color-primary) 8%, var(--el-bg-color));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--el-color-primary) 12%, transparent);
+}
+
+/* Color variants */
+.header-btn--accent {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--el-color-success) 40%, var(--el-border-color));
+  color: var(--el-color-success);
+  background: color-mix(in srgb, var(--el-color-success) 4%, var(--el-bg-color));
+}
+
+.header-btn--accent:hover {
+  border-color: var(--el-color-success);
+  color: var(--el-color-success);
+  background: color-mix(in srgb, var(--el-color-success) 10%, var(--el-bg-color));
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--el-color-success) 16%, transparent);
+}
+
+.header-btn--primary {
+  border-color: color-mix(in srgb, var(--el-color-primary) 30%, var(--el-border-color));
+  color: var(--el-color-primary);
+  background: color-mix(in srgb, var(--el-color-primary) 4%, var(--el-bg-color));
+}
+
+.header-btn--primary:hover {
+  border-color: var(--el-color-primary);
+  background: color-mix(in srgb, var(--el-color-primary) 10%, var(--el-bg-color));
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--el-color-primary) 16%, transparent);
+}
+
+.header-btn--success {
+  border-color: color-mix(in srgb, var(--el-color-success) 30%, var(--el-border-color));
+  color: var(--el-color-success);
+  background: color-mix(in srgb, var(--el-color-success) 4%, var(--el-bg-color));
+}
+
+.header-btn--success:hover {
+  border-color: var(--el-color-success);
+  background: color-mix(in srgb, var(--el-color-success) 10%, var(--el-bg-color));
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--el-color-success) 16%, transparent);
+}
+
+.header-btn--warn {
+  border-color: color-mix(in srgb, var(--el-color-warning) 30%, var(--el-border-color));
+  color: var(--el-color-warning);
+  background: color-mix(in srgb, var(--el-color-warning) 4%, var(--el-bg-color));
+}
+
+.header-btn--warn:hover {
+  border-color: var(--el-color-warning);
+  background: color-mix(in srgb, var(--el-color-warning) 10%, var(--el-bg-color));
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--el-color-warning) 16%, transparent);
+}
+
+.import-file-input {
+  display: none;
+}
+
+/* ── Export button in batch row ── */
+.fab-action--export:hover {
+  background: color-mix(in srgb, var(--el-color-primary) 10%, transparent);
+  color: var(--el-color-primary);
+}
+
 /* ── Floating bottom action bar ── */
 .floating-select-bar {
   position: fixed;
@@ -1235,15 +1455,11 @@ onUnmounted(() => {
 
 .header-actions {
   display: flex;
-  gap: 12px;
+  gap: 8px;
   align-items: center;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   justify-content: flex-end;
   min-width: 0;
-}
-
-.header-actions :deep(.el-button) {
-  --el-button-border-radius: var(--radius-control);
 }
 
 /* ── Filter bar ── */
