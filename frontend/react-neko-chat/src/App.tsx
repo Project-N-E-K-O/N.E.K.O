@@ -809,21 +809,6 @@ export default function App({
     }
   }, [messages, pendingDrafts]);
 
-  // Merge host messages + optimistic pending drafts
-  const lastUserAuthor = [...messages].reverse().find(m => m.role === 'user')?.author;
-  const allMessages = useMemo(() => {
-    if (pendingDrafts.length === 0) return messages;
-    const optimistic: ChatMessage[] = pendingDrafts.map(d => ({
-      id: d.id,
-      role: 'user' as const,
-      author: lastUserAuthor || 'You',
-      time: d.time,
-      blocks: [{ type: 'text' as const, text: d.text }],
-      status: 'sending' as const,
-    }));
-    return [...messages, ...optimistic];
-  }, [messages, pendingDrafts, lastUserAuthor]);
-
   useEffect(() => {
     if (!toolMenuOpen) return;
 
