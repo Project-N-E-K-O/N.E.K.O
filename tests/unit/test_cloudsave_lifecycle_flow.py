@@ -2,10 +2,32 @@ import contextlib
 import json
 import shutil
 import asyncio
+import threading
 from pathlib import Path
+from queue import Queue
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
+
+
+def _role_state_from_session_managers(session_managers: dict) -> dict:
+    """Build a role_state dict seeded with the given session_managers.
+
+    Post-#855 consolidation: the old module-level ``session_manager`` dict
+    became ``role_state[name].session_manager``. Tests that want to stub
+    shutdown-time behavior construct RoleState stubs here (with live
+    Queue/Event/Lock so any adapter access does not explode).
+    """
+    from main_server import RoleState
+    return {
+        name: RoleState(
+            sync_message_queue=Queue(),
+            sync_shutdown_event=threading.Event(),
+            websocket_lock=asyncio.Lock(),
+            session_manager=session_manager,
+        )
+        for name, session_manager in session_managers.items()
+    }
 
 import pytest
 
@@ -319,7 +341,7 @@ async def test_main_server_shutdown_does_not_reexport_runtime_into_cloudsave_sna
     with patch.object(main_server, "_IS_MAIN_PROCESS", True), \
          patch.object(main_server, "_preload_task", None), \
          patch.object(main_server, "agent_event_bridge", None), \
-         patch.object(main_server, "session_manager", {}), \
+         patch.object(main_server, "role_state", _role_state_from_session_managers({})), \
          patch.object(main_server, "_run_cloudsave_manager_action", AsyncMock()) as run_cloudsave_action, \
          patch("utils.music_crawlers.close_all_crawlers", AsyncMock(return_value=None)), \
          patch("utils.token_tracker.TokenTracker.get_instance", return_value=fake_tracker):
@@ -370,7 +392,7 @@ async def test_main_server_shutdown_releases_live_sessions_then_uploads_existing
          patch.object(main_server, "_preload_task", None), \
          patch.object(main_server, "agent_event_bridge", None), \
          patch.object(main_server, "steamworks", existing_steamworks), \
-         patch.object(main_server, "session_manager", {"角色A": manager_with_resampler, "角色B": object(), "空槽": None}), \
+         patch.object(main_server, "role_state", _role_state_from_session_managers({"角色A": manager_with_resampler, "角色B": object(), "空槽": None})), \
          patch.object(main_server, "_run_cloudsave_manager_action", run_cloudsave_action), \
          patch("main_routers.characters_router.release_memory_server_character", AsyncMock(return_value=True)) as mock_release, \
          patch("utils.language_utils.aclose_translation_service", AsyncMock(return_value=None), create=True), \
@@ -401,7 +423,7 @@ async def test_main_server_shutdown_continues_when_memory_release_returns_false(
          patch.object(main_server, "_preload_task", None), \
          patch.object(main_server, "agent_event_bridge", None), \
          patch.object(main_server, "steamworks", None), \
-         patch.object(main_server, "session_manager", {"角色A": object(), "角色B": object()}), \
+         patch.object(main_server, "role_state", _role_state_from_session_managers({"角色A": object(), "角色B": object()})), \
          patch.object(main_server, "_run_cloudsave_manager_action", AsyncMock()) as run_cloudsave_action, \
          patch("main_routers.characters_router.release_memory_server_character", AsyncMock(side_effect=[True, False])) as mock_release, \
          patch("utils.language_utils.aclose_translation_service", AsyncMock(return_value=None), create=True), \
@@ -467,7 +489,7 @@ async def test_main_server_shutdown_requests_memory_server_stop_after_snapshot_u
          patch.object(main_server, "_preload_task", None), \
          patch.object(main_server, "agent_event_bridge", None), \
          patch.object(main_server, "steamworks", None), \
-         patch.object(main_server, "session_manager", {}), \
+         patch.object(main_server, "role_state", _role_state_from_session_managers({})), \
          patch.object(main_server, "_run_cloudsave_manager_action", AsyncMock()) as run_cloudsave_action, \
          patch.object(main_server, "get_start_config", Mock(return_value=start_config)), \
          patch.object(main_server, "_request_memory_server_shutdown", AsyncMock(side_effect=_fake_request_shutdown)) as mock_request_shutdown, \

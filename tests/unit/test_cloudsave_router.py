@@ -1,8 +1,11 @@
+import asyncio
 import importlib
 import sys
 import json
 import shutil
+import threading
 from pathlib import Path
+from queue import Queue
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -11,6 +14,20 @@ import pytest
 from fastapi.responses import JSONResponse
 
 from main_routers.shared_state import init_shared_state
+
+
+def _make_role_state_for_test(session_managers: dict) -> dict:
+    """See tests/unit/test_character_memory_regression.py for rationale."""
+    from main_server import RoleState
+    return {
+        name: RoleState(
+            sync_message_queue=Queue(),
+            sync_shutdown_event=threading.Event(),
+            websocket_lock=asyncio.Lock(),
+            session_manager=session_manager,
+        )
+        for name, session_manager in session_managers.items()
+    }
 from utils.config_manager import ConfigManager
 from utils.cloudsave_runtime import (
     MaintenanceModeError,
@@ -89,19 +106,20 @@ async def test_cloudsave_router_exposes_summary_and_character_detail():
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
@@ -131,19 +149,20 @@ async def test_cloudsave_router_summary_marks_workshop_item_as_needing_resubscri
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
@@ -189,19 +208,20 @@ async def test_cloudsave_router_summary_marks_workshop_item_as_unavailable():
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
@@ -238,19 +258,20 @@ async def test_cloudsave_router_summary_marks_workshop_item_as_steam_unavailable
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
@@ -312,19 +333,20 @@ async def test_cloudsave_router_summary_enriches_workshop_origin_status_for_loca
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
@@ -379,19 +401,22 @@ async def test_cloudsave_router_upload_download_and_blocking_paths():
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", target_cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={"云端角色": SimpleNamespace(is_active=True, websocket=None)},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state=_make_role_state_for_test({
+                    "云端角色": SimpleNamespace(is_active=True, websocket=None),
+                }),
                 steamworks=None,
                 templates=None,
                 config_manager=target_cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
@@ -405,17 +430,15 @@ async def test_cloudsave_router_upload_download_and_blocking_paths():
             assert blocked_payload["code"] == "ACTIVE_SESSION_BLOCKED"
 
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=target_cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             upload = await cloudsave_router_module.post_cloudsave_character_upload(
@@ -449,19 +472,20 @@ async def test_cloudsave_router_handles_not_found_and_release_failures():
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
@@ -503,19 +527,20 @@ async def test_cloudsave_router_upload_rejects_invalid_overwrite_and_invalid_jso
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
@@ -548,19 +573,20 @@ async def test_cloudsave_router_download_rejects_invalid_flags_and_invalid_json(
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
@@ -609,19 +635,20 @@ async def test_cloudsave_router_download_without_overwrite_returns_conflict_befo
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", target_cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=target_cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
@@ -676,19 +703,20 @@ async def test_cloudsave_router_upload_overwrite_succeeds_for_diverged_character
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", target_cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=target_cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
@@ -740,19 +768,20 @@ async def test_cloudsave_router_download_overwrite_succeeds_for_diverged_charact
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", target_cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=target_cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
@@ -782,19 +811,20 @@ async def test_cloudsave_router_blocks_mutations_when_provider_is_unavailable():
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
@@ -827,19 +857,20 @@ async def test_cloudsave_router_preserves_maintenance_mode_conflicts():
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
@@ -915,19 +946,20 @@ async def test_cloudsave_router_download_reload_failure_rolls_back():
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", target_cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=target_cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
@@ -974,19 +1006,20 @@ async def test_cloudsave_router_download_rollback_reports_notify_reload_false():
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", target_cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=target_cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
@@ -1026,19 +1059,20 @@ async def test_cloudsave_download_does_not_report_rollback_when_no_backup_was_at
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")

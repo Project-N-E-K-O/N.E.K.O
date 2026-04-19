@@ -544,18 +544,24 @@ async def _rollback_character_operation(
     rollback_errors: list[str] = []
 
     try:
-        _restore_snapshot_paths(memory_snapshot_records)
+        await asyncio.to_thread(_restore_snapshot_paths, memory_snapshot_records)
     except Exception as exc:
         rollback_errors.append(f"memory restore failed: {exc}")
 
     try:
-        config_manager.save_characters(characters_snapshot, bypass_write_fence=True)
+        await asyncio.to_thread(
+            config_manager.save_characters,
+            characters_snapshot,
+            bypass_write_fence=True,
+        )
     except Exception as exc:
         rollback_errors.append(f"characters restore failed: {exc}")
 
     if tombstone_snapshot is not None:
         try:
-            config_manager.save_character_tombstones_state(tombstone_snapshot)
+            await asyncio.to_thread(
+                config_manager.save_character_tombstones_state, tombstone_snapshot
+            )
         except Exception as exc:
             rollback_errors.append(f"tombstones restore failed: {exc}")
 
@@ -1631,7 +1637,9 @@ async def rename_catgirl(old_name: str, request: Request):
     memory_server_reloaded = False
 
     with _create_character_operation_backup_dir(_config_manager, "neko-rename-character-") as temp_dir:
-        memory_snapshot_records = _snapshot_existing_paths(memory_targets, Path(temp_dir))
+        memory_snapshot_records = await asyncio.to_thread(
+            _snapshot_existing_paths, memory_targets, Path(temp_dir)
+        )
         try:
             rename_character_memory_storage(_config_manager, old_name, new_name)
 
@@ -2156,18 +2164,23 @@ async def delete_catgirl(name: str):
     memory_targets = list_character_memory_paths(_config_manager, name)
 
     with _create_character_operation_backup_dir(_config_manager, "neko-delete-character-") as temp_dir:
-        memory_snapshot_records = _snapshot_existing_paths(memory_targets, Path(temp_dir))
+        memory_snapshot_records = await asyncio.to_thread(
+            _snapshot_existing_paths, memory_targets, Path(temp_dir)
+        )
         tombstone_snapshot = None
         memory_server_reloaded = False
         try:
             tombstone_snapshot = copy.deepcopy(_config_manager.load_character_tombstones_state())
 
-            removed_memory_paths = delete_character_memory_storage(_config_manager, name)
+            removed_memory_paths = await asyncio.to_thread(
+                delete_character_memory_storage, _config_manager, name
+            )
             for entry_path in removed_memory_paths:
                 logger.info(f"已删除: {entry_path}")
 
-            _config_manager.save_character_tombstones_state(
-                _build_character_tombstones_state(_config_manager, name)
+            await asyncio.to_thread(
+                _config_manager.save_character_tombstones_state,
+                _build_character_tombstones_state(_config_manager, name),
             )
 
             # 删除角色配置

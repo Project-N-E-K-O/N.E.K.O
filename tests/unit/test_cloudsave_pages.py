@@ -19,12 +19,7 @@ class _DummyTemplates:
 async def test_cloudsave_manager_page_renders_with_or_without_character_query():
     templates = _DummyTemplates()
     init_shared_state(
-        sync_message_queue={},
-        sync_shutdown_event={},
-        session_manager={},
-        session_id={},
-        sync_process={},
-        websocket_locks={},
+        role_state={},
         steamworks=None,
         templates=templates,
         config_manager=SimpleNamespace(),

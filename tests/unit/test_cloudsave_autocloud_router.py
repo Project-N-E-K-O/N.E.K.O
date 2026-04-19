@@ -76,23 +76,24 @@ async def test_cloudsave_router_exposes_steam_autocloud_configuration_payload():
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", cm), patch.dict(
             "os.environ",
             {"SteamAppId": "4099310"},
             clear=False,
         ):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=_make_dummy_steamworks(),
                 templates=None,
                 config_manager=cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")

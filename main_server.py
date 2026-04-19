@@ -1428,40 +1428,62 @@ async def on_shutdown():
 
         # Steam Auto-Cloud: 预先释放 memory_server 句柄 + 上传 staged snapshot
         # 必须在关 http pool 之前，因为 release / upload 都依赖 internal_http_client
+        any_release_failed = False
+        failed_release_characters: list[str] = []
         try:
             from main_routers.characters_router import release_memory_server_character
 
-            releasable_names = sorted(
-                name
-                for name, mgr in session_manager.items()
-                if mgr is not None
-            )
-            any_release_failed = False
-            failed_release_characters: list[str] = []
-            for character_name in releasable_names:
+            releasable_names = sorted(name for name, _mgr in _iter_session_managers())
+
+            # 并发释放所有角色句柄：给整体一个 3s 总预算，而不是 N*1s 串行
+            # memory_server 端是独立进程，/release_character 之间没有共享状态依赖，
+            # 可以安全并发；单角色仍设 2.5s 上限避免慢调用拖尾
+            async def _release_one(character_name: str) -> tuple[str, bool, Exception | None]:
                 try:
                     released = await asyncio.wait_for(
                         release_memory_server_character(
                             character_name,
                             reason=f"Steam Auto-Cloud pre-shutdown release: {character_name}",
                         ),
-                        timeout=1.0,
+                        timeout=2.5,
                     )
-                    if not released:
-                        any_release_failed = True
-                        failed_release_characters.append(character_name)
+                    return character_name, bool(released), None
+                except Exception as e:
+                    return character_name, False, e
+
+            if releasable_names:
+                try:
+                    results = await asyncio.wait_for(
+                        asyncio.gather(
+                            *(_release_one(n) for n in releasable_names),
+                            return_exceptions=False,
+                        ),
+                        timeout=3.0,
+                    )
+                except asyncio.TimeoutError:
+                    any_release_failed = True
+                    failed_release_characters = list(releasable_names)
+                    logger.warning(
+                        "Steam Auto-Cloud pre-shutdown release phase exceeded 3.0s budget; assuming all characters not fully released"
+                    )
+                    results = []
+
+                for character_name, ok, err in results:
+                    if ok:
+                        continue
+                    any_release_failed = True
+                    failed_release_characters.append(character_name)
+                    if err is None:
                         logger.warning(
                             "Steam Auto-Cloud pre-shutdown release failed for %s: returned False; uploaded snapshot may be stale/incomplete",
                             character_name,
                         )
-                except Exception as e:
-                    any_release_failed = True
-                    failed_release_characters.append(character_name)
-                    logger.warning(
-                        "Steam Auto-Cloud pre-shutdown release failed for %s: %s; uploaded snapshot may be stale/incomplete",
-                        character_name,
-                        e,
-                    )
+                    else:
+                        logger.warning(
+                            "Steam Auto-Cloud pre-shutdown release failed for %s: %s; uploaded snapshot may be stale/incomplete",
+                            character_name,
+                            err,
+                        )
         except Exception as e:
             any_release_failed = True
             failed_release_characters = ["<release_phase_error>"]

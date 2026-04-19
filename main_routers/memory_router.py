@@ -436,7 +436,9 @@ async def get_review_config():
     try:
         from utils.config_manager import get_config_manager
         config_manager = get_config_manager()
-        config_data = config_manager.load_json_config('core_config.json', default_value={})
+        config_data = await asyncio.to_thread(
+            config_manager.load_json_config, 'core_config.json', default_value={}
+        )
         return {"enabled": config_data.get('recent_memory_auto_review', True)}
     except Exception as e:
         logger.error(f"读取记忆整理配置失败: {e}")
@@ -449,16 +451,20 @@ async def update_review_config(request: Request):
     try:
         data = await request.json()
         enabled = data.get('enabled', True)
-        
+
         from utils.config_manager import get_config_manager
         config_manager = get_config_manager()
-        config_data = config_manager.load_json_config('core_config.json', default_value={})
-        
+        config_data = await asyncio.to_thread(
+            config_manager.load_json_config, 'core_config.json', default_value={}
+        )
+
         # 更新配置
         config_data['recent_memory_auto_review'] = enabled
-        
+
         # 保存配置
-        config_manager.save_json_config('core_config.json', config_data)
+        await asyncio.to_thread(
+            config_manager.save_json_config, 'core_config.json', config_data
+        )
         
         logger.info(f"记忆整理配置已更新: enabled={enabled}")
         return {"success": True, "enabled": enabled}

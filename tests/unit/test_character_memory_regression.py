@@ -1,7 +1,10 @@
+import asyncio
 import importlib
 import json
 import os
+import threading
 from pathlib import Path
+from queue import Queue
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -9,6 +12,28 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from main_routers.shared_state import init_shared_state
+
+
+def _make_role_state_for_test(session_managers: dict) -> dict:
+    """Seed role_state with pre-existing session_managers (new post-#855 API).
+
+    The legacy 6-dict layout (sync_message_queue / sync_shutdown_event /
+    session_manager / session_id / sync_process / websocket_locks) was
+    consolidated into RoleState on main. Tests that only care about
+    seeding session_manager construct stub RoleState entries with live
+    Queue / Event / asyncio.Lock so adapters don't crash on attribute access.
+    """
+    # Import lazily to avoid circular import at module load time
+    from main_server import RoleState
+    return {
+        name: RoleState(
+            sync_message_queue=Queue(),
+            sync_shutdown_event=threading.Event(),
+            websocket_lock=asyncio.Lock(),
+            session_manager=session_manager,
+        )
+        for name, session_manager in session_managers.items()
+    }
 from utils.config_manager import ConfigManager
 from utils.cloudsave_runtime import (
     MaintenanceModeError,
@@ -69,19 +94,20 @@ async def test_character_management_and_recent_save_regression():
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             characters_router_module = reload_module("main_routers.characters_router")
@@ -147,19 +173,20 @@ async def test_character_read_endpoints_disable_caching():
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             characters_router_module = reload_module("main_routers.characters_router")
@@ -185,19 +212,20 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage():
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             characters_router_module = reload_module("main_routers.characters_router")
@@ -279,23 +307,24 @@ async def test_rename_catgirl_rolls_back_memory_and_suppresses_switch_notice_on_
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         websocket = AsyncMock()
 
         with patch("utils.config_manager._config_manager", cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={
+                role_state=_make_role_state_for_test({
                     "旧角色": SimpleNamespace(is_active=False, websocket=websocket, session=None),
-                },
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                }),
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             characters_router_module = reload_module("main_routers.characters_router")
@@ -384,23 +413,24 @@ async def test_rename_catgirl_returns_503_and_keeps_disk_unchanged_when_memory_r
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         websocket = AsyncMock()
 
         with patch("utils.config_manager._config_manager", cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={
+                role_state=_make_role_state_for_test({
                     "旧角色": SimpleNamespace(is_active=False, websocket=websocket, session=None),
-                },
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                }),
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             characters_router_module = reload_module("main_routers.characters_router")
@@ -477,19 +507,20 @@ async def test_rename_catgirl_maintenance_error_preserves_original_exception_typ
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             characters_router_module = reload_module("main_routers.characters_router")
@@ -547,19 +578,20 @@ async def test_deleted_workshop_character_is_not_restored_by_startup_sync():
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             characters_router_module = reload_module("main_routers.characters_router")
@@ -626,19 +658,20 @@ async def test_sync_workshop_character_cards_persists_character_origin_metadata(
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             workshop_router_module = reload_module("main_routers.workshop_router")
@@ -735,19 +768,20 @@ async def test_sync_workshop_character_cards_persists_live3d_workshop_origin_met
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             workshop_router_module = reload_module("main_routers.workshop_router")
@@ -803,19 +837,20 @@ async def test_delete_catgirl_returns_error_when_memory_cleanup_fails():
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             characters_router_module = reload_module("main_routers.characters_router")
@@ -861,19 +896,20 @@ async def test_delete_catgirl_returns_503_when_memory_handle_release_fails_befor
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             characters_router_module = reload_module("main_routers.characters_router")
@@ -909,19 +945,20 @@ async def test_delete_catgirl_rolls_back_tombstone_and_memory_when_persist_failu
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             characters_router_module = reload_module("main_routers.characters_router")
@@ -986,19 +1023,20 @@ async def test_delete_catgirl_rolls_back_when_notify_reload_returns_false():
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             characters_router_module = reload_module("main_routers.characters_router")
@@ -1048,19 +1086,20 @@ async def test_delete_catgirl_maintenance_error_preserves_original_exception_typ
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             characters_router_module = reload_module("main_routers.characters_router")
@@ -1114,19 +1153,20 @@ def test_resolve_live2d_model_binding_keeps_manual_external_url_without_catalog_
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             characters_router_module = reload_module("main_routers.characters_router")
@@ -1161,19 +1201,20 @@ async def test_update_catgirl_l2d_marks_builtin_live2d_as_builtin():
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             characters_router_module = reload_module("main_routers.characters_router")
@@ -1220,19 +1261,20 @@ async def test_character_rollback_reports_notify_reload_false_as_failure():
         async def _noop_init():
             return None
 
+        async def _noop_any(*args, **kwargs):
+            return None
+
         with patch("utils.config_manager._config_manager", cm):
             init_shared_state(
-                sync_message_queue={},
-                sync_shutdown_event={},
-                session_manager={},
-                session_id={},
-                sync_process={},
-                websocket_locks={},
+                role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
                 logger=None,
                 initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
             )
 
             characters_router_module = reload_module("main_routers.characters_router")
