@@ -884,7 +884,10 @@
         }
 
         host.setOnComposerSubmit(function (detail) {
-            return mod.sendTextPayload(detail && detail.text, { source: 'react-chat-window' });
+            return mod.sendTextPayload(detail && detail.text, {
+                source: 'react-chat-window',
+                requestId: detail && detail.requestId
+            });
         });
         host.setOnComposerImportImage(function () {
             return mod.openImageImportPicker();
@@ -1074,6 +1077,8 @@
                     window.startSilenceDetection();
                     window.monitorInputVolume();
                 }, 1000);
+
+                window.dispatchEvent(new CustomEvent('neko:voice-session-started'));
 
                 window.isMicStarting = false;
                 S.isSwitchingMode = false;
@@ -1409,9 +1414,18 @@
             options = options || {};
             var text = String(typeof rawText === 'string' ? rawText : '').trim();
             var hasScreenshots = screenshotsList.children.length > 0;
+            var requestId = (typeof options.requestId === 'string' && options.requestId)
+                ? options.requestId
+                : ('req-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
+
+            // Store last submitted text for rollback on RESPONSE_TOO_LONG.
+            // Clear stale text for pure-screenshot submissions.
+            window._lastSubmittedText = text;
+            window._lastSubmittedRequestId = text ? requestId : '';
             var isReactWindowSource = options.source === 'react-chat-window';
             var reactOptimisticMessageId = '';
             var reactOptimisticMessageAppended = null;
+            var sentUserContent = false;
 
             if (!text && !hasScreenshots) return false;
 
@@ -1557,6 +1571,7 @@
                                 skipReactSync: true
                             });
                         }
+                        sentUserContent = true;
 
                         // Achievement: send image
                         if (window.unlockAchievement) {
@@ -1585,7 +1600,8 @@
                         S.socket.send(JSON.stringify({
                             action: 'stream_data',
                             data: text,
-                            input_type: 'text'
+                            input_type: 'text',
+                            request_id: requestId
                         }));
 
                         if (!options.preserveInputValue) {
@@ -1596,6 +1612,7 @@
                                 skipReactSync: sentImageUrls.length > 0
                             });
                         }
+                        sentUserContent = true;
 
                         // Achievement: meow detection
                         if (window.incrementAchievementCounter) {
@@ -1625,6 +1642,10 @@
                     }
 
                     updateReactOptimisticMessageStatus('sent');
+
+                    if (sentUserContent) {
+                        window.dispatchEvent(new CustomEvent('neko:user-content-sent'));
+                    }
 
                     // Reset proactive chat timer
                     if (S.proactiveChatEnabled && window.hasAnyChatModeEnabled()) {

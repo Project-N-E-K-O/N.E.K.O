@@ -42,6 +42,25 @@
         "toneMappingAgX": "AgX",
         "toneMappingNeutral": "Neutral"
     },
+    "autostartPrompt": {
+        "title": "要不要让 N.E.K.O 开机自动启动？",
+        "message": "这样下次打开电脑后，N.E.K.O 会自动准备好，不用你再手动启动。",
+        "note": "只会为当前用户开启，之后也可以随时关闭。",
+        "startNow": "开启自启动",
+        "later": "稍后再说",
+        "never": "不再提示",
+        "enableFailed": "暂时无法开启开机自启动，请稍后再试",
+        "requiresApproval": "需要先在系统设置里批准开机自启动，批准后会自动生效"
+    },
+    "tutorialPrompt": {
+        "title": "要不要开始主页新手引导？",
+        "message": "我可以带你快速认识主页上的核心入口，用最短路径上手 N.E.K.O。",
+        "note": "整个过程随时都可以跳过，也可以之后再从记忆浏览里重新打开。",
+        "startNow": "开始引导",
+        "later": "稍后再说",
+        "never": "不再提示",
+        "startFailed": "暂时无法开始新手引导，请稍后再试"
+    },
     "characterProfile": {
         "gender": "性别",
         "age": "年龄",
@@ -517,6 +536,7 @@
         "RESPONSE_TIMEOUT": "💥 连接超时 (Response timeout)，语音对话已中断。",
         "CONNECTION_TIMEOUT": "💥 连接超时，请检查网络连接。",
         "RESPONSE_TOO_LONG": "回复过长，已放弃输出（可在配置中调大 TEXT_GUARD_MAX_LENGTH）",
+        "INPUT_TOO_LONG": "输入过长，请精简后重试",
         "RESPONSE_INVALID": "AI回复不符合要求，已放弃输出",
         "NO_USER_MESSAGE": "⚠️ 对话历史中没有用户消息，无法生成回复",
         "LLM_RETRY": "⚠️ LLM {{error_type}}，正在重试（{{attempt}}/{{max_retries}}）...",
@@ -566,6 +586,8 @@
         "tooltip": "对话区",
         "textInputPlaceholder": "回车发送，Shift+回车换行",
         "send": "发送",
+        "inputTooLong": "消息过长（{{count}}/{{max}}），请精简后重试",
+        "responseTooLong": "唔主人你让人家想太多了，人家想不过来了啦！",
         "importImage": "导入图片",
         "importImageAriaLabel": "导入图片",
         "screenshot": "截图",

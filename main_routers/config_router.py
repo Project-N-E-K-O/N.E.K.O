@@ -15,7 +15,7 @@ import os
 import threading
 import urllib.parse
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
 from .shared_state import get_config_manager, get_steamworks, get_session_manager, get_initialize_character_data
@@ -25,6 +25,7 @@ from utils.preferences import aload_user_preferences, update_model_preferences, 
 from utils.logger_config import get_module_logger
 from utils.config_manager import get_reserved
 from config import (
+    AUTOSTART_CSRF_TOKEN,
     CHARACTER_SYSTEM_RESERVED_FIELDS,
     CHARACTER_WORKSHOP_RESERVED_FIELDS,
     CHARACTER_RESERVED_FIELDS,
@@ -200,9 +201,12 @@ def _resolve_mmd_path(mmd_path: str, _config_manager, target_name: str) -> str:
 
 
 @router.get("/page_config")
-async def get_page_config(lanlan_name: str = ""):
+async def get_page_config(response: Response, lanlan_name: str = ""):
     """获取页面配置(lanlan_name 和 model_path),支持Live2D、VRM和MMD(Live3D)模型"""
     try:
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+
         # 获取角色数据
         _config_manager = get_config_manager()
         master_name, her_name, master_basic_config, lanlan_basic_config, _, _, _, _, _ = await _config_manager.aget_character_data()
@@ -281,6 +285,7 @@ async def get_page_config(lanlan_name: str = ""):
             "master_profile_name": str(master_basic_config.get('档案名', '') or ''),
             "master_nickname": str(master_basic_config.get('昵称', '') or ''),
             "master_display_name": master_display_name or "",
+            "autostart_csrf_token": AUTOSTART_CSRF_TOKEN,
             "model_path": model_path,
             "model_type": model_type,
             "lighting": lighting,
@@ -298,6 +303,7 @@ async def get_page_config(lanlan_name: str = ""):
             "master_profile_name": "",
             "master_nickname": "",
             "master_display_name": "",
+            "autostart_csrf_token": AUTOSTART_CSRF_TOKEN,
             "model_path": "",
             "model_type": ""
         }

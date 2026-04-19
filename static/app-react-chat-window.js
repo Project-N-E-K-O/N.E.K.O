@@ -35,7 +35,9 @@
         onComposerScreenshot: null,
         onComposerRemoveAttachment: null,
         onComposerSubmit: null,
-        onAvatarInteraction: null
+        onAvatarInteraction: null,
+        pendingRollbackDrafts: Object.create(null),
+        rollbackDraft: ''
     };
 
     var MOBILE_MAX_HEIGHT_RATIO = 0.85;
@@ -387,9 +389,14 @@
     }
 
     function buildRenderProps() {
+        if (state.rollbackDraft) {
+            console.log('[ROLLBACK] buildRenderProps: rollbackDraftPresent=true length=' + state.rollbackDraft.length + ' key=' + state._rollbackKey);
+        }
         return Object.assign({}, ensureViewProps(), {
             messages: state.messages,
             composerAttachments: state.composerAttachments,
+            rollbackDraft: state.rollbackDraft || undefined,
+            _rollbackKey: state._rollbackKey || undefined,
             composerHidden: state.composerHidden,
             onMessageAction: handleMessageAction,
             onComposerImportImage: handleComposerImportImage,
@@ -642,12 +649,29 @@
     }
 
     function handleComposerSubmit(payload) {
+        var requestId = payload && typeof payload.requestId === 'string' && payload.requestId
+            ? payload.requestId
+            : ('req-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
         var detail = {
-            text: payload && typeof payload.text === 'string' ? payload.text : ''
+            text: payload && typeof payload.text === 'string' ? payload.text : '',
+            requestId: requestId
         };
 
         var hasAttachments = state.composerAttachments && state.composerAttachments.length > 0;
         if (!detail.text.trim() && !hasAttachments) return;
+
+        // Store last submitted text for rollback on RESPONSE_TOO_LONG
+        // Preserve original whitespace so rollback restores exactly what the user typed
+        if (detail.text.trim()) {
+            state.pendingRollbackDrafts[detail.requestId] = detail.text;
+        } else {
+            delete state.pendingRollbackDrafts[detail.requestId];
+        }
+        // Clear any stale rollback so it won't overwrite this new draft
+        if (state.rollbackDraft) {
+            console.log('[ROLLBACK] handleComposerSubmit: clearing rollbackDraft length=' + state.rollbackDraft.length + ' key=' + state._rollbackKey);
+        }
+        state.rollbackDraft = '';
 
         if (typeof state.onComposerSubmit === 'function') {
             try {
@@ -656,7 +680,7 @@
                 console.error('[ReactChatWindow] onComposerSubmit failed:', error);
             }
         } else if (window.appButtons && typeof window.appButtons.sendTextPayload === 'function') {
-            window.appButtons.sendTextPayload(detail.text, { source: 'react-chat-window' });
+            window.appButtons.sendTextPayload(detail.text, { source: 'react-chat-window', requestId: detail.requestId });
         } else {
             var input = $('textInputBox');
             var sendButton = $('textSendButton');
@@ -733,6 +757,28 @@
         }
 
         dispatchHostEvent('remove-attachment', { attachmentId: attachmentId });
+    }
+
+    /**
+     * Rollback last submitted text to the React composer input.
+     * Called when backend discards response due to RESPONSE_TOO_LONG.
+     */
+    function rollbackLastDraft(requestId) {
+        var rollbackText = (requestId && Object.prototype.hasOwnProperty.call(state.pendingRollbackDrafts, requestId))
+            ? state.pendingRollbackDrafts[requestId]
+            : '';
+        if (!rollbackText) return;
+        // Use a unique key each time so React useEffect can distinguish invocations
+        state.rollbackDraft = rollbackText;
+        state._rollbackKey = 'rb-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+        delete state.pendingRollbackDrafts[requestId];
+        console.log('[ROLLBACK] rollbackLastDraft: rollbackDraftPresent=true length=' + state.rollbackDraft.length + ' key=' + state._rollbackKey);
+        renderWindow();
+    }
+
+    function clearPendingRollbackDraft(requestId) {
+        if (!requestId) return;
+        delete state.pendingRollbackDrafts[requestId];
     }
 
     function handleJukeboxClick() {
@@ -1819,6 +1865,8 @@
         setOnAvatarInteraction: function (handler) {
             state.onAvatarInteraction = typeof handler === 'function' ? handler : null;
         },
+        rollbackLastDraft: rollbackLastDraft,
+        clearPendingRollbackDraft: clearPendingRollbackDraft,
         isMounted: function () { return mounted; }
     };
 })();
