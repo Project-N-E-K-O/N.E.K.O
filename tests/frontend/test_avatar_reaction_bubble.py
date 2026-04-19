@@ -1695,3 +1695,52 @@ def test_live2d_manager_keeps_hitareas_for_non_chibi_models(mock_page: Page, run
     assert selected["bodySource"] == "hitArea"
     assert selected["headTop"] == 116
     assert selected["bodyTop"] == 244
+
+
+@pytest.mark.frontend
+def test_live2d_face_mode_rect_expands_to_full_head(mock_page: Page, running_server: str):
+    """Regression test: face-mode head rects expand to include hair/top-of-head for bubble sizing."""
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        "() => !!(window.live2dManager && window.live2dManager._normalizeBubbleHeadRect)",
+        timeout=10000,
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const manager = window.live2dManager;
+            const bounds = {
+                left: 96, top: 48, right: 416, bottom: 860,
+                width: 320, height: 812, centerX: 256, centerY: 454
+            };
+            const faceRect = {
+                left: 210, top: 180, right: 302, bottom: 290,
+                width: 92, height: 110, centerX: 256, centerY: 235
+            };
+            const bodyRect = {
+                left: 160, top: 340, right: 352, bottom: 780,
+                width: 192, height: 440, centerX: 256, centerY: 560
+            };
+
+            const expanded = manager._normalizeBubbleHeadRect(
+                faceRect, bounds, bodyRect, 'hitArea', 'face'
+            );
+            const original = manager._normalizeBubbleHeadRect(
+                faceRect, bounds, bodyRect, 'hitArea', null
+            );
+            return {
+                expandedWidth: expanded?.width || 0,
+                expandedTop: expanded?.top || 0,
+                originalWidth: original?.width || 0,
+                originalTop: original?.top || 0,
+                expandedHeight: expanded?.height || 0,
+                originalHeight: original?.height || 0
+            };
+        }
+        """
+    )
+
+    assert result["expandedWidth"] > result["originalWidth"]
+    assert result["expandedTop"] < result["originalTop"]
+    assert result["expandedHeight"] > result["originalHeight"]

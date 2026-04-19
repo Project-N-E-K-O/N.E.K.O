@@ -2710,7 +2710,7 @@ class Live2DManager {
             : this._createBubbleBodyProxyRect(headRect, bounds, bodyRect);
     }
 
-    _normalizeBubbleHeadRect(headRect, bounds, bodyRect, headSource) {
+    _normalizeBubbleHeadRect(headRect, bounds, bodyRect, headSource, headMode) {
         if (!this._hasValidBubbleScreenRect(headRect) || !bounds) {
             return headRect;
         }
@@ -2724,7 +2724,61 @@ class Live2DManager {
             ) || headRect;
         }
 
+        if (headMode === 'face') {
+            return this._expandFaceModeRectToFullHead(
+                headRect, bounds, bodyRect
+            ) || headRect;
+        }
+
         return headRect;
+    }
+
+    _expandFaceModeRectToFullHead(rect, bounds, bodyRect) {
+        if (!rect || !bounds) {
+            return rect;
+        }
+
+        const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+        const widthRatio = rect.width / Math.max(1, bounds.width);
+        const heightRatio = rect.height / Math.max(1, bounds.height);
+
+        if (widthRatio >= 0.48 || heightRatio >= 0.38) {
+            return rect;
+        }
+
+        const expandedWidth = clamp(
+            rect.width * 1.3,
+            rect.width * 1.2,
+            Math.min(bounds.width * 0.58, rect.width * 1.45)
+        );
+        const topExtension = rect.height * 0.3;
+        let newTop = rect.top - topExtension;
+        let newBottom = rect.bottom;
+
+        if (this._hasValidBubbleScreenRect(bodyRect)) {
+            const bodyCap = bodyRect.top + bodyRect.height * 0.15;
+            if (newBottom > bodyCap && bodyCap > newTop + expandedWidth * 0.4) {
+                newBottom = bodyCap;
+            }
+        }
+
+        newTop = Math.max(bounds.top, newTop);
+        newBottom = Math.min(bounds.top + bounds.height, newBottom);
+        if (newBottom - newTop < rect.height * 1.15) {
+            newBottom = newTop + rect.height * 1.25;
+            newBottom = Math.min(bounds.top + bounds.height, newBottom);
+        }
+
+        const centerX = Number.isFinite(rect.centerX)
+            ? rect.centerX
+            : rect.left + rect.width * 0.5;
+
+        return this._createScreenRect(
+            centerX - expandedWidth * 0.5,
+            newTop,
+            centerX + expandedWidth * 0.5,
+            newBottom
+        ) || rect;
     }
 
     _shouldUseBubbleDrawableHeadProxy(headRect, bounds, bodyRect, headSource) {
@@ -2988,7 +3042,8 @@ class Live2DManager {
             headInfo?.rect || null,
             bounds,
             bodyInfo?.rect || null,
-            headInfo?.source || null
+            headInfo?.source || null,
+            headInfo?.mode || null
         );
         const rawBodyRect = bodyInfo?.rect || null;
         const headMode = headInfo?.mode || null;
