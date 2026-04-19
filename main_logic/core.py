@@ -1649,8 +1649,8 @@ class LLMSessionManager:
             async def _fetch_new_dialog():
                 """独立任务：取 /new_dialog 响应。在 gather 之前就 kick off，
                 主动避开 TTS worker 启动时的 GIL 争用窗口。"""
-                from utils.memory_client import get_memory_client
-                _mem_client = get_memory_client()
+                from utils.internal_http_client import get_internal_http_client
+                _mem_client = get_internal_http_client()
                 try:
                     resp = await _mem_client.get(
                         f"http://127.0.0.1:{_dlg_port}/new_dialog/{_dlg_lanlan}",
@@ -2004,31 +2004,36 @@ class LLMSessionManager:
         """Query agent server for active tasks and return a prompt snippet."""
         if not self._is_agent_enabled():
             return ""
+        # 复用 internal_http_client 单例：agent mode session init 走此路径，
+        # TOOL_SERVER_PORT 也是 127.0.0.1 内部服务
         try:
-            async with httpx.AsyncClient(timeout=1.5, proxy=None, trust_env=False) as client:
-                resp = await client.get(f"http://127.0.0.1:{TOOL_SERVER_PORT}/tasks")
-                if resp.status_code != 200:
-                    return ""
-                data = resp.json()
-                tasks = data.get("tasks", [])
-                active = [t for t in tasks if t.get("status") in ("running", "queued")]
-                if not active:
-                    return ""
-                _lang = normalize_language_code(self.user_language, format='short')
-                lines = []
-                for t in active:
-                    params = t.get("params") or {}
-                    desc = params.get("query") or params.get("instruction") or t.get("original_query") or t.get("id", "")[:8]
-                    status = _loc(AGENT_TASK_STATUS_RUNNING, _lang) if t.get("status") == "running" else _loc(AGENT_TASK_STATUS_QUEUED, _lang)
-                    lines.append(f"  - [{status}] {desc}")
-                if len(lines) > 0:
-                    return (
-                        _loc(AGENT_TASKS_HEADER, _lang)
-                        + "\n".join(lines)
-                        + _loc(AGENT_TASKS_NOTICE, _lang)
-                    )
-                else:
-                    return ""
+            from utils.internal_http_client import get_internal_http_client
+            client = get_internal_http_client()
+            resp = await client.get(
+                f"http://127.0.0.1:{TOOL_SERVER_PORT}/tasks", timeout=1.5,
+            )
+            if resp.status_code != 200:
+                return ""
+            data = resp.json()
+            tasks = data.get("tasks", [])
+            active = [t for t in tasks if t.get("status") in ("running", "queued")]
+            if not active:
+                return ""
+            _lang = normalize_language_code(self.user_language, format='short')
+            lines = []
+            for t in active:
+                params = t.get("params") or {}
+                desc = params.get("query") or params.get("instruction") or t.get("original_query") or t.get("id", "")[:8]
+                status = _loc(AGENT_TASK_STATUS_RUNNING, _lang) if t.get("status") == "running" else _loc(AGENT_TASK_STATUS_QUEUED, _lang)
+                lines.append(f"  - [{status}] {desc}")
+            if len(lines) > 0:
+                return (
+                    _loc(AGENT_TASKS_HEADER, _lang)
+                    + "\n".join(lines)
+                    + _loc(AGENT_TASKS_NOTICE, _lang)
+                )
+            else:
+                return ""
         except Exception:
             return ""
 
@@ -2143,8 +2148,8 @@ class LLMSessionManager:
             
             initial_prompt = await self._build_initial_prompt()
             self.initial_cache_snapshot_len = len(self.message_cache_for_new_session)
-            from utils.memory_client import get_memory_client
-            _hs_client = get_memory_client()
+            from utils.internal_http_client import get_internal_http_client
+            _hs_client = get_internal_http_client()
             try:
                 resp = await _hs_client.get(
                     f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}",
@@ -2732,13 +2737,19 @@ class LLMSessionManager:
             logger.info("[%s] trigger_greeting: voice session active/starting, skipping", self.lanlan_name)
             return
 
+        # 复用 internal_http_client 单例：session 启动路径，避开 AsyncClient 构造开销
+        # （Windows idle 157ms，事件循环压力下可达 1.1s，详见 utils/internal_http_client.py）
         try:
-            async with httpx.AsyncClient(timeout=2.0, proxy=None, trust_env=False) as client:
-                resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/last_conversation_gap/{self.lanlan_name}")
-                if not resp.is_success:
-                    logger.warning("[%s] trigger_greeting: memory server returned %s", self.lanlan_name, resp.status_code)
-                    return
-                gap_seconds = resp.json().get("gap_seconds", -1)
+            from utils.internal_http_client import get_internal_http_client
+            _mem_client = get_internal_http_client()
+            resp = await _mem_client.get(
+                f"http://127.0.0.1:{self.memory_server_port}/last_conversation_gap/{self.lanlan_name}",
+                timeout=2.0,
+            )
+            if not resp.is_success:
+                logger.warning("[%s] trigger_greeting: memory server returned %s", self.lanlan_name, resp.status_code)
+                return
+            gap_seconds = resp.json().get("gap_seconds", -1)
         except Exception as e:
             logger.warning("[%s] trigger_greeting: failed to query gap: %s", self.lanlan_name, e)
             return

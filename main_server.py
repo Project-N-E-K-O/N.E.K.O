@@ -1053,8 +1053,9 @@ def _sync_preload_modules():
     try:
         import httpx
         import asyncio
-        
+
         async def _warmup_httpx():
+            # per-call AsyncClient: 这就是 SSL warmup 本身，改共享 client 反而没意义
             async with httpx.AsyncClient(timeout=1.0, proxy=None, trust_env=False) as client:
                 # 发送一个简单请求预热 SSL 上下文
                 try:
@@ -1274,14 +1275,23 @@ async def on_shutdown():
         except Exception as e:
             logger.debug(f"音乐爬虫清理失败: {e}", exc_info=True)
 
-        # 关闭 memory_server 共享 httpx 连接池
+        # 关闭内部共享 httpx 连接池
         try:
-            from utils.memory_client import aclose_memory_client
-            await asyncio.wait_for(aclose_memory_client(), timeout=1.0)
+            from utils.internal_http_client import aclose_internal_http_client
+            await asyncio.wait_for(aclose_internal_http_client(), timeout=1.0)
         except asyncio.TimeoutError:
-            logger.warning("memory_client 清理超时，已强制跳过。")
+            logger.warning("internal_http_client 清理超时，已强制跳过。")
         except Exception as e:
-            logger.debug(f"memory_client 清理失败: {e}", exc_info=True)
+            logger.debug(f"internal_http_client 清理失败: {e}", exc_info=True)
+
+        # 关闭外部共享 httpx 连接池
+        try:
+            from utils.external_http_client import aclose_external_http_client
+            await asyncio.wait_for(aclose_external_http_client(), timeout=2.0)
+        except asyncio.TimeoutError:
+            logger.warning("external_http_client 清理超时，已强制跳过。")
+        except Exception as e:
+            logger.debug(f"external_http_client 清理失败: {e}", exc_info=True)
 
 # 使用 FastAPI 的 app.state 来管理启动配置
 def get_start_config():
@@ -1372,6 +1382,8 @@ async def shutdown_server_async():
         try:
             from config import MEMORY_SERVER_PORT
             shutdown_url = f"http://127.0.0.1:{MEMORY_SERVER_PORT}/shutdown"
+            # per-call AsyncClient: 每进程仅一次的 shutdown 路径；internal_http_client
+            # 单例紧接着会在 on_shutdown 里被 aclose()，此处直接构造一次更稳妥
             async with httpx.AsyncClient(timeout=1, proxy=None, trust_env=False) as client:
                 response = await client.post(shutdown_url)
                 if response.status_code == 200:
