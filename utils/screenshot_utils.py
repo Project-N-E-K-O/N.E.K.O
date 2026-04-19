@@ -302,17 +302,15 @@ async def analyze_screenshot_from_data_url(data_url: str, window_title: str = ''
 # Avatar annotation overlay — 在截图上叠加 Avatar 文字注解
 # ============================================================================
 
-# i18n translations for the avatar annotation text
-# Line 1: "This is {name}'s Avatar"
-# Line 2: "Please ignore it, {name}" (告诉 AI 不要在意)
+# i18n translations for the avatar annotation text (3 lines)
 _AVATAR_ANNOTATION_I18N: Dict[str, tuple] = {
-    'zh':    ('这是{name}的虚拟形象', '请{name}不要在意'),
-    'zh-CN': ('这是{name}的虚拟形象', '请{name}不要在意'),
-    'zh-TW': ('這是{name}的虛擬形象', '請{name}不要在意'),
-    'en':    ("This is {name}'s Avatar", "Please ignore it, {name}"),
-    'ja':    ('これは{name}のアバターです', '{name}は気にしないでください'),
-    'ko':    ('이것은 {name}의 아바타입니다', '{name}은(는) 신경 쓰지 마세요'),
-    'ru':    ('Это аватар {name}', 'Пожалуйста, {name}, не обращай внимания'),
+    'zh':    ('这是{name}在桌面上的虚拟形象,', '请{name}不要主动提及', '请{name}不要主动提及'),
+    'zh-CN': ('这是{name}在桌面上的虚拟形象,', '请{name}不要主动提及', '请{name}不要主动提及'),
+    'zh-TW': ('這是{name}在桌面上的虛擬形象,', '請{name}不要主動提及', '請{name}不要主動提及'),
+    'en':    ("This is {name}'s virtual avatar on the desktop,", "Please don't mention it, {name}", "Please don't mention it, {name}"),
+    'ja':    ('これはデスクトップ上の{name}の仮想アバターです,', '{name}は自分から言及しないでください', '{name}は自分から言及しないでください'),
+    'ko':    ('이것은 바탕화면의 {name} 가상 아바타입니다,', '{name}은(는) 스스로 언급하지 마세요', '{name}은(는) 스스로 언급하지 마세요'),
+    'ru':    ('Это виртуальный аватар {name} на рабочем столе,', 'Пожалуйста, {name}, не упоминай это', 'Пожалуйста, {name}, не упоминай это'),
 }
 
 # Lazy-loaded CJK font cache
@@ -432,21 +430,18 @@ def overlay_avatar_annotation(
 
         # 获取 i18n 文字
         tpl = _AVATAR_ANNOTATION_I18N.get(language) or _AVATAR_ANNOTATION_I18N.get(language.split('-')[0]) or _AVATAR_ANNOTATION_I18N['en']
-        line1 = tpl[0].format(name=lanlan_name)
-        line2 = tpl[1].format(name=lanlan_name)
+        lines = [t.format(name=lanlan_name) for t in tpl]
 
         draw = ImageDraw.Draw(img)
 
-        # 测量文字尺寸
-        bbox1 = draw.textbbox((0, 0), line1, font=font)
-        bbox2 = draw.textbbox((0, 0), line2, font=font)
-        tw1 = bbox1[2] - bbox1[0]
-        th1 = bbox1[3] - bbox1[1]
-        tw2 = bbox2[2] - bbox2[0]
-        th2 = bbox2[3] - bbox2[1]
+        # 测量每行文字尺寸
         line_gap = max(2, font_size // 4)
-        total_tw = max(tw1, tw2)
-        total_th = th1 + line_gap + th2
+        line_metrics = []
+        for line in lines:
+            bbox = draw.textbbox((0, 0), line, font=font)
+            line_metrics.append((bbox[2] - bbox[0], bbox[3] - bbox[1]))
+        total_tw = max(m[0] for m in line_metrics)
+        total_th = sum(m[1] for m in line_metrics) + line_gap * (len(lines) - 1)
 
         # 文字放在 Avatar 中心偏下（模型身体区域）
         text_cx = px
@@ -496,9 +491,11 @@ def overlay_avatar_annotation(
 
         # 绘制文字（白色）
         draw = ImageDraw.Draw(img)
-        y_start = text_cy - total_th // 2
-        draw.text((text_cx - tw1 // 2, y_start), line1, fill=(255, 255, 255), font=font)
-        draw.text((text_cx - tw2 // 2, y_start + th1 + line_gap), line2, fill=(255, 255, 255), font=font)
+        y_cur = text_cy - total_th // 2
+        for i, line in enumerate(lines):
+            tw, th = line_metrics[i]
+            draw.text((text_cx - tw // 2, y_cur), line, fill=(255, 255, 255), font=font)
+            y_cur += th + line_gap
 
         # 编码回 JPEG base64
         buf = BytesIO()
