@@ -400,16 +400,18 @@ class MMDCore {
             loadManager._failedUrls.push(url);
         };
         // 所有资源（含失败的）加载完成后，检查并修复缺失纹理
+        // 使用 _pendingMmd 捕获模型引用，避免 onLoad 在 currentModel 赋值前触发时跳过检查
+        this._pendingMmd = null;
         loadManager.onLoad = () => {
             loadManager._allResourcesLoaded = true;
             console.log('[MMD Core] 所有资源加载完成，检查纹理状态');
-            if (this.manager.currentModel) {
-                // 清除兜底定时器
+            const mmd = this._pendingMmd || this.manager.currentModel;
+            if (mmd) {
                 if (this._fixMissingTexturesTimer) {
                     clearTimeout(this._fixMissingTexturesTimer);
                     this._fixMissingTexturesTimer = null;
                 }
-                this._fixMissingTextures(this.manager.currentModel);
+                this._fixMissingTextures(mmd);
             }
         };
         this.manager._loadManager = loadManager;
@@ -430,7 +432,10 @@ class MMDCore {
             const mmd = await new Promise((resolve, reject) => {
                 loader.load(
                     modelUrl,
-                    (mmd) => resolve(mmd),
+                    (mmd) => {
+                        this._pendingMmd = mmd;
+                        resolve(mmd);
+                    },
                     (progress) => {
                         this._updateLoadingOverlay(
                             loadingSessionId,
