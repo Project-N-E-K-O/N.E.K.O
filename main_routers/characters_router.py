@@ -1458,6 +1458,7 @@ async def add_catgirl(request: Request):
     await init_one_catgirl(key, is_new=True)
 
     # 通知记忆服务器重新加载配置
+    # per-call AsyncClient: 用户手动新建猫娘触发，典型冷路径
     try:
             async with httpx.AsyncClient(proxy=None, trust_env=False) as client:
                         resp = await client.post(f"http://127.0.0.1:{MEMORY_SERVER_PORT}/reload", timeout=5.0)
@@ -2343,7 +2344,8 @@ async def voice_clone(
                 'speaker_id': prefix,
                 'prompt_text': f"<|{ref_language}|>" if ref_language != 'ch' else "希望你以后能够做的比我还好呦。"
             }
-            
+
+            # per-call AsyncClient: 用户手动上传音色文件触发，冷路径
             async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
                 resp = await client.post(register_url, data=data, files=files)
                 
@@ -2662,6 +2664,7 @@ async def voice_clone_direct(request: Request):
         provider_label = '阿里云CosyVoice'
 
     # 验证直链是否可访问（HEAD失败时回退到GET）
+    # per-call AsyncClient: 用户粘贴直链触发的一次性克隆流程，冷路径（外部 CDN 主机）
     try:
         async with httpx.AsyncClient(timeout=30, proxy=None, trust_env=False) as client:
             head_resp = await client.head(direct_link, follow_redirects=True)
@@ -2685,7 +2688,8 @@ async def voice_clone_direct(request: Request):
             # 1. 下载音频文件（使用流式读取避免内存问题）
             logger.info(f"开始下载直链音频: {direct_link}")
             MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB限制
-            
+
+            # per-call AsyncClient: 用户一次性直链下载，冷路径
             async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
                 async with client.stream('GET', direct_link, follow_redirects=True) as download_resp:
                     if download_resp.status_code != 200:
@@ -2784,7 +2788,8 @@ async def voice_clone_direct(request: Request):
             # 1. 下载音频文件以计算内容MD5（使用流式读取避免内存问题）
             logger.info(f"开始下载直链音频用于CosyVoice: {direct_link}")
             MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB限制
-            
+
+            # per-call AsyncClient: 用户一次性直链下载，冷路径
             async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
                 async with client.stream('GET', direct_link, follow_redirects=True) as download_resp:
                     if download_resp.status_code != 200:

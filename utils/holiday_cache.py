@@ -206,6 +206,8 @@ def _build_periods(entries: list[HolidayEntry]) -> list[HolidayPeriod]:
 async def _fetch_nager(country: str, year: int) -> list[HolidayEntry]:
     """Fetch from Nager.Date API (JP / KR / RU / US etc.)."""
     url = f"{_NAGER_API}/PublicHolidays/{year}/{country}"
+    # per-call AsyncClient: 每年每国家只拉一次（lazy warmup），且刻意 trust_env=False
+    # 绕开本地代理 —— 与 external_http_client（trust_env=True）配置不一致
     async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT, proxy=None, trust_env=False) as client:
         resp = await client.get(url)
         resp.raise_for_status()
@@ -215,6 +217,7 @@ async def _fetch_nager(country: str, year: int) -> list[HolidayEntry]:
 async def _fetch_cn(year: int) -> list[HolidayEntry]:
     """Fetch from timor.tech API for China — complete with 调休."""
     url = f"{_TIMOR_API}/{year}"
+    # per-call AsyncClient: 同上，每年一次，trust_env=False 绕开代理
     async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT, proxy=None, trust_env=False) as client:
         resp = await client.get(url)
         resp.raise_for_status()
