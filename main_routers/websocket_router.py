@@ -139,6 +139,9 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     )
                 _fire_task(session_manager[lanlan_name].stream_data(message))
 
+            elif action == "avatar_interaction":
+                _fire_task(session_manager[lanlan_name].handle_avatar_interaction(message))
+
             elif action == "end_session":
                 session_manager[lanlan_name].active_session_is_idle = False
                 _fire_task(session_manager[lanlan_name].end_session())
@@ -198,4 +201,3 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
 
         if is_current and lanlan_name in session_manager:
             await session_manager[lanlan_name].cleanup(expected_websocket=websocket)
-
