@@ -181,9 +181,10 @@ class MemeFetcher:
                     # 使用持久化 Session
                     response = await session.get(url, params=params, headers=headers)
                 else:
-                    # 使用临时 Client
-                    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, trust_env=True) as client:
-                        response = await client.get(url, params=params, headers=headers)
+                    # fallback：复用外部共享 client（未 open 实例时）
+                    from utils.external_http_client import get_external_http_client
+                    client = get_external_http_client()
+                    response = await client.get(url, params=params, headers=headers, timeout=10.0)
                     
                 if response.status_code == 429:
                     q_val = params.get('q') or params.get('keywords') if params else 'N/A'
@@ -588,8 +589,10 @@ class DoutubFetcher:
                     if self._session:
                         api_resp = await self._session.get(api_url, params=api_params, headers=self._get_headers())
                     else:
-                        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, trust_env=True) as client:
-                            api_resp = await client.get(api_url, params=api_params, headers=self._get_headers())
+                        # fallback：复用外部共享 client
+                        from utils.external_http_client import get_external_http_client
+                        client = get_external_http_client()
+                        api_resp = await client.get(api_url, params=api_params, headers=self._get_headers(), timeout=10.0)
                     
                     if api_resp.status_code == 200:
                         api_data = api_resp.json()
