@@ -3508,9 +3508,10 @@ async def proactive_chat(request: Request):
                 if av_pos and isinstance(av_pos, dict):
                     try:
                         from utils.screenshot_utils import overlay_avatar_annotation
-                        fresh_b64 = overlay_avatar_annotation(
+                        fresh_b64 = await asyncio.to_thread(
+                            overlay_avatar_annotation,
                             fresh_b64, av_pos, lanlan_name,
-                            language=proactive_lang,
+                            proactive_lang,
                         )
                     except Exception as ann_err:
                         logger.warning(f"[{lanlan_name}] Phase 2 avatar annotation failed: {ann_err}")

@@ -3775,9 +3775,10 @@ class LLMSessionManager:
                         if av_pos and isinstance(av_pos, dict):
                             try:
                                 from utils.language_utils import get_global_language_full
-                                image_b64 = overlay_avatar_annotation(
+                                image_b64 = await asyncio.to_thread(
+                                    overlay_avatar_annotation,
                                     image_b64, av_pos, self.lanlan_name,
-                                    language=get_global_language_full(),
+                                    get_global_language_full(),
                                 )
                             except Exception as ann_err:
                                 logger.warning("[%s] avatar annotation failed, sending original: %s",
