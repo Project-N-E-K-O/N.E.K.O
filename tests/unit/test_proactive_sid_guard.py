@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 from main_logic.core import LLMSessionManager, _proactive_expected_sid
+from main_logic.session_state import SessionStateMachine
 
 
 def _make_mgr() -> LLMSessionManager:
@@ -45,6 +46,9 @@ def _make_mgr() -> LLMSessionManager:
     mgr._enqueue_tts_text_chunk = MagicMock()
     mgr._respawn_tts_worker = MagicMock()
     mgr.send_lanlan_response = AsyncMock()
+    # 状态机：finish_proactive_delivery / handle_new_message 会 fire 事件，
+    # 所以测试 mgr 也要有真实 SM 实例（轻量、无外部依赖）。
+    mgr.state = SessionStateMachine(lanlan_name="Test")
     return mgr
 
 
