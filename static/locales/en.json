@@ -367,7 +367,7 @@
         "default": "Default",
         "noVoiceSelected": "No Voice Selected",
         "noDescription": "No Description",
-            "characterSettingsFile": "Character Settings File",
+        "characterSettingsFile": "Character Settings File",
         "workshopAgreementText": "By clicking \"Upload\" you agree to the Steam Workshop Terms of Service, including the Workshop Legal Agreement:",
         "alreadyUploaded": "Uploaded to Workshop",
         "uploadTime": "Upload Time",
@@ -2680,7 +2680,7 @@
         "themeChanged": "Theme changed"
     },
     "characterModelNotSet": "Current character has no model set",
-   "cookiesLogin": {
+    "cookiesLogin": {
         "title": "N.E.K.O Credential Control Center",
         "header": "🔐 Credential Acquisition Center",
         "bilibili": "📺 Bilibili",

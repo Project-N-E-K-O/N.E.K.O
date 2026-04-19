@@ -10,11 +10,16 @@ import os
 import io
 import signal
 
-# 强制 UTF-8 编码
-if sys.platform == 'win32':
+
+def _configure_stdio_utf8() -> None:
+    """Normalize stdio encoding when running the launcher on Windows."""
+    if sys.platform != 'win32':
+        return
+
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
-    
+
+
 # 检测打包环境（PyInstaller 设 sys.frozen，Nuitka 设 __compiled__）
 IS_FROZEN = getattr(sys, 'frozen', False) or '__compiled__' in globals()
 
@@ -32,8 +37,40 @@ else:
     # 运行在正常 Python 环境
     bundle_dir = os.path.dirname(os.path.abspath(__file__))
 
-sys.path.insert(0, bundle_dir)
-os.chdir(bundle_dir)
+
+def _get_project_venv_python(project_dir: str) -> str | None:
+    if sys.platform == 'win32':
+        candidate = os.path.join(project_dir, '.venv', 'Scripts', 'python.exe')
+    else:
+        candidate = os.path.join(project_dir, '.venv', 'bin', 'python')
+
+    return candidate if os.path.exists(candidate) else None
+
+
+def _maybe_reexec_into_project_venv(project_dir: str) -> None:
+    """Prefer the repo-local virtualenv when launching from source.
+
+    Users often invoke ``python launcher.py`` with the system interpreter.
+    When that interpreter differs from the project's managed ``.venv``,
+    imports fail even though the dependency is already installed locally.
+    """
+    if IS_FROZEN:
+        return
+
+    current_executable = os.path.abspath(sys.executable or "")
+    if not current_executable:
+        return
+
+    candidate = _get_project_venv_python(project_dir)
+    if not candidate:
+        return
+
+    target_executable = os.path.abspath(candidate)
+    if current_executable == target_executable:
+        return
+
+    print(f"[Launcher] 当前解释器不是项目虚拟环境，正在切换到: {candidate}")
+    os.execv(target_executable, [target_executable] + sys.argv)
 
 import subprocess
 import socket
@@ -47,6 +84,7 @@ import json
 import logging
 import uuid
 import importlib
+import multiprocessing
 from datetime import datetime, timezone
 from typing import Dict
 from multiprocessing import Process, freeze_support, Event
@@ -61,21 +99,26 @@ from utils.port_utils import (
     set_port_probe_reuse,
 )
 
-# 本次 launcher 启动的唯一标识
-LAUNCH_ID = uuid.uuid4().hex
-# 实例 ID：若父进程已设置则复用，否则生成新值，确保所有子进程共享同一实例标识
-INSTANCE_ID = os.environ.get("NEKO_INSTANCE_ID") or uuid.uuid4().hex
-os.environ.setdefault("NEKO_INSTANCE_ID", INSTANCE_ID)
 
-# 确保本地服务间通信不走系统代理（防止 Clash/Surge 等代理软件拦截 localhost 请求）
-# httpx 优先读小写 no_proxy，因此大小写都需要设置
-# 使用精确 token 匹配，防止 "127.0.0.1" in "127.0.0.10" 这类子串误判
-for _key in ("NO_PROXY", "no_proxy"):
-    _no_proxy_raw = os.environ.get(_key, "")
-    _tokens = set(map(str.strip, filter(None, _no_proxy_raw.split(","))))
-    for _host in ("127.0.0.1", "localhost"):
-        _tokens.add(_host)
-    os.environ[_key] = ",".join(_tokens)
+def _configure_multiprocessing_executable(project_dir: str) -> None:
+    """Force macOS/Windows spawn children to reuse the project virtualenv."""
+    if IS_FROZEN:
+        return
+
+    candidate = _get_project_venv_python(project_dir)
+    if not candidate:
+        return
+
+    try:
+        multiprocessing.set_executable(os.path.abspath(candidate))
+    except Exception as exc:
+        print(f"[Launcher] Warning: failed to pin multiprocessing executable: {exc}", flush=True)
+
+
+# 本次 launcher 启动的唯一标识
+LAUNCH_ID = ""
+# 实例 ID：在显式启动路径中初始化，确保导入模块时不改动进程环境
+INSTANCE_ID = ""
 
 JOB_HANDLE = None
 _cleanup_lock = threading.Lock()
@@ -185,7 +228,39 @@ def _install_logging_brace_compat() -> None:
     logging._neko_brace_compat_installed = True
 
 
-_install_logging_brace_compat()
+def _initialize_launcher_context() -> None:
+    """Populate per-launch ids and env only during explicit launcher startup."""
+    global LAUNCH_ID, INSTANCE_ID
+
+    if not LAUNCH_ID:
+        LAUNCH_ID = uuid.uuid4().hex
+
+    if not INSTANCE_ID:
+        INSTANCE_ID = os.environ.get("NEKO_INSTANCE_ID") or uuid.uuid4().hex
+        os.environ.setdefault("NEKO_INSTANCE_ID", INSTANCE_ID)
+        _sync_runtime_config_globals()
+
+    # 确保本地服务间通信不走系统代理（防止 Clash/Surge 等代理软件拦截 localhost 请求）
+    # httpx 优先读小写 no_proxy，因此大小写都需要设置
+    # 使用精确 token 匹配，防止 "127.0.0.1" in "127.0.0.10" 这类子串误判
+    for _key in ("NO_PROXY", "no_proxy"):
+        _no_proxy_raw = os.environ.get(_key, "")
+        _tokens = set(map(str.strip, filter(None, _no_proxy_raw.split(","))))
+        for _host in ("127.0.0.1", "localhost"):
+            _tokens.add(_host)
+        os.environ[_key] = ",".join(_tokens)
+
+
+def _bootstrap_launcher_runtime(project_dir: str) -> None:
+    """Run launcher bootstrap only from the explicit startup path."""
+    _configure_stdio_utf8()
+    _maybe_reexec_into_project_venv(project_dir)
+    if project_dir not in sys.path:
+        sys.path.insert(0, project_dir)
+    os.chdir(project_dir)
+    _configure_multiprocessing_executable(project_dir)
+    _install_logging_brace_compat()
+    _initialize_launcher_context()
 
 
 def _show_error_dialog(message: str):
@@ -1543,5 +1618,11 @@ def main():
         print("再见！\n", flush=True)
     return 0
 
+
+def start_launcher() -> int:
+    """Launcher entrypoint with explicit runtime bootstrap."""
+    _bootstrap_launcher_runtime(bundle_dir)
+    return main()
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(start_launcher())

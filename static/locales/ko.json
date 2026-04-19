@@ -367,7 +367,7 @@
         "default": "기본값",
         "noVoiceSelected": "선택된 음성 없음",
         "noDescription": "설명 없음",
-            "characterSettingsFile": "캐릭터 설정 파일",
+        "characterSettingsFile": "캐릭터 설정 파일",
         "workshopAgreementText": "\"업로드\"를 클릭하면 창작마당 법적 계약을 포함한 Steam 창작마당 서비스 약관에 동의하게 됩니다.",
         "alreadyUploaded": "창작마당에 업로드됨",
         "uploadTime": "업로드 시간",

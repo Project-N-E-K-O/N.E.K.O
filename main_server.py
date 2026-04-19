@@ -195,18 +195,67 @@ class RoleState:
 role_state: dict[str, RoleState] = {}
 
 
-def cleanup():
-    """通知所有同步线程停止"""
-    logger.info("正在关闭同步线程...")
+def _iter_sync_connector_threads():
+    """迭代所有仍然存活的同步连接器线程（按 role_state 为准）。"""
+    for name, rs in role_state.items():
+        thread = rs.sync_process
+        if thread is None:
+            continue
+        yield name, thread
+
+
+def _signal_sync_connectors_shutdown(*, log: bool = True) -> None:
+    if log:
+        logger.info("正在关闭同步线程...")
     for rs in role_state.values():
         try:
             rs.sync_shutdown_event.set()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"设置同步关闭事件失败: {e}", exc_info=True)
+
+
+async def join_sync_connector_threads(timeout: float = 3.0) -> list[str]:
+    """并行 join 所有同步连接器线程，返回在 timeout 内仍未退出的线程名。
+
+    N 个角色串行 join 会把最坏墙钟放大成 N * timeout；gather + to_thread
+    让每个 join 在自己的线程里跑，墙钟收敛到单个 timeout。
+    """
+    wait_timeout = max(0.0, float(timeout))
+    targets = list(_iter_sync_connector_threads())
+    if not targets:
+        return []
+
+    async def _join_one(name: str, thread) -> str | None:
+        try:
+            await asyncio.to_thread(thread.join, wait_timeout)
+        except Exception as e:
+            logger.debug(f"等待同步连接器线程 {name} 退出时出错: {e}", exc_info=True)
+            return None
+        return name if thread.is_alive() else None
+
+    results = await asyncio.gather(
+        *(_join_one(name, thread) for name, thread in targets),
+        return_exceptions=False,
+    )
+    alive_threads = [name for name in results if name]
+
+    if alive_threads:
+        logger.warning(
+            "以下同步连接器线程未在 %.1fs 内退出: %s",
+            wait_timeout,
+            ", ".join(alive_threads),
+        )
+    return alive_threads
+
+
+def cleanup(*, log: bool = True):
+    """通知所有同步线程停止。log=False 用于 atexit 二次触发时抑制重复日志。"""
+    _signal_sync_connectors_shutdown(log=log)
 
 # 只在主进程中注册 cleanup 函数，防止子进程退出时执行清理
+# log=False：on_shutdown 已经打印过 "正在清理资源..."，atexit 补一刀时不重复 log
 if _IS_MAIN_PROCESS:
-    atexit.register(cleanup)
+    atexit.register(cleanup, log=False)
 # 角色数据全局变量（会在重载时更新）
 master_name = None
 her_name = None
@@ -1213,6 +1262,12 @@ async def on_shutdown():
     """服务器关闭时清理资源"""
     if _IS_MAIN_PROCESS:
         logger.info("正在清理资源...")
+        cleanup()
+        try:
+            # join_sync_connector_threads 内部已经 gather 并行 join，直接 await
+            await join_sync_connector_threads(3.0)
+        except Exception as e:
+            logger.debug(f"同步连接器线程清理失败: {e}", exc_info=True)
         
         # 等待预加载任务完成（如果还在运行）
         global _preload_task, agent_event_bridge

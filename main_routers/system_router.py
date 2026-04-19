@@ -213,6 +213,16 @@ async def _safe_fire_proactive_done(scope: dict) -> None:
         logger.warning("safe_fire_proactive_done 异常: %s", err)
 
 
+async def _read_json_object(request: Request) -> dict[str, object]:
+    """Read a JSON request body and normalize non-object payloads to {}."""
+    try:
+        payload = await request.json()
+    except Exception:
+        return {}
+
+    return payload if isinstance(payload, dict) else {}
+
+
 # 统一的表情包图源白名单由 utils.meme_fetcher 维护，本文件仅用于引入
 
 _EMOTION_LABEL_ALIASES = {
@@ -647,7 +657,7 @@ async def ack_pending_notices(request: Request):
     """前端展示完通知后调用，仅删除 cursor 以内的通知（游标确认，避免 TOCTOU）。"""
     from main_logic.core import drain_prominent_notices
     try:
-        body = await request.json()
+        body = await _read_json_object(request)
         cursor = int(body.get("cursor", 0))
     except Exception:
         cursor = 0
@@ -668,10 +678,7 @@ async def post_tutorial_prompt_heartbeat(request: Request):
     if validation_error is not None:
         return validation_error
 
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    payload = await _read_json_object(request)
     return process_tutorial_prompt_heartbeat(payload, config_manager=get_config_manager())
 
 
@@ -682,10 +689,7 @@ async def post_tutorial_prompt_shown(request: Request):
     if validation_error is not None:
         return validation_error
 
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    payload = await _read_json_object(request)
 
     try:
         return record_tutorial_prompt_shown(payload, config_manager=get_config_manager())
@@ -700,10 +704,7 @@ async def post_tutorial_prompt_decision(request: Request):
     if validation_error is not None:
         return validation_error
 
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    payload = await _read_json_object(request)
 
     try:
         return record_tutorial_prompt_decision(payload, config_manager=get_config_manager())
@@ -724,10 +725,7 @@ async def post_autostart_prompt_heartbeat(request: Request):
     if validation_error is not None:
         return validation_error
 
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    payload = await _read_json_object(request)
     return process_autostart_prompt_heartbeat(payload, config_manager=get_config_manager())
 
 
@@ -738,10 +736,7 @@ async def post_autostart_prompt_shown(request: Request):
     if validation_error is not None:
         return validation_error
 
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    payload = await _read_json_object(request)
 
     try:
         return record_autostart_prompt_shown(payload, config_manager=get_config_manager())
@@ -756,10 +751,7 @@ async def post_autostart_prompt_decision(request: Request):
     if validation_error is not None:
         return validation_error
 
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    payload = await _read_json_object(request)
 
     try:
         return record_autostart_prompt_decision(payload, config_manager=get_config_manager())
@@ -774,10 +766,7 @@ async def post_tutorial_started(request: Request):
     if validation_error is not None:
         return validation_error
 
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    payload = await _read_json_object(request)
 
     try:
         return record_tutorial_started(payload, config_manager=get_config_manager())
@@ -792,10 +781,7 @@ async def post_tutorial_completed(request: Request):
     if validation_error is not None:
         return validation_error
 
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    payload = await _read_json_object(request)
 
     try:
         return record_tutorial_completed(payload, config_manager=get_config_manager())

@@ -5,6 +5,7 @@ import nest_asyncio
 
 nest_asyncio.apply()
 
+_orig_asyncio_run = asyncio.run
 _orig_runner_run = asyncio.runners.Runner.run
 
 def _nested_runner_run(self, coro, *, context=None):
@@ -22,7 +23,18 @@ def _nested_runner_run(self, coro, *, context=None):
             with __import__("contextlib").suppress(asyncio.CancelledError):
                 self._loop.run_until_complete(task)
 
+
+def _compat_asyncio_run(main, *, debug=None, loop_factory=None):
+    """Preserve Python 3.12's loop_factory support after nest_asyncio patches asyncio.run."""
+    if loop_factory is None:
+        return _orig_asyncio_run(main, debug=debug)
+
+    with asyncio.runners.Runner(debug=debug, loop_factory=loop_factory) as runner:
+        return runner.run(main)
+
+
 asyncio.runners.Runner.run = _nested_runner_run
+asyncio.run = _compat_asyncio_run
 
 import pytest
 import os
@@ -31,7 +43,9 @@ import time
 import uvicorn
 import json
 import logging
+import socket
 from unittest.mock import patch
+from pathlib import Path
 
 # Add project root to sys.path if needed, or rely on pytest pythonpath
 import sys
@@ -40,6 +54,10 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from tests.utils.llm_judger import LLMJudger
 
 logger = logging.getLogger(__name__)
+
+SYSTEM_CHROME_PATH = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+_RUNTIME_TEST_PORTS: dict[str, int] = {}
+_RUNTIME_TEST_PORT_RETRY_LIMIT = 10
 
 # Map camelCase keys in api_keys.json to UPPER_SNAKE_CASE env vars expected by ConfigManager
 KEY_MAPPING = {
@@ -149,7 +167,90 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "manual" in item.keywords:
                 item.add_marker(skip_manual)
-                
+
+
+def _find_free_local_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def _set_runtime_test_port(port_name: str, port_value: int) -> None:
+    os.environ[f"NEKO_{port_name}"] = str(port_value)
+
+    try:
+        import config as config_module
+    except (ModuleNotFoundError, ImportError) as exc:
+        if getattr(exc, "name", None) == "config":
+            return
+        raise
+
+    setattr(config_module, port_name, port_value)
+
+
+def _resolve_runtime_test_port(port_name: str) -> int:
+    env_name = f"NEKO_{port_name}"
+    raw_value = os.environ.get(env_name)
+    if raw_value:
+        try:
+            port_value = int(raw_value)
+        except ValueError:
+            logger.warning("Ignoring invalid %s=%r", env_name, raw_value)
+        else:
+            if 1 <= port_value <= 65535:
+                return port_value
+            # 0 会让 uvicorn 随机绑端口但 readiness probe 仍连 0，测试必卡死；
+            # 负数 / >65535 直接非法。一律视为未设置，重新分配。
+            logger.warning(
+                "Ignoring out-of-range %s=%r (must be 1..65535)",
+                env_name,
+                raw_value,
+            )
+    return _find_free_local_port()
+
+
+def _initialize_runtime_test_ports() -> None:
+    if _RUNTIME_TEST_PORTS:
+        for port_name, port_value in _RUNTIME_TEST_PORTS.items():
+            _set_runtime_test_port(port_name, port_value)
+        return
+
+    for port_name in ("MEMORY_SERVER_PORT", "MAIN_SERVER_PORT"):
+        port_value = _resolve_runtime_test_port(port_name)
+        if port_value in _RUNTIME_TEST_PORTS.values():
+            logger.warning(
+                "Resolved duplicate runtime test port %s=%s; selecting a new port",
+                port_name,
+                port_value,
+            )
+            for attempt in range(1, _RUNTIME_TEST_PORT_RETRY_LIMIT + 1):
+                fallback_port = _find_free_local_port()
+                if fallback_port not in _RUNTIME_TEST_PORTS.values():
+                    port_value = fallback_port
+                    break
+                logger.warning(
+                    "Duplicate fallback runtime test port %s=%s on attempt %s/%s",
+                    port_name,
+                    fallback_port,
+                    attempt,
+                    _RUNTIME_TEST_PORT_RETRY_LIMIT,
+                )
+            else:
+                raise RuntimeError(
+                    f"Unable to allocate unique runtime test port for {port_name} "
+                    f"after {_RUNTIME_TEST_PORT_RETRY_LIMIT} attempts"
+                )
+        _RUNTIME_TEST_PORTS[port_name] = port_value
+        _set_runtime_test_port(port_name, port_value)
+
+
+def _get_runtime_test_port(port_name: str) -> int:
+    _initialize_runtime_test_ports()
+    return _RUNTIME_TEST_PORTS[port_name]
+
+
+_initialize_runtime_test_ports()
 
 
 @pytest.fixture(scope="session")
@@ -164,14 +265,17 @@ def browser_context_args(browser_context_args):
     }
 
 @pytest.fixture(scope="session")
-def browser_type_launch_args(browser_type_launch_args):
-    return {
+def browser_type_launch_args(browser_type_launch_args, browser_name):
+    launch_args = {
         **browser_type_launch_args,
         "args": [
             "--use-fake-ui-for-media-stream",
             "--use-fake-device-for-media-stream",
         ]
     }
+    if browser_name == "chromium" and SYSTEM_CHROME_PATH.exists():
+        launch_args["executable_path"] = str(SYSTEM_CHROME_PATH)
+    return launch_args
 
 @pytest.fixture(scope="session", autouse=True)
 def loaded_api_keys():
@@ -301,41 +405,42 @@ def mock_page(page):
 @pytest.fixture(scope="session", autouse=True)
 def mock_memory_server():
     """
-    Runs a minimal mock memory server on port 48912 to satisfy core.py's
+    Runs a minimal mock memory server on a free local port to satisfy core.py's
     requirement to fetch contextual memory before starting a session.
     """
     from fastapi import FastAPI
     from fastapi.responses import PlainTextResponse
-    
+
+    memory_port = _get_runtime_test_port("MEMORY_SERVER_PORT")
+
     app = FastAPI()
-    
+
     @app.get("/new_dialog/{character}")
     def get_memory(character: str):
         return PlainTextResponse(f"Mock memory context for {character}.")
-        
-    config = uvicorn.Config(app, host="127.0.0.1", port=48912, log_level="error")
+
+    config = uvicorn.Config(app, host="127.0.0.1", port=memory_port, log_level="error")
     server = uvicorn.Server(config)
-    
+
     def run_server():
         server.run()
-        
+
     thread = threading.Thread(target=run_server, daemon=True)
     thread.start()
-    
-    import socket
+
     start_time = time.time()
     while time.time() - start_time < 10:
         try:
-            with socket.create_connection(("127.0.0.1", 48912), timeout=1):
+            with socket.create_connection(("127.0.0.1", memory_port), timeout=1):
                 break
         except (OSError, ConnectionRefusedError):
             time.sleep(0.5)
             continue
     else:
-        raise RuntimeError("Mock memory server failed to start on 48912")
-        
+        raise RuntimeError(f"Mock memory server failed to start on {memory_port}")
+
     yield
-    
+
     server.should_exit = True
     thread.join(timeout=5)
 
@@ -347,37 +452,34 @@ def running_server(clean_user_data_dir, mock_memory_server):
     Waits for port to be ready.
     Depends on clean_user_data_dir to ensure config is patched BEFORE import.
     """
+    test_port = _get_runtime_test_port("MAIN_SERVER_PORT")
+
     from main_server import app
-    
-    # Use a different port for testing to avoid conflict
-    TEST_PORT = 8001
-    
-    config = uvicorn.Config(app, host="127.0.0.1", port=TEST_PORT, log_level="error")
+
+    config = uvicorn.Config(app, host="127.0.0.1", port=test_port, log_level="error")
     server = uvicorn.Server(config)
-    
-    
+
     def run_server():
         server.run()
-        
+
     thread = threading.Thread(target=run_server, daemon=True)
     thread.start()
-    
+
     # Wait for server to start
     # Simple check loop
-    import socket
     start_time = time.time()
     while time.time() - start_time < 10:
         try:
-            with socket.create_connection(("127.0.0.1", TEST_PORT), timeout=1):
+            with socket.create_connection(("127.0.0.1", test_port), timeout=1):
                 break
         except (OSError, ConnectionRefusedError):
             time.sleep(0.5)
             continue
     else:
         raise RuntimeError("Test server failed to start")
-        
-    yield f"http://127.0.0.1:{TEST_PORT}"
-    
+
+    yield f"http://127.0.0.1:{test_port}"
+
     # Force-terminate uvicorn: graceful shutdown first, then force-kill
     server.should_exit = True
     thread.join(timeout=10)
