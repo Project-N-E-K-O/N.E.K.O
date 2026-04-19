@@ -103,6 +103,7 @@ export const chatMessageSchema = z.object({
 
 export const composerSubmitSchema = z.object({
   text: z.string(),
+  requestId: z.string().optional(),
 });
 
 export const chatWindowPropsSchema = z.object({
@@ -124,6 +125,8 @@ export const chatWindowPropsSchema = z.object({
   removeAttachmentButtonAriaLabel: z.string().optional(),
   failedStatusLabel: z.string().optional(),
   inputHint: z.string().optional(),
+  rollbackDraft: z.string().optional(),
+  _rollbackKey: z.string().optional(),
   jukeboxButtonLabel: z.string().optional(),
   jukeboxButtonAriaLabel: z.string().optional(),
   avatarGeneratorButtonLabel: z.string().optional(),

@@ -177,6 +177,32 @@ def _read_port_env(port_name: str, default: int) -> int:
             )
     return default
 
+
+def _read_list_env(var_name: str) -> tuple[str, ...]:
+    for key in (f"NEKO_{var_name}", var_name):
+        raw = os.getenv(key)
+        if raw is None:
+            continue
+
+        values: list[str] = []
+        for item in raw.split(","):
+            value = item.strip().rstrip("/")
+            if value:
+                values.append(value)
+        return tuple(dict.fromkeys(values))
+
+    return ()
+
+
+def _build_local_allowed_origins(port: int, *, extra_origins: tuple[str, ...] = ()) -> tuple[str, ...]:
+    origins = [
+        f"http://127.0.0.1:{port}",
+        f"http://localhost:{port}",
+        f"http://[::1]:{port}",
+    ]
+    origins.extend(extra_origins)
+    return tuple(dict.fromkeys(origins))
+
 # 服务器端口配置
 MAIN_SERVER_PORT = _read_port_env("MAIN_SERVER_PORT", 48911)
 MEMORY_SERVER_PORT = _read_port_env("MEMORY_SERVER_PORT", 48912)
@@ -196,6 +222,11 @@ OPENFANG_BASE_URL = f"http://127.0.0.1:{OPENFANG_PORT}"
 # 若源码直跑绕过 launcher，则每次导入使用随机回退值，确保 /health
 # 始终返回有效 id。
 INSTANCE_ID = os.getenv("NEKO_INSTANCE_ID") or uuid.uuid4().hex
+AUTOSTART_CSRF_TOKEN = os.getenv("NEKO_AUTOSTART_CSRF_TOKEN") or INSTANCE_ID
+AUTOSTART_ALLOWED_ORIGINS = _build_local_allowed_origins(
+    MAIN_SERVER_PORT,
+    extra_origins=_read_list_env("AUTOSTART_ALLOWED_ORIGINS"),
+)
 
 # tfLink 文件上传服务配置
 TFLINK_UPLOAD_URL = 'http://47.101.214.205:8000/api/upload'
@@ -260,6 +291,7 @@ DEFAULT_TTS_MODEL = "qwen3-omni-flash-realtime"   # 与Realtime对应的TTS模�
 CONFIG_FILES = [
     'characters.json',
     'core_config.json',
+    'tutorial_prompt_config.json',
     'user_preferences.json',
     'voice_storage.json',
     'workshop_config.json',
@@ -712,9 +744,17 @@ DEFAULT_ASSIST_API_KEY_FIELDS = {
     'doubao': 'ASSIST_API_KEY_DOUBAO',
 }
 
+DEFAULT_TUTORIAL_PROMPT_CONFIG = {
+    'min_prompt_foreground_ms': 15 * 1000,
+    'later_cooldown_ms': 24 * 60 * 60 * 1000,
+    'failure_cooldown_ms': 2 * 60 * 60 * 1000,
+    'max_prompt_shows': 2,
+}
+
 DEFAULT_CONFIG_DATA = {
     'characters.json': DEFAULT_CHARACTERS_CONFIG,
     'core_config.json': DEFAULT_CORE_CONFIG,
+    'tutorial_prompt_config.json': DEFAULT_TUTORIAL_PROMPT_CONFIG,
     'user_preferences.json': DEFAULT_USER_PREFERENCES,
     'voice_storage.json': DEFAULT_VOICE_STORAGE,
 }
@@ -766,6 +806,7 @@ __all__ = [
     'get_lanlan_prompt',
     'is_default_prompt',
     'DEFAULT_CORE_CONFIG',
+    'DEFAULT_TUTORIAL_PROMPT_CONFIG',
     'DEFAULT_USER_PREFERENCES',
     'DEFAULT_VOICE_STORAGE',
     'DEFAULT_CONFIG_DATA',
@@ -790,6 +831,8 @@ __all__ = [
     'AGENT_MQ_PORT',
     'MAIN_AGENT_EVENT_PORT',
     'INSTANCE_ID',
+    'AUTOSTART_CSRF_TOKEN',
+    'AUTOSTART_ALLOWED_ORIGINS',
     'TFLINK_UPLOAD_URL',
     'TFLINK_ALLOWED_HOSTS',
     'NATIVE_IMAGE_MIN_INTERVAL',
