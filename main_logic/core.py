@@ -9,6 +9,7 @@ import json
 import struct  # For packing audio data
 import re
 import time
+from collections import deque
 from typing import Optional
 from datetime import datetime
 from websockets import exceptions as web_exceptions
@@ -33,6 +34,11 @@ from config.prompts_sys import (
     AGENT_CALLBACK_NOTIFICATION,
     RESULT_PARSER_PHRASES,
 )
+from config.prompts_avatar_interaction import (
+    _normalize_avatar_interaction_payload,
+    _build_avatar_interaction_instruction,
+    _build_avatar_interaction_memory_meta,
+)
 # Historical imports kept here (commented) for easy rollback:
 # from config import USER_PLUGIN_SERVER_PORT
 # from config.prompts_sys import (
@@ -44,7 +50,7 @@ from config.prompts_sys import (
 from utils.config_manager import get_config_manager, get_reserved
 from utils.logger_config import get_module_logger
 from utils.api_config_loader import get_free_voices
-from utils.language_utils import normalize_language_code, get_global_language
+from utils.language_utils import normalize_language_code, get_global_language, get_global_language_full
 import threading
 from threading import Thread
 from queue import Queue
@@ -256,8 +262,6 @@ class LLMSessionManager:
         self.pending_extra_replies = []
         # 结构化 agent 任务回调队列（用于按会话类型注入）
         self.pending_agent_callbacks: list[dict] = []
-        # 防止 trigger_agent_callbacks 重入
-        self._agent_delivery_in_progress: bool = False
         # 防止 trigger_agent_callbacks 和 finish_proactive_delivery 并发写 WS/sync_message_queue
         self._proactive_write_lock = asyncio.Lock()
         # 由前端控制的Agent相关开关
@@ -328,6 +332,19 @@ class LLMSessionManager:
         self.last_audio_send_error_time = 0.0  # 上次音频发送错误的时间戳
         self.audio_error_log_interval = 2.0  # 音频错误log间隔（秒）
 
+        self._recent_avatar_interaction_ids = deque(maxlen=32)
+        self._recent_avatar_interaction_id_set = set()
+        self._last_avatar_interaction_at = 0
+        self._last_avatar_interaction_speak_at = 0
+        self.avatar_interaction_cooldown_ms = 600
+        self.avatar_interaction_speak_cooldown_ms = 1500
+        # 下一次 handle_response_complete 发出的 turn end 要携带的 meta。
+        # 在 handle_avatar_interaction 等需要标记特殊轮次的入口里设置，
+        # 由 handle_response_complete 读取并清空。比独立的
+        # sync_message_queue 控制消息更原子：meta 与 turn end 事件
+        # 同生共死，不会因为两条消息的时序错乱而把 avatar 轮当成 proactive。
+        self._pending_turn_meta: Optional[dict] = None
+
     def _fire_task(self, coro):
         """Create a background task with GC protection (prevent Python 3.11+ from collecting it)."""
         task = asyncio.create_task(coro)
@@ -393,6 +410,24 @@ class LLMSessionManager:
         """清空 normalizer 状态。中断 / 轮次结束 / session 重建时调用。"""
         self._tts_stream_normalizer.reset()
         self._tts_norm_speech_id = None
+
+    def _remember_avatar_interaction_id(self, interaction_id: str) -> None:
+        if interaction_id in self._recent_avatar_interaction_id_set:
+            return
+        if self._recent_avatar_interaction_ids.maxlen and len(self._recent_avatar_interaction_ids) >= self._recent_avatar_interaction_ids.maxlen:
+            oldest_id = self._recent_avatar_interaction_ids[0]
+            self._recent_avatar_interaction_id_set.discard(oldest_id)
+        self._recent_avatar_interaction_ids.append(interaction_id)
+        self._recent_avatar_interaction_id_set.add(interaction_id)
+
+    def _has_connected_websocket(self) -> bool:
+        websocket = self.websocket
+        if not websocket or not hasattr(websocket, 'client_state'):
+            return False
+        try:
+            return websocket.client_state == websocket.client_state.CONNECTED
+        except Exception:
+            return False
 
     async def _clear_tts_pipeline(self):
         """清空 TTS 请求/响应队列和待处理缓存，停止当前合成。"""
@@ -492,7 +527,7 @@ class LLMSessionManager:
                     if is_first_chunk and self.tts_thread and not self.tts_thread.is_alive():
                         self._respawn_tts_worker()
 
-    async def handle_proactive_complete(self):
+    async def handle_proactive_complete(self, content_committed: bool = True):
         """Lightweight completion for proactive (agent callback) replies.
 
         Only flushes TTS and sends turn_end to the frontend so that the
@@ -500,6 +535,9 @@ class LLMSessionManager:
         analyze_request, or agent-callback re-delivery — those belong
         exclusively to user-initiated conversation turns.
         """
+        if not content_committed:
+            logger.debug("[%s] handle_proactive_complete: no content committed, skipping completion flush", self.lanlan_name)
+            return
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
             if self._tts_done_queued_for_turn:
                 logger.debug("handle_proactive_complete: TTS done 已排入队列，跳过重复信号")
@@ -533,7 +571,12 @@ class LLMSessionManager:
                     self._tts_done_queued_for_turn = True
                 except Exception as e:
                     logger.warning(f"⚠️ 发送TTS结束信号失败: {e}")
-        self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
+        turn_end_msg: dict = {'type': 'system', 'data': 'turn end'}
+        pending_meta = self._pending_turn_meta
+        if pending_meta:
+            turn_end_msg['meta'] = pending_meta
+            self._pending_turn_meta = None
+        self.sync_message_queue.put(turn_end_msg)
 
         # 直接向前端发送turn end消息
         try:
@@ -1651,8 +1694,8 @@ class LLMSessionManager:
             async def _fetch_new_dialog():
                 """独立任务：取 /new_dialog 响应。在 gather 之前就 kick off，
                 主动避开 TTS worker 启动时的 GIL 争用窗口。"""
-                from utils.memory_client import get_memory_client
-                _mem_client = get_memory_client()
+                from utils.internal_http_client import get_internal_http_client
+                _mem_client = get_internal_http_client()
                 try:
                     resp = await _mem_client.get(
                         f"http://127.0.0.1:{_dlg_port}/new_dialog/{_dlg_lanlan}",
@@ -2006,31 +2049,36 @@ class LLMSessionManager:
         """Query agent server for active tasks and return a prompt snippet."""
         if not self._is_agent_enabled():
             return ""
+        # 复用 internal_http_client 单例：agent mode session init 走此路径，
+        # TOOL_SERVER_PORT 也是 127.0.0.1 内部服务
         try:
-            async with httpx.AsyncClient(timeout=1.5, proxy=None, trust_env=False) as client:
-                resp = await client.get(f"http://127.0.0.1:{TOOL_SERVER_PORT}/tasks")
-                if resp.status_code != 200:
-                    return ""
-                data = resp.json()
-                tasks = data.get("tasks", [])
-                active = [t for t in tasks if t.get("status") in ("running", "queued")]
-                if not active:
-                    return ""
-                _lang = normalize_language_code(self.user_language, format='short')
-                lines = []
-                for t in active:
-                    params = t.get("params") or {}
-                    desc = params.get("query") or params.get("instruction") or t.get("original_query") or t.get("id", "")[:8]
-                    status = _loc(AGENT_TASK_STATUS_RUNNING, _lang) if t.get("status") == "running" else _loc(AGENT_TASK_STATUS_QUEUED, _lang)
-                    lines.append(f"  - [{status}] {desc}")
-                if len(lines) > 0:
-                    return (
-                        _loc(AGENT_TASKS_HEADER, _lang)
-                        + "\n".join(lines)
-                        + _loc(AGENT_TASKS_NOTICE, _lang)
-                    )
-                else:
-                    return ""
+            from utils.internal_http_client import get_internal_http_client
+            client = get_internal_http_client()
+            resp = await client.get(
+                f"http://127.0.0.1:{TOOL_SERVER_PORT}/tasks", timeout=1.5,
+            )
+            if resp.status_code != 200:
+                return ""
+            data = resp.json()
+            tasks = data.get("tasks", [])
+            active = [t for t in tasks if t.get("status") in ("running", "queued")]
+            if not active:
+                return ""
+            _lang = normalize_language_code(self.user_language, format='short')
+            lines = []
+            for t in active:
+                params = t.get("params") or {}
+                desc = params.get("query") or params.get("instruction") or t.get("original_query") or t.get("id", "")[:8]
+                status = _loc(AGENT_TASK_STATUS_RUNNING, _lang) if t.get("status") == "running" else _loc(AGENT_TASK_STATUS_QUEUED, _lang)
+                lines.append(f"  - [{status}] {desc}")
+            if len(lines) > 0:
+                return (
+                    _loc(AGENT_TASKS_HEADER, _lang)
+                    + "\n".join(lines)
+                    + _loc(AGENT_TASKS_NOTICE, _lang)
+                )
+            else:
+                return ""
         except Exception:
             return ""
 
@@ -2145,8 +2193,8 @@ class LLMSessionManager:
             
             initial_prompt = await self._build_initial_prompt()
             self.initial_cache_snapshot_len = len(self.message_cache_for_new_session)
-            from utils.memory_client import get_memory_client
-            _hs_client = get_memory_client()
+            from utils.internal_http_client import get_internal_http_client
+            _hs_client = get_internal_http_client()
             try:
                 resp = await _hs_client.get(
                     f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}",
@@ -2584,26 +2632,185 @@ class LLMSessionManager:
         logger.info("[%s] Proactive stream delivered: %.40s…", self.lanlan_name, full_text)
         return True
 
+    async def handle_avatar_interaction(self, payload: dict) -> dict:
+        raw_interaction_id = str(payload.get("interaction_id") or payload.get("interactionId") or "").strip() if isinstance(payload, dict) else ""
+        raw = _normalize_avatar_interaction_payload(payload)
+        if not raw:
+            logger.debug("[%s] handle_avatar_interaction: ignored invalid payload", self.lanlan_name)
+            await self.send_avatar_interaction_ack(raw_interaction_id, False, "invalid_payload")
+            return {"accepted": False, "reason": "invalid_payload"}
+
+        interaction_id = raw["interaction_id"]
+        now_ms = int(time.time() * 1000)
+
+        if interaction_id in self._recent_avatar_interaction_id_set:
+            logger.debug("[%s] handle_avatar_interaction: duplicate interaction_id=%s", self.lanlan_name, interaction_id)
+            await self.send_avatar_interaction_ack(interaction_id, False, "duplicate")
+            return {"accepted": False, "reason": "duplicate", "interaction_id": interaction_id}
+
+        if now_ms - self._last_avatar_interaction_at < self.avatar_interaction_cooldown_ms:
+            logger.debug("[%s] handle_avatar_interaction: cooldown skip interaction_id=%s", self.lanlan_name, interaction_id)
+            self._remember_avatar_interaction_id(interaction_id)
+            await self.send_avatar_interaction_ack(interaction_id, False, "cooldown")
+            return {"accepted": False, "reason": "cooldown", "interaction_id": interaction_id}
+
+        self._remember_avatar_interaction_id(interaction_id)
+        self._last_avatar_interaction_at = now_ms
+
+        if self.is_active and isinstance(self.session, OmniRealtimeClient):
+            logger.debug("[%s] handle_avatar_interaction: voice session active, skipping", self.lanlan_name)
+            await self.send_avatar_interaction_ack(interaction_id, False, "voice_session_active")
+            return {"accepted": False, "reason": "voice_session_active", "interaction_id": interaction_id}
+
+        if not (self.is_active and isinstance(self.session, OmniOfflineClient)):
+            if not self._has_connected_websocket():
+                logger.warning("[%s] handle_avatar_interaction: no connected websocket, skipping", self.lanlan_name)
+                await self.send_avatar_interaction_ack(interaction_id, False, "no_websocket")
+                return {"accepted": False, "reason": "no_websocket", "interaction_id": interaction_id}
+            try:
+                logger.info("[%s] handle_avatar_interaction: auto-starting text session", self.lanlan_name)
+                await self.start_session(self.websocket, new=False, input_mode='text')
+            except Exception as e:
+                logger.warning("[%s] handle_avatar_interaction: auto start_session failed: %s", self.lanlan_name, e)
+                await self.send_avatar_interaction_ack(interaction_id, False, "session_start_failed")
+                return {"accepted": False, "reason": "session_start_failed", "interaction_id": interaction_id}
+
+        if not (self.is_active and isinstance(self.session, OmniOfflineClient)):
+            logger.warning("[%s] handle_avatar_interaction: session is not text mode after start, skipping", self.lanlan_name)
+            await self.send_avatar_interaction_ack(interaction_id, False, "not_text_session")
+            return {"accepted": False, "reason": "not_text_session", "interaction_id": interaction_id}
+
+        instruction = _build_avatar_interaction_instruction(
+            getattr(self, "user_language", None),
+            self.lanlan_name,
+            self.master_name,
+            raw,
+        )
+        memory_meta = _build_avatar_interaction_memory_meta(getattr(self, "user_language", None), raw)
+        memory_note = memory_meta["memory_note"]
+        delivered = False
+
+        async with self._proactive_write_lock:
+            if not (self.is_active and isinstance(self.session, OmniOfflineClient)):
+                await self.send_avatar_interaction_ack(interaction_id, False, "session_changed")
+                return {"accepted": False, "reason": "session_changed", "interaction_id": interaction_id}
+            if getattr(self.session, "_is_responding", False):
+                logger.debug("[%s] handle_avatar_interaction: text session busy, skipping", self.lanlan_name)
+                await self.send_avatar_interaction_ack(interaction_id, False, "busy")
+                return {"accepted": False, "reason": "busy", "interaction_id": interaction_id}
+            speak_now_ms = int(time.time() * 1000)
+            if speak_now_ms - self._last_avatar_interaction_speak_at < self.avatar_interaction_speak_cooldown_ms:
+                logger.debug("[%s] handle_avatar_interaction: speak cooldown skip interaction_id=%s", self.lanlan_name, interaction_id)
+                await self.send_avatar_interaction_ack(interaction_id, False, "speak_cooldown")
+                return {"accepted": False, "reason": "speak_cooldown", "interaction_id": interaction_id}
+
+            async with self.lock:
+                self.current_speech_id = str(uuid4())
+                self._tts_done_queued_for_turn = False
+
+            if hasattr(self.session, 'update_max_response_length'):
+                self.session.update_max_response_length(self._get_text_guard_max_length())
+
+            # 后端打标：把 avatar interaction 元数据挂在 session manager 上，
+            # 等 prompt_ephemeral 触发 handle_response_complete 时随 turn end
+            # 原子地下发。不再走独立的 sync_message_queue 控制消息，避免
+            # meta 与 turn end 两条消息时序错乱导致本轮被误判成 proactive。
+            self._pending_turn_meta = {
+                "kind": "avatar_interaction",
+                "interaction_id": interaction_id,
+                "memory_note": memory_note,
+                "memory_dedupe_key": memory_meta["memory_dedupe_key"],
+                "memory_dedupe_rank": memory_meta["memory_dedupe_rank"],
+            }
+
+            current_turn_id = self.current_speech_id
+            # 主动搭话 race guard：prompt_ephemeral 运行期间若用户发起新输入
+            # 会换 current_speech_id + 清 TTS queue，本路径产生的 text delta
+            # 必须靠 _proactive_expected_sid 在 handle_text_data/handle_output_transcript
+            # 里判同，不一致就丢。和 trigger_agent_callbacks 走同一套保护。
+            _sid_token = _proactive_expected_sid.set(current_turn_id)
+            try:
+                try:
+                    delivered = await self.session.prompt_ephemeral(
+                        instruction,
+                        completion_mode="response",
+                        persist_response=False,
+                    )
+                except Exception as e:
+                    logger.exception(
+                        "[%s] handle_avatar_interaction: prompt_ephemeral failed interaction_id=%s: %s",
+                        self.lanlan_name,
+                        interaction_id,
+                        e,
+                    )
+                    # prompt_ephemeral 抛错时 handle_response_complete 不会被触发，
+                    # 必须主动清掉 meta，避免泄漏到下一轮。
+                    self._pending_turn_meta = None
+                    await self.send_avatar_interaction_ack(interaction_id, False, "error")
+                    return {"accepted": False, "reason": "error", "interaction_id": interaction_id}
+            finally:
+                _proactive_expected_sid.reset(_sid_token)
+
+            # Prompt 跑完后若 current_speech_id 已换（用户中途接管），
+            # 本轮 avatar 响应算未送达：meta 不该挂到用户的新 turn end 上，
+            # ack 也要汇报 interrupted 而非 delivered。
+            interrupted = self.current_speech_id != current_turn_id
+            accepted = bool(delivered) and not interrupted
+            if interrupted:
+                self._pending_turn_meta = None
+            if accepted:
+                self._last_avatar_interaction_speak_at = int(time.time() * 1000)
+            ack_reason = "delivered" if accepted else ("interrupted" if interrupted else "empty_response")
+            await self.send_avatar_interaction_ack(
+                interaction_id,
+                accepted,
+                ack_reason,
+                turn_id=current_turn_id if accepted else "",
+            )
+
+        # 未 accepted 时 handle_response_complete 不一定被触发（或者触发在用户
+        # 的新 turn 上已被 interrupted 分支清空），留下的 meta 可能被下一轮
+        # turn end 误消费；在这里兜底清掉。accepted=True 时 meta 已被
+        # handle_response_complete 消费，这里是幂等 no-op。
+        if not accepted:
+            self._pending_turn_meta = None
+
+        if accepted:
+            logger.info(
+                "[%s] handle_avatar_interaction: delivered interaction_id=%s tool=%s action=%s",
+                self.lanlan_name,
+                interaction_id,
+                raw["tool_id"],
+                raw["action_id"],
+            )
+            return {"accepted": True, "interaction_id": interaction_id}
+
+        logger.debug(
+            "[%s] handle_avatar_interaction: not accepted interaction_id=%s reason=%s",
+            self.lanlan_name, interaction_id, ack_reason,
+        )
+        return {"accepted": False, "reason": ack_reason, "interaction_id": interaction_id}
+
     async def trigger_agent_callbacks(self) -> None:
         """Proactively deliver pending agent task results via LLM rephrase.
 
         Design:
-        - Text mode (OmniOfflineClient): calls session.prompt_ephemeral() so the
-          LLM generates a styled response in the character's voice.
+        - Text mode (OmniOfflineClient): claims proactive turn via
+          ``state.try_start_proactive()`` then calls ``prompt_ephemeral()`` so
+          the LLM generates a styled response in the character's voice.
         - Voice mode (OmniRealtimeClient): defers to hot-swap — callbacks are
-          kept in pending_extra_replies for injection via prime_context().
+          kept in pending_extra_replies for injection via prime_context()；
+          不参与 SM 状态机（hot-swap 有独立生命周期）。
         - On failure or when the session is busy, restores callbacks so the next
           handle_response_complete() call will retry automatically.
-        - Re-entrance guard prevents concurrent deliveries.
+        - 重入与"AI 正在回复"互斥由 SM 的原子 claim 承担；同时与
+          ``/api/proactive_chat`` / ``trigger_greeting`` 互为 mutual exclusion。
         """
         sess_type = type(self.session).__name__ if self.session else "None"
         logger.info(
-            "[%s] trigger_agent_callbacks enter: session=%s delivery_in_progress=%s pending=%d",
-            self.lanlan_name, sess_type, self._agent_delivery_in_progress, len(self.pending_agent_callbacks),
+            "[%s] trigger_agent_callbacks enter: session=%s phase=%s pending=%d",
+            self.lanlan_name, sess_type, self.state.phase.value, len(self.pending_agent_callbacks),
         )
-        if self._agent_delivery_in_progress:
-            logger.debug("[%s] trigger_agent_callbacks: skipped — delivery already in progress", self.lanlan_name)
-            return
         if not self.pending_agent_callbacks:
             return
 
@@ -2628,47 +2835,32 @@ class LLMSessionManager:
             self.pending_extra_replies.clear()
             return
 
+        # Voice mode 走 hot-swap，不进 SM proactive 流水线
+        if isinstance(self.session, OmniRealtimeClient):
+            self.pending_agent_callbacks.clear()
+            logger.debug("[%s] trigger_agent_callbacks: voice mode, deferring to hot-swap", self.lanlan_name)
+            return
+
         _lang = normalize_language_code(self.user_language, format='short')
         instruction = (
             _loc(SYSTEM_NOTIFICATION_TASKS_DONE, _lang).format(name=self.lanlan_name, master=self.master_name)
             + "\n".join(items)
         )
-
         callbacks_snapshot = list(self.pending_agent_callbacks)
 
-        self._agent_delivery_in_progress = True
+        # 原子 check-and-claim：若另一路 proactive（router/greeting）在跑或 AI
+        # 正在为用户回复，SM 拒绝本次投递，callbacks 留在 pending 下轮重试。
+        claim_session = self.session if isinstance(self.session, OmniOfflineClient) else None
+        if not await self.state.try_start_proactive(session=claim_session):
+            logger.debug(
+                "[%s] trigger_agent_callbacks: SM denied claim (phase=%s), re-queuing",
+                self.lanlan_name, self.state.phase.value,
+            )
+            return
+
         try:
-            if isinstance(self.session, OmniRealtimeClient):
-                self.pending_agent_callbacks.clear()
-                logger.debug("[%s] trigger_agent_callbacks: voice mode, deferring to hot-swap", self.lanlan_name)
-
-            elif isinstance(self.session, OmniOfflineClient):
-                if getattr(self.session, "_is_responding", False):
-                    logger.debug("[%s] trigger_agent_callbacks: text session busy (_is_responding=True), re-queuing", self.lanlan_name)
-                    return
-                async with self._proactive_write_lock:
-                    async with self.lock:
-                        self.current_speech_id = str(uuid4())
-                        self._tts_done_queued_for_turn = False
-                        proactive_sid = self.current_speech_id
-                    logger.debug("[%s] trigger_agent_callbacks: text session ready, calling prompt_ephemeral", self.lanlan_name)
-                    # 更新字数限制（可能用户在对话期间修改了设置）
-                    if hasattr(self.session, 'update_max_response_length'):
-                        self.session.update_max_response_length(self._get_text_guard_max_length())
-                    self.pending_agent_callbacks.clear()
-                    # 设置 per-task contextvar，让 prompt_ephemeral 回调链里的
-                    # handle_text_data 能识别本路径 chunk 并在 sid 被用户抢走后丢弃。
-                    _sid_token = _proactive_expected_sid.set(proactive_sid)
-                    try:
-                        delivered = await self.session.prompt_ephemeral(instruction)
-                    finally:
-                        _proactive_expected_sid.reset(_sid_token)
-                    logger.debug("[%s] trigger_agent_callbacks: text session prompt_ephemeral delivered=%s", self.lanlan_name, delivered)
-                    if delivered:
-                        self.pending_extra_replies.clear()
-                    else:
-                        self.pending_agent_callbacks.extend(callbacks_snapshot)
-
+            if isinstance(self.session, OmniOfflineClient):
+                await self._deliver_agent_callbacks_text(instruction, callbacks_snapshot)
             else:
                 ws = self.websocket
                 if ws and hasattr(ws, 'client_state') and ws.client_state == ws.client_state.CONNECTED:
@@ -2677,33 +2869,59 @@ class LLMSessionManager:
                     except Exception as e:
                         logger.warning("[%s] trigger_agent_callbacks: auto start_session failed: %s", self.lanlan_name, e)
                 if isinstance(self.session, OmniOfflineClient):
-                    async with self._proactive_write_lock:
-                        async with self.lock:
-                            self.current_speech_id = str(uuid4())
-                            self._tts_done_queued_for_turn = False
-                            proactive_sid = self.current_speech_id
-                        # 更新字数限制（可能用户在对话期间修改了设置）
-                        if hasattr(self.session, 'update_max_response_length'):
-                            self.session.update_max_response_length(self._get_text_guard_max_length())
-                        self.pending_agent_callbacks.clear()
-                        _sid_token = _proactive_expected_sid.set(proactive_sid)
-                        try:
-                            delivered = await self.session.prompt_ephemeral(instruction)
-                        finally:
-                            _proactive_expected_sid.reset(_sid_token)
-                        if delivered:
-                            self.pending_extra_replies.clear()
-                        else:
-                            self.pending_agent_callbacks.extend(callbacks_snapshot)
-                        logger.debug("[%s] trigger_agent_callbacks: auto text session, delivered=%s", self.lanlan_name, delivered)
+                    await self._deliver_agent_callbacks_text(instruction, callbacks_snapshot)
+                    logger.debug("[%s] trigger_agent_callbacks: auto text session delivered", self.lanlan_name)
                 else:
                     logger.debug("[%s] trigger_agent_callbacks: no websocket/session, keeping for later", self.lanlan_name)
-
         except Exception as e:
             logger.warning("[%s] trigger_agent_callbacks error: %s", self.lanlan_name, e)
             self.pending_agent_callbacks.extend(callbacks_snapshot)
         finally:
-            self._agent_delivery_in_progress = False
+            await self.state.fire(SessionEvent.PROACTIVE_DONE)
+
+    async def _deliver_agent_callbacks_text(self, instruction: str, callbacks_snapshot: list) -> None:
+        """Execute prompt_ephemeral on an OmniOfflineClient session inside the
+        proactive write lock. Caller holds the SM proactive claim (PHASE1).
+
+        返回 True 当且仅当真正投递。返回 False 的情况：claim 到 lock 之间用户
+        抢占（``mark_user_input_preempt`` 在 ``self.lock`` 内翻起 ``_preempted``
+        且已轮换 ``current_speech_id`` 到新 user sid），此时不能再覆盖。
+        """
+        async with self._proactive_write_lock:
+            async with self.lock:
+                # sticky preempt 复查：与 prepare_proactive_delivery 同样，在持有
+                # self.lock 的临界区内判定。USER_INPUT 路径在本锁段内翻 flag 和
+                # 写 user sid 是原子的，如果此处 preempt==True 说明用户已抢到
+                # 本轮 turn，必须放弃本次 proactive（否则会把用户刚写好的 sid
+                # 再覆盖成 proactive sid，污染 TTS/chunk 分发）。
+                if self.state.is_proactive_preempted():
+                    logger.info("[%s] trigger_agent_callbacks: preempted before sid claim, skipping", self.lanlan_name)
+                    self.pending_agent_callbacks.extend(callbacks_snapshot)
+                    return
+                self.current_speech_id = str(uuid4())
+                self._tts_done_queued_for_turn = False
+                proactive_sid = self.current_speech_id
+            # SM：发射 CLAIM（把 proactive_sid 写入 state，供诊断/订阅者观察）
+            # 随后立刻 PHASE2，因 prompt_ephemeral 没有可分离的 phase1/phase2 边界
+            await self.state.fire(SessionEvent.PROACTIVE_CLAIM, sid=proactive_sid)
+            await self.state.fire(SessionEvent.PROACTIVE_PHASE2)
+            logger.debug("[%s] trigger_agent_callbacks: text session ready, calling prompt_ephemeral", self.lanlan_name)
+            # 更新字数限制（可能用户在对话期间修改了设置）
+            if hasattr(self.session, 'update_max_response_length'):
+                self.session.update_max_response_length(self._get_text_guard_max_length())
+            self.pending_agent_callbacks.clear()
+            # per-task contextvar：prompt_ephemeral 回调链里 handle_text_data
+            # 识别本路径 chunk 并在 sid 被用户抢走后丢弃
+            _sid_token = _proactive_expected_sid.set(proactive_sid)
+            try:
+                delivered = await self.session.prompt_ephemeral(instruction)
+            finally:
+                _proactive_expected_sid.reset(_sid_token)
+            logger.debug("[%s] trigger_agent_callbacks: prompt_ephemeral delivered=%s", self.lanlan_name, delivered)
+            if delivered:
+                self.pending_extra_replies.clear()
+            else:
+                self.pending_agent_callbacks.extend(callbacks_snapshot)
 
     def _is_voice_session_active_or_starting(self) -> bool:
         """语音 session 正在启动或已经活跃时返回 True，用于阻止 greeting 干扰语音流。"""
@@ -2723,13 +2941,19 @@ class LLMSessionManager:
             logger.info("[%s] trigger_greeting: voice session active/starting, skipping", self.lanlan_name)
             return
 
+        # 复用 internal_http_client 单例：session 启动路径，避开 AsyncClient 构造开销
+        # （Windows idle 157ms，事件循环压力下可达 1.1s，详见 utils/internal_http_client.py）
         try:
-            async with httpx.AsyncClient(timeout=2.0, proxy=None, trust_env=False) as client:
-                resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/last_conversation_gap/{self.lanlan_name}")
-                if not resp.is_success:
-                    logger.warning("[%s] trigger_greeting: memory server returned %s", self.lanlan_name, resp.status_code)
-                    return
-                gap_seconds = resp.json().get("gap_seconds", -1)
+            from utils.internal_http_client import get_internal_http_client
+            _mem_client = get_internal_http_client()
+            resp = await _mem_client.get(
+                f"http://127.0.0.1:{self.memory_server_port}/last_conversation_gap/{self.lanlan_name}",
+                timeout=2.0,
+            )
+            if not resp.is_success:
+                logger.warning("[%s] trigger_greeting: memory server returned %s", self.lanlan_name, resp.status_code)
+                return
+            gap_seconds = resp.json().get("gap_seconds", -1)
         except Exception as e:
             logger.warning("[%s] trigger_greeting: failed to query gap: %s", self.lanlan_name, e)
             return
@@ -2800,25 +3024,45 @@ class LLMSessionManager:
             logger.info("[%s] trigger_greeting: voice session took over before delivery, skipping", self.lanlan_name)
             return
 
-        async with self._proactive_write_lock:
-            # 持锁后仍需检查：_proactive_write_lock 等待期间语音可能已启动
-            if self._is_voice_session_active_or_starting():
-                logger.info("[%s] trigger_greeting: voice session took over while waiting for write lock, skipping", self.lanlan_name)
-                return
-            async with self.lock:
-                self.current_speech_id = str(uuid4())
-                self._tts_done_queued_for_turn = False
-                proactive_sid = self.current_speech_id
-            _sid_token = _proactive_expected_sid.set(proactive_sid)
-            try:
-                delivered = await self.session.prompt_ephemeral(instruction)
-            finally:
-                _proactive_expected_sid.reset(_sid_token)
-            logger.info("[%s] trigger_greeting: delivered=%s", self.lanlan_name, delivered)
-            # 投递成功后才真正消费节日/周末预算
-            # commit 内部会 atomic_write_json 消费预算文件，offload 以免阻塞事件循环
-            if delivered and _holiday_token is not None:
-                await asyncio.to_thread(commit_holiday_or_weekend_hint, self.lanlan_name, _holiday_token)
+        # 原子 SM claim：与 trigger_agent_callbacks / /api/proactive_chat 互斥
+        # 并拦截"AI 正在为用户回复"（session._is_responding）的场景
+        if not await self.state.try_start_proactive(session=self.session):
+            logger.info(
+                "[%s] trigger_greeting: SM denied claim (phase=%s), skipping",
+                self.lanlan_name, self.state.phase.value,
+            )
+            return
+
+        try:
+            async with self._proactive_write_lock:
+                # 持锁后仍需检查：_proactive_write_lock 等待期间语音可能已启动
+                if self._is_voice_session_active_or_starting():
+                    logger.info("[%s] trigger_greeting: voice session took over while waiting for write lock, skipping", self.lanlan_name)
+                    return
+                async with self.lock:
+                    # sticky preempt 复查：USER_INPUT 路径在本锁段内翻 flag 和写
+                    # user sid 是原子的；若 preempt==True 说明用户已抢到本轮 turn，
+                    # 不能再覆盖 current_speech_id 成 proactive sid。
+                    if self.state.is_proactive_preempted():
+                        logger.info("[%s] trigger_greeting: preempted before sid claim, skipping", self.lanlan_name)
+                        return
+                    self.current_speech_id = str(uuid4())
+                    self._tts_done_queued_for_turn = False
+                    proactive_sid = self.current_speech_id
+                await self.state.fire(SessionEvent.PROACTIVE_CLAIM, sid=proactive_sid)
+                await self.state.fire(SessionEvent.PROACTIVE_PHASE2)
+                _sid_token = _proactive_expected_sid.set(proactive_sid)
+                try:
+                    delivered = await self.session.prompt_ephemeral(instruction)
+                finally:
+                    _proactive_expected_sid.reset(_sid_token)
+                logger.info("[%s] trigger_greeting: delivered=%s", self.lanlan_name, delivered)
+                # 投递成功后才真正消费节日/周末预算
+                # commit 内部会 atomic_write_json 消费预算文件，offload 以免阻塞事件循环
+                if delivered and _holiday_token is not None:
+                    await asyncio.to_thread(commit_holiday_or_weekend_hint, self.lanlan_name, _holiday_token)
+        finally:
+            await self.state.fire(SessionEvent.PROACTIVE_DONE)
 
     def enqueue_agent_callback(self, callback: dict) -> None:
         """Enqueue a structured agent task callback for LLM injection.
@@ -3633,6 +3877,24 @@ class LLMSessionManager:
             pass
         except Exception as e:
             logger.error(f"💥 WS Send Session Failed Error: {e}")
+
+    async def send_avatar_interaction_ack(self, interaction_id: str, accepted: bool, reason: str = '', turn_id: str = ''):
+        """向前端确认点触互动的投递结果，便于前端做续发与状态收口。"""
+        if not interaction_id:
+            return
+        try:
+            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                await self.websocket.send_json({
+                    "type": "avatar_interaction_ack",
+                    "interaction_id": interaction_id,
+                    "accepted": bool(accepted),
+                    "reason": str(reason or ''),
+                    "turn_id": str(turn_id or ''),
+                })
+        except WebSocketDisconnect:
+            pass
+        except Exception as e:
+            logger.error(f"💥 WS Send Avatar Interaction Ack Error: {e}")
 
     async def send_session_ended_by_server(self): # 通知前端session已被服务器终止
         """通知前端 session 已被服务器端终止（如API断连），让前端重置会话状态"""

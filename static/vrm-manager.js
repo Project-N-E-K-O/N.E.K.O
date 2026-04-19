@@ -1170,7 +1170,7 @@ class VRMManager {
         if (this.expression) {
             this.expression.setMood('neutral');
         }
-        if (this.setupFloatingButtons) {
+        if (this.setupFloatingButtons && !window._cardExportPage) {
             this.setupFloatingButtons();
         }
 
