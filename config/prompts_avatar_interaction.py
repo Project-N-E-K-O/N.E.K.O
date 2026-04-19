@@ -1011,7 +1011,11 @@ def _normalize_avatar_interaction_payload(payload: dict) -> Optional[dict]:
         )
         if tool_id == "hammer" else False
     )
-    if easter_egg:
+    # 归一：flag 和 intensity 任一指向彩蛋，两个都抬成彩蛋态。
+    # 否则 intensity="easter_egg" + flag=False 会让 memory 落彩蛋模板，
+    # 但 prompt 少了"触发放大彩蛋"这行，字段语义互相打架。
+    if tool_id == "hammer" and (easter_egg or intensity == "easter_egg"):
+        easter_egg = True
         intensity = _normalize_avatar_interaction_intensity(tool_id, action_id, "easter_egg")
 
     raw_touch_zone = str(payload.get("touch_zone") or payload.get("touchZone") or "").strip().lower()
