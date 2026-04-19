@@ -143,7 +143,10 @@ code, .mono {
 
 #app {
   display: grid;
-  grid-template-rows: var(--topbar-h) var(--tabbar-h) 1fr;
+  /* 四行: topbar (固定) → reminder-slot (auto, 空时 slot :empty { display:none } 自然坍塌成 0)
+     → tabbar (固定) → workspace-host (1fr). 这里必须留一行给 reminder, 否则 DOM 插入后
+     grid auto-flow 会把它塞进 tabbar 行, 让 tabbar 被挤到 workspace-host 行上跟内容叠加. */
+  grid-template-rows: var(--topbar-h) auto var(--tabbar-h) 1fr;
   height: 100vh;
 }
 
@@ -245,6 +248,282 @@ code, .mono {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+}
+
+/* ── Stage Coach chip (P14) ────────────────────────────────── */
+.stage-chip-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.stage-chip-slot {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: nowrap;
+}
+.stage-chip {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.stage-inline-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 4px;
+}
+.stage-action-btn {
+  padding: 2px 8px;
+  height: 22px;
+  font-size: 11.5px;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stage-action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.stage-action-primary {
+  background: var(--accent-bg, rgba(90,160,255,0.15));
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.stage-action-primary:hover {
+  background: var(--accent-bg-hover, rgba(90,160,255,0.25));
+}
+.stage-action-secondary {
+  color: var(--text-secondary);
+}
+.stage-panel {
+  width: 420px;
+  max-width: min(420px, 90vw);
+  max-height: min(80vh, 640px);
+  overflow-y: auto;
+  padding: 10px 12px;
+}
+.stage-panel-empty {
+  padding: 20px 12px;
+  color: var(--text-tertiary);
+  text-align: center;
+}
+.stage-panel-intro {
+  background: rgba(90, 160, 255, 0.08);
+  border: 1px solid rgba(90, 160, 255, 0.25);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  margin-bottom: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+.stage-panel-intro[open] { padding-bottom: 6px; }
+.stage-panel-intro-summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--text-primary);
+  list-style: none;
+  outline: none;
+  user-select: none;
+}
+.stage-panel-intro-summary::-webkit-details-marker { display: none; }
+.stage-panel-intro-icon {
+  color: var(--accent);
+  margin-right: 2px;
+}
+.stage-panel-intro-body {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed rgba(90, 160, 255, 0.25);
+}
+.stage-panel-intro-line {
+  margin: 0 0 4px;
+  white-space: pre-wrap;
+}
+.stage-panel-intro-line:last-child { margin-bottom: 0; }
+.stage-panel-intro-line strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.stage-panel-section-title {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 10px 0 6px;
+}
+.stage-panel-section-title:first-child { margin-top: 0; }
+.stage-panel-track {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 2px 6px;
+  margin-bottom: 6px;
+}
+.stage-panel-track-node {
+  grid-row: 1;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  color: var(--text-tertiary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  cursor: pointer;
+  margin: 0 auto;
+}
+.stage-panel-track-node.past {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+.stage-panel-track-node.active {
+  background: var(--accent);
+  color: #0a0a0a;
+  border-color: var(--accent);
+  font-weight: 700;
+}
+.stage-panel-track-node:hover { border-color: var(--accent); }
+.stage-panel-track-label {
+  grid-row: 2;
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  text-align: center;
+  line-height: 1.2;
+}
+.stage-panel-op-card {
+  background: var(--bg-subtle, var(--bg-raised));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+}
+.stage-panel-op-label {
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+.stage-panel-op-desc {
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  line-height: 1.45;
+  margin-bottom: 6px;
+}
+.stage-panel-op-sub-title {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-top: 6px;
+}
+.stage-panel-op-sub {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+  margin-top: 2px;
+}
+.stage-panel-context {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.stage-panel-context-line { white-space: pre-wrap; }
+.stage-panel-context-warning { color: var(--warn, #d39a4a); }
+.stage-panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.stage-panel-history {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  max-height: 160px;
+  overflow-y: auto;
+}
+.stage-panel-history-row { line-height: 1.6; }
+.stage-panel-history-at { color: var(--text-tertiary); margin-right: 4px; }
+.stage-panel-history-stage { color: var(--text-primary); }
+.stage-panel-history-empty {
+  color: var(--text-tertiary);
+  text-align: center;
+  padding: 8px;
+}
+
+/* ── 启动提醒横幅 (AI 模型未配置) ────────────────────────────── */
+/* 插在 topbar 和 tabbar 之间, 醒目但不遮挡操作. 配色走 warn / welcome 两语义.
+   NOTE: 空槽位**不能**用 display:none, 否则它会从 grid auto-flow 里消失, 导致下方
+   的 tabbar / workspace-host 被重分配到错误的 row track (会让 workspace-host 挤进
+   var(--tabbar-h) 那 ~40px 的行). 让 slot 永远是 block, 无子元素时自然高度为 0 即可. */
+.model-reminder-slot { display: block; min-width: 0; }
+.model-reminder-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.5;
+  border-top: 1px solid transparent;
+  border-bottom: 1px solid transparent;
+}
+.model-reminder-banner.mode-warn {
+  background: rgba(240, 170, 40, 0.12);
+  border-top-color: rgba(240, 170, 40, 0.35);
+  border-bottom-color: rgba(240, 170, 40, 0.35);
+}
+.model-reminder-banner.mode-welcome {
+  background: rgba(90, 160, 255, 0.10);
+  border-top-color: rgba(90, 160, 255, 0.30);
+  border-bottom-color: rgba(90, 160, 255, 0.30);
+}
+.model-reminder-icon { font-size: 18px; flex: 0 0 auto; }
+.model-reminder-body { flex: 1 1 auto; min-width: 0; }
+.model-reminder-title {
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 2px;
+}
+.model-reminder-text {
+  color: var(--text-secondary);
+  word-break: break-word;
+}
+.model-reminder-text code {
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 12px;
+}
+.model-reminder-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.model-reminder-dismiss {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-tertiary);
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+}
+.model-reminder-dismiss:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 /* ── Workspace tab bar ─────────────────────────────────────── */
@@ -1387,7 +1666,14 @@ table.tbl .tbl-key-field {
   min-height: 320px;
   height: 100%;
   display: grid;
-  grid-template-rows: 1fr auto;
+  /* 三行: auto-banner (空闲 display:none = 0 高度, 运行时 = 自身内容高度) /
+     stream (1fr 填满剩余) / composer (内容高度). P13 前只有后两行, 当时写
+     的是 `1fr auto`; P13 在最前面插了 autoBannerHost 但忘了同步改这里,
+     导致第一行被默认 1fr 分配给 banner, 第二行 auto 给 stream — 现象是
+     banner 下方留一大片空白, 且 stream 消息数变化时 1fr/auto 重算导致
+     banner 视觉上下跳动. 修正: 行数和子元素数一一对应, 1fr 必须给
+     stream 这个"应当填满"的主区. */
+  grid-template-rows: auto 1fr auto;
   overflow: hidden;  /* 内部 stream-list 自己滚 */
 }
 .chat-stream-host {
@@ -1861,6 +2147,133 @@ button.primary.small { font-size: 12px; padding: 3px 12px; }
   background: rgba(120, 180, 255, 0.08);
   font-size: 11.5px;
   font-family: var(--font-mono);
+}
+
+/* Auto-Dialog (P13) 子控件条. 与 .simuser-controls / .script-controls 同一
+   视觉语言, 但比它们多几个 input (轮数/秒数), 所以横向更长, 允许换行
+   避免溢出. */
+.auto-controls {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-left: 8px;
+  padding: 2px 4px;
+  border-left: 1px solid var(--border);
+}
+.auto-style-select,
+.auto-step-mode-select {
+  background: var(--bg-input, var(--bg-panel));
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 2px 4px;
+  font-size: 12px;
+}
+.auto-total-input,
+.auto-step-seconds-input {
+  background: var(--bg-input, var(--bg-panel));
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 2px 4px;
+  font-size: 12px;
+  width: 56px;
+}
+.auto-persona-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  /* 与 SimUser persona editor 的蓝底不同, 用暖橙色调区分 "这是 Auto 模式
+     的人设, 不是 SimUser 模式的那份". */
+  background: rgba(255, 180, 120, 0.07);
+  border: 1px solid rgba(255, 180, 120, 0.25);
+  border-radius: var(--radius-sm);
+  margin-top: 2px;
+}
+.auto-persona-textarea {
+  resize: vertical;
+  min-height: 36px;
+  background: var(--bg-input, var(--bg-panel));
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 6px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.auto-persona-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Auto-Dialog 进度横幅 (sticky, 运行期悬浮在 .chat-main 顶部). 空闲时
+   display:none 整条隐藏, 不占视觉空间. */
+.chat-auto-banner-host {
+  /* 作为 .chat-main grid 的第一行 (grid-template-rows: auto 1fr auto), 空闲
+     时子元素 .auto-banner 自己 display:none, 整行高度塌成 0 不占视觉空间;
+     运行时 auto 行自动撑开贴在 chat-main 顶部. sticky 保留只是"万一未来
+     chat-main 自身变成滚动容器"的防御 — 当前 chat-main overflow:hidden,
+     真正滚动的是内部 .chat-stream, sticky 其实没实际效果, 但也无副作用. */
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+.auto-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 12px;
+  margin-bottom: 6px;
+  border: 1px solid rgba(100, 180, 255, 0.4);
+  background: linear-gradient(
+    to right,
+    rgba(100, 180, 255, 0.12),
+    rgba(100, 180, 255, 0.06)
+  );
+  border-radius: var(--radius-sm);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
+  font-size: 12.5px;
+}
+.auto-banner.paused {
+  border-color: rgba(255, 180, 80, 0.55);
+  background: linear-gradient(
+    to right,
+    rgba(255, 180, 80, 0.15),
+    rgba(255, 180, 80, 0.07)
+  );
+}
+.auto-banner-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.auto-banner-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.auto-banner-label {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.auto-banner-progress {
+  padding: 1px 10px;
+  border-radius: 999px;
+  background: rgba(100, 180, 255, 0.2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.auto-banner.paused .auto-banner-progress {
+  background: rgba(255, 180, 80, 0.22);
+}
+.auto-banner-step {
+  font-size: 11.5px;
+  color: var(--text-secondary);
 }
 
 /* 参考回复 (reference_content) 折叠块: 跟 assistant 消息气泡绑在一起,

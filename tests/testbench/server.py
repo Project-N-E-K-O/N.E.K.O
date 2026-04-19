@@ -40,6 +40,7 @@ from tests.testbench.routers import (
     memory_router,
     persona_router,
     session_router,
+    stage_router,
     time_router,
 )
 from tests.testbench.session_store import get_session_store
@@ -115,6 +116,7 @@ def create_app() -> FastAPI:
     app.include_router(time_router.router)
     app.include_router(memory_router.router)
     app.include_router(chat_router.router)
+    app.include_router(stage_router.router)
 
     # Shutdown hook: release the ConfigManager singleton + sandbox so a
     # subsequent uvicorn --reload cycle doesn't leave stale paths wired in.

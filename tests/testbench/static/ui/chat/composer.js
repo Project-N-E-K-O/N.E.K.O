@@ -1,11 +1,14 @@
 /**
- * chat/composer.js — Chat workspace 底部输入栏 (P09 Manual + P11 SimUser + P12 Scripted 模式).
+ * chat/composer.js — Chat workspace 底部输入栏
+ * (P09 Manual + P11 SimUser + P12 Scripted + P13 Auto-Dialog 四模式).
  *
  * PLAN §Chat workspace 约定两行扁平布局:
  *   Row 1: Clock + Next turn +Δt | Role (User/System) | Mode (Manual/SimUser/Script/Auto)
  *   Row 2: textarea | [Send] [Inject sys] [⋯ more]
  *
- * 已实现 Manual (P09) + SimUser (P11) + Script (P12). Auto 仍是占位, P13 接入.
+ * 四种模式都已接入. Auto 模式下的实际 SSE 连接在 auto_banner.js 里, composer
+ * 只负责 "采集 config + 点 [启动 Auto]"; 运行期 UI (进度 + 暂停/停止) 全部
+ * 归顶部进度横幅管.
  *
  * Script 模式流程:
  *   1. Row1 Mode = script → 展开 Script 子控件: 剧本下拉 + [加载] + [下一轮]
@@ -70,9 +73,11 @@ import { streamPostSse } from './sse_client.js';
 
 /**
  * @param {HTMLElement} host
- * @param {object} deps  { stream } — 来自 mountMessageStream 的 handle
+ * @param {object} deps  { stream, autoBanner }
+ *   stream     — mountMessageStream 的 handle
+ *   autoBanner — mountAutoBanner 的 handle (P13); 可选, 没挂就禁用 Auto 模式
  */
-export function mountComposer(host, { stream }) {
+export function mountComposer(host, { stream, autoBanner = null }) {
   host.innerHTML = '';
   host.classList.add('chat-composer');
 
@@ -115,8 +120,7 @@ export function mountComposer(host, { stream }) {
     style: { display: 'none' },
   }, i18n('chat.composer.system_mode_hint'));
 
-  // Mode: manual (P09) / simuser (P11). Script / Auto 仍以 disabled 占位,
-  // 保留入口但明确提示后续 phase 接入, 避免测试人员误以为已经可用.
+  // Mode: manual / simuser / script / auto — 四模式全部可用 (P13 起).
   const modeGroup = el('span', { className: 'mode-group' });
   modeGroup.append(
     el('span', { className: 'muted' }, i18n('chat.composer.mode_prefix')),
@@ -126,9 +130,7 @@ export function mountComposer(host, { stream }) {
     el('option', { value: 'manual' }, i18n('chat.composer.mode.manual')),
     el('option', { value: 'simuser' }, i18n('chat.composer.mode.simuser')),
     el('option', { value: 'script' }, i18n('chat.composer.mode.script')),
-    el('option', {
-      value: 'auto', disabled: true,
-    }, i18n('chat.composer.mode.auto_deferred')),
+    el('option', { value: 'auto' }, i18n('chat.composer.mode.auto')),
   );
   modeGroup.append(modeSelect);
 
@@ -226,6 +228,67 @@ export function mountComposer(host, { stream }) {
   );
   modeGroup.append(scriptControls);
 
+  // ── Auto-Dialog 子控件 (P13) ────────────────────────────────────
+  // style 下拉 / [自定义 persona] 折叠 / 轮数 input / step mode 下拉 /
+  // step 秒数 input / [启动 Auto] 按钮. 默认隐藏, 当 mode=auto 时整组显示.
+  // persona 编辑区与 SimUser 模式的**互相独立** — 不继承、不共享, 切模式
+  // 只切显示, 数据各走各.
+  const autoControls = el('span', {
+    className: 'auto-controls',
+    style: { display: 'none' },
+  });
+  const autoStyleSelect = el('select', { className: 'auto-style-select' });
+  const autoPersonaToggleBtn = el('button', {
+    type: 'button',
+    className: 'small subtle',
+    onClick: () => toggleAutoPersonaEditor(),
+    title: i18n('chat.composer.auto.persona_toggle_title'),
+  }, i18n('chat.composer.auto.persona_toggle'));
+  const autoTotalInput = el('input', {
+    type: 'number',
+    className: 'auto-total-input',
+    min: '1',
+    max: '50',
+    value: '5',
+    title: i18n('chat.composer.auto.total_turns_title'),
+  });
+  const autoStepModeSelect = el('select', {
+    className: 'auto-step-mode-select',
+    title: i18n('chat.composer.auto.step_mode_title'),
+    onChange: () => syncAutoFields(),
+  });
+  autoStepModeSelect.append(
+    el('option', { value: 'off' }, i18n('chat.composer.auto.step_mode.off')),
+    el('option', { value: 'fixed' }, i18n('chat.composer.auto.step_mode.fixed')),
+  );
+  const autoStepSecondsInput = el('input', {
+    type: 'number',
+    className: 'auto-step-seconds-input',
+    min: '1',
+    max: '604800',
+    value: '300',
+    title: i18n('chat.composer.auto.step_seconds_title'),
+  });
+  const autoStartBtn = el('button', {
+    type: 'button',
+    className: 'small primary',
+    onClick: () => startAutoDialog(),
+    title: i18n('chat.composer.auto.start_title'),
+  }, i18n('chat.composer.auto.start'));
+  autoControls.append(
+    el('span', { className: 'muted' }, i18n('chat.composer.auto.style_prefix')),
+    autoStyleSelect,
+    autoPersonaToggleBtn,
+    el('span', { className: 'muted' }, i18n('chat.composer.auto.total_turns_prefix')),
+    autoTotalInput,
+    el('span', { className: 'muted' }, i18n('chat.composer.auto.step_mode_prefix')),
+    autoStepModeSelect,
+    autoStepSecondsInput,
+    el('span', { className: 'muted' }, i18n('chat.composer.auto.step_seconds_unit')),
+    autoStartBtn,
+  );
+  modeGroup.append(autoControls);
+
   row1.append(modeGroup);
 
   const pendingBadge = el('span', { className: 'pending-badge', style: { display: 'none' } });
@@ -250,6 +313,23 @@ export function mountComposer(host, { stream }) {
     personaTextarea,
   );
   host.append(personaEditor);
+
+  // Auto-Dialog 自己的 persona 编辑区 (与 SimUser 模式独立, 不共享).
+  const autoPersonaEditor = el('div', {
+    className: 'auto-persona-editor',
+    style: { display: 'none' },
+  });
+  const autoPersonaTextarea = el('textarea', {
+    className: 'auto-persona-textarea',
+    placeholder: i18n('chat.composer.auto.persona_placeholder'),
+    rows: 2,
+  });
+  autoPersonaEditor.append(
+    el('div', { className: 'muted' }, i18n('chat.composer.auto.persona_intro')),
+    autoPersonaTextarea,
+  );
+  host.append(autoPersonaEditor);
+
   host.append(systemHint);
 
   // ── Row 2 ──────────────────────────────────────────────────────
@@ -298,13 +378,15 @@ export function mountComposer(host, { stream }) {
   roleSelect.addEventListener('change', syncRoleUI);
   syncRoleUI();
 
-  // ── mode 切换 → 切 SimUser / Script 控件显隐 ─────────────────
+  // ── mode 切换 → 切 SimUser / Script / Auto 控件显隐 ─────────
   function syncModeUI() {
     const mode = modeSelect.value;
     const isSimUser = mode === 'simuser';
     const isScript = mode === 'script';
+    const isAuto = mode === 'auto';
     simuserControls.style.display = isSimUser ? '' : 'none';
     scriptControls.style.display = isScript ? '' : 'none';
+    autoControls.style.display = isAuto ? '' : 'none';
 
     if (isSimUser) {
       // SimUser 模式下 role 只用 user (生成的是用户消息). system 语义
@@ -322,6 +404,15 @@ export function mountComposer(host, { stream }) {
       // 首次进入时拉模板列表 + 读当前 script_state, 此后按需手动刷新.
       loadTemplateList(false);
       refreshScriptState();
+    } else if (isAuto) {
+      // Auto 模式下 role / Send 都无用 (SimUser + Target 自动轮流发), 锁死 user.
+      roleSelect.value = 'user';
+      roleSelect.disabled = true;
+      syncRoleUI();
+      // style 下拉 lazy 加载, 沿用 SimUser 的 /styles 接口 (同一套 STYLE_PRESETS).
+      // ensureAutoStylesLoaded 内部会先 await ensureStylesLoaded (单飞 Promise),
+      // 确保 styleSelect 被填满之后再往 autoStyleSelect 拷贝, 不会拷到空.
+      ensureAutoStylesLoaded();
     } else {
       roleSelect.disabled = false;
     }
@@ -332,8 +423,12 @@ export function mountComposer(host, { stream }) {
       // 把 textarea 当成 simuser 草稿).
       draftOrigin = null;
     }
+    if (!isAuto) {
+      autoPersonaEditor.style.display = 'none';
+    }
     syncGenerateBtn();
     syncScriptButtons();
+    syncAutoFields();
   }
   modeSelect.addEventListener('change', syncModeUI);
 
@@ -341,6 +436,12 @@ export function mountComposer(host, { stream }) {
     const willShow = personaEditor.style.display === 'none';
     personaEditor.style.display = willShow ? '' : 'none';
     if (willShow) { personaTextarea.focus(); }
+  }
+
+  function toggleAutoPersonaEditor() {
+    const willShow = autoPersonaEditor.style.display === 'none';
+    autoPersonaEditor.style.display = willShow ? '' : 'none';
+    if (willShow) { autoPersonaTextarea.focus(); }
   }
 
   // ── state ──────────────────────────────────────────────────────
@@ -360,6 +461,10 @@ export function mountComposer(host, { stream }) {
   let scriptRunning = false;
   let scriptCurrentAssistantHandle = null;
 
+  // P13 Auto-Dialog 状态. autoRunning 在 [启动 Auto] 之后置 true 锁 UI;
+  // auto_banner 结束时会 emit `auto_dialog:finished`, 我们监听了解锁.
+  let autoRunning = false;
+
   function setPending(value) {
     pending = value;
     sendBtn.disabled = value;
@@ -369,12 +474,13 @@ export function mountComposer(host, { stream }) {
       : i18n('chat.composer.send');
     syncGenerateBtn();
     syncScriptButtons();
+    syncAutoFields();
   }
 
   function syncGenerateBtn() {
     // [生成] 只在 SimUser 模式 + 非 pending + 非 generating 可用.
     const isSimUser = modeSelect.value === 'simuser';
-    generateBtn.disabled = !isSimUser || pending || generating || scriptRunning;
+    generateBtn.disabled = !isSimUser || pending || generating || scriptRunning || autoRunning;
     generateBtn.textContent = generating
       ? i18n('chat.composer.simuser.generating')
       : i18n('chat.composer.simuser.generate');
@@ -390,13 +496,13 @@ export function mountComposer(host, { stream }) {
     const exhausted = loaded && scriptState.exhausted;
     // [加载] / [刷新列表]: 只要在 Script 模式 + 非 pending/running 就可用;
     // 加载要求下拉有选中项.
-    loadBtn.disabled = !isScript || !hasSession || !hasTemplate || pending || scriptRunning;
-    templateRefreshBtn.disabled = !isScript || pending || scriptRunning;
+    loadBtn.disabled = !isScript || !hasSession || !hasTemplate || pending || scriptRunning || autoRunning;
+    templateRefreshBtn.disabled = !isScript || pending || scriptRunning || autoRunning;
     // [下一轮] / [跑完]: 需要加载了脚本且未跑完.
-    const canAdvance = isScript && loaded && !exhausted && hasSession && !pending && !scriptRunning;
+    const canAdvance = isScript && loaded && !exhausted && hasSession && !pending && !scriptRunning && !autoRunning;
     nextBtn.disabled = !canAdvance;
     runAllBtn.disabled = !canAdvance;
-    unloadBtn.disabled = !isScript || !loaded || pending || scriptRunning;
+    unloadBtn.disabled = !isScript || !loaded || pending || scriptRunning || autoRunning;
 
     nextBtn.textContent = scriptRunning
       ? i18n('chat.composer.script.next_running')
@@ -416,6 +522,41 @@ export function mountComposer(host, { stream }) {
     } else {
       scriptProgressBadge.style.display = 'none';
     }
+  }
+
+  function syncAutoFields() {
+    const isAuto = modeSelect.value === 'auto';
+    const canStart = isAuto && !autoRunning && !pending && !scriptRunning && !!store.session?.id;
+    // step_seconds input 只在 fixed 模式下可见
+    const stepFixed = autoStepModeSelect.value === 'fixed';
+    autoStepSecondsInput.style.display = stepFixed ? '' : 'none';
+    // 运行中 disable 所有配置字段, 防止误改 (即使改了也不影响已在跑的 run).
+    autoStyleSelect.disabled = autoRunning;
+    autoPersonaToggleBtn.disabled = autoRunning;
+    autoTotalInput.disabled = autoRunning;
+    autoStepModeSelect.disabled = autoRunning;
+    autoStepSecondsInput.disabled = autoRunning;
+    autoStartBtn.disabled = !canStart;
+    autoStartBtn.textContent = autoRunning
+      ? i18n('chat.composer.auto.running_hint')
+      : i18n('chat.composer.auto.start');
+  }
+
+  // 同样用单飞 Promise 守卫 — 避免多次 fire-and-forget 调用重复拷贝 options.
+  // 内部先 await ensureStylesLoaded() 等后端 /styles 真正返回再拷贝, 保证不拷空.
+  let autoStylesLoadedPromise = null;
+  function ensureAutoStylesLoaded() {
+    if (autoStylesLoadedPromise) return autoStylesLoadedPromise;
+    autoStylesLoadedPromise = (async () => {
+      await ensureStylesLoaded();
+      autoStyleSelect.innerHTML = '';
+      // 复制 styleSelect 的 options 过来 — 保持 label / title 一致.
+      for (const opt of Array.from(styleSelect.options)) {
+        autoStyleSelect.append(opt.cloneNode(true));
+      }
+      autoStyleSelect.value = styleSelect.value || 'friendly';
+    })();
+    return autoStylesLoadedPromise;
   }
 
   // 一旦用户手动编辑草稿, draftOrigin 就掉回 null.
@@ -632,30 +773,39 @@ export function mountComposer(host, { stream }) {
 
   // ── SimUser draft generation (P11) ─────────────────────────────
 
-  // 风格列表: 首次切到 simuser 时 lazy 拉取. 拉取成功后填 styleSelect,
+  // 风格列表: 首次切到 simuser / auto 时 lazy 拉取. 拉取成功后填 styleSelect,
   // 失败则 fallback 到硬编码 ['friendly'] 保证按钮仍可用.
-  let stylesLoaded = false;
-  async function ensureStylesLoaded() {
-    if (stylesLoaded) return;
-    stylesLoaded = true;
-    const res = await api.get('/api/chat/simulate_user/styles',
-      { expectedStatuses: [404] });
-    const styles = res.ok && Array.isArray(res.data?.styles)
-      ? res.data.styles : [{ id: 'friendly' }];
-    const defaultId = res.ok ? (res.data?.default || 'friendly') : 'friendly';
-    styleSelect.innerHTML = '';
-    for (const s of styles) {
-      const labelKey = `chat.composer.simuser.style.${s.id}`;
-      const labelRaw = i18n(labelKey);
-      // i18n 缺 key 时返回 key 本身; 此时退到 id.
-      const label = labelRaw === labelKey ? s.id : labelRaw;
-      const opt = el('option', {
-        value: s.id,
-        title: (s.prompt || '').slice(0, 120),
-      }, label);
-      styleSelect.append(opt);
-    }
-    styleSelect.value = defaultId;
+  //
+  // 注: 用 Promise 单飞 (single-flight) 做幂等守卫, **不**用 boolean flag.
+  // 原因: 若 flag 在 await 网络请求前就置 true, 紧随其后的第二次调用会命中
+  // "已加载" 分支立即返回, 但此时 select 里还没填进任何 option — 下游
+  // ensureAutoStylesLoaded 拷贝空的 styleSelect 就会造成 Auto 风格下拉空白
+  // (触发场景: syncModeUI 里背靠背调 ensureStylesLoaded + ensureAutoStylesLoaded).
+  // 改成缓存 Promise, 所有 caller await 同一个真实网络返回的 Promise, 就没这个坑.
+  let stylesLoadedPromise = null;
+  function ensureStylesLoaded() {
+    if (stylesLoadedPromise) return stylesLoadedPromise;
+    stylesLoadedPromise = (async () => {
+      const res = await api.get('/api/chat/simulate_user/styles',
+        { expectedStatuses: [404] });
+      const styles = res.ok && Array.isArray(res.data?.styles)
+        ? res.data.styles : [{ id: 'friendly' }];
+      const defaultId = res.ok ? (res.data?.default || 'friendly') : 'friendly';
+      styleSelect.innerHTML = '';
+      for (const s of styles) {
+        const labelKey = `chat.composer.simuser.style.${s.id}`;
+        const labelRaw = i18n(labelKey);
+        // i18n 缺 key 时返回 key 本身; 此时退到 id.
+        const label = labelRaw === labelKey ? s.id : labelRaw;
+        const opt = el('option', {
+          value: s.id,
+          title: (s.prompt || '').slice(0, 120),
+        }, label);
+        styleSelect.append(opt);
+      }
+      styleSelect.value = defaultId;
+    })();
+    return stylesLoadedPromise;
   }
 
   async function generateDraft() {
@@ -967,6 +1117,57 @@ export function mountComposer(host, { stream }) {
     openScriptStream('/api/chat/script/run_all');
   }
 
+  // ── Auto-Dialog (P13) ──────────────────────────────────────────
+
+  function startAutoDialog() {
+    if (autoRunning || pending || scriptRunning) return;
+    if (!store.session?.id) {
+      toast.err(i18n('chat.composer.auto.no_session'));
+      return;
+    }
+    if (!autoBanner) {
+      // 开发期兜底 — workspace_chat 正常会挂 banner. 没挂说明集成链路断了.
+      toast.err('Auto-Dialog banner 未挂载, 请检查 workspace_chat 集成.');
+      return;
+    }
+    const style = (autoStyleSelect.value || '').trim();
+    if (!style) {
+      toast.err(i18n('chat.composer.auto.no_style'));
+      return;
+    }
+    const totalTurns = parseInt(autoTotalInput.value, 10);
+    if (!Number.isFinite(totalTurns) || totalTurns < 1 || totalTurns > 50) {
+      toast.err(i18n('chat.composer.auto.invalid_turns'));
+      return;
+    }
+    const stepMode = autoStepModeSelect.value || 'off';
+    let stepSeconds = null;
+    if (stepMode === 'fixed') {
+      stepSeconds = parseInt(autoStepSecondsInput.value, 10);
+      if (!Number.isFinite(stepSeconds) || stepSeconds < 1 || stepSeconds > 604800) {
+        toast.err(i18n('chat.composer.auto.invalid_step_seconds'));
+        return;
+      }
+    }
+
+    const config = {
+      total_turns: totalTurns,
+      simuser_style: style,
+      step_mode: stepMode,
+      step_seconds: stepSeconds,
+      simuser_persona_hint: autoPersonaTextarea.value || '',
+      simuser_extra_hint: '',
+    };
+    const stream = autoBanner.startAutoDialog(config);
+    if (!stream) return;  // banner 已 toast 了 failure
+    autoRunning = true;
+    syncAutoFields();
+    syncScriptButtons();
+    syncGenerateBtn();
+    const stepLabel = stepMode === 'fixed' ? `${stepSeconds}s` : 'off';
+    toast.ok(i18n('chat.composer.auto.toast_started', totalTurns, stepLabel));
+  }
+
   // ── lifecycle ──────────────────────────────────────────────────
 
   refreshClock();
@@ -983,16 +1184,33 @@ export function mountComposer(host, { stream }) {
     } else {
       syncScriptButtons();
     }
+    // auto_state 同样会随会话销毁清零; 重置本地锁.
+    if (autoRunning) {
+      autoRunning = false;
+      syncAutoFields();
+    }
   });
 
   // 外部改了时钟 (Setup → Virtual Clock 页) 也要同步显示.
   const offClock = on('clock:change', refreshClock);
+
+  // auto_banner 结束 (正常跑完 / stop / error / 传输失败) 都会 emit 这个
+  // 事件, composer 据此解锁 Start 按钮.
+  const offAutoDone = on('auto_dialog:finished', () => {
+    autoRunning = false;
+    syncAutoFields();
+    syncScriptButtons();
+    syncGenerateBtn();
+    // 每完成一个 auto 跑批, refreshClock 让 clock chip 反映最终时间.
+    refreshClock();
+  });
 
   return {
     focus() { textarea.focus(); },
     destroy() {
       offSession();
       offClock();
+      offAutoDone();
       currentStream?.abort?.();
     },
   };

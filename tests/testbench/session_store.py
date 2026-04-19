@@ -89,7 +89,25 @@ class Session:
     model_config: dict[str, Any] = field(default_factory=dict)
     # Filled by /api/persona in P05; empty dict means "never edited, form blank".
     persona: dict[str, Any] = field(default_factory=dict)
-    stage: str = "persona_setup"
+
+    # P14: Stage Coach 引导状态. 结构:
+    #   {
+    #     "current": Stage,                  # 六阶段之一
+    #     "updated_at": iso_str,             # 最近一次 advance/skip/rewind 的
+    #                                        # 真实时钟时间 (非虚拟时钟)
+    #     "history": [                       # 追加式, 不截断; rewind 也只追加
+    #        {"stage": Stage, "at": iso_str, "action": "init"|"advance"|
+    #         "skip"|"rewind", "op_id": str | None, "skipped": bool,
+    #         "note": str | None},
+    #        ...,
+    #     ],
+    #   }
+    # `SessionStore.create` 会初始化为 :func:`stage_coordinator.initial_stage_state`
+    # 的返回值 (current=persona_setup + 一条 action="init" 的 history 根锚).
+    # P21 存档会带上; 加载回来时 Stage chip 自动回到上次的 stage.
+    # **只由 /api/stage/{advance,skip,rewind} 端点写**; chat/auto/script
+    # 等业务端点绝不自动触达 — PLAN §P14 "永远只建议 + 预览 + 等确认".
+    stage_state: dict[str, Any] = field(default_factory=dict)
 
     # P10: memory op preview cache. Key = op id (e.g. "facts.extract"), value =
     # a dict ``{created_at: datetime, payload: dict, params: dict}``. A given
@@ -116,6 +134,22 @@ class Session:
     # 只是一次性运行时状态; 会话被 destroy/重建时随之清空.
     script_state: dict[str, Any] | None = None
 
+    # P13: 当前活跃的双 AI 自动对话运行态. None = 没跑 Auto-Dialog. Shape:
+    #   {
+    #     "total_turns": int,              # 目标 target 回复次数
+    #     "completed_turns": int,          # 已完成 target 回复数 (进度分子)
+    #     "next_kind": "simuser"|"target", # 下一步是谁
+    #     "config": dict,                  # AutoDialogConfig.to_dict() 快照
+    #     "started_at_real": float,        # time.monotonic() 监测起点
+    #     "running_event": asyncio.Event,  # set = 跑, clear = pause 卡门
+    #     "stop_event": asyncio.Event,     # set = 请求停止
+    #   }
+    # `describe()` 和对外序列化接口会过滤掉两个 asyncio.Event (不可 JSON 化).
+    # 整个 dict 只在 pipeline/auto_dialog.py 的 generator try/finally 里生死,
+    # 外部只应**只读**观测, 通过独立的 pause/resume/stop HTTP 端点修改两个
+    # Event. 直接改 dict 字段会 race 坏运行中的 generator.
+    auto_state: dict[str, Any] | None = None
+
     # Mutated directly by SessionStore under its own lock.
     state: SessionState = SessionState.IDLE
     busy_op: str | None = None
@@ -131,7 +165,8 @@ class Session:
             "message_count": len(self.messages),
             "snapshot_count": len(self.snapshots),
             "eval_count": len(self.eval_results),
-            "stage": self.stage,
+            "stage": (self.stage_state or {}).get("current", "persona_setup"),
+            "stage_history_count": len((self.stage_state or {}).get("history") or []),
             "sandbox": self.sandbox.describe(),
             "clock": self.clock.to_dict(),
         }
@@ -194,6 +229,9 @@ class SessionStore:
             sandbox = Sandbox(session_id=session_id).create()
             sandbox.apply()
 
+            from tests.testbench.pipeline.stage_coordinator import (
+                initial_stage_state,
+            )
             session = Session(
                 id=session_id,
                 name=name or f"session-{session_id[:6]}",
@@ -201,6 +239,7 @@ class SessionStore:
                 sandbox=sandbox,
                 clock=VirtualClock(),
                 logger=SessionLogger(session_id),
+                stage_state=initial_stage_state(),
             )
             self._session = session
             session.logger.log_sync(

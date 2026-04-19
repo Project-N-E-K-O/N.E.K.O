@@ -87,5 +87,18 @@ export function mountSettingsWorkspace(host) {
     }
   });
 
+  // 外部组件 (例如首页的 AI 模型配置提醒横幅) 需要直接跳到某个子页. 和
+  // `setup:goto_page` 对称 — 未挂载态只更新 LS, 下次切回 settings 会读 LS.
+  on('settings:goto_page', (pageId) => {
+    if (typeof pageId !== 'string' || !PAGES.some((p) => p.id === pageId)) return;
+    localStorage.setItem(LS_KEY, pageId);
+    if (store.active_workspace === 'settings') {
+      selectPage(pageId);
+    } else {
+      currentId = pageId;
+      dirty = true;
+    }
+  });
+
   selectPage(initial);
 }

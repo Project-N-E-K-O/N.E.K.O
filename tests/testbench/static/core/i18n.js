@@ -33,7 +33,9 @@ export const I18N = {
       stage: {
         label: '阶段',
         chip_placeholder: '未启用',
-        not_implemented: 'Stage Coach 将在 P14 实装',
+        no_session: '未建会话',
+        chip_title: stageName => `当前阶段: ${stageName} · 点击展开 Stage Coach`,
+        chip_title_expanded: '点击折叠 Stage Coach',
       },
       timeline: {
         label: '时间轴',
@@ -722,11 +724,14 @@ export const I18N = {
           // P12 上线后 script 已启用, 但保留 script_deferred key 以防老代码
           // 引用; 文案里明确注明已启用, 避免误导.
           script_deferred: '脚本化 (Scripted)',
-          auto_deferred: '双 AI 自动 — P13',
+          auto: '双 AI 自动 (Auto)',
+          // P13 上线后 auto 已启用; 保留 auto_deferred key 以防老代码引用,
+          // 文案同步更新到"已启用"版本, 不再暗示未接入.
+          auto_deferred: '双 AI 自动 (Auto)',
           // P09 的单文案值, 保留以便其它模块引用.
-          deferred: '(Auto — P13)',
+          deferred: '(Auto)',
         },
-        mode_deferred_hint: 'Auto 模式在 P13 阶段接入.',
+        mode_deferred_hint: '',
         // SimUser (P11) 专用文案. style key 与后端 STYLE_PRESETS 键对齐; 如新增
         // 风格, 这里补 label + 后端预设同步.
         simuser: {
@@ -788,11 +793,68 @@ export const I18N = {
           turn_warning_title: '脚本 time 字段警告',
           ref_auto_filled: '脚本 expected 已回填到 AI 回复的 reference_content.',
         },
+        // P13 双 AI 自动对话. style key 复用 simuser.style.* (上方已定义),
+        // 这里只补模式自身的 UI 文案. Start / Pause / Resume / Stop 文案
+        // 以 "控制按钮 + 进度横幅" 两个入口分别使用, 统一收进 auto.*.
+        auto: {
+          style_prefix: '风格:',
+          persona_toggle: '自定义人设',
+          persona_toggle_title: '展开 textarea, 为 Auto-Dialog 的 SimUser 一方追加"额外人设/背景"描述. 与 SimUser 模式的人设彼此独立 (切换 mode 不会互相覆盖).',
+          persona_placeholder: '例: 你是一位内向的新手用户, 对话题好奇但对技术细节没信心...',
+          persona_intro: 'Auto-Dialog 的 SimUser 人设; 仅对 "双 AI 自动" 模式生效, 不会影响手动 SimUser 模式.',
+          total_turns_prefix: '轮数:',
+          total_turns_title: '要跑的目标 AI 回复次数. 每条 assistant 回复算一轮, 跑完 N 条即结束.',
+          step_mode_prefix: '时钟步长:',
+          step_mode_title: 'fixed = 每轮前固定推进 step_seconds 秒; off = 整段不动虚拟时钟.',
+          step_mode: {
+            fixed: '固定',
+            off: '不动',
+          },
+          step_seconds_unit: '秒',
+          step_seconds_title: 'fixed 模式下每轮推进的秒数 (1 ~ 604800).',
+          start: '启动 Auto',
+          starting: '启动中…',
+          start_title: '启动双 AI 自动对话: SimUser ↔ Target AI 交替生成 N 轮, 期间消息流与手动发送一致, 可随时通过顶部进度条暂停/停止.',
+          running_hint: '运行中 · 见顶部进度条',
+          start_failed: '启动失败',
+          no_session: '先在顶栏新建一个会话, 再启动 Auto-Dialog.',
+          no_style: '请先选一个 SimUser 风格',
+          invalid_turns: '轮数必须在 1 ~ 50 之间',
+          invalid_step_seconds: 'step_seconds 必须在 1 ~ 604800 之间',
+          toast_started: (n, mode) => `Auto-Dialog 已启动, 共 ${n} 轮, 步长: ${mode}.`,
+        },
         pending_absolute: (iso) => `Next turn → ${iso}`,
         pending_delta: (label) => `Next turn +${label}`,
         no_session: '先在顶栏新建一个会话.',
         stream_error: '流式发送中断',
         send_failed: '发送失败',
+      },
+      // P13 Auto-Dialog 顶部进度横幅. 只在有活跃 auto_state 时渲染.
+      auto_banner: {
+        label_running: 'Auto-Dialog 运行中',
+        label_paused: 'Auto-Dialog 已暂停',
+        label_stopping: '正在停止…',
+        progress: (done, total) => `${done}/${total} 轮`,
+        step_fixed: (seconds) => `步长 +${seconds}s`,
+        step_off: '步长: 不动时钟',
+        pause: '暂停',
+        resume: '继续',
+        stop: '停止',
+        pause_title: '当前 step 跑完后不再进入下一轮. 已生成的消息保留.',
+        resume_title: '继续跑剩余轮数.',
+        stop_title: '停止 Auto-Dialog. 当前 step 结束后立即终止, 已生成的消息保留.',
+        pause_failed: '暂停请求失败',
+        resume_failed: '继续请求失败',
+        stop_failed: '停止请求失败',
+        stopped_toast: (reason, done, total) => {
+          const reasonText = {
+            completed: '正常跑完',
+            user_stop: '手动停止',
+            error: '出错中止',
+          }[reason] || reason;
+          return `Auto-Dialog 结束 (${reasonText}): ${done}/${total} 轮`;
+        },
+        error_title: 'Auto-Dialog 执行错误',
       },
       preview: {
         heading: 'Prompt 预览',
@@ -1024,6 +1086,189 @@ export const I18N = {
       close: '关闭',
       loading: '加载中…',
       not_implemented: '尚未实装',
+    },
+    model_reminder: {
+      dismiss_hint: '本次服务运行期不再提醒 (服务重启后会再出现)',
+      welcome: {
+        title: '欢迎使用 N.E.K.O. Testbench — 先配置 AI 模型',
+        body:
+          '新建会话后, chat / simuser / judge / memory 四组 AI 模型默认都是空的, '
+          + '后续生成 persona、假想用户回复、对话、记忆摘要、评分都要走 LLM, '
+          + '所以请先去 Settings → Models 给至少 chat / simuser / judge 三组配上模型. '
+          + '如果你还没填过 provider 的 API Key, 请先编辑 `tests/api_keys.json`, '
+          + '或挑一个 `is_free_version` 的免费 provider 直接用.',
+        goto_btn: '去 Settings → Models',
+      },
+      warn: {
+        title: '请先配置 AI 模型 API Key',
+        body:
+          '测试流程 (生成 persona / 假想用户回复 / 对话 / 评分等) 都要调用 LLM. '
+          + '当前没有任何可用的 provider — 请编辑 `tests/api_keys.json` 和/或 '
+          + '`tests/api_providers.json`, 然后去 Settings → API Keys 点 [Reload] 让后端重读.',
+        goto_btn: '去 Settings → API Keys',
+      },
+    },
+    stage: {
+      name: {
+        persona_setup: '人设准备',
+        memory_build: '记忆搭建',
+        prompt_assembly: 'Prompt 组装',
+        chat_turn: '对话轮次',
+        post_turn_memory_update: '轮后记忆更新',
+        evaluation: '评分',
+      },
+      name_short: {
+        persona_setup: '人设',
+        memory_build: '记忆',
+        prompt_assembly: 'Prompt',
+        chat_turn: '对话',
+        post_turn_memory_update: '记忆更新',
+        evaluation: '评分',
+      },
+      op: {
+        persona_edit: {
+          label: '去 Setup → Persona 编辑人设',
+          description:
+            '六阶段里最早的一步: 配置角色名 / 用户名 / 基础人设文本. '
+            + '只要人设为空或未保存, system prompt 拼不出来, 后面所有环节都会报 "PreviewNotReady".',
+          when_to_run:
+            '首次建会话 / 换人设 / 想让 SimUser 有针对性的人设风格时. '
+            + '"执行并推进" 会把阶段切到 memory_build 同时跳到 Setup → Persona 子页, 请手动填写并 Save 后再回来点 "执行并推进" 推进到下一阶段.',
+          when_to_skip:
+            '人设已经填过 (context 面板里 persona_configured=true) / 想跳过使用**空白人设**模拟最原始对话时可以 skip.',
+        },
+        memory_edit: {
+          label: '去 Setup → Memory 填写初始记忆',
+          description:
+            '给角色配置初始的 recent / facts / reflections / persona 记忆. '
+            + '记忆为空时 Lanlan 也能跑对话, 但测试 "记忆影响回复" 这类场景需要先造数据.',
+          when_to_run:
+            '准备测试记忆召回 / 事实矛盾 / 反思触发等场景时. '
+            + '记忆条目数见下方 context 面板 (memory_counts). 已有足够数据时可 skip.',
+          when_to_skip:
+            '测试零记忆冷启动, 或完全依赖对话运行时动态生成的记忆 (走 post_turn_memory_update 流程)时.',
+        },
+        prompt_preview: {
+          label: '去 Chat 右栏预览 wire messages',
+          description:
+            '在 Chat workspace 右栏查看**真正要发给 LLM** 的 wire messages, '
+            + '确认 system prompt + 历史 + 记忆注入拼接符合预期再发.',
+          when_to_run:
+            '改完人设 / 记忆 / 模型配置后第一次发消息前**强烈建议看一眼**, '
+            + '否则容易把错误 prompt 发出去然后推断 "模型不行".',
+          when_to_skip:
+            '确信当前拼接逻辑没变过 (只是再发一轮) 时可以直接 skip 到 chat_turn.',
+        },
+        chat_send: {
+          label: '在 Chat 发送一条消息',
+          description:
+            '任一对话模式均可: 手动 (自己打) / SimUser (AI 模拟用户) / '
+            + 'Scripted (加载剧本) / Auto-Dialog (双 AI 自动跑). 每种模式自身也可以无限反复地发.',
+          when_to_run:
+            '前面几步就绪后正常进入对话阶段. 注意: **点 "执行并推进" 不会自动发消息**, '
+            + '只是把阶段切到 post_turn_memory_update; 实际发消息请在 Chat workspace 的 Composer 里操作.',
+          when_to_skip:
+            '用不上对话 (比如只想测人设加载) 时可 skip, 但通常不会.',
+        },
+        memory_trigger: {
+          label: '去 Setup → Memory 触发一次记忆 op',
+          description:
+            '对话之后的记忆合并/抽取/反思: recent.compress (压缩历史为摘要) / '
+            + 'facts.extract (从对话抽取事实) / reflect (反思) / persona.add_fact / resolve_corrections. '
+            + '每个 op 都是 "Trigger → 预览 drawer → Accept" 的确认流程, 绝不自动写盘.',
+          when_to_run:
+            '对话累积到想要压缩或抽事实时. 下方 context 面板里:'
+            + ' messages_count 多 → 可能该 recent.compress;'
+            + ' pending_memory_previews 非空 → 已有未 Accept 的 op 预览在等,'
+            + ' 先去 Memory 子页处理那几个.',
+          when_to_skip:
+            '想继续跑对话不做记忆更新时 skip. 注意 skip 只切阶段,'
+            + ' 不会清任何现有 pending 预览.',
+        },
+        evaluation_pending: {
+          label: '评分 (P15/P16 未上线)',
+          description:
+            'ScoringSchema 一等公民 + 四类 Judger 分别在 P15 / P16 阶段落地. '
+            + '届时此阶段会提供: Absolute/Comparative 双轴 × 单消息/整段对话 粒度 × 多 schema 切换 的评分入口.',
+          when_to_run:
+            '尚未上线. 现在点 "执行并推进" 只会把阶段循环回 chat_turn, 继续下一轮对话.',
+          when_to_skip:
+            '与 "执行并推进" 等效 (都只切阶段不跑评分). 可以视心情任选.',
+        },
+      },
+      chip: {
+        collapsed_prefix: stageShort => `阶段: ${stageShort}`,
+        no_session: '阶段: (未建会话)',
+        expand_hint: '点击展开 Stage Coach',
+        collapse_hint: '点击折叠',
+        expanded_default_tip: '本 workspace 下 Stage Coach 默认展开. 点右上 × 可折叠.',
+      },
+      panel: {
+        intro_title: '这是一个帮手, 不是流程警察',
+        intro_body:
+          'Stage Coach 只是把测试流程做成了一张**可选的 checklist**, '
+          + '同时**收集一些数据** (消息数 / 各类记忆条目数 / 虚拟时钟 / '
+          + '未确认的 memory op 等) 放在下方"当前上下文"面板里, 帮你判断**现在该做什么/能不能跳过**.\n'
+          + '它**不会自动跑任何 op** — 发消息 / 编辑人设 / 跑 memory 压缩 / 评分, '
+          + '全都要你自己在对应的 workspace 里点按钮.\n'
+          + '"执行并推进" 和 "跳过" **只改阶段指针** (以及跳转到相关子页), '
+          + '完全不会动对话记录 / 记忆 / 虚拟时钟; "回退" 同理, 只让你回到某个阶段的 UI 视角, '
+          + '既不会撤销已发消息也不会清记忆. 所以随便点, 出错也没副作用.',
+        stage_bar_title: '流水线阶段',
+        op_card_title: '下一步推荐',
+        when_to_run: '什么时候该跑',
+        when_to_skip: '什么时候可以跳过',
+        context_title: '当前上下文 (帮你判断该不该跑)',
+        history_title: '最近动作',
+        history_empty: '暂无记录',
+      },
+      context: {
+        messages_count: count => `消息数: ${count}`,
+        messages_split: (user, asst) => `(user ${user} · assistant ${asst})`,
+        last_message: role =>
+          role ? `末尾消息角色: ${role}` : '末尾消息: (无)',
+        memory_counts: c =>
+          `记忆: recent ${c.recent} · facts ${c.facts}`
+          + ` · reflections ${c.reflections} · persona_facts ${c.persona_facts}`,
+        persona_configured: ok =>
+          ok ? '人设已配置 ✓' : '人设未配置',
+        pending_previews_none: '暂无记忆 op 待确认',
+        pending_previews: ops => `记忆 op 待确认: ${ops.join(', ')}`,
+        script_loaded: ok => ok ? '已加载脚本' : '未加载脚本',
+        auto_running: ok => ok ? 'Auto-Dialog 运行中' : 'Auto-Dialog 未运行',
+        virtual_now: t => `虚拟时钟: ${t || '(未设)'}`,
+        pending_advance: s =>
+          s == null ? '无暂存时长' : `下轮暂存推进 ${s} 秒`,
+        warnings: ws =>
+          ws.length === 0 ? '' : `(采集警告: ${ws.join(', ')})`,
+      },
+      buttons: {
+        preview: '预览 dry-run',
+        preview_disabled_hint:
+          '本阶段推荐不提供内置 dry-run: memory op 请去 Setup → Memory 的 Trigger 按钮, 评分等 P15/P16.',
+        advance: '执行并推进',
+        skip: '跳过',
+        rewind_open: '回退…',
+        rewind_apply: '跳到此阶段',
+        go_target: '跳转到目标页',
+        collapse: '折叠',
+      },
+      action: {
+        nav_persona: '已跳转到 Setup → Persona, 请填写并保存后回来点 "执行并推进"',
+        nav_memory: '已跳转到 Setup → Memory 子页',
+        nav_chat_preview: '已跳转到 Chat, 请在右栏确认 wire messages',
+        nav_chat_send: '已跳转到 Chat, 请在 Composer 里发送消息',
+        evaluation_pending_toast: 'P14 暂不提供评分 dry-run; 点 "执行并推进" 会循环回 chat_turn',
+      },
+      toast: {
+        advance_ok: (from, to) => `阶段推进: ${from} → ${to}`,
+        skip_ok: (from, to) => `阶段跳过: ${from} → ${to} (history 标 skipped)`,
+        rewind_ok: (from, to) => `阶段回退: ${from} → ${to} (数据未改)`,
+        advance_failed: '阶段推进失败',
+        fetch_failed: '读取 stage 状态失败',
+        no_session: '请先建会话',
+        preview_unsupported: 'P14 范围内此 op 不提供 dry-run, 详见推荐说明',
+      },
     },
   },
 };

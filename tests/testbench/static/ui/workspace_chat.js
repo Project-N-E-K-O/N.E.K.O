@@ -21,10 +21,12 @@ import { el } from './_dom.js';
 import { mountPreviewPanel } from './chat/preview_panel.js';
 import { mountMessageStream } from './chat/message_stream.js';
 import { mountComposer } from './chat/composer.js';
+import { mountAutoBanner } from './chat/auto_banner.js';
 
 let previewHandle = null;
 let streamHandle = null;
 let composerHandle = null;
+let autoBannerHandle = null;
 let activeWorkspaceSubscribed = false;
 let chatMessagesChangedSubscribed = false;
 let lastRefreshAt = 0;
@@ -33,17 +35,27 @@ export function mountChatWorkspace(host) {
   host.innerHTML = '';
   host.classList.add('chat-layout');
 
-  // ── 左: message stream + composer ──────────────────────────────
+  // ── 左: auto banner + message stream + composer ────────────────
+  // P13: banner 位于 leftPane 最上, sticky 贴在 .chat-main 顶部. 空闲时
+  // display:none, 不占视觉空间; 有活跃 auto_state 时才展开. 顺序是 banner
+  // → stream → composer, 与 PLAN §Chat workspace 的"对话流上方插入进度
+  // 横幅"约定一致.
   const leftPane = el('div', { className: 'chat-main' });
+  const autoBannerHost = el('div', { className: 'chat-auto-banner-host' });
   const streamHost = el('div', { className: 'chat-stream-host' });
   const composerHost = el('div', { className: 'chat-composer-host' });
-  leftPane.append(streamHost, composerHost);
+  leftPane.append(autoBannerHost, streamHost, composerHost);
   host.append(leftPane);
 
   try { streamHandle?.destroy?.(); } catch (_) { /* ignore */ }
   try { composerHandle?.destroy?.(); } catch (_) { /* ignore */ }
+  try { autoBannerHandle?.destroy?.(); } catch (_) { /* ignore */ }
   streamHandle = mountMessageStream(streamHost);
-  composerHandle = mountComposer(composerHost, { stream: streamHandle });
+  autoBannerHandle = mountAutoBanner(autoBannerHost, { stream: streamHandle });
+  composerHandle = mountComposer(composerHost, {
+    stream: streamHandle,
+    autoBanner: autoBannerHandle,
+  });
 
   // ── 右: Prompt Preview ─────────────────────────────────────────
   const rightPane = el('aside', { className: 'chat-sidebar' });

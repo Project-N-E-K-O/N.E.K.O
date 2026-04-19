@@ -45,6 +45,22 @@ Endpoints
 * **P12.5** ``POST   /api/chat/script/templates/duplicate`` — 复制模板到用户目录.
 * **P12** ``POST   /api/chat/script/run_all``          — SSE; 循环 Next 直到
                                                          脚本耗尽或 error.
+* **P13** ``POST   /api/chat/auto_dialog/start``       — SSE; 双 AI 自动对话,
+                                                         持 BUSY 锁整段; 事件
+                                                         里含 turn_begin /
+                                                         simuser_done / target
+                                                         stream 透传 / turn_done
+                                                         / paused / resumed /
+                                                         stopped / error.
+* **P13** ``POST   /api/chat/auto_dialog/pause``       — graceful pause (当前
+                                                         step 跑完后不进入下
+                                                         一 step); 不持锁.
+* **P13** ``POST   /api/chat/auto_dialog/resume``      — 继续; 不持锁.
+* **P13** ``POST   /api/chat/auto_dialog/stop``        — 请求终止; 不持锁.
+* **P13** ``GET    /api/chat/auto_dialog/state``       — 观测当前运行态 (刷新
+                                                         页面后前端可靠 auto_
+                                                         state 决定要不要重挂
+                                                         SSE).
 
 Design notes
 ------------
@@ -87,6 +103,15 @@ from tests.testbench.chat_messages import (
     make_message,
 )
 from tests.testbench.logger import python_logger
+from tests.testbench.pipeline.auto_dialog import (
+    AutoDialogConfig,
+    AutoDialogError,
+    describe_auto_state,
+    request_pause as request_auto_pause,
+    request_resume as request_auto_resume,
+    request_stop as request_auto_stop,
+    run_auto_dialog,
+)
 from tests.testbench.pipeline.chat_runner import (
     ChatConfigError,
     get_chat_backend,
@@ -1130,6 +1155,216 @@ async def script_run_all() -> StreamingResponse:
         media_type="text/event-stream",
         headers=_sse_headers(),
     )
+
+
+# ── /auto_dialog (P13) ──────────────────────────────────────────────
+
+
+def _auto_error_to_http(exc: AutoDialogError) -> HTTPException:
+    """AutoDialogError → HTTPException. 沿用 script/simuser 的错误包装风格,
+    便于前端 error_bus 按 ``detail.error_type`` 选 toast 文案.
+    """
+    return HTTPException(
+        status_code=exc.status,
+        detail={"error_type": exc.code, "message": exc.message},
+    )
+
+
+class _AutoDialogStartRequest(BaseModel):
+    """Body for ``POST /api/chat/auto_dialog/start``.
+
+    字段全部可选由 pydantic 先松校验; 具体范围/预设值校验下放给
+    :meth:`AutoDialogConfig.from_request` 做 (好处: 错误消息都是中文 & 错误
+    code 统一在 ``AutoDialogError`` 里定义, 不用 pydantic 翻 error translate).
+    """
+
+    total_turns: int = Field(..., ge=1, description="要跑的 target 回复总数.")
+    simuser_style: str = Field(..., description="SimUser 风格预设 key.")
+    step_mode: str = Field(default="off", description="fixed / off.")
+    step_seconds: int | None = Field(default=None)
+    simuser_persona_hint: str = Field(default="")
+    simuser_extra_hint: str = Field(default="")
+
+
+async def _auto_dialog_event_stream(body: _AutoDialogStartRequest) -> AsyncIterator[str]:
+    """SSE generator for ``/auto_dialog/start``.
+
+    持 BUSY 锁整个生命周期 (与 script/run_all 同粒度), 期间 pause/resume/stop
+    三个 "控制" 端点**不持锁**, 只通过 ``session.auto_state`` 里的 asyncio
+    Event 通信 — 如果它们也想拿锁就会跟本函数死锁.
+
+    错误路径: 配置校验 (InvalidConfig) / 会话冲突 (SessionConflict) / 已
+    有运行中实例 (AutoAlreadyRunning) 都作为 SSE error 帧送出 + 紧跟
+    stopped(reason=error). 这样前端只需要一条错误通道 (error bus + 模态
+    toast) 就能把所有情况处理完.
+    """
+    store = get_session_store()
+    try:
+        config = AutoDialogConfig.from_request(body.model_dump())
+    except AutoDialogError as exc:
+        yield _sse_frame({
+            "event": "error",
+            "error": {"type": exc.code, "message": exc.message},
+        })
+        yield _sse_frame({
+            "event": "stopped",
+            "reason": "error",
+            "completed_turns": 0,
+            "total_turns": getattr(body, "total_turns", 0) or 0,
+        })
+        return
+
+    try:
+        async with store.session_operation(
+            "chat.auto_dialog.start",
+            state=SessionState.BUSY,
+        ) as session:
+            try:
+                async for event in run_auto_dialog(session, config):
+                    yield _sse_frame(event)
+            except AutoDialogError as exc:
+                yield _sse_frame({
+                    "event": "error",
+                    "error": {"type": exc.code, "message": exc.message},
+                })
+                yield _sse_frame({
+                    "event": "stopped",
+                    "reason": "error",
+                    "completed_turns": 0,
+                    "total_turns": config.total_turns,
+                })
+            except Exception as exc:  # noqa: BLE001
+                python_logger().exception(
+                    "auto_dialog stream crashed (session=%s): %s",
+                    session.id, exc,
+                )
+                yield _sse_frame({
+                    "event": "error",
+                    "error": {
+                        "type": type(exc).__name__,
+                        "message": f"自动对话执行失败: {exc}",
+                    },
+                })
+                yield _sse_frame({
+                    "event": "stopped",
+                    "reason": "error",
+                    "completed_turns": 0,
+                    "total_turns": config.total_turns,
+                })
+    except SessionConflictError as exc:
+        yield _sse_frame({
+            "event": "error",
+            "error": {
+                "type": "SessionConflict",
+                "message": str(exc),
+                "state": exc.state.value,
+                "busy_op": exc.busy_op,
+            },
+        })
+        yield _sse_frame({
+            "event": "stopped",
+            "reason": "error",
+            "completed_turns": 0,
+            "total_turns": config.total_turns,
+        })
+    except LookupError as exc:
+        yield _sse_frame({
+            "event": "error",
+            "error": {"type": "NoActiveSession", "message": str(exc)},
+        })
+        yield _sse_frame({
+            "event": "stopped",
+            "reason": "error",
+            "completed_turns": 0,
+            "total_turns": config.total_turns,
+        })
+
+
+@router.post("/auto_dialog/start")
+async def auto_dialog_start(body: _AutoDialogStartRequest) -> StreamingResponse:
+    """Start a double-AI auto-dialog; stream SSE until stop / completion.
+
+    锁粒度: 整段 SSE 持 BUSY; pause/resume/stop 通过独立端点调整运行标志.
+    """
+    return StreamingResponse(
+        _auto_dialog_event_stream(body),
+        media_type="text/event-stream",
+        headers=_sse_headers(),
+    )
+
+
+@router.post("/auto_dialog/pause")
+async def auto_dialog_pause() -> dict[str, Any]:
+    """Request graceful pause — 当前 step 跑完后不再启动下一 step.
+
+    不持会话锁 (start 端点正在持); 直接读 ``session.auto_state`` 里的
+    ``running_event.clear()``. 无运行中实例 → 409.
+    """
+    store = get_session_store()
+    try:
+        session = store.require()
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"error_type": "NoActiveSession", "message": str(exc)},
+        ) from exc
+    try:
+        return request_auto_pause(session)
+    except AutoDialogError as exc:
+        raise _auto_error_to_http(exc) from exc
+
+
+@router.post("/auto_dialog/resume")
+async def auto_dialog_resume() -> dict[str, Any]:
+    """Resume a paused auto-dialog. 幂等 (未 paused 时 set 也无副作用)."""
+    store = get_session_store()
+    try:
+        session = store.require()
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"error_type": "NoActiveSession", "message": str(exc)},
+        ) from exc
+    try:
+        return request_auto_resume(session)
+    except AutoDialogError as exc:
+        raise _auto_error_to_http(exc) from exc
+
+
+@router.post("/auto_dialog/stop")
+async def auto_dialog_stop() -> dict[str, Any]:
+    """Request stop — generator 下一次循环头会走 break 分支.
+
+    当前 step 仍然跑完 (graceful), 已经落盘的消息保留. 实际 "stopped" 事件
+    在 SSE 里由 runner 发出, 此端点只负责 "告诉 runner 该停了" 的信号.
+    """
+    store = get_session_store()
+    try:
+        session = store.require()
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"error_type": "NoActiveSession", "message": str(exc)},
+        ) from exc
+    try:
+        return request_auto_stop(session)
+    except AutoDialogError as exc:
+        raise _auto_error_to_http(exc) from exc
+
+
+@router.get("/auto_dialog/state")
+async def auto_dialog_state() -> dict[str, Any]:
+    """Observe 当前 Auto-Dialog 运行态 (或空闲).
+
+    前端 mount 时调这个决定要不要立刻挂 SSE 重连 banner (刷新页面后
+    auto 仍在跑的场景). 不需要 session 时返回 ``{is_running: false,
+    auto_state: null}`` 而不是 404 — UI 逻辑更简单.
+    """
+    store = get_session_store()
+    session = store.get()
+    if session is None:
+        return {"is_running": False, "auto_state": None}
+    return describe_auto_state(session)
 
 
 # Convenience trailing-slash-free aliases are provided by the router

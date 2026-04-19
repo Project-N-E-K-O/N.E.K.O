@@ -3,7 +3,7 @@
  *
  * 职责:
  *   - 品牌 + Session dropdown (New / Destroy; P21 之后补 Load/Save/Import/Restore)
- *   - Stage chip 占位 (P14 接入 Stage Coach)
+ *   - Stage chip (P14, 细节在 ./topbar_stage_chip.js)
  *   - Timeline chip 占位 (P18 接入快照时间线)
  *   - Err 徽章: 订阅 `http:error`, P03 只做简易计数 (P19 会完整 Errors 子页)
  *   - 右侧 Menu: 跳到 Diagnostics / Settings / About; Export/Reset 占位
@@ -15,6 +15,7 @@ import { i18n } from '../core/i18n.js';
 import { api } from '../core/api.js';
 import { toast } from '../core/toast.js';
 import { store, set, on } from '../core/state.js';
+import { mountStageChip } from './topbar_stage_chip.js';
 
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
@@ -179,20 +180,7 @@ function mountSessionDropdown(host) {
   });
 }
 
-// ── Stage / Timeline 占位 chip ─────────────────────────────────────
-
-function mountStageChip(host) {
-  const chip = el('button', {
-    className: 'chip muted',
-    title: i18n('topbar.stage.not_implemented'),
-    onClick: (ev) => {
-      ev.stopPropagation();
-      toast.info(i18n('topbar.stage.not_implemented'));
-    },
-  },
-  `${i18n('topbar.stage.label')}: ${i18n('topbar.stage.chip_placeholder')}`);
-  host.append(chip);
-}
+// ── Timeline 占位 chip (Stage chip 已迁到 topbar_stage_chip.js) ─────
 
 function mountTimelineChip(host) {
   const chip = el('button', {

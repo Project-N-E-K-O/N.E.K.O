@@ -105,7 +105,7 @@ class ChatBackend(Protocol):
         self,
         session: Session,
         *,
-        user_content: str,
+        user_content: str | None,
         role: str = ROLE_USER,
         source: str = SOURCE_MANUAL,
     ) -> AsyncIterator[dict[str, Any]]:
@@ -273,11 +273,21 @@ class OfflineChatBackend:
         self,
         session: Session,
         *,
-        user_content: str,
+        user_content: str | None,
         role: str = ROLE_USER,
         source: str = SOURCE_MANUAL,
     ) -> AsyncIterator[dict[str, Any]]:
         """Run one turn end-to-end and yield SSE-shaped events.
+
+        Parameters
+        ----------
+        user_content
+            Composer / 脚本 / SimUser 产出的 user (或 system) 消息正文. 传
+            ``None`` 表示**跳过 "追加一条新 user 消息"** 这一步, 直接在
+            当前 ``session.messages`` 之上跑推理. 仅在"会话末尾已经有一条
+            未回复的 user 消息, 本次调用只是补齐 assistant 回复"的场景使用
+            (例如 P13 Auto-Dialog 的 adaptive 首步). 其它调用方一律传字
+            符串让本函数管理好 user 消息与 ``{event: 'user'}`` SSE 帧.
 
         Yields
         ------
@@ -322,6 +332,15 @@ class OfflineChatBackend:
         """
         if role not in {ROLE_USER, ROLE_SYSTEM}:
             raise ValueError(f"stream_send does not accept role={role!r}")
+        if user_content is None:
+            # "只跑回复"模式, 末尾必须已经是 user, 否则 prompt_bundle 会拼出
+            # 一个无结尾 user 的 wire, 大多数 provider 会拒 (Gemini 400, OpenAI
+            # "last message must be user" 等). 提前校验, 给出明确错误.
+            if not session.messages or session.messages[-1].get("role") != ROLE_USER:
+                raise ValueError(
+                    "stream_send(user_content=None) 要求 session.messages 末尾是 "
+                    "role=user 的待回复消息"
+                )
 
         started_perf = time.perf_counter()
 
@@ -341,15 +360,19 @@ class OfflineChatBackend:
                 timedelta(seconds=session.clock.per_turn_default_seconds),
             )
 
-        now = session.clock.now()
-        user_msg = make_message(
-            role=role,
-            content=user_content,
-            timestamp=now,
-            source=source,
-        )
-        session.messages.append(user_msg)
-        yield {"event": "user", "message": user_msg}
+        if user_content is not None:
+            now = session.clock.now()
+            user_msg = make_message(
+                role=role,
+                content=user_content,
+                timestamp=now,
+                source=source,
+            )
+            session.messages.append(user_msg)
+            yield {"event": "user", "message": user_msg}
+        # user_content is None 时 ({event:'user'} 缺省) — 上游调用方负责
+        # 生成 "user 消息已就绪" 的 UI 提示 (例如 Auto-Dialog 的 simuser_done
+        # 事件). 这里不伪造 event 保持单一职责.
 
         # NOTE: 早期版本里这两个 except 分支会 `session.messages.pop()` 把
         # 刚 append 的 user_msg 回滚掉. 但 `{event: 'user'}` 已经先于此

@@ -25,8 +25,8 @@
 | P11 | 假想用户 AI (SimUser) | **done** | 2026-04-19 完成 |
 | P12 | 脚本化对话 (Scripted) | **done** | 2026-04-19 完成 |
 | P12.5 | Setup → Scripts 子页 (脚本模板编辑器) | **done** | 2026-04-19 完成 (+ 验收期两条小补丁: DOM null 文本 / 移除冗余 [校验] 按钮) |
-| P13 | 双 AI 自动对话 (Auto-Dialog) | pending | |
-| P14 | Stage Coach 流水线引导 | pending | |
+| P13 | 双 AI 自动对话 (Auto-Dialog) | **done** | 2026-04-19 完成 (后端 4 端点 + UI 手动验收通过; 含 4 条验收期补丁: 风格下拉空白 / stopped 事件 completed_turns=0 / banner 大片空白跳动 / Stop 后半轮悬空) |
+| P14 | Stage Coach 流水线引导 | **done** | 2026-04-19 完成 (后端 5 端点 + 顶栏折叠/展开双形态 chip + 上下文面板 + 历史; 烟测五端点全绿) |
 | P15 | ScoringSchema + Schemas 子页 | pending | |
 | P16 | 四类 Judger + Run 子页 | pending | |
 | P17 | Results + Aggregate 子页 + 导出报告 | pending | |
@@ -538,13 +538,139 @@
   - **DOM "null" 文本残影**: `page_scripts.js::renderEditor` 里 `pane.append(renderEditorErrors(state))` 遇到 `renderEditorErrors` 返回 `null` 时会把字符串 `"null"` 塞进 DOM (`Node.prototype.append` 对非 Node 参数一律 `String(x)`). 同类问题在编辑器头部按钮组 `buttons.append(..., state.details.has_user ? el(...) : null)` 也中招. 统一改成 `const n = ...; if (n) parent.append(n);` 或 `if (state.details.has_user) buttons.append(...)` 分支形式. 细节见 AGENT_NOTES §4.17 #42 + 新抽的跨项目 skill `~/.cursor/skills-cursor/dom-append-null-gotcha/SKILL.md`.
   - **[校验] 按钮下线**: `POST /script/templates` 本来就是 "先 `validate_template_dict` 再落盘" 的原子语义, 失败返回 422 + `detail.errors`, 前端 `saveDraft` 已经有完整的字段级红框/toast 回流, 独立 [校验] 按钮纯噪音. 改动: (a) `page_scripts.js` 删 [校验] 按钮 + `validateDraft` 函数, docstring 第 4 条改写为 "校验隐式内嵌在 Save"; (b) `chat_router.py` 删 `POST /script/templates/validate` 路由 + `_ScriptValidateRequest` 模型 + `validate_script_template` import (pipeline 层的 `validate_template_dict` 函数保留, save 内部还要用); (c) `i18n.js` 删 4 个 key (`buttons.validate` / `toast.validate_ok`/`_errors`/`_failed`). **注意**: 本节 "预期产物" 里 `POST /api/chat/script/templates/validate` 端点 + 工具栏 `[Validate]` 按钮描述**已失效**, 以本补丁为准.
 
-### [ ] P13 双 AI 自动对话
-- 预期产物: `pipeline/auto_dialog.py` + Auto-Dialog 模式 UI + /chat/auto_dialog/* SSE
-- 状态: pending
+### [x] P13 双 AI 自动对话 (Auto-Dialog)
+- 目标: Composer 第四种对话模式 — 测试人员配置好 SimUser 人设 + 轮数 + 每轮时钟步长后点 [Start], 后端循环 `(SimUser 生成 user → 落盘 → Target AI stream → 落盘)` 跑 N 轮, SSE 把进度推到 UI 顶部进度横幅. 运行期支持 Pause / Resume / Stop. 消息源 `source='auto'` 与手动消息走同一 `session.messages`, 手动/脚本/SimUser/Auto 四模式落盘完全统一. 目标 AI + SimUser 都是无状态 ChatCompletion, 测试人员 Stop 后随时可以编辑任一条消息再 Start 续跑, 下一轮自然以编辑后的版本为准.
+- 预期产物 (代码):
+  - **后端**:
+    - `pipeline/auto_dialog.py` (新建):
+      - `AutoDialogError` + error codes (`NoSession` / `NoSimUserStyle` / `AutoAlreadyRunning` / `AutoNotRunning` / `InvalidStep` / `ChatFailed` / `SimUserFailed`), 映射 HTTP (404/409/412/500/502).
+      - `@dataclass AutoDialogConfig`: `total_turns: int` / `simuser_style: str` / `simuser_persona_hint: str | None` / `step_mode: Literal['fixed','off']` / `step_seconds: int | None` (fixed 必填且 >0) / `simuser_extra_hint: str | None = None`.
+      - `_decide_first_kind(session) -> Literal['simuser','target']`: 末尾 user → `target` (先补一条回复), 末尾 assistant / 空 → `simuser` (开局).
+      - `run_auto_dialog(session, config) -> AsyncIterator[dict]`: 主 async generator, 写 `session.auto_state` (含 `running_event=asyncio.Event` gate + `stop_event=asyncio.Event`), 循环头 `await running_event.wait()` 实现 graceful pause (当前 step 不打断), 结束或错误 finally 里清空 `auto_state`. 内部调 `simulated_user.generate_simuser_message` 拿 user 消息 + `append_message(session, ...)` 落盘; 调 `chat_runner.get_chat_backend().stream_send(session, ..., source='auto')` 拿 assistant (fixed 模式前先 `clock.stage_next_turn(delta=timedelta(seconds=step_seconds))`).
+      - SSE 事件 schema: `start` (total_turns/config/first_kind) / `turn_begin` (index, kind, step_seconds?) / `simuser_done` (message) / `assistant_delta` (delta) / `assistant_done` (message, usage) / `turn_done` (target_completed_count) / `paused` / `resumed` / `stopped` (reason: completed/user_stop/error) / `error` (type, message).
+      - "turn" 定义 = "一次完整的 target 回复", 进度在 `target_completed_count` 上. 首步是 target 时仍 +1 (即使没配对 sim). 首步是 simuser 时 sim 落盘后紧跟 target, 合起来算一轮.
+    - `session_store.Session` 扩 `auto_state: Any = None` 字段: `{total_turns, completed_turns, next_kind, config: dict, running_event: asyncio.Event, stop_event: asyncio.Event, started_at_real: float}`. `to_dict` 里 auto_state 序列化掉 event (只留可见的 total/completed/next_kind/config, 省得快照).
+    - `routers/chat_router.py` 新增 4 个端点 (`/api/chat/auto_dialog/` 命名空间):
+      - `POST /start`: body = `AutoDialogConfig` 字段, 进 `session_operation(..., state=BUSY)` 整段持锁, 返回 SSE `StreamingResponse`. 已有 `auto_state` 则 409.
+      - `POST /pause`: 不持锁, 读 `session.auto_state['running_event'].clear()`, 200 OK `{status: paused}`; 无活跃 auto 则 409.
+      - `POST /resume`: 不持锁, `running_event.set()`, 200 `{status: running}`; 无活跃 auto 则 409.
+      - `POST /stop`: 不持锁, `stop_event.set() + running_event.set()` (让卡在 pause gate 的 generator 能被唤醒走到 stop 判断), 200 `{status: stopping}`; 无活跃 auto 则 409.
+  - **前端**:
+    - `static/ui/chat/composer.js`:
+      - `modeSelect` 把 `auto` 从 disabled 改 enabled, 新增 `auto` 分支.
+      - `autoControls` 折叠条 (mode=auto 时显示): Row1 = [Start] 按钮 + 轮数 input + Step mode 下拉 (fixed/off) + fixed 时 step_seconds input; Row2 = Style 下拉 (lazy-load 复用 `/api/chat/simulate_user/styles`) + [自定义人设] 折叠 textarea (独立一份, 不跟 SimUser 模式共享).
+      - `syncAutoStartBtn`: 运行中 disabled=true + 改 label "运行中 · 右上进度条".
+      - mode=auto 时 role select 强制 `user` + disabled, Send 按钮隐藏 (Start 代替).
+    - `static/ui/chat/auto_banner.js` (新建): `mountAutoBanner(host, ctx) -> {start, refresh, destroy}`. UI: sticky 顶部条, 左 "Auto N/M · step 5分钟" + 中间 [暂停]/[继续] 按钮 + 右 [停止] 按钮; 有 auto 运行时显示, 空闲时隐藏. 内部维护一个 SSE 连接 (复用 `sse_client.js`), 自动消费事件: simuser_done / assistant_delta / assistant_done 转发给 `message_stream` 的 `beginAssistantStream` + 普通消息 append; turn_done 更新计数; paused/resumed 切换按钮态; stopped 析构 banner.
+    - `static/ui/workspace_chat.js`: mount 时挂 banner (在 `.chat-main` 顶部); 页面加载时 GET `/api/chat/auto_dialog/state` 探测, 若后端仍 running 则立刻重连 SSE 显示 banner (支持刷新页面续看).
+    - `routers/chat_router.py` 另加 `GET /api/chat/auto_dialog/state` 给前端恢复用 (返回 auto_state 的可见快照 + null 表示未运行).
+    - `static/core/i18n.js`: `chat.composer.auto.*` (约 15 个 key: mode label / total_turns / step_mode options / start / persona_toggle / already_running 等) + `chat.auto_banner.*` (progress / pause / resume / stop / paused_hint / stopping).
+    - `static/testbench.css`: `.auto-controls` (与 `.simuser-controls` 同分段风格) + `.auto-banner` (sticky top:0, 柔色背景, 圆角, 阴影) + `.auto-banner.paused` (暖色调提示) + `.auto-banner .progress` (带 N/M 展示).
+- 设计决策:
+  - **Pause 语义 = graceful gate**: Pause 只阻挡 "下一步开始", 不中断当前已发出的 LLM 请求. 实现 = 循环头 `await running_event.wait()` (默认 set, pause 时 clear); 当前 step 从 stream_send 回来后, 下次循环卡在 gate. 代价: 从点 Pause 到真暂停有 = 当前 step 剩余时间. 好处: 代码简单, 不会产生半截 assistant 消息.
+  - **首步决策 = adaptive**: `session.messages[-1].role == 'user'` → 先 target (补齐欠下的一条回复); 否则 (末尾是 assistant / empty / system) → 先 SimUser (开局). 每"轮" = 一次 target 回复, 进度 = `target_completed_count`, 总 N. 首步是 target 时也算一轮 (哪怕没配 sim).
+  - **Step mode 先做 fixed / off 两档**: `fixed` 复用 `VirtualClock.stage_next_turn(delta=seconds)` 语义, 每轮 target 发送前自动 stage; `off` = 全程不动虚拟时钟 (但手动 staged 的还在). 线性 / 随机 / seed 留 TODO, 等 P15 有具体评分场景需求再补 (PLAN 原文列的四档到时候回填).
+  - **SimUser 配置独立**: Auto 配置面板里 style + persona_hint 与 SimUser 模式的 composer 配置**完全独立**两份状态 (不继承不共享), 切换 mode 只切显示, 数据互不干扰. 理由: 语义清晰 — SimUser 模式是 "生成一条给人改"、Auto 模式是 "连续测试角色一致性", 两种场景里测试人员选的 persona 很可能不同.
+  - **锁粒度 = 全程 BUSY**: `/auto_dialog/start` 整个 SSE 生命周期进 `session_operation(..., state=BUSY)`, 跟 `/chat/script/run_all` 同粒度. pause/resume/stop 三个控制端点**不持锁** (持了就死锁), 改的是 `session.auto_state` 里的 `asyncio.Event`, 这是写原子 (GIL 保护单 set/clear 调用).
+  - **状态字段放 Session 不放模块 global**: `auto_state` 挂 `Session` 实例上, 便于多 session (虽然当前单 session), 便于 `to_dict` 序列化可见字段给前端, 便于清理 (session destroy 时一起清).
+  - **SSE 格式复用 `sse_client.js` + P12 script SSE pattern**: 错误走流内 `{event:'error'}` + `{event:'stopped', reason:'error'}` 而不是 HTTP 500, 前端可 toast (参 AGENT_NOTES §4.17 #38).
+- 自测 (manual, 完成后补):
+  - Chat workspace 建会话 → Composer mode 下拉选 Auto-Dialog → 底下出配置面板, 选个 style + 填轮数 3 + step=fixed 60s → [Start].
+  - 顶部出 banner "Auto 1/3 · step 1分钟 · [暂停] [停止]", 消息流开始流式 (sim-user 消息带 `source=auto` 橙色带, assistant 消息紧跟, 虚拟时钟每轮 +1min).
+  - 跑到 2/3 时 [暂停] → banner 变 "已暂停" 黄色调, 当前 stream 跑完就不再生成新的; [继续] → 继续跑.
+  - 跑 3/3 完成 → banner 消失, composer 回到空闲态, 消息流保持 6 条新消息 (3 sim + 3 assistant).
+  - 点 Start 没等完就 [停止] → banner 消失, 保留已发消息, auto_state 归零.
+  - 在 Auto 跑期间点普通的 /send → 被 SessionConflictError 拒, toast 提示 "会话正忙: chat.auto_dialog.start".
+  - 刷新页面 (F5) 期间 auto 在跑 → 新页面重挂 banner (GET /state 探测), 继续接 SSE 显示余下进度.
+  - 错误注入: 把 Target model 的 api_key 改错然后 Start → 首轮 assistant 失败, SSE 出 `{event:'error'}` + `stopped`, banner 红色 toast 错误, auto_state 清空.
+- 落地情况 (2026-04-19 完成):
+  - 后端 4 个功能端点 + 1 个状态端点全部落地, `pipeline/auto_dialog.py` 实现主循环 + graceful pause/stop + SSE 错误优先 yield 再 return (参 AGENT_NOTES §4.17 #38 + §4.18 #43-#46); `chat_runner.stream_send` 扩 `user_content: str | None` 支持 adaptive 首轮 target 回复已有 user (#44); `session_store.Session.auto_state` 挂运行期 Event 对象 + describe() 走 `_public_auto_state` 白名单过滤避免 JSON 序列化炸 (#45).
+  - 前端 composer.js Auto 模式激活 + autoControls 子控件条 (风格/人设/N/step_mode/step_seconds/Start) + autoPersonaEditor 独立 textarea (与 simuser 模式隔离); auto_banner.js sticky 进度横幅 (mount 时 `GET /state` 探测运行态, observer 模式支持刷新续看); workspace_chat.js 顶部挂 banner 并注入 composer 依赖.
+  - i18n `chat.composer.auto.*` + `chat.auto_banner.*` 完整命名空间, CSS 新增 `.auto-controls` / `.auto-persona-editor` 暖橙底 / `.auto-banner` 蓝渐变 / `.auto-banner.paused` 橙渐变.
+  - 后端烟测: `/version` phase=P13 ✓, `/auto_dialog/state` idle ✓, pause/resume/stop 未运行时 409 `AutoNotRunning` ✓, `/start` Pydantic `total_turns>=1` 校验 ✓. UI 功能 (Start/Pause/Resume/Stop 完整链路 + 刷新续看 + 与 /send 冲突拒绝) 留待测试人员手动验收.
+  - 新增 AGENT_NOTES §4.18 四条落地坑: #43 graceful pause 双 Event / #44 stream_send(user_content=None) 分支 / #45 auto_state 序列化白名单 / #46 进度分母对齐 target 回复次数.
 
-### [ ] P14 Stage Coach
-- 预期产物: `pipeline/stage_coordinator.py` + `routers/stage_router.py` + 顶栏 Stage chip 完整实现
-- 状态: pending
+### [x] P14 Stage Coach 流水线引导
+- 目标: 给测试人员一条**自愿采纳**的流程指引, UI 顶栏常驻一枚 Stage chip, 告知当前处于 persona_setup / memory_build / prompt_assembly / chat_turn / post_turn_memory_update / evaluation 六阶段中的哪一段, 并基于当前 stage **静态**给出推荐的下一步 op (比如"去 Setup→Persona 编辑人设"/"在 Chat 发一条消息"/"跑一次 recent.compress 记忆压缩"); 附带当前会话的**上下文快照** (消息数 / 各类记忆条目数 / 当前虚拟时钟等), 让测试人员看到数据后自行判断"是不是真该跑这一步". 后端**永远只提示 + 预览 + 等确认, 绝不自动执行任何副作用**; /chat/send 跑完不会偷偷把 stage 从 chat_turn 推到 post_turn_memory_update.
+- 预期产物 (代码):
+  - **后端**:
+    - `pipeline/stage_coordinator.py` (新建):
+      - `Stage` Literal 闭集: `persona_setup / memory_build / prompt_assembly / chat_turn / post_turn_memory_update / evaluation`.
+      - `STAGE_ORDER`: 顺序列表, `next_stage(current)` 在 `evaluation → chat_turn` 处循环回.
+      - `@dataclass SuggestedOp`: `op_id` + `label_i18n_key` + `description_i18n_key` (解释这一步做什么) + `when_to_run_i18n_key` (什么时候该跑) + `when_to_skip_i18n_key` (什么时候可以跳过) + `ui_action: Literal["nav_to_setup_persona","nav_to_setup_memory","nav_to_chat_preview","chat_send_hint","memory_trigger","evaluation_pending"]` + `dry_run_available: bool`. 文案走 i18n key 而非硬字符串, 保证前端可以换语种.
+      - `STAGE_SUGGESTIONS: dict[Stage, SuggestedOp]` 静态映射 (P14 决策: 纯静态, 不看消息数/记忆量等数据阈值; 判断交给测试人员, context_snapshot 提供数据):
+        - persona_setup → `ui_action=nav_to_setup_persona`, dry_run=False
+        - memory_build → `ui_action=nav_to_setup_memory`, dry_run=False
+        - prompt_assembly → `ui_action=nav_to_chat_preview`, dry_run=False (走 Chat 右栏 preview 确认 wire messages)
+        - chat_turn → `ui_action=chat_send_hint`, dry_run=False (提示去 Chat 用任一模式发送)
+        - post_turn_memory_update → `ui_action=memory_trigger`, dry_run=True (委托 memory_runner 的 dry-run, 复用 P10 的 memory_ops)
+        - evaluation → `ui_action=evaluation_pending`, dry_run=False (占位: P15/P16 未上线时 preview 返回 "评分未就绪" 文案)
+      - `collect_context_snapshot(session) -> dict`: 无副作用, 收集 `{messages_count, user_messages_count, assistant_messages_count, last_message_role, last_message_timestamp, memory_counts: {recent, facts, reflections, persona}, persona_configured: bool, simuser_configured_global: bool (是否在 composer 里填过 simuser persona), script_loaded: bool, auto_running: bool, virtual_now: str, virtual_pending_advance_seconds: int | None}`. 任何 I/O 失败降级到空字段 + warnings 列表, 绝不抛异常炸掉 stage chip.
+      - `current_stage(session) -> Stage` + `advance(session, op_id=None, payload=None) -> dict` + `skip(session) -> dict` + `rewind(session, target_stage) -> dict`. advance/skip/rewind 只改 `session.stage_state`, 不碰 messages / memory / clock — 那些副作用依赖用户点 ui_action 跳转到对应 workspace 操作.
+      - 每次 advance/skip/rewind/preview 调用写一条 JSONL 日志 `op="stage.<action>"` + `{from, to, op_id?, skipped?}`; 便于 P18 回放和 P19 错误排查.
+      - `StageError` + code (`NoSession` 404 / `UnknownStage` 400 / `InvalidTarget` 400 / `PreviewUnsupported` 412), 映射 HTTP.
+    - `session_store.Session` 扩 `stage_state: dict | None = None`, 结构:
+      `{"current": Stage, "history": [{"stage": Stage, "at": iso_str, "action": "advance"|"skip"|"rewind"|"init", "op_id": str | None}, ...], "updated_at": iso_str}`. 会话新建时初始化 `current="persona_setup"` + history 首条 `{action:"init"}`. `describe()` / `to_dict()` 里直接透传 (全是 JSON 原生类型, 没 Event 需过滤).
+    - `routers/stage_router.py` (新建, 挂 `server.py`):
+      - `GET /api/stage`: 读 `{current, suggested_op: {...}, context_snapshot, history, updated_at, phase: "P14"}`; 走 `session_operation(READY, allow_states={READY, BUSY})` — 即使 chat/auto 在跑也允许观测 stage.
+      - `POST /api/stage/preview`: body 可选 `{op_id}`, 默认取 `suggested_op.op_id`; memory 类返回 `memory_runner.preview(op_id)` 的 dry-run 结果, 其他类 412 `PreviewUnsupported` + 提示文案; 走 READY 锁.
+      - `POST /api/stage/advance`: body 可选 `{op_id, payload}`; payload 仅对 memory 类有效 (透传给 `memory_runner.commit(op_id, edited_payload)`), 其他 op advance 仅切 stage 不跑副作用. 走 `BUSY` 锁 (因为 memory commit 可能写磁盘). 返回新 `{current, suggested_op, history[-1]}`.
+      - `POST /api/stage/skip`: 不带 payload, 只切 stage + history 标 `skipped:true`. 走 READY 锁.
+      - `POST /api/stage/rewind`: body `{target_stage}`, 把 current 改回去; history 追加 `action:"rewind"` 不删历史 (P18 时间线要用). 走 READY 锁.
+    - `health_router.phase = "P14"` (bump 在 smoke 阶段).
+  - **前端**:
+    - `static/ui/topbar_stage_chip.js` (新建): `mountStageChip(host) -> {refresh, destroy, setExpanded(bool)}`. 两态:
+      - **折叠 chip** (Evaluation / Diagnostics / Settings workspace): 单行 `阶段: <stage_name> ▸`, hover tooltip 显示 `suggested_op.label`. 点 chip → `setExpanded(true)` 展开 drawer.
+      - **展开 panel** (Setup / Chat workspace 默认): 三段布局:
+        1. **阶段条**: `<stage_name>` + 进度点 (6 个圆点, 当前高亮, history 已走过的灰填充).
+        2. **推荐动作卡**: `suggested_op.label` 主标题 + `description` / `when_to_run` / `when_to_skip` 三段说明 + 上下文快照 (messages_count / memory_counts 等渲染成表格, **让测试人员看到数据后判断"该不该跑"**).
+        3. **动作按钮行**: `[预览 dry-run]` (dry_run_available=false 时 disabled + tooltip "此推荐不提供 dry-run") / `[执行并推进]` / `[跳过]` / `[回退...]` (下拉 6 阶段). memory op 的"执行并推进"会先 POST /stage/preview 弹 modal (复用 P10 memory trigger modal 的 diff 高亮 + edit payload), accept 后 POST /stage/advance 带 edited_payload. 其他 op 的"执行并推进": nav 类直接 `store.setActiveWorkspace(...)` + `selectPage(...)` 跳转到目标页并闪动对应区域, chat_send_hint 跳 Chat 工作区并聚焦 composer, evaluation_pending 弹 toast "评分功能 P15/P16 上线后此按钮将接入对应 workflow".
+      - 订阅 `session:change` (全量刷) / `stage:change` (自身 advance/skip/rewind 后 emit) / `active_workspace:change` (切 folded/expanded) 自动刷新; mount 时 GET /stage 初始化.
+    - `static/core/topbar.js`: 在顶栏占位插 `stageChipHost`, store active_workspace 变化时调 `stageChip.setExpanded(workspace in {setup, chat})`. 空会话态下整个 chip 显示 "阶段: 未建会话" + 所有按钮 disabled.
+    - `static/core/store.js`: 若需要, 新加 `stage` 字段缓存最近一次 /stage 响应, 供其他 workspace 订阅.
+  - **i18n `static/core/i18n.js`** 新增 `stage.*` 命名空间 (至少 50 个 key):
+    - `stage.name.{persona_setup, memory_build, prompt_assembly, chat_turn, post_turn_memory_update, evaluation}` — 6 个阶段显示名.
+    - `stage.op.{persona_edit, memory_edit, prompt_preview, chat_send, memory_trigger_recent, evaluation_pending}.{label, description, when_to_run, when_to_skip}` — 6 个 op × 4 段 = 24 key.
+    - `stage.context.{messages_count, user_messages, assistant_messages, memory_recent, memory_facts, memory_reflections, memory_persona, last_message_at, virtual_now, pending_advance}` — 上下文面板 label.
+    - `stage.buttons.{preview, advance, skip, rewind, rewind_prompt}` + `stage.chip.{collapsed_prefix, no_session}`.
+    - `stage.toast.{advance_ok, skip_ok, rewind_ok, preview_unsupported, evaluation_pending_hint, no_session}` + `stage.modal.{preview_title, payload_edit, accept, cancel}`.
+  - **CSS `static/testbench.css`** 新增:
+    - `.stage-chip` (顶栏内联, hover 变色) / `.stage-chip.collapsed` (单行窄) / `.stage-chip.expanded` (展开 drawer, 固定 max-height + 内部 scroll).
+    - `.stage-panel` 三段 (stage-bar / op-card / action-row), `.stage-progress-dots` (6 圆点).
+    - `.stage-context-panel` (表格式数据展示, 小字灰色, 突出"看数据自行判断"的视觉提示).
+    - `.stage-op-card` 区分当前 op 类型 (memory trigger 暖色提示 dry-run 可用, nav 类冷色).
+- 设计决策 (与用户确认):
+  - **stage_state 写进 Session + 存档**: P21 save/load 自然带上, 加载会话回到上次阶段.
+  - **evaluation 阶段 P14 占位保留**: 不改状态机 6 阶段, 占位 op `evaluation_pending` 返回"未上线"文案; P16 上线时只替换 preview/advance 具体实现, 不动 router / chip.
+  - **纯 UI 驱动**: /chat/send / /chat/auto_dialog/start / /chat/script/* **都不** 动 stage_state. 只有 /stage/advance /stage/skip /stage/rewind 能改. 符合 PLAN 原文 "永远只建议 + 预览 + 等确认, 绝不自动跑".
+  - **suggest_next 纯静态 + UI 补足数据**: stage_coordinator 只维护"stage → op"静态映射, 不看消息数/记忆量等数据, 不搞硬编码阈值; 但 GET /stage 附带 context_snapshot, UI 展开面板里**和推荐动作并排显示**消息数/记忆量等, 同时推荐卡有 `when_to_run` / `when_to_skip` 文案 → 测试人员看数据 + 看文案 → 自己决定是 preview/advance 还是 skip. 避免了 coordinator 与 memory_runner 阈值逻辑重复 + 避免 UI 对阈值细节敏感.
+  - **Stage chip 可见性按 PLAN 原文**: 所有 workspace 都显示 chip, Setup/Chat 默认展开成完整 panel (Preview/Accept/Skip/Rewind 四按钮 + 上下文快照), Evaluation/Diagnostics/Settings 默认折叠成 `阶段: chat_turn ▸` 一行点击可展开.
+- 自测 checklist (手动, 落地后填):
+  - 新建会话 → 顶栏 chip 显示 "阶段: persona_setup", 推荐 "去 Setup → Persona 编辑人设", 按钮 [预览] disabled + tooltip "此推荐不提供 dry-run".
+  - 点 [执行并推进] → 路由跳 Setup → Persona 子页, chip 阶段变 memory_build, 推荐 "去 Setup → Memory".
+  - 依次推进到 chat_turn → 发消息 (mode=manual /simuser/script/auto 任一) → 消息入 messages, chip 阶段保持 chat_turn (**不自动推进** post_turn_memory_update).
+  - 手动点 [执行并推进] → 阶段切 post_turn_memory_update, 推荐 "Memory recent.compress", 按钮 [预览] enabled → 弹 modal 显 dry-run diff (复用 P10 memory trigger modal) → accept → 写磁盘成功 → 阶段切 evaluation → 推荐 "评分未上线" + [执行并推进] 按钮 toast 提示 P16 上线再接入; 继续点 [跳过] → 循环回 chat_turn.
+  - 点 [回退...] 下拉选 persona_setup → chip 回到 persona_setup, history 里多一条 action=rewind; 数据 (messages / memory) **不被清空** (rewind 只切 UI 指引, 不动副作用).
+  - 切 Evaluation workspace → chip 折叠为单行 `阶段: chat_turn ▸`, 点击展开为 drawer, 内容与 Setup/Chat 展开态一致.
+  - 空会话态 (删除当前会话) → chip 显示 "阶段: 未建会话", 所有按钮 disabled; 重建会话 → 自动刷新回 persona_setup.
+- 状态: **done** (2026-04-19)
+- 落地偏差 (与上方 "预期产物" 的差异, 以实际代码为准):
+  - `SuggestedOp.dry_run_available` 六个 op 本期**全部为 False** (包括 post_turn_memory_update 的 memory_trigger): Stage Coach 不在自己层面重新包一个 memory dry-run, 而是把测试人员 `nav` 到 Setup → Memory 子页使用 P10 已有的 Trigger → Preview → Accept 流程. 这样避免了 "在两个地方维护同一份 memory dry-run 入口" 带来的行为漂移, 对应 §4.19 #51 的 "coordinator 不代跑" 原则.
+  - `advance/skip/rewind` **完全不碰** memory 副作用 — 预期产物写的 "memory op advance 透传 payload 给 memory_runner.commit" 也删掉了. 理由同上, 并且与 "ui_only" 策略一致 (用户选的 auto_advance_policy=ui_only). memory commit 仍走原 `/api/memory/trigger/{op}` 路径, 与 stage 无耦合.
+  - `/api/stage/preview` P14 一律 **412 PreviewUnsupported**, 保留 URL 为 P15/P16 评分 dry-run 预留 schema; 错误 detail 里给 `redirect_hint_i18n_key` 方便 UI toast 指向真正 preview 入口.
+  - 六阶段 UI 跳转按钮的 `ui_action` 归一化映射表 (`nav_to_setup_persona` / `nav_to_setup_memory` / `nav_to_chat_preview` / `chat_send_hint` / `memory_trigger_hint` / `evaluation_pending`) 在 `topbar_stage_chip.handleUiAction` 里 switch 显式实现, 其中 memory_trigger_hint 暂时跳到 `memory_recent` 子页 (与 memory_edit 同目标, 下一步 P14 补丁可按 `pending_memory_previews` 智能选最相关的 memory 子页).
+  - CSS 类名略调整: 实际落的是 `.stage-chip-wrap` / `.stage-chip-slot` / `.stage-inline-actions` / `.stage-action-btn` / `.stage-panel-track{,-node,-label}` / `.stage-panel-op-card` / `.stage-panel-op-{label,desc,sub-title,sub}` / `.stage-panel-context{,-line,-warning}` / `.stage-panel-actions` / `.stage-panel-history{,-row,-at,-stage,-empty}`, 与"预期产物"里写的 `.stage-chip.expanded / .stage-progress-dots / .stage-op-card` 等名字不一样但覆盖了相同语义, 以实际 testbench.css 为准.
+  - 烟测结果: `GET /api/stage` 无 session → 404 NoActiveSession ✓; 创建 session 后 → current=persona_setup + 6 段 stages + init history ✓; advance → memory_build 且 history 追加 action=advance+op_id=persona.edit ✓; skip → prompt_assembly 且 history 追加 action=skip+skipped=true ✓; rewind target_stage=chat_turn → current=chat_turn, history 追加 action=rewind ✓; preview → 412 PreviewUnsupported ✓; `/static/ui/topbar_stage_chip.js` 200 served (17696 B) ✓.
+  - AGENT_NOTES §4.19 新增四条落地教训 (#51 coordinator 绝不代跑 / #52 stage_state 驻 Session 为 P21 存档 / #53 context 采集绝不 raise / #54 stage 切换收拢到三端点).
+- P14 验收后 UX 补丁 (2026-04-19 同日继续, 与 P14 核心无架构差异, 纯增强):
+  - **Stage Coach 面板顶部说明**: `stage.panel.intro_title` / `intro_body` 两条 i18n + `renderPanel()` 开头渲染 `<details>` 折叠块 (默认展开, 状态存 LS `testbench:stage:intro_collapsed`), 明确告诉测试人员 "Stage Coach 是 checklist 辅助表不是强制流程", 所有操作只改阶段指针不动 messages / 记忆 / 虚拟时钟. CSS 加 `.stage-panel-intro*` 一组淡蓝底样式.
+  - **AI 模型配置提醒横幅** (`static/ui/model_config_reminder.js` 新建 + `static/app.js` 挂载): 顶栏与 tabbar 之间两态横幅. Welcome (蓝底, 👋) 首次启动 / 服务重启后出现, 按钮跳 Settings → Models; Warn (黄底, ⚠️) 任何时候没可用 provider 就出现, 按钮跳 Settings → API Keys. 两态都能用 × 关闭 (sessionStorage 记录 dismiss 时的 boot_id, 重启后失效). Welcome 通过 `boot_id` 对齐而不是纯布尔 LS — 每次服务重启自动再出现一次 (用户明确需求).
+  - **`/healthz` 扩 `boot_id` 字段**: `uuid.uuid4().hex` 在 `health_router` 顶层生成一次, 前端用它做"服务是否新启动"的对齐比较. 不加 Cookie / Auth / WebSocket 心跳等重基础设施.
+  - **`settings:goto_page` 事件**: 与 `setup:goto_page` 对称, 挂在 `workspace_settings.js`. 外部组件 (reminder 横幅, 将来可能的 Stage Coach 跳转) 通过 `emit('settings:goto_page', 'models')` 打开指定子页. 挂载前后都能用 (未挂载时先写 LS, 挂载读 LS).
+  - **`#app` grid 行数修正**: 从 3 行 `var(--topbar-h) var(--tabbar-h) 1fr` 扩到 4 行 `var(--topbar-h) auto var(--tabbar-h) 1fr`, 第 2 行专给 reminder-slot; 空 slot 保持 `display: block` (不用 `:empty { display: none }`, 详见 §4.20 #55 教训).
+  - AGENT_NOTES §4.20 新增两条教训: #55 grid + display:none 的兄弟错位坑; #56 boot_id 模式; #57 seen flag 写入时机必须在交互回调里不是 render.
+  - 跨项目 skill 更新: `css-grid-template-child-sync` 加 "Conditional / Empty Slot Sub-Trap" 小节; 新增 `server-boot-id-for-ui-state` skill.
+  - 烟测: `/healthz` 返回 `{status:ok, boot_id:3fb1ff21...}` ✓; `/static/ui/model_config_reminder.js` 200 ✓; DevTools 清 LS `testbench:model_reminder:welcome_seen_boot_id` 刷新 → 蓝色 welcome 出现 + 点 × 关闭 + 刷新不再出现 + 重启服务刷新又出现 ✓.
 
 ### [ ] P15 ScoringSchema 一等公民
 - 预期产物: `pipeline/scoring_schema.py` + 三套 builtin JSON + judge_router schema CRUD + Evaluation → Schemas 子页
@@ -623,3 +749,4 @@
   - **两栏 layout 现在落地, P09 只塞左栏**: `.chat-layout` grid 一次性定型, preview panel 常驻右栏. P09 消息流 + composer 直接进 `.chat-main`, 不用再动 CSS/workspace 骨架. 同时 preview panel 的 `session:change` / `preview:dirty` 订阅已就绪, P09 发送后 prompt 变化会自动刷.
 - **2026-04-18** 跨 workspace 细节: 会话创建/销毁时当前可见 workspace 的活跃子页自动刷新一次. 实现: `workspace_setup.js` / `workspace_settings.js` 订阅 `session:change`, 若 `store.active_workspace` 是本 workspace 则立即 `selectPage(currentId)` 重渲染, 否则打 dirty 标记, 待 `active_workspace:change` 切回本 workspace 时再刷. 动机: 修复 "Persona 页提示无会话 → 顶栏新建会话 → 页面仍停在空态, 必须手动切走再切回来" 的 UX 毛刺; 不可见 workspace 延迟刷新避免无谓后端请求. Chat / Evaluation / Diagnostics 会话无关, 不改.
 - **2026-04-18** P07/P09 补丁组交叉审计 + checkpoint. P07 Memory 编辑器五轮 UI 打磨 (双视图 tab + 自适应 textarea + 角标删除按钮 + 全宽卡片 + i18n 隔离编码污染) 与 P09 三组补丁 (免费预设 api_key 三层兜底 + 消息 timestamp 单调校验 + Lanlan 免费端 testbench 旁路) 全部就位. 本轮交叉审计结论: (a) `memory_editor_structured.js` 因早期编辑链事故整个文件退化为纯 ASCII (1808 字节非 ASCII 内容被 `?` 替换), 本文件已被标记为编码污染热点, 后续维护一律禁写中文字面量, 用户可见文案全部走 `i18n.js` (独立文件, 970 个中文段完好, UTF-8 完整性已校验). (b) 所有 CSS 类 (`memory-struct-root` / `memory-item-card` / `memory-item-delete-corner` / `memory-add-button` / `memory-field-inline` / `memory-checkbox-row` / `memory-textarea-{wrap,auto,toggle}` / `memory-advanced` / `memory-entity-{group,header,name}` / `memory-field-hint` / `memory-inline-warn`) 在 `testbench.css` 有对应定义, JS ↔ CSS 无悬空引用. (c) 新增 i18n 键 (`setup.memory.editor.message_type.{human,ai,system}` / `textarea.{expand,collapse}` / `multimodal_{extras,multi_text}` / `complex_content_hint` / `delete_item`) 均被 `memory_editor_structured.js` 正确引用; `_dom.js` 的 `el()` fallback 对只读 getter 的 try/catch 容错就位. (d) `memory_editor.js` / `memory_editor_raw.js` / `memory_editor_structured.js` 三个 ESM `node -e "import(...)"` 均成功加载. 本 checkpoint commit 对应状态: P00-P09 全部 done, P07/P09 已进入可用态, 下一步进 P10.
+- **2026-04-19** 完成 P13 双 AI 自动对话 (Auto-Dialog). 后端: `pipeline/auto_dialog.py` 新建 (AutoDialogConfig 聚合式校验 / `_decide_first_kind` 按 messages 末尾自描述 / `run_auto_dialog` 主循环: 双 asyncio.Event (running_event 默认 set + stop_event 默认 clear) 实现 graceful pause/stop — 点 Pause 后当前 step 跑完再卡下一轮, 绝不取消已发出的 LLM 请求, 与 graceful 设计决策对齐 / SSE 事件 `start / turn_begin / simuser_done / assistant_* / turn_done / paused / resumed / stopped / error` 九种 / 错误优先 yield error 帧再 return 或 raise, 沿用 §4.17 #38 SSE 错误处理模板 / `_run_simuser_step` 调 `generate_simuser_message` + 落盘 `source=auto` 的 user 消息 / `_run_target_step` 调 `chat_runner.stream_send(user_content=None)` 让 target AI 对已有 user 回复不重复追加). `routers/chat_router.py` 新增 `POST /api/chat/auto_dialog/{start,pause,resume,stop}` + `GET /state`; start 持整段 BUSY 锁, 控制端点全部无锁纯 Event flip. `session_store.Session.auto_state: dict | None` 挂 Event 对象, `describe()` 走白名单过滤避免 JSON 序列化崩 (新增 AGENT_NOTES §4.18 #45). `chat_runner.stream_send(user_content: str | None)` 扩为可选 user, None 分支跳过追加 user 消息 + yield user 帧, 直接进 wire/stream; 断言 messages 末尾必须是 user role 否则 ValueError (§4.18 #44). 前端: `composer.js` 激活 mode=auto + autoControls 行 (reuse simuser styles 下拉 / auto 独立 persona textarea / total N input / step_mode {off,fixed} / step_seconds) + autoPersonaEditor 独立暖橙底 textarea 与 simuser 模式隔离; `syncModeUI` 在 auto 模式锁 role=user disabled + 显隐控件; `syncAutoFields` 跟随 autoRunning + stepMode 切换按钮态; `startAutoDialog` 收集配置调 autoBanner, 订阅 `auto_dialog:finished` 复位; `syncGenerateBtn` / `syncScriptButtons` 追加 autoRunning 冲突互斥. `auto_banner.js` 新建 sticky 顶部横幅 (进度 pill + pause/resume/stop 三按钮 + 空闲态 display:none + 暂停态 `.paused` 暖橙渐变 + SSE 消费九种事件, simuser_done/assistant_* 转发 message_stream 同 /chat/send 路径 + mount 时 GET /state 探测运行态进 observer 模式支持刷新页面续看 + emit `auto_dialog:finished` 通知 composer 复位). `workspace_chat.js` 顶部挂 banner host 在 streamHost 之前, 注入 autoBannerHandle 给 composer 依赖. i18n `chat.composer.auto.*` + `chat.auto_banner.*` 完整命名空间, CSS 新增 `.auto-controls` (flex-wrap) / `.auto-persona-editor` (与 simuser 蓝底区分的暖橙色) / `.chat-auto-banner-host` sticky top:0 / `.auto-banner` 蓝渐变 + `.auto-banner.paused` 橙渐变 + 左右两区 progress pill. `health_router.phase = P13`. 关键设计: (a) Pause/Stop 双 Event graceful gate 绝不 cancel 当前 step; (b) 进度分母 = target 回复次数 (与 Virtual Clock 每 assistant 回复 advance 一次对齐), SimUser 步骤单独 simuser_done 不进度; (c) adaptive 首轮 `_decide_first_kind` 按 messages[-1].role 自描述, 不额外传 flag; (d) Auto 模式的 SimUser 风格/人设配置与 SimUser 模式完全独立两份状态; (e) step_mode 本期只 fixed/off (linear/random 留到 P15 有具体评分需求再补). 新增 AGENT_NOTES §4.18 #43-#46 四条落地坑 (graceful pause 双 Event / stream_send(user_content=None) 扩签名 / auto_state 序列化白名单 / 进度分母前后端对齐). 后端烟测通过: curl `/version` phase=P13, `/auto_dialog/state` idle `{is_running:false, auto_state:null}`, 控制端点未运行时均返回 409 `AutoNotRunning`, `/start` Pydantic `total_turns>=1` 校验生效. UI 端到端 (Start/Pause/Resume/Stop 完整链路 + 刷新续看 + 与 /send 冲突拒绝) 留待测试人员手动验收.

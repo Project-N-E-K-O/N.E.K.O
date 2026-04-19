@@ -15,6 +15,7 @@ import { store, set, on } from './core/state.js';
 import { initErrorsBus } from './core/errors_bus.js';
 
 import { mountTopbar }            from './ui/topbar.js';
+import { mountModelConfigReminder } from './ui/model_config_reminder.js';
 import { mountSetupWorkspace }    from './ui/workspace_setup.js';
 import { mountChatWorkspace }     from './ui/workspace_chat.js';
 import { mountEvaluationWorkspace } from './ui/workspace_evaluation.js';
@@ -99,6 +100,9 @@ function boot() {
   }
 
   mountTopbar(topbar);
+  // Reminder 横幅插到 topbar 和 tabbar 之间, 在 tabbar 挂载**之前**插槽, 这样 DOM 顺序是
+  // topbar → reminder-slot → tabbar → workspace-host, 视觉从上到下自然.
+  mountModelConfigReminder();
   mountTabbar(tabbar);
   renderWorkspaces(host);
 

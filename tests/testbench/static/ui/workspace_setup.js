@@ -116,5 +116,21 @@ export function mountSetupWorkspace(host) {
     }
   });
 
+  // P14 Stage Coach 的 "跳转到目标页" 按钮会发这条事件, 内容是目标 subpage id
+  // (e.g. 'persona' / 'memory_recent'). 它只需在挂载态生效 — 未挂载时 subpage
+  // 的选择由 LS 在下次挂载读取, 所以这里不做 store-then-defer.
+  on('setup:goto_page', (pageId) => {
+    if (typeof pageId !== 'string' || !PAGES.some((p) => p.kind === 'page' && p.id === pageId)) {
+      return;
+    }
+    localStorage.setItem(LS_KEY, pageId);
+    if (store.active_workspace === 'setup') {
+      selectPage(pageId);
+    } else {
+      currentId = pageId;
+      dirty = true;
+    }
+  });
+
   selectPage(initial);
 }
