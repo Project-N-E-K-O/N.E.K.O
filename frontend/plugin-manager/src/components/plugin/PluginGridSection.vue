@@ -42,13 +42,15 @@
           :class="pluginItemClass(item.id)"
           :style="itemMotionStyle(index)"
         >
-          <div v-if="multiSelectEnabled" class="plugin-item__select">
-            <el-checkbox
-              :model-value="isSelected(item.id)"
-              @click.stop
-              @change="$emit('toggle-selection', item.id)"
-            />
-          </div>
+          <Transition name="check-pop">
+            <div v-if="multiSelectEnabled" class="plugin-item__select" @click.stop="$emit('toggle-selection', item.id)">
+              <div class="plugin-item__check" :class="{ 'plugin-item__check--checked': isSelected(item.id) }">
+                <svg v-if="isSelected(item.id)" class="plugin-item__check-icon" viewBox="0 0 16 16" fill="none">
+                  <path d="M3.5 8.5L6.5 11.5L12.5 4.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </div>
+            </div>
+          </Transition>
 
           <component
             :is="layoutMode === 'list' ? PluginListRow : PluginCard"
@@ -188,29 +190,124 @@ function pluginItemClass(pluginId: string) {
 
 .plugin-item__select {
   position: absolute;
-  top: -8px;
-  right: -8px;
+  top: -6px;
+  right: -6px;
   z-index: 2;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 32px;
-  min-height: 32px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--el-bg-color) 86%, white);
-  box-shadow: 0 8px 18px color-mix(in srgb, var(--el-text-color-primary) 10%, transparent);
-  backdrop-filter: blur(10px);
+  cursor: pointer;
+}
+
+.plugin-item__check {
+  width: 26px;
+  height: 26px;
+  border-radius: 9px;
+  border: 2px solid color-mix(in srgb, var(--el-border-color) 80%, transparent);
+  background: color-mix(in srgb, var(--el-bg-color) 92%, white);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow:
+    0 4px 12px color-mix(in srgb, var(--el-text-color-primary) 8%, transparent);
+  transition:
+    border-color 0.2s ease,
+    background-color 0.2s ease,
+    transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1),
+    box-shadow 0.2s ease;
+}
+
+.plugin-item__check:hover {
+  border-color: var(--el-color-primary);
+  transform: scale(1.08);
+}
+
+.plugin-item__check--checked {
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary);
+  box-shadow:
+    0 4px 14px color-mix(in srgb, var(--el-color-primary) 36%, transparent);
+}
+
+.plugin-item__check--checked:hover {
+  transform: scale(1.08);
+}
+
+.plugin-item__check-icon {
+  width: 14px;
+  height: 14px;
+  color: #fff;
+  animation: check-draw 0.25s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+@keyframes check-draw {
+  from {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Check pop transition */
+.check-pop-enter-active {
+  transition:
+    opacity 0.22s ease,
+    transform 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.check-pop-leave-active {
+  transition:
+    opacity 0.18s ease,
+    transform 0.18s ease;
+}
+
+.check-pop-enter-from {
+  opacity: 0;
+  transform: scale(0.4);
+}
+
+.check-pop-leave-to {
+  opacity: 0;
+  transform: scale(0.6);
 }
 
 .plugin-item--selected :deep(.plugin-card) {
   border-color: var(--el-color-primary);
+  background:
+    linear-gradient(135deg,
+      color-mix(in srgb, var(--el-color-primary) 4%, var(--el-bg-color)),
+      color-mix(in srgb, var(--el-color-primary) 2%, var(--el-bg-color))
+    );
   box-shadow:
-    0 16px 32px color-mix(in srgb, var(--el-color-primary) 16%, transparent),
-    0 6px 14px color-mix(in srgb, var(--el-text-color-primary) 8%, transparent);
+    0 0 0 2px color-mix(in srgb, var(--el-color-primary) 16%, transparent),
+    0 16px 32px color-mix(in srgb, var(--el-color-primary) 12%, transparent),
+    0 6px 14px color-mix(in srgb, var(--el-text-color-primary) 6%, transparent);
 }
 
 .plugin-item--selected :deep(.plugin-list-row-card) {
   border-color: var(--el-color-primary);
+  background:
+    linear-gradient(135deg,
+      color-mix(in srgb, var(--el-color-primary) 4%, var(--el-bg-color)),
+      color-mix(in srgb, var(--el-color-primary) 2%, var(--el-bg-color))
+    );
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--el-color-primary) 16%, transparent),
+    0 14px 28px color-mix(in srgb, var(--el-color-primary) 12%, transparent);
+}
+
+/* Selection mode: subtle scale on hover for better feedback */
+.plugin-item--selection-mode {
+  cursor: pointer;
+}
+
+.plugin-item--selection-mode:hover :deep(.plugin-card),
+.plugin-item--selection-mode:hover :deep(.plugin-list-row-card) {
+  border-color: color-mix(in srgb, var(--el-color-primary) 40%, var(--el-border-color));
 }
 
 .plugin-item :deep(.plugin-card) {

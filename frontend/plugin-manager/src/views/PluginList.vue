@@ -5,51 +5,16 @@
         <template #header>
           <div class="workbench-header">
             <div class="workbench-header__copy">
-              <div class="selection-toolbar" :class="{ 'selection-toolbar--active': multiSelectEnabled }">
-                <el-button
-                  class="selection-toolbar__trigger"
-                  :type="multiSelectEnabled ? 'primary' : 'default'"
-                  plain
-                  @click="toggleMultiSelectMode"
-                >
-                  <span class="selection-toolbar__trigger-dot" aria-hidden="true"></span>
-                  {{ multiSelectEnabled ? $t('plugins.exitMultiSelect') : $t('plugins.multiSelect') }}
-                </el-button>
-                <div
-                  class="selection-toolbar__expanded"
-                  :class="{ 'selection-toolbar__expanded--active': multiSelectEnabled }"
-                >
-                  <el-tag class="selection-toolbar__count" size="small" type="info">
-                    <span class="selection-toolbar__count-label">
-                      {{ $t('plugins.selectedCount', { count: selectedCount }) }}
-                    </span>
-                  </el-tag>
-                  <el-button
-                    class="selection-toolbar__action"
-                    text
-                    :tabindex="multiSelectEnabled ? 0 : -1"
-                    @click="selectAllVisible"
-                  >
-                    {{ $t('plugins.selectAllVisible') }}
-                  </el-button>
-                  <el-button
-                    class="selection-toolbar__action"
-                    text
-                    :tabindex="multiSelectEnabled ? 0 : -1"
-                    @click="invertVisibleSelection"
-                  >
-                    {{ $t('plugins.invertVisibleSelection') }}
-                  </el-button>
-                  <el-button
-                    class="selection-toolbar__action selection-toolbar__action--danger"
-                    text
-                    :tabindex="multiSelectEnabled ? 0 : -1"
-                    @click="clearSelection"
-                  >
-                    {{ $t('plugins.clearSelection') }}
-                  </el-button>
-                </div>
-              </div>
+              <el-button
+                class="multi-select-trigger"
+                :class="{ 'multi-select-trigger--active': multiSelectEnabled }"
+                :type="multiSelectEnabled ? 'primary' : 'default'"
+                plain
+                @click="toggleMultiSelectMode"
+              >
+                <el-icon><Finished /></el-icon>
+                {{ multiSelectEnabled ? $t('plugins.exitMultiSelect') : $t('plugins.multiSelect') }}
+              </el-button>
             </div>
 
             <div class="header-actions">
@@ -213,6 +178,42 @@
       <PackageManagerPanel embedded @close="closePackagePanel" />
     </aside>
 
+    <!-- Floating multi-select action bar -->
+    <Transition name="float-bar">
+      <div v-if="multiSelectEnabled" class="floating-select-bar">
+        <div class="floating-select-bar__inner">
+          <div class="floating-select-bar__count">
+            <span class="floating-select-bar__count-num">{{ selectedCount }}</span>
+            <span class="floating-select-bar__count-label">{{ $t('plugins.selectedCount', { count: selectedCount }) }}</span>
+          </div>
+
+          <div class="floating-select-bar__divider" />
+
+          <div class="floating-select-bar__actions">
+            <button class="fab-action" @click="selectAllVisible">
+              <el-icon><Finished /></el-icon>
+              <span>{{ $t('plugins.selectAllVisible') }}</span>
+            </button>
+            <button class="fab-action" @click="invertVisibleSelection">
+              <el-icon><Sort /></el-icon>
+              <span>{{ $t('plugins.invertVisibleSelection') }}</span>
+            </button>
+            <button class="fab-action fab-action--danger" @click="clearSelection">
+              <el-icon><CircleClose /></el-icon>
+              <span>{{ $t('plugins.clearSelection') }}</span>
+            </button>
+          </div>
+
+          <div class="floating-select-bar__divider" />
+
+          <button class="fab-action fab-action--exit" @click="toggleMultiSelectMode">
+            <el-icon><Close /></el-icon>
+            <span>{{ $t('plugins.exitMultiSelect') }}</span>
+          </button>
+        </div>
+      </div>
+    </Transition>
+
     <PluginContextMenu
       :visible="contextMenuVisible"
       :x="contextMenuPosition.x"
@@ -245,7 +246,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Expand, Operation } from '@element-plus/icons-vue'
+import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Expand, Operation, Finished, Sort, CircleClose, Close } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
@@ -677,6 +678,7 @@ onUnmounted(() => {
   align-items: flex-start;
   gap: 20px;
   min-width: 0;
+  padding-bottom: 80px; /* space for floating bar */
 }
 
 .plugin-workbench__main {
@@ -727,49 +729,12 @@ onUnmounted(() => {
   flex: 1 1 auto;
 }
 
-.selection-toolbar {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  gap: 12px;
-  min-height: 32px;
-  width: min(100%, 460px);
-  min-width: 0;
-  padding: 6px;
-  border-radius: 999px;
-  background:
-    linear-gradient(135deg, color-mix(in srgb, var(--el-fill-color-light) 82%, white), color-mix(in srgb, var(--el-color-primary) 5%, white));
-  border: 1px solid color-mix(in srgb, var(--el-color-primary) 10%, var(--el-border-color));
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, white 72%, transparent),
-    0 10px 26px color-mix(in srgb, var(--el-text-color-primary) 6%, transparent);
-  transition:
-    border-color 0.24s ease,
-    box-shadow 0.28s ease,
-    background 0.28s ease,
-    transform 0.24s ease;
-}
-
-.selection-toolbar--active,
-.selection-toolbar:focus-within {
-  border-color: color-mix(in srgb, var(--el-color-primary) 28%, var(--el-border-color));
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, white 82%, transparent),
-    0 14px 34px color-mix(in srgb, var(--el-color-primary) 12%, transparent);
-}
-
-.selection-toolbar__trigger {
-  --el-button-border-radius: 999px;
-  --el-button-bg-color: color-mix(in srgb, var(--el-bg-color) 92%, white);
-  --el-button-hover-bg-color: color-mix(in srgb, var(--el-color-primary-light-9) 72%, white);
-  --el-button-active-bg-color: color-mix(in srgb, var(--el-color-primary-light-8) 76%, white);
-  padding-inline: 16px;
-  min-width: 108px;
-  justify-content: center;
+/* ── Multi-select trigger button (top) ── */
+.multi-select-trigger {
+  --el-button-border-radius: 12px;
   font-weight: 600;
-  box-shadow:
-    0 6px 14px color-mix(in srgb, var(--el-text-color-primary) 6%, transparent),
-    inset 0 1px 0 color-mix(in srgb, white 70%, transparent);
+  padding: 8px 18px;
+  gap: 6px;
   transition:
     transform 0.22s ease,
     box-shadow 0.22s ease,
@@ -777,124 +742,164 @@ onUnmounted(() => {
     border-color 0.22s ease;
 }
 
-.selection-toolbar__trigger:hover {
+.multi-select-trigger:hover {
   transform: translateY(-1px);
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--el-color-primary) 14%, transparent);
 }
 
-.selection-toolbar__trigger :deep(.el-button__text) {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
+.multi-select-trigger--active {
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--el-color-primary) 24%, transparent),
+    0 6px 16px color-mix(in srgb, var(--el-color-primary) 14%, transparent);
 }
 
-.selection-toolbar__trigger-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--el-color-primary) 88%, white);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--el-color-primary) 16%, transparent);
-  transition:
-    transform 0.22s ease,
-    box-shadow 0.22s ease,
-    background 0.22s ease;
+/* ── Floating bottom action bar ── */
+.floating-select-bar {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2000;
+  pointer-events: auto;
 }
 
-.selection-toolbar__trigger:hover .selection-toolbar__trigger-dot {
-  transform: scale(1.08);
-}
-
-.selection-toolbar__expanded {
+.floating-select-bar__inner {
   display: flex;
   align-items: center;
-  gap: 12px;
-  min-width: 0;
-  opacity: 0;
-  visibility: hidden;
-  pointer-events: none;
-  transform: translateX(-8px) scale(0.985);
-  transform-origin: left center;
-  transition:
-    opacity 0.24s ease,
-    transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--el-bg-color) 78%, transparent);
+  backdrop-filter: blur(20px) saturate(1.6);
+  -webkit-backdrop-filter: blur(20px) saturate(1.6);
+  border: 1px solid color-mix(in srgb, var(--el-color-primary) 18%, var(--el-border-color));
+  box-shadow:
+    0 20px 60px color-mix(in srgb, var(--el-text-color-primary) 16%, transparent),
+    0 8px 24px color-mix(in srgb, var(--el-color-primary) 10%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 40%, transparent);
 }
 
-.selection-toolbar__expanded > * {
-  opacity: 0;
-  transform: translateX(-6px);
-  transition:
-    opacity 0.2s ease,
-    transform 0.26s cubic-bezier(0.22, 1, 0.36, 1);
+.floating-select-bar__count {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  min-height: 40px;
 }
 
-.selection-toolbar__expanded--active {
-  opacity: 1;
-  visibility: visible;
-  pointer-events: auto;
-  transform: translateX(0) scale(1);
-}
-
-.selection-toolbar__expanded--active > * {
-  opacity: 1;
-  transform: translateX(0);
-}
-
-.selection-toolbar__expanded--active > :nth-child(1) {
-  transition-delay: 30ms;
-}
-
-.selection-toolbar__expanded--active > :nth-child(2) {
-  transition-delay: 70ms;
-}
-
-.selection-toolbar__expanded--active > :nth-child(3) {
-  transition-delay: 110ms;
-}
-
-.selection-toolbar__expanded--active > :nth-child(4) {
-  transition-delay: 150ms;
-}
-
-.selection-toolbar__count {
-  border-radius: 999px;
-  padding-inline: 8px;
-  min-height: 28px;
+.floating-select-bar__count-num {
   display: inline-flex;
   align-items: center;
-  border: 1px solid color-mix(in srgb, var(--el-color-info) 18%, var(--el-border-color));
-  background: color-mix(in srgb, var(--el-color-info-light-9) 72%, white);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, white 72%, transparent);
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 10px;
+  background: var(--el-color-primary);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--el-color-primary) 36%, transparent);
 }
 
-.selection-toolbar__count-label {
-  display: inline-flex;
-  align-items: center;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-}
-
-.selection-toolbar__action {
-  --el-button-text-color: var(--el-text-color-regular);
-  --el-button-hover-text-color: var(--el-color-primary);
-  --el-button-bg-color: transparent;
-  --el-button-hover-bg-color: color-mix(in srgb, var(--el-color-primary-light-9) 74%, white);
-  --el-button-active-bg-color: color-mix(in srgb, var(--el-color-primary-light-8) 78%, white);
-  min-height: 28px;
-  padding-inline: 10px;
-  border-radius: 999px;
+.floating-select-bar__count-label {
+  font-size: 13px;
   font-weight: 500;
-  transition:
-    transform 0.2s ease,
-    background-color 0.22s ease,
-    color 0.22s ease;
+  color: var(--el-text-color-regular);
+  white-space: nowrap;
 }
 
-.selection-toolbar__action:hover {
+.floating-select-bar__divider {
+  width: 1px;
+  height: 24px;
+  background: color-mix(in srgb, var(--el-border-color) 60%, transparent);
+  flex-shrink: 0;
+  margin: 0 4px;
+}
+
+.floating-select-bar__actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* ── Floating bar action buttons ── */
+.fab-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--el-text-color-regular);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease,
+    transform 0.18s ease;
+}
+
+.fab-action .el-icon {
+  font-size: 16px;
+}
+
+.fab-action:hover {
+  background: color-mix(in srgb, var(--el-color-primary) 10%, transparent);
+  color: var(--el-color-primary);
   transform: translateY(-1px);
 }
 
-.selection-toolbar__action--danger {
-  --el-button-hover-text-color: var(--el-color-danger);
-  --el-button-hover-bg-color: color-mix(in srgb, var(--el-color-danger-light-9) 82%, white);
+.fab-action:active {
+  transform: translateY(0) scale(0.97);
+}
+
+.fab-action--danger:hover {
+  background: color-mix(in srgb, var(--el-color-danger) 10%, transparent);
+  color: var(--el-color-danger);
+}
+
+.fab-action--exit {
+  color: var(--el-text-color-secondary);
+}
+
+.fab-action--exit:hover {
+  background: color-mix(in srgb, var(--el-text-color-primary) 8%, transparent);
+  color: var(--el-text-color-primary);
+}
+
+/* ── Float bar transition ── */
+.float-bar-enter-active {
+  transition:
+    opacity 0.32s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.38s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.float-bar-leave-active {
+  transition:
+    opacity 0.22s ease,
+    transform 0.26s cubic-bezier(0.55, 0, 1, 0.45);
+}
+
+.float-bar-enter-from {
+  opacity: 0;
+  transform: translateX(-50%) translateY(24px) scale(0.92);
+}
+
+.float-bar-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(16px) scale(0.95);
+}
+
+.float-bar-enter-to,
+.float-bar-leave-from {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0) scale(1);
 }
 
 .header-actions {
@@ -1142,13 +1147,55 @@ onUnmounted(() => {
     transform: translateY(0) scale(1);
   }
 
-  .selection-toolbar {
-    min-width: 0;
-    width: 100%;
-  }
-
   .header-actions {
     flex-wrap: wrap;
+  }
+
+  .floating-select-bar__inner {
+    flex-wrap: wrap;
+    justify-content: center;
+    max-width: calc(100vw - 32px);
+  }
+
+  .floating-select-bar__count-label {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .floating-select-bar {
+    left: 16px;
+    right: 16px;
+    transform: none;
+  }
+
+  .floating-select-bar__inner {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .float-bar-enter-from {
+    opacity: 0;
+    transform: translateY(24px) scale(0.92);
+  }
+
+  .float-bar-leave-to {
+    opacity: 0;
+    transform: translateY(16px) scale(0.95);
+  }
+
+  .float-bar-enter-to,
+  .float-bar-leave-from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+
+  .fab-action span {
+    display: none;
+  }
+
+  .fab-action {
+    padding: 8px 10px;
   }
 }
 </style>
