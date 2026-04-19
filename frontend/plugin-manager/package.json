@@ -18,6 +18,8 @@
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",
     "@tanstack/vue-virtual": "^3.0.0",
+    "@vueuse/core": "^14.2.1",
+    "@vueuse/motion": "^3.0.3",
     "axios": "^1.8.2",
     "dayjs": "^1.11.13",
     "diff": "^8.0.2",

@@ -27,14 +27,16 @@
     <el-empty v-if="!loading && packages.length === 0" description="没有匹配的本地包" />
 
     <div v-else class="package-list">
-      <button
-        v-for="pkg in packages"
-        :key="pkg.path"
-        type="button"
-        class="package-list-item"
-        :class="{ 'package-list-item--active': activePackage === pkg.path || activePackage === pkg.name }"
-        @click="$emit('select', pkg)"
-      >
+      <TransitionGroup name="pkg-item" tag="div" class="package-list__inner">
+        <button
+          v-for="(pkg, index) in packages"
+          :key="pkg.path"
+          type="button"
+          class="package-list-item"
+          :class="{ 'package-list-item--active': activePackage === pkg.path || activePackage === pkg.name }"
+          :style="{ '--item-i': index }"
+          @click="$emit('select', pkg)"
+        >
         <div class="package-list-item__main">
           <div class="package-list-item__title">
             <div class="package-list-item__name">{{ pkg.name }}</div>
@@ -54,6 +56,7 @@
           <el-button text @click.stop="$emit('prepareUnpack', pkg)">解包</el-button>
         </div>
       </button>
+      </TransitionGroup>
     </div>
   </el-card>
 </template>
@@ -146,6 +149,13 @@ function formatTime(raw: string): string {
   gap: 10px;
 }
 
+.package-list__inner {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  position: relative;
+}
+
 .package-list-item {
   width: 100%;
   border: 1px solid var(--el-border-color-light);
@@ -158,17 +168,64 @@ function formatTime(raw: string): string {
   gap: 12px;
   text-align: left;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition:
+    transform 0.24s ease,
+    box-shadow 0.24s ease,
+    border-color 0.24s ease,
+    background-color 0.24s ease,
+    opacity 0.24s ease;
 }
 
 .package-list-item:hover {
-  transform: translateY(-1px);
+  transform: translateY(-2px);
   box-shadow: var(--el-box-shadow-light);
 }
 
 .package-list-item--active {
   border-color: var(--el-color-primary);
   background: color-mix(in srgb, var(--el-color-primary) 6%, var(--el-bg-color));
+}
+
+/* ── Package list item transitions ── */
+.pkg-item-enter-active,
+.pkg-item-leave-active {
+  transition:
+    transform 0.34s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.24s ease,
+    filter 0.24s ease;
+}
+
+.pkg-item-enter-active {
+  transition-delay: calc(var(--item-i, 0) * 35ms);
+}
+
+.pkg-item-enter-from {
+  opacity: 0;
+  transform: scale(0.95) translateY(12px);
+  filter: blur(6px);
+}
+
+.pkg-item-leave-to {
+  opacity: 0;
+  transform: scale(0.94) translateY(-12px);
+  filter: blur(6px);
+}
+
+.pkg-item-enter-to,
+.pkg-item-leave-from {
+  opacity: 1;
+  transform: scale(1) translateY(0);
+  filter: blur(0);
+}
+
+.pkg-item-leave-active {
+  position: absolute;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.pkg-item-move {
+  transition: transform 0.34s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .package-list-item__main {

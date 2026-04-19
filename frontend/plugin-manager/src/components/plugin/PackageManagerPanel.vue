@@ -70,7 +70,7 @@
             </div>
           </template>
 
-          <el-tabs v-model="activeTab" stretch>
+          <el-tabs v-model="activeTab" stretch class="pkg-tabs">
             <el-tab-pane label="打包" name="pack">
               <el-form label-position="top">
                 <el-form-item label="打包模式">
@@ -443,6 +443,45 @@ const {
   margin: 6px 0 4px;
 }
 
+/* ── Tab content transition ── */
+.pkg-tabs :deep(.el-tabs__content) {
+  overflow: visible;
+}
+
+.pkg-tabs :deep(.el-tab-pane) {
+  animation: tab-enter 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes tab-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(8px);
+    filter: blur(4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+    filter: blur(0);
+  }
+}
+
+/* ── Tab nav bar polish ── */
+.pkg-tabs :deep(.el-tabs__nav-wrap) {
+  margin-bottom: 4px;
+}
+
+.pkg-tabs :deep(.el-tabs__item) {
+  transition:
+    color 0.24s ease,
+    font-weight 0.24s ease;
+}
+
+.pkg-tabs :deep(.el-tabs__active-bar) {
+  transition:
+    transform 0.34s cubic-bezier(0.22, 1, 0.36, 1),
+    width 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
 @media (max-width: 1380px) {
   .main-grid {
     grid-template-columns: 1fr;
@@ -457,6 +496,12 @@ const {
 
   .embedded-heading__actions {
     justify-content: space-between;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pkg-tabs :deep(.el-tab-pane) {
+    animation: none;
   }
 }
 </style>
