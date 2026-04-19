@@ -1557,7 +1557,7 @@
                     : TIMING.live2dReliableHeadBubbleScaleMultiplier;
             }
         }
-        var minBubbleDim = Math.max(bounds.height * 0.14, 24);
+        var minBubbleDim = Math.min(Math.max(Math.min(bounds.height * 0.14, bounds.width * 0.5), 24), bounds.width * 0.9);
         var headSize = Math.max(
             minBubbleDim,
             Math.min(
@@ -1565,8 +1565,8 @@
                 Math.round(headSpan * 1.38 * headBubbleScaleMultiplier)
             )
         );
-        var width = Math.max(minBubbleDim, Math.round(headSize * 0.82));
-        var height = Math.max(minBubbleDim * 0.77, Math.round(headSize * 0.64));
+        var width = Math.max(minBubbleDim, Math.min(Math.round(headSize * 0.82), bounds.width * 0.9));
+        var height = Math.max(minBubbleDim * 0.77, Math.min(Math.round(headSize * 0.64), bounds.height * 0.45));
         var useReliableLive2dHeadCenterX = avatarType === 'live2d' &&
             reliableLive2dHeadRect &&
             hasValidRect(placementHeadRect) &&
