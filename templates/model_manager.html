@@ -14,6 +14,7 @@
     <link rel="stylesheet" href="/static/css/model_manager.css">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <link rel="stylesheet" href="/static/css/tutorial-styles.css">
+    <link rel="stylesheet" href="/static/css/model-profiler.css">
     <script src="/static/theme-manager.js"></script>
 </head>
 
@@ -518,6 +519,9 @@
 
         </div>
 
+        <!-- 性能分析器挂载点 -->
+        <div id="profiler-mount" class="control-group"></div>
+
         <div id="status">
             <img src="/static/icons/reminder_icon.png?v=1" data-i18n-alt="common.alert" class="reminder-icon" style="height: 16px; width: 16px; vertical-align: middle; margin-right: 6px; display: inline-block; image-rendering: crisp-edges;">
             <span id="status-text" data-i18n="status.initializing">正在初始化...</span>
@@ -633,6 +637,29 @@
     <script src="/static/avatar-portrait.js"></script>
 
     <script src="/static/js/model_manager.js"></script>
+
+    <!-- 性能分析器 -->
+    <script src="/static/model-profiler.js"></script>
+    <script src="/static/model-profiler-ui.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const mount = document.getElementById('profiler-mount');
+            if (mount && typeof ModelProfilerUI !== 'undefined') {
+                window._profilerUI = new ModelProfilerUI({
+                    container: mount,
+                    collapsed: true,
+                    getManager: function() {
+                        return window.mmdManager || window.vrmManager || null;
+                    },
+                    getRenderer: function() {
+                        var mgr = window.mmdManager || window.vrmManager;
+                        return mgr ? mgr.renderer : null;
+                    }
+                });
+                window._profilerUI.mount();
+            }
+        });
+    </script>
 
     <!-- Driver.js 库 -->
     <script src="/static/libs/driver.min.js"></script>
