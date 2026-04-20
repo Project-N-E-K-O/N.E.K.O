@@ -802,9 +802,11 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
             if is_lanlan_app:
                 data["voice_id"] = "Leda"
                 data["language_code"] = "ja-JP" if lang_hint == "ja" else _get_tts_language_code()
-            else:
+            elif free_mode:
+                # lanlan.tech：voice_label 方案已经通过 probe 实测验证
                 if lang_hint == "ja":
                     data["voice_label"] = {"language": "日语"}
+            # 自建 StepFun（free_mode=False）不挂任何语言字段，完全交由服务端识别
             return data
 
         async def _flush_deferred_create(force: bool = False) -> bool:
@@ -1414,7 +1416,10 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         # 若此轮文本不足 MIN_CHARS 还没发出 session.update，force 一次
                         if not session_configured:
                             await _flush_deferred_config(force=True)
-                        if session_ready.is_set() and not buffer_committed:
+                        # 短句场景下 session.updated 可能比 _flush 内的 2s 等待更晚到达；
+                        # 不再依赖 session_ready，直接发 commit（服务端会在 session.updated
+                        # 就绪后按顺序处理 append + commit）。漏 commit 会导致短句静默丢失。
+                        if not buffer_committed:
                             try:
                                 await ws.send(json.dumps({
                                     "type": "input_text_buffer.commit",
