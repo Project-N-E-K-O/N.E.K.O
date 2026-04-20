@@ -241,7 +241,18 @@
             return Promise.resolve(unsupported);
         }
 
+        const requestIssuedAt = Date.now();
         const request = provider.getStatus().then(function (response) {
+            // shell 事件 (neko:autostart-status-changed) 可能在 IPC 期间把
+            // state.autostartStatusUpdatedAt 推进到 requestIssuedAt 之后。
+            // 这时该响应相对 shell 快照已经过期，直接丢弃避免把旧 enabled 回写覆盖新状态。
+            if (requestIssuedAt < state.autostartStatusUpdatedAt) {
+                logFlow('autostart-status', {
+                    source: requestOptions.source || 'unknown',
+                    droppedAsStale: true,
+                });
+                return buildAutostartCapabilitySnapshot();
+            }
             applyAutostartCapabilityState(response);
             logFlow('autostart-status', {
                 source: requestOptions.source || 'unknown',
