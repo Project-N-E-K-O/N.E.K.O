@@ -1438,6 +1438,16 @@ html #chat-container {
   color: #4aa3df;
 }
 
+[data-theme="dark"] .clear-custom-api-btn {
+  background: linear-gradient(135deg, #c0392b, #a93226);
+  box-shadow: 0 2px 8px rgba(192, 57, 43, 0.4);
+}
+
+[data-theme="dark"] .clear-custom-api-btn:hover {
+  background: linear-gradient(135deg, #e74c3c, #c0392b);
+  box-shadow: 0 4px 12px rgba(192, 57, 43, 0.5);
+}
+
 /* ===== 子页面：图标亮度 ===== */
 [data-theme="dark"] .container-header img,
 [data-theme="dark"] .btn img {
