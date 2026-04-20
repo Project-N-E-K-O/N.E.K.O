@@ -17,7 +17,7 @@ Pages are rendered with Jinja2 on the server side. Templates are located in the 
 | `/vrm_emotion_manager` | `vrm_emotion_manager.html` | VRM emotion mapping |
 | `/voice_clone` | `voice_clone.html` | Voice cloning interface |
 | `/memory_browser` | `memory_browser.html` | Memory browsing and editing |
-| `/steam_workshop_manager` | `steam_workshop_manager.html` | Steam Workshop management |
+| `/character_card_manager` | `character_card_manager.html` | Character Card Manager |
 
 ## Dark mode
 

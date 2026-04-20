@@ -45,7 +45,7 @@ Navigate to `http://localhost:48911/chara_manager` to:
 | `/vrm_emotion_manager` | VRM emotion mapping |
 | `/voice_clone` | Voice cloning |
 | `/memory_browser` | Browse and edit memories |
-| `/steam_workshop_manager` | Steam Workshop items |
+| `/character_card_manager` | Character Card Manager |
 
 ## Next steps
 

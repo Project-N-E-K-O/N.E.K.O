@@ -3742,6 +3742,64 @@ async def import_character_card(zip_file: UploadFile = File(...)):
             await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
 
 
+# ====== 角色卡卡面（Card Face）存储 ======
+
+@router.get('/catgirl/{name}/card-face')
+async def get_card_face(name: str):
+    """获取角色的自定义卡面图片"""
+    _config_manager = get_config_manager()
+    # 安全检查：防止路径遍历
+    safe_name = os.path.basename(name)
+    if safe_name != name or not name:
+        return JSONResponse({'success': False, 'error': '无效的角色名'}, status_code=400)
+
+    face_path = _config_manager.card_faces_dir / f"{name}.png"
+    if not face_path.exists():
+        return JSONResponse({'success': False, 'error': '卡面不存在'}, status_code=404)
+
+    image_data = await asyncio.to_thread(face_path.read_bytes)
+    return Response(content=image_data, media_type='image/png')
+
+
+@router.put('/catgirl/{name}/card-face')
+async def put_card_face(name: str, image: UploadFile = File(...)):
+    """保存角色的自定义卡面图片"""
+    _config_manager = get_config_manager()
+    # 安全检查：防止路径遍历
+    safe_name = os.path.basename(name)
+    if safe_name != name or not name:
+        return JSONResponse({'success': False, 'error': '无效的角色名'}, status_code=400)
+
+    characters = await _config_manager.aload_characters()
+    if name not in characters.get('猫娘', {}):
+        return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
+
+    # 验证文件类型
+    content_type = image.content_type or ''
+    if not content_type.startswith('image/'):
+        return JSONResponse({'success': False, 'error': '文件类型无效，请上传图片'}, status_code=400)
+
+    # 读取并验证图片
+    image_data = await image.read()
+    if len(image_data) > 10 * 1024 * 1024:  # 10MB 限制
+        return JSONResponse({'success': False, 'error': '图片文件过大（最大 10MB）'}, status_code=400)
+
+    try:
+        from PIL import Image as PILImage
+        img = PILImage.open(io.BytesIO(image_data))
+        img.verify()
+    except Exception:
+        return JSONResponse({'success': False, 'error': '无效的图片文件'}, status_code=400)
+
+    # 确保目录存在
+    _config_manager.ensure_card_faces_directory()
+
+    face_path = _config_manager.card_faces_dir / f"{name}.png"
+    await asyncio.to_thread(face_path.write_bytes, image_data)
+
+    return JSONResponse({'success': True})
+
+
 class _InvalidPortraitError(ValueError):
     """Raised by the character-card render helper when the user-supplied
     portrait fails PIL's verify() check. Caught at the endpoint to map

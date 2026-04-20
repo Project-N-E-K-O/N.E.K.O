@@ -148,7 +148,7 @@
         "placeholderCharacterSetting": "キャラクター設定を入力",
         "placeholderAddTag": "タグを追加",
         "workshop": "Steamワークショップ",
-        "workshopManager": "Steamワークショップマネージャー - Project N.E.K.O.",
+        "workshopManager": "キャラクターカード管理 - Project N.E.K.O.",
         "itemId": "アイテムID",
         "preparingUpload": "アップロード準備中...",
         "mySubscriptions": "サブスクリプション済みアイテム",
@@ -1582,7 +1582,15 @@
         "exportSettingsSuccess": "設定のエクスポートに成功しました",
         "exportSettingsFailed": "設定のエクスポートに失敗しました: {{error}}",
         "capturingPortrait": "立ち絵をキャプチャ中...",
-        "generatingCard": "キャラクターカードを生成中..."
+        "generatingCard": "キャラクターカードを生成中...",
+        "settings": "設定",
+        "renamePrompt": "新しいプロフィール名を入力してください",
+        "renameTitle": "名前の変更",
+        "tempSaveFailed": "一時保存に失敗しました: ",
+        "newCatgirlSuccess": "新しいキャラクターが作成されました",
+        "saveSuccess": "保存しました",
+        "switchSuccess": "切り替えに成功しました",
+        "deleteError": "キャラクターの削除中にエラーが発生しました"
     },
     "app": {
         "welcomeBack": "{{name}}が戻りました！",
@@ -3024,7 +3032,7 @@
         "unlocked": "🏆 実績解除: {{description}}"
     },
     "cardExport": {
-        "title": "キャラカードエクスポート",
+        "title": "カードフェイスメーカー",
         "loadingModel": "モデルを読み込み中...",
         "selectCharacter": "キャラクターを選択",
         "selectCharacterHint": "-- キャラクターを選択 --",
@@ -3063,6 +3071,7 @@
         "compressAndSave": "圧縮して保存",
         "useTemporary": "一時的に使用",
         "tempBadge": "一時",
-        "popupBlocked": "ポップアップがブロックされました。ポップアップを許可してから再試行してください。"
+        "popupBlocked": "ポップアップがブロックされました。ポップアップを許可してから再試行してください。",
+        "saveCardFace": "カードフェイスを保存"
     }
 }

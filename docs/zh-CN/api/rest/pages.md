@@ -14,7 +14,7 @@
 | `/chara_manager` | `chara_manager.html` | 角色设置编辑器 |
 | `/voice_clone` | `voice_clone.html` | 语音克隆界面 |
 | `/api_key` | `api_key_settings.html` | API 密钥配置 |
-| `/steam_workshop_manager` | `steam_workshop_manager.html` | Steam 创意工坊管理 |
+| `/character_card_manager` | `character_card_manager.html` | 角色卡管理 |
 | `/memory_browser` | `memory_browser.html` | 记忆浏览与编辑 |
 | `/{lanlan_name}` | `index.html` | 角色专属聊天（通配路由） |
 

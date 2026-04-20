@@ -148,7 +148,7 @@
         "placeholderCharacterSetting": "Введите настройки персонажа",
         "placeholderAddTag": "Добавить тег",
         "workshop": "Мастерская Steam",
-        "workshopManager": "Менеджер Мастерской Steam — Project N.E.K.O.",
+        "workshopManager": "Менеджер Карточек Персонажей — Project N.E.K.O.",
         "itemId": "ID предмета",
         "preparingUpload": "Подготовка к загрузке...",
         "mySubscriptions": "Мои подписки",
@@ -495,7 +495,12 @@
         "prepareUploadFailedMessage": "Ошибка подготовки загрузки: {{error}}",
         "noCharacterCardSelected": "Сначала выберите карточку персонажа",
         "steamNotRunningTitle": "Steam не запущен",
-        "steamNotRunningMessage": "Клиент Steam не запущен или не выполнен вход.\n\nДля работы Мастерской необходим клиент Steam:\n1. Скачайте и установите клиент Steam\n2. Запустите Steam и войдите в свой аккаунт\n3. Откройте эту страницу заново"
+        "steamNotRunningMessage": "Клиент Steam не запущен или не выполнен вход.\n\nДля работы Мастерской необходим клиент Steam:\n1. Скачайте и установите клиент Steam\n2. Запустите Steam и войдите в свой аккаунт\n3. Откройте эту страницу заново",
+        "addNewCatgirl": "Добавить нового персонажа",
+        "searchCharacterCards": "Поиск карточек...",
+        "cardView": "Карточки",
+        "listView": "Список",
+        "noCardImage": "Изображение\nне задано"
     },
     "dialogs": {
         "confirmLeave": "Подтвердить выход",
@@ -1582,7 +1587,15 @@
         "exportSettingsSuccess": "Настройки успешно экспортированы",
         "exportSettingsFailed": "Ошибка экспорта настроек: {{error}}",
         "capturingPortrait": "Захват портрета...",
-        "generatingCard": "Создание карточки персонажа..."
+        "generatingCard": "Создание карточки персонажа...",
+        "settings": "Настройки",
+        "renamePrompt": "Введите новое имя профиля",
+        "renameTitle": "Переименовать",
+        "tempSaveFailed": "Ошибка временного сохранения: ",
+        "newCatgirlSuccess": "Новый персонаж успешно создан",
+        "saveSuccess": "Сохранено",
+        "switchSuccess": "Переключено",
+        "deleteError": "Ошибка при удалении персонажа"
     },
     "app": {
         "welcomeBack": "{{name}} вернулась!",
@@ -3024,7 +3037,7 @@
         "unlocked": "🏆 Достижение разблокировано: {{description}}"
     },
     "cardExport": {
-        "title": "Экспорт карточки персонажа",
+        "title": "Создание обложки карточки",
         "loadingModel": "Загрузка модели...",
         "selectCharacter": "Выбрать персонажа",
         "selectCharacterHint": "-- Выберите персонажа --",
@@ -3063,6 +3076,7 @@
         "compressAndSave": "Сжать и сохранить",
         "useTemporary": "Временно",
         "tempBadge": "Врем.",
-        "popupBlocked": "Всплывающее окно заблокировано. Разрешите всплывающие окна и повторите попытку."
+        "popupBlocked": "Всплывающее окно заблокировано. Разрешите всплывающие окна и повторите попытку.",
+        "saveCardFace": "Сохранить обложку"
     }
 }

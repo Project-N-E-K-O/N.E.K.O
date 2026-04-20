@@ -458,8 +458,8 @@ const PROFILE_NAME_RESERVED_ROUTE_KEY = 'character.profileNameReservedRoute';
 const RESERVED_ROUTE_NAMES = new Set([
     'l2d', 'model_manager', 'live2d_parameter_editor', 'live2d_emotion_manager',
     'vrm_emotion_manager', 'mmd_emotion_manager', 'chara_manager', 'voice_clone',
-    'api_key', 'steam_workshop_manager', 'memory_browser', 'cookies_login',
-    'chat', 'subtitle', 'agenthud', 'toast', 'card_export',
+    'api_key', 'character_card_manager', 'memory_browser', 'cookies_login',
+    'chat', 'subtitle', 'agenthud', 'toast', 'card_maker',
     'static', 'user_live2d', 'user_live2d_local', 'user_vrm', 'user_mmd',
     'user_mods', 'workshop',
     'api', 'ws', 'health',
@@ -3758,8 +3758,8 @@ function showExportOptionsModal(catgirlName) {
             const left = Math.round((screen.width - w) / 2);
             const top = Math.round((screen.height - h) / 2);
             const win = window.open(
-                `/card_export?name=${encodeURIComponent(catgirlName)}`,
-                'card_export',
+                `/card_maker?name=${encodeURIComponent(catgirlName)}`,
+                'card_maker',
                 `width=${w},height=${h},left=${left},top=${top},resizable=yes,scrollbars=yes`
             );
             if (!win) {
@@ -3789,7 +3789,7 @@ function showExportOptionsModal(catgirlName) {
     });
 }
 
-// 导出角色卡函数（现在仅处理"仅导出设定"，完整角色卡通过 card_export 页面导出）
+// 导出角色卡函数（现在仅处理"仅导出设定"，完整角色卡通过 card_maker 页面导出）
 async function exportCharacterCard(catgirlName) {
     let exportType = null;
     try {

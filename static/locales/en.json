@@ -148,7 +148,7 @@
         "placeholderCharacterSetting": "Enter character setting",
         "placeholderAddTag": "Add tag",
         "workshop": "Steam Workshop",
-        "workshopManager": "Steam Workshop Manager - Project N.E.K.O.",
+        "workshopManager": "Character Card Manager - Project N.E.K.O.",
         "itemId": "Item ID",
         "preparingUpload": "Preparing upload...",
         "mySubscriptions": "My Subscriptions",
@@ -495,7 +495,12 @@
         "prepareUploadFailedMessage": "Prepare upload failed: {{error}}",
         "noCharacterCardSelected": "Please select a character card first",
         "steamNotRunningTitle": "Steam Not Running",
-        "steamNotRunningMessage": "Steam client is not running or not logged in.\n\nWorkshop features require the Steam client. Please:\n1. Download and install the Steam client\n2. Launch Steam and log in to your account\n3. Reopen this page"
+        "steamNotRunningMessage": "Steam client is not running or not logged in.\n\nWorkshop features require the Steam client. Please:\n1. Download and install the Steam client\n2. Launch Steam and log in to your account\n3. Reopen this page",
+        "addNewCatgirl": "Add New Catgirl",
+        "searchCharacterCards": "Search character cards...",
+        "cardView": "Card View",
+        "listView": "List View",
+        "noCardImage": "No card\nimage set"
     },
     "dialogs": {
         "confirmLeave": "Confirm Leave",
@@ -1582,7 +1587,15 @@
         "exportSettingsSuccess": "Settings exported successfully",
         "exportSettingsFailed": "Failed to export settings: {{error}}",
         "capturingPortrait": "Capturing portrait...",
-        "generatingCard": "Generating character card..."
+        "generatingCard": "Generating character card...",
+        "settings": "Settings",
+        "renamePrompt": "Please enter a new profile name",
+        "renameTitle": "Rename",
+        "tempSaveFailed": "Temp save failed: ",
+        "newCatgirlSuccess": "New catgirl created successfully",
+        "saveSuccess": "Saved successfully",
+        "switchSuccess": "Switched successfully",
+        "deleteError": "Error occurred while deleting catgirl"
     },
     "app": {
         "welcomeBack": "{{name}} is back!",
@@ -3024,7 +3037,7 @@
         "unlocked": "🏆 Achievement unlocked: {{description}}"
     },
     "cardExport": {
-        "title": "Character Card Export",
+        "title": "Card Face Maker",
         "loadingModel": "Loading model...",
         "selectCharacter": "Select Character",
         "selectCharacterHint": "-- Select a character --",
@@ -3063,6 +3076,7 @@
         "compressAndSave": "Compress & Save",
         "useTemporary": "Use Temporarily",
         "tempBadge": "Temp",
-        "popupBlocked": "Popup was blocked. Please allow popups and try again."
+        "popupBlocked": "Popup was blocked. Please allow popups and try again.",
+        "saveCardFace": "Save Card Face"
     }
 }

@@ -488,6 +488,7 @@ class ConfigManager:
         self._steam_workshop_path = None
         self._user_workshop_folder_persisted = False
         self.chara_dir = self.app_docs_dir / "character_cards"
+        self.card_faces_dir = self.app_docs_dir / "card_faces"
         self._workshop_config_lock = threading.Lock()
         self._workshop_config_cleanup_done = False
 
@@ -838,6 +839,17 @@ class ConfigManager:
             return True
         except Exception as e:
             print(f"Warning: Failed to create character_cards directory: {e}", file=sys.stderr)
+            return False
+
+    def ensure_card_faces_directory(self):
+        """确保我的文档下的card_faces目录存在"""
+        try:
+            if not self._ensure_app_docs_directory():
+                return False
+            self.card_faces_dir.mkdir(exist_ok=True)
+            return True
+        except Exception as e:
+            print(f"Warning: Failed to create card_faces directory: {e}", file=sys.stderr)
             return False
     
     def get_config_path(self, filename):

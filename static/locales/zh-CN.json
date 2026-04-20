@@ -148,7 +148,7 @@
         "placeholderCharacterSetting": "输入设定",
         "placeholderAddTag": "添加标签",
         "workshop": "Steam创意工坊",
-        "workshopManager": "Steam 创意工坊管理 - Project N.E.K.O.",
+        "workshopManager": "角色卡管理 - Project N.E.K.O.",
         "itemId": "物品ID",
         "preparingUpload": "正在准备上传...",
         "mySubscriptions": "我的订阅",
@@ -495,7 +495,12 @@
         "prepareUploadFailedMessage": "准备上传失败: {{error}}",
         "noCharacterCardSelected": "请先选择一个角色卡",
         "steamNotRunningTitle": "Steam 未运行",
-        "steamNotRunningMessage": "检测到Steam客户端未运行或未登录。\n\n创意工坊功能需要Steam客户端支持，请：\n1. 下载并安装Steam客户端\n2. 启动Steam并登录您的账号\n3. 重新打开此页面"
+        "steamNotRunningMessage": "检测到Steam客户端未运行或未登录。\n\n创意工坊功能需要Steam客户端支持，请：\n1. 下载并安装Steam客户端\n2. 启动Steam并登录您的账号\n3. 重新打开此页面",
+        "addNewCatgirl": "新增猫娘设定",
+        "searchCharacterCards": "搜索角色卡...",
+        "cardView": "卡片视图",
+        "listView": "列表视图",
+        "noCardImage": "暂未设置\n角色卡图片"
     },
     "dialogs": {
         "confirmLeave": "确认离开",
@@ -1582,7 +1587,15 @@
         "exportSettingsSuccess": "设定导出成功",
         "exportSettingsFailed": "导出设定失败: {{error}}",
         "capturingPortrait": "正在捕获立绘...",
-        "generatingCard": "正在生成角色卡..."
+        "generatingCard": "正在生成角色卡...",
+        "settings": "设定",
+        "renamePrompt": "请输入新的档案名",
+        "renameTitle": "修改名称",
+        "tempSaveFailed": "临时保存失败: ",
+        "newCatgirlSuccess": "新猫娘创建成功",
+        "saveSuccess": "保存成功",
+        "switchSuccess": "切换成功",
+        "deleteError": "删除猫娘时发生错误"
     },
     "app": {
         "welcomeBack": "{{name}}回来了！",
@@ -3024,7 +3037,7 @@
         "unlocked": "🏆 成就解锁: {{description}}"
     },
     "cardExport": {
-        "title": "角色卡导出",
+        "title": "卡面制作",
         "loadingModel": "正在加载模型...",
         "selectCharacter": "选择角色",
         "selectCharacterHint": "-- 请选择角色 --",
@@ -3063,6 +3076,7 @@
         "compressAndSave": "压缩并保存",
         "useTemporary": "临时使用",
         "tempBadge": "临时",
-        "popupBlocked": "弹窗被阻止，请允许弹窗后重试"
+        "popupBlocked": "弹窗被阻止，请允许弹窗后重试",
+        "saveCardFace": "保存卡面"
     }
 }

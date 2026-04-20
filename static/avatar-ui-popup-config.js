@@ -18,7 +18,7 @@ if (typeof Live2DManager !== 'undefined') {
     AvatarPopupMixin.apply(Live2DManager.prototype, 'live2d', {
         animationDurationMs: AVATAR_POPUP_ANIMATION_DURATION_MS,
         characterMenuItems: [
-            { id: 'general', label: '通用设置', labelKey: 'settings.menu.general', icon: '/static/icons/live2d_settings_icon.png', action: 'navigate', url: '/steam_workshop_manager' },
+            { id: 'general', label: '通用设置', labelKey: 'settings.menu.general', icon: '/static/icons/live2d_settings_icon.png', action: 'navigate', url: '/character_card_manager' },
             { id: 'live2d-manage', label: '模型管理', labelKey: 'settings.menu.modelSettings', icon: '/static/icons/character_icon.png', action: 'navigate', urlBase: '/model_manager' },
             { id: 'voice-clone', label: '声音克隆', labelKey: 'settings.menu.voiceClone', icon: '/static/icons/voice_clone_icon.png', action: 'navigate', url: '/voice_clone' }
         ],
@@ -42,7 +42,7 @@ if (typeof Live2DManager !== 'undefined') {
 const _vrmPopupConfig = {
     animationDurationMs: AVATAR_POPUP_ANIMATION_DURATION_MS,
     characterMenuItems: [
-        { id: 'general', label: '通用设置', labelKey: 'settings.menu.general', icon: '/static/icons/live2d_settings_icon.png', action: 'navigate', url: '/steam_workshop_manager' },
+        { id: 'general', label: '通用设置', labelKey: 'settings.menu.general', icon: '/static/icons/live2d_settings_icon.png', action: 'navigate', url: '/character_card_manager' },
         { id: 'vrm-manage', label: '模型管理', labelKey: 'settings.menu.modelSettings', icon: '/static/icons/character_icon.png', action: 'navigate', urlBase: '/model_manager' },
         { id: 'voice-clone', label: '声音克隆', labelKey: 'settings.menu.voiceClone', icon: '/static/icons/voice_clone_icon.png', action: 'navigate', url: '/voice_clone' }
     ],
@@ -147,7 +147,7 @@ window.hideMMDPopup = hideMMDPopup;
 const _mmdPopupConfig = {
     animationDurationMs: AVATAR_POPUP_ANIMATION_DURATION_MS,
     characterMenuItems: [
-        { id: 'general', label: '通用设置', labelKey: 'settings.menu.general', icon: '/static/icons/live2d_settings_icon.png', action: 'navigate', url: '/steam_workshop_manager' },
+        { id: 'general', label: '通用设置', labelKey: 'settings.menu.general', icon: '/static/icons/live2d_settings_icon.png', action: 'navigate', url: '/character_card_manager' },
         { id: 'mmd-manage', label: '模型管理', labelKey: 'settings.menu.modelSettings', icon: '/static/icons/character_icon.png', action: 'navigate', urlBase: '/model_manager' },
         { id: 'voice-clone', label: '声音克隆', labelKey: 'settings.menu.voiceClone', icon: '/static/icons/voice_clone_icon.png', action: 'navigate', url: '/voice_clone' }
     ],

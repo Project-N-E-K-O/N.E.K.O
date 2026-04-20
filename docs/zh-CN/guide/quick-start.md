@@ -45,7 +45,7 @@ uv run python main_server.py
 | `/vrm_emotion_manager` | VRM 情绪映射 |
 | `/voice_clone` | 语音克隆 |
 | `/memory_browser` | 浏览和编辑记忆 |
-| `/steam_workshop_manager` | Steam 创意工坊管理 |
+| `/character_card_manager` | 角色卡管理 |
 
 ## 下一步
 

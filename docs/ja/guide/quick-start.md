@@ -45,7 +45,7 @@ APIキーなしでクイックテストを行う場合は、Core APIプロバイ
 | `/vrm_emotion_manager` | VRM感情マッピング |
 | `/voice_clone` | 音声クローン |
 | `/memory_browser` | メモリの閲覧と編集 |
-| `/steam_workshop_manager` | Steam Workshopアイテム |
+| `/character_card_manager` | キャラクターカード管理 |
 
 ## 次のステップ
 

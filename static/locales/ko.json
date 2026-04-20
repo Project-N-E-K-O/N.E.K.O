@@ -148,7 +148,7 @@
         "placeholderCharacterSetting": "문자 설정 입력",
         "placeholderAddTag": "태그 추가",
         "workshop": "Steam 창작마당",
-        "workshopManager": "Steam 창작마당 관리자 - Project N.E.K.O.",
+        "workshopManager": "캐릭터 카드 관리 - Project N.E.K.O.",
         "itemId": "아이템 ID",
         "preparingUpload": "업로드 준비 중...",
         "mySubscriptions": "내 구독",
@@ -495,7 +495,12 @@
         "prepareUploadFailedMessage": "업로드 준비 실패: {{error}}",
         "noCharacterCardSelected": "먼저 캐릭터 카드를 선택해주세요",
         "steamNotRunningTitle": "Steam이 실행되지 않음",
-        "steamNotRunningMessage": "Steam 클라이언트가 실행되지 않거나 로그인되지 않았습니다.\n\n창작마당 기능을 사용하려면 Steam 클라이언트가 필요합니다:\n1. Steam 클라이언트를 다운로드하여 설치\n2. Steam을 실행하고 계정에 로그인\n3. 이 페이지를 다시 열어주세요"
+        "steamNotRunningMessage": "Steam 클라이언트가 실행되지 않거나 로그인되지 않았습니다.\n\n창작마당 기능을 사용하려면 Steam 클라이언트가 필요합니다:\n1. Steam 클라이언트를 다운로드하여 설치\n2. Steam을 실행하고 계정에 로그인\n3. 이 페이지를 다시 열어주세요",
+        "addNewCatgirl": "새 캐릭터 설정 추가",
+        "searchCharacterCards": "캐릭터 카드 검색...",
+        "cardView": "카드 보기",
+        "listView": "목록 보기",
+        "noCardImage": "카드 이미지\n미설정"
     },
     "dialogs": {
         "confirmLeave": "휴가 확인",
@@ -1582,7 +1587,15 @@
         "exportSettingsSuccess": "설정 내보내기 성공",
         "exportSettingsFailed": "설정 내보내기 실패: {{error}}",
         "capturingPortrait": "스탠딩 이미지 캡처 중...",
-        "generatingCard": "캐릭터 카드 생성 중..."
+        "generatingCard": "캐릭터 카드 생성 중...",
+        "settings": "설정",
+        "renamePrompt": "새 프로필 이름을 입력하세요",
+        "renameTitle": "이름 변경",
+        "tempSaveFailed": "임시 저장 실패: ",
+        "newCatgirlSuccess": "새 캐릭터가 생성되었습니다",
+        "saveSuccess": "저장 완료",
+        "switchSuccess": "전환 완료",
+        "deleteError": "캐릭터 삭제 중 오류가 발생했습니다"
     },
     "app": {
         "welcomeBack": "{{name}}이 돌아왔습니다!",
@@ -3024,7 +3037,7 @@
         "unlocked": "🏆 업적 달성: {{description}}"
     },
     "cardExport": {
-        "title": "캐릭터 카드 내보내기",
+        "title": "카드 페이스 메이커",
         "loadingModel": "모델 로딩 중...",
         "selectCharacter": "캐릭터 선택",
         "selectCharacterHint": "-- 캐릭터를 선택하세요 --",
@@ -3063,6 +3076,7 @@
         "compressAndSave": "압축 후 저장",
         "useTemporary": "임시로 사용",
         "tempBadge": "임시",
-        "popupBlocked": "팝업이 차단되었습니다. 팝업을 허용한 후 다시 시도하세요."
+        "popupBlocked": "팝업이 차단되었습니다. 팝업을 허용한 후 다시 시도하세요.",
+        "saveCardFace": "카드 페이스 저장"
     }
 }

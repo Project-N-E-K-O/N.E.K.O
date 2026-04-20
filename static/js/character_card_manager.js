@@ -459,6 +459,11 @@ function switchTab(tabId, event) {
     if (tabId === 'local-items-content') {
         applyWorkshopSyncData();
     }
+
+    // 如果切换到订阅内容页面，检查Steam状态
+    if (tabId === 'subscriptions-content') {
+        checkSteamStatus();
+    }
 }
 
 // 提示：由于浏览器安全限制，浏览按钮仅提供路径输入提示
@@ -2507,9 +2512,6 @@ window.addEventListener('load', function () {
     }
     updateReferenceAudioDisplay();
 
-    // 检查Steam状态
-    checkSteamStatus();
-
     // 页面加载时自动加载订阅内容
     loadSubscriptions();
 
@@ -2754,7 +2756,23 @@ function switchCharaCardsView(mode) {
     // 更新按钮状态
     document.getElementById('chara-view-card-btn')?.classList.toggle('active', mode === 'card');
     document.getElementById('chara-view-list-btn')?.classList.toggle('active', mode === 'list');
-    renderCharaCardsView();
+
+    const container = document.getElementById('chara-cards-container');
+    if (container) {
+        // 退出动画
+        container.style.opacity = '0';
+        container.style.transform = 'scale(0.97)';
+        setTimeout(function () {
+            renderCharaCardsView();
+            // 入场动画
+            requestAnimationFrame(function () {
+                container.style.opacity = '1';
+                container.style.transform = 'scale(1)';
+            });
+        }, 200);
+    } else {
+        renderCharaCardsView();
+    }
 }
 window.switchCharaCardsView = switchCharaCardsView;
 
@@ -2825,6 +2843,17 @@ function renderCharaCardsGrid(container, cards, currentCatgirl) {
         placeholderSpan.className = 'card-avatar-placeholder';
         placeholderSpan.textContent = window.t ? window.t('steam.noCardImage') : '暂未设置\n角色卡图片';
         avatar.appendChild(placeholderSpan);
+
+        // 加载已有的卡面图片
+        const avatarImg = document.createElement('img');
+        avatarImg.className = 'card-face-img';
+        avatarImg.alt = name;
+        avatarImg.onload = () => {
+            placeholderSpan.style.display = 'none';
+            avatar.insertBefore(avatarImg, placeholderSpan);
+        };
+        avatarImg.src = `/api/characters/catgirl/${encodeURIComponent(name)}/card-face?t=${Date.now()}`;
+
         item.appendChild(avatar);
 
         // 名称
@@ -2955,7 +2984,7 @@ function openCatgirlPanel(card, originEl) {
 
     // 创建面板容器
     const wrapper = document.createElement('div');
-    wrapper.className = 'catgirl-panel-wrapper' + (isNew ? '' : ' card-only');
+    wrapper.className = 'catgirl-panel-wrapper card-only';
     wrapper.id = 'catgirl-panel-wrapper';
 
     // 设置动画起点
@@ -2976,6 +3005,88 @@ function openCatgirlPanel(card, originEl) {
     imgPlaceholder.className = 'card-avatar-placeholder';
     imgPlaceholder.textContent = window.t ? window.t('steam.noCardImage') : '暂未设置\n角色卡图片';
     cardImage.appendChild(imgPlaceholder);
+
+    // 加载已有的卡面图片
+    const cardFaceUrl = `/api/characters/catgirl/${encodeURIComponent(name)}/card-face`;
+    const img = document.createElement('img');
+    img.className = 'card-face-img';
+    img.alt = '角色卡面';
+    img.onload = () => {
+        imgPlaceholder.style.display = 'none';
+        cardImage.insertBefore(img, imgPlaceholder);
+    };
+    img.src = cardFaceUrl + '?t=' + Date.now();
+
+    // 点击卡面打开角色卡制作页面
+    cardImage.addEventListener('click', () => {
+        // 优先使用表单中当前填写的档案名（新建猫娘可能已临时保存）
+        const form = cardImage.closest('.catgirl-panel-wrapper')?.querySelector('form');
+        const currentName = form?.querySelector('[name="档案名"]')?.value || name;
+        if (!currentName) {
+            showMessage(window.t ? window.t('character.fillProfileNameFirst') : '请先填写猫娘档案名', 'warning');
+            return;
+        }
+        const makerUrl = `/card_maker?name=${encodeURIComponent(currentName)}&mode=maker`;
+        window.open(makerUrl, '_blank', 'width=1200,height=800');
+    });
+
+    // 监听角色卡制作页面的保存消息
+    const onCardFaceMessage = (event) => {
+        // 获取当前实际的档案名（新建猫娘时 name 为 null，需要从表单读取）
+        const form = cardImage.closest('.catgirl-panel-wrapper')?.querySelector('form');
+        const currentName = form?.querySelector('[name="档案名"]')?.value || name;
+        if (!currentName) return;
+
+        if (event.data && event.data.type === 'card-face-updated' && event.data.name === currentName) {
+            const ts = event.data.timestamp;
+            const newSrc = `/api/characters/catgirl/${encodeURIComponent(currentName)}/card-face?t=${ts}`;
+
+            // 更新面板卡面图片
+            let panelImg = cardImage.querySelector('.card-face-img');
+            if (!panelImg) {
+                panelImg = document.createElement('img');
+                panelImg.className = 'card-face-img';
+                panelImg.alt = '角色卡面';
+                cardImage.insertBefore(panelImg, imgPlaceholder);
+                imgPlaceholder.style.display = 'none';
+            }
+            panelImg.src = newSrc;
+
+            // 同步更新角色列表中的卡面
+            document.querySelectorAll('.chara-card-item').forEach(cardItem => {
+                const cardName = cardItem.querySelector('.card-name');
+                if (cardName && cardName.textContent === currentName) {
+                    const gridAvatar = cardItem.querySelector('.card-avatar');
+                    if (gridAvatar) {
+                        let gridImg = gridAvatar.querySelector('.card-face-img');
+                        const gridPlaceholder = gridAvatar.querySelector('.card-avatar-placeholder');
+                        if (!gridImg) {
+                            gridImg = document.createElement('img');
+                            gridImg.className = 'card-face-img';
+                            gridImg.alt = currentName;
+                            if (gridPlaceholder) {
+                                gridAvatar.insertBefore(gridImg, gridPlaceholder);
+                                gridPlaceholder.style.display = 'none';
+                            } else {
+                                gridAvatar.appendChild(gridImg);
+                            }
+                        }
+                        gridImg.src = newSrc;
+                    }
+                }
+            });
+        }
+    };
+    window.addEventListener('message', onCardFaceMessage);
+    // 面板关闭时清理监听器（利用MutationObserver）
+    const panelCleanupObserver = new MutationObserver(() => {
+        if (!document.contains(cardImage)) {
+            window.removeEventListener('message', onCardFaceMessage);
+            panelCleanupObserver.disconnect();
+        }
+    });
+    panelCleanupObserver.observe(document.body, { childList: true, subtree: true });
+
     leftSection.appendChild(cardImage);
 
     wrapper.appendChild(leftSection);
@@ -2991,26 +3102,36 @@ function openCatgirlPanel(card, originEl) {
     const tabsContainer = document.createElement('div');
     tabsContainer.className = 'panel-tabs';
 
+    // 滑动指示器
+    const indicator = document.createElement('div');
+    indicator.className = 'panel-tabs-indicator';
+    tabsContainer.appendChild(indicator);
+
     // 设定标签
     const settingsTab = document.createElement('button');
     settingsTab.type = 'button';
     settingsTab.className = 'panel-tab active';
     settingsTab.dataset.tab = 'settings';
-    settingsTab.textContent = window.t ? window.t('character.settings') : '设定';
+    const settingsIcon = document.createElement('img');
+    settingsIcon.src = '/static/icons/set_on.png';
+    settingsIcon.className = 'panel-tab-icon';
+    settingsIcon.alt = '';
+    settingsTab.appendChild(settingsIcon);
+    settingsTab.appendChild(document.createTextNode(window.t ? window.t('character.settings') : '设定'));
     tabsContainer.appendChild(settingsTab);
 
     if (!isNew) {
-        // 分隔线
-        const divider = document.createElement('span');
-        divider.className = 'panel-tab-divider';
-        tabsContainer.appendChild(divider);
-
         // Steam 标签
         const steamTab = document.createElement('button');
         steamTab.type = 'button';
         steamTab.className = 'panel-tab';
         steamTab.dataset.tab = 'steam';
-        steamTab.textContent = 'Steam';
+        const steamIcon = document.createElement('img');
+        steamIcon.src = '/static/icons/Steam_icon_logo.png';
+        steamIcon.className = 'panel-tab-icon';
+        steamIcon.alt = '';
+        steamTab.appendChild(steamIcon);
+        steamTab.appendChild(document.createTextNode('Steam'));
         tabsContainer.appendChild(steamTab);
     }
 
@@ -3042,16 +3163,148 @@ function openCatgirlPanel(card, originEl) {
         steamContent.className = 'panel-tab-content panel-tab-steam';
         rightSection.appendChild(steamContent);
 
-        // 标签切换逻辑
+        // 标签切换逻辑（含滑动指示器 + 幕布转场）
+        const updateIndicator = function () {
+            const activeTab = tabsContainer.querySelector('.panel-tab.active');
+            if (activeTab && indicator) {
+                indicator.style.left = activeTab.offsetLeft + 'px';
+                indicator.style.width = activeTab.offsetWidth + 'px';
+            }
+        };
+
+        // 幕布转场特效
+        const CURTAIN_SCATTER_ICONS = [
+            '/static/icons/star.png',
+            '/static/icons/paw_ui.png',
+            '/static/icons/star.png',
+            '/static/icons/paw_ui.png'
+        ];
+        const spawnCurtainTransition = function (targetTabName) {
+            const curtain = document.createElement('div');
+            curtain.className = 'panel-transition-curtain';
+
+            // 幕布色块
+            const sweep = document.createElement('div');
+            sweep.className = 'curtain-sweep';
+            curtain.appendChild(sweep);
+
+            // 散落小图标（跟着幕布走）
+            for (let i = 0; i < 10; i++) {
+                const icon = document.createElement('img');
+                icon.className = 'curtain-icon';
+                icon.src = CURTAIN_SCATTER_ICONS[i % CURTAIN_SCATTER_ICONS.length];
+                const size = 18 + Math.random() * 20;
+                icon.style.width = size + 'px';
+                icon.style.height = size + 'px';
+                icon.style.top = (5 + Math.random() * 85) + '%';
+                icon.style.left = (5 + Math.random() * 85) + '%';
+                icon.style.animationDelay = (0.15 + i * 0.04) + 's';
+                sweep.appendChild(icon);
+            }
+
+            // 中央大图标 — 根据目标标签页显示不同图标
+            const centerIcon = document.createElement('img');
+            centerIcon.className = 'curtain-center-icon';
+            if (targetTabName === 'steam') {
+                centerIcon.src = '/static/icons/Steam_icon_logo.png';
+                centerIcon.style.width = '72px';
+                centerIcon.style.height = '72px';
+                centerIcon.style.background = 'white';
+                centerIcon.style.borderRadius = '50%';
+                centerIcon.style.padding = '4px';
+                centerIcon.style.boxShadow = '0 4px 16px rgba(0,100,200,0.25)';
+            } else {
+                centerIcon.src = '/static/icons/set_on.png';
+                centerIcon.style.width = '64px';
+                centerIcon.style.height = '64px';
+            }
+            centerIcon.style.animationDelay = '0.18s';
+            curtain.appendChild(centerIcon);
+
+            rightSection.appendChild(curtain);
+            setTimeout(function () { curtain.remove(); }, 900);
+        };
+
+        let _tabSwitching = false;
+
+        // 初始化指示器位置（等 DOM 渲染后）
+        requestAnimationFrame(updateIndicator);
+
         headerBar.querySelectorAll('.panel-tab').forEach(tab => {
             tab.addEventListener('click', function () {
+                if (_tabSwitching) return;
+                const targetTab = this.dataset.tab;
+                const currentActive = rightSection.querySelector('.panel-tab-content.active');
+                const targetClass = 'panel-tab-' + targetTab;
+                const target = rightSection.querySelector('.' + targetClass);
+                if (!target || target === currentActive) return;
+
+                _tabSwitching = true;
                 headerBar.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
                 this.classList.add('active');
-                rightSection.querySelectorAll('.panel-tab-content').forEach(c => c.classList.remove('active'));
-                const targetClass = 'panel-tab-' + this.dataset.tab;
-                const target = rightSection.querySelector('.' + targetClass);
-                if (target) target.classList.add('active');
+                updateIndicator();
+
+                // 播放幕布转场
+                spawnCurtainTransition(targetTab);
+
+                // 退出当前页 — absolute定位防止撑高容器
+                if (currentActive) {
+                    currentActive.classList.remove('active');
+                    currentActive.classList.add('tab-exit');
+                }
+
+                // 幕布扫过中央时切入新页
+                setTimeout(function () {
+                    if (currentActive) {
+                        currentActive.classList.remove('tab-exit');
+                    }
+                    target.classList.add('active', 'tab-enter');
+
+                    // Steam 标签变为可见后，强制刷新模型预览尺寸并重新计算模型位置
+                    if (targetTab === 'steam') {
+                        requestAnimationFrame(function () {
+                            // Live2D resize + 重新应用模型设置
+                            if (live2dPreviewManager && live2dPreviewManager.pixi_app) {
+                                const l2dContainer = document.getElementById('live2d-preview-content');
+                                if (l2dContainer && l2dContainer.clientWidth > 0 && l2dContainer.clientHeight > 0) {
+                                    live2dPreviewManager.pixi_app.renderer.resize(l2dContainer.clientWidth, l2dContainer.clientHeight);
+                                    // 重新计算模型缩放和位置（修复在隐藏标签中加载导致的0尺寸问题）
+                                    if (live2dPreviewManager.currentModel) {
+                                        live2dPreviewManager.applyModelSettings(live2dPreviewManager.currentModel, {});
+                                        if (live2dPreviewManager.app && live2dPreviewManager.app.renderer) {
+                                            live2dPreviewManager.app.renderer.render(live2dPreviewManager.app.stage);
+                                        }
+                                    }
+                                }
+                            }
+                            // VRM resize
+                            const vrmContainer = document.getElementById('vrm-preview-container');
+                            if (vrmContainer && workshopVrmManager && workshopVrmManager.renderer) {
+                                workshopVrmManager.renderer.setSize(vrmContainer.clientWidth, vrmContainer.clientHeight);
+                            }
+                            // MMD resize
+                            const mmdContainer = document.getElementById('mmd-preview-container');
+                            if (mmdContainer && workshopMmdManager && workshopMmdManager.renderer) {
+                                workshopMmdManager.renderer.setSize(mmdContainer.clientWidth, mmdContainer.clientHeight);
+                            }
+                        });
+                    }
+
+                    // 入场动画结束后清理class
+                    setTimeout(function () {
+                        target.classList.remove('tab-enter');
+                        _tabSwitching = false;
+                    }, 460);
+                }, 320);
             });
+        });
+    } else {
+        // 单标签模式也初始化指示器
+        requestAnimationFrame(function () {
+            if (indicator && settingsTab) {
+                indicator.style.left = settingsTab.offsetLeft + 'px';
+                indicator.style.width = settingsTab.offsetWidth + 'px';
+            }
         });
     }
 
@@ -3068,6 +3321,30 @@ function openCatgirlPanel(card, originEl) {
         setTimeout(() => {
             wrapper.classList.remove('phase-center');
             wrapper.classList.add('phase-expand');
+
+            // 展开动画完成后，重新触发 textarea 自动调整高度
+            setTimeout(() => {
+                const settingsForm = rightSection.querySelector('form');
+                if (settingsForm) {
+                    settingsForm.querySelectorAll('textarea').forEach(ta => {
+                        ta.style.height = 'auto';
+                        const lineHeight = parseFloat(getComputedStyle(ta).lineHeight) || 20;
+                        const maxHeight = lineHeight * 3 + 10;
+                        const scrollHeight = ta.scrollHeight;
+                        ta.style.height = Math.min(scrollHeight, maxHeight) + 'px';
+                        const fieldRow = ta.closest('.field-row');
+                        if (fieldRow) {
+                            if (scrollHeight > maxHeight) {
+                                ta.style.overflowY = 'auto';
+                                fieldRow.classList.add('has-scrollbar');
+                            } else {
+                                ta.style.overflowY = 'hidden';
+                                fieldRow.classList.remove('has-scrollbar');
+                            }
+                        }
+                    });
+                }
+            }, 500);
 
             // 延迟初始化 Steam 标签页内容（等待面板展开动画完成后）
             if (!isNew) {
@@ -3145,6 +3422,15 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     nameInput.required = true;
     nameInput.value = name || '';
     if (!isNew) nameInput.readOnly = true;
+    // 新建猫娘时，名称变化后重置自动创建状态
+    if (isNew) {
+        nameInput.addEventListener('change', function () {
+            if (form._autoCreated && form._autoCreatedName !== nameInput.value.trim()) {
+                form._autoCreated = false;
+                form._autoCreatedName = '';
+            }
+        });
+    }
     _panelAttachProfileNameLimiter(nameInput);
     fieldRow.appendChild(nameInput);
     baseWrapper.appendChild(fieldRow);
@@ -3431,6 +3717,27 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
             }
             return;
         }
+        // 新建猫娘时，先临时保存（自动创建角色记录），确保模型管理器能正确关联
+        if (isNew && !form._autoCreated) {
+            try {
+                const tmpResp = await fetch('/api/characters/catgirl', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ '档案名': catgirlName })
+                });
+                if (tmpResp.ok) {
+                    form._autoCreated = true;
+                    form._autoCreatedName = catgirlName;
+                } else {
+                    const errData = await tmpResp.json().catch(() => ({}));
+                    showMessage((window.t ? window.t('character.tempSaveFailed') : '临时保存失败: ') + (errData.error || ''), 'error');
+                    return;
+                }
+            } catch (e) {
+                showMessage((window.t ? window.t('character.tempSaveFailed') : '临时保存失败: ') + e.message, 'error');
+                return;
+            }
+        }
         const url = '/model_manager?lanlan_name=' + encodeURIComponent(catgirlName);
         if (!window._openSettingsWindows) window._openSettingsWindows = {};
         if (window._openSettingsWindows[url]) {
@@ -3451,11 +3758,45 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
         window._openSettingsWindows[url] = popup;
         popup.moveTo(0, 0);
         popup.resizeTo(screen.availWidth, screen.availHeight);
-        const timer = setInterval(() => {
+        const timer = setInterval(async () => {
             if (popup.closed) {
                 clearInterval(timer);
                 if (window._openSettingsWindows[url] === popup) delete window._openSettingsWindows[url];
                 loadCharacterCards();
+                // 模型管理器关闭后，重新获取角色数据并更新模型显示名称
+                try {
+                    const resp = await fetch('/api/characters/');
+                    if (resp.ok) {
+                        const allData = await resp.json();
+                        const updatedCat = allData?.['猫娘']?.[catgirlName];
+                        if (!updatedCat) throw new Error('catgirl not found');
+                        const updModelType = updatedCat['model_type'] || 'live2d';
+                        const updNormType = updModelType === 'vrm' ? 'live3d' : updModelType;
+                        const updMmd = validateModelPath(updatedCat['mmd'])
+                            || validateModelPath(updatedCat['_reserved']?.avatar?.mmd?.model_path);
+                        const updVrm = validateModelPath(updatedCat['vrm'])
+                            || validateModelPath(updatedCat['_reserved']?.avatar?.vrm?.model_path);
+                        const updLive2d = validateModelPath(updatedCat['live2d']);
+                        const updSubType = String(
+                            updatedCat['_reserved']?.avatar?.live3d_sub_type || updatedCat['live3d_sub_type'] || ''
+                        ).trim().toLowerCase();
+                        let newDisplayText = '';
+                        if (updNormType === 'live3d' && updSubType === 'mmd' && updMmd) {
+                            newDisplayText = (updMmd.split(/[\\/]/).pop() || updMmd).replace(/\.(pmx|pmd)$/i, '');
+                        } else if (updNormType === 'live3d' && updSubType === 'vrm' && updVrm) {
+                            newDisplayText = (updVrm.split(/[\\/]/).pop() || updVrm).replace(/\.vrm$/i, '');
+                        } else if (updNormType === 'live3d' && updMmd && !updVrm) {
+                            newDisplayText = (updMmd.split(/[\\/]/).pop() || updMmd).replace(/\.(pmx|pmd)$/i, '');
+                        } else if (updNormType === 'live3d' && updVrm) {
+                            newDisplayText = (updVrm.split(/[\\/]/).pop() || updVrm).replace(/\.vrm$/i, '');
+                        } else if (updLive2d) {
+                            newDisplayText = updLive2d;
+                        }
+                        modelLink.textContent = newDisplayText || (window.t ? window.t('character.modelNotSet') : '未设置');
+                    }
+                } catch (e) {
+                    console.warn('[Panel] 更新模型显示名称失败:', e);
+                }
             }
         }, 500);
     };
@@ -3823,9 +4164,11 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             }
         }
 
-        const url = '/api/characters/catgirl' + (isNew ? '' : '/' + encodeURIComponent(originalName));
+        // 如果新建猫娘已被临时保存（自动创建），则改用 PUT 更新
+        const effectiveIsNew = isNew && !form._autoCreated;
+        const url = '/api/characters/catgirl' + (effectiveIsNew ? '' : '/' + encodeURIComponent(effectiveIsNew ? '' : (form._autoCreatedName || originalName)));
         const response = await fetch(url, {
-            method: isNew ? 'POST' : 'PUT',
+            method: effectiveIsNew ? 'POST' : 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data)
         });
@@ -4098,25 +4441,27 @@ function buildSteamTabContent(name, rawData, card, container) {
             <use href="#hex-body-shape-p" x="0" y="149" opacity="0.05"/>
             <use href="#hex-body-shape-p" x="120" y="198" opacity="0.05"/>
         </svg>
-        <svg class="card-info-bg-stars" xmlns="http://www.w3.org/2000/svg">
-            <defs>
-                <linearGradient id="card-star-gradient-p" x1="0%" y1="0%" x2="100%" y2="100%">
-                    <stop offset="0%" stop-color="#ffffff"/><stop offset="100%" stop-color="#8cd5ff"/>
-                </linearGradient>
-                <symbol id="card-rounded-star-p" viewBox="0 0 24 24">
-                    <path d="M 12 3 Q 12 12 21 12 Q 12 12 12 21 Q 12 12 3 12 Q 12 12 12 3 Z" fill="#ffffff" stroke="#ffffff" stroke-width="3.5" stroke-linejoin="round"/>
-                </symbol>
-                <pattern id="card-star-pattern-p" x="0" y="0" width="80" height="80" patternUnits="userSpaceOnUse">
-                    <use href="#card-rounded-star-p" x="5" y="5" width="15" height="15"/>
-                    <use href="#card-rounded-star-p" x="45" y="45" width="15" height="15"/>
-                </pattern>
-                <mask id="card-stars-mask-p"><rect width="100%" height="100%" fill="url(#card-star-pattern-p)"/></mask>
-            </defs>
-            <rect width="100%" height="100%" fill="url(#card-star-gradient-p)" mask="url(#card-stars-mask-p)"/>
-        </svg>
-        <div id="card-info-preview">
-            <div id="card-info-dynamic-content">
-                <p style="color: #999; text-align: center;" data-i18n="steam.selectCharacterCard">${window.t ? window.t('steam.selectCharacterCard') : '请选择一个角色卡'}</p>
+        <div class="card-info-body-scroll">
+            <svg class="card-info-bg-stars" xmlns="http://www.w3.org/2000/svg">
+                <defs>
+                    <linearGradient id="card-star-gradient-p" x1="0%" y1="0%" x2="100%" y2="100%">
+                        <stop offset="0%" stop-color="#ffffff"/><stop offset="100%" stop-color="#8cd5ff"/>
+                    </linearGradient>
+                    <symbol id="card-rounded-star-p" viewBox="0 0 24 24">
+                        <path d="M 12 3 Q 12 12 21 12 Q 12 12 12 21 Q 12 12 3 12 Q 12 12 12 3 Z" fill="#ffffff" stroke="#ffffff" stroke-width="3.5" stroke-linejoin="round"/>
+                    </symbol>
+                    <pattern id="card-star-pattern-p" x="0" y="0" width="80" height="80" patternUnits="userSpaceOnUse">
+                        <use href="#card-rounded-star-p" x="5" y="5" width="15" height="15"/>
+                        <use href="#card-rounded-star-p" x="45" y="45" width="15" height="15"/>
+                    </pattern>
+                    <mask id="card-stars-mask-p"><rect width="100%" height="100%" fill="url(#card-star-pattern-p)"/></mask>
+                </defs>
+                <rect width="100%" height="100%" fill="url(#card-star-gradient-p)" mask="url(#card-stars-mask-p)"/>
+            </svg>
+            <div id="card-info-preview">
+                <div id="card-info-dynamic-content">
+                    <p style="color: #999; text-align: center;" data-i18n="steam.selectCharacterCard">${window.t ? window.t('steam.selectCharacterCard') : '请选择一个角色卡'}</p>
+                </div>
             </div>
         </div>`;
     infoSection.appendChild(infoBody);
@@ -5828,7 +6173,7 @@ async function clearLive2DPreview(showModelNotSetMessage = false) {
 async function loadLive2DModelByName(modelName, modelInfo = null) {
     try {
         // 确保live2dPreviewManager已初始化
-        if (!live2dPreviewManager) {
+        if (!live2dPreviewManager || !live2dPreviewManager.pixi_app) {
             await initLive2DPreview();
         }
 
@@ -6169,9 +6514,12 @@ async function initLive2DPreview() {
         }
 
         // 避免重复初始化
-        if (live2dPreviewManager && live2dPreviewManager.currentModel) {
-            return; // 已经有模型加载，不需要重新初始化
+        if (live2dPreviewManager && live2dPreviewManager.pixi_app) {
+            return; // 已经正常初始化，不需要重新初始化
         }
+
+        // 清理可能存在的残缺实例
+        live2dPreviewManager = null;
 
         // 创建一个新的Live2DManager实例
         live2dPreviewManager = new Live2DManager();
@@ -6261,6 +6609,7 @@ async function initLive2DPreview() {
 
     } catch (error) {
         console.error('Failed to initialize Live2D preview:', error);
+        live2dPreviewManager = null;
         showMessage(window.t('steam.live2dInitFailed'), 'error');
     }
 }
@@ -6268,7 +6617,7 @@ async function initLive2DPreview() {
 // 从文件夹加载Live2D模型
 async function loadLive2DModelFromFolder(files) {
     try {
-        if (!live2dPreviewManager) {
+        if (!live2dPreviewManager || !live2dPreviewManager.pixi_app) {
             await initLive2DPreview();
         }
 

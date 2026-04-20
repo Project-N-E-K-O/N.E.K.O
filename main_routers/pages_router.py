@@ -107,10 +107,10 @@ async def api_key_settings(request: Request):
     })
 
 
-@router.get('/steam_workshop_manager', response_class=HTMLResponse)
-async def steam_workshop_manager_page(request: Request, lanlan_name: str = ""):
+@router.get('/character_card_manager', response_class=HTMLResponse)
+async def character_card_manager_page(request: Request, lanlan_name: str = ""):
     templates = get_templates()
-    return templates.TemplateResponse("templates/steam_workshop_manager.html", {"request": request, "lanlan_name": lanlan_name})
+    return templates.TemplateResponse("templates/character_card_manager.html", {"request": request, "lanlan_name": lanlan_name})
 
 
 @router.get('/memory_browser', response_class=HTMLResponse)
@@ -148,11 +148,11 @@ async def get_agenthud_page(request: Request):
     return templates.TemplateResponse("templates/agenthud.html", {"request": request})
 
 
-@router.get("/card_export", response_class=HTMLResponse)
-async def get_card_export_page(request: Request):
-    """角色卡导出页面（独立加载模型并可调整构图）"""
+@router.get("/card_maker", response_class=HTMLResponse)
+async def get_card_maker_page(request: Request):
+    """卡面制作页面（独立加载模型并可调整构图）"""
     templates = get_templates()
-    return templates.TemplateResponse("templates/card_export.html", {
+    return templates.TemplateResponse("templates/card_maker.html", {
         "request": request,
         **_vrm_defaults_ctx(),
     })

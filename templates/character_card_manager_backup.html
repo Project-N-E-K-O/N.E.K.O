@@ -5,11 +5,11 @@
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title data-i18n="steam.workshopManager">Steam 创意工坊管理 - Project N.E.K.O.</title>
+    <title data-i18n="steam.workshopManagerBackup">Steam 创意工坊管理（备份） - Project N.E.K.O.</title>
     <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
     <script src="/static/i18n-i18next.js"></script>
     <script src="/static/common_dialogs.js"></script>
-    <link rel="stylesheet" href="/static/css/steam_workshop_manager.css">
+    <link rel="stylesheet" href="/static/css/character_card_manager.css">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <link rel="stylesheet" href="/static/css/tutorial-styles.css">
     <script src="/static/theme-manager.js"></script>
@@ -18,13 +18,12 @@
 <body>
     <!-- 页面标题栏 - 支持拖动窗口 -->
     <div class="page-title-bar">
-        <h2 data-i18n="steam.workshopManager" data-text="Steam 创意工坊管理">Steam 创意工坊管理 - Project N.E.K.O.</h2>
+        <h2 data-i18n="steam.workshopManagerBackup" data-text="Steam 创意工坊管理（备份）">Steam 创意工坊管理（备份） - Project N.E.K.O.</h2>
         <button class="close-btn" onclick="window.close(); window.history.back();" data-i18n-title="common.close" title="关闭">
             <img src="/static/icons/close_button.png" data-i18n-alt="common.close">
         </button>
     </div>
 
-    <!-- 侧边栏 -->
     <!-- 布局容器 -->
     <div class="layout-container" style="margin-top: 0; padding-top: 0;">
         <!-- 侧边栏 -->
@@ -36,12 +35,7 @@
                      <button class="tab active" onclick="switchTab('character-cards-content', event)" data-i18n="steam.characterCards">角色卡</button>
                      <button class="tab" onclick="switchTab('subscriptions-content', event)" data-i18n="steam.subscriptions">订阅内容</button>
                   </div>
-                
-                <!-- 修复的自定义tooltip实现 -->
-                
 </div>
-
-
 
 <!-- 关于创意工坊集成说明 -->
 <div class="menu-section workshop-integration-info">
@@ -70,8 +64,7 @@
 
 <!-- 主内容区域 -->
 <div class="main-content">
-<!-- 标题已移除 -->
-        
+
 <!-- 标签内容容器 -->
 <div class="tab-contents">
 <!-- 订阅内容标签页 -->
@@ -83,7 +76,6 @@
                     
 <div class="filter-controls">
 <div class="filter-group search-group">
-<!--<div class="filter-label" data-i18n="steam.search">搜索：</div>-->
 <div class="search-input-wrapper">
     <input type="text" id="search-subscription" class="control-input" placeholder="" onkeyup="filterSubscriptions(this.value)" data-i18n-placeholder="steam.searchPlaceholder" aria-label="搜索订阅内容" data-i18n-aria="steam.searchAriaLabel">
     <img src="/static/icons/search_icon.png" class="search-icon" alt="" aria-hidden="true">
@@ -132,9 +124,9 @@
 </div>
 </div>
 </div>
+
 <!-- 本地内容标签页 -->
 <div id="local-items-content" class="tab-content" style="display: none;">
-                
 <div class="section-card">
 <div class="section-header">
 <h2 data-i18n="steam.localItems">管理本地物品</h2>
@@ -169,53 +161,270 @@
 </div>
 </div>
 </div>
-            
+
 <!-- 角色卡标签页 -->
 <div id="character-cards-content" class="tab-content active">
+<!-- 角色卡列表 -->
+<div class="section-card">
+<div style="display: flex; justify-content: space-between; align-items: center; gap: 15px;">
+<span data-i18n="steam.characterCardsList" style="white-space: nowrap; margin: 0; line-height: 1; font-size: 20px; font-weight: 600;">角色卡列表</span>
+<select id="character-card-select" class="control-input" style="flex: 1; font-size: 14px; padding: 8px 12px; min-width: 0;">
+<option value="" disabled selected data-i18n="steam.selectCharacterCard">请选择一个角色卡</option>
+</select>
+<div class="btn-chara-manager-wrapper">
+<button class="btn" onclick="window.location.href='/chara_manager'">
+<span data-i18n="steam.editInCharaManager">在角色管理中编辑</span>
+</button>
+</div>
+</div>
+</div>
 
-<!-- 角色卡列表区域 -->
-<div class="chara-cards-view-area">
-<div class="chara-cards-header-bg">
-<div class="chara-cards-header-row">
+<!-- 角色卡管理区域 -->
+<div class="section-card">
+<div class="section-header">
+<h2 data-i18n="steam.characterCards">角色卡上传</h2>
+</div>
+
+<div class="character-card-layout" id="character-card-layout">
+
+<!-- 上方区域：角色卡信息 + Live2D预览 -->
+<div class="character-card-top-row">
+<!-- 左上：角色卡信息 -->
+<div class="character-card-info-section">
+<img src="/static/icons/logo_show.png" class="card-info-logo" alt="">
+<div class="card-info-header-row">
+
+<!-- 标题区六边形装饰（被clip-path裁剪到可见白色区域） -->
+<svg class="card-info-bg-hexagons" viewBox="-10 -10 370 310" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <polygon id="hex-header-shape" points="25,5 75,5 100,48 75,91 25,91 0,48"
+                 fill="#8cd5ff" stroke="#8cd5ff" stroke-width="8" stroke-linejoin="round" />
+    </defs>
+    <use href="#hex-header-shape" x="120" y="0"   opacity="0.05" />
+    <use href="#hex-header-shape" x="240" y="50"  opacity="0.05" />
+    <use href="#hex-header-shape" x="0"   y="50"  opacity="0.05" />
+    <use href="#hex-header-shape" x="120" y="99"  opacity="0.05" />
+    <use href="#hex-header-shape" x="240" y="149" opacity="0.05" />
+    <use href="#hex-header-shape" x="0"   y="149" opacity="0.05" />
+    <use href="#hex-header-shape" x="120" y="198" opacity="0.05" />
+</svg>
+
 <div class="card-info-title-area">
 <div class="card-info-header-text">
 <svg width="15" height="15" viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 L14.5 9.5 L22 12 L14.5 14.5 L12 22 L9.5 14.5 L2 12 L9.5 9.5 Z" stroke="#7EC8E3" stroke-width="2" stroke-linejoin="round" fill="white"/></svg>
-<span data-i18n="steam.characterCardsList">角色卡列表</span>
+<span data-i18n="steam.cardInfoPreview">角色卡信息</span>
 </div>
 <img src="/static/icons/paw_ui.png" class="card-info-paw" alt="">
 </div>
 </div>
+<div class="card-info-body">
+
+<!-- 六边形背景装饰 -->
+<svg class="card-info-bg-hexagons" viewBox="-10 -10 370 310" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <polygon id="hex-body-shape" points="25,5 75,5 100,48 75,91 25,91 0,48"
+                 fill="#8cd5ff" stroke="#8cd5ff" stroke-width="8" stroke-linejoin="round" />
+    </defs>
+    <use href="#hex-body-shape" x="120" y="0"   opacity="0.05" />
+    <use href="#hex-body-shape" x="240" y="50"  opacity="0.05" />
+    <use href="#hex-body-shape" x="0"   y="50"  opacity="0.05" />
+    <use href="#hex-body-shape" x="120" y="99"  opacity="0.05" />
+    <use href="#hex-body-shape" x="240" y="149" opacity="0.05" />
+    <use href="#hex-body-shape" x="0"   y="149" opacity="0.05" />
+    <use href="#hex-body-shape" x="120" y="198" opacity="0.05" />
+</svg>
+
+<!-- 星星背景装饰 -->
+<svg class="card-info-bg-stars" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <linearGradient id="card-star-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#ffffff" />
+            <stop offset="100%" stop-color="#8cd5ff" />
+        </linearGradient>
+        <symbol id="card-rounded-star" viewBox="0 0 24 24">
+            <path d="M 12 3 Q 12 12 21 12 Q 12 12 12 21 Q 12 12 3 12 Q 12 12 12 3 Z"
+                  fill="#ffffff" stroke="#ffffff" stroke-width="3.5" stroke-linejoin="round" />
+        </symbol>
+        <pattern id="card-star-pattern" x="0" y="0" width="80" height="80" patternUnits="userSpaceOnUse">
+            <use href="#card-rounded-star" x="5" y="5" width="15" height="15" />
+            <use href="#card-rounded-star" x="45" y="45" width="15" height="15" />
+        </pattern>
+        <mask id="card-stars-mask">
+            <rect width="100%" height="100%" fill="url(#card-star-pattern)" />
+        </mask>
+    </defs>
+    <rect width="100%" height="100%" fill="url(#card-star-gradient)" mask="url(#card-stars-mask)" />
+</svg>
+
+<div id="card-info-preview">
+<!-- 角色卡属性将由JavaScript动态生成 -->
+<div id="card-info-dynamic-content">
+<p style="color: #999; text-align: center;" data-i18n="steam.selectCharacterCard">请选择一个角色卡</p>
 </div>
-<div class="chara-cards-toggle-bar">
-<div class="chara-cards-toolbar-left">
-<button class="chara-add-btn" onclick="openNewCatgirlPanel()" title="新增猫娘" data-i18n-title="steam.addNewCatgirl">
-<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-<span data-i18n="steam.addNewCatgirl">新增猫娘</span>
+</div>
+</div>
+</div>
+                            
+<!-- 右上：模型预览 -->
+<div class="character-card-live2d-section">
+<h3 id="model-preview-title" data-i18n="steam.live2dPreview">Live2D</h3>
+<div id="live2d-preview-container">
+<!-- Live2D预览内容区域 -->
+<div id="live2d-preview-content" style="flex: 1; position: relative; min-height: 0; pointer-events: none; background-color: transparent;">
+<!-- Live2D预览Canvas -->
+<canvas id="live2d-preview-canvas" style="display: none; width: 100%; height: 100%; position: absolute; top: 0; left: 0; pointer-events: none;"></canvas>
+<!-- VRM预览容器 -->
+<div id="vrm-preview-container" style="display: none; width: 100%; height: 100%; position: absolute; top: 0; left: 0;">
+<canvas id="vrm-preview-canvas" style="width: 100%; height: 100%;"></canvas>
+</div>
+<!-- MMD预览容器 -->
+<div id="mmd-preview-container" style="display: none; width: 100%; height: 100%; position: absolute; top: 0; left: 0;">
+<canvas id="mmd-preview-canvas" style="width: 100%; height: 100%;"></canvas>
+</div>
+<!-- 占位符 -->
+<div class="preview-placeholder" style="display: flex; justify-content: center; align-items: center; height: 100%; position: relative; z-index: 1; background-color: transparent;">
+<div class="preview-ring-perspective">
+<div class="preview-ring-tilt">
+<div id="preview-ring-container" class="preview-ring-container"></div>
+</div>
+</div>
+</div>
+<!-- 防止点击的覆盖层 -->
+<div id="live2d-preview-overlay" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 100; pointer-events: auto;"></div>
+<!-- 刷新按钮 -->
+<button id="live2d-refresh-btn" style="position: absolute; top: 10px; right: 10px; z-index: 101; width: 30px; height: 30px; border: none; border-radius: 50%; background-color: transparent; color: white; cursor: pointer; display: flex; justify-content: center; align-items: center; font-size: 16px; pointer-events: auto;" data-i18n-title="steam.refreshLive2DPreview" title="刷新Live2D预览" onclick="refreshLive2DPreview()">
+↻
 </button>
-<div class="chara-search-wrapper">
-<input type="text" id="chara-search-input" class="control-input" placeholder="搜索角色卡..." oninput="filterCharaCards(this.value)" data-i18n-placeholder="steam.searchCharacterCards">
-<img src="/static/icons/search_icon.png" class="search-icon" alt="">
 </div>
 </div>
-<div class="chara-cards-view-toggle">
-<button class="view-toggle-btn active" id="chara-view-card-btn" onclick="switchCharaCardsView('card')" title="卡片视图" data-i18n-title="steam.cardView">
-<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+<div id="live2d-preview-controls" style="padding: 10px; background-color: #fff; border-top: 1px solid #e0e0e0; margin: 10px 10px 10px 10px; border-radius: 16px;">
+<div style="display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap;">
+<div style="flex: 1; min-width: 150px;">
+<select id="preview-motion-select" class="control-input" style="width: 100%;">
+<option value="" data-i18n="steam.selectMotion">选择动作</option>
+</select>
+</div>
+<div class="btn-play-wrapper">
+<button id="preview-play-motion-btn" class="btn" disabled>
+<span data-i18n="steam.playMotion">播放动作</span>
 </button>
-<button class="view-toggle-btn" id="chara-view-list-btn" onclick="switchCharaCardsView('list')" title="列表视图" data-i18n-title="steam.listView">
-<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+</div>
+</div>
+<div style="display: flex; gap: 10px; flex-wrap: wrap;">
+<div style="flex: 1; min-width: 150px;">
+<select id="preview-expression-select" class="control-input" style="width: 100%;">
+<option value="" data-i18n="steam.selectExpression">选择表情</option>
+</select>
+</div>
+<div class="btn-play-wrapper">
+<button id="preview-play-expression-btn" class="btn" disabled>
+<span data-i18n="steam.playExpression">播放表情</span>
 </button>
 </div>
 </div>
-<div class="chara-cards-container" id="chara-cards-container">
-<!-- 角色卡片/列表由JS动态渲染 -->
-<div class="empty-state">
-<p data-i18n="steam.loadingCharacterCards">正在加载角色卡...</p>
+</div>
+</div>
+</div>
+                        
+<!-- 下方区域：描述 + 标签和按钮 -->
+<div class="character-card-bottom-row">
+<!-- 左侧：描述区域 -->
+<div class="character-card-description-section">
+<!-- 描述区域标题栏 -->
+<div class="description-header-row">
+<div class="description-title-area">
+<div class="description-header-text">
+<svg width="15" height="15" viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 L14.5 9.5 L22 12 L14.5 14.5 L12 22 L9.5 14.5 L2 12 L9.5 9.5 Z" stroke="#7EC8E3" stroke-width="2" stroke-linejoin="round" fill="white"/></svg>
+<span data-i18n="steam.characterCardDescription">描述</span>
+<img src="/static/icons/paw_ui.png" class="description-paw" alt="">
+</div>
+</div>
+</div>
+
+<!-- 版权警告 -->
+<div id="copyright-warning" style="display: none; padding: 8px; background-color: #f8d7da; border: 1px solid #f5c6cb; border-radius: 4px; color: #721c24; margin-bottom: 8px; margin-top: 8px;">
+<strong>⚠️</strong> <span data-i18n="steam.modelCopyrightIssue">您的角色形象存在版权问题，无法上传</span>
+</div>
+
+<!-- 可编辑字段：描述 -->
+<div class="control-group description-content">
+<div class="control-label" data-i18n="steam.characterCardDescription" style="display: none;">描述</div>
+<textarea id="character-card-description" class="control-input" style="white-space: pre-wrap; min-height: 100px; resize: none; overflow-y: auto;" placeholder="输入角色描述..." data-i18n-placeholder="steam.placeholderCharacterDescription"></textarea>
+</div>
+                                
+<!-- Workshop 状态区域 -->
+<div id="workshop-status-area" style="display: none; padding: 8px; background-color: #e7f3ff; border: 1px solid #b3d7ff; border-radius: 4px; margin-top: 8px;">
+<div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+<div>
+<strong style="color: #0066cc;">✅ <span data-i18n="steam.alreadyUploaded">已上传到创意工坊</span></strong>
+<div style="font-size: 12px; color: #666; margin-top: 4px;">
+<span data-i18n="steam.uploadTime">上传时间</span>：<span id="workshop-upload-time">-</span>
+</div>
+<div style="font-size: 12px; color: #666;">
+<span data-i18n="steam.workshopItemId">物品ID</span>：<span id="workshop-item-id">-</span>
+</div>
+</div>
+<button class="btn btn-secondary btn-sm" onclick="showWorkshopSnapshot()" style="white-space: nowrap;">
+📋 <span data-i18n="steam.viewSnapshot">查看已上传版本</span>
+</button>
+</div>
+</div>
+</div>
+                            
+<!-- 右侧：标签和按钮区域 -->
+<div class="character-card-tags-buttons-section">
+<!-- 标签区域 -->
+<div class="character-card-tags-area">
+<img src="/static/icons/logo_show.png" class="card-info-logo" alt="">
+<!-- 标签区域标题栏 -->
+<div class="tags-header-row">
+<div class="tags-title-area">
+<div class="tags-header-text">
+<svg width="15" height="15" viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 L14.5 9.5 L22 12 L14.5 14.5 L12 22 L9.5 14.5 L2 12 L9.5 9.5 Z" stroke="#7EC8E3" stroke-width="2" stroke-linejoin="round" fill="white"/></svg>
+<span data-i18n="steam.characterCardTags">角色卡标签</span>
+</div>
+<img src="/static/icons/paw_ui.png" class="tags-paw" alt="">
+</div>
+</div>
+<div class="control-group tags-content">
+<div class="control-label" data-i18n="steam.characterCardTags" style="display: none;">角色卡标签</div>
+<input type="text" id="character-card-tag-input" class="control-input" placeholder="输入标签，按空格添加" data-i18n-placeholder="steam.tagsPlaceholderSpace">
+<div id="character-card-tags-wrapper" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 15px; border: 2px solid #b3e5fc; border-radius: 50px; background-color: #fff; min-height: 40px; box-sizing: border-box; margin-top: 5px;">
+<div class="tags-container" id="character-card-tags-container"></div>
+</div>
+</div>
+</div>
+                                
+<!-- 无可上传模型时的警告提示 -->
+<div id="no-uploadable-models-warning" style="display: none; padding: 10px; background-color: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; color: #856404; font-size: 14px; margin-top: 15px;">
+<span data-i18n="steam.noUploadableModels">没有可上传的模型，请先在角色管理页面创建自定义模型</span>
+</div>
+                                
+<!-- 按钮行：两个按钮并排 -->
+<div class="character-card-buttons-row">
+<div class="btn-wrapper">
+<button id="upload-to-workshop-btn" class="btn" onclick="handleUploadToWorkshop()" disabled style="display: flex; align-items: center; justify-content: center; gap: 6px;">
+<img src="/static/icons/upload_icon.png" style="width: 34px; height: 34px;">
+<span id="upload-btn-text" data-i18n="steam.uploadToWorkshop">上传到创意工坊</span>
+</button>
+</div>
+<div class="btn-wrapper">
+<button class="btn" onclick="window.location.href='/chara_manager'" style="display: flex; align-items: center; justify-content: center; gap: 6px;">
+<img src="/static/icons/cat_icon.png" style="width: 34px; height: 34px;">
+<span data-i18n="steam.editInCharaManager">在角色管理中编辑</span>
+</button>
+</div>
 </div>
 </div>
 </div>
 
 </div>
-            
+</div>
+
+
+
+</div>
+
 <!-- 上传内容标签页 -->
 <div id="upload-content" class="tab-content" style="display: none;">
 <!-- 已移除重复的上传页面，统一使用本地物品标签页中的上传功能 -->
@@ -233,7 +442,6 @@
 </div>
 <div class="modal-body">
 <div id="itemDetailContent" class="item-detail-container">
-<!-- 物品详情内容将通过JavaScript动态加载 -->
 <div class="empty-state">
 <p data-i18n="steam.loadingItemDetails">正在加载物品详情...</p>
 </div>
@@ -265,7 +473,6 @@
 <div id="item-description" class="control-input" style="background-color: #f5f5f5; padding: 8px 12px; border-radius: 4px; min-height: 60px; white-space: pre-wrap;"></div>
 </div>
                 
-<!-- Content Folder Path 已隐藏，但保留元素供 JS 使用 -->
 <input type="hidden" id="content-folder">
                 
 <div class="control-group">
@@ -322,7 +529,6 @@
                 
 <div class="control-group">
 <div class="control-label" data-i18n="steam.tags">标签</div>
-<!-- 标签输入框已隐藏，标签通过 tags-container 显示 -->
 <input type="hidden" id="item-tags">
 <div id="tags-container" class="tags-container"></div>
 </div>
@@ -445,7 +651,7 @@
     <script src="/static/live2d-init.js"></script>
     
     <script src="/static/js/reserved_fields_utils.js"></script>
-    <script src="/static/js/steam_workshop_manager.js"></script>
+    <script src="/static/js/character_card_manager.js"></script>
 
     <!-- Three.js 核心库和importmap（用于VRM/MMD模型预览）-->
     <script type="importmap">
@@ -481,6 +687,88 @@
                 initUniversalTutorialManager();
             }
         });
+    </script>
+
+    <!-- 占位符环形文字 -->
+    <script>
+        var GLITCH_TIMINGS = [
+            {dur:'4.8s',delay:'0s'},   {dur:'5.3s',delay:'1.2s'},
+            {dur:'4.5s',delay:'2.7s'}, {dur:'5.7s',delay:'0.4s'},
+            {dur:'4.2s',delay:'3.5s'}, {dur:'5.1s',delay:'1.8s'},
+            {dur:'4.9s',delay:'2.1s'}, {dur:'5.4s',delay:'0.9s'},
+            {dur:'4.6s',delay:'3.2s'},
+        ];
+        var lastCustomRingText = null;
+
+        function buildPreviewRing(customText) {
+            var container = document.getElementById('preview-ring-container');
+            if (!container) return;
+            var text;
+            if (customText && typeof customText === 'string') {
+                lastCustomRingText = customText;
+                text = customText;
+            } else if (lastCustomRingText) {
+                text = lastCustomRingText;
+            } else {
+                var key = 'steam.selectCharaToPreview';
+                var raw = (typeof window.t === 'function') ? window.t(key) : null;
+                text = (raw && raw !== key) ? raw : '请选择角色进行预览';
+            }
+            var base = Array.from(text);
+            var chars = base.concat(base).concat(base);
+
+            var groupSize = base.length;
+            var gapExtra = 0.3;
+            var totalSlots = chars.length + gapExtra * 3;
+
+            var placeholder = container.closest('.preview-placeholder');
+            var availH = placeholder ? placeholder.clientHeight : 0;
+            var availW = placeholder ? placeholder.clientWidth : 0;
+            var nominalRadius = Math.ceil(totalSlots * 50 / (2 * Math.PI));
+            var limits = [];
+            if (availH > 80) limits.push((availH - 50) * 0.65);
+            if (availW > 80) limits.push((availW - 50 - 42) / 2);
+            var containerDriven = limits.length ? Math.max(200, Math.min.apply(null, limits)) : 200;
+            var radius = Math.min(nominalRadius, containerDriven);
+
+            var arcPerSlot = radius * 2 * Math.PI / totalSlots;
+            var fontSize = Math.max(14, Math.min(42, Math.floor(arcPerSlot) - 4));
+            container.style.setProperty('--ring-char-size', fontSize + 'px');
+
+            var yComp = Math.round(radius * Math.sin(10 * Math.PI / 180) * -0.1);
+            var tiltDiv = container.closest('.preview-ring-tilt');
+            if (tiltDiv) {
+                tiltDiv.style.transform = 'translateY(' + yComp + 'px) rotateX(-10deg)';
+            }
+            container.innerHTML = '';
+            chars.forEach(function(ch, i) {
+                var group = Math.floor(i / groupSize);
+                var posInGroup = i % groupSize;
+                var slotIndex = group * (groupSize + gapExtra) + posInGroup;
+                var angle = (slotIndex / totalSlots) * 360;
+                var span = document.createElement('span');
+                span.className = 'ring-char';
+                span.textContent = ch;
+                span.setAttribute('data-char', ch);
+                var t = GLITCH_TIMINGS[i % GLITCH_TIMINGS.length];
+                span.style.setProperty('--gdur', t.dur);
+                span.style.setProperty('--gdelay', t.delay);
+                span.style.transform = 'rotateY(' + angle + 'deg) translateZ(' + radius + 'px)';
+                container.appendChild(span);
+            });
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            buildPreviewRing();
+            requestAnimationFrame(function() { requestAnimationFrame(buildPreviewRing); });
+            var placeholder = document.querySelector('#live2d-preview-container .preview-placeholder');
+            if (placeholder && typeof ResizeObserver !== 'undefined') {
+                new ResizeObserver(buildPreviewRing).observe(placeholder);
+            } else {
+                window.addEventListener('resize', buildPreviewRing);
+            }
+        });
+        window.addEventListener('localechange', buildPreviewRing);
     </script>
 </body>
 
