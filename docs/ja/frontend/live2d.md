@@ -31,7 +31,7 @@ N.E.K.O. は Pixi.js 経由の Cubism SDK を使用して Live2D モデルをレ
 | モジュール | 用途 |
 |--------|---------|
 | `live2d-ui-buttons.js` | コントロールボタン（モデル切り替え、設定） |
-| `live2d-ui-drag.js` | モデル配置のためのドラッグとズーム |
+| `avatar-ui-drag.js` | モデル配置のためのドラッグとズーム（VRM/MMD と共用） |
 | `live2d-ui-hud.js` | ヘッドアップディスプレイオーバーレイ |
 | `live2d-ui-popup.js` | ポップアップダイアログとメニュー |
 

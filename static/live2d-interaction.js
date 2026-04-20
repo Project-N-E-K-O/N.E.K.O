@@ -310,7 +310,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     const CLICK_THRESHOLD_DISTANCE = 10; // 移动距离阈值（像素）
     const CLICK_THRESHOLD_TIME = 300; // 时间阈值（毫秒）
 
-    // 使用 live2d-ui-drag.js 中的共享工具函数（按钮 pointer-events 管理）
+    // 使用 avatar-ui-drag.js 中的共享工具函数（按钮 pointer-events 管理）
     const disableButtonPointerEvents = () => {
         if (window.DragHelpers) {
             window.DragHelpers.disableButtonPointerEvents();

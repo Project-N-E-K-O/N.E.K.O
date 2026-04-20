@@ -64,7 +64,7 @@ class VRMInteraction {
 
 
     /**
-     * 使用 live2d-ui-drag.js 中的共享工具函数（按钮 pointer-events 管理）
+     * 使用 avatar-ui-drag.js 中的共享工具函数（按钮 pointer-events 管理）
      */
     _disableButtonPointerEvents() {
         if (window.DragHelpers) {
