@@ -137,7 +137,17 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     logger.info(
                         f"[{lanlan_name}] stream_data #{sd_log_counter} input_type={_input_type_dbg} data_len={_data_len}"
                     )
+                # Extract and store avatar position metadata (paired with screenshot)
+                # 显式清空：前端不发 avatar_position = 不应叠加，防止旧坐标残留
+                av_pos = message.get("avatar_position")
+                if av_pos and isinstance(av_pos, dict):
+                    session_manager[lanlan_name]._avatar_position = av_pos
+                else:
+                    session_manager[lanlan_name]._avatar_position = None
                 _fire_task(session_manager[lanlan_name].stream_data(message))
+
+            elif action == "avatar_interaction":
+                _fire_task(session_manager[lanlan_name].handle_avatar_interaction(message))
 
             elif action == "end_session":
                 session_manager[lanlan_name].active_session_is_idle = False
@@ -150,6 +160,12 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             elif action == "screenshot_response":
                 raw = message.get("data", "")
                 b64 = raw.split(",", 1)[1] if "," in raw else raw
+                # Extract and store avatar position metadata (paired with fresh screenshot)
+                av_pos = message.get("avatar_position")
+                if av_pos and isinstance(av_pos, dict):
+                    session_manager[lanlan_name]._avatar_position = av_pos
+                else:
+                    session_manager[lanlan_name]._avatar_position = None
                 session_manager[lanlan_name].resolve_screenshot_request(b64)
 
             elif action == "greeting_check":
@@ -198,4 +214,3 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
 
         if is_current and lanlan_name in session_manager:
             await session_manager[lanlan_name].cleanup(expected_websocket=websocket)
-

@@ -101,7 +101,12 @@ RESULT_PARSER_PHRASES = {
     'cu_fail':            {'zh': '任务执行失败', 'en': 'Task failed', 'ja': 'タスク失敗', 'ko': '작업 실패', 'ru': 'Задача не выполнена'},
     'cu_status_done':     {'zh': '已完成', 'en': 'completed', 'ja': '完了', 'ko': '완료', 'ru': 'выполнена'},
     'cu_status_ended':    {'zh': '已结束', 'en': 'ended', 'ja': '終了', 'ko': '종료', 'ru': 'завершена'},
-'openclaw_processing': {'zh': 'OpenClaw 处理中...', 'en': 'OpenClaw is processing...', 'ja': 'OpenClaw 処理中...', 'ko': 'OpenClaw 처리 중...', 'ru': 'OpenClaw обрабатывает...'},    'openclaw_done':       {'zh': 'OpenClaw 执行完成', 'en': 'OpenClaw execution completed', 'ja': 'OpenClaw 実行完了', 'ko': 'OpenClaw 실행 완료', 'ru': 'OpenClaw выполнено'},    'openclaw_failed':     {'zh': 'OpenClaw 执行失败', 'en': 'OpenClaw execution failed', 'ja': 'OpenClaw 実行失敗', 'ko': 'OpenClaw 실행 실패', 'ru': 'OpenClaw не выполнено'},    'openclaw_cancelled':  {'zh': 'OpenClaw 任务已取消', 'en': 'OpenClaw task cancelled', 'ja': 'OpenClaw タスクがキャンセルされました', 'ko': 'OpenClaw 작업 취소됨', 'ru': 'Задача OpenClaw отменена'},    'openclaw_dispatch_failed': {'zh': 'OpenClaw 任务分发失败', 'en': 'OpenClaw task dispatch failed', 'ja': 'OpenClaw タスク配信失敗', 'ko': 'OpenClaw 작업 전달 실패', 'ru': 'Ошибка отправки задачи OpenClaw'},
+    'openclaw_try':       {'zh': '我试试', 'en': "I'll try", 'ja': 'やってみるね', 'ko': '해볼게', 'ru': 'Я попробую'},
+    'openclaw_processing': {'zh': 'OpenClaw(QwenPaw) 处理中...', 'en': 'OpenClaw (QwenPaw) is processing...', 'ja': 'OpenClaw(QwenPaw) 処理中...', 'ko': 'OpenClaw(QwenPaw) 처리 중...', 'ru': 'OpenClaw (QwenPaw) обрабатывает...'},
+    'openclaw_done':       {'zh': 'OpenClaw(QwenPaw) 执行完成', 'en': 'OpenClaw (QwenPaw) execution completed', 'ja': 'OpenClaw(QwenPaw) 実行完了', 'ko': 'OpenClaw(QwenPaw) 실행 완료', 'ru': 'OpenClaw (QwenPaw) выполнено'},
+    'openclaw_failed':     {'zh': 'OpenClaw(QwenPaw) 执行失败', 'en': 'OpenClaw (QwenPaw) execution failed', 'ja': 'OpenClaw(QwenPaw) 実行失敗', 'ko': 'OpenClaw(QwenPaw) 실행 실패', 'ru': 'OpenClaw (QwenPaw) не выполнено'},
+    'openclaw_cancelled':  {'zh': 'OpenClaw(QwenPaw) 任务已取消', 'en': 'OpenClaw (QwenPaw) task cancelled', 'ja': 'OpenClaw(QwenPaw) タスクがキャンセルされました', 'ko': 'OpenClaw(QwenPaw) 작업 취소됨', 'ru': 'Задача OpenClaw (QwenPaw) отменена'},
+    'openclaw_dispatch_failed': {'zh': 'OpenClaw(QwenPaw) 任务分发失败', 'en': 'OpenClaw (QwenPaw) task dispatch failed', 'ja': 'OpenClaw(QwenPaw) タスク配信失敗', 'ko': 'OpenClaw(QwenPaw) 작업 전달 실패', 'ru': 'Ошибка отправки задачи OpenClaw (QwenPaw)'},
     'bu_cancelled':        {'zh': '你的任务"{desc}"已取消', 'en': 'Your task "{desc}" cancelled', 'ja': 'タスク「{desc}」がキャンセルされました', 'ko': '작업 "{desc}" 취소됨', 'ru': 'Ваша задача «{desc}» отменена'},
     'of_cancelled':        {'zh': '虚拟机任务 "{desc}" 已取消', 'en': 'VM task "{desc}" cancelled', 'ja': 'VM タスク「{desc}」がキャンセルされました', 'ko': 'VM 작업 "{desc}" 취소됨', 'ru': 'Задача ВМ «{desc}» отменена'},
 }
@@ -116,19 +121,19 @@ SESSION_INIT_PROMPT = {
 }
 
 SESSION_INIT_PROMPT_AGENT = {
-    'zh': '你是一个角色扮演大师，并且精通电脑操作。请按要求扮演以下角色（{name}），并在对方请求时、回答"我试试"并尝试操纵电脑。',
-    'en': 'You are a role-playing expert and skilled at computer operations. Please play the following character ({name}) as instructed, and when the user asks, respond "Let me try" and attempt to control the computer.',
-    'ja': 'あなたはロールプレイの達人で、コンピュータ操作も得意です。指示に従い、以下のキャラクター（{name}）を演じてください。ユーザーに頼まれたら「やってみる」と答えてコンピュータを操作してください。',
-    'ko': '당신은 롤플레이 전문가이며 컴퓨터 조작에도 능숙합니다. 지시에 따라 다음 캐릭터（{name}）를 연기하고, 상대방이 요청하면 "해볼게요"라고 답하며 컴퓨터를 조작하세요.',
-    'ru': 'Вы мастер ролевых игр и хорошо разбираетесь в управлении компьютером. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям, а когда пользователь просит — отвечайте "Попробую" и управляйте компьютером.',
+    'zh': '你是一个角色扮演大师，并且精通电脑操作。请按要求扮演以下角色（{name}）。当外部任务系统接管执行时，不要抢先声称自己已经开始执行或自行编造执行结果。',
+    'en': 'You are a role-playing expert and skilled at computer operations. Please play the following character ({name}) as instructed. When an external task system is responsible for execution, do not claim you have already started or fabricate execution results.',
+    'ja': 'あなたはロールプレイの達人で、コンピュータ操作も得意です。指示に従い、以下のキャラクター（{name}）を演じてください。外部タスクシステムが実行を担当する場合、自分がすでに着手したかのように主張したり、結果を捏造したりしないでください。',
+    'ko': '당신은 롤플레이 전문가이며 컴퓨터 조작에도 능숙합니다. 지시에 따라 다음 캐릭터（{name}）를 연기하세요. 외부 작업 시스템이 실행을 담당할 때는 이미 시작했다고 먼저 말하거나 실행 결과를 지어내지 마세요.',
+    'ru': 'Вы мастер ролевых игр и хорошо разбираетесь в управлении компьютером. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям. Когда выполнение поручено внешней системе задач, не утверждайте заранее, что уже начали выполнять запрос, и не выдумывайте результаты.',
 }
 
 SESSION_INIT_PROMPT_AGENT_DYNAMIC = {
-    'zh': '你是一个角色扮演大师，并且能够{capabilities}。请按要求扮演以下角色（{name}），并在对方请求时、回答"我试试"并尝试执行。',
-    'en': 'You are a role-playing expert and can {capabilities}. Please play the following character ({name}) as instructed, and when the user asks, respond "Let me try" and attempt to execute the request.',
-    'ja': 'あなたはロールプレイの達人で、{capabilities}ことができます。指示に従い、以下のキャラクター（{name}）を演じてください。ユーザーに頼まれたら「やってみる」と答えて実行を試みてください。',
-    'ko': '당신은 롤플레이 전문가이며 {capabilities} 수 있습니다. 지시에 따라 다음 캐릭터（{name}）를 연기하고, 상대방이 요청하면 "해볼게요"라고 답하며 실행을 시도하세요.',
-    'ru': 'Вы мастер ролевых игр и можете {capabilities}. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям, а когда пользователь просит — отвечайте "Попробую" и пытайтесь выполнить запрос.',
+    'zh': '你是一个角色扮演大师，并且能够{capabilities}。请按要求扮演以下角色（{name}）。当外部任务系统接管执行时，不要抢先声称自己已经开始执行或自行编造执行结果。',
+    'en': 'You are a role-playing expert and can {capabilities}. Please play the following character ({name}) as instructed. When an external task system is responsible for execution, do not claim you have already started or fabricate execution results.',
+    'ja': 'あなたはロールプレイの達人で、{capabilities}ことができます。指示に従い、以下のキャラクター（{name}）を演じてください。外部タスクシステムが実行を担当する場合、自分がすでに着手したかのように主張したり、結果を捏造したりしないでください。',
+    'ko': '당신은 롤플레이 전문가이며 {capabilities} 수 있습니다. 지시에 따라 다음 캐릭터（{name}）를 연기하세요. 외부 작업 시스템이 실행을 담당할 때는 이미 시작했다고 먼저 말하거나 실행 결과를 지어내지 마세요.',
+    'ru': 'Вы мастер ролевых игр и можете {capabilities}. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям. Когда выполнение поручено внешней системе задач, не утверждайте заранее, что уже начали выполнять запрос, и не выдумывайте результаты.',
 }
 
 AGENT_CAPABILITY_COMPUTER_USE = {
@@ -263,6 +268,17 @@ AGENT_CALLBACK_NOTIFICATION = {
     'ja': '======[システム通知：以下は最近完了したバックグラウンドタスクです。返答の中で自然に言及または確認してください。]\n',
     'ko': '======[시스템 알림：다음은 최근 완료된 백그라운드 작업입니다. 답변에서 자연스럽게 언급하거나 확인하세요.]\n',
     'ru': '======[Системное уведомление: следующие фоновые задачи недавно завершены. Пожалуйста, естественно упомяните или подтвердите их в своём ответе.]\n',
+}
+
+# ---------- Vision: Avatar 截图注解（叠加在发给视觉模型的截图上，用户不可见） ----------
+AVATAR_ANNOTATION_TEXT = {
+    'zh':    ('这是{name}在桌面上的虚拟形象,', '请{name}不要主动提及', '请{name}不要主动提及'),
+    'zh-CN': ('这是{name}在桌面上的虚拟形象,', '请{name}不要主动提及', '请{name}不要主动提及'),
+    'zh-TW': ('這是{name}在桌面上的虛擬形象,', '請{name}不要主動提及', '請{name}不要主動提及'),
+    'en':    ("This is {name}'s virtual avatar on the desktop,", "Please don't mention it, {name}", "Please don't mention it, {name}"),
+    'ja':    ('これはデスクトップ上の{name}の仮想アバターです,', '{name}は自分から言及しないでください', '{name}は自分から言及しないでください'),
+    'ko':    ('이것은 바탕화면의 {name} 가상 아바타입니다,', '{name}은(는) 스스로 언급하지 마세요', '{name}은(는) 스스로 언급하지 마세요'),
+    'ru':    ('Это виртуальный аватар {name} на рабочем столе,', 'Пожалуйста, {name}, не упоминай это', 'Пожалуйста, {name}, не упоминай это'),
 }
 
 # ---------- Vision 图像描述 prompt ----------

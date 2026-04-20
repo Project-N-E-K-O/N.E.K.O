@@ -133,7 +133,8 @@ Live2DManager.prototype.setupHTMLLockIcon = function(model) {
     const tick = () => {
         try {
             if (!model || !model.parent) {
-                if (lockIcon) lockIcon.style.display = 'none';
+                // 教程期间不隐藏锁图标，防止高亮框位置被刷到 (0,0)
+                if (lockIcon && !window.isInTutorial) lockIcon.style.display = 'none';
                 return;
             }
             const bounds = model.getBounds();

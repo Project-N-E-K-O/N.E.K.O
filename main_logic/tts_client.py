@@ -2591,6 +2591,7 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
         agg_flush_bytes = 4096
 
         # 连通性探测
+        # per-call AsyncClient: 一次性 probe，紧接着下面会构造 per-worker 持久 client
         async with httpx.AsyncClient(timeout=httpx.Timeout(10, connect=10)) as probe:
             probe_resp = await probe.post(
                 api_url, headers=headers,
@@ -2717,7 +2718,7 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
             # GPT-SoVITS / local CosyVoice 需要用户显式启用 gptsovitsEnabled 开关，
             # 仅 enableCustomApi + http URL 不应自动路由到 GPT-SoVITS。
             core_cfg = cm.get_core_config()
-            gsv_enabled = core_cfg.get('gptsovitsEnabled', False)
+            gsv_enabled = core_cfg.get('GPTSOVITS_ENABLED', False)
             if gsv_enabled and (base_url.startswith('http://') or base_url.startswith('https://')):
                 return gptsovits_tts_worker, None, 'gptsovits'
             if gsv_enabled and (base_url.startswith('ws://') or base_url.startswith('wss://')):
