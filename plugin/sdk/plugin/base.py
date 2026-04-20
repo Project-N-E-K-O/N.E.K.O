@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from plugin.sdk.shared.constants import EVENT_META_ATTR, NEKO_PLUGIN_META_ATTR, NEKO_PLUGIN_TAG
 from plugin.sdk.shared.core.base import DEFAULT_PLUGIN_VERSION as _DEFAULT_PLUGIN_VERSION
@@ -12,6 +12,9 @@ from plugin.sdk.shared.core.base import NekoPluginBase as _SharedNekoPluginBase
 from plugin.sdk.shared.core.base import PluginMeta as _SharedPluginMeta
 from plugin.sdk.shared.core.events import EventHandler, EventMeta
 from plugin.sdk.shared.models.exceptions import EntryConflictError
+
+if TYPE_CHECKING:
+    from .settings import PluginSettings
 
 DEFAULT_PLUGIN_VERSION = _DEFAULT_PLUGIN_VERSION
 
@@ -34,6 +37,18 @@ class NekoPluginBase(_SharedNekoPluginBase):
         self._static_ui_config: dict[str, Any] | None = None
         self._dynamic_entries: dict[str, dict[str, Any]] = {}
 
+        # ── PluginSettings auto-creation ──
+        self._settings_instance: PluginSettings | None = None
+        settings_cls = getattr(type(self), "Settings", None)
+        if settings_cls is not None:
+            from .settings import PluginSettings as _PluginSettingsBase, create_settings_safe
+
+            if isinstance(settings_cls, type) and issubclass(settings_cls, _PluginSettingsBase):
+                toml_section = settings_cls.model_config.get("toml_section", "settings")
+                config_section = self.effective_config.get(toml_section)
+                section_dict = dict(config_section) if isinstance(config_section, Mapping) else None
+                self._settings_instance = create_settings_safe(settings_cls, section_dict)
+
     @property
     def plugin_id(self) -> str:
         return str(getattr(self.ctx, "plugin_id", "plugin"))
@@ -42,6 +57,64 @@ class NekoPluginBase(_SharedNekoPluginBase):
     def config_dir(self) -> Path:
         config_path = getattr(self.ctx, "config_path", None)
         return Path(config_path).parent if config_path is not None else Path.cwd()
+
+    @property
+    def settings(self) -> PluginSettings | None:
+        """Synchronously return the current ``PluginSettings`` instance.
+
+        Returns ``None`` when the plugin class does not define a ``Settings``
+        class attribute.
+        """
+        return self._settings_instance
+
+    @property
+    def effective_config(self) -> dict[str, Any]:
+        """Synchronously return the current effective config dict.
+
+        Prefers the cached ``ctx._effective_config``.  Falls back to a
+        synchronous file read of ``plugin.toml`` when the cache is empty.
+        """
+        cached = getattr(self.ctx, "_effective_config", None)
+        if cached and isinstance(cached, dict):
+            return dict(cached)
+        # Fallback: synchronous read from plugin.toml
+        return self._load_effective_config_sync()
+
+    def _load_effective_config_sync(self) -> dict[str, Any]:
+        """Read ``plugin.toml`` synchronously as a last-resort fallback."""
+        config_path = getattr(self.ctx, "config_path", None)
+        if config_path is None:
+            return {}
+        path = Path(config_path)
+        if not path.is_file():
+            return {}
+        try:
+            try:
+                import tomllib
+            except ModuleNotFoundError:
+                import tomli as tomllib  # type: ignore[no-redef]
+            with path.open("rb") as f:
+                return tomllib.load(f)
+        except Exception:
+            return {}
+
+    def _refresh_settings(self) -> None:
+        """Re-create the ``PluginSettings`` instance from the current config.
+
+        Called by the plugin host after ``ctx._effective_config`` is updated
+        during a ``config_change`` lifecycle event.
+        """
+        settings_cls = getattr(type(self), "Settings", None)
+        if settings_cls is None:
+            return
+        from .settings import PluginSettings as _PluginSettingsBase, create_settings_safe
+
+        if not (isinstance(settings_cls, type) and issubclass(settings_cls, _PluginSettingsBase)):
+            return
+        toml_section = settings_cls.model_config.get("toml_section", "settings")
+        config_section = self.effective_config.get(toml_section)
+        section_dict = dict(config_section) if isinstance(config_section, Mapping) else None
+        self._settings_instance = create_settings_safe(settings_cls, section_dict)
 
     def data_path(self, *parts: str) -> Path:
         base = self.config_dir / "data"

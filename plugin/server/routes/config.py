@@ -3,6 +3,8 @@
 """
 from __future__ import annotations
 
+import importlib
+
 from fastapi import APIRouter
 from pydantic import BaseModel
 
@@ -215,3 +217,81 @@ async def hot_update_plugin_config_endpoint(
         )
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
+
+
+@router.get("/plugin/{plugin_id}/settings/schema")
+async def get_plugin_settings_schema_endpoint(
+    plugin_id: str,
+    _: str = require_admin,
+) -> dict[str, object]:
+    """Return the PluginSettings JSON Schema for a plugin.
+
+    If the plugin is running and defines a ``PluginSettings`` subclass,
+    the response includes the full JSON Schema with ``hot`` markers.
+    Otherwise ``settings_class`` and ``schema`` are ``null``.
+    """
+    try:
+        return _resolve_plugin_settings_schema(plugin_id)
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
+
+
+def _resolve_plugin_settings_schema(plugin_id: str) -> dict[str, object]:
+    """Resolve the PluginSettings class for *plugin_id* and return its schema."""
+    from plugin.core.state import state
+    from plugin.sdk.plugin.settings import PluginSettings
+
+    with state.acquire_plugin_hosts_read_lock():
+        host = state.plugin_hosts.get(plugin_id)
+
+    if host is None:
+        return {
+            "plugin_id": plugin_id,
+            "settings_class": None,
+            "toml_section": None,
+            "schema": None,
+        }
+
+    entry_point: str | None = getattr(host, "entry_point", None)
+    if not entry_point:
+        return {
+            "plugin_id": plugin_id,
+            "settings_class": None,
+            "toml_section": None,
+            "schema": None,
+        }
+
+    # Import the plugin class from the entry_point (e.g. "plugins.my_plugin:MyPlugin")
+    settings_cls = _import_settings_class(entry_point)
+    if settings_cls is None or not (isinstance(settings_cls, type) and issubclass(settings_cls, PluginSettings)):
+        return {
+            "plugin_id": plugin_id,
+            "settings_class": None,
+            "toml_section": None,
+            "schema": None,
+        }
+
+    toml_section = settings_cls.model_config.get("toml_section", "settings")
+    return {
+        "plugin_id": plugin_id,
+        "settings_class": settings_cls.__name__,
+        "toml_section": toml_section,
+        "schema": settings_cls.model_json_schema(),
+    }
+
+
+def _import_settings_class(entry_point: str) -> type | None:
+    """Try to import the plugin class from *entry_point* and return its Settings class.
+
+    Returns ``None`` if the import fails or the class has no Settings attribute.
+    """
+    try:
+        module_path, class_name = entry_point.split(":", 1)
+        mod = importlib.import_module(module_path)
+        plugin_cls = getattr(mod, class_name, None)
+        if plugin_cls is None:
+            return None
+        return getattr(plugin_cls, "Settings", None)
+    except Exception:
+        logger.debug("Failed to import Settings from entry_point {}", entry_point)
+        return None

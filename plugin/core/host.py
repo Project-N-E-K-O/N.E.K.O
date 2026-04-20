@@ -399,6 +399,7 @@ async def _handle_config_update_command(
     plugin_id: str,
     res_sender: Any,
     logger: Any,
+    plugin_instance: Any = None,
 ) -> None:
     """处理 CONFIG_UPDATE 命令 - 配置热更新。
 
@@ -431,6 +432,19 @@ async def _handle_config_update_command(
         else:
             ctx._effective_config = new_config
         
+        # 自动刷新 PluginSettings 实例（如果插件定义了 Settings）
+        if plugin_instance is not None:
+            _refresh = getattr(plugin_instance, "_refresh_settings", None)
+            if callable(_refresh):
+                try:
+                    _refresh()
+                    logger.debug("[Plugin Process] PluginSettings refreshed after config update")
+                except Exception as _settings_err:
+                    logger.warning(
+                        "[Plugin Process] PluginSettings refresh failed (non-fatal): {}",
+                        _settings_err,
+                    )
+
         # 触发 config_change 生命周期事件（如果存在）
         lifecycle_events = events_by_type.get("lifecycle", {})
         config_change_handler = lifecycle_events.get("config_change")
@@ -451,6 +465,14 @@ async def _handle_config_update_command(
                 # 回滚配置到变更前状态
                 ctx._effective_config = old_config
                 logger.debug("[Plugin Process] Config rolled back after handler failure")
+                # 回滚 PluginSettings 实例
+                if plugin_instance is not None:
+                    _refresh = getattr(plugin_instance, "_refresh_settings", None)
+                    if callable(_refresh):
+                        try:
+                            _refresh()
+                        except Exception:
+                            pass
                 ret_payload["error"] = f"config_change handler failed: {e}"
                 res_sender.put(ret_payload, timeout=10.0)
                 return
@@ -1226,6 +1248,7 @@ def _plugin_process_runner(
                     await _handle_config_update_command(
                         msg=msg, ctx=ctx, events_by_type=events_by_type,
                         plugin_id=plugin_id, res_sender=res_sender, logger=logger,
+                        plugin_instance=instance,
                     )
                     continue
 

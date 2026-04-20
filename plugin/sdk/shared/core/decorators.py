@@ -28,7 +28,7 @@ from .result_contract import (
 from .types import InputSchema, JsonValue
 
 F = TypeVar("F", bound=Callable[..., object])
-EntryKind = Literal["service", "action", "hook", "custom", "lifecycle", "consumer", "timer"]
+EntryKind = Literal["service", "action", "hook", "custom", "lifecycle", "consumer", "timer", "chat_command"]
 _SKIP_PARAMS = frozenset({"self", "cls", "kwargs", "_ctx", "args"})
 _PARAMS_MODEL_ATTR = "_neko_params_model"
 _AUTO_INFER_PARAMS_ATTR = "_neko_auto_infer_params"

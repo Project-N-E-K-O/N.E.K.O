@@ -76,6 +76,10 @@ async def hot_update_plugin_config(
         persisted["mode"] = mode
         return persisted
 
+    # --- Hot field validation for temporary mode ---
+    if mode == "temporary":
+        _validate_hot_fields(host, plugin_id, normalized_updates)
+
     if mode == "permanent":
         await loop.run_in_executor(None, update_plugin_config, plugin_id, normalized_updates)
 
@@ -150,3 +154,59 @@ async def hot_update_plugin_config(
         "handler_called": handler_called,
         "message": "Config hot-updated successfully",
     }
+
+
+def _validate_hot_fields(
+    host: object,
+    plugin_id: str,
+    updates: dict[str, object],
+) -> None:
+    """Check that all update keys are marked ``hot=True`` in the plugin's PluginSettings.
+
+    If the plugin has no ``PluginSettings`` subclass (backward compat), all
+    fields are allowed.  Only raises for temporary-mode updates where at
+    least one key is not in the hot fields set.
+    """
+    import importlib
+
+    from plugin.sdk.plugin.settings import PluginSettings, get_hot_fields
+
+    entry_point: str | None = getattr(host, "entry_point", None)
+    if not entry_point:
+        return  # No entry_point — backward compat, allow all
+
+    try:
+        module_path, class_name = entry_point.split(":", 1)
+        mod = importlib.import_module(module_path)
+        plugin_cls = getattr(mod, class_name, None)
+    except Exception:
+        logger.debug("Failed to import plugin class from {} for hot field check", entry_point)
+        return  # Import failure — backward compat, allow all
+
+    if plugin_cls is None:
+        return
+
+    settings_cls = getattr(plugin_cls, "Settings", None)
+    if settings_cls is None:
+        return  # No PluginSettings — backward compat, allow all
+
+    if not (isinstance(settings_cls, type) and issubclass(settings_cls, PluginSettings)):
+        return  # Not a PluginSettings subclass — backward compat
+
+    hot_fields = get_hot_fields(settings_cls)
+    non_hot = sorted(k for k in updates if k not in hot_fields)
+
+    if non_hot:
+        raise ServerDomainError(
+            code="NON_HOT_FIELD_UPDATE",
+            message=(
+                f"Cannot hot-update non-hot fields: {', '.join(non_hot)}. "
+                f"These fields require a plugin restart to take effect."
+            ),
+            status_code=400,
+            details={
+                "plugin_id": plugin_id,
+                "non_hot_fields": non_hot,
+                "hot_fields": sorted(hot_fields),
+            },
+        )
