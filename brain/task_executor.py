@@ -209,6 +209,20 @@ class DirectTaskExecutor:
         self._short_desc_cache: dict[str, tuple[str, str]] = {}
         self._correction_memory_filename = "correction_memory.json"
         self._search_term_allowlist = {"id", "os", "db", "ui", "ux", "qa"}
+        # 白名单 + alias 归一化，防止任意字符串被写进 correction_memory.json
+        # 并跨会话注入到路由 system prompt 里。未命中一律归一为空串，由调用方丢弃。
+        self._correction_tool_canonical = {
+            "computer_use": "computer_use",
+            "browser_use": "browser_use",
+            "openclaw": "openclaw",
+            "qwenpaw": "openclaw",
+            "openfang": "openfang",
+            "user_plugin": "user_plugin",
+        }
+
+    def _normalize_correction_tool_name(self, value: Any) -> str:
+        tool = str(value or "").strip().lower()
+        return self._correction_tool_canonical.get(tool, "")
     
     
     def set_plugin_list_provider(self, provider: Callable[[bool], Awaitable[List[Dict[str, Any]]]]):
@@ -697,8 +711,8 @@ class DirectTaskExecutor:
                 [
                     str(event.get("normalized_intent", "")),
                     str(event.get("user_query", "")),
-                    str(event.get("chosen_tool", "")),
-                    str(event.get("correct_tool", "")),
+                    self._normalize_correction_tool_name(event.get("chosen_tool", "")),
+                    self._normalize_correction_tool_name(event.get("correct_tool", "")),
                     " ".join(
                         str(item.get("content", ""))
                         for item in event.get("recent_context", [])
@@ -732,8 +746,8 @@ class DirectTaskExecutor:
         lines = ["[Historical correction lessons]"]
         for event in events[:3]:
             normalized_intent = self._sanitize_correction_text(event.get("normalized_intent", ""))
-            chosen_tool = self._sanitize_correction_text(event.get("chosen_tool", ""))
-            correct_tool = self._sanitize_correction_text(event.get("correct_tool", ""))
+            chosen_tool = self._normalize_correction_tool_name(event.get("chosen_tool", ""))
+            correct_tool = self._normalize_correction_tool_name(event.get("correct_tool", ""))
             if not any((normalized_intent, chosen_tool, correct_tool)):
                 continue
             lines.append("- Routing lesson:")
@@ -780,12 +794,12 @@ class DirectTaskExecutor:
         correct_instruction: str,
         user_note: str = "",
     ) -> Dict[str, Any]:
-        chosen_tool = str(
+        chosen_tool = self._normalize_correction_tool_name(
             task_info.get("type")
             or task_info.get("execution_method")
             or task_info.get("method")
-            or ""
-        ).strip()
+        )
+        normalized_correct_tool = self._normalize_correction_tool_name(correct_tool)
         task_id = str(task_info.get("task_id") or task_info.get("id") or "").strip()
         task_type = chosen_tool  # Backward-compatible alias for existing readers of correction events.
         event = {
@@ -800,7 +814,7 @@ class DirectTaskExecutor:
             ),
             "task_type": task_type,
             "task_description": self._sanitize_correction_text(task_info.get("task_description", "")),
-            "correct_tool": self._sanitize_correction_text(correct_tool),
+            "correct_tool": normalized_correct_tool,
             "correct_instruction": self._sanitize_correction_text(correct_instruction),
             "user_note": self._sanitize_correction_text(user_note),
             "resolved": True,
