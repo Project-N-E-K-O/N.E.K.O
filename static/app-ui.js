@@ -1171,7 +1171,6 @@
         document.removeEventListener('touchcancel', state.handleTouchEnd);
 
         delete document.body.dataset.nekoBallDrag;
-        if (window.DragHelpers) window.DragHelpers.isDragging = false;
         multiWindowReturnBallDragState = null;
     }
 
@@ -1354,7 +1353,6 @@
                 document.head.appendChild(styleEl);
             }
             document.body.dataset.nekoBallDrag = '1';
-            if (window.DragHelpers) window.DragHelpers.isDragging = true;
             window.nekoPetDrag.start(screenX, screenY);
 
             if (event) {
@@ -1386,7 +1384,6 @@
             const dragToken = state.dragSessionToken;
 
             delete document.body.dataset.nekoBallDrag;
-            if (window.DragHelpers) window.DragHelpers.isDragging = false;
 
             if (!state.hasMoved) {
                 Promise.resolve(window.nekoPetDrag.stop(screenX, screenY)).catch((error) => {

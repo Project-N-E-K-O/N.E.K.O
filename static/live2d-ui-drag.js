@@ -85,8 +85,7 @@
     // 挂载到全局 window 对象，供其他脚本使用
     window.DragHelpers = {
         disableButtonPointerEvents: disableButtonPointerEvents,
-        restoreButtonPointerEvents: restoreButtonPointerEvents,
-        isDragging: false  // 全局拖拽状态，供 preload 跳过 elementFromPoint 等开销
+        restoreButtonPointerEvents: restoreButtonPointerEvents
     };
 })();
 
@@ -224,9 +223,6 @@ Live2DManager.prototype.setupReturnButtonContainerDrag = function (returnButtonC
         pendingClientX = clientX;
         pendingClientY = clientY;
 
-        // 设置全局拖拽标志，供 preload 等跳过昂贵操作
-        if (window.DragHelpers) window.DragHelpers.isDragging = true;
-
         const currentLeft = parseInt(returnButtonContainer.style.left) || 0;
         const currentTop = parseInt(returnButtonContainer.style.top) || 0;
         containerStartX = currentLeft;
@@ -301,9 +297,6 @@ Live2DManager.prototype.setupReturnButtonContainerDrag = function (returnButtonC
 
         isDragging = false;
         returnButtonContainer.style.cursor = 'grab';
-
-        // 清除全局拖拽标志
-        if (window.DragHelpers) window.DragHelpers.isDragging = false;
 
         // 恢复拖拽期间禁用的视觉效果
         const returnBtn = returnButtonContainer.querySelector('#live2d-btn-return');

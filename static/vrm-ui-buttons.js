@@ -737,9 +737,6 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
         pendingClientX = clientX;
         pendingClientY = clientY;
 
-        // 设置全局拖拽标志，供 preload 等跳过昂贵操作
-        if (window.DragHelpers) window.DragHelpers.isDragging = true;
-
         // 获取当前容器的实际位置（考虑居中定位）
         const rect = returnButtonContainer.getBoundingClientRect();
         containerStartX = rect.left;
@@ -820,9 +817,6 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
             setTimeout(() => returnButtonContainer.setAttribute('data-dragging', 'false'), 10);
             isDragging = false;
             returnButtonContainer.style.cursor = 'grab';
-
-            // 清除全局拖拽标志
-            if (window.DragHelpers) window.DragHelpers.isDragging = false;
 
             // 恢复拖拽期间禁用的视觉效果
             const returnBtn = returnButtonContainer.querySelector('#vrm-btn-return');
