@@ -606,7 +606,6 @@ async def startup_event_handler():
         _char_data = await _config_manager.aload_characters()
         _catgirl_names = list(_char_data.get('猫娘', {}).keys())
         await asyncio.to_thread(migrate_to_character_dirs, _config_manager.memory_dir, _catgirl_names)
-        del _char_data, _catgirl_names
     except Exception as _e:
         logger.warning(f"[Memory] 目录迁移失败: {_e}")
 
