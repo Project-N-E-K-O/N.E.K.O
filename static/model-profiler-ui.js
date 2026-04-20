@@ -44,6 +44,7 @@ class ModelProfilerUI {
     }
 
     unmount() {
+        this._cleanupDebugHelpers();
         this.profiler.dispose();
         if (this._updateTimer) {
             clearInterval(this._updateTimer);
@@ -78,6 +79,21 @@ class ModelProfilerUI {
                     <button class="profiler-btn profiler-stop-btn" disabled>⏹ 停止</button>
                     <button class="profiler-btn profiler-snapshot-btn">📷 快照</button>
                     <button class="profiler-btn profiler-reset-btn">🔄 重置</button>
+                </div>
+
+                <!-- 调试可视化 -->
+                <div class="profiler-section">
+                    <div class="profiler-section-title">调试可视化</div>
+                    <div class="profiler-controls">
+                        <button class="profiler-btn profiler-toggle-physics" data-debug="physics-kinematic" title="Kinematic 刚体 (Mode 0)：跟随骨骼动画，不受物理影响" style="border-color:#FF6B35;color:#FF6B35;">⬤ 骨骼刚体</button>
+                        <button class="profiler-btn profiler-toggle-physics" data-debug="physics-dynamic" title="Dynamic 刚体 (Mode 1)：纯物理驱动，受重力和碰撞影响" style="border-color:#E040FB;color:#E040FB;">⬤ 物理刚体</button>
+                        <button class="profiler-btn profiler-toggle-physics" data-debug="physics-mixed" title="Mixed 刚体 (Mode 2)：物理+骨骼混合，位置锚定到骨骼" style="border-color:#448AFF;color:#448AFF;">⬤ 混合刚体</button>
+                    </div>
+                    <div class="profiler-controls" style="margin-top:4px;">
+                        <button class="profiler-btn" data-debug="physics-solid" title="切换线框/半透明面：半透明面模式可观察刚体堆叠关系和重叠程度" style="border-color:#999;color:#999;">🔲 半透明面</button>
+                        <button class="profiler-btn profiler-toggle-ik" data-debug="ik" title="IK 求解器：显示 IK 目标、效应器和链节点">🦴 IK 链</button>
+                        <button class="profiler-btn profiler-toggle-skeleton" data-debug="skeleton" title="骨骼线框：显示完整骨骼层级结构">🩻 骨骼</button>
+                    </div>
                 </div>
 
                 <!-- FPS 实时数据 -->
@@ -247,6 +263,171 @@ class ModelProfilerUI {
         this._resizeObserver = new ResizeObserver(() => this._resizeChart());
         const chartContainer = panel.querySelector('.profiler-chart-container');
         if (chartContainer) this._resizeObserver.observe(chartContainer);
+
+        // 调试可视化开关
+        this._debugHelpers = { 'physics-kinematic': null, 'physics-dynamic': null, 'physics-mixed': null, ik: null, skeleton: null };
+        this._physicsSolidMode = false;
+        panel.querySelectorAll('[data-debug]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                if (btn.dataset.debug === 'physics-solid') {
+                    this._togglePhysicsSolidMode(btn);
+                } else {
+                    this._toggleDebugHelper(btn.dataset.debug, btn);
+                }
+            });
+        });
+    }
+
+    // ═══════════════════ 调试可视化 ═══════════════════
+
+    _toggleDebugHelper(type, btn) {
+        const manager = this.getManager?.();
+        if (!manager) return;
+        const mmd = manager.currentModel;
+        if (!mmd || !mmd.mesh) return;
+        const scene = manager.scene;
+        if (!scene) return;
+
+        // 已有 → 移除
+        if (this._debugHelpers[type]) {
+            if (type.startsWith('physics-')) {
+                this._removePhysicsWireframes(type);
+            } else {
+                scene.remove(this._debugHelpers[type]);
+                if (this._debugHelpers[type].dispose) this._debugHelpers[type].dispose();
+            }
+            this._debugHelpers[type] = null;
+            btn.classList.remove('profiler-debug-active');
+            return;
+        }
+
+        // 创建 helper
+        let helper = null;
+        try {
+            if (type.startsWith('physics-')) {
+                const modeMap = { 'physics-kinematic': 0, 'physics-dynamic': 1, 'physics-mixed': 2 };
+                const colorMap = { 'physics-kinematic': 0xFF6B35, 'physics-dynamic': 0xE040FB, 'physics-mixed': 0x448AFF };
+                helper = this._createPhysicsWireframes(mmd, modeMap[type], colorMap[type]);
+            } else if (type === 'ik') {
+                const anim = manager.animationModule;
+                if (anim?.ikSolver?.createHelper) {
+                    helper = anim.ikSolver.createHelper();
+                } else {
+                    console.warn('[Profiler] IK 求解器不可用');
+                }
+            } else if (type === 'skeleton') {
+                const THREE = window.THREE;
+                if (THREE?.SkeletonHelper) {
+                    helper = new THREE.SkeletonHelper(mmd.mesh);
+                    helper.visible = true;
+                } else {
+                    console.warn('[Profiler] SkeletonHelper 不可用');
+                }
+            }
+        } catch (e) {
+            console.warn(`[Profiler] 创建 ${type} helper 失败:`, e);
+        }
+
+        if (helper) {
+            if (!type.startsWith('physics-')) scene.add(helper);
+            this._debugHelpers[type] = helper;
+            btn.classList.add('profiler-debug-active');
+        }
+    }
+
+    /**
+     * 骨骼挂载式物理可视化：把线框直接挂到骨骼上，自动跟随缩放/位移/旋转
+     */
+    _createPhysicsWireframes(mmd, filterMode, color) {
+        const THREE = window.THREE;
+        if (!THREE) return null;
+
+        const physics = mmd.physics?.getPhysics?.();
+        if (!physics || !physics.bodies) {
+            console.warn('[Profiler] 物理数据不可用');
+            return null;
+        }
+
+        const material = new THREE.MeshBasicMaterial({
+            color: color, wireframe: true, transparent: true, opacity: 0.3, depthTest: false, depthWrite: false
+        });
+
+        const wireframes = [];
+        for (let i = 0; i < physics.bodies.length; i++) {
+            const body = physics.bodies[i];
+            const params = body.params;
+            if (params.physicsMode !== filterMode) continue;
+            const bone = body.bone;
+            if (!bone) continue;
+
+            const [w, h, d] = params.shapeSize;
+            let geo;
+            switch (params.shapeType) {
+                case 0: geo = new THREE.SphereGeometry(w, 8, 6); break;           // Sphere
+                case 1: geo = new THREE.BoxGeometry(w * 2, h * 2, d * 2, 4, 4, 4); break; // Box: half-extent → full
+                case 2: geo = new THREE.CapsuleGeometry(w, h, 4, 8); break;       // Capsule
+                default: continue;
+            }
+
+            const wireframe = new THREE.Mesh(geo, material);
+
+            const offsetForm = body.boneOffsetForm;
+            if (offsetForm) {
+                const o = offsetForm.getOrigin();
+                wireframe.position.set(o.x(), o.y(), o.z());
+                const r = offsetForm.getRotation();
+                wireframe.quaternion.set(r.x(), r.y(), r.z(), r.w());
+            }
+
+            wireframe.userData._physicsWireframe = true;
+            bone.add(wireframe);
+            wireframes.push({ bone, wireframe });
+        }
+
+        return { wireframes, material };
+    }
+
+    _removePhysicsWireframes(type) {
+        const data = this._debugHelpers[type];
+        if (!data) return;
+        for (const { bone, wireframe } of data.wireframes) {
+            bone.remove(wireframe);
+            wireframe.geometry.dispose();
+        }
+        data.material.dispose();
+    }
+
+    _togglePhysicsSolidMode(btn) {
+        this._physicsSolidMode = !this._physicsSolidMode;
+        btn.classList.toggle('profiler-debug-active', this._physicsSolidMode);
+
+        for (const type of ['physics-kinematic', 'physics-dynamic', 'physics-mixed']) {
+            const data = this._debugHelpers[type];
+            if (!data) continue;
+            data.material.wireframe = !this._physicsSolidMode;
+            data.material.opacity = this._physicsSolidMode ? 0.15 : 0.3;
+            data.material.needsUpdate = true;
+        }
+    }
+
+    _cleanupDebugHelpers() {
+        const manager = this.getManager?.();
+        const scene = manager?.scene;
+        for (const type of Object.keys(this._debugHelpers)) {
+            if (this._debugHelpers[type]) {
+                if (type.startsWith('physics-')) {
+                    this._removePhysicsWireframes(type);
+                } else {
+                    if (scene) scene.remove(this._debugHelpers[type]);
+                    if (this._debugHelpers[type].dispose) this._debugHelpers[type].dispose();
+                }
+                this._debugHelpers[type] = null;
+            }
+        }
+        // 重置按钮状态
+        this._elements?.panel?.querySelectorAll('[data-debug]').forEach(btn => {
+            btn.classList.remove('profiler-debug-active');
+        });
     }
 
     // ═══════════════════ 操作 ═══════════════════

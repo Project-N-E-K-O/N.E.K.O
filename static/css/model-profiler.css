@@ -443,3 +443,16 @@
 .dark-mode .profiler-rating-item.profiler-rating-medium { background: #3e2723; }
 .dark-mode .profiler-rating-item.profiler-rating-high { background: #3e1a1a; }
 .dark-mode .profiler-rating-item.profiler-rating-extreme { background: #4a0e0e; }
+
+/* ── 调试可视化按钮激活态 ── */
+.profiler-debug-active {
+    background: #40C5F1 !important;
+    color: #fff !important;
+    border-color: #40C5F1 !important;
+}
+
+.dark-mode .profiler-debug-active {
+    background: #2196f3 !important;
+    color: #fff !important;
+    border-color: #2196f3 !important;
+}
