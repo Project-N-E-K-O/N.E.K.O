@@ -1183,7 +1183,7 @@
         if (!container) return;
         container.style.removeProperty('opacity');
         container.style.removeProperty('transition');
-        container.style.removeProperty('willChange');
+        container.style.removeProperty('will-change');
         container.setAttribute('data-dragging', 'false');
     }
 
@@ -1396,6 +1396,7 @@
             const fallbackMs = options && Number.isFinite(options.fallbackMs)
                 ? options.fallbackMs
                 : 120;
+            const fallbackDeadline = Date.now() + Math.max(0, fallbackMs);
 
             const runWhenStable = () => {
                 requestAnimationFrame(() => {
@@ -1422,11 +1423,25 @@
                 void tryFinish();
             };
             window.addEventListener('resize', state.viewportWaitOnResize);
-            state.viewportWaitFallbackTimer = setTimeout(() => {
+            const pollViewportRestore = () => {
                 if (!isActiveDragToken(dragToken)) return;
-                clearMultiWindowReturnBallDeferredWork(state);
-                runWhenStable();
-            }, fallbackMs);
+                if (tryFinish()) return;
+
+                const remainingMs = fallbackDeadline - Date.now();
+                if (remainingMs <= 0) {
+                    clearMultiWindowReturnBallDeferredWork(state);
+                    return;
+                }
+
+                state.viewportWaitFallbackTimer = setTimeout(
+                    pollViewportRestore,
+                    Math.min(remainingMs, 16)
+                );
+            };
+            state.viewportWaitFallbackTimer = setTimeout(
+                pollViewportRestore,
+                Math.min(Math.max(0, fallbackMs), 16)
+            );
         }
 
         async function resolveFinalWindowBounds(screenX, screenY, dragToken) {
