@@ -6,7 +6,11 @@ from typing import Optional
 from fastapi import APIRouter, Query
 
 from plugin.logging_config import get_logger
-from plugin.server.application.plugins import PluginLifecycleService, PluginQueryService
+from plugin.server.application.plugins import (
+    PluginLifecycleService,
+    PluginQueryService,
+    PluginRegistryService,
+)
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.auth import require_admin
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
@@ -15,6 +19,7 @@ router = APIRouter()
 logger = get_logger("server.routes.plugins")
 query_service = PluginQueryService()
 lifecycle_service = PluginLifecycleService()
+registry_service = PluginRegistryService()
 
 
 @router.get("/plugin/status")
@@ -41,10 +46,34 @@ async def start_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[
         raise_http_from_domain(error, logger=logger)
 
 
+@router.post("/plugin/{plugin_id}/refresh")
+async def refresh_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
+    try:
+        return await registry_service.refresh_plugin(plugin_id)
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
+
+
 @router.post("/plugin/{plugin_id}/stop")
 async def stop_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
     try:
         return await lifecycle_service.stop_plugin(plugin_id)
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
+
+
+@router.delete("/plugin/{plugin_id}")
+async def delete_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
+    try:
+        return await lifecycle_service.delete_plugin(plugin_id)
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
+
+
+@router.post("/plugins/refresh")
+async def refresh_plugins_endpoint(_: str = require_admin) -> dict[str, object]:
+    try:
+        return await registry_service.refresh_registry()
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 

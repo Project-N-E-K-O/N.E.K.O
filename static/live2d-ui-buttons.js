@@ -640,6 +640,8 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
         this.closeAllPopups();
     };
     document.addEventListener('click', this._outsideClickHandler);
+    this._uiWindowHandlers = this._uiWindowHandlers || [];
+    this._uiWindowHandlers.push({ event: 'click', handler: this._outsideClickHandler, target: document });
 
     window.dispatchEvent(new CustomEvent('live2d-floating-buttons-ready'));
     console.log('[Live2D] 浮动按钮就绪事件已发送');

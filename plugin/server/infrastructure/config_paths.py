@@ -5,7 +5,36 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
+from plugin.core.state import state
 from plugin.settings import PLUGIN_CONFIG_ROOTS
+
+
+def _resolve_registered_plugin_config_path(plugin_id: str) -> Path | None:
+    candidates: list[object] = []
+
+    with state.acquire_plugins_read_lock():
+        meta = state.plugins.get(plugin_id)
+        if isinstance(meta, dict):
+            candidates.append(meta.get("config_path"))
+        elif meta is not None:
+            candidates.append(getattr(meta, "config_path", None))
+
+    with state.acquire_plugin_hosts_read_lock():
+        host = state.plugin_hosts.get(plugin_id)
+        if host is not None:
+            candidates.append(getattr(host, "config_path", None))
+
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        try:
+            path = Path(candidate).resolve()
+        except (TypeError, ValueError, OSError, RuntimeError):
+            continue
+        if path.is_file() and path.name == "plugin.toml":
+            return path
+
+    return None
 
 
 def get_plugin_config_path(plugin_id: str) -> Path:
@@ -17,6 +46,10 @@ def get_plugin_config_path(plugin_id: str) -> Path:
                 "underscores, and hyphens are allowed."
             ),
         )
+
+    registered_path = _resolve_registered_plugin_config_path(plugin_id)
+    if registered_path is not None:
+        return registered_path
 
     for root in PLUGIN_CONFIG_ROOTS:
         config_file = root / plugin_id / "plugin.toml"

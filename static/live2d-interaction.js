@@ -444,6 +444,9 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
                 // 如果变成多点触摸，停止拖拽
                 this._isDraggingModel = false;
                 document.getElementById('live2d-canvas').style.cursor = '';
+                // 【维护注意】所有退出拖拽的路径都必须调用 restoreButtonPointerEvents，
+                //  否则 body 上的 neko-model-dragging class 不会被移除，按钮将永久失效。
+                restoreButtonPointerEvents();
                 return;
             }
 
@@ -832,17 +835,14 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
         if (this._goodbyeClicked) {
             const lockIcon = document.getElementById('live2d-lock-icon');
             const floatingButtons = document.getElementById('live2d-floating-buttons');
-            const returnButtonContainer = document.getElementById('live2d-return-button-container');
 
             if (lockIcon) {
                 lockIcon.style.setProperty('display', 'none', 'important');
             }
-            // 隐藏浮动按钮容器，显示"请她回来"按钮
+            // goodbye 状态下这里只维护锁图标/浮动按钮可见性。
+            // 返回球必须由 app-ui.js 在完成定位后再显示，避免先以默认 (0, 0) 闪现。
             if (floatingButtons) {
                 floatingButtons.style.display = 'none';
-            }
-            if (returnButtonContainer) {
-                returnButtonContainer.style.display = 'block';
             }
             ctrlFadeActive = false;
             stationaryFadeActive = false;

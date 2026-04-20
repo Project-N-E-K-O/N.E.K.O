@@ -586,6 +586,15 @@ class VRMInteraction {
             canvas.removeEventListener('contextmenu', this.contextMenuHandler);
             this.contextMenuHandler = null;
         }
+
+        // 【维护注意】cleanup 可能在拖动进行中被调用（如切换模型、dispose），
+        //  必须检查并恢复按钮事件，否则 body 上的 neko-model-dragging class 残留。
+        if (this.isDragging) {
+            this.isDragging = false;
+            this.dragMode = null;
+            if (canvas) canvas.style.cursor = 'default';
+            this._restoreButtonPointerEvents();
+        }
     }
 
     /**

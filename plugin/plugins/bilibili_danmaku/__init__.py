@@ -230,7 +230,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
                 cache_control="no-cache, no-store, must-revalidate",
             )
             if ok:
-                self.logger.info("✅ 弹幕控制台已注册，访问: http://localhost:48916/plugin/bilibili-danmaku/ui/")
+                self.logger.info("✅ 弹幕控制台已注册，访问: http://localhost:48916/plugin/bilibili_danmaku/ui/")
             else:
                 self.logger.warning("注册静态UI失败")
 
@@ -386,7 +386,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
                 content=danmaku_notice,
                 metadata={
                     "room_id": self._room_id,
-                    "plugin_id": "bilibili-danmaku",
+                    "plugin_id": "bilibili_danmaku",
                 },
                 target_lanlan=self._target_lanlan if self._target_lanlan else None,  # 可配置的目标 AI
             )

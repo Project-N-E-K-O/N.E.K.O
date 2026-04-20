@@ -225,6 +225,16 @@ class MMDInteraction {
         this.dragHandler = (e) => {
             if (!this.isDragging || !this.manager.camera) return;
 
+            // 【维护注意】拖动中外部可能触发 setLocked，此时 dragHandler 仍会被 mousemove 调用。
+            //  必须在此检测并终止拖拽 + 恢复按钮事件，否则锁定后拖拽状态残留。
+            if (this.checkLocked()) {
+                this.isDragging = false;
+                this.dragMode = null;
+                canvas.style.cursor = 'default';
+                this._restoreButtonPointerEvents();
+                return;
+            }
+
             const dx = e.clientX - this.previousMousePosition.x;
             const dy = e.clientY - this.previousMousePosition.y;
             this.previousMousePosition = { x: e.clientX, y: e.clientY };

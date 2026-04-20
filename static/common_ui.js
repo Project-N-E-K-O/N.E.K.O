@@ -786,8 +786,6 @@ if (toggleBtn) {
     function startDrag(e, skipPreventDefault = false) {
         isDragging = true;
         hasMoved = false;
-        // 设置全局拖拽标志，供 preload 等跳过昂贵操作
-        if (window.DragHelpers) window.DragHelpers.isDragging = true;
         dragStartedFromToggleBtn = (e.target === toggleBtn || toggleBtn.contains(e.target));
 
         // 获取初始鼠标/触摸位置
@@ -916,9 +914,6 @@ if (toggleBtn) {
             chatContainer.classList.remove('dragging');
             chatContainer.style.cursor = '';
             if (chatHeader) chatHeader.style.cursor = '';
-
-            // 清除全局拖拽标志
-            if (window.DragHelpers) window.DragHelpers.isDragging = false;
 
             // 拖拽结束后恢复按钮的 pointer-events
             if (window.DragHelpers) {
