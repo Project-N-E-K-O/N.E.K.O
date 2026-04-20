@@ -408,6 +408,22 @@ MMDManager.prototype.setupFloatingButtons = function() {
 
     this._syncButtonStatesWithGlobalState();
 
+    // 点击按钮栏/弹窗/侧面板之外的区域时，自动关闭所有弹窗
+    if (this._outsideClickHandler) {
+        document.removeEventListener('click', this._outsideClickHandler);
+    }
+    this._outsideClickHandler = (e) => {
+        const path = e.composedPath ? e.composedPath() : (e.path || []);
+        if (path.includes(buttonsContainer)) return;
+        if (path.some(n => n && n.id && n.id.startsWith('mmd-popup-'))) return;
+        if (path.some(n => n && typeof n.hasAttribute === 'function' && n.hasAttribute('data-neko-sidepanel'))) return;
+        const openPopup = Array.from(document.querySelectorAll('[id^="mmd-popup-"]')).find(el =>
+            getComputedStyle(el).display === 'flex');
+        if (!openPopup) return;
+        this.closeAllPopups();
+    };
+    document.addEventListener('click', this._outsideClickHandler);
+
     // 通知外部浮动按钮已就绪
     window.dispatchEvent(new CustomEvent('live2d-floating-buttons-ready'));
 };

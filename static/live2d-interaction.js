@@ -444,6 +444,9 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
                 // 如果变成多点触摸，停止拖拽
                 this._isDraggingModel = false;
                 document.getElementById('live2d-canvas').style.cursor = '';
+                // 【维护注意】所有退出拖拽的路径都必须调用 restoreButtonPointerEvents，
+                //  否则 body 上的 neko-model-dragging class 不会被移除，按钮将永久失效。
+                restoreButtonPointerEvents();
                 return;
             }
 
