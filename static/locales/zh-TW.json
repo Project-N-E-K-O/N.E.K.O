@@ -367,7 +367,7 @@
         "default": "默認",
         "noVoiceSelected": "未選擇音色",
         "noDescription": "暫無描述",
-            "characterSettingsFile": "角色設定檔",
+        "characterSettingsFile": "角色設定檔",
         "workshopAgreementText": "點擊\"上傳\"即錶示您同意 Steam 創意工坊服務條款，包括創意工坊法律協議：",
         "alreadyUploaded": "已上傳到創意工坊",
         "uploadTime": "上傳時間",
@@ -1490,6 +1490,7 @@
         "detailDescriptionPlaceholder": "可輸入詳細描述",
         "catgirlProfile": "貓娘檔案：進階設定包含Live2D形象、語音ID等。",
         "addCatgirl": "新增貓娘",
+        "openCloudsaveManager": "雲存檔管理",
         "switchCatgirl": "切換貓娘",
         "deleteCatgirl": "刪除貓娘",
         "hideCatgirl": "隱藏此貓娘",
@@ -1526,6 +1527,7 @@
         "cannotConfirmCatgirlStatus": "無法確認當前貓娘狀態，刪除操作已取消",
         "confirmDeleteCatgirl": "確定要刪除貓娘\"{{name}}\"？",
         "deleteCatgirlTitle": "刪除貓娘",
+        "deleteFailed": "刪除失敗",
         "addCatgirlFieldPrompt": "請輸入新設定的名稱（鍵名）",
         "addCatgirlFieldTitle": "新增貓娘設定",
         "live2dModelError": "貓娘\"{{name}}\"的Live2D模型文件不存在或已損壞。\n\n當前模型路徑: {{path}}\n\n是否迴退到默認模型(mao_pro)？\n\n點擊\"確定\"使用默認模型，點擊\"取消\"保持當前設置。",
@@ -1552,7 +1554,6 @@
         "unregisterVoiceTitle": "解除聲音注冊",
         "voiceUnregistered": "聲音注冊已解除",
         "unregisterFailed": "解除注冊失敗",
-        "partialSaveVoiceFailed": "角色已儲存，但音色更新失敗: {{error}}",
         "unregisterError": "解除注冊時發生錯誤",
         "switchFailed": "切換失敗",
         "switchError": "切換貓娘時發生錯誤",
@@ -1566,6 +1567,8 @@
         "saveMasterError": "儲存主人設定失敗",
         "autoSaved": "已自動儲存設定",
         "autoSaveFailed": "自動儲存失敗，請手動儲存後再關閉頁面",
+        "unsavedNewCatgirlDraftDetected": "偵測到未儲存的新貓娘草稿，請先儲存或取消後再同步刷新",
+        "partialSaveVoiceFailed": "角色已保存，但音色更新失敗: {{error}}",
         "exportCard": "導出角色卡",
         "exportingCard": "正在導出角色卡...",
         "exportCardSuccess": "角色卡導出成功",
@@ -1690,6 +1693,255 @@
         "micMute": "靜音麥剋風",
         "micUnmute": "取消靜音"
     },
+    "cloudsave": {
+        "pageTitle": "雲存檔管理 - Project N.E.K.O.",
+        "headerTitle": "雲存檔管理",
+        "subtitle": "可按角色逐一產生或恢復本地雲快照，不會自動覆蓋全域設定。若透過 Steam 啟動並正常退出，Steam Cloud 會自動上傳該快照目錄。",
+        "refresh": "重新整理",
+        "backToCharacterManager": "返回",
+        "loadingSummary": "雲存檔摘要載入中...",
+        "emptyState": "目前沒有可顯示的角色摘要。",
+        "providerAvailable": "雲存檔功能可用，可以手動產生或恢復單一角色快照。",
+        "providerUnavailable": "雲存檔目前不可用，頁面只顯示本地摘要。",
+        "providerSteamAutoCloudReady": "Steam Cloud 已連線。上傳會立即寫入本地雲快照，等你透過 Steam 離開遊戲後，Steam 會自動把該快照上傳到雲端。",
+        "providerSteamAutoCloudOffline": "本地雲快照目前可用，但 Steam Cloud 還沒有連線。若希望 Steam 自動上傳或下載快照，請確認是從 Steam 啟動遊戲且帳號已登入。",
+        "providerSteamAutoCloudSourceLaunch": "目前這次執行是原始碼啟動，所以即使 Steam 已登入，也不能把這次運行視為 Steam Auto-Cloud 一定會執行上傳或下載。若要驗證跨裝置同步，請至少透過 Steam 或桌面啟動器啟動一次。",
+        "providerSnapshotScope": "目前頁面顯示的是這台裝置上已經落地的 cloudsave 暫存快照。",
+        "providerSnapshotSequence": "快照序號：{{sequence}}。",
+        "providerSnapshotExportedAt": "匯出時間：{{time}}。",
+        "providerSnapshotManualApply": "這台裝置上已經有更新的暫存快照，但執行中的資料仍要等你手動按下「套用快照」後才會變更。",
+        "currentCharacter": "目前角色：{{name}}",
+        "noCurrentCharacter": "目前角色：未設定",
+        "nameConflictNotice": {
+            "title": "重名提醒",
+            "bodyStorage": "雲存檔會以角色名稱作為單一角色槽位儲存，不會因為「來自創意工坊」或「自創角色」而自動分開。",
+            "bodyImpact": "如果兩個不同來源的角色重名，上傳或下載都會按同一個雲端角色處理，可能互相覆蓋角色設定、記憶目錄與雲端紀錄。",
+            "bodyAction": "同步前請先確認角色名稱唯一；若不是同一個角色，請先改名再上傳或下載。"
+        },
+        "group": {
+            "count": "{{count}} 項",
+            "workshopTitle": "創意工坊來源角色",
+            "workshopDescription": "這裡集中顯示本地或雲端任一側已確認來源於 Steam 創意工坊的角色。僅僅把目前模型切換為創意工坊資源，不會把自建角色歸入這裡。",
+            "otherTitle": "我的角色",
+            "otherDescription": "這裡顯示自建角色或其他非創意工坊來源的角色。目前模型資源來源會在詳情中單獨顯示。"
+        },
+        "resourceRecoveryTitle": "資源恢復說明",
+        "metaNoValue": "無",
+        "warning": {
+            "local_resource_missing_on_this_device": "本地目前就缺少資源：此裝置缺少該角色所需的模型資源，請依上方資源來源提示恢復。",
+            "cloud_resource_may_be_missing_after_download": "雲端下載後可能仍缺少資源：該角色下載到此裝置後，模型資源可能仍需依來源手動恢復。"
+        },
+        "modelType": {
+            "live2d": "Live2D",
+            "vrm": "VRM",
+            "live3d": "VRM",
+            "mmd": "MMD",
+            "unknown": "未知模型"
+        },
+        "assetSource": {
+            "notRecorded": "未記錄",
+            "steamWorkshop": "Steam 創意工坊",
+            "localImported": "本地匯入模型",
+            "manualExternal": "外部模型引用",
+            "builtin": "內建資源"
+        },
+        "relationState": {
+            "local_only": "僅本地存在",
+            "cloud_only": "僅雲端存在",
+            "matched": "本地與雲端一致",
+            "diverged": "本地與雲端有差異",
+            "unknown": "未知狀態"
+        },
+        "assetState": {
+            "notRecorded": "未記錄",
+            "ready": "資源可直接使用",
+            "import_required": "需要手動匯入資源",
+            "downloadable": "目前缺少資源，請結合創意工坊來源狀態判斷",
+            "missing": "僅恢復設定，資源仍缺失"
+        },
+        "workshopStatus": {
+            "notConfirmed": "未確認",
+            "installed_and_subscribed": "已安裝且仍訂閱",
+            "installed_but_unsubscribed": "本地仍有快取，但已取消訂閱",
+            "subscribed_not_installed": "已訂閱，等待或需要下載",
+            "available_needs_resubscribe": "條目仍可存取，但需要重新訂閱",
+            "unavailable": "條目已不可存取",
+            "steam_unavailable": "目前無法連線 Steam，尚未確認",
+            "unknown": "目前未確認"
+        },
+        "badge": {
+            "local": "本地：{{value}}",
+            "cloud": "雲端：{{value}}"
+        },
+        "scopePrefix": {
+            "localReady": "本地資源仍可用",
+            "cloudReady": "目前裝置已有對應的創意工坊資源",
+            "localMissing": "本地資源缺失",
+            "cloudAfterDownload": "雲端下載後"
+        },
+        "guidance": {
+            "workshopReadyResubscribe": {
+                "title": "{{prefix}}，但目前不在有效訂閱狀態",
+                "bodyLocal": "目前裝置還能直接使用這套本地 Steam 創意工坊資源；但若日後本地快取遺失，通常需要重新訂閱對應條目後，才能再次恢復。",
+                "bodyCloud": "目前裝置已有這套 Steam 創意工坊資源可直接使用；但若日後本地快取遺失，通常需要先重新訂閱對應條目，才能再次恢復。"
+            },
+            "workshopReadyUnavailable": {
+                "title": "{{prefix}}，但原 Steam 創意工坊條目可能已刪除或下架",
+                "body": "目前裝置已有資源，所以角色現在仍可正常使用；但若日後本地快取遺失，通常無法再透過創意工坊自動恢復，只能依靠你自己的備份或手動匯入。"
+            },
+            "workshopInstalled": {
+                "title": "{{prefix}}：目前裝置仍有有效的創意工坊資源",
+                "bodyLocal": "目前裝置仍偵測到該 Steam 創意工坊條目已安裝且仍訂閱，但角色綁定的模型檔案未命中。可能是資源目錄變動、更新未完成，或需要重新同步模型。",
+                "bodyCloud": "目前裝置仍偵測到該 Steam 創意工坊條目已安裝且仍訂閱。下載角色資料後，通常可透過既有恢復流程補齊；若仍未恢復，可能需要重新同步模型。"
+            },
+            "workshopCacheOnly": {
+                "title": "{{prefix}}：裝置可能只剩舊快取，且已取消訂閱",
+                "bodyLocal": "目前裝置已不在訂閱狀態，且目前綁定檔案未命中。若這份舊快取也不可用，通常需要重新訂閱或手動匯入模型，不能再把它當成穩定的自動恢復來源。",
+                "bodyCloud": "目前裝置已不在訂閱狀態。下載角色資料後，若本機舊快取不足以恢復模型，通常需要重新訂閱對應的創意工坊條目，或改為手動匯入模型。"
+            },
+            "workshopSubscribed": {
+                "title": "{{prefix}}：目前裝置仍已訂閱對應創意工坊條目",
+                "bodyLocal": "目前裝置仍訂閱該創意工坊條目，待 Steam 下載完成後通常可恢復；若長時間未恢復，可能是條目結構變更或需要重新同步模型。",
+                "bodyCloud": "目前裝置仍訂閱該創意工坊條目。下載角色資料後，待 Steam 下載完成，通常可以繼續恢復模型資源。"
+            },
+            "workshopResubscribe": {
+                "title": "{{prefix}}：需要重新訂閱原創意工坊條目",
+                "bodyLocal": "該角色原本來自 Steam 創意工坊，但目前裝置已不在訂閱狀態。若條目仍可存取，需要先重新訂閱，再嘗試恢復模型資源。",
+                "bodyCloud": "該雲端角色原本來自 Steam 創意工坊，但目前裝置未訂閱該條目。下載角色資料後，需要先重新訂閱，才能嘗試恢復模型資源。"
+            },
+            "workshopUnavailable": {
+                "title": "{{prefix}}：該創意工坊條目目前已不可存取",
+                "bodyLocal": "該角色原本來自 Steam 創意工坊，但對應條目已刪除、下架或目前不可存取。此裝置無法再依創意工坊自動恢復，只能依靠手動備份或重新匯入模型資源。",
+                "bodyCloud": "該雲端角色原本來自 Steam 創意工坊，但對應條目已刪除、下架或目前不可存取。下載角色資料後，通常無法再依創意工坊自動恢復模型。"
+            },
+            "workshopSteamUnavailable": {
+                "title": "{{prefix}}：目前無法確認創意工坊資源是否仍可恢復",
+                "body": "Steam 目前不可用、未登入，或 Steamworks 尚未初始化。待 Steam 恢復後，才能確認該條目是仍可重新下載，還是已不可用。"
+            },
+            "workshopUnknown": {
+                "title": "{{prefix}}：創意工坊恢復狀態未確認",
+                "body": "目前還不能確認這個創意工坊條目是否仍可恢復，建議先到創意工坊頁面確認訂閱狀態與條目可用性。"
+            },
+            "localManualImport": {
+                "title": "本地資源：需要手動匯入本地模型",
+                "body": "目前裝置缺少該角色所需的本地匯入或外部模型，需要你手動匯入或移動模型檔案。"
+            },
+            "cloudManualImport": {
+                "title": "雲端下載後：需要手動匯入本地模型",
+                "body": "該雲端角色依賴本地匯入或外部模型。下載到目前裝置後，需要你手動匯入或移動對應模型檔案。"
+            },
+            "localManualSource": {
+                "title": "目前角色使用的是本地或手動模型",
+                "body": "雲存檔只會同步角色資料，不會帶上目前這套本地匯入或外部模型檔案。若其他裝置也要保留目前外觀，仍需要你自行準備並匯入模型。"
+            },
+            "localModifiedModel": {
+                "title": "如果你替角色改過模型，需要注意",
+                "body": "如果這是你替原本可由創意工坊恢復的角色換過的模型，現在也會按「需要手動匯入本地模型」處理。上傳後，其他裝置下載這個角色時仍需要你自己補回這套模型檔案。"
+            },
+            "cloudManualSource": {
+                "title": "雲端角色目前記錄的是本地或手動模型",
+                "body": "下載這個雲端角色時，只會恢復角色資料，不會帶上目前記錄的本地匯入或外部模型檔案。目前裝置仍需要你自己準備並匯入對應模型。"
+            },
+            "localWorkshopOrigin": {
+                "title": "這個角色最初來自 Steam 創意工坊",
+                "body": "目前仍能對應到創意工坊角色來源，但現在綁定的模型已經是目前裝置上的本地或手動模型，而不是創意工坊路徑。雲存檔只會同步角色資料，不會上傳目前這套模型檔案。若其他裝置也要保留現在這套外觀，需要你手動匯入模型；若想回到創意工坊自動恢復鏈路，請切回上方顯示的創意工坊條目。"
+            },
+            "cloudWorkshopOrigin": {
+                "title": "這個雲端角色最初來自 Steam 創意工坊",
+                "body": "這個雲端角色是從創意工坊角色上傳而來，但目前記錄的模型已經是本地或手動模型，而不是創意工坊路徑。下載後只會恢復角色資料；若其他裝置也要保留目前這套模型，需要你手動準備模型檔案，並同時確認上方顯示的創意工坊來源狀態。"
+            },
+            "sourceDiverged": {
+                "title": "本地模型來源已不同於雲端",
+                "body": "本地目前用的是手動匯入或外部模型，而雲端記錄仍是 Steam 創意工坊來源。若繼續上傳，雲端也會改為只同步角色資料、不包含模型檔案。"
+            }
+        },
+        "hint": {
+            "uploadResubscribe": "\n目前本地角色雖然仍使用創意工坊資源，但目前裝置已不在有效訂閱狀態。其他裝置下載這個角色後，可能需要重新訂閱對應條目，才能恢復模型。",
+            "uploadUnavailable": "\n目前本地角色雖然仍能使用這套創意工坊資源，但原條目已不可存取。其他裝置下載這個角色後，通常無法再透過創意工坊自動恢復模型。",
+            "uploadUnconfirmed": "\n目前本地角色來自 Steam 創意工坊，但現在還不能確認其他裝置是否仍可透過創意工坊恢復模型。",
+            "uploadOriginResubscribe": "\n該角色原本來自 Steam 創意工坊，但目前綁定模型已經是本地或手動模型。其他裝置若要保留目前外觀，仍需要你準備這套模型檔案；若之後還想恢復原始創意工坊來源，通常也需要重新訂閱對應條目。",
+            "uploadOriginUnavailable": "\n該角色原本來自 Steam 創意工坊，但原條目已不可存取，目前綁定模型也已經是本地或手動模型。其他裝置若要保留目前外觀，仍需要你準備這套模型檔案，而且通常也無法再透過創意工坊自動恢復原始來源。",
+            "uploadOriginUnconfirmed": "\n該角色原本來自 Steam 創意工坊，但目前綁定模型已經是本地或手動模型。其他裝置若要保留目前外觀，仍需要你準備這套模型檔案，同時目前也還不能確認原始創意工坊條目是否仍可恢復。",
+            "downloadResubscribe": "\n該雲端角色原本來自 Steam 創意工坊，但目前裝置不在有效訂閱狀態。下載後通常需要先重新訂閱對應條目，才能恢復模型。",
+            "downloadUnavailable": "\n該雲端角色原本來自 Steam 創意工坊，但目前條目已不可存取。下載後通常無法再透過創意工坊自動恢復模型。",
+            "downloadUnconfirmed": "\n該雲端角色原本來自 Steam 創意工坊，但目前還不能確認該條目是否仍可恢復。",
+            "downloadOriginResubscribe": "\n該雲端角色原本來自 Steam 創意工坊，但目前記錄的綁定模型已經是本地或手動模型。下載後你仍需要自己準備目前這套模型檔案；若之後還想恢復原始創意工坊來源，通常也需要重新訂閱對應條目。",
+            "downloadOriginUnavailable": "\n該雲端角色原本來自 Steam 創意工坊，但原條目已不可存取，目前記錄的綁定模型也已經是本地或手動模型。下載後你仍需要自己準備目前這套模型檔案，而且通常也無法再透過創意工坊自動恢復原始來源。",
+            "downloadOriginUnconfirmed": "\n該雲端角色原本來自 Steam 創意工坊，但目前記錄的綁定模型已經是本地或手動模型。下載後你仍需要自己準備目前這套模型檔案，同時目前也還不能確認原始創意工坊條目是否仍可恢復。"
+        },
+        "confirm": {
+            "uploadOverwrite": "這會覆蓋本地雲快照中同名角色的紀錄，不會立刻改動本地角色，也不會包含模型資源本體。",
+            "uploadNew": "這會把本地該角色寫入本地雲快照快取，不會包含模型資源本體。",
+            "uploadManualAsset": "\n目前本地角色使用的是手動匯入或外部模型。上傳後，其他裝置下載這個角色時仍需要你自己匯入這套模型檔案。",
+            "uploadFinal": "\n確定繼續產生 Steam Cloud 快照嗎？",
+            "downloadOverwrite": "這會使用目前裝置上已同步到本地的雲快照，覆蓋本地同名角色設定與記憶目錄，不會自動下載模型資源，並會先建立本地備份。",
+            "downloadNew": "這會把目前裝置上已同步到本地的雲快照恢復到本地，不會自動下載模型資源，並會先建立本地備份。",
+            "downloadManualAsset": "\n該雲端角色依賴手動匯入或外部模型。下載後，如目前裝置沒有這套模型檔案，仍需要你手動匯入或移動資源。",
+            "downloadFinal": "\n確定繼續從 Steam Cloud 快照恢復嗎？",
+            "forceTerminateSession": "角色「{{name}}」目前有活躍會話。\n終止會話後，目前對話內容將遺失，但雲端存檔下載可以繼續。\n\n是否終止會話並繼續下載？"
+        },
+        "dialog": {
+            "providerUnavailable": "雲存檔提供方目前不可用，請稍後再試。",
+            "uploadTitle": "上傳雲存檔",
+            "downloadTitle": "下載雲存檔",
+            "uploadSuccess": "上傳成功。",
+            "downloadSuccess": "下載成功。",
+            "uploadTitleSteamAutoCloud": "產生 Steam Cloud 快照",
+            "downloadTitleSteamAutoCloud": "套用 Steam Cloud 快照",
+            "uploadSuccessSteamAutoCloud": "本地雲快照已更新。等你透過 Steam 離開遊戲後，Steam 會自動把它上傳到雲端。",
+            "downloadSuccessSteamAutoCloud": "Steam Cloud 快照已恢復到本地。",
+            "operationFailed": "操作失敗：{{message}}",
+            "operationInProgress": "該角色的操作正在進行中，請稍等。",
+            "rollbackApplied": "\n本地資料已自動回滾到操作前狀態。",
+            "rollbackFailed": "\n回滾也失敗了：{{message}}",
+            "loadFailed": "載入雲存檔摘要失敗：{{message}}",
+            "stateChanged": "雲存檔狀態已變更，頁面已重新整理，請先確認最新狀態後再重試。",
+            "forceTerminateTitle": "終止會話並繼續？"
+        },
+        "action": {
+            "expandDetails": "展開詳情",
+            "collapseDetails": "收起詳情",
+            "uploadDisabledByProvider": "暫時無法產生快照",
+            "uploadOverwrite": "產生快照",
+            "uploadNew": "產生快照",
+            "uploadUnavailable": "暫時無法產生快照",
+            "downloadDisabledByProvider": "暫時無法套用快照",
+            "downloadOverwrite": "套用快照",
+            "downloadNew": "套用快照",
+            "downloadUnavailable": "暫時無法套用快照"
+        },
+        "meta": {
+            "groupLocal": "本地狀態",
+            "groupCloud": "雲端狀態",
+            "localAssetState": "本地資源狀態",
+            "localAssetSource": "本地資源來源",
+            "localWorkshopStatus": "本地目前狀態",
+            "localCharacterOrigin": "本地角色來源",
+            "localOriginWorkshopStatus": "本地角色來源和目前狀態",
+            "cloudAssetState": "雲端資源狀態",
+            "cloudAssetSource": "雲端資源來源",
+            "cloudWorkshopStatus": "雲端目前狀態",
+            "cloudCharacterOrigin": "雲端角色來源",
+            "cloudOriginWorkshopStatus": "雲端角色來源和目前狀態",
+            "localUpdatedAt": "本地更新時間",
+            "cloudUpdatedAt": "雲端更新時間"
+        },
+        "error": {
+            "providerUnavailable": "雲存檔提供方目前不可用。",
+            "activeSessionBlocked": "該角色存在活躍會話，請先停止會話後再下載。",
+            "memoryServerReleaseFailed": "下載覆蓋前釋放本地記憶句柄失敗，請稍後再試。",
+            "localCharacterNotFound": "找不到本地角色。",
+            "cloudCharacterNotFound": "找不到雲端角色。",
+            "localCharacterExists": "本地已存在同名角色。",
+            "cloudCharacterExists": "雲端已存在同名角色。",
+            "writeFenceActive": "雲存檔維護寫入保護仍在生效，請稍後再試。",
+            "nameAuditFailed": "角色名稱未通過雲存檔校驗規則。",
+            "uploadFailed": "上傳失敗：{{message}}",
+            "downloadFailed": "下載失敗：{{message}}",
+            "localReloadFailedRolledBack": "下載已套用，但本地重新載入失敗。",
+            "sessionTerminateFailed": "終止活躍會話失敗，請稍後重試。"
+        }
+    },
     "settings": {
         "menu": {
             "live2dSettings": "Live2D設置",
@@ -1795,7 +2047,17 @@
         "title": "實時字幕",
         "enable": "字幕翻譯",
         "enableAriaLabel": "字幕翻譯開關",
-        "markdownPlaceholder": "[格式化內容]"
+        "markdownPlaceholder": "[格式化內容]",
+        "settings": {
+            "targetLang": "目標語言",
+            "opacity": "不透明度",
+            "dragAnywhere": "整體拖動",
+            "size": "大小",
+            "sizeSmall": "小",
+            "sizeMedium": "中",
+            "sizeLarge": "大",
+            "settingsBtn": "字幕設定"
+        }
     },
     "viewer": {
         "title": "Viewer - Project N.E.K.O."

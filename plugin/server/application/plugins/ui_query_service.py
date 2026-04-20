@@ -10,6 +10,21 @@ from plugin.server.domain import IO_RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 
 logger = get_logger("server.application.plugins.ui_query")
+_ALLOWED_PLUGIN_LIST_ACTION_KINDS = {"builtin", "ui", "route", "url"}
+_ALLOWED_PLUGIN_LIST_ACTION_OPEN_IN = {"new_tab", "same_tab"}
+_ALLOWED_PLUGIN_LIST_ACTION_CONFIRM_MODES = {"dialog", "hold"}
+_ALLOWED_PLUGIN_LIST_ACTION_BUILTINS = {
+    "open_detail",
+    "open_config",
+    "open_logs",
+    "start",
+    "stop",
+    "reload",
+    "pack",
+    "delete",
+    "enable_extension",
+    "disable_extension",
+}
 
 
 def _normalize_mapping(raw: Mapping[object, object], *, context: str) -> dict[str, object]:
@@ -103,6 +118,112 @@ def _list_static_files_sync(static_dir: Path) -> list[str]:
         rel_path = file_path.relative_to(static_dir)
         static_files.append(str(rel_path))
     return static_files
+
+
+def _has_static_ui_from_meta(plugin_meta: Mapping[str, object]) -> bool:
+    static_ui_config = _get_static_ui_config_from_meta(plugin_meta)
+    if static_ui_config is None:
+        return False
+    static_dir = _resolve_static_dir(static_ui_config)
+    return static_dir is not None and (static_dir / "index.html").exists()
+
+
+def _normalize_plugin_list_action(
+    raw_action: object,
+    *,
+    plugin_id: str,
+    context: str,
+) -> dict[str, object] | None:
+    if not isinstance(raw_action, Mapping):
+        return None
+
+    action = _normalize_mapping(raw_action, context=context)
+    action_id_obj = action.get("id")
+    if isinstance(action_id_obj, str) and action_id_obj.strip():
+        action_id = action_id_obj.strip()
+    else:
+        return None
+
+    kind_obj = action.get("kind")
+    kind = str(kind_obj).strip().lower() if isinstance(kind_obj, str) and kind_obj.strip() else "builtin"
+    if kind not in _ALLOWED_PLUGIN_LIST_ACTION_KINDS:
+        return None
+    if kind == "builtin" and action_id not in _ALLOWED_PLUGIN_LIST_ACTION_BUILTINS:
+        return None
+
+    normalized: dict[str, object] = {
+        "id": action_id,
+        "kind": kind,
+    }
+
+    label_obj = action.get("label")
+    if isinstance(label_obj, str) and label_obj.strip():
+        normalized["label"] = label_obj.strip()
+
+    target_obj = action.get("target")
+    if isinstance(target_obj, str) and target_obj.strip():
+        normalized["target"] = target_obj.strip().replace("{plugin_id}", plugin_id)
+
+    icon_obj = action.get("icon")
+    if isinstance(icon_obj, str) and icon_obj.strip():
+        normalized["icon"] = icon_obj.strip()
+
+    confirm_message_obj = action.get("confirm_message")
+    if isinstance(confirm_message_obj, str) and confirm_message_obj.strip():
+        normalized["confirm_message"] = confirm_message_obj.strip()
+
+    confirm_mode_obj = action.get("confirm_mode")
+    if isinstance(confirm_mode_obj, str) and confirm_mode_obj in _ALLOWED_PLUGIN_LIST_ACTION_CONFIRM_MODES:
+        normalized["confirm_mode"] = confirm_mode_obj
+
+    if isinstance(action.get("danger"), bool):
+        normalized["danger"] = action["danger"]
+    if isinstance(action.get("disabled"), bool):
+        normalized["disabled"] = action["disabled"]
+    if isinstance(action.get("requires_running"), bool):
+        normalized["requires_running"] = action["requires_running"]
+
+    open_in_obj = action.get("open_in")
+    if isinstance(open_in_obj, str) and open_in_obj in _ALLOWED_PLUGIN_LIST_ACTION_OPEN_IN:
+        normalized["open_in"] = open_in_obj
+
+    return normalized
+
+
+def _build_plugin_list_actions_from_meta(
+    plugin_id: str,
+    plugin_meta: Mapping[str, object],
+) -> list[dict[str, object]]:
+    actions: list[dict[str, object]] = []
+    seen_ids: set[str] = set()
+
+    raw_actions = plugin_meta.get("list_actions")
+    if isinstance(raw_actions, list):
+        for index, raw_action in enumerate(raw_actions):
+            normalized = _normalize_plugin_list_action(
+                raw_action,
+                plugin_id=plugin_id,
+                context=f"plugins[{plugin_id}].list_actions[{index}]",
+            )
+            if normalized is None:
+                continue
+            action_id = str(normalized["id"])
+            if action_id in seen_ids:
+                continue
+            actions.append(normalized)
+            seen_ids.add(action_id)
+
+    if _has_static_ui_from_meta(plugin_meta) and "open_ui" not in seen_ids:
+        actions.append(
+            {
+                "id": "open_ui",
+                "kind": "ui",
+                "target": f"/plugin/{plugin_id}/ui/",
+                "open_in": "new_tab",
+            }
+        )
+
+    return actions
 
 
 class PluginUiQueryService:

@@ -213,6 +213,16 @@ async def _safe_fire_proactive_done(scope: dict) -> None:
         logger.warning("safe_fire_proactive_done 异常: %s", err)
 
 
+async def _read_json_object(request: Request) -> dict[str, object]:
+    """Read a JSON request body and normalize non-object payloads to {}."""
+    try:
+        payload = await request.json()
+    except Exception:
+        return {}
+
+    return payload if isinstance(payload, dict) else {}
+
+
 # 统一的表情包图源白名单由 utils.meme_fetcher 维护，本文件仅用于引入
 
 _EMOTION_LABEL_ALIASES = {
@@ -647,7 +657,7 @@ async def ack_pending_notices(request: Request):
     """前端展示完通知后调用，仅删除 cursor 以内的通知（游标确认，避免 TOCTOU）。"""
     from main_logic.core import drain_prominent_notices
     try:
-        body = await request.json()
+        body = await _read_json_object(request)
         cursor = int(body.get("cursor", 0))
     except Exception:
         cursor = 0
@@ -668,10 +678,7 @@ async def post_tutorial_prompt_heartbeat(request: Request):
     if validation_error is not None:
         return validation_error
 
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    payload = await _read_json_object(request)
     return process_tutorial_prompt_heartbeat(payload, config_manager=get_config_manager())
 
 
@@ -682,10 +689,7 @@ async def post_tutorial_prompt_shown(request: Request):
     if validation_error is not None:
         return validation_error
 
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    payload = await _read_json_object(request)
 
     try:
         return record_tutorial_prompt_shown(payload, config_manager=get_config_manager())
@@ -700,10 +704,7 @@ async def post_tutorial_prompt_decision(request: Request):
     if validation_error is not None:
         return validation_error
 
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    payload = await _read_json_object(request)
 
     try:
         return record_tutorial_prompt_decision(payload, config_manager=get_config_manager())
@@ -724,10 +725,7 @@ async def post_autostart_prompt_heartbeat(request: Request):
     if validation_error is not None:
         return validation_error
 
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    payload = await _read_json_object(request)
     return process_autostart_prompt_heartbeat(payload, config_manager=get_config_manager())
 
 
@@ -738,10 +736,7 @@ async def post_autostart_prompt_shown(request: Request):
     if validation_error is not None:
         return validation_error
 
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    payload = await _read_json_object(request)
 
     try:
         return record_autostart_prompt_shown(payload, config_manager=get_config_manager())
@@ -756,10 +751,7 @@ async def post_autostart_prompt_decision(request: Request):
     if validation_error is not None:
         return validation_error
 
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    payload = await _read_json_object(request)
 
     try:
         return record_autostart_prompt_decision(payload, config_manager=get_config_manager())
@@ -774,10 +766,7 @@ async def post_tutorial_started(request: Request):
     if validation_error is not None:
         return validation_error
 
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    payload = await _read_json_object(request)
 
     try:
         return record_tutorial_started(payload, config_manager=get_config_manager())
@@ -792,10 +781,7 @@ async def post_tutorial_completed(request: Request):
     if validation_error is not None:
         return validation_error
 
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    payload = await _read_json_object(request)
 
     try:
         return record_tutorial_completed(payload, config_manager=get_config_manager())
@@ -2719,6 +2705,8 @@ async def proactive_chat(request: Request):
         # ========== 0. 并行获取所有信息源内容（无 LLM） ==========
         screenshot_data = data.get('screenshot_data')
         has_screenshot = bool(screenshot_data) and isinstance(screenshot_data, str)
+        # Avatar 位置元数据（前端截图时捕获的归一化坐标）
+        avatar_position = data.get('avatar_position')
         
         async def _fetch_source(mode: str) -> tuple:
             """
@@ -2739,6 +2727,19 @@ async def proactive_chat(request: Request):
                         COMPRESS_TARGET_HEIGHT,
                         COMPRESS_JPEG_QUALITY,
                     )
+                    # 叠加 Avatar 文字注解（_fetch_source 内部 proactive_lang
+                    # 尚未解析，Phase 1 使用全局语言；Phase 2 会用请求级别的 proactive_lang）
+                    if avatar_position and isinstance(avatar_position, dict):
+                        try:
+                            from utils.screenshot_utils import overlay_avatar_annotation
+                            from utils.language_utils import get_global_language_full
+                            compressed_b64 = await asyncio.to_thread(
+                                overlay_avatar_annotation,
+                                compressed_b64, avatar_position, lanlan_name,
+                                get_global_language_full(),
+                            )
+                        except Exception as ann_err:
+                            logger.warning(f"[{lanlan_name}] Phase 1 avatar annotation failed: {ann_err}")
                     jpg_size_kb = len(compressed_b64) * 3 // 4 // 1024
                     print(f"[{lanlan_name}] Vision 通道: 截图压缩完成 {jpg_size_kb}KB (Phase 2 将直接分析)")
                 except Exception as compress_err:
@@ -3485,6 +3486,21 @@ async def proactive_chat(request: Request):
         if vision_content and has_vision_model:
             fresh_b64 = await mgr.request_fresh_screenshot(timeout=3.0)
             if fresh_b64:
+                # 如果 request_fresh_screenshot 走了 WebSocket 路径，screenshot_response
+                # 已经在 websocket_router 中更新了 mgr._avatar_position，这里用最新的位置叠加。
+                # 如果走了 pyautogui 路径，overlay 已在 request_fresh_screenshot 内部完成。
+                # 为安全起见：若 WS 路径返回的 fresh_b64 尚未叠加，在此补叠。
+                av_pos = getattr(mgr, '_avatar_position', None) or avatar_position
+                if av_pos and isinstance(av_pos, dict):
+                    try:
+                        from utils.screenshot_utils import overlay_avatar_annotation
+                        fresh_b64 = await asyncio.to_thread(
+                            overlay_avatar_annotation,
+                            fresh_b64, av_pos, lanlan_name,
+                            proactive_lang,
+                        )
+                    except Exception as ann_err:
+                        logger.warning(f"[{lanlan_name}] Phase 2 avatar annotation failed: {ann_err}")
                 screenshot_b64_for_phase2 = fresh_b64
                 print(f"[{lanlan_name}] Phase 2 获取到最新截图 ({len(fresh_b64)//1024}KB)")
             else:

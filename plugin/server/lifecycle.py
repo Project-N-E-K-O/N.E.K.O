@@ -5,15 +5,13 @@ import atexit
 import asyncio
 import os
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from plugin.core.host import PluginProcessHost
-from plugin.core.registry import load_plugins_from_roots
 from plugin.core.state import state
 from plugin.core.status import status_manager
 from plugin.logging_config import get_logger
 from plugin.utils.time_utils import now_iso
+from plugin.server.application.plugins import PluginLifecycleService, PluginRegistryService
 from plugin.server.messaging.bus_subscriptions import bus_subscription_manager
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
 from plugin.server.messaging.plane_bridge import start_bridge, stop_bridge
@@ -21,7 +19,7 @@ from plugin.server.messaging.proactive_bridge import start_proactive_bridge, sto
 from plugin.server.messaging.plane_runner import MessagePlaneRunner, build_message_plane_runner
 from plugin.server.monitoring.metrics import metrics_collector
 from plugin.server.messaging.request_router import plugin_router
-from plugin.settings import PLUGIN_CONFIG_ROOTS, PLUGIN_SHUTDOWN_TIMEOUT, PLUGIN_SHUTDOWN_TOTAL_TIMEOUT
+from plugin.settings import PLUGIN_SHUTDOWN_TIMEOUT, PLUGIN_SHUTDOWN_TOTAL_TIMEOUT
 from utils.logger_config import get_module_logger
 
 _EMBEDDED_BY_AGENT = os.getenv("NEKO_PLUGIN_HOSTED_BY_AGENT", "").strip().lower() == "true"
@@ -47,21 +45,8 @@ class _ShutdownResult:
 class ServerLifecycleService:
     def __init__(self) -> None:
         self._message_plane_runner: MessagePlaneRunner | None = None
-
-    @staticmethod
-    def _plugin_factory(
-        plugin_id: str,
-        entry: str,
-        config_path: Path,
-        *,
-        extension_configs: list | None = None,
-    ) -> PluginProcessHost:
-        return PluginProcessHost(
-            plugin_id=plugin_id,
-            entry_point=entry,
-            config_path=config_path,
-            extension_configs=extension_configs,
-        )
+        self._plugin_registry_service = PluginRegistryService()
+        self._plugin_lifecycle_service = PluginLifecycleService()
 
     @staticmethod
     def _get_plugin_hosts_snapshot() -> dict[str, object]:
@@ -135,27 +120,36 @@ class ServerLifecycleService:
         if not healthy:
             logger.warning("message_plane health check returned false; it may still be starting")
 
-    async def _start_hosts(self) -> None:
-        hosts_snapshot = self._get_plugin_hosts_snapshot()
-        if not hosts_snapshot:
-            logger.warning("no plugins loaded at startup; plugins may need manual start")
+    async def _refresh_registry_and_start_autostart_plugins(self) -> None:
+        try:
+            refresh_result = await self._plugin_registry_service.refresh_registry()
+            logger.info(
+                "plugin registry refresh completed: added={}, updated={}, removed={}, failed={}",
+                len(refresh_result.get("added", [])),
+                len(refresh_result.get("updated", [])),
+                len(refresh_result.get("removed", [])),
+                len(refresh_result.get("failed", [])),
+            )
+            autostart_plugin_ids = await self._plugin_registry_service.list_autostart_plugin_ids()
+        except Exception as exc:
+            logger.error(
+                "plugin registry refresh failed at startup: err_type={}, err={}",
+                type(exc).__name__,
+                str(exc),
+            )
             return
 
-        for plugin_id, host_obj in hosts_snapshot.items():
-            if not isinstance(host_obj, _PluginHostContract):
-                logger.warning(
-                    "invalid plugin host object skipped during startup: plugin_id={}, host_type={}",
-                    plugin_id,
-                    type(host_obj).__name__,
-                )
-                continue
+        if not autostart_plugin_ids:
+            logger.warning("no autostart plugins discovered at startup; plugins may need manual start")
+            return
 
+        for plugin_id in autostart_plugin_ids:
             try:
-                await host_obj.start(message_target_queue=state.message_queue)
-                logger.debug("started plugin communication resources: plugin_id={}", plugin_id)
-            except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError, TimeoutError) as exc:
+                await self._plugin_lifecycle_service.start_plugin(plugin_id, refresh_registry=False)
+                logger.debug("autostart plugin started: plugin_id={}", plugin_id)
+            except Exception as exc:
                 logger.error(
-                    "failed to start plugin communication resources: plugin_id={}, err_type={}, err={}",
+                    "failed to autostart plugin at startup: plugin_id={}, err_type={}, err={}",
                     plugin_id,
                     type(exc).__name__,
                     str(exc),
@@ -191,7 +185,7 @@ class ServerLifecycleService:
             )
             self._message_plane_runner = None
 
-        load_plugins_from_roots(PLUGIN_CONFIG_ROOTS, logger, self._plugin_factory)
+        await self._refresh_registry_and_start_autostart_plugins()
 
         await bus_subscription_manager.start()
         logger.debug("bus subscription manager started")
@@ -213,8 +207,6 @@ class ServerLifecycleService:
                 type(exc).__name__,
                 str(exc),
             )
-
-        await self._start_hosts()
 
         def _get_hosts() -> dict[str, object]:
             return self._get_plugin_hosts_snapshot()

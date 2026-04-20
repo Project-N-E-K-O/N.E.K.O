@@ -59,6 +59,7 @@ RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
     nginx \
     openssl \
     bc \
+    fonts-wqy-zenhei \
     && rm -rf /var/lib/apt/lists/* && \
     unset http_proxy && \
     unset https_proxy

@@ -902,12 +902,24 @@
             console.warn('[ReactChatWindow] bridge.toggle failed, using fallback:', err);
             // Fallback: flip flag manually if bridge not loaded or threw
             var appSt = window.appState;
+            var subtitleStore = window.nekoSubtitleShared;
+            var subtitleState = subtitleStore && typeof subtitleStore.getSettings === 'function'
+                ? subtitleStore.getSettings()
+                : null;
             var current = (appSt && typeof appSt.subtitleEnabled !== 'undefined')
                 ? appSt.subtitleEnabled
-                : localStorage.getItem('subtitleEnabled') === 'true';
+                : (subtitleState ? !!subtitleState.subtitleEnabled : (localStorage.getItem('subtitleEnabled') === 'true'));
             next = !current;
             if (appSt) appSt.subtitleEnabled = next;
-            localStorage.setItem('subtitleEnabled', String(next));
+            if (subtitleStore && typeof subtitleStore.updateSettings === 'function') {
+                subtitleStore.updateSettings({
+                    subtitleEnabled: next
+                }, {
+                    source: 'react-chat-fallback-toggle'
+                });
+            } else {
+                localStorage.setItem('subtitleEnabled', String(next));
+            }
             if (window.appSettings && typeof window.appSettings.saveSettings === 'function') {
                 window.appSettings.saveSettings();
             }

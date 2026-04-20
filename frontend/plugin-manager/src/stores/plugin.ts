@@ -3,9 +3,23 @@
  */
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { getPlugins, getPluginStatus, startPlugin, stopPlugin, reloadPlugin, disableExtension, enableExtension } from '@/api/plugins'
+import {
+  getPlugins,
+  getPluginStatus,
+  startPlugin,
+  stopPlugin,
+  reloadPlugin,
+  disableExtension,
+  enableExtension,
+  refreshPluginsRegistry,
+} from '@/api/plugins'
 import type { PluginMeta, PluginStatusData } from '@/types/api'
 import { PluginStatus as StatusEnum } from '@/utils/constants'
+
+type RegistrySyncResult = {
+  registryRefreshed: boolean
+  warningMessage: string | null
+}
 
 export const usePluginStore = defineStore('plugin', () => {
   // 状态
@@ -112,6 +126,41 @@ export const usePluginStore = defineStore('plugin', () => {
     })()
     
     return pendingFetchPlugins
+  }
+
+  async function syncRegistryAndFetch(): Promise<RegistrySyncResult> {
+    let registryRefreshed = false
+    let warningMessage: string | null = null
+
+    try {
+      const response = await refreshPluginsRegistry()
+      registryRefreshed = true
+      if (response.success === false) {
+        const firstFailure = response.failed[0]
+        if (firstFailure) {
+          const failureTarget = firstFailure.plugin_id || firstFailure.config_path
+          warningMessage = response.failed.length > 1
+            ? `插件注册表刷新有 ${response.failed.length} 项失败，首项为 ${failureTarget}: ${firstFailure.error}`
+            : `插件注册表刷新失败: ${failureTarget}: ${firstFailure.error}`
+        } else {
+          warningMessage = '插件注册表刷新未完全成功'
+        }
+      }
+    } catch (err: any) {
+      const status = err?.response?.status
+      if (status !== 401 && status !== 403) {
+        throw err
+      }
+      warningMessage = status === 403
+        ? '当前账号无权限刷新插件注册表，已仅重新拉取插件列表'
+        : '当前会话未认证，已仅重新拉取插件列表'
+    }
+
+    await fetchPlugins(true)
+    return {
+      registryRefreshed,
+      warningMessage,
+    }
   }
 
   async function fetchPluginStatus(pluginId?: string) {
@@ -230,6 +279,7 @@ export const usePluginStore = defineStore('plugin', () => {
     error,
     // 操作
     fetchPlugins,
+    syncRegistryAndFetch,
     fetchPluginStatus,
     start,
     stop,

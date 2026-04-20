@@ -1,0 +1,13 @@
+[plugin]
+id = "simple_plugin"
+name = "Simple Plugin"
+description = "Minimal fixture plugin."
+version = "0.1.0"
+type = "plugin"
+entry = "simple:Plugin"
+
+[plugin_runtime]
+auto_start = true
+
+[simple_plugin]
+enabled = true

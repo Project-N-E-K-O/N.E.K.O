@@ -694,7 +694,7 @@ function renderModelList(models) {
         models.forEach(model => {
             const option = document.createElement('option');
             option.value = model.name;
-            option.textContent = model.name;
+            option.textContent = model.display_name || model.name;
             modelSelect.appendChild(option);
         });
         updateModelDropdown();
