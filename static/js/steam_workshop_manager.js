@@ -2966,13 +2966,6 @@ function openCatgirlPanel(card, originEl) {
         wrapper.style.transformOrigin = cx + 'px ' + cy + 'px';
     }
 
-    // 关闭按钮
-    const closeBtn = document.createElement('button');
-    closeBtn.className = 'catgirl-panel-close';
-    closeBtn.innerHTML = '&times;';
-    closeBtn.onclick = closeCatgirlPanel;
-    wrapper.appendChild(closeBtn);
-
     // 左侧：卡片预览
     const leftSection = document.createElement('div');
     leftSection.className = 'catgirl-panel-left';
@@ -2990,7 +2983,78 @@ function openCatgirlPanel(card, originEl) {
     // 右侧：编辑表单
     const rightSection = document.createElement('div');
     rightSection.className = 'catgirl-panel-right';
-    buildCatgirlDetailForm(name, rawData, isNew, rightSection);
+
+    // === 面板标题栏 ===
+    const headerBar = document.createElement('div');
+    headerBar.className = 'panel-header-bar';
+
+    const tabsContainer = document.createElement('div');
+    tabsContainer.className = 'panel-tabs';
+
+    // 设定标签
+    const settingsTab = document.createElement('button');
+    settingsTab.type = 'button';
+    settingsTab.className = 'panel-tab active';
+    settingsTab.dataset.tab = 'settings';
+    settingsTab.textContent = window.t ? window.t('character.settings') : '设定';
+    tabsContainer.appendChild(settingsTab);
+
+    if (!isNew) {
+        // 分隔线
+        const divider = document.createElement('span');
+        divider.className = 'panel-tab-divider';
+        tabsContainer.appendChild(divider);
+
+        // Steam 标签
+        const steamTab = document.createElement('button');
+        steamTab.type = 'button';
+        steamTab.className = 'panel-tab';
+        steamTab.dataset.tab = 'steam';
+        steamTab.textContent = 'Steam';
+        tabsContainer.appendChild(steamTab);
+    }
+
+    headerBar.appendChild(tabsContainer);
+
+    // 关闭按钮（统一样式）
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'panel-close-btn';
+    closeBtn.title = window.t ? window.t('common.close') : '关闭';
+    const closeBtnImg = document.createElement('img');
+    closeBtnImg.src = '/static/icons/close_button.png';
+    closeBtnImg.alt = window.t ? window.t('common.close') : '关闭';
+    closeBtn.appendChild(closeBtnImg);
+    closeBtn.onclick = closeCatgirlPanel;
+    headerBar.appendChild(closeBtn);
+
+    rightSection.appendChild(headerBar);
+
+    // === 设定标签内容 ===
+    const settingsContent = document.createElement('div');
+    settingsContent.className = 'panel-tab-content panel-tab-settings active';
+    buildCatgirlDetailForm(name, rawData, isNew, settingsContent);
+    rightSection.appendChild(settingsContent);
+
+    // === Steam 标签内容 ===
+    if (!isNew) {
+        const steamContent = document.createElement('div');
+        steamContent.className = 'panel-tab-content panel-tab-steam';
+        rightSection.appendChild(steamContent);
+
+        // 标签切换逻辑
+        headerBar.querySelectorAll('.panel-tab').forEach(tab => {
+            tab.addEventListener('click', function () {
+                headerBar.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
+                this.classList.add('active');
+                rightSection.querySelectorAll('.panel-tab-content').forEach(c => c.classList.remove('active'));
+                const targetClass = 'panel-tab-' + this.dataset.tab;
+                const target = rightSection.querySelector('.' + targetClass);
+                if (target) target.classList.add('active');
+            });
+        });
+    }
+
     wrapper.appendChild(rightSection);
 
     overlay.appendChild(wrapper);
@@ -3004,6 +3068,17 @@ function openCatgirlPanel(card, originEl) {
         setTimeout(() => {
             wrapper.classList.remove('phase-center');
             wrapper.classList.add('phase-expand');
+
+            // 延迟初始化 Steam 标签页内容（等待面板展开动画完成后）
+            if (!isNew) {
+                setTimeout(() => {
+                    const steamContainer = rightSection.querySelector('.panel-tab-steam');
+                    if (steamContainer && !steamContainer.dataset.initialized) {
+                        steamContainer.dataset.initialized = 'true';
+                        buildSteamTabContent(name, rawData, card, steamContainer);
+                    }
+                }, 500);
+            }
         }, 500);
     });
 }
@@ -3017,6 +3092,15 @@ window.openNewCatgirlPanel = openNewCatgirlPanel;
 function closeCatgirlPanel() {
     const overlay = document.querySelector('.catgirl-panel-overlay');
     if (!overlay) return;
+
+    // 清理模型预览资源（如果 Steam 标签页曾加载过）
+    try {
+        if (typeof disposeWorkshopVrm === 'function') disposeWorkshopVrm();
+        if (typeof disposeWorkshopMmd === 'function') disposeWorkshopMmd();
+        if (typeof clearLive2DPreview === 'function') clearLive2DPreview();
+    } catch (e) {
+        console.warn('[Panel] 清理预览资源时出错:', e);
+    }
 
     const wrapper = overlay.querySelector('.catgirl-panel-wrapper');
     if (wrapper) {
@@ -3884,6 +3968,445 @@ async function workshopDeleteCatgirl(name) {
     }
 }
 
+// ====== 占位符环形3D文字 ======
+var GLITCH_TIMINGS = [
+    {dur:'4.8s',delay:'0s'},   {dur:'5.3s',delay:'1.2s'},
+    {dur:'4.5s',delay:'2.7s'}, {dur:'5.7s',delay:'0.4s'},
+    {dur:'4.2s',delay:'3.5s'}, {dur:'5.1s',delay:'1.8s'},
+    {dur:'4.9s',delay:'2.1s'}, {dur:'5.4s',delay:'0.9s'},
+    {dur:'4.6s',delay:'3.2s'},
+];
+var lastCustomRingText = null;
+
+function buildPreviewRing(customText) {
+    var container = document.getElementById('preview-ring-container');
+    if (!container) return;
+    var text;
+    if (customText && typeof customText === 'string') {
+        lastCustomRingText = customText;
+        text = customText;
+    } else if (lastCustomRingText) {
+        text = lastCustomRingText;
+    } else {
+        var key = 'steam.selectCharaToPreview';
+        var raw = (typeof window.t === 'function') ? window.t(key) : null;
+        text = (raw && raw !== key) ? raw : '请选择角色进行预览';
+    }
+    var base = Array.from(text);
+    var chars = base.concat(base).concat(base);
+
+    var groupSize = base.length;
+    var gapExtra = 0.3;
+    var totalSlots = chars.length + gapExtra * 3;
+
+    var placeholder = container.closest('.preview-placeholder');
+    var availH = placeholder ? placeholder.clientHeight : 0;
+    var availW = placeholder ? placeholder.clientWidth : 0;
+    var nominalRadius = Math.ceil(totalSlots * 50 / (2 * Math.PI));
+    var limits = [];
+    if (availH > 80) limits.push((availH - 50) * 0.65);
+    if (availW > 80) limits.push((availW - 50 - 42) / 2);
+    var containerDriven = limits.length ? Math.max(200, Math.min.apply(null, limits)) : 200;
+    var radius = Math.min(nominalRadius, containerDriven);
+
+    var arcPerSlot = radius * 2 * Math.PI / totalSlots;
+    var fontSize = Math.max(14, Math.min(42, Math.floor(arcPerSlot) - 4));
+    container.style.setProperty('--ring-char-size', fontSize + 'px');
+
+    var yComp = Math.round(radius * Math.sin(10 * Math.PI / 180) * -0.1);
+    var tiltDiv = container.closest('.preview-ring-tilt');
+    if (tiltDiv) {
+        tiltDiv.style.transform = 'translateY(' + yComp + 'px) rotateX(-10deg)';
+    }
+    container.innerHTML = '';
+    chars.forEach(function(ch, i) {
+        var group = Math.floor(i / groupSize);
+        var posInGroup = i % groupSize;
+        var slotIndex = group * (groupSize + gapExtra) + posInGroup;
+        var angle = (slotIndex / totalSlots) * 360;
+        var span = document.createElement('span');
+        span.className = 'ring-char';
+        span.textContent = ch;
+        span.setAttribute('data-char', ch);
+        var t = GLITCH_TIMINGS[i % GLITCH_TIMINGS.length];
+        span.style.setProperty('--gdur', t.dur);
+        span.style.setProperty('--gdelay', t.delay);
+        span.style.transform = 'rotateY(' + angle + 'deg) translateZ(' + radius + 'px)';
+        container.appendChild(span);
+    });
+}
+window.buildPreviewRing = buildPreviewRing;
+
+// ====== Steam 标签页内容构建 ======
+function buildSteamTabContent(name, rawData, card, container) {
+    container.innerHTML = '';
+
+    // 主布局容器
+    const layout = document.createElement('div');
+    layout.className = 'character-card-layout';
+    layout.id = 'character-card-layout';
+    layout.style.display = 'flex';
+
+    // ── 上方区域：角色卡信息 + Live2D预览 ──
+    const topRow = document.createElement('div');
+    topRow.className = 'character-card-top-row';
+
+    // 左上：角色卡信息
+    const infoSection = document.createElement('div');
+    infoSection.className = 'character-card-info-section';
+
+    const infoLogo = document.createElement('img');
+    infoLogo.src = '/static/icons/logo_show.png';
+    infoLogo.className = 'card-info-logo';
+    infoLogo.alt = '';
+    infoSection.appendChild(infoLogo);
+
+    // 标题区
+    const headerRow = document.createElement('div');
+    headerRow.className = 'card-info-header-row';
+    headerRow.innerHTML = `
+        <svg class="card-info-bg-hexagons" viewBox="-10 -10 370 310" xmlns="http://www.w3.org/2000/svg">
+            <defs><polygon id="hex-header-shape-p" points="25,5 75,5 100,48 75,91 25,91 0,48" fill="#8cd5ff" stroke="#8cd5ff" stroke-width="8" stroke-linejoin="round"/></defs>
+            <use href="#hex-header-shape-p" x="120" y="0" opacity="0.05"/>
+            <use href="#hex-header-shape-p" x="240" y="50" opacity="0.05"/>
+            <use href="#hex-header-shape-p" x="0" y="50" opacity="0.05"/>
+            <use href="#hex-header-shape-p" x="120" y="99" opacity="0.05"/>
+            <use href="#hex-header-shape-p" x="240" y="149" opacity="0.05"/>
+            <use href="#hex-header-shape-p" x="0" y="149" opacity="0.05"/>
+            <use href="#hex-header-shape-p" x="120" y="198" opacity="0.05"/>
+        </svg>
+        <div class="card-info-title-area">
+            <div class="card-info-header-text">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 L14.5 9.5 L22 12 L14.5 14.5 L12 22 L9.5 14.5 L2 12 L9.5 9.5 Z" stroke="#7EC8E3" stroke-width="2" stroke-linejoin="round" fill="white"/></svg>
+                <span data-i18n="steam.cardInfoPreview">${window.t ? window.t('steam.cardInfoPreview') : '角色卡信息'}</span>
+            </div>
+            <img src="/static/icons/paw_ui.png" class="card-info-paw" alt="">
+        </div>`;
+    infoSection.appendChild(headerRow);
+
+    // 信息正文
+    const infoBody = document.createElement('div');
+    infoBody.className = 'card-info-body';
+    infoBody.innerHTML = `
+        <svg class="card-info-bg-hexagons" viewBox="-10 -10 370 310" xmlns="http://www.w3.org/2000/svg">
+            <defs><polygon id="hex-body-shape-p" points="25,5 75,5 100,48 75,91 25,91 0,48" fill="#8cd5ff" stroke="#8cd5ff" stroke-width="8" stroke-linejoin="round"/></defs>
+            <use href="#hex-body-shape-p" x="120" y="0" opacity="0.05"/>
+            <use href="#hex-body-shape-p" x="240" y="50" opacity="0.05"/>
+            <use href="#hex-body-shape-p" x="0" y="50" opacity="0.05"/>
+            <use href="#hex-body-shape-p" x="120" y="99" opacity="0.05"/>
+            <use href="#hex-body-shape-p" x="240" y="149" opacity="0.05"/>
+            <use href="#hex-body-shape-p" x="0" y="149" opacity="0.05"/>
+            <use href="#hex-body-shape-p" x="120" y="198" opacity="0.05"/>
+        </svg>
+        <svg class="card-info-bg-stars" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+                <linearGradient id="card-star-gradient-p" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" stop-color="#ffffff"/><stop offset="100%" stop-color="#8cd5ff"/>
+                </linearGradient>
+                <symbol id="card-rounded-star-p" viewBox="0 0 24 24">
+                    <path d="M 12 3 Q 12 12 21 12 Q 12 12 12 21 Q 12 12 3 12 Q 12 12 12 3 Z" fill="#ffffff" stroke="#ffffff" stroke-width="3.5" stroke-linejoin="round"/>
+                </symbol>
+                <pattern id="card-star-pattern-p" x="0" y="0" width="80" height="80" patternUnits="userSpaceOnUse">
+                    <use href="#card-rounded-star-p" x="5" y="5" width="15" height="15"/>
+                    <use href="#card-rounded-star-p" x="45" y="45" width="15" height="15"/>
+                </pattern>
+                <mask id="card-stars-mask-p"><rect width="100%" height="100%" fill="url(#card-star-pattern-p)"/></mask>
+            </defs>
+            <rect width="100%" height="100%" fill="url(#card-star-gradient-p)" mask="url(#card-stars-mask-p)"/>
+        </svg>
+        <div id="card-info-preview">
+            <div id="card-info-dynamic-content">
+                <p style="color: #999; text-align: center;" data-i18n="steam.selectCharacterCard">${window.t ? window.t('steam.selectCharacterCard') : '请选择一个角色卡'}</p>
+            </div>
+        </div>`;
+    infoSection.appendChild(infoBody);
+    topRow.appendChild(infoSection);
+
+    // 右上：模型预览
+    const live2dSection = document.createElement('div');
+    live2dSection.className = 'character-card-live2d-section';
+
+    const previewTitle = document.createElement('h3');
+    previewTitle.id = 'model-preview-title';
+    previewTitle.setAttribute('data-i18n', 'steam.live2dPreview');
+    previewTitle.textContent = 'Live2D';
+    live2dSection.appendChild(previewTitle);
+
+    const previewContainer = document.createElement('div');
+    previewContainer.id = 'live2d-preview-container';
+
+    previewContainer.innerHTML = `
+        <div id="live2d-preview-content" style="flex: 1; position: relative; min-height: 0; pointer-events: none; background-color: transparent;">
+            <canvas id="live2d-preview-canvas" style="display: none; width: 100%; height: 100%; position: absolute; top: 0; left: 0; pointer-events: none;"></canvas>
+            <div id="vrm-preview-container" style="display: none; width: 100%; height: 100%; position: absolute; top: 0; left: 0;">
+                <canvas id="vrm-preview-canvas" style="width: 100%; height: 100%;"></canvas>
+            </div>
+            <div id="mmd-preview-container" style="display: none; width: 100%; height: 100%; position: absolute; top: 0; left: 0;">
+                <canvas id="mmd-preview-canvas" style="width: 100%; height: 100%;"></canvas>
+            </div>
+            <div class="preview-placeholder" style="display: flex; justify-content: center; align-items: center; height: 100%; position: relative; z-index: 1; background-color: transparent;">
+                <div class="preview-ring-perspective">
+                    <div class="preview-ring-tilt">
+                        <div id="preview-ring-container" class="preview-ring-container"></div>
+                    </div>
+                </div>
+            </div>
+            <div id="live2d-preview-overlay" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 100; pointer-events: auto;"></div>
+            <button id="live2d-refresh-btn" style="position: absolute; top: 10px; right: 10px; z-index: 101; width: 30px; height: 30px; border: none; border-radius: 50%; background-color: transparent; color: white; cursor: pointer; display: flex; justify-content: center; align-items: center; font-size: 16px; pointer-events: auto;" title="${window.t ? window.t('steam.refreshLive2DPreview') : '刷新Live2D预览'}" onclick="refreshLive2DPreview()">↻</button>
+        </div>`;
+    live2dSection.appendChild(previewContainer);
+
+    // 动作/表情控件
+    const controlsDiv = document.createElement('div');
+    controlsDiv.id = 'live2d-preview-controls';
+    controlsDiv.style.cssText = 'padding: 10px; background-color: #fff; border-top: 1px solid #e0e0e0; margin: 10px 10px 10px 10px; border-radius: 16px;';
+    controlsDiv.innerHTML = `
+        <div style="display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap;">
+            <div style="flex: 1; min-width: 150px;">
+                <select id="preview-motion-select" class="control-input" style="width: 100%;">
+                    <option value="" data-i18n="steam.selectMotion">${window.t ? window.t('steam.selectMotion') : '选择动作'}</option>
+                </select>
+            </div>
+            <div class="btn-play-wrapper">
+                <button id="preview-play-motion-btn" class="btn" disabled>
+                    <span data-i18n="steam.playMotion">${window.t ? window.t('steam.playMotion') : '播放动作'}</span>
+                </button>
+            </div>
+        </div>
+        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+            <div style="flex: 1; min-width: 150px;">
+                <select id="preview-expression-select" class="control-input" style="width: 100%;">
+                    <option value="" data-i18n="steam.selectExpression">${window.t ? window.t('steam.selectExpression') : '选择表情'}</option>
+                </select>
+            </div>
+            <div class="btn-play-wrapper">
+                <button id="preview-play-expression-btn" class="btn" disabled>
+                    <span data-i18n="steam.playExpression">${window.t ? window.t('steam.playExpression') : '播放表情'}</span>
+                </button>
+            </div>
+        </div>`;
+    live2dSection.appendChild(controlsDiv);
+    topRow.appendChild(live2dSection);
+    layout.appendChild(topRow);
+
+    // ── 下方区域：描述 + 标签和按钮 ──
+    const bottomRow = document.createElement('div');
+    bottomRow.className = 'character-card-bottom-row';
+
+    // 左下：描述区域
+    const descSection = document.createElement('div');
+    descSection.className = 'character-card-description-section';
+
+    // 描述标题栏
+    const descHeader = document.createElement('div');
+    descHeader.className = 'description-header-row';
+    descHeader.innerHTML = `
+        <div class="description-title-area">
+            <div class="description-header-text">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 L14.5 9.5 L22 12 L14.5 14.5 L12 22 L9.5 14.5 L2 12 L9.5 9.5 Z" stroke="#7EC8E3" stroke-width="2" stroke-linejoin="round" fill="white"/></svg>
+                <span data-i18n="steam.characterCardDescription">${window.t ? window.t('steam.characterCardDescription') : '描述'}</span>
+                <img src="/static/icons/paw_ui.png" class="description-paw" alt="">
+            </div>
+        </div>`;
+    descSection.appendChild(descHeader);
+
+    // 版权警告
+    const copyrightWarning = document.createElement('div');
+    copyrightWarning.id = 'copyright-warning';
+    copyrightWarning.style.cssText = 'display: none; padding: 8px; background-color: #f8d7da; border: 1px solid #f5c6cb; border-radius: 4px; color: #721c24; margin-bottom: 8px; margin-top: 8px;';
+    copyrightWarning.innerHTML = `<strong>⚠️</strong> <span data-i18n="steam.modelCopyrightIssue">${window.t ? window.t('steam.modelCopyrightIssue') : '您的角色形象存在版权问题，无法上传'}</span>`;
+    descSection.appendChild(copyrightWarning);
+
+    // 描述输入
+    const descGroup = document.createElement('div');
+    descGroup.className = 'control-group description-content';
+    const descTextarea = document.createElement('textarea');
+    descTextarea.id = 'character-card-description';
+    descTextarea.className = 'control-input';
+    descTextarea.style.cssText = 'white-space: pre-wrap; min-height: 100px; resize: none; overflow-y: auto;';
+    descTextarea.placeholder = window.t ? window.t('steam.placeholderCharacterDescription') : '输入角色描述...';
+    descTextarea.addEventListener('input', function () {
+        if (typeof updateCardPreview === 'function') updateCardPreview();
+    });
+    descGroup.appendChild(descTextarea);
+    descSection.appendChild(descGroup);
+
+    // Workshop 状态区域
+    const statusArea = document.createElement('div');
+    statusArea.id = 'workshop-status-area';
+    statusArea.style.cssText = 'display: none; padding: 8px; background-color: #e7f3ff; border: 1px solid #b3d7ff; border-radius: 4px; margin-top: 8px;';
+    statusArea.innerHTML = `
+        <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+            <div>
+                <strong style="color: #0066cc;">✅ <span data-i18n="steam.alreadyUploaded">${window.t ? window.t('steam.alreadyUploaded') : '已上传到创意工坊'}</span></strong>
+                <div style="font-size: 12px; color: #666; margin-top: 4px;">
+                    <span data-i18n="steam.uploadTime">${window.t ? window.t('steam.uploadTime') : '上传时间'}</span>：<span id="workshop-upload-time">-</span>
+                </div>
+                <div style="font-size: 12px; color: #666;">
+                    <span data-i18n="steam.workshopItemId">${window.t ? window.t('steam.workshopItemId') : '物品ID'}</span>：<span id="workshop-item-id">-</span>
+                </div>
+            </div>
+            <button class="btn btn-secondary btn-sm" onclick="showWorkshopSnapshot()" style="white-space: nowrap;">
+                📋 <span data-i18n="steam.viewSnapshot">${window.t ? window.t('steam.viewSnapshot') : '查看已上传版本'}</span>
+            </button>
+        </div>`;
+    descSection.appendChild(statusArea);
+    bottomRow.appendChild(descSection);
+
+    // 右下：标签和按钮区域
+    const tagsButtonsSection = document.createElement('div');
+    tagsButtonsSection.className = 'character-card-tags-buttons-section';
+
+    // 标签区域
+    const tagsArea = document.createElement('div');
+    tagsArea.className = 'character-card-tags-area';
+
+    const tagsLogo = document.createElement('img');
+    tagsLogo.src = '/static/icons/logo_show.png';
+    tagsLogo.className = 'card-info-logo';
+    tagsLogo.alt = '';
+    tagsArea.appendChild(tagsLogo);
+
+    // 标签标题栏
+    const tagsHeaderRow = document.createElement('div');
+    tagsHeaderRow.className = 'tags-header-row';
+    tagsHeaderRow.innerHTML = `
+        <div class="tags-title-area">
+            <div class="tags-header-text">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 L14.5 9.5 L22 12 L14.5 14.5 L12 22 L9.5 14.5 L2 12 L9.5 9.5 Z" stroke="#7EC8E3" stroke-width="2" stroke-linejoin="round" fill="white"/></svg>
+                <span data-i18n="steam.characterCardTags">${window.t ? window.t('steam.characterCardTags') : '角色卡标签'}</span>
+            </div>
+            <img src="/static/icons/paw_ui.png" class="tags-paw" alt="">
+        </div>`;
+    tagsArea.appendChild(tagsHeaderRow);
+
+    // 标签输入
+    const tagsControlGroup = document.createElement('div');
+    tagsControlGroup.className = 'control-group tags-content';
+    const tagInput = document.createElement('input');
+    tagInput.type = 'text';
+    tagInput.id = 'character-card-tag-input';
+    tagInput.className = 'control-input';
+    tagInput.placeholder = window.t ? window.t('steam.tagsPlaceholderSpace') : '输入标签，按空格添加';
+
+    // 标签输入事件
+    tagInput.addEventListener('input', function (e) {
+        if (e.target.value.endsWith(' ') && e.target.value.trim() !== '') {
+            e.preventDefault();
+            if (typeof addTag === 'function') addTag(e.target.value.trim(), 'character-card');
+            e.target.value = '';
+        }
+    });
+    tagInput.addEventListener('keypress', function (e) {
+        if (e.key === 'Enter' && e.target.value.trim() !== '') {
+            e.preventDefault();
+            if (typeof addTag === 'function') addTag(e.target.value.trim(), 'character-card');
+            e.target.value = '';
+        }
+    });
+    tagsControlGroup.appendChild(tagInput);
+
+    const tagsWrapper = document.createElement('div');
+    tagsWrapper.id = 'character-card-tags-wrapper';
+    tagsWrapper.style.cssText = 'display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 15px; border: 2px solid #b3e5fc; border-radius: 50px; background-color: #fff; min-height: 40px; box-sizing: border-box; margin-top: 5px;';
+    const tagsContainer = document.createElement('div');
+    tagsContainer.className = 'tags-container';
+    tagsContainer.id = 'character-card-tags-container';
+    tagsWrapper.appendChild(tagsContainer);
+    tagsControlGroup.appendChild(tagsWrapper);
+    tagsArea.appendChild(tagsControlGroup);
+    tagsButtonsSection.appendChild(tagsArea);
+
+    // 无可上传模型警告
+    const noModelsWarning = document.createElement('div');
+    noModelsWarning.id = 'no-uploadable-models-warning';
+    noModelsWarning.style.cssText = 'display: none; padding: 10px; background-color: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; color: #856404; font-size: 14px; margin-top: 15px;';
+    noModelsWarning.innerHTML = `<span data-i18n="steam.noUploadableModels">${window.t ? window.t('steam.noUploadableModels') : '没有可上传的模型，请先在角色管理页面创建自定义模型'}</span>`;
+    tagsButtonsSection.appendChild(noModelsWarning);
+
+    // 按钮行
+    const buttonsRow = document.createElement('div');
+    buttonsRow.className = 'character-card-buttons-row';
+
+    // 上传按钮
+    const uploadWrapper = document.createElement('div');
+    uploadWrapper.className = 'btn-wrapper';
+    const uploadBtn = document.createElement('button');
+    uploadBtn.id = 'upload-to-workshop-btn';
+    uploadBtn.className = 'btn';
+    uploadBtn.disabled = true;
+    uploadBtn.style.cssText = 'display: flex; align-items: center; justify-content: center; gap: 6px;';
+    uploadBtn.onclick = function () { if (typeof handleUploadToWorkshop === 'function') handleUploadToWorkshop(); };
+    const uploadIcon = document.createElement('img');
+    uploadIcon.src = '/static/icons/upload_icon.png';
+    uploadIcon.style.cssText = 'width: 34px; height: 34px;';
+    uploadBtn.appendChild(uploadIcon);
+    const uploadText = document.createElement('span');
+    uploadText.id = 'upload-btn-text';
+    uploadText.setAttribute('data-i18n', 'steam.uploadToWorkshop');
+    uploadText.textContent = window.t ? window.t('steam.uploadToWorkshop') : '上传到创意工坊';
+    uploadBtn.appendChild(uploadText);
+    uploadWrapper.appendChild(uploadBtn);
+    buttonsRow.appendChild(uploadWrapper);
+
+    // 在角色管理中编辑按钮
+    const editWrapper = document.createElement('div');
+    editWrapper.className = 'btn-wrapper';
+    const editBtn = document.createElement('button');
+    editBtn.className = 'btn';
+    editBtn.style.cssText = 'display: flex; align-items: center; justify-content: center; gap: 6px;';
+    editBtn.onclick = function () { window.location.href = '/chara_manager'; };
+    const editIcon = document.createElement('img');
+    editIcon.src = '/static/icons/cat_icon.png';
+    editIcon.style.cssText = 'width: 34px; height: 34px;';
+    editBtn.appendChild(editIcon);
+    const editText = document.createElement('span');
+    editText.setAttribute('data-i18n', 'steam.editInCharaManager');
+    editText.textContent = window.t ? window.t('steam.editInCharaManager') : '在角色管理中编辑';
+    editBtn.appendChild(editText);
+    editWrapper.appendChild(editBtn);
+    buttonsRow.appendChild(editWrapper);
+
+    tagsButtonsSection.appendChild(buttonsRow);
+    bottomRow.appendChild(tagsButtonsSection);
+    layout.appendChild(bottomRow);
+
+    container.appendChild(layout);
+
+    // 初始化预览环形文字
+    requestAnimationFrame(function () {
+        buildPreviewRing();
+        requestAnimationFrame(buildPreviewRing);
+        var placeholder = container.querySelector('#live2d-preview-container .preview-placeholder');
+        if (placeholder && typeof ResizeObserver !== 'undefined') {
+            new ResizeObserver(buildPreviewRing).observe(placeholder);
+        }
+    });
+
+    // 使用 expandCharacterCardSection 填充数据
+    if (card) {
+        // 确保 card 有足够的信息
+        const cardForExpand = {
+            id: card.id || card.name || name,
+            name: name,
+            originalName: card.originalName || name,
+            rawData: rawData,
+            tags: card.tags || [],
+            description: card.description || ''
+        };
+
+        // 确保角色卡列表中包含该卡
+        if (window.characterCards) {
+            const existingIdx = window.characterCards.findIndex(c => c.id === cardForExpand.id);
+            if (existingIdx < 0) {
+                window.characterCards.push(cardForExpand);
+            }
+        }
+
+        expandCharacterCardSection(cardForExpand);
+    }
+}
+
 // 展开角色卡区域并填充数据
 function expandCharacterCardSection(card) {
     // 更新当前打开的角色卡ID
@@ -3945,7 +4468,8 @@ function expandCharacterCardSection(card) {
     let voiceId = rawData['voice_id'] || (rawData['voice'] && rawData['voice']['voice_id']);
 
     // 填充可编辑字段（Description 使用 textarea.value）
-    document.getElementById('character-card-description').value = description || '';
+    const descEl = document.getElementById('character-card-description');
+    if (descEl) descEl.value = description || '';
 
     // 存储当前角色卡的模型名称和类型供后续使用
     window.currentCharacterCardModel = (effectiveModelType !== 'live2d' && effectiveModelPath) ? effectiveModelPath : live2d;
@@ -4044,22 +4568,28 @@ function expandCharacterCardSection(card) {
 
     // 更新标签
     const tagsContainer = document.getElementById('character-card-tags-container');
-    tagsContainer.innerHTML = '';
-    if (card.tags && card.tags.length > 0) {
-        card.tags.forEach(tag => {
-            const tagElement = document.createElement('span');
-            tagElement.className = 'tag';
-            tagElement.textContent = tag;
-            tagsContainer.appendChild(tagElement);
-        });
+    if (tagsContainer) {
+        tagsContainer.innerHTML = '';
+        if (card.tags && card.tags.length > 0) {
+            card.tags.forEach(tag => {
+                const tagElement = document.createElement('span');
+                tagElement.className = 'tag';
+                tagElement.textContent = tag;
+                tagsContainer.appendChild(tagElement);
+            });
+        }
     }
 
     // 显示角色卡区域
     const characterCardLayout = document.getElementById('character-card-layout');
-    characterCardLayout.style.display = 'flex';
+    if (characterCardLayout) {
+        characterCardLayout.style.display = 'flex';
 
-    // 滚动到角色卡区域
-    characterCardLayout.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        // 仅在非面板上下文中滚动到角色卡区域
+        if (!_catgirlPanelOpen) {
+            characterCardLayout.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+    }
 
     // 获取并显示 Workshop 状态
     fetchWorkshopStatus(card.name);
@@ -4522,10 +5052,15 @@ async function performUpload(data) {
                     }
 
                     // 步骤3: 打开填写信息窗口（modal）
-                    // 先确保本地物品标签页可见
-                    switchTab('local-items-content');
-                    // 然后显示上传表单区域
-                    toggleUploadSection();
+                    if (_catgirlPanelOpen) {
+                        // 面板上下文中只打开上传模态框，不切换主页标签
+                        toggleUploadSection();
+                    } else {
+                        // 先确保本地物品标签页可见
+                        switchTab('local-items-content');
+                        // 然后显示上传表单区域
+                        toggleUploadSection();
+                    }
                 } else {
                     showMessage(window.t ? window.t('steam.prepareUploadFailedMessage', { error: result.error || (window.t ? window.t('common.unknownError') : '未知错误') }) : `准备上传失败: ${result.error || '未知错误'}`, 'error');
                 }
