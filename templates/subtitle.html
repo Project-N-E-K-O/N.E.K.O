@@ -628,7 +628,11 @@
                 if (isDragging) return;
                 if (isDragAnywhereMode()) return;
                 var el = document.elementFromPoint(e.clientX, e.clientY);
-                var isOnHandle = dragHandle.contains(el);
+                var isOnHandle = !!el && (
+                    dragHandle.contains(el) ||
+                    (settingsBtn && settingsBtn.contains(el)) ||
+                    (settingsPanel && settingsPanel.contains(el))
+                );
                 if (isOnHandle && !overHandle) {
                     overHandle = true;
                     api.enableInteraction();
@@ -651,8 +655,17 @@
                 startDrag(e);
                 dragHandle.style.cursor = 'grabbing';
             });
+            dragHandle.addEventListener('touchstart', function(e) {
+                if (isDragAnywhereMode()) return;
+                startDrag(e);
+                dragHandle.style.cursor = 'grabbing';
+            });
 
             subtitleDisplay.addEventListener('mousedown', function(e) {
+                if (!isDragAnywhereMode()) return;
+                startDrag(e);
+            });
+            subtitleDisplay.addEventListener('touchstart', function(e) {
                 if (!isDragAnywhereMode()) return;
                 startDrag(e);
             });
