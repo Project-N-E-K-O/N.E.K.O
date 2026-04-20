@@ -18,6 +18,7 @@ import threading
 import mimetypes
 import platform
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import quote, unquote
 
 from fastapi import APIRouter, Request
@@ -74,6 +75,105 @@ def _read_first_line(path: str, encoding: str = 'utf-8') -> str:
     """同步读文件首行，供 asyncio.to_thread 调用（README.md / README.txt 元数据回退）。"""
     with open(path, 'r', encoding=encoding) as f:
         return f.readline()
+
+
+def _load_deleted_character_names(config_mgr) -> set[str]:
+    deleted_names: set[str] = set()
+    try:
+        tombstone_state = config_mgr.load_character_tombstones_state()
+    except Exception as exc:
+        logger.warning(f"sync_workshop_character_cards: 读取 tombstone 状态失败: {exc}")
+        return deleted_names
+
+    for entry in tombstone_state.get("tombstones") or []:
+        if not isinstance(entry, dict):
+            continue
+        character_name = str(entry.get("character_name") or "").strip()
+        if character_name:
+            deleted_names.add(character_name)
+    return deleted_names
+
+
+def _derive_workshop_origin_display_name(raw_model_name: str, fallback_name: str) -> str:
+    normalized_name = str(raw_model_name or "").strip().replace("\\", "/")
+    if not normalized_name:
+        return str(fallback_name or "").strip()
+    if "/" in normalized_name:
+        normalized_name = normalized_name.rsplit("/", 1)[-1]
+    lower_name = normalized_name.lower()
+    for suffix in (".model3.json", ".vrm", ".pmx", ".pmd"):
+        if lower_name.endswith(suffix):
+            normalized_name = normalized_name[:-len(suffix)]
+            break
+    return normalized_name or str(fallback_name or "").strip()
+
+
+def _normalize_workshop_model_ref(raw_value: str) -> str:
+    return str(raw_value or "").strip().replace("\\", "/")
+
+
+def _build_subscriber_workshop_model_ref(item_id: str | int, raw_model_ref: str) -> str:
+    normalized_ref = _normalize_workshop_model_ref(raw_model_ref)
+    normalized_item_id = str(item_id or "").strip()
+    if not normalized_ref or not normalized_item_id:
+        return normalized_ref
+    if normalized_ref.startswith("/workshop/"):
+        parts = [segment for segment in normalized_ref.strip("/").split("/") if segment]
+        # /workshop/{old_item_id}/...
+        if parts and parts[0] == "workshop":
+            tail_parts = parts[2:] if len(parts) >= 2 else []
+            if tail_parts:
+                return f"/workshop/{normalized_item_id}/{'/'.join(tail_parts)}"
+            return f"/workshop/{normalized_item_id}"
+    relative_ref = normalized_ref.strip("/")
+    if not relative_ref:
+        return f"/workshop/{normalized_item_id}"
+    return f"/workshop/{normalized_item_id}/{relative_ref}"
+
+
+def _derive_workshop_model_binding(chara_data: dict) -> dict[str, str]:
+    legacy_live2d_name = _normalize_workshop_model_ref(chara_data.get("live2d"))
+    vrm_model_path = _normalize_workshop_model_ref(chara_data.get("vrm"))
+    mmd_model_path = _normalize_workshop_model_ref(chara_data.get("mmd"))
+
+    if legacy_live2d_name:
+        lower_legacy_model = legacy_live2d_name.lower()
+        if not vrm_model_path and lower_legacy_model.endswith(".vrm"):
+            vrm_model_path = legacy_live2d_name
+            legacy_live2d_name = ""
+        elif not mmd_model_path and lower_legacy_model.endswith((".pmx", ".pmd")):
+            mmd_model_path = legacy_live2d_name
+            legacy_live2d_name = ""
+
+    if mmd_model_path:
+        return {
+            "binding_model_type": "mmd",
+            "stored_model_type": "live3d",
+            "model_ref": mmd_model_path,
+            "display_name_source": mmd_model_path,
+        }
+
+    if vrm_model_path:
+        return {
+            "binding_model_type": "vrm",
+            "stored_model_type": "live3d",
+            "model_ref": vrm_model_path,
+            "display_name_source": vrm_model_path,
+        }
+
+    live2d_model_path = ""
+    if legacy_live2d_name:
+        if "/" in legacy_live2d_name or legacy_live2d_name.endswith(".model3.json"):
+            live2d_model_path = legacy_live2d_name
+        else:
+            live2d_model_path = f"{legacy_live2d_name}/{legacy_live2d_name}.model3.json"
+
+    return {
+        "binding_model_type": "live2d",
+        "stored_model_type": "live2d",
+        "model_ref": live2d_model_path,
+        "display_name_source": legacy_live2d_name or live2d_model_path,
+    }
 
 
 def _is_item_cache_valid(item_id: int) -> bool:
@@ -3312,6 +3412,7 @@ async def sync_workshop_character_cards() -> dict:
             characters = await config_mgr.aload_characters()
             if '猫娘' not in characters:
                 characters['猫娘'] = {}
+            deleted_character_names = _load_deleted_character_names(config_mgr)
             
             need_save = False
             
@@ -3338,6 +3439,15 @@ async def sync_workshop_character_cards() -> dict:
                             chara_name = chara_data.get('档案名') or chara_data.get('name')
                             if not chara_name:
                                 continue
+
+                            if chara_name in deleted_character_names:
+                                skipped_count += 1
+                                logger.info(
+                                    "sync_workshop_character_cards: 跳过已删除角色 '%s'（tombstone 生效，物品 %s）",
+                                    chara_name,
+                                    item_id,
+                                )
+                                continue
                             
                             # 已存在则跳过（当前设计：仅填充缺失角色卡，不覆盖已有数据；
                             # 如需支持创意工坊更新覆写本地数据，可添加 allow_workshop_overwrite 配置项）
@@ -3355,19 +3465,60 @@ async def sync_workshop_character_cards() -> dict:
                             # 工坊角色首次导入时强制清空 voice_id（当前工坊 voice_id 尚未适配）。
                             # 仅影响新增角色；已存在角色会在上面的分支直接跳过。
                             set_reserved(catgirl_data, 'voice_id', '')
-                            
-                            # 如果角色卡有 live2d 字段，同时保存到 _reserved.avatar.asset_source_id
+
+                            # 角色来源与当前绑定资源来源分离保存：
+                            # - character_origin 表示该角色最初来自哪个 Workshop 物品
+                            # - avatar.asset_source 表示当前实际绑定的模型来源
+                            model_binding = _derive_workshop_model_binding(chara_data)
+                            subscriber_model_ref = _build_subscriber_workshop_model_ref(
+                                item_id,
+                                model_binding.get('model_ref', ''),
+                            )
+                            origin_display_name = _derive_workshop_origin_display_name(
+                                model_binding.get('display_name_source', ''),
+                                chara_name,
+                            )
+
+                            if item_id:
+                                set_reserved(catgirl_data, 'character_origin', 'source', 'steam_workshop')
+                                set_reserved(catgirl_data, 'character_origin', 'source_id', str(item_id))
+                                set_reserved(
+                                    catgirl_data,
+                                    'character_origin',
+                                    'display_name',
+                                    origin_display_name,
+                                )
+                                set_reserved(
+                                    catgirl_data,
+                                    'character_origin',
+                                    'model_ref',
+                                    subscriber_model_ref,
+                                )
+
+                            # 如果角色卡带有可识别的模型路径，同时保存当前 avatar 绑定信息
                             # COMPAT(v1->v2): 旧字段 live2d_item_id 已迁移，不再写回平铺 key。
-                            legacy_live2d_name = str(chara_data.get('live2d', '') or '').strip()
-                            if legacy_live2d_name and item_id:
+                            if subscriber_model_ref and item_id:
                                 set_reserved(catgirl_data, 'avatar', 'asset_source_id', str(item_id))
                                 set_reserved(catgirl_data, 'avatar', 'asset_source', 'steam_workshop')
-                                set_reserved(catgirl_data, 'avatar', 'model_type', 'live2d')
-                                if '/' in legacy_live2d_name or legacy_live2d_name.endswith('.model3.json'):
-                                    live2d_model_path = legacy_live2d_name
-                                else:
-                                    live2d_model_path = f'{legacy_live2d_name}/{legacy_live2d_name}.model3.json'
-                                set_reserved(catgirl_data, 'avatar', 'live2d', 'model_path', live2d_model_path)
+                                set_reserved(
+                                    catgirl_data,
+                                    'avatar',
+                                    'model_type',
+                                    model_binding.get('stored_model_type', 'live2d'),
+                                )
+
+                                if model_binding.get('binding_model_type') == 'live2d':
+                                    set_reserved(catgirl_data, 'avatar', 'live2d', 'model_path', subscriber_model_ref)
+                                    set_reserved(catgirl_data, 'avatar', 'vrm', 'model_path', '')
+                                    set_reserved(catgirl_data, 'avatar', 'mmd', 'model_path', '')
+                                elif model_binding.get('binding_model_type') == 'vrm':
+                                    set_reserved(catgirl_data, 'avatar', 'live2d', 'model_path', '')
+                                    set_reserved(catgirl_data, 'avatar', 'vrm', 'model_path', subscriber_model_ref)
+                                    set_reserved(catgirl_data, 'avatar', 'mmd', 'model_path', '')
+                                elif model_binding.get('binding_model_type') == 'mmd':
+                                    set_reserved(catgirl_data, 'avatar', 'live2d', 'model_path', '')
+                                    set_reserved(catgirl_data, 'avatar', 'vrm', 'model_path', '')
+                                    set_reserved(catgirl_data, 'avatar', 'mmd', 'model_path', subscriber_model_ref)
                             
                             characters['猫娘'][chara_name] = catgirl_data
                             need_save = True
