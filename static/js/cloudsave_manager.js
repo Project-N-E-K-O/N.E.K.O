@@ -1407,10 +1407,10 @@
                     const forceConfirmed = await showConfirm(
                         translate(
                             'cloudsave.confirm.forceTerminateSession',
-                            '该角色 "{{name}}" 当前有活跃会话。\n终止会话后，当前对话内容将丢失，但云存档下载可以继续。\n\n是否终止会话并继续下载？',
+                            'Character "{{name}}" has an active session.\nTerminating the session will discard the current conversation, but the cloud save download can proceed.\n\nTerminate session and continue?',
                             { name: latestItem.character_name || item.character_name },
                         ),
-                        translate('cloudsave.dialog.forceTerminateTitle', '终止会话并继续？'),
+                        translate('cloudsave.dialog.forceTerminateTitle', 'Terminate session and continue?'),
                         { danger: true },
                     );
                     if (!forceConfirmed) {
