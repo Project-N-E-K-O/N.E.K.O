@@ -1,10 +1,12 @@
 # RFC: Memory subsystem event log + view derivation (P2)
 
-Status: **Draft v4** — revised after third design review; awaiting
-fourth review before implementation.
+Status: **Implemented (P2.a)** in PR #905 — infrastructure for event log,
+reconciler scaffolding, and per-character manager locks has landed. P2.b
+(producer wiring for the 12 event types) tracked separately per
+`docs/design/p2-continuation-task.md`.
 
-Branch context: `claude/awesome-goldberg-omrDx`, built on top of P0 (persistent
-rebuttal cursor) and P1 (reflection id determinism + outbox).
+Historical branch context and revision history are preserved in the
+Revision log below.
 
 ## Revision log
 
@@ -307,7 +309,7 @@ Some state transitions emit more than one event. The canonical example:
 and for each `confirmed → promoted` transition calls
 `PersonaManager.aadd_fact`. The real code today interleaves:
 
-```
+```text
 for r in reflections:                       # in-memory iteration
     if eligible_for_promote(r):
         result = await persona.aadd_fact(...)  # persona-side mutation + save

@@ -491,13 +491,13 @@ async def test_reconciler_unknown_event_type_logs_and_skips(tmp_path):
 
     applied_calls: list[str] = []
 
-    def handler(name, payload, view):
+    def handler(name, payload):
         applied_calls.append(payload.get("fact_id"))
         return True
 
     rec.register(EVT_FACT_ADDED, handler)
 
-    applied = await rec.areconcile("小天", view_provider=lambda n, t: {})
+    applied = await rec.areconcile("小天")
     assert applied == 1
     assert applied_calls == ["f1"]
     # Sentinel advanced past both events (unknown was skipped, known was applied)
@@ -516,7 +516,7 @@ async def test_reconciler_handler_exception_preserves_sentinel(tmp_path):
 
     call_count = {"n": 0}
 
-    def handler(name, payload, view):
+    def handler(name, payload):
         call_count["n"] += 1
         if call_count["n"] == 1:
             return True  # first one ok
@@ -524,7 +524,7 @@ async def test_reconciler_handler_exception_preserves_sentinel(tmp_path):
 
     rec.register(EVT_FACT_ADDED, handler)
 
-    applied = await rec.areconcile("小天", view_provider=lambda n, t: {})
+    applied = await rec.areconcile("小天")
     assert applied == 1
     # Sentinel is advanced only past the successful event
     assert log.read_sentinel("小天") == eid1
@@ -538,7 +538,7 @@ async def test_reconciler_no_tail_is_noop(tmp_path):
     eid = log.append("小天", EVT_FACT_ADDED, {"fact_id": "f1"})
     log.advance_sentinel("小天", eid)
 
-    applied = await rec.areconcile("小天", view_provider=lambda n, t: {})
+    applied = await rec.areconcile("小天")
     assert applied == 0
 
 

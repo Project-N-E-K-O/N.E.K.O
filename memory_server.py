@@ -225,9 +225,10 @@ async def _run_outbox_op(name: str, op: dict, sem: asyncio.Semaphore | None = No
     if handler is None:
         logger.warning(f"[Outbox] {name}: 未注册的 op type {op_type}, 跳过 {op_id}")
         return
-    acquired = sem is not None
-    if acquired:
+    acquired = False
+    if sem is not None:
         await sem.acquire()
+        acquired = True
     try:
         try:
             await handler(name, payload)
@@ -240,7 +241,7 @@ async def _run_outbox_op(name: str, op: dict, sem: asyncio.Semaphore | None = No
             # append_done 失败不致命：下次启动重放这个 op，handler 幂等。
             logger.warning(f"[Outbox] {name}/{op_type}/{op_id}: append_done 失败: {e}")
     finally:
-        if acquired:
+        if acquired and sem is not None:
             sem.release()
 
 

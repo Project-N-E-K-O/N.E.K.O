@@ -102,9 +102,11 @@ async def aadd_fact(self, name, fact):
         )
 ```
 
-**Reconciler handlers** — register one `apply_<event_type>(view, event)`
-per type on `Reconciler`. Each must be a pure function over the view +
-event payload. Tests must show: apply twice → same view.
+**Reconciler handlers** — register one `apply_<event_type>(name, payload)
+-> bool` per type on `Reconciler`. Handler MUST load → apply → save its
+own view before returning (sentinel advances after handler returns, so
+skipping save would lose the change on crash). Tests must show: apply
+twice → same view (idempotent).
 
 **Startup integration** in `memory_server.py`: for each character, in
 order: `event_log.compact_if_needed` → `reconciler.areconcile` →
