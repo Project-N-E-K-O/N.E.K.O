@@ -139,6 +139,33 @@
         state.autostartStatusUpdatedAt = Date.now();
     }
 
+    let autostartChangedListenerInstalled = false;
+
+    function handleAutostartStatusChanged(event) {
+        const detail = event && event.detail;
+        if (
+            detail
+            && typeof detail === 'object'
+            && 'enabled' in detail
+            && 'supported' in detail
+            && 'provider' in detail
+        ) {
+            applyAutostartCapabilityState(detail);
+            logFlow('autostart-status', {
+                source: 'shell-event',
+                provider: detail.provider,
+                authoritative: !!detail.authoritative,
+                supported: state.autostartSupported,
+                enabled: state.autostartEnabled,
+                platform: detail.platform,
+                mechanism: detail.mechanism,
+            });
+            return;
+        }
+        // detail 不完整：仅清零时间戳，下一次 ensureAutostartStatusFresh 会重新 poll。
+        state.autostartStatusUpdatedAt = 0;
+    }
+
     async function postDecision(payload) {
         try {
             const response = await requestJson('/api/autostart-prompt/decision', {
@@ -600,6 +627,11 @@
             });
             scheduleFastHeartbeat();
         });
+
+        if (!autostartChangedListenerInstalled) {
+            autostartChangedListenerInstalled = true;
+            window.addEventListener('neko:autostart-status-changed', handleAutostartStatusChanged);
+        }
 
         window.addEventListener('beforeunload', syncForegroundWindow);
     }
