@@ -1103,3 +1103,299 @@ async def test_cloudsave_download_does_not_report_rollback_when_no_backup_was_at
         assert failed_payload["rolled_back"] is False
         assert failed_payload["rollback_error"] == ""
         restore_backup_mock.assert_not_called()
+
+
+# ======================================================================
+# Force-terminate session tests
+# ======================================================================
+
+
+def _make_active_session_mgr():
+    """Create a mock LLMSessionManager with is_active=True."""
+    mgr = AsyncMock()
+    mgr.is_active = True
+    mgr.websocket = AsyncMock()
+    return mgr
+
+
+def _setup_force_test_env(tmp_root, *, active_mgr=None):
+    """Common setup for force-terminate tests: bootstrap + shared_state init."""
+    cm = _make_config_manager(tmp_root)
+    bootstrap_local_cloudsave_environment(cm)
+
+    async def _noop_init():
+        return None
+
+    async def _noop_any(*args, **kwargs):
+        return None
+
+    role_state = _make_role_state_for_test(
+        {"小满": active_mgr} if active_mgr else {}
+    )
+
+    with patch("utils.config_manager._config_manager", cm):
+        init_shared_state(
+            role_state=role_state,
+            steamworks=None,
+            templates=None,
+            config_manager=cm,
+            logger=None,
+            initialize_character_data=_noop_init,
+            switch_current_catgirl_fast=_noop_any,
+            init_one_catgirl=_noop_any,
+            remove_one_catgirl=_noop_any,
+        )
+
+    return cm
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_download_active_session_no_force():
+    """Active session + no force → 409 + can_force: true."""
+    with TemporaryDirectory() as td:
+        mgr = _make_active_session_mgr()
+        cm = _setup_force_test_env(Path(td), active_mgr=mgr)
+
+        with patch("utils.config_manager._config_manager", cm):
+            cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
+
+            resp = await cloudsave_router_module.post_cloudsave_character_download(
+                "小满",
+                _DummyRequest({"overwrite": True, "backup_before_overwrite": True}),
+            )
+
+        payload = json.loads(resp.body)
+        assert resp.status_code == 409
+        assert payload["code"] == "ACTIVE_SESSION_BLOCKED"
+        assert payload["can_force"] is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_download_active_session_force_bool_coercion():
+    """force='true' (string) → still returns 409 (strict bool check)."""
+    with TemporaryDirectory() as td:
+        mgr = _make_active_session_mgr()
+        cm = _setup_force_test_env(Path(td), active_mgr=mgr)
+
+        with patch("utils.config_manager._config_manager", cm):
+            cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
+
+            resp = await cloudsave_router_module.post_cloudsave_character_download(
+                "小满",
+                _DummyRequest({"overwrite": True, "backup_before_overwrite": True, "force": "true"}),
+            )
+
+        payload = json.loads(resp.body)
+        assert resp.status_code == 409
+        assert payload["code"] == "ACTIVE_SESSION_BLOCKED"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_download_active_session_force_terminate_ok():
+    """force=true + terminate success + memory release success → download proceeds → 200."""
+    with TemporaryDirectory() as td:
+        mgr = _make_active_session_mgr()
+        cm = _setup_force_test_env(Path(td), active_mgr=mgr)
+        _write_runtime_state(cm, character_name="小满")
+        export_local_cloudsave_snapshot(cm)
+
+        with patch("utils.config_manager._config_manager", cm):
+            cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
+
+            with patch.object(
+                cloudsave_router_module,
+                "import_cloudsave_character_unit",
+                return_value={
+                    "detail": {"item": {"character_name": "小满"}},
+                    "backup_path": "",
+                },
+            ), patch.object(
+                cloudsave_router_module,
+                "_reload_after_character_download",
+                AsyncMock(return_value=(True, "")),
+            ), patch.object(
+                cloudsave_router_module,
+                "release_memory_server_character",
+                AsyncMock(return_value=True),
+            ):
+                resp = await cloudsave_router_module.post_cloudsave_character_download(
+                    "小满",
+                    _DummyRequest({"overwrite": True, "backup_before_overwrite": True, "force": True}),
+                )
+
+        # Successful download returns a plain dict, not JSONResponse
+        assert isinstance(resp, dict)
+        assert resp["success"] is True
+        mgr.disconnected_by_server.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_download_active_session_force_terminate_fail():
+    """force=true + terminate fails → 503 SESSION_TERMINATE_FAILED."""
+    with TemporaryDirectory() as td:
+        mgr = _make_active_session_mgr()
+        mgr.disconnected_by_server = AsyncMock(side_effect=RuntimeError("websocket error"))
+        cm = _setup_force_test_env(Path(td), active_mgr=mgr)
+
+        with patch("utils.config_manager._config_manager", cm):
+            cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
+
+            with patch.object(
+                cloudsave_router_module,
+                "release_memory_server_character",
+                AsyncMock(return_value=True),
+            ) as release_mock:
+                resp = await cloudsave_router_module.post_cloudsave_character_download(
+                    "小满",
+                    _DummyRequest({"overwrite": True, "backup_before_overwrite": True, "force": True}),
+                )
+
+        payload = json.loads(resp.body)
+        assert resp.status_code == 503
+        assert payload["code"] == "SESSION_TERMINATE_FAILED"
+        release_mock.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_download_active_session_force_memory_release_fail():
+    """force=true + terminate ok + memory release fails → 503 MEMORY_SERVER_RELEASE_FAILED."""
+    with TemporaryDirectory() as td:
+        mgr = _make_active_session_mgr()
+        cm = _setup_force_test_env(Path(td), active_mgr=mgr)
+
+        with patch("utils.config_manager._config_manager", cm):
+            cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
+
+            with patch.object(
+                cloudsave_router_module,
+                "release_memory_server_character",
+                AsyncMock(return_value=False),
+            ), patch.object(
+                cloudsave_router_module,
+                "import_cloudsave_character_unit",
+            ) as import_mock:
+                resp = await cloudsave_router_module.post_cloudsave_character_download(
+                    "小满",
+                    _DummyRequest({"overwrite": True, "backup_before_overwrite": True, "force": True}),
+                )
+
+        payload = json.loads(resp.body)
+        assert resp.status_code == 503
+        assert payload["code"] == "MEMORY_SERVER_RELEASE_FAILED"
+        import_mock.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_download_no_active_session_force_ignored():
+    """No active session + force=true → normal download (force ignored)."""
+    with TemporaryDirectory() as td:
+        cm = _setup_force_test_env(Path(td))
+        _write_runtime_state(cm, character_name="小满")
+        export_local_cloudsave_snapshot(cm)
+
+        with patch("utils.config_manager._config_manager", cm):
+            cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
+
+            with patch.object(
+                cloudsave_router_module,
+                "import_cloudsave_character_unit",
+                return_value={
+                    "detail": {"item": {"character_name": "小满"}},
+                    "backup_path": "",
+                },
+            ), patch.object(
+                cloudsave_router_module,
+                "_reload_after_character_download",
+                AsyncMock(return_value=(True, "")),
+            ):
+                resp = await cloudsave_router_module.post_cloudsave_character_download(
+                    "小满",
+                    _DummyRequest({"overwrite": True, "backup_before_overwrite": True, "force": True}),
+                )
+
+        assert isinstance(resp, dict)
+        assert resp["success"] is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_download_after_force_is_active_false():
+    """After force terminate, mgr.is_active should be False."""
+    with TemporaryDirectory() as td:
+        mgr = _make_active_session_mgr()
+        cm = _setup_force_test_env(Path(td), active_mgr=mgr)
+        _write_runtime_state(cm, character_name="小满")
+        export_local_cloudsave_snapshot(cm)
+
+        with patch("utils.config_manager._config_manager", cm):
+            cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
+
+            with patch.object(
+                cloudsave_router_module,
+                "import_cloudsave_character_unit",
+                return_value={
+                    "detail": {"item": {"character_name": "小满"}},
+                    "backup_path": "",
+                },
+            ), patch.object(
+                cloudsave_router_module,
+                "_reload_after_character_download",
+                AsyncMock(return_value=(True, "")),
+            ), patch.object(
+                cloudsave_router_module,
+                "release_memory_server_character",
+                AsyncMock(return_value=True),
+            ):
+                await cloudsave_router_module.post_cloudsave_character_download(
+                    "小满",
+                    _DummyRequest({"overwrite": True, "backup_before_overwrite": True, "force": True}),
+                )
+
+        # disconnected_by_server → cleanup → end_session sets is_active=False
+        mgr.disconnected_by_server.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_download_after_force_memory_released():
+    """Force terminate should call release_memory_server_character."""
+    with TemporaryDirectory() as td:
+        mgr = _make_active_session_mgr()
+        cm = _setup_force_test_env(Path(td), active_mgr=mgr)
+        _write_runtime_state(cm, character_name="小满")
+        export_local_cloudsave_snapshot(cm)
+
+        with patch("utils.config_manager._config_manager", cm):
+            cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
+
+            with patch.object(
+                cloudsave_router_module,
+                "import_cloudsave_character_unit",
+                return_value={
+                    "detail": {"item": {"character_name": "小满"}},
+                    "backup_path": "",
+                },
+            ), patch.object(
+                cloudsave_router_module,
+                "_reload_after_character_download",
+                AsyncMock(return_value=(True, "")),
+            ), patch.object(
+                cloudsave_router_module,
+                "release_memory_server_character",
+                AsyncMock(return_value=True),
+            ) as release_mock:
+                await cloudsave_router_module.post_cloudsave_character_download(
+                    "小满",
+                    _DummyRequest({"overwrite": True, "backup_before_overwrite": True, "force": True}),
+                )
+
+        release_mock.assert_awaited_once()
+        call_args = release_mock.call_args
+        assert call_args[0][0] == "小满"
+        assert "强制" in call_args[1]["reason"]

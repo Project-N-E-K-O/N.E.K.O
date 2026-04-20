@@ -1864,7 +1864,8 @@
             "downloadOverwrite": "这会使用当前设备上已同步到本地的云快照，覆盖本地同名角色配置和记忆目录，不会自动下载模型资源，并会先创建本地备份。",
             "downloadNew": "这会把当前设备上已同步到本地的云快照恢复到本地，不会自动下载模型资源，并会先创建本地备份。",
             "downloadManualAsset": "\n该云端角色依赖手动导入或外部模型。下载后，如当前设备没有这套模型文件，仍需要你手动导入或移动资源。",
-            "downloadFinal": "\n确定继续从 Steam Cloud 快照恢复吗？"
+            "downloadFinal": "\n确定继续从 Steam Cloud 快照恢复吗？",
+            "forceTerminateSession": "该角色 \"{{name}}\" 当前有活跃会话。\n终止会话后，当前对话内容将丢失，但云存档下载可以继续。\n\n是否终止会话并继续下载？"
         },
         "dialog": {
             "providerUnavailable": "云存档提供方当前不可用，请稍后再试。",
@@ -1881,7 +1882,8 @@
             "rollbackApplied": "\n本地数据已自动回滚到操作前状态。",
             "rollbackFailed": "\n回滚也失败了：{{message}}",
             "loadFailed": "加载云存档摘要失败：{{message}}",
-            "stateChanged": "云存档状态已变化，页面已刷新，请先确认最新状态后再重试。"
+            "stateChanged": "云存档状态已变化，页面已刷新，请先确认最新状态后再重试。",
+            "forceTerminateTitle": "终止会话并继续？"
         },
         "action": {
             "expandDetails": "展开详情",
@@ -1923,7 +1925,8 @@
             "nameAuditFailed": "角色名称未通过云存档校验规则。",
             "uploadFailed": "上传失败：{{message}}",
             "downloadFailed": "下载失败：{{message}}",
-            "localReloadFailedRolledBack": "下载结果不保证已生效。"
+            "localReloadFailedRolledBack": "下载结果不保证已生效。",
+            "sessionTerminateFailed": "终止活跃会话失败，请稍后重试。"
         }
     },
     "settings": {

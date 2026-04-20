@@ -3905,6 +3905,17 @@ async function closeCharaManagerPage() {
         }
     }
 
+    // 关闭通过 openOrFocusWindow 打开的子窗口（如 cloudsave_manager），
+    // 避免 Electron 按窗口名复用残留窗口而不加载新 URL
+    if (window._openedWindows) {
+        for (const [key, win] of Object.entries(window._openedWindows)) {
+            if (win && !win.closed) {
+                win.close();
+            }
+            delete window._openedWindows[key];
+        }
+    }
+
     if (window.opener) {
         window.close();
     } else if (window.parent && window.parent !== window) {
