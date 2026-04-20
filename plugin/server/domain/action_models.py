@@ -38,6 +38,9 @@ class ActionDescriptor(BaseModel):
     step: float | None = None  # number/slider only
     disabled: bool = False
 
+    # Entry action fields (control == "button" with input_schema)
+    input_schema: dict[str, object] | None = None
+
     # Chat inject fields (type == "chat_inject")
     inject_text: str | None = None
 

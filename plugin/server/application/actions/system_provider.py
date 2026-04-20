@@ -90,6 +90,7 @@ def _get_entries_for_plugin(
         meta = getattr(handler, "meta", None)
         entry_name = getattr(meta, "name", entry_id) if meta else entry_id
         entry_kind = getattr(meta, "kind", "action") if meta else "action"
+        entry_input_schema = getattr(meta, "input_schema", None) if meta else None
 
         # Determine enabled state from metadata
         enabled = True
@@ -102,6 +103,7 @@ def _get_entries_for_plugin(
             "name": entry_name,
             "kind": entry_kind,
             "enabled": enabled,
+            "input_schema": entry_input_schema,
         })
 
     return entries
@@ -194,6 +196,14 @@ def _collect_system_actions_sync(
                         current_value=entry.get("enabled", True),
                     ))
                 else:
+                    # Pass input_schema so the frontend can show a parameter form
+                    raw_schema = entry.get("input_schema")
+                    schema: dict[str, object] | None = None
+                    if isinstance(raw_schema, dict):
+                        props = raw_schema.get("properties")
+                        if isinstance(props, dict) and len(props) > 0:
+                            schema = raw_schema
+
                     actions.append(ActionDescriptor(
                         action_id=f"system:{pid}:entry:{entry_id}",
                         type="instant",
@@ -202,6 +212,7 @@ def _collect_system_actions_sync(
                         category=_SYSTEM_CATEGORY,
                         plugin_id=pid,
                         control="button",
+                        input_schema=schema,
                     ))
 
         # ── Static UI navigation ──

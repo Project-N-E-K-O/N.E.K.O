@@ -2534,6 +2534,88 @@ button * {
 
 .qa-action-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
+/* ── Parameter form (for entries with input_schema) ── */
+
+.qa-row-col {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+}
+
+.qa-param-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 8px 6px;
+  border-top: 1px solid rgba(140, 160, 190, 0.1);
+  animation: qa-toast-in 0.2s ease;
+}
+
+.qa-param-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.qa-param-label {
+  font-size: 0.7rem;
+  color: #6a7a90;
+  font-weight: 500;
+}
+
+.qa-param-input {
+  border: 1px solid rgba(140, 160, 190, 0.2);
+  border-radius: 7px;
+  padding: 5px 8px;
+  font-size: 0.78rem;
+  background: rgba(255, 255, 255, 0.6);
+  color: #273042;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.qa-param-input:focus {
+  border-color: rgba(68, 183, 254, 0.5);
+  box-shadow: 0 0 0 2px rgba(68, 183, 254, 0.1);
+}
+
+.qa-param-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.qa-param-cancel,
+.qa-param-submit {
+  border: 0;
+  border-radius: 7px;
+  padding: 4px 12px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.qa-param-cancel {
+  background: rgba(140, 160, 190, 0.1);
+  color: #6a7a90;
+}
+
+.qa-param-cancel:hover {
+  background: rgba(140, 160, 190, 0.2);
+}
+
+.qa-param-submit {
+  background: linear-gradient(135deg, #3a8fd4, #5ab0e8);
+  color: #fff;
+  box-shadow: 0 1px 4px rgba(68, 183, 254, 0.2);
+}
+
+.qa-param-submit:hover {
+  box-shadow: 0 2px 8px rgba(68, 183, 254, 0.3);
+}
+
 /* ── Spinner ── */
 
 .qa-spinner {
@@ -2722,6 +2804,20 @@ button * {
   background: linear-gradient(135deg, rgba(111, 168, 255, 0.18), rgba(111, 168, 255, 0.08));
   border-color: rgba(111, 168, 255, 0.28);
 }
+
+[data-theme="dark"] .qa-param-form { border-top-color: rgba(255, 255, 255, 0.06); }
+[data-theme="dark"] .qa-param-label { color: #7a8ca0; }
+[data-theme="dark"] .qa-param-input {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.08);
+  color: #e0e4ea;
+}
+[data-theme="dark"] .qa-param-input:focus {
+  border-color: rgba(68, 183, 254, 0.4);
+  box-shadow: 0 0 0 2px rgba(68, 183, 254, 0.08);
+}
+[data-theme="dark"] .qa-param-cancel { background: rgba(255, 255, 255, 0.06); color: #8a95a8; }
+[data-theme="dark"] .qa-param-cancel:hover { background: rgba(255, 255, 255, 0.1); }
 
 [data-theme="dark"] .qa-err { background: rgba(223, 91, 91, 0.16); color: #e07070; }
 

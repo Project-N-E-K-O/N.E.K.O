@@ -278,10 +278,13 @@ class _SystemActionHandler:
 
         # ── Button-type entries (value != bool): trigger execution via IPC ──
         if not isinstance(value, bool):
+            # value may be a dict of parameters from the frontend form,
+            # or null for entries without input_schema.
+            args: dict = value if isinstance(value, dict) else {}
             try:
                 trigger = getattr(host, "trigger", None)
                 if trigger is not None:
-                    result = await trigger(entry_id, {})
+                    result = await trigger(entry_id, args)
                     msg = str(result) if result is not None else f"Entry '{entry_id}' executed"
                 else:
                     msg = f"Entry '{entry_id}' triggered (no IPC)"

@@ -20,6 +20,7 @@ export interface ActionDescriptor {
   step?: number;
   disabled?: boolean;
   inject_text?: string;
+  input_schema?: Record<string, unknown>;
   target?: string;
   open_in?: 'new_tab' | 'same_tab';
 }
@@ -330,25 +331,92 @@ function PluginLifecycleControl({ action, loading, error, onExecute }: ControlPr
 }
 
 function ButtonControl({ action, loading, error, onExecute }: ControlProps) {
+  const schema = action.input_schema as Record<string, unknown> | undefined;
+  const properties = (schema?.properties ?? {}) as Record<string, { type?: string; description?: string; default?: unknown }>;
+  const propKeys = Object.keys(properties);
+  const hasParams = propKeys.length > 0;
+
+  const [formOpen, setFormOpen] = useState(false);
+  const [formValues, setFormValues] = useState<Record<string, string>>({});
+
+  // Initialize form defaults when opening
+  const openForm = () => {
+    const defaults: Record<string, string> = {};
+    for (const key of propKeys) {
+      const prop = properties[key];
+      defaults[key] = prop?.default != null ? String(prop.default) : '';
+    }
+    setFormValues(defaults);
+    setFormOpen(true);
+  };
+
+  const submitForm = () => {
+    // Coerce values based on schema types
+    const args: Record<string, unknown> = {};
+    for (const key of propKeys) {
+      const prop = properties[key];
+      const raw = formValues[key] ?? '';
+      if (prop?.type === 'number' || prop?.type === 'integer') {
+        args[key] = Number(raw) || 0;
+      } else if (prop?.type === 'boolean') {
+        args[key] = raw === 'true' || raw === '1';
+      } else {
+        args[key] = raw;
+      }
+    }
+    setFormOpen(false);
+    onExecute(action.action_id, args);
+  };
+
   return (
-    <div className="qa-row">
-      <div className="qa-row-info">
-        <span className="qa-row-label">{action.label}</span>
-        {action.description && <span className="qa-row-desc">{action.description}</span>}
+    <div className="qa-row qa-row-col">
+      <div className="qa-row" style={{ padding: 0 }}>
+        <div className="qa-row-info">
+          <span className="qa-row-label">{action.label}</span>
+          {action.description && <span className="qa-row-desc">{action.description}</span>}
+        </div>
+        <div className="qa-row-widget">
+          {loading && <span className="qa-spinner" />}
+          <button
+            type="button"
+            className="qa-action-btn"
+            disabled={action.disabled || loading}
+            aria-label={action.label}
+            onClick={hasParams ? openForm : () => onExecute(action.action_id, null)}
+          >
+            {i18n('quickActions.run', '执行')}
+          </button>
+          {error && <span className="qa-err" title={error}>!</span>}
+        </div>
       </div>
-      <div className="qa-row-widget">
-        {loading && <span className="qa-spinner" />}
-        <button
-          type="button"
-          className="qa-action-btn"
-          disabled={action.disabled || loading}
-          aria-label={action.label}
-          onClick={() => onExecute(action.action_id, null)}
-        >
-          {i18n('quickActions.run', '执行')}
-        </button>
-        {error && <span className="qa-err" title={error}>!</span>}
-      </div>
+      {formOpen && (
+        <div className="qa-param-form">
+          {propKeys.map(key => {
+            const prop = properties[key];
+            return (
+              <label key={key} className="qa-param-field">
+                <span className="qa-param-label">{prop?.description || key}</span>
+                <input
+                  type={prop?.type === 'number' || prop?.type === 'integer' ? 'number' : 'text'}
+                  className="qa-param-input"
+                  value={formValues[key] ?? ''}
+                  placeholder={key}
+                  onChange={e => setFormValues(v => ({ ...v, [key]: e.target.value }))}
+                  onKeyDown={e => { if (e.key === 'Enter') submitForm(); }}
+                />
+              </label>
+            );
+          })}
+          <div className="qa-param-actions">
+            <button type="button" className="qa-param-cancel" onClick={() => setFormOpen(false)}>
+              {i18n('quickActions.cancel', '取消')}
+            </button>
+            <button type="button" className="qa-param-submit" onClick={submitForm}>
+              {i18n('quickActions.confirm', '确认执行')}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -680,9 +748,11 @@ export default function QuickActionsPanel({
       pushToast('success', `${label}: 操作成功`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      setErrorMap(m => ({ ...m, [actionId]: msg }));
+      // Strip the "executeChatAction: HTTP xxx" prefix for cleaner display
+      const cleanMsg = msg.replace(/^executeChatAction:\s*HTTP\s*\d+\s*[-–—]?\s*/i, '');
+      setErrorMap(m => ({ ...m, [actionId]: cleanMsg }));
       setTimeout(() => setErrorMap(m => ({ ...m, [actionId]: null })), 3000);
-      pushToast('error', `${label}: ${msg}`);
+      pushToast('error', `${label}: ${cleanMsg}`);
     } finally {
       setLoadingMap(m => ({ ...m, [actionId]: false }));
     }

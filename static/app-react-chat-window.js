@@ -420,7 +420,12 @@
             body: JSON.stringify({ value: value })
         })
         .then(function (res) {
-            if (!res.ok) throw new Error('executeChatAction: HTTP ' + res.status);
+            if (!res.ok) {
+                return res.json().catch(function () { return null; }).then(function (body) {
+                    var detail = (body && body.detail) ? body.detail : 'HTTP ' + res.status;
+                    throw new Error(detail);
+                });
+            }
             return res.json();
         })
         .then(function (data) {
