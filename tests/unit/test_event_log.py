@@ -278,7 +278,7 @@ def test_scan_head_handles_corrupt_first_line(tmp_path):
 
 
 def test_record_and_save_runs_all_steps_in_order(tmp_path):
-    """load → mutate → append → save → sentinel advance, all inside lock."""
+    """load → append → mutate → save → sentinel advance, all inside lock."""
     from memory.event_log import EVT_FACT_ADDED
 
     log = _fresh_log(str(tmp_path))
