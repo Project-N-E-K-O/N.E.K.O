@@ -534,7 +534,18 @@ class DirectTaskExecutor:
                 return re.search(rf"\b{re.escape(marker_norm)}\b", normalized_latest) is not None
             return marker_norm in latest or marker_norm in normalized_latest
 
-        latest_is_vague = len(normalized_latest or latest) <= 12 or any(
+        length_source = normalized_latest or latest
+        cjk_like_count = sum(
+            1
+            for ch in length_source
+            if (
+                "\u3040" <= ch <= "\u30ff"  # Hiragana + Katakana
+                or "\u4e00" <= ch <= "\u9fff"  # CJK Unified Ideographs
+                or "\uac00" <= ch <= "\ud7af"  # Hangul Syllables
+            )
+        )
+        length_threshold = 4 if cjk_like_count * 2 >= len(length_source) else 12
+        latest_is_vague = len(length_source) <= length_threshold or any(
             _matches_vague_marker(marker) for marker in vague_markers
         )
         if not latest_is_vague:
