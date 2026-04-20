@@ -33,28 +33,36 @@
             z-index: 1 !important;
         }
 
+        /* 整个面板走 OS 原生拖动（Chromium `-webkit-app-region: drag` → Windows HTCAPTION），
+           和 /jukebox/manager 一致。之前 container 是 no-drag + JS 模拟拖动，
+           经 IPC + setBounds 每帧大约 15–20ms，实测约为 manager 的一半帧率；
+           改为原生拖动后由 OS 直接走 SetWindowPos，零 IPC 零 JS，跟手感拉齐。
+           header 区域（包括 header-left / h3）继承 container 的 drag，
+           交互元素（按钮/输入/内容区/resize 把手）必须 no-drag !important 抢回点击。 */
         .jukebox-container {
             width: 100% !important;
             max-height: 100% !important;
             height: 100% !important;
             border-radius: 0 !important;
             box-sizing: border-box !important;
-            -webkit-app-region: no-drag !important;
+            -webkit-app-region: drag !important;
         }
 
-        .jukebox-header,
-        .jukebox-header-left,
-        .jukebox-header h3,
         .jukebox-header-buttons,
         .jukebox-header-buttons button,
         .jukebox-settings,
         .jukebox-minimize,
         .jukebox-close,
         .jukebox-content,
+        .jukebox-content *,
         .jukebox-controls-row,
+        .jukebox-controls-row *,
         .jukebox-calibration-section,
+        .jukebox-calibration-section *,
         .jukebox-notice,
-        .sam-panel {
+        .sam-panel,
+        .sam-panel *,
+        .jukebox-resize-handle {
             -webkit-app-region: no-drag !important;
         }
 
