@@ -992,7 +992,7 @@
         "clearCustomApiConfirmTitle": "⚠️ クリア確認",
         "clearCustomApiConfirmBtn": "クリア実行",
         "clearCustomApiSaveHint": "⚠ この操作はページ上の設定内容をクリアするだけです。変更を保存するには「設定を保存」ボタンをクリックしてください。",
-        "clearCustomApiSuccess": "カスタムAPI設定がクリアされました。保存ボタンをクリックして変更を保存してください。",
+        "clearCustomApiSuccess": "カスタムAPI設定がクリアされました。「設定を保存」ボタンをクリックして変更を保存してください。",
         "loadProvidersFailed": "プロバイダー情報の読み込みに失敗しました。ページを更新してください",
         "saveFailed": "保存失敗: {{error}}",
         "apiKeyInvalid": "APIキーが無効です",

@@ -992,7 +992,7 @@
         "clearCustomApiConfirmTitle": "⚠️ 确认清空",
         "clearCustomApiConfirmBtn": "确认清空",
         "clearCustomApiSaveHint": "⚠ 此操作仅清空页面上的配置内容，保存清空结果仍需点击下方的「保存设置」按钮。",
-        "clearCustomApiSuccess": "自定义API配置已清空，请点击保存按钮以保存更改",
+        "clearCustomApiSuccess": "自定义API配置已清空，请点击「保存设置」按钮以保存更改",
         "loadProvidersFailed": "加载API服务商选项失败，请刷新页面重试",
         "saveFailed": "保存失败: {{error}}",
         "apiKeyInvalid": "API Key无效",

@@ -1556,12 +1556,19 @@ function confirmClearCustomApi() {
         gptsovitsEnabled.checked = false;
         toggleGptSovitsConfig();
     }
+    // 清空 GPT-SoVITS 隐藏字段并重置状态，防止保存时残留旧配置
+    const gptsovitsApiUrlEl = document.getElementById('gptsovitsApiUrl');
+    if (gptsovitsApiUrlEl) gptsovitsApiUrlEl.value = '';
+    const gptsovitsVoiceIdEl = document.getElementById('gptsovitsVoiceId');
+    if (gptsovitsVoiceIdEl) gptsovitsVoiceIdEl.value = '';
+    _loadedGptSovitsState = 'none';
+    _ttsConfigDirty = true;
 
-    // 取消勾选自定义API开关
+    // 取消勾选自定义API开关（skipAutoFill=true 避免覆盖未保存的核心/辅助API输入）
     const enableCustomApi = document.getElementById('enableCustomApi');
     if (enableCustomApi && enableCustomApi.checked) {
         enableCustomApi.checked = false;
-        toggleCustomApi();
+        toggleCustomApi(true);
     }
 
     showStatus(window.t ? window.t('api.clearCustomApiSuccess') : '自定义API配置已清空，请点击保存按钮以保存更改', 'success');

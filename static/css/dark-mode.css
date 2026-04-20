@@ -1440,11 +1440,13 @@ html #chat-container {
 
 [data-theme="dark"] .clear-custom-api-btn {
   background: linear-gradient(135deg, #c0392b, #a93226);
+  color: #fff;
   box-shadow: 0 2px 8px rgba(192, 57, 43, 0.4);
 }
 
 [data-theme="dark"] .clear-custom-api-btn:hover {
-  background: linear-gradient(135deg, #e74c3c, #c0392b);
+  background: linear-gradient(135deg, #d32f2f, #b71c1c);
+  color: #fff;
   box-shadow: 0 4px 12px rgba(192, 57, 43, 0.5);
 }
 
