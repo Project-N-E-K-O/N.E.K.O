@@ -46,8 +46,8 @@ interface ViewModeDef {
 }
 
 const VIEW_MODES: ViewModeDef[] = [
-  { id: 'function', icon: '🎛', labelKey: 'quickActions.viewFunction', labelFallback: '按功能' },
   { id: 'plugin', icon: '🧩', labelKey: 'quickActions.viewPlugin', labelFallback: '按插件' },
+  { id: 'function', icon: '🎛', labelKey: 'quickActions.viewFunction', labelFallback: '按功能' },
 ];
 
 /* Function-view sub-tabs */
@@ -612,7 +612,7 @@ export default function QuickActionsPanel({
   onNavigate,
   onClose,
 }: QuickActionsPanelProps) {
-  const [viewMode, setViewMode] = useState<ViewMode>('function');
+  const [viewMode, setViewMode] = useState<ViewMode>('plugin');
   const [search, setSearch] = useState('');
   const [loadingMap, setLoadingMap] = useState<Record<string, boolean>>({});
   const [errorMap, setErrorMap] = useState<Record<string, string | null>>({});
