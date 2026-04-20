@@ -819,4 +819,5 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
         logger.error(f"[{lanlan_name}] Sync进程错误: {e}", exc_info=True)
     finally:
         loop.close()
-        logger.info(f"[{lanlan_name}] Sync进程已终止")
+        # 线程退出阶段测试环境可能已经关闭日志捕获流；这里避免再做收尾 info 日志，
+        # 以免 shutdown 正常完成时反而刷出 logging error 噪音。

@@ -126,5 +126,3 @@ def test_add_catgirl(mock_page: Page, running_server: str):
         mock_page.screenshot(path="frontend_failure_generic.png")
         print("Page content on failure:", mock_page.content()[:1000])
         raise
-
-
