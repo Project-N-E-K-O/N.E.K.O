@@ -298,7 +298,6 @@ function PluginLifecycleControl({ action, loading, error, onExecute }: ControlPr
   return (
     <div className="qa-lifecycle-row">
       <div className="qa-lifecycle-info">
-        <span className={`qa-dot ${running ? 'is-on' : ''}`} />
         <span className="qa-lifecycle-name">{action.label}</span>
       </div>
       <div className="qa-lifecycle-controls">
