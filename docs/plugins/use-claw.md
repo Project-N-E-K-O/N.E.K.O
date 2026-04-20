@@ -173,16 +173,18 @@
 建议新增的最小辅助函数都放在 `DirectTaskExecutor` 内部：
 
 1. `_load_correction_memory()`
-2. `_retrieve_relevant_corrections(conversation: str, limit: int = 3)`
+2. `_retrieve_relevant_corrections(latest_user_request: str, *, normalized_intent: str = "", recent_context: list[dict] | None = None, limit: int = 3) -> list[dict]`
 3. `_build_correction_lessons_block(events: list[dict]) -> str`
 4. `_append_correction_event(event: dict)`
+
+调用顺序是“先 `_retrieve_relevant_corrections` 拿到事件列表，再把列表丢给 `_build_correction_lessons_block` 渲染成文本”。`_retrieve_relevant_corrections` 本身只负责按入参召回，不再二次提炼意图；`latest_user_request` / `normalized_intent` / `recent_context` 由调用方（`_assess_unified_channels`）在更上层的 `analyze_and_execute()` 里用 `_extract_latest_user_intent()` / `_extract_recent_context()` / `_normalize_user_intent()` 提前提炼好。
 
 同时建议在这一层补一个轻量的“当前请求上下文提炼”步骤。  
 原因是后续用户纠正发生在 `agent_server`，如果不在这里先把关键信息提炼出来，后面只能拿到已经被压缩过的 `task_description`，拿不到足够准确的原始意图。
 
 建议最小新增：
 
-1. `_extract_latest_user_request(conversation: str) -> str`
+1. `_extract_latest_user_intent(conversation: str) -> str`
 2. `_normalize_user_intent(latest_user_request: str, recent_context: list[dict]) -> str`
 3. 在 `TaskResult` 中增加可选字段：
    - `latest_user_request`
@@ -448,31 +450,47 @@ def _load_correction_memory(self) -> dict:
 #### 检索
 
 ```python
-def _retrieve_relevant_corrections(self, conversation: str, limit: int = 3) -> list[dict]:
+def _retrieve_relevant_corrections(
+    self,
+    latest_user_request: str,
+    *,
+    normalized_intent: str = "",
+    recent_context: list[dict] | None = None,
+    limit: int = 3,
+) -> list[dict]:
     ...
 ```
 
-建议这个 helper 内部不要直接拿整段 `conversation` 做粗暴匹配，而是先做两步提炼：
+这个 helper 不再自己拿整段 `conversation` 做粗暴匹配。调用它之前，`analyze_and_execute()` 已经把关键字段提炼好：
 
-1. 提取 `latest_user_request`
-2. 归一化出 `normalized_intent`
+1. `_extract_latest_user_intent(conversation)` 拿到 `latest_user_request`
+2. `_extract_recent_context(messages)` 拿到 `recent_context`
+3. `_normalize_user_intent(latest_user_request, recent_context)` 归一化出 `normalized_intent`
+
+helper 内部只做一件事：用这三个字段拼出 query blob，`_extract_search_terms()` 抽关键词，再在历史事件的 `normalized_intent` / `user_query` / `recent_context` / `chosen_tool` / `correct_tool` 拼成的 `event_context` 里做子串计分，取前 `limit` 条。
 
 建议匹配来源：
 
 - `normalized_intent`
-- 最新用户请求
+- `latest_user_request`
 - `recent_context`
-- `task_description`
 - 关键词：网页、浏览器、搜索、表单、下载、B站、Google、登录
 - 关键词：微信、QQ、文件管理器、设置、桌面、窗口、客户端
 
 #### 注入
 
 ```python
+events = self._retrieve_relevant_corrections(
+    latest_user_request,
+    normalized_intent=normalized_intent,
+    recent_context=recent_context,
+)
 lessons = self._build_correction_lessons_block(events)
 if lessons:
     system_prompt = system_prompt + "\n\n" + lessons
 ```
+
+`_build_correction_lessons_block(events)` 本身不再感知意图字段，只负责把事件列表渲染成 `[Historical correction lessons]` 文本块；脱敏在渲染时通过 `_sanitize_correction_text()` 兜底。
 
 ### 7.2 `agent_server` 中的最小实现
 
