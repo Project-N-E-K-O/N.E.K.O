@@ -601,6 +601,31 @@ function PluginView({ actions, loadingMap, errorMap, onExecute, onInject, onNavi
 }
 
 /* ================================================================== */
+/*  Execution result toast                                             */
+/* ================================================================== */
+
+type ToastItem = {
+  id: number;
+  tone: 'success' | 'error' | 'info';
+  text: string;
+};
+
+let _toastId = 0;
+
+function ToastStack({ toasts }: { toasts: ToastItem[] }) {
+  if (toasts.length === 0) return null;
+  return (
+    <div className="qa-toast-stack">
+      {toasts.map(t => (
+        <div key={t.id} className={`message-block-status tone-${t.tone} qa-toast`}>
+          {t.text}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ================================================================== */
 /*  Main panel                                                         */
 /* ================================================================== */
 
@@ -616,6 +641,7 @@ export default function QuickActionsPanel({
   const [loadingMap, setLoadingMap] = useState<Record<string, boolean>>({});
   const [errorMap, setErrorMap] = useState<Record<string, string | null>>({});
   const [localActions, setLocalActions] = useState<ActionDescriptor[]>(actions);
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
   const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { setLocalActions(actions); }, [actions]);
@@ -636,20 +662,33 @@ export default function QuickActionsPanel({
     return () => { clearTimeout(id); document.removeEventListener('mousedown', onClick); };
   }, [onClose]);
 
+  const pushToast = useCallback((tone: ToastItem['tone'], text: string) => {
+    const id = ++_toastId;
+    setToasts(prev => [...prev.slice(-2), { id, tone, text }]); // keep max 3
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3000);
+  }, []);
+
   const handleExecute = useCallback(async (actionId: string, value: unknown) => {
     setLoadingMap(m => ({ ...m, [actionId]: true }));
     setErrorMap(m => ({ ...m, [actionId]: null }));
     try {
       const updated = await onExecuteAction(actionId, value);
-      if (updated) setLocalActions(prev => prev.map(a => (a.action_id === updated.action_id ? updated : a)));
+      if (updated) {
+        setLocalActions(prev => prev.map(a => (a.action_id === updated.action_id ? updated : a)));
+      }
+      // Derive a short label from the actionId for the toast
+      const label = localActions.find(a => a.action_id === actionId)?.label ?? actionId;
+      pushToast('success', `${label}: 操作成功`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       setErrorMap(m => ({ ...m, [actionId]: msg }));
       setTimeout(() => setErrorMap(m => ({ ...m, [actionId]: null })), 3000);
+      const label = localActions.find(a => a.action_id === actionId)?.label ?? actionId;
+      pushToast('error', `${label}: ${msg}`);
     } finally {
       setLoadingMap(m => ({ ...m, [actionId]: false }));
     }
-  }, [onExecuteAction]);
+  }, [onExecuteAction, localActions, pushToast]);
 
   const handleInject = useCallback((text: string) => { onInjectText(text); onClose(); }, [onInjectText, onClose]);
   const handleNavigate = useCallback((target: string, openIn: string) => { onNavigate(target, openIn); }, [onNavigate]);
@@ -705,6 +744,9 @@ export default function QuickActionsPanel({
           )}
         </div>
       </div>
+
+      {/* ── Execution result toasts ── */}
+      <ToastStack toasts={toasts} />
     </div>
   );
 }
