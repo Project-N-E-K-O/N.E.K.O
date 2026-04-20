@@ -160,47 +160,15 @@ def _collect_system_actions_sync(
         plugin_name = str(meta.get("name") or pid)
         is_running = pid in hosts_snapshot
 
-        # ── Lifecycle actions: start / stop / reload ──
-        actions.append(ActionDescriptor(
-            action_id=f"system:{pid}:start",
-            type="instant",
-            label=f"启动 {plugin_name}",
-            description="",
-            category=_SYSTEM_CATEGORY,
-            plugin_id=pid,
-            control="button",
-            disabled=is_running,
-        ))
-        actions.append(ActionDescriptor(
-            action_id=f"system:{pid}:stop",
-            type="instant",
-            label=f"停止 {plugin_name}",
-            description="",
-            category=_SYSTEM_CATEGORY,
-            plugin_id=pid,
-            control="button",
-            disabled=not is_running,
-        ))
-        actions.append(ActionDescriptor(
-            action_id=f"system:{pid}:reload",
-            type="instant",
-            label=f"重载 {plugin_name}",
-            description="",
-            category=_SYSTEM_CATEGORY,
-            plugin_id=pid,
-            control="button",
-            disabled=not is_running,
-        ))
-
-        # ── Plugin toggle ──
+        # ── Plugin lifecycle (composite: toggle + reload) ──
         actions.append(ActionDescriptor(
             action_id=f"system:{pid}:toggle",
             type="instant",
             label=plugin_name,
-            description="启用/禁用插件",
+            description="",
             category=_SYSTEM_CATEGORY,
             plugin_id=pid,
-            control="plugin_toggle",
+            control="plugin_lifecycle",
             current_value=is_running,
         ))
 

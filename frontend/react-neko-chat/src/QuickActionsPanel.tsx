@@ -12,7 +12,7 @@ export interface ActionDescriptor {
   description: string;
   category: string;
   plugin_id: string;
-  control?: 'toggle' | 'button' | 'dropdown' | 'number' | 'slider' | 'plugin_toggle' | 'entry_toggle';
+  control?: 'toggle' | 'button' | 'dropdown' | 'number' | 'slider' | 'plugin_lifecycle' | 'entry_toggle';
   current_value?: unknown;
   options?: string[];
   min?: number;
@@ -89,14 +89,14 @@ function filterByFuncTab(actions: ActionDescriptor[], tab: FuncTab): ActionDescr
       return actions.filter(
         a =>
           a.type === 'instant' &&
-          a.control !== 'plugin_toggle' &&
+          a.control !== 'plugin_lifecycle' &&
           a.control !== 'entry_toggle' &&
           a.control !== 'button',
       );
     case 'lifecycle':
       return actions.filter(
         a =>
-          a.control === 'plugin_toggle' ||
+          a.control === 'plugin_lifecycle' ||
           a.control === 'entry_toggle' ||
           a.control === 'button',
       );
@@ -127,10 +127,10 @@ function pluginDisplayName(actions: ActionDescriptor[]): string {
   return actions[0]?.plugin_id ?? '?';
 }
 
-/** Check if any action for this plugin is a running plugin_toggle */
+/** Check if any action for this plugin is a running plugin_lifecycle */
 function isPluginRunning(actions: ActionDescriptor[]): boolean {
   for (const a of actions) {
-    if (a.control === 'plugin_toggle') return Boolean(a.current_value);
+    if (a.control === 'plugin_lifecycle') return Boolean(a.current_value);
   }
   return false;
 }
@@ -150,12 +150,10 @@ interface ControlProps {
 
 function ToggleControl({ action, loading, error, onExecute }: ControlProps) {
   const checked = Boolean(action.current_value);
-  const isPlugin = action.control === 'plugin_toggle';
   return (
     <div className="qa-row">
       <div className="qa-row-info">
         <span className="qa-row-label">
-          {isPlugin && <span className={`qa-dot ${checked ? 'is-on' : ''}`} />}
           {action.label}
         </span>
         {action.description && <span className="qa-row-desc">{action.description}</span>}
@@ -293,6 +291,45 @@ function NumberControl({ action, loading, error, onExecute }: ControlProps) {
   );
 }
 
+function PluginLifecycleControl({ action, loading, error, onExecute }: ControlProps) {
+  const running = Boolean(action.current_value);
+  // Derive the reload action_id from the toggle action_id: system:{pid}:toggle → system:{pid}:reload
+  const reloadId = action.action_id.replace(/:toggle$/, ':reload');
+  return (
+    <div className="qa-lifecycle-row">
+      <div className="qa-lifecycle-info">
+        <span className={`qa-dot ${running ? 'is-on' : ''}`} />
+        <span className="qa-lifecycle-name">{action.label}</span>
+      </div>
+      <div className="qa-lifecycle-controls">
+        {loading && <span className="qa-spinner" />}
+        <button
+          type="button"
+          role="switch"
+          aria-checked={running}
+          aria-label={`${action.label} ${running ? i18n('quickActions.stop', '停止') : i18n('quickActions.start', '启动')}`}
+          className={`qa-toggle ${running ? 'is-on' : ''}`}
+          disabled={loading}
+          onClick={() => onExecute(action.action_id, !running)}
+        >
+          <span className="qa-toggle-thumb" />
+        </button>
+        <button
+          type="button"
+          className="qa-reload-btn"
+          disabled={!running || loading}
+          aria-label={`${i18n('quickActions.reload', '重载')} ${action.label}`}
+          title={i18n('quickActions.reload', '重载')}
+          onClick={() => onExecute(reloadId, null)}
+        >
+          ↻
+        </button>
+        {error && <span className="qa-err" title={error}>!</span>}
+      </div>
+    </div>
+  );
+}
+
 function ButtonControl({ action, loading, error, onExecute }: ControlProps) {
   return (
     <div className="qa-row">
@@ -351,9 +388,10 @@ function ActionControl(props: ControlProps) {
   if (action.type === 'navigation') return <NavButton {...props} />;
   switch (action.control) {
     case 'toggle':
-    case 'plugin_toggle':
     case 'entry_toggle':
       return <ToggleControl {...props} />;
+    case 'plugin_lifecycle':
+      return <PluginLifecycleControl {...props} />;
     case 'button':
       return <ButtonControl {...props} />;
     case 'dropdown':
@@ -418,7 +456,7 @@ function FunctionView({ actions, loadingMap, errorMap, onExecute, onInject, onNa
     const c: Record<FuncTab, number> = { all: actions.length, config: 0, lifecycle: 0, inject: 0 };
     for (const a of actions) {
       if (a.type === 'chat_inject' || a.type === 'navigation') c.inject++;
-      else if (a.control === 'plugin_toggle' || a.control === 'entry_toggle' || a.control === 'button') c.lifecycle++;
+      else if (a.control === 'plugin_lifecycle' || a.control === 'entry_toggle' || a.control === 'button') c.lifecycle++;
       else if (a.type === 'instant') c.config++;
     }
     return c;
