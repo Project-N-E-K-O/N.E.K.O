@@ -307,8 +307,15 @@ async def run_probe(args: argparse.Namespace, log: logging.Logger) -> int:
                         out_path.write_bytes(final_audio)
                         log.info("saved final audio (%d bytes) to %s", len(final_audio), out_path.resolve())
                     elif audio_chunks:
-                        out_path.write_bytes(audio_chunks[0])
-                        log.info("saved first audio chunk (%d bytes) to %s", len(audio_chunks[0]), out_path.resolve())
+                        merged = b"".join(audio_chunks)
+                        out_path.write_bytes(merged)
+                        log.info(
+                            "saved concatenated delta chunks (%d chunks, %d bytes) to %s "
+                            "(note: each chunk is a standalone WAV, file contains multiple headers)",
+                            len(audio_chunks),
+                            len(merged),
+                            out_path.resolve(),
+                        )
 
     finally:
         await ws.close()
