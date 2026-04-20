@@ -122,10 +122,8 @@ class _SystemActionHandler:
     def __init__(
         self,
         lifecycle: PluginLifecycleService,
-        aggregation: ActionAggregationService,
     ) -> None:
         self._lifecycle = lifecycle
-        self._aggregation = aggregation
 
     async def execute(
         self,
@@ -161,6 +159,8 @@ class _SystemActionHandler:
         )
 
     # -- Lifecycle actions --
+    # These return action=None because the frontend does a full
+    # fetchChatActions() refresh after every execute anyway.
 
     async def _start(
         self, plugin_id: str, action_id: str, value: object,
@@ -168,7 +168,6 @@ class _SystemActionHandler:
         result = await self._lifecycle.start_plugin(plugin_id)
         return ActionExecuteResponse(
             success=True,
-            action=await _find_action(self._aggregation, action_id),
             message=str(result.get("message", "Plugin started")),
         )
 
@@ -178,7 +177,6 @@ class _SystemActionHandler:
         result = await self._lifecycle.stop_plugin(plugin_id)
         return ActionExecuteResponse(
             success=True,
-            action=await _find_action(self._aggregation, action_id),
             message=str(result.get("message", "Plugin stopped")),
         )
 
@@ -188,7 +186,6 @@ class _SystemActionHandler:
         result = await self._lifecycle.reload_plugin(plugin_id)
         return ActionExecuteResponse(
             success=True,
-            action=await _find_action(self._aggregation, action_id),
             message=str(result.get("message", "Plugin reloaded")),
         )
 
@@ -204,7 +201,6 @@ class _SystemActionHandler:
             msg = "Plugin started"
         return ActionExecuteResponse(
             success=True,
-            action=await _find_action(self._aggregation, action_id),
             message=str(result.get("message", msg)),
         )
 
@@ -248,7 +244,6 @@ class _SystemActionHandler:
 
         return ActionExecuteResponse(
             success=True,
-            action=await _find_action(self._aggregation, action_id),
             message=f"Profile switched to '{profile_name}'",
         )
 
@@ -302,7 +297,6 @@ class _SystemActionHandler:
 
             return ActionExecuteResponse(
                 success=True,
-                action=await _find_action(self._aggregation, action_id),
                 message=msg,
             )
 
@@ -328,7 +322,6 @@ class _SystemActionHandler:
 
         return ActionExecuteResponse(
             success=True,
-            action=await _find_action(self._aggregation, action_id),
             message=f"Entry '{entry_id}' {'enabled' if enable else 'disabled'}",
         )
 
@@ -377,7 +370,7 @@ class ActionExecutionService:
         self._lifecycle = PluginLifecycleService()
         self._aggregation = ActionAggregationService()
         self._settings_handler = _SettingsActionHandler(self._aggregation)
-        self._system_handler = _SystemActionHandler(self._lifecycle, self._aggregation)
+        self._system_handler = _SystemActionHandler(self._lifecycle)
         self._list_action_handler = _ListActionHandler()
 
     async def execute(

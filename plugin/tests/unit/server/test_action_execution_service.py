@@ -82,7 +82,7 @@ def _build_service(
     )
 
     svc._settings_handler = _SettingsActionHandler(svc._aggregation)
-    svc._system_handler = _SystemActionHandler(svc._lifecycle, svc._aggregation)
+    svc._system_handler = _SystemActionHandler(svc._lifecycle)
     svc._list_action_handler = _ListActionHandler()
     return svc
 

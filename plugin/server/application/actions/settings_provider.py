@@ -9,13 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import enum
-import importlib
 import typing
 from collections.abc import Mapping
 from typing import Any, get_args, get_origin
 
 from plugin.logging_config import get_logger
 from plugin.server.domain.action_models import ActionDescriptor
+from plugin.server.infrastructure.plugin_settings_resolver import resolve_settings_class
 
 logger = get_logger("server.application.actions.settings_provider")
 
@@ -23,24 +23,6 @@ logger = get_logger("server.application.actions.settings_provider")
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _import_settings_class(entry_point: str) -> type | None:
-    """Import the plugin class from *entry_point* and return its ``Settings``.
-
-    .. deprecated:: Use ``resolve_settings_class`` from infrastructure layer
-       for new code.  Kept here only for the sync collection path which
-       already has the entry_point resolved.
-    """
-    try:
-        module_path, class_name = entry_point.split(":", 1)
-        mod = importlib.import_module(module_path)
-        plugin_cls = getattr(mod, class_name, None)
-        if plugin_cls is None:
-            return None
-        return getattr(plugin_cls, "Settings", None)
-    except Exception:
-        logger.debug("Failed to import Settings from entry_point {}", entry_point)
-        return None
 
 
 def _is_hot(field_info: Any) -> bool:
@@ -196,7 +178,6 @@ def _collect_settings_actions_sync(
 ) -> list[ActionDescriptor]:
     """Collect settings-derived actions (called from a worker thread)."""
     from plugin.core.state import state
-    from plugin.sdk.plugin.settings import PluginSettings
 
     plugins_snapshot = state.get_plugins_snapshot_cached()
     hosts_snapshot: dict[str, Any] = {}
@@ -221,14 +202,8 @@ def _collect_settings_actions_sync(
         plugin_name = str(meta.get("name") or pid)
 
         # Resolve the PluginSettings class
-        entry_point: str | None = getattr(host, "entry_point", None) or meta.get("entry_point") or meta.get("entry")
-        if not entry_point or not isinstance(entry_point, str):
-            continue
-
-        settings_cls = _import_settings_class(entry_point)
+        settings_cls = resolve_settings_class(pid, host=host)
         if settings_cls is None:
-            continue
-        if not (isinstance(settings_cls, type) and issubclass(settings_cls, PluginSettings)):
             continue
 
         # Read current effective config for this plugin's toml_section
