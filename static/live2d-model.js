@@ -3,6 +3,19 @@
  * 依赖: live2d-core.js (提供 Live2DManager 类和 window.LIPSYNC_PARAMS)
  */
 
+const Easing = {
+    linear: (t) => t,
+    easeInQuad: (t) => t * t,
+    easeInCubic: (t) => t * t * t,
+    easeOutQuad: (t) => t * (2 - t),
+    easeOutCubic: (t) => --t * t * t + 1,
+    easeInOutQuad: (t) => t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t,
+    easeOutElastic: (t) => {
+        const c4 = (2 * Math.PI) / 3;
+        return t === 0 ? 0 : t === 1 ? 1 : Math.pow(2, -10 * t) * Math.sin((t * 10 - 0.75) * c4) + 1;
+    }
+};
+
 // 加载模型
 Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
     if (!this.pixi_app) {
@@ -200,6 +213,10 @@ Live2DManager.prototype._isLoadTokenActive = function(loadToken) {
     return this._activeLoadToken === loadToken;
 };
 
+Live2DManager.prototype.getCurrentModel = function() {
+    return this.currentModel || null;
+};
+
 Live2DManager.prototype._resetDerivedModelMetadata = function() {
     this._displayInfo = null;
     this._autoNamedHitAreaIds = new Set();
@@ -209,6 +226,22 @@ Live2DManager.prototype._resetDerivedModelMetadata = function() {
     this._shouldApplySavedParams = false;
     this.modelName = null;
     this.modelRootPath = null;
+    this._eyeBlinkParams = null;
+    this._eyeBlinkState = 0;
+    this._eyeBlinkTimer = 0;
+    this._eyeBlinkNextTime = 2 + Math.random() * 4;
+    this._autoEyeBlinkEnabled = false;
+    this._suspendEyeBlinkOverride = false;
+    this._isMouthDrivenByMotion = false;
+    this._isEyeDrivenByMotion = false;
+    this._isLookAtDrivenByMotion = false;
+    this._lookAtTimer = undefined;
+    this._lookAtNextTime = 0;
+    this._lookAtTargetX = 0;
+    this._lookAtTargetY = 0;
+    this._lookAtCurrentX = 0;
+    this._lookAtCurrentY = 0;
+    this._isMouseTrackingActive = this._mouseTrackingEnabled || false;
 
     if (this._missingExpressionFiles instanceof Set) {
         this._missingExpressionFiles.clear();
@@ -434,6 +467,200 @@ Live2DManager.prototype._loadDisplayInfo = async function(settings) {
     }
 };
 
+Live2DManager.prototype._validateEyeBlinkGroup = function(settings, model) {
+    const groups = settings?.Groups;
+    let eyeBlinkIds = null;
+
+    if (!groups || !Array.isArray(groups)) {
+        console.warn(`[Live2D EyeBlink] 模型 ${this.modelName || this.modelRootPath} 的 .model3.json 中缺少 Groups 字段或 Groups 不是数组，将尝试自动扫描眨眼参数`);
+    } else {
+        const eyeBlinkGroup = groups.find(g => g?.Target === 'Parameter' && g?.Name === 'EyeBlink');
+        if (eyeBlinkGroup) {
+            const ids = eyeBlinkGroup?.Ids;
+            if (ids && Array.isArray(ids) && ids.length > 0) {
+                eyeBlinkIds = ids;
+            }
+        }
+        if (!eyeBlinkIds) {
+            console.warn(`[Live2D EyeBlink] 模型 ${this.modelName || this.modelRootPath} 的 .model3.json 中 EyeBlink Ids 为空或不存在，将尝试自动扫描眨眼参数`);
+        }
+    }
+
+    if (!eyeBlinkIds) {
+        const scanned = this._scanEyeBlinkParams(model);
+        if (scanned && scanned.length > 0) {
+            eyeBlinkIds = scanned;
+            console.log(`[Live2D EyeBlink] 自动扫描到眨眼参数:`, eyeBlinkIds);
+            this._autoEyeBlinkEnabled = true;
+            console.log(`[Live2D EyeBlink] 已启用自动眨眼（fallback 模式）`);
+        } else {
+            console.warn(`[Live2D EyeBlink] 无法为模型 ${this.modelName || this.modelRootPath} 找到任何眨眼参数，眨眼功能不可用`);
+            return;
+        }
+    } else {
+        console.log(`[Live2D EyeBlink] 检测通过: EyeBlink Ids =`, eyeBlinkIds);
+    }
+
+    this._eyeBlinkParams = eyeBlinkIds.map(id => {
+        try {
+            const idx = model.internalModel.coreModel.getParameterIndex(id);
+            return idx >= 0 ? { id, idx } : null;
+        } catch (_) {
+            return null;
+        }
+    }).filter(Boolean);
+
+    if (this._eyeBlinkParams.length === 0) {
+        console.warn(`[Live2D EyeBlink] EyeBlink 参数索引全部无效，眨眼功能不可用`);
+        this._autoEyeBlinkEnabled = false;
+        return;
+    }
+
+    this._eyeBlinkParams.forEach(p => {
+        console.log(`[Live2D EyeBlink] 注册眨眼参数: ${p.id} (idx=${p.idx})`);
+    });
+};
+
+Live2DManager.prototype._scanEyeBlinkParams = function(model) {
+    if (!model?.internalModel?.coreModel) return null;
+    const coreModel = model.internalModel.coreModel;
+    const count = coreModel.getParameterCount();
+    const eyePatterns = [/eye.*open/i, /eye.*l/i, /eye.*r/i, /eyel/i, /eyer/i, /eye_l/i, /eye_r/i, /eye_/i, /目/i, /眼/i];
+    const found = [];
+
+    for (let i = 0; i < count; i++) {
+        let paramId = null;
+        try { paramId = coreModel.getParameterId(i); } catch (_) {}
+        if (!paramId) continue;
+        const lower = String(paramId).toLowerCase();
+        if (eyePatterns.some(p => p.test(paramId))) {
+            found.push(paramId);
+        }
+    }
+
+    if (found.length < 2) {
+        const eyeL = found.find(id => /eye.?l/i.test(id) || /l$/i.test(id));
+        const eyeR = found.find(id => /eye.?r/i.test(id) || /r$/i.test(id));
+        if (eyeL && eyeR) return [eyeL, eyeR];
+        if (found.length >= 2) return found.slice(0, 2);
+    }
+    return found.slice(0, 2);
+};
+
+Live2DManager.prototype._updateEyeBlink = function(delta) {
+    if (this._suspendEyeBlinkOverride) return;
+    if (!this._autoEyeBlinkEnabled || !this._eyeBlinkParams || this._eyeBlinkParams.length === 0) return;
+    const coreModel = this.currentModel?.internalModel?.coreModel;
+    if (!coreModel) return;
+    const params = this._eyeBlinkParams;
+
+    this._eyeBlinkTimer += delta;
+    if (this._eyeBlinkState === 0) {
+        if (this._eyeBlinkTimer >= this._eyeBlinkNextTime) {
+            this._eyeBlinkState = 1;
+            this._eyeBlinkTimer = 0;
+        }
+    } else if (this._eyeBlinkState === 1) {
+        const CLOSE_DURATION = 0.08;
+        let t = Math.min(this._eyeBlinkTimer / CLOSE_DURATION, 1);
+        let p = Easing.easeInCubic(t);
+        let currentValue = 1.0 + (0.0 - 1.0) * p;
+        for (const param of params) {
+            try { coreModel.setParameterValueByIndex(param.idx, currentValue); } catch (_) {}
+        }
+        if (this._eyeBlinkTimer >= CLOSE_DURATION) {
+            this._eyeBlinkState = 2;
+            this._eyeBlinkTimer = 0;
+        }
+    } else if (this._eyeBlinkState === 2) {
+        const OPEN_DURATION = 0.15;
+        let t = Math.min(this._eyeBlinkTimer / OPEN_DURATION, 1);
+        let p = Easing.easeOutCubic(t);
+        let currentValue = 0.0 + (1.0 - 0.0) * p;
+        for (const param of params) {
+            try { coreModel.setParameterValueByIndex(param.idx, currentValue); } catch (_) {}
+        }
+        if (this._eyeBlinkTimer >= OPEN_DURATION) {
+            this._eyeBlinkState = 0;
+            this._eyeBlinkTimer = 0;
+            this._eyeBlinkNextTime = 2 + Math.random() * 4;
+        }
+    }
+};
+
+Live2DManager.prototype._updateRandomLookAt = function(delta) {
+    const coreModel = this.currentModel?.internalModel?.coreModel;
+    if (!coreModel) return;
+    if (this._isMouseTrackingActive) return;
+    if (this._lookAtTimer === undefined) {
+        this._lookAtTimer = 0;
+        this._lookAtNextTime = 2 + Math.random() * 3;
+        this._lookAtTargetX = 0;
+        this._lookAtTargetY = 0;
+        this._lookAtCurrentX = 0;
+        this._lookAtCurrentY = 0;
+    }
+    this._lookAtTimer += delta;
+    if (this._lookAtTimer > this._lookAtNextTime) {
+        this._lookAtTimer = 0;
+        this._lookAtNextTime = 1 + Math.random() * 4;
+        this._lookAtTargetX = (Math.random() * 2 - 1) * 15;
+        this._lookAtTargetY = (Math.random() * 2 - 1) * 10;
+    }
+    const lerpFactor = 2.0 * delta;
+    this._lookAtCurrentX += (this._lookAtTargetX - this._lookAtCurrentX) * lerpFactor;
+    this._lookAtCurrentY += (this._lookAtTargetY - this._lookAtCurrentY) * lerpFactor;
+    try {
+        coreModel.setParameterValueById('ParamAngleX', this._lookAtCurrentX);
+        coreModel.setParameterValueById('ParamAngleY', this._lookAtCurrentY);
+        coreModel.setParameterValueById('ParamEyeBallX', this._lookAtCurrentX / 30);
+        coreModel.setParameterValueById('ParamEyeBallY', this._lookAtCurrentY / 30);
+    } catch (_) {}
+};
+
+Live2DManager.prototype.setupIdleMotionLoop = function(model) {
+    if (!model || !model.internalModel || !model.internalModel.motionManager) return;
+    const motionManager = model.internalModel.motionManager;
+    const self = this;
+    model.internalModel.events.on('motionFinish', () => {
+        if (window._currentMotionPreviewId != null) {
+            console.log('[Live2D] 预览模式中，忽略 motionFinish，不启动新 Idle');
+            return;
+        }
+        const randomDelay = 1000 + Math.random() * 2000;
+        setTimeout(() => {
+            if (!motionManager.playing) {
+                self._playIdleMotion(motionManager);
+            }
+        }, randomDelay);
+    });
+    setTimeout(() => {
+        if (!motionManager.playing) {
+            self._playIdleMotion(motionManager);
+        }
+    }, 2000);
+};
+
+Live2DManager.prototype._playIdleMotion = function(motionManager) {
+    const idleAnimations = this._userIdleAnimations;
+    if (idleAnimations && idleAnimations.length > 0) {
+        const group = motionManager._motionGroups?.PreviewAll;
+        if (group && group.length > 0) {
+            const available = group.filter(m => m.file && idleAnimations.includes(m.file.split('/').pop()));
+            if (available.length > 0) {
+                const chosen = available[Math.floor(Math.random() * available.length)];
+                const idx = group.indexOf(chosen);
+                if (idx >= 0) {
+                    console.log(`[Live2D] 播放用户保存的待机动作: ${chosen.file}`);
+                    motionManager.startMotion('PreviewAll', idx);
+                    return;
+                }
+            }
+        }
+    }
+    motionManager.startRandomMotion('Idle');
+};
+
 // 配置已加载的模型（私有方法，用于消除主路径和回退路径的重复代码）
 Live2DManager.prototype._configureLoadedModel = async function(model, modelPath, options, loadToken) {
     if (!this._isLoadTokenActive(loadToken)) return;
@@ -568,6 +795,7 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     // 同步内部状态（眼睛跟踪是否启用）
     this._mouseTrackingEnabled = window.mouseTrackingEnabled !== false;
     console.log(`[Live2D] 鼠标跟踪初始化: window.mouseTrackingEnabled=${window.mouseTrackingEnabled}, _mouseTrackingEnabled=${this._mouseTrackingEnabled}`);
+    this._isMouseTrackingActive = this._mouseTrackingEnabled || false;
 
     // 设置浮动按钮系统（在模型完全就绪后再绑定ticker回调）
     this.setupFloatingButtons(model);
@@ -583,6 +811,7 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         try {
             await this._loadDisplayInfo(settings);
         } catch (_) {}
+        this._validateEyeBlinkGroup(settings, model);
     } else {
         this._displayInfo = null;
     }
@@ -818,6 +1047,11 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         }
     }
 
+    // 启动待机动作无限循环
+    try {
+        this.setupIdleMotionLoop(model);
+    } catch (_) {}
+
     // 调用回调函数
     if (this.onModelLoaded) {
         this.onModelLoaded(model, modelPath);
@@ -976,8 +1210,8 @@ Live2DManager.prototype.installMouthOverride = function() {
         } catch (_) {}
     }
     console.log('[Live2D MouthOverride] 找到的口型参数:', Object.keys(mouthParamIndices).join(', ') || '无');
-    
-    // 覆盖 1: motionManager.update - 在动作更新后立即覆盖参数
+
+    // 覆盖 1: motionManager.update
     if (internalModel.motionManager && typeof internalModel.motionManager.update === 'function') {
         // 确保在绑定之前，motionManager 和 coreModel 都已准备好
         if (!internalModel.motionManager || !coreModel) {
@@ -993,6 +1227,7 @@ Live2DManager.prototype.installMouthOverride = function() {
             }
 
             // 1. 捕获更新前的参数值（用于检测 Motion 是否修改了参数）
+            // 1a. 保存参数 + 口型 + 眨眼参数快照（用于后续 Diff 检测）
             const preUpdateParams = {};
             if (this.savedModelParameters && this._shouldApplySavedParams) {
                 for (const paramId of Object.keys(this.savedModelParameters)) {
@@ -1003,6 +1238,24 @@ Live2DManager.prototype.installMouthOverride = function() {
                         }
                     } catch (_) {}
                 }
+            }
+            for (const id of lipSyncParams) {
+                try {
+                    const idx = coreModel.getParameterIndex(id);
+                    if (idx >= 0) preUpdateParams[id] = coreModel.getParameterValueByIndex(idx);
+                } catch (_) {}
+            }
+            if (this._autoEyeBlinkEnabled && this._eyeBlinkParams) {
+                for (const p of this._eyeBlinkParams) {
+                    try { preUpdateParams[p.id] = coreModel.getParameterValueByIndex(p.idx); } catch (_) {}
+                }
+            }
+            const lookAtParams = ['ParamAngleX', 'ParamAngleY', 'ParamEyeBallX', 'ParamEyeBallY'];
+            for (const id of lookAtParams) {
+                try {
+                    const idx = coreModel.getParameterIndex(id);
+                    if (idx >= 0) preUpdateParams[id] = coreModel.getParameterValueByIndex(idx);
+                } catch (_) {}
             }
             
             // 先调用原始的 motionManager.update（添加错误处理）
@@ -1023,8 +1276,58 @@ Live2DManager.prototype.installMouthOverride = function() {
             if (!coreModel || !this.currentModel || !this.currentModel.internalModel || !this.currentModel.internalModel.coreModel) {
                 return; // 如果模型已销毁，直接返回
             }
-            
-            // 然后在动作更新后立即覆盖参数
+
+            // 2. 执行后 Diff 检测：判断 Motion 是否接管了口型/眨眼/视线
+            this._isMouthDrivenByMotion = false;
+            this._isEyeDrivenByMotion = false;
+            this._isLookAtDrivenByMotion = false;
+            for (const id of lipSyncParams) {
+                try {
+                    const idx = coreModel.getParameterIndex(id);
+                    if (idx >= 0) {
+                        const postVal = coreModel.getParameterValueByIndex(idx);
+                        const preVal = preUpdateParams[id];
+                        if (preVal !== undefined && Math.abs(postVal - preVal) > 0.001) {
+                            this._isMouthDrivenByMotion = true;
+                            break;
+                        }
+                    }
+                } catch (_) {}
+            }
+            if (!this._isMouthDrivenByMotion && this._autoEyeBlinkEnabled && this._eyeBlinkParams) {
+                for (const p of this._eyeBlinkParams) {
+                    try {
+                        const postVal = coreModel.getParameterValueByIndex(p.idx);
+                        const preVal = preUpdateParams[p.id];
+                        if (preVal !== undefined && Math.abs(postVal - preVal) > 0.001) {
+                            this._isEyeDrivenByMotion = true;
+                            break;
+                        }
+                    } catch (_) {}
+                }
+            }
+            for (const id of lookAtParams) {
+                try {
+                    const idx = coreModel.getParameterIndex(id);
+                    if (idx >= 0) {
+                        const postVal = coreModel.getParameterValueByIndex(idx);
+                        const preVal = preUpdateParams[id];
+                        if (preVal !== undefined && Math.abs(postVal - preVal) > 0.001) {
+                            this._isLookAtDrivenByMotion = true;
+                            break;
+                        }
+                    }
+                } catch (_) {}
+            }
+
+            // === 注入点 1（物理引擎前）：视线微动 ===
+            // 仅当 Motion 未接管时注入，让物理引擎能看到这些变化
+            // 注意：呼吸由 SDK 原生 Breath 系统接管，无需我们干预
+            if (!this._isLookAtDrivenByMotion && !this._isMouseTrackingActive) {
+                const delta = (this.currentModel?.deltaTime || 16.66) / 1000;
+                this._updateRandomLookAt(delta);
+            }
+
             try {
                 // === 点击效果平滑过渡处理 ===
                 // 当 _clickFadeState 存在时，说明点击效果正在平滑恢复中
@@ -1034,10 +1337,8 @@ Live2DManager.prototype.installMouthOverride = function() {
                 if (fadeState) {
                     const now = performance.now();
                     const elapsed = now - fadeState.startTime;
-                    // 防御性校验：确保 duration 为有限正数，否则视为立即完成
                     const safeDuration = (Number.isFinite(fadeState.duration) && fadeState.duration > 0) ? fadeState.duration : 1;
                     const linearProgress = Math.min(Math.max(elapsed / safeDuration, 0), 1);
-                    // cubic ease-out: 快进慢出
                     const t = 1 - Math.pow(1 - linearProgress, 3);
 
                     for (const [paramId, target] of Object.entries(fadeState.targetValues)) {
@@ -1049,11 +1350,13 @@ Live2DManager.prototype.installMouthOverride = function() {
                         } catch (_) {}
                     }
 
-                    // 口型参数不受过渡影响，照常写入
-                    for (const [id, idx] of Object.entries(mouthParamIndices)) {
-                        try {
-                            coreModel.setParameterValueByIndex(idx, this.mouthValue);
-                        } catch (_) {}
+                    // 口型参数：仅当 Motion 未接管时写入
+                    if (!this._isMouthDrivenByMotion) {
+                        for (const [id, idx] of Object.entries(mouthParamIndices)) {
+                            try {
+                                coreModel.setParameterValueByIndex(idx, this.mouthValue);
+                            } catch (_) {}
+                        }
                     }
 
                     // 过渡完成：清除 fade 状态，恢复正常覆写逻辑
@@ -1068,10 +1371,12 @@ Live2DManager.prototype.installMouthOverride = function() {
                     // 跳过下方的正常覆写逻辑
                 } else {
                 // === 正常帧：应用保存参数 + 常驻表情 ===
+                // 注意：口型、眨眼在 coreModel.update 拦截器（注入点2）中写入
+                // 注意：呼吸、视线微动在 motionManager.update 拦截器（注入点1）中已写入
                 // 1. 应用保存的模型参数（智能叠加模式）
                 if (this.savedModelParameters && this._shouldApplySavedParams) {
                     const persistentParamIds = this.getPersistentExpressionParamIds();
-                    
+
                     for (const [paramId, value] of Object.entries(this.savedModelParameters)) {
                         // 跳过口型参数
                         if (lipSyncParams.includes(paramId)) continue;
@@ -1079,7 +1384,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                         if (visibilityParams.includes(paramId)) continue;
                         // 跳过常驻表情已设置的参数
                         if (persistentParamIds.has(paramId)) continue;
-                        
+
                         try {
                             const idx = coreModel.getParameterIndex(paramId);
                             if (idx >= 0 && typeof value === 'number' && Number.isFinite(value)) {
@@ -1088,32 +1393,16 @@ Live2DManager.prototype.installMouthOverride = function() {
                                 const defaultVal = coreModel.getParameterDefaultValueByIndex(idx);
                                 const offset = value - defaultVal;
 
-                                // 策略：比较当前值(Motion更新后)与上一帧的值(preVal)
-                                // 如果值变了(Math.abs > 0.001)，说明 Motion/Physics 正在控制它 -> 叠加 Offset
-                                // 如果值没变，说明 Motion 没动它 -> 强制设为 UserValue (静态覆盖)
-                                
                                 if (Math.abs(currentVal - preVal) > 0.001) {
-                                    // Motion 正在控制，使用叠加
-                                    // 注意：这里 currentVal 已经是 Motion 的新值了
                                     coreModel.setParameterValueByIndex(idx, currentVal + offset);
                                 } else {
-                                    // Motion 没动它（或者静止），强制设为用户设定值
-                                    // 这样可以防止无限叠加（因为没有叠加在上一帧的 Offset 上）
-                                    // 同时也保证了静态参数也能生效
                                     coreModel.setParameterValueByIndex(idx, value);
                                 }
                             }
                         } catch (_) {}
                     }
                 }
-
-                // 2. 写入口型参数（覆盖模式，优先级高）
-                for (const [id, idx] of Object.entries(mouthParamIndices)) {
-                    try {
-                        coreModel.setParameterValueByIndex(idx, this.mouthValue);
-                    } catch (_) {}
-                }
-                // 3. 写入常驻表情参数（覆盖模式，优先级最高）
+                // 2. 写入常驻表情参数（覆盖模式，优先级最高）
                 if (this.persistentExpressionParamsByName) {
                     for (const name in this.persistentExpressionParamsByName) {
                         const params = this.persistentExpressionParamsByName[name];
@@ -1168,19 +1457,22 @@ Live2DManager.prototype.installMouthOverride = function() {
         }
         
         try {
-            // 这里的逻辑主要为了确保渲染前参数正确（防止 physics 等后续步骤重置了某些值）
-            // 注意：如果 physics 运行在 motionManager.update 之后但在 coreModel.update 之前，
-            // 那么这里的叠加可能已经被 physics 处理过或覆盖。
-            // 通常 motion -> physics -> update.
-            // 我们在 motionManager.update 里叠加，physics 应该能看到叠加后的值。
-            
-            // 1. 强制写入口型参数
-            for (const [id, idx] of Object.entries(mouthParamIndices)) {
-                try {
-                    currentCoreModel.setParameterValueByIndex(idx, this.mouthValue);
-                } catch (_) {}
+            // === 注入点 2（渲染前）：口型 + 眨眼 ===
+            // 这是渲染前的最后一步，强制命令，绝对优先级
+            // 口型参数（仅当 Motion 未接管时）
+            if (!this._isMouthDrivenByMotion) {
+                for (const [id, idx] of Object.entries(mouthParamIndices)) {
+                    try {
+                        currentCoreModel.setParameterValueByIndex(idx, this.mouthValue);
+                    } catch (_) {}
+                }
             }
-            
+            // 眨眼更新（仅当 Motion 未接管且未暂停时）
+            if (this._autoEyeBlinkEnabled && !this._suspendEyeBlinkOverride && !this._isEyeDrivenByMotion) {
+                const delta = (this.currentModel?.deltaTime || 16.66) / 1000;
+                this._updateEyeBlink(delta);
+            }
+
             // 2. 写入常驻表情参数（跳过口型参数以避免覆盖lipsync）
             // 当点击效果正在淡入淡出时，跳过常驻表情写入以避免覆盖插值
             if (this.persistentExpressionParamsByName && !this._clickFadeState) {
