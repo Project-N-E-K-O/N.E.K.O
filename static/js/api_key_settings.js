@@ -1571,7 +1571,13 @@ function confirmClearCustomApi() {
         toggleCustomApi(true);
     }
 
-    showStatus(window.t ? window.t('api.clearCustomApiSuccess') : '自定义API配置已清空，请点击保存按钮以保存更改', 'success');
+    // 同步折叠外层自定义API面板
+    const customApiOptions = document.getElementById('custom-api-options');
+    if (customApiOptions) customApiOptions.style.display = 'none';
+    const customApiToggleBtn = document.getElementById('custom-api-toggle-btn');
+    if (customApiToggleBtn) customApiToggleBtn.classList.remove('rotated');
+
+    showStatus(window.t ? window.t('api.clearCustomApiSuccess') : '自定义API配置已清空，请点击「保存设置」按钮以保存更改', 'success');
 }
 
 // 为自定义API开关添加事件监听器
