@@ -261,10 +261,18 @@ class _SystemActionHandler:
         action_id: str,
         value: object,
     ) -> ActionExecuteResponse:
-        from plugin.core.state import state
+        # Button-type entries (action, hook, timer, …) send value=null.
+        # They don't have enable/disable semantics — just acknowledge.
+        if not isinstance(value, bool):
+            return ActionExecuteResponse(
+                success=True,
+                action=await _find_action(self._aggregation, action_id),
+                message=f"Entry '{entry_id}' triggered",
+            )
 
-        plugin_instance = state.plugin_instances.get(plugin_id)
-        if plugin_instance is None:
+        # Toggle-type entries (service) send value=true/false.
+        running = await asyncio.to_thread(_is_plugin_running, plugin_id)
+        if not running:
             raise ServerDomainError(
                 code="PLUGIN_NOT_RUNNING",
                 message=f"Plugin '{plugin_id}' is not running",
@@ -272,13 +280,20 @@ class _SystemActionHandler:
                 details={"plugin_id": plugin_id},
             )
 
-        enable = value if isinstance(value, bool) else True
+        enable = value
 
         try:
-            method_name = "enable_entry" if enable else "disable_entry"
-            method = getattr(plugin_instance, method_name, None)
-            if method is not None:
-                await asyncio.to_thread(method, entry_id)
+            from plugin.core.state import state
+
+            host = None
+            with state.acquire_plugin_hosts_read_lock():
+                host = state.plugin_hosts.get(plugin_id)
+
+            if host is not None:
+                method_name = "enable_entry" if enable else "disable_entry"
+                method = getattr(host, method_name, None)
+                if method is not None:
+                    await asyncio.to_thread(method, entry_id)
         except Exception as exc:
             raise ServerDomainError(
                 code="ENTRY_TOGGLE_FAILED",
