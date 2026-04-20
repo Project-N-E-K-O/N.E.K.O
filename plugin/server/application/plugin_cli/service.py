@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -164,13 +163,17 @@ class PluginCliService:
     def _list_local_packages_sync(self) -> dict[str, object]:
         try:
             items: list[dict[str, object]] = []
+            package_paths = [
+                path
+                for suffix in _ALLOWED_UPLOAD_SUFFIXES
+                for path in _TARGET_ROOT.glob(f"*{suffix}")
+                if path.is_file()
+            ]
             for path in sorted(
-                _TARGET_ROOT.glob("*.neko-*"),
-                key=lambda item: item.stat().st_mtime if item.exists() else 0,
+                package_paths,
+                key=lambda item: item.stat().st_mtime,
                 reverse=True,
             ):
-                if not path.is_file():
-                    continue
                 stat = path.stat()
                 items.append(
                     {
@@ -353,27 +356,28 @@ class PluginCliService:
             # Ensure target directory exists
             _TARGET_ROOT.mkdir(parents=True, exist_ok=True)
 
-            # Avoid overwriting: if file exists, add a short UUID suffix
-            dest = _TARGET_ROOT / safe_name
-            if dest.exists():
-                stem = safe_name
-                suffix = ""
-                for allowed_suffix in sorted(_ALLOWED_UPLOAD_SUFFIXES, key=len, reverse=True):
-                    if stem.endswith(allowed_suffix):
-                        suffix = allowed_suffix
-                        stem = stem[: -len(allowed_suffix)]
-                        break
-                unique = uuid.uuid4().hex[:8]
-                dest = _TARGET_ROOT / f"{stem}_{unique}{suffix}"
+            stem = safe_name
+            suffix = ""
+            for allowed_suffix in sorted(_ALLOWED_UPLOAD_SUFFIXES, key=len, reverse=True):
+                if stem.endswith(allowed_suffix):
+                    suffix = allowed_suffix
+                    stem = stem[: -len(allowed_suffix)]
+                    break
 
-            # Write atomically: write to temp file then rename
-            tmp_path = dest.with_suffix(dest.suffix + ".uploading")
-            try:
-                tmp_path.write_bytes(content)
-                shutil.move(str(tmp_path), str(dest))
-            except Exception:
-                tmp_path.unlink(missing_ok=True)
-                raise
+            # Exclusive create: if name collides (including concurrent uploads
+            # racing on the same filename), pick a UUID-suffixed dest and retry.
+            dest = _TARGET_ROOT / safe_name
+            while True:
+                try:
+                    with dest.open("xb") as file:
+                        file.write(content)
+                    break
+                except FileExistsError:
+                    unique = uuid.uuid4().hex[:8]
+                    dest = _TARGET_ROOT / f"{stem}_{unique}{suffix}"
+                except Exception:
+                    dest.unlink(missing_ok=True)
+                    raise
 
             stat = dest.stat()
             return {
@@ -418,16 +422,23 @@ class PluginCliService:
         return plugin_dir
 
     def _resolve_package_path(self, raw: str) -> Path:
+        def _accept(path: Path) -> bool:
+            return path.is_file() and any(
+                path.name.endswith(suffix) for suffix in _ALLOWED_UPLOAD_SUFFIXES
+            )
+
         candidate = Path(raw).expanduser()
         if candidate.exists():
             resolved = candidate.resolve()
             _require_within(resolved, _TARGET_ROOT, field=f"package '{raw}'")
-            return resolved
+            if _accept(resolved):
+                return resolved
 
         target_candidate = (_TARGET_ROOT / raw).resolve()
         if target_candidate.exists():
             _require_within(target_candidate, _TARGET_ROOT, field=f"package '{raw}'")
-            return target_candidate
+            if _accept(target_candidate):
+                return target_candidate
 
         raise FileNotFoundError(f"package file not found: {raw}")
 
