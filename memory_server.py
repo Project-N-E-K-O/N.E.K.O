@@ -76,8 +76,10 @@ def validate_lanlan_name(name: str) -> str:
     return result.normalized
 
 # 初始化组件（迁移必须在实例化之前，否则旧路径文件找不到）
+# bootstrap_local_cloudsave_environment 移到 startup 钩子执行：该函数在磁盘满/
+# 权限不足/只读 FS 等场景会 raise OSError，以前裸调会让整个模块 import 失败，
+# FastAPI 根本起不来；改为 startup 钩子里 try/except 降级为警告日志后继续。
 _config_manager = get_config_manager()
-bootstrap_local_cloudsave_environment(_config_manager)
 try:
     from memory import migrate_to_character_dirs
     _config_manager.ensure_memory_directory()
@@ -586,6 +588,15 @@ async def _periodic_idle_maintenance_loop():
 @app.on_event("startup")
 async def startup_event_handler():
     """应用启动时初始化"""
+    # 先 bootstrap cloudsave 目录结构：磁盘满/只读 FS 等场景会 raise OSError，
+    # 降级为 warning 后继续（对应的 set_root_mode(NORMAL) 只在 bootstrap 成功时写入）
+    bootstrap_ok = False
+    try:
+        bootstrap_local_cloudsave_environment(_config_manager)
+        bootstrap_ok = True
+    except Exception as e:
+        logger.warning(f"[Memory] cloudsave 环境 bootstrap 失败，后续 cloudsave 相关操作可能降级: {e}")
+
     try:
         from utils.token_tracker import TokenTracker, install_hooks
         install_hooks()
@@ -620,16 +631,19 @@ async def startup_event_handler():
     except Exception as e:
         logger.warning(f"[Memory] Persona 迁移检查失败: {e}")
 
-    try:
-        set_root_mode(
-            _config_manager,
-            ROOT_MODE_NORMAL,
-            current_root=str(_config_manager.app_docs_dir),
-            last_known_good_root=str(_config_manager.app_docs_dir),
-            last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        )
-    except Exception as e:
-        logger.warning(f"[Memory] 写入启动成功标记失败: {e}")
+    if bootstrap_ok:
+        try:
+            set_root_mode(
+                _config_manager,
+                ROOT_MODE_NORMAL,
+                current_root=str(_config_manager.app_docs_dir),
+                last_known_good_root=str(_config_manager.app_docs_dir),
+                last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            )
+        except Exception as e:
+            logger.warning(f"[Memory] 写入启动成功标记失败: {e}")
+    else:
+        logger.warning("[Memory] 跳过 ROOT_MODE_NORMAL 写入：cloudsave bootstrap 未成功")
 
     # 启动定期后台任务
     _spawn_background_task(_periodic_rebuttal_loop())
