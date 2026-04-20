@@ -271,21 +271,40 @@ async def _replay_pending_outbox() -> list[asyncio.Task]:
 
     返回值方便调用方（或测试）await 所有任务跑完，而不是靠
     `_BACKGROUND_TASKS` 快照 + `asyncio.sleep(0)` 这种弱保证等法。
+
+    扫描范围 = 当前 config 的角色名 ∪ memory_dir 下有 `outbox.ndjson` 的
+    子目录。仅扫 config 会漏掉"曾经在用、后来被移出 config 但仍有 pending
+    op 的角色"，导致那些 op 永远不会被补跑。
     """
     global _replay_semaphore
     spawned: list[asyncio.Task] = []
+    names: set[str] = set()
     try:
         character_data = _config_manager.load_characters()
-        catgirl_names = list(character_data.get('猫娘', {}).keys())
+        names.update(character_data.get('猫娘', {}).keys())
     except Exception as e:
         logger.warning(f"[Outbox] 启动补跑：加载角色列表失败: {e}")
+        # 即便 config 加载失败，仍允许走磁盘扫描兜底——这正是 config
+        # 变化后仍需保证 crash-recovery 的场景。
+
+    try:
+        memory_dir = _config_manager.memory_dir
+        if memory_dir and os.path.isdir(memory_dir):
+            for entry in os.listdir(memory_dir):
+                candidate = os.path.join(memory_dir, entry, 'outbox.ndjson')
+                if os.path.isfile(candidate):
+                    names.add(entry)
+    except Exception as e:
+        logger.warning(f"[Outbox] 启动补跑：扫描 memory_dir 失败: {e}")
+
+    if not names:
         return spawned
 
     # Semaphore 在 event loop 里构造（不能在模块级构造）
     if _replay_semaphore is None:
         _replay_semaphore = asyncio.Semaphore(_REPLAY_CONCURRENCY)
 
-    for name in catgirl_names:
+    for name in sorted(names):
         try:
             pending = await outbox.apending_ops(name)
         except Exception as e:

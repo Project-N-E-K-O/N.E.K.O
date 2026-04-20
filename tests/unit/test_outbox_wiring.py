@@ -189,6 +189,39 @@ async def test_replay_respects_concurrency_semaphore(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_replay_scans_disk_for_characters_not_in_config(tmp_path):
+    """Codex PR#905 P2: 角色从 config 移除但 outbox 还有 pending → 必须仍补跑。"""
+    ob, mock_cm = _install_fresh_memory_state(str(tmp_path))
+    import memory_server
+    from memory.outbox import OP_EXTRACT_FACTS
+
+    # 登记一条 pending op（在 "小天" 的 outbox 里）
+    await ob.aappend_pending("小天", OP_EXTRACT_FACTS, {"i": 1})
+
+    # 模拟 config 被改成不再包含小天（但磁盘上的 outbox 还在）
+    mock_cm.load_characters = MagicMock(
+        return_value={"猫娘": {}, "当前猫娘": None}
+    )
+
+    calls: list[str] = []
+
+    async def _handler(name: str, payload: dict):
+        calls.append(name)
+
+    with patch.dict(
+        memory_server._OUTBOX_HANDLERS,
+        {OP_EXTRACT_FACTS: _handler},
+        clear=False,
+    ):
+        spawned = await memory_server._replay_pending_outbox()
+        await asyncio.gather(*spawned, return_exceptions=True)
+
+    # 仍然补跑了小天，尽管 config 里没有
+    assert calls == ["小天"]
+    assert await ob.apending_ops("小天") == []
+
+
+@pytest.mark.asyncio
 async def test_end_to_end_kill_then_replay_persists_side_effect(tmp_path):
     """端到端：handler 把 fact 写入假 FactStore 但在 append_done 前"崩溃"，
     新进程加载 outbox → 重跑 → side effect 最终落盘。"""
