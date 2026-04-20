@@ -234,20 +234,18 @@ def _collect_settings_actions_sync(
         # Read current effective config for this plugin's toml_section
         toml_section = settings_cls.model_config.get("toml_section", "settings")
 
-        # Try to get effective config from the plugin instance
+        # Read current config from the plugin's TOML file
         current_section: dict[str, Any] = {}
-        plugin_instance = state.plugin_instances.get(pid)
-        if plugin_instance is not None:
-            try:
-                ec = getattr(plugin_instance, "effective_config", None)
-                if callable(ec):
-                    ec = ec()
-                if isinstance(ec, dict):
-                    section = ec.get(toml_section)
-                    if isinstance(section, Mapping):
-                        current_section = dict(section)
-            except Exception:
-                pass
+        try:
+            from plugin.config.service import load_plugin_config
+
+            config_data = load_plugin_config(pid, validate=False)
+            if isinstance(config_data, dict):
+                section = config_data.get(toml_section)
+                if isinstance(section, Mapping):
+                    current_section = dict(section)
+        except Exception:
+            pass
 
         # Iterate fields
         for field_name, field_info in settings_cls.model_fields.items():
