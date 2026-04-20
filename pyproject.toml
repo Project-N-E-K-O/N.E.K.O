@@ -106,3 +106,27 @@ dev = [
     "ruff>=0.15.4",
 ]
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Ruff: enforce zero-blocking-call policy in async def bodies.
+# Covers: time.sleep / requests / urllib.request / subprocess.* (run, Popen…).
+# Gaps (threading.Thread.join timeout, queue.Queue.get, threading.Event.wait
+# timeout, raw socket.recv/send/accept/connect) are caught by the companion
+# script scripts/check_async_blocking.py which the CI Analyze job also runs.
+# ─────────────────────────────────────────────────────────────────────────────
+[tool.ruff]
+target-version = "py311"
+extend-exclude = [
+  "frontend",
+  "dist",
+  ".venv",
+]
+
+[tool.ruff.lint]
+select = [
+  "ASYNC210",  # blocking HTTP call (requests / urllib / httpx.Client)
+  "ASYNC220",  # create-subprocess (Popen) in async function
+  "ASYNC221",  # subprocess.run / call / check_output / check_call
+  "ASYNC222",  # Popen.wait / Popen.communicate
+  "ASYNC251",  # time.sleep in async function
+]
+

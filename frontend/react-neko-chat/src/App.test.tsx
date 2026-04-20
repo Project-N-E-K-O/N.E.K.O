@@ -69,6 +69,19 @@ describe('App', () => {
     expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Test send' });
   });
 
+  it('does not render a local optimistic user bubble before the host echoes messages', () => {
+    const onComposerSubmit = vi.fn();
+    render(<App onComposerSubmit={onComposerSubmit} />);
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: 'No local optimistic bubble' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'No local optimistic bubble' });
+    expect(screen.queryByText('No local optimistic bubble')).not.toBeInTheDocument();
+    expect(screen.queryByText('You')).not.toBeInTheDocument();
+  });
+
   it('renders composer tool buttons and calls the React callbacks', () => {
     const onComposerImportImage = vi.fn();
     const onComposerScreenshot = vi.fn();
@@ -103,5 +116,349 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Remove image: Screenshot 1' }));
 
     expect(onComposerRemoveAttachment).toHaveBeenCalledWith('img-1');
+  });
+
+  it('only emits avatar interactions when the pointer hits the avatar range', () => {
+    const onAvatarInteraction = vi.fn();
+    const live2dContainer = document.createElement('div');
+    live2dContainer.id = 'live2d-container';
+    Object.defineProperty(live2dContainer, 'getClientRects', {
+      configurable: true,
+      value: () => [{ width: 100, height: 100 }],
+    });
+    document.body.appendChild(live2dContainer);
+
+    Object.assign(window, {
+      live2dManager: {
+        currentModel: {},
+        getModelScreenBounds: () => ({
+          left: 100,
+          right: 200,
+          top: 100,
+          bottom: 200,
+          width: 100,
+          height: 100,
+        }),
+      },
+    });
+
+    try {
+      render(<App onAvatarInteraction={onAvatarInteraction} />);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
+
+      fireEvent.pointerDown(window, { button: 0, clientX: 20, clientY: 20 });
+      expect(onAvatarInteraction).not.toHaveBeenCalled();
+
+      fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 150 });
+      expect(onAvatarInteraction).toHaveBeenCalledTimes(1);
+      expect(onAvatarInteraction).toHaveBeenCalledWith(expect.objectContaining({
+        toolId: 'lollipop',
+        actionId: 'offer',
+        target: 'avatar',
+        pointer: {
+          clientX: 150,
+          clientY: 150,
+        },
+      }));
+      expect(onAvatarInteraction.mock.calls[0]?.[0]).not.toHaveProperty('touchZone');
+    } finally {
+      delete (window as Window & { live2dManager?: unknown }).live2dManager;
+      live2dContainer.remove();
+    }
+  });
+
+  it('derives different touch zones for different avatar hit areas', () => {
+    const onAvatarInteraction = vi.fn();
+    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.9);
+    const live2dContainer = document.createElement('div');
+    live2dContainer.id = 'live2d-container';
+    Object.defineProperty(live2dContainer, 'getClientRects', {
+      configurable: true,
+      value: () => [{ width: 100, height: 100 }],
+    });
+    document.body.appendChild(live2dContainer);
+
+    Object.assign(window, {
+      live2dManager: {
+        currentModel: {},
+        getModelScreenBounds: () => ({
+          left: 100,
+          right: 200,
+          top: 100,
+          bottom: 200,
+          width: 100,
+          height: 100,
+        }),
+      },
+    });
+
+    try {
+      render(<App onAvatarInteraction={onAvatarInteraction} />);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
+
+      fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 110 });
+      fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 150 });
+      fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 185 });
+
+      expect(onAvatarInteraction.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+        toolId: 'fist',
+        actionId: 'poke',
+        touchZone: 'head',
+      }));
+      expect(onAvatarInteraction.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
+        toolId: 'fist',
+        actionId: 'poke',
+        touchZone: 'face',
+      }));
+      expect(onAvatarInteraction.mock.calls[2]?.[0]).toEqual(expect.objectContaining({
+        toolId: 'fist',
+        actionId: 'poke',
+        touchZone: 'body',
+      }));
+    } finally {
+      randomSpy.mockRestore();
+      delete (window as Window & { live2dManager?: unknown }).live2dManager;
+      live2dContainer.remove();
+    }
+  });
+
+  it('escalates lollipop interactions from normal to burst on repeated in-range taps', () => {
+    const onAvatarInteraction = vi.fn();
+    const live2dContainer = document.createElement('div');
+    live2dContainer.id = 'live2d-container';
+    Object.defineProperty(live2dContainer, 'getClientRects', {
+      configurable: true,
+      value: () => [{ width: 100, height: 100 }],
+    });
+    document.body.appendChild(live2dContainer);
+
+    Object.assign(window, {
+      live2dManager: {
+        currentModel: {},
+        getModelScreenBounds: () => ({
+          left: 100,
+          right: 200,
+          top: 100,
+          bottom: 200,
+          width: 100,
+          height: 100,
+        }),
+      },
+    });
+
+    try {
+      render(<App onAvatarInteraction={onAvatarInteraction} />);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
+
+      for (let index = 0; index < 6; index += 1) {
+        fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 150 });
+      }
+
+      expect(onAvatarInteraction).toHaveBeenCalledTimes(6);
+      expect(onAvatarInteraction.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+        toolId: 'lollipop',
+        actionId: 'offer',
+        intensity: 'normal',
+      }));
+      expect(onAvatarInteraction.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
+        toolId: 'lollipop',
+        actionId: 'tease',
+        intensity: 'normal',
+      }));
+      expect(onAvatarInteraction.mock.calls[2]?.[0]).toEqual(expect.objectContaining({
+        toolId: 'lollipop',
+        actionId: 'tap_soft',
+        intensity: 'rapid',
+      }));
+      expect(onAvatarInteraction.mock.calls[5]?.[0]).toEqual(expect.objectContaining({
+        toolId: 'lollipop',
+        actionId: 'tap_soft',
+        intensity: 'burst',
+      }));
+    } finally {
+      delete (window as Window & { live2dManager?: unknown }).live2dManager;
+      live2dContainer.remove();
+    }
+  });
+
+  it('escalates fist interactions to rapid on repeated in-range taps', () => {
+    const onAvatarInteraction = vi.fn();
+    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.9);
+    const live2dContainer = document.createElement('div');
+    live2dContainer.id = 'live2d-container';
+    Object.defineProperty(live2dContainer, 'getClientRects', {
+      configurable: true,
+      value: () => [{ width: 100, height: 100 }],
+    });
+    document.body.appendChild(live2dContainer);
+
+    Object.assign(window, {
+      live2dManager: {
+        currentModel: {},
+        getModelScreenBounds: () => ({
+          left: 100,
+          right: 200,
+          top: 100,
+          bottom: 200,
+          width: 100,
+          height: 100,
+        }),
+      },
+    });
+
+    try {
+      render(<App onAvatarInteraction={onAvatarInteraction} />);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
+
+      for (let index = 0; index < 4; index += 1) {
+        fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 150 });
+      }
+
+      expect(onAvatarInteraction).toHaveBeenCalledTimes(4);
+      expect(onAvatarInteraction.mock.calls[3]?.[0]).toEqual(expect.objectContaining({
+        toolId: 'fist',
+        actionId: 'poke',
+        intensity: 'rapid',
+      }));
+    } finally {
+      randomSpy.mockRestore();
+      delete (window as Window & { live2dManager?: unknown }).live2dManager;
+      live2dContainer.remove();
+    }
+  });
+
+  it('does not emit avatar interactions when compact UI overlaps the avatar hit range', () => {
+    const onAvatarInteraction = vi.fn();
+    const live2dContainer = document.createElement('div');
+    live2dContainer.id = 'live2d-container';
+    Object.defineProperty(live2dContainer, 'getClientRects', {
+      configurable: true,
+      value: () => [{ width: 100, height: 100 }],
+    });
+    document.body.appendChild(live2dContainer);
+
+    const compactButton = document.createElement('button');
+    compactButton.className = 'live2d-floating-btn';
+    document.body.appendChild(compactButton);
+
+    const originalElementsFromPoint = document.elementsFromPoint;
+    Object.defineProperty(document, 'elementsFromPoint', {
+      configurable: true,
+      value: () => [compactButton],
+    });
+
+    Object.assign(window, {
+      live2dManager: {
+        currentModel: {},
+        getModelScreenBounds: () => ({
+          left: 100,
+          right: 200,
+          top: 100,
+          bottom: 200,
+          width: 100,
+          height: 100,
+        }),
+      },
+    });
+
+    try {
+      render(<App onAvatarInteraction={onAvatarInteraction} />);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
+      fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 150 });
+
+      expect(onAvatarInteraction).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(document, 'elementsFromPoint', {
+        configurable: true,
+        value: originalElementsFromPoint || (() => []),
+      });
+      delete (window as Window & { live2dManager?: unknown }).live2dManager;
+      compactButton.remove();
+      live2dContainer.remove();
+    }
+  });
+
+  it('exposes avatar tools as a toggle group with pressed state', () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+
+    expect(screen.getByRole('group', { name: 'Tool icons' })).toBeInTheDocument();
+
+    const lollipopButton = screen.getByRole('button', { name: '棒棒糖' });
+    expect(lollipopButton).toHaveAttribute('aria-pressed', 'false');
+
+    fireEvent.click(lollipopButton);
+    fireEvent.click(screen.getByRole('button', { name: 'Emoji: 棒棒糖' }));
+
+    expect(screen.getByRole('button', { name: '棒棒糖' })).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('anchors the desktop cursor overlay to the current pointer when a tool is activated', () => {
+    const { container } = render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    fireEvent.click(screen.getByRole('button', { name: '猫爪' }), {
+      clientX: 240,
+      clientY: 320,
+    });
+
+    const overlay = container.querySelector('.avatar-cursor-overlay');
+    expect(overlay).not.toBeNull();
+    expect((overlay as HTMLDivElement).style.transform).toBe('translate3d(201px, 280px, 0)');
+  });
+
+  it('shows the hammer secondary cursor asset on outside-range desktop clicks', () => {
+    const live2dContainer = document.createElement('div');
+    live2dContainer.id = 'live2d-container';
+    Object.defineProperty(live2dContainer, 'getClientRects', {
+      configurable: true,
+      value: () => [{ width: 100, height: 100 }],
+    });
+    document.body.appendChild(live2dContainer);
+
+    Object.assign(window, {
+      live2dManager: {
+        currentModel: {},
+        getModelScreenBounds: () => ({
+          left: 100,
+          right: 200,
+          top: 100,
+          bottom: 200,
+          width: 100,
+          height: 100,
+        }),
+      },
+    });
+
+    try {
+      const { container } = render(<App />);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: '锤子' }));
+
+      const compactImageBefore = container.querySelector('.hammer-cursor-overlay-compact-image');
+      expect(compactImageBefore).not.toBeNull();
+      expect(compactImageBefore).toHaveAttribute('src', '/static/icons/chat_hammer1_cursor.png');
+
+      fireEvent.pointerDown(window, { button: 0, clientX: 20, clientY: 20 });
+
+      const compactImageAfter = container.querySelector('.hammer-cursor-overlay-compact-image');
+      expect(compactImageAfter).not.toBeNull();
+      expect(compactImageAfter).toHaveAttribute('src', '/static/icons/chat_hammer2_cursor.png');
+    } finally {
+      delete (window as Window & { live2dManager?: unknown }).live2dManager;
+      live2dContainer.remove();
+    }
   });
 });

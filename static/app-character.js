@@ -92,6 +92,33 @@
         }));
     }
 
+    function markMMDCanvasLoadingSession(canvas, loadingSessionId) {
+        if (!canvas) return;
+        canvas.dataset.mmdLoadingSessionId = String(loadingSessionId);
+        canvas.style.display = 'block';
+        canvas.style.visibility = 'hidden';
+        canvas.style.pointerEvents = 'none';
+    }
+
+    function restoreMMDCanvasForLoadingSession(canvas, loadingSessionId) {
+        if (!canvas) return false;
+        if (canvas.dataset.mmdLoadingSessionId !== String(loadingSessionId)) {
+            return false;
+        }
+        delete canvas.dataset.mmdLoadingSessionId;
+        canvas.style.display = 'block';
+        canvas.style.visibility = 'visible';
+        canvas.style.pointerEvents = 'auto';
+        return true;
+    }
+
+    function clearMMDCanvasLoadingSession(canvas) {
+        if (!canvas) return;
+        delete canvas.dataset.mmdLoadingSessionId;
+        canvas.style.visibility = 'hidden';
+        canvas.style.pointerEvents = 'none';
+    }
+
     // ======================================================================
     // handleCatgirlSwitch — main character switching logic
     // ======================================================================
@@ -107,6 +134,10 @@
         console.log('[猫娘切换] ========== 开始切换 ==========');
         console.log('[猫娘切换] 从', oldCatgirl, '切换到', newCatgirl);
         console.log('[猫娘切换] isSwitchingCatgirl:', S.isSwitchingCatgirl);
+        let mmdLoadingSessionId = '';
+        // 保存旧连接引用，finally 中确保关闭（防止 try 中途 throw 导致永久泄露）
+        let _switchOldSocket = null;
+        let _switchOldHeartbeat = null;
 
         if (S.isSwitchingCatgirl) {
             console.log('[猫娘切换] 正在切换中，忽略本次请求');
@@ -123,6 +154,8 @@
         // 确认切换到不同角色后，清空上一任的搜歌任务
         window.invalidatePendingMusicSearch();
         S.isSwitchingCatgirl = true;
+        _switchOldSocket = S.socket;
+        _switchOldHeartbeat = S.heartbeatInterval;
         console.log('[猫娘切换] 设置 isSwitchingCatgirl = true');
 
         try {
@@ -364,8 +397,7 @@
                 }
                 const mmdCanvas = document.getElementById('mmd-canvas');
                 if (mmdCanvas) {
-                    mmdCanvas.style.visibility = 'hidden';
-                    mmdCanvas.style.pointerEvents = 'none';
+                    clearMMDCanvasLoadingSession(mmdCanvas);
                 }
 
                 // 清理 MMD UI 资源（浮动按钮、锁图标等）
@@ -386,10 +418,21 @@
             // 3. 准备新环境
             showStatusToast(window.t ? window.t('app.switchingCatgirl', { name: newCatgirl }) : `正在切换到 ${newCatgirl}...`, 3000);
 
+            // 先退役旧 socket，让它后续的 onmessage / onclose 在清空会话期间直接走 stale guard。
+            if (_switchOldSocket && S.socket === _switchOldSocket) {
+                S.socket = null;
+            }
+
             // 清空聊天记录和相关全局状态
             const chatContainer = document.getElementById('chatContainer');
             if (chatContainer) {
                 chatContainer.innerHTML = '';
+            }
+            if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearMessages === 'function') {
+                window.reactChatWindowHost.clearMessages();
+            }
+            if (typeof window._resetReactChatSwitchState === 'function') {
+                window._resetReactChatSwitchState();
             }
             // 重置聊天相关的全局状态
             window.currentGeminiMessage = null;
@@ -402,9 +445,15 @@
             window._pendingMusicCommand = '';
             window._realisticGeminiTimestamp = null;
             window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
+            window._isProcessingRealisticQueue = false;
+            window.realisticGeminiCurrentTurnId = null;
             // 重置语音模式用户转录合并追踪
             S.lastVoiceUserMessage = null;
             S.lastVoiceUserMessageTime = 0;
+            // 丢弃切换前已经入站但尚未消费的旧 TTS 数据
+            S.incomingAudioEpoch += 1;
+            S.incomingAudioBlobQueue = [];
+            S.pendingAudioChunkMetaQueue = [];
 
             // 清理连接与状态
             if (S.autoReconnectTimeoutId) clearTimeout(S.autoReconnectTimeoutId);
@@ -431,6 +480,10 @@
             console.log('[猫娘切换] 检测到模型类型:', modelType, '有效类型:', effectiveModelType);
             if (!supportsLocalModelRuntime()) {
                 console.log('[猫娘切换] 当前页面不加载本地模型，跳过模型热切换');
+                // chat.html 不走模型分支，在此显式恢复 composer（兜底 onclose 路径）
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
             } else if (effectiveModelType === 'vrm') {
                 // 加载 VRM 模型
                 console.log('[猫娘切换] 进入VRM加载分支');
@@ -785,8 +838,7 @@
                 }
                 const mmdCanvasVrm = document.getElementById('mmd-canvas');
                 if (mmdCanvasVrm) {
-                    mmdCanvasVrm.style.visibility = 'hidden';
-                    mmdCanvasVrm.style.pointerEvents = 'none';
+                    clearMMDCanvasLoadingSession(mmdCanvasVrm);
                 }
 
                 // 确保 VRM 渲染器可见
@@ -815,6 +867,9 @@
                 console.log('[猫娘切换] VRM - 恢复对话框 - chatContainer存在:', !!chatContainerVrm, '当前类:', chatContainerVrm ? chatContainerVrm.className : 'N/A');
                 if (chatContainerVrm) chatContainerVrm.classList.remove('minimized');
                 if (textInputArea) textInputArea.classList.remove('hidden');
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
                 console.log('[猫娘切换] VRM - 对话框已恢复，当前类:', chatContainerVrm ? chatContainerVrm.className : 'N/A');
 
                 // 确保 VRM 按钮和锁图标可见
@@ -909,11 +964,14 @@
                     mmdContainerShow.style.removeProperty('pointer-events');
                 }
                 const mmdCanvasShow = document.getElementById('mmd-canvas');
+                mmdLoadingSessionId = window._createMMDLoadingSessionId
+                    ? window._createMMDLoadingSessionId('mmd-character')
+                    : `mmd-character-${Date.now()}`;
                 if (mmdCanvasShow) {
-                    mmdCanvasShow.style.display = 'block';
-                    mmdCanvasShow.style.visibility = 'visible';
-                    mmdCanvasShow.style.pointerEvents = 'auto';
+                    // 先隐藏 canvas，避免旧帧或新模型首帧在半透明 loading overlay 后面透出。
+                    markMMDCanvasLoadingSession(mmdCanvasShow, mmdLoadingSessionId);
                 }
+                window.MMDLoadingOverlay?.begin(mmdLoadingSessionId, { stage: 'engine' });
 
                 // 初始化 MMD 管理器
                 // 【优化】如果 MMD 管理器已存在且场景有效，复用现有 renderer/scene，
@@ -935,10 +993,19 @@
                     console.log('[猫娘切换] MMD 管理器已复用');
                 } else {
                     // 首次初始化或管理器已销毁，执行完整初始化
+                    let initializedManager = null;
                     if (typeof window.initMMDModel === 'function') {
-                        await window.initMMDModel();
+                        initializedManager = await window.initMMDModel();
                     } else if (typeof initMMDModel === 'function') {
-                        await initMMDModel();
+                        initializedManager = await initMMDModel();
+                    }
+                    if (!initializedManager || !window.mmdManager || window.mmdManager._isDisposed) {
+                        console.error('[猫娘切换] MMD 管理器初始化失败');
+                        window.MMDLoadingOverlay?.fail(mmdLoadingSessionId, {
+                            detail: (window.t && window.t('mmd.managerInitFailed')) || 'MMD 管理器初始化失败'
+                        });
+                        mmdLoadingSessionId = '';
+                        return;
                     }
                 }
 
@@ -949,6 +1016,7 @@
                     // 提前获取设置并预置物理开关
                     let savedSettings = null;
                     try {
+                        window.MMDLoadingOverlay?.update(mmdLoadingSessionId, { stage: 'settings' });
                         const settingsRes = await fetch('/api/characters/catgirl/' + encodeURIComponent(newCatgirl) + '/mmd_settings');
                         const settingsData = await settingsRes.json();
                         if (settingsData.success && settingsData.settings) {
@@ -958,7 +1026,8 @@
                             }
                         }
                     } catch (e) { /* ignore - will use current enablePhysics */ }
-                    await window.mmdManager.loadModel(mmdModelUrl);
+                    window.MMDLoadingOverlay?.update(mmdLoadingSessionId, { stage: 'model' });
+                    await window.mmdManager.loadModel(mmdModelUrl, { loadingSessionId: mmdLoadingSessionId });
                     console.log('[猫娘切换] MMD 模型加载完成');
 
                     // 应用完整设置（光照、渲染、物理、鼠标跟踪）
@@ -970,6 +1039,7 @@
                     const mmdIdleAnimation = catgirlConfig?.mmd_idle_animation;
                     if (mmdIdleAnimation) {
                         try {
+                            window.MMDLoadingOverlay?.update(mmdLoadingSessionId, { stage: 'idle' });
                             await window.mmdManager.loadAnimation(mmdIdleAnimation);
                             window.mmdManager.playAnimation();
                             console.log('[猫娘切换] 已播放待机动作:', mmdIdleAnimation);
@@ -977,8 +1047,20 @@
                             console.warn('[猫娘切换] 播放待机动作失败:', idleErr);
                         }
                     }
+                    window.MMDLoadingOverlay?.update(mmdLoadingSessionId, { stage: 'done' });
+                    if (window._waitForMMDRenderFrame) {
+                        await window._waitForMMDRenderFrame(window.mmdManager);
+                    }
+                    window.MMDLoadingOverlay?.end(mmdLoadingSessionId);
+                    const mmdCanvasReady = document.getElementById('mmd-canvas');
+                    restoreMMDCanvasForLoadingSession(mmdCanvasReady, mmdLoadingSessionId);
+                    mmdLoadingSessionId = '';
                 } else {
                     console.error('[猫娘切换] MMD 管理器初始化失败');
+                    window.MMDLoadingOverlay?.fail(mmdLoadingSessionId, {
+                        detail: (window.t && window.t('mmd.managerInitFailed')) || 'MMD 管理器初始化失败'
+                    });
+                    mmdLoadingSessionId = '';
                 }
 
                 if (window.LanLan1) {
@@ -990,6 +1072,9 @@
                 const textInputAreaMmd = document.getElementById('text-input-area');
                 if (chatContainerMmd) chatContainerMmd.classList.remove('minimized');
                 if (textInputAreaMmd) textInputAreaMmd.classList.remove('hidden');
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
 
                 // 延时显示 MMD 浮动按钮和锁图标
                 setTimeout(() => {
@@ -1137,14 +1222,16 @@
                 }
                 const mmdCanvasL2d = document.getElementById('mmd-canvas');
                 if (mmdCanvasL2d) {
-                    mmdCanvasL2d.style.visibility = 'hidden';
-                    mmdCanvasL2d.style.pointerEvents = 'none';
+                    clearMMDCanvasLoadingSession(mmdCanvasL2d);
                 }
 
                 const chatContainerL2d = document.getElementById('chat-container');
                 const textInputAreaL2d = document.getElementById('text-input-area');
                 if (chatContainerL2d) chatContainerL2d.classList.remove('minimized');
                 if (textInputAreaL2d) textInputAreaL2d.classList.remove('hidden');
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
 
                 // 延时重启 Ticker 和显示按钮（双重保险）
                 setTimeout(() => {
@@ -1229,8 +1316,45 @@
 
         } catch (error) {
             console.error('[猫娘切换] 失败:', error);
+            if (mmdLoadingSessionId) {
+                window.MMDLoadingOverlay?.fail(mmdLoadingSessionId, { detail: error?.message || String(error) });
+            }
             showStatusToast(window.t ? window.t('app.switchCatgirlError', { error: error.message }) : `切换失败: ${error.message}`, 4000);
+
+            // 早期失败回滚：若新 socket 未接管（如 /api/characters fetch 抛错），
+            // try 开头的"紧急制动"已停掉 L2D ticker 和 VRM 动画，此处重启回旧模型的渲染循环，
+            // 否则用户看到的是切换失败 toast + 冻结画面。
+            if (_switchOldSocket && S.socket === _switchOldSocket) {
+                try {
+                    const ticker = window.live2dManager?.pixi_app?.ticker;
+                    if (ticker && !ticker.started) ticker.start();
+                } catch (_e) { /* ignore */ }
+                try {
+                    if (window.vrmManager
+                        && !window.vrmManager._animationFrameId
+                        && typeof window.vrmManager.startAnimation === 'function') {
+                        window.vrmManager.startAnimation();
+                    }
+                } catch (_e) { /* ignore */ }
+            }
         } finally {
+            // 双重保障：若新 socket 已接管，确保旧连接被关闭（即使 try 中途 throw）。
+            // 真正的 stale-onclose guard 在 app-websocket.js 的 onclose 早退
+            // (S.socket !== _thisSocket)，本层是第二道防线。
+            // 门闸 S.socket !== _switchOldSocket：切换早期失败（如 /api/characters fetch 抛错）时
+            // 新 socket 尚未建立，此时保留旧 socket 让用户继续与当前猫娘对话。
+            try {
+                if (_switchOldSocket
+                    && S.socket !== _switchOldSocket
+                    && _switchOldSocket.readyState !== WebSocket.CLOSED
+                    && _switchOldSocket.readyState !== WebSocket.CLOSING) {
+                    _switchOldSocket.close();
+                }
+                if (_switchOldHeartbeat && S.heartbeatInterval !== _switchOldHeartbeat) {
+                    clearInterval(_switchOldHeartbeat);
+                }
+            } catch (_e) { /* ignore */ }
+
             S.isSwitchingCatgirl = false;
             // 清理切换标识，取消所有 pending 的 applyLighting 定时器
             window._currentCatgirlSwitchId = null;
@@ -1257,4 +1381,36 @@
     window.handleCatgirlSwitch = handleCatgirlSwitch;
 
     window.appCharacter = mod;
+
+    // ======================================================================
+    // Cloudsave force-terminate: clear chat UI after character reloaded
+    // ======================================================================
+    window.addEventListener('neko-cloudsave-character-reloaded', function (event) {
+        var character_name = (event.detail || {}).character_name || '';
+
+        var chatContainer = document.getElementById('chatContainer');
+        if (chatContainer) {
+            chatContainer.innerHTML = '';
+        }
+        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearMessages === 'function') {
+            window.reactChatWindowHost.clearMessages();
+        }
+        if (typeof window._resetReactChatSwitchState === 'function') {
+            window._resetReactChatSwitchState();
+        }
+
+        window.currentGeminiMessage = null;
+        window._geminiTurnFullText = '';
+        window.currentTurnGeminiBubbles = [];
+        window.currentTurnGeminiAttachments = [];
+        window._realisticGeminiQueue = [];
+        window._realisticGeminiBuffer = '';
+        window._pendingMusicCommand = '';
+        window._realisticGeminiTimestamp = null;
+        window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
+        window._isProcessingRealisticQueue = false;
+        window.realisticGeminiCurrentTurnId = null;
+
+        console.info('[cloudsave] 角色 ' + character_name + ' 数据已从云端重新加载，聊天 UI 已刷新');
+    });
 })();

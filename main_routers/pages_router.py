@@ -113,6 +113,12 @@ async def steam_workshop_manager_page(request: Request, lanlan_name: str = ""):
     return templates.TemplateResponse("templates/steam_workshop_manager.html", {"request": request, "lanlan_name": lanlan_name})
 
 
+@router.get('/cloudsave_manager', response_class=HTMLResponse)
+async def cloudsave_manager_page(request: Request, lanlan_name: str = ""):
+    templates = get_templates()
+    return templates.TemplateResponse("templates/cloudsave_manager.html", {"request": request, "lanlan_name": lanlan_name})
+
+
 @router.get('/memory_browser', response_class=HTMLResponse)
 async def memory_browser(request: Request):
     templates = get_templates()
@@ -146,6 +152,16 @@ async def get_agenthud_page(request: Request):
     """AgentHUD 独立窗口页面"""
     templates = get_templates()
     return templates.TemplateResponse("templates/agenthud.html", {"request": request})
+
+
+@router.get("/card_export", response_class=HTMLResponse)
+async def get_card_export_page(request: Request):
+    """角色卡导出页面（独立加载模型并可调整构图）"""
+    templates = get_templates()
+    return templates.TemplateResponse("templates/card_export.html", {
+        "request": request,
+        **_vrm_defaults_ctx(),
+    })
 
 
 @router.get("/jukebox", response_class=HTMLResponse)

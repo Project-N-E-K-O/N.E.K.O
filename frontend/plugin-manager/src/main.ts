@@ -19,6 +19,7 @@ import koLocale from 'element-plus/dist/locale/ko.mjs'
 import ruLocale from 'element-plus/dist/locale/ru.mjs'
 import router from './router'
 import { i18n, getLocale } from './i18n'
+import { MotionPlugin } from '@vueuse/motion'
 import App from './App.vue'
 
 console.log('🚀 Starting N.E.K.O Plugin Management System...')
@@ -40,6 +41,9 @@ app.use(router)
 
 console.log('✅ Setting up i18n...')
 app.use(i18n)
+
+console.log('✅ Setting up Motion...')
+app.use(MotionPlugin)
 
 console.log('✅ Setting up Element Plus...')
 // 根据当前语言设置 Element Plus 的 locale

@@ -19,7 +19,7 @@
      * Add a screenshot thumbnail to the pending list.
      * @param {string} dataUrl - image data URL
      */
-    mod.addScreenshotToList = function addScreenshotToList(dataUrl) {
+    mod.addScreenshotToList = function addScreenshotToList(dataUrl, avatarPosition) {
         S.screenshotCounter++;
 
         const screenshotsList = S.dom.screenshotsList;
@@ -30,6 +30,10 @@
         item.className = 'screenshot-item';
         item.dataset.index = S.screenshotCounter;
         item.dataset.attachmentId = 'attachment-' + Date.now() + '-' + S.screenshotCounter;
+        // Store avatar position metadata (captured at screenshot time)
+        if (avatarPosition) {
+            item.dataset.avatarPosition = JSON.stringify(avatarPosition);
+        }
 
         // Create thumbnail
         const img = document.createElement('img');
@@ -118,10 +122,11 @@
         return Array.from(screenshotsList.children).map(function (item, index) {
             var img = item.querySelector('.screenshot-thumbnail');
             if (!img || !img.src) return null;
+            var translatedAlt = window.t ? window.t('chat.pendingImageAlt', { index: index + 1 }) : '';
             return {
                 id: String(item.dataset.attachmentId || item.dataset.index || ('attachment-' + index)),
                 url: img.src,
-                alt: img.alt || (window.t ? window.t('chat.pendingImageAlt', { index: index + 1 }) : '图片 ' + (index + 1))
+                alt: img.alt || (typeof translatedAlt === 'string' && translatedAlt ? translatedAlt : '图片 ' + (index + 1))
             };
         }).filter(Boolean);
     };
@@ -283,9 +288,653 @@
     };
     window.applyEmotion = mod.applyEmotion;
 
+    var AVATAR_INTERACTION_ALLOWED_ACTIONS = Object.freeze({
+        lollipop: Object.freeze(['offer', 'tease', 'tap_soft']),
+        fist: Object.freeze(['poke']),
+        hammer: Object.freeze(['bonk'])
+    });
+    var AVATAR_INTERACTION_ALLOWED_INTENSITIES = Object.freeze(['normal', 'rapid', 'burst', 'easter_egg']);
+    var AVATAR_INTERACTION_ALLOWED_TOUCH_ZONES = Object.freeze(['ear', 'head', 'face', 'body']);
+    var AVATAR_INTERACTION_SEED_FALLBACK_MS = 2200;
+    var AVATAR_INTERACTION_ACK_TIMEOUT_MS = 8000;
+    var AVATAR_INTERACTION_TURN_START_TIMEOUT_MS = 5000;
+    var AVATAR_INTERACTION_TURN_COMPLETION_TIMEOUT_MS = 15000;
+    var AVATAR_INTERACTION_HOST_COOLDOWN_MS = 600;
+    var AVATAR_INTERACTION_HOST_SPEAK_COOLDOWN_MS = 1500;
+    var AVATAR_INTERACTION_SEED_EMOTIONS = Object.freeze({
+        lollipop: Object.freeze({
+            offer: Object.freeze({
+                normal: 'happy'
+            }),
+            tease: Object.freeze({
+                normal: 'surprised'
+            }),
+            tap_soft: Object.freeze({
+                rapid: 'happy',
+                burst: 'happy'
+            })
+        }),
+        fist: Object.freeze({
+            poke: Object.freeze({
+                normal: 'happy',
+                rapid: 'surprised',
+                reward_drop: 'happy'
+            })
+        }),
+        hammer: Object.freeze({
+            bonk: Object.freeze({
+                normal: 'surprised',
+                rapid: 'angry',
+                burst: 'angry',
+                easter_egg: 'angry'
+            })
+        })
+    });
+    var avatarInteractionSeedState = {
+        interactionId: '',
+        timerId: 0,
+        previousEmotion: null,
+        seedEmotion: null
+    };
+    var avatarInteractionTextContinuationState = {
+        interactionId: '',
+        expectedTurnId: '',
+        activeTurnId: '',
+        phase: 'idle',
+        ackTimerId: 0,
+        turnStartTimerId: 0,
+        completionTimerId: 0,
+        deferredTextSubmissions: [],
+        deferredSendHandler: null,
+        drainingDeferredTextSubmissions: false
+    };
+    var avatarInteractionDispatchGateState = {
+        reservedInteractionId: '',
+        activeInteractionId: '',
+        activeDispatchAt: 0,
+        lastDispatchAt: 0,
+        speakCooldownUntil: 0
+    };
+
+    function hasReservedAvatarInteractionDispatch() {
+        return !!avatarInteractionDispatchGateState.reservedInteractionId;
+    }
+
+    function reserveAvatarInteractionDispatch(interactionId) {
+        if (!interactionId || hasReservedAvatarInteractionDispatch()) {
+            return false;
+        }
+        avatarInteractionDispatchGateState.reservedInteractionId = interactionId;
+        return true;
+    }
+
+    function releaseAvatarInteractionDispatchReservation(interactionId) {
+        if (interactionId
+                && avatarInteractionDispatchGateState.reservedInteractionId
+                && avatarInteractionDispatchGateState.reservedInteractionId !== interactionId) {
+            return;
+        }
+        avatarInteractionDispatchGateState.reservedInteractionId = '';
+    }
+
+    function setActiveAvatarInteractionDispatch(interactionId, dispatchedAt) {
+        avatarInteractionDispatchGateState.activeInteractionId = interactionId || '';
+        avatarInteractionDispatchGateState.activeDispatchAt = interactionId ? dispatchedAt : 0;
+        if (interactionId) {
+            avatarInteractionDispatchGateState.lastDispatchAt = dispatchedAt;
+        }
+    }
+
+    function clearActiveAvatarInteractionDispatch(interactionId) {
+        if (interactionId
+                && avatarInteractionDispatchGateState.activeInteractionId
+                && avatarInteractionDispatchGateState.activeInteractionId !== interactionId) {
+            return;
+        }
+        avatarInteractionDispatchGateState.activeInteractionId = '';
+        avatarInteractionDispatchGateState.activeDispatchAt = 0;
+    }
+
+    function noteAvatarInteractionSpeakCooldown(interactionId) {
+        if (interactionId
+                && avatarInteractionDispatchGateState.activeInteractionId
+                && avatarInteractionDispatchGateState.activeInteractionId !== interactionId) {
+            return;
+        }
+        var dispatchedAt = avatarInteractionDispatchGateState.activeDispatchAt || Date.now();
+        var cooldownUntil = dispatchedAt + AVATAR_INTERACTION_HOST_SPEAK_COOLDOWN_MS;
+        if (cooldownUntil > avatarInteractionDispatchGateState.speakCooldownUntil) {
+            avatarInteractionDispatchGateState.speakCooldownUntil = cooldownUntil;
+        }
+    }
+
+    function getAvatarInteractionDispatchThrottleReason(nowMs) {
+        var now = Number.isFinite(nowMs) ? nowMs : Date.now();
+        if (hasReservedAvatarInteractionDispatch()) {
+            return 'host_pending_dispatch';
+        }
+        if (hasPendingAvatarInteractionContinuation()) {
+            return 'host_pending_turn';
+        }
+        if (avatarInteractionDispatchGateState.speakCooldownUntil > now) {
+            return 'host_speak_cooldown';
+        }
+        if (avatarInteractionDispatchGateState.lastDispatchAt
+                && (now - avatarInteractionDispatchGateState.lastDispatchAt) < AVATAR_INTERACTION_HOST_COOLDOWN_MS) {
+            return 'host_cooldown';
+        }
+        return '';
+    }
+
+    function clearAvatarInteractionContinuationTimer(timerKey) {
+        if (!avatarInteractionTextContinuationState[timerKey]) {
+            return;
+        }
+        window.clearTimeout(avatarInteractionTextContinuationState[timerKey]);
+        avatarInteractionTextContinuationState[timerKey] = 0;
+    }
+
+    function clearAvatarInteractionContinuationTimers() {
+        clearAvatarInteractionContinuationTimer('ackTimerId');
+        clearAvatarInteractionContinuationTimer('turnStartTimerId');
+        clearAvatarInteractionContinuationTimer('completionTimerId');
+    }
+
+    function hasPendingAvatarInteractionContinuation() {
+        return avatarInteractionTextContinuationState.phase !== 'idle'
+            && !!avatarInteractionTextContinuationState.interactionId;
+    }
+
+    function queueDeferredTextSubmission(text, options) {
+        avatarInteractionTextContinuationState.deferredTextSubmissions.push({
+            text: String(text || ''),
+            options: Object.assign({}, options || {})
+        });
+    }
+
+    function flushDeferredTextSubmissions() {
+        if (hasPendingAvatarInteractionContinuation()) {
+            return;
+        }
+
+        var sendHandler = avatarInteractionTextContinuationState.deferredSendHandler;
+        if (typeof sendHandler !== 'function') {
+            return;
+        }
+
+        if (avatarInteractionTextContinuationState.drainingDeferredTextSubmissions) {
+            return;
+        }
+
+        if (!avatarInteractionTextContinuationState.deferredTextSubmissions.length) {
+            return;
+        }
+
+        avatarInteractionTextContinuationState.drainingDeferredTextSubmissions = true;
+        var pending = avatarInteractionTextContinuationState.deferredTextSubmissions.slice();
+        avatarInteractionTextContinuationState.deferredTextSubmissions = [];
+        var nextPendingIndex = 0;
+
+        (async function () {
+            for (var index = 0; index < pending.length; index += 1) {
+                nextPendingIndex = index;
+                var submission = pending[index];
+                var sent = await sendHandler(submission.text, Object.assign({}, submission.options, {
+                    skipAvatarInteractionDeferral: true
+                }));
+                if (sent === false) {
+                    queueDeferredTextSubmission(submission.text, submission.options);
+                }
+                nextPendingIndex = index + 1;
+            }
+        })().catch(function (error) {
+            console.error('[AvatarInteraction] deferred text flush failed:', error);
+            avatarInteractionTextContinuationState.deferredTextSubmissions = pending.slice(nextPendingIndex).concat(
+                avatarInteractionTextContinuationState.deferredTextSubmissions
+            );
+        }).finally(function () {
+            avatarInteractionTextContinuationState.drainingDeferredTextSubmissions = false;
+            if (!hasPendingAvatarInteractionContinuation()
+                    && avatarInteractionTextContinuationState.deferredTextSubmissions.length > 0) {
+                flushDeferredTextSubmissions();
+            }
+        });
+    }
+
+    function releaseDeferredTextAfterAvatarInteraction() {
+        clearAvatarInteractionContinuationTimers();
+        releaseAvatarInteractionDispatchReservation();
+        clearActiveAvatarInteractionDispatch();
+        avatarInteractionTextContinuationState.interactionId = '';
+        avatarInteractionTextContinuationState.expectedTurnId = '';
+        avatarInteractionTextContinuationState.activeTurnId = '';
+        avatarInteractionTextContinuationState.phase = 'idle';
+        flushDeferredTextSubmissions();
+    }
+
+    function beginAvatarInteractionTextContinuation(interactionId) {
+        if (!interactionId || hasPendingAvatarInteractionContinuation()) {
+            return;
+        }
+
+        clearAvatarInteractionContinuationTimers();
+        avatarInteractionTextContinuationState.interactionId = interactionId;
+        avatarInteractionTextContinuationState.expectedTurnId = '';
+        avatarInteractionTextContinuationState.activeTurnId = '';
+        avatarInteractionTextContinuationState.phase = 'awaiting_ack';
+        avatarInteractionTextContinuationState.ackTimerId = window.setTimeout(function () {
+            if (avatarInteractionTextContinuationState.phase !== 'awaiting_ack'
+                    || avatarInteractionTextContinuationState.interactionId !== interactionId) {
+                return;
+            }
+            releaseDeferredTextAfterAvatarInteraction();
+        }, AVATAR_INTERACTION_ACK_TIMEOUT_MS);
+    }
+
+    function markAvatarInteractionAccepted(interactionId, turnId) {
+        if (!interactionId || avatarInteractionTextContinuationState.interactionId !== interactionId) {
+            return;
+        }
+
+        clearAvatarInteractionContinuationTimer('ackTimerId');
+        if (avatarInteractionTextContinuationState.phase === 'active_turn') {
+            return;
+        }
+
+        avatarInteractionTextContinuationState.expectedTurnId = String(turnId || '').trim();
+        avatarInteractionTextContinuationState.activeTurnId = '';
+        avatarInteractionTextContinuationState.phase = 'awaiting_turn';
+        clearAvatarInteractionContinuationTimer('turnStartTimerId');
+        avatarInteractionTextContinuationState.turnStartTimerId = window.setTimeout(function () {
+            if (avatarInteractionTextContinuationState.phase !== 'awaiting_turn'
+                    || avatarInteractionTextContinuationState.interactionId !== interactionId) {
+                return;
+            }
+            releaseDeferredTextAfterAvatarInteraction();
+        }, AVATAR_INTERACTION_TURN_START_TIMEOUT_MS);
+    }
+
+    function markAvatarInteractionTurnStarted(turnId) {
+        if (!hasPendingAvatarInteractionContinuation()) {
+            return;
+        }
+        var normalizedTurnId = String(turnId || '').trim();
+        if (!normalizedTurnId || avatarInteractionTextContinuationState.phase !== 'awaiting_turn') {
+            return;
+        }
+        if (avatarInteractionTextContinuationState.expectedTurnId
+                && avatarInteractionTextContinuationState.expectedTurnId !== normalizedTurnId) {
+            return;
+        }
+
+        clearAvatarInteractionContinuationTimer('ackTimerId');
+        clearAvatarInteractionContinuationTimer('turnStartTimerId');
+        avatarInteractionTextContinuationState.activeTurnId = normalizedTurnId;
+        avatarInteractionTextContinuationState.phase = 'active_turn';
+        clearAvatarInteractionContinuationTimer('completionTimerId');
+        avatarInteractionTextContinuationState.completionTimerId = window.setTimeout(function () {
+            if (avatarInteractionTextContinuationState.phase !== 'active_turn') {
+                return;
+            }
+            releaseDeferredTextAfterAvatarInteraction();
+        }, AVATAR_INTERACTION_TURN_COMPLETION_TIMEOUT_MS);
+    }
+
+    function bindAvatarInteractionTextContinuationLifecycle() {
+        if (mod._avatarInteractionTextContinuationLifecycleBound) {
+            return;
+        }
+        mod._avatarInteractionTextContinuationLifecycleBound = true;
+
+        window.addEventListener('neko-avatar-interaction-ack', function (event) {
+            var detail = event && event.detail ? event.detail : {};
+            var interactionId = String(detail.interactionId || detail.interaction_id || '').trim();
+            var turnId = String(detail.turnId || detail.turn_id || '').trim();
+            if (!interactionId || avatarInteractionTextContinuationState.interactionId !== interactionId) {
+                return;
+            }
+            if (detail.accepted === true) {
+                noteAvatarInteractionSpeakCooldown(interactionId);
+                if (String(detail.reason || '').trim() === 'delivered') {
+                    releaseDeferredTextAfterAvatarInteraction();
+                    return;
+                }
+                markAvatarInteractionAccepted(interactionId, turnId);
+                return;
+            }
+            releaseDeferredTextAfterAvatarInteraction();
+        });
+
+        window.addEventListener('neko-assistant-turn-start', function (event) {
+            if (!hasPendingAvatarInteractionContinuation()) {
+                return;
+            }
+            var detail = event && event.detail ? event.detail : {};
+            markAvatarInteractionTurnStarted(detail.turnId || detail.turn_id || '');
+        });
+
+        window.addEventListener('neko-assistant-turn-end', function (event) {
+            if (!hasPendingAvatarInteractionContinuation()) {
+                return;
+            }
+            var detail = event && event.detail ? event.detail : {};
+            var turnId = String(detail.turnId || detail.turn_id || '').trim();
+            if (!turnId || avatarInteractionTextContinuationState.activeTurnId !== turnId) {
+                return;
+            }
+            releaseDeferredTextAfterAvatarInteraction();
+        });
+
+        window.addEventListener('neko-assistant-speech-cancel', function (event) {
+            if (!hasPendingAvatarInteractionContinuation()) {
+                return;
+            }
+            var detail = event && event.detail ? event.detail : {};
+            var turnId = String(detail.turnId || detail.turn_id || '').trim();
+            if (!turnId || avatarInteractionTextContinuationState.activeTurnId !== turnId) {
+                return;
+            }
+            releaseDeferredTextAfterAvatarInteraction();
+        });
+    }
+
+    function sanitizeAvatarInteractionTextContext(value) {
+        var text = String(value || '').trim();
+        if (!text) return '';
+        return text.length > 80 ? text.slice(0, 80).trimEnd() : text;
+    }
+
+    function normalizeAvatarInteractionPayload(payload) {
+        if (!payload || typeof payload !== 'object') {
+            console.warn('[AvatarInteraction] ignored invalid payload:', payload);
+            return null;
+        }
+
+        var toolId = String(payload.toolId || '').trim().toLowerCase();
+        var actionId = String(payload.actionId || '').trim().toLowerCase();
+        var allowedActions = AVATAR_INTERACTION_ALLOWED_ACTIONS[toolId];
+        if (!allowedActions || allowedActions.indexOf(actionId) === -1) {
+            console.warn('[AvatarInteraction] ignored unsupported tool/action:', toolId, actionId);
+            return null;
+        }
+
+        if (String(payload.target || '').trim().toLowerCase() !== 'avatar') {
+            console.warn('[AvatarInteraction] ignored non-avatar target:', payload.target);
+            return null;
+        }
+
+        var interactionId = String(payload.interactionId || '').trim();
+        if (!interactionId) {
+            console.warn('[AvatarInteraction] ignored payload without interactionId');
+            return null;
+        }
+
+        var timestamp = Number(payload.timestamp);
+        if (!Number.isFinite(timestamp) || timestamp <= 0) {
+            timestamp = Date.now();
+        }
+
+        var normalized = {
+            action: 'avatar_interaction',
+            interaction_id: interactionId,
+            tool_id: toolId,
+            action_id: actionId,
+            target: 'avatar',
+            timestamp: timestamp
+        };
+
+        if (payload.pointer && typeof payload.pointer === 'object') {
+            var clientX = Number(payload.pointer.clientX);
+            var clientY = Number(payload.pointer.clientY);
+            if (Number.isFinite(clientX) && Number.isFinite(clientY)) {
+                normalized.pointer = {
+                    clientX: clientX,
+                    clientY: clientY
+                };
+            }
+        }
+
+        var touchZone = String(payload.touchZone || payload.touch_zone || '').trim().toLowerCase();
+        if (AVATAR_INTERACTION_ALLOWED_TOUCH_ZONES.indexOf(touchZone) !== -1) {
+            normalized.touch_zone = touchZone;
+        }
+
+        var intensity = String(payload.intensity || '').trim().toLowerCase();
+        if (AVATAR_INTERACTION_ALLOWED_INTENSITIES.indexOf(intensity) !== -1) {
+            if (toolId === 'hammer' || intensity !== 'easter_egg') {
+                normalized.intensity = intensity;
+            }
+        }
+
+        var textContext = sanitizeAvatarInteractionTextContext(payload.textContext);
+        if (textContext) {
+            normalized.text_context = textContext;
+        }
+
+        if (toolId === 'fist' && payload.rewardDrop === true) {
+            normalized.reward_drop = true;
+        }
+
+        if (toolId === 'hammer' && payload.easterEgg === true) {
+            normalized.easter_egg = true;
+        }
+
+        return normalized;
+    }
+
+    function getCurrentAvatarEmotion() {
+        try {
+            if (window.live2dManager && typeof window.live2dManager.currentEmotion === 'string' && window.live2dManager.currentEmotion) {
+                return window.live2dManager.currentEmotion;
+            }
+            if (window.mmdManager && window.mmdManager.expression && typeof window.mmdManager.expression.currentMood === 'string' && window.mmdManager.expression.currentMood) {
+                return window.mmdManager.expression.currentMood;
+            }
+            if (window.vrmManager && window.vrmManager.expression && typeof window.vrmManager.expression.currentMood === 'string' && window.vrmManager.expression.currentMood) {
+                return window.vrmManager.expression.currentMood;
+            }
+        } catch (_error) {
+            return 'neutral';
+        }
+        return 'neutral';
+    }
+
+    function clearAvatarInteractionSeedTimer() {
+        if (avatarInteractionSeedState.timerId) {
+            window.clearTimeout(avatarInteractionSeedState.timerId);
+            avatarInteractionSeedState.timerId = 0;
+        }
+    }
+
+    function resolveAvatarInteractionSeedEmotion(payload) {
+        if (!payload || typeof payload !== 'object') {
+            return null;
+        }
+
+        var toolId = String(payload.tool_id || payload.toolId || '').trim().toLowerCase();
+        var actionId = String(payload.action_id || payload.actionId || '').trim().toLowerCase();
+        var intensity = String(payload.intensity || '').trim().toLowerCase() || 'normal';
+        var toolMap = AVATAR_INTERACTION_SEED_EMOTIONS[toolId];
+        var actionMap = toolMap && toolMap[actionId];
+        if (!actionMap) {
+            return null;
+        }
+        if (toolId === 'fist' && payload.reward_drop === true) {
+            return actionMap.reward_drop || actionMap.normal || null;
+        }
+        if (toolId === 'hammer' && payload.easter_egg === true) {
+            return actionMap.easter_egg || actionMap[intensity] || actionMap.normal || null;
+        }
+        return actionMap[intensity] || actionMap.normal || null;
+    }
+
+    function clearAvatarInteractionSeedState() {
+        clearAvatarInteractionSeedTimer();
+        avatarInteractionSeedState.interactionId = '';
+        avatarInteractionSeedState.seedEmotion = null;
+        avatarInteractionSeedState.previousEmotion = null;
+    }
+
+    function applyAvatarInteractionSeedEmotion(payload) {
+        var interactionId = String(payload && (payload.interaction_id || payload.interactionId) || '').trim();
+        var seedEmotion = resolveAvatarInteractionSeedEmotion(payload);
+        if (!interactionId || !seedEmotion || typeof window.applyEmotion !== 'function') {
+            return;
+        }
+
+        var previousEmotion = avatarInteractionSeedState.previousEmotion;
+        if (!avatarInteractionSeedState.interactionId) {
+            previousEmotion = getCurrentAvatarEmotion();
+        }
+
+        clearAvatarInteractionSeedTimer();
+        avatarInteractionSeedState.interactionId = interactionId;
+        avatarInteractionSeedState.seedEmotion = seedEmotion;
+        avatarInteractionSeedState.previousEmotion = previousEmotion || 'neutral';
+
+        window.applyEmotion(seedEmotion);
+
+        avatarInteractionSeedState.timerId = window.setTimeout(function () {
+            if (avatarInteractionSeedState.interactionId !== interactionId) {
+                return;
+            }
+            var fallbackEmotion = avatarInteractionSeedState.previousEmotion || 'neutral';
+            clearAvatarInteractionSeedState();
+            if (typeof window.applyEmotion === 'function') {
+                window.applyEmotion(fallbackEmotion);
+            }
+        }, AVATAR_INTERACTION_SEED_FALLBACK_MS);
+    }
+
+    function bindAvatarInteractionSeedLifecycle() {
+        if (mod._avatarInteractionSeedLifecycleBound) {
+            return;
+        }
+        mod._avatarInteractionSeedLifecycleBound = true;
+
+        window.addEventListener('neko-assistant-emotion-ready', function () {
+            clearAvatarInteractionSeedState();
+        });
+    }
+
+    async function sendAvatarInteractionPayload(payload) {
+        var normalized = normalizeAvatarInteractionPayload(payload);
+        if (!normalized) {
+            return false;
+        }
+
+        var throttleReason = getAvatarInteractionDispatchThrottleReason(Date.now());
+        if (throttleReason) {
+            console.debug(
+                '[AvatarInteraction] host gate skipped:',
+                throttleReason,
+                normalized.tool_id,
+                normalized.action_id
+            );
+            return false;
+        }
+
+        if (!reserveAvatarInteractionDispatch(normalized.interaction_id)) {
+            console.debug('[AvatarInteraction] host gate skipped: host_pending_dispatch');
+            return false;
+        }
+
+        beginAvatarInteractionTextContinuation(normalized.interaction_id);
+
+        try {
+            await window.ensureWebSocketOpen();
+            if (!S.socket || S.socket.readyState !== WebSocket.OPEN) {
+                throw new Error('WEBSOCKET_NOT_CONNECTED');
+            }
+            S.socket.send(JSON.stringify(normalized));
+            setActiveAvatarInteractionDispatch(normalized.interaction_id, Date.now());
+            applyAvatarInteractionSeedEmotion(normalized);
+            return true;
+        } catch (error) {
+            console.error('[AvatarInteraction] send failed:', error);
+            if (avatarInteractionTextContinuationState.interactionId === normalized.interaction_id) {
+                releaseDeferredTextAfterAvatarInteraction();
+            }
+            return false;
+        } finally {
+            releaseAvatarInteractionDispatchReservation(normalized.interaction_id);
+        }
+    }
+
+    mod.normalizeAvatarInteractionPayload = normalizeAvatarInteractionPayload;
+    mod.sendAvatarInteractionPayload = sendAvatarInteractionPayload;
+
+    function clearReactChatWindowHostBindingPoll() {
+        if (!mod._reactChatWindowHostBindingPollId) {
+            return;
+        }
+        window.clearInterval(mod._reactChatWindowHostBindingPollId);
+        mod._reactChatWindowHostBindingPollId = 0;
+    }
+
+    function bindReactChatWindowHostCallbacks() {
+        var host = window.reactChatWindowHost;
+        if (!host
+                || typeof host.setOnComposerSubmit !== 'function'
+                || typeof host.setOnComposerImportImage !== 'function'
+                || typeof host.setOnComposerScreenshot !== 'function'
+                || typeof host.setOnComposerRemoveAttachment !== 'function'
+                || typeof host.setOnAvatarInteraction !== 'function') {
+            return false;
+        }
+        if (mod._boundReactChatWindowHost === host) {
+            mod.syncPendingComposerAttachments();
+            return true;
+        }
+
+        host.setOnComposerSubmit(function (detail) {
+            return mod.sendTextPayload(detail && detail.text, {
+                source: 'react-chat-window',
+                requestId: detail && detail.requestId
+            });
+        });
+        host.setOnComposerImportImage(function () {
+            return mod.openImageImportPicker();
+        });
+        host.setOnComposerScreenshot(function () {
+            return mod.captureScreenshotToPendingList();
+        });
+        host.setOnComposerRemoveAttachment(function (attachmentId) {
+            return mod.removePendingAttachmentById(attachmentId);
+        });
+        host.setOnAvatarInteraction(function (payload) {
+            return mod.sendAvatarInteractionPayload(payload);
+        });
+
+        mod._boundReactChatWindowHost = host;
+        mod.syncPendingComposerAttachments();
+        return true;
+    }
+
+    function ensureReactChatWindowHostCallbacks() {
+        if (bindReactChatWindowHostCallbacks()) {
+            clearReactChatWindowHostBindingPoll();
+            return;
+        }
+        if (mod._reactChatWindowHostBindingPollId) {
+            return;
+        }
+
+        var remainingAttempts = 80;
+        mod._reactChatWindowHostBindingPollId = window.setInterval(function () {
+            remainingAttempts--;
+            if (bindReactChatWindowHostCallbacks() || remainingAttempts <= 0) {
+                clearReactChatWindowHostBindingPoll();
+            }
+        }, 250);
+    }
+
     // ======================== init — wire up all event listeners ========================
 
     mod.init = function init() {
+        bindAvatarInteractionSeedLifecycle();
+        bindAvatarInteractionTextContinuationLifecycle();
+
         // Cache DOM references
         var micButton            = S.dom.micButton            = document.getElementById('micButton');
         var muteButton           = S.dom.muteButton           = document.getElementById('muteButton');
@@ -331,10 +980,13 @@
                 await new Promise(function (resolve) { setTimeout(resolve, 1500); });
             }
 
-            // Hide text input area (desktop only)
+            // Hide text input area (desktop only) + React composer + IPC
             var textInputArea = document.getElementById('text-input-area');
             if (!U.isMobile()) {
                 textInputArea.classList.add('hidden');
+            }
+            if (!U.isMobile() && typeof window.syncVoiceChatComposerHidden === 'function') {
+                window.syncVoiceChatComposerHidden(true);
             }
 
             // Disable all voice buttons
@@ -430,6 +1082,8 @@
                     window.monitorInputVolume();
                 }, 1000);
 
+                window.dispatchEvent(new CustomEvent('neko:voice-session-started'));
+
                 window.isMicStarting = false;
                 S.isSwitchingMode = false;
 
@@ -467,6 +1121,9 @@
                 stopButton.disabled = true;
                 resetSessionButton.disabled = false;
                 textInputArea.classList.remove('hidden');
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
                 window.showStatusToast(window.t ? window.t('app.startFailed', { error: error.message }) : '\u542F\u52A8\u5931\u8D25: ' + error.message, 5000);
 
                 window.isMicStarting = false;
@@ -551,6 +1208,9 @@
 
                 var textInputArea = document.getElementById('text-input-area');
                 textInputArea.classList.remove('hidden');
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
 
                 micButton.disabled = false;
                 textSendButton.disabled = false;
@@ -570,6 +1230,9 @@
 
                 var textInputArea = document.getElementById('text-input-area');
                 textInputArea.classList.add('hidden');
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(true);
+                }
 
                 micButton.disabled = true;
                 textSendButton.disabled = true;
@@ -622,8 +1285,14 @@
                 if (textInputArea) {
                     textInputArea.classList.remove('hidden');
                 }
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
 
-                window.showStatusToast(window.t ? window.t('app.initializingText') : '\u6B63\u5728\u521D\u59CB\u5316\u6587\u672C\u5BF9\u8BDD...', 3000);
+                // 切换猫娘期间会话建立耗时常 >5s（模型加载 + 后端冷加载），
+                // 默认 3s toast 在真空期间消失会让用户误以为"没反应就报错"。
+                var initToastMs1 = (S.isSwitchingCatgirl) ? 8000 : 3000;
+                window.showStatusToast(window.t ? window.t('app.initializingText') : '\u6B63\u5728\u521D\u59CB\u5316\u6587\u672C\u5BF9\u8BDD...', initToastMs1);
 
                 // Wait for session_started
                 var sessionStartPromise = new Promise(function (resolve, reject) {
@@ -745,16 +1414,57 @@
             }
         });
 
-        async function sendTextPayload(rawText, options) {
+        async function sendTextPayloadInternal(rawText, options) {
             options = options || {};
             var text = String(typeof rawText === 'string' ? rawText : '').trim();
             var hasScreenshots = screenshotsList.children.length > 0;
+            var requestId = (typeof options.requestId === 'string' && options.requestId)
+                ? options.requestId
+                : ('req-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
 
-            if (!text && !hasScreenshots) return;
+            // Store last submitted text for rollback on RESPONSE_TOO_LONG.
+            // Clear stale text for pure-screenshot submissions.
+            window._lastSubmittedText = text;
+            window._lastSubmittedRequestId = text ? requestId : '';
+            var isReactWindowSource = options.source === 'react-chat-window';
+            var reactOptimisticMessageId = '';
+            var reactOptimisticMessageAppended = null;
+            var sentUserContent = false;
+
+            if (!text && !hasScreenshots) return false;
 
             // Record user input time and reset proactive chat
             window.lastUserInputTime = Date.now();
             window.resetProactiveChatBackoff();
+
+            if (isReactWindowSource && window.appChat && typeof window.appChat.appendReactUserMessage === 'function') {
+                reactOptimisticMessageId = 'user-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+                reactOptimisticMessageAppended = window.appChat.appendReactUserMessage({
+                    id: reactOptimisticMessageId,
+                    time: (typeof window.getCurrentTimeString === 'function')
+                        ? window.getCurrentTimeString()
+                        : new Date().toLocaleTimeString('en-US', {
+                            hour12: false,
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            second: '2-digit'
+                        }),
+                    status: 'sending',
+                    text: text,
+                    imageUrls: mod.getPendingComposerAttachments().map(function (attachment) {
+                        return attachment && attachment.url ? String(attachment.url) : '';
+                    }).filter(Boolean)
+                });
+            }
+
+            function updateReactOptimisticMessageStatus(status) {
+                if (reactOptimisticMessageAppended === null || !reactOptimisticMessageId) return;
+                if (window.reactChatWindowHost && typeof window.reactChatWindowHost.updateMessage === 'function') {
+                    window.reactChatWindowHost.updateMessage(reactOptimisticMessageId, {
+                        status: status
+                    });
+                }
+            }
 
             // If no active text session, start one first
             if (!S.isTextSessionActive) {
@@ -763,7 +1473,9 @@
                 screenshotButton.disabled = true;
                 resetSessionButton.disabled = false;
 
-                window.showStatusToast(window.t ? window.t('app.initializingText') : '\u6B63\u5728\u521D\u59CB\u5316\u6587\u672C\u5BF9\u8BDD...', 3000);
+                // 同上：切换期间的初始化窗口比默认 3s 更长，延长 toast 避免真空感
+                var initToastMs2 = (S.isSwitchingCatgirl) ? 8000 : 3000;
+                window.showStatusToast(window.t ? window.t('app.initializingText') : '\u6B63\u5728\u521D\u59CB\u5316\u6587\u672C\u5BF9\u8BDD...', initToastMs2);
 
                 try {
                     var sessionStartPromise = new Promise(function (resolve, reject) {
@@ -832,107 +1544,166 @@
                     textInputBox.disabled = false;
                     screenshotButton.disabled = false;
 
+                    updateReactOptimisticMessageStatus('failed');
                     return; // Don't send if session start failed
                 }
             }
 
             // Send message
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
-                var sentImageUrls = [];
+                try {
+                    var sentImageUrls = [];
 
-                // Send screenshots first
-                if (hasScreenshots) {
-                    var screenshotItems = Array.from(screenshotsList.children);
-                    for (var i = 0; i < screenshotItems.length; i++) {
-                        var img = screenshotItems[i].querySelector('.screenshot-thumbnail');
-                        if (img && img.src) {
-                            sentImageUrls.push(img.src);
-                            S.socket.send(JSON.stringify({
-                                action: 'stream_data',
-                                data: img.src,
-                                input_type: U.isMobile() ? 'camera' : 'screen'
-                            }));
+                    // Send screenshots first
+                    if (hasScreenshots) {
+                        var screenshotItems = Array.from(screenshotsList.children);
+                        for (var i = 0; i < screenshotItems.length; i++) {
+                            var img = screenshotItems[i].querySelector('.screenshot-thumbnail');
+                            if (img && img.src) {
+                                sentImageUrls.push(img.src);
+                                var msg = {
+                                    action: 'stream_data',
+                                    data: img.src,
+                                    input_type: U.isMobile() ? 'camera' : 'screen'
+                                };
+                                // Attach paired avatar position metadata (captured at screenshot time)
+                                var storedPos = screenshotItems[i].dataset.avatarPosition;
+                                if (storedPos) {
+                                    try { msg.avatar_position = JSON.parse(storedPos); } catch (e) { /* ignore */ }
+                                }
+                                S.socket.send(JSON.stringify(msg));
+                            }
+                        }
+
+                        if (!isReactWindowSource) {
+                            var screenshotItemCount = screenshotItems.length;
+                            window.appendMessage('\uD83D\uDCF8 [\u5DF2\u53D1\u9001' + screenshotItemCount + '\u5F20\u622A\u56FE]', 'user', true, {
+                                skipReactSync: true
+                            });
+                        }
+                        sentUserContent = true;
+
+                        // Achievement: send image
+                        if (window.unlockAchievement) {
+                            window.unlockAchievement('ACH_SEND_IMAGE').catch(function (err) {
+                                console.error('\u89E3\u9501\u53D1\u9001\u56FE\u7247\u6210\u5C31\u5931\u8D25:', err);
+                            });
+                        }
+
+                        // Clear screenshot list
+                        screenshotsList.innerHTML = '';
+                        screenshotThumbnailContainer.classList.remove('show');
+                        mod.updateScreenshotCount();
+                        mod.syncPendingComposerAttachments();
+                    }
+
+                    // Then send text (if any)
+                    if (text) {
+                        if (!isReactWindowSource && window.appChat && typeof window.appChat.ensureUserDisplayName === 'function') {
+                            try {
+                                await window.appChat.ensureUserDisplayName();
+                            } catch (nameError) {
+                                console.warn('[Chat] preload user display name failed:', nameError);
+                            }
+                        }
+
+                        S.socket.send(JSON.stringify({
+                            action: 'stream_data',
+                            data: text,
+                            input_type: 'text',
+                            request_id: requestId
+                        }));
+
+                        if (!options.preserveInputValue) {
+                            textInputBox.value = '';
+                        }
+                        if (!isReactWindowSource) {
+                            window.appendMessage(text, 'user', true, {
+                                skipReactSync: sentImageUrls.length > 0
+                            });
+                        }
+                        sentUserContent = true;
+
+                        // Achievement: meow detection
+                        if (window.incrementAchievementCounter) {
+                            var meowPattern = /\u55B5|miao|meow|nya[no]?|\u306B\u3083|\uB0E5|\u043C\u044F\u0443/i;
+                            if (meowPattern.test(text)) {
+                                try {
+                                    window.incrementAchievementCounter('meowCount');
+                                } catch (error) {
+                                    console.debug('\u589E\u52A0\u55B5\u55B5\u8BA1\u6570\u5931\u8D25:', error);
+                                }
+                            }
+                        }
+
+                        // First user input check
+                        if (window.appChat && window.appChat.isFirstUserInput()) {
+                            window.appChat.markFirstUserInput();
+                            console.log(window.t('console.userFirstInputDetected'));
+                            window.checkAndUnlockFirstDialogueAchievement();
                         }
                     }
 
-                    var screenshotItemCount = screenshotItems.length;
-                    window.appendMessage('\uD83D\uDCF8 [\u5DF2\u53D1\u9001' + screenshotItemCount + '\u5F20\u622A\u56FE]', 'user', true, {
-                        skipReactSync: true
-                    });
-
-                    // Achievement: send image
-                    if (window.unlockAchievement) {
-                        window.unlockAchievement('ACH_SEND_IMAGE').catch(function (err) {
-                            console.error('\u89E3\u9501\u53D1\u9001\u56FE\u7247\u6210\u5C31\u5931\u8D25:', err);
+                    if (!isReactWindowSource && window.appChat && typeof window.appChat.appendReactUserMessage === 'function' && sentImageUrls.length > 0) {
+                        window.appChat.appendReactUserMessage({
+                            text: text,
+                            imageUrls: sentImageUrls
                         });
                     }
 
-                    // Clear screenshot list
-                    screenshotsList.innerHTML = '';
-                    screenshotThumbnailContainer.classList.remove('show');
-                    mod.updateScreenshotCount();
-                    mod.syncPendingComposerAttachments();
-                }
+                    updateReactOptimisticMessageStatus('sent');
 
-                // Then send text (if any)
-                if (text) {
-                    if (window.appChat && typeof window.appChat.ensureUserDisplayName === 'function') {
-                        try {
-                            await window.appChat.ensureUserDisplayName();
-                        } catch (nameError) {
-                            console.warn('[Chat] preload user display name failed:', nameError);
-                        }
+                    if (sentUserContent) {
+                        window.dispatchEvent(new CustomEvent('neko:user-content-sent'));
                     }
 
-                    S.socket.send(JSON.stringify({
-                        action: 'stream_data',
-                        data: text,
-                        input_type: 'text'
-                    }));
-
-                    if (!options.preserveInputValue) {
-                        textInputBox.value = '';
-                    }
-                    window.appendMessage(text, 'user', true, {
-                        skipReactSync: sentImageUrls.length > 0
-                    });
-
-                    // Achievement: meow detection
-                    if (window.incrementAchievementCounter) {
-                        var meowPattern = /\u55B5|miao|meow|nya[no]?|\u306B\u3083|\uB0E5|\u043C\u044F\u0443/i;
-                        if (meowPattern.test(text)) {
-                            try {
-                                window.incrementAchievementCounter('meowCount');
-                            } catch (error) {
-                                console.debug('\u589E\u52A0\u55B5\u55B5\u8BA1\u6570\u5931\u8D25:', error);
-                            }
-                        }
+                    // Reset proactive chat timer
+                    if (S.proactiveChatEnabled && window.hasAnyChatModeEnabled()) {
+                        window.resetProactiveChatBackoff();
                     }
 
-                    // First user input check
-                    if (window.appChat && window.appChat.isFirstUserInput()) {
-                        window.appChat.markFirstUserInput();
-                        console.log(window.t('console.userFirstInputDetected'));
-                        window.checkAndUnlockFirstDialogueAchievement();
-                    }
+                    window.showStatusToast(window.t ? window.t('app.textChattingShort') : '\u6B63\u5728\u6587\u672C\u804A\u5929\u4E2D', 2000);
+                } catch (sendError) {
+                    console.error('[Chat] send text payload failed:', sendError);
+                    updateReactOptimisticMessageStatus('failed');
+                    window.showStatusToast(
+                        window.t
+                            ? window.t('app.sendFailed', { error: sendError.message })
+                            : '\u53D1\u9001\u5931\u8D25: ' + sendError.message,
+                        5000
+                    );
                 }
-
-                if (window.appChat && typeof window.appChat.appendReactUserMessage === 'function' && sentImageUrls.length > 0) {
-                    window.appChat.appendReactUserMessage({
-                        text: text,
-                        imageUrls: sentImageUrls
-                    });
-                }
-
-                // Reset proactive chat timer
-                if (S.proactiveChatEnabled && window.hasAnyChatModeEnabled()) {
-                    window.resetProactiveChatBackoff();
-                }
-
-                window.showStatusToast(window.t ? window.t('app.textChattingShort') : '\u6B63\u5728\u6587\u672C\u804A\u5929\u4E2D', 2000);
             } else {
+                updateReactOptimisticMessageStatus('failed');
                 window.showStatusToast(window.t ? window.t('app.websocketNotConnected') : 'WebSocket\u672A\u8FDE\u63A5\uFF01', 4000);
+                return false;
             }
+        }
+
+        avatarInteractionTextContinuationState.deferredSendHandler = sendTextPayloadInternal;
+        flushDeferredTextSubmissions();
+
+        async function sendTextPayload(rawText, options) {
+            options = options || {};
+            var text = String(typeof rawText === 'string' ? rawText : '').trim();
+            var hasScreenshots = screenshotsList.children.length > 0;
+
+            if (!text && !hasScreenshots) return;
+
+            if (options.skipAvatarInteractionDeferral !== true
+                    && text
+                    && !hasScreenshots
+                    && hasPendingAvatarInteractionContinuation()) {
+                queueDeferredTextSubmission(text, options);
+                textInputBox.value = '';
+                textInputComposing = false;
+                lastTextCompositionEndAt = 0;
+                return true;
+            }
+
+            return sendTextPayloadInternal(rawText, Object.assign({}, options, {
+                skipAvatarInteractionDeferral: true
+            }));
         }
 
         mod.sendTextPayload = sendTextPayload;
@@ -1008,6 +1779,95 @@
             });
         }
 
+        // ----------------------------------------------------------------
+        // Hide NEKO UI, recapture screen, then restore
+        // ----------------------------------------------------------------
+        var NEKO_UI_IDS = [
+            'live2d-container', 'vrm-container', 'mmd-container',
+            'chat-container', 'react-chat-window-overlay',
+            'chat-avatar-preview-popup',
+            'avatar-reaction-bubble', 'subtitle-display', 'status-toast',
+            'live2d-floating-buttons', 'vrm-floating-buttons', 'mmd-floating-buttons',
+            'live2d-lock-icon', 'vrm-lock-icon', 'mmd-lock-icon',
+            'live2d-return-button-container', 'vrm-return-button-container', 'mmd-return-button-container',
+            'crop-overlay'
+        ];
+
+        function hideNekoUI() {
+            var saved = [];
+            NEKO_UI_IDS.forEach(function (id) {
+                var el = document.getElementById(id);
+                if (el) {
+                    saved.push({ el: el, prev: el.style.display });
+                    el.style.display = 'none';
+                }
+            });
+            return saved;
+        }
+
+        function restoreNekoUI(saved) {
+            saved.forEach(function (item) {
+                item.el.style.display = item.prev;
+            });
+        }
+
+        async function recaptureWithoutNeko() {
+            var saved = hideNekoUI();
+            await new Promise(function (r) { setTimeout(r, 200); });
+            try {
+                // Priority 1: Electron direct capture (mirrors main flow)
+                var selectedSourceId = S.selectedScreenSourceId;
+                if (selectedSourceId && window.electronDesktopCapturer
+                    && typeof window.electronDesktopCapturer.captureSourceAsDataUrl === 'function') {
+                    try {
+                        var direct = await window.electronDesktopCapturer.captureSourceAsDataUrl(selectedSourceId);
+                        if (direct && direct.success && direct.dataUrl) {
+                            var scaled = await downscaleDataUrlTo720p(direct.dataUrl);
+                            if (scaled && scaled.dataUrl) return scaled.dataUrl;
+                        }
+                    } catch (e) { /* fallback below */ }
+                }
+
+                // Priority 2: acquireOrReuseCachedStream / cached stream
+                if (typeof window.acquireOrReuseCachedStream === 'function') {
+                    try {
+                        var acqStream = await window.acquireOrReuseCachedStream({ allowPrompt: false });
+                        if (acqStream) {
+                            var isCached = (acqStream === S.screenCaptureStream);
+                            try {
+                                var frame = await window.captureFrameFromStream(acqStream, 0.8);
+                                if (frame && frame.dataUrl) return frame.dataUrl;
+                            } finally {
+                                if (!isCached && acqStream instanceof MediaStream) {
+                                    acqStream.getTracks().forEach(function (t) { try { t.stop(); } catch (e) {} });
+                                }
+                            }
+                        }
+                    } catch (e) { /* fallback below */ }
+                } else {
+                    try {
+                        if (S.screenCaptureStream && S.screenCaptureStream.active) {
+                            var tracks = S.screenCaptureStream.getVideoTracks();
+                            if (tracks.length > 0 && tracks.some(function (t) { return t.readyState === 'live'; })) {
+                                var cachedFrame = await window.captureFrameFromStream(S.screenCaptureStream, 0.8);
+                                if (cachedFrame && cachedFrame.dataUrl) return cachedFrame.dataUrl;
+                            }
+                        }
+                    } catch (e) { /* fallback below */ }
+                }
+
+                // Priority 3: backend pyautogui
+                var result = await window.fetchBackendScreenshot();
+                if (result && result.dataUrl) {
+                    var beScaled = await downscaleDataUrlTo720p(result.dataUrl);
+                    return (beScaled && beScaled.dataUrl) || null;
+                }
+                return null;
+            } finally {
+                restoreNekoUI(saved);
+            }
+        }
+
         mod.captureScreenshotToPendingList = async function captureScreenshotToPendingList() {
             // 桌面端优先级：
             //   1) 主进程直接 desktopCapturer 捕获选中源（最可靠，绕开所有 Chromium 桌面捕获管线问题）
@@ -1016,6 +1876,7 @@
             // isCachedStream 用于区分缓存流（绝不能关）与一次性流（finally 要关）。
             var acquiredStream = null;
             var isCachedStream = false;
+            var captureType = null; // 'screen' | 'viewport' | null — 用于 Avatar 坐标映射
 
             try {
                 screenshotButton.disabled = true;
@@ -1040,6 +1901,7 @@
                             dataUrl = mframe.dataUrl;
                             width = mframe.width;
                             height = mframe.height;
+                            captureType = null; // 手机相机，Avatar 不在画面中
                         }
                     }
                 } else {
@@ -1061,6 +1923,10 @@
                                 // 此时回退到主进程上报的原始尺寸，避免日志空值。
                                 width = scaled.width || direct.width || 0;
                                 height = scaled.height || direct.height || 0;
+                                // 主进程直接捕获：靠 sourceId 前缀区分 screen/window
+                                captureType = window.detectScreenshotCaptureType
+                                    ? window.detectScreenshotCaptureType(null, selectedSourceId)
+                                    : null;
                                 console.log('[截图] 主进程直接捕获成功:', selectedSourceId, width + 'x' + height);
                             } else if (direct && direct.error) {
                                 console.warn('[截图] 主进程直接捕获失败:', direct.error);
@@ -1089,6 +1955,9 @@
                                 dataUrl = frame.dataUrl;
                                 width = frame.width;
                                 height = frame.height;
+                                captureType = window.detectScreenshotCaptureType
+                                    ? window.detectScreenshotCaptureType(acquiredStream, S.selectedScreenSourceId)
+                                    : null;
                                 if (isCachedStream) {
                                     S.screenCaptureStreamLastUsed = Date.now();
                                     if (window.scheduleScreenCaptureIdleCheck) window.scheduleScreenCaptureIdleCheck();
@@ -1123,7 +1992,37 @@
                     console.log(window.t('console.screenshotSuccess'), width + 'x' + height);
                 }
 
-                mod.addScreenshotToList(dataUrl);
+                // Capture avatar position at screenshot time, mapped to capture coordinate system.
+                // Only meaningful for the uncropped path — cropping invalidates the normalized coords.
+                var avatarPos = typeof window.getAvatarScreenPosition === 'function'
+                    ? window.getAvatarScreenPosition(captureType) : null;
+
+                // Release one-time stream BEFORE opening crop overlay
+                // Only release if it's a one-time stream — cached streams are managed globally
+                if (!isCachedStream && acquiredStream instanceof MediaStream) {
+                    acquiredStream.getTracks().forEach(function (track) {
+                        try { track.stop(); } catch (e) { }
+                    });
+                    acquiredStream = null; // prevent double-release in finally
+                }
+
+                // Open crop overlay for region selection
+                if (window.appCrop && typeof window.appCrop.cropImage === 'function') {
+                    var croppedUrl = await window.appCrop.cropImage(dataUrl, {
+                        recaptureFn: function () { return recaptureWithoutNeko(); }
+                    });
+                    if (!croppedUrl) {
+                        // User cancelled cropping
+                        window.showStatusToast(window.t ? window.t('app.screenshotCancelled') : '\u5DF2\u53D6\u6D88\u622A\u56FE', 2000);
+                        return;
+                    }
+                    // 裁切后坐标系变了，Avatar 位置无效：不附带 avatar_position
+                    // （除非裁切图与原图相同 — 但我们无法从 appCrop API 判定，保守跳过）
+                    mod.addScreenshotToList(croppedUrl, croppedUrl === dataUrl ? avatarPos : null);
+                } else {
+                    // Fallback: no crop module available, add full screenshot with avatar position
+                    mod.addScreenshotToList(dataUrl, avatarPos);
+                }
                 window.showStatusToast(window.t ? window.t('app.screenshotAdded') : '\u622A\u56FE\u5DF2\u6DFB\u52A0\uFF0C\u70B9\u51FB\u53D1\u9001\u4E00\u8D77\u53D1\u9001', 3000);
 
             } catch (err) {
@@ -1179,26 +2078,40 @@
             }
         });
 
-        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setOnComposerSubmit === 'function') {
-            window.reactChatWindowHost.setOnComposerSubmit(function (detail) {
-                return mod.sendTextPayload(detail && detail.text, { source: 'react-chat-window' });
-            });
-        }
-        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setOnComposerImportImage === 'function') {
-            window.reactChatWindowHost.setOnComposerImportImage(function () {
-                return mod.openImageImportPicker();
-            });
-        }
-        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setOnComposerScreenshot === 'function') {
-            window.reactChatWindowHost.setOnComposerScreenshot(function () {
-                return mod.captureScreenshotToPendingList();
-            });
-        }
-        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setOnComposerRemoveAttachment === 'function') {
-            window.reactChatWindowHost.setOnComposerRemoveAttachment(function (attachmentId) {
-                return mod.removePendingAttachmentById(attachmentId);
-            });
-        }
+        ensureReactChatWindowHostCallbacks();
+
+        // ----------------------------------------------------------------
+        // Clipboard paste → add image to pending screenshots
+        // ----------------------------------------------------------------
+        document.addEventListener('paste', function (e) {
+            if (!e.clipboardData || !e.clipboardData.items) return;
+            // Don't handle paste when crop overlay is open
+            var cropOverlay = document.getElementById('crop-overlay');
+            if (cropOverlay && cropOverlay.style.display !== 'none') return;
+            var items = e.clipboardData.items;
+            for (var i = 0; i < items.length; i++) {
+                if (items[i].type.indexOf('image/') === 0) {
+                    e.preventDefault();
+                    var blob = items[i].getAsFile();
+                    if (!blob) continue;
+                    var reader = new FileReader();
+                    reader.onload = function (ev) {
+                        if (ev.target && ev.target.result) {
+                            mod.addScreenshotToList(ev.target.result);
+                            window.showStatusToast(
+                                window.t ? window.t('app.screenshotAdded') : '\u622A\u56FE\u5DF2\u6DFB\u52A0\uFF0C\u70B9\u51FB\u53D1\u9001\u4E00\u8D77\u53D1\u9001',
+                                3000
+                            );
+                        }
+                    };
+                    reader.onerror = function () {
+                        console.warn('[粘贴] 读取剪贴板图片失败');
+                    };
+                    reader.readAsDataURL(blob);
+                    break;
+                }
+            }
+        });
 
         mod.ensureImportImageInput();
         mod.syncPendingComposerAttachments();

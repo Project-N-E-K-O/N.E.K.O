@@ -10,19 +10,25 @@ Handles Live2D model-related endpoints including:
 - Model upload
 """
 
+import asyncio
 import os
 import json
 import pathlib
+import hashlib
+from copy import deepcopy
+from pathlib import Path
+from urllib.parse import unquote
 
 from fastapi import APIRouter, Request, File, UploadFile
 from fastapi.responses import JSONResponse
 
 from .shared_state import get_config_manager
 from .workshop_router import get_subscribed_workshop_items
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json, atomic_write_json_async, read_json_async
 from utils.frontend_utils import find_models, find_model_directory, find_workshop_item_by_id
 from utils.logger_config import get_module_logger
 from utils.url_utils import encode_url_path
+from utils.workshop_utils import get_workshop_path
 
 router = APIRouter(prefix="/api/live2d", tags=["live2d"])
 logger = get_module_logger(__name__, "Main")
@@ -33,9 +39,153 @@ def _normalize_model_path(path: str) -> str:
     return encode_url_path(path.strip('"'))
 
 
-def _upsert_model(models: list, model_name: str, item_id: str, path: str, source: str = 'steam_workshop') -> None:
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as file_obj:
+        for chunk in iter(lambda: file_obj.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _resolve_model_url_to_file_path(path: str, config_manager) -> Path | None:
+    normalized_path = str(path or "").strip().replace("\\", "/")
+    if not normalized_path:
+        return None
+
+    decoded_path = unquote(normalized_path)
+    parts = [part for part in decoded_path.split("/") if part]
+    if not parts:
+        return None
+
+    if parts[0] == "user_live2d":
+        local_root = getattr(config_manager, "readable_live2d_dir", None) or getattr(config_manager, "live2d_dir", None)
+        return Path(local_root) / Path(*parts[1:]) if local_root and len(parts) > 1 else None
+    if parts[0] == "user_live2d_local":
+        local_root = getattr(config_manager, "live2d_dir", None)
+        return Path(local_root) / Path(*parts[1:]) if local_root and len(parts) > 1 else None
+    if parts[0] == "static":
+        return Path("static") / Path(*parts[1:]) if len(parts) > 1 else None
+    if parts[0] == "workshop":
+        workshop_root = get_workshop_path()
+        return Path(workshop_root) / Path(*parts[1:]) if workshop_root and len(parts) > 1 else None
+    return None
+
+
+def _extract_local_shadow_key(path: str) -> str:
+    decoded_path = unquote(str(path or "").strip().replace("\\", "/"))
+    parts = [part for part in decoded_path.split("/") if part]
+    if len(parts) < 3 or parts[0] not in {"user_live2d", "user_live2d_local"}:
+        return ""
+    return "/".join(parts[1:])
+
+
+def _extract_workshop_shadow_key(path: str) -> tuple[str, bool]:
+    decoded_path = unquote(str(path or "").strip().replace("\\", "/"))
+    parts = [part for part in decoded_path.split("/") if part]
+    if len(parts) < 3 or parts[0] != "workshop":
+        return "", False
+    if parts[1] == "WorkshopExport":
+        if len(parts) < 5:
+            return "", True
+        return "/".join(parts[3:]), True
+    return "/".join(parts[2:]), False
+
+
+def _dedupe_live2d_models_for_display(models: list[dict]) -> list[dict]:
+    config_manager = get_config_manager()
+    normalized_entries: list[dict] = []
+    seen_exact_paths: set[str] = set()
+    local_groups: dict[tuple[str, str], list[int]] = {}
+    workshop_actual_groups: dict[tuple[str, str], list[int]] = {}
+    workshop_export_groups: dict[tuple[str, str], list[int]] = {}
+
+    for model in models or []:
+        if not isinstance(model, dict):
+            continue
+
+        normalized_model = deepcopy(model)
+        raw_path = str(normalized_model.get("path") or "").strip()
+        normalized_path = _normalize_model_path(raw_path) if raw_path else ""
+        if normalized_path and normalized_path in seen_exact_paths:
+            continue
+        if normalized_path:
+            seen_exact_paths.add(normalized_path)
+            normalized_model["path"] = normalized_path
+
+        file_path = _resolve_model_url_to_file_path(normalized_path or raw_path, config_manager)
+        fingerprint = ""
+        if file_path is not None and file_path.is_file():
+            try:
+                fingerprint = _sha256_file(file_path)
+            except Exception:
+                fingerprint = ""
+
+        local_shadow_key = _extract_local_shadow_key(normalized_path or raw_path)
+        workshop_shadow_key, is_workshop_export = _extract_workshop_shadow_key(normalized_path or raw_path)
+
+        normalized_entries.append(
+            {
+                "model": normalized_model,
+                "local_shadow_key": local_shadow_key,
+                "workshop_shadow_key": workshop_shadow_key,
+                "is_workshop_export": is_workshop_export,
+                "fingerprint": fingerprint,
+                "source_priority": 0 if local_shadow_key and str(normalized_model.get("source") or "") == "documents" else 1,
+            }
+        )
+        entry_index = len(normalized_entries) - 1
+
+        if local_shadow_key and fingerprint:
+            local_groups.setdefault((local_shadow_key, fingerprint), []).append(entry_index)
+        if workshop_shadow_key and fingerprint:
+            target_groups = workshop_export_groups if is_workshop_export else workshop_actual_groups
+            target_groups.setdefault((workshop_shadow_key, fingerprint), []).append(entry_index)
+
+    filtered_indexes = set(range(len(normalized_entries)))
+
+    for group_indexes in local_groups.values():
+        if len(group_indexes) <= 1:
+            continue
+        best_index = min(
+            group_indexes,
+            key=lambda idx: (
+                normalized_entries[idx]["source_priority"],
+                idx,
+            ),
+        )
+        for group_index in group_indexes:
+            if group_index != best_index:
+                filtered_indexes.discard(group_index)
+
+    for shadow_group_key, export_indexes in workshop_export_groups.items():
+        actual_indexes = workshop_actual_groups.get(shadow_group_key) or []
+        if actual_indexes:
+            for export_index in export_indexes:
+                filtered_indexes.discard(export_index)
+            continue
+        if len(export_indexes) <= 1:
+            continue
+        for export_index in export_indexes[1:]:
+            filtered_indexes.discard(export_index)
+
+    return [
+        normalized_entries[index]["model"]
+        for index in range(len(normalized_entries))
+        if index in filtered_indexes
+    ]
+
+
+def _upsert_model(
+    models: list,
+    model_name: str,
+    item_id: str,
+    path: str,
+    source: str = 'steam_workshop',
+    *,
+    merge_by_name: bool = True,
+) -> None:
     """
-    Update existing model with item_id if found, otherwise append new model.
+    Update an existing model by name, or append a distinct entry when requested.
     
     Args:
         models: List of model dictionaries to update
@@ -43,19 +193,31 @@ def _upsert_model(models: list, model_name: str, item_id: str, path: str, source
         item_id: Steam workshop item ID
         path: Model path URL
         source: Model source (default: 'steam_workshop')
+        merge_by_name: When False, preserve same-name variants as separate entries
     """
-    existing_model = next((m for m in models if m['name'] == model_name), None)
-    if existing_model:
-        if not existing_model.get('item_id'):
-            existing_model['item_id'] = item_id
-            existing_model['source'] = source
-    else:
-        models.append({
-            'name': model_name,
-            'path': path,
-            'source': source,
-            'item_id': item_id
-        })
+    if merge_by_name:
+        existing_model = next((m for m in models if m['name'] == model_name), None)
+        if existing_model:
+            if not existing_model.get('item_id'):
+                existing_model['item_id'] = item_id
+                existing_model['source'] = source
+            return
+
+    display_name = model_name
+    existing_names = [str(model.get('name') or '') for model in models if isinstance(model, dict)]
+    if existing_names.count(model_name) >= 1:
+        disambiguator = str(source or "").strip() or "variant"
+        if item_id:
+            disambiguator = f"{disambiguator} {item_id}"
+        display_name = f"{display_name} ({disambiguator})"
+
+    models.append({
+        'name': model_name,
+        'display_name': display_name,
+        'path': path,
+        'source': source,
+        'item_id': item_id
+    })
 
 
 def _locate_model_config(model_dir: str):
@@ -119,7 +281,13 @@ async def get_live2d_models(simple: bool = False):
                                 model_name = os.path.splitext(os.path.splitext(filename)[0])[0]
                                 path_value = _normalize_model_path(f'/workshop/{item_id}/{filename}')
                                 logger.debug(f"添加模型路径: {path_value!r}, item_id类型: {type(item_id)}, filename类型: {type(filename)}")
-                                _upsert_model(models, model_name, item_id, path_value)
+                                _upsert_model(
+                                    models,
+                                    model_name,
+                                    item_id,
+                                    path_value,
+                                    merge_by_name=False,
+                                )
                             
                         # 检查安装目录下的子目录
                         for subdir in os.listdir(installed_folder):
@@ -130,9 +298,17 @@ async def get_live2d_models(simple: bool = False):
                                 if os.path.exists(json_file):
                                     path_value = _normalize_model_path(f'/workshop/{item_id}/{model_name}/{model_name}.model3.json')
                                     logger.debug(f"添加子目录模型路径: {path_value!r}, item_id类型: {type(item_id)}, model_name类型: {type(model_name)}")
-                                    _upsert_model(models, model_name, item_id, path_value)
+                                    _upsert_model(
+                                        models,
+                                        model_name,
+                                        item_id,
+                                        path_value,
+                                        merge_by_name=False,
+                                    )
         except Exception as e:
             logger.error(f"获取创意工坊模型时出错: {e}")
+
+        models = _dedupe_live2d_models_for_display(models)
         
         if simple:
             # 只返回模型名称列表
@@ -231,9 +407,8 @@ async def update_model_config(model_name: str, request: Request):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
         
         # 为了安全，只允许修改 Motions 和 Expressions
-        with open(model_json_path, 'r', encoding='utf-8') as f:
-            current_config = json.load(f)
-            
+        current_config = await read_json_async(model_json_path)
+
         file_refs = current_config.setdefault("FileReferences", {})
         if 'FileReferences' in data and 'Motions' in data['FileReferences']:
             file_refs['Motions'] = data['FileReferences']['Motions']
@@ -241,8 +416,8 @@ async def update_model_config(model_name: str, request: Request):
         if 'FileReferences' in data and 'Expressions' in data['FileReferences']:
             file_refs['Expressions'] = data['FileReferences']['Expressions']
 
-        atomic_write_json(model_json_path, current_config, ensure_ascii=False, indent=4)  # 使用 indent=4 保持格式
-            
+        await atomic_write_json_async(model_json_path, current_config, ensure_ascii=False, indent=4)  # 使用 indent=4 保持格式
+
         return {"success": True, "message": "模型配置已更新"}
     except Exception as e:
         logger.error(f"更新模型配置失败: {e}")
@@ -344,8 +519,7 @@ async def update_emotion_mapping(model_name: str, request: Request):
         if not model_json_path or not os.path.exists(model_json_path):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
 
-        with open(model_json_path, 'r', encoding='utf-8') as f:
-            config_data = json.load(f)
+        config_data = await read_json_async(model_json_path)
 
         # 统一写入到标准 Cubism 结构（FileReferences.Motions / FileReferences.Expressions）
         file_refs = config_data.setdefault('FileReferences', {})
@@ -410,8 +584,8 @@ async def update_emotion_mapping(model_name: str, request: Request):
         config_data['EmotionMapping'] = data
 
         # 保存配置到文件
-        atomic_write_json(model_json_path, config_data, ensure_ascii=False, indent=2)
-        
+        await atomic_write_json_async(model_json_path, config_data, ensure_ascii=False, indent=2)
+
         logger.info(f"模型 {model_name} 的情绪映射配置已更新（已同步到 FileReferences）")
         return {"success": True, "message": "情绪映射配置已保存"}
     except Exception as e:
@@ -575,7 +749,7 @@ async def save_model_parameters(model_name: str, request: Request):
         
         # 保存到parameters.json文件
         parameters_file = os.path.join(model_dir, 'parameters.json')
-        atomic_write_json(parameters_file, parameters, indent=2, ensure_ascii=False)
+        await atomic_write_json_async(parameters_file, parameters, indent=2, ensure_ascii=False)
         
         logger.info(f"已保存模型参数到: {parameters_file}, 参数数量: {len(parameters)}")
         return {"success": True, "message": "参数保存成功"}
@@ -720,18 +894,17 @@ async def update_model_config_by_id(model_id: str, request: Request):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
         
         # 为了安全，只允许修改 Motions 和 Expressions
-        with open(model_json_path, 'r', encoding='utf-8') as f:
-            current_config = json.load(f)
-            
+        current_config = await read_json_async(model_json_path)
+
         file_refs = current_config.setdefault("FileReferences", {})
         if 'FileReferences' in data and 'Motions' in data['FileReferences']:
             file_refs['Motions'] = data['FileReferences']['Motions']
-            
+
         if 'FileReferences' in data and 'Expressions' in data['FileReferences']:
             file_refs['Expressions'] = data['FileReferences']['Expressions']
 
-        atomic_write_json(model_json_path, current_config, ensure_ascii=False, indent=4)  # 使用 indent=4 保持格式
-            
+        await atomic_write_json_async(model_json_path, current_config, ensure_ascii=False, indent=4)  # 使用 indent=4 保持格式
+
         return {"success": True, "message": "模型配置已更新"}
     except Exception as e:
         logger.error(f"更新模型配置失败: {e}")
@@ -922,10 +1095,10 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
                     })
                 else:
                     logger.info(f"清理残留的无效模型目录: {target_model_dir}")
-                    shutil.rmtree(target_model_dir, ignore_errors=True)
-            
+                    await asyncio.to_thread(shutil.rmtree, target_model_dir, ignore_errors=True)
+
             # 复制模型根目录到用户文档的live2d目录
-            shutil.copytree(model_root_dir, target_model_dir)
+            await asyncio.to_thread(shutil.copytree, model_root_dir, target_model_dir)
 
             # 上传后：遍历模型目录中的所有动作文件（*.motion3.json），
             # 将官方白名单参数及模型自身在 .model3.json 中声明为 LipSync 的参数的 Segments 清空为 []。
@@ -1015,7 +1188,7 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
 
                         if modified:
                             try:
-                                atomic_write_json(motion_path, motion_data, ensure_ascii=False, indent=4)
+                                await atomic_write_json_async(motion_path, motion_data, ensure_ascii=False, indent=4)
                                 logger.info(f"已清除口型参数：{motion_path}")
                             except Exception:
                                 # 写入失败则记录但不阻止上传
@@ -1038,7 +1211,7 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
         # 清理可能的残留目录
         try:
             if target_model_dir and target_model_dir.exists():
-                shutil.rmtree(target_model_dir)
+                await asyncio.to_thread(shutil.rmtree, target_model_dir)
                 logger.info(f"已清理导入失败的残留目录: {target_model_dir}")
         except Exception as cleanup_err:
             logger.warning(f"清理导入失败的残留目录时出错: {cleanup_err}")
@@ -1349,5 +1522,3 @@ def get_user_models():
     except Exception as e:
         logger.error(f"获取用户模型列表失败: {e}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
-
-

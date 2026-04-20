@@ -1,5 +1,10 @@
 // 允许的来源列表
 const ALLOWED_ORIGINS = [window.location.origin];
+const MINIMAX_PREFIX_MAX_LENGTH = 10;
+let workshopReferenceFile = null;
+let workshopReferenceAudioUrl = '';
+let providerTouchedByUser = false;
+let suppressProviderTouchedTracking = false;
 
 // 打开API设置页（带弹窗拦截回退）
 function openApiSettings() {
@@ -91,6 +96,78 @@ function parseVoiceRegisterError(errorObj) {
     return { displayError, shouldFlash };
 }
 
+function isMiniMaxProvider(provider) {
+    return provider === 'minimax' || provider === 'minimax_intl';
+}
+
+function sanitizeMiniMaxPrefix(prefix) {
+    return String(prefix || '')
+        .replace(/[^0-9a-z]/gi, '')
+        .slice(0, MINIMAX_PREFIX_MAX_LENGTH);
+}
+
+function normalizePrefixInputForProvider() {
+    const prefixInput = document.getElementById('prefix');
+    const provider = (document.getElementById('voiceProvider') || {}).value || 'cosyvoice';
+    if (!prefixInput) {
+        return '';
+    }
+
+    if (!isMiniMaxProvider(provider)) {
+        prefixInput.removeAttribute('maxlength');
+        return prefixInput.value.trim();
+    }
+
+    prefixInput.maxLength = MINIMAX_PREFIX_MAX_LENGTH;
+    const trimmedValue = prefixInput.value.trim();
+    const sanitized = sanitizeMiniMaxPrefix(trimmedValue);
+    if (trimmedValue !== sanitized || prefixInput.value !== sanitized) {
+        prefixInput.value = sanitized;
+    }
+    return sanitized;
+}
+
+function guessAudioMimeType(filename) {
+    return /\.mp3$/i.test(filename || '') ? 'audio/mpeg' : 'audio/wav';
+}
+
+function getEffectiveAudioFile() {
+    const fileInput = document.getElementById('audioFile');
+    if (fileInput && fileInput.files && fileInput.files.length) {
+        return fileInput.files[0];
+    }
+    return workshopReferenceFile;
+}
+
+function setWorkshopVoiceSourceStatus(message, isError = false) {
+    const statusEl = document.getElementById('workshopVoiceSourceStatus');
+    if (!statusEl) return;
+    statusEl.textContent = message || '';
+    statusEl.style.display = message ? 'block' : 'none';
+    statusEl.classList.toggle('error', !!message && isError);
+}
+
+function revokeWorkshopReferenceAudioUrl() {
+    if (workshopReferenceAudioUrl) {
+        URL.revokeObjectURL(workshopReferenceAudioUrl);
+        workshopReferenceAudioUrl = '';
+    }
+}
+
+function applyWorkshopProviderHint(providerHint) {
+    const providerSelect = document.getElementById('voiceProvider');
+    if (!providerSelect || !providerHint) return;
+    if (providerTouchedByUser) return;
+    if (providerSelect.value !== 'cosyvoice') return;
+
+    suppressProviderTouchedTracking = true;
+    providerSelect.value = providerHint;
+    providerSelect.dispatchEvent(new Event('change'));
+    suppressProviderTouchedTracking = false;
+}
+
+window.addEventListener('beforeunload', revokeWorkshopReferenceAudioUrl);
+
 // 关闭页面函数
 function closeVoiceClonePage() {
     if (window.opener) {
@@ -127,6 +204,11 @@ function updateFileDisplay() {
     }
     if (fileInput.files.length > 0) {
         fileNameDisplay.textContent = fileInput.files[0].name;
+    } else if (workshopReferenceFile) {
+        const workshopPreloadedSuffix = (window.t && typeof window.t === 'function')
+            ? window.t('voice.workshopPreloaded')
+            : '（创意工坊预载入）';
+        fileNameDisplay.textContent = `${workshopReferenceFile.name}${workshopPreloadedSuffix}`;
     } else {
         fileNameDisplay.textContent = window.t ? window.t('voice.noFileSelected') : '未选择文件';
     }
@@ -316,12 +398,15 @@ if (window.i18n && window.i18n.isInitialized) {
     } catch (e) {
         console.warn('检查克隆API Key失败:', e);
     }
+
+    await initWorkshopVoiceReference();
 })();
 
 // 服务商切换时更新提示横幅
 document.addEventListener('DOMContentLoaded', function initProviderSwitch() {
     const providerSelect = document.getElementById('voiceProvider');
     const noticeDiv = document.getElementById('provider-notice');
+    const prefixInput = document.getElementById('prefix');
     if (!providerSelect || !noticeDiv) return;
 
     function updateNotice() {
@@ -341,8 +426,20 @@ document.addEventListener('DOMContentLoaded', function initProviderSwitch() {
         // 若 window.t 不可用，保留 HTML 中的原始文本，不覆盖
     }
 
-    providerSelect.addEventListener('change', updateNotice);
+    providerSelect.addEventListener('change', () => {
+        if (!suppressProviderTouchedTracking) {
+            providerTouchedByUser = true;
+        }
+        updateNotice();
+        normalizePrefixInputForProvider();
+    });
+    if (prefixInput) {
+        prefixInput.addEventListener('input', () => {
+            normalizePrefixInputForProvider();
+        });
+    }
     updateNotice();
+    normalizePrefixInputForProvider();
 });
 
 // 当前克隆方式
@@ -382,6 +479,84 @@ function switchCloneMethod(method) {
     }
 }
 
+async function initWorkshopVoiceReference() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const workshopItemId = urlParams.get('workshop_item_id');
+    const source = urlParams.get('source');
+    if (!workshopItemId || source !== 'workshop') {
+        return;
+    }
+
+    const sourceCard = document.getElementById('workshopVoiceSource');
+    const sourceTitle = document.getElementById('workshopVoiceSourceTitle');
+    const sourceMeta = document.getElementById('workshopVoiceSourceMeta');
+    const previewAudio = document.getElementById('workshopVoicePreview');
+    const t = (key, fallback, options) => window.t ? window.t(key, options) : fallback;
+    const workshopSourceTitleText = t('voice.workshopSourceTitle', 'Workshop Reference Voice');
+    if (!sourceCard || !sourceTitle || !sourceMeta || !previewAudio) {
+        return;
+    }
+
+    sourceCard.style.display = 'block';
+    sourceTitle.textContent = workshopSourceTitleText;
+    sourceMeta.textContent = '';
+    setWorkshopVoiceSourceStatus(t('voice.workshopSourceLoading', 'Loading workshop reference voice...'));
+
+    try {
+        const manifestResponse = await fetch(`/api/steam/workshop/voice-reference/${encodeURIComponent(workshopItemId)}`);
+        const manifestData = await manifestResponse.json();
+        if (!manifestResponse.ok) {
+            throw new Error(manifestData.error || `HTTP ${manifestResponse.status}`);
+        }
+        if (!manifestData.available || !manifestData.manifest) {
+            throw new Error(t('voice.workshopSourceUnavailable', 'This workshop item has no available reference voice.'));
+        }
+
+        const audioResponse = await fetch(`/api/steam/workshop/voice-reference/${encodeURIComponent(workshopItemId)}/audio`);
+        if (!audioResponse.ok) {
+            const errorData = await audioResponse.json().catch(() => ({}));
+            throw new Error(errorData.error || `HTTP ${audioResponse.status}`);
+        }
+
+        const manifest = manifestData.manifest;
+        const audioBlob = await audioResponse.blob();
+        workshopReferenceFile = new File(
+            [audioBlob],
+            manifest.reference_audio,
+            { type: audioBlob.type || guessAudioMimeType(manifest.reference_audio) }
+        );
+        revokeWorkshopReferenceAudioUrl();
+        workshopReferenceAudioUrl = URL.createObjectURL(audioBlob);
+
+        sourceTitle.textContent = manifestData.title || manifest.display_name || workshopSourceTitleText;
+        sourceMeta.textContent = t('voice.workshopSourceMeta', 'Sample: {{sample}} | Prefix: {{prefix}} | Language: {{language}}', {
+            sample: manifest.display_name || manifest.reference_audio,
+            prefix: manifest.prefix,
+            language: manifest.ref_language
+        });
+        previewAudio.src = workshopReferenceAudioUrl;
+        previewAudio.style.display = 'block';
+        setWorkshopVoiceSourceStatus(t('voice.workshopSourceReady', 'Reference voice preloaded. Submission will use the file upload clone flow.'));
+
+        switchCloneMethod('file');
+        const prefixInput = document.getElementById('prefix');
+        const refLanguageSelect = document.getElementById('refLanguage');
+        if (prefixInput) prefixInput.value = manifest.prefix || '';
+        if (refLanguageSelect) refLanguageSelect.value = manifest.ref_language || 'ch';
+        applyWorkshopProviderHint(manifest.provider_hint);
+        updateFileDisplay();
+    } catch (error) {
+        workshopReferenceFile = null;
+        revokeWorkshopReferenceAudioUrl();
+        sourceTitle.textContent = workshopSourceTitleText;
+        sourceMeta.textContent = '';
+        previewAudio.removeAttribute('src');
+        previewAudio.style.display = 'none';
+        setWorkshopVoiceSourceStatus(error?.message || t('voice.workshopSourceLoadFailed', 'Failed to load workshop reference voice'), true);
+        updateFileDisplay();
+    }
+}
+
 function setFormDisabled(disabled) {
     const audioFile = document.getElementById('audioFile');
     const directLinkUrl = document.getElementById('directLinkUrl');
@@ -406,19 +581,19 @@ function registerVoice() {
     const fileInput = document.getElementById('audioFile');
     const directLinkUrl = document.getElementById('directLinkUrl');
     const refLanguage = document.getElementById('refLanguage').value;
-    const prefix = document.getElementById('prefix').value.trim();
     const resultDiv = document.getElementById('result');
+    const effectiveAudioFile = getEffectiveAudioFile();
+    const provider = (document.getElementById('voiceProvider') || {}).value || 'cosyvoice';
+    const prefix = normalizePrefixInputForProvider();
 
     // 清空现有内容并重置类名
     resultDiv.textContent = '';
     resultDiv.className = 'result';
 
-    const provider = (document.getElementById('voiceProvider') || {}).value || 'cosyvoice';
-
     // 根据克隆方式验证输入
     if (currentCloneMethod === 'file') {
         // 先检查文件
-        if (!fileInput.files.length) {
+        if (!effectiveAudioFile) {
             resultDiv.textContent = window.t ? window.t('voice.pleaseUploadFile') : '请选择音频文件';
             resultDiv.className = 'result error';
             return;
@@ -461,7 +636,7 @@ function registerVoice() {
     if (currentCloneMethod === 'file') {
         // 本地文件克隆
         const formData = new FormData();
-        formData.append('file', fileInput.files[0]);
+        formData.append('file', effectiveAudioFile, effectiveAudioFile.name);
         formData.append('ref_language', refLanguage);
         formData.append('prefix', prefix);
         formData.append('provider', provider);
@@ -1013,4 +1188,3 @@ async function deleteVoice(voiceId, voiceName) {
         waitForI18n();
     }
 })();
-

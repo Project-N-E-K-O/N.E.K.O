@@ -121,6 +121,7 @@ def _make_config_manager_cfa(cfa_env):
 
     def fake_get_docs(self_inner):
         self_inner._first_readable_candidate = docs_dir
+        self_inner._first_non_writable_readable_candidate = docs_dir
         return appdata_dir
 
     with patch.object(ConfigManager, '_get_documents_directory', fake_get_docs):
@@ -141,6 +142,7 @@ def _make_config_manager_normal(normal_env):
 
     def fake_get_docs(self_inner):
         self_inner._first_readable_candidate = docs_dir
+        self_inner._first_non_writable_readable_candidate = None
         return docs_dir
 
     with patch.object(ConfigManager, '_get_documents_directory', fake_get_docs):
@@ -187,6 +189,25 @@ class TestConfigManagerCFA:
         """In normal (non-CFA) mode, _readable_docs_dir should be None."""
         cm = _make_config_manager_normal(normal_env)
 
+        assert cm._readable_docs_dir is None
+
+    def test_appdata_storage_without_write_failure_does_not_trigger_cfa_mode(self, cfa_env):
+        """Choosing AppData alone should not imply CFA if the legacy path is still writable."""
+        from utils.config_manager import ConfigManager
+
+        docs_dir = cfa_env["docs_dir"]
+        appdata_dir = cfa_env["appdata_dir"]
+
+        def fake_get_docs(self_inner):
+            self_inner._first_readable_candidate = docs_dir
+            self_inner._first_non_writable_readable_candidate = None
+            return appdata_dir
+
+        with patch.object(ConfigManager, '_get_documents_directory', fake_get_docs):
+            cm = ConfigManager.__new__(ConfigManager)
+            cm.__init__(app_name=APP_NAME)
+
+        assert cm.docs_dir == appdata_dir
         assert cm._readable_docs_dir is None
 
     def test_normal_readable_live2d_dir_returns_none(self, normal_env):

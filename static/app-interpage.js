@@ -112,6 +112,35 @@
             .forEach(function (el) { el.remove(); });
     }
 
+    function markMMDCanvasLoadingSession(canvas, loadingSessionId) {
+        if (!canvas) return;
+        canvas.dataset.mmdLoadingSessionId = String(loadingSessionId);
+        canvas.style.visibility = 'hidden';
+        canvas.style.pointerEvents = 'none';
+    }
+
+    function restoreMMDCanvasForLoadingSession(canvas, loadingSessionId) {
+        if (!canvas) return false;
+        if (canvas.dataset.mmdLoadingSessionId !== String(loadingSessionId)) {
+            return false;
+        }
+        delete canvas.dataset.mmdLoadingSessionId;
+        canvas.style.visibility = 'visible';
+        canvas.style.pointerEvents = 'auto';
+        return true;
+    }
+
+    function isMMDLoadingSessionActive(canvas, loadingSessionId) {
+        return !!canvas && canvas.dataset.mmdLoadingSessionId === String(loadingSessionId);
+    }
+
+    function clearMMDCanvasLoadingSession(canvas) {
+        if (!canvas) return;
+        delete canvas.dataset.mmdLoadingSessionId;
+        canvas.style.visibility = 'hidden';
+        canvas.style.pointerEvents = 'none';
+    }
+
     // =====================================================================
     // Shared: memory-edited session reset logic
     // =====================================================================
@@ -185,6 +214,18 @@
     // =====================================================================
 
     /**
+     * Capability check: does the current page host the full model UI?
+     * index.html (served at / and /{lanlan_name}) has live2d-container,
+     * vrm-container AND mmd-container. Other pages (chat, subtitle, etc.)
+     * lack the complete set and must not run model reload / hide / show.
+     */
+    function _isModelHostPage() {
+        return !!(document.getElementById('live2d-container')
+              && document.getElementById('vrm-container')
+              && document.getElementById('mmd-container'));
+    }
+
+    /**
      * Handle model hot-swap triggered from another tab (model_manager).
      *
      * Concurrency-safe: if a reload is already in flight, the new request
@@ -194,6 +235,13 @@
      */
     async function handleModelReload(targetLanlanName) {
         targetLanlanName = targetLanlanName || '';
+
+        // 只有承载完整模型 UI 的页面才处理重载；Chat 等子窗口缺少渲染容器，
+        // 执行会导致异常并弹出误导性的"模型切换失败"toast。
+        if (!_isModelHostPage()) {
+            console.log('[Model] 当前页面无模型容器，跳过模型重载');
+            return;
+        }
 
         // If the message targets a different character, ignore it
         var currentLanlanName = window.lanlan_config?.lanlan_name || '';
@@ -220,6 +268,8 @@
         });
 
         console.log('[Model] 开始热切换模型');
+        let mmdRequestSessionId = '';
+        let activeMmdLoadingSessionId = '';
 
         try {
             // 1. Re-fetch page config
@@ -339,32 +389,58 @@
 
                     // Load the new model
                     if (window.vrmManager) {
+                        // 【关键修复】确保容器和 canvas 存在，并恢复 Three.js 场景可见性。
+                        // 角色切换的清理逻辑会将 renderer.domElement 设为 display:none，
+                        // 而 loadModel 内部在 scene/camera/renderer 已存在时不会调用
+                        // ensureThreeReady（也就不会恢复 canvas 可见性），导致从 Live2D
+                        // 切换到 VRM 时模型加载成功但不可见。
+                        // initThreeJS 在已初始化时是幂等的，但会无条件恢复容器/canvas 可见性。
+                        {
+                            var vrmContainerEl = document.getElementById('vrm-container');
+                            if (vrmContainerEl && !vrmContainerEl.querySelector('canvas')) {
+                                var newCanvas = document.createElement('canvas');
+                                newCanvas.id = 'vrm-canvas';
+                                vrmContainerEl.appendChild(newCanvas);
+                            }
+                        }
+                        await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container', nextLighting);
+
                         // 停止旧的待机轮换
                         if (typeof window._stopVrmIdleRotation === 'function') window._stopVrmIdleRotation();
                         if (typeof window._stopMmdIdleRotation === 'function') window._stopMmdIdleRotation();
 
-                        await window.vrmManager.loadModel(newModelPath);
-
-                        // 获取角色待机动作列表并启动轮换
-                        if (nameForConfig && typeof window._startVrmIdleRotation === 'function') {
+                        // 【修复】在 loadModel 之前获取角色待机动作列表，
+                        // 更新 lanlan_config 使 loadModel 内部读取到正确的待机动作 URL，
+                        // 避免使用初始页面加载时的过时值导致动画加载失败进入 T-pose。
+                        // 先清空旧值，确保 fetch 失败时 loadModel 回退到安全的硬编码默认值
+                        // 而非残留的上一个角色的待机动作 URL。
+                        var vrmIdleList = [];
+                        window.lanlan_config.vrmIdleAnimation = '';
+                        window.lanlan_config.vrmIdleAnimations = [];
+                        if (nameForConfig) {
                             try {
-                                const charRes = await fetch('/api/characters/');
-                                if (charRes.ok) {
-                                    const charData = await charRes.json();
-                                    const catData = charData?.['猫娘']?.[nameForConfig];
-                                    let idleList = catData?.idleAnimations;
-                                    if (!Array.isArray(idleList)) {
-                                        const single = catData?.idleAnimation;
-                                        idleList = single ? [single] : [];
+                                var charResVrm = await fetch('/api/characters/');
+                                if (charResVrm.ok) {
+                                    var charDataVrm = await charResVrm.json();
+                                    var catDataVrm = charDataVrm?.['猫娘']?.[nameForConfig];
+                                    vrmIdleList = catDataVrm?.idleAnimations;
+                                    if (!Array.isArray(vrmIdleList)) {
+                                        var singleIdle = catDataVrm?.idleAnimation;
+                                        vrmIdleList = singleIdle ? [singleIdle] : [];
                                     }
-                                    window.lanlan_config.vrmIdleAnimations = idleList;
-                                    if (idleList.length > 0) {
-                                        window._startVrmIdleRotation(idleList);
-                                    }
+                                    window.lanlan_config.vrmIdleAnimation = vrmIdleList[0] || '';
+                                    window.lanlan_config.vrmIdleAnimations = vrmIdleList;
                                 }
                             } catch (e) {
                                 console.warn('[Model] 获取VRM待机动作列表失败:', e);
                             }
+                        }
+
+                        await window.vrmManager.loadModel(newModelPath);
+
+                        // 启动待机动作轮换（多个动作时自动切换）
+                        if (vrmIdleList.length > 0 && typeof window._startVrmIdleRotation === 'function') {
+                            window._startVrmIdleRotation(vrmIdleList);
                         }
 
                         // 重新应用打光/曝光/描边；若角色未保存自定义光照，则回退到默认值，避免沿用上一个角色的灯光状态。
@@ -383,6 +459,15 @@
                                     }
                                 });
                             }
+                        }
+
+                        // 重启 UI 更新循环（被 handleHideMainUI 停止）。
+                        // handleShowMainUI 在 _modelReloadInFlight 为 true 时会跳过，
+                        // 因此必须在模型加载完成后手动重启，否则悬浮按钮不会重新出现。
+                        if (window.vrmManager && window.vrmManager._uiUpdateLoopId == null
+                            && typeof window.vrmManager._startUIUpdateLoop === 'function') {
+                            window.vrmManager._snapUIPosition = true;
+                            window.vrmManager._startUIUpdateLoop();
                         }
                     } else {
                         console.error('[Model] VRM 管理器初始化失败');
@@ -434,16 +519,25 @@
                         mmdContainerShow.style.removeProperty('pointer-events');
                     }
                     var mmdCanvasShow = document.getElementById('mmd-canvas');
+                    const loadingSessionId = window._createMMDLoadingSessionId
+                        ? window._createMMDLoadingSessionId('mmd-interpage')
+                        : `mmd-interpage-${Date.now()}`;
                     if (mmdCanvasShow) {
-                        mmdCanvasShow.style.visibility = 'visible';
-                        mmdCanvasShow.style.pointerEvents = 'auto';
+                        // 先隐藏 canvas，避免旧帧或加载中的模型透过半透明 overlay 露出。
+                        markMMDCanvasLoadingSession(mmdCanvasShow, loadingSessionId);
                     }
+                    mmdRequestSessionId = loadingSessionId;
+                    activeMmdLoadingSessionId = loadingSessionId;
+                    window.MMDLoadingOverlay?.begin(loadingSessionId, { stage: 'engine' });
 
                     // Ensure MMD manager is initialised
                     if (!window.mmdManager) {
                         console.log('[Model] MMD 管理器未初始化，等待初始化完成');
                         if (typeof initMMDModel === 'function') {
-                            await initMMDModel();
+                            const initializedManager = await initMMDModel();
+                            if (!initializedManager || !window.mmdManager || window.mmdManager._isDisposed) {
+                                throw new Error('MMD 管理器初始化失败');
+                            }
                         }
                     }
 
@@ -452,6 +546,7 @@
                         // 提前获取设置并预置物理开关
                         let savedSettings = null;
                         try {
+                            window.MMDLoadingOverlay?.update(loadingSessionId, { stage: 'settings' });
                             var settingsRes = await fetch('/api/characters/catgirl/' + encodeURIComponent(nameForConfig) + '/mmd_settings');
                             var settingsData = await settingsRes.json();
                             if (settingsData.success && settingsData.settings) {
@@ -467,7 +562,8 @@
                         if (typeof window._stopVrmIdleRotation === 'function') window._stopVrmIdleRotation();
                         if (typeof window._stopMmdIdleRotation === 'function') window._stopMmdIdleRotation();
 
-                        await window.mmdManager.loadModel(newModelPath);
+                        window.MMDLoadingOverlay?.update(loadingSessionId, { stage: 'model' });
+                        await window.mmdManager.loadModel(newModelPath, { loadingSessionId });
 
                         // 应用完整设置（光照、渲染、物理、鼠标跟踪）
                         if (savedSettings) {
@@ -488,6 +584,7 @@
                                     }
                                     if (idleList.length > 0) {
                                         try {
+                                            window.MMDLoadingOverlay?.update(loadingSessionId, { stage: 'idle' });
                                             await window.mmdManager.loadAnimation(idleList[0]);
                                             window.mmdManager.playAnimation();
                                             console.log('[Model] 已播放待机动作:', idleList[0]);
@@ -502,6 +599,26 @@
                             } catch (idleErr) {
                                 console.warn('[Model] 获取角色待机动作失败:', idleErr);
                             }
+                        }
+                        window.MMDLoadingOverlay?.update(loadingSessionId, { stage: 'done' });
+                        if (window._waitForMMDRenderFrame) {
+                            await window._waitForMMDRenderFrame(window.mmdManager);
+                        }
+                        var mmdCanvasReady = document.getElementById('mmd-canvas');
+                        if (mmdRequestSessionId === loadingSessionId && isMMDLoadingSessionActive(mmdCanvasReady, loadingSessionId)) {
+                            window.MMDLoadingOverlay?.end(loadingSessionId);
+                            restoreMMDCanvasForLoadingSession(mmdCanvasReady, loadingSessionId);
+                            mmdRequestSessionId = '';
+                            activeMmdLoadingSessionId = '';
+                        }
+
+                        // 重启 UI 更新循环（被 handleHideMainUI 停止）。
+                        // handleShowMainUI 在 _modelReloadInFlight 为 true 时会跳过，
+                        // 因此必须在模型加载完成后手动重启，否则悬浮按钮不会重新出现。
+                        if (window.mmdManager && window.mmdManager._uiUpdateLoopId == null
+                            && typeof window.mmdManager._startUIUpdateLoop === 'function') {
+                            window.mmdManager._snapUIPosition = true;
+                            window.mmdManager._startUIUpdateLoop();
                         }
                     } else {
                         console.error('[Model] MMD 管理器初始化失败');
@@ -533,8 +650,7 @@
                     }
                     var mmdCanvas2 = document.getElementById('mmd-canvas');
                     if (mmdCanvas2) {
-                        mmdCanvas2.style.visibility = 'hidden';
-                        mmdCanvas2.style.pointerEvents = 'none';
+                        clearMMDCanvasLoadingSession(mmdCanvas2);
                     }
                     if (window.vrmManager && typeof window.vrmManager.pauseRendering === 'function') {
                         window.vrmManager.pauseRendering();
@@ -642,6 +758,13 @@
             }
         } catch (error) {
             console.error('[Model] 模型热切换失败:', error);
+            if (activeMmdLoadingSessionId) {
+                window.MMDLoadingOverlay?.fail(activeMmdLoadingSessionId, { detail: error?.message || String(error) });
+                if (mmdRequestSessionId === activeMmdLoadingSessionId) {
+                    mmdRequestSessionId = '';
+                }
+                activeMmdLoadingSessionId = '';
+            }
             // 回滚提前写入的 config，防止残留错误的模型类型
             if (typeChanged && window.lanlan_config) {
                 window.lanlan_config.model_type = oldModelType;
@@ -674,6 +797,7 @@
      * Hide main-page model rendering (entering model manager).
      */
     function handleHideMainUI() {
+        if (!_isModelHostPage()) return;
         console.log('[UI] 隐藏主界面并暂停渲染');
 
         try {
@@ -712,8 +836,7 @@
 
             var mmdCanvas = document.getElementById('mmd-canvas');
             if (mmdCanvas) {
-                mmdCanvas.style.visibility = 'hidden';
-                mmdCanvas.style.pointerEvents = 'none';
+                clearMMDCanvasLoadingSession(mmdCanvas);
             }
 
             // Pause render loops to save resources
@@ -727,6 +850,17 @@
 
             if (window.mmdManager && typeof window.mmdManager.pauseRendering === 'function') {
                 window.mmdManager.pauseRendering();
+            }
+
+            // 停止 UI 更新循环（独立于渲染循环，pauseRendering 不会停止它们）
+            // 如果不停止，UI 循环每帧会覆盖下面设置的 display: none，导致按钮重新出现
+            if (window.vrmManager && window.vrmManager._uiUpdateLoopId != null) {
+                cancelAnimationFrame(window.vrmManager._uiUpdateLoopId);
+                window.vrmManager._uiUpdateLoopId = null;
+            }
+            if (window.mmdManager && window.mmdManager._uiUpdateLoopId != null) {
+                cancelAnimationFrame(window.mmdManager._uiUpdateLoopId);
+                window.mmdManager._uiUpdateLoopId = null;
             }
 
             // 隐藏所有悬浮按钮、锁图标和返回按钮（它们挂载在 document.body 上，不随容器隐藏）
@@ -744,6 +878,7 @@
      * Show main-page model rendering (returning to main page).
      */
     function handleShowMainUI() {
+        if (!_isModelHostPage()) return;
         // 模型重载进行中时跳过：handleModelReload 自己会正确切换容器，
         // 此时 lanlan_config.model_type 尚未更新，handleShowMainUI 会
         // 错误地恢复旧模型类型的容器，导致需要切换两次才能成功。
@@ -777,6 +912,11 @@
                 if (window.vrmManager && typeof window.vrmManager.resumeRendering === 'function') {
                     window.vrmManager.resumeRendering();
                 }
+                // 重启 VRM UI 更新循环（被 handleHideMainUI 停止）
+                if (window.vrmManager && window.vrmManager._uiUpdateLoopId == null
+                    && typeof window.vrmManager._startUIUpdateLoop === 'function') {
+                    window.vrmManager._startUIUpdateLoop();
+                }
             } else if (currentModelType === 'live3d') {
                 // Live3D: determine sub-type from config
                 var live3dSubType = (window.lanlan_config && window.lanlan_config.live3d_sub_type || '').toLowerCase();
@@ -788,12 +928,20 @@
                         mmdContainerR.classList.remove('hidden');
                     }
                     var mmdCanvasR = document.getElementById('mmd-canvas');
-                    if (mmdCanvasR) {
+                    var hasActiveLoadingSession = mmdCanvasR && !!mmdCanvasR.dataset.mmdLoadingSessionId;
+                    if (mmdCanvasR && !hasActiveLoadingSession) {
                         mmdCanvasR.style.visibility = 'visible';
                         mmdCanvasR.style.pointerEvents = 'auto';
                     }
                     if (window.mmdManager && typeof window.mmdManager.resumeRendering === 'function') {
                         window.mmdManager.resumeRendering();
+                    }
+                    // 重启 MMD UI 更新循环（被 handleHideMainUI 停止）
+                    // UI 循环会自动管理浮动按钮和锁图标的显示/定位
+                    if (window.mmdManager && window.mmdManager._uiUpdateLoopId == null
+                        && typeof window.mmdManager._startUIUpdateLoop === 'function') {
+                        window.mmdManager._snapUIPosition = true;
+                        window.mmdManager._startUIUpdateLoop();
                     }
                 } else {
                     var vrmContainerR = document.getElementById('vrm-container');
@@ -808,6 +956,10 @@
                     }
                     if (window.vrmManager && typeof window.vrmManager.resumeRendering === 'function') {
                         window.vrmManager.resumeRendering();
+                    }
+                    if (window.vrmManager && window.vrmManager._uiUpdateLoopId == null
+                        && typeof window.vrmManager._startUIUpdateLoop === 'function') {
+                        window.vrmManager._startUIUpdateLoop();
                     }
                 }
             } else {
@@ -833,6 +985,33 @@
             }
         } catch (error) {
             console.error('[UI] 显示主界面失败:', error);
+        }
+    }
+
+    // =====================================================================
+    // Voice chat composer sync (cross-window)
+    // =====================================================================
+
+    /**
+     * Sync voice chat state to local React composer AND broadcast to other windows.
+     * Called from app-buttons.js / app-audio-capture.js whenever voice chat starts/stops.
+     *
+     * @param {boolean} hidden - true = voice chat active, hide composer; false = show composer
+     */
+    function syncVoiceChatComposerHidden(hidden) {
+        hidden = !!hidden;
+        // Update local React composer
+        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setComposerHidden === 'function') {
+            window.reactChatWindowHost.setComposerHidden(hidden);
+        }
+        // Broadcast to other windows (chat.html ↔ index.html)
+        if (nekoBroadcastChannel) {
+            nekoBroadcastChannel.postMessage({
+                action: 'voice_chat_active',
+                active: hidden,
+                lanlan_name: (window.lanlan_config && window.lanlan_config.lanlan_name) || '',
+                timestamp: Date.now()
+            });
         }
     }
 
@@ -872,6 +1051,26 @@
                     case 'memory_edited':
                         await handleMemoryEdited(event.data.catgirl_name);
                         break;
+                    case 'voice_chat_active': {
+                        // 来自另一个窗口的语音对话状态变更，同步本地 React composer 隐藏状态
+                        // 校验 lanlan_name：多角色场景下避免串状态
+                        var vcCurrentName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+                        if (event.data.lanlan_name && (!vcCurrentName || event.data.lanlan_name !== vcCurrentName)) break;
+                        var vcHidden = !!event.data.active;
+                        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setComposerHidden === 'function') {
+                            window.reactChatWindowHost.setComposerHidden(vcHidden);
+                        }
+                        // 同步旧版 text-input-area（兜底）
+                        var vcTextInput = document.getElementById('text-input-area');
+                        if (vcTextInput) {
+                            if (vcHidden) {
+                                vcTextInput.classList.add('hidden');
+                            } else {
+                                vcTextInput.classList.remove('hidden');
+                            }
+                        }
+                        break;
+                    }
                     case 'avatar_updated': {
                         // 从 Pet 窗口接收头像数据，注入到 Chat 窗口
                         // 校验 lanlan_name：多角色场景下避免串头像
@@ -904,6 +1103,50 @@
                                     timestamp: Date.now()
                                 });
                             }
+                        }
+                        break;
+                    }
+                    case 'request_avatar_capture': {
+                        if (window.location.pathname === '/chat') break;
+                        var captureLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+                        if (event.data.lanlan_name && (!captureLanlanName || event.data.lanlan_name !== captureLanlanName)) break;
+                        var captureRequestId = event.data.requestId || '';
+                        var includeSource = !!event.data.includeSourceDataUrl;
+                        if (window.avatarPortrait && typeof window.avatarPortrait.capture === 'function') {
+                            window.avatarPortrait.capture({
+                                width: 320, height: 320, padding: 0.035,
+                                shape: 'rounded', radius: 40,
+                                background: 'rgba(255, 255, 255, 0.96)',
+                                includeDataUrl: true,
+                                includeSourceDataUrl: includeSource
+                            }).then(function (result) {
+                                if (!nekoBroadcastChannel) return;
+                                nekoBroadcastChannel.postMessage({
+                                    action: 'avatar_capture_result',
+                                    requestId: captureRequestId,
+                                    dataUrl: result.dataUrl || '',
+                                    modelType: result.modelType || '',
+                                    sourceDataUrl: includeSource ? (result.sourceDataUrl || '') : '',
+                                    cropRectPixels: result.cropRectPixels || null,
+                                    timestamp: Date.now()
+                                });
+                            }).catch(function (err) {
+                                console.error('[BroadcastChannel] avatar capture failed:', err);
+                                if (!nekoBroadcastChannel) return;
+                                nekoBroadcastChannel.postMessage({
+                                    action: 'avatar_capture_result',
+                                    requestId: captureRequestId,
+                                    error: true,
+                                    timestamp: Date.now()
+                                });
+                            });
+                        } else if (nekoBroadcastChannel) {
+                            nekoBroadcastChannel.postMessage({
+                                action: 'avatar_capture_result',
+                                requestId: captureRequestId,
+                                error: true,
+                                timestamp: Date.now()
+                            });
                         }
                         break;
                     }
@@ -1005,6 +1248,7 @@
     mod.cleanupLive2DOverlayUI = cleanupLive2DOverlayUI;
     mod.cleanupVRMOverlayUI = cleanupVRMOverlayUI;
     mod.cleanupMMDOverlayUI = cleanupMMDOverlayUI;
+    mod.syncVoiceChatComposerHidden = syncVoiceChatComposerHidden;
 
     // Backward-compatible window globals
     window.handleModelReload = handleModelReload;
@@ -1013,6 +1257,7 @@
     window.cleanupLive2DOverlayUI = cleanupLive2DOverlayUI;
     window.cleanupVRMOverlayUI = cleanupVRMOverlayUI;
     window.cleanupMMDOverlayUI = cleanupMMDOverlayUI;
+    window.syncVoiceChatComposerHidden = syncVoiceChatComposerHidden;
 
     window.appInterpage = mod;
 })();

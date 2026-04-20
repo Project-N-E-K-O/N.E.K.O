@@ -6,19 +6,18 @@
     <meta charset="UTF-8">
     <title>N.E.K.O. Jukebox</title>
 
-    <!-- i18n -->
     <script src="/static/i18n-i18next.js"></script>
-    <!-- APlayer -->
     <link rel="stylesheet" href="/static/libs/APlayer.min.css">
     <script src="/static/libs/APlayer.min.js"></script>
-    <!-- 暗色模式 -->
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <script src="/static/theme-manager.js"></script>
 
     <style>
         html, body {
-            margin: 0; padding: 0;
-            width: 100%; height: 100%;
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
             overflow: hidden;
             background: #87CEEB;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -26,7 +25,6 @@
             -webkit-user-select: none;
         }
 
-        /* Electron 独立窗口：Jukebox 覆盖全窗口 */
         .jukebox-wrapper {
             position: fixed !important;
             inset: 0 !important;
@@ -34,20 +32,57 @@
             right: 0 !important;
             z-index: 1 !important;
         }
+
         .jukebox-container {
             width: 100% !important;
             max-height: 100% !important;
             height: 100% !important;
             border-radius: 0 !important;
             box-sizing: border-box !important;
+            -webkit-app-region: no-drag !important;
+        }
+
+        .jukebox-header,
+        .jukebox-header-left,
+        .jukebox-header h3,
+        .jukebox-header-buttons,
+        .jukebox-header-buttons button,
+        .jukebox-settings,
+        .jukebox-minimize,
+        .jukebox-close,
+        .jukebox-content,
+        .jukebox-controls-row,
+        .jukebox-calibration-section,
+        .jukebox-notice,
+        .sam-panel {
+            -webkit-app-region: no-drag !important;
+        }
+
+        body.neko-jukebox-standalone-page .jukebox-drag-overlay {
+            display: none !important;
+        }
+
+        body.neko-jukebox-standalone-page .jukebox-header {
+            cursor: grab;
+            touch-action: none;
+        }
+
+        body.neko-jukebox-standalone-page.jukebox-dragging .jukebox-header {
+            cursor: grabbing;
+        }
+
+        body.neko-jukebox-standalone-page .jukebox-resize-handle {
+            touch-action: none;
         }
     </style>
 </head>
 <body>
-    <!-- Jukebox.js 自动构建 UI -->
-    <script src="/static/Jukebox.js"></script>
     <script>
-        // 从后端获取当前模型类型，供 Jukebox 判断是否需要播放 VMD/VRMA
+        window.__NEKO_JUKEBOX_STANDALONE__ = true;
+    </script>
+    <script src="/static/Jukebox.js"></script>
+    <script src="/static/jukebox-standalone.js"></script>
+    <script>
         async function _fetchModelType() {
             try {
                 var res = await fetch('/api/config/page_config');
@@ -58,20 +93,16 @@
                     window.lanlan_config.live3d_sub_type = cfg.live3d_sub_type || '';
                     window.lanlan_config.catgirl_name = cfg.lanlan_name || '';
                 }
-            } catch (_) { /* ignore */ }
+            } catch (_) {}
         }
 
-        // 等待 i18n 初始化完成后再打开 Jukebox
         async function _initJukebox() {
             if (!window.Jukebox) return;
 
-            // 获取模型类型
             await _fetchModelType();
 
-            // 独立模式：直接打开，不需要绑定按钮
             window.Jukebox_playSong = window.Jukebox.playSong;
             window.Jukebox_close = function() {
-                // 独立窗口关闭 = 隐藏窗口
                 if (window.close) window.close();
             };
             window.Jukebox_hide = function() {
@@ -82,10 +113,12 @@
             window.Jukebox_togglePause = window.Jukebox.togglePause;
 
             window.Jukebox.open();
+
+            if (window.NekoJukeboxStandalonePage) {
+                window.NekoJukeboxStandalonePage.mount();
+            }
         }
 
-        // i18n-i18next.js 是同步 IIFE + 异步 init，window.t 可能还未就绪
-        // 使用轮询等待 + 超时保护
         var _jbInitDone = false;
         function _tryInitJukebox() {
             if (_jbInitDone) return;
@@ -94,18 +127,29 @@
                 _initJukebox();
             }
         }
-        var _jbPoll = setInterval(function() { _tryInitJukebox(); }, 100);
-        // 超时保护：3s 后无论如何启动
+
+        var _jbPoll = setInterval(function() {
+            _tryInitJukebox();
+        }, 100);
+
         setTimeout(function() {
             clearInterval(_jbPoll);
-            if (!_jbInitDone) {
-                _jbInitDone = true;
-                // 确保 fallback t 存在
-                if (typeof window.t !== 'function') {
-                    window.t = function(key, fallback) { return fallback || key; };
-                }
-                _initJukebox();
+            if (_jbInitDone) return;
+
+            _jbInitDone = true;
+            if (typeof window.t !== 'function') {
+                window.t = function(key, opts) {
+                    if (typeof opts === 'string') return opts;
+                    if (opts && typeof opts === 'object') {
+                        var tpl = typeof opts.defaultValue === 'string' ? opts.defaultValue : key;
+                        return tpl.replace(/\{\{(\w+)\}\}/g, function(_, name) {
+                            return opts[name] != null ? opts[name] : '{{' + name + '}}';
+                        });
+                    }
+                    return key;
+                };
             }
+            _initJukebox();
         }, 3000);
     </script>
 </body>

@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 import sys
 from collections import deque
 from datetime import datetime
@@ -43,6 +44,19 @@ from plugin.sdk.plugin import (
     SdkError,
     get_plugin_logger,
 )
+
+# ── 同步 helper（避免 async def 内直接调 subprocess 阻塞事件循环）────────────
+def _open_url_in_browser(url: str) -> None:
+    """在默认浏览器打开 URL（同步调用，仅供 asyncio.to_thread 使用）"""
+    try:
+        if sys.platform == "win32":
+            subprocess.Popen(["cmd", "/c", "start", "", url], shell=False)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", url])
+        else:
+            subprocess.Popen(["xdg-open", url])
+    except Exception:
+        raise
 
 from .danmaku_core import DanmakuListener
 from .filter import DanmakuFilter, get_level_tier, get_level_weekly_bonus
@@ -82,36 +96,36 @@ _PLUGIN_CRED_FILE = "bili_credential.enc"
 _PLUGIN_KEY_FILE  = "bili_credential.key"
 
 
-def _get_fernet(data_dir: Path):
+async def _get_fernet(data_dir: Path):
     """获取或生成插件本地 Fernet 实例，密钥存 data_dir/<_PLUGIN_KEY_FILE>"""
     from cryptography.fernet import Fernet
     key_path = data_dir / _PLUGIN_KEY_FILE
     if key_path.exists():
-        key = key_path.read_bytes()
+        key = await asyncio.to_thread(key_path.read_bytes)
     else:
         key = Fernet.generate_key()
-        data_dir.mkdir(parents=True, exist_ok=True)
-        key_path.write_bytes(key)
+        await asyncio.to_thread(data_dir.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread(key_path.write_bytes, key)
         if sys.platform != "win32":
-            os.chmod(str(key_path), 0o600)
+            await asyncio.to_thread(os.chmod, str(key_path), 0o600)
     return Fernet(key)
 
 
-def _save_credential_encrypted(data_dir: Path, cred: dict) -> bool:
+async def _save_credential_encrypted(data_dir: Path, cred: dict) -> bool:
     """加密保存凭据字典到 data_dir/<_PLUGIN_CRED_FILE>"""
     try:
-        f = _get_fernet(data_dir)
-        enc = f.encrypt(json.dumps(cred, ensure_ascii=False).encode("utf-8"))
+        fernet = await _get_fernet(data_dir)
+        enc = fernet.encrypt(json.dumps(cred, ensure_ascii=False).encode("utf-8"))
         cred_path = data_dir / _PLUGIN_CRED_FILE
-        cred_path.write_bytes(enc)
+        await asyncio.to_thread(cred_path.write_bytes, enc)
         if sys.platform != "win32":
-            os.chmod(str(cred_path), 0o600)
+            await asyncio.to_thread(os.chmod, str(cred_path), 0o600)
         return True
     except Exception:
         return False
 
 
-def _load_credential_encrypted(data_dir: Path) -> Optional[Dict[str, str]]:
+async def _load_credential_encrypted(data_dir: Path) -> Optional[Dict[str, str]]:
     """从 data_dir/<_PLUGIN_CRED_FILE> 解密读取凭据字典，失败返回 None"""
     try:
         cred_path = data_dir / _PLUGIN_CRED_FILE
@@ -121,23 +135,24 @@ def _load_credential_encrypted(data_dir: Path) -> Optional[Dict[str, str]]:
         if not key_path.exists():
             return None
         from cryptography.fernet import Fernet
-        key = key_path.read_bytes()
+        key = await asyncio.to_thread(key_path.read_bytes)
         fernet = Fernet(key)
-        dec = fernet.decrypt(cred_path.read_bytes()).decode("utf-8")
+        enc_data = await asyncio.to_thread(cred_path.read_bytes)
+        dec = fernet.decrypt(enc_data).decode("utf-8")
         return json.loads(dec)
     except Exception:
         return None
 
 
-def _delete_credential_files(data_dir: Path) -> list[str]:
+async def _delete_credential_files(data_dir: Path) -> list[str]:
     """删除插件本地凭据文件，返回删除失败的文件名列表"""
     failed = []
     for fname in (_PLUGIN_CRED_FILE, _PLUGIN_KEY_FILE):
         p = data_dir / fname
         if p.exists():
             try:
-                p.unlink()
-            except Exception as e:
+                await asyncio.to_thread(p.unlink)
+            except Exception:
                 failed.append(fname)
     return failed
 
@@ -199,13 +214,13 @@ class BiliDanmakuPlugin(NekoPluginBase):
         self.logger.info("Bilibili弹幕插件启动中...")
 
         # 加载插件配置
-        self._load_plugin_config()
+        await self._load_plugin_config()
 
         # 尝试从 NEKO 读取 B 站凭据
         await self._load_bilibili_credential()
 
         # 初始化过滤器
-        self._init_filter()
+        await self._init_filter()
 
         # 注册静态 UI
         if (self.config_dir / "static").exists():
@@ -215,7 +230,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
                 cache_control="no-cache, no-store, must-revalidate",
             )
             if ok:
-                self.logger.info("✅ 弹幕控制台已注册，访问: http://localhost:48916/plugin/bilibili-danmaku/ui/")
+                self.logger.info("✅ 弹幕控制台已注册，访问: http://localhost:48916/plugin/bilibili_danmaku/ui/")
             else:
                 self.logger.warning("注册静态UI失败")
 
@@ -245,13 +260,12 @@ class BiliDanmakuPlugin(NekoPluginBase):
     # 内部方法：配置加载
     # ==========================================
 
-    def _load_plugin_config(self):
+    async def _load_plugin_config(self):
         """从插件 data/config.json 加载配置"""
         config_path = self.data_path("config.json")
         if config_path.exists():
             try:
-                with open(config_path, "r", encoding="utf-8") as f:
-                    cfg = json.load(f)
+                cfg = await asyncio.to_thread(self._read_json, config_path)
                 self._room_id = int(cfg.get("room_id", DEFAULT_ROOM_ID))
                 raw_interval = int(cfg.get("interval_seconds", DEFAULT_INTERVAL))
                 self._interval = max(MIN_INTERVAL, min(MAX_INTERVAL, raw_interval))
@@ -264,20 +278,26 @@ class BiliDanmakuPlugin(NekoPluginBase):
                 self.logger.warning(f"加载配置失败，使用默认值: {e}")
         else:
             # 写入默认配置
-            self._save_plugin_config()
+            await self._save_plugin_config()
 
         # 清理旧版推送时间记录文件（已改用内存变量）
         legacy_file = self.data_path("last_push.txt")
         if legacy_file.exists():
             try:
-                legacy_file.unlink()
+                await asyncio.to_thread(legacy_file.unlink)
             except Exception:
                 pass
 
-    def _save_plugin_config(self):
+    @staticmethod
+    def _read_json(path: Path) -> dict:
+        """同步读取 JSON（供 asyncio.to_thread 使用）"""
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    async def _save_plugin_config(self):
         """保存配置到 data/config.json"""
         config_path = self.data_path("config.json")
-        config_path.parent.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(config_path.parent.mkdir, parents=True, exist_ok=True)
         cfg = {
             "room_id": self._room_id,
             "interval_seconds": self._interval,
@@ -287,14 +307,19 @@ class BiliDanmakuPlugin(NekoPluginBase):
             "danmaku_max_length": self._danmaku_max_length,
             "_comment_danmaku_max_length": "发送弹幕的最大长度限制（B站限制 20 字符，建议 20）",
         }
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, ensure_ascii=False, indent=2)
+        await asyncio.to_thread(self._write_json, config_path, cfg)
+
+    @staticmethod
+    def _write_json(path: Path, data: dict) -> None:
+        """同步写入 JSON（供 asyncio.to_thread 使用）"""
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
 
     async def _load_bilibili_credential(self):
         """从插件本地加密存储或 NEKO 全局凭据文件读取 B 站 Cookie"""
         # ── 1. 优先读插件自己保存的加密 Cookie ────────────────────
         try:
-            local_cred = _load_credential_encrypted(self.data_path())
+            local_cred = await _load_credential_encrypted(self.data_path())
             if local_cred and local_cred.get("SESSDATA"):
                 self._bilibili_credential = _BiliCredential(
                     sessdata=local_cred.get("SESSDATA", ""),
@@ -361,7 +386,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
                 content=danmaku_notice,
                 metadata={
                     "room_id": self._room_id,
-                    "plugin_id": "bilibili-danmaku",
+                    "plugin_id": "bilibili_danmaku",
                 },
                 target_lanlan=self._target_lanlan if self._target_lanlan else None,  # 可配置的目标 AI
             )
@@ -369,15 +394,14 @@ class BiliDanmakuPlugin(NekoPluginBase):
         except Exception as e:
             self.logger.warning(f"push_message 失败: {e}")
 
-    def _init_filter(self):
+    async def _init_filter(self):
         """初始化过滤器"""
         # 加载过滤器配置
         filter_cfg_path = self.data_path("filter_config.json")
         filter_cfg = {}
         if filter_cfg_path.exists():
             try:
-                with open(filter_cfg_path, "r", encoding="utf-8") as f:
-                    filter_cfg = json.load(f)
+                filter_cfg = await asyncio.to_thread(self._read_json, filter_cfg_path)
             except Exception:
                 pass
 
@@ -667,6 +691,12 @@ class BiliDanmakuPlugin(NekoPluginBase):
     # AI 可调用入口
     # ==========================================
 
+    def _get_connection_info(self) -> dict:
+        """获取连接详情（内部方法）"""
+        if self._listener:
+            return self._listener.get_connection_state()
+        return {"state": "disconnected", "server": "", "viewer_count": 0, "room_id": self._room_id}
+
     @plugin_entry(
         id="get_danmaku",
         name="获取直播间弹幕",
@@ -690,6 +720,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
     async def get_danmaku(self, max_count: int = 10, include_gifts: bool = True, **_):
         """获取缓冲区中的弹幕，格式化返回给 AI"""
         is_listening = self._listener is not None and self._listener.is_running()
+        conn_info = self._get_connection_info()
 
         if not is_listening:
             if self._connecting:
@@ -703,6 +734,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
                     "logged_in": self._is_logged_in,
                     "interval": self._interval,
                     "queue_size": len(self._ui_danmaku_queue),
+                    "connection": conn_info,
                     "stats": {
                         "received": self._total_received,
                         "filtered": self._total_filtered,
@@ -720,6 +752,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
                     "logged_in": self._is_logged_in,
                     "interval": self._interval,
                     "queue_size": len(self._ui_danmaku_queue),
+                    "connection": conn_info,
                     "stats": {
                         "received": self._total_received,
                         "filtered": self._total_filtered,
@@ -752,6 +785,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
                 "logged_in": self._is_logged_in,
                 "interval": self._interval,
                 "queue_size": len(self._ui_danmaku_queue),
+                "connection": conn_info,
                 "stats": {
                     "received": self._total_received,
                     "filtered": self._total_filtered,
@@ -807,6 +841,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
             "danmaku": danmaku_list,
             "superchat": sc_list,
             "gifts": gift_list,
+            "connection": conn_info,
             "stats": {
                 "received": self._total_received,
                 "filtered": self._total_filtered,
@@ -837,7 +872,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
         old_room = self._room_id
         self._room_id = room_id
-        self._save_plugin_config()
+        await self._save_plugin_config()
 
         # 重新启动监听
         asyncio.create_task(self._start_listening())
@@ -882,7 +917,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
         old_interval = self._interval
         self._interval = seconds
-        self._save_plugin_config()
+        await self._save_plugin_config()
 
         return Ok({
             "success": True,
@@ -913,7 +948,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
         """设置弹幕推送的目标 AI 名称"""
         old_value = self._target_lanlan
         self._target_lanlan = str(target_lanlan).strip()
-        self._save_plugin_config()
+        await self._save_plugin_config()
         return Ok({
             "success": True,
             "message": f"✅ 目标 AI 已从 '{old_value or '(未指定)'}' 更改为 '{self._target_lanlan or '(未指定)'}'",
@@ -948,7 +983,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
         old_value = self._danmaku_max_length
         self._danmaku_max_length = max_length
-        self._save_plugin_config()
+        await self._save_plugin_config()
 
         # 更新监听器的弹幕长度限制（如果监听器已创建）
         if self._listener:
@@ -981,7 +1016,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
         """开始或重启弹幕监听"""
         if room_id and room_id > 0:
             self._room_id = room_id
-            self._save_plugin_config()
+            await self._save_plugin_config()
 
         if self._room_id <= 0:
             return Err(SdkError("未配置直播间ID，请先传入 room_id"))
@@ -1027,11 +1062,30 @@ class BiliDanmakuPlugin(NekoPluginBase):
         else:
             listen_status = "🔴 未监听"
 
+        # 获取详细连接状态
+        conn_state = {}
+        if self._listener:
+            conn_state = self._listener.get_connection_state()
+            # 映射状态为中文
+            state_map = {
+                "disconnected": "🔴 未连接",
+                "connecting": "🟡 连接中",
+                "authenticating": "🟡 认证中",
+                "receiving": "🟢 接收中",
+                "reconnecting": "🟠 重连中",
+            }
+            conn_state["state_desc"] = state_map.get(conn_state.get("state", ""), conn_state.get("state", ""))
+        else:
+            conn_state = {"state": "disconnected", "server": "", "viewer_count": 0, "room_id": self._room_id, "state_desc": "🔴 未初始化"}
+
         lines = [
             "📡 B站弹幕插件状态",
             "",
             f"直播间: {self._room_id if self._room_id > 0 else '未配置'}",
             f"监听状态: {listen_status}",
+            f"连接状态: {conn_state.get('state_desc', '未知')}",
+            f"弹幕服务器: {conn_state.get('server', 'N/A')}",
+            f"当前人气: {conn_state.get('viewer_count', 0):,}",
             f"账号状态: {'🔐 已登录' if self._is_logged_in else '👤 游客模式'}",
             f"过滤模式: {self._filter.describe_mode() if self._filter else '未初始化'}",
             f"推送间隔: {self._interval}s",
@@ -1057,12 +1111,30 @@ class BiliDanmakuPlugin(NekoPluginBase):
             "target_lanlan": self._target_lanlan,
             "danmaku_max_length": self._danmaku_max_length,
             "queue_size": len(self._danmaku_queue),
+            "connection": conn_state,
             "stats": {
                 "received": self._total_received,
                 "filtered": self._total_filtered,
                 "pushed": self._total_pushed,
             }
         })
+
+    @plugin_entry(
+        id="open_ui",
+        name="打开弹幕控制台",
+        description="在浏览器中打开B站弹幕插件的Web UI控制台，用于配置直播间、查看弹幕等",
+        kind="action"
+    )
+    async def open_ui(self, **_):
+        """在浏览器中打开B站弹幕控制台"""
+        url = "http://localhost:48916/plugin/bilibili-danmaku/ui/"
+        try:
+            await asyncio.to_thread(_open_url_in_browser, url)
+            self.logger.info(f"已在浏览器中打开: {url}")
+            return Ok({"success": True, "url": url, "message": "已在浏览器打开控制台"})
+        except Exception as e:
+            self.logger.exception("打开控制台失败")
+            return Err(SdkError(f"打开控制台失败: {e}"))
 
     @plugin_entry(
         id="save_credential",
@@ -1110,7 +1182,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
         # data_path() 即 data 目录（config_dir/data/）
         data_dir = self.data_path()
-        ok = _save_credential_encrypted(data_dir, cred_dict)
+        ok = await _save_credential_encrypted(data_dir, cred_dict)
         if not ok:
             return Err(SdkError("加密保存失败，请检查 cryptography 库是否可用"))
 
@@ -1123,7 +1195,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
         )
         self._is_logged_in = True
         # 重建过滤器为登录态，确保立刻生效
-        self._init_filter()
+        await self._init_filter()
         self.logger.info(f"✅ B站凭据已加密保存 (UID={dedeuserid})")
 
         # 如果当前在监听，重启以使新凭据生效
@@ -1149,14 +1221,14 @@ class BiliDanmakuPlugin(NekoPluginBase):
     async def clear_credential(self, **_):
         """清除插件本地加密凭据，切换回游客模式"""
         data_dir = self.data_path()
-        failed = _delete_credential_files(data_dir)
+        failed = await _delete_credential_files(data_dir)
         if failed:
             self.logger.warning(f"⚠️ 以下凭据文件删除失败（可能仍留在磁盘）: {', '.join(failed)}")
 
         self._bilibili_credential = None
         self._is_logged_in = False
         # 重建过滤器为游客模式
-        self._init_filter()
+        await self._init_filter()
         self.logger.info("🗑️ 已清除插件本地 B站凭据，切换为游客模式")
 
         # 如果当前在监听，重连以断开旧的登录态连接
@@ -1185,7 +1257,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
     async def reload_credential(self, **_):
         """热重载凭据（不重启监听）"""
         await self._load_bilibili_credential()
-        self._init_filter()
+        await self._init_filter()
         status = "🔐 已登录" if self._is_logged_in else "👤 游客模式"
         return Ok({
             "success": True,

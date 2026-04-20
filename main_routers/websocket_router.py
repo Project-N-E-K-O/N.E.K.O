@@ -48,7 +48,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
     _config_manager = get_config_manager()
     session_manager = get_session_manager()
     await websocket.accept()
-    
+
     # 检查角色是否存在，如果不存在则通知前端并关闭连接
     if lanlan_name not in session_manager:
         logger.warning(f"❌ 角色 {lanlan_name} 不存在，当前可用角色: {list(session_manager.keys())}")
@@ -75,6 +75,8 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         return
     
     this_session_id = uuid.uuid4()
+    # [DIAG] stream_data 计数器：按连接独立，重连后 `#1` 首包可见
+    sd_log_counter = 0
     async with _lock:
         session_id = get_session_id()
         session_id[lanlan_name] = this_session_id
@@ -125,7 +127,27 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     await session_manager[lanlan_name].send_status(json.dumps({"code": "INVALID_INPUT_TYPE", "details": {"input_type": input_type}}))
 
             elif action == "stream_data":
+                # [DIAG] 切换猫娘后语音 STT 不触发的排查：确认前端是否送达音频
+                _input_type_dbg = message.get("input_type")
+                _data = message.get("data")
+                _data_len = len(_data) if isinstance(_data, (str, bytes, bytearray)) else -1
+                # 按连接计数，重连后 #1 首包仍可见；每 50 次打一条够判断通路是否活
+                sd_log_counter += 1
+                if sd_log_counter == 1 or sd_log_counter % 50 == 0:
+                    logger.info(
+                        f"[{lanlan_name}] stream_data #{sd_log_counter} input_type={_input_type_dbg} data_len={_data_len}"
+                    )
+                # Extract and store avatar position metadata (paired with screenshot)
+                # 显式清空：前端不发 avatar_position = 不应叠加，防止旧坐标残留
+                av_pos = message.get("avatar_position")
+                if av_pos and isinstance(av_pos, dict):
+                    session_manager[lanlan_name]._avatar_position = av_pos
+                else:
+                    session_manager[lanlan_name]._avatar_position = None
                 _fire_task(session_manager[lanlan_name].stream_data(message))
+
+            elif action == "avatar_interaction":
+                _fire_task(session_manager[lanlan_name].handle_avatar_interaction(message))
 
             elif action == "end_session":
                 session_manager[lanlan_name].active_session_is_idle = False
@@ -138,6 +160,12 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             elif action == "screenshot_response":
                 raw = message.get("data", "")
                 b64 = raw.split(",", 1)[1] if "," in raw else raw
+                # Extract and store avatar position metadata (paired with fresh screenshot)
+                av_pos = message.get("avatar_position")
+                if av_pos and isinstance(av_pos, dict):
+                    session_manager[lanlan_name]._avatar_position = av_pos
+                else:
+                    session_manager[lanlan_name]._avatar_position = None
                 session_manager[lanlan_name].resolve_screenshot_request(b64)
 
             elif action == "greeting_check":
@@ -186,4 +214,3 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
 
         if is_current and lanlan_name in session_manager:
             await session_manager[lanlan_name].cleanup(expected_websocket=websocket)
-
