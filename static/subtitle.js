@@ -422,7 +422,8 @@ function resetSubtitleTurnState() {
         incrementalAbortController.abort();
         incrementalAbortController = null;
     }
-    incrementalRequestId = 0;
+    // 不重置 incrementalRequestId；保持单调递增作为失效令牌，
+    // 使旧的翻译响应无法与新的请求 ID 碰撞。
 }
 
 /**
@@ -848,6 +849,10 @@ function initSubtitleDrag() {
     });
     subtitleDisplay.addEventListener('touchstart', function(e) {
         if (!subtitleDisplay.classList.contains('drag-anywhere')) return;
+        if (document.getElementById('subtitle-settings-panel') &&
+            document.getElementById('subtitle-settings-panel').contains(e.target)) return;
+        if (document.getElementById('subtitle-settings-btn') &&
+            document.getElementById('subtitle-settings-btn').contains(e.target)) return;
         handleTouchStart(e);
     }, { passive: false });
 
@@ -862,10 +867,14 @@ function initSubtitleDrag() {
         const maxX = Math.max(0, window.innerWidth - subtitleDisplay.offsetWidth);
         const maxY = Math.max(0, window.innerHeight - subtitleDisplay.offsetHeight);
 
-        if (rect.right > window.innerWidth) {
+        if (rect.left < 0) {
+            subtitleDisplay.style.left = '0px';
+        } else if (rect.right > window.innerWidth) {
             subtitleDisplay.style.left = maxX + 'px';
         }
-        if (rect.bottom > window.innerHeight) {
+        if (rect.top < 0) {
+            subtitleDisplay.style.top = '0px';
+        } else if (rect.bottom > window.innerHeight) {
             subtitleDisplay.style.top = maxY + 'px';
         }
     });
@@ -973,7 +982,7 @@ window.subtitleBridge = {
             incrementalAbortController.abort();
             incrementalAbortController = null;
         }
-        incrementalRequestId = 0;
+        // 不重置 incrementalRequestId；保持单调递增作为失效令牌。
 
         if (subtitleEnabled && currentTurnOriginalText && currentTurnOriginalText.trim()) {
             if (isCurrentTurnFinalized) {
@@ -981,9 +990,8 @@ window.subtitleBridge = {
                 isCurrentTurnFinalized = false;
                 translateAndShowSubtitle(currentTurnOriginalText);
             } else {
-                // 流式中，用原文显示，等待新的增量翻译
-                ensureSubtitleVisibleIfEnabled();
-                writeSubtitleText(currentTurnOriginalText);
+                // 流式中，对当前已累积文本立即重新启动增量翻译
+                updateSubtitleStreamingText(currentTurnOriginalText);
             }
         }
     },

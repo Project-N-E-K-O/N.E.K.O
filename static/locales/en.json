@@ -1782,7 +1782,16 @@
         "title": "Real-time Subtitles",
         "enable": "Subtitle Translation",
         "enableAriaLabel": "Toggle subtitle translation",
-        "markdownPlaceholder": "[formatted content]"
+        "markdownPlaceholder": "[formatted content]",
+        "settings": {
+            "targetLang": "Target Language",
+            "opacity": "Opacity",
+            "dragAnywhere": "Drag Anywhere",
+            "size": "Size",
+            "sizeSmall": "S",
+            "sizeMedium": "M",
+            "sizeLarge": "L"
+        }
     },
     "viewer": {
         "title": "Viewer - Project N.E.K.O."

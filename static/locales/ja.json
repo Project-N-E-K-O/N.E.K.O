@@ -1782,7 +1782,16 @@
         "title": "リアルタイム字幕",
         "enable": "字幕翻訳",
         "enableAriaLabel": "字幕翻訳の切り替え",
-        "markdownPlaceholder": "[整形済みコンテンツ]"
+        "markdownPlaceholder": "[整形済みコンテンツ]",
+        "settings": {
+            "targetLang": "翻訳先の言語",
+            "opacity": "不透明度",
+            "dragAnywhere": "全体ドラッグ",
+            "size": "サイズ",
+            "sizeSmall": "小",
+            "sizeMedium": "中",
+            "sizeLarge": "大"
+        }
     },
     "viewer": {
         "title": "ビューアー - Project N.E.K.O."

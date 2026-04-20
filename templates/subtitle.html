@@ -381,7 +381,10 @@
         var savedDragMode = localStorage.getItem('subtitleDragAnywhere') === 'true';
         if (dragModeToggle) {
             dragModeToggle.checked = savedDragMode;
-            if (savedDragMode) subtitleDisplay.classList.add('drag-anywhere');
+            if (savedDragMode) {
+                subtitleDisplay.classList.add('drag-anywhere');
+                dragHandle.style.display = 'none';
+            }
             dragModeToggle.addEventListener('change', function() {
                 var on = dragModeToggle.checked;
                 subtitleDisplay.classList.toggle('drag-anywhere', on);
@@ -519,6 +522,36 @@
             var overHandle = false;
             var isDragging = false;
 
+            // 拖拽结束后检测窗口是否超出屏幕，超出则回弹
+            // 保证控件（设置按钮、拖拽手柄）始终可点击
+            function bounceBackIfNeeded() {
+                try {
+                    if (typeof window.screenX !== 'number') return;
+                    var MARGIN = 30;
+                    var x = window.screenX;
+                    var y = window.screenY;
+                    var w = window.outerWidth;
+                    var h = window.outerHeight;
+                    if (!w || !h) return;
+                    var moved = false;
+
+                    // 左/上：控件区域不可见时回弹到 0
+                    if (x < 0) { x = 0; moved = true; }
+                    if (y < 0) { y = 0; moved = true; }
+                    // 右/下：至少保留 MARGIN 像素在屏幕内
+                    if (x + w - MARGIN > screen.availWidth) {
+                        x = Math.max(0, screen.availWidth - w);
+                        moved = true;
+                    }
+                    if (y + h - MARGIN > screen.availHeight) {
+                        y = Math.max(0, screen.availHeight - h);
+                        moved = true;
+                    }
+
+                    if (moved) window.moveTo(x, y);
+                } catch(e) {}
+            }
+
             function isDragAnywhereMode() {
                 return subtitleDisplay.classList.contains('drag-anywhere');
             }
@@ -539,6 +572,7 @@
 
             function startDrag(e) {
                 if (settingsPanel.contains(e.target)) return;
+                if (settingsBtn && settingsBtn.contains(e.target)) return;
                 isDragging = true;
                 api.dragStart();
                 e.preventDefault();
@@ -560,6 +594,7 @@
                     dragHandle.style.cursor = '';
                     isDragging = false;
                     api.dragStop();
+                    bounceBackIfNeeded();
                     if (!isDragAnywhereMode() && !overHandle) {
                         api.disableInteraction();
                     }
@@ -572,6 +607,10 @@
                     api.disableInteraction();
                 }
             });
+
+            // 窗口获得焦点或屏幕尺寸变化时也检查是否超出屏幕
+            window.addEventListener('focus', bounceBackIfNeeded);
+            window.addEventListener('resize', bounceBackIfNeeded);
         }
     </script>
 </body>

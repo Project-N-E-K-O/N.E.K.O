@@ -1782,7 +1782,16 @@
         "title": "實時字幕",
         "enable": "字幕翻譯",
         "enableAriaLabel": "字幕翻譯開關",
-        "markdownPlaceholder": "[格式化內容]"
+        "markdownPlaceholder": "[格式化內容]",
+        "settings": {
+            "targetLang": "目標語言",
+            "opacity": "不透明度",
+            "dragAnywhere": "整體拖動",
+            "size": "大小",
+            "sizeSmall": "小",
+            "sizeMedium": "中",
+            "sizeLarge": "大"
+        }
     },
     "viewer": {
         "title": "Viewer - Project N.E.K.O."

@@ -1782,7 +1782,16 @@
         "title": "실시간 자막",
         "enable": "자막 번역",
         "enableAriaLabel": "자막 번역 전환",
-        "markdownPlaceholder": "[서식 있는 내용]"
+        "markdownPlaceholder": "[서식 있는 내용]",
+        "settings": {
+            "targetLang": "대상 언어",
+            "opacity": "불투명도",
+            "dragAnywhere": "전체 드래그",
+            "size": "크기",
+            "sizeSmall": "소",
+            "sizeMedium": "중",
+            "sizeLarge": "대"
+        }
     },
     "viewer": {
         "title": "뷰어 - 프로젝트 N.E.K.O."
