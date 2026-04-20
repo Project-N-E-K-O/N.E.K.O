@@ -789,9 +789,8 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
 
         def _build_tts_create_data(sid_: str, lang_hint):
             """根据 URL 和语言提示组装 tts.create 的 data 字段。
-            - lanlan.app: language_code（命中 ja 时覆盖全局语言）
-            - lanlan.tech: voice_label.language="日语"（命中 ja 时），否则不带
-            - 自建 StepFun: 目前不挂语言字段（服务端自动识别）
+            - lanlan.app: language_code（Gemini streaming-TTS 风格；命中 ja 时覆盖全局语言）
+            - lanlan.tech / 自建 StepFun: 协议对称，voice_label.language="日语"（命中 ja 时）
             """
             data = {
                 "session_id": sid_,
@@ -802,11 +801,10 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
             if is_lanlan_app:
                 data["voice_id"] = "Leda"
                 data["language_code"] = "ja-JP" if lang_hint == "ja" else _get_tts_language_code()
-            elif free_mode:
-                # lanlan.tech：voice_label 方案已经通过 probe 实测验证
+            else:
+                # lanlan.tech (free) 和自建 StepFun (wss://api.stepfun.com/...) 共用同一协议
                 if lang_hint == "ja":
                     data["voice_label"] = {"language": "日语"}
-            # 自建 StepFun（free_mode=False）不挂任何语言字段，完全交由服务端识别
             return data
 
         async def _flush_deferred_create(force: bool = False) -> bool:

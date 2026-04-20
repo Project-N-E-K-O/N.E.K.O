@@ -71,7 +71,7 @@ class TestQwenConfigMessageBuilder:
 class TestStepTtsCreateBuilder:
     """类似地，覆盖 step_realtime_tts_worker 的 _build_tts_create_data 分支逻辑。"""
 
-    def _build(self, *, voice_id: str, session_id: str, lang_hint, is_lanlan_app: bool, free_mode: bool = True, fallback_lang_code: str = "zh-CN"):
+    def _build(self, *, voice_id: str, session_id: str, lang_hint, is_lanlan_app: bool, fallback_lang_code: str = "zh-CN"):
         data = {
             "session_id": session_id,
             "voice_id": voice_id,
@@ -81,32 +81,26 @@ class TestStepTtsCreateBuilder:
         if is_lanlan_app:
             data["voice_id"] = "Leda"
             data["language_code"] = "ja-JP" if lang_hint == "ja" else fallback_lang_code
-        elif free_mode:
+        else:
+            # lanlan.tech (free) 和自建 StepFun 协议对称，都用 voice_label
             if lang_hint == "ja":
                 data["voice_label"] = {"language": "日语"}
         return data
 
     def test_lanlan_tech_ja_adds_voice_label(self):
-        data = self._build(voice_id="v1", session_id="s1", lang_hint="ja", is_lanlan_app=False, free_mode=True)
+        data = self._build(voice_id="v1", session_id="s1", lang_hint="ja", is_lanlan_app=False)
         assert data["voice_label"] == {"language": "日语"}
-        # 非 lanlan.app 分支保持原 voice_id
         assert data["voice_id"] == "v1"
         assert "language_code" not in data
 
     def test_lanlan_tech_no_hint_has_no_voice_label(self):
-        data = self._build(voice_id="v1", session_id="s1", lang_hint=None, is_lanlan_app=False, free_mode=True)
+        data = self._build(voice_id="v1", session_id="s1", lang_hint=None, is_lanlan_app=False)
         assert "voice_label" not in data
 
-    def test_paid_stepfun_ja_has_no_language_field(self):
-        # 自建 StepFun 必须不挂任何语言字段（避免 lanlan-only 字段污染 payload）
-        data = self._build(voice_id="v1", session_id="s1", lang_hint="ja", is_lanlan_app=False, free_mode=False)
-        assert "voice_label" not in data
-        assert "language_code" not in data
-
-    def test_paid_stepfun_no_hint_has_no_language_field(self):
-        data = self._build(voice_id="v1", session_id="s1", lang_hint=None, is_lanlan_app=False, free_mode=False)
-        assert "voice_label" not in data
-        assert "language_code" not in data
+    def test_paid_stepfun_ja_also_uses_voice_label(self):
+        # 付费 StepFun 与 lanlan.tech 协议对称，同样应该带 voice_label
+        data = self._build(voice_id="v1", session_id="s1", lang_hint="ja", is_lanlan_app=False)
+        assert data["voice_label"] == {"language": "日语"}
 
     def test_lanlan_app_ja_uses_ja_jp_language_code(self):
         data = self._build(voice_id="v1", session_id="s1", lang_hint="ja", is_lanlan_app=True)
