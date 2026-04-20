@@ -89,6 +89,11 @@ SyncSaveView = Callable[[str, object], None]     # (character_name, view_obj) ->
 # returns successfully, so handler MUST persist before returning — otherwise
 # a process crash between handler-return and sentinel-write would lose the
 # change while marking the event as applied.
+#
+# Handlers MUST be synchronous (no async/await) and use the sync IO helpers
+# (atomic_write_json, not its a-twin): Reconciler.areconcile calls them
+# directly without await. An async handler would return a coroutine that
+# never runs, silently breaking reconciliation.
 ApplyHandler = Callable[[str, dict], bool]
 
 

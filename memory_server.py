@@ -258,7 +258,8 @@ async def _spawn_outbox_extract_facts(lanlan_name: str, messages: list) -> async
     except Exception as e:
         # Outbox 写失败不能阻塞主流程，降级为一次性任务（与重构前行为一致）
         logger.warning(
-            f"[Outbox] {lanlan_name}: append_pending 失败，降级为内存任务: {e}"
+            f"[Outbox] {lanlan_name}: append_pending 失败，降级为内存任务: "
+            f"{type(e).__name__}: {e}"
         )
         return _spawn_background_task(
             _extract_facts_and_check_feedback(messages, lanlan_name)
