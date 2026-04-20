@@ -2093,61 +2093,85 @@ button * {
 .qa-plugin-view {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
 .qa-plugin-card {
-  border: 1px solid rgba(140, 160, 190, 0.12);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 14px;
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.72) 0%,
+    rgba(240, 246, 255, 0.55) 100%
+  );
+  backdrop-filter: blur(18px) saturate(1.4);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
   overflow: hidden;
-  transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
+  box-shadow:
+    0 1px 3px rgba(60, 100, 160, 0.06),
+    0 0 0 0.5px rgba(255, 255, 255, 0.5) inset;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .qa-plugin-card:hover {
-  border-color: rgba(68, 183, 254, 0.22);
+  border-color: rgba(68, 183, 254, 0.25);
+  box-shadow:
+    0 4px 16px rgba(68, 183, 254, 0.08),
+    0 1px 3px rgba(60, 100, 160, 0.06),
+    0 0 0 0.5px rgba(255, 255, 255, 0.5) inset;
+  transform: translateY(-1px);
 }
 
 .qa-plugin-card.is-open {
   border-color: rgba(68, 183, 254, 0.3);
-  background: rgba(255, 255, 255, 0.8);
-  box-shadow: 0 2px 10px rgba(60, 80, 120, 0.06);
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.82) 0%,
+    rgba(235, 245, 255, 0.7) 100%
+  );
+  box-shadow:
+    0 6px 24px rgba(68, 183, 254, 0.1),
+    0 2px 6px rgba(60, 100, 160, 0.06),
+    0 0 0 0.5px rgba(68, 183, 254, 0.15) inset;
+  transform: translateY(0);
 }
 
 .qa-plugin-header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   width: 100%;
-  padding: 10px 12px;
+  padding: 11px 14px;
   border: 0;
   background: transparent;
   cursor: pointer;
   text-align: left;
-  transition: background 0.12s;
+  transition: background 0.15s;
 }
 
 .qa-plugin-header:hover {
-  background: rgba(68, 183, 254, 0.04);
+  background: rgba(68, 183, 254, 0.05);
 }
 
 .qa-plugin-name {
   flex: 1;
-  font-size: 0.82rem;
+  font-size: 0.84rem;
   font-weight: 650;
-  color: #273042;
+  color: #1e2a3a;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  letter-spacing: -0.01em;
 }
 
 .qa-plugin-count {
-  font-size: 0.66rem;
-  color: #8a95a8;
-  background: rgba(140, 160, 190, 0.1);
-  padding: 1px 6px;
+  font-size: 0.64rem;
+  color: #6a7a90;
+  background: rgba(68, 183, 254, 0.08);
+  padding: 2px 7px;
   border-radius: 999px;
   font-weight: 600;
+  letter-spacing: 0.02em;
 }
 
 .qa-chevron {
@@ -2157,7 +2181,7 @@ button * {
   border-left: 4px solid transparent;
   border-right: 4px solid transparent;
   border-top: 5px solid #8a95a8;
-  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   flex-shrink: 0;
 }
 
@@ -2167,11 +2191,11 @@ button * {
 
 .qa-plugin-body {
   overflow: hidden;
-  transition: height 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: height 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .qa-plugin-body-inner {
-  padding: 0 10px 8px;
+  padding: 2px 12px 10px;
 }
 
 /* ── Control row ── */
@@ -2605,22 +2629,40 @@ button * {
 
 [data-theme="dark"] .qa-plugin-card {
   border-color: rgba(255, 255, 255, 0.06);
-  background: rgba(255, 255, 255, 0.03);
+  background: linear-gradient(
+    135deg,
+    rgba(30, 36, 52, 0.75) 0%,
+    rgba(24, 30, 46, 0.6) 100%
+  );
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.2),
+    0 0 0 0.5px rgba(255, 255, 255, 0.04) inset;
 }
 
 [data-theme="dark"] .qa-plugin-card:hover {
-  border-color: rgba(68, 183, 254, 0.18);
+  border-color: rgba(68, 183, 254, 0.2);
+  box-shadow:
+    0 4px 18px rgba(68, 183, 254, 0.06),
+    0 1px 3px rgba(0, 0, 0, 0.25),
+    0 0 0 0.5px rgba(68, 183, 254, 0.08) inset;
 }
 
 [data-theme="dark"] .qa-plugin-card.is-open {
   border-color: rgba(68, 183, 254, 0.25);
-  background: rgba(255, 255, 255, 0.05);
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+  background: linear-gradient(
+    135deg,
+    rgba(34, 42, 62, 0.85) 0%,
+    rgba(28, 36, 56, 0.7) 100%
+  );
+  box-shadow:
+    0 6px 28px rgba(68, 183, 254, 0.08),
+    0 2px 6px rgba(0, 0, 0, 0.2),
+    0 0 0 0.5px rgba(68, 183, 254, 0.12) inset;
 }
 
-[data-theme="dark"] .qa-plugin-header:hover { background: rgba(68, 183, 254, 0.05); }
-[data-theme="dark"] .qa-plugin-name { color: #e0e4ea; }
-[data-theme="dark"] .qa-plugin-count { color: #7a8494; background: rgba(255, 255, 255, 0.06); }
+[data-theme="dark"] .qa-plugin-header:hover { background: rgba(68, 183, 254, 0.06); }
+[data-theme="dark"] .qa-plugin-name { color: #e2e6ee; }
+[data-theme="dark"] .qa-plugin-count { color: #7a8ca0; background: rgba(68, 183, 254, 0.08); }
 [data-theme="dark"] .qa-chevron { border-top-color: #7a8494; }
 
 [data-theme="dark"] .qa-row:hover { background: rgba(68, 183, 254, 0.05); }
