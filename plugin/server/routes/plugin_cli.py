@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, File, Query, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, model_validator
 
@@ -145,10 +145,6 @@ async def plugin_cli_analyze(
 # ── Upload & Download ──────────────────────────────────────────────────
 
 
-class PluginCliUploadAndUnpackQuery(BaseModel):
-    on_conflict: str = Field(default="rename", pattern="^(rename|fail)$")
-
-
 @router.post("/plugin-cli/upload")
 async def plugin_cli_upload(
     file: UploadFile = File(...),
@@ -167,6 +163,9 @@ async def plugin_cli_upload(
         )
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
+    except Exception:
+        logger.exception("Unexpected error during plugin package upload")
+        raise HTTPException(status_code=500, detail="Internal server error during upload")
 
 
 @router.post("/plugin-cli/upload-and-unpack")
@@ -188,6 +187,9 @@ async def plugin_cli_upload_and_unpack(
         )
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
+    except Exception:
+        logger.exception("Unexpected error during plugin package upload-and-unpack")
+        raise HTTPException(status_code=500, detail="Internal server error during upload-and-unpack")
 
 
 @router.get("/plugin-cli/download")

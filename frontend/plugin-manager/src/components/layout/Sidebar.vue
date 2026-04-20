@@ -11,11 +11,12 @@
         :key="item.path"
         :to="item.path"
         custom
-        v-slot="{ isActive, navigate }"
+        v-slot="{ isExactActive, navigate }"
       >
         <button
           class="nav-item"
-          :class="{ 'nav-item--active': isActive || isRouteActive(item.path) }"
+          :class="{ 'nav-item--active': isExactActive || isRouteActive(item.path) }"
+          :aria-current="isExactActive || isRouteActive(item.path) ? 'page' : undefined"
           @click="navigate"
         >
           <el-icon class="nav-item__icon"><component :is="item.icon" /></el-icon>

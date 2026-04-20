@@ -804,15 +804,16 @@ async function handleBatchExport() {
       return
     }
 
-    // Download each packed file
+    // Download each packed file using the full path returned by backend
     for (const packed of result.packed) {
-      const packagePath = packed.package_path
-      // Extract just the filename from the full path
-      const packageName = packagePath.split('/').pop() || packagePath.split('\\').pop() || packagePath
-      downloadPluginPackage(packageName)
+      downloadPluginPackage(packed.package_path)
     }
 
-    ElMessage.success(t('plugins.exportSuccess', { count: result.packed.length }))
+    if (result.failed && result.failed.length > 0) {
+      ElMessage.warning(t('plugins.batchPartial', { success: result.packed.length, fail: result.failed.length }))
+    } else {
+      ElMessage.success(t('plugins.exportSuccess', { count: result.packed.length }))
+    }
   } catch (error: any) {
     console.error('Failed to export plugins:', error)
     const detail = error?.response?.data?.detail || error?.message || ''

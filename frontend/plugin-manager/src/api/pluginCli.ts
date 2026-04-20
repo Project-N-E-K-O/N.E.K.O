@@ -228,7 +228,6 @@ export function uploadPluginPackage(file: File): Promise<PluginCliUploadResult> 
   const formData = new FormData()
   formData.append('file', file)
   return post('/plugin-cli/upload', formData, {
-    headers: { 'Content-Type': 'multipart/form-data' },
     timeout: 120_000,
   })
 }
@@ -249,7 +248,6 @@ export function uploadAndUnpackPlugin(
   const query = params.toString()
   const url = `/plugin-cli/upload-and-unpack${query ? `?${query}` : ''}`
   return post(url, formData, {
-    headers: { 'Content-Type': 'multipart/form-data' },
     timeout: 120_000,
   })
 }
@@ -257,19 +255,21 @@ export function uploadAndUnpackPlugin(
 /**
  * 构建插件包下载 URL（用于浏览器直接下载）
  */
-export function getPluginPackageDownloadUrl(packageName: string): string {
-  const params = new URLSearchParams({ package: packageName })
+export function getPluginPackageDownloadUrl(packagePath: string): string {
+  const params = new URLSearchParams({ package: packagePath })
   return `${API_BASE_URL}/plugin-cli/download?${params.toString()}`
 }
 
 /**
  * 触发浏览器下载插件包
  */
-export function downloadPluginPackage(packageName: string): void {
-  const url = getPluginPackageDownloadUrl(packageName)
+export function downloadPluginPackage(packagePath: string): void {
+  const url = getPluginPackageDownloadUrl(packagePath)
+  // Extract just the filename for the browser download hint
+  const filename = packagePath.split('/').pop() || packagePath.split('\\').pop() || packagePath
   const link = document.createElement('a')
   link.href = url
-  link.download = packageName
+  link.download = filename
   link.style.display = 'none'
   document.body.appendChild(link)
   link.click()

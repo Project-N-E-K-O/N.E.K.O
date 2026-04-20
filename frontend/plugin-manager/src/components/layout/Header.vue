@@ -4,10 +4,10 @@
 
     <div class="header__actions">
       <LanguageSwitcher />
-      <button class="header-btn" :title="isDark ? $t('common.lightMode') : $t('common.darkMode')" @click="toggleDarkMode">
+      <button class="header-btn" :title="isDark ? $t('common.lightMode') : $t('common.darkMode')" :aria-label="isDark ? $t('common.lightMode') : $t('common.darkMode')" @click="toggleDarkMode">
         <el-icon :size="16"><Sunny v-if="isDark" /><Moon v-else /></el-icon>
       </button>
-      <button class="header-btn" :disabled="refreshing" @click="handleRefresh">
+      <button class="header-btn" :disabled="refreshing" :aria-label="$t('common.refresh')" @click="handleRefresh">
         <el-icon :size="16" :class="{ 'spin': refreshing }"><Refresh /></el-icon>
       </button>
     </div>
