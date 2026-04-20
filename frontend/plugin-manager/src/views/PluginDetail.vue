@@ -95,7 +95,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, Loading } from '@element-plus/icons-vue'
 import { usePluginStore } from '@/stores/plugin'
@@ -114,6 +114,7 @@ const pluginStore = usePluginStore()
 const pluginId = computed(() => route.params.id as string)
 const activeTab = ref('info')
 const loading = ref(true)
+const allowedTabs = new Set(['info', 'entries', 'metrics', 'config', 'logs'])
 
 const plugin = computed(() => {
   return pluginStore.pluginsWithStatus.find(p => p.id === pluginId.value)
@@ -159,8 +160,13 @@ function goToPlugin(pid: string) {
   router.push(`/plugins/${encodeURIComponent(pid)}`)
 }
 
+function resolveActiveTab(value: unknown): string {
+  return typeof value === 'string' && allowedTabs.has(value) ? value : 'info'
+}
+
 onMounted(async () => {
   try {
+    activeTab.value = resolveActiveTab(route.query.tab)
     await pluginStore.fetchPlugins()
     await pluginStore.fetchPluginStatus(pluginId.value)
     pluginStore.setSelectedPlugin(pluginId.value)
@@ -168,6 +174,13 @@ onMounted(async () => {
     loading.value = false
   }
 })
+
+watch(
+  () => route.query.tab,
+  (tab) => {
+    activeTab.value = resolveActiveTab(tab)
+  },
+)
 </script>
 
 <style scoped>
@@ -262,4 +275,3 @@ onMounted(async () => {
   white-space: nowrap;
 }
 </style>
-

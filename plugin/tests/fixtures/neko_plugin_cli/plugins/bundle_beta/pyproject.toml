@@ -1,0 +1,7 @@
+[project]
+name = "bundle-beta"
+version = "0.5.1"
+dependencies = [
+  "shared-lib>=2,<4",
+  "beta-only>=0.5",
+]

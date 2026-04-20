@@ -75,25 +75,23 @@ def validate_lanlan_name(name: str) -> str:
         raise HTTPException(status_code=400, detail="Invalid characters in lanlan_name")
     return result.normalized
 
-# 初始化组件（迁移必须在实例化之前，否则旧路径文件找不到）
+# 所有依赖 cloudsave 目录结构的初始化都推迟到 startup 钩子（见 startup_event_handler）：
+#   1. bootstrap_local_cloudsave_environment 在磁盘满/只读 FS 等场景会 raise OSError，
+#      裸调会让 module import 阶段就崩，FastAPI 根本起不来；
+#   2. bootstrap 内部的 import_legacy_runtime_root_if_needed 可能把 legacy 扁平布局的
+#      memory/{type}_{name}.ext 文件带进 target root，必须在 migrate_to_character_dirs
+#      之前跑（不然 legacy 数据留在扁平布局、components 只认 per-character 布局，数据不可达）；
+#   3. 因此 bootstrap → migrate → 组件实例化 三步必须保持顺序且都放在 startup 里。
+# Components 先声明为 None，startup hook 赋值。FastAPI 在 startup 钩子 await 完成后
+# 才开始接请求，所以 route handler 不会看到 None。
 _config_manager = get_config_manager()
-bootstrap_local_cloudsave_environment(_config_manager)
-try:
-    from memory import migrate_to_character_dirs
-    _config_manager.ensure_memory_directory()
-    _char_data = _config_manager.load_characters()
-    _catgirl_names = list(_char_data.get('猫娘', {}).keys())
-    migrate_to_character_dirs(_config_manager.memory_dir, _catgirl_names)
-    del _char_data, _catgirl_names
-except Exception as _e:
-    logger.warning(f"[Memory] 模块级目录迁移失败: {_e}")
 
-recent_history_manager = CompressedRecentHistoryManager()
-settings_manager = ImportantSettingsManager()  # 保留兼容，逐步迁移
-time_manager = TimeIndexedMemory(recent_history_manager)
-fact_store = FactStore(time_indexed_memory=time_manager)
-persona_manager = PersonaManager()
-reflection_engine = ReflectionEngine(fact_store, persona_manager)
+recent_history_manager: CompressedRecentHistoryManager | None = None
+settings_manager: ImportantSettingsManager | None = None
+time_manager: TimeIndexedMemory | None = None
+fact_store: FactStore | None = None
+persona_manager: PersonaManager | None = None
+reflection_engine: ReflectionEngine | None = None
 
 # 用于保护重新加载操作的锁
 _reload_lock = asyncio.Lock()
@@ -586,6 +584,39 @@ async def _periodic_idle_maintenance_loop():
 @app.on_event("startup")
 async def startup_event_handler():
     """应用启动时初始化"""
+    global recent_history_manager, settings_manager, time_manager, fact_store, persona_manager, reflection_engine
+
+    # ── 步骤 1：bootstrap cloudsave 目录 ──────────────────────────
+    # 磁盘满/只读 FS 等场景会 raise OSError；降级为 warning 后继续，
+    # set_root_mode(NORMAL) 只在 bootstrap 成功时写入。bootstrap 内部的
+    # import_legacy_runtime_root_if_needed 可能把 legacy 扁平布局文件带进 target root，
+    # 所以 migrate 必须在 bootstrap 之后运行。
+    bootstrap_ok = False
+    try:
+        bootstrap_local_cloudsave_environment(_config_manager)
+        bootstrap_ok = True
+    except Exception as e:
+        logger.warning(f"[Memory] cloudsave 环境 bootstrap 失败，后续 cloudsave 相关操作可能降级: {e}")
+
+    # ── 步骤 2：目录结构迁移 ───────────────────────────────────
+    # 必须在 bootstrap 之后（拿到可能的 legacy 扁平文件）、组件实例化之前（组件只读 per-character 路径）。
+    try:
+        from memory import migrate_to_character_dirs
+        _config_manager.ensure_memory_directory()
+        _char_data = await _config_manager.aload_characters()
+        _catgirl_names = list(_char_data.get('猫娘', {}).keys())
+        await asyncio.to_thread(migrate_to_character_dirs, _config_manager.memory_dir, _catgirl_names)
+    except Exception as _e:
+        logger.warning(f"[Memory] 目录迁移失败: {_e}")
+
+    # ── 步骤 3：组件实例化 ──────────────────────────────────
+    recent_history_manager = CompressedRecentHistoryManager()
+    settings_manager = ImportantSettingsManager()  # 保留兼容，逐步迁移
+    time_manager = TimeIndexedMemory(recent_history_manager)
+    fact_store = FactStore(time_indexed_memory=time_manager)
+    persona_manager = PersonaManager()
+    reflection_engine = ReflectionEngine(fact_store, persona_manager)
+
     try:
         from utils.token_tracker import TokenTracker, install_hooks
         install_hooks()
@@ -620,16 +651,19 @@ async def startup_event_handler():
     except Exception as e:
         logger.warning(f"[Memory] Persona 迁移检查失败: {e}")
 
-    try:
-        set_root_mode(
-            _config_manager,
-            ROOT_MODE_NORMAL,
-            current_root=str(_config_manager.app_docs_dir),
-            last_known_good_root=str(_config_manager.app_docs_dir),
-            last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        )
-    except Exception as e:
-        logger.warning(f"[Memory] 写入启动成功标记失败: {e}")
+    if bootstrap_ok:
+        try:
+            set_root_mode(
+                _config_manager,
+                ROOT_MODE_NORMAL,
+                current_root=str(_config_manager.app_docs_dir),
+                last_known_good_root=str(_config_manager.app_docs_dir),
+                last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            )
+        except Exception as e:
+            logger.warning(f"[Memory] 写入启动成功标记失败: {e}")
+    else:
+        logger.warning("[Memory] 跳过 ROOT_MODE_NORMAL 写入：cloudsave bootstrap 未成功")
 
     # 启动定期后台任务
     _spawn_background_task(_periodic_rebuttal_loop())
@@ -652,7 +686,8 @@ async def shutdown_event_handler():
     async with _reload_lock:
         managers_to_cleanup.extend(_deferred_time_managers)
         _deferred_time_managers.clear()
-        if all(existing is not time_manager for existing in managers_to_cleanup):
+        # time_manager 在 startup 钩子里才实例化；若启动过程中就触发 shutdown 可能为 None
+        if time_manager is not None and all(existing is not time_manager for existing in managers_to_cleanup):
             managers_to_cleanup.append(time_manager)
     for manager in managers_to_cleanup:
         try:
