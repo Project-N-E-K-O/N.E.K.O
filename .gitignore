@@ -156,6 +156,9 @@ plugin/plugins/web_radio/
 # QQ 自动回复：NapCat.Shell 整个目录不入库，仅保留 .gitkeep 占位
 plugin/plugins/qq_auto_reply/NapCat.Shell/*
 !plugin/plugins/qq_auto_reply/NapCat.Shell/.gitkeep
+# Ignore local temporary Steam/launcher environment dumps
+.tmp_env_*
+.test_neko_write
 
 # Jukebox 二进制资源（音乐、动画），只保留 songs.json 索引
 static/jukebox/*.mp3

@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title data-i18n="cloudsave.pageTitle">云存档管理 - Project N.E.K.O.</title>
+    <script src="/static/i18n-i18next.js"></script>
+    <script src="/static/common_dialogs.js"></script>
+    <link rel="stylesheet" href="/static/css/cloudsave_manager.css">
+    <link rel="stylesheet" href="/static/css/dark-mode.css">
+    <script src="/static/theme-manager.js"></script>
+</head>
+<body>
+    <div class="container">
+        <div class="container-header">
+            <h2 data-i18n="cloudsave.headerTitle" data-text="Cloud Save Manager">云存档管理</h2>
+            <div class="header-actions">
+                <button type="button" class="btn sm secondary" id="refresh-cloudsave-btn" data-i18n="cloudsave.refresh">刷新</button>
+                <button type="button" class="btn sm" id="back-to-chara-manager-btn" data-i18n="cloudsave.backToCharacterManager">返回</button>
+            </div>
+        </div>
+
+        <div class="container-content">
+            <input type="hidden" id="lanlan_name" value="{{ lanlan_name | e }}">
+
+            <p class="page-subtitle" id="cloudsave-subtitle" data-i18n="cloudsave.subtitle">可按角色逐个生成或恢复本地云快照，不会自动覆盖全局配置。</p>
+            <div class="cloudsave-status-card">
+                <div id="cloudsave-provider-status" data-i18n="cloudsave.loadingSummary">云存档摘要加载中...</div>
+                <div id="cloudsave-provider-scope"></div>
+                <div class="page-meta-row">
+                    <div id="cloudsave-current-character"></div>
+                </div>
+            </div>
+
+            <div class="cloudsave-name-note" role="note" aria-live="polite">
+                <div class="cloudsave-name-note-title" data-i18n="cloudsave.nameConflictNotice.title">重名提醒</div>
+                <p class="cloudsave-name-note-body" data-i18n="cloudsave.nameConflictNotice.bodyStorage">云存档按角色名作为单个角色槽位存储，不会因为“来自创意工坊”或“自创角色”而自动分开。</p>
+                <p class="cloudsave-name-note-body" data-i18n="cloudsave.nameConflictNotice.bodyImpact">如果两个不同来源的角色重名，生成快照或恢复都会按同一个云端角色处理，可能互相覆盖角色设置、记忆目录和云端记录。</p>
+                <p class="cloudsave-name-note-body" data-i18n="cloudsave.nameConflictNotice.bodyAction">准备同步前，请先确认角色名唯一；若不是同一个角色，请先改名再生成或恢复快照。</p>
+            </div>
+
+            <div id="cloudsave-empty-state" class="cloudsave-empty" style="display:none;" data-i18n="cloudsave.emptyState">当前没有可展示的角色摘要。</div>
+            <div id="cloudsave-list" class="cloudsave-list"></div>
+        </div>
+    </div>
+
+    <script src="/static/js/cloudsave_manager.js"></script>
+</body>
+</html>
