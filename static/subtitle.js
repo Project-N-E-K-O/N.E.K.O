@@ -12,41 +12,92 @@
 // 翻译开关由 React 聊天窗口的 composer 按钮控制，状态走 window.subtitleBridge。
 // 旧的字幕提示气泡（subtitle-prompt-message）已下线，相关 prompt/detect 代码全部移除。
 
-// 归一化语言代码：将 BCP-47 格式（如 'zh-CN', 'en-US'）归一化为简单代码（'zh', 'en', 'ja', 'ko', 'ru'）
+var SubtitleShared = window.nekoSubtitleShared || null;
+var subtitleUiController = null;
+var initialSubtitleSettings = SubtitleShared && typeof SubtitleShared.getSettings === 'function'
+    ? SubtitleShared.getSettings()
+    : null;
+
 function normalizeLanguageCode(lang) {
-    if (!lang) return 'zh'; // 默认中文
-    const langLower = lang.toLowerCase();
-    if (langLower.startsWith('zh')) {
-        return 'zh';
-    } else if (langLower.startsWith('ja')) {
-        return 'ja';
-    } else if (langLower.startsWith('en')) {
-        return 'en';
-    } else if (langLower.startsWith('ko')) {
-        return 'ko';
-    } else if (langLower.startsWith('ru')) {
-        return 'ru';
+    if (SubtitleShared && typeof SubtitleShared.normalizeTranslationLanguageCode === 'function') {
+        return SubtitleShared.normalizeTranslationLanguageCode(lang);
     }
-    return 'zh'; // 默认中文
+    if (!lang) return 'zh';
+    var value = String(lang).toLowerCase();
+    if (value.indexOf('ja') === 0) return 'ja';
+    if (value.indexOf('en') === 0) return 'en';
+    if (value.indexOf('ko') === 0) return 'ko';
+    if (value.indexOf('ru') === 0) return 'ru';
+    return 'zh';
 }
 
-// 字幕开关状态（优先从 appState 读取，否则从 localStorage 读取）
-let subtitleEnabled = (typeof window.appState !== 'undefined' && typeof window.appState.subtitleEnabled !== 'undefined')
-    ? window.appState.subtitleEnabled
-    : localStorage.getItem('subtitleEnabled') === 'true';
+let subtitleEnabled = initialSubtitleSettings
+    ? !!initialSubtitleSettings.subtitleEnabled
+    : ((typeof window.appState !== 'undefined' && typeof window.appState.subtitleEnabled !== 'undefined')
+        ? window.appState.subtitleEnabled
+        : localStorage.getItem('subtitleEnabled') === 'true');
+
+function applySharedSubtitleSettings(patch, options) {
+    if (!SubtitleShared || typeof SubtitleShared.updateSettings !== 'function') {
+        if (Object.prototype.hasOwnProperty.call(patch, 'subtitleEnabled')) {
+            subtitleEnabled = !!patch.subtitleEnabled;
+        }
+        if (Object.prototype.hasOwnProperty.call(patch, 'userLanguage')) {
+            userLanguage = normalizeLanguageCode(patch.userLanguage);
+        }
+        return {
+            subtitleEnabled: subtitleEnabled,
+            userLanguage: userLanguage || 'zh'
+        };
+    }
+    var next = SubtitleShared.updateSettings(patch, {
+        persist: !options || options.persist !== false,
+        source: options && options.source ? options.source : 'subtitle-core',
+        silent: options && options.silent === true,
+        refreshUiLocale: options && options.refreshUiLocale === true
+    });
+    subtitleEnabled = !!next.subtitleEnabled;
+    if (next.userLanguage) {
+        userLanguage = next.userLanguage;
+    }
+    return next;
+}
+
+function syncSubtitleRenderState(source) {
+    if (!SubtitleShared || typeof SubtitleShared.updateRenderState !== 'function') return;
+    var display = document.getElementById('subtitle-display');
+    var subtitleText = document.getElementById('subtitle-text');
+    var currentSettings = SubtitleShared.getSettings ? SubtitleShared.getSettings() : initialSubtitleSettings;
+    SubtitleShared.updateRenderState({
+        text: subtitleText ? (subtitleText.textContent || '') : '',
+        visible: !!display && !display.classList.contains('hidden'),
+        subtitleEnabled: subtitleEnabled,
+        userLanguage: userLanguage || (currentSettings && currentSettings.userLanguage) || 'zh',
+        uiLocale: currentSettings ? currentSettings.uiLocale : (SubtitleShared.getCurrentUiLocale ? SubtitleShared.getCurrentUiLocale() : 'zh-CN'),
+        subtitleOpacity: currentSettings ? currentSettings.subtitleOpacity : 95,
+        subtitleDragAnywhere: currentSettings ? currentSettings.subtitleDragAnywhere : false,
+        subtitleSize: currentSettings ? currentSettings.subtitleSize : 'medium'
+    }, { source: source || 'subtitle-core' });
+}
 
 /**
  * 设置用户语言并同步到 appState
  */
-function setUserLanguage(lang) {
-    userLanguage = lang;
-    localStorage.setItem('userLanguage', userLanguage);
-    if (typeof window.appState !== 'undefined') {
-        window.appState.userLanguage = userLanguage;
+function commitUserLanguage(lang, options) {
+    var next = applySharedSubtitleSettings({
+        userLanguage: normalizeLanguageCode(lang)
+    }, {
+        source: options && options.source ? options.source : 'subtitle-language',
+        persist: !options || options.persist !== false
+    });
+    userLanguage = next.userLanguage;
+    if (options && options.saveSettings === false) {
+        return userLanguage;
     }
     if (typeof window.appSettings !== 'undefined' && window.appSettings.saveSettings) {
         window.appSettings.saveSettings();
     }
+    return userLanguage;
 }
 // 用户语言（懒加载，避免使用 localStorage 旧值）
 let userLanguage = null;
@@ -66,7 +117,10 @@ async function getUserLanguage() {
             const response = await fetch('/api/config/user_language');
             const data = await response.json();
             if (data.success && data.language) {
-                setUserLanguage(normalizeLanguageCode(data.language));
+                commitUserLanguage(normalizeLanguageCode(data.language), {
+                    source: 'subtitle-api-language',
+                    saveSettings: false
+                });
                 return userLanguage;
             }
         } catch (error) {
@@ -74,11 +128,17 @@ async function getUserLanguage() {
         }
         const cachedLang = localStorage.getItem('userLanguage');
         if (cachedLang) {
-            setUserLanguage(normalizeLanguageCode(cachedLang));
+            commitUserLanguage(normalizeLanguageCode(cachedLang), {
+                source: 'subtitle-cached-language',
+                saveSettings: false
+            });
             return userLanguage;
         }
         const browserLang = navigator.language || navigator.userLanguage;
-        setUserLanguage(normalizeLanguageCode(browserLang));
+        commitUserLanguage(normalizeLanguageCode(browserLang), {
+            source: 'subtitle-browser-language',
+            saveSettings: false
+        });
         return userLanguage;
     })();
     return await userLanguageInitPromise;
@@ -187,6 +247,7 @@ function ensureSubtitleVisibleIfEnabled() {
         display.classList.add('show');
         display.style.opacity = '1';
     }
+    syncSubtitleRenderState('subtitle-visible');
 }
 
 /**
@@ -200,6 +261,7 @@ function hideSubtitle() {
     display.classList.remove('show');
     display.classList.add('hidden');
     display.style.opacity = '0';
+    syncSubtitleRenderState('subtitle-hidden');
 }
 
 /**
@@ -211,30 +273,37 @@ function writeSubtitleText(text) {
     const subtitleText = document.getElementById('subtitle-text');
     if (!subtitleText) return;
     subtitleText.textContent = text || '';
+    syncSubtitleRenderState('subtitle-text-write');
 
     // 自适应字号：防抖测量，避免流式高频触发
     if (_subtitleFontResizeTimer) clearTimeout(_subtitleFontResizeTimer);
     if (!text || !text.trim()) {
         subtitleText.style.fontSize = '';
+        syncSubtitleRenderState('subtitle-text-clear');
         return;
     }
     _subtitleFontResizeTimer = setTimeout(function() {
         var display = document.getElementById('subtitle-display');
         if (!display) return;
-        var maxH = display.offsetHeight || 200;
-        // 用隐藏元素测量实际高度
-        var m = document.createElement('span');
-        m.style.cssText = 'visibility:hidden;position:absolute;white-space:pre-wrap;overflow-wrap:break-word;' +
-            'font-size:17px;font-weight:500;line-height:1.5;max-width:' + (display.offsetWidth - 48) + 'px;';
-        m.textContent = text;
-        display.appendChild(m);
-        var fontSize = 17;
-        while (m.offsetHeight > maxH && fontSize > 12) {
-            fontSize--;
-            m.style.fontSize = fontSize + 'px';
-        }
-        display.removeChild(m);
-        subtitleText.style.fontSize = fontSize < 17 ? fontSize + 'px' : '';
+        var preset = SubtitleShared && typeof SubtitleShared.getSettings === 'function'
+            ? SubtitleShared.getSettings()
+            : { subtitleSize: 'medium' };
+        var presetSize = SubtitleShared && typeof SubtitleShared.getSizePreset === 'function'
+            ? SubtitleShared.getSizePreset(preset.subtitleSize)
+            : { width: display.offsetWidth || 600, minHeight: parseInt(display.style.minHeight, 10) || 80 };
+        var layout = SubtitleShared && typeof SubtitleShared.measureSubtitleLayout === 'function'
+            ? SubtitleShared.measureSubtitleLayout({
+                mode: 'web',
+                text: text,
+                presetKey: preset.subtitleSize,
+                maxWidth: presetSize.width,
+                minHeight: presetSize.minHeight,
+                availableWidth: Math.max(0, (display.clientWidth || presetSize.width) - 48),
+                availableHeight: Math.max(display.offsetHeight || presetSize.minHeight, presetSize.minHeight)
+            })
+            : { fontSize: 17 };
+        subtitleText.style.fontSize = layout.fontSize < 17 ? layout.fontSize + 'px' : '';
+        syncSubtitleRenderState('subtitle-text-resize');
     }, 200);
 }
 
@@ -600,11 +669,83 @@ async function translateAndShowSubtitle(text) {
     }
 }
 
+function initSubtitleHostUi() {
+    if (subtitleUiController || !SubtitleShared || typeof SubtitleShared.initSubtitleUI !== 'function') {
+        return subtitleUiController;
+    }
+    subtitleUiController = SubtitleShared.initSubtitleUI({
+        host: 'web',
+        onLanguageChange: function(lang) {
+            if (window.subtitleBridge && typeof window.subtitleBridge.setUserLanguage === 'function') {
+                window.subtitleBridge.setUserLanguage(lang);
+            }
+        },
+        onSettingsApplied: function(state, refs, detail) {
+            if (refs && refs.display && SubtitleShared && typeof SubtitleShared.applySubtitlePreset === 'function') {
+                SubtitleShared.applySubtitlePreset(refs.display, state.subtitleSize, { host: 'web' });
+            }
+            if (detail && detail.source === 'subtitle-ui-size' && refs && refs.text && refs.text.textContent) {
+                writeSubtitleText(refs.text.textContent);
+            }
+            syncSubtitleRenderState(detail && detail.source ? detail.source : 'subtitle-ui-apply');
+        }
+    });
+    return subtitleUiController;
+}
+
+function syncSettingsPanel() {
+    var toggle = document.getElementById('subtitle-translate-toggle');
+    var select = document.getElementById('subtitle-lang-select');
+    if (toggle) toggle.checked = subtitleEnabled;
+    if (select && userLanguage) select.value = userLanguage;
+    if (subtitleUiController && typeof subtitleUiController.applyCurrentState === 'function') {
+        subtitleUiController.applyCurrentState();
+    }
+}
+
+function initSubtitleSettings() {
+    return initSubtitleHostUi();
+}
+
+function initSubtitleDrag() {
+    return initSubtitleHostUi();
+}
+
+function retranslateCurrentSubtitle() {
+    incrementalTranslatedCount = 0;
+    incrementalTranslatedSentences = [];
+    if (incrementalTranslateTimer) {
+        clearTimeout(incrementalTranslateTimer);
+        incrementalTranslateTimer = null;
+    }
+    if (incrementalAbortController) {
+        incrementalAbortController.abort();
+        incrementalAbortController = null;
+    }
+    if (currentTranslateAbortController) {
+        currentTranslateAbortController.abort();
+        currentTranslateAbortController = null;
+    }
+
+    if (!(subtitleEnabled && currentTurnOriginalText && currentTurnOriginalText.trim())) {
+        syncSubtitleRenderState('subtitle-language-idle');
+        return;
+    }
+
+    if (isCurrentTurnFinalized) {
+        isCurrentTurnFinalized = false;
+        translateAndShowSubtitle(currentTurnOriginalText);
+    } else {
+        updateSubtitleStreamingText(currentTurnOriginalText);
+    }
+}
+
 // 初始化字幕模块（DOM 就绪后绑定拖拽 & turn 事件）
 document.addEventListener('DOMContentLoaded', async function() {
-    initSubtitleDrag();
-    initSubtitleSettings();
+    initSubtitleHostUi();
     await getUserLanguage();
+    syncSettingsPanel();
+    syncSubtitleRenderState('subtitle-dom-ready');
     window.addEventListener('neko-assistant-turn-start', onAssistantTurnStart);
 
     // 通用引导管理器：index.html / chat.html 都加载 subtitle.js，
@@ -622,264 +763,6 @@ document.addEventListener('DOMContentLoaded', async function() {
     }
 });
 
-// 同步设置面板 UI 状态
-function syncSettingsPanel() {
-    var toggle = document.getElementById('subtitle-translate-toggle');
-    var select = document.getElementById('subtitle-lang-select');
-    if (toggle) toggle.checked = subtitleEnabled;
-    if (select && userLanguage) select.value = userLanguage;
-}
-
-// 字幕设置面板
-function initSubtitleSettings() {
-    var settingsBtn = document.getElementById('subtitle-settings-btn');
-    var settingsPanel = document.getElementById('subtitle-settings-panel');
-    var langSelect = document.getElementById('subtitle-lang-select');
-    var opacitySlider = document.getElementById('subtitle-opacity-slider');
-    var opacityValue = document.getElementById('subtitle-opacity-value');
-
-    if (!settingsBtn || !settingsPanel || !langSelect) return;
-
-    // 同步初始语言
-    if (userLanguage) langSelect.value = userLanguage;
-
-    var subtitleDisplay = document.getElementById('subtitle-display');
-    var dragHandle = document.getElementById('subtitle-drag-handle');
-
-    // 不透明度：读取缓存并应用（只改背景透明度，文字保持不透明）
-    if (opacitySlider) {
-        function applyBackgroundOpacity(val) {
-            if (!subtitleDisplay) return;
-            var a = val / 100;
-            subtitleDisplay.style.background = 'linear-gradient(135deg, rgba(68,183,254,' + a + ') 0%, rgba(68,183,254,' + Math.max(0, a - 0.05) + ') 50%, rgba(100,200,255,' + a + ') 100%)';
-        }
-        var savedOpacity = localStorage.getItem('subtitleOpacity');
-        if (savedOpacity) {
-            opacitySlider.value = savedOpacity;
-            if (opacityValue) opacityValue.textContent = savedOpacity + '%';
-            applyBackgroundOpacity(savedOpacity);
-        }
-        opacitySlider.addEventListener('input', function() {
-            var val = opacitySlider.value;
-            if (opacityValue) opacityValue.textContent = val + '%';
-            applyBackgroundOpacity(val);
-            localStorage.setItem('subtitleOpacity', val);
-        });
-    }
-
-    // 拖动模式切换
-    var dragModeToggle = document.getElementById('subtitle-drag-mode-toggle');
-    if (dragModeToggle && subtitleDisplay) {
-        var savedDragMode = localStorage.getItem('subtitleDragAnywhere') === 'true';
-        dragModeToggle.checked = savedDragMode;
-        if (savedDragMode) {
-            subtitleDisplay.classList.add('drag-anywhere');
-            if (dragHandle) dragHandle.style.display = 'none';
-        }
-        dragModeToggle.addEventListener('change', function() {
-            var on = dragModeToggle.checked;
-            subtitleDisplay.classList.toggle('drag-anywhere', on);
-            if (dragHandle) dragHandle.style.display = on ? 'none' : '';
-            localStorage.setItem('subtitleDragAnywhere', on);
-        });
-    }
-
-    // 大小预设：小/中/大（调整 max-width / min-height）
-    var WEB_SIZES = { small: { maxW: '400px', minH: '60px' }, medium: { maxW: '600px', minH: '80px' }, large: { maxW: '800px', minH: '100px' } };
-    var savedWebSize = localStorage.getItem('subtitleSize') || 'medium';
-    var sizeBtns = document.querySelectorAll('.subtitle-size-btn');
-    if (sizeBtns.length > 0 && subtitleDisplay) {
-        function applyWebSize(size) {
-            var s = WEB_SIZES[size] || WEB_SIZES.medium;
-            subtitleDisplay.style.maxWidth = s.maxW;
-            subtitleDisplay.style.minHeight = s.minH;
-        }
-        sizeBtns.forEach(function(btn) {
-            if (btn.dataset.size === savedWebSize) {
-                btn.classList.add('active');
-            } else {
-                btn.classList.remove('active');
-            }
-            btn.addEventListener('click', function() {
-                sizeBtns.forEach(function(b) { b.classList.remove('active'); });
-                btn.classList.add('active');
-                var size = btn.dataset.size;
-                localStorage.setItem('subtitleSize', size);
-                applyWebSize(size);
-            });
-        });
-        applyWebSize(savedWebSize);
-    }
-
-    settingsBtn.addEventListener('click', function(e) {
-        e.stopPropagation();
-        settingsPanel.classList.toggle('hidden');
-    });
-
-    document.addEventListener('mousedown', function(e) {
-        if (!settingsPanel.classList.contains('hidden') &&
-            !settingsPanel.contains(e.target) &&
-            !settingsBtn.contains(e.target)) {
-            settingsPanel.classList.add('hidden');
-        }
-    });
-
-    langSelect.addEventListener('change', function() {
-        window.subtitleBridge.setUserLanguage(langSelect.value);
-    });
-}
-
-// 字幕拖拽功能
-function initSubtitleDrag() {
-    const subtitleDisplay = document.getElementById('subtitle-display');
-    const dragHandle = document.getElementById('subtitle-drag-handle');
-
-    if (!subtitleDisplay || !dragHandle) {
-        console.warn('[Subtitle] 无法找到字幕元素或拖拽句柄');
-        return;
-    }
-
-    let isDragging = false;
-    let pendingDrag = false;
-    let isManualPosition = false;
-    let startX, startY;
-    let initialX, initialY;
-
-    function handleMouseDown(e) {
-        if (e.button !== 0) return;
-
-        pendingDrag = true;
-        document.body.style.userSelect = 'none';
-
-        const rect = subtitleDisplay.getBoundingClientRect();
-        startX = e.clientX;
-        startY = e.clientY;
-        initialX = rect.left;
-        initialY = rect.top;
-
-        document.addEventListener('mousemove', handleMouseMove);
-        document.addEventListener('mouseup', handleMouseUp);
-    }
-
-    function handleTouchStart(e) {
-        const touch = e.touches[0];
-        handleMouseDown({
-            button: 0,
-            clientX: touch.clientX,
-            clientY: touch.clientY
-        });
-    }
-
-    function commitDragPosition() {
-        isDragging = true;
-        pendingDrag = false;
-        isManualPosition = true;
-        // animation forwards 填充层优先级高于 inline style，
-        // 必须先 kill animation 再设置 transform，否则 transform 被动画覆盖导致跳变
-        subtitleDisplay.style.animation = 'none';
-        subtitleDisplay.style.transition = 'none';
-        subtitleDisplay.classList.add('dragging');
-        subtitleDisplay.style.transform = 'none';
-        subtitleDisplay.style.left = initialX + 'px';
-        subtitleDisplay.style.top = initialY + 'px';
-        subtitleDisplay.style.bottom = 'auto';
-    }
-
-    function handleMouseMove(e) {
-        if (!pendingDrag && !isDragging) return;
-
-        e.preventDefault();
-
-        const dx = e.clientX - startX;
-        const dy = e.clientY - startY;
-
-        // 超过 4px 阈值后才正式进入拖动模式，避免单纯点击破坏居中布局
-        if (!isDragging) {
-            if (Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
-            commitDragPosition();
-        }
-
-        let newX = initialX + dx;
-        let newY = initialY + dy;
-
-        const maxX = window.innerWidth - subtitleDisplay.offsetWidth;
-        const maxY = window.innerHeight - subtitleDisplay.offsetHeight;
-
-        newX = Math.max(0, Math.min(newX, maxX));
-        newY = Math.max(0, Math.min(newY, maxY));
-
-        subtitleDisplay.style.left = newX + 'px';
-        subtitleDisplay.style.top = newY + 'px';
-    }
-
-    function handleTouchMove(e) {
-        const touch = e.touches[0];
-        handleMouseMove({
-            preventDefault: () => e.preventDefault(),
-            clientX: touch.clientX,
-            clientY: touch.clientY
-        });
-    }
-
-    function handleMouseUp() {
-        if (!pendingDrag && !isDragging) return;
-
-        pendingDrag = false;
-        isDragging = false;
-        document.body.style.userSelect = '';
-        subtitleDisplay.classList.remove('dragging');
-
-        document.removeEventListener('mousemove', handleMouseMove);
-        document.removeEventListener('mouseup', handleMouseUp);
-    }
-
-    function handleTouchUp() {
-        handleMouseUp();
-    }
-
-    dragHandle.addEventListener('mousedown', handleMouseDown);
-    dragHandle.addEventListener('touchstart', handleTouchStart, { passive: false });
-
-    // 整体拖动模式：点击字幕框任意位置即可拖动
-    subtitleDisplay.addEventListener('mousedown', function(e) {
-        if (!subtitleDisplay.classList.contains('drag-anywhere')) return;
-        if (document.getElementById('subtitle-settings-panel') &&
-            document.getElementById('subtitle-settings-panel').contains(e.target)) return;
-        handleMouseDown(e);
-    });
-    subtitleDisplay.addEventListener('touchstart', function(e) {
-        if (!subtitleDisplay.classList.contains('drag-anywhere')) return;
-        if (document.getElementById('subtitle-settings-panel') &&
-            document.getElementById('subtitle-settings-panel').contains(e.target)) return;
-        if (document.getElementById('subtitle-settings-btn') &&
-            document.getElementById('subtitle-settings-btn').contains(e.target)) return;
-        handleTouchStart(e);
-    }, { passive: false });
-
-    document.addEventListener('touchmove', handleTouchMove, { passive: false });
-    document.addEventListener('touchend', handleTouchUp);
-    document.addEventListener('touchcancel', handleTouchUp);
-
-    window.addEventListener('resize', () => {
-        if (!isManualPosition) return;
-
-        const rect = subtitleDisplay.getBoundingClientRect();
-        const maxX = Math.max(0, window.innerWidth - subtitleDisplay.offsetWidth);
-        const maxY = Math.max(0, window.innerHeight - subtitleDisplay.offsetHeight);
-
-        if (rect.left < 0) {
-            subtitleDisplay.style.left = '0px';
-        } else if (rect.right > window.innerWidth) {
-            subtitleDisplay.style.left = maxX + 'px';
-        }
-        if (rect.top < 0) {
-            subtitleDisplay.style.top = '0px';
-        } else if (rect.bottom > window.innerHeight) {
-            subtitleDisplay.style.top = maxY + 'px';
-        }
-    });
-}
-
 // ======================== 外部桥接接口 ========================
 // 供 app-settings.js / React 聊天窗口在合并服务器设置或用户点击开关时调用
 window.subtitleBridge = {
@@ -894,10 +777,11 @@ window.subtitleBridge = {
     /** 仅同步状态，不做副作用（用于服务器设置回灌） */
     setSubtitleEnabled: function(enabled) {
         subtitleEnabled = !!enabled;
-        if (typeof window.appState !== 'undefined') {
-            window.appState.subtitleEnabled = subtitleEnabled;
-        }
-        localStorage.setItem('subtitleEnabled', subtitleEnabled.toString());
+        applySharedSubtitleSettings({
+            subtitleEnabled: subtitleEnabled
+        }, {
+            source: 'subtitle-bridge-set-enabled'
+        });
 
         if (subtitleEnabled) {
             // 优先显示已有的增量翻译，其次原文
@@ -915,14 +799,17 @@ window.subtitleBridge = {
         } else {
             hideSubtitle();
         }
+        syncSettingsPanel();
+        syncSubtitleRenderState('subtitle-bridge-set-enabled');
     },
     /** 完整切换：翻转开关 + 执行运行时副作用（隐藏/补显字幕，并在开启时翻译当前文本） */
     toggle: function() {
         subtitleEnabled = !subtitleEnabled;
-        if (typeof window.appState !== 'undefined') {
-            window.appState.subtitleEnabled = subtitleEnabled;
-        }
-        localStorage.setItem('subtitleEnabled', subtitleEnabled.toString());
+        applySharedSubtitleSettings({
+            subtitleEnabled: subtitleEnabled
+        }, {
+            source: 'subtitle-bridge-toggle'
+        });
         if (typeof window.appSettings !== 'undefined' && window.appSettings.saveSettings) {
             window.appSettings.saveSettings();
         }
@@ -958,6 +845,7 @@ window.subtitleBridge = {
 
         // 同步设置面板状态
         syncSettingsPanel();
+        syncSubtitleRenderState('subtitle-bridge-toggle');
 
         return subtitleEnabled;
     },
@@ -965,35 +853,12 @@ window.subtitleBridge = {
         if (!lang || typeof lang !== 'string') {
             lang = 'zh';
         }
-        userLanguage = normalizeLanguageCode(lang.trim().toLowerCase());
-        if (typeof window.appState !== 'undefined') {
-            window.appState.userLanguage = userLanguage;
-        }
-        localStorage.setItem('userLanguage', userLanguage);
-
-        // 切换语言时重置增量状态，对当前文本重新翻译
-        incrementalTranslatedCount = 0;
-        incrementalTranslatedSentences = [];
-        if (incrementalTranslateTimer) {
-            clearTimeout(incrementalTranslateTimer);
-            incrementalTranslateTimer = null;
-        }
-        if (incrementalAbortController) {
-            incrementalAbortController.abort();
-            incrementalAbortController = null;
-        }
-        // 不重置 incrementalRequestId；保持单调递增作为失效令牌。
-
-        if (subtitleEnabled && currentTurnOriginalText && currentTurnOriginalText.trim()) {
-            if (isCurrentTurnFinalized) {
-                // turn 已结束，整段重新翻译
-                isCurrentTurnFinalized = false;
-                translateAndShowSubtitle(currentTurnOriginalText);
-            } else {
-                // 流式中，对当前已累积文本立即重新启动增量翻译
-                updateSubtitleStreamingText(currentTurnOriginalText);
-            }
-        }
+        userLanguage = commitUserLanguage(lang.trim().toLowerCase(), {
+            source: 'subtitle-bridge-language'
+        });
+        syncSettingsPanel();
+        retranslateCurrentSubtitle();
+        syncSubtitleRenderState('subtitle-bridge-language');
     },
     /** 供 app-chat.js / app-chat-adapter.js 在 isNewMessage 分支首个 chunk 前调用 */
     beginTurn: beginSubtitleTurn,

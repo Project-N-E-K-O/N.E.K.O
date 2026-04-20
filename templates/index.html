@@ -17,6 +17,7 @@
     <script src="/static/i18n-i18next.js"></script>
     <script src="/static/common_dialogs.js"></script>
     <link rel="stylesheet" href="/static/css/index.css">
+    <link rel="stylesheet" href="/static/css/subtitle.css">
     <style>/* React chat adapter: hide old chat */
     #chat-container { display: none !important; visibility: hidden !important; }</style>
     <link rel="stylesheet" href="/static/react/neko-chat/neko-chat-window.css">
@@ -36,7 +37,7 @@
     <script src="/static/libs/APlayer.min.js"></script>
 </head>
 
-<body>
+<body class="subtitle-web-host">
 
     <!-- 旧的按钮面板已迁移到浮动按钮系统（live2d.js），保留隐藏的旧按钮元素供功能触发使用 -->
     <div id="sidebar" style="display: none;">
@@ -326,6 +327,7 @@
     <script src="/static/ogg-opus-decoder-wrapper.js"></script>
 
     <!-- app 解构模块 -->
+    <script src="/static/subtitle-shared.js"></script>
     <script src="/static/app-state.js"></script>
     <script src="/static/app-ui.js"></script>
     <script src="/static/app-chat-text-utils.js"></script>
