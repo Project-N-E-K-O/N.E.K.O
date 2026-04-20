@@ -148,10 +148,17 @@ class EventLog:
             os.fsync(f.fileno())
 
     def _append_unlocked(self, name: str, event_type: str, payload: dict) -> str:
-        """Write one event record under an already-held lock. Returns event_id."""
+        """Write one event record under an already-held lock. Returns event_id.
+
+        Fails fast on unknown event_type. 若放行未登记类型，一旦 record_and_save
+        在 event append 后、view save 前崩溃，重启后 Reconciler 没有 handler
+        只能跳过（且若反推到 pause-on-unknown，整条 tail 都 stuck），
+        修复路径昂贵。写入点挡住是最便宜的防线。
+        """
         if event_type not in ALL_EVENT_TYPES:
-            logger.warning(
-                f"[EventLog] {name}: 写入未登记事件类型 {event_type!r}（可能是 typo）"
+            raise ValueError(
+                f"[EventLog] {name}: unknown event type {event_type!r}; "
+                f"refusing to write unreplayable event"
             )
         event_id = str(uuid.uuid4())
         record = {
@@ -340,8 +347,10 @@ class EventLog:
             now_iso = datetime.now().isoformat()
             for event_type, payload in seeds:
                 if event_type not in ALL_EVENT_TYPES:
-                    logger.warning(
-                        f"[EventLog] {name}: compact seed 使用未登记类型 {event_type!r}"
+                    raise ValueError(
+                        f"[EventLog] {name}: compact seed uses unknown event type "
+                        f"{event_type!r}; refusing to rewrite log body with "
+                        f"unreplayable seeds"
                     )
                 rec = {
                     'event_id': str(uuid.uuid4()),
@@ -502,8 +511,14 @@ class Reconciler:
         transitions (reflection.state_changed followed by persona.fact_added)
         have a causal dependency; applying downstream events past a failed
         upstream one would produce an inconsistent view. Per-character
-        reconciliation resumes on next boot. Unknown event types are NOT
-        failures; they log-and-skip and keep advancing.
+        reconciliation resumes on next boot. Unknown event types ALSO pause
+        the loop: advancing past an unknown event would permanently lose it
+        (a later version that adds the handler couldn't recover it), and
+        applying subsequent known events could silently fork the view from
+        the unreplayed mutation. Writes are gated by _append_unlocked's
+        ALL_EVENT_TYPES check, so an unknown type here means a rollback
+        to an older binary — operator must upgrade back or manually
+        surgery the log.
         """
         last_applied = await self._event_log.aread_sentinel(name)
         tail = await self._event_log.aread_since(name, last_applied)
@@ -512,13 +527,12 @@ class Reconciler:
             event_type = event.get('type')
             event_id = event.get('event_id')
             if event_type not in self._handlers:
-                logger.info(
-                    f"[Reconciler] {name}: 跳过未注册事件类型 {event_type!r} (id={event_id})"
+                logger.warning(
+                    f"[Reconciler] {name}: 遇到未注册事件类型 {event_type!r} "
+                    f"(id={event_id})，暂停 replay，sentinel 保留在上一条已应用事件；"
+                    f"请检查是否需要升级到支持该类型的版本"
                 )
-                # Still advance sentinel past unknown types so we don't
-                # re-process them next boot.
-                await self._event_log.aadvance_sentinel(name, event_id)
-                continue
+                return applied_count
             handler = self._handlers[event_type]
             try:
                 # Handler自己 load → apply → save，见 ApplyHandler 契约。

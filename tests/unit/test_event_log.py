@@ -479,15 +479,48 @@ def test_concurrent_append_during_compact_preserves_events(tmp_path):
 # ── Reconciler scaffolding ──────────────────────────────────────────
 
 
+def test_append_rejects_unknown_event_type(tmp_path):
+    """Fail-fast at the write site: typos or rolled-back-new types must not
+    reach disk, otherwise a crash between event append and view save would
+    leave an unreplayable record (Reconciler has no handler) and the view
+    mutation would be lost forever."""
+    log = _fresh_log(str(tmp_path))
+    with pytest.raises(ValueError, match="unknown event type"):
+        log.append("小天", "future.unknown.type", {"v": 1})
+    # No file should have been created (append raised before write).
+    events_path = os.path.join(str(tmp_path), "小天", "events.ndjson")
+    assert not os.path.exists(events_path)
+
+
 @pytest.mark.asyncio
-async def test_reconciler_unknown_event_type_logs_and_skips(tmp_path):
-    """Forward-compat: events with types the reconciler doesn't know about
-    are logged and skipped (sentinel still advances)."""
+async def test_reconciler_pauses_on_unknown_event_type(tmp_path):
+    """Rollback safety: if a newer binary wrote an event type the current
+    binary doesn't know, Reconciler must pause with the sentinel on the
+    previous event. Advancing past would permanently lose the event and
+    could silently fork the view when later known events apply mutations
+    that depend on the unreplayed one."""
     from memory.event_log import EVT_FACT_ADDED
 
     log, rec = _fresh_reconciler(str(tmp_path))
-    log.append("小天", "future.unknown.type", {"v": 1})
-    eid2 = log.append("小天", EVT_FACT_ADDED, {"fact_id": "f1"})
+
+    # First known event — gets applied.
+    eid1 = log.append("小天", EVT_FACT_ADDED, {"fact_id": "f1"})
+
+    # Then manually inject an unknown event (append() fail-fasts on unknown
+    # types, so we simulate a log written by a newer binary by appending the
+    # raw ndjson line ourselves).
+    events_path = os.path.join(str(tmp_path), "小天", "events.ndjson")
+    with open(events_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "event_id": str(uuid.uuid4()),
+            "type": "future.unknown.type",
+            "ts": datetime.now().isoformat(),
+            "payload": {"v": 1},
+        }) + "\n")
+
+    # A known event AFTER the unknown one — must NOT be applied (would risk
+    # view fork if the unknown event carried a prerequisite mutation).
+    log.append("小天", EVT_FACT_ADDED, {"fact_id": "f2"})
 
     applied_calls: list[str] = []
 
@@ -498,10 +531,12 @@ async def test_reconciler_unknown_event_type_logs_and_skips(tmp_path):
     rec.register(EVT_FACT_ADDED, handler)
 
     applied = await rec.areconcile("小天")
+    # Only f1 applied — unknown event paused the loop, f2 never reached.
     assert applied == 1
     assert applied_calls == ["f1"]
-    # Sentinel advanced past both events (unknown was skipped, known was applied)
-    assert log.read_sentinel("小天") == eid2
+    # Sentinel stays on eid1 (the last known-applied event) so next boot
+    # with an upgraded binary can resume from the unknown one.
+    assert log.read_sentinel("小天") == eid1
 
 
 @pytest.mark.asyncio
