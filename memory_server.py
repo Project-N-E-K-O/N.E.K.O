@@ -311,13 +311,14 @@ async def _replay_pending_outbox() -> list[asyncio.Task]:
             logger.warning(f"[Outbox] {name}: 读取 pending ops 失败: {e}")
             continue
         if not pending:
-            # 机会性 compact：文件可能累积了很多 done 行
+            # 机会性 compact：文件可能累积了很多 done 行。失败不影响主流程
+            # （compact 仅是空间回收），debug 级别记录便于观测。
             try:
                 dropped = await outbox.amaybe_compact(name)
                 if dropped:
                     logger.info(f"[Outbox] {name}: compact 丢弃 {dropped} 行")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[Outbox] {name}: 机会性 compact 失败（可忽略）: {e}")
             continue
         logger.info(f"[Outbox] {name}: 补跑 {len(pending)} 条未完成 op")
         for op in pending:
