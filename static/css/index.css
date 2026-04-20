@@ -1504,7 +1504,6 @@ body.react-chat-window-dragging {
 #subtitle-text {
     display: block;
     margin-right: 24px;
-    padding: 4px 0 28px 0;
     white-space: pre-wrap;
     overflow-wrap: break-word;
 }
@@ -1594,6 +1593,12 @@ body.react-chat-window-dragging {
     background: #333;
     color: #fff;
 }
+#subtitle-lang-select:focus-visible {
+    outline: 2px solid rgba(255, 255, 255, 0.95);
+    outline-offset: 2px;
+    border-color: rgba(255, 255, 255, 0.75);
+    box-shadow: 0 0 0 3px rgba(68, 183, 254, 0.4);
+}
 
 /* 不透明度滑块 */
 #subtitle-opacity-slider {
@@ -1606,6 +1611,11 @@ body.react-chat-window-dragging {
     outline: none;
     cursor: pointer;
 }
+#subtitle-opacity-slider:focus-visible {
+    outline: 2px solid rgba(255, 255, 255, 0.95);
+    outline-offset: 3px;
+    box-shadow: 0 0 0 3px rgba(68, 183, 254, 0.35);
+}
 #subtitle-opacity-slider::-webkit-slider-thumb {
     -webkit-appearance: none;
     width: 14px;
@@ -1614,6 +1624,9 @@ body.react-chat-window-dragging {
     border-radius: 50%;
     cursor: pointer;
     box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+#subtitle-opacity-slider:focus-visible::-webkit-slider-thumb {
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.95), 0 0 0 5px rgba(68, 183, 254, 0.45);
 }
 #subtitle-opacity-value {
     font-size: 11px;
@@ -1658,6 +1671,14 @@ body.react-chat-window-dragging {
 }
 .subtitle-settings-switch input:checked + .subtitle-settings-track::before {
     transform: translateX(16px);
+}
+.subtitle-settings-switch input:focus-visible + .subtitle-settings-track {
+    outline: 2px solid rgba(255, 255, 255, 0.95);
+    outline-offset: 2px;
+    box-shadow: 0 0 0 3px rgba(68, 183, 254, 0.35);
+}
+.subtitle-settings-switch input:focus-visible + .subtitle-settings-track::before {
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.95), 0 0 0 5px rgba(68, 183, 254, 0.35);
 }
 
 /* 整体拖动模式：光标变为可拖拽 */
