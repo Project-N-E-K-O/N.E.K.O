@@ -1,7 +1,7 @@
 /**
  * 插件相关 API
  */
-import { get, post } from './index'
+import { del, get, post } from './index'
 import type {
   PluginMeta,
   PluginStatusData,
@@ -14,6 +14,22 @@ import type {
  */
 export function getPlugins(): Promise<{ plugins: PluginMeta[]; message: string }> {
   return get('/plugins')
+}
+
+/**
+ * 刷新插件注册表
+ */
+export function refreshPluginsRegistry(): Promise<{
+  success: boolean
+  added: string[]
+  updated: string[]
+  removed: string[]
+  removed_running: string[]
+  unchanged: string[]
+  failed: Array<{ plugin_id: string; config_path: string; error: string }>
+  scanned_count: number
+}> {
+  return post('/plugins/refresh')
 }
 
 /**
@@ -70,6 +86,21 @@ export function reloadAllPlugins(): Promise<{
 }
 
 /**
+ * 删除插件目录并刷新注册表
+ */
+export function deletePlugin(pluginId: string): Promise<{
+  success: boolean
+  plugin_id: string
+  plugin_dir: string
+  deleted_from_disk: boolean
+  host_plugin_id?: string
+  message: string
+}> {
+  const safeId = encodeURIComponent(pluginId)
+  return del(`/plugin/${safeId}`)
+}
+
+/**
  * 获取插件消息
  */
 export function getPluginMessages(params?: {
@@ -106,4 +137,3 @@ export function getServerInfo(): Promise<{
 }> {
   return get('/server/info')
 }
-

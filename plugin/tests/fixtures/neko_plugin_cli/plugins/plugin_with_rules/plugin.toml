@@ -1,0 +1,22 @@
+[plugin]
+id = "plugin_with_rules"
+name = "Plugin With Rules"
+description = "Fixture plugin with realistic pack rules and runtime config."
+version = "1.4.2"
+type = "plugin"
+entry = "main:Plugin"
+
+[plugin.author]
+name = "Neko Test"
+email = "test@example.com"
+
+[plugin.sdk]
+supported = ">=2.0,<3.0"
+recommended = ">=2.2,<2.6"
+
+[plugin_runtime]
+auto_start = true
+
+[plugin_with_rules]
+token = "fixture-token"
+retry = 5
