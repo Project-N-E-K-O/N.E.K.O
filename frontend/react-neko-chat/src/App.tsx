@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, type CSSProperties } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback, type CSSProperties } from 'react';
 import MessageList from './MessageList';
 import { i18n } from './i18n';
 import {
@@ -9,6 +9,7 @@ import {
   type ComposerAttachment,
   type AvatarInteractionPayload,
 } from './message-schema';
+import QuickActionsPanel, { type ActionDescriptor } from './QuickActionsPanel';
 
 export type ChatWindowProps = ChatWindowSchemaProps & {
   onMessageAction?: (message: ChatMessage, action: MessageAction) => void;
@@ -19,6 +20,9 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
   onAvatarInteraction?: (payload: AvatarInteractionPayload) => void;
   onJukeboxClick?: () => void;
   onTranslateToggle?: () => void;
+  quickActions?: ActionDescriptor[];
+  onQuickActionExecute?: (actionId: string, value: unknown) => Promise<ActionDescriptor | null>;
+  onQuickActionInjectText?: (text: string) => void;
 };
 
 const defaultMessages: ChatMessage[] = [];
@@ -540,12 +544,15 @@ export default function App({
   onAvatarInteraction,
   onJukeboxClick,
   onTranslateToggle,
+  quickActions,
+  onQuickActionExecute,
   rollbackDraft,
   _rollbackKey,
 }: ChatWindowProps) {
   const [draft, setDraft] = useState('');
   const [pendingDrafts, setPendingDrafts] = useState<Array<{ id: string; text: string; time: string; lastMsgId: string | null }>>([]);
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
+  const [quickActionsPanelOpen, setQuickActionsPanelOpen] = useState<boolean>(false);
   const [activeCursorToolId, setActiveCursorToolId] = useState<string | null>(null);
   const [avatarRangeCursorVariants, setAvatarRangeCursorVariants] = useState<ToolCursorVariantState>(() => createDefaultToolCursorVariantState());
   const [outsideRangeCursorVariants, setOutsideRangeCursorVariants] = useState<ToolCursorVariantState>(() => createDefaultToolCursorVariantState());
@@ -579,6 +586,7 @@ export default function App({
   const [floatingHearts, setFloatingHearts] = useState<FloatingHeart[]>([]);
   const [floatingFistDrops, setFloatingFistDrops] = useState<FloatingFistDrop[]>([]);
   const submittingRef = useRef(false);
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const lastRollbackKeyRef = useRef('');
   const canSubmit = draft.trim().length > 0 || composerAttachments.length > 0;
 
@@ -1129,6 +1137,32 @@ export default function App({
     root.style.removeProperty('--neko-chat-tool-cursor');
   }, []);
 
+  const handleQuickActionInjectText = useCallback((text: string) => {
+    setDraft(prev => {
+      if (!prev || !prev.trim()) return text;
+      return prev + ' ' + text;
+    });
+    setQuickActionsPanelOpen(false);
+    requestAnimationFrame(() => {
+      composerTextareaRef.current?.focus();
+    });
+  }, []);
+
+  const handleQuickActionNavigate = useCallback((target: string, openIn: string) => {
+    if (openIn === 'same_tab') {
+      window.location.href = target;
+    } else {
+      window.open(target, '_blank');
+    }
+  }, []);
+
+  const handleQuickActionExecute = useCallback(async (actionId: string, value: unknown): Promise<ActionDescriptor | null> => {
+    if (onQuickActionExecute) {
+      return onQuickActionExecute(actionId, value);
+    }
+    return null;
+  }, [onQuickActionExecute]);
+
   function submitDraft() {
     if (submittingRef.current) return;
     const text = draft.trim();
@@ -1288,6 +1322,15 @@ export default function App({
               ))}
             </div>
           ) : null}
+          {quickActionsPanelOpen ? (
+            <QuickActionsPanel
+              actions={quickActions ?? []}
+              onExecuteAction={handleQuickActionExecute}
+              onInjectText={handleQuickActionInjectText}
+              onNavigate={handleQuickActionNavigate}
+              onClose={() => setQuickActionsPanelOpen(false)}
+            />
+          ) : null}
           <form className="composer" onSubmit={(event) => {
             event.preventDefault();
             submitDraft();
@@ -1295,6 +1338,7 @@ export default function App({
             <div className="composer-input-shell">
               <textarea
                 className="composer-input"
+                ref={composerTextareaRef}
                 placeholder={inputPlaceholder}
                 aria-label={inputPlaceholder}
                 rows={1}
@@ -1339,6 +1383,16 @@ export default function App({
                     onClick={() => onTranslateToggle?.()}
                   >
                     <img src="/static/icons/translate_icon.png" alt="" aria-hidden="true" />
+                  </button>
+                  <span className="composer-tool-divider" aria-hidden="true">|</span>
+                  <button
+                    className={`composer-tool-btn${quickActionsPanelOpen ? ' is-active' : ''}`}
+                    type="button"
+                    aria-label={i18n('chat.quickActionsAriaLabel', '快捷操作')}
+                    title={i18n('chat.quickActionsLabel', '快捷操作')}
+                    onClick={() => setQuickActionsPanelOpen(open => !open)}
+                  >
+                    <span aria-hidden="true">⚡</span>
                   </button>
                   <span className="composer-tool-divider" aria-hidden="true">|</span>
                   <button

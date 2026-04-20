@@ -24,6 +24,7 @@
     var savedShellSize = null;
     var savedShellPosition = null; // {left, top} before minimize – used to fly back on expand
     var _sortKeySeq = 0; // monotonically increasing sortKey counter
+    var _cachedActions = [];
 
     var state = {
         viewProps: null,
@@ -388,6 +389,68 @@
         });
     }
 
+    /* ---- Quick Actions (chat plugin commands) ---- */
+
+    function fetchChatActions() {
+        return fetch('/chat/actions', {
+            method: 'GET',
+            headers: { 'Accept': 'application/json' },
+            credentials: 'same-origin'
+        })
+        .then(function (res) {
+            if (!res.ok) throw new Error('fetchChatActions: HTTP ' + res.status);
+            return res.json();
+        })
+        .then(function (data) {
+            _cachedActions = (data && data.actions) || [];
+            renderWindow();
+            return _cachedActions;
+        })
+        .catch(function (err) {
+            console.warn('[ReactChatWindow] fetchChatActions failed:', err);
+            return _cachedActions;
+        });
+    }
+
+    function executeChatAction(actionId, value) {
+        return fetch('/chat/actions/' + encodeURIComponent(actionId) + '/execute', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ value: value })
+        })
+        .then(function (res) {
+            if (!res.ok) throw new Error('executeChatAction: HTTP ' + res.status);
+            return res.json();
+        })
+        .then(function (data) {
+            if (data && data.success && data.action) {
+                // Update the cached action in-place
+                for (var i = 0; i < _cachedActions.length; i++) {
+                    if (_cachedActions[i].action_id === data.action.action_id) {
+                        _cachedActions[i] = data.action;
+                        break;
+                    }
+                }
+                renderWindow();
+                return data.action;
+            }
+            return null;
+        })
+        .catch(function (err) {
+            console.error('[ReactChatWindow] executeChatAction failed:', err);
+            throw err;
+        });
+    }
+
+    function handleQuickActionInjectText(text) {
+        // Dispatch a custom event that the React component can pick up via its onQuickActionInjectText prop
+        // The prop is passed directly, so this function is the callback itself
+        // It will be called by the React component — no extra dispatch needed
+    }
+
+    /* ---- End Quick Actions ---- */
+
     function buildRenderProps() {
         if (state.rollbackDraft) {
             console.log('[ROLLBACK] buildRenderProps: rollbackDraftPresent=true length=' + state.rollbackDraft.length + ' key=' + state._rollbackKey);
@@ -406,7 +469,15 @@
             onAvatarInteraction: handleAvatarInteraction,
             onJukeboxClick: handleJukeboxClick,
             onAvatarGeneratorClick: handleAvatarGeneratorClick,
-            onTranslateToggle: handleTranslateToggle
+            onTranslateToggle: handleTranslateToggle,
+            quickActions: _cachedActions,
+            onQuickActionExecute: function (actionId, value) {
+                return executeChatAction(actionId, value);
+            },
+            onQuickActionInjectText: function (text) {
+                // The React component handles draft injection internally via its handleInjectText
+                // This callback is a no-op on the bridge side since the React component manages draft state
+            }
         });
     }
 
@@ -1345,6 +1416,8 @@
                     showToast(getI18nText('chat.reactWindowMountFailed', '新版聊天框挂载失败'), 3000);
                     return;
                 }
+                // Fetch quick actions when window becomes visible
+                fetchChatActions();
                 // closeWindow 已经会重置 minimized，所以到这里通常 minimized=false
                 // 但如果外部直接调用 openWindow（未经 closeWindow），仍需处理
                 var wasMinimized = minimized;
@@ -1705,6 +1778,14 @@
 
         window.addEventListener(EVENT_PREFIX + 'set-composer-hidden', function (event) {
             setComposerHidden(event.detail && event.detail.hidden);
+        });
+
+        // Re-fetch quick actions when plugin state changes or list_actions update
+        window.addEventListener(EVENT_PREFIX + 'plugin-state-change', function () {
+            fetchChatActions();
+        });
+        window.addEventListener(EVENT_PREFIX + 'list-actions-update', function () {
+            fetchChatActions();
         });
     }
 
