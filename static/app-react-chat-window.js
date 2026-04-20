@@ -425,14 +425,10 @@
         })
         .then(function (data) {
             if (data && data.success && data.action) {
-                // Update the cached action in-place
-                for (var i = 0; i < _cachedActions.length; i++) {
-                    if (_cachedActions[i].action_id === data.action.action_id) {
-                        _cachedActions[i] = data.action;
-                        break;
-                    }
-                }
-                renderWindow();
+                // Lifecycle actions (start/stop/reload/toggle) change the
+                // disabled state of sibling actions.  Re-fetch all actions
+                // so every button reflects the current plugin state.
+                fetchChatActions();
                 return data.action;
             }
             return null;
