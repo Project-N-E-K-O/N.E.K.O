@@ -461,6 +461,8 @@ VRMManager.prototype.setupFloatingButtons = function() {
         this.closeAllPopups();
     };
     document.addEventListener('click', this._outsideClickHandler);
+    this._uiWindowHandlers = this._uiWindowHandlers || [];
+    this._uiWindowHandlers.push({ event: 'click', handler: this._outsideClickHandler, target: document });
 
     // 通知外部浮动按钮已就绪
     window.dispatchEvent(new CustomEvent('live2d-floating-buttons-ready'));

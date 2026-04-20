@@ -205,9 +205,11 @@ function injectPopupStyles(prefix) {
             min-height: 20px;
             text-align: center;
         }
-        /* 拖动模型期间禁用弹窗和侧面板的 pointer-events */
+        /* 拖动模型期间禁用弹窗和侧面板及其所有子元素的 pointer-events */
         body.neko-model-dragging .${prefix}-popup,
-        body.neko-model-dragging [data-neko-sidepanel] {
+        body.neko-model-dragging .${prefix}-popup *,
+        body.neko-model-dragging [data-neko-sidepanel],
+        body.neko-model-dragging [data-neko-sidepanel] * {
             pointer-events: none !important;
         }
     `;

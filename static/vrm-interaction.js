@@ -591,6 +591,8 @@ class VRMInteraction {
         //  必须检查并恢复按钮事件，否则 body 上的 neko-model-dragging class 残留。
         if (this.isDragging) {
             this.isDragging = false;
+            this.dragMode = null;
+            if (canvas) canvas.style.cursor = 'default';
             this._restoreButtonPointerEvents();
         }
     }
