@@ -326,6 +326,50 @@
     </div>
 
     <script>
+        // ===== 内嵌 i18n（subtitle.html 是独立窗口，不加载 i18next）=====
+        var SUBTITLE_I18N = {
+            zh: { targetLang: '目标语言', opacity: '不透明度', dragAnywhere: '整体拖动', dragAria: '整体拖动开关', size: '大小', sizeSmall: '小', sizeMedium: '中', sizeLarge: '大' },
+            en: { targetLang: 'Target Language', opacity: 'Opacity', dragAnywhere: 'Drag Anywhere', dragAria: 'Drag Anywhere toggle', size: 'Size', sizeSmall: 'S', sizeMedium: 'M', sizeLarge: 'L' },
+            ja: { targetLang: '翻訳先の言語', opacity: '不透明度', dragAnywhere: '全体ドラッグ', dragAria: '全体ドラッグの切り替え', size: 'サイズ', sizeSmall: '小', sizeMedium: '中', sizeLarge: '大' },
+            ko: { targetLang: '대상 언어', opacity: '불투명도', dragAnywhere: '전체 드래그', dragAria: '전체 드래그 전환', size: '크기', sizeSmall: '소', sizeMedium: '중', sizeLarge: '대' },
+            ru: { targetLang: 'Целевой язык', opacity: 'Непрозрачность', dragAnywhere: 'Перетаскивание везде', dragAria: 'Переключить перетаскивание', size: 'Размер', sizeSmall: 'М', sizeMedium: 'С', sizeLarge: 'Б' },
+            'zh-TW': { targetLang: '目標語言', opacity: '不透明度', dragAnywhere: '整體拖動', dragAria: '整體拖動開關', size: '大小', sizeSmall: '小', sizeMedium: '中', sizeLarge: '大' }
+        };
+
+        function getSubLang() {
+            var lang = (localStorage.getItem('userLanguage') || 'zh').replace('-CN', '').replace('-tw', '-TW').replace('-TW', '');
+            return SUBTITLE_I18N[lang] ? lang : 'zh';
+        }
+
+        function t(key) {
+            var strings = SUBTITLE_I18N[getSubLang()] || SUBTITLE_I18N['zh'];
+            return strings[key] || SUBTITLE_I18N['zh'][key] || key;
+        }
+
+        function applySubtitleI18N() {
+            // 标签
+            var labels = document.querySelectorAll('.subtitle-settings-label');
+            if (labels[0]) labels[0].textContent = t('targetLang');
+            if (labels[1]) labels[1].textContent = t('opacity');
+            if (labels[2]) labels[2].textContent = t('dragAnywhere');
+            if (labels[3]) labels[3].textContent = t('size');
+            // aria
+            var toggle = document.getElementById('subtitle-drag-mode-toggle');
+            if (toggle) toggle.setAttribute('aria-label', t('dragAria'));
+            // title
+            var sel = document.getElementById('subtitle-lang-select');
+            if (sel) sel.title = t('targetLang');
+            var slider = document.getElementById('subtitle-opacity-slider');
+            if (slider) slider.title = t('opacity');
+            // 大小按钮
+            var btns = document.querySelectorAll('.subtitle-size-btn');
+            var sizeKeys = { small: 'sizeSmall', medium: 'sizeMedium', large: 'sizeLarge' };
+            btns.forEach(function(btn) {
+                var key = sizeKeys[btn.dataset.size];
+                if (key) btn.textContent = t(key);
+            });
+        }
+
         var subtitleText = document.getElementById('subtitle-text');
         var dragHandle = document.getElementById('subtitle-drag-handle');
         var api = window.nekoSubtitle;
@@ -384,12 +428,22 @@
             if (savedDragMode) {
                 subtitleDisplay.classList.add('drag-anywhere');
                 dragHandle.style.display = 'none';
+                // drag-anywhere 模式下整个窗口需要可交互（关闭鼠标穿透）
+                if (api && api.enableInteraction) api.enableInteraction();
             }
             dragModeToggle.addEventListener('change', function() {
                 var on = dragModeToggle.checked;
                 subtitleDisplay.classList.toggle('drag-anywhere', on);
                 dragHandle.style.display = on ? 'none' : '';
                 localStorage.setItem('subtitleDragAnywhere', on);
+                // 切换模式时同步 interaction 状态
+                if (api && api.enableInteraction && api.disableInteraction) {
+                    if (on) {
+                        api.enableInteraction();
+                    } else {
+                        api.disableInteraction();
+                    }
+                }
             });
         }
 
@@ -437,7 +491,11 @@
             var data = e.detail;
             if (!data) return;
             if (data.language) langSelect.value = data.language;
+            if (data.locale) applySubtitleI18N();
         });
+
+        // 初始化 i18n
+        applySubtitleI18N();
 
         // ===== 监听转写消息 =====
         window.addEventListener('neko-ws-transcript', function(e) {
