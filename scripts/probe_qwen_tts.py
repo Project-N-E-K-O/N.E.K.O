@@ -11,7 +11,8 @@ Usage:
   uv run python scripts/probe_qwen_tts.py --text "..." --language-type Auto \
       --save-audio /tmp/tts_probe/qwen_auto.pcm
 
-Token is loaded from utils.config_manager.get_core_config()["AUDIO_API_KEY"].
+Token is loaded from utils.config_manager.get_core_config()["ASSIST_API_KEY_QWEN"]
+（DashScope API key），并非 lanlan.app 免费代理用的 AUDIO_API_KEY。
 """
 from __future__ import annotations
 
@@ -123,6 +124,11 @@ async def run(args: argparse.Namespace, log: logging.Logger) -> int:
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_bytes(total)
             log.info("saved PCM (24kHz mono int16) to %s", out.resolve())
+
+        if not done:
+            log.error("timed out waiting for response.done (recv %d chunks, %d bytes)",
+                      len(audio_chunks), len(total))
+            return 1
 
     return 0
 
