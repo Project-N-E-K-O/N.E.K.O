@@ -1864,7 +1864,8 @@
             "downloadOverwrite": "這會使用目前裝置上已同步到本地的雲快照，覆蓋本地同名角色設定與記憶目錄，不會自動下載模型資源，並會先建立本地備份。",
             "downloadNew": "這會把目前裝置上已同步到本地的雲快照恢復到本地，不會自動下載模型資源，並會先建立本地備份。",
             "downloadManualAsset": "\n該雲端角色依賴手動匯入或外部模型。下載後，如目前裝置沒有這套模型檔案，仍需要你手動匯入或移動資源。",
-            "downloadFinal": "\n確定繼續從 Steam Cloud 快照恢復嗎？"
+            "downloadFinal": "\n確定繼續從 Steam Cloud 快照恢復嗎？",
+            "forceTerminateSession": "角色「{{name}}」目前有活躍會話。\n終止會話後，目前對話內容將遺失，但雲端存檔下載可以繼續。\n\n是否終止會話並繼續下載？"
         },
         "dialog": {
             "providerUnavailable": "雲存檔提供方目前不可用，請稍後再試。",
@@ -1881,7 +1882,8 @@
             "rollbackApplied": "\n本地資料已自動回滾到操作前狀態。",
             "rollbackFailed": "\n回滾也失敗了：{{message}}",
             "loadFailed": "載入雲存檔摘要失敗：{{message}}",
-            "stateChanged": "雲存檔狀態已變更，頁面已重新整理，請先確認最新狀態後再重試。"
+            "stateChanged": "雲存檔狀態已變更，頁面已重新整理，請先確認最新狀態後再重試。",
+            "forceTerminateTitle": "終止會話並繼續？"
         },
         "action": {
             "expandDetails": "展開詳情",
@@ -1923,7 +1925,8 @@
             "nameAuditFailed": "角色名稱未通過雲存檔校驗規則。",
             "uploadFailed": "上傳失敗：{{message}}",
             "downloadFailed": "下載失敗：{{message}}",
-            "localReloadFailedRolledBack": "下載已套用，但本地重新載入失敗。"
+            "localReloadFailedRolledBack": "下載已套用，但本地重新載入失敗。",
+            "sessionTerminateFailed": "終止活躍會話失敗，請稍後重試。"
         }
     },
     "settings": {

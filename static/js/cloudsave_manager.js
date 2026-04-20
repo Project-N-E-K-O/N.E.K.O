@@ -123,6 +123,10 @@
             key: 'cloudsave.error.activeSessionBlocked',
             fallback: 'This character has an active session. Stop the session before downloading.',
         },
+        SESSION_TERMINATE_FAILED: {
+            key: 'cloudsave.error.sessionTerminateFailed',
+            fallback: 'Failed to terminate active session. Please try again later.',
+        },
         MEMORY_SERVER_RELEASE_FAILED: {
             key: 'cloudsave.error.memoryServerReleaseFailed',
             fallback: 'Failed to release the local memory handle before overwrite. Please try again later.',
@@ -1204,6 +1208,87 @@
         );
     }
 
+    async function _handleDownloadSuccess(result, action, latestItem, item) {
+        await showAlert(
+            action === 'upload'
+                ? (
+                    isSteamAutoCloudBackend(result)
+                        ? translate(
+                            'cloudsave.dialog.uploadSuccessSteamAutoCloud',
+                            'Local cloud snapshot updated. Steam will upload it automatically after you exit the game through Steam.',
+                        )
+                        : translate('cloudsave.dialog.uploadSuccess', 'Upload completed.')
+                )
+                : (
+                    isSteamAutoCloudBackend(result)
+                        ? translate(
+                            'cloudsave.dialog.downloadSuccessSteamAutoCloud',
+                            'The Steam Cloud snapshot was applied locally.',
+                        )
+                        : translate('cloudsave.dialog.downloadSuccess', 'Download completed.')
+                ),
+        );
+        if (result && result.detail && result.detail.item) {
+            state.preferredCharacterName = result.detail.item.character_name || state.preferredCharacterName;
+        } else if (latestItem.character_name) {
+            state.preferredCharacterName = latestItem.character_name;
+        }
+        if (action === 'download') {
+            notifyCharacterManagerSync({
+                action,
+                character_name: state.preferredCharacterName || latestItem.character_name || item.character_name,
+            });
+            window.dispatchEvent(new CustomEvent('neko-cloudsave-character-reloaded', {
+                detail: { character_name: state.preferredCharacterName || latestItem.character_name },
+            }));
+        }
+        await loadSummary();
+    }
+
+    async function _handleDownloadError(error) {
+        const payloadError = error.payload || {};
+        const message = translateErrorPayload(
+            payloadError,
+            payloadError.message || payloadError.error || error.message,
+        ) || payloadError.message || payloadError.error || error.message;
+        let rollbackHint = '';
+        if (payloadError.code === 'LOCAL_RELOAD_FAILED_ROLLED_BACK') {
+            if (payloadError.rolled_back) {
+                rollbackHint = translate(
+                    'cloudsave.dialog.rollbackApplied',
+                    '\nLocal data was rolled back automatically to the state before the operation.',
+                );
+            } else if (payloadError.rollback_error) {
+                rollbackHint = translate(
+                    'cloudsave.dialog.rollbackFailed',
+                    '\nRollback also failed: {{message}}',
+                    {
+                        message: translateErrorPayload(
+                            {
+                                code: payloadError.rollback_error,
+                                message: payloadError.rollback_error,
+                                error: payloadError.rollback_error,
+                            },
+                            payloadError.rollback_error,
+                        ) || payloadError.rollback_error,
+                    },
+                );
+            }
+        }
+        await showAlert(
+            translate(
+                'cloudsave.dialog.operationFailed',
+                'Operation failed: {{message}}',
+                { message },
+            ) + rollbackHint,
+        );
+        try {
+            await loadSummary({ silent: true });
+        } catch (refreshError) {
+            // Keep the original action error visible even if the silent refresh also fails.
+        }
+    }
+
     async function performCharacterAction(item, action) {
         if (!isProviderAvailable()) {
             await showAlert(
@@ -1314,79 +1399,37 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload),
                 });
-                await showAlert(
-                    action === 'upload'
-                        ? (
-                            isSteamAutoCloudBackend(result)
-                                ? translate(
-                                    'cloudsave.dialog.uploadSuccessSteamAutoCloud',
-                                    'Local cloud snapshot updated. Steam will upload it automatically after you exit the game through Steam.',
-                                )
-                                : translate('cloudsave.dialog.uploadSuccess', 'Upload completed.')
-                        )
-                        : (
-                            isSteamAutoCloudBackend(result)
-                                ? translate(
-                                    'cloudsave.dialog.downloadSuccessSteamAutoCloud',
-                                    'The Steam Cloud snapshot was applied locally.',
-                                )
-                                : translate('cloudsave.dialog.downloadSuccess', 'Download completed.')
-                        ),
-                );
-                if (result && result.detail && result.detail.item) {
-                    state.preferredCharacterName = result.detail.item.character_name || state.preferredCharacterName;
-                } else if (latestItem.character_name) {
-                    state.preferredCharacterName = latestItem.character_name;
-                }
-                if (action === 'download') {
-                    notifyCharacterManagerSync({
-                        action,
-                        character_name: state.preferredCharacterName || latestItem.character_name || item.character_name,
-                    });
-                }
-                await loadSummary();
+                await _handleDownloadSuccess(result, action, latestItem, item);
             } catch (error) {
                 const payloadError = error.payload || {};
-                const message = translateErrorPayload(
-                    payloadError,
-                    payloadError.message || payloadError.error || error.message,
-                ) || payloadError.message || payloadError.error || error.message;
-                let rollbackHint = '';
-                if (payloadError.code === 'LOCAL_RELOAD_FAILED_ROLLED_BACK') {
-                    if (payloadError.rolled_back) {
-                        rollbackHint = translate(
-                            'cloudsave.dialog.rollbackApplied',
-                            '\nLocal data was rolled back automatically to the state before the operation.',
-                        );
-                    } else if (payloadError.rollback_error) {
-                        rollbackHint = translate(
-                            'cloudsave.dialog.rollbackFailed',
-                            '\nRollback also failed: {{message}}',
-                            {
-                                message: translateErrorPayload(
-                                    {
-                                        code: payloadError.rollback_error,
-                                        message: payloadError.rollback_error,
-                                        error: payloadError.rollback_error,
-                                    },
-                                    payloadError.rollback_error,
-                                ) || payloadError.rollback_error,
-                            },
-                        );
+
+                if (payloadError.code === 'ACTIVE_SESSION_BLOCKED' && payloadError.can_force) {
+                    const forceConfirmed = await showConfirm(
+                        translate(
+                            'cloudsave.confirm.forceTerminateSession',
+                            '该角色 "{{name}}" 当前有活跃会话。\n终止会话后，当前对话内容将丢失，但云存档下载可以继续。\n\n是否终止会话并继续下载？',
+                            { name: latestItem.character_name || item.character_name },
+                        ),
+                        translate('cloudsave.dialog.forceTerminateTitle', '终止会话并继续？'),
+                        { danger: true },
+                    );
+                    if (!forceConfirmed) {
+                        return;
                     }
+                    try {
+                        const retryResult = await requestJson(endpoint, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ ...payload, force: true }),
+                        });
+                        await _handleDownloadSuccess(retryResult, action, latestItem, item);
+                    } catch (retryError) {
+                        await _handleDownloadError(retryError);
+                    }
+                    return;
                 }
-                await showAlert(
-                    translate(
-                        'cloudsave.dialog.operationFailed',
-                        'Operation failed: {{message}}',
-                        { message },
-                    ) + rollbackHint,
-                );
-                try {
-                    await loadSummary({ silent: true });
-                } catch (refreshError) {
-                    // Keep the original action error visible even if the silent refresh also fails.
-                }
+
+                await _handleDownloadError(error);
             }
         } finally {
             inflightActions.delete(actionKey);
