@@ -544,7 +544,7 @@ class DirectTaskExecutor:
                 or "\uac00" <= ch <= "\ud7af"  # Hangul Syllables
             )
         )
-        length_threshold = 4 if cjk_like_count * 2 >= len(length_source) else 12
+        length_threshold = 3 if cjk_like_count * 2 >= len(length_source) else 6
         latest_is_vague = len(length_source) <= length_threshold or any(
             _matches_vague_marker(marker) for marker in vague_markers
         )
@@ -565,16 +565,16 @@ class DirectTaskExecutor:
         cleaned = cleaned.replace("\r", " ").replace("\n", " ")
         patterns = [
             (r"(?i)(password|passwd|pwd)\s*[:=]\s*\S+", r"\1=[REDACTED_PASSWORD]"),
-            (r"(?i)(password|passwd|pwd|密码|口令)\s*(?:is|是|=|:)\s*\S+", r"\1=[REDACTED_PASSWORD]"),
+            (r"(?i)(password|passwd|pwd|密码|口令)\s*(?:is|为|是|=|:|：)\s*\S+", r"\1=[REDACTED_PASSWORD]"),
             (r"(?i)authorization\s*:\s*bearer\s+\S+", "Authorization: Bearer [REDACTED_TOKEN]"),
             (r"(?i)(token|api[_-]?key|access[_-]?token|refresh[_-]?token)\s*[:=]\s*\S+", r"\1=[REDACTED_TOKEN]"),
             (
-                r"(?i)(token|api(?:[\s_-]?key)|access(?:[\s_-]?token)|refresh(?:[\s_-]?token)|令牌|密钥|秘钥)\s*(?:is|是|=|:)\s*\S+",
+                r"(?i)(token|api(?:[\s_-]?key)|access(?:[\s_-]?token)|refresh(?:[\s_-]?token)|令牌|密钥|秘钥)\s*(?:is|为|是|=|:|：)\s*\S+",
                 r"\1=[REDACTED_TOKEN]",
             ),
             (r"(?i)\bsk-[a-z0-9_-]{10,}\b", "[REDACTED_TOKEN]"),
-            (r"(?i)(cookie)\s*[:=]\s*\S+", r"\1=[REDACTED_COOKIE]"),
-            (r"(?i)(cookie)\s*(?:[:=]|is|是)\s*\S+", r"\1=[REDACTED_COOKIE]"),
+            (r"(?i)(cookie)\s*[:=：]\s*\S+", r"\1=[REDACTED_COOKIE]"),
+            (r"(?i)(cookie)\s*(?:[:=：]|is|为|是)\s*\S+", r"\1=[REDACTED_COOKIE]"),
             (r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[A-Za-z]{2,}\b", "[REDACTED_EMAIL]"),
             (
                 r"(?i)(\b(?:otp|pin|verification(?:\s+code)?|sms\s*code|one[-\s]?time(?:\s+password|\s+code)?|验证码|校验码|短信码|动态码)\b(?:\s*(?:is|为|是))?[\s:：=#-]{0,6})\d{4,8}\b",
