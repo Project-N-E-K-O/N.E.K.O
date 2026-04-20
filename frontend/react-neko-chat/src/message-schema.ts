@@ -171,6 +171,15 @@ export const chatWindowPropsSchema = z.object({
     .args()
     .returns(z.void())
     .optional(),
+  quickActions: z.array(z.record(z.unknown())).optional() as unknown as z.ZodOptional<z.ZodArray<z.ZodType<import('./QuickActionsPanel').ActionDescriptor>>>,
+  onQuickActionExecute: z.function()
+    .args(z.string(), z.unknown())
+    .returns(z.promise(z.union([z.record(z.unknown()), z.null()])))
+    .optional() as unknown as z.ZodOptional<z.ZodType<(actionId: string, value: unknown) => Promise<import('./QuickActionsPanel').ActionDescriptor | null>>>,
+  onQuickActionsRequest: z.function()
+    .args()
+    .returns(z.void())
+    .optional(),
 });
 
 export type ChatMessageRole = z.infer<typeof chatMessageSchema>['role'];

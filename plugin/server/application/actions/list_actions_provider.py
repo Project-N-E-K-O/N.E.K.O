@@ -71,10 +71,9 @@ def _map_list_action(
             open_in=open_in,
         )
 
-    if kind == "toggle":
-        current_value = action.get("state", False)
-        if isinstance(current_value, str):
-            current_value = current_value.lower() in ("true", "1", "yes", "on")
+    # All other kinds (toggle, trigger, action, button, …) are
+    # one-shot calls with no persistent state — always a button.
+    if kind:
         return ActionDescriptor(
             action_id=full_action_id,
             type="instant",
@@ -82,11 +81,9 @@ def _map_list_action(
             description=description,
             category=plugin_name,
             plugin_id=plugin_id,
-            control="toggle",
-            current_value=bool(current_value),
+            control="button",
         )
 
-    # Unknown kind — skip
     return None
 
 

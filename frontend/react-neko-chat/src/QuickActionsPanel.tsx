@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { i18n } from './i18n';
 
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
 /*  Types                                                              */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
 
 export interface ActionDescriptor {
   action_id: string;
@@ -12,7 +12,7 @@ export interface ActionDescriptor {
   description: string;
   category: string;
   plugin_id: string;
-  control?: 'toggle' | 'dropdown' | 'number' | 'slider' | 'plugin_toggle' | 'entry_toggle';
+  control?: 'toggle' | 'button' | 'dropdown' | 'number' | 'slider' | 'plugin_toggle' | 'entry_toggle';
   current_value?: unknown;
   options?: string[];
   min?: number;
@@ -32,57 +32,73 @@ export interface QuickActionsPanelProps {
   onClose: () => void;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Tabs                                                               */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
+/*  View modes                                                         */
+/* ================================================================== */
 
-type TabId = 'home' | 'quick' | 'plugins' | 'inject';
+type ViewMode = 'function' | 'plugin';
 
-interface TabDef {
-  id: TabId;
+interface ViewModeDef {
+  id: ViewMode;
   icon: string;
   labelKey: string;
   labelFallback: string;
 }
 
-const TABS: TabDef[] = [
-  { id: 'home', icon: '🏠', labelKey: 'quickActions.tabHome', labelFallback: '首页' },
-  { id: 'quick', icon: '⚡', labelKey: 'quickActions.tabQuickConfig', labelFallback: '快捷配置' },
-  { id: 'plugins', icon: '🔌', labelKey: 'quickActions.tabPlugins', labelFallback: '插件管理' },
-  { id: 'inject', icon: '📎', labelKey: 'quickActions.tabInject', labelFallback: '注入' },
+const VIEW_MODES: ViewModeDef[] = [
+  { id: 'function', icon: '🎛', labelKey: 'quickActions.viewFunction', labelFallback: '按功能' },
+  { id: 'plugin', icon: '🧩', labelKey: 'quickActions.viewPlugin', labelFallback: '按插件' },
 ];
 
-/* ------------------------------------------------------------------ */
+/* Function-view sub-tabs */
+type FuncTab = 'all' | 'config' | 'lifecycle' | 'inject';
+
+interface FuncTabDef {
+  id: FuncTab;
+  labelKey: string;
+  labelFallback: string;
+}
+
+const FUNC_TABS: FuncTabDef[] = [
+  { id: 'all', labelKey: 'quickActions.funcAll', labelFallback: '全部' },
+  { id: 'config', labelKey: 'quickActions.funcConfig', labelFallback: '配置' },
+  { id: 'lifecycle', labelKey: 'quickActions.funcLifecycle', labelFallback: '生命周期' },
+  { id: 'inject', labelKey: 'quickActions.funcInject', labelFallback: '注入 / 导航' },
+];
+
+/* ================================================================== */
 /*  Helpers                                                            */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
 
-function matchesSearch(action: ActionDescriptor, query: string): boolean {
-  if (!query) return true;
-  const q = query.toLowerCase();
-  return action.label.toLowerCase().includes(q) || action.description.toLowerCase().includes(q);
+function matchesSearch(a: ActionDescriptor, q: string): boolean {
+  if (!q) return true;
+  const low = q.toLowerCase();
+  return (
+    a.label.toLowerCase().includes(low) ||
+    a.description.toLowerCase().includes(low) ||
+    a.plugin_id.toLowerCase().includes(low) ||
+    a.category.toLowerCase().includes(low)
+  );
 }
 
-function groupByCategory(actions: ActionDescriptor[]): Map<string, ActionDescriptor[]> {
-  const map = new Map<string, ActionDescriptor[]>();
-  for (const a of actions) {
-    const list = map.get(a.category);
-    if (list) list.push(a);
-    else map.set(a.category, [a]);
-  }
-  return map;
-}
-
-function filterForTab(actions: ActionDescriptor[], tab: TabId): ActionDescriptor[] {
+function filterByFuncTab(actions: ActionDescriptor[], tab: FuncTab): ActionDescriptor[] {
   switch (tab) {
-    case 'home':
+    case 'all':
       return actions;
-    case 'quick':
+    case 'config':
       return actions.filter(
-        a => a.type === 'instant' && a.control !== 'plugin_toggle' && a.control !== 'entry_toggle',
+        a =>
+          a.type === 'instant' &&
+          a.control !== 'plugin_toggle' &&
+          a.control !== 'entry_toggle' &&
+          a.control !== 'button',
       );
-    case 'plugins':
+    case 'lifecycle':
       return actions.filter(
-        a => a.control === 'plugin_toggle' || a.control === 'entry_toggle',
+        a =>
+          a.control === 'plugin_toggle' ||
+          a.control === 'entry_toggle' ||
+          a.control === 'button',
       );
     case 'inject':
       return actions.filter(a => a.type === 'chat_inject' || a.type === 'navigation');
@@ -91,9 +107,37 @@ function filterForTab(actions: ActionDescriptor[], tab: TabId): ActionDescriptor
   }
 }
 
-/* ------------------------------------------------------------------ */
+function groupBy(actions: ActionDescriptor[], key: 'category' | 'plugin_id'): Map<string, ActionDescriptor[]> {
+  const map = new Map<string, ActionDescriptor[]>();
+  for (const a of actions) {
+    const k = a[key];
+    const list = map.get(k);
+    if (list) list.push(a);
+    else map.set(k, [a]);
+  }
+  return map;
+}
+
+/** Derive a display name for a plugin_id from its actions (use category as name). */
+function pluginDisplayName(actions: ActionDescriptor[]): string {
+  // The category of the first non-system action is usually the plugin name
+  for (const a of actions) {
+    if (a.category !== '系统') return a.category;
+  }
+  return actions[0]?.plugin_id ?? '?';
+}
+
+/** Check if any action for this plugin is a running plugin_toggle */
+function isPluginRunning(actions: ActionDescriptor[]): boolean {
+  for (const a of actions) {
+    if (a.control === 'plugin_toggle') return Boolean(a.current_value);
+  }
+  return false;
+}
+
+/* ================================================================== */
 /*  Control renderers                                                  */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
 
 interface ControlProps {
   action: ActionDescriptor;
@@ -106,66 +150,56 @@ interface ControlProps {
 
 function ToggleControl({ action, loading, error, onExecute }: ControlProps) {
   const checked = Boolean(action.current_value);
-  const isPluginToggle = action.control === 'plugin_toggle';
+  const isPlugin = action.control === 'plugin_toggle';
   return (
-    <div className="quick-actions-control-row">
-      <div className="quick-actions-control-info">
-        <span className="quick-actions-control-label">
-          {isPluginToggle && (
-            <span
-              className={`quick-actions-status-dot ${checked ? 'is-active' : ''}`}
-              aria-hidden="true"
-            />
-          )}
+    <div className="qa-row">
+      <div className="qa-row-info">
+        <span className="qa-row-label">
+          {isPlugin && <span className={`qa-dot ${checked ? 'is-on' : ''}`} />}
           {action.label}
         </span>
-        {action.description && (
-          <span className="quick-actions-control-desc">{action.description}</span>
-        )}
+        {action.description && <span className="qa-row-desc">{action.description}</span>}
       </div>
-      <div className="quick-actions-control-widget">
-        {loading && <span className="quick-actions-spinner" aria-hidden="true" />}
+      <div className="qa-row-widget">
+        {loading && <span className="qa-spinner" />}
         <button
           type="button"
           role="switch"
           aria-checked={checked}
           aria-label={action.label}
-          className={`quick-actions-toggle ${checked ? 'is-on' : ''} ${action.control === 'entry_toggle' ? 'is-small' : ''}`}
+          className={`qa-toggle ${checked ? 'is-on' : ''} ${action.control === 'entry_toggle' ? 'is-sm' : ''}`}
           disabled={action.disabled || loading}
           onClick={() => onExecute(action.action_id, !checked)}
         >
-          <span className="quick-actions-toggle-thumb" />
+          <span className="qa-toggle-thumb" />
         </button>
-        {error && <span className="quick-actions-error-tip" title={error}>!</span>}
+        {error && <span className="qa-err" title={error}>!</span>}
       </div>
     </div>
   );
 }
 
 function DropdownControl({ action, loading, error, onExecute }: ControlProps) {
-  const value = String(action.current_value ?? '');
   return (
-    <div className="quick-actions-control-row">
-      <div className="quick-actions-control-info">
-        <span className="quick-actions-control-label">{action.label}</span>
-        {action.description && (
-          <span className="quick-actions-control-desc">{action.description}</span>
-        )}
+    <div className="qa-row">
+      <div className="qa-row-info">
+        <span className="qa-row-label">{action.label}</span>
+        {action.description && <span className="qa-row-desc">{action.description}</span>}
       </div>
-      <div className="quick-actions-control-widget">
-        {loading && <span className="quick-actions-spinner" aria-hidden="true" />}
+      <div className="qa-row-widget">
+        {loading && <span className="qa-spinner" />}
         <select
-          className="quick-actions-select"
-          value={value}
+          className="qa-select"
+          value={String(action.current_value ?? '')}
           disabled={action.disabled || loading}
           aria-label={action.label}
           onChange={e => onExecute(action.action_id, e.target.value)}
         >
-          {(action.options ?? []).map(opt => (
-            <option key={opt} value={opt}>{opt}</option>
+          {(action.options ?? []).map(o => (
+            <option key={o} value={o}>{o}</option>
           ))}
         </select>
-        {error && <span className="quick-actions-error-tip" title={error}>!</span>}
+        {error && <span className="qa-err" title={error}>!</span>}
       </div>
     </div>
   );
@@ -175,25 +209,26 @@ function SliderControl({ action, loading, error, onExecute }: ControlProps) {
   const numVal = Number(action.current_value ?? action.min ?? 0);
   const [local, setLocal] = useState(numVal);
   const committed = useRef(numVal);
+  useEffect(() => { setLocal(numVal); committed.current = numVal; }, [numVal]);
 
-  useEffect(() => {
-    setLocal(numVal);
-    committed.current = numVal;
-  }, [numVal]);
+  const commit = () => {
+    if (local !== committed.current) {
+      committed.current = local;
+      onExecute(action.action_id, local);
+    }
+  };
 
   return (
-    <div className="quick-actions-control-row">
-      <div className="quick-actions-control-info">
-        <span className="quick-actions-control-label">{action.label}</span>
-        {action.description && (
-          <span className="quick-actions-control-desc">{action.description}</span>
-        )}
+    <div className="qa-row">
+      <div className="qa-row-info">
+        <span className="qa-row-label">{action.label}</span>
+        {action.description && <span className="qa-row-desc">{action.description}</span>}
       </div>
-      <div className="quick-actions-control-widget quick-actions-slider-widget">
-        {loading && <span className="quick-actions-spinner" aria-hidden="true" />}
+      <div className="qa-row-widget qa-slider-wrap">
+        {loading && <span className="qa-spinner" />}
         <input
           type="range"
-          className="quick-actions-slider"
+          className="qa-slider"
           min={action.min ?? 0}
           max={action.max ?? 100}
           step={action.step ?? 1}
@@ -201,21 +236,11 @@ function SliderControl({ action, loading, error, onExecute }: ControlProps) {
           disabled={action.disabled || loading}
           aria-label={action.label}
           onChange={e => setLocal(Number(e.target.value))}
-          onMouseUp={() => {
-            if (local !== committed.current) {
-              committed.current = local;
-              onExecute(action.action_id, local);
-            }
-          }}
-          onTouchEnd={() => {
-            if (local !== committed.current) {
-              committed.current = local;
-              onExecute(action.action_id, local);
-            }
-          }}
+          onMouseUp={commit}
+          onTouchEnd={commit}
         />
-        <span className="quick-actions-slider-value">{local}</span>
-        {error && <span className="quick-actions-error-tip" title={error}>!</span>}
+        <span className="qa-slider-val">{local}</span>
+        {error && <span className="qa-err" title={error}>!</span>}
       </div>
     </div>
   );
@@ -224,120 +249,97 @@ function SliderControl({ action, loading, error, onExecute }: ControlProps) {
 function NumberControl({ action, loading, error, onExecute }: ControlProps) {
   const numVal = Number(action.current_value ?? 0);
   const [local, setLocal] = useState(numVal);
-  const commitTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
-
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => { setLocal(numVal); }, [numVal]);
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
 
   const commit = useCallback(
     (v: number) => {
-      if (commitTimeout.current) clearTimeout(commitTimeout.current);
-      commitTimeout.current = setTimeout(() => onExecute(action.action_id, v), 400);
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => onExecute(action.action_id, v), 400);
     },
     [action.action_id, onExecute],
   );
-
   const step = action.step ?? 1;
-  const inc = () => {
-    const next = Math.min(local + step, action.max ?? Infinity);
-    setLocal(next);
-    commit(next);
-  };
-  const dec = () => {
-    const next = Math.max(local - step, action.min ?? -Infinity);
-    setLocal(next);
-    commit(next);
-  };
+  const inc = () => { const n = Math.min(local + step, action.max ?? Infinity); setLocal(n); commit(n); };
+  const dec = () => { const n = Math.max(local - step, action.min ?? -Infinity); setLocal(n); commit(n); };
 
   return (
-    <div className="quick-actions-control-row">
-      <div className="quick-actions-control-info">
-        <span className="quick-actions-control-label">{action.label}</span>
-        {action.description && (
-          <span className="quick-actions-control-desc">{action.description}</span>
-        )}
+    <div className="qa-row">
+      <div className="qa-row-info">
+        <span className="qa-row-label">{action.label}</span>
+        {action.description && <span className="qa-row-desc">{action.description}</span>}
       </div>
-      <div className="quick-actions-control-widget">
-        {loading && <span className="quick-actions-spinner" aria-hidden="true" />}
-        <div className="quick-actions-number-group">
-          <button
-            type="button"
-            className="quick-actions-number-btn"
-            disabled={action.disabled || loading}
-            aria-label={`${action.label} decrease`}
-            onClick={dec}
-          >
-            −
-          </button>
+      <div className="qa-row-widget">
+        {loading && <span className="qa-spinner" />}
+        <div className="qa-num-group">
+          <button type="button" className="qa-num-btn" disabled={action.disabled || loading} onClick={dec} aria-label={`${action.label} −`}>−</button>
           <input
             type="number"
-            className="quick-actions-number-input"
+            className="qa-num-input"
             value={local}
             min={action.min}
             max={action.max}
             step={action.step}
             disabled={action.disabled || loading}
             aria-label={action.label}
-            onChange={e => {
-              const v = Number(e.target.value);
-              setLocal(v);
-              commit(v);
-            }}
+            onChange={e => { const v = Number(e.target.value); setLocal(v); commit(v); }}
           />
-          <button
-            type="button"
-            className="quick-actions-number-btn"
-            disabled={action.disabled || loading}
-            aria-label={`${action.label} increase`}
-            onClick={inc}
-          >
-            +
-          </button>
+          <button type="button" className="qa-num-btn" disabled={action.disabled || loading} onClick={inc} aria-label={`${action.label} +`}>+</button>
         </div>
-        {error && <span className="quick-actions-error-tip" title={error}>!</span>}
+        {error && <span className="qa-err" title={error}>!</span>}
       </div>
     </div>
   );
 }
 
-function ChatInjectButton({ action, onInject }: ControlProps) {
+function ButtonControl({ action, loading, error, onExecute }: ControlProps) {
   return (
-    <div className="quick-actions-control-row">
-      <div className="quick-actions-control-info">
-        <span className="quick-actions-control-label">{action.label}</span>
-        {action.description && (
-          <span className="quick-actions-control-desc">{action.description}</span>
-        )}
+    <div className="qa-row">
+      <div className="qa-row-info">
+        <span className="qa-row-label">{action.label}</span>
+        {action.description && <span className="qa-row-desc">{action.description}</span>}
       </div>
-      <button
-        type="button"
-        className="quick-actions-inject-btn"
-        onClick={() => onInject(action.inject_text ?? '')}
-        aria-label={action.label}
-      >
-        <span className="quick-actions-inject-icon" aria-hidden="true">📎</span>
-        {i18n('quickActions.inject', '注入')}
+      <div className="qa-row-widget">
+        {loading && <span className="qa-spinner" />}
+        <button
+          type="button"
+          className="qa-action-btn"
+          disabled={action.disabled || loading}
+          aria-label={action.label}
+          onClick={() => onExecute(action.action_id, null)}
+        >
+          {i18n('quickActions.run', '执行')}
+        </button>
+        {error && <span className="qa-err" title={error}>!</span>}
+      </div>
+    </div>
+  );
+}
+
+function InjectButton({ action, onInject }: ControlProps) {
+  return (
+    <div className="qa-row">
+      <div className="qa-row-info">
+        <span className="qa-row-label">{action.label}</span>
+        {action.description && <span className="qa-row-desc">{action.description}</span>}
+      </div>
+      <button type="button" className="qa-inject-btn" onClick={() => onInject(action.inject_text ?? '')} aria-label={action.label}>
+        <span aria-hidden="true">📎</span> {i18n('quickActions.inject', '注入')}
       </button>
     </div>
   );
 }
 
-function NavigationButton({ action, onNavigate }: ControlProps) {
+function NavButton({ action, onNavigate }: ControlProps) {
   return (
-    <div className="quick-actions-control-row">
-      <div className="quick-actions-control-info">
-        <span className="quick-actions-control-label">{action.label}</span>
-        {action.description && (
-          <span className="quick-actions-control-desc">{action.description}</span>
-        )}
+    <div className="qa-row">
+      <div className="qa-row-info">
+        <span className="qa-row-label">{action.label}</span>
+        {action.description && <span className="qa-row-desc">{action.description}</span>}
       </div>
-      <button
-        type="button"
-        className="quick-actions-nav-btn"
-        onClick={() => onNavigate(action.target ?? '', action.open_in ?? 'new_tab')}
-        aria-label={action.label}
-      >
-        <span className="quick-actions-nav-icon" aria-hidden="true">↗</span>
-        {i18n('quickActions.open', '打开')}
+      <button type="button" className="qa-nav-btn" onClick={() => onNavigate(action.target ?? '', action.open_in ?? 'new_tab')} aria-label={action.label}>
+        <span aria-hidden="true">↗</span> {i18n('quickActions.open', '打开')}
       </button>
     </div>
   );
@@ -345,13 +347,15 @@ function NavigationButton({ action, onNavigate }: ControlProps) {
 
 function ActionControl(props: ControlProps) {
   const { action } = props;
-  if (action.type === 'chat_inject') return <ChatInjectButton {...props} />;
-  if (action.type === 'navigation') return <NavigationButton {...props} />;
+  if (action.type === 'chat_inject') return <InjectButton {...props} />;
+  if (action.type === 'navigation') return <NavButton {...props} />;
   switch (action.control) {
     case 'toggle':
     case 'plugin_toggle':
     case 'entry_toggle':
       return <ToggleControl {...props} />;
+    case 'button':
+      return <ButtonControl {...props} />;
     case 'dropdown':
       return <DropdownControl {...props} />;
     case 'slider':
@@ -363,78 +367,12 @@ function ActionControl(props: ControlProps) {
   }
 }
 
-/* ------------------------------------------------------------------ */
-/*  Home tab — plugin cards                                            */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
+/*  Staggered list — items animate in one by one                       */
+/* ================================================================== */
 
-function HomeView({
-  groups,
-  loadingMap,
-  errorMap,
-  onExecute,
-  onInject,
-  onNavigate,
-}: {
-  groups: Map<string, ActionDescriptor[]>;
-  loadingMap: Record<string, boolean>;
-  errorMap: Record<string, string | null>;
-  onExecute: (id: string, v: unknown) => void;
-  onInject: (t: string) => void;
-  onNavigate: (t: string, o: string) => void;
-}) {
-  const [expanded, setExpanded] = useState<string | null>(null);
-  const categories = Array.from(groups.keys());
-
-  return (
-    <div className="quick-actions-home">
-      <div className="quick-actions-card-grid">
-        {categories.map(cat => (
-          <button
-            key={cat}
-            type="button"
-            className={`quick-actions-card ${expanded === cat ? 'is-expanded' : ''}`}
-            onClick={() => setExpanded(expanded === cat ? null : cat)}
-            aria-expanded={expanded === cat}
-          >
-            <span className="quick-actions-card-icon">🔌</span>
-            <span className="quick-actions-card-name">{cat}</span>
-            <span className="quick-actions-card-count">{groups.get(cat)?.length ?? 0}</span>
-          </button>
-        ))}
-      </div>
-      {expanded && groups.has(expanded) && (
-        <div className="quick-actions-card-detail">
-          <div className="quick-actions-section-title">{expanded}</div>
-          {groups.get(expanded)!.map(a => (
-            <ActionControl
-              key={a.action_id}
-              action={a}
-              loading={!!loadingMap[a.action_id]}
-              error={errorMap[a.action_id] ?? null}
-              onExecute={onExecute}
-              onInject={onInject}
-              onNavigate={onNavigate}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Grouped list view (for quick / plugins / inject tabs)              */
-/* ------------------------------------------------------------------ */
-
-function GroupedListView({
-  groups,
-  loadingMap,
-  errorMap,
-  onExecute,
-  onInject,
-  onNavigate,
-}: {
-  groups: Map<string, ActionDescriptor[]>;
+function StaggeredList({ actions, loadingMap, errorMap, onExecute, onInject, onNavigate }: {
+  actions: ActionDescriptor[];
   loadingMap: Record<string, boolean>;
   errorMap: Record<string, string | null>;
   onExecute: (id: string, v: unknown) => void;
@@ -443,29 +381,191 @@ function GroupedListView({
 }) {
   return (
     <>
-      {Array.from(groups.entries()).map(([cat, items]) => (
-        <div key={cat} className="quick-actions-group">
-          <div className="quick-actions-section-title">{cat}</div>
-          {items.map(a => (
-            <ActionControl
-              key={a.action_id}
-              action={a}
-              loading={!!loadingMap[a.action_id]}
-              error={errorMap[a.action_id] ?? null}
-              onExecute={onExecute}
-              onInject={onInject}
-              onNavigate={onNavigate}
-            />
-          ))}
+      {actions.map((a, i) => (
+        <div key={a.action_id} className="qa-stagger-item" style={{ animationDelay: `${i * 25}ms` }}>
+          <ActionControl
+            action={a}
+            loading={!!loadingMap[a.action_id]}
+            error={errorMap[a.action_id] ?? null}
+            onExecute={onExecute}
+            onInject={onInject}
+            onNavigate={onNavigate}
+          />
         </div>
       ))}
     </>
   );
 }
 
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
+/*  Function view — sub-tabs filter by action type                     */
+/* ================================================================== */
+
+function FunctionView({ actions, loadingMap, errorMap, onExecute, onInject, onNavigate }: {
+  actions: ActionDescriptor[];
+  loadingMap: Record<string, boolean>;
+  errorMap: Record<string, string | null>;
+  onExecute: (id: string, v: unknown) => void;
+  onInject: (t: string) => void;
+  onNavigate: (t: string, o: string) => void;
+}) {
+  const [tab, setTab] = useState<FuncTab>('all');
+  const filtered = useMemo(() => filterByFuncTab(actions, tab), [actions, tab]);
+  const groups = useMemo(() => groupBy(filtered, 'category'), [filtered]);
+
+  // Count badges
+  const counts = useMemo(() => {
+    const c: Record<FuncTab, number> = { all: actions.length, config: 0, lifecycle: 0, inject: 0 };
+    for (const a of actions) {
+      if (a.type === 'chat_inject' || a.type === 'navigation') c.inject++;
+      else if (a.control === 'plugin_toggle' || a.control === 'entry_toggle' || a.control === 'button') c.lifecycle++;
+      else if (a.type === 'instant') c.config++;
+    }
+    return c;
+  }, [actions]);
+
+  return (
+    <div className="qa-func-view">
+      {/* Sub-tab pills */}
+      <div className="qa-pills">
+        {FUNC_TABS.map(t => (
+          <button
+            key={t.id}
+            type="button"
+            className={`qa-pill ${tab === t.id ? 'is-active' : ''}`}
+            onClick={() => setTab(t.id)}
+          >
+            {i18n(t.labelKey, t.labelFallback)}
+            {counts[t.id] > 0 && <span className="qa-pill-badge">{counts[t.id]}</span>}
+          </button>
+        ))}
+      </div>
+
+      {/* Grouped content with crossfade */}
+      <div className="qa-fade-content" key={tab}>
+        {filtered.length === 0 ? (
+          <div className="qa-empty">{i18n('quickActions.empty', '无可用操作')}</div>
+        ) : (
+          Array.from(groups.entries()).map(([cat, items]) => (
+            <div key={cat} className="qa-group">
+              <div className="qa-group-title">{cat}</div>
+              <StaggeredList
+                actions={items}
+                loadingMap={loadingMap}
+                errorMap={errorMap}
+                onExecute={onExecute}
+                onInject={onInject}
+                onNavigate={onNavigate}
+              />
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ================================================================== */
+/*  Plugin view — collapsible cards per plugin                         */
+/* ================================================================== */
+
+function PluginCard({ actions, expanded, onToggle, loadingMap, errorMap, onExecute, onInject, onNavigate }: {
+  actions: ActionDescriptor[];
+  expanded: boolean;
+  onToggle: () => void;
+  loadingMap: Record<string, boolean>;
+  errorMap: Record<string, string | null>;
+  onExecute: (id: string, v: unknown) => void;
+  onInject: (t: string) => void;
+  onNavigate: (t: string, o: string) => void;
+}) {
+  const name = pluginDisplayName(actions);
+  const running = isPluginRunning(actions);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const [height, setHeight] = useState<number | undefined>(undefined);
+
+  // Measure content height for smooth accordion
+  useEffect(() => {
+    if (expanded && contentRef.current) {
+      setHeight(contentRef.current.scrollHeight);
+    } else {
+      setHeight(0);
+    }
+  }, [expanded, actions.length]);
+
+  return (
+    <div className={`qa-plugin-card ${expanded ? 'is-open' : ''}`}>
+      <button type="button" className="qa-plugin-header" onClick={onToggle} aria-expanded={expanded}>
+        <span className={`qa-dot ${running ? 'is-on' : ''}`} />
+        <span className="qa-plugin-name">{name}</span>
+        <span className="qa-plugin-count">{actions.length}</span>
+        <span className={`qa-chevron ${expanded ? 'is-open' : ''}`} />
+      </button>
+      <div
+        className="qa-plugin-body"
+        style={{ height: height !== undefined ? `${height}px` : undefined }}
+      >
+        <div ref={contentRef} className="qa-plugin-body-inner">
+          {expanded && (
+            <StaggeredList
+              actions={actions}
+              loadingMap={loadingMap}
+              errorMap={errorMap}
+              onExecute={onExecute}
+              onInject={onInject}
+              onNavigate={onNavigate}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PluginView({ actions, loadingMap, errorMap, onExecute, onInject, onNavigate }: {
+  actions: ActionDescriptor[];
+  loadingMap: Record<string, boolean>;
+  errorMap: Record<string, string | null>;
+  onExecute: (id: string, v: unknown) => void;
+  onInject: (t: string) => void;
+  onNavigate: (t: string, o: string) => void;
+}) {
+  const byPlugin = useMemo(() => groupBy(actions, 'plugin_id'), [actions]);
+  const pluginIds = useMemo(() => Array.from(byPlugin.keys()), [byPlugin]);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  // Auto-expand first plugin if only one
+  useEffect(() => {
+    if (pluginIds.length === 1 && expandedId === null) setExpandedId(pluginIds[0]);
+  }, [pluginIds, expandedId]);
+
+  return (
+    <div className="qa-plugin-view">
+      {pluginIds.length === 0 ? (
+        <div className="qa-empty">{i18n('quickActions.empty', '无可用操作')}</div>
+      ) : (
+        pluginIds.map((pid, i) => (
+          <div key={pid} className="qa-stagger-item" style={{ animationDelay: `${i * 40}ms` }}>
+            <PluginCard
+              actions={byPlugin.get(pid)!}
+              expanded={expandedId === pid}
+              onToggle={() => setExpandedId(expandedId === pid ? null : pid)}
+              loadingMap={loadingMap}
+              errorMap={errorMap}
+              onExecute={onExecute}
+              onInject={onInject}
+              onNavigate={onNavigate}
+            />
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
+/* ================================================================== */
 /*  Main panel                                                         */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
 
 export default function QuickActionsPanel({
   actions,
@@ -474,151 +574,99 @@ export default function QuickActionsPanel({
   onNavigate,
   onClose,
 }: QuickActionsPanelProps) {
-  const [activeTab, setActiveTab] = useState<TabId>('home');
+  const [viewMode, setViewMode] = useState<ViewMode>('function');
   const [search, setSearch] = useState('');
   const [loadingMap, setLoadingMap] = useState<Record<string, boolean>>({});
   const [errorMap, setErrorMap] = useState<Record<string, string | null>>({});
   const [localActions, setLocalActions] = useState<ActionDescriptor[]>(actions);
   const panelRef = useRef<HTMLDivElement>(null);
 
-  // Sync external actions
   useEffect(() => { setLocalActions(actions); }, [actions]);
 
   // Close on Escape
   useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose();
-    }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
 
   // Close on click outside
   useEffect(() => {
-    function onClick(e: MouseEvent) {
-      if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
-        onClose();
-      }
-    }
-    // Use setTimeout to avoid the opening click from immediately closing
-    const id = setTimeout(() => document.addEventListener('mousedown', onClick), 0);
-    return () => {
-      clearTimeout(id);
-      document.removeEventListener('mousedown', onClick);
+    const onClick = (e: MouseEvent) => {
+      if (panelRef.current && !panelRef.current.contains(e.target as Node)) onClose();
     };
+    const id = setTimeout(() => document.addEventListener('mousedown', onClick), 0);
+    return () => { clearTimeout(id); document.removeEventListener('mousedown', onClick); };
   }, [onClose]);
 
-  // Execute action handler
-  const handleExecute = useCallback(
-    async (actionId: string, value: unknown) => {
-      setLoadingMap(m => ({ ...m, [actionId]: true }));
-      setErrorMap(m => ({ ...m, [actionId]: null }));
-      try {
-        const updated = await onExecuteAction(actionId, value);
-        if (updated) {
-          setLocalActions(prev =>
-            prev.map(a => (a.action_id === updated.action_id ? updated : a)),
-          );
-        }
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        setErrorMap(m => ({ ...m, [actionId]: msg }));
-        // Auto-clear error after 3s
-        setTimeout(() => setErrorMap(m => ({ ...m, [actionId]: null })), 3000);
-      } finally {
-        setLoadingMap(m => ({ ...m, [actionId]: false }));
-      }
-    },
-    [onExecuteAction],
+  const handleExecute = useCallback(async (actionId: string, value: unknown) => {
+    setLoadingMap(m => ({ ...m, [actionId]: true }));
+    setErrorMap(m => ({ ...m, [actionId]: null }));
+    try {
+      const updated = await onExecuteAction(actionId, value);
+      if (updated) setLocalActions(prev => prev.map(a => (a.action_id === updated.action_id ? updated : a)));
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setErrorMap(m => ({ ...m, [actionId]: msg }));
+      setTimeout(() => setErrorMap(m => ({ ...m, [actionId]: null })), 3000);
+    } finally {
+      setLoadingMap(m => ({ ...m, [actionId]: false }));
+    }
+  }, [onExecuteAction]);
+
+  const handleInject = useCallback((text: string) => { onInjectText(text); onClose(); }, [onInjectText, onClose]);
+  const handleNavigate = useCallback((target: string, openIn: string) => { onNavigate(target, openIn); }, [onNavigate]);
+
+  const visible = useMemo(
+    () => localActions.filter(a => matchesSearch(a, search)),
+    [localActions, search],
   );
 
-  // Inject handler — close panel after inject
-  const handleInject = useCallback(
-    (text: string) => {
-      onInjectText(text);
-      onClose();
-    },
-    [onInjectText, onClose],
-  );
-
-  // Navigate handler
-  const handleNavigate = useCallback(
-    (target: string, openIn: string) => {
-      onNavigate(target, openIn);
-    },
-    [onNavigate],
-  );
-
-  // Filtered + tab-scoped actions
-  const visibleActions = useMemo(() => {
-    const tabFiltered = filterForTab(localActions, activeTab);
-    return tabFiltered.filter(a => matchesSearch(a, search));
-  }, [localActions, activeTab, search]);
-
-  const groups = useMemo(() => groupByCategory(visibleActions), [visibleActions]);
-
-  const isEmpty = visibleActions.length === 0;
+  const sharedProps = { loadingMap, errorMap, onExecute: handleExecute, onInject: handleInject, onNavigate: handleNavigate };
 
   return (
-    <div className="quick-actions-panel" ref={panelRef} role="dialog" aria-label={i18n('quickActions.title', '快捷操作')}>
-      {/* Header */}
-      <div className="quick-actions-header">
-        <span className="quick-actions-title">{i18n('quickActions.title', '快捷操作')}</span>
-        <div className="quick-actions-search-wrap">
+    <div className="qa-panel" ref={panelRef} role="dialog" aria-label={i18n('quickActions.title', '快捷操作')}>
+      {/* ── Header ── */}
+      <div className="qa-header">
+        <span className="qa-title">{i18n('quickActions.title', '快捷操作')}</span>
+        <div className="qa-search-wrap">
+          <span className="qa-search-icon" aria-hidden="true">🔍</span>
           <input
             type="text"
-            className="quick-actions-search"
-            placeholder={i18n('quickActions.searchPlaceholder', '搜索操作...')}
+            className="qa-search"
+            placeholder={i18n('quickActions.searchPlaceholder', '搜索...')}
             value={search}
             onChange={e => setSearch(e.target.value)}
             aria-label={i18n('quickActions.searchAriaLabel', '搜索操作')}
           />
-          <span className="quick-actions-search-icon" aria-hidden="true">🔍</span>
         </div>
       </div>
 
-      {/* Content */}
-      <div className="quick-actions-content">
-        {isEmpty ? (
-          <div className="quick-actions-empty">
-            {i18n('quickActions.empty', '无可用操作')}
-          </div>
-        ) : activeTab === 'home' ? (
-          <HomeView
-            groups={groups}
-            loadingMap={loadingMap}
-            errorMap={errorMap}
-            onExecute={handleExecute}
-            onInject={handleInject}
-            onNavigate={handleNavigate}
-          />
-        ) : (
-          <GroupedListView
-            groups={groups}
-            loadingMap={loadingMap}
-            errorMap={errorMap}
-            onExecute={handleExecute}
-            onInject={handleInject}
-            onNavigate={handleNavigate}
-          />
-        )}
-      </div>
-
-      {/* Tab bar */}
-      <div className="quick-actions-tabs" role="tablist">
-        {TABS.map(tab => (
+      {/* ── View mode switcher ── */}
+      <div className="qa-mode-bar">
+        {VIEW_MODES.map(m => (
           <button
-            key={tab.id}
+            key={m.id}
             type="button"
-            role="tab"
-            aria-selected={activeTab === tab.id}
-            className={`quick-actions-tab ${activeTab === tab.id ? 'is-active' : ''}`}
-            onClick={() => setActiveTab(tab.id)}
+            className={`qa-mode-btn ${viewMode === m.id ? 'is-active' : ''}`}
+            onClick={() => setViewMode(m.id)}
+            aria-pressed={viewMode === m.id}
           >
-            <span className="quick-actions-tab-icon">{tab.icon}</span>
-            <span className="quick-actions-tab-label">{i18n(tab.labelKey, tab.labelFallback)}</span>
+            <span className="qa-mode-icon">{m.icon}</span>
+            {i18n(m.labelKey, m.labelFallback)}
           </button>
         ))}
+      </div>
+
+      {/* ── Content ── */}
+      <div className="qa-content">
+        <div className="qa-fade-content" key={viewMode}>
+          {viewMode === 'function' ? (
+            <FunctionView actions={visible} {...sharedProps} />
+          ) : (
+            <PluginView actions={visible} {...sharedProps} />
+          )}
+        </div>
       </div>
     </div>
   );

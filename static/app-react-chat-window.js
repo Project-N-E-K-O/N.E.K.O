@@ -443,12 +443,6 @@
         });
     }
 
-    function handleQuickActionInjectText(text) {
-        // Dispatch a custom event that the React component can pick up via its onQuickActionInjectText prop
-        // The prop is passed directly, so this function is the callback itself
-        // It will be called by the React component — no extra dispatch needed
-    }
-
     /* ---- End Quick Actions ---- */
 
     function buildRenderProps() {
@@ -471,12 +465,11 @@
             onAvatarGeneratorClick: handleAvatarGeneratorClick,
             onTranslateToggle: handleTranslateToggle,
             quickActions: _cachedActions,
+            onQuickActionsRequest: function () {
+                fetchChatActions();
+            },
             onQuickActionExecute: function (actionId, value) {
                 return executeChatAction(actionId, value);
-            },
-            onQuickActionInjectText: function (text) {
-                // The React component handles draft injection internally via its handleInjectText
-                // This callback is a no-op on the bridge side since the React component manages draft state
             }
         });
     }
@@ -1833,6 +1826,10 @@
         createResizeEdges();
         bindResizing();
         bindBridgeEvents();
+
+        // Quick actions are fetched on-demand when the panel is opened,
+        // ensuring data is always fresh regardless of plugin startup timing.
+        // The openWindow handler and bridge events also trigger refreshes.
 
         // 恢复手机端用户设置的高度
         try {

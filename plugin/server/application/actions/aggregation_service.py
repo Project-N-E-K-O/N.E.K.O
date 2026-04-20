@@ -15,6 +15,7 @@ from plugin.server.application.actions.list_actions_provider import ListActionsP
 from plugin.server.application.actions.settings_provider import SettingsActionProvider
 from plugin.server.application.actions.system_provider import SystemActionProvider
 from plugin.server.domain.action_models import ActionDescriptor
+from plugin.server.domain.action_provider import ActionProvider
 
 logger = get_logger("server.application.actions.aggregation")
 
@@ -23,13 +24,10 @@ class ActionAggregationService:
     """Aggregate ``ActionDescriptor`` items from all providers."""
 
     def __init__(self) -> None:
-        self._settings_provider = SettingsActionProvider()
-        self._list_actions_provider = ListActionsProvider()
-        self._system_provider = SystemActionProvider()
-        self._providers = [
-            self._settings_provider,
-            self._list_actions_provider,
-            self._system_provider,
+        self._providers: list[ActionProvider] = [
+            SettingsActionProvider(),
+            ListActionsProvider(),
+            SystemActionProvider(),
         ]
 
     async def aggregate_actions(

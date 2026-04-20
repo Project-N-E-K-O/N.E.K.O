@@ -24,6 +24,7 @@ class ActionDescriptor(BaseModel):
     # Instant action fields (type == "instant")
     control: Literal[
         "toggle",
+        "button",
         "dropdown",
         "number",
         "slider",

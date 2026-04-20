@@ -22,7 +22,7 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
   onTranslateToggle?: () => void;
   quickActions?: ActionDescriptor[];
   onQuickActionExecute?: (actionId: string, value: unknown) => Promise<ActionDescriptor | null>;
-  onQuickActionInjectText?: (text: string) => void;
+  onQuickActionsRequest?: () => void;
 };
 
 const defaultMessages: ChatMessage[] = [];
@@ -546,6 +546,7 @@ export default function App({
   onTranslateToggle,
   quickActions,
   onQuickActionExecute,
+  onQuickActionsRequest,
   rollbackDraft,
   _rollbackKey,
 }: ChatWindowProps) {
@@ -1390,9 +1391,13 @@ export default function App({
                     type="button"
                     aria-label={i18n('chat.quickActionsAriaLabel', '快捷操作')}
                     title={i18n('chat.quickActionsLabel', '快捷操作')}
-                    onClick={() => setQuickActionsPanelOpen(open => !open)}
+                    onClick={() => {
+                      const willOpen = !quickActionsPanelOpen;
+                      setQuickActionsPanelOpen(willOpen);
+                      if (willOpen && onQuickActionsRequest) onQuickActionsRequest();
+                    }}
                   >
-                    <span aria-hidden="true">⚡</span>
+                    <img src="/static/icons/quick_actions_icon.png" alt="" aria-hidden="true" />
                   </button>
                   <span className="composer-tool-divider" aria-hidden="true">|</span>
                   <button

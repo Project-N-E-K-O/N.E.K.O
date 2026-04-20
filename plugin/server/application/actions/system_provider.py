@@ -41,27 +41,25 @@ def _to_bool(value: object, *, default: bool) -> bool:
 
 
 def _has_static_ui(meta: dict[str, Any]) -> bool:
-    """Check whether a plugin has a usable static UI directory."""
-    # Explicit registration via static_ui_config
+    """Check whether a plugin has a usable static UI directory.
+
+    Only returns True when the plugin has *explicitly* registered a
+    static UI config (via ``register_static_ui`` or ``static_ui_config``
+    in metadata).  The config_path inference is intentionally removed
+    to avoid false positives for plugins that happen to have a
+    ``static/`` directory but don't serve a UI.
+    """
     static_ui_obj = meta.get("static_ui_config")
-    if isinstance(static_ui_obj, Mapping):
-        enabled = _to_bool(static_ui_obj.get("enabled"), default=False)
-        if enabled:
-            directory = static_ui_obj.get("directory")
-            if isinstance(directory, str) and directory:
-                p = Path(directory)
-                return p.is_dir() and (p / "index.html").is_file()
-
-    # Inferred from config_path
-    config_path_obj = meta.get("config_path")
-    if isinstance(config_path_obj, str) and config_path_obj:
-        try:
-            static_dir = Path(config_path_obj).parent / "static"
-            return static_dir.is_dir() and (static_dir / "index.html").is_file()
-        except Exception:
-            pass
-
-    return False
+    if not isinstance(static_ui_obj, Mapping):
+        return False
+    enabled = _to_bool(static_ui_obj.get("enabled"), default=False)
+    if not enabled:
+        return False
+    directory = static_ui_obj.get("directory")
+    if not isinstance(directory, str) or not directory:
+        return False
+    p = Path(directory)
+    return p.is_dir() and (p / "index.html").is_file()
 
 
 def _get_entries_for_plugin(
@@ -91,6 +89,7 @@ def _get_entries_for_plugin(
 
         meta = getattr(handler, "meta", None)
         entry_name = getattr(meta, "name", entry_id) if meta else entry_id
+        entry_kind = getattr(meta, "kind", "action") if meta else "action"
 
         # Determine enabled state from metadata
         enabled = True
@@ -101,6 +100,7 @@ def _get_entries_for_plugin(
         entries.append({
             "id": entry_id,
             "name": entry_name,
+            "kind": entry_kind,
             "enabled": enabled,
         })
 
@@ -168,8 +168,7 @@ def _collect_system_actions_sync(
             description="",
             category=_SYSTEM_CATEGORY,
             plugin_id=pid,
-            control="toggle",
-            current_value=None,
+            control="button",
             disabled=is_running,
         ))
         actions.append(ActionDescriptor(
@@ -179,8 +178,7 @@ def _collect_system_actions_sync(
             description="",
             category=_SYSTEM_CATEGORY,
             plugin_id=pid,
-            control="toggle",
-            current_value=None,
+            control="button",
             disabled=not is_running,
         ))
         actions.append(ActionDescriptor(
@@ -190,8 +188,7 @@ def _collect_system_actions_sync(
             description="",
             category=_SYSTEM_CATEGORY,
             plugin_id=pid,
-            control="toggle",
-            current_value=None,
+            control="button",
             disabled=not is_running,
         ))
 
@@ -207,25 +204,41 @@ def _collect_system_actions_sync(
             current_value=is_running,
         ))
 
-        # ── Entry toggles (running plugins only) ──
+        # ── Entry actions (running plugins only) ──
         if is_running:
             entries = _get_entries_for_plugin(pid, handlers_snapshot)
             for entry in entries:
                 entry_id = entry["id"]
                 entry_name = entry.get("name", entry_id)
-                actions.append(ActionDescriptor(
-                    action_id=f"system:{pid}:entry:{entry_id}",
-                    type="instant",
-                    label=str(entry_name),
-                    description="",
-                    category=_SYSTEM_CATEGORY,
-                    plugin_id=pid,
-                    control="entry_toggle",
-                    current_value=entry.get("enabled", True),
-                ))
+                entry_kind = entry.get("kind", "action")
+
+                # Only long-running service entries get a toggle;
+                # everything else (action, hook, timer, …) is a button.
+                if entry_kind == "service":
+                    actions.append(ActionDescriptor(
+                        action_id=f"system:{pid}:entry:{entry_id}",
+                        type="instant",
+                        label=str(entry_name),
+                        description="",
+                        category=_SYSTEM_CATEGORY,
+                        plugin_id=pid,
+                        control="entry_toggle",
+                        current_value=entry.get("enabled", True),
+                    ))
+                else:
+                    actions.append(ActionDescriptor(
+                        action_id=f"system:{pid}:entry:{entry_id}",
+                        type="instant",
+                        label=str(entry_name),
+                        description="",
+                        category=_SYSTEM_CATEGORY,
+                        plugin_id=pid,
+                        control="button",
+                    ))
 
         # ── Static UI navigation ──
         if _has_static_ui(meta):
+            from config import USER_PLUGIN_SERVER_PORT as _ui_port
             actions.append(ActionDescriptor(
                 action_id=f"system:{pid}:open_ui",
                 type="navigation",
@@ -233,7 +246,7 @@ def _collect_system_actions_sync(
                 description="",
                 category=_SYSTEM_CATEGORY,
                 plugin_id=pid,
-                target=f"/plugin/{pid}/ui/",
+                target=f"http://127.0.0.1:{_ui_port}/plugin/{pid}/ui/",
                 open_in="new_tab",
             ))
 

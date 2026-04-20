@@ -25,7 +25,12 @@ logger = get_logger("server.application.actions.settings_provider")
 # ---------------------------------------------------------------------------
 
 def _import_settings_class(entry_point: str) -> type | None:
-    """Import the plugin class from *entry_point* and return its ``Settings``."""
+    """Import the plugin class from *entry_point* and return its ``Settings``.
+
+    .. deprecated:: Use ``resolve_settings_class`` from infrastructure layer
+       for new code.  Kept here only for the sync collection path which
+       already has the entry_point resolved.
+    """
     try:
         module_path, class_name = entry_point.split(":", 1)
         mod = importlib.import_module(module_path)
