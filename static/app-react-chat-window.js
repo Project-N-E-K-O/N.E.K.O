@@ -424,14 +424,15 @@
             return res.json();
         })
         .then(function (data) {
-            if (data && data.success && data.action) {
+            if (data && data.success) {
                 // Lifecycle actions (start/stop/reload/toggle) change the
                 // disabled state of sibling actions.  Re-fetch all actions
                 // so every button reflects the current plugin state.
                 fetchChatActions();
-                return data.action;
+                return data.action || null;
             }
-            return null;
+            // Backend returned success: false — treat as error
+            throw new Error(data && data.message ? data.message : 'Action failed');
         })
         .catch(function (err) {
             console.error('[ReactChatWindow] executeChatAction failed:', err);

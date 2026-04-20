@@ -261,18 +261,14 @@ class _SystemActionHandler:
         action_id: str,
         value: object,
     ) -> ActionExecuteResponse:
-        # Button-type entries (action, hook, timer, …) send value=null.
-        # They don't have enable/disable semantics — just acknowledge.
-        if not isinstance(value, bool):
-            return ActionExecuteResponse(
-                success=True,
-                action=await _find_action(self._aggregation, action_id),
-                message=f"Entry '{entry_id}' triggered",
-            )
+        from plugin.core.state import state
 
-        # Toggle-type entries (service) send value=true/false.
-        running = await asyncio.to_thread(_is_plugin_running, plugin_id)
-        if not running:
+        # Resolve the host — required for both trigger and toggle paths.
+        host = None
+        with state.acquire_plugin_hosts_read_lock():
+            host = state.plugin_hosts.get(plugin_id)
+
+        if host is None:
             raise ServerDomainError(
                 code="PLUGIN_NOT_RUNNING",
                 message=f"Plugin '{plugin_id}' is not running",
@@ -280,20 +276,41 @@ class _SystemActionHandler:
                 details={"plugin_id": plugin_id},
             )
 
+        # ── Button-type entries (value != bool): trigger execution via IPC ──
+        if not isinstance(value, bool):
+            try:
+                trigger = getattr(host, "trigger", None)
+                if trigger is not None:
+                    result = await trigger(entry_id, {})
+                    msg = str(result) if result is not None else f"Entry '{entry_id}' executed"
+                else:
+                    msg = f"Entry '{entry_id}' triggered (no IPC)"
+            except Exception as exc:
+                raise ServerDomainError(
+                    code="ENTRY_TRIGGER_FAILED",
+                    message=f"Failed to trigger entry '{entry_id}': {exc}",
+                    status_code=500,
+                    details={
+                        "plugin_id": plugin_id,
+                        "entry_id": entry_id,
+                        "error": str(exc),
+                    },
+                ) from exc
+
+            return ActionExecuteResponse(
+                success=True,
+                action=await _find_action(self._aggregation, action_id),
+                message=msg,
+            )
+
+        # ── Toggle-type entries (value == bool): enable/disable service ──
         enable = value
 
         try:
-            from plugin.core.state import state
-
-            host = None
-            with state.acquire_plugin_hosts_read_lock():
-                host = state.plugin_hosts.get(plugin_id)
-
-            if host is not None:
-                method_name = "enable_entry" if enable else "disable_entry"
-                method = getattr(host, method_name, None)
-                if method is not None:
-                    await asyncio.to_thread(method, entry_id)
+            method_name = "enable_entry" if enable else "disable_entry"
+            method = getattr(host, method_name, None)
+            if method is not None:
+                await asyncio.to_thread(method, entry_id)
         except Exception as exc:
             raise ServerDomainError(
                 code="ENTRY_TOGGLE_FAILED",

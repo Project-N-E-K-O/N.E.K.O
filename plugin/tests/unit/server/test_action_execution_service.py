@@ -42,12 +42,17 @@ class _FakeHost:
     def __init__(self) -> None:
         self.enabled_entries: list[str] = []
         self.disabled_entries: list[str] = []
+        self.triggered_entries: list[str] = []
 
     def enable_entry(self, entry_id: str) -> None:
         self.enabled_entries.append(entry_id)
 
     def disable_entry(self, entry_id: str) -> None:
         self.disabled_entries.append(entry_id)
+
+    async def trigger(self, entry_id: str, args: dict, timeout: float = 30.0) -> object:
+        self.triggered_entries.append(entry_id)
+        return {"ok": True}
 
 
 class _FakeState:
@@ -148,12 +153,31 @@ class TestSystemActions:
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
 class TestEntryActions:
-    async def test_button_entry_returns_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Button-type entries (value=null) should succeed without enable/disable."""
-        svc = _build_service()
-        resp = await svc.execute("system:demo:entry:do_thing", value=None)
-        assert resp.success is True
-        assert "triggered" in resp.message
+    async def test_button_entry_triggers_via_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Button-type entries (value=null) should call host.trigger."""
+        host = _FakeHost()
+        from plugin.core.state import state as real_state
+        original_hosts = real_state.plugin_hosts
+        real_state.plugin_hosts = {"demo": host}
+        try:
+            svc = _build_service()
+            resp = await svc.execute("system:demo:entry:do_thing", value=None)
+            assert resp.success is True
+            assert "do_thing" in host.triggered_entries
+        finally:
+            real_state.plugin_hosts = original_hosts
+
+    async def test_button_entry_plugin_not_running(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from plugin.core.state import state as real_state
+        original_hosts = real_state.plugin_hosts
+        real_state.plugin_hosts = {}
+        try:
+            svc = _build_service()
+            with pytest.raises(ServerDomainError) as exc_info:
+                await svc.execute("system:demo:entry:do_thing", value=None)
+            assert exc_info.value.code == "PLUGIN_NOT_RUNNING"
+        finally:
+            real_state.plugin_hosts = original_hosts
 
     async def test_toggle_entry_enable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         host = _FakeHost()

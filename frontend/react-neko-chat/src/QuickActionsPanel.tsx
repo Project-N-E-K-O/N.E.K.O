@@ -671,19 +671,17 @@ export default function QuickActionsPanel({
   const handleExecute = useCallback(async (actionId: string, value: unknown) => {
     setLoadingMap(m => ({ ...m, [actionId]: true }));
     setErrorMap(m => ({ ...m, [actionId]: null }));
+    const label = localActions.find(a => a.action_id === actionId)?.label ?? actionId;
     try {
       const updated = await onExecuteAction(actionId, value);
       if (updated) {
         setLocalActions(prev => prev.map(a => (a.action_id === updated.action_id ? updated : a)));
       }
-      // Derive a short label from the actionId for the toast
-      const label = localActions.find(a => a.action_id === actionId)?.label ?? actionId;
       pushToast('success', `${label}: 操作成功`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       setErrorMap(m => ({ ...m, [actionId]: msg }));
       setTimeout(() => setErrorMap(m => ({ ...m, [actionId]: null })), 3000);
-      const label = localActions.find(a => a.action_id === actionId)?.label ?? actionId;
       pushToast('error', `${label}: ${msg}`);
     } finally {
       setLoadingMap(m => ({ ...m, [actionId]: false }));
