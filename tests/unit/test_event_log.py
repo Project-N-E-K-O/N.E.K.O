@@ -278,7 +278,11 @@ def test_scan_head_handles_corrupt_first_line(tmp_path):
 
 
 def test_record_and_save_runs_all_steps_in_order(tmp_path):
-    """load → append → mutate → save → sentinel advance, all inside lock."""
+    """load → append → mutate → save → sentinel advance, all inside lock.
+
+    Pins the append-first ordering: if append raises, the caller's shared
+    cache (mutated by sync_mutate_view) must not be dirtied.
+    """
     from memory.event_log import EVT_FACT_ADDED
 
     log = _fresh_log(str(tmp_path))
@@ -298,12 +302,19 @@ def test_record_and_save_runs_all_steps_in_order(tmp_path):
         call_order.append("save")
         view["saved"] = True
 
-    eid = log.record_and_save(
-        "小天", EVT_FACT_ADDED, {"fact_id": "f1"},
-        sync_load_view=load, sync_mutate_view=mutate, sync_save_view=save,
-    )
+    real_append = log._append_unlocked
 
-    assert call_order == ["load", "mutate", "save"]
+    def append_probe(name, event_type, payload):
+        call_order.append("append")
+        return real_append(name, event_type, payload)
+
+    with patch.object(log, "_append_unlocked", side_effect=append_probe):
+        eid = log.record_and_save(
+            "小天", EVT_FACT_ADDED, {"fact_id": "f1"},
+            sync_load_view=load, sync_mutate_view=mutate, sync_save_view=save,
+        )
+
+    assert call_order == ["load", "append", "mutate", "save"]
     assert the_view == {"loaded": True, "mutated": True, "saved": True}
     # Event landed
     tail = log.read_since("小天", None)
@@ -313,16 +324,19 @@ def test_record_and_save_runs_all_steps_in_order(tmp_path):
 
 
 def test_record_and_save_append_failure_skips_save_and_sentinel(tmp_path):
-    """If event append raises, view save must NOT happen, sentinel must NOT advance."""
+    """If event append raises, view mutate+save must NOT happen and sentinel
+    must NOT advance — the append-first invariant keeps shared cache clean."""
     from memory.event_log import EVT_FACT_ADDED
 
     log = _fresh_log(str(tmp_path))
+    mutate_called = [False]
     save_called = [False]
 
     def load(name):
         return {"x": 1}
 
     def mutate(view):
+        mutate_called[0] = True
         view["x"] = 2
 
     def save(name, view):
@@ -335,6 +349,8 @@ def test_record_and_save_append_failure_skips_save_and_sentinel(tmp_path):
                 sync_load_view=load, sync_mutate_view=mutate, sync_save_view=save,
             )
 
+    # Append-first means mutate never runs when append fails → shared cache clean.
+    assert mutate_called[0] is False
     assert save_called[0] is False
     # Sentinel untouched
     assert log.read_sentinel("小天") is None
@@ -396,8 +412,11 @@ def test_record_and_save_serializes_concurrent_calls(tmp_path):
 def test_serialization_oracle_rejects_unlocked_mode(tmp_path):
     """Diagnostic-power check: with the lock patched out, the previous
     test's oracle MUST fail — proves the assertion isn't passing by
-    accident of scheduling."""
-    import time
+    accident of scheduling.
+
+    Uses a Barrier so every worker finishes its read before any worker
+    writes — deterministic lost-update, no reliance on sleep timing.
+    """
     import threading as real_threading
     from contextlib import nullcontext
     from memory.event_log import EVT_FACT_ADDED
@@ -406,11 +425,14 @@ def test_serialization_oracle_rejects_unlocked_mode(tmp_path):
     # Replace per-character lock with a no-op context manager
     log._get_lock = lambda name: nullcontext()
 
+    num_workers = 5
     mutable_view = {"value": 0}
+    read_barrier = real_threading.Barrier(num_workers)
 
     def mutate(view):
         current = view["value"]
-        time.sleep(0.05)
+        # Hold the RMW open until every worker has read the same value.
+        read_barrier.wait(timeout=5)
         view["value"] = current + 1
 
     def worker(tag: str):
@@ -421,14 +443,18 @@ def test_serialization_oracle_rejects_unlocked_mode(tmp_path):
             sync_save_view=lambda n, v: None,
         )
 
-    threads = [real_threading.Thread(target=worker, args=(f"w{i}",)) for i in range(5)]
+    threads = [
+        real_threading.Thread(target=worker, args=(f"w{i}",))
+        for i in range(num_workers)
+    ]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
 
-    # With no lock, at least two workers race → lost updates → final < 5
-    assert mutable_view["value"] < 5, \
+    # Every worker read 0 before any wrote → final value is exactly 1.
+    # With the lock, workers would serialize and final value would be num_workers.
+    assert mutable_view["value"] < num_workers, \
         f"expected lost updates without lock, got {mutable_view['value']}"
 
 
