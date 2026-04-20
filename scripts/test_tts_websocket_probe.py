@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64 as _b64
 import json
 import logging
 import os
@@ -255,7 +256,6 @@ async def run_probe(args: argparse.Namespace, log: logging.Logger) -> int:
                 await ws.send(te)
                 done = json.dumps({"type": "tts.text.done", "data": {"session_id": session_id}})
                 await ws.send(done)
-                import base64 as _b64
                 audio_chunks: list[bytes] = []
                 final_audio: bytes | None = None
                 audio_done = False
