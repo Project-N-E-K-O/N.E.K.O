@@ -255,6 +255,14 @@
         // 同步字幕设置到共享状态
         S.subtitleEnabled = currentSubtitleEnabled;
         S.userLanguage = currentUserLanguage;
+        if (subtitleStore && typeof subtitleStore.updateSettings === 'function') {
+            subtitleStore.updateSettings({
+                subtitleEnabled: S.subtitleEnabled,
+                userLanguage: S.userLanguage
+            }, {
+                source: 'app-settings-save'
+            });
+        }
 
         // 同步到服务器（异步，不阻塞）
         syncSettingsToServer();

@@ -681,9 +681,6 @@ function initSubtitleHostUi() {
             }
         },
         onSettingsApplied: function(state, refs, detail) {
-            if (refs && refs.display && SubtitleShared && typeof SubtitleShared.applySubtitlePreset === 'function') {
-                SubtitleShared.applySubtitlePreset(refs.display, state.subtitleSize, { host: 'web' });
-            }
             if (detail && detail.source === 'subtitle-ui-size' && refs && refs.text && refs.text.textContent) {
                 writeSubtitleText(refs.text.textContent);
             }

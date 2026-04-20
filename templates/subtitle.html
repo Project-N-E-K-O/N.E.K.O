@@ -19,7 +19,7 @@
         </button>
         <div id="subtitle-settings-panel" class="hidden">
             <div class="subtitle-settings-row">
-                <span class="subtitle-settings-label">目标语言</span>
+                <span class="subtitle-settings-label" data-subtitle-label="targetLang">目标语言</span>
                 <select id="subtitle-lang-select" title="目标语言">
                     <option value="zh">中文</option>
                     <option value="en">English</option>
@@ -29,19 +29,19 @@
                 </select>
             </div>
             <div class="subtitle-settings-row">
-                <span class="subtitle-settings-label">不透明度</span>
+                <span class="subtitle-settings-label" data-subtitle-label="opacity">不透明度</span>
                 <input type="range" id="subtitle-opacity-slider" min="20" max="100" value="95" title="不透明度">
                 <span id="subtitle-opacity-value">95%</span>
             </div>
             <div class="subtitle-settings-row">
-                <span class="subtitle-settings-label">整体拖动</span>
+                <span class="subtitle-settings-label" data-subtitle-label="dragAnywhere">整体拖动</span>
                 <label class="subtitle-settings-switch">
                     <input type="checkbox" id="subtitle-drag-mode-toggle" aria-label="整体拖动开关">
                     <span class="subtitle-settings-track"></span>
                 </label>
             </div>
             <div class="subtitle-settings-row">
-                <span class="subtitle-settings-label">大小</span>
+                <span class="subtitle-settings-label" data-subtitle-label="size">大小</span>
                 <div class="subtitle-size-group">
                     <button type="button" class="subtitle-size-btn" data-size="small">小</button>
                     <button type="button" class="subtitle-size-btn active" data-size="medium">中</button>

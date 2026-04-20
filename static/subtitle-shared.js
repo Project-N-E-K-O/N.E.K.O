@@ -480,10 +480,11 @@
         if (!refs) return;
         var locale = state && state.uiLocale ? state.uiLocale : getCurrentUiLocale();
         if (refs.labels && refs.labels.length) {
-            if (refs.labels[0]) refs.labels[0].textContent = getUiText('targetLang', locale);
-            if (refs.labels[1]) refs.labels[1].textContent = getUiText('opacity', locale);
-            if (refs.labels[2]) refs.labels[2].textContent = getUiText('dragAnywhere', locale);
-            if (refs.labels[3]) refs.labels[3].textContent = getUiText('size', locale);
+            refs.labels.forEach(function(label) {
+                var key = label && label.dataset ? label.dataset.subtitleLabel : '';
+                if (!key) return;
+                label.textContent = getUiText(key, locale);
+            });
         }
         if (refs.settingsBtn) {
             refs.settingsBtn.title = getUiText('settingsBtn', locale);
@@ -974,7 +975,7 @@
             });
         }
 
-        cleanupFns.push(options.host === 'window' ? attachWindowDrag(refs, options) : attachWebDrag(refs, options));
+        cleanupFns.push(options.host === 'window' ? attachWindowDrag(refs, options) : attachWebDrag(refs));
 
         return {
             refs: refs,
