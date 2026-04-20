@@ -213,7 +213,11 @@ class PluginCliService:
                 output_path = (
                     _require_within(Path(out).expanduser().resolve(), _TARGET_ROOT, field="out")
                     if out
-                    else resolved_target_dir / f"{resolved_bundle_id}.neko-bundle"
+                    else _require_within(
+                        (resolved_target_dir / f"{resolved_bundle_id}.neko-bundle").resolve(),
+                        _TARGET_ROOT,
+                        field="out",
+                    )
                 )
                 result = pack_bundle(
                     plugin_dirs,

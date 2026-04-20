@@ -28,14 +28,17 @@
 
     <div v-else class="package-list">
       <TransitionGroup name="pkg-item" tag="div" class="package-list__inner">
-        <button
+        <div
           v-for="(pkg, index) in packages"
           :key="pkg.path"
-          type="button"
+          role="button"
+          tabindex="0"
           class="package-list-item"
           :class="{ 'package-list-item--active': activePackage === pkg.path || activePackage === pkg.name }"
           :style="{ '--item-i': index }"
           @click="$emit('select', pkg)"
+          @keydown.enter.prevent="$emit('select', pkg)"
+          @keydown.space.prevent="$emit('select', pkg)"
         >
         <div class="package-list-item__main">
           <div class="package-list-item__title">
@@ -55,7 +58,7 @@
           <el-button text @click.stop="$emit('verify', pkg)">校验</el-button>
           <el-button text @click.stop="$emit('prepareUnpack', pkg)">解包</el-button>
         </div>
-      </button>
+      </div>
       </TransitionGroup>
     </div>
   </el-card>
