@@ -1539,10 +1539,11 @@ function confirmClearCustomApi() {
                 delete keyEl.dataset.masked;
             }
         }
-        // 重置 Provider 下拉为默认值（跟随核心API）
+        // 重置 Provider 下拉为默认值（跟随核心API）并同步联动状态
         const providerEl = document.getElementById(`${mt}ModelProvider`);
         if (providerEl) {
             providerEl.value = 'follow_core';
+            onCustomModelProviderChange(mt);
         }
     });
 
