@@ -2042,7 +2042,8 @@
             "size": "Size",
             "sizeSmall": "S",
             "sizeMedium": "M",
-            "sizeLarge": "L"
+            "sizeLarge": "L",
+            "settingsBtn": "Subtitle Settings"
         }
     },
     "viewer": {

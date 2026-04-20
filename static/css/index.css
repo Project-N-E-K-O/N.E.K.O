@@ -1529,6 +1529,9 @@ body.react-chat-window-dragging {
     pointer-events: auto;
     background: rgba(255, 255, 255, 0.12);
     opacity: 0;
+    border: none;
+    padding: 0;
+    font-size: inherit;
 }
 #subtitle-settings-btn svg {
     width: 13px;

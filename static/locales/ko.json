@@ -2042,7 +2042,8 @@
             "size": "크기",
             "sizeSmall": "소",
             "sizeMedium": "중",
-            "sizeLarge": "대"
+            "sizeLarge": "대",
+            "settingsBtn": "자막 설정"
         }
     },
     "viewer": {

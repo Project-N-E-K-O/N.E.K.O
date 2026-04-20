@@ -2042,7 +2042,8 @@
             "size": "サイズ",
             "sizeSmall": "小",
             "sizeMedium": "中",
-            "sizeLarge": "大"
+            "sizeLarge": "大",
+            "settingsBtn": "字幕設定"
         }
     },
     "viewer": {

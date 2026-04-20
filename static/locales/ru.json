@@ -2042,7 +2042,8 @@
             "size": "Размер",
             "sizeSmall": "М",
             "sizeMedium": "С",
-            "sizeLarge": "Б"
+            "sizeLarge": "Б",
+            "settingsBtn": "Настройки субтитров"
         }
     },
     "viewer": {
