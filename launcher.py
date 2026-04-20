@@ -32,6 +32,13 @@ def _configure_stdio_utf8() -> None:
             pass
 
 
+# 模块级立即 reconfigure 一次：即使 launcher 被作为 module import（比如
+# tests/unit/test_cloudsave_startup_flow.py 里 8 处 import launcher），也
+# 能保证 Windows 下中文 log 不崩。stream.reconfigure 幂等，
+# _bootstrap_launcher_runtime 里再调一次只是 no-op。
+_configure_stdio_utf8()
+
+
 # 检测打包环境（PyInstaller 设 sys.frozen，Nuitka 设 __compiled__）
 IS_FROZEN = getattr(sys, 'frozen', False) or '__compiled__' in globals()
 
