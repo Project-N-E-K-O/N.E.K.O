@@ -484,6 +484,29 @@ ENGLISH_PATTERN = re.compile(r'[a-zA-Z]')
 KOREAN_PATTERN = re.compile(r'[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]')  # 谚文
 RUSSIAN_PATTERN = re.compile(r'[\u0400-\u04ff]')  # 西里尔字母（俄语）
 
+# TTS 开头几个字符的轻量语言检测
+# 场景：WS bistream TTS provider（CosyVoice/Qwen/Step）在建立 session 前
+# 扫描缓冲的首批文本，把语言提示传给服务端。命中假名直接判日语，其他语言
+# 交由服务端自动识别（provider 一般支持中/英/韩/粤等自动识别，但对日语在
+# 上下文不够时容易判错）。
+_TTS_KANA_RE = re.compile(r'[\u3040-\u309f\u30a0-\u30ff]')
+TTS_LANG_DETECT_MIN_CHARS = 6
+
+
+def detect_tts_language_hint(text: str) -> Optional[str]:
+    """扫描文本，命中假名返回 'ja'，否则返回 None（交由服务端自动识别）。
+
+    返回值为 provider 无关的语言代码（'ja'）。各 TTS provider worker 自行把
+    该代码映射到自己的字段：
+      - CosyVoice: language_hints=["ja"]
+      - Qwen:      session.language_type="Japanese"
+      - lanlan.tech (step free): voice_label={"language": "日语"}
+      - lanlan.app (step free):  language_code="ja-JP"
+    """
+    if text and _TTS_KANA_RE.search(text):
+        return 'ja'
+    return None
+
 
 def _split_text_into_chunks(text: str, max_chunk_size: int) -> List[str]:
     """

@@ -835,17 +835,14 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
         if (this._goodbyeClicked) {
             const lockIcon = document.getElementById('live2d-lock-icon');
             const floatingButtons = document.getElementById('live2d-floating-buttons');
-            const returnButtonContainer = document.getElementById('live2d-return-button-container');
 
             if (lockIcon) {
                 lockIcon.style.setProperty('display', 'none', 'important');
             }
-            // 隐藏浮动按钮容器，显示"请她回来"按钮
+            // goodbye 状态下这里只维护锁图标/浮动按钮可见性。
+            // 返回球必须由 app-ui.js 在完成定位后再显示，避免先以默认 (0, 0) 闪现。
             if (floatingButtons) {
                 floatingButtons.style.display = 'none';
-            }
-            if (returnButtonContainer) {
-                returnButtonContainer.style.display = 'block';
             }
             ctrlFadeActive = false;
             stationaryFadeActive = false;

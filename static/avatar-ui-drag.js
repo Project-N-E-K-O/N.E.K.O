@@ -219,10 +219,13 @@ Live2DManager.prototype.setupReturnButtonContainerDrag = function (returnButtonC
             dragStartX = e.clientX;
             dragStartY = e.clientY;
 
-            const currentLeft = parseInt(returnButtonContainer.style.left) || 0;
-            const currentTop = parseInt(returnButtonContainer.style.top) || 0;
-            containerStartX = currentLeft;
-            containerStartY = currentTop;
+            const rect = returnButtonContainer.getBoundingClientRect();
+            containerStartX = rect.left;
+            containerStartY = rect.top;
+            returnButtonContainer.style.right = '';
+            returnButtonContainer.style.bottom = '';
+            returnButtonContainer.style.left = `${containerStartX}px`;
+            returnButtonContainer.style.top = `${containerStartY}px`;
 
             returnButtonContainer.setAttribute('data-dragging', 'false');
             returnButtonContainer.style.cursor = 'grabbing';
@@ -283,10 +286,13 @@ Live2DManager.prototype.setupReturnButtonContainerDrag = function (returnButtonC
             dragStartX = touch.clientX;
             dragStartY = touch.clientY;
 
-            const currentLeft = parseInt(returnButtonContainer.style.left) || 0;
-            const currentTop = parseInt(returnButtonContainer.style.top) || 0;
-            containerStartX = currentLeft;
-            containerStartY = currentTop;
+            const rect = returnButtonContainer.getBoundingClientRect();
+            containerStartX = rect.left;
+            containerStartY = rect.top;
+            returnButtonContainer.style.right = '';
+            returnButtonContainer.style.bottom = '';
+            returnButtonContainer.style.left = `${containerStartX}px`;
+            returnButtonContainer.style.top = `${containerStartY}px`;
 
             returnButtonContainer.setAttribute('data-dragging', 'false');
             e.preventDefault();
