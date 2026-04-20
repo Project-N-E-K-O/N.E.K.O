@@ -1122,20 +1122,68 @@
     const MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE = 80;
     let multiWindowReturnBallDragState = null;
 
-    function getVisibleReturnBallContainer() {
-        const containerIds = [
-            'mmd-return-button-container',
-            'vrm-return-button-container',
-            'live2d-return-button-container',
-        ];
-        for (const id of containerIds) {
-            const el = document.getElementById(id);
-            if (!el) continue;
-            const style = window.getComputedStyle ? window.getComputedStyle(el) : null;
-            if (style && (style.display === 'none' || style.visibility === 'hidden')) continue;
-            return el;
+    function cancelReturnBallReveal(container) {
+        if (!container) return;
+        const revealFrameId = container.__nekoReturnBallRevealFrame;
+        if (typeof revealFrameId === 'number') {
+            cancelAnimationFrame(revealFrameId);
         }
-        return null;
+        container.__nekoReturnBallRevealFrame = null;
+    }
+
+    function hideReturnBallContainer(container) {
+        if (!container) return;
+        cancelReturnBallReveal(container);
+        container.style.display = 'none';
+        container.style.pointerEvents = 'none';
+        container.style.removeProperty('visibility');
+    }
+
+    function positionReturnBallContainer(container, anchorRect) {
+        if (!container) return;
+
+        container.style.left = '';
+        container.style.top = '';
+        container.style.right = '';
+        container.style.bottom = '';
+        container.style.transform = 'none';
+
+        if (anchorRect) {
+            const containerWidth = Math.round(container.offsetWidth) || 64;
+            const containerHeight = Math.round(container.offsetHeight) || 64;
+            const maxLeft = Math.max(0, window.innerWidth - containerWidth);
+            const maxTop = Math.max(0, window.innerHeight - containerHeight);
+            const left = Math.round(anchorRect.left + (anchorRect.width - containerWidth) / 2);
+            const top = Math.round(anchorRect.top + (anchorRect.height - containerHeight) / 2);
+            container.style.left = `${Math.max(0, Math.min(left, maxLeft))}px`;
+            container.style.top = `${Math.max(0, Math.min(top, maxTop))}px`;
+            return;
+        }
+
+        container.style.right = '16px';
+        container.style.bottom = '116px';
+    }
+
+    function showReturnBallContainer(container, anchorRect) {
+        if (!container) return null;
+
+        cancelReturnBallReveal(container);
+        container.style.display = 'flex';
+        container.style.visibility = 'hidden';
+        container.style.pointerEvents = 'none';
+        positionReturnBallContainer(container, anchorRect);
+
+        void container.offsetWidth;
+
+        const revealFrameId = requestAnimationFrame(() => {
+            if (container.__nekoReturnBallRevealFrame !== revealFrameId) return;
+            container.__nekoReturnBallRevealFrame = null;
+            if (container.style.display === 'none') return;
+            container.style.visibility = 'visible';
+            container.style.pointerEvents = 'auto';
+        });
+        container.__nekoReturnBallRevealFrame = revealFrameId;
+        return container;
     }
 
     function clearMultiWindowReturnBallDeferredWork(state) {
@@ -1874,6 +1922,8 @@
             const useMmdReturn = isMmdActive;
             const useVrmReturn = isVrmActive && !isMmdActive;
 
+            let activeReturnButtonContainer = null;
+
             // MMD 返回按钮
             if (useMmdReturn && !mmdReturnButtonContainer && window.mmdManager) {
                 if (typeof window.mmdManager.setupFloatingButtons === 'function') {
@@ -1882,54 +1932,16 @@
                 }
             }
             if (useMmdReturn && mmdReturnButtonContainer) {
-                if (savedGoodbyeRect) {
-                    const containerWidth = mmdReturnButtonContainer.offsetWidth || 64;
-                    const containerHeight = mmdReturnButtonContainer.offsetHeight || 64;
-                    const left = Math.round(savedGoodbyeRect.left + (savedGoodbyeRect.width - containerWidth) / 2);
-                    const top = Math.round(savedGoodbyeRect.top + (savedGoodbyeRect.height - containerHeight) / 2);
-                    mmdReturnButtonContainer.style.right = '';
-                    mmdReturnButtonContainer.style.bottom = '';
-                    mmdReturnButtonContainer.style.left = `${Math.max(0, Math.min(left, window.innerWidth - containerWidth))}px`;
-                    mmdReturnButtonContainer.style.top = `${Math.max(0, Math.min(top, window.innerHeight - containerHeight))}px`;
-                    mmdReturnButtonContainer.style.transform = 'none';
-                } else {
-                    mmdReturnButtonContainer.style.right = '16px';
-                    mmdReturnButtonContainer.style.bottom = '116px';
-                    mmdReturnButtonContainer.style.left = '';
-                    mmdReturnButtonContainer.style.top = '';
-                    mmdReturnButtonContainer.style.transform = 'none';
-                }
-                mmdReturnButtonContainer.style.display = 'flex';
-                mmdReturnButtonContainer.style.pointerEvents = 'auto';
-            } else if (mmdReturnButtonContainer) {
-                mmdReturnButtonContainer.style.display = 'none';
+                activeReturnButtonContainer = showReturnBallContainer(mmdReturnButtonContainer, savedGoodbyeRect);
+            } else {
+                hideReturnBallContainer(mmdReturnButtonContainer);
             }
 
             // 显示Live2D的返回按钮（仅在非VRM/非MMD模式时显示）
             if (!useVrmReturn && !useMmdReturn && live2dReturnButtonContainer) {
-                if (savedGoodbyeRect) {
-                    const containerWidth = live2dReturnButtonContainer.offsetWidth || 64;
-                    const containerHeight = live2dReturnButtonContainer.offsetHeight || 64;
-                    const left = Math.round(savedGoodbyeRect.left + (savedGoodbyeRect.width - containerWidth) / 2);
-                    const top = Math.round(savedGoodbyeRect.top + (savedGoodbyeRect.height - containerHeight) / 2);
-                    live2dReturnButtonContainer.style.right = '';
-                    live2dReturnButtonContainer.style.bottom = '';
-                    live2dReturnButtonContainer.style.left = `${Math.max(0, Math.min(left, window.innerWidth - containerWidth))}px`;
-                    live2dReturnButtonContainer.style.top = `${Math.max(0, Math.min(top, window.innerHeight - containerHeight))}px`;
-                    live2dReturnButtonContainer.style.transform = 'none';
-                } else {
-                    const fallbackRight = 16;
-                    const fallbackBottom = 116;
-                    live2dReturnButtonContainer.style.right = `${fallbackRight}px`;
-                    live2dReturnButtonContainer.style.bottom = `${fallbackBottom}px`;
-                    live2dReturnButtonContainer.style.left = '';
-                    live2dReturnButtonContainer.style.top = '';
-                    live2dReturnButtonContainer.style.transform = 'none';
-                }
-                live2dReturnButtonContainer.style.display = 'flex';
-                live2dReturnButtonContainer.style.pointerEvents = 'auto';
-            } else if (live2dReturnButtonContainer) {
-                live2dReturnButtonContainer.style.display = 'none';
+                activeReturnButtonContainer = showReturnBallContainer(live2dReturnButtonContainer, savedGoodbyeRect);
+            } else {
+                hideReturnBallContainer(live2dReturnButtonContainer);
             }
 
             // 显示VRM的返回按钮
@@ -1945,32 +1957,12 @@
             }
 
             if (useVrmReturn && vrmReturnButtonContainer) {
-                if (savedGoodbyeRect) {
-                    const containerWidth = vrmReturnButtonContainer.offsetWidth || 64;
-                    const containerHeight = vrmReturnButtonContainer.offsetHeight || 64;
-                    const left = Math.round(savedGoodbyeRect.left + (savedGoodbyeRect.width - containerWidth) / 2);
-                    const top = Math.round(savedGoodbyeRect.top + (savedGoodbyeRect.height - containerHeight) / 2);
-                    vrmReturnButtonContainer.style.right = '';
-                    vrmReturnButtonContainer.style.bottom = '';
-                    vrmReturnButtonContainer.style.left = `${Math.max(0, Math.min(left, window.innerWidth - containerWidth))}px`;
-                    vrmReturnButtonContainer.style.top = `${Math.max(0, Math.min(top, window.innerHeight - containerHeight))}px`;
-                    vrmReturnButtonContainer.style.transform = 'none';
-                } else {
-                    const fallbackRight = 16;
-                    const fallbackBottom = 116;
-                    vrmReturnButtonContainer.style.right = `${fallbackRight}px`;
-                    vrmReturnButtonContainer.style.bottom = `${fallbackBottom}px`;
-                    vrmReturnButtonContainer.style.left = '';
-                    vrmReturnButtonContainer.style.top = '';
-                    vrmReturnButtonContainer.style.transform = 'none';
-                }
-                vrmReturnButtonContainer.style.display = 'flex';
-                vrmReturnButtonContainer.style.pointerEvents = 'auto';
-            } else if (vrmReturnButtonContainer) {
-                vrmReturnButtonContainer.style.display = 'none';
+                activeReturnButtonContainer = showReturnBallContainer(vrmReturnButtonContainer, savedGoodbyeRect);
+            } else {
+                hideReturnBallContainer(vrmReturnButtonContainer);
             }
 
-            ensureMultiWindowReturnBallDrag(getVisibleReturnBallContainer());
+            ensureMultiWindowReturnBallDrag(activeReturnButtonContainer);
 
             // 隐藏 side-btn 按钮和侧边栏
             const sidebar = document.getElementById('sidebar');
@@ -2090,20 +2082,12 @@
 
             // 隐藏"请她回来"按钮
             const live2dReturnButtonContainer = document.getElementById('live2d-return-button-container');
-            if (live2dReturnButtonContainer) {
-                live2dReturnButtonContainer.style.display = 'none';
-                live2dReturnButtonContainer.style.pointerEvents = 'none';
-            }
             const vrmReturnButtonContainer = document.getElementById('vrm-return-button-container');
-            if (vrmReturnButtonContainer) {
-                vrmReturnButtonContainer.style.display = 'none';
-                vrmReturnButtonContainer.style.pointerEvents = 'none';
-            }
             const mmdReturnButtonContainer = document.getElementById('mmd-return-button-container');
-            if (mmdReturnButtonContainer) {
-                mmdReturnButtonContainer.style.display = 'none';
-                mmdReturnButtonContainer.style.pointerEvents = 'none';
-            }
+            hideReturnBallContainer(live2dReturnButtonContainer);
+            hideReturnBallContainer(vrmReturnButtonContainer);
+            hideReturnBallContainer(mmdReturnButtonContainer);
+            ensureMultiWindowReturnBallDrag(null);
 
             // 如果返回按钮被拖拽到新位置，先偏移模型再显示，避免闪烁
             const returnRect = event && event.detail && event.detail.returnButtonRect;
