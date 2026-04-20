@@ -838,7 +838,10 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     }))
                     _record_tts_telemetry("stepfun", pending_text_buffer)
                 except Exception as e:
+                    # delta 发失败时连接多半已断，调用方不能继续发 tts.text.done；
+                    # 返回 False 让 sid=None/文本发送路径都走 continue 触发重连。
                     logger.error(f"刷出缓冲文本失败: {e}")
+                    return False
             pending_text_buffer = ""
             return True
         
@@ -1004,7 +1007,10 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     if ws and session_id and current_speech_id is not None and not text_done_sent:
                         # 若缓冲中还有不足 MIN_CHARS 的文本，强制刷出以保证短句也能合成
                         if not session_created:
-                            await _flush_deferred_create(force=True)
+                            if not await _flush_deferred_create(force=True):
+                                # flush 失败（tts.create 或 delta 发失败），连接已死，
+                                # 跳过 tts.text.done，等待下一个 speech_id 触发重连
+                                continue
                         try:
                             done_event = {
                                 "type": "tts.text.done",
@@ -1273,7 +1279,10 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     }))
                     _record_tts_telemetry("qwen", pending_text_buffer)
                 except Exception as e:
+                    # append 发失败时连接多半已断，调用方不能继续发 commit；
+                    # 返回 False 让 sid=None/文本路径走 continue 触发重连。
                     logger.error(f"发送缓冲文本失败: {e}")
+                    return False
             pending_text_buffer = ""
             return True
 
@@ -1413,7 +1422,10 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     if ws and current_speech_id is not None:
                         # 若此轮文本不足 MIN_CHARS 还没发出 session.update，force 一次
                         if not session_configured:
-                            await _flush_deferred_config(force=True)
+                            if not await _flush_deferred_config(force=True):
+                                # flush 失败（session.update 或 append 发失败），连接已死，
+                                # 跳过 commit，等待下一个 speech_id 触发重连
+                                continue
                         # 短句场景下 session.updated 可能比 _flush 内的 2s 等待更晚到达；
                         # 不再依赖 session_ready，直接发 commit（服务端会在 session.updated
                         # 就绪后按顺序处理 append + commit）。漏 commit 会导致短句静默丢失。
