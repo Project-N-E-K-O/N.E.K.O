@@ -171,7 +171,7 @@ stays or gets replaced. Do not start without explicit user direction.
 
 ## Agent-facing prompt (copy everything below into the fresh session)
 
-```
+```text
 Branch: claude/awesome-goldberg-omrDx (do NOT rebase or merge main)
 
 Read these in order before touching any code:

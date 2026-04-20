@@ -187,6 +187,19 @@ class PersonaManager:
         return persona
 
     async def aensure_persona(self, name: str) -> dict:
+        """Thread-safe wrapper. 首次创建 / character card 变更这两条分支会
+        `asave_persona()` 写盘，必须在 per-character 锁下进行，否则会与
+        `aadd_fact` / `arecord_mentions` / `aupdate_suppressions` /
+        `_resolve_corrections_locked` 等持锁写盘路径竞争，导致刚落盘的新事实
+        被锁外的 ensure/sync-card 分支覆盖。
+
+        内部已持 `_get_alock(name)` 的调用点（如 aadd_fact 内）必须改用
+        `_aensure_persona_locked` 以避免 asyncio.Lock 不可重入死锁。"""
+        async with self._get_alock(name):
+            return await self._aensure_persona_locked(name)
+
+    async def _aensure_persona_locked(self, name: str) -> dict:
+        """Inner body. Caller MUST hold self._get_alock(name)."""
         if name in self._personas:
             if await self._async_sync_character_card(name, self._personas[name]):
                 await self.asave_persona(name, self._personas[name])
@@ -622,7 +635,7 @@ class PersonaManager:
         asyncio.Lock（可重入？不，asyncio.Lock 不可重入）→ 所以在锁内调用
         _aqueue_correction 的 **unlocked** 版本。"""
         async with self._get_alock(name):
-            persona = await self.aensure_persona(name)
+            persona = await self._aensure_persona_locked(name)
             section_facts = self._get_section_facts(persona, entity)
             stop_names = await self._aget_entity_stop_names()
 
@@ -825,8 +838,8 @@ class PersonaManager:
             logger.warning(f"[Persona] {name}: correction model 调用失败: {e}")
             return 0
 
-        # 应用结果
-        persona = await self.aensure_persona(name)
+        # 应用结果（本函数被 resolve_corrections 在锁下调用，故用 _locked 变体）
+        persona = await self._aensure_persona_locked(name)
         resolved = 0
         for result in results:
             if not isinstance(result, dict):
@@ -926,7 +939,7 @@ class PersonaManager:
 
     async def arecord_mentions(self, name: str, response_text: str) -> None:
         async with self._get_alock(name):
-            persona = await self.aensure_persona(name)
+            persona = await self._aensure_persona_locked(name)
             if self._apply_record_mentions(persona, response_text):
                 await self.asave_persona(name, persona)
 
@@ -969,7 +982,7 @@ class PersonaManager:
         """P2.a.2: persona.json 写回必须在角色锁下，避免与 aadd_fact /
         arecord_mentions / aresolve_corrections 竞写。"""
         async with self._get_alock(name):
-            persona = await self.aensure_persona(name)
+            persona = await self._aensure_persona_locked(name)
             if self._apply_update_suppressions(persona):
                 await self.asave_persona(name, persona)
 

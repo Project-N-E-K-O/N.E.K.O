@@ -364,7 +364,11 @@ async def _resolve_rebuttal_start_time(name: str, now: datetime):
 
     rollback 分支立即覆写游标的原因：若只在主循环 success branch 才覆写，
     遇上 LLM 持续失败 + 时钟回拨，主循环每轮都会命中 fallback 并告警，
-    但游标永远停留在未来时间，无法自愈；这里直接写回 now 打破死循环。
+    但游标永远停留在未来时间，无法自愈；这里直接写回 fallback 打破死循环。
+
+    写 fallback 而非 now：若写 now，本 tick 的 LLM 调用若失败，
+    窗口 `[fallback, now]` 的消息会因下轮 cursor 已推进到 now 而被跳过；
+    写 fallback 则保持重试语义——主循环 success branch 再把 cursor 推进到 now。
 
     独立成函数便于单测验证。
     """
@@ -377,9 +381,12 @@ async def _resolve_rebuttal_start_time(name: str, now: datetime):
             f"[Rebuttal] {name}: 游标 {cursor.isoformat()} 晚于当前时间 "
             f"{now.isoformat()}（时钟回拨?），回退到 {fallback.isoformat()} 并覆写"
         )
-        # 自愈：把游标拉回 now，使后续 tick 不再反复命中该分支
+        # 自愈：把游标拉回 fallback（而非 now），使后续 tick 不再命中 rollback
+        # 分支，同时保留本轮窗口 [fallback, now] 的重试能力（若 LLM 失败）
         try:
-            await cursor_store.aset_cursor(name, CURSOR_REBUTTAL_CHECKED_UNTIL, now)
+            await cursor_store.aset_cursor(
+                name, CURSOR_REBUTTAL_CHECKED_UNTIL, fallback,
+            )
         except Exception as e:
             logger.debug(f"[Rebuttal] {name}: rollback 自愈写入失败（将在下轮重试）: {e}")
         return fallback
@@ -409,6 +416,12 @@ async def _periodic_rebuttal_loop():
             try:
                 confirmed = await reflection_engine.aget_confirmed_reflections(name)
                 if not confirmed:
+                    # 无 confirmed 时仍需推进游标：否则等到有新 confirmed reflection
+                    # 出现后，首轮会把 cursor-now 之间积攒的全部用户消息喂给
+                    # check_feedback_for_confirmed，容易把无关历史回复误判为反驳。
+                    await cursor_store.aset_cursor(
+                        name, CURSOR_REBUTTAL_CHECKED_UNTIL, now,
+                    )
                     continue
 
                 start_time = await _resolve_rebuttal_start_time(name, now)

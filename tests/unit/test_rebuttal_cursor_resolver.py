@@ -9,8 +9,6 @@ Covers the three decision branches of the rebuttal loop's start-time resolver:
 """
 from __future__ import annotations
 
-import os
-import tempfile
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
@@ -59,7 +57,8 @@ async def test_resolve_returns_persisted_cursor_when_in_past(tmp_path):
 
 @pytest.mark.asyncio
 async def test_resolve_fallback_and_self_heal_on_clock_rollback(tmp_path):
-    """Cursor greater than now (clock rollback) → fallback returned AND cursor overwritten to now."""
+    """Cursor greater than now (clock rollback) → fallback returned AND cursor
+    healed to `fallback`（非 now，保留本轮 [fallback, now] 的 LLM 重试语义）."""
     store = _install_fresh_cursor_store(str(tmp_path))
     import memory_server
     from memory.cursors import CURSOR_REBUTTAL_CHECKED_UNTIL
@@ -75,9 +74,10 @@ async def test_resolve_fallback_and_self_heal_on_clock_rollback(tmp_path):
     expected_fallback = now - timedelta(hours=memory_server.REBUTTAL_FIRST_RUN_LOOKBACK_HOURS)
     assert start == expected_fallback
 
-    # Side effect: cursor has been healed to `now` (no longer in the future)
+    # Side effect: cursor healed to `fallback` — below `now`, so下轮不再命中
+    # rollback 分支；若本轮 LLM 失败，下轮仍能覆盖 [fallback, new_now] 重试
     healed = await store.aget_cursor("小天", CURSOR_REBUTTAL_CHECKED_UNTIL)
-    assert healed == now
+    assert healed == expected_fallback
 
 
 @pytest.mark.asyncio
@@ -98,5 +98,6 @@ async def test_resolve_persists_healed_cursor_across_instances(tmp_path):
         fresh_store = CursorStore()
     fresh_store._config_manager = fresh_cm
 
+    expected_fallback = now - timedelta(hours=memory_server.REBUTTAL_FIRST_RUN_LOOKBACK_HOURS)
     healed = await fresh_store.aget_cursor("小天", CURSOR_REBUTTAL_CHECKED_UNTIL)
-    assert healed == now
+    assert healed == expected_fallback

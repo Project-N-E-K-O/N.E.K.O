@@ -31,7 +31,7 @@ import os
 import threading
 import uuid
 from datetime import datetime
-from typing import Awaitable, Callable
+from typing import Callable
 
 from utils.config_manager import get_config_manager
 from utils.file_utils import atomic_write_text, atomic_write_json
@@ -122,14 +122,14 @@ class EventLog:
     # ── low-level append (no lock — caller must hold it) ────────
 
     def _write_line_unlocked(self, path: str, line: str) -> None:
-        """Append + flush + fsync. OSError on fsync is non-fatal."""
+        """Append + flush + fsync. fsync 失败需上抛——record_and_save 的
+        耐久性合同是"事件先落盘再推进 view"，若 fsync 静默失败，后续
+        view.save 仍成功即破坏 event↔view 对应关系、reconciler 也无从补救。
+        由调用方（record_and_save）负责处理异常，保证 view 不会被错误推进。"""
         with open(path, 'a', encoding='utf-8') as f:
             f.write(line + '\n')
             f.flush()
-            try:
-                os.fsync(f.fileno())
-            except OSError as e:
-                logger.debug(f"[EventLog] fsync 失败（可忽略）: {e}")
+            os.fsync(f.fileno())
 
     def _append_unlocked(self, name: str, event_type: str, payload: dict) -> str:
         """Write one event record under an already-held lock. Returns event_id."""
@@ -383,8 +383,15 @@ class EventLog:
         """
         with self._get_lock(name):
             view = sync_load_view(name)
-            sync_mutate_view(view)
+            # 顺序：load → append（可能 fsync 失败抛出）→ mutate → save。
+            # append 先于 mutate 的原因：sync_load_view 常返回 manager 持有的
+            # 共享 cache，若先 mutate 再 append 而 append 抛出，cache 已脏但
+            # 事件没落盘，后续任一次正常 save 都会把"无事件对应的变更"刷盘，
+            # 破坏 event↔view 对应关系。先 append 成功再 mutate 则保证：
+            #   - append 失败：view/cache 未动，无状态泄露
+            #   - mutate/save 失败：事件已在 log，reconciler 会补齐
             event_id = self._append_unlocked(name, event_type, payload)
+            sync_mutate_view(view)
             sync_save_view(name, view)
             # Inline sentinel write: still under the lock, still on this
             # worker thread — safe to use atomic_write_json sync.

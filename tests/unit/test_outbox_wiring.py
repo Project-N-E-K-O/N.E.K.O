@@ -107,7 +107,7 @@ async def test_replay_reinvokes_pending_handler(tmp_path):
 
     # 场景：上一跑在 append_pending 后崩溃，没跑完 handler
     payload = {"messages": messages_to_dict([HumanMessage(content="反驳：不喜欢咖啡")])}
-    op_id = await ob.aappend_pending("小天", OP_EXTRACT_FACTS, payload)
+    await ob.aappend_pending("小天", OP_EXTRACT_FACTS, payload)
 
     replay_calls: list[tuple[str, dict]] = []
 

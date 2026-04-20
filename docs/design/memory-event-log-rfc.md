@@ -113,12 +113,14 @@ views after abnormal shutdown.
 
 ### 3.1 File layout
 
-```
-memory_dir/<character>/events.ndjson     # append-only
-memory_dir/<character>/events.snapshot   # periodic compaction target (optional)
+```text
+memory_dir/<character>/events.ndjson       # append-only event log
+memory_dir/<character>/events_applied.json # reconciler sentinel (last applied event_id)
 ```
 
 One file per character. Lives beside `facts.json`, `reflections.json`, etc.
+Compaction in §3.6 is a single-swap on `events.ndjson` — no intermediate
+`events.snapshot` file is ever written.
 
 ### 3.2 Record schema
 
@@ -230,13 +232,22 @@ def _sync_record_and_save(
     sync_load_view, sync_mutate_view, sync_save_view,
 ) -> str:
     with _character_lock(name):   # threading.Lock — never held across await
-        view = sync_load_view(name)            # fresh read under lock
-        sync_mutate_view(view)                 # in-memory mutation
-        event_id = event_log.append(name, event_type, payload)
-        sync_save_view(name, view)             # atomic_write_json
+        view = sync_load_view(name)                         # fresh read under lock
+        event_id = event_log.append(name, event_type, payload)  # ← append FIRST
+        sync_mutate_view(view)                              # in-memory mutation
+        sync_save_view(name, view)                          # atomic_write_json
         event_log.advance_sentinel(name, event_id)
         return event_id
 ```
+
+**Append-first ordering rationale:** `sync_load_view` routinely returns the
+manager's shared cache object (e.g. `self._personas[name]`). If `mutate` ran
+before `append`, an `append` failure (fsync OSError, disk full) would leave
+the shared cache dirty while no event is on disk; any subsequent normal
+save would flush those "eventless" changes, breaking the event↔view
+correspondence and leaving the reconciler nothing to compensate against.
+`append → mutate → save` keeps the invariant: cache is only ever dirtied
+after an event is durably persisted.
 
 **On sync-vs-async twins**: `sync_load_view` / `sync_save_view` must be the
 **synchronous** twins (`FactStore.load_facts` / `save_facts`, not
@@ -251,7 +262,7 @@ Rationale for the whole-block-in-one-to_thread approach:
   thread, never held across an asyncio `await` boundary.
 - Sibling coroutines on the same event loop are never blocked directly;
   they go through the thread pool like all other I/O.
-- The lock holds for one load + one mutate + one append + one
+- The lock holds for one load + one append + one mutate + one
   `atomic_write_json` + one sentinel write. Worst case on slow disks: a
   few tens of ms, dominated by 4 sequential fsyncs (§3.5 budget).
 

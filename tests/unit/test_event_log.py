@@ -7,11 +7,10 @@ Covers the resilience guarantees described in RFC §3.4 / §3.5 / §3.6.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -213,7 +212,6 @@ def test_compact_atomicity_single_rename(tmp_path):
         log.append("小天", EVT_FACT_ADDED, {"i": i})
 
     char_dir = os.path.join(str(tmp_path), "小天")
-    before = set(os.listdir(char_dir))
     with patch("memory.event_log._COMPACT_LINES_THRESHOLD", 1):
         log.compact_if_needed("小天", lambda: [(EVT_FACT_ADDED, {"seed": 1})])
     after = set(os.listdir(char_dir))
@@ -488,7 +486,7 @@ async def test_reconciler_unknown_event_type_logs_and_skips(tmp_path):
     from memory.event_log import EVT_FACT_ADDED
 
     log, rec = _fresh_reconciler(str(tmp_path))
-    eid1 = log.append("小天", "future.unknown.type", {"v": 1})
+    log.append("小天", "future.unknown.type", {"v": 1})
     eid2 = log.append("小天", EVT_FACT_ADDED, {"fact_id": "f1"})
 
     applied_calls: list[str] = []

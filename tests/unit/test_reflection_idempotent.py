@@ -11,7 +11,6 @@ sha256(sorted(source_fact_ids))[:16]，同批 facts 永远映射到同一 id。
 from __future__ import annotations
 
 import os
-import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
