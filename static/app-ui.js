@@ -908,16 +908,34 @@
                 }
 
                 if (vrmFloatingButtons) {
-                    vrmFloatingButtons.style.removeProperty('display');
-                    vrmFloatingButtons.style.removeProperty('visibility');
-                    vrmFloatingButtons.style.removeProperty('opacity');
+                    const isVrmMobile = typeof window.isMobileWidth === 'function'
+                        ? window.isMobileWidth()
+                        : (window.innerWidth <= 768);
+                    if (isVrmMobile) {
+                        vrmFloatingButtons.style.removeProperty('display');
+                        vrmFloatingButtons.style.removeProperty('visibility');
+                        vrmFloatingButtons.style.removeProperty('opacity');
+                    } else {
+                        vrmFloatingButtons.style.display = 'none';
+                        vrmFloatingButtons.style.visibility = 'hidden';
+                        vrmFloatingButtons.style.opacity = '0';
+                    }
                 }
 
                 const vrmLockIcon = document.getElementById('vrm-lock-icon');
                 if (vrmLockIcon) {
-                    vrmLockIcon.style.removeProperty('display');
-                    vrmLockIcon.style.removeProperty('visibility');
-                    vrmLockIcon.style.removeProperty('opacity');
+                    const isVrmMobile = typeof window.isMobileWidth === 'function'
+                        ? window.isMobileWidth()
+                        : (window.innerWidth <= 768);
+                    if (isVrmMobile) {
+                        vrmLockIcon.style.removeProperty('display');
+                        vrmLockIcon.style.removeProperty('visibility');
+                        vrmLockIcon.style.removeProperty('opacity');
+                    } else {
+                        vrmLockIcon.style.display = 'none';
+                        vrmLockIcon.style.visibility = 'hidden';
+                        vrmLockIcon.style.opacity = '0';
+                    }
                 }
 
                 if (window.vrmManager && window.vrmManager.core && typeof window.vrmManager.core.setLocked === 'function') {
@@ -1019,9 +1037,18 @@
                     mmdFloatingButtons = document.getElementById('mmd-floating-buttons');
                 }
                 if (mmdFloatingButtons) {
-                    mmdFloatingButtons.style.removeProperty('display');
-                    mmdFloatingButtons.style.removeProperty('visibility');
-                    mmdFloatingButtons.style.removeProperty('opacity');
+                    const isMmdMobile = typeof window.isMobileWidth === 'function'
+                        ? window.isMobileWidth()
+                        : (window.innerWidth <= 768);
+                    if (isMmdMobile) {
+                        mmdFloatingButtons.style.removeProperty('display');
+                        mmdFloatingButtons.style.removeProperty('visibility');
+                        mmdFloatingButtons.style.removeProperty('opacity');
+                    } else {
+                        mmdFloatingButtons.style.display = 'none';
+                        mmdFloatingButtons.style.visibility = 'hidden';
+                        mmdFloatingButtons.style.opacity = '0';
+                    }
                 }
 
                 // 隐藏 VRM / Live2D 浮动按钮
@@ -1188,17 +1215,17 @@
 
     function clearMultiWindowReturnBallDeferredWork(state) {
         if (!state) return;
-        if (state.positionFallbackTimer) {
-            clearTimeout(state.positionFallbackTimer);
-            state.positionFallbackTimer = null;
+        if (state.viewportWaitFallbackTimer) {
+            clearTimeout(state.viewportWaitFallbackTimer);
+            state.viewportWaitFallbackTimer = null;
         }
         if (state.transitionCleanupTimer) {
             clearTimeout(state.transitionCleanupTimer);
             state.transitionCleanupTimer = null;
         }
-        if (state.positionBallOnResize) {
-            window.removeEventListener('resize', state.positionBallOnResize);
-            state.positionBallOnResize = null;
+        if (state.viewportWaitOnResize) {
+            window.removeEventListener('resize', state.viewportWaitOnResize);
+            state.viewportWaitOnResize = null;
         }
     }
 
@@ -1254,8 +1281,8 @@
             savedBallStyle: null,
             savedBallWidth: 64,
             savedBallHeight: 64,
-            positionBallOnResize: null,
-            positionFallbackTimer: null,
+            viewportWaitOnResize: null,
+            viewportWaitFallbackTimer: null,
             transitionCleanupTimer: null,
             dragSessionToken: 0,
             handleMouseDown: null,
@@ -1338,9 +1365,12 @@
                 Math.abs(window.innerHeight - expectedHeight) <= tolerance;
         }
 
-        function waitForViewportRestore(dragToken, expectedWidth, expectedHeight, onReady) {
+        function waitForViewportSize(dragToken, expectedWidth, expectedHeight, onReady, options) {
             if (!isActiveDragToken(dragToken)) return;
             clearMultiWindowReturnBallDeferredWork(state);
+            const fallbackMs = options && Number.isFinite(options.fallbackMs)
+                ? options.fallbackMs
+                : 120;
 
             const runWhenStable = () => {
                 requestAnimationFrame(() => {
@@ -1363,31 +1393,15 @@
                 return;
             }
 
-            state.positionBallOnResize = () => {
+            state.viewportWaitOnResize = () => {
                 void tryFinish();
             };
-            window.addEventListener('resize', state.positionBallOnResize);
-            state.positionFallbackTimer = setTimeout(() => {
+            window.addEventListener('resize', state.viewportWaitOnResize);
+            state.viewportWaitFallbackTimer = setTimeout(() => {
                 if (!isActiveDragToken(dragToken)) return;
                 clearMultiWindowReturnBallDeferredWork(state);
                 runWhenStable();
-            }, 120);
-        }
-
-        function restoreBallVisibility(dragToken) {
-            if (!isActiveDragToken(dragToken)) return;
-            requestAnimationFrame(() => {
-                if (!isActiveDragToken(dragToken)) return;
-                container.style.opacity = getSavedBallStyleValue('opacity');
-                state.transitionCleanupTimer = setTimeout(() => {
-                    state.transitionCleanupTimer = null;
-                    if (!isActiveDragToken(dragToken)) return;
-                    container.style.transition = getSavedBallStyleValue('transition');
-                    container.style.willChange = getSavedBallStyleValue('willChange');
-                    state.savedBallStyle = null;
-                }, 180);
-            });
-            container.setAttribute('data-dragging', 'false');
+            }, fallbackMs);
         }
 
         async function resolveFinalWindowBounds(screenX, screenY, dragToken) {
@@ -1418,6 +1432,7 @@
         function beginDrag(screenX, screenY, event) {
             clearMultiWindowReturnBallDeferredWork(state);
             state.dragSessionToken += 1;
+            const dragToken = state.dragSessionToken;
 
             state.isDragging = true;
             state.hasMoved = false;
@@ -1472,16 +1487,19 @@
             if (window.DragHelpers) window.DragHelpers.isDragging = true;
             window.nekoPetDrag.start(screenX, screenY);
 
-            // 双层 rAF：nekoPetDrag.start 用 ipcRenderer.send（异步），
-            // 单层 rAF 可能早于主进程的 setBounds(80x80)，导致球在全尺寸视口
-            // 以 (8,8) 偏左上位置闪现。双层 rAF 留出 ~32ms 让 IPC 落地 + 视口刷新。
-            requestAnimationFrame(() => {
-                requestAnimationFrame(() => {
-                    if (!state.isDragging) return;
+            // dragStart 的 shrink 通过异步 IPC 落到主进程，不能再靠固定帧数猜测
+            // 80x80 视口已经生效；否则返回球会按临时 left/top 在原窗口左侧闪一帧。
+            waitForViewportSize(
+                dragToken,
+                MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE,
+                MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE,
+                () => {
+                    if (!state.isDragging || !isActiveDragToken(dragToken)) return;
                     container.style.opacity = getSavedBallStyleValue('opacity');
                     container.style.willChange = 'opacity';
-                });
-            });
+                },
+                { fallbackMs: 160 }
+            );
 
             if (event) {
                 event.preventDefault();
@@ -1510,6 +1528,7 @@
             state.releaseScreenX = screenX;
             state.releaseScreenY = screenY;
             const dragToken = state.dragSessionToken;
+            clearMultiWindowReturnBallDeferredWork(state);
 
             // 先瞬间隐藏球，防止恢复 UI 时球在 (8,8) 闪烁
             container.style.transition = 'none';
@@ -1529,7 +1548,7 @@
                 if (!isActiveDragToken(dragToken)) return;
                 const expectedWidth = restoreBounds ? restoreBounds.width : state.savedWindowW;
                 const expectedHeight = restoreBounds ? restoreBounds.height : state.savedWindowH;
-                waitForViewportRestore(dragToken, expectedWidth, expectedHeight, () => {
+                waitForViewportSize(dragToken, expectedWidth, expectedHeight, () => {
                     restoreSavedBallStyle();
                     delete document.body.dataset.nekoBallDrag;
                     container.setAttribute('data-dragging', 'false');
@@ -1560,7 +1579,7 @@
 
             const expectedWidth = finalBounds ? finalBounds.width : state.savedWindowW;
             const expectedHeight = finalBounds ? finalBounds.height : state.savedWindowH;
-            waitForViewportRestore(dragToken, expectedWidth, expectedHeight, () => {
+            waitForViewportSize(dragToken, expectedWidth, expectedHeight, () => {
                 if (shouldRestoreSavedBallStyle) {
                     restoreSavedBallStyle();
                     container.setAttribute('data-dragging', 'false');
@@ -2119,6 +2138,9 @@
                 }
             }
             window._savedGoodbyeRect = null;
+            const isMobileViewport = typeof window.isMobileWidth === 'function'
+                ? window.isMobileWidth()
+                : (window.innerWidth <= 768);
 
             // 使用 showCurrentModel() 做最终裁决
             try {
@@ -2156,15 +2178,27 @@
             }
             const vrmLockIcon = document.getElementById('vrm-lock-icon');
             if (vrmLockIcon) {
-                vrmLockIcon.style.removeProperty('display');
-                vrmLockIcon.style.removeProperty('visibility');
-                vrmLockIcon.style.removeProperty('opacity');
+                if (isMobileViewport) {
+                    vrmLockIcon.style.removeProperty('display');
+                    vrmLockIcon.style.removeProperty('visibility');
+                    vrmLockIcon.style.removeProperty('opacity');
+                } else {
+                    vrmLockIcon.style.display = 'none';
+                    vrmLockIcon.style.visibility = 'hidden';
+                    vrmLockIcon.style.opacity = '0';
+                }
             }
             const mmdLockIcon = document.getElementById('mmd-lock-icon');
             if (mmdLockIcon) {
-                mmdLockIcon.style.removeProperty('display');
-                mmdLockIcon.style.removeProperty('visibility');
-                mmdLockIcon.style.removeProperty('opacity');
+                if (isMobileViewport) {
+                    mmdLockIcon.style.removeProperty('display');
+                    mmdLockIcon.style.removeProperty('visibility');
+                    mmdLockIcon.style.removeProperty('opacity');
+                } else {
+                    mmdLockIcon.style.display = 'none';
+                    mmdLockIcon.style.visibility = 'hidden';
+                    mmdLockIcon.style.opacity = '0';
+                }
             }
             // 恢复"请她离开"之前的锁定状态（而非强制解锁）
             const savedLock = window._savedLockState || { live2d: false, vrm: false, mmd: false };
@@ -2211,9 +2245,15 @@
             // 恢复VRM浮动按钮系统
             const vrmFloatingButtons = document.getElementById('vrm-floating-buttons');
             if (vrmFloatingButtons) {
-                vrmFloatingButtons.style.removeProperty('display');
-                vrmFloatingButtons.style.removeProperty('visibility');
-                vrmFloatingButtons.style.removeProperty('opacity');
+                if (isMobileViewport) {
+                    vrmFloatingButtons.style.removeProperty('display');
+                    vrmFloatingButtons.style.removeProperty('visibility');
+                    vrmFloatingButtons.style.removeProperty('opacity');
+                } else {
+                    vrmFloatingButtons.style.display = 'none';
+                    vrmFloatingButtons.style.visibility = 'hidden';
+                    vrmFloatingButtons.style.opacity = '0';
+                }
 
                 if (window.vrmManager && window.vrmManager._floatingButtons) {
                     Object.keys(window.vrmManager._floatingButtons).forEach(btnId => {
@@ -2236,9 +2276,15 @@
             // 恢复MMD浮动按钮系统
             const mmdFloatingButtons = document.getElementById('mmd-floating-buttons');
             if (mmdFloatingButtons) {
-                mmdFloatingButtons.style.removeProperty('display');
-                mmdFloatingButtons.style.removeProperty('visibility');
-                mmdFloatingButtons.style.removeProperty('opacity');
+                if (isMobileViewport) {
+                    mmdFloatingButtons.style.removeProperty('display');
+                    mmdFloatingButtons.style.removeProperty('visibility');
+                    mmdFloatingButtons.style.removeProperty('opacity');
+                } else {
+                    mmdFloatingButtons.style.display = 'none';
+                    mmdFloatingButtons.style.visibility = 'hidden';
+                    mmdFloatingButtons.style.opacity = '0';
+                }
 
                 if (window.mmdManager && window.mmdManager._floatingButtons) {
                     Object.keys(window.mmdManager._floatingButtons).forEach(btnId => {
@@ -2260,7 +2306,7 @@
 
             // 恢复对话区
             const chatContainerEl = document.getElementById('chat-container');
-            const isMobile = typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (window.innerWidth <= 768);
+            const isMobile = isMobileViewport;
             const collapseClass = isMobile ? 'mobile-collapsed' : 'minimized';
 
             console.log('[App] 检查对话区状态 - 存在:', !!chatContainerEl, '类列表:', chatContainerEl ? chatContainerEl.className : 'N/A', '目标类:', collapseClass);
