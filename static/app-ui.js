@@ -1158,9 +1158,40 @@
         container.__nekoReturnBallRevealFrame = null;
     }
 
+    function restoreSavedReturnBallStyle(container, state) {
+        if (!container) return false;
+        const dragState = state ||
+            (multiWindowReturnBallDragState && multiWindowReturnBallDragState.container === container
+                ? multiWindowReturnBallDragState
+                : null);
+        const savedStyle = dragState && dragState.savedBallStyle;
+        if (!savedStyle) return false;
+
+        container.style.left = savedStyle.left;
+        container.style.top = savedStyle.top;
+        container.style.right = savedStyle.right;
+        container.style.bottom = savedStyle.bottom;
+        container.style.transform = savedStyle.transform;
+        container.style.opacity = savedStyle.opacity;
+        container.style.transition = savedStyle.transition;
+        container.style.willChange = savedStyle.willChange;
+        dragState.savedBallStyle = null;
+        return true;
+    }
+
+    function resetReturnBallTemporaryStyle(container) {
+        if (!container) return;
+        container.style.removeProperty('opacity');
+        container.style.removeProperty('transition');
+        container.style.removeProperty('willChange');
+        container.setAttribute('data-dragging', 'false');
+    }
+
     function hideReturnBallContainer(container) {
         if (!container) return;
         cancelReturnBallReveal(container);
+        restoreSavedReturnBallStyle(container);
+        resetReturnBallTemporaryStyle(container);
         container.style.display = 'none';
         container.style.pointerEvents = 'none';
         container.style.removeProperty('visibility');
@@ -1195,6 +1226,8 @@
         if (!container) return null;
 
         cancelReturnBallReveal(container);
+        restoreSavedReturnBallStyle(container);
+        resetReturnBallTemporaryStyle(container);
         container.style.display = 'flex';
         container.style.visibility = 'hidden';
         container.style.pointerEvents = 'none';
@@ -1246,6 +1279,8 @@
         document.removeEventListener('touchcancel', state.handleTouchEnd);
 
         if (state.container) {
+            restoreSavedReturnBallStyle(state.container, state);
+            resetReturnBallTemporaryStyle(state.container);
             state.container.setAttribute('data-dragging', 'false');
         }
         delete document.body.dataset.nekoBallDrag;
@@ -1302,17 +1337,7 @@
         }
 
         function restoreSavedBallStyle() {
-            const savedStyle = state.savedBallStyle;
-            if (!savedStyle) return;
-            container.style.left = savedStyle.left;
-            container.style.top = savedStyle.top;
-            container.style.right = savedStyle.right;
-            container.style.bottom = savedStyle.bottom;
-            container.style.transform = savedStyle.transform;
-            container.style.opacity = savedStyle.opacity;
-            container.style.transition = savedStyle.transition;
-            container.style.willChange = savedStyle.willChange;
-            state.savedBallStyle = null;
+            restoreSavedReturnBallStyle(container, state);
         }
 
         function getSavedBallStyleValue(key) {
