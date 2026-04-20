@@ -695,6 +695,13 @@
 
     mod.showLive2d = showLive2d;
 
+    // --- viewport helpers ---
+    function isMobileViewport() {
+        return typeof window.isMobileWidth === 'function'
+            ? window.isMobileWidth()
+            : (window.innerWidth <= 768);
+    }
+
     // --- showCurrentModel ---
     async function showCurrentModel() {
         // 检查"请她离开"状态
@@ -908,10 +915,7 @@
                 }
 
                 if (vrmFloatingButtons) {
-                    const isVrmMobile = typeof window.isMobileWidth === 'function'
-                        ? window.isMobileWidth()
-                        : (window.innerWidth <= 768);
-                    if (isVrmMobile) {
+                    if (isMobileViewport()) {
                         vrmFloatingButtons.style.removeProperty('display');
                         vrmFloatingButtons.style.removeProperty('visibility');
                         vrmFloatingButtons.style.removeProperty('opacity');
@@ -924,10 +928,7 @@
 
                 const vrmLockIcon = document.getElementById('vrm-lock-icon');
                 if (vrmLockIcon) {
-                    const isVrmMobile = typeof window.isMobileWidth === 'function'
-                        ? window.isMobileWidth()
-                        : (window.innerWidth <= 768);
-                    if (isVrmMobile) {
+                    if (isMobileViewport()) {
                         vrmLockIcon.style.removeProperty('display');
                         vrmLockIcon.style.removeProperty('visibility');
                         vrmLockIcon.style.removeProperty('opacity');
@@ -1365,8 +1366,12 @@
         }
 
         function dispatchReturnBallClick() {
-            const match = String(container.id || '').match(/^([a-z0-9]+)-return-button-container$/i);
-            if (!match || !match[1]) return;
+            const id = String(container.id || '');
+            const match = id.match(/^([a-z0-9-]+)-return-button-container$/i);
+            if (!match || !match[1]) {
+                console.warn('[dispatchReturnBallClick] container id does not match expected pattern, return-click event not dispatched. id:', id);
+                return;
+            }
 
             const rect = container.getBoundingClientRect();
             window.dispatchEvent(new CustomEvent(`${match[1]}-return-click`, {
@@ -1429,6 +1434,12 @@
 
                 const remainingMs = fallbackDeadline - Date.now();
                 if (remainingMs <= 0) {
+                    console.warn(
+                        '[pollViewportRestore] waitForViewportSize timed out — dropping deferred work (click may be lost).',
+                        'dragToken:', state.dragSessionToken,
+                        'fallbackMs:', fallbackMs,
+                        'fallbackDeadline:', fallbackDeadline
+                    );
                     clearMultiWindowReturnBallDeferredWork(state);
                     return;
                 }
