@@ -1864,7 +1864,8 @@
             "downloadOverwrite": "This will overwrite the local character settings and memory directory with the same name using the cloud snapshot already synced to this device. Model assets will not be downloaded automatically, and a local backup will be created first.",
             "downloadNew": "This will restore the cloud snapshot already synced to this device into local storage. Model assets will not be downloaded automatically, and a local backup will be created first.",
             "downloadManualAsset": "\nThis cloud character depends on a manually imported or external model. If this device does not already have those files, you will still need to import or move them manually after download.",
-            "downloadFinal": "\nDo you want to continue restoring from the Steam Cloud snapshot?"
+            "downloadFinal": "\nDo you want to continue restoring from the Steam Cloud snapshot?",
+            "forceTerminateSession": "Character \"{{name}}\" has an active session.\nTerminating the session will discard the current conversation, but the cloud save download can proceed.\n\nTerminate session and continue?"
         },
         "dialog": {
             "providerUnavailable": "Cloud save provider is currently unavailable. Please try again later.",
@@ -1881,7 +1882,8 @@
             "rollbackApplied": "\nLocal data was rolled back automatically to the state before the operation.",
             "rollbackFailed": "\nRollback also failed: {{message}}",
             "loadFailed": "Failed to load the cloud save summary: {{message}}",
-            "stateChanged": "Cloud save status changed. Please review the refreshed summary and try again."
+            "stateChanged": "Cloud save status changed. Please review the refreshed summary and try again.",
+            "forceTerminateTitle": "Terminate session and continue?"
         },
         "action": {
             "expandDetails": "Expand details",
@@ -1923,7 +1925,8 @@
             "nameAuditFailed": "The character name did not pass the cloud save validation rules.",
             "uploadFailed": "Upload failed: {{message}}",
             "downloadFailed": "Download failed: {{message}}",
-            "localReloadFailedRolledBack": "The download was applied, but local reload failed."
+            "localReloadFailedRolledBack": "The download was applied, but local reload failed.",
+            "sessionTerminateFailed": "Failed to terminate active session. Please try again later."
         }
     },
     "settings": {
@@ -2031,7 +2034,17 @@
         "title": "Real-time Subtitles",
         "enable": "Subtitle Translation",
         "enableAriaLabel": "Toggle subtitle translation",
-        "markdownPlaceholder": "[formatted content]"
+        "markdownPlaceholder": "[formatted content]",
+        "settings": {
+            "targetLang": "Target Language",
+            "opacity": "Opacity",
+            "dragAnywhere": "Drag Anywhere",
+            "size": "Size",
+            "sizeSmall": "S",
+            "sizeMedium": "M",
+            "sizeLarge": "L",
+            "settingsBtn": "Subtitle Settings"
+        }
     },
     "viewer": {
         "title": "Viewer - Project N.E.K.O."

@@ -2353,6 +2353,9 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                 if not tts_text or not tts_text.strip():
                     continue
 
+                if not re.sub(r'\W+', '', tts_text.strip()):
+                    continue
+
                 # 用 append 累积碎片文本，v3 TextBuffer 自动按标点切句推理
                 if _ws_is_open(ws):
                     try:

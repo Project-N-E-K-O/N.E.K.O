@@ -12,7 +12,7 @@ import logging
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from .shared_state import get_config_manager, get_initialize_character_data, get_session_manager, get_steamworks
+from .shared_state import get_config_manager, get_initialize_character_data, get_role_state, get_session_manager, get_steamworks
 from .characters_router import (
     notify_memory_server_reload,
     release_memory_server_character,
@@ -227,6 +227,24 @@ def _active_session_block_reason(character_name: str) -> str:
     return "角色存在活跃会话，暂不允许云端下载覆盖，请先停止会话后重试"
 
 
+async def _force_terminate_session(character_name: str) -> tuple[bool, str]:
+    session_manager = get_session_manager()
+    mgr = session_manager.get(character_name)
+    if mgr is None or not getattr(mgr, "is_active", False):
+        return True, ""
+
+    try:
+        await mgr.disconnected_by_server()
+        role_state = get_role_state()
+        rs = role_state.get(character_name)
+        if rs is not None:
+            rs.session_manager = None
+        return True, ""
+    except Exception as exc:
+        logger.warning("强制终止角色 %s 会话失败: %s", character_name, exc)
+        return False, str(exc)
+
+
 def _local_character_exists(config_manager, character_name: str) -> bool:
     characters_payload = config_manager.load_characters()
     return character_name in (characters_payload.get("猫娘") or {})
@@ -401,15 +419,37 @@ async def post_cloudsave_character_download(name: str, request: Request):
         )
     overwrite = overwrite_val
     backup_before_overwrite = backup_val
+    force_val = (body or {}).get("force", False)
 
     block_reason = _active_session_block_reason(name)
     if block_reason:
-        return _cloudsave_error_response(
-            "ACTIVE_SESSION_BLOCKED",
-            block_reason,
-            status_code=409,
-            character_name=name,
+        if not isinstance(force_val, bool) or not force_val:
+            return _cloudsave_error_response(
+                "ACTIVE_SESSION_BLOCKED",
+                block_reason,
+                status_code=409,
+                character_name=name,
+                extra={"can_force": True},
+            )
+        terminated_ok, terminate_msg = await _force_terminate_session(name)
+        if not terminated_ok:
+            return _cloudsave_error_response(
+                "SESSION_TERMINATE_FAILED",
+                f"终止活跃会话失败: {terminate_msg}",
+                status_code=503,
+                character_name=name,
+            )
+        released_memory_handle = await release_memory_server_character(
+            name,
+            reason=f"云存档强制下载前释放 SQLite 句柄: {name}",
         )
+        if not released_memory_handle:
+            return _cloudsave_error_response(
+                "MEMORY_SERVER_RELEASE_FAILED",
+                "释放本地角色记忆句柄失败，已阻止下载覆盖，请稍后重试",
+                status_code=503,
+                character_name=name,
+            )
 
     local_exists = _local_character_exists(config_manager, name)
     if local_exists and not overwrite:
@@ -428,7 +468,7 @@ async def post_cloudsave_character_download(name: str, request: Request):
             character_name=name,
         )
 
-    if local_exists and overwrite:
+    if local_exists and overwrite and not force_val:
         released_memory_handle = await release_memory_server_character(
             name,
             reason=f"云存档下载前释放 SQLite 句柄: {name}",

@@ -16,6 +16,7 @@ import httpx
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 from utils.logger_config import setup_logging, ThrottledLogger
 
@@ -46,6 +47,22 @@ except Exception as e:
 
 
 app = FastAPI(title="N.E.K.O Tool Server")
+
+
+class ToolCorrectionPayload(BaseModel):
+    correct_tool: str = Field(min_length=1)
+    correct_instruction: str = Field(min_length=1)
+    user_note: str = ""
+
+
+_LEGACY_CORRECTION_PUBLIC_KEYS = {
+    "decision_reason",
+    "task_description",
+    "latest_user_request",
+    "normalized_intent",
+    "recent_context",
+}
+
 
 class Modules:
     computer_use: ComputerUseAdapter | None = None
@@ -1170,6 +1187,47 @@ def _spawn_task(kind: str, args: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError(f"Unknown task kind: {kind}")
 
 
+def _set_internal_correction_context(task_info: Dict[str, Any], result: Any) -> None:
+    task_info["_internal_corrections"] = {
+        "decision_reason": getattr(result, "reason", "") or "",
+        "task_description": getattr(result, "task_description", "") or "",
+        "latest_user_request": getattr(result, "latest_user_request", "") or "",
+        "normalized_intent": getattr(result, "normalized_intent", "") or "",
+        "recent_context": getattr(result, "recent_context", None) or [],
+    }
+
+
+def _get_internal_correction_context(task_info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    internal = task_info.get("_internal_corrections")
+    if isinstance(internal, dict):
+        return internal
+
+    legacy = {key: task_info.get(key) for key in _LEGACY_CORRECTION_PUBLIC_KEYS if key in task_info}
+    if legacy:
+        return legacy
+
+    params = task_info.get("params")
+    if isinstance(params, dict):
+        fallback_text = str(params.get("query") or params.get("instruction") or "").strip()
+        if fallback_text:
+            return {
+                "task_description": fallback_text,
+                "latest_user_request": fallback_text,
+                "normalized_intent": "",
+                "recent_context": [],
+            }
+
+    return None
+
+
+def _public_task_info(task_info: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        key: value
+        for key, value in task_info.items()
+        if not key.startswith("_") and key not in _LEGACY_CORRECTION_PUBLIC_KEYS
+    }
+
+
 async def _run_computer_use_task(
     task_id: str,
     instruction: str,
@@ -1473,6 +1531,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     ti = _spawn_task("computer_use", {"instruction": result.task_description, "screenshot": None})
                     ti["lanlan_name"] = lanlan_name
                     ti["session_id"] = cu_session.session_id
+                    _set_internal_correction_context(ti, result)
                     _task_tracker.record_assigned(
                         lanlan_name, task_id=ti["id"], method="computer_use",
                         desc=result.task_description or "",
@@ -2044,6 +2103,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     "result": None,
                     "error": None,
                 }
+                _set_internal_correction_context(bu_info, result)
                 Modules.task_registry[bu_task_id] = bu_info
                 Modules.active_browser_use_task_id = bu_task_id
                 _task_tracker.record_assigned(
@@ -2975,8 +3035,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
 async def get_task(task_id: str):
     info = Modules.task_registry.get(task_id)
     if info:
-        out = {k: v for k, v in info.items() if k != "_proc"}
-        return out
+        return _public_task_info(info)
     raise HTTPException(404, "task not found")
 
 
@@ -3085,6 +3144,77 @@ async def cancel_task(task_id: str):
         pass
     logger.info("[Agent] Task %s (%s) cancelled by user", task_id, task_type)
     return {"success": True, "task_id": task_id, "status": "cancelled"}
+
+
+@app.post("/api/agent/tasks/{task_id}/correction")
+async def submit_task_correction(task_id: str, body: ToolCorrectionPayload):
+    info = Modules.task_registry.get(task_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    task_type = str(info.get("type") or "").strip()
+    if task_type not in {"computer_use", "browser_use"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Only computer_use/browser_use tasks support tool correction",
+        )
+    if Modules.task_executor is None:
+        raise HTTPException(status_code=503, detail="Task executor not ready")
+
+    correct_tool = str(body.correct_tool or "").strip()
+    if correct_tool not in {"computer_use", "browser_use"}:
+        raise HTTPException(
+            status_code=400,
+            detail="correct_tool must be computer_use or browser_use",
+        )
+    if correct_tool == task_type:
+        raise HTTPException(
+            status_code=400,
+            detail="correct_tool must be different from the current task type",
+        )
+
+    instr = str(body.correct_instruction or "").strip()
+    if not instr:
+        raise HTTPException(
+            status_code=400,
+            detail="correct_instruction cannot be blank",
+        )
+
+    correction_info = _get_internal_correction_context(info)
+    if correction_info is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Task correction context is unavailable for this task",
+        )
+    task_status = str(info.get("status") or info.get("state") or "").strip().lower()
+    if task_status not in {"completed", "failed", "cancelled"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Task correction is only allowed after the task reaches a terminal state",
+        )
+
+    try:
+        event = Modules.task_executor.record_tool_correction(
+            {
+                **correction_info,
+                "task_id": task_id,
+                "type": task_type,
+            },
+            correct_tool=correct_tool,
+            correct_instruction=instr,
+            user_note=body.user_note,
+        )
+    except Exception as exc:
+        logger.exception("[CorrectionMemory] Failed to record correction for %s: %s", task_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to record correction") from exc
+
+    logger.info(
+        "[CorrectionMemory] Recorded correction: task_id=%s chosen=%s correct=%s",
+        task_id,
+        task_type,
+        correct_tool,
+    )
+    return {"success": True, "task_id": task_id}
 
 
 @app.post("/api/agent/tasks/{task_id}/complete")

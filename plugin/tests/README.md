@@ -18,6 +18,12 @@ Run plugin unit + integration:
 uv run pytest -c plugin/tests/pytest.ini plugin/tests/unit plugin/tests/integration -q
 ```
 
+Run the end-to-end packaging workflow regression only:
+
+```bash
+uv run pytest -c plugin/tests/pytest.ini plugin/tests/integration/test_neko_plugin_cli_workflow.py -q
+```
+
 Run plugin e2e (opt-in):
 
 ```bash
@@ -33,6 +39,7 @@ PLUGIN_E2E_BASE_URL=http://127.0.0.1:48911/ui uv run pytest -c plugin/tests/pyte
 ## Design Notes
 
 - Integration tests use `httpx.AsyncClient` with `ASGITransport`; no external server process is required.
+- `integration/test_neko_plugin_cli_workflow.py` uses fixture plugins under `fixtures/neko_plugin_cli/plugins/` to replay realistic pack/inspect/verify/unpack flows without manual testing.
 - Admin dependency is overridden in test app fixture to isolate business behavior from auth setup.
 - E2E tests are gated by `--run-plugin-e2e` to keep CI stable and fast by default.
 
