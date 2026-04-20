@@ -12,6 +12,7 @@
     <script src="/static/i18n-i18next.js"></script>
     <script src="/static/common_dialogs.js"></script>
     <link rel="stylesheet" href="/static/css/index.css">
+    <link rel="stylesheet" href="/static/css/subtitle.css">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <link rel="stylesheet" href="/static/react/neko-chat/neko-chat-window.css">
     <script src="/static/theme-manager.js"></script>
@@ -343,7 +344,7 @@
         }
     </style>
 </head>
-<body class="electron-chat-window">
+<body class="electron-chat-window subtitle-web-host">
 
     <div id="status-toast"></div>
 
@@ -506,6 +507,7 @@
     <script src="/static/ogg-opus-decoder-wrapper.js"></script>
 
     <!-- app 模块（与 index.html 完全相同的加载顺序）-->
+    <script src="/static/subtitle-shared.js"></script>
     <script src="/static/app-state.js"></script>
     <script src="/static/app-ui.js"></script>
     <script src="/static/app-chat-text-utils.js"></script>

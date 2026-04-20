@@ -49,11 +49,11 @@ class DummyConfig:
 
 
 @pytest.mark.unit
-def test_prompt_triggers_after_idle_home_usage(tmp_path):
+def test_prompt_triggers_immediately_on_first_open(tmp_path):
     config = DummyConfig(tmp_path)
     response = process_tutorial_prompt_heartbeat(
         {
-            "foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS,
+            "foreground_ms_delta": 0,
             "chat_turns_delta": 0,
             "voice_sessions_delta": 0,
             "home_tutorial_completed": False,
@@ -63,7 +63,7 @@ def test_prompt_triggers_after_idle_home_usage(tmp_path):
     )
 
     assert response["should_prompt"] is True
-    assert response["prompt_reason"] == "idle_timeout"
+    assert response["prompt_reason"] == "first_open"
     assert response["prompt_mode"] == "tutorial"
     assert response["prompt_token"]
     assert response["state"]["user_cohort"] == "new"
@@ -73,6 +73,39 @@ def test_prompt_triggers_after_idle_home_usage(tmp_path):
     assert state["shown_count"] == 0
     assert state["active_prompt_token"] == response["prompt_token"]
     assert state["last_shown_at"] == 0
+    assert state["recent_heartbeat_tokens"] == []
+
+
+@pytest.mark.unit
+def test_heartbeat_token_is_idempotent_for_replayed_tutorial_heartbeat(tmp_path):
+    config = DummyConfig(tmp_path)
+
+    first = process_tutorial_prompt_heartbeat(
+        {
+            "heartbeat_token": "heartbeat-1",
+            "foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS,
+            "chat_turns_delta": 1,
+        },
+        config_manager=config,
+        now_ms=1_000,
+    )
+
+    replay = process_tutorial_prompt_heartbeat(
+        {
+            "heartbeat_token": "heartbeat-1",
+            "foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS,
+            "chat_turns_delta": 1,
+        },
+        config_manager=config,
+        now_ms=2_000,
+    )
+
+    state = load_tutorial_prompt_state(config)
+    assert first["state"]["chat_turns"] == 1
+    assert replay["state"]["chat_turns"] == 1
+    assert state["chat_turns"] == 1
+    assert state["foreground_ms"] == MIN_PROMPT_FOREGROUND_MS
+    assert state["recent_heartbeat_tokens"] == ["heartbeat-1"]
 
 
 @pytest.mark.unit
@@ -202,7 +235,7 @@ def test_manual_home_tutorial_view_heartbeat_clears_stale_prompt_start_flag(tmp_
 def test_later_decision_sets_cooldown(tmp_path):
     config = DummyConfig(tmp_path)
     heartbeat = process_tutorial_prompt_heartbeat(
-        {"foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS},
+        {"foreground_ms_delta": 0},
         config_manager=config,
         now_ms=1_000,
     )
@@ -228,7 +261,41 @@ def test_later_decision_sets_cooldown(tmp_path):
 
 
 @pytest.mark.unit
-def test_accept_started_marks_state_started(tmp_path):
+def test_prompt_requires_foreground_threshold_after_first_prompt_is_deferred(tmp_path):
+    config = DummyConfig(tmp_path)
+    heartbeat = process_tutorial_prompt_heartbeat(
+        {"foreground_ms_delta": 0},
+        config_manager=config,
+        now_ms=1_000,
+    )
+
+    record_tutorial_prompt_decision(
+        {"decision": "later", "prompt_token": heartbeat["prompt_token"]},
+        config_manager=config,
+        now_ms=2_000,
+    )
+
+    blocked = process_tutorial_prompt_heartbeat(
+        {"foreground_ms_delta": 0},
+        config_manager=config,
+        now_ms=2_000 + LATER_COOLDOWN_MS + 1,
+    )
+
+    assert blocked["should_prompt"] is False
+    assert blocked["prompt_reason"] == "foreground_insufficient"
+
+    prompt = process_tutorial_prompt_heartbeat(
+        {"foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS},
+        config_manager=config,
+        now_ms=2_000 + LATER_COOLDOWN_MS + 2_000,
+    )
+
+    assert prompt["should_prompt"] is True
+    assert prompt["prompt_reason"] == "idle_timeout"
+
+
+@pytest.mark.unit
+def test_tutorial_started_event_marks_state_started_after_accept_decision(tmp_path):
     config = DummyConfig(tmp_path)
     heartbeat = process_tutorial_prompt_heartbeat(
         {"foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS},
@@ -239,21 +306,34 @@ def test_accept_started_marks_state_started(tmp_path):
     decision = record_tutorial_prompt_decision(
         {
             "decision": "accept",
-            "result": "started",
+            "result": "accepted",
             "prompt_token": heartbeat["prompt_token"],
         },
         config_manager=config,
         now_ms=5_000,
     )
 
-    assert decision["state"]["status"] == "started"
-    assert decision["state"]["started_at"] == 5_000
+    assert decision["state"]["started_at"] == 0
+    assert decision["state"]["started_via_prompt"] is True
     assert decision["state"]["shown_count"] == 1
+
+    started = record_tutorial_started(
+        {
+            "page": "home",
+            "source": "idle_prompt",
+            "prompt_token": heartbeat["prompt_token"],
+        },
+        config_manager=config,
+        now_ms=6_000,
+    )
+
+    assert started["state"]["status"] == "started"
+    assert started["state"]["started_at"] == 6_000
 
     follow_up = process_tutorial_prompt_heartbeat(
         {"foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS},
         config_manager=config,
-        now_ms=6_000,
+        now_ms=7_000,
     )
 
     assert follow_up["should_prompt"] is False
@@ -261,7 +341,7 @@ def test_accept_started_marks_state_started(tmp_path):
 
 
 @pytest.mark.unit
-def test_accept_accepted_marks_started_as_fallback(tmp_path):
+def test_accept_accepted_preserves_prompt_attribution_until_started_event(tmp_path):
     config = DummyConfig(tmp_path)
     heartbeat = process_tutorial_prompt_heartbeat(
         {"foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS},
@@ -280,44 +360,33 @@ def test_accept_accepted_marks_started_as_fallback(tmp_path):
     )
 
     assert decision["state"]["accepted_at"] == 1_500
-    assert decision["state"]["started_at"] == 1_500
+    assert decision["state"]["started_at"] == 0
 
     state = load_tutorial_prompt_state(config)
     assert state["accepted_at"] == 1_500
-    assert state["started_at"] == 1_500
+    assert state["started_at"] == 0
     assert state["started_via_prompt"] is True
     assert state["funnel_counts"]["accept"] == 1
-    assert state["funnel_counts"]["started"] == 1
+    assert state["funnel_counts"]["started"] == 0
 
-
-@pytest.mark.unit
-def test_accept_without_result_does_not_mark_started(tmp_path):
-    config = DummyConfig(tmp_path)
-    runtime_config = load_tutorial_prompt_runtime_config(config)
-    heartbeat = process_tutorial_prompt_heartbeat(
-        {"foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS},
-        config_manager=config,
-        now_ms=1_000,
-    )
-
-    decision = record_tutorial_prompt_decision(
+    started = record_tutorial_started(
         {
-            "decision": "accept",
+            "page": "home",
+            "source": "idle_prompt",
             "prompt_token": heartbeat["prompt_token"],
         },
         config_manager=config,
-        now_ms=1_500,
+        now_ms=2_000,
     )
 
-    assert decision["state"]["accepted_at"] == 1_500
-    assert decision["state"]["started_at"] == 0
-    assert decision["state"]["started_via_prompt"] is False
-    assert decision["state"]["status"] == "error"
-    assert decision["state"]["deferred_until"] == 1_500 + runtime_config["failure_cooldown_ms"]
-    assert decision["state"]["last_error"] == "tutorial_start_failed"
-    assert decision["state"]["funnel_counts"]["accept"] == 1
-    assert decision["state"]["funnel_counts"]["started"] == 0
-    assert decision["state"]["funnel_counts"]["failed"] == 1
+    assert started["state"]["started_at"] == 2_000
+
+    state = load_tutorial_prompt_state(config)
+    assert state["accepted_at"] == 1_500
+    assert state["started_at"] == 2_000
+    assert state["started_via_prompt"] is True
+    assert state["funnel_counts"]["accept"] == 1
+    assert state["funnel_counts"]["started"] == 1
 
 
 @pytest.mark.unit
@@ -600,17 +669,30 @@ def test_funnel_counts_track_accept_start_and_completion(tmp_path):
     )
     assert shown["state"]["funnel_counts"]["shown"] == 1
 
-    started = record_tutorial_prompt_decision(
+    accepted = record_tutorial_prompt_decision(
         {
             "decision": "accept",
-            "result": "started",
+            "result": "accepted",
             "prompt_token": heartbeat["prompt_token"],
         },
         config_manager=config,
         now_ms=2_000,
     )
-    assert started["state"]["funnel_counts"]["accept"] == 1
-    assert started["state"]["funnel_counts"]["started"] == 1
+    assert accepted["state"]["funnel_counts"]["accept"] == 1
+    assert accepted["state"]["funnel_counts"]["started"] == 0
+
+    started = record_tutorial_started(
+        {
+            "page": "home",
+            "source": "idle_prompt",
+            "prompt_token": heartbeat["prompt_token"],
+        },
+        config_manager=config,
+        now_ms=2_500,
+    )
+    state = load_tutorial_prompt_state(config)
+    assert state["funnel_counts"]["accept"] == 1
+    assert state["funnel_counts"]["started"] == 1
 
     completed = process_tutorial_prompt_heartbeat(
         {"home_tutorial_completed": True},
@@ -710,7 +792,7 @@ def test_legacy_autostart_state_is_ignored_for_new_tutorial_prompt(tmp_path):
     )
 
     assert response["should_prompt"] is True
-    assert response["prompt_reason"] == "idle_timeout"
+    assert response["prompt_reason"] == "first_open"
     assert response["state"]["shown_count"] == 0
     assert response["state"]["never_remind"] is False
 
@@ -719,60 +801,28 @@ def test_legacy_autostart_state_is_ignored_for_new_tutorial_prompt(tmp_path):
 
 
 @pytest.mark.unit
-def test_legacy_completed_only_tutorial_state_is_migrated(tmp_path):
+def test_legacy_autostart_shared_home_interaction_state_is_ignored_for_tutorial_prompt(tmp_path):
     config = DummyConfig(tmp_path)
     legacy_state_path = config.config_dir / "autostart_prompt.json"
     legacy_state_path.write_text(json.dumps({
         "schema_version": 1,
-        "completed_timestamp": 4_321,
-        "completed_status": "completed",
+        "status": "observing",
+        "foreground_ms": 0,
+        "chat_turns": 0,
+        "voice_sessions": 0,
+        "last_weak_home_interaction_at": 4_321,
     }), encoding="utf-8")
 
-    state = load_tutorial_prompt_state(config)
+    response = process_tutorial_prompt_heartbeat(
+        {"foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS},
+        config_manager=config,
+        now_ms=9_000,
+    )
 
-    assert state["home_tutorial_completed"] is True
-    assert state["completed_at"] == 4_321
-    assert state["status"] == "completed"
-
-    tutorial_state_path = config.config_dir / "tutorial_prompt.json"
-    assert tutorial_state_path.exists()
-
-    persisted = json.loads(tutorial_state_path.read_text(encoding="utf-8"))
-    assert persisted["prompt_kind"] == "tutorial_prompt"
-    assert persisted["home_tutorial_completed"] is True
-    assert persisted["completed_at"] == 4_321
-    assert persisted["status"] == "completed"
-
-
-@pytest.mark.unit
-def test_corrupted_legacy_autostart_state_does_not_break_tutorial_state_load(tmp_path):
-    config = DummyConfig(tmp_path)
-    legacy_state_path = config.config_dir / "autostart_prompt.json"
-    legacy_state_path.write_text(json.dumps(["not", "a", "dict"]), encoding="utf-8")
-
-    state = load_tutorial_prompt_state(config)
-
-    assert state["status"] == "observing"
-    assert state["shown_count"] == 0
-    assert state["home_tutorial_completed"] is False
-
-
-@pytest.mark.unit
-def test_legacy_autostart_state_with_completed_status_does_not_pollute_tutorial_state(tmp_path):
-    config = DummyConfig(tmp_path)
-    legacy_state_path = config.config_dir / "autostart_prompt.json"
-    legacy_state_path.write_text(json.dumps({
-        "autostart_enabled": True,
-        "enabled_at": 8_000,
-        "completed_status": "completed",
-    }), encoding="utf-8")
-
-    state = load_tutorial_prompt_state(config)
-
-    assert state["status"] == "observing"
-    assert state["home_tutorial_completed"] is False
-    assert state["completed_at"] == 0
-    assert not (config.config_dir / "tutorial_prompt.json").exists()
+    assert response["should_prompt"] is True
+    assert response["prompt_reason"] == "first_open"
+    assert response["state"]["shown_count"] == 0
+    assert response["state"]["last_weak_home_interaction_at"] == 0
 
 
 @pytest.mark.unit
@@ -792,8 +842,25 @@ def test_autostart_state_file_does_not_pollute_tutorial_state(tmp_path):
     )
 
     assert response["should_prompt"] is True
-    assert response["prompt_reason"] == "idle_timeout"
+    assert response["prompt_reason"] == "first_open"
     assert response["state"]["home_tutorial_completed"] is False
+    assert response["state"]["shown_count"] == 0
+
+
+@pytest.mark.unit
+def test_corrupted_legacy_autostart_state_list_is_ignored_for_tutorial_prompt(tmp_path):
+    config = DummyConfig(tmp_path)
+    legacy_state_path = config.config_dir / "autostart_prompt.json"
+    legacy_state_path.write_text(json.dumps(["bad", "state"]), encoding="utf-8")
+
+    response = process_tutorial_prompt_heartbeat(
+        {"foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS},
+        config_manager=config,
+        now_ms=9_000,
+    )
+
+    assert response["should_prompt"] is True
+    assert response["prompt_reason"] == "first_open"
     assert response["state"]["shown_count"] == 0
 
 
@@ -891,43 +958,27 @@ def test_tutorial_decision_is_idempotent_for_repeated_token(tmp_path):
 @pytest.mark.unit
 def test_public_state_response_hides_internal_prompt_tokens(tmp_path):
     config = DummyConfig(tmp_path)
-    save_tutorial_prompt_state(
-        {
-            "status": "completed",
-            "shown_count": 1,
-            "manual_home_tutorial_viewed": True,
-            "manual_home_tutorial_viewed_at": 1_500,
-            "home_tutorial_completed": True,
-            "user_cohort": "existing",
-            "cohort_decided_at": 1_200,
-            "cohort_reason": "memory_history",
-            "active_prompt_token": "prompt-token",
-            "active_prompt_issued_at": 1_000,
-            "last_acknowledged_prompt_token": "ack-token",
-            "active_tutorial_run_token": "run-token",
-            "active_tutorial_run_source": "manual",
-            "active_tutorial_run_started_at": 1_500,
-        },
-        config,
+    heartbeat = process_tutorial_prompt_heartbeat(
+        {"foreground_ms_delta": MIN_PROMPT_FOREGROUND_MS},
+        config_manager=config,
+        now_ms=1_000,
     )
+
+    assert heartbeat["prompt_token"]
 
     response = get_tutorial_prompt_state_response(config_manager=config)
     state = response["state"]
 
-    assert state["status"] == "completed"
-    assert state["shown_count"] == 1
-    assert state["manual_home_tutorial_viewed"] is True
-    assert state["manual_home_tutorial_viewed_at"] == 1_500
-    assert state["home_tutorial_completed"] is True
-    assert state["user_cohort"] == "existing"
-    assert state["cohort_decided_at"] == 1_200
-    assert state["cohort_reason"] == "memory_history"
+    assert state["status"] == "observing"
+    assert state["shown_count"] == 0
+    assert state["home_tutorial_completed"] is False
+    assert state["manual_home_tutorial_viewed"] is False
+    assert state["user_cohort"] == "new"
+    assert state["chat_turns"] == 0
+    assert state["voice_sessions"] == 0
     assert "active_prompt_token" not in state
     assert "active_prompt_issued_at" not in state
     assert "last_acknowledged_prompt_token" not in state
-    assert "active_tutorial_run_token" not in state
-    assert "active_tutorial_run_source" not in state
-    assert "active_tutorial_run_started_at" not in state
 
 
 @pytest.mark.unit
@@ -965,6 +1016,12 @@ def test_prompt_threshold_config_overrides_idle_and_later_cooldown(tmp_path):
         "failure_cooldown_ms": 120_000,
         "max_prompt_shows": 3,
     }), encoding="utf-8")
+
+    process_tutorial_prompt_heartbeat(
+        {"home_interactions_delta": 1},
+        config_manager=config,
+        now_ms=900,
+    )
 
     blocked = process_tutorial_prompt_heartbeat(
         {"foreground_ms_delta": 29_000},
@@ -1049,6 +1106,12 @@ def test_invalid_prompt_threshold_config_is_clamped(tmp_path):
     assert runtime_config["later_cooldown_ms"] == 5 * 60 * 1000
     assert runtime_config["failure_cooldown_ms"] == 2 * 60 * 60 * 1000
     assert runtime_config["max_prompt_shows"] == 10
+
+    process_tutorial_prompt_heartbeat(
+        {"home_interactions_delta": 1},
+        config_manager=config,
+        now_ms=900,
+    )
 
     response = process_tutorial_prompt_heartbeat(
         {"foreground_ms_delta": 0},
@@ -1402,236 +1465,6 @@ def test_autostart_accept_enabled_result_is_treated_as_success(tmp_path):
 
 
 @pytest.mark.unit
-def test_autostart_accept_requires_approval_is_tracked_as_started(tmp_path):
-    config = DummyConfig(tmp_path)
-    heartbeat = process_autostart_prompt_heartbeat(
-        {"foreground_ms_delta": AUTOSTART_MIN_PROMPT_FOREGROUND_MS},
-        config_manager=config,
-        now_ms=1_000,
-    )
-
-    decision = record_autostart_prompt_decision(
-        {
-            "decision": "accept",
-            "result": "approval_pending",
-            "prompt_token": heartbeat["prompt_token"],
-        },
-        config_manager=config,
-        now_ms=2_000,
-    )
-
-    assert decision["state"]["status"] == "started"
-    assert decision["state"]["accepted_at"] == 2_000
-    assert decision["state"]["started_at"] == 2_000
-    assert decision["state"]["started_via_prompt"] is True
-    assert decision["state"]["autostart_enabled"] is False
-    assert decision["state"]["deferred_until"] == 0
-    assert decision["state"]["last_error"] == ""
-    assert decision["state"]["funnel_counts"]["accept"] == 1
-    assert decision["state"]["funnel_counts"]["started"] == 1
-    assert decision["state"]["funnel_counts"]["failed"] == 0
-
-    blocked = process_autostart_prompt_heartbeat(
-        {"foreground_ms_delta": 0},
-        config_manager=config,
-        now_ms=3_000,
-    )
-    assert blocked["should_prompt"] is False
-    assert blocked["prompt_reason"] == "autostart_pending"
-
-
-@pytest.mark.unit
-def test_authoritative_requires_approval_heartbeat_rebuilds_pending_state(tmp_path):
-    config = DummyConfig(tmp_path)
-
-    response = process_autostart_prompt_heartbeat(
-        {
-            "foreground_ms_delta": AUTOSTART_MIN_PROMPT_FOREGROUND_MS,
-            "autostart_enabled": False,
-            "autostart_status_authoritative": True,
-            "autostart_requires_approval": True,
-            "autostart_provider": "neko-pc",
-        },
-        config_manager=config,
-        now_ms=2_000,
-    )
-
-    assert response["should_prompt"] is False
-    assert response["prompt_reason"] == "autostart_pending"
-
-    state = load_autostart_prompt_state(config)
-    assert state["status"] == "started"
-    assert state["started_at"] == 2_000
-    assert state["started_via_prompt"] is False
-    assert state["autostart_enabled"] is False
-    assert state["funnel_counts"]["started"] == 0
-
-
-@pytest.mark.unit
-def test_authoritative_non_pending_heartbeat_clears_stale_started_state(tmp_path):
-    config = DummyConfig(tmp_path)
-
-    process_autostart_prompt_heartbeat(
-        {
-            "foreground_ms_delta": AUTOSTART_MIN_PROMPT_FOREGROUND_MS,
-            "autostart_enabled": False,
-            "autostart_status_authoritative": True,
-            "autostart_requires_approval": True,
-            "autostart_provider": "neko-pc",
-        },
-        config_manager=config,
-        now_ms=2_000,
-    )
-
-    cleared = process_autostart_prompt_heartbeat(
-        {
-            "foreground_ms_delta": 0,
-            "autostart_enabled": False,
-            "autostart_status_authoritative": True,
-            "autostart_requires_approval": False,
-            "autostart_provider": "neko-pc",
-        },
-        config_manager=config,
-        now_ms=3_000,
-    )
-
-    assert cleared["should_prompt"] is True
-    assert cleared["prompt_reason"] == "usage_timeout"
-
-    state = load_autostart_prompt_state(config)
-    assert state["status"] == "observing"
-    assert state["started_at"] == 0
-    assert state["started_via_prompt"] is False
-    assert state["autostart_enabled"] is False
-
-
-@pytest.mark.unit
-def test_authoritative_non_pending_heartbeat_preserves_failure_cooldown(tmp_path):
-    config = DummyConfig(tmp_path)
-
-    heartbeat = process_autostart_prompt_heartbeat(
-        {"foreground_ms_delta": AUTOSTART_MIN_PROMPT_FOREGROUND_MS},
-        config_manager=config,
-        now_ms=1_000,
-    )
-
-    record_autostart_prompt_decision(
-        {
-            "decision": "accept",
-            "result": "failed",
-            "error": "autostart_enable_failed",
-            "prompt_token": heartbeat["prompt_token"],
-        },
-        config_manager=config,
-        now_ms=2_000,
-    )
-
-    blocked = process_autostart_prompt_heartbeat(
-        {
-            "foreground_ms_delta": 0,
-            "autostart_enabled": False,
-            "autostart_status_authoritative": True,
-            "autostart_requires_approval": False,
-            "autostart_provider": "neko-pc",
-        },
-        config_manager=config,
-        now_ms=3_000,
-    )
-
-    assert blocked["should_prompt"] is False
-    assert blocked["prompt_reason"] == "cooldown_active"
-
-    state = load_autostart_prompt_state(config)
-    assert state["status"] == "error"
-    assert state["deferred_until"] > 3_000
-    assert state["last_error"] == "autostart_enable_failed"
-
-
-@pytest.mark.unit
-def test_authoritative_pending_after_failed_accept_does_not_restore_prompt_attribution(tmp_path):
-    config = DummyConfig(tmp_path)
-
-    heartbeat = process_autostart_prompt_heartbeat(
-        {"foreground_ms_delta": AUTOSTART_MIN_PROMPT_FOREGROUND_MS},
-        config_manager=config,
-        now_ms=1_000,
-    )
-
-    record_autostart_prompt_decision(
-        {
-            "decision": "accept",
-            "result": "failed",
-            "error": "autostart_enable_failed",
-            "prompt_token": heartbeat["prompt_token"],
-        },
-        config_manager=config,
-        now_ms=2_000,
-    )
-
-    pending = process_autostart_prompt_heartbeat(
-        {
-            "foreground_ms_delta": 0,
-            "autostart_enabled": False,
-            "autostart_status_authoritative": True,
-            "autostart_requires_approval": True,
-            "autostart_provider": "neko-pc",
-        },
-        config_manager=config,
-        now_ms=3_000,
-    )
-
-    assert pending["should_prompt"] is False
-    assert pending["prompt_reason"] == "autostart_pending"
-    assert pending["state"]["started_via_prompt"] is False
-
-    completed = process_autostart_prompt_heartbeat(
-        {
-            "foreground_ms_delta": 0,
-            "autostart_enabled": True,
-            "autostart_status_authoritative": True,
-            "autostart_provider": "neko-pc",
-        },
-        config_manager=config,
-        now_ms=4_000,
-    )
-
-    assert completed["should_prompt"] is False
-    assert completed["prompt_reason"] == "autostart_enabled"
-    assert completed["state"]["started_via_prompt"] is False
-    assert completed["state"]["funnel_counts"]["completed"] == 0
-
-    state = load_autostart_prompt_state(config)
-    assert state["status"] == "completed"
-    assert state["started_via_prompt"] is False
-    assert state["funnel_counts"]["completed"] == 0
-
-
-@pytest.mark.unit
-def test_authoritative_service_not_found_heartbeat_suppresses_prompt(tmp_path):
-    config = DummyConfig(tmp_path)
-
-    blocked = process_autostart_prompt_heartbeat(
-        {
-            "foreground_ms_delta": AUTOSTART_MIN_PROMPT_FOREGROUND_MS,
-            "autostart_enabled": False,
-            "autostart_supported": True,
-            "autostart_status_authoritative": True,
-            "autostart_service_not_found": True,
-            "autostart_provider": "neko-pc",
-        },
-        config_manager=config,
-        now_ms=1_000,
-    )
-
-    assert blocked["should_prompt"] is False
-    assert blocked["prompt_reason"] == "autostart_service_not_found"
-
-    state = load_autostart_prompt_state(config)
-    assert state["status"] == "observing"
-    assert state["autostart_enabled"] is False
-
-
-@pytest.mark.unit
 def test_authoritative_autostart_enabled_heartbeat_does_not_double_count_completion(tmp_path):
     config = DummyConfig(tmp_path)
     heartbeat = process_autostart_prompt_heartbeat(
@@ -1669,42 +1502,6 @@ def test_authoritative_autostart_enabled_heartbeat_does_not_double_count_complet
     assert second_state["funnel_counts"]["completed"] == 1
     assert second_state["status"] == "completed"
     assert second_state["autostart_enabled"] is True
-
-
-@pytest.mark.unit
-def test_authoritative_autostart_enabled_heartbeat_migrates_enabled_provider_from_backend_to_desktop(tmp_path):
-    config = DummyConfig(tmp_path)
-    state = load_autostart_prompt_state(config)
-    state["autostart_enabled"] = True
-    state["enabled_at"] = 2_000
-    state["enabled_provider"] = "backend"
-    state["completed_at"] = 2_000
-    state["status"] = "completed"
-    state["started_via_prompt"] = True
-    state["funnel_counts"]["completed"] = 1
-    save_autostart_prompt_state(state, config)
-
-    response = process_autostart_prompt_heartbeat(
-        {
-            "foreground_ms_delta": 0,
-            "autostart_enabled": True,
-            "autostart_status_authoritative": True,
-            "autostart_provider": "neko-pc",
-        },
-        config_manager=config,
-        now_ms=5_000,
-    )
-
-    assert response["should_prompt"] is False
-    assert response["prompt_reason"] == "autostart_enabled"
-
-    updated_state = load_autostart_prompt_state(config)
-    assert updated_state["autostart_enabled"] is True
-    assert updated_state["enabled_at"] == 2_000
-    assert updated_state["enabled_provider"] == "neko-pc"
-    assert updated_state["completed_at"] == 2_000
-    assert updated_state["status"] == "completed"
-    assert updated_state["funnel_counts"]["completed"] == 1
 
 
 @pytest.mark.unit
@@ -1789,29 +1586,10 @@ def test_autostart_non_accept_decisions_clear_stale_prompt_attribution(tmp_path,
 
     assert decision_response["state"]["started_via_prompt"] is False
 
-    pending = process_autostart_prompt_heartbeat(
-        {
-            "foreground_ms_delta": 0,
-            "autostart_enabled": False,
-            "autostart_status_authoritative": True,
-            "autostart_requires_approval": True,
-            "autostart_provider": "neko-pc",
-        },
-        config_manager=config,
-        now_ms=4_000 + runtime_config["failure_cooldown_ms"],
-    )
-
-    assert pending["state"]["started_via_prompt"] is False
-
     completed = process_autostart_prompt_heartbeat(
-        {
-            "foreground_ms_delta": 0,
-            "autostart_enabled": True,
-            "autostart_status_authoritative": True,
-            "autostart_provider": "neko-pc",
-        },
+        {"foreground_ms_delta": 0, "autostart_enabled": True},
         config_manager=config,
-        now_ms=5_000 + runtime_config["later_cooldown_ms"],
+        now_ms=4_000 + runtime_config["later_cooldown_ms"],
     )
 
     assert completed["state"]["status"] == "completed"

@@ -60,6 +60,8 @@ MMDManager.prototype.setupFloatingButtons = function() {
 
     // 锁图标显示逻辑
     const shouldShowLockIcon = () => {
+        // 教程期间始终显示锁图标，防止高亮框位置异常
+        if (window.isInTutorial) return true;
         const isLocked = this.isLocked;
         if (this._isInReturnState) return false;
         if (isLocked) return true;

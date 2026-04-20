@@ -49,6 +49,7 @@ __pycache__/
 .cursor/
 .pytest_cache/
 .DS_Store
+.codex
 .venv
 .venv_monitor/
 .matplotlib/
@@ -65,7 +66,6 @@ playwright_browsers/
 *.code-workspace
 .claude
 CLAUDE.md
-.codex
 
 # Rust: ignore target and cargo artifacts
 /launcher/target/
@@ -134,6 +134,7 @@ tests/reports/
 tests/testbench_data/
 latest_report.json
 sendText.js
+tmp/
 data/browser_use_prompts/*.md
 data/browser_use_extensions/
 .coverage
@@ -141,6 +142,9 @@ data/browser_use_extensions/
 
 # 插件服务器运行时生成的凭证文件
 plugin/.plugin_server_admin_code
+
+# 插件包解包后提取出的 profile 目录（运行/导入产物，不入库）
+plugin/.neko-package-profiles/
 
 # 插件备忘提醒运行时数据库
 plugin/plugins/memo_reminder/store.db
@@ -156,6 +160,9 @@ plugin/plugins/web_radio/
 # QQ 自动回复：NapCat.Shell 整个目录不入库，仅保留 .gitkeep 占位
 plugin/plugins/qq_auto_reply/NapCat.Shell/*
 !plugin/plugins/qq_auto_reply/NapCat.Shell/.gitkeep
+# Ignore local temporary Steam/launcher environment dumps
+.tmp_env_*
+.test_neko_write
 
 # Jukebox 二进制资源（音乐、动画），只保留 songs.json 索引
 static/jukebox/*.mp3

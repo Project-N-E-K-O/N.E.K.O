@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from plugin.core.state import state
 from plugin.core.status import status_manager
 from plugin.logging_config import get_logger
+from plugin.server.application.plugins.ui_query_service import _build_plugin_list_actions_from_meta
 from plugin.server.domain import IO_RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.utils.time_utils import now_iso
@@ -94,6 +95,10 @@ def _resolve_plugin_status(
     plugin_meta: Mapping[str, object],
     running_plugin_ids: set[str],
 ) -> str:
+    runtime_source_missing_obj = plugin_meta.get("runtime_source_missing")
+    if runtime_source_missing_obj is True:
+        return "source_missing"
+
     runtime_load_state_obj = plugin_meta.get("runtime_load_state")
     if isinstance(runtime_load_state_obj, str) and runtime_load_state_obj == "failed":
         return "load_failed"
@@ -366,6 +371,7 @@ def _build_plugin_list_sync() -> list[dict[str, object]]:
             )
 
             plugin_info["entries"] = entries
+            plugin_info["list_actions"] = _build_plugin_list_actions_from_meta(plugin_id, plugin_meta)
             result.append(plugin_info)
         except ServerDomainError as exc:
             _append_plugin_fallback(

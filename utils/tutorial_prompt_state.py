@@ -45,6 +45,7 @@ from utils.prompt_state_core import (
 
 TUTORIAL_PROMPT_CONFIG_FILENAME = "tutorial_prompt_config.json"
 TUTORIAL_PROMPT_STATE_KIND = "tutorial_prompt"
+MAX_RECENT_HEARTBEAT_TOKENS = 16
 
 MIN_PROMPT_FOREGROUND_MS = 15 * 1000
 LATER_COOLDOWN_MS = 24 * 60 * 60 * 1000
@@ -70,7 +71,8 @@ VALID_TUTORIAL_EVENT_SOURCES = {
 }
 
 TUTORIAL_PROMPT_FUNNEL_KEYS = PROMPT_FUNNEL_KEYS
-TUTORIAL_PROMPT_SNAPSHOT_EXTRA_FIELDS = (
+
+TUTORIAL_PROMPT_EXTRA_FIELDS = (
     "home_tutorial_completed",
     "manual_home_tutorial_viewed",
     "manual_home_tutorial_viewed_at",
@@ -81,10 +83,13 @@ TUTORIAL_PROMPT_SNAPSHOT_EXTRA_FIELDS = (
     "active_tutorial_run_source",
     "active_tutorial_run_started_at",
 )
-TUTORIAL_PROMPT_PUBLIC_EXTRA_FIELDS = tuple(
-    field
-    for field in TUTORIAL_PROMPT_SNAPSHOT_EXTRA_FIELDS
-    if not field.startswith("active_tutorial_run_")
+
+TUTORIAL_PROMPT_PUBLIC_EXTRA_FIELDS = (
+    "home_tutorial_completed",
+    "manual_home_tutorial_viewed",
+    "user_cohort",
+    "chat_turns",
+    "voice_sessions",
 )
 
 DEFAULT_TUTORIAL_PROMPT_STATE = {
@@ -99,25 +104,17 @@ DEFAULT_TUTORIAL_PROMPT_STATE = {
     "active_tutorial_run_token": "",
     "active_tutorial_run_source": "",
     "active_tutorial_run_started_at": 0,
+    "recent_heartbeat_tokens": [],
 }
 
 _STATE_LOCK = threading.RLock()
 
 
 def _normalize_state(raw_state: Any) -> dict[str, Any]:
-    raw_state = raw_state if isinstance(raw_state, dict) else {}
-
     def _normalize_extra(state: dict[str, Any]) -> None:
         state["home_tutorial_completed"] = bool(state.get("home_tutorial_completed"))
         state["manual_home_tutorial_viewed"] = bool(state.get("manual_home_tutorial_viewed"))
         state["manual_home_tutorial_viewed_at"] = _clamp_int(state.get("manual_home_tutorial_viewed_at"))
-
-        if state["completed_at"] <= 0:
-            state["completed_at"] = _clamp_int(raw_state.get("completed_timestamp"))
-
-        legacy_completed_status = _clean_str(raw_state.get("completed_status"), limit=32).lower()
-        if not state["home_tutorial_completed"] and (state["completed_at"] > 0 or legacy_completed_status):
-            state["home_tutorial_completed"] = True
 
         cohort = _clean_str(state.get("user_cohort"), limit=32).lower()
         state["user_cohort"] = cohort if cohort in VALID_USER_COHORTS else "unknown"
@@ -128,6 +125,9 @@ def _normalize_state(raw_state: Any) -> dict[str, Any]:
         state["active_tutorial_run_token"] = _clean_str(state.get("active_tutorial_run_token"), limit=128)
         state["active_tutorial_run_source"] = source if source in VALID_TUTORIAL_EVENT_SOURCES else ""
         state["active_tutorial_run_started_at"] = _clamp_int(state.get("active_tutorial_run_started_at"))
+        state["recent_heartbeat_tokens"] = _normalize_recent_heartbeat_tokens(
+            state.get("recent_heartbeat_tokens")
+        )
 
     def _resolve_status(state: dict[str, Any]) -> None:
         if state["never_remind"]:
@@ -200,24 +200,7 @@ def _looks_like_tutorial_prompt_state(raw_state: dict[str, Any]) -> bool:
         return prompt_kind == TUTORIAL_PROMPT_STATE_KIND
 
     # 仅在确实看到 tutorial 专属痕迹时才迁移旧文件，避免把 autostart 状态误导入 tutorial。
-    has_autostart_markers = any((
-        "autostart_enabled" in raw_state,
-        _clamp_int(raw_state.get("enabled_at")) > 0,
-        bool(_clean_str(raw_state.get("enabled_provider"), limit=64)),
-    ))
-    has_legacy_completion_markers = any((
-        bool(raw_state.get("home_tutorial_completed")),
-        bool(_clean_str(raw_state.get("completed_status"), limit=32)) and not has_autostart_markers,
-        (
-            (
-                _clamp_int(raw_state.get("completed_at")) > 0
-                or _clamp_int(raw_state.get("completed_timestamp")) > 0
-            )
-            and not has_autostart_markers
-        ),
-    ))
     return any((
-        has_legacy_completion_markers,
         bool(raw_state.get("manual_home_tutorial_viewed")),
         _clamp_int(raw_state.get("manual_home_tutorial_viewed_at")) > 0,
         _clamp_int(raw_state.get("cohort_decided_at")) > 0,
@@ -226,7 +209,6 @@ def _looks_like_tutorial_prompt_state(raw_state: dict[str, Any]) -> bool:
         _clean_str(raw_state.get("active_tutorial_run_token"), limit=128),
         _clean_str(raw_state.get("active_tutorial_run_source"), limit=64),
         _clamp_int(raw_state.get("active_tutorial_run_started_at")) > 0,
-        _clamp_int(raw_state.get("last_weak_home_interaction_at")) > 0,
     ))
 
 
@@ -257,17 +239,16 @@ def build_tutorial_prompt_snapshot(state: dict[str, Any]) -> dict[str, Any]:
     normalized = _normalize_state(state)
     return build_prompt_flow_snapshot(
         normalized,
-        extra_fields=TUTORIAL_PROMPT_SNAPSHOT_EXTRA_FIELDS,
+        extra_fields=TUTORIAL_PROMPT_EXTRA_FIELDS,
     )
 
 
 def build_public_tutorial_prompt_snapshot(state: dict[str, Any]) -> dict[str, Any]:
     normalized = _normalize_state(state)
-    snapshot = build_public_prompt_flow_snapshot(normalized)
-    for field in TUTORIAL_PROMPT_PUBLIC_EXTRA_FIELDS:
-        value = normalized.get(field)
-        snapshot[field] = deepcopy(value) if isinstance(value, (dict, list)) else value
-    return snapshot
+    return build_public_prompt_flow_snapshot(
+        normalized,
+        extra_fields=TUTORIAL_PROMPT_PUBLIC_EXTRA_FIELDS,
+    )
 
 
 def _normalize_tutorial_event_payload(payload: dict[str, Any] | None) -> tuple[str, str, str]:
@@ -305,6 +286,48 @@ def _apply_weak_home_interaction(state: dict[str, Any], delta: int, now_ms: int)
     if state["last_weak_home_interaction_at"] != now_ms:
         state["last_weak_home_interaction_at"] = now_ms
     return changed
+
+
+def _normalize_recent_heartbeat_tokens(raw_tokens: Any) -> list[str]:
+    if not isinstance(raw_tokens, list):
+        return []
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_token in raw_tokens:
+        token = _clean_str(raw_token, limit=128)
+        if not token or token in seen:
+            continue
+        normalized.append(token)
+        seen.add(token)
+
+    if len(normalized) > MAX_RECENT_HEARTBEAT_TOKENS:
+        normalized = normalized[-MAX_RECENT_HEARTBEAT_TOKENS:]
+    return normalized
+
+
+def _is_heartbeat_replayed(state: dict[str, Any], heartbeat_token: str) -> bool:
+    token = _clean_str(heartbeat_token, limit=128)
+    if not token:
+        return False
+    return token in _normalize_recent_heartbeat_tokens(state.get("recent_heartbeat_tokens"))
+
+
+def _mark_heartbeat_token(state: dict[str, Any], heartbeat_token: str) -> bool:
+    token = _clean_str(heartbeat_token, limit=128)
+    if not token:
+        return False
+
+    tokens = _normalize_recent_heartbeat_tokens(state.get("recent_heartbeat_tokens"))
+    if token in tokens:
+        return False
+
+    tokens.append(token)
+    if len(tokens) > MAX_RECENT_HEARTBEAT_TOKENS:
+        tokens = tokens[-MAX_RECENT_HEARTBEAT_TOKENS:]
+
+    state["recent_heartbeat_tokens"] = tokens
+    return True
 
 
 def _apply_completed_state(state: dict[str, Any], now_ms: int) -> bool:
@@ -539,9 +562,19 @@ def _compute_prompt_eligibility(
         return False, "prompt_pending"
     if state["deferred_until"] > now_ms:
         return False, "cooldown_active"
+    if _should_prompt_immediately_on_first_open(state):
+        return True, "first_open"
     if state["foreground_ms"] < min_prompt_foreground_ms:
         return False, "foreground_insufficient"
     return True, "idle_timeout"
+
+
+def _should_prompt_immediately_on_first_open(state: dict[str, Any]) -> bool:
+    return (
+        state["shown_count"] == 0
+        and state["last_shown_at"] <= 0
+        and state["home_interactions"] == 0
+    )
 
 
 def process_tutorial_prompt_heartbeat(
@@ -576,6 +609,10 @@ def process_tutorial_prompt_heartbeat(
     )
     home_tutorial_completed = bool(payload.get("home_tutorial_completed"))
     manual_home_tutorial_viewed = bool(payload.get("manual_home_tutorial_viewed"))
+    heartbeat_token = _clean_str(
+        payload.get("heartbeat_token") or payload.get("delivery_token"),
+        limit=128,
+    )
 
     with _STATE_LOCK:
         state = load_tutorial_prompt_state(config_manager)
@@ -586,6 +623,29 @@ def process_tutorial_prompt_heartbeat(
             now_ms=now_ms,
         )
         changed |= cohort_changed
+
+        if heartbeat_token and _is_heartbeat_replayed(state, heartbeat_token):
+            should_prompt, prompt_reason = _compute_prompt_eligibility(
+                state,
+                now_ms=now_ms,
+                min_prompt_foreground_ms=runtime_config["min_prompt_foreground_ms"],
+                max_prompt_shows=runtime_config["max_prompt_shows"],
+            )
+            active_token = _clean_str(state.get("active_prompt_token"), limit=128)
+            # 回放路径不 mutate 状态，也不应该凭空发新 token 喵：若当前没有 active
+            # token（比如上一轮 later/completed 清掉了），即便 eligibility 判定应
+            # 该提示，也返回 should_prompt=False，避免前端拿着 null token 去 shown/decision。
+            if should_prompt and not active_token:
+                should_prompt = False
+                prompt_reason = "replay_no_active_token"
+            return {
+                "ok": True,
+                "should_prompt": should_prompt,
+                "prompt_reason": prompt_reason,
+                "prompt_mode": "tutorial",
+                "prompt_token": active_token if (should_prompt and active_token) else None,
+                "state": build_tutorial_prompt_snapshot(state),
+            }
 
         if state["first_seen_at"] <= 0:
             state["first_seen_at"] = now_ms
@@ -633,6 +693,9 @@ def process_tutorial_prompt_heartbeat(
                 changed |= _increment_funnel_count(state, "issued")
         else:
             changed |= _clear_active_prompt_token(state)
+
+        if heartbeat_token:
+            changed |= _mark_heartbeat_token(state, heartbeat_token)
 
         if changed:
             state = save_tutorial_prompt_state(state, config_manager)
@@ -738,16 +801,12 @@ def record_tutorial_prompt_decision(
                 token_changed = True
             if not accepted_before:
                 token_changed |= _increment_funnel_count(state, "accept")
-            if result and result in {"accepted", "started", "tutorial_started"}:
-                started_before = state["started_at"] > 0
+            if result == "accepted":
                 if not state["started_via_prompt"]:
                     state["started_via_prompt"] = True
                     token_changed = True
-                token_changed |= _apply_started_state(state, now_ms)
-                if not started_before:
-                    token_changed |= _increment_funnel_count(state, "started")
             else:
-                token_changed |= _clear_started_via_prompt_state(state)
+                state["started_via_prompt"] = False
                 state["status"] = "error"
                 state["deferred_until"] = now_ms + runtime_config["failure_cooldown_ms"]
                 state["last_error"] = error or "tutorial_start_failed"

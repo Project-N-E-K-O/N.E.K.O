@@ -599,7 +599,7 @@
     <div class="logo-wrap">📺</div>
     <div class="header-text">
       <h1>B站弹幕监听</h1>
-      <p>N.E.K.O 插件控制台</p>
+      <p>N.E.K.O 插件控制台 · bilibili_danmaku</p>
     </div>
   </div>
 
@@ -742,8 +742,8 @@
 </div>
 
 <script>
-  const PLUGIN_ID = 'bilibili-danmaku';
-  const RUNS_URL = '/runs';
+  const PLUGIN_ID = 'bilibili_danmaku';
+  const RUNS_URL  = '/runs';
 
   async function callPlugin(entry, args = {}) {
     const resp = await fetch(RUNS_URL, {
