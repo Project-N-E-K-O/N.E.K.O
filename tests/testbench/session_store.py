@@ -29,6 +29,7 @@ from typing import Any, AsyncIterator
 from uuid import uuid4
 
 from tests.testbench.logger import SessionLogger, python_logger
+from tests.testbench.pipeline.snapshot_store import SnapshotStore
 from tests.testbench.sandbox import Sandbox
 from tests.testbench.virtual_clock import VirtualClock
 
@@ -84,6 +85,11 @@ class Session:
 
     # Reserved for later phases; kept here to freeze the shape.
     messages: list[dict[str, Any]] = field(default_factory=list)
+    # P02-era legacy field kept as empty list for backwards compat; the real
+    # snapshot timeline lives in ``snapshot_store`` (P18). Nothing in the
+    # codebase should read this directly anymore — routers/UI go through
+    # ``session.snapshot_store.list_metadata()``. Kept here so saved_sessions
+    # files from pre-P18 code still deserialize without a migration step.
     snapshots: list[dict[str, Any]] = field(default_factory=list)
     eval_results: list[dict[str, Any]] = field(default_factory=list)
     model_config: dict[str, Any] = field(default_factory=dict)
@@ -150,12 +156,25 @@ class Session:
     # Event. 直接改 dict 字段会 race 坏运行中的 generator.
     auto_state: dict[str, Any] | None = None
 
+    # P18: per-session snapshot timeline. Concrete SnapshotStore instance
+    # is attached by :meth:`SessionStore.create`; we ``field(default=None)``
+    # here only because dataclass field order forces the optional marker
+    # (non-default fields must come before defaults). In practice every
+    # live session has a non-None snapshot_store — a ``None`` means the
+    # dataclass was constructed outside the store (tests) and those tests
+    # must set it explicitly before any capture/rewind call.
+    snapshot_store: SnapshotStore | None = None
+
     # Mutated directly by SessionStore under its own lock.
     state: SessionState = SessionState.IDLE
     busy_op: str | None = None
 
     def describe(self) -> dict[str, Any]:
         """Small JSON-safe dict for ``GET /api/session`` + ``/state``."""
+        snap_count = (
+            len(self.snapshot_store.list_metadata())
+            if self.snapshot_store is not None else 0
+        )
         return {
             "id": self.id,
             "name": self.name,
@@ -163,7 +182,7 @@ class Session:
             "state": self.state.value,
             "busy_op": self.busy_op,
             "message_count": len(self.messages),
-            "snapshot_count": len(self.snapshots),
+            "snapshot_count": snap_count,
             "eval_count": len(self.eval_results),
             "stage": (self.stage_state or {}).get("current", "persona_setup"),
             "stage_history_count": len((self.stage_state or {}).get("history") or []),
@@ -240,8 +259,13 @@ class SessionStore:
                 clock=VirtualClock(),
                 logger=SessionLogger(session_id),
                 stage_state=initial_stage_state(),
+                snapshot_store=SnapshotStore(sandbox_root=sandbox.root),
             )
             self._session = session
+            # t0:init anchor — never debounced, never truncated.
+            session.snapshot_store.capture(
+                session, trigger="init", label="t0:init",
+            )
             session.logger.log_sync(
                 "session.create",
                 payload={"name": session.name, "sandbox": str(sandbox.root)},

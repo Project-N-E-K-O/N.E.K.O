@@ -15,10 +15,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime
+import re
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from tests.testbench import config as _tb_config
 from tests.testbench.config import LOGS_DIR, session_log_path
 
 # Python ``logging`` Logger used for console mirroring and library-style calls.
@@ -93,7 +95,15 @@ class SessionLogger:
         payload: dict[str, Any] | None = None,
         error: str | None = None,
     ) -> None:
-        """Append one record synchronously (used from non-async paths)."""
+        """Append one record synchronously (used from non-async paths).
+
+        DEBUG-level writes are gated on :data:`config.LOG_DEBUG_ENABLED` —
+        when the flag is off, the call is a silent no-op (no disk write,
+        no console echo). We read the flag *each call* so runtime toggles
+        via ``POST /api/diagnostics/logs/debug`` take effect immediately.
+        """
+        if level == "DEBUG" and not _tb_config.LOG_DEBUG_ENABLED:
+            return
         record = {
             "ts": datetime.now().isoformat(timespec="seconds"),
             "level": level,
@@ -105,6 +115,23 @@ class SessionLogger:
         self._append(record)
         if level in ("WARNING", "ERROR"):
             getattr(_PY_LOGGER, level.lower())("[%s] %s: %s", self.session_id, op, error or payload)
+
+    def debug(
+        self,
+        op: str,
+        *,
+        payload: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> None:
+        """Shorthand for ``log_sync(level='DEBUG', ...)``.
+
+        Default gated off; flip on from the Logs subpage or with
+        ``TESTBENCH_LOG_DEBUG=1`` at boot when diagnosing issues. Use
+        for per-request *echo* entries (rendered previews, purely-read
+        endpoints, keystroke-rate state changes) that have no standalone
+        forensic value once the feature is working.
+        """
+        self.log_sync(op, level="DEBUG", payload=payload, error=error)
 
     async def log(
         self,
@@ -137,3 +164,165 @@ def anon_logger() -> SessionLogger:
     if _anon_logger is None:
         _anon_logger = SessionLogger(_ANON_SESSION_ID)
     return _anon_logger
+
+
+# ── Log retention / usage helpers (P19 hotfix 2) ───────────────────
+
+# Matches ``<session_id>-YYYYMMDD.jsonl``. Session id allows letters, digits,
+# underscore, dash (matches our sandbox id format + ``_anon``). The strict
+# regex is intentional: anything else in ``LOGS_DIR`` (README / backups /
+# zip archives) is off-limits to the cleaner.
+_LOG_FILE_RE = re.compile(r"^(?P<sid>[A-Za-z0-9_\-]+)-(?P<date>\d{8})\.jsonl$")
+
+
+def _parse_log_filename(name: str) -> tuple[str, date] | None:
+    m = _LOG_FILE_RE.match(name)
+    if not m:
+        return None
+    sid = m.group("sid")
+    raw_date = m.group("date")
+    try:
+        parsed = datetime.strptime(raw_date, "%Y%m%d").date()
+    except ValueError:
+        return None
+    return sid, parsed
+
+
+def collect_logs_usage(*, now: datetime | None = None) -> dict[str, Any]:
+    """Scan :data:`LOGS_DIR` and summarise current disk usage.
+
+    Returns a dict with ``total_files`` / ``total_bytes`` / ``by_date``
+    (sorted newest-first, each entry ``{"date": "YYYYMMDD", "files": N,
+    "bytes": B}``). Non-jsonl files are ignored in the counts but reported
+    under ``other_files`` so the UI can surface stray artefacts.
+    """
+    _ = now  # reserved for future relative stats (e.g. age buckets)
+    logs_dir = _tb_config.LOGS_DIR
+    total_files = 0
+    total_bytes = 0
+    by_date: dict[str, dict[str, int]] = {}
+    other_files = 0
+    if logs_dir.exists():
+        for entry in logs_dir.iterdir():
+            if not entry.is_file():
+                continue
+            parsed = _parse_log_filename(entry.name)
+            if parsed is None:
+                other_files += 1
+                continue
+            try:
+                size = entry.stat().st_size
+            except OSError:
+                size = 0
+            total_files += 1
+            total_bytes += size
+            key = parsed[1].strftime("%Y%m%d")
+            bucket = by_date.setdefault(key, {"files": 0, "bytes": 0})
+            bucket["files"] += 1
+            bucket["bytes"] += size
+    date_rows = [
+        {"date": k, "files": v["files"], "bytes": v["bytes"]}
+        for k, v in sorted(by_date.items(), reverse=True)
+    ]
+    return {
+        "total_files": total_files,
+        "total_bytes": total_bytes,
+        "by_date": date_rows,
+        "other_files": other_files,
+        "logs_dir": str(logs_dir),
+    }
+
+
+def cleanup_old_logs(
+    *,
+    retention_days: int | None = None,
+    now: datetime | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Delete JSONL log files older than ``today - retention_days``.
+
+    Parameters
+    ----------
+    retention_days:
+        Override :data:`config.LOG_RETENTION_DAYS`. Must be ``>= 0``.
+    now:
+        Override the current timestamp (used by tests to make the 'today'
+        cutoff deterministic).
+    dry_run:
+        If True, report what *would* be deleted without actually removing
+        files (useful for preview UIs + unit tests).
+
+    Guarantees
+    ----------
+    * **Today's file is never deleted**, even if ``retention_days == 0`` —
+      an active writer may still be appending. The cutoff is a strict
+      less-than on the date stamp, not ``<=``.
+    * Only files matching ``<sid>-YYYYMMDD.jsonl`` are considered. Any
+      README / backup / stray file is left untouched.
+    * Directory is scanned under a fresh ``listdir`` each call; callers
+      don't need to lock.
+    """
+    default_days = _tb_config.LOG_RETENTION_DAYS
+    effective_days = default_days if retention_days is None else retention_days
+    if effective_days < 0:
+        effective_days = default_days
+    today = (now or datetime.now()).date()
+    cutoff = today - timedelta(days=effective_days)
+
+    deleted: list[dict[str, Any]] = []
+    kept = 0
+    bytes_freed = 0
+    scan_errors: list[str] = []
+
+    logs_dir = _tb_config.LOGS_DIR
+    if not logs_dir.exists():
+        return {
+            "deleted": 0,
+            "kept": 0,
+            "bytes_freed": 0,
+            "retention_days": effective_days,
+            "cutoff_date": cutoff.strftime("%Y%m%d"),
+            "today": today.strftime("%Y%m%d"),
+            "deleted_files": [],
+            "scan_errors": scan_errors,
+            "dry_run": dry_run,
+        }
+
+    for entry in logs_dir.iterdir():
+        if not entry.is_file():
+            continue
+        parsed = _parse_log_filename(entry.name)
+        if parsed is None:
+            continue
+        _sid, parsed_date = parsed
+        # Today's file always kept regardless of retention policy.
+        if parsed_date >= cutoff or parsed_date >= today:
+            kept += 1
+            continue
+        try:
+            size = entry.stat().st_size
+        except OSError:
+            size = 0
+        if dry_run:
+            deleted.append({"name": entry.name, "bytes": size})
+            bytes_freed += size
+            continue
+        try:
+            entry.unlink()
+        except OSError as exc:
+            scan_errors.append(f"{entry.name}: {exc}")
+            continue
+        deleted.append({"name": entry.name, "bytes": size})
+        bytes_freed += size
+
+    return {
+        "deleted": len(deleted),
+        "kept": kept,
+        "bytes_freed": bytes_freed,
+        "retention_days": effective_days,
+        "cutoff_date": cutoff.strftime("%Y%m%d"),
+        "today": today.strftime("%Y%m%d"),
+        "deleted_files": deleted,
+        "scan_errors": scan_errors,
+        "dry_run": dry_run,
+    }

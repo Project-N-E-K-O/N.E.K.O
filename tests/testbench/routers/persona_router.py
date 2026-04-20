@@ -57,6 +57,7 @@ from utils.config_manager import get_config_manager
 
 from tests.testbench.logger import python_logger
 from tests.testbench.persona_config import PersonaConfig
+from tests.testbench.pipeline.snapshot_store import capture_safe as _snapshot_capture
 from tests.testbench.presets import PRESETS_ROOT
 from tests.testbench.session_store import (
     SessionConflictError,
@@ -157,6 +158,7 @@ async def replace_persona(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         async with store.session_operation("persona.replace") as session:
             _store(session, new_persona)
+            _snapshot_capture(session, trigger="persona_update")
     except SessionConflictError as exc:
         raise _session_conflict_to_http(exc) from exc
     except LookupError as exc:
@@ -182,6 +184,7 @@ async def patch_persona(body: _PatchPersonaRequest) -> dict[str, Any]:
                     detail={"error_type": type(exc).__name__, "message": str(exc)},
                 ) from exc
             _store(session, merged_persona)
+            _snapshot_capture(session, trigger="persona_update")
             return {"persona": merged_persona.summary()}
     except SessionConflictError as exc:
         raise _session_conflict_to_http(exc) from exc
@@ -521,6 +524,7 @@ async def import_from_real(name: str) -> dict[str, Any]:
 
             known = [f for f in copied if f in _KNOWN_MEMORY_FILES]
             extra = [f for f in copied if f not in _KNOWN_MEMORY_FILES]
+            _snapshot_capture(session, trigger="persona_update")
             return {
                 "ok": True,
                 "persona": persona.summary(),
@@ -828,6 +832,7 @@ async def import_builtin_preset(preset_id: str) -> dict[str, Any]:
 
             known = [f for f in copied if f in _KNOWN_MEMORY_FILES]
             extra = [f for f in copied if f not in _KNOWN_MEMORY_FILES]
+            _snapshot_capture(session, trigger="persona_update")
             return {
                 "ok": True,
                 "preset_id": preset_id,

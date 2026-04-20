@@ -1,5 +1,5 @@
 /**
- * errors_bus.js — 全局错误收集 (临时桥, P04 夹带, P19 会被完整版替换).
+ * errors_bus.js — 全局错误收集 (P04 夹带的客户端总线 + P19 后端同步).
  *
  * 设计目标:
  *   - 一处订阅四类错误源 → 统一 shape → 追加到 `store.errors` → emit 'errors:change'
@@ -13,21 +13,90 @@
  *
  *   - 容量上限 `MAX_ERRORS`, 超出后从最早的开始丢.
  *
- * 与 P19 的关系:
- *   - P19 会把"收集 + 渲染"搬到 server-side (让多会话 / Browser 崩溃也能回看),
- *     配套 `POST /api/errors` / `GET /api/errors` + JSONL log. 本文件届时要么
- *     删掉, 要么降级成"浏览器本地镜像".
- *   - 本模块只依赖 `core/state.js`, 不依赖任何 UI. 可以在不同子页独立消费.
+ * P19 扩展 — 后端镜像:
+ *   - 本地收录的同时, 每条错误异步 POST 到 `/api/diagnostics/errors`, 让
+ *     后端 `diagnostics_store` 也有一份. 好处: Browser tab 崩溃/刷新/切会
+ *     话后错误仍可在 Diagnostics → Errors 子页回看 (后端 ring buffer
+ *     200 条容量, 重启清空).
+ *   - 后端同步**失败不递归上报**, 否则会导致错误洪流 (网络挂时每条错误
+ *     都会触发新的 http:error). 失败只在 console 记一次 warn.
+ *   - 同步本身的 HTTP 请求会绕过 `core/api.js`, 直接用原生 fetch —
+ *     否则 POST /api/diagnostics/errors 若失败又经过 api.js 的 toast +
+ *     emit('http:error') 就自激反馈.
  */
 
 import { set, on, store, emit } from './state.js';
 
 const MAX_ERRORS = 100;
+const BACKEND_SYNC_URL = '/api/diagnostics/errors';
 let _seq = 0;
+// 同一条错误 (同 source+type+message+url) 在短时间内反复抛, 只上报第一条 —
+// 避免网络挂掉时每次 fetch 失败都 POST 一次, 导致后端也跟着淹没. 窗口用
+// Map<signature, lastAt>, 30s 去重.
+const _recentSyncSigs = new Map();
+const SYNC_DEDUPE_MS = 30_000;
 
 function nextId() {
   _seq += 1;
   return `e${Date.now().toString(36)}${_seq}`;
+}
+
+function _syncSignature(entry) {
+  return [
+    entry.source || 'unknown',
+    entry.type || 'Error',
+    (entry.message || '').slice(0, 160),
+    entry.url || '',
+    entry.status || '',
+  ].join('|');
+}
+
+function _shouldSyncToBackend(entry) {
+  const now = Date.now();
+  // 先清理过期签名, 防止 map 无限增长.
+  for (const [sig, t] of _recentSyncSigs) {
+    if (now - t > SYNC_DEDUPE_MS) _recentSyncSigs.delete(sig);
+  }
+  const sig = _syncSignature(entry);
+  if (_recentSyncSigs.has(sig)) return false;
+  _recentSyncSigs.set(sig, now);
+  return true;
+}
+
+async function _backendSync(entry) {
+  if (typeof fetch !== 'function') return;
+  if (!_shouldSyncToBackend(entry)) return;
+  // 后端 source 白名单 = {http, sse, js, promise, resource, synthetic}.
+  // "unknown" 等保留类会被后端归一化, 这里不拦截.
+  try {
+    const payload = {
+      source: entry.source,
+      type: entry.type,
+      message: entry.message,
+      level: entry.level || 'error',
+      url: entry.url,
+      method: entry.method,
+      status: entry.status,
+      session_id: store.session?.id || null,
+      user_agent: (typeof navigator !== 'undefined' && navigator.userAgent) || null,
+      detail: entry.detail || {},
+    };
+    // 绕过 core/api.js 的 http:error emit, 避免无限自激.
+    await fetch(BACKEND_SYNC_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      // keepalive 让 unload 时 inflight 请求也能发出去 —
+      // 对于"页面崩溃前最后一条错误"这类场景很关键.
+      keepalive: true,
+    });
+  } catch (err) {
+    // 注意: 这里**不能**再 emit 'http:error' 或 pushError, 否则网络挂时
+    // 每次 sync 失败都进一步产生新错误, 无限循环.
+    if (typeof console !== 'undefined') {
+      console.warn('[errors_bus] backend sync failed:', err?.message || err);
+    }
+  }
 }
 
 /** 把任意值压成一行可展示的字符串, 给 UI / 日志用. */
@@ -59,6 +128,8 @@ function pushError(entry) {
   const next = [...current, normalized];
   if (next.length > MAX_ERRORS) next.splice(0, next.length - MAX_ERRORS);
   set('errors', next);           // 会触发 errors:change (state.js 内置)
+  // 异步镜像到后端; fire-and-forget, 失败不影响本地渲染.
+  _backendSync(normalized);
 }
 
 /**

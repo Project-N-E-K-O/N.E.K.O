@@ -51,6 +51,7 @@ from utils.config_manager import get_config_manager
 
 from tests.testbench.logger import python_logger
 from tests.testbench.pipeline import memory_runner
+from tests.testbench.pipeline.snapshot_store import capture_safe as _snapshot_capture
 from tests.testbench.session_store import (
     SessionConflictError,
     get_session_store,
@@ -327,6 +328,7 @@ async def write_memory(kind: str, body: MemoryWritePayload) -> dict[str, Any]:
             python_logger().info(
                 "memory_router: wrote %s (%d bytes)", path, path.stat().st_size,
             )
+            _snapshot_capture(session, trigger="memory_op")
             return {
                 "kind": kind,
                 "path": str(path),
@@ -438,7 +440,9 @@ async def commit_memory_op(op: str, body: MemoryCommitPayload) -> dict[str, Any]
     store = get_session_store()
     try:
         async with store.session_operation(f"memory.{op}:commit") as session:
-            return await memory_runner.commit_op(session, op, body.edits)
+            result = await memory_runner.commit_op(session, op, body.edits)
+            _snapshot_capture(session, trigger="memory_op")
+            return result
     except memory_runner.MemoryOpError as exc:
         raise _wrap_memory_op_error(exc) from exc
     except SessionConflictError as exc:

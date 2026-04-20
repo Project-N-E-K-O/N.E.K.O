@@ -133,6 +133,7 @@ from tests.testbench.pipeline.script_runner import (
     save_user_template as save_user_script_template,
     unload_script_from_session,
 )
+from tests.testbench.pipeline.snapshot_store import capture_safe as _snapshot_capture
 from tests.testbench.pipeline.simulated_user import (
     SimUserError,
     generate_simuser_message,
@@ -236,7 +237,11 @@ def get_prompt_preview() -> dict[str, Any]:
             },
         ) from exc
 
-    session.logger.log_sync(
+    # DEBUG level: this endpoint is a pure read-back called on every UI
+    # refresh, so at INFO it dominates the log (~32% of all entries in
+    # testing). Keep the payload shape intact so tuning DEBUG logs on
+    # still surfaces persona/template/warnings drift when investigating.
+    session.logger.debug(
         "chat.prompt_preview",
         payload={
             "character_name": bundle.metadata.get("character_name"),
@@ -403,6 +408,7 @@ async def add_message(body: _AddMessageRequest) -> dict[str, Any]:
             )
             payload = _serialize_messages(session)
             payload["message"] = msg
+            _snapshot_capture(session, trigger="edit")
             return payload
     except SessionConflictError as exc:
         raise _session_conflict_to_http(exc) from exc
@@ -441,6 +447,7 @@ async def edit_message(message_id: str, body: _EditMessageRequest) -> dict[str, 
                     "new_chars": len(body.content),
                 },
             )
+            _snapshot_capture(session, trigger="edit")
             return {"message": old, "count": len(session.messages)}
     except SessionConflictError as exc:
         raise _session_conflict_to_http(exc) from exc
@@ -531,6 +538,7 @@ async def delete_message(message_id: str) -> dict[str, Any]:
                 "chat.messages.delete",
                 payload={"message_id": message_id, "role": removed.get("role")},
             )
+            _snapshot_capture(session, trigger="edit")
             return {"removed": removed, "count": len(session.messages)}
     except SessionConflictError as exc:
         raise _session_conflict_to_http(exc) from exc
@@ -585,6 +593,7 @@ async def truncate_messages(body: _TruncateRequest) -> dict[str, Any]:
                     "remaining_count": len(session.messages),
                 },
             )
+            _snapshot_capture(session, trigger="edit")
             return {
                 "removed_count": removed,
                 "count": len(session.messages),
@@ -614,6 +623,7 @@ async def inject_system(body: _InjectSystemRequest) -> dict[str, Any]:
         async with store.session_operation("chat.inject_system") as session:
             backend = get_chat_backend()
             msg = backend.inject_system(session, body.content)
+            _snapshot_capture(session, trigger="edit")
             return {
                 "message": msg,
                 "count": len(session.messages),
@@ -680,6 +690,7 @@ async def _send_event_stream(
                 )
 
             backend = get_chat_backend()
+            stream_ok = False
             try:
                 async for event in backend.stream_send(
                     session,
@@ -688,6 +699,7 @@ async def _send_event_stream(
                     source=body.source,
                 ):
                     yield _sse_frame(event)
+                stream_ok = True
             except ChatConfigError as exc:
                 yield _sse_frame({
                     "event": "error",
@@ -705,6 +717,11 @@ async def _send_event_stream(
                         "message": f"流式发送失败: {exc}",
                     },
                 })
+            # P18: snapshot after a successful round-trip. On error /
+            # abort we skip — the partial state may be inconsistent and
+            # the prior snapshot is still a valid rewind target.
+            if stream_ok:
+                _snapshot_capture(session, trigger="send")
     except SessionConflictError as exc:
         yield _sse_frame({
             "event": "error",
@@ -1001,6 +1018,7 @@ async def script_load(body: _ScriptLoadRequest) -> dict[str, Any]:
                 state, warnings = load_script_into_session(session, body.name)
             except ScriptError as exc:
                 raise _script_error_to_http(exc) from exc
+            _snapshot_capture(session, trigger="script_load")
             return {"script_state": state, "warnings": warnings}
     except SessionConflictError as exc:
         raise _session_conflict_to_http(exc) from exc
@@ -1037,9 +1055,11 @@ async def _script_next_event_stream() -> AsyncIterator[str]:
             "chat.script.next",
             state=SessionState.BUSY,
         ) as session:
+            stream_ok = False
             try:
                 async for event in advance_one_user_turn(session):
                     yield _sse_frame(event)
+                stream_ok = True
             except ScriptError as exc:
                 yield _sse_frame({
                     "event": "error",
@@ -1057,6 +1077,11 @@ async def _script_next_event_stream() -> AsyncIterator[str]:
                         "message": f"脚本下一轮执行失败: {exc}",
                     },
                 })
+            # A scripted turn is semantically one round-trip, same as
+            # manual /chat/send — reuse the ``send`` trigger so rapid
+            # scripted turns debounce together like manual sends do.
+            if stream_ok:
+                _snapshot_capture(session, trigger="send")
     except SessionConflictError as exc:
         yield _sse_frame({
             "event": "error",
@@ -1082,9 +1107,11 @@ async def _script_run_all_event_stream() -> AsyncIterator[str]:
             "chat.script.run_all",
             state=SessionState.BUSY,
         ) as session:
+            stream_ok = False
             try:
                 async for event in run_all_turns(session):
                     yield _sse_frame(event)
+                stream_ok = True
             except ScriptError as exc:
                 yield _sse_frame({
                     "event": "error",
@@ -1102,6 +1129,13 @@ async def _script_run_all_event_stream() -> AsyncIterator[str]:
                         "message": f"脚本连续执行失败: {exc}",
                     },
                 })
+            # P18: one snapshot at the end of the full scripted run.
+            # Individual turns inside the loop are already debounced
+            # down to one ``send`` trigger each; the final ``script_run_all``
+            # trigger marks the "script done" boundary distinctly so
+            # users can rewind to "right before I fired run_all".
+            if stream_ok:
+                _snapshot_capture(session, trigger="script_run_all")
     except SessionConflictError as exc:
         yield _sse_frame({
             "event": "error",
@@ -1219,9 +1253,11 @@ async def _auto_dialog_event_stream(body: _AutoDialogStartRequest) -> AsyncItera
             "chat.auto_dialog.start",
             state=SessionState.BUSY,
         ) as session:
+            stream_ok = False
             try:
                 async for event in run_auto_dialog(session, config):
                     yield _sse_frame(event)
+                stream_ok = True
             except AutoDialogError as exc:
                 yield _sse_frame({
                     "event": "error",
@@ -1251,6 +1287,13 @@ async def _auto_dialog_event_stream(body: _AutoDialogStartRequest) -> AsyncItera
                     "completed_turns": 0,
                     "total_turns": config.total_turns,
                 })
+            # P18: one snapshot when the auto-dialog exits cleanly
+            # (done / user_stop). Per-turn snapshots inside the loop
+            # would flood the timeline — the loop can run dozens of
+            # turns. One ``auto_dialog_start`` at the end is a clean
+            # rewind target for "undo the whole auto run".
+            if stream_ok:
+                _snapshot_capture(session, trigger="auto_dialog_start")
     except SessionConflictError as exc:
         yield _sse_frame({
             "event": "error",

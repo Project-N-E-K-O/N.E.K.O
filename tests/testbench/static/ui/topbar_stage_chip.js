@@ -2,8 +2,14 @@
  * topbar_stage_chip.js — Stage Coach 顶栏 chip (P14).
  *
  * 根据当前 active_workspace 决定两种形态:
- *   - setup / chat     → 展开为 "Stage: 对话 ▶︎ [去 Chat 发送消息] [预览] [执行并推进] [跳过] [回退] [⋯ 展开面板]"
- *   - evaluation / diagnostics / settings → 折叠为 "Stage: 对话 ▾" 小徽章
+ *   - setup / chat / evaluation → 展开为 "Stage: 对话 ▶︎ [去 Chat 发送消息] [预览] [执行并推进] [跳过] [回退] [⋯ 展开面板]"
+ *   - diagnostics / settings    → 折叠为 "Stage: 对话 ▾" 小徽章
+ *
+ * evaluation 原来在 P14 设计时归入"折叠 workspace", 当时 P15/P16/P17 还没落地,
+ * Stage Coach 的 evaluation 阶段只是个占位 op (evaluation.pending) 没有实际动作,
+ * 折叠起来省顶栏空间合理. P19 hotfix 5 把 op 升级为 evaluation.run 并接上真实
+ * Evaluation → Run 子页后, 用户在评分页跑完一轮想"执行并推进 → 回到 chat_turn 开
+ * 下一轮"是流水线主干操作, 不应该再藏在折叠徽章下点两次, 因此展开 evaluation.
  *
  * 两种形态都可以点右侧触发器展开**下拉面板**, 里面包含:
  *   - 完整的流水线阶段可视化 (6 个阶段圆点 / 当前高亮)
@@ -47,9 +53,11 @@ function el(tag, attrs = {}, ...children) {
   return node;
 }
 
-/** setup/chat 默认展开; 其它 workspace 折叠. */
+/** setup / chat / evaluation 属于流水线主干, 行内展开完整按钮; diagnostics /
+ *  settings 是辅助工具面板, 折叠成小徽章避免喧宾夺主 (点开徽章下拉面板依然
+ *  能拿到全部操作). */
 function isExpandedWorkspace(ws) {
-  return ws === 'setup' || ws === 'chat';
+  return ws === 'setup' || ws === 'chat' || ws === 'evaluation';
 }
 
 // ── 组件 ────────────────────────────────────────────────────────────
@@ -372,14 +380,28 @@ export function mountStageChip(host) {
     }
   }
 
+  // 409 `SessionConflict` = 会话正在跑对话/脚本/自动对话, 不是"错误"而是
+  // "现在不是时候, 等它跑完". toast 走 info 级 (黄色/灰色信息条) 而不是
+  // err 级 (红色报错), 同时把 409 加进 expectedStatuses 避免 api.js
+  // 默认把 409 当 http:error 广播出去污染 Diagnostics → Errors 页.
+  function reportStageBusy(res) {
+    const busyOp = res.data?.detail?.busy_op
+      || res.data?.busy_op
+      || '?';
+    toast.info(i18n('stage.toast.busy_fmt', busyOp));
+  }
+
   async function handleAdvance() {
     const from = lastData?.current;
-    const res = await api.post('/api/stage/advance', {});
+    const res = await api.post('/api/stage/advance', {},
+      { expectedStatuses: [409] });
     if (res.ok && res.data) {
       applyStageResponse(res.data);
       toast.ok(i18n('stage.toast.advance_ok',
         i18n(`stage.name_short.${from}`) || from,
         i18n(`stage.name_short.${res.data.current}`) || res.data.current));
+    } else if (res.status === 409) {
+      reportStageBusy(res);
     } else {
       toast.err(i18n('stage.toast.advance_failed'),
         { message: res.error?.message });
@@ -388,12 +410,15 @@ export function mountStageChip(host) {
 
   async function handleSkip() {
     const from = lastData?.current;
-    const res = await api.post('/api/stage/skip', {});
+    const res = await api.post('/api/stage/skip', {},
+      { expectedStatuses: [409] });
     if (res.ok && res.data) {
       applyStageResponse(res.data);
       toast.ok(i18n('stage.toast.skip_ok',
         i18n(`stage.name_short.${from}`) || from,
         i18n(`stage.name_short.${res.data.current}`) || res.data.current));
+    } else if (res.status === 409) {
+      reportStageBusy(res);
     } else {
       toast.err(i18n('stage.toast.advance_failed'),
         { message: res.error?.message });
@@ -410,12 +435,15 @@ export function mountStageChip(host) {
 
   async function handleRewindTo(targetStage) {
     const from = lastData?.current;
-    const res = await api.post('/api/stage/rewind', { target_stage: targetStage });
+    const res = await api.post('/api/stage/rewind', { target_stage: targetStage },
+      { expectedStatuses: [409] });
     if (res.ok && res.data) {
       applyStageResponse(res.data);
       toast.ok(i18n('stage.toast.rewind_ok',
         i18n(`stage.name_short.${from}`) || from,
         i18n(`stage.name_short.${res.data.current}`) || res.data.current));
+    } else if (res.status === 409) {
+      reportStageBusy(res);
     } else {
       toast.err(i18n('stage.toast.advance_failed'),
         { message: res.error?.message });
@@ -447,8 +475,16 @@ export function mountStageChip(host) {
         emit('setup:goto_page', 'memory_recent');
         toast.info(i18n('stage.action.nav_memory'));
         break;
-      case 'evaluation_pending':
-        toast.info(i18n('stage.action.evaluation_pending_toast'));
+      case 'nav_to_evaluation_run':
+        // P17/P19 后: evaluation 阶段的推荐 op 指向真实的 Evaluation → Run
+        // 子页. Workspace 切换本身会挂载 workspace_evaluation 并读
+        // localStorage 上次选中的子页, 这里额外 emit evaluation:navigate
+        // 覆盖 localStorage 偏好, 强制落到 run 子页. 和 setup 分支不同:
+        // evaluation 工作区订阅的是 evaluation:navigate 而不是
+        // evaluation:goto_page (命名不统一是历史遗留, 不在本补丁统一范围).
+        set('active_workspace', 'evaluation');
+        emit('evaluation:navigate', { subpage: 'run' });
+        toast.info(i18n('stage.action.nav_evaluation_run'));
         break;
       default:
         toast.info(i18n('common.not_implemented'));

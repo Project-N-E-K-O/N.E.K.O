@@ -21,6 +21,7 @@
 import { i18n } from '../../core/i18n.js';
 import { api } from '../../core/api.js';
 import { toast } from '../../core/toast.js';
+import { emit } from '../../core/state.js';
 import { el, field } from '../_dom.js';
 
 const API_BASE = '/api/chat/script/templates';
@@ -253,6 +254,11 @@ async function duplicateBuiltin(sourceName, state, ctx) {
   toast.ok(i18n('setup.scripts.toast.duplicated', target));
   await ctx.refreshList();
   await ctx.loadDetails(target);
+  emit('scripts:templates_changed', {
+    reason: 'duplicate',
+    name: target,
+    old_name: null,
+  });
 }
 
 async function deleteUserTemplate(name, state, ctx) {
@@ -277,6 +283,14 @@ async function deleteUserTemplate(name, state, ctx) {
     state.baseline = null;
   }
   await ctx.refreshList();
+  // If the deletion resurfaces a builtin, the Chat composer's dropdown is
+  // still stale (same name, but different source tag); broadcast so the
+  // composer re-fetches and re-labels accordingly.
+  emit('scripts:templates_changed', {
+    reason: 'delete',
+    name: null,
+    old_name: name,
+  });
 }
 
 // ── 右列: 编辑器 ─────────────────────────────────────────────────
@@ -709,6 +723,15 @@ async function saveDraft(state, ctx) {
   }
   await ctx.refreshList();
   await ctx.loadDetails(newName);
+  // Broadcast to Chat composer (and anyone else caching template list) so
+  // the Script-mode dropdown reflects the save without the tester having to
+  // click [刷新列表]. Covers rename (Save As) too because `renaming` above
+  // already deleted the old name before we reach here.
+  emit('scripts:templates_changed', {
+    reason: renaming ? 'rename' : 'save',
+    name: newName,
+    old_name: renaming ? oldName : null,
+  });
 }
 
 function reloadDraft(state, ctx) {

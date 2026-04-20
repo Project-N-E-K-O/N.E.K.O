@@ -55,7 +55,7 @@ todos:
     status: pending
   - id: p17_results_aggregate
     content: "P17 Results + Aggregate 子页 + 导出报告: Evaluation → Results 子页 (过滤表格 + drawer 详情 Header/Dimensions 横条/Comparative 并排+gap/Analysis/Comparative 专属/Context/Raw JSON + CollapsibleBlock + 批量操作 + 内联评分徽章跳转); Aggregate 子页 (总览卡片 + 纯 SVG 维度雷达 + Comparative gap 折线 + problem pattern 词云); judge_router results CRUD; POST /judge/export_report 生成 JSON+Markdown"
-    status: pending
+    status: done
   - id: p18_snapshots_timeline
     content: "P18 快照/时间线/回退: snapshot.py (Snapshot dataclass 含 messages/memory_files/model_config/stage/clock/eval_results); session_store 自动建快照拦截 (send/edit/memory_op/stage_advance/persona 改动 5s 防抖); rewind_to 实现 (含 pre_rewind_backup + 截断后续时间线); 内存上限 + 压缩落盘; session_router 快照 CRUD; 顶栏 Timeline chip (折叠/最近 10 + 查看全部跳 Diagnostics)"
     status: pending
@@ -78,6 +78,38 @@ todos:
     content: "P24 文档: tests/testbench_README.md 覆盖 启动命令 / Workspace 导航 / 顶栏折叠控件 / 中文 i18n / CollapsibleBlock 使用约定 / 虚拟时钟滚动游标模型 / Stage Coach 流程 / 快照与回退 (编辑历史/Re-run/Rewind 三者边界) / 假想用户 & 脚本 & 双 AI / Comparative 评分 + ScoringSchema 自定义 / 保存加载 + 自动保存 + 断点续跑 + 导出 scope + api_key 脱敏 / 数据目录结构 + 备份建议 / 错误处理 + 日志 / 从真实角色导入 / 限制声明 (Realtime / 多会话 / 多客户端 / memory 内部时钟) / 扩展点"
     status: pending
 isProject: false
+---
+
+## 当前快照 (2026-04-20, P17 完成)
+
+> 本节为后期追加, 帮助新 Agent 或调研者在不通读全文的情况下快速定位现状. 核心 `todos` 的状态仍以**条目内 `status` 字段**为准; 本节仅作总览.
+
+**进度**: 已完成 17 / 24 阶段 (约 **71%**), 评分子系统 (P15-P17) 已完整落地, 当前处于"评分模块可用但缺持久化"的中期检查点. 下一个推荐阶段是 P19 (Errors+Logs 替换临时版), 让后续大阶段具备排障基础.
+
+**已 done 的阶段 (P00-P17)**: 从"docs 骨架 / 后端骨架 / 沙盒 & 时钟"一路到"四类 Judger + Run / Results / Aggregate + 导出报告 + 内联评分徽章". 期间交付的**可用闭环**包括:
+1. 人设编辑 + 从真实角色导入 + 内置预设导入 (含记忆全量复刻);
+2. 三层记忆 (Recent / Facts / Reflections / Persona) 四子页 + 5 个记忆操作 (Preview/Commit 双阶段);
+3. 四模式对话 (手动 / SimUser / Scripted / Dual-AI Auto) + SSE over POST 流式回显 + 任意消息编辑 / 从此处重跑 / timestamp 追溯;
+4. 滚动虚拟时钟 (bootstrap + cursor + per-turn default + pending_advance/set + consume_pending + gap_to);
+5. Prompt 双视图 (structured + wire_messages + char_counts + warnings);
+6. Stage Coach (6 阶段状态机 + suggest/advance/skip/rewind);
+7. ScoringSchema 一等公民 (dataclass + validate + render_prompt + compute_raw_score/normalize/evaluate_pass_rule AST 白名单);
+8. 4 类 Judger (AbsoluteSingle / AbsoluteConversation / ComparativeSingle / ComparativeConversation) + POST /judge/run 统一入口 + Run 子页 1:N reference mapping;
+9. **Results 子页 (filter/table/drawer/批量/导出) + Aggregate 子页 (overview cards + 维度雷达 + gap 折线 + pattern 词频) + 导出报告 (JSON / Markdown) + Chat 消息内联评分徽章 (点击跳转 Results 并按 message_id 过滤)**.
+
+**已冻结的设计约定** (新阶段只能扩展不能逆转, 详见 `AGENT_NOTES.md §3 / §3A`): 代码/数据严格分离; 单活跃会话 + asyncio.Lock + 状态机; 沙盒只替换路径不替换 API 配置; PromptBundle 双份 (structured vs wire) 且 session.messages 是唯一真相; Preview/Commit 分阶段; SSE 顶层必须先 yield 一条 error 帧再 raise; 软错 (result.error) vs 硬错 (HTTP 4xx) 契约; 状态驱动 renderAll 优先于 partial DOM; **aggregate / export 逻辑与 session 解耦 (session-agnostic pure-Python), 以便 P21 持久化时复用**; **跨 workspace 导航先写 LS 再 set active_workspace 再 emit \`xxx:navigate\` 事件, 兼顾冷/热挂载**.
+
+**未完成阶段 (P18-P24, 7 条)**: Snapshots+Timeline / Diagnostics Errors+Logs (替换 P04 临时版) / Paths+Snapshots+Reset / Save-Load 核心 / Autosave+续跑 / 多格式多 scope 导出 / 用户 README. 推荐执行顺序 **P19 → P18 → P20 → P21 → P22 → P23 → P24** (价值与依赖分析见 `PROGRESS.md` 中后期回顾与展望 §三).
+
+**未解事项 / 技术债**:
+- 前端渲染 `i18n(key)(arg)` 误用模式须在全仓做一次扫描 grep (P17 实现时已扫过一次, 0 命中, 但新阶段照旧定期查);
+- Evaluation / Memory / Diagnostics 子页是否齐套订阅 `chat:messages_changed` / `session:change` / `judge:results_changed` 需一次横扫;
+- P04 临时 Errors 面板 (`workspace_diagnostics.js` + `errors_bus.js`) 在 P19 到来时直接替换为正式 Errors + Logs 双子页;
+- 踩过但未形成全仓 lint 规则的: `Node.append(null)` 静默插入、`??` 对 0/空串不 fallback、Grid template-rows 与子节点数不一致 (详见 `AGENT_NOTES.md §3A` + `§4`);
+- P17 新增的 `_coerce_bool` / `_coerce_float` 值得抽成通用 helper 供将来 export/persistence 阶段复用 (目前局限在 `judge_router`).
+
+**下一个 Agent 的第一件事**: 读 `AGENT_NOTES.md §3A 横切设计原则索引` (19 条精华) → 再扫 `PROGRESS.md` 中后期回顾与展望 → 定位 `todos[p19_diagnostics_errors_logs]` 开工.
+
 ---
 
 ## 总体架构
@@ -940,6 +972,45 @@ sequenceDiagram
     API->>SB: atomic write JSON + memory tar.gz to testbench_data/saved_sessions/
     API-->>UI: toast (path + copy/open)
 ```
+
+10) 崩溃恢复与启动自检 (crash safety / boot-time self-check)
+
+**背景**: P20 hotfix 2 修复 "rewind 撞 time_indexed.db 文件锁" 后, 自然引出一个架构级问题 — **如果进程异常终止 (任务管理器强杀 / 蓝屏 / 断电 / OOM killer), 当前框架有没有兜底措施?** 完整诊断见 [AGENT_NOTES §4.26 #91](AGENT_NOTES.md).
+
+**设计约束**: 本项目定位是"本地开发工具", 用户机器上大概率同时跑多个开发环境 (Cursor IDE / VSCode / 浏览器), 系统内存/CPU 突发是常态, 进程被 OOM killer 挑中不是 edge case. 任何写磁盘的 phase 都要按"**进程可能在下一行代码崩掉**"的悲观假设设计.
+
+**两条路径, 分别由"hook"与"boot scan"覆盖**:
+
+| 关闭场景 | 覆盖方式 | 当前能力 |
+|---|---|---|
+| Ctrl+C / `kill <pid>` / `uvicorn --reload` | `@app.on_event("shutdown")` + `atexit` | ✅ 已覆盖 (清 log_cleanup_task + `session_store.destroy(purge_sandbox=False)`) |
+| SIGKILL / 任务管理器强杀 / 蓝屏 / 断电 | 启动自检 (boot-time scan + cleanup) | ❌ 缺失 — 沙盒/`.tmp`/`.locked_*`/`.db-journal` 残留永不清理 |
+
+**设计目标**:
+
+1. **不丢数据**: 关键状态写入走 `atomic_write_json` (tmp + `os.replace`), 崩溃只丢正在写的 tmp 不破坏原文件. 已全量覆盖 memory 文件 / schema 文件 / script 文件.
+2. **启动可恢复**: 启动时扫 `SANDBOXES_DIR` 识别孤儿 (无对应活跃 session 的沙盒目录), 用户可见 Paths 子页的"孤儿徽章"并选择清理.
+3. **报告而非静默删**: 孤儿可能是用户故意保留的排查素材 — **默认 scan + UI 展示, 不自动删**. 手动清理走 Paths 子页的按钮确认.
+4. **残留清理分类**: `<sandbox>/N.E.K.O/memory/*.tmp` (半写状态, 直接删); `<sandbox>/N.E.K.O/memory/memory.locked_*` (> 24h 直接 rmtree); 孤儿 `*.db-journal` (无伴随 `.db`, 删).
+5. **资源显式 dispose, 不靠 GC**: SQLAlchemy engine / SQLite connection / 文件句柄 在 rewind/reset 等关键路径**主动**调 `dispose()` + `gc.collect()`. 已通过 `_dispose_all_sqlalchemy_caches` 覆盖 (P20 hotfix 2).
+
+**待交付项 (归属 P22 Autosave+续跑)**:
+
+- `pipeline/boot_self_check.py` (新增): `scan_orphans()` / `scan_half_written_tmps()` / `scan_stale_locked_dirs()` / 组合成 `run_boot_self_check(data_dir)` 返回结构化报告
+- `routers/health_router.py` 新增 `GET /system/orphans` + `POST /system/orphans/cleanup` 两端点 (白名单仅 DATA_DIR)
+- `server.py::_startup_cleanup` 把 boot self-check 的 report 挂到 `app.state.boot_report` (不直接清理, 给 UI 看)
+- `static/ui/diagnostics/page_paths.js` 顶部显示"孤儿数量 + 总大小"徽章 + `[查看详情]` modal + `[一键清理]` 按钮
+- P22 autosave 时将 "最后活跃会话 ID + autosave 路径" 写入 `DATA_DIR/.last_session.json`, 启动扫孤儿时匹配此文件, 孤儿若有对应 autosave 则提示"检测到上次未正常关闭的会话, [从 autosave 恢复] / [丢弃沙盒]"
+
+**为什么归 P22 而不是另立 phase**: P22 本身就要实装 autosave + "启动时续跑", boot self-check 是同一 boot-time 阶段的工作, 两者的孤儿扫描结果共享同一份数据 ("这个沙盒目录对应的 autosave 是否存在"). 拆成独立 phase 会重复实现 scan 逻辑.
+
+**提前修的部分** (P20 hotfix 2 已交付): `atomic_write_json` (多处) / `_dispose_all_sqlalchemy_caches` / `robust_rmtree` / `memory.locked_<ts>` 旁路模式 — 这些都是"崩溃安全的构件", 留给 P22 的是"组装+入口 UI".
+
+**主动不做**:
+
+- WAL 模式 SQLite (`PRAGMA journal_mode=WAL`): 引入 `-wal` / `-shm` 旁车文件, 对 Windows 文件锁问题火上浇油, **保守选 DELETE 模式**.
+- 崩溃后自动 rollback 到上一个 `pre_*_backup` 快照: 用户可能希望保留崩溃时刻的状态以便排查, 不应该自动"擦干净". 提供 UI 入口让用户选.
+- 跨进程锁文件 (PID file): 当前"单活跃会话 + 单 uvicorn 进程"的定位不需要, PID file 在 Windows 上语义弱 (进程死了 PID 复用).
 
 ## 分阶段实现 (见 todos)
 

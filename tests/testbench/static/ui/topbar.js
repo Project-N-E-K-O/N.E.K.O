@@ -4,7 +4,7 @@
  * 职责:
  *   - 品牌 + Session dropdown (New / Destroy; P21 之后补 Load/Save/Import/Restore)
  *   - Stage chip (P14, 细节在 ./topbar_stage_chip.js)
- *   - Timeline chip 占位 (P18 接入快照时间线)
+ *   - Timeline chip (P18, 细节在 ./topbar_timeline_chip.js)
  *   - Err 徽章: 订阅 `http:error`, P03 只做简易计数 (P19 会完整 Errors 子页)
  *   - 右侧 Menu: 跳到 Diagnostics / Settings / About; Export/Reset 占位
  *
@@ -14,8 +14,9 @@
 import { i18n } from '../core/i18n.js';
 import { api } from '../core/api.js';
 import { toast } from '../core/toast.js';
-import { store, set, on } from '../core/state.js';
+import { store, set, on, emit } from '../core/state.js';
 import { mountStageChip } from './topbar_stage_chip.js';
+import { mountTimelineChip } from './topbar_timeline_chip.js';
 
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
@@ -180,21 +181,6 @@ function mountSessionDropdown(host) {
   });
 }
 
-// ── Timeline 占位 chip (Stage chip 已迁到 topbar_stage_chip.js) ─────
-
-function mountTimelineChip(host) {
-  const chip = el('button', {
-    className: 'chip muted',
-    title: i18n('topbar.timeline.not_implemented'),
-    onClick: (ev) => {
-      ev.stopPropagation();
-      toast.info(i18n('topbar.timeline.not_implemented'));
-    },
-  },
-  `${i18n('topbar.timeline.label')}: ${i18n('topbar.timeline.chip_placeholder')}`);
-  host.append(chip);
-}
-
 // ── Err 徽章 ───────────────────────────────────────────────────────
 
 function mountErrBadge(host) {
@@ -224,10 +210,20 @@ function mountErrBadge(host) {
     const n = (store.errors || []).length;
     if (n === 0) {
       toast.info(i18n('topbar.error_badge.empty'));
-    } else {
-      // 直接跳 Diagnostics, 不再用 toast 中转.
-      set('active_workspace', 'diagnostics');
+      return;
     }
+    // P20 hotfix 2: 不仅切到 Diagnostics, 还要确保子页是 Errors (不管
+    // 用户上次离开时看的是哪个子页). 走 workspace_diagnostics 的
+    // 'diagnostics:navigate' 协调者事件 — 它会 force-select 'errors'
+    // 子页, 并且在未挂载的情况下把目标写 LS 等下次激活时读出.
+    // 只 `set('active_workspace', 'diagnostics')` 会沿用上次子页
+    // (可能是 logs/paths/reset), 看起来像"点 Err 徽章没有跳转".
+    // LS key 必须与 workspace_diagnostics.js::LS_KEY 一致, 否则协调者
+    // 读不到这条 "先切 errors" 的 hint, 回到它上次记住的子页.
+    try { localStorage.setItem('testbench:diagnostics:active_subpage', 'errors'); }
+    catch { /* ignore */ }
+    set('active_workspace', 'diagnostics');
+    emit('diagnostics:navigate', { subpage: 'errors' });
   });
 
   host.append(chip);

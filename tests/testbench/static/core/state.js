@@ -66,16 +66,48 @@ export function off(event, fn) {
   if (set) set.delete(fn);
 }
 
-/** 发布事件. 监听器异常不会互相影响. */
+// ── recursion guard ───────────────────────────────────────────────
+//
+// 任何一个 listener 里同步调 `set()` 都会再次进 emit; 一串 listener 叠
+// 起来可能意外写出 "A 的 listener 改 B, B 的 listener 改 A" 这种
+// cross-feedback loop. state.js 原来没有保护, 真跑到这种配置时会把整
+// 个 event loop 烧死. 2026-04-20 Hard Reset 诊断时意识到这个空洞.
+//
+// 实现策略: per-event 深度计数. 同一个 event 如果正处于被处理状态
+// (depth > 0) 且再次被 emit, 我们仍然让它跑 (否则 rewind/reset 的正常
+// re-entry 会失效), 但超过 `_MAX_EMIT_DEPTH` 时**切断**并打印 stack,
+// 给开发者留一条明确的排查线索而不是让浏览器/电脑卡死.
+const _emitDepth = new Map();
+const _MAX_EMIT_DEPTH = 8;
+
+/** 发布事件. 监听器异常不会互相影响; 超过递归上限会主动熔断. */
 export function emit(event, payload) {
   const set = listeners.get(event);
   if (!set) return;
-  for (const fn of set) {
-    try {
-      fn(payload);
-    } catch (err) {
-      console.error(`[state] listener for '${event}' threw:`, err);
+  const depth = (_emitDepth.get(event) || 0) + 1;
+  if (depth > _MAX_EMIT_DEPTH) {
+    // 不再调用 listener. 这几乎一定是 bug (某个 listener 在 reacting
+    // 时又 set 触发同一个 event). 留下明显的 console 痕迹而不是静默
+    // 挂浏览器.
+    console.error(
+      `[state] recursive emit of '${event}' exceeded depth ${_MAX_EMIT_DEPTH}; `
+      + `aborting to prevent infinite loop. Fix the listener that synchronously `
+      + `re-sets the same key.`,
+    );
+    return;
+  }
+  _emitDepth.set(event, depth);
+  try {
+    for (const fn of set) {
+      try {
+        fn(payload);
+      } catch (err) {
+        console.error(`[state] listener for '${event}' threw:`, err);
+      }
     }
+  } finally {
+    if (depth <= 1) _emitDepth.delete(event);
+    else _emitDepth.set(event, depth - 1);
   }
 }
 

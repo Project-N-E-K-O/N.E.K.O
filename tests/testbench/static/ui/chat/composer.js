@@ -212,6 +212,16 @@ export function mountComposer(host, { stream, autoBanner = null }) {
     onClick: () => unloadScript(),
     title: i18n('chat.composer.script.unload_title'),
   }, i18n('chat.composer.script.unload'));
+  // P19 hotfix 5: Script run_all / next 运行期间允许手动 Stop — 通过 abort 当前 SSE
+  // 流. abort 后 sse_client 会走 onDone() 分支, 回调里 scriptRunning = false 并
+  // refreshScriptState, 后端 /chat/script/* 的 generator 在 disconnect 时会提前 return.
+  const stopBtn = el('button', {
+    type: 'button',
+    className: 'small danger',
+    onClick: () => scriptStop(),
+    title: i18n('chat.composer.script.stop_title'),
+    style: { display: 'none' },
+  }, i18n('chat.composer.script.stop'));
   const scriptProgressBadge = el('span', {
     className: 'script-progress-badge muted',
     style: { display: 'none' },
@@ -223,6 +233,7 @@ export function mountComposer(host, { stream, autoBanner = null }) {
     loadBtn,
     nextBtn,
     runAllBtn,
+    stopBtn,
     unloadBtn,
     scriptProgressBadge,
   );
@@ -503,6 +514,9 @@ export function mountComposer(host, { stream, autoBanner = null }) {
     nextBtn.disabled = !canAdvance;
     runAllBtn.disabled = !canAdvance;
     unloadBtn.disabled = !isScript || !loaded || pending || scriptRunning || autoRunning;
+    // Stop 仅在 Script 模式且正在跑时显示 / 可用; 不跑时直接隐藏避免占位.
+    stopBtn.style.display = isScript && scriptRunning ? '' : 'none';
+    stopBtn.disabled = !scriptRunning;
 
     nextBtn.textContent = scriptRunning
       ? i18n('chat.composer.script.next_running')
@@ -1117,6 +1131,20 @@ export function mountComposer(host, { stream, autoBanner = null }) {
     openScriptStream('/api/chat/script/run_all');
   }
 
+  function scriptStop() {
+    // 只有正在跑 script SSE 时才 abort; 避免误把手动 /chat/send 的 currentStream
+    // 也 abort 掉 (理论上 scriptRunning=true 时同一时刻不会并发 manual send,
+    // 但挡一道更安全).
+    if (!scriptRunning || !currentStream) return;
+    try {
+      currentStream.abort();
+    } catch (err) {
+      console.debug('[composer] scriptStop abort failed:', err);
+    }
+    // 视觉上立刻反馈 — onDone() 回调里还会再清一次 scriptRunning/refreshScriptState.
+    toast.ok(i18n('chat.composer.script.stop_toast'));
+  }
+
   // ── Auto-Dialog (P13) ──────────────────────────────────────────
 
   function startAutoDialog() {
@@ -1191,6 +1219,19 @@ export function mountComposer(host, { stream, autoBanner = null }) {
     }
   });
 
+  // Setup → Scripts 页保存 / 删除 / 复制 / 改名后会广播这个事件; composer
+  // 的模板下拉是惰性加载 + 本地缓存的 (templatesLoaded + scriptTemplates),
+  // 不刷新就会一直显示旧列表. 这里强制重拉一次:
+  //   - 当前是 script 模式 → 立刻 loadTemplateList(true) 更新 <select>
+  //   - 当前不是 script 模式 → 只清 templatesLoaded 让下次切到 script 时重拉
+  // 避免在 manual/simuser/auto 模式下做无用功.
+  const offScriptTemplates = on('scripts:templates_changed', () => {
+    templatesLoaded = false;
+    if (modeSelect.value === 'script') {
+      loadTemplateList(true);
+    }
+  });
+
   // 外部改了时钟 (Setup → Virtual Clock 页) 也要同步显示.
   const offClock = on('clock:change', refreshClock);
 
@@ -1211,6 +1252,7 @@ export function mountComposer(host, { stream, autoBanner = null }) {
       offSession();
       offClock();
       offAutoDone();
+      offScriptTemplates();
       currentStream?.abort?.();
     },
   };

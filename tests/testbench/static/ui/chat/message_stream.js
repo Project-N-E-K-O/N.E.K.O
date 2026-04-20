@@ -33,7 +33,7 @@
 import { api } from '../../core/api.js';
 import { i18n } from '../../core/i18n.js';
 import { toast } from '../../core/toast.js';
-import { emit, on, store } from '../../core/state.js';
+import { emit, on, set, store } from '../../core/state.js';
 import { createCollapsible } from '../../core/collapsible.js';
 import { el } from '../_dom.js';
 
@@ -92,6 +92,15 @@ export function mountMessageStream(host) {
   // ── state ──────────────────────────────────────────────────────
   let messages = [];
 
+  // Map `assistant_msg_id → latest EvalResult dict` used to render the
+  // inline evaluation badge on each assistant bubble (P17). Populated
+  // by `refreshEvalMap()`, which walks `GET /api/judge/results`; the
+  // latest result wins when a message has been evaluated more than
+  // once. We keep this in the closure (not in module scope) so
+  // hot-reloading a new workspace doesn't leak cached state across
+  // sessions.
+  let latestEvalByMsg = new Map();
+
   function renderAll() {
     list.innerHTML = '';
     if (!messages.length) {
@@ -135,15 +144,26 @@ export function mountMessageStream(host) {
       'data-msg-id': msg.id,
     });
 
-    // header: role + source + timestamp + menu
+    // header: role + source + timestamp + eval badge + menu
+    //
+    // P17 hotfix: `buildEvalBadge(msg)` 返回 null 的情况下 (非 assistant /
+    // 还没跑过评分), 不能再直接传给 `Node.prototype.append` — per §3A C3
+    // / #42 native append 会把 `null` 字符串化成文本节点 "null" 塞进 DOM.
+    // P17 首版徽章代码正好踩了这个 gotcha, 导致每条没评分的消息都拖着
+    // 一串 "null" 字样, 容易被误判成"徽章逻辑坏了". 改成先算后过滤, 保
+    // 持 `el()` helper 里 "null/undefined/false 自动跳过" 同样的语义.
     const header = el('div', { className: 'msg-header' });
+    const evalBadge = buildEvalBadge(msg);
     header.append(
-      el('span', { className: `msg-role role-${msg.role}` }, roleLabel(msg.role)),
-      el('span', { className: 'msg-source' }, sourceLabel(msg.source || 'manual')),
-      el('span', { className: 'msg-timestamp muted', title: msg.timestamp },
-        formatTimestamp(msg.timestamp)),
-      el('span', { className: 'spacer' }),
-      buildMenuButton(msg),
+      ...[
+        el('span', { className: `msg-role role-${msg.role}` }, roleLabel(msg.role)),
+        el('span', { className: 'msg-source' }, sourceLabel(msg.source || 'manual')),
+        el('span', { className: 'msg-timestamp muted', title: msg.timestamp },
+          formatTimestamp(msg.timestamp)),
+        el('span', { className: 'spacer' }),
+        evalBadge,
+        buildMenuButton(msg),
+      ].filter(Boolean),
     );
     node.append(header);
 
@@ -238,6 +258,105 @@ export function mountMessageStream(host) {
     }, text);
   }
 
+  // ── P17 evaluation badge ───────────────────────────────────────
+
+  /** Return the inline eval badge node (or `null` for non-assistant /
+   * un-evaluated messages). Clicking the badge jumps to
+   * Evaluation → Results with ``message_id`` pre-filtered so the tester
+   * can see every pass this message has under. We don't expand the
+   * badge into a tooltip with the full result — the click-through to
+   * the drawer does that job better, and a tooltip with e.g. 5 dims of
+   * data would be unreadable in a header row.
+   */
+  function buildEvalBadge(msg) {
+    if (msg.role !== 'assistant') return null;
+    const latest = latestEvalByMsg.get(msg.id);
+    if (!latest) return null;
+
+    const isError = Boolean(latest.error);
+    let text;
+    let className = 'msg-eval-badge badge';
+    if (isError) {
+      text = i18n('chat.stream.eval_badge.errored');
+      className += ' danger';
+    } else if (latest.mode === 'comparative') {
+      const g = Number(latest.gap ?? 0);
+      const sign = g >= 0 ? '+' : '';
+      text = i18n('chat.stream.eval_badge.gap_fmt', `${sign}${g.toFixed(1)}`);
+      className += g > 0 ? ' success' : g < 0 ? ' danger' : ' subtle';
+    } else {
+      const ov = Number(latest.scores?.overall_score ?? 0);
+      text = i18n('chat.stream.eval_badge.overall_fmt', ov.toFixed(0));
+      className += latest.passed ? ' success' : ' subtle';
+    }
+
+    const tooltipParts = [
+      i18n('chat.stream.eval_badge.tooltip_fmt',
+        latest.schema_id || '-', latest.verdict || '-'),
+      (latest.created_at || '').replace('T', ' ').slice(0, 19),
+      i18n('chat.stream.eval_badge.click_hint'),
+    ].filter(Boolean);
+
+    return el('button', {
+      type: 'button',
+      className,
+      title: tooltipParts.join(' · '),
+      onClick: (ev) => {
+        ev.stopPropagation();
+        jumpToResultsFilter(msg.id);
+      },
+    }, text);
+  }
+
+  /** Stash a filter override on `store.ui_prefs` and switch to the
+   * Evaluation workspace on the Results subpage.
+   * `workspace_evaluation` reads `active_subpage` from localStorage on
+   * mount; `page_results` consumes `ui_prefs.evaluation_results_filter`
+   * on first render and clears it. Doing both means a cold jump
+   * (workspace just mounted) and a warm jump (already on Evaluation)
+   * both land the user on the filtered Results table.
+   */
+  function jumpToResultsFilter(messageId) {
+    try {
+      localStorage.setItem('testbench:evaluation:active_subpage', 'results');
+    } catch { /* ignore */ }
+    set('ui_prefs', {
+      ...(store.ui_prefs || {}),
+      evaluation_results_filter: { message_id: messageId },
+    });
+    // 先切 workspace (若未在 Evaluation) 再发 navigate. 已经在
+    // Evaluation 时 set 是 no-op, 由 navigate 负责跳子页. 这两步顺序
+    // 对首次冷挂载也安全: mountEvaluationWorkspace 里会用 localStorage
+    // 读出初始子页.
+    set('active_workspace', 'evaluation');
+    emit('evaluation:navigate', { subpage: 'results' });
+  }
+
+  async function refreshEvalMap() {
+    latestEvalByMsg = new Map();
+    if (!store.session?.id) return;
+    // Pull all results in one request. The backend caps at 200 per
+    // request; we ask for 200 and rely on the fact that a single
+    // session rarely accumulates more. If future work raises that cap
+    // we can switch to paginated walking here.
+    const res = await api.get('/api/judge/results?limit=200', {
+      expectedStatuses: [404],
+    });
+    if (!res.ok) return;
+    const results = Array.isArray(res.data?.results) ? res.data.results : [];
+    // The backend already sorts newest-first; walk once and keep the
+    // first-seen entry for each message_id (== latest). A result can
+    // target several messages (comparative batch) — we register the
+    // same result under every targeted id so every badge points at a
+    // meaningful latest.
+    for (const r of results) {
+      for (const mid of (r.target_message_ids || [])) {
+        if (!mid) continue;
+        if (!latestEvalByMsg.has(mid)) latestEvalByMsg.set(mid, r);
+      }
+    }
+  }
+
   // ── menu actions ───────────────────────────────────────────────
 
   async function editMessage(msg) {
@@ -319,6 +438,7 @@ export function mountMessageStream(host) {
   async function refresh() {
     if (!store.session?.id) {
       messages = [];
+      latestEvalByMsg = new Map();
       renderAll();
       return;
     }
@@ -327,10 +447,15 @@ export function mountMessageStream(host) {
     });
     if (!res.ok) {
       messages = [];
+      latestEvalByMsg = new Map();
       renderAll();
       return;
     }
     messages = Array.isArray(res.data?.messages) ? res.data.messages : [];
+    // Pull eval results in parallel with render — badges appear the
+    // moment the eval map resolves, and if it fails we just render
+    // without badges (which is the correct "no evaluations yet" look).
+    await refreshEvalMap();
     renderAll();
   }
 
@@ -403,8 +528,19 @@ export function mountMessageStream(host) {
     if (s?.id) refresh();
     else {
       messages = [];
+      latestEvalByMsg = new Map();
       renderAll();
     }
+  });
+
+  // Re-pull the eval map whenever Run 子页 completes a batch or
+  // Results 子页 deletes rows. We don't re-pull the messages because
+  // evaluations never mutate the chat log — only the badges. Worth
+  // the extra request: the alternative is stale green badges pointing
+  // at results the user just deleted.
+  const offResults = on('judge:results_changed', async () => {
+    await refreshEvalMap();
+    renderAll();
   });
 
   // 初次挂载: 有会话就拉一次.
@@ -419,7 +555,7 @@ export function mountMessageStream(host) {
     beginAssistantStream,
     appendIncomingMessage,
     replaceTailWith,
-    destroy() { offSession(); },
+    destroy() { offSession(); offResults(); },
   };
 }
 

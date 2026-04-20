@@ -1,23 +1,25 @@
-"""Session lifecycle endpoints (P02 minimum).
+"""Session lifecycle endpoints.
 
-Exposes just enough surface for the browser to prove the single-active-
-session model works end to end:
+Exposes the surface the browser needs for the single-active-session
+model:
 
-- ``POST   /api/session``        create a fresh session (+ sandbox)
-- ``GET    /api/session``        inspect the current session
-- ``DELETE /api/session``        tear it down (ConfigManager restored)
-- ``GET    /api/session/state``  compact state for UI polling
+- ``POST   /api/session``         create a fresh session (+ sandbox)
+- ``GET    /api/session``         inspect the current session
+- ``DELETE /api/session``         tear it down (ConfigManager restored)
+- ``GET    /api/session/state``   compact state for UI polling
+- ``POST   /api/session/reset``   three-tier reset (P20)
 
-Later phases extend this router with save/load/reset/rewind/snapshot
-endpoints per ``PLAN.md``.
+P20 adds the Reset endpoint; save/load/rewind live elsewhere already
+(``snapshot_router`` for rewind, P21 will add persistence).
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from tests.testbench.pipeline.reset_runner import reset_session
 from tests.testbench.session_store import (
     SessionConflictError,
     SessionState,
@@ -92,6 +94,84 @@ async def delete_session(purge_sandbox: bool = True) -> dict[str, Any]:
     store = get_session_store()
     await store.destroy(purge_sandbox=purge_sandbox)
     return {"ok": True}
+
+
+class ResetSessionRequest(BaseModel):
+    """Body for ``POST /api/session/reset``.
+
+    ``confirm`` must be ``True`` — the UI always sends the second-
+    confirmation state explicitly, so the API surface rejects any
+    accidental POST without it. This is an intentional 400 vs 200
+    split rather than a quiet no-op.
+    """
+
+    level: Literal["soft", "medium", "hard"] = Field(
+        ...,
+        description=(
+            "Reset tier. soft = clear messages + eval_results only; "
+            "medium = soft + wipe memory files; "
+            "hard = wipe sandbox + reset all session state (keeps "
+            "model_config and backup snapshots)."
+        ),
+    )
+    confirm: bool = Field(
+        default=False,
+        description=(
+            "UI-side second confirmation. Must be true; rejecting "
+            "`confirm=false` prevents accidental reset via curl."
+        ),
+    )
+
+
+@router.post("/reset")
+async def reset_current_session(body: ResetSessionRequest) -> dict[str, Any]:
+    """Perform a three-tier reset on the active session.
+
+    Flow:
+      1. Acquire ``session_operation("session.reset", state=RESETTING)``
+         so any concurrent chat/send/script waits (and the UI disables
+         risky buttons via polled ``/state``).
+      2. Inside the lock, :func:`reset_runner.reset_session` captures a
+         ``pre_reset_backup`` snapshot, then mutates state per level.
+      3. Returns ``{ok: true, stats: {level, removed, preserved,
+         pre_reset_backup_id}}`` so the UI can toast exactly what was
+         wiped.
+
+    Error codes:
+      * 400 if ``confirm != true`` or ``level`` invalid (pydantic
+        already covers the latter).
+      * 404 if no session active.
+      * 409 if another operation already holds the session lock.
+    """
+    if not body.confirm:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "confirm must be true — reset is destructive; "
+                "UI should gate behind an explicit second confirmation."
+            ),
+        )
+
+    store = get_session_store()
+    if store.get() is None:
+        raise HTTPException(status_code=404, detail="no active session")
+
+    try:
+        async with store.session_operation(
+            "session.reset", state=SessionState.RESETTING,
+        ) as session:
+            stats = reset_session(session, body.level)
+            return {"ok": True, "stats": stats, **session.describe()}
+    except SessionConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error_type": "SessionConflict",
+                "message": str(exc),
+                "state": exc.state.value,
+                "busy_op": exc.busy_op,
+            },
+        ) from exc
 
 
 @router.get("/state", response_model=SessionStateResponse)

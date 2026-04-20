@@ -3,8 +3,11 @@
 五个端点, 全部薄封装 :mod:`pipeline.stage_coordinator`:
 
 * ``GET   /api/stage``            — 当前阶段 + 推荐 op + 上下文快照 + 历史
-* ``POST  /api/stage/preview``    — P14 一律 412 PreviewUnsupported (PLAN
-                                     预留给 P15/P16 的评分 dry-run)
+* ``POST  /api/stage/preview``    — 一律 412 PreviewUnsupported (stage 层
+                                     不包 dry-run; memory op 去 Setup →
+                                     Memory 点 Trigger, evaluation op
+                                     去 Evaluation → Run 子页或直接调
+                                     ``/api/judge/run`` {persist:false})
 * ``POST  /api/stage/advance``    — 推进到下一阶段 (循环: evaluation →
                                      chat_turn), 只改 stage_state, 不跑副作用
 * ``POST  /api/stage/skip``       — 同 advance 但 history 标 ``skipped=true``
@@ -28,6 +31,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from tests.testbench.pipeline.snapshot_store import capture_safe as _snapshot_capture
 from tests.testbench.pipeline.stage_coordinator import (
     STAGE_ORDER,
     StageError,
@@ -123,11 +127,12 @@ async def get_stage() -> dict[str, Any]:
 
 @router.post("/preview")
 async def stage_preview(body: _PreviewBody) -> dict[str, Any]:
-    """P14: always 412 PreviewUnsupported (see stage_coordinator docstring).
+    """Always 412 PreviewUnsupported (see stage_coordinator docstring).
 
     Kept as an endpoint rather than omitted so the frontend can call it
-    uniformly; when P15/P16 evaluation lands, only the implementation
-    changes, not the URL surface.
+    uniformly; per-stage dry-run entries live in their own routers
+    (``/api/memory/trigger/{op}`` for memory, ``/api/judge/run``
+    with ``persist=False`` for evaluation).
     """
     session = _require_session()
     try:
@@ -146,9 +151,11 @@ async def stage_advance(body: _AdvanceBody) -> dict[str, Any]:
             state=SessionState.BUSY,
         ) as session:
             try:
-                return advance(session, op_id=body.op_id, note=body.note)
+                result = advance(session, op_id=body.op_id, note=body.note)
             except StageError as exc:
                 raise _wrap_stage_error(exc) from exc
+            _snapshot_capture(session, trigger="stage_advance")
+            return result
     except SessionConflictError as exc:
         raise _wrap_conflict(exc) from exc
 
@@ -163,9 +170,11 @@ async def stage_skip(body: _SkipBody) -> dict[str, Any]:
             state=SessionState.BUSY,
         ) as session:
             try:
-                return skip(session, note=body.note)
+                result = skip(session, note=body.note)
             except StageError as exc:
                 raise _wrap_stage_error(exc) from exc
+            _snapshot_capture(session, trigger="stage_advance")
+            return result
     except SessionConflictError as exc:
         raise _wrap_conflict(exc) from exc
 
@@ -196,8 +205,10 @@ async def stage_rewind(body: _RewindBody) -> dict[str, Any]:
             state=SessionState.BUSY,
         ) as session:
             try:
-                return rewind(session, body.target_stage, note=body.note)
+                result = rewind(session, body.target_stage, note=body.note)
             except StageError as exc:
                 raise _wrap_stage_error(exc) from exc
+            _snapshot_capture(session, trigger="stage_rewind")
+            return result
     except SessionConflictError as exc:
         raise _wrap_conflict(exc) from exc

@@ -22,6 +22,25 @@ const DEFAULT_DURATIONS = {
   err:  0,
 };
 
+// toast 右下角浮窗宽度固定 380px (见 #toast-stack max-width). 超长的
+// 错误 message (典型来源: 后端异常 traceback / WinError 32 全路径 / JSON
+// dump) 会把 .toast-body 撑成单行几千字符, 把 .toast-close 顶出右边, 用户
+// 既看不全消息也点不到 X 关闭. 2026-04-20 用户反馈此问题后加此截断:
+//   - 显示层 max TOAST_MSG_MAX_CHARS 字符 + "..." 省略号
+//   - 完整原文放 `title=` 属性里, 鼠标 hover 可看全文
+//   - CSS 侧 `.toast-msg { overflow-wrap: anywhere; max-height: ... }`
+//     兜底, 保证即使 JS 截断失败也不撑破 container
+// 阈值选 280 — 3 行可读长度, 够贴常见"HTTP 409 + hint"+"路径"级消息,
+// 又足够短使得 380px 宽 + ~3 行能完整显示不横向滚动.
+const TOAST_MSG_MAX_CHARS = 280;
+const TOAST_TITLE_MAX_CHARS = 120;
+
+function _truncate(s, limit) {
+  if (typeof s !== 'string') return s;
+  if (s.length <= limit) return s;
+  return s.slice(0, limit - 1) + '…';
+}
+
 function ensureStack() {
   let stack = document.getElementById('toast-stack');
   if (!stack) {
@@ -42,13 +61,20 @@ function createToast({ kind = 'info', title, message, actions = [], duration }) 
   if (title) {
     const t = document.createElement('div');
     t.className = 'toast-title';
-    t.textContent = title;
+    const titleStr = typeof title === 'string' ? title : String(title);
+    const titleShort = _truncate(titleStr, TOAST_TITLE_MAX_CHARS);
+    t.textContent = titleShort;
+    // 原文若被截断, 挂 title 属性, 鼠标 hover 可看全文.
+    if (titleStr !== titleShort) t.title = titleStr;
     body.appendChild(t);
   }
   if (message) {
     const m = document.createElement('div');
     m.className = 'toast-msg';
-    m.textContent = message;
+    const msgStr = typeof message === 'string' ? message : String(message);
+    const msgShort = _truncate(msgStr, TOAST_MSG_MAX_CHARS);
+    m.textContent = msgShort;
+    if (msgStr !== msgShort) m.title = msgStr;
     body.appendChild(m);
   }
 

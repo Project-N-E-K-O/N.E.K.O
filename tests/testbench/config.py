@@ -7,6 +7,7 @@ testbench is launched.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 # ─── Directory layout ──────────────────────────────────────────────────────
@@ -48,6 +49,51 @@ DEFAULT_PORT: int = 48920
 
 # Log-related defaults.
 DEFAULT_LOG_LEVEL: str = "INFO"
+
+#: JSONL log retention policy (P19). Files whose date suffix is older than
+#: ``today - LOG_RETENTION_DAYS`` are deleted by the startup + periodic
+#: cleanup (``logger.cleanup_old_logs``). **Today's file is never deleted**
+#: to avoid races with active writers. Override at deploy time via the
+#: ``TESTBENCH_LOG_RETENTION_DAYS`` environment variable; invalid/negative
+#: values fall back to the default.
+def _read_retention_days_env(default: int) -> int:
+    raw = os.environ.get("TESTBENCH_LOG_RETENTION_DAYS")
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value >= 0 else default
+
+
+LOG_RETENTION_DAYS: int = _read_retention_days_env(14)
+
+#: How often the background task re-scans ``LOGS_DIR`` for expired files.
+#: 12 hours strikes a balance between 'don't stay dirty too long after
+#: midnight rollover' and 'don't hammer disk'.
+LOG_CLEANUP_INTERVAL_SECONDS: int = 12 * 60 * 60
+
+#: Whether ``SessionLogger.log_sync(level='DEBUG')`` actually writes to
+#: disk. Kept off by default because DEBUG ops are high-volume
+#: (``chat.prompt_preview`` alone was ~32% of all entries before the
+#: split) and rarely useful post-hoc. Flip on via environment variable
+#: ``TESTBENCH_LOG_DEBUG=1`` / ``true`` / ``yes`` / ``on`` at boot, or
+#: hot-toggle via ``POST /api/diagnostics/logs/debug`` from the Logs
+#: subpage without restarting.
+#:
+#: Design note: we treat this as a *mutable module-level flag*. Every
+#: ``log_sync`` call reads it fresh (no caching), so the HTTP toggle
+#: takes effect immediately for subsequent writes. Existing disk
+#: content is untouched.
+def _read_bool_env(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+LOG_DEBUG_ENABLED: bool = _read_bool_env("TESTBENCH_LOG_DEBUG", False)
 
 # Autosave defaults (consumed by P22).
 AUTOSAVE_DEBOUNCE_SECONDS: float = 5.0

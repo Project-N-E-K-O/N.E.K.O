@@ -6,6 +6,7 @@ health router and ensures the runtime data directories exist.
 """
 from __future__ import annotations
 
+import asyncio
 import traceback
 
 from fastapi import FastAPI, Request
@@ -32,14 +33,18 @@ class _NoCacheStaticFiles(StaticFiles):
         return response
 
 from tests.testbench import config as tb_config
-from tests.testbench.logger import anon_logger, python_logger
+from tests.testbench.logger import anon_logger, cleanup_old_logs, python_logger
+from tests.testbench.pipeline import diagnostics_store
 from tests.testbench.routers import (
     chat_router,
     config_router,
+    diagnostics_router,
     health_router,
+    judge_router,
     memory_router,
     persona_router,
     session_router,
+    snapshot_router,
     stage_router,
     time_router,
 )
@@ -85,26 +90,69 @@ def create_app() -> FastAPI:
     async def _unhandled_exception_handler(request: Request, exc: Exception):
         """Turn uncaught exceptions into structured JSON.
 
-        A full stack trace goes to stderr (through :mod:`logging`); a
-        short digest rides the HTTP response so the browser can show a
-        friendly toast. P19 will extend this by also pushing the record
-        into the Diagnostics → Errors list.
+        Three sinks each get the record so no single failure loses it:
+
+        1. ``python_logger().exception`` — full stack goes to stderr via
+           Python logging, survives even if the client disconnects.
+        2. ``SessionLogger`` (or anon logger if no session) — per-session
+           JSONL on disk, what the Diagnostics → Logs subpage tails.
+        3. :mod:`pipeline.diagnostics_store` — process-level ring buffer
+           the Diagnostics → Errors subpage reads for "recent errors"
+           regardless of which session was active.
+
+        The response payload stays compact (``{error_type, message,
+        trace_digest, session_state}``) so the browser toast has
+        everything it needs; full trace lives on disk + ring buffer.
         """
         python_logger().exception("Unhandled exception on %s %s", request.method, request.url.path)
-        anon_logger().log_sync(
+        store = get_session_store()
+        session_state = store.get_state()
+        session_id = session_state.get("session_id") if isinstance(session_state, dict) else None
+        trace_digest = "\n".join(
+            traceback.format_exception(type(exc), exc, exc.__traceback__)[-4:]
+        )
+
+        # Route the JSONL entry to the live session logger when one exists
+        # so per-session Logs pages pick it up; else anon logger so the
+        # entry still lands on disk.
+        logger_target = None
+        try:
+            active_session = store.get()
+            if active_session is not None:
+                logger_target = active_session.logger
+        except Exception:  # noqa: BLE001 - never crash the error handler
+            logger_target = None
+        (logger_target or anon_logger()).log_sync(
             "http.unhandled_exception",
             level="ERROR",
             payload={"method": request.method, "path": request.url.path},
             error=f"{type(exc).__name__}: {exc}",
         )
-        store = get_session_store()
+
+        try:
+            diagnostics_store.record(
+                source="middleware",
+                type=type(exc).__name__,
+                message=str(exc) or "(no message)",
+                level="error",
+                session_id=session_id,
+                url=str(request.url.path),
+                method=request.method,
+                status=500,
+                trace_digest=trace_digest,
+                user_agent=request.headers.get("user-agent"),
+                detail={"query": str(request.url.query) or None},
+            )
+        except Exception:  # noqa: BLE001 - ring buffer push must not re-raise
+            python_logger().exception("diagnostics_store.record failed inside exception handler")
+
         return JSONResponse(
             status_code=500,
             content={
                 "error_type": type(exc).__name__,
                 "message": str(exc),
-                "trace_digest": "\n".join(traceback.format_exception(type(exc), exc, exc.__traceback__)[-4:]),
-                "session_state": store.get_state(),
+                "trace_digest": trace_digest,
+                "session_state": session_state,
             },
         )
 
@@ -116,12 +164,66 @@ def create_app() -> FastAPI:
     app.include_router(time_router.router)
     app.include_router(memory_router.router)
     app.include_router(chat_router.router)
+    app.include_router(judge_router.router)
     app.include_router(stage_router.router)
+    app.include_router(snapshot_router.router)
+    app.include_router(diagnostics_router.router)
+
+    # ── Log retention background task (P19) ─────────────────────────────
+    # Three triggers keep the JSONL log directory bounded:
+    #   1. Startup: run once so a long-idle testbench picks up the day it
+    #      missed. Sync call (no event loop at module import, but fine in
+    #      the FastAPI startup hook which runs after loop is up).
+    #   2. Periodic: every ``LOG_CLEANUP_INTERVAL_SECONDS`` (default 12h)
+    #      re-scan in case the process runs across midnight.
+    #   3. Manual: ``POST /api/diagnostics/logs/cleanup`` lets users force
+    #      it from the Logs subpage.
+    # Cancel the task cleanly on shutdown so uvicorn --reload doesn't leak
+    # background work across reloads.
+    app.state.log_cleanup_task = None
+
+    async def _periodic_log_cleanup() -> None:
+        try:
+            while True:
+                try:
+                    result = cleanup_old_logs()
+                    if result["deleted"]:
+                        python_logger().info(
+                            "log cleanup: removed %d file(s), freed %d bytes (retention=%d days)",
+                            result["deleted"], result["bytes_freed"], result["retention_days"],
+                        )
+                except Exception:  # noqa: BLE001 - never crash the task loop
+                    python_logger().exception("log cleanup pass failed")
+                await asyncio.sleep(tb_config.LOG_CLEANUP_INTERVAL_SECONDS)
+        except asyncio.CancelledError:
+            raise
+
+    @app.on_event("startup")
+    async def _startup_cleanup() -> None:
+        try:
+            result = cleanup_old_logs()
+            if result["deleted"]:
+                python_logger().info(
+                    "boot log cleanup: removed %d file(s), freed %d bytes (retention=%d days)",
+                    result["deleted"], result["bytes_freed"], result["retention_days"],
+                )
+        except Exception:  # noqa: BLE001 - never crash boot
+            python_logger().exception("boot log cleanup failed")
+        app.state.log_cleanup_task = asyncio.create_task(
+            _periodic_log_cleanup(), name="testbench-log-cleanup"
+        )
 
     # Shutdown hook: release the ConfigManager singleton + sandbox so a
     # subsequent uvicorn --reload cycle doesn't leave stale paths wired in.
     @app.on_event("shutdown")
     async def _shutdown_cleanup() -> None:
+        task = getattr(app.state, "log_cleanup_task", None)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
         try:
             await get_session_store().destroy(purge_sandbox=False)
         except Exception:  # noqa: BLE001 - best-effort cleanup on shutdown

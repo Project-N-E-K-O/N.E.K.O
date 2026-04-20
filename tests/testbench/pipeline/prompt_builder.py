@@ -586,6 +586,21 @@ def build_prompt_bundle(session: Session) -> PromptBundle:
         "built_at_real": datetime.now().isoformat(timespec="seconds"),
     }
 
+    # ── dispose managers that hold OS-level resources ──
+    # `TimeIndexedMemory` opens a SQLAlchemy engine per character when
+    # `get_last_conversation_time` is called during memory context
+    # assembly. The engine keeps an OS-level handle on `time_indexed.db`
+    # until its connection pool is disposed. Python GC would eventually
+    # do it, but on Windows the next rewind / reset rmtree can race the
+    # GC and fail with WinError 32. Dispose explicitly here — the
+    # manager is a throwaway local, we have no reason to keep its
+    # engines alive past this function.
+    try:
+        if time_manager is not None and hasattr(time_manager, "cleanup"):
+            time_manager.cleanup()  # closes all per-character engines
+    except Exception as exc:  # noqa: BLE001 - best-effort cleanup
+        warnings.append(f"TimeIndexedMemory.cleanup 失败: {exc}")
+
     return PromptBundle(
         session_id=session.id,
         structured=structured_for_ui,
