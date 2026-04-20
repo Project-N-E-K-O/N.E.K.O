@@ -367,7 +367,7 @@
         "default": "По умолчанию",
         "noVoiceSelected": "Голос не выбран",
         "noDescription": "Нет описания",
-            "characterSettingsFile": "Файл настроек персонажа",
+        "characterSettingsFile": "Файл настроек персонажа",
         "workshopAgreementText": "Нажимая «Загрузить», вы соглашаетесь с условиями использования Мастерской Steam, включая юридическое соглашение Мастерской:",
         "alreadyUploaded": "Загружено в Мастерскую",
         "uploadTime": "Время загрузки",

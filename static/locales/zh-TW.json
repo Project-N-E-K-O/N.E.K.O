@@ -367,7 +367,7 @@
         "default": "默認",
         "noVoiceSelected": "未選擇音色",
         "noDescription": "暫無描述",
-            "characterSettingsFile": "角色設定檔",
+        "characterSettingsFile": "角色設定檔",
         "workshopAgreementText": "點擊\"上傳\"即錶示您同意 Steam 創意工坊服務條款，包括創意工坊法律協議：",
         "alreadyUploaded": "已上傳到創意工坊",
         "uploadTime": "上傳時間",

@@ -367,7 +367,7 @@
         "default": "デフォルト",
         "noVoiceSelected": "ボイスが選択されていません",
         "noDescription": "説明なし",
-            "characterSettingsFile": "キャラクター設定ファイル",
+        "characterSettingsFile": "キャラクター設定ファイル",
         "workshopAgreementText": "「アップロード」をクリックすることで、ワークショップ法的使用許諾契約を含むSteamワークショップ利用規約に同意したことになります：",
         "alreadyUploaded": "ワークショップにアップロード済み",
         "uploadTime": "アップロード日時",
