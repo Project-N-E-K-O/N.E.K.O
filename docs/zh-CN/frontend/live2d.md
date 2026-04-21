@@ -31,9 +31,9 @@ N.E.K.O. 使用 Cubism SDK 通过 Pixi.js 渲染 Live2D 模型。模型显示在
 | 模块 | 用途 |
 |------|------|
 | `live2d-ui-buttons.js` | 控制按钮（模型切换、设置） |
-| `live2d-ui-drag.js` | 模型位置的拖拽和缩放 |
-| `live2d-ui-hud.js` | 平视显示叠加层 |
-| `live2d-ui-popup.js` | 弹出对话框和菜单 |
+| `avatar-ui-drag.js` | 模型位置的拖拽和缩放（与 VRM/MMD 共用） |
+| `common-ui-hud.js` | 平视显示叠加层（通用，适用于所有角色类型） |
+| `avatar-ui-popup.js` | 弹出对话框和菜单（与 VRM/MMD 共用） |
 
 ## 模型管理页面
 

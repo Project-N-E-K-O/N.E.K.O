@@ -214,6 +214,18 @@
     // =====================================================================
 
     /**
+     * Capability check: does the current page host the full model UI?
+     * index.html (served at / and /{lanlan_name}) has live2d-container,
+     * vrm-container AND mmd-container. Other pages (chat, subtitle, etc.)
+     * lack the complete set and must not run model reload / hide / show.
+     */
+    function _isModelHostPage() {
+        return !!(document.getElementById('live2d-container')
+              && document.getElementById('vrm-container')
+              && document.getElementById('mmd-container'));
+    }
+
+    /**
      * Handle model hot-swap triggered from another tab (model_manager).
      *
      * Concurrency-safe: if a reload is already in flight, the new request
@@ -223,6 +235,13 @@
      */
     async function handleModelReload(targetLanlanName) {
         targetLanlanName = targetLanlanName || '';
+
+        // 只有承载完整模型 UI 的页面才处理重载；Chat 等子窗口缺少渲染容器，
+        // 执行会导致异常并弹出误导性的"模型切换失败"toast。
+        if (!_isModelHostPage()) {
+            console.log('[Model] 当前页面无模型容器，跳过模型重载');
+            return;
+        }
 
         // If the message targets a different character, ignore it
         var currentLanlanName = window.lanlan_config?.lanlan_name || '';
@@ -441,6 +460,15 @@
                                 });
                             }
                         }
+
+                        // 重启 UI 更新循环（被 handleHideMainUI 停止）。
+                        // handleShowMainUI 在 _modelReloadInFlight 为 true 时会跳过，
+                        // 因此必须在模型加载完成后手动重启，否则悬浮按钮不会重新出现。
+                        if (window.vrmManager && window.vrmManager._uiUpdateLoopId == null
+                            && typeof window.vrmManager._startUIUpdateLoop === 'function') {
+                            window.vrmManager._snapUIPosition = true;
+                            window.vrmManager._startUIUpdateLoop();
+                        }
                     } else {
                         console.error('[Model] VRM 管理器初始化失败');
                     }
@@ -582,6 +610,15 @@
                             restoreMMDCanvasForLoadingSession(mmdCanvasReady, loadingSessionId);
                             mmdRequestSessionId = '';
                             activeMmdLoadingSessionId = '';
+                        }
+
+                        // 重启 UI 更新循环（被 handleHideMainUI 停止）。
+                        // handleShowMainUI 在 _modelReloadInFlight 为 true 时会跳过，
+                        // 因此必须在模型加载完成后手动重启，否则悬浮按钮不会重新出现。
+                        if (window.mmdManager && window.mmdManager._uiUpdateLoopId == null
+                            && typeof window.mmdManager._startUIUpdateLoop === 'function') {
+                            window.mmdManager._snapUIPosition = true;
+                            window.mmdManager._startUIUpdateLoop();
                         }
                     } else {
                         console.error('[Model] MMD 管理器初始化失败');
@@ -760,6 +797,7 @@
      * Hide main-page model rendering (entering model manager).
      */
     function handleHideMainUI() {
+        if (!_isModelHostPage()) return;
         console.log('[UI] 隐藏主界面并暂停渲染');
 
         try {
@@ -840,6 +878,7 @@
      * Show main-page model rendering (returning to main page).
      */
     function handleShowMainUI() {
+        if (!_isModelHostPage()) return;
         // 模型重载进行中时跳过：handleModelReload 自己会正确切换容器，
         // 此时 lanlan_config.model_type 尚未更新，handleShowMainUI 会
         // 错误地恢复旧模型类型的容器，导致需要切换两次才能成功。

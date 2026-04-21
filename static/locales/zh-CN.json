@@ -42,6 +42,25 @@
         "toneMappingAgX": "AgX",
         "toneMappingNeutral": "Neutral"
     },
+    "autostartPrompt": {
+        "title": "要不要让 N.E.K.O 开机自动启动？",
+        "message": "这样下次打开电脑后，N.E.K.O 会自动准备好，不用你再手动启动。",
+        "note": "只会为当前用户开启，之后也可以随时关闭。",
+        "startNow": "开启自启动",
+        "later": "稍后再说",
+        "never": "不再提示",
+        "enableFailed": "暂时无法开启开机自启动，请稍后再试",
+        "requiresApproval": "需要先在系统设置里批准开机自启动，批准后会自动生效"
+    },
+    "tutorialPrompt": {
+        "title": "要不要开始主页新手引导？",
+        "message": "我可以带你快速认识主页上的核心入口，用最短路径上手 N.E.K.O。",
+        "note": "整个过程随时都可以跳过，也可以之后再从记忆浏览里重新打开。",
+        "startNow": "开始引导",
+        "later": "稍后再说",
+        "never": "不再提示",
+        "startFailed": "暂时无法开始新手引导，请稍后再试"
+    },
     "characterProfile": {
         "gender": "性别",
         "age": "年龄",
@@ -160,6 +179,7 @@
         "uploadReady": "准备上传 {{itemName}}",
         "pageDescription": "通过此页面，您可以浏览、订阅、下载和管理Steam创意工坊中的Live2D模型和声音",
         "voiceNote": "如有语音音色请前往live2d设置页面手动注册",
+        "openVoiceClone": "在语音克隆页打开",
         "searchLocalItems": "搜索本地物品...",
         "scanLocalItems": "扫描本地物品",
         "configurePath": "配置路径",
@@ -181,6 +201,15 @@
         "defaultTagMod": "模组",
         "defaultTagCharacter": "角色",
         "allowComments": "允许评论",
+        "voiceReferenceOptional": "参考语音（可选）",
+        "voiceReferenceNoFileSelected": "未选择文件",
+        "voiceReferenceHint": "订阅者会在语音克隆页自动带入这段样本，但不会自动注册音色。",
+        "voiceReferenceDisplayName": "参考语音展示名",
+        "voiceReferenceDisplayNamePlaceholder": "例如：猫娘柔和中文",
+        "voiceReferencePrefix": "默认前缀",
+        "voiceReferencePrefixPlaceholder": "英文字母和数字，最多10位",
+        "voiceReferenceLanguage": "参考语音语言",
+        "voiceReferenceProviderHint": "服务商建议",
         "uploadTip": "您可以在\"管理本地物品\"中选择物品自动填充路径，也可以直接手动输入内容文件夹和预览图片的完整路径。",
         "search": "搜索：",
         "uploadSuccess": "上传成功！",
@@ -338,7 +367,7 @@
         "default": "默认",
         "noVoiceSelected": "未选择音色",
         "noDescription": "暂无描述",
-            "characterSettingsFile": "角色设置文件",
+        "characterSettingsFile": "角色设置文件",
         "workshopAgreementText": "点击\"上传\"即表示您同意 Steam 创意工坊服务条款，包括创意工坊法律协议：",
         "alreadyUploaded": "已上传到创意工坊",
         "uploadTime": "上传时间",
@@ -507,6 +536,7 @@
         "RESPONSE_TIMEOUT": "💥 连接超时 (Response timeout)，语音对话已中断。",
         "CONNECTION_TIMEOUT": "💥 连接超时，请检查网络连接。",
         "RESPONSE_TOO_LONG": "回复过长，已放弃输出（可在配置中调大 TEXT_GUARD_MAX_LENGTH）",
+        "INPUT_TOO_LONG": "输入过长，请精简后重试",
         "RESPONSE_INVALID": "AI回复不符合要求，已放弃输出",
         "NO_USER_MESSAGE": "⚠️ 对话历史中没有用户消息，无法生成回复",
         "LLM_RETRY": "⚠️ LLM {{error_type}}，正在重试（{{attempt}}/{{max_retries}}）...",
@@ -556,6 +586,8 @@
         "tooltip": "对话区",
         "textInputPlaceholder": "回车发送，Shift+回车换行",
         "send": "发送",
+        "inputTooLong": "消息过长（{{count}}/{{max}}），请精简后重试",
+        "responseTooLong": "唔主人你让人家想太多了，人家想不过来了啦！",
         "importImage": "导入图片",
         "importImageAriaLabel": "导入图片",
         "screenshot": "截图",
@@ -617,6 +649,10 @@
         "pendingImageAlt": "图片 {{index}}",
         "removePendingImage": "移除图片",
         "emojiButtonAriaLabel": "表情",
+        "toolIconsAriaLabel": "工具图标",
+        "toolLollipop": "棒棒糖",
+        "toolFist": "猫爪",
+        "toolHammer": "锤子",
         "attachmentButtonAriaLabel": "附件",
         "jukebox": "点歌台",
         "jukeboxLabel": "点歌台",
@@ -951,6 +987,12 @@
         "customApiWarning": "注意：启用自定义API后，核心API和辅助API将被部分覆盖。",
         "enableCustomApi": "启用自定义API配置",
         "enableCustomApiNote": "启用后将使用自定义API配置，部分覆盖核心API和辅助API的配置",
+        "clearCustomApi": "清空自定义API配置",
+        "clearCustomApiConfirm": "确定要清空所有自定义API配置吗？这将清除所有自定义API Key、模型ID、URL，并取消勾选GPT-SoVITS。",
+        "clearCustomApiConfirmTitle": "⚠️ 确认清空",
+        "clearCustomApiConfirmBtn": "确认清空",
+        "clearCustomApiSaveHint": "⚠ 此操作仅清空页面上的配置内容，保存清空结果仍需点击下方的「保存设置」按钮。",
+        "clearCustomApiSuccess": "自定义API配置已清空，请点击「保存设置」按钮以保存更改",
         "loadProvidersFailed": "加载API服务商选项失败，请刷新页面重试",
         "saveFailed": "保存失败: {{error}}",
         "apiKeyInvalid": "API Key无效",
@@ -1331,6 +1373,14 @@
         "deleteError": "删除失败：{{error}}",
         "freePresetLabel": "免费预设音色",
         "freePresetBadge": "预设",
+        "workshopSourceBadge": "创意工坊参考语音",
+        "workshopSourceTitle": "创意工坊参考语音",
+        "workshopSourceLoading": "正在加载参考语音...",
+        "workshopSourceUnavailable": "该工坊物品没有可用的参考语音",
+        "workshopSourceMeta": "样本：{{sample}} ｜ 前缀：{{prefix}} ｜ 语言：{{language}}",
+        "workshopSourceReady": "参考语音已预载入，提交时将走文件上传克隆流程。",
+        "workshopSourceLoadFailed": "加载工坊参考语音失败",
+        "workshopPreloaded": "（创意工坊预载入）",
         "freeVoice": {
             "playfulGirl": "俏皮女孩",
             "cuteGirl": "可爱女孩",
@@ -1441,6 +1491,7 @@
         "detailDescriptionPlaceholder": "可输入详细描述",
         "catgirlProfile": "猫娘档案：进阶设定包含Live2D形象、语音ID等。",
         "addCatgirl": "新增猫娘",
+        "openCloudsaveManager": "云存档管理",
         "switchCatgirl": "切换猫娘",
         "deleteCatgirl": "删除猫娘",
         "hideCatgirl": "隐藏此猫娘",
@@ -1477,6 +1528,7 @@
         "cannotConfirmCatgirlStatus": "无法确认当前猫娘状态，删除操作已取消",
         "confirmDeleteCatgirl": "确定要删除猫娘\"{{name}}\"？",
         "deleteCatgirlTitle": "删除猫娘",
+        "deleteFailed": "删除失败",
         "addCatgirlFieldPrompt": "请输入新设定的名称（键名）",
         "addCatgirlFieldTitle": "新增猫娘设定",
         "live2dModelError": "猫娘\"{{name}}\"的Live2D模型文件不存在或已损坏。\n\n当前模型路径: {{path}}\n\n是否回退到默认模型(mao_pro)？\n\n点击\"确定\"使用默认模型，点击\"取消\"保持当前设置。",
@@ -1517,6 +1569,7 @@
         "saveMasterError": "保存主人设定失败",
         "autoSaved": "已自动保存设定",
         "autoSaveFailed": "自动保存失败，请手动保存后再关闭页面",
+        "unsavedNewCatgirlDraftDetected": "检测到未保存的新猫娘草稿，请先保存或取消后再同步刷新",
         "exportCard": "导出角色卡",
         "exportingCard": "正在导出角色卡...",
         "exportCardSuccess": "角色卡导出成功",
@@ -1561,6 +1614,7 @@
         "initializingVoice": "正在初始化语音对话...",
         "initializingMic": "正在初始化麦克风...",
         "startFailed": "启动失败: {{error}}",
+        "sendFailed": "发送失败: {{error}}",
         "sessionEnded": "会话已结束",
         "returning": "{{name}}回来了！正在重新连接...",
         "websocketNotConnected": "WebSocket未连接！",
@@ -1631,6 +1685,255 @@
         "return": "请她回来",
         "micMute": "静音麦克风",
         "micUnmute": "取消静音"
+    },
+    "cloudsave": {
+        "pageTitle": "云存档管理 - Project N.E.K.O.",
+        "headerTitle": "云存档管理",
+        "subtitle": "可按角色逐个生成或恢复本地云快照，不会自动覆盖全局配置。若通过 Steam 启动并正常退出，Steam Cloud 会自动上传该快照目录。",
+        "refresh": "刷新",
+        "backToCharacterManager": "返回",
+        "loadingSummary": "云存档摘要加载中...",
+        "emptyState": "当前没有可展示的角色摘要。",
+        "providerAvailable": "云存档功能可用，可以手动生成或恢复单个角色快照。",
+        "providerUnavailable": "云存档当前不可用，页面只展示本地摘要。",
+        "providerSteamAutoCloudReady": "Steam Cloud 已连接。上传会立即写入本地云快照，等你通过 Steam 退出游戏后，Steam 会自动把该快照上传到云端。",
+        "providerSteamAutoCloudOffline": "本地云快照当前可用，但 Steam Cloud 还没有连接。若希望 Steam 自动上传或下载快照，请确保从 Steam 启动游戏并保持已登录状态。",
+        "providerSteamAutoCloudSourceLaunch": "当前会话是源码启动。如果 Steam 正在运行且已登录，桌面端 RemoteStorage helper 可以辅助完成 cloudsave 下载和上传；但这条链路仍不等同于打包版的 Steam Auto-Cloud 主路径。若要验证生产态路径，请至少通过 Steam 或桌面启动器启动一次。",
+        "providerSnapshotScope": "当前页面展示的是这台设备上已经落地的 cloudsave 暂存快照。",
+        "providerSnapshotSequence": "快照序号：{{sequence}}。",
+        "providerSnapshotExportedAt": "导出时间：{{time}}。",
+        "providerSnapshotManualApply": "这台设备上已经有更新的暂存快照，但运行时数据仍需你手动点击“应用快照”后才会变化。",
+        "currentCharacter": "当前角色：{{name}}",
+        "noCurrentCharacter": "当前角色：未设置",
+        "nameConflictNotice": {
+            "title": "重名提醒",
+            "bodyStorage": "云存档按角色名作为单个角色槽位存储，不会因为“来自创意工坊”或“自创角色”而自动分开。",
+            "bodyImpact": "如果两个不同来源的角色重名，上传或下载都会按同一个云端角色处理，可能互相覆盖角色设置、记忆目录和云端记录。",
+            "bodyAction": "准备同步前，请先确认角色名唯一；若不是同一个角色，请先改名再上传或下载。"
+        },
+        "group": {
+            "count": "{{count}} 项",
+            "workshopTitle": "创意工坊来源角色",
+            "workshopDescription": "这里集中展示本地或云端任一侧已确认来源于 Steam 创意工坊的角色。仅仅把当前模型切换为创意工坊资源，不会把自建角色归入这里。",
+            "otherTitle": "我的角色",
+            "otherDescription": "这里展示自建角色或其他非创意工坊来源的角色。当前模型资源来源会在详情中单独显示。"
+        },
+        "resourceRecoveryTitle": "资源恢复说明",
+        "metaNoValue": "无",
+        "warning": {
+            "local_resource_missing_on_this_device": "本地当前就缺资源：当前设备本地缺少该角色所需模型资源，请按上方资源来源提示恢复。",
+            "cloud_resource_may_be_missing_after_download": "云端下载后可能缺资源：该角色下载到当前设备后，模型资源可能仍需按来源手动恢复。"
+        },
+        "modelType": {
+            "live2d": "Live2D",
+            "vrm": "VRM",
+            "live3d": "VRM",
+            "mmd": "MMD",
+            "unknown": "未知模型"
+        },
+        "assetSource": {
+            "notRecorded": "未记录",
+            "steamWorkshop": "Steam 创意工坊",
+            "localImported": "本地导入模型",
+            "manualExternal": "外部模型引用",
+            "builtin": "内置资源"
+        },
+        "relationState": {
+            "local_only": "仅本地存在",
+            "cloud_only": "仅云端存在",
+            "matched": "本地与云端一致",
+            "diverged": "本地与云端有差异",
+            "unknown": "未知状态"
+        },
+        "assetState": {
+            "notRecorded": "未记录",
+            "ready": "资源可直接使用",
+            "import_required": "需要手动导入资源",
+            "downloadable": "当前缺少资源，请结合创意工坊来源状态判断",
+            "missing": "仅配置已恢复，资源缺失"
+        },
+        "workshopStatus": {
+            "notConfirmed": "未确认",
+            "installed_and_subscribed": "已安装且仍订阅",
+            "installed_but_unsubscribed": "本地仍有缓存，但已取消订阅",
+            "subscribed_not_installed": "已订阅，等待或需要下载",
+            "available_needs_resubscribe": "条目仍可访问，但需要重新订阅",
+            "unavailable": "条目已不可访问",
+            "steam_unavailable": "当前无法连接 Steam，未确认",
+            "unknown": "当前未确认"
+        },
+        "badge": {
+            "local": "本地：{{value}}",
+            "cloud": "云端：{{value}}"
+        },
+        "scopePrefix": {
+            "localReady": "本地资源仍可用",
+            "cloudReady": "当前设备已有对应的创意工坊资源",
+            "localMissing": "本地资源缺失",
+            "cloudAfterDownload": "云端下载后"
+        },
+        "guidance": {
+            "workshopReadyResubscribe": {
+                "title": "{{prefix}}，但当前不在有效订阅状态",
+                "bodyLocal": "当前设备还能直接使用这套本地 Steam 创意工坊资源；但如果以后本地缓存丢失，通常需要重新订阅对应条目后，才能再次恢复。",
+                "bodyCloud": "当前设备已有这套 Steam 创意工坊资源可直接使用；但如果以后本地缓存丢失，通常需要先重新订阅对应条目，才能再次恢复。"
+            },
+            "workshopReadyUnavailable": {
+                "title": "{{prefix}}，但原 Steam 创意工坊条目可能已删除或下架",
+                "body": "当前设备已有资源，所以角色现在还能正常使用；但如果以后本地缓存丢失，通常无法再通过创意工坊自动恢复，只能依赖你自己的备份或手动导入。"
+            },
+            "workshopInstalled": {
+                "title": "{{prefix}}：当前设备仍有有效的创意工坊资源",
+                "bodyLocal": "当前设备仍检测到该 Steam 创意工坊条目已安装且仍订阅，但角色绑定的模型文件未命中。可能是资源目录变化、更新未完成，或需要重新同步模型。",
+                "bodyCloud": "当前设备仍检测到该 Steam 创意工坊条目已安装且仍订阅。下载角色数据后，通常可通过现有恢复链路补齐；如果仍未恢复，可能需要重新同步模型。"
+            },
+            "workshopCacheOnly": {
+                "title": "{{prefix}}：设备可能只剩旧缓存，且已取消订阅",
+                "bodyLocal": "当前设备不在订阅状态，且当前绑定文件未命中。若这份旧缓存也不可用，通常需要重新订阅或手动导入模型，不能再把它当成稳定的自动恢复来源。",
+                "bodyCloud": "当前设备不在订阅状态。下载角色数据后，若本机旧缓存不足以恢复模型，通常需要重新订阅对应的创意工坊条目，或改为手动导入模型。"
+            },
+            "workshopSubscribed": {
+                "title": "{{prefix}}：当前设备仍已订阅对应创意工坊条目",
+                "bodyLocal": "当前设备仍订阅该创意工坊条目，等待 Steam 下载完成后通常可恢复；如果长时间未恢复，可能是条目结构变化或需要重新同步模型。",
+                "bodyCloud": "当前设备仍订阅该创意工坊条目。下载角色数据后，待 Steam 下载完成，通常可以继续恢复模型资源。"
+            },
+            "workshopResubscribe": {
+                "title": "{{prefix}}：需要重新订阅原创意工坊条目",
+                "bodyLocal": "该角色原本来自 Steam 创意工坊，但当前设备已不在订阅状态。若条目仍可访问，需要先重新订阅，再尝试恢复模型资源。",
+                "bodyCloud": "该云端角色原本来自 Steam 创意工坊，但当前设备未订阅该条目。下载角色数据后，需要先重新订阅，才能尝试恢复模型资源。"
+            },
+            "workshopUnavailable": {
+                "title": "{{prefix}}：该创意工坊条目当前已不可访问",
+                "bodyLocal": "该角色原本来自 Steam 创意工坊，但对应条目已删除、下架或当前不可访问。当前设备不能再按创意工坊自动恢复，只能依赖手动备份或重新导入模型资源。",
+                "bodyCloud": "该云端角色原本来自 Steam 创意工坊，但对应条目已删除、下架或当前不可访问。下载角色数据后，通常无法再按创意工坊自动恢复模型。"
+            },
+            "workshopSteamUnavailable": {
+                "title": "{{prefix}}：当前无法确认创意工坊资源是否还能恢复",
+                "body": "Steam 当前不可用、未登录，或 Steamworks 尚未初始化。等 Steam 恢复后，才能确认该条目是仍可重新下载，还是已经不可用。"
+            },
+            "workshopUnknown": {
+                "title": "{{prefix}}：创意工坊恢复状态未确认",
+                "body": "当前还不能确认这个创意工坊条目是否仍可恢复，建议先在创意工坊页核对订阅状态和条目可用性。"
+            },
+            "localManualImport": {
+                "title": "本地资源：需要手动导入本地模型",
+                "body": "当前设备缺少该角色所需的本地导入或外部模型，需要你手动导入或移动模型文件。"
+            },
+            "cloudManualImport": {
+                "title": "云端下载后：需要手动导入本地模型",
+                "body": "该云端角色依赖本地导入或外部模型。下载到当前设备后，需要你手动导入或移动对应模型文件。"
+            },
+            "localManualSource": {
+                "title": "当前角色使用的是本地或手动模型",
+                "body": "云存档只会同步角色数据，不会带上当前这套本地导入或外部模型文件。其他设备若要保持当前外观，仍需要你自己准备并导入模型。"
+            },
+            "localModifiedModel": {
+                "title": "如果你给角色改过模型，需要注意",
+                "body": "如果这是你给原本可由创意工坊恢复的角色换过的模型，现在也按“需要手动导入本地模型”处理。上传后，其他设备下载这个角色时仍需要你自己补回这套模型文件。"
+            },
+            "cloudManualSource": {
+                "title": "云端角色当前记录的是本地或手动模型",
+                "body": "下载这个云端角色时，只会恢复角色数据，不会带上当前记录的本地导入或外部模型文件。当前设备仍需要你自己准备并导入对应模型。"
+            },
+            "localWorkshopOrigin": {
+                "title": "这个角色最初来自 Steam 创意工坊",
+                "body": "当前仍能匹配到对应的创意工坊角色来源，但现在绑定的模型已经是当前设备上的本地或手动模型，而不是创意工坊路径。云存档只会同步角色数据，不会上传当前这套模型文件。如果其他设备也要保留现在这套外观，需要你手动导入模型；如果想恢复为创意工坊自动恢复链路，请切回上方显示的创意工坊条目。"
+            },
+            "cloudWorkshopOrigin": {
+                "title": "这个云端角色最初来自 Steam 创意工坊",
+                "body": "这个云端角色是从创意工坊角色上传来的，但当前记录的模型已经是本地或手动模型，而不是创意工坊路径。下载后只会恢复角色数据；如果其他设备也要保留当前这套模型，需要你手动准备模型文件，并同时检查上方显示的创意工坊来源状态。"
+            },
+            "sourceDiverged": {
+                "title": "本地模型来源已不同于云端",
+                "body": "本地当前用的是手动导入或外部模型，而云端记录仍是 Steam 创意工坊来源。若继续上传，云端也会改为只同步角色数据、不包含模型文件。"
+            }
+        },
+        "hint": {
+            "uploadResubscribe": "\n当前本地角色虽然仍使用创意工坊资源，但当前设备已不在有效订阅状态。其他设备下载这个角色后，可能需要重新订阅对应条目，才能恢复模型。",
+            "uploadUnavailable": "\n当前本地角色虽然仍能使用这套创意工坊资源，但原条目已不可访问。其他设备下载这个角色后，通常无法再通过创意工坊自动恢复模型。",
+            "uploadUnconfirmed": "\n当前本地角色来自 Steam 创意工坊，但现在还不能确认其他设备是否仍可通过创意工坊恢复模型。",
+            "uploadOriginResubscribe": "\n该角色原本来自 Steam 创意工坊，但当前绑定模型已经是本地或手动模型。其他设备若要保留当前外观，仍需要你准备这套模型文件；如果之后还想恢复原始创意工坊来源，通常还需要重新订阅对应条目。",
+            "uploadOriginUnavailable": "\n该角色原本来自 Steam 创意工坊，但原条目已不可访问，当前绑定模型也已经是本地或手动模型。其他设备若要保留当前外观，仍需要你准备这套模型文件，而且通常也无法再通过创意工坊自动恢复原始来源。",
+            "uploadOriginUnconfirmed": "\n该角色原本来自 Steam 创意工坊，但当前绑定模型已经是本地或手动模型。其他设备若要保留当前外观，仍需要你准备这套模型文件，同时当前也还不能确认原始创意工坊条目是否仍可恢复。",
+            "downloadResubscribe": "\n该云端角色原本来自 Steam 创意工坊，但当前设备不在有效订阅状态。下载后通常需要先重新订阅对应条目，才能恢复模型。",
+            "downloadUnavailable": "\n该云端角色原本来自 Steam 创意工坊，但当前条目已不可访问。下载后通常无法再通过创意工坊自动恢复模型。",
+            "downloadUnconfirmed": "\n该云端角色原本来自 Steam 创意工坊，但当前还不能确认该条目是否仍可恢复。",
+            "downloadOriginResubscribe": "\n该云端角色原本来自 Steam 创意工坊，但当前记录的绑定模型已经是本地或手动模型。下载后你仍需要自己准备当前这套模型文件；如果之后还想恢复原始创意工坊来源，通常还需要重新订阅对应条目。",
+            "downloadOriginUnavailable": "\n该云端角色原本来自 Steam 创意工坊，但原条目已不可访问，当前记录的绑定模型也已经是本地或手动模型。下载后你仍需要自己准备当前这套模型文件，而且通常也无法再通过创意工坊自动恢复原始来源。",
+            "downloadOriginUnconfirmed": "\n该云端角色原本来自 Steam 创意工坊，但当前记录的绑定模型已经是本地或手动模型。下载后你仍需要自己准备当前这套模型文件，同时当前也还不能确认原始创意工坊条目是否仍可恢复。"
+        },
+        "confirm": {
+            "uploadOverwrite": "这会覆盖本地云快照中同名角色的记录，不会立刻改动本地角色，也不会包含模型资源本体。",
+            "uploadNew": "这会把本地该角色写入本地云快照缓存，不会包含模型资源本体。",
+            "uploadManualAsset": "\n当前本地角色使用的是手动导入或外部模型。上传后，其他设备下载这个角色时仍需要你自己导入这套模型文件。",
+            "uploadFinal": "\n确定继续生成 Steam Cloud 快照吗？",
+            "downloadOverwrite": "这会使用当前设备上已同步到本地的云快照，覆盖本地同名角色配置和记忆目录，不会自动下载模型资源，并会先创建本地备份。",
+            "downloadNew": "这会把当前设备上已同步到本地的云快照恢复到本地，不会自动下载模型资源，并会先创建本地备份。",
+            "downloadManualAsset": "\n该云端角色依赖手动导入或外部模型。下载后，如当前设备没有这套模型文件，仍需要你手动导入或移动资源。",
+            "downloadFinal": "\n确定继续从 Steam Cloud 快照恢复吗？",
+            "forceTerminateSession": "该角色 \"{{name}}\" 当前有活跃会话。\n终止会话后，当前对话内容将丢失，但云存档下载可以继续。\n\n是否终止会话并继续下载？"
+        },
+        "dialog": {
+            "providerUnavailable": "云存档提供方当前不可用，请稍后再试。",
+            "uploadTitle": "上传云存档",
+            "downloadTitle": "下载云存档",
+            "uploadSuccess": "上传成功。",
+            "downloadSuccess": "下载成功。",
+            "uploadTitleSteamAutoCloud": "生成 Steam Cloud 快照",
+            "downloadTitleSteamAutoCloud": "应用 Steam Cloud 快照",
+            "uploadSuccessSteamAutoCloud": "本地云快照已更新。等你通过 Steam 退出游戏后，Steam 会自动把它上传到云端。",
+            "downloadSuccessSteamAutoCloud": "Steam Cloud 快照已恢复到本地。",
+            "operationFailed": "操作失败：{{message}}",
+            "operationInProgress": "该角色的操作正在进行中，请稍等。",
+            "rollbackApplied": "\n本地数据已自动回滚到操作前状态。",
+            "rollbackFailed": "\n回滚也失败了：{{message}}",
+            "loadFailed": "加载云存档摘要失败：{{message}}",
+            "stateChanged": "云存档状态已变化，页面已刷新，请先确认最新状态后再重试。",
+            "forceTerminateTitle": "终止会话并继续？"
+        },
+        "action": {
+            "expandDetails": "展开详情",
+            "collapseDetails": "收起详情",
+            "uploadDisabledByProvider": "暂不可生成快照",
+            "uploadOverwrite": "生成快照",
+            "uploadNew": "生成快照",
+            "uploadUnavailable": "暂不可生成快照",
+            "downloadDisabledByProvider": "暂不可应用快照",
+            "downloadOverwrite": "应用快照",
+            "downloadNew": "应用快照",
+            "downloadUnavailable": "暂不可应用快照"
+        },
+        "meta": {
+            "groupLocal": "本地状态",
+            "groupCloud": "云端状态",
+            "localAssetState": "本地资源状态",
+            "localAssetSource": "本地资源来源",
+            "localWorkshopStatus": "本地当前状态",
+            "localCharacterOrigin": "本地角色来源",
+            "localOriginWorkshopStatus": "本地角色来源和当前状态",
+            "cloudAssetState": "云端资源状态",
+            "cloudAssetSource": "云端资源来源",
+            "cloudWorkshopStatus": "云端当前状态",
+            "cloudCharacterOrigin": "云端角色来源",
+            "cloudOriginWorkshopStatus": "云端角色来源和当前状态",
+            "localUpdatedAt": "本地更新时间",
+            "cloudUpdatedAt": "云端更新时间"
+        },
+        "error": {
+            "providerUnavailable": "云存档提供方当前不可用。",
+            "activeSessionBlocked": "该角色存在活跃会话，请先停止会话后再下载。",
+            "memoryServerReleaseFailed": "下载覆盖前释放本地记忆句柄失败，请稍后重试。",
+            "localCharacterNotFound": "未找到本地角色。",
+            "cloudCharacterNotFound": "未找到云端角色。",
+            "localCharacterExists": "本地已存在同名角色。",
+            "cloudCharacterExists": "云端已存在同名角色。",
+            "writeFenceActive": "云存档维护态写保护仍在生效，请稍后重试。",
+            "nameAuditFailed": "角色名称未通过云存档校验规则。",
+            "uploadFailed": "上传失败：{{message}}",
+            "downloadFailed": "下载失败：{{message}}",
+            "localReloadFailedRolledBack": "下载结果不保证已生效。",
+            "sessionTerminateFailed": "终止活跃会话失败，请稍后重试。"
+        }
     },
     "settings": {
         "menu": {
@@ -1727,7 +2030,7 @@
     "openclawGuide": {
         "windowTitle": "OpenClaw 接入教程 - N.E.K.O.",
         "pageTitle": "OpenClaw 接入教程",
-        "pageSubtitle": "把 OpenClaw 安装、通道放置、健康检查与 N.E.K.O 配置串起来，按一条路径接通。",
+        "pageSubtitle": "把 QwenPaw 安装、模型配置、替换文件与 N.E.K.O 配置串起来，按一条路径接通。",
         "sourceLabel": "教程来源",
         "contentLanguageNotice": "语言切换会同时更新页面控件文案和正文内容。",
         "languageLabel": "语言",
@@ -1737,7 +2040,17 @@
         "title": "实时字幕",
         "enable": "字幕翻译",
         "enableAriaLabel": "字幕翻译开关",
-        "markdownPlaceholder": "[格式化内容]"
+        "markdownPlaceholder": "[格式化内容]",
+        "settings": {
+            "targetLang": "目标语言",
+            "opacity": "不透明度",
+            "dragAnywhere": "整体拖动",
+            "size": "大小",
+            "sizeSmall": "小",
+            "sizeMedium": "中",
+            "sizeLarge": "大",
+            "settingsBtn": "字幕设置"
+        }
     },
     "viewer": {
         "title": "Viewer - Project N.E.K.O."
@@ -2927,6 +3240,7 @@
         "selectedActions": "已选择 {{count}} 个动画",
         "selectedSeparator": "，",
         "selectedInfo": "已选择 {{songCount}} 首歌曲，{{actionCount}} 个动画",
+        "bindingsSelected": "绑定页已选 {{bindingSongCount}} 首歌曲、{{bindingActionCount}} 个动画；绑定集合共 {{bundleSongCount}} 首歌曲、{{bundleActionCount}} 个动画",
         "missing": "缺失",
         "unknownError": "未知错误",
         "calibration": "校准动画",
@@ -2976,5 +3290,47 @@
     },
     "achievement": {
         "unlocked": "🏆 成就解锁: {{description}}"
+    },
+    "cardExport": {
+        "title": "角色卡导出",
+        "loadingModel": "正在加载模型...",
+        "selectCharacter": "选择角色",
+        "selectCharacterHint": "-- 请选择角色 --",
+        "loading": "加载中...",
+        "preview": "卡片预览",
+        "adjustHint": "拖拽调整位置，滚轮缩放",
+        "composition": "构图调整",
+        "offsetX": "水平偏移",
+        "offsetY": "垂直偏移",
+        "scale": "缩放",
+        "resetComposition": "重置构图",
+        "refreshPreview": "刷新预览",
+        "rotation": "旋转",
+        "modelTab": "模型调整",
+        "decorTab": "装饰",
+        "stickerPick": "选择贴纸",
+        "stickerAdjust": "贴纸调整",
+        "stickerWidth": "宽",
+        "stickerHeight": "高",
+        "lockRatio": "锁定比例",
+        "stickerRotation": "旋转",
+        "removeSticker": "删除选中",
+        "clearStickers": "清除全部",
+        "layers": "图层",
+        "modelLayer": "模型",
+        "sticker": "贴纸",
+        "exportFull": "导出角色卡",
+        "exportSettings": "仅导出设定",
+        "exporting": "导出中...",
+        "exportError": "导出失败: ",
+        "back": "返回",
+        "importSticker": "导入自定义贴纸",
+        "removeCustomSticker": "删除贴纸",
+        "stickerSizeTitle": "贴纸图片过大",
+        "stickerSizeWarning": "该图片较大（超过 5MB），压缩后可永久保存。\n选择「临时使用」将作为临时贴纸使用（关闭页面后消失）。",
+        "compressAndSave": "压缩并保存",
+        "useTemporary": "临时使用",
+        "tempBadge": "临时",
+        "popupBlocked": "弹窗被阻止，请允许弹窗后重试"
     }
 }

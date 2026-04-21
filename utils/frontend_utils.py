@@ -18,8 +18,6 @@ import os
 import logging
 import locale
 from datetime import datetime
-from pathlib import Path
-import httpx
 
 
 chinese_char_pattern = re.compile(r'[\u4e00-\u9fff]+')
@@ -403,44 +401,6 @@ def find_models():
             logging.error(f"搜索目录 {search_root_dir} 时出错: {e}")
                 
     return found_models
-
-# --- 工具函数 ---
-async def get_upload_policy(api_key, model_name):
-    url = "https://dashscope.aliyuncs.com/api/v1/uploads"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-    params = {
-        "action": "getPolicy",
-        "model": model_name
-    }
-    async with httpx.AsyncClient() as client:
-        response = await client.get(url, headers=headers, params=params)
-        if response.status_code != 200:
-            raise Exception(f"获取上传凭证失败: {response.text}")
-        return response.json()['data']
-
-async def upload_file_to_oss(policy_data, file_path):
-    file_name = Path(file_path).name
-    key = f"{policy_data['upload_dir']}/{file_name}"
-    with open(file_path, 'rb') as file:
-        files = {
-            'OSSAccessKeyId': (None, policy_data['oss_access_key_id']),
-            'Signature': (None, policy_data['signature']),
-            'policy': (None, policy_data['policy']),
-            'x-oss-object-acl': (None, policy_data['x_oss_object_acl']),
-            'x-oss-forbid-overwrite': (None, policy_data['x_oss_forbid_overwrite']),
-            'key': (None, key),
-            'success_action_status': (None, '200'),
-            'file': (file_name, file)
-        }
-        async with httpx.AsyncClient() as client:
-            response = await client.post(policy_data['upload_host'], files=files)
-            if response.status_code != 200:
-                raise Exception(f"上传文件失败: {response.text}")
-    return f'oss://{key}'
-
 
 def _is_within(base: str, target: str) -> bool:
     """

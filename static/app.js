@@ -130,6 +130,14 @@ function init_app() {
         window.appButtons.init();
     }
 
+    if (window.appTutorialPrompt && window.appTutorialPrompt.init) {
+        window.appTutorialPrompt.init();
+    }
+
+    if (window.appAutostartPrompt && window.appAutostartPrompt.init) {
+        window.appAutostartPrompt.init();
+    }
+
     if (window.appChatAvatar && window.appChatAvatar.init) {
         window.appChatAvatar.init();
     }

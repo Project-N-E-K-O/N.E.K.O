@@ -27,6 +27,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from config import SETTING_PROPOSER_MODEL
+from utils.cloudsave_runtime import assert_cloudsave_writable
 from utils.config_manager import get_config_manager
 from utils.file_utils import (
     atomic_write_json,
@@ -185,6 +186,11 @@ class ReflectionEngine:
 
         promoted/denied 超过 _REFLECTION_ARCHIVE_DAYS 的条目自动移入归档文件。
         """
+        assert_cloudsave_writable(
+            self._config_manager,
+            operation="save",
+            target=f"memory/{name}/reflections.json",
+        )
         path = self._reflections_path(name)
         all_on_disk = []
         if os.path.exists(path):
@@ -220,6 +226,11 @@ class ReflectionEngine:
         atomic_write_json(path, merged, indent=2, ensure_ascii=False)
 
     async def asave_reflections(self, name: str, reflections: list[dict]) -> None:
+        assert_cloudsave_writable(
+            self._config_manager,
+            operation="save",
+            target=f"memory/{name}/reflections.json",
+        )
         path = self._reflections_path(name)
         all_on_disk = []
         if await asyncio.to_thread(os.path.exists, path):
@@ -281,9 +292,19 @@ class ReflectionEngine:
         return []
 
     def save_surfaced(self, name: str, surfaced: list[dict]) -> None:
+        assert_cloudsave_writable(
+            self._config_manager,
+            operation="save",
+            target=f"memory/{name}/surfaced.json",
+        )
         atomic_write_json(self._surfaced_path(name), surfaced, indent=2, ensure_ascii=False)
 
     async def asave_surfaced(self, name: str, surfaced: list[dict]) -> None:
+        assert_cloudsave_writable(
+            self._config_manager,
+            operation="save",
+            target=f"memory/{name}/surfaced.json",
+        )
         await atomic_write_json_async(self._surfaced_path(name), surfaced, indent=2, ensure_ascii=False)
 
     # ── synthesis ────────────────────────────────────────────────────

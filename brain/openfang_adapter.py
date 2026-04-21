@@ -22,6 +22,8 @@ from utils.config_manager import get_config_manager
 # OpenFang LLM proxy — 运行在 agent_server 上，补全 OpenAI 兼容性字段
 _LLM_PROXY_BASE_URL = f"http://127.0.0.1:{TOOL_SERVER_PORT}/openfang-llm-proxy"
 
+logger = logging.getLogger("openfang_adapter")
+
 # ── Provider 检测 ──────────────────────────────────────────
 # OpenFang 原生支持多种 provider: anthropic, openai, groq, gemini, deepseek, ollama 等
 # 根据用户配置的 agent API base_url 推断最合适的 provider 和是否需要 proxy
@@ -38,11 +40,33 @@ def _detect_provider_info(base_url: str, model: str) -> dict:
             "api_key_env": str,       # 环境变量名 (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)
         }
     """
-    url_lower = base_url.lower()
-    model_lower = model.lower()
+    from urllib.parse import urlsplit
 
-    # Anthropic 原生 API — OpenFang 直接支持，无需 proxy
-    if "anthropic.com" in url_lower or "api.anthropic" in url_lower:
+    model_lower = model.lower()
+    try:
+        parsed = urlsplit(base_url)
+        host = (parsed.hostname or "").lower()
+        path = (parsed.path or "").lower()
+        port = parsed.port  # may raise ValueError for malformed ports
+    except Exception as exc:
+        logger.debug("[OpenFang] Failed to parse base_url %r: %s", base_url, exc)
+        host, path, port = "", "", None
+
+    def _host_matches(*domains: str) -> bool:
+        """Check if host exactly matches or is a subdomain of any given domain."""
+        return any(host == d or host.endswith(f".{d}") for d in domains)
+
+    # 已知的 OpenAI-compatible 代理/中转 -- 必须走 proxy, 跳过后续 model-name 启发式匹配
+    if _host_matches("openrouter.ai"):
+        return {
+            "provider": "openai",
+            "needs_proxy": True,
+            "effective_url": _LLM_PROXY_BASE_URL,
+            "api_key_env": "OPENAI_API_KEY",
+        }
+
+    # Anthropic 原生 API -- OpenFang 直接支持, 无需 proxy
+    if _host_matches("anthropic.com", "api.anthropic.com"):
         return {
             "provider": "anthropic",
             "needs_proxy": False,
@@ -50,8 +74,8 @@ def _detect_provider_info(base_url: str, model: str) -> dict:
             "api_key_env": "ANTHROPIC_API_KEY",
         }
 
-    # OpenAI 原生 API — OpenFang 直接支持，无需 proxy
-    if "api.openai.com" in url_lower:
+    # OpenAI 原生 API -- OpenFang 直接支持, 无需 proxy
+    if _host_matches("api.openai.com"):
         return {
             "provider": "openai",
             "needs_proxy": False,
@@ -60,7 +84,7 @@ def _detect_provider_info(base_url: str, model: str) -> dict:
         }
 
     # Groq
-    if "groq.com" in url_lower or "groq" in model_lower:
+    if _host_matches("groq.com", "api.groq.com") or "groq" in model_lower:
         return {
             "provider": "groq",
             "needs_proxy": False,
@@ -68,8 +92,25 @@ def _detect_provider_info(base_url: str, model: str) -> dict:
             "api_key_env": "GROQ_API_KEY",
         }
 
-    # Gemini / Google AI
-    if "generativelanguage.googleapis.com" in url_lower or "gemini" in model_lower:
+    # Gemini / Google AI -- 仅通过 hostname 白名单判定, 不用 model name 启发式
+    # (model 名含 "gemini" 但 host 不是 Google 的情况 = OpenAI-compatible 代理, 应走 fallback)
+    # Google 提供两种端点:
+    #   /v1beta/openai/ -- OpenAI 兼容 (Bearer token + OpenAI tools 格式) -> 用 openai provider
+    #   /v1beta         -- 原生 Gemini API (?key= 认证 + functionDeclarations) -> 用 gemini provider
+    _is_google_ai = _host_matches("generativelanguage.googleapis.com")
+    _normalized_path = path.rstrip("/")
+    if _is_google_ai and (
+        _normalized_path == "/v1beta/openai"
+        or _normalized_path.startswith("/v1beta/openai/")
+    ):
+        # OpenAI 兼容端点, 直连即可, 不需要 Gemini driver
+        return {
+            "provider": "openai",
+            "needs_proxy": False,
+            "effective_url": base_url,
+            "api_key_env": "GEMINI_API_KEY",
+        }
+    if _is_google_ai:
         return {
             "provider": "gemini",
             "needs_proxy": False,
@@ -78,7 +119,7 @@ def _detect_provider_info(base_url: str, model: str) -> dict:
         }
 
     # DeepSeek
-    if "deepseek.com" in url_lower or "deepseek" in model_lower:
+    if _host_matches("deepseek.com", "api.deepseek.com") or "deepseek" in model_lower:
         return {
             "provider": "deepseek",
             "needs_proxy": False,
@@ -86,10 +127,24 @@ def _detect_provider_info(base_url: str, model: str) -> dict:
             "api_key_env": "DEEPSEEK_API_KEY",
         }
 
-    # Ollama (local) — detect localhost, 127.0.0.1, 0.0.0.0, [::1]
-    _loopback_hosts = ("localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]")
-    _is_loopback = any(h in url_lower for h in _loopback_hosts)
-    if _is_loopback and ("11434" in url_lower or "ollama" in model_lower):
+    # Ollama -- detect by:
+    #   1. Loopback/LAN address + default port 11434
+    #   2. Loopback/LAN address + "ollama" in model name
+    #   3. URL path containing "/ollama" (reverse-proxy setups)
+    #   4. Default port 11434 on any host (strong Ollama signal)
+    _loopback_hosts = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+    _is_loopback = host in _loopback_hosts
+    # RFC1918 private ranges: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+    _is_lan = (
+        host.startswith("10.")
+        or host.startswith("192.168.")
+        or any(host.startswith(f"172.{i}.") for i in range(16, 32))
+    )
+    _is_local = _is_loopback or _is_lan
+    _has_ollama_port = port == 11434
+    _has_ollama_path = "/ollama" in path
+    _has_ollama_model = "ollama" in model_lower
+    if _has_ollama_port or _has_ollama_path or (_is_local and _has_ollama_model):
         return {
             "provider": "ollama",
             "needs_proxy": False,
@@ -107,7 +162,6 @@ def _detect_provider_info(base_url: str, model: str) -> dict:
         "api_key_env": "OPENAI_API_KEY",
     }
 
-logger = logging.getLogger("openfang_adapter")
 
 
 # ──────────────────────────────────────────────────────────────
@@ -521,13 +575,19 @@ class OpenFangAdapter:
             logger.warning("[OpenFang] Agent model not configured, cannot sync")
             return False
 
-        if not api_key or not base_url:
-            logger.warning("[OpenFang] Agent API 未配置 (key=%s, url=%s), 跳过同步",
-                           "set" if api_key else "empty", "set" if base_url else "empty")
+        if not base_url:
+            logger.warning("[OpenFang] Agent API base_url 未配置, 跳过同步")
             return False
 
-        # 自动检测 provider 和是否需要 proxy
+        # 先检测 provider，再决定是否需要 api_key
+        # Ollama 等本地 provider 不需要 api_key（api_key_env 为空串）
         pinfo = _detect_provider_info(base_url, model)
+        if not api_key and pinfo.get("api_key_env"):
+            # 云端 provider 缺少 api_key，跳过同步
+            logger.warning("[OpenFang] Agent API key 未配置 (provider=%s), 跳过同步",
+                           pinfo["provider"])
+            return False
+
         self._provider_info = pinfo
         provider = pinfo["provider"]
         effective_url = pinfo["effective_url"]
@@ -540,60 +600,64 @@ class OpenFangAdapter:
         key_pushed = False
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                # (1) Push API key — 尝试推送到检测到的 provider
-                provider_key_url = f"{self.base_url}/api/providers/{provider}/key"
-                for payload in [
-                    {"key": api_key},
-                    {"api_key": api_key},
-                    {"key": api_key, "base_url": base_url, "model": model},
-                    api_key,  # plain string body
-                ]:
-                    try:
-                        if isinstance(payload, str):
-                            resp = await client.post(
-                                provider_key_url,
-                                content=payload,
-                                headers={**self._auth_headers(), "Content-Type": "text/plain"},
-                            )
-                        else:
-                            resp = await client.post(
-                                provider_key_url,
-                                json=payload,
-                                headers=self._auth_headers(),
-                            )
-                        if resp.status_code == 200:
-                            key_pushed = True
-                            logger.info("[OpenFang] API key synced to %s (format=%s): model=%s",
-                                        provider, type(payload).__name__, model)
-                            break
-                    except Exception as ep:
-                        logger.debug("[OpenFang] Key push attempt failed: %s", ep)
-
-                # 如果检测到的 provider push 失败，也尝试 openai（通用后备）
-                if not key_pushed and provider != "openai":
-                    for payload in [{"key": api_key}, api_key]:
+                # (1) Push API key — 本地 provider (api_key_env 为空) 跳过
+                if api_key and pinfo.get("api_key_env"):
+                    provider_key_url = f"{self.base_url}/api/providers/{provider}/key"
+                    for payload in [
+                        {"key": api_key},
+                        {"api_key": api_key},
+                        {"key": api_key, "base_url": base_url, "model": model},
+                        api_key,  # plain string body
+                    ]:
                         try:
                             if isinstance(payload, str):
                                 resp = await client.post(
-                                    f"{self.base_url}/api/providers/openai/key",
+                                    provider_key_url,
                                     content=payload,
                                     headers={**self._auth_headers(), "Content-Type": "text/plain"},
                                 )
                             else:
                                 resp = await client.post(
-                                    f"{self.base_url}/api/providers/openai/key",
+                                    provider_key_url,
                                     json=payload,
                                     headers=self._auth_headers(),
                                 )
                             if resp.status_code == 200:
                                 key_pushed = True
-                                logger.info("[OpenFang] API key synced to openai fallback")
+                                logger.info("[OpenFang] API key synced to %s (format=%s): model=%s",
+                                            provider, type(payload).__name__, model)
                                 break
-                        except Exception:
-                            pass
+                        except Exception as ep:
+                            logger.debug("[OpenFang] Key push attempt failed: %s", ep)
 
-                if not key_pushed:
-                    logger.warning("[OpenFang] All key push formats failed, relying on config.toml")
+                    # 如果检测到的 provider push 失败，也尝试 openai（通用后备）
+                    if not key_pushed and provider != "openai":
+                        for payload in [{"key": api_key}, api_key]:
+                            try:
+                                if isinstance(payload, str):
+                                    resp = await client.post(
+                                        f"{self.base_url}/api/providers/openai/key",
+                                        content=payload,
+                                        headers={**self._auth_headers(), "Content-Type": "text/plain"},
+                                    )
+                                else:
+                                    resp = await client.post(
+                                        f"{self.base_url}/api/providers/openai/key",
+                                        json=payload,
+                                        headers=self._auth_headers(),
+                                    )
+                                if resp.status_code == 200:
+                                    key_pushed = True
+                                    logger.info("[OpenFang] API key synced to openai fallback")
+                                    break
+                            except Exception as ep:
+                                logger.debug("[OpenFang] Fallback key push attempt failed: %s", ep)
+
+                    if not key_pushed:
+                        logger.warning("[OpenFang] All key push formats failed, relying on config.toml")
+                else:
+                    # 本地 provider 不需要 key, 跳过 key push
+                    logger.info("[OpenFang] Local provider %s, skipping API key push", provider)
 
                 # (2) Override provider base_url
                 push_url = effective_url  # proxy URL 或直连 URL
