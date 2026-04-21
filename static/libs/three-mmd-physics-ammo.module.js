@@ -1038,6 +1038,9 @@ class MMDPhysics {
 
     const manager = this.manager;
     const mesh = this.mesh;
+    // Capture previous-frame quaternion before any updates (used by rotation compensation + spin-lock)
+    const prevMeshQuat = manager.allocThreeQuaternion();
+    prevMeshQuat.copy(this._lastMeshQuat);
     let isNonDefaultScale = false;
     const position = manager.allocThreeVector3();
     const quaternion = manager.allocThreeQuaternion();
@@ -1109,7 +1112,7 @@ class MMDPhysics {
       const freshQuat = manager.allocThreeQuaternion();
       mesh.getWorldQuaternion(freshQuat);
       const deltaQuat = manager.allocThreeQuaternion();
-      deltaQuat.copy(this._lastMeshQuat).invert().multiply(freshQuat);
+      deltaQuat.copy(prevMeshQuat).invert().multiply(freshQuat);
       const rotAngle = 2 * Math.acos(Math.min(1, Math.abs(deltaQuat.w)));
 
       if (rotAngle > 0.001) {
@@ -1163,7 +1166,6 @@ class MMDPhysics {
         }
         manager.freeTransform(tr);
       }
-      this._lastMeshQuat.copy(freshQuat);
       manager.freeThreeQuaternion(deltaQuat);
       manager.freeThreeQuaternion(freshQuat);
     }
@@ -1185,7 +1187,7 @@ class MMDPhysics {
     // Spin-Lock Mechanism (自旋锁防撕裂机制):
     // 检测模型的极限空间自转。如果角速度超过安全阈值（例如高速拖拉/转圈），巨大的离心力会将密集的弹簧直接扯断。
     // 在此时强行剥夺物理引擎算力：清零所有物理动能和惯性，并将裙摆、头发死死锁在默认位置上。
-    const angleDelta = this._lastMeshQuat.angleTo(quaternion);
+    const angleDelta = prevMeshQuat.angleTo(quaternion);
     const angularVelocity = angleDelta / delta;
     if (angularVelocity > 3.0) { // 阈值：> 3.0 rad/s (约 170 度/秒)
       const zeroVel = manager.allocVector3();
@@ -1204,6 +1206,7 @@ class MMDPhysics {
       manager.freeVector3(zeroVel);
     }
     this._lastMeshQuat.copy(quaternion);
+    manager.freeThreeQuaternion(prevMeshQuat);
 
     this._stepSimulation(delta);
     this._dampNearRestBodies();
