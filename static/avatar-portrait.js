@@ -770,9 +770,9 @@
         };
     }
 
-    function getLive2dHeadRectInfoFromBubbleGeometry(model, metrics) {
+    function getLive2dHeadRectInfoFromManagerGeometry(model, metrics) {
         const manager = global.live2dManager;
-        if (!manager || typeof manager.getBubbleAnchorGeometryInfo !== 'function') {
+        if (!manager) {
             return null;
         }
 
@@ -783,11 +783,20 @@
             return null;
         }
 
+        const getGeometryInfo = typeof manager.getHeadDetectionGeometryInfo === 'function'
+            ? manager.getHeadDetectionGeometryInfo.bind(manager)
+            : (typeof manager.getBubbleAnchorGeometryInfo === 'function'
+                ? manager.getBubbleAnchorGeometryInfo.bind(manager)
+                : null);
+        if (!getGeometryInfo) {
+            return null;
+        }
+
         let geometryInfo = null;
         try {
-            geometryInfo = manager.getBubbleAnchorGeometryInfo();
+            geometryInfo = getGeometryInfo();
         } catch (error) {
-            console.warn('[avatar-portrait] 读取 Live2D 气泡几何失败，回退旧头像头框逻辑:', error);
+            console.warn('[avatar-portrait] 读取 Live2D 头部识别几何失败，回退旧头像头框逻辑:', error);
             return null;
         }
 
@@ -815,9 +824,9 @@
     }
 
     function getLive2dHeadRectInfo(model, metrics) {
-        const bubbleGeometryInfo = getLive2dHeadRectInfoFromBubbleGeometry(model, metrics);
-        if (bubbleGeometryInfo && bubbleGeometryInfo.rect) {
-            return bubbleGeometryInfo;
+        const managerGeometryInfo = getLive2dHeadRectInfoFromManagerGeometry(model, metrics);
+        if (managerGeometryInfo && managerGeometryInfo.rect) {
+            return managerGeometryInfo;
         }
 
         const internalModel = model?.internalModel;
@@ -1270,6 +1279,28 @@
         };
     }
 
+    function getManagerHeadDetectionAnchor(manager) {
+        if (!manager || typeof manager.getHeadDetectionGeometryInfo !== 'function') {
+            return null;
+        }
+
+        let detectionInfo = null;
+        try {
+            detectionInfo = manager.getHeadDetectionGeometryInfo();
+        } catch (_) {
+            return null;
+        }
+
+        const anchor = detectionInfo?.headAnchor || detectionInfo?.rawHeadAnchor || null;
+        const x = finiteOr(anchor?.x, NaN);
+        const y = finiteOr(anchor?.y, NaN);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) {
+            return null;
+        }
+
+        return { x, y };
+    }
+
     function getVrmAdapter() {
         return {
             type: 'vrm',
@@ -1300,7 +1331,15 @@
                 const metrics = getCanvasMetrics(ctx.canvas);
                 ctx.model.vrm.scene.updateMatrixWorld(true);
                 const subjectRect = computeProjectedBoxCss(ctx.model.vrm.scene, ctx.manager.camera, metrics, THREE);
-                const headAnchor = getVrmHeadAnchor(ctx.model, ctx.manager.camera, metrics, THREE);
+                const managerHeadAnchor = getManagerHeadDetectionAnchor(ctx.manager);
+                const vrmBoneHeadAnchor = getVrmHeadAnchor(ctx.model, ctx.manager.camera, metrics, THREE);
+                const headAnchor = managerHeadAnchor
+                    ? {
+                        x: managerHeadAnchor.x,
+                        y: managerHeadAnchor.y,
+                        headHeight: finiteOr(vrmBoneHeadAnchor?.headHeight, 0)
+                    }
+                    : vrmBoneHeadAnchor;
 
                 // 立绘模式：返回全身包围盒
                 if (options.cropMode === 'portrait') {
@@ -1445,7 +1484,15 @@
                 const metrics = getCanvasMetrics(ctx.canvas);
                 ctx.model.mesh.updateMatrixWorld(true);
                 const subjectRect = computeProjectedBoxCss(ctx.model.mesh, ctx.manager.camera, metrics, THREE);
-                const headAnchor = findMmdHeadAnchor(ctx.model.mesh, ctx.manager.camera, metrics, THREE);
+                const managerHeadAnchor = getManagerHeadDetectionAnchor(ctx.manager);
+                const mmdBoneHeadAnchor = findMmdHeadAnchor(ctx.model.mesh, ctx.manager.camera, metrics, THREE);
+                const headAnchor = managerHeadAnchor
+                    ? {
+                        x: managerHeadAnchor.x,
+                        y: managerHeadAnchor.y,
+                        headHeight: finiteOr(mmdBoneHeadAnchor?.headHeight, 0)
+                    }
+                    : mmdBoneHeadAnchor;
 
                 // 立绘模式：返回全身包围盒
                 if (options.cropMode === 'portrait') {

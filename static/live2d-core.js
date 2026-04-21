@@ -980,7 +980,7 @@ class Live2DManager {
         return this._createScreenRect(minX, minY, maxX, maxY);
     }
 
-    _getRenderableDrawableScreenRects(modelBounds = null, modelLogicalRect = null) {
+    _getRenderableDrawableScreenRects(modelBounds = null, modelLogicalRect = null, includeIndex = false) {
         const internalModel = this.currentModel?.internalModel;
         const coreModel = internalModel?.coreModel;
         const drawableCount = coreModel?.getDrawableCount?.();
@@ -1006,7 +1006,7 @@ class Live2DManager {
                 true
             );
             if (rect) {
-                rects.push(rect);
+                rects.push(includeIndex ? { rect, index } : rect);
             }
         }
 
@@ -1550,8 +1550,12 @@ class Live2DManager {
     _inferDrawableRegionScreenRectInfo(kind, modelBounds = null, modelLogicalRect = null, bodyRectHint = null, headRectHint = null) {
         const resolvedModelBounds = modelBounds || this.getModelScreenBounds();
         const resolvedModelLogicalRect = modelLogicalRect || this._getModelLogicalRect();
-        const drawableRects = this._getRenderableDrawableScreenRects(resolvedModelBounds, resolvedModelLogicalRect);
-        if (!resolvedModelBounds || drawableRects.length === 0) {
+        const drawableEntries = this._getRenderableDrawableScreenRects(
+            resolvedModelBounds,
+            resolvedModelLogicalRect,
+            true
+        );
+        if (!resolvedModelBounds || drawableEntries.length === 0) {
             return null;
         }
 
@@ -1579,8 +1583,110 @@ class Live2DManager {
         const rectArea = (rect) => Math.max(1, Number(rect?.width) * Number(rect?.height));
         const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
         const clamp01 = (value) => clamp(value, 0, 1);
-        const candidates = drawableRects
-            .map((rect) => {
+        const tokenizePartId = (text) => {
+            if (!text) {
+                return [];
+            }
+
+            return String(text)
+                .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+                .replace(/[^A-Za-z0-9]+/g, ' ')
+                .toLowerCase()
+                .trim()
+                .split(/\s+/)
+                .filter(Boolean);
+        };
+        const tokenMatchesKeyword = (token, keyword) => {
+            if (!token || !keyword) {
+                return false;
+            }
+
+            if (token === keyword) {
+                return true;
+            }
+
+            if (token.startsWith(keyword) || token.endsWith(keyword)) {
+                return token.length <= keyword.length + 4;
+            }
+
+            return false;
+        };
+        const matchesAnyPartKeyword = (text, keywords) => {
+            if (!text || !Array.isArray(keywords) || keywords.length === 0) {
+                return false;
+            }
+
+            const normalizedText = String(text).toLowerCase();
+            const tokens = tokenizePartId(text);
+
+            for (const keyword of keywords) {
+                if (!keyword) {
+                    continue;
+                }
+
+                const normalizedKeyword = String(keyword).toLowerCase();
+                if (!normalizedKeyword) {
+                    continue;
+                }
+
+                // CJK (or other non-latin) labels are typically not tokenized; use direct contains.
+                if (!/^[a-z0-9]+$/.test(normalizedKeyword)) {
+                    if (normalizedText.includes(normalizedKeyword)) {
+                        return true;
+                    }
+                    continue;
+                }
+
+                for (const token of tokens) {
+                    if (tokenMatchesKeyword(token, normalizedKeyword)) {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        };
+
+        let drawableParentPartIds = null;
+        if (kind === 'head') {
+            const internalModel = this.currentModel?.internalModel;
+            const coreModel = internalModel?.coreModel;
+            drawableParentPartIds = this._getDrawableParentPartIdLookup(coreModel);
+        }
+
+        const nonHeadPartKeywords = [
+            'arm', 'hand', 'leg', 'foot', 'shoe',
+            'tuba', 'trumpet', 'flute', 'drum', 'guitar', 'violin', 'piano', 'horn',
+            'sword', 'gun', 'staff', 'wand', 'shield', 'spear', 'bow', 'axe',
+            'weapon', 'instrument',
+            'tail', 'wing'
+        ];
+        const facePartKeywords = [
+            'face', 'head', 'eye', 'eyebrow', 'brow', 'mouth', 'lip', 'nose', 'ear', 'cheek', 'blush', 'tear',
+            '脸', '脸部', '面', '头', '眼', '眉', '嘴', '口', '鼻', '耳',
+            '顔', '頭', '目', '眉', '口', '鼻', '耳'
+        ];
+        const hairPartKeywords = [
+            'hair', 'bang', 'fringe', 'ahoge', 'ponytail', 'braid', 'curl', 'sidehair', 'fronthair', 'backhair',
+            '发', '髮', '刘海', '耳发', '髪', '前髪', '後ろ髪', '横髪'
+        ];
+        const headCorePartKeywords = [
+            'head', 'face', 'neck', 'chin', 'jaw', 'forehead',
+            '头', '脸', '颈', '脖',
+            '頭', '顔', '首'
+        ];
+        const accessoryPartKeywords = [
+            'halo', 'horn', 'crown', 'hat', 'cap', 'ribbon', 'bow', 'ornament', 'clip', 'flower', 'veil', 'headdress',
+            '光环', '角', '冠', '发饰', '饰品', '蝴蝶结', '花',
+            '輪', '角', '冠', '飾', 'リボン', '花'
+        ];
+
+        const candidates = drawableEntries
+            .map((entry) => {
+                const rect = entry?.rect;
+                if (!rect) {
+                    return null;
+                }
                 const area = rectArea(rect);
                 const overlapArea = this._getRectIntersectionArea(rect, targetRect);
                 const overlapRatio = overlapArea / area;
@@ -1596,6 +1702,9 @@ class Live2DManager {
                     : resolvedModelBounds.height * 0.34;
                 const verticalBias = clamp01(1 - Math.abs(rect.centerY - verticalTargetY) / Math.max(1, verticalBand));
                 const areaRatio = area / modelArea;
+                const partId = Array.isArray(drawableParentPartIds)
+                    ? (drawableParentPartIds[entry.index] || '')
+                    : '';
 
                 if (kind === 'head') {
                     const wideShallowBand = widthRatio >= 0.44 &&
@@ -1608,6 +1717,10 @@ class Live2DManager {
                         rect.height > resolvedModelBounds.height * 0.48 ||
                         rect.width > resolvedModelBounds.width * 0.82 ||
                         wideShallowBand) {
+                        return null;
+                    }
+
+                    if (partId && matchesAnyPartKeyword(partId, nonHeadPartKeywords)) {
                         return null;
                     }
                 } else if (areaRatio < 0.002 || areaRatio > 0.7 ||
@@ -1625,37 +1738,180 @@ class Live2DManager {
                     ? clamp01(1 - Math.max(0, aspectRatio - 1.9) / 1.4)
                     : 1;
 
-                return {
-                    rect,
-                    score: overlapRatio * 4.2 +
-                        centerBias * 1.8 +
-                        verticalBias * 1.9 +
-                        widthBias * (kind === 'head' ? 1.4 : 0) +
-                        aspectBias * (kind === 'head' ? 1.3 : 0)
-                };
+                let score = overlapRatio * 4.2 +
+                    centerBias * 1.8 +
+                    verticalBias * 1.9 +
+                    widthBias * (kind === 'head' ? 1.4 : 0) +
+                    aspectBias * (kind === 'head' ? 1.3 : 0);
+                if (kind === 'head' && partId) {
+                    if (matchesAnyPartKeyword(partId, facePartKeywords)) {
+                        score += 2.4;
+                    }
+                    if (matchesAnyPartKeyword(partId, hairPartKeywords)) {
+                        score += 1.05;
+                    }
+                    if (matchesAnyPartKeyword(partId, headCorePartKeywords)) {
+                        score += 0.85;
+                    }
+                    if (matchesAnyPartKeyword(partId, accessoryPartKeywords)) {
+                        score -= 0.75;
+                    }
+                }
+
+                return { rect, score, drawableIndex: entry.index };
             })
-            .filter(Boolean)
-            .sort((left, right) => right.score - left.score);
+            .filter(Boolean);
+
+        if (kind === 'head' && candidates.length > 1) {
+            const semanticAnchors = [];
+            if (Array.isArray(drawableParentPartIds) && drawableParentPartIds.length > 0) {
+                for (const candidate of candidates) {
+                    const partId = drawableParentPartIds[candidate.drawableIndex] || '';
+                    if (!partId) {
+                        continue;
+                    }
+
+                    let semanticWeight = 0;
+                    if (matchesAnyPartKeyword(partId, facePartKeywords)) {
+                        semanticWeight += 2.6;
+                    }
+                    if (matchesAnyPartKeyword(partId, hairPartKeywords)) {
+                        semanticWeight += 1.2;
+                    }
+                    if (matchesAnyPartKeyword(partId, headCorePartKeywords)) {
+                        semanticWeight += 0.9;
+                    }
+                    if (matchesAnyPartKeyword(partId, accessoryPartKeywords)) {
+                        semanticWeight -= 1.0;
+                    }
+
+                    if (semanticWeight > 0.15) {
+                        semanticAnchors.push({ rect: candidate.rect, weight: semanticWeight });
+                    }
+                }
+            }
+
+            if (semanticAnchors.length > 0) {
+                const totalWeight = semanticAnchors.reduce((sum, item) => sum + item.weight, 0);
+                const semanticCenterX = semanticAnchors.reduce((sum, item) => sum + item.rect.centerX * item.weight, 0) / Math.max(0.001, totalWeight);
+                const semanticCenterY = semanticAnchors.reduce((sum, item) => sum + item.rect.centerY * item.weight, 0) / Math.max(0.001, totalWeight);
+                const maxDistance = Math.max(resolvedModelBounds.width, resolvedModelBounds.height) * 0.18;
+
+                for (const candidate of candidates) {
+                    const partId = Array.isArray(drawableParentPartIds)
+                        ? (drawableParentPartIds[candidate.drawableIndex] || '')
+                        : '';
+                    let roleWeight = 1;
+                    if (partId && matchesAnyPartKeyword(partId, facePartKeywords)) {
+                        roleWeight = 1.35;
+                    } else if (partId && matchesAnyPartKeyword(partId, hairPartKeywords)) {
+                        roleWeight = 1.12;
+                    } else if (partId && matchesAnyPartKeyword(partId, headCorePartKeywords)) {
+                        roleWeight = 1.0;
+                    }
+                    if (partId && matchesAnyPartKeyword(partId, accessoryPartKeywords)) {
+                        roleWeight *= 0.72;
+                    }
+
+                    const deltaX = candidate.rect.centerX - semanticCenterX;
+                    const deltaY = candidate.rect.centerY - semanticCenterY;
+                    const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+                    if (distance < maxDistance) {
+                        candidate.score += 2.1 * roleWeight * (1 - distance / maxDistance);
+                    }
+                }
+            }
+        }
+
+        candidates.sort((left, right) => right.score - left.score);
         if (candidates.length === 0) {
             return null;
         }
 
-        let mergedRect = candidates[0].rect;
-        const mergedCandidates = [candidates[0]];
-        const bestScore = Math.max(0.01, candidates[0].score);
+        let orderedCandidates = candidates;
+        if (kind === 'head' && candidates.length > 1) {
+            const boundsTop = resolvedModelBounds.top;
+            const boundsHeight = Math.max(1, resolvedModelBounds.height);
+            const bestScore = Math.max(0.01, candidates[0].score);
+            const isPrimaryHeadBand = (candidateRect) =>
+                candidateRect.centerY >= boundsTop + boundsHeight * 0.16 &&
+                candidateRect.centerY <= boundsTop + boundsHeight * 0.56;
+
+            // Prefer a face-tagged candidate in the central head band when available.
+            let stableAnchor = null;
+            if (Array.isArray(drawableParentPartIds) && drawableParentPartIds.length > 0) {
+                for (const candidate of candidates) {
+                    const partId = drawableParentPartIds[candidate.drawableIndex] || '';
+                    if (!partId ||
+                        !matchesAnyPartKeyword(partId, facePartKeywords) ||
+                        !isPrimaryHeadBand(candidate.rect) ||
+                        candidate.score < bestScore * 0.58) {
+                        continue;
+                    }
+
+                    if (!stableAnchor || candidate.score > stableAnchor.score) {
+                        stableAnchor = candidate;
+                    }
+                }
+            }
+
+            const topCandidate = candidates[0];
+            const topLooksLikeAccessoryFragment = topCandidate.rect.centerY <= boundsTop + boundsHeight * 0.18 &&
+                topCandidate.rect.height <= boundsHeight * 0.2 &&
+                topCandidate.rect.width <= resolvedModelBounds.width * 0.38;
+            if (!stableAnchor && topLooksLikeAccessoryFragment) {
+                for (const candidate of candidates) {
+                    if (!isPrimaryHeadBand(candidate.rect) || candidate.score < bestScore * 0.62) {
+                        continue;
+                    }
+
+                    if (!stableAnchor ||
+                        candidate.score > stableAnchor.score ||
+                        (candidate.score === stableAnchor.score &&
+                            rectArea(candidate.rect) > rectArea(stableAnchor.rect))) {
+                        stableAnchor = candidate;
+                    }
+                }
+            }
+
+            if (stableAnchor && stableAnchor !== candidates[0]) {
+                orderedCandidates = [stableAnchor, ...candidates.filter((candidate) => candidate !== stableAnchor)];
+            }
+        }
+
+        let mergedRect = orderedCandidates[0].rect;
+        const mergedCandidates = [orderedCandidates[0]];
+        const bestScore = Math.max(0.01, orderedCandidates[0].score);
         const mergePaddingX = resolvedModelBounds.width * (kind === 'head' ? 0.05 : 0.1);
         const mergePaddingY = resolvedModelBounds.height * (kind === 'head' ? 0.03 : 0.08);
+        const anchorCenterX = kind === 'head' ? orderedCandidates[0].rect.centerX : null;
+        const anchorCenterY = kind === 'head' ? orderedCandidates[0].rect.centerY : null;
 
-        for (const candidate of candidates.slice(1)) {
+        for (const candidate of orderedCandidates.slice(1)) {
             if (kind === 'head' && candidate.score < bestScore * 0.72) {
                 continue;
+            }
+
+            if (kind === 'head' &&
+                Number.isFinite(anchorCenterX) &&
+                Number.isFinite(anchorCenterY)) {
+                const deltaXFromAnchor = Math.abs(candidate.rect.centerX - anchorCenterX);
+                const deltaYFromAnchor = Math.abs(candidate.rect.centerY - anchorCenterY);
+                if (deltaXFromAnchor > resolvedModelBounds.width * 0.18 ||
+                    deltaYFromAnchor > resolvedModelBounds.height * 0.14) {
+                    continue;
+                }
             }
 
             const expandedMergedRect = this._expandScreenRect(mergedRect, mergePaddingX, mergePaddingY);
             const overlapsMerged = this._getRectIntersectionArea(candidate.rect, expandedMergedRect) > 0;
             const verticallyAdjacent = candidate.rect.top <= mergedRect.bottom + mergePaddingY &&
                 candidate.rect.bottom >= mergedRect.top - mergePaddingY;
-            const centeredEnough = Math.abs(candidate.rect.centerX - mergedRect.centerX) <= resolvedModelBounds.width * (kind === 'head' ? 0.16 : 0.28);
+            const centerReferenceX = kind === 'head' && Number.isFinite(anchorCenterX)
+                ? anchorCenterX
+                : mergedRect.centerX;
+            const centeredEnough = Math.abs(candidate.rect.centerX - centerReferenceX) <=
+                resolvedModelBounds.width * (kind === 'head' ? 0.14 : 0.28);
             if (!overlapsMerged && !(verticallyAdjacent && centeredEnough)) {
                 continue;
             }
@@ -1868,6 +2124,31 @@ class Live2DManager {
         return nestedParentIndices && typeof nestedParentIndices.length === 'number'
             ? nestedParentIndices
             : [];
+    }
+
+    _getDrawableParentPartIdLookup(coreModel) {
+        if (!coreModel) {
+            return null;
+        }
+
+        const partIds = this._getCoreModelPartIds(coreModel);
+        const drawableParentPartIndices = this._getCoreModelDrawableParentPartIndices(coreModel);
+        if (partIds.length === 0 || drawableParentPartIndices.length === 0) {
+            return null;
+        }
+
+        const normalizedPartIds = partIds.map((partId) => String(partId || '').toLowerCase());
+        const lookup = new Array(drawableParentPartIndices.length);
+        for (let drawableIndex = 0; drawableIndex < drawableParentPartIndices.length; drawableIndex += 1) {
+            const parentPartIndex = Number(drawableParentPartIndices[drawableIndex]);
+            lookup[drawableIndex] = Number.isInteger(parentPartIndex) &&
+                parentPartIndex >= 0 &&
+                parentPartIndex < normalizedPartIds.length
+                ? normalizedPartIds[parentPartIndex]
+                : '';
+        }
+
+        return lookup;
     }
 
     _partIndexMatchesTargetIds(partIndex, partIds, partParentIndices, targetPartIdSet) {
@@ -3130,15 +3411,10 @@ class Live2DManager {
         return hitAreaInfo || displayInfoInfo || inferredInfo;
     }
 
-    getBubbleAnchorGeometryInfo() {
+    getHeadDetectionGeometryInfo() {
         const bounds = this.getModelScreenBounds();
         if (!bounds) {
             return null;
-        }
-
-        const cached = this._getCachedBubbleGeometryResult();
-        if (cached) {
-            return cached;
         }
 
         const headInfo = this.getHeadScreenRectInfo();
@@ -3155,6 +3431,7 @@ class Live2DManager {
         const headMode = headInfo?.mode || null;
         const headSource = headInfo?.source || null;
         let bodySource = bodyInfo?.source || null;
+
         const headPlausibleWithoutBody = this._isReliableBubbleHeadRect(headRect, bounds, null, headSource);
         const bodyRect = this._normalizeBubbleBodyRect(
             rawBodyRect,
@@ -3166,6 +3443,56 @@ class Live2DManager {
         if (bodyRect && bodyRect !== rawBodyRect) {
             bodySource = 'bubbleBodyProxy';
         }
+
+        const reliableHeadRect = this._isReliableBubbleHeadRect(headRect, bounds, bodyRect, headSource);
+        const preciseDisplayInfoRect = reliableHeadRect && headSource === 'displayInfo';
+        const coarseHitAreaHeadRect = headSource === 'hitArea' &&
+            this._hasValidBubbleScreenRect(headRect) &&
+            rawHeadAnchor &&
+            Number.isFinite(rawHeadAnchor.y) &&
+            rawHeadAnchor.y >= headRect.top + headRect.height * 0.82;
+        let headAnchor = reliableHeadRect
+            ? (this._getBubbleHeadAnchorFromRect(headRect, headMode, headSource) || rawHeadAnchor)
+            : null;
+
+        if (coarseHitAreaHeadRect && rawHeadAnchor) {
+            headAnchor = rawHeadAnchor;
+        }
+
+        return {
+            type: 'live2d',
+            bounds,
+            rawHeadAnchor: rawHeadAnchor || null,
+            headAnchor: headAnchor || rawHeadAnchor || null,
+            headRect: headRect || null,
+            headMode,
+            headSource,
+            bodyRect,
+            bodySource,
+            reliableHeadRect,
+            preciseDisplayInfoRect,
+            coarseHitAreaHeadRect
+        };
+    }
+
+    getBubbleAnchorGeometryInfo() {
+        const cached = this._getCachedBubbleGeometryResult();
+        if (cached) {
+            return cached;
+        }
+
+        const detectionInfo = this.getHeadDetectionGeometryInfo();
+        if (!detectionInfo || !detectionInfo.bounds) {
+            return null;
+        }
+
+        const bounds = detectionInfo.bounds;
+        const rawHeadAnchor = detectionInfo.rawHeadAnchor || null;
+        const headRect = detectionInfo.headRect || null;
+        const headMode = detectionInfo.headMode || null;
+        const headSource = detectionInfo.headSource || null;
+        const bodyRect = detectionInfo.bodyRect || null;
+        const bodySource = detectionInfo.bodySource || null;
         const bubbleHeadRect = this._shouldUseBubbleDrawableHeadProxy(headRect, bounds, bodyRect, headSource)
             ? (this._createBubbleDrawableHeadProxyRect(headRect, bounds, bodyRect) || headRect)
             : headRect;

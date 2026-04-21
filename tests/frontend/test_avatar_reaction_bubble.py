@@ -118,6 +118,164 @@ def test_live2d_face_rect_keeps_bubble_near_head(mock_page: Page, running_server
 
 
 @pytest.mark.frontend
+def test_vrm_direct_head_anchor_drives_reaction_bubble_position(mock_page: Page, running_server: str):
+    """Regression test: VRM head anchor changes should directly drive bubble anchor updates."""
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        "() => !!(window.appState && window.avatarReactionBubble)",
+        timeout=10000,
+    )
+
+    mock_page.evaluate(
+        """
+        () => {
+            const live2dContainer = document.getElementById('live2d-container');
+            const vrmContainer = document.getElementById('vrm-container');
+            const mmdContainer = document.getElementById('mmd-container');
+
+            live2dContainer.style.display = 'none';
+            mmdContainer.style.display = 'none';
+            vrmContainer.style.display = 'block';
+            vrmContainer.style.visibility = 'visible';
+
+            const bounds = {
+                left: 120,
+                top: 60,
+                right: 520,
+                bottom: 680,
+                width: 400,
+                height: 620,
+                centerX: 320,
+                centerY: 370
+            };
+
+            window.__testVrmHeadAnchor = { x: 262, y: 334 };
+            window.live2dManager = null;
+            window.mmdManager = null;
+            window.vrmManager = {
+                getModelScreenBounds() {
+                    return bounds;
+                },
+                getHeadScreenAnchor() {
+                    const p = window.__testVrmHeadAnchor;
+                    return { x: p.x, y: p.y };
+                }
+            };
+
+            window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', {
+                detail: { turnId: 'turn-vrm-head-anchor-1', timestamp: Date.now() }
+            }));
+        }
+        """
+    )
+
+    mock_page.wait_for_timeout(120)
+    first = mock_page.evaluate(
+        """
+        () => {
+            const s = window.avatarReactionBubble.getState();
+            return { anchorX: s.anchorX, anchorY: s.anchorY };
+        }
+        """
+    )
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.__testVrmHeadAnchor = { x: 498, y: 176 };
+            window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', {
+                detail: { turnId: 'turn-vrm-head-anchor-2', timestamp: Date.now() }
+            }));
+        }
+        """
+    )
+
+    mock_page.wait_for_timeout(120)
+    second = mock_page.evaluate(
+        """
+        () => {
+            const s = window.avatarReactionBubble.getState();
+            return { anchorX: s.anchorX, anchorY: s.anchorY };
+        }
+        """
+    )
+
+    expect(mock_page.locator("#avatar-reaction-bubble")).to_have_attribute("aria-hidden", "false")
+    assert abs(second["anchorX"] - first["anchorX"]) > 120
+    assert first["anchorY"] - second["anchorY"] > 70
+
+
+@pytest.mark.frontend
+def test_vrm_debug_snapshot_contains_3d_proxy_rects(mock_page: Page, running_server: str):
+    """Regression test: 3D avatars should expose debug rects even without Live2D-style head/body rectangles."""
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        "() => !!(window.appState && window.avatarReactionBubble)",
+        timeout=10000,
+    )
+
+    snapshot = mock_page.evaluate(
+        """
+        () => {
+            const live2dContainer = document.getElementById('live2d-container');
+            const vrmContainer = document.getElementById('vrm-container');
+            const mmdContainer = document.getElementById('mmd-container');
+
+            live2dContainer.style.display = 'none';
+            mmdContainer.style.display = 'none';
+            vrmContainer.style.display = 'block';
+            vrmContainer.style.visibility = 'visible';
+
+            const bounds = {
+                left: 120,
+                top: 60,
+                right: 520,
+                bottom: 680,
+                width: 400,
+                height: 620,
+                centerX: 320,
+                centerY: 370
+            };
+
+            window.live2dManager = null;
+            window.mmdManager = null;
+            window.vrmManager = {
+                getModelScreenBounds() {
+                    return bounds;
+                },
+                getHeadScreenAnchor() {
+                    return { x: 328, y: 214 };
+                }
+            };
+
+            window.avatarReactionBubble.setDebugOverlayEnabled(true);
+            window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', {
+                detail: { turnId: 'turn-vrm-debug-proxy-rects', timestamp: Date.now() }
+            }));
+
+            const s = window.avatarReactionBubble.getState().lastDebugSnapshot || {};
+            return {
+                model: s.model || null,
+                headWidth: s.headRect?.width || null,
+                headTop: s.headRect?.top || null,
+                bodyTop: s.bodyRect?.top || null,
+                boundsWidth: s.bounds?.width || null,
+                bubbleWidth: s.bubbleRect?.width || null
+            };
+        }
+        """
+    )
+
+    expect(mock_page.locator("#avatar-reaction-bubble")).to_have_attribute("aria-hidden", "false")
+    assert snapshot["model"] == "vrm"
+    assert snapshot["headWidth"] is not None and snapshot["headWidth"] > 0
+    assert snapshot["bodyTop"] is not None and snapshot["headTop"] is not None
+    assert snapshot["bodyTop"] > snapshot["headTop"]
+    assert snapshot["boundsWidth"] is not None and snapshot["boundsWidth"] > 0
+    assert snapshot["bubbleWidth"] is not None and snapshot["bubbleWidth"] > 0
+
+
+@pytest.mark.frontend
 def test_live2d_manager_prefers_display_info_over_coarse_autonamed_hitarea(mock_page: Page, running_server: str):
     """Regression test for models whose repaired HitArea is much coarser than DisplayInfo."""
     mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
