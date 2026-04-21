@@ -252,6 +252,14 @@
                             <!-- 自定义API折叠容器 -->
                             <div id="custom-api-container" class="custom-api-container" style="display: none;">
 
+                                <!-- 清空自定义API按钮 -->
+                                <div class="clear-custom-api-wrapper">
+                                    <button type="button" id="clearCustomApiBtn" class="clear-custom-api-btn" onclick="clearCustomApi()">
+                                        <span class="clear-custom-api-icon">🗑️</span>
+                                        <span data-i18n="api.clearCustomApi">清空自定义API配置</span>
+                                    </button>
+                                </div>
+
                                 <!-- 文本对话模型配置 -->
                                 <div class="model-config-container">
                                     <div class="model-header" onclick="toggleModelConfig('conversation')">
@@ -677,6 +685,21 @@
                         data-i18n="api.apiKeyChangeWarning.cancel">取消</button>
                     <button type="button" class="btn" onclick="confirmApiKeyChange()"
                         data-i18n="api.apiKeyChangeWarning.continue">继续保存</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 清空自定义API确认弹窗 -->
+        <div id="clear-custom-api-modal" class="modal-overlay" onclick="closeClearCustomApiModal()">
+            <div class="modal-warning" onclick="event.stopPropagation()">
+                <h3 data-i18n="api.clearCustomApiConfirmTitle">⚠️ 确认清空</h3>
+                <p data-i18n="api.clearCustomApiConfirm">确定要清空所有自定义API配置吗？这将清除所有自定义API Key、模型ID、URL，并取消勾选GPT-SoVITS。</p>
+                <p style="color: #ff6b35; font-weight: 500; margin-top: 8px;" data-i18n="api.clearCustomApiSaveHint">⚠ 此操作仅清空页面上的配置内容，保存清空结果仍需点击下方的「保存设置」按钮。</p>
+                <div class="modal-buttons">
+                    <button type="button" class="btn secondary" onclick="closeClearCustomApiModal()"
+                        data-i18n="common.cancel">取消</button>
+                    <button type="button" class="btn" style="background: #ee5a24;" onclick="confirmClearCustomApi()"
+                        data-i18n="api.clearCustomApiConfirmBtn">确认清空</button>
                 </div>
             </div>
         </div>

@@ -1,5 +1,10 @@
 <template>
-  <el-card class="plugin-card" :class="{ 'plugin-card--selected': isSelected }" @click="$emit('click')">
+  <el-card
+    class="plugin-card"
+    :class="{ 'plugin-card--selected': isSelected }"
+    @click="$emit('click')"
+    @contextmenu.prevent="$emit('contextmenu', $event)"
+  >
     <template #header>
       <div class="plugin-card-header">
         <div class="plugin-info">
@@ -17,29 +22,23 @@
         </div>
       </div>
     </template>
-    
+
     <div class="plugin-card-body">
-      <!-- 显示性能指标模式 -->
-      <Transition name="fade-slide" mode="out-in">
-        <div v-if="showMetrics" key="metrics" class="plugin-metrics-wrapper">
-          <PluginMetricsInline
-            :key="`metrics-${plugin.id}`"
-            :plugin-id="plugin.id"
-            class="plugin-metrics-content"
-          />
-        </div>
-        <!-- 默认模式：显示描述和元数据 -->
-        <div v-else key="default" class="plugin-default-content">
-          <p class="plugin-description">{{ plugin.description || t('common.noData') }}</p>
-          <div class="plugin-meta">
-            <el-tag size="small" type="info">v{{ plugin.version }}</el-tag>
-            <span v-if="plugin.type === 'extension' && plugin.host_plugin_id" class="plugin-host">
-              → {{ plugin.host_plugin_id }}
-            </span>
-            <span class="plugin-entries">{{ t('plugins.entryPoint') }}: {{ entryCount }}</span>
-          </div>
-        </div>
-      </Transition>
+      <p class="plugin-description">{{ plugin.description || t('common.noData') }}</p>
+
+      <PluginMetricsInline
+        v-if="showMetrics"
+        :plugin-id="plugin.id"
+        :plugin-status="plugin.status || 'stopped'"
+      />
+
+      <div class="plugin-meta">
+        <el-tag size="small" type="info">v{{ plugin.version }}</el-tag>
+        <span v-if="plugin.type === 'extension' && plugin.host_plugin_id" class="plugin-host">
+          → {{ plugin.host_plugin_id }}
+        </span>
+        <span class="plugin-entries">{{ t('plugins.entryPoint') }}: {{ entryCount }}</span>
+      </div>
     </div>
   </el-card>
 </template>
@@ -59,13 +58,14 @@ interface Props {
 
 const props = withDefaults(defineProps<Props>(), {
   isSelected: false,
-  showMetrics: false
+  showMetrics: false,
 })
 
 const { t } = useI18n()
 
 defineEmits<{
   click: []
+  contextmenu: [event: MouseEvent]
 }>()
 
 const entryCount = computed(() => {
@@ -76,7 +76,11 @@ const entryCount = computed(() => {
 <style scoped>
 .plugin-card {
   cursor: pointer;
-  transition: all 0.3s ease;
+  border-radius: var(--plugin-entry-radius, 16px);
+  transition:
+    transform 0.24s ease,
+    box-shadow 0.24s ease,
+    border-color 0.24s ease;
 }
 
 .plugin-card:hover {
@@ -91,13 +95,17 @@ const entryCount = computed(() => {
 .plugin-card-header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
 }
 
 .plugin-info {
   display: flex;
   align-items: center;
-  gap: 12px;
+  align-content: flex-start;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .plugin-name {
@@ -105,17 +113,18 @@ const entryCount = computed(() => {
   font-size: 16px;
   font-weight: 600;
   color: var(--el-text-color-primary);
+  line-height: 1.35;
+  word-break: break-word;
 }
 
 .plugin-card-body {
-  margin-top: 12px;
   flex: 1;
   display: flex;
   flex-direction: column;
 }
 
 .plugin-description {
-  margin: 0 0 12px 0;
+  margin: 0;
   color: var(--el-text-color-regular);
   font-size: 14px;
   line-height: 1.5;
@@ -131,7 +140,8 @@ const entryCount = computed(() => {
   gap: 12px;
   font-size: 12px;
   color: var(--el-text-color-secondary);
-  margin-top: auto; /* 将元数据推到底部 */
+  margin-top: auto;
+  padding-top: 10px;
 }
 
 .plugin-entries {
@@ -148,49 +158,9 @@ const entryCount = computed(() => {
   flex-shrink: 0;
 }
 
-.plugin-metrics-wrapper {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0; /* 确保 flex 子元素可以收缩 */
-}
-
-.plugin-default-content {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-
-.plugin-metrics-content {
-  margin-top: 0;
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  min-height: 0; /* 确保可以正确渲染 */
-}
-
-/* 淡入淡出 + 滑动动画 */
-.fade-slide-enter-active,
-.fade-slide-leave-active {
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.fade-slide-enter-from {
-  opacity: 0;
-  transform: translateY(-10px);
-}
-
-.fade-slide-leave-to {
-  opacity: 0;
-  transform: translateY(10px);
-}
-
-.fade-slide-enter-to,
-.fade-slide-leave-from {
-  opacity: 1;
-  transform: translateY(0);
+@media (max-width: 640px) {
+  .plugin-info {
+    align-items: flex-start;
+  }
 }
 </style>
-

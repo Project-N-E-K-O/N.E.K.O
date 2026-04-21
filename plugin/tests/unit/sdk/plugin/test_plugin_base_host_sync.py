@@ -59,6 +59,20 @@ def test_dynamic_entry_updates_notify_host() -> None:
     assert ("ENTRY_UPDATE", "unregister", "dyn") in seen
 
 
+def test_list_actions_updates_notify_host() -> None:
+    ctx = _Ctx(Path(tempfile.mkdtemp()) / "plugin.toml")
+    plugin = _Plugin(ctx)
+
+    plugin.register_list_action({"id": "open_docs", "kind": "url", "target": "https://example.com"})
+    plugin.set_list_actions([{"id": "open_ui", "kind": "ui"}])
+    plugin.clear_list_actions()
+
+    assert ctx.message_queue.items[0]["type"] == "LIST_ACTIONS_UPDATE"
+    assert ctx.message_queue.items[0]["actions"][0]["id"] == "open_docs"
+    assert ctx.message_queue.items[1]["actions"][0]["id"] == "open_ui"
+    assert ctx.message_queue.items[2]["actions"] == []
+
+
 def test_register_dynamic_entry_preserves_timeout_in_meta() -> None:
     ctx = _Ctx(Path(tempfile.mkdtemp()) / "plugin.toml")
     plugin = _Plugin(ctx)

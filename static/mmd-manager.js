@@ -498,6 +498,9 @@ class MMDManager {
         const canvasRect = this.renderer.domElement.getBoundingClientRect();
         const canvasWidth = canvasRect.width;
         const canvasHeight = canvasRect.height;
+        if (!(canvasWidth > 0) || !(canvasHeight > 0)) {
+            return null;
+        }
 
         const mesh = this.currentModel.mesh;
         if (!mesh) return null;
@@ -534,6 +537,9 @@ class MMDManager {
 
         const width = screenRight - screenLeft;
         const height = screenBottom - screenTop;
+        if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 2 || height <= 2) {
+            return null;
+        }
 
         return {
             left: screenLeft,
