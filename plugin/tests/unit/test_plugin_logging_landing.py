@@ -54,10 +54,15 @@ def isolated_log_dir(tmp_path, monkeypatch):
 
     # Reset every N.E.K.O.* logger's state — pytest workers persist process
     # state across tests, so leftover handlers from a prior test would
-    # double-write or shadow our assertions.
+    # double-write or shadow our assertions. Track the handler set so we
+    # can prune the root logger below WITHOUT touching unrelated handlers
+    # (e.g. pytest's own log-capture handler — see CodeRabbit feedback on
+    # PR #912).
+    bridged_handlers: set[logging.Handler] = set()
     for name in list(logging.Logger.manager.loggerDict.keys()):
         if name == "N.E.K.O" or name.startswith("N.E.K.O."):
             lg = logging.getLogger(name)
+            bridged_handlers.update(lg.handlers)
             for h in list(lg.handlers):
                 lg.removeHandler(h)
                 try:
@@ -69,16 +74,24 @@ def isolated_log_dir(tmp_path, monkeypatch):
                     # the actual test failure.
                     pass
 
-    # Also reset root logger: _install_root_bridge attaches plugin file
-    # handlers there to forward third-party logger output, and tags the
-    # root logger with ``_neko_plugin_root_bridged = True`` for idempotency.
-    # Both must be cleared between tests, otherwise:
+    # Reset root logger ONLY for plugin-bridged handlers:
+    # ``_install_root_bridge`` re-attaches each ``N.E.K.O.<service>`` file
+    # handler onto root so plain stdlib third-party loggers (uvicorn /
+    # aiohttp) reach the same file — those exact handler objects are
+    # already captured in ``bridged_handlers`` above. Removing them by
+    # identity (``h not in bridged_handlers → skip``) keeps unrelated
+    # root handlers intact (pytest LogCaptureHandler, asyncio's debug
+    # handler, anything a sibling test installed). Stale-handler reasons
+    # for clearing them anyway:
     #   * stale handlers point at a previous test's tmp_path (now deleted),
     #     so the next test's INFO writes go to a no-longer-existing file;
-    #   * the marker would short-circuit the new bridge install and the
-    #     "third-party logger reaches our file" test would silently regress.
+    #   * the ``_neko_plugin_root_bridged`` marker would short-circuit the
+    #     new bridge install and the "third-party logger reaches our file"
+    #     test would silently regress.
     root = logging.getLogger()
     for h in list(root.handlers):
+        if h not in bridged_handlers:
+            continue
         root.removeHandler(h)
         try:
             h.close()
@@ -271,25 +284,38 @@ def test_third_party_logger_propagates_to_plugin_log_file(
     importlib.import_module("plugin.logging_config")
 
     # Simulate a third-party library: NOT under the N.E.K.O.* namespace.
+    # ``logging.getLogger(name)`` returns a process-global singleton, so
+    # mutating ``handlers`` / ``propagate`` here would leak into any test
+    # that runs later in the same pytest worker (CodeRabbit feedback on
+    # PR #912). Snapshot the original state and restore in ``finally``.
     third_party = logging.getLogger("uvicorn.error")
-    third_party.handlers.clear()  # uvicorn defaults sometimes attach a handler
-    third_party.propagate = True
-    third_party.info("uvicorn-bridged-into-plugin-log")
-
     aiohttp_like = logging.getLogger("aiohttp.access")
-    aiohttp_like.handlers.clear()
-    aiohttp_like.propagate = True
-    aiohttp_like.warning("aiohttp-bridged-into-plugin-log")
+    tp_handlers, tp_propagate = list(third_party.handlers), third_party.propagate
+    ah_handlers, ah_propagate = list(aiohttp_like.handlers), aiohttp_like.propagate
 
-    for h in logging.getLogger().handlers:
-        h.flush()
+    try:
+        third_party.handlers.clear()  # uvicorn defaults sometimes attach a handler
+        third_party.propagate = True
+        third_party.info("uvicorn-bridged-into-plugin-log")
 
-    text = _read_logs(isolated_log_dir, "PluginServer")
-    assert "uvicorn-bridged-into-plugin-log" in text, (
-        "Root bridge missing — third-party stdlib logger output is being "
-        "silently dropped instead of landing in the plugin log file."
-    )
-    assert "aiohttp-bridged-into-plugin-log" in text
+        aiohttp_like.handlers.clear()
+        aiohttp_like.propagate = True
+        aiohttp_like.warning("aiohttp-bridged-into-plugin-log")
+
+        for h in logging.getLogger().handlers:
+            h.flush()
+
+        text = _read_logs(isolated_log_dir, "PluginServer")
+        assert "uvicorn-bridged-into-plugin-log" in text, (
+            "Root bridge missing — third-party stdlib logger output is being "
+            "silently dropped instead of landing in the plugin log file."
+        )
+        assert "aiohttp-bridged-into-plugin-log" in text
+    finally:
+        third_party.handlers[:] = tp_handlers
+        third_party.propagate = tp_propagate
+        aiohttp_like.handlers[:] = ah_handlers
+        aiohttp_like.propagate = ah_propagate
 
 
 def test_bootstrap_failure_does_not_lock_root_initialised(
