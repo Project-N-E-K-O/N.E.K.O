@@ -3049,7 +3049,7 @@ function initConnectivityLights() {
         ConnectivityManager.onKeyChanged(key);
     }
 
-    # Core API key input change
+    // Core API key input change
     if (apiKeyInput) {
         const handleCoreKeyChange = debounce(() => {
             const oldKey = coreCurrentKey;
