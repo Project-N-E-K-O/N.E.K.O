@@ -283,19 +283,45 @@ def _format_brace_msg(msg: Any, args: tuple) -> tuple[str, tuple]:
 
 
 class PluginLoggerAdapter:
-    """对外暴露的 logger 实例。"""
+    """对外暴露的 logger 实例。
 
-    __slots__ = ("_logger", "_extra", "_opt_exc_info")
+    **Lazy logger resolution**：adapter 持有 *component 名*（str），每次
+    log 时根据当前 ``NEKO_PLUGIN_SERVICE_NAME`` 环境变量重算
+    ``N.E.K.O.<service>.<component>`` 拿 stdlib logger。
+
+    为什么不在 ``__init__`` 时绑定 ``logging.Logger`` 实例：
+      子进程的某个共享 module 顶部写
+      ``from plugin.logging_config import logger``，
+      会在 import 时跑一次 ``get_logger("plugin")``。这一刻 host 的
+      ``_setup_plugin_logger`` 还没把 ``NEKO_PLUGIN_SERVICE_NAME`` 设成
+      ``Plugin_<id>``，所以 logger 会被冻结到默认的 ``Plugin`` 命名空间，
+      之后再 setup_logging 也救不回来——日志都跑到 N.E.K.O_Plugin_*.log
+      去了，新建的 N.E.K.O_Plugin_<id>_*.log 反而是空的。
+
+      stdlib ``logging.getLogger(name)`` 自带 LRU，每次调用是 O(1) 拿同一
+      个 Logger 实例，所以 lazy 解析没有性能开销。
+    """
+
+    __slots__ = ("_component", "_extra", "_opt_exc_info")
 
     def __init__(
         self,
-        logger: logging.Logger,
+        component: str,
         extra: Optional[dict] = None,
         opt_exc_info: Any = None,
     ):
-        self._logger = logger
+        self._component = component
         self._extra: dict = dict(extra) if extra else {}
         self._opt_exc_info = opt_exc_info  # 仅由 .opt(exception=...) 设置，单次有效
+
+    # ── 懒解析底层 stdlib logger ────────────────────────────────────
+    def _resolve_logger(self) -> logging.Logger:
+        try:
+            from config import APP_NAME as _app_name
+        except Exception:
+            _app_name = "N.E.K.O"
+        service_name = os.getenv("NEKO_PLUGIN_SERVICE_NAME") or "Plugin"
+        return logging.getLogger(f"{_app_name}.{service_name}.{self._component}")
 
     # ── 内部分发 ─────────────────────────────────────────────────────
     def _log(self, level: int, msg: Any, args: tuple, kwargs: dict) -> None:
@@ -328,7 +354,7 @@ class PluginLoggerAdapter:
         # 让 caller filename/lineno 跳过 adapter 本身
         std_kwargs.setdefault("stacklevel", 2)
 
-        self._logger.log(level, msg, *args, **std_kwargs)
+        self._resolve_logger().log(level, msg, *args, **std_kwargs)
 
     # ── 标准方法 ─────────────────────────────────────────────────────
     def trace(self, msg: Any, *args, **kwargs) -> None:
@@ -365,14 +391,14 @@ class PluginLoggerAdapter:
     def bind(self, **extra: Any) -> "PluginLoggerAdapter":
         merged = dict(self._extra)
         merged.update(extra)
-        return PluginLoggerAdapter(self._logger, extra=merged)
+        return PluginLoggerAdapter(self._component, extra=merged)
 
     def opt(self, *, exception: Any = None, depth: int = 0, lazy: bool = False,
             colors: bool = False, raw: bool = False, capture: bool = True) -> "PluginLoggerAdapter":
         # depth/lazy/colors/raw/capture 在 stdlib 下没有意义，保留签名兼容。
         # exception=True 触发下一次 log 自动 exc_info；exception=<exc_info_tuple> 直接透传。
         return PluginLoggerAdapter(
-            self._logger,
+            self._component,
             extra=self._extra,
             opt_exc_info=True if exception is True else exception if exception else None,
         )
@@ -425,17 +451,14 @@ def setup_logging(
 def get_logger(component: str) -> PluginLoggerAdapter:
     """获取带组件命名空间的 logger。
 
-    底层 logger 名为 N.E.K.O.Plugin.<component>，自动落到本体 plugin 日志文件。
+    底层 logger 名为 ``N.E.K.O.<service>.<component>``，每次调用时根据当前
+    ``NEKO_PLUGIN_SERVICE_NAME`` 环境变量动态解析（见 PluginLoggerAdapter
+    docstring）。这样保证模块顶部的 ``logger = get_logger(...)`` 可以跟随
+    后续 host 设置的 service_name。
     """
     _ensure_root_logger()
     safe = component.strip(".") or "plugin"
-    try:
-        from config import APP_NAME
-    except Exception:
-        APP_NAME = "N.E.K.O"
-    service_name = os.getenv("NEKO_PLUGIN_SERVICE_NAME") or "Plugin"
-    logger_name = f"{APP_NAME}.{service_name}.{safe}"
-    return PluginLoggerAdapter(logging.getLogger(logger_name))
+    return PluginLoggerAdapter(safe)
 
 
 def configure_default_logger(level: str = "INFO") -> None:

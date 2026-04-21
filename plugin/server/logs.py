@@ -143,6 +143,38 @@ def get_plugin_log_dir(plugin_id: str) -> Path:
         return fallback_dir
 
 
+def _is_error_log_file(name: str) -> bool:
+    """判断文件名是不是 RobustLoggerConfig 的 ``_error.log`` 系列。
+
+    RobustLoggerConfig 会单独打开 ``N.E.K.O_<Service>_error.log``（以及
+    rotation 后的 ``_error.log.1`` / ``_error.log.2025-04-21`` 等）作为
+    "永久错误流" 文件。它的 mtime 可能晚于今天的常规日志（因为最近一次
+    错误就在刚才），导致 "找最新文件" 的逻辑误选错误日志，让 tail/WebSocket
+    feed 只剩下错误行——常规 INFO/DEBUG 整体消失。
+
+    所有 "拿最新一条 log 文件" 的入口都要先用这个 helper 排掉错误文件。
+    listing 端点 (``get_plugin_log_files``) 不需要，那里要让用户看到所有文件。
+    """
+    # ``_error.log`` 或者 rotation 后缀（_error.log.1 / _error.log.2025-04-21 …）
+    return "_error.log" in name
+
+
+def _list_plugin_log_files_for_tail(log_dir: Path, plugin_id: str) -> list[Path]:
+    """按 mtime 倒序返回该 plugin 的常规日志文件（已剔除 ``_error.log`` 系列）。
+
+    给 ``get_plugin_logs`` / ``LogFileWatcher`` 共享，避免 6 处 glob 各写各的、
+    一个一个修。
+    """
+    if plugin_id == SERVER_LOG_ID:
+        pattern = "N.E.K.O_PluginServer_*.log"
+    else:
+        pattern = f"N.E.K.O_Plugin_{plugin_id}_*.log"
+
+    files = [p for p in log_dir.glob(pattern) if not _is_error_log_file(p.name)]
+    files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+    return files
+
+
 def get_plugin_log_files(plugin_id: str) -> list[dict[str, object]]:
     """
     获取插件的日志文件列表
@@ -459,21 +491,11 @@ def get_plugin_logs(
             "returned_lines": 0
         }
     
-    # 文件名由 RobustLoggerConfig 控制：N.E.K.O_{ServiceName}_YYYYMMDD.log
-    if plugin_id == SERVER_LOG_ID:
-        pattern = "N.E.K.O_PluginServer_*.log"
-    else:
-        pattern = f"N.E.K.O_Plugin_{plugin_id}_*.log"
-    
-    # 找到最新的日志文件
+    # 找到最新的常规日志文件（剔除 _error.log 系列，避免 tail 误读错误流）
     try:
-        log_files = sorted(
-            log_dir.glob(pattern),
-            key=lambda f: f.stat().st_mtime,
-            reverse=True
-        )
+        log_files = _list_plugin_log_files_for_tail(log_dir, plugin_id)
     except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
-        logger.exception(f"Failed to find log files in {log_dir} with pattern {pattern}")
+        logger.exception(f"Failed to find log files in {log_dir} for plugin {plugin_id}")
         return {
             "plugin_id": plugin_id,
             "logs": [],
@@ -481,9 +503,9 @@ def get_plugin_logs(
             "returned_lines": 0,
             "error": "Failed to find log files"
         }
-    
+
     if not log_files:
-        logger.info(f"No log files found in {log_dir} with pattern {pattern}")
+        logger.info(f"No regular log files found in {log_dir} for plugin {plugin_id}")
         return {
             "plugin_id": plugin_id,
             "logs": [],
@@ -604,19 +626,9 @@ class LogFileWatcher:
         """监控循环：定期检查文件变化并推送新日志"""
         while self._running:
             try:
-                # 获取最新的日志文件
+                # 获取最新的日志文件（同样剔除 _error.log，避免 stream 只剩错误行）
                 log_dir = get_plugin_log_dir(self.plugin_id)
-                
-                if self.plugin_id == SERVER_LOG_ID:
-                    pattern = "N.E.K.O_PluginServer_*.log"
-                else:
-                    pattern = f"N.E.K.O_Plugin_{self.plugin_id}_*.log"
-
-                log_files = sorted(
-                    log_dir.glob(pattern),
-                    key=lambda f: f.stat().st_mtime,
-                    reverse=True
-                )
+                log_files = _list_plugin_log_files_for_tail(log_dir, self.plugin_id)
 
                 if not log_files:
                     await asyncio.sleep(1)  # 没有日志文件，等待
@@ -691,18 +703,9 @@ class LogFileWatcher:
                 "total_lines": result.get("total_lines", 0)
             })
             
-            # 记录当前日志文件和位置
+            # 记录当前日志文件和位置（剔除 _error.log，与 _watch_loop / get_plugin_logs 一致）
             log_dir = get_plugin_log_dir(self.plugin_id)
-            if self.plugin_id == SERVER_LOG_ID:
-                pattern = "N.E.K.O_PluginServer_*.log"
-            else:
-                pattern = f"N.E.K.O_Plugin_{self.plugin_id}_*.log"
-
-            log_files = sorted(
-                log_dir.glob(pattern),
-                key=lambda f: f.stat().st_mtime,
-                reverse=True
-            )
+            log_files = _list_plugin_log_files_for_tail(log_dir, self.plugin_id)
 
             if log_files:
                 self.current_log_file = log_files[0]

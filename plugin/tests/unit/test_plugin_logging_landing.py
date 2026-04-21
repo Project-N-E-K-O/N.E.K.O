@@ -151,6 +151,54 @@ def test_plugin_subprocess_logs_to_its_own_service_file(isolated_log_dir, monkey
         assert "hello-from-plugin-demo" not in error_file.read_text(encoding="utf-8")
 
 
+def test_module_level_logger_follows_late_service_name_change(
+    isolated_log_dir, monkeypatch
+):
+    """Subprocess race regression test (PR #912 codex finding):
+
+    In a real spawned plugin subprocess the boot order is:
+      1. Python imports some shared plugin module (e.g. plugin.message_plane)
+      2. that module's top says ``from plugin.logging_config import logger``
+         → triggers ``get_logger("plugin")`` while NEKO_PLUGIN_SERVICE_NAME
+         is still empty / inherited from the parent
+      3. THEN host's ``_setup_plugin_logger`` sets
+         NEKO_PLUGIN_SERVICE_NAME=Plugin_<id> + setup_logging(...)
+      4. shared module later does ``logger.info(...)``
+
+    If PluginLoggerAdapter froze its stdlib logger at step 2, step 4 would
+    write to N.E.K.O_Plugin_*.log (or wherever step 2's env pointed), NOT
+    N.E.K.O_Plugin_<id>_*.log. The lazy ``_resolve_logger`` fix is what
+    makes this work.
+    """
+    # Step 2: import + grab a module-level logger BEFORE service_name is set.
+    monkeypatch.delenv("NEKO_PLUGIN_SERVICE_NAME", raising=False)
+    plogging = importlib.import_module("plugin.logging_config")
+    early_logger = plogging.get_logger("shared.module")
+    early_default = plogging.logger  # the module-level singleton
+    early_bound = plogging.logger.bind(plugin_id="lazy_test")  # propagated through bind
+
+    # Step 3: host belatedly sets env + boots its logger sink.
+    monkeypatch.setenv("NEKO_PLUGIN_SERVICE_NAME", "Plugin_lazy")
+    from utils.logger_config import setup_logging as bootstrap_setup_logging
+    bootstrap_setup_logging(service_name="Plugin_lazy", log_level=logging.INFO, silent=True)
+
+    # Step 4: emit through the loggers grabbed BEFORE step 3.
+    early_logger.info("late-routed-shared")
+    early_default.info("late-routed-default")
+    early_bound.warning("late-routed-bound")
+
+    for h in logging.getLogger("N.E.K.O.Plugin_lazy").handlers:
+        h.flush()
+
+    text = _read_logs(isolated_log_dir, "Plugin_lazy")
+    assert "late-routed-shared" in text, (
+        "PluginLoggerAdapter froze its stdlib logger at construction — "
+        "subprocess-style late env change no longer routes to the right file."
+    )
+    assert "late-routed-default" in text
+    assert "late-routed-bound" in text
+
+
 def test_logger_adapter_braces_route_to_pluginserver_file(isolated_log_dir, monkeypatch):
     """Most plugin code still uses loguru-style braces:
         logger.info("foo {}", x)
