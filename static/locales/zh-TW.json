@@ -3326,5 +3326,31 @@
         "useTemporary": "臨時使用",
         "tempBadge": "臨時",
         "popupBlocked": "彈窗被阻止，請允許彈窗後重試"
+    },
+    "connectivity": {
+        "testCustom": "測試自訂 API 連通性",
+        "testCore": "測試",
+        "testCoreTooltip": "測試核心 API 連通性",
+        "testAssist": "測試",
+        "testAssistTooltip": "測試輔助 API 連通性",
+        "error": {
+            "timeout": "請求逾時（10秒）",
+            "auth_failed": "API Key 無效或已過期",
+            "connection_refused": "無法連接到目標伺服器",
+            "dns_error": "域名解析失敗",
+            "ssl_error": "SSL 憑證驗證失敗",
+            "ws_error": "WebSocket 連接失敗",
+            "missing_params": "缺少必要參數",
+            "unknown": "未知錯誤",
+            "backend_unavailable": "後端服務不可用",
+            "invalid_response": "回應格式錯誤"
+        },
+        "status": {
+            "connected": "已連通",
+            "failed": "連接失敗",
+            "untested": "未測試",
+            "not_configured": "未設定",
+            "testing": "測試中..."
+        }
     }
 }

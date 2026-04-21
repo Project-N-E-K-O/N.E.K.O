@@ -3326,5 +3326,31 @@
         "useTemporary": "一時的に使用",
         "tempBadge": "一時",
         "popupBlocked": "ポップアップがブロックされました。ポップアップを許可してから再試行してください。"
+    },
+    "connectivity": {
+        "testCustom": "カスタムAPI接続テスト",
+        "testCore": "テスト",
+        "testCoreTooltip": "コアAPI接続テスト",
+        "testAssist": "テスト",
+        "testAssistTooltip": "アシストAPI接続テスト",
+        "error": {
+            "timeout": "リクエストがタイムアウトしました（10秒）",
+            "auth_failed": "API Keyが無効または期限切れです",
+            "connection_refused": "ターゲットサーバーに接続できません",
+            "dns_error": "DNS解決に失敗しました",
+            "ssl_error": "SSL証明書の検証に失敗しました",
+            "ws_error": "WebSocket接続に失敗しました",
+            "missing_params": "必須パラメータが不足しています",
+            "unknown": "不明なエラー",
+            "backend_unavailable": "バックエンドサービスが利用できません",
+            "invalid_response": "レスポンス形式が不正です"
+        },
+        "status": {
+            "connected": "接続済み",
+            "failed": "接続失敗",
+            "untested": "未テスト",
+            "not_configured": "未設定",
+            "testing": "テスト中..."
+        }
     }
 }

@@ -3326,5 +3326,31 @@
         "useTemporary": "Временно",
         "tempBadge": "Врем.",
         "popupBlocked": "Всплывающее окно заблокировано. Разрешите всплывающие окна и повторите попытку."
+    },
+    "connectivity": {
+        "testCustom": "Тест подключения пользовательского API",
+        "testCore": "Тест",
+        "testCoreTooltip": "Тест подключения основного API",
+        "testAssist": "Тест",
+        "testAssistTooltip": "Тест подключения вспомогательного API",
+        "error": {
+            "timeout": "Время ожидания запроса истекло (10 сек)",
+            "auth_failed": "API Key недействителен или истёк",
+            "connection_refused": "Не удаётся подключиться к целевому серверу",
+            "dns_error": "Ошибка разрешения DNS",
+            "ssl_error": "Ошибка проверки SSL-сертификата",
+            "ws_error": "Ошибка подключения WebSocket",
+            "missing_params": "Отсутствуют обязательные параметры",
+            "unknown": "Неизвестная ошибка",
+            "backend_unavailable": "Бэкенд-сервис недоступен",
+            "invalid_response": "Неверный формат ответа"
+        },
+        "status": {
+            "connected": "Подключено",
+            "failed": "Ошибка подключения",
+            "untested": "Не проверено",
+            "not_configured": "Не настроено",
+            "testing": "Проверка..."
+        }
     }
 }

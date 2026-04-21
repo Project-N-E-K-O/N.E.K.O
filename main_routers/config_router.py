@@ -12,11 +12,14 @@ Handles configuration-related API endpoints including:
 import asyncio
 import json
 import os
+import ssl
 import threading
 import urllib.parse
+from typing import Optional
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from .shared_state import get_config_manager, get_steamworks, get_session_manager, get_initialize_character_data
 from .characters_router import get_current_live2d_model
@@ -972,3 +975,225 @@ async def set_proxy_mode(request: Request):
     except Exception:
         logger.exception("[ProxyMode] 切换失败")
         return JSONResponse({"success": False, "error": "切换失败，服务器内部错误"}, status_code=500)
+
+
+# ---------------------------------------------------------------------------
+# Connectivity Test Models & Endpoint
+# ---------------------------------------------------------------------------
+
+class ConnectivityTestRequest(BaseModel):
+    url: str
+    api_key: Optional[str] = ""
+    provider_type: Optional[str] = "openai_compatible"
+    is_free: Optional[bool] = False
+
+
+class ConnectivityTestResponse(BaseModel):
+    success: bool
+    error: Optional[str] = None
+    error_code: Optional[str] = None
+
+
+async def _test_openai_compatible(url: str, api_key: str, is_free: bool = False) -> dict:
+    """Test an OpenAI-compatible REST API endpoint.
+
+    Strategy:
+    1. GET {url}/models with Authorization header (10s timeout).
+    2. If /models returns 4xx, fallback to a minimal chat completion POST.
+    3. Any 2xx is considered success.
+    4. For free version APIs (is_free=True), 400 Bad Request also counts as success.
+    """
+    import httpx
+
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    timeout = httpx.Timeout(10.0)
+
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        # --- Step 1: GET /models ---
+        try:
+            models_url = f"{url.rstrip('/')}/models"
+            resp = await client.get(models_url, headers=headers)
+
+            if resp.status_code in (401, 403):
+                return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
+
+            if 200 <= resp.status_code < 300:
+                return {"success": True}
+
+            # 4xx (other than 401/403) → fallback to chat completion
+            if 400 <= resp.status_code < 500:
+                return await _fallback_chat_completion(client, url, headers, is_free)
+
+            # 5xx or other
+            return {"success": False, "error": f"HTTP {resp.status_code}", "error_code": "unknown"}
+
+        except httpx.TimeoutException:
+            return {"success": False, "error": "请求超时（10秒）", "error_code": "timeout"}
+        except ssl.SSLError:
+            return {"success": False, "error": "SSL证书验证失败", "error_code": "ssl_error"}
+        except httpx.ConnectError as e:
+            return _classify_connect_error(e)
+        except Exception as e:
+            return {"success": False, "error": str(e), "error_code": "unknown"}
+
+
+async def _fallback_chat_completion(client, url: str, headers: dict, is_free: bool = False) -> dict:
+    """Fallback: send a minimal chat completion request when /models returns 4xx."""
+    import httpx
+
+    try:
+        chat_url = f"{url.rstrip('/')}/chat/completions"
+        payload = {
+            "model": "gpt-3.5-turbo",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 1,
+        }
+        resp = await client.post(chat_url, headers=headers, json=payload)
+
+        if resp.status_code in (401, 403):
+            return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
+
+        if 200 <= resp.status_code < 300:
+            return {"success": True}
+
+        # 免费版 API：400 Bad Request = 服务可达，Key 未被拒绝，只是请求格式不匹配
+        if is_free and resp.status_code == 400:
+            return {"success": True}
+
+        return {"success": False, "error": f"HTTP {resp.status_code}", "error_code": "unknown"}
+
+    except httpx.TimeoutException:
+        return {"success": False, "error": "请求超时（10秒）", "error_code": "timeout"}
+    except ssl.SSLError:
+        return {"success": False, "error": "SSL证书验证失败", "error_code": "ssl_error"}
+    except httpx.ConnectError as e:
+        return _classify_connect_error(e)
+    except Exception as e:
+        return {"success": False, "error": str(e), "error_code": "unknown"}
+
+
+async def _test_websocket(url: str, api_key: str) -> dict:
+    """Test a WebSocket endpoint by performing a handshake and closing immediately."""
+    import websockets
+
+    try:
+        # Build WebSocket URL with API key as query parameter (if key provided)
+        ws_url = url.rstrip("/")
+        if api_key:
+            separator = "&" if "?" in ws_url else "?"
+            ws_url_with_key = f"{ws_url}{separator}api_key={api_key}"
+            extra_headers = {"Authorization": f"Bearer {api_key}"}
+        else:
+            ws_url_with_key = ws_url
+            extra_headers = {}
+
+        async with asyncio.timeout(10):
+            async with websockets.connect(
+                ws_url_with_key,
+                additional_headers=extra_headers,
+                open_timeout=10,
+                close_timeout=5,
+            ):
+                # Connection succeeded — close immediately
+                pass
+
+        return {"success": True}
+
+    except TimeoutError:
+        return {"success": False, "error": "请求超时（10秒）", "error_code": "timeout"}
+    except asyncio.TimeoutError:
+        return {"success": False, "error": "请求超时（10秒）", "error_code": "timeout"}
+    except ssl.SSLError:
+        return {"success": False, "error": "SSL证书验证失败", "error_code": "ssl_error"}
+    except OSError as e:
+        err_str = str(e).lower()
+        if "getaddrinfo" in err_str or "name or service not known" in err_str or "nodename nor servname" in err_str:
+            return {"success": False, "error": "域名解析失败", "error_code": "dns_error"}
+        if "connection refused" in err_str or "connect call failed" in err_str:
+            return {"success": False, "error": "无法连接到目标服务器", "error_code": "connection_refused"}
+        return {"success": False, "error": f"WebSocket连接失败: {e}", "error_code": "ws_error"}
+    except Exception as e:
+        err_str = str(e).lower()
+        # websockets library raises InvalidStatusError for HTTP 401/403 during handshake
+        status_code = getattr(e, "status_code", None)
+        if status_code in (401, 403):
+            return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
+        return {"success": False, "error": f"WebSocket连接失败: {e}", "error_code": "ws_error"}
+
+
+def _classify_connect_error(e) -> dict:
+    """Classify an httpx.ConnectError into a specific error code."""
+    err_str = str(e).lower()
+    if "getaddrinfo" in err_str or "name or service not known" in err_str or "nodename nor servname" in err_str:
+        return {"success": False, "error": "域名解析失败", "error_code": "dns_error"}
+    if "connection refused" in err_str or "connect call failed" in err_str:
+        return {"success": False, "error": "无法连接到目标服务器", "error_code": "connection_refused"}
+    if "ssl" in err_str:
+        return {"success": False, "error": "SSL证书验证失败", "error_code": "ssl_error"}
+    return {"success": False, "error": f"无法连接到目标服务器: {e}", "error_code": "connection_refused"}
+
+
+@router.post("/test_connectivity")
+async def test_connectivity(req: ConnectivityTestRequest) -> dict:
+    """测试 API 连通性。
+
+    根据 provider_type 选择测试策略：
+    - openai_compatible（默认）：GET {url}/models，4xx 时回退到 chat completion
+    - websocket：WebSocket 握手，成功后立即关闭
+
+    所有请求 10 秒超时。端点为 async，天然支持并发请求不阻塞。
+    """
+    # --- Parameter validation ---
+    if not req.url or not req.url.strip():
+        return {"success": False, "error": "缺少必要参数", "error_code": "missing_params"}
+
+    # api_key 可选（本地服务如 Ollama 不需要 key）
+    api_key_stripped = (req.api_key or "").strip()
+
+    provider = (req.provider_type or "openai_compatible").strip().lower()
+    url_stripped = req.url.strip()
+
+    # 根据 URL 识别供应商名称，用于日志显示
+    _source_label = _identify_provider_label(url_stripped, bool(req.is_free))
+
+    try:
+        if provider == "websocket":
+            result = await _test_websocket(url_stripped, api_key_stripped)
+        else:
+            result = await _test_openai_compatible(url_stripped, api_key_stripped, is_free=bool(req.is_free))
+    except Exception as e:
+        logger.exception("[ConnectivityTest] 未预期的异常")
+        result = {"success": False, "error": str(e), "error_code": "unknown"}
+
+    # 单条结果日志：供应商/自定义 + 成功/失败
+    if result.get("success"):
+        logger.info("[ConnectivityTest] %s → ✅ 连通", _source_label)
+    else:
+        logger.info("[ConnectivityTest] %s → ❌ %s", _source_label, result.get("error_code", "unknown"))
+
+    return result
+
+
+def _identify_provider_label(url: str, is_free: bool) -> str:
+    """根据 URL 识别是哪个供应商，返回人类可读的标签。
+    已知供应商显示名称，自定义的显示完整 URL。
+    """
+    _KNOWN_PROVIDERS = {
+        "lanlan.tech": "免费版",
+        "dashscope.aliyuncs.com": "阿里百炼",
+        "dashscope-intl.aliyuncs.com": "阿里国际版",
+        "api.openai.com": "OpenAI",
+        "open.bigmodel.cn": "智谱",
+        "api.stepfun.com": "阶跃星辰",
+        "api.siliconflow.cn": "硅基流动",
+        "generativelanguage.googleapis.com": "Gemini",
+        "api.moonshot.cn": "Kimi",
+    }
+    url_lower = url.lower()
+    for domain, name in _KNOWN_PROVIDERS.items():
+        if domain in url_lower:
+            if is_free:
+                return f"{name}(免费)"
+            return name
+    # 自定义 URL：显示完整地址
+    return f"自定义({url})"
