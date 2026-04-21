@@ -539,6 +539,15 @@ async def _resolve_rebuttal_start_time(name: str, now: datetime):
     cursor = await cursor_store.aget_cursor(name, CURSOR_REBUTTAL_CHECKED_UNTIL)
     fallback = now - timedelta(hours=REBUTTAL_FIRST_RUN_LOOKBACK_HOURS)
     if cursor is None:
+        # 首次启动：把 fallback 落盘锚定。否则 LLM 连续失败时，下轮
+        # cursor 仍为 None，新的 fallback 会基于新的 now 重新计算并前移
+        # （滑动 1h 窗口），首轮窗口最早段消息会被永久跳过。
+        try:
+            await cursor_store.aset_cursor(
+                name, CURSOR_REBUTTAL_CHECKED_UNTIL, fallback,
+            )
+        except Exception as e:
+            logger.debug(f"[Rebuttal] {name}: 首次 fallback 锚定写入失败（将在下轮重试）: {e}")
         return fallback
     if cursor > now:
         logger.warning(

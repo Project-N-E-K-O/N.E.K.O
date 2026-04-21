@@ -224,3 +224,84 @@ async def test_synth_different_fact_set_produces_different_id(tmp_path):
         with open(rpath, encoding="utf-8") as f:
             reflections = json.load(f)
         assert len(reflections) == 2
+
+
+@pytest.mark.asyncio
+async def test_synth_concurrent_dedup_returns_empty(tmp_path):
+    """并发场景：第一次 aload 没看到 rid → LLM 跑完 → 第二次 aload 发现
+    rid 已被对方协程持久化 → 必须返回 [] 而不是内存里的副本，否则调用方
+    拿到的反思不在磁盘上、文本可能与磁盘版不同。"""
+    from memory.reflection import _reflection_id_from_facts
+
+    mock_cm = _build_mock_cm(str(tmp_path))
+    fact_ids = [f"f{i}" for i in range(6)]
+    _write_unabsorbed_facts(str(tmp_path), "小天", fact_ids)
+    expected_rid = _reflection_id_from_facts(sorted(fact_ids))
+
+    with patch("memory.reflection.get_config_manager", return_value=mock_cm), \
+         patch("memory.facts.get_config_manager", return_value=mock_cm):
+        from memory.facts import FactStore
+        from memory.persona import PersonaManager
+        from memory.reflection import ReflectionEngine
+
+        fs = FactStore()
+        fs._config_manager = mock_cm
+        pm = PersonaManager()
+        pm._config_manager = mock_cm
+        re = ReflectionEngine(fs, pm)
+        re._config_manager = mock_cm
+
+        async def _fake_ainvoke(self, prompt):
+            resp = MagicMock()
+            resp.content = (
+                '{"reflection": "本进程的反思文本", "entity": "master"}'
+            )
+            return resp
+
+        class _FakeLLM:
+            def __init__(self, *a, **kw): pass
+            ainvoke = _fake_ainvoke
+
+            async def aclose(self):
+                return None
+
+        # aload_reflections 第一次（line 349 短路检查）→ []，让 LLM 跑起来
+        # 第二次（line 416 race re-load）→ 返回另一协程已写入的版本
+        ghost_reflection = {
+            "id": expected_rid,
+            "text": "并发协程写下的另一份反思文本",
+            "entity": "master",
+            "status": "pending",
+            "source_fact_ids": sorted(fact_ids),
+        }
+        load_call_count = {"n": 0}
+        original_aload = re.aload_reflections
+
+        async def mock_aload(name):
+            load_call_count["n"] += 1
+            if load_call_count["n"] == 1:
+                return await original_aload(name)
+            # 模拟并发：另一协程已落盘
+            return [ghost_reflection]
+
+        save_called = {"n": 0}
+        original_asave = re.asave_reflections
+
+        async def mock_asave(name, refs):
+            save_called["n"] += 1
+            await original_asave(name, refs)
+
+        with patch("utils.llm_client.create_chat_llm", _FakeLLM), \
+             patch("config.prompts_memory.get_reflection_prompt", lambda lang: "{FACTS}|{LANLAN_NAME}|{MASTER_NAME}"), \
+             patch("utils.language_utils.get_global_language", return_value="zh"), \
+             patch.object(re, "aload_reflections", side_effect=mock_aload), \
+             patch.object(re, "asave_reflections", side_effect=mock_asave):
+            result = await re.synthesize_reflections("小天")
+
+        # 关键断言：dedup 分支必须返回 []，不能把内存里未落盘的副本交出去
+        assert result == [], (
+            f"concurrent dedup must return [] (caller would otherwise see an "
+            f"un-persisted reflection that may differ from disk). got: {result}"
+        )
+        # 我们这次没真正 save（dedup 命中跳过 append+save）
+        assert save_called["n"] == 0

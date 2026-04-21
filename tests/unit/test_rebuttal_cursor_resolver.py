@@ -41,6 +41,31 @@ async def test_resolve_returns_fallback_when_cursor_missing(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_resolve_anchors_fallback_on_first_call(tmp_path):
+    """首次启动 cursor=None 时必须把 fallback 落盘锚定，否则 LLM 连续失败
+    会让 fallback 随 now 滑动、最早段消息被永久跳过。"""
+    store = _install_fresh_cursor_store(str(tmp_path))
+    import memory_server
+    from memory.cursors import CURSOR_REBUTTAL_CHECKED_UNTIL
+
+    now = datetime(2026, 4, 17, 12, 0, 0)
+    expected_fallback = now - timedelta(hours=memory_server.REBUTTAL_FIRST_RUN_LOOKBACK_HOURS)
+
+    start = await memory_server._resolve_rebuttal_start_time("小天", now)
+    assert start == expected_fallback
+
+    # 关键：fallback 已被持久化，下轮即便 now 推进、cursor 也不再为 None
+    persisted = await store.aget_cursor("小天", CURSOR_REBUTTAL_CHECKED_UNTIL)
+    assert persisted == expected_fallback
+
+    # 模拟下轮：5 分钟后再调，应走 in-past 分支返回上轮锚定的 fallback，
+    # 而不是用新 now 重算一个滑动后的 fallback。
+    later = now + timedelta(minutes=5)
+    start_2 = await memory_server._resolve_rebuttal_start_time("小天", later)
+    assert start_2 == expected_fallback  # 锚点未漂移
+
+
+@pytest.mark.asyncio
 async def test_resolve_returns_persisted_cursor_when_in_past(tmp_path):
     """Normal path: cursor from 2 hours ago should be returned as-is."""
     store = _install_fresh_cursor_store(str(tmp_path))

@@ -414,6 +414,7 @@ class ReflectionEngine:
 
         # 再次 load：LLM 调用期间可能有并发 synth；用最新 list 做 id dedup 追加
         reflections = await self.aload_reflections(lanlan_name)
+        created = False
         if any(r.get('id') == rid for r in reflections):
             logger.info(
                 f"[Reflection] {lanlan_name}: reflection {rid} 已被并发 synth 写入，跳过重复 append"
@@ -421,10 +422,16 @@ class ReflectionEngine:
         else:
             reflections.append(reflection)
             await self.asave_reflections(lanlan_name, reflections)
+            created = True
 
         # 无条件 mark_absorbed：幂等，且覆盖 save 成功后但在此崩溃的补跑情况
         await self._fact_store.amark_absorbed(lanlan_name, source_fact_ids)
 
+        if not created:
+            # 并发分支已落盘对方的对象；返回内存副本会让调用方拿到一个
+            # 未持久化、可能与磁盘版文本不同的"幽灵反思"，违反"返回值
+            # = 本调用真正新建的反思"语义。
+            return []
         logger.info(f"[Reflection] {lanlan_name}: 合成了新反思 {rid}: {reflection_text[:50]}...")
         return [reflection]
 
