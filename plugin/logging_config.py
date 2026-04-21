@@ -228,11 +228,16 @@ def _ensure_root_logger() -> None:
         # handler。再调一次会触发 RobustLoggerConfig.setup_logger() 的 "幂等重建"
         # （清掉重建），既浪费 IO，又会多打一行 "日志系统已初始化"。
         if not service_logger.handlers:
+            # ``Plugin_<id>`` 子进程 → 收纳到 ``logs/plugin/``；
+            # ``PluginServer`` 宿主进程 → 留在顶层 ``logs/``。
+            # 前缀匹配故意卡 ``Plugin_`` 下划线，避免把 ``PluginServer`` 误路由。
+            log_subdir = "plugin" if service_name.startswith("Plugin_") else None
             try:
                 _bootstrap_setup_logging(
                     service_name=service_name,
                     log_level=_level_to_int(LOG_LEVEL),
                     silent=True,
+                    log_subdir=log_subdir,
                 )
             except Exception:
                 # bootstrap 失败 —— 同样别锁死 flag，下次真正能跑时再重试。

@@ -91,7 +91,10 @@ class PluginFileLogger:
         """返回当前进程的日志文件路径（由本体 RobustLoggerConfig 决定）。"""
         try:
             from utils.logger_config import RobustLoggerConfig
-            cfg = RobustLoggerConfig(service_name=f"Plugin_{self.plugin_id}")
+            cfg = RobustLoggerConfig(
+                service_name=f"Plugin_{self.plugin_id}",
+                log_subdir="plugin",
+            )
             return Path(cfg.get_log_file_path())
         except Exception:
             return self.plugin_dir / "logs" / f"{self.plugin_id}.log"
@@ -99,7 +102,10 @@ class PluginFileLogger:
     def get_log_directory(self) -> Path:
         try:
             from utils.logger_config import RobustLoggerConfig
-            cfg = RobustLoggerConfig(service_name=f"Plugin_{self.plugin_id}")
+            cfg = RobustLoggerConfig(
+                service_name=f"Plugin_{self.plugin_id}",
+                log_subdir="plugin",
+            )
             return Path(cfg.get_log_directory_path())
         except Exception:
             return self.plugin_dir / "logs"
