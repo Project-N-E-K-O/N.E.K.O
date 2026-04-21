@@ -152,7 +152,16 @@ class VRMManager {
     }
 
     _getLookAtHeadWorldPosition() {
-        const headBone = this.currentModel?.vrm?.humanoid?.getNormalizedBoneNode('head');
+        const humanoid = this.currentModel?.vrm?.humanoid;
+        let headBone = null;
+        if (humanoid) {
+            if (typeof humanoid.getRawBoneNode === 'function') {
+                headBone = humanoid.getRawBoneNode('head');
+            }
+            if (!headBone && typeof humanoid.getNormalizedBoneNode === 'function') {
+                headBone = humanoid.getNormalizedBoneNode('head');
+            }
+        }
         if (headBone) {
             headBone.updateMatrixWorld(true);
             headBone.getWorldPosition(this._lookAtHeadWorldPos);
@@ -1665,6 +1674,29 @@ class VRMManager {
         return this._projectWorldPositionToScreen(this._getLookAtHeadWorldPosition());
     }
 
+    getHeadDetectionGeometryInfo() {
+        const bounds = this.getModelScreenBounds();
+        if (!bounds) {
+            return null;
+        }
+
+        const headAnchor = this.getHeadScreenAnchor();
+        return {
+            type: 'vrm',
+            bounds,
+            rawHeadAnchor: headAnchor || null,
+            headAnchor: headAnchor || null,
+            headRect: null,
+            headMode: 'head',
+            headSource: 'bone',
+            bodyRect: null,
+            bodySource: null,
+            reliableHeadRect: false,
+            preciseDisplayInfoRect: false,
+            coarseHitAreaHeadRect: false
+        };
+    }
+
     /**
      * 获取 VRM 模型在屏幕上的边界（用于局部跟踪）
      * @returns {Object|null} 边界对象 { left, right, top, bottom, width, height, centerX, centerY } 或 null
@@ -1677,6 +1709,9 @@ class VRMManager {
         const canvasRect = this.renderer.domElement.getBoundingClientRect();
         const canvasWidth = canvasRect.width;
         const canvasHeight = canvasRect.height;
+        if (!(canvasWidth > 0) || !(canvasHeight > 0)) {
+            return null;
+        }
 
         const scene = this.currentModel.vrm?.scene ?? this.currentModel.scene;
         if (!scene) return null;
@@ -1713,6 +1748,9 @@ class VRMManager {
 
         const width = screenRight - screenLeft;
         const height = screenBottom - screenTop;
+        if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 2 || height <= 2) {
+            return null;
+        }
 
         return {
             left: screenLeft,

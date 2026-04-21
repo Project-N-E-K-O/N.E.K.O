@@ -486,6 +486,29 @@ class MMDManager {
         };
     }
 
+    getHeadDetectionGeometryInfo() {
+        const bounds = this.getModelScreenBounds();
+        if (!bounds) {
+            return null;
+        }
+
+        const headAnchor = this.getHeadScreenAnchor();
+        return {
+            type: 'mmd',
+            bounds,
+            rawHeadAnchor: headAnchor || null,
+            headAnchor: headAnchor || null,
+            headRect: null,
+            headMode: 'head',
+            headSource: 'bone',
+            bodyRect: null,
+            bodySource: null,
+            reliableHeadRect: false,
+            preciseDisplayInfoRect: false,
+            coarseHitAreaHeadRect: false
+        };
+    }
+
     /**
      * 获取 MMD 模型在屏幕上的边界（用于局部跟踪）
      * @returns {Object|null} 边界对象 { left, right, top, bottom, width, height, centerX, centerY } 或 null
@@ -498,6 +521,9 @@ class MMDManager {
         const canvasRect = this.renderer.domElement.getBoundingClientRect();
         const canvasWidth = canvasRect.width;
         const canvasHeight = canvasRect.height;
+        if (!(canvasWidth > 0) || !(canvasHeight > 0)) {
+            return null;
+        }
 
         const mesh = this.currentModel.mesh;
         if (!mesh) return null;
@@ -534,6 +560,9 @@ class MMDManager {
 
         const width = screenRight - screenLeft;
         const height = screenBottom - screenTop;
+        if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 2 || height <= 2) {
+            return null;
+        }
 
         return {
             left: screenLeft,

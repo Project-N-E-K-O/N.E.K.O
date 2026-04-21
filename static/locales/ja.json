@@ -987,6 +987,12 @@
         "customApiWarning": "注: カスタムAPIを有効にすると、以下の設定が優先され、Core/Assist APIの設定よりも優先して使用されます。",
         "enableCustomApi": "カスタムAPI設定を有効にする",
         "enableCustomApiNote": "有効にすると、Core/Assist APIよりも優先してカスタム設定が使用されます",
+        "clearCustomApi": "カスタムAPI設定をクリア",
+        "clearCustomApiConfirm": "すべてのカスタムAPI設定をクリアしますか？すべてのカスタムAPI Key、モデルID、URLがクリアされ、GPT-SoVITSのチェックも外れます。",
+        "clearCustomApiConfirmTitle": "⚠️ クリア確認",
+        "clearCustomApiConfirmBtn": "クリア実行",
+        "clearCustomApiSaveHint": "⚠ この操作はページ上の設定内容をクリアするだけです。変更を保存するには「設定を保存」ボタンをクリックしてください。",
+        "clearCustomApiSuccess": "カスタムAPI設定がクリアされました。「設定を保存」ボタンをクリックして変更を保存してください。",
         "loadProvidersFailed": "プロバイダー情報の読み込みに失敗しました。ページを更新してください",
         "saveFailed": "保存失敗: {{error}}",
         "apiKeyInvalid": "APIキーが無効です",
@@ -1864,7 +1870,8 @@
             "downloadOverwrite": "この端末にすでに同期済みのクラウドスナップショットを使って、同名のローカルキャラクター設定とメモリディレクトリを上書きします。モデルリソースは自動ダウンロードされず、先にローカルバックアップを作成します。",
             "downloadNew": "この端末にすでに同期済みのクラウドスナップショットをローカルストレージへ復元します。モデルリソースは自動ダウンロードされず、先にローカルバックアップを作成します。",
             "downloadManualAsset": "\nこのクラウドキャラクターは手動インポートまたは外部モデルに依存しています。この端末にファイルがない場合、ダウンロード後も手動でインポートまたは移動する必要があります。",
-            "downloadFinal": "\nSteam Cloud スナップショットからの復元を続行しますか？"
+            "downloadFinal": "\nSteam Cloud スナップショットからの復元を続行しますか？",
+            "forceTerminateSession": "キャラクター「{{name}}」にはアクティブなセッションがあります。\nセッションを終了すると、現在の会話内容は失われますが、クラウドセーブのダウンロードは続行できます。\n\nセッションを終了して続行しますか？"
         },
         "dialog": {
             "providerUnavailable": "クラウドセーブ提供元は現在利用できません。後でもう一度お試しください。",
@@ -1881,7 +1888,8 @@
             "rollbackApplied": "\nローカルデータは操作前の状態に自動ロールバックされました。",
             "rollbackFailed": "\nロールバックも失敗しました：{{message}}",
             "loadFailed": "クラウドセーブ概要の読み込みに失敗しました：{{message}}",
-            "stateChanged": "クラウドセーブの状態が変わりました。最新の状態を確認してから再試行してください。"
+            "stateChanged": "クラウドセーブの状態が変わりました。最新の状態を確認してから再試行してください。",
+            "forceTerminateTitle": "セッションを終了して続行？"
         },
         "action": {
             "expandDetails": "詳細を表示",
@@ -1923,7 +1931,8 @@
             "nameAuditFailed": "キャラクター名がクラウドセーブルールの検証を通過しませんでした。",
             "uploadFailed": "アップロードに失敗しました：{{message}}",
             "downloadFailed": "ダウンロードに失敗しました：{{message}}",
-            "localReloadFailedRolledBack": "ダウンロードは適用されましたが、ローカルの再読み込みに失敗しました。"
+            "localReloadFailedRolledBack": "ダウンロードは適用されましたが、ローカルの再読み込みに失敗しました。",
+            "sessionTerminateFailed": "アクティブなセッションの終了に失敗しました。後でもう一度お試しください。"
         }
     },
     "settings": {
@@ -2031,7 +2040,17 @@
         "title": "リアルタイム字幕",
         "enable": "字幕翻訳",
         "enableAriaLabel": "字幕翻訳の切り替え",
-        "markdownPlaceholder": "[整形済みコンテンツ]"
+        "markdownPlaceholder": "[整形済みコンテンツ]",
+        "settings": {
+            "targetLang": "翻訳先の言語",
+            "opacity": "不透明度",
+            "dragAnywhere": "全体ドラッグ",
+            "size": "サイズ",
+            "sizeSmall": "小",
+            "sizeMedium": "中",
+            "sizeLarge": "大",
+            "settingsBtn": "字幕設定"
+        }
     },
     "viewer": {
         "title": "ビューアー - Project N.E.K.O."

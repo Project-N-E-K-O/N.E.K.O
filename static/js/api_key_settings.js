@@ -1511,6 +1511,76 @@ function toggleCustomApiSection() {
     }
 }
 
+// 清空自定义API配置
+function clearCustomApi() {
+    // 显示页面内确认弹窗
+    document.getElementById('clear-custom-api-modal').style.display = 'flex';
+}
+
+function closeClearCustomApiModal() {
+    document.getElementById('clear-custom-api-modal').style.display = 'none';
+}
+
+function confirmClearCustomApi() {
+    closeClearCustomApiModal();
+
+    // 清空所有自定义模型的 URL / Model ID / API Key
+    MODEL_TYPES.forEach(mt => {
+        const urlEl = document.getElementById(`${mt}ModelUrl`);
+        const idEl = document.getElementById(`${mt}ModelId`);
+        const keyEl = document.getElementById(`${mt}ModelApiKey`);
+        if (urlEl) urlEl.value = '';
+        if (idEl) idEl.value = '';
+        if (keyEl) {
+            keyEl.value = '';
+            // 清除遮蔽状态（如果有）
+            if (keyEl.dataset) {
+                delete keyEl.dataset.realKey;
+                delete keyEl.dataset.masked;
+            }
+        }
+        // 重置 Provider 下拉为默认值（跟随核心API）并同步联动状态
+        const providerEl = document.getElementById(`${mt}ModelProvider`);
+        if (providerEl) {
+            providerEl.value = 'follow_core';
+            onCustomModelProviderChange(mt);
+        }
+    });
+
+    // 清空 TTS Voice ID
+    const ttsVoiceIdEl = document.getElementById('ttsVoiceId');
+    if (ttsVoiceIdEl) ttsVoiceIdEl.value = '';
+
+    // 取消勾选 GPT-SoVITS
+    const gptsovitsEnabled = document.getElementById('gptsovitsEnabled');
+    if (gptsovitsEnabled && gptsovitsEnabled.checked) {
+        gptsovitsEnabled.checked = false;
+        toggleGptSovitsConfig();
+    }
+    // 清空 GPT-SoVITS 隐藏字段并重置状态，防止保存时残留旧配置
+    const gptsovitsApiUrlEl = document.getElementById('gptsovitsApiUrl');
+    if (gptsovitsApiUrlEl) gptsovitsApiUrlEl.value = '';
+    const gptsovitsVoiceIdEl = document.getElementById('gptsovitsVoiceId');
+    if (gptsovitsVoiceIdEl) gptsovitsVoiceIdEl.value = '';
+    _loadedGptSovitsState = 'none';
+    _ttsConfigDirty = true;
+
+    // 取消勾选自定义API开关（skipAutoFill=true 避免覆盖未保存的核心/辅助API输入）
+    const enableCustomApi = document.getElementById('enableCustomApi');
+    if (enableCustomApi && enableCustomApi.checked) {
+        enableCustomApi.checked = false;
+        toggleCustomApi(true);
+    }
+
+    // 同步折叠外层自定义API面板
+    const customApiOptions = document.getElementById('custom-api-options');
+    if (customApiOptions) customApiOptions.style.display = 'none';
+    const customApiToggleBtn = document.getElementById('custom-api-toggle-btn');
+    if (customApiToggleBtn) customApiToggleBtn.classList.remove('rotated');
+
+    showStatus(window.t ? window.t('api.clearCustomApiSuccess') : '自定义API配置已清空，请点击「保存设置」按钮以保存更改', 'success');
+}
+
 // 为自定义API开关添加事件监听器
 document.addEventListener('DOMContentLoaded', function () {
     const enableCustomApi = document.getElementById('enableCustomApi');

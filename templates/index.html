@@ -17,6 +17,7 @@
     <script src="/static/i18n-i18next.js"></script>
     <script src="/static/common_dialogs.js"></script>
     <link rel="stylesheet" href="/static/css/index.css">
+    <link rel="stylesheet" href="/static/css/subtitle.css">
     <style>/* React chat adapter: hide old chat */
     #chat-container { display: none !important; visibility: hidden !important; }</style>
     <link rel="stylesheet" href="/static/react/neko-chat/neko-chat-window.css">
@@ -36,7 +37,7 @@
     <script src="/static/libs/APlayer.min.js"></script>
 </head>
 
-<body>
+<body class="subtitle-web-host">
 
     <!-- 旧的按钮面板已迁移到浮动按钮系统（live2d.js），保留隐藏的旧按钮元素供功能触发使用 -->
     <div id="sidebar" style="display: none;">
@@ -114,7 +115,46 @@
     </div>
     <!-- 字幕显示区域 -->
     <div id="subtitle-display" class="hidden">
-        <span id="subtitle-text"></span>
+        <div id="subtitle-scroll">
+            <span id="subtitle-text"></span>
+        </div>
+        <button type="button" id="subtitle-settings-btn" title="Subtitle Settings" aria-label="Subtitle Settings" data-i18n-title="subtitle.settings.settingsBtn" data-i18n-aria="subtitle.settings.settingsBtn">
+            <svg viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg" width="14" height="14">
+                <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 00-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1115.6 12 3.61 3.61 0 0112 15.6z"/>
+            </svg>
+        </button>
+        <div id="subtitle-settings-panel" class="hidden">
+            <div class="subtitle-settings-row">
+                <span class="subtitle-settings-label" data-i18n="subtitle.settings.targetLang" data-subtitle-label="targetLang">目标语言</span>
+                <select id="subtitle-lang-select" data-i18n-title="subtitle.settings.targetLang" title="目标语言">
+                    <option value="zh">中文</option>
+                    <option value="en">English</option>
+                    <option value="ja">日本語</option>
+                    <option value="ko">한국어</option>
+                    <option value="ru">Русский</option>
+                </select>
+            </div>
+            <div class="subtitle-settings-row">
+                <span class="subtitle-settings-label" data-i18n="subtitle.settings.opacity" data-subtitle-label="opacity">不透明度</span>
+                <input type="range" id="subtitle-opacity-slider" min="20" max="100" value="95" data-i18n-title="subtitle.settings.opacity" title="不透明度">
+                <span id="subtitle-opacity-value">95%</span>
+            </div>
+            <div class="subtitle-settings-row">
+                <span class="subtitle-settings-label" data-i18n="subtitle.settings.dragAnywhere" data-subtitle-label="dragAnywhere">整体拖动</span>
+                <label class="subtitle-settings-switch">
+                    <input type="checkbox" id="subtitle-drag-mode-toggle" data-i18n-aria="subtitle.settings.dragAnywhere" aria-label="整体拖动开关">
+                    <span class="subtitle-settings-track"></span>
+                </label>
+            </div>
+            <div class="subtitle-settings-row">
+                <span class="subtitle-settings-label" data-i18n="subtitle.settings.size" data-subtitle-label="size">大小</span>
+                <div class="subtitle-size-group">
+                    <button type="button" class="subtitle-size-btn" data-size="small" data-i18n="subtitle.settings.sizeSmall">小</button>
+                    <button type="button" class="subtitle-size-btn active" data-size="medium" data-i18n="subtitle.settings.sizeMedium">中</button>
+                    <button type="button" class="subtitle-size-btn" data-size="large" data-i18n="subtitle.settings.sizeLarge">大</button>
+                </div>
+            </div>
+        </div>
         <div id="subtitle-drag-handle">
             <!-- 四向箭头图标 -->
             <div id="subtitle-drag-arrows">
@@ -287,6 +327,7 @@
     <script src="/static/ogg-opus-decoder-wrapper.js"></script>
 
     <!-- app 解构模块 -->
+    <script src="/static/subtitle-shared.js"></script>
     <script src="/static/app-state.js"></script>
     <script src="/static/app-ui.js"></script>
     <script src="/static/app-chat-text-utils.js"></script>

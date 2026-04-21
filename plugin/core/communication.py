@@ -11,7 +11,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, ClassVar, Dict, Optional, TypeVar
 
-from loguru import logger
+from plugin.logging_config import logger
 
 from plugin.utils.time_utils import now_iso
 from plugin.settings import (
@@ -339,6 +339,7 @@ class PluginCommunicationResourceManager:
     _MESSAGE_ROUTING: ClassVar[Dict[str, str]] = {
         "ENTRY_UPDATE": "_handle_entry_update",
         "STATIC_UI_REGISTER": "_handle_static_ui_register",
+        "LIST_ACTIONS_UPDATE": "_handle_list_actions_update",
     }
 
     async def _consume_uplink(self) -> None:
@@ -569,3 +570,35 @@ class PluginCommunicationResourceManager:
                     state.invalidate_snapshot_cache("plugins")
         except Exception:
             self.logger.exception("Failed to handle STATIC_UI_REGISTER")
+
+    async def _handle_list_actions_update(self, msg: Dict[str, Any]) -> None:
+        try:
+            from plugin.core.state import state
+
+            plugin_id = self.plugin_id
+            actions = msg.get("actions")
+            if not isinstance(actions, list):
+                self.logger.warning("LIST_ACTIONS_UPDATE missing actions list from plugin {}", plugin_id)
+                return
+
+            updated = False
+            with state.acquire_plugins_write_lock():
+                plugin_meta = state.plugins.get(plugin_id)
+                if isinstance(plugin_meta, dict):
+                    plugin_meta["list_actions"] = [
+                        dict(item) for item in actions if isinstance(item, dict)
+                    ]
+                    state.plugins[plugin_id] = plugin_meta
+                    updated = True
+                else:
+                    self.logger.warning("Plugin {} not found in state.plugins", plugin_id)
+                if updated:
+                    state.invalidate_snapshot_cache("plugins")
+            if updated:
+                self.logger.info(
+                    "List actions updated for plugin {}: {} actions",
+                    plugin_id,
+                    len(actions),
+                )
+        except Exception:
+            self.logger.exception("Failed to handle LIST_ACTIONS_UPDATE")

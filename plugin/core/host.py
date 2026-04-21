@@ -14,7 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional, Type
 
-from loguru import logger
+from plugin.logging_config import logger
 
 from plugin._types.events import EVENT_META_ATTR
 from plugin.sdk import PERSIST_ATTR
@@ -224,94 +224,50 @@ def _inject_extensions(
 # ============================================================================
 
 def _setup_plugin_logger(plugin_id: str, project_root: Path) -> Any:
-    """
-    配置插件进程的 loguru logger。
-    
+    """配置插件子进程的 logger（走本体 RobustLoggerConfig，落到 我的文档/N.E.K.O/logs/）。
+
+    NOTE: 不要再引入 loguru / 不要再用 cwd 推日志目录 / 不要再造 FileHandler。
+    见 plugin/logging_config.py 顶部警告。
+
     Args:
         plugin_id: 插件 ID
-        project_root: 项目根目录
-    
+        project_root: 项目根目录（用于注入 sys.path）
+
     Returns:
-        配置好的 logger 实例
+        PluginLoggerAdapter，已绑定 plugin_id。
     """
-    from loguru import logger
-    from plugin.logging_config import get_plugin_format_console, get_plugin_format_file
-    
-    # 移除默认 handler，绑定插件 ID
-    logger.remove()
-    logger = logger.bind(plugin_id=plugin_id)
-    
-    # 添加控制台输出（使用统一格式）
     safe_pid = _sanitize_plugin_id(plugin_id)
-    logger.add(
-        sys.stdout,
-        format=get_plugin_format_console(safe_pid),
-        level="INFO",
-        colorize=True,
-        enqueue=False,
-    )
-    
-    # 添加文件输出（使用统一格式）
-    log_dir = project_root / "log" / "plugins" / safe_pid
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir / f"{safe_pid}_{time.strftime('%Y%m%d_%H%M%S')}.log"
-    logger.add(
-        str(log_file),
-        format=get_plugin_format_file(safe_pid),
-        level="INFO",
-        rotation="10 MB",
-        retention=10,
-        encoding="utf-8",
-    )
-    
-    return logger
+    # 让 plugin/logging_config.get_logger() 能算出正确的 service namespace。
+    os.environ["NEKO_PLUGIN_SERVICE_NAME"] = f"Plugin_{safe_pid}"
+
+    # 子进程要先把项目根加到 sys.path，否则下面 import utils.logger_config 会失败。
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+
+    try:
+        from utils.logger_config import setup_logging as _bootstrap_setup_logging
+        _bootstrap_setup_logging(
+            service_name=f"Plugin_{safe_pid}",
+            silent=True,
+            # plugin 子进程日志统一收纳到 logs/plugin/，别跟 PluginServer /
+            # Main / Memory / Agent 等宿主进程日志混在 logs/ 顶层。
+            log_subdir="plugin",
+        )
+    except Exception:
+        # RobustLoggerConfig 自己会做多级 fallback；这里只兜底，不要遮蔽根因。
+        pass
+
+    from plugin.logging_config import get_logger
+    return get_logger(f"plugin.{safe_pid}").bind(plugin_id=plugin_id)
 
 
 def _setup_logging_interception(logger: Any, project_root: Path) -> None:
+    """兼容性 no-op：本体即 stdlib logging，不需要拦截。
+
+    保留函数签名以避免老调用者破坏。仅做一件事：确保 project_root 在 sys.path。
     """
-    设置标准库 logging 拦截，转发到 loguru。
-    
-    Args:
-        logger: loguru logger 实例
-        project_root: 项目根目录
-    """
-    import logging
-    
-    # 确保项目根目录在 path 中
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
-    
-    logger.debug("[Plugin Process] Resolved project_root: {}", project_root)
-    logger.debug("[Plugin Process] Python path (head): {}", sys.path[:3])
-    
-    # 尝试使用项目的 InterceptHandler
-    handler_cls: Optional[Type[logging.Handler]] = None
-    try:
-        import utils.logger_config as _lc
-        handler_cls = getattr(_lc, "InterceptHandler", None)
-    except Exception:
-        handler_cls = None
-    
-    if handler_cls is None:
-        class _InterceptHandler(logging.Handler):
-            def emit(self, record: logging.LogRecord) -> None:
-                try:
-                    level = record.levelname
-                    msg = record.getMessage()
-                    logger.opt(exception=record.exc_info).log(level, msg)
-                except Exception:
-                    pass
-        handler_cls = _InterceptHandler
-    
-    logging.basicConfig(handlers=[handler_cls()], level=0, force=True)
-    
-    # 设置 uvicorn/fastapi logger
-    for logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access", "fastapi"):
-        logging_logger = logging.getLogger(logger_name)
-        logging_logger.handlers = [handler_cls()]
-        logging_logger.propagate = False
-    
-    logger.debug("[Plugin Process] Standard logging intercepted and redirected to loguru")
 
 
 def _find_project_root(config_path: Path) -> Path:

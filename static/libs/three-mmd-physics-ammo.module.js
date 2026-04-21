@@ -709,6 +709,21 @@ class RigidBody {
     manager.freeThreeVector3(thV);
     manager.freeTransform(tr);
   }
+  _updateBonePositionSoft() {
+    const manager = this.manager;
+    const tr = this._getWorldTransformForBone();
+    const thV = manager.allocThreeVector3();
+    const o = manager.getOrigin(tr);
+    thV.set(o.x(), o.y(), o.z());
+    if (this.bone.parent)
+      this.bone.parent.worldToLocal(thV);
+    // 动态 alpha：偏差小时快速收敛（减少穿模），偏差大时慢速跟随（避免拉长）
+    const dist = this.bone.position.distanceTo(thV);
+    const alpha = dist < 0.1 ? 0.06 : dist < 0.5 ? 0.02 : 0.005;
+    this.bone.position.lerp(thV, alpha);
+    manager.freeThreeVector3(thV);
+    manager.freeTransform(tr);
+  }
   _updateBoneRotation() {
     const manager = this.manager;
     const tr = this._getWorldTransformForBone();
@@ -746,8 +761,10 @@ class RigidBody {
     if (this.params.physicsMode === 0 || this.params.boneIndex === -1)
       return this;
     this._updateBoneRotation();
+    // 柔性位置同步：不硬覆盖 position（会导致拉长），而是缓慢趋向物理位置
+    // 保持碰撞一致性的同时避免视觉拉伸
     if (this.params.physicsMode === 1)
-      this._updateBonePosition();
+      this._updateBonePositionSoft();
     this.bone.updateMatrixWorld(true);
     if (this.params.physicsMode === 2)
       this._setPositionFromBone();
@@ -1021,10 +1038,15 @@ class MMDPhysics {
 
     const manager = this.manager;
     const mesh = this.mesh;
+    // Capture previous-frame quaternion before any updates (used by rotation compensation + spin-lock)
+    const prevMeshQuat = manager.allocThreeQuaternion();
+    prevMeshQuat.copy(this._lastMeshQuat);
     let isNonDefaultScale = false;
     const position = manager.allocThreeVector3();
     const quaternion = manager.allocThreeQuaternion();
     const scale = manager.allocThreeVector3();
+    // Ensure matrixWorld reflects latest mesh.quaternion/position before decompose
+    mesh.updateMatrixWorld(true);
     mesh.matrixWorld.decompose(position, quaternion, scale);
 
     // [终极魔法 1: 局部相对重力 (Local Gravity)]
@@ -1086,6 +1108,66 @@ class MMDPhysics {
       manager.freeThreeVector3(displacement);
     }
 
+    // World Rotation Compensation: Sync dynamic rigid bodies when the model rotates.
+    if (delta > 0) {
+      const deltaQuat = manager.allocThreeQuaternion();
+      deltaQuat.copy(prevMeshQuat).invert().multiply(quaternion);
+      const rotAngle = 2 * Math.acos(Math.min(1, Math.abs(deltaQuat.w)));
+
+      if (rotAngle > 0.001) {
+        const pivot = position;
+        const tr = manager.allocTransform();
+
+        for (let i = 0, il = this.bodies.length; i < il; i++) {
+          const body = this.bodies[i];
+          if (body.params.physicsMode !== 0 && body.body) {
+            const ms = body.body.getMotionState();
+            if (ms) {
+              ms.getWorldTransform(tr);
+              const o = tr.getOrigin();
+
+              // Rotate position around pivot
+              const px = o.x() - pivot.x, py = o.y() - pivot.y, pz = o.z() - pivot.z;
+              const rVec = manager.allocThreeVector3();
+              rVec.set(px, py, pz).applyQuaternion(deltaQuat);
+              o.setValue(rVec.x + pivot.x, rVec.y + pivot.y, rVec.z + pivot.z);
+              manager.freeThreeVector3(rVec);
+
+              // Rotate orientation
+              const bodyQuat = tr.getRotation();
+              const thQ = manager.allocThreeQuaternion();
+              thQ.set(bodyQuat.x(), bodyQuat.y(), bodyQuat.z(), bodyQuat.w());
+              thQ.premultiply(deltaQuat);
+              const ammoQ = manager.allocQuaternion();
+              ammoQ.setValue(thQ.x, thQ.y, thQ.z, thQ.w);
+              tr.setRotation(ammoQ);
+              manager.freeQuaternion(ammoQ);
+              manager.freeThreeQuaternion(thQ);
+
+              body.body.setCenterOfMassTransform(tr);
+              ms.setWorldTransform(tr);
+
+              // Rotate velocities to keep inertia direction consistent
+              const lv = body.body.getLinearVelocity();
+              const av = body.body.getAngularVelocity();
+              const rvl = manager.allocThreeVector3();
+              rvl.set(lv.x(), lv.y(), lv.z()).applyQuaternion(deltaQuat);
+              const rva = manager.allocThreeVector3();
+              rva.set(av.x(), av.y(), av.z()).applyQuaternion(deltaQuat);
+              lv.setValue(rvl.x, rvl.y, rvl.z);
+              av.setValue(rva.x, rva.y, rva.z);
+              body.body.setLinearVelocity(lv);
+              body.body.setAngularVelocity(av);
+              manager.freeThreeVector3(rvl);
+              manager.freeThreeVector3(rva);
+            }
+          }
+        }
+        manager.freeTransform(tr);
+      }
+      manager.freeThreeQuaternion(deltaQuat);
+    }
+
     if (scale.x !== 1 || scale.y !== 1 || scale.z !== 1) {
       isNonDefaultScale = true;
     }
@@ -1101,11 +1183,12 @@ class MMDPhysics {
     this._updateRigidBodies();
 
     // Spin-Lock Mechanism (自旋锁防撕裂机制):
-    // 检测模型的极限空间自转。如果角速度超过安全阈值（例如高速拖拉/转圈），巨大的离心力会将密集的弹簧直接扯断。
-    // 在此时强行剥夺物理引擎算力：清零所有物理动能和惯性，并将裙摆、头发死死锁在默认位置上。
-    const angleDelta = this._lastMeshQuat.angleTo(quaternion);
-    const angularVelocity = angleDelta / delta;
-    if (angularVelocity > 3.0) { // 阈值：> 3.0 rad/s (约 170 度/秒)
+    // Only trigger if rotation compensation did NOT already handle this frame's rotation.
+    // Also guard against delta <= 0 to avoid Infinity/NaN.
+    const angleDelta = prevMeshQuat.angleTo(quaternion);
+    const angularVelocity = delta > 0 ? angleDelta / delta : 0;
+    const rotationCompensated = delta > 0 && angleDelta > 0.001;
+    if (!rotationCompensated && angularVelocity > 3.0) { // 阈值：> 3.0 rad/s (约 170 度/秒)
       const zeroVel = manager.allocVector3();
       zeroVel.setValue(0, 0, 0);
       for (let i = 0, il = this.bodies.length; i < il; i++) {
@@ -1122,6 +1205,7 @@ class MMDPhysics {
       manager.freeVector3(zeroVel);
     }
     this._lastMeshQuat.copy(quaternion);
+    manager.freeThreeQuaternion(prevMeshQuat);
 
     this._stepSimulation(delta);
     this._dampNearRestBodies();

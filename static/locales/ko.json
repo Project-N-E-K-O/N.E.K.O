@@ -987,6 +987,12 @@
         "customApiWarning": "참고: 사용자 정의 API를 활성화한 후에는 아래의 사용자 정의 구성이 우선적으로 적용되지만 핵심 및 보조 API는 별도로 조정할 수 있습니다.",
         "enableCustomApi": "사용자 정의 API 구성 활성화",
         "enableCustomApiNote": "활성화한 후에는 핵심 API 및 보조 API보다 우선순위가 높은 사용자 지정 API 구성이 사용됩니다.",
+        "clearCustomApi": "사용자 정의 API 구성 초기화",
+        "clearCustomApiConfirm": "모든 사용자 정의 API 구성을 초기화하시겠습니까? 모든 사용자 정의 API Key, 모델 ID, URL이 삭제되고 GPT-SoVITS 선택이 해제됩니다.",
+        "clearCustomApiConfirmTitle": "⚠️ 초기화 확인",
+        "clearCustomApiConfirmBtn": "초기화 확인",
+        "clearCustomApiSaveHint": "⚠ 이 작업은 페이지의 구성 내용만 초기화합니다. 변경 사항을 저장하려면 「설정 저장」 버튼을 클릭해야 합니다.",
+        "clearCustomApiSuccess": "사용자 정의 API 구성이 초기화되었습니다. 「설정 저장」 버튼을 클릭하여 변경 사항을 저장하세요.",
         "loadProvidersFailed": "API 제공업체 옵션을 로드하지 못했습니다. 페이지를 새로 고치고 다시 시도해 주세요.",
         "saveFailed": "저장 실패: {{error}}",
         "apiKeyInvalid": "API 키가 잘못되었습니다.",
@@ -1864,7 +1870,8 @@
             "downloadOverwrite": "이 장치에 이미 동기화된 클라우드 스냅샷으로 같은 이름의 로컬 캐릭터 설정과 메모리 디렉터리를 덮어씁니다. 모델 리소스는 자동으로 다운로드되지 않으며 먼저 로컬 백업을 만듭니다.",
             "downloadNew": "이 장치에 이미 동기화된 클라우드 스냅샷을 로컬 저장소로 복원합니다. 모델 리소스는 자동으로 다운로드되지 않으며 먼저 로컬 백업을 만듭니다.",
             "downloadManualAsset": "\n이 클라우드 캐릭터는 수동으로 가져온 모델 또는 외부 모델에 의존합니다. 이 장치에 파일이 없다면 다운로드 후에도 수동으로 가져오거나 옮겨야 합니다.",
-            "downloadFinal": "\nSteam Cloud 스냅샷에서 복원을 계속하시겠습니까?"
+            "downloadFinal": "\nSteam Cloud 스냅샷에서 복원을 계속하시겠습니까?",
+            "forceTerminateSession": "캐릭터 \"{{name}}\"에 활성 세션이 있습니다.\n세션을 종료하면 현재 대화 내용이 손실되지만, 클라우드 세이브 다운로드는 계속 진행할 수 있습니다.\n\n세션을 종료하고 계속하시겠습니까？"
         },
         "dialog": {
             "providerUnavailable": "클라우드 저장 제공자를 현재 사용할 수 없습니다. 나중에 다시 시도해 주세요.",
@@ -1881,7 +1888,8 @@
             "rollbackApplied": "\n로컬 데이터가 작업 전 상태로 자동 롤백되었습니다.",
             "rollbackFailed": "\n롤백도 실패했습니다: {{message}}",
             "loadFailed": "클라우드 저장 요약을 불러오지 못했습니다: {{message}}",
-            "stateChanged": "클라우드 저장 상태가 변경되었습니다. 새로고침된 요약을 확인한 뒤 다시 시도해 주세요."
+            "stateChanged": "클라우드 저장 상태가 변경되었습니다. 새로고침된 요약을 확인한 뒤 다시 시도해 주세요.",
+            "forceTerminateTitle": "세션 종료 후 계속？"
         },
         "action": {
             "expandDetails": "세부 정보 펼치기",
@@ -1923,7 +1931,8 @@
             "nameAuditFailed": "캐릭터 이름이 클라우드 저장 검증 규칙을 통과하지 못했습니다.",
             "uploadFailed": "업로드 실패: {{message}}",
             "downloadFailed": "다운로드 실패: {{message}}",
-            "localReloadFailedRolledBack": "다운로드는 적용되었지만 로컬 다시 불러오기에 실패했습니다."
+            "localReloadFailedRolledBack": "다운로드는 적용되었지만 로컬 다시 불러오기에 실패했습니다.",
+            "sessionTerminateFailed": "활성 세션 종료에 실패했습니다. 나중에 다시 시도해 주세요."
         }
     },
     "settings": {
@@ -2031,7 +2040,17 @@
         "title": "실시간 자막",
         "enable": "자막 번역",
         "enableAriaLabel": "자막 번역 전환",
-        "markdownPlaceholder": "[서식 있는 내용]"
+        "markdownPlaceholder": "[서식 있는 내용]",
+        "settings": {
+            "targetLang": "대상 언어",
+            "opacity": "불투명도",
+            "dragAnywhere": "전체 드래그",
+            "size": "크기",
+            "sizeSmall": "소",
+            "sizeMedium": "중",
+            "sizeLarge": "대",
+            "settingsBtn": "자막 설정"
+        }
     },
     "viewer": {
         "title": "뷰어 - 프로젝트 N.E.K.O."

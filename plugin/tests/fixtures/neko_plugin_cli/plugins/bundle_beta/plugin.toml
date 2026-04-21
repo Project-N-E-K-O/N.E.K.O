@@ -1,0 +1,18 @@
+[plugin]
+id = "bundle_beta"
+name = "Bundle Beta"
+description = "Second bundle fixture plugin."
+version = "0.5.1"
+type = "plugin"
+entry = "beta:Plugin"
+
+[plugin.sdk]
+supported = ">=2.3,<2.8"
+recommended = ">=2.3,<2.5"
+
+[plugin_runtime]
+auto_start = true
+
+[bundle_beta]
+mode = "beta"
+weight = 2

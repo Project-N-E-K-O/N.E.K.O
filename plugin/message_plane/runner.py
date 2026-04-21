@@ -8,7 +8,7 @@ import threading
 import time
 from dataclasses import dataclass
 
-from loguru import logger
+from plugin.logging_config import logger
 
 
 @dataclass(frozen=True)

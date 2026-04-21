@@ -107,35 +107,13 @@ _ensure_plugin_zmq_endpoint_available()
 
 from config import USER_PLUGIN_SERVER_PORT
 
-# -- brace-format compat for third-party libs that mix {} and % --
-def _install_logging_brace_compat() -> None:
-    if getattr(logging, "_neko_brace_compat_installed", False):
-        return
-
-    original_get_message = logging.LogRecord.getMessage
-
-    def _compat_get_message(self: logging.LogRecord) -> str:
-        try:
-            return original_get_message(self)
-        except TypeError:
-            msg = str(self.msg)
-            args = self.args
-            if not args or "%" in msg or "{" not in msg or "}" not in msg:
-                raise
-            try:
-                if isinstance(args, dict):
-                    return msg.format(**args)
-                if not isinstance(args, tuple):
-                    args = (args,)
-                return msg.format(*args)
-            except Exception:
-                return f"{msg} | args={self.args!r}"
-
-    setattr(logging.LogRecord, "getMessage", _compat_get_message)
-    setattr(logging, "_neko_brace_compat_installed", True)
-
-
-_install_logging_brace_compat()
+# ──────────────────────────────────────────────────────────────────────────
+#  ⚠ 严禁再引入 loguru。所有 plugin/* 已统一走 plugin.logging_config →
+#  utils.logger_config.RobustLoggerConfig。曾经的 brace-compat 与
+#  loguru→stdlib bridge 已迁入 plugin/logging_config.py。
+#  规则：再有人在本仓库 import loguru —— 就把谁杀了。
+#  lint 守门：scripts/check_no_loguru.py（CI: .github/workflows/analyze.yml）
+# ──────────────────────────────────────────────────────────────────────────
 
 # -- Unified stdlib logger, same as agent_server / memory_server --
 try:
@@ -152,31 +130,23 @@ except ModuleNotFoundError:
     _spec.loader.exec_module(_module)
     setup_logging = getattr(_module, "setup_logging")
 
+# 提前固定主 PluginServer 进程的 service_name —— plugin.logging_config.get_logger()
+# 通过 NEKO_PLUGIN_SERVICE_NAME 决定 logger 父节点（N.E.K.O.<service>.<comp>）。
+# 不设的话会 fallback 到 "Plugin"，导致 message_plane / runs / config 等模块的日志
+# 跑去 N.E.K.O_Plugin_*.log，与 PluginServer 自身的 N.E.K.O_PluginServer_*.log 分裂。
+#
+# 用 ``=`` 而不是 ``setdefault``：父进程（Electron / launcher 脚本）若意外携带
+# 旧的 ``Plugin_<id>`` 环境（比如复用了一个调试 shell），setdefault 会保留旧值，
+# 然后下面的 ``setup_logging("PluginServer")`` 和 ``get_logger()`` 会路由到两个
+# 不同的 namespace，再次造成日志分裂。这里强制覆盖。
+os.environ["NEKO_PLUGIN_SERVICE_NAME"] = "PluginServer"
+
 logger, _log_config = setup_logging(service_name="PluginServer", log_level=logging.INFO)
 
-# -- Keep loguru console handler alive for plugin SDK internals --
-# Plugin SDK components (plugin/server/*, plugin/core/*) use loguru via
-# plugin.logging_config.get_logger().  configure_default_logger() gives them
-# a console sink so their output isn't silently lost.  We additionally bridge
-# loguru -> stdlib so those logs also land in the PluginServer log file.
-try:
-    from plugin.logging_config import configure_default_logger  # noqa: E402
-    configure_default_logger()
-
-    from loguru import logger as _loguru_logger
-
-    def _loguru_sink(message) -> None:
-        record = message.record
-        lvl_name = record["level"].name
-        stdlib_lvl = getattr(logging, lvl_name, logging.INFO)
-        component = record["extra"].get("component", "plugin")
-        logger._logger.log(stdlib_lvl, "[%s] %s", component, record["message"])
-
-    _loguru_logger.add(_loguru_sink, level="INFO", format="{message}")
-except ModuleNotFoundError:
-    logger.info("loguru not installed; plugin SDK logs will only go to console")
-except Exception as _bridge_exc:
-    logger.warning("failed to set up loguru->stdlib bridge: %s", _bridge_exc)
+# Side-effect import：触发 plugin/logging_config.py 顶层的
+# _install_logging_brace_compat()，让所有 plugin/* 子模块共享 brace-format
+# 兼容（logger.info("msg {}", x) 不抛 TypeError）。模块本身不需要 alias。
+import plugin.logging_config  # noqa: E402,F401  -- side-effect only
 
 # -- uvicorn logging bridge --
 def _configure_uvicorn_logging_bridge() -> None:
@@ -236,7 +206,16 @@ def _can_register_faulthandler_signal() -> bool:
 
 
 def _enable_fault_handler_dump_file() -> IO[str] | None:
-    dump_path = Path(__file__).resolve().parent / "log" / "server" / "faulthandler_dump.log"
+    # 路径来自本体 RobustLoggerConfig（5 级可写目录回退，AppImage squashfs 安全）。
+    # 严禁再用 Path(__file__).parent / "log" —— 那是只读 squashfs，会直接崩。
+    try:
+        from utils.logger_config import RobustLoggerConfig
+        dump_dir = Path(RobustLoggerConfig(service_name="PluginServer").get_log_directory_path())
+    except Exception as exc:
+        logger.warning("failed to resolve log dir for faulthandler, fallback to tempdir: %s", exc)
+        import tempfile
+        dump_dir = Path(tempfile.gettempdir()) / "neko" / "logs"
+    dump_path = dump_dir / "faulthandler_dump.log"
     try:
         dump_path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
