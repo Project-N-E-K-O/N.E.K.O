@@ -544,7 +544,6 @@ export default function App({
   _rollbackKey,
 }: ChatWindowProps) {
   const [draft, setDraft] = useState('');
-  const [pendingDrafts, setPendingDrafts] = useState<Array<{ id: string; text: string; time: string; lastMsgId: string | null }>>([]);
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
   const [activeCursorToolId, setActiveCursorToolId] = useState<string | null>(null);
   const [avatarRangeCursorVariants, setAvatarRangeCursorVariants] = useState<ToolCursorVariantState>(() => createDefaultToolCursorVariantState());
@@ -790,24 +789,6 @@ export default function App({
 
     callback(payload);
   }
-
-  // Clear pending drafts once the host confirms them (appears in messages)
-  useEffect(() => {
-    if (pendingDrafts.length === 0) return;
-    const remaining = pendingDrafts.filter(d => {
-      const anchor = d.lastMsgId ? messages.findIndex(m => m.id === d.lastMsgId) : -1;
-      const newMsgs = messages.slice(anchor + 1);
-      const newUserTexts = new Set(
-        newMsgs
-          .filter(m => m.role === 'user')
-          .flatMap(m => m.blocks.flatMap(b => b.type === 'text' ? [b.text] : [])),
-      );
-      return !newUserTexts.has(d.text);
-    });
-    if (remaining.length < pendingDrafts.length) {
-      setPendingDrafts(remaining);
-    }
-  }, [messages, pendingDrafts]);
 
   useEffect(() => {
     if (!toolMenuOpen) return;
