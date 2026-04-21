@@ -264,6 +264,10 @@ min-width: 0;
 /* 防止flex子项溢出 */
 overflow: visible;
 box-sizing: border-box;
+/* 居于侧边背景装饰图（sidebar_logo1.png 等越界遮住的部分）之上，
+   以保证主内容区的蓝色渐变圈面不被侧边装饰图覆盖 */
+position: relative;
+z-index: 5;
 }
 
 /* subscriptions-content 内部的 section-card 样式 */
@@ -1418,6 +1422,13 @@ border-radius: 0 0 12px 12px;
 overflow: visible;
 width: 100%;
 box-sizing: border-box;
+display: none;
+}
+
+.tab-content.active,
+.tab-content.tab-leaving,
+.tab-content.tab-entering {
+    display: block;
 }
 
 /* subscriptions-content 和 character-cards-content 无内边距，使 section-header 与顶部无空隙 */
@@ -1437,15 +1448,47 @@ border-radius: 16px;
 box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
 display: flex;
 flex-direction: column;
+position: relative;
+overflow: hidden;
 }
 
 /* 让激活的角色卡 tab 内容撑满 tab-contents，使内层 view-area 的圆角与外层底部圆角对齐，
-   避免「卡片容器底部圆角 + 外层再有一个圆角结尾」的双层圆角观感 */
-#character-cards-content.tab-content.active {
+   避免「卡片容器底部圆角 + 外层再有一个圆角结尾」的双层圆角观感。 */
+#character-cards-content.tab-content.active,
+#character-cards-content.tab-content.tab-leaving,
+#character-cards-content.tab-content.tab-entering {
     flex: 1 1 auto;
     display: flex;
     flex-direction: column;
     min-height: 0;
+}
+
+/* 视图转场动画：旧视图离场与新视图入场重叠，避免露出底层蓝色背景 */
+.tab-content.tab-leaving {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    pointer-events: none;
+    z-index: 1;
+    animation: viewLeave 0.3s ease-in forwards;
+}
+
+.tab-content.tab-entering {
+    position: relative;
+    z-index: 2;
+    animation: viewEnter 0.46s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes viewLeave {
+    0%   { opacity: 1; transform: translateY(0) scale(1);     filter: blur(0); }
+    100% { opacity: 0; transform: translateY(-12px) scale(0.985); filter: blur(6px); }
+}
+
+@keyframes viewEnter {
+    0%   { opacity: 0; transform: translateY(14px) scale(0.985); filter: blur(6px); }
+    60%  {                                                       filter: blur(0); }
+    100% { opacity: 1; transform: translateY(0) scale(1);        filter: blur(0); }
 }
 
 #character-cards-content > .chara-cards-view-area {
@@ -3558,8 +3601,49 @@ margin-top: 10px;
 .chara-cards-container {
     padding: 10px 16px 16px;
     min-height: 200px;
+    /* 限定默认只显示两行卡片，超出出现滚动条
+       单卡高度 ≈ 180 * 1.333 (avatar) + 40 (name+actions) + 22 (padding) = 302px
+       两行 = 302 * 2 + 14 (gap) + 10 (top padding) + 16 (bottom padding) = 642px */
+    max-height: 642px;
+    overflow-y: auto;
+    overflow-x: hidden;
     background-color: #fff;
     transition: opacity 0.2s ease, transform 0.2s ease;
+    /* Firefox 滚动条样式 */
+    scrollbar-width: thin;
+    scrollbar-color: #7dd3ff transparent;
+}
+
+/* WebKit 滚动条美化（与页面蓝色主题谐调）*/
+.chara-cards-container::-webkit-scrollbar,
+.chara-cards-list::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+.chara-cards-container::-webkit-scrollbar-track,
+.chara-cards-list::-webkit-scrollbar-track {
+    background: rgba(150, 232, 255, 0.08);
+    border-radius: 4px;
+    margin: 4px 0;
+}
+
+.chara-cards-container::-webkit-scrollbar-thumb,
+.chara-cards-list::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, #96e8ff, #7dd3ff);
+    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.6);
+    box-shadow: 0 1px 2px rgba(64, 197, 241, 0.18);
+}
+
+.chara-cards-container::-webkit-scrollbar-thumb:hover,
+.chara-cards-list::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, #7dd3ff, #5dc4f7);
+}
+
+.chara-cards-container::-webkit-scrollbar-corner,
+.chara-cards-list::-webkit-scrollbar-corner {
+    background: transparent;
 }
 
 .chara-cards-container .empty-state {
@@ -4094,7 +4178,7 @@ margin-top: 10px;
     pointer-events: none;
 }
 
-/* 标签切换转场动画 */
+/* 标签切换转场动画 - 默认从右侧进入、向左侧退出（点击右侧 tab） */
 @keyframes tabSlideIn {
     0%   { opacity: 0; transform: translateX(30px); filter: blur(4px); }
     60%  { filter: blur(0); }
@@ -4104,6 +4188,26 @@ margin-top: 10px;
 @keyframes tabSlideOut {
     0%   { opacity: 1; transform: translateX(0); filter: blur(0); }
     100% { opacity: 0; transform: translateX(-30px); filter: blur(4px); }
+}
+
+/* 反向转场（点击左侧 tab）：从左侧进入、向右侧退出 */
+.panel-tab-content.tab-enter.tab-reverse {
+    animation: tabSlideInReverse 0.45s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.panel-tab-content.tab-exit.tab-reverse {
+    animation: tabSlideOutReverse 0.3s ease-in forwards;
+}
+
+@keyframes tabSlideInReverse {
+    0%   { opacity: 0; transform: translateX(-30px); filter: blur(4px); }
+    60%  { filter: blur(0); }
+    100% { opacity: 1; transform: translateX(0); filter: blur(0); }
+}
+
+@keyframes tabSlideOutReverse {
+    0%   { opacity: 1; transform: translateX(0); filter: blur(0); }
+    100% { opacity: 0; transform: translateX(30px); filter: blur(4px); }
 }
 
 /* ====== 转场幕布遮罩 ====== */
@@ -4118,7 +4222,7 @@ margin-top: 10px;
     overflow: hidden;
 }
 
-/* 主幕布色块 */
+/* 主幕布色块 - 默认从左到右扫过（点击右侧 tab） */
 .curtain-sweep {
     position: absolute;
     top: 0;
@@ -4136,6 +4240,19 @@ margin-top: 10px;
     40%  { transform: translateX(0%); }
     60%  { transform: translateX(0%); }
     100% { transform: translateX(105%); }
+}
+
+/* 反向幕布（点击左侧 tab）：从右到左扫过 */
+.panel-transition-curtain.curtain-reverse .curtain-sweep {
+    transform: translateX(105%);
+    animation: curtainSweepReverse 0.7s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+@keyframes curtainSweepReverse {
+    0%   { transform: translateX(105%); }
+    40%  { transform: translateX(0%); }
+    60%  { transform: translateX(0%); }
+    100% { transform: translateX(-105%); }
 }
 
 /* 幕布上的装饰图标 */

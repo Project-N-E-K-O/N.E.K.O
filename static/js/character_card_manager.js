@@ -1,4 +1,4 @@
-// 角色保留字段配置（优先从后端集中配置加载；失败时使用前端兜底）
+﻿// 角色保留字段配置（优先从后端集中配置加载；失败时使用前端兜底）
 // 共用工具由 reserved_fields_utils.js 提供（ReservedFieldsUtils）
 let characterReservedFieldsConfig = ReservedFieldsUtils.emptyConfig();
 let _reservedFieldsReady = null;
@@ -56,71 +56,9 @@ function ensureReservedFieldsLoaded() {
     return _reservedFieldsReady || Promise.resolve();
 }
 
-// JavaScript控制的tooltip实现
+// 顶部 tab 按钮初始化（旧版自定义 tooltip 因为文本与按钮文字重复且定位有误已移除）
 document.addEventListener('DOMContentLoaded', function () {
     void loadCharacterReservedFieldsConfig();
-    const tabButtons = document.querySelectorAll('.tabs button');
-
-    // 创建tooltip元素
-    let tooltip = document.createElement('div');
-    tooltip.id = 'custom-tooltip';
-    tooltip.style.cssText = `
-        position: absolute;
-        background: rgba(0, 0, 0, 0.8);
-        color: white;
-        padding: 5px 10px;
-        border-radius: 4px;
-        font-size: 12px;
-        white-space: nowrap;
-        pointer-events: none;
-        z-index: 1000;
-        display: none;
-    `;
-    document.body.appendChild(tooltip);
-
-    // 为每个标签按钮添加事件监听
-    tabButtons.forEach(button => {
-        button.addEventListener('mouseenter', function (e) {
-                const tooltipText = button.textContent.trim();
-                if (!tooltipText) {
-                    return;
-                }
-
-            // 计算tooltip位置
-            const buttonRect = button.getBoundingClientRect();
-            const sidebarRect = document.getElementById('sidebar').getBoundingClientRect();
-
-            // 计算tooltip尺寸
-            tooltip.textContent = tooltipText;
-            tooltip.style.display = 'block';
-            const tooltipRect = tooltip.getBoundingClientRect();
-
-            // 确保tooltip在侧边栏内显示
-            let left = buttonRect.left + buttonRect.width / 2 - tooltipRect.width / 2;
-
-            // 检查并修正左侧位置
-            if (left < sidebarRect.left + 10) {
-                left = sidebarRect.left + 10;
-            }
-            // 检查并修正右侧位置
-            if (left + tooltipRect.width > sidebarRect.right - 10) {
-                left = sidebarRect.right - tooltipRect.width - 10;
-            }
-
-            // 设置tooltip位置
-            tooltip.style.left = left + 'px';
-            tooltip.style.top = (buttonRect.top - tooltipRect.height - 5) + 'px';
-        });
-
-        button.addEventListener('mouseleave', function () {
-            tooltip.style.display = 'none';
-        });
-
-        // 阻止默认的title提示
-        button.addEventListener('mouseover', function (e) {
-            e.preventDefault();
-        });
-    });
 });
 
 // 响应式标签页处理
@@ -379,75 +317,96 @@ function applyWorkshopSyncData() {
     }
 }
 
+// 视图切换防抖锁，防止动画期间重复点击
+let _viewSwitching = false;
+
 function switchTab(tabId, event) {
-    // 隐藏所有标签内容
-    const tabContents = document.querySelectorAll('.tab-content');
-    tabContents.forEach(content => {
-        content.style.display = 'none';
-    });
+    if (_viewSwitching) return;
 
-    // 移除所有标签按钮的活动状态
-    const tabButtons = document.querySelectorAll('.tab');
-    tabButtons.forEach(button => {
-        button.classList.remove('active');
-    });
-
-    // 为当前点击的标签按钮添加活动状态
-    if (event && event.target) {
-        const clickedButton = event.target;
-        clickedButton.classList.add('active');
-    } else {
-        // 非点击事件调用时，通过tabId找到对应的标签按钮
-        const matchingTab = Array.from(tabButtons).find(btn =>
-            btn.getAttribute('onclick') && btn.getAttribute('onclick').includes(tabId)
-        );
-        if (matchingTab) {
-            matchingTab.classList.add('active');
-        }
-    }
-
-    // 显示选中的标签内容
     const selectedTab = document.getElementById(tabId);
-    if (selectedTab) {
-        selectedTab.style.display = 'block';
-        // 更新翻译，确保新显示的元素都能正确翻译
-        if (window.updatePageTexts) {
-            window.updatePageTexts();
-        }
+    if (!selectedTab) return;
+
+    // 已经是激活状态，直接同步按钮高亮即可
+    const tabButtons = document.querySelectorAll('.tab');
+    if (selectedTab.classList.contains('active') && !selectedTab.classList.contains('tab-leaving')) {
+        tabButtons.forEach(btn => {
+            const onclick = btn.getAttribute('onclick') || '';
+            btn.classList.toggle('active', onclick.includes(tabId));
+        });
+        return;
     }
 
-    // 设置选中的标签按钮为活动状态（兼容旧的标签按钮）
-    tabButtons.forEach(button => {
-        if (button.getAttribute('onclick') && button.getAttribute('onclick').includes(tabId)) {
-            button.classList.add('active');
+    _viewSwitching = true;
+
+    // 同步按钮 active 状态（点击事件 / 编程调用都覆盖）
+    tabButtons.forEach(btn => {
+        const onclick = btn.getAttribute('onclick') || '';
+        btn.classList.toggle('active', onclick.includes(tabId));
+    });
+    if (event && event.currentTarget && event.currentTarget.classList) {
+        event.currentTarget.classList.add('active');
+    }
+    const sidebarButtons = document.querySelectorAll('.sidebar-tab-button');
+    sidebarButtons.forEach(btn => {
+        const onclick = btn.getAttribute('onclick') || '';
+        btn.classList.toggle('active', onclick.includes(tabId));
+    });
+
+    // 找到当前激活视图（要离场的）
+    const tabContents = document.querySelectorAll('.tab-content');
+    let leavingTab = null;
+    tabContents.forEach(content => {
+        if (content !== selectedTab && content.classList.contains('active')) {
+            leavingTab = content;
+        }
+        // 清理可能残留的内联 display（早期版本）
+        if (content !== selectedTab && content !== leavingTab) {
+            content.style.display = '';
+            content.classList.remove('active', 'tab-leaving', 'tab-entering');
         }
     });
 
-    // 设置侧边栏中对应的按钮为活动状态
-    const sidebarButtons = document.querySelectorAll('.sidebar-tab-button');
-    if (sidebarButtons.length > 0) {
-        sidebarButtons.forEach(button => {
-            if (button.getAttribute('onclick') && button.getAttribute('onclick').includes(tabId)) {
-                button.classList.add('active');
-            }
-        });
+    const finalize = () => {
+        _viewSwitching = false;
+    };
+
+    if (leavingTab && leavingTab !== selectedTab) {
+        // 旧视图执行 leaving 动画，新视图同步入场（重叠以遮住底层蓝色背景）
+        leavingTab.classList.remove('active');
+        leavingTab.classList.add('tab-leaving');
+
+        selectedTab.classList.add('active', 'tab-entering');
+        if (window.updatePageTexts) window.updatePageTexts();
+
+        // 旧视图离场结束（与 CSS @keyframes viewLeave 时长一致）
+        setTimeout(() => {
+            leavingTab.classList.remove('tab-leaving');
+            leavingTab.style.display = '';
+        }, 300);
+        // 新视图入场结束
+        setTimeout(() => {
+            selectedTab.classList.remove('tab-entering');
+            finalize();
+        }, 460);
+    } else {
+        // 没有离场视图（首次或同 tab）：直接显示
+        selectedTab.classList.add('active');
+        if (window.updatePageTexts) window.updatePageTexts();
+        finalize();
     }
 
-    // 确保上传modal初始隐藏
+    // 上传 modal 初始隐藏
     const uploadModal = document.getElementById('uploadToWorkshopModal');
     if (uploadModal) {
         uploadModal.style.display = 'none';
     }
 
-    // 如果切换到角色卡页面，自动执行模型扫描，并更新当前选中的角色卡
+    // 切换到角色卡：自动扫描模型并恢复选中
     if (tabId === 'character-cards-content') {
         scanModels();
-
-        // 如果下拉选单已有选中的角色卡，触发更新
         const characterCardSelect = document.getElementById('character-card-select');
         const selectedId = characterCardSelect ? characterCardSelect.value : null;
         if (selectedId && window.characterCards) {
-            // 注意：select.value 返回字符串，card.id 可能是数字或字符串
             const selectedCard = window.characterCards.find(c => String(c.id) === selectedId);
             if (selectedCard) {
                 expandCharacterCardSection(selectedCard);
@@ -455,12 +414,12 @@ function switchTab(tabId, event) {
         }
     }
 
-    // 如果切换到本地物品页面，应用从localStorage加载的同步数据
+    // 本地物品：应用同步数据
     if (tabId === 'local-items-content') {
         applyWorkshopSyncData();
     }
 
-    // 如果切换到订阅内容页面，检查Steam状态
+    // 订阅内容：检查 Steam 状态
     if (tabId === 'subscriptions-content') {
         checkSteamStatus();
     }
@@ -3879,9 +3838,9 @@ function openCatgirlPanel(card, originEl) {
             '/static/icons/star.png',
             '/static/icons/paw_ui.png'
         ];
-        const spawnCurtainTransition = function (targetTabName) {
+        const spawnCurtainTransition = function (targetTabName, reverse) {
             const curtain = document.createElement('div');
-            curtain.className = 'panel-transition-curtain';
+            curtain.className = 'panel-transition-curtain' + (reverse ? ' curtain-reverse' : '');
 
             // 幕布色块
             const sweep = document.createElement('div');
@@ -3939,6 +3898,13 @@ function openCatgirlPanel(card, originEl) {
                 const target = rightSection.querySelector('.' + targetClass);
                 if (!target || target === currentActive) return;
 
+                // 计算动画方向：点击位于当前激活 tab 左侧的则反向动画
+                const allTabs = Array.from(headerBar.querySelectorAll('.panel-tab'));
+                const currentActiveTabBtn = headerBar.querySelector('.panel-tab.active');
+                const currentIdx = currentActiveTabBtn ? allTabs.indexOf(currentActiveTabBtn) : -1;
+                const targetIdx = allTabs.indexOf(this);
+                const reverseDirection = (currentIdx >= 0 && targetIdx >= 0 && targetIdx < currentIdx);
+
                 _tabSwitching = true;
                 headerBar.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
                 this.classList.add('active');
@@ -3952,20 +3918,23 @@ function openCatgirlPanel(card, originEl) {
                 }
 
                 // 播放幕布转场
-                spawnCurtainTransition(targetTab);
+                spawnCurtainTransition(targetTab, reverseDirection);
 
                 // 退出当前页 — absolute定位防止撑高容器
                 if (currentActive) {
                     currentActive.classList.remove('active');
                     currentActive.classList.add('tab-exit');
+                    if (reverseDirection) currentActive.classList.add('tab-reverse');
                 }
 
                 // 幕布扫过中央时切入新页
                 setTimeout(function () {
                     if (currentActive) {
                         currentActive.classList.remove('tab-exit');
+                        currentActive.classList.remove('tab-reverse');
                     }
                     target.classList.add('active', 'tab-enter');
+                    if (reverseDirection) target.classList.add('tab-reverse');
 
                     // Steam 标签变为可见后，强制刷新模型预览尺寸并重新计算模型位置
                     if (targetTab === 'steam') {
@@ -4000,6 +3969,7 @@ function openCatgirlPanel(card, originEl) {
                     // 入场动画结束后清理class
                     setTimeout(function () {
                         target.classList.remove('tab-enter');
+                        target.classList.remove('tab-reverse');
                         _tabSwitching = false;
                     }, 460);
                 }, 320);
@@ -4029,29 +3999,36 @@ function openCatgirlPanel(card, originEl) {
             wrapper.classList.remove('phase-center');
             wrapper.classList.add('phase-expand');
 
-            // 展开动画完成后，重新触发 textarea 自动调整高度
-            setTimeout(() => {
+            // 在展开动画刚开始时立即测量并调整 textarea 高度，
+            // 这样多行内容（>3 行）的输入框在展开过程中就直接呈现出
+            // 「带滚动条+左下圆角」的最终形态，不再出现展开后才变化的延迟感。
+            // 因为 phase-expand 仅做 opacity / translateX 过渡（宽度已是终态），
+            // textarea 的 scrollHeight 已可正确测量。
+            const _resizeAllPanelTextareas = () => {
                 const settingsForm = rightSection.querySelector('form');
-                if (settingsForm) {
-                    settingsForm.querySelectorAll('textarea').forEach(ta => {
-                        ta.style.height = 'auto';
-                        const lineHeight = parseFloat(getComputedStyle(ta).lineHeight) || 20;
-                        const maxHeight = lineHeight * 3 + 10;
-                        const scrollHeight = ta.scrollHeight;
-                        ta.style.height = Math.min(scrollHeight, maxHeight) + 'px';
-                        const fieldRow = ta.closest('.field-row');
-                        if (fieldRow) {
-                            if (scrollHeight > maxHeight) {
-                                ta.style.overflowY = 'auto';
-                                fieldRow.classList.add('has-scrollbar');
-                            } else {
-                                ta.style.overflowY = 'hidden';
-                                fieldRow.classList.remove('has-scrollbar');
-                            }
+                if (!settingsForm) return;
+                settingsForm.querySelectorAll('textarea').forEach(ta => {
+                    ta.style.height = 'auto';
+                    const lineHeight = parseFloat(getComputedStyle(ta).lineHeight) || 20;
+                    const maxHeight = lineHeight * 3 + 10;
+                    const scrollHeight = ta.scrollHeight;
+                    ta.style.height = Math.min(scrollHeight, maxHeight) + 'px';
+                    const fieldRow = ta.closest('.field-row');
+                    if (fieldRow) {
+                        if (scrollHeight > maxHeight) {
+                            ta.style.overflowY = 'auto';
+                            fieldRow.classList.add('has-scrollbar');
+                        } else {
+                            ta.style.overflowY = 'hidden';
+                            fieldRow.classList.remove('has-scrollbar');
                         }
-                    });
-                }
-            }, 500);
+                    }
+                });
+            };
+            // 双 rAF 等一次 layout flush，再做测量
+            requestAnimationFrame(() => requestAnimationFrame(_resizeAllPanelTextareas));
+            // 兜底：动画结束后再测量一次（处理字体延迟加载等情况）
+            setTimeout(_resizeAllPanelTextareas, 500);
 
             // 延迟初始化 Steam 标签页内容（等待面板展开动画完成后）
             if (!isNew) {

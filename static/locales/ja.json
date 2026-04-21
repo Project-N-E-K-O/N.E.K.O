@@ -178,7 +178,6 @@
         "previewImageMissing": "プレビュー画像ファイルが見つかりません。パスを確認してください",
         "uploadReady": "{{itemName}}のアップロード準備完了",
         "pageDescription": "SteamワークショップからLive2Dモデルとボイスを閲覧、購読、ダウンロード、管理できます",
-        "voiceNote": "ボイス設定については、Live2D設定ページで手動登録してください",
         "openVoiceClone": "ボイスクローンで開く",
         "searchLocalItems": "ローカルアイテムを検索...",
         "scanLocalItems": "ローカルアイテムをスキャン",
