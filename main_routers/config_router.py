@@ -997,79 +997,75 @@ class ConnectivityTestResponse(BaseModel):
 async def _test_openai_compatible(url: str, api_key: str, is_free: bool = False) -> dict:
     """Test an OpenAI-compatible REST API endpoint.
 
-    Strategy:
-    1. GET {url}/models with Authorization header (10s timeout).
-    2. If /models returns 4xx, fallback to a minimal chat completion POST.
-    3. Any 2xx is considered success.
-    4. For free version APIs (is_free=True), 400 Bad Request also counts as success.
+    Uses the project's ChatOpenAI client (same as actual conversations) to send
+    a minimal chat completion request (max_tokens=1). This ensures the test
+    exercises the exact same auth and request path as real usage.
+
+    For free version APIs (is_free=True), 400 Bad Request also counts as success
+    because the service responded — the key simply lacks paid access.
+
+    Future: TTS/GPT-SoVITS connectivity testing is not yet supported here;
+    those use different protocols and will need dedicated test paths.
     """
-    import httpx
-
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-    timeout = httpx.Timeout(10.0)
-
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-        # --- Step 1: GET /models ---
-        try:
-            models_url = f"{url.rstrip('/')}/models"
-            resp = await client.get(models_url, headers=headers)
-
-            if resp.status_code in (401, 403):
-                return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
-
-            if 200 <= resp.status_code < 300:
-                return {"success": True}
-
-            # 4xx (other than 401/403) → fallback to chat completion
-            if 400 <= resp.status_code < 500:
-                return await _fallback_chat_completion(client, url, headers, is_free)
-
-            # 5xx or other
-            return {"success": False, "error": f"HTTP {resp.status_code}", "error_code": "unknown"}
-
-        except httpx.TimeoutException:
-            return {"success": False, "error": "请求超时（10秒）", "error_code": "timeout"}
-        except ssl.SSLError:
-            return {"success": False, "error": "SSL证书验证失败", "error_code": "ssl_error"}
-        except httpx.ConnectError as e:
-            return _classify_connect_error(e)
-        except Exception as e:
-            return {"success": False, "error": str(e), "error_code": "unknown"}
-
-
-async def _fallback_chat_completion(client, url: str, headers: dict, is_free: bool = False) -> dict:
-    """Fallback: send a minimal chat completion request when /models returns 4xx."""
-    import httpx
+    from utils.llm_client import ChatOpenAI as _ChatOpenAI
 
     try:
-        chat_url = f"{url.rstrip('/')}/chat/completions"
-        payload = {
-            "model": "gpt-3.5-turbo",
-            "messages": [{"role": "user", "content": "hi"}],
-            "max_tokens": 1,
-        }
-        resp = await client.post(chat_url, headers=headers, json=payload)
-
-        if resp.status_code in (401, 403):
-            return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
-
-        if 200 <= resp.status_code < 300:
+        client = _ChatOpenAI(
+            model="gpt-3.5-turbo",
+            base_url=url,
+            api_key=api_key or "sk-placeholder",
+            max_tokens=1,
+            timeout=10.0,
+            max_retries=0,
+        )
+        try:
+            await client.ainvoke([{"role": "user", "content": "hi"}])
             return {"success": True}
+        finally:
+            await client.aclose()
 
-        # 免费版 API：400 Bad Request = 服务可达，Key 未被拒绝，只是请求格式不匹配
-        if is_free and resp.status_code == 400:
-            return {"success": True}
-
-        return {"success": False, "error": f"HTTP {resp.status_code}", "error_code": "unknown"}
-
-    except httpx.TimeoutException:
-        return {"success": False, "error": "请求超时（10秒）", "error_code": "timeout"}
-    except ssl.SSLError:
-        return {"success": False, "error": "SSL证书验证失败", "error_code": "ssl_error"}
-    except httpx.ConnectError as e:
-        return _classify_connect_error(e)
     except Exception as e:
-        return {"success": False, "error": str(e), "error_code": "unknown"}
+        return _classify_openai_error(e, is_free=is_free)
+
+
+def _classify_openai_error(e: Exception, is_free: bool = False) -> dict:
+    """Classify an OpenAI client exception into a connectivity test result."""
+    import httpx
+    from openai import AuthenticationError, APITimeoutError, APIConnectionError, APIStatusError
+
+    # Auth errors (401, 403)
+    if isinstance(e, AuthenticationError):
+        return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
+
+    # Timeout
+    if isinstance(e, (APITimeoutError, TimeoutError, asyncio.TimeoutError)):
+        return {"success": False, "error": "请求超时（10秒）", "error_code": "timeout"}
+
+    # Connection errors (DNS, refused, etc.)
+    if isinstance(e, APIConnectionError):
+        err_str = str(e).lower()
+        if "getaddrinfo" in err_str or "name or service not known" in err_str or "nodename nor servname" in err_str:
+            return {"success": False, "error": "域名解析失败", "error_code": "dns_error"}
+        if "connection refused" in err_str or "connect call failed" in err_str:
+            return {"success": False, "error": "无法连接到目标服务器", "error_code": "connection_refused"}
+        return {"success": False, "error": f"连接失败: {e}", "error_code": "connection_refused"}
+
+    # SSL errors
+    if isinstance(e, ssl.SSLError):
+        return {"success": False, "error": "SSL证书验证失败", "error_code": "ssl_error"}
+
+    # HTTP status errors (400, 500, etc.)
+    if isinstance(e, APIStatusError):
+        status = e.status_code
+        if status in (401, 403):
+            return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
+        # 免费版 API：400 = 服务可达，Key 未被拒绝
+        if is_free and status == 400:
+            return {"success": True}
+        return {"success": False, "error": f"HTTP {status}", "error_code": "unknown"}
+
+    # Fallback
+    return {"success": False, "error": str(e), "error_code": "unknown"}
 
 
 async def _test_websocket(url: str, api_key: str) -> dict:

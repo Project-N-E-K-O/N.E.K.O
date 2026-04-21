@@ -23,9 +23,9 @@ import pytest
 from main_routers.config_router import (
     ConnectivityTestRequest,
     ConnectivityTestResponse,
-    _fallback_chat_completion,
     _test_openai_compatible,
     _test_websocket,
+    _classify_openai_error,
     test_connectivity as _endpoint_test_connectivity,
 )
 
@@ -39,23 +39,6 @@ def _make_mock_response(status_code: int) -> MagicMock:
     resp = MagicMock(spec=httpx.Response)
     resp.status_code = status_code
     return resp
-
-
-def _make_httpx_client_mock(get_side_effect=None, get_return=None,
-                            post_side_effect=None, post_return=None):
-    """Build a mock httpx.AsyncClient with configurable get/post behaviour."""
-    mock_client = AsyncMock(spec=httpx.AsyncClient)
-    if get_side_effect is not None:
-        mock_client.get = AsyncMock(side_effect=get_side_effect)
-    elif get_return is not None:
-        mock_client.get = AsyncMock(return_value=get_return)
-    if post_side_effect is not None:
-        mock_client.post = AsyncMock(side_effect=post_side_effect)
-    elif post_return is not None:
-        mock_client.post = AsyncMock(return_value=post_return)
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-    return mock_client
 
 
 # ===========================================================================
@@ -320,195 +303,209 @@ class TestWebSocketConnectivity:
 # ===========================================================================
 
 class TestOpenAICompatibleErrors:
-    """Test _test_openai_compatible error handling for various HTTP/network errors."""
+    """Test _test_openai_compatible error handling via ChatOpenAI client.
 
-    async def test_http_200_success(self):
-        """GET /models returns 200 → success."""
-        client = _make_httpx_client_mock(get_return=_make_mock_response(200))
-        with patch("httpx.AsyncClient", return_value=client):
+    Now uses the project's ChatOpenAI client internally, so we mock at the
+    ChatOpenAI level rather than httpx level.
+    """
+
+    async def test_success(self):
+        """Successful chat completion → success."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "hi"
+        mock_response.usage = None
+
+        mock_client = MagicMock()
+        mock_client.ainvoke = AsyncMock(return_value=MagicMock(content="hi"))
+        mock_client.aclose = AsyncMock()
+
+        with patch("utils.llm_client.ChatOpenAI", return_value=mock_client) as mock_cls:
             result = await _test_openai_compatible("https://api.example.com/v1", "sk-key")
         assert result["success"] is True
 
-    async def test_http_401_auth_failed(self):
-        """GET /models returns 401 → auth_failed."""
-        client = _make_httpx_client_mock(get_return=_make_mock_response(401))
-        with patch("httpx.AsyncClient", return_value=client):
+    async def test_auth_error(self):
+        """AuthenticationError → auth_failed."""
+        from openai import AuthenticationError
+        mock_client = MagicMock()
+        mock_client.ainvoke = AsyncMock(
+            side_effect=AuthenticationError("invalid key", response=MagicMock(status_code=401), body=None)
+        )
+        mock_client.aclose = AsyncMock()
+
+        with patch("utils.llm_client.ChatOpenAI", return_value=mock_client):
             result = await _test_openai_compatible("https://api.example.com/v1", "sk-key")
         assert result["success"] is False
         assert result["error_code"] == "auth_failed"
 
-    async def test_http_403_auth_failed(self):
-        """GET /models returns 403 → auth_failed."""
-        client = _make_httpx_client_mock(get_return=_make_mock_response(403))
-        with patch("httpx.AsyncClient", return_value=client):
-            result = await _test_openai_compatible("https://api.example.com/v1", "sk-key")
-        assert result["success"] is False
-        assert result["error_code"] == "auth_failed"
+    async def test_timeout_error(self):
+        """APITimeoutError → timeout."""
+        from openai import APITimeoutError
+        mock_client = MagicMock()
+        mock_client.ainvoke = AsyncMock(side_effect=APITimeoutError(request=MagicMock()))
+        mock_client.aclose = AsyncMock()
 
-    async def test_http_500_unknown(self):
-        """GET /models returns 500 → unknown."""
-        client = _make_httpx_client_mock(get_return=_make_mock_response(500))
-        with patch("httpx.AsyncClient", return_value=client):
-            result = await _test_openai_compatible("https://api.example.com/v1", "sk-key")
-        assert result["success"] is False
-        assert result["error_code"] == "unknown"
-
-    async def test_http_404_fallback_to_chat(self):
-        """GET /models returns 404 → fallback to chat/completions."""
-        client = _make_httpx_client_mock(
-            get_return=_make_mock_response(404),
-            post_return=_make_mock_response(200),
-        )
-        with patch("httpx.AsyncClient", return_value=client):
-            result = await _test_openai_compatible("https://api.example.com/v1", "sk-key")
-        assert result["success"] is True
-
-    async def test_http_404_fallback_also_fails(self):
-        """GET /models 404 → fallback chat/completions also 500 → unknown."""
-        client = _make_httpx_client_mock(
-            get_return=_make_mock_response(404),
-            post_return=_make_mock_response(500),
-        )
-        with patch("httpx.AsyncClient", return_value=client):
-            result = await _test_openai_compatible("https://api.example.com/v1", "sk-key")
-        assert result["success"] is False
-        assert result["error_code"] == "unknown"
-
-    async def test_timeout_exception(self):
-        """httpx.TimeoutException → timeout."""
-        client = _make_httpx_client_mock(
-            get_side_effect=httpx.TimeoutException("timed out")
-        )
-        with patch("httpx.AsyncClient", return_value=client):
+        with patch("utils.llm_client.ChatOpenAI", return_value=mock_client):
             result = await _test_openai_compatible("https://api.example.com/v1", "sk-key")
         assert result["success"] is False
         assert result["error_code"] == "timeout"
 
-    async def test_ssl_error(self):
-        """ssl.SSLError → ssl_error."""
-        client = _make_httpx_client_mock(
-            get_side_effect=ssl.SSLError("certificate verify failed")
+    async def test_connection_error_dns(self):
+        """APIConnectionError with DNS failure → dns_error."""
+        from openai import APIConnectionError
+        mock_client = MagicMock()
+        mock_client.ainvoke = AsyncMock(
+            side_effect=APIConnectionError(message="[Errno 11001] getaddrinfo failed", request=MagicMock())
         )
-        with patch("httpx.AsyncClient", return_value=client):
-            result = await _test_openai_compatible("https://api.example.com/v1", "sk-key")
-        assert result["success"] is False
-        assert result["error_code"] == "ssl_error"
+        mock_client.aclose = AsyncMock()
 
-    async def test_connect_error_dns(self):
-        """httpx.ConnectError with DNS failure → dns_error."""
-        client = _make_httpx_client_mock(
-            get_side_effect=httpx.ConnectError("[Errno 11001] getaddrinfo failed")
-        )
-        with patch("httpx.AsyncClient", return_value=client):
+        with patch("utils.llm_client.ChatOpenAI", return_value=mock_client):
             result = await _test_openai_compatible("https://api.example.com/v1", "sk-key")
         assert result["success"] is False
         assert result["error_code"] == "dns_error"
 
-    async def test_connect_error_refused(self):
-        """httpx.ConnectError with connection refused → connection_refused."""
-        client = _make_httpx_client_mock(
-            get_side_effect=httpx.ConnectError("[Errno 111] Connection refused")
+    async def test_connection_error_refused(self):
+        """APIConnectionError with connection refused → connection_refused."""
+        from openai import APIConnectionError
+        mock_client = MagicMock()
+        mock_client.ainvoke = AsyncMock(
+            side_effect=APIConnectionError(message="[Errno 111] Connection refused", request=MagicMock())
         )
-        with patch("httpx.AsyncClient", return_value=client):
+        mock_client.aclose = AsyncMock()
+
+        with patch("utils.llm_client.ChatOpenAI", return_value=mock_client):
             result = await _test_openai_compatible("https://api.example.com/v1", "sk-key")
         assert result["success"] is False
         assert result["error_code"] == "connection_refused"
 
+    async def test_ssl_error(self):
+        """ssl.SSLError → ssl_error."""
+        mock_client = MagicMock()
+        mock_client.ainvoke = AsyncMock(side_effect=ssl.SSLError("certificate verify failed"))
+        mock_client.aclose = AsyncMock()
+
+        with patch("utils.llm_client.ChatOpenAI", return_value=mock_client):
+            result = await _test_openai_compatible("https://api.example.com/v1", "sk-key")
+        assert result["success"] is False
+        assert result["error_code"] == "ssl_error"
+
+    async def test_status_error_500(self):
+        """APIStatusError with 500 → unknown."""
+        from openai import APIStatusError
+        mock_resp = MagicMock()
+        mock_resp.status_code = 500
+        mock_client = MagicMock()
+        mock_client.ainvoke = AsyncMock(
+            side_effect=APIStatusError("server error", response=mock_resp, body=None)
+        )
+        mock_client.aclose = AsyncMock()
+
+        with patch("utils.llm_client.ChatOpenAI", return_value=mock_client):
+            result = await _test_openai_compatible("https://api.example.com/v1", "sk-key")
+        assert result["success"] is False
+        assert result["error_code"] == "unknown"
+
+    async def test_status_error_401(self):
+        """APIStatusError with 401 → auth_failed."""
+        from openai import APIStatusError
+        mock_resp = MagicMock()
+        mock_resp.status_code = 401
+        mock_client = MagicMock()
+        mock_client.ainvoke = AsyncMock(
+            side_effect=APIStatusError("unauthorized", response=mock_resp, body=None)
+        )
+        mock_client.aclose = AsyncMock()
+
+        with patch("utils.llm_client.ChatOpenAI", return_value=mock_client):
+            result = await _test_openai_compatible("https://api.example.com/v1", "sk-key")
+        assert result["success"] is False
+        assert result["error_code"] == "auth_failed"
+
+    async def test_free_400_success(self):
+        """Free version + APIStatusError 400 → success (service reachable)."""
+        from openai import APIStatusError
+        mock_resp = MagicMock()
+        mock_resp.status_code = 400
+        mock_client = MagicMock()
+        mock_client.ainvoke = AsyncMock(
+            side_effect=APIStatusError("bad request", response=mock_resp, body=None)
+        )
+        mock_client.aclose = AsyncMock()
+
+        with patch("utils.llm_client.ChatOpenAI", return_value=mock_client):
+            result = await _test_openai_compatible("https://api.example.com/v1", "sk-key", is_free=True)
+        assert result["success"] is True
+
+    async def test_non_free_400_unknown(self):
+        """Non-free + APIStatusError 400 → unknown."""
+        from openai import APIStatusError
+        mock_resp = MagicMock()
+        mock_resp.status_code = 400
+        mock_client = MagicMock()
+        mock_client.ainvoke = AsyncMock(
+            side_effect=APIStatusError("bad request", response=mock_resp, body=None)
+        )
+        mock_client.aclose = AsyncMock()
+
+        with patch("utils.llm_client.ChatOpenAI", return_value=mock_client):
+            result = await _test_openai_compatible("https://api.example.com/v1", "sk-key", is_free=False)
+        assert result["success"] is False
+        assert result["error_code"] == "unknown"
+
     async def test_generic_exception_unknown(self):
         """Unexpected Exception → unknown."""
-        client = _make_httpx_client_mock(
-            get_side_effect=RuntimeError("something unexpected")
-        )
-        with patch("httpx.AsyncClient", return_value=client):
+        mock_client = MagicMock()
+        mock_client.ainvoke = AsyncMock(side_effect=RuntimeError("something unexpected"))
+        mock_client.aclose = AsyncMock()
+
+        with patch("utils.llm_client.ChatOpenAI", return_value=mock_client):
             result = await _test_openai_compatible("https://api.example.com/v1", "sk-key")
         assert result["success"] is False
         assert result["error_code"] == "unknown"
 
 
-class TestFallbackChatCompletion:
-    """Test _fallback_chat_completion error handling."""
+class TestClassifyOpenAIError:
+    """Test _classify_openai_error directly for edge cases."""
 
-    async def test_chat_200_success(self):
-        """POST chat/completions 200 → success."""
-        client = AsyncMock(spec=httpx.AsyncClient)
-        client.post = AsyncMock(return_value=_make_mock_response(200))
-        result = await _fallback_chat_completion(
-            client, "https://api.example.com/v1", {"Authorization": "Bearer sk-key"}
+    def test_asyncio_timeout(self):
+        """asyncio.TimeoutError → timeout."""
+        result = _classify_openai_error(asyncio.TimeoutError())
+        assert result["error_code"] == "timeout"
+
+    def test_builtin_timeout(self):
+        """Built-in TimeoutError → timeout."""
+        result = _classify_openai_error(TimeoutError("timed out"))
+        assert result["error_code"] == "timeout"
+
+    def test_generic_connection_error(self):
+        """APIConnectionError without specific pattern → connection_refused."""
+        from openai import APIConnectionError
+        result = _classify_openai_error(
+            APIConnectionError(message="some network issue", request=MagicMock())
         )
-        assert result["success"] is True
+        assert result["error_code"] == "connection_refused"
 
-    async def test_chat_401_auth_failed(self):
-        """POST chat/completions 401 → auth_failed."""
-        client = AsyncMock(spec=httpx.AsyncClient)
-        client.post = AsyncMock(return_value=_make_mock_response(401))
-        result = await _fallback_chat_completion(
-            client, "https://api.example.com/v1", {"Authorization": "Bearer sk-key"}
-        )
-        assert result["success"] is False
-        assert result["error_code"] == "auth_failed"
-
-    async def test_chat_403_auth_failed(self):
-        """POST chat/completions 403 → auth_failed."""
-        client = AsyncMock(spec=httpx.AsyncClient)
-        client.post = AsyncMock(return_value=_make_mock_response(403))
-        result = await _fallback_chat_completion(
-            client, "https://api.example.com/v1", {"Authorization": "Bearer sk-key"}
-        )
-        assert result["success"] is False
-        assert result["error_code"] == "auth_failed"
-
-    async def test_chat_free_400_success(self):
-        """Free version + 400 → success (service reachable, key not rejected)."""
-        client = AsyncMock(spec=httpx.AsyncClient)
-        client.post = AsyncMock(return_value=_make_mock_response(400))
-        result = await _fallback_chat_completion(
-            client, "https://api.example.com/v1", {"Authorization": "Bearer free-key"},
+    def test_free_400_success(self):
+        """Free version + 400 status → success."""
+        from openai import APIStatusError
+        mock_resp = MagicMock()
+        mock_resp.status_code = 400
+        result = _classify_openai_error(
+            APIStatusError("bad request", response=mock_resp, body=None),
             is_free=True,
         )
         assert result["success"] is True
 
-    async def test_chat_non_free_400_unknown(self):
-        """Non-free + 400 → unknown."""
-        client = AsyncMock(spec=httpx.AsyncClient)
-        client.post = AsyncMock(return_value=_make_mock_response(400))
-        result = await _fallback_chat_completion(
-            client, "https://api.example.com/v1", {"Authorization": "Bearer sk-key"},
+    def test_non_free_400_unknown(self):
+        """Non-free + 400 status → unknown."""
+        from openai import APIStatusError
+        mock_resp = MagicMock()
+        mock_resp.status_code = 400
+        result = _classify_openai_error(
+            APIStatusError("bad request", response=mock_resp, body=None),
             is_free=False,
         )
-        assert result["success"] is False
         assert result["error_code"] == "unknown"
-
-    async def test_chat_timeout(self):
-        """Timeout during chat/completions → timeout."""
-        client = AsyncMock(spec=httpx.AsyncClient)
-        client.post = AsyncMock(side_effect=httpx.TimeoutException("timed out"))
-        result = await _fallback_chat_completion(
-            client, "https://api.example.com/v1", {"Authorization": "Bearer sk-key"}
-        )
-        assert result["success"] is False
-        assert result["error_code"] == "timeout"
-
-    async def test_chat_ssl_error(self):
-        """SSL error during chat/completions → ssl_error."""
-        client = AsyncMock(spec=httpx.AsyncClient)
-        client.post = AsyncMock(side_effect=ssl.SSLError("cert error"))
-        result = await _fallback_chat_completion(
-            client, "https://api.example.com/v1", {"Authorization": "Bearer sk-key"}
-        )
-        assert result["success"] is False
-        assert result["error_code"] == "ssl_error"
-
-    async def test_chat_connect_error_dns(self):
-        """DNS error during chat/completions → dns_error."""
-        client = AsyncMock(spec=httpx.AsyncClient)
-        client.post = AsyncMock(
-            side_effect=httpx.ConnectError("[Errno 11001] getaddrinfo failed")
-        )
-        result = await _fallback_chat_completion(
-            client, "https://api.example.com/v1", {"Authorization": "Bearer sk-key"}
-        )
-        assert result["success"] is False
-        assert result["error_code"] == "dns_error"
 
 
 # ===========================================================================

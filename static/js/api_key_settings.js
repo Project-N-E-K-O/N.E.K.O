@@ -16,6 +16,10 @@ let _assistApiProviders = {};
 let _coreApiProviders = {};
 // 所有模型类型
 const MODEL_TYPES = ['conversation', 'summary', 'correction', 'emotion', 'vision', 'agent', 'omni', 'tts'];
+// Model types that support connectivity testing via chat/completions.
+// TTS uses different protocols (MiniMax TTS API, GPT-SoVITS local HTTP) and is excluded for now.
+// Future: add TTS connectivity testing with dedicated protocol handlers.
+const CONNECTIVITY_TESTABLE_TYPES = MODEL_TYPES.filter(mt => mt !== 'tts');
 // 当前加载到页面中的 GPT-SoVITS 状态：none | enabled | disabled
 let _loadedGptSovitsState = 'none';
 // 上方普通 TTS 配置是否被用户在本页改动过
@@ -2586,7 +2590,7 @@ const ConnectivityManager = {
         // 自定义 API（如果启用）
         const enableCustomApi = document.getElementById('enableCustomApi');
         if (enableCustomApi && enableCustomApi.checked) {
-            MODEL_TYPES.forEach(mt => {
+            CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
                 const customResult = this.resolveEffectiveKey({ type: 'custom', modelType: mt });
                 const customCacheId = customResult.key || customResult.url;
                 if (customCacheId && !keyConfigs[customCacheId]) {
@@ -2681,7 +2685,7 @@ const ConnectivityManager = {
         const assistSelect = document.getElementById('assistApiSelect');
 
         if (enableCustomApi && enableCustomApi.checked) {
-            MODEL_TYPES.forEach(mt => {
+            CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
                 const customResult = this.resolveEffectiveKey({ type: 'custom', modelType: mt });
                 const cacheId = customResult.key || customResult.url;
                 if (cacheId && !keyConfigs[cacheId]) {
@@ -2962,7 +2966,7 @@ function initConnectivityLights() {
         summaryRow.className = 'connectivity-summary-row';
         summaryRow.id = 'customApiSummaryLights';
 
-        MODEL_TYPES.forEach(mt => {
+        CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
             const summaryLight = document.createElement('span');
             summaryLight.className = 'connectivity-summary-light';
             summaryLight.dataset.status = LightStatus.NOT_CONFIGURED;
@@ -3003,7 +3007,7 @@ function initConnectivityLights() {
 
     // ===== Task 7.2: Custom model indicator lights =====
     const customCurrentKeys = {}; // { [modelType]: currentKey }
-    MODEL_TYPES.forEach(mt => {
+    CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
         const keyInput = document.getElementById(`${mt}ModelApiKey`);
         if (!keyInput) return;
 
@@ -3083,7 +3087,7 @@ function initConnectivityLights() {
     }
 
     // Custom model key input changes
-    MODEL_TYPES.forEach(mt => {
+    CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
         const keyInput = document.getElementById(`${mt}ModelApiKey`);
         if (!keyInput || !lightRefs.custom[mt]) return;
 
@@ -3124,7 +3128,7 @@ function initConnectivityLights() {
                 );
             }
             // Also re-register custom models that follow_core or follow_assist
-            MODEL_TYPES.forEach(mt => {
+            CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
                 const providerSel = document.getElementById(`${mt}ModelProvider`);
                 if (providerSel && (providerSel.value === 'follow_core' || providerSel.value === 'follow_assist') && lightRefs.custom[mt]) {
                     const oldCustomKey = customCurrentKeys[mt];
@@ -3147,7 +3151,7 @@ function initConnectivityLights() {
                 { type: 'assist' }, oldKey
             );
             // Also re-register custom models that follow_assist
-            MODEL_TYPES.forEach(mt => {
+            CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
                 const providerSel = document.getElementById(`${mt}ModelProvider`);
                 if (providerSel && providerSel.value === 'follow_assist' && lightRefs.custom[mt]) {
                     const oldCustomKey = customCurrentKeys[mt];
@@ -3162,7 +3166,7 @@ function initConnectivityLights() {
     }
 
     // Custom model provider dropdown changes
-    MODEL_TYPES.forEach(mt => {
+    CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
         const providerSel = document.getElementById(`${mt}ModelProvider`);
         if (!providerSel || !lightRefs.custom[mt]) return;
 
@@ -3347,10 +3351,11 @@ async function initializePage() {
             toggleCustomApi(true);
         }, 0);
 
-        // Task 6.3: Auto-test on load (after all UI is settled)
-        setTimeout(() => {
-            ConnectivityManager.autoTestOnLoad();
-        }, 100);
+        // Task 6.3: Auto-test removed per maintainer feedback (Wehos).
+        // Manual test buttons are sufficient; auto-test on page load could
+        // consume tokens without user consent and /models doesn't reliably
+        // verify key validity across all providers.
+        // Future: consider auto-test opt-in via user preference.
 
     } catch (error) {
         console.error('页面初始化失败:', error);
