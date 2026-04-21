@@ -1370,11 +1370,10 @@ async def _computer_use_scheduler_loop():
         Modules.computer_use_queue = asyncio.Queue()
     while True:
         try:
-            await asyncio.sleep(0.05)
-            if Modules.computer_use_running:
-                continue
-            if Modules.computer_use_queue.empty():
-                continue
+            # Event-driven: block until a task is pushed. Producers (_spawn_task)
+            # put_nowait from async contexts on the same loop, so get() wakes
+            # immediately — no polling needed.
+            next_task = await Modules.computer_use_queue.get()
             if not Modules.analyzer_enabled or not Modules.agent_flags.get("computer_use_enabled", False):
                 while not Modules.computer_use_queue.empty():
                     try:
@@ -1382,7 +1381,14 @@ async def _computer_use_scheduler_loop():
                     except asyncio.QueueEmpty:
                         break
                 continue
-            next_task = await Modules.computer_use_queue.get()
+            # Wait for the currently running CU task (if any) to finish before
+            # dispatching the next one. This preserves the single-task-at-a-time
+            # invariant without busy-polling computer_use_running.
+            if Modules.computer_use_running and Modules.active_computer_use_async_task is not None:
+                try:
+                    await Modules.active_computer_use_async_task
+                except Exception:
+                    pass
             tid = next_task.get("task_id")
             if not tid or tid not in Modules.task_registry:
                 continue
