@@ -87,6 +87,9 @@
         live2dFaceTopOffsetRatio: 0.26,
         live2dHeadEdgeInsetBubbleRatio: 0.26,
         live2dHeadEdgeFallbackOffsetBubbleRatio: 0.07,
+        live2dDrawableCompactHeadCoverageMin: 0.16,
+        live2dDrawableCompactHeadCoverageMax: 0.3,
+        live2dDrawableCompactTopOffsetMinScale: 0.7,
         live2dHeadMaxBoundsWidthRatio: 0.82,
         live2dHeadMaxBoundsHeightRatio: 0.58,
         live2dHeadMaxBoundsCenterYRatio: 0.62,
@@ -1219,6 +1222,44 @@
         };
     }
 
+    function getLive2dDrawableTopOffsetRatio(headRect, bounds, headMode) {
+        var baseOffsetRatio = headMode === 'face'
+            ? TIMING.live2dFaceTopOffsetRatio
+            : TIMING.live2dHeadTopOffsetRatio;
+        if (!hasValidRect(headRect) || !hasValidRect(bounds)) {
+            return baseOffsetRatio;
+        }
+
+        var widthCoverage = headRect.width / Math.max(1, bounds.width);
+        var heightCoverage = headRect.height / Math.max(1, bounds.height);
+        var headCoverage = Math.max(widthCoverage, heightCoverage);
+        var compactCoverageProgress = clamp(
+            (headCoverage - TIMING.live2dDrawableCompactHeadCoverageMin) /
+            Math.max(0.0001, TIMING.live2dDrawableCompactHeadCoverageMax - TIMING.live2dDrawableCompactHeadCoverageMin),
+            0,
+            1
+        );
+        var compactOffsetRatio = baseOffsetRatio * TIMING.live2dDrawableCompactTopOffsetMinScale;
+        return lerp(compactOffsetRatio, baseOffsetRatio, compactCoverageProgress);
+    }
+
+    function getLive2dDrawableCompactModelOffsetFloor(headRect, bounds) {
+        if (!hasValidRect(headRect) || !hasValidRect(bounds)) {
+            return -0.12;
+        }
+
+        var widthCoverage = headRect.width / Math.max(1, bounds.width);
+        var heightCoverage = headRect.height / Math.max(1, bounds.height);
+        var headCoverage = Math.max(widthCoverage, heightCoverage);
+        var compactCoverageProgress = clamp(
+            (headCoverage - TIMING.live2dDrawableCompactHeadCoverageMin) /
+            Math.max(0.0001, TIMING.live2dDrawableCompactHeadCoverageMax - TIMING.live2dDrawableCompactHeadCoverageMin),
+            0,
+            1
+        );
+        return lerp(0, -0.12, compactCoverageProgress);
+    }
+
     function isReliableLive2dHeadRect(headRect, bounds, bodyRect, headSource) {
         if (!hasValidRect(headRect) || !bounds) {
             return false;
@@ -1749,6 +1790,15 @@
             modelOffsetRatio = Math.max(modelOffsetRatio, -0.12);
         }
         if (avatarType === 'live2d' &&
+            reliableLive2dHeadRect &&
+            headSource === 'drawableHeuristic' &&
+            hasValidRect(placementHeadRect)) {
+            modelOffsetRatio = Math.max(
+                modelOffsetRatio,
+                getLive2dDrawableCompactModelOffsetFloor(placementHeadRect, bounds)
+            );
+        }
+        if (avatarType === 'live2d' &&
             preciseLive2dDisplayInfoRect &&
             reliableLive2dHeadRect &&
             hasValidRect(placementHeadRect) &&
@@ -1871,9 +1921,12 @@
                         : TIMING.live2dDisplayInfoHeadTopOffsetRatio) - live2dDisplayInfoGapPx;
                     live2dTopTargetActsAsCeiling = true;
                 } else {
-                    live2dTopTargetY = placementHeadRect.top - height * (headMode === 'face'
-                        ? TIMING.live2dFaceTopOffsetRatio
-                        : TIMING.live2dHeadTopOffsetRatio);
+                    var drawableTopOffsetRatio = headSource === 'drawableHeuristic'
+                        ? getLive2dDrawableTopOffsetRatio(placementHeadRect, bounds, headMode)
+                        : (headMode === 'face'
+                            ? TIMING.live2dFaceTopOffsetRatio
+                            : TIMING.live2dHeadTopOffsetRatio);
+                    live2dTopTargetY = placementHeadRect.top - height * drawableTopOffsetRatio;
                     if (headSource === 'drawableHeuristic') {
                         live2dTopTargetActsAsCeiling = true;
                     }
