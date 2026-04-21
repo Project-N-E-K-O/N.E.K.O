@@ -1387,8 +1387,10 @@ async def _computer_use_scheduler_loop():
             if Modules.computer_use_running and Modules.active_computer_use_async_task is not None:
                 try:
                     await Modules.active_computer_use_async_task
-                except Exception:
-                    pass
+                except Exception as e:
+                    # 前一个 CU task 的异常已由 _run_computer_use_task 的 finally 处理/记录；
+                    # 此处仅防御未预期的穿透，保留 scheduler 存活以调度下一任务。
+                    logger.debug("[ComputerUse] prior task raised on await: %s", e)
             tid = next_task.get("task_id")
             if not tid or tid not in Modules.task_registry:
                 continue

@@ -90,8 +90,10 @@ async def _wait_tcp_ready_async(endpoint: str, *, timeout_s: float = 2.0) -> boo
             )
             return True
         except (asyncio.TimeoutError, OSError, ConnectionError):
+            # Expected during readiness probe: endpoint not yet listening — retry until deadline.
             pass
         except Exception:
+            # Belt-and-suspenders: don't let an unexpected error kill the retry loop.
             pass
         finally:
             if writer is not None:
@@ -108,6 +110,7 @@ async def _wait_tcp_ready_async(endpoint: str, *, timeout_s: float = 2.0) -> boo
         except asyncio.CancelledError:
             raise
         except Exception:
+            # asyncio.sleep should only raise CancelledError; swallow anything else to keep retrying.
             pass
     return False
 
