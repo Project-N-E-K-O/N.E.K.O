@@ -1683,10 +1683,11 @@ class Live2DManager {
 
         const candidates = drawableEntries
             .map((entry) => {
-                const rect = entry?.rect;
+                const rect = entry?.rect || entry;
                 if (!rect) {
                     return null;
                 }
+                const drawableIndex = Number.isInteger(entry?.index) ? entry.index : null;
                 const area = rectArea(rect);
                 const overlapArea = this._getRectIntersectionArea(rect, targetRect);
                 const overlapRatio = overlapArea / area;
@@ -1702,8 +1703,8 @@ class Live2DManager {
                     : resolvedModelBounds.height * 0.34;
                 const verticalBias = clamp01(1 - Math.abs(rect.centerY - verticalTargetY) / Math.max(1, verticalBand));
                 const areaRatio = area / modelArea;
-                const partId = Array.isArray(drawableParentPartIds)
-                    ? (drawableParentPartIds[entry.index] || '')
+                const partId = Array.isArray(drawableParentPartIds) && Number.isInteger(drawableIndex)
+                    ? (drawableParentPartIds[drawableIndex] || '')
                     : '';
 
                 if (kind === 'head') {
@@ -1758,7 +1759,7 @@ class Live2DManager {
                     }
                 }
 
-                return { rect, score, drawableIndex: entry.index };
+                return { rect, score, drawableIndex };
             })
             .filter(Boolean);
 
@@ -3364,15 +3365,37 @@ class Live2DManager {
         const hitAreaInfo = this._getHeadHitAreaScreenRectInfo(modelBounds, modelLogicalRect);
         const displayInfoInfo = this._getDisplayInfoPartScreenRectInfo('head');
         const inferredBodyInfo = this._inferDrawableRegionScreenRectInfo('body', modelBounds, modelLogicalRect);
+        const useHitAreaAsHeadHint = this._isRectInfoPlausibleWithinModel(
+            hitAreaInfo,
+            modelBounds,
+            { maxWidthRatio: 0.78, maxHeightRatio: 0.56 }
+        );
         const inferredInfo = this._inferDrawableRegionScreenRectInfo(
             'head',
             modelBounds,
             modelLogicalRect,
             inferredBodyInfo?.rect || null,
-            hitAreaInfo?.rect || null
+            useHitAreaAsHeadHint ? (hitAreaInfo?.rect || null) : null
+        );
+        const headHitRect = hitAreaInfo?.rect || null;
+        const hitAreaLooksCoarseAgainstModel = !!(
+            headHitRect &&
+            modelBounds &&
+            headHitRect.width >= modelBounds.width * 0.8 &&
+            headHitRect.height >= modelBounds.height * 0.46 &&
+            headHitRect.top <= modelBounds.top + modelBounds.height * 0.12
         );
         if (this._shouldPreferDisplayInfoRect('head', hitAreaInfo, displayInfoInfo, modelBounds)) {
             return displayInfoInfo;
+        }
+
+        if (hitAreaLooksCoarseAgainstModel &&
+            this._isRectInfoPlausibleWithinModel(
+                inferredInfo,
+                modelBounds,
+                { maxWidthRatio: 0.86, maxHeightRatio: 0.64 }
+            )) {
+            return inferredInfo;
         }
 
         if (this._shouldPreferInferredRect('head', hitAreaInfo, inferredInfo, modelBounds, inferredBodyInfo)) {

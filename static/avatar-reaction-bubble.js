@@ -36,9 +36,14 @@
         live2dReliableHeadBubbleScaleMultiplier: 1.3,
         live2dPreciseDisplayInfoHeadBubbleScaleMultiplier: 1.42,
         live2dDrawableHeadBubbleScaleMultiplier: 1.36,
+        live2dMinBubbleDimPx: 34,
+        threeDMinBubbleDimPx: 30,
+        live2dUnreliableMaxBubbleWidthRatio: 0.84,
+        bubbleWidthFromHeadSizeRatio: 0.82,
+        bubbleHeightFromHeadSizeRatio: 0.64,
+        bubbleMinHeightFromMinWidthRatio: 0.77,
+        bubbleMaxHeightBoundsRatio: 0.45,
         verticalOffsetPx: 0,
-        modelOverlapRatio: 0.28,
-        threeDModelOverlapRatio: 0.22,
         compactModelAspectRatio: 1.15,
         tallModelAspectRatio: 1.8,
         headHeightFromModelRatio: 0.28,
@@ -54,7 +59,8 @@
         shortModelOffsetRatio: 0.12,
         tallModelOffsetRatio: -0.4,
         threeDModelOffsetRatio: -0.16,
-        threeDHeadSideOffsetRatio: 0.11,
+        horizontalAnchorOffsetBubbleRatio: 0.13,
+        threeDHorizontalAnchorOffsetBubbleRatio: 0.02,
         accessoryDropBasePx: 0,
         accessoryDropRatio: 1.2,
         accessoryDropMaxPx: 56,
@@ -69,7 +75,7 @@
         threeDHeadAnchorMaxYRatio: 0.66,
         live2dDisplayInfoFaceAnchorRatio: 0.36,
         live2dDisplayInfoHeadAnchorRatio: 0.44,
-        live2dDisplayInfoTopOffsetRatio: 0.24,
+        live2dDisplayInfoTopOffsetRatio: 0.23,
         live2dDisplayInfoHeadTopOffsetRatio: 0.22,
         live2dDisplayInfoGapHeadRatio: 0.1,
         live2dDisplayInfoGapBubbleRatio: 0.04,
@@ -79,6 +85,8 @@
         live2dBodyProxyHeadLiftRatio: 0.45,
         live2dHeadTopOffsetRatio: 0.24,
         live2dFaceTopOffsetRatio: 0.26,
+        live2dHeadEdgeInsetBubbleRatio: 0.26,
+        live2dHeadEdgeFallbackOffsetBubbleRatio: 0.07,
         live2dHeadMaxBoundsWidthRatio: 0.82,
         live2dHeadMaxBoundsHeightRatio: 0.58,
         live2dHeadMaxBoundsCenterYRatio: 0.62,
@@ -94,8 +102,6 @@
         live2dDrawableHeadSpanRatio: 0.24,
         live2dDrawableHeadSpanMaxMultiplier: 1.32,
         live2dDrawableBodyHeadSpanMaxRatio: 0.38,
-        live2dHeadSideOffsetMinHeadWidthRatio: 0.38,
-        live2dHeadSideOffsetMaxHeadWidthRatio: 0.66,
         showFollowWindowMs: 360,
         moveFollowWindowMs: 120,
         moveSettleWindowMs: 420,
@@ -1760,7 +1766,20 @@
                     : TIMING.live2dReliableHeadBubbleScaleMultiplier;
             }
         }
-        var minBubbleDim = Math.min(Math.max(Math.min(bounds.height * 0.14, bounds.width * 0.5), 24), bounds.width * 0.9);
+        var minBubbleFloorPx = isLive2dAvatar
+            ? TIMING.live2dMinBubbleDimPx
+            : TIMING.threeDMinBubbleDimPx;
+        var maxBubbleWidthRatio = (isLive2dAvatar && !reliableLive2dHeadRect)
+            ? TIMING.live2dUnreliableMaxBubbleWidthRatio
+            : 0.9;
+        var maxBubbleWidthPx = bounds.width * maxBubbleWidthRatio;
+        var minBubbleDim = Math.min(
+            Math.max(
+                Math.min(bounds.height * 0.14, bounds.width * 0.5),
+                minBubbleFloorPx
+            ),
+            maxBubbleWidthPx
+        );
         var headSize = Math.max(
             minBubbleDim,
             Math.min(
@@ -1768,36 +1787,52 @@
                 Math.round(headSpan * 1.38 * headBubbleScaleMultiplier)
             )
         );
-        var width = Math.max(minBubbleDim, Math.min(Math.round(headSize * 0.82), bounds.width * 0.9));
-        var height = Math.max(minBubbleDim * 0.77, Math.min(Math.round(headSize * 0.64), bounds.height * 0.45));
+        // Keep bubble frame aspect ratio stable across models; only scale uniformly.
+        var bubbleWidthFromHeadSizeRatio = TIMING.bubbleWidthFromHeadSizeRatio;
+        var bubbleHeightFromHeadSizeRatio = TIMING.bubbleHeightFromHeadSizeRatio;
+        var bubbleHeightFromWidthRatio = bubbleHeightFromHeadSizeRatio / Math.max(0.0001, bubbleWidthFromHeadSizeRatio);
+        var targetWidthFromHeadSize = headSize * bubbleWidthFromHeadSizeRatio;
+        var minHeightByFloor = minBubbleDim * TIMING.bubbleMinHeightFromMinWidthRatio;
+        var minWidthByHeightFloor = minHeightByFloor / Math.max(0.0001, bubbleHeightFromWidthRatio);
+        var minWidth = Math.max(minBubbleDim, minWidthByHeightFloor);
+        var maxWidthByHeightLimit = (bounds.height * TIMING.bubbleMaxHeightBoundsRatio) / Math.max(0.0001, bubbleHeightFromWidthRatio);
+        var maxWidth = Math.max(minWidth, Math.min(maxBubbleWidthPx, maxWidthByHeightLimit));
+        var width = clamp(targetWidthFromHeadSize, minWidth, maxWidth);
+        var height = width * bubbleHeightFromWidthRatio;
         var useReliableLive2dHeadCenterX = avatarType === 'live2d' &&
             reliableLive2dHeadRect &&
             hasValidRect(placementHeadRect) &&
             headSource !== 'hitArea' &&
             Number.isFinite(placementHeadRect.centerX);
+        var useHeadRectEdgeHorizontalPlacement = avatarType === 'live2d' &&
+            reliableLive2dHeadRect &&
+            hasValidRect(placementHeadRect);
         var useDirect3dHeadAnchor = avatarType !== 'live2d' &&
             isPlausibleHumanoidHeadAnchor(headAnchor, bounds);
         var headCenterX = useReliableLive2dHeadCenterX
             ? placementHeadRect.centerX
             : (useDirect3dHeadAnchor
-                ? (function () {
-                    // 3D 模型头骨坐标仅作“受限偏移”，避免把气泡整体带歪。
-                    var maxShiftX = bounds.width * 0.2;
-                    return boundsCenterX + clamp(headAnchor.x - boundsCenterX, -maxShiftX, maxShiftX);
-                })()
+                ? headAnchor.x
                 : boundsCenterX);
-        var sideOffsetPx = isLive2dAvatar
-            ? (layoutBounds.width * 0.13)
-            : (bounds.width * TIMING.threeDHeadSideOffsetRatio);
-        if (useReliableLive2dHeadCenterX) {
-            sideOffsetPx = clamp(
-                sideOffsetPx,
-                placementHeadRect.width * TIMING.live2dHeadSideOffsetMinHeadWidthRatio,
-                placementHeadRect.width * TIMING.live2dHeadSideOffsetMaxHeadWidthRatio
-            );
+        var horizontalAnchorOffsetPx = width * (isLive2dAvatar
+            ? TIMING.horizontalAnchorOffsetBubbleRatio
+            : TIMING.threeDHorizontalAnchorOffsetBubbleRatio);
+        var rightAnchorX = headCenterX + horizontalAnchorOffsetPx;
+        var leftAnchorX = headCenterX - horizontalAnchorOffsetPx;
+        if (useHeadRectEdgeHorizontalPlacement) {
+            var placementHeadRectRight = rectRight(placementHeadRect);
+            if (Number.isFinite(placementHeadRect.left) && Number.isFinite(placementHeadRectRight)) {
+                var headEdgeInsetPx = width * TIMING.live2dHeadEdgeInsetBubbleRatio;
+                // 可靠头框时，使用头框内侧锚点，避免气泡被挂到头框外太远。
+                rightAnchorX = placementHeadRectRight - headEdgeInsetPx;
+                leftAnchorX = placementHeadRect.left + headEdgeInsetPx;
+                if (!(rightAnchorX > leftAnchorX)) {
+                    var fallbackOffsetPx = width * TIMING.live2dHeadEdgeFallbackOffsetBubbleRatio;
+                    rightAnchorX = headCenterX + fallbackOffsetPx;
+                    leftAnchorX = headCenterX - fallbackOffsetPx;
+                }
+            }
         }
-        var rightAnchorX = headCenterX + sideOffsetPx;
-        var leftAnchorX = headCenterX - sideOffsetPx;
         var modelAspectRatio = effectiveHeight / Math.max(layoutBounds.width, 1);
         var modelShapeProgress = clamp(
             (modelAspectRatio - TIMING.compactModelAspectRatio) / (TIMING.tallModelAspectRatio - TIMING.compactModelAspectRatio),
@@ -1878,6 +1913,10 @@
         } else if (live2dHeadAnchor && Number.isFinite(live2dHeadAnchor.y)) {
             anchorY = Math.max(anchorY, live2dHeadAnchor.y);
         }
+        if (useDirect3dHeadAnchor && headAnchor && Number.isFinite(headAnchor.y)) {
+            // 3D 头锚点精度高，纵向位置直接跟随头部识别结果。
+            anchorY = headAnchor.y;
+        }
         if (useDirect3dHeadAnchor) {
             anchorY = clamp(
                 anchorY,
@@ -1916,9 +1955,8 @@
         }
 
         var tailInset = Math.round(width * -0.06);
-        var overlapPx = Math.round(width * (isLive2dAvatar ? TIMING.modelOverlapRatio : TIMING.threeDModelOverlapRatio));
-        var preferredRightX = rightAnchorX - tailInset - overlapPx;
-        var preferredLeftX = leftAnchorX - width + tailInset + overlapPx;
+        var preferredRightX = rightAnchorX - tailInset;
+        var preferredLeftX = leftAnchorX - width + tailInset;
         var rightFits = preferredRightX + width <= viewportWidth - margin;
         var leftFits = preferredLeftX >= margin;
         var accessoryDropPx = Math.min(
