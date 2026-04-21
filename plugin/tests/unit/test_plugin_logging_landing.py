@@ -83,6 +83,11 @@ def isolated_log_dir(tmp_path, monkeypatch):
         try:
             h.close()
         except Exception:
+            # Best-effort cleanup. Same rationale as the per-service loop
+            # above: a handler may already be closed (RotatingFileHandler
+            # rotation, or the per-service loop already drained shared
+            # references) — swallow so fixture teardown doesn't mask a
+            # real test failure.
             pass
     if hasattr(root, "_neko_plugin_root_bridged"):
         delattr(root, "_neko_plugin_root_bridged")
@@ -302,16 +307,19 @@ def test_bootstrap_failure_does_not_lock_root_initialised(
     """
     monkeypatch.setenv("NEKO_PLUGIN_SERVICE_NAME", "PluginServer")
 
-    # Patch BEFORE re-importing plugin.logging_config — the module top-level
-    # ``logger = get_logger("plugin")`` triggers _ensure_root_logger on
-    # import, so the patch must already be in place.
-    import utils.logger_config as ulc
-    real_setup = ulc.setup_logging
+    # Capture the real setup_logging BEFORE we patch it so the retry leg
+    # below has something to restore.
+    from utils.logger_config import setup_logging as _real_setup_logging
 
     def _exploding_setup(*_a, **_kw):
         raise RuntimeError("simulated bootstrap failure")
 
-    monkeypatch.setattr(ulc, "setup_logging", _exploding_setup)
+    # Patch BEFORE re-importing plugin.logging_config — the module top-level
+    # ``logger = get_logger("plugin")`` triggers _ensure_root_logger on
+    # import, so the patch must already be in place. Use string-based
+    # target so we keep a single ``from utils.logger_config import ...``
+    # style in this file (avoids the CodeQL "import + import from" smell).
+    monkeypatch.setattr("utils.logger_config.setup_logging", _exploding_setup)
 
     plogging = importlib.import_module("plugin.logging_config")
 
@@ -324,7 +332,7 @@ def test_bootstrap_failure_does_not_lock_root_initialised(
     )
 
     # Restore working setup_logging, retry: must succeed and set the flag.
-    monkeypatch.setattr(ulc, "setup_logging", real_setup)
+    monkeypatch.setattr("utils.logger_config.setup_logging", _real_setup_logging)
     plogging._ensure_root_logger()
     assert plogging._root_initialised
     plogging.get_logger("retry.test").info("post-retry-success")
