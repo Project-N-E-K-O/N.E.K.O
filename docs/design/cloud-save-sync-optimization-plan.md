@@ -113,7 +113,7 @@
 - 上传（单角色）：`export_cloudsave_character_unit`，只更新本机 `cloudsave/` 的该角色快照单元。
 - 下载（单角色）：`import_cloudsave_character_unit`，从本机快照应用到运行时。
 - 下载前有活跃会话保护，必要时先释放 memory 句柄。
-- 下载时若遇到活跃会话（409 `ACTIVE_SESSION_BLOCKED`），支持前端带 `force: true` 参数强制终止会话后继续下载。强制流程：终止 AI 会话（`disconnected_by_server`）→ 将 `rs.session_manager` 置 `None` 阻断自动重连 → 释放 memory server SQLite 句柄 → 执行下载覆盖。详见 [cloudsave-force-terminate-optimization.md](cloudsave-force-terminate-optimization.md)。
+- 下载时若遇到活跃会话（409 `ACTIVE_SESSION_BLOCKED`），支持前端带 `force: true` 参数强制终止会话后继续下载。强制流程：终止 AI 会话（`disconnected_by_server`）→ 将 `rs.session_manager` 置 `None` 阻断自动重连 → 释放 memory server SQLite 句柄 → 执行下载覆盖。
 
 ### 4.5 单角色与全量快照差异
 

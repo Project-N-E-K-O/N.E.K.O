@@ -319,22 +319,37 @@ MMDManager.prototype.setupFloatingButtons = function() {
 
         const bc = document.getElementById('mmd-floating-buttons');
         if (!bc) { this.setupFloatingButtons(); return; }
-        bc.style.removeProperty('display');
-        bc.style.removeProperty('visibility');
-        bc.style.removeProperty('opacity');
+        const isMobile = window.isMobileWidth && window.isMobileWidth();
+        if (isMobile) {
+            bc.style.removeProperty('display');
+            bc.style.removeProperty('visibility');
+            bc.style.removeProperty('opacity');
+        } else {
+            bc.style.display = 'none';
+            bc.style.visibility = 'hidden';
+            bc.style.opacity = '0';
+        }
 
         if (this.core && typeof this.core.setLocked === 'function') {
             this.core.setLocked(false);
         }
 
-        applyResponsiveFloatingLayout();
+        if (isMobile) {
+            applyResponsiveFloatingLayout();
+        }
 
         if (this._mmdLockIcon) {
-            this._mmdLockIcon.style.removeProperty('display');
-            this._mmdLockIcon.style.removeProperty('visibility');
-            this._mmdLockIcon.style.removeProperty('opacity');
             this._mmdLockIcon.style.backgroundImage = 'url(/static/icons/unlocked_icon.png)';
-            this._mmdLockIcon.style.display = shouldShowLockIcon() ? 'block' : 'none';
+            if (isMobile) {
+                this._mmdLockIcon.style.removeProperty('display');
+                this._mmdLockIcon.style.removeProperty('visibility');
+                this._mmdLockIcon.style.removeProperty('opacity');
+                this._mmdLockIcon.style.display = shouldShowLockIcon() ? 'block' : 'none';
+            } else {
+                this._mmdLockIcon.style.display = 'none';
+                this._mmdLockIcon.style.visibility = 'hidden';
+                this._mmdLockIcon.style.opacity = '0';
+            }
         }
 
         if (hadPhysics) {
@@ -408,6 +423,24 @@ MMDManager.prototype.setupFloatingButtons = function() {
 
     this._syncButtonStatesWithGlobalState();
 
+    // 点击按钮栏/弹窗/侧面板之外的区域时，自动关闭所有弹窗
+    if (this._outsideClickHandler) {
+        document.removeEventListener('click', this._outsideClickHandler);
+    }
+    this._outsideClickHandler = (e) => {
+        const path = e.composedPath ? e.composedPath() : (e.path || []);
+        if (path.includes(buttonsContainer)) return;
+        if (path.some(n => n && n.id && n.id.startsWith('mmd-popup-'))) return;
+        if (path.some(n => n && typeof n.hasAttribute === 'function' && n.hasAttribute('data-neko-sidepanel'))) return;
+        const openPopup = Array.from(document.querySelectorAll('[id^="mmd-popup-"]')).find(el =>
+            getComputedStyle(el).display === 'flex');
+        if (!openPopup) return;
+        this.closeAllPopups();
+    };
+    document.addEventListener('click', this._outsideClickHandler);
+    this._uiWindowHandlers = this._uiWindowHandlers || [];
+    this._uiWindowHandlers.push({ event: 'click', handler: this._outsideClickHandler, target: document });
+
     // 通知外部浮动按钮已就绪
     window.dispatchEvent(new CustomEvent('live2d-floating-buttons-ready'));
 };
@@ -418,7 +451,6 @@ MMDManager.prototype.setupFloatingButtons = function() {
 MMDManager.prototype._startUIUpdateLoop = function() {
     if (this._uiUpdateLoopId !== null && this._uiUpdateLoopId !== undefined) return;
 
-    const box = new window.THREE.Box3();
     const getVisibleButtonCount = () => {
         const mobile = window.isMobileWidth && window.isMobileWidth();
         return [{ id: 'mic' }, { id: 'screen' }, { id: 'agent' }, { id: 'settings' }, { id: 'goodbye' }]
@@ -543,42 +575,37 @@ MMDManager.prototype._startUIUpdateLoop = function() {
         }
 
         try {
-            const camera = this.camera;
             const renderer = this.renderer;
             const canvasRect = renderer.domElement.getBoundingClientRect();
             const canvasWidth = canvasRect.width;
             const canvasHeight = canvasRect.height;
-
-            box.setFromObject(this.currentModel.mesh);
-
-            const corners = [
-                new window.THREE.Vector3(box.min.x, box.min.y, box.min.z),
-                new window.THREE.Vector3(box.min.x, box.min.y, box.max.z),
-                new window.THREE.Vector3(box.min.x, box.max.y, box.min.z),
-                new window.THREE.Vector3(box.min.x, box.max.y, box.max.z),
-                new window.THREE.Vector3(box.max.x, box.min.y, box.min.z),
-                new window.THREE.Vector3(box.max.x, box.min.y, box.max.z),
-                new window.THREE.Vector3(box.max.x, box.max.y, box.min.z),
-                new window.THREE.Vector3(box.max.x, box.max.y, box.max.z)
-            ];
-
-            let screenLeft = Infinity, screenRight = -Infinity;
-            let screenTop = Infinity, screenBottom = -Infinity;
-
-            for (const corner of corners) {
-                corner.project(camera);
-                const sx = canvasRect.left + (corner.x * 0.5 + 0.5) * canvasWidth;
-                const sy = canvasRect.top + (-corner.y * 0.5 + 0.5) * canvasHeight;
-                screenLeft = Math.min(screenLeft, sx);
-                screenRight = Math.max(screenRight, sx);
-                screenTop = Math.min(screenTop, sy);
-                screenBottom = Math.max(screenBottom, sy);
+            const isMobile = window.isMobileWidth && window.isMobileWidth();
+            const modelBounds = typeof this.getModelScreenBounds === 'function'
+                ? this.getModelScreenBounds()
+                : null;
+            if (!modelBounds) {
+                if (!isMobile) {
+                    if (buttonsContainer) {
+                        buttonsContainer.style.display = 'none';
+                        buttonsContainer.style.visibility = 'hidden';
+                        buttonsContainer.style.opacity = '0';
+                    }
+                    if (lockIcon && !this._isInReturnState) {
+                        lockIcon.style.display = 'none';
+                        lockIcon.style.visibility = 'hidden';
+                        lockIcon.style.opacity = '0';
+                    }
+                }
+                if (this._uiUpdateLoopId !== null && this._uiUpdateLoopId !== undefined) {
+                    this._uiUpdateLoopId = requestAnimationFrame(update);
+                }
+                return;
             }
 
-            const visibleLeft = Math.max(0, Math.min(canvasWidth, screenLeft - canvasRect.left));
-            const visibleRight = Math.max(0, Math.min(canvasWidth, screenRight - canvasRect.left));
-            const visibleTop = Math.max(0, Math.min(canvasHeight, screenTop - canvasRect.top));
-            const visibleBottom = Math.max(0, Math.min(canvasHeight, screenBottom - canvasRect.top));
+            const visibleLeft = Math.max(0, Math.min(canvasWidth, modelBounds.left - canvasRect.left));
+            const visibleRight = Math.max(0, Math.min(canvasWidth, modelBounds.right - canvasRect.left));
+            const visibleTop = Math.max(0, Math.min(canvasHeight, modelBounds.top - canvasRect.top));
+            const visibleBottom = Math.max(0, Math.min(canvasHeight, modelBounds.bottom - canvasRect.top));
             const visibleHeight = Math.max(1, visibleBottom - visibleTop);
 
             const modelScreenHeight = visibleHeight;
@@ -676,12 +703,38 @@ MMDManager.prototype._startUIUpdateLoop = function() {
             const scale = Math.max(0.5, Math.min(1.0, targetToolbarHeight / baseToolbarHeight));
 
             if (buttonsContainer) {
-                const isMobile = window.isMobileWidth && window.isMobileWidth();
                 if (isMobile) {
                     buttonsContainer.style.transformOrigin = 'right bottom';
+                    buttonsContainer.style.visibility = 'visible';
+                    buttonsContainer.style.opacity = '1';
                     buttonsContainer.style.display = this.isLocked ? 'none' : 'flex';
                 } else {
                     buttonsContainer.style.transformOrigin = 'left top';
+                    const screenWidth = window.innerWidth;
+                    const screenHeight = window.innerHeight;
+                    const targetX = canvasRect.left + visibleRight * 0.8 + visibleLeft * 0.2;
+                    const actualToolbarHeight = baseToolbarHeight * scale;
+                    const actualToolbarWidth = 80 * scale;
+                    const offsetY = Math.min(modelScreenHeight * 0.1, screenHeight * 0.08);
+                    const targetY = modelCenterY - actualToolbarHeight / 2 - offsetY;
+                    const boundedY = Math.max(20, Math.min(targetY, screenHeight - actualToolbarHeight - 20));
+                    const boundedX = Math.max(0, Math.min(targetX, screenWidth - actualToolbarWidth));
+
+                    const rawLeft = parseFloat(buttonsContainer.style.left);
+                    if (this._snapUIPosition || Number.isNaN(rawLeft)) {
+                        buttonsContainer.style.left = `${boundedX}px`;
+                        buttonsContainer.style.top = `${boundedY}px`;
+                        this._snapUIPosition = false;
+                    } else {
+                        const currentTop = parseFloat(buttonsContainer.style.top) || boundedY;
+                        const dist = Math.sqrt(Math.pow(boundedX - rawLeft, 2) + Math.pow(boundedY - currentTop, 2));
+                        if (dist > 0.5) {
+                            const lerpFactor = 0.15;
+                            buttonsContainer.style.left = `${rawLeft + (boundedX - rawLeft) * lerpFactor}px`;
+                            buttonsContainer.style.top = `${currentTop + (boundedY - currentTop) * lerpFactor}px`;
+                        }
+                    }
+
                     const isLocked = this.isLocked;
                     const hoveringButtons = this._mmdButtonsHovered === true;
                     const popupUi = window.AvatarPopupUI || null;
@@ -704,38 +757,15 @@ MMDManager.prototype._startUIUpdateLoop = function() {
                         : Array.from(document.querySelectorAll('[id^="mmd-popup-"], [data-neko-sidepanel-owner^="mmd-popup-"]'))
                             .some(isFallbackOverlayVisible);
                     const inTutorial = buttonsContainer.dataset.inTutorial === 'true' || window.isInTutorial === true;
-                    const shouldShowButtons = inTutorial || (!isLocked && (this._mmdUiNearModel || hoveringButtons || hasOpenOverlay));
+                    const isUiPositionReady =
+                        Number.isFinite(parseFloat(buttonsContainer.style.left)) &&
+                        Number.isFinite(parseFloat(buttonsContainer.style.top)) &&
+                        !this._snapUIPosition;
+                    const shouldShowButtons = isUiPositionReady &&
+                        (inTutorial || (!isLocked && (this._mmdUiNearModel || hoveringButtons || hasOpenOverlay)));
                     buttonsContainer.style.display = shouldShowButtons ? 'flex' : 'none';
-                }
-                buttonsContainer.style.transform = `scale(${scale})`;
-
-                if (!isMobile) {
-                    const screenWidth = window.innerWidth;
-                    const screenHeight = window.innerHeight;
-                    const targetX = canvasRect.left + visibleRight * 0.8 + visibleLeft * 0.2;
-                    const actualToolbarHeight = baseToolbarHeight * scale;
-                    const actualToolbarWidth = 80 * scale;
-                    const offsetY = Math.min(modelScreenHeight * 0.1, screenHeight * 0.08);
-                    const targetY = modelCenterY - actualToolbarHeight / 2 - offsetY;
-                    const boundedY = Math.max(20, Math.min(targetY, screenHeight - actualToolbarHeight - 20));
-                    const boundedX = Math.max(0, Math.min(targetX, screenWidth - actualToolbarWidth));
-
-                    const rawLeft = parseFloat(buttonsContainer.style.left);
-                    if (this._snapUIPosition || Number.isNaN(rawLeft)) {
-                        if (canvasWidth > 0 && canvasHeight > 0) {
-                            buttonsContainer.style.left = `${boundedX}px`;
-                            buttonsContainer.style.top = `${boundedY}px`;
-                            this._snapUIPosition = false;
-                        }
-                    } else {
-                        const currentTop = parseFloat(buttonsContainer.style.top) || boundedY;
-                        const dist = Math.sqrt(Math.pow(boundedX - rawLeft, 2) + Math.pow(boundedY - currentTop, 2));
-                        if (dist > 0.5) {
-                            const lerpFactor = 0.15;
-                            buttonsContainer.style.left = `${rawLeft + (boundedX - rawLeft) * lerpFactor}px`;
-                            buttonsContainer.style.top = `${currentTop + (boundedY - currentTop) * lerpFactor}px`;
-                        }
-                    }
+                    buttonsContainer.style.visibility = shouldShowButtons ? 'visible' : 'hidden';
+                    buttonsContainer.style.opacity = shouldShowButtons ? '1' : '0';
 
                     if (lockIcon && !this._isInReturnState) {
                         const lockTargetX = canvasRect.left + visibleRight * 0.7 + visibleLeft * 0.3;
@@ -753,10 +783,8 @@ MMDManager.prototype._startUIUpdateLoop = function() {
 
                         const rawLockLeft = parseFloat(lockIcon.style.left);
                         if (Number.isNaN(rawLockLeft)) {
-                            if (canvasWidth > 0 && canvasHeight > 0) {
-                                lockIcon.style.left = `${boundedLockX}px`;
-                                lockIcon.style.top = `${boundedLockY}px`;
-                            }
+                            lockIcon.style.left = `${boundedLockX}px`;
+                            lockIcon.style.top = `${boundedLockY}px`;
                         } else {
                             const currentLockTop = parseFloat(lockIcon.style.top) || boundedLockY;
                             const lockDist = Math.sqrt(Math.pow(boundedLockX - rawLockLeft, 2) + Math.pow(boundedLockY - currentLockTop, 2));
@@ -766,7 +794,12 @@ MMDManager.prototype._startUIUpdateLoop = function() {
                                 lockIcon.style.top = `${currentLockTop + (boundedLockY - currentLockTop) * lerpFactor}px`;
                             }
                         }
-                        lockIcon.style.display = (this._shouldShowMmdLockIcon && this._shouldShowMmdLockIcon()) ? 'block' : 'none';
+                        const shouldShowLock = (this._shouldShowMmdLockIcon && this._shouldShowMmdLockIcon()) &&
+                            Number.isFinite(parseFloat(lockIcon.style.left)) &&
+                            Number.isFinite(parseFloat(lockIcon.style.top));
+                        lockIcon.style.display = shouldShowLock ? 'block' : 'none';
+                        lockIcon.style.visibility = shouldShowLock ? 'visible' : 'hidden';
+                        lockIcon.style.opacity = shouldShowLock ? '' : '0';
 
                         const lockRect = lockIcon.getBoundingClientRect();
                         let isLockOverlapped = false;
@@ -782,6 +815,7 @@ MMDManager.prototype._startUIUpdateLoop = function() {
                         lockIcon.style.opacity = isLockOverlapped ? '0.3' : '';
                     }
                 }
+                buttonsContainer.style.transform = `scale(${scale})`;
             }
         } catch (error) {
             if (window.DEBUG_MODE) console.debug('[MMD UI] 更新循环单帧异常:', error);

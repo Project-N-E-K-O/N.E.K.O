@@ -38,7 +38,8 @@ dependencies = [
   "translatepy",
   "tomli>=2.3.0",
   "tomli-w>=1.2.0",
-  "loguru>=0.7.0",
+  # ⚠ 严禁再加 loguru / structlog / logbook。日志统一走 utils.logger_config。
+  # lint 守门：scripts/check_no_loguru.py（CI: .github/workflows/analyze.yml）
   "pyzmq>=27.1.0",
   "ormsgpack>=1.4.0",
   "browser-use>=0.11.0",

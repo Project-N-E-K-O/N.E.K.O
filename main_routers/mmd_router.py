@@ -801,6 +801,12 @@ async def update_emotion_mapping(request: Request):
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
 
+def _count_and_rmtree(path: Path) -> int:
+    count = sum(1 for f in path.rglob('*') if f.is_file())
+    shutil.rmtree(path)
+    return count
+
+
 @router.delete('/model')
 async def delete_mmd_model(request: Request):
     """删除 MMD 模型文件（及其所在目录中的关联资源）"""
@@ -841,8 +847,7 @@ async def delete_mmd_model(request: Request):
                         "success": False, "error": "该目录包含模型文件，请通过模型 URL 删除"
                     })
                 # 残缺目录（无模型文件）：允许删除
-                deleted_files = sum(1 for f in candidate.rglob('*') if f.is_file())
-                await asyncio.to_thread(shutil.rmtree, candidate)
+                deleted_files = await asyncio.to_thread(_count_and_rmtree, candidate)
                 logger.info(f"删除残缺 MMD 模型目录: {candidate}")
                 return JSONResponse(content={
                     "success": True,
@@ -870,10 +875,7 @@ async def delete_mmd_model(request: Request):
                 return JSONResponse(status_code=400, content={"success": False, "error": "路径越界"})
             if top_subdir.name.lower() in RESERVED_DIRS:
                 return JSONResponse(status_code=400, content={"success": False, "error": "不能删除保留目录"})
-            for f in top_subdir.rglob('*'):
-                if f.is_file():
-                    deleted_files += 1
-            await asyncio.to_thread(shutil.rmtree, top_subdir)
+            deleted_files = await asyncio.to_thread(_count_and_rmtree, top_subdir)
             logger.info(f"删除 MMD 模型目录: {top_subdir} ({deleted_files} 个文件)")
         else:
             # 模型在顶层：只删除模型文件本身

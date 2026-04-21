@@ -8,11 +8,15 @@ import sys
 
 from plugin.logging_config import get_logger
 from plugin.server.domain.errors import ServerDomainError
+from plugin.settings import USER_PACKAGE_PROFILES_ROOT, USER_PLUGIN_CONFIG_ROOT
 
 _PLUGIN_ROOT = Path(__file__).resolve().parents[3]
 _CLI_ROOT = _PLUGIN_ROOT / "neko-plugin-cli"
+# 源仓库内置插件目录：用于 list/pack（只读扫描）。
 _RUNTIME_PLUGINS_ROOT = _PLUGIN_ROOT / "plugins"
-_RUNTIME_PROFILES_ROOT = _PLUGIN_ROOT / ".neko-package-profiles"
+# unpack（导入）目标目录：统一落到用户我的文档下的 plugins 配置根。
+_UNPACK_PLUGINS_ROOT = USER_PLUGIN_CONFIG_ROOT
+_UNPACK_PROFILES_ROOT = USER_PACKAGE_PROFILES_ROOT
 _TARGET_ROOT = _CLI_ROOT / "target"
 
 # Allowed extensions for uploaded plugin packages
@@ -296,14 +300,14 @@ class PluginCliService:
     ) -> dict[str, object]:
         try:
             plugins_root_path = (
-                _require_within(Path(plugins_root).expanduser().resolve(), _RUNTIME_PLUGINS_ROOT, field="plugins_root")
+                _require_within(Path(plugins_root).expanduser().resolve(), _UNPACK_PLUGINS_ROOT, field="plugins_root")
                 if plugins_root
-                else _RUNTIME_PLUGINS_ROOT
+                else _UNPACK_PLUGINS_ROOT
             )
             profiles_root_path = (
-                _require_within(Path(profiles_root).expanduser().resolve(), _RUNTIME_PROFILES_ROOT, field="profiles_root")
+                _require_within(Path(profiles_root).expanduser().resolve(), _UNPACK_PROFILES_ROOT, field="profiles_root")
                 if profiles_root
-                else _RUNTIME_PROFILES_ROOT
+                else _UNPACK_PROFILES_ROOT
             )
             result = unpack_package(
                 self._resolve_package_path(package),
