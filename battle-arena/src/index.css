@@ -1,0 +1,31 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body, #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-neko-darker text-white font-display;
+    overflow: hidden;
+  }
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { @apply bg-purple-700/60 rounded-full; }
+}
+
+@layer components {
+  /* 毛玻璃卡片 — 在浅色背景上提高透明度保证可读 */
+  .glass-card {
+    @apply bg-black/40 backdrop-blur-md border border-white/10 rounded-2xl;
+  }
+  /* 渐变文字 */
+  .gradient-text {
+    @apply bg-gradient-to-r from-purple-300 via-pink-300 to-purple-300 bg-clip-text text-transparent;
+  }
+  /* 评分条过渡 */
+  .score-fill {
+    transition: width 1s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+}
