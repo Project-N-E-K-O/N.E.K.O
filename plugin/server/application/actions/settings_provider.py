@@ -116,27 +116,29 @@ def _build_descriptor_for_field(
         gt = _get_constraint(field_info, "gt")
         lt = _get_constraint(field_info, "lt")
 
-        if ge is not None and le is not None:
+        # Resolve effective min/max from ge/gt and le/lt
+        eff_min = ge if ge is not None else gt
+        eff_max = le if le is not None else lt
+
+        if eff_min is not None and eff_max is not None:
             step: float = 1.0 if core_type is int else 0.1
             return ActionDescriptor(
                 **base,
                 control="slider",
                 current_value=current_value,
-                min=ge,
-                max=le,
+                min=eff_min,
+                max=eff_max,
                 step=step,
                 icon="🎚",
             )
 
-        # number fallback
-        min_val = ge if ge is not None else (gt if gt is not None else None)
-        max_val = le if le is not None else (lt if lt is not None else None)
+        # number fallback — one or both bounds missing
         return ActionDescriptor(
             **base,
             control="number",
             current_value=current_value,
-            min=min_val,
-            max=max_val,
+            min=eff_min,
+            max=eff_max,
             icon="🔢",
         )
 
@@ -157,10 +159,16 @@ def _build_descriptor_for_field(
     # --- Enum subclass → dropdown ---
     if isinstance(core_type, type) and issubclass(core_type, enum.Enum):
         options = [str(m.value) for m in core_type]
+        if isinstance(current_value, enum.Enum):
+            display_value = str(current_value.value)
+        elif current_value is not None:
+            display_value = str(current_value)
+        else:
+            display_value = None
         return ActionDescriptor(
             **base,
             control="dropdown",
-            current_value=str(current_value.value) if isinstance(current_value, enum.Enum) else str(current_value) if current_value is not None else None,
+            current_value=display_value,
             options=options,
             icon="📋",
         )
@@ -232,15 +240,18 @@ def _collect_settings_actions_sync(
                 section = config_data.get(toml_section)
                 if isinstance(section, Mapping):
                     current_section = dict(section)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(
+                "Failed to load config for plugin {} section {}: {}",
+                pid, toml_section, repr(exc),
+            )
 
         # Iterate fields
         for field_name, field_info in settings_cls.model_fields.items():
             if not _is_hot(field_info):
                 continue
 
-            annotation = settings_cls.model_fields[field_name].annotation
+            annotation = field_info.annotation
             current_value = current_section.get(field_name, field_info.default)
 
             descriptor = _build_descriptor_for_field(

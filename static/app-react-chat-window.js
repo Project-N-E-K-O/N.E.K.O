@@ -425,7 +425,7 @@
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
             credentials: 'same-origin',
-            body: JSON.stringify({ value: value })
+            body: JSON.stringify({ value: value !== undefined ? value : null })
         })
         .then(function (res) {
             if (!res.ok) {
@@ -454,6 +454,7 @@
     }
 
     function saveChatActionPreferences(prefs) {
+        var previousPreferences = _cachedPreferences;
         _cachedPreferences = prefs;
         renderWindow();
         fetch('/chat/actions/preferences', {
@@ -461,8 +462,12 @@
             headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
             credentials: 'same-origin',
             body: JSON.stringify(prefs)
+        }).then(function (res) {
+            if (!res.ok) throw new Error('HTTP ' + res.status);
         }).catch(function (err) {
-            console.warn('[ReactChatWindow] saveChatActionPreferences failed:', err);
+            console.warn('[ReactChatWindow] saveChatActionPreferences failed, rolling back:', err);
+            _cachedPreferences = previousPreferences;
+            renderWindow();
         });
     }
 
