@@ -64,10 +64,15 @@ def plugin_cli_test_app() -> FastAPI:
 async def test_plugin_cli_inspect_and_verify_routes(
     plugin_cli_test_app: FastAPI,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     plugin_dir = _make_plugin_dir(tmp_path)
     package_path = tmp_path / "route_demo.neko-plugin"
     pack_plugin(plugin_dir, package_path)
+
+    import plugin.server.application.plugin_cli.service as plugin_cli_service_module
+
+    monkeypatch.setattr(plugin_cli_service_module, "_TARGET_ROOT", tmp_path)
 
     transport = ASGITransport(app=plugin_cli_test_app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -142,6 +147,7 @@ async def test_plugin_cli_pack_bundle_route_uses_mode_payload(
     import plugin.server.application.plugin_cli.service as plugin_cli_service_module
 
     monkeypatch.setattr(plugin_cli_service_module, "_RUNTIME_PLUGINS_ROOT", tmp_path)
+    monkeypatch.setattr(plugin_cli_service_module, "_TARGET_ROOT", tmp_path)
 
     transport = ASGITransport(app=plugin_cli_test_app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
