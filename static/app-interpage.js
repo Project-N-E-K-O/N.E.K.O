@@ -726,6 +726,9 @@
                                 window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
                                 window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
                             }
+
+                            // 恢复 Live2D 待机动作
+                            restoreLive2DIdleAnimationOnMainPage();
                         } else {
                             console.error('[Model] Live2D 管理器初始化失败');
                         }
@@ -788,6 +791,89 @@
             }
         }
     }
+
+    // =====================================================================
+    // Restore Live2D Idle Animation on Main Page
+    // =====================================================================
+
+    async function restoreLive2DIdleAnimationOnMainPage() {
+        try {
+            const lanlanName = window.lanlan_config?.name;
+            if (!lanlanName) {
+                console.log('[Live2D Main] 没有 lanlanName，跳过恢复待机动作');
+                return;
+            }
+
+            const response = await fetch('/api/characters/');
+            const data = await response.json();
+            const charData = data['猫娘']?.[lanlanName];
+            const live2dIdleAnimation = charData?.avatar?.live2d?.idle_animation;
+
+            if (!live2dIdleAnimation) {
+                console.log('[Live2D Main] 没有保存的待机动作');
+                return;
+            }
+
+            console.log('[Live2D Main] 开始恢复待机动作:', live2dIdleAnimation);
+
+            const live2dManager = window.live2dManager;
+            const live2dModel = live2dManager?.getCurrentModel();
+            if (!live2dModel) {
+                console.log('[Live2D Main] Live2D 模型未加载，跳过恢复');
+                return;
+            }
+
+            const internalModel = live2dModel.internalModel;
+            if (!internalModel?.motionManager) {
+                console.log('[Live2D Main] motionManager 不存在');
+                return;
+            }
+
+            // 从 fileReferences.Motions.PreviewAll 获取动作文件列表
+            const motionManager = internalModel.motionManager;
+            const fileReferences = live2dModel.fileReferences || {};
+            const previewAllMotions = fileReferences.Motions?.PreviewAll || [];
+            const motionFiles = previewAllMotions.map(m => m.File || m);
+
+            console.log('[Live2D Main] motionFiles:', motionFiles);
+            const motionIndex = motionFiles.indexOf(live2dIdleAnimation);
+
+            if (motionIndex < 0) {
+                console.log('[Live2D Main] 待机动作不在当前模型的动作列表中:', live2dIdleAnimation);
+                return;
+            }
+
+            const groupName = 'PreviewAll';
+
+            if (!motionManager.motionGroups) {
+                motionManager.motionGroups = {};
+            }
+            if (!motionManager.motionGroups[groupName]) {
+                motionManager.motionGroups[groupName] = [];
+            }
+
+            await motionManager.loadMotion(groupName, motionIndex);
+
+            const motionInstance = motionManager.motionGroups?.[groupName]?.[motionIndex];
+            if (motionInstance) {
+                if (typeof motionInstance.setIsLoop === 'function') {
+                    motionInstance.setIsLoop(true);
+                } else if (motionInstance._loop !== undefined) {
+                    motionInstance._loop = true;
+                }
+            }
+
+            motionManager.stopAllMotions();
+            live2dModel.motion(groupName, motionIndex, 3);
+            console.log('[Live2D Main] 已恢复待机动作并循环播放:', live2dIdleAnimation);
+
+        } catch (error) {
+            console.error('[Live2D Main] 恢复待机动作失败:', error);
+        }
+    }
+
+    // 暴露给全局作用域
+    window.restoreLive2DIdleAnimationOnMainPage = restoreLive2DIdleAnimationOnMainPage;
 
     // =====================================================================
     // Hide / Show main UI (called when entering/leaving model manager)

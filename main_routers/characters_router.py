@@ -642,6 +642,23 @@ async def update_catgirl_l2d(name: str, request: Request):
                 live2d_model_path,
             )
             set_reserved(characters['猫娘'][name], 'avatar', 'model_type', 'live2d')
+
+            if 'live2d_idle_animation' in data:
+                live2d_idle_animation = data.get('live2d_idle_animation')
+                logger.info(f"[Live2D Save] 收到 live2d_idle_animation 请求: {live2d_idle_animation}")
+                if live2d_idle_animation is None or live2d_idle_animation == '':
+                    set_reserved(characters['猫娘'][name], 'avatar', 'live2d', 'idle_animation', None)
+                elif isinstance(live2d_idle_animation, str):
+                    live2d_idle_str = str(live2d_idle_animation).strip()
+                    if '://' in live2d_idle_str or live2d_idle_str.startswith('data:'):
+                        return JSONResponse(content={'success': False, 'error': 'Live2D待机动作路径不能包含URL方案'}, status_code=400)
+                    if '..' in live2d_idle_str:
+                        return JSONResponse(content={'success': False, 'error': 'Live2D待机动作路径不能包含路径遍历（..）'}, status_code=400)
+                    set_reserved(characters['猫娘'][name], 'avatar', 'live2d', 'idle_animation', live2d_idle_str)
+                    logger.info(f"[Live2D Save] 已保存 idle_animation: {live2d_idle_str}")
+            else:
+                logger.info(f"[Live2D Save] 请求中未包含 live2d_idle_animation 字段, data keys: {list(data.keys())}")
+
             if item_id:
                 set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', str(item_id))
                 set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', 'steam_workshop')

@@ -983,6 +983,102 @@ document.addEventListener('DOMContentLoaded', async () => {
     // VRM/MMD 专属设置区域 DOM 引用
     const vrmSettingsSection = document.getElementById('vrm-settings-section');
     const mmdSettingsSection = document.getElementById('mmd-settings-section');
+    async function restoreLive2DIdleAnimation() {
+        try {
+            const lanlanName = await getLanlanName();
+            console.log('[Live2D Restore] lanlanName:', lanlanName);
+            if (!lanlanName) return;
+
+            const data = await RequestHelper.fetchJson('/api/characters/');
+            console.log('[Live2D Restore] charData from API:', data['猫娘']?.[lanlanName]);
+            const charData = data['猫娘']?.[lanlanName];
+            const live2dIdleAnimation = charData?.avatar?.live2d?.idle_animation;
+            console.log('[Live2D Restore] live2dIdleAnimation:', live2dIdleAnimation);
+
+            if (!live2dIdleAnimation) {
+                console.log('[Live2D Restore] 没有保存的待机动作');
+                return;
+            }
+
+            const motionSelect = document.getElementById('motion-select');
+            console.log('[Live2D Restore] motionSelect:', motionSelect);
+            if (!motionSelect) return;
+
+            const motionFiles = currentModelFiles?.motion_files || [];
+            console.log('[Live2D Restore] motionFiles:', motionFiles);
+            console.log('[Live2D Restore] 检查动作是否在列表中:', motionFiles.includes(live2dIdleAnimation));
+            if (!motionFiles.includes(live2dIdleAnimation)) {
+                console.log('[Live2D] 保存的待机动作不在当前模型的动作列表中，跳过恢复:', live2dIdleAnimation);
+                return;
+            }
+
+            motionSelect.value = live2dIdleAnimation;
+            if (typeof updateMotionSelectButtonText === 'function') {
+                updateMotionSelectButtonText();
+            }
+            if (typeof updateMotionDropdown === 'function') {
+                updateMotionDropdown();
+            }
+
+            const motionIndex = motionFiles.indexOf(live2dIdleAnimation);
+            console.log('[Live2D Restore] motionIndex:', motionIndex);
+            if (motionIndex < 0) return;
+
+            const live2dModel = window.live2dManager?.getCurrentModel() || live2dModel;
+            console.log('[Live2D Restore] live2dModel:', live2dModel);
+            if (!live2dModel) return;
+
+            const internalModel = live2dModel.internalModel;
+            console.log('[Live2D Restore] internalModel:', internalModel);
+            if (!internalModel?.motionManager) {
+                console.log('[Live2D Restore] motionManager 不存在');
+                return;
+            }
+
+            const motionManager = internalModel.motionManager;
+            console.log('[Live2D Restore] motionManager:', motionManager);
+            const groupName = 'PreviewAll';
+
+            if (!motionManager.motionGroups) {
+                motionManager.motionGroups = {};
+            }
+            if (!motionManager.motionGroups[groupName]) {
+                motionManager.motionGroups[groupName] = [];
+            }
+
+            try {
+                await motionManager.loadMotion(groupName, motionIndex);
+            } catch (e) {
+                console.warn('[Live2D] 加载待机动作失败:', e);
+                return;
+            }
+
+            const motionInstance = motionManager.motionGroups?.[groupName]?.[motionIndex];
+            console.log('[Live2D Restore] motionInstance:', motionInstance);
+            console.log('[Live2D Restore] motionGroups[PreviewAll]:', motionManager.motionGroups?.[groupName]);
+            if (motionInstance) {
+                if (typeof motionInstance.setIsLoop === 'function') {
+                    motionInstance.setIsLoop(true);
+                } else if (motionInstance._loop !== undefined) {
+                    motionInstance._loop = true;
+                }
+                console.log('[Live2D] 已将待机动作设置为循环播放:', live2dIdleAnimation);
+            } else {
+                console.log('[Live2D Restore] motionInstance 不存在，无法设置循环');
+            }
+
+            motionManager.stopAllMotions();
+            const result = live2dModel.motion(groupName, motionIndex, 3);
+            console.log('[Live2D Restore] motion result:', result);
+            isMotionPlaying = true;
+            updateMotionPlayButtonIcon();
+            console.log('[Live2D] 已恢复待机动作并循环播放:', live2dIdleAnimation);
+        } catch (error) {
+            console.error('[Live2D] 恢复待机动作失败:', error);
+        }
+    }
+
+
     // VRM 鼠标跟踪已移至 popup-ui 统一控制，不在外观管理页单独配置
     // MMD 光照
     const mmdAmbientIntensitySlider = document.getElementById('mmd-ambient-intensity-slider');
@@ -1844,6 +1940,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }
 
+            console.log('[Live2D Save] saveModelToCharacter called, currentModelType:', currentModelType);
+            console.log('[Live2D Save] currentModelInfo:', currentModelInfo);
+            console.log('[Live2D Save] modelName:', modelName);
+
             showStatus(t('live2d.savingSettings', '正在保存设置...'));
 
             // 2. 构建模型数据，使用专用接口保存
@@ -1910,10 +2010,20 @@ document.addEventListener('DOMContentLoaded', async () => {
                     modelData.item_id = itemId;
                     modelData.live2d_item_id = itemId;
                 }
+                const motionSelect = document.getElementById('motion-select');
+                console.log('[Live2D Save] motionSelect element:', motionSelect);
+                console.log('[Live2D Save] motionSelect.value:', motionSelect ? motionSelect.value : 'null');
+                console.log('[Live2D Save] currentModelFiles.motion_files:', currentModelFiles?.motion_files);
+                if (motionSelect && motionSelect.value) {
+                    modelData.live2d_idle_animation = motionSelect.value;
+                    console.log('[Live2D Save] Added live2d_idle_animation to modelData:', motionSelect.value);
+                }
+                console.log('[Live2D Save] Final modelData:', JSON.stringify(modelData, null, 2));
             }
 
             
             // 3. 使用【专用模型接口】保存模型设置（包含光照和待机动作）
+            console.log('[Live2D Save] Sending request to server...');
             const modelResult = await RequestHelper.fetchJson(
                 `/api/characters/catgirl/l2d/${encodeURIComponent(lanlanName)}`,
                 {
@@ -1924,6 +2034,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     body: JSON.stringify(modelData)
                 }
             );
+            console.log('[Live2D Save] Server response:', modelResult);
 
             if (!modelResult.success) {
                 throw new Error(modelResult.error || '保存模型设置失败');
@@ -6118,6 +6229,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             setControlsDisabled(false);
             showStatus(t('live2d.modelLoadSuccess', `模型 ${modelName} 加载成功`, { model: modelName }));
 
+            // 恢复 Live2D 待机动作（如果之前保存过）
+            restoreLive2DIdleAnimation();
+
         } catch (error) {
             showStatus(t('live2d.modelLoadFailed', `加载模型 ${modelName} 失败`, { model: modelName }));
             console.error(error);
@@ -6264,6 +6378,48 @@ document.addEventListener('DOMContentLoaded', async () => {
             // 播放按钮保持可用：未选择动作时点击会提示
             playMotionBtn.disabled = false;
             return;
+        }
+
+        // 立即播放选中的动作
+        const motionFiles = currentModelFiles?.motion_files || [];
+        const motionIndex = motionFiles.indexOf(selectedValue);
+        if (motionIndex >= 0 && live2dModel) {
+            const internalModel = live2dModel.internalModel;
+            if (internalModel?.motionManager) {
+                const motionManager = internalModel.motionManager;
+                const groupName = 'PreviewAll';
+
+                // 确保 motionGroups 存在
+                if (!motionManager.motionGroups) {
+                    motionManager.motionGroups = {};
+                }
+                if (!motionManager.motionGroups[groupName]) {
+                    motionManager.motionGroups[groupName] = [];
+                }
+
+                // 加载并播放动作
+                try {
+                    await motionManager.loadMotion(groupName, motionIndex);
+
+                    // 设置为循环播放
+                    const motionInstance = motionManager.motionGroups?.[groupName]?.[motionIndex];
+                    if (motionInstance) {
+                        if (typeof motionInstance.setIsLoop === 'function') {
+                            motionInstance.setIsLoop(true);
+                        } else if (motionInstance._loop !== undefined) {
+                            motionInstance._loop = true;
+                        }
+                    }
+
+                    motionManager.stopAllMotions();
+                    live2dModel.motion(groupName, motionIndex, 3);
+                    isMotionPlaying = true;
+                    updateMotionPlayButtonIcon();
+                    console.log('[Live2D] 已播放选中的动作（循环模式）:', selectedValue);
+                } catch (err) {
+                    console.warn('[Live2D] 播放动作失败:', err);
+                }
+            }
         }
 
         isMotionPlaying = false;
