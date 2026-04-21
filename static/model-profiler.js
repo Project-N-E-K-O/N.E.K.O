@@ -421,7 +421,9 @@ class ModelProfiler {
                 const geom = child.geometry;
                 if (geom) {
                     totalVertices += geom.attributes?.position?.count || 0;
-                    totalFaces += geom.index ? Math.floor(geom.index.count / 3) : 0;
+                    totalFaces += geom.index
+                        ? Math.floor(geom.index.count / 3)
+                        : (geom.attributes?.position ? Math.floor(geom.attributes.position.count / 3) : 0);
                 }
                 const mats = Array.isArray(child.material) ? child.material : [child.material];
                 for (const mat of mats) {
