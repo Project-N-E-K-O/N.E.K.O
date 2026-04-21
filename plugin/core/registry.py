@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Callable, Type, Optional, Iterable, cast
 
-from loguru import logger
+from plugin.logging_config import logger
 
 _DEFAULT_LOGGER = logger
 

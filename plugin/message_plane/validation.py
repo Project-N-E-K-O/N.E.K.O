@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Optional, Tuple
 
-from loguru import logger
+from plugin.logging_config import logger
 from pydantic import ValidationError
 from pydantic.type_adapter import TypeAdapter
 

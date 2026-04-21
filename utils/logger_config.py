@@ -7,6 +7,24 @@
 - 自动清理旧日志
 - 降级策略（当无法写入时的备用方案）
 - 跨平台支持
+
+╔══════════════════════════════════════════════════════════════════════════╗
+║                        ⚠⚠⚠  警  告  ⚠⚠⚠                                ║
+║                                                                          ║
+║   本模块是全仓库唯一允许的日志后端。所有 Python 进程（main_*、         ║
+║   agent_*、memory_*、user_plugin_server、各 Plugin 子进程）都必须      ║
+║   通过 setup_logging(service_name=...) 走这里。                         ║
+║                                                                          ║
+║   严禁：                                                                ║
+║     1. 引入 loguru / structlog / logbook 等第三方日志库；              ║
+║     2. 用 cwd / __file__.parent 算日志目录（AppImage squashfs 只读）；║
+║     3. 自创 FileHandler 绕过 RobustLoggerConfig；                       ║
+║     4. 把 plugin 日志单独写到别的地方。                                ║
+║                                                                          ║
+║   再有人乱搞 —— 按维护者口径就把谁杀了。                                ║
+║   lint 守门：scripts/check_no_loguru.py（CI: .github/workflows/         ║
+║   analyze.yml）。                                                        ║
+╚══════════════════════════════════════════════════════════════════════════╝
 """
 import os
 import sys

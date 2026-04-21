@@ -3,6 +3,12 @@
 
 提供插件日志和服务器日志的读取和查询功能。
 支持 WebSocket 实时推送日志更新。
+
+⚠ 历史教训：本模块过去用 `BUILTIN_PLUGIN_CONFIG_ROOT.parent.parent / "log"`
+推测插件日志路径，AppImage 打包后 plugin/ 在只读 squashfs 下直接崩。
+现在统一通过 utils.logger_config.RobustLoggerConfig(service_name=...)
+读取真实落盘目录（Documents/N.E.K.O/logs/），不再做相对路径推算。
+谁再加 loguru / cwd-based fallback —— 按维护者口径就把谁杀了。
 """
 import re
 import asyncio
@@ -14,7 +20,6 @@ from collections import deque
 from fastapi import HTTPException, WebSocket, WebSocketDisconnect
 from plugin.logging_config import get_logger
 
-from plugin.server.infrastructure.config_paths import get_plugin_config_path
 from plugin.settings import BUILTIN_PLUGIN_CONFIG_ROOT
 
 
@@ -78,139 +83,64 @@ def _validate_plugin_id(plugin_id: str) -> None:
         )
 
 
+def _resolve_robust_log_dir(service_name: str) -> Path:
+    """通过本体 RobustLoggerConfig 拿落盘目录。
+
+    AppImage 打包后 plugin 包在只读 squashfs 下，禁止用 cwd / __file__ 推
+    日志路径。RobustLoggerConfig 会按 5 级回退（Documents → AppData → home
+    → temp）选择可写目录。
+    """
+    try:
+        from utils.logger_config import RobustLoggerConfig
+    except (ImportError, ModuleNotFoundError):
+        import importlib.util
+
+        project_root = BUILTIN_PLUGIN_CONFIG_ROOT.parent.parent
+        logger_config_path = project_root / "utils" / "logger_config.py"
+        spec = importlib.util.spec_from_file_location("utils.logger_config", logger_config_path)
+        if spec is None or spec.loader is None:
+            raise
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        RobustLoggerConfig = getattr(mod, "RobustLoggerConfig")
+    config = RobustLoggerConfig(service_name=service_name)
+    log_dir = Path(config.get_log_directory_path())
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir
+
+
 def get_plugin_log_dir(plugin_id: str) -> Path:
     """
-    获取插件的日志目录
-    
-    安全措施：
-    1. 验证 plugin_id 只包含安全字符（防止路径遍历攻击）
-    2. 使用 resolve() 和路径检查确保路径在安全目录内
-    
+    获取插件的日志目录。
+
+    所有插件 / 服务器日志统一落到本体 RobustLoggerConfig 选中的可写目录
+    （默认 Documents/N.E.K.O/logs/）。文件名由 RobustLoggerConfig 控制：
+      - 服务器日志：N.E.K.O_PluginServer_YYYYMMDD.log
+      - 插件日志：N.E.K.O_Plugin_{plugin_id}_YYYYMMDD.log
+
     Args:
         plugin_id: 插件ID（或 SERVER_LOG_ID 表示服务器日志）
-    
+
     Returns:
         日志目录路径
-    
-    Raises:
-        HTTPException: 如果 plugin_id 不安全
-    """
-    # 验证 plugin_id 安全性（防止路径遍历攻击）
-    _validate_plugin_id(plugin_id)
-    
-    # 如果是服务器日志，使用应用日志目录（log文件夹）
-    if plugin_id == SERVER_LOG_ID:
-        try:
-            try:
-                from utils.logger_config import RobustLoggerConfig
-            except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
-                import importlib.util
 
-                project_root = BUILTIN_PLUGIN_CONFIG_ROOT.parent.parent
-                logger_config_path = project_root / "utils" / "logger_config.py"
-                spec = importlib.util.spec_from_file_location("utils.logger_config", logger_config_path)
-                if spec is None or spec.loader is None:
-                    raise
-                mod = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(mod)
-                RobustLoggerConfig = getattr(mod, "RobustLoggerConfig")
-            config = RobustLoggerConfig(service_name="PluginServer")
-            # get_log_directory_path() 返回字符串，需要转换为 Path
-            log_dir_str = config.get_log_directory_path()
-            log_dir = Path(log_dir_str)
-            # 确保目录存在
-            log_dir.mkdir(parents=True, exist_ok=True)
-            return log_dir
-        except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError) as e:
-            logger.warning(f"Failed to get server log directory, using fallback: {e}")
-            # 降级方案：使用项目根目录下的 log 文件夹
-            # 内置插件位于 plugin/plugins，需要向上两级到项目根目录
-            project_root = BUILTIN_PLUGIN_CONFIG_ROOT.parent.parent
-            fallback_dir = project_root / "log"
-            fallback_dir.mkdir(parents=True, exist_ok=True)
-            return fallback_dir
-    
-    # 插件日志：优先使用项目根目录下的 log/plugins/{plugin_id} 目录
+    Raises:
+        HTTPException: 如果 plugin_id 不安全（含路径遍历字符）
+    """
+    _validate_plugin_id(plugin_id)
+
+    service_name = "PluginServer" if plugin_id == SERVER_LOG_ID else f"Plugin_{plugin_id}"
     try:
-        # 内置插件位于 plugin/plugins，需要向上两级到项目根目录
-        project_root = BUILTIN_PLUGIN_CONFIG_ROOT.parent.parent
-        log_dir = project_root / "log" / "plugins" / plugin_id
-        
-        # 解析路径并验证它在安全目录内（防止路径遍历攻击）
-        try:
-            resolved_path = log_dir.resolve()
-            root_resolved = project_root.resolve()
-            resolved_str = str(resolved_path)
-            root_str = str(root_resolved)
-            if not resolved_str.startswith(root_str):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Invalid plugin_id: '{plugin_id}'. Path traversal detected."
-                )
-        except (OSError, ValueError) as e:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid plugin_id: '{plugin_id}'. {str(e)}"
-            ) from e
-        
-        log_dir.mkdir(parents=True, exist_ok=True)
-        # 测试目录是否可写
-        test_file = log_dir / ".test_write"
-        try:
-            test_file.write_text("test")
-            test_file.unlink()
-            return log_dir
-        except (OSError, PermissionError):
-            # 如果不可写，使用降级方案：插件目录下的logs子目录
-            plugin_dir = get_plugin_config_path(plugin_id).parent
-            
-            # 再次验证降级路径的安全性
-            try:
-                resolved_plugin_dir = plugin_dir.resolve()
-                config_root_resolved = plugin_dir.parent.resolve()
-                resolved_plugin_str = str(resolved_plugin_dir)
-                config_root_str = str(config_root_resolved)
-                if not resolved_plugin_str.startswith(config_root_str):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Invalid plugin_id: '{plugin_id}'. Path traversal detected in fallback path."
-                    )
-            except (OSError, ValueError) as e:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Invalid plugin_id: '{plugin_id}'. {str(e)}"
-                ) from e
-            
-            log_dir = plugin_dir / "logs"
-            log_dir.mkdir(parents=True, exist_ok=True)
-            return log_dir
+        return _resolve_robust_log_dir(service_name)
     except HTTPException:
         raise
-    except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError) as e:
-        logger.warning(f"Failed to use project log directory, using plugin directory: {e}")
-        # 降级方案：使用插件目录下的logs子目录
-        plugin_dir = get_plugin_config_path(plugin_id).parent
-        
-        # 验证降级路径的安全性
-        try:
-            resolved_plugin_dir = plugin_dir.resolve()
-            config_root_resolved = plugin_dir.parent.resolve()
-            resolved_plugin_str = str(resolved_plugin_dir)
-            config_root_str = str(config_root_resolved)
-            if not resolved_plugin_str.startswith(config_root_str):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Invalid plugin_id: '{plugin_id}'. Path traversal detected in fallback path."
-                )
-        except (OSError, ValueError) as e:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid plugin_id: '{plugin_id}'. {str(e)}"
-            ) from e
-        
-        log_dir = plugin_dir / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        return log_dir
+    except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError) as exc:
+        # 终极兜底：临时目录。绝不再走 plugin/ 包内目录（squashfs 只读）。
+        logger.warning(f"Failed to resolve robust log dir for {service_name}: {exc}; falling back to temp")
+        import tempfile
+        fallback_dir = Path(tempfile.gettempdir()) / "neko" / "logs"
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+        return fallback_dir
 
 
 def get_plugin_log_files(plugin_id: str) -> list[dict[str, object]]:
@@ -230,13 +160,11 @@ def get_plugin_log_files(plugin_id: str) -> list[dict[str, object]]:
     
     log_files = []
     
-    # 服务器日志使用不同的文件名模式
+    # 文件名由 RobustLoggerConfig 控制：N.E.K.O_{ServiceName}_YYYYMMDD.log
     if plugin_id == SERVER_LOG_ID:
-        # 服务器日志文件名格式：N.E.K.O_PluginServer_YYYYMMDD.log
         pattern = "N.E.K.O_PluginServer_*.log*"
     else:
-        # 插件日志文件名格式：{plugin_id}_YYYYMMDD_HHMMSS.log
-        pattern = f"{plugin_id}_*.log*"
+        pattern = f"N.E.K.O_Plugin_{plugin_id}_*.log*"
     
     for log_file in log_dir.glob(pattern):
         try:
@@ -531,13 +459,11 @@ def get_plugin_logs(
             "returned_lines": 0
         }
     
-    # 根据日志类型选择文件模式
+    # 文件名由 RobustLoggerConfig 控制：N.E.K.O_{ServiceName}_YYYYMMDD.log
     if plugin_id == SERVER_LOG_ID:
-        # 服务器日志文件名格式：N.E.K.O_PluginServer_YYYYMMDD.log
         pattern = "N.E.K.O_PluginServer_*.log"
     else:
-        # 插件日志文件名格式：{plugin_id}_YYYYMMDD_HHMMSS.log
-        pattern = f"{plugin_id}_*.log"
+        pattern = f"N.E.K.O_Plugin_{plugin_id}_*.log"
     
     # 找到最新的日志文件
     try:
@@ -684,14 +610,14 @@ class LogFileWatcher:
                 if self.plugin_id == SERVER_LOG_ID:
                     pattern = "N.E.K.O_PluginServer_*.log"
                 else:
-                    pattern = f"{self.plugin_id}_*.log"
-                
+                    pattern = f"N.E.K.O_Plugin_{self.plugin_id}_*.log"
+
                 log_files = sorted(
                     log_dir.glob(pattern),
                     key=lambda f: f.stat().st_mtime,
                     reverse=True
                 )
-                
+
                 if not log_files:
                     await asyncio.sleep(1)  # 没有日志文件，等待
                     continue
@@ -770,14 +696,14 @@ class LogFileWatcher:
             if self.plugin_id == SERVER_LOG_ID:
                 pattern = "N.E.K.O_PluginServer_*.log"
             else:
-                pattern = f"{self.plugin_id}_*.log"
-            
+                pattern = f"N.E.K.O_Plugin_{self.plugin_id}_*.log"
+
             log_files = sorted(
                 log_dir.glob(pattern),
                 key=lambda f: f.stat().st_mtime,
                 reverse=True
             )
-            
+
             if log_files:
                 self.current_log_file = log_files[0]
                 # 获取文件当前大小作为起始位置
