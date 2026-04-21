@@ -319,7 +319,9 @@ class ModelProfiler {
             const geom = mesh.geometry;
             snap.geometry = {
                 vertices: geom?.attributes?.position?.count || 0,
-                faces: geom?.index ? Math.floor(geom.index.count / 3) : 0,
+                faces: geom?.index
+                    ? Math.floor(geom.index.count / 3)
+                    : (geom?.attributes?.position ? Math.floor(geom.attributes.position.count / 3) : 0),
                 hasNormals: !!geom?.attributes?.normal,
                 hasUV: !!geom?.attributes?.uv,
                 hasMorphTargets: !!(geom?.morphAttributes && Object.keys(geom.morphAttributes).length > 0),

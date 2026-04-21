@@ -349,7 +349,12 @@ class ModelProfilerUI {
         }
 
         const material = new THREE.MeshBasicMaterial({
-            color: color, wireframe: true, transparent: true, opacity: 0.3, depthTest: false, depthWrite: false
+            color: color,
+            wireframe: !this._physicsSolidMode,
+            transparent: true,
+            opacity: this._physicsSolidMode ? 0.15 : 0.3,
+            depthTest: false,
+            depthWrite: false
         });
 
         const wireframes = [];
@@ -790,7 +795,7 @@ class ModelProfilerUI {
         }
 
         html += `</div>`;
-        html += `<div class="profiler-rating-note">评级参考 <a href="https://wiki.vrchat.com/wiki/Guides:Avatar_Performance_Ranking" target="_blank" style="color:#40C5F1;">VRChat Avatar Performance Ranking</a> (PC 端)，因 N.E.K.O 为单模型场景已适当放宽。</div>`;
+        html += `<div class="profiler-rating-note">评级参考 <a href="https://wiki.vrchat.com/wiki/Guides:Avatar_Performance_Ranking" target="_blank" rel="noopener noreferrer" style="color:#40C5F1;">VRChat Avatar Performance Ranking</a> (PC 端)，因 N.E.K.O 为单模型场景已适当放宽。</div>`;
         el.innerHTML = html;
     }
 
