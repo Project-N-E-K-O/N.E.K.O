@@ -409,15 +409,10 @@ class PluginLoggerAdapter:
 #  对外 API
 # ──────────────────────────────────────────────────────────────────────────
 
-# 已配置的组件集合（保留作兼容性接口；实际不再用）
-_configured_components: set[str] = set()
-_configured_console_roots: set[str] = set()
-
-
 def setup_logging(
-    component: str = "main",
-    level: Optional[Any] = None,
-    force: bool = False,
+    component: str = "main",  # noqa: ARG001 — 兼容旧签名；本体接管后 component 只作命名空间
+    level: Optional[Any] = None,  # noqa: ARG001 — 同上
+    force: bool = False,  # noqa: ARG001 — 同上
 ) -> None:
     """配置组件日志（兼容旧签名）。
 
@@ -425,8 +420,6 @@ def setup_logging(
     本体 logger 已初始化。组件名仅用作 logger 命名空间，不再单独 sink。
     """
     _ensure_root_logger()
-    if component:
-        _configured_components.add(component)
 
 
 def get_logger(component: str) -> PluginLoggerAdapter:

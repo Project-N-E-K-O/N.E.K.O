@@ -138,9 +138,10 @@ os.environ.setdefault("NEKO_PLUGIN_SERVICE_NAME", "PluginServer")
 
 logger, _log_config = setup_logging(service_name="PluginServer", log_level=logging.INFO)
 
-# import plugin.logging_config 触发其模块顶层 _install_logging_brace_compat()，
-# 让所有 plugin/* 子模块共享 brace-format 兼容（logger.info("msg {}", x) 不抛 TypeError）。
-import plugin.logging_config as _plugin_logging_config  # noqa: E402,F401
+# Side-effect import：触发 plugin/logging_config.py 顶层的
+# _install_logging_brace_compat()，让所有 plugin/* 子模块共享 brace-format
+# 兼容（logger.info("msg {}", x) 不抛 TypeError）。模块本身不需要 alias。
+import plugin.logging_config  # noqa: E402,F401  -- side-effect only
 
 # -- uvicorn logging bridge --
 def _configure_uvicorn_logging_bridge() -> None:

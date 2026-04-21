@@ -63,6 +63,10 @@ def isolated_log_dir(tmp_path, monkeypatch):
                 try:
                     h.close()
                 except Exception:
+                    # Best-effort cleanup. A handler may already be closed
+                    # (e.g. RotatingFileHandler swapped during a prior test
+                    # rotation) — swallow so fixture teardown doesn't mask
+                    # the actual test failure.
                     pass
 
     yield documents / "N.E.K.O" / "logs"
