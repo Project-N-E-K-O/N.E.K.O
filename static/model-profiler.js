@@ -17,8 +17,8 @@ class ModelProfiler {
     constructor(opts = {}) {
         // FPS 历史记录长度（默认 300 个采样点，配合 200ms 间隔 ≈ 60 秒窗口）
         this.historySize = opts.historySize || 300;
-        // 采样间隔（ms），0 = 每帧采样
-        this.sampleInterval = opts.sampleInterval || 0;
+        // 采样间隔（ms），下限 200ms（见 _tick 中的 Math.max 保护）
+        this.sampleInterval = opts.sampleInterval || 200;
         // Warmup 期（ms）：启动后丢弃前 N 毫秒的数据，避免冷启动低帧污染统计
         this.warmupMs = opts.warmupMs || 1500;
 
