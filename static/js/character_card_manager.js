@@ -59,7 +59,73 @@ function ensureReservedFieldsLoaded() {
 // 顶部 tab 按钮初始化（旧版自定义 tooltip 因为文本与按钮文字重复且定位有误已移除）
 document.addEventListener('DOMContentLoaded', function () {
     void loadCharacterReservedFieldsConfig();
+
+    // 云存档管理按钮
+    const openCloudsaveManagerBtn = document.getElementById('open-cloudsave-manager-btn');
+    if (openCloudsaveManagerBtn) {
+        openCloudsaveManagerBtn.addEventListener('click', openCloudsaveManager);
+    }
 });
+
+// 构建云存档管理页 URL（带当前 UI 语言；角色名由云存档页内自行选择）
+function buildCloudsaveManagerUrl() {
+    const query = new URLSearchParams();
+    let uiLang = '';
+    if (window.i18n && typeof window.i18n.language === 'string' && window.i18n.language.trim()) {
+        uiLang = window.i18n.language.trim();
+    } else {
+        const saved = localStorage.getItem('i18nextLng');
+        if (typeof saved === 'string' && saved.trim()) uiLang = saved.trim();
+    }
+    if (uiLang) query.set('ui_lang', uiLang);
+    // 若页面上下文已有当前选中角色，也带上以便云存档页直接定位
+    if (typeof window._currentCatgirl === 'string' && window._currentCatgirl.trim()) {
+        query.set('lanlan_name', window._currentCatgirl.trim());
+    }
+    const qs = query.toString();
+    return qs ? '/cloudsave_manager?' + qs : '/cloudsave_manager';
+}
+
+// 打开云存档管理窗口（与 chara_manager.js 中的实现保持行为一致）
+function openCloudsaveManager() {
+    const url = buildCloudsaveManagerUrl();
+    const windowName = 'neko_cloudsave_manager';
+    const width = 1180;
+    const height = 860;
+    const left = Math.max(0, Math.floor((screen.width - width) / 2));
+    const top = Math.max(0, Math.floor((screen.height - height) / 2));
+    const features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+
+    const existingWindow = window._openedWindows && window._openedWindows[windowName];
+    if (existingWindow && !existingWindow.closed) {
+        try {
+            const targetUrl = new URL(url, window.location.origin).toString();
+            if (existingWindow.location.href !== targetUrl) {
+                existingWindow.location.href = targetUrl;
+            }
+            existingWindow.focus();
+            return;
+        } catch (error) {
+            console.warn('更新云存档管理窗口地址失败:', error);
+        }
+    }
+
+    const openedWindow = typeof window.openOrFocusWindow === 'function'
+        ? window.openOrFocusWindow(url, windowName, features)
+        : window.open(url, windowName, features);
+
+    if (openedWindow && !openedWindow.closed) {
+        if (!window._openedWindows || typeof window._openedWindows !== 'object') {
+            window._openedWindows = {};
+        }
+        window._openedWindows[windowName] = openedWindow;
+    }
+
+    if (!openedWindow) {
+        window.location.href = url;
+    }
+}
+window.openCloudsaveManager = openCloudsaveManager;
 
 // 响应式标签页处理
 function updateTabsLayout() {
@@ -378,16 +444,16 @@ function switchTab(tabId, event) {
         selectedTab.classList.add('active', 'tab-entering');
         if (window.updatePageTexts) window.updatePageTexts();
 
-        // 旧视图离场结束（与 CSS @keyframes viewLeave 时长一致）
+        // 旧视图保持原状作为底层；新视图自上而下"拉下帘幕"完全覆盖（500ms 与 CSS @keyframes viewCurtainReveal 时长一致）
         setTimeout(() => {
             leavingTab.classList.remove('tab-leaving');
             leavingTab.style.display = '';
-        }, 300);
+        }, 520);
         // 新视图入场结束
         setTimeout(() => {
             selectedTab.classList.remove('tab-entering');
             finalize();
-        }, 460);
+        }, 520);
     } else {
         // 没有离场视图（首次或同 tab）：直接显示
         selectedTab.classList.add('active');

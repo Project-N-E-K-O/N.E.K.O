@@ -177,7 +177,7 @@
         "validatingFolderPath": "フォルダを検証中: {{path}}",
         "previewImageMissing": "プレビュー画像ファイルが見つかりません。パスを確認してください",
         "uploadReady": "{{itemName}}のアップロード準備完了",
-        "pageDescription": "SteamワークショップからLive2Dモデルとボイスを閲覧、購読、ダウンロード、管理できます",
+        "pageDescription": "このページではキャラクターカードの閲覧・編集・アップロード・インポート/エクスポート、およびSteamワークショップ内のLive2Dモデルとボイスの管理が行えます",
         "openVoiceClone": "ボイスクローンで開く",
         "searchLocalItems": "ローカルアイテムを検索...",
         "scanLocalItems": "ローカルアイテムをスキャン",

@@ -177,7 +177,7 @@
         "validatingFolderPath": "Validating folder: {{path}}",
         "previewImageMissing": "Preview image file not found, please check the path",
         "uploadReady": "Ready to upload {{itemName}}",
-        "pageDescription": "Browse, subscribe, download, and manage Live2D models and voices from Steam Workshop",
+        "pageDescription": "From this page you can browse, edit, upload, import and export character cards, and manage Live2D models and voices from the Steam Workshop",
         "openVoiceClone": "Open in Voice Clone",
         "searchLocalItems": "Search local items...",
         "scanLocalItems": "Scan Local Items",

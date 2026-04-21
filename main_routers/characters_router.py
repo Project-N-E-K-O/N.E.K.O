@@ -4611,6 +4611,9 @@ async def put_card_face(name: str, image: UploadFile = File(...)):
     if not meta_path.exists():
         # 首次创建：标记为本地创作
         meta['origin'] = 'self'
+    # 没有卡面时 created_at 保持为空；一旦设置了卡面就写入创建时间
+    # （即便 sidecar 已存在但此前一直没有 created_at，也补写为当次设置时间）
+    if not meta.get('created_at'):
         meta['created_at'] = now_iso
     meta['updated_at'] = now_iso
     await asyncio.to_thread(_write_card_meta, meta_path, meta)
