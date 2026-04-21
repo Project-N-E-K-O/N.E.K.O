@@ -149,9 +149,14 @@ def get_plugin_log_dir(plugin_id: str) -> Path:
         *_RUNTIME_ERRORS,
     ) as exc:
         # 终极兜底：临时目录。绝不再走 plugin/ 包内目录（squashfs 只读）。
+        # 把 log_subdir 也接到兜底路径上，保持 reader/writer 对偶 —— 否则
+        # writer 正常写 ``.../logs/plugin/``、reader 走到这里去读
+        # ``.../neko/logs/``，前端直接读空。
         logger.warning(f"Failed to resolve robust log dir for {service_name}: {exc}; falling back to temp")
         import tempfile
         fallback_dir = Path(tempfile.gettempdir()) / "neko" / "logs"
+        if log_subdir:
+            fallback_dir = fallback_dir / log_subdir
         fallback_dir.mkdir(parents=True, exist_ok=True)
         return fallback_dir
 
