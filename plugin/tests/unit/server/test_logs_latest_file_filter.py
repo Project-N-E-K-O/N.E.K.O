@@ -69,6 +69,33 @@ def test_list_plugin_log_files_for_tail_excludes_error_log_even_when_newer(tmp_p
 
 
 @pytest.mark.plugin_unit
+def test_list_plugin_log_files_for_tail_includes_rotated_regular_logs(tmp_path) -> None:
+    """RotatingFileHandler 触发轮转后只剩 ``.log.1`` / ``.log.2026-04-21`` 这种
+    后缀的文件。如果 helper 的 glob 只匹配 ``*.log``，目录里只剩轮转后的常规
+    日志时会返回空，让 tail / WebSocket 误报 "无日志"。
+    """
+    daily = tmp_path / "N.E.K.O_Plugin_demo_20260421.log"
+    daily.write_text("today\n", encoding="utf-8")
+    rotated_size = tmp_path / "N.E.K.O_Plugin_demo_20260420.log.1"
+    rotated_size.write_text("yesterday-size\n", encoding="utf-8")
+    rotated_time = tmp_path / "N.E.K.O_Plugin_demo_20260419.log.2026-04-19"
+    rotated_time.write_text("two-days-ago\n", encoding="utf-8")
+
+    # Error rotations must STILL be excluded even with the wider glob.
+    err_rotated = tmp_path / "N.E.K.O_Plugin_demo_error.log.3"
+    err_rotated.write_text("err-rotated\n", encoding="utf-8")
+
+    files = _list_plugin_log_files_for_tail(tmp_path, "demo")
+
+    assert daily in files
+    assert rotated_size in files, "size-based rotation suffix .log.1 not picked up"
+    assert rotated_time in files, "time-based rotation suffix .log.YYYY-MM-DD not picked up"
+    assert err_rotated not in files, (
+        "error-log rotation must still be excluded even after the glob widening."
+    )
+
+
+@pytest.mark.plugin_unit
 def test_list_plugin_log_files_for_tail_server_id_uses_pluginserver_pattern(tmp_path) -> None:
     server_daily = tmp_path / "N.E.K.O_PluginServer_20260421.log"
     server_daily.write_text("server\n", encoding="utf-8")

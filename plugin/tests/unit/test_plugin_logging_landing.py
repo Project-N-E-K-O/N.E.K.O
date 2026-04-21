@@ -69,6 +69,24 @@ def isolated_log_dir(tmp_path, monkeypatch):
                     # the actual test failure.
                     pass
 
+    # Also reset root logger: _install_root_bridge attaches plugin file
+    # handlers there to forward third-party logger output, and tags the
+    # root logger with ``_neko_plugin_root_bridged = True`` for idempotency.
+    # Both must be cleared between tests, otherwise:
+    #   * stale handlers point at a previous test's tmp_path (now deleted),
+    #     so the next test's INFO writes go to a no-longer-existing file;
+    #   * the marker would short-circuit the new bridge install and the
+    #     "third-party logger reaches our file" test would silently regress.
+    root = logging.getLogger()
+    for h in list(root.handlers):
+        root.removeHandler(h)
+        try:
+            h.close()
+        except Exception:
+            pass
+    if hasattr(root, "_neko_plugin_root_bridged"):
+        delattr(root, "_neko_plugin_root_bridged")
+
     yield documents / "N.E.K.O" / "logs"
 
 
@@ -220,3 +238,97 @@ def test_logger_adapter_braces_route_to_pluginserver_file(isolated_log_dir, monk
     text = _read_logs(isolated_log_dir, "PluginServer")
     assert "braces value=42" in text
     assert "two=a three=b" in text
+
+
+def test_third_party_logger_propagates_to_plugin_log_file(
+    isolated_log_dir, monkeypatch
+):
+    """Root-bridge regression test (PR #912 coderabbit finding):
+
+    uvicorn / aiohttp / urllib3 etc. don't know about ``N.E.K.O.*``
+    namespacing — they call plain ``logging.getLogger("uvicorn.error")``
+    and rely on the propagation chain to reach root. ``RobustLoggerConfig``
+    by default only attaches handlers to ``N.E.K.O`` and
+    ``N.E.K.O.<service>``, not root. With the loguru rip-out (which used
+    to install a root forwarder via ``intercept_standard_logging``),
+    those messages were silently dropped.
+
+    ``_install_root_bridge`` (called from ``_ensure_root_logger``) re-adds
+    the file handlers onto root so plain stdlib third-party loggers land
+    in the same plugin log file.
+    """
+    monkeypatch.setenv("NEKO_PLUGIN_SERVICE_NAME", "PluginServer")
+    from utils.logger_config import setup_logging as bootstrap_setup_logging
+    bootstrap_setup_logging(service_name="PluginServer", log_level=logging.INFO, silent=True)
+
+    # Importing plugin.logging_config triggers _ensure_root_logger →
+    # _install_root_bridge.
+    importlib.import_module("plugin.logging_config")
+
+    # Simulate a third-party library: NOT under the N.E.K.O.* namespace.
+    third_party = logging.getLogger("uvicorn.error")
+    third_party.handlers.clear()  # uvicorn defaults sometimes attach a handler
+    third_party.propagate = True
+    third_party.info("uvicorn-bridged-into-plugin-log")
+
+    aiohttp_like = logging.getLogger("aiohttp.access")
+    aiohttp_like.handlers.clear()
+    aiohttp_like.propagate = True
+    aiohttp_like.warning("aiohttp-bridged-into-plugin-log")
+
+    for h in logging.getLogger().handlers:
+        h.flush()
+
+    text = _read_logs(isolated_log_dir, "PluginServer")
+    assert "uvicorn-bridged-into-plugin-log" in text, (
+        "Root bridge missing — third-party stdlib logger output is being "
+        "silently dropped instead of landing in the plugin log file."
+    )
+    assert "aiohttp-bridged-into-plugin-log" in text
+
+
+def test_bootstrap_failure_does_not_lock_root_initialised(
+    isolated_log_dir, monkeypatch
+):
+    """Retry regression test (PR #912 coderabbit finding):
+
+    If the very first ``_ensure_root_logger()`` call hits a transient
+    failure — utils not on sys.path during a unit test, or
+    setup_logging raises — the OLD code set
+    ``_root_initialised = True`` anyway and short-circuited every
+    subsequent call, permanently disabling the file-handler hookup.
+
+    The fix: only flip the flag after a successful bootstrap.
+    """
+    monkeypatch.setenv("NEKO_PLUGIN_SERVICE_NAME", "PluginServer")
+
+    # Patch BEFORE re-importing plugin.logging_config — the module top-level
+    # ``logger = get_logger("plugin")`` triggers _ensure_root_logger on
+    # import, so the patch must already be in place.
+    import utils.logger_config as ulc
+    real_setup = ulc.setup_logging
+
+    def _exploding_setup(*_a, **_kw):
+        raise RuntimeError("simulated bootstrap failure")
+
+    monkeypatch.setattr(ulc, "setup_logging", _exploding_setup)
+
+    plogging = importlib.import_module("plugin.logging_config")
+
+    # _ensure_root_logger ran via the module-level get_logger("plugin") and
+    # should have caught the RuntimeError without flipping the flag.
+    assert not plogging._root_initialised, (
+        "_root_initialised got locked to True despite bootstrap failure — "
+        "subsequent retries will be silently short-circuited and the "
+        "plugin log file will never be hooked up."
+    )
+
+    # Restore working setup_logging, retry: must succeed and set the flag.
+    monkeypatch.setattr(ulc, "setup_logging", real_setup)
+    plogging._ensure_root_logger()
+    assert plogging._root_initialised
+    plogging.get_logger("retry.test").info("post-retry-success")
+    for h in logging.getLogger("N.E.K.O.PluginServer").handlers:
+        h.flush()
+    text = _read_logs(isolated_log_dir, "PluginServer")
+    assert "post-retry-success" in text

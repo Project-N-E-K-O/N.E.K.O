@@ -134,7 +134,12 @@ except ModuleNotFoundError:
 # 通过 NEKO_PLUGIN_SERVICE_NAME 决定 logger 父节点（N.E.K.O.<service>.<comp>）。
 # 不设的话会 fallback 到 "Plugin"，导致 message_plane / runs / config 等模块的日志
 # 跑去 N.E.K.O_Plugin_*.log，与 PluginServer 自身的 N.E.K.O_PluginServer_*.log 分裂。
-os.environ.setdefault("NEKO_PLUGIN_SERVICE_NAME", "PluginServer")
+#
+# 用 ``=`` 而不是 ``setdefault``：父进程（Electron / launcher 脚本）若意外携带
+# 旧的 ``Plugin_<id>`` 环境（比如复用了一个调试 shell），setdefault 会保留旧值，
+# 然后下面的 ``setup_logging("PluginServer")`` 和 ``get_logger()`` 会路由到两个
+# 不同的 namespace，再次造成日志分裂。这里强制覆盖。
+os.environ["NEKO_PLUGIN_SERVICE_NAME"] = "PluginServer"
 
 logger, _log_config = setup_logging(service_name="PluginServer", log_level=logging.INFO)
 

@@ -195,9 +195,10 @@ _root_initialised = False
 def _ensure_root_logger() -> None:
     """确保 plugin 命名空间挂在本体 RobustLoggerConfig 之下。
 
-    幂等。多次调用只生效一次。
-    子进程调用一次自动 setup_logging(service_name=...)；
-    主进程的 setup_logging 已经由 user_plugin_server.py 早期调用过。
+    多次调用幂等。但**只在真正成功 setup 之后**才把 ``_root_initialised``
+    锁死成 True，否则 import 早期 ``utils`` 还没在 sys.path / bootstrap 临时
+    抛错 时会永久禁用重试，后续真正能 setup 的调用直接被短路掉，日志链路
+    就再也挂不上了。
     """
     global _root_initialised
     if _root_initialised:
@@ -210,34 +211,66 @@ def _ensure_root_logger() -> None:
             from utils.logger_config import setup_logging as _bootstrap_setup_logging
         except ModuleNotFoundError:
             # 极早期 import（plugin SDK 单元测试场景）utils 不在 sys.path 时，
-            # 静默使用 stdlib 默认 root logger，等真正走 setup_logging 时再统一。
-            _root_initialised = True
+            # 静默 return —— 不要把 _root_initialised 锁死，下次再调能重试。
             return
 
         service_name = os.getenv("NEKO_PLUGIN_SERVICE_NAME") or "Plugin"
+
+        try:
+            from config import APP_NAME as _app_name
+        except Exception:
+            _app_name = "N.E.K.O"
+
+        service_logger = logging.getLogger(f"{_app_name}.{service_name}")
 
         # Short-circuit：上层（user_plugin_server.py / _setup_plugin_logger）
         # 已经为该 service_name 调过 setup_logging，对应 logger 已挂 file/console
         # handler。再调一次会触发 RobustLoggerConfig.setup_logger() 的 "幂等重建"
         # （清掉重建），既浪费 IO，又会多打一行 "日志系统已初始化"。
-        try:
-            from config import APP_NAME as _app_name
-        except Exception:
-            _app_name = "N.E.K.O"
-        if logging.getLogger(f"{_app_name}.{service_name}").handlers:
-            _root_initialised = True
-            return
+        if not service_logger.handlers:
+            try:
+                _bootstrap_setup_logging(
+                    service_name=service_name,
+                    log_level=_level_to_int(LOG_LEVEL),
+                    silent=True,
+                )
+            except Exception:
+                # bootstrap 失败 —— 同样别锁死 flag，下次真正能跑时再重试。
+                return
+            # bootstrap 应该已经把 handlers 挂到 service_logger；重新拿一次。
+            service_logger = logging.getLogger(f"{_app_name}.{service_name}")
 
-        try:
-            _bootstrap_setup_logging(
-                service_name=service_name,
-                log_level=_level_to_int(LOG_LEVEL),
-                silent=True,
-            )
-        except Exception:
-            # 已经 setup 过 / 其他幂等冲突——忽略。
-            pass
+        # 桥接 root logger → service handlers，让 uvicorn / aiohttp / urllib3 等
+        # 通过 ``logging.getLogger("xxx")`` 拿 logger 的第三方库，propagate 到
+        # root 时也能落盘。loguru 时代靠 ``intercept_standard_logging`` 在 root
+        # 上挂转发 handler；拆 loguru 后那条 bridge 没了，必须显式重建。
+        _install_root_bridge(service_logger)
+
         _root_initialised = True
+
+
+def _install_root_bridge(service_logger: logging.Logger) -> None:
+    """让 root logger 把记录复制到 service_logger 的 handlers 上。
+
+    只在第一个真正配过 handler 的 service 上执行一次，幂等。
+
+    注意：``N.E.K.O.<service>`` 自己挂的 logger ``propagate=False``，所以
+    plugin 自己的日志走 service handler 一次，不会被 root 再写一遍；只有
+    propagate=True 的第三方 logger 会经 root 走到这里。
+    """
+    if not service_logger.handlers:
+        return
+    root = logging.getLogger()
+    if getattr(root, "_neko_plugin_root_bridged", False):
+        return
+    for h in service_logger.handlers:
+        if h not in root.handlers:
+            root.addHandler(h)
+    # root 默认 WARNING；要拉到 service 级别，否则 INFO 在到达 handler 前
+    # 就被 root 砍掉了。
+    if root.level == logging.NOTSET or root.level > service_logger.level:
+        root.setLevel(service_logger.level or logging.INFO)
+    setattr(root, "_neko_plugin_root_bridged", True)
 
 
 # ──────────────────────────────────────────────────────────────────────────

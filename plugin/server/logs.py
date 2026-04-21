@@ -134,7 +134,11 @@ def get_plugin_log_dir(plugin_id: str) -> Path:
         return _resolve_robust_log_dir(service_name)
     except HTTPException:
         raise
-    except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError) as exc:
+    except (
+        ImportError,  # _resolve_robust_log_dir 会先 import utils.logger_config，
+        ModuleNotFoundError,  #   失败时这两类异常会逃过原本的 _RUNTIME_ERRORS。
+        *_RUNTIME_ERRORS,
+    ) as exc:
         # 终极兜底：临时目录。绝不再走 plugin/ 包内目录（squashfs 只读）。
         logger.warning(f"Failed to resolve robust log dir for {service_name}: {exc}; falling back to temp")
         import tempfile
@@ -164,11 +168,16 @@ def _list_plugin_log_files_for_tail(log_dir: Path, plugin_id: str) -> list[Path]
 
     给 ``get_plugin_logs`` / ``LogFileWatcher`` 共享，避免 6 处 glob 各写各的、
     一个一个修。
+
+    pattern 末尾带 ``*`` —— RotatingFileHandler 轮转后会写出
+    ``N.E.K.O_<Service>_YYYYMMDD.log.1`` / ``.log.2026-04-21`` 等后缀；如果只
+    匹配 ``*.log`` 会在目录里只剩下轮转文件时返回空，让 tail / WebSocket 误报
+    "无日志"。``_is_error_log_file`` 已经覆盖 ``_error.log.1`` 这类后缀。
     """
     if plugin_id == SERVER_LOG_ID:
-        pattern = "N.E.K.O_PluginServer_*.log"
+        pattern = "N.E.K.O_PluginServer_*.log*"
     else:
-        pattern = f"N.E.K.O_Plugin_{plugin_id}_*.log"
+        pattern = f"N.E.K.O_Plugin_{plugin_id}_*.log*"
 
     files = [p for p in log_dir.glob(pattern) if not _is_error_log_file(p.name)]
     files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
