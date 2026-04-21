@@ -153,6 +153,7 @@
         lastHeadSource: null,
         lastBodyRect: null,
         lastBodySource: null,
+        lastHasNormalizedLive2dGeometry: null,
         lastReliableLive2dHeadRect: null,
         lastPreciseLive2dDisplayInfoRect: null,
         lastCoarseHitAreaHeadRect: null,
@@ -348,6 +349,7 @@
         state.lastHeadSource = null;
         state.lastBodyRect = null;
         state.lastBodySource = null;
+        state.lastHasNormalizedLive2dGeometry = null;
         state.lastReliableLive2dHeadRect = null;
         state.lastPreciseLive2dDisplayInfoRect = null;
         state.lastCoarseHitAreaHeadRect = null;
@@ -1489,6 +1491,10 @@
             state.lastHeadSource = anchorInfo.headSource || null;
             state.lastBodyRect = cloneBounds(anchorInfo.bodyRect);
             state.lastBodySource = anchorInfo.bodySource || null;
+            if (anchorInfo.type === 'live2d' &&
+                typeof anchorInfo.hasNormalizedLive2dGeometry === 'boolean') {
+                state.lastHasNormalizedLive2dGeometry = anchorInfo.hasNormalizedLive2dGeometry;
+            }
             state.lastReliableLive2dHeadRect = typeof anchorInfo.reliableLive2dHeadRect === 'boolean'
                 ? anchorInfo.reliableLive2dHeadRect
                 : null;
@@ -1517,8 +1523,11 @@
         var headSource = anchorInfo && anchorInfo.bounds ? anchorInfo.headSource : state.lastHeadSource;
         var bodyRect = anchorInfo && anchorInfo.bounds ? anchorInfo.bodyRect : state.lastBodyRect;
         var bodySource = anchorInfo && anchorInfo.bounds ? anchorInfo.bodySource : state.lastBodySource;
-        var hasNormalizedLive2dGeometry = avatarType === 'live2d' &&
-            !!(anchorInfo && anchorInfo.bounds && anchorInfo.hasNormalizedLive2dGeometry === true);
+        var hasNormalizedLive2dGeometry = avatarType === 'live2d'
+            ? ((anchorInfo && anchorInfo.bounds)
+                ? (anchorInfo.hasNormalizedLive2dGeometry === true)
+                : (state.lastHasNormalizedLive2dGeometry === true))
+            : false;
         var reliableLive2dHeadRect = avatarType === 'live2d'
             ? ((anchorInfo && anchorInfo.bounds && typeof anchorInfo.reliableLive2dHeadRect === 'boolean')
                 ? anchorInfo.reliableLive2dHeadRect
@@ -2209,6 +2218,7 @@
         state.lastHeadSource = null;
         state.lastBodyRect = null;
         state.lastBodySource = null;
+        state.lastHasNormalizedLive2dGeometry = null;
         state.lastBoundsCenterX = null;
         state.lastBoundsCenterY = null;
         state.lastDebugSnapshot = null;
