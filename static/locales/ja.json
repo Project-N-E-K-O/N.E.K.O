@@ -42,6 +42,25 @@
         "toneMappingAgX": "AgX",
         "toneMappingNeutral": "Neutral"
     },
+    "autostartPrompt": {
+        "title": "N.E.K.O を起動時に自動起動しますか？",
+        "message": "次回パソコンを起動したときに N.E.K.O が自動で準備されるので、手動で起動する手間がなくなります。",
+        "note": "現在のユーザーに対してのみ有効になり、後からいつでもオフにできます。",
+        "startNow": "自動起動を有効にする",
+        "later": "あとで",
+        "never": "今後は表示しない",
+        "enableFailed": "今は自動起動を有効にできませんでした。しばらくしてからもう一度お試しください。",
+        "requiresApproval": "先にシステム設定で自動起動を許可してください。許可後に有効になります。"
+    },
+    "tutorialPrompt": {
+        "title": "ホームのチュートリアルを始めますか？",
+        "message": "ホーム画面の主要な入口をすばやく案内して、最短で N.E.K.O を使い始められるようにします。",
+        "note": "途中でいつでもスキップでき、あとからメモリブラウザから再度開くこともできます。",
+        "startNow": "チュートリアルを開始",
+        "later": "あとで",
+        "never": "今後は表示しない",
+        "startFailed": "今はチュートリアルを開始できません。しばらくしてからもう一度お試しください。"
+    },
     "characterProfile": {
         "gender": "性別",
         "age": "年齢",
@@ -160,6 +179,7 @@
         "uploadReady": "{{itemName}}のアップロード準備完了",
         "pageDescription": "SteamワークショップからLive2Dモデルとボイスを閲覧、購読、ダウンロード、管理できます",
         "voiceNote": "ボイス設定については、Live2D設定ページで手動登録してください",
+        "openVoiceClone": "ボイスクローンで開く",
         "searchLocalItems": "ローカルアイテムを検索...",
         "scanLocalItems": "ローカルアイテムをスキャン",
         "configurePath": "パス設定",
@@ -181,6 +201,15 @@
         "defaultTagMod": "Mod",
         "defaultTagCharacter": "キャラクター",
         "allowComments": "コメントを許可",
+        "voiceReferenceOptional": "参考音声（任意）",
+        "voiceReferenceNoFileSelected": "ファイル未選択",
+        "voiceReferenceHint": "購読者はこのサンプルをボイスクローンページへ自動で引き継げますが、音色は自動登録されません。",
+        "voiceReferenceDisplayName": "参考音声の表示名",
+        "voiceReferenceDisplayNamePlaceholder": "例: やわらかい中国語の猫娘",
+        "voiceReferencePrefix": "デフォルト接頭辞",
+        "voiceReferencePrefixPlaceholder": "英数字のみ、最大10文字",
+        "voiceReferenceLanguage": "参考音声の言語",
+        "voiceReferenceProviderHint": "推奨プロバイダー",
         "uploadTip": "「ローカルアイテム管理」でアイテムを選択するとパスが自動入力されます。または、コンテンツフォルダとプレビュー画像のフルパスを手動で入力してください。",
         "search": "検索:",
         "uploadSuccess": "アップロード成功！",
@@ -338,7 +367,7 @@
         "default": "デフォルト",
         "noVoiceSelected": "ボイスが選択されていません",
         "noDescription": "説明なし",
-            "characterSettingsFile": "キャラクター設定ファイル",
+        "characterSettingsFile": "キャラクター設定ファイル",
         "workshopAgreementText": "「アップロード」をクリックすることで、ワークショップ法的使用許諾契約を含むSteamワークショップ利用規約に同意したことになります：",
         "alreadyUploaded": "ワークショップにアップロード済み",
         "uploadTime": "アップロード日時",
@@ -507,6 +536,7 @@
         "RESPONSE_TIMEOUT": "💥 接続タイムアウト (Response timeout)、音声会話が中断されました。",
         "CONNECTION_TIMEOUT": "💥 接続タイムアウト。ネットワーク接続を確認してください。",
         "RESPONSE_TOO_LONG": "回答が長すぎるため、出力を破棄しました（設定で TEXT_GUARD_MAX_LENGTH を増やすことができます）",
+        "INPUT_TOO_LONG": "入力が長すぎます。短くしてから再試行してください",
         "RESPONSE_INVALID": "AIの回答が要件を満たしていないため、出力を破棄しました",
         "NO_USER_MESSAGE": "⚠️ 会話履歴にユーザーメッセージがないため、応答を生成できません",
         "LLM_RETRY": "⚠️ LLM {{error_type}}、リトライ中（{{attempt}}/{{max_retries}}）...",
@@ -534,7 +564,9 @@
         "AGENT_CU_AUTO_CLOSED": "Computer Use モジュール未ロード、自動無効化されました",
         "AGENT_CU_CAPABILITY_LOST": "Computer Use が利用できません：$t(agent.precheck.{{reason_code}})",
         "TTS_CONNECTION_FAILED": "TTSサービス接続失敗: {{msg}}",
+        "UPSTREAM_SERVER_BUSY": "ごめんなさいにゃ、上流サーバーが混雑しています。しばらくしてからもう一度お試しください~",
         "TTS_RECONNECTING": "🔄 音声サービスが自動再接続中です。しばらくお待ちください...",
+        "TTS_WATERMARK_DETECTED": "⚠️ CogTTSの音声ウォーターマーク（ビープ音）を検出しました。ウォーターマークを無効にするには、智譜コンソールで手動設定してください。",
         "TTS_CUSTOM_URL_NOT_CONFIGURED": "GPT-SoVITS API URLが設定されていません。API設定でカスタムTTSを有効にして設定してください。",
         "TTS_CUSTOM_URL_LOCALHOST_ONLY": "GPT-SoVITS API URLはlocalhostである必要があります",
         "TTS_AUDIO_API_KEY_MISSING": "音声APIキー（AUDIO_API_KEY）が設定されていません",
@@ -554,6 +586,8 @@
         "tooltip": "チャットエリア",
         "textInputPlaceholder": "Enterで送信、Shift+Enterで改行",
         "send": "送信",
+        "inputTooLong": "メッセージが長すぎます（{{count}}/{{max}}）。短くしてから再試行してください",
+        "responseTooLong": "ご主人様、考えすぎちゃってもう頭が追いつかないにゃ～！",
         "importImage": "画像を取り込む",
         "importImageAriaLabel": "画像を取り込む",
         "screenshot": "スクリーンショット",
@@ -583,6 +617,18 @@
         "avatarPreviewRefreshing": "現在のアバターを更新しています...",
         "avatarPreviewGenerating": "現在のアバターを生成しています...",
         "avatarPreviewFailed": "アバターの生成に失敗しました",
+        "avatarCropperTitle": "アバターの切り抜き範囲を調整",
+        "avatarPreviewCropping": "切り抜き範囲を調整してください",
+        "avatarPreviewCropCancelled": "手動切り抜きをキャンセルしました。元のアバターを維持します。",
+        "avatarCropMoveUp": "上へ移動",
+        "avatarCropMoveDown": "下へ移動",
+        "avatarCropMoveLeft": "左へ移動",
+        "avatarCropMoveRight": "右へ移動",
+        "avatarCropCenter": "中央に配置",
+        "avatarCropZoomIn": "拡大",
+        "avatarCropZoomOut": "縮小",
+        "avatarCropCancel": "キャンセル",
+        "avatarCropSave": "保存",
         "emptyState": "チャット内容が接続されると、ここに表示されます。",
         "messageStreaming": "生成中",
         "messageFailed": "送信失敗",
@@ -603,6 +649,10 @@
         "pendingImageAlt": "画像 {{index}}",
         "removePendingImage": "画像を削除",
         "emojiButtonAriaLabel": "絵文字",
+        "toolIconsAriaLabel": "ツールアイコン",
+        "toolLollipop": "キャンディー",
+        "toolFist": "猫の手",
+        "toolHammer": "ハンマー",
         "attachmentButtonAriaLabel": "添付",
         "jukebox": "ジュークボックス",
         "jukeboxLabel": "ジュークボックス",
@@ -635,6 +685,9 @@
         "copyMarkdown": "Markdown をコピー",
         "copyMarkdownSuccess": "Markdown をクリップボードにコピーしました。",
         "copyMarkdownFailed": "Markdown のコピーに失敗しました。",
+        "copyToClipboard": "クリップボードにコピー",
+        "copyImageSuccess": "クリップボードにコピーしました。",
+        "copyImageFailed": "クリップボードへのコピーに失敗しました。",
         "exportEmpty": "エクスポート可能な会話がまだありません。",
         "exportSelectionEmpty": "エクスポートするメッセージを 1 件以上選択してください。",
         "exportSuccess": "会話のエクスポートに成功しました",
@@ -771,7 +824,7 @@
         "assistApiKeyGemini": "Assist APIキー - Gemini",
         "assistApiKeyKimi": "Assist APIキー - Kimi",
         "assistApiKeyHint": "（Assist APIが {{provider}} の場合のみ必要）",
-        "assistApiKeyPlaceholder": "任意（空欄ならCore APIキーを使用）",
+        "assistApiKeyPlaceholder": "空欄時は管理簿のキーを自動使用",
         "providerNames": {
             "ali": "Alibaba",
             "openai": "OpenAI",
@@ -785,7 +838,7 @@
             "qwen": "Qwen-Omni（Alibaba百炼、最速、推奨）",
             "qwen_intl": "Qwen-Omni（Alibaba国際版）",
             "openai": "GPT-Realtime（OpenAI）",
-            "glm": "GLM-realtime（GLM）",
+            "glm": "GLM-Realtime（GLM、無料枠あり、音声透かしはコンソールで除去可能）",
             "step": "Step-2-Audio（StepFun）",
             "gemini": "Gemini Live（Google、最高レベル）"
         },
@@ -804,12 +857,15 @@
             "minimax": "MiniMax（中国版）",
             "minimax_intl": "MiniMax（国際版）",
             "claude": "Claude（Anthropic）",
-            "grok": "Grok（xAI）"
+            "grok": "Grok（xAI）",
+            "openrouter": "OpenRouter（モデルアグリゲーター）"
         },
         "coreApiAutoFillHint": "API管理簿からキーが自動入力されます。直接入力も可能です",
         "assistApiSelectLabel": "アシストAPIプロバイダー",
         "assistApiKeyLabel": "アシストAPIキー",
-        "assistApiAutoFillHint": "API管理簿からキーが自動入力されます。直接入力も可能です",
+        "assistApiAutoFillHint": "空欄時は管理簿のキーを自動使用、手動入力すると独立して保存されます",
+        "disableTts": "TTSを無効化",
+        "disableTtsHint": "有効にすると音声合成サービスを呼び出しません",
         "keyBookTitle": "API管理簿",
         "keyBookDescription": "すべてのAPIキーを一元管理。コア/アシストAPIのプロバイダー切替時にここからキーが自動入力され、入力したキーもここに自動保存されます。",
         "keyBookPlaceholder": "APIプロバイダー設定を読み込み中...",
@@ -836,14 +892,15 @@
             "minimax": "MiniMax（中国版）",
             "minimax_intl": "MiniMax（国際版）",
             "claude": "Claude（Anthropic）",
-            "grok": "Grok（xAI）"
+            "grok": "Grok（xAI）",
+            "openrouter": "OpenRouter"
         },
         "freeVersionNoApiKey": "無料版はAPIキー不要です",
         "pleaseEnterApiKey": "APIキーを入力してください",
         "freeVersionOnlyWhenCoreFree": "無料版（Core APIが無料版の時のみ選択可）",
         "freeVersionConfig": "無料版構成: 音声通話、テキストチャット、記憶管理に対応。カスタム音声とAgentは非対応",
         "qwenRecommendation": "Core APIがAlibabaの場合、最高の体験（カスタム音声等）のためにAssist APIもAlibaba推奨",
-        "glmRecommendation": "GLMの音声動画モデルGLM-Realtimeは一時停止中のため、Core APIとして使用できません",
+        "glmRecommendation": "GLMをCore APIとして使用する場合、無料枠があり、Web検索に対応。音声にはデフォルトで透かし（ビープ音）が含まれます（智譜コンソールで手動無効化可能）。カスタム音声にはAssist APIにAlibabaを推奨",
         "openaiRecommendation": "Core APIがOpenAIの場合、カスタム音声機能を使うにはAssist APIにAlibabaを選択してください",
         "stepRecommendation": "Core APIがStepFunの場合、カスタム音声機能を使うにはAssist APIにAlibabaを選択してください",
         "geminiRecommendation": "Core APIがGeminiの場合、カスタム音声機能を使うにはAssist APIにAlibabaを選択してください",
@@ -930,6 +987,12 @@
         "customApiWarning": "注: カスタムAPIを有効にすると、以下の設定が優先され、Core/Assist APIの設定よりも優先して使用されます。",
         "enableCustomApi": "カスタムAPI設定を有効にする",
         "enableCustomApiNote": "有効にすると、Core/Assist APIよりも優先してカスタム設定が使用されます",
+        "clearCustomApi": "カスタムAPI設定をクリア",
+        "clearCustomApiConfirm": "すべてのカスタムAPI設定をクリアしますか？すべてのカスタムAPI Key、モデルID、URLがクリアされ、GPT-SoVITSのチェックも外れます。",
+        "clearCustomApiConfirmTitle": "⚠️ クリア確認",
+        "clearCustomApiConfirmBtn": "クリア実行",
+        "clearCustomApiSaveHint": "⚠ この操作はページ上の設定内容をクリアするだけです。変更を保存するには「設定を保存」ボタンをクリックしてください。",
+        "clearCustomApiSuccess": "カスタムAPI設定がクリアされました。「設定を保存」ボタンをクリックして変更を保存してください。",
         "loadProvidersFailed": "プロバイダー情報の読み込みに失敗しました。ページを更新してください",
         "saveFailed": "保存失敗: {{error}}",
         "apiKeyInvalid": "APIキーが無効です",
@@ -1310,6 +1373,14 @@
         "deleteError": "削除失敗：{{error}}",
         "freePresetLabel": "無料プリセット",
         "freePresetBadge": "プリセット",
+        "workshopSourceBadge": "Workshop参照音声",
+        "workshopSourceTitle": "Workshop参照音声",
+        "workshopSourceLoading": "Workshop参照音声を読み込み中...",
+        "workshopSourceUnavailable": "このWorkshopアイテムには利用可能な参照音声がありません。",
+        "workshopSourceMeta": "サンプル: {{sample}} | 接頭辞: {{prefix}} | 言語: {{language}}",
+        "workshopSourceReady": "参照音声を事前読み込みしました。送信時はファイルアップロードのクローン処理を使用します。",
+        "workshopSourceLoadFailed": "Workshop参照音声の読み込みに失敗しました",
+        "workshopPreloaded": "（Workshop事前読み込み）",
         "freeVoice": {
             "playfulGirl": "陽気な少女",
             "cuteGirl": "かわいい女の子",
@@ -1420,6 +1491,7 @@
         "detailDescriptionPlaceholder": "詳細説明を入力",
         "catgirlProfile": "NEKO プロフィール: 高度な設定には Live2D モデル、ボイス ID などが含まれます。",
         "addCatgirl": "NEKO を追加",
+        "openCloudsaveManager": "クラウドセーブ管理",
         "switchCatgirl": "NEKO を切り替え",
         "deleteCatgirl": "NEKO を削除",
         "hideCatgirl": "このNEKOを隠す",
@@ -1456,6 +1528,7 @@
         "cannotConfirmCatgirlStatus": "現在の neko ステータスを確認できません。削除がキャンセルされました",
         "confirmDeleteCatgirl": "neko \"{{name}}\" を削除してもよろしいですか？",
         "deleteCatgirlTitle": "NEKO を削除",
+        "deleteFailed": "削除に失敗しました",
         "addCatgirlFieldPrompt": "新しいフィールドの名前（キー名）を入力してください",
         "addCatgirlFieldTitle": "NEKO フィールドを追加",
         "live2dModelError": "NEKO \"{{name}}\" の Live2D モデルファイルが存在しないか、破損しています。\n\n現在のモデルパス: {{path}}\n\nデフォルトモデル (mao_pro) にフォールバックしますか？\n\n「OK」をクリックしてデフォルトモデルを使用するか、「キャンセル」をクリックして現在の設定を保持してください。",
@@ -1495,6 +1568,7 @@
         "saveMasterError": "マスター設定の保存に失敗しました",
         "autoSaved": "設定を自動保存しました",
         "autoSaveFailed": "自動保存に失敗しました。手動で保存してからページを閉じてください",
+        "unsavedNewCatgirlDraftDetected": "未保存の新しい NEKO 下書きが検出されました。同期更新の前に保存またはキャンセルしてください",
         "partialSaveVoiceFailed": "キャラクターは保存されましたが、音声の更新に失敗しました: {{error}}",
         "exportCard": "キャラクターカードをエクスポート",
         "exportingCard": "キャラクターカードをエクスポート中...",
@@ -1540,6 +1614,7 @@
         "initializingVoice": "音声チャットを初期化中...",
         "initializingMic": "マイクを初期化中...",
         "startFailed": "起動失敗: {{error}}",
+        "sendFailed": "送信失敗: {{error}}",
         "sessionEnded": "セッション終了",
         "returning": "{{name}}が戻りました！再接続中...",
         "websocketNotConnected": "WebSocket未接続！",
@@ -1610,6 +1685,255 @@
         "return": "戻る",
         "micMute": "マイクをミュート",
         "micUnmute": "ミュート解除"
+    },
+    "cloudsave": {
+        "pageTitle": "クラウドセーブ管理 - Project N.E.K.O.",
+        "headerTitle": "クラウドセーブ管理",
+        "subtitle": "ローカルのクラウドスナップショットキャッシュを使って、1キャラクターずつ準備または復元できます。グローバル設定を自動で上書きすることはありません。Steam 経由でゲームを終了すると、Steam Cloud がスナップショットフォルダを自動アップロードします。",
+        "refresh": "更新",
+        "backToCharacterManager": "戻る",
+        "loadingSummary": "クラウドセーブの概要を読み込み中...",
+        "emptyState": "表示できるキャラクター概要はありません。",
+        "providerAvailable": "クラウドセーブは利用可能です。キャラクター単位でローカルクラウドスナップショットを手動で準備または復元できます。",
+        "providerUnavailable": "クラウドセーブは現在利用できません。このページではローカル概要のみ表示します。",
+        "providerSteamAutoCloudReady": "Steam Cloud は接続済みです。アップロードすると今すぐローカルクラウドスナップショットへ書き込み、Steam 経由でゲーム終了後に Steam が自動でクラウドへアップロードします。",
+        "providerSteamAutoCloudOffline": "ローカルクラウドスナップショットは利用できますが、Steam Cloud は現在接続されていません。Steam にログインした状態で Steam からゲームを起動すると、Steam がスナップショットを自動でアップロードまたはダウンロードできます。",
+        "providerSteamAutoCloudSourceLaunch": "現在のセッションはソース起動です。Steam が起動中かつログイン済みであれば、デスクトップ向け RemoteStorage helper によって cloudsave のダウンロードやアップロードを補助できますが、この経路はパッケージ版の Steam Auto-Cloud 主経路と同一ではありません。本番経路を検証したい場合は、少なくとも一度 Steam またはデスクトップランチャー経由で起動してください。",
+        "providerSnapshotScope": "このページに表示されるのは、この端末にすでに保存されている cloudsave のステージ済みスナップショットです。",
+        "providerSnapshotSequence": "スナップショット番号: {{sequence}}。",
+        "providerSnapshotExportedAt": "エクスポート時刻: {{time}}。",
+        "providerSnapshotManualApply": "この端末には新しいステージ済みスナップショットがありますが、実際のランタイムデータは手動で「スナップショットを適用」を押すまで変わりません。",
+        "currentCharacter": "現在のキャラクター：{{name}}",
+        "noCurrentCharacter": "現在のキャラクター：未設定",
+        "nameConflictNotice": {
+            "title": "同名に関する注意",
+            "bodyStorage": "クラウドセーブではキャラクター名を 1 つのキャラクタースロットとして扱います。Steam Workshop 由来かローカル作成かで自動的に分離されることはありません。",
+            "bodyImpact": "出自の異なる 2 人のキャラクターが同名の場合、アップロード / ダウンロードは同じクラウドキャラクターとして処理され、キャラクター設定、記憶ディレクトリ、クラウド記録が上書きされる可能性があります。",
+            "bodyAction": "同期前に、キャラクター名が一意であることを確認してください。同じキャラクターでない場合は、アップロードまたはダウンロードの前に名前を変更してください。"
+        },
+        "group": {
+            "count": "{{count}} 件",
+            "workshopTitle": "Steam Workshop 由来キャラクター",
+            "workshopDescription": "このセクションには、ローカル側またはクラウド側のどちらかで Steam Workshop 由来だと確認できるキャラクターをまとめて表示します。現在のモデルだけを Steam Workshop リソースに切り替えても、自作キャラクターはこのグループへ移動しません。",
+            "otherTitle": "マイキャラクター",
+            "otherDescription": "このセクションには、自作キャラクターや Steam Workshop 由来ではないキャラクターを表示します。現在のモデル素材の出所は詳細で個別に表示されます。"
+        },
+        "resourceRecoveryTitle": "リソース復元の案内",
+        "metaNoValue": "なし",
+        "warning": {
+            "local_resource_missing_on_this_device": "この端末ではすでにローカルリソースが不足しています。上のリソース元ガイドに従って復元してください。",
+            "cloud_resource_may_be_missing_after_download": "ダウンロード後もリソースが不足する可能性があります。必要に応じて記録された元に従って手動復元してください。"
+        },
+        "modelType": {
+            "live2d": "Live2D",
+            "vrm": "VRM",
+            "live3d": "VRM",
+            "mmd": "MMD",
+            "unknown": "不明なモデル"
+        },
+        "assetSource": {
+            "notRecorded": "記録なし",
+            "steamWorkshop": "Steamワークショップ",
+            "localImported": "ローカルにインポートしたモデル",
+            "manualExternal": "外部モデル参照",
+            "builtin": "内蔵リソース"
+        },
+        "relationState": {
+            "local_only": "ローカルのみ",
+            "cloud_only": "クラウドのみ",
+            "matched": "ローカルとクラウドが一致",
+            "diverged": "ローカルとクラウドに差分あり",
+            "unknown": "不明な状態"
+        },
+        "assetState": {
+            "notRecorded": "記録なし",
+            "ready": "そのまま利用可能",
+            "import_required": "手動インポートが必要",
+            "downloadable": "リソース不足。Steam Workshop の復元状態を確認してください。",
+            "missing": "設定のみ復元済みで、リソースは不足しています。"
+        },
+        "workshopStatus": {
+            "notConfirmed": "未確認",
+            "installed_and_subscribed": "インストール済みで購読中",
+            "installed_but_unsubscribed": "ローカルに残っているが購読解除済み",
+            "subscribed_not_installed": "購読中、ダウンロード待ち",
+            "available_needs_resubscribe": "項目は有効だが再購読が必要",
+            "unavailable": "項目は利用不可",
+            "steam_unavailable": "Steam が利用できず確認不可",
+            "unknown": "状態未確認"
+        },
+        "badge": {
+            "local": "ローカル：{{value}}",
+            "cloud": "クラウド：{{value}}"
+        },
+        "scopePrefix": {
+            "localReady": "ローカルリソースはまだ利用可能です",
+            "cloudReady": "この端末には対応する Steam Workshop リソースがあります",
+            "localMissing": "ローカルリソース不足",
+            "cloudAfterDownload": "クラウドからダウンロード後"
+        },
+        "guidance": {
+            "workshopReadyResubscribe": {
+                "title": "{{prefix}}が、現在は有効な購読状態ではありません",
+                "bodyLocal": "この端末では現在のローカル Steam Workshop リソースをまだ使用できます。ただし今後ローカルキャッシュが失われた場合、通常は再度購読しないと復元できません。",
+                "bodyCloud": "この端末には対応する Steam Workshop リソースがあります。ただし今後ローカルキャッシュが失われた場合、通常は再度購読しないと復元できません。"
+            },
+            "workshopReadyUnavailable": {
+                "title": "{{prefix}}が、元の Steam Workshop 項目は削除・非公開の可能性があります",
+                "body": "この端末にはリソースが残っているため今は使用できますが、後でキャッシュが失われると Steam Workshop からの自動復元は通常できなくなります。手元のバックアップか手動インポートが必要です。"
+            },
+            "workshopInstalled": {
+                "title": "{{prefix}}：この端末には有効な Steam Workshop リソースがあります",
+                "bodyLocal": "Steam Workshop 項目はこの端末でインストール済みかつ購読中ですが、紐付いたモデルファイルは見つかりませんでした。フォルダ構成の変更、更新未完了、または再同期が必要な可能性があります。",
+                "bodyCloud": "Steam Workshop 項目はこの端末でインストール済みかつ購読中です。キャラクターデータのダウンロード後、通常は既存の復元経路でモデルを復元できます。失敗する場合は再同期が必要かもしれません。"
+            },
+            "workshopCacheOnly": {
+                "title": "{{prefix}}：古いキャッシュだけが残り、購読解除済みの可能性があります",
+                "bodyLocal": "この端末はすでに購読状態ではなく、現在の紐付けファイルも見つかっていません。古いキャッシュも使えない場合は、通常は再購読または手動インポートが必要です。",
+                "bodyCloud": "この端末はすでに購読状態ではありません。キャラクターデータのダウンロード後、古いキャッシュで復元できない場合は、通常は再購読か手動インポートが必要です。"
+            },
+            "workshopSubscribed": {
+                "title": "{{prefix}}：この端末はまだ Steam Workshop 項目を購読中です",
+                "bodyLocal": "この端末はまだ Steam Workshop 項目を購読しています。Steam のダウンロード完了後、通常は復元できます。長時間復元されない場合は構成変更や再同期が必要かもしれません。",
+                "bodyCloud": "この端末はまだ Steam Workshop 項目を購読しています。キャラクターデータをダウンロードした後、Steam のダウンロード完了を待てば通常はモデルを復元できます。"
+            },
+            "workshopResubscribe": {
+                "title": "{{prefix}}：Steam Workshop の再購読が必要です",
+                "bodyLocal": "このキャラクターは元々 Steam Workshop リソースを使っていましたが、この端末ではすでに購読解除されています。項目がまだ有効なら、先に再購読してから復元を試してください。",
+                "bodyCloud": "このクラウドキャラクターは元々 Steam Workshop リソースを使っていましたが、この端末では未購読です。ダウンロード後、まず再購読してからモデル復元を試してください。"
+            },
+            "workshopUnavailable": {
+                "title": "{{prefix}}：この Steam Workshop 項目には現在アクセスできません",
+                "bodyLocal": "このキャラクターは元々 Steam Workshop リソースを使っていましたが、該当項目は削除・非公開、または現在アクセスできません。この端末では自動復元できないため、手動バックアップまたは再インポートが必要です。",
+                "bodyCloud": "このクラウドキャラクターは元々 Steam Workshop リソースを使っていましたが、該当項目は削除・非公開、または現在アクセスできません。ダウンロード後も Steam Workshop からの自動復元は通常できません。"
+            },
+            "workshopSteamUnavailable": {
+                "title": "{{prefix}}：Steam Workshop で復元可能か今は確認できません",
+                "body": "Steam が利用できない、未ログイン、または Steamworks が初期化されていません。Steam が復旧してから、項目を再度ダウンロードできるか確認してください。"
+            },
+            "workshopUnknown": {
+                "title": "{{prefix}}：Steam Workshop 復元状態は未確認です",
+                "body": "現在の状態はまだ不明です。Steam Workshop ページで購読状態と項目の可用性を確認してください。"
+            },
+            "localManualImport": {
+                "title": "ローカルリソース：手動でモデルをインポートする必要があります",
+                "body": "この端末には、このキャラクターが使うローカルインポートまたは外部モデルがありません。モデルファイルを手動でインポートまたは移動してください。"
+            },
+            "cloudManualImport": {
+                "title": "クラウドからダウンロード後：手動でモデルをインポートする必要があります",
+                "body": "このクラウドキャラクターはローカルインポートまたは外部モデルに依存しています。この端末にダウンロードした後、対応するモデルファイルを手動でインポートまたは移動してください。"
+            },
+            "localManualSource": {
+                "title": "このキャラクターは現在ローカルまたは手動モデルを使用しています",
+                "body": "クラウドセーブで同期されるのはキャラクターデータのみです。現在使っているローカルインポートまたは外部モデルのファイル自体は含まれないため、別の端末では手動で用意する必要があります。"
+            },
+            "localModifiedModel": {
+                "title": "手動でモデルを変更した場合は注意してください",
+                "body": "もともと Steam Workshop から復元可能だったモデルを差し替えている場合、現在は手動インポートモデルとして扱われます。アップロード後も、他の端末ではモデルファイルを手動で戻す必要があります。"
+            },
+            "cloudManualSource": {
+                "title": "このクラウドキャラクターには現在ローカルまたは手動モデルが記録されています",
+                "body": "このクラウドキャラクターをダウンロードしても復元されるのはキャラクターデータのみです。記録されているローカルインポートまたは外部モデルのファイルは含まれないため、この端末でも手動で用意する必要があります。"
+            },
+            "localWorkshopOrigin": {
+                "title": "このキャラクターは元々 Steam Workshop から来ています",
+                "body": "このキャラクターは今でも Steam Workshop 由来として照合できますが、現在紐付いているモデルは Steam Workshop のパスではなく、この端末上のローカルまたは手動モデルです。クラウドセーブはキャラクターデータのみ同期し、現在のモデルファイルはアップロードしません。別の端末でも今の見た目を保ちたい場合はモデルを手動で用意してください。Steam Workshop の自動復元に戻したい場合は、上に表示されている Steam Workshop 項目へ切り替えてください。"
+            },
+            "cloudWorkshopOrigin": {
+                "title": "このクラウドキャラクターは元々 Steam Workshop から来ています",
+                "body": "このクラウドキャラクターは Steam Workshop 由来のキャラクターからアップロードされましたが、現在記録されているモデルは Steam Workshop のパスではなくローカルまたは手動モデルです。ダウンロードしても復元されるのはキャラクターデータのみです。別の端末でも今の見た目を保ちたい場合はモデルファイルを手動で用意し、上に表示されている Steam Workshop 由来の状態も確認してください。"
+            },
+            "sourceDiverged": {
+                "title": "ローカルのモデル元はクラウド記録と異なります",
+                "body": "ローカルでは手動インポートまたは外部モデルを使っていますが、クラウド側の記録はまだ Steam Workshop です。再度アップロードすると、クラウド側もキャラクターデータのみ同期され、モデルファイルは含まれません。"
+            }
+        },
+        "hint": {
+            "uploadResubscribe": "\nこのローカルキャラクターはまだ Steam Workshop リソースを使っていますが、この端末はすでに有効な購読状態ではありません。別の端末でダウンロードした後、モデル復元のために再購読が必要になる場合があります。",
+            "uploadUnavailable": "\nこのローカルキャラクターはまだ Steam Workshop リソースを使っていますが、元の項目は現在アクセスできません。別の端末でダウンロードした後、Steam Workshop による自動復元は通常できません。",
+            "uploadUnconfirmed": "\nこのローカルキャラクターは Steam Workshop リソース由来ですが、別の端末でも Steam Workshop から復元できるかは今の時点では確認できません。",
+            "uploadOriginResubscribe": "\nこのキャラクターは元々 Steam Workshop 由来ですが、現在バインドされているモデルはローカルまたは手動モデルに変わっています。別の端末で現在の見た目を保つには、このモデルファイルを手動で用意する必要があります。さらに元の Steam Workshop ソースへ戻したい場合は、後で再購読も必要になることがあります。",
+            "uploadOriginUnavailable": "\nこのキャラクターは元々 Steam Workshop 由来ですが、元の項目は現在アクセスできず、現在バインドされているモデルもローカルまたは手動モデルに変わっています。別の端末で現在の見た目を保つには、このモデルファイルを手動で用意する必要があり、Steam Workshop で元のソースを自動復元することも通常はできません。",
+            "uploadOriginUnconfirmed": "\nこのキャラクターは元々 Steam Workshop 由来ですが、現在バインドされているモデルはローカルまたは手動モデルに変わっています。別の端末で現在の見た目を保つには、このモデルファイルを手動で用意する必要があり、元の Steam Workshop 項目がまだ復元可能かどうかも今の時点では確認できません。",
+            "downloadResubscribe": "\nこのクラウドキャラクターは元々 Steam Workshop リソースを使っていましたが、この端末は有効な購読状態ではありません。ダウンロード後、モデル復元のためにまず再購読が必要になることがあります。",
+            "downloadUnavailable": "\nこのクラウドキャラクターは元々 Steam Workshop リソースを使っていましたが、その項目は現在アクセスできません。ダウンロード後も Steam Workshop による自動復元は通常できません。",
+            "downloadUnconfirmed": "\nこのクラウドキャラクターは元々 Steam Workshop リソースを使っていましたが、その項目がまだ復元可能かどうかは今の時点では確認できません。",
+            "downloadOriginResubscribe": "\nこのクラウドキャラクターは元々 Steam Workshop 由来ですが、記録されているバインドモデルはすでにローカルまたは手動モデルに変わっています。ダウンロード後も現在のモデルファイルを自分で用意する必要があり、元の Steam Workshop ソースへ戻したい場合は後で再購読も必要になることがあります。",
+            "downloadOriginUnavailable": "\nこのクラウドキャラクターは元々 Steam Workshop 由来ですが、元の項目は現在アクセスできず、記録されているバインドモデルもすでにローカルまたは手動モデルに変わっています。ダウンロード後も現在のモデルファイルを自分で用意する必要があり、Steam Workshop で元のソースを自動復元することも通常はできません。",
+            "downloadOriginUnconfirmed": "\nこのクラウドキャラクターは元々 Steam Workshop 由来ですが、記録されているバインドモデルはすでにローカルまたは手動モデルに変わっています。ダウンロード後も現在のモデルファイルを自分で用意する必要があり、元の Steam Workshop 項目がまだ復元可能かどうかも今の時点では確認できません。"
+        },
+        "confirm": {
+            "uploadOverwrite": "同名のローカルクラウドスナップショット項目を上書きします。ローカルキャラクターはすぐには変更されず、モデル本体ファイルも含まれません。",
+            "uploadNew": "このローカルキャラクターをローカルクラウドスナップショットキャッシュへ書き込みます。モデル本体ファイルは含まれません。",
+            "uploadManualAsset": "\nこのローカルキャラクターは手動インポートまたは外部モデルを使用しています。別の端末でダウンロードした後も、同じモデルファイルを手動で用意する必要があります。",
+            "uploadFinal": "\nSteam Cloud スナップショットの準備を続行しますか？",
+            "downloadOverwrite": "この端末にすでに同期済みのクラウドスナップショットを使って、同名のローカルキャラクター設定とメモリディレクトリを上書きします。モデルリソースは自動ダウンロードされず、先にローカルバックアップを作成します。",
+            "downloadNew": "この端末にすでに同期済みのクラウドスナップショットをローカルストレージへ復元します。モデルリソースは自動ダウンロードされず、先にローカルバックアップを作成します。",
+            "downloadManualAsset": "\nこのクラウドキャラクターは手動インポートまたは外部モデルに依存しています。この端末にファイルがない場合、ダウンロード後も手動でインポートまたは移動する必要があります。",
+            "downloadFinal": "\nSteam Cloud スナップショットからの復元を続行しますか？",
+            "forceTerminateSession": "キャラクター「{{name}}」にはアクティブなセッションがあります。\nセッションを終了すると、現在の会話内容は失われますが、クラウドセーブのダウンロードは続行できます。\n\nセッションを終了して続行しますか？"
+        },
+        "dialog": {
+            "providerUnavailable": "クラウドセーブ提供元は現在利用できません。後でもう一度お試しください。",
+            "uploadTitle": "クラウドセーブをアップロード",
+            "downloadTitle": "クラウドセーブをダウンロード",
+            "uploadSuccess": "アップロードが完了しました。",
+            "downloadSuccess": "ダウンロードが完了しました。",
+            "uploadTitleSteamAutoCloud": "Steam Cloud スナップショットを準備",
+            "downloadTitleSteamAutoCloud": "Steam Cloud スナップショットを適用",
+            "uploadSuccessSteamAutoCloud": "ローカルクラウドスナップショットを更新しました。Steam 経由でゲームを終了すると、Steam が自動でクラウドへアップロードします。",
+            "downloadSuccessSteamAutoCloud": "Steam Cloud スナップショットをローカルに適用しました。",
+            "operationFailed": "操作に失敗しました：{{message}}",
+            "operationInProgress": "このキャラクターの操作はすでに進行中です。少々お待ちください。",
+            "rollbackApplied": "\nローカルデータは操作前の状態に自動ロールバックされました。",
+            "rollbackFailed": "\nロールバックも失敗しました：{{message}}",
+            "loadFailed": "クラウドセーブ概要の読み込みに失敗しました：{{message}}",
+            "stateChanged": "クラウドセーブの状態が変わりました。最新の状態を確認してから再試行してください。",
+            "forceTerminateTitle": "セッションを終了して続行？"
+        },
+        "action": {
+            "expandDetails": "詳細を表示",
+            "collapseDetails": "詳細を隠す",
+            "uploadDisabledByProvider": "スナップショットを準備できません",
+            "uploadOverwrite": "スナップショットを準備",
+            "uploadNew": "スナップショットを準備",
+            "uploadUnavailable": "スナップショットを準備できません",
+            "downloadDisabledByProvider": "スナップショットを適用できません",
+            "downloadOverwrite": "スナップショットを適用",
+            "downloadNew": "スナップショットを適用",
+            "downloadUnavailable": "スナップショットを適用できません"
+        },
+        "meta": {
+            "groupLocal": "ローカル状態",
+            "groupCloud": "クラウド状態",
+            "localAssetState": "ローカルリソース状態",
+            "localAssetSource": "ローカルリソース元",
+            "localWorkshopStatus": "ローカル現在の状態",
+            "localCharacterOrigin": "ローカルキャラクター由来",
+            "localOriginWorkshopStatus": "ローカルキャラクターの由来と現在の状態",
+            "cloudAssetState": "クラウドリソース状態",
+            "cloudAssetSource": "クラウドリソース元",
+            "cloudWorkshopStatus": "クラウド現在の状態",
+            "cloudCharacterOrigin": "クラウドキャラクター由来",
+            "cloudOriginWorkshopStatus": "クラウドキャラクターの由来と現在の状態",
+            "localUpdatedAt": "ローカル更新時刻",
+            "cloudUpdatedAt": "クラウド更新時刻"
+        },
+        "error": {
+            "providerUnavailable": "クラウドセーブ提供元は現在利用できません。",
+            "activeSessionBlocked": "このキャラクターにはアクティブなセッションがあります。ダウンロード前に停止してください。",
+            "memoryServerReleaseFailed": "上書き前のローカルメモリハンドル解放に失敗しました。後でもう一度お試しください。",
+            "localCharacterNotFound": "ローカルキャラクターが見つかりません。",
+            "cloudCharacterNotFound": "クラウドキャラクターが見つかりません。",
+            "localCharacterExists": "同名のローカルキャラクターがすでに存在します。",
+            "cloudCharacterExists": "同名のクラウドキャラクターがすでに存在します。",
+            "writeFenceActive": "クラウドセーブのメンテナンス保護が有効です。後でもう一度お試しください。",
+            "nameAuditFailed": "キャラクター名がクラウドセーブルールの検証を通過しませんでした。",
+            "uploadFailed": "アップロードに失敗しました：{{message}}",
+            "downloadFailed": "ダウンロードに失敗しました：{{message}}",
+            "localReloadFailedRolledBack": "ダウンロードは適用されましたが、ローカルの再読み込みに失敗しました。",
+            "sessionTerminateFailed": "アクティブなセッションの終了に失敗しました。後でもう一度お試しください。"
+        }
     },
     "settings": {
         "menu": {
@@ -1706,9 +2030,9 @@
     "openclawGuide": {
         "windowTitle": "OpenClaw 接続ガイド - N.E.K.O.",
         "pageTitle": "OpenClaw 接続ガイド",
-        "pageSubtitle": "CoPaw の導入、チャンネル配置、ヘルスチェック、N.E.K.O 設定をひとつの流れでつなぎます。",
+        "pageSubtitle": "QwenPaw の導入、モデル設定、置き換えファイル、N.E.K.O 設定をひとつの流れでつなぎます。",
         "sourceLabel": "ガイドソース",
-        "contentLanguageNotice": "本文は現在中国語ドキュメントを表示しています。言語切り替えはページ操作文言のみに反映されます。",
+        "contentLanguageNotice": "言語切り替えはページ操作文言と本文の両方に反映されます。",
         "languageLabel": "言語",
         "guideUnavailable": "ガイド内容が空です。"
     },
@@ -1716,7 +2040,17 @@
         "title": "リアルタイム字幕",
         "enable": "字幕翻訳",
         "enableAriaLabel": "字幕翻訳の切り替え",
-        "markdownPlaceholder": "[整形済みコンテンツ]"
+        "markdownPlaceholder": "[整形済みコンテンツ]",
+        "settings": {
+            "targetLang": "翻訳先の言語",
+            "opacity": "不透明度",
+            "dragAnywhere": "全体ドラッグ",
+            "size": "サイズ",
+            "sizeSmall": "小",
+            "sizeMedium": "中",
+            "sizeLarge": "大",
+            "settingsBtn": "字幕設定"
+        }
     },
     "viewer": {
         "title": "ビューアー - Project N.E.K.O."
@@ -1872,8 +2206,19 @@
             "changeFailed": "待機アニメーションの変更に失敗しました"
         },
         "managerInitFailed": "MMD マネージャーの初期化に失敗しました",
+        "moduleLoading": "MMD モジュールを読み込み中...",
         "modelLoading": "MMD モデルを読み込み中...",
-        "modelLoaded": "MMD モデルの読み込みに成功しました"
+        "modelLoaded": "MMD モデルの読み込みに成功しました",
+        "modelLoadFailed": "MMD モデルの読み込みに失敗しました: {{error}}",
+        "loadingOverlay": {
+            "engine": "MMD エンジンを準備中...",
+            "settings": "MMD 設定を読み込み中...",
+            "model": "モデルリソースを読み込み中...",
+            "physics": "物理演算を初期化中...",
+            "idle": "待機アニメーションを読み込み中...",
+            "done": "MMD の準備ができました",
+            "failed": "MMD の読み込みに失敗しました"
+        }
     },
     "modelManager": {
         "vrmLoadingDependencies": "[VRM] 依存モジュールの読み込みを開始しています",
@@ -2782,7 +3127,8 @@
         "ended": "終了",
         "unknownState": "不明な状態",
         "volume": "音量: ",
-        "unsafeSource": "安全でない音源をブロックしました: {{domain}}"
+        "unsafeSource": "安全でない音源をブロックしました: {{domain}}",
+        "cookieExpired": "音楽Cookieの有効期限が切れました"
     },
     "Jukebox": {
         "title": "ジュークボックス",
@@ -2806,12 +3152,12 @@
         "play": "再生",
         "playError": "音楽プレイヤーが初期化されていません",
         "notFound": "曲が見つかりません",
-        "mp3Ended": "mp3再生終了",
+        "audioEnded": "音声再生終了",
         "vmdNotInit": "MMD Managerが初期化されていません、アニメーションをスキップします",
         "vmdPlayFailed": "VMD再生に失敗しました",
         "vmdPlayed": "VMDアニメーションを再生しました",
-        "useAPlayer": "APlayerを使用してmp3ファイルを再生します",
-        "startPlay": "mp3オーディオの再生を開始",
+        "useAPlayer": "APlayerで音声ファイルを再生",
+        "startPlay": "音声の再生を開始",
         "nonMp3Error": "mp3以外の形式のファイルを再生しようとしています",
         "nonMp3Info": "mp3以外のオーディオ情報",
         "btnNotFound": "ジュークボックスボタンが見つかりません、読み込みを待機中...",
@@ -2894,6 +3240,7 @@
         "selectedActions": "{{count}}アニメーション選択中",
         "selectedSeparator": "、",
         "selectedInfo": "{{songCount}}曲、{{actionCount}}アニメーション選択中",
+        "bindingsSelected": "バインディングタブで{{bindingSongCount}}曲、{{bindingActionCount}}アニメーション選択中；バンドル合計{{bundleSongCount}}曲、{{bundleActionCount}}アニメーション",
         "missing": "欠落",
         "unknownError": "不明なエラー",
         "calibration": "アニメーションをキャリブレーション",
@@ -2943,5 +3290,47 @@
     },
     "achievement": {
         "unlocked": "🏆 実績解除: {{description}}"
+    },
+    "cardExport": {
+        "title": "キャラカードエクスポート",
+        "loadingModel": "モデルを読み込み中...",
+        "selectCharacter": "キャラクターを選択",
+        "selectCharacterHint": "-- キャラクターを選択 --",
+        "loading": "読み込み中...",
+        "preview": "カードプレビュー",
+        "adjustHint": "ドラッグで位置調整、スクロールで拡大縮小",
+        "composition": "構図調整",
+        "offsetX": "水平オフセット",
+        "offsetY": "垂直オフセット",
+        "scale": "拡大率",
+        "resetComposition": "構図リセット",
+        "refreshPreview": "プレビュー更新",
+        "rotation": "回転",
+        "modelTab": "モデル調整",
+        "decorTab": "デコレーション",
+        "stickerPick": "スタンプを選択",
+        "stickerAdjust": "スタンプ調整",
+        "stickerWidth": "幅",
+        "stickerHeight": "高さ",
+        "lockRatio": "比率をロック",
+        "stickerRotation": "回転",
+        "removeSticker": "選択を削除",
+        "clearStickers": "すべて削除",
+        "layers": "レイヤー",
+        "modelLayer": "モデル",
+        "sticker": "スタンプ",
+        "exportFull": "キャラカードをエクスポート",
+        "exportSettings": "設定のみエクスポート",
+        "exporting": "エクスポート中...",
+        "exportError": "エクスポート失敗: ",
+        "back": "戻る",
+        "importSticker": "カスタムスタンプをインポート",
+        "removeCustomSticker": "スタンプを削除",
+        "stickerSizeTitle": "スタンプ画像が大きすぎます",
+        "stickerSizeWarning": "この画像は大きいです（5MB超）。圧縮すると永久に保存できます。\n「一時使用」を選択すると一時スタンプとして使用されます（ページを閉じると消えます）。",
+        "compressAndSave": "圧縮して保存",
+        "useTemporary": "一時的に使用",
+        "tempBadge": "一時",
+        "popupBlocked": "ポップアップがブロックされました。ポップアップを許可してから再試行してください。"
     }
 }

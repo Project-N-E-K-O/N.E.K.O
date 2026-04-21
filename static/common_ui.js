@@ -642,6 +642,9 @@ if (toggleBtn) {
     };
 
     // 获取当前显示区域的尺寸（考虑多屏幕）
+    // 多屏下 workArea/display 可能大于实际窗口像素（窗口还未跟上屏幕切换），
+    // 直接用会导致聊天框被吸附到窗口外、被窗口边界裁切。
+    // 因此 clamp 边界始终以 window.innerWidth/innerHeight 为上限，workArea 仅用来取更保守值。
     async function getDisplayWorkAreaSize() {
         let width = window.innerWidth;
         let height = window.innerHeight;
@@ -650,11 +653,13 @@ if (toggleBtn) {
             try {
                 const currentDisplay = await window.electronScreen.getCurrentDisplay();
                 if (currentDisplay && currentDisplay.workArea) {
-                    width = currentDisplay.workArea.width || width;
-                    height = currentDisplay.workArea.height || height;
+                    const waW = currentDisplay.workArea.width;
+                    const waH = currentDisplay.workArea.height;
+                    if (Number.isFinite(waW) && waW > 0) width = Math.min(width, waW);
+                    if (Number.isFinite(waH) && waH > 0) height = Math.min(height, waH);
                 } else if (currentDisplay && currentDisplay.width && currentDisplay.height) {
-                    width = currentDisplay.width;
-                    height = currentDisplay.height;
+                    width = Math.min(width, currentDisplay.width);
+                    height = Math.min(height, currentDisplay.height);
                 }
             } catch (e) {
                 console.debug('[Chat Snap] 获取屏幕工作区域失败，使用窗口尺寸');
@@ -781,8 +786,6 @@ if (toggleBtn) {
     function startDrag(e, skipPreventDefault = false) {
         isDragging = true;
         hasMoved = false;
-        // 设置全局拖拽标志，供 preload 等跳过昂贵操作
-        if (window.DragHelpers) window.DragHelpers.isDragging = true;
         dragStartedFromToggleBtn = (e.target === toggleBtn || toggleBtn.contains(e.target));
 
         // 获取初始鼠标/触摸位置
@@ -818,7 +821,7 @@ if (toggleBtn) {
         chatContainer.style.cursor = 'grabbing';
         if (chatHeader) chatHeader.style.cursor = 'grabbing';
 
-        // 开始拖动时，临时禁用按钮的 pointer-events（使用 live2d-ui-drag.js 中的共享工具函数）
+        // 开始拖动时，临时禁用按钮的 pointer-events（使用 avatar-ui-drag.js 中的共享工具函数）
         if (window.DragHelpers) {
             window.DragHelpers.disableButtonPointerEvents();
         }
@@ -911,9 +914,6 @@ if (toggleBtn) {
             chatContainer.classList.remove('dragging');
             chatContainer.style.cursor = '';
             if (chatHeader) chatHeader.style.cursor = '';
-
-            // 清除全局拖拽标志
-            if (window.DragHelpers) window.DragHelpers.isDragging = false;
 
             // 拖拽结束后恢复按钮的 pointer-events
             if (window.DragHelpers) {
@@ -1026,8 +1026,13 @@ if (toggleBtn) {
     document.addEventListener('touchend', endDrag);
 
     // 屏幕切换后，确保对话框回弹到新屏幕内侧
+    // 延迟一帧：主进程 setBounds 到 renderer 的 innerWidth/innerHeight 刷新有几毫秒~一帧延迟，
+    // 立即 snap 会让 getDisplayWorkAreaSize 读到旧尺寸，把聊天框永久 clamp 到旧屏内侧
+    // （对照 live2d-core.js 中 _displayChangeHandler 的 rAF 包裹方式）
     window.addEventListener('electron-display-changed', () => {
-        snapChatContainerIntoScreen({ animate: true });
+        requestAnimationFrame(() => {
+            snapChatContainerIntoScreen({ animate: true });
+        });
     });
 
     // 窗口大小改变后，确保对话框回弹到屏幕内侧（包括折叠状态）

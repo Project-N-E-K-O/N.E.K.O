@@ -1267,134 +1267,201 @@ body.react-chat-window-dragging {
     cursor: progress;
 }
 
+/* ──── Avatar Cropper (inline in popup) ──── */
+.chat-avatar-preview-crop-body {
+    display: none;
+    flex-direction: column;
+    gap: 10px;
+}
+#chat-avatar-preview-popup.is-cropping .chat-avatar-preview-card-body { display: none; }
+#chat-avatar-preview-popup.is-cropping .chat-avatar-preview-crop-body { display: flex; }
+#chat-avatar-preview-popup.is-cropping { width: auto; max-width: calc(100vw - 24px); }
+
+.avatar-cropper-canvas-wrap {
+    position: relative;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+    overflow: hidden;
+    border-radius: 8px;
+    background: #0a0a0a;
+    align-self: center;
+    flex-shrink: 0;
+}
+
+.avatar-cropper-source-img {
+    display: block;
+    pointer-events: none;
+}
+
+.avatar-cropper-mask {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+
+.avatar-cropper-crop-box {
+    position: absolute;
+    cursor: move;
+    box-sizing: border-box;
+    border: 2px solid rgba(255, 255, 255, 0.85);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.3);
+    overflow: visible;
+}
+
+.avatar-cropper-viewfinder {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    overflow: hidden;
+}
+
+.avatar-cropper-grid-line {
+    position: absolute;
+    background: rgba(255, 255, 255, 0.35);
+}
+.avatar-cropper-grid-line.h1 { top: 33.33%; left: 0; right: 0; height: 1px; }
+.avatar-cropper-grid-line.h2 { top: 66.66%; left: 0; right: 0; height: 1px; }
+.avatar-cropper-grid-line.v1 { left: 33.33%; top: 0; bottom: 0; width: 1px; }
+.avatar-cropper-grid-line.v2 { left: 66.66%; top: 0; bottom: 0; width: 1px; }
+
+.avatar-cropper-circle-guide {
+    position: absolute;
+    inset: 4%;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    pointer-events: none;
+}
+
+/* 手柄：完全定位在 crop-box 外侧角落 */
+.avatar-cropper-handle {
+    position: absolute;
+    width: 24px;
+    height: 24px;
+    z-index: 2;
+}
+.avatar-cropper-handle::before,
+.avatar-cropper-handle::after {
+    content: '';
+    position: absolute;
+    background: #fff;
+    box-shadow: 0 0 5px rgba(0, 0, 0, 0.7);
+    border-radius: 1px;
+}
+.avatar-cropper-handle.tl { top: -26px; left: -26px; cursor: nwse-resize; }
+.avatar-cropper-handle.tr { top: -26px; right: -26px; cursor: nesw-resize; }
+.avatar-cropper-handle.bl { bottom: -26px; left: -26px; cursor: nesw-resize; }
+.avatar-cropper-handle.br { bottom: -26px; right: -26px; cursor: nwse-resize; }
+
+.avatar-cropper-handle.tl::before { bottom: 0; right: 0; width: 20px; height: 5px; }
+.avatar-cropper-handle.tl::after  { bottom: 0; right: 0; width: 5px; height: 20px; }
+.avatar-cropper-handle.tr::before { bottom: 0; left: 0; width: 20px; height: 5px; }
+.avatar-cropper-handle.tr::after  { bottom: 0; left: 0; width: 5px; height: 20px; }
+.avatar-cropper-handle.bl::before { top: 0; right: 0; width: 20px; height: 5px; }
+.avatar-cropper-handle.bl::after  { top: 0; right: 0; width: 5px; height: 20px; }
+.avatar-cropper-handle.br::before { top: 0; left: 0; width: 20px; height: 5px; }
+.avatar-cropper-handle.br::after  { top: 0; left: 0; width: 5px; height: 20px; }
+
+/* 右侧控制面板 */
+.avatar-cropper-controls {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    align-self: center;
+    flex-shrink: 0;
+}
+.avatar-cropper-controls-row {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+}
+.avatar-cropper-ctrl-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.35);
+    color: rgba(255, 255, 255, 0.85);
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s;
+    padding: 0;
+}
+.avatar-cropper-ctrl-btn:hover {
+    background: rgba(68, 183, 254, 0.25);
+    border-color: rgba(68, 183, 254, 0.4);
+}
+.avatar-cropper-ctrl-btn:active {
+    background: rgba(68, 183, 254, 0.4);
+}
+.avatar-cropper-ctrl-btn svg {
+    width: 16px;
+    height: 16px;
+    fill: currentColor;
+}
+.avatar-cropper-ctrl-divider {
+    height: 6px;
+}
+
+.avatar-cropper-area {
+    display: flex;
+    gap: 10px;
+    align-items: stretch;
+}
+
+.avatar-cropper-buttons {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+}
+
+.avatar-cropper-btn {
+    padding: 6px 14px;
+    border-radius: 999px;
+    border: 1px solid rgba(68, 183, 254, 0.24);
+    background: rgba(68, 183, 254, 0.08);
+    color: #215f90;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+.avatar-cropper-btn:hover {
+    background: rgba(68, 183, 254, 0.14);
+    border-color: rgba(68, 183, 254, 0.38);
+}
+.avatar-cropper-btn.primary {
+    background: rgba(68, 183, 254, 0.22);
+    border-color: rgba(68, 183, 254, 0.4);
+    color: #127dbc;
+}
+.avatar-cropper-btn.primary:hover {
+    background: rgba(68, 183, 254, 0.32);
+}
+[data-theme="dark"] .avatar-cropper-btn {
+    color: #8fd4ff;
+    border-color: rgba(68, 183, 254, 0.22);
+    background: rgba(68, 183, 254, 0.06);
+}
+[data-theme="dark"] .avatar-cropper-btn:hover {
+    background: rgba(68, 183, 254, 0.14);
+}
+[data-theme="dark"] .avatar-cropper-btn.primary {
+    background: rgba(68, 183, 254, 0.18);
+    border-color: rgba(68, 183, 254, 0.38);
+}
+
 /* 旧的 .subtitle-prompt-message 注入式提示已下线：
  * 字幕翻译开关现在常驻在 React 聊天窗口的 composer 工具栏，
  * 由 frontend/react-neko-chat 渲染。 */
 
 
-/* 字幕显示区域样式（参考Xiao8项目优化，性能优化版本） */
-#subtitle-display {
-    position: fixed;
-    bottom: 30px;
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 99998;
-    max-width: min(500px, 85%);
-    min-width: 200px;
-    padding: 10px 18px;
-    background: linear-gradient(135deg, rgba(68, 183, 254, 0.95) 0%, rgba(68, 183, 254, 0.9) 50%, rgba(100, 200, 255, 0.95) 100%);
-    color: #fff;
-    border-radius: 12px;
-    font-size: 17px;
-    font-weight: 500;
-    line-height: 1.5;
-    text-align: center;
-    overflow-wrap: break-word;
-    white-space: normal;
-    opacity: 0;
-    visibility: hidden;
-    transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
-    pointer-events: none;
-    box-shadow: 0 6px 24px rgba(68, 183, 254, 0.35),
-        0 0 0 1px rgba(255, 255, 255, 0.3) inset;
-    border: 1.5px solid rgba(255, 255, 255, 0.4);
-    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
-}
-
-#subtitle-text {
-    display: block;
-    margin-right: 24px;
-    white-space: pre-wrap;
-    overflow-wrap: break-word;
-}
-
-#subtitle-display.hidden {
-    display: none;
-}
-
-/* 拖拽句柄（四散箭头） */
-#subtitle-drag-handle {
-    position: absolute;
-    top: 50%;
-    right: 4px;
-    transform: translateY(-50%);
-    width: 26px;
-    height: 26px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: grab;
-    border-radius: 6px;
-    transition: all 0.2s ease;
-    pointer-events: auto;
-    background: rgba(255, 255, 255, 0.18);
-    backdrop-filter: blur(4px);
-}
-
-#subtitle-drag-handle:hover {
-    background: rgba(255, 255, 255, 0.32);
-    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.6);
-}
-
-#subtitle-drag-handle:active {
-    cursor: grabbing;
-    background: rgba(255, 255, 255, 0.42);
-    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9);
-}
-
-/* SVG 四向箭头图标 */
-#subtitle-drag-arrows {
-    width: 100%;
-    height: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-#subtitle-drag-arrows svg {
-    width: 14px;
-    height: 14px;
-}
-
-/* 拖拽时的高亮效果 */
-#subtitle-display.dragging {
-    opacity: 0.85;
-    box-shadow: 0 12px 40px rgba(68, 183, 254, 0.6),
-        0 0 0 2px rgba(255, 255, 255, 0.5) inset;
-    transition: none !important;
-    user-select: none;
-}
-
-#subtitle-display.show {
-    opacity: 1;
-    visibility: visible;
-    animation: subtitleFadeIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
-}
-
-/* 确保拖拽句柄在任何情况下都显示（防御性规则） */
-
-@keyframes subtitleFadeIn {
-    0% {
-        opacity: 0;
-        transform: translateX(-50%) translateY(20px) scale(0.95);
-    }
-
-    100% {
-        opacity: 1;
-        transform: translateX(-50%) translateY(0) scale(1);
-    }
-}
-
-/* 移动端优化：禁用backdrop-filter以提升性能，调整位置避免重叠 */
-@media only screen and (max-width: 768px) {
-    #subtitle-display {
-        bottom: 80px;
-        min-width: 180px;
-        max-width: 92%;
-        font-size: 15px;
-        padding: 6px 14px;
-    }
-}
+/* 字幕样式已抽离到 /static/css/subtitle.css，避免主页面和独立字幕窗口重复维护。 */
 
 /* 截图缩略图容器 - 横向滚动布局 */
 #screenshot-thumbnail-container {
@@ -1573,6 +1640,188 @@ body.react-chat-window-dragging {
     padding: 2px 6px;
     border-radius: 10px;
     border: 1px solid rgba(68, 183, 254, 0.3);
+}
+
+/* ============ 截图裁切 overlay ============ */
+.crop-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 100040;
+    display: flex;
+    flex-direction: column;
+    background: #111;
+    pointer-events: auto;
+    animation: crop-fade-in 0.2s ease;
+}
+
+@keyframes crop-fade-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+/* Top bar with tabs */
+.crop-topbar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 0 12px;
+    background: rgba(0, 0, 0, 0.85);
+    border-bottom: 1px solid rgba(68, 183, 254, 0.3);
+    z-index: 2;
+    user-select: none;
+}
+
+.crop-tab {
+    padding: 5px 16px;
+    border: none;
+    border-radius: 4px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    cursor: pointer;
+    color: rgba(255, 255, 255, 0.6);
+    background: transparent;
+    transition: background 0.15s, color 0.15s;
+}
+
+.crop-tab:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+}
+
+.crop-tab-active {
+    background: rgba(68, 183, 254, 0.25);
+    color: #44b7fe;
+}
+
+.crop-tab-active:hover {
+    background: rgba(68, 183, 254, 0.35);
+}
+
+.crop-tab-cancel {
+    margin-left: auto;
+    color: #ff6b7a;
+}
+
+.crop-tab-cancel:hover {
+    background: rgba(220, 53, 69, 0.2);
+    color: #ff8a97;
+}
+
+.crop-tab:disabled {
+    opacity: 0.5;
+    cursor: wait;
+}
+
+.crop-tab:focus-visible,
+.crop-action-btn:focus-visible {
+    outline: 2px solid rgba(68, 183, 254, 0.85);
+    outline-offset: 2px;
+}
+
+/* Background image + canvas positioned below topbar */
+.crop-bg-image {
+    position: absolute;
+    top: 40px;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    height: calc(100% - 40px);
+    object-fit: contain;
+    pointer-events: none;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.crop-canvas {
+    position: absolute;
+    top: 40px;
+    left: 0;
+    width: 100%;
+    height: calc(100% - 40px);
+    cursor: crosshair;
+    touch-action: none;
+    z-index: 1;
+}
+
+/* Floating ✓ / × buttons near selection */
+.crop-action-btns {
+    position: fixed;
+    display: flex;
+    gap: 4px;
+    z-index: 100041;
+    pointer-events: auto;
+    animation: crop-fade-in 0.15s ease;
+}
+
+.crop-action-btn {
+    width: 32px;
+    height: 32px;
+    border: none;
+    border-radius: 6px;
+    font-size: 1.1rem;
+    font-weight: 700;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s, transform 0.1s;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.crop-action-confirm {
+    background: #44b7fe;
+    color: #fff;
+}
+
+.crop-action-confirm:hover {
+    background: #2fa8f5;
+    transform: scale(1.08);
+}
+
+.crop-action-cancel {
+    background: rgba(255, 255, 255, 0.15);
+    color: #ff6b7a;
+    border: 1px solid rgba(220, 53, 69, 0.4);
+}
+
+.crop-action-cancel:hover {
+    background: rgba(220, 53, 69, 0.25);
+    transform: scale(1.08);
+}
+
+/* Mobile adjustments */
+@media (max-width: 768px) {
+    .crop-topbar {
+        height: 36px;
+        padding: 0 8px;
+    }
+
+    .crop-tab {
+        padding: 4px 10px;
+        font-size: 0.78rem;
+    }
+
+    .crop-bg-image {
+        top: 36px;
+        height: calc(100% - 36px);
+    }
+
+    .crop-canvas {
+        top: 36px;
+        height: calc(100% - 36px);
+    }
+
+    .crop-action-btn {
+        width: 36px;
+        height: 36px;
+        font-size: 1.2rem;
+    }
 }
 
 #text-input-row {
@@ -2055,7 +2304,7 @@ body.react-chat-window-dragging {
     body:not(.electron-chat-window) #react-chat-window-shell:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
         width: calc(100vw - 12px);
         height: auto;
-        max-height: 50vh;
+        max-height: 85vh;
         top: auto;
         bottom: 6px;
         left: 6px;
@@ -2082,7 +2331,8 @@ body.react-chat-window-dragging {
 
     /* 窄屏与桌面统一用 grid 布局：auto(顶栏) 1fr(消息) auto(输入) +
        overflow:hidden 保证输入区不会被消息挤出。shell 尺寸仍由
-       syncMobileContentLayout() 写成显式像素（根据内容 50vh 上限）。 */
+       syncMobileContentLayout() 写成显式像素（根据内容，最高 85vh；
+       用户拖过顶部手柄后走 mobileUserHeight 持久化值）。 */
     body:not(.electron-chat-window) #react-chat-window-shell .chat-window {
         height: 100%;
         display: grid;
@@ -2118,29 +2368,55 @@ body.react-chat-window-dragging {
     }
 
     body:not(.electron-chat-window) #react-chat-window-drag-handle {
-        cursor: default;
+        cursor: grab;
     }
 
-    /* ---- 手机端最小化：全宽底部胶囊（替代 50px 圆球）----
-       胶囊横跨屏幕底部，点击即展开；比左下角小圆球更符合手机底栏交互习惯。
-       具体最小化尺寸由 JS 通过 transform scale 动画过渡到此 CSS 终态。 */
+    /* 手机端：仅显示顶部拖拽边缘用于调整高度，隐藏其余方向 */
+    body:not(.electron-chat-window) #react-chat-window-shell:not(.is-minimized) .react-chat-resize-edge {
+        display: none;
+    }
+    body:not(.electron-chat-window) #react-chat-window-shell:not(.is-minimized) .react-chat-resize-n {
+        display: block;
+        height: 14px;
+        top: -4px;
+        left: 0;
+        right: 0;
+        cursor: n-resize;
+        /* 可视拖拽指示条 */
+        background: transparent;
+    }
+    body:not(.electron-chat-window) #react-chat-window-shell:not(.is-minimized) .react-chat-resize-n::after {
+        content: '';
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        width: 36px;
+        height: 4px;
+        border-radius: 2px;
+        background: rgba(150, 160, 175, 0.4);
+    }
+
+    /* ---- 手机端最小化：50px 圆形悬浮球（与桌面端一致）----
+       替代原先的全宽底部胶囊，使用圆形小球，可自由拖动 */
     body:not(.electron-chat-window) #react-chat-window-shell.is-minimized {
-        width: calc(100vw - 12px) !important;
-        height: 48px !important;
-        border-radius: 24px;
+        width: 50px !important;
+        height: 50px !important;
+        border-radius: 50%;
     }
 
     body:not(.electron-chat-window) #react-chat-window-shell.is-minimized #react-chat-window-drag-handle {
         display: flex;
         align-items: center;
         justify-content: center;
+        cursor: pointer;
     }
 
     body:not(.electron-chat-window) #react-chat-window-shell.is-minimized .react-chat-minimized-icon {
-        width: 28px;
-        height: 28px;
-        /* 居中显示而非填满整条胶囊 */
+        width: 100%;
+        height: 100%;
         object-fit: contain;
+        pointer-events: none;
     }
 
     #chat-container.minimized::before {

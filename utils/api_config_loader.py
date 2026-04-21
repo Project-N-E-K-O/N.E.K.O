@@ -4,6 +4,7 @@ API配置加载器
 从JSON文件加载API服务商配置和默认模型配置
 """
 import json
+import sys
 from copy import deepcopy
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -19,6 +20,14 @@ logger = get_module_logger(__name__)
 
 # 配置缓存
 _config_cache: Optional[Dict[str, Any]] = None
+
+
+def _get_app_root() -> Path:
+    if getattr(sys, "frozen", False):
+        if hasattr(sys, "_MEIPASS"):
+            return Path(sys._MEIPASS)
+        return Path(sys.executable).parent
+    return Path(__file__).resolve().parents[1]
 
 
 def _get_default_core_api_profiles() -> Dict[str, Dict[str, Any]]:
@@ -40,22 +49,7 @@ def _get_config_file_path() -> Path:
     Returns:
         Path: api_providers.json 文件路径
     """
-    # 获取项目根目录下的 config 目录
-    if hasattr(__import__('sys'), 'frozen'):
-        import sys
-        if getattr(sys, 'frozen', False):
-            # 打包后的exe
-            if hasattr(sys, '_MEIPASS'):
-                app_dir = Path(sys._MEIPASS)
-            else:
-                app_dir = Path(sys.executable).parent
-        else:
-            # 脚本运行
-            app_dir = Path.cwd()
-    else:
-        app_dir = Path.cwd()
-    
-    return app_dir / "config" / "api_providers.json"
+    return _get_app_root() / "config" / "api_providers.json"
 
 
 def _load_json_config() -> Dict[str, Any]:

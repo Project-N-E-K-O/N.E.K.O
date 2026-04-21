@@ -217,12 +217,12 @@
 
     function appendReactUserMessage(payload) {
         var host = getReactChatHost();
-        if (!host || typeof host.appendMessage !== 'function') return;
+        if (!host || typeof host.appendMessage !== 'function') return null;
 
         payload = payload || {};
         var text = String(payload.text || '').trim();
         var imageUrls = Array.isArray(payload.imageUrls) ? payload.imageUrls.filter(Boolean) : [];
-        if (!text && imageUrls.length === 0) return;
+        if (!text && imageUrls.length === 0) return null;
 
         var author = getCurrentUserName();
         var blocks = [];
@@ -235,22 +235,23 @@
         }
 
         imageUrls.forEach(function (url, index) {
+            var translatedAlt = window.t ? window.t('chat.pendingImageAlt', { index: index + 1 }) : '';
             blocks.push({
                 type: 'image',
                 url: String(url),
-                alt: (window.t ? window.t('chat.pendingImageAlt', { index: index + 1 }) : '图片 ' + (index + 1))
+                alt: (typeof translatedAlt === 'string' && translatedAlt ? translatedAlt : '图片 ' + (index + 1))
             });
         });
 
-        host.appendMessage({
-            id: nextReactMessageId('user'),
+        return host.appendMessage({
+            id: payload.id ? String(payload.id) : nextReactMessageId('user'),
             role: 'user',
             author: author,
-            time: getCurrentTimeString(),
+            time: payload.time ? String(payload.time) : getCurrentTimeString(),
             createdAt: Date.now(),
             avatarLabel: String(author).trim().slice(0, 1).toUpperCase(),
             blocks: blocks,
-            status: 'sent'
+            status: payload.status ? String(payload.status) : 'sent'
         });
     }
 
@@ -415,10 +416,16 @@
                 }
             }
         } finally {
-            window._isProcessingRealisticQueue = false;
-            // 兜底检查：如果在循环结束到重置标志位之间又有新消息进入队列，递归触发
-            if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
-                processRealisticQueue(window._realisticGeminiVersion || 0);
+            // 如果 lock 还是 true，说明没有任何外部路径（discard / audio-capture）
+            // 接管过 —— 无论 version 是否变化，我们都是当前唯一持有者，必须释放锁，
+            // 否则队列会卡死。
+            // 如果 lock 已经是 false，说明外部路径已经重置锁并可能启动了新 processor，
+            // 我们不能再递归也不能再动锁。
+            if (window._isProcessingRealisticQueue) {
+                window._isProcessingRealisticQueue = false;
+                if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
+                    processRealisticQueue(window._realisticGeminiVersion || 0);
+                }
             }
         }
     }
@@ -627,6 +634,15 @@
                         continue;
                     }
 
+                    if (result.netease_cookie_invalid && typeof window.showStatusToast === 'function') {
+                        var now = Date.now();
+                        if (!window._cookieWarnLastTime || now - window._cookieWarnLastTime > 300000) {
+                            var musiccookieWarnMsg = (window.t && window.t('music.cookieExpired')) || '音乐Cookie已失效';
+                            window.showStatusToast(musiccookieWarnMsg, 5000);
+                            window._cookieWarnLastTime = now;
+                        }
+                    }
+
                     if (!result.success) {
                         console.error('[Music] Search API failed:', result.error);
                         if (window.showStatusToast) {
@@ -801,10 +817,11 @@
                 // ========== 重置本轮气泡追踪 ==========
                 window.currentTurnGeminiBubbles = [];
                 window.currentTurnGeminiAttachments = [];
-                // 提前复位字幕 turn 状态：neko-assistant-turn-start 事件要等
-                // 首个可见气泡创建后才发，而 updateSubtitleStreamingText 在
-                // 首个 chunk 就会被调用，必须在此解锁 isCurrentTurnFinalized
-                // 闸门，否则上一轮结束留下的 true 会把本轮首个 chunk 吞掉。
+                // 提前复位字幕 turn 状态：neko-assistant-turn-start 事件在
+                // 首个 chunk 不可渲染时会延后到首个可见气泡创建才派发，而
+                // updateSubtitleStreamingText 在首个 chunk 就会被调用；必须
+                // 在此解锁 isCurrentTurnFinalized 闸门，否则上一轮结束留下
+                // 的 true 会把本轮首个 chunk 吞掉。
                 if (typeof window.beginSubtitleTurn === 'function') {
                     window.beginSubtitleTurn();
                 }

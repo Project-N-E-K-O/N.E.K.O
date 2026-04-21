@@ -251,6 +251,14 @@
         });
     }
 
+    function _resetReactChatSwitchState() {
+        _pendingHostMessages = [];
+        if (_pendingFlushTimer) {
+            clearInterval(_pendingFlushTimer);
+            _pendingFlushTimer = null;
+        }
+    }
+
     function createGeminiBubble(sentence) {
         var host = getHost();
         var cleanSentence = (sentence || '').replace(/\[play_music:[^\]]*(\]|$)/g, '');
@@ -320,9 +328,16 @@
                 }
             }
         } finally {
-            window._isProcessingRealisticQueue = false;
-            if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
-                processRealisticQueue(window._realisticGeminiVersion || 0);
+            // 如果 lock 还是 true，说明没有任何外部路径（discard / audio-capture）
+            // 接管过 —— 无论 version 是否变化，我们都是当前唯一持有者，必须释放锁，
+            // 否则队列会卡死。
+            // 如果 lock 已经是 false，说明外部路径已经重置锁并可能启动了新 processor，
+            // 我们不能再递归也不能再动锁。
+            if (window._isProcessingRealisticQueue) {
+                window._isProcessingRealisticQueue = false;
+                if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
+                    processRealisticQueue(window._realisticGeminiVersion || 0);
+                }
             }
         }
     }
@@ -598,12 +613,12 @@
 
     function appendReactUserMessage(payload) {
         var host = getHost();
-        if (!host || typeof host.appendMessage !== 'function') return;
+        if (!host || typeof host.appendMessage !== 'function') return null;
 
         payload = payload || {};
         var text = String(payload.text || '').trim();
         var imageUrls = Array.isArray(payload.imageUrls) ? payload.imageUrls.filter(Boolean) : [];
-        if (!text && imageUrls.length === 0) return;
+        if (!text && imageUrls.length === 0) return null;
 
         var author = getCurrentUserName();
         var blocks = [];
@@ -613,22 +628,23 @@
         }
 
         imageUrls.forEach(function (url, index) {
+            var translatedAlt = window.t ? window.t('chat.pendingImageAlt', { index: index + 1 }) : '';
             blocks.push({
                 type: 'image',
                 url: String(url),
-                alt: (window.t ? window.t('chat.pendingImageAlt', { index: index + 1 }) : '\u56FE\u7247 ' + (index + 1))
+                alt: (typeof translatedAlt === 'string' && translatedAlt ? translatedAlt : '\u56FE\u7247 ' + (index + 1))
             });
         });
 
-        host.appendMessage({
-            id: nextReactMessageId('user'),
+        return host.appendMessage({
+            id: payload.id ? String(payload.id) : nextReactMessageId('user'),
             role: 'user',
             author: author,
-            time: getCurrentTimeString(),
+            time: payload.time ? String(payload.time) : getCurrentTimeString(),
             createdAt: Date.now(),
             avatarLabel: String(author).trim().slice(0, 1).toUpperCase(),
             blocks: blocks,
-            status: 'sent'
+            status: payload.status ? String(payload.status) : 'sent'
         });
     }
 
@@ -654,6 +670,7 @@
     window.setReactMessageStatus = setReactMessageStatus;
     window._tryFlushPendingHostMessages = _tryFlushPendingHostMessages;
     window._clearPendingHostMessagesByIds = _clearPendingHostMessagesByIds;
+    window._resetReactChatSwitchState = _resetReactChatSwitchState;
 
     // 覆盖 appChat 上的方法
     if (window.appChat) {

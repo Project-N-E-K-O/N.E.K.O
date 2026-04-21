@@ -30,10 +30,28 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // 更新语言包内容时可以递增此值
-    const LOCALE_VERSION = '2026-03-16-1';
+    const LOCALE_VERSION = '2026-04-20-1';
+
+    function getLanguageFromQuery() {
+        try {
+            const params = new URLSearchParams(window.location.search || '');
+            const queryLanguage = String(params.get('ui_lang') || params.get('lang') || '').trim();
+            if (queryLanguage && SUPPORTED_LANGUAGES.includes(queryLanguage)) {
+                return queryLanguage;
+            }
+        } catch (error) {
+            console.warn('[i18n] 解析 URL 语言参数失败:', error);
+        }
+        return '';
+    }
 
     // 获取浏览器语言（同步，作为 fallback）
     function getBrowserLanguage() {
+        const queryLanguage = getLanguageFromQuery();
+        if (queryLanguage) {
+            return queryLanguage;
+        }
+
         // 1. 检查 localStorage
         const savedLanguage = localStorage.getItem('i18nextLng');
         if (savedLanguage && SUPPORTED_LANGUAGES.includes(savedLanguage)) {
@@ -100,6 +118,12 @@
 
     // 获取初始语言：优先 Steam 设置，然后 localStorage，然后浏览器设置，最后默认中文
     async function getInitialLanguage() {
+        const queryLanguage = getLanguageFromQuery();
+        if (queryLanguage) {
+            localStorage.setItem('i18nextLng', queryLanguage);
+            return queryLanguage;
+        }
+
         // 1. 尝试从 Steam API 获取语言
         const steamLanguage = await getSteamLanguage();
         if (steamLanguage) {

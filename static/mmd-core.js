@@ -146,6 +146,25 @@ class MMDCore {
         }
     }
 
+    _updateLoadingOverlay(sessionId, stage, detail = '') {
+        if (!sessionId || !window.MMDLoadingOverlay || typeof window.MMDLoadingOverlay.update !== 'function') {
+            return;
+        }
+        window.MMDLoadingOverlay.update(sessionId, { stage, detail });
+    }
+
+    _formatProgressDetail(progress) {
+        if (!progress || typeof progress.loaded !== 'number' || !Number.isFinite(progress.loaded)) {
+            return '';
+        }
+        if (typeof progress.total === 'number' && Number.isFinite(progress.total) && progress.total > 0) {
+            const percent = Math.max(0, Math.min(100, Math.round((progress.loaded / progress.total) * 100)));
+            return `${percent}%`;
+        }
+        const kb = Math.max(1, Math.round(progress.loaded / 1024));
+        return `${kb} KB`;
+    }
+
     // ═══════════════════ Three.js 依赖检查 ═══════════════════
 
     _ensureThreeReady() {
@@ -370,13 +389,30 @@ class MMDCore {
         }
 
         const { MMDLoader } = mmdModule;
+        const loadingSessionId = options.loadingSessionId || '';
 
         // 自定义 LoadingManager: 追踪加载失败的纹理 URL
         const loadManager = new THREE.LoadingManager();
         loadManager._failedUrls = [];
+        loadManager._allResourcesLoaded = false;
         loadManager.onError = (url) => {
             console.warn(`[MMD Core] 资源加载失败: ${url}`);
             loadManager._failedUrls.push(url);
+        };
+        // 所有资源（含失败的）加载完成后，检查并修复缺失纹理
+        // 使用 _pendingMmd 捕获模型引用，避免 onLoad 在 currentModel 赋值前触发时跳过检查
+        this._pendingMmd = null;
+        loadManager.onLoad = () => {
+            loadManager._allResourcesLoaded = true;
+            console.log('[MMD Core] 所有资源加载完成，检查纹理状态');
+            const mmd = this._pendingMmd || this.manager.currentModel;
+            if (mmd) {
+                if (this._fixMissingTexturesTimer) {
+                    clearTimeout(this._fixMissingTexturesTimer);
+                    this._fixMissingTexturesTimer = null;
+                }
+                this._fixMissingTextures(mmd);
+            }
         };
         this.manager._loadManager = loadManager;
 
@@ -392,11 +428,20 @@ class MMDCore {
 
         try {
             // MMDLoader.load 返回 MMD 对象
+            this._updateLoadingOverlay(loadingSessionId, 'model');
             const mmd = await new Promise((resolve, reject) => {
                 loader.load(
                     modelUrl,
-                    (mmd) => resolve(mmd),
+                    (mmd) => {
+                        this._pendingMmd = mmd;
+                        resolve(mmd);
+                    },
                     (progress) => {
+                        this._updateLoadingOverlay(
+                            loadingSessionId,
+                            'model',
+                            this._formatProgressDetail(progress)
+                        );
                         if (options.onProgress) {
                             options.onProgress(progress);
                         }
@@ -438,7 +483,8 @@ class MMDCore {
 
             // 初始化物理引擎
             if (this.manager.enablePhysics) {
-                await this._initPhysics(mmd);
+                this._updateLoadingOverlay(loadingSessionId, 'physics');
+                await this._initPhysics(mmd, loadingSessionId);
                 // 如果有存储的物理强度设置，应用到刚初始化的物理引擎
                 const strength = this.manager.physicsStrength;
                 if (strength !== 1.0 && mmd.physics && typeof mmd.physics.setGravity === 'function') {
@@ -538,8 +584,16 @@ class MMDCore {
         }
         console.log(`[MMD Core] 材质后处理完成: ${materialCount} 个材质`);
 
-        // 延迟检查纹理加载状态，为加载失败的纹理提供白色 fallback
-        setTimeout(() => this._fixMissingTextures(mmd), 3000);
+        // 兜底：如果 LoadingManager.onLoad 30 秒内未触发，强制检查纹理状态
+        // （正常情况下 onLoad 会在所有资源加载完后触发，此定时器仅防极端情况）
+        this._fixMissingTexturesTimer = setTimeout(() => {
+            this._fixMissingTexturesTimer = null;
+            const loadManager = this.manager._loadManager;
+            if (loadManager && !loadManager._allResourcesLoaded) {
+                console.warn('[MMD Core] 纹理加载兜底超时（30s），强制检查纹理状态');
+                this._fixMissingTextures(mmd);
+            }
+        }, 30000);
     }
 
     /**
@@ -671,7 +725,7 @@ class MMDCore {
 
     // ═══════════════════ 物理引擎 ═══════════════════
 
-    async _initPhysics(mmd) {
+    async _initPhysics(mmd, loadingSessionId = '') {
         const physicsModule = await this._getPhysicsModule();
         if (!physicsModule) {
             console.warn('[MMD Core] 物理模块不可用，跳过物理初始化');
@@ -681,6 +735,7 @@ class MMDCore {
         const { MMDAmmoPhysics, initAmmo } = physicsModule;
 
         try {
+            this._updateLoadingOverlay(loadingSessionId, 'physics');
             // 初始化 Ammo.js
             await initAmmo();
             console.log('[MMD Core] Ammo.js 初始化完成');
@@ -757,6 +812,12 @@ class MMDCore {
     // ═══════════════════ 模型清理 ═══════════════════
 
     _clearModel() {
+        // 清理纹理修复兜底定时器（必须在早退之前，防止 currentModel 被外部提前置空时 timer 泄漏）
+        if (this._fixMissingTexturesTimer) {
+            clearTimeout(this._fixMissingTexturesTimer);
+            this._fixMissingTexturesTimer = null;
+        }
+
         const mmd = this.manager.currentModel;
         if (!mmd) return;
 
@@ -814,8 +875,42 @@ class MMDCore {
         this._render();
     }
 
+    _flushRenderWaiters() {
+        const waiters = this.manager._renderWaiters;
+        if (!Array.isArray(waiters) || waiters.length === 0) return;
+        this.manager._renderWaiters = [];
+        waiters.forEach((resolve) => {
+            try {
+                resolve();
+            } catch (_) { /* ignore waiter errors */ }
+        });
+    }
+
+    waitForRenderFrame(timeoutMs = 2000) {
+        if (!this.manager.renderer || this.manager._isDisposed) {
+            return Promise.resolve();
+        }
+        return new Promise((resolve) => {
+            const waiters = this.manager._renderWaiters || (this.manager._renderWaiters = []);
+            let settled = false;
+            const finish = () => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                const idx = waiters.indexOf(finish);
+                if (idx >= 0) waiters.splice(idx, 1);
+                resolve();
+            };
+            const timer = setTimeout(finish, timeoutMs);
+            waiters.push(finish);
+        });
+    }
+
     _render() {
-        if (!this.manager._shouldRender || this.manager._isDisposed) return;
+        if (!this.manager._shouldRender || this.manager._isDisposed) {
+            this._flushRenderWaiters();
+            return;
+        }
 
         this.manager._animationFrameId = requestAnimationFrame(() => this._render());
 
@@ -884,6 +979,8 @@ class MMDCore {
         } else if (this.manager.renderer) {
             this.manager.renderer.render(this.manager.scene, this.manager.camera);
         }
+
+        this._flushRenderWaiters();
     }
 
     // ═══════════════════ Resize ═══════════════════
@@ -1272,7 +1369,17 @@ class MMDCore {
             this.manager._animationFrameId = null;
         }
 
+        this._flushRenderWaiters();
+
         this._clearModel();
+
+        // 显式清空最后一帧，避免下次重新显示 canvas 时透出旧模型残留。
+        if (this.manager.renderer) {
+            try {
+                this.manager.renderer.setRenderTarget(null);
+                this.manager.renderer.clear(true, true, true);
+            } catch (_) { /* ignore clear failures during teardown */ }
+        }
 
         // 清理光照
         [this.manager.ambientLight, this.manager.directionalLight].forEach(light => {

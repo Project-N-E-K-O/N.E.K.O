@@ -5,10 +5,16 @@
  */
 // 允许的来源列表
 const ALLOWED_ORIGINS = [window.location.origin];
+const CLOUDSAVE_CHARACTER_SYNC_EVENT_KEY = 'neko_cloudsave_character_sync';
+const CLOUDSAVE_CHARACTER_SYNC_MESSAGE_TYPE = 'cloudsave_character_changed';
+const CLOUDSAVE_CHARACTER_SYNC_CHANNEL_NAME = 'neko_cloudsave_character_sync';
 
 // 自动保存提示管理
 let autoSaveToastTimer = null;
 let autoSaveToastElement = null;
+let lastCloudsaveSyncTimestamp = 0;
+let processingCloudsaveTimestamp = 0;
+let cloudsaveSyncChannel = null;
 
 function showAutoSaveToast(disableAutoHide = false, customMessage = null) {
     if (!autoSaveToastElement) {
@@ -459,7 +465,7 @@ const RESERVED_ROUTE_NAMES = new Set([
     'l2d', 'model_manager', 'live2d_parameter_editor', 'live2d_emotion_manager',
     'vrm_emotion_manager', 'mmd_emotion_manager', 'chara_manager', 'voice_clone',
     'api_key', 'steam_workshop_manager', 'memory_browser', 'cookies_login',
-    'chat', 'subtitle', 'agenthud', 'toast',
+    'chat', 'subtitle', 'agenthud', 'toast', 'card_export',
     'static', 'user_live2d', 'user_live2d_local', 'user_vrm', 'user_mmd',
     'user_mods', 'workshop',
     'api', 'ws', 'health',
@@ -528,6 +534,12 @@ function sanitizeProfileNameValue(value, caretPos = null) {
 
 function translateBackendError(errorMessage) {
     if (!errorMessage || typeof errorMessage !== 'string') return errorMessage;
+    if (errorMessage === 'CLOUDSAVE_WRITE_FENCE_ACTIVE') {
+        return window.t ? window.t('cloudsave.error.writeFenceActive') : '云存档维护模式生效中，请稍后再试';
+    }
+    if (errorMessage === 'MEMORY_SERVER_RELEASE_FAILED') {
+        return window.t ? window.t('cloudsave.error.memoryServerReleaseFailed') : '释放本地记忆句柄失败，请稍后再试';
+    }
     if (errorMessage.includes('保留的路由名称')) {
         return tOrFallback(PROFILE_NAME_RESERVED_ROUTE_KEY, errorMessage);
     }
@@ -994,7 +1006,7 @@ async function loadCharacterData() {
     const thisRequestId = ++currentRequestId;
     
     try {
-        const resp = await fetch('/api/characters');
+        const resp = await fetch('/api/characters', { cache: 'no-store' });
         if (!resp.ok) {
             throw new Error(`HTTP error! status: ${resp.status}`);
         }
@@ -1012,7 +1024,10 @@ async function loadCharacterData() {
         const timeoutId = setTimeout(() => controller.abort(), 5000);
         
         try {
-            const currentResp = await fetch('/api/characters/current_catgirl', { signal: controller.signal });
+            const currentResp = await fetch('/api/characters/current_catgirl', {
+                signal: controller.signal,
+                cache: 'no-store'
+            });
             clearTimeout(timeoutId);
             if (currentResp.ok) {
                 const currentData = await currentResp.json();
@@ -1487,9 +1502,6 @@ function renderCatgirls() {
         exportBtn.style.background = '#40C5F1';
         exportBtn.style.minWidth = '120px';
         exportBtn.style.marginRight = '8px';
-        if (!isCurrentCatgirl) {
-            exportBtn.style.display = 'none';
-        }
         const exportIconSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;margin-right:4px;vertical-align:middle;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
         const exportText = (window.t && typeof window.t === 'function') ? `${exportIconSvg}<span data-i18n="character.exportCard">${window.t('character.exportCard')}</span>` : `${exportIconSvg}导出角色卡`;
         exportBtn.innerHTML = exportText;
@@ -1820,7 +1832,22 @@ window.deleteCatgirl = async function (key) {
     }
     const confirmTitle = window.t ? window.t('character.deleteCatgirlTitle') : '删除猫娘';
     if (!await showConfirm(confirmMsg, confirmTitle, { danger: true })) return;
-    await fetch('/api/characters/catgirl/' + encodeURIComponent(key), { method: 'DELETE' });
+    try {
+        const response = await fetch('/api/characters/catgirl/' + encodeURIComponent(key), { method: 'DELETE' });
+        const result = await response.json();
+        if (!response.ok || !result || result.success !== true) {
+            const errorText = translateBackendError(result?.code || result?.error || result?.message || '未知错误');
+            const prefix = window.t ? window.t('character.deleteFailed') : '删除失败';
+            await showAlert(errorText ? `${prefix}: ${errorText}` : prefix);
+            return;
+        }
+    } catch (error) {
+        console.warn('删除猫娘请求失败:', error);
+        const errorText = translateBackendError(error?.message || '');
+        const prefix = window.t ? window.t('character.deleteFailed') : '删除失败';
+        await showAlert(errorText ? `${prefix}: ${errorText}` : prefix);
+        return;
+    }
     // 清除 localStorage 中的展开状态记录
     localStorage.removeItem(`catgirl_expand_${key}`);
     // 清除进阶设定折叠状态记录
@@ -2786,7 +2813,7 @@ window.renameMaster = async function (oldName) {
         await loadCharacterData();
         await showAlert(window.t ? window.t('character.renameSuccess') : '重命名成功');
     } else {
-        const errorText = translateBackendError(result.error || result.message || '未知错误');
+        const errorText = translateBackendError(result.code || result.error || result.message || '未知错误');
         await showAlert(window.t ? window.t('character.renameError', { error: errorText }) : '重命名失败: ' + errorText);
     }
 }
@@ -2896,21 +2923,44 @@ window.renameCatgirl = async function (oldName) {
             localStorage.removeItem(oldStorageKey);
         }
 
-        // 更新记忆文件中的角色名称
-        try {
-            await fetch('/api/memory/update_catgirl_name', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ old_name: oldName, new_name: newName })
-            });
-        } catch (error) {
-            console.error('更新记忆文件中的角色名称失败:', error);
-            // 不阻止主流程，继续加载数据
+        // 兼容旧后端：如果主事务没有返回 memory_renamed，再尝试旧记忆改名接口。
+        if (result.memory_renamed !== true) {
+            try {
+                const legacyRenameResponse = await fetch('/api/memory/update_catgirl_name', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ old_name: oldName, new_name: newName })
+                });
+                if (!legacyRenameResponse.ok) {
+                    let responseText = '';
+                    let responseJson = null;
+                    try {
+                        responseText = await legacyRenameResponse.text();
+                        if (responseText) {
+                            responseJson = JSON.parse(responseText);
+                        }
+                    } catch (readError) {
+                        console.warn('读取旧记忆改名接口错误响应失败:', readError);
+                    }
+                    console.error('更新记忆文件中的角色名称失败:', {
+                        status: legacyRenameResponse.status,
+                        statusText: legacyRenameResponse.statusText,
+                        body: responseText,
+                        payload: responseJson
+                    });
+                }
+            } catch (error) {
+                console.error('更新记忆文件中的角色名称失败:', error);
+                // 不阻止主流程，继续加载数据
+            }
         }
 
         await loadCharacterData();
     } else {
-        await showAlert(translateBackendError(result.error) || (window.t ? window.t('character.renameFailed') : '重命名失败'));
+        await showAlert(
+            translateBackendError(result.code || result.error || result.message)
+            || (window.t ? window.t('character.renameFailed') : '重命名失败')
+        );
     }
 }
 
@@ -2990,6 +3040,80 @@ function openVoiceClone(lanlanName) {
     }
 }
 
+function getPreferredCloudsaveCharacterName() {
+    if (typeof window._currentCatgirl === 'string' && window._currentCatgirl.trim()) {
+        return window._currentCatgirl.trim();
+    }
+    return '';
+}
+
+function getCurrentUiLanguage() {
+    if (window.i18n && typeof window.i18n.language === 'string' && window.i18n.language.trim()) {
+        return window.i18n.language.trim();
+    }
+
+    const savedLanguage = localStorage.getItem('i18nextLng');
+    if (typeof savedLanguage === 'string' && savedLanguage.trim()) {
+        return savedLanguage.trim();
+    }
+
+    return '';
+}
+
+function buildCloudsaveManagerUrl() {
+    const preferredCharacterName = getPreferredCloudsaveCharacterName();
+    const currentUiLanguage = getCurrentUiLanguage();
+    const query = new URLSearchParams();
+
+    if (preferredCharacterName) {
+        query.set('lanlan_name', preferredCharacterName);
+    }
+    if (currentUiLanguage) {
+        query.set('ui_lang', currentUiLanguage);
+    }
+
+    const queryString = query.toString();
+    return queryString ? '/cloudsave_manager?' + queryString : '/cloudsave_manager';
+}
+
+function openCloudsaveManager() {
+    const url = buildCloudsaveManagerUrl();
+    const windowName = 'neko_cloudsave_manager';
+    const width = 1180;
+    const height = 860;
+    const left = Math.max(0, Math.floor((screen.width - width) / 2));
+    const top = Math.max(0, Math.floor((screen.height - height) / 2));
+    const features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+
+    const existingWindow = window._openedWindows && window._openedWindows[windowName];
+    if (existingWindow && !existingWindow.closed) {
+        try {
+            const targetUrl = new URL(url, window.location.origin).toString();
+            if (existingWindow.location.href !== targetUrl) {
+                existingWindow.location.href = targetUrl;
+            }
+            existingWindow.focus();
+            return;
+        } catch (error) {
+            console.warn('更新云存档管理窗口地址失败:', error);
+        }
+    }
+
+    const openedWindow = typeof window.openOrFocusWindow === 'function'
+        ? window.openOrFocusWindow(url, windowName, features)
+        : window.open(url, windowName, features);
+
+    if (openedWindow && !openedWindow.closed) {
+        if (!window._openedWindows || typeof window._openedWindows !== 'object') {
+            window._openedWindows = {};
+        }
+        window._openedWindows[windowName] = openedWindow;
+    }
+
+    if (!openedWindow) {
+        window.location.href = url;
+    }
+}
 
 
 // 解除声音注册
@@ -3058,6 +3182,70 @@ function sendBeacon() {
 }
 
 // 监听API Key变更事件
+async function handleCloudsaveCharacterSync(payload) {
+    if (!payload || payload.type !== CLOUDSAVE_CHARACTER_SYNC_MESSAGE_TYPE) return;
+
+    const nextTimestamp = Number(payload.timestamp || 0);
+    if (
+        nextTimestamp
+        && (
+            nextTimestamp <= lastCloudsaveSyncTimestamp
+            || nextTimestamp <= processingCloudsaveTimestamp
+        )
+    ) {
+        return;
+    }
+
+    let shouldCommitTimestamp = false;
+    if (nextTimestamp) {
+        processingCloudsaveTimestamp = nextTimestamp;
+    }
+
+    try {
+        if (hasUnsavedNewCatgirlDraft()) {
+            await showAlert(window.t
+                ? window.t('character.unsavedNewCatgirlDraftDetected')
+                : '检测到未保存的新猫娘草稿，请先保存或取消后再同步刷新');
+            return;
+        }
+
+        if (hasUnsavedChanges()) {
+            try {
+                await saveAllUnsavedChanges();
+            } catch (error) {
+                console.warn('[Cloud Save] 自动保存失败，跳过本次同步刷新:', error);
+                return;
+            }
+        }
+
+        console.log('[Cloud Save] 收到角色列表刷新通知，正在刷新角色数据...', payload);
+        await loadCharacterData();
+        shouldCommitTimestamp = true;
+    } finally {
+        if (nextTimestamp && processingCloudsaveTimestamp === nextTimestamp) {
+            processingCloudsaveTimestamp = 0;
+        }
+        if (nextTimestamp && shouldCommitTimestamp) {
+            lastCloudsaveSyncTimestamp = Math.max(lastCloudsaveSyncTimestamp, nextTimestamp);
+        }
+    }
+}
+
+function initCloudsaveCharacterSyncChannel() {
+    if (typeof BroadcastChannel !== 'function' || cloudsaveSyncChannel) {
+        return;
+    }
+
+    try {
+        cloudsaveSyncChannel = new BroadcastChannel(CLOUDSAVE_CHARACTER_SYNC_CHANNEL_NAME);
+        cloudsaveSyncChannel.addEventListener('message', function (event) {
+            handleCloudsaveCharacterSync(event.data);
+        });
+    } catch (error) {
+        console.warn('[Cloud Save] 初始化同步频道失败:', error);
+    }
+}
+
 window.addEventListener('message', function (event) {
     if (!ALLOWED_ORIGINS.includes(event.origin)) return;
     if (event.data && event.data.type === 'api_key_changed') {
@@ -3129,8 +3317,23 @@ window.addEventListener('message', function (event) {
                 select.value = voiceId;
             }).catch(() => {});
         } catch (e) {}
+    } else if (event.data && event.data.type === CLOUDSAVE_CHARACTER_SYNC_MESSAGE_TYPE) {
+        handleCloudsaveCharacterSync(event.data);
     }
 });
+
+window.addEventListener('storage', function (event) {
+    if (event.key !== CLOUDSAVE_CHARACTER_SYNC_EVENT_KEY || !event.newValue) return;
+
+    try {
+        const payload = JSON.parse(event.newValue);
+        handleCloudsaveCharacterSync(payload);
+    } catch (error) {
+        console.warn('[Cloud Save] 解析角色列表刷新通知失败:', error);
+    }
+});
+
+initCloudsaveCharacterSyncChannel();
 
 // 监听页面关闭事件
 window.addEventListener('beforeunload', sendBeacon);
@@ -3177,11 +3380,7 @@ function updateSwitchButtons() {
 
                 const exportBtn = document.getElementById(`export-btn-${name}`);
                 if (exportBtn) {
-                    if (name === currentCatgirl) {
-                        exportBtn.style.display = '';
-                    } else {
-                        exportBtn.style.display = 'none';
-                    }
+                    exportBtn.style.display = '';
                 }
 
                 const hideBtn = block ? block.querySelector('.catgirl-hide') : null;
@@ -3242,6 +3441,11 @@ function setupPageEventListeners() {
         addCatgirlBtn.addEventListener('click', function () {
             showCatgirlForm(null);
         });
+    }
+
+    const openCloudsaveManagerBtn = document.getElementById('open-cloudsave-manager-btn');
+    if (openCloudsaveManagerBtn) {
+        openCloudsaveManagerBtn.addEventListener('click', openCloudsaveManager);
     }
 
     // 导入角色卡按钮
@@ -3557,6 +3761,24 @@ function hasUnsavedChanges() {
     return false;
 }
 
+function hasUnsavedNewCatgirlDraft() {
+    const newDraftForm = document.getElementById('catgirl-form-new');
+    if (!newDraftForm) {
+        return false;
+    }
+
+    const inputs = newDraftForm.querySelectorAll('input, textarea, select');
+    for (const input of inputs) {
+        if (hasInputChanged(input)) {
+            return true;
+        }
+        if ((input.name || input.id) && String(input.value || '').trim()) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // 保存所有未保存的改动
 async function saveAllUnsavedChanges() {
     const savePromises = [];
@@ -3683,6 +3905,17 @@ async function closeCharaManagerPage() {
         }
     }
 
+    // 关闭通过 openOrFocusWindow 打开的子窗口（如 cloudsave_manager），
+    // 避免 Electron 按窗口名复用残留窗口而不加载新 URL
+    if (window._openedWindows) {
+        for (const [key, win] of Object.entries(window._openedWindows)) {
+            if (win && !win.closed) {
+                win.close();
+            }
+            delete window._openedWindows[key];
+        }
+    }
+
     if (window.opener) {
         window.close();
     } else if (window.parent && window.parent !== window) {
@@ -3754,13 +3987,24 @@ function showExportOptionsModal(catgirlName) {
         };
         footer.appendChild(settingsBtn);
 
-        // 导出角色卡按钮
+        // 导出角色卡按钮（打开独立导出页面弹窗）
         const exportBtn = document.createElement('button');
         exportBtn.className = 'modal-btn modal-btn-primary';
         exportBtn.textContent = window.t ? window.t('character.exportFull') : '导出角色卡';
         exportBtn.onclick = () => {
             closeModal();
-            resolve('full');
+            resolve(null);  // 不走原有流程
+            const w = 1400, h = 820;
+            const left = Math.round((screen.width - w) / 2);
+            const top = Math.round((screen.height - h) / 2);
+            const win = window.open(
+                `/card_export?name=${encodeURIComponent(catgirlName)}`,
+                'card_export',
+                `width=${w},height=${h},left=${left},top=${top},resizable=yes,scrollbars=yes`
+            );
+            if (!win) {
+                window.showAlert(window.t ? window.t('cardExport.popupBlocked') : '弹窗被阻止，请允许弹窗后重试');
+            }
         };
         footer.appendChild(exportBtn);
 
@@ -3785,119 +4029,26 @@ function showExportOptionsModal(catgirlName) {
     });
 }
 
-// 导出角色卡函数
+// 导出角色卡函数（现在仅处理"仅导出设定"，完整角色卡通过 card_export 页面导出）
 async function exportCharacterCard(catgirlName) {
-    let exportType = null; // 声明在函数顶部，以便在 catch 块中访问
+    let exportType = null;
     try {
         // 显示导出选项弹窗
         exportType = await showExportOptionsModal(catgirlName);
         if (!exportType) {
-            return; // 用户取消
+            return; // 用户取消或选择了"导出角色卡"（已由弹窗打开独立页面）
         }
 
-        // 显示加载提示
-        const loadingText = exportType === 'settings-only'
-            ? (window.t ? window.t('character.exportingSettings') : '正在导出设定...')
-            : (window.t ? window.t('character.exportingCard') : '正在导出角色卡...');
+        // 仅导出设定
+        const loadingText = window.t ? window.t('character.exportingSettings') : '正在导出设定...';
         showPersistentAutoSaveToast();
         if (autoSaveToastElement) {
             autoSaveToastElement.querySelector('span').textContent = loadingText;
         }
 
-        let response;
-
-        if (exportType === 'full') {
-            // 导出完整角色卡（包含立绘）
-            // 1. 首先捕获立绘
-            let portraitBlob = null;
-            let portraitCaptured = false;
-
-            // 检查是否支持立绘捕获
-            // 角色管理页面本身不渲染模型，需要通过 window.opener 访问主页面的 avatarPortrait
-            const mainWindow = window.opener || window.parent;
-            const portraitApi = (mainWindow && typeof mainWindow.avatarPortrait !== 'undefined' && mainWindow.avatarPortrait.capture)
-                ? mainWindow.avatarPortrait
-                : null;
-
-            console.log('[角色卡导出] 检查立绘捕获支持:', {
-                hasOpener: !!window.opener,
-                hasParent: !!(window.parent && window.parent !== window),
-                mainWindowExists: !!mainWindow,
-                avatarPortraitExists: !!(mainWindow && typeof mainWindow.avatarPortrait !== 'undefined'),
-                canCapture: portraitApi ? portraitApi.canCapture() : false
-            });
-
-            if (portraitApi && portraitApi.canCapture()) {
-                try {
-                    // 更新加载提示
-                    if (autoSaveToastElement) {
-                        autoSaveToastElement.querySelector('span').textContent = window.t
-                            ? window.t('character.capturingPortrait') || '正在捕获立绘...'
-                            : '正在捕获立绘...';
-                    }
-
-                    console.log('[角色卡导出] 开始捕获立绘...');
-
-                    // 捕获立绘 - 使用 3:4 比例（450x600），立绘模式
-                    const portraitResult = await portraitApi.capture({
-                        width: 450,
-                        height: 600,
-                        includeBlob: true,
-                        mimeType: 'image/png',
-                        cropMode: 'portrait'  // 使用立绘模式（全身）而非头像模式
-                    });
-
-                    console.log('[角色卡导出] 立绘捕获结果:', {
-                        hasResult: !!portraitResult,
-                        hasBlob: !!(portraitResult && portraitResult.blob),
-                        hasCanvas: !!(portraitResult && portraitResult.canvas),
-                        modelType: portraitResult?.modelType
-                    });
-
-                    if (portraitResult && portraitResult.blob) {
-                        portraitBlob = portraitResult.blob;
-                        portraitCaptured = true;
-                        console.log('[角色卡导出] 立绘捕获成功，blob大小:', portraitBlob.size);
-                    } else {
-                        console.warn('[角色卡导出] 立绘捕获成功但没有返回blob');
-                    }
-                } catch (captureError) {
-                    console.warn('[角色卡导出] 立绘捕获失败，将使用无立绘的角色卡:', captureError);
-                }
-            } else {
-                console.log('[角色卡导出] 当前页面不支持立绘捕获，将使用无立绘的角色卡');
-            }
-
-            // 2. 根据是否捕获到立绘选择API端点
-            if (portraitCaptured && portraitBlob) {
-                // 使用带立绘的导出API
-                const formData = new FormData();
-                formData.append('portrait', portraitBlob, 'portrait.png');
-                formData.append('include_model', 'true');
-
-                // 更新加载提示
-                    if (autoSaveToastElement) {
-                        autoSaveToastElement.querySelector('span').textContent = window.t
-                            ? window.t('character.generatingCard') || '正在生成角色卡...'
-                            : '正在生成角色卡...';
-                    }
-
-                response = await fetch(`/api/characters/catgirl/${encodeURIComponent(catgirlName)}/export-with-portrait`, {
-                    method: 'POST',
-                    body: formData
-                });
-            } else {
-                // 使用无立绘的导出API（原有API）
-                response = await fetch(`/api/characters/catgirl/${encodeURIComponent(catgirlName)}/export`, {
-                    method: 'GET'
-                });
-            }
-        } else {
-            // 仅导出设定
-            response = await fetch(`/api/characters/catgirl/${encodeURIComponent(catgirlName)}/export-settings`, {
-                method: 'GET'
-            });
-        }
+        const response = await fetch(`/api/characters/catgirl/${encodeURIComponent(catgirlName)}/export-settings`, {
+            method: 'GET'
+        });
 
         if (!response.ok) {
             const errorData = await response.json().catch(() => ({ error: '导出失败' }));
@@ -3909,9 +4060,7 @@ async function exportCharacterCard(catgirlName) {
 
         // 从 Content-Disposition 头解析文件名
         const contentDisposition = response.headers.get('Content-Disposition');
-        let filename = exportType === 'settings-only'
-            ? `${catgirlName}_设定.nekocfg`
-            : `${catgirlName}_角色卡.png`;
+        let filename = `${catgirlName}_设定.nekocfg`;
 
         if (contentDisposition) {
             const filenameStarMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
@@ -3934,12 +4083,9 @@ async function exportCharacterCard(catgirlName) {
             if ('showSaveFilePicker' in window) {
                 const fileHandle = await window.showSaveFilePicker({
                     suggestedName: filename,
-                    types: exportType === 'settings-only' ? [{
+                    types: [{
                         description: 'NEKO 设定文件',
                         accept: { 'application/octet-stream': ['.nekocfg'] }
-                    }] : [{
-                        description: 'PNG 图片',
-                        accept: { 'image/png': ['.png'] }
                     }]
                 });
 
@@ -3975,21 +4121,11 @@ async function exportCharacterCard(catgirlName) {
         }
 
         // 显示成功提示
-        const successText = exportType === 'settings-only'
-            ? (window.t ? window.t('character.exportSettingsSuccess') : '设定导出成功')
-            : (window.t ? window.t('character.exportCardSuccess') : '角色卡导出成功');
-
+        const successText = window.t ? window.t('character.exportSettingsSuccess') : '设定导出成功';
         showAutoSaveToast(false, successText);
     } catch (error) {
         console.error('导出角色卡失败:', error);
-        let errorText;
-        if (exportType === 'settings-only') {
-            errorText = window.t ? window.t('character.exportSettingsFailed', { error: error.message }) : `导出设定失败: ${error.message}`;
-        } else if (exportType === 'full') {
-            errorText = window.t ? window.t('character.exportCardFailed', { error: error.message }) : `导出角色卡失败: ${error.message}`;
-        } else {
-            errorText = window.t ? window.t('character.exportCardFailed', { error: error.message }) : `导出失败: ${error.message}`;
-        }
+        const errorText = window.t ? window.t('character.exportSettingsFailed', { error: error.message }) : `导出设定失败: ${error.message}`;
         await showAlert(errorText);
         hideAutoSaveToast();
     }

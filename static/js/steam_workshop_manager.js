@@ -1345,6 +1345,141 @@ function setButtonState(buttonElement, isDisabled) {
     }
 }
 
+function sanitizeWorkshopVoicePrefix(value, fallback = 'voice') {
+    const normalized = String(value || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 10);
+    if (normalized) return normalized;
+    const fallbackNormalized = String(fallback || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 10);
+    return fallbackNormalized || 'voice';
+}
+
+function normalizeWorkshopTempPath(path) {
+    return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+function getSelectedReferenceAudioFile() {
+    const fileInput = document.getElementById('voice-reference-file');
+    return fileInput && fileInput.files && fileInput.files.length ? fileInput.files[0] : null;
+}
+
+function updateReferenceAudioDisplay() {
+    const fileNameDisplay = document.getElementById('voice-reference-file-name');
+    const selectedFile = getSelectedReferenceAudioFile();
+    if (!fileNameDisplay) return;
+    fileNameDisplay.textContent = selectedFile
+        ? selectedFile.name
+        : (window.t ? window.t('steam.voiceReferenceNoFileSelected') : '未选择文件');
+}
+
+function clearReferenceAudioSelection() {
+    const fileInput = document.getElementById('voice-reference-file');
+    if (fileInput) {
+        fileInput.value = '';
+    }
+    updateReferenceAudioDisplay();
+}
+
+function selectReferenceAudio() {
+    const fileInput = document.getElementById('voice-reference-file');
+    if (!fileInput) return;
+
+    fileInput.onchange = function (e) {
+        const selectedFile = e.target.files && e.target.files[0];
+        if (!selectedFile) {
+            updateReferenceAudioDisplay();
+            return;
+        }
+
+        const validExtension = /\.(mp3|wav)$/i.test(selectedFile.name);
+        if (!validExtension) {
+            showMessage('参考语音只支持 mp3 或 wav 格式', 'error');
+            clearReferenceAudioSelection();
+            return;
+        }
+
+        const maxSize = 20 * 1024 * 1024;
+        if (selectedFile.size > maxSize) {
+            showMessage('参考语音大小不能超过 20MB', 'error');
+            clearReferenceAudioSelection();
+            return;
+        }
+
+        const itemTitle = document.getElementById('item-title')?.textContent.trim() || 'voice';
+        const prefixInput = document.getElementById('voice-reference-prefix');
+        const displayNameInput = document.getElementById('voice-reference-display-name');
+        if (prefixInput && !prefixInput.value.trim()) {
+            prefixInput.value = sanitizeWorkshopVoicePrefix(itemTitle, 'voice');
+        }
+        if (displayNameInput && !displayNameInput.value.trim()) {
+            displayNameInput.value = itemTitle;
+        }
+        updateReferenceAudioDisplay();
+    };
+
+    fileInput.click();
+}
+
+function resetWorkshopVoiceReferenceFields(defaultTitle = '') {
+    const displayNameInput = document.getElementById('voice-reference-display-name');
+    const prefixInput = document.getElementById('voice-reference-prefix');
+    const languageSelect = document.getElementById('voice-reference-language');
+    const providerSelect = document.getElementById('voice-reference-provider-hint');
+
+    clearReferenceAudioSelection();
+    if (displayNameInput) displayNameInput.value = defaultTitle || '';
+    if (prefixInput) prefixInput.value = sanitizeWorkshopVoicePrefix(defaultTitle, 'voice');
+    if (languageSelect) languageSelect.value = 'ch';
+    if (providerSelect) providerSelect.value = 'cosyvoice';
+}
+
+async function uploadWorkshopReferenceAudio(contentFolder, defaultTitle) {
+    const selectedFile = getSelectedReferenceAudioFile();
+    if (!selectedFile) return null;
+
+    const prefixInput = document.getElementById('voice-reference-prefix');
+    const displayNameInput = document.getElementById('voice-reference-display-name');
+    const languageSelect = document.getElementById('voice-reference-language');
+    const providerSelect = document.getElementById('voice-reference-provider-hint');
+
+    const prefix = sanitizeWorkshopVoicePrefix(prefixInput?.value, defaultTitle || 'voice');
+    if (prefixInput) {
+        prefixInput.value = prefix;
+    }
+
+    const formData = new FormData();
+    formData.append('file', selectedFile, selectedFile.name);
+    formData.append('content_folder', contentFolder);
+    formData.append('prefix', prefix);
+    formData.append('display_name', displayNameInput?.value.trim() || defaultTitle || prefix);
+    formData.append('ref_language', languageSelect?.value || 'ch');
+    formData.append('provider_hint', providerSelect?.value || 'cosyvoice');
+
+    showMessage('正在写入参考语音...', 'info');
+    const response = await fetch('/api/steam/workshop/upload-reference-audio', {
+        method: 'POST',
+        body: formData
+    });
+    const data = await response.json();
+    if (!response.ok || !data.success) {
+        throw new Error(data.error || '参考语音上传失败');
+    }
+    return data;
+}
+
+async function removeWorkshopReferenceAudio(contentFolder) {
+    const response = await fetch('/api/steam/workshop/remove-reference-audio', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ content_folder: contentFolder })
+    });
+    const data = await response.json();
+    if (!response.ok || !data.success) {
+        throw new Error(data.error || '参考语音清理失败');
+    }
+    return data;
+}
+
 // 上传物品功能
 function uploadItem() {
     // 检查是否为默认模型
@@ -1436,19 +1571,36 @@ function uploadItem() {
     // 显示上传中消息
     showMessage(window.t ? window.t('steam.preparingUpload') : '正在准备上传...', 'success', 0); // 0表示不自动关闭
 
+    const selectedReferenceAudio = getSelectedReferenceAudioFile();
+    const isManagedWorkshopTempFolder =
+        normalizeWorkshopTempPath(contentFolder) &&
+        normalizeWorkshopTempPath(currentUploadTempFolder) &&
+        normalizeWorkshopTempPath(contentFolder) === normalizeWorkshopTempPath(currentUploadTempFolder);
+
+    let voiceReferenceSyncPromise = Promise.resolve(null);
+    if (isManagedWorkshopTempFolder) {
+        voiceReferenceSyncPromise = selectedReferenceAudio
+            ? uploadWorkshopReferenceAudio(contentFolder, title || characterCardName || 'voice')
+            : removeWorkshopReferenceAudio(contentFolder);
+    } else if (selectedReferenceAudio) {
+        showMessage('参考语音当前仅支持角色卡打包后的工坊临时目录上传，已跳过该样本。', 'warning', 6000);
+    }
+
     // 发送API请求
-    fetch('/api/steam/workshop/publish', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(uploadData)
-    })
-        .then(response => {
+    voiceReferenceSyncPromise
+        .then(() => fetch('/api/steam/workshop/publish', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(uploadData)
+        }))
+        .then(async response => {
+            const data = await response.json().catch(() => null);
             if (!response.ok) {
-                throw new Error(`HTTP错误，状态码: ${response.status}`);
+                throw new Error(data?.message || data?.error || `HTTP错误，状态码: ${response.status}`);
             }
-            return response.json();
+            return data;
         })
         .then(data => {
             // 恢复按钮状态
@@ -1481,14 +1633,15 @@ function uploadItem() {
                     // 使用Steam overlay打开物品页面
                     try {
                         const published_id = data.published_file_id;
-                        const url = `steam://url/CommunityFilePage/${published_id}`;
+                        const overlayUrl = `steam://url/CommunityFilePage/${published_id}`;
+                        const webUrl = `https://steamcommunity.com/sharedfiles/filedetails/?id=${published_id}`;
 
                         // 检查是否支持Steam overlay
                         if (window.steam && typeof window.steam.ActivateGameOverlayToWebPage === 'function') {
-                            window.steam.ActivateGameOverlayToWebPage(url);
+                            window.steam.ActivateGameOverlayToWebPage(overlayUrl);
                         } else {
-                            // 备选方案：尝试直接打开URL
-                            window.open(url);
+                            // Electron / 嵌入浏览器环境下直接打开 steam:// 可能导致窗口异常，回退到网页链接
+                            window.open(webUrl, '_blank', 'noopener');
                         }
                     } catch (e) {
                         console.error('无法打开Steam overlay:', e);
@@ -1520,6 +1673,10 @@ function uploadItem() {
                     { id: 'item-description', property: 'textContent', value: '' },
                     { id: 'content-folder', property: 'value', value: '' },
                     { id: 'preview-image', property: 'value', value: '' },
+                    { id: 'voice-reference-display-name', property: 'value', value: '' },
+                    { id: 'voice-reference-prefix', property: 'value', value: '' },
+                    { id: 'voice-reference-language', property: 'value', value: 'ch' },
+                    { id: 'voice-reference-provider-hint', property: 'value', value: 'cosyvoice' },
                     { id: 'visibility', property: 'value', value: 'public' },
                     { id: 'allow-comments', property: 'checked', value: true }
                 ];
@@ -1530,6 +1687,7 @@ function uploadItem() {
                         el[element.property] = element.value;
                     }
                 });
+                clearReferenceAudioSelection();
 
                 // 清空标签
                 const tagsContainer = document.getElementById('tags-container');
@@ -1619,6 +1777,28 @@ let itemsPerPage = 10;
 let totalPages = 1;
 let currentSortField = 'timeAdded'; // 默认按添加时间排序
 let currentSortOrder = 'desc'; // 默认降序
+
+function getWorkshopManagerLanlanName() {
+    const urlParams = new URLSearchParams(window.location.search);
+    return urlParams.get('lanlan_name') || '';
+}
+
+function openWorkshopVoiceClone(itemId) {
+    const params = new URLSearchParams({
+        workshop_item_id: String(itemId),
+        source: 'workshop'
+    });
+    const lanlanName = getWorkshopManagerLanlanName();
+    if (lanlanName) {
+        params.set('lanlan_name', lanlanName);
+    }
+
+    const url = `/voice_clone?${params.toString()}`;
+    const popup = window.open(url, `workshopVoiceClone_${itemId}`, 'width=920,height=860,scrollbars=yes,resizable=yes');
+    if (!popup) {
+        window.location.href = url;
+    }
+}
 
 // escapeHtml 已在上方定义（DOM-based，非 string 走 String(text) 转换）
 
@@ -1733,7 +1913,9 @@ function renderSubscriptionsPage() {
             installedFolder: item.installedFolder || '',
             description: escapeHtml(item.description || (window.t ? window.t('steam.noDescription') : '暂无描述')),
             timeAdded: item.timeAdded || 0,
-            fileSize: item.fileSizeOnDisk || item.fileSize || 0
+            fileSize: item.fileSizeOnDisk || item.fileSize || 0,
+            voiceReferenceAvailable: !!item.voiceReferenceAvailable,
+            voiceReferenceDisplayName: escapeHtml(item.voiceReference?.displayName || ''),
         };
 
         // 确定状态类和文本
@@ -1786,7 +1968,10 @@ function renderSubscriptionsPage() {
                         </div>` : ''
             }
                     <div class="card-actions">
-                        <!-- 查看详情下次再加，一时半会儿搞不定 -->
+                        ${formattedItem.voiceReferenceAvailable ? `
+                        <button class="button button-primary" onclick="openWorkshopVoiceClone('${formattedItem.id}')" title="${formattedItem.voiceReferenceDisplayName || ''}" style="margin-bottom: 8px;">
+                            ${window.t ? window.t('steam.openVoiceClone') : '在语音克隆页打开'}
+                        </button>` : ''}
                         <button class="button button-danger" data-item-id="${formattedItem.id}" data-item-name="${formattedItem.name}" onclick="unsubscribeItem(this.dataset.itemId, this.dataset.itemName)">${window.t ? window.t('steam.unsubscribe') : '取消订阅'}</button>
                     </div>
                 </div>
@@ -2179,41 +2364,9 @@ let availableModels = [];
 let availableVrmModels = [];
 let availableMmdModels = [];
 
-// 全局Set：用于跟踪已处理的音频文件，防止重复注册
-// 使用localStorage持久化存储，避免页面刷新后重复扫描
-let processedAudioFiles = new Set();
-
-// 页面加载时从localStorage恢复已处理的音频文件列表
-function loadProcessedAudioFiles() {
-    try {
-        const stored = localStorage.getItem('neko_processed_audio_files');
-        if (stored) {
-            const files = JSON.parse(stored);
-            processedAudioFiles = new Set(files);
-        }
-    } catch (error) {
-        console.error('从localStorage加载已处理音频文件失败:', error);
-        processedAudioFiles = new Set();
-    }
-}
-
-// 保存已处理的音频文件列表到localStorage
-function saveProcessedAudioFiles() {
-    try {
-        const files = Array.from(processedAudioFiles);
-        localStorage.setItem('neko_processed_audio_files', JSON.stringify(files));
-    } catch (error) {
-        console.error('保存已处理音频文件到localStorage失败:', error);
-    }
-}
-
-// 页面加载时初始化
-loadProcessedAudioFiles();
-
-// 自动扫描创意工坊角色卡并添加到系统（通过服务端统一同步 + 前端音频扫描）
+// 自动扫描创意工坊角色卡并添加到系统（仅同步角色卡，不再自动注册参考语音）
 async function autoScanAndAddWorkshopCharacterCards() {
     try {
-        // 1. 服务端统一同步角色卡（高效，不需要前端逐个fetch读取文件）
         try {
             const syncResponse = await fetch('/api/steam/workshop/sync-characters', { method: 'POST' });
             if (!syncResponse.ok) {
@@ -2235,112 +2388,8 @@ async function autoScanAndAddWorkshopCharacterCards() {
         } catch (syncError) {
             console.error('[工坊同步] 服务端角色卡同步请求失败:', syncError);
         }
-
-        // 2. 音频文件扫描仍在前端执行（涉及 voice_clone API 和 localStorage 追踪）
-        const subscribedResponse = await fetch('/api/steam/workshop/subscribed-items');
-        if (!subscribedResponse.ok) {
-            console.error(`[工坊同步] 获取订阅物品失败: HTTP ${subscribedResponse.status} ${subscribedResponse.statusText}`);
-            return;
-        }
-        const subscribedResult = await subscribedResponse.json();
-
-        if (!subscribedResult.success) {
-            console.error('获取订阅物品失败:', subscribedResult.error);
-            return;
-        }
-
-        const subscribedItems = subscribedResult.items;
-
-        for (const item of subscribedItems) {
-            if (!item.installedFolder) {
-                continue;
-            }
-
-            const itemId = item.publishedFileId;
-            const folderPath = item.installedFolder;
-
-            // 扫描目录中所有音频文件(.mp3, .wav)
-            try {
-                const audioListResponse = await fetch(`/api/steam/workshop/list-audio-files?directory=${encodeURIComponent(folderPath)}`);
-                if (!audioListResponse.ok) {
-                    const errText = await audioListResponse.text().catch(() => '');
-                    throw new Error(`HTTP ${audioListResponse.status}: ${errText || audioListResponse.statusText}`);
-                }
-                const audioListResult = await audioListResponse.json();
-
-                if (audioListResult.success && audioListResult.files.length > 0) {
-                    for (const audioFile of audioListResult.files) {
-                        console.log(`  - ${audioFile.name}`);
-                        await scanAudioFile(audioFile.path, audioFile.prefix, itemId, item.title);
-                    }
-                }
-            } catch (audioListError) {
-                console.error(`扫描目录 ${folderPath} 中的音频文件失败:`, audioListError);
-            }
-        }
-
     } catch (error) {
         console.error('自动扫描和添加角色卡失败:', error);
-    }
-}
-
-// 扫描单个音频文件并调用voice_clone API
-async function scanAudioFile(filePath, prefix, itemId, itemTitle) {
-    // 检查文件是否已处理
-    if (processedAudioFiles.has(filePath)) {
-        return;
-    }
-
-    try {
-        // 使用现有的read-file API读取文件内容
-        const readResponse = await fetch(`/api/steam/workshop/read-file?path=${encodeURIComponent(filePath)}`);
-        const readResult = await readResponse.json();
-
-        if (readResult.success) {
-            // 将base64内容转换为Blob
-            const base64ToBlob = (base64, mimeType) => {
-                const byteCharacters = atob(base64);
-                const byteNumbers = new Array(byteCharacters.length);
-                for (let i = 0; i < byteCharacters.length; i++) {
-                    byteNumbers[i] = byteCharacters.charCodeAt(i);
-                }
-                const byteArray = new Uint8Array(byteNumbers);
-                return new Blob([byteArray], { type: mimeType });
-            };
-
-            // 确定文件类型
-            const fileExtension = filePath.split('.').pop().toLowerCase();
-            const mimeType = fileExtension === 'mp3' ? 'audio/mpeg' : 'audio/wav';
-
-            // 创建Blob对象
-            const blob = base64ToBlob(readResult.content, mimeType);
-
-            // 创建FormData对象
-            const formData = new FormData();
-            formData.append('file', blob, filePath.split('\\').pop());
-            formData.append('prefix', prefix);
-
-            // 调用voice_clone API
-            const cloneResponse = await fetch('/api/characters/voice_clone', {
-                method: 'POST',
-                body: formData
-            });
-
-            const cloneResult = await cloneResponse.json();
-
-            if (cloneResponse.ok) {
-                // 标记文件为已处理
-                processedAudioFiles.add(filePath);
-                // 保存到localStorage以持久化
-                saveProcessedAudioFiles();
-            } else {
-                console.error(`克隆音频文件 ${filePath} 失败:`, cloneResult.error);
-            }
-        } else {
-            console.error(`读取音频文件 ${filePath} 失败:`, readResult.error);
-        }
-    } catch (error) {
-        console.error(`处理音频文件 ${filePath} 时出错:`, error);
     }
 }
 
@@ -2459,6 +2508,7 @@ window.addEventListener('load', function () {
     if (document.getElementById('search-subscription')) {
         document.getElementById('search-subscription').placeholder = window.t ? window.t('steam.searchPlaceholder') : '搜索订阅内容...';
     }
+    updateReferenceAudioDisplay();
 
     // 检查Steam状态
     checkSteamStatus();
@@ -3280,6 +3330,7 @@ async function performUpload(data) {
                     }
                     // 使用临时目录路径（隐藏字段）
                     if (contentFolder) contentFolder.value = result.temp_folder;
+                    resetWorkshopVoiceReferenceFields(cardName);
 
                     // 添加角色卡标签到上传标签（允许用户编辑）
                     if (tagsContainer) {
@@ -3485,7 +3536,7 @@ function updateFileDisplay() {
     if (fileInput.files.length > 0) {
         fileNameDisplay.textContent = fileInput.files[0].name;
     } else {
-        fileNameDisplay.textContent = window.t ? window.t('voice.noFileSelected') : '未选择文件';
+        fileNameDisplay.textContent = window.t ? window.t('steam.voiceReferenceNoFileSelected') : '未选择文件';
     }
 }
 
@@ -4000,6 +4051,7 @@ async function loadMmdPreview(modelPath, rawData) {
             if (idleAnimation && typeof workshopMmdManager.loadAnimation === 'function') {
                 try {
                     await workshopMmdManager.loadAnimation(idleAnimation);
+                    workshopMmdManager.playAnimation();
                 } catch (e) {
                     console.warn('[Workshop MMD] idle 动画加载失败:', e);
                 }

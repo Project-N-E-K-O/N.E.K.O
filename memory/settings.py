@@ -5,6 +5,7 @@ from openai import APIConnectionError, InternalServerError, RateLimitError
 from config import SETTING_PROPOSER_MODEL, SETTING_VERIFIER_MODEL
 from config import CHARACTER_RESERVED_FIELDS
 from utils.config_manager import get_config_manager
+from utils.cloudsave_runtime import assert_cloudsave_writable
 from utils.token_tracker import set_call_type
 from utils.file_utils import atomic_write_json, robust_json_loads
 from config.prompts_memory import settings_extractor_prompt, settings_verifier_prompt
@@ -52,6 +53,11 @@ class ImportantSettingsManager:
                 self.settings[i] = {i: {}, self.name_mapping['human']: {}}
 
     def save_settings(self, lanlan_name):
+        assert_cloudsave_writable(
+            self._config_manager,
+            operation="save",
+            target=f"memory/{lanlan_name}/settings.json",
+        )
         atomic_write_json(
             self.settings_file[lanlan_name],
             self.settings[lanlan_name],
@@ -152,9 +158,9 @@ class ImportantSettingsManager:
 
         # 检测并解决矛盾
         if len(new_settings)>0:
-            self.load_settings()
+            await asyncio.to_thread(self.load_settings)
             self.settings[lanlan_name] = await self.detect_and_resolve_contradictions(self.settings[lanlan_name], new_settings, lanlan_name)
-            self.save_settings(lanlan_name)
+            await asyncio.to_thread(self.save_settings, lanlan_name)
 
     def get_settings(self, lanlan_name):
         self.load_settings()

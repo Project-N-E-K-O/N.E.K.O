@@ -48,7 +48,8 @@
             localStorage.setItem(key, JSON.stringify({
                 dataUrl: preview.dataUrl,
                 modelType: preview.modelType,
-                capturedAt: preview.capturedAt
+                capturedAt: preview.capturedAt,
+                cacheKey: preview.cacheKey || ''
             }));
         } catch (_) { /* quota exceeded — 静默失败 */ }
     }
@@ -219,6 +220,7 @@
             if (pendingHideHandler) return;
             // 关键：关闭时先取消任何尚未执行的进场 rAF，否则它会把 is-visible 加回来
             cancelPendingShow();
+            closeCropperIfOpen();
 
             card.classList.remove('is-visible');
             clearTriggerActive();
@@ -412,8 +414,57 @@
         });
     }
 
-    async function captureAvatarPreview() {
-        // 优先使用本地 avatarPortrait（index.html）；chat.html 里回退到 IPC。
+    /**
+     * 通过 BroadcastChannel 请求 Pet 窗口执行带源数据的截取。
+     */
+    function captureAvatarPreviewViaBroadcast(includeSourceDataUrl) {
+        return new Promise(function (resolve, reject) {
+            var bc = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
+            if (!bc) {
+                reject(new Error('BroadcastChannel unavailable'));
+                return;
+            }
+            var requestId = 'cap_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+            var finished = false;
+            var timerId = null;
+            function onMessage(event) {
+                if (!event.data || event.data.action !== 'avatar_capture_result') return;
+                if (event.data.requestId !== requestId) return;
+                if (finished) return;
+                finished = true;
+                bc.removeEventListener('message', onMessage);
+                if (timerId) { clearTimeout(timerId); timerId = null; }
+                if (event.data.error) {
+                    reject(new Error(translateLabel('chat.avatarPreviewFailed', '生成头像失败')));
+                } else {
+                    var result = {
+                        dataUrl: event.data.dataUrl || '',
+                        modelType: event.data.modelType || ''
+                    };
+                    if (event.data.sourceDataUrl) result.sourceDataUrl = event.data.sourceDataUrl;
+                    if (event.data.cropRectPixels) result.cropRectPixels = event.data.cropRectPixels;
+                    resolve(result);
+                }
+            }
+            bc.addEventListener('message', onMessage);
+            timerId = setTimeout(function () {
+                if (finished) return;
+                finished = true;
+                bc.removeEventListener('message', onMessage);
+                reject(new Error(translateLabel('chat.avatarPreviewFailed', '生成头像失败')));
+            }, 15000);
+            bc.postMessage({
+                action: 'request_avatar_capture',
+                requestId: requestId,
+                includeSourceDataUrl: !!includeSourceDataUrl,
+                lanlan_name: (window.lanlan_config && window.lanlan_config.lanlan_name) || '',
+                timestamp: Date.now()
+            });
+        });
+    }
+
+    async function captureAvatarPreview(opts) {
+        const extra = opts || {};
         if (window.avatarPortrait && typeof window.avatarPortrait.capture === 'function') {
             return window.avatarPortrait.capture({
                 width: 320,
@@ -422,13 +473,315 @@
                 shape: 'rounded',
                 radius: 40,
                 background: 'rgba(255, 255, 255, 0.96)',
-                includeDataUrl: true
+                includeDataUrl: true,
+                includeSourceDataUrl: !!extra.includeSourceDataUrl
             });
         }
-        if (window.__NEKO_MULTI_WINDOW__ && typeof window.__nekoRequestAvatarPreview === 'function') {
-            return captureAvatarPreviewViaIpc();
+        if (window.__NEKO_MULTI_WINDOW__) {
+            if (extra.includeSourceDataUrl) {
+                try {
+                    return await captureAvatarPreviewViaBroadcast(true);
+                } catch (_bcErr) {
+                    if (typeof window.__nekoRequestAvatarPreview === 'function') {
+                        return captureAvatarPreviewViaIpc();
+                    }
+                    throw _bcErr;
+                }
+            }
+            if (typeof window.__nekoRequestAvatarPreview === 'function') {
+                return captureAvatarPreviewViaIpc();
+            }
+            return captureAvatarPreviewViaBroadcast(false);
         }
         throw new Error(translateLabel('chat.avatarPreviewUnavailable', '头像预览功能尚未就绪。'));
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Manual Avatar Cropper (inline in popup)
+    // ═══════════════════════════════════════════════════════════════
+
+    var cropperState = null;
+
+    function openAvatarCropper(sourceDataUrl, defaultCropRect, sourceWidth, sourceHeight) {
+        return new Promise(function (resolve) {
+            var popup = S.dom.chatAvatarPreviewCard;
+            var wrap = document.getElementById('avatar-cropper-wrap');
+            var img = document.getElementById('avatar-cropper-img');
+            var svgMask = document.getElementById('avatar-cropper-mask');
+            var cropBox = document.getElementById('avatar-cropper-box');
+            var cancelBtn = document.getElementById('avatar-cropper-cancel');
+            var saveBtn = document.getElementById('avatar-cropper-save');
+
+            if (!popup || !wrap || !img || !svgMask || !cropBox || !cancelBtn || !saveBtn) {
+                resolve(null);
+                return;
+            }
+
+            var displayW, displayH, scaleRatio;
+            var crop = { x: 0, y: 0, size: 0 };
+            var MIN_SIZE = 40;
+            var settled = false;
+            var drag = null;
+
+            function initLayout() {
+                // 计算可用宽度：需扣除控制面板宽度、弹窗 padding/border
+                // popup max-width: calc(100vw - 24px), padding: 14px×2, border: 1px×2
+                var controlsEl = popup.querySelector('.avatar-cropper-controls');
+                var controlsWidth = controlsEl ? controlsEl.offsetWidth : 0;
+                var areaEl = wrap.parentElement;
+                var areaGap = areaEl ? (parseFloat(getComputedStyle(areaEl).gap) || 0) : 0;
+                var popupContentW = window.innerWidth - 24 - 28 - 2;
+                var maxW = Math.min(360, popupContentW - controlsWidth - areaGap);
+                if (maxW < MIN_SIZE) maxW = MIN_SIZE;
+                var maxH = Math.min(360, window.innerHeight - 180);
+                var aspect = sourceWidth / sourceHeight;
+                if (aspect >= 1) {
+                    displayW = Math.min(maxW, sourceWidth);
+                    displayH = Math.round(displayW / aspect);
+                    if (displayH > maxH) { displayH = maxH; displayW = Math.round(displayH * aspect); }
+                } else {
+                    displayH = Math.min(maxH, sourceHeight);
+                    displayW = Math.round(displayH * aspect);
+                    if (displayW > maxW) { displayW = maxW; displayH = Math.round(displayW / aspect); }
+                }
+                scaleRatio = sourceWidth / displayW;
+                img.style.width = displayW + 'px';
+                img.style.height = displayH + 'px';
+                wrap.style.width = displayW + 'px';
+                wrap.style.height = displayH + 'px';
+
+                if (defaultCropRect) {
+                    var rX = defaultCropRect.x || 0;
+                    var rY = defaultCropRect.y || 0;
+                    var rW = defaultCropRect.width || defaultCropRect.size || 0;
+                    var rH = defaultCropRect.height || defaultCropRect.size || 0;
+                    if (rW > rH) { rX += Math.round((rW - rH) / 2); rW = rH; }
+                    else if (rH > rW) { rY += Math.round((rH - rW) / 2); rH = rW; }
+                    crop.size = Math.round(rW / scaleRatio);
+                    crop.x = Math.round(rX / scaleRatio);
+                    crop.y = Math.round(rY / scaleRatio);
+                } else {
+                    crop.size = Math.round(Math.min(displayW, displayH) * 0.7);
+                    crop.x = Math.round((displayW - crop.size) / 2);
+                    crop.y = Math.round((displayH - crop.size) / 2);
+                }
+                clampCrop();
+                renderCrop();
+            }
+
+            function clampCrop() {
+                crop.size = Math.max(MIN_SIZE, Math.min(crop.size, displayW, displayH));
+                crop.x = Math.max(0, Math.min(crop.x, displayW - crop.size));
+                crop.y = Math.max(0, Math.min(crop.y, displayH - crop.size));
+            }
+
+            function renderCrop() {
+                cropBox.style.left = crop.x + 'px';
+                cropBox.style.top = crop.y + 'px';
+                cropBox.style.width = crop.size + 'px';
+                cropBox.style.height = crop.size + 'px';
+                var w = displayW, h = displayH;
+                var cx = crop.x, cy = crop.y, cs = crop.size;
+                svgMask.setAttribute('viewBox', '0 0 ' + w + ' ' + h);
+                svgMask.innerHTML =
+                    '<defs><mask id="__acm">' +
+                    '<rect width="' + w + '" height="' + h + '" fill="white"/>' +
+                    '<rect x="' + cx + '" y="' + cy + '" width="' + cs + '" height="' + cs + '" fill="black"/>' +
+                    '</mask></defs>' +
+                    '<rect width="' + w + '" height="' + h + '" fill="rgba(0,0,0,0.5)" mask="url(#__acm)"/>';
+            }
+
+            function onPointerDown(e) {
+                var h = e.target.dataset && e.target.dataset.handle;
+                if (h) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    drag = { startX: e.clientX, startY: e.clientY, ox: crop.x, oy: crop.y, osize: crop.size, type: 'resize', handle: h };
+                } else if (cropBox.contains(e.target) || e.target === cropBox) {
+                    e.preventDefault();
+                    drag = { startX: e.clientX, startY: e.clientY, ox: crop.x, oy: crop.y, type: 'move' };
+                }
+            }
+
+            function onPointerMove(e) {
+                if (!drag) return;
+                var dx = e.clientX - drag.startX;
+                var dy = e.clientY - drag.startY;
+                if (drag.type === 'move') {
+                    crop.x = drag.ox + dx;
+                    crop.y = drag.oy + dy;
+                } else {
+                    var hh = drag.handle;
+                    var ldx, ldy;
+                    if (hh === 'br')      { ldx =  dx; ldy =  dy; }
+                    else if (hh === 'tl') { ldx = -dx; ldy = -dy; }
+                    else if (hh === 'tr') { ldx =  dx; ldy = -dy; }
+                    else                  { ldx = -dx; ldy =  dy; }
+                    var delta = Math.max(ldx, ldy);
+                    crop.size = drag.osize + delta;
+                    if (hh === 'tl' || hh === 'bl') { crop.x = drag.ox - delta; }
+                    if (hh === 'tl' || hh === 'tr') { crop.y = drag.oy - delta; }
+                }
+                clampCrop();
+                renderCrop();
+            }
+
+            function onPointerUp() { drag = null; }
+
+            function onWheel(e) {
+                if (!cropBox.contains(e.target) && e.target !== cropBox) return;
+                e.preventDefault();
+                var step = Math.round(crop.size * 0.08);
+                if (step < 4) step = 4;
+                var delta = e.deltaY > 0 ? -step : step;
+                var oldSize = crop.size;
+                var newSize = Math.max(MIN_SIZE, Math.min(oldSize + delta, displayW, displayH));
+                if (newSize === oldSize) return;
+                var centerX = crop.x + oldSize / 2;
+                var centerY = crop.y + oldSize / 2;
+                crop.size = newSize;
+                crop.x = Math.round(centerX - newSize / 2);
+                crop.y = Math.round(centerY - newSize / 2);
+                clampCrop();
+                renderCrop();
+            }
+
+            function cleanup() {
+                document.removeEventListener('pointermove', onPointerMove);
+                document.removeEventListener('pointerup', onPointerUp);
+                wrap.removeEventListener('pointerdown', onPointerDown);
+                wrap.removeEventListener('wheel', onWheel);
+                if (cancelBtn) cancelBtn.removeEventListener('click', onCancel);
+                if (saveBtn) saveBtn.removeEventListener('click', onSave);
+                if (cropperState && cropperState.controlsEl) {
+                    cropperState.controlsEl.removeEventListener('click', cropperState.onCtrlAction);
+                }
+                popup.classList.remove('is-cropping');
+                cropperState = null;
+            }
+
+            function finish(accepted) {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                if (accepted) {
+                    resolve({
+                        x: Math.round(crop.x * scaleRatio),
+                        y: Math.round(crop.y * scaleRatio),
+                        size: Math.round(crop.size * scaleRatio)
+                    });
+                } else {
+                    resolve(null);
+                }
+            }
+
+            function onCancel() { finish(false); }
+            function onSave() { finish(true); }
+
+            var MOVE_STEP = 10;
+            var SIZE_STEP_RATIO = 0.1;
+
+            function onCtrlAction(e) {
+                var btn = e.target.closest('[data-crop-action]');
+                if (!btn) return;
+                var action = btn.dataset.cropAction;
+                var sizeStep = Math.max(6, Math.round(crop.size * SIZE_STEP_RATIO));
+                switch (action) {
+                    case 'up':    crop.y -= MOVE_STEP; break;
+                    case 'down':  crop.y += MOVE_STEP; break;
+                    case 'left':  crop.x -= MOVE_STEP; break;
+                    case 'right': crop.x += MOVE_STEP; break;
+                    case 'center':
+                        crop.x = Math.round((displayW - crop.size) / 2);
+                        crop.y = Math.round((displayH - crop.size) / 2);
+                        break;
+                    case 'bigger': {
+                        var oldS = crop.size;
+                        var newS = Math.max(MIN_SIZE, Math.min(oldS + sizeStep, displayW, displayH));
+                        if (newS !== oldS) {
+                            crop.x -= Math.round((newS - oldS) / 2);
+                            crop.y -= Math.round((newS - oldS) / 2);
+                            crop.size = newS;
+                        }
+                        break;
+                    }
+                    case 'smaller': {
+                        var oldS2 = crop.size;
+                        var newS2 = Math.max(MIN_SIZE, Math.min(oldS2 - sizeStep, displayW, displayH));
+                        if (newS2 !== oldS2) {
+                            crop.x += Math.round((oldS2 - newS2) / 2);
+                            crop.y += Math.round((oldS2 - newS2) / 2);
+                            crop.size = newS2;
+                        }
+                        break;
+                    }
+                }
+                clampCrop();
+                renderCrop();
+            }
+
+            var controlsEl = popup.querySelector('.avatar-cropper-controls');
+
+            img.src = sourceDataUrl;
+            wrap.addEventListener('pointerdown', onPointerDown);
+            wrap.addEventListener('wheel', onWheel, { passive: false });
+            document.addEventListener('pointermove', onPointerMove);
+            document.addEventListener('pointerup', onPointerUp);
+            cancelBtn.addEventListener('click', onCancel);
+            saveBtn.addEventListener('click', onSave);
+            if (controlsEl) controlsEl.addEventListener('click', onCtrlAction);
+
+            popup.classList.add('is-cropping');
+            setPreviewStatus(translateLabel('chat.avatarCropperTitle', '调整头像裁剪区域'));
+
+            cropperState = { finish: finish, controlsEl: controlsEl, onCtrlAction: onCtrlAction };
+
+            requestAnimationFrame(function () {
+                initLayout();
+                positionPopupNearTrigger(popup, activeTrigger);
+            });
+        });
+    }
+
+    function closeCropperIfOpen() {
+        if (cropperState && cropperState.finish) {
+            cropperState.finish(false);
+        }
+    }
+
+    function cropSourceToAvatar(sourceDataUrl, cropRect) {
+        return new Promise(function (resolve, reject) {
+            var img = new Image();
+            img.onload = function () {
+                try {
+                    var canvas = document.createElement('canvas');
+                    canvas.width = 320;
+                    canvas.height = 320;
+                    var ctx = canvas.getContext('2d');
+                    ctx.beginPath();
+                    var r = 40;
+                    var w = 320, h = 320;
+                    ctx.moveTo(r, 0);
+                    ctx.arcTo(w, 0, w, h, r);
+                    ctx.arcTo(w, h, 0, h, r);
+                    ctx.arcTo(0, h, 0, 0, r);
+                    ctx.arcTo(0, 0, w, 0, r);
+                    ctx.closePath();
+                    ctx.clip();
+                    ctx.fillStyle = 'rgba(255, 255, 255, 0.96)';
+                    ctx.fillRect(0, 0, 320, 320);
+                    ctx.drawImage(img,
+                        cropRect.x, cropRect.y, cropRect.size, cropRect.size,
+                        0, 0, 320, 320
+                    );
+                    resolve(canvas.toDataURL('image/png'));
+                } catch (err) {
+                    reject(err);
+                }
+            };
+            img.onerror = function () { reject(new Error('Failed to load source image')); };
+            img.src = sourceDataUrl;
+        });
     }
 
     async function renderAvatarPreview(options = {}) {
@@ -436,6 +789,7 @@
         const showCard = options.showCard !== false;
         const silent = options.silent === true;
         const trigger = options.trigger || null;
+        const manualCrop = options.manualCrop === true;
 
         if (isCapturing) {
             if (!showCard && silent) {
@@ -459,6 +813,7 @@
         isCapturing = true;
         const token = ++activeCaptureToken;
         const cacheKey = getCurrentModelCacheKey();
+        const prevCachedPreview = cachedPreview ? Object.assign({}, cachedPreview) : null;
         if (showCard) {
             setPreviewVisible(true, trigger);
         }
@@ -469,10 +824,43 @@
         setPreviewNote(translateLabel('chat.avatarPreviewCardNote', '将基于当前显示中的 Live2D / VRM / MMD 模型生成头像。'));
 
         try {
-            const result = await captureAvatarPreview();
+            const result = await captureAvatarPreview({ includeSourceDataUrl: manualCrop });
             if (token !== activeCaptureToken) return;
 
-            applyPreviewResult(result, cacheKey);
+            if (manualCrop && result.sourceDataUrl) {
+                setLoadingState(false);
+                setPreviewStatus(translateLabel('chat.avatarPreviewCropping', '请调整裁剪区域'));
+
+                var srcDims = await new Promise(function (res) {
+                    var tmp = new Image();
+                    tmp.onload = function () { res({ w: tmp.naturalWidth, h: tmp.naturalHeight }); };
+                    tmp.onerror = function () { res({ w: 640, h: 640 }); };
+                    tmp.src = result.sourceDataUrl;
+                });
+                var defRect = result.cropRectPixels || null;
+
+                var userCrop = await openAvatarCropper(result.sourceDataUrl, defRect, srcDims.w, srcDims.h);
+                if (token !== activeCaptureToken) return;
+
+                if (userCrop) {
+                    var croppedDataUrl = await cropSourceToAvatar(result.sourceDataUrl, userCrop);
+                    applyPreviewResult({ dataUrl: croppedDataUrl, modelType: result.modelType }, cacheKey);
+                } else {
+                    if (prevCachedPreview) {
+                        cachedPreview = prevCachedPreview;
+                        setPreviewImage(prevCachedPreview.dataUrl);
+                        setPreviewStatus(
+                            translateLabel('chat.avatarPreviewReady', '头像已更新') + ' · ' + normalizeModelLabel(prevCachedPreview.modelType)
+                        );
+                    } else {
+                        setPreviewImage('');
+                        setPreviewStatus(translateLabel('chat.avatarPreviewCardStatus', '点击上方按钮生成当前模型头像'));
+                    }
+                    setPreviewNote(translateLabel('chat.avatarPreviewCropCancelled', '已取消手动裁剪，保持原头像不变。'));
+                }
+            } else {
+                applyPreviewResult(result, cacheKey);
+            }
         } catch (error) {
             if (token !== activeCaptureToken) return;
 
@@ -534,6 +922,15 @@
         }, 180);
     }
 
+    function handleModelLoaded(reason) {
+        var newCacheKey = getCurrentModelCacheKey();
+        if (cachedPreview && cachedPreview.dataUrl && cachedPreview.cacheKey === newCacheKey) {
+            return;
+        }
+        invalidateCachedPreview();
+        scheduleAutoCapture(reason);
+    }
+
     function bindModelLoadListeners() {
         const previousOnModelLoaded = window.live2dManager && typeof window.live2dManager.onModelLoaded === 'function'
             ? window.live2dManager.onModelLoaded
@@ -544,19 +941,16 @@
                 if (previousOnModelLoaded) {
                     previousOnModelLoaded.call(window.live2dManager, model, modelPath);
                 }
-                invalidateCachedPreview();
-                scheduleAutoCapture('live2d-model-loaded');
+                handleModelLoaded('live2d-model-loaded');
             };
         }
 
         window.addEventListener('vrm-model-loaded', function () {
-            invalidateCachedPreview();
-            scheduleAutoCapture('vrm-model-loaded');
+            handleModelLoaded('vrm-model-loaded');
         });
 
         window.addEventListener('mmd-model-loaded', function () {
-            invalidateCachedPreview();
-            scheduleAutoCapture('mmd-model-loaded');
+            handleModelLoaded('mmd-model-loaded');
         });
     }
 
@@ -642,7 +1036,7 @@
             setPreviewNote(translateLabel('chat.avatarPreviewReadyHint', '这是从当前模型画布实时提取的头像预览。'));
         } else if (stored) {
             cachedPreview = {
-                cacheKey: getCurrentModelCacheKey(),
+                cacheKey: stored.cacheKey || getCurrentModelCacheKey(),
                 dataUrl: stored.dataUrl,
                 modelType: stored.modelType,
                 capturedAt: stored.capturedAt
@@ -688,7 +1082,7 @@
         bindTriggerButton(S.dom.avatarPreviewHeaderButton);
 
         refreshButton.addEventListener('click', function () {
-            renderAvatarPreview({ forceRefresh: true, trigger: activeTrigger });
+            renderAvatarPreview({ forceRefresh: true, trigger: activeTrigger, manualCrop: true });
         });
 
         closeButton.addEventListener('click', function () {

@@ -101,7 +101,7 @@ class MMDManager {
         }
 
         // 设置浮动按钮
-        if (typeof this.setupFloatingButtons === 'function') {
+        if (typeof this.setupFloatingButtons === 'function' && !window._cardExportPage) {
             this.setupFloatingButtons();
         }
 
@@ -110,7 +110,7 @@ class MMDManager {
 
     // ═══════════════════ 模型加载 ═══════════════════
 
-    async loadModel(modelPath) {
+    async loadModel(modelPath, options = {}) {
         if (!this.core) throw new Error('MMDCore 未初始化');
 
         this._isModelReadyForInteraction = false;
@@ -118,7 +118,7 @@ class MMDManager {
         const loadToken = this._activeLoadToken;
 
         try {
-            const modelInfo = await this.core.loadModel(modelPath);
+            const modelInfo = await this.core.loadModel(modelPath, options);
 
             // 检查是否已被新的加载请求取代或已 dispose
             if (this._isDisposed || this._activeLoadToken !== loadToken) {
@@ -163,7 +163,7 @@ class MMDManager {
             if (modelPath !== defaultModelPath) {
                 console.warn('[MMD Manager] 模型加载失败，尝试回退到默认模型:', defaultModelPath);
                 try {
-                    const modelInfo = await this.core.loadModel(defaultModelPath);
+                    const modelInfo = await this.core.loadModel(defaultModelPath, options);
 
                     if (this._isDisposed || this._activeLoadToken !== loadToken) {
                         console.log('[MMD Manager] 回退模型加载已被取代或已销毁');
@@ -292,6 +292,13 @@ class MMDManager {
         if (this.core) {
             this.core.onWindowResize();
         }
+    }
+
+    waitForRenderFrame(timeoutMs = 2000) {
+        if (this.core && typeof this.core.waitForRenderFrame === 'function') {
+            return this.core.waitForRenderFrame(timeoutMs);
+        }
+        return Promise.resolve();
     }
 
     // ═══════════════════ 应用设置 (来自UI) ═══════════════════
@@ -491,6 +498,9 @@ class MMDManager {
         const canvasRect = this.renderer.domElement.getBoundingClientRect();
         const canvasWidth = canvasRect.width;
         const canvasHeight = canvasRect.height;
+        if (!(canvasWidth > 0) || !(canvasHeight > 0)) {
+            return null;
+        }
 
         const mesh = this.currentModel.mesh;
         if (!mesh) return null;
@@ -527,6 +537,9 @@ class MMDManager {
 
         const width = screenRight - screenLeft;
         const height = screenBottom - screenTop;
+        if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 2 || height <= 2) {
+            return null;
+        }
 
         return {
             left: screenLeft,

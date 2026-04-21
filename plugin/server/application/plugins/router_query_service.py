@@ -55,6 +55,10 @@ def _resolve_plugin_status(
     plugin_id: str,
     status_by_plugin: Mapping[str, str],
 ) -> str:
+    runtime_source_missing_obj = plugin_meta.get("runtime_source_missing")
+    if runtime_source_missing_obj is True:
+        return "source_missing"
+
     runtime_load_state_obj = plugin_meta.get("runtime_load_state")
     if isinstance(runtime_load_state_obj, str) and runtime_load_state_obj == "failed":
         return "load_failed"

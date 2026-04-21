@@ -70,6 +70,10 @@
                         foundCurrentCatgirl = true;
                         // 延迟一下确保DOM已渲染
                         setTimeout(() => {
+                            // 如果用户已经手动选中了其他 recent 文件，就不要再用自动选择覆盖它。
+                            if (currentMemoryFile) {
+                                return;
+                            }
                             selectMemoryFile(f, li, catName);
                         }, 100);
                     }
@@ -514,4 +518,3 @@
     }
 
 })();
-

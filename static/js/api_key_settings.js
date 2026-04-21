@@ -1054,9 +1054,9 @@ async function loadCurrentApiKey() {
                 const dataField = _apiKeyRegistry[providerKey].config_field;
                 if (!dataField || !data.hasOwnProperty(dataField)) return;
                 const val = data[dataField];
-                // Skip empty-string values for the current core provider so we
-                // don't overwrite the valid key synced from data.api_key above.
-                if (val === '' && providerKey === data.coreApi) return;
+                // 当前核心API服务商的Key已由上方 data.api_key 写入管理簿，
+                // 此处跳过以免 assistApiKey* 字段的旧值覆盖核心Key
+                if (providerKey === data.coreApi && data.api_key) return;
                 // Only sync non-empty values; empty strings from the backend
                 // usually mean "not configured" rather than "intentionally cleared".
                 if (val !== '') {
@@ -1064,17 +1064,26 @@ async function loadCurrentApiKey() {
                 }
             });
 
-            // Set assist key input from selected assist provider's book input
+            // Set assist key input from server response data directly.
+            // 不从管理簿读取，因为：
+            // 1) 同服务商时管理簿被核心Key占据；
+            // 2) 受限服务商（restricted）的管理簿DOM不存在。
             if (data.assistApi && data.assistApi !== 'free') {
-                const assistBookKey = syncKeyFromBook(data.assistApi);
+                const assistDataField = (_apiKeyRegistry[data.assistApi] || {}).config_field;
+                const assistKeyFromData = assistDataField ? (data[assistDataField] || '') : '';
                 if (assistApiKeyInput) {
-                    if (assistBookKey) {
-                        // 有Key Book中的值时设置
-                        setMaskedInput(assistApiKeyInput, assistBookKey);
+                    if (assistKeyFromData) {
+                        setMaskedInput(assistApiKeyInput, assistKeyFromData);
                         attachMaskBehavior(assistApiKeyInput);
-                    } else if (!data.enableCustomApi) {
-                        // 自定义API未启用且Key Book中没有值，强制刷新
-                        autoFillAssistApiKey(true);
+                    } else {
+                        // 后端无辅助Key时，尝试从管理簿读取（兼容旧数据迁移）
+                        const bookKey = syncKeyFromBook(data.assistApi);
+                        if (bookKey) {
+                            setMaskedInput(assistApiKeyInput, bookKey);
+                            attachMaskBehavior(assistApiKeyInput);
+                        } else if (!data.enableCustomApi) {
+                            autoFillAssistApiKey(true);
+                        }
                     }
                 }
             }
@@ -1159,9 +1168,15 @@ async function loadCurrentApiKey() {
                 document.getElementById('enableCustomApi').checked = data.enableCustomApi;
                 // 延迟应用状态，确保API Key已正确加载
                 setTimeout(() => {
-                    toggleCustomApi();
+                    toggleCustomApi(true);
                 }, 100);
             }
+
+            // 加载禁用TTS状态
+            if (typeof data.disableTts === 'boolean' && document.getElementById('disableTts')) {
+                document.getElementById('disableTts').checked = data.disableTts;
+            }
+
         } else {
             showCurrentApiKey(window.t ? window.t('api.getCurrentApiKeyFailed') : '获取当前API Key失败', '', false);
         }
@@ -1412,7 +1427,7 @@ function toggleGptSovitsConfig() {
 // ==================== 结束 GPT-SoVITS v3 配置相关函数 ====================
 
 // 切换自定义API启用状态
-function toggleCustomApi() {
+function toggleCustomApi(skipAutoFill) {
     const enableCustomApi = document.getElementById('enableCustomApi');
     const coreApiSelect = document.getElementById('coreApiSelect');
     const assistApiSelect = document.getElementById('assistApiSelect');
@@ -1472,7 +1487,9 @@ function toggleCustomApi() {
     }
 
     // 关闭自定义API时，自动填充已保存的API Key
-    if (!isCustomEnabled) {
+    // 但如果是从 loadCurrentApiKey 调用（skipAutoFill=true），
+    // Key 已由后端数据正确设置，跳过 autoFill 以免管理簿覆盖
+    if (!isCustomEnabled && !skipAutoFill) {
         autoFillCoreApiKey(true);
         autoFillAssistApiKey(true);
         updateAssistApiRecommendation();
@@ -1494,11 +1511,81 @@ function toggleCustomApiSection() {
     }
 }
 
+// 清空自定义API配置
+function clearCustomApi() {
+    // 显示页面内确认弹窗
+    document.getElementById('clear-custom-api-modal').style.display = 'flex';
+}
+
+function closeClearCustomApiModal() {
+    document.getElementById('clear-custom-api-modal').style.display = 'none';
+}
+
+function confirmClearCustomApi() {
+    closeClearCustomApiModal();
+
+    // 清空所有自定义模型的 URL / Model ID / API Key
+    MODEL_TYPES.forEach(mt => {
+        const urlEl = document.getElementById(`${mt}ModelUrl`);
+        const idEl = document.getElementById(`${mt}ModelId`);
+        const keyEl = document.getElementById(`${mt}ModelApiKey`);
+        if (urlEl) urlEl.value = '';
+        if (idEl) idEl.value = '';
+        if (keyEl) {
+            keyEl.value = '';
+            // 清除遮蔽状态（如果有）
+            if (keyEl.dataset) {
+                delete keyEl.dataset.realKey;
+                delete keyEl.dataset.masked;
+            }
+        }
+        // 重置 Provider 下拉为默认值（跟随核心API）并同步联动状态
+        const providerEl = document.getElementById(`${mt}ModelProvider`);
+        if (providerEl) {
+            providerEl.value = 'follow_core';
+            onCustomModelProviderChange(mt);
+        }
+    });
+
+    // 清空 TTS Voice ID
+    const ttsVoiceIdEl = document.getElementById('ttsVoiceId');
+    if (ttsVoiceIdEl) ttsVoiceIdEl.value = '';
+
+    // 取消勾选 GPT-SoVITS
+    const gptsovitsEnabled = document.getElementById('gptsovitsEnabled');
+    if (gptsovitsEnabled && gptsovitsEnabled.checked) {
+        gptsovitsEnabled.checked = false;
+        toggleGptSovitsConfig();
+    }
+    // 清空 GPT-SoVITS 隐藏字段并重置状态，防止保存时残留旧配置
+    const gptsovitsApiUrlEl = document.getElementById('gptsovitsApiUrl');
+    if (gptsovitsApiUrlEl) gptsovitsApiUrlEl.value = '';
+    const gptsovitsVoiceIdEl = document.getElementById('gptsovitsVoiceId');
+    if (gptsovitsVoiceIdEl) gptsovitsVoiceIdEl.value = '';
+    _loadedGptSovitsState = 'none';
+    _ttsConfigDirty = true;
+
+    // 取消勾选自定义API开关（skipAutoFill=true 避免覆盖未保存的核心/辅助API输入）
+    const enableCustomApi = document.getElementById('enableCustomApi');
+    if (enableCustomApi && enableCustomApi.checked) {
+        enableCustomApi.checked = false;
+        toggleCustomApi(true);
+    }
+
+    // 同步折叠外层自定义API面板
+    const customApiOptions = document.getElementById('custom-api-options');
+    if (customApiOptions) customApiOptions.style.display = 'none';
+    const customApiToggleBtn = document.getElementById('custom-api-toggle-btn');
+    if (customApiToggleBtn) customApiToggleBtn.classList.remove('rotated');
+
+    showStatus(window.t ? window.t('api.clearCustomApiSuccess') : '自定义API配置已清空，请点击「保存设置」按钮以保存更改', 'success');
+}
+
 // 为自定义API开关添加事件监听器
 document.addEventListener('DOMContentLoaded', function () {
     const enableCustomApi = document.getElementById('enableCustomApi');
     if (enableCustomApi) {
-        enableCustomApi.addEventListener('change', toggleCustomApi);
+        enableCustomApi.addEventListener('change', () => toggleCustomApi());
     }
 
     ['ttsModelProvider', 'ttsModelUrl', 'ttsModelId', 'ttsModelApiKey', 'ttsVoiceId'].forEach(id => {
@@ -1565,17 +1652,9 @@ async function save_button_down(e) {
         apiKey = '';
     }
 
-    // Sync core key to book (仅在API Key不为空时才同步，避免清空时破坏Key Book)
-    if (coreApi && coreApi !== 'free' && apiKey) {
-        syncKeyToBook(coreApi, apiKey);
-    }
-
-    // Sync assist key to book (仅在API Key不为空时才同步，避免清空时破坏Key Book)
+    // 读取辅助API Key
     const assistKeyInput = document.getElementById('assistApiKeyInput');
     const assistKeyVal = getRealKey(assistKeyInput);
-    if (assistApi && assistApi !== 'free' && assistKeyVal) {
-        syncKeyToBook(assistApi, assistKeyVal);
-    }
 
     // Collect keys from keyBookInput_* via _apiKeyRegistry.
     // syncKeyFromBook returns null when DOM is absent (restricted/hidden provider)
@@ -1588,6 +1667,15 @@ async function save_button_down(e) {
             allBookKeys[pk] = val; // include '' so backend can clear
         }
     });
+
+    // 用输入框中的值覆盖管理簿中对应服务商的Key（不直接修改管理簿DOM，
+    // 避免二次确认取消时管理簿已被污染）
+    if (coreApi && coreApi !== 'free' && apiKey) {
+        allBookKeys[coreApi] = apiKey;
+    }
+    if (assistApi && assistApi !== 'free' && assistKeyVal) {
+        allBookKeys[assistApi] = assistKeyVal;
+    }
 
     // 获取用户自定义API配置
     const getVal = (id) => {
@@ -1698,6 +1786,11 @@ async function save_button_down(e) {
         mcpToken, enableCustomApi, gptsovitsEnabled,
         ...modelProviders
     };
+
+    const disableTtsEl = document.getElementById('disableTts');
+    if (disableTtsEl) {
+        payload.disableTts = disableTtsEl.checked;
+    }
 
     // 检查是否已有API Key，如果有则显示警告
     const currentApiKeyDiv = document.getElementById('current-api-key');
@@ -1951,15 +2044,17 @@ function autoFillCoreApiKey(force) {
     // Use !== null to distinguish "input not present" from "input present but empty":
     // null = restricted/hidden provider (no input), '' = user cleared the key intentionally.
     const bookKey = syncKeyFromBook(selectedCoreApi);
-    // 仅在Key Book中有非空值时才填充，避免清空用户可能输入的值
-    if (bookKey !== null && bookKey !== '') {
-        setMaskedInput(apiKeyInput, bookKey);
+    // When forced (provider switch), clear input if no book key
+    if (force && (bookKey === null || bookKey === '')) {
+        setMaskedInput(apiKeyInput, '');
         attachMaskBehavior(apiKeyInput);
         return;
     }
-
-    // No book input or empty value for this provider — do not overwrite input
-    // Key Book intentionally cleared (empty string) should be respected
+    // Non-forced: only fill if book has a value
+    if (bookKey !== null && bookKey !== '') {
+        setMaskedInput(apiKeyInput, bookKey);
+        attachMaskBehavior(apiKeyInput);
+    }
 }
 
 // Auto-fill assist API key from book
@@ -2233,7 +2328,9 @@ async function initializePage() {
 
             updateAssistApiRecommendation();
             autoFillCoreApiKey(true);
-            autoFillAssistApiKey(true);
+            // 不再调用 autoFillAssistApiKey(true)，因为 loadCurrentApiKey()
+            // 已从后端数据直接设置辅助API Key，此处再次从管理簿读取会覆盖正确值
+            // （同服务商时管理簿存的是核心Key，受限服务商时管理簿DOM不存在）
             syncProviderSelectDropdowns();
         }
 
@@ -2325,7 +2422,7 @@ async function initializePage() {
         window.apiKeySettingsInitialized = true;
 
         setTimeout(() => {
-            toggleCustomApi();
+            toggleCustomApi(true);
         }, 0);
 
     } catch (error) {

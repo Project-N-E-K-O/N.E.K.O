@@ -4,17 +4,21 @@ DirectTaskExecutor: 合并 Analyzer + Planner 的功能
 并行评估 ComputerUse / BrowserUse / UserPlugin 可行性
 """
 import json
+import os
 import re
 import asyncio
+from pathlib import Path
 from typing import Dict, Any, List, Optional, Callable, Awaitable
 from dataclasses import dataclass
+from datetime import datetime, timezone
+import uuid
 from openai import APIConnectionError, InternalServerError, RateLimitError
 import httpx
 from config import USER_PLUGIN_SERVER_PORT
 from utils.llm_client import create_chat_llm, ChatOpenAI
 from config.prompts_agent import (
     UNIFIED_CHANNEL_SYSTEM_PROMPT,
-    CHANNEL_DESC_COPAW,
+    CHANNEL_DESC_QWENPAW,
     CHANNEL_DESC_OPENFANG,
     CHANNEL_DESC_BROWSER_USE,
     CHANNEL_DESC_COMPUTER_USE,
@@ -108,6 +112,9 @@ class TaskResult:
     tool_args: Optional[Dict] = None
     entry_id: Optional[str] = None
     reason: str = ""
+    latest_user_request: str = ""
+    normalized_intent: str = ""
+    recent_context: Optional[List[Dict[str, str]]] = None
 
 
 @dataclass
@@ -162,16 +169,16 @@ class OpenClawDecision:
 @dataclass
 class UnifiedChannelDecision:
     """统一渠道评估结果 — 每个渠道为 dict 或 None"""
-    copaw: Optional[Dict[str, Any]] = None       # {"can_execute": bool, "task_description": str, "reason": str}
+    qwenpaw: Optional[Dict[str, Any]] = None     # {"can_execute": bool, "task_description": str, "reason": str}
     openfang: Optional[Dict[str, Any]] = None
     browser_use: Optional[Dict[str, Any]] = None
     computer_use: Optional[Dict[str, Any]] = None
 
 
-# 优先级：copaw > openfang > browser_use > computer_use
-_CHANNEL_PRIORITY = ["copaw", "openfang", "browser_use", "computer_use"]
+# 优先级：qwenpaw > openfang > browser_use > computer_use
+_CHANNEL_PRIORITY = ["qwenpaw", "openfang", "browser_use", "computer_use"]
 _CHANNEL_TO_METHOD = {
-    "copaw": "openclaw",
+    "qwenpaw": "openclaw",
     "openfang": "openfang",
     "browser_use": "browser_use",
     "computer_use": "computer_use",
@@ -200,6 +207,22 @@ class DirectTaskExecutor:
         self._cleanup_tasks: set = set()  # 持有关闭任务的强引用，防止 GC 回收
         # plugin_id -> (full_description, generated_short_description)
         self._short_desc_cache: dict[str, tuple[str, str]] = {}
+        self._correction_memory_filename = "correction_memory.json"
+        self._search_term_allowlist = {"id", "os", "db", "ui", "ux", "qa"}
+        # 白名单 + alias 归一化，防止任意字符串被写进 correction_memory.json
+        # 并跨会话注入到路由 system prompt 里。未命中一律归一为空串，由调用方丢弃。
+        self._correction_tool_canonical = {
+            "computer_use": "computer_use",
+            "browser_use": "browser_use",
+            "openclaw": "openclaw",
+            "qwenpaw": "openclaw",
+            "openfang": "openfang",
+            "user_plugin": "user_plugin",
+        }
+
+    def _normalize_correction_tool_name(self, value: Any) -> str:
+        tool = str(value or "").strip().lower()
+        return self._correction_tool_canonical.get(tool, "")
     
     
     def set_plugin_list_provider(self, provider: Callable[[bool], Awaitable[List[Dict[str, Any]]]]):
@@ -232,7 +255,7 @@ class DirectTaskExecutor:
         try:
             llm = self._get_llm(temperature=0, max_completion_tokens=150)
             for p in to_generate:
-                quota_error = self._check_agent_quota("task_executor.ensure_short_desc")
+                quota_error = await self._check_agent_quota("task_executor.ensure_short_desc")
                 if quota_error:
                     logger.debug("[Agent] Stopping short_description generation: quota exceeded")
                     break
@@ -352,9 +375,9 @@ class DirectTaskExecutor:
         except RuntimeError:
             logger.debug("[Agent] No running event loop, skipping async LLM close")
 
-    def _check_agent_quota(self, source: str) -> Optional[str]:
-        """免费版 Agent 模型每日 300 次本地限流。"""
-        ok, info = self._config_manager.consume_agent_daily_quota(source=source, units=1)
+    async def _check_agent_quota(self, source: str) -> Optional[str]:
+        """免费版 Agent 模型每日 300 次本地限流（async，避免事件循环阻塞）。"""
+        ok, info = await self._config_manager.aconsume_agent_daily_quota(source=source, units=1)
         if ok:
             return None
         return json.dumps({"code": "AGENT_QUOTA_EXCEEDED", "details": {"used": info.get('used', 0), "limit": info.get('limit', 300)}})
@@ -364,10 +387,35 @@ class DirectTaskExecutor:
         def _extract_text(m: dict) -> str:
             return str(m.get('text') or m.get('content') or '').strip()
 
+        def _extract_attachments(m: dict) -> list[dict]:
+            raw = m.get("attachments") or []
+            if not isinstance(raw, list):
+                return []
+            normalized = []
+            for item in raw:
+                if isinstance(item, str):
+                    url = item.strip()
+                elif isinstance(item, dict):
+                    url = str(item.get("url") or item.get("image_url") or "").strip()
+                else:
+                    url = ""
+                if url:
+                    normalized.append({"type": "image_url", "url": url})
+            return normalized
+
+        def _describe_user_message(text: str, attachments: list[dict]) -> str:
+            if text:
+                if attachments:
+                    return f"{text} [Attached images: {len(attachments)}]"
+                return text
+            if attachments:
+                return f"[User attached {len(attachments)} image(s) without text]"
+            return ""
+
         latest_user_text = ""
         for m in reversed(messages[-10:]):
             if m.get('role') == 'user':
-                latest_user_text = _extract_text(m)
+                latest_user_text = _describe_user_message(_extract_text(m), _extract_attachments(m))
                 if latest_user_text:
                     break
         lines = []
@@ -375,10 +423,37 @@ class DirectTaskExecutor:
             lines.append(f"LATEST_USER_REQUEST: {latest_user_text}")
         for m in messages[-10:]:
             role = m.get('role', 'user')
-            text = _extract_text(m)
+            text = _describe_user_message(_extract_text(m), _extract_attachments(m))
             if text:
                 lines.append(f"{role}: {text}")
         return "\n".join(lines)
+
+    def _extract_latest_user_payload(self, messages: List[Dict[str, Any]]) -> tuple[str, list[dict]]:
+        latest_text = ""
+        latest_attachments: list[dict] = []
+        for m in reversed(messages[-10:]):
+            if not isinstance(m, dict) or m.get("role") != "user":
+                continue
+            latest_text = str(m.get("text") or m.get("content") or "").strip()
+            raw_attachments = m.get("attachments") or []
+            if isinstance(raw_attachments, list):
+                for item in raw_attachments:
+                    if isinstance(item, str):
+                        url = item.strip()
+                    elif isinstance(item, dict):
+                        url = str(item.get("url") or item.get("image_url") or "").strip()
+                    else:
+                        url = ""
+                    if url:
+                        latest_attachments.append({
+                            "type": "image_url",
+                            "url": url,
+                        })
+            if latest_text or latest_attachments:
+                break
+        if not latest_text and latest_attachments:
+            latest_text = "请分析用户提供的图片内容，并根据图片完成任务。"
+        return latest_text, latest_attachments
     
     def _format_tools(self, capabilities: Dict[str, Dict[str, Any]]) -> str:
         """格式化工具列表供 LLM 参考"""
@@ -419,17 +494,347 @@ class DirectTaskExecutor:
                     break
         return user_intent
 
+    @staticmethod
+    def _message_text(message: Dict[str, Any]) -> str:
+        return str(message.get("text") or message.get("content") or "").strip()
+
+    def _extract_recent_context(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        limit: int = 4,
+    ) -> List[Dict[str, str]]:
+        items: List[Dict[str, str]] = []
+        for message in messages:
+            role = str(message.get("role") or "").strip().lower()
+            if role not in {"user", "assistant"}:
+                continue
+            text = self._message_text(message)
+            if not text:
+                continue
+            items.append({"role": role, "content": text})
+        return items[-limit:]
+
+    def _normalize_user_intent(
+        self,
+        latest_user_request: str,
+        recent_context: List[Dict[str, str]],
+    ) -> str:
+        latest = re.sub(r"\s+", " ", (latest_user_request or "").strip())
+        if not latest:
+            return ""
+
+        normalized_latest = re.sub(r"[^\w\u4e00-\u9fff]+", " ", latest.lower()).strip()
+        vague_markers = (
+            "这个", "那个", "一下", "继续", "继续弄", "处理一下", "帮我弄一下",
+            "就这个", "刚才那个", "上一条", "发给他", "发给她", "发给它",
+            "打开它", "打开这个", "继续这个", "继续那个",
+            "this", "that", "this one", "that one", "it", "do it", "continue",
+            "go on", "keep going", "same one", "the same", "open it", "send it",
+            "上一個", "這個", "那個", "继续做", "接着做",
+            "これ", "それ", "これを", "それを", "続けて", "続ける", "やって", "やってね",
+            "이거", "저거", "이것", "그것", "계속", "계속해", "해줘", "그거 해줘",
+        )
+        user_turns = [
+            item.get("content", "").strip()
+            for item in recent_context
+            if item.get("role") == "user" and item.get("content", "").strip()
+        ]
+        def _matches_vague_marker(marker: str) -> bool:
+            marker_norm = re.sub(r"[^\w\u4e00-\u9fff]+", " ", marker.lower()).strip()
+            if not marker_norm:
+                return False
+            if re.search(r"[a-z0-9]", marker_norm):
+                return re.search(rf"\b{re.escape(marker_norm)}\b", normalized_latest) is not None
+            return marker_norm in latest or marker_norm in normalized_latest
+
+        length_source = normalized_latest or latest
+        cjk_like_count = sum(
+            1
+            for ch in length_source
+            if (
+                "\u3040" <= ch <= "\u30ff"  # Hiragana + Katakana
+                or "\u4e00" <= ch <= "\u9fff"  # CJK Unified Ideographs
+                or "\uac00" <= ch <= "\ud7af"  # Hangul Syllables
+            )
+        )
+        length_threshold = 3 if cjk_like_count * 2 >= len(length_source) else 6
+        latest_is_vague = len(length_source) <= length_threshold or any(
+            _matches_vague_marker(marker) for marker in vague_markers
+        )
+        if not latest_is_vague:
+            return latest
+
+        context_candidates: List[str] = []
+        for text in user_turns[-3:]:
+            if text and text != latest:
+                context_candidates.append(text)
+        if context_candidates:
+            return " / ".join([*context_candidates[-2:], latest])[:300]
+        return latest[:300]
+
+    @staticmethod
+    def _sanitize_correction_text(text: str) -> str:
+        cleaned = str(text or "")
+        cleaned = cleaned.replace("\r", " ").replace("\n", " ")
+        patterns = [
+            (r"(?i)(password|passwd|pwd)\s*[:=]\s*\S+", r"\1=[REDACTED_PASSWORD]"),
+            (r"(?i)(password|passwd|pwd|密码|口令)\s*(?:is|为|是|=|:|：)\s*\S+", r"\1=[REDACTED_PASSWORD]"),
+            (r"(?i)authorization\s*:\s*bearer\s+\S+", "Authorization: Bearer [REDACTED_TOKEN]"),
+            (r"(?i)(token|api[_-]?key|access[_-]?token|refresh[_-]?token)\s*[:=]\s*\S+", r"\1=[REDACTED_TOKEN]"),
+            (
+                r"(?i)(token|api(?:[\s_-]?key)|access(?:[\s_-]?token)|refresh(?:[\s_-]?token)|令牌|密钥|秘钥)\s*(?:is|为|是|=|:|：)\s*\S+",
+                r"\1=[REDACTED_TOKEN]",
+            ),
+            (r"(?i)\bsk-[a-z0-9_-]{10,}\b", "[REDACTED_TOKEN]"),
+            (r"(?i)(cookie)\s*[:=：]\s*\S+", r"\1=[REDACTED_COOKIE]"),
+            (r"(?i)(cookie)\s*(?:[:=：]|is|为|是)\s*\S+", r"\1=[REDACTED_COOKIE]"),
+            (r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[A-Za-z]{2,}\b", "[REDACTED_EMAIL]"),
+            (
+                r"(?i)(\b(?:otp|pin|verification(?:\s+code)?|sms\s*code|one[-\s]?time(?:\s+password|\s+code)?|验证码|校验码|短信码|动态码)\b(?:\s*(?:is|为|是))?[\s:：=#-]{0,6})\d{4,8}\b",
+                r"\1[REDACTED_OTP]",
+            ),
+            (r"\b(?:\d{15}|\d{17}[0-9Xx])\b", "[REDACTED_ID]"),
+            (r"\b\d{15,19}\b", "[REDACTED_NUMBER]"),
+            (r"\b1[3-9]\d{9}\b", "[REDACTED_PHONE]"),
+        ]
+        for pattern, replacement in patterns:
+            cleaned = re.sub(pattern, replacement, cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        return cleaned[:500]
+
+    def _sanitize_recent_context(self, recent_context: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        sanitized: List[Dict[str, str]] = []
+        total_chars = 0
+        for item in reversed(recent_context[-4:]):
+            role = str(item.get("role") or "").strip().lower()
+            if role not in {"user", "assistant"}:
+                continue
+            content = self._sanitize_correction_text(item.get("content", ""))
+            if not content:
+                continue
+            total_chars += len(content)
+            if total_chars > 1200:
+                break
+            sanitized.append({"role": role, "content": content})
+        sanitized.reverse()
+        return sanitized
+
+    def _get_correction_memory_path(self) -> Path:
+        self._config_manager.ensure_config_directory()
+        return Path(self._config_manager.config_dir) / self._correction_memory_filename
+
+    def _load_correction_memory(self) -> Dict[str, Any]:
+        path = self._get_correction_memory_path()
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except FileNotFoundError:
+            return {"version": 1, "correction_events": []}
+        except Exception as exc:
+            logger.warning("[CorrectionMemory] Failed to load %s: %s", path, exc)
+            return {"version": 1, "correction_events": []}
+        if not isinstance(data, dict):
+            return {"version": 1, "correction_events": []}
+        events = data.get("correction_events")
+        if not isinstance(events, list):
+            data["correction_events"] = []
+        data.setdefault("version", 1)
+        return data
+
+    def _save_correction_memory(self, data: Dict[str, Any]) -> None:
+        path = self._get_correction_memory_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(path.parent, 0o700)
+        except OSError:
+            pass
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        with tmp_path.open("w", encoding="utf-8") as handle:
+            json.dump(data, handle, ensure_ascii=False, indent=2)
+        try:
+            os.chmod(tmp_path, 0o600)
+        except OSError:
+            pass
+        tmp_path.replace(path)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+
+    def _is_allowed_search_term(self, term: str) -> bool:
+        if not term or term.isdigit():
+            return False
+        if len(term) == 2 and term.isascii() and term.isalpha() and term not in self._search_term_allowlist:
+            return False
+        return True
+
+    def _extract_search_terms(self, text: str) -> List[str]:
+        lowered = str(text or "").lower()
+        terms = re.findall(r"\w{2,}", lowered, flags=re.UNICODE)
+        seen: set[str] = set()
+        result: List[str] = []
+        for term in terms:
+            if not self._is_allowed_search_term(term):
+                continue
+            if term in seen:
+                continue
+            seen.add(term)
+            result.append(term)
+        return result[:24]
+
+    def _retrieve_relevant_corrections(
+        self,
+        latest_user_request: str,
+        *,
+        normalized_intent: str = "",
+        recent_context: Optional[List[Dict[str, str]]] = None,
+        limit: int = 3,
+    ) -> List[Dict[str, Any]]:
+        memory = self._load_correction_memory()
+        events = memory.get("correction_events", [])
+        if not isinstance(events, list) or not events:
+            return []
+
+        query_blob_parts = [normalized_intent, latest_user_request]
+        for item in recent_context or []:
+            query_blob_parts.append(item.get("content", ""))
+        query_terms = self._extract_search_terms(" ".join(part for part in query_blob_parts if part))
+        if not query_terms:
+            return []
+
+        scored: List[tuple[int, datetime, Dict[str, Any]]] = []
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            event_context = " ".join(
+                [
+                    str(event.get("normalized_intent", "")),
+                    str(event.get("user_query", "")),
+                    self._normalize_correction_tool_name(event.get("chosen_tool", "")),
+                    self._normalize_correction_tool_name(event.get("correct_tool", "")),
+                    " ".join(
+                        str(item.get("content", ""))
+                        for item in event.get("recent_context", [])
+                        if isinstance(item, dict)
+                    ),
+                ]
+            ).lower()
+            score = 0
+            for term in query_terms:
+                if not self._is_allowed_search_term(term):
+                    continue
+                if term and term in event_context:
+                    score += max(1, min(len(term), 8))
+            if score <= 0:
+                continue
+            timestamp_raw = str(event.get("timestamp", "")).strip()
+            try:
+                parsed_timestamp = datetime.fromisoformat(timestamp_raw)
+                if parsed_timestamp.tzinfo is None:
+                    parsed_timestamp = parsed_timestamp.replace(tzinfo=timezone.utc)
+            except ValueError:
+                parsed_timestamp = datetime.min.replace(tzinfo=timezone.utc)
+            scored.append((score, parsed_timestamp, event))
+
+        scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return [item[2] for item in scored[:limit]]
+
+    def _build_correction_lessons_block(self, events: List[Dict[str, Any]]) -> str:
+        if not events:
+            return ""
+        lines = ["[Historical correction lessons]"]
+        for event in events[:3]:
+            normalized_intent = self._sanitize_correction_text(event.get("normalized_intent", ""))
+            chosen_tool = self._normalize_correction_tool_name(event.get("chosen_tool", ""))
+            correct_tool = self._normalize_correction_tool_name(event.get("correct_tool", ""))
+            if not any((normalized_intent, chosen_tool, correct_tool)):
+                continue
+            lines.append("- Routing lesson:")
+            lines.append(f"  Intent: {normalized_intent or '[unspecified]'}")
+            if chosen_tool:
+                lines.append(f"  Wrong choice: {chosen_tool}")
+            if correct_tool:
+                lines.append(f"  Correct tool: {correct_tool}")
+        if len(lines) == 1:
+            return ""
+        return "\n".join(lines)
+
+    def _append_correction_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
+        memory = self._load_correction_memory()
+        events = memory.setdefault("correction_events", [])
+        task_id = str(event.get("task_id") or "").strip()
+        if task_id:
+            for idx, existing in enumerate(events):
+                if not isinstance(existing, dict):
+                    continue
+                if str(existing.get("task_id") or "").strip() != task_id:
+                    continue
+                merged_event = dict(existing)
+                merged_event.update(event)
+                merged_event["task_id"] = task_id
+                merged_event["event_id"] = str(existing.get("event_id") or event.get("event_id") or f"corr_{uuid.uuid4().hex[:12]}")
+                events[idx] = merged_event
+                self._save_correction_memory(memory)
+                return merged_event
+
+        event = dict(event)
+        event["event_id"] = str(event.get("event_id") or f"corr_{uuid.uuid4().hex[:12]}")
+        events.append(event)
+        if len(events) > 300:
+            del events[:-300]
+        self._save_correction_memory(memory)
+        return event
+
+    def record_tool_correction(
+        self,
+        task_info: Dict[str, Any],
+        *,
+        correct_tool: str,
+        correct_instruction: str,
+        user_note: str = "",
+    ) -> Dict[str, Any]:
+        chosen_tool = self._normalize_correction_tool_name(
+            task_info.get("type")
+            or task_info.get("execution_method")
+            or task_info.get("method")
+        )
+        normalized_correct_tool = self._normalize_correction_tool_name(correct_tool)
+        task_id = str(task_info.get("task_id") or task_info.get("id") or "").strip()
+        task_type = chosen_tool  # Backward-compatible alias for existing readers of correction events.
+        event = {
+            "task_id": task_id,
+            "timestamp": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+            "user_query": self._sanitize_correction_text(task_info.get("latest_user_request", "")),
+            "normalized_intent": self._sanitize_correction_text(task_info.get("normalized_intent", "")),
+            "recent_context": self._sanitize_recent_context(task_info.get("recent_context") or []),
+            "chosen_tool": chosen_tool,
+            "chosen_reason": self._sanitize_correction_text(
+                task_info.get("decision_reason") or task_info.get("reason", "")
+            ),
+            "task_type": task_type,
+            "task_description": self._sanitize_correction_text(task_info.get("task_description", "")),
+            "correct_tool": normalized_correct_tool,
+            "correct_instruction": self._sanitize_correction_text(correct_instruction),
+            "user_note": self._sanitize_correction_text(user_note),
+            "resolved": True,
+        }
+        return self._append_correction_event(event)
+
     async def _assess_unified_channels(
         self,
         conversation: str,
         *,
-        copaw_available: bool = False,
+        qwenpaw_available: bool = False,
         openfang_available: bool = False,
         browser_available: bool = False,
         cu_available: bool = False,
+        latest_user_request: str = "",
+        normalized_intent: str = "",
+        recent_context: Optional[List[Dict[str, str]]] = None,
         lang: str = "en",
     ) -> UnifiedChannelDecision:
-        """一次 LLM 调用评估所有非 plugin 渠道（copaw / openfang / browser / computer）。
+        """一次 LLM 调用评估所有非 plugin 渠道（qwenpaw / openfang / browser / computer）。
 
         根据 available 标志动态组装 prompt，要求 LLM 选出最合适的渠道。
         如果 LLM 输出多个 can_execute=true，由调用方按优先级选取。
@@ -438,9 +843,9 @@ class DirectTaskExecutor:
         channel_descs: List[str] = []
         available_keys: List[str] = []
 
-        if copaw_available:
-            available_keys.append("copaw")
-            channel_descs.append(_loc(CHANNEL_DESC_COPAW, lang))
+        if qwenpaw_available:
+            available_keys.append("qwenpaw")
+            channel_descs.append(_loc(CHANNEL_DESC_QWENPAW, lang))
 
         if openfang_available:
             available_keys.append("openfang")
@@ -469,6 +874,15 @@ class DirectTaskExecutor:
             keys_json=keys_json,
             json_fields=json_fields,
         )
+        lessons = self._build_correction_lessons_block(
+            self._retrieve_relevant_corrections(
+                latest_user_request,
+                normalized_intent=normalized_intent,
+                recent_context=recent_context,
+            )
+        )
+        if lessons:
+            system_prompt = f"{system_prompt}\n\n{lessons}"
 
         user_prompt = f"Conversation:\n{conversation}"
 
@@ -484,7 +898,7 @@ class DirectTaskExecutor:
                     {"role": "user", "content": user_prompt},
                 ]
 
-                quota_error = self._check_agent_quota("task_executor.assess_unified")
+                quota_error = await self._check_agent_quota("task_executor.assess_unified")
                 if quota_error:
                     return UnifiedChannelDecision()
 
@@ -630,7 +1044,7 @@ class DirectTaskExecutor:
                 {"role": "user", "content": user_text},
             ]
 
-            quota_error = self._check_agent_quota("task_executor.coarse_screen")
+            quota_error = await self._check_agent_quota("task_executor.coarse_screen")
             if quota_error:
                 return []
 
@@ -706,8 +1120,9 @@ class DirectTaskExecutor:
                     len(plugins_desc), len(plugin_list),
                 )
 
-                # BM25 + keyword filter
-                bm25_filtered, _ = stage1_filter(
+                # BM25 + keyword filter（纯 CPU，offload 到线程）
+                bm25_filtered, _ = await asyncio.to_thread(
+                    stage1_filter,
                     user_intent or conversation,
                     plugin_list,
                     bm25_top_k=10,
@@ -765,7 +1180,7 @@ class DirectTaskExecutor:
                     {"role": "user", "content": user_prompt},
                 ]
 
-                quota_error = self._check_agent_quota("task_executor.assess_user_plugin")
+                quota_error = await self._check_agent_quota("task_executor.assess_user_plugin")
                 if quota_error:
                     return UserPluginDecision(
                         has_task=False,
@@ -969,10 +1384,9 @@ class DirectTaskExecutor:
     ) -> Optional[TaskResult]:
         """
         评估各渠道可行性，返回 Decision（不执行）。
-        Plugin 单独判定；copaw/openfang/browser/computer 合并为一次 LLM 调用。
+        Plugin 单独判定；qwenpaw/openfang/browser/computer 合并为一次 LLM 调用。
         实际执行由 agent_server 统一 dispatch。
         """
-        import uuid
         task_id = str(uuid.uuid4())
 
         if agent_flags is None:
@@ -997,12 +1411,16 @@ class DirectTaskExecutor:
         conversation = self._format_messages(messages)
         if not conversation.strip():
             return None
+        latest_user_request = self._extract_latest_user_intent(conversation)
+        recent_context = self._extract_recent_context(messages)
+        normalized_intent = self._normalize_user_intent(latest_user_request, recent_context)
 
         # ── 可用性检查 ──────────────────────────────────────
         cu_available = False
         if computer_use_enabled:
             try:
-                cu_available = self.computer_use.is_available().get('ready', False)
+                cu_status = await asyncio.to_thread(self.computer_use.is_available)
+                cu_available = cu_status.get('ready', False) if isinstance(cu_status, dict) else False
                 logger.info("[TaskExecutor] ComputerUse available: %s", cu_available)
             except Exception as e:
                 logger.warning("[TaskExecutor] Failed to check ComputerUse: %s", e)
@@ -1010,7 +1428,8 @@ class DirectTaskExecutor:
         browser_available = False
         if browser_use_enabled:
             try:
-                browser_available = self.browser_use.is_available().get("ready", False)
+                bu_status = await asyncio.to_thread(self.browser_use.is_available)
+                browser_available = bu_status.get("ready", False) if isinstance(bu_status, dict) else False
                 logger.info("[TaskExecutor] BrowserUse available: %s", browser_available)
             except Exception as e:
                 logger.warning("[TaskExecutor] Failed to check BrowserUse: %s", e)
@@ -1023,13 +1442,48 @@ class DirectTaskExecutor:
             except Exception as e:
                 logger.warning("[TaskExecutor] Failed to check OpenFang: %s", e)
 
-        copaw_available = False
+        qwenpaw_available = False
         if openclaw_enabled and self.openclaw:
             try:
-                copaw_available = self.openclaw.is_available().get("ready", False)
-                logger.info("[TaskExecutor] CoPaw available: %s", copaw_available)
+                # openclaw.is_available 内部走 sync httpx，必须 offload
+                oc_status = await asyncio.to_thread(self.openclaw.is_available)
+                qwenpaw_available = oc_status.get("ready", False) if isinstance(oc_status, dict) else False
+                logger.info("[TaskExecutor] QwenPaw available: %s", qwenpaw_available)
             except Exception as e:
-                logger.warning("[TaskExecutor] Failed to check CoPaw: %s", e)
+                logger.warning("[TaskExecutor] Failed to check QwenPaw: %s", e)
+
+        # ── 魔法命令前置拦截（仅对 openclaw/qwenpaw）──────────────────────
+        user_intent, user_attachments = self._extract_latest_user_payload(messages)
+        if not user_intent:
+            user_intent = self._extract_latest_user_intent(conversation)
+        if qwenpaw_available and self.openclaw and user_intent and not user_attachments:
+            try:
+                magic_intent = await self.openclaw.classify_magic_intent(user_intent)
+            except Exception as e:
+                logger.warning("[TaskExecutor] Failed to classify magic intent: %s", e)
+                magic_intent = {"is_magic_intent": False, "command": None}
+            if magic_intent.get("is_magic_intent") and magic_intent.get("command"):
+                magic_command = str(magic_intent["command"])
+                logger.info(
+                    "[TaskExecutor] Magic intent intercepted: command=%s source=%s",
+                    magic_command,
+                    magic_intent.get("source", "unknown"),
+                )
+                return TaskResult(
+                    task_id=task_id,
+                    has_task=True,
+                    task_description=self.openclaw.get_magic_command_task_description(magic_command),
+                    execution_method="openclaw",
+                    success=False,
+                    tool_args={
+                        "instruction": magic_command,
+                        "attachments": [],
+                        "magic_command": magic_command,
+                        "original_user_text": user_intent,
+                        "direct_reply": True,
+                    },
+                    reason=f"magic_intent:{magic_intent.get('source', 'unknown')}",
+                )
 
         # ── 并行执行：plugin 单独 + 统一渠道评估 ──────────────
         parallel_tasks: List[tuple] = []   # [(key, coro), ...]
@@ -1042,15 +1496,18 @@ class DirectTaskExecutor:
         if user_plugin_enabled and plugins:
             parallel_tasks.append(('up', self._assess_user_plugin(conversation, plugins, lang=lang)))
 
-        # 统一渠道评估（copaw / openfang / browser / computer）
-        has_any_unified = copaw_available or of_available or browser_available or cu_available
+        # 统一渠道评估（qwenpaw / openfang / browser / computer）
+        has_any_unified = qwenpaw_available or of_available or browser_available or cu_available
         if has_any_unified:
             parallel_tasks.append(('unified', self._assess_unified_channels(
                 conversation,
-                copaw_available=copaw_available,
+                qwenpaw_available=qwenpaw_available,
                 openfang_available=of_available,
                 browser_available=browser_available,
                 cu_available=cu_available,
+                latest_user_request=latest_user_request,
+                normalized_intent=normalized_intent,
+                recent_context=recent_context,
                 lang=lang,
             )))
 
@@ -1102,10 +1559,8 @@ class DirectTaskExecutor:
                 reason=up_decision.reason,
             )
 
-        # 2. 统一渠道 — 按优先级 copaw > openfang > browser_use > computer_use
+        # 2. 统一渠道 — 按优先级 qwenpaw > openfang > browser_use > computer_use
         if isinstance(unified, UnifiedChannelDecision):
-            user_intent = self._extract_latest_user_intent(conversation)
-
             for ch_key in _CHANNEL_PRIORITY:
                 ch_info = getattr(unified, ch_key, None)
                 if not isinstance(ch_info, dict) or not ch_info.get("can_execute"):
@@ -1118,7 +1573,14 @@ class DirectTaskExecutor:
 
                 tool_args = None
                 if method == "openclaw":
-                    tool_args = {"instruction": user_intent}
+                    tool_args = {"instruction": user_intent, "attachments": user_attachments}
+                result_context_kwargs = {}
+                if method in {"browser_use", "computer_use"}:
+                    result_context_kwargs = {
+                        "latest_user_request": latest_user_request,
+                        "normalized_intent": normalized_intent,
+                        "recent_context": recent_context,
+                    }
 
                 return TaskResult(
                     task_id=task_id,
@@ -1128,6 +1590,7 @@ class DirectTaskExecutor:
                     success=False,
                     tool_args=tool_args,
                     reason=reason,
+                    **result_context_kwargs,
                 )
 
         # 3. 没有可执行的分支，汇总原因

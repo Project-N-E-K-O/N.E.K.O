@@ -34,15 +34,34 @@
             box-sizing: border-box !important;
         }
 
-        /* 整个面板可拖拽，内容区域和交互按钮排除 */
+        /* 整个面板走 OS 原生拖动（Chromium `-webkit-app-region: drag` → Windows HTCAPTION）。
+           不再用 JS mousedown + setBounds 模拟，避免和 Windows 边缘 WS_THICKFRAME resize
+           热区并发触发导致"拖一下窗口变大一下"。 */
         .jukebox-sam-panel {
-            -webkit-app-region: drag;
+            -webkit-app-region: drag !important;
+            cursor: grab;
         }
-        .sam-content,
-        .sam-footer,
-        .sam-close-btn,
-        .sam-tab {
-            -webkit-app-region: no-drag;
+
+        /* 交互元素必须 no-drag，否则点击会被原生拖动吃掉。 */
+        .jukebox-sam-panel button,
+        .jukebox-sam-panel input,
+        .jukebox-sam-panel a,
+        .jukebox-sam-panel select,
+        .jukebox-sam-panel textarea,
+        .jukebox-sam-panel label,
+        .jukebox-sam-panel [contenteditable="true"],
+        .jukebox-sam-panel .sam-tab,
+        .jukebox-sam-panel .sam-close-btn,
+        .jukebox-sam-panel .sam-content,
+        .jukebox-sam-panel .sam-item,
+        .jukebox-sam-panel .sam-binding-item,
+        .jukebox-sam-panel .sam-checkbox,
+        .jukebox-sam-panel .sam-unbind-btn,
+        .jukebox-sam-panel .sam-add-binding-btn,
+        .jukebox-sam-panel .sam-click-add,
+        .jukebox-sam-panel .sam-file-drop-zone,
+        .jukebox-sam-panel .sam-footer {
+            -webkit-app-region: no-drag !important;
         }
     </style>
 </head>
@@ -55,6 +74,10 @@
     <script src="/static/Jukebox.js"></script>
     <script>
         // 管理器独立窗口初始化
+        // 拖动走 CSS `-webkit-app-region: drag`（OS 原生），不再用 JS mousedown 模拟。
+        // 原因：JS 设 setBounds 会和 Windows 边缘 resize 热区并发，看起来"一拖就变大"。
+        // 原生拖动下 Chromium 返回 HTCAPTION，Windows 直接走窗口移动，绕开 resize 逻辑。
+
         async function _initManager() {
             if (!window.Jukebox || !window.Jukebox.SongActionManager) return;
 
@@ -63,6 +86,7 @@
             // 创建管理器面板 DOM
             var panel = SAM.create();
             document.body.appendChild(panel);
+            // 拖动由 CSS `-webkit-app-region: drag` 原生接管，无需 JS 绑定。
 
             // 注入管理器样式
             var style = document.createElement('style');
@@ -115,7 +139,16 @@
             if (!_mgrInitDone) {
                 _mgrInitDone = true;
                 if (typeof window.t !== 'function') {
-                    window.t = function(key, fallback) { return typeof fallback === 'string' ? fallback : key; };
+                    window.t = function(key, opts) {
+                        if (typeof opts === 'string') return opts;
+                        if (opts && typeof opts === 'object') {
+                            var tpl = typeof opts.defaultValue === 'string' ? opts.defaultValue : key;
+                            return tpl.replace(/\{\{(\w+)\}\}/g, function(_, name) {
+                                return opts[name] != null ? opts[name] : '{{' + name + '}}';
+                            });
+                        }
+                        return key;
+                    };
                 }
                 _initManager().catch(function(e) { console.error('[JukeboxManager] init failed:', e); });
             }

@@ -73,6 +73,7 @@ def _load_openclaw_guide_markdown(lang: str | None = None) -> str:
         )
         return (
             "# OpenClaw 接入教程\n\n"
+            "> 本项目中的 OpenClaw 指代 QwenPaw。\n\n"
             "教程内容暂时无法加载，请检查文档文件是否存在：\n\n"
             f"`{candidate.name}`"
         )
@@ -105,7 +106,7 @@ async def update_agent_flags(request: Request):
         data = await request.json()
         _config_manager = get_config_manager()
         session_manager = get_session_manager()
-        _, her_name_current, _, _, _, _, _, _, _ = _config_manager.get_character_data()
+        _, her_name_current, _, _, _, _, _, _, _ = await _config_manager.aget_character_data()
         lanlan = data.get('lanlan_name') or her_name_current
         flags = data.get('flags') or {}
         mgr = session_manager.get(lanlan)
