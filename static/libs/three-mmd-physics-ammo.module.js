@@ -1183,11 +1183,12 @@ class MMDPhysics {
     this._updateRigidBodies();
 
     // Spin-Lock Mechanism (自旋锁防撕裂机制):
-    // 检测模型的极限空间自转。如果角速度超过安全阈值（例如高速拖拉/转圈），巨大的离心力会将密集的弹簧直接扯断。
-    // 在此时强行剥夺物理引擎算力：清零所有物理动能和惯性，并将裙摆、头发死死锁在默认位置上。
+    // Only trigger if rotation compensation did NOT already handle this frame's rotation.
+    // Also guard against delta <= 0 to avoid Infinity/NaN.
     const angleDelta = prevMeshQuat.angleTo(quaternion);
-    const angularVelocity = angleDelta / delta;
-    if (angularVelocity > 3.0) { // 阈值：> 3.0 rad/s (约 170 度/秒)
+    const angularVelocity = delta > 0 ? angleDelta / delta : 0;
+    const rotationCompensated = delta > 0 && angleDelta > 0.001;
+    if (!rotationCompensated && angularVelocity > 3.0) { // 阈值：> 3.0 rad/s (约 170 度/秒)
       const zeroVel = manager.allocVector3();
       zeroVel.setValue(0, 0, 0);
       for (let i = 0, il = this.bodies.length; i < il; i++) {
