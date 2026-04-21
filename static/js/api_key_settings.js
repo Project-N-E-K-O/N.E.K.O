@@ -2524,7 +2524,10 @@ const ConnectivityManager = {
             });
 
             clearTimeout(timeoutId);
-            delete this._abortControllers[cacheKey];
+            // Only delete if map still points to this controller (avoid race with newer request)
+            if (this._abortControllers[cacheKey] === controller) {
+                delete this._abortControllers[cacheKey];
+            }
 
             if (!response.ok) {
                 return {
@@ -2542,7 +2545,9 @@ const ConnectivityManager = {
             };
         } catch (err) {
             clearTimeout(timeoutId);
-            delete this._abortControllers[cacheKey];
+            if (this._abortControllers[cacheKey] === controller) {
+                delete this._abortControllers[cacheKey];
+            }
 
             if (err.name === 'AbortError') {
                 return {
