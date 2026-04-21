@@ -667,6 +667,9 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     // 设置常驻表情
     try { await this.syncEmotionMappingWithServer({ replacePersistentOnly: true }); } catch(_) {}
     await this.setupPersistentExpressions();
+
+    // 设置常驻动作
+    try { await this.setupPersistentMotions(); } catch(_) {}
     
     // 调用常驻表情应用完成的回调（事件驱动方式，替代不可靠的 setTimeout）
     if (options.onResidentExpressionApplied && typeof options.onResidentExpressionApplied === 'function') {
@@ -740,12 +743,14 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     // 检测是否有 Idle 情绪配置（兼容新旧两种格式）
     // - 新格式: EmotionMapping.motions['Idle'] / EmotionMapping.expressions['Idle']
     // - 旧格式: FileReferences.Motions['Idle'] / FileReferences.Expressions 中的 Idle 前缀
-    const hasIdleInEmotionMapping = this.emotionMapping && 
+    // - PreviewAll 组：用户上传的 .motion3.json 文件存储在此组，如果有则播放 Idle 情绪
+    const hasIdleInEmotionMapping = this.emotionMapping &&
         (this.emotionMapping.motions?.['Idle'] || this.emotionMapping.expressions?.['Idle']);
-    const hasIdleInFileReferences = this.fileReferences && 
-        (this.fileReferences.Motions?.['Idle'] || 
-         (Array.isArray(this.fileReferences.Expressions) && 
-          this.fileReferences.Expressions.some(e => (e.Name || '').startsWith('Idle'))));
+    const hasIdleInFileReferences = this.fileReferences &&
+        (this.fileReferences.Motions?.['Idle'] ||
+         (Array.isArray(this.fileReferences.Expressions) &&
+          this.fileReferences.Expressions.some(e => (e.Name || '').startsWith('Idle'))) ||
+         (Array.isArray(this.fileReferences.Motions?.PreviewAll) && this.fileReferences.Motions.PreviewAll.length > 0));
     // 注意：Idle 情绪播放已移至模型淡入完成后触发，
     // 避免在加载过程中独立 setTimeout 可能导致的变形/抖动
 

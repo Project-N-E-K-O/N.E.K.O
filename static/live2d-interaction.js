@@ -2020,13 +2020,47 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
                             } catch (error) {
                                 console.warn(`[TouchSet] 无法获取motion持续时间:`, error);
                             }
-                            
+
                             try {
-                                const result = await this.currentModel.motion(groupName, index, 2);
+                                const internalModel = this.currentModel.internalModel;
+                                const motionManager = internalModel.motionManager;
+                                const json = internalModel.settings.json;
+
+                                if (json) {
+                                    json.FileReferences = json.FileReferences || {};
+                                    json.FileReferences.Motions = json.FileReferences.Motions || {};
+                                    json.FileReferences.Motions[groupName] = json.FileReferences.Motions[groupName] || [];
+                                    json.FileReferences.Motions[groupName][index] = { 'File': motion.File };
+
+                                    json.motions = json.motions || {};
+                                    json.motions[groupName] = json.motions[groupName] || [];
+                                    json.motions[groupName][index] = { 'File': motion.File };
+                                }
+
+                                internalModel.settings.motions = internalModel.settings.motions || {};
+                                internalModel.settings.motions[groupName] = internalModel.settings.motions[groupName] || [];
+                                internalModel.settings.motions[groupName][index] = { 'File': motion.File };
+
+                                if (!motionManager.definitions) motionManager.definitions = {};
+                                motionManager.definitions[groupName] = internalModel.settings.motions[groupName];
+
+                                if (!motionManager.motionGroups) {
+                                    motionManager.motionGroups = {};
+                                }
+                                if (!motionManager.motionGroups[groupName]) {
+                                    motionManager.motionGroups[groupName] = [];
+                                }
+
+                                console.log(`[TouchSet] 正在向引擎注入并加载动作: ${motion.File}`);
+                                await motionManager.loadMotion(groupName, index);
+
+                                motionManager.stopAllMotions();
+                                const result = await this.currentModel.motion(groupName, index, 3);
+
                                 if (result) {
-                                    console.log(`[TouchSet] 成功播放动作: ${groupName}[${index}]`);
+                                    console.log(`[TouchSet] ✅ 成功下发播放指令: ${groupName}[${index}]`);
                                 } else {
-                                    console.warn(`[TouchSet] 动作播放返回空值: ${groupName}[${index}]`);
+                                    console.warn(`[TouchSet] ❌ 动作加载成功但引擎仍拒绝播放: ${groupName}[${index}]`);
                                 }
                             } catch (motionError) {
                                 console.warn(`[TouchSet] 动作播放异常: ${groupName}[${index}]`, motionError);
