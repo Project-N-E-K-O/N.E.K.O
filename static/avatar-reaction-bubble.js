@@ -179,7 +179,7 @@
     let debugBubbleRectEl = null;
 
     function resolveInitialDebugOverlayEnabled() {
-        return window.NEKO_DEBUG_BUBBLE_OVERLAY === true;
+        return false;
     }
 
     state.debugOverlayEnabled = resolveInitialDebugOverlayEnabled();
@@ -204,7 +204,7 @@
     }
 
     function bubbleTraceEnabled() {
-        return window.NEKO_DEBUG_BUBBLE_LIFECYCLE === true;
+        return false;
     }
 
     function logBubbleLifecycle(label, extra) {
@@ -224,11 +224,11 @@
     }
 
     function bubblePositionDebugEnabled() {
-        return window.NEKO_DEBUG_BUBBLE_POSITION === true || bubbleTraceEnabled();
+        return false;
     }
 
     function debugOverlayEnabled() {
-        return state.debugOverlayEnabled === true;
+        return false;
     }
 
     function roundDebugNumber(value) {
@@ -398,58 +398,7 @@
         bubbleEl.appendChild(frameEl);
         document.body.appendChild(bubbleEl);
 
-        debugOverlayEl = document.createElement('div');
-        debugOverlayEl.id = 'avatar-reaction-bubble-debug-overlay';
-        debugOverlayEl.className = 'avatar-reaction-bubble-debug-overlay is-hidden';
-        debugOverlayEl.setAttribute('aria-hidden', 'true');
-
-        debugGuideLineEl = document.createElement('div');
-        debugGuideLineEl.className = 'avatar-reaction-bubble-debug-guide';
-
-        debugAnchorEl = document.createElement('div');
-        debugAnchorEl.className = 'avatar-reaction-bubble-debug-anchor';
-
-        debugBoundsRectEl = document.createElement('div');
-        debugBoundsRectEl.className = 'avatar-reaction-bubble-debug-rect is-bounds';
-
-        debugHeadRectEl = document.createElement('div');
-        debugHeadRectEl.className = 'avatar-reaction-bubble-debug-rect is-head';
-
-        debugBodyRectEl = document.createElement('div');
-        debugBodyRectEl.className = 'avatar-reaction-bubble-debug-rect is-body';
-
-        debugBubbleRectEl = document.createElement('div');
-        debugBubbleRectEl.className = 'avatar-reaction-bubble-debug-rect is-bubble';
-
-        debugPanelEl = document.createElement('aside');
-        debugPanelEl.className = 'avatar-reaction-bubble-debug-panel';
-
-        var debugPanelTitleEl = document.createElement('div');
-        debugPanelTitleEl.className = 'avatar-reaction-bubble-debug-title';
-        debugPanelTitleEl.textContent = 'Bubble Debug';
-
-        debugPanelHintEl = document.createElement('div');
-        debugPanelHintEl.className = 'avatar-reaction-bubble-debug-hint';
-        debugPanelHintEl.textContent = 'Debug enabled';
-
-        debugPanelBodyEl = document.createElement('pre');
-        debugPanelBodyEl.className = 'avatar-reaction-bubble-debug-body';
-        debugPanelBodyEl.textContent = 'No debug data yet.';
-
-        debugPanelEl.appendChild(debugPanelTitleEl);
-        debugPanelEl.appendChild(debugPanelHintEl);
-        debugPanelEl.appendChild(debugPanelBodyEl);
-
-        debugOverlayEl.appendChild(debugGuideLineEl);
-        debugOverlayEl.appendChild(debugAnchorEl);
-        debugOverlayEl.appendChild(debugBoundsRectEl);
-        debugOverlayEl.appendChild(debugHeadRectEl);
-        debugOverlayEl.appendChild(debugBodyRectEl);
-        debugOverlayEl.appendChild(debugBubbleRectEl);
-        debugOverlayEl.appendChild(debugPanelEl);
-        document.body.appendChild(debugOverlayEl);
-
-        syncDebugOverlayVisibility();
+        // Bubble debug overlay has been removed from production runtime.
     }
 
     function syncEnabledFromSettings() {
@@ -478,8 +427,6 @@
             bubbleEl.style.left = '-9999px';
             bubbleEl.style.top = '-9999px';
         }
-        syncDebugOverlayVisibility();
-        renderDebugOverlay();
     }
 
     function setDebugRectElement(element, rect, label) {
@@ -546,16 +493,7 @@
     }
 
     function syncDebugOverlayVisibility() {
-        if (!debugOverlayEl) {
-            return;
-        }
-
-        var enabled = debugOverlayEnabled();
-        debugOverlayEl.classList.toggle('is-hidden', !enabled);
-        debugOverlayEl.setAttribute('aria-hidden', enabled ? 'false' : 'true');
-        if (debugPanelHintEl) {
-            debugPanelHintEl.textContent = enabled ? 'Debug enabled' : 'Debug disabled';
-        }
+        // Debug overlay removed.
     }
 
     function formatDebugSnapshot(snapshot) {
@@ -604,38 +542,7 @@
     }
 
     function renderDebugOverlay(snapshot) {
-        if (!debugOverlayEl || !debugPanelBodyEl) {
-            return;
-        }
-
-        var resolvedSnapshot = snapshot || state.lastDebugSnapshot || null;
-        debugPanelBodyEl.textContent = formatDebugSnapshot(resolvedSnapshot);
-
-        if (!debugOverlayEnabled()) {
-            clearDebugOverlayShapes();
-            return;
-        }
-
-        if (!resolvedSnapshot) {
-            clearDebugOverlayShapes();
-            return;
-        }
-
-        setDebugRectElement(debugBoundsRectEl, resolvedSnapshot.bounds, 'model bounds');
-        setDebugRectElement(debugHeadRectEl, resolvedSnapshot.headRect, 'head rect');
-        setDebugRectElement(debugBodyRectEl, resolvedSnapshot.bodyRect, 'body rect');
-        setDebugRectElement(debugBubbleRectEl, resolvedSnapshot.bubbleRect, 'bubble box');
-        setDebugAnchorElement(resolvedSnapshot.anchor);
-
-        var guideEndPoint = resolvedSnapshot.bubbleRect
-            ? {
-                x: resolvedSnapshot.final && resolvedSnapshot.final.side === 'left'
-                    ? resolvedSnapshot.bubbleRect.right
-                    : resolvedSnapshot.bubbleRect.left,
-                y: resolvedSnapshot.bubbleRect.top + resolvedSnapshot.bubbleRect.height * 0.5
-            }
-            : null;
-        setDebugGuideLine(resolvedSnapshot.anchor, guideEndPoint);
+        void snapshot;
     }
 
     function buildPassiveDebugSnapshot() {
@@ -709,35 +616,11 @@
     }
 
     function syncDebugOverlaySnapshot() {
-        if (!debugOverlayEnabled()) {
-            renderDebugOverlay();
-            return;
-        }
-
-        if (state.visible && state.lastDebugSnapshot) {
-            renderDebugOverlay(state.lastDebugSnapshot);
-            return;
-        }
-
-        state.lastDebugSnapshot = buildPassiveDebugSnapshot();
-        renderDebugOverlay(state.lastDebugSnapshot);
+        // Debug overlay removed.
     }
 
     function ensureDebugOverlayLoop() {
-        stopDebugOverlayLoop();
-        if (!debugOverlayEnabled()) {
-            return;
-        }
-
-        var tick = function () {
-            state.debugRafId = 0;
-            syncDebugOverlaySnapshot();
-            if (debugOverlayEnabled()) {
-                state.debugRafId = requestAnimationFrame(tick);
-            }
-        };
-
-        state.debugRafId = requestAnimationFrame(tick);
+        // Debug overlay removed.
     }
 
     function getThemeContent(theme) {
@@ -2701,15 +2584,11 @@
     }
 
     function setDebugOverlayEnabled(enabled) {
-        state.debugOverlayEnabled = enabled === true;
-        window.NEKO_DEBUG_BUBBLE_OVERLAY = state.debugOverlayEnabled;
-        syncDebugOverlayVisibility();
-        ensureDebugOverlayLoop();
-        syncDebugOverlaySnapshot();
+        void enabled;
     }
 
     function toggleDebugOverlay() {
-        setDebugOverlayEnabled(!debugOverlayEnabled());
+        // Debug overlay removed.
     }
 
     function init() {

@@ -24,7 +24,21 @@ def test_turn_end_does_not_clear_completion_before_late_speech_start(mock_page: 
         """
     )
 
-    mock_page.wait_for_timeout(900)
+    mock_page.wait_for_timeout(260)
+    mock_page.evaluate(
+        """
+        () => {
+            window.dispatchEvent(new CustomEvent('neko-assistant-speech-start', {
+                detail: {
+                    turnId: 'turn-late-audio',
+                    source: 'late-tts-test',
+                    timestamp: Date.now()
+                }
+            }));
+        }
+        """
+    )
+    mock_page.wait_for_timeout(640)
 
     completion_turn_id = mock_page.evaluate("() => window.appState.assistantTurnCompletedId")
     expect(mock_page.locator("#avatar-reaction-bubble")).to_have_attribute("aria-hidden", "false")
@@ -155,6 +169,23 @@ def test_vrm_direct_head_anchor_drives_reaction_bubble_position(mock_page: Page,
             window.vrmManager = {
                 getModelScreenBounds() {
                     return bounds;
+                },
+                getHeadDetectionGeometryInfo() {
+                    const p = window.__testVrmHeadAnchor;
+                    return {
+                        type: 'vrm',
+                        bounds,
+                        rawHeadAnchor: { x: p.x, y: p.y },
+                        headAnchor: { x: p.x, y: p.y },
+                        headRect: null,
+                        headMode: 'head',
+                        headSource: 'bone',
+                        bodyRect: null,
+                        bodySource: null,
+                        reliableHeadRect: false,
+                        preciseDisplayInfoRect: false,
+                        coarseHitAreaHeadRect: false
+                    };
                 },
                 getHeadScreenAnchor() {
                     const p = window.__testVrmHeadAnchor;

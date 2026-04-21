@@ -889,6 +889,7 @@ class Live2DManager {
             reliableHeadRect: result.reliableHeadRect,
             preciseDisplayInfoRect: result.preciseDisplayInfoRect || false,
             coarseHitAreaHeadRect: result.coarseHitAreaHeadRect || false,
+            overrideSignature: this._getBubbleGeometryOverrideSignature(),
             headRect,
             bubbleHeadRect,
             bodyRect,
@@ -901,6 +902,10 @@ class Live2DManager {
         const cache = this._bubbleGeometryCache;
         if (!cache) { return null; }
         if (cache.modelPath !== this.modelRootPath) {
+            this._bubbleGeometryCache = null;
+            return null;
+        }
+        if (cache.overrideSignature !== this._getBubbleGeometryOverrideSignature()) {
             this._bubbleGeometryCache = null;
             return null;
         }
@@ -3259,6 +3264,27 @@ class Live2DManager {
         return overrideMap[this.modelRootPath] ||
             overrideMap[this.modelName] ||
             null;
+    }
+
+    _getBubbleGeometryOverrideSignature() {
+        const override = this._getBubbleGeometryOverride();
+        if (!override || typeof override !== 'object') {
+            return 'none';
+        }
+
+        const readFinite = (key) => {
+            const value = Number(override[key]);
+            return Number.isFinite(value) ? value : null;
+        };
+
+        return JSON.stringify({
+            headScaleX: readFinite('headScaleX'),
+            headScaleY: readFinite('headScaleY'),
+            headOffsetX: readFinite('headOffsetX'),
+            headOffsetY: readFinite('headOffsetY'),
+            anchorOffsetX: readFinite('anchorOffsetX'),
+            anchorOffsetY: readFinite('anchorOffsetY')
+        });
     }
 
     _applyBubbleGeometryOverride(geometryInfo) {
