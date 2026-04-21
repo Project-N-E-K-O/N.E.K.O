@@ -120,6 +120,11 @@ class ModelProfiler {
             if (dt > this._allTimeFtMax) this._allTimeFtMax = dt;
             this._allTimeFtSum += dt;
             this._allTimeFtCount++;
+        } else if (dt >= 1000) {
+            // 后台标签页切回来，丢弃本次采样窗口，重置计数
+            this._frameCount = 0;
+            this._lastSampleTime = now;
+            return;
         }
 
         // 按采样间隔记录 FPS
@@ -278,7 +283,9 @@ class ModelProfiler {
                 programs: info?.programs?.length || 0,
                 pixelRatio: renderer.getPixelRatio?.() || 1,
                 size: (() => {
-                    const s = renderer.getSize?.(new (window.THREE?.Vector2 || function() { this.x = 0; this.y = 0; })());
+                    const V2 = window.THREE?.Vector2;
+                    if (!V2) return null;
+                    const s = renderer.getSize?.(new V2());
                     return s ? { width: s.x || s.width, height: s.y || s.height } : null;
                 })()
             };
