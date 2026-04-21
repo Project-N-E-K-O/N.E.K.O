@@ -9,7 +9,7 @@ import {
   type ComposerAttachment,
   type AvatarInteractionPayload,
 } from './message-schema';
-import QuickActionsPanel, { type ActionDescriptor } from './QuickActionsPanel';
+import CommandPalette, { type CommandItem, type UserPreferences } from './CommandPalette';
 
 export type ChatWindowProps = ChatWindowSchemaProps & {
   onMessageAction?: (message: ChatMessage, action: MessageAction) => void;
@@ -20,9 +20,11 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
   onAvatarInteraction?: (payload: AvatarInteractionPayload) => void;
   onJukeboxClick?: () => void;
   onTranslateToggle?: () => void;
-  quickActions?: ActionDescriptor[];
-  onQuickActionExecute?: (actionId: string, value: unknown) => Promise<ActionDescriptor | null>;
+  quickActions?: CommandItem[];
+  quickActionsPreferences?: UserPreferences;
+  onQuickActionExecute?: (actionId: string, value: unknown) => Promise<CommandItem | null>;
   onQuickActionsRequest?: () => void;
+  onQuickActionsPreferencesChange?: (prefs: UserPreferences) => void;
 };
 
 const defaultMessages: ChatMessage[] = [];
@@ -545,8 +547,10 @@ export default function App({
   onJukeboxClick,
   onTranslateToggle,
   quickActions,
+  quickActionsPreferences,
   onQuickActionExecute,
   onQuickActionsRequest,
+  onQuickActionsPreferencesChange,
   rollbackDraft,
   _rollbackKey,
 }: ChatWindowProps) {
@@ -1157,12 +1161,16 @@ export default function App({
     }
   }, []);
 
-  const handleQuickActionExecute = useCallback(async (actionId: string, value: unknown): Promise<ActionDescriptor | null> => {
+  const handleQuickActionExecute = useCallback(async (actionId: string, value: unknown): Promise<CommandItem | null> => {
     if (onQuickActionExecute) {
       return onQuickActionExecute(actionId, value);
     }
     return null;
   }, [onQuickActionExecute]);
+
+  const handleQuickActionsPreferencesChange = useCallback((prefs: UserPreferences) => {
+    if (onQuickActionsPreferencesChange) onQuickActionsPreferencesChange(prefs);
+  }, [onQuickActionsPreferencesChange]);
 
   function submitDraft() {
     if (submittingRef.current) return;
@@ -1324,11 +1332,13 @@ export default function App({
             </div>
           ) : null}
           {quickActionsPanelOpen ? (
-            <QuickActionsPanel
-              actions={quickActions ?? []}
-              onExecuteAction={handleQuickActionExecute}
+            <CommandPalette
+              items={quickActions ?? []}
+              preferences={quickActionsPreferences ?? { pinned: [], hidden: [], recent: [] }}
+              onExecute={handleQuickActionExecute}
               onInjectText={handleQuickActionInjectText}
               onNavigate={handleQuickActionNavigate}
+              onPreferencesChange={handleQuickActionsPreferencesChange}
               onClose={() => setQuickActionsPanelOpen(false)}
             />
           ) : null}

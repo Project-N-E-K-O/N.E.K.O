@@ -1,6 +1,6 @@
 """ActionAggregationService — merge actions from all providers.
 
-Holds instances of the three ``ActionProvider`` implementations and
+Holds instances of the ``ActionProvider`` implementations and
 exposes a single ``aggregate_actions`` method that collects, merges and
 returns a flat list of ``ActionDescriptor`` items.
 
@@ -11,6 +11,7 @@ provider does not block the others.
 from __future__ import annotations
 
 from plugin.logging_config import get_logger
+from plugin.server.application.actions.builtin_provider import BuiltinActionsProvider
 from plugin.server.application.actions.list_actions_provider import ListActionsProvider
 from plugin.server.application.actions.settings_provider import SettingsActionProvider
 from plugin.server.application.actions.system_provider import SystemActionProvider
@@ -28,6 +29,7 @@ class ActionAggregationService:
             SettingsActionProvider(),
             ListActionsProvider(),
             SystemActionProvider(),
+            BuiltinActionsProvider(),
         ]
 
     async def aggregate_actions(

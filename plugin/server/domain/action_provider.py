@@ -1,7 +1,7 @@
-"""ActionProvider protocol for the Quick Actions Panel.
+"""ActionProvider protocol for the Command Palette.
 
 Each provider is responsible for generating ``ActionDescriptor`` items
-from a single source (PluginSettings, list_actions, system lifecycle, …).
+from a single source (PluginSettings, list_actions, system entries, builtin, …).
 """
 
 from __future__ import annotations

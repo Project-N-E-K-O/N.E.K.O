@@ -25,6 +25,7 @@
     var savedShellPosition = null; // {left, top} before minimize – used to fly back on expand
     var _sortKeySeq = 0; // monotonically increasing sortKey counter
     var _cachedActions = [];
+    var _cachedPreferences = { pinned: [], hidden: [], recent: [] };
 
     var state = {
         viewProps: null,
@@ -403,6 +404,7 @@
         })
         .then(function (data) {
             _cachedActions = (data && data.actions) || [];
+            _cachedPreferences = (data && data.preferences) || { pinned: [], hidden: [], recent: [] };
             renderWindow();
             return _cachedActions;
         })
@@ -445,6 +447,19 @@
         });
     }
 
+    function saveChatActionPreferences(prefs) {
+        _cachedPreferences = prefs;
+        renderWindow();
+        fetch('/chat/actions/preferences', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify(prefs)
+        }).catch(function (err) {
+            console.warn('[ReactChatWindow] saveChatActionPreferences failed:', err);
+        });
+    }
+
     /* ---- End Quick Actions ---- */
 
     function buildRenderProps() {
@@ -467,11 +482,15 @@
             onAvatarGeneratorClick: handleAvatarGeneratorClick,
             onTranslateToggle: handleTranslateToggle,
             quickActions: _cachedActions,
+            quickActionsPreferences: _cachedPreferences,
             onQuickActionsRequest: function () {
                 fetchChatActions();
             },
             onQuickActionExecute: function (actionId, value) {
                 return executeChatAction(actionId, value);
+            },
+            onQuickActionsPreferencesChange: function (prefs) {
+                saveChatActionPreferences(prefs);
             }
         });
     }

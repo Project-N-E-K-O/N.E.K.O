@@ -91,6 +91,7 @@ def _build_descriptor_for_field(
         description=field_info.description or "",
         category=plugin_name,
         plugin_id=plugin_id,
+        keywords=[plugin_id, plugin_name, field_name, label],
     )
 
     # --- bool → toggle ---
@@ -99,6 +100,7 @@ def _build_descriptor_for_field(
             **base,
             control="toggle",
             current_value=bool(current_value) if current_value is not None else False,
+            icon="🔘",
         )
 
     # --- int / float → slider or number ---
@@ -117,6 +119,7 @@ def _build_descriptor_for_field(
                 min=ge,
                 max=le,
                 step=step,
+                icon="🎚",
             )
 
         # number fallback
@@ -128,6 +131,7 @@ def _build_descriptor_for_field(
             current_value=current_value,
             min=min_val,
             max=max_val,
+            icon="🔢",
         )
 
     # --- str with enum / Literal → dropdown ---
@@ -139,6 +143,7 @@ def _build_descriptor_for_field(
                 control="dropdown",
                 current_value=current_value,
                 options=options,
+                icon="📋",
             )
         # str without enum → skip (no sensible control)
         return None
@@ -151,6 +156,7 @@ def _build_descriptor_for_field(
             control="dropdown",
             current_value=str(current_value.value) if isinstance(current_value, enum.Enum) else str(current_value) if current_value is not None else None,
             options=options,
+            icon="📋",
         )
 
     # --- Literal (non-str) → dropdown ---
@@ -163,6 +169,7 @@ def _build_descriptor_for_field(
                 control="dropdown",
                 current_value=str(current_value) if current_value is not None else None,
                 options=[str(a) for a in args],
+                icon="📋",
             )
 
     # Unsupported type → skip

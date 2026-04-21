@@ -2,10 +2,12 @@
 """
 Actions Proxy Router
 
-Proxies Quick Actions Panel requests from the main server to the
+Proxies Command Palette requests from the main server to the
 user plugin server, which owns the actual action providers.
 
 GET  /chat/actions                       → plugin server
+GET  /chat/actions/preferences           → plugin server
+POST /chat/actions/preferences           → plugin server
 POST /chat/actions/{action_id}/execute   → plugin server
 """
 
@@ -40,8 +42,43 @@ async def proxy_chat_actions(
             return resp.json()
     except Exception:
         logger.debug("Failed to proxy GET /chat/actions", exc_info=True)
-        return {"actions": [], "categories": []}
+        return {"actions": [], "preferences": {"pinned": [], "hidden": [], "recent": []}}
 
+
+# ── Preferences routes MUST be registered before the {action_id:path}
+#    route below, otherwise FastAPI would match "preferences" as an action_id.
+
+@router.get("/chat/actions/preferences")
+async def proxy_get_preferences():
+    """Proxy GET /chat/actions/preferences to the user plugin server."""
+    url = f"{_PLUGIN_BASE}/chat/actions/preferences"
+    try:
+        async with httpx.AsyncClient(timeout=5.0, proxy=None, trust_env=False) as client:
+            resp = await client.get(url)
+            return resp.json()
+    except Exception:
+        logger.debug("Failed to proxy GET /chat/actions/preferences", exc_info=True)
+        return {"pinned": [], "hidden": [], "recent": []}
+
+
+@router.post("/chat/actions/preferences")
+async def proxy_save_preferences(request: Request):
+    """Proxy POST /chat/actions/preferences to the user plugin server."""
+    url = f"{_PLUGIN_BASE}/chat/actions/preferences"
+    body = await request.json()
+    try:
+        async with httpx.AsyncClient(timeout=5.0, proxy=None, trust_env=False) as client:
+            resp = await client.post(url, json=body)
+            return resp.json()
+    except Exception as exc:
+        logger.warning("Failed to proxy POST /chat/actions/preferences: %s", exc)
+        return JSONResponse(
+            status_code=502,
+            content={"pinned": [], "hidden": [], "recent": []},
+        )
+
+
+# ── Execute route uses {action_id:path} — must come last.
 
 @router.post("/chat/actions/{action_id:path}/execute")
 async def proxy_chat_action_execute(

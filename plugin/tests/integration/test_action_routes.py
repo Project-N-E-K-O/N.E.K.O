@@ -87,6 +87,18 @@ class _FakeExecutionService:
         return ActionExecuteResponse(success=True, message="ok")
 
 
+class _FakePreferencesService:
+    async def load(self):
+        from plugin.server.domain.action_models import UserActionPreferences
+        return UserActionPreferences()
+
+    async def save(self, prefs):
+        return prefs
+
+    async def touch_recent(self, action_id: str) -> None:
+        pass
+
+
 # ── Fixtures ─────────────────────────────────────────────────────────
 
 @pytest.fixture
@@ -104,6 +116,7 @@ async def client(actions_test_app: FastAPI, monkeypatch: pytest.MonkeyPatch) -> 
 
     monkeypatch.setattr(route_module, "aggregation_service", _FakeAggregationService())
     monkeypatch.setattr(route_module, "execution_service", _FakeExecutionService())
+    monkeypatch.setattr(route_module, "preferences_service", _FakePreferencesService())
 
     transport = ASGITransport(app=actions_test_app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as c:
@@ -120,8 +133,8 @@ class TestGetChatActions:
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["actions"]) == 3
-        assert isinstance(data["categories"], list)
-        assert "系统" in data["categories"]
+        assert isinstance(data["preferences"], dict)
+        assert "pinned" in data["preferences"]
 
     async def test_filter_by_plugin_id(self, client: AsyncClient) -> None:
         resp = await client.get("/chat/actions", params={"plugin_id": "demo"})

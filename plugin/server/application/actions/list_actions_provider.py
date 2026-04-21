@@ -53,6 +53,8 @@ def _map_list_action(
             category=plugin_name,
             plugin_id=plugin_id,
             inject_text=inject_text,
+            icon="📎",
+            keywords=[plugin_id, plugin_name, action_id, label],
         )
 
     if kind in _NAVIGATION_KINDS:
@@ -69,6 +71,8 @@ def _map_list_action(
             plugin_id=plugin_id,
             target=target,
             open_in=open_in,
+            icon="↗",
+            keywords=[plugin_id, plugin_name, action_id, label],
         )
 
     # All other kinds (toggle, trigger, action, button, …) are
@@ -82,6 +86,8 @@ def _map_list_action(
             category=plugin_name,
             plugin_id=plugin_id,
             control="button",
+            icon="⚡",
+            keywords=[plugin_id, plugin_name, action_id, label],
         )
 
     return None

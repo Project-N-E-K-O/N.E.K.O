@@ -1,12 +1,13 @@
-"""SystemActionProvider — lifecycle, toggle, entry, UI and profile actions.
+"""SystemActionProvider — entry actions and UI navigation for running plugins.
 
-For every registered plugin this provider generates:
+For every registered *running* plugin this provider generates:
 
-* ``start`` / ``stop`` / ``reload`` instant actions (with disabled logic)
-* ``plugin_toggle`` — running state toggle
-* ``entry_toggle`` — per-entry enabled/disabled toggle (running plugins only)
+* Button actions for non-service entries (action, hook, timer, chat_command, …)
 * Navigation action for plugins with static UI
-* Profile dropdown for plugins with multiple config profiles
+
+Lifecycle management (start/stop/reload/toggle) and service toggles are
+intentionally excluded — those belong in the plugin management dashboard,
+not in the chat command palette.
 """
 
 from __future__ import annotations
@@ -20,8 +21,6 @@ from plugin.logging_config import get_logger
 from plugin.server.domain.action_models import ActionDescriptor
 
 logger = get_logger("server.application.actions.system_provider")
-
-_SYSTEM_CATEGORY = "系统"
 
 
 # ---------------------------------------------------------------------------
@@ -41,14 +40,7 @@ def _to_bool(value: object, *, default: bool) -> bool:
 
 
 def _has_static_ui(meta: dict[str, Any]) -> bool:
-    """Check whether a plugin has a usable static UI directory.
-
-    Only returns True when the plugin has *explicitly* registered a
-    static UI config (via ``register_static_ui`` or ``static_ui_config``
-    in metadata).  The config_path inference is intentionally removed
-    to avoid false positives for plugins that happen to have a
-    ``static/`` directory but don't serve a UI.
-    """
+    """Check whether a plugin has a usable static UI directory."""
     static_ui_obj = meta.get("static_ui_config")
     if not isinstance(static_ui_obj, Mapping):
         return False
@@ -71,11 +63,9 @@ def _get_entries_for_plugin(
     seen: set[str] = set()
 
     for key, handler in handlers_snapshot.items():
-        # Keys are "{plugin_id}.{entry_id}" or "{plugin_id}:plugin_entry:{entry_id}"
         if not isinstance(key, str):
             continue
 
-        # Prefer the dot-separated key to avoid duplicates
         if key.startswith(f"{plugin_id}."):
             entry_id = key[len(plugin_id) + 1:]
         elif key.startswith(f"{plugin_id}:plugin_entry:"):
@@ -90,48 +80,18 @@ def _get_entries_for_plugin(
         meta = getattr(handler, "meta", None)
         entry_name = getattr(meta, "name", entry_id) if meta else entry_id
         entry_kind = getattr(meta, "kind", "action") if meta else "action"
+        entry_description = getattr(meta, "description", "") if meta else ""
         entry_input_schema = getattr(meta, "input_schema", None) if meta else None
-
-        # Determine enabled state from metadata
-        enabled = True
-        meta_dict = getattr(meta, "metadata", None)
-        if isinstance(meta_dict, Mapping):
-            enabled = _to_bool(meta_dict.get("enabled", True), default=True)
 
         entries.append({
             "id": entry_id,
             "name": entry_name,
             "kind": entry_kind,
-            "enabled": enabled,
+            "description": entry_description,
             "input_schema": entry_input_schema,
         })
 
     return entries
-
-
-def _get_profiles_for_plugin(plugin_id: str) -> dict[str, Any] | None:
-    """Return profile state for *plugin_id*, or None if unavailable / single profile."""
-    try:
-        from plugin.config.service import get_plugin_profiles_state
-
-        profiles_state = get_plugin_profiles_state(plugin_id)
-        if not isinstance(profiles_state, dict):
-            return None
-
-        config_profiles = profiles_state.get("config_profiles")
-        if not isinstance(config_profiles, dict):
-            return None
-
-        files = config_profiles.get("files")
-        if not isinstance(files, dict) or len(files) < 2:
-            return None
-
-        return {
-            "active": config_profiles.get("active"),
-            "names": list(files.keys()),
-        }
-    except Exception:
-        return None
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +101,7 @@ def _get_profiles_for_plugin(plugin_id: str) -> dict[str, Any] | None:
 def _collect_system_actions_sync(
     plugin_id_filter: str | None = None,
 ) -> list[ActionDescriptor]:
-    """Collect system-level actions (called from a worker thread)."""
+    """Collect user-facing actions from running plugins (called from a worker thread)."""
     from plugin.core.state import state
 
     plugins_snapshot = state.get_plugins_snapshot_cached()
@@ -162,58 +122,41 @@ def _collect_system_actions_sync(
         plugin_name = str(meta.get("name") or pid)
         is_running = pid in hosts_snapshot
 
-        # ── Plugin lifecycle (composite: toggle + reload) ──
-        actions.append(ActionDescriptor(
-            action_id=f"system:{pid}:toggle",
-            type="instant",
-            label=plugin_name,
-            description="",
-            category=_SYSTEM_CATEGORY,
-            plugin_id=pid,
-            control="plugin_lifecycle",
-            current_value=is_running,
-        ))
-
         # ── Entry actions (running plugins only) ──
+        # Only non-service entries are exposed as user-facing commands.
+        # Services are background processes managed via the admin dashboard.
         if is_running:
             entries = _get_entries_for_plugin(pid, handlers_snapshot)
             for entry in entries:
-                entry_id = entry["id"]
-                entry_name = entry.get("name", entry_id)
                 entry_kind = entry.get("kind", "action")
 
-                # Only long-running service entries get a toggle;
-                # everything else (action, hook, timer, …) is a button.
+                # Skip service entries — they are not user-facing commands
                 if entry_kind == "service":
-                    actions.append(ActionDescriptor(
-                        action_id=f"system:{pid}:entry:{entry_id}",
-                        type="instant",
-                        label=str(entry_name),
-                        description="",
-                        category=_SYSTEM_CATEGORY,
-                        plugin_id=pid,
-                        control="entry_toggle",
-                        current_value=entry.get("enabled", True),
-                    ))
-                else:
-                    # Pass input_schema so the frontend can show a parameter form
-                    raw_schema = entry.get("input_schema")
-                    schema: dict[str, object] | None = None
-                    if isinstance(raw_schema, dict):
-                        props = raw_schema.get("properties")
-                        if isinstance(props, dict) and len(props) > 0:
-                            schema = raw_schema
+                    continue
 
-                    actions.append(ActionDescriptor(
-                        action_id=f"system:{pid}:entry:{entry_id}",
-                        type="instant",
-                        label=str(entry_name),
-                        description="",
-                        category=_SYSTEM_CATEGORY,
-                        plugin_id=pid,
-                        control="button",
-                        input_schema=schema,
-                    ))
+                entry_id = entry["id"]
+                entry_name = entry.get("name", entry_id)
+                entry_desc = entry.get("description", "")
+
+                raw_schema = entry.get("input_schema")
+                schema: dict[str, object] | None = None
+                if isinstance(raw_schema, dict):
+                    props = raw_schema.get("properties")
+                    if isinstance(props, dict) and len(props) > 0:
+                        schema = raw_schema
+
+                actions.append(ActionDescriptor(
+                    action_id=f"system:{pid}:entry:{entry_id}",
+                    type="instant",
+                    label=str(entry_name),
+                    description=str(entry_desc),
+                    category=plugin_name,
+                    plugin_id=pid,
+                    control="button",
+                    input_schema=schema,
+                    icon="⚡",
+                    keywords=[pid, plugin_name, str(entry_name)],
+                ))
 
         # ── Static UI navigation ──
         if _has_static_ui(meta):
@@ -223,25 +166,12 @@ def _collect_system_actions_sync(
                 type="navigation",
                 label=f"打开 {plugin_name} UI",
                 description="",
-                category=_SYSTEM_CATEGORY,
+                category=plugin_name,
                 plugin_id=pid,
                 target=f"http://127.0.0.1:{_ui_port}/plugin/{pid}/ui/",
                 open_in="new_tab",
-            ))
-
-        # ── Config profile dropdown ──
-        profiles = _get_profiles_for_plugin(pid)
-        if profiles is not None:
-            actions.append(ActionDescriptor(
-                action_id=f"system:{pid}:profile",
-                type="instant",
-                label="配置 Profile",
-                description="",
-                category=_SYSTEM_CATEGORY,
-                plugin_id=pid,
-                control="dropdown",
-                current_value=profiles.get("active"),
-                options=profiles.get("names", []),
+                icon="↗",
+                keywords=[pid, plugin_name, "ui", "界面"],
             ))
 
     return actions
@@ -252,7 +182,7 @@ def _collect_system_actions_sync(
 # ---------------------------------------------------------------------------
 
 class SystemActionProvider:
-    """Generate system-level ``ActionDescriptor`` items for every registered plugin."""
+    """Generate user-facing ``ActionDescriptor`` items for running plugins."""
 
     async def get_actions(
         self,

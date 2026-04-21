@@ -28,6 +28,7 @@ def _make_handler(
     name: str = "",
     kind: str = "action",
     enabled: bool = True,
+    description: str = "",
 ) -> Any:
     """Create a fake event handler with meta attributes."""
     from types import SimpleNamespace
@@ -36,7 +37,9 @@ def _make_handler(
         id=entry_id,
         name=name or entry_id,
         kind=kind,
+        description=description,
         metadata={"enabled": enabled},
+        input_schema=None,
     )
     return SimpleNamespace(meta=meta)
 
@@ -79,28 +82,23 @@ class TestCollectSystemActions:
         actions = self._collect(_FakeState())
         assert actions == []
 
-    def test_stopped_plugin_produces_lifecycle_action(self) -> None:
+    def test_stopped_plugin_produces_no_actions(self) -> None:
+        """Stopped plugins should not produce any user-facing actions."""
         state = _FakeState(plugins={"demo": _make_plugin_meta()})
         actions = self._collect(state)
+        assert len(actions) == 0
 
-        lifecycle = [a for a in actions if a.control == "plugin_lifecycle"]
-        assert len(lifecycle) == 1
-        assert lifecycle[0].action_id == "system:demo:toggle"
-        assert lifecycle[0].current_value is False  # not running
-
-    def test_running_plugin_lifecycle_shows_running(self) -> None:
+    def test_no_lifecycle_actions_emitted(self) -> None:
+        """Lifecycle management is not part of the command palette."""
         state = _FakeState(
             plugins={"demo": _make_plugin_meta()},
             hosts={"demo": object()},
         )
         actions = self._collect(state)
-
         lifecycle = [a for a in actions if a.control == "plugin_lifecycle"]
-        assert len(lifecycle) == 1
-        assert lifecycle[0].current_value is True
+        assert len(lifecycle) == 0
 
     def test_no_start_stop_reload_buttons_emitted(self) -> None:
-        """The old separate start/stop/reload buttons should no longer exist."""
         state = _FakeState(
             plugins={"demo": _make_plugin_meta()},
             hosts={"demo": object()},
@@ -110,16 +108,25 @@ class TestCollectSystemActions:
         assert "system:demo:start" not in ids
         assert "system:demo:stop" not in ids
         assert "system:demo:reload" not in ids
+        assert "system:demo:toggle" not in ids
 
     def test_plugin_id_filter(self) -> None:
-        state = _FakeState(plugins={
-            "a": _make_plugin_meta("a", "A"),
-            "b": _make_plugin_meta("b", "B"),
-        })
+        state = _FakeState(
+            plugins={
+                "a": _make_plugin_meta("a", "A"),
+                "b": _make_plugin_meta("b", "B"),
+            },
+            hosts={"a": object(), "b": object()},
+            handlers={
+                "a.do_a": _make_handler("do_a"),
+                "b.do_b": _make_handler("do_b"),
+            },
+        )
         actions = self._collect(state, plugin_id="a")
         assert all(a.plugin_id == "a" for a in actions)
 
-    def test_service_entry_gets_entry_toggle(self) -> None:
+    def test_service_entry_skipped(self) -> None:
+        """Service entries are background processes, not user-facing commands."""
         state = _FakeState(
             plugins={"demo": _make_plugin_meta()},
             hosts={"demo": object()},
@@ -127,9 +134,7 @@ class TestCollectSystemActions:
         )
         actions = self._collect(state)
         entry_actions = [a for a in actions if "entry:" in a.action_id]
-        assert len(entry_actions) == 1
-        assert entry_actions[0].control == "entry_toggle"
-        assert entry_actions[0].current_value is True
+        assert len(entry_actions) == 0
 
     def test_action_entry_gets_button(self) -> None:
         state = _FakeState(
@@ -141,6 +146,18 @@ class TestCollectSystemActions:
         entry_actions = [a for a in actions if "entry:" in a.action_id]
         assert len(entry_actions) == 1
         assert entry_actions[0].control == "button"
+
+    def test_entry_has_keywords_and_icon(self) -> None:
+        state = _FakeState(
+            plugins={"demo": _make_plugin_meta()},
+            hosts={"demo": object()},
+            handlers={"demo.do_thing": _make_handler("do_thing", kind="action")},
+        )
+        actions = self._collect(state)
+        entry = [a for a in actions if "entry:" in a.action_id][0]
+        assert entry.icon == "⚡"
+        assert "demo" in entry.keywords
+        assert "Demo Plugin" in entry.keywords
 
     def test_entries_only_for_running_plugins(self) -> None:
         state = _FakeState(
@@ -156,6 +173,17 @@ class TestCollectSystemActions:
         state = _FakeState(plugins={"bad": "not-a-dict"})
         actions = self._collect(state)
         assert actions == []
+
+    def test_entry_category_is_plugin_name(self) -> None:
+        """Entry actions should use the plugin name as category, not '系统'."""
+        state = _FakeState(
+            plugins={"demo": _make_plugin_meta()},
+            hosts={"demo": object()},
+            handlers={"demo.do_thing": _make_handler("do_thing", kind="action")},
+        )
+        actions = self._collect(state)
+        entry = [a for a in actions if "entry:" in a.action_id][0]
+        assert entry.category == "Demo Plugin"
 
 
 @pytest.mark.plugin_unit
@@ -183,11 +211,6 @@ class TestGetEntriesForPlugin:
         handlers = {"other.entry_x": _make_handler("entry_x")}
         entries = module._get_entries_for_plugin("demo", handlers)
         assert len(entries) == 0
-
-    def test_disabled_entry(self) -> None:
-        handlers = {"demo.off": _make_handler("off", enabled=False)}
-        entries = module._get_entries_for_plugin("demo", handlers)
-        assert entries[0]["enabled"] is False
 
 
 @pytest.mark.plugin_unit
