@@ -26,6 +26,7 @@
     var _sortKeySeq = 0; // monotonically increasing sortKey counter
     var _cachedActions = [];
     var _cachedPreferences = { pinned: [], hidden: [], recent: [] };
+    var _actionsLoading = false;
 
     var state = {
         viewProps: null,
@@ -393,6 +394,8 @@
     /* ---- Quick Actions (chat plugin commands) ---- */
 
     function fetchChatActions() {
+        _actionsLoading = true;
+        renderWindow();
         return fetch('/chat/actions', {
             method: 'GET',
             headers: { 'Accept': 'application/json' },
@@ -405,11 +408,13 @@
         .then(function (data) {
             _cachedActions = (data && data.actions) || [];
             _cachedPreferences = (data && data.preferences) || { pinned: [], hidden: [], recent: [] };
+            _actionsLoading = false;
             renderWindow();
             return _cachedActions;
         })
         .catch(function (err) {
             console.warn('[ReactChatWindow] fetchChatActions failed:', err);
+            _actionsLoading = false;
             return _cachedActions;
         });
     }
@@ -483,6 +488,7 @@
             onTranslateToggle: handleTranslateToggle,
             quickActions: _cachedActions,
             quickActionsPreferences: _cachedPreferences,
+            quickActionsLoading: _actionsLoading,
             onQuickActionsRequest: function () {
                 fetchChatActions();
             },

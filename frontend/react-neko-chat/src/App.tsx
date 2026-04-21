@@ -22,6 +22,7 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
   onTranslateToggle?: () => void;
   quickActions?: CommandItem[];
   quickActionsPreferences?: UserPreferences;
+  quickActionsLoading?: boolean;
   onQuickActionExecute?: (actionId: string, value: unknown) => Promise<CommandItem | null>;
   onQuickActionsRequest?: () => void;
   onQuickActionsPreferencesChange?: (prefs: UserPreferences) => void;
@@ -548,6 +549,7 @@ export default function App({
   onTranslateToggle,
   quickActions,
   quickActionsPreferences,
+  quickActionsLoading,
   onQuickActionExecute,
   onQuickActionsRequest,
   onQuickActionsPreferencesChange,
@@ -1335,6 +1337,7 @@ export default function App({
             <CommandPalette
               items={quickActions ?? []}
               preferences={quickActionsPreferences ?? { pinned: [], hidden: [], recent: [] }}
+              loading={quickActionsLoading}
               onExecute={handleQuickActionExecute}
               onInjectText={handleQuickActionInjectText}
               onNavigate={handleQuickActionNavigate}

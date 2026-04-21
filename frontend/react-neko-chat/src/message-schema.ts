@@ -173,6 +173,7 @@ export const chatWindowPropsSchema = z.object({
     .optional(),
   quickActions: z.array(z.record(z.unknown())).optional() as unknown as z.ZodOptional<z.ZodArray<z.ZodType<import('./CommandPalette').CommandItem>>>,
   quickActionsPreferences: z.record(z.unknown()).optional() as unknown as z.ZodOptional<z.ZodType<import('./CommandPalette').UserPreferences>>,
+  quickActionsLoading: z.boolean().optional(),
   onQuickActionExecute: z.function()
     .args(z.string(), z.unknown())
     .returns(z.promise(z.union([z.record(z.unknown()), z.null()])))

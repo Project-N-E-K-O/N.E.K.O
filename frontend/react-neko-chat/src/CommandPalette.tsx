@@ -38,6 +38,7 @@ export interface UserPreferences {
 export interface CommandPaletteProps {
   items: CommandItem[];
   preferences: UserPreferences;
+  loading?: boolean;
   onExecute: (actionId: string, value: unknown) => Promise<CommandItem | null>;
   onInjectText: (text: string) => void;
   onNavigate: (target: string, openIn: string) => void;
@@ -359,6 +360,7 @@ function CommandRow({ item, loading, error, prefs, onExec, onInject, onNavigate,
   const [ctxOpen, setCtxOpen] = useState(false);
   const [paramFormOpen, setParamFormOpen] = useState(false);
   const isHidden = prefs.hidden.includes(item.action_id);
+  const isPinned = prefs.pinned.includes(item.action_id);
 
   const hasInlineWidget = item.type === 'instant' && (
     item.control === 'toggle' || item.control === 'entry_toggle' ||
@@ -373,7 +375,7 @@ function CommandRow({ item, loading, error, prefs, onExec, onInject, onNavigate,
   })();
 
   const handleRowClick = () => {
-    if (hasInlineWidget) return; // Inline widgets handle their own clicks
+    if (hasInlineWidget) return;
     if (item.type === 'chat_inject') {
       onInject(item.inject_text ?? '');
       return;
@@ -402,25 +404,34 @@ function CommandRow({ item, loading, error, prefs, onExec, onInject, onNavigate,
         tabIndex={hasInlineWidget ? undefined : 0}
         onKeyDown={hasInlineWidget ? undefined : (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleRowClick(); } }}
       >
-        <span className="cp-row-icon" aria-hidden="true">{defaultIcon(item)}</span>
+        <span className="cp-row-icon-wrap" aria-hidden="true">
+          <span className="cp-row-icon">{defaultIcon(item)}</span>
+        </span>
         <div className="cp-row-info">
-          <span className="cp-row-label">{item.label}</span>
-          {item.description && <span className="cp-row-desc">{item.description}</span>}
+          <div className="cp-row-label-line">
+            <span className="cp-row-label">{item.label}</span>
+            {isPinned && <span className="cp-row-pin-badge" aria-label="pinned">📌</span>}
+          </div>
+          {item.description ? (
+            <span className="cp-row-desc">{item.description}</span>
+          ) : (
+            <span className="cp-row-desc cp-row-category">{item.category}</span>
+          )}
         </div>
         <div className="cp-row-right">
           {loading && <span className="cp-spinner" />}
           <InlineWidget {...controlProps} />
           {!hasInlineWidget && item.type === 'chat_inject' && (
-            <span className="cp-row-hint">{i18n('commandPalette.inject', '注入')}</span>
+            <span className="cp-row-badge cp-row-badge-inject">{i18n('commandPalette.inject', '注入')}</span>
           )}
           {!hasInlineWidget && item.type === 'navigation' && (
-            <span className="cp-row-hint">{i18n('commandPalette.open', '打开')}</span>
+            <span className="cp-row-badge cp-row-badge-nav">{i18n('commandPalette.open', '打开')}</span>
           )}
           {!hasInlineWidget && item.control === 'button' && !hasParams && (
-            <span className="cp-row-hint">{i18n('commandPalette.run', '执行')}</span>
+            <span className="cp-row-badge cp-row-badge-run">{i18n('commandPalette.run', '执行')}</span>
           )}
           {!hasInlineWidget && item.control === 'button' && hasParams && (
-            <span className="cp-row-hint">{paramFormOpen ? '▾' : '▸'}</span>
+            <span className="cp-row-badge cp-row-badge-run">{paramFormOpen ? '▾' : i18n('commandPalette.run', '执行')}</span>
           )}
           {error && <span className="cp-err" title={error}>!</span>}
           <button
@@ -429,7 +440,7 @@ function CommandRow({ item, loading, error, prefs, onExec, onInject, onNavigate,
             aria-label={i18n('commandPalette.more', '更多')}
             onClick={e => { e.stopPropagation(); setCtxOpen(o => !o); }}
           >
-            ⋯
+            ⋮
           </button>
           {ctxOpen && (
             <ContextMenu
@@ -493,6 +504,7 @@ function ToastStack({ toasts }: { toasts: ToastItem[] }) {
 export default function CommandPalette({
   items,
   preferences,
+  loading: externalLoading = false,
   onExecute,
   onInjectText,
   onNavigate,
@@ -542,6 +554,9 @@ export default function CommandPalette({
     const label = localItems.find(a => a.action_id === actionId)?.label ?? actionId;
     try {
       const updated = await onExecute(actionId, value);
+      // Don't do local patching here — the host will re-fetch all actions
+      // and pass new `items` prop, which triggers the useEffect sync above.
+      // Local patching would conflict with the full refresh.
       if (updated) {
         setLocalItems(prev => prev.map(a => (a.action_id === updated.action_id ? updated : a)));
       }
@@ -642,12 +657,38 @@ export default function CommandPalette({
           onChange={e => setSearch(e.target.value)}
           aria-label={i18n('commandPalette.searchAriaLabel', '搜索操作')}
         />
+        {search && (
+          <button
+            type="button"
+            className="cp-search-clear"
+            aria-label={i18n('commandPalette.clearSearch', '清除搜索')}
+            onClick={() => { setSearch(''); searchRef.current?.focus(); }}
+          >
+            ✕
+          </button>
+        )}
       </div>
 
       {/* ── Content ── */}
       <div className="cp-content">
-        {!hasResults ? (
-          <div className="cp-empty">{i18n('commandPalette.empty', '无可用操作')}</div>
+        {externalLoading && localItems.length === 0 ? (
+          <div className="cp-empty">
+            <span className="cp-spinner" />
+          </div>
+        ) : !hasResults ? (
+          <div className="cp-empty">
+            <div className="cp-empty-icon" aria-hidden="true">{isSearching ? '🔍' : '📋'}</div>
+            <div className="cp-empty-text">
+              {isSearching
+                ? i18n('commandPalette.noResults', '没有匹配的操作')
+                : i18n('commandPalette.empty', '暂无可用操作')}
+            </div>
+            {isSearching && (
+              <button type="button" className="cp-empty-clear" onClick={() => { setSearch(''); searchRef.current?.focus(); }}>
+                {i18n('commandPalette.clearSearch', '清除搜索')}
+              </button>
+            )}
+          </div>
         ) : isSearching ? (
           /* Flat search results */
           <div className="cp-section">
