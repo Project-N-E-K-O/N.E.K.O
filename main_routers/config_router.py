@@ -1111,8 +1111,12 @@ async def _test_websocket(url: str, api_key: str) -> dict:
         return {"success": False, "error": f"WebSocket连接失败: {e}", "error_code": "ws_error"}
     except Exception as e:
         err_str = str(e).lower()
-        # websockets library raises InvalidStatusError for HTTP 401/403 during handshake
+        # websockets library raises InvalidStatus for HTTP 401/403 during handshake
+        # websockets 15.0.1: status code is at e.response.status_code, not e.status_code
         status_code = getattr(e, "status_code", None)
+        if status_code is None:
+            _resp = getattr(e, "response", None)
+            status_code = getattr(_resp, "status_code", None)
         if status_code in (401, 403):
             return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
         return {"success": False, "error": f"WebSocket连接失败: {e}", "error_code": "ws_error"}
@@ -1135,7 +1139,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
     """测试 API 连通性。
 
     根据 provider_type 选择测试策略：
-    - openai_compatible（默认）：GET {url}/models，4xx 时回退到 chat completion
+    - openai_compatible（默认）：通过 ChatOpenAI 发送最小 chat completion 请求（max_tokens=1）
     - websocket：WebSocket 握手，成功后立即关闭
 
     所有请求 10 秒超时。端点为 async，天然支持并发请求不阻塞。

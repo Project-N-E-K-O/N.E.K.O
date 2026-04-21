@@ -255,6 +255,18 @@ class TestWebSocketConnectivity:
         assert result["success"] is False
         assert result["error_code"] == "auth_failed"
 
+    async def test_ws_auth_failed_response_status_code(self):
+        """Exception with response.status_code=401 (websockets 15.0.1 style) → auth_failed."""
+        exc = Exception("HTTP 401")
+        mock_response = MagicMock()
+        mock_response.status_code = 401
+        exc.response = mock_response
+        with patch("websockets.connect", side_effect=exc):
+            result = await _test_websocket("wss://realtime.example.com", "sk-key")
+
+        assert result["success"] is False
+        assert result["error_code"] == "auth_failed"
+
     async def test_ws_generic_exception(self):
         """Generic Exception without status_code → ws_error."""
         with patch(

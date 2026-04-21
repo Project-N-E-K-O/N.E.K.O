@@ -3049,7 +3049,7 @@ function initConnectivityLights() {
         ConnectivityManager.onKeyChanged(key);
     }
 
-    // Core API key input change
+    # Core API key input change
     if (apiKeyInput) {
         const handleCoreKeyChange = debounce(() => {
             const oldKey = coreCurrentKey;
@@ -3062,6 +3062,18 @@ function initConnectivityLights() {
                 cascadeResetForKey(oldKey);
             }
             // 新 key 不需要 cascadeReset — reRegister 已经从缓存正确恢复了状态
+            // Re-register custom models that follow_core so they track the new key
+            CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
+                const providerSel = document.getElementById(`${mt}ModelProvider`);
+                if (providerSel && providerSel.value === 'follow_core' && lightRefs.custom[mt]) {
+                    const oldCustomKey = customCurrentKeys[mt];
+                    customCurrentKeys[mt] = reRegister(
+                        lightRefs.custom[mt].light, lightRefs.custom[mt].errorDisplay,
+                        { type: 'custom', modelType: mt }, oldCustomKey,
+                        lightRefs.custom[mt].summaryLight
+                    );
+                }
+            });
         }, 300);
 
         apiKeyInput.addEventListener('input', handleCoreKeyChange);
@@ -3080,6 +3092,18 @@ function initConnectivityLights() {
                 cascadeResetForKey(oldKey);
             }
             // 新 key 不需要 cascadeReset — reRegister 已经从缓存正确恢复了状态
+            // Re-register custom models that follow_assist so they track the new key
+            CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
+                const providerSel = document.getElementById(`${mt}ModelProvider`);
+                if (providerSel && providerSel.value === 'follow_assist' && lightRefs.custom[mt]) {
+                    const oldCustomKey = customCurrentKeys[mt];
+                    customCurrentKeys[mt] = reRegister(
+                        lightRefs.custom[mt].light, lightRefs.custom[mt].errorDisplay,
+                        { type: 'custom', modelType: mt }, oldCustomKey,
+                        lightRefs.custom[mt].summaryLight
+                    );
+                }
+            });
         }, 300);
 
         assistApiKeyInput.addEventListener('input', handleAssistKeyChange);
