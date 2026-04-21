@@ -179,7 +179,8 @@ async def test_plugin_cli_route_workflow_pack_analyze_inspect_verify_and_unpack(
 
     monkeypatch.setattr(plugin_cli_service_module, "_RUNTIME_PLUGINS_ROOT", tmp_path)
     monkeypatch.setattr(plugin_cli_service_module, "_TARGET_ROOT", target_dir)
-    monkeypatch.setattr(plugin_cli_service_module, "_RUNTIME_PROFILES_ROOT", profiles_root)
+    monkeypatch.setattr(plugin_cli_service_module, "_UNPACK_PLUGINS_ROOT", tmp_path)
+    monkeypatch.setattr(plugin_cli_service_module, "_UNPACK_PROFILES_ROOT", profiles_root)
 
     transport = ASGITransport(app=plugin_cli_test_app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:

@@ -78,8 +78,23 @@ def get_plugin_config_roots() -> tuple[Path, ...]:
     return tuple(roots)
 
 
+def get_user_package_profiles_root() -> Path:
+    """获取用户插件包 profile 根目录。
+
+    - Env: ``PACKAGE_PROFILES_ROOT``
+    - 默认：``<user plugins root>/../.neko-package-profiles``，即与
+      ``USER_PLUGIN_CONFIG_ROOT`` 同级，便于统一存放于我的文档下的
+      应用配置目录中。
+    """
+    custom_path = os.getenv("PACKAGE_PROFILES_ROOT")
+    if custom_path:
+        return Path(custom_path).expanduser().resolve()
+    return (get_user_plugin_config_root().parent / ".neko-package-profiles").resolve()
+
+
 BUILTIN_PLUGIN_CONFIG_ROOT = get_builtin_plugin_config_root()
 USER_PLUGIN_CONFIG_ROOT = get_user_plugin_config_root()
+USER_PACKAGE_PROFILES_ROOT = get_user_package_profiles_root()
 # Deprecated compatibility alias for older single-root callers.
 PLUGIN_CONFIG_ROOT = BUILTIN_PLUGIN_CONFIG_ROOT
 PLUGIN_CONFIG_ROOTS = get_plugin_config_roots()
@@ -520,12 +535,14 @@ __all__ = [
     # 路径配置
     "BUILTIN_PLUGIN_CONFIG_ROOT",
     "USER_PLUGIN_CONFIG_ROOT",
+    "USER_PACKAGE_PROFILES_ROOT",
     "PLUGIN_CONFIG_ROOT",
     "PLUGIN_CONFIG_ROOTS",
     "get_builtin_plugin_config_root",
     "get_plugin_config_root",
     "get_plugin_config_roots",
     "get_user_plugin_config_root",
+    "get_user_package_profiles_root",
     
     # 队列配置
     "EVENT_QUEUE_MAX",
@@ -603,6 +620,7 @@ __all__ = [
 PUBLIC_SYSTEM_CONFIG_KEYS = (
     "BUILTIN_PLUGIN_CONFIG_ROOT",
     "USER_PLUGIN_CONFIG_ROOT",
+    "USER_PACKAGE_PROFILES_ROOT",
     "PLUGIN_CONFIG_ROOT",
     "PLUGIN_CONFIG_ROOTS",
     "EVENT_QUEUE_MAX",
