@@ -397,9 +397,18 @@ async def _handle_config_update_command(
                     logger.debug("[Plugin Process] PluginSettings refreshed after config update")
                 except Exception as _settings_err:
                     logger.warning(
-                        "[Plugin Process] PluginSettings refresh failed (non-fatal): {}",
+                        "[Plugin Process] PluginSettings refresh failed, rolling back config: {}",
                         _settings_err,
                     )
+                    # 回滚 effective_config 以保持一致性
+                    ctx._effective_config = old_config
+                    try:
+                        _refresh()
+                    except Exception:
+                        logger.debug("[Plugin Process] PluginSettings rollback refresh failed", exc_info=True)
+                    ret_payload["error"] = f"PluginSettings refresh failed: {_settings_err}"
+                    res_sender.put(ret_payload, timeout=10.0)
+                    return
 
         # 触发 config_change 生命周期事件（如果存在）
         lifecycle_events = events_by_type.get("lifecycle", {})

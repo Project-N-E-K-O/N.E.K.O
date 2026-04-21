@@ -167,31 +167,12 @@ def _validate_hot_fields(
     fields are allowed.  Only raises for temporary-mode updates where at
     least one key is not in the hot fields set.
     """
-    import importlib
+    from plugin.sdk.plugin.settings import get_hot_fields
+    from plugin.server.infrastructure.plugin_settings_resolver import resolve_settings_class
 
-    from plugin.sdk.plugin.settings import PluginSettings, get_hot_fields
-
-    entry_point: str | None = getattr(host, "entry_point", None)
-    if not entry_point:
-        return  # No entry_point — backward compat, allow all
-
-    try:
-        module_path, class_name = entry_point.split(":", 1)
-        mod = importlib.import_module(module_path)
-        plugin_cls = getattr(mod, class_name, None)
-    except Exception:
-        logger.debug("Failed to import plugin class from {} for hot field check", entry_point)
-        return  # Import failure — backward compat, allow all
-
-    if plugin_cls is None:
-        return
-
-    settings_cls = getattr(plugin_cls, "Settings", None)
+    settings_cls = resolve_settings_class(plugin_id, host=host)
     if settings_cls is None:
         return  # No PluginSettings — backward compat, allow all
-
-    if not (isinstance(settings_cls, type) and issubclass(settings_cls, PluginSettings)):
-        return  # Not a PluginSettings subclass — backward compat
 
     hot_fields = get_hot_fields(settings_cls)
     non_hot = sorted(k for k in updates if k not in hot_fields)
