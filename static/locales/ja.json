@@ -987,6 +987,12 @@
         "customApiWarning": "注: カスタムAPIを有効にすると、以下の設定が優先され、Core/Assist APIの設定よりも優先して使用されます。",
         "enableCustomApi": "カスタムAPI設定を有効にする",
         "enableCustomApiNote": "有効にすると、Core/Assist APIよりも優先してカスタム設定が使用されます",
+        "clearCustomApi": "カスタムAPI設定をクリア",
+        "clearCustomApiConfirm": "すべてのカスタムAPI設定をクリアしますか？すべてのカスタムAPI Key、モデルID、URLがクリアされ、GPT-SoVITSのチェックも外れます。",
+        "clearCustomApiConfirmTitle": "⚠️ クリア確認",
+        "clearCustomApiConfirmBtn": "クリア実行",
+        "clearCustomApiSaveHint": "⚠ この操作はページ上の設定内容をクリアするだけです。変更を保存するには「設定を保存」ボタンをクリックしてください。",
+        "clearCustomApiSuccess": "カスタムAPI設定がクリアされました。「設定を保存」ボタンをクリックして変更を保存してください。",
         "loadProvidersFailed": "プロバイダー情報の読み込みに失敗しました。ページを更新してください",
         "saveFailed": "保存失敗: {{error}}",
         "apiKeyInvalid": "APIキーが無効です",
@@ -2034,7 +2040,17 @@
         "title": "リアルタイム字幕",
         "enable": "字幕翻訳",
         "enableAriaLabel": "字幕翻訳の切り替え",
-        "markdownPlaceholder": "[整形済みコンテンツ]"
+        "markdownPlaceholder": "[整形済みコンテンツ]",
+        "settings": {
+            "targetLang": "翻訳先の言語",
+            "opacity": "不透明度",
+            "dragAnywhere": "全体ドラッグ",
+            "size": "サイズ",
+            "sizeSmall": "小",
+            "sizeMedium": "中",
+            "sizeLarge": "大",
+            "settingsBtn": "字幕設定"
+        }
     },
     "viewer": {
         "title": "ビューアー - Project N.E.K.O."

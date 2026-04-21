@@ -30,6 +30,22 @@ export interface PluginDependency {
 
 export type PluginType = 'plugin' | 'extension' | 'script' | 'adapter'
 
+export type PluginListActionKind = 'builtin' | 'ui' | 'route' | 'url'
+
+export interface PluginListAction {
+  id: string
+  kind: PluginListActionKind
+  label?: string
+  icon?: string
+  target?: string
+  open_in?: 'new_tab' | 'same_tab'
+  confirm_message?: string
+  confirm_mode?: 'dialog' | 'hold'
+  danger?: boolean
+  disabled?: boolean
+  requires_running?: boolean
+}
+
 export interface PluginMeta {
   id: string
   name: string
@@ -49,6 +65,7 @@ export interface PluginMeta {
   input_schema?: JSONSchema
   host_plugin_id?: string
   status?: string
+  list_actions?: PluginListAction[]
 }
 
 // JSON Schema（简化版），用于描述插件入口参数

@@ -1,0 +1,12 @@
+[project]
+name = "plugin-with-rules"
+version = "1.4.2"
+dependencies = [
+  "httpx>=0.27",
+  "shared-lib>=1,<3",
+]
+
+[tool.neko.pack]
+exclude = ["*.tmp"]
+exclude_dirs = ["cache_dir"]
+exclude_files = ["secret.txt"]

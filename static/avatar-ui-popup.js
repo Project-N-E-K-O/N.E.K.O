@@ -38,7 +38,7 @@ function injectPopupStyles(prefix) {
             min-width: 180px;
             max-height: 200px;
             overflow-y: auto;
-            pointer-events: auto !important;
+            pointer-events: auto !important; /* 【维护注意】此 !important 会与拖动屏蔽机制冲突。拖动期间由 body.neko-model-dragging 选择器覆盖（见下方及 avatar-ui-drag.js），其 body.class .popup 特异性更高。修改此处特异性时需同步检查拖动屏蔽规则。 */
             opacity: 0;
             transform: translateX(-10px);
             transition: opacity 0.2s cubic-bezier(0.1, 0.9, 0.2, 1), transform 0.2s cubic-bezier(0.1, 0.9, 0.2, 1);
@@ -205,6 +205,13 @@ function injectPopupStyles(prefix) {
             min-height: 20px;
             text-align: center;
         }
+        /* 拖动模型期间禁用弹窗和侧面板及其所有子元素的 pointer-events */
+        body.neko-model-dragging .${prefix}-popup,
+        body.neko-model-dragging .${prefix}-popup *,
+        body.neko-model-dragging [data-neko-sidepanel],
+        body.neko-model-dragging [data-neko-sidepanel] * {
+            pointer-events: none !important;
+        }
     `;
 
     // VRM 额外的 CSS 变量
@@ -241,7 +248,13 @@ function createPopup(manager, prefix, buttonId) {
     popup.id = `${prefix}-popup-${buttonId}`;
     popup.className = `${prefix}-popup`;
 
-    const stopEventPropagation = (e) => { e.stopPropagation(); };
+    // 【维护注意】拖动模型期间必须跳过 stopPropagation，
+    //  否则 pointerup/mouseup 无法冒泡到 window/document 的 drag-end handler，
+    //  导致拖动状态永远无法结束（「粘手」bug）。
+    const stopEventPropagation = (e) => {
+        if (document.body.classList.contains('neko-model-dragging')) return;
+        e.stopPropagation();
+    };
     ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend'].forEach(evt => {
         popup.addEventListener(evt, stopEventPropagation, true);
     });
@@ -1320,7 +1333,10 @@ function createSidePanelContainer(manager, prefix, options = {}) {
         maxWidth: '300px'
     });
 
-    const stopEventPropagation = (e) => e.stopPropagation();
+    const stopEventPropagation = (e) => {
+        if (document.body.classList.contains('neko-model-dragging')) return;
+        e.stopPropagation();
+    };
     ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend'].forEach(evt => {
         container.addEventListener(evt, stopEventPropagation, true);
     });
@@ -1457,7 +1473,10 @@ function createIntervalControl(manager, prefix, toggle) {
         maxWidth: 'min(320px, calc(100vw - 24px))'
     });
 
-    const stopEventPropagation = (e) => e.stopPropagation();
+    const stopEventPropagation = (e) => {
+        if (document.body.classList.contains('neko-model-dragging')) return;
+        e.stopPropagation();
+    };
     ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend'].forEach(evt => {
         container.addEventListener(evt, stopEventPropagation, true);
     });

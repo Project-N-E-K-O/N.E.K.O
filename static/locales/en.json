@@ -987,6 +987,12 @@
         "customApiWarning": "Note: After enabling custom APIs, custom configurations below will be prioritized, while core and auxiliary APIs can still be adjusted separately.",
         "enableCustomApi": "Enable Custom API Configuration",
         "enableCustomApiNote": "After enabling, custom API configuration will be used, prioritized over core APIs and auxiliary APIs",
+        "clearCustomApi": "Clear Custom API Configuration",
+        "clearCustomApiConfirm": "Are you sure you want to clear all custom API configurations? This will clear all custom API Keys, Model IDs, URLs, and uncheck GPT-SoVITS.",
+        "clearCustomApiConfirmTitle": "⚠️ Confirm Clear",
+        "clearCustomApiConfirmBtn": "Confirm Clear",
+        "clearCustomApiSaveHint": "⚠ This only clears the configuration on the page. You still need to click \"Save Settings\" to apply the changes.",
+        "clearCustomApiSuccess": "Custom API configuration cleared. Please click Save Settings to apply changes.",
         "loadProvidersFailed": "Failed to load API provider options, please refresh the page and try again",
         "saveFailed": "Save failed: {{error}}",
         "apiKeyInvalid": "API Key is invalid",
@@ -2034,7 +2040,17 @@
         "title": "Real-time Subtitles",
         "enable": "Subtitle Translation",
         "enableAriaLabel": "Toggle subtitle translation",
-        "markdownPlaceholder": "[formatted content]"
+        "markdownPlaceholder": "[formatted content]",
+        "settings": {
+            "targetLang": "Target Language",
+            "opacity": "Opacity",
+            "dragAnywhere": "Drag Anywhere",
+            "size": "Size",
+            "sizeSmall": "S",
+            "sizeMedium": "M",
+            "sizeLarge": "L",
+            "settingsBtn": "Subtitle Settings"
+        }
     },
     "viewer": {
         "title": "Viewer - Project N.E.K.O."
