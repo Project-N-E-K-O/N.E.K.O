@@ -42,6 +42,8 @@ def _parse_wait_tcp_target(endpoint: str) -> tuple[str, int] | None:
         port = int(port_s)
     except Exception:
         return None
+    if port <= 0 or port > 65535:
+        return None
     return host, port
 
 
