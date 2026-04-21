@@ -1137,10 +1137,12 @@ export default function App({
   }, []);
 
   const handleQuickActionNavigate = useCallback((target: string, openIn: string) => {
+    // Only allow http(s) and relative URLs — block javascript: and other dangerous protocols
+    if (target && /^javascript:/i.test(target)) return;
     if (openIn === 'same_tab') {
       window.location.href = target;
     } else {
-      window.open(target, '_blank');
+      window.open(target, '_blank', 'noopener,noreferrer');
     }
   }, []);
 
@@ -1385,6 +1387,8 @@ export default function App({
                     type="button"
                     aria-label={i18n('chat.quickActionsAriaLabel', '快捷操作')}
                     title={i18n('chat.quickActionsLabel', '快捷操作')}
+                    aria-pressed={quickActionsPanelOpen}
+                    aria-expanded={quickActionsPanelOpen}
                     onClick={() => {
                       const willOpen = !quickActionsPanelOpen;
                       setQuickActionsPanelOpen(willOpen);

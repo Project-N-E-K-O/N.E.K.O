@@ -150,6 +150,7 @@ function SliderWidget({ item, loading, onExec }: ControlProps) {
         onChange={e => setLocal(Number(e.target.value))}
         onMouseUp={commit}
         onTouchEnd={commit}
+        onKeyUp={commit}
       />
       <span className="cp-slider-val">{local}</span>
     </div>
@@ -166,9 +167,13 @@ function NumberWidget({ item, loading, onExec }: ControlProps) {
   const commit = useCallback(
     (v: number) => {
       if (timer.current) clearTimeout(timer.current);
-      timer.current = setTimeout(() => onExec(item.action_id, v), 400);
+      // Clamp to min/max and reject NaN
+      const lo = item.min ?? -Infinity;
+      const hi = item.max ?? Infinity;
+      const clamped = Number.isFinite(v) ? Math.min(Math.max(v, lo), hi) : numVal;
+      timer.current = setTimeout(() => onExec(item.action_id, clamped), 400);
     },
-    [item.action_id, onExec],
+    [item.action_id, item.min, item.max, numVal, onExec],
   );
   const step = item.step ?? 1;
   const inc = () => { const n = Math.min(local + step, item.max ?? Infinity); setLocal(n); commit(n); };
@@ -376,6 +381,7 @@ function CommandRow({ item, loading, error, prefs, onExec, onInject, onNavigate,
 
   const handleRowClick = () => {
     if (hasInlineWidget) return;
+    if (item.disabled || loading) return;
     if (item.type === 'chat_inject') {
       onInject(item.inject_text ?? '');
       return;

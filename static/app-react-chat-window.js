@@ -415,6 +415,7 @@
         .catch(function (err) {
             console.warn('[ReactChatWindow] fetchChatActions failed:', err);
             _actionsLoading = false;
+            renderWindow();
             return _cachedActions;
         });
     }

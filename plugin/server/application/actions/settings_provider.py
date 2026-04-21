@@ -64,9 +64,15 @@ def _get_enum_options(field_info: Any, annotation: Any) -> list[str] | None:
 
 
 def _resolve_annotation(annotation: Any) -> type | None:
-    """Unwrap Optional / Union to get the core type."""
+    """Unwrap Optional / Union to get the core type.
+
+    Handles both ``typing.Union[X, None]`` (Python 3.9) and
+    ``X | None`` (PEP 604, Python 3.10+).
+    """
+    import types as _types
+
     origin = get_origin(annotation)
-    if origin is typing.Union:
+    if origin is typing.Union or isinstance(annotation, _types.UnionType):
         args = [a for a in get_args(annotation) if a is not type(None)]
         return args[0] if args else None
     return annotation

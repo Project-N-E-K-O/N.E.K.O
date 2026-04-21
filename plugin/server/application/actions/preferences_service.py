@@ -39,16 +39,36 @@ def _load_sync() -> UserActionPreferences:
 
 
 def _save_sync(prefs: UserActionPreferences) -> None:
-    """Save preferences to disk (called from worker thread)."""
+    """Atomically save preferences to disk (called from worker thread).
+
+    Writes to a temporary file first, then renames to the target path.
+    This prevents half-written JSON on crash.  Raises on failure so the
+    caller can propagate the error to the client.
+    """
+    import os
+    import tempfile
+
     path = _preferences_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = json.dumps(prefs.model_dump(), ensure_ascii=False, indent=2)
+
+    # Write to a temp file in the same directory, then atomic rename.
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(path.parent),
+        prefix=".action_prefs_",
+        suffix=".tmp",
+    )
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(prefs.model_dump(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-    except Exception as exc:
-        logger.warning("Failed to save action preferences: {}", str(exc))
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp_path, str(path))
+    except BaseException:
+        # Clean up the temp file on any failure
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 class PreferencesService:

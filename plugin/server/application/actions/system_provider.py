@@ -50,8 +50,11 @@ def _has_static_ui(meta: dict[str, Any]) -> bool:
     directory = static_ui_obj.get("directory")
     if not isinstance(directory, str) or not directory:
         return False
+    index_file = static_ui_obj.get("index_file", "index.html")
+    if not isinstance(index_file, str) or not index_file:
+        index_file = "index.html"
     p = Path(directory)
-    return p.is_dir() and (p / "index.html").is_file()
+    return p.is_dir() and (p / index_file).is_file()
 
 
 def _get_entries_for_plugin(
