@@ -1045,6 +1045,8 @@ class MMDPhysics {
     const position = manager.allocThreeVector3();
     const quaternion = manager.allocThreeQuaternion();
     const scale = manager.allocThreeVector3();
+    // Ensure matrixWorld reflects latest mesh.quaternion/position before decompose
+    mesh.updateMatrixWorld(true);
     mesh.matrixWorld.decompose(position, quaternion, scale);
 
     // [终极魔法 1: 局部相对重力 (Local Gravity)]
@@ -1108,11 +1110,8 @@ class MMDPhysics {
 
     // World Rotation Compensation: Sync dynamic rigid bodies when the model rotates.
     if (delta > 0) {
-      mesh.updateMatrixWorld(true);
-      const freshQuat = manager.allocThreeQuaternion();
-      mesh.getWorldQuaternion(freshQuat);
       const deltaQuat = manager.allocThreeQuaternion();
-      deltaQuat.copy(prevMeshQuat).invert().multiply(freshQuat);
+      deltaQuat.copy(prevMeshQuat).invert().multiply(quaternion);
       const rotAngle = 2 * Math.acos(Math.min(1, Math.abs(deltaQuat.w)));
 
       if (rotAngle > 0.001) {
@@ -1167,7 +1166,6 @@ class MMDPhysics {
         manager.freeTransform(tr);
       }
       manager.freeThreeQuaternion(deltaQuat);
-      manager.freeThreeQuaternion(freshQuat);
     }
 
     if (scale.x !== 1 || scale.y !== 1 || scale.z !== 1) {
