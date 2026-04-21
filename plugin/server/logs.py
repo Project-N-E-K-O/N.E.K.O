@@ -83,12 +83,15 @@ def _validate_plugin_id(plugin_id: str) -> None:
         )
 
 
-def _resolve_robust_log_dir(service_name: str) -> Path:
+def _resolve_robust_log_dir(service_name: str, log_subdir: str | None = None) -> Path:
     """通过本体 RobustLoggerConfig 拿落盘目录。
 
     AppImage 打包后 plugin 包在只读 squashfs 下，禁止用 cwd / __file__ 推
     日志路径。RobustLoggerConfig 会按 5 级回退（Documents → AppData → home
     → temp）选择可写目录。
+
+    ``log_subdir`` 与 writer 侧保持一致：plugin 子进程写入 ``logs/plugin/``，
+    server 主进程写入 ``logs/``。
     """
     try:
         from utils.logger_config import RobustLoggerConfig
@@ -103,7 +106,7 @@ def _resolve_robust_log_dir(service_name: str) -> Path:
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         RobustLoggerConfig = getattr(mod, "RobustLoggerConfig")
-    config = RobustLoggerConfig(service_name=service_name)
+    config = RobustLoggerConfig(service_name=service_name, log_subdir=log_subdir)
     log_dir = Path(config.get_log_directory_path())
     log_dir.mkdir(parents=True, exist_ok=True)
     return log_dir
@@ -113,10 +116,11 @@ def get_plugin_log_dir(plugin_id: str) -> Path:
     """
     获取插件的日志目录。
 
-    所有插件 / 服务器日志统一落到本体 RobustLoggerConfig 选中的可写目录
-    （默认 Documents/N.E.K.O/logs/）。文件名由 RobustLoggerConfig 控制：
-      - 服务器日志：N.E.K.O_PluginServer_YYYYMMDD.log
-      - 插件日志：N.E.K.O_Plugin_{plugin_id}_YYYYMMDD.log
+    落盘分层（与 writer 侧 ``plugin/core/host.py`` / ``plugin/logging_config.py``
+    保持对偶）：
+
+      - 服务器日志：``<docs>/N.E.K.O/logs/N.E.K.O_PluginServer_YYYYMMDD.log``
+      - 插件日志：  ``<docs>/N.E.K.O/logs/plugin/N.E.K.O_Plugin_{id}_YYYYMMDD.log``
 
     Args:
         plugin_id: 插件ID（或 SERVER_LOG_ID 表示服务器日志）
@@ -129,9 +133,14 @@ def get_plugin_log_dir(plugin_id: str) -> Path:
     """
     _validate_plugin_id(plugin_id)
 
-    service_name = "PluginServer" if plugin_id == SERVER_LOG_ID else f"Plugin_{plugin_id}"
+    if plugin_id == SERVER_LOG_ID:
+        service_name = "PluginServer"
+        log_subdir: str | None = None
+    else:
+        service_name = f"Plugin_{plugin_id}"
+        log_subdir = "plugin"
     try:
-        return _resolve_robust_log_dir(service_name)
+        return _resolve_robust_log_dir(service_name, log_subdir=log_subdir)
     except HTTPException:
         raise
     except (

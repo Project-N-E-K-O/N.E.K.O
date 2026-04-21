@@ -152,20 +152,35 @@ def test_plugin_server_main_process_unifies_logs_under_pluginserver(
     # and a stray N.E.K.O_Plugin_*.log would exist.
     assert not list(isolated_log_dir.glob("N.E.K.O_Plugin_*.log"))
 
+    # PluginServer 是宿主进程，绝对不能被收纳到 logs/plugin/ —— 否则 Electron
+    # 那侧按顶层路径读 PluginServer 日志时会一片空白。
+    plugin_subdir = isolated_log_dir / "plugin"
+    if plugin_subdir.exists():
+        assert not list(plugin_subdir.glob("N.E.K.O_PluginServer_*.log")), (
+            "PluginServer 宿主日志被误路由到 logs/plugin/ 子目录了。"
+        )
+
 
 def test_plugin_subprocess_logs_to_its_own_service_file(isolated_log_dir, monkeypatch):
     """Simulate _setup_plugin_logger from plugin/core/host.py:
     1. set NEKO_PLUGIN_SERVICE_NAME=Plugin_<safe_pid>
-    2. utils.logger_config.setup_logging(service_name="Plugin_<safe_pid>")
+    2. utils.logger_config.setup_logging(service_name="Plugin_<safe_pid>",
+       log_subdir="plugin")
     3. plugin.logging_config.get_logger(f"plugin.{safe_pid}").bind(plugin_id=...)
 
-    Expectation: logs land in N.E.K.O_Plugin_demo_*.log and nowhere else.
+    Expectation: logs land in ``logs/plugin/N.E.K.O_Plugin_demo_*.log`` — NOT
+    at the ``logs/`` top level where PluginServer / Main / Memory / Agent live.
     """
     monkeypatch.setenv("NEKO_PLUGIN_SERVICE_NAME", "Plugin_demo")
 
     from utils.logger_config import setup_logging as bootstrap_setup_logging
 
-    bootstrap_setup_logging(service_name="Plugin_demo", log_level=logging.INFO, silent=True)
+    bootstrap_setup_logging(
+        service_name="Plugin_demo",
+        log_level=logging.INFO,
+        silent=True,
+        log_subdir="plugin",
+    )
 
     plogging = importlib.import_module("plugin.logging_config")
 
@@ -176,15 +191,23 @@ def test_plugin_subprocess_logs_to_its_own_service_file(isolated_log_dir, monkey
     for h in logging.getLogger("N.E.K.O.Plugin_demo").handlers:
         h.flush()
 
-    text = _read_logs(isolated_log_dir, "Plugin_demo")
+    plugin_subdir = isolated_log_dir / "plugin"
+    text = _read_logs(plugin_subdir, "Plugin_demo")
     assert "hello-from-plugin-demo" in text
     assert "warn-from-plugin-demo" in text
 
     # error log file gets opened on setup; nothing should be written there
     # for INFO/WARNING traffic.
-    error_file = isolated_log_dir / "N.E.K.O_Plugin_demo_error.log"
+    error_file = plugin_subdir / "N.E.K.O_Plugin_demo_error.log"
     if error_file.exists():
         assert "hello-from-plugin-demo" not in error_file.read_text(encoding="utf-8")
+
+    # Plugin_* 子进程日志绝对不能再污染顶层 logs/。顶层是留给 PluginServer /
+    # Main / Memory / Agent 宿主进程的。如果未来又有人忘了传 log_subdir，
+    # 这个反向断言会在 CI 直接报错。
+    assert not list(isolated_log_dir.glob("N.E.K.O_Plugin_demo_*.log")), (
+        "Plugin_demo 子进程日志落到 logs/ 顶层了；应收纳到 logs/plugin/。"
+    )
 
 
 def test_module_level_logger_follows_late_service_name_change(
@@ -216,7 +239,12 @@ def test_module_level_logger_follows_late_service_name_change(
     # Step 3: host belatedly sets env + boots its logger sink.
     monkeypatch.setenv("NEKO_PLUGIN_SERVICE_NAME", "Plugin_lazy")
     from utils.logger_config import setup_logging as bootstrap_setup_logging
-    bootstrap_setup_logging(service_name="Plugin_lazy", log_level=logging.INFO, silent=True)
+    bootstrap_setup_logging(
+        service_name="Plugin_lazy",
+        log_level=logging.INFO,
+        silent=True,
+        log_subdir="plugin",
+    )
 
     # Step 4: emit through the loggers grabbed BEFORE step 3.
     early_logger.info("late-routed-shared")
@@ -226,7 +254,7 @@ def test_module_level_logger_follows_late_service_name_change(
     for h in logging.getLogger("N.E.K.O.Plugin_lazy").handlers:
         h.flush()
 
-    text = _read_logs(isolated_log_dir, "Plugin_lazy")
+    text = _read_logs(isolated_log_dir / "plugin", "Plugin_lazy")
     assert "late-routed-shared" in text, (
         "PluginLoggerAdapter froze its stdlib logger at construction — "
         "subprocess-style late env change no longer routes to the right file."

@@ -249,6 +249,9 @@ def _setup_plugin_logger(plugin_id: str, project_root: Path) -> Any:
         _bootstrap_setup_logging(
             service_name=f"Plugin_{safe_pid}",
             silent=True,
+            # plugin 子进程日志统一收纳到 logs/plugin/，别跟 PluginServer /
+            # Main / Memory / Agent 等宿主进程日志混在 logs/ 顶层。
+            log_subdir="plugin",
         )
     except Exception:
         # RobustLoggerConfig 自己会做多级 fallback；这里只兜底，不要遮蔽根因。
