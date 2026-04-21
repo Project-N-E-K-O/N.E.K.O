@@ -3335,7 +3335,7 @@
         "testAssistTooltip": "アシストAPI接続テスト",
         "error": {
             "timeout": "リクエストがタイムアウトしました（10秒）",
-            "auth_failed": "API Keyが無効または期限切れです",
+            "auth_failed": "APIキーが無効または期限切れです",
             "connection_refused": "ターゲットサーバーに接続できません",
             "dns_error": "DNS解決に失敗しました",
             "ssl_error": "SSL証明書の検証に失敗しました",

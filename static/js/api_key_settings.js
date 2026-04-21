@@ -2567,7 +2567,7 @@ const ConnectivityManager = {
         const coreIsFree = coreSelect && coreSelect.value === 'free';
         const coreResult = this.resolveEffectiveKey({ type: 'core' });
         const coreCacheId = coreResult.key || coreResult.url;
-        console.log('[ConnectivityManager] testAll - core resolved:', JSON.stringify(coreResult));
+        console.log('[ConnectivityManager] testAll - core resolved:', { hasUrl: !!coreResult.url, hasKey: !!coreResult.key, providerType: coreResult.providerType });
         if (coreCacheId && !(coreResult.key && coreResult.key !== 'free-access' && isFreeVersionText(coreResult.key))) {
             if (!keyConfigs[coreCacheId]) {
                 keyConfigs[coreCacheId] = { url: coreResult.url, apiKey: coreResult.key || '', providerType: coreResult.providerType, isFree: coreIsFree };
@@ -2601,7 +2601,7 @@ const ConnectivityManager = {
         }
 
         // 将所有待测试的 Key 设为 testing 状态
-        console.log('[ConnectivityManager] testAll - keyConfigs to test:', Object.keys(keyConfigs).length, Object.keys(keyConfigs));
+        console.log('[ConnectivityManager] testAll - keyConfigs to test:', Object.keys(keyConfigs).length);
         Object.keys(keyConfigs).forEach(key => {
             this.keyStatusMap[key] = LightStatus.TESTING;
             this.keyErrorMap[key] = null;
@@ -2636,7 +2636,7 @@ const ConnectivityManager = {
         if (!key) return;
         const status = this.keyStatusMap[key] || LightStatus.NOT_CONFIGURED;
         const lights = this.keyLightsMap[key] || [];
-        console.log(`[ConnectivityManager] syncLightsForKey: key=${key}, status=${status}, lights=${lights.length}`);
+        console.log(`[ConnectivityManager] syncLightsForKey: status=${status}, lights=${lights.length}`);
         lights.forEach(light => {
             updateLightStatus(light, status);
         });

@@ -1081,7 +1081,8 @@ async def _test_websocket(url: str, api_key: str) -> dict:
         ws_url = url.rstrip("/")
         if api_key:
             separator = "&" if "?" in ws_url else "?"
-            ws_url_with_key = f"{ws_url}{separator}api_key={api_key}"
+            encoded_api_key = urllib.parse.quote(api_key, safe="")
+            ws_url_with_key = f"{ws_url}{separator}api_key={encoded_api_key}"
             extra_headers = {"Authorization": f"Bearer {api_key}"}
         else:
             ws_url_with_key = ws_url
@@ -1195,5 +1196,23 @@ def _identify_provider_label(url: str, is_free: bool) -> str:
             if is_free:
                 return f"{name}(免费)"
             return name
-    # 自定义 URL：显示完整地址
-    return f"自定义({url})"
+    # 自定义 URL：脱敏后显示（移除敏感 query 参数）
+    return f"自定义({_redact_url_for_log(url)})"
+
+
+def _redact_url_for_log(url: str) -> str:
+    """Redact sensitive query parameters before logging a custom endpoint URL."""
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        if not parsed.query:
+            return url
+        sensitive_keys = {"api_key", "apikey", "key", "token", "access_token", "authorization", "signature", "sig"}
+        query_pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+        redacted_pairs = [
+            (k, "***" if k.lower() in sensitive_keys else v)
+            for k, v in query_pairs
+        ]
+        redacted_query = urllib.parse.urlencode(redacted_pairs)
+        return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, redacted_query, parsed.fragment))
+    except Exception:
+        return url

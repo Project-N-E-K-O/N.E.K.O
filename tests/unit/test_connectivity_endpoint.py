@@ -112,12 +112,17 @@ class TestSchemaValidation:
         assert result["success"] is False
         assert result["error_code"] == "missing_params"
 
-    async def test_endpoint_returns_missing_params_for_empty_api_key(self):
-        """Empty api_key → missing_params (Req 1.4)."""
-        req = ConnectivityTestRequest(url="https://api.example.com", api_key="")
-        result = await _endpoint_test_connectivity(req)
-        assert result["success"] is False
-        assert result["error_code"] == "missing_params"
+    async def test_endpoint_allows_empty_api_key_for_keyless_services(self):
+        """Empty api_key is allowed for local/keyless services (Decision 15)."""
+        with patch(
+            "main_routers.config_router._test_openai_compatible",
+            new_callable=AsyncMock,
+            return_value={"success": True},
+        ) as mock_http:
+            req = ConnectivityTestRequest(url="https://api.example.com", api_key="")
+            result = await _endpoint_test_connectivity(req)
+            mock_http.assert_awaited_once()
+            assert result["success"] is True
 
     async def test_endpoint_returns_missing_params_for_whitespace_url(self):
         """Whitespace-only url → missing_params (Req 1.4)."""
@@ -126,12 +131,17 @@ class TestSchemaValidation:
         assert result["success"] is False
         assert result["error_code"] == "missing_params"
 
-    async def test_endpoint_returns_missing_params_for_whitespace_api_key(self):
-        """Whitespace-only api_key → missing_params (Req 1.4)."""
-        req = ConnectivityTestRequest(url="https://api.example.com", api_key="   ")
-        result = await _endpoint_test_connectivity(req)
-        assert result["success"] is False
-        assert result["error_code"] == "missing_params"
+    async def test_endpoint_allows_whitespace_api_key_for_keyless_services(self):
+        """Whitespace-only api_key is stripped and allowed for keyless services (Decision 15)."""
+        with patch(
+            "main_routers.config_router._test_openai_compatible",
+            new_callable=AsyncMock,
+            return_value={"success": True},
+        ) as mock_http:
+            req = ConnectivityTestRequest(url="https://api.example.com", api_key="   ")
+            result = await _endpoint_test_connectivity(req)
+            mock_http.assert_awaited_once()
+            assert result["success"] is True
 
     async def test_endpoint_routes_to_openai_compatible_by_default(self):
         """Default provider_type routes to _test_openai_compatible (Req 1.1)."""

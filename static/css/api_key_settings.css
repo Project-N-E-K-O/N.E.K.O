@@ -1591,10 +1591,10 @@ font-size: 0.8em;
 /* Testing - Pulse Animation */
 .connectivity-light[data-status="testing"] {
     background-color: #40C5F1;
-    animation: pulse 1.2s ease-in-out infinite;
+    animation: connectivityPulse 1.2s ease-in-out infinite;
 }
 
-@keyframes pulse {
+@keyframes connectivityPulse {
     0% {
         box-shadow: 0 0 4px rgba(64, 197, 241, 0.4);
         opacity: 1;
@@ -1746,5 +1746,13 @@ font-size: 0.8em;
 }
 .connectivity-summary-light[data-status="testing"] {
     background-color: #40C5F1;
-    animation: pulse 1.2s ease-in-out infinite;
+    animation: connectivityPulse 1.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .connectivity-light[data-status="testing"],
+    .connectivity-summary-light[data-status="testing"] {
+        animation: none;
+        box-shadow: 0 0 6px rgba(64, 197, 241, 0.5);
+    }
 }
