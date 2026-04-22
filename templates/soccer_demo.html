@@ -1251,12 +1251,14 @@
     loadPromise.catch(e => console.warn('[setAiAvatar] loadModel awaited reject:', e));
     await new Promise((resolve, reject) => {
       const t0 = Date.now();
-      const startedWithModelOfPath = window.live2dManager.currentModel?.internalModel?.settings?.url === path;
+      const prevUrl = window.live2dManager.currentModel?.internalModel?.settings?.url || '';
+      const startedWithSameModel = prevUrl === path || prevUrl.endsWith(path);
       const tick = () => {
         const m = window.live2dManager.currentModel;
-        // 等 currentModel 换成了新路径且 width/height 已解析
-        const urlMatches = m?.internalModel?.settings?.url?.endsWith(path.split('/').pop());
-        if (m && m.width > 0 && (urlMatches || !startedWithModelOfPath)) return resolve();
+        const curUrl = m?.internalModel?.settings?.url || '';
+        // 用完整路径比对（不是只看文件名），避免不同目录同名模型被误判
+        const urlMatches = curUrl === path || curUrl.endsWith(path);
+        if (m && m.width > 0 && (urlMatches || !startedWithSameModel)) return resolve();
         if (Date.now() - t0 > 20000) return reject(new Error('L2D model not ready within 20s'));
         setTimeout(tick, 150);
       };
