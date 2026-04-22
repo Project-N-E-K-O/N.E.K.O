@@ -66,7 +66,7 @@ def _find_by_id(rows: list[dict], rid: str) -> dict:
 
 @pytest.mark.asyncio
 async def test_reflection_apply_reinforcement_updates_fields(tmp_path):
-    ev, _fs, _pm, re, _cm = _install(str(tmp_path))
+    _ev, _fs, _pm, re, _cm = _install(str(tmp_path))
     now_iso = "2026-04-22T10:00:00"
     rid = "ref_abc"
     seed = [{
@@ -113,6 +113,45 @@ async def test_reflection_apply_independent_clocks(tmp_path):
     r = _find_by_id(await re.aload_reflections("小天"), rid)
     assert r["rein_last_signal_at"] == rein_ts_before  # preserved
     assert r["disp_last_signal_at"] is not None  # now set
+
+
+@pytest.mark.asyncio
+async def test_reflection_apply_both_sides_updates_both_clocks(tmp_path):
+    """RFC §3.4.1: "如果未来出现双侧同步触动的场景，两个时间戳都重置。"
+    Locks the both-sides delta path so a future caller passing e.g.
+    {'reinforcement': 1.0, 'disputation': 0.5} gets both clocks set
+    and both counters updated (CodeRabbit PR #929 forward-compat nit)."""
+    from memory.event_log import EVT_REFLECTION_EVIDENCE_UPDATED
+    ev, _fs, _pm, re, _cm = _install(str(tmp_path))
+    rid = "ref_both"
+    now_iso = "2026-04-22T10:00:00"
+    await re.asave_reflections("小天", [{
+        "id": rid, "text": "x", "entity": "master", "status": "pending",
+        "source_fact_ids": [], "created_at": now_iso,
+        "feedback": None, "next_eligible_at": now_iso,
+    }])
+
+    ok = await re.aapply_signal(
+        "小天", rid,
+        {"reinforcement": 1.0, "disputation": 0.5},
+        source="user_fact",
+    )
+    assert ok is True
+
+    r = _find_by_id(await re.aload_reflections("小天"), rid)
+    assert r["reinforcement"] == pytest.approx(1.0)
+    assert r["disputation"] == pytest.approx(0.5)
+    assert r["rein_last_signal_at"] is not None
+    assert r["disp_last_signal_at"] is not None
+
+    # Event payload also carries both clocks.
+    events = ev.read_since("小天", None)
+    pe = [e for e in events if e["type"] == EVT_REFLECTION_EVIDENCE_UPDATED]
+    assert len(pe) == 1
+    payload = pe[0]["payload"]
+    assert payload["rein_last_signal_at"] is not None
+    assert payload["disp_last_signal_at"] is not None
+    assert payload["source"] == "user_fact"
 
 
 @pytest.mark.asyncio
