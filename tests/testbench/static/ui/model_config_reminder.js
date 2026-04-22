@@ -166,9 +166,12 @@ function render(providers) {
     if (i % 2 === 1) textNode.append(el('code', {}, seg));
     else if (seg) textNode.append(document.createTextNode(seg));
   });
+  const reminderTitleText = i18n(`model_reminder.${mode}.title`);
   body.append(
-    el('div', { className: 'model-reminder-title' },
-      i18n(`model_reminder.${mode}.title`)),
+    el('div', {
+      className: 'model-reminder-title u-wrap-anywhere',
+      title: reminderTitleText,
+    }, reminderTitleText),
     textNode,
   );
 
@@ -192,6 +195,16 @@ function render(providers) {
       set('active_workspace', 'settings');
       // warn 模式跳 API Keys (先让全局 key 可用); welcome 模式跳 Models (配置当前会话).
       emit('settings:goto_page', mode === 'warn' ? 'api_keys' : 'models');
+      // P24 §12.3.E #15: auto-dismiss on [去配置] click. Same rationale
+      // as session_restore_banner: jumping to Settings is the user's
+      // acknowledgement. Record the dismiss-at-boot marker so the
+      // banner stays dismissed for the rest of this boot session; the
+      // real-time refresh loop will bring it back if the user somehow
+      // ends up without model config again.
+      const bootMarker = currentBootId || 'pre-boot';
+      try { sessionStorage.setItem(DISMISS_SS, bootMarker); }
+      catch { /* private-mode / quota — banner will simply stay visible */ }
+      if (hostEl) hostEl.innerHTML = '';
     },
   }, i18n(`model_reminder.${mode}.goto_btn`));
 

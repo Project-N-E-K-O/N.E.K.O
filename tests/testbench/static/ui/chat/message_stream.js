@@ -413,7 +413,15 @@ export function mountMessageStream(host) {
     if (!res.ok) return;
     // 用响应里的 count 代替重拉; 但我们需要完整列表, 重拉更稳.
     await refresh();
-    toast.ok(i18n('chat.stream.toast.rerun_done', res.data.removed_count));
+    // 2026-04-22 Day 8 #3: 根据末尾 role 区分 toast 文案.
+    // - 末尾是 user → 提示用户可直接按 [Send] 让 AI 对这条回复 (空 textarea
+    //   也能 send, 后端走 "只跑 LLM 回复末尾 user" 路径; 避免产生连续两条 user);
+    // - 末尾是 assistant / system → 常规提示.
+    const tailRole = msg.role;
+    const key = tailRole === 'user'
+      ? 'chat.stream.toast.rerun_done_user_tail'
+      : 'chat.stream.toast.rerun_done';
+    toast.ok(i18n(key, res.data.removed_count));
     afterMutation('truncate');
   }
 

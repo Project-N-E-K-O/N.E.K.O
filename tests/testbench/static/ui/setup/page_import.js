@@ -99,12 +99,67 @@ async function renderRealCharacters(host) {
 
   const data = res.data || {};
   const characters = data.characters || [];
+  const skipped = Array.isArray(data.skipped_entries) ? data.skipped_entries : [];
+  const cfaFallback = data.cfa_fallback || null;
+
+  // Windows CFA (受控文件夹访问/反勒索防护) 主程序降级警告: 当 Documents
+  // 被 CFA 判定为只读, 主程序 config_dir 自动回退到 AppData\Local. 用户
+  // 如果在 Documents 下手动编辑 characters.json 主程序**不会读到**. 这是
+  // 最隐蔽的 "改了但没生效" 陷阱, 必须在 Import 页头显眼位置警示.
+  // (2026-04-22 dev_note L17 根因定位.)
+  if (cfaFallback) {
+    container.append(renderCfaFallbackWarning(cfaFallback));
+  }
 
   container.append(renderSourcePaths(data));
 
+  // P24 Day 8 §12.4.A: 后端返回 `note` 解释空态原因 (sandbox 未 apply /
+  // 文件缺失 / 字段格式异常) 或扫到但全被过滤的情况. 若同时有 note 和
+  // characters, 意思是"扫到了一些但也有异常", note 作 hint 顶部挂.
+  if (data.note && characters.length === 0) {
+    container.append(el('div', { className: 'empty-state' }, data.note));
+  } else if (data.note) {
+    container.append(el('div', { className: 'hint' }, data.note));
+  }
+
+  // 有被过滤的条目就单独一块展示 (用户 dev_note L17 的直接诊断入口).
+  if (skipped.length > 0) {
+    const skippedBlock = el('div', {
+      className: 'import-skipped-entries',
+      style: {
+        border: '1px solid var(--border)',
+        borderRadius: 'var(--radius-sm)',
+        padding: 'var(--density-sm)',
+        marginBottom: 'var(--density-sm)',
+        background: 'rgba(220, 180, 80, 0.06)',
+      },
+    });
+    skippedBlock.append(el('div', {
+      style: { fontWeight: '600', marginBottom: '4px', fontSize: '12.5px' },
+    }, i18n('setup.import.skipped_heading_fmt', skipped.length)));
+    skippedBlock.append(el('div', {
+      className: 'hint tiny',
+      style: { marginBottom: '4px' },
+    }, i18n('setup.import.skipped_hint')));
+    const list = el('ul', { style: { margin: '4px 0 0 16px', padding: 0, fontSize: '12px' } });
+    for (const s of skipped) {
+      list.append(el('li', {},
+        el('code', {}, s.name || '?'),
+        ' — ',
+        s.reason || i18n('setup.import.skipped_unknown_reason'),
+      ));
+    }
+    skippedBlock.append(list);
+    container.append(skippedBlock);
+  }
+
   if (characters.length === 0) {
-    container.append(el('div', { className: 'empty-state' },
-      data.note || i18n('setup.import.no_real')));
+    // Empty-state 情况已在 note 分支里展示过, 这里仅在没有 note 且无 skipped
+    // 时兜底 (理论不会到这, 但防御性保留原 UX).
+    if (!data.note && skipped.length === 0) {
+      container.append(el('div', { className: 'empty-state' },
+        i18n('setup.import.no_real')));
+    }
     return;
   }
 
@@ -142,15 +197,28 @@ function renderPresetRow(preset) {
     onClick: (ev) => onImportPreset(preset.id, ev.currentTarget),
   }, i18n('setup.import.builtin.button_apply'));
 
+  const displayNameText = preset.display_name || preset.id;
   return el('div', { className: 'import-row preset-row' },
-    el('div', { className: 'import-row-head' },
-      el('div', { className: 'import-row-name' },
-        preset.display_name || preset.id, ' ', ...badges),
+    el('div', { className: 'import-row-head u-min-width-0' },
+      el('div', { className: 'import-row-name u-min-width-0' },
+        el('span', {
+          className: 'u-truncate',
+          title: displayNameText,
+        }, displayNameText),
+        ' ', ...badges),
     ),
-    preset.description ? el('div', { className: 'preset-row-desc' },
-      preset.description) : null,
-    el('div', { className: 'import-row-files muted tiny' }, metaLine),
-    el('div', { className: 'import-row-files' }, files),
+    preset.description ? el('div', {
+      className: 'preset-row-desc u-truncate-3',
+      title: preset.description,
+    }, preset.description) : null,
+    el('div', {
+      className: 'import-row-files muted tiny u-wrap-anywhere',
+      title: metaLine,
+    }, metaLine),
+    el('div', {
+      className: 'import-row-files u-wrap-anywhere',
+      title: files,
+    }, files),
     el('div', { className: 'import-row-actions' }, button),
   );
 }
@@ -199,14 +267,66 @@ function renderSourcePaths(data) {
   );
 }
 
+/**
+ * CFA (Controlled Folder Access) fallback warning block.
+ *
+ * Rendered **顶栏显眼位置** whenever backend detects Windows CFA has forced
+ * ConfigManager to fall back from Documents/ to AppData\Local\. The user's
+ * mental model is "Documents/ is where my config lives" but the main program
+ * is actually reading AppData\Local — leading to the classic "I edited
+ * characters.json and nothing changed" failure mode that ate hours of
+ * debugging in dev_note L17.
+ *
+ * Visual: red-tinted box (danger color), large heading, both paths shown
+ * with monospace font so user can copy, clear actionable hint.
+ */
+function renderCfaFallbackWarning(cfa) {
+  const block = el('div', { className: 'import-cfa-fallback' });
+  block.append(
+    el('div', { className: 'import-cfa-fallback__heading' },
+      i18n('setup.import.cfa_fallback.heading')),
+    el('div', { className: 'import-cfa-fallback__body' },
+      i18n('setup.import.cfa_fallback.body')),
+  );
+  const grid = el('div', { className: 'import-cfa-fallback__paths' });
+  grid.append(
+    el('div', { className: 'import-cfa-fallback__label' },
+      i18n('setup.import.cfa_fallback.active_label')),
+    el('code', {}, cfa.active_characters_path || '?'),
+    el('div', { className: 'import-cfa-fallback__label' },
+      i18n('setup.import.cfa_fallback.readable_label')),
+    el('code', {}, cfa.readable_characters_path || '?'),
+  );
+  block.append(grid);
+  block.append(
+    el('div', { className: 'import-cfa-fallback__hint' },
+      i18n('setup.import.cfa_fallback.hint')),
+  );
+  return block;
+}
+
 function renderRow(ch, source) {
   const badges = [];
-  if (ch.is_current) badges.push(el('span', { className: 'badge primary' }, i18n('setup.import.badge_current')));
+  if (ch.is_current) {
+    badges.push(el('span', {
+      className: 'badge primary',
+      title: i18n('setup.import.badge_current_hint'),
+    }, i18n('setup.import.badge_current')));
+  }
   badges.push(ch.has_system_prompt
-    ? el('span', { className: 'badge ok' }, i18n('setup.import.badge_has_prompt'))
-    : el('span', { className: 'badge warn' }, i18n('setup.import.badge_no_prompt')));
+    ? el('span', {
+        className: 'badge ok',
+        title: i18n('setup.import.badge_has_prompt_hint'),
+      }, i18n('setup.import.badge_has_prompt'))
+    : el('span', {
+        className: 'badge warn',
+        title: i18n('setup.import.badge_no_prompt_hint'),
+      }, i18n('setup.import.badge_no_prompt')));
   if (!ch.memory_dir_exists) {
-    badges.push(el('span', { className: 'badge warn' }, i18n('setup.import.badge_no_memdir')));
+    badges.push(el('span', {
+      className: 'badge warn',
+      title: i18n('setup.import.badge_no_memdir_hint'),
+    }, i18n('setup.import.badge_no_memdir')));
   }
 
   const files = ch.memory_files?.length

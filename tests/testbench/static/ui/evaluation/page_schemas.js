@@ -145,8 +145,16 @@ function makeState() {
 
 export async function renderSchemasPage(host) {
   host.innerHTML = '';
+  const { openFolderButton } = await import('../_open_folder_btn.js');
+  const header = el('div', {
+    style: { display: 'flex', alignItems: 'baseline', gap: '12px', justifyContent: 'space-between' },
+  });
+  header.append(
+    el('h2', { style: { margin: 0 } }, i18n('evaluation.schemas.heading')),
+    openFolderButton('user_schemas'),
+  );
   host.append(
-    el('h2', {}, i18n('evaluation.schemas.heading')),
+    header,
     el('p', { className: 'intro' }, i18n('evaluation.schemas.intro')),
   );
 
@@ -271,13 +279,12 @@ async function importFromFile(state, { refreshList, loadDetails }) {
       }
       const res = await api.post(`${API_BASE}/import`, payload);
       if (!res.ok) {
-        const detail = res.data?.detail || {};
-        if (detail.errors) {
-          state.errors = detail.errors;
-          toast.err(i18n('evaluation.schemas.toast.save_errors', detail.errors.length));
+        if (Array.isArray(res.error?.errors) && res.error.errors.length > 0) {
+          state.errors = res.error.errors;
+          toast.err(i18n('evaluation.schemas.toast.save_errors', state.errors.length));
         } else {
           toast.err(i18n('evaluation.schemas.toast.import_failed'),
-            { message: detail.message || String(res.error || res.status) });
+            { message: res.error?.message || `HTTP ${res.status}` });
         }
         return;
       }
@@ -381,13 +388,19 @@ function renderListItem(meta, state, ctx) {
     className: classes.join(' '),
     onClick: () => ctx.loadDetails(meta.id),
   },
-    el('div', { className: 'script-editor-list-item-title' }, meta.id),
+    el('div', {
+      className: 'script-editor-list-item-title u-truncate',
+      title: meta.id,
+    }, meta.id),
     el('div', { className: 'script-editor-list-item-meta' },
       i18n('evaluation.schemas.list.dims_fmt', meta.dimensions_count),
       ...badges,
     ),
     meta.description
-      ? el('div', { className: 'script-editor-list-item-desc' }, meta.description)
+      ? el('div', {
+          className: 'script-editor-list-item-desc u-truncate-2',
+          title: meta.description,
+        }, meta.description)
       : null,
     el('div', { className: 'script-editor-list-item-actions' }, ...actions),
   );
@@ -405,9 +418,8 @@ async function duplicateSchema(sourceId, state, ctx) {
     overwrite: false,
   });
   if (!res.ok) {
-    const detail = res.data?.detail || {};
     toast.err(i18n('evaluation.schemas.toast.duplicate_failed'),
-      { message: detail.message || String(res.error || res.status) });
+      { message: res.error?.message || `HTTP ${res.status}` });
     return;
   }
   toast.ok(i18n('evaluation.schemas.toast.duplicated', target));
@@ -420,9 +432,8 @@ async function deleteUserSchema(id, state, ctx) {
   if (!confirmed) return;
   const res = await api.delete(`${API_BASE}/${encodeURIComponent(id)}`);
   if (!res.ok) {
-    const detail = res.data?.detail || {};
     toast.err(i18n('evaluation.schemas.toast.delete_failed'),
-      { message: detail.message || String(res.error || res.status) });
+      { message: res.error?.message || `HTTP ${res.status}` });
     return;
   }
   toast.ok(i18n('evaluation.schemas.toast.deleted', id));
@@ -1039,6 +1050,18 @@ function renderPromptField(state, readonly) {
   card.append(el('p', { className: 'hint' },
     i18n('evaluation.schemas.editor.prompt_hint')));
 
+  // PLAN §13 F4 security advisory: the POST /api/judge/run body's
+  // ``extra_context`` can overlay any of the prompt placeholders listed
+  // above; collisions silently replace testbench-managed context with
+  // caller-controlled text. UI doesn't expose this knob, so it only
+  // applies to script / direct-API callers — but anyone reading a
+  // third-party schema + its associated runner script should be warned.
+  // Back-end audit lands in Diagnostics → Errors via
+  // ``judge_router._audit_extra_context_override``. See also
+  // AGENT_NOTES §4.27 #97 (I2) for attack-surface mapping.
+  card.append(el('p', { className: 'preview-hint danger' },
+    i18n('evaluation.schemas.editor.prompt_extra_context_warn')));
+
   const ta = el('textarea', {
     rows: 20,
     className: 'mono',
@@ -1100,14 +1123,15 @@ async function saveDraft(state, ctx) {
 
   const res = await api.post(API_BASE, payload);
   if (!res.ok) {
-    const detail = res.data?.detail || {};
-    if (detail.errors) {
-      state.errors = detail.errors;
+    // 2026-04-22 Day 8 手测 #2: api.js 现在把 errors / message 平铺到
+    // res.error 上, 不用再 `res.data?.detail` (非 2xx 时 res.data = null).
+    if (Array.isArray(res.error?.errors) && res.error.errors.length > 0) {
+      state.errors = res.error.errors;
       ctx.rerender();
       toast.err(i18n('evaluation.schemas.toast.save_errors', state.errors.length));
     } else {
       toast.err(i18n('evaluation.schemas.toast.save_failed'),
-        { message: detail.message || String(res.error || res.status) });
+        { message: res.error?.message || `HTTP ${res.status}` });
     }
     return;
   }

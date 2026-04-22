@@ -126,6 +126,10 @@ function ensureSelection(state) {
   } catch { /* ignore quota */ }
 }
 
+// P24 §14.4 M3: AbortController — rapid toolbar / filter / pagination
+// clicks abort the pending request so "last click wins".
+let _logsLoadController = null;
+
 async function loadLogs(state) {
   if (!state.sessionId || !state.date) {
     state.items = [];
@@ -134,6 +138,11 @@ async function loadLogs(state) {
     state.facets = { op: [], level: [] };
     return;
   }
+  if (_logsLoadController) {
+    try { _logsLoadController.abort(); } catch { /* ignore */ }
+  }
+  const controller = new AbortController();
+  _logsLoadController = controller;
   state.loading = true;
   const usp = new URLSearchParams({
     session_id: state.sessionId,
@@ -144,8 +153,12 @@ async function loadLogs(state) {
   if (state.level)   usp.set('level', state.level);
   if (state.op)      usp.set('op', state.op);
   if (state.keyword) usp.set('keyword', state.keyword);
-  const resp = await api.get(`/api/diagnostics/logs?${usp.toString()}`,
-    { expectedStatuses: [404] });
+  const resp = await api.get(`/api/diagnostics/logs?${usp.toString()}`, {
+    expectedStatuses: [404],
+    signal: controller.signal,
+  });
+  if (resp.error?.type === 'aborted') return;
+  if (_logsLoadController === controller) _logsLoadController = null;
   state.loading = false;
   if (resp.ok) {
     state.items = resp.data?.items || [];

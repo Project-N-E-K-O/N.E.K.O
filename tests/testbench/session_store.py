@@ -33,6 +33,12 @@ from tests.testbench.pipeline.snapshot_store import SnapshotStore
 from tests.testbench.sandbox import Sandbox
 from tests.testbench.virtual_clock import VirtualClock
 
+# P22 autosave scheduler. Imported at the module level so the dataclass
+# field annotation resolves cleanly; the actual runtime dependency only
+# kicks in inside ``SessionStore.create`` / ``_destroy_locked`` /
+# ``session_operation``.
+from tests.testbench.pipeline.autosave import AutosaveScheduler
+
 
 class SessionState(str, Enum):
     """Lifecycle state surfaced to the UI.
@@ -165,6 +171,13 @@ class Session:
     # must set it explicitly before any capture/rewind call.
     snapshot_store: SnapshotStore | None = None
 
+    # P22: debounced autosave scheduler. Attached by SessionStore.create
+    # and stopped from SessionStore._destroy_locked. Same "None for raw
+    # dataclass in tests" convention as snapshot_store. Mutating ops go
+    # through ``session_operation`` which pings notify() on exit (when
+    # the op succeeded); direct writers must call notify() themselves.
+    autosave_scheduler: AutosaveScheduler | None = None
+
     # Mutated directly by SessionStore under its own lock.
     state: SessionState = SessionState.IDLE
     busy_op: str | None = None
@@ -234,30 +247,52 @@ class SessionStore:
 
     # ── creation / destruction ──────────────────────────────────────
 
-    async def create(self, *, name: str | None = None) -> Session:
+    async def create(
+        self,
+        *,
+        name: str | None = None,
+        session_id: str | None = None,
+    ) -> Session:
         """Build a fresh session + sandbox and make it the active slot.
 
         Destroys the current session first (restoring ConfigManager and
         rmtree-ing the old sandbox) so the singleton invariant holds.
+
+        ``session_id`` (P24 2026-04-21, user-reported): when provided
+        (e.g. by load / autosave-restore paths that want to reuse the
+        archive's original session_id), we pin the new session to that
+        id instead of generating a fresh uuid. This keeps downstream
+        per-session artifacts (autosave rolling slots, sandbox dir)
+        continuous with the restored archive's history — otherwise each
+        restore leaked a new session_id's worth of rolling slots on
+        disk (visible to the user as "6 autosaves when I only allow 3").
+        When ``None`` (default: New session, Reset), uuid4.hex[:12].
+
+        The singleton invariant still holds: if the current active
+        session happens to already share the requested id, it gets
+        destroyed above (purge_sandbox=True rmtree's the old data),
+        and a fresh sandbox is created under the same id below —
+        ``Sandbox.create()`` is idempotent so re-using a directory
+        that lingered from a prior run is also safe.
         """
         async with self._registry_lock:
             if self._session is not None:
                 await self._destroy_locked(purge_sandbox=True)
 
-            session_id = uuid4().hex[:12]
-            sandbox = Sandbox(session_id=session_id).create()
+            chosen_id = session_id or uuid4().hex[:12]
+            sandbox = Sandbox(session_id=chosen_id).create()
             sandbox.apply()
 
             from tests.testbench.pipeline.stage_coordinator import (
                 initial_stage_state,
             )
             session = Session(
-                id=session_id,
-                name=name or f"session-{session_id[:6]}",
+                id=chosen_id,
+                name=name or f"session-{chosen_id[:6]}",
                 created_at=datetime.now(),
                 sandbox=sandbox,
                 clock=VirtualClock(),
-                logger=SessionLogger(session_id),
+                logger=SessionLogger(chosen_id),
                 stage_state=initial_stage_state(),
                 snapshot_store=SnapshotStore(sandbox_root=sandbox.root),
             )
@@ -266,6 +301,12 @@ class SessionStore:
             session.snapshot_store.capture(
                 session, trigger="init", label="t0:init",
             )
+            # P22: autosave scheduler. Attached *after* snapshot anchor
+            # so the first notify() doesn't race with the capture above.
+            # We don't notify on create — an empty session isn't worth
+            # autosaving; the first user op will flip it dirty.
+            session.autosave_scheduler = AutosaveScheduler(session)
+            session.autosave_scheduler.start()
             session.logger.log_sync(
                 "session.create",
                 payload={"name": session.name, "sandbox": str(sandbox.root)},
@@ -284,6 +325,23 @@ class SessionStore:
         """Internal helper; caller holds ``self._registry_lock``."""
         session = self._session
         assert session is not None
+
+        # P22: stop the autosave scheduler *before* we grab session.lock.
+        # ``close()`` does a best-effort last-gasp flush (which itself
+        # takes session.lock briefly) and then cancels the background
+        # task. Doing this before the outer ``async with session.lock``
+        # avoids deadlock — if we tried it inside the block, the flush
+        # couldn't acquire the lock we already hold.
+        scheduler = session.autosave_scheduler
+        if scheduler is not None:
+            try:
+                await scheduler.close()
+            except Exception as exc:  # noqa: BLE001 - best-effort
+                python_logger().warning(
+                    "Session %s: autosave scheduler close failed: %s",
+                    session.id, exc,
+                )
+            session.autosave_scheduler = None
 
         # Wait for any in-flight per-session op to complete. If another
         # coroutine is still inside ``session_operation``, this blocks until
@@ -318,6 +376,7 @@ class SessionStore:
         op_name: str,
         *,
         state: SessionState = SessionState.BUSY,
+        autosave_notify: bool = True,
     ) -> AsyncIterator[Session]:
         """Acquire the per-session lock and set an op label for the UI.
 
@@ -328,6 +387,13 @@ class SessionStore:
 
         Raises :class:`LookupError` if no session is active and
         :class:`SessionConflictError` if the session is already busy.
+
+        P22 — ``autosave_notify``: if True (default), calls
+        ``session.autosave_scheduler.notify(op_name)`` on **successful**
+        exit. Set False for read-only ops that pass through this
+        context manager for state labeling (none currently; listed for
+        future-proofing) and for the autosave path itself to avoid
+        re-entrant "autosave notifies autosave" loops.
         """
         session = self.require()
         if session.lock.locked():
@@ -340,11 +406,32 @@ class SessionStore:
             prev_op = session.busy_op
             session.state = state
             session.busy_op = op_name
+            mutation_succeeded = False
             try:
                 yield session
+                mutation_succeeded = True
             finally:
                 session.state = prev_state
                 session.busy_op = prev_op
+        # ``notify`` runs *outside* the session.lock to avoid holding the
+        # lock a single tick longer than needed (scheduler.notify is sync
+        # and <1 μs but "after release" is a cleaner invariant for anyone
+        # debugging lock contention). It's also outside the "if succeeded"
+        # check? — we only notify on success: an op that raised likely
+        # left partial state; autosaving it would persist that mess. The
+        # caller who aborted surfaces the failure; if they then retry,
+        # the next successful op notifies and covers the delta.
+        if (
+            mutation_succeeded
+            and autosave_notify
+            and session.autosave_scheduler is not None
+        ):
+            try:
+                session.autosave_scheduler.notify(op_name)
+            except Exception:  # noqa: BLE001 — scheduler never bubbles
+                python_logger().exception(
+                    "session_operation: autosave notify() failed (non-fatal)",
+                )
 
 
 # ── module-level singleton ──────────────────────────────────────────

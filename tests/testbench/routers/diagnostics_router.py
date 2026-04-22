@@ -60,6 +60,7 @@ from tests.testbench.logger import (
     python_logger,
 )
 from tests.testbench.pipeline import diagnostics_store
+from tests.testbench.pipeline.diagnostics_ops import all_ops_payload
 
 router = APIRouter(prefix="/api/diagnostics", tags=["diagnostics"])
 
@@ -97,8 +98,16 @@ def list_errors(
     level: Optional[str] = Query(None),
     session_id: Optional[str] = Query(None),
     search: Optional[str] = Query(None, min_length=1, max_length=200),
+    op_type: Optional[str] = Query(None, max_length=200),
 ) -> dict[str, Any]:
-    """Return newest-first errors matching the given filters."""
+    """Return newest-first errors matching the given filters.
+
+    ``op_type`` — P24 §15.2 D / F7 Option B. Exact-match on the
+    ``DiagnosticsError.type`` field; accepts a comma-separated list
+    for "any of" semantics. Used by Errors subpage's Security filter
+    buttons (integrity_check / judge_extra_context_override /
+    timestamp_coerced).
+    """
     return diagnostics_store.list_errors(
         limit=limit,
         offset=offset,
@@ -106,6 +115,7 @@ def list_errors(
         level=level,
         session_id=session_id,
         search=search,
+        op_type=op_type,
     )
 
 
@@ -115,6 +125,29 @@ def get_error(error_id: str) -> dict[str, Any]:
     if entry is None:
         raise HTTPException(status_code=404, detail=f"error {error_id} not found")
     return entry.to_dict()
+
+
+@router.get("/ops")
+def list_internal_ops() -> dict[str, Any]:
+    """Return the catalog of known ``record_internal`` op types.
+
+    Used by Diagnostics → Errors (F7 Security subpage) to populate an
+    "op" filter dropdown without the frontend hardcoding a duplicate
+    list. Single source of truth is
+    :data:`tests.testbench.pipeline.diagnostics_ops.OP_CATALOG`.
+
+    Each item shape::
+
+        {
+            "op": "integrity_check",
+            "category": "data_integrity",
+            "severity": "warning",
+            "description": "..."
+        }
+
+    See ``P24_BLUEPRINT §4.1.5``.
+    """
+    return {"ops": all_ops_payload()}
 
 
 @router.post("/errors")

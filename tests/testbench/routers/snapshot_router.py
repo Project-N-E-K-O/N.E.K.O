@@ -100,6 +100,18 @@ class _UpdateLabelBody(BaseModel):
     label: str = Field(..., min_length=1, max_length=120)
 
 
+class _UpdateConfigBody(BaseModel):
+    """Body for ``POST /api/snapshots/config``.
+
+    Either or both fields may be provided; unspecified fields keep their
+    current value. Input ranges are validated server-side in
+    ``SnapshotStore.update_config`` (and mirrored here for early reject).
+    """
+
+    max_hot: int | None = Field(default=None, ge=1, le=500)
+    debounce_seconds: float | None = Field(default=None, ge=0.0, le=3600.0)
+
+
 # ── endpoints ────────────────────────────────────────────────────────
 
 
@@ -118,6 +130,46 @@ async def list_snapshots() -> dict[str, Any]:
         "max_hot": store.max_hot,
         "debounce_seconds": store.debounce_seconds,
     }
+
+
+@router.post("/config")
+async def update_snapshot_config(body: _UpdateConfigBody) -> dict[str, Any]:
+    """Update the hot cap / debounce seconds on the active session.
+
+    Session-scoped: the change applies only to the currently active
+    session's ``SnapshotStore``; a future (new) session is created with
+    defaults (``DEFAULT_MAX_HOT=30`` / ``DEFAULT_DEBOUNCE_SECONDS=5``).
+    This matches the testbench's single-session model where "设置后
+    跨 session 继承" semantics would need a global config layer
+    (deliberately out of P24 scope per §12.3.A — if needed later, a
+    small ``tb_config`` pref or ``POST /api/config/ui_prefs`` endpoint
+    can preserve the value).
+
+    Shrinking ``max_hot`` below the current hot snapshot count triggers
+    an immediate spill of the excess to cold storage (see
+    ``SnapshotStore.update_config``).
+
+    Returns the effective ``{max_hot, debounce_seconds}`` after the
+    update — the client can echo these back into its form state without
+    an extra GET round trip.
+
+    P24 Day 7 §12.3.A #3 — 2026-04-22 delivery.
+    """
+    session = _require_session()
+    try:
+        result = session.snapshot_store.update_config(
+            max_hot=body.max_hot,
+            debounce_seconds=body.debounce_seconds,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_type": "InvalidSnapshotConfig",
+                "message": str(exc),
+            },
+        ) from exc
+    return result
 
 
 @router.post("")

@@ -27,10 +27,28 @@ from utils.config_manager import get_config_manager
 from tests.testbench import config as tb_config
 from tests.testbench.logger import python_logger
 
-# Attributes captured and restored on ConfigManager. Mirrors the list in
-# :func:`tests.conftest.clean_user_data_dir` plus a few modern additions
-# (``plugins_dir`` / ``mmd_dir`` / ``mmd_animation_dir``). Kept centrally so
+# Attributes captured and restored on ConfigManager. Kept centrally so
 # forgetting one won't leak state across sessions.
+#
+# Sync status (2026-04-21 P24 Day 1 audit):
+#
+#   ``utils.config_manager.ConfigManager.__init__`` defines 14 ``*_dir``
+#   attributes (docs/app_docs/config/memory/plugins/live2d/vrm/vrm_animation/
+#   mmd/mmd_animation/workshop/chara/project_config/project_memory). This
+#   list covers all 14 — fully synced.
+#
+#   ``tests.conftest.clean_user_data_dir`` (non-testbench pytest fixture)
+#   only covers 11; it lags by 3 fields (``plugins_dir`` / ``mmd_dir`` /
+#   ``mmd_animation_dir``). **Intentionally not fixed here** because:
+#   (a) it's a non-testbench fixture, doesn't affect our sandboxing;
+#   (b) patching it requires rewriting 9 explicit variable names in the
+#   fixture body, larger blast radius than warranted by P24 Day 1 scope.
+#   Filed as main-program-side tech debt for future standalone pass.
+#
+# Invariant enforced by ``smoke/p24_sandbox_attrs_sync_smoke.py`` (Day 10):
+# inspect current ``ConfigManager`` for any new ``*_dir`` / ``*_path``
+# public attribute not in this tuple — fail loudly so future additions
+# force a sync update here.
 _PATCHED_ATTRS: tuple[str, ...] = (
     "docs_dir",
     "app_docs_dir",
@@ -197,7 +215,7 @@ class Sandbox:
             "applied": "yes" if self._applied else "no",
         }
 
-    def real_paths(self) -> dict[str, Path]:
+    def real_paths(self) -> dict[str, Any]:
         """Return **pre-patch** ConfigManager paths (memory/config/chara).
 
         Used by the "Import from real character" flow (P05) which needs to
@@ -208,13 +226,25 @@ class Sandbox:
         Returns an empty dict when the sandbox is not currently applied —
         callers should treat that as "nothing to import from" and tell the
         user to create a session first.
+
+        P24 Day 8 (2026-04-22, §12.4.A fix): also exposes the main program's
+        ``_readable_docs_dir`` (CFA fallback state) so the Import UI can
+        warn users when Documents is read-only and the app reads/writes
+        from ``AppData\\Local`` instead — a common "I edited Documents but
+        nothing changed" gotcha on Windows with Controlled Folder Access
+        enabled. ``readable_docs_dir`` is None when CFA fallback is
+        inactive (Documents is writable and everything goes there).
         """
         if not self._applied or not self._originals:
             return {}
+        from utils.config_manager import get_config_manager
+        cm = get_config_manager(self.app_name)
+        readable = getattr(cm, "_readable_docs_dir", None)
         return {
             "docs_dir": Path(self._originals["docs_dir"]),
             "app_docs_dir": Path(self._originals["app_docs_dir"]),
             "config_dir": Path(self._originals["config_dir"]),
             "memory_dir": Path(self._originals["memory_dir"]),
             "chara_dir": Path(self._originals["chara_dir"]),
+            "readable_docs_dir": Path(readable) if readable else None,
         }

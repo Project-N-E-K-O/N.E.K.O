@@ -208,9 +208,15 @@ export function mountPreviewPanel(host) {
   }
 
   function metaBadge(label, value) {
-    return el('span', { className: 'meta-badge' },
+    const valueStr = String(value ?? '');
+    return el('span', {
+      className: 'meta-badge',
+      title: `${label}: ${valueStr}`,
+    },
       el('span', { className: 'meta-label' }, label + ': '),
-      el('span', { className: 'meta-value' }, value),
+      el('span', {
+        className: 'meta-value u-wrap-anywhere',
+      }, valueStr),
     );
   }
 

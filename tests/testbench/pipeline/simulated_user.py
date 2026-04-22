@@ -303,11 +303,36 @@ _PREFIX_PATTERNS: Final[tuple[str, ...]] = (
 )
 
 
-def _postprocess_draft(raw: str) -> tuple[str, list[str]]:
+def _postprocess_draft(raw: str, *, preserve_role_prefix: bool = False) -> tuple[str, list[str]]:
     """Strip role-label prefixes + outer quotes that models often emit.
 
-    Returns ``(cleaned, warnings)`` — 如果做了非平凡清洗, 会追加一条
-    warning 让前端/日志能看到 "SimUser LLM 不守规矩, 我们兜了底".
+    Boundary clarification (§3A G1 + LESSONS_LEARNED §5.3, 2026-04-21):
+    this is **LLM output hygiene, not user-input filtering**. SimUser's
+    LLM frequently echoes its own role label ("用户:", "User:", "我:")
+    or wraps the reply in outer quotes; stripping these restores the
+    "plain user utterance" the downstream chat pipeline expects. The
+    cleaning operates on the **LLM's generated content**, never on
+    anything the human tester typed. Per G1 ("never filter user
+    content") this sits on the allowed side of the line.
+
+    **Known edge case**: when the tester deliberately wants to test a
+    model's robustness against ChatML-style role-prefix payloads (e.g.
+    "reply with `User: real_attack_here`" to measure if the target
+    model sees / obeys the prefix), this cleaner would strip the "User:"
+    and defeat the test. Use ``preserve_role_prefix=True`` to opt out.
+
+    Args:
+      raw: Raw LLM output.
+      preserve_role_prefix: If ``True``, skip the prefix stripping (but
+        still strip outer quotes — quotes are an independent hygiene
+        concern unrelated to injection-prefix tests). Default ``False``
+        preserves the historical behavior.
+
+    Returns:
+      ``(cleaned, warnings)``. ``warnings`` is non-empty when the
+      cleaner modified the string, so the composer UI can toast
+      "SimUser LLM 不守规矩, 我们兜了底" and the tester can inspect
+      the raw version in the preview drawer if they care.
     """
     warnings: list[str] = []
     s = (raw or "").strip()
@@ -315,16 +340,17 @@ def _postprocess_draft(raw: str) -> tuple[str, list[str]]:
         return "", warnings
 
     stripped_any = False
-    changed = True
-    # 允许 "用户: 我:"这种多重叠加, 循环去掉.
-    while changed:
-        changed = False
-        for prefix in _PREFIX_PATTERNS:
-            if s.startswith(prefix):
-                s = s[len(prefix):].lstrip()
-                changed = True
-                stripped_any = True
-                break
+    if not preserve_role_prefix:
+        changed = True
+        # 允许 "用户: 我:"这种多重叠加, 循环去掉.
+        while changed:
+            changed = False
+            for prefix in _PREFIX_PATTERNS:
+                if s.startswith(prefix):
+                    s = s[len(prefix):].lstrip()
+                    changed = True
+                    stripped_any = True
+                    break
 
     # 去首尾成对引号. 仅当首尾都是同一种引号时.
     quote_pairs = (('"', '"'), ("'", "'"), ("\u201c", "\u201d"), ("\u300c", "\u300d"))

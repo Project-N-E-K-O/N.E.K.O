@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 from pathlib import Path
 from typing import Any
@@ -276,6 +277,32 @@ async def effective_system_prompt(
 # ── real-character discovery / import ───────────────────────────────
 
 
+def _user_documents_dir() -> Path | None:
+    """Best-effort resolve the user's real Documents directory.
+
+    Used for the split-config detection in ``list_real_characters`` — we
+    want to know if there's a **legacy** ``<Documents>/<app>/config/`` that
+    the user might have edited but the main program stopped reading from
+    (either CFA fallback or new-version primary-is-AppData).
+
+    Returns ``None`` when the platform doesn't expose a stable "Documents"
+    concept or when lookup fails — callers treat None as "can't check, skip
+    warning". Never raises.
+    """
+    try:
+        if os.name == "nt":
+            userprofile = os.environ.get("USERPROFILE")
+            if userprofile:
+                p = Path(userprofile) / "Documents"
+                return p if p.exists() else None
+            return None
+        home = Path.home()
+        p = home / "Documents"
+        return p if p.exists() else None
+    except OSError:
+        return None
+
+
 def _read_real_characters_json(config_dir: Path) -> dict[str, Any] | None:
     """Load the tester's real ``characters.json`` if present.
 
@@ -331,6 +358,13 @@ async def list_real_characters() -> dict[str, Any]:
     Works only when a session (hence a sandbox) is active — that's how we know
     where the real (pre-patch) ``config_dir`` lives. Each entry is a compact
     summary; the full payload is fetched by :func:`import_from_real`.
+
+    P24 Day 8 §12.4.A (2026-04-22): 用户 dev_note L17 反馈 "本地有数据但
+    列表不显示只有默认小天". Backend scan 逻辑与主程序 ``raw['猫娘']`` 契约
+    同源, 代码层面无 bug. 真正根因大概率在用户本地 characters.json 的
+    具体内容 (手动编辑过 / 主程序新增字段 / 异常 entry 被 ``isinstance(entry,
+    dict)`` 过滤). 加诊断字段 ``note`` 覆盖所有空态路径 + ``skipped_entries``
+    列出被过滤掉的 key + 原因, 让用户手测时**自己诊断**不需要来回贴文件.
     """
     session = _require_session()
     paths = session.sandbox.real_paths()
@@ -340,11 +374,39 @@ async def list_real_characters() -> dict[str, Any]:
             "memory_dir": None,
             "master_name": "",
             "characters": [],
+            "skipped_entries": [],
+            "cfa_fallback": None,
             "note": "Sandbox not applied; cannot introspect real paths.",
         }
 
     config_dir = paths["config_dir"]
     memory_dir = paths["memory_dir"]
+
+    # 配置路径分裂检测 (2026-04-22 dev_note L17 根因):
+    # 用户报告"Documents\<app>\config\characters.json 改了但程序读不到".
+    # 两种可能:
+    #   (a) Windows CFA 把 Documents 判为只读, ConfigManager 回退到
+    #       AppData\Local → `cm._readable_docs_dir` 非 None;
+    #   (b) 主程序新版本直接以 AppData\Local 作 primary 候选, 根本不
+    #       尝试 Documents; 用户历史遗留的 Documents\<app>\ 目录仍然
+    #       存在但主程序永远不读 → `cm._readable_docs_dir = None`.
+    # 两种场景的用户表现完全一致 ("改了没生效"), 用 **启发式**: 直接查
+    # `%USERPROFILE%\Documents\<app_name>\config\characters.json` 是否存在,
+    # 存在且与 active 路径不同 → 有分裂风险, 警告用户.
+    cfa_fallback: dict[str, str] | None = None
+    active_characters_path = config_dir / "characters.json"
+    user_docs = _user_documents_dir()
+    if user_docs is not None:
+        legacy_config = user_docs / session.sandbox.app_name / "config"
+        legacy_characters = legacy_config / "characters.json"
+        if (legacy_characters.exists()
+                and legacy_characters.resolve() != active_characters_path.resolve()):
+            cfa_fallback = {
+                "readable_docs_dir": str(user_docs),
+                "write_docs_dir": str(paths["docs_dir"]),
+                "active_characters_path": str(active_characters_path),
+                "readable_characters_path": str(legacy_characters),
+            }
     raw = _read_real_characters_json(config_dir)
     if raw is None:
         return {
@@ -352,6 +414,7 @@ async def list_real_characters() -> dict[str, Any]:
             "memory_dir": str(memory_dir),
             "master_name": "",
             "characters": [],
+            "skipped_entries": [],
             "note": "characters.json missing or unreadable.",
         }
 
@@ -362,10 +425,33 @@ async def list_real_characters() -> dict[str, Any]:
 
     catgirls = raw.get("猫娘")
     summaries: list[dict[str, Any]] = []
-    if isinstance(catgirls, dict):
+    skipped: list[dict[str, str]] = []
+    note: str | None = None
+
+    if catgirls is None:
+        note = (
+            "characters.json 有 '主人' 但没有 '猫娘' 字段. "
+            "主程序的预期格式是 {主人: {...}, 猫娘: {角色名: 角色 dict}, 当前猫娘: '...'}; "
+            "请检查本地 config/characters.json."
+        )
+    elif not isinstance(catgirls, dict):
+        note = (
+            f"characters.json 的 '猫娘' 字段不是对象而是 {type(catgirls).__name__} — "
+            "可能文件被手动编辑过, 或者主程序更新了 schema. "
+            "预期: 猫娘 应该是 {角色名: {...}} 形式的 dict."
+        )
+    else:
         current = str(raw.get("当前猫娘", "") or "")
         for name, entry in catgirls.items():
             if not isinstance(entry, dict):
+                # 把被过滤的条目透出 + 原因, 让用户自查.
+                skipped.append({
+                    "name": str(name),
+                    "reason": (
+                        f"entry 不是对象而是 {type(entry).__name__} — "
+                        "预期是 dict 格式的角色卡"
+                    ),
+                })
                 continue
             mem_subdir = memory_dir / name
             has_mem_dir = mem_subdir.is_dir()
@@ -377,12 +463,30 @@ async def list_real_characters() -> dict[str, Any]:
                 "memory_dir_exists": has_mem_dir,
                 "memory_files": present,
             })
+        if not summaries and not skipped:
+            note = (
+                "characters.json 的 '猫娘' 字段是对象但内部为空. "
+                "如果你的本地 characters.json 里明明有角色, 请把文件发给开发者确认 "
+                "(通常在 ~/Documents/N.E.K.O/config/characters.json)."
+            )
+
+    # 不管成功与否都 log 一次给 live_runtime_log / session log 追溯, 用户手测时
+    # 可以去看日志看扫到的完整真相.
+    python_logger().info(
+        "persona.list_real_characters: session=%s, config_dir=%s, "
+        "catgirls_type=%s, summaries=%d, skipped=%d",
+        getattr(session, "id", "?"), config_dir,
+        type(catgirls).__name__, len(summaries), len(skipped),
+    )
 
     return {
         "config_dir": str(config_dir),
         "memory_dir": str(memory_dir),
         "master_name": master_name,
         "characters": summaries,
+        "skipped_entries": skipped,
+        "cfa_fallback": cfa_fallback,
+        "note": note,
     }
 
 

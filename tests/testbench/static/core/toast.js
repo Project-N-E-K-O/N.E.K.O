@@ -123,12 +123,32 @@ function show(opts) {
   return el;
 }
 
+// 2026-04-22 Day 8 验收反馈 — 历史上 toast.ok/info/warn/err 的签名是
+// `(message, opts)`, 但全仓 16 处调用点写的是
+// `toast.err('主标题', { message: '详情/副标题' })` — 期望首参作"大字
+// 标题", opts.message 作"正文". 原实现 `show({..., message: firstArg,
+// ...opts })` 让 opts.message **覆盖**首参, 导致首参悄悄丢失, 正文只剩
+// 详情部分. 长期没被发现是因为绝大多数调用首参 (如 '网络错误') 和
+// opts.message (如 'POST /api/foo HTTP 409') 意义相近. 直到 auto_dialog
+// 抛 RateLimitError 时首参是 "RateLimitError: 429 - Rate limit exceeded..."
+// 完整诊断信息, opts.message = 'LlmFailed' 覆盖后用户只看到 'LlmFailed'
+// 毫无 actionable 上下文, 才浮出水面.
+//
+// 修法: 首参在 **opts.message 存在且 opts.title 不存在** 时自动升格成
+// title (符合调用方意图); 其它情况维持"首参即正文"的旧契约.
+function _dispatch(kind, messageOrTitle, opts = {}) {
+  if (opts.message !== undefined && opts.title === undefined) {
+    return show({ kind, title: messageOrTitle, ...opts });
+  }
+  return show({ kind, message: messageOrTitle, ...opts });
+}
+
 export const toast = {
   show,
-  ok:   (message, opts = {}) => show({ kind: 'ok',   message, ...opts }),
-  info: (message, opts = {}) => show({ kind: 'info', message, ...opts }),
-  warn: (message, opts = {}) => show({ kind: 'warn', message, ...opts }),
-  err:  (message, opts = {}) => show({ kind: 'err',  message, ...opts }),
+  ok:   (msg, opts = {}) => _dispatch('ok',   msg, opts),
+  info: (msg, opts = {}) => _dispatch('info', msg, opts),
+  warn: (msg, opts = {}) => _dispatch('warn', msg, opts),
+  err:  (msg, opts = {}) => _dispatch('err',  msg, opts),
   dismissAll() {
     document.querySelectorAll('#toast-stack .toast').forEach(dismiss);
   },

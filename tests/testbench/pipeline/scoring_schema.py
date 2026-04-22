@@ -308,6 +308,20 @@ class ScoringSchema:
         robust across schema / context drift. If you need strict behavior
         for testing, call ``validate_schema_dict`` first which rejects
         templates referencing unresolvable names.
+
+        Hardened for P21.3 F1 (prompt injection 最小化防御 pass):
+
+        * Attribute access (``{x.__class__}``) and index access (``{x[0]}``)
+          are disabled via :class:`_SafeFormatter`; user-authored templates
+          cannot traverse Python object internals on ctx values for info
+          leak purposes.
+        * ``ValueError`` from malformed templates (unmatched braces / bad
+          format spec) is caught and re-raised as
+          :class:`ScoringSchemaError` (``SchemaInvalid``) with an
+          actionable ``path=prompt_template`` message, so a corrupt or
+          manually-edited-and-smuggled-past-validate schema surfaces as a
+          clean 422 in the judger API instead of crashing the judge
+          worker with a raw stack trace.
         """
         ctx = dict(ctx or {})
         ctx.setdefault("dimensions_block", self.format_dimensions_block())
@@ -316,7 +330,14 @@ class ScoringSchema:
         ctx.setdefault("verdict_rule", self.verdict_rule)
         ctx.setdefault("pass_rule", self.pass_rule)
         ctx.setdefault("max_raw_score", self.max_raw_score)
-        return self.prompt_template.format_map(_SafeDict(ctx))
+        try:
+            return _SAFE_FORMATTER.vformat(self.prompt_template, (), ctx)
+        except (ValueError, IndexError) as exc:
+            raise ScoringSchemaError(
+                "SchemaInvalid",
+                f"prompt_template \u6e32\u67d3\u5931\u8d25: {exc}",
+                status=422,
+            ) from exc
 
     # ── Rendering helpers (precomputed blocks) ─────────────────────
 
@@ -539,6 +560,43 @@ class _SafeDict(dict):
         return ""
 
 
+# ── P21.3 F1: hardened formatter ────────────────────────────────────
+
+
+class _SafeFormatter(__import__("string").Formatter):
+    """``string.Formatter`` that locks down attribute/index access.
+
+    Why: user-authored ``prompt_template`` can, with default Python
+    ``format_map`` semantics, do ``{history.__class__.__mro__}`` or
+    ``{ctx[0]}`` to traverse Python object internals on ctx values.
+    The leak is minor in testbench today (ctx is plain strings), but
+    prompt injection is a "user-editable field feeds into AI" surface
+    we want to close systematically (PLAN §13 F1). Locking at the
+    formatter layer is cheap and defence-in-depth vs. any future ctx
+    value that happens to be a dataclass / model / session object.
+
+    Unknown top-level names resolve to ``""`` (matches legacy
+    ``_SafeDict`` UX — schemas can keep optional placeholders like
+    ``{reference_response}`` without breaking absolute-mode).
+    """
+
+    def get_field(self, field_name: str, args: tuple, kwargs: dict) -> tuple:
+        # We deliberately skip the base class's ast-walking dispatch so
+        # neither ``.attr`` nor ``[idx]`` after the first token can reach
+        # Python's getattr / getitem. Only the first identifier counts.
+        first = field_name.split(".", 1)[0].split("[", 1)[0]
+        return kwargs.get(first, ""), first
+
+    def format_field(self, value: Any, format_spec: str) -> str:
+        # Empty-string fallback for None / unset ctx values.
+        if value is None:
+            value = ""
+        return super().format_field(value, format_spec)
+
+
+_SAFE_FORMATTER = _SafeFormatter()
+
+
 # ── Validation (soft / collecting) ─────────────────────────────────
 
 
@@ -687,14 +745,17 @@ def _collect_schema_errors(raw: Any) -> list[dict[str, str]]:
 
 # probe formatting — used by validate to detect `{oops` style syntax errors.
 def _probe_format_impl(template: str) -> None:
-    """Dry-run ``template.format_map`` with a non-raising dict.
+    """Dry-run the template through :data:`_SAFE_FORMATTER`.
 
     Only raises for low-level template *syntax* problems (unbalanced braces,
-    bad format spec) — unknown names still collapse to empty via
-    :class:`_SafeDict`. Delegated to a module-level helper so we can expose
+    bad format spec) — unknown names still collapse to empty via the
+    hardened formatter. Delegated to a module-level helper so we can expose
     it on the class without shadowing the instance scope.
+
+    Kept in sync with :meth:`ScoringSchema.render_prompt` so probe and render
+    agree on what counts as "valid" (P21.3 F1).
     """
-    template.format_map(_SafeDict())
+    _SAFE_FORMATTER.vformat(template, (), {})
 
 
 # Attach as a staticmethod. Declaring the helper at module scope keeps the
@@ -843,19 +904,13 @@ def _strip_meta(schema: dict[str, Any] | None) -> dict[str, Any] | None:
 
 
 def _write_user_schema_atomic(path: Path, data: dict[str, Any]) -> None:
-    """Atomic JSON write (tmp + rename). Mirrors ``script_runner``."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent),
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fp:
-            json.dump(data, fp, ensure_ascii=False, indent=2)
-            fp.write("\n")
-        os.replace(tmp_path, path)
-    except Exception:
-        Path(tmp_path).unlink(missing_ok=True)
-        raise
+    """Crash-safe write of a user-authored scoring schema JSON.
+
+    P24 §4.1.2 (2026-04-21): delegates to unified ``atomic_io`` helper
+    which adds ``fsync`` (previously missing here).
+    """
+    from tests.testbench.pipeline.atomic_io import atomic_write_json
+    atomic_write_json(path, data)
 
 
 def save_user_schema(raw: Any) -> dict[str, Any]:

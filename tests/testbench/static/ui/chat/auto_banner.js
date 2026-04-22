@@ -248,9 +248,17 @@ export function mountAutoBanner(host, { stream }) {
             break;
           }
           case 'error': {
+            // toast.err 签名是 (message, opts). opts 里的 `message` 会
+            // 覆盖首参. 之前错写成 toast.err(err.message, {message: err.type})
+            // 导致正文只显示 err.type (如 "LlmFailed"), 详细的 err.message
+            // (如 "调用假想用户 LLM 失败: RateLimitError: Error code: 429...")
+            // 完全被吞. 2026-04-22 Day 8 验收反馈发现此 bug.
+            // 正确用法: 用 opts.title 放 err.type (粗体大字), 首参放
+            // err.message (小字正文), 两行都要给用户看见.
             const err = ev.error || {};
-            toast.err(err.message || i18n('chat.auto_banner.error_title'),
-              { message: err.type || '' });
+            toast.err(err.message || i18n('chat.auto_banner.error_title'), {
+              title: err.type || i18n('chat.auto_banner.error_title'),
+            });
             currentAssistantHandle?.abort();
             currentAssistantHandle = null;
             break;
@@ -264,12 +272,22 @@ export function mountAutoBanner(host, { stream }) {
         }
       },
       onError(err) {
-        toast.err(i18n('chat.auto_banner.error_title'),
-          { message: err.message });
+        // P24 Day 7 (§12.3.F): 启动期配置校验失败 (400 InvalidConfig)
+        // 会带 `err.detail = {error_type, message, errors: [...]}`,
+        // ``errors`` 是逐条校验信息. 用专门的 banner 错误态显示列表,
+        // 避免 toast 被 280 字符截断 + 避免用户需要手动解析
+        // "errA; errB; errC" 合成字符串.
+        const detail = err?.detail;
+        if (Array.isArray(detail?.errors) && detail.errors.length > 1) {
+          showErrorPanel(detail.errors, detail.message);
+        } else {
+          toast.err(i18n('chat.auto_banner.error_title'),
+            { message: err.message });
+          finish();
+        }
         currentAssistantHandle?.abort();
         currentAssistantHandle = null;
         emitPersistedChange();
-        finish();
       },
       onDone() {
         emitPersistedChange();
@@ -288,6 +306,61 @@ export function mountAutoBanner(host, { stream }) {
     hide();
     // 通知 composer 解锁 Start 按钮 (通过事件; 更简单的耦合方式).
     emit('auto_dialog:finished', {});
+  }
+
+  /**
+   * 启动期配置校验多条失败 — 把 banner 替换成错误详情面板 (P24 §12.3.F).
+   *
+   * 设计:
+   *   - 覆盖 banner 原有内容 (不保留 leftGroup/rightGroup, 因为 Start
+   *     根本没成功, 进度/控制按钮都无意义).
+   *   - 顶部 h4 "启动失败 · N 条错误", 居中 [关闭] 按钮.
+   *   - 每条 error 一行, li 列表样式, 首字符加 `• ` 视觉 bullet.
+   *   - 关闭后 banner 整体 hide, 用户可重新调整配置再点 [启动 Auto].
+   *
+   * 没加"单独的 error-modal" 是为了视觉连续性 — 启动动作刚从 Chat
+   * workspace 的 composer 触发, 错误也应该显示在 Chat workspace 里,
+   * 而不是弹一个覆盖全屏的 modal.
+   */
+  function showErrorPanel(errors, headerMessage) {
+    // 拆掉原 banner 内容 (leftGroup + rightGroup), 插错误面板 DOM.
+    bar.innerHTML = '';
+    bar.classList.add('auto-banner--error');
+    bar.style.display = 'flex';
+    bar.style.flexDirection = 'column';
+    bar.style.alignItems = 'stretch';
+
+    const header = el('div', { className: 'auto-banner-error-header' });
+    const title = el('strong', {},
+      i18n('chat.auto_banner.error_panel_title_fmt', errors.length));
+    const closeBtn = el('button', {
+      type: 'button',
+      className: 'small ghost',
+      title: i18n('common.close'),
+      onClick: () => dismissErrorPanel(),
+    }, '×');
+    header.append(title, closeBtn);
+
+    const summary = el('div', { className: 'auto-banner-error-summary' },
+      headerMessage || i18n('chat.auto_banner.error_title'));
+
+    const list = el('ul', { className: 'auto-banner-error-list' });
+    for (const e of errors) {
+      list.append(el('li', {}, String(e)));
+    }
+
+    bar.append(header, summary, list);
+  }
+
+  function dismissErrorPanel() {
+    bar.classList.remove('auto-banner--error');
+    bar.style.flexDirection = '';
+    bar.style.alignItems = '';
+    // 恢复 banner 的原结构 (下次 start 前 render*() 会重新填充), 这里
+    // 只需要把错误 DOM 清掉 + hide 让横幅塌成 0 高度.
+    bar.innerHTML = '';
+    bar.append(leftGroup, rightGroup);
+    finish();
   }
 
   // ── 控制按钮 ───────────────────────────────────────────────────

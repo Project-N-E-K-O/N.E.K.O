@@ -164,16 +164,22 @@ export function mountStageChip(host) {
         actions.append(navBtn);
       }
 
+      // P24 §12.3.E #17: 只给 memory 类 op (dry_run_available === true)
+      // 渲染 [预览] 按钮. 其它 op 以前是 disabled 的 "黑按钮", 用户
+      // 看起来很困惑 ("按了半天就弹个提示"), 且 [跳转到 XX] (op.ui_action)
+      // 已经承担了 "下一步去哪" 的引导, 再挂个 disabled Preview 只会
+      // 吸走注意力. 直接不渲染, 工具栏更干净.
+      if (op.dry_run_available) {
+        actions.append(actionBtn('stage.buttons.preview', handlePreview, {}));
+      }
+      // 2026-04-22 Day 8 #1: 加 tooltip 消除"跳过/回退与阶段节点冗余"困惑.
       actions.append(
-        actionBtn('stage.buttons.preview', handlePreview, {
-          disabled: !op.dry_run_available,
-          title: op.dry_run_available
-            ? null
-            : i18n('stage.buttons.preview_disabled_hint'),
-        }),
-        actionBtn('stage.buttons.advance', handleAdvance, { primary: true }),
-        actionBtn('stage.buttons.skip', handleSkip, {}),
-        actionBtn('stage.buttons.rewind_open', handleRewindOpen, {}),
+        actionBtn('stage.buttons.advance', handleAdvance,
+          { primary: true, title: i18n('stage.buttons.advance_hint') }),
+        actionBtn('stage.buttons.skip', handleSkip,
+          { title: i18n('stage.buttons.skip_hint') }),
+        actionBtn('stage.buttons.rewind_open', handleRewindOpen,
+          { title: i18n('stage.buttons.rewind_hint') }),
       );
       chipSlot.append(actions);
     }
@@ -232,7 +238,8 @@ export function mountStageChip(host) {
       const node = el('div', {
         className: 'stage-panel-track-node'
           + (i === currentIdx ? ' active' : (i < currentIdx ? ' past' : '')),
-        title: i18n(`stage.name.${s}`),
+        // 2026-04-22 Day 8 #1: 解释节点点击语义 — 与 [回退] 按钮等价, 纯 UI 视角.
+        title: `${i18n(`stage.name.${s}`)} — ${i18n('stage.buttons.track_node_hint')}`,
         onClick: (ev) => {
           ev.stopPropagation();
           if (s === lastData.current) return;
@@ -251,11 +258,17 @@ export function mountStageChip(host) {
     const opTitle = el('div', { className: 'stage-panel-section-title' },
       i18n('stage.panel.op_card_title'));
     const opCard = el('div', { className: 'stage-panel-op-card' });
+    const opLabelText = i18n(op.label_i18n_key || 'common.not_implemented');
+    const opDescText = i18n(op.description_i18n_key || 'common.not_implemented');
     opCard.append(
-      el('div', { className: 'stage-panel-op-label' },
-        i18n(op.label_i18n_key || 'common.not_implemented')),
-      el('div', { className: 'stage-panel-op-desc' },
-        i18n(op.description_i18n_key || 'common.not_implemented')),
+      el('div', {
+        className: 'stage-panel-op-label u-wrap-anywhere',
+        title: opLabelText,
+      }, opLabelText),
+      el('div', {
+        className: 'stage-panel-op-desc u-wrap-anywhere',
+        title: opDescText,
+      }, opDescText),
       el('div', { className: 'stage-panel-op-sub-title' },
         i18n('stage.panel.when_to_run')),
       el('div', { className: 'stage-panel-op-sub' },
@@ -304,14 +317,16 @@ export function mountStageChip(host) {
       btnRow.append(actionBtn('stage.buttons.go_target',
         () => { handleUiAction(op2.ui_action); }, { secondary: true }));
     }
+    // P24 §12.3.E #17: 同 inline 工具栏, memory op 才显示 [预览]; 其它 op
+    // 已经有 [跳转到 XX] 按钮 (if op2.ui_action), 不需要再挂 disabled Preview.
+    if (op2.dry_run_available) {
+      btnRow.append(actionBtn('stage.buttons.preview', handlePreview, {}));
+    }
     btnRow.append(
-      actionBtn('stage.buttons.preview', handlePreview, {
-        disabled: !op2.dry_run_available,
-        title: op2.dry_run_available ? null
-          : i18n('stage.buttons.preview_disabled_hint'),
-      }),
-      actionBtn('stage.buttons.advance', handleAdvance, { primary: true }),
-      actionBtn('stage.buttons.skip', handleSkip, {}),
+      actionBtn('stage.buttons.advance', handleAdvance,
+        { primary: true, title: i18n('stage.buttons.advance_hint') }),
+      actionBtn('stage.buttons.skip', handleSkip,
+        { title: i18n('stage.buttons.skip_hint') }),
     );
     panel.append(btnRow);
 
@@ -385,9 +400,10 @@ export function mountStageChip(host) {
   // err 级 (红色报错), 同时把 409 加进 expectedStatuses 避免 api.js
   // 默认把 409 当 http:error 广播出去污染 Diagnostics → Errors 页.
   function reportStageBusy(res) {
-    const busyOp = res.data?.detail?.busy_op
-      || res.data?.busy_op
-      || '?';
+    // 2026-04-22 Day 8 修 #2: api.js extractError 把 busy_op 平铺到
+    // res.error 上, 避免深挖 `res.data?.detail?.busy_op` (非 2xx 时
+    // res.data = null 导致 undefined → toast 显示 "?")
+    const busyOp = res.error?.busy_op || '?';
     toast.info(i18n('stage.toast.busy_fmt', busyOp));
   }
 
@@ -497,7 +513,10 @@ export function mountStageChip(host) {
   function applyStageResponse(data) {
     lastData = data;
     renderAll();
-    emit('stage:change', data);
+    // P24 §12.1 event bus audit (2026-04-21): 删了 `stage:change` emit —
+    // 全仓 0 listener, 最初推测给 diagnostics 审计用但从未接线.
+    // `stage:needs_refresh` 是反向事件 (他人触发 stage chip 重拉, 还在用).
+    // 未来如要做 stage 变更历史记录, 重建此事件前先把 listener 同步到位.
   }
 
   async function refresh() {

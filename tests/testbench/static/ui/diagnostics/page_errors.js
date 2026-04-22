@@ -72,7 +72,7 @@ function defaultState() {
 function filterToQs(state) {
   const usp = new URLSearchParams();
   const f = state.filter || {};
-  for (const k of ['source', 'level', 'session_id', 'search']) {
+  for (const k of ['source', 'level', 'session_id', 'search', 'op_type']) {
     if (f[k] != null && String(f[k]).trim() !== '') {
       usp.set(k, String(f[k]).trim());
     }
@@ -82,10 +82,43 @@ function filterToQs(state) {
   return `?${usp.toString()}`;
 }
 
+// P24 §15.2 D / F7 Option B — security-relevant internal ops. Kept
+// in sync with pipeline/diagnostics_ops.py::DiagnosticsOp. Order here
+// mirrors user scan priority: integrity first (data corruption),
+// judge override second (prompt injection vector), prompt_injection
+// third (direct attack surface), timestamp_coerced last (soft warning).
+// 2026-04-22 Day 8 手测 #6: 加 prompt_injection_suspected 让 Chat 发送
+// 的注入命中也能被 Security filter 聚合到.
+const SECURITY_OPS = [
+  'integrity_check',
+  'judge_extra_context_override',
+  'prompt_injection_suspected',
+  'timestamp_coerced',
+];
+
+// P24 §14.4 M3: per-page AbortController so rapid Refresh / filter clicks
+// don't race — the prev fetch is aborted before the new one starts so the
+// "last click wins" (not "last response wins"). url varies with filter/qs,
+// so we can't use `makeCancellableGet(url)` which binds a fixed url.
+let _errorsLoadController = null;
+
 async function loadErrors(state) {
+  if (_errorsLoadController) {
+    try { _errorsLoadController.abort(); } catch { /* ignore */ }
+  }
+  const controller = new AbortController();
+  _errorsLoadController = controller;
+
   state.loading = true;
   const qs = filterToQs(state);
-  const resp = await api.get(`/api/diagnostics/errors${qs}`, { expectedStatuses: [404] });
+  const resp = await api.get(`/api/diagnostics/errors${qs}`, {
+    expectedStatuses: [404],
+    signal: controller.signal,
+  });
+  // Abort 的结果 (type:'aborted') 直接忽略 — 下一次 loadErrors 已接管 state.
+  if (resp.error?.type === 'aborted') return;
+  if (_errorsLoadController === controller) _errorsLoadController = null;
+
   state.loading = false;
   if (resp.ok) {
     state.items = resp.data?.items || [];
@@ -285,6 +318,12 @@ function renderToolbar(root, state) {
     },
   }, i18n('diagnostics.errors.clear'));
 
+  // P24 §15.2 D / F7 Option B: Security op quick-filter chips. Each
+  // chip sets op_type to a single op; clicking the same active chip
+  // clears it. "All 3" convenience sets op_type to all SECURITY_OPS
+  // joined by comma — the backend accepts comma-separated lists.
+  const secRow = renderSecurityFilters(root, state);
+
   return el('div', { className: 'diag-toolbar' },
     el('div', { className: 'diag-toolbar-left' },
       el('span', { className: 'diag-count' },
@@ -293,7 +332,53 @@ function renderToolbar(root, state) {
     el('div', { className: 'diag-toolbar-right' },
       sourceSel, levelSel, searchBox, autoLabel, refreshBtn, synthBtn, clearBtn,
     ),
+    secRow,
   );
+}
+
+function renderSecurityFilters(root, state) {
+  const f = state.filter;
+  const current = (f.op_type || '').trim();
+  const row = el('div', { className: 'diag-security-filter-row' });
+  row.append(el('span', { className: 'diag-security-filter-label' },
+    i18n('diagnostics.errors.security_filter_label')));
+
+  function chip(opName, labelKey) {
+    const active = current === opName;
+    return el('button', {
+      className: 'chip tiny' + (active ? ' active primary' : ''),
+      title: i18n(`diagnostics.errors.security_filter_hint.${opName}`),
+      onClick: () => {
+        f.op_type = active ? undefined : opName;
+        state.offset = 0;
+        state.toggledKeys?.clear();
+        persistFilter(f);
+        loadErrors(state).then(() => renderAll(root, state));
+      },
+    }, i18n(labelKey));
+  }
+  row.append(
+    chip('integrity_check', 'diagnostics.errors.security_filter.integrity_check'),
+    chip('judge_extra_context_override', 'diagnostics.errors.security_filter.judge_override'),
+    chip('prompt_injection_suspected', 'diagnostics.errors.security_filter.prompt_injection'),
+    chip('timestamp_coerced', 'diagnostics.errors.security_filter.timestamp_coerced'),
+  );
+
+  const allJoined = SECURITY_OPS.join(',');
+  const allActive = current === allJoined;
+  row.append(el('button', {
+    className: 'chip tiny' + (allActive ? ' active primary' : ''),
+    title: i18n('diagnostics.errors.security_filter_hint.all'),
+    onClick: () => {
+      f.op_type = allActive ? undefined : allJoined;
+      state.offset = 0;
+      state.toggledKeys?.clear();
+      persistFilter(f);
+      loadErrors(state).then(() => renderAll(root, state));
+    },
+  }, i18n('diagnostics.errors.security_filter.all')));
+
+  return row;
 }
 
 function renderFilterChips(root, state) {
@@ -303,6 +388,7 @@ function renderFilterChips(root, state) {
   if (f.level)  active.push(['level', f.level]);
   if (f.session_id) active.push(['session_id', f.session_id]);
   if (f.search) active.push(['search', f.search]);
+  if (f.op_type) active.push(['op_type', f.op_type]);
   if (!active.length) return null;
   const wrap = el('div', { className: 'diag-filter-chips' });
   for (const [k, v] of active) {

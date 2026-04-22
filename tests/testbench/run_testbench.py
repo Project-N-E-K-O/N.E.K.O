@@ -72,6 +72,20 @@ def main() -> None:
     tb_config.ensure_code_support_dirs()
     tb_config.ensure_data_dirs()
 
+    # P24 hotfix #105 (2026-04-21): install the stdout/stderr tee BEFORE
+    # any print so the banner + uvicorn startup + access logs + library
+    # logs all land in ``DATA_DIR/live_runtime/current.log``. Rotate
+    # first so the previous boot's capture moves aside (current.log →
+    # previous.log, old previous.log removed — matches user requirement:
+    # "每次开启服务自检的时候可以清理上一次留下的实时转存日志").
+    # Background: §4.27 #105 — we had two browser-freeze-then-hard-
+    # power-off incidents where the only evidence (uvicorn's '200 OK'
+    # flood) went nowhere durable. Now it does.
+    from tests.testbench.pipeline import live_runtime_log
+
+    boot_rotate_stats = live_runtime_log.rotate_for_boot()
+    live_runtime_log.install()
+
     print("=" * 66)
     print(" N.E.K.O. Testbench")
     print(f"  URL       : http://{args.host}:{args.port}")
@@ -79,6 +93,13 @@ def main() -> None:
     print(f"  Data dir  : {tb_config.DATA_DIR}")
     print(f"  Logs dir  : {tb_config.LOGS_DIR}")
     print(f"  Saved     : {tb_config.SAVED_SESSIONS_DIR}")
+    print(f"  Live log  : {live_runtime_log.CURRENT_FILE}")
+    if boot_rotate_stats.get("rotated"):
+        print(
+            f"              (rotated previous boot's {boot_rotate_stats['current_bytes']} bytes "
+            f"→ previous.log; dropped older previous.log "
+            f"{boot_rotate_stats['previous_bytes']} bytes)"
+        )
     print("=" * 66)
     if args.host not in ("127.0.0.1", "localhost", "::1"):
         print(
@@ -86,6 +107,20 @@ def main() -> None:
             "do not expose it on untrusted networks.",
         )
         print("=" * 66)
+        # Also surface to in-app diagnostics so the event is visible on
+        # the Diagnostics → Errors subpage (not just stderr). P24 §4.3 I.
+        try:
+            from tests.testbench.pipeline import diagnostics_store
+            from tests.testbench.pipeline.diagnostics_ops import DiagnosticsOp
+            diagnostics_store.record_internal(
+                DiagnosticsOp.INSECURE_HOST_BINDING,
+                f"服务器绑定到非 loopback 主机 (--host={args.host}). testbench 无鉴权, "
+                f"局域网任何人都可以访问. 仅在可信网络使用.",
+                level="warning",
+                detail={"host": args.host, "port": args.port},
+            )
+        except Exception:  # noqa: BLE001 — never block startup on audit
+            pass
 
     uvicorn.run(
         "tests.testbench.server:app",

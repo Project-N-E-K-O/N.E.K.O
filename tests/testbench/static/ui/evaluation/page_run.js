@@ -84,6 +84,10 @@ function defaultState() {
     referenceText: '',
     overrideOpen: localStorage.getItem(LS_OVERRIDE_OPEN) === '1',
     override: defaultOverride(),
+    // P24 F6: align judger persona_system with main chat's
+    // build_prompt_bundle output. Off by default — the legacy behavior
+    // sends only persona.system_prompt without gap/memory context.
+    matchMainChat: localStorage.getItem('testbench:eval:match_main_chat') === '1',
     // results of the most recent run (not persisted; refresh when
     // user navigates away and comes back).
     runResults: [],  // [ EvalResult dict, ... ]
@@ -268,8 +272,31 @@ function renderConfigForm(root, state) {
       form.append(renderReferencePicker(root, state));
     }
     form.append(renderOverrideSection(root, state));
+    form.append(renderMatchMainChatOption(root, state));
   }
   return form;
+}
+
+function renderMatchMainChatOption(root, state) {
+  const cb = el('input', {
+    type: 'checkbox',
+    checked: !!state.matchMainChat,
+    onChange: (e) => {
+      state.matchMainChat = e.target.checked;
+      try { localStorage.setItem('testbench:eval:match_main_chat', state.matchMainChat ? '1' : '0'); }
+      catch { /* storage full / private mode — preference won't persist across reloads */ }
+    },
+  });
+  const label = el('label', {
+    className: 'eval-run-match-main-chat',
+    style: { display: 'flex', gap: '8px', alignItems: 'flex-start' },
+  }, cb, el('span', {},
+    el('strong', {}, i18n('evaluation.run.fields.match_main_chat')),
+    el('div', { className: 'hint' }, i18n('evaluation.run.fields.match_main_chat_hint')),
+  ));
+  const wrap = el('div', { className: 'field wide' });
+  wrap.append(label);
+  return wrap;
 }
 
 function renderSchemaPicker(root, state) {
@@ -865,6 +892,8 @@ async function startRun(root, state, onlyMessageId) {
   const override = collectOverride(state.override);
   if (override) body.judge_model_override = override;
 
+  if (state.matchMainChat) body.match_main_chat = true;
+
   const resp = await api.post('/api/judge/run', body, {
     expectedStatuses: [200, 422, 404],
   });
@@ -892,6 +921,17 @@ async function startRun(root, state, onlyMessageId) {
     toast.warn(i18n('evaluation.run.toast.partial_error', data.error_count, data.total));
   } else {
     toast.ok(i18n('evaluation.run.toast.run_ok', data.total));
+  }
+  // P24 §3.4 F6 — if the user ticked "match_main_chat" but the backend
+  // had to fall back (persona not ready / bundle error), tell them so
+  // they don't mistakenly interpret the score as reflecting the full
+  // main-chat context.
+  if (data.match_main_chat_requested && !data.match_main_chat_applied) {
+    const reason = data.match_main_chat_fallback_reason || 'unknown';
+    toast.warn(
+      i18n('evaluation.run.toast.match_main_chat_fallback', reason),
+      { duration: 8000 },
+    );
   }
   // 广播给 Results / Aggregate 子页 + Chat 消息徽章, 让它们无需手动刷新.
   // payload 给出本次新增的 id 列表, 便于订阅者判断是否需要清某个过滤再

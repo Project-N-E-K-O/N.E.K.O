@@ -44,8 +44,16 @@ function makeState() {
 
 export async function renderScriptsPage(host) {
   host.innerHTML = '';
+  const { openFolderButton } = await import('../_open_folder_btn.js');
+  const header = el('div', {
+    style: { display: 'flex', alignItems: 'baseline', gap: '12px', justifyContent: 'space-between' },
+  });
+  header.append(
+    el('h2', { style: { margin: 0 } }, i18n('setup.scripts.heading')),
+    openFolderButton('user_dialog_templates'),
+  );
   host.append(
-    el('h2', {}, i18n('setup.scripts.heading')),
+    header,
     el('p', { className: 'intro' }, i18n('setup.scripts.intro')),
   );
 
@@ -226,12 +234,20 @@ function renderListItem(meta, state, ctx) {
     className: classes.join(' '),
     onClick: () => ctx.loadDetails(meta.name),
   },
-    el('div', { className: 'script-editor-list-item-title' }, meta.name),
+    el('div', {
+      className: 'script-editor-list-item-title u-truncate',
+      title: meta.name,
+    }, meta.name),
     el('div', { className: 'script-editor-list-item-meta' },
       i18n('setup.scripts.list.turns_fmt', meta.turns_count),
       ...badges,
     ),
-    meta.description ? el('div', { className: 'script-editor-list-item-desc' }, meta.description) : null,
+    meta.description
+      ? el('div', {
+          className: 'script-editor-list-item-desc u-truncate-2',
+          title: meta.description,
+        }, meta.description)
+      : null,
     el('div', { className: 'script-editor-list-item-actions' }, ...actions),
   );
 }
@@ -246,9 +262,8 @@ async function duplicateBuiltin(sourceName, state, ctx) {
     overwrite: false,
   });
   if (!res.ok) {
-    const detail = res.data?.detail || {};
     toast.err(i18n('setup.scripts.toast.duplicate_failed'),
-      { message: detail.message || String(res.error || res.status) });
+      { message: res.error?.message || `HTTP ${res.status}` });
     return;
   }
   toast.ok(i18n('setup.scripts.toast.duplicated', target));
@@ -266,9 +281,8 @@ async function deleteUserTemplate(name, state, ctx) {
   if (!confirmed) return;
   const res = await api.delete(`${API_BASE}/${encodeURIComponent(name)}`);
   if (!res.ok) {
-    const detail = res.data?.detail || {};
     toast.err(i18n('setup.scripts.toast.delete_failed'),
-      { message: detail.message || String(res.error || res.status) });
+      { message: res.error?.message || `HTTP ${res.status}` });
     return;
   }
   toast.ok(i18n('setup.scripts.toast.deleted', name));
@@ -695,14 +709,13 @@ async function saveDraft(state, ctx) {
 
   const res = await api.post(API_BASE, payload);
   if (!res.ok) {
-    const detail = res.data?.detail || {};
-    if (detail.errors) {
-      state.errors = detail.errors;
+    if (Array.isArray(res.error?.errors) && res.error.errors.length > 0) {
+      state.errors = res.error.errors;
       ctx.rerender();
       toast.err(i18n('setup.scripts.toast.save_errors', state.errors.length));
     } else {
       toast.err(i18n('setup.scripts.toast.save_failed'),
-        { message: detail.message || String(res.error || res.status) });
+        { message: res.error?.message || `HTTP ${res.status}` });
     }
     return;
   }

@@ -174,3 +174,4 @@ static/jukebox/*.vrma
 static/jukebox/*.bvh
 static/jukebox/*.fbx
 tests/prompt_dump.json
+tests/testbench/docs/dev_note.txt

@@ -67,6 +67,7 @@ from tests.testbench.chat_messages import (
     make_message,
 )
 from tests.testbench.logger import python_logger
+from tests.testbench.pipeline.messages_writer import append_message
 from tests.testbench.model_config import (
     GROUP_KEYS,
     GroupKey,
@@ -361,6 +362,65 @@ class OfflineChatBackend:
             )
 
         if user_content is not None:
+            # P24 Day 8 手测 #6 (§13 F3 scope 扩展): 对 user 消息做 prompt
+            # injection 检测. 按 LESSONS "检测不改, 不阻断" 原则 —
+            # - 不过滤 / 不改写 (本项目允许用户输入任何攻击性 payload 作为
+            #   测试素材, 任何自动净化都会抵消核心能力);
+            # - 命中时写 diagnostics warning (Diagnostics → Errors 可见) +
+            #   SSE 发一个 `injection_warning` frame 让 UI 挂 badge;
+            # - 继续执行原 chat send 路径, 不影响消息落盘或 LLM 调用.
+            # 这是对原 F3 设计的扩展: 最初 F3 只在 judge_runner 里检测,
+            # 用户 dev_note L17 暗示期望"发送时就能看到注入告警", 本次补齐.
+            try:
+                from tests.testbench.pipeline import (
+                    prompt_injection_detect as _pid,
+                )
+                from tests.testbench.pipeline import diagnostics_store as _ds
+                from tests.testbench.pipeline.diagnostics_ops import DiagnosticsOp
+                hits = _pid.detect(user_content or "")
+                if hits:
+                    summary = _pid.summarize(hits)
+                    _ds.record_internal(
+                        DiagnosticsOp.PROMPT_INJECTION_SUSPECTED,
+                        f"Chat 发送命中 {len(hits)} 条注入模式: "
+                        + ", ".join(h.pattern_id for h in hits[:5])
+                        + (" ..." if len(hits) > 5 else ""),
+                        level="warning",
+                        detail={
+                            "source": "chat.send",
+                            "session_id": getattr(session, "id", None),
+                            "role": role,
+                            "content_length": len(user_content),
+                            "hits_count": len(hits),
+                            # 2026-04-22 Day 8 手测 #2 修正: 原来写 `h.match_preview`
+                            # 拼错 (实际字段是 `match_text`), AttributeError 被
+                            # `except Exception: pass` 静默吞掉, 导致整个检测
+                            # 分支 silent 失败 — 用户看到的就是"注入无检出无提示".
+                            # 现在用 to_dict() 返回完整结构.
+                            "hits": [h.to_dict() for h in hits[:20]],
+                            "summary": summary,
+                        },
+                    )
+                    # SSE warning frame — UI 可挂 advisory badge, 不阻断.
+                    yield {
+                        "event": "injection_warning",
+                        "warning": {
+                            "type": "prompt_injection_suspected",
+                            "hits_count": len(hits),
+                            "categories": sorted(set(h.category for h in hits)),
+                            "message": f"检测到 {len(hits)} 条可疑注入模式 (不阻断)",
+                        },
+                    }
+            except Exception as exc:  # noqa: BLE001 — detection 不得破坏主流程
+                # 2026-04-22 Day 8 手测: 原来 `except Exception: pass` 是
+                # silent fallback 反模式 (LESSONS #14) — 检测分支的任何 bug
+                # (字段拼错 / import 链挂掉) 都会被静默吞. 改成 python_logger
+                # warning 一条: 检测失败不阻断 chat send, 但至少留审计线索.
+                python_logger().warning(
+                    "chat.send: prompt_injection detection skipped due to "
+                    "%s: %s", type(exc).__name__, exc,
+                )
+
             now = session.clock.now()
             user_msg = make_message(
                 role=role,
@@ -368,7 +428,23 @@ class OfflineChatBackend:
                 timestamp=now,
                 source=source,
             )
-            session.messages.append(user_msg)
+            # P24 §12.5: SSE path uses coerce policy — if the virtual
+            # clock was rewound into the past, bump ts forward so downstream
+            # (dialog_template, recent_history slice, UI time separator)
+            # never sees non-monotonic messages.
+            result = append_message(session, user_msg, on_violation="coerce")
+            user_msg = result.msg
+            if result.coerced is not None:
+                # User-visible surfacing: yield a warning frame before the
+                # user event so the UI can toast before the bubble renders.
+                yield {
+                    "event": "warning",
+                    "warning": {
+                        "type": "timestamp_coerced",
+                        "message_role": "user",
+                        **result.coerced,
+                    },
+                }
             yield {"event": "user", "message": user_msg}
         # user_content is None 时 ({event:'user'} 缺省) — 上游调用方负责
         # 生成 "user 消息已就绪" 的 UI 提示 (例如 Auto-Dialog 的 simuser_done
@@ -431,7 +507,20 @@ class OfflineChatBackend:
             timestamp=assistant_ts,
             source=SOURCE_LLM,
         )
-        session.messages.append(assistant_msg)
+        # P24 §12.5: same as user_msg append — coerce-on-violation so the
+        # assistant placeholder can't introduce a monotonicity break even
+        # if clock was rewound between user and assistant turn.
+        _asst_result = append_message(session, assistant_msg, on_violation="coerce")
+        assistant_msg = _asst_result.msg
+        if _asst_result.coerced is not None:
+            yield {
+                "event": "warning",
+                "warning": {
+                    "type": "timestamp_coerced",
+                    "message_role": "assistant",
+                    **_asst_result.coerced,
+                },
+            }
         yield {
             "event": "assistant_start",
             "message_id": assistant_msg["id"],
@@ -524,7 +613,16 @@ class OfflineChatBackend:
             timestamp=session.clock.now(),
             source=SOURCE_INJECT,
         )
-        session.messages.append(msg)
+        # P24 §12.5: inject_system is a side-feature; coerce prevents
+        # it from failing if clock is rewound before an injection. If a
+        # coerce did happen, the diagnostics_store op=timestamp_coerced
+        # entry (written inside append_message) is the sole user-visible
+        # surfacing — inject_system has no SSE channel to yield a warning
+        # frame, and the router returns the saved msg synchronously.
+        # Callers reading ``msg["timestamp"]`` after this point see the
+        # coerced (monotonic) value.
+        _sys_result = append_message(session, msg, on_violation="coerce")
+        msg = _sys_result.msg
         session.logger.log_sync(
             "chat.inject_system",
             payload={

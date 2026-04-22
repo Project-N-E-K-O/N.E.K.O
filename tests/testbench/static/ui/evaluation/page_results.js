@@ -217,10 +217,23 @@ function buildQs(params) {
   return s ? `?${s}` : '';
 }
 
+// P24 §14.4 M3: abort prev on rapid filter / paginate clicks.
+let _resultsLoadController = null;
+
 async function loadResults(state) {
+  if (_resultsLoadController) {
+    try { _resultsLoadController.abort(); } catch { /* ignore */ }
+  }
+  const controller = new AbortController();
+  _resultsLoadController = controller;
   state.loading = true;
   const qs = buildQs(filterToQuery(state.filter, { offset: state.offset, limit: state.limit }));
-  const resp = await api.get(`/api/judge/results${qs}`, { expectedStatuses: [404] });
+  const resp = await api.get(`/api/judge/results${qs}`, {
+    expectedStatuses: [404],
+    signal: controller.signal,
+  });
+  if (resp.error?.type === 'aborted') { state.loading = false; return; }
+  if (_resultsLoadController === controller) _resultsLoadController = null;
   if (resp.ok) {
     state.results = resp.data?.results || [];
     state.total = resp.data?.total || 0;

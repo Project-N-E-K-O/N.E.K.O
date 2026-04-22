@@ -27,7 +27,9 @@
 import { api } from '../../core/api.js';
 import { i18n } from '../../core/i18n.js';
 import { toast } from '../../core/toast.js';
+import { store } from '../../core/state.js';
 import { el } from '../_dom.js';
+import { openSessionExportModal } from '../session_export_modal.js';
 
 //: 哪些 key 会被 `/system/open_path` 接受 (DATA_DIR 下). 前端用此集
 //: 合决定 [打开] 按钮是 active 还是 disabled + 带解释 tooltip.
@@ -48,19 +50,50 @@ function defaultState() {
     loading: false,
     data: null,        // /system/paths 响应: { data_root, entries, platform }
     error: null,
+    // P24 §15.2 A/B + §3.1: orphan sandbox triage + health card
+    health: null,      // /system/health 响应: { status, checks, checked_at }
+    orphans: null,     // /system/orphans 响应: { orphans, scanned_at, total_bytes }
+    orphansError: null,
   };
 }
 
+// P24 §14.4 M3: abort prev trio on rapid Refresh clicks.
+let _pathsLoadController = null;
+
 async function loadPaths(state) {
+  if (_pathsLoadController) {
+    try { _pathsLoadController.abort(); } catch { /* ignore */ }
+  }
+  const controller = new AbortController();
+  _pathsLoadController = controller;
   state.loading = true;
   state.error = null;
-  const res = await api.get('/system/paths');
+  // Parallel fetches: paths + health + orphans all load at once so the
+  // page renders in one pass with full data. None of the three blocks
+  // is critical for the others — a failed /orphans still lets /paths
+  // show, etc. 同一 AbortController 给三个请求, 任一被 abort 即全组放弃.
+  const [pathsRes, healthRes, orphansRes] = await Promise.all([
+    api.get('/system/paths', { signal: controller.signal }),
+    api.get('/system/health', { signal: controller.signal }),
+    api.get('/system/orphans', { signal: controller.signal }),
+  ]);
+  if (pathsRes.error?.type === 'aborted'
+    || healthRes.error?.type === 'aborted'
+    || orphansRes.error?.type === 'aborted') return;
+  if (_pathsLoadController === controller) _pathsLoadController = null;
   state.loading = false;
-  if (res.ok) {
-    state.data = res.data || null;
-  } else {
+  if (pathsRes.ok) state.data = pathsRes.data || null;
+  else {
     state.data = null;
-    state.error = res.error?.message || `HTTP ${res.status}`;
+    state.error = pathsRes.error?.message || `HTTP ${pathsRes.status}`;
+  }
+  state.health = healthRes.ok ? healthRes.data : null;
+  if (orphansRes.ok) {
+    state.orphans = orphansRes.data || null;
+    state.orphansError = null;
+  } else {
+    state.orphans = null;
+    state.orphansError = orphansRes.error?.message || `HTTP ${orphansRes.status}`;
   }
 }
 
@@ -81,7 +114,7 @@ function renderAll(state, host) {
       i18n('diagnostics.paths.intro')),
   );
 
-  // Toolbar: 刷新按钮 + 平台徽章.
+  // Toolbar: 刷新按钮 + 平台徽章 + P23 Export sandbox snapshot.
   const toolbar = el('div', { className: 'diag-paths-toolbar' });
   toolbar.append(
     el('button', {
@@ -92,11 +125,45 @@ function renderAll(state, host) {
       },
     }, i18n('diagnostics.paths.refresh_btn')),
   );
+  // P23 sandbox-snapshot export: pre-selects scope=full + format=json +
+  // include_memory=true so the resulting file is compatible with
+  // `POST /api/session/import` and captures the entire sandbox on disk.
+  // The button is disabled (with an explanatory tooltip) when there is
+  // no active session, so Diagnostics → Paths stays functional for
+  // "inspect directories only" workflows.
+  const hasSession = !!store.session;
+  const exportBtn = el('button', {
+    className: 'ghost tiny',
+    title: hasSession
+      ? i18n('diagnostics.paths.action.export_sandbox_hint')
+      : i18n('diagnostics.paths.action.export_sandbox_disabled'),
+    onClick: () => {
+      if (!hasSession) {
+        toast.info(i18n('session.no_active'));
+        return;
+      }
+      openSessionExportModal({
+        scope: 'full',
+        format: 'json',
+        include_memory: true,
+        subtitle: i18n('diagnostics.paths.export_modal_subtitle'),
+      });
+    },
+  }, i18n('diagnostics.paths.action.export_sandbox'));
+  exportBtn.disabled = !hasSession;
+  toolbar.append(exportBtn);
   if (state.data?.platform) {
     toolbar.append(el('span', { className: 'diag-paths-platform' },
       i18n('diagnostics.paths.platform_fmt', state.data.platform)));
   }
   host.append(toolbar);
+
+  // P24 §3.1 H1: system health card at the top of the Paths page.
+  // Non-blocking — even if the health fetch fails we still render the
+  // rest of the page (health is an indicator, not a gate).
+  if (state.health) {
+    host.append(renderHealthCard(state.health));
+  }
 
   if (state.loading) {
     host.append(el('div', { className: 'empty-state' },
@@ -126,9 +193,271 @@ function renderAll(state, host) {
   host.append(renderGroup('shared', grouped.shared));
   host.append(renderGroup('code', grouped.code));
 
+  // P24 §15.2 B / P-D: orphan sandbox section. Always rendered (even
+  // if empty — empty state matters so user knows orphan detection is
+  // working). Placed after the main groups since it's a separate
+  // "triage this stale data" activity, not part of the normal
+  // "where is my data?" flow.
+  host.append(renderOrphansSection(state, host));
+
   // 底部提示条.
   host.append(el('div', { className: 'diag-paths-footer' },
     i18n('diagnostics.paths.gitignore_note')));
+}
+
+
+// ── P24 §3.1 H1 health card ─────────────────────────────────────────
+
+function formatCheckValue(checkKey, info) {
+  if (checkKey === 'autosave_scheduler') {
+    if (info.alive === null) return i18n('diagnostics.paths.health.no_session');
+    return info.alive
+      ? i18n('diagnostics.paths.health.scheduler_alive')
+      : i18n('diagnostics.paths.health.scheduler_dead');
+  }
+  if (checkKey === 'orphan_sandboxes') {
+    return i18n('diagnostics.paths.health.orphans_count', info.value ?? '?');
+  }
+  if (checkKey === 'disk_free_gb') {
+    return info.value === null ? '?' : `${info.value} GB`;
+  }
+  if (checkKey === 'log_dir_size_mb') {
+    return info.value === null ? '?' : `${info.value} MB`;
+  }
+  if (checkKey === 'diagnostics_errors') {
+    return i18n('diagnostics.paths.health.errors_count', info.value ?? '?');
+  }
+  return String(info.value ?? '—');
+}
+
+function renderHealthCard(health) {
+  const wrap = el('div', {
+    className: `diag-paths-health-card diag-paths-health-${health.status}`,
+  });
+  const title = el('div', { className: 'diag-paths-health-title' });
+  const statusLabel = i18n(`diagnostics.paths.health.status.${health.status}`)
+    || health.status;
+  title.append(
+    el('span', { className: 'diag-paths-health-label' },
+      i18n('diagnostics.paths.health.title')),
+    el('span', {
+      className: `diag-paths-health-badge badge-${health.status}`,
+    }, statusLabel),
+  );
+  wrap.append(title);
+
+  // Problem summary: list each non-healthy check with human-readable
+  // detail, so users know *why* the status is warning/critical without
+  // having to eyeball all 5 rows. Only shown when status != healthy.
+  const checks = health.checks || {};
+  if (health.status !== 'healthy') {
+    const problems = el('div', { className: 'diag-paths-health-problems' });
+    problems.append(el('strong', {},
+      i18n('diagnostics.paths.health.problem_heading')));
+    for (const [checkKey, info] of Object.entries(checks)) {
+      const s = info.status || 'healthy';
+      if (s === 'healthy') continue;
+      const labelText = i18n(`diagnostics.paths.health.check.${checkKey}`)
+        || checkKey;
+      const valueText = formatCheckValue(checkKey, info);
+      const thresholdText = i18n(
+        `diagnostics.paths.health.threshold_${s}`,
+        info.threshold_warn, info.threshold_critical, checkKey,
+      );
+      const adviceText = i18n(`diagnostics.paths.health.advice.${checkKey}`) || '';
+      problems.append(el('div', { className: 'diag-paths-health-problem-item' },
+        '• ', el('strong', {}, `${labelText}: `),
+        valueText,
+        thresholdText ? ' ' : '',
+        thresholdText ? el('span', { className: 'hint' }, thresholdText) : null,
+        adviceText ? ' — ' : '',
+        adviceText ? el('span', {}, adviceText) : null,
+      ));
+    }
+    wrap.append(problems);
+  }
+
+  // Checks grid: per-check row with label / value / status color.
+  const grid = el('div', { className: 'diag-paths-health-grid' });
+  for (const [checkKey, info] of Object.entries(checks)) {
+    const row = el('div', {
+      className: `diag-paths-health-row status-${info.status || 'healthy'}`,
+    });
+    const labelText = i18n(`diagnostics.paths.health.check.${checkKey}`)
+      || checkKey;
+    row.append(
+      el('span', { className: 'diag-paths-health-key' }, labelText),
+      el('span', { className: 'diag-paths-health-value' },
+        formatCheckValue(checkKey, info)),
+    );
+    grid.append(row);
+  }
+  wrap.append(grid);
+
+  if (health.checked_at) {
+    wrap.append(el('div', { className: 'diag-paths-health-timestamp' },
+      i18n('diagnostics.paths.health.checked_at_fmt', health.checked_at)));
+  }
+  return wrap;
+}
+
+
+// ── P24 §15.2 B / P-D orphan sandbox section ────────────────────────
+
+function renderOrphansSection(state, host) {
+  const wrap = el('div', { className: 'diag-paths-group diag-paths-orphans' });
+  wrap.append(el('h3', { className: 'diag-paths-group-title' },
+    i18n('diagnostics.paths.orphans.title')));
+  wrap.append(el('p', { className: 'diag-paths-group-intro' },
+    i18n('diagnostics.paths.orphans.intro')));
+
+  if (state.orphansError) {
+    wrap.append(el('div', { className: 'empty-state' },
+      i18n('diagnostics.paths.orphans.load_failed_fmt', state.orphansError)));
+    return wrap;
+  }
+  const orphans = state.orphans?.orphans || [];
+  if (orphans.length === 0) {
+    wrap.append(el('div', { className: 'empty-state' },
+      i18n('diagnostics.paths.orphans.empty')));
+    return wrap;
+  }
+
+  const emptyCount = orphans.filter((o) => (o.size_bytes || 0) === 0).length;
+
+  const meta = el('div', { className: 'diag-paths-orphans-meta' },
+    i18n('diagnostics.paths.orphans.summary_fmt',
+      orphans.length, formatBytes(state.orphans?.total_bytes || 0)),
+  );
+  wrap.append(meta);
+
+  // Bulk "clear empty (0-byte) orphans" button — always visible so users
+  // know the capability exists; disabled when emptyCount === 0 with a
+  // tooltip explaining why (usually because boot_cleanup already took
+  // care of them on the previous restart).
+  const toolbar = el('div', { className: 'orphans-toolbar' });
+  // Button is bulk-action scale (not tiny), so users don't miss it —
+  // this is the one-click "cleanup the easy ones" affordance.
+  const clearEmptyBtn = el('button', {
+    className: emptyCount > 0 ? 'primary' : 'ghost',
+    title: emptyCount > 0
+      ? i18n('diagnostics.paths.orphans.clear_empty_hint')
+      : i18n('diagnostics.paths.orphans.clear_empty_disabled_hint'),
+    onClick: () => {
+      if (emptyCount === 0) {
+        toast.info(i18n('diagnostics.paths.orphans.clear_empty_none_toast'));
+        return;
+      }
+      confirmClearEmpty(state, host, emptyCount);
+    },
+  }, i18n('diagnostics.paths.orphans.clear_empty_btn', emptyCount));
+  if (emptyCount === 0) clearEmptyBtn.disabled = true;
+  toolbar.append(clearEmptyBtn);
+  wrap.append(toolbar);
+
+  const table = el('table', { className: 'diag-paths-table' });
+  const thead = el('thead', {});
+  thead.append(el('tr', {},
+    el('th', {}, i18n('diagnostics.paths.orphans.col.session_id')),
+    el('th', { className: 'num' }, i18n('diagnostics.paths.orphans.col.size')),
+    el('th', {}, i18n('diagnostics.paths.orphans.col.mtime')),
+    el('th', { className: 'actions' }, i18n('diagnostics.paths.col.actions')),
+  ));
+  table.append(thead);
+
+  const tbody = el('tbody', {});
+  for (const orphan of orphans) {
+    tbody.append(renderOrphanRow(orphan, state, host));
+  }
+  table.append(tbody);
+  wrap.append(table);
+  return wrap;
+}
+
+function renderOrphanRow(orphan, state, host) {
+  const tr = el('tr', { className: 'diag-paths-orphan-row' });
+  tr.append(
+    el('td', {},
+      el('code', {
+        className: 'u-truncate',
+        title: orphan.session_id || '',
+      }, orphan.session_id || '?'),
+      el('div', { className: 'hint' }, orphan.path || ''),
+    ),
+    el('td', { className: 'num' }, formatBytes(orphan.size_bytes || 0)),
+    el('td', {}, orphan.mtime || '—'),
+    el('td', { className: 'actions' },
+      el('button', {
+        className: 'ghost tiny danger',
+        onClick: () => confirmDeleteOrphan(orphan, state, host),
+      }, i18n('diagnostics.paths.orphans.delete_btn')),
+    ),
+  );
+  return tr;
+}
+
+async function confirmClearEmpty(state, host, emptyCount) {
+  const message = i18n('diagnostics.paths.orphans.confirm_clear_empty_fmt',
+    emptyCount);
+  if (!window.confirm(message)) return;
+  const res = await api.post('/api/system/orphans/clear_empty', {});
+  if (!res.ok) {
+    toast.err(i18n('diagnostics.paths.orphans.clear_empty_err'),
+      { message: res.error?.message || '' });
+    return;
+  }
+  const data = res.data || {};
+  const cleared = data.cleared || 0;
+  const errors = data.errors || [];
+  if (errors.length === 0) {
+    toast.ok(i18n('diagnostics.paths.orphans.clear_empty_ok_fmt', cleared));
+  } else {
+    toast.warn(
+      i18n('diagnostics.paths.orphans.clear_empty_partial_fmt',
+        cleared, errors.length),
+      { message: errors.map((e) => `${e.session_id}: ${e.message}`).join(' · ') },
+    );
+  }
+  await loadPaths(state);
+  renderAll(state, host);
+}
+
+async function confirmDeleteOrphan(orphan, state, host) {
+  // Simple confirm — no extra modal for now; consistent with other
+  // "destructive action" patterns in diagnostics pages. Browser's
+  // native confirm is intentionally "ugly" for danger ops.
+  const message = i18n(
+    'diagnostics.paths.orphans.confirm_delete_fmt',
+    orphan.session_id,
+    formatBytes(orphan.size_bytes || 0),
+  );
+  if (!window.confirm(message)) return;
+
+  const res = await api.delete(
+    `/system/orphans/${encodeURIComponent(orphan.session_id)}`,
+    { expectedStatuses: [400, 404, 409] },
+  );
+  if (res.ok) {
+    if (res.data?.fully_removed) {
+      toast.ok(i18n('diagnostics.paths.orphans.delete_ok_fmt',
+        orphan.session_id,
+        formatBytes(res.data.deleted_bytes || 0)));
+    } else {
+      toast.warn(
+        i18n('diagnostics.paths.orphans.delete_partial'),
+        { message: i18n('diagnostics.paths.orphans.delete_partial_detail_fmt',
+          formatBytes(res.data?.remaining_bytes || 0)) },
+      );
+    }
+  } else {
+    toast.err(
+      i18n('diagnostics.paths.orphans.delete_err'),
+      { message: res.error?.message || '' },
+    );
+  }
+  // Re-fetch & re-render so the list reflects the new state.
+  await loadPaths(state);
+  renderAll(state, host);
 }
 
 function groupEntries(entries) {
@@ -268,10 +597,8 @@ async function handleOpen(path) {
   if (res.ok) {
     toast.ok(i18n('diagnostics.paths.toast.opened'));
   } else {
-    const detail = res.error?.message
-      || res.data?.detail
-      || `HTTP ${res.status}`;
-    toast.err(i18n('diagnostics.paths.toast.open_failed_fmt', detail));
+    toast.err(i18n('diagnostics.paths.toast.open_failed_fmt',
+      res.error?.message || `HTTP ${res.status}`));
   }
 }
 

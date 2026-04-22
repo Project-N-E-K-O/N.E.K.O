@@ -28,8 +28,16 @@ const LANGUAGE_OPTIONS = [
 
 export async function renderPersonaPage(host) {
   host.innerHTML = '';
+  const { openFolderButton } = await import('../_open_folder_btn.js');
+  const header = el('div', {
+    style: { display: 'flex', alignItems: 'baseline', gap: '12px', justifyContent: 'space-between' },
+  });
+  header.append(
+    el('h2', { style: { margin: 0 } }, i18n('setup.persona.heading')),
+    openFolderButton('current_sandbox'),
+  );
   host.append(
-    el('h2', {}, i18n('setup.persona.heading')),
+    header,
     el('p', { className: 'intro' }, i18n('setup.persona.intro')),
   );
 
@@ -196,7 +204,7 @@ function renderPreviewContents(host, data) {
   } = data;
 
   const sourceLabel = template_used === 'default'
-    ? i18n('setup.persona.preview.source_default', language)
+    ? i18n('setup.persona.preview.source_default_fmt', language)
     : i18n('setup.persona.preview.source_stored');
 
   host.append(el('div', { className: 'meta-card-row' },
@@ -210,7 +218,7 @@ function renderPreviewContents(host, data) {
   // 必须提示 tester.
   if (template_used === 'default' && stored_is_default && data.stored_prompt) {
     host.append(el('div', { className: 'empty-state warn', style: { marginTop: '6px' } },
-      i18n('setup.persona.preview.default_warning', language)));
+      i18n('setup.persona.preview.default_warning_fmt', language)));
   }
   // 名字为空 → 占位符没替换, 预览里会看到 {LANLAN_NAME}; 提醒 tester 这是正常的.
   if (!character_name || !master_name) {

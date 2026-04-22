@@ -616,7 +616,10 @@ export function mountComposer(host, { stream, autoBanner = null }) {
     const res = await api.post('/api/time/stage_next_turn', {
       delta_seconds: seconds,
     }, { expectedStatuses: [404, 409] });
-    if (res.ok) { reflectPending(res.data?.clock); }
+    if (res.ok) {
+      reflectPending(res.data?.clock);
+      emit('clock:change', { clock: res.data?.clock || res.data, source: '/api/time/stage_next_turn' });
+    }
   }
 
   async function customStage() {
@@ -633,7 +636,10 @@ export function mountComposer(host, { stream, autoBanner = null }) {
   async function clearStage() {
     const res = await api.delete('/api/time/stage_next_turn',
       { expectedStatuses: [404, 409] });
-    if (res.ok) { reflectPending(res.data?.clock); }
+    if (res.ok) {
+      reflectPending(res.data?.clock);
+      emit('clock:change', { clock: res.data?.clock || res.data, source: '/api/time/stage_next_turn' });
+    }
   }
 
   function reflectPending(clock) {
@@ -673,8 +679,14 @@ export function mountComposer(host, { stream, autoBanner = null }) {
       return;
     }
     const content = textarea.value.trim();
-    if (!content) return;
     const role = roleSelect.value || 'user';
+
+    // 2026-04-22 Day 8 #3: 空 textarea 走 pipeline 的 "只跑 LLM 回复末尾
+    // user" 路径 (chat_runner `stream_send(user_content=None)`). 典型场景:
+    // 用户对 user 消息点 [从此处重跑] 截断后, 直接按 Send 让 AI 对这条已
+    // 有 user 生成回复, 避免产生连续两条 user 消息. 如果末尾不是 user, 后端
+    // 会用 `InvalidSendState` SSE error 反馈, 前端的 'error' case 会 toast
+    // 出友好提示 ("需要末尾有 user 待回复"), 不在这里本地预检.
 
     setPending(true);
     let assistantHandle = null;
@@ -737,6 +749,36 @@ export function mountComposer(host, { stream, autoBanner = null }) {
             toast.err(err.message || i18n('chat.composer.send_failed'),
               { message: err.type || '' });
             assistantHandle?.abort();
+            break;
+          }
+          case 'warning': {
+            // P24 §12.5 follow-up: backend coerced a message ts forward
+            // to preserve monotonicity (user rewound the virtual clock).
+            // Toast is the user-visible surfacing the chokepoint design
+            // was missing in Day 2 initial landing.
+            const warn = ev.warning || {};
+            if (warn.type === 'timestamp_coerced') {
+              toast.warn(
+                i18n('chat.composer.timestamp_coerced_toast'),
+                { message: i18n(
+                  'chat.composer.timestamp_coerced_detail',
+                  warn.original_ts || '?', warn.coerced_ts || '?',
+                )},
+              );
+            } else {
+              console.debug('[composer] SSE warning:', warn);
+            }
+            break;
+          }
+          case 'injection_warning': {
+            // 2026-04-22 Day 8 手测 #6: Chat 发送命中注入模式 — 按"检测
+            // 不改, 不阻断"原则只弹 advisory toast, 不打断消息流. 用户
+            // 可以在 Diagnostics → Errors 安全筛选 → [注入命中] 看详情.
+            // 2026-04-22 验收反馈: toast 简化到单行, 不再挂冗长 detail —
+            // 详细说明放在 Diagnostics 筛选 hint 里, toast 要轻.
+            const warn = ev.warning || {};
+            toast.warn(i18n('chat.composer.injection_warning_toast_fmt',
+              warn.hits_count || 1));
             break;
           }
           case 'wire_built':
@@ -1082,6 +1124,22 @@ export function mountComposer(host, { stream, autoBanner = null }) {
           case 'wire_built':
           case 'usage':
             break;
+          case 'warning': {
+            // Same timestamp_coerced surfacing as the manual /chat/send path.
+            const warn = ev.warning || {};
+            if (warn.type === 'timestamp_coerced') {
+              toast.warn(
+                i18n('chat.composer.timestamp_coerced_toast'),
+                { message: i18n(
+                  'chat.composer.timestamp_coerced_detail',
+                  warn.original_ts || '?', warn.coerced_ts || '?',
+                )},
+              );
+            } else {
+              console.debug('[composer] script SSE warning:', warn);
+            }
+            break;
+          }
           case 'error': {
             const err = ev.error || {};
             toast.err(err.message || i18n('chat.composer.script.turn_failed'),

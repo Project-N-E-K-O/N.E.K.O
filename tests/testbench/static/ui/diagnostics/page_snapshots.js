@@ -49,6 +49,9 @@ function defaultState() {
   };
 }
 
+// P24 §14.4 M3: abort prev on rapid Refresh / snapshot-create clicks.
+let _snapshotsLoadController = null;
+
 async function loadSnapshots(state) {
   if (!store.session) {
     state.items = [];
@@ -57,8 +60,18 @@ async function loadSnapshots(state) {
     state.loadError = null;
     return;
   }
+  if (_snapshotsLoadController) {
+    try { _snapshotsLoadController.abort(); } catch { /* ignore */ }
+  }
+  const controller = new AbortController();
+  _snapshotsLoadController = controller;
   state.loading = true;
-  const res = await api.get('/api/snapshots', { expectedStatuses: [404] });
+  const res = await api.get('/api/snapshots', {
+    expectedStatuses: [404],
+    signal: controller.signal,
+  });
+  if (res.error?.type === 'aborted') return;
+  if (_snapshotsLoadController === controller) _snapshotsLoadController = null;
   state.loading = false;
   if (res.ok) {
     state.items = Array.isArray(res.data?.items) ? res.data.items : [];
@@ -79,6 +92,19 @@ async function loadSnapshots(state) {
 }
 
 export async function renderSnapshotsPage(host) {
+  // P24 Day 6F (§14.4 M2): tear down old listeners before (re-)mounting.
+  // 历史版本的注释 "粗粒度 remount 会直接 innerHTML='' 所以不主动 off
+  // 也不会泄漏事件" 是**错的** — innerHTML='' 只清 DOM, 而 state.js 的
+  // listeners Map 里 fn 引用保留, 每次 remount 都会叠加一个 fn, 触发
+  // 一次事件跑 N 倍工作量. page_results / page_run 早已用 host.__offX
+  // 这个 pattern 正确 teardown, 这里补齐.
+  for (const k of ['__offSnapshotsChanged', '__offSession']) {
+    if (typeof host[k] === 'function') {
+      try { host[k](); } catch { /* ignore */ }
+      host[k] = null;
+    }
+  }
+
   host.innerHTML = '';
   host.classList.add('snapshots-page');
   const state = defaultState();
@@ -86,13 +112,10 @@ export async function renderSnapshotsPage(host) {
   await loadSnapshots(state);
   renderAll(state, host);
 
-  // 外部来源变更 — 仅当当前还挂载在这个 host 里时响应.
-  // workspace_diagnostics 切走会清 pane; 订阅器拿到事件发现 host.isConnected
-  // 为 false 就跳过 (避免在不挂载的 DOM 上做工作).
-  const off = on('snapshots:changed', async (payload) => {
-    // 本页自己 emit 的事件: reason starts with 'page:' — 已同步本地 state,
-    // 无需再拉. 外部 (chip 手动建 / rewind) 的 reason 是 'manual_create' /
-    // 'rewind' / 'delete' 等, 需要重新 GET 拉取.
+  // 外部来源变更 — 本页自己 emit 的事件: reason starts with 'page:' —
+  // 已同步本地 state, 无需再拉. 外部 (chip 手动建 / rewind) 的 reason
+  // 是 'manual_create' / 'rewind' / 'delete' 等, 需要重新 GET 拉取.
+  host.__offSnapshotsChanged = on('snapshots:changed', async (payload) => {
     if (payload?.reason?.startsWith('page:')) return;
     if (!host.isConnected) return;
     await loadSnapshots(state);
@@ -101,15 +124,11 @@ export async function renderSnapshotsPage(host) {
   // 会话切换 → 列表清空重拉. workspace_diagnostics 也订阅了 session:change
   // 并 remount logs 页; snapshots 不强制 remount (切会话后这里显示的是新
   // 会话的 t0:init, 不需要完全重建 DOM).
-  const offSession = on('session:change', async () => {
+  host.__offSession = on('session:change', async () => {
     if (!host.isConnected) return;
     await loadSnapshots(state);
     renderAll(state, host);
   });
-  // 保留 off 句柄以便将来 workspace 层 unmount 时调 (目前 diag workspace
-  // 粗粒度 remount 会直接 innerHTML=‘', 所以不主动 off 也不会泄漏事件;
-  // 但 host.isConnected 检查兜底任何不期望的重复触发).
-  void off; void offSession;
 }
 
 function renderAll(state, host) {
@@ -120,6 +139,10 @@ function renderAll(state, host) {
     el('h2', {}, i18n('snapshots.page.title')),
     el('p', { className: 'diag-page-intro' },
       i18n('snapshots.page.intro')),
+    el('p', {
+      className: 'diag-page-intro',
+      style: { fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '-4px' },
+    }, i18n('snapshots.page.time_legend')),
     renderMechanismDetails(state),
   );
 
@@ -223,8 +246,11 @@ function renderRow(item, state, host) {
         ? el('div', { className: 'virtual-now' }, '@', item.virtual_now)
         : null,
     ),
-    el('td', { className: 'label' },
-      el('span', {}, item.label || '(unnamed)'),
+    el('td', { className: 'label u-min-width-0' },
+      el('span', {
+        className: 'u-truncate',
+        title: item.label || '(unnamed)',
+      }, item.label || '(unnamed)'),
       item.is_backup
         ? el('span', { className: 'badge subtle' },
             i18n('snapshots.badge.backup'))
@@ -436,23 +462,21 @@ async function handleRewind(item, state, host) {
     const dropped = res.data?.dropped_count ?? 0;
     toast.ok(i18n('snapshots.toast.rewound_fmt',
       item.label || item.id, dropped));
-    emit('snapshots:changed', { reason: 'page:rewind', id: item.id });
-    emit('stage:needs_refresh', { source: 'snapshots_page' });
-    emit('messages:needs_refresh', { source: 'snapshots_page' });
-    emit('memory:needs_refresh', { source: 'snapshots_page' });
-    // 同 chip: refresh session describe.
-    try {
-      const sres = await api.get('/api/session', { expectedStatuses: [404] });
-      if (sres.ok && sres.data?.has_session) {
-        setStore('session', sres.data);
-      }
-    } catch { /* ignore */ }
-    await loadSnapshots(state);
-    renderAll(state, host);
+    // ⚠️ P24 sweep (2026-04-22, §4.27 #105 同族 sweep): 同 topbar_timeline_chip
+    // 的 doRewind — rewind 到早期快照可能让 persona / memory / messages 归空,
+    // 触发 New Session 同款级联风暴. LESSONS §7 #20 判据: 任何涉及"状态清
+    // 零"可能的操作一律 reload. 原 surgical (emit 事件 + setStore + loadSnapshots
+    // + renderAll) 删, 单次 reload 更稳.
+    setTimeout(() => {
+      try { window.location.reload(); }
+      catch { /* jsdom / headless */ }
+    }, 300);
   } else {
     toast.err(i18n('snapshots.toast.rewind_failed_fmt',
       res.error?.message || `HTTP ${res.status}`));
   }
+  // 保留: rewind 失败路径仍需 re-render 当前子页显示错误态.
+  if (!res.ok) renderAll(state, host);
 }
 
 async function openView(item, state, host) {

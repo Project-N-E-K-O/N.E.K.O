@@ -549,6 +549,66 @@ class SnapshotStore:
         self._last_capture_monotonic: dict[str, float] = {}
         self._last_capture_id: dict[str, str] = {}
 
+    # ── runtime config update ────────────────────────────────────────
+
+    def update_config(
+        self,
+        *,
+        max_hot: int | None = None,
+        debounce_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Update the hot cap / debounce window on a live store.
+
+        Validation:
+          * ``max_hot`` must be ≥ 1 (0 would mean "never keep hot",
+            effectively disabling in-memory access — not a coherent UX).
+            Cap at 500 to prevent a user accidentally blowing up RAM
+            from a misplaced zero in the input.
+          * ``debounce_seconds`` must be ≥ 0.0 (0 = no debounce; still
+            legal). Cap at 3600s so a fat-fingered "60000" doesn't
+            silently disable same-trigger coalescing for an hour.
+
+        Shrinking ``max_hot`` immediately spills the extra hot entries
+        to cold storage via ``_enforce_hot_cap``; growing it is a no-op
+        in terms of existing entries (new captures just won't get
+        spilled as eagerly).
+
+        Args:
+          max_hot: new hot cap; ``None`` keeps the current value.
+          debounce_seconds: new debounce window; ``None`` keeps current.
+
+        Returns:
+          Dict with the effective values after the update — the caller
+          can echo this back to the client UI without re-querying.
+
+        Raises:
+          ValueError: on out-of-range inputs. Caller (router) should
+            translate to HTTP 400.
+
+        P24 Day 7 (2026-04-22): added to back the Settings → UI page's
+        Snapshot limit input after it was de-``disabled``'d.
+        """
+        if max_hot is not None:
+            mh = int(max_hot)
+            if mh < 1 or mh > 500:
+                raise ValueError(
+                    f"max_hot must be in [1, 500], got {mh}"
+                )
+            self.max_hot = mh
+            # Immediate spill if the new cap is below current hot size.
+            self._enforce_hot_cap()
+        if debounce_seconds is not None:
+            ds = float(debounce_seconds)
+            if ds < 0.0 or ds > 3600.0:
+                raise ValueError(
+                    f"debounce_seconds must be in [0, 3600], got {ds}"
+                )
+            self.debounce_seconds = ds
+        return {
+            "max_hot": self.max_hot,
+            "debounce_seconds": self.debounce_seconds,
+        }
+
     # ── capture ──────────────────────────────────────────────────────
 
     def capture(
@@ -724,12 +784,18 @@ class SnapshotStore:
     def _spill_to_cold(self, snap: Snapshot) -> None:
         """Write ``snap`` to ``sandbox/.snapshots/<id>.json.gz`` and drop
         the in-memory payload; keep a metadata dict in ``_cold_meta``.
+
+        P24 §4.1.2 (2026-04-21): switched from raw gzip-open-for-write
+        (non-atomic; highest-risk writer of all 6 copies pre-P24) to
+        ``atomic_io.atomic_write_gzip_json`` which does
+        tmp + gzip + fsync + os.replace. Previously a power loss
+        mid-spill could leave a corrupted cold snapshot that silently
+        broke rewind later.
         """
+        from tests.testbench.pipeline.atomic_io import atomic_write_gzip_json
         path = self._cold_dir / f"{snap.id}.json.gz"
         try:
-            payload = json.dumps(snap.to_json_dict(), ensure_ascii=False).encode("utf-8")
-            with gzip.open(path, "wb", compresslevel=6) as fh:
-                fh.write(payload)
+            atomic_write_gzip_json(path, snap.to_json_dict())
         except OSError as exc:
             python_logger().warning(
                 "snapshot_store: spill to cold failed for %s (%s); dropping "
@@ -834,9 +900,12 @@ class SnapshotStore:
             snap.label = label
             path = self._cold_dir / f"{snapshot_id}.json.gz"
             try:
-                payload = json.dumps(snap.to_json_dict(), ensure_ascii=False).encode("utf-8")
-                with gzip.open(path, "wb", compresslevel=6) as fh:
-                    fh.write(payload)
+                # P24 §4.1.2: second atomic-io site (alongside _spill_to_cold).
+                # Rewrites an existing cold snapshot with the new label; must
+                # stay crash-safe so a mid-rewrite crash doesn't corrupt the
+                # previously-good snapshot.
+                from tests.testbench.pipeline.atomic_io import atomic_write_gzip_json
+                atomic_write_gzip_json(path, snap.to_json_dict())
             except OSError as exc:
                 python_logger().warning(
                     "snapshot_store: update_label disk rewrite failed on %s (%s)",

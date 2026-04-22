@@ -403,24 +403,22 @@ def _collect_template_errors(raw: Any) -> list[dict[str, str]]:
 
 
 def _write_user_template_atomic(path: Path, data: dict[str, Any]) -> None:
-    """原子写: 先写到同目录 tmp 再 rename, 避免写一半掉电留半截 JSON.
+    """Crash-safe write of a user-authored script template JSON.
 
-    `os.replace` 在同一 filesystem 下是原子的, 比 ``write_text`` 直接糊更
-    稳. 顺手 ``ensure_dir`` 一下, 因为 user 目录可能是第一次用.
+    P24 §4.1.2 (2026-04-21): the previous bespoke implementation claimed
+    "防掉电" in its docstring but had no ``fsync`` — a power loss during
+    write could leave a zero-byte file masquerading as a valid template.
+    Now delegates to the unified ``atomic_io.atomic_write_json`` helper
+    which includes ``fh.flush() + os.fsync(...)`` before the rename.
+
+    Note: ``atomic_write_json`` uses ``<path>.tmp`` (same stem) rather
+    than the ``tempfile.mkstemp(prefix='.<name>.')`` pattern used here
+    previously — same atomicity guarantees (both same-directory renames),
+    just a slightly different tmp filename shape. No observable diff
+    for callers.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent),
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-            f.write("\n")
-        os.replace(tmp_path, path)
-    except Exception:
-        # tmp 留着方便排查; Path.unlink 错了就忽略.
-        Path(tmp_path).unlink(missing_ok=True)
-        raise
+    from tests.testbench.pipeline.atomic_io import atomic_write_json
+    atomic_write_json(path, data)
 
 
 def validate_template_dict(raw: Any) -> dict[str, Any]:

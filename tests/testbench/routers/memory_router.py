@@ -158,13 +158,9 @@ def _read_json(path: Path, spec: dict[str, Any]) -> tuple[Any, bool]:
     return data, True
 
 
-def _atomic_write_json(path: Path, data: Any) -> None:
-    """``tmp + os.replace`` — editor Save survives a mid-flight kill."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as fp:
-        json.dump(data, fp, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+# P24 §4.1.2 (2026-04-21): delegates to the unified atomic_io chokepoint
+# (now includes fsync — previously missing here, per P21.1 G1 gap).
+from tests.testbench.pipeline.atomic_io import atomic_write_json as _atomic_write_json  # noqa: E402
 
 
 def _validate_shape(data: Any, spec: dict[str, Any]) -> None:

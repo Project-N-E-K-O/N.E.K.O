@@ -334,8 +334,14 @@ def _build_memory_context_structured_with_clock(
     try:
         last_time = time_manager.get_last_conversation_time(lanlan_name)
         if last_time is not None:
+            # P24 §12.5 L3 defensive: clamp negative gaps to 0. The
+            # `append_message` chokepoint guards new writes, but loaded
+            # archives or snapshot rewinds to older states can hand us
+            # a "now" earlier than the last message — a negative gap
+            # shouldn't trigger the "你好久没见我了" (long-silence)
+            # prompt. Treat as "just happened".
             gap = now - last_time
-            gap_seconds = gap.total_seconds()
+            gap_seconds = max(0.0, gap.total_seconds())
             if gap_seconds >= 1800:
                 elapsed = _format_elapsed(lang_short, gap_seconds)
                 if gap_seconds >= 18000:

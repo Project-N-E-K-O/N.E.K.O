@@ -138,15 +138,87 @@ code, .mono {
 }
 
 /* =====================================================================
+ * Utility classes for user-editable string rendering (P21.2)
+ *
+ * Background: overflow防御历史踩坑见 docs/PLAN.md §12 和
+ * AGENT_NOTES §4.27 #96. 新加 user-editable string (script name, schema
+ * id, snapshot label, character_name, …) 的 render 必须显式选一个.
+ *
+ * 使用原则 (配套 .cursor/rules/ui-user-input-overflow.mdc):
+ *   - 单行 chip / list row title → `u-truncate` + `title=fullText`,
+ *     父 flex/grid 元素需要 `u-min-width-0` 打通 min-content 链.
+ *   - 多行 description / preview → `u-truncate-2` 或 `u-truncate-3`
+ *     (CSS line-clamp) + `title=fullText`.
+ *   - 多行长无空格 token (URL / hash / json blob) → `u-wrap-anywhere`.
+ *   - 多行限高内滚 (toast / error 详情) → `u-wrap-anywhere u-scroll-y-limit`.
+ *
+ * 不过度重构: 现有 ~100 处硬编码 overflow 规则保持原状, 只有**新加**和
+ * **修补**的地方切 utility. 存量 bug-free 就不动.
+ * ===================================================================== */
+
+/* Single-line ellipsis. 必须和 `title=` tooltip 配对, 否则用户看不到全文. */
+.u-truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* Multi-line clamp — 2 行 / 3 行截断, 依赖 `-webkit-line-clamp` (所有
+ * 现代浏览器已支持, Chromium + Firefox + Safari). 同样要挂 `title=`. */
+.u-truncate-2 {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  min-width: 0;
+}
+.u-truncate-3 {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+  min-width: 0;
+}
+
+/* 允许长无空格串在任意字符换行. `overflow-wrap: anywhere` 是现代属性,
+ * 老浏览器 fallback 用 `word-break: break-word` (非标准但 Chromium /
+ * Safari 都认). 两个同时写是有意的双保险. */
+.u-wrap-anywhere {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* 打通 flex/grid 子元素的默认 `min-width: min-content` 链 — 父元素不显
+ * 式加 `min-width: 0`, 子元素的 `u-truncate` 会被长字符反向撑破 (§3A C5).
+ * 用法: 直接挂在 flex/grid 容器上. */
+.u-min-width-0 {
+  min-width: 0;
+}
+
+/* 多行限高 + 内滚 — 配合 u-wrap-anywhere 用在 toast / 错误详情 /
+ * preview 面板, 防止单条内容把整个容器顶到屏幕外. */
+.u-scroll-y-limit {
+  max-height: 12em;
+  overflow-y: auto;
+}
+
+/* =====================================================================
  * 主框架
  * ===================================================================== */
 
 #app {
   display: grid;
-  /* 四行: topbar (固定) → reminder-slot (auto, 空时 slot :empty { display:none } 自然坍塌成 0)
-     → tabbar (固定) → workspace-host (1fr). 这里必须留一行给 reminder, 否则 DOM 插入后
-     grid auto-flow 会把它塞进 tabbar 行, 让 tabbar 被挤到 workspace-host 行上跟内容叠加. */
-  grid-template-rows: var(--topbar-h) auto var(--tabbar-h) 1fr;
+  /* 五行: topbar (固定) → model-reminder-slot (auto, 空时子元素不渲染自然 0 高)
+     → session-restore-banner-slot (auto, P22 加, 同理空时 0 高)
+     → tabbar (固定) → workspace-host (1fr).
+     ⚠ 每次加新的"顶部 chrome 槽位"时 **必须** 在这里补一条 auto track, 否则
+     grid auto-flow 会把新 child 塞进已有 track (通常是 tabbar-h 这条),
+     后面的 tabbar / workspace-host 全错位, 表现就是"顶部栏位高度巨大 + 内容
+     被压扁". 参见 `.cursor/skills/css-grid-template-child-sync`. */
+  grid-template-rows: var(--topbar-h) auto auto var(--tabbar-h) 1fr;
   height: 100vh;
 }
 
@@ -200,6 +272,23 @@ code, .mono {
   font-size: 11px;
 }
 .chip.err-active { border-color: #663434; color: var(--err); }
+
+/* Session chip: cap how wide the label can grow so a long session /
+   archive name doesn't push Stage / Timeline / Err badges off screen.
+   The visible label truncates; hover tooltip (title attr) keeps the
+   full string reachable. Keep the caret outside the truncation box so
+   it stays flush-right and always visible as the dropdown affordance. */
+.chip--session {
+  max-width: 280px;
+  min-width: 0;
+}
+.chip--session .chip__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1 1 auto;
+}
 
 /* Session dropdown ------------------------------------------------ */
 .dropdown { position: relative; }
@@ -848,6 +937,56 @@ code, .mono {
   color: var(--text-primary);
 }
 
+/* ── 自动保存恢复横幅 (启动时检测到 orphan autosave) ──────────────
+ * 结构同 .model-reminder-slot — 插在 topbar 和 tabbar 之间, 空槽位
+ * 保持 display: block 以免 grid-auto-flow 在插槽消失时错乱.
+ * 语义走 "info" (蓝), 和 model-reminder 的 warn / welcome 区分开. */
+.session-restore-banner-slot { display: block; min-width: 0; }
+.session-restore-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.5;
+  background: rgba(120, 180, 255, 0.10);
+  border-top: 1px solid rgba(120, 180, 255, 0.30);
+  border-bottom: 1px solid rgba(120, 180, 255, 0.30);
+}
+.session-restore-banner__icon { font-size: 18px; flex: 0 0 auto; }
+.session-restore-banner__body { flex: 1 1 auto; min-width: 0; }
+.session-restore-banner__title {
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 2px;
+}
+.session-restore-banner__text {
+  color: var(--text-secondary);
+  word-break: break-word;
+}
+.session-restore-banner__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.session-restore-banner__dismiss {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-tertiary);
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+}
+.session-restore-banner__dismiss:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
 /* ── Workspace tab bar ─────────────────────────────────────── */
 #tabbar {
   display: flex;
@@ -1113,13 +1252,228 @@ code, .mono {
   min-width: 360px;
   max-width: 640px;
   box-shadow: var(--shadow-md);
+  /* 2026-04-22 Day 8 手测 #7 同族 sweep: 限制 modal 不超过 viewport,
+   * 否则 session_load / session_restore 存档多时会撑出屏幕外 actions
+   * 按钮看不见. flex-column + 内部 body 滚动: 标题/actions 固定, 中间
+   * content 自己滚. */
+  max-height: calc(100vh - 80px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
-.modal h3 { margin-top: 0; }
+.modal h3 { margin-top: 0; flex-shrink: 0; }
+/* Modal 里除标题/actions 以外的任意直接子元素 (save/load 的 __body) 都
+ * 应该充当可滚动 content 区. 这里统一给所有非标题非 actions 的直接子元
+ * 素 flex:1 + overflow-y:auto, 各 modal 不需要单独写 CSS. */
+.modal > :not(h3):not(.modal-actions) {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
 .modal .modal-actions {
   display: flex;
   justify-content: flex-end;
   gap: var(--density-sm);
   margin-top: var(--density-md);
+  flex-shrink: 0;
+}
+
+/* ---- P21 session save / load modals ---- */
+.session-save-modal .session-save-modal__name {
+  width: 100%;
+  padding: 6px 8px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
+}
+.session-save-modal .session-save-modal__name:focus {
+  outline: 2px solid var(--accent-dim);
+  outline-offset: 1px;
+}
+.session-load-modal .modal {
+  min-width: 520px;
+  max-width: 720px;
+}
+.session-load-modal__row:last-child {
+  border-bottom: none !important;
+}
+.session-load-modal__row button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.session-load-modal__body .hint {
+  padding: 4px 2px;
+}
+/* Long archive names must truncate rather than blow out the dialog
+   width or wrap to two lines (which would misalign the Load/Delete
+   action buttons on neighbouring rows). Hover tooltip carries the
+   full name. The flex chain needs min-width: 0 on every ancestor to
+   let ellipsis actually kick in instead of stretching parents. */
+.session-load-modal__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.session-load-modal__title strong {
+  font-weight: 600;
+}
+.session-load-modal__import_ta {
+  padding: 6px 8px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  resize: vertical;
+}
+.session-load-modal__import_ta:focus {
+  outline: 2px solid var(--accent-dim);
+  outline-offset: 1px;
+}
+
+/* ── Autosave restore modal ──────────────────────────────────
+ * 和 session-load-modal 的行布局一致, 但 autosave 条目右侧有两个按钮
+ * ([恢复][删除]), 且有 slot-badge 占位, 所以单独一组样式. */
+.session-restore-modal .modal {
+  min-width: 560px;
+  max-width: 760px;
+}
+.session-restore-modal__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px;
+  border-bottom: 1px solid var(--border-dim, #333);
+}
+.session-restore-modal__row:last-child {
+  border-bottom: none !important;
+}
+.session-restore-modal__row button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.session-restore-modal__meta {
+  flex: 1;
+  min-width: 0;
+}
+.session-restore-modal__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.session-restore-modal__title strong {
+  font-weight: 600;
+}
+.session-restore-modal__slot-badge {
+  display: inline-block;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-dim, #333);
+  margin-right: 2px;
+  vertical-align: baseline;
+}
+.session-restore-modal__body .hint {
+  padding: 4px 2px;
+}
+
+/* ── P23 session export modal ──────────────────────────────────────
+ * Two-column scope/format grid (stacks on narrow viewports), live
+ * filename preview, and red-tinted inline error line.
+ * Disabled radio rows fade out via .is-disabled so users can see
+ * why a combination is unavailable (e.g. dialog_template locked to
+ * conversation scope) without the radios silently vanishing. */
+.session-export-modal .modal {
+  min-width: 560px;
+  max-width: 720px;
+}
+.session-export-modal__body h4 {
+  margin: 0 0 6px 0;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.session-export-modal__grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--density-md);
+  margin-bottom: var(--density-sm);
+}
+@media (max-width: 640px) {
+  .session-export-modal__grid {
+    grid-template-columns: 1fr;
+  }
+}
+.session-export-modal__radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.session-export-modal__radio {
+  padding: 4px 2px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.session-export-modal__radio:hover {
+  background: var(--bg-raised);
+}
+.session-export-modal__radio.is-disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.session-export-modal__radio.is-disabled:hover {
+  background: transparent;
+}
+.session-export-modal__radio-label {
+  font-size: 12.5px;
+}
+.session-export-modal__memory {
+  margin-top: 4px;
+}
+.session-export-modal__memory.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.session-export-modal__api-key-note {
+  padding: 6px 8px;
+  border-left: 2px solid var(--accent-dim, #5a7);
+  background: var(--bg-raised);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  margin-top: var(--density-sm);
+  margin-bottom: var(--density-sm);
+}
+.session-export-modal__note {
+  padding: 4px 2px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+.session-export-modal__subtitle {
+  margin: 0 0 var(--density-sm) 0;
+  padding: 6px 8px;
+  background: var(--bg-raised);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+}
+.session-export-modal__filename-row {
+  padding: 4px 2px;
+}
+.session-export-modal__filename {
+  background: var(--bg-raised);
+  border: 1px solid var(--border-dim, #333);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
+.session-export-modal__err:empty {
+  display: none;
 }
 
 /* =====================================================================
@@ -1760,6 +2114,51 @@ button.tiny {
   padding: 2px 8px;
   height: auto;
 }
+
+/* ──────────────────────────────────────────────────────────────────
+ * [打开文件夹] 按钮 (`ui/_open_folder_btn.js::openFolderButton`).
+ *
+ * 2026-04-22 用户反馈: 按钮之前用 `ghost tiny` 样式 (transparent 背景 +
+ * var(--text-secondary) 弱化色 + 11px 小字号), Setup / Evaluation 各
+ * 页头 h2 边上基本是"隐身"的状态, 用户找不到. 这套专用样式给它:
+ *   - 明确可见的底色 (bg-raised) + 边框
+ *   - 前置 folder SVG 图标 (14×14, 用 currentColor 跟随 hover 变色)
+ *   - 正常按钮 padding, 比 .chip 略窄, 比普通 button 略紧凑
+ *   - hover 时底色变 accent tint, 图标 + 文字换成 accent 紫, 高可见
+ * ────────────────────────────────────────────────────────────────── */
+button.open-folder-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  font-size: 12.5px;
+  font-weight: 500;
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease,
+              border-color 120ms ease;
+}
+button.open-folder-btn:hover:not(:disabled) {
+  background: rgba(233, 208, 255, 0.10); /* accent #e9d0ff @ 10% */
+  border-color: var(--accent);
+  color: var(--accent);
+}
+button.open-folder-btn:active:not(:disabled) {
+  background: rgba(233, 208, 255, 0.16);
+}
+button.open-folder-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.open-folder-btn__icon {
+  display: inline-flex;
+  align-items: center;
+  line-height: 0; /* SVG 会自带一点 descent, 去掉让图标垂直对齐文字 */
+}
+
 .subpage {
   background: var(--bg-panel);
   border: 1px solid var(--border);
@@ -1793,6 +2192,109 @@ button.tiny {
   color: var(--text-tertiary);
   font-size: 12.5px;
   margin-bottom: var(--density-sm);
+}
+
+/* ──────────────────────────────────────────────────────────────────
+ * Settings → UI 偏好 子控件 (P24 Day 7, §12.3.A #3/#4):
+ *   - .settings-snapshot-config — max_hot / debounce 双输入 + 保存按钮
+ *   - .settings-fold-table — 5 行折叠策略表, 每行 label + mode select +
+ *     阈值 input (auto 模式时亮, 其它模式 opacity 降低)
+ * ────────────────────────────────────────────────────────────────── */
+
+/* 原版写成 `display: flex; flex-direction: column` 结果 align-items
+ * 默认 stretch, [保存] 按钮被拉成 100% 宽 (2026-04-22 用户反馈 "保存
+ * 按钮的宽度填满了整个容器"). 改成普通 block 流 + 相邻元素间距, 按钮
+ * 保持 inline-block 默认 content 宽即可. */
+.settings-snapshot-config > * + * {
+  margin-top: var(--density-xs);
+}
+
+/* 保存按钮 / 重置按钮之类的 action row: flex 把按钮按自身宽度排开,
+ * 左对齐. 复用给未来其它 card 内按钮组, 避免同一个"flex container
+ * stretch 把按钮拉满" 的坑再犯. */
+.form-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--density-xs);
+  justify-content: flex-start;
+  align-items: center;
+}
+
+/* Windows CFA (受控文件夹访问) 回退警告块, 用在 Setup → Import 页头.
+ * 红色主题 + 大标题 + 等宽字体展示两条路径, 一眼看出是严重配置问题
+ * 而不是常规提示. 2026-04-22 §12.4.A 用户报告 "改了 characters.json 但
+ * 程序读不到" 的根因修复. */
+.import-cfa-fallback {
+  border: 1px solid rgba(220, 100, 100, 0.55);
+  border-left: 4px solid rgba(220, 100, 100, 0.8);
+  background: rgba(220, 100, 100, 0.08);
+  border-radius: var(--radius-sm);
+  padding: var(--density-md);
+  margin-bottom: var(--density-md);
+  color: var(--text-primary);
+}
+.import-cfa-fallback__heading {
+  font-size: 14.5px;
+  font-weight: 700;
+  color: #e89090;
+  margin-bottom: var(--density-xs);
+}
+.import-cfa-fallback__body {
+  font-size: 12.5px;
+  line-height: 1.55;
+  margin-bottom: var(--density-sm);
+  color: var(--text-secondary);
+}
+.import-cfa-fallback__paths {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: var(--density-md);
+  row-gap: var(--density-xs);
+  padding: var(--density-xs) 0;
+  align-items: center;
+}
+.import-cfa-fallback__label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.import-cfa-fallback__paths code {
+  font-size: 12px;
+  background: var(--bg-raised);
+  padding: 3px 6px;
+  border-radius: 3px;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  color: var(--text-primary);
+}
+.import-cfa-fallback__hint {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: var(--density-sm);
+  padding-top: var(--density-sm);
+  border-top: 1px solid rgba(220, 100, 100, 0.22);
+  line-height: 1.55;
+}
+
+.settings-fold-table {
+  display: grid;
+  grid-template-columns: max-content max-content max-content max-content;
+  column-gap: var(--density-md);
+  row-gap: var(--density-sm);
+  align-items: center;
+  padding-top: var(--density-xs);
+}
+.settings-fold-row {
+  display: contents; /* 让 4 个子元素直接占 4 列, 不引入额外 wrapper */
+}
+.settings-fold-row-label {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+.settings-fold-row-threshold-label {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  transition: opacity 120ms ease;
 }
 
 table.tbl {
@@ -2006,8 +2508,16 @@ table.tbl .tbl-key-field {
   gap: var(--density-md);
   align-items: start;
   padding: var(--density-md);
-  /* 预览面板常常很长, 给一个稳定的可滚动高度 */
-  max-height: calc(100vh - 140px);
+  /* 2026-04-22 Day 8 手测 #7: 原来写 `max-height: calc(100vh - 140px)`
+   * 只是上限, 当内容 < 上限时 .chat-main 的 `grid-template-rows: auto
+   * 1fr auto` 的 1fr 没有被触发压缩, stream 按 content 高度展开 → 消息
+   * 多了就"无限往下延伸", 外层 #workspace-host 的 overflow:auto 接管滚
+   * 动, sticky banner 相对 workspace-host 而非 chat-main 贴顶也失效,
+   * 用户要翻上去才看得到 Auto 按钮. 改成 `height` + `overflow:hidden`
+   * 让 .chat-main 获得确定高度, grid 正确压缩 stream, 内部滚自 chat-
+   * stream-list, sticky banner 真正贴在 chat-main 顶. */
+  height: calc(100vh - 140px);
+  overflow: hidden;
 }
 .chat-main {
   background: var(--bg-panel);
@@ -2168,6 +2678,16 @@ table.tbl .tbl-key-field {
   border: 1px solid #5d4a1f;
   color: var(--warn, #d69f3d);
   background: rgba(255, 193, 77, 0.05);
+}
+/* Red variant used for security-advisory copy (e.g. PLAN §13 F4
+   extra_context override warning in the Schemas editor): keeps the
+   same padding/layout as .preview-hint.info/.warn so it plugs into
+   the same containers, but uses --err / red background so it reads
+   as "advisory, not just informational". */
+.preview-hint.danger {
+  border: 1px solid rgba(224, 90, 90, 0.55);
+  color: var(--err, #e05a5a);
+  background: rgba(224, 90, 90, 0.06);
 }
 
 .preview-view {
@@ -2671,6 +3191,57 @@ button.primary.small { font-size: 12px; padding: 3px 12px; }
   color: var(--text-secondary);
 }
 
+/* P24 Day 7 §12.3.F: Auto-Dialog 启动期配置校验错误折叠面板. 用 error
+ * 色 (红边框 + 红底) 替代正常运行状态的蓝色, 一眼分辨"这是失败不是
+ * 进行中". 列表每行 li 用 border-left 作 bullet, 与 .chat-message
+ * source 边框的视觉风格一致. */
+.auto-banner--error {
+  border-color: rgba(220, 100, 100, 0.55) !important;
+  background: linear-gradient(
+    to right,
+    rgba(220, 100, 100, 0.12),
+    rgba(220, 100, 100, 0.06)
+  ) !important;
+  padding: 8px 14px;
+  gap: 6px;
+}
+.auto-banner-error-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+.auto-banner-error-header button {
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 8px;
+  color: var(--text-secondary);
+}
+.auto-banner-error-summary {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.auto-banner-error-list {
+  list-style: none;
+  margin: 4px 0 2px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.auto-banner-error-list li {
+  font-size: 12.5px;
+  color: var(--text-primary);
+  padding: 3px 8px;
+  border-left: 3px solid rgba(220, 100, 100, 0.7);
+  background: rgba(220, 100, 100, 0.06);
+  border-radius: 2px;
+  overflow-wrap: anywhere;
+}
+
 /* 参考回复 (reference_content) 折叠块: 跟 assistant 消息气泡绑在一起,
    视觉上要清晰地"不是 AI 本体回复", 所以用灰色边框 + 左竖线提示. */
 .msg-reference-wrap {
@@ -2976,10 +3547,11 @@ button.primary.small { font-size: 12px; padding: 3px 12px; }
   color: var(--warn);
 }
 /* 轻微脉动提示"有未保存改动", 不用浮夸的 box-shadow 动画以免注意力被
- * 抢走 — 只是底色变亮一点. */
+ * 抢走 — 只是底色变亮一点. 2026-04-22 用户反馈: color:#fff 在 accent
+ * 浅紫底上对比度太低看不清, 改用深色 (同 button.primary 默认). */
 button.is-dirty {
   background: var(--accent) !important;
-  color: #fff !important;
+  color: #1a1a1a !important;
 }
 @media (max-width: 900px) {
   .script-editor-body {
@@ -4051,6 +4623,25 @@ button.is-dirty {
 }
 .diag-checkbox-label input[type="checkbox"] { margin: 0; }
 
+/* Errors subpage — Security quick-filter row (P24 F7 Option B) ---- */
+.diag-security-filter-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  width: 100%;
+  padding: 6px 10px;
+  margin-top: 2px;
+  background: var(--bg-subtle, rgba(255,255,255,0.02));
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+}
+.diag-security-filter-label {
+  font-size: 11.5px; color: var(--text-tertiary);
+  margin-right: 4px; font-weight: 600;
+}
+.diag-security-filter-row .chip.active {
+  border-color: var(--accent, #4a8fdb);
+  background: var(--accent-bg, rgba(74,143,219,0.12));
+}
+
 .diag-filter-chips {
   display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
 }
@@ -4202,6 +4793,134 @@ button.is-dirty {
   font-size: 12px;
   color: var(--text-secondary);
 }
+
+/* P24 §3.1 H1 — system health card on Paths page. */
+.diag-paths-health-card {
+  padding: 12px 14px;
+  border: 1px solid var(--accent-dim, var(--border));
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 10px 0 4px;
+}
+.diag-paths-health-card.diag-paths-health-warning {
+  border-color: var(--warn);
+  background: rgba(255, 194, 104, 0.04);
+}
+.diag-paths-health-card.diag-paths-health-critical {
+  border-color: var(--err);
+  background: rgba(220, 92, 82, 0.05);
+}
+.diag-paths-health-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.diag-paths-health-badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.3px;
+}
+.diag-paths-health-badge.badge-healthy {
+  color: var(--ok);
+  border: 1px solid color-mix(in srgb, var(--ok) 40%, transparent);
+  background: color-mix(in srgb, var(--ok) 8%, transparent);
+}
+.diag-paths-health-badge.badge-warning {
+  color: var(--warn);
+  border: 1px solid color-mix(in srgb, var(--warn) 50%, transparent);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+.diag-paths-health-badge.badge-critical {
+  color: var(--err);
+  border: 1px solid color-mix(in srgb, var(--err) 50%, transparent);
+  background: color-mix(in srgb, var(--err) 10%, transparent);
+}
+.diag-paths-health-problems {
+  font-size: 12.5px;
+  line-height: 1.5;
+  padding: 6px 10px;
+  border-left: 3px solid var(--warn);
+  background: rgba(255, 194, 104, 0.06);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  color: var(--text-primary);
+}
+.diag-paths-health-card.diag-paths-health-critical .diag-paths-health-problems {
+  border-left-color: var(--err);
+  background: rgba(220, 92, 82, 0.07);
+}
+.diag-paths-health-problem-item {
+  margin: 2px 0;
+}
+.diag-paths-health-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 6px 16px;
+  padding: 8px 4px 0;
+  border-top: 1px dashed var(--border);
+}
+.diag-paths-health-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+}
+.diag-paths-health-row.status-warning {
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 4%, transparent);
+}
+.diag-paths-health-row.status-critical {
+  color: var(--err);
+  background: color-mix(in srgb, var(--err) 5%, transparent);
+}
+.diag-paths-health-key {
+  color: var(--text-secondary);
+}
+.diag-paths-health-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+.diag-paths-health-row.status-warning .diag-paths-health-value,
+.diag-paths-health-row.status-critical .diag-paths-health-value {
+  font-weight: 600;
+}
+.diag-paths-health-timestamp {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-align: right;
+  margin-top: 2px;
+}
+
+/* P24 §15.2 B / P-D — orphan sandbox triage section. */
+.diag-paths-orphans {
+  margin-top: 12px;
+}
+.diag-paths-orphans-meta {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+.diag-paths-orphans .orphans-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.diag-paths-orphan-row td {
+  vertical-align: top;
+}
+
 .diag-paths-group {
   display: flex;
   flex-direction: column;

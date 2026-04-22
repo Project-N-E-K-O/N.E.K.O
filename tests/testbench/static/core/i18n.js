@@ -23,12 +23,12 @@ export const I18N = {
         none: '(未建会话)',
         new: '新建会话',
         delete: '销毁当前会话',
-        load: '加载存档…',
-        save: '保存',
+        load: '加载存档 / 导入 JSON…',
+        save: '保存到存档',
         save_as: '另存为…',
-        import: '导入 JSON…',
         restore_autosave: '恢复自动保存…',
-        not_implemented: '该功能将在 P21 后实装',
+        restore_autosave_hint: '崩溃恢复 / 自动保存入口 (P22)',
+        not_implemented: '该功能将在后续 phase 实装',
       },
       stage: {
         label: '阶段',
@@ -189,9 +189,15 @@ export const I18N = {
           loading: '加载中...',
           load_failed: '加载失败',
           source_label: '来源',
-          source_default: '默认模板 (language = {0})',
+          // 函数叶子 (§3A i18n-fmt-naming): `_fmt` 后缀表明是函数值, caller
+          // 必须用 `i18n(key, arg)` 而非 `i18n(key)` 读. 本字典用 `{0}`
+          // 占位符模式是训练语料污染 (i18next 风格) — 项目自定义 i18n 不
+          // 支持, 显示的是字面量 `{0}`. 2026-04-22 Day 7 验收期用户反馈
+          // 顺手修了 page_ui 和此处共 4 处; 统一改为函数值.
+          source_default_fmt: (lang) => `默认模板 (language = ${lang})`,
           source_stored: '自定义 (来自已保存 system_prompt)',
-          default_warning: '注意: 当前自定义文本被识别为某语言默认模板 — 运行期会被当作"空"并自动换成 language={0} 的版本. 若想固化保存, 需要对默认文本做任意修改.',
+          default_warning_fmt: (lang) =>
+            `注意: 当前自定义文本被识别为某语言默认模板 — 运行期会被当作"空"并自动换成 language=${lang} 的版本. 若想固化保存, 需要对默认文本做任意修改.`,
           placeholder_warning: '注意: 主人名 / 角色名为空, 预览里保留了 {LANLAN_NAME} / {MASTER_NAME} 占位符, 运行期会按实际填写值替换.',
           resolved_label: '最终 (名字替换后)',
           template_label: '模板原文 (未替换占位符)',
@@ -221,6 +227,27 @@ export const I18N = {
         },
         no_session: '需要先建会话才能读取真实角色目录.',
         no_real: '主 App 文档目录下没找到 characters.json, 或暂无角色.',
+        // P24 Day 8 §12.4.A: dev_note L17 默认角色数据显示 bug 的诊断入口.
+        // Backend 新增 `skipped_entries` 字段列出被过滤掉的 raw 条目 + 原因,
+        // 前端展示成独立块让用户直接自查本地 characters.json 的异常.
+        skipped_heading_fmt: (n) => `有 ${n} 个 characters.json 里的条目被过滤掉, 没显示在上面的列表里`,
+        skipped_hint: '常见原因: 该条目不是对象格式 (手动编辑过 / 误存成数组或字符串) / 主程序最近改了 schema. 请打开上面"数据源"里的 config_dir 路径看实际文件, 检查下面列出的角色.',
+        skipped_unknown_reason: '(未知原因)',
+        // Windows CFA (Controlled Folder Access) 回退警告. 用户在 Documents/
+        // 下改了 characters.json 但主程序用的是 AppData\Local 下的另一份 —
+        // 2026-04-22 dev_note L17 根因.
+        cfa_fallback: {
+          heading: '⚠ 主程序检测到 Documents 目录不可写, 已降级到 AppData\\Local',
+          body: 'Windows 受控文件夹访问 (CFA) 或类似安全策略阻止了对 Documents 目录的写入. '
+              + '主程序与 testbench 都从下面"实际生效"的路径读写配置和角色数据. '
+              + '如果你在"仅可读"的 Documents 那份文件里改了 characters.json 或其它 config, '
+              + '主程序根本不会看到那些改动, 测试场景里就会观察到"改了角色但列表没更新"的现象.',
+          active_label: '✅ 主程序实际读写的 characters.json',
+          readable_label: '🚫 仅可读的 Documents 副本 (改这个无效)',
+          hint: '修复方式二选一: (a) 直接编辑上方"实际读写"路径下的 characters.json; '
+              + '或 (b) 去 Windows 设置关掉 Documents 的 CFA / 反勒索防护让 Documents 可写, '
+              + '然后重启主程序 + testbench 服务.',
+        },
         columns: {
           name: '角色名',
           status: '状态',
@@ -228,9 +255,13 @@ export const I18N = {
           action: '操作',
         },
         badge_current: '当前',
+        badge_current_hint: '你当前正在使用的角色 (characters.json 的"当前猫娘").',
         badge_has_prompt: 'prompt ✓',
+        badge_has_prompt_hint: '该角色在 characters.json 里配置了自定义 system_prompt. 导入会把这段 prompt 带到 testbench 会话里作为 persona.system_prompt.',
         badge_no_prompt: 'prompt ✗',
+        badge_no_prompt_hint: '该角色没有自定义 system_prompt — characters.json 里该字段缺失或为空. 导入后人设 prompt 会是空的, 需要你自己在 Setup → Persona 里填写.',
         badge_no_memdir: '无 memory 目录',
+        badge_no_memdir_hint: '主程序 memory/store/ 下没有该角色的子目录, 也就是这个角色没有任何历史对话 / facts / reflections / persona 文件可以导入. 只会导入 characters.json 的基本信息 (名字、system_prompt 等).',
         button_import: '导入到当前会话',
         button_importing: '导入中…',
         confirm_overwrite: name => `"${name}" 已经在当前沙盒存在同名 memory 目录. 继续将覆盖文件; 确认?`,
@@ -667,6 +698,8 @@ export const I18N = {
           reference_hint: 'comparative schema 会把目标 AI 回复 (A) 和这段文本 (B) 做 pairwise 对比. 可以直接粘贴, 也可以挑一条已经带 reference_content 的消息 (通常来自 Script 脚本跑完落盘).',
           override_heading: '高级 · Judge 模型覆盖 (可选)',
           override_hint: '留空则沿用 Settings → Models → judge 组的配置. 只填你想临时改的字段, 其余回落到 session 默认.',
+          match_main_chat: '评委看到和主对话模型一样的 system prompt',
+          match_main_chat_hint: '默认只把 persona.system_prompt 发给评委. 勾选后会调 build_prompt_bundle 组装出主 chat 模型实际看到的完整 system (含人设模板 / chat gap / recent_history / 节日等), 让评委在同一条"上下文"下打分. 主要用于排查"同一条对话为什么评分和体感不一致": 打开后对比评分变化, 通常能看出是 persona 本身的问题还是 gap/memory 的问题.',
         },
         picker: {
           no_schemas: '(没有 schema, 先去 Schemas 子页新建)',
@@ -774,6 +807,13 @@ export const I18N = {
           run_ok: n => `评分完成 (${n} 条)`,
           partial_error: (errN, total) => `评分完成但有 ${errN}/${total} 条失败, 请看结果卡片里的错误信息.`,
           run_failed: '评分失败',
+          match_main_chat_fallback: reason => {
+            const reasonCn = {
+              preview_not_ready: '当前 session 没有填 character_name, build_prompt_bundle 无法装配, 已回落到只发 persona.system_prompt 的默认路径',
+              bundle_error: 'build_prompt_bundle 装配时异常, 已回落到只发 persona.system_prompt 的默认路径',
+            }[reason] || `回落原因: ${reason}`;
+            return `已勾选"评委看到主对话 system prompt", 但 ${reasonCn}. 本轮评分未对齐主对话 system.`;
+          },
         },
       },
       results: {
@@ -864,6 +904,10 @@ export const I18N = {
       aggregate: {
         heading: 'Aggregate 汇总',
         intro: '基于 Results 的过滤条件, 给出总览卡片 / 维度雷达 / comparative gap 轨迹 / 问题模式词频. 失败记录 (error 非空) 会在 "总览" 里单列, 不进入任何均值.',
+        // P23: 会话级导出快捷入口. 按钮预选 conversation_evaluations + markdown.
+        export_btn: '导出会话报告…',
+        export_btn_hint: '把当前会话的对话 + 评分 + aggregate 汇总导出为 Markdown / JSON (可通过模态调整范围).',
+        export_modal_subtitle: '预选为 "对话 + 评分" Markdown, 适合给评审 / 自己复盘 — 可在下方调整.',
         loading: '计算汇总中…',
         no_session: {
           heading: '当前没有活动 session',
@@ -971,6 +1015,7 @@ export const I18N = {
           formula_heading: '公式与规则 (可选, 留空走默认)',
           prompt_heading: 'Prompt 模板',
           prompt_hint: '可用占位符: {system_prompt} / {history} / {user_input} / {ai_response} / {reference_response} / {character_name} / {master_name} / {scenario_block} / {dimensions_block} / {anchors_block} / {formula_block} / {verdict_rule} / {max_raw_score}. 后几个 block 由 schema 自己生成, 不需要 ctx 传值.',
+          prompt_extra_context_warn: '⚠ 安全提示 (F4): 通过 API 调用 POST /api/judge/run 时, 请求体 extra_context 里传入 system_prompt / history / conversation / user_input / ai_response / reference_response / character_name / master_name 任一 key 都会 **覆盖** testbench 管理的评委上下文, 相当于对评委 prompt 的完全控制权. 当前 UI 不暴露此字段, 只对脚本化 API 调用者生效. 一旦检测到上述覆盖, 后端会在 Diagnostics → Errors 写一条 warning 级审计 (不阻断运行). 导入他人 schema / 共享 auto-dialog 脚本前请审阅对应代码, 避免无意中传入敏感 key.',
           tags_heading: '标签',
           errors_heading: '字段错误',
           buttons: {
@@ -1113,6 +1158,22 @@ export const I18N = {
         pager_prev: '← 上一页',
         pager_next: '下一页 →',
         pager_fmt: (page, total) => `第 ${page} / ${total} 页`,
+        // P24 F7 Option B — Security-focused quick filters.
+        security_filter_label: '安全筛选:',
+        security_filter: {
+          integrity_check: '存档体检',
+          judge_override: '评委 override',
+          prompt_injection: '注入命中',
+          timestamp_coerced: '时间戳纠正',
+          all: '以上任一',
+        },
+        security_filter_hint: {
+          integrity_check: '只看"存档完整性校验"相关事件 (session 加载 / 导入时 hash 不符、字段缺失等). 这是数据损坏类异常的第一窗口.',
+          judge_override: '只看"评委 extra_context 覆盖内置键"的记录. 如果有人通过 API 传 extra_context 偷偷改 persona_system / dimensions_block 等内置字段, 会在这里出现, 是评分框架被 prompt injection 的早期信号.',
+          prompt_injection: '只看"Chat 发送 / persona 编辑 / memory 字段命中注入模式"的记录. 按"检测不改, 不阻断"原则只是审计留痕, 框架不会过滤或拒绝. 若目标是测试 AI 对抗性鲁棒性, 这些记录是预期的 (可忽略); 若并非刻意输入注入 payload, 建议改回常规文本.',
+          timestamp_coerced: '只看"消息时间戳被自动纠正"的记录. 说明 append_message 遇到了非单调时间戳 (通常是手动 set_cursor 回到过去), 强行上推到上一条. 多发说明测试流程存在问题, 但偶发是正常容错.',
+          all: '勾选则同时筛这四类 (存档体检 + 评委 override + 注入命中 + 时间戳纠正), 做一次"安全相关条目总体扫描".',
+        },
       },
       logs: {
         heading: 'Logs · 结构化日志',
@@ -1249,12 +1310,89 @@ export const I18N = {
           open: '打开',
           open_disabled_missing: '路径不存在, 无法打开',
           open_disabled_readonly: '代码侧路径禁用 [打开] (白名单仅 testbench_data)',
+          // P23 export sandbox snapshot 快捷入口.
+          export_sandbox: '导出沙盒快照…',
+          export_sandbox_hint: '把当前 session 的完整状态 (含 memory tarball base64) 导出为 JSON, 可通过导入端点逆向加载.',
+          export_sandbox_disabled: '需要活跃会话才能导出沙盒快照.',
         },
+        // P23 Paths → Export sandbox snapshot 模态副标题.
+        export_modal_subtitle: '预选为 "完整 + JSON + 附带 memory tarball", 产物可通过 POST /api/session/import 逆向导入 (等同于 save_archive 的转储).',
         toast: {
           copied: '路径已复制到剪贴板',
           copy_failed: '复制失败, 请手动选中路径',
           opened: '已请求操作系统打开路径',
           open_failed_fmt: r => `打开失败: ${r}`,
+          open_failed: '打开失败',
+        },
+        // P24 §3.1 H1 — system health card at the top of this page.
+        health: {
+          title: '系统健康',
+          status: {
+            healthy: '正常',
+            warning: '注意',
+            critical: '严重',
+          },
+          check: {
+            disk_free_gb: '剩余磁盘',
+            log_dir_size_mb: '日志目录大小',
+            orphan_sandboxes: '孤儿沙盒',
+            autosave_scheduler: '自动保存调度器',
+            diagnostics_errors: '诊断错误 (累计)',
+          },
+          no_session: '无活跃会话',
+          scheduler_alive: '运行中',
+          scheduler_dead: '已停止',
+          orphans_count: (n) => `${n} 个`,
+          errors_count: (n) => `${n} 条`,
+          checked_at_fmt: (ts) => `最后检查: ${ts}`,
+          // 顶部"问题摘要"面板 — 仅在 status != healthy 时出现.
+          problem_heading: '需要关注的项:',
+          threshold_warning: (warn_at, crit_at, _key) =>
+            `(注意阈值 ${warn_at}, 严重阈值 ${crit_at})`,
+          threshold_critical: (warn_at, crit_at, _key) =>
+            `(严重阈值 ${crit_at}, 已超)`,
+          advice: {
+            disk_free_gb: '建议清理 tests/testbench_data/ 或把该目录迁到更大的盘.',
+            log_dir_size_mb: '可在 Diagnostics → Logs 里点 [清理旧日志] 缩减.',
+            orphan_sandboxes: '下方"孤儿沙盒"区可逐条清理, 或点 [一键清理空沙盒] 批量删除 0 字节的残留.',
+            autosave_scheduler: '调度器异常一般是服务重启或后台任务 cancel 失败, 重启服务通常恢复.',
+            diagnostics_errors: '打开 Diagnostics → Errors 查看具体错误; 次数过多可在那里 [清空错误列表].',
+          },
+        },
+        // P24 §15.2 B / P-D — orphan sandbox triage section.
+        orphans: {
+          title: '孤儿沙盒 (已结束会话的残留目录)',
+          intro: '列出 sandboxes/ 下没有对应活跃会话的目录. 这些通常是进程被强杀 / 异常退出留下的; 也可能是你之前故意保留用来对比两次会话 memory 的. 系统**不自动清理** — 请自行核对后决定删除还是保留.',
+          empty: '没有孤儿沙盒. 目录清爽.',
+          load_failed_fmt: (err) => `加载失败: ${err}`,
+          summary_fmt: (count, total) => `共 ${count} 条 · 占用 ${total}`,
+          col: {
+            session_id: '会话 ID / 路径',
+            size: '大小',
+            mtime: '最后修改',
+          },
+          delete_btn: '删除',
+          confirm_delete_fmt: (sid, size) =>
+            `确认删除孤儿沙盒 "${sid}" (占用 ${size})? 此操作不可撤销. 里面可能含有上次会话的 memory / logs / 快照冷存.`,
+          delete_ok_fmt: (sid, freed) => `已删除 ${sid}, 释放 ${freed}`,
+          delete_err: '删除失败',
+          delete_partial: '部分删除',
+          delete_partial_detail_fmt: (remaining) =>
+            `系统返回 "已删除但有残留" — 可能是 Windows 文件锁. 剩余 ${remaining}, 可以重启服务后重试.`,
+          // 一键清理空沙盒 — 仅对 0 字节的沙盒生效, 提供给懒得重启服务的用户.
+          // (服务重启时 boot_cleanup 也会自动清空沙盒, 同样安全等级.)
+          clear_empty_btn: (n) => n > 0
+            ? `一键清理空沙盒 (${n} 个 0 字节)`
+            : '一键清理空沙盒 (当前无 0 字节沙盒)',
+          clear_empty_hint: '只清理完全没有文件的 0 字节沙盒. 有内容的沙盒不会被动. 和服务重启时 boot_cleanup 自动清理的逻辑一致.',
+          clear_empty_disabled_hint: '当前所有孤儿沙盒都有内容, 没有可一键清理的 0 字节目录 (通常是因为服务重启时 boot_cleanup 已自动清过). 若想清理有内容的沙盒, 请用每行右侧的 [删除] 按钮.',
+          clear_empty_none_toast: '当前没有 0 字节的空沙盒.',
+          confirm_clear_empty_fmt: (n) =>
+            `确认一键清理 ${n} 个完全空白 (0 字节) 的沙盒目录? 这些沙盒没有任何用户数据, 可安全删除. 非空的沙盒不会受影响.`,
+          clear_empty_ok_fmt: (n) => `已清理 ${n} 个空沙盒.`,
+          clear_empty_err: '一键清理失败',
+          clear_empty_partial_fmt: (cleared, errors) =>
+            `清理了 ${cleared} 个, ${errors} 个失败 (可能文件锁).`,
         },
       },
       reset: {
@@ -1333,6 +1471,8 @@ export const I18N = {
       page: {
         title: 'Snapshots · 快照时间线',
         intro: '会话的完整快照列表 (消息 + 记忆 + 时钟 + stage + 评分). 每次发消息 / 编辑 / 记忆操作 / 阶段推进都会自动建一条; 5 秒内同类触发会自动合并避免刷屏. 点 [回退] 能把整个会话倒回到该时刻 (会自动建一条 pre_rewind_backup 兜底).',
+        time_legend:
+          '时间列的**主字段**(大字体)是**系统真实时间** (快照创建时的 wall clock), 带 ``@`` 前缀的**小字段**是**虚拟时钟 cursor** (当时会话内部时间), 两者通常不同; 虚拟时间不在也不会显示 (新建会话未设虚拟时间前).',
         summary_fmt: (total, hot, cold, max_hot) =>
           `共 ${total} 条 · 内存 ${hot}/${max_hot} · 磁盘 ${cold}`,
         manual_btn: '+ 手动建快照',
@@ -1471,6 +1611,10 @@ export const I18N = {
         toast: {
           bad_timestamp: '时间戳格式无效',
           rerun_done: (n) => `已截断 ${n} 条后续消息, 时钟已回退. 可继续编辑 / 重新发送.`,
+          // 2026-04-22 Day 8 #3: 末尾是 user 时, 引导用户直接按 [Send] 让
+          // AI 对这条 user 回复, 避免产生连续两条 user 消息.
+          rerun_done_user_tail: (n) =>
+            `已截断 ${n} 条后续消息. 末尾已是 user 消息, 直接点 [发送] (不打字) 即可让 AI 对这条重新回复; 或在 Composer 里编辑/补充内容再发送.`,
         },
         long_content_title: (n) => `长消息 (${n} 字符)`,
         // P12: assistant 消息上挂的 reference_content (脚本 expected / 手工
@@ -1621,6 +1765,20 @@ export const I18N = {
         no_session: '先在顶栏新建一个会话.',
         stream_error: '流式发送中断',
         send_failed: '发送失败',
+        // P24 §12.5 · virtual clock rewound → ts auto-coerced to preserve monotonicity.
+        timestamp_coerced_toast: '消息时间已自动前移, 保持消息时间顺序不倒退',
+        timestamp_coerced_detail: (originalTs, coercedTs) =>
+          `原时间: ${originalTs} → 调整为: ${coercedTs}. 原因: 虚拟时钟被回退到过去, 系统自动把新消息时间对齐到上一条消息时间避免列表错乱. 详情可在 Diagnostics → Errors 查看 op=timestamp_coerced.`,
+        // 2026-04-22 Day 8 §13 F3 scope 扩展: Chat 发送命中注入模式时显示
+        // advisory toast. 按"检测不改"原则不阻断, 仅告知 + 留审计.
+        // 函数叶子用 `_fmt` 后缀 (§3A i18n-fmt-naming).
+        //
+        // 2026-04-22 验收反馈: 原 detail 文案太长 + 说教, 用户只需知道"检出
+        // 了几条". 详细说明 / "检测不改原则"等已经在 Diagnostics → Errors
+        // 的 security_filter_hint.prompt_injection 里讲过, 不必在 toast
+        // 里重复. toast 只保留"检测到 N 条注入模式" 一行.
+        injection_warning_toast_fmt: (n) =>
+          `检测到 ${n} 条提示词注入模式`,
       },
       // P13 Auto-Dialog 顶部进度横幅. 只在有活跃 auto_state 时渲染.
       auto_banner: {
@@ -1648,6 +1806,8 @@ export const I18N = {
           return `Auto-Dialog 结束 (${reasonText}): ${done}/${total} 轮`;
         },
         error_title: 'Auto-Dialog 执行错误',
+        // P24 Day 7 §12.3.F: 启动期批量配置校验失败的折叠面板.
+        error_panel_title_fmt: (n) => `启动失败 · 共 ${n} 条配置错误`,
       },
       preview: {
         heading: 'Prompt 预览',
@@ -1719,6 +1879,7 @@ export const I18N = {
         models: 'Models 模型',
         api_keys: 'API Keys 密钥',
         providers: 'Providers 服务商',
+        autosave: 'Autosave 自动保存',
         ui: 'UI 偏好',
         about: '关于',
       },
@@ -1817,17 +1978,45 @@ export const I18N = {
         no_key: '✗',
       },
       ui: {
-        heading: 'UI 偏好 (占位)',
-        intro: '以下选项将在后续 phase 接入. 本期 P04 仅展示入口.',
+        heading: 'UI 偏好',
+        intro: '本页设置会实时保存; 语言和主题切换暂未开放, 其余项均可用.',
         language_label: '界面语言',
-        language_only_zh: '目前仅支持简体中文, 其它语种将在后续版本加入.',
+        language_only_zh: '目前仅支持简体中文.',
         theme_label: '主题',
         theme_dark: '暗色 (默认)',
-        theme_light_todo: '浅色 (TODO)',
+        theme_light_todo: '浅色 (暂未支持)',
         snapshot_limit_label: '快照内存上限 (条)',
-        snapshot_limit_hint: 'P18 实装快照时间线时生效.',
+        snapshot_limit_hint: '超过上限的老快照自动转入磁盘冷存; 可随时从 Diagnostics → Snapshots 查看完整时间线. 范围 1 - 500.',
+        snapshot_debounce_label: '同类快照合并窗口 (秒)',
+        snapshot_debounce_hint: '同一触发源 (比如连续发消息) 在窗口内的快照会被合并, 避免时间线被细碎事件刷屏. 范围 0 - 3600.',
+        snapshot_limit_no_session: '需先建立会话才能调整快照配置; 配置仅对当前会话生效 (新建会话回默认值 30 / 5s).',
+        // 函数叶子 + `_fmt` 后缀 (§3A i18n-fmt-naming): caller 必须用
+        // `i18n(key, ...args)` 调用, 不能用 `{0}`/`{1}` 字面量占位符
+        // (i18next 风格 — 本项目自定义 i18n 不支持, 会显示字面量).
+        // 2026-04-22 Day 7 验收期用户反馈 "显示 {0} {1}" 的直接成因.
+        snapshot_limit_save_ok_fmt: (limit, debounce) =>
+          `已更新快照配置: 上限 ${limit} 条, 合并窗口 ${debounce}s`,
+        snapshot_limit_save_err_fmt: (msg) => `保存失败: ${msg}`,
+        snapshot_limit_invalid: '输入超出合法范围 (上限 1-500, 窗口 0-3600s)',
+        // 非法值自动重置模式 — 替代纯报错, 用户不用手动改回默认值.
+        snapshot_limit_reset_to_default_fmt: (fieldsList) =>
+          `检测到超出合法范围的值, 已自动重置为默认: ${fieldsList}. 请确认后再点保存.`,
         fold_defaults_label: '默认折叠策略',
-        fold_defaults_hint: '按内容类型分别设置默认展开/折叠, 将在 P08 Prompt Preview 落地时接入.',
+        fold_defaults_hint: '按内容类型分别设置默认展开/折叠; 选择会立即保存在浏览器本地, 切换会话不影响. 各类型的长度阈值超过时才会折叠, 短内容永远直接展开.',
+        fold_defaults_row: {
+          chat_message: '聊天长消息',
+          log_entry: '诊断日志条目',
+          error_entry: '诊断错误条目',
+          preview_panel: 'Prompt 预览',
+          eval_drawer: '评分详情抽屉',
+        },
+        fold_defaults_mode: {
+          auto: '按长度阈值',
+          open: '总是展开',
+          closed: '总是折叠',
+        },
+        fold_defaults_threshold_label: '阈值 (字符)',
+        fold_defaults_save_ok: '已更新折叠策略',
         reset_fold: '清除当前会话的 localStorage fold 记录',
         reset_fold_ok: '已清除 fold 键',
       },
@@ -1867,6 +2056,222 @@ export const I18N = {
       create_failed: '创建会话失败',
       destroy_failed: '销毁会话失败',
       confirm_destroy: '确认销毁当前会话? 沙盒目录将被清空.',
+      // P23 — 统一导出模态 (顶栏 Menu / Aggregate / Diagnostics Paths 三入口共用).
+      export_modal: {
+        title: '导出当前会话',
+        scope_heading: '导出范围 (Scope)',
+        format_heading: '导出格式 (Format)',
+        scope: {
+          full: '完整 (full) — 人设 + 记忆 + 对话 + 评分 + 快照元信息',
+          persona_memory: '人设 + 记忆 (persona_memory) — 无对话/评分',
+          conversation: '对话 (conversation) — 只导出 messages',
+          conversation_evaluations: '对话 + 评分 (conversation_evaluations)',
+          evaluations: '仅评分 (evaluations) — 无 messages',
+        },
+        format: {
+          json: 'JSON — 结构化, 可 diff / re-import',
+          markdown: 'Markdown — 人类可读, 分节报告',
+          dialog_template: 'Dialog template — 回流为可重跑的 script schema (仅 conversation)',
+        },
+        include_memory: '附带 sandbox memory tarball (base64 内嵌)',
+        include_memory_hint:
+          '仅在 scope=full 或 persona_memory + format=json 时生效. 产物可通过 POST /api/session/import 逆向加载, '
+          + '但文件会显著变大 (memory 目录越大差距越悬殊).',
+        api_key_redacted_hint:
+          'API Key 强制脱敏: 导出产物里的 model_config.api_key 永远是 "<redacted>". '
+          + '无"明文导出"开关 — 若要保留真密钥请用 [另存为…] 并手动取消脱敏.',
+        filename_label: '目标文件名:',
+        export_btn: '导出并下载',
+        exporting: '导出中…',
+        ok_toast: (name) => `已下载: ${name}`,
+        note: {
+          full: '产物包含全部会话字段 + snapshot 元信息, 是"我要把整条测试过程交给外部"时的选择.',
+          persona_memory: '只把人设 + memory 打包, 给"复用同一套人设在另一组测试里起测"场景用.',
+          conversation: '仅保留对话消息 + 必要元信息, 适合给评审看"这段对话发生了什么".',
+          conversation_evaluations: '对话 + 评分 + aggregate 统计, 一份"对话+评分"综合报告.',
+          evaluations: '仅保留评分结果 + aggregate, 适合跨会话对比 / 只关心评分的分析.',
+          dialog_template:
+            '把对话回流为 script_runner 兼容的 JSON schema: user turn 的时间差分自动填入 time.advance, '
+            + 'assistant turn 的原文作为 expected. 保存到 user dialog_templates/ 目录即可重跑.',
+        },
+        err: {
+          invalid_combo: '当前 scope 与 format 组合不合法. dialog_template 仅对 conversation scope 开放.',
+          network: '网络错误, 请检查服务端是否在运行.',
+          busy: '会话正忙 (自动保存 / 加载中), 请稍后重试.',
+          backend: (msg) => `导出失败: ${msg || '未知错误'}`,
+          download: (msg) => `浏览器写盘失败: ${msg || '未知'}`,
+        },
+      },
+      save_modal: {
+        title_save: '保存当前会话到存档',
+        title_save_as: '另存为新的会话存档',
+        name_label: '存档名',
+        name_placeholder: '示例: demo_run_01',
+        name_required: '必须填写存档名.',
+        name_invalid: '存档名只能包含字母/数字/下划线/短横/点, 需以字母或数字开头, 长度 ≤ 64.',
+        name_taken: (name) => `存档 "${name}" 已存在; 请换个名字, 或使用 [保存] 进行覆盖.`,
+        redact_api_keys: '脱敏 API Key (推荐)',
+        redact_hint:
+          '勾选后 model_config 中的 api_key 会替换成 "<redacted>", 存档可安全分享. '
+          + '取消勾选会明文写入存档, 仅自用且在可信环境下才关掉.',
+        confirm_plaintext:
+          '确认将 API Key 明文写入存档?\n\n'
+          + '只有在你完全掌控该存档的存放/传输路径 (非团队共享) 时才建议这么做. '
+          + '一旦存档被分享或泄漏, 文件内的密钥会立即暴露.',
+        save_btn: '保存 (覆盖同名)',
+        save_as_btn: '另存为',
+        ok_toast: (name) => `存档已保存: ${name}`,
+        err_toast: '保存失败',
+        injection_badge: (hitCount, fieldCount) =>
+          `⚠ 检测到 ${hitCount} 处疑似 prompt-injection 模式 (${fieldCount} 个字段). 保存不会过滤, 仅作提示.`,
+        injection_tooltip_header:
+          '以下字段包含框架检测器识别出的可疑模式 (仍会原样保存):',
+      },
+      load_modal: {
+        title: '会话存档管理',
+        refresh: '刷新',
+        empty: '尚无任何会话存档. 先新建并使用 [保存到存档] / [另存为…] 生成第一个.',
+        list_failed: (msg) => `加载存档列表失败: ${msg || '未知错误'}`,
+        row_meta: (savedAt, msgCount, snapCount, evalCount, sizeStr, redactedBadge) =>
+          `${savedAt} · ${msgCount} 消息 · ${snapCount} 快照 · ${evalCount} 评分 · ${sizeStr}${
+            redactedBadge ? ' · ' + redactedBadge : ''
+          }`,
+        row_error: (err) => `无法解析存档: ${err}`,
+        redacted_badge: 'api_key 已脱敏',
+        load_btn: '加载',
+        delete_btn: '删除',
+        // P24 §3.2 / H2: field-level archive lint (not tarball verify).
+        lint_btn: '体检',
+        lint_btn_hint: '对存档的 JSON 做字段级校验, 找出结构性错误 / 未知字段 / 旧版本残留 (不触发 memory tarball 完整性校验, 那是 Load 时 memory_hash_verify 的事).',
+        lint_clean_fmt: (name) => `存档 "${name}" 的 JSON 结构完整无异常.`,
+        lint_has_errors_fmt: (name, errs, warns) =>
+          `存档 "${name}" 有 ${errs} 个错误 · ${warns} 个警告 (可能导致加载失败)`,
+        lint_has_warnings_fmt: (name, warns) =>
+          `存档 "${name}" 有 ${warns} 个警告 (加载仍能工作)`,
+        lint_err: '体检请求失败',
+        lint_err_prefix: '❌ 错误',
+        lint_warn_prefix: '⚠ 警告',
+        confirm_load: (name) => `加载存档 "${name}" 会彻底替换当前会话 (页面自动刷新). 确定?`,
+        confirm_delete: (name) => `确认删除存档 "${name}"? 此操作不可撤销 (disk-level).`,
+        ok_toast: (name) => `正在加载存档: ${name}`,
+        err_toast: (name) => `加载存档 "${name}" 失败`,
+        // P22.1 G3/G10 + P24 §14A.2 — memory 完整性校验未通过时的提示.
+        hash_mismatch_title: '⚠ memory 完整性校验未通过',
+        hash_mismatch_detail:
+          '存档已载入, 但 memory tar.gz 的内容哈希与保存时记录的不一致. 可能是存档被手动编辑 / 传输过程中损坏 / 跨版本改动导致. 建议先到 Diagnostics → Errors 查看 op=integrity_check 的详情, 核对 memory 内容后再继续.',
+        delete_ok: (name) => `已删除存档: ${name}`,
+        delete_err: (name) => `删除存档 "${name}" 失败`,
+        reload_hint: (name) =>
+          `已加载 ${name || '存档'}, 页面将自动刷新以同步所有工作区状态…`,
+        import_btn: '导入 JSON…',
+        import_hint:
+          '可选两种路径: (a) 直接把 .json 文件里的内容粘贴到下方文本框 → 点 [从文件导入 JSON…] 提交; '
+          + '(b) 文本框留空 → 点 [从文件导入 JSON…] 打开文件选择器选本机 .json 文件, 自动读取并提交. '
+          + '导入后存档落在本机的 saved_sessions/, 再点 [加载] 才会切会话.',
+        import_placeholder: '{ "kind": "testbench_session_export", ... }',
+        import_name_label: '存档名覆盖 (可选)',
+        import_name_placeholder: '留空沿用 payload 里的 name',
+        import_overwrite: '允许覆盖同名存档',
+        import_back: '← 返回列表',
+        import_go: '导入',
+        import_ok: (name) => `已导入存档: ${name}`,
+        import_err: '导入失败',
+        import_parse_err: '粘贴的内容不是合法 JSON',
+        // 2026-04-22 Day 8 验收反馈 #4: 重做主按钮 — 智能走文件或粘贴.
+        import_go_file: '从文件导入 JSON…',
+        import_file_hint: '智能导入: 文本框有内容则直接提交文本框; 文本框为空则打开文件选择器, 选 .json 后自动读取并提交. 无需两步操作.',
+        import_file_loaded: (name) => `已读入文件: ${name}`,
+        import_file_read_err: '读取文件失败',
+      },
+      // P22 — 自动保存恢复横幅 (启动时检测到前一次运行的 orphan autosave 就出).
+      restore_banner: {
+        title: (n) => `检测到上次运行的 ${n} 个会话有未保存的自动备份`,
+        body: '可以点 [查看并恢复] 打开恢复面板; 不想恢复点 × 关闭横幅即可 (自动备份保留在磁盘, 可随时从 "恢复自动保存…" 再进).',
+        open_btn: '查看并恢复',
+        dismiss_hint: '本次运行不再提示 (服务重启后会再出现)',
+      },
+      // P22 — 自动保存管理模态 (从 topbar dropdown 或 restore banner 进).
+      restore_modal: {
+        title: '自动保存备份',
+        intro:
+          '**每个会话独立**保留最近的 rolling slot (current / prev / prev2, 由 Settings → 自动保存 → 保留份数 控制, 最多 3). '
+          + '若你在同一服务期间切换过多个会话, 每个会话的 slot 都会在此列出, 所以条目总数可能大于"保留份数". '
+          + 'autosave 强制脱敏 api_key, 过期 (默认 24h) 自动清理.',
+        refresh: '刷新',
+        empty: '暂无自动保存条目. 一旦修改会话内容, 5 秒后会自动写入第一份.',
+        list_failed: (msg) => `加载自动保存列表失败: ${msg || '未知错误'}`,
+        row_meta: (autosaveAt, msgCount, snapCount, evalCount, sizeStr) =>
+          `${autosaveAt} · ${msgCount} 消息 · ${snapCount} 快照 · ${evalCount} 评分 · ${sizeStr}`,
+        row_error: (err) => `无法解析: ${err}`,
+        title_tooltip: (sessionId, slotLabel, sessionName) =>
+          `session_id: ${sessionId}\nslot: ${slotLabel || 'current'}${sessionName ? '\nname: ' + sessionName : ''}`,
+        slot_0: '最新',
+        slot_1: '上一份',
+        slot_2: '更早',
+        restore_btn: '恢复',
+        delete_btn: '删除',
+        clear_all_btn: '清空全部自动保存',
+        confirm_restore: (entryId) =>
+          `恢复 "${entryId}" 会替换当前会话 (页面自动刷新). 确认?`,
+        confirm_delete: '确认删除这条自动保存? 此操作不可撤销.',
+        confirm_clear_all:
+          '确认清空**所有**自动保存条目? 此操作不可撤销 (pre_load_* 安全备份不受影响).',
+        restore_ok: '自动保存恢复完成, 页面将刷新…',
+        restore_err: '恢复失败',
+        delete_ok: '已删除这条自动保存',
+        delete_err: '删除失败',
+        clear_all_ok: (n) => `已清空 ${n} 条自动保存`,
+        clear_all_err: '清空失败',
+      },
+      // P22 — Settings → 自动保存 子页.
+      autosave_settings: {
+        heading: '自动保存 (Autosave)',
+        intro:
+          '会话状态修改后, 系统会在后台做**防抖式**自动保存: 默认 5s 内无新修改即落盘, '
+          + '60s 内有持续修改也会强制落盘一次. **每个会话独立**保留最近 N 份 (最新 / 上一份 / 更早, N 由下方"保留份数"控制, 最多 3). '
+          + '多会话并存时, 列表里总条目数 = 会话数 × N, 属于正常现象. '
+          + 'autosave 永远脱敏 api_key, 到期 (默认 24h) 自动清理. '
+          + '启动时若检测到上次运行的 orphan 条目, 会以横幅提示并支持从列表恢复.',
+        status_loading: '读取状态中…',
+        status_heading: '当前状态',
+        status_fields: {
+          enabled: '启用',
+          dirty: '待保存',
+          last_flush_at: '上次保存',
+          last_error: '上次错误',
+          last_source: '上次触发源',
+          stats: '运行统计',
+        },
+        status_stats_fmt: (n, f, e, d, l) =>
+          `通知 ${n} · 落盘 ${f} · 错误 ${e} · 禁用跳过 ${d} · 锁忙跳过 ${l}`,
+        status_none: '未激活 (无当前会话)',
+        status_na: '—',
+        flush_btn: '立即保存一次',
+        flush_ok: '已强制保存当前会话 autosave',
+        flush_err: '强制保存失败',
+        config_heading: '配置',
+        config_fields: {
+          enabled: '启用自动保存',
+          debounce_seconds: '防抖时长 (秒)',
+          debounce_hint: '收到修改后等待这么久没有新修改再落盘; 范围 0.5 ~ 300.',
+          force_seconds: '强制落盘上限 (秒)',
+          force_hint:
+            '持续修改时, 从第一次修改算起超过这么久会强制落盘, 防止"被连续改动拖到永不保存"; 需 ≥ 防抖时长, 上限 3600.',
+          rolling_count: '保留份数',
+          rolling_hint: '**每个会话独立**保留最近 N 份 (最多 3), 覆盖崩溃时最新文件半写的场景. 多会话场景下总条目数 = 会话数 × N.',
+          keep_window_hours: '保留时长 (小时)',
+          keep_window_hint:
+            '超过此时长的条目在服务启动时自动清理 (范围 1 ~ 720 即 30 天).',
+        },
+        config_save: '保存配置',
+        config_reset: '恢复默认',
+        config_saved: '配置已保存',
+        config_invalid: (msg) => `配置有误: ${msg}`,
+        config_save_err: '保存配置失败',
+        open_restore_modal: '打开自动保存管理面板',
+        boot_cleanup_hint:
+          '注: 配置只影响新一轮 debounce 周期与下次启动时的清理; 已经落盘的条目不会重写.',
+      },
     },
     errors: {
       network: '网络请求失败',
@@ -1877,8 +2282,17 @@ export const I18N = {
       ok: '确定',
       cancel: '取消',
       close: '关闭',
+      save: '保存',
       loading: '加载中…',
       not_implemented: '尚未实装',
+      // P24 §12.3.E #13 — shared [打开文件夹] button (dev_note L15).
+      open_folder_btn: '打开文件夹',
+      open_folder_hint: {
+        generic: '在操作系统的文件管理器里打开对应目录.',
+        current_sandbox: '打开当前会话的沙盒目录. 人设 / memory / snapshot 冷存都在里面.',
+        user_schemas: '打开自定义评分 schemas 目录 (testbench_data/scoring_schemas). 点 [从文件夹导入] 也是从这里读.',
+        user_dialog_templates: '打开自定义剧本目录 (testbench_data/dialog_templates). 可以在这里手动放 / 改 .json 模板文件.',
+      },
     },
     model_reminder: {
       dismiss_hint: '本次服务运行期不再提醒 (服务重启后会再出现)',
@@ -2042,6 +2456,8 @@ export const I18N = {
       },
       buttons: {
         preview: '预览 dry-run',
+        // P24 §12.3.E #17 (Day 5): non-memory op 的 disabled Preview 按钮
+        // 已改为不渲染, 本 hint key 目前无 caller 但保留以备日后恢复.
         preview_disabled_hint:
           '本阶段推荐不提供 stage 层 dry-run: memory op 请去 Setup → Memory 的 Trigger 按钮,'
           + ' 评分请去 Evaluation → Run 子页 (选 schema + 目标后点 [运行评分]).',
@@ -2051,6 +2467,22 @@ export const I18N = {
         rewind_apply: '跳到此阶段',
         go_target: '跳转到目标页',
         collapse: '折叠',
+        // 2026-04-22 Day 8 手测 #1: 用户反馈"跳过/回退与直接点阶段节点冗余".
+        // 实际差异在 history 标签和 navigate 行为 — 加 tooltip 让 hover 就明白.
+        advance_hint:
+          '执行并推进: 把阶段指针切到下一阶段 + 跳转到目标页面 (Setup/Chat/Evaluation 等). '
+          + 'history 里标 "advance" 代表你顺序走完了这一步. **不会**自动跑任何 op, '
+          + '发消息/填人设/跑评分仍需你自己去目标页操作.',
+        skip_hint:
+          '跳过: 只把阶段指针切到下一阶段, **不跳转页面**, history 里标 "skipped" '
+          + '(复盘时能看到"这一步被跳了")或"数据统计"用. 实际行为跟 advance 推进一阶段等价, '
+          + '差异仅在 history 标签 + 有无自动 navigate.',
+        rewind_hint:
+          '回退: 弹窗选一个历史阶段跳回去. **与阶段条上直接点节点等价** — '
+          + '只改 UI 视角, 不撤销消息/记忆/虚拟时钟等任何数据. 这个按钮只是提供 chip '
+          + '工具栏的 inline 入口, 方便不展开整个 Stage Coach 面板的情况下也能快速回退.',
+        track_node_hint:
+          '点击跳到此阶段 (与 [回退…] 按钮等价). 纯 UI 视角切换, 不影响任何数据.',
       },
       action: {
         nav_persona: '已跳转到 Setup → Persona, 请填写并保存后回来点 "执行并推进"',

@@ -2,7 +2,8 @@
  * topbar.js — 顶栏渲染 + 交互.
  *
  * 职责:
- *   - 品牌 + Session dropdown (New / Destroy; P21 之后补 Load/Save/Import/Restore)
+ *   - 品牌 + Session dropdown (P21 起: New / Destroy / Save / Save as /
+ *     Load (入口也带 Import JSON); Restore autosave 留给 P22)
  *   - Stage chip (P14, 细节在 ./topbar_stage_chip.js)
  *   - Timeline chip (P18, 细节在 ./topbar_timeline_chip.js)
  *   - Err 徽章: 订阅 `http:error`, P03 只做简易计数 (P19 会完整 Errors 子页)
@@ -17,6 +18,10 @@ import { toast } from '../core/toast.js';
 import { store, set, on, emit } from '../core/state.js';
 import { mountStageChip } from './topbar_stage_chip.js';
 import { mountTimelineChip } from './topbar_timeline_chip.js';
+import { openSessionSaveModal } from './session_save_modal.js';
+import { openSessionLoadModal } from './session_load_modal.js';
+import { openSessionRestoreModal } from './session_restore_modal.js';
+import { openSessionExportModal } from './session_export_modal.js';
 
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
@@ -71,14 +76,19 @@ function makeDropdown(trigger, menuEl) {
 
 function renderSessionChip() {
   const session = store.session;
-  const chip = el('button', {
-    className: 'chip',
-    title: i18n('topbar.session.label'),
-  });
-  const label = el('span', {});
-  label.textContent = session
+  const fullLabel = session
     ? `${i18n('topbar.session.label')}: ${session.name || session.id}`
     : `${i18n('topbar.session.label')}: ${i18n('topbar.session.none')}`;
+  const chip = el('button', {
+    className: 'chip chip--session',
+    // The tooltip carries the full (possibly very long) session/archive
+    // name, since the visible label below is truncated with ellipsis.
+    title: fullLabel,
+  });
+  // Label is a dedicated span so CSS can ellipsis-truncate it while the
+  // caret chevron stays fully visible.
+  const label = el('span', { className: 'chip__label' });
+  label.textContent = fullLabel;
   chip.append(label, el('span', { className: 'caret' }, '▾'));
   return chip;
 }
@@ -96,8 +106,20 @@ function renderSessionMenu() {
       closeMenu();
       const res = await api.post('/api/session', {});
       if (res.ok) {
-        set('session', res.data);
+        // ⚠️ P24 hotfix (2026-04-21, #105): 新建会话**必须**走 reload 而不是
+        // surgical `set('session', ...)`. 同族决策链:
+        //   - P20 hotfix 1 (§4.26 #87) 改 Hard Reset → reload: 半死状态订阅者
+        //     并发 fetch empty-sandbox 导致浏览器→电脑级卡死崩溃
+        //   - P21 session:loaded → reload: 同原因, Load 存档后直接 reload
+        //   - **New / Destroy 却一直沿用 P03 原始 surgical 路径** — 这次同款
+        //     bug 再次发生 (用户 create 新会话 → 400/200 OK flood → 整机卡死
+        //     强制断电). 这次一并统一到 reload, 消除最后两个 surgical 入口.
+        // 详见 §4.26 #87 + §4.27 #105 + LESSONS_LEARNED #20.
         toast.ok(i18n('session.created', res.data.name));
+        setTimeout(() => {
+          try { window.location.reload(); }
+          catch { /* jsdom / headless */ }
+        }, 300);
       } else {
         toast.err(i18n('session.create_failed'), { message: res.error?.message });
       }
@@ -117,8 +139,14 @@ function renderSessionMenu() {
       if (!confirm(i18n('session.confirm_destroy'))) return;
       const res = await api.delete('/api/session');
       if (res.ok) {
-        set('session', null);
+        // 同 new 一致走 reload. Destroy 后 session=null 也是半死状态 — 所有
+        // session-scoped 订阅者会 fetch 到 "has_session=false" / 404, 部分
+        // 组件的 no-session 分支未必覆盖完整 (尤其 chat 子页已 mount 的 DOM).
         toast.ok(i18n('session.destroyed'));
+        setTimeout(() => {
+          try { window.location.reload(); }
+          catch { /* jsdom / headless */ }
+        }, 300);
       } else {
         toast.err(i18n('session.destroy_failed'), { message: res.error?.message });
       }
@@ -128,25 +156,63 @@ function renderSessionMenu() {
 
   menu.append(el('div', { className: 'divider' }));
 
-  // 占位项 — 后续 phase 实装
-  for (const [textKey] of [
-    ['topbar.session.load'],
-    ['topbar.session.save'],
-    ['topbar.session.save_as'],
-    ['topbar.session.import'],
-    ['topbar.session.restore_autosave'],
-  ]) {
-    const item = el('button', {
-      className: 'item',
-      onClick: (ev) => {
-        ev.stopPropagation();
-        closeMenu();
-        toast.info(i18n('topbar.session.not_implemented'));
-      },
-    }, i18n(textKey));
-    item.disabled = true;
-    menu.append(item);
-  }
+  // ── P21: Save / Save as / Load / Import / Delete ─────────────────
+
+  const saveBtn = el('button', {
+    className: 'item',
+    onClick: (ev) => {
+      ev.stopPropagation();
+      closeMenu();
+      if (!store.session) {
+        toast.info(i18n('session.no_active'));
+        return;
+      }
+      openSessionSaveModal({ mode: 'save', defaultName: store.session?.name || '' });
+    },
+  }, i18n('topbar.session.save'));
+  if (!store.session) saveBtn.disabled = true;
+  menu.append(saveBtn);
+
+  const saveAsBtn = el('button', {
+    className: 'item',
+    onClick: (ev) => {
+      ev.stopPropagation();
+      closeMenu();
+      if (!store.session) {
+        toast.info(i18n('session.no_active'));
+        return;
+      }
+      openSessionSaveModal({ mode: 'save_as', defaultName: store.session?.name || '' });
+    },
+  }, i18n('topbar.session.save_as'));
+  if (!store.session) saveAsBtn.disabled = true;
+  menu.append(saveAsBtn);
+
+  // Load modal embeds the Import-JSON inline flow (click "导入 JSON…"
+  // inside it), so we expose a single entry point in the dropdown
+  // instead of two buttons that both open the same modal.
+  const loadBtn = el('button', {
+    className: 'item',
+    onClick: (ev) => {
+      ev.stopPropagation();
+      closeMenu();
+      openSessionLoadModal();
+    },
+  }, i18n('topbar.session.load'));
+  menu.append(loadBtn);
+
+  menu.append(el('div', { className: 'divider' }));
+
+  // Restore autosave: 打开 session_restore_modal (P22).
+  const restoreItem = el('button', {
+    className: 'item',
+    onClick: (ev) => {
+      ev.stopPropagation();
+      closeMenu();
+      openSessionRestoreModal();
+    },
+  }, i18n('topbar.session.restore_autosave'));
+  menu.append(restoreItem);
 
   return menu;
 }
@@ -154,6 +220,28 @@ function renderSessionMenu() {
 function mountSessionDropdown(host) {
   const wrap = makeDropdown(renderSessionChip(), renderSessionMenu());
   host.append(wrap);
+
+  function rebuildTrigger() {
+    const newChip = renderSessionChip();
+    const oldChip = wrap.firstElementChild;
+    oldChip.replaceWith(newChip);
+    newChip.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const menuEl = wrap.querySelector('.dropdown-menu');
+      if (_openMenu === menuEl) closeMenu();
+      else openMenu(menuEl);
+    });
+  }
+
+  function rebuildMenu() {
+    // The Save/Save-as items need their `disabled` state recomputed
+    // whenever the active session changes (new/destroy). Rebuild the
+    // menu subtree in place so the dropdown dom node stays stable.
+    const oldMenu = wrap.querySelector('.dropdown-menu');
+    if (!oldMenu) return;
+    const newMenu = renderSessionMenu();
+    oldMenu.replaceWith(newMenu);
+  }
 
   // 初次加载时拉一次后端, 让 UI 与后端状态同步.
   (async () => {
@@ -166,18 +254,28 @@ function mountSessionDropdown(host) {
   })();
 
   on('session:change', () => {
-    // 替换 trigger chip 内容, 菜单结构不变.
-    const newChip = renderSessionChip();
-    const oldChip = wrap.firstElementChild;
-    oldChip.replaceWith(newChip);
-    // 重新绑定 trigger 事件 (makeDropdown 依赖闭包, 简单起见重建 wrap)
-    // —— 但这里直接复用原 dropdown menu 更简单:
-    newChip.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      const menuEl = wrap.querySelector('.dropdown-menu');
-      if (_openMenu === menuEl) closeMenu();
-      else openMenu(menuEl);
-    });
+    rebuildTrigger();
+    rebuildMenu();
+  });
+
+  // P21: Load / Import finished — whole page must hard-reload so every
+  // workspace re-fetches its slice of session state instead of relying
+  // on surgical updates (§3A B13). We keep the reload delayed so the
+  // success toast flashes briefly before the window blanks.
+  on('session:loaded', ({ name } = {}) => {
+    toast.ok(i18n('session.load_modal.reload_hint', name || ''));
+    setTimeout(() => {
+      try { window.location.reload(); }
+      catch { /* jsdom / headless */ }
+    }, 300);
+  });
+
+  // Save finished — dropdown label doesn't actually need to change
+  // (session name is independent of saved archive names), but we still
+  // refresh the menu so any "last saved at" hints stay fresh when we
+  // add them in a follow-up.
+  on('session:saved', () => {
+    rebuildMenu();
   });
 }
 
@@ -256,24 +354,41 @@ function mountRightMenu(host) {
     },
   }, i18n('topbar.menu.settings'));
 
-  const placeholders = [
-    ['topbar.menu.export', 'topbar.session.not_implemented'],
-    ['topbar.menu.reset',  'topbar.session.not_implemented'],
-    ['topbar.menu.about',  'common.not_implemented'],
-  ].map(([labelKey, hintKey]) => {
-    const btn = el('button', {
-      className: 'item',
-      onClick: (ev) => {
-        ev.stopPropagation();
-        closeMenu();
-        toast.info(i18n(hintKey));
-      },
-    }, i18n(labelKey));
-    btn.disabled = true;
-    return btn;
-  });
+  // P23: Export menu item — opens the unified session export modal
+  // with no preset (scope/format defaults to `full` + `json`). The
+  // modal itself gates on "no active session" so we don't duplicate
+  // that check here; keeping the button always-enabled mirrors the
+  // Save menu's "click-to-get-friendly-toast" flow.
+  const exportItem = el('button', {
+    className: 'item',
+    onClick: (ev) => {
+      ev.stopPropagation();
+      closeMenu();
+      if (!store.session) {
+        toast.info(i18n('session.no_active'));
+        return;
+      }
+      openSessionExportModal();
+    },
+  }, i18n('topbar.menu.export'));
 
-  menu.append(gotoDiag, gotoSet, el('div', { className: 'divider' }), ...placeholders);
+  // P24 cleanup (2026-04-21, see P24_BLUEPRINT §12.3.B):
+  //
+  // * `topbar.menu.reset` removed — Diagnostics → Reset subpage already
+  //   exposes all three reset tiers (soft/medium/hard) with full backup UX;
+  //   a second entry here would violate §3A B6 ("single entry per feature").
+  // * `topbar.menu.about` hidden — placeholder pending P25 README work.
+  //   i18n key retained so P25 can un-hide without re-translation.
+  //
+  // Both items were previously rendered as `btn.disabled = true` with
+  // toast("not implemented"), which is exactly the anti-pattern §3A B15
+  // new clause forbids ("UI stub buttons must not linger — wire or delete").
+
+  menu.append(
+    gotoDiag, gotoSet,
+    el('div', { className: 'divider' }),
+    exportItem,
+  );
   host.append(makeDropdown(trigger, menu));
 }
 

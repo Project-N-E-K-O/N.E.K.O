@@ -153,14 +153,84 @@ async def get_cursor() -> dict[str, Any]:
 # ── mutation endpoints ───────────────────────────────────────────────
 
 
+def _last_message_timestamp(session) -> datetime | None:
+    """Return the timestamp of the last message in ``session.messages``.
+
+    Used by the P24 §12.5 L2 "pre-action warning" — before rewinding
+    the clock, we check whether the new cursor would land before the
+    most recent message. If so, :func:`append_message` 's ``coerce``
+    policy would silently bump every future message's timestamp up to
+    that old anchor, producing a flat plateau in the virtual timeline.
+    Warning the user lets them either accept (and the coerce toast
+    then fires on every chat/send) or pick a later moment.
+    """
+    try:
+        for msg in reversed(session.messages or []):
+            ts = msg.get("timestamp") if isinstance(msg, dict) else None
+            if not ts:
+                continue
+            if isinstance(ts, datetime):
+                return ts
+            try:
+                parsed = datetime.fromisoformat(str(ts))
+            except ValueError:
+                continue
+            return parsed
+    except Exception:
+        return None
+    return None
+
+
+def _warning_for_new_cursor(
+    session, new_cursor: datetime | None,
+) -> dict[str, Any] | None:
+    """Compute a pre-action warning if ``new_cursor`` would rewind past
+    the last message.
+
+    Returns ``None`` when no warning is needed — specifically when the
+    caller released back to real time (``new_cursor is None``), when
+    there are no messages yet, or when the new cursor is at or after
+    the last message timestamp.
+    """
+    if new_cursor is None:
+        return None
+    last_ts = _last_message_timestamp(session)
+    if last_ts is None:
+        return None
+    # Normalize to naive comparison — VirtualClock stores naive
+    # datetimes; incoming cursor may or may not have tzinfo depending
+    # on the client. Strip to keep the comparison apples-to-apples.
+    def _strip(d: datetime) -> datetime:
+        return d.replace(tzinfo=None) if d.tzinfo else d
+    if _strip(new_cursor) >= _strip(last_ts):
+        return None
+    gap_seconds = int((_strip(last_ts) - _strip(new_cursor)).total_seconds())
+    return {
+        "code": "cursor_rewinds_before_last_message",
+        "last_message_at": last_ts.isoformat(),
+        "new_cursor_at": new_cursor.isoformat(),
+        "gap_seconds": gap_seconds,
+        "message_cn": (
+            f"新光标比最近一条消息早 {gap_seconds} 秒. 继续后, "
+            "后续发送的消息会被 append_message 自动上推到最近一条的时间 "
+            "(相当于多条消息挤在同一秒), 产生虚拟时间线的平坦段. "
+            "如果这不是你想要的, 请选一个晚于最近一条消息的时间."
+        ),
+    }
+
+
 @router.put("/cursor")
 async def set_cursor(body: CursorPayload) -> dict[str, Any]:
     """Pin the live cursor, or pass ``null`` to release back to real time."""
     store = get_session_store()
     try:
         async with store.session_operation("time.set_cursor") as session:
+            warning = _warning_for_new_cursor(session, body.absolute)
             session.clock.set_now(body.absolute)
-            return _snapshot(session)
+            payload = _snapshot(session)
+            if warning:
+                payload["warning"] = warning
+            return payload
     except SessionConflictError as exc:
         raise _wrap_conflict(exc) from exc
 
@@ -171,8 +241,18 @@ async def advance_cursor(body: AdvancePayload) -> dict[str, Any]:
     store = get_session_store()
     try:
         async with store.session_operation("time.advance") as session:
+            # Compute "where would the cursor land" BEFORE the advance
+            # so the warning can show the projected moment.
+            try:
+                projected = session.clock.now() + timedelta(seconds=body.delta_seconds)
+            except Exception:
+                projected = None
+            warning = _warning_for_new_cursor(session, projected) if projected else None
             session.clock.advance(timedelta(seconds=body.delta_seconds))
-            return _snapshot(session)
+            payload = _snapshot(session)
+            if warning:
+                payload["warning"] = warning
+            return payload
     except SessionConflictError as exc:
         raise _wrap_conflict(exc) from exc
 

@@ -58,9 +58,41 @@ export function streamPostSse(url, body, cbs = {}) {
     }
 
     if (!resp.ok) {
-      let detail = null;
-      try { detail = await resp.text(); } catch (_) { /* ignore */ }
-      const info = { type: 'http_error', status: resp.status, message: detail || `HTTP ${resp.status}` };
+      // P24 Day 7 (§12.3.F): 尽可能把 body 解析成 JSON 让 onError 拿到
+      // 结构化 detail (例如 `{error_type, message, errors:[...]}`).
+      // 失败时 fall back 到 text — 保留原行为, 不破坏老调用方.
+      let rawText = null;
+      let detailObj = null;
+      try {
+        rawText = await resp.text();
+        if (rawText) {
+          try {
+            detailObj = JSON.parse(rawText);
+          } catch { /* not JSON, keep rawText as-is */ }
+        }
+      } catch (_) { /* ignore */ }
+
+      // `detailObj.detail` 是 FastAPI HTTPException 标准包装; 有则拆出.
+      const wrapped = (detailObj && typeof detailObj === 'object'
+        && detailObj.detail !== undefined)
+        ? detailObj.detail
+        : detailObj;
+
+      let message;
+      if (wrapped && typeof wrapped === 'object' && wrapped.message) {
+        message = String(wrapped.message);
+      } else if (typeof wrapped === 'string') {
+        message = wrapped;
+      } else {
+        message = rawText || `HTTP ${resp.status}`;
+      }
+
+      const info = {
+        type: 'http_error',
+        status: resp.status,
+        message,
+        detail: wrapped || null,
+      };
       onError?.(info);
       emit('sse:error', { url, ...info });
       return;

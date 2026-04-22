@@ -54,7 +54,9 @@ from tests.testbench.chat_messages import (
     SOURCE_AUTO,
 )
 from tests.testbench.logger import python_logger
+from tests.testbench.pipeline import diagnostics_store
 from tests.testbench.pipeline.chat_runner import get_chat_backend
+from tests.testbench.pipeline.messages_writer import append_message
 from tests.testbench.pipeline.simulated_user import (
     STYLE_PRESETS,
     SimUserError,
@@ -71,12 +73,26 @@ class AutoDialogError(RuntimeError):
 
     Code → HTTP status 在 router 层 ``_auto_error_to_http`` 统一映射. 前端
     按 ``code`` 选 toast 文案.
+
+    P24 Day 7 (§12.3.F) 新加 ``errors: list[str] | None`` 字段: 用于
+    ``from_request`` 类**批量校验**场景 — 一次收集多条失败, 让前端
+    可以用折叠面板分条展示而不是把所有错误挤进一个大 string 让 toast
+    截断或不可读 (toast 超 280 字符会被 ``_truncate`` 砍掉). 该字段
+    纯展示用, 不影响 HTTP status 分派.
     """
 
-    def __init__(self, code: str, message: str, status: int = 500) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        status: int = 500,
+        *,
+        errors: list[str] | None = None,
+    ) -> None:
         self.code = code
         self.message = message
         self.status = status
+        self.errors = list(errors) if errors else None
         super().__init__(f"{code}: {message}")
 
 
@@ -121,8 +137,9 @@ class AutoDialogConfig:
         """校验并构造 config; 失败 → :class:`AutoDialogError`.
 
         Router 把 JSON body 直接喂进来, 这里一口气校验完所有字段, 好让前端
-        一次看到所有错误 (但具体到 UI 上目前只报第一条 — 留 TODO 给前端
-        做字段级高亮).
+        一次看到所有错误. P24 Day 7 (§12.3.F) 起**把多条错误整体传给前端**:
+        合成的 message (兼容老前端 toast 显示) + ``errors: list[str]``
+        分条列表 (新前端用折叠面板展示).
         """
         errors: list[str] = []
 
@@ -169,6 +186,7 @@ class AutoDialogConfig:
                 "InvalidConfig",
                 "Auto-Dialog 配置无效: " + "; ".join(errors),
                 status=400,
+                errors=errors,
             )
 
         # 此处所有字段都已过校验
@@ -437,6 +455,32 @@ async def run_auto_dialog(
                 "error": error_payload,
             },
         )
+        # 2026-04-22 Day 8 验收反馈: RateLimitError (429) / SimUser LlmFailed
+        # / 其他 runtime error 之前**只走 SSE** 到前端, 不进 diagnostics
+        # ring buffer, 顶栏 Err 徽章 + Diagnostics → Errors 页都看不见.
+        # 集中在 finally 里兜, 覆盖三处 except 分支, 未来新增 except 也
+        # 自动受益. level="error" 让徽章计数 +1 (warning 是轻量 advisory).
+        if error_payload is not None:
+            try:
+                diagnostics_store.record_internal(
+                    op="auto_dialog_error",
+                    message=(
+                        f"[auto_dialog] {error_payload.get('type', 'Error')}: "
+                        f"{error_payload.get('message', '')}"
+                    ),
+                    level="error",
+                    session_id=session.id,
+                    detail={
+                        "type": error_payload.get("type"),
+                        "completed_turns": final_completed,
+                        "total_turns": config.total_turns,
+                    },
+                )
+            except Exception as rec_exc:  # noqa: BLE001 — 不因日志写入失败阻塞
+                python_logger().warning(
+                    "diagnostics_store.record_internal failed"
+                    " (session=%s): %s", session.id, rec_exc,
+                )
         session.auto_state = None
 
     if error_payload is not None:
@@ -500,7 +544,14 @@ async def _run_simuser_step(
         timestamp=session.clock.now(),
         source=SOURCE_AUTO,
     )
-    session.messages.append(user_msg)
+    # P24 §12.5: Auto-Dialog uses coerce like SSE chat path. Dialog can't
+    # fail mid-stream; if clock was rewound, monotonicity is preserved by
+    # bumping ts forward. For Auto-Dialog the user-visible surfacing is
+    # the op=timestamp_coerced diagnostics entry; auto_dialog's own SSE
+    # frames are per-turn progress events and don't carry per-message
+    # warnings, so users find this via Diagnostics → Errors.
+    _auto_result = append_message(session, user_msg, on_violation="coerce")
+    user_msg = _auto_result.msg
 
     session.logger.log_sync(
         "auto_dialog.simuser.done",

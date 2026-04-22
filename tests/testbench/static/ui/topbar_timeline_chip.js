@@ -225,7 +225,10 @@ export function mountTimelineChip(host) {
     // 标签 + 时间.
     const main = el('div', { className: 'timeline-panel-row-main' });
     main.append(
-      el('div', { className: 'timeline-panel-row-label' }, item.label || '(unnamed)'),
+      el('div', {
+        className: 'timeline-panel-row-label u-truncate',
+        title: item.label || '(unnamed)',
+      }, item.label || '(unnamed)'),
       el('div', { className: 'timeline-panel-row-meta' },
         i18n(`snapshots.trigger.${item.trigger}`) || item.trigger,
         ' · ',
@@ -348,23 +351,20 @@ export function mountTimelineChip(host) {
       toast.ok(i18n('snapshots.toast.rewound_fmt',
         item.label || item.id, dropped));
       closePanel();
-      // rewind 重写了 messages / memory / stage / eval / persona, 所有上层
-      // 组件都需要刷新. 最简单的做法是通知全局 session:change; 但这会让
-      // topbar 重新查会话描述. 更精准的是各组件订阅自己关心的事件:
-      emit('snapshots:changed', { reason: 'rewind', id: item.id });
-      emit('stage:needs_refresh', { source: 'timeline_chip' });
-      emit('messages:needs_refresh', { source: 'timeline_chip' });
-      emit('memory:needs_refresh', { source: 'timeline_chip' });
-      // 兜底: 拉一次会话状态, 让 session.message_count / snapshot_count 也
-      // 回填 (不发 session:change 避免死循环但再取一次以刷新 describe).
-      try {
-        const sres = await api.get('/api/session',
-          { expectedStatuses: [404] });
-        if (sres.ok && sres.data?.has_session) {
-          set('session', sres.data);
-        }
-      } catch { /* ignore */ }
-      refresh().catch(() => {});
+      // ⚠️ P24 sweep (2026-04-22, §4.27 #105 同族 sweep): rewind 到早期快照
+      // (persona.character_name 空 / memory 空 / messages 空) 会复现 New
+      // Session 级联风暴 — 所有 session:change 订阅者并发 fetch empty-state
+      // 端点 → 409/500 → emit('http:error') → errors_bus 异步 cascade →
+      // 浏览器烧穿. LESSONS_LEARNED §7 #20 量化判据 5 项 (messages /
+      // session.id / character_name / memory 任一清空) rewind 天生可能全
+      // 命中, 不允许 surgical. 对齐 Hard Reset / New Session / Load
+      // session 的 reload 模式, 彻底消灭 empty-state 订阅路径.
+      // 原 surgical 代码 (set('session', sres.data) + snapshots:changed /
+      // stage:needs_refresh emit) 删除, 单次 reload 一站式刷新整个页面.
+      setTimeout(() => {
+        try { window.location.reload(); }
+        catch { /* jsdom / headless */ }
+      }, 300);
     } else {
       toast.err(i18n('snapshots.toast.rewind_failed_fmt',
         res.error?.message || `HTTP ${res.status}`));

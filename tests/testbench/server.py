@@ -34,6 +34,8 @@ class _NoCacheStaticFiles(StaticFiles):
 
 from tests.testbench import config as tb_config
 from tests.testbench.logger import anon_logger, cleanup_old_logs, python_logger
+from tests.testbench.pipeline import autosave as autosave_module
+from tests.testbench.pipeline import boot_cleanup as boot_cleanup_module
 from tests.testbench.pipeline import diagnostics_store
 from tests.testbench.routers import (
     chat_router,
@@ -43,6 +45,7 @@ from tests.testbench.routers import (
     judge_router,
     memory_router,
     persona_router,
+    security_router,
     session_router,
     snapshot_router,
     stage_router,
@@ -168,6 +171,7 @@ def create_app() -> FastAPI:
     app.include_router(stage_router.router)
     app.include_router(snapshot_router.router)
     app.include_router(diagnostics_router.router)
+    app.include_router(security_router.router)
 
     # ── Log retention background task (P19) ─────────────────────────────
     # Three triggers keep the JSONL log directory bounded:
@@ -209,6 +213,56 @@ def create_app() -> FastAPI:
                 )
         except Exception:  # noqa: BLE001 - never crash boot
             python_logger().exception("boot log cleanup failed")
+
+        # P22 autosave: prune entries older than the retention window.
+        # We do this synchronously in the startup hook (not in a
+        # background task) because:
+        #   (a) it's O(n) in the number of autosave files which is ≤ 3
+        #       per session so essentially bounded in practice;
+        #   (b) the UI's ``/autosaves/boot_orphans`` call happens after
+        #       startup completes, so running cleanup synchronously
+        #       ensures stale-but-expired entries don't flash into the
+        #       "restore?" banner before disappearing on first cleanup.
+        try:
+            stats = autosave_module.cleanup_old_autosaves()
+            if stats["deleted_entries"]:
+                python_logger().info(
+                    "boot autosave cleanup: removed %d entry/entries "
+                    "(json=%d, tar=%d, retention=%.1fh)",
+                    stats["deleted_entries"], stats["json_removed"],
+                    stats["tar_removed"], stats["retention_hours"],
+                )
+        except Exception:  # noqa: BLE001 - never crash boot
+            python_logger().exception("boot autosave cleanup failed")
+
+        # PLAN §10 P-B (post-P22 hardening): clean up half-written
+        # ``.tmp`` files from crashed atomic-writes, stale
+        # ``memory.locked_<ts>`` rename-aside sidecars (> 24h), and
+        # orphan SQLite sidecars (``*-journal`` / ``*-wal`` / ``*-shm``
+        # whose ``.db`` is gone). Safe by construction — see the module
+        # docstring for each category's rationale. Sandbox-directory
+        # level orphans (P-A) are deliberately not touched here;
+        # they need user triage via Diagnostics → Paths (P-D, future).
+        try:
+            bc_stats = boot_cleanup_module.run_boot_cleanup()
+            has_activity = (
+                bc_stats.get("files_removed", 0)
+                or bc_stats.get("dirs_removed", 0)
+                or bc_stats.get("unlink_failures", 0)
+                or bc_stats.get("rmtree_failures", 0)
+            )
+            if has_activity:
+                python_logger().info(
+                    "boot temp-file cleanup: files_removed=%d, "
+                    "dirs_removed=%d, unlink_failures=%d, rmtree_failures=%d",
+                    bc_stats.get("files_removed", 0),
+                    bc_stats.get("dirs_removed", 0),
+                    bc_stats.get("unlink_failures", 0),
+                    bc_stats.get("rmtree_failures", 0),
+                )
+        except Exception:  # noqa: BLE001 - never crash boot
+            python_logger().exception("boot temp-file cleanup failed")
+
         app.state.log_cleanup_task = asyncio.create_task(
             _periodic_log_cleanup(), name="testbench-log-cleanup"
         )

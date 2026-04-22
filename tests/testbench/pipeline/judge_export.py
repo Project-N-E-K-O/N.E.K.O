@@ -378,29 +378,34 @@ def build_report_markdown(
     meta = dict(metadata or {})
     filt = dict(filter_payload or {})
 
-    lines.append("# Evaluation Report")
+    # 2026-04-22 Day 8 手测 #4: 将 Markdown 导出全部改为中文 — 所有字段
+    # 标签 / 章节标题 / 表头本地化, 以符合项目约定 (UI 语言 = zh-CN, 导出
+    # 文档理应与 UI 一致, 否则用户拿到 "Overall" "By schema" 这类英文标签
+    # 会困惑). 注意: 字段 **key** (如 `overall_score`, `verdict`) 保留英文
+    # 避免破坏程序可读性; 只把 **人类可读的 heading / label** 改中文.
+    lines.append("# 评分报告")
     lines.append("")
-    lines.append(f"_Generated at {_now_iso()}_")
+    lines.append(f"_生成时间: {_now_iso()}_")
     lines.append("")
     if meta:
-        lines.append("## Context")
+        lines.append("## 上下文")
         lines.append("")
         session_id = meta.get("session_id")
         session_name = meta.get("session_name")
         if session_name or session_id:
             lines.append(
-                f"- **Session**: {session_name or '(unnamed)'} "
+                f"- **会话**: {session_name or '(未命名)'} "
                 f"(`{session_id or '-'}`)"
             )
         if "character_name" in meta or "master_name" in meta:
             lines.append(
-                f"- **Persona**: character=`{meta.get('character_name') or '-'}`, "
-                f"master=`{meta.get('master_name') or '-'}`"
+                f"- **人设**: 角色=`{meta.get('character_name') or '-'}`, "
+                f"主人=`{meta.get('master_name') or '-'}`"
             )
         lines.append("")
 
     if filt:
-        lines.append("## Filter")
+        lines.append("## 过滤条件")
         lines.append("")
         for k, v in filt.items():
             if v is None or v == "" or v == []:
@@ -408,7 +413,7 @@ def build_report_markdown(
             lines.append(f"- `{k}` = `{v}`")
         lines.append("")
 
-    lines.append("## Overview")
+    lines.append("## 概览")
     lines.append("")
     total = aggregate.get("total", 0)
     errored = aggregate.get("errored", 0)
@@ -418,29 +423,29 @@ def build_report_markdown(
     avg_dur = aggregate.get("avg_duration_ms", 0)
     avg_ov = aggregate.get("avg_overall") or {}
     avg_gap = aggregate.get("avg_gap")
-    lines.append(f"- **Total runs**: {total}")
-    lines.append(f"- **Successful**: {effective}")
-    lines.append(f"- **Errored**: {errored}")
+    lines.append(f"- **总运行数**: {total}")
+    lines.append(f"- **成功**: {effective}")
+    lines.append(f"- **错误**: {errored}")
     if effective:
         pass_rate_str = f"{round((pass_rate or 0) * 100, 1)}%" if pass_rate is not None else "-"
-        lines.append(f"- **Passed**: {pass_count} ({pass_rate_str})")
+        lines.append(f"- **通过**: {pass_count} ({pass_rate_str})")
     if avg_ov.get("absolute") is not None:
-        lines.append(f"- **Avg overall (absolute)**: {avg_ov['absolute']:.2f} / 100")
+        lines.append(f"- **平均总分 (absolute)**: {avg_ov['absolute']:.2f} / 100")
     if avg_ov.get("comparative_a") is not None:
-        lines.append(f"- **Avg overall A (comparative)**: {avg_ov['comparative_a']:.2f} / 100")
+        lines.append(f"- **平均 A 总分 (comparative)**: {avg_ov['comparative_a']:.2f} / 100")
     if avg_gap is not None:
-        lines.append(f"- **Avg gap (comparative A-B)**: {avg_gap:+.2f}")
-    lines.append(f"- **Avg LLM call duration**: {avg_dur} ms")
+        lines.append(f"- **平均 gap (comparative A-B)**: {avg_gap:+.2f}")
+    lines.append(f"- **LLM 平均调用耗时**: {avg_dur} ms")
 
     vd = aggregate.get("verdict_distribution") or {}
     if vd:
         items = ", ".join(f"`{k}`: {n}" for k, n in vd.items())
-        lines.append(f"- **Verdict distribution**: {items}")
+        lines.append(f"- **Verdict 分布**: {items}")
     lines.append("")
 
     by_schema = aggregate.get("by_schema") or {}
     if by_schema:
-        lines.append("## By schema")
+        lines.append("## 按 schema 分组")
         lines.append("")
         for sid, block in by_schema.items():
             lines.append(f"### `{sid}` — {block.get('mode')} · {block.get('granularity')}")
@@ -450,17 +455,17 @@ def build_report_markdown(
             pr = block.get("pass_rate")
             ao = block.get("avg_overall")
             ag = block.get("avg_gap")
-            lines.append(f"- Count: {cnt}" + (f" (+{err} errored)" if err else ""))
+            lines.append(f"- 计数: {cnt}" + (f" (另有 {err} 条错误)" if err else ""))
             if pr is not None:
-                lines.append(f"- Pass rate: {round(pr * 100, 1)}%")
+                lines.append(f"- 通过率: {round(pr * 100, 1)}%")
             if ao is not None:
-                lines.append(f"- Avg overall: {ao:.2f} / 100")
+                lines.append(f"- 平均总分: {ao:.2f} / 100")
             if ag is not None:
-                lines.append(f"- Avg gap: {ag:+.2f}")
+                lines.append(f"- 平均 gap: {ag:+.2f}")
             dims = block.get("dimensions") or []
             if dims:
                 lines.append("")
-                lines.append("| Dimension | Avg | Samples |")
+                lines.append("| 维度 | 平均 | 样本数 |")
                 lines.append("|---|---|---|")
                 for d in dims:
                     avg = d.get("avg")
@@ -473,20 +478,20 @@ def build_report_markdown(
             if vdd:
                 lines.append("")
                 lines.append(
-                    "**Verdicts**: "
+                    "**Verdict 分布**: "
                     + ", ".join(f"`{k}`: {n}" for k, n in vdd.items())
                 )
             pp = block.get("problem_patterns") or {}
             if pp:
                 lines.append("")
                 lines.append(
-                    "**Problem patterns**: "
+                    "**问题模式**: "
                     + ", ".join(f"`{k}` ({n})" for k, n in pp.items())
                 )
             gt = block.get("gap_trajectory") or []
             if gt:
                 lines.append("")
-                lines.append("**Gap trajectory** (oldest → newest):")
+                lines.append("**Gap 轨迹** (最早 → 最新):")
                 for item in gt:
                     lines.append(
                         f"- `{item.get('t')}` · gap `{item.get('gap'):+.2f}` "
@@ -494,9 +499,8 @@ def build_report_markdown(
                     )
             lines.append("")
 
-    # Individual results — keep to core fields so the export stays readable
-    # even for 50-run batches.
-    lines.append("## Results")
+    # 单条结果 — 只渲染核心字段让 50 条批量导出也保持可读性.
+    lines.append("## 逐条结果")
     lines.append("")
     for idx, r in enumerate(results, start=1):
         rid = r.get("id") or "-"
@@ -514,68 +518,68 @@ def build_report_markdown(
         lines.append(header)
         lines.append("")
         lines.append(
-            f"- Verdict: `{verdict}` · Passed: `{passed}` · Created: `{created}`"
+            f"- Verdict: `{verdict}` · 是否通过: `{passed}` · 创建时间: `{created}`"
         )
         if mode == "comparative":
             oa = _safe_number(scores.get("overall_a"))
             ob = _safe_number(scores.get("overall_b"))
             lines.append(
-                f"- Overall A: {oa if oa is not None else '-'} · "
-                f"Overall B: {ob if ob is not None else '-'} · "
+                f"- A 总分: {oa if oa is not None else '-'} · "
+                f"B 总分: {ob if ob is not None else '-'} · "
                 f"Gap: {f'{gap:+.2f}' if gap is not None else '-'}"
             )
         elif overall is not None:
-            lines.append(f"- Overall: {overall:.2f} / 100")
+            lines.append(f"- 总分: {overall:.2f} / 100")
         tgt_ids = r.get("target_message_ids") or []
         if tgt_ids:
             lines.append(
-                "- Targets: "
+                "- 目标消息: "
                 + ", ".join(f"`{mid[:12]}`" for mid in tgt_ids if mid)
             )
         if err:
             lines.append("")
-            lines.append("> **Error:** " + str(err))
+            lines.append("> **错误:** " + str(err))
         tp = r.get("target_preview") or {}
         ai_resp = (tp.get("ai_response") or "").strip()
         if ai_resp:
             lines.append("")
-            lines.append("**AI response (preview)**:")
+            lines.append("**AI 回复 (预览)**:")
             lines.append("")
             lines.append("> " + ai_resp.replace("\n", "\n> "))
         ref_resp = (tp.get("reference_response") or "").strip()
         if ref_resp:
             lines.append("")
-            lines.append("**Reference response (preview)**:")
+            lines.append("**参考回复 (预览)**:")
             lines.append("")
             lines.append("> " + ref_resp.replace("\n", "\n> "))
         analysis = (r.get("analysis") or "").strip()
         if analysis:
             lines.append("")
-            lines.append("**Analysis**:")
+            lines.append("**分析**:")
             lines.append("")
             lines.append(analysis)
         diff_analysis = (r.get("diff_analysis") or "").strip()
         if diff_analysis:
             lines.append("")
-            lines.append("**Diff analysis**:")
+            lines.append("**差异分析**:")
             lines.append("")
             lines.append(diff_analysis)
         strengths = r.get("strengths") or []
         weaknesses = r.get("weaknesses") or []
         if strengths:
             lines.append("")
-            lines.append("**Strengths**:")
+            lines.append("**亮点**:")
             for s in strengths:
                 lines.append(f"- {s}")
         if weaknesses:
             lines.append("")
-            lines.append("**Weaknesses**:")
+            lines.append("**不足**:")
             for w in weaknesses:
                 lines.append(f"- {w}")
         patterns = r.get("problem_patterns") or []
         if patterns:
             lines.append("")
-            lines.append("**Problem patterns**: " + ", ".join(f"`{p}`" for p in patterns))
+            lines.append("**问题模式**: " + ", ".join(f"`{p}`" for p in patterns))
         lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"

@@ -229,12 +229,83 @@ async def system_paths() -> dict[str, Any]:
 
 
 class OpenPathRequest(BaseModel):
-    """Body for ``POST /system/open_path``."""
+    """Body for ``POST /system/open_path``.
 
-    path: str = Field(
-        ...,
+    Two accepted shapes:
+
+    * ``{"path": "<absolute>"}`` — legacy, used by Diagnostics → Paths's
+      per-row [打开] button. The client had already fetched
+      ``/system/paths`` so it knows the absolute path.
+    * ``{"key": "<whitelisted_key>"}`` — P24 §12.3.E #13, used by the
+      shared ``openFolderButton`` helper across Setup/Evaluation pages.
+      The caller doesn't need to fetch ``/system/paths`` first — the
+      server resolves ``key`` against the same whitelist
+      ``/system/paths`` enumerates. This avoids every button paying a
+      network round-trip just to learn the path it's whitelisted to
+      open anyway.
+
+    Exactly one of ``key`` or ``path`` must be set (validator below).
+    """
+
+    path: str | None = Field(
+        default=None,
         description="Absolute path to open. Must be inside testbench_data/",
     )
+    key: str | None = Field(
+        default=None,
+        description=(
+            "Whitelisted path key (current_sandbox, user_schemas, "
+            "user_dialog_templates, saved_sessions, autosave, exports, "
+            "sandboxes_all, logs_all, current_session_log). Server "
+            "resolves to path, so this avoids a /system/paths round-trip."
+        ),
+    )
+
+
+#: Whitelisted ``key`` → ``Path`` factory for :func:`system_open_path`.
+#: Each value is a **callable** (not a path) because some keys (like
+#: ``current_sandbox`` / ``current_session_log``) depend on the active
+#: session and can't be evaluated at module import time. Keep in sync
+#: with :func:`system_paths` entry list.
+def _resolve_open_path_key(key: str) -> Path | None:
+    """Resolve a whitelisted ``key`` to an absolute ``Path``.
+
+    Returns ``None`` if:
+
+    * ``key`` is not in the whitelist.
+    * ``key`` is session-scoped but no active session exists.
+
+    The caller (``system_open_path``) turns ``None`` into a 404 with a
+    friendly "no current session, activate one first" message instead
+    of a generic 400, because the most common cause is exactly that.
+    """
+    store = get_session_store()
+    try:
+        session = store.get()
+    except Exception:
+        session = None
+
+    if key == "current_sandbox":
+        if session is None:
+            return None
+        return tb_config.SANDBOXES_DIR / session.id
+    if key == "current_session_log":
+        if session is None:
+            return None
+        from datetime import datetime as _dt
+        today = _dt.now().strftime("%Y%m%d")
+        return tb_config.session_log_path(session.id, today)
+    # Shared paths — no session dependency.
+    _shared: dict[str, Path] = {
+        "sandboxes_all": tb_config.SANDBOXES_DIR,
+        "logs_all": tb_config.LOGS_DIR,
+        "saved_sessions": tb_config.SAVED_SESSIONS_DIR,
+        "autosave": tb_config.AUTOSAVE_DIR,
+        "exports": tb_config.EXPORTS_DIR,
+        "user_schemas": tb_config.USER_SCHEMAS_DIR,
+        "user_dialog_templates": tb_config.USER_DIALOG_TEMPLATES_DIR,
+    }
+    return _shared.get(key)
 
 
 def _path_is_inside_data_dir(target: Path) -> bool:
@@ -293,35 +364,74 @@ def _spawn_file_manager(path: Path) -> None:
 async def system_open_path(body: OpenPathRequest) -> dict[str, Any]:
     """Open a whitelisted path in the host OS file manager.
 
+    Two accepted request shapes (see :class:`OpenPathRequest`):
+
+    * ``{"key": "<whitelisted_key>"}`` — resolved via
+      :func:`_resolve_open_path_key`; bypasses ``path_is_inside_data_dir``
+      because the whitelist already guarantees containment.
+    * ``{"path": "<absolute>"}`` — legacy; checked against DATA_DIR.
+
     Returns ``{"ok": true, "path": ...}`` on success. Raises:
 
-      * 400 if ``body.path`` is empty or ``Path()`` parsing fails.
-      * 403 if the resolved path is outside ``testbench_data/``.
+      * 400 if neither / both of ``key`` and ``path`` are set, or
+        either is malformed.
+      * 403 if a path-mode request resolves outside ``testbench_data/``.
       * 404 if the path doesn't exist on disk (opening a ghost path
         would silently spawn an empty Explorer window on Windows and
-        an error dialog on macOS/Linux; surface the mistake early).
+        an error dialog on macOS/Linux; surface the mistake early),
+        or if a key-mode request is session-scoped with no active
+        session.
       * 500 if the OS dispatcher itself raises (missing xdg-open /
         Explorer crashed / etc.).
     """
-    raw = (body.path or "").strip()
-    if not raw:
-        raise HTTPException(status_code=400, detail="path must be non-empty")
-
-    try:
-        target = Path(raw)
-    except (TypeError, ValueError) as exc:
+    raw_path = (body.path or "").strip()
+    raw_key = (body.key or "").strip()
+    if not raw_path and not raw_key:
         raise HTTPException(
-            status_code=400, detail=f"invalid path syntax: {exc}",
-        ) from exc
-
-    if not _path_is_inside_data_dir(target):
-        python_logger().warning(
-            "system_open_path: rejecting path %r outside DATA_DIR", raw,
+            status_code=400, detail="either `key` or `path` is required",
         )
+    if raw_path and raw_key:
         raise HTTPException(
-            status_code=403,
-            detail="path must be inside tests/testbench_data/",
+            status_code=400, detail="send only one of `key` / `path`",
         )
+
+    if raw_key:
+        resolved_by_key = _resolve_open_path_key(raw_key)
+        if resolved_by_key is None:
+            # Distinguish "unknown key" (400) vs "valid key but needs
+            # session" (404) — helps testers understand why the click
+            # didn't open anything without them having to guess.
+            known_session_scoped = {"current_sandbox", "current_session_log"}
+            if raw_key in known_session_scoped:
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        f"key={raw_key} is session-scoped but no active "
+                        "session. Create a session first, then retry."
+                    ),
+                )
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown key: {raw_key}",
+            )
+        target = resolved_by_key
+    else:
+        try:
+            target = Path(raw_path)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400, detail=f"invalid path syntax: {exc}",
+            ) from exc
+
+        if not _path_is_inside_data_dir(target):
+            python_logger().warning(
+                "system_open_path: rejecting path %r outside DATA_DIR",
+                raw_path,
+            )
+            raise HTTPException(
+                status_code=403,
+                detail="path must be inside tests/testbench_data/",
+            )
 
     resolved = target.resolve()
     if not resolved.exists():
@@ -346,3 +456,282 @@ async def system_open_path(body: OpenPathRequest) -> dict[str, Any]:
         "path": str(resolved),
         "platform": platform.system(),
     }
+
+
+# ── /system/orphans (P24 §15.2 A / P-A) ─────────────────────────────
+#
+# Orphan sandbox directory triage. Scans ``SANDBOXES_DIR`` for subdirs
+# without an active session mapping and reports them to the user;
+# deletion is a separate explicit endpoint. See
+# :mod:`pipeline.boot_self_check` for the full rationale.
+
+
+# ── /system/health (P24 §3.1 / H1 最小版) ──────────────────────────
+#
+# Aggregated read-only health snapshot. No new pipelines or background
+# tasks — composes existing data sources (diagnostics_store ring buffer,
+# logger.collect_logs_usage, autosave scheduler state, orphan scanner).
+# Callers: Diagnostics Paths top card ("System Health: healthy/warning/
+# critical"), optional external monitors via curl.
+
+def _health_status_for(
+    value: int | float | None,
+    *,
+    warn_at: int | float | None = None,
+    crit_at: int | float | None = None,
+    reverse: bool = False,
+) -> str:
+    """Bucket a numeric value into ``healthy / warning / critical``.
+
+    ``reverse=True`` means "smaller is worse" (e.g. disk_free_gb — low
+    disk is bad). Default is "bigger is worse" (error count goes up).
+    ``None`` value always maps to ``healthy`` (missing measurement
+    shouldn't cause alarm bells).
+    """
+    if value is None:
+        return "healthy"
+    if reverse:
+        if crit_at is not None and value <= crit_at:
+            return "critical"
+        if warn_at is not None and value <= warn_at:
+            return "warning"
+        return "healthy"
+    if crit_at is not None and value >= crit_at:
+        return "critical"
+    if warn_at is not None and value >= warn_at:
+        return "warning"
+    return "healthy"
+
+
+@router.get("/system/health")
+async def system_health() -> dict[str, Any]:
+    """Aggregated health snapshot across disk / logs / orphans / diagnostics.
+
+    Overall ``status`` is the worst of all individual ``check`` statuses.
+    Thresholds are intentionally loose — this is a user-facing "is
+    anything obviously broken?" indicator, not a precise monitoring
+    system.
+
+    Checks:
+
+    * **disk_free_gb**: available bytes on the DATA_DIR filesystem.
+      critical < 0.5 GB, warn < 2 GB.
+    * **log_dir_size_mb**: total bytes under LOGS_DIR. warn > 500 MB,
+      critical > 2000 MB (the user should trigger log cleanup).
+    * **orphan_sandboxes**: count from :func:`scan_orphan_sandboxes`.
+      warn >= 3, critical >= 10 (indicates repeated hard-kill cycles).
+    * **autosave_scheduler**: true if the active session's scheduler
+      is running, null if no active session.
+    * **diagnostics_errors**: count of ``level == "error"`` entries
+      in the ring buffer (a coarse "recent problems" indicator).
+      warn >= 5, critical >= 20.
+    """
+    import shutil
+    from tests.testbench.logger import collect_logs_usage
+    from tests.testbench.pipeline import diagnostics_store
+    from tests.testbench.pipeline.boot_self_check import scan_orphan_sandboxes
+
+    checks: dict[str, dict[str, Any]] = {}
+
+    # Disk free on DATA_DIR's filesystem
+    try:
+        du = shutil.disk_usage(tb_config.DATA_DIR)
+        free_gb = round(du.free / (1024 ** 3), 2)
+    except OSError:
+        free_gb = None
+    checks["disk_free_gb"] = {
+        "value": free_gb,
+        "threshold_warn": 2.0,
+        "threshold_critical": 0.5,
+        "status": _health_status_for(
+            free_gb, warn_at=2.0, crit_at=0.5, reverse=True,
+        ),
+    }
+
+    # Log directory total size
+    try:
+        logs_usage = collect_logs_usage()
+        log_mb = round(logs_usage.get("total_bytes", 0) / (1024 ** 2), 1)
+    except Exception:  # noqa: BLE001
+        log_mb = None
+    checks["log_dir_size_mb"] = {
+        "value": log_mb,
+        "threshold_warn": 500,
+        "threshold_critical": 2000,
+        "status": _health_status_for(log_mb, warn_at=500, crit_at=2000),
+    }
+
+    # Orphan sandboxes (share scanner with /system/orphans endpoint)
+    try:
+        orphans_info = scan_orphan_sandboxes()
+        orphan_count = len(orphans_info.get("orphans", []))
+    except Exception:  # noqa: BLE001
+        orphan_count = None
+    checks["orphan_sandboxes"] = {
+        "value": orphan_count,
+        "threshold_warn": 3,
+        "threshold_critical": 10,
+        "status": _health_status_for(orphan_count, warn_at=3, crit_at=10),
+    }
+
+    # Autosave scheduler alive (null when no active session)
+    autosave_alive: bool | None = None
+    try:
+        store = get_session_store()
+        session = store.get()
+        if session is not None:
+            sched = session.autosave_scheduler
+            autosave_alive = (
+                bool(sched is not None and getattr(sched, "_task", None) is not None
+                     and not sched._task.done())  # noqa: SLF001
+            )
+    except Exception:  # noqa: BLE001
+        pass
+    checks["autosave_scheduler"] = {
+        "alive": autosave_alive,
+        "status": "healthy" if autosave_alive or autosave_alive is None else "warning",
+    }
+
+    # Recent error count from diagnostics_store ring buffer
+    try:
+        errors_view = diagnostics_store.list_errors(limit=500, level="error")
+        error_count = errors_view.get("matched", 0)
+    except Exception:  # noqa: BLE001
+        error_count = None
+    checks["diagnostics_errors"] = {
+        "value": error_count,
+        "threshold_warn": 5,
+        "threshold_critical": 20,
+        "status": _health_status_for(error_count, warn_at=5, crit_at=20),
+    }
+
+    # Aggregate: worst wins
+    order = {"healthy": 0, "warning": 1, "critical": 2}
+    worst = "healthy"
+    for c in checks.values():
+        s = c.get("status", "healthy")
+        if order.get(s, 0) > order.get(worst, 0):
+            worst = s
+
+    from datetime import datetime
+    return {
+        "status": worst,
+        "checks": checks,
+        "checked_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+@router.get("/system/orphans")
+async def list_orphan_sandboxes() -> dict[str, Any]:
+    """List sandbox directories without a corresponding active session.
+
+    Read-only. Called by Diagnostics → Paths every time the Paths
+    subpage mounts / the user clicks "Refresh". Per §3A F3 "report,
+    don't silently delete" — this endpoint never mutates disk.
+
+    Response shape::
+
+        {
+            "orphans": [
+                {
+                    "session_id": "a1b2c3d4e5f6",
+                    "path": "E:/.../sandboxes/a1b2c3d4e5f6",
+                    "size_bytes": 1234567,
+                    "mtime": "2026-04-21T18:56:51"
+                },
+                ...
+            ],
+            "scanned_at": "2026-04-21T18:57:00",
+            "total_bytes": 9876543
+        }
+    """
+    from tests.testbench.pipeline.boot_self_check import scan_orphan_sandboxes
+    return scan_orphan_sandboxes()
+
+
+@router.post("/system/orphans/clear_empty")
+async def clear_empty_orphan_sandboxes() -> dict[str, Any]:
+    """One-shot clear all **empty** (0-byte) orphan sandboxes.
+
+    Same safety tier as the per-item delete below — refuses to touch
+    the active session and checks path-traversal — but bulk so users
+    don't have to click 23+ times to clear a startup-test accumulation.
+    "Empty" = recursive walk finds no files with ``size > 0``; dirs
+    with even a single 0-byte file (e.g. ``.gitkeep``) are preserved.
+
+    Returns ``{"cleared": N, "skipped_nonempty": M, "errors": [...]}``.
+    """
+    import shutil
+    from tests.testbench.pipeline.boot_self_check import (
+        scan_orphan_sandboxes,
+    )
+
+    scan = scan_orphan_sandboxes()
+    cleared = 0
+    skipped_nonempty = 0
+    errors: list[dict[str, str]] = []
+    for orphan in scan.get("orphans", []):
+        if orphan.get("size_bytes", 0) > 0:
+            skipped_nonempty += 1
+            continue
+        path = Path(orphan.get("path", ""))
+        # Defensive: re-check path is inside SANDBOXES_DIR after resolve
+        try:
+            path.resolve(strict=False).relative_to(
+                tb_config.SANDBOXES_DIR.resolve(strict=False),
+            )
+        except (OSError, ValueError):
+            errors.append({
+                "session_id": orphan.get("session_id", "?"),
+                "message": "path resolves outside sandboxes root",
+            })
+            continue
+        try:
+            shutil.rmtree(path, ignore_errors=False)
+            cleared += 1
+        except OSError as exc:
+            errors.append({
+                "session_id": orphan.get("session_id", "?"),
+                "message": f"rmtree failed: {exc}",
+            })
+    python_logger().info(
+        "clear_empty_orphan_sandboxes: cleared=%d skipped=%d errors=%d",
+        cleared, skipped_nonempty, len(errors),
+    )
+    return {
+        "cleared": cleared,
+        "skipped_nonempty": skipped_nonempty,
+        "errors": errors,
+    }
+
+
+@router.delete("/system/orphans/{session_id}")
+async def delete_orphan_sandbox_endpoint(session_id: str) -> dict[str, Any]:
+    """Delete one orphan sandbox by session_id.
+
+    Frontend MUST gate this behind an explicit confirm modal listing
+    what's about to be removed. The backend refuses if ``session_id``
+    matches the active session (would destroy live data) or if the
+    resolved path escapes :data:`config.SANDBOXES_DIR`.
+
+    Returns ``{session_id, deleted_bytes, remaining_bytes, fully_removed}``.
+    ``fully_removed=false`` means the OS kept a locked handle open (common
+    on Windows) — UI should hint "retry after restarting the server".
+    """
+    from tests.testbench.pipeline.boot_self_check import (
+        OrphanSandboxError,
+        delete_orphan_sandbox,
+    )
+    try:
+        return delete_orphan_sandbox(session_id)
+    except OrphanSandboxError as exc:
+        # 404 for "not found" / 409 for "is active" / 400 for path traversal
+        status = {
+            "OrphanNotFound": 404,
+            "OrphanIsActive": 409,
+            "OrphanPathTraversal": 400,
+        }.get(exc.code, 400)
+        raise HTTPException(
+            status_code=status,
+            detail={"error_type": exc.code, "message": exc.message},
+        ) from exc

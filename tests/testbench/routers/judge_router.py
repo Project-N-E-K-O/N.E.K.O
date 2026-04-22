@@ -54,6 +54,7 @@ Design notes
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
@@ -63,6 +64,8 @@ from pydantic import BaseModel, Field
 from tests.testbench.chat_messages import ROLE_ASSISTANT, ROLE_USER
 from tests.testbench.logger import python_logger
 from tests.testbench.model_config import ModelGroupConfig
+from tests.testbench.pipeline import diagnostics_store
+from tests.testbench.pipeline.diagnostics_ops import DiagnosticsOp
 from tests.testbench.pipeline.judge_export import (
     aggregate_results,
     build_export_filename,
@@ -75,6 +78,23 @@ from tests.testbench.pipeline.judge_runner import (
     JudgeRunError,
     load_schema_by_id,
     make_judger,
+)
+# Module-level import to avoid Python scope trap: earlier version had
+# `from pipeline.prompt_builder import ... PreviewNotReady` **inside**
+# `_extract_persona_meta`'s try-block. That made `PreviewNotReady` a
+# function-local; if `build_prompt_bundle(session)` raised something
+# that needed `except PreviewNotReady:` to evaluate the class, AND the
+# import had failed (transitively, e.g. memory loader ImportError),
+# Python tried to resolve the local `PreviewNotReady` → UnboundLocalError
+# "cannot access local variable 'PreviewNotReady' where it is not
+# associated with a value" — which surfaced to the user as "整批运行失败"
+# when F6 `match_main_chat` was checked. 2026-04-22 Day 8 手测 fix.
+# Use the full `tests.testbench.pipeline.*` path (not short `pipeline.*`)
+# so smoke tests work; `pipeline` short path only resolves under
+# `run_testbench.py`'s sys.path shim.
+from tests.testbench.pipeline.prompt_builder import (
+    build_prompt_bundle,
+    PreviewNotReady,
 )
 from tests.testbench.pipeline.scoring_schema import (
     ScoringSchemaError,
@@ -446,6 +466,20 @@ class _JudgeRunRequest(BaseModel):
     judge_model_override: _JudgeModelOverride | None = None
     extra_context: dict[str, Any] | None = None
     persist: bool = True
+    # P24 §15.2 C / F6 — when ``True``, the judger prompt pulls the
+    # same ``persona_system`` block that ``build_prompt_bundle`` sends
+    # to the main chat model. Useful for reproducibility ("是不是因为
+    # 评委看到了和对话模型不同的 system?"), especially when diagnosing
+    # prompt-injection suspicions. Default ``False`` preserves the
+    # historical behavior (evaluator sees only the scoring schema's
+    # own ``prompt_template`` without main-chat persona).
+    match_main_chat: bool = Field(
+        default=False,
+        description=(
+            "F6: align evaluator's persona_system with main-chat's "
+            "build_prompt_bundle output. Off by default."
+        ),
+    )
 
     model_config = {"extra": "ignore"}
 
@@ -611,29 +645,100 @@ def _resolve_reference_text(
     return ""
 
 
-def _extract_persona_meta(session) -> tuple[str, str, str]:
-    """Derive ``(system_prompt, character_name, master_name)`` from session.
+@dataclass
+class _PersonaMetaResult:
+    """Output of :func:`_extract_persona_meta`.
 
-    Uses whatever is currently stored on ``session.persona`` (same as
-    what a chat call would bootstrap with). Empty strings on all three
-    fields are OK for judging — the prompt will just have empty
-    placeholders; the judger still functions.
+    P24 §3.4 F6: when ``match_main_chat`` was requested, callers need
+    to know **whether the align actually happened** so the response
+    payload can surface ``match_main_chat_applied`` — a checkbox that
+    silently falls back to legacy behavior would defeat the debugging
+    value of the feature.
+
+    Attributes:
+
+    * ``system_prompt`` / ``character_name`` / ``master_name`` — same
+      3-tuple as the old return value.
+    * ``applied`` — ``True`` iff ``match_main_chat=True`` was honored
+      (i.e. the ``build_prompt_bundle`` path was used). ``False`` when
+      the caller didn't request it, or when a fallback happened.
+    * ``fallback_reason`` — short identifier when ``applied`` dropped
+      to ``False`` despite a request; ``None`` otherwise. Values:
+      ``"preview_not_ready"`` (no character_name), ``"bundle_error"``
+      (unexpected bundle failure).
+    """
+
+    system_prompt: str
+    character_name: str
+    master_name: str
+    applied: bool
+    fallback_reason: str | None
+
+
+def _extract_persona_meta(
+    session, *, match_main_chat: bool = False,
+) -> _PersonaMetaResult:
+    """Derive ``(system_prompt, character_name, master_name, applied, reason)``.
+
+    Two modes:
+
+    * ``match_main_chat=False`` (default, historical behavior): use
+      whatever is currently stored on ``session.persona`` with manual
+      name interpolation. Lightweight, predictable, but does *not*
+      include chat gap hints / recent history / holiday context that
+      the real chat request receives. ``applied`` = ``False``,
+      ``fallback_reason`` = ``None``.
+    * ``match_main_chat=True`` (F6 opt-in): call
+      :func:`build_prompt_bundle` and use the bundle's
+      ``system_prompt``. This is byte-identical to what the chat
+      model sees, making "why did the judger score this low?" much
+      easier to answer when persona / memory is the suspect.
+      Gracefully degrades to legacy path if the bundle can't build —
+      but records the fallback reason so the UI can tell the user
+      "you asked for it but it didn't apply because X".
+
+    Empty strings on all three fields are OK for judging — the prompt
+    will just have empty placeholders; the judger still functions.
     """
     persona = session.persona or {}
-    # system_prompt resolution mirrors what chat_runner does — a full
-    # integration would call effective_system_prompt, but that function
-    # is currently UI-oriented (returns a dict). For P16 MVP we use
-    # the stored prompt directly with manual name interpolation; P17
-    # can extract a shared helper.
-    stored_prompt = str(persona.get("system_prompt") or "")
     character_name = str(persona.get("character_name") or "")
     master_name = str(persona.get("master_name") or "")
+
+    if match_main_chat:
+        try:
+            bundle = build_prompt_bundle(session)
+            return _PersonaMetaResult(
+                system_prompt=bundle.system_prompt,
+                character_name=character_name,
+                master_name=master_name,
+                applied=True,
+                fallback_reason=None,
+            )
+        except PreviewNotReady:
+            fallback_reason = "preview_not_ready"
+        except Exception as exc:  # noqa: BLE001 — last-chance fallback
+            python_logger().warning(
+                "judge._extract_persona_meta: build_prompt_bundle raised "
+                "%s; falling back to legacy stored-prompt path. detail=%s",
+                type(exc).__name__, exc,
+            )
+            fallback_reason = "bundle_error"
+    else:
+        fallback_reason = None
+
+    stored_prompt = str(persona.get("system_prompt") or "")
     resolved = stored_prompt
     if character_name:
         resolved = resolved.replace("{LANLAN_NAME}", character_name)
     if master_name:
         resolved = resolved.replace("{MASTER_NAME}", master_name)
-    return resolved, character_name, master_name
+    return _PersonaMetaResult(
+        system_prompt=resolved,
+        character_name=character_name,
+        master_name=master_name,
+        applied=False,
+        fallback_reason=fallback_reason,
+    )
 
 
 def _override_to_model_config(
@@ -665,6 +770,95 @@ def _override_to_model_config(
     )
 
 
+#: Keys that :class:`BaseJudger` subclasses set in ``_build_ctx`` **before**
+#: the ``ctx.update(inputs.extra_context or {})`` line. If the caller's
+#: ``extra_context`` payload contains any of these, the supplied value
+#: wins — effectively taking control of the judge prompt's core
+#: placeholders. This is a legitimate (if specialised) feature for
+#: testbench power users but crosses a security boundary worth an
+#: audit-log line, see PLAN §13 F4 + AGENT_NOTES §4.27 #97 (I2).
+#:
+#: Not included here: purely decorative keys like ``target_message_ids``
+#: / ``scope`` which the template may reference but ``_build_ctx`` does
+#: not set (those are **additions**, not overrides).
+_JUDGE_CTX_OVERRIDE_KEYS: frozenset[str] = frozenset({
+    "system_prompt",
+    "history",
+    "conversation",
+    "user_input",
+    "ai_response",
+    "reference_response",
+    "character_name",
+    "master_name",
+})
+
+
+def _audit_extra_context_override(
+    extra_context: dict[str, Any] | None,
+    *,
+    schema_id: str,
+    session_id: str | None,
+) -> None:
+    """Log a warning iff ``extra_context`` overrides judger-managed keys.
+
+    PLAN §13 F4 (post-P22 hardening). ``extra_context`` is the escape
+    hatch that lets a request inject custom ``{my_tag}`` values into a
+    schema's ``prompt_template``. Because its ``dict.update`` is applied
+    *after* :meth:`BaseJudger._build_ctx` assembles the canonical
+    context, any key collision silently replaces testbench-managed
+    values (``system_prompt``, ``history``, the ``<user_content>``-
+    wrapped chat turn, etc.) with caller-controlled text. That is
+    effectively full judge-prompt control — consent-worthy, but
+    explicitly not blocked (core principle: testbench must let users
+    mount adversarial tests on purpose).
+
+    This helper produces two audit trails:
+
+    * ``python_logger().warning(...)`` so the line lands in the
+      rotating server log for offline review.
+    * ``diagnostics_store.record_internal(level="warning", ...)`` so the
+      Diagnostics → Errors UI surfaces it to whoever is running the
+      session right now, matching the "report but don't block" pattern
+      used for the P21.3 F3 injection-detection badges.
+
+    No audit is emitted when:
+
+    * ``extra_context`` is ``None`` / empty.
+    * ``extra_context`` contains only **non-override** keys (i.e. user
+      just added ``{custom_tag}`` placeholders their template uses —
+      the safe / intended case).
+    """
+    if not extra_context:
+        return
+    overridden = sorted(k for k in extra_context if k in _JUDGE_CTX_OVERRIDE_KEYS)
+    if not overridden:
+        return
+    python_logger().warning(
+        "[judge] extra_context override detected: schema=%s session=%s "
+        "keys=%s (these replace testbench-managed judge prompt context)",
+        schema_id, session_id or "?", overridden,
+    )
+    try:
+        diagnostics_store.record_internal(
+            op=DiagnosticsOp.JUDGE_EXTRA_CONTEXT_OVERRIDE,
+            message=(
+                f"judge_run extra_context overrides core keys "
+                f"{overridden}; caller controls judge prompt context."
+            ),
+            level="warning",
+            session_id=session_id,
+            detail={
+                "schema_id": schema_id,
+                "override_keys": overridden,
+                "total_keys": sorted(extra_context.keys()),
+            },
+        )
+    except Exception:  # noqa: BLE001 - audit must never break the run
+        python_logger().exception(
+            "[judge] failed to record extra_context audit event"
+        )
+
+
 @router.post("/run")
 async def judge_run(body: _JudgeRunRequest) -> dict[str, Any]:
     """Run one or more judger calls against the active session.
@@ -675,6 +869,12 @@ async def judge_run(body: _JudgeRunRequest) -> dict[str, Any]:
     (no session / unknown schema / empty message list).
     """
     session = _require_session()
+
+    _audit_extra_context_override(
+        body.extra_context,
+        schema_id=body.schema_id,
+        session_id=getattr(session, "id", None),
+    )
 
     try:
         schema = load_schema_by_id(body.schema_id)
@@ -694,7 +894,12 @@ async def judge_run(body: _JudgeRunRequest) -> dict[str, Any]:
     except JudgeRunError as exc:
         raise _judge_run_error_to_http(exc) from exc
 
-    system_prompt, character_name, master_name = _extract_persona_meta(session)
+    persona_meta = _extract_persona_meta(
+        session, match_main_chat=bool(body.match_main_chat),
+    )
+    system_prompt = persona_meta.system_prompt
+    character_name = persona_meta.character_name
+    master_name = persona_meta.master_name
 
     runs: list[JudgeInputs] = []
     if schema.granularity == "single":
@@ -811,42 +1016,26 @@ async def judge_run(body: _JudgeRunRequest) -> dict[str, Any]:
         "persisted_count": persisted_count,
         "error_count": error_count,
         "total": len(results),
+        # P24 §3.4 F6: signal whether match_main_chat was honored.
+        # Three states:
+        #   - requested=False, applied=False → not asked (default path)
+        #   - requested=True,  applied=True  → full build_prompt_bundle
+        #   - requested=True,  applied=False → fallback, reason in field
+        "match_main_chat_requested": bool(body.match_main_chat),
+        "match_main_chat_applied": persona_meta.applied,
+        "match_main_chat_fallback_reason": persona_meta.fallback_reason,
     }
 
 
-def _coerce_bool(value: Any) -> bool | None:
-    """Normalize user-supplied bool-ish values.
-
-    The ``GET /results`` endpoint receives booleans through FastAPI
-    (which already coerces ``"true"`` / ``"false"``) but the JSON body
-    of ``POST /export_report`` leaves filter values as raw strings. A
-    naive ``bool(s)`` would treat ``"false"`` as True (non-empty string)
-    and silently flip filter semantics; so every caller that might see
-    a string goes through this helper first.
-    """
-    if value is None or value == "":
-        return None
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in {"true", "1", "yes", "y"}:
-            return True
-        if lowered in {"false", "0", "no", "n"}:
-            return False
-    return None
-
-
-def _coerce_float(value: Any) -> float | None:
-    """Coerce numeric filter fields; ``None`` on empty / invalid."""
-    if value is None or value == "":
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
+# P24 §13.3 (2026-04-21): these helpers moved to
+# ``pipeline/request_helpers.py`` as shared module-level utilities. Other
+# routers (memory_router / config_router / persona_router) that parse
+# raw dict bodies should also use them. The aliases below preserve
+# legacy call sites in this file (``_coerce_bool(...)``) with zero diff.
+from tests.testbench.pipeline.request_helpers import (  # noqa: E402
+    coerce_bool as _coerce_bool,
+    coerce_float as _coerce_float,
+)
 
 
 def _result_matches(

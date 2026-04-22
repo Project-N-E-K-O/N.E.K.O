@@ -17,11 +17,13 @@ import { renderApiKeysPage } from './settings/page_api_keys.js';
 import { renderProvidersPage } from './settings/page_providers.js';
 import { renderUiPage } from './settings/page_ui.js';
 import { renderAboutPage } from './settings/page_about.js';
+import { renderAutosavePage } from './settings/page_autosave.js';
 
 const PAGES = [
   { id: 'models',    render: renderModelsPage,    navKey: 'settings.nav.models' },
   { id: 'api_keys',  render: renderApiKeysPage,   navKey: 'settings.nav.api_keys' },
   { id: 'providers', render: renderProvidersPage, navKey: 'settings.nav.providers' },
+  { id: 'autosave',  render: renderAutosavePage,  navKey: 'settings.nav.autosave' },
   { id: 'ui',        render: renderUiPage,        navKey: 'settings.nav.ui' },
   { id: 'about',     render: renderAboutPage,     navKey: 'settings.nav.about' },
 ];

@@ -103,6 +103,7 @@ from tests.testbench.chat_messages import (
     make_message,
 )
 from tests.testbench.logger import python_logger
+from tests.testbench.pipeline.messages_writer import append_message
 from tests.testbench.pipeline.auto_dialog import (
     AutoDialogConfig,
     AutoDialogError,
@@ -316,9 +317,22 @@ class _SendRequest(BaseModel):
     Mirrors the composer's "Next turn +Δt" buttons, so the UI can send
     both in a single round-trip instead of /time/stage_next_turn then
     /chat/send.
+
+    2026-04-22 Day 8 验收反馈 #3: ``content`` 改为可空. 场景: rerun-from-user
+    截断后末尾是 user, 用户期望"让 AI 直接对这条已有 user 回复"而不是"再
+    手打一条 user". 空字符串 → pipeline 走 ``stream_send(user_content=None)``
+    "只跑 LLM" 路径, 避免产生连续两条 user. 后端 ``chat_runner`` 会校验
+    session.messages 末尾是 user 再跑 — 如果末尾不是 user 就会 422 报错.
     """
 
-    content: str = Field(..., description="User message text.")
+    content: str = Field(
+        default="",
+        description=(
+            "User message text. 空字符串 = '不追加新消息, 直接让 AI 对末尾"
+            "已有的 user 消息生成回复' (常用于 rerun-from-user 之后). 末尾不是"
+            "user 时后端会 422."
+        ),
+    )
     role: str = Field(default=ROLE_USER, description="user or system.")
     source: str = Field(
         default=SOURCE_MANUAL,
@@ -396,7 +410,13 @@ async def add_message(body: _AddMessageRequest) -> dict[str, Any]:
                 source=body.source,
                 reference_content=body.reference_content,
             )
-            session.messages.append(msg)
+            # check_timestamp_monotonic was already called above (line ~384),
+            # so the append cannot violate monotonicity here. Going through
+            # the chokepoint anyway satisfies .cursor/rules/single-append-message
+            # and keeps one code path. on_violation="raise" matches the existing
+            # 422 UX for the manual-add endpoint. We discard the AppendResult
+            # since raise mode never populates ``.coerced``.
+            append_message(session, msg, on_violation="raise")
             session.logger.log_sync(
                 "chat.messages.add",
                 payload={
@@ -692,9 +712,14 @@ async def _send_event_stream(
             backend = get_chat_backend()
             stream_ok = False
             try:
+                # 2026-04-22 Day 8 #3: 空字符串 → None, 触发 pipeline 的
+                # "只跑 LLM 对末尾已有 user 回复" 路径. pipeline 自己校验
+                # 末尾必须是 user, 否则抛 ValueError → 下面 Exception 分支
+                # 翻译成友好错误.
+                user_content_arg = body.content if body.content else None
                 async for event in backend.stream_send(
                     session,
-                    user_content=body.content,
+                    user_content=user_content_arg,
                     role=body.role,
                     source=body.source,
                 ):
@@ -704,6 +729,16 @@ async def _send_event_stream(
                 yield _sse_frame({
                     "event": "error",
                     "error": {"type": exc.code, "message": exc.message},
+                })
+            except ValueError as exc:
+                # pipeline 的预检查 (比如 stream_send(user_content=None)
+                # 要求末尾是 user) 走 ValueError. 给前端一个友好的 error_type.
+                yield _sse_frame({
+                    "event": "error",
+                    "error": {
+                        "type": "InvalidSendState",
+                        "message": str(exc),
+                    },
                 })
             except Exception as exc:  # noqa: BLE001 — last-chance safety net
                 python_logger().exception(
@@ -1197,11 +1232,16 @@ async def script_run_all() -> StreamingResponse:
 def _auto_error_to_http(exc: AutoDialogError) -> HTTPException:
     """AutoDialogError → HTTPException. 沿用 script/simuser 的错误包装风格,
     便于前端 error_bus 按 ``detail.error_type`` 选 toast 文案.
+
+    P24 Day 7 (§12.3.F): 若 ``exc.errors`` 非空 (批量校验错误), 多挂一个
+    ``errors: list[str]`` 字段让前端 ``auto_banner`` 渲染多行折叠面板
+    (既避免 toast 被 280 字符截断, 又省得用户需要解析 "err1; err2; err3"
+    合成字符串).
     """
-    return HTTPException(
-        status_code=exc.status,
-        detail={"error_type": exc.code, "message": exc.message},
-    )
+    detail: dict[str, Any] = {"error_type": exc.code, "message": exc.message}
+    if exc.errors:
+        detail["errors"] = list(exc.errors)
+    return HTTPException(status_code=exc.status, detail=detail)
 
 
 class _AutoDialogStartRequest(BaseModel):

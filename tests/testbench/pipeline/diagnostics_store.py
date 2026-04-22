@@ -84,6 +84,13 @@ _LOCK = threading.Lock()
 _BUFFER: list[DiagnosticsError] = []
 _COUNTER = 0
 
+# P24 Day 10 §14.4 M4: one-shot flag that flips True the first time
+# the ring overflows in the current "fill cycle" (from last clear()
+# or from cold start). Prevents the overflow notice from flooding
+# when the ring is full and every new record evicts an old one.
+# Cleared on ``clear()`` or when buffer drops back below MAX_ERRORS.
+_RING_FULL_NOTICE_FIRED: bool = False
+
 
 def _next_id() -> str:
     """Generate a short monotonic id. ``e`` + base36(ms) + counter so
@@ -97,12 +104,81 @@ def _next_id() -> str:
     return f"e{ms:x}{_COUNTER:x}{suffix}"
 
 
+def _build_ring_full_notice() -> DiagnosticsError:
+    """Construct the one-shot "ring overflowed, older entries dropped"
+    self-describing entry. Does NOT take the lock — caller already holds
+    it inside :func:`_push`.
+
+    Uses the ``DiagnosticsOp`` registry for the op string and message
+    prefix so Errors subpage's security filter can co-list it with
+    the other maintenance-category events.
+    """
+    return DiagnosticsError(
+        id=_next_id(),
+        at=datetime.now().isoformat(timespec="seconds"),
+        source="pipeline",
+        level="warning",
+        type="diagnostics_ring_full",
+        message=(
+            f"Diagnostics ring buffer reached its {MAX_ERRORS}-entry cap; "
+            "older entries are now being evicted."
+        ),
+        detail={"max_errors": MAX_ERRORS, "cycle_warn_once": True},
+    )
+
+
 def _push(entry: DiagnosticsError) -> None:
+    """Append ``entry`` and enforce the ring-buffer cap.
+
+    When the cap is breached for the first time in the current fill
+    cycle we:
+
+    1. Log once at WARNING via the python logger (so stderr/live log
+       captures the event even if the UI never opens).
+    2. Inject a self-describing ``diagnostics_ring_full`` entry so the
+       Errors subpage shows a breadcrumb.
+    3. Set the ``_RING_FULL_NOTICE_FIRED`` one-shot flag until
+       :func:`clear` resets it (or the buffer organically drops below
+       the cap).
+
+    The notice is NEVER evicted by the same overflow that created it:
+    it is appended *after* the oversized segment is trimmed, guaranteeing
+    it survives into the user-visible ring.
+    """
+    global _RING_FULL_NOTICE_FIRED
     with _LOCK:
         _BUFFER.append(entry)
         overflow = len(_BUFFER) - MAX_ERRORS
         if overflow > 0:
             del _BUFFER[:overflow]
+            if not _RING_FULL_NOTICE_FIRED:
+                _RING_FULL_NOTICE_FIRED = True
+                # Log to python logger *before* injecting the notice
+                # so stderr order reflects "real overflow → breadcrumb".
+                # We deliberately use a bare python_logger to avoid the
+                # re-entrance that would happen if we called back into
+                # :func:`record_internal` (which reacquires _LOCK).
+                try:
+                    import logging
+                    logging.getLogger("testbench").warning(
+                        "diagnostics_store: ring buffer full "
+                        "(%d entries); older entries will be evicted "
+                        "from here on. Fires once per fill cycle.",
+                        MAX_ERRORS,
+                    )
+                except Exception:  # logging must never crash the push
+                    pass
+                notice = _build_ring_full_notice()
+                _BUFFER.append(notice)
+                # Re-trim if the notice itself put us over cap.
+                overflow2 = len(_BUFFER) - MAX_ERRORS
+                if overflow2 > 0:
+                    del _BUFFER[:overflow2]
+        else:
+            # Buffer dropped (e.g. after a targeted clear-by-source);
+            # allow the next overflow to fire its own notice.
+            if _RING_FULL_NOTICE_FIRED and len(_BUFFER) < MAX_ERRORS:
+                _RING_FULL_NOTICE_FIRED = False
 
 
 def record(
@@ -147,7 +223,24 @@ def record_internal(
     session_id: Optional[str] = None,
     detail: Optional[dict[str, Any]] = None,
 ) -> DiagnosticsError:
-    """Convenience for pipeline modules. ``op`` becomes the ``type``."""
+    """Convenience for pipeline modules. ``op`` becomes the ``type``.
+
+    P24 §4.3 H (2026-04-21): ``detail`` is passed through
+    :func:`tests.testbench.pipeline.redact.redact_secrets` as a
+    defense-in-depth layer. Callers are **already expected** to not
+    shove raw ``session.model_config`` or provider auth state into
+    ``detail`` — audit confirmed the 5 existing call sites all pass
+    curated dicts without credentials. But the ring buffer is read
+    by the Errors subpage (visible to anyone who opens the app on the
+    local machine, and anyone on the LAN if ``--host 0.0.0.0``), so
+    the cost of this safety net is tiny (deepcopy walk of small dicts)
+    vs the cost of one day a future caller accidentally including a
+    credential field. No-op on ``None`` input.
+    """
+    if detail is not None:
+        # Lazy import to avoid a circular during module init
+        from tests.testbench.pipeline.redact import redact_secrets
+        detail = redact_secrets(detail)
     return record(
         source="pipeline",
         type=op,
@@ -166,8 +259,19 @@ def list_errors(
     level: Optional[str] = None,
     session_id: Optional[str] = None,
     search: Optional[str] = None,
+    op_type: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Return ``{total, matched, items}`` newest-first after filtering."""
+    """Return ``{total, matched, items}`` newest-first after filtering.
+
+    ``op_type`` — P24 §15.2 D / F7 Option B: exact-match on
+    ``DiagnosticsError.type``. Accepts a single op string (e.g.
+    ``"integrity_check"``) or a comma-separated list (e.g.
+    ``"integrity_check,judge_extra_context_override,timestamp_coerced"``).
+    Used by the Security filter buttons on the Errors subpage so
+    security-relevant internal ops can be isolated without relying on
+    fuzzy ``search`` matching (op strings are tokens, but ``search``
+    also matches substrings of user messages, which can drift).
+    """
     with _LOCK:
         snapshot = list(_BUFFER)
     total = len(snapshot)
@@ -179,6 +283,10 @@ def list_errors(
         items = [e for e in items if e.level == level]
     if session_id:
         items = [e for e in items if e.session_id == session_id]
+    if op_type:
+        allowed = {tok.strip() for tok in op_type.split(",") if tok.strip()}
+        if allowed:
+            items = [e for e in items if (e.type or "") in allowed]
     if search:
         needle = search.lower()
         items = [
@@ -207,15 +315,24 @@ def get_by_id(error_id: str) -> Optional[DiagnosticsError]:
 def clear(*, source: Optional[str] = None) -> int:
     """Drop errors (optionally filtered by ``source``) and return the
     number removed. ``source=None`` wipes everything.
+
+    Clearing also resets the ring-full one-shot flag so the *next* time
+    the buffer fills up the overflow notice fires again — otherwise the
+    user would clear to reset, hit the cap again, and see no breadcrumb
+    telling them evictions had resumed.
     """
+    global _RING_FULL_NOTICE_FIRED
     with _LOCK:
         before = len(_BUFFER)
         if source is None:
             _BUFFER.clear()
+            _RING_FULL_NOTICE_FIRED = False
             return before
         keep = [e for e in _BUFFER if e.source != source]
         removed = before - len(keep)
         _BUFFER[:] = keep
+        if len(_BUFFER) < MAX_ERRORS:
+            _RING_FULL_NOTICE_FIRED = False
         return removed
 
 

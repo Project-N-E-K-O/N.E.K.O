@@ -169,6 +169,22 @@ export function initErrorsBus() {
     });
   });
 
+  // P24 hotfix #105 (2026-04-21): 当 api.js 的 burst circuit breaker 熔断
+  // 时, 写入**一条** synthetic 错误让用户在 Diagnostics → Errors 看到
+  // "发生过 http:error 风暴", 这条本身不会再触发 emit('http:error') 或
+  // 额外 pushError (避免冷却期内自激).
+  on('http:error:burst_tripped', (payload) => {
+    pushError({
+      source: 'synthetic',
+      type: 'HttpErrorBurstTripped',
+      level: 'warning',
+      message: `http:error 风暴熔断: ${payload?.threshold || '?'}/${payload?.window_ms || '?'}ms, `
+        + `静默 ${payload?.cooldown_ms || '?'}ms. 最后一次: `
+        + `${payload?.last_method || '?'} ${payload?.last_url || '?'} → ${payload?.last_status || '?'}`,
+      detail: payload,
+    });
+  });
+
   on('sse:error', (payload) => {
     pushError({
       source: 'sse',

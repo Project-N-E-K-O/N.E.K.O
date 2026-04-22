@@ -35,6 +35,7 @@ import { api } from '../../core/api.js';
 import { i18n } from '../../core/i18n.js';
 import { store, on } from '../../core/state.js';
 import { el } from '../_dom.js';
+import { openSessionExportModal } from '../session_export_modal.js';
 
 const LS_FILTER_KEY = 'testbench:evaluation:results:filter:v1';
 
@@ -112,10 +113,23 @@ export async function renderAggregatePage(host) {
   renderAll(root, state);
 }
 
+// P24 §14.4 M3: abort prev on rapid filter / schema-switch clicks.
+let _aggregateLoadController = null;
+
 async function loadAggregate(state) {
+  if (_aggregateLoadController) {
+    try { _aggregateLoadController.abort(); } catch { /* ignore */ }
+  }
+  const controller = new AbortController();
+  _aggregateLoadController = controller;
   state.loading = true;
   const qs = filterToQs(state.filter);
-  const resp = await api.get(`/api/judge/aggregate${qs}`, { expectedStatuses: [404] });
+  const resp = await api.get(`/api/judge/aggregate${qs}`, {
+    expectedStatuses: [404],
+    signal: controller.signal,
+  });
+  if (resp.error?.type === 'aborted') { state.loading = false; return; }
+  if (_aggregateLoadController === controller) _aggregateLoadController = null;
   if (resp.ok) {
     state.aggregate = resp.data?.aggregate || null;
     state.matched = resp.data?.matched || 0;
@@ -163,7 +177,22 @@ function renderIntro(state) {
     .filter(([, v]) => v !== '' && v != null)
     .map(([k]) => k);
   const wrap = el('div', { className: 'eval-aggregate-intro' });
-  wrap.append(el('p', { className: 'intro' }, i18n('evaluation.aggregate.intro')));
+  // Intro row: description on the left, P23 session-report export
+  // button on the right. The button is scoped to conversation+evaluations
+  // + markdown by default — the most common "I want a reviewer-shareable
+  // record" flow. Advanced users can tweak scope/format in the modal.
+  const topRow = el('div', { className: 'eval-aggregate-intro-row' });
+  topRow.append(el('p', { className: 'intro' }, i18n('evaluation.aggregate.intro')));
+  topRow.append(el('button', {
+    className: 'small',
+    title: i18n('evaluation.aggregate.export_btn_hint'),
+    onClick: () => openSessionExportModal({
+      scope: 'conversation_evaluations',
+      format: 'markdown',
+      subtitle: i18n('evaluation.aggregate.export_modal_subtitle'),
+    }),
+  }, i18n('evaluation.aggregate.export_btn')));
+  wrap.append(topRow);
   if (activeKeys.length) {
     const chips = el('div', { className: 'eval-results-filter-chips' });
     for (const k of activeKeys) {

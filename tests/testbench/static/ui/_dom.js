@@ -49,6 +49,32 @@ export function el(tag, attrs = {}, ...children) {
 }
 
 /**
+ * safeAppend(parent, ...children) — variadic append with null/false/undefined
+ * filtering. Same semantics as `el()`'s children handling: arrays flat; null /
+ * undefined / false children skipped; non-Node children coerced to text nodes.
+ *
+ * Use this when you have *raw* `parent.append()` calls with conditionals like
+ *   `parent.append(cond ? nodeA : null)`   // ← renders literal "null"
+ *   `parent.append(flag && el(...))`       // ← renders "false" when !flag
+ * Native `Node.prototype.append` coerces non-Node args via String() and inserts
+ * text nodes silently — see skill `dom-append-null-gotcha`.
+ *
+ * Prefer `el(...)` which already guards internally; only reach for
+ * `safeAppend` when you've built the parent elsewhere and need to dump a
+ * variadic list of possibly-null nodes into it.
+ *
+ * P24 Day 6C (2026-04-21) sweep: audited all render helpers that return null;
+ * every caller is already guarded with `if (node) parent.append(node)`. This
+ * helper exists as a forward-defence for future additions.
+ */
+export function safeAppend(parent, ...children) {
+  for (const c of children.flat()) {
+    if (c == null || c === false) continue;
+    parent.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  }
+}
+
+/**
  * Build a labelled form row.
  *
  * @param {string} labelText — text of the <label>

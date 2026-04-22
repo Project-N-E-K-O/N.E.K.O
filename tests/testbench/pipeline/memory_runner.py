@@ -317,18 +317,12 @@ def _read_json_dict(path: Path) -> dict[str, Any]:
     return data
 
 
-def _atomic_write_json(path: Path, data: Any) -> None:
-    """``tmp + os.replace`` — same convention as memory_router.
-
-    Separate copy here instead of importing from the router to keep
-    pipeline code free of FastAPI imports.
-    """
-    import os as _os
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as fp:
-        json.dump(data, fp, ensure_ascii=False, indent=2)
-    _os.replace(tmp, path)
+# P24 §4.1.2 (2026-04-21): was a local non-fsync copy, now delegates to
+# the unified atomic_io chokepoint so this module shares the fsync guard
+# with persistence.py / memory_router / script_runner / scoring_schema /
+# snapshot_store. Callers keep using ``_atomic_write_json`` to minimize
+# diff; the helper now just wraps ``atomic_io.atomic_write_json``.
+from tests.testbench.pipeline.atomic_io import atomic_write_json as _atomic_write_json  # noqa: E402
 
 
 def _resolve_memory_cfg(session: Session) -> ModelGroupConfig:

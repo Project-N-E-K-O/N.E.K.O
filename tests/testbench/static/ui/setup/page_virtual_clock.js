@@ -20,6 +20,7 @@
 import { api } from '../../core/api.js';
 import { i18n } from '../../core/i18n.js';
 import { toast } from '../../core/toast.js';
+import { emit } from '../../core/state.js';
 import { el } from '../_dom.js';
 import {
   parseDurationText,
@@ -94,7 +95,24 @@ function refresh(ctx, newState) {
 async function mutate(ctx, path, method, body) {
   const res = await api.request(path, { method, body });
   if (!res.ok) return false;
+  // P24 §12.5 L2: time_router may return { warning: {...} } when the
+  // new cursor rewinds past the last message timestamp. Surface the
+  // Chinese message_cn as a warn toast so the user knows subsequent
+  // messages will get coerced. We don't abort the mutation — the
+  // user already clicked, and coerce + toast on each chat send is
+  // the downstream safety net.
+  const warning = res.data?.warning;
+  if (warning && typeof warning === 'object' && warning.message_cn) {
+    toast.warn(warning.message_cn, { duration: 8000 });
+  }
   refresh(ctx, res.data);
+  // P24 §12.1 event bus audit (2026-04-21): 补 `clock:change` emit —
+  // composer:1271 监听此事件重渲染时间显示, 但此前全仓 0 emit (反向 B12
+  // 违规). 虚拟时钟页任何成功 mutate (set / advance / bootstrap /
+  // per_turn_default / stage_next_turn / reset) 都会产生 clock 变化,
+  // composer 如果已 mount 需要同步. payload 传整个新 clock snapshot,
+  // composer 也自己再 formatIsoReadable, 所以 payload shape 很宽松.
+  emit('clock:change', { clock: res.data?.clock || res.data, source: path });
   return true;
 }
 
@@ -267,13 +285,21 @@ function renderBootstrapCard(ctx) {
         // pass `null` explicitly (vs. "not set") to signal clearing, and
         // omit initial_last_gap_seconds from the body entirely.
         const res = await api.put('/api/time/bootstrap', { bootstrap_at: null, sync_cursor: false });
-        if (res.ok) { refresh(ctx, res.data); toast.ok(i18n('setup.virtual_clock.status.cleared')); }
+        if (res.ok) {
+          refresh(ctx, res.data);
+          emit('clock:change', { clock: res.data?.clock || res.data, source: '/api/time/bootstrap' });
+          toast.ok(i18n('setup.virtual_clock.status.cleared'));
+        }
       },
     }, i18n('setup.virtual_clock.bootstrap.clear_bootstrap_btn')),
     el('button', {
       onClick: async () => {
         const res = await api.put('/api/time/bootstrap', { initial_last_gap_seconds: null });
-        if (res.ok) { refresh(ctx, res.data); toast.ok(i18n('setup.virtual_clock.status.cleared')); }
+        if (res.ok) {
+          refresh(ctx, res.data);
+          emit('clock:change', { clock: res.data?.clock || res.data, source: '/api/time/bootstrap' });
+          toast.ok(i18n('setup.virtual_clock.status.cleared'));
+        }
       },
     }, i18n('setup.virtual_clock.bootstrap.clear_gap_btn')),
     status,
@@ -414,7 +440,11 @@ function renderPendingCard(ctx) {
     el('button', {
       onClick: async () => {
         const res = await api.request('/api/time/stage_next_turn', { method: 'DELETE' });
-        if (res.ok) { refresh(ctx, res.data); toast.ok(i18n('setup.virtual_clock.status.cleared')); }
+        if (res.ok) {
+          refresh(ctx, res.data);
+          emit('clock:change', { clock: res.data?.clock || res.data, source: '/api/time/stage_next_turn' });
+          toast.ok(i18n('setup.virtual_clock.status.cleared'));
+        }
       },
     }, i18n('setup.virtual_clock.pending.clear_btn')),
     status,

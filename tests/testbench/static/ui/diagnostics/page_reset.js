@@ -240,7 +240,7 @@ async function doReset(level, state, host) {
     toast.ok(i18n('diagnostics.reset.toast.done_fmt',
       i18n(`diagnostics.reset.level.${level}.title`)));
 
-    // ── Hard Reset 特殊路径: 强制 reload ─────────────────────────
+    // ── Hard / Medium: 强制 reload 路径 ──────────────────────────
     // Hard Reset 语义 = "沙盒清零 + persona 清零 + memory 清零 + 时间
     // 线裁剪". 后端执行完后, session.id 保留, 但前端所有挂载的组件
     // (composer / preview / memory 页 / persona 页 / stage chip / ...
@@ -256,14 +256,14 @@ async function doReset(level, state, host) {
     //       边界 bug.
     //
     // 2026-04-20 用户反馈"Hard Reset 后浏览器卡 → 电脑黑屏硬重启" —
-    // 最可能就是 (a) + (b) 叠加把用户系统资源推上临界点. Hard Reset
-    // 既然本来就是"彻底归零", 直接 `location.reload()` 刷新页面最
-    // 符合用户心智也最稳: 单次 GET /api/session 回到干净初态, 不经
-    // 任何跨组件级联.
+    // 最可能就是 (a) + (b) 叠加把用户系统资源推上临界点.
     //
-    // Soft / Medium 保留原广播逻辑 — 它们会话里仍有数据, 级联刷新能
-    // 跑在熟悉的路径上, 不会触发 (a)(b) 组合拳.
-    if (level === 'hard') {
+    // 2026-04-22 P24 §4.27 #105 同族 sweep: **Medium Reset 也纳入 reload**
+    // — LESSONS §7 #20 量化判据第 5 条 "memory/ 目录被清空或替换" 命中
+    // Medium (语义是"清 messages + 清 memory, 保留 persona"), 同族地雷.
+    // Soft Reset 仍走 surgical: 只清 messages, persona/memory 仍在, 订阅
+    // 者的"有数据"渲染路径安全.
+    if (level === 'hard' || level === 'medium') {
       // 给 toast 200ms 显示时间让用户看到成功提示再刷.
       setTimeout(() => {
         try { window.location.reload(); } catch { /* ignore */ }
@@ -272,9 +272,9 @@ async function doReset(level, state, host) {
       return;
     }
 
-    // Soft / Medium: 精简广播 — 只发真有订阅者的事件.
-    // (messages:needs_refresh / memory:needs_refresh 当前没人订阅,
-    //  发了是噪音; stage + snapshots 有订阅者, 保留.)
+    // Soft Reset: 只清 messages, 保留 persona + memory. 精简广播 —
+    // 只发真有订阅者的事件 (messages:needs_refresh / memory:needs_refresh
+    // 当前没人订阅, 发了是噪音; stage + snapshots 有订阅者, 保留).
     emit('snapshots:changed', { reason: 'reset', level });
     emit('stage:needs_refresh', { source: 'reset_page' });
     // 拉一次 session 描述同步 snapshot_count / message_count.
@@ -287,7 +287,7 @@ async function doReset(level, state, host) {
     } catch { /* ignore */ }
   } else if (res.status === 409) {
     toast.err(i18n('diagnostics.reset.toast.busy_fmt',
-      res.data?.detail?.busy_op || '?'));
+      res.error?.busy_op || '?'));
   } else if (res.status === 404) {
     toast.err(i18n('diagnostics.reset.no_session'));
   } else {

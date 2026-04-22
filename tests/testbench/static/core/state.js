@@ -19,10 +19,27 @@ const listeners = new Map();   // key -> Set<fn>
 const _state = {
   session: null,         // { id, name, state, busy_op, ... } 或 null
   active_workspace: 'setup',
-  errors: [],            // 最近错误队列 (P19 填充; P03 先空)
-  ui_prefs: {
-    // Settings → UI 控制的偏好, P04 接入持久化, 当前用默认值
-  },
+  errors: [],            // 最近错误队列 (errors_bus 收 http:error / sse:error 等)
+  //
+  // ui_prefs 子字段分两类语义, 订阅规则截然不同:
+  //
+  //   (A) 持久 UI 偏好 (language / theme / snapshot_limit / fold_defaults …) —
+  //       读写用 `store.ui_prefs?.<key>`, 写入后自动 emit `ui_prefs:change`.
+  //       消费方**可以**订阅 `ui_prefs:change` 做实时响应.
+  //
+  //   (B) one-shot navigation hint (evaluation_results_filter / diagnostics_errors_filter …)
+  //       ⚠️ **禁止订阅 `ui_prefs:change` 来消费**. 必须走协调者
+  //       force-remount 模式 (workspace_evaluation.js::consumeHintIfPresent).
+  //       理由: 子页生命周期不稳 (mount/unmount 时机复杂) + ES 模块
+  //       缓存偶发漂移, 接收方订阅方案在 jsdom 单测能过但**浏览器实测
+  //       偶发失灵** (P17 hotfix 4→5 踩点, 详见 AGENT_NOTES §4.23 #78).
+  //       由导航协调者 (生命周期稳定的 workspace 入口) 检测 hint 并强制
+  //       `selectPage(stored)` remount 才稳定.
+  //
+  // 新加 one-shot hint 类字段时, 命名约定带 `_filter` / `_hint` 后缀,
+  // 并配套在协调者 `consumeHintIfPresent()` 里处理. 新加持久偏好类字段
+  // 可直接订阅. 若分不清属于哪类, 默认走 (B) 协调者模式更保险.
+  ui_prefs: {},
 };
 
 // ── 访问 ─────────────────────────────────────────────────────────
@@ -80,10 +97,39 @@ export function off(event, fn) {
 const _emitDepth = new Map();
 const _MAX_EMIT_DEPTH = 8;
 
+// ── dev-only dead-emit detector (P24 §12.1 DEBUG_UNLISTENED) ────────
+//
+// 触发: URL 带 `?dev=1` 或在 devtools 手设 `window.__DEBUG_EVENT_BUS__ = true`.
+// 行为: emit 一个完全没有 listener 的 event 时 console.warn 一次 (每个
+//       event 只 warn 一次避免刷屏). 生产环境静默.
+// 配套: p24_lint_drift_smoke.py Rule 5 在构建期做静态检查; 这个 hook
+//       负责抓 "静态绕过但运行期出现" 的漂移 (eg. 某 listener 注册路径
+//       有条件 feature flag 关掉但 emit 仍在跑).
+const _deadEmitWarned = new Set();
+function _isDevMode() {
+  if (typeof window === 'undefined') return false;
+  if (window.__DEBUG_EVENT_BUS__ === true) return true;
+  try {
+    return new URLSearchParams(window.location.search).get('dev') === '1';
+  } catch {
+    return false;
+  }
+}
+
 /** 发布事件. 监听器异常不会互相影响; 超过递归上限会主动熔断. */
 export function emit(event, payload) {
   const set = listeners.get(event);
-  if (!set) return;
+  if (!set || set.size === 0) {
+    if (_isDevMode() && !_deadEmitWarned.has(event)) {
+      _deadEmitWarned.add(event);
+      console.warn(
+        `[state] dead emit '${event}' — no listener registered. `
+        + `Either add an on('${event}', ...) somewhere or remove the emit. `
+        + `(This warning appears once per event; see P24 §12.1.)`,
+      );
+    }
+    return;
+  }
   const depth = (_emitDepth.get(event) || 0) + 1;
   if (depth > _MAX_EMIT_DEPTH) {
     // 不再调用 listener. 这几乎一定是 bug (某个 listener 在 reacting
