@@ -37,6 +37,21 @@ _global_language_initialized = False
 _global_region: Optional[str] = None  # 'china' 或 'non-china'
 
 
+def _matches_lang_code(lang_lower: str, code: str, aliases: Optional[set] = None) -> bool:
+    """检查语言字符串是否匹配指定的语言 code，支持精确码、locale 后缀（`xx-XX`/`xx_XX`）和显式别名。
+
+    用法：避免 `startswith('es')` 这种宽松匹配把 `estonian`、`esperanto` 误归到西语。
+    传入 aliases 集合（如 `{'spanish', 'latam'}`）可显式接收 Steam/系统的别名。
+    """
+    aliases = aliases or set()
+    return (
+        lang_lower == code
+        or lang_lower.startswith(f'{code}-')
+        or lang_lower.startswith(f'{code}_')
+        or lang_lower in aliases
+    )
+
+
 def _is_china_region() -> bool:
     """
     判断当前系统是否在中文区
@@ -100,9 +115,9 @@ def _get_system_language() -> str:
             return 'ko'
         if s.startswith('ru') or 'russian' in s:
             return 'ru'
-        if s.startswith('es') or 'spanish' in s:
+        if _matches_lang_code(s, 'es', {'spanish', 'latam'}):
             return 'es'
-        if s.startswith('pt') or 'portuguese' in s:
+        if _matches_lang_code(s, 'pt', {'portuguese', 'brazilian'}):
             return 'pt'
         if s.startswith('en') or 'english' in s:
             return 'en'
@@ -277,9 +292,9 @@ def set_global_language(language: str) -> None:
         normalized_lang = 'ko'
     elif lang_lower.startswith('ru'):
         normalized_lang = 'ru'
-    elif lang_lower.startswith('es'):
+    elif _matches_lang_code(lang_lower, 'es', {'spanish', 'latam'}):
         normalized_lang = 'es'
-    elif lang_lower.startswith('pt'):
+    elif _matches_lang_code(lang_lower, 'pt', {'portuguese', 'brazilian'}):
         normalized_lang = 'pt'
     elif lang_lower.startswith('en'):
         normalized_lang = 'en'
@@ -419,9 +434,9 @@ def normalize_language_code(lang: str, format: str = 'short') -> str:
         return 'ko'
     elif lang_lower.startswith('ru'):
         return 'ru'
-    elif lang_lower.startswith('es'):
+    elif _matches_lang_code(lang_lower, 'es', {'spanish', 'latam'}):
         return 'es'
-    elif lang_lower.startswith('pt'):
+    elif _matches_lang_code(lang_lower, 'pt', {'portuguese', 'brazilian'}):
         return 'pt'
     elif lang_lower.startswith('en'):
         return 'en'
@@ -790,11 +805,22 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
         return text, _is_google_marked_failed()
 
     # 自动检测源语言
-    if source_lang is None:
+    auto_detected_source = source_lang is None
+    if auto_detected_source:
         source_lang = detect_language(text)
 
-    # 如果源语言和目标语言相同，不需要翻译
-    if source_lang == target_lang or source_lang == 'unknown':
+    # 西/葡与英文共享拉丁脚本：detect_language 在没有 ñ¡¿/ãõ 等强特征字符时
+    # 会回退到 'en'。此时如果目标是 es/pt/en，固定 src='en' 会让翻译器把
+    # "Hola como estas" 当英文返回原文。改为下游用 'auto' 让 Google/translatepy
+    # 自己再检测一次喵。
+    ambiguous_latin_source = (
+        auto_detected_source
+        and source_lang == 'en'
+        and target_lang in {'en', 'es', 'pt'}
+    )
+
+    # 如果源语言和目标语言相同，不需要翻译（歧义拉丁语料除外，仍要让翻译器做一次）
+    if (source_lang == target_lang and not ambiguous_latin_source) or source_lang == 'unknown':
         logger.debug(f"跳过翻译: 源语言({source_lang}) == 目标语言({target_lang}) 或源语言未知")
         return text, _is_google_marked_failed()
 
@@ -824,7 +850,10 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
     }
     
     google_target = GOOGLE_LANG_MAP.get(target_lang, target_lang)
-    if source_lang != 'unknown':
+    if ambiguous_latin_source:
+        # 拉丁脚本歧义文本：让 Google 自己再检测一次源语言
+        google_source = 'auto'
+    elif source_lang != 'unknown':
         google_source = GOOGLE_LANG_MAP.get(source_lang, source_lang)
     else:
         google_source = 'auto'
@@ -888,9 +917,11 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
         # 中文区：直接走 translatepy（不再尝试 Google，避免每次都等满超时）
         logger.debug("⏭️ [翻译服务] 中文区，直接使用 translatepy")
         if TRANSLATEPY_AVAILABLE:
-            logger.debug(f"🌐 [翻译服务] 尝试 translatepy (中文区): {source_lang} -> {target_lang}")
+            # 拉丁脚本歧义文本：传 'unknown' 让 translatepy 走 auto-detect
+            translatepy_source = 'unknown' if ambiguous_latin_source else source_lang
+            logger.debug(f"🌐 [翻译服务] 尝试 translatepy (中文区): {translatepy_source} -> {target_lang}")
             try:
-                translated_text = await translate_with_translatepy(text, source_lang, target_lang)
+                translated_text = await translate_with_translatepy(text, translatepy_source, target_lang)
                 if translated_text:
                     logger.info(f"✅ [翻译服务] translatepy翻译成功: {source_lang} -> {target_lang}")
                     return translated_text, google_failed
