@@ -1,6 +1,8 @@
 /**
  * 中文语言包
  */
+import { yuiGuideLocales } from './yuiGuide'
+
 export default {
   common: {
     loading: '加载中...',
@@ -326,6 +328,9 @@ export default {
   },
   app: {
     titleSuffix: 'N.E.K.O 插件管理'
+  },
+  tutorial: {
+    yuiGuide: yuiGuideLocales['zh-CN']
   },
   yuiTutorial: {
     title: '喵～欢迎来到插件管理面板！',

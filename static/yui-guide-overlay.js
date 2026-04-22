@@ -510,6 +510,9 @@
             this.ensureRoot();
             this.document.body.classList.toggle('yui-taking-over', !!active);
             this.root.classList.toggle('is-taking-over', !!active);
+            var cursorValue = active ? 'none' : '';
+            this.document.documentElement.style.cursor = cursorValue;
+            this.document.body.style.cursor = cursorValue;
         }
 
         setAngry(active) {
@@ -717,10 +720,16 @@
 
             const normalizedOptions = options || {};
             const durationMs = Number.isFinite(normalizedOptions.durationMs) ? normalizedOptions.durationMs : 480;
+            const pauseCheck = typeof normalizedOptions.pauseCheck === 'function'
+                ? normalizedOptions.pauseCheck
+                : null;
+            const cancelCheck = typeof normalizedOptions.cancelCheck === 'function'
+                ? normalizedOptions.cancelCheck
+                : null;
 
             if (!this.cursorPosition) {
                 this.showCursorAt(x, y);
-                return Promise.resolve();
+                return Promise.resolve(true);
             }
 
             this.document.body.classList.add('yui-guide-ghost-cursor-active');
@@ -729,29 +738,71 @@
 
             return new Promise((resolve) => {
                 let settled = false;
-                const finish = () => {
+                let frameId = 0;
+                let elapsedMs = 0;
+                let lastNow = 0;
+                const startX = this.cursorPosition.x;
+                const startY = this.cursorPosition.y;
+                const deltaX = x - startX;
+                const deltaY = y - startY;
+                const finish = (completed) => {
                     if (settled) {
                         return;
                     }
                     settled = true;
-                    this.cursorShell.removeEventListener('transitionend', onTransitionEnd);
-                    resolve();
-                };
-                const onTransitionEnd = (event) => {
-                    if (event.target === this.cursorShell) {
-                        finish();
+                    if (frameId) {
+                        window.cancelAnimationFrame(frameId);
+                        frameId = 0;
                     }
+                    if (completed) {
+                        this.cursorPosition = { x: x, y: y };
+                    }
+                    resolve(completed !== false);
                 };
 
-                this.cursorShell.addEventListener('transitionend', onTransitionEnd);
-                this.cursorShell.style.transitionDuration = String(durationMs) + 'ms';
+                const tick = (now) => {
+                    if (settled || !this.cursorShell || !this.cursorShell.isConnected) {
+                        finish(false);
+                        return;
+                    }
 
-                window.requestAnimationFrame(() => {
-                    this.cursorShell.style.transform = 'translate(' + Math.round(x) + 'px, ' + Math.round(y) + 'px)';
-                });
+                    if (cancelCheck && cancelCheck()) {
+                        finish(false);
+                        return;
+                    }
 
-                window.setTimeout(finish, durationMs + 80);
-                this.cursorPosition = { x: x, y: y };
+                    if (pauseCheck && pauseCheck()) {
+                        lastNow = now;
+                        frameId = window.requestAnimationFrame(tick);
+                        return;
+                    }
+
+                    if (!lastNow) {
+                        lastNow = now;
+                    }
+
+                    elapsedMs += Math.max(0, now - lastNow);
+                    lastNow = now;
+
+                    const progress = durationMs <= 0
+                        ? 1
+                        : Math.max(0, Math.min(1, elapsedMs / durationMs));
+                    const nextX = startX + (deltaX * progress);
+                    const nextY = startY + (deltaY * progress);
+
+                    this.cursorShell.style.transitionDuration = '0ms';
+                    this.cursorShell.style.transform = 'translate(' + Math.round(nextX) + 'px, ' + Math.round(nextY) + 'px)';
+                    this.cursorPosition = { x: nextX, y: nextY };
+
+                    if (progress >= 1) {
+                        finish(true);
+                        return;
+                    }
+
+                    frameId = window.requestAnimationFrame(tick);
+                };
+
+                frameId = window.requestAnimationFrame(tick);
             });
         }
 
@@ -783,6 +834,70 @@
                     this.cursorInner.classList.remove('is-wobbling');
                 }
             }, 700);
+        }
+
+        runEllipseAnimation(centerX, centerY, radiusX, radiusY, cycleMs, abortCheck, pauseCheck, cancelCheck) {
+            this.ensureRoot();
+            if (!this.cursorShell) {
+                return Promise.resolve(false);
+            }
+
+            var self = this;
+            var startedAt = performance.now();
+            var pausedTotalMs = 0;
+            var pausedAt = 0;
+
+            self.document.body.classList.add('yui-guide-ghost-cursor-active');
+            self.cursorShell.hidden = false;
+            self.cursorShell.classList.add('is-visible');
+
+            return new Promise(function (resolve) {
+                function tick(now) {
+                    if (!self.cursorShell || !self.cursorShell.isConnected) {
+                        resolve(false);
+                        return;
+                    }
+
+                    if (typeof cancelCheck === 'function' && cancelCheck()) {
+                        resolve(false);
+                        return;
+                    }
+
+                    if (typeof pauseCheck === 'function' && pauseCheck()) {
+                        if (!pausedAt) {
+                            pausedAt = now;
+                        }
+                        window.requestAnimationFrame(tick);
+                        return;
+                    }
+
+                    if (pausedAt) {
+                        pausedTotalMs += Math.max(0, now - pausedAt);
+                        pausedAt = 0;
+                    }
+
+                    if (typeof abortCheck === 'function' && abortCheck()) {
+                        resolve(false);
+                        return;
+                    }
+
+                    var progress = Math.max(0, Math.min(1, (now - startedAt - pausedTotalMs) / cycleMs));
+                    var angle = progress * Math.PI * 2;
+                    var x = centerX + Math.cos(angle) * radiusX;
+                    var y = centerY + Math.sin(angle) * radiusY;
+                    self.cursorShell.style.transitionDuration = '80ms';
+                    self.cursorShell.style.transform = 'translate(' + Math.round(x) + 'px, ' + Math.round(y) + 'px)';
+                    self.cursorPosition = { x: x, y: y };
+
+                    if (progress >= 1) {
+                        resolve(true);
+                        return;
+                    }
+                    window.requestAnimationFrame(tick);
+                }
+
+                window.requestAnimationFrame(tick);
+            });
         }
 
         hideCursor() {

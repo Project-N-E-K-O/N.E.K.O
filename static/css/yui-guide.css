@@ -47,11 +47,11 @@ body.yui-guide-home-driver-hidden .driver-highlight {
 
 .yui-guide-spotlight-frame {
   position: fixed;
-  border: 3px solid #93d6ff;
+  border: 2px solid #93d6ff;
   box-shadow:
-    0 0 0 7px #a1e4ff,
-    0 0 0 12px #aff3ff,
-    0 20px 40px rgba(147, 214, 255, 0.22);
+    0 0 0 4px #a1e4ff,
+    0 0 0 7px #aff3ff,
+    0 16px 32px rgba(147, 214, 255, 0.18);
   opacity: 0;
   transform: translateY(0);
   transition:
@@ -77,24 +77,24 @@ body.yui-guide-home-driver-hidden .driver-highlight {
   z-index: 1;
   border-color: #93d6ff;
   box-shadow:
-    0 0 0 7px #a1e4ff,
-    0 0 0 12px #aff3ff,
-    0 20px 38px rgba(147, 214, 255, 0.26);
+    0 0 0 4px #a1e4ff,
+    0 0 0 7px #aff3ff,
+    0 16px 30px rgba(147, 214, 255, 0.20);
 }
 
 .yui-guide-spotlight-frame.is-circular-mask {
   box-shadow:
     0 0 0 9999px rgba(3, 7, 18, 0.62),
-    0 0 0 7px #a1e4ff,
-    0 0 0 12px #aff3ff,
-    0 20px 40px rgba(147, 214, 255, 0.22);
+    0 0 0 4px #a1e4ff,
+    0 0 0 7px #aff3ff,
+    0 16px 32px rgba(147, 214, 255, 0.18);
 }
 
 .yui-guide-precise-highlight {
   box-shadow:
-    0 0 0 3px rgba(147, 214, 255, 0.98),
-    0 0 0 7px rgba(161, 228, 255, 0.72),
-    0 18px 36px rgba(147, 214, 255, 0.22) !important;
+    0 0 0 2px rgba(147, 214, 255, 0.98),
+    0 0 0 5px rgba(161, 228, 255, 0.72),
+    0 14px 28px rgba(147, 214, 255, 0.18) !important;
   border-radius: 16px !important;
   animation: yui-guide-chat-pulse 1.5s ease-in-out infinite;
 }
@@ -247,6 +247,7 @@ body.yui-guide-home-driver-hidden .driver-highlight {
   position: fixed;
   top: 0;
   left: 0;
+  z-index: 2;
   transition-property: transform;
   transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
   will-change: transform;
@@ -278,23 +279,18 @@ body.yui-guide-home-driver-hidden .driver-highlight {
   animation: yui-guide-cursor-wobble 620ms ease;
 }
 
-body.yui-guide-ghost-cursor-active,
-body.yui-guide-ghost-cursor-active * {
-  cursor: none !important;
-}
-
-body.yui-guide-ghost-cursor-active #neko-tutorial-skip-btn,
-body.yui-guide-ghost-cursor-active #neko-tutorial-skip-btn * {
-  cursor: auto !important;
-}
-
 body.yui-taking-over,
-body.yui-taking-over [data-yui-cursor-hidden='true'] {
+body.yui-taking-over * {
   cursor: none !important;
 }
 
 body.yui-taking-over #neko-tutorial-skip-btn,
 body.yui-taking-over #neko-tutorial-skip-btn * {
+  cursor: auto !important;
+}
+
+body.yui-taking-over.yui-resistance-cursor-reveal,
+body.yui-taking-over.yui-resistance-cursor-reveal * {
   cursor: auto !important;
 }
 
@@ -316,13 +312,13 @@ body.yui-taking-over #vrm-canvas,
 body.yui-taking-over #mmd-container,
 body.yui-taking-over #mmd-canvas {
   pointer-events: none !important;
-  cursor: default !important;
+  cursor: none !important;
 }
 
 body.yui-guide-home-driver-hidden #react-chat-window-drag-handle,
 body.yui-taking-over #react-chat-window-drag-handle {
   pointer-events: none !important;
-  cursor: default !important;
+  cursor: none !important;
 }
 
 .yui-guide-overlay.is-angry .yui-guide-cursor {

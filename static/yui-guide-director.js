@@ -1,6 +1,172 @@
 (function () {
     'use strict';
 
+    function translateGuideText(textKey, fallbackText) {
+        const normalizedKey = typeof textKey === 'string' ? textKey.trim() : '';
+        const normalizedFallback = typeof fallbackText === 'string' ? fallbackText : '';
+        if (!normalizedKey || typeof window.t !== 'function') {
+            return normalizedFallback;
+        }
+
+        try {
+            const translated = window.t(normalizedKey);
+            if (typeof translated === 'string' && translated.trim() && translated !== normalizedKey) {
+                return translated;
+            }
+        } catch (_) {}
+
+        return normalizedFallback;
+    }
+
+    function normalizeGuideLocale(locale) {
+        const current = String(locale || '').trim().toLowerCase();
+        if (!current || current === 'auto') {
+            return 'zh';
+        }
+
+        if (current.indexOf('ja') === 0) return 'ja';
+        if (current.indexOf('en') === 0) return 'en';
+        if (current.indexOf('ko') === 0) return 'ko';
+        if (current.indexOf('ru') === 0) return 'ru';
+        return 'zh';
+    }
+
+    function resolveGuidePreferredLanguage() {
+        const candidates = [
+            window.i18n && window.i18n.language,
+            window.localStorage && window.localStorage.getItem('i18nextLng'),
+            document && document.documentElement && document.documentElement.lang,
+            navigator && navigator.language,
+            window.localStorage && window.localStorage.getItem('locale')
+        ];
+
+        for (let index = 0; index < candidates.length; index += 1) {
+            const candidate = String(candidates[index] || '').trim();
+            if (!candidate || candidate.toLowerCase() === 'auto') {
+                continue;
+            }
+
+            const lowered = candidate.toLowerCase();
+            if (lowered.indexOf('ja') === 0) return 'ja';
+            if (lowered.indexOf('en') === 0) return 'en';
+            if (lowered.indexOf('ko') === 0) return 'ko';
+            if (lowered.indexOf('ru') === 0) return 'ru';
+            if (lowered.indexOf('zh-tw') === 0 || lowered.indexOf('zh-hk') === 0 || lowered.indexOf('zh-hant') === 0) {
+                return 'zh-TW';
+            }
+            if (lowered.indexOf('zh') === 0) {
+                return 'zh-CN';
+            }
+        }
+
+        return '';
+    }
+
+    function isGuideI18nReady() {
+        const i18nInstance = window.i18n;
+        return typeof window.t === 'function' && !!(i18nInstance && i18nInstance.isInitialized);
+    }
+
+    function waitForGuideI18nReady(timeoutMs) {
+        const normalizedTimeoutMs = Number.isFinite(timeoutMs) ? timeoutMs : 5000;
+        if (isGuideI18nReady()) {
+            return Promise.resolve(true);
+        }
+
+        return new Promise((resolve) => {
+            let settled = false;
+            let timeoutId = 0;
+            let pollId = 0;
+
+            const finish = (ready) => {
+                if (settled) {
+                    return;
+                }
+                settled = true;
+                if (timeoutId) {
+                    window.clearTimeout(timeoutId);
+                    timeoutId = 0;
+                }
+                if (pollId) {
+                    window.clearInterval(pollId);
+                    pollId = 0;
+                }
+                window.removeEventListener('localechange', handleLocaleReady);
+                resolve(!!ready);
+            };
+
+            const handleLocaleReady = () => {
+                if (isGuideI18nReady()) {
+                    finish(true);
+                }
+            };
+
+            pollId = window.setInterval(() => {
+                if (isGuideI18nReady()) {
+                    finish(true);
+                }
+            }, 120);
+            timeoutId = window.setTimeout(() => {
+                finish(isGuideI18nReady());
+            }, normalizedTimeoutMs);
+
+            window.addEventListener('localechange', handleLocaleReady);
+        });
+    }
+
+    async function syncGuideI18nLanguage(timeoutMs) {
+        await waitForGuideI18nReady(timeoutMs);
+
+        const targetLanguage = resolveGuidePreferredLanguage();
+        const currentLanguage = window.i18n && typeof window.i18n.language === 'string'
+            ? window.i18n.language
+            : '';
+
+        if (!targetLanguage || !currentLanguage || typeof window.changeLanguage !== 'function') {
+            return;
+        }
+
+        if (targetLanguage === currentLanguage) {
+            return;
+        }
+
+        try {
+            await window.changeLanguage(targetLanguage);
+            await waitForGuideI18nReady(timeoutMs);
+        } catch (error) {
+            console.warn('[YuiGuide] 同步引导语言失败:', targetLanguage, error);
+        }
+    }
+
+    function resolveGuideLocale() {
+        const candidates = [
+            window.i18n && window.i18n.language,
+            window.localStorage && window.localStorage.getItem('i18nextLng'),
+            document && document.documentElement && document.documentElement.lang,
+            navigator && navigator.language,
+            window.localStorage && window.localStorage.getItem('locale')
+        ];
+
+        for (let index = 0; index < candidates.length; index += 1) {
+            const candidate = String(candidates[index] || '').trim();
+            if (!candidate || candidate.toLowerCase() === 'auto') {
+                continue;
+            }
+            return normalizeGuideLocale(candidate);
+        }
+
+        return 'zh';
+    }
+
+    function guideSpeechLang() {
+        const locale = resolveGuideLocale();
+        if (locale === 'ja') return 'ja-JP';
+        if (locale === 'en') return 'en-US';
+        if (locale === 'ko') return 'ko-KR';
+        if (locale === 'ru') return 'ru-RU';
+        return 'zh-CN';
+    }
+
     const DEFAULT_INTERRUPT_DISTANCE = 32;
     const DEFAULT_INTERRUPT_SPEED_THRESHOLD = 1.8;
     const DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD = 0.09;
@@ -11,7 +177,17 @@
     const DEFAULT_SCENE_SETTLE_MS = 260;
     const DEFAULT_CURSOR_DURATION_MS = 520;
     const INTRO_PRACTICE_TEXT = '现在你可以试试跟我说说话啦，看看我们是不是超有默契的喵～';
+    const INTRO_PRACTICE_TEXT_KEY = 'tutorial.yuiGuide.lines.introPractice';
+    const INTRO_HELLO_ACTION_ID = 'yui-guide-intro-hello';
+    const INTRO_GREETING_REPLY_TEXT = '我是你的专属猫娘，从今天起就由我来陪伴主人咯。无论是想要聊天解闷、一起玩耍，还是需要我帮忙做些什么，我都会乖乖陪在主人身边的喵。以后请多多指教啦，最喜欢主人了~！';
+    const INTRO_GREETING_REPLY_TEXT_KEY = 'tutorial.yuiGuide.lines.introGreetingReply';
+    const TAKEOVER_PLUGIN_DASHBOARD_TEXT = '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～';
+    const TAKEOVER_PLUGIN_DASHBOARD_TEXT_KEY = 'tutorial.yuiGuide.lines.takeoverPluginPreviewDashboard';
+    const TAKEOVER_SETTINGS_DETAIL_TEXT = '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！';
+    const TAKEOVER_SETTINGS_DETAIL_TEXT_KEY = 'tutorial.yuiGuide.lines.takeoverSettingsPeekDetail';
     const INTRO_SKIP_ACTION_ID = 'yui-guide-intro-skip-chat';
+    const INTRO_SKIP_LABEL_KEY = 'tutorial.yuiGuide.buttons.skipChat';
+    const INTRO_HELLO_LABEL_KEY = 'tutorial.yuiGuide.buttons.sayHello';
     const REACT_CHAT_ACTION_EVENT = 'react-chat-window:action';
     const REACT_CHAT_SUBMIT_EVENT = 'react-chat-window:submit';
     const PLUGIN_DASHBOARD_WINDOW_NAME = 'plugin_dashboard';
@@ -19,10 +195,126 @@
     const PLUGIN_DASHBOARD_READY_EVENT = 'neko:yui-guide:plugin-dashboard:ready';
     const PLUGIN_DASHBOARD_DONE_EVENT = 'neko:yui-guide:plugin-dashboard:done';
     const DEFAULT_TUTORIAL_MODEL_MANAGER_LANLAN_NAME = 'ATLS';
+    const GUIDE_AUDIO_BASE_URL = '/static/assets/tutorial/guide-audio/';
+    const INTRO_ACTIVATION_HINT_KEY = 'tutorial.yuiGuide.lines.introActivationHint';
+    const INTRO_ACTIVATION_HINT = '点一下这里，我就能开始说话啦～';
+    const GUIDE_AUDIO_FILES_BY_KEY = Object.freeze({
+        intro_basic: {
+            zh: '想要找我的时候，随时在这里打字或者发语音都能召唤本喵哦！.mp3',
+            ja: '想要找我的时候，随时在这里打字或者发语音都能召唤本喵哦！.mp3',
+            en: '想要找我的时候，随时在这里打字或者发语音都能召唤本喵哦！.mp3',
+            ko: '想要找我的时候，随时在这里打字或者发语音都能召唤本喵哦！.mp3',
+            ru: '想要找我的时候，随时在这里打字或者发语音都能召唤本喵哦！.mp3'
+        },
+        intro_practice: {
+            zh: '现在你可以试试跟我说说话啦，看看我们是不是超有默契的喵～.mp3',
+            ja: '现在你可以试试跟我说说话啦，看看我们是不是超有默契的喵～.mp3',
+            en: '现在你可以试试跟我说说话啦，看看我们是不是超有默契的喵～.mp3',
+            ko: '现在你可以试试跟我说说话啦，看看我们是不是超有默契的喵～.mp3',
+            ru: '现在你可以试试跟我说说话啦，看看我们是不是超有默契的喵～.mp3'
+        },
+        intro_proactive: {
+            zh: '可恶，居然敢无视本大小姐嘛！要说你一直没理我，我可是会主动跑出来咬你的哦～（哈！！）.mp3',
+            ja: '可恶，居然敢无视本大小姐嘛！要说你一直没理我，我可是会主动跑出来咬你的哦～（哈！！）.mp3',
+            en: '可恶，居然敢无视本大小姐嘛！要说你一直没理我，我可是会主动跑出来咬你的哦～（哈！！）.mp3',
+            ko: '可恶，居然敢无视本大小姐嘛！要说你一直没理我，我可是会主动跑出来咬你的哦～（哈！！）.mp3',
+            ru: '可恶，居然敢无视本大小姐嘛！要说你一直没理我，我可是会主动跑出来咬你的哦～（哈！！）.mp3'
+        },
+        intro_greeting_reply: {
+            zh: '我是你的专属猫娘，从今天起就由我来陪伴主人咯。无论是想要聊天解闷、一起玩耍，还是需要我帮忙做些什么，我都会乖乖陪在主人身边的喵。以后请多多指教啦，最喜欢主人了~！.mp3',
+            ja: '我是你的专属猫娘，从今天起就由我来陪伴主人咯。无论是想要聊天解闷、一起玩耍，还是需要我帮忙做些什么，我都会乖乖陪在主人身边的喵。以后请多多指教啦，最喜欢主人了~！.mp3',
+            en: '我是你的专属猫娘，从今天起就由我来陪伴主人咯。无论是想要聊天解闷、一起玩耍，还是需要我帮忙做些什么，我都会乖乖陪在主人身边的喵。以后请多多指教啦，最喜欢主人了~！.mp3',
+            ko: '我是你的专属猫娘，从今天起就由我来陪伴主人咯。无论是想要聊天解闷、一起玩耍，还是需要我帮忙做些什么，我都会乖乖陪在主人身边的喵。以后请多多指教啦，最喜欢主人了~！.mp3',
+            ru: '我是你的专属猫娘，从今天起就由我来陪伴主人咯。无论是想要聊天解闷、一起玩耍，还是需要我帮忙做些什么，我都会乖乖陪在主人身边的喵。以后请多多指教啦，最喜欢主人了~！.mp3'
+        },
+        intro_cat_paw: {
+            zh: '好啦！不说废话了喵——你看到那个可爱的‘猫爪’了吗，准备好了吗？让我借用一下你的鼠标吧！.mp3',
+            ja: '好啦！不说废话了喵——你看到那个可爱的‘猫爪’了吗，准备好了吗？让我借用一下你的鼠标吧！.mp3',
+            en: '好啦！不说废话了喵——你看到那个可爱的‘猫爪’了吗，准备好了吗？让我借用一下你的鼠标吧！.mp3',
+            ko: '好啦！不说废话了喵——你看到那个可爱的‘猫爪’了吗，准备好了吗？让我借用一下你的鼠标吧！.mp3',
+            ru: '好啦！不说废话了喵——你看到那个可爱的‘猫爪’了吗，准备好了吗？让我借用一下你的鼠标吧！.mp3'
+        },
+        takeover_capture_cursor: {
+            zh: '嘿咻！可算逮住你的鼠标了喵～.mp3',
+            ja: '嘿咻！可算逮住你的鼠标了喵～.mp3',
+            en: '嘿咻！可算逮住你的鼠标了喵～.mp3',
+            ko: '嘿咻！可算逮住你的鼠标了喵～.mp3',
+            ru: '嘿咻！可算逮住你的鼠标了喵～.mp3'
+        },
+        takeover_plugin_preview_home: {
+            zh: '还没完呢！你快看快看，这里还有超～～多好玩的插件呢！.mp3',
+            ja: '还没完呢！你快看快看，这里还有超～～多好玩的插件呢！.mp3',
+            en: '还没完呢！你快看快看，这里还有超～～多好玩的插件呢！.mp3',
+            ko: '还没完呢！你快看快看，这里还有超～～多好玩的插件呢！.mp3',
+            ru: '还没完呢！你快看快看，这里还有超～～多好玩的插件呢！.mp3'
+        },
+        takeover_plugin_preview_dashboard: {
+            zh: '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～.mp3',
+            ja: '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～.mp3',
+            en: '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～.mp3',
+            ko: '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～.mp3',
+            ru: '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～.mp3'
+        },
+        takeover_settings_peek_intro: {
+            zh: '当然啦，如果你想让本喵多和你聊聊天也不是不行啦，给我多准备点小鱼干吧，嘿嘿，好了不逗你啦，设置都在这个齿轮里。.mp3',
+            ja: '当然啦，如果你想让本喵多和你聊聊天也不是不行啦，给我多准备点小鱼干吧，嘿嘿，好了不逗你啦，设置都在这个齿轮里。.mp3',
+            en: '当然啦，如果你想让本喵多和你聊聊天也不是不行啦，给我多准备点小鱼干吧，嘿嘿，好了不逗你啦，设置都在这个齿轮里。.mp3',
+            ko: '当然啦，如果你想让本喵多和你聊聊天也不是不行啦，给我多准备点小鱼干吧，嘿嘿，好了不逗你啦，设置都在这个齿轮里。.mp3',
+            ru: '当然啦，如果你想让本喵多和你聊聊天也不是不行啦，给我多准备点小鱼干吧，嘿嘿，好了不逗你啦，设置都在这个齿轮里。.mp3'
+        },
+        takeover_settings_peek_detail: {
+            zh: '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！.mp3',
+            ja: '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！.mp3',
+            en: '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！.mp3',
+            ko: '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！.mp3',
+            ru: '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！.mp3'
+        },
+        interrupt_resist_light_1: {
+            zh: '喂！不要拽我啦，还没轮到你的回合呢！.mp3',
+            ja: '喂！不要拽我啦，还没轮到你的回合呢！.mp3',
+            en: '喂！不要拽我啦，还没轮到你的回合呢！.mp3',
+            ko: '喂！不要拽我啦，还没轮到你的回合呢！.mp3',
+            ru: '喂！不要拽我啦，还没轮到你的回合呢！.mp3'
+        },
+        interrupt_resist_light_3: {
+            zh: '等一下啦！还没结束呢，不要随便打断我啦！.mp3',
+            ja: '等一下啦！还没结束呢，不要随便打断我啦！.mp3',
+            en: '等一下啦！还没结束呢，不要随便打断我啦！.mp3',
+            ko: '等一下啦！还没结束呢，不要随便打断我啦！.mp3',
+            ru: '等一下啦！还没结束呢，不要随便打断我啦！.mp3'
+        },
+        interrupt_angry_exit: {
+            zh: '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！.mp3',
+            ja: '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！.mp3',
+            en: '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！.mp3',
+            ko: '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！.mp3',
+            ru: '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！.mp3'
+        },
+        takeover_return_control: {
+            zh: '好啦好啦，不霸占你的电脑啦～控制权还给你了喵！可不许趁我不注意乱点奇怪的设置哦！之后的日子也请你多多关照了喵～.mp3',
+            ja: '好啦好啦，不霸占你的电脑啦～控制权还给你了喵！可不许趁我不注意乱点奇怪的设置哦！之后的日子也请你多多关照了喵～.mp3',
+            en: '好啦好啦，不霸占你的电脑啦～控制权还给你了喵！可不许趁我不注意乱点奇怪的设置哦！之后的日子也请你多多关照了喵～.mp3',
+            ko: '好啦好啦，不霸占你的电脑啦～控制权还给你了喵！可不许趁我不注意乱点奇怪的设置哦！之后的日子也请你多多关照了喵～.mp3',
+            ru: '好啦好啦，不霸占你的电脑啦～控制权还给你了喵！可不许趁我不注意乱点奇怪的设置哦！之后的日子也请你多多关照了喵～.mp3'
+        }
+    });
+
+    function guideAudioSrc(key) {
+        const files = key && GUIDE_AUDIO_FILES_BY_KEY[key] ? GUIDE_AUDIO_FILES_BY_KEY[key] : null;
+        if (!files) {
+            return '';
+        }
+
+        const locale = resolveGuideLocale();
+        const fileName = files[locale] || files.zh || '';
+        const fileLocale = files[locale] ? locale : 'zh';
+        return fileName ? (GUIDE_AUDIO_BASE_URL + fileLocale + '/' + encodeURIComponent(fileName)) : '';
+    }
+
     const TAKEOVER_CAPTURE_SELECTORS = Object.freeze({
         catPaw: '[alt="猫爪"]',
-        agentMaster: 'div[aria-label="猫爪总开关"][title="猫爪总开关"]',
-        userPlugin: 'div[aria-label="用户插件"][title="用户插件"]',
+        agentMaster: '#${p}-toggle-agent-master',
+        userPlugin: '#${p}-toggle-agent-user-plugin',
         managementPanel: 'div#neko-sidepanel-action-agent-user-plugin-management-panel'
     });
     function wait(ms) {
@@ -33,6 +325,81 @@
 
     function clamp(value, min, max) {
         return Math.max(min, Math.min(max, value));
+    }
+
+    const GUIDE_AUDIO_CUES_BY_KEY = Object.freeze({
+        intro_cat_paw: Object.freeze({
+            baseDurationMs: 9102,
+            captureCursorPrelude: 6000
+        }),
+        takeover_settings_peek_intro: Object.freeze({
+            baseDurationMs: 11877,
+            openSettingsPanel: 9000
+        })
+    });
+
+    const GUIDE_AUDIO_DURATIONS_BY_KEY = Object.freeze({
+        intro_cat_paw: Object.freeze({
+            zh: 9102,
+            ja: 10697,
+            en: 7737,
+            ko: 10217,
+            ru: 9497
+        }),
+        takeover_plugin_preview_home: Object.freeze({
+            zh: 6583,
+            ja: 8297,
+            en: 5738,
+            ko: 6640,
+            ru: 5897
+        }),
+        takeover_settings_peek_intro: Object.freeze({
+            zh: 11877,
+            ja: 17817,
+            en: 9338,
+            ko: 11360,
+            ru: 10697
+        })
+    });
+
+    const GUIDE_DEBUG_ZH_TEXT_BY_KEY = Object.freeze({
+        'tutorial.yuiGuide.lines.introBasic': '想要找我的时候，随时在这里打字或者发语音都能召唤本喵哦！',
+        'tutorial.yuiGuide.lines.introProactive': '可恶，居然敢无视本大小姐嘛！要说你一直没理我，我可是会主动跑出来咬你的哦～（哈！！）',
+        'tutorial.yuiGuide.lines.introCatPaw': '好啦不说废话了喵——你看到那个可爱的‘猫爪’了吗，准备好了吗？让我借用一下你的鼠标吧！',
+        'tutorial.yuiGuide.lines.takeoverCaptureCursor': '嘿咻！可算逮住你的鼠标了喵～',
+        'tutorial.yuiGuide.lines.takeoverPluginPreviewHome': '还没完呢！你快看快看，这里还有超～～多好玩的插件呢！',
+        'tutorial.yuiGuide.lines.takeoverPluginPreviewDashboard': '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～',
+        'tutorial.yuiGuide.lines.takeoverSettingsPeekIntro': '当然啦，如果你想让本喵多和你聊聊天也不是不行啦，给我多准备点小鱼干吧，嘿嘿，好了不逗你啦，设置都在这个齿轮里。',
+        'tutorial.yuiGuide.lines.takeoverSettingsPeekDetail': '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！',
+        'tutorial.yuiGuide.lines.takeoverReturnControl': '好啦好啦，不霸占你的电脑啦～控制权还给你了喵！可不许趁我不注意乱点奇怪的设置哦！之后的日子也请你多多关照了喵～',
+        'tutorial.yuiGuide.lines.interruptResistLight1': '喂！不要拽我啦，还没轮到你的回合呢！',
+        'tutorial.yuiGuide.lines.interruptResistLight3': '等一下啦！还没结束呢，不要随便打断我啦！',
+        'tutorial.yuiGuide.lines.interruptAngryExit': '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！',
+        'tutorial.yuiGuide.lines.introGreetingReply': '我是你的专属猫娘，从今天起就由我来陪伴主人咯。无论是想要聊天解闷、一起玩耍，还是需要我帮忙做些什么，我都会乖乖陪在主人身边的喵。以后请多多指教啦，最喜欢主人了~！',
+        'tutorial.yuiGuide.lines.introPractice': '现在你可以试试跟我说说话啦，看看我们是不是超有默契的喵～'
+    });
+
+    function getGuideAudioCueConfig(voiceKey) {
+        const normalizedKey = typeof voiceKey === 'string' ? voiceKey.trim() : '';
+        if (!normalizedKey) {
+            return null;
+        }
+
+        return GUIDE_AUDIO_CUES_BY_KEY[normalizedKey] || null;
+    }
+
+    function getGuideAudioDurationConfig(voiceKey) {
+        const normalizedKey = typeof voiceKey === 'string' ? voiceKey.trim() : '';
+        if (!normalizedKey) {
+            return null;
+        }
+
+        return GUIDE_AUDIO_DURATIONS_BY_KEY[normalizedKey] || null;
+    }
+
+    function formatGuideDebugText(textKey, text) {
+        const content = typeof text === 'string' ? text.trim() : '';
+        return content;
     }
 
     function unionRects(rects) {
@@ -69,44 +436,6 @@
         }
 
         return clamp(Math.round(message.length * 280), 2200, 24000);
-    }
-
-    function waitForFirstUserGesture(timeoutMs) {
-        const normalizedTimeoutMs = Number.isFinite(timeoutMs) ? timeoutMs : 12000;
-        if (navigator.userActivation && (navigator.userActivation.isActive || navigator.userActivation.hasBeenActive)) {
-            return Promise.resolve(true);
-        }
-
-        return new Promise((resolve) => {
-            let settled = false;
-            let timeoutId = 0;
-
-            const finish = (activated) => {
-                if (settled) {
-                    return;
-                }
-                settled = true;
-                if (timeoutId) {
-                    window.clearTimeout(timeoutId);
-                    timeoutId = 0;
-                }
-                window.removeEventListener('pointerdown', handleGesture, true);
-                window.removeEventListener('mousedown', handleGesture, true);
-                window.removeEventListener('keydown', handleGesture, true);
-                window.removeEventListener('touchstart', handleGesture, true);
-                resolve(!!activated);
-            };
-
-            const handleGesture = () => {
-                finish(true);
-            };
-
-            window.addEventListener('pointerdown', handleGesture, true);
-            window.addEventListener('mousedown', handleGesture, true);
-            window.addEventListener('keydown', handleGesture, true);
-            window.addEventListener('touchstart', handleGesture, true);
-            timeoutId = window.setTimeout(() => finish(false), normalizedTimeoutMs);
-        });
     }
 
     async function resumeKnownAudioContexts() {
@@ -173,6 +502,7 @@
             this.enabled = !!window.speechSynthesis;
             this.voicesReadyPromise = null;
             this.currentAudio = null;
+            this.currentAudioMeta = null;
             this.voiceIdCache = {
                 name: '',
                 value: '',
@@ -208,6 +538,22 @@
                 this.currentAudio = null;
             }
 
+            if (this.currentAudioMeta && this.currentAudioMeta.mode === 'buffer') {
+                try {
+                    if (this.currentAudioMeta.source) {
+                        this.currentAudioMeta.source.onended = null;
+                        this.currentAudioMeta.source.stop();
+                        this.currentAudioMeta.source.disconnect();
+                    }
+                    if (this.currentAudioMeta.gainNode) {
+                        this.currentAudioMeta.gainNode.disconnect();
+                    }
+                } catch (error) {
+                    console.warn('[YuiGuide] 停止 AudioContext 教程语音失败:', error);
+                }
+            }
+            this.currentAudioMeta = null;
+
             this.currentUtterance = null;
             this.currentFinish = null;
 
@@ -216,6 +562,100 @@
                     finish();
                 } catch (_) {}
             }
+        }
+
+        capturePlaybackSnapshot() {
+            if (this.currentAudio) {
+                const currentTimeMs = Math.max(
+                    0,
+                    Math.round((Number.isFinite(this.currentAudio.currentTime) ? this.currentAudio.currentTime : 0) * 1000)
+                );
+                const durationMs = Number.isFinite(this.currentAudio.duration) && this.currentAudio.duration > 0
+                    ? Math.round(this.currentAudio.duration * 1000)
+                    : 0;
+
+                return {
+                    mode: 'audio',
+                    voiceKey: this.currentAudioMeta && typeof this.currentAudioMeta.voiceKey === 'string'
+                        ? this.currentAudioMeta.voiceKey
+                        : '',
+                    currentTimeMs: currentTimeMs,
+                    durationMs: durationMs
+                };
+            }
+
+            if (this.currentAudioMeta && this.currentAudioMeta.mode === 'buffer') {
+                const context = this.currentAudioMeta.context || null;
+                const startedAt = Number.isFinite(this.currentAudioMeta.startedAt)
+                    ? this.currentAudioMeta.startedAt
+                    : 0;
+                const startOffsetMs = Number.isFinite(this.currentAudioMeta.startOffsetMs)
+                    ? this.currentAudioMeta.startOffsetMs
+                    : 0;
+                const durationMs = Number.isFinite(this.currentAudioMeta.durationMs)
+                    ? this.currentAudioMeta.durationMs
+                    : 0;
+                const elapsedMs = context && Number.isFinite(context.currentTime)
+                    ? Math.max(0, Math.round((context.currentTime - startedAt) * 1000) + startOffsetMs)
+                    : startOffsetMs;
+
+                return {
+                    mode: 'buffer',
+                    voiceKey: typeof this.currentAudioMeta.voiceKey === 'string'
+                        ? this.currentAudioMeta.voiceKey
+                        : '',
+                    currentTimeMs: durationMs > 0 ? Math.min(durationMs, elapsedMs) : elapsedMs,
+                    durationMs: durationMs
+                };
+            }
+
+            return null;
+        }
+
+        getAvailableGuideAudioContext() {
+            const candidates = [
+                window.lanlanAudioContext,
+                window.appState && window.appState.audioPlayerContext,
+                window.AM && window.AM.ctx
+            ];
+
+            for (let index = 0; index < candidates.length; index += 1) {
+                const candidate = candidates[index];
+                if (!candidate || typeof candidate.createBufferSource !== 'function') {
+                    continue;
+                }
+                if (candidate.state === 'closed') {
+                    continue;
+                }
+                return candidate;
+            }
+
+            return null;
+        }
+
+        decodeGuideAudioBuffer(context, arrayBuffer) {
+            if (!context || !arrayBuffer) {
+                return Promise.reject(new Error('missing_audio_context_or_buffer'));
+            }
+
+            try {
+                const maybePromise = context.decodeAudioData(arrayBuffer.slice(0));
+                if (maybePromise && typeof maybePromise.then === 'function') {
+                    return maybePromise;
+                }
+            } catch (_) {}
+
+            return new Promise((resolve, reject) => {
+                try {
+                    context.decodeAudioData(
+                        arrayBuffer.slice(0),
+                        (audioBuffer) => resolve(audioBuffer),
+                        (error) => reject(error || new Error('decode_audio_failed'))
+                    );
+                } catch (error) {
+                    reject(error);
+                }
+            });
         }
 
         async ensureVoicesReady() {
@@ -374,17 +814,20 @@
             }
         }
 
-        async playPreviewAudio(audioSrc, minimumDurationMs) {
+        async playPreviewAudio(audioSrc, minimumDurationMs, startAtMs, meta) {
             if (!audioSrc) {
                 return false;
             }
 
             const minDurationMs = Number.isFinite(minimumDurationMs) ? minimumDurationMs : 0;
+            const initialTimeSeconds = Math.max(
+                0,
+                (Number.isFinite(startAtMs) ? startAtMs : 0) / 1000
+            );
 
             return new Promise((resolve, reject) => {
                 let settled = false;
                 const audio = new Audio(audioSrc);
-                const maxBlockedWaitMs = 12000;
                 const finish = (success, error) => {
                     if (settled) {
                         return;
@@ -397,8 +840,12 @@
                     audio.onended = null;
                     audio.onerror = null;
                     audio.onpause = null;
+                    audio.onloadedmetadata = null;
                     if (this.currentAudio === audio) {
                         this.currentAudio = null;
+                    }
+                    if (this.currentAudioMeta && this.currentAudioMeta.audio === audio) {
+                        this.currentAudioMeta = null;
                     }
                     if (this.currentFinish === cancelPlayback) {
                         this.currentFinish = null;
@@ -418,55 +865,150 @@
                 audio.onended = () => finish(true);
                 audio.onerror = () => finish(false, new Error('preview_audio_error'));
                 this.currentAudio = audio;
+                this.currentAudioMeta = Object.assign({
+                    audio: audio,
+                    voiceKey: '',
+                    text: ''
+                }, meta || {});
                 this.currentFinish = cancelPlayback;
+
+                if (initialTimeSeconds > 0) {
+                    const applyStartTime = () => {
+                        try {
+                            const maxSeek = Number.isFinite(audio.duration) && audio.duration > 0
+                                ? Math.max(0, audio.duration - 0.05)
+                                : initialTimeSeconds;
+                            audio.currentTime = Math.min(initialTimeSeconds, maxSeek);
+                        } catch (_) {}
+                    };
+
+                    audio.onloadedmetadata = applyStartTime;
+                    if (audio.readyState >= 1) {
+                        applyStartTime();
+                    }
+                }
 
                 const fallbackTimerId = window.setTimeout(() => {
                     finish(true);
-                }, Math.max(estimateSpeechDurationMs('x'), minDurationMs, 3000) + maxBlockedWaitMs);
+                }, Math.max(estimateSpeechDurationMs('x'), minDurationMs, 3000));
                 this.currentFallbackTimer = fallbackTimerId;
 
-                const attemptPlayback = async () => {
-                    try {
-                        const playPromise = audio.play();
-                        if (playPromise && typeof playPromise.then === 'function') {
-                            await playPromise;
-                        }
-                    } catch (error) {
-                        const message = error && typeof error.message === 'string' ? error.message : '';
-                        const errorName = error && typeof error.name === 'string' ? error.name : '';
-                        const blockedByAutoplay = errorName === 'NotAllowedError'
-                            || /gesture|user activation|autoplay/i.test(message);
-
-                        if (!blockedByAutoplay) {
-                            finish(false, error);
-                            return;
-                        }
-
-                        console.warn('[YuiGuide] 教程语音等待用户手势后重试播放:', error);
-                        const unlocked = await waitForFirstUserGesture(maxBlockedWaitMs);
-                        if (!unlocked || settled) {
-                            finish(false, error);
-                            return;
-                        }
-
-                        await resumeKnownAudioContexts();
-                        try {
-                            audio.currentTime = 0;
-                        } catch (_) {}
-
-                        try {
-                            const retryPromise = audio.play();
-                            if (retryPromise && typeof retryPromise.then === 'function') {
-                                await retryPromise;
-                            }
-                        } catch (retryError) {
-                            finish(false, retryError);
-                        }
+                try {
+                    const playPromise = audio.play();
+                    if (playPromise && typeof playPromise.then === 'function') {
+                        playPromise.catch((error) => finish(false, error));
                     }
+                } catch (error) {
+                    finish(false, error);
+                }
+            });
+        }
+
+        async playPreviewAudioThroughContext(audioSrc, minimumDurationMs, startAtMs, meta) {
+            const context = this.getAvailableGuideAudioContext();
+            if (!context) {
+                return false;
+            }
+
+            await resumeKnownAudioContexts();
+            const response = await fetch(audioSrc, {
+                credentials: 'same-origin'
+            });
+            if (!response.ok) {
+                throw new Error('guide_audio_fetch_failed');
+            }
+
+            const arrayBuffer = await response.arrayBuffer();
+            const audioBuffer = await this.decodeGuideAudioBuffer(context, arrayBuffer);
+            const startOffsetMs = Number.isFinite(startAtMs) ? Math.max(0, startAtMs) : 0;
+            const startOffsetSeconds = Math.max(0, startOffsetMs / 1000);
+
+            return new Promise((resolve, reject) => {
+                let settled = false;
+                const source = context.createBufferSource();
+                const gainNode = typeof context.createGain === 'function' ? context.createGain() : null;
+                const finish = (success, error) => {
+                    if (settled) {
+                        return;
+                    }
+                    settled = true;
+                    if (this.currentFallbackTimer === fallbackTimerId) {
+                        this.currentFallbackTimer = null;
+                    }
+                    window.clearTimeout(fallbackTimerId);
+                    source.onended = null;
+                    try {
+                        source.disconnect();
+                    } catch (_) {}
+                    if (gainNode) {
+                        try {
+                            gainNode.disconnect();
+                        } catch (_) {}
+                    }
+                    if (this.currentAudioMeta && this.currentAudioMeta.source === source) {
+                        this.currentAudioMeta = null;
+                    }
+                    if (this.currentFinish === cancelPlayback) {
+                        this.currentFinish = null;
+                    }
+                    if (success) {
+                        resolve(true);
+                        return;
+                    }
+                    reject(error || new Error('guide_audio_context_play_failed'));
+                };
+                const cancelPlayback = () => {
+                    finish(true);
                 };
 
-                void attemptPlayback();
+                source.buffer = audioBuffer;
+                if (gainNode) {
+                    gainNode.gain.value = 1;
+                    source.connect(gainNode);
+                    gainNode.connect(context.destination);
+                } else {
+                    source.connect(context.destination);
+                }
+
+                this.currentFinish = cancelPlayback;
+                this.currentAudioMeta = Object.assign({
+                    mode: 'buffer',
+                    context: context,
+                    source: source,
+                    gainNode: gainNode,
+                    startedAt: context.currentTime,
+                    startOffsetMs: startOffsetMs,
+                    durationMs: Math.round(audioBuffer.duration * 1000),
+                    voiceKey: '',
+                    text: ''
+                }, meta || {});
+
+                source.onended = () => finish(true);
+
+                const fallbackTimerId = window.setTimeout(() => {
+                    finish(true);
+                }, Math.max(
+                    estimateSpeechDurationMs('x'),
+                    minimumDurationMs,
+                    Math.max(3000, Math.round(audioBuffer.duration * 1000))
+                ) + 1200);
+                this.currentFallbackTimer = fallbackTimerId;
+
+                try {
+                    source.start(0, Math.min(startOffsetSeconds, Math.max(0, audioBuffer.duration - 0.05)));
+                } catch (error) {
+                    finish(false, error);
+                }
             });
+        }
+
+        resolveGuideAudioSrc(voiceKey) {
+            const normalizedKey = typeof voiceKey === 'string' ? voiceKey.trim() : '';
+            if (!normalizedKey) {
+                return '';
+            }
+
+            return guideAudioSrc(normalizedKey);
         }
 
         async speak(text, options) {
@@ -482,6 +1024,37 @@
                 ? normalizedOptions.minDurationMs
                 : 0;
             const fallbackDurationMs = Math.max(estimateSpeechDurationMs(message), minimumDurationMs);
+            const localAudioSrc = this.resolveGuideAudioSrc(normalizedOptions.voiceKey);
+            const startAtMs = Number.isFinite(normalizedOptions.startAtMs)
+                ? Math.max(0, normalizedOptions.startAtMs)
+                : 0;
+
+            if (localAudioSrc) {
+                try {
+                    await this.playPreviewAudio(localAudioSrc, fallbackDurationMs, startAtMs, {
+                        voiceKey: normalizedOptions.voiceKey,
+                        text: message
+                    });
+                    return;
+                } catch (error) {
+                    try {
+                        const playedByContext = await this.playPreviewAudioThroughContext(
+                            localAudioSrc,
+                            fallbackDurationMs,
+                            startAtMs,
+                            {
+                                voiceKey: normalizedOptions.voiceKey,
+                                text: message
+                            }
+                        );
+                        if (playedByContext) {
+                            return;
+                        }
+                    } catch (_) {}
+
+                    console.warn('[YuiGuide] 本地教程语音播放失败，回退 TTS:', normalizedOptions.voiceKey, error);
+                }
+            }
 
             if (!this.enabled || typeof SpeechSynthesisUtterance === 'undefined' || !window.speechSynthesis) {
                 await wait(fallbackDurationMs);
@@ -511,7 +1084,7 @@
                 };
 
                 const utterance = new SpeechSynthesisUtterance(message);
-                utterance.lang = 'zh-CN';
+                utterance.lang = guideSpeechLang();
                 utterance.rate = 1.02;
                 utterance.pitch = 1.05;
                 utterance.volume = 0.9;
@@ -615,9 +1188,20 @@
         }
 
         moveToPoint(x, y, options) {
-            this.motionToken += 1;
+            const normalizedOptions = options || {};
+            const token = ++this.motionToken;
             this.lastTarget = { x: x, y: y };
-            return this.overlay.moveCursorTo(x, y, options);
+            return this.overlay.moveCursorTo(x, y, Object.assign({}, normalizedOptions, {
+                cancelCheck: () => {
+                    if (token !== this.motionToken) {
+                        return true;
+                    }
+
+                    return typeof normalizedOptions.cancelCheck === 'function'
+                        ? !!normalizedOptions.cancelCheck()
+                        : false;
+                }
+            }));
         }
 
         moveToRect(rect, options) {
@@ -692,12 +1276,48 @@
             this.overlay.wobbleCursor();
         }
 
+        runEllipse(centerX, centerY, radiusX, radiusY, cycleMs, abortCheck) {
+            const token = ++this.motionToken;
+            return this.overlay.runEllipseAnimation(
+                centerX,
+                centerY,
+                radiusX,
+                radiusY,
+                cycleMs,
+                abortCheck,
+                null,
+                () => token !== this.motionToken
+            );
+        }
+
+        runPauseAwareEllipse(centerX, centerY, radiusX, radiusY, cycleMs, abortCheck, pauseCheck, cancelCheck) {
+            const normalizedCancelCheck = typeof cancelCheck === 'function' ? cancelCheck : null;
+            const token = ++this.motionToken;
+            return this.overlay.runEllipseAnimation(
+                centerX,
+                centerY,
+                radiusX,
+                radiusY,
+                cycleMs,
+                abortCheck,
+                pauseCheck,
+                () => {
+                    if (token !== this.motionToken) {
+                        return true;
+                    }
+
+                    return normalizedCancelCheck ? !!normalizedCancelCheck() : false;
+                }
+            );
+        }
+
         hide() {
             this.overlay.hideCursor();
         }
 
         cancel() {
             this.motionToken += 1;
+            this.reactionToken += 1;
         }
     }
 
@@ -728,6 +1348,8 @@
             this.introFlowStarted = false;
             this.introFlowCompleted = false;
             this.introClickActivated = false;
+            this.awaitingIntroActivation = false;
+            this._introActivationResolve = null;
             this.introChoicePending = false;
             this.introPracticeMessageId = null;
             this.introThirdMessageTimer = null;
@@ -738,6 +1360,8 @@
             this.terminationRequested = false;
             this.activeNarration = null;
             this.narrationResumeTimer = null;
+            this.scenePausedForResistance = false;
+            this.scenePauseResolvers = [];
             this.chatIntroCleanupFns = [];
             this.virtualSpotlights = new Map();
             this.preciseHighlightElements = new Set();
@@ -749,10 +1373,12 @@
             this.keydownHandler = this.onKeyDown.bind(this);
             this.pointerMoveHandler = this.onPointerMove.bind(this);
             this.pointerDownHandler = this.onPointerDown.bind(this);
+            this.resistanceCursorTimer = null;
             this.pageHideHandler = this.onPageHide.bind(this);
             this.tutorialEndHandler = this.onTutorialEndEvent.bind(this);
             this.messageHandler = this.onWindowMessage.bind(this);
             this.skipButtonClickHandler = this.onSkipButtonClick.bind(this);
+            this.interactionGuardHandler = this.onInteractionGuard.bind(this);
 
             if (this.page === 'home') {
                 document.body.classList.add('yui-guide-home-driver-hidden');
@@ -762,6 +1388,8 @@
             window.addEventListener('pagehide', this.pageHideHandler, true);
             window.addEventListener('neko:yui-guide:tutorial-end', this.tutorialEndHandler, true);
             window.addEventListener('message', this.messageHandler, true);
+            document.addEventListener('pointerdown', this.interactionGuardHandler, true);
+            document.addEventListener('click', this.interactionGuardHandler, true);
             document.addEventListener('click', this.skipButtonClickHandler, true);
         }
 
@@ -890,6 +1518,39 @@
             return {
                 x: window.innerWidth / 2,
                 y: window.innerHeight / 2
+            };
+        }
+
+        resolveGuideCopy(textKey, fallbackText) {
+            return translateGuideText(textKey, fallbackText);
+        }
+
+        resolvePerformanceBubbleText(performance) {
+            const normalizedPerformance = performance || {};
+            return this.resolveGuideCopy(
+                normalizedPerformance.bubbleTextKey || '',
+                normalizedPerformance.bubbleText || ''
+            );
+        }
+
+        resolvePerformanceResistanceVoices(performance) {
+            const normalizedPerformance = performance || {};
+            const fallbacks = Array.isArray(normalizedPerformance.resistanceVoices)
+                ? normalizedPerformance.resistanceVoices
+                : [];
+            const keys = Array.isArray(normalizedPerformance.resistanceVoiceKeys)
+                ? normalizedPerformance.resistanceVoiceKeys
+                : [];
+
+            return fallbacks.map((fallbackText, index) => {
+                return this.resolveGuideCopy(keys[index] || '', fallbackText);
+            });
+        }
+
+        getIntroChoiceLabels() {
+            return {
+                skipChat: this.resolveGuideCopy(INTRO_SKIP_LABEL_KEY, '暂时不聊天'),
+                sayHello: this.resolveGuideCopy(INTRO_HELLO_LABEL_KEY, '你好')
             };
         }
 
@@ -1233,16 +1894,27 @@
             const characterMenu = normalizeVisibleTarget(targets.characterMenu);
             const appearanceItem = normalizeVisibleTarget(targets.appearanceItem);
             const voiceCloneItem = normalizeVisibleTarget(targets.voiceCloneItem);
-            const characterChildrenBundle = (appearanceItem && voiceCloneItem)
+            const sidePanel = this.getCharacterSettingsSidePanel();
+            const sidePanelVisible = sidePanel && this.isElementVisible(sidePanel) ? sidePanel : null;
+            const characterChildrenBundle = sidePanelVisible
                 ? this.createUnionSpotlight(
                     'settings-character-children-bundle',
-                    [appearanceItem, voiceCloneItem],
+                    [sidePanelVisible],
                     {
                         padding: 10,
                         radius: 18
                     }
                 )
-                : null;
+                : (appearanceItem && voiceCloneItem)
+                    ? this.createUnionSpotlight(
+                        'settings-character-children-bundle',
+                        [appearanceItem, voiceCloneItem],
+                        {
+                            padding: 10,
+                            radius: 18
+                        }
+                    )
+                    : null;
             this.setSceneExtraSpotlights([
                 settingsButtonTarget,
                 characterMenu,
@@ -1277,6 +1949,32 @@
 
             const visiblePanel = await this.waitForVisibleElement(() => this.getCharacterSettingsSidePanel(), 1600);
             return !!visiblePanel;
+        }
+
+        collapseCharacterSettingsSidePanel() {
+            const sidePanel = this.getCharacterSettingsSidePanel();
+            if (!sidePanel) {
+                return;
+            }
+
+            if (sidePanel._hoverCollapseTimer) {
+                window.clearTimeout(sidePanel._hoverCollapseTimer);
+                sidePanel._hoverCollapseTimer = null;
+            }
+
+            if (typeof sidePanel._collapse === 'function') {
+                sidePanel._collapse();
+            } else {
+                if (sidePanel._collapseTimeout) {
+                    window.clearTimeout(sidePanel._collapseTimeout);
+                    sidePanel._collapseTimeout = null;
+                }
+                sidePanel.style.transition = 'none';
+                sidePanel.style.opacity = '0';
+                sidePanel.style.display = 'none';
+                sidePanel.style.pointerEvents = 'none';
+                sidePanel.style.transition = '';
+            }
         }
 
         normalizeHighlightTarget(target, fallbackKey) {
@@ -1400,10 +2098,26 @@
 
             return new Promise((resolve) => {
                 const startedAt = Date.now();
+                let pausedAt = 0;
+                let pausedTotalMs = 0;
                 const tick = () => {
                     if (this.isStopping()) {
                         resolve(null);
                         return;
+                    }
+
+                    const now = Date.now();
+                    if (this.scenePausedForResistance) {
+                        if (!pausedAt) {
+                            pausedAt = now;
+                        }
+                        window.setTimeout(tick, 80);
+                        return;
+                    }
+
+                    if (pausedAt) {
+                        pausedTotalMs += Math.max(0, now - pausedAt);
+                        pausedAt = 0;
                     }
 
                     const element = resolver();
@@ -1412,7 +2126,7 @@
                         return;
                     }
 
-                    if ((Date.now() - startedAt) >= timeout) {
+                    if ((now - startedAt - pausedTotalMs) >= timeout) {
                         resolve(null);
                         return;
                     }
@@ -1448,12 +2162,12 @@
         waitForVisibleElement(resolveElement, timeoutMs) {
             return this.waitForElement(() => {
                 const element = typeof resolveElement === 'function' ? resolveElement() : null;
-                return this.isElementVisible(element) ? element : null;
+                return (this.getElementRect(element) || this.isElementVisible(element)) ? element : null;
             }, timeoutMs);
         }
 
         waitForDocumentSelector(selector, timeoutMs, requireVisible) {
-            const normalizedSelector = typeof selector === 'string' ? selector.trim() : '';
+            const normalizedSelector = this.expandSelector(typeof selector === 'string' ? selector.trim() : '');
             if (!normalizedSelector) {
                 return Promise.resolve(null);
             }
@@ -1475,7 +2189,7 @@
 
         waitForAnyDocumentSelector(selectors, timeoutMs, requireVisible) {
             const normalizedSelectors = (Array.isArray(selectors) ? selectors : [])
-                .map((selector) => typeof selector === 'string' ? selector.trim() : '')
+                .map((selector) => this.expandSelector(typeof selector === 'string' ? selector.trim() : ''))
                 .filter(Boolean);
             if (normalizedSelectors.length === 0) {
                 return Promise.resolve(null);
@@ -1537,6 +2251,8 @@
 
             return new Promise((resolve) => {
                 const startedAt = Date.now();
+                let pausedAt = 0;
+                let pausedTotalMs = 0;
                 let lastRect = null;
                 let stableCount = 0;
 
@@ -1546,8 +2262,22 @@
                         return;
                     }
 
+                    const now = Date.now();
+                    if (this.scenePausedForResistance) {
+                        if (!pausedAt) {
+                            pausedAt = now;
+                        }
+                        window.setTimeout(tick, 80);
+                        return;
+                    }
+
+                    if (pausedAt) {
+                        pausedTotalMs += Math.max(0, now - pausedAt);
+                        pausedAt = 0;
+                    }
+
                     if (!this.isElementVisible(element)) {
-                        if ((Date.now() - startedAt) >= normalizedTimeoutMs) {
+                        if ((now - startedAt - pausedTotalMs) >= normalizedTimeoutMs) {
                             resolve(null);
                             return;
                         }
@@ -1557,7 +2287,7 @@
 
                     const rect = element.getBoundingClientRect();
                     if (!rect || rect.width <= 0 || rect.height <= 0) {
-                        if ((Date.now() - startedAt) >= normalizedTimeoutMs) {
+                        if ((now - startedAt - pausedTotalMs) >= normalizedTimeoutMs) {
                             resolve(null);
                             return;
                         }
@@ -1586,7 +2316,7 @@
                         return;
                     }
 
-                    if ((Date.now() - startedAt) >= normalizedTimeoutMs) {
+                    if ((now - startedAt - pausedTotalMs) >= normalizedTimeoutMs) {
                         resolve(element);
                         return;
                     }
@@ -1789,6 +2519,188 @@
             }
         }
 
+        pauseCurrentSceneForResistance() {
+            if (this.scenePausedForResistance) {
+                return;
+            }
+
+            this.scenePausedForResistance = true;
+            this.cursor.cancel();
+        }
+
+        resumeCurrentSceneAfterResistance() {
+            if (!this.scenePausedForResistance) {
+                return;
+            }
+
+            this.scenePausedForResistance = false;
+            const resolvers = this.scenePauseResolvers.slice();
+            this.scenePauseResolvers = [];
+            resolvers.forEach((resolve) => {
+                try {
+                    resolve();
+                } catch (_) {}
+            });
+        }
+
+        waitUntilSceneResumed() {
+            if (!this.scenePausedForResistance) {
+                return Promise.resolve();
+            }
+
+            return new Promise((resolve) => {
+                this.scenePauseResolvers.push(resolve);
+            });
+        }
+
+        async waitForSceneDelay(delayMs) {
+            const totalMs = Number.isFinite(delayMs) ? Math.max(0, delayMs) : 0;
+            if (totalMs <= 0) {
+                return true;
+            }
+
+            let remainingMs = totalMs;
+            let lastTickAt = Date.now();
+
+            while (remainingMs > 0) {
+                if (this.isStopping()) {
+                    return false;
+                }
+
+                if (this.scenePausedForResistance) {
+                    await this.waitUntilSceneResumed();
+                    lastTickAt = Date.now();
+                    continue;
+                }
+
+                const sliceMs = Math.min(remainingMs, 80);
+                await wait(sliceMs);
+                if (this.isStopping()) {
+                    return false;
+                }
+
+                const now = Date.now();
+                remainingMs -= Math.max(0, now - lastTickAt);
+                lastTickAt = now;
+            }
+
+            return true;
+        }
+
+        resolveGuideVoiceCueTargetMs(voiceKey, cueName, playbackDurationMs) {
+            const cueConfig = getGuideAudioCueConfig(voiceKey);
+            const normalizedCueName = typeof cueName === 'string' ? cueName.trim() : '';
+            if (!cueConfig || !normalizedCueName) {
+                return 0;
+            }
+
+            const baseDurationMs = Number.isFinite(cueConfig.baseDurationMs)
+                ? Math.max(1, cueConfig.baseDurationMs)
+                : 0;
+            const baseCueMs = Number.isFinite(cueConfig[normalizedCueName])
+                ? Math.max(0, cueConfig[normalizedCueName])
+                : 0;
+            if (baseDurationMs <= 0 || baseCueMs <= 0) {
+                return 0;
+            }
+
+            const progress = clamp(baseCueMs / baseDurationMs, 0, 1);
+            const targetDurationMs = Number.isFinite(playbackDurationMs) && playbackDurationMs > 0
+                ? playbackDurationMs
+                : baseDurationMs;
+            return clamp(Math.round(targetDurationMs * progress), 0, targetDurationMs);
+        }
+
+        async waitForNarrationCue(voiceKey, cueName) {
+            const fallbackTargetMs = this.resolveGuideVoiceCueTargetMs(voiceKey, cueName, 0);
+            if (fallbackTargetMs <= 0) {
+                return true;
+            }
+
+            let fallbackElapsedMs = 0;
+            let lastTickAt = Date.now();
+            let sawAudioPlayback = false;
+
+            while (!this.isStopping()) {
+                if (this.scenePausedForResistance) {
+                    await this.waitUntilSceneResumed();
+                    lastTickAt = Date.now();
+                    continue;
+                }
+
+                const playbackSnapshot = this.voiceQueue.capturePlaybackSnapshot();
+                if (playbackSnapshot && playbackSnapshot.voiceKey === voiceKey) {
+                    sawAudioPlayback = true;
+                    const cueTargetMs = this.resolveGuideVoiceCueTargetMs(
+                        voiceKey,
+                        cueName,
+                        playbackSnapshot.durationMs
+                    );
+                    if (playbackSnapshot.currentTimeMs >= cueTargetMs) {
+                        return true;
+                    }
+
+                    await wait(60);
+                    lastTickAt = Date.now();
+                    continue;
+                }
+
+                const activeNarration = this.activeNarration;
+                if (sawAudioPlayback && (!activeNarration || activeNarration.voiceKey !== voiceKey)) {
+                    return true;
+                }
+
+                const sliceMs = Math.min(Math.max(40, fallbackTargetMs - fallbackElapsedMs), 80);
+                await wait(sliceMs);
+                if (this.isStopping()) {
+                    return false;
+                }
+
+                const now = Date.now();
+                if (!sawAudioPlayback && (!activeNarration || !activeNarration.interrupted)) {
+                    fallbackElapsedMs += Math.max(0, now - lastTickAt);
+                    if (fallbackElapsedMs >= fallbackTargetMs) {
+                        return true;
+                    }
+                }
+                lastTickAt = now;
+            }
+
+            return false;
+        }
+
+        getGuideVoiceDurationMs(voiceKey, locale) {
+            const durationConfig = getGuideAudioDurationConfig(voiceKey);
+            if (!durationConfig) {
+                return 0;
+            }
+
+            const normalizedLocale = normalizeGuideLocale(locale || resolveGuideLocale());
+            const exactDurationMs = Number.isFinite(durationConfig[normalizedLocale])
+                ? durationConfig[normalizedLocale]
+                : 0;
+            if (exactDurationMs > 0) {
+                return exactDurationMs;
+            }
+
+            const fallbackDurationMs = Number.isFinite(durationConfig.zh) ? durationConfig.zh : 0;
+            return fallbackDurationMs > 0 ? fallbackDurationMs : 0;
+        }
+
+        getGuideVoiceTimingScale(voiceKey) {
+            const baseDurationMs = this.getGuideVoiceDurationMs(voiceKey, 'zh');
+            if (baseDurationMs <= 0) {
+                return 1;
+            }
+
+            const currentDurationMs = this.getGuideVoiceDurationMs(voiceKey, resolveGuideLocale());
+            if (currentDurationMs <= 0) {
+                return 1;
+            }
+
+            return clamp(currentDurationMs / baseDurationMs, 0.75, 2.5);
+        }
+
         cancelActiveNarration() {
             const narration = this.activeNarration;
             this.activeNarration = null;
@@ -1823,6 +2735,7 @@
 
             if (!playbackText.trim()) {
                 narration.resumeIndex = narration.text.length;
+                narration.resumeAudioOffsetMs = 0;
                 if (this.activeNarration === narration) {
                     this.activeNarration = null;
                 }
@@ -1836,6 +2749,8 @@
             narration.playbackStartIndex = playbackStartIndex;
             narration.playbackStartAt = Date.now();
             await this.voiceQueue.speak(playbackText, {
+                voiceKey: narration.voiceKey,
+                startAtMs: Number.isFinite(narration.resumeAudioOffsetMs) ? narration.resumeAudioOffsetMs : 0,
                 minDurationMs: Number.isFinite(narration.minDurationMs)
                     ? narration.minDurationMs
                     : 0,
@@ -1876,6 +2791,7 @@
             }
 
             narration.resumeIndex = narration.text.length;
+            narration.resumeAudioOffsetMs = 0;
             if (this.activeNarration === narration) {
                 this.activeNarration = null;
             }
@@ -1896,7 +2812,9 @@
             await new Promise((resolve) => {
                 const narration = {
                     text: content,
+                    voiceKey: typeof normalizedOptions.voiceKey === 'string' ? normalizedOptions.voiceKey : '',
                     resumeIndex: 0,
+                    resumeAudioOffsetMs: 0,
                     playbackStartIndex: 0,
                     playbackStartAt: 0,
                     minDurationMs: Number.isFinite(normalizedOptions.minDurationMs)
@@ -1925,6 +2843,10 @@
                 return false;
             }
 
+            if (narration.interrupted) {
+                return true;
+            }
+
             if (narration.running) {
                 const playbackStartIndex = Number.isFinite(narration.playbackStartIndex) ? narration.playbackStartIndex : 0;
                 const playbackStartAt = Number.isFinite(narration.playbackStartAt) ? narration.playbackStartAt : 0;
@@ -1940,6 +2862,11 @@
                     estimatedIndex
                 );
             }
+
+            const playbackSnapshot = this.voiceQueue.capturePlaybackSnapshot();
+            narration.resumeAudioOffsetMs = playbackSnapshot && playbackSnapshot.mode === 'audio'
+                ? playbackSnapshot.currentTimeMs
+                : 0;
 
             narration.interrupted = true;
             this.clearNarrationResumeTimer();
@@ -1991,6 +2918,7 @@
             }
 
             const performance = this.currentStep.performance || {};
+            const bubbleText = this.resolvePerformanceBubbleText(performance);
             const spotlightTarget = this.getSceneSpotlightTarget(this.currentSceneId, performance);
             if (spotlightTarget) {
                 this.overlay.setPersistentSpotlight(spotlightTarget);
@@ -2011,8 +2939,8 @@
 
             if (this.shouldNarrateInChat(this.currentSceneId)) {
                 this.overlay.hideBubble();
-            } else if (performance.bubbleText) {
-                this.overlay.showBubble(performance.bubbleText, {
+            } else if (bubbleText) {
+                this.overlay.showBubble(bubbleText, {
                     title: 'Yui',
                     emotion: performance.emotion || 'neutral',
                     anchorRect: this.resolveRect(this.currentStep.anchor)
@@ -2114,7 +3042,14 @@
             const api = this.getHomeInteractionApi();
             if (api && typeof api[methodName] === 'function') {
                 try {
-                    return !!(await api[methodName].apply(api, Array.isArray(args) ? args : []));
+                    const apiResult = await api[methodName].apply(api, Array.isArray(args) ? args : []);
+                    if (apiResult) {
+                        return true;
+                    }
+                    if (typeof fallback === 'function') {
+                        return !!(await fallback());
+                    }
+                    return false;
                 } catch (error) {
                     console.warn('[YuiGuide] 首页交互 API 调用失败，回退到本地实现:', methodName, error);
                 }
@@ -2584,7 +3519,9 @@
 
             if (!this.cursor.hasPosition()) {
                 this.cursor.showAt(origin.x, origin.y);
-                await wait(120);
+                if (!(await this.waitForSceneDelay(120))) {
+                    return;
+                }
             }
 
             const points = [
@@ -2598,34 +3535,74 @@
 
             for (let index = 0; index < points.length; index += 1) {
                 const point = points[index];
-                await this.cursor.moveToPoint(point.x, point.y, { durationMs: segmentDurationMs });
+                const moved = await this.cursor.moveToPoint(point.x, point.y, {
+                    durationMs: segmentDurationMs,
+                    pauseCheck: () => this.scenePausedForResistance,
+                    cancelCheck: () => this.isStopping()
+                });
+                if (!moved && this.isStopping()) {
+                    return;
+                }
+                if (!moved) {
+                    await this.waitUntilSceneResumed();
+                    index -= 1;
+                    continue;
+                }
+                await this.waitUntilSceneResumed();
                 if (this.destroyed || this.angryExitTriggered) {
                     return;
                 }
                 this.cursor.wobble();
-                await wait(60);
+                if (!(await this.waitForSceneDelay(60))) {
+                    return;
+                }
             }
         }
 
         async moveCursorToElement(element, durationMs) {
-            const rect = this.getElementRect(element);
-            if (!rect) {
-                return false;
+            while (!this.isStopping()) {
+                await this.waitUntilSceneResumed();
+                const rect = this.getElementRect(element);
+                if (!rect) {
+                    return false;
+                }
+
+                const moved = await this.cursor.moveToRect(rect, {
+                    durationMs: Number.isFinite(durationMs) ? durationMs : DEFAULT_CURSOR_DURATION_MS,
+                    pauseCheck: () => this.scenePausedForResistance,
+                    cancelCheck: () => this.isStopping()
+                });
+                if (moved) {
+                    return true;
+                }
             }
 
-            await this.cursor.moveToRect(rect, {
-                durationMs: Number.isFinite(durationMs) ? durationMs : DEFAULT_CURSOR_DURATION_MS
-            });
-            return true;
+            return false;
         }
 
         async resolveElementCenterPoint(element, timeoutMs) {
             const normalizedTimeoutMs = Number.isFinite(timeoutMs) ? timeoutMs : 800;
             const startedAt = Date.now();
+            let pausedAt = 0;
+            let pausedTotalMs = 0;
 
-            while ((Date.now() - startedAt) < normalizedTimeoutMs) {
+            while ((Date.now() - startedAt - pausedTotalMs) < normalizedTimeoutMs) {
                 if (this.destroyed || this.angryExitTriggered) {
                     return null;
+                }
+
+                const now = Date.now();
+                if (this.scenePausedForResistance) {
+                    if (!pausedAt) {
+                        pausedAt = now;
+                    }
+                    await wait(80);
+                    continue;
+                }
+
+                if (pausedAt) {
+                    pausedTotalMs += Math.max(0, now - pausedAt);
+                    pausedAt = 0;
                 }
 
                 const rect = this.getElementRect(element);
@@ -2637,7 +3614,7 @@
                     };
                 }
 
-                await wait(80);
+                await this.waitForSceneDelay(80);
             }
 
             const finalRect = this.getElementRect(element);
@@ -2668,15 +3645,30 @@
             if (!initialPoint) {
                 return false;
             }
-            await this.cursor.moveToPoint(initialPoint.x, initialPoint.y, {
-                durationMs: firstLegMs
-            });
+            while (!this.isStopping()) {
+                const movedToInitialPoint = await this.cursor.moveToPoint(initialPoint.x, initialPoint.y, {
+                    durationMs: firstLegMs,
+                    pauseCheck: () => this.scenePausedForResistance,
+                    cancelCheck: () => this.isStopping()
+                });
+                if (movedToInitialPoint) {
+                    break;
+                }
+                await this.waitUntilSceneResumed();
+            }
+            if (this.isStopping()) {
+                return false;
+            }
 
             if (settleDelayMs > 0) {
-                await wait(settleDelayMs);
+                if (!(await this.waitForSceneDelay(settleDelayMs))) {
+                    return false;
+                }
             }
             if (recheckDelayMs > 0) {
-                await wait(recheckDelayMs);
+                if (!(await this.waitForSceneDelay(recheckDelayMs))) {
+                    return false;
+                }
             }
             if (this.destroyed || this.angryExitTriggered) {
                 return false;
@@ -2687,15 +3679,24 @@
                 return false;
             }
 
-            await this.cursor.moveToPoint(finalPoint.x, finalPoint.y, {
-                durationMs: secondLegMs
-            });
-            return true;
+            while (!this.isStopping()) {
+                const movedToFinalPoint = await this.cursor.moveToPoint(finalPoint.x, finalPoint.y, {
+                    durationMs: secondLegMs,
+                    pauseCheck: () => this.scenePausedForResistance,
+                    cancelCheck: () => this.isStopping()
+                });
+                if (movedToFinalPoint) {
+                    return true;
+                }
+                await this.waitUntilSceneResumed();
+            }
+
+            return false;
         }
 
         async clickCursorAndWait(holdMs) {
             this.cursor.click();
-            await wait(Number.isFinite(holdMs) ? holdMs : 180);
+            await this.waitForSceneDelay(Number.isFinite(holdMs) ? holdMs : 180);
         }
 
         hoverElement(element) {
@@ -2787,20 +3788,37 @@
             this.clearSceneExtraSpotlights();
             this.overlay.clearActionSpotlight();
             this.clearRetainedExtraSpotlights();
+            const timingScale = this.getGuideVoiceTimingScale(performance && performance.voiceKey);
+            const scaleSceneMs = (value, minValue, maxValue) => {
+                const baseValue = Number.isFinite(value) ? value : 0;
+                const scaledValue = Math.round(baseValue * timingScale);
+                return clamp(
+                    scaledValue,
+                    Number.isFinite(minValue) ? minValue : 40,
+                    Number.isFinite(maxValue) ? maxValue : Math.max(
+                        Number.isFinite(minValue) ? minValue : 40,
+                        scaledValue
+                    )
+                );
+            };
 
             const guardFailed = () => {
                 return runId !== this.sceneRunId || this.isStopping();
             };
 
-            const catPawButtonImage = await this.waitForDocumentSelector(TAKEOVER_CAPTURE_SELECTORS.catPaw, 2200);
-            const catPawButton = this.getFloatingButtonShell(catPawButtonImage);
+            const catPawButton = await this.waitForVisibleTarget([
+                () => this.getFloatingButtonShell(this.getFallbackFloatingButton('agent')),
+                () => this.getFloatingButtonShell(this.resolveElement((performance && performance.cursorTarget) || '')),
+                () => this.getFloatingButtonShell(this.resolveElement(step && step.anchor ? step.anchor : '')),
+                () => this.getFloatingButtonShell(this.queryDocumentSelector(this.expandSelector(TAKEOVER_CAPTURE_SELECTORS.catPaw)))
+            ], 2200);
             if (!catPawButton || guardFailed()) {
                 return null;
             }
 
             // 1-3. 高亮猫爪 -> 平滑移动 -> 点击并打开猫爪面板
             this.addRetainedExtraSpotlight(catPawButton);
-            const movedToCatPaw = await this.moveCursorToElement(catPawButton, 1500);
+            const movedToCatPaw = await this.moveCursorToElement(catPawButton, scaleSceneMs(1500, 900, 2600));
             if (!movedToCatPaw || guardFailed()) {
                 return null;
             }
@@ -2811,14 +3829,17 @@
                 return null;
             }
 
-            const agentMasterToggle = await this.waitForDocumentSelector(TAKEOVER_CAPTURE_SELECTORS.agentMaster, 4000);
+            const agentMasterToggle = await this.waitForElement(() => {
+                const toggleItem = this.getAgentToggleElement('agent-master');
+                return this.getElementRect(toggleItem) ? toggleItem : null;
+            }, 4000);
             if (!agentMasterToggle || guardFailed()) {
                 return null;
             }
 
             // 4-6. 高亮猫爪总开关 -> 平滑移动 -> 点击并同步打开
             this.addRetainedExtraSpotlight(agentMasterToggle);
-            const movedToAgentMaster = await this.moveCursorToElement(agentMasterToggle, 1200);
+            const movedToAgentMaster = await this.moveCursorToElement(agentMasterToggle, scaleSceneMs(1200, 760, 2200));
             if (!movedToAgentMaster || guardFailed()) {
                 return null;
             }
@@ -2833,19 +3854,24 @@
             if (!agentMasterState || guardFailed()) {
                 return null;
             }
-            await wait(420);
+            if (!(await this.waitForSceneDelay(scaleSceneMs(420, 180, 900)))) {
+                return null;
+            }
             if (guardFailed()) {
                 return null;
             }
 
-            const pluginToggle = await this.waitForDocumentSelector(TAKEOVER_CAPTURE_SELECTORS.userPlugin, 2200);
+            const pluginToggle = await this.waitForElement(() => {
+                const toggleItem = this.getAgentToggleElement('agent-user-plugin');
+                return this.getElementRect(toggleItem) ? toggleItem : null;
+            }, 2200);
             if (!pluginToggle || guardFailed()) {
                 return null;
             }
 
             // 7-9. 高亮用户插件 -> 平滑移动 -> 点击并同步打开
             this.addRetainedExtraSpotlight(pluginToggle);
-            const movedToPluginToggle = await this.moveCursorToElement(pluginToggle, 1300);
+            const movedToPluginToggle = await this.moveCursorToElement(pluginToggle, scaleSceneMs(1300, 820, 2300));
             if (!movedToPluginToggle || guardFailed()) {
                 return null;
             }
@@ -2861,7 +3887,9 @@
                 return null;
             }
 
-            await wait(180);
+            if (!(await this.waitForSceneDelay(scaleSceneMs(180, 80, 420)))) {
+                return null;
+            }
 
             // 10. 通过悬停让管理面板显现
             this.hoverElement(pluginToggle);
@@ -2872,39 +3900,38 @@
                 2600
             );
             if (!managementButton || guardFailed()) {
-                console.warn('[YuiGuide] 阶段四未找到管理面板按钮');
                 return null;
             }
 
-            const stableManagementButton = await this.waitForStableElementRect(managementButton, 320);
+            const stableManagementButton = await this.waitForStableElementRect(
+                managementButton,
+                scaleSceneMs(320, 160, 760)
+            );
             const managementMovementTarget = stableManagementButton || managementButton;
             if (!managementMovementTarget || guardFailed()) {
-                console.warn('[YuiGuide] 阶段四管理面板按钮不可用于移动');
                 return null;
             }
 
             // 11-13. 高亮管理面板 -> 移动到高亮中心点 -> 点击并同步打开真实页面
             this.addRetainedExtraSpotlight(managementButton);
-            await wait(60);
-            const managementRectBeforeMove = this.getElementRect(managementMovementTarget);
-            console.info('[YuiGuide] 阶段四管理面板移动前 rect:', managementRectBeforeMove
-                ? {
-                    left: Math.round(managementRectBeforeMove.left),
-                    top: Math.round(managementRectBeforeMove.top),
-                    width: Math.round(managementRectBeforeMove.width),
-                    height: Math.round(managementRectBeforeMove.height)
+            if (!(await this.waitForSceneDelay(scaleSceneMs(60, 40, 180)))) {
+                return null;
+            }
+            const movedToManagementButton = await this.moveCursorToTrackedElement(
+                managementMovementTarget,
+                scaleSceneMs(1900, 1200, 3200),
+                {
+                    recheckDelayMs: scaleSceneMs(180, 80, 420)
                 }
-                : null);
-            const movedToManagementButton = await this.moveCursorToTrackedElement(managementMovementTarget, 1900, {
-                recheckDelayMs: 180
-            });
+            );
             if (!movedToManagementButton || guardFailed()) {
-                console.warn('[YuiGuide] 阶段四管理面板 Ghost Cursor 移动失败');
                 return null;
             }
 
-            await wait(90);
-            await this.clickCursorAndWait(180);
+            if (!(await this.waitForSceneDelay(scaleSceneMs(90, 40, 220)))) {
+                return null;
+            }
+            await this.clickCursorAndWait(scaleSceneMs(180, 90, 420));
             // clickAgentSidePanelAction 会把窗口打开交给按钮点击链路处理；
             // 这里优先依赖 waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME) 等待副作用结果，
             // 只有点击链路没有拉起窗口时才回退 openPluginDashboardWindow。
@@ -2936,7 +3963,7 @@
                     12000,
                     42000
                 );
-                const targetOrigin = window.location.origin;
+                const targetOrigin = '*';
                 const handoff = {
                     sessionId: sessionId,
                     windowRef: windowRef,
@@ -3019,48 +4046,57 @@
 
         async runPluginDashboardPreviewScene(step, runId) {
             this.highlightChatWindow();
-            if (step && step.performance && step.performance.bubbleText) {
-                this.appendGuideChatMessage(step.performance.bubbleText);
+            const stepBubbleText = this.resolvePerformanceBubbleText(step && step.performance);
+            let homeNarrationPromise = Promise.resolve();
+            if (stepBubbleText) {
+                this.appendGuideChatMessage(stepBubbleText, {
+                    textKey: step && step.performance ? step.performance.bubbleTextKey : ''
+                });
+                homeNarrationPromise = this.speakLineAndWait(stepBubbleText, {
+                    voiceKey: step.performance.voiceKey || 'takeover_plugin_preview_home'
+                }).catch(() => {});
             }
-            await this.ensureAgentSidePanelVisible('agent-user-plugin');
-            const pluginToggle = this.getAgentToggleElement('agent-user-plugin');
-            const managementButton = await this.waitForVisibleElement(
-                () => this.getAgentSidePanelButton('agent-user-plugin', 'management-panel'),
-                1800
+            let dashboardWindow = await this.runTakeoverCaptureActionSequence(
+                step,
+                (step && step.performance) || {},
+                runId
             );
-            this.clearSceneExtraSpotlights();
-            if (managementButton) {
-                this.replaceRetainedExtraSpotlight(
-                    (element) => !!(element && element.id === 'neko-sidepanel-action-agent-user-plugin-management-panel'),
-                    managementButton
-                );
-            } else if (pluginToggle) {
-                this.setSceneExtraSpotlights([pluginToggle]);
+            await homeNarrationPromise;
+            if (runId !== this.sceneRunId || this.isStopping()) {
+                return;
             }
-
-            let dashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 2200);
-            if (!dashboardWindow && runId === this.sceneRunId && !this.isStopping()) {
-                const reopened = await this.clickAgentSidePanelAction('agent-user-plugin', 'management-panel');
-                if (!reopened) {
-                    await this.openPluginDashboardWindow();
-                }
-                dashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 5000);
-            }
-            if (!dashboardWindow || runId !== this.sceneRunId || this.isStopping()) {
+            if (!dashboardWindow) {
                 return;
             }
 
+            const dashboardText = this.resolveGuideCopy(
+                TAKEOVER_PLUGIN_DASHBOARD_TEXT_KEY,
+                TAKEOVER_PLUGIN_DASHBOARD_TEXT
+            );
+            this.appendGuideChatMessage(dashboardText, {
+                textKey: TAKEOVER_PLUGIN_DASHBOARD_TEXT_KEY
+            });
+            const dashboardNarrationPromise = this.speakLineAndWait(dashboardText, {
+                voiceKey: 'takeover_plugin_preview_dashboard'
+            }).catch(() => {});
+
             const completed = await this.waitForPluginDashboardPerformance(dashboardWindow, {
-                line: step && step.performance ? step.performance.bubbleText || '' : '',
+                line: '',
                 closeOnDone: true
-            }).catch((error) => {
-                console.warn('[YuiGuide] 插件管理跨页演出失败:', error);
+            }).catch(() => {
                 return false;
             });
+            await dashboardNarrationPromise;
             this.customSecondarySpotlightTarget = null;
             this.clearSceneExtraSpotlights();
+            this.clearRetainedExtraSpotlights();
             this.overlay.clearActionSpotlight();
             this.clearVirtualSpotlight('plugin-management-entry');
+            // 恢复关闭猫爪总开关和用户插件开关
+            await Promise.all([
+                this.setAgentMasterEnabled(false).catch(() => {}),
+                this.setAgentFlagEnabled('user_plugin_enabled', false).catch(() => {})
+            ]);
             await this.closeNamedWindow(PLUGIN_DASHBOARD_WINDOW_NAME);
             await this.waitForHomeMainUIReady(3600);
             if (runId !== this.sceneRunId || this.isStopping()) {
@@ -3073,9 +4109,35 @@
         async runSettingsPeekScene(step, performance, runId) {
             this.customSecondarySpotlightTarget = null;
             const settingsButton = this.resolveElement(performance.cursorTarget || step.anchor);
+            const introText = this.resolvePerformanceBubbleText(performance);
             await this.closeAgentPanel();
             this.clearPreciseHighlights();
             this.clearSceneExtraSpotlights();
+            this.overlay.clearActionSpotlight();
+            this.highlightChatWindow();
+
+            if (introText) {
+                this.appendGuideChatMessage(introText, {
+                    textKey: performance.bubbleTextKey || ''
+                });
+            }
+            if (performance.emotion) {
+                this.emotionBridge.apply(performance.emotion);
+            }
+
+            const introNarrationPromise = this.speakLineAndWait(introText || '', {
+                voiceKey: performance.voiceKey || 'takeover_settings_peek_intro'
+            });
+            if (!(await this.waitForNarrationCue(
+                performance.voiceKey || 'takeover_settings_peek_intro',
+                'openSettingsPanel'
+            ))) {
+                return;
+            }
+            if (runId !== this.sceneRunId || this.isStopping()) {
+                return;
+            }
+
             const openedSettings = settingsButton
                 ? await this.performHighlightedApiClick({
                     target: settingsButton,
@@ -3084,15 +4146,14 @@
                     action: () => this.openSettingsPanel()
                 })
                 : await this.openSettingsPanel();
-            if (!openedSettings) {
-                return;
-            }
-            if (runId !== this.sceneRunId || this.isStopping()) {
+            if (!openedSettings || runId !== this.sceneRunId || this.isStopping()) {
                 return;
             }
 
-            this.overlay.clearActionSpotlight();
-            this.highlightChatWindow();
+            await introNarrationPromise;
+            if (runId !== this.sceneRunId || this.isStopping()) {
+                return;
+            }
 
             let characterMenu = await this.waitForVisibleTarget([
                 () => this.getSettingsPeekTargets().characterMenu
@@ -3113,6 +4174,18 @@
                 return;
             }
             this.overlay.clearActionSpotlight();
+
+            if (characterMenu) {
+                this.applyGuideHighlights({ primary: characterMenu });
+            }
+
+            if (characterMenu && runId === this.sceneRunId && !this.isStopping()) {
+                await this.moveCursorToElement(characterMenu, 900);
+            }
+            if (runId !== this.sceneRunId || this.isStopping()) {
+                return;
+            }
+
             let settingsButtonTarget = null;
             ({
                 settingsButton: settingsButtonTarget,
@@ -3124,15 +4197,45 @@
                 return;
             }
 
-            if (performance.bubbleText) {
-                this.appendGuideChatMessage(performance.bubbleText);
+            const sidePanel = this.getCharacterSettingsSidePanel();
+            const panelRect = sidePanel ? this.getElementRect(sidePanel) : null;
+            const centerX = panelRect
+                ? panelRect.left + panelRect.width / 2
+                : (this.getElementRect(appearanceItem).left + this.getElementRect(voiceCloneItem).left) / 2;
+            const centerY = panelRect
+                ? panelRect.top + panelRect.height / 2
+                : (this.getElementRect(appearanceItem).top + this.getElementRect(voiceCloneItem).bottom) / 2;
+            const radiusX = panelRect
+                ? panelRect.width / 2 * 1.4
+                : 120;
+            const radiusY = panelRect
+                ? panelRect.height / 2 * 1.4
+                : 80;
+            if (panelRect) {
+                while (!this.isStopping()) {
+                    const movedToCenter = await this.cursor.moveToPoint(centerX, centerY, {
+                        durationMs: 900,
+                        pauseCheck: () => this.scenePausedForResistance,
+                        cancelCheck: () => this.isStopping()
+                    });
+                    if (movedToCenter) {
+                        break;
+                    }
+                    await this.waitUntilSceneResumed();
+                }
             }
-            if (performance.emotion) {
-                this.emotionBridge.apply(performance.emotion);
+            if (runId !== this.sceneRunId || this.isStopping()) {
+                return;
             }
 
-            let openedModelManagerWindow = null;
-            let openedModelManagerWindowName = null;
+            const detailText = this.resolveGuideCopy(
+                TAKEOVER_SETTINGS_DETAIL_TEXT_KEY,
+                TAKEOVER_SETTINGS_DETAIL_TEXT
+            );
+            this.appendGuideChatMessage(detailText, {
+                textKey: TAKEOVER_SETTINGS_DETAIL_TEXT_KEY
+            });
+
             let settingsPeekHighlightsCleared = false;
             const clearSettingsPeekHighlights = () => {
                 if (settingsPeekHighlightsCleared) {
@@ -3150,68 +4253,55 @@
                     this.highlightChatWindow();
                 }
             };
-            const narrationPromise = this.speakLineAndWait(performance.bubbleText || '').finally(() => {
+            const narrationPromise = this.speakLineAndWait(detailText, {
+                voiceKey: 'takeover_settings_peek_detail'
+            }).finally(() => {
                 if (runId !== this.sceneRunId || this.isStopping()) {
                     return;
                 }
 
                 clearSettingsPeekHighlights();
             });
+
+            const cycleMs = 7000;
+            const ellipseAbortCheck = () => this.destroyed || this.angryExitTriggered || settingsPeekHighlightsCleared;
             const actionPromise = (async () => {
-                await wait(2000);
-                if (!appearanceItem || runId !== this.sceneRunId || this.isStopping()) {
-                    return;
+                while (runId === this.sceneRunId && !ellipseAbortCheck()) {
+                    const moved = await this.cursor.runPauseAwareEllipse(
+                        centerX,
+                        centerY,
+                        radiusX,
+                        radiusY,
+                        cycleMs,
+                        ellipseAbortCheck,
+                        () => this.scenePausedForResistance,
+                        () => this.isStopping()
+                    );
+                    if (!moved && this.isStopping()) {
+                        return;
+                    }
+                    if (!moved) {
+                        await this.waitUntilSceneResumed();
+                    }
                 }
-
-                await this.moveCursorToElement(appearanceItem, 780);
-                if (runId !== this.sceneRunId || this.isStopping()) {
-                    return;
-                }
-
-                await this.clickCursorAndWait(180);
-                const tutorialLanlanName = this.getTutorialModelManagerLanlanName();
-                const appearanceMenuId = this.getCharacterAppearanceMenuId();
-                openedModelManagerWindowName = this.getModelManagerWindowName(tutorialLanlanName, appearanceMenuId);
-                openedModelManagerWindow = await this.openModelManagerPage(tutorialLanlanName);
-                if (!openedModelManagerWindow) {
-                    openedModelManagerWindow = await this.waitForOpenedWindow(openedModelManagerWindowName, 4000);
-                }
-                this.cleanupTutorialReturnButtons();
-                await wait(180);
-                await this.ensureCharacterSettingsSidePanelVisible();
-                if (settingsPeekHighlightsCleared || runId !== this.sceneRunId || this.isStopping()) {
-                    return;
-                }
-                ({
-                    settingsButton: settingsButtonTarget,
-                    characterMenu,
-                    appearanceItem,
-                    voiceCloneItem
-                } = this.refreshSettingsPeekSpotlights(settingsButton));
             })();
 
             await Promise.all([narrationPromise, actionPromise]);
             if (runId !== this.sceneRunId || this.isStopping()) {
-                if (openedModelManagerWindowName) {
-                    await this.closeNamedWindow(openedModelManagerWindowName);
-                } else if (openedModelManagerWindow && !openedModelManagerWindow.closed) {
-                    try {
-                        openedModelManagerWindow.close();
-                    } catch (error) {
-                        console.warn('[YuiGuide] 终止阶段六时关闭模型管理页失败:', error);
-                    }
-                }
                 return;
             }
 
-            if (openedModelManagerWindowName) {
-                await this.closeNamedWindow(openedModelManagerWindowName);
-            } else if (openedModelManagerWindow && !openedModelManagerWindow.closed) {
-                try {
-                    openedModelManagerWindow.close();
-                } catch (error) {
-                    console.warn('[YuiGuide] 关闭模型管理页失败:', error);
+            // 语音结束后 ghost cursor 平滑移到页面中间
+            while (!this.isStopping()) {
+                const movedToViewportCenter = await this.cursor.moveToPoint(window.innerWidth / 2, window.innerHeight / 2, {
+                    durationMs: 600,
+                    pauseCheck: () => this.scenePausedForResistance,
+                    cancelCheck: () => this.isStopping()
+                });
+                if (movedToViewportCenter) {
+                    break;
                 }
+                await this.waitUntilSceneResumed();
             }
 
             await this.waitForHomeMainUIReady(3600);
@@ -3219,19 +4309,29 @@
                 return;
             }
             this.cleanupTutorialReturnButtons();
-            await this.ensureCharacterSettingsSidePanelVisible();
-            if (runId !== this.sceneRunId || this.isStopping()) {
-                return;
-            }
             clearSettingsPeekHighlights();
+            // 恢复隐藏角色设置侧面板（通用设置 / 角色外形 / 声音克隆）
+            this.collapseCharacterSettingsSidePanel();
+            await this.closeSettingsPanel().catch(() => {});
         }
 
         beginTerminationVisualCleanup() {
             this.sceneRunId += 1;
+            this.resumeCurrentSceneAfterResistance();
             this.setCurrentScene(null, null);
             this.clearSceneTimers();
             this.disableInterrupts();
             this.cancelActiveNarration();
+            if (this.resistanceCursorTimer) {
+                window.clearTimeout(this.resistanceCursorTimer);
+                this.resistanceCursorTimer = null;
+            }
+            document.body.classList.remove('yui-resistance-cursor-reveal');
+            this.awaitingIntroActivation = false;
+            if (typeof this._introActivationResolve === 'function') {
+                this._introActivationResolve();
+                this._introActivationResolve = null;
+            }
             this.clearIntroFlow();
             this.voiceQueue.stop();
             this.clearAllVirtualSpotlights();
@@ -3250,6 +4350,7 @@
             this.overlay.setAngry(false);
             this.overlay.setTakingOver(false);
             this.overlay.clearSpotlight();
+            this.collapseCharacterSettingsSidePanel();
             this.closeManagedPanels().catch((error) => {
                 console.warn('[YuiGuide] 终止时关闭首页面板失败:', error);
             });
@@ -3440,12 +4541,15 @@
         }
 
         appendGuideChatMessage(text, options) {
-            const content = typeof text === 'string' ? text.trim() : '';
+            const normalizedOptions = options || {};
+            const content = formatGuideDebugText(
+                normalizedOptions.textKey || '',
+                typeof text === 'string' ? text.trim() : ''
+            );
             if (!content) {
                 return null;
             }
 
-            const normalizedOptions = options || {};
             const host = window.reactChatWindowHost;
             if (host && typeof host.appendMessage === 'function') {
                 const createdAt = Date.now();
@@ -3622,6 +4726,9 @@
                 }
 
                 if (actionId !== INTRO_SKIP_ACTION_ID && actionName !== INTRO_SKIP_ACTION_ID) {
+                    if (actionId === INTRO_HELLO_ACTION_ID || actionName === INTRO_HELLO_ACTION_ID) {
+                        this.resolveChatIntroChoice('chat');
+                    }
                     return;
                 }
 
@@ -3842,9 +4949,6 @@
 
             const normalizedMode = mode === 'chat' ? 'chat' : 'skip';
             const promptMessageId = this.introPracticeMessageId;
-            const submittedAt = options && Number.isFinite(options.submittedAt)
-                ? options.submittedAt
-                : Date.now();
 
             this.introChoicePending = false;
             this.introClickActivated = true;
@@ -3859,23 +4963,32 @@
             this.highlightChatWindow();
 
             if (normalizedMode === 'chat') {
-                this.waitForFirstAssistantReplyAfter(submittedAt).then(() => {
+                (async () => {
+                    const greetingReplyText = this.resolveGuideCopy(
+                        INTRO_GREETING_REPLY_TEXT_KEY,
+                        INTRO_GREETING_REPLY_TEXT
+                    );
+                    this.appendGuideChatMessage(greetingReplyText, {
+                        textKey: INTRO_GREETING_REPLY_TEXT_KEY
+                    });
+                    this.emotionBridge.apply('happy');
+                    await this.speakLineAndWait(greetingReplyText, {
+                        voiceKey: 'intro_greeting_reply'
+                    });
                     if (this.isStopping()) {
                         return;
+                    }
+
+                    if (!this.cursor.hasPosition()) {
+                        const origin = this.getDefaultCursorOrigin();
+                        this.cursor.showAt(origin.x, origin.y);
                     }
 
                     this.sendIntroFollowups({
                         includeProactive: false
                     });
-                }).catch((error) => {
-                    console.warn('[YuiGuide] 等待首次聊天回复失败:', error);
-                    if (this.isStopping()) {
-                        return;
-                    }
-
-                    this.sendIntroFollowups({
-                        includeProactive: false
-                    });
+                })().catch((error) => {
+                    console.warn('[YuiGuide] 播放问候分支失败:', error);
                 });
                 return;
             }
@@ -3890,16 +5003,20 @@
             const catPawStep = this.getStep('intro_cat_paw');
             const normalizedOptions = options || {};
             const includeProactive = normalizedOptions.includeProactive !== false;
-            const catPawDelayMs = includeProactive ? 5000 : 280;
+            const catPawDelayMs = includeProactive ? 0 : 280;
 
             (async () => {
                 if (includeProactive && proactiveStep && proactiveStep.performance) {
-                    const proactiveText = proactiveStep.performance.bubbleText || '';
-                    this.appendGuideChatMessage(proactiveText);
+                    const proactiveText = this.resolvePerformanceBubbleText(proactiveStep.performance);
+                    this.appendGuideChatMessage(proactiveText, {
+                        textKey: proactiveStep.performance.bubbleTextKey || ''
+                    });
                     if (proactiveStep.performance.emotion) {
                         this.emotionBridge.apply(proactiveStep.performance.emotion);
                     }
-                    await this.speakLineAndWait(proactiveText);
+                    await this.speakLineAndWait(proactiveText, {
+                        voiceKey: proactiveStep.performance.voiceKey
+                    });
                     if (this.isStopping()) {
                         return;
                     }
@@ -3926,23 +5043,41 @@
                 }
 
                 if (catPawStep && catPawStep.performance) {
-                    const catPawText = catPawStep.performance.bubbleText || '';
-                    this.appendGuideChatMessage(catPawText);
+                    const catPawText = this.resolvePerformanceBubbleText(catPawStep.performance);
+                    this.appendGuideChatMessage(catPawText, {
+                        textKey: catPawStep.performance.bubbleTextKey || ''
+                    });
                     if (catPawStep.performance.emotion) {
                         this.emotionBridge.apply(catPawStep.performance.emotion);
                     }
-                    await this.speakLineAndWait(catPawText);
+                    await Promise.all([
+                        this.speakLineAndWait(catPawText, {
+                            voiceKey: catPawStep.performance.voiceKey
+                        }),
+                        (async () => {
+                            if (!(await this.waitForNarrationCue(
+                                catPawStep.performance.voiceKey,
+                                'captureCursorPrelude'
+                            ))) {
+                                return;
+                            }
+                            if (this.isStopping()) {
+                                return;
+                            }
+                            await this.performCaptureCursorPrelude(3000);
+                        })()
+                    ]);
                 }
 
                 if (this.isStopping()) {
                     return;
                 }
                 this.introFlowCompleted = true;
-                this.schedule(() => {
-                    if (!this.isStopping()) {
-                        this.runTakeoverMainFlow();
-                    }
-                }, 320);
+                await wait(320);
+                if (this.isStopping()) {
+                    return;
+                }
+                await this.runTakeoverMainFlow();
             })();
         }
 
@@ -3961,12 +5096,53 @@
             this.overlay.hidePluginPreview();
             await this.ensureChatVisible();
             this.focusAndHighlightChatInput(this.getChatInputTarget());
-            const introText = introStep.performance.bubbleText || '';
-            this.appendGuideChatMessage(introText);
+
+            // Ghost cursor 出现 + 气泡引导用户点击输入框（解锁 autoplay）
+            const inputTarget = this.getChatInputTarget();
+            const inputRect = this.getElementRect(inputTarget);
+            if (inputRect) {
+                const cx = inputRect.left + inputRect.width / 2;
+                const cy = inputRect.top + inputRect.height / 2;
+                this.cursor.showAt(cx, cy);
+                this.cursor.wobble();
+                const activationHint = this.resolveGuideCopy(INTRO_ACTIVATION_HINT_KEY, INTRO_ACTIVATION_HINT);
+                this.overlay.showBubble(activationHint, {
+                    anchorRect: inputRect
+                });
+                // 将气泡定位到输入框正上方
+                const bubbleEl = this.overlay.bubble;
+                if (bubbleEl) {
+                    const bubbleW = Math.min(320, window.innerWidth - 32);
+                    const bubbleH = bubbleEl.offsetHeight || 60;
+                    const bLeft = Math.max(16, Math.min(
+                        inputRect.left + inputRect.width / 2 - bubbleW / 2,
+                        window.innerWidth - bubbleW - 16
+                    ));
+                    const bTop = Math.max(16, inputRect.top - bubbleH - 14);
+                    bubbleEl.style.left = Math.round(bLeft) + 'px';
+                    bubbleEl.style.top = Math.round(bTop) + 'px';
+                }
+                this.awaitingIntroActivation = true;
+                await new Promise((resolve) => {
+                    this._introActivationResolve = resolve;
+                });
+                this.overlay.hideBubble();
+                this.cursor.wobble();
+                await wait(200);
+            }
+            if (this.isStopping()) {
+                return;
+            }
+
+            const introText = this.resolvePerformanceBubbleText(introStep.performance);
+            this.appendGuideChatMessage(introText, {
+                textKey: introStep.performance.bubbleTextKey || ''
+            });
             if (introStep.performance.emotion) {
                 this.emotionBridge.apply(introStep.performance.emotion);
             }
             await this.speakLineAndWait(introText, {
+                voiceKey: introStep.performance.voiceKey,
                 minDurationMs: 4200
             });
             if (this.isStopping()) {
@@ -3979,12 +5155,21 @@
                 return;
             }
 
-            const practiceMessage = this.appendGuideChatMessage(INTRO_PRACTICE_TEXT, {
+            const introChoiceLabels = this.getIntroChoiceLabels();
+            const practiceText = this.resolveGuideCopy(INTRO_PRACTICE_TEXT_KEY, INTRO_PRACTICE_TEXT);
+            const practiceMessage = this.appendGuideChatMessage(practiceText, {
+                textKey: INTRO_PRACTICE_TEXT_KEY,
                 buttons: [{
                     id: INTRO_SKIP_ACTION_ID,
-                    label: '暂时先不聊天',
+                    label: introChoiceLabels.skipChat,
                     action: INTRO_SKIP_ACTION_ID,
                     variant: 'secondary',
+                    disabled: false
+                }, {
+                    id: INTRO_HELLO_ACTION_ID,
+                    label: introChoiceLabels.sayHello,
+                    action: INTRO_HELLO_ACTION_ID,
+                    variant: 'primary',
                     disabled: false
                 }]
             });
@@ -3993,7 +5178,8 @@
                 : null;
             this.introChoicePending = true;
             this.attachChatIntroActivation();
-            await this.speakLineAndWait(INTRO_PRACTICE_TEXT, {
+            await this.speakLineAndWait(practiceText, {
+                voiceKey: 'intro_practice',
                 minDurationMs: 3600
             });
             if (this.isStopping()) {
@@ -4003,6 +5189,7 @@
         }
 
         async startPrelude() {
+            await syncGuideI18nLanguage(5000);
             const preludeSceneIds = this.getPreludeSceneIds();
             if (!Array.isArray(preludeSceneIds) || preludeSceneIds.length === 0) {
                 return;
@@ -4079,6 +5266,7 @@
 
             const runId = ++this.sceneRunId;
             const performance = step.performance || {};
+            const bubbleText = this.resolvePerformanceBubbleText(performance);
             const anchorRect = this.resolveRect(step.anchor);
             const cursorTargetRect = this.resolveRect(performance.cursorTarget || step.anchor);
             const isTakeoverScene = stepId.indexOf('takeover_') === 0 || stepId.indexOf('interrupt_') === 0;
@@ -4110,7 +5298,7 @@
                 this.clearRetainedExtraSpotlights();
             }
 
-            if (isTakeoverScene && stepId !== 'takeover_return_control') {
+            if (isTakeoverScene) {
                 this.overlay.setTakingOver(true);
             }
 
@@ -4137,29 +5325,25 @@
                 this.overlay.hideBubble();
                 this.highlightChatWindow();
                 this.enableInterrupts(step);
-                await this.performCaptureCursorPrelude(2000);
-                if (runId !== this.sceneRunId || this.destroyed || this.angryExitTriggered) {
-                    return;
-                }
 
-                if (performance.bubbleText && shouldNarrateInChat) {
-                    this.appendGuideChatMessage(performance.bubbleText);
+                if (bubbleText && shouldNarrateInChat) {
+                    this.appendGuideChatMessage(bubbleText, {
+                        textKey: performance.bubbleTextKey || ''
+                    });
                 }
                 if (performance.emotion) {
                     this.emotionBridge.apply(performance.emotion);
                 }
 
-                await Promise.all([
-                    this.speakLineAndWait(performance.bubbleText || '', {
-                        minDurationMs: 8000
-                    }),
-                    this.runTakeoverCaptureActionSequence(step, performance, runId)
-                ]);
+                await this.speakLineAndWait(bubbleText || '', {
+                    voiceKey: performance.voiceKey,
+                    minDurationMs: 4000
+                });
                 if (runId !== this.sceneRunId || this.destroyed || this.angryExitTriggered) {
                     return;
                 }
 
-                await wait(DEFAULT_SCENE_SETTLE_MS);
+                await this.waitForSceneDelay(DEFAULT_SCENE_SETTLE_MS);
                 return;
             }
 
@@ -4173,7 +5357,7 @@
                     return;
                 }
 
-                await wait(DEFAULT_SCENE_SETTLE_MS);
+                await this.waitForSceneDelay(DEFAULT_SCENE_SETTLE_MS);
                 return;
             }
 
@@ -4187,12 +5371,12 @@
                     return;
                 }
 
-                await wait(DEFAULT_SCENE_SETTLE_MS);
+                await this.waitForSceneDelay(DEFAULT_SCENE_SETTLE_MS);
                 return;
             }
 
-            if (performance.bubbleText && !shouldNarrateAfterMove && !shouldNarrateInChat) {
-                this.overlay.showBubble(performance.bubbleText, {
+            if (bubbleText && !shouldNarrateAfterMove && !shouldNarrateInChat) {
+                this.overlay.showBubble(bubbleText, {
                     title: 'Yui',
                     emotion: performance.emotion || 'neutral',
                     anchorRect: anchorRect
@@ -4209,17 +5393,17 @@
             if (shouldIntroduceCursor) {
                 const origin = this.getDefaultCursorOrigin();
                 this.cursor.showAt(origin.x, origin.y);
-                await wait(260);
+                await this.waitForSceneDelay(260);
                 if (runId !== this.sceneRunId || this.destroyed) {
                     return;
                 }
                 this.cursor.wobble();
-                await wait(260);
+                await this.waitForSceneDelay(260);
                 if (runId !== this.sceneRunId || this.destroyed) {
                     return;
                 }
                 this.cursor.wobble();
-                await wait(260);
+                await this.waitForSceneDelay(260);
                 if (runId !== this.sceneRunId || this.destroyed) {
                     return;
                 }
@@ -4231,7 +5415,7 @@
             }
 
             if (delayMs > 0) {
-                await wait(delayMs);
+                await this.waitForSceneDelay(delayMs);
                 if (runId !== this.sceneRunId || this.destroyed) {
                     return;
                 }
@@ -4242,8 +5426,8 @@
                 this.enableInterrupts(step);
             }
 
-            if (performance.bubbleText && shouldNarrateDuringMove && !shouldNarrateInChat) {
-                this.overlay.showBubble(performance.bubbleText, {
+            if (bubbleText && shouldNarrateDuringMove && !shouldNarrateInChat) {
+                this.overlay.showBubble(bubbleText, {
                     title: 'Yui',
                     emotion: performance.emotion || 'neutral',
                     anchorRect: anchorRect
@@ -4255,11 +5439,15 @@
             }
 
             if (shouldNarrateDuringMove) {
-                if (performance.bubbleText && shouldNarrateInChat) {
-                    this.appendGuideChatMessage(performance.bubbleText);
+                if (bubbleText && shouldNarrateInChat) {
+                    this.appendGuideChatMessage(bubbleText, {
+                        textKey: performance.bubbleTextKey || ''
+                    });
                     this.overlay.hideBubble();
                 }
-                narrationPromise = this.speakLineAndWait(performance.bubbleText || '');
+                narrationPromise = this.speakLineAndWait(bubbleText || '', {
+                    voiceKey: performance.voiceKey
+                });
             }
 
             const shouldMoveCursor = (
@@ -4270,7 +5458,11 @@
             );
             if (shouldMoveCursor && (performance.cursorAction === 'move' || performance.cursorAction === 'click' || performance.cursorAction === 'wobble')) {
                 if (cursorTargetRect) {
-                    const movePromise = this.cursor.moveToRect(cursorTargetRect, { durationMs: durationMs });
+                    const movePromise = this.cursor.moveToRect(cursorTargetRect, {
+                        durationMs: durationMs,
+                        pauseCheck: () => this.scenePausedForResistance,
+                        cancelCheck: () => this.isStopping()
+                    });
                     if (narrationPromise) {
                         await Promise.all([movePromise, narrationPromise]);
                     } else {
@@ -4290,8 +5482,8 @@
                 this.disableInterrupts();
             }
 
-            if (performance.bubbleText && shouldNarrateAfterMove && !shouldNarrateInChat) {
-                this.overlay.showBubble(performance.bubbleText, {
+            if (bubbleText && shouldNarrateAfterMove && !shouldNarrateInChat) {
+                this.overlay.showBubble(bubbleText, {
                     title: 'Yui',
                     emotion: performance.emotion || 'neutral',
                     anchorRect: anchorRect
@@ -4305,11 +5497,15 @@
             }
 
             if (!shouldNarrateDuringMove) {
-                if (performance.bubbleText && shouldNarrateInChat) {
-                    this.appendGuideChatMessage(performance.bubbleText);
+                if (bubbleText && shouldNarrateInChat) {
+                    this.appendGuideChatMessage(bubbleText, {
+                        textKey: performance.bubbleTextKey || ''
+                    });
                     this.overlay.hideBubble();
                 }
-                await this.speakLineAndWait(performance.bubbleText || '');
+                await this.speakLineAndWait(bubbleText || '', {
+                    voiceKey: performance.voiceKey
+                });
                 if (runId !== this.sceneRunId || this.destroyed) {
                     return;
                 }
@@ -4328,17 +5524,27 @@
                 }
                 this.highlightChatWindow();
                 const centerPoint = this.getViewportCenter();
-                await wait(140);
+                await this.waitForSceneDelay(140);
                 if (runId !== this.sceneRunId || this.destroyed) {
                     return;
                 }
                 if (!this.cursor.hasPosition()) {
                     this.cursor.showAt(centerPoint.x, centerPoint.y);
                 } else {
-                    await this.cursor.moveToPoint(centerPoint.x, centerPoint.y, { durationMs: 360 });
+                    while (!this.isStopping()) {
+                        const movedToCenterPoint = await this.cursor.moveToPoint(centerPoint.x, centerPoint.y, {
+                            durationMs: 360,
+                            pauseCheck: () => this.scenePausedForResistance,
+                            cancelCheck: () => this.isStopping()
+                        });
+                        if (movedToCenterPoint) {
+                            break;
+                        }
+                        await this.waitUntilSceneResumed();
+                    }
                 }
                 this.cursor.wobble();
-                await wait(260);
+                await this.waitForSceneDelay(260);
                 if (runId !== this.sceneRunId || this.destroyed) {
                     return;
                 }
@@ -4366,7 +5572,7 @@
                 return;
             }
 
-            await wait(DEFAULT_SCENE_SETTLE_MS);
+            await this.waitForSceneDelay(DEFAULT_SCENE_SETTLE_MS);
             if (runId !== this.sceneRunId || this.destroyed) {
                 return;
             }
@@ -4405,7 +5611,14 @@
         }
 
         handleInterrupt(event) {
-            if (this.destroyed || this.angryExitTriggered || !this.interruptsEnabled || !event || event.isTrusted === false) {
+            if (
+                this.destroyed
+                || this.angryExitTriggered
+                || this.scenePausedForResistance
+                || !this.interruptsEnabled
+                || !event
+                || event.isTrusted === false
+            ) {
                 return;
             }
 
@@ -4424,6 +5637,18 @@
 
             if (!document.body.classList.contains('yui-taking-over')) {
                 return;
+            }
+
+            if (this.page === 'home' && typeof document.hasFocus === 'function' && !document.hasFocus()) {
+                return;
+            }
+
+            if (event.type === 'mousemove') {
+                const movementX = Number.isFinite(event.movementX) ? event.movementX : null;
+                const movementY = Number.isFinite(event.movementY) ? event.movementY : null;
+                if (movementX !== null && movementY !== null && Math.hypot(movementX, movementY) <= 0) {
+                    return;
+                }
             }
 
             const now = Date.now();
@@ -4495,23 +5720,57 @@
         }
 
         playLightResistance(x, y) {
+            if (this.scenePausedForResistance) {
+                return;
+            }
+
+            // 对抗机制触发时真实鼠标显示 3 秒
+            if (this.resistanceCursorTimer) {
+                window.clearTimeout(this.resistanceCursorTimer);
+            }
+            document.documentElement.style.cursor = '';
+            document.body.style.cursor = '';
+            document.body.classList.add('yui-resistance-cursor-reveal');
+            this.resistanceCursorTimer = window.setTimeout(() => {
+                this.resistanceCursorTimer = null;
+                document.body.classList.remove('yui-resistance-cursor-reveal');
+                if (!this.destroyed && !this.angryExitTriggered) {
+                    document.documentElement.style.cursor = 'none';
+                    document.body.style.cursor = 'none';
+                }
+            }, 3000);
+
             const resistanceStep = this.getStep('interrupt_resist_light');
             if (!resistanceStep) {
                 return;
             }
 
             const performance = resistanceStep.performance || {};
-            const voices = Array.isArray(performance.resistanceVoices) ? performance.resistanceVoices : [];
+            const voices = this.resolvePerformanceResistanceVoices(performance);
+            const resistanceVoiceKeys = ['interrupt_resist_light_1', 'interrupt_resist_light_3'];
+            const resistanceVoiceIndex = Math.max(0, Math.min(resistanceVoiceKeys.length - 1, this.interruptCount - 1));
+            const defaultResistanceText = this.resolvePerformanceBubbleText(performance);
             const message = voices.length > 0
                 ? voices[(this.interruptCount - 1) % voices.length]
-                : performance.bubbleText || '不要拽我啦，还没结束呢！';
+                : defaultResistanceText || '不要拽我啦，还没结束呢！';
 
+            this.pauseCurrentSceneForResistance();
             this.interruptNarrationForResistance();
 
             this.overlay.hideBubble();
-            this.appendGuideChatMessage(message);
+            this.appendGuideChatMessage(message, {
+                textKey: resistanceVoiceKeys[resistanceVoiceIndex] === 'interrupt_resist_light_3'
+                    ? 'tutorial.yuiGuide.lines.interruptResistLight3'
+                    : 'tutorial.yuiGuide.lines.interruptResistLight1'
+            });
             this.emotionBridge.apply(performance.emotion || 'surprised');
-            this.voiceQueue.speak(message).finally(() => {
+            Promise.all([
+                this.voiceQueue.speak(message, {
+                    voiceKey: resistanceVoiceKeys[resistanceVoiceIndex] || ''
+                }),
+                this.cursor.resistTo(x, y)
+            ]).finally(() => {
+                this.resumeCurrentSceneAfterResistance();
                 const narration = this.activeNarration;
                 if (narration && narration.interrupted) {
                     this.scheduleNarrationResume();
@@ -4520,7 +5779,6 @@
 
                 this.restoreCurrentScenePresentation();
             });
-            this.cursor.resistTo(x, y);
         }
 
         async abortAsAngryExit(source) {
@@ -4534,14 +5792,19 @@
 
             const angryStep = this.getStep('interrupt_angry_exit');
             const performance = (angryStep && angryStep.performance) || {};
+            const bubbleText = this.resolvePerformanceBubbleText(performance);
 
             this.overlay.setTakingOver(true);
             this.overlay.setAngry(true);
             this.overlay.hidePluginPreview();
             this.overlay.hideBubble();
-            this.appendGuideChatMessage(performance.bubbleText || '人类~~~~！你真的很没礼貌喵！');
+            this.appendGuideChatMessage(bubbleText || '人类~~~~！你真的很没礼貌喵！', {
+                textKey: performance.bubbleTextKey || ''
+            });
             this.emotionBridge.apply(performance.emotion || 'angry');
-            await this.speakLineAndWait(performance.bubbleText || '');
+            await this.speakLineAndWait(bubbleText || '', {
+                voiceKey: performance.voiceKey
+            });
             if (this.destroyed) {
                 return;
             }
@@ -4575,6 +5838,7 @@
 
             this.destroyed = true;
             this.terminationRequested = true;
+            this.resumeCurrentSceneAfterResistance();
             if (this.page === 'home') {
                 document.body.classList.remove('yui-guide-home-driver-hidden');
             }
@@ -4614,6 +5878,8 @@
             window.removeEventListener('pagehide', this.pageHideHandler, true);
             window.removeEventListener('neko:yui-guide:tutorial-end', this.tutorialEndHandler, true);
             window.removeEventListener('message', this.messageHandler, true);
+            document.removeEventListener('pointerdown', this.interactionGuardHandler, true);
+            document.removeEventListener('click', this.interactionGuardHandler, true);
             document.removeEventListener('click', this.skipButtonClickHandler, true);
         }
 
@@ -4628,6 +5894,64 @@
 
         onPageHide() {
             this.destroy();
+        }
+
+        isAllowedTutorialInteractionTarget(target) {
+            if (!target || typeof target.closest !== 'function') {
+                return false;
+            }
+
+            if (target.closest('#neko-tutorial-skip-btn')) {
+                return true;
+            }
+
+            if (this.awaitingIntroActivation) {
+                const chatInput = target.closest('#react-chat-window-root .composer-input')
+                    || target.closest('#textInputBox');
+                if (chatInput) {
+                    this.awaitingIntroActivation = false;
+                    if (typeof this._introActivationResolve === 'function') {
+                        this._introActivationResolve();
+                        this._introActivationResolve = null;
+                    }
+                    return true;
+                }
+            }
+
+            if (!this.introChoicePending) {
+                return false;
+            }
+
+            const button = target.closest('button.message-action-button');
+            if (!button) {
+                return false;
+            }
+
+            const buttonLabel = typeof button.textContent === 'string'
+                ? button.textContent.replace(/\s+/g, '').trim()
+                : '';
+            const introChoiceLabels = this.getIntroChoiceLabels();
+            return [introChoiceLabels.skipChat, introChoiceLabels.sayHello].some((label) => {
+                return label.replace(/\s+/g, '').trim() === buttonLabel;
+            });
+        }
+
+        onInteractionGuard(event) {
+            if (this.destroyed || this.page !== 'home' || !event || event.isTrusted === false) {
+                return;
+            }
+
+            if (this.isAllowedTutorialInteractionTarget(event.target)) {
+                return;
+            }
+
+            if (typeof event.preventDefault === 'function') {
+                event.preventDefault();
+            }
+            if (typeof event.stopImmediatePropagation === 'function') {
+                event.stopImmediatePropagation();
+            }
+            event.stopPropagation();
         }
 
         onSkipButtonClick(event) {

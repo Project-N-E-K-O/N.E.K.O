@@ -1,9 +1,18 @@
 import defaultGhostCursorUrl from '../../../static/assets/tutorial/ghost-cursor/default-ghost-cursor.png'
 import clickGhostCursorUrl from '../../../static/assets/tutorial/ghost-cursor/click-ghost-cursor.png'
+import { getLocale } from './i18n'
 
 const START_EVENT = 'neko:yui-guide:plugin-dashboard:start'
 const READY_EVENT = 'neko:yui-guide:plugin-dashboard:ready'
 const DONE_EVENT = 'neko:yui-guide:plugin-dashboard:done'
+const GUIDE_AUDIO_BASE_URL = '/static/assets/tutorial/guide-audio/'
+const DEFAULT_GUIDE_LOCALE = 'zh'
+const GUIDE_AUDIO_BY_KEY = {
+  takeover_plugin_preview_dashboard: {
+    zh: '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～.mp3',
+    ja: '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～.mp3',
+  },
+} as const
 
 const ROOT_ID = 'yui-guide-plugin-dashboard-runtime'
 const SVG_NS = 'http://www.w3.org/2000/svg'
@@ -12,6 +21,8 @@ const ALLOWED_ORIGINS = new Set([window.location.origin])
 
 type StartPayload = {
   line?: string
+  voiceKey?: keyof typeof GUIDE_AUDIO_BY_KEY
+  audioUrl?: string
   closeOnDone?: boolean
 }
 
@@ -33,6 +44,51 @@ function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value))
 }
 
+function normalizeGuideLocale(locale?: string) {
+  const current = String(locale || '').trim().toLowerCase()
+  if (!current || current === 'auto') {
+    return DEFAULT_GUIDE_LOCALE
+  }
+
+  if (current.startsWith('ja')) return 'ja'
+  if (current.startsWith('en')) return 'en'
+  if (current.startsWith('ko')) return 'ko'
+  if (current.startsWith('ru')) return 'ru'
+  if (current.startsWith('zh')) return 'zh'
+  return DEFAULT_GUIDE_LOCALE
+}
+
+function resolveGuideLocale() {
+  try {
+    return normalizeGuideLocale(getLocale())
+  } catch (_) {}
+
+  const candidates = [
+    window.localStorage?.getItem('locale'),
+    document.documentElement.lang,
+    navigator.language,
+  ]
+
+  for (const candidate of candidates) {
+    const value = String(candidate || '').trim()
+    if (!value || value.toLowerCase() === 'auto') {
+      continue
+    }
+    return normalizeGuideLocale(value)
+  }
+
+  return DEFAULT_GUIDE_LOCALE
+}
+
+function resolveSpeechLang() {
+  const locale = resolveGuideLocale()
+  if (locale === 'ja') return 'ja-JP'
+  if (locale === 'en') return 'en-US'
+  if (locale === 'ko') return 'ko-KR'
+  if (locale === 'ru') return 'ru-RU'
+  return 'zh-CN'
+}
+
 function estimateSpeechDurationMs(text: string) {
   const content = typeof text === 'string' ? text.trim() : ''
   if (!content) {
@@ -40,6 +96,68 @@ function estimateSpeechDurationMs(text: string) {
   }
 
   return clamp(Math.round(content.length * 280), 2400, 24000)
+}
+
+function resolveGuideAudioSrc(voiceKey?: keyof typeof GUIDE_AUDIO_BY_KEY, audioUrl?: string) {
+  const normalizedAudioUrl = typeof audioUrl === 'string' ? audioUrl.trim() : ''
+  if (normalizedAudioUrl) {
+    return normalizedAudioUrl
+  }
+
+  if (!voiceKey) {
+    return ''
+  }
+
+  const locale = resolveGuideLocale()
+  const files = GUIDE_AUDIO_BY_KEY[voiceKey]
+  const fileName = files[locale as keyof typeof files] || files.zh || ''
+  const fileLocale = files[locale as keyof typeof files] ? locale : DEFAULT_GUIDE_LOCALE
+  return fileName ? `${GUIDE_AUDIO_BASE_URL}${fileLocale}/${encodeURIComponent(fileName)}` : ''
+}
+
+function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number) {
+  const normalizedAudioSrc = typeof audioSrc === 'string' ? audioSrc.trim() : ''
+  if (!normalizedAudioSrc) {
+    return Promise.reject(new Error('missing_audio_src'))
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    let settled = false
+    const audio = new Audio(normalizedAudioSrc)
+    const maxWaitMs = Math.max(3000, minimumDurationMs) + 12000
+
+    const finish = (success: boolean, error?: unknown) => {
+      if (settled) {
+        return
+      }
+      settled = true
+      window.clearTimeout(timerId)
+      audio.onended = null
+      audio.onerror = null
+      if (success) {
+        resolve()
+        return
+      }
+      reject(error)
+    }
+
+    const timerId = window.setTimeout(() => {
+      finish(true)
+    }, maxWaitMs)
+
+    audio.preload = 'auto'
+    audio.onended = () => finish(true)
+    audio.onerror = () => finish(false, new Error('guide_audio_error'))
+
+    try {
+      const playback = audio.play()
+      if (playback && typeof playback.then === 'function') {
+        playback.catch((error: unknown) => finish(false, error))
+      }
+    } catch (error) {
+      finish(false, error)
+    }
+  })
 }
 
 function createSvgElement<K extends keyof SVGElementTagNameMap>(
@@ -53,13 +171,26 @@ function createSvgElement<K extends keyof SVGElementTagNameMap>(
   return element
 }
 
-function speakTextWithPromise(text: string) {
+function speakTextWithPromise(
+  text: string,
+  options?: {
+    voiceKey?: keyof typeof GUIDE_AUDIO_BY_KEY
+    audioUrl?: string
+  },
+): Promise<void> {
   const content = typeof text === 'string' ? text.trim() : ''
   if (!content) {
     return Promise.resolve()
   }
 
   const minDurationMs = estimateSpeechDurationMs(content)
+  const localAudioSrc = resolveGuideAudioSrc(options?.voiceKey, options?.audioUrl)
+  if (localAudioSrc) {
+    return playGuideAudioWithPromise(localAudioSrc, minDurationMs).catch(() => {
+      return speakTextWithPromise(content)
+    })
+  }
+
   if (typeof window.speechSynthesis === 'undefined' || typeof window.SpeechSynthesisUtterance === 'undefined') {
     return wait(minDurationMs)
   }
@@ -67,7 +198,7 @@ function speakTextWithPromise(text: string) {
   return new Promise<void>((resolve) => {
     let settled = false
     const utterance = new SpeechSynthesisUtterance(content)
-    utterance.lang = 'zh-CN'
+    utterance.lang = resolveSpeechLang()
     utterance.rate = 1
     utterance.pitch = 1.1
 
@@ -541,8 +672,8 @@ class PluginDashboardGuideRuntime {
 
     const centerX = rect.left + rect.width * 0.55
     const centerY = rect.top + rect.height * 0.42
-    const radiusX = Math.min(220, rect.width * 0.36)
-    const radiusY = Math.min(112, rect.height * 0.2)
+    const radiusX = Math.min(440, rect.width * 0.72)
+    const radiusY = Math.min(224, rect.height * 0.4)
     const startedAt = performance.now()
 
     await new Promise<void>((resolve) => {
@@ -568,8 +699,14 @@ class PluginDashboardGuideRuntime {
     })
   }
 
-  async speakLine(text: string) {
-    await speakTextWithPromise(text)
+  async speakLine(
+    text: string,
+    options?: {
+      voiceKey?: keyof typeof GUIDE_AUDIO_BY_KEY
+      audioUrl?: string
+    },
+  ) {
+    await speakTextWithPromise(text, options)
   }
 
   cleanup() {
@@ -642,13 +779,16 @@ class PluginDashboardGuideRuntime {
     pluginButton.click()
     await wait(280)
 
-    const speechPromise = this.speakLine(payload.line || '')
+    const speechPromise = this.speakLine(payload.line || '', {
+      voiceKey: payload.voiceKey,
+      audioUrl: payload.audioUrl,
+    })
 
     this.setSpotlight(mainContainer)
     await this.moveCursorToElement(mainContainer, 780)
     await this.animateScroll(mainContainer, 150, 1000)
     await this.animateScroll(mainContainer, -150, 1000)
-    await this.runEllipse(mainContainer, 2000)
+    await this.runEllipse(mainContainer, 7000)
     await speechPromise
 
     this.notify(DONE_EVENT, sessionId)
@@ -671,7 +811,7 @@ export function initPluginDashboardYuiGuideRuntime() {
       return
     }
 
-    if (!ALLOWED_ORIGINS.has(event.origin)) {
+    if (!ALLOWED_ORIGINS.has(event.origin) && event.source !== window.opener) {
       return
     }
 

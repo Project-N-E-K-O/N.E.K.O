@@ -1,6 +1,8 @@
 /**
  * 日本語言語パック
  */
+import { yuiGuideLocales } from './yuiGuide'
+
 export default {
   common: {
     loading: '読み込み中...',
@@ -326,6 +328,9 @@ export default {
   },
   app: {
     titleSuffix: 'N.E.K.O プラグイン管理'
+  },
+  tutorial: {
+    yuiGuide: yuiGuideLocales.ja
   },
   yuiTutorial: {
     title: 'にゃ～プラグイン管理画面へようこそ！',

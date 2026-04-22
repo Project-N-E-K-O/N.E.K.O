@@ -1,6 +1,8 @@
 /**
  * English language pack
  */
+import { yuiGuideLocales } from './yuiGuide'
+
 export default {
   common: {
     loading: 'Loading...',
@@ -326,6 +328,9 @@ export default {
   },
   app: {
     titleSuffix: 'N.E.K.O Plugin Manager'
+  },
+  tutorial: {
+    yuiGuide: yuiGuideLocales['en-US']
   },
   yuiTutorial: {
     title: 'Meow~ Welcome to the Plugin Manager!',

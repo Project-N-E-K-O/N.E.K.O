@@ -52,6 +52,7 @@
             },
             performance: {
                 bubbleText: '',
+                bubbleTextKey: '',
                 voiceKey: '',
                 emotion: 'neutral',
                 cursorAction: 'none',
@@ -60,7 +61,8 @@
                 cursorSpeedMultiplier: 1,
                 delayMs: 0,
                 interruptible: false,
-                resistanceVoices: []
+                resistanceVoices: [],
+                resistanceVoiceKeys: []
             },
             navigation: {
                 openUrl: '',
@@ -82,20 +84,23 @@
     steps.intro_basic.tutorial.title = '文字和语音入口';
     steps.intro_basic.tutorial.description = '介绍首页的文字输入区和语音入口。';
     steps.intro_basic.performance.bubbleText = '想要找我的时候，随时在这里打字或者发语音都能召唤本喵哦！';
+    steps.intro_basic.performance.bubbleTextKey = 'tutorial.yuiGuide.lines.introBasic';
     steps.intro_basic.performance.voiceKey = 'intro_basic';
     steps.intro_basic.performance.emotion = 'happy';
 
     steps.intro_proactive = createBaseStep('intro_proactive', 'home', '#${p}-toggle-proactive-chat');
     steps.intro_proactive.tutorial.title = '主动能力';
     steps.intro_proactive.tutorial.description = '介绍主动搭话与主动视觉这类主动能力。';
-    steps.intro_proactive.performance.bubbleText = '要说你一直没理我，我可是会主动跑出来咬你的哦～（哈！！）';
+    steps.intro_proactive.performance.bubbleText = '可恶，居然敢无视本大小姐嘛！要说你一直没理我，我可是会主动跑出来咬你的哦～（哈！！）';
+    steps.intro_proactive.performance.bubbleTextKey = 'tutorial.yuiGuide.lines.introProactive';
     steps.intro_proactive.performance.voiceKey = 'intro_proactive';
     steps.intro_proactive.performance.emotion = 'happy';
 
     steps.intro_cat_paw = createBaseStep('intro_cat_paw', 'home', '#${p}-btn-agent');
     steps.intro_cat_paw.tutorial.title = '猫爪入口';
     steps.intro_cat_paw.tutorial.description = '把开场第三句落到首页真实存在的猫爪 / OpenClaw 入口。';
-    steps.intro_cat_paw.performance.bubbleText = '好啦不说废话了喵——你看到那个可爱的‘猫爪’了吗，准备好了吗？让我借用一下下你的鼠标吧！';
+    steps.intro_cat_paw.performance.bubbleText = '好啦！不说废话了喵——你看到那个可爱的‘猫爪’了吗，准备好了吗？让我借用一下你的鼠标吧！';
+    steps.intro_cat_paw.performance.bubbleTextKey = 'tutorial.yuiGuide.lines.introCatPaw';
     steps.intro_cat_paw.performance.voiceKey = 'intro_cat_paw';
     steps.intro_cat_paw.performance.emotion = 'happy';
 
@@ -103,6 +108,7 @@
     steps.takeover_capture_cursor.tutorial.title = '借用鼠标';
     steps.takeover_capture_cursor.tutorial.description = '首页接管流程的第一步，只做页面级接管演出。';
     steps.takeover_capture_cursor.performance.bubbleText = '嘿咻！可算逮住你的鼠标了喵～';
+    steps.takeover_capture_cursor.performance.bubbleTextKey = 'tutorial.yuiGuide.lines.takeoverCaptureCursor';
     steps.takeover_capture_cursor.performance.voiceKey = 'takeover_capture_cursor';
     steps.takeover_capture_cursor.performance.emotion = 'happy';
     steps.takeover_capture_cursor.performance.cursorAction = 'wobble';
@@ -114,8 +120,9 @@
     steps.takeover_plugin_preview = createBaseStep('takeover_plugin_preview', 'home', '#${p}-btn-agent');
     steps.takeover_plugin_preview.tutorial.title = '插件预演';
     steps.takeover_plugin_preview.tutorial.description = '首页插件能力预演，M4 后可接力到真实 /ui 插件面板。';
-    steps.takeover_plugin_preview.performance.bubbleText = '还没完呢！你快看快看，这里还有超～～多好玩的插件呢！有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～';
-    steps.takeover_plugin_preview.performance.voiceKey = 'takeover_plugin_preview';
+    steps.takeover_plugin_preview.performance.bubbleText = '还没完呢！你快看快看，这里还有超～～多好玩的插件呢！';
+    steps.takeover_plugin_preview.performance.bubbleTextKey = 'tutorial.yuiGuide.lines.takeoverPluginPreviewHome';
+    steps.takeover_plugin_preview.performance.voiceKey = 'takeover_plugin_preview_home';
     steps.takeover_plugin_preview.performance.emotion = 'happy';
     steps.takeover_plugin_preview.performance.cursorAction = 'click';
     steps.takeover_plugin_preview.performance.cursorTarget = '#${p}-btn-agent';
@@ -126,8 +133,9 @@
     steps.takeover_settings_peek = createBaseStep('takeover_settings_peek', 'home', '#${p}-btn-settings');
     steps.takeover_settings_peek.tutorial.title = '设置一瞥';
     steps.takeover_settings_peek.tutorial.description = '只浏览首页真实设置弹层及真实菜单项。';
-    steps.takeover_settings_peek.performance.bubbleText = '当然啦，如果你想让本喵多和你聊聊天也不是不行啦，给我多准备点小鱼干吧，嘿嘿，好了不逗你啦，设置都在这个齿轮里。你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！';
-    steps.takeover_settings_peek.performance.voiceKey = 'takeover_settings_peek';
+    steps.takeover_settings_peek.performance.bubbleText = '当然啦，如果你想让本喵多和你聊聊天也不是不行啦，给我多准备点小鱼干吧，嘿嘿，好了不逗你啦，设置都在这个齿轮里。';
+    steps.takeover_settings_peek.performance.bubbleTextKey = 'tutorial.yuiGuide.lines.takeoverSettingsPeekIntro';
+    steps.takeover_settings_peek.performance.voiceKey = 'takeover_settings_peek_intro';
     steps.takeover_settings_peek.performance.emotion = 'surprised';
     steps.takeover_settings_peek.performance.cursorAction = 'click';
     steps.takeover_settings_peek.performance.cursorTarget = '#${p}-btn-settings';
@@ -140,6 +148,7 @@
     steps.takeover_return_control.tutorial.title = '归还控制权';
     steps.takeover_return_control.tutorial.description = '收掉临时演出层并把控制权完整交还给用户。';
     steps.takeover_return_control.performance.bubbleText = '好啦好啦，不霸占你的电脑啦～控制权还给你了喵！可不许趁我不注意乱点奇怪的设置哦！之后的日子也请你多多关照了喵～';
+    steps.takeover_return_control.performance.bubbleTextKey = 'tutorial.yuiGuide.lines.takeoverReturnControl';
     steps.takeover_return_control.performance.voiceKey = 'takeover_return_control';
     steps.takeover_return_control.performance.emotion = 'happy';
     steps.takeover_return_control.performance.cursorAction = 'wobble';
@@ -149,6 +158,7 @@
     steps.interrupt_resist_light.tutorial.title = '轻微抵抗';
     steps.interrupt_resist_light.tutorial.description = '用户轻微试探时的较劲反馈。';
     steps.interrupt_resist_light.performance.bubbleText = '喂！不要拽我啦，还没轮到你的回合呢！';
+    steps.interrupt_resist_light.performance.bubbleTextKey = 'tutorial.yuiGuide.lines.interruptResistLight1';
     steps.interrupt_resist_light.performance.voiceKey = 'interrupt_resist_light';
     steps.interrupt_resist_light.performance.emotion = 'surprised';
     steps.interrupt_resist_light.performance.cursorAction = 'wobble';
@@ -156,8 +166,11 @@
     steps.interrupt_resist_light.performance.interruptible = true;
     steps.interrupt_resist_light.performance.resistanceVoices = [
         '喂！不要拽我啦，还没轮到你的回合呢！',
-        '哇啊！你干嘛啊！快松手快松手！',
         '等一下啦！还没结束呢，不要随便打断我啦！'
+    ];
+    steps.interrupt_resist_light.performance.resistanceVoiceKeys = [
+        'tutorial.yuiGuide.lines.interruptResistLight1',
+        'tutorial.yuiGuide.lines.interruptResistLight3'
     ];
     steps.interrupt_resist_light.interrupts.mode = 'theatrical_abort';
 
@@ -165,6 +178,7 @@
     steps.interrupt_angry_exit.tutorial.title = '生气退出';
     steps.interrupt_angry_exit.tutorial.description = '连续有效打断达到阈值后，进入带演出的 angry exit。';
     steps.interrupt_angry_exit.performance.bubbleText = '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！';
+    steps.interrupt_angry_exit.performance.bubbleTextKey = 'tutorial.yuiGuide.lines.interruptAngryExit';
     steps.interrupt_angry_exit.performance.voiceKey = 'interrupt_angry_exit';
     steps.interrupt_angry_exit.performance.emotion = 'angry';
     steps.interrupt_angry_exit.performance.cursorAction = 'none';

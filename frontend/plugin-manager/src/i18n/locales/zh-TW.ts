@@ -1,6 +1,8 @@
 /**
  * 繁體中文語言包
  */
+import { yuiGuideLocales } from './yuiGuide'
+
 export default {
   common: {
     loading: '載入中...',
@@ -326,6 +328,9 @@ export default {
   },
   app: {
     titleSuffix: 'N.E.K.O 外掛管理'
+  },
+  tutorial: {
+    yuiGuide: yuiGuideLocales['zh-TW']
   },
   yuiTutorial: {
     title: '喵～歡迎來到外掛管理面板！',
