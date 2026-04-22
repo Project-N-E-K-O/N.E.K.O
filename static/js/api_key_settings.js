@@ -3330,26 +3330,27 @@ function initConnectivityLights() {
                 const result = await resp.json();
                 if (result.success) {
                     gsvLight.dataset.status = LightStatus.CONNECTED;
-                    // TODO: Remove audio playback after GSV verification is confirmed
-                    if (result.audio_data && result.sample_rate) {
-                        try {
-                            const pcmBytes = Uint8Array.from(atob(result.audio_data), c => c.charCodeAt(0));
-                            const samples = new Int16Array(pcmBytes.buffer);
-                            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                            const buffer = audioCtx.createBuffer(1, samples.length, result.sample_rate);
-                            const channelData = buffer.getChannelData(0);
-                            for (let i = 0; i < samples.length; i++) {
-                                channelData[i] = samples[i] / 32768;
-                            }
-                            const source = audioCtx.createBufferSource();
-                            source.buffer = buffer;
-                            source.connect(audioCtx.destination);
-                            source.start();
-                            console.log(`[GSV Test] Playing ${result.audio_length_ms}ms audio at ${result.sample_rate}Hz`);
-                        } catch (audioErr) {
-                            console.warn('[GSV Test] Audio playback failed:', audioErr);
-                        }
-                    }
+                    // --- 以下为编写连通测试时使用的音频播放验证代码，已确认可行（2026-04-22） ---
+                    // --- 保留供后续调试使用，正常运行时不启用 ---
+                    // if (result.audio_data && result.sample_rate) {
+                    //     try {
+                    //         const pcmBytes = Uint8Array.from(atob(result.audio_data), c => c.charCodeAt(0));
+                    //         const samples = new Int16Array(pcmBytes.buffer);
+                    //         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                    //         const buffer = audioCtx.createBuffer(1, samples.length, result.sample_rate);
+                    //         const channelData = buffer.getChannelData(0);
+                    //         for (let i = 0; i < samples.length; i++) {
+                    //             channelData[i] = samples[i] / 32768;
+                    //         }
+                    //         const source = audioCtx.createBufferSource();
+                    //         source.buffer = buffer;
+                    //         source.connect(audioCtx.destination);
+                    //         source.start();
+                    //         console.log(`[GSV Test] Playing ${result.audio_length_ms}ms audio at ${result.sample_rate}Hz`);
+                    //     } catch (audioErr) {
+                    //         console.warn('[GSV Test] Audio playback failed:', audioErr);
+                    //     }
+                    // }
                 } else {
                     gsvLight.dataset.status = LightStatus.FAILED;
                 }
