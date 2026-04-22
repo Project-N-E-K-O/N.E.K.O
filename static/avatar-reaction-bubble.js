@@ -90,6 +90,7 @@
         live2dDrawableCompactHeadCoverageMin: 0.16,
         live2dDrawableCompactHeadCoverageMax: 0.3,
         live2dDrawableCompactTopOffsetMinScale: 0.7,
+        live2dBodyAwareModelOffsetFloor: -0.12,
         live2dHeadMaxBoundsWidthRatio: 0.82,
         live2dHeadMaxBoundsHeightRatio: 0.58,
         live2dHeadMaxBoundsCenterYRatio: 0.62,
@@ -1222,6 +1223,21 @@
         };
     }
 
+    function getLive2dDrawableCompactCoverageProgress(headRect, bounds) {
+        if (!hasValidRect(headRect) || !hasValidRect(bounds)) {
+            return 0;
+        }
+        var widthCoverage = headRect.width / Math.max(1, bounds.width);
+        var heightCoverage = headRect.height / Math.max(1, bounds.height);
+        var headCoverage = Math.max(widthCoverage, heightCoverage);
+        return clamp(
+            (headCoverage - TIMING.live2dDrawableCompactHeadCoverageMin) /
+            Math.max(0.0001, TIMING.live2dDrawableCompactHeadCoverageMax - TIMING.live2dDrawableCompactHeadCoverageMin),
+            0,
+            1
+        );
+    }
+
     function getLive2dDrawableTopOffsetRatio(headRect, bounds, headMode) {
         var baseOffsetRatio = headMode === 'face'
             ? TIMING.live2dFaceTopOffsetRatio
@@ -1230,34 +1246,18 @@
             return baseOffsetRatio;
         }
 
-        var widthCoverage = headRect.width / Math.max(1, bounds.width);
-        var heightCoverage = headRect.height / Math.max(1, bounds.height);
-        var headCoverage = Math.max(widthCoverage, heightCoverage);
-        var compactCoverageProgress = clamp(
-            (headCoverage - TIMING.live2dDrawableCompactHeadCoverageMin) /
-            Math.max(0.0001, TIMING.live2dDrawableCompactHeadCoverageMax - TIMING.live2dDrawableCompactHeadCoverageMin),
-            0,
-            1
-        );
+        var compactCoverageProgress = getLive2dDrawableCompactCoverageProgress(headRect, bounds);
         var compactOffsetRatio = baseOffsetRatio * TIMING.live2dDrawableCompactTopOffsetMinScale;
         return lerp(compactOffsetRatio, baseOffsetRatio, compactCoverageProgress);
     }
 
     function getLive2dDrawableCompactModelOffsetFloor(headRect, bounds) {
         if (!hasValidRect(headRect) || !hasValidRect(bounds)) {
-            return -0.12;
+            return Number.NEGATIVE_INFINITY;
         }
 
-        var widthCoverage = headRect.width / Math.max(1, bounds.width);
-        var heightCoverage = headRect.height / Math.max(1, bounds.height);
-        var headCoverage = Math.max(widthCoverage, heightCoverage);
-        var compactCoverageProgress = clamp(
-            (headCoverage - TIMING.live2dDrawableCompactHeadCoverageMin) /
-            Math.max(0.0001, TIMING.live2dDrawableCompactHeadCoverageMax - TIMING.live2dDrawableCompactHeadCoverageMin),
-            0,
-            1
-        );
-        return lerp(0, -0.12, compactCoverageProgress);
+        var compactCoverageProgress = getLive2dDrawableCompactCoverageProgress(headRect, bounds);
+        return lerp(0, TIMING.live2dBodyAwareModelOffsetFloor, compactCoverageProgress);
     }
 
     function isReliableLive2dHeadRect(headRect, bounds, bodyRect, headSource) {
@@ -1787,7 +1787,7 @@
             )
             : TIMING.threeDModelOffsetRatio;
         if (avatarType === 'live2d' && live2dLayoutMetrics && live2dLayoutMetrics.bodyAwareLayout) {
-            modelOffsetRatio = Math.max(modelOffsetRatio, -0.12);
+            modelOffsetRatio = Math.max(modelOffsetRatio, TIMING.live2dBodyAwareModelOffsetFloor);
         }
         if (avatarType === 'live2d' &&
             reliableLive2dHeadRect &&

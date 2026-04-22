@@ -105,6 +105,7 @@ class Live2DManager {
         this._displayInfo = null;
         this._autoNamedHitAreaIds = new Set();
         this._bubbleGeometryCache = null;
+        this._bubbleGeometrySettleRefreshMs = LIVE2D_BUBBLE_GEOMETRY_SETTLE_REFRESH_MS;
         this._bubbleGeometryModelReadyAt = 0;
         this._bubbleGeometryRefreshPass = 0;
 

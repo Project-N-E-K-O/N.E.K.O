@@ -905,6 +905,7 @@ def test_live2d_drawable_compact_head_background_reduces_top_lift(mock_page: Pag
     expect(mock_page.locator("#avatar-reaction-bubble")).to_have_attribute("aria-hidden", "false")
     assert metrics["bubbleHeight"] > 0
     assert metrics["top"] >= metrics["headTop"] - metrics["bubbleHeight"] * 0.22 - 2
+    assert metrics["top"] <= metrics["headTop"] + 2
 
 
 @pytest.mark.frontend
@@ -1030,6 +1031,7 @@ def test_live2d_drawable_compact_head_background_caps_upward_model_offset(mock_p
     expect(mock_page.locator("#avatar-reaction-bubble")).to_have_attribute("aria-hidden", "false")
     assert metrics["bubbleHeight"] > 0
     assert metrics["top"] >= metrics["headTop"] - metrics["bubbleHeight"] * 0.24 - 2
+    assert metrics["top"] <= metrics["headTop"] + 2
 
 
 @pytest.mark.frontend
@@ -2355,12 +2357,27 @@ def test_live2d_bubble_geometry_cache_rebuilds_once_after_settle_window(mock_pag
                 manager._cacheBubbleGeometryResult(detected, bounds, logicalRect);
                 const initialPass = manager._bubbleGeometryCache?.refreshPass ?? null;
 
-                // Simulate settle window elapsed with a positive ready timestamp.
-                while (performance.now() < 2200) {
-                    // busy-wait on purpose so model state cannot change between cache/create/fetch.
+                // Keep this offset explicitly above settle refresh window so
+                // cacheNeedsSettleRefresh remains reliable when constants change.
+                const settleRefreshMs = Math.max(
+                    0.1,
+                    Number(manager._bubbleGeometrySettleRefreshMs) ||
+                        Number(window.LIVE2D_BUBBLE_GEOMETRY_SETTLE_REFRESH_MS) ||
+                        1800
+                );
+                // SETTLE_OFFSET_MS must stay >= settle window to keep refresh invalidation deterministic.
+                const SETTLE_OFFSET_MS = Math.max(10000, settleRefreshMs + 100);
+                const stableNowMs = Math.max(0.1, performance.now());
+                manager._bubbleGeometryModelReadyAt = stableNowMs;
+                const simulatedNowMs = stableNowMs + SETTLE_OFFSET_MS;
+                const originalPerformanceNow = performance.now.bind(performance);
+                performance.now = () => simulatedNowMs;
+                let firstFetch = null;
+                try {
+                    firstFetch = manager._getCachedBubbleGeometryResult();
+                } finally {
+                    performance.now = originalPerformanceNow;
                 }
-                manager._bubbleGeometryModelReadyAt = performance.now() - 2000;
-                const firstFetch = manager._getCachedBubbleGeometryResult();
                 const passAfterInvalidate = manager._bubbleGeometryRefreshPass;
 
                 // Rebuild cache once; subsequent fetch should remain valid.
