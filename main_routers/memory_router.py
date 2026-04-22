@@ -473,3 +473,385 @@ async def update_review_config(request: Request):
     except Exception as e:
         logger.error(f"更新记忆整理配置失败: {e}")
         return {"success": False, "error": str(e)}
+
+
+# ---------------------------------------------------------------
+# Legacy memory 扫描 / 手动清理（对应前端"清理遗留记忆"按钮）
+# ---------------------------------------------------------------
+#
+# 设计目标：列出不在当前 runtime ``memory_dir`` 下、但可能有历史遗留角色
+# 记忆的根目录（Documents / CFA 回退原路径 / 历史可读 Documents 候选），让
+# 用户主动勾选清理。默认不自动删，任何删除必须由 POST /legacy/purge 带
+# 明确路径列表触发，且路径必须落在 scan 返回的 ``legacy_roots[].root``
+# 白名单下（防路径逃逸）。
+
+
+def _collect_legacy_memory_roots(config_manager) -> list[tuple[Path, str]]:
+    """
+    收集所有非当前 runtime 的 legacy memory 根目录（带来源标签）。
+
+    返回 ``[(Path, source), ...]``，去重后保持顺序：
+      - ``get_legacy_app_root_candidates()`` 返回的各候选的 ``memory/``
+        子目录（``source="legacy_app_root"``）
+      - ``_readable_docs_dir / <app_name> / memory``（``source="cfa_readable_docs"``）
+
+    当前激活的 ``memory_dir`` 绝不会被包含。
+    """
+    roots: list[tuple[Path, str]] = []
+    seen: set[str] = set()
+
+    try:
+        runtime_memory = Path(getattr(config_manager, 'memory_dir', '') or '').resolve(strict=False)
+    except Exception:
+        runtime_memory = None
+
+    def _add(path_obj: Path, source: str) -> None:
+        try:
+            resolved = path_obj.resolve(strict=False)
+        except Exception:
+            resolved = path_obj
+        key = str(resolved).lower() if os.name == 'nt' else str(resolved)
+        if key in seen:
+            return
+        if runtime_memory is not None:
+            try:
+                if resolved == runtime_memory:
+                    return
+            except Exception:
+                pass
+        seen.add(key)
+        roots.append((path_obj, source))
+
+    try:
+        legacy_app_roots = list(config_manager.get_legacy_app_root_candidates() or [])
+    except Exception as exc:
+        logger.warning(f"legacy memory scan: get_legacy_app_root_candidates 失败: {exc}")
+        legacy_app_roots = []
+
+    for app_root in legacy_app_roots:
+        try:
+            _add(Path(app_root) / 'memory', 'legacy_app_root')
+        except Exception:
+            continue
+
+    readable_docs = getattr(config_manager, '_readable_docs_dir', None)
+    if readable_docs:
+        try:
+            app_name = getattr(config_manager, 'app_name', None) or 'N.E.K.O'
+            _add(Path(readable_docs) / app_name / 'memory', 'cfa_readable_docs')
+        except Exception:
+            pass
+
+    return roots
+
+
+def _directory_size_safe(path: Path, *, max_entries: int = 50000) -> int:
+    """
+    计算目录递归 size。遇到权限错误/文件消失时忽略；超过 max_entries 条
+    目提前返回避免阻塞事件循环（返回 -1 作为"过大/未知"标记）。
+    """
+    total = 0
+    visited = 0
+    try:
+        stack: list[Path] = [path]
+        while stack:
+            current = stack.pop()
+            try:
+                with os.scandir(current) as it:
+                    for entry in it:
+                        visited += 1
+                        if visited > max_entries:
+                            return -1
+                        try:
+                            if entry.is_symlink():
+                                continue
+                            if entry.is_file(follow_symlinks=False):
+                                try:
+                                    total += entry.stat(follow_symlinks=False).st_size
+                                except (FileNotFoundError, PermissionError, OSError):
+                                    continue
+                            elif entry.is_dir(follow_symlinks=False):
+                                stack.append(Path(entry.path))
+                        except (FileNotFoundError, PermissionError, OSError):
+                            continue
+            except (FileNotFoundError, PermissionError, OSError):
+                continue
+    except Exception as exc:
+        logger.debug(f"_directory_size_safe({path}): 汇总大小时出错: {exc}")
+        return -1
+    return total
+
+
+@router.get('/legacy/scan')
+async def scan_legacy_memory():
+    """
+    扫描 legacy 路径下的角色记忆目录，返回每条的元数据，供前端"清理
+    遗留记忆"按钮弹层使用。本接口**只读**，不做任何删除 / 迁移。
+    """
+    try:
+        from utils.config_manager import get_config_manager
+        config_manager = get_config_manager()
+
+        legacy_roots = await asyncio.to_thread(_collect_legacy_memory_roots, config_manager)
+
+        try:
+            characters = await asyncio.to_thread(config_manager.load_characters)
+        except Exception as exc:
+            logger.warning(f"scan_legacy_memory: 加载 characters.json 失败: {exc}")
+            characters = {}
+        known_names: set[str] = set((characters.get('猫娘') or {}).keys())
+
+        runtime_memory_dir = Path(getattr(config_manager, 'memory_dir', '') or '')
+        runtime_existing: set[str] = set()
+        try:
+            if runtime_memory_dir.is_dir():
+                for entry in os.scandir(runtime_memory_dir):
+                    if entry.is_dir(follow_symlinks=False):
+                        runtime_existing.add(entry.name)
+        except Exception as exc:
+            logger.debug(f"scan_legacy_memory: 枚举 runtime_memory_dir 失败: {exc}")
+
+        roots_payload: list[dict] = []
+        total_entries = 0
+        total_size_bytes = 0
+
+        for root_path, source in legacy_roots:
+            try:
+                exists = await asyncio.to_thread(root_path.is_dir)
+            except Exception:
+                exists = False
+            entries_payload: list[dict] = []
+            if exists:
+                try:
+                    raw_entries = await asyncio.to_thread(
+                        lambda p=root_path: list(os.scandir(p))
+                    )
+                except Exception as exc:
+                    logger.debug(f"scan_legacy_memory: 枚举 {root_path} 失败: {exc}")
+                    raw_entries = []
+
+                for entry in raw_entries:
+                    try:
+                        entry_name = entry.name
+                        if not entry_name or entry_name.startswith('.') or entry_name.startswith('_'):
+                            continue
+                        if entry.is_symlink():
+                            continue
+                        is_dir = False
+                        try:
+                            is_dir = entry.is_dir(follow_symlinks=False)
+                        except Exception:
+                            is_dir = False
+                        entry_path = Path(entry.path)
+                        if is_dir:
+                            size_bytes = await asyncio.to_thread(
+                                _directory_size_safe, entry_path
+                            )
+                        else:
+                            try:
+                                size_bytes = entry.stat(follow_symlinks=False).st_size
+                            except Exception:
+                                size_bytes = -1
+                        is_unlinked = entry_name not in known_names
+                        runtime_has_same_name = entry_name in runtime_existing
+                        entries_payload.append({
+                            'name': entry_name,
+                            'path': str(entry_path),
+                            'is_dir': bool(is_dir),
+                            'size_bytes': int(size_bytes) if isinstance(size_bytes, (int, float)) else -1,
+                            'is_unlinked': bool(is_unlinked),
+                            'runtime_has_same_name': bool(runtime_has_same_name),
+                        })
+                    except Exception as exc:
+                        logger.debug(
+                            f"scan_legacy_memory: 处理条目 {entry.path} 失败: {exc}"
+                        )
+                        continue
+
+            total_entries += len(entries_payload)
+            for ep in entries_payload:
+                sb = ep.get('size_bytes')
+                if isinstance(sb, int) and sb > 0:
+                    total_size_bytes += sb
+
+            roots_payload.append({
+                'root': str(root_path),
+                'source': source,
+                'exists': bool(exists),
+                'entries': entries_payload,
+            })
+
+        return {
+            'success': True,
+            'runtime_memory_dir': str(runtime_memory_dir),
+            'legacy_roots': roots_payload,
+            'total_entries': total_entries,
+            'total_size_bytes': total_size_bytes,
+        }
+    except MaintenanceModeError:
+        raise
+    except Exception as exc:
+        logger.error(f"扫描 legacy memory 失败: {exc}", exc_info=True)
+        return JSONResponse(
+            {'success': False, 'error': f'扫描 legacy memory 失败: {exc}'},
+            status_code=500,
+        )
+
+
+def _is_path_within(child: Path, parent: Path) -> bool:
+    """
+    判断 child 是否严格位于 parent 之下（parent 必须是前缀，且 child != parent）。
+    双方都需要 resolve 后比对，避免 ``..`` 路径逃逸。
+    """
+    try:
+        child_resolved = child.resolve(strict=False)
+        parent_resolved = parent.resolve(strict=False)
+    except Exception:
+        return False
+
+    try:
+        child_resolved.relative_to(parent_resolved)
+    except ValueError:
+        return False
+    return child_resolved != parent_resolved
+
+
+@router.post('/legacy/purge')
+async def purge_legacy_memory(request: Request):
+    """
+    按前端勾选的 paths 精确删除 legacy memory 条目。
+
+    安全校验（全部必须通过才删）：
+      1. 每条 path 必须严格位于 ``_collect_legacy_memory_roots`` 返回的
+         任一 root 之下（resolve 后白名单前缀比对），拒绝路径逃逸。
+      2. 不得等于或覆盖当前 runtime ``memory_dir``。
+      3. ``..`` / 相对路径 / 空字符串 / 非字符串 → 400。
+    """
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        return JSONResponse(
+            {'success': False, 'error': f'非法请求体: {exc}'}, status_code=400
+        )
+
+    raw_paths = payload.get('paths') if isinstance(payload, dict) else None
+    if not isinstance(raw_paths, list) or not raw_paths:
+        return JSONResponse(
+            {'success': False, 'error': 'paths 必须为非空列表'}, status_code=400
+        )
+
+    try:
+        from utils.config_manager import get_config_manager
+        config_manager = get_config_manager()
+        legacy_roots = await asyncio.to_thread(_collect_legacy_memory_roots, config_manager)
+    except Exception as exc:
+        logger.error(f"purge_legacy_memory: 初始化失败: {exc}", exc_info=True)
+        return JSONResponse(
+            {'success': False, 'error': f'内部错误: {exc}'}, status_code=500
+        )
+
+    if not legacy_roots:
+        return JSONResponse(
+            {'success': False, 'error': '当前无可清理的 legacy 根目录'},
+            status_code=409,
+        )
+
+    try:
+        runtime_memory = Path(getattr(config_manager, 'memory_dir', '') or '').resolve(
+            strict=False
+        )
+    except Exception:
+        runtime_memory = None
+
+    normalized_roots: list[Path] = []
+    for root_path, _ in legacy_roots:
+        try:
+            normalized_roots.append(root_path.resolve(strict=False))
+        except Exception:
+            continue
+
+    removed: list[str] = []
+    errors: list[dict] = []
+
+    import shutil
+    for raw_path in raw_paths:
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            errors.append({'path': str(raw_path), 'error': '非法路径（非字符串或空）'})
+            continue
+        if '..' in raw_path.replace('\\', '/').split('/'):
+            errors.append({'path': raw_path, 'error': '路径包含 .. 段，已拒绝'})
+            continue
+
+        try:
+            target = Path(raw_path)
+        except Exception as exc:
+            errors.append({'path': raw_path, 'error': f'路径解析失败: {exc}'})
+            continue
+
+        if not target.is_absolute():
+            errors.append({'path': raw_path, 'error': '必须使用绝对路径'})
+            continue
+
+        try:
+            target_resolved = target.resolve(strict=False)
+        except Exception as exc:
+            errors.append({'path': raw_path, 'error': f'resolve 失败: {exc}'})
+            continue
+
+        if runtime_memory is not None:
+            try:
+                if target_resolved == runtime_memory:
+                    errors.append({'path': raw_path, 'error': '禁止删除 runtime memory_dir'})
+                    continue
+            except Exception:
+                pass
+
+        allowed = False
+        for root in normalized_roots:
+            try:
+                target_resolved.relative_to(root)
+                if target_resolved != root:
+                    allowed = True
+                    break
+            except ValueError:
+                continue
+        if not allowed:
+            errors.append({
+                'path': raw_path,
+                'error': '路径不在 legacy 白名单根目录之下，已拒绝',
+            })
+            continue
+
+        # 通过所有校验，执行删除（PermissionError 重试一次）
+        async def _rmtree_once(p: Path) -> None:
+            if p.is_dir():
+                await asyncio.to_thread(shutil.rmtree, p, ignore_errors=False)
+            elif p.exists():
+                await asyncio.to_thread(p.unlink)
+
+        try:
+            try:
+                await _rmtree_once(target_resolved)
+            except PermissionError as exc:
+                logger.warning(
+                    f"purge_legacy_memory: {target_resolved} PermissionError: {exc}，300ms 后重试"
+                )
+                await asyncio.sleep(0.3)
+                await _rmtree_once(target_resolved)
+            removed.append(str(target_resolved))
+            logger.info(f"purge_legacy_memory: 已删除 {target_resolved}")
+        except FileNotFoundError:
+            # 已经不存在，视为成功（幂等）
+            removed.append(str(target_resolved))
+            logger.debug(f"purge_legacy_memory: {target_resolved} 不存在，跳过（视为已删）")
+        except Exception as exc:
+            logger.error(
+                f"purge_legacy_memory: 删除 {target_resolved} 失败: {exc}", exc_info=True
+            )
+            errors.append({'path': raw_path, 'error': str(exc)})
+
+    return {
+        'success': True,
+        'removed': removed,
+        'errors': errors,
+    }

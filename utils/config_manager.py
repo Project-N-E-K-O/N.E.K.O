@@ -1355,6 +1355,118 @@ class ConfigManager:
                     print(f"Migrated memory directory: {item.name}")
         except Exception as e:
             print(f"Warning: Failed to migrate memory files: {e}", file=sys.stderr)
+
+    def migrate_legacy_documents_memory(self):
+        """
+        启动时对 legacy 根目录（``Documents\\N.E.K.O`` / CFA 原始只读路径等）
+        下的 ``memory/`` 仅做**软迁移**：把仍在 ``characters.json[猫娘]``
+        的角色目录搬到当前 runtime ``memory_dir``；runtime 已有同名目录则
+        保留 legacy 副本并打印 warning，绝不覆盖。
+
+        **未关联条目**（目录名不在 ``characters.json[猫娘]`` 的孤立记忆）
+        不在本方法处理范围内，完全交由创意工坊页面的"清理遗留记忆"按钮
+        走 ``/api/memory/legacy/scan`` + ``purge`` 由用户主动勾选删除。
+
+        该方法应在 ``migrate_config_files`` / ``migrate_memory_files`` 之后
+        调用，此时 ``characters.json`` 已就位。任何失败只打日志不抛异常，
+        绝不阻塞启动流程。
+        """
+        try:
+            # get_legacy_app_root_candidates 已排除当前 app_docs_dir，且去重
+            legacy_roots = list(self.get_legacy_app_root_candidates() or [])
+        except Exception as exc:
+            self._log(
+                f"[ConfigManager] migrate_legacy_documents_memory: 获取 legacy roots 失败: {exc}"
+            )
+            return
+
+        # CFA 回退场景：_readable_docs_dir 是只读原 Documents，也要纳入
+        readable_docs = getattr(self, "_readable_docs_dir", None)
+        if readable_docs:
+            try:
+                extra = Path(readable_docs) / self.app_name
+                if all(str(extra) != str(existing) for existing in legacy_roots):
+                    legacy_roots.append(extra)
+            except Exception:
+                pass
+
+        if not legacy_roots:
+            return
+
+        try:
+            characters = self.load_characters()
+        except Exception as exc:
+            self._log(
+                f"[ConfigManager] migrate_legacy_documents_memory: 加载 characters.json 失败: {exc}"
+            )
+            return
+
+        known_characters = set((characters.get("猫娘") or {}).keys())
+        if not known_characters:
+            # characters.json 异常/为空时无从判断哪些应当迁移，直接退出。
+            self._log(
+                "[ConfigManager] migrate_legacy_documents_memory: "
+                "characters.json 中无角色，跳过本次软迁移"
+            )
+            return
+
+        migrated_count = 0
+        skipped_count = 0
+
+        for legacy_root in legacy_roots:
+            try:
+                legacy_memory = Path(legacy_root) / "memory"
+            except Exception:
+                continue
+            if not legacy_memory.exists() or not legacy_memory.is_dir():
+                continue
+            # 保护：绝不处理 runtime memory 自身（防御性重复检查）
+            try:
+                if legacy_memory.resolve() == Path(self.memory_dir).resolve():
+                    continue
+            except Exception:
+                pass
+
+            for entry in list(legacy_memory.iterdir()):
+                try:
+                    entry_name = entry.name
+                    # 跳过隐藏/临时/非角色类条目
+                    if entry_name.startswith(".") or entry_name.startswith("_"):
+                        continue
+
+                    # 未关联条目交给手动清理按钮，此处不做任何操作
+                    if entry_name not in known_characters:
+                        continue
+
+                    target = self.memory_dir / entry_name
+                    if target.exists():
+                        skipped_count += 1
+                        self._log(
+                            f"[ConfigManager] legacy memory {entry} 已存在于 runtime "
+                            f"({target})，保留 legacy 副本避免覆盖"
+                        )
+                        continue
+                    try:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.move(str(entry), str(target))
+                        migrated_count += 1
+                        self._log(
+                            f"[ConfigManager] 已迁移 legacy memory: {entry} -> {target}"
+                        )
+                    except Exception as exc:
+                        self._log(
+                            f"[ConfigManager] 迁移 legacy memory {entry} -> {target} 失败: {exc}"
+                        )
+                except Exception as exc:
+                    self._log(
+                        f"[ConfigManager] 处理 legacy memory 条目 {entry} 时出错: {exc}"
+                    )
+
+        if migrated_count or skipped_count:
+            self._log(
+                f"[ConfigManager] legacy memory 软迁移汇总: 迁移 {migrated_count} 个, "
+                f"跳过 {skipped_count} 个（runtime 已存在同名）"
+            )
     
     # --- Character configuration helpers ---
 
@@ -2905,6 +3017,18 @@ def _ensure_config_manager_migrated():
     # 先基于“尚未注入默认配置的运行根”判断是否需要导入云快照。
     _config_manager.migrate_config_files()
     _config_manager.migrate_memory_files()
+    # 在 config/memory 基础迁移完成后，对遗留 Documents/AppData 路径下的
+    # N.E.K.O/memory 做一次性迁移与孤儿清理（软迁移 A + 软清理 B）。
+    # 失败只打日志不抛异常，绝不阻塞启动。
+    try:
+        _config_manager.migrate_legacy_documents_memory()
+    except Exception as exc:
+        try:
+            _config_manager._log(
+                f"[ConfigManager] migrate_legacy_documents_memory 抛异常（已忽略）: {exc}"
+            )
+        except Exception:
+            pass
     _config_manager_migrated = True
     return _config_manager
 

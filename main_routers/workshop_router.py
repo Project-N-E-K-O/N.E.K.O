@@ -31,7 +31,7 @@ from utils.workshop_utils import (
     get_workshop_path,
 )
 from utils.logger_config import get_module_logger
-from utils.config_manager import set_reserved
+from utils.config_manager import get_reserved, set_reserved
 from config import CHARACTER_RESERVED_FIELDS
 import hashlib
 
@@ -1130,6 +1130,11 @@ async def get_subscribed_workshop_items():
                     else:
                         logger.warning(f'物品 {item_id} 的安装信息返回格式未知: {type(result)} - {result}')
                         item_info["state"]["installed"] = False
+                except (FileNotFoundError, OSError) as e:
+                    # 取消订阅后的短窗内 Steam 仍可能返回该 item，但本地 install
+                    # folder 已被删 → 预期的 race，降级为 debug 避免日志噪音。
+                    logger.debug(f'获取物品 {item_id} 安装信息失败（可能刚取消订阅）: {e}')
+                    item_info["state"]["installed"] = False
                 except Exception as e:
                     logger.warning(f'获取物品 {item_id} 安装信息失败: {e}')
                     item_info["state"]["installed"] = False
@@ -1245,9 +1250,11 @@ async def get_subscribed_workshop_items():
                 item_info['publishedFileId'] = str(item_info['publishedFileId'])
                 
                 # 尝试获取预览图信息 - 优先从本地文件夹查找
+                # 多道防御：先用 isdir 双重检查（比 exists 更明确排除"存在但不是目录"），
+                # 再吞 FileNotFoundError（取消订阅后遍历期间目录被删的 race）。
                 preview_url = None
                 install_folder = item_info.get('installedFolder')
-                if install_folder and os.path.exists(install_folder):
+                if install_folder and os.path.isdir(install_folder):
                     try:
                         # 使用辅助函数查找预览图
                         preview_image_path = find_preview_image_in_folder(install_folder)
@@ -1261,6 +1268,10 @@ async def get_subscribed_workshop_items():
                                 proxy_path = preview_image_path
                             preview_url = f"/api/steam/proxy-image?image_path={quote(proxy_path)}"
                             logger.debug(f'为物品 {item_id} 找到本地预览图: {preview_url}')
+                    except (FileNotFoundError, OSError) as preview_error:
+                        logger.debug(
+                            f'查找物品 {item_id} 预览图时目录已消失（可能刚取消订阅）: {preview_error}'
+                        )
                     except Exception as preview_error:
                         logger.warning(f'查找物品 {item_id} 预览图时出错: {preview_error}')
                 
@@ -1269,11 +1280,18 @@ async def get_subscribed_workshop_items():
                     item_info['previewUrl'] = preview_url
 
                 voice_reference_summary = None
-                if install_folder and os.path.exists(install_folder):
-                    voice_reference_summary = await asyncio.to_thread(
-                        _build_workshop_voice_reference_summary,
-                        install_folder,
-                    )
+                if install_folder and os.path.isdir(install_folder):
+                    try:
+                        voice_reference_summary = await asyncio.to_thread(
+                            _build_workshop_voice_reference_summary,
+                            install_folder,
+                        )
+                    except (FileNotFoundError, OSError) as voice_error:
+                        logger.debug(
+                            f'构建物品 {item_id} voice reference 时目录已消失（可能刚取消订阅）: {voice_error}'
+                        )
+                    except Exception as voice_error:
+                        logger.warning(f'构建物品 {item_id} voice reference 失败: {voice_error}')
                 item_info['voiceReferenceAvailable'] = bool(voice_reference_summary)
                 if voice_reference_summary:
                     item_info['voiceReference'] = voice_reference_summary
@@ -1698,6 +1716,126 @@ async def get_workshop_item_details(item_id: str):
         }, status_code=500)
 
 
+def _collect_character_names_by_workshop_item_id(config_mgr, item_id: int) -> list[str]:
+    """
+    通过 character_origin.source_id 在 characters.json 中反查来源为该
+    Workshop 物品的角色名（稳定索引，不依赖磁盘上的 .chara.json）。
+
+    Args:
+        config_mgr: ConfigManager 实例
+        item_id: Workshop 物品 ID（整数）
+
+    Returns:
+        list[str]: 匹配到的角色名列表（可能为空；保持去重后的插入顺序）
+    """
+    try:
+        characters = config_mgr.load_characters()
+    except Exception as exc:
+        logger.warning(
+            f"_collect_character_names_by_workshop_item_id: 加载 characters.json 失败: {exc}"
+        )
+        return []
+
+    target_id = str(item_id)
+    names: list[str] = []
+    seen: set[str] = set()
+    for name, payload in (characters.get('猫娘') or {}).items():
+        if not isinstance(payload, dict):
+            continue
+        source = str(
+            get_reserved(payload, 'character_origin', 'source', default='') or ''
+        ).strip()
+        source_id = str(
+            get_reserved(payload, 'character_origin', 'source_id', default='') or ''
+        ).strip()
+        if source == 'steam_workshop' and source_id == target_id and name not in seen:
+            names.append(name)
+            seen.add(name)
+    return names
+
+
+def _scan_workshop_folder_character_names(item_path: str | None) -> list[str]:
+    """
+    扫描 Workshop 物品磁盘目录中的 .chara.json，提取角色名（作为反向索引的补充）。
+    若目录不存在或扫描出错，返回空列表。
+    """
+    if not item_path:
+        return []
+    try:
+        normalized_path = os.path.abspath(os.path.normpath(item_path))
+    except Exception:
+        return []
+    if not os.path.isdir(normalized_path):
+        return []
+
+    names: list[str] = []
+    seen: set[str] = set()
+    try:
+        for root, _dirs, files in os.walk(normalized_path):
+            for file_name in files:
+                if not file_name.endswith('.chara.json'):
+                    continue
+                chara_file_path = os.path.join(root, file_name)
+                try:
+                    with open(chara_file_path, 'r', encoding='utf-8') as f:
+                        chara_data = json.load(f)
+                except Exception as exc:
+                    logger.warning(
+                        f"_scan_workshop_folder_character_names: 读取 {chara_file_path} 失败: {exc}"
+                    )
+                    continue
+                chara_name = chara_data.get('档案名') or chara_data.get('name')
+                if chara_name and chara_name not in seen:
+                    names.append(chara_name)
+                    seen.add(chara_name)
+    except Exception as exc:
+        logger.warning(
+            f"_scan_workshop_folder_character_names: 扫描 {normalized_path} 失败: {exc}"
+        )
+    return names
+
+
+def _resolve_workshop_item_install_path(steamworks, item_id: int) -> str | None:
+    """
+    尽力解析 Workshop 物品当前的磁盘安装路径。
+    优先 GetItemInstallInfo，回退 find_workshop_item_by_id；失败返回 None。
+    """
+    item_path: str | None = None
+    try:
+        if steamworks:
+            install_info = steamworks.Workshop.GetItemInstallInfo(item_id)
+            if isinstance(install_info, dict):
+                folder_path = install_info.get('folder') or ''
+                if folder_path:
+                    item_path = str(folder_path)
+            elif isinstance(install_info, tuple) and len(install_info) >= 2:
+                folder = install_info[1]
+                if folder:
+                    item_path = str(folder)
+    except Exception as exc:
+        logger.debug(
+            f"_resolve_workshop_item_install_path: GetItemInstallInfo({item_id}) 失败: {exc}"
+        )
+
+    if not item_path:
+        try:
+            from utils.frontend_utils import find_workshop_item_by_id
+            candidate, _ = find_workshop_item_by_id(str(item_id))
+            item_path = candidate or None
+        except Exception as exc:
+            logger.debug(
+                f"_resolve_workshop_item_install_path: find_workshop_item_by_id({item_id}) 失败: {exc}"
+            )
+            return None
+
+    if not item_path:
+        return None
+    try:
+        return os.path.abspath(os.path.normpath(item_path))
+    except Exception:
+        return item_path
+
+
 @router.post('/unsubscribe')
 async def unsubscribe_workshop_item(request: Request):
     """
@@ -1705,7 +1843,7 @@ async def unsubscribe_workshop_item(request: Request):
     接收包含物品ID的POST请求
     """
     steamworks = get_steamworks()
-    
+
     # 检查Steamworks是否初始化成功
     if steamworks is None:
         return JSONResponse({
@@ -1713,19 +1851,19 @@ async def unsubscribe_workshop_item(request: Request):
             "error": "Steamworks未初始化",
             "message": "请确保Steam客户端已运行且已登录"
         }, status_code=503)
-    
+
     try:
         # 获取请求体中的数据
         data = await request.json()
         item_id = data.get('item_id')
-        
+
         if not item_id:
             return JSONResponse({
                 "success": False,
                 "error": "缺少必要参数",
                 "message": "请求中缺少物品ID"
             }, status_code=400)
-        
+
         # 转换item_id为整数
         try:
             item_id_int = int(item_id)
@@ -1735,246 +1873,409 @@ async def unsubscribe_workshop_item(request: Request):
                 "error": "无效的物品ID",
                 "message": "提供的物品ID不是有效的数字"
             }, status_code=400)
-        
-        # 定义一个内部删除函数，可以在回调或备用方案中使用
+
+        config_mgr = get_config_manager()
+
+        # 反向索引：优先用 character_origin.source_id 找到来自该 Workshop 物品的角色，
+        # 再用磁盘上 .chara.json 的扫描结果兜底合并（文件夹可能已被 Steam 删除）。
+        candidate_names = _collect_character_names_by_workshop_item_id(config_mgr, item_id_int)
+        pre_item_path = _resolve_workshop_item_install_path(steamworks, item_id_int)
+        disk_names = _scan_workshop_folder_character_names(pre_item_path)
+        seen_names: set[str] = set(candidate_names)
+        for disk_name in disk_names:
+            if disk_name not in seen_names:
+                candidate_names.append(disk_name)
+                seen_names.add(disk_name)
+        logger.info(
+            f"取消订阅 {item_id_int}: 反向索引候选角色 {candidate_names}（磁盘扫描追加 {disk_names}）"
+        )
+
+        # 前置校验：候选角色中若包含当前猫娘，直接阻止取消订阅并提示用户切换。
+        try:
+            current_characters = await config_mgr.aload_characters()
+        except Exception as exc:
+            logger.warning(f"取消订阅前读取 characters.json 失败: {exc}")
+            current_characters = config_mgr.load_characters()
+        current_catgirl = str(current_characters.get('当前猫娘', '') or '')
+        if current_catgirl and current_catgirl in candidate_names:
+            logger.warning(
+                f"取消订阅被阻止: item_id={item_id_int} 对应角色 {current_catgirl} 正是当前猫娘"
+            )
+            return JSONResponse({
+                "success": False,
+                "code": "CURRENT_CATGIRL_IN_USE",
+                "error": f"不能取消订阅当前正在使用的猫娘「{current_catgirl}」，请先切换到其他角色后再取消订阅。",
+                "character_name": current_catgirl,
+            }, status_code=400)
+
+        # 前置尝试释放 memory_server 对候选角色的 SQLite 句柄（best-effort + 并行）。
+        # 与 delete_catgirl 不同：取消订阅场景下，memory_server 对非活跃角色
+        # 可能本来就没持有句柄，/release_character 会返回 non-success，但此时
+        # 也根本不存在文件锁 —— 硬拒绝会导致用户永远无法取消订阅。
+        # 真正的安全网是同步清理里的 PermissionError retry；这里只记录 warning。
+        #
+        # 并行预算：per-call 2.5s，整体 3s（参考 main_server.py 关机阶段做法）。
+        # 多候选时耗时从 O(N * RT) 降到 O(max(RT))；单候选表现不变。
+        release_warnings: list[str] = []
+        if candidate_names:
+            try:
+                from .characters_router import release_memory_server_character
+            except Exception as exc:
+                logger.error(
+                    f"取消订阅前置 release: 无法 import release_memory_server_character: {exc}"
+                )
+                return JSONResponse({
+                    "success": False,
+                    "code": "INTERNAL_IMPORT_ERROR",
+                    "error": f"内部组件加载失败: {exc}",
+                }, status_code=500)
+
+            async def _release_one(name: str) -> tuple[str, bool, str | None]:
+                try:
+                    released = await asyncio.wait_for(
+                        release_memory_server_character(
+                            name,
+                            reason=f"取消订阅前释放 SQLite 句柄: {name}（item_id={item_id_int}）",
+                        ),
+                        timeout=2.5,
+                    )
+                    return name, bool(released), None
+                except Exception as exc:
+                    return name, False, str(exc)
+
+            try:
+                release_results = await asyncio.wait_for(
+                    asyncio.gather(
+                        *(_release_one(n) for n in candidate_names),
+                        return_exceptions=False,
+                    ),
+                    timeout=3.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"取消订阅前置 release 总预算 3s 超时（item_id={item_id_int}），"
+                    f"视为全部 non-success 继续清理"
+                )
+                release_results = [(n, False, "overall_timeout") for n in candidate_names]
+
+            for name, ok, err in release_results:
+                if ok:
+                    continue
+                release_warnings.append(name)
+                logger.info(
+                    f"取消订阅前置 release: {name} 返回 non-success"
+                    f"{'（' + err + '）' if err else ''}，继续走清理流程"
+                )
+
+        # 同步执行记忆/角色卡/tombstone 清理（与 DELETE /catgirl/{name} 对齐）。
+        # 这一步必须在 UnsubscribeItem 之前完成，这样 HTTP 响应就能直接汇报
+        # "删了哪些角色、删了哪些记忆路径"，用户能立刻确认结果，不用等 Steam 异步回调。
+        # 任意角色子步骤失败都只记录到 cleanup_summary.errors，不中断整体流程
+        # （因为 UnsubscribeItem 一旦发出，Steam 端已无法回滚；记忆残留由用户看到错误后重试）。
+        #
+        # 性能优化：
+        #   - 单角色内 delete_memory / tombstone / remove_one_catgirl 三步互相独立，
+        #     用 asyncio.gather 并发（return_exceptions=True 各自兜异常）。
+        #   - characters.json 的 del 只改内存 dict，循环末尾批量一次写盘
+        #     （N 次 atomic_write → 1 次）。
+        cleanup_summary: dict = {
+            "candidate_characters": list(candidate_names),
+            "cleaned_characters": [],
+            "removed_memory_paths": [],
+            "errors": [],
+            # memory_server release 返回 non-success 的角色名（不影响清理流程，
+            # 仅用于诊断，一般表示该角色在 memory_server 侧本来就没持有句柄）。
+            "release_warnings": list(release_warnings),
+        }
+
+        if candidate_names:
+            try:
+                from .characters_router import (
+                    _build_character_tombstones_state,
+                    notify_memory_server_reload,
+                )
+                from utils.character_memory import delete_character_memory_storage
+                from .shared_state import get_remove_one_catgirl
+            except Exception as exc:
+                logger.error(
+                    f"取消订阅同步清理: 无法 import 生命周期工具: {exc}"
+                )
+                return JSONResponse({
+                    "success": False,
+                    "code": "INTERNAL_IMPORT_ERROR",
+                    "error": f"内部组件加载失败: {exc}",
+                }, status_code=500)
+
+            characters_mut = await config_mgr.aload_characters()
+            current_catgirl_now = str(characters_mut.get('当前猫娘', '') or '')
+
+            async def _delete_memory_with_retry(name: str) -> list:
+                """Windows 文件锁 → 300ms 重试一次作为安全网。"""
+                try:
+                    return list(
+                        await asyncio.to_thread(
+                            delete_character_memory_storage, config_mgr, name
+                        )
+                        or []
+                    )
+                except PermissionError as exc:
+                    logger.warning(
+                        f"同步清理: delete_character_memory_storage({name}) "
+                        f"PermissionError: {exc}，300ms 后重试"
+                    )
+                    await asyncio.sleep(0.3)
+                    return list(
+                        await asyncio.to_thread(
+                            delete_character_memory_storage, config_mgr, name
+                        )
+                        or []
+                    )
+
+            async def _write_tombstone(name: str) -> None:
+                tombstone_state = _build_character_tombstones_state(config_mgr, name)
+                await asyncio.to_thread(
+                    config_mgr.save_character_tombstones_state, tombstone_state
+                )
+
+            async def _remove_one(name: str) -> None:
+                fn = get_remove_one_catgirl()
+                if fn is not None:
+                    await fn(name)
+
+            pending_del_names: list[str] = []
+            for name in candidate_names:
+                if not name:
+                    continue
+                # 保护性双保险：绝不删当前猫娘（前置校验已覆盖，这里兜底）
+                if name == current_catgirl_now:
+                    logger.warning(
+                        f"取消订阅同步清理: 跳过当前猫娘 '{name}'（保护性双保险）"
+                    )
+                    continue
+
+                # 三步独立：并发执行
+                results = await asyncio.gather(
+                    _delete_memory_with_retry(name),
+                    _write_tombstone(name),
+                    _remove_one(name),
+                    return_exceptions=True,
+                )
+                rm_paths_or_exc, tombstone_or_exc, remove_or_exc = results
+
+                # delete_memory 结果
+                if isinstance(rm_paths_or_exc, Exception):
+                    logger.error(
+                        f"取消订阅同步清理: delete_memory({name}) 失败: {rm_paths_or_exc}",
+                        exc_info=rm_paths_or_exc,
+                    )
+                    cleanup_summary["errors"].append({
+                        "character": name,
+                        "stage": "delete_memory",
+                        "error": str(rm_paths_or_exc),
+                    })
+                else:
+                    for entry_path in rm_paths_or_exc:
+                        logger.info(f"取消订阅同步清理: 已删除记忆 {entry_path}")
+                        cleanup_summary["removed_memory_paths"].append(str(entry_path))
+                    if not rm_paths_or_exc:
+                        logger.warning(
+                            f"取消订阅同步清理: delete_memory({name}) 未返回任何路径 "
+                            f"(memory_dir={getattr(config_mgr, 'memory_dir', None)})"
+                        )
+
+                # tombstone 结果
+                if isinstance(tombstone_or_exc, Exception):
+                    logger.error(
+                        f"取消订阅同步清理: tombstone({name}) 失败: {tombstone_or_exc}",
+                        exc_info=tombstone_or_exc,
+                    )
+                    cleanup_summary["errors"].append({
+                        "character": name,
+                        "stage": "tombstone",
+                        "error": str(tombstone_or_exc),
+                    })
+                else:
+                    logger.info(f"取消订阅同步清理: 已写入 tombstone -> {name}")
+
+                # remove_one_catgirl 结果
+                if isinstance(remove_or_exc, Exception):
+                    logger.warning(
+                        f"取消订阅同步清理: remove_one_catgirl({name}) 失败: {remove_or_exc}"
+                    )
+                    cleanup_summary["errors"].append({
+                        "character": name,
+                        "stage": "remove_one_catgirl",
+                        "error": str(remove_or_exc),
+                    })
+
+                # characters.json 条目仅做内存删除，循环结束一次性批量写盘
+                if name in (characters_mut.get('猫娘') or {}):
+                    try:
+                        del characters_mut['猫娘'][name]
+                        pending_del_names.append(name)
+                    except Exception as exc:
+                        logger.error(
+                            f"取消订阅同步清理: 内存 del characters[猫娘][{name}] 失败: {exc}",
+                            exc_info=True,
+                        )
+                        cleanup_summary["errors"].append({
+                            "character": name,
+                            "stage": "delete_config",
+                            "error": str(exc),
+                        })
+
+            # 批量写 characters.json（N 个 del → 1 次 atomic write）
+            if pending_del_names:
+                try:
+                    await config_mgr.asave_characters(characters_mut)
+                    cleanup_summary["cleaned_characters"] = list(pending_del_names)
+                    logger.info(
+                        f"取消订阅同步清理: 批量删除 {len(pending_del_names)} 个角色并写入 characters.json: "
+                        f"{pending_del_names}"
+                    )
+                except Exception as exc:
+                    logger.error(
+                        f"取消订阅同步清理: 批量 asave_characters 失败: {exc}",
+                        exc_info=True,
+                    )
+                    cleanup_summary["errors"].append({
+                        "character": "<batch>",
+                        "stage": "delete_config",
+                        "error": str(exc),
+                    })
+
+            # 通知 memory_server 重新加载（一次即可）
+            try:
+                await notify_memory_server_reload(
+                    reason=f"取消订阅 item_id={item_id_int}"
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"取消订阅同步清理: notify_memory_server_reload 失败: {exc}"
+                )
+
+        logger.info(
+            f"取消订阅同步清理汇总 item_id={item_id_int}: "
+            f"cleaned={cleanup_summary['cleaned_characters']}, "
+            f"removed_paths={len(cleanup_summary['removed_memory_paths'])}, "
+            f"errors={len(cleanup_summary['errors'])}"
+        )
+
+        # 回调与延迟兜底共享的幂等标志（first-winner 模式）。
+        # 使用 Lock 保证 check + set 的原子性，避免两线程同时通过闸口。
+        #
+        # 角色卡/记忆/tombstone 已经在同步路径（上方）处理完毕；perform_cleanup
+        # 只负责 Steam 订阅文件夹的磁盘删除兜底。不再需要把 async 任务调回主
+        # 事件循环（_run_async_in_main_loop / _purge_character_memory_and_config
+        # 已移除），回调线程做的事纯粹是阻塞 IO（shutil.rmtree），可以直接跑。
+        cleanup_event = threading.Event()
+        cleanup_claim_lock = threading.Lock()
+
         def perform_cleanup(item_id: int):
-            """执行清理操作：删除文件夹和角色卡"""
+            """
+            回调/延迟兜底共用的订阅文件夹删除。幂等：cleanup_event 保证只跑
+            一次。角色卡/记忆已由 handler 同步路径处理，这里不再重复。
+            """
+            with cleanup_claim_lock:
+                if cleanup_event.is_set():
+                    logger.debug(f"perform_cleanup({item_id}): 已执行过，跳过（幂等）")
+                    return False
+                cleanup_event.set()
+
             try:
                 import shutil
-                
-                # 获取steamworks实例（在函数内部获取，确保可用）
-                current_steamworks = get_steamworks()
-                
-                # 首先尝试使用Steamworks API获取实际安装路径
-                item_path = None
-                try:
-                    if current_steamworks:
-                        install_info = current_steamworks.Workshop.GetItemInstallInfo(item_id)
-                        logger.debug(f"GetItemInstallInfo返回: {install_info}, 类型: {type(install_info)}")
-                        
-                        if isinstance(install_info, dict):
-                            folder_path = install_info.get('folder', '')
-                            if folder_path:
-                                item_path = str(folder_path)
-                                logger.info(f"从GetItemInstallInfo获取到安装路径: {item_path}")
-                        elif isinstance(install_info, tuple) and len(install_info) >= 2:
-                            folder = install_info[1]
-                            if folder:
-                                item_path = str(folder)
-                                logger.info(f"从GetItemInstallInfo(元组)获取到安装路径: {item_path}")
-                except Exception as e:
-                    logger.warning(f"通过GetItemInstallInfo获取路径失败: {e}，尝试使用find_workshop_item_by_id")
-                
-                # 如果GetItemInstallInfo失败，回退到使用find_workshop_item_by_id
-                if not item_path:
-                    from utils.frontend_utils import find_workshop_item_by_id
-                    item_path, _ = find_workshop_item_by_id(str(item_id))
-                    logger.info(f"通过find_workshop_item_by_id找到路径: {item_path}")
-                
-                # 检查路径是否存在
-                if not item_path:
-                    logger.error(f"无法获取物品 {item_id} 的安装路径")
-                    return False
-                
-                # 规范化路径
-                item_path = os.path.abspath(os.path.normpath(item_path))
-                logger.info(f"规范化后的物品路径: {item_path}")
-                
-                # 检查路径是否存在
-                if not os.path.exists(item_path):
-                    logger.warning(f"创意工坊物品路径不存在: {item_path}")
-                    return False
-                
-                if not os.path.isdir(item_path):
-                    logger.warning(f"物品路径不是目录: {item_path}")
-                    return False
-                
-                # 扫描文件夹及其子文件夹，查找所有.chara.json文件
-                chara_files = []
-                chara_names = []  # 存储找到的角色卡名称
-                logger.info(f"开始扫描文件夹: {item_path}")
-                
-                try:
-                    for root, dirs, files in os.walk(item_path):
-                        logger.debug(f"扫描目录: {root}, 文件数: {len(files)}")
-                        for file in files:
-                            if file.endswith('.chara.json'):
-                                chara_file_path = os.path.join(root, file)
-                                chara_files.append(chara_file_path)
-                                logger.info(f"找到角色卡文件: {chara_file_path}")
-                except Exception as e:
-                    logger.error(f"扫描文件夹时出错: {e}")
-                
-                logger.info(f"共找到 {len(chara_files)} 个角色卡文件")
-                
-                # 解析.chara.json文件，获取角色卡名称
-                for chara_file_path in chara_files:
-                    try:
-                        with open(chara_file_path, 'r', encoding='utf-8') as f:
-                            chara_data = json.load(f)
-                        
-                        # 获取角色卡名称，兼容中英文字段名
-                        chara_name = chara_data.get('档案名') or chara_data.get('name')
-                        if chara_name:
-                            chara_names.append(chara_name)
-                            logger.info(f"解析角色卡文件成功: {chara_file_path} -> {chara_name}")
-                        else:
-                            logger.warning(f"角色卡文件 {chara_file_path} 缺少名称字段，数据: {chara_data}")
-                    except Exception as e:
-                        logger.error(f"处理角色卡文件 {chara_file_path} 时出错: {e}", exc_info=True)
-                
-                logger.info(f"共解析出 {len(chara_names)} 个角色卡名称: {chara_names}")
-                
-                # 从characters.json中删除角色卡
-                if chara_names:
-                    config_mgr = get_config_manager()
-                    characters = config_mgr.load_characters()
-                    
-                    # 确保'猫娘'键存在
-                    if '猫娘' not in characters:
-                        characters['猫娘'] = {}
-                    
-                    # 删除每个找到的角色卡
-                    deleted_count = 0
-                    for chara_name in chara_names:
-                        if chara_name in characters.get('猫娘', {}):
-                            # 检查是否是当前正在使用的猫娘
-                            current_catgirl = characters.get('当前猫娘', '')
-                            if chara_name == current_catgirl:
-                                logger.warning(f"不能删除当前正在使用的猫娘: {chara_name}，跳过删除")
-                                continue
-                            
-                            del characters['猫娘'][chara_name]
-                            deleted_count += 1
-                            logger.info(f"已从characters.json中删除角色卡: {chara_name}")
-                    
-                    if deleted_count > 0:
-                        # 保存更新后的characters.json（perform_cleanup 是同步闭包，被
-                        # Steamworks 回调线程调用，这里直接走同步 save_characters）
-                        config_mgr.save_characters(characters)
-                        logger.info(f"已保存更新后的characters.json，删除了 {deleted_count} 个角色卡")
-                        
-                        # 重新加载配置
-                        try:
-                            initialize_character_data = get_initialize_character_data()
-                            if initialize_character_data:
-                                # 尝试获取事件循环并安全地调用异步函数
-                                try:
-                                    loop = asyncio.get_event_loop()
-                                    if loop.is_running():
-                                        # 如果事件循环正在运行，使用create_task
-                                        # 保存任务引用以防止被垃圾回收器提前回收
-                                        task = loop.create_task(initialize_character_data())
-                                        # 可选：添加错误处理回调
-                                        def task_done_callback(t):
-                                            try:
-                                                t.result()  # 获取任务结果，如果有异常会抛出
-                                            except Exception as e:
-                                                logger.error(f"重新加载角色配置时出错: {e}")
-                                        task.add_done_callback(task_done_callback)
-                                    else:
-                                        # 如果事件循环未运行，使用run_until_complete
-                                        loop.run_until_complete(initialize_character_data())
-                                    logger.info("已重新加载角色配置")
-                                except RuntimeError:
-                                    # 如果没有事件循环，尝试创建新的
-                                    try:
-                                        asyncio.run(initialize_character_data())
-                                        logger.info("已重新加载角色配置")
-                                    except Exception as e:
-                                        logger.warning(f"无法重新加载角色配置（可能不在事件循环中）: {e}")
-                        except Exception as e:
-                            logger.error(f"重新加载角色配置时出错: {e}")
-                
-                # 删除订阅文件夹
-                try:
-                    logger.info(f"准备删除订阅文件夹: {item_path}")
-                    if os.path.exists(item_path) and os.path.isdir(item_path):
-                        # 再次确认路径存在
-                        logger.info(f"确认文件夹存在，开始删除: {item_path}")
-                        shutil.rmtree(item_path, ignore_errors=True)
-                        
-                        # 验证删除是否成功
-                        if os.path.exists(item_path):
-                            logger.warning(f"删除后文件夹仍存在: {item_path}，可能被占用或权限不足")
-                        else:
-                            logger.info(f"✅ 成功删除订阅文件夹: {item_path}")
+                # 重新解析一次路径（候选路径可能在取消订阅过程中失效）
+                final_item_path = _resolve_workshop_item_install_path(
+                    get_steamworks(), item_id
+                ) or pre_item_path
+                if final_item_path and os.path.isdir(final_item_path):
+                    shutil.rmtree(final_item_path, ignore_errors=True)
+                    if os.path.exists(final_item_path):
+                        logger.warning(
+                            f"perform_cleanup({item_id}): 订阅文件夹仍存在（可能被占用）: {final_item_path}"
+                        )
                     else:
-                        logger.warning(f"订阅文件夹不存在或不是目录: {item_path} (存在: {os.path.exists(item_path)}, 是目录: {os.path.isdir(item_path) if os.path.exists(item_path) else False})")
-                except Exception as e:
-                    logger.error(f"删除订阅文件夹时出错: {e}", exc_info=True)
-                    
-            except Exception as e:
-                logger.error(f"执行清理操作时出错: {e}", exc_info=True)
+                        logger.info(
+                            f"perform_cleanup({item_id}): 已删除订阅文件夹 {final_item_path}"
+                        )
+                else:
+                    logger.debug(
+                        f"perform_cleanup({item_id}): 订阅文件夹已不存在，跳过删除"
+                    )
+            except Exception as exc:
+                logger.error(
+                    f"perform_cleanup({item_id}): 删除订阅文件夹时出错: {exc}",
+                    exc_info=True,
+                )
                 return False
             return True
-        
-        # 定义一个简单的回调函数来处理取消订阅的结果
+
         def unsubscribe_callback(result):
-            # 记录取消订阅的结果（添加详细日志）
-            callback_item_id = getattr(result, 'publishedFileId', getattr(result, 'published_file_id', None))
-            logger.info(f"取消订阅回调被触发: 期望item_id={item_id_int}, 回调item_id={callback_item_id}, result.result={result.result}")
-            
-            # 检查result对象的结构（用于调试）
-            logger.debug(f"回调result对象类型: {type(result)}, 属性: {dir(result)}")
-            
-            # 验证item_id是否匹配（防止其他取消订阅操作触发此回调）
+            """Steamworks UnsubscribeItem 的回调（在 Steam 回调线程中执行）。"""
+            callback_item_id = getattr(
+                result, 'publishedFileId', getattr(result, 'published_file_id', None)
+            )
+            logger.info(
+                f"取消订阅回调被触发: 期望item_id={item_id_int}, 回调item_id={callback_item_id}, "
+                f"result.result={getattr(result, 'result', None)}"
+            )
+            # 验证 item_id 是否匹配（防止其他取消订阅操作触发此回调）
             if callback_item_id and int(callback_item_id) != item_id_int:
-                logger.warning(f"回调item_id不匹配: 期望{item_id_int}, 实际{callback_item_id}，跳过处理")
+                logger.warning(
+                    f"回调item_id不匹配: 期望{item_id_int}, 实际{callback_item_id}，跳过处理"
+                )
                 return
-            
-            # 记录取消订阅的结果
-            if result.result == 1:  # k_EResultOK
-                logger.info(f"取消订阅成功回调: {item_id_int}，开始执行删除操作")
-                # 调用统一的清理函数
+
+            if getattr(result, 'result', None) == 1:  # k_EResultOK
+                logger.info(f"取消订阅成功回调: {item_id_int}，开始执行清理")
                 perform_cleanup(item_id_int)
             else:
-                logger.warning(f"取消订阅失败回调: {item_id_int}, 错误代码: {result.result}")
-        
-        # 调用Steamworks的UnsubscribeItem方法，并提供回调函数
-        # 使用override_callback=True确保回调被正确设置
+                logger.warning(
+                    f"取消订阅失败回调: {item_id_int}, 错误代码: {getattr(result, 'result', None)}"
+                )
+
+        # 调用 Steamworks 的 UnsubscribeItem 方法，并提供回调函数
         try:
-            steamworks.Workshop.UnsubscribeItem(item_id_int, callback=unsubscribe_callback, override_callback=True)
+            steamworks.Workshop.UnsubscribeItem(
+                item_id_int, callback=unsubscribe_callback, override_callback=True
+            )
             logger.info(f"取消订阅请求已发送: {item_id_int}，等待回调...")
-            
-            # 设置一个延迟的后备清理机制（如果回调在5秒内没有触发）
+
+            # 延迟兜底：5 秒后若回调仍未触发（cleanup_event 未 set），
+            # 在后台线程里直接执行一次 perform_cleanup（幂等）。
             def delayed_cleanup():
-                import time
-                # noqa: BLOCKING-OK - 此函数仅通过 threading.Thread(daemon=True) 在后台线程运行
-                # （见下方 cleanup_thread），不会阻塞 FastAPI 主事件循环。
-                time.sleep(5)  # 等待5秒
-                logger.info(f"延迟清理检查: 如果回调未触发，执行备用清理...")
-                # 注意：这里不能直接调用，因为无法知道回调是否已执行
-                # 更好的方法是检查文件夹是否还存在
-                try:
-                    install_info = steamworks.Workshop.GetItemInstallInfo(item_id_int)
-                    if install_info:  # 如果还能获取到安装信息，说明可能还没删除
-                        logger.warning(f"5秒后仍能获取安装信息，可能回调未触发，执行备用清理")
-                        perform_cleanup(item_id_int)
-                except Exception as e:
-                    # 如果获取失败，可能已经删除了，这是正常情况，记录调试信息即可
-                    logger.debug(f"延迟清理检查时获取安装信息失败（可能已删除）: {e}")
-            
-            # 在后台线程中启动延迟清理（可选）
-            import threading
+                import time as _time
+                # noqa: BLOCKING-OK - 只在 daemon 后台线程跑，不阻塞主事件循环。
+                _time.sleep(5)
+                if cleanup_event.is_set():
+                    logger.debug(f"延迟兜底: item_id={item_id_int} 已清理，跳过")
+                    return
+                logger.warning(
+                    f"延迟兜底: item_id={item_id_int} 5 秒内未收到回调，执行备用清理"
+                )
+                perform_cleanup(item_id_int)
+
             cleanup_thread = threading.Thread(target=delayed_cleanup, daemon=True)
             cleanup_thread.start()
-            
+
         except Exception as e:
-            logger.error(f"调用UnsubscribeItem失败: {e}")
-            # 如果设置回调失败，直接执行删除操作
-            logger.warning(f"回调设置失败，立即执行删除操作...")
+            logger.error(f"调用 UnsubscribeItem 失败: {e}")
+            # 如果设置回调失败，立即尝试执行一次清理（幂等）
+            logger.warning("UnsubscribeItem 调用失败，立即执行备用清理")
             perform_cleanup(item_id_int)
             raise
-        
-        # 由于回调是异步的，我们返回请求已被接受处理的状态
+
         logger.info(f"取消订阅请求已被接受，正在处理: {item_id_int}")
         return {
             "success": True,
             "status": "accepted",
-            "message": "取消订阅请求已被接受，正在处理中。实际结果将在后台异步完成。"
+            "message": "取消订阅请求已被接受，正在处理中。实际结果将在后台异步完成。",
+            "candidate_character_count": len(candidate_names),
+            # 同步阶段的实际清理结果（记忆/角色卡/tombstone 已删除），
+            # 订阅文件夹由 Steam 异步回调或 5 秒延迟兜底负责删除。
+            "cleanup_summary": cleanup_summary,
         }
-            
+
     except Exception as e:
         logger.error(f"取消订阅物品时出错: {e}")
         return JSONResponse({
