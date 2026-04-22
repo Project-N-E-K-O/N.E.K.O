@@ -52,6 +52,15 @@ def _install(tmpdir: str):
     return event_log, fs, pm, re, cm
 
 
+def _find_by_id(rows: list[dict], rid: str) -> dict:
+    """Locate a row by id or raise a descriptive assertion.
+    Preferred over `[x for x in rows if x["id"] == rid][0]` so failures
+    report the missing id rather than an opaque IndexError."""
+    item = next((x for x in rows if x.get("id") == rid), None)
+    assert item is not None, f"missing row with id {rid!r}"
+    return item
+
+
 # ── Reflection.aapply_signal ────────────────────────────────────────
 
 
@@ -72,7 +81,7 @@ async def test_reflection_apply_reinforcement_updates_fields(tmp_path):
     assert ok is True
 
     reloaded = await re.aload_reflections("小天")
-    r = [x for x in reloaded if x["id"] == rid][0]
+    r = _find_by_id(reloaded, rid)
     assert r["reinforcement"] == pytest.approx(1.0)
     assert r["disputation"] == 0.0
     assert r["rein_last_signal_at"] is not None
@@ -94,14 +103,14 @@ async def test_reflection_apply_independent_clocks(tmp_path):
 
     # First: reinforcement signal
     await re.aapply_signal("小天", rid, {"reinforcement": 1.0}, source="user_confirm")
-    r = [x for x in await re.aload_reflections("小天") if x["id"] == rid][0]
+    r = _find_by_id(await re.aload_reflections("小天"), rid)
     rein_ts_before = r["rein_last_signal_at"]
     assert rein_ts_before is not None
     assert r["disp_last_signal_at"] is None
 
     # Second: disputation signal — must NOT overwrite rein timestamp
     await re.aapply_signal("小天", rid, {"disputation": 1.0}, source="user_rebut")
-    r = [x for x in await re.aload_reflections("小天") if x["id"] == rid][0]
+    r = _find_by_id(await re.aload_reflections("小天"), rid)
     assert r["rein_last_signal_at"] == rein_ts_before  # preserved
     assert r["disp_last_signal_at"] is not None  # now set
 
@@ -242,7 +251,7 @@ async def test_reflection_evidence_handler_is_idempotent_on_replay(tmp_path):
         assert apply_fn("小天", payload) is False
 
     reloaded = await re.aload_reflections("小天")
-    r = [x for x in reloaded if x["id"] == rid][0]
+    r = _find_by_id(reloaded, rid)
     assert r["reinforcement"] == pytest.approx(1.0)
     assert r["disputation"] == 0.0
     assert r["rein_last_signal_at"] is not None
