@@ -24,6 +24,9 @@
     var resolvePromise = null;
     var sourceDataUrl = null;
     var recaptureFn = null;
+    // 单调递增 token：防止旧 recaptureFn 异步返回时把结果灌进新一轮 crop 会话，
+    // 或在 finally 里把新会话刚显示的"隐藏NEKO"按钮文案/disabled 状态错误重置。
+    var recaptureRunId = 0;
 
     // Selection rectangle (canvas coords, always normalized: x,y = top-left)
     var sel = null; // { x, y, w, h } or null
@@ -169,16 +172,21 @@
         clearSelection();
 
         if (tab === 'hideNeko' && recaptureFn) {
+            var runId = ++recaptureRunId;
+            var currentRecaptureFn = recaptureFn;
             tabHideNeko.disabled = true;
             tabHideNeko.textContent = tr('chat.cropTabRecapturing', '\u6B63\u5728\u91CD\u65B0\u622A\u56FE...');
-            recaptureFn().then(function (newDataUrl) {
+            currentRecaptureFn().then(function (newDataUrl) {
+                if (runId !== recaptureRunId) return;
                 if (newDataUrl && activeTab === 'hideNeko') {
                     sourceDataUrl = newDataUrl;
                     loadImage(newDataUrl);
                 }
             }).catch(function (err) {
+                if (runId !== recaptureRunId) return;
                 console.warn('[crop] recapture failed:', err);
             }).finally(function () {
+                if (runId !== recaptureRunId) return;
                 tabHideNeko.disabled = false;
                 tabHideNeko.textContent = tr('chat.cropTabHideNeko', '\u9690\u85CFNEKO');
             });
@@ -572,6 +580,9 @@
     }
 
     function close(result) {
+        // 任何已 in-flight 的 recapture promise 在 then/catch/finally 里都会发现
+        // runId 已过期，从而不会再触碰 sourceDataUrl / 按钮文案。
+        recaptureRunId++;
         if (overlay) overlay.style.display = 'none';
         sel = null;
         mode = MODE_NONE;
@@ -632,9 +643,15 @@
             sel = null;
             mode = MODE_NONE;
             activeTab = 'screenshot';
+            // 新会话开始 —— 失效任何尚未结算的旧 recapture promise，并把按钮恢复初始态。
+            // close() 已经 ++ 过一次，这里再 ++ 一次保证 cropImage 直接被重复调用
+            // （不经过 close）的边角情况也安全。
+            recaptureRunId++;
             tabScreenshot.classList.add('crop-tab-active');
             tabHideNeko.classList.remove('crop-tab-active');
             tabHideNeko.style.display = recaptureFn ? '' : 'none';
+            tabHideNeko.disabled = false;
+            tabHideNeko.textContent = tr('chat.cropTabHideNeko', '\u9690\u85CFNEKO');
             hideActionBtns();
 
             loadImage(dataUrl);

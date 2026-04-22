@@ -1850,6 +1850,8 @@
                         if (direct && direct.success && direct.dataUrl) {
                             var scaled = await downscaleDataUrlTo720p(direct.dataUrl);
                             if (scaled && scaled.dataUrl) return scaled.dataUrl;
+                        } else if (typeof window.maybeClearSourceOnNotFound === 'function') {
+                            window.maybeClearSourceOnNotFound(direct, 'recaptureWithoutNeko Priority 1 Source not found');
                         }
                     } catch (e) { /* fallback below */ }
                 }
@@ -1971,9 +1973,8 @@
                                 // （窗口被关/HWND 变了）。立刻清掉，防止 Priority 2 的
                                 // acquireOrReuseCachedStream 再拿同一个死 ID 去跑 500ms
                                 // Electron getUserMedia 超时；下一次截图也能直接跳过 Priority 1。
-                                if (direct.error === 'Source not found'
-                                    && typeof window.clearSelectedScreenSource === 'function') {
-                                    window.clearSelectedScreenSource('主进程 capture-source-as-dataurl Source not found');
+                                if (typeof window.maybeClearSourceOnNotFound === 'function') {
+                                    window.maybeClearSourceOnNotFound(direct, '主进程 capture-source-as-dataurl Source not found');
                                 }
                             }
                         } catch (directErr) {

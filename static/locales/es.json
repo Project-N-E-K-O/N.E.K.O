@@ -599,7 +599,7 @@
         "screenshotAlt": "Captura de pantalla {{index}}",
         "screenshotTitle": "Haga clic para ver la captura de pantalla {{index}}",
         "removeScreenshot": "Eliminar esta captura de pantalla",
-        "cropTabScreenshot": "Captura",
+        "cropTabScreenshot": "Captura de pantalla",
         "cropTabHideNeko": "Ocultar NEKO",
         "cropTabCancel": "Cancelar",
         "cropTabRecapturing": "Recapturando...",

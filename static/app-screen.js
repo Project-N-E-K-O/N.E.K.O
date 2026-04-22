@@ -82,6 +82,20 @@
     }
     mod.clearSelectedScreenSource = clearSelectedScreenSource;
 
+    // ======================== maybeClearSourceOnNotFound ========================
+    /**
+     * 通用兜底：主进程 captureSourceAsDataUrl 返回 { error: 'Source not found' }
+     * 时统一清掉失效的 selectedScreenSourceId。所有调用 captureSourceAsDataUrl 的
+     * 路径（截图、隐藏NEKO 重截、主动搭话）共用同一份语义，避免漏处理。
+     * 返回 true 表示已清理（调用方可据此判断要不要走下一个兜底）。
+     */
+    function maybeClearSourceOnNotFound(direct, reason) {
+        if (!direct || direct.error !== 'Source not found') return false;
+        clearSelectedScreenSource(reason);
+        return true;
+    }
+    mod.maybeClearSourceOnNotFound = maybeClearSourceOnNotFound;
+
     // 模块初始化：立刻将还原的选择推送到主进程，覆盖上次会话遗留的值
     pushSelectedSourceToMain(S.selectedScreenSourceId);
 
@@ -1504,6 +1518,7 @@
     window.getAvatarScreenPosition = getAvatarScreenPosition;
     window.detectScreenshotCaptureType = detectScreenshotCaptureType;
     window.clearSelectedScreenSource = clearSelectedScreenSource;
+    window.maybeClearSourceOnNotFound = maybeClearSourceOnNotFound;
 
     // ======================== Export module ========================
     window.appScreen = mod;
