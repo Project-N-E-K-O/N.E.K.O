@@ -13,6 +13,17 @@ PR merges.
 
 ## Revision log
 
+- **v1.1** (2026-04-22, same-day revision): split the single
+  `last_signal_at` into independent `rein_last_signal_at` /
+  `disp_last_signal_at` per counter. Original v1 design shared one
+  timestamp for both rein and disp decay — a late negation would
+  reset the clock for long-decayed reinforcement (or vice versa),
+  inflating `evidence_score` incorrectly. Fix updates §3.1.1 formula,
+  §3.2 schemas, §3.3 event payloads, §3.4 apply semantics, §3.5
+  decay implementation, §5 migration table, and §8 success criteria
+  (new S1b). No change to overall design direction — just correctness
+  of the decay math.
+
 - **v1** (initial draft, 2026-04-22): first RFC for issue #849 user-driven
   evidence mechanism. Builds on the event-sourced infrastructure that
   landed in #905 (`memory/event_log.py`, `Reconciler`, per-character
@@ -86,8 +97,9 @@ view → save view → advance sentinel` 的五步合约，per-character
 
 本 RFC 实现 issue #849 提出的 user-driven evidence 框架：每条
 reflection / persona entry 维护 evidence 计数器 `(reinforcement,
-disputation, last_signal_at)`，仅由用户显式输入驱动累积，读时做半衰
-衰减，派生出 pending / confirmed / promoted / archive_candidate 状态。
+disputation, rein_last_signal_at, disp_last_signal_at)`——rein 和
+disp 各自独立的时间戳，仅由用户显式输入驱动累积，读时做半衰衰减，
+派生出 pending / confirmed / promoted / archive_candidate 状态。
 顺带解决以上 4 个结构问题。
 
 ### 1.6 为什么是独立 RFC 而非塞进 memory-event-log-rfc
@@ -390,18 +402,32 @@ evidence_score(entry, now) =
     effective_reinforcement(entry, now) - effective_disputation(entry, now)
 
 effective_reinforcement(entry, now) =
-    reinforcement(entry) × 0.5 ^ ((now - last_signal_at).days
+    reinforcement(entry) × 0.5 ^ ((now - rein_last_signal_at).days
                                   / EVIDENCE_REIN_HALF_LIFE_DAYS)
-    if last_signal_at is not None else reinforcement(entry)
+    if rein_last_signal_at is not None else reinforcement(entry)
 
 effective_disputation(entry, now) =
-    disputation(entry) × 0.5 ^ ((now - last_signal_at).days
+    disputation(entry) × 0.5 ^ ((now - disp_last_signal_at).days
                                 / EVIDENCE_DISP_HALF_LIFE_DAYS)
-    if last_signal_at is not None else disputation(entry)
+    if disp_last_signal_at is not None else disputation(entry)
 ```
 
-`last_signal_at` 为 None 表示该条目没收过任何 user signal → rein / disp
-都不衰减（就用原值，一般都是 0）。
+rein 和 disp 各自有**独立的时间戳** `rein_last_signal_at` /
+`disp_last_signal_at`。None 表示该侧没收过 signal → 不衰减（一般 counter
+也是 0）。
+
+**为什么两个独立时间戳而不是共享一个**（v1.1 修订）：
+
+考虑场景——一条 entry 在 30 天前收过若干 `reinforces`，rein=3；期间
+没 disp。共享单一 `last_signal_at` 的话，30 天时衰减后
+`effective_rein = 3 × 0.5^1 = 1.5`。现在用户发一次 `negates`，若共享
+时间戳会重置为 `now` —— 下次读计算时 `age_days=0`，effective_rein
+回到 `3`，旧的 reinforcement 被"刷新"回未衰减态。`score = 3 - 1 = 2`
+跨 PROMOTED 阈值，行为错误。
+
+独立时间戳解决：`negates` 事件只改 `disputation` 和 `disp_last_signal_at`，
+`rein_last_signal_at` 保持 30 天前不变——下次读 `effective_rein` 仍是
+1.5，`score = 1.5 - 1 = 0.5`，正确。
 
 **两个半衰期**（草案值，见 §6.5 Gate 1 reviewer 敲定）：
 
@@ -557,10 +583,11 @@ fact 对用户透明）。fact 维护 evidence 是浪费存储且无下游消费
     'feedback': None,
     'next_eligible_at': '...',
 
-    'reinforcement': 0.0,              # NEW, float
-    'disputation': 0.0,                # NEW, float
-    'last_signal_at': None,            # NEW, ISO8601 or null
-    'sub_zero_days': 0,                # NEW, int, archive 倒计时
+    'reinforcement': 0.0,                  # NEW, float
+    'disputation': 0.0,                    # NEW, float
+    'rein_last_signal_at': None,           # NEW, ISO8601 or null
+    'disp_last_signal_at': None,           # NEW, ISO8601 or null
+    'sub_zero_days': 0,                    # NEW, int, archive 倒计时
     'sub_zero_last_increment_date': None,  # NEW, str ISO date, 防抖
 
     # 溯源字段 (§3.11)
@@ -594,10 +621,11 @@ fact 对用户透明）。fact 维护 evidence 是浪费存储且无下游消费
     'suppressed_at': None,
     'protected': False,
 
-    'reinforcement': 0.0,              # NEW
-    'disputation': 0.0,                # NEW
-    'last_signal_at': None,            # NEW
-    'sub_zero_days': 0,                # NEW
+    'reinforcement': 0.0,                  # NEW
+    'disputation': 0.0,                    # NEW
+    'rein_last_signal_at': None,           # NEW, ISO8601 or null
+    'disp_last_signal_at': None,           # NEW, ISO8601 or null
+    'sub_zero_days': 0,                    # NEW
     'sub_zero_last_increment_date': None,  # NEW
 
     # 溯源字段 (§3.11)
@@ -658,7 +686,9 @@ entry 的完整 mutation（text + evidence 都可能一起变）。
   "reflection_id": "ref_abc123",
   "reinforcement": 1.8,
   "disputation": 0.0,
-  "last_signal_at": "2026-04-22T14:03:00",
+  "rein_last_signal_at": "2026-04-22T14:03:00",
+  "disp_last_signal_at": null,                // 这次事件没改 disp
+                                               // 保持该侧原状
   "sub_zero_days": 0,
   "source": "user_fact"
   // source ∈ {user_fact, user_rebut, user_confirm, user_ignore,
@@ -671,7 +701,8 @@ entry 的完整 mutation（text + evidence 都可能一起变）。
   "entry_id": "prom_ref_abc123",
   "reinforcement": 2.0,
   "disputation": 0.0,
-  "last_signal_at": "2026-04-22T14:03:00",
+  "rein_last_signal_at": "2026-04-22T14:03:00",
+  "disp_last_signal_at": null,
   "sub_zero_days": 0,
   "source": "user_confirm"
 }
@@ -684,12 +715,20 @@ entry 的完整 mutation（text + evidence 都可能一起变）。
                                             // 原文不落日志（红线 4）
   "reinforcement": 3.0,                     // merge 后的 evidence
   "disputation": 0.0,
-  "last_signal_at": "2026-04-22T14:03:00",
+  "rein_last_signal_at": "2026-04-22T14:03:00",
+  "disp_last_signal_at": null,
   "sub_zero_days": 0,
   "merged_from_ids": ["ref_abc", "ref_def"],  // 审计追溯
   "source": "promote_merge"
 }
 ```
+
+**两个时间戳字段的 full-snapshot 语义**：事件 payload 都**总是**带两个
+时间戳字段的当前值（即写入后应当存在 view 里的值），不管本次事件是
+否"触动"了该侧。例如上面第一个事件只触动了 `reinforcement`，
+`disp_last_signal_at` 保持为事件发生前的值（这里是 null，因为该 entry
+从未收过 disp signal）。apply handler 直接把两个字段覆写到 payload 值即
+可——full-snapshot 的一贯语义，不需要 "delta 判定"。
 
 #### 3.3.3 Event 日志的基础合约（本 RFC 自包含描述，不依赖外部 RFC）
 
@@ -823,13 +862,24 @@ source 值加进 event_log 的 `ALL_EVENT_TYPES` 校验外的一个单独 set
 
 每次 evidence 变化：
 
-1. 先算出新的 `(reinforcement, disputation, last_signal_at)` 值
+1. 根据 signal 的 delta 判断**只触动哪一侧**：
+   - 若 `delta['reinforcement'] != 0` → 更新 `reinforcement` +
+     `rein_last_signal_at = now`；`disp_last_signal_at` **不动**
+   - 若 `delta['disputation'] != 0` → 更新 `disputation` +
+     `disp_last_signal_at = now`；`rein_last_signal_at` **不动**
+   - 一次 signal 通常只触动一侧。同时触动两侧的场景目前没有
+     （Stage-2 返回 reinforces 或 negates 之一；check_feedback 返回
+     三选一；keyword 命中走 disputation）。如果未来出现双侧同步
+     触动的场景，两个时间戳都重置。
 2. 通过 `PersonaManager.aapply_signal` / `ReflectionEngine.aapply_signal`
-   发出对应 `*.evidence_updated` 事件（带 full-snapshot payload）
+   发出对应 `*.evidence_updated` 事件（full-snapshot payload，**两个**
+   时间戳字段当前值一起写进 payload）
 3. Handler 覆写 view 字段并落盘（§3.3.6）
 
-`last_signal_at` 每次写入都置为当前时刻 `datetime.now().isoformat()`，
-触发半衰衰减的"时钟重置"。
+**独立时钟设计的单元测试要求**：给定 `rein=3, rein_last_signal_at=30天前,
+disp=0, disp_last_signal_at=None`，apply 一次 `disp += 1` signal 之后：
+`effective_reinforcement(now) ≈ 1.5`（不回弹），`effective_disputation
+(now) = 1.0`，`evidence_score = 0.5`。
 
 #### 3.4.2 Stage-1 + Stage-2 两次独立 LLM 调用
 
@@ -1303,16 +1353,18 @@ from config import (
     EVIDENCE_DISP_HALF_LIFE_DAYS,
 )
 
-def _age_days(last_signal_at: str | None, now: datetime) -> float:
-    if not last_signal_at:
+def _age_days(ts: str | None, now: datetime) -> float:
+    if not ts:
         return 0.0
-    return (now - datetime.fromisoformat(last_signal_at)).total_seconds() / 86400
+    return (now - datetime.fromisoformat(ts)).total_seconds() / 86400
 
 def effective_reinforcement(entry: dict, now: datetime) -> float:
     r = float(entry.get('reinforcement', 0.0))
     if r == 0.0:
         return r
-    age = _age_days(entry.get('last_signal_at'), now)
+    # 独立时间戳：rein_last_signal_at 只在 reinforcement 侧被触动时
+    # 重置；disp 事件不影响本函数计算
+    age = _age_days(entry.get('rein_last_signal_at'), now)
     if age == 0.0:
         return r
     return r * (0.5 ** (age / EVIDENCE_REIN_HALF_LIFE_DAYS))
@@ -1321,7 +1373,7 @@ def effective_disputation(entry: dict, now: datetime) -> float:
     d = float(entry.get('disputation', 0.0))
     if d == 0.0:
         return d
-    age = _age_days(entry.get('last_signal_at'), now)
+    age = _age_days(entry.get('disp_last_signal_at'), now)
     if age == 0.0:
         return d
     return d * (0.5 ** (age / EVIDENCE_DISP_HALF_LIFE_DAYS))
@@ -1347,8 +1399,9 @@ def evidence_score(entry: dict, now: datetime) -> float:
 比值 6 倍体现"否认比肯定持久"的语义：否认信号强、留痕长；但不应永恒，
 给用户态度转变的可能。
 
-两者共用 `last_signal_at` 作时间起点。任何一种 signal 到来都重置
-`last_signal_at = now`——相当于"时钟重置"。
+两者**各自独立**的时间起点（`rein_last_signal_at` / `disp_last_signal_at`）。
+对应侧的 signal 到来时重置该侧时间戳，另一侧不动。这样避免 "用 negate
+刷新了 reinforce 的衰减时钟" 这类误差——见 §3.1.1 末段的场景说明。
 
 两个半衰期的具体数值是草案，见 §6.5 Gate 1 reviewer 敲定。
 
@@ -1775,7 +1828,8 @@ async def acount_tokens(text: str, encoding: str = PERSONA_RENDER_ENCODING) -> i
 # ReflectionEngine
 async def aapply_signal(
     self, name: str, reflection_id: str,
-    delta: dict,       # {'reinforcement': ±float, 'disputation': ±float}
+    delta: dict,       # {'reinforcement': ±float}  或  {'disputation': ±float}
+                       # 通常只有一侧非零
     source: str,       # user_fact | user_rebut | user_confirm | user_ignore
                        # | user_keyword_rebut | migration_seed
 ) -> None:
@@ -1783,8 +1837,17 @@ async def aapply_signal(
     async with self._get_alock(name):
         # 1. load reflections.json
         # 2. find reflection by id
-        # 3. compute new rein / disp / last_signal_at
-        # 4. await arecord_and_save(...)
+        # 3. 根据 delta 只触动对应侧的时间戳：
+        #      if delta.get('reinforcement'):
+        #          new_rein = old_rein + delta['reinforcement']
+        #          new_rein_ts = now
+        #          new_disp_ts = old_disp_ts  # unchanged
+        #      elif delta.get('disputation'):
+        #          new_disp = old_disp + delta['disputation']
+        #          new_disp_ts = now
+        #          new_rein_ts = old_rein_ts  # unchanged
+        # 4. await arecord_and_save(...) with full-snapshot payload
+        #    (两个时间戳字段都放当前值)
         ...
 
 async def _apromote_with_merge(self, name: str, reflection: dict) -> str:
@@ -2476,17 +2539,34 @@ persona entry 缺 evidence 字段 → 进入一次性迁移流程。
 └──────────────────┴─────────┴────────┴──────────────┴─────────────┘
 ```
 
-所有条目的 `last_signal_at` 都填迁移时刻（`datetime.now().isoformat()`），
+迁移时每个 entry 的时间戳字段按 seed 是否非零分别设置：
+
+- reinforcement seed > 0 → `rein_last_signal_at = migration_time`
+- disputation seed > 0 → `disp_last_signal_at = migration_time`
+- 对应 seed = 0 → 对应时间戳字段 `None`
+
 `sub_zero_days = 0`，`sub_zero_last_increment_date = None`。
+
+具体：
+
+| 旧 status | rein | disp | rein_last_signal_at | disp_last_signal_at |
+|---|---|---|---|---|
+| pending | 0 | 0 | None | None |
+| confirmed | 1 | 0 | migration_time | None |
+| promoted | 2 | 0 | migration_time | None |
+| denied | 0 | 2 | None | migration_time |
 
 `denied` 条目迁移后 `score = -2` 虽然立即落在 archive_candidate 派生
 状态，但**不会**立即归档——因为 `sub_zero_days = 0`，需要累计 14 天
 才真触发归档（§3.5.3）。这给用户留出余地：半年前偶尔否定过的事，
-迁移后有 14 天的"观察期"，期间若 user 给新 reinforces 信号就能回正。
+迁移后有 14 天的"观察期"，期间若 user 给新 reinforces 信号，下次读
+`effective_rein` 会从新 signal 起衰减，`effective_disp` 仍从
+`migration_time` 起衰减——**两侧衰减时钟独立**，不会相互影响。
 
 Persona entry 的迁移：所有非-protected 条目 `rein = 0, disp = 0,
-last_signal_at = None`（等价"从未收过 signal"）。protected 条目同样
-填默认值但被 `evidence_score` 返回 `inf` 豁免。
+rein_last_signal_at = None, disp_last_signal_at = None`（等价"从未
+收过 signal"）。protected 条目同样填默认值但被 `evidence_score`
+返回 `inf` 豁免。
 
 ### 5.2 迁移事件化
 
@@ -2740,9 +2820,15 @@ event log replay / record_and_save 合约已经由 #905 保证，不在本 RFC
 ### 8.1 数值与公式正确性
 
 - **S1**：read-time decay 数学正确。给定 `(reinforcement, disputation,
-  last_signal_at)` 三元组与 `now`，`evidence_score()` 输出符合 §3.1
-  公式。snapshot 测试覆盖 `(0d / 30d / 60d / 180d / 365d)` × `(rein
-  衰减 / disp 衰减)` 的 10 个组合。
+  rein_last_signal_at, disp_last_signal_at)` 与 `now`，`evidence_score()`
+  输出符合 §3.1.1 公式。snapshot 测试覆盖 `(0d / 30d / 60d / 180d /
+  365d)` × `(rein 衰减 / disp 衰减)` 的 10 个组合。
+- **S1b**（新增）：rein / disp 时钟独立性。给定 `rein=3,
+  rein_last_signal_at=30 天前, disp=0, disp_last_signal_at=None`，
+  apply 一次 `disp += 1` 事件之后，下次读 `effective_reinforcement ≈
+  1.5`（不被 disp 事件"刷新"）、`effective_disputation = 1.0`、
+  `evidence_score ≈ 0.5`。反向场景（disp 有值后 apply reinforcement）
+  对称测一遍。
 - **S2**：派生状态映射正确。给定 `score`，`derive_status()` 返回值
   符合 §3.1.4 阈值表（archive_candidate / pending / confirmed /
   promoted）。
