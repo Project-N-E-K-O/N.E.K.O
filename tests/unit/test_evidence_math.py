@@ -238,3 +238,22 @@ def test_sub_zero_protected_exempt(fixed_now):
     }
     assert maybe_mark_sub_zero(entry, fixed_now) is False
     assert entry['sub_zero_days'] == 0
+
+
+# ── importance → initial rein seed (PR-1 round-8 addition) ──────────
+
+
+def test_initial_reinforcement_from_importance_curve():
+    from memory.evidence import initial_reinforcement_from_importance
+    assert initial_reinforcement_from_importance(10) == pytest.approx(0.8)
+    assert initial_reinforcement_from_importance(9) == pytest.approx(0.6)
+    assert initial_reinforcement_from_importance(8) == pytest.approx(0.4)
+    assert initial_reinforcement_from_importance(7) == pytest.approx(0.2)
+    assert initial_reinforcement_from_importance(6) == 0.0
+    assert initial_reinforcement_from_importance(5) == 0.0
+    assert initial_reinforcement_from_importance(1) == 0.0
+    # Dirty values gracefully default to 0
+    assert initial_reinforcement_from_importance(None) == 0.0
+    assert initial_reinforcement_from_importance("hi") == 0.0
+    # Above 10: still clamp to the top tier
+    assert initial_reinforcement_from_importance(20) == pytest.approx(0.8)

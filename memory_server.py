@@ -1548,10 +1548,12 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
         logger.warning(f"[MemoryServer] 事实提取失败: {e}")
 
     try:
-        # 2. 全局复读嗅探：扫描 AI 回复中是否重复提及 persona 条目
+        # 2. 全局复读嗅探：扫描 AI 回复中是否重复提及 persona 条目 +
+        #    confirmed reflection（§2.6 5h 窗口 suppress 机制，两者正交）
         ai_response = _extract_ai_response(messages)
         if ai_response:
             await persona_manager.arecord_mentions(lanlan_name, ai_response)
+            await reflection_engine.arecord_mentions(lanlan_name, ai_response)
     except Exception as e:
         logger.warning(f"[MemoryServer] 复读嗅探失败: {e}")
 
@@ -1886,6 +1888,12 @@ async def get_settings(lanlan_name: str):
         logger.error(f"检查角色配置失败: {e}")
         return f"{lanlan_name}记得{{}}"
 
+    # Render 前刷新 reflection suppress 状态（冷却期过 → 解除），语义对齐
+    # persona render 的 update_suppressions 调用位置
+    try:
+        await reflection_engine.aupdate_suppressions(lanlan_name)
+    except Exception as e:
+        logger.debug(f"[MemoryServer] reflection suppress 刷新失败: {e}")
     # 优先使用 persona markdown 渲染（与 /new_dialog 保持一致），回退到旧 settings 格式
     pending_reflections = await reflection_engine.aget_pending_reflections(lanlan_name)
     confirmed_reflections = await reflection_engine.aget_confirmed_reflections(lanlan_name)
@@ -1983,7 +1991,11 @@ async def new_dialog(lanlan_name: str):
         _lang = get_global_language()
 
         # ── [静态前缀] Persona 长期记忆（变化极少 → 最大化 prefix cache） ──
-    # pending + confirmed 反思也注入上下文（分区标注）
+        # pending + confirmed 反思也注入上下文（分区标注）
+        try:
+            await reflection_engine.aupdate_suppressions(lanlan_name)
+        except Exception as e:
+            logger.debug(f"[MemoryServer] reflection suppress 刷新失败: {e}")
         pending_reflections = await reflection_engine.aget_pending_reflections(lanlan_name)
         confirmed_reflections = await reflection_engine.aget_confirmed_reflections(lanlan_name)
         result = _loc(PERSONA_HEADER, _lang).format(name=lanlan_name)

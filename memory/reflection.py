@@ -30,7 +30,7 @@ from config import (
     EVIDENCE_CONFIRMED_THRESHOLD,
     SETTING_PROPOSER_MODEL,
 )
-from memory.evidence import evidence_score
+from memory.evidence import evidence_score, initial_reinforcement_from_importance
 from utils.cloudsave_runtime import assert_cloudsave_writable
 from utils.config_manager import get_config_manager
 from utils.file_utils import (
@@ -41,7 +41,13 @@ from utils.file_utils import (
 )
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
-from memory.persona import PersonaManager
+from memory.persona import (
+    PersonaManager,
+    SUPPRESS_COOLDOWN_HOURS,
+    SUPPRESS_MENTION_LIMIT,
+    SUPPRESS_WINDOW_HOURS,
+    _is_mentioned,
+)
 
 if TYPE_CHECKING:
     from memory.event_log import EventLog
@@ -157,6 +163,10 @@ class ReflectionEngine:
         (§5.2), which goes through aapply_signal so it's also event-sourced.
         Here we only guarantee the fields exist so downstream code
         (`evidence_score`, `derive_status` …) doesn't KeyError on legacy data.
+
+        Also adds the `recent_mentions` / `suppress` mention抑制 fields so
+        confirmed reflections can share persona's 5h-window rate-limit
+        machinery (AI 自我克制，不在 5h 内反复提同一条)。
         """
         defaults = {
             # Evidence counters
@@ -172,6 +182,10 @@ class ReflectionEngine:
             'last_promote_attempt_at': None,
             'promote_attempt_count': 0,
             'promote_blocked_reason': None,
+            # AI-mention rate-limit，和 persona 同机制
+            'recent_mentions': [],
+            'suppress': False,
+            'suppressed_at': None,
         }
         for k, v in defaults.items():
             entry.setdefault(k, v)
@@ -484,16 +498,30 @@ class ReflectionEngine:
 
         # Create pending reflection — id 已在函数开头由 source_fact_ids 决定
         now = datetime.now()
-        reflection = {
+        now_iso = now.isoformat()
+
+        # Importance-based initial rein seed：让"关键节点"型 reflection 起步
+        # 就带一点正分，不必等多轮 user confirms 才穿越 CONFIRMED 阈值。
+        # 不走 aapply_signal（synthesis 本身不经 event log），直接写进初始
+        # 字典——synth 不是 event-sourced，这些初始值就是 ground truth。
+        max_importance = max(
+            (int(f.get('importance', 5) or 5) for f in unabsorbed),
+            default=5,
+        )
+        initial_rein = initial_reinforcement_from_importance(max_importance)
+
+        reflection = self._normalize_reflection({
             'id': rid,
             'text': reflection_text,
             'entity': reflection_entity,
             'status': 'pending',  # pending | confirmed | denied | promoted | archived
             'source_fact_ids': source_fact_ids,
-            'created_at': now.isoformat(),
+            'created_at': now_iso,
             'feedback': None,
             'next_eligible_at': (now + timedelta(minutes=REFLECTION_COOLDOWN_MINUTES)).isoformat(),
-        }
+            'reinforcement': initial_rein,
+            'rein_last_signal_at': now_iso if initial_rein > 0 else None,
+        })
 
         # 再次 load：LLM 调用期间可能有并发 synth；用最新 list 做 id dedup 追加
         reflections = await self.aload_reflections(lanlan_name)
@@ -646,6 +674,101 @@ class ReflectionEngine:
             for item in data if isinstance(item, dict) and 'id' in item
         ]
 
+    # ── mention suppress (confirmed only, mirrors persona §2.6) ──────
+
+    @staticmethod
+    def _in_window(ts_str: str, cutoff: datetime) -> bool:
+        try:
+            return datetime.fromisoformat(ts_str) >= cutoff
+        except (ValueError, TypeError):
+            return False
+
+    @classmethod
+    def _apply_record_reflection_mentions(
+        cls, reflections: list[dict], response_text: str,
+    ) -> bool:
+        """AI response 提到任一 **confirmed** reflection 的文本 → recent_mentions 累加。
+        Pending reflection 本意就是"AI 主动试探"，抑制会反向破坏机制——
+        所以只扫 confirmed。语义和 persona._apply_record_mentions 对齐。
+        """
+        now = datetime.now()
+        now_str = now.isoformat()
+        cutoff = now - timedelta(hours=SUPPRESS_WINDOW_HOURS)
+        changed = False
+        for r in reflections:
+            if not isinstance(r, dict):
+                continue
+            if r.get('status') != 'confirmed':
+                continue
+            if not _is_mentioned(r.get('text', ''), response_text):
+                continue
+            mentions = r.get('recent_mentions', [])
+            mentions.append(now_str)
+            mentions = [t for t in mentions if cls._in_window(t, cutoff)]
+            r['recent_mentions'] = mentions
+            if not r.get('suppress') and len(mentions) > SUPPRESS_MENTION_LIMIT:
+                r['suppress'] = True
+                r['suppressed_at'] = now_str
+            changed = True
+        return changed
+
+    @classmethod
+    def _apply_update_reflection_suppressions(
+        cls, reflections: list[dict],
+    ) -> bool:
+        now = datetime.now()
+        cutoff = now - timedelta(hours=SUPPRESS_WINDOW_HOURS)
+        changed = False
+        for r in reflections:
+            if not isinstance(r, dict):
+                continue
+            mentions = r.get('recent_mentions', [])
+            cleaned = [t for t in mentions if cls._in_window(t, cutoff)]
+            if len(cleaned) != len(mentions):
+                r['recent_mentions'] = cleaned
+                changed = True
+            if r.get('suppress'):
+                suppressed_str = r.get('suppressed_at')
+                if suppressed_str:
+                    try:
+                        hours_since = (
+                            now - datetime.fromisoformat(suppressed_str)
+                        ).total_seconds() / 3600
+                        if hours_since >= SUPPRESS_COOLDOWN_HOURS:
+                            r['suppress'] = False
+                            r['suppressed_at'] = None
+                            r['recent_mentions'] = []
+                            changed = True
+                    except (ValueError, TypeError):
+                        pass
+        return changed
+
+    async def arecord_mentions(self, lanlan_name: str, response_text: str) -> None:
+        """AI 发完一轮回复后扫 confirmed reflection，按 5h 窗口累加 mention。
+        连续提超过 SUPPRESS_MENTION_LIMIT (=2) 次 → 打上 suppress=True。
+        """
+        if not response_text:
+            return
+        async with self._get_alock(lanlan_name):
+            reflections = await self._aload_reflections_full(lanlan_name)
+            if self._apply_record_reflection_mentions(reflections, response_text):
+                active = [
+                    r for r in reflections
+                    if r.get('status') not in REFLECTION_TERMINAL_STATUSES
+                ]
+                await self.asave_reflections(lanlan_name, active)
+
+    async def aupdate_suppressions(self, lanlan_name: str) -> None:
+        """Render 前刷新 suppress 状态：冷却期过 → 解除；清理窗口外的 recent_mentions。"""
+        async with self._get_alock(lanlan_name):
+            reflections = await self._aload_reflections_full(lanlan_name)
+            if self._apply_update_reflection_suppressions(reflections):
+                active = [
+                    r for r in reflections
+                    if r.get('status') not in REFLECTION_TERMINAL_STATUSES
+                ]
+                await self.asave_reflections(lanlan_name, active)
+
     # ── feedback lifecycle ───────────────────────────────────────────
 
     def get_pending_reflections(self, lanlan_name: str) -> list[dict]:
@@ -657,23 +780,53 @@ class ReflectionEngine:
         reflections = await self.aload_reflections(lanlan_name)
         return [r for r in reflections if r.get('status') == 'pending']
 
+    @staticmethod
+    def _filter_active_confirmed(
+        reflections: list[dict], now: datetime | None = None,
+    ) -> list[dict]:
+        """Active confirmed = status='confirmed' AND score > 0 AND not suppressed.
+
+        score <= 0：用户否认多次或刚好抵消，既不应进 render "比较确定的印象"
+        段（语义漂移），也会随背景循环 tick 归档计数器（§3.5）。
+        suppress=True：AI 刚在 5h 窗口内提过太多次这条，由 persona 的同款
+        机制静默（§2.6 正交）。
+        """
+        if now is None:
+            now = datetime.now()
+        out = []
+        for r in reflections:
+            if r.get('status') != 'confirmed':
+                continue
+            if r.get('suppress'):
+                continue
+            if evidence_score(r, now) <= 0:
+                continue
+            out.append(r)
+        return out
+
     def get_confirmed_reflections(self, lanlan_name: str) -> list[dict]:
-        """Get all confirmed (soft persona) reflections."""
-        reflections = self.load_reflections(lanlan_name)
-        return [r for r in reflections if r.get('status') == 'confirmed']
+        """Get all confirmed (soft persona) reflections that are still
+        active — status='confirmed' AND score > 0 AND not mention-suppressed."""
+        return self._filter_active_confirmed(self.load_reflections(lanlan_name))
 
     async def aget_confirmed_reflections(self, lanlan_name: str) -> list[dict]:
-        reflections = await self.aload_reflections(lanlan_name)
-        return [r for r in reflections if r.get('status') == 'confirmed']
+        return self._filter_active_confirmed(
+            await self.aload_reflections(lanlan_name),
+        )
 
     @staticmethod
     def _filter_followup_candidates(pending: list[dict]) -> list[dict]:
         """Filter pending reflections for proactive chat candidacy.
 
-        RFC §3.8.6 adds an `evidence_score >= 0` gate on top of the existing
-        `next_eligible_at` cooldown. A reflection with score < 0 is
-        "coldshouldered" by user signals but not yet archived — it stays in
-        `reflections.json` but is skipped from active selection.
+        Two gates on evidence_score on top of the `next_eligible_at` cooldown:
+
+        1. `score < 0` → 冷藏态，被用户否认过了，不再主动搭话（§3.8.6）
+        2. `score >= CONFIRMED_THRESHOLD` → 派生 confirmed，只是还没来得及
+           在存盘 status 上落位，不应该继续带"还不太确定"的口吻再问
+           （漂移窗口 bug 修复，见 PR #929 讨论）
+
+        也就是说：只有 `0 <= score < CONFIRMED_THRESHOLD` 的 pending 才
+        进候选。
         """
         if not pending:
             return []
@@ -687,7 +840,10 @@ class ReflectionEngine:
                         continue
                 except (ValueError, TypeError):
                     pass
-            if evidence_score(r, now) < 0:
+            score = evidence_score(r, now)
+            if score < 0:
+                continue
+            if score >= EVIDENCE_CONFIRMED_THRESHOLD:
                 continue
             eligible.append(r)
         return eligible[:2]

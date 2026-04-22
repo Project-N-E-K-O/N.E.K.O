@@ -704,14 +704,20 @@ FACT_EXTRACTION_PROMPT = {
 - 忽略闲聊、寒暄、模糊的内容
 - 忽略AI幻觉、胡言乱语(gibberish)、无意义的编造内容，只提取对话中有真实依据的事实
 - 每条事实必须是一个独立的原子陈述
-- importance 评分 1-10（低分也请返回，下游按场景筛选；不要提前过滤）
 - entity 标注为 "master"(关于{MASTER_NAME})、"neko"(关于{LANLAN_NAME})或 "relationship"(关于两人关系)
+
+importance 评分 1-10，评分指引（请按此打分，不要泛泛都打 7）：
+- **10**：关键长期信息——姓名、昵称、生日、身份、核心关系节点；用户明确表示"请{LANLAN_NAME}记住 X" / "这个你一定要记得"；或者 {LANLAN_NAME} 自己特别希望记住的重要相处细节。这些会被快速沉淀为长期记忆。
+- **8-9**：长期稳定的核心偏好 / 固定习惯（不是一时兴起）
+- **6-7**：普通偏好、日常习惯、近期动态
+- **5**：次要但有记录价值的观察
+- **1-4**：弱相关或不确定的线索（仍请返回，下游按场景过滤；不要在此处预先丢弃）
 
 ======以下为对话======
 {CONVERSATION}
 ======以上为对话======
 
-请以 JSON 数组格式返回，格式如下(如果没有值得提取的事实，返回空数组 [])：
+请以 JSON 数组格式返回（如果没有值得提取的事实，返回空数组 []）：
 [
   {"text": "事实描述", "importance": 7, "entity": "master"},
   ...
@@ -721,16 +727,22 @@ FACT_EXTRACTION_PROMPT = {
 Requirements:
 - Only extract important and clear facts (preferences, habits, identity, relationship dynamics, etc.)
 - Ignore small talk, greetings, and vague content
-- Ignore AI hallucinations, gibberish, and meaningless fabricated content — only extract facts that are grounded in the actual conversation
+- Ignore AI hallucinations, gibberish, and meaningless fabricated content — only extract facts grounded in the actual conversation
 - Each fact must be an independent atomic statement
-- Rate importance 1-10 (return low-importance facts too; downstream decides how to filter — do not pre-filter here)
 - Mark entity as "master" (about {MASTER_NAME}), "neko" (about {LANLAN_NAME}), or "relationship" (about the relationship)
+
+Rate importance 1-10 using this rubric (please calibrate — don't default everyone to 7):
+- **10**: Critical long-term facts — real names, nicknames, birthdays, identity, core relationship markers; cases where the user explicitly says "please remember X, {LANLAN_NAME}" / "do NOT forget this"; or details {LANLAN_NAME} personally wants to remember about the user. These fast-track into long-term memory.
+- **8-9**: Long-term stable core preferences / established habits (not one-off whims)
+- **6-7**: Ordinary preferences, routine habits, recent happenings
+- **5**: Minor but worth-recording observations
+- **1-4**: Weakly related or uncertain hints (still return them; downstream filters by context — do not pre-filter here)
 
 ======以下为对话======
 {CONVERSATION}
 ======以上为对话======
 
-Return as a JSON array in the following format (if no facts are worth extracting, return an empty array []):
+Return as a JSON array (empty array if nothing is worth extracting):
 [
   {"text": "fact description", "importance": 7, "entity": "master"},
   ...
@@ -740,10 +752,16 @@ Return as a JSON array in the following format (if no facts are worth extracting
 要件：
 - 重要かつ明確な事実のみを抽出（好み、習慣、アイデンティティ、関係の動態など）
 - 雑談、挨拶、曖昧な内容は無視
-- AIの幻覚（ハルシネーション）、意味不明な発言（gibberish）、根拠のない作り話は無視し、実際の会話に基づいた事実のみを抽出
-- 各事実は独立した原子的な文でなければならない
-- importance は 1-10 で評価（低スコアも返す；下流で用途別にフィルタする）
+- AIの幻覚（ハルシネーション）、意味不明な発言、根拠のない作り話は無視し、実際の会話に基づいた事実のみを抽出
+- 各事実は独立した原子的な文であること
 - entity は "master"({MASTER_NAME}について)、"neko"({LANLAN_NAME}について)、または "relationship"(二人の関係について) と記載
+
+importance は 1-10 で評価。以下の基準で丁寧に分布させること（全部 7 にしない）：
+- **10**：重要な長期情報——本名、ニックネーム、誕生日、身分、関係の核となる節目；ユーザーが「{LANLAN_NAME}、これは絶対に覚えておいて」と明示した内容；または {LANLAN_NAME} 自身が特に覚えておきたい相処の詳細。長期記憶への早期定着対象。
+- **8-9**：長期的に安定した中核的な好み / 確立された習慣（一時的な気まぐれではない）
+- **6-7**：一般的な好み、日常の習慣、最近の動向
+- **5**：副次的だが記録価値のある観察
+- **1-4**：弱い関連または不確かな手がかり（それでも返してください。下流で用途別にフィルタします）
 
 ======以下为对话======
 {CONVERSATION}
@@ -759,10 +777,16 @@ Return as a JSON array in the following format (if no facts are worth extracting
 요구사항:
 - 중요하고 명확한 사실만 추출 (선호, 습관, 정체성, 관계 동태 등)
 - 잡담, 인사, 모호한 내용은 무시
-- AI 환각(hallucination), 의미 없는 말(gibberish), 근거 없는 조작된 내용은 무시하고, 실제 대화에 근거한 사실만 추출
+- AI 환각(hallucination), 의미 없는 말, 근거 없는 조작된 내용은 무시하고, 실제 대화에 근거한 사실만 추출
 - 각 사실은 독립적인 원자적 진술이어야 함
-- importance는 1-10으로 평가 (낮은 점수도 반환; 하류에서 용도에 따라 필터링)
 - entity는 "master"({MASTER_NAME}에 대해), "neko"({LANLAN_NAME}에 대해), 또는 "relationship"(두 사람의 관계에 대해)로 표기
+
+importance는 1-10으로 평가. 다음 기준으로 세심하게 분포시키세요 (모두 7로 기본 설정하지 말 것):
+- **10**: 핵심 장기 정보 — 본명, 별명, 생일, 신분, 관계의 핵심 노드; 사용자가 "{LANLAN_NAME}, 이건 꼭 기억해 줘"라고 명시한 내용; 또는 {LANLAN_NAME} 자신이 특별히 기억하고 싶은 교류 세부사항. 장기 기억으로 빠르게 굳히는 대상.
+- **8-9**: 장기적으로 안정된 핵심 선호 / 굳어진 습관 (일시적인 기분이 아님)
+- **6-7**: 평범한 선호, 일상 습관, 최근 동향
+- **5**: 부차적이지만 기록할 가치가 있는 관찰
+- **1-4**: 약한 관련성 또는 불확실한 단서 (그래도 반환; 하류에서 용도별로 필터링)
 
 ======以下为对话======
 {CONVERSATION}
@@ -778,16 +802,22 @@ Return as a JSON array in the following format (if no facts are worth extracting
 Требования:
 - Извлекайте только важные и чёткие факты (предпочтения, привычки, личность, динамика отношений и т.д.)
 - Игнорируйте болтовню, приветствия и расплывчатое содержание
-- Игнорируйте галлюцинации ИИ, бессмыслицу (gibberish) и бессодержательный вымысел — извлекайте только факты, подтверждённые реальным диалогом
+- Игнорируйте галлюцинации ИИ, бессмыслицу и бессодержательный вымысел — извлекайте только факты, подтверждённые реальным диалогом
 - Каждый факт должен быть независимым атомарным утверждением
-- Оценка importance от 1 до 10 (возвращайте и малозначимые факты; нижестоящий код решает, как фильтровать)
 - Отмечайте entity как "master" (о {MASTER_NAME}), "neko" (о {LANLAN_NAME}) или "relationship" (об отношениях)
+
+Оценка importance 1-10 по следующему критерию (распределяйте осознанно, не ставьте всем 7):
+- **10**: Критически важные долгосрочные факты — настоящие имена, прозвища, дни рождения, идентичность, ключевые узлы отношений; когда пользователь явно говорит «{LANLAN_NAME}, обязательно запомни X»; или детали, которые {LANLAN_NAME} лично хочет запомнить о пользователе. Ускоренный путь в долгосрочную память.
+- **8-9**: Долговременные устойчивые ключевые предпочтения / закрепившиеся привычки (не сиюминутные капризы)
+- **6-7**: Обычные предпочтения, бытовые привычки, недавние события
+- **5**: Второстепенные, но заслуживающие записи наблюдения
+- **1-4**: Слабо связанные или неопределённые намёки (всё равно возвращайте; фильтрация делается ниже по потоку — не отсеивайте здесь)
 
 ======以下为对话======
 {CONVERSATION}
 ======以上为对话======
 
-Верните в формате JSON-массива (если нет достойных извлечения фактов, верните пустой массив []):
+Верните в формате JSON-массива (пустой массив, если нет достойных извлечения фактов):
 [
   {"text": "описание факта", "importance": 7, "entity": "master"},
   ...

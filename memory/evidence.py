@@ -32,7 +32,46 @@ __all__ = [
     "evidence_score",
     "derive_status",
     "maybe_mark_sub_zero",
+    "initial_reinforcement_from_importance",
 ]
+
+
+# 用 tuple 定义更紧凑的分档表，避免 if 链；[(importance_threshold, rein), ...]
+# 含义：importance >= threshold → 得到对应的 initial rein seed；
+# 从高到低第一条命中的即为结果，其余跳过。
+# RFC §3.1.2 本来让所有新 reflection 从 score=0 起步；这里开了个例外：
+# 通过 fact importance 给"关键节点"型 reflection（昵称/身份/用户明确说请记住）
+# 一个初始鼓励，使其可以用更少 user_fact reinforces 穿越 CONFIRMED/PROMOTED。
+# 阈值梯度（用户指定）：10→0.8, 9→0.6, 8→0.4, 7→0.2, ≤6→0.0
+_IMPORTANCE_TO_INITIAL_REIN: tuple[tuple[int, float], ...] = (
+    (10, 0.8),
+    (9, 0.6),
+    (8, 0.4),
+    (7, 0.2),
+)
+
+
+def initial_reinforcement_from_importance(max_importance: int) -> float:
+    """Map the MAX importance among a reflection's source facts to an
+    initial `reinforcement` seed.
+
+    Rationale: high-importance facts (nicknames, IDs, critical relationship
+    markers, or user-flagged "请记住 X") should fast-track through the
+    pending→confirmed→promoted pipeline without waiting for multiple
+    natural reinforcement cycles. Low-importance noise still starts at 0.
+
+    Thresholds are MAX-based (not avg / sum) because one high-importance
+    fact in the batch is enough to mark the synthesized reflection as
+    important; averaging would dilute that signal.
+    """
+    try:
+        imp = int(max_importance)
+    except (ValueError, TypeError):
+        return 0.0
+    for threshold, seed in _IMPORTANCE_TO_INITIAL_REIN:
+        if imp >= threshold:
+            return seed
+    return 0.0
 
 
 def _age_days(ts: str | None, now: datetime) -> float:
