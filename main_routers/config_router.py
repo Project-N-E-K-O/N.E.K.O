@@ -1048,9 +1048,7 @@ async def test_gptsovits_connectivity(request: Request):
 
                 return result
 
-    except TimeoutError:
-        return {"success": False, "error": "请求超时（10秒）", "error_code": "timeout"}
-    except asyncio.TimeoutError:
+    except (TimeoutError, asyncio.TimeoutError):
         return {"success": False, "error": "请求超时（10秒）", "error_code": "timeout"}
     except OSError as e:
         err_str = str(e).lower()
@@ -1326,11 +1324,7 @@ async def _test_websocket(url: str, api_key: str, model: str = "") -> dict:
                     # This is still a partial success — service is reachable
                     return {"success": True}
 
-        return {"success": True}
-
-    except TimeoutError:
-        return {"success": False, "error": "请求超时（10秒）", "error_code": "timeout"}
-    except asyncio.TimeoutError:
+    except (TimeoutError, asyncio.TimeoutError):
         return {"success": False, "error": "请求超时（10秒）", "error_code": "timeout"}
     except ssl.SSLError:
         return {"success": False, "error": "SSL证书验证失败", "error_code": "ssl_error"}
@@ -1352,18 +1346,6 @@ async def _test_websocket(url: str, api_key: str, model: str = "") -> dict:
         if status_code in (401, 403):
             return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
         return {"success": False, "error": f"WebSocket连接失败: {e}", "error_code": "ws_error"}
-
-
-def _classify_connect_error(e) -> dict:
-    """Classify an httpx.ConnectError into a specific error code."""
-    err_str = str(e).lower()
-    if "getaddrinfo" in err_str or "name or service not known" in err_str or "nodename nor servname" in err_str:
-        return {"success": False, "error": "域名解析失败", "error_code": "dns_error"}
-    if "connection refused" in err_str or "connect call failed" in err_str:
-        return {"success": False, "error": "无法连接到目标服务器", "error_code": "connection_refused"}
-    if "ssl" in err_str:
-        return {"success": False, "error": "SSL证书验证失败", "error_code": "ssl_error"}
-    return {"success": False, "error": f"无法连接到目标服务器: {e}", "error_code": "connection_refused"}
 
 
 @router.post("/test_connectivity")
