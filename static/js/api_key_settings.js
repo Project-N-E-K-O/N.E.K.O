@@ -16,10 +16,11 @@ let _assistApiProviders = {};
 let _coreApiProviders = {};
 // 所有模型类型
 const MODEL_TYPES = ['conversation', 'summary', 'correction', 'emotion', 'vision', 'agent', 'omni', 'tts'];
-// Model types that support connectivity testing via chat/completions.
-// TTS uses different protocols (MiniMax TTS API, GPT-SoVITS local HTTP) and is excluded for now.
-// Future: add TTS connectivity testing with dedicated protocol handlers.
-const CONNECTIVITY_TESTABLE_TYPES = MODEL_TYPES.filter(mt => mt !== 'tts');
+// Model types that support connectivity testing.
+// All model types including TTS are testable — TTS follows the same
+// provider resolution logic (follow_core/follow_assist/custom).
+// Future: GPT-SoVITS custom TTS may need dedicated WebSocket test path.
+const CONNECTIVITY_TESTABLE_TYPES = MODEL_TYPES;
 // 当前加载到页面中的 GPT-SoVITS 状态：none | enabled | disabled
 let _loadedGptSovitsState = 'none';
 // 上方普通 TTS 配置是否被用户在本页改动过

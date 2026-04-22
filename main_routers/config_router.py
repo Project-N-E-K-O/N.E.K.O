@@ -1049,11 +1049,15 @@ async def _test_openai_compatible(url: str, api_key: str, model: str = "gpt-3.5-
 def _classify_openai_error(e: Exception, is_free: bool = False) -> dict:
     """Classify an OpenAI client exception into a connectivity test result."""
     import httpx
-    from openai import AuthenticationError, APITimeoutError, APIConnectionError, APIStatusError
+    from openai import AuthenticationError, APITimeoutError, APIConnectionError, APIStatusError, RateLimitError
 
     # Auth errors (401, 403)
     if isinstance(e, AuthenticationError):
         return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
+
+    # Rate limit (429) — key is valid but temporarily throttled, treat as success
+    if isinstance(e, RateLimitError):
+        return {"success": True}
 
     # Timeout
     if isinstance(e, (APITimeoutError, TimeoutError, asyncio.TimeoutError)):
