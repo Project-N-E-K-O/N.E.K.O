@@ -191,10 +191,21 @@ async def test_persona_apply_signal_updates_and_emits_event(tmp_path):
     assert entry["reinforcement"] == pytest.approx(1.0)
     assert entry["rein_last_signal_at"] is not None
 
+    # Full-snapshot payload contract, same discipline as the reflection
+    # event test (CodeRabbit PR #929 nit): lock clock fields + source
+    # so a future regression that drops any of them fails here.
     events = ev.read_since("小天", None)
     pe = [e for e in events if e["type"] == EVT_PERSONA_EVIDENCE_UPDATED]
     assert len(pe) == 1
-    assert pe[0]["payload"]["entry_id"] == "p_001"
+    payload = pe[0]["payload"]
+    assert payload["entity_key"] == "master"
+    assert payload["entry_id"] == "p_001"
+    assert payload["reinforcement"] == pytest.approx(1.0)
+    assert payload["disputation"] == 0.0
+    assert payload["rein_last_signal_at"] is not None  # rein side touched
+    assert payload["disp_last_signal_at"] is None      # disp side untouched
+    assert payload["sub_zero_days"] == 0
+    assert payload["source"] == "user_fact"
 
 
 @pytest.mark.asyncio
