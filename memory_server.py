@@ -1078,10 +1078,14 @@ async def _periodic_signal_extraction_loop():
             continue
 
         now = datetime.now()
-        for name in catgirl_names:
+
+        async def _signal_check_one(name: str):
+            """单角色的 Stage-1 + Stage-2 + signal dispatch。各角色互相
+            独立（per-char event_log 锁 / 文件），外层 gather 并行。失败
+            不阻塞其他角色，cursor 只在完整成功路径上推进。"""
             try:
                 if not _signal_check_should_run(name, now):
-                    continue
+                    return
                 # 窗口起点：优先用上次成功 check 时戳（cursor 语义），避免
                 # 长对话期间 >10 分钟的消息被永远 skip（§3.4.3 游标推进）。
                 # 冷启动 / cursor 缺失时回退到 IDLE_MINUTES*2。
@@ -1091,11 +1095,11 @@ async def _periodic_signal_extraction_loop():
                 )
                 if not rows:
                     _signal_check_mark_done(name, now)
-                    continue
+                    return
                 user_msgs_text = _extract_user_messages_from_rows(rows)
                 if not user_msgs_text:
                     _signal_check_mark_done(name, now)
-                    continue
+                    return
 
                 # 组装成 BaseMessage-like 结构给 extract_facts 使用
                 from utils.llm_client import convert_to_messages
@@ -1117,7 +1121,7 @@ async def _periodic_signal_extraction_loop():
                     logger.warning(
                         f"[SignalLoop] {name}: Stage-1 失败保留 cursor 重试: {e}"
                     )
-                    continue
+                    return
 
                 # 先 dispatch 再 mark_done：dispatch 中途抛致命异常时 cursor
                 # 不推进，下轮重试（见 §3.4.3）。`_adispatch_evidence_signals`
@@ -1144,6 +1148,12 @@ async def _periodic_signal_extraction_loop():
                 _signal_check_mark_done(name, now)
             except Exception as e:
                 logger.debug(f"[SignalLoop] {name}: 处理失败: {e}")
+
+        if catgirl_names:
+            await asyncio.gather(
+                *(_signal_check_one(name) for name in catgirl_names),
+                return_exceptions=True,
+            )
 
 
 # ── memory-evidence-rfc §3.4.5: negative-keyword hook helpers ───────
@@ -1323,25 +1333,37 @@ async def startup_event_handler():
         logger.warning("[Memory] 跳过 ROOT_MODE_NORMAL 写入：cloudsave bootstrap 未成功")
 
     # memory-evidence-rfc §3.3.4: reconciler 启动期补跑 —— 崩溃后把未 apply
-    # 的 evidence / persona / reflection 事件重放到 view。per-character 迭代，
-    # 失败暂停、保留 sentinel（同 event-log RFC semantics）。
-    try:
-        for name in catgirl_names:
-            applied = await reconciler.areconcile(name)
+    # 的 evidence / persona / reflection 事件重放到 view。per-character 独
+    # 立（各自有独立 event_log 锁 + 独立文件），并行 replay 把 N×IO 的墙
+    # 钟压成 max，同时 return_exceptions 保证一个角色的失败不带倒其他。
+    async def _reconcile_one(n: str):
+        try:
+            applied = await reconciler.areconcile(n)
             if applied:
-                logger.info(
-                    f"[Memory] reconciler {name}: 重放 {applied} 条事件"
-                )
-    except Exception as e:
-        logger.warning(f"[Memory] reconciler 启动期 replay 失败: {e}")
+                logger.info(f"[Memory] reconciler {n}: 重放 {applied} 条事件")
+        except Exception as e:
+            logger.warning(f"[Memory] reconciler {n} replay 失败: {e}")
+
+    if catgirl_names:
+        await asyncio.gather(
+            *(_reconcile_one(n) for n in catgirl_names),
+            return_exceptions=True,
+        )
 
     # memory-evidence-rfc §5: 一次性迁移种子 —— 给旧 reflection / persona 补
-    # 上 evidence 字段，失败静默（不阻塞 startup）。
-    try:
-        for name in catgirl_names:
-            await _aone_shot_migration_if_needed(name)
-    except Exception as e:
-        logger.warning(f"[Memory] evidence 迁移失败: {e}")
+    # 上 evidence 字段，失败静默（不阻塞 startup）。各角色 marker 独立、
+    # 互不依赖，并行。
+    async def _migrate_one(n: str):
+        try:
+            await _aone_shot_migration_if_needed(n)
+        except Exception as e:
+            logger.warning(f"[Memory] {n} evidence 迁移失败: {e}")
+
+    if catgirl_names:
+        await asyncio.gather(
+            *(_migrate_one(n) for n in catgirl_names),
+            return_exceptions=True,
+        )
 
     # 启动定期后台任务
     _spawn_background_task(_periodic_rebuttal_loop())
