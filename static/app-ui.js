@@ -695,6 +695,13 @@
 
     mod.showLive2d = showLive2d;
 
+    // --- viewport helpers ---
+    function isMobileViewport() {
+        return typeof window.isMobileWidth === 'function'
+            ? window.isMobileWidth()
+            : (window.innerWidth <= 768);
+    }
+
     // --- showCurrentModel ---
     async function showCurrentModel() {
         // 检查"请她离开"状态
@@ -908,16 +915,28 @@
                 }
 
                 if (vrmFloatingButtons) {
-                    vrmFloatingButtons.style.removeProperty('display');
-                    vrmFloatingButtons.style.removeProperty('visibility');
-                    vrmFloatingButtons.style.removeProperty('opacity');
+                    if (isMobileViewport()) {
+                        vrmFloatingButtons.style.removeProperty('display');
+                        vrmFloatingButtons.style.removeProperty('visibility');
+                        vrmFloatingButtons.style.removeProperty('opacity');
+                    } else {
+                        vrmFloatingButtons.style.display = 'none';
+                        vrmFloatingButtons.style.visibility = 'hidden';
+                        vrmFloatingButtons.style.opacity = '0';
+                    }
                 }
 
                 const vrmLockIcon = document.getElementById('vrm-lock-icon');
                 if (vrmLockIcon) {
-                    vrmLockIcon.style.removeProperty('display');
-                    vrmLockIcon.style.removeProperty('visibility');
-                    vrmLockIcon.style.removeProperty('opacity');
+                    if (isMobileViewport()) {
+                        vrmLockIcon.style.removeProperty('display');
+                        vrmLockIcon.style.removeProperty('visibility');
+                        vrmLockIcon.style.removeProperty('opacity');
+                    } else {
+                        vrmLockIcon.style.display = 'none';
+                        vrmLockIcon.style.visibility = 'hidden';
+                        vrmLockIcon.style.opacity = '0';
+                    }
                 }
 
                 if (window.vrmManager && window.vrmManager.core && typeof window.vrmManager.core.setLocked === 'function') {
@@ -1019,9 +1038,18 @@
                     mmdFloatingButtons = document.getElementById('mmd-floating-buttons');
                 }
                 if (mmdFloatingButtons) {
-                    mmdFloatingButtons.style.removeProperty('display');
-                    mmdFloatingButtons.style.removeProperty('visibility');
-                    mmdFloatingButtons.style.removeProperty('opacity');
+                    const isMmdMobile = typeof window.isMobileWidth === 'function'
+                        ? window.isMobileWidth()
+                        : (window.innerWidth <= 768);
+                    if (isMmdMobile) {
+                        mmdFloatingButtons.style.removeProperty('display');
+                        mmdFloatingButtons.style.removeProperty('visibility');
+                        mmdFloatingButtons.style.removeProperty('opacity');
+                    } else {
+                        mmdFloatingButtons.style.display = 'none';
+                        mmdFloatingButtons.style.visibility = 'hidden';
+                        mmdFloatingButtons.style.opacity = '0';
+                    }
                 }
 
                 // 隐藏 VRM / Live2D 浮动按钮
@@ -1122,35 +1150,116 @@
     const MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE = 80;
     let multiWindowReturnBallDragState = null;
 
-    function getVisibleReturnBallContainer() {
-        const containerIds = [
-            'mmd-return-button-container',
-            'vrm-return-button-container',
-            'live2d-return-button-container',
-        ];
-        for (const id of containerIds) {
-            const el = document.getElementById(id);
-            if (!el) continue;
-            const style = window.getComputedStyle ? window.getComputedStyle(el) : null;
-            if (style && (style.display === 'none' || style.visibility === 'hidden')) continue;
-            return el;
+    function cancelReturnBallReveal(container) {
+        if (!container) return;
+        const revealFrameId = container.__nekoReturnBallRevealFrame;
+        if (typeof revealFrameId === 'number') {
+            cancelAnimationFrame(revealFrameId);
         }
-        return null;
+        container.__nekoReturnBallRevealFrame = null;
+    }
+
+    function restoreSavedReturnBallStyle(container, state) {
+        if (!container) return false;
+        const dragState = state ||
+            (multiWindowReturnBallDragState && multiWindowReturnBallDragState.container === container
+                ? multiWindowReturnBallDragState
+                : null);
+        const savedStyle = dragState && dragState.savedBallStyle;
+        if (!savedStyle) return false;
+
+        container.style.left = savedStyle.left;
+        container.style.top = savedStyle.top;
+        container.style.right = savedStyle.right;
+        container.style.bottom = savedStyle.bottom;
+        container.style.transform = savedStyle.transform;
+        container.style.opacity = savedStyle.opacity;
+        container.style.transition = savedStyle.transition;
+        container.style.willChange = savedStyle.willChange;
+        dragState.savedBallStyle = null;
+        return true;
+    }
+
+    function resetReturnBallTemporaryStyle(container) {
+        if (!container) return;
+        container.style.removeProperty('opacity');
+        container.style.removeProperty('transition');
+        container.style.removeProperty('will-change');
+        container.setAttribute('data-dragging', 'false');
+    }
+
+    function hideReturnBallContainer(container) {
+        if (!container) return;
+        cancelReturnBallReveal(container);
+        restoreSavedReturnBallStyle(container);
+        resetReturnBallTemporaryStyle(container);
+        container.style.display = 'none';
+        container.style.pointerEvents = 'none';
+        container.style.removeProperty('visibility');
+    }
+
+    function positionReturnBallContainer(container, anchorRect) {
+        if (!container) return;
+
+        container.style.left = '';
+        container.style.top = '';
+        container.style.right = '';
+        container.style.bottom = '';
+        container.style.transform = 'none';
+
+        if (anchorRect) {
+            const containerWidth = Math.round(container.offsetWidth) || 64;
+            const containerHeight = Math.round(container.offsetHeight) || 64;
+            const maxLeft = Math.max(0, window.innerWidth - containerWidth);
+            const maxTop = Math.max(0, window.innerHeight - containerHeight);
+            const left = Math.round(anchorRect.left + (anchorRect.width - containerWidth) / 2);
+            const top = Math.round(anchorRect.top + (anchorRect.height - containerHeight) / 2);
+            container.style.left = `${Math.max(0, Math.min(left, maxLeft))}px`;
+            container.style.top = `${Math.max(0, Math.min(top, maxTop))}px`;
+            return;
+        }
+
+        container.style.right = '16px';
+        container.style.bottom = '116px';
+    }
+
+    function showReturnBallContainer(container, anchorRect) {
+        if (!container) return null;
+
+        cancelReturnBallReveal(container);
+        restoreSavedReturnBallStyle(container);
+        resetReturnBallTemporaryStyle(container);
+        container.style.display = 'flex';
+        container.style.visibility = 'hidden';
+        container.style.pointerEvents = 'none';
+        positionReturnBallContainer(container, anchorRect);
+
+        void container.offsetWidth;
+
+        const revealFrameId = requestAnimationFrame(() => {
+            if (container.__nekoReturnBallRevealFrame !== revealFrameId) return;
+            container.__nekoReturnBallRevealFrame = null;
+            if (container.style.display === 'none') return;
+            container.style.visibility = 'visible';
+            container.style.pointerEvents = 'auto';
+        });
+        container.__nekoReturnBallRevealFrame = revealFrameId;
+        return container;
     }
 
     function clearMultiWindowReturnBallDeferredWork(state) {
         if (!state) return;
-        if (state.positionFallbackTimer) {
-            clearTimeout(state.positionFallbackTimer);
-            state.positionFallbackTimer = null;
+        if (state.viewportWaitFallbackTimer) {
+            clearTimeout(state.viewportWaitFallbackTimer);
+            state.viewportWaitFallbackTimer = null;
         }
         if (state.transitionCleanupTimer) {
             clearTimeout(state.transitionCleanupTimer);
             state.transitionCleanupTimer = null;
         }
-        if (state.positionBallOnResize) {
-            window.removeEventListener('resize', state.positionBallOnResize);
-            state.positionBallOnResize = null;
+        if (state.viewportWaitOnResize) {
+            window.removeEventListener('resize', state.viewportWaitOnResize);
+            state.viewportWaitOnResize = null;
         }
     }
 
@@ -1170,8 +1279,12 @@
         document.removeEventListener('touchend', state.handleTouchEnd);
         document.removeEventListener('touchcancel', state.handleTouchEnd);
 
+        if (state.container) {
+            restoreSavedReturnBallStyle(state.container, state);
+            resetReturnBallTemporaryStyle(state.container);
+            state.container.setAttribute('data-dragging', 'false');
+        }
         delete document.body.dataset.nekoBallDrag;
-        if (window.DragHelpers) window.DragHelpers.isDragging = false;
         multiWindowReturnBallDragState = null;
     }
 
@@ -1203,8 +1316,8 @@
             savedBallStyle: null,
             savedBallWidth: 64,
             savedBallHeight: 64,
-            positionBallOnResize: null,
-            positionFallbackTimer: null,
+            viewportWaitOnResize: null,
+            viewportWaitFallbackTimer: null,
             transitionCleanupTimer: null,
             dragSessionToken: 0,
             handleMouseDown: null,
@@ -1224,17 +1337,7 @@
         }
 
         function restoreSavedBallStyle() {
-            const savedStyle = state.savedBallStyle;
-            if (!savedStyle) return;
-            container.style.left = savedStyle.left;
-            container.style.top = savedStyle.top;
-            container.style.right = savedStyle.right;
-            container.style.bottom = savedStyle.bottom;
-            container.style.transform = savedStyle.transform;
-            container.style.opacity = savedStyle.opacity;
-            container.style.transition = savedStyle.transition;
-            container.style.willChange = savedStyle.willChange;
-            state.savedBallStyle = null;
+            restoreSavedReturnBallStyle(container, state);
         }
 
         function getSavedBallStyleValue(key) {
@@ -1261,20 +1364,94 @@
             return multiWindowReturnBallDragState === state && state.dragSessionToken === token;
         }
 
-        function restoreBallVisibility(dragToken) {
+        function dispatchReturnBallClick() {
+            const id = String(container.id || '');
+            const match = id.match(/^([a-z0-9-]+)-return-button-container$/i);
+            if (!match || !match[1]) {
+                console.warn('[dispatchReturnBallClick] container id does not match expected pattern, return-click event not dispatched. id:', id);
+                return;
+            }
+
+            const rect = container.getBoundingClientRect();
+            window.dispatchEvent(new CustomEvent(`${match[1]}-return-click`, {
+                detail: {
+                    returnButtonRect: {
+                        left: rect.left,
+                        top: rect.top,
+                        width: rect.width,
+                        height: rect.height
+                    }
+                }
+            }));
+        }
+
+        function isViewportRestored(expectedWidth, expectedHeight) {
+            if (!Number.isFinite(expectedWidth) || !Number.isFinite(expectedHeight)) {
+                return true;
+            }
+            const tolerance = 2;
+            return Math.abs(window.innerWidth - expectedWidth) <= tolerance &&
+                Math.abs(window.innerHeight - expectedHeight) <= tolerance;
+        }
+
+        function waitForViewportSize(dragToken, expectedWidth, expectedHeight, onReady, options) {
             if (!isActiveDragToken(dragToken)) return;
-            requestAnimationFrame(() => {
+            clearMultiWindowReturnBallDeferredWork(state);
+            const fallbackMs = options && Number.isFinite(options.fallbackMs)
+                ? options.fallbackMs
+                : 120;
+            const fallbackDeadline = Date.now() + Math.max(0, fallbackMs);
+
+            const runWhenStable = () => {
+                requestAnimationFrame(() => {
+                    requestAnimationFrame(() => {
+                        if (!isActiveDragToken(dragToken)) return;
+                        onReady();
+                    });
+                });
+            };
+
+            const tryFinish = () => {
+                if (!isActiveDragToken(dragToken)) return false;
+                if (!isViewportRestored(expectedWidth, expectedHeight)) return false;
+                clearMultiWindowReturnBallDeferredWork(state);
+                runWhenStable();
+                return true;
+            };
+
+            if (tryFinish()) {
+                return;
+            }
+
+            state.viewportWaitOnResize = () => {
+                void tryFinish();
+            };
+            window.addEventListener('resize', state.viewportWaitOnResize);
+            const pollViewportRestore = () => {
                 if (!isActiveDragToken(dragToken)) return;
-                container.style.opacity = getSavedBallStyleValue('opacity');
-                state.transitionCleanupTimer = setTimeout(() => {
-                    state.transitionCleanupTimer = null;
-                    if (!isActiveDragToken(dragToken)) return;
-                    container.style.transition = getSavedBallStyleValue('transition');
-                    container.style.willChange = getSavedBallStyleValue('willChange');
-                    state.savedBallStyle = null;
-                }, 180);
-            });
-            container.setAttribute('data-dragging', 'false');
+                if (tryFinish()) return;
+
+                const remainingMs = fallbackDeadline - Date.now();
+                if (remainingMs <= 0) {
+                    console.warn(
+                        '[pollViewportRestore] waitForViewportSize timed out — dropping deferred work (click may be lost).',
+                        'dragToken:', state.dragSessionToken,
+                        'fallbackMs:', fallbackMs,
+                        'fallbackDeadline:', fallbackDeadline
+                    );
+                    clearMultiWindowReturnBallDeferredWork(state);
+                    return;
+                }
+
+                state.viewportWaitFallbackTimer = setTimeout(
+                    pollViewportRestore,
+                    Math.min(remainingMs, 16)
+                );
+            };
+            state.viewportWaitFallbackTimer = setTimeout(
+                pollViewportRestore,
+                Math.min(Math.max(0, fallbackMs), 16)
+            );
         }
 
         async function resolveFinalWindowBounds(screenX, screenY, dragToken) {
@@ -1305,6 +1482,7 @@
         function beginDrag(screenX, screenY, event) {
             clearMultiWindowReturnBallDeferredWork(state);
             state.dragSessionToken += 1;
+            const dragToken = state.dragSessionToken;
 
             state.isDragging = true;
             state.hasMoved = false;
@@ -1332,14 +1510,15 @@
             const centeredLeft = Math.max(0, Math.round((MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE - state.savedBallWidth) / 2));
             const centeredTop = Math.max(0, Math.round((MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE - state.savedBallHeight) / 2));
 
+            // 先隐藏球再移动到居中位置，防止闪烁
+            container.style.transition = 'none';
+            container.style.opacity = '0';
+
             container.style.left = `${centeredLeft}px`;
             container.style.top = `${centeredTop}px`;
             container.style.right = '';
             container.style.bottom = '';
             container.style.transform = 'none';
-            container.style.opacity = getSavedBallStyleValue('opacity');
-            container.style.transition = '';
-            container.style.willChange = 'opacity';
             container.setAttribute('data-dragging', 'false');
 
             document.documentElement.style.setProperty('background', 'transparent', 'important');
@@ -1350,12 +1529,26 @@
                 styleEl.textContent = [
                     'body[data-neko-ball-drag], body[data-neko-ball-drag] * { background:transparent!important; background-color:transparent!important; box-shadow:none!important; }',
                     'body[data-neko-ball-drag] > *:not([id$="-return-button-container"]) { display:none!important; }',
+                    'body[data-neko-ball-drag] * { transition:none!important; animation:none!important; }',
                 ].join('\n');
                 document.head.appendChild(styleEl);
             }
             document.body.dataset.nekoBallDrag = '1';
-            if (window.DragHelpers) window.DragHelpers.isDragging = true;
             window.nekoPetDrag.start(screenX, screenY);
+
+            // dragStart 的 shrink 通过异步 IPC 落到主进程，不能再靠固定帧数猜测
+            // 80x80 视口已经生效；否则返回球会按临时 left/top 在原窗口左侧闪一帧。
+            waitForViewportSize(
+                dragToken,
+                MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE,
+                MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE,
+                () => {
+                    if (!state.isDragging || !isActiveDragToken(dragToken)) return;
+                    container.style.opacity = getSavedBallStyleValue('opacity');
+                    container.style.willChange = 'opacity';
+                },
+                { fallbackMs: 160 }
+            );
 
             if (event) {
                 event.preventDefault();
@@ -1384,24 +1577,35 @@
             state.releaseScreenX = screenX;
             state.releaseScreenY = screenY;
             const dragToken = state.dragSessionToken;
+            clearMultiWindowReturnBallDeferredWork(state);
 
-            delete document.body.dataset.nekoBallDrag;
-            if (window.DragHelpers) window.DragHelpers.isDragging = false;
+            // 先瞬间隐藏球，防止恢复 UI 时球在 (8,8) 闪烁
+            container.style.transition = 'none';
+            container.style.opacity = '0';
 
             if (!state.hasMoved) {
-                Promise.resolve(window.nekoPetDrag.stop(screenX, screenY)).catch((error) => {
+                container.setAttribute('data-dragging', 'true');
+                let restoreBounds = null;
+                try {
+                    restoreBounds = normalizeWindowBounds(await window.nekoPetDrag.stop(screenX, screenY));
+                } catch (error) {
                     console.warn('[App] 返回球点击结束时恢复窗口失败:', error);
+                }
+                if (!isActiveDragToken(dragToken)) return;
+                const expectedWidth = restoreBounds ? restoreBounds.width : state.savedWindowW;
+                const expectedHeight = restoreBounds ? restoreBounds.height : state.savedWindowH;
+                waitForViewportSize(dragToken, expectedWidth, expectedHeight, () => {
+                    restoreSavedBallStyle();
+                    delete document.body.dataset.nekoBallDrag;
+                    container.setAttribute('data-dragging', 'false');
+                    dispatchReturnBallClick();
                 });
-                restoreSavedBallStyle();
-                container.setAttribute('data-dragging', 'false');
                 return;
             }
-
-            container.style.opacity = '0';
-            container.style.transition = 'opacity 0.15s ease';
             const finalBounds = await resolveFinalWindowBounds(screenX, screenY, dragToken);
             if (!isActiveDragToken(dragToken)) return;
 
+            let shouldRestoreSavedBallStyle = false;
             if (finalBounds) {
                 const width = state.savedBallWidth || container.offsetWidth || 64;
                 const height = state.savedBallHeight || container.offsetHeight || 64;
@@ -1416,10 +1620,32 @@
                 container.style.bottom = '';
                 container.style.transform = 'none';
             } else {
-                restoreSavedBallStyle();
+                shouldRestoreSavedBallStyle = true;
             }
 
-            restoreBallVisibility(dragToken);
+            const expectedWidth = finalBounds ? finalBounds.width : state.savedWindowW;
+            const expectedHeight = finalBounds ? finalBounds.height : state.savedWindowH;
+            waitForViewportSize(dragToken, expectedWidth, expectedHeight, () => {
+                if (shouldRestoreSavedBallStyle) {
+                    restoreSavedBallStyle();
+                    container.setAttribute('data-dragging', 'false');
+                    delete document.body.dataset.nekoBallDrag;
+                    return;
+                }
+                // 先同步恢复球 opacity，再删除 nekoBallDrag 显示页面内容，
+                // 避免 1 帧"页面可见但球不可见"的闪烁
+                container.style.opacity = getSavedBallStyleValue('opacity');
+                container.style.willChange = getSavedBallStyleValue('willChange');
+                container.setAttribute('data-dragging', 'false');
+                delete document.body.dataset.nekoBallDrag;
+                // 延迟恢复 transition，避免恢复瞬间触发动画
+                state.transitionCleanupTimer = setTimeout(() => {
+                    state.transitionCleanupTimer = null;
+                    if (!isActiveDragToken(dragToken)) return;
+                    container.style.transition = getSavedBallStyleValue('transition');
+                    state.savedBallStyle = null;
+                }, 180);
+            });
         }
 
         state.handleMouseDown = (event) => {
@@ -1761,6 +1987,8 @@
             const useMmdReturn = isMmdActive;
             const useVrmReturn = isVrmActive && !isMmdActive;
 
+            let activeReturnButtonContainer = null;
+
             // MMD 返回按钮
             if (useMmdReturn && !mmdReturnButtonContainer && window.mmdManager) {
                 if (typeof window.mmdManager.setupFloatingButtons === 'function') {
@@ -1769,54 +1997,16 @@
                 }
             }
             if (useMmdReturn && mmdReturnButtonContainer) {
-                if (savedGoodbyeRect) {
-                    const containerWidth = mmdReturnButtonContainer.offsetWidth || 64;
-                    const containerHeight = mmdReturnButtonContainer.offsetHeight || 64;
-                    const left = Math.round(savedGoodbyeRect.left + (savedGoodbyeRect.width - containerWidth) / 2);
-                    const top = Math.round(savedGoodbyeRect.top + (savedGoodbyeRect.height - containerHeight) / 2);
-                    mmdReturnButtonContainer.style.right = '';
-                    mmdReturnButtonContainer.style.bottom = '';
-                    mmdReturnButtonContainer.style.left = `${Math.max(0, Math.min(left, window.innerWidth - containerWidth))}px`;
-                    mmdReturnButtonContainer.style.top = `${Math.max(0, Math.min(top, window.innerHeight - containerHeight))}px`;
-                    mmdReturnButtonContainer.style.transform = 'none';
-                } else {
-                    mmdReturnButtonContainer.style.right = '16px';
-                    mmdReturnButtonContainer.style.bottom = '116px';
-                    mmdReturnButtonContainer.style.left = '';
-                    mmdReturnButtonContainer.style.top = '';
-                    mmdReturnButtonContainer.style.transform = 'none';
-                }
-                mmdReturnButtonContainer.style.display = 'flex';
-                mmdReturnButtonContainer.style.pointerEvents = 'auto';
-            } else if (mmdReturnButtonContainer) {
-                mmdReturnButtonContainer.style.display = 'none';
+                activeReturnButtonContainer = showReturnBallContainer(mmdReturnButtonContainer, savedGoodbyeRect);
+            } else {
+                hideReturnBallContainer(mmdReturnButtonContainer);
             }
 
             // 显示Live2D的返回按钮（仅在非VRM/非MMD模式时显示）
             if (!useVrmReturn && !useMmdReturn && live2dReturnButtonContainer) {
-                if (savedGoodbyeRect) {
-                    const containerWidth = live2dReturnButtonContainer.offsetWidth || 64;
-                    const containerHeight = live2dReturnButtonContainer.offsetHeight || 64;
-                    const left = Math.round(savedGoodbyeRect.left + (savedGoodbyeRect.width - containerWidth) / 2);
-                    const top = Math.round(savedGoodbyeRect.top + (savedGoodbyeRect.height - containerHeight) / 2);
-                    live2dReturnButtonContainer.style.right = '';
-                    live2dReturnButtonContainer.style.bottom = '';
-                    live2dReturnButtonContainer.style.left = `${Math.max(0, Math.min(left, window.innerWidth - containerWidth))}px`;
-                    live2dReturnButtonContainer.style.top = `${Math.max(0, Math.min(top, window.innerHeight - containerHeight))}px`;
-                    live2dReturnButtonContainer.style.transform = 'none';
-                } else {
-                    const fallbackRight = 16;
-                    const fallbackBottom = 116;
-                    live2dReturnButtonContainer.style.right = `${fallbackRight}px`;
-                    live2dReturnButtonContainer.style.bottom = `${fallbackBottom}px`;
-                    live2dReturnButtonContainer.style.left = '';
-                    live2dReturnButtonContainer.style.top = '';
-                    live2dReturnButtonContainer.style.transform = 'none';
-                }
-                live2dReturnButtonContainer.style.display = 'flex';
-                live2dReturnButtonContainer.style.pointerEvents = 'auto';
-            } else if (live2dReturnButtonContainer) {
-                live2dReturnButtonContainer.style.display = 'none';
+                activeReturnButtonContainer = showReturnBallContainer(live2dReturnButtonContainer, savedGoodbyeRect);
+            } else {
+                hideReturnBallContainer(live2dReturnButtonContainer);
             }
 
             // 显示VRM的返回按钮
@@ -1832,32 +2022,12 @@
             }
 
             if (useVrmReturn && vrmReturnButtonContainer) {
-                if (savedGoodbyeRect) {
-                    const containerWidth = vrmReturnButtonContainer.offsetWidth || 64;
-                    const containerHeight = vrmReturnButtonContainer.offsetHeight || 64;
-                    const left = Math.round(savedGoodbyeRect.left + (savedGoodbyeRect.width - containerWidth) / 2);
-                    const top = Math.round(savedGoodbyeRect.top + (savedGoodbyeRect.height - containerHeight) / 2);
-                    vrmReturnButtonContainer.style.right = '';
-                    vrmReturnButtonContainer.style.bottom = '';
-                    vrmReturnButtonContainer.style.left = `${Math.max(0, Math.min(left, window.innerWidth - containerWidth))}px`;
-                    vrmReturnButtonContainer.style.top = `${Math.max(0, Math.min(top, window.innerHeight - containerHeight))}px`;
-                    vrmReturnButtonContainer.style.transform = 'none';
-                } else {
-                    const fallbackRight = 16;
-                    const fallbackBottom = 116;
-                    vrmReturnButtonContainer.style.right = `${fallbackRight}px`;
-                    vrmReturnButtonContainer.style.bottom = `${fallbackBottom}px`;
-                    vrmReturnButtonContainer.style.left = '';
-                    vrmReturnButtonContainer.style.top = '';
-                    vrmReturnButtonContainer.style.transform = 'none';
-                }
-                vrmReturnButtonContainer.style.display = 'flex';
-                vrmReturnButtonContainer.style.pointerEvents = 'auto';
-            } else if (vrmReturnButtonContainer) {
-                vrmReturnButtonContainer.style.display = 'none';
+                activeReturnButtonContainer = showReturnBallContainer(vrmReturnButtonContainer, savedGoodbyeRect);
+            } else {
+                hideReturnBallContainer(vrmReturnButtonContainer);
             }
 
-            ensureMultiWindowReturnBallDrag(getVisibleReturnBallContainer());
+            ensureMultiWindowReturnBallDrag(activeReturnButtonContainer);
 
             // 隐藏 side-btn 按钮和侧边栏
             const sidebar = document.getElementById('sidebar');
@@ -1977,20 +2147,12 @@
 
             // 隐藏"请她回来"按钮
             const live2dReturnButtonContainer = document.getElementById('live2d-return-button-container');
-            if (live2dReturnButtonContainer) {
-                live2dReturnButtonContainer.style.display = 'none';
-                live2dReturnButtonContainer.style.pointerEvents = 'none';
-            }
             const vrmReturnButtonContainer = document.getElementById('vrm-return-button-container');
-            if (vrmReturnButtonContainer) {
-                vrmReturnButtonContainer.style.display = 'none';
-                vrmReturnButtonContainer.style.pointerEvents = 'none';
-            }
             const mmdReturnButtonContainer = document.getElementById('mmd-return-button-container');
-            if (mmdReturnButtonContainer) {
-                mmdReturnButtonContainer.style.display = 'none';
-                mmdReturnButtonContainer.style.pointerEvents = 'none';
-            }
+            hideReturnBallContainer(live2dReturnButtonContainer);
+            hideReturnBallContainer(vrmReturnButtonContainer);
+            hideReturnBallContainer(mmdReturnButtonContainer);
+            ensureMultiWindowReturnBallDrag(null);
 
             // 如果返回按钮被拖拽到新位置，先偏移模型再显示，避免闪烁
             const returnRect = event && event.detail && event.detail.returnButtonRect;
@@ -2022,6 +2184,9 @@
                 }
             }
             window._savedGoodbyeRect = null;
+            const isMobileViewport = typeof window.isMobileWidth === 'function'
+                ? window.isMobileWidth()
+                : (window.innerWidth <= 768);
 
             // 使用 showCurrentModel() 做最终裁决
             try {
@@ -2059,15 +2224,27 @@
             }
             const vrmLockIcon = document.getElementById('vrm-lock-icon');
             if (vrmLockIcon) {
-                vrmLockIcon.style.removeProperty('display');
-                vrmLockIcon.style.removeProperty('visibility');
-                vrmLockIcon.style.removeProperty('opacity');
+                if (isMobileViewport) {
+                    vrmLockIcon.style.removeProperty('display');
+                    vrmLockIcon.style.removeProperty('visibility');
+                    vrmLockIcon.style.removeProperty('opacity');
+                } else {
+                    vrmLockIcon.style.display = 'none';
+                    vrmLockIcon.style.visibility = 'hidden';
+                    vrmLockIcon.style.opacity = '0';
+                }
             }
             const mmdLockIcon = document.getElementById('mmd-lock-icon');
             if (mmdLockIcon) {
-                mmdLockIcon.style.removeProperty('display');
-                mmdLockIcon.style.removeProperty('visibility');
-                mmdLockIcon.style.removeProperty('opacity');
+                if (isMobileViewport) {
+                    mmdLockIcon.style.removeProperty('display');
+                    mmdLockIcon.style.removeProperty('visibility');
+                    mmdLockIcon.style.removeProperty('opacity');
+                } else {
+                    mmdLockIcon.style.display = 'none';
+                    mmdLockIcon.style.visibility = 'hidden';
+                    mmdLockIcon.style.opacity = '0';
+                }
             }
             // 恢复"请她离开"之前的锁定状态（而非强制解锁）
             const savedLock = window._savedLockState || { live2d: false, vrm: false, mmd: false };
@@ -2114,9 +2291,15 @@
             // 恢复VRM浮动按钮系统
             const vrmFloatingButtons = document.getElementById('vrm-floating-buttons');
             if (vrmFloatingButtons) {
-                vrmFloatingButtons.style.removeProperty('display');
-                vrmFloatingButtons.style.removeProperty('visibility');
-                vrmFloatingButtons.style.removeProperty('opacity');
+                if (isMobileViewport) {
+                    vrmFloatingButtons.style.removeProperty('display');
+                    vrmFloatingButtons.style.removeProperty('visibility');
+                    vrmFloatingButtons.style.removeProperty('opacity');
+                } else {
+                    vrmFloatingButtons.style.display = 'none';
+                    vrmFloatingButtons.style.visibility = 'hidden';
+                    vrmFloatingButtons.style.opacity = '0';
+                }
 
                 if (window.vrmManager && window.vrmManager._floatingButtons) {
                     Object.keys(window.vrmManager._floatingButtons).forEach(btnId => {
@@ -2139,9 +2322,15 @@
             // 恢复MMD浮动按钮系统
             const mmdFloatingButtons = document.getElementById('mmd-floating-buttons');
             if (mmdFloatingButtons) {
-                mmdFloatingButtons.style.removeProperty('display');
-                mmdFloatingButtons.style.removeProperty('visibility');
-                mmdFloatingButtons.style.removeProperty('opacity');
+                if (isMobileViewport) {
+                    mmdFloatingButtons.style.removeProperty('display');
+                    mmdFloatingButtons.style.removeProperty('visibility');
+                    mmdFloatingButtons.style.removeProperty('opacity');
+                } else {
+                    mmdFloatingButtons.style.display = 'none';
+                    mmdFloatingButtons.style.visibility = 'hidden';
+                    mmdFloatingButtons.style.opacity = '0';
+                }
 
                 if (window.mmdManager && window.mmdManager._floatingButtons) {
                     Object.keys(window.mmdManager._floatingButtons).forEach(btnId => {
@@ -2163,7 +2352,7 @@
 
             // 恢复对话区
             const chatContainerEl = document.getElementById('chat-container');
-            const isMobile = typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (window.innerWidth <= 768);
+            const isMobile = isMobileViewport;
             const collapseClass = isMobile ? 'mobile-collapsed' : 'minimized';
 
             console.log('[App] 检查对话区状态 - 存在:', !!chatContainerEl, '类列表:', chatContainerEl ? chatContainerEl.className : 'N/A', '目标类:', collapseClass);

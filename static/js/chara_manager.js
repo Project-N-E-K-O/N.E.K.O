@@ -5,10 +5,16 @@
  */
 // 允许的来源列表
 const ALLOWED_ORIGINS = [window.location.origin];
+const CLOUDSAVE_CHARACTER_SYNC_EVENT_KEY = 'neko_cloudsave_character_sync';
+const CLOUDSAVE_CHARACTER_SYNC_MESSAGE_TYPE = 'cloudsave_character_changed';
+const CLOUDSAVE_CHARACTER_SYNC_CHANNEL_NAME = 'neko_cloudsave_character_sync';
 
 // 自动保存提示管理
 let autoSaveToastTimer = null;
 let autoSaveToastElement = null;
+let lastCloudsaveSyncTimestamp = 0;
+let processingCloudsaveTimestamp = 0;
+let cloudsaveSyncChannel = null;
 
 function showAutoSaveToast(disableAutoHide = false, customMessage = null) {
     if (!autoSaveToastElement) {
@@ -528,6 +534,12 @@ function sanitizeProfileNameValue(value, caretPos = null) {
 
 function translateBackendError(errorMessage) {
     if (!errorMessage || typeof errorMessage !== 'string') return errorMessage;
+    if (errorMessage === 'CLOUDSAVE_WRITE_FENCE_ACTIVE') {
+        return window.t ? window.t('cloudsave.error.writeFenceActive') : '云存档维护模式生效中，请稍后再试';
+    }
+    if (errorMessage === 'MEMORY_SERVER_RELEASE_FAILED') {
+        return window.t ? window.t('cloudsave.error.memoryServerReleaseFailed') : '释放本地记忆句柄失败，请稍后再试';
+    }
     if (errorMessage.includes('保留的路由名称')) {
         return tOrFallback(PROFILE_NAME_RESERVED_ROUTE_KEY, errorMessage);
     }
@@ -994,7 +1006,7 @@ async function loadCharacterData() {
     const thisRequestId = ++currentRequestId;
     
     try {
-        const resp = await fetch('/api/characters');
+        const resp = await fetch('/api/characters', { cache: 'no-store' });
         if (!resp.ok) {
             throw new Error(`HTTP error! status: ${resp.status}`);
         }
@@ -1012,7 +1024,10 @@ async function loadCharacterData() {
         const timeoutId = setTimeout(() => controller.abort(), 5000);
         
         try {
-            const currentResp = await fetch('/api/characters/current_catgirl', { signal: controller.signal });
+            const currentResp = await fetch('/api/characters/current_catgirl', {
+                signal: controller.signal,
+                cache: 'no-store'
+            });
             clearTimeout(timeoutId);
             if (currentResp.ok) {
                 const currentData = await currentResp.json();
@@ -1817,7 +1832,22 @@ window.deleteCatgirl = async function (key) {
     }
     const confirmTitle = window.t ? window.t('character.deleteCatgirlTitle') : '删除猫娘';
     if (!await showConfirm(confirmMsg, confirmTitle, { danger: true })) return;
-    await fetch('/api/characters/catgirl/' + encodeURIComponent(key), { method: 'DELETE' });
+    try {
+        const response = await fetch('/api/characters/catgirl/' + encodeURIComponent(key), { method: 'DELETE' });
+        const result = await response.json();
+        if (!response.ok || !result || result.success !== true) {
+            const errorText = translateBackendError(result?.code || result?.error || result?.message || '未知错误');
+            const prefix = window.t ? window.t('character.deleteFailed') : '删除失败';
+            await showAlert(errorText ? `${prefix}: ${errorText}` : prefix);
+            return;
+        }
+    } catch (error) {
+        console.warn('删除猫娘请求失败:', error);
+        const errorText = translateBackendError(error?.message || '');
+        const prefix = window.t ? window.t('character.deleteFailed') : '删除失败';
+        await showAlert(errorText ? `${prefix}: ${errorText}` : prefix);
+        return;
+    }
     // 清除 localStorage 中的展开状态记录
     localStorage.removeItem(`catgirl_expand_${key}`);
     // 清除进阶设定折叠状态记录
@@ -2783,7 +2813,7 @@ window.renameMaster = async function (oldName) {
         await loadCharacterData();
         await showAlert(window.t ? window.t('character.renameSuccess') : '重命名成功');
     } else {
-        const errorText = translateBackendError(result.error || result.message || '未知错误');
+        const errorText = translateBackendError(result.code || result.error || result.message || '未知错误');
         await showAlert(window.t ? window.t('character.renameError', { error: errorText }) : '重命名失败: ' + errorText);
     }
 }
@@ -2893,21 +2923,44 @@ window.renameCatgirl = async function (oldName) {
             localStorage.removeItem(oldStorageKey);
         }
 
-        // 更新记忆文件中的角色名称
-        try {
-            await fetch('/api/memory/update_catgirl_name', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ old_name: oldName, new_name: newName })
-            });
-        } catch (error) {
-            console.error('更新记忆文件中的角色名称失败:', error);
-            // 不阻止主流程，继续加载数据
+        // 兼容旧后端：如果主事务没有返回 memory_renamed，再尝试旧记忆改名接口。
+        if (result.memory_renamed !== true) {
+            try {
+                const legacyRenameResponse = await fetch('/api/memory/update_catgirl_name', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ old_name: oldName, new_name: newName })
+                });
+                if (!legacyRenameResponse.ok) {
+                    let responseText = '';
+                    let responseJson = null;
+                    try {
+                        responseText = await legacyRenameResponse.text();
+                        if (responseText) {
+                            responseJson = JSON.parse(responseText);
+                        }
+                    } catch (readError) {
+                        console.warn('读取旧记忆改名接口错误响应失败:', readError);
+                    }
+                    console.error('更新记忆文件中的角色名称失败:', {
+                        status: legacyRenameResponse.status,
+                        statusText: legacyRenameResponse.statusText,
+                        body: responseText,
+                        payload: responseJson
+                    });
+                }
+            } catch (error) {
+                console.error('更新记忆文件中的角色名称失败:', error);
+                // 不阻止主流程，继续加载数据
+            }
         }
 
         await loadCharacterData();
     } else {
-        await showAlert(translateBackendError(result.error) || (window.t ? window.t('character.renameFailed') : '重命名失败'));
+        await showAlert(
+            translateBackendError(result.code || result.error || result.message)
+            || (window.t ? window.t('character.renameFailed') : '重命名失败')
+        );
     }
 }
 
@@ -2987,6 +3040,80 @@ function openVoiceClone(lanlanName) {
     }
 }
 
+function getPreferredCloudsaveCharacterName() {
+    if (typeof window._currentCatgirl === 'string' && window._currentCatgirl.trim()) {
+        return window._currentCatgirl.trim();
+    }
+    return '';
+}
+
+function getCurrentUiLanguage() {
+    if (window.i18n && typeof window.i18n.language === 'string' && window.i18n.language.trim()) {
+        return window.i18n.language.trim();
+    }
+
+    const savedLanguage = localStorage.getItem('i18nextLng');
+    if (typeof savedLanguage === 'string' && savedLanguage.trim()) {
+        return savedLanguage.trim();
+    }
+
+    return '';
+}
+
+function buildCloudsaveManagerUrl() {
+    const preferredCharacterName = getPreferredCloudsaveCharacterName();
+    const currentUiLanguage = getCurrentUiLanguage();
+    const query = new URLSearchParams();
+
+    if (preferredCharacterName) {
+        query.set('lanlan_name', preferredCharacterName);
+    }
+    if (currentUiLanguage) {
+        query.set('ui_lang', currentUiLanguage);
+    }
+
+    const queryString = query.toString();
+    return queryString ? '/cloudsave_manager?' + queryString : '/cloudsave_manager';
+}
+
+function openCloudsaveManager() {
+    const url = buildCloudsaveManagerUrl();
+    const windowName = 'neko_cloudsave_manager';
+    const width = 1180;
+    const height = 860;
+    const left = Math.max(0, Math.floor((screen.width - width) / 2));
+    const top = Math.max(0, Math.floor((screen.height - height) / 2));
+    const features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+
+    const existingWindow = window._openedWindows && window._openedWindows[windowName];
+    if (existingWindow && !existingWindow.closed) {
+        try {
+            const targetUrl = new URL(url, window.location.origin).toString();
+            if (existingWindow.location.href !== targetUrl) {
+                existingWindow.location.href = targetUrl;
+            }
+            existingWindow.focus();
+            return;
+        } catch (error) {
+            console.warn('更新云存档管理窗口地址失败:', error);
+        }
+    }
+
+    const openedWindow = typeof window.openOrFocusWindow === 'function'
+        ? window.openOrFocusWindow(url, windowName, features)
+        : window.open(url, windowName, features);
+
+    if (openedWindow && !openedWindow.closed) {
+        if (!window._openedWindows || typeof window._openedWindows !== 'object') {
+            window._openedWindows = {};
+        }
+        window._openedWindows[windowName] = openedWindow;
+    }
+
+    if (!openedWindow) {
+        window.location.href = url;
+    }
+}
 
 
 // 解除声音注册
@@ -3055,6 +3182,70 @@ function sendBeacon() {
 }
 
 // 监听API Key变更事件
+async function handleCloudsaveCharacterSync(payload) {
+    if (!payload || payload.type !== CLOUDSAVE_CHARACTER_SYNC_MESSAGE_TYPE) return;
+
+    const nextTimestamp = Number(payload.timestamp || 0);
+    if (
+        nextTimestamp
+        && (
+            nextTimestamp <= lastCloudsaveSyncTimestamp
+            || nextTimestamp <= processingCloudsaveTimestamp
+        )
+    ) {
+        return;
+    }
+
+    let shouldCommitTimestamp = false;
+    if (nextTimestamp) {
+        processingCloudsaveTimestamp = nextTimestamp;
+    }
+
+    try {
+        if (hasUnsavedNewCatgirlDraft()) {
+            await showAlert(window.t
+                ? window.t('character.unsavedNewCatgirlDraftDetected')
+                : '检测到未保存的新猫娘草稿，请先保存或取消后再同步刷新');
+            return;
+        }
+
+        if (hasUnsavedChanges()) {
+            try {
+                await saveAllUnsavedChanges();
+            } catch (error) {
+                console.warn('[Cloud Save] 自动保存失败，跳过本次同步刷新:', error);
+                return;
+            }
+        }
+
+        console.log('[Cloud Save] 收到角色列表刷新通知，正在刷新角色数据...', payload);
+        await loadCharacterData();
+        shouldCommitTimestamp = true;
+    } finally {
+        if (nextTimestamp && processingCloudsaveTimestamp === nextTimestamp) {
+            processingCloudsaveTimestamp = 0;
+        }
+        if (nextTimestamp && shouldCommitTimestamp) {
+            lastCloudsaveSyncTimestamp = Math.max(lastCloudsaveSyncTimestamp, nextTimestamp);
+        }
+    }
+}
+
+function initCloudsaveCharacterSyncChannel() {
+    if (typeof BroadcastChannel !== 'function' || cloudsaveSyncChannel) {
+        return;
+    }
+
+    try {
+        cloudsaveSyncChannel = new BroadcastChannel(CLOUDSAVE_CHARACTER_SYNC_CHANNEL_NAME);
+        cloudsaveSyncChannel.addEventListener('message', function (event) {
+            handleCloudsaveCharacterSync(event.data);
+        });
+    } catch (error) {
+        console.warn('[Cloud Save] 初始化同步频道失败:', error);
+    }
+}
+
 window.addEventListener('message', function (event) {
     if (!ALLOWED_ORIGINS.includes(event.origin)) return;
     if (event.data && event.data.type === 'api_key_changed') {
@@ -3126,8 +3317,23 @@ window.addEventListener('message', function (event) {
                 select.value = voiceId;
             }).catch(() => {});
         } catch (e) {}
+    } else if (event.data && event.data.type === CLOUDSAVE_CHARACTER_SYNC_MESSAGE_TYPE) {
+        handleCloudsaveCharacterSync(event.data);
     }
 });
+
+window.addEventListener('storage', function (event) {
+    if (event.key !== CLOUDSAVE_CHARACTER_SYNC_EVENT_KEY || !event.newValue) return;
+
+    try {
+        const payload = JSON.parse(event.newValue);
+        handleCloudsaveCharacterSync(payload);
+    } catch (error) {
+        console.warn('[Cloud Save] 解析角色列表刷新通知失败:', error);
+    }
+});
+
+initCloudsaveCharacterSyncChannel();
 
 // 监听页面关闭事件
 window.addEventListener('beforeunload', sendBeacon);
@@ -3235,6 +3441,11 @@ function setupPageEventListeners() {
         addCatgirlBtn.addEventListener('click', function () {
             showCatgirlForm(null);
         });
+    }
+
+    const openCloudsaveManagerBtn = document.getElementById('open-cloudsave-manager-btn');
+    if (openCloudsaveManagerBtn) {
+        openCloudsaveManagerBtn.addEventListener('click', openCloudsaveManager);
     }
 
     // 导入角色卡按钮
@@ -3550,6 +3761,24 @@ function hasUnsavedChanges() {
     return false;
 }
 
+function hasUnsavedNewCatgirlDraft() {
+    const newDraftForm = document.getElementById('catgirl-form-new');
+    if (!newDraftForm) {
+        return false;
+    }
+
+    const inputs = newDraftForm.querySelectorAll('input, textarea, select');
+    for (const input of inputs) {
+        if (hasInputChanged(input)) {
+            return true;
+        }
+        if ((input.name || input.id) && String(input.value || '').trim()) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // 保存所有未保存的改动
 async function saveAllUnsavedChanges() {
     const savePromises = [];
@@ -3673,6 +3902,17 @@ async function closeCharaManagerPage() {
                 win.close();
             }
             delete window._openSettingsWindows[key];
+        }
+    }
+
+    // 关闭通过 openOrFocusWindow 打开的子窗口（如 cloudsave_manager），
+    // 避免 Electron 按窗口名复用残留窗口而不加载新 URL
+    if (window._openedWindows) {
+        for (const [key, win] of Object.entries(window._openedWindows)) {
+            if (win && !win.closed) {
+                win.close();
+            }
+            delete window._openedWindows[key];
         }
     }
 

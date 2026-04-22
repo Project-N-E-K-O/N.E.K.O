@@ -2077,6 +2077,9 @@ class UniversalTutorialManager {
      * 启动引导步骤（内部方法）
      */
     startTutorialSteps(validSteps) {
+        // 预加载所有步骤中的图片，确保走到含图片的步骤时图片已在浏览器缓存中
+        this._preloadStepImages(validSteps);
+
         // 重置步骤 onHighlighted 触发标记（避免重复/跨次引导）
         this._lastOnHighlightedStepIndex = null;
 
@@ -2659,6 +2662,34 @@ class UniversalTutorialManager {
                 resolve();
             }, 600);
         });
+    }
+
+    /**
+     * 预加载所有教程步骤中的图片。
+     * 解析每个步骤的 popover.description HTML，提取 <img src="..."> 中的 URL，
+     * 通过 new Image() 提前下载到浏览器缓存。这样走到含图片的步骤时，
+     * createPopover 插入 DOM 后图片能立即渲染，offsetHeight 计算准确，
+     * 避免图片异步加载导致弹窗定位偏移、按钮被截断。
+     */
+    _preloadStepImages(steps) {
+        if (!steps || steps.length === 0) return;
+        const srcSet = new Set();
+        const imgTagRegex = /<img[^>]+src\s*=\s*["']([^"']+)["'][^>]*>/gi;
+        for (const step of steps) {
+            const desc = step.popover && step.popover.description;
+            if (!desc || typeof desc !== 'string') continue;
+            let match;
+            while ((match = imgTagRegex.exec(desc)) !== null) {
+                srcSet.add(match[1]);
+            }
+            imgTagRegex.lastIndex = 0;
+        }
+        if (srcSet.size === 0) return;
+        console.log(`[Tutorial] 预加载 ${srcSet.size} 张教程图片:`, [...srcSet]);
+        for (const src of srcSet) {
+            const img = new Image();
+            img.src = src;
+        }
     }
 
     /**

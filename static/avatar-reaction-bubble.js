@@ -32,32 +32,50 @@
         horizontalNoiseTolerancePx: 8,
         verticalMoveMaxHorizontalDriftPx: 18,
         headBubbleScaleMultiplier: 1.77,
+        threeDHeadBubbleScaleMultiplier: 1.28,
         live2dReliableHeadBubbleScaleMultiplier: 1.3,
         live2dPreciseDisplayInfoHeadBubbleScaleMultiplier: 1.42,
         live2dDrawableHeadBubbleScaleMultiplier: 1.36,
-        baseWidthShrinkPx: 92,
-        baseHeightShrinkPx: 66,
+        live2dMinBubbleDimPx: 34,
+        threeDMinBubbleDimPx: 30,
+        live2dUnreliableMaxBubbleWidthRatio: 0.84,
+        bubbleWidthFromHeadSizeRatio: 0.82,
+        bubbleHeightFromHeadSizeRatio: 0.64,
+        bubbleMinHeightFromMinWidthRatio: 0.77,
+        bubbleMaxHeightBoundsRatio: 0.45,
         verticalOffsetPx: 0,
-        modelOverlapRatio: 0.28,
         compactModelAspectRatio: 1.15,
         tallModelAspectRatio: 1.8,
         headHeightFromModelRatio: 0.28,
         headHeightFromWidthRatio: 0.56,
+        threeDHeadWidthRatio: 0.31,
+        threeDHeadHeightFromModelRatio: 0.24,
+        threeDHeadHeightFromWidthRatio: 0.44,
         accessoryTrimRatio: 2.1,
         accessoryTrimMaxPx: 96,
         shortHeadAnchorRatio: 0.7,
         tallHeadAnchorRatio: 0.42,
+        threeDHeadAnchorRatio: 0.5,
         shortModelOffsetRatio: 0.12,
         tallModelOffsetRatio: -0.4,
+        threeDModelOffsetRatio: -0.16,
+        horizontalAnchorOffsetBubbleRatio: 0.13,
+        threeDHorizontalAnchorOffsetBubbleRatio: 0.02,
         accessoryDropBasePx: 0,
         accessoryDropRatio: 1.2,
         accessoryDropMaxPx: 56,
         headAnchorCorrectionDeadzonePx: 16,
         headAnchorCorrectionRatio: 0.82,
         headAnchorCorrectionMaxPx: 72,
+        threeDHeadAnchorCorrectionDeadzonePx: 10,
+        threeDHeadAnchorCorrectionRatio: 0.56,
+        threeDHeadAnchorDownCorrectionMaxRatio: 0.1,
+        threeDHeadAnchorUpCorrectionMaxPx: 18,
+        threeDHeadAnchorMinYRatio: 0.12,
+        threeDHeadAnchorMaxYRatio: 0.66,
         live2dDisplayInfoFaceAnchorRatio: 0.36,
         live2dDisplayInfoHeadAnchorRatio: 0.44,
-        live2dDisplayInfoTopOffsetRatio: 0.24,
+        live2dDisplayInfoTopOffsetRatio: 0.23,
         live2dDisplayInfoHeadTopOffsetRatio: 0.22,
         live2dDisplayInfoGapHeadRatio: 0.1,
         live2dDisplayInfoGapBubbleRatio: 0.04,
@@ -67,6 +85,8 @@
         live2dBodyProxyHeadLiftRatio: 0.45,
         live2dHeadTopOffsetRatio: 0.24,
         live2dFaceTopOffsetRatio: 0.26,
+        live2dHeadEdgeInsetBubbleRatio: 0.26,
+        live2dHeadEdgeFallbackOffsetBubbleRatio: 0.07,
         live2dHeadMaxBoundsWidthRatio: 0.82,
         live2dHeadMaxBoundsHeightRatio: 0.58,
         live2dHeadMaxBoundsCenterYRatio: 0.62,
@@ -82,8 +102,6 @@
         live2dDrawableHeadSpanRatio: 0.24,
         live2dDrawableHeadSpanMaxMultiplier: 1.32,
         live2dDrawableBodyHeadSpanMaxRatio: 0.38,
-        live2dHeadSideOffsetMinHeadWidthRatio: 0.38,
-        live2dHeadSideOffsetMaxHeadWidthRatio: 0.66,
         showFollowWindowMs: 360,
         moveFollowWindowMs: 120,
         moveSettleWindowMs: 420,
@@ -130,10 +148,12 @@
         lastHeadAnchor: null,
         lastLive2dHeadAnchor: null,
         lastHeadRect: null,
+        lastBubbleHeadRect: null,
         lastHeadMode: null,
         lastHeadSource: null,
         lastBodyRect: null,
         lastBodySource: null,
+        lastHasNormalizedLive2dGeometry: null,
         lastReliableLive2dHeadRect: null,
         lastPreciseLive2dDisplayInfoRect: null,
         lastCoarseHitAreaHeadRect: null,
@@ -150,6 +170,7 @@
     let contentEl = null;
     let debugOverlayEl = null;
     let debugPanelEl = null;
+    let debugPanelHintEl = null;
     let debugPanelBodyEl = null;
     let debugAnchorEl = null;
     let debugGuideLineEl = null;
@@ -184,7 +205,7 @@
     }
 
     function bubbleTraceEnabled() {
-        return window.NEKO_DEBUG_BUBBLE_LIFECYCLE === true;
+        return false;
     }
 
     function logBubbleLifecycle(label, extra) {
@@ -204,11 +225,11 @@
     }
 
     function bubblePositionDebugEnabled() {
-        return window.NEKO_DEBUG_BUBBLE_POSITION === true || bubbleTraceEnabled();
+        return false;
     }
 
     function debugOverlayEnabled() {
-        return state.debugOverlayEnabled === true;
+        return false;
     }
 
     function roundDebugNumber(value) {
@@ -323,10 +344,12 @@
         state.lastHeadAnchor = null;
         state.lastLive2dHeadAnchor = null;
         state.lastHeadRect = null;
+        state.lastBubbleHeadRect = null;
         state.lastHeadMode = null;
         state.lastHeadSource = null;
         state.lastBodyRect = null;
         state.lastBodySource = null;
+        state.lastHasNormalizedLive2dGeometry = null;
         state.lastReliableLive2dHeadRect = null;
         state.lastPreciseLive2dDisplayInfoRect = null;
         state.lastCoarseHitAreaHeadRect = null;
@@ -377,58 +400,7 @@
         bubbleEl.appendChild(frameEl);
         document.body.appendChild(bubbleEl);
 
-        debugOverlayEl = document.createElement('div');
-        debugOverlayEl.id = 'avatar-reaction-bubble-debug-overlay';
-        debugOverlayEl.className = 'avatar-reaction-bubble-debug-overlay is-hidden';
-        debugOverlayEl.setAttribute('aria-hidden', 'true');
-
-        debugGuideLineEl = document.createElement('div');
-        debugGuideLineEl.className = 'avatar-reaction-bubble-debug-guide';
-
-        debugAnchorEl = document.createElement('div');
-        debugAnchorEl.className = 'avatar-reaction-bubble-debug-anchor';
-
-        debugBoundsRectEl = document.createElement('div');
-        debugBoundsRectEl.className = 'avatar-reaction-bubble-debug-rect is-bounds';
-
-        debugHeadRectEl = document.createElement('div');
-        debugHeadRectEl.className = 'avatar-reaction-bubble-debug-rect is-head';
-
-        debugBodyRectEl = document.createElement('div');
-        debugBodyRectEl.className = 'avatar-reaction-bubble-debug-rect is-body';
-
-        debugBubbleRectEl = document.createElement('div');
-        debugBubbleRectEl.className = 'avatar-reaction-bubble-debug-rect is-bubble';
-
-        debugPanelEl = document.createElement('aside');
-        debugPanelEl.className = 'avatar-reaction-bubble-debug-panel';
-
-        var debugPanelTitleEl = document.createElement('div');
-        debugPanelTitleEl.className = 'avatar-reaction-bubble-debug-title';
-        debugPanelTitleEl.textContent = 'Bubble Debug';
-
-        var debugPanelHintEl = document.createElement('div');
-        debugPanelHintEl.className = 'avatar-reaction-bubble-debug-hint';
-        debugPanelHintEl.textContent = 'Debug disabled';
-
-        debugPanelBodyEl = document.createElement('pre');
-        debugPanelBodyEl.className = 'avatar-reaction-bubble-debug-body';
-        debugPanelBodyEl.textContent = 'No debug data yet.';
-
-        debugPanelEl.appendChild(debugPanelTitleEl);
-        debugPanelEl.appendChild(debugPanelHintEl);
-        debugPanelEl.appendChild(debugPanelBodyEl);
-
-        debugOverlayEl.appendChild(debugGuideLineEl);
-        debugOverlayEl.appendChild(debugAnchorEl);
-        debugOverlayEl.appendChild(debugBoundsRectEl);
-        debugOverlayEl.appendChild(debugHeadRectEl);
-        debugOverlayEl.appendChild(debugBodyRectEl);
-        debugOverlayEl.appendChild(debugBubbleRectEl);
-        debugOverlayEl.appendChild(debugPanelEl);
-        document.body.appendChild(debugOverlayEl);
-
-        syncDebugOverlayVisibility();
+        // Bubble debug overlay has been removed from production runtime.
     }
 
     function syncEnabledFromSettings() {
@@ -457,8 +429,6 @@
             bubbleEl.style.left = '-9999px';
             bubbleEl.style.top = '-9999px';
         }
-        syncDebugOverlayVisibility();
-        renderDebugOverlay();
     }
 
     function setDebugRectElement(element, rect, label) {
@@ -525,13 +495,7 @@
     }
 
     function syncDebugOverlayVisibility() {
-        if (!debugOverlayEl) {
-            return;
-        }
-
-        var enabled = debugOverlayEnabled();
-        debugOverlayEl.classList.toggle('is-hidden', !enabled);
-        debugOverlayEl.setAttribute('aria-hidden', enabled ? 'false' : 'true');
+        // Debug overlay removed.
     }
 
     function formatDebugSnapshot(snapshot) {
@@ -559,6 +523,10 @@
             ? Math.round(snapshot.headRect.left) + ', ' + Math.round(snapshot.headRect.top) +
                 '  ' + Math.round(snapshot.headRect.width) + 'x' + Math.round(snapshot.headRect.height)
             : 'n/a'));
+        lines.push('bubbleHeadRect: ' + (snapshot.bubbleHeadRect
+            ? Math.round(snapshot.bubbleHeadRect.left) + ', ' + Math.round(snapshot.bubbleHeadRect.top) +
+                '  ' + Math.round(snapshot.bubbleHeadRect.width) + 'x' + Math.round(snapshot.bubbleHeadRect.height)
+            : 'n/a'));
         lines.push('bodyRect: ' + (snapshot.bodyRect
             ? Math.round(snapshot.bodyRect.left) + ', ' + Math.round(snapshot.bodyRect.top) +
                 '  ' + Math.round(snapshot.bodyRect.width) + 'x' + Math.round(snapshot.bodyRect.height)
@@ -576,38 +544,7 @@
     }
 
     function renderDebugOverlay(snapshot) {
-        if (!debugOverlayEl || !debugPanelBodyEl) {
-            return;
-        }
-
-        var resolvedSnapshot = snapshot || state.lastDebugSnapshot || null;
-        debugPanelBodyEl.textContent = formatDebugSnapshot(resolvedSnapshot);
-
-        if (!debugOverlayEnabled()) {
-            clearDebugOverlayShapes();
-            return;
-        }
-
-        if (!resolvedSnapshot) {
-            clearDebugOverlayShapes();
-            return;
-        }
-
-        setDebugRectElement(debugBoundsRectEl, resolvedSnapshot.bounds, 'model bounds');
-        setDebugRectElement(debugHeadRectEl, resolvedSnapshot.headRect, 'head rect');
-        setDebugRectElement(debugBodyRectEl, resolvedSnapshot.bodyRect, 'body rect');
-        setDebugRectElement(debugBubbleRectEl, resolvedSnapshot.bubbleRect, 'bubble box');
-        setDebugAnchorElement(resolvedSnapshot.anchor);
-
-        var guideEndPoint = resolvedSnapshot.bubbleRect
-            ? {
-                x: resolvedSnapshot.final && resolvedSnapshot.final.side === 'left'
-                    ? resolvedSnapshot.bubbleRect.right
-                    : resolvedSnapshot.bubbleRect.left,
-                y: resolvedSnapshot.bubbleRect.top + resolvedSnapshot.bubbleRect.height * 0.5
-            }
-            : null;
-        setDebugGuideLine(resolvedSnapshot.anchor, guideEndPoint);
+        void snapshot;
     }
 
     function buildPassiveDebugSnapshot() {
@@ -618,18 +555,19 @@
 
         var bounds = anchorInfo.bounds;
         var headRect = anchorInfo.headRect || null;
+        var bubbleHeadRect = getResolvedLive2dPlacementHeadRect(anchorInfo);
         var bodyRect = anchorInfo.bodyRect || null;
         var headMode = anchorInfo.headMode || null;
         var headSource = anchorInfo.headSource || null;
         var reliableLive2dHeadRect = anchorInfo.type === 'live2d'
             ? (typeof anchorInfo.reliableLive2dHeadRect === 'boolean'
                 ? anchorInfo.reliableLive2dHeadRect
-                : isReliableLive2dHeadRect(headRect, bounds, bodyRect, headSource))
+                : isReliableLive2dHeadRect(bubbleHeadRect || headRect, bounds, bodyRect, headSource))
             : false;
         var live2dHeadAnchor = anchorInfo.type === 'live2d'
             ? (anchorInfo.live2dHeadAnchor || (
                 reliableLive2dHeadRect
-                    ? (getLive2dHeadAnchorFromRect(headRect, headMode, headSource) || anchorInfo.head)
+                    ? (getLive2dHeadAnchorFromRect(bubbleHeadRect || headRect, headMode, headSource) || anchorInfo.head)
                     : anchorInfo.head
             ))
             : (anchorInfo.head || null);
@@ -639,6 +577,12 @@
                 : (reliableLive2dHeadRect && headSource === 'displayInfo'))
             : false;
 
+        var debugHeadRect = resolveDebugHeadRect(anchorInfo.type, bounds, headRect, anchorInfo.head);
+        var debugBodyRect = resolveDebugBodyRect(anchorInfo.type, bounds, bodyRect, debugHeadRect);
+        var debugBubbleHeadRect = anchorInfo.type === 'live2d'
+            ? bubbleHeadRect
+            : debugHeadRect;
+
         return {
             model: anchorInfo.type || 'unknown',
             headSource: headSource || null,
@@ -646,8 +590,9 @@
             reliableLive2dHeadRect: !!reliableLive2dHeadRect,
             preciseLive2dDisplayInfoRect: !!preciseLive2dDisplayInfoRect,
             bounds: createDebugRect(bounds),
-            headRect: createDebugRect(headRect),
-            bodyRect: createDebugRect(bodyRect),
+            headRect: createDebugRect(debugHeadRect),
+            bubbleHeadRect: createDebugRect(debugBubbleHeadRect),
+            bodyRect: createDebugRect(debugBodyRect),
             anchor: createDebugPoint(live2dHeadAnchor || anchorInfo.head || null),
             bubbleRect: state.visible && Number.isFinite(state.lastRenderX) && Number.isFinite(state.lastRenderY) &&
                 Number.isFinite(state.lastRenderWidth) && Number.isFinite(state.lastRenderHeight)
@@ -673,35 +618,11 @@
     }
 
     function syncDebugOverlaySnapshot() {
-        if (!debugOverlayEnabled()) {
-            renderDebugOverlay();
-            return;
-        }
-
-        if (state.visible && state.lastDebugSnapshot) {
-            renderDebugOverlay(state.lastDebugSnapshot);
-            return;
-        }
-
-        state.lastDebugSnapshot = buildPassiveDebugSnapshot();
-        renderDebugOverlay(state.lastDebugSnapshot);
+        // Debug overlay removed.
     }
 
     function ensureDebugOverlayLoop() {
-        stopDebugOverlayLoop();
-        if (!debugOverlayEnabled()) {
-            return;
-        }
-
-        var tick = function () {
-            state.debugRafId = 0;
-            syncDebugOverlaySnapshot();
-            if (debugOverlayEnabled()) {
-                state.debugRafId = requestAnimationFrame(tick);
-            }
-        };
-
-        state.debugRafId = requestAnimationFrame(tick);
+        // Debug overlay removed.
     }
 
     function getThemeContent(theme) {
@@ -736,8 +657,44 @@
         if (!el) {
             return false;
         }
+        if (el.classList && (el.classList.contains('hidden') || el.classList.contains('minimized'))) {
+            return false;
+        }
         var style = window.getComputedStyle(el);
-        return style.display !== 'none' && style.visibility !== 'hidden';
+        if (style.display === 'none' || style.visibility === 'hidden') {
+            return false;
+        }
+        if (Number.isFinite(parseFloat(style.opacity)) && parseFloat(style.opacity) <= 0) {
+            return false;
+        }
+        if (typeof el.getClientRects === 'function' && el.getClientRects().length <= 0) {
+            return false;
+        }
+        return true;
+    }
+
+    function hasExplicitEmptyCurrentModel(manager) {
+        return !!(manager &&
+            Object.prototype.hasOwnProperty.call(manager, 'currentModel') &&
+            !manager.currentModel);
+    }
+
+    function hasLive2dModelLikelyReady(manager) {
+        if (!manager) {
+            return false;
+        }
+        if (typeof manager.getCurrentModel === 'function') {
+            try {
+                if (!manager.getCurrentModel()) {
+                    return false;
+                }
+            } catch (_) {
+                return false;
+            }
+        } else if (hasExplicitEmptyCurrentModel(manager)) {
+            return false;
+        }
+        return true;
     }
 
     function getBoundsFromManager(manager, methodName) {
@@ -751,12 +708,121 @@
         }
     }
 
-    function getHeadAnchorFromManager(manager) {
+    function getHeadAnchorFromManager(manager, detectionInfo) {
+        var resolvedDetectionInfo = detectionInfo === undefined
+            ? getBoundsFromManager(manager, 'getHeadDetectionGeometryInfo')
+            : detectionInfo;
+        var detectionAnchor = resolvedDetectionInfo && (
+            resolvedDetectionInfo.headAnchor ||
+            resolvedDetectionInfo.rawHeadAnchor ||
+            resolvedDetectionInfo.head ||
+            null
+        );
+        if (detectionAnchor &&
+            Number.isFinite(detectionAnchor.x) &&
+            Number.isFinite(detectionAnchor.y)) {
+            return {
+                x: detectionAnchor.x,
+                y: detectionAnchor.y
+            };
+        }
+
         var anchor = getBoundsFromManager(manager, 'getHeadScreenAnchor');
         if (!anchor || !Number.isFinite(anchor.x) || !Number.isFinite(anchor.y)) {
             return null;
         }
         return anchor;
+    }
+
+    function isPlausibleHumanoidHeadAnchor(anchor, bounds) {
+        if (!anchor || !bounds ||
+            !Number.isFinite(anchor.x) || !Number.isFinite(anchor.y) ||
+            !Number.isFinite(bounds.left) || !Number.isFinite(bounds.right) ||
+            !Number.isFinite(bounds.top) || !Number.isFinite(bounds.bottom) ||
+            !Number.isFinite(bounds.width) || !Number.isFinite(bounds.height)) {
+            return false;
+        }
+
+        var toleranceX = Math.max(24, bounds.width * 0.16);
+        var toleranceY = Math.max(24, bounds.height * 0.22);
+        return anchor.x >= bounds.left - toleranceX &&
+            anchor.x <= bounds.right + toleranceX &&
+            anchor.y >= bounds.top - toleranceY &&
+            anchor.y <= bounds.bottom + toleranceY;
+    }
+
+    function createHumanoidHeadProxyRect(bounds, headAnchor) {
+        if (!hasValidRect(bounds)) {
+            return null;
+        }
+
+        var centerX = Number.isFinite(headAnchor && headAnchor.x)
+            ? headAnchor.x
+            : (Number.isFinite(bounds.centerX) ? bounds.centerX : bounds.left + bounds.width * 0.5);
+        var centerY = Number.isFinite(headAnchor && headAnchor.y)
+            ? headAnchor.y
+            : bounds.top + bounds.height * 0.24;
+
+        var width = clamp(bounds.width * 0.26, 44, bounds.width * 0.62);
+        var height = clamp(bounds.height * 0.22, 42, bounds.height * 0.48);
+        var marginX = Math.max(20, bounds.width * 0.08);
+        var marginY = Math.max(20, bounds.height * 0.08);
+        var left = clamp(centerX - width * 0.5, bounds.left - marginX, bounds.right - width + marginX);
+        var top = clamp(centerY - height * 0.48, bounds.top - marginY, bounds.bottom - height + marginY);
+
+        return {
+            left: left,
+            top: top,
+            right: left + width,
+            bottom: top + height,
+            width: width,
+            height: height,
+            centerX: left + width * 0.5,
+            centerY: top + height * 0.5
+        };
+    }
+
+    function createHumanoidBodyProxyRect(bounds, headRect) {
+        if (!hasValidRect(bounds)) {
+            return null;
+        }
+
+        var topBase = hasValidRect(headRect)
+            ? headRect.bottom + Math.max(8, headRect.height * 0.12)
+            : bounds.top + bounds.height * 0.3;
+        var top = clamp(topBase, bounds.top + bounds.height * 0.18, bounds.top + bounds.height * 0.6);
+        var height = Math.max(36, bounds.bottom - top);
+
+        return {
+            left: bounds.left,
+            top: top,
+            right: bounds.right,
+            bottom: top + height,
+            width: bounds.width,
+            height: height,
+            centerX: Number.isFinite(bounds.centerX) ? bounds.centerX : bounds.left + bounds.width * 0.5,
+            centerY: top + height * 0.5
+        };
+    }
+
+    function resolveDebugHeadRect(avatarType, bounds, headRect, headAnchor) {
+        if (avatarType === 'live2d') {
+            return hasValidRect(headRect) ? headRect : null;
+        }
+        if (hasValidRect(headRect)) {
+            return headRect;
+        }
+        return createHumanoidHeadProxyRect(bounds, headAnchor);
+    }
+
+    function resolveDebugBodyRect(avatarType, bounds, bodyRect, debugHeadRect) {
+        if (avatarType === 'live2d') {
+            return hasValidRect(bodyRect) ? bodyRect : null;
+        }
+        if (hasValidRect(bodyRect)) {
+            return bodyRect;
+        }
+        return createHumanoidBodyProxyRect(bounds, debugHeadRect);
     }
 
     function cloneBounds(bounds) {
@@ -903,6 +969,7 @@
             rawHeadAnchor: normalizePointLike(info.rawHeadAnchor),
             headAnchor: normalizePointLike(info.headAnchor),
             headRect: normalizeRectLike(info.headRect),
+            bubbleHeadRect: normalizeRectLike(info.bubbleHeadRect),
             headMode: info.headMode === 'head' ? 'head' : 'face',
             headSource: typeof info.headSource === 'string' && info.headSource
                 ? info.headSource
@@ -915,6 +982,20 @@
             preciseLive2dDisplayInfoRect: info.preciseDisplayInfoRect === true,
             coarseHitAreaHeadRect: info.coarseHitAreaHeadRect === true
         };
+    }
+
+    function getResolvedLive2dPlacementHeadRect(anchorInfo) {
+        if (!anchorInfo) {
+            return null;
+        }
+
+        if (hasValidRect(anchorInfo.bubbleHeadRect)) {
+            return anchorInfo.bubbleHeadRect;
+        }
+
+        return hasValidRect(anchorInfo.headRect)
+            ? anchorInfo.headRect
+            : null;
     }
 
     function hasValidRect(rect) {
@@ -984,7 +1065,7 @@
             }
         }
 
-        var headRect = hasValidRect(anchorInfo.headRect) ? anchorInfo.headRect : null;
+        var headRect = getResolvedLive2dPlacementHeadRect(anchorInfo);
         if (headRect) {
             var headRight = rectRight(headRect);
             var headBottom = rectBottom(headRect);
@@ -1231,13 +1312,17 @@
             return anchorInfo;
         }
 
-        if (anchorInfo.reliableLive2dHeadRect !== true || !hasValidRect(anchorInfo.headRect)) {
+        var placementHeadRect = getResolvedLive2dPlacementHeadRect(anchorInfo);
+        var previousPlacementHeadRect = hasValidRect(state.lastBubbleHeadRect)
+            ? state.lastBubbleHeadRect
+            : state.lastHeadRect;
+        if (anchorInfo.reliableLive2dHeadRect !== true || !hasValidRect(placementHeadRect)) {
             return anchorInfo;
         }
 
         if (state.lastAnchorType !== 'live2d' ||
             state.lastReliableLive2dHeadRect !== true ||
-            !hasValidRect(state.lastHeadRect)) {
+            !hasValidRect(previousPlacementHeadRect)) {
             return anchorInfo;
         }
 
@@ -1249,13 +1334,21 @@
             return anchorInfo;
         }
 
-        if (!isWithinLive2dRectDeadzone(anchorInfo.headRect, state.lastHeadRect)) {
+        if (!isWithinLive2dRectDeadzone(placementHeadRect, previousPlacementHeadRect)) {
             return anchorInfo;
         }
 
-        var nextAnchorInfo = Object.assign({}, anchorInfo, {
-            headRect: cloneBounds(state.lastHeadRect)
-        });
+        var nextAnchorInfo = Object.assign({}, anchorInfo);
+        if (hasValidRect(anchorInfo.headRect) &&
+            hasValidRect(state.lastHeadRect) &&
+            isWithinLive2dRectDeadzone(anchorInfo.headRect, state.lastHeadRect)) {
+            nextAnchorInfo.headRect = cloneBounds(state.lastHeadRect);
+        }
+        if (hasValidRect(anchorInfo.bubbleHeadRect) &&
+            hasValidRect(state.lastBubbleHeadRect) &&
+            isWithinLive2dRectDeadzone(anchorInfo.bubbleHeadRect, state.lastBubbleHeadRect)) {
+            nextAnchorInfo.bubbleHeadRect = cloneBounds(state.lastBubbleHeadRect);
+        }
 
         if (hasValidRect(anchorInfo.bodyRect) &&
             hasValidRect(state.lastBodyRect) &&
@@ -1275,33 +1368,50 @@
     }
 
     function getActiveAvatarBubbleAnchor() {
-        var mmdBounds = isContainerVisible('mmd-container')
-            ? getBoundsFromManager(window.mmdManager, 'getModelScreenBounds')
+        var mmdManager = window.mmdManager;
+        var vrmManager = window.vrmManager;
+        var live2dManager = window.live2dManager;
+        var mmdContainerVisible = isContainerVisible('mmd-container');
+        var vrmContainerVisible = isContainerVisible('vrm-container');
+        var live2dContainerVisible = isContainerVisible('live2d-container');
+
+        var mmdDetectionInfo = mmdContainerVisible
+            ? getBoundsFromManager(mmdManager, 'getHeadDetectionGeometryInfo')
             : null;
-        if (mmdBounds) {
+        var mmdBounds = normalizeRectLike(mmdDetectionInfo && mmdDetectionInfo.bounds) ||
+            (mmdContainerVisible
+                ? getBoundsFromManager(mmdManager, 'getModelScreenBounds')
+                : null);
+        if (mmdBounds && !hasExplicitEmptyCurrentModel(mmdManager)) {
+            var mmdHeadAnchor = getHeadAnchorFromManager(mmdManager, mmdDetectionInfo);
             return {
                 type: 'mmd',
                 bounds: mmdBounds,
-                head: getHeadAnchorFromManager(window.mmdManager)
+                head: isPlausibleHumanoidHeadAnchor(mmdHeadAnchor, mmdBounds) ? mmdHeadAnchor : null
             };
         }
 
-        var vrmBounds = isContainerVisible('vrm-container')
-            ? getBoundsFromManager(window.vrmManager, 'getModelScreenBounds')
+        var vrmDetectionInfo = vrmContainerVisible
+            ? getBoundsFromManager(vrmManager, 'getHeadDetectionGeometryInfo')
             : null;
-        if (vrmBounds) {
+        var vrmBounds = normalizeRectLike(vrmDetectionInfo && vrmDetectionInfo.bounds) ||
+            (vrmContainerVisible
+                ? getBoundsFromManager(vrmManager, 'getModelScreenBounds')
+                : null);
+        if (vrmBounds && !hasExplicitEmptyCurrentModel(vrmManager)) {
+            var vrmHeadAnchor = getHeadAnchorFromManager(vrmManager, vrmDetectionInfo);
             return {
                 type: 'vrm',
                 bounds: vrmBounds,
-                head: getHeadAnchorFromManager(window.vrmManager)
+                head: isPlausibleHumanoidHeadAnchor(vrmHeadAnchor, vrmBounds) ? vrmHeadAnchor : null
             };
         }
 
-        var live2dBounds = isContainerVisible('live2d-container')
-            ? getBoundsFromManager(window.live2dManager, 'getModelScreenBounds')
+        var live2dBounds = live2dContainerVisible
+            ? getBoundsFromManager(live2dManager, 'getModelScreenBounds')
             : null;
-        if (live2dBounds) {
-            var live2dGeometryInfo = getLive2dBubbleGeometryInfoFromManager(window.live2dManager);
+        if (live2dBounds && hasLive2dModelLikelyReady(live2dManager)) {
+            var live2dGeometryInfo = getLive2dBubbleGeometryInfoFromManager(live2dManager);
             if (live2dGeometryInfo && live2dGeometryInfo.bounds) {
                 return {
                     type: 'live2d',
@@ -1309,6 +1419,7 @@
                     head: live2dGeometryInfo.rawHeadAnchor || live2dGeometryInfo.headAnchor || null,
                     live2dHeadAnchor: live2dGeometryInfo.headAnchor || null,
                     headRect: live2dGeometryInfo.headRect,
+                    bubbleHeadRect: live2dGeometryInfo.bubbleHeadRect || live2dGeometryInfo.headRect || null,
                     headMode: live2dGeometryInfo.headMode,
                     headSource: live2dGeometryInfo.headSource,
                     bodyRect: live2dGeometryInfo.bodyRect,
@@ -1320,12 +1431,12 @@
                 };
             }
 
-            var live2dHeadRectInfo = getHeadRectInfoFromManager(window.live2dManager);
-            var live2dBodyRectInfo = getBodyRectInfoFromManager(window.live2dManager);
+            var live2dHeadRectInfo = getHeadRectInfoFromManager(live2dManager);
+            var live2dBodyRectInfo = getBodyRectInfoFromManager(live2dManager);
             return {
                 type: 'live2d',
                 bounds: live2dBounds,
-                head: getHeadAnchorFromManager(window.live2dManager),
+                head: getHeadAnchorFromManager(live2dManager),
                 headRect: live2dHeadRectInfo ? live2dHeadRectInfo.rect : null,
                 headMode: live2dHeadRectInfo ? live2dHeadRectInfo.mode : null,
                 headSource: live2dHeadRectInfo ? live2dHeadRectInfo.source : null,
@@ -1375,10 +1486,15 @@
             state.lastHeadAnchor = clonePoint(anchorInfo.head);
             state.lastLive2dHeadAnchor = clonePoint(anchorInfo.live2dHeadAnchor);
             state.lastHeadRect = cloneBounds(anchorInfo.headRect);
+            state.lastBubbleHeadRect = cloneBounds(anchorInfo.bubbleHeadRect);
             state.lastHeadMode = anchorInfo.headMode || null;
             state.lastHeadSource = anchorInfo.headSource || null;
             state.lastBodyRect = cloneBounds(anchorInfo.bodyRect);
             state.lastBodySource = anchorInfo.bodySource || null;
+            if (anchorInfo.type === 'live2d' &&
+                typeof anchorInfo.hasNormalizedLive2dGeometry === 'boolean') {
+                state.lastHasNormalizedLive2dGeometry = anchorInfo.hasNormalizedLive2dGeometry;
+            }
             state.lastReliableLive2dHeadRect = typeof anchorInfo.reliableLive2dHeadRect === 'boolean'
                 ? anchorInfo.reliableLive2dHeadRect
                 : null;
@@ -1399,16 +1515,25 @@
         var headAnchor = anchorInfo && anchorInfo.bounds ? anchorInfo.head : state.lastHeadAnchor;
         var live2dHeadAnchor = anchorInfo && anchorInfo.bounds ? anchorInfo.live2dHeadAnchor : state.lastLive2dHeadAnchor;
         var headRect = anchorInfo && anchorInfo.bounds ? anchorInfo.headRect : state.lastHeadRect;
+        var bubbleHeadRect = anchorInfo && anchorInfo.bounds ? anchorInfo.bubbleHeadRect : state.lastBubbleHeadRect;
+        var placementHeadRect = avatarType === 'live2d'
+            ? (hasValidRect(bubbleHeadRect) ? bubbleHeadRect : headRect)
+            : headRect;
         var headMode = anchorInfo && anchorInfo.bounds ? anchorInfo.headMode : state.lastHeadMode;
         var headSource = anchorInfo && anchorInfo.bounds ? anchorInfo.headSource : state.lastHeadSource;
         var bodyRect = anchorInfo && anchorInfo.bounds ? anchorInfo.bodyRect : state.lastBodyRect;
         var bodySource = anchorInfo && anchorInfo.bounds ? anchorInfo.bodySource : state.lastBodySource;
+        var hasNormalizedLive2dGeometry = avatarType === 'live2d'
+            ? ((anchorInfo && anchorInfo.bounds)
+                ? (anchorInfo.hasNormalizedLive2dGeometry === true)
+                : (state.lastHasNormalizedLive2dGeometry === true))
+            : false;
         var reliableLive2dHeadRect = avatarType === 'live2d'
             ? ((anchorInfo && anchorInfo.bounds && typeof anchorInfo.reliableLive2dHeadRect === 'boolean')
                 ? anchorInfo.reliableLive2dHeadRect
                 : (state.lastReliableLive2dHeadRect !== null
                     ? state.lastReliableLive2dHeadRect
-                    : isReliableLive2dHeadRect(headRect, bounds, bodyRect, headSource)))
+                    : isReliableLive2dHeadRect(placementHeadRect, bounds, bodyRect, headSource)))
             : false;
         var preciseLive2dDisplayInfoRect = avatarType === 'live2d'
             ? ((anchorInfo && anchorInfo.bounds && typeof anchorInfo.preciseLive2dDisplayInfoRect === 'boolean')
@@ -1423,19 +1548,20 @@
                 : (state.lastCoarseHitAreaHeadRect !== null
                     ? state.lastCoarseHitAreaHeadRect
                     : (headSource === 'hitArea' &&
-                        hasValidRect(headRect) &&
+                        hasValidRect(placementHeadRect) &&
                         headAnchor &&
                         Number.isFinite(headAnchor.y) &&
-                        headAnchor.y >= headRect.top + headRect.height * 0.82)))
+                        headAnchor.y >= placementHeadRect.top + placementHeadRect.height * 0.82)))
             : false;
         if (avatarType === 'live2d' && !live2dHeadAnchor && reliableLive2dHeadRect) {
-            live2dHeadAnchor = getLive2dHeadAnchorFromRect(headRect, headMode, headSource) || headAnchor;
+            live2dHeadAnchor = getLive2dHeadAnchorFromRect(placementHeadRect, headMode, headSource) || headAnchor;
         }
         if (coarseHitAreaHeadRect && headAnchor) {
             live2dHeadAnchor = headAnchor;
         }
+        var isLive2dAvatar = avatarType === 'live2d';
         var live2dLayoutMetrics = avatarType === 'live2d'
-            ? getLive2dLayoutMetrics(bounds, headRect, bodyRect, reliableLive2dHeadRect, headSource)
+            ? getLive2dLayoutMetrics(bounds, placementHeadRect, bodyRect, reliableLive2dHeadRect, headSource)
             : null;
         var layoutBounds = live2dLayoutMetrics && live2dLayoutMetrics.effectiveBounds
             ? live2dLayoutMetrics.effectiveBounds
@@ -1445,54 +1571,85 @@
         var viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
         var viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
         var margin = TIMING.edgeMarginPx;
-        var rawHeadHeight = layoutBounds.height * TIMING.headHeightFromModelRatio;
-        var cappedHeadHeight = layoutBounds.width * TIMING.headHeightFromWidthRatio;
-        var accessoryOvershootPx = Math.max(0, rawHeadHeight - cappedHeadHeight);
-        var accessoryTrimPx = Math.min(
-            TIMING.accessoryTrimMaxPx,
-            accessoryOvershootPx * TIMING.accessoryTrimRatio
-        );
-        var effectiveTop = (live2dLayoutMetrics ? live2dLayoutMetrics.effectiveTop : layoutBounds.top) + accessoryTrimPx;
-        var effectiveHeight = Math.max(
-            (live2dLayoutMetrics ? live2dLayoutMetrics.effectiveHeight : layoutBounds.height) - accessoryTrimPx,
-            cappedHeadHeight * 2
-        );
-        var headWidth = live2dLayoutMetrics ? live2dLayoutMetrics.headWidth : layoutBounds.width * 0.34;
-        var headHeight = live2dLayoutMetrics ? live2dLayoutMetrics.headHeight : Math.min(effectiveHeight * TIMING.headHeightFromModelRatio, cappedHeadHeight);
-        var headSpan = live2dLayoutMetrics ? live2dLayoutMetrics.headSpan : Math.max(headWidth, headHeight);
+        var rawHeadHeight = isLive2dAvatar
+            ? layoutBounds.height * TIMING.headHeightFromModelRatio
+            : bounds.height * TIMING.threeDHeadHeightFromModelRatio;
+        var cappedHeadHeight = isLive2dAvatar
+            ? layoutBounds.width * TIMING.headHeightFromWidthRatio
+            : bounds.width * TIMING.threeDHeadHeightFromWidthRatio;
+        var accessoryOvershootPx = isLive2dAvatar ? Math.max(0, rawHeadHeight - cappedHeadHeight) : 0;
+        var accessoryTrimPx = isLive2dAvatar
+            ? Math.min(
+                TIMING.accessoryTrimMaxPx,
+                accessoryOvershootPx * TIMING.accessoryTrimRatio
+            )
+            : 0;
+        var effectiveTop = isLive2dAvatar
+            ? ((live2dLayoutMetrics ? live2dLayoutMetrics.effectiveTop : layoutBounds.top) + accessoryTrimPx)
+            : bounds.top;
+        var effectiveHeight = isLive2dAvatar
+            ? Math.max(
+                (live2dLayoutMetrics ? live2dLayoutMetrics.effectiveHeight : layoutBounds.height) - accessoryTrimPx,
+                cappedHeadHeight * 2
+            )
+            : bounds.height;
+        var headWidth = isLive2dAvatar
+            ? (live2dLayoutMetrics ? live2dLayoutMetrics.headWidth : layoutBounds.width * 0.34)
+            : (bounds.width * TIMING.threeDHeadWidthRatio);
+        var headHeight = isLive2dAvatar
+            ? (live2dLayoutMetrics
+                ? live2dLayoutMetrics.headHeight
+                : Math.min(effectiveHeight * TIMING.headHeightFromModelRatio, cappedHeadHeight))
+            : Math.min(effectiveHeight * TIMING.threeDHeadHeightFromModelRatio, cappedHeadHeight);
+        var headSpan = isLive2dAvatar
+            ? (live2dLayoutMetrics ? live2dLayoutMetrics.headSpan : Math.max(headWidth, headHeight))
+            : Math.max(headWidth, headHeight);
         if (avatarType === 'live2d' &&
             preciseLive2dDisplayInfoRect &&
             reliableLive2dHeadRect &&
-            hasValidRect(headRect) &&
+            hasValidRect(placementHeadRect) &&
             bodySource === 'drawableHeuristic') {
             headSpan = Math.min(
                 headSpan,
-                Math.max(headRect.width, headRect.height) * 1.24
+                Math.max(placementHeadRect.width, placementHeadRect.height) * 1.24
             );
         } else if (avatarType === 'live2d' &&
             preciseLive2dDisplayInfoRect &&
             reliableLive2dHeadRect &&
-            hasValidRect(headRect) &&
+            hasValidRect(placementHeadRect) &&
             hasValidRect(bodyRect)) {
             headSpan = Math.min(
                 headSpan,
-                Math.max(headRect.width, headRect.height) * TIMING.live2dDisplayInfoBodyAwareHeadSpanMaxMultiplier
+                Math.max(placementHeadRect.width, placementHeadRect.height) * TIMING.live2dDisplayInfoBodyAwareHeadSpanMaxMultiplier
             );
         } else if (avatarType === 'live2d' &&
             preciseLive2dDisplayInfoRect &&
             reliableLive2dHeadRect &&
-            hasValidRect(headRect) &&
+            hasValidRect(placementHeadRect) &&
             !hasValidRect(bodyRect)) {
             headSpan = Math.min(
                 headSpan,
-                Math.max(headRect.width, headRect.height) * 2.1
+                Math.max(placementHeadRect.width, placementHeadRect.height) * 2.1
+            );
+        } else if (avatarType === 'live2d' &&
+            !hasNormalizedLive2dGeometry &&
+            reliableLive2dHeadRect &&
+            hasValidRect(placementHeadRect)) {
+            headSpan = Math.max(
+                headSpan,
+                Math.max(
+                    layoutBounds.width * 0.44,
+                    layoutBounds.height * 0.22
+                )
             );
         }
         var viewportCap = Math.round(Math.min(viewportWidth, viewportHeight) * 0.42);
-        var headBubbleScaleMultiplier = TIMING.headBubbleScaleMultiplier;
+        var headBubbleScaleMultiplier = isLive2dAvatar
+            ? TIMING.headBubbleScaleMultiplier
+            : TIMING.threeDHeadBubbleScaleMultiplier;
         if (avatarType === 'live2d' &&
             reliableLive2dHeadRect &&
-            hasValidRect(headRect)) {
+            hasValidRect(placementHeadRect)) {
             if (preciseLive2dDisplayInfoRect) {
                 headBubbleScaleMultiplier = TIMING.live2dPreciseDisplayInfoHeadBubbleScaleMultiplier;
             } else {
@@ -1501,56 +1658,100 @@
                     : TIMING.live2dReliableHeadBubbleScaleMultiplier;
             }
         }
+        var minBubbleFloorPx = isLive2dAvatar
+            ? TIMING.live2dMinBubbleDimPx
+            : TIMING.threeDMinBubbleDimPx;
+        var maxBubbleWidthRatio = (isLive2dAvatar && !reliableLive2dHeadRect)
+            ? TIMING.live2dUnreliableMaxBubbleWidthRatio
+            : 0.9;
+        var maxBubbleWidthPx = bounds.width * maxBubbleWidthRatio;
+        var minBubbleDim = Math.min(
+            Math.max(
+                Math.min(bounds.height * 0.14, bounds.width * 0.5),
+                minBubbleFloorPx
+            ),
+            maxBubbleWidthPx
+        );
         var headSize = Math.max(
-            96,
+            minBubbleDim,
             Math.min(
                 viewportCap,
                 Math.round(headSpan * 1.38 * headBubbleScaleMultiplier)
             )
         );
-        var width = Math.max(96, Math.round(headSize * 1.34) - TIMING.baseWidthShrinkPx);
-        var height = Math.max(74, Math.round(headSize * 1.02) - TIMING.baseHeightShrinkPx);
+        // Keep bubble frame aspect ratio stable across models; only scale uniformly.
+        var bubbleWidthFromHeadSizeRatio = TIMING.bubbleWidthFromHeadSizeRatio;
+        var bubbleHeightFromHeadSizeRatio = TIMING.bubbleHeightFromHeadSizeRatio;
+        var bubbleHeightFromWidthRatio = bubbleHeightFromHeadSizeRatio / Math.max(0.0001, bubbleWidthFromHeadSizeRatio);
+        var targetWidthFromHeadSize = headSize * bubbleWidthFromHeadSizeRatio;
+        var minHeightByFloor = minBubbleDim * TIMING.bubbleMinHeightFromMinWidthRatio;
+        var minWidthByHeightFloor = minHeightByFloor / Math.max(0.0001, bubbleHeightFromWidthRatio);
+        var minWidth = Math.max(minBubbleDim, minWidthByHeightFloor);
+        var maxWidthByHeightLimit = (bounds.height * TIMING.bubbleMaxHeightBoundsRatio) / Math.max(0.0001, bubbleHeightFromWidthRatio);
+        var maxWidth = Math.max(minWidth, Math.min(maxBubbleWidthPx, maxWidthByHeightLimit));
+        var width = clamp(targetWidthFromHeadSize, minWidth, maxWidth);
+        var height = width * bubbleHeightFromWidthRatio;
         var useReliableLive2dHeadCenterX = avatarType === 'live2d' &&
             reliableLive2dHeadRect &&
-            hasValidRect(headRect) &&
+            hasValidRect(placementHeadRect) &&
             headSource !== 'hitArea' &&
-            Number.isFinite(headRect.centerX);
+            Number.isFinite(placementHeadRect.centerX);
+        var useHeadRectEdgeHorizontalPlacement = avatarType === 'live2d' &&
+            reliableLive2dHeadRect &&
+            hasValidRect(placementHeadRect);
+        var useDirect3dHeadAnchor = avatarType !== 'live2d' &&
+            isPlausibleHumanoidHeadAnchor(headAnchor, bounds);
         var headCenterX = useReliableLive2dHeadCenterX
-            ? headRect.centerX
-            : bounds.left + bounds.width * 0.5;
-        var sideOffsetPx = layoutBounds.width * 0.13;
-        if (useReliableLive2dHeadCenterX) {
-            sideOffsetPx = clamp(
-                sideOffsetPx,
-                headRect.width * TIMING.live2dHeadSideOffsetMinHeadWidthRatio,
-                headRect.width * TIMING.live2dHeadSideOffsetMaxHeadWidthRatio
-            );
+            ? placementHeadRect.centerX
+            : (useDirect3dHeadAnchor
+                ? headAnchor.x
+                : boundsCenterX);
+        var horizontalAnchorOffsetPx = width * (isLive2dAvatar
+            ? TIMING.horizontalAnchorOffsetBubbleRatio
+            : TIMING.threeDHorizontalAnchorOffsetBubbleRatio);
+        var rightAnchorX = headCenterX + horizontalAnchorOffsetPx;
+        var leftAnchorX = headCenterX - horizontalAnchorOffsetPx;
+        if (useHeadRectEdgeHorizontalPlacement) {
+            var placementHeadRectRight = rectRight(placementHeadRect);
+            if (Number.isFinite(placementHeadRect.left) && Number.isFinite(placementHeadRectRight)) {
+                var headEdgeInsetPx = width * TIMING.live2dHeadEdgeInsetBubbleRatio;
+                // 可靠头框时，使用头框内侧锚点，避免气泡被挂到头框外太远。
+                rightAnchorX = placementHeadRectRight - headEdgeInsetPx;
+                leftAnchorX = placementHeadRect.left + headEdgeInsetPx;
+                if (!(rightAnchorX > leftAnchorX)) {
+                    var fallbackOffsetPx = width * TIMING.live2dHeadEdgeFallbackOffsetBubbleRatio;
+                    rightAnchorX = headCenterX + fallbackOffsetPx;
+                    leftAnchorX = headCenterX - fallbackOffsetPx;
+                }
+            }
         }
-        var rightAnchorX = headCenterX + sideOffsetPx;
-        var leftAnchorX = headCenterX - sideOffsetPx;
         var modelAspectRatio = effectiveHeight / Math.max(layoutBounds.width, 1);
         var modelShapeProgress = clamp(
             (modelAspectRatio - TIMING.compactModelAspectRatio) / (TIMING.tallModelAspectRatio - TIMING.compactModelAspectRatio),
             0,
             1
         );
-        var headAnchorRatio = lerp(
-            TIMING.shortHeadAnchorRatio,
-            TIMING.tallHeadAnchorRatio,
-            modelShapeProgress
-        );
-        var modelOffsetRatio = lerp(
-            TIMING.shortModelOffsetRatio,
-            TIMING.tallModelOffsetRatio,
-            modelShapeProgress
-        );
+        var headAnchorRatio = isLive2dAvatar
+            ? lerp(
+                TIMING.shortHeadAnchorRatio,
+                TIMING.tallHeadAnchorRatio,
+                modelShapeProgress
+            )
+            : TIMING.threeDHeadAnchorRatio;
+        var modelOffsetRatio = isLive2dAvatar
+            ? lerp(
+                TIMING.shortModelOffsetRatio,
+                TIMING.tallModelOffsetRatio,
+                modelShapeProgress
+            )
+            : TIMING.threeDModelOffsetRatio;
         if (avatarType === 'live2d' && live2dLayoutMetrics && live2dLayoutMetrics.bodyAwareLayout) {
             modelOffsetRatio = Math.max(modelOffsetRatio, -0.12);
         }
         if (avatarType === 'live2d' &&
             preciseLive2dDisplayInfoRect &&
             reliableLive2dHeadRect &&
-            hasValidRect(headRect) &&
+            hasValidRect(placementHeadRect) &&
             !hasValidRect(bodyRect)) {
             modelOffsetRatio = Math.max(modelOffsetRatio, -0.06);
         }
@@ -1574,6 +1775,22 @@
                         TIMING.headAnchorCorrectionMaxPx
                     ) * TIMING.headAnchorCorrectionRatio;
                 }
+            } else if (useDirect3dHeadAnchor) {
+                var humanoidHeadDownCorrectionMaxPx = Math.max(
+                    TIMING.headAnchorCorrectionMaxPx * 0.9,
+                    bounds.height * TIMING.threeDHeadAnchorDownCorrectionMaxRatio
+                );
+                var humanoidHeadUpCorrectionMaxPx = Math.max(
+                    TIMING.threeDHeadAnchorUpCorrectionMaxPx,
+                    TIMING.headAnchorCorrectionMaxPx * 0.28
+                );
+                if (Math.abs(anchorDelta) > TIMING.threeDHeadAnchorCorrectionDeadzonePx) {
+                    headAnchorCorrectionPx = clamp(
+                        anchorDelta,
+                        -humanoidHeadUpCorrectionMaxPx,
+                        humanoidHeadDownCorrectionMaxPx
+                    ) * TIMING.threeDHeadAnchorCorrectionRatio;
+                }
             } else {
                 headAnchorCorrectionPx = clamp(
                     Math.max(0, anchorDelta) - TIMING.headAnchorCorrectionDeadzonePx,
@@ -1587,6 +1804,17 @@
             anchorY = live2dHeadAnchor.y;
         } else if (live2dHeadAnchor && Number.isFinite(live2dHeadAnchor.y)) {
             anchorY = Math.max(anchorY, live2dHeadAnchor.y);
+        }
+        if (useDirect3dHeadAnchor && headAnchor && Number.isFinite(headAnchor.y)) {
+            // 3D 头锚点精度高，纵向位置直接跟随头部识别结果。
+            anchorY = headAnchor.y;
+        }
+        if (useDirect3dHeadAnchor) {
+            anchorY = clamp(
+                anchorY,
+                bounds.top + bounds.height * TIMING.threeDHeadAnchorMinYRatio,
+                bounds.top + bounds.height * TIMING.threeDHeadAnchorMaxYRatio
+            );
         }
 
         if (avatarType === 'live2d' &&
@@ -1619,9 +1847,8 @@
         }
 
         var tailInset = Math.round(width * -0.06);
-        var overlapPx = Math.round(width * TIMING.modelOverlapRatio);
-        var preferredRightX = rightAnchorX - tailInset - overlapPx;
-        var preferredLeftX = leftAnchorX - width + tailInset + overlapPx;
+        var preferredRightX = rightAnchorX - tailInset;
+        var preferredLeftX = leftAnchorX - width + tailInset;
         var rightFits = preferredRightX + width <= viewportWidth - margin;
         var leftFits = preferredLeftX >= margin;
         var accessoryDropPx = Math.min(
@@ -1635,16 +1862,16 @@
             if (reliableLive2dHeadRect) {
                 if (preciseLive2dDisplayInfoRect) {
                     var live2dDisplayInfoGapPx = Math.max(
-                        headRect.height * TIMING.live2dDisplayInfoGapHeadRatio,
+                        placementHeadRect.height * TIMING.live2dDisplayInfoGapHeadRatio,
                         height * TIMING.live2dDisplayInfoGapBubbleRatio,
                         hasValidRect(bodyRect) ? bodyRect.height * TIMING.live2dDisplayInfoGapBodyRatio : 0
                     );
-                    live2dTopTargetY = headRect.top - height * (headMode === 'face'
+                    live2dTopTargetY = placementHeadRect.top - height * (headMode === 'face'
                         ? TIMING.live2dDisplayInfoTopOffsetRatio
                         : TIMING.live2dDisplayInfoHeadTopOffsetRatio) - live2dDisplayInfoGapPx;
                     live2dTopTargetActsAsCeiling = true;
                 } else {
-                    live2dTopTargetY = headRect.top - height * (headMode === 'face'
+                    live2dTopTargetY = placementHeadRect.top - height * (headMode === 'face'
                         ? TIMING.live2dFaceTopOffsetRatio
                         : TIMING.live2dHeadTopOffsetRatio);
                     if (headSource === 'drawableHeuristic') {
@@ -1733,6 +1960,12 @@
             roundedY = state.lastRenderY;
         }
 
+        var debugHeadRect = resolveDebugHeadRect(avatarType, bounds, headRect, headAnchor);
+        var debugBodyRect = resolveDebugBodyRect(avatarType, bounds, bodyRect, debugHeadRect);
+        var debugBubbleHeadRect = avatarType === 'live2d'
+            ? placementHeadRect
+            : debugHeadRect;
+
         if (avatarType === 'live2d' && bubblePositionDebugEnabled()) {
             var live2dDebugInfo = getLive2dBubbleDebugInfoFromManager(window.live2dManager);
             var live2dDebugSnapshot = {
@@ -1743,8 +1976,9 @@
                 preciseLive2dDisplayInfoRect: preciseLive2dDisplayInfoRect,
                 coarseHitAreaHeadRect: coarseHitAreaHeadRect,
                 bounds: createDebugRect(bounds),
-                headRect: createDebugRect(headRect),
-                bodyRect: createDebugRect(bodyRect),
+                headRect: createDebugRect(debugHeadRect),
+                bubbleHeadRect: createDebugRect(debugBubbleHeadRect),
+                bodyRect: createDebugRect(debugBodyRect),
                 layoutBounds: createDebugRect(layoutBounds),
                 headAnchor: createDebugPoint(headAnchor),
                 live2dHeadAnchor: createDebugPoint(live2dHeadAnchor),
@@ -1813,8 +2047,9 @@
                 preciseLive2dDisplayInfoRect: !!preciseLive2dDisplayInfoRect,
                 coarseHitAreaHeadRect: !!coarseHitAreaHeadRect,
                 bounds: createDebugRect(bounds),
-                headRect: createDebugRect(headRect),
-                bodyRect: createDebugRect(bodyRect),
+                headRect: createDebugRect(debugHeadRect),
+                bubbleHeadRect: createDebugRect(debugBubbleHeadRect),
+                bodyRect: createDebugRect(debugBodyRect),
                 layoutBounds: createDebugRect(layoutBounds),
                 anchor: createDebugPoint({
                     x: state.anchorX,
@@ -1952,6 +2187,7 @@
         if (!state.visible) {
             return;
         }
+        resetPositionTracking();
         syncPositionOnce();
         keepFollowingWhileVisible();
     }
@@ -1977,9 +2213,12 @@
         state.lastAnchorBounds = null;
         state.lastHeadAnchor = null;
         state.lastHeadRect = null;
+        state.lastBubbleHeadRect = null;
         state.lastHeadMode = null;
         state.lastHeadSource = null;
         state.lastBodyRect = null;
+        state.lastBodySource = null;
+        state.lastHasNormalizedLive2dGeometry = null;
         state.lastBoundsCenterX = null;
         state.lastBoundsCenterY = null;
         state.lastDebugSnapshot = null;
@@ -2355,15 +2594,11 @@
     }
 
     function setDebugOverlayEnabled(enabled) {
-        state.debugOverlayEnabled = false;
-        window.NEKO_DEBUG_BUBBLE_OVERLAY = false;
-        syncDebugOverlayVisibility();
-        ensureDebugOverlayLoop();
-        syncDebugOverlaySnapshot();
+        void enabled;
     }
 
     function toggleDebugOverlay() {
-        setDebugOverlayEnabled(false);
+        // Debug overlay removed.
     }
 
     function init() {
@@ -2421,6 +2656,8 @@
 
     window.avatarReactionBubble = {
         forceHide: function () { forceHide(true); },
+        setDebugOverlayEnabled: setDebugOverlayEnabled,
+        toggleDebugOverlay: toggleDebugOverlay,
         getState: function () {
             return Object.assign({}, state);
         },

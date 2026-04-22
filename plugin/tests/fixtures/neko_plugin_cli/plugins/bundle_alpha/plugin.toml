@@ -1,0 +1,18 @@
+[plugin]
+id = "bundle_alpha"
+name = "Bundle Alpha"
+description = "First bundle fixture plugin."
+version = "0.3.0"
+type = "plugin"
+entry = "alpha:Plugin"
+
+[plugin.sdk]
+supported = ">=2.1,<2.5"
+recommended = ">=2.2,<2.4"
+
+[plugin_runtime]
+auto_start = false
+
+[bundle_alpha]
+mode = "alpha"
+weight = 1

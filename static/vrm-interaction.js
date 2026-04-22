@@ -64,7 +64,7 @@ class VRMInteraction {
 
 
     /**
-     * 使用 live2d-ui-drag.js 中的共享工具函数（按钮 pointer-events 管理）
+     * 使用 avatar-ui-drag.js 中的共享工具函数（按钮 pointer-events 管理）
      */
     _disableButtonPointerEvents() {
         if (window.DragHelpers) {
@@ -585,6 +585,15 @@ class VRMInteraction {
         if (this.contextMenuHandler) {
             canvas.removeEventListener('contextmenu', this.contextMenuHandler);
             this.contextMenuHandler = null;
+        }
+
+        // 【维护注意】cleanup 可能在拖动进行中被调用（如切换模型、dispose），
+        //  必须检查并恢复按钮事件，否则 body 上的 neko-model-dragging class 残留。
+        if (this.isDragging) {
+            this.isDragging = false;
+            this.dragMode = null;
+            if (canvas) canvas.style.cursor = 'default';
+            this._restoreButtonPointerEvents();
         }
     }
 

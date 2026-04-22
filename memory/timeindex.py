@@ -1,6 +1,7 @@
 from utils.llm_client import SQLChatMessageHistory, SystemMessage
 from sqlalchemy import create_engine, text
 from config import TIME_ORIGINAL_TABLE_NAME, TIME_COMPRESSED_TABLE_NAME
+from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
 from datetime import datetime
@@ -13,41 +14,136 @@ class TimeIndexedMemory:
     def __init__(self, recent_history_manager):
         self.engines = {}  # 存储 {lanlan_name: engine}
         self.db_paths = {} # 存储 {lanlan_name: db_path}
+        self._engine_readonly_flags = {}  # 存储 {lanlan_name: bool}
+        self._writable_bootstrapped = set()  # 存储已完成可写初始化的角色
         self.recent_history_manager = recent_history_manager
         # 懒加载：不在构造器里同步初始化每角色 engine，首次访问时按需创建
+        # （MaintenanceModeError 在 _ensure_engine_exists 内部按需处理）
 
-    def _ensure_engine_exists(self, lanlan_name: str, db_path: str | None = None) -> bool:
+    def _assert_timeindex_writable(self, lanlan_name: str) -> None:
+        assert_cloudsave_writable(
+            get_config_manager(),
+            operation="save",
+            target=f"memory/{lanlan_name}/time_indexed.db",
+        )
+
+    def _build_sqlite_connection_string(self, db_path: str, *, readonly: bool) -> tuple[str, str]:
+        normalized_db_path = os.path.abspath(db_path)
+        uri_path = normalized_db_path.replace("\\", "/")
+        if readonly:
+            sqlite_file_uri = f"file:{uri_path}"
+            if os.name == "nt" and not uri_path.startswith("/"):
+                sqlite_file_uri = f"file:/{uri_path}"
+            return normalized_db_path, f"sqlite:///{sqlite_file_uri}?mode=ro&uri=true"
+        if not readonly:
+            db_dir = os.path.dirname(normalized_db_path)
+            os.makedirs(db_dir, exist_ok=True)
+        return normalized_db_path, f"sqlite:///{uri_path}"
+
+    def _ensure_engine_exists(
+        self,
+        lanlan_name: str,
+        db_path: str | None = None,
+        readonly: bool = False,
+    ) -> bool:
         """确保指定角色的数据库引擎已初始化喵~"""
+        if not readonly:
+            self._assert_timeindex_writable(lanlan_name)
         if lanlan_name in self.engines and lanlan_name in self.db_paths:
-            return True
+            cached_engine = self.engines[lanlan_name]
+            cached_db_path = str(self.db_paths[lanlan_name])
+            cached_readonly = bool(self._engine_readonly_flags.get(lanlan_name, False))
+            if not readonly and cached_readonly and lanlan_name not in self._writable_bootstrapped:
+                logger.info("[TimeIndexedMemory] 角色 %s 当前为只读引擎，切换为可写引擎后再执行迁移", lanlan_name)
+                self.dispose_engine(lanlan_name)
+                if not db_path:
+                    db_path = cached_db_path
+            else:
+                if readonly or lanlan_name in self._writable_bootstrapped:
+                    return True
+                try:
+                    normalized_db_path, connection_string = self._build_sqlite_connection_string(
+                        str(self.db_paths[lanlan_name]),
+                        readonly=False,
+                    )
+                    self._ensure_tables_exist_with(cached_engine, connection_string, lanlan_name)
+                    self._check_and_migrate_schema(cached_engine, lanlan_name)
+                    self.db_paths[lanlan_name] = normalized_db_path
+                    self._writable_bootstrapped.add(lanlan_name)
+                    self._engine_readonly_flags[lanlan_name] = False
+                    return True
+                except Exception:
+                    logger.exception(f"补跑角色数据库可写初始化失败: {lanlan_name}")
+                    return False
 
+        engine = None
+        connection_string = None
         try:
             if not db_path:
                 _, _, _, _, _, _, time_store, _, _ = get_config_manager().get_character_data()
                 if lanlan_name in time_store:
                     db_path = time_store[lanlan_name]
                 else:
-                    from memory import ensure_character_dir
                     config_mgr = get_config_manager()
-                    db_path = os.path.join(ensure_character_dir(config_mgr.memory_dir, lanlan_name), 'time_indexed.db')
+                    if readonly:
+                        db_path = os.path.join(config_mgr.memory_dir, lanlan_name, "time_indexed.db")
+                    else:
+                        from memory import ensure_character_dir
+                        db_path = os.path.join(ensure_character_dir(config_mgr.memory_dir, lanlan_name), 'time_indexed.db')
                     logger.info(f"[TimeIndexedMemory] 角色 '{lanlan_name}' 不在配置中，使用默认路径: {db_path}")
 
-            # 确保数据库文件的父目录存在（兼容相对文件名路径）
-            normalized_db_path = os.path.abspath(db_path)
-            db_dir = os.path.dirname(normalized_db_path)
-            os.makedirs(db_dir, exist_ok=True)
-            # Windows 路径使用反斜杠，SQLite URI 需要正斜杠
-            uri_path = normalized_db_path.replace("\\", "/")
-            engine = create_engine(f"sqlite:///{uri_path}")
-            connection_string = f"sqlite:///{uri_path}"
-            # 先完成所有初始化/迁移，再注册到 self.engines，
-            # 避免失败后引擎被标记为"已初始化"而跳过后续修复
-            self._ensure_tables_exist_with(engine, connection_string, lanlan_name)
-            self._check_and_migrate_schema(engine, lanlan_name)
+            normalized_db_path, connection_string = self._build_sqlite_connection_string(
+                db_path,
+                readonly=readonly,
+            )
+            if readonly and not os.path.isfile(normalized_db_path):
+                return False
+            engine = create_engine(connection_string)
+            if not readonly:
+                # 先完成所有初始化/迁移，再注册到 self.engines，
+                # 避免失败后引擎被标记为"已初始化"而跳过后续修复
+                self._ensure_tables_exist_with(engine, connection_string, lanlan_name)
+                self._check_and_migrate_schema(engine, lanlan_name)
+                self._writable_bootstrapped.add(lanlan_name)
+            else:
+                self._writable_bootstrapped.discard(lanlan_name)
             self.db_paths[lanlan_name] = normalized_db_path
             self.engines[lanlan_name] = engine
+            self._engine_readonly_flags[lanlan_name] = readonly
             return True
         except Exception:
+            try:
+                if engine is not None:
+                    engine.dispose()
+            except Exception as cleanup_exc:
+                logger.debug(
+                    "[TimeIndexedMemory] 初始化失败后的 engine.dispose 清理失败: %s",
+                    cleanup_exc,
+                )
+            try:
+                existing_engine = self.engines.get(lanlan_name)
+                if existing_engine is engine:
+                    self.engines.pop(lanlan_name, None)
+                    self.db_paths.pop(lanlan_name, None)
+                    self._engine_readonly_flags.pop(lanlan_name, None)
+                    self._writable_bootstrapped.discard(lanlan_name)
+            except Exception as cleanup_exc:
+                logger.debug(
+                    "[TimeIndexedMemory] 初始化失败后的缓存回收清理失败(%s): %s",
+                    lanlan_name,
+                    cleanup_exc,
+                )
+            if connection_string:
+                cached_engine = SQLChatMessageHistory._engine_cache.pop(connection_string, None)
+                if cached_engine is not None and cached_engine is not engine:
+                    try:
+                        cached_engine.dispose()
+                    except Exception as cleanup_exc:
+                        logger.debug(
+                            "[TimeIndexedMemory] 初始化失败后的 SQLChatMessageHistory 引擎清理失败(%s): %s",
+                            lanlan_name,
+                            cleanup_exc,
+                        )
             logger.exception(f"初始化角色数据库引擎失败: {lanlan_name}")
             return False
 
@@ -59,11 +155,24 @@ class TimeIndexedMemory:
 
     def dispose_engine(self, lanlan_name: str):
         """释放指定角色的数据库引擎资源喵~"""
+        db_path = self.db_paths.pop(lanlan_name, None)
         engine = self.engines.pop(lanlan_name, None)
+        self._engine_readonly_flags.pop(lanlan_name, None)
+        self._writable_bootstrapped.discard(lanlan_name)
         if engine:
             engine.dispose()
             logger.info(f"[TimeIndexedMemory] 已释放角色 {lanlan_name} 的数据库引擎")
-        self.db_paths.pop(lanlan_name, None)
+        if db_path:
+            normalized_db_path, readonly_connection_string = self._build_sqlite_connection_string(
+                str(db_path),
+                readonly=True,
+            )
+            uri_path = normalized_db_path.replace("\\", "/")
+            writable_connection_string = f"sqlite:///{uri_path}"
+            for connection_string in {readonly_connection_string, writable_connection_string}:
+                cached_engine = SQLChatMessageHistory._engine_cache.pop(connection_string, None)
+                if cached_engine and cached_engine is not engine:
+                    cached_engine.dispose()
 
     def cleanup(self):
         """清理所有引擎资源喵~"""
@@ -96,6 +205,7 @@ class TimeIndexedMemory:
 
     def _check_and_migrate_schema(self, engine, lanlan_name: str) -> None:
         """逐表检查并补齐 timestamp 列，每张表独立处理避免互相影响。"""
+        migration_errors = []
         for table_name in [TIME_ORIGINAL_TABLE_NAME, TIME_COMPRESSED_TABLE_NAME]:
             table = self._validate_table_name(table_name)
             try:
@@ -106,10 +216,16 @@ class TimeIndexedMemory:
                         conn.execute(text(f"ALTER TABLE {table} ADD COLUMN timestamp DATETIME"))
                         conn.commit()
                         logger.info(f"[TimeIndexedMemory] 已为 {lanlan_name} 的表 {table} 补齐 timestamp 列")
-            except Exception:
+            except Exception as exc:
                 logger.exception(f"[TimeIndexedMemory] 迁移 {lanlan_name} 表 {table} 失败")
+                migration_errors.append(f"{table}: {exc}")
+        if migration_errors:
+            raise RuntimeError(
+                f"[TimeIndexedMemory] 角色 {lanlan_name} schema 迁移失败: {'; '.join(migration_errors)}"
+            )
 
     def store_conversation(self, event_id, messages, lanlan_name, timestamp=None):
+        self._assert_timeindex_writable(lanlan_name)
         # 确保数据库引擎和路径存在
         if not self._ensure_engine_exists(lanlan_name):
             logger.error(f"严重错误：无法为角色 {lanlan_name} 创建任何数据库连接")
@@ -154,7 +270,11 @@ class TimeIndexedMemory:
 
     def get_last_conversation_time(self, lanlan_name: str) -> datetime | None:
         """查询指定角色最后一次对话的时间戳。无记录时返回 None。"""
-        if not self._ensure_engine_exists(lanlan_name):
+        try:
+            if not self._ensure_engine_exists(lanlan_name, readonly=True):
+                return None
+        except MaintenanceModeError as exc:
+            logger.debug(f"[TimeIndexedMemory] 维护态跳过初始化 {lanlan_name} 的 time_indexed.db: {exc}")
             return None
         table_name = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
         try:
@@ -188,17 +308,26 @@ class TimeIndexedMemory:
 
     def retrieve_original_by_timeframe(self, lanlan_name, start_time, end_time):
         # 懒加载：首次访问时（例如重启后立刻读取）需要注册 engine，
-        # 否则 rebuttal loop 会静默跳过，直到 store_conversation 才触发建表
-        if not self._ensure_engine_exists(lanlan_name):
+        # 否则 rebuttal loop 会静默跳过，直到 store_conversation 才触发建表。
+        # 读路径走 readonly，维护态也允许读。
+        try:
+            if not self._ensure_engine_exists(lanlan_name, readonly=True):
+                return []
+        except MaintenanceModeError as exc:
+            logger.debug(f"[TimeIndexedMemory] 维护态跳过读取 {lanlan_name} 的历史对话: {exc}")
             return []
         table_name = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
-        # 查询指定时间范围内的对话
-        with self.engines[lanlan_name].connect() as conn:
-            result = conn.execute(
-                text(f"SELECT session_id, message FROM {table_name} WHERE timestamp BETWEEN :start_time AND :end_time"),
-                {"start_time": start_time, "end_time": end_time}
-            )
-            return result.fetchall()
+        try:
+            # 查询指定时间范围内的对话
+            with self.engines[lanlan_name].connect() as conn:
+                result = conn.execute(
+                    text(f"SELECT session_id, message FROM {table_name} WHERE timestamp BETWEEN :start_time AND :end_time"),
+                    {"start_time": start_time, "end_time": end_time}
+                )
+                return result.fetchall()
+        except Exception as e:
+            logger.warning(f"[TimeIndexedMemory] 按时间范围读取原始对话失败: {e}")
+            return []
 
     async def aretrieve_original_by_timeframe(self, lanlan_name, start_time, end_time):
         return await asyncio.to_thread(
@@ -209,10 +338,25 @@ class TimeIndexedMemory:
 
     FACTS_FTS_TABLE = "facts_fts"
 
-    def _ensure_fts_table(self, lanlan_name: str) -> None:
+    def _ensure_fts_table(self, lanlan_name: str, readonly: bool = False) -> bool:
         """确保 FTS5 虚拟表存在。unicode61 分词器对中文做字级别索引，零依赖。"""
-        if not self._ensure_engine_exists(lanlan_name):
-            return
+        if not self._ensure_engine_exists(lanlan_name, readonly=readonly):
+            return False
+        if readonly:
+            try:
+                with self.engines[lanlan_name].connect() as conn:
+                    result = conn.execute(
+                        text(
+                            "SELECT name FROM sqlite_master "
+                            "WHERE type='table' AND name = :table_name"
+                        ),
+                        {"table_name": self.FACTS_FTS_TABLE},
+                    )
+                    return result.fetchone() is not None
+            except Exception as e:
+                logger.debug(f"[TimeIndexedMemory] 只读检查 FTS5 表失败: {e}")
+                return False
+        self._assert_timeindex_writable(lanlan_name)
         try:
             with self.engines[lanlan_name].connect() as conn:
                 conn.execute(text(
@@ -220,17 +364,21 @@ class TimeIndexedMemory:
                     f"USING fts5(fact_id, content, tokenize='unicode61')"
                 ))
                 conn.commit()
+            return True
         except Exception as e:
             logger.warning(f"[TimeIndexedMemory] 创建 FTS5 表失败: {e}")
+            return False
 
     async def a_ensure_fts_table(self, lanlan_name: str) -> None:
         await asyncio.to_thread(self._ensure_fts_table, lanlan_name)
 
     def index_fact(self, lanlan_name: str, fact_id: str, content: str) -> None:
         """将事实插入 FTS5 索引。"""
+        self._assert_timeindex_writable(lanlan_name)
         if not self._ensure_engine_exists(lanlan_name):
             return
-        self._ensure_fts_table(lanlan_name)
+        if not self._ensure_fts_table(lanlan_name):
+            return
         try:
             with self.engines[lanlan_name].connect() as conn:
                 # 先检查是否已存在
@@ -254,11 +402,16 @@ class TimeIndexedMemory:
     def search_facts(self, lanlan_name: str, query: str, limit: int = 10) -> list[tuple[str, float]]:
         """通过 FTS5 BM25 搜索事实。返回 [(fact_id, bm25_score), ...]。
 
-        BM25 分数为负值，越接近 0 越相关。
+        FTS5 bm25() 分数通常为负值，分数越小（越负）代表相关性越高。
         """
-        if not self._ensure_engine_exists(lanlan_name):
+        try:
+            if not self._ensure_engine_exists(lanlan_name, readonly=True):
+                return []
+            if not self._ensure_fts_table(lanlan_name, readonly=True):
+                return []
+        except MaintenanceModeError as exc:
+            logger.debug(f"[TimeIndexedMemory] 维护态跳过搜索 {lanlan_name} 的 FTS 索引初始化: {exc}")
             return []
-        self._ensure_fts_table(lanlan_name)
         try:
             # 转义 FTS5 特殊字符
             safe_query = query.replace('"', '""')
@@ -282,9 +435,11 @@ class TimeIndexedMemory:
 
     def delete_fact_from_index(self, lanlan_name: str, fact_id: str) -> None:
         """从 FTS5 索引中移除事实。"""
+        self._assert_timeindex_writable(lanlan_name)
         if not self._ensure_engine_exists(lanlan_name):
             return
-        self._ensure_fts_table(lanlan_name)
+        if not self._ensure_fts_table(lanlan_name):
+            return
         try:
             with self.engines[lanlan_name].connect() as conn:
                 conn.execute(

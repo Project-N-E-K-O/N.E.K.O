@@ -246,6 +246,7 @@ Live2DManager.prototype._resetDerivedModelMetadata = function() {
     this._lookAtCurrentX = 0;
     this._lookAtCurrentY = 0;
     this._isMouseTrackingActive = this._mouseTrackingEnabled || false;
+    this._bubbleGeometryCache = null;
 
     if (this._missingExpressionFiles instanceof Set) {
         this._missingExpressionFiles.clear();
