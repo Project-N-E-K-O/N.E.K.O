@@ -307,10 +307,11 @@ body: { kind: "avatar_interaction" | "agent_callback" | "proactive", payload: {.
 进入 P25 前必须满足:
 
 - [x] P24 Day 1-9 完成并用户验收 (Day 1-8 已 ✅, Day 9 已 ✅ 2026-04-22)
-- [ ] P24 Day 10 smoke 交付完成 + 回归绿
-- [ ] 用户对 P25_BLUEPRINT 本文档审读通过 (or 提出修订)
+- [x] P24 Day 10-12 全交付 + 用户 "不要留尾巴" 指示后 Day 12 欠账清返全清 (commit `62844c7` + push `d0fdf72..62844c7 main -> main`, 2026-04-23), **9/9 全量 smoke 全绿 baseline 锁定**
+- [x] **§A 开工前设计层回顾完成** (本次新加的 gate 条件, 2026-04-23): 六轮元审核 + 24 元教训/57 原则框架回顾 + 27 条上游 merge delta 三方交叉核查, 输出 §A.5 七条开工前必做清单 (§3/§4/§5 回写) + 3 条 Day 3 新 smoke + 2 条 §1.3 OOS 扩 + 3 条派生元教训候选 L28-L30
+- [ ] 用户对 P25_BLUEPRINT 本文档审读通过 (**含 §A 以及 §A.5 提出的 §3/§4/§5 回写**)
 
-满足以上 3 条后启动 P25 Day 1.
+满足以上 4 条后启动 P25 Day 1. **若用户同意 §A.5 清单, 本 agent 或下个 agent 即可按清单回写 §3/§4/§5 (这是小改动, 无新决策), 然后开工**; **若用户对 §A.5 七条矫正中任何一条有异议, 先讨论再修订 §A 再开工**, 不允许跳过 §A.5 直接按原 §3 开工 (会重踩 R1b/R1c/R4/R5/R6 五条高危 bug).
 
 ---
 
@@ -329,3 +330,152 @@ P25 完成后必须在以下文档中同步:
 
 **变更日志**:
 - 2026-04-22 初版创建 (基于 P24 Day 9 二轮评估结论 + 用户 4 轮 AskQuestion 决策)
+- 2026-04-23 §A 开工前设计层回顾新增 (P24 Day 12 欠账清返 done 后, 按用户 "开工前先研究设计草案, 从架构上理清内容 + 预防高危 bug 点" 要求, 参照 P24 开工期六轮 meta 审核节奏做的 design review gate)
+
+---
+
+## §A 开工前设计层回顾 (Design Review Gate, 2026-04-23)
+
+> **权威性**: 本节是 **P25 Day 1 开工前的 design review gate**. 本节列出的 "设计层矫正" 必须落到 §3 Day-by-Day / §4 关键技术决策 / §5 风险表 后才能开工. Agent 在读本节时若发现 §3 / §4 / §5 已更新对齐, 说明矫正已落地; 若未对齐, 必须先改 §3 / §4 / §5 再开工.
+>
+> **产出方式**: 按 P24 开工期六轮 meta 审核方法论 ([P24_BLUEPRINT §14 meta-audit](P24_BLUEPRINT.md#14-p24-方案元审)), 对本蓝图 §1-§9 做六轮思想实验 + 对 LESSONS §7 24 条元教训 + §3A 57 条设计原则 + 2026-04-22 git merge 27 条上游 delta 做三方交叉核查. 用 P24 Day 12 欠账清返 (`fix(testbench): 62844c7`) 留下的工具 (semantic-contract-vs-runtime-mechanism skill + async-lazy-init-promise-cache skill + render_drift_detector 骨架) 辅助审查.
+
+### §A.1 六轮元审核 (发现的设计层问题)
+
+下表列出六轮审核发现的 **7 条设计层矫正**, 必须在 Day 1 开工前先回写到 §3 / §4 / §5:
+
+| # | 审核维度 | 问题原文 | 正确语义 | 落地处置 | 严重度 |
+|---|---|---|---|---|---|
+| **R1a** | L26 生成器三分类延伸到"冷却三分类" | §1.3 OOS 说"不冷却窗口 (600ms/1500ms)", §3 Day 1 说"dedupe 8000ms 窗口" 两者混在一起, 没明确区分 | 主程序三种冷却: **(a)** 实时流抖动 (600ms/1500ms, 运行时 OOS) / **(b)** 语义去重 (8000ms rank upgrade, 语义**必保**) / **(c)** N 秒窗口内禁复触发 (未在 avatar 场景出现, 但 proactive `min_idle_secs`=10s 属于此类, 也是运行时 OOS) | §1.3 OOS 扩成"冷却三分类", 明示 (b) 保, (a)(c) 不保. 派生候选元教训 **L29 "冷却语义三分类"** (L26 在时序维度的延伸) | ⚠ 中 |
+| **R1b** | 临时 instruction 不入 history | §3 Day 1 Acceptance 第 2 条 "agent_callback 注入时 system instruction + assistant reply 都入 session.messages" | 实证主程序 `core.py::handle_avatar_interaction` L2876 调用 `prompt_ephemeral(instruction, persist_response=False)` 以及 L3624-3631 agent_callback 调用 `prompt_ephemeral(_loc(AGENT_CALLBACK_NOTIFICATION, lang) + ctx)` 注释 "**指令不持久化, 只保留 AI 回复**". 即 **instruction 从来不入持久 history, 只 reply 入**. proactive 同理. | §3 Day 1 Acceptance 改: instruction 只出现在**本次 LLM 调用的 wire**, **不**调 `append_message`; assistant reply **才**走 `append_message` choke-point. `SimulationResult.instruction` 字段作 UI preview 用, 不代表"已入 messages" | ❗ 高 (语义错位) |
+| **R1c** | Avatar memory pair "独立 path" 概念 | §2.4 "Dual-Mode Memory Write" 描述为"默认 session_only, 可选 mirror_recent", 但没澄清 session.messages 和 recent 的关系 | 实证主程序 `cross_server.py` L474-497: avatar_interaction 产出 `{role:user, content:[{type:text, text:memory_note}]} + {role:assistant, content:[{type:text, text:assistant_text}]}` **直接 POST `/cache`** (独立 memory path), **不**走 conversation history. 即 avatar memory pair 对应的是 testbench 的 `memory/recent.json` (独立 memory), 不是 testbench 的 `session.messages` (UI 对话视图) | §2.4 增补一段 "testbench 的 session.messages ≈ 主程序 UI conversation history 视图; memory/recent.json ≈ 主程序 /cache memory path, 两者互斥". Dual-Mode 改写: **默认 (recent_only)** = 仅走 memory_writer 写 recent.json, 对齐主程序真实语义; **可选 (mirror_ui)** = 额外 mirror 一份到 session.messages 让 tester 在 Chat 视图直接看到 note + reply. (这是语义反转: 原 "默认 session_only" 与主程序不一致). | ❗ 高 (默认选择错) |
+| **R2** | B14 emit/on 双向一致性 | Day 1 新增 3 个 DiagnosticsOp (`AVATAR_INTERACTION_SIMULATED` / `AGENT_CALLBACK_SIMULATED` / `PROACTIVE_SIMULATED`) 全 info 级 | 实证 `static/core/errors_bus.js` 仅拉 level in ('error', 'warning') 入 toast 徽章, info 级不会"漂移"到 errors toast (✅). 但**若** Day 2 面板需要 "面板右上角显示最近 N 次事件摘要" 小组件, 就要新订阅 `diagnostics:op_pushed` (目前不存在). | §A.2 Day 2 UI 建议项加一条: 面板右上角的 "最近 N 次事件摘要" 视情况决定 (若做, 必须同步加 emit 侧: diagnostics_store 每 push info 级 op 时 emit 一次事件, 前端订阅 state.on). **不做则 ✅ 当前 B14 合规**. | ℹ 低 |
+| **R3** | L27 资源上限 UX 降级四问 应用到 dedupe cache | §2.x dedupe cache 有 8000ms TTL 但**无条目数 soft cap**. tester 在 8s 内连点 1000 次**不同 key** 会累积 1000 条. | 四问: (a) **上限?** 无; (b) **达上限行为?** 无; (c) **用户可见?** 无; (d) **actionable 操作?** 手动 "Clear dedupe cache" 按钮 (部分). 需补齐: soft cap=**100** 条 + LRU evict + 新 `AVATAR_DEDUPE_CACHE_FULL` DiagnosticsOp (level=info, 仅首次满记录不 spam) | §3 Day 1 pipeline/avatar_dedupe.py (见 R4) 加 `_MAX_ENTRIES=100` + LRU + 溢出 once-notice. §3 Day 1 diagnostics_ops.py 新增 `AVATAR_DEDUPE_CACHE_FULL`. §5 风险表补一条 "高频事件 tester 点爆 cache". | ⚠ 中 |
+| **R4** | main_logic 边界破坏 | §3 Day 1 + §5 风险表 2 "If 主程序改签名... copy 到 pipeline/avatar_dedupe.py". 含蓄表达"先 import 再 fallback copy" | 实证 `main_logic/cross_server.py` 模块级 `import main_logic.agent_event_bus / aiohttp / ssl / asyncio.Queue` 有重副作用, testbench **从未 import main_logic**, 边界历史上就没打破过. 接受 cross_server import 等于打破"testbench 只 import config/ 和 memory/" 的历史默契, 且带入大量不必要依赖. | **Day 1 必做, 不走 fallback**: 把 `_should_persist_avatar_interaction_memory` 及 `AVATAR_INTERACTION_MEMORY_DEDUPE_WINDOW_MS` 常量**显式 copy** 到 `tests/testbench/pipeline/avatar_dedupe.py`, 顶部 docstring 明文 "copy from main_logic/cross_server.py, 2026-04-23 快照, 主程序该函数发生签名变更时本文件与新 smoke 同步更新". Day 3 新 smoke `p25_avatar_dedupe_drift_smoke.py` **从主程序 import** 原函数 + testbench copy 对比**字节级相等的纯函数 body** (hash compare), 漂移即 FAIL — 这样 "复用主程序 pure helper" 的承诺在"不 import main_logic"前提下仍然落地. | ❗ 高 (边界纪律) |
+| **R5** | L14 coerce 必须 surface | `_normalize_avatar_interaction_payload` 对非法 intensity / touch_zone / text_context>80字符 **静默 coerce**, Day 1 handler 未 surface | P24 Day 2 `messages_writer.append_message` 已踩过一次, 当时教训是"coerce 必须返 caller + caller surface". 当前 P25 Day 1 `SimulationResult` 只有 `accepted/reason/instruction/memory_pair/persisted/dedupe_info/assistant_reply`, **没** `coerce_info` 字段, 等于又一次"coerce = silent". | `SimulationResult` 加 `coerce_info: list[CoerceEntry]` 字段, `CoerceEntry = {field, original, coerced, reason}`; handler 从 `_normalize_avatar_interaction_payload` 返回值提取 coerce diff (如需 helper 改签名返三元组 则本阶段做). Day 2 UI 面板在 "Persistence decision" 栏下加一个 "Payload coerce" 子区 (若 coerce_info 非空才显示), 显示黄色 warning badge. | ❗ 高 (L14 重踩点) |
+| **R6** | L19 mutation 不能 abort | §3 Day 2 "Abort 支持 (api.js signal/abort, 中途取消 LLM 调用)" | L19 明言 "严禁给 mutations (POST/PUT/DELETE) 用 AbortController — 中途 abort 会让服务端状态模糊 (commit 了还是没 commit?)". `POST /api/session/external-event` 是 mutation (写 messages + 写 recent + 写 dedupe cache + 写 diagnostics ring, 四处副作用). abort 中途等于部分副作用落地部分没落地, 无法回滚. | §3 Day 2 改: "**不**用 AbortController; [Invoke event] 按钮在 in-flight 期间 `disabled=true` + 显示 spinner + toast 'event 正在投递, 请稍候'; 若用户真要中止必须等当前 LLM 调用超时 (api.js 默认 90s) 或手动刷新页面". 面板 [Clear dedupe cache] 按钮**可以**用 signal/abort (是 GET-like 幂等调用). | ❗ 高 (L19 重踩点) |
+
+**矫正 7 条的分级**:
+- ❗ 高 (5 条): R1b / R1c / R4 / R5 / R6 — 都是"语义错位 / 边界破坏 / 会重踩历史教训"类, 不改开工就错.
+- ⚠ 中 (2 条): R1a / R3 — 分类清晰化 + 资源 cap 补齐.
+- ℹ 低 (1 条): R2 — 条件满足, 本地 ✅ 合规; 只在 UI 扩"事件摘要"视组件时再做.
+
+### §A.2 框架回顾 (24 元教训 + 57 原则中 P25 必读子集)
+
+从 `LESSONS_LEARNED §7` 24 条元教训筛出 **P25 直接相关 8 条 / 间接相关 3 条 / 暂不相关 13 条**:
+
+#### 直接相关 (Day 1 编码时要查的)
+
+| # | 元教训 | P25 具体落地点 |
+|---|---|---|
+| **L6** | 多源写入 choke-point (单源 vs 多源是纸面原则成败分水岭) | session.messages 的所有入口 (包括 avatar memory pair 的 mirror_ui 分支) 必须走 `pipeline/messages_writer.append_message`. 裸 `.append` 禁用. P24 Day 11 已加 §3A A17. |
+| **L14** | Coerce 必须 surface (silent coerce = silent fallback) | R5 矫正直接对应. `SimulationResult.coerce_info` 字段必加. |
+| **L17** | Feature flag "requested/applied/fallback_reason" 三元组 | dual-mode memory write 的 `mirror_ui` 开关是 feature flag. 若 tester 勾选 mirror_ui 但遇到"session.messages 已达 max_messages 拒写" 之类降级场景, 必须返 `{requested: true, applied: false, fallback_reason: "max_messages_reached"}` 三元组, 不能 silent drop. |
+| **L19** | Last-click-wins vs mutation | R6 矫正直接对应. [Invoke event] 不用 AbortController. |
+| **L20** | 同族架构空白 sweep | P25 新增 `POST /api/session/external-event` mutation. 三问: (a) 会不会触发 session:change 级联风暴? — 不会 (event 只变 messages, 不动 session.name/id/model). (b) 高频连点会不会像 New Session 卡死? — 不会 (按钮 disabled 兜住). (c) error 路径有没有清残留 meta? — `SimulationResult.accepted=false` 时 dedupe cache 必须回滚 (主程序 cross_server.py L480-484 `dedupe_prior_entry` 保护机制). 照抄. |
+| **L23** | 生成器三分类 (请求-响应 / 真 generator / Template Method) | 三类 handler (avatar / agent_callback / proactive) 都是"请求-响应 async def" 类型 (返 `SimulationResult`), 不是 generator. A6 不适用, A5 不强制 (不走 SSE). A9 不适用 (非 Template Method). 但若未来 P25.1 扩 "批量事件注入 SSE 流式预览", 会升级为"真 async generator" 要补 A5/A6. |
+| **L24** | 资源上限 UX 降级四问 | R3 矫正直接对应. dedupe cache 加 soft cap=100. |
+| **L25** | 语义契约 vs 运行时机制 (P25 本阶段元教训) | P25 §2.1 原则. R1a/R1b/R1c 都是此原则的具体应用深度展开. |
+
+#### 间接相关 (审查时辅助参考)
+
+| # | 元教训 | P25 参考价值 |
+|---|---|---|
+| **L9** | X 受 Y 守护→先怀疑 Y 漏守 | 若 Day 3 smoke 发现"dedupe 没生效" bug, 先怀疑 `_should_persist_avatar_interaction_memory` 的调用入口漏守, 而不是去质疑 main_logic 实现. |
+| **L11** | 方法论立即扩大 | R1a "冷却三分类" 派生 L29 候选元教训, 本阶段立即派生立即记录, 不推 P26. |
+| **L18** | innerHTML 清不了 state listener | Day 2 前端面板的 state.on 订阅 (如订阅 `session:change` 切换 session 清 dedupe cache UI) 必须有 `host.__offSessionChange` teardown. 在新面板 mount 时立即加. |
+
+#### 暂不相关 (P25 范围外, 但交付后 P26 README 时再审)
+
+L1-L5 (整体方法论, 已内化) / L7 (纸面原则静态守) / L8 (合规率 KPI) / L10 (决策树) / L12 (RAG 灯) / L13 (sweep checklist) / L15 (restore 保留主键) / L16 (前后端 shape 双端一致) / L21 (hidden 属性) / L22 (opts 覆盖陷阱) / L26/L27 (P24 Day 10 派生, 已在 R1a/R3 应用).
+
+#### §3A 57 原则中 P25 直接相关子集
+
+| 组 | 编号 | 原则 | P25 应用点 |
+|---|---|---|---|
+| A | **A1** | 软错 / 硬错分离 | `SimulationResult.accepted=false` = 软错 (200 OK + reason); payload 格式根本非法 = 硬错 400. |
+| A | **A5** | SSE 先 yield error 帧 | Day 1 不走 SSE, 不适用 (但若未来 P25.1 做流式预览要加). |
+| A | **A7** / **A17** | messages 单 choke-point | 已覆盖, R1b 之后 instruction **不**走 choke-point (因为不入), reply 走. |
+| A | **A10** | JSON body bool/num 归一化 | `mirror_ui: bool` + dedupe rank int 必须走归一化 helper. |
+| A | **A12** | HTTPException detail = dict | `400 {detail: {code: "PAYLOAD_INVALID", message: "..."}}` 形式, 不用裸 str. |
+| A | **A15** | api_key 从对外序列化 redact | `SimulationResult` 不含 model_config (model_config 在 session 里, 不在返回体). ✅ 天然合规. |
+| A | **A18** | Choke-point 必配静态验证 | `p24_lint_drift_smoke.py` 的 `single-append-message` 规则自动守 R1b 矫正 (reply 走 append_message). ✅ 已存在的 cursor rule 自动覆盖本期. |
+| B | **B1** | state.X 变 → renderAll | Day 2 面板每次 Invoke event 后 state.set(...) → renderAll. 新面板的 mount 必须接 `session:change` / `model_config:change` 事件. |
+| B | **B3** | 数据子集订阅 | 面板 mount 后订阅 `session:change` 用于重置 dedupe cache 视图. |
+| B | **B7** | 跨 workspace 导航 force-remount | 面板在 Chat workspace, 切走 → 切回 必须按 B7 force-remount. |
+| B | **B12** / **B14** | emit 前 grep + 双向一致 | R2 矫正直接对应. |
+| B | **B13** | 清零类必 reload | 不适用 (面板无"清零"按钮; Clear dedupe cache 只清 session._avatar_dedupe_cache, 非清零语义). |
+| B | **B15** | placeholder 条件渲染 | "未触发任何事件" 空态必须 renderAll 条件 append, 不 `display:none`. |
+| C | **C3** | `append(null)` | Day 2 面板 renderAll 若拼 `host.append(maybeNullEl)` 必防御. |
+| C | **C5** | min-width:0 父链 | 面板嵌 Chat workspace grid, 父链所有层要 `min-width: 0`. |
+| D | **D1** | Promise cache lazy init | 面板任何 lazy load (如 lazy load prompt_proactive.py 的 dispatch table metadata) 必走 Promise cache (P24 Day 12 欠账清返刚用过的 skill). |
+| D | **D3** | 临时运行态挂 session + 白名单 filter | `session._avatar_dedupe_cache` 必进 Session `__post_init__` + `describe()` / `dict()` 的白名单黑名单 (走 Day 6A 定的白名单). session 销毁自动清, 不加 cleanup 钩子. |
+| E | **E1** | jsdom mount smoke | Day 3 必跑面板 jsdom mount smoke (虽然 Day 3 p25_external_events_smoke 已含 router 集成, 但 mount smoke 要额外跑, 参照 p21_3 / p22 pattern). |
+| E | **E3** | 阶段开工前 Full-Repo Pre-Sweep | Day 1 开工第一步: 跑全量 9/9 smoke + `p24_lint_drift` 作 baseline. 当前状态: 已在本 agent 欠账清返 done 后跑过一轮全绿 (9/9 + lint drift), 可直接开工不必再跑. |
+| F | **F7** | Fail-loud 不 silent fallback | R5 矫正直接对应. |
+| G | **G1** | Testbench "检测不改"边界 | P25 不改主程序 prompts, 不改 memory 写入语义, ✅ 合规. |
+
+### §A.3 上游 Merge Delta (27 条对 P25 的影响点)
+
+2026-04-22 merge commit `cb394ab` 并入上游 27 条, 与 P25 相关文件的精确 delta:
+
+| 文件 | Delta | 对 P25 的影响 | 需在 P25 做什么 |
+|---|---|---|---|
+| `config/prompts_avatar_interaction.py` | **零变更** ✅ | 9 个 helper + 7 个常量表全稳定 | 直接 import 复用, 无风险 |
+| `main_logic/cross_server.py` | **零变更** ✅ | `_should_persist_avatar_interaction_memory` 函数体稳定 | R4 矫正: copy 到 testbench, 不 import (边界纪律) |
+| `config/prompts_sys.py` | **+34 / -1** | `AGENT_CALLBACK_NOTIFICATION` 5 语言表**未扩 es/pt**, 只在 TRANSLATION_INSTRUCTION / TRANSLATION_REQUIREMENTS / TRANSLATION_LANG_NAMES / MEMORY_MEMO_WITH_SUMMARY 等加了 es/pt; `_loc()` 新增 `_SILENT_FALLBACK = {'es', 'pt'}` — **当 session.persona.language ∈ {es, pt} 时 AGENT_CALLBACK_NOTIFICATION 静默回退到 en, 不打 WARNING** | Day 3 smoke 加 **`persona.language=es` → agent_callback instruction 应是英文**的断言 (验静默回退路径). 不是 bug (LLM 能理解英文), 但 tester 需知悉 |
+| `config/prompts_proactive.py` | **+4 / -0** | `_normalize_prompt_language()` 加 4 行 es/pt 回退到 en 分支 | 同上, smoke 补 `persona.language=es` → proactive prompt 应是英文 |
+| `main_logic/core.py` | **+1 / -1** | `prepare_proactive_delivery(min_idle_secs=30.0)` 改 `=10.0` | testbench `simulate_proactive` OOS 不复现实时流, **无影响**. §1.3 OOS 可补"`min_idle_secs` 阈值 OOS". |
+| `memory/recent.py` | **+5 / -5** | `json.loads` / `messages_from_dict` / `messages_to_dict` 改走 `asyncio.to_thread`. 性能/不阻塞事件循环改进, **API 签名不变** | 无影响, 继续复用 |
+| `memory/persona.py` | **+82 / -20** | `PersonaManager.aensure_persona / aadd_fact / arecord_mentions / aupdate_suppressions` 全部加 **per-character `asyncio.Lock`** 串行化, 解决 P2.a.2 的 persona.json 竞写 | testbench **单会话单 event loop**, 天然零竞争, 零影响 ✅. 但 Day 3 smoke 若 **asyncio.gather 并发** 跑 aadd_fact 会测到新的串行行为, 原期望"并发全成功"要改为"**按 lock 序列成功**"(实际可能这么测的 smoke 都没有, 故此风险极低) |
+| `memory/reflection.py` | **+143 / -28** | `ReflectionEngine` 同样加 per-character asyncio.Lock. 同时新增 `_reflection_id_from_facts()` 确定性 id 生成 (sha256 前 16 hex = 64 bit), `save_reflections + mark_absorbed` 可基于 id 幂等去重 | 零影响 (testbench 调 synthesize_reflection 时 lock 自动生效). Day 3 可尝试验 "同 facts 两次合成产出相同 reflection_id" 的幂等性, 属于 memory_runner smoke 的 bonus 点, 不强制 |
+| `memory_server.py` | **+262 / -20** | 新增 `cursor_store` + `outbox` 全局 singleton, 引入 `from memory.cursors import CursorStore` / `from memory.outbox import Outbox` | testbench **不 import memory_server**, 只 `from memory import (CompressedRecentHistoryManager, ..., ReflectionEngine)` 等类, **无直接影响**. 但 Day 3 跑"端到端 recent.compress → facts.extract → reflect" 时若主程序的 memory 路径现在走 outbox 双写 (event_log + cache), testbench 复现的只是 cache 侧, 不含 outbox — 符合语义契约 vs 运行时机制原则 (outbox 是可靠性机制, 非语义). ✅ |
+| `memory/cursors.py` (NEW) | +126 | `CursorStore` 单文件 cursor 持久化 (P0 resilience) | testbench 不用, 无影响 |
+| `memory/outbox.py` (NEW) | +239 | `Outbox` 可靠事件投递 (P1 resilience) | testbench 不用, 无影响 |
+| `memory/event_log.py` (NEW) | +549 | `EventLog / Reconciler` (P2.a resilience, memory_evidence RFC) | testbench 不用, 无影响. **但**若未来 P27+ 需要测 "memory-event-log 写语义", 需独立新 phase |
+
+**上游 delta 总结**: 对 P25 **零阻塞 + 1 个 Day 3 smoke 补测点** (`persona.language=es/pt` 静默回退) + **1 个 OOS 扩充** (`min_idle_secs=10s` 阈值). 主程序新 memory resilience (outbox / event_log / cursors) 不在 P25 scope.
+
+### §A.4 派生的新元教训候选 (L28-L30)
+
+- **L28 "跨阶段推迟项必须双向回扫"** (P24 Day 12 欠账清返派生, 已在 AGENT_NOTES §4.27 #108 Day 12 段 + PROGRESS §P24 Day 12 欠账清返段登记). 每阶段收尾跑 `rg "推迟至 Day X"` 双向核对. P25 Day 3 收尾必跑.
+- **L29 "冷却语义三分类"** (R1a 派生, 候选, 待 P25 落地后观察是否稳定抽象). 任何"N 秒内不复触发" 行为必须先分类: (a) 实时流抖动 / (b) 语义去重 / (c) N 秒窗口禁复触发, 再决定 testbench 是否复现. L26 "yield 型 API 三分类" 在时序维度的延伸.
+- **L30 "外部系统 pure helper 跨 package copy + drift smoke 而非 import"** (R4 派生, 候选). 当 pure helper 所在 package 有重副作用 (aiohttp/ssl/event_bus) 时, 跨 package **import** 不如 **copy + drift smoke** — 前者带入副作用, 后者边界清晰 + hash compare 自动守漂移. 适用场景: 测试生态 / adapter 层 / plugin 沙盒.
+
+### §A.5 Design Review Gate 结论
+
+本轮 design review gate 输出以下**开工前必做清单**:
+
+1. **§3 Day 1 必改 4 处**:
+   - Acceptance 第 2 条改: instruction 只入 wire, 不入 session.messages (R1b)
+   - 新增 `pipeline/avatar_dedupe.py` (copy `_should_persist_avatar_interaction_memory` + `AVATAR_INTERACTION_MEMORY_DEDUPE_WINDOW_MS` 常量) (R4)
+   - `_AvatarDedupeCache` 加 `_MAX_ENTRIES=100` + LRU + 溢出 once-notice (R3)
+   - `SimulationResult` 加 `coerce_info: list[CoerceEntry]` 字段 + handler 从 `_normalize_avatar_interaction_payload` 提取 coerce diff (R5)
+2. **§2.4 Dual-Mode Memory Write 默认值反转**:
+   - 默认 = **recent_only** (仅走 memory_writer 写 recent.json, 对齐主程序真实语义)
+   - 可选 = **mirror_ui** (额外 mirror 一份到 session.messages 让 tester 在 Chat 视图看到 note + reply) (R1c)
+3. **§3 Day 2 必改 1 处**:
+   - 删 "Abort 支持 (api.js signal/abort, 中途取消 LLM 调用)"
+   - 改为 "[Invoke event] 按钮 in-flight 期间 disabled=true + spinner + toast '事件正在投递, 请稍候'" (R6)
+4. **§3 Day 3 必加 3 条 smoke**:
+   - `p25_avatar_dedupe_drift_smoke.py` — from 主程序 import `_should_persist_avatar_interaction_memory` vs testbench copy hash compare (R4)
+   - `persona.language=es/pt` 断言 → agent_callback instruction 是英文 (上游 delta)
+   - `persona.language=es/pt` 断言 → proactive prompt 是英文 (上游 delta)
+5. **§1.3 OOS 扩 2 条**:
+   - 冷却三分类明示 (R1a)
+   - `min_idle_secs=10s` 阈值 OOS (上游 core.py 的 prepare_proactive_delivery)
+6. **§5 风险表补 1 条**:
+   - "高频事件 tester 点爆 dedupe cache" (R3 已处置, 记录到风险表)
+7. **§3A 可能新增原则 (待 P25 交付后观察)**:
+   - 候选 H3 "外部系统 pure helper cross-package copy > import (有重副作用时)" (L30 的铁律化)
+   - 候选 A19 "SimulationResult-like 响应对象必须含 coerce_info / fallback_reason 字段族" (L14/L17 的 request-response 扩展)
+
+### §A.6 开工门禁重核 (§8)
+
+原 §8 三条门禁:
+- [x] P24 Day 1-9 完成并用户验收 ✅ (Day 1-12 全 + Day 12 欠账清返 全绿)
+- [x] **P24 Day 10 smoke 交付完成 + 回归绿** ✅ (9/9 smoke 全绿, 最后一次 2026-04-23 欠账清返 commit `62844c7` 后跑的)
+- [ ] 用户对 P25_BLUEPRINT 本文档审读通过 (**含本 §A**) **← 本轮新加的 gate 条件**
+
+**新 §8 门禁满足判据**: 用户阅读本 §A + 回复"开工" 或"修订 §A 再开工"之一, 再进 Day 1.
+
