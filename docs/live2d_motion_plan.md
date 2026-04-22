@@ -31,10 +31,10 @@
 |------|----------|
 | `utils/config_manager.py` | 添加 `live2d.idle_animation` 字段迁移逻辑、legacy_keys 读取兼容 |
 | `main_routers/characters_router.py` | 添加 `live2d_idle_animation` 保存处理和路径校验 |
-| `static/js/model_manager.js` | 添加动作保存逻辑、循环播放、恢复函数 |
+| `static/js/model_manager.js` | 添加动作保存逻辑、循环播放、恢复函数；动作选择器状态管理；异步令牌竞态防护；保存快照纳入 Live2D 待机动作 |
 | `static/app-interpage.js` | 添加 `restoreLive2DIdleAnimationOnMainPage()` 函数和 `_injectMotionGroupSafely()` 隔离 Helper |
 | `static/live2d-init.js` | 添加 `onModelReady` 回调触发恢复函数、模型实例对比守卫 |
-| `static/live2d-model.js` | 添加 `onModelReady` 回调选项支持、setMouth Index 缓存、loadToken 穿透保护、coreModel 快照校验、Idle 判定去 PreviewAll |
+| `static/live2d-model.js` | 添加 `onModelReady` 回调选项支持、setMouth Index 缓存、loadToken 穿透保护、coreModel 快照校验、Idle 判定去 PreviewAll、视线跟踪状态冗余消除 |
 
 ---
 
@@ -46,9 +46,9 @@
 // characters.json 中的保存格式
 {
     "猫娘": {
-        "帕朵": {
-            "live2d": "星海伊束小天",
-            "live2d_idle_animation": "motions/动态.motion3.json",
+        "小天": {
+            "live2d": "小天",
+            "live2d_idle_animation": "motions/跳舞.motion3.json",
             "model_type": "live2d"
         }
     }
@@ -310,7 +310,83 @@ for legacy_key in (... "live2d_idle_animation", ...):
 
 ---
 
-## �� 待优化项
+### 8. 动作选择器状态管理与竞态防护
+
+**问题 1**：`motionSelect` 选择动作后，`isMotionPlaying` 被无条件设为 `false`，导致下一次点击播放按钮时的状态判断错乱。
+
+**问题 2**：只修改 Live2D 动作时，`hasUnsavedChanges` 被误判为未更改，退出页面不提示。
+
+**问题 3**：用户快速切换不同动作时，因网络/加载速度不同导致预览播放错位。
+
+**解决**：
+
+```javascript
+// 1. 添加局部变量标记播放状态
+let playedSelectedMotion = false;
+
+// 2. 播放前清理预览定时器
+if (window._motionPreviewRestoreTimer) {
+    clearTimeout(window._motionPreviewRestoreTimer);
+    window._motionPreviewRestoreTimer = null;
+}
+// ...
+
+// 3. 条件重置播放状态
+if (!playedSelectedMotion) {
+    isMotionPlaying = false;
+}
+window.hasUnsavedChanges = true;
+
+// 4. 生成异步令牌，防止快速切换导致加载顺序错乱
+window._currentLive2DMotionToken = (window._currentLive2DMotionToken || 0) + 1;
+const currentToken = window._currentLive2DMotionToken;
+
+await motionManager.loadMotion(groupName, motionIndex);
+
+// 加载完成后检查令牌是否过期
+if (window._currentLive2DMotionToken !== currentToken) {
+    console.log('[Live2D] 动作加载完成，但已过期被丢弃:', selectedValue);
+    return;
+}
+```
+
+---
+
+### 9. Live2D 待机动作纳入保存快照
+
+**问题**：保存快照函数 `getModelSnapshot()` 未包含 Live2D 待机动作的当前值。
+
+**解决**：在快照中添加 `live2dIdleAnimation` 字段。
+
+```javascript
+live2dIdleAnimation: document.getElementById('motion-select')?.value ?? '',
+```
+
+---
+
+### 10. 视线跟踪状态冗余消除（_isMouseTrackingActive）
+
+**问题**：`_isMouseTrackingActive` 仅在模型加载时被赋值一次，与运行时动态开关 `_mouseTrackingEnabled` 产生错配，导致死鱼眼/抖动冲突。
+
+**解决**：完全移除 `_isMouseTrackingActive`，直接在视线微动逻辑中读取动态的 `this._mouseTrackingEnabled`。
+
+```javascript
+// 修改前
+if (this._isMouseTrackingActive) return;
+
+// 修改后
+if (this._mouseTrackingEnabled) return;
+```
+
+涉及 4 处修改：
+- 元数据重置时移除赋值
+- `_updateRandomLookAt` 函数读取真实开关
+- 模型配置期间移除赋值
+- 帧更新注入点读取真实开关
+
+---
+
+## 🧪 待优化项
 
 1. ~~**缩短恢复延迟**：目前固定 2 秒，可考虑监听物理预跑完成事件~~ ✅ 已优化：移除了固定延迟，改为使用 `onModelReady` 回调触发恢复函数
 2. **错误处理**：网络请求失败时的用户体验优化

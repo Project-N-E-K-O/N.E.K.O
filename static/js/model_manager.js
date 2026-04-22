@@ -576,6 +576,7 @@ function captureSettingsSnapshot() {
         mmdToneMapping: document.getElementById('mmd-tonemapping-select')?.value ?? '',
         mmdOutline: String(document.getElementById('mmd-outline-toggle')?.checked ?? false),
         // 待机动作（多选，序列化为 JSON 数组）
+        live2dIdleAnimation: document.getElementById('motion-select')?.value ?? '',
         idleAnimation: JSON.stringify(_getSelectedIdleAnimationsGlobal('vrm-idle-animation-multiselect')),
         mmdIdleAnimation: JSON.stringify(_getSelectedIdleAnimationsGlobal('mmd-idle-animation-multiselect')),
     };
@@ -6415,9 +6416,19 @@ document.addEventListener('DOMContentLoaded', async () => {
                     motionManager.motionGroups[groupName] = [];
                 }
 
+                // 生成异步令牌，防止快速切换导致加载顺序错乱
+                window._currentLive2DMotionToken = (window._currentLive2DMotionToken || 0) + 1;
+                const currentToken = window._currentLive2DMotionToken;
+
                 // 加载并播放动作
                 try {
                     await motionManager.loadMotion(groupName, motionIndex);
+
+                    // 如果加载期间用户又选择了其他动作，则丢弃本次过时的播放请求
+                    if (window._currentLive2DMotionToken !== currentToken) {
+                        console.log('[Live2D] 动作加载完成，但已过期被丢弃:', selectedValue);
+                        return;
+                    }
 
                     // 设置为循环播放
                     const motionInstance = motionManager.motionGroups?.[groupName]?.[motionIndex];
