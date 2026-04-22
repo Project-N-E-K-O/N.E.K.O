@@ -546,13 +546,10 @@
     b.vx = dirX * CFG.kickImpulse * impulseScale + kicker.vx * 0.4;
     b.vy = dirY * CFG.kickImpulse * impulseScale + kicker.vy * 0.4;
     logGameEvent(isPlayer ? 'player-kick' : 'ai-kick');
-    if (typeof markBallTouched === 'function') markBallTouched();
-    if (typeof emitEvent === 'function') emitEvent(isPlayer ? 'player-kick' : 'ai-kick');
-    // AI 把球从玩家附近踢走 → AI 抢到了
-    // 玩家把球从 AI 附近踢走 → AI 被抢
-    if (typeof triggerScene === 'function' && oppNearBall) {
-      triggerScene(isPlayer ? 'stolen' : 'steal');
-    }
+    markBallTouched();
+    emitEvent(isPlayer ? 'player-kick' : 'ai-kick');
+    // AI 把球从玩家附近踢走 → AI 抢到了；玩家把球从 AI 附近踢走 → AI 被抢
+    if (oppNearBall) triggerScene(isPlayer ? 'stolen' : 'steal');
     return true;
   }
 
@@ -562,11 +559,6 @@
     const dx = state.ball.x - cx, dy = state.ball.y - cy;
     const d = Math.hypot(dx, dy) || 1;
     return { nx: dx / d, ny: dy / d, d };
-  }
-
-  function tryKick() {
-    const { nx, ny } = kickDirFor(state.player);
-    kickBall(state.player, nx, ny, 1);
   }
 
   // AI 踢球：根据难度档决定冷却/前摇；根据 mode 决定朝哪儿踢
@@ -710,14 +702,14 @@
     const y1 = H/2 - CFG.goalHeight/2, y2 = H/2 + CFG.goalHeight/2;
     if (b.x - r < CFG.goalWidth && b.y > y1 && b.y < y2) {
       state.score.ai++; flash('ai');
-      if (typeof triggerScene === 'function') triggerScene('goal-scored');
-      if (typeof emitEvent === 'function') emitEvent('goal-scored', { side: 'ai' });
+      triggerScene('goal-scored');
+      emitEvent('goal-scored', { side: 'ai' });
       resetPositions(+1); cycleDifficulty();
     }
     if (b.x + r > W - CFG.goalWidth && b.y > y1 && b.y < y2) {
       state.score.player++; flash('player');
-      if (typeof triggerScene === 'function') triggerScene('goal-conceded');
-      if (typeof emitEvent === 'function') emitEvent('goal-conceded', { side: 'player' });
+      triggerScene('goal-conceded');
+      emitEvent('goal-conceded', { side: 'player' });
       resetPositions(-1); cycleDifficulty();
     }
   }
@@ -764,7 +756,7 @@
   let aiFreezeSec = 0;
   let lastBallVx = 0, lastBallVy = 0;
   // zoneout：sad 模式下周期性走神
-  let zoneoutSec = 0, zoneoutCooldown = 3 + Math.random() * 2;
+  let zoneoutCooldown = 3 + Math.random() * 2;
 
   // AI 决策：状态机 + 球预判 + 反应延时
   //   defend：球高速冲向己方球门（右）→ 退守在球和门之间
@@ -865,14 +857,14 @@
     if (mood.style === 'startle' && accelMag > 4000 && aiFreezeSec <= 0) {
       aiFreezeSec = 0.25;
       aiKickCd = 0;
-      if (typeof triggerScene === 'function') triggerScene('startle');
+      triggerScene('startle');
     }
     if (mood.style === 'zoneout') {
       zoneoutCooldown -= dt;
       if (zoneoutCooldown <= 0 && aiFreezeSec <= 0) {
         aiFreezeSec = 0.3;
         zoneoutCooldown = 3 + Math.random() * 2;
-        if (typeof triggerScene === 'function') triggerScene('zoneout');
+        triggerScene('zoneout');
       }
     }
   }
@@ -915,7 +907,8 @@
       const rtx = Math.max(retreatMargin, Math.min(W - retreatMargin, acx + (axdir / aL) * 200));
       const rty = Math.max(retreatMargin, Math.min(H - retreatMargin, acy + (aydir / aL) * 200));
       aiRetreatTarget = { x: rtx, y: rty };
-      aiRetreatSec = 1.0;
+      // 与 unstickCd 对齐：撤退锁定覆盖整个脱困冷却期，避免 AI 重新冲向同一个墙角
+      aiRetreatSec = 1.8;
       aiTargetCache = aiRetreatTarget;
       // 瞬间给 AI 一个反向速度，不然刚解锁撤退目标时它得从零加速
       ai.vx = (axdir / aL) * 400;
@@ -1102,7 +1095,7 @@
 
   function speechTick(dt) {
     const b = state.ball;
-    const W = canvas.width, H = canvas.height;
+    const W = canvas.width;
 
     // 球长时间在对方半场（按 allowAttack 分支）
     if (b.x < W * 0.5) {
@@ -1217,7 +1210,12 @@
     const vrm = gltf.userData.vrm;
     if (!vrm) throw new Error('not a valid VRM: ' + path);
     if (window.vrmManager.currentModel?.vrm?.scene) {
-      window.vrmManager.scene.remove(window.vrmManager.currentModel.vrm.scene);
+      const oldScene = window.vrmManager.currentModel.vrm.scene;
+      window.vrmManager.scene.remove(oldScene);
+      // 释放旧模型 GPU 资源（geometry / material / texture），避免多次切换泄漏
+      try { vrmModule.VRMUtils?.deepDispose?.(oldScene); }
+      catch (e) { console.warn('[setPlayerAvatar] deepDispose failed:', e); }
+      window.vrmManager.currentModel = null;
     }
     window.vrmManager.scene.add(vrm.scene);
     window.vrmManager.currentModel = { vrm, gltf, scene: vrm.scene, url: path };
@@ -1247,10 +1245,23 @@
   async function setAiAvatar({ type, path } = {}) {
     if (type !== 'live2d') throw new Error('ai avatar: only live2d supported');
     if (!path) throw new Error('ai avatar: path required');
-    await window.live2dManager.loadModel(path);
-    // 重新 fit（复用 loadModel 后的 fit 流程；简化版：直接调一次已有的 fit 代码会过于耦合，
-    // 所以这里只做最小：等 1 帧让 loadModel 设置好，然后手动校正 scale/position）
-    await new Promise(r => setTimeout(r, 50));
+    // 不 await loadModel 的 Promise —— 在 rAF 被 throttle（后台 tab/headless）时它可能永不 resolve，
+    // 会把外部调用者（LLM / 本体集成）挂死。改用就绪轮询，与初始 AI 加载路径一致。
+    const loadPromise = window.live2dManager.loadModel(path);
+    loadPromise.catch(e => console.warn('[setAiAvatar] loadModel awaited reject:', e));
+    await new Promise((resolve, reject) => {
+      const t0 = Date.now();
+      const startedWithModelOfPath = window.live2dManager.currentModel?.internalModel?.settings?.url === path;
+      const tick = () => {
+        const m = window.live2dManager.currentModel;
+        // 等 currentModel 换成了新路径且 width/height 已解析
+        const urlMatches = m?.internalModel?.settings?.url?.endsWith(path.split('/').pop());
+        if (m && m.width > 0 && (urlMatches || !startedWithModelOfPath)) return resolve();
+        if (Date.now() - t0 > 20000) return reject(new Error('L2D model not ready within 20s'));
+        setTimeout(tick, 150);
+      };
+      tick();
+    });
     const m = window.live2dManager.currentModel;
     if (m && m.width && m.height) {
       const canvasW = 200, canvasH = 300, margin = 6;
