@@ -1418,7 +1418,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
                 url_stripped = fallback_url
                 model = fallback_model
                 provider_type = "openai_compatible"
-                _source_label = profile.get("name", provider_key) + "（通过辅助端点验证）"
+                _source_label = assist_profile.get("name", profile.get("name", provider_key)) + "（通过辅助端点验证）"
             else:
                 return {"success": False, "error": f"供应商 {_source_label} 暂不支持连通测试", "error_code": "missing_params"}
 
