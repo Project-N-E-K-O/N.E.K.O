@@ -132,7 +132,9 @@ async def test_reflection_apply_emits_evidence_event(tmp_path):
 
     await re.aapply_signal("小天", rid, {"reinforcement": 1.0}, source="user_confirm")
 
-    # Read event log
+    # Read event log — assert the full-snapshot payload contract so a
+    # future regression that drops clock fields or sub_zero_days is
+    # caught early (CodeRabbit PR #929 nit).
     events = ev.read_since("小天", None)
     rein_events = [e for e in events if e["type"] == EVT_REFLECTION_EVIDENCE_UPDATED]
     assert len(rein_events) == 1
@@ -140,6 +142,9 @@ async def test_reflection_apply_emits_evidence_event(tmp_path):
     assert payload["reflection_id"] == rid
     assert payload["reinforcement"] == pytest.approx(1.0)
     assert payload["disputation"] == 0.0
+    assert payload["rein_last_signal_at"] is not None  # rein side touched
+    assert payload["disp_last_signal_at"] is None      # disp side untouched
+    assert payload["sub_zero_days"] == 0
     assert payload["source"] == "user_confirm"
 
 
@@ -231,9 +236,10 @@ async def test_reflection_evidence_handler_is_idempotent_on_replay(tmp_path):
     changed_first = apply_fn("小天", payload)
     assert changed_first is False
 
-    # 9 more replays — view must stay at the same values.
+    # 9 more replays — each must also report no-op to harden the
+    # idempotence guarantee (CodeRabbit PR #929 nit).
     for _ in range(9):
-        apply_fn("小天", payload)
+        assert apply_fn("小天", payload) is False
 
     reloaded = await re.aload_reflections("小天")
     r = [x for x in reloaded if x["id"] == rid][0]
