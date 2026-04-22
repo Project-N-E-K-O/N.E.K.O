@@ -1244,9 +1244,19 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
             return {"success": False, "error": "无效的 provider_scope", "error_code": "missing_params"}
 
         if not url_stripped:
-            # Some providers (e.g. Gemini) may not have a URL in the config
-            # (they use SDK-based connections, not raw WebSocket/HTTP)
-            return {"success": False, "error": f"供应商 {provider_key} 未配置测试 URL", "error_code": "missing_params"}
+            # Provider has no core_url (e.g. Gemini uses SDK, not raw WebSocket).
+            # Fall back to the assist profile's OpenAI-compatible endpoint to verify the key.
+            assist_providers = api_config.get("assist_api_providers", {})
+            assist_profile = assist_providers.get(provider_key, {})
+            fallback_url = assist_profile.get("openrouter_url", "")
+            fallback_model = assist_profile.get("conversation_model", "")
+            if fallback_url:
+                url_stripped = fallback_url
+                model = fallback_model
+                provider_type = "openai_compatible"
+                _source_label = profile.get("name", provider_key) + "（通过辅助端点验证）"
+            else:
+                return {"success": False, "error": f"供应商 {_source_label} 暂不支持连通测试", "error_code": "missing_params"}
 
     # --- Mode 2: Custom API (use frontend-provided params directly) ---
     else:
