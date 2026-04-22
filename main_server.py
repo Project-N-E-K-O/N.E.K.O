@@ -955,6 +955,12 @@ if _IS_MAIN_PROCESS:
         if os.path.exists(_writable_live2d_path):
             app.mount("/user_live2d_local", CustomStaticFiles(directory=_writable_live2d_path), name="user_live2d_local")
             logger.info(f"已挂载本地Live2D目录(CFA回退): {_writable_live2d_path}")
+            if _config_manager.is_windows_cfa_fallback_active:
+                logger.info(
+                    "检测到 Windows CFA 读写分离模式：Live2D 读取目录=%s，写入目录=%s",
+                    _serve_live2d_path,
+                    _writable_live2d_path,
+                )
 
     # 挂载VRM动画目录（static/vrm/animation） 必须第一个挂载
     vrm_animation_path = str(_config_manager.vrm_animation_dir)

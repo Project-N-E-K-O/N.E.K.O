@@ -1339,11 +1339,18 @@ def _derive_binding_asset_display_name(model_ref: str) -> str:
 
 
 def _collect_binding_live2d_roots(config_manager) -> list[Path]:
+    get_live2d_lookup_roots = getattr(config_manager, "get_live2d_lookup_roots", None)
+    if callable(get_live2d_lookup_roots):
+        try:
+            return [Path(candidate) for candidate in get_live2d_lookup_roots(prefer_writable=True)]
+        except Exception:
+            pass
+
     roots: list[Path] = []
     seen_roots: set[str] = set()
     for candidate in (
-        getattr(config_manager, "readable_live2d_dir", None),
         getattr(config_manager, "live2d_dir", None),
+        getattr(config_manager, "readable_live2d_dir", None),
     ):
         if not candidate:
             continue

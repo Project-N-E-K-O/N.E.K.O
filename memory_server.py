@@ -265,7 +265,7 @@ async def _ais_review_enabled() -> bool:
     """检查配置中 correction/review 是否启用（走异步 IO）。"""
     from utils.file_utils import read_json_async
     try:
-        config_path = str(_config_manager.get_config_path('core_config.json'))
+        config_path = str(_config_manager.get_runtime_config_path('core_config.json'))
         if not await asyncio.to_thread(os.path.exists, config_path):
             return True
         config_data = await read_json_async(config_path)

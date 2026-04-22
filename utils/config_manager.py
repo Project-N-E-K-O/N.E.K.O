@@ -509,8 +509,11 @@ class ConfigManager:
         # CFA (Windows 受控文件夹访问/反勒索防护) 检测：
         # 如果原始 Documents 路径可读但不可写，记住它以便从中读取用户数据（模型等）
         first_readable_non_writable = getattr(self, '_first_non_writable_readable_candidate', None)
-        if (first_readable_non_writable is not None
-                and first_readable_non_writable != self.docs_dir):
+        if (
+            sys.platform == "win32"
+            and first_readable_non_writable is not None
+            and first_readable_non_writable != self.docs_dir
+        ):
             self._readable_docs_dir = first_readable_non_writable
             print("⚠ WARNING [ConfigManager] 文档目录不可写（可能受Windows安全策略/反勒索防护保护）!", file=sys.stderr)
             print(f"⚠ WARNING [ConfigManager] 原始文档路径(只读): {first_readable_non_writable}", file=sys.stderr)
@@ -984,6 +987,37 @@ class ConfigManager:
             if p.exists():
                 return p
         return None
+
+    @property
+    def is_windows_cfa_fallback_active(self) -> bool:
+        """是否处于 Windows CFA 读写分离模式。"""
+        if sys.platform != "win32":
+            return False
+        if self._readable_docs_dir is None:
+            return False
+        return str(self._readable_docs_dir) != str(self.docs_dir)
+
+    def get_live2d_lookup_roots(self, *, prefer_writable: bool = True) -> list[Path]:
+        """返回 Live2D 查找路径（去重后）。
+
+        默认优先可写运行时目录，命中失败时回退到只读 legacy 目录，
+        避免 CFA 模式下“新导入模型存在但仍优先命中旧目录”。
+        """
+        readable = self.readable_live2d_dir
+        writable = Path(self.live2d_dir)
+        ordered_candidates = [writable, readable] if prefer_writable else [readable, writable]
+
+        roots: list[Path] = []
+        seen: set[str] = set()
+        for candidate in ordered_candidates:
+            if not candidate:
+                continue
+            normalized = os.path.normcase(os.path.normpath(str(candidate)))
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            roots.append(Path(candidate))
+        return roots
 
     def ensure_vrm_directory(self):
         """确保用户文档目录下的vrm目录和animation子目录存在"""
@@ -2643,6 +2677,8 @@ class ConfigManager:
             "memory_dir": str(self.memory_dir),
             "plugins_dir": str(self.plugins_dir),
             "live2d_dir": str(self.live2d_dir),
+            "readable_live2d_dir": str(self.readable_live2d_dir) if self.readable_live2d_dir else "",
+            "windows_cfa_fallback_active": self.is_windows_cfa_fallback_active,
             "workshop_dir": str(self.workshop_dir),
             "chara_dir": str(self.chara_dir),
             "cloudsave_dir": str(self.cloudsave_dir),

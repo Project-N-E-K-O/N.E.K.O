@@ -372,7 +372,7 @@ class CompressedRecentHistoryManager:
         try:
             from utils.config_manager import get_config_manager
             config_manager = get_config_manager()
-            config_path = str(config_manager.get_config_path('core_config.json'))
+            config_path = str(config_manager.get_runtime_config_path('core_config.json'))
             if await asyncio.to_thread(os.path.exists, config_path):
                 config_data = await read_json_async(config_path)
                 if 'recent_memory_auto_review' in config_data and not config_data['recent_memory_auto_review']:
