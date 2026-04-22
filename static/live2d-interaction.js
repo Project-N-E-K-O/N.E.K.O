@@ -1864,6 +1864,9 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
         } else {
             restoreIdleMotion();
         }
+        if (typeof window.restoreLive2DIdleAnimationOnMainPage === 'function') {
+            window.restoreLive2DIdleAnimationOnMainPage();
+        }
     }, window.live2dManager.CLICK_EFFECT_DURATION);
 };
 
@@ -2029,7 +2032,7 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
                             } catch (error) {
                                 console.warn(`[TouchSet] 无法获取motion持续时间:`, error);
                             }
-                            
+
                             try {
                                 const internalModel = this.currentModel.internalModel;
                                 const motionManager = internalModel.motionManager;
