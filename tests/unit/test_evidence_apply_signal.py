@@ -113,6 +113,10 @@ async def test_reflection_apply_unknown_id_returns_false(tmp_path):
     ok = await re.aapply_signal("小天", "does_not_exist",
                                  {"reinforcement": 1.0}, source="user_confirm")
     assert ok is False
+    # Unknown target_id must not produce an event — emitting then rolling
+    # back would violate the "append before mutate" discipline (CodeRabbit
+    # PR #929 nit).
+    assert ev.read_since("小天", None) == []
 
 
 @pytest.mark.asyncio
@@ -181,7 +185,7 @@ async def test_persona_apply_signal_updates_and_emits_event(tmp_path):
 
 @pytest.mark.asyncio
 async def test_persona_apply_signal_unknown_entry_returns_false(tmp_path):
-    _ev, _fs, pm, _re, _cm = _install(str(tmp_path))
+    ev, _fs, pm, _re, _cm = _install(str(tmp_path))
     # Empty persona — aensure_persona will create it
     await pm.aensure_persona("小天")
     ok = await pm.aapply_signal(
@@ -189,6 +193,8 @@ async def test_persona_apply_signal_unknown_entry_returns_false(tmp_path):
         {"reinforcement": 1.0}, source="user_fact",
     )
     assert ok is False
+    # Unknown entry must not produce an event (CodeRabbit PR #929 nit).
+    assert ev.read_since("小天", None) == []
 
 
 # ── S4: reconciler handler idempotency ──────────────────────────────
