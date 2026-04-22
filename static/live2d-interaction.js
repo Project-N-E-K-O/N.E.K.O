@@ -1846,6 +1846,7 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
         
         console.log('[Interaction] 点击效果持续时间结束，平滑恢复到默认状态');
         this._currentClickEffectId = null;
+        // 待机动画恢复函数，等平滑恢复完成后再调用，避免被 smoothReset 停掉刚恢复的待机动画
         const restoreIdleMotion = () => {
             if (typeof window.restoreLive2DIdleAnimationOnMainPage === 'function') {
                 window.restoreLive2DIdleAnimationOnMainPage();
@@ -2034,6 +2035,8 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
                                 const motionManager = internalModel.motionManager;
                                 const json = internalModel.settings.json;
 
+                                // 使用完整列表而非稀疏数组，
+                                // 避免 motionManager.definitions[groupName] 变成稀疏数组导致同组其它动作丢失
                                 const motionsList = [{ 'File': motion.File }];
 
                                 if (json) {
@@ -2055,6 +2058,7 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
                                 }
                                 motionManager.motionGroups[groupName] = [];
 
+                                // 捕获模型引用，await 后校验是否切换了模型，防止旧请求下发到新模型
                                 const live2dModel = this.currentModel;
                                 console.log(`[TouchSet] 正在向引擎注入并加载动作: ${motion.File}`);
                                 await motionManager.loadMotion(groupName, 0);
