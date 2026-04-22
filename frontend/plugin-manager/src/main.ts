@@ -17,6 +17,8 @@ import en from 'element-plus/dist/locale/en.mjs'
 import jaLocale from 'element-plus/dist/locale/ja.mjs'
 import koLocale from 'element-plus/dist/locale/ko.mjs'
 import ruLocale from 'element-plus/dist/locale/ru.mjs'
+import esLocale from 'element-plus/dist/locale/es.mjs'
+import ptLocale from 'element-plus/dist/locale/pt.mjs'
 import router from './router'
 import { i18n, getLocale } from './i18n'
 import { MotionPlugin } from '@vueuse/motion'
@@ -54,7 +56,9 @@ const elLocaleMap: Record<string, any> = {
   'en-US': en,
   'ja': jaLocale,
   'ko': koLocale,
-  'ru': ruLocale
+  'ru': ruLocale,
+  'es': esLocale,
+  'pt': ptLocale
 }
 app.use(ElementPlus, {
   locale: elLocaleMap[currentLocale] ?? zhCn

@@ -362,9 +362,10 @@ class VRMCore {
         }
     }
 
-    async init(canvasId, containerId, lightingConfig = null) {
+    async init(canvasId, containerId, lightingConfig = null, options = {}) {
         this._ensureThreeReady();
         const THREE = window.THREE;
+        const embed = options && options.embed === true;
 
         this.manager.container = document.getElementById(containerId);
         this.manager.canvas = document.getElementById(canvasId);
@@ -383,15 +384,17 @@ class VRMCore {
             throw new Error(errorMsg);
         }
 
-        this.manager.container.style.display = 'block';
-        this.manager.container.style.visibility = 'visible';
-        this.manager.container.style.opacity = '1';
-        this.manager.container.style.width = '100%';
-        this.manager.container.style.height = '100%';
-        this.manager.container.style.position = 'fixed';
-        this.manager.container.style.top = '0';
-        this.manager.container.style.left = '0';
-        this.manager.container.style.setProperty('pointer-events', 'auto', 'important');
+        if (!embed) {
+            this.manager.container.style.display = 'block';
+            this.manager.container.style.visibility = 'visible';
+            this.manager.container.style.opacity = '1';
+            this.manager.container.style.width = '100%';
+            this.manager.container.style.height = '100%';
+            this.manager.container.style.position = 'fixed';
+            this.manager.container.style.top = '0';
+            this.manager.container.style.left = '0';
+            this.manager.container.style.setProperty('pointer-events', 'auto', 'important');
+        }
 
         this.manager.clock = new THREE.Clock();
         this.manager.scene = new THREE.Scene();

@@ -1246,6 +1246,10 @@ def _normalize_prompt_language(lang: str) -> str:
         return 'ko'
     if lang_lower.startswith('ru'):
         return 'ru'
+    # es/pt 当前未提供原生 proactive prompt 翻译，回退到 en（LLM 能理解英文系统 prompt，
+    # 输出语言由全局语言变量驱动的其他机制控制）
+    if lang_lower.startswith('es') or lang_lower.startswith('pt'):
+        return 'en'
     return 'en'
 
 

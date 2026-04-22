@@ -3610,7 +3610,7 @@ async def proactive_chat(request: Request):
             return await _end_proactive(JSONResponse(_proactive_preempted_json("phase1_pre_prepare")))
 
         # --- 前置检查：用户是否空闲、WebSocket 是否在线、session 是否可用 ---
-        if not await mgr.prepare_proactive_delivery(min_idle_secs=30.0):
+        if not await mgr.prepare_proactive_delivery(min_idle_secs=10.0):
             return await _end_proactive(JSONResponse({
                 "success": True,
                 "action": "pass",
