@@ -992,7 +992,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             const data = await RequestHelper.fetchJson('/api/characters/');
             console.log('[Live2D Restore] charData from API:', data['猫娘']?.[lanlanName]);
             const charData = data['猫娘']?.[lanlanName];
-            const live2dIdleAnimation = charData?.avatar?.live2d?.idle_animation;
+
+            // 优先从 _reserved 保留字段读取，兼容旧版本的直接平铺结构
+            const live2dIdleAnimation = charData?._reserved?.avatar?.live2d?.idle_animation
+                                     || charData?.avatar?.live2d?.idle_animation;
+
             console.log('[Live2D Restore] live2dIdleAnimation:', live2dIdleAnimation);
 
             if (!live2dIdleAnimation) {
@@ -1024,11 +1028,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             console.log('[Live2D Restore] motionIndex:', motionIndex);
             if (motionIndex < 0) return;
 
-            const live2dModel = window.live2dManager?.getCurrentModel() || live2dModel;
-            console.log('[Live2D Restore] live2dModel:', live2dModel);
-            if (!live2dModel) return;
+            const currentLive2DModel = window.live2dManager?.getCurrentModel() || live2dModel;
+            console.log('[Live2D Restore] currentLive2DModel:', currentLive2DModel);
+            if (!currentLive2DModel) return;
 
-            const internalModel = live2dModel.internalModel;
+            const internalModel = currentLive2DModel.internalModel;
             console.log('[Live2D Restore] internalModel:', internalModel);
             if (!internalModel?.motionManager) {
                 console.log('[Live2D Restore] motionManager 不存在');
@@ -1068,7 +1072,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             motionManager.stopAllMotions();
-            const result = live2dModel.motion(groupName, motionIndex, 3);
+            const result = currentLive2DModel.motion(groupName, motionIndex, 3);
             console.log('[Live2D Restore] motion result:', result);
             isMotionPlaying = true;
             updateMotionPlayButtonIcon();
@@ -2014,9 +2018,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 console.log('[Live2D Save] motionSelect element:', motionSelect);
                 console.log('[Live2D Save] motionSelect.value:', motionSelect ? motionSelect.value : 'null');
                 console.log('[Live2D Save] currentModelFiles.motion_files:', currentModelFiles?.motion_files);
-                if (motionSelect && motionSelect.value) {
-                    modelData.live2d_idle_animation = motionSelect.value;
-                    console.log('[Live2D Save] Added live2d_idle_animation to modelData:', motionSelect.value);
+                if (motionSelect) {
+                    // 【修复】无论是否有值，即使是空字符串（用户点击清空/默认选项），也要显式发送给后端，触发置空逻辑
+                    modelData.live2d_idle_animation = motionSelect.value || "";
+                    console.log('[Live2D Save] Added live2d_idle_animation to modelData:', modelData.live2d_idle_animation);
                 }
                 console.log('[Live2D Save] Final modelData:', JSON.stringify(modelData, null, 2));
             }
@@ -6395,6 +6400,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         // 立即播放选中的动作（循环模式）
         const motionFiles = currentModelFiles?.motion_files || [];
         const motionIndex = motionFiles.indexOf(selectedValue);
+        let playedSelectedMotion = false;
         if (motionIndex >= 0 && live2dModel) {
             const internalModel = live2dModel.internalModel;
             if (internalModel?.motionManager) {
@@ -6423,9 +6429,21 @@ document.addEventListener('DOMContentLoaded', async () => {
                         }
                     }
 
+                    if (window._motionPreviewRestoreTimer) {
+                        clearTimeout(window._motionPreviewRestoreTimer);
+                        window._motionPreviewRestoreTimer = null;
+                    }
+                    if (window._expressionPreviewRestoreTimer) {
+                        clearTimeout(window._expressionPreviewRestoreTimer);
+                        window._expressionPreviewRestoreTimer = null;
+                    }
+                    window._currentMotionPreviewId = null;
+                    window._currentExpressionPreviewToken = null;
+
                     motionManager.stopAllMotions();
                     live2dModel.motion(groupName, motionIndex, 3);
                     isMotionPlaying = true;
+                    playedSelectedMotion = true;
                     updateMotionPlayButtonIcon();
                     console.log('[Live2D] 已播放选中的动作（循环模式）:', selectedValue);
                 } catch (err) {
@@ -6434,7 +6452,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
 
-        isMotionPlaying = false;
+        if (!playedSelectedMotion) {
+            isMotionPlaying = false;
+        }
+        window.hasUnsavedChanges = true;
         // 确保图标仍然是播放图标
         updateMotionPlayButtonIcon();
         updateMotionSelectButtonText();

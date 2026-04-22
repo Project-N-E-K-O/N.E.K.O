@@ -29,12 +29,12 @@
 
 | 文件 | 修改内容 |
 |------|----------|
-| `utils/config_manager.py` | 添加 `live2d.idle_animation` 字段迁移逻辑 |
+| `utils/config_manager.py` | 添加 `live2d.idle_animation` 字段迁移逻辑、legacy_keys 读取兼容 |
 | `main_routers/characters_router.py` | 添加 `live2d_idle_animation` 保存处理和路径校验 |
 | `static/js/model_manager.js` | 添加动作保存逻辑、循环播放、恢复函数 |
-| `static/app-interpage.js` | 添加 `restoreLive2DIdleAnimationOnMainPage()` 函数 |
-| `static/live2d-init.js` | 添加 `onModelReady` 回调触发恢复函数 |
-| `static/live2d-model.js` | 添加 `onModelReady` 回调选项支持 |
+| `static/app-interpage.js` | 添加 `restoreLive2DIdleAnimationOnMainPage()` 函数和 `_injectMotionGroupSafely()` 隔离 Helper |
+| `static/live2d-init.js` | 添加 `onModelReady` 回调触发恢复函数、模型实例对比守卫 |
+| `static/live2d-model.js` | 添加 `onModelReady` 回调选项支持、setMouth Index 缓存、loadToken 穿透保护、coreModel 快照校验、Idle 判定去 PreviewAll |
 
 ---
 
@@ -137,7 +137,7 @@ onModelReady: (model) => {
 
 - [ ] 模型管理页面：选择动作后立即播放
 - [ ] 模型管理页面：保存设置后显示成功提示
-- [ ] 主页加载：等待 2 秒后自动播放保存的待机动作
+- [ ] 主页加载：等待 500ms 后自动播放保存的待机动作
 - [ ] 主页加载：待机动作循环播放
 - [ ] 点击交互：点击模型触发其他动作
 - [ ] 情绪切换：切换情绪时动作正常播放
@@ -159,7 +159,158 @@ onModelReady: (model) => {
 
 ---
 
-## 🔄 待优化项
+## � 代码质量与稳定性增强
+
+### 1. setMouth 高频性能优化
+
+**问题**：`setMouth` 被音频解析器以 60fps 调用，每次都通过字符串查找 `getParameterIndex()` 造成 CPU 瓶颈。
+
+**解决**：引入 Index 缓存机制，首次调用时缓存口型参数的 Index，后续全部使用 `setParameterValueByIndex()` 直接写入。
+
+```javascript
+// 缓存逻辑
+if (!this._cachedMouthIndices || this._cachedMouthIndicesModel !== coreModel) {
+    this._cachedMouthIndices = [];
+    this._cachedMouthIndicesModel = coreModel;
+    for (const id of mouthIds) {
+        const idx = coreModel.getParameterIndex(id);
+        if (idx !== -1) this._cachedMouthIndices.push(idx);
+    }
+}
+// 极速写入
+for (const idx of this._cachedMouthIndices) {
+    coreModel.setParameterValueByIndex(idx, this.mouthValue, 1);
+}
+```
+
+---
+
+### 2. Fetch 竞态条件防护（loadToken 穿透保护）
+
+**问题**：在 `await fetch()` 让出主线程期间，用户切换模型会导致旧模型的请求返回时污染新模型。
+
+**解决**：在每个 `await` 恢复后立即检查 `loadToken`，如果不匹配则直接中断。
+
+```javascript
+const response = await fetch(`/api/live2d/load_model_parameters/...`);
+// 【重要修复】Fetch 回来后，必须检查 Token！
+if (!this._isLoadTokenActive(loadToken)) return;
+
+const data = await response.json();
+if (!this._isLoadTokenActive(loadToken)) return;
+// ... 继续处理
+```
+
+涉及两处 fetch：
+- `/api/live2d/model_files/{modelName}` - 获取动作/表情文件列表
+- `/api/live2d/load_model_parameters/{modelName}` - 加载保存的参数
+
+---
+
+### 3. 定时器溢出防护（coreModel 快照校验）
+
+**问题**：`_scheduleReinstallOverride` 的 setTimeout 回调触发时，如果模型已被切换，会在错误的模型上执行 `installMouthOverride()`。
+
+**解决**：记录 coreModel 快照，触发时校验是否为同一模型。
+
+```javascript
+const snapshotCoreModel = (this.currentModel && this.currentModel.internalModel) ?
+                           this.currentModel.internalModel.coreModel : null;
+
+this._reinstallTimer = setTimeout(() => {
+    // ...
+    if (this.currentModel.internalModel.coreModel !== snapshotCoreModel) {
+        console.warn('[Live2D] 模型已切换，废弃旧的口型重装任务');
+        return;
+    }
+    // ...
+}, REINSTALL_OVERRIDE_DELAY_MS);
+```
+
+---
+
+### 4. Idle 动作判定去黑魔法化
+
+**问题**：`hasIdleInFileReferences` 错误地将 `PreviewAll` 组（有动作就认为有 Idle）作为判定依据，导致随机测试动作被当成待机动作播放。
+
+**解决**：移除 `PreviewAll` 判定，只保留真正标有 `Idle` 的动作文件。
+
+```javascript
+// 修改前（错误）
+const hasIdleInFileReferences = this.fileReferences &&
+    (this.fileReferences.Motions?.['Idle'] ||
+     (... PreviewAll 条件 ...));  // ❌ 会误判
+
+// 修改后（正确）
+const hasIdleInFileReferences = this.fileReferences &&
+    (this.fileReferences.Motions?.['Idle'] ||
+     (Array.isArray(this.fileReferences.Expressions) &&
+      this.fileReferences.Expressions.some(e => (e.Name || '').startsWith('Idle'))));
+```
+
+---
+
+### 5. 口型覆盖安装竞态防护
+
+**问题**：`onModelReady` 回调的 500ms 延迟期间，用户可能已切换模型。
+
+**解决**：在 setTimeout 执行时再次校验模型实例。
+
+```javascript
+onModelReady: (model) => {
+    setTimeout(() => {
+        // 【修复】防竞态：确保 500ms 后当前存活的模型仍然是触发这个回调的模型
+        if (window.live2dManager && window.live2dManager.getCurrentModel() !== model) {
+            console.log('[Live2D Init] 模型已在 500ms 延迟期间被切换或销毁，跳过待机动作恢复');
+            return;
+        }
+        // ...
+    }, 500);
+}
+```
+
+---
+
+### 6. SDK 黑魔法隔离（_injectMotionGroupSafely）
+
+**问题**：直接修改 pixi-live2d-display SDK 的内部私有属性会导致未来 SDK 升级时代码崩溃。
+
+**解决**：将所有内部结构修改隔离到独立 Helper 函数，并添加 JSDoc 废弃警告和 try-catch 防错。
+
+```javascript
+/**
+ * [HACK/WORKAROUND] 动态向已加载的 Live2D 模型实例注入动作组。
+ * @deprecated-if-sdk-upgraded 如果未来升级了 live2d SDK，此函数极易崩溃，请优先寻找官方 API 替代。
+ */
+function _injectMotionGroupSafely(live2dModel, groupName, motionFiles) {
+    // ... 详细的参数校验和 try-catch
+}
+```
+
+---
+
+### 7. 配置迁移增强（legacy_keys 读取兼容）
+
+**问题**：旧配置文件中 `live2d_idle_animation` 平铺在顶层，迁移逻辑可能遗漏。
+
+**解决**：在 `get_reserved` 调用时添加 `legacy_keys` 参数，并在清理列表中加入该字段。
+
+```python
+# 读取时兼容
+live2d_idle_animation = get_reserved(
+    catgirl_data, "avatar", "live2d", "idle_animation",
+    default=None,
+    legacy_keys=("live2d_idle_animation",),  # 新增
+)
+
+# 清理时删除
+for legacy_key in (... "live2d_idle_animation", ...):
+    changed |= delete_reserved(catgirl_data, "avatar", legacy_key)
+```
+
+---
+
+## �� 待优化项
 
 1. ~~**缩短恢复延迟**：目前固定 2 秒，可考虑监听物理预跑完成事件~~ ✅ 已优化：移除了固定延迟，改为使用 `onModelReady` 回调触发恢复函数
 2. **错误处理**：网络请求失败时的用户体验优化

@@ -607,8 +607,13 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
                 }
                 if (filesApiUrl) {
                     const filesResp = await fetch(filesApiUrl);
+                    // 【重要修复】Fetch 回来后，必须检查 Token！如果用户在此期间切了模型，直接中断！
+                    if (!this._isLoadTokenActive(loadToken)) return;
+
                     if (filesResp.ok) {
                         const filesData = await filesResp.json();
+                        if (!this._isLoadTokenActive(loadToken)) return;
+
                         if (filesData.success !== false && Array.isArray(filesData.expression_files)) {
                             if (!this.fileReferences) this.fileReferences = {};
                             this.fileReferences.Expressions = filesData.expression_files.map(file => ({
@@ -683,12 +688,17 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     if (this.modelName && model.internalModel && model.internalModel.coreModel) {
         try {
             const response = await fetch(`/api/live2d/load_model_parameters/${encodeURIComponent(this.modelName)}`);
+            // 【重要修复】Fetch 回来后，必须检查 Token！如果用户在此期间切了模型，直接中断！
+            if (!this._isLoadTokenActive(loadToken)) return;
+
             const data = await response.json();
+            if (!this._isLoadTokenActive(loadToken)) return;
+
             if (data.success && data.parameters && Object.keys(data.parameters).length > 0) {
                 // 保存参数到实例变量，供定时器定期应用
                 this.savedModelParameters = data.parameters;
                 this._shouldApplySavedParams = true;
-                
+
                 // 立即应用一次
                 this.applyModelParameters(model, data.parameters);
             } else {
@@ -741,14 +751,14 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     // 检测是否有 Idle 情绪配置（兼容新旧两种格式）
     // - 新格式: EmotionMapping.motions['Idle'] / EmotionMapping.expressions['Idle']
     // - 旧格式: FileReferences.Motions['Idle'] / FileReferences.Expressions 中的 Idle 前缀
-    // - PreviewAll 组：用户上传的 .motion3.json 文件存储在此组，如果有则播放 Idle 情绪
+    // 注意：PreviewAll 只是用户上传动作的临时存放组，不具备 Idle 语义，不应作为待机动作判定依据
     const hasIdleInEmotionMapping = this.emotionMapping &&
         (this.emotionMapping.motions?.['Idle'] || this.emotionMapping.expressions?.['Idle']);
+
     const hasIdleInFileReferences = this.fileReferences &&
         (this.fileReferences.Motions?.['Idle'] ||
          (Array.isArray(this.fileReferences.Expressions) &&
-          this.fileReferences.Expressions.some(e => (e.Name || '').startsWith('Idle'))) ||
-         (Array.isArray(this.fileReferences.Motions?.PreviewAll) && this.fileReferences.Motions.PreviewAll.length > 0));
+          this.fileReferences.Expressions.some(e => (e.Name || '').startsWith('Idle'))));
     // 注意：Idle 情绪播放已移至模型淡入完成后触发，
     // 避免在加载过程中独立 setTimeout 可能导致的变形/抖动
 
@@ -936,11 +946,22 @@ Live2DManager.prototype._scheduleReinstallOverride = function() {
     }
     
     this._reinstallScheduled = true;
+
+    // 【新增】快照记录当前的 coreModel，防止定时器触发时模型已被切换
+    const snapshotCoreModel = (this.currentModel && this.currentModel.internalModel) ?
+                               this.currentModel.internalModel.coreModel : null;
+
     this._reinstallTimer = setTimeout(() => {
         this._reinstallScheduled = false;
         this._reinstallTimer = null;
         this._reinstallAttempts++;
+
         if (this.currentModel && this.currentModel.internalModel && this.currentModel.internalModel.coreModel) {
+            // 【重要修复】对比 coreModel。如果已经不是同一个模型，说明切模型了，直接放弃重装
+            if (this.currentModel.internalModel.coreModel !== snapshotCoreModel) {
+                console.warn('[Live2D] 模型已切换，废弃旧的口型重装任务');
+                return;
+            }
             try {
                 this.installMouthOverride();
             } catch (reinstallError) {
@@ -1279,36 +1300,40 @@ Live2DManager.prototype.installMouthOverride = function() {
 Live2DManager.prototype.setMouth = function(value) {
     const v = Math.max(0, Math.min(1, Number(value) || 0));
     this.mouthValue = v;
-    
+
     // 调试日志（每100次调用输出一次）
     if (typeof this._setMouthCallCount === 'undefined') this._setMouthCallCount = 0;
     this._setMouthCallCount++;
     const shouldLog = this._setMouthCallCount % 100 === 1;
-    
-    // 即时写入一次，best-effort 同步
+
     try {
         if (this.currentModel && this.currentModel.internalModel) {
             const coreModel = this.currentModel.internalModel.coreModel;
-            // 使用完整的 LIPSYNC_PARAMS 列表，确保覆盖所有可能的口型参数
-            const mouthIds = window.LIPSYNC_PARAMS || ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
-            let paramsSet = [];
-            for (const id of mouthIds) {
+
+            // 【新增】延迟初始化并缓存口型参数的 Index，避免每帧进行字符串查找
+            if (!this._cachedMouthIndices || this._cachedMouthIndicesModel !== coreModel) {
+                this._cachedMouthIndices = [];
+                this._cachedMouthIndicesModel = coreModel;
+                const mouthIds = window.LIPSYNC_PARAMS || ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
+
+                for (const id of mouthIds) {
+                    if (id === 'ParamMouthForm') continue; // 忽略嘴型（非张合）参数
+                    try {
+                        const idx = coreModel.getParameterIndex(id);
+                        if (idx !== -1) this._cachedMouthIndices.push(idx);
+                    } catch (_) {}
+                }
+            }
+
+            // 【优化】使用极速的 Index 直接写入
+            for (const idx of this._cachedMouthIndices) {
                 try {
-                    const idx = coreModel.getParameterIndex(id);
-                    if (idx !== -1) {
-                        // 对于 ParamMouthForm，通常表示嘴型（-1到1），不需要设置为 mouthValue
-                        // ParamMouthOpenY, ParamMouthOpen, ParamA, ParamI, ParamU, ParamE, ParamO 都与张嘴程度相关
-                        if (id === 'ParamMouthForm') {
-                            // ParamMouthForm 保持不变或设置为中性值
-                            continue;
-                        }
-                        coreModel.setParameterValueById(id, this.mouthValue, 1);
-                        paramsSet.push(id);
-                    }
+                    coreModel.setParameterValueByIndex(idx, this.mouthValue, 1);
                 } catch (_) {}
             }
+
             if (shouldLog) {
-                console.log('[Live2D setMouth] value:', v.toFixed(3), 'params set:', paramsSet.join(', '));
+                console.log('[Live2D setMouth] value:', v.toFixed(3), 'indices:', this._cachedMouthIndices.join(', '));
             }
         } else if (shouldLog) {
             console.warn('[Live2D setMouth] 模型未就绪');

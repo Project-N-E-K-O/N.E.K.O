@@ -262,6 +262,7 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         "live2d",
         "idle_animation",
         default=None,
+        legacy_keys=("live2d_idle_animation",),
     )
     if live2d_idle_animation is not None:
         if isinstance(live2d_idle_animation, str):
@@ -397,6 +398,7 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         "live2d_item_id",
         "item_id",
         "live2d",
+        "live2d_idle_animation",
         "vrm",
         "vrm_animation",
         "idleAnimation",
