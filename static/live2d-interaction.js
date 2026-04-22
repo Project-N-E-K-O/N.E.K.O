@@ -1855,6 +1855,9 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
         } else if (typeof this.clearExpression === 'function') {
             this.clearExpression();
         }
+        if (typeof window.restoreLive2DIdleAnimationOnMainPage === 'function') {
+            window.restoreLive2DIdleAnimationOnMainPage();
+        }
     }, window.live2dManager.CLICK_EFFECT_DURATION);
 };
 
