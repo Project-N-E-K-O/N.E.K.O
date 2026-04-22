@@ -995,8 +995,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             const charData = data['猫娘']?.[lanlanName];
 
             // 优先从 _reserved 保留字段读取，兼容旧版本的直接平铺结构
+            // 使用 ?? 替代 || 以保留空字符串语义（用户清空后的有效值）
             const live2dIdleAnimation = charData?._reserved?.avatar?.live2d?.idle_animation
-                                     || charData?.avatar?.live2d?.idle_animation;
+                                     ?? charData?.avatar?.live2d?.idle_animation
+                                     ?? charData?.live2d_idle_animation;  // 兼容旧版本平铺字段
 
             console.log('[Live2D Restore] live2dIdleAnimation:', live2dIdleAnimation);
 

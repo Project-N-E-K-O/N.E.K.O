@@ -1108,6 +1108,8 @@ async def update_catgirl_l2d(name: str, request: Request):
                             return JSONResponse(content={'success': False, 'error': 'Live2D待机动作路径不能包含URL方案'}, status_code=400)
                         if '..' in live2d_idle_str:
                             return JSONResponse(content={'success': False, 'error': 'Live2D待机动作路径不能包含路径遍历（..）'}, status_code=400)
+                        if live2d_idle_str.startswith('/') or live2d_idle_str.startswith('\\') or re.match(r'^[A-Za-z]:', live2d_idle_str):
+                            return JSONResponse(content={'success': False, 'error': 'Live2D待机动作路径必须是相对路径，不能是绝对路径'}, status_code=400)
                         if not live2d_idle_str.lower().endswith('.motion3.json'):
                             return JSONResponse(content={'success': False, 'error': 'Live2D待机动作必须是 .motion3.json 文件'}, status_code=400)
                         set_reserved(characters['猫娘'][name], 'avatar', 'live2d', 'idle_animation', live2d_idle_str)

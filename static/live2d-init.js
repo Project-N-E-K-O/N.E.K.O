@@ -468,7 +468,7 @@ async function initLive2DModel() {
                 onModelReady: (model) => {
                     setTimeout(() => {
                         // 防竞态：确保 500ms 后当前存活的模型仍然是触发这个回调的模型
-                        if (window.live2dManager && window.live2dManager.getCurrentModel() !== model) {
+                        if (window.live2dManager && (window.live2dManager.getCurrentModel() !== model || model.destroyed)) {
                             console.log('[Live2D Init] 模型已在 500ms 延迟期间被切换或销毁，跳过待机动作恢复');
                             return;
                         }

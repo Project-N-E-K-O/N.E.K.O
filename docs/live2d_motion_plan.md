@@ -386,6 +386,57 @@ if (this._mouseTrackingEnabled) return;
 
 ---
 
+### 11. 口型覆盖安装竞态防护增强（destroyed guard）
+
+**问题**：在 `onModelReady` 回调的 500ms 延迟期间，`currentModel` 可能仍短暂指向已销毁的旧模型，导致继续触发待机动作恢复。
+
+**解决**：在模型引用比较之外，增加 `model.destroyed` 检查。
+
+```javascript
+// 修改前
+if (window.live2dManager && window.live2dManager.getCurrentModel() !== model) {
+
+// 修改后
+if (window.live2dManager && (window.live2dManager.getCurrentModel() !== model || model.destroyed)) {
+```
+
+---
+
+### 12. 待机动作路径校验增强（绝对路径拦截）
+
+**问题**：用户可能传入绝对路径（如 `/foo.motion3.json`、`C:\foo.motion3.json`），导致后续恢复时加载错误。
+
+**解决**：在 `characters_router.py` 中增加相对路径校验。
+
+```python
+# 新增校验
+if live2d_idle_str.startswith('/') or live2d_idle_str.startswith('\\') or re.match(r'^[A-Za-z]:', live2d_idle_str):
+    return JSONResponse(content={'success': False, 'error': 'Live2D待机动作路径必须是相对路径，不能是绝对路径'}, status_code=400)
+```
+
+---
+
+### 13. 待机动作恢复读取兼容增强（空值语义保留）
+
+**问题 1**：使用 `||` 会把空字符串（用户清空后的有效值）当成缺失，继续回退到其他字段。
+
+**问题 2**：漏读 `live2d_idle_animation` 平铺字段，旧配置恢复失败。
+
+**解决**：使用 `??` 替代 `||`，并增加平铺字段读取。
+
+```javascript
+// 修改前
+const live2dIdleAnimation = charData?._reserved?.avatar?.live2d?.idle_animation
+                         || charData?.avatar?.live2d?.idle_animation;
+
+// 修改后
+const live2dIdleAnimation = charData?._reserved?.avatar?.live2d?.idle_animation
+                         ?? charData?.avatar?.live2d?.idle_animation
+                         ?? charData?.live2d_idle_animation;  // 兼容旧版本平铺字段
+```
+
+---
+
 ## 🧪 待优化项
 
 1. ~~**缩短恢复延迟**：目前固定 2 秒，可考虑监听物理预跑完成事件~~ ✅ 已优化：移除了固定延迟，改为使用 `onModelReady` 回调触发恢复函数
