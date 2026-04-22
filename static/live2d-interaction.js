@@ -1864,9 +1864,6 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
         } else {
             restoreIdleMotion();
         }
-        if (typeof window.restoreLive2DIdleAnimationOnMainPage === 'function') {
-            window.restoreLive2DIdleAnimationOnMainPage();
-        }
     }, window.live2dManager.CLICK_EFFECT_DURATION);
 };
 
@@ -2046,66 +2043,81 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
                     console.warn(`[TouchSet] 无法获取motion持续时间:`, error);
                 }
 
-                try {
-                    const internalModel = this.currentModel.internalModel;
-                    const motionManager = internalModel.motionManager;
-                    const json = internalModel.settings.json;
+                let backupDefs, backupGroups, backupSettingsMotions, backupJsonMotions, backupJsonFileRefs;
+                    let groupExisted = false;
 
-                    const backupDefs = motionManager.definitions?.[groupName];
-                    const backupGroups = motionManager.motionGroups?.[groupName];
-                    const backupSettingsMotions = internalModel.settings.motions?.[groupName];
-                    const backupJsonMotions = json?.motions?.[groupName];
-                    const backupJsonFileRefs = json?.FileReferences?.Motions?.[groupName];
+                    try {
+                        const internalModel = this.currentModel.internalModel;
+                        const motionManager = internalModel.motionManager;
+                        const json = internalModel.settings.json;
 
-                    const tempMotionsList = [{ 'File': motion.File }];
+                        backupDefs = motionManager.definitions?.[groupName];
+                        backupGroups = motionManager.motionGroups?.[groupName];
+                        backupSettingsMotions = internalModel.settings.motions?.[groupName];
+                        backupJsonMotions = json?.motions?.[groupName];
+                        backupJsonFileRefs = json?.FileReferences?.Motions?.[groupName];
 
-                    if (json) {
-                        if (!json.FileReferences) json.FileReferences = {};
-                        if (!json.FileReferences.Motions) json.FileReferences.Motions = {};
-                        json.FileReferences.Motions[groupName] = tempMotionsList;
-                        if (!json.motions) json.motions = {};
-                        json.motions[groupName] = tempMotionsList;
+                        groupExisted = backupDefs !== undefined || backupGroups !== undefined;
+
+                        const tempMotionsList = [{ 'File': motion.File }];
+
+                        if (json) {
+                            if (!json.FileReferences) json.FileReferences = {};
+                            if (!json.FileReferences.Motions) json.FileReferences.Motions = {};
+                            json.FileReferences.Motions[groupName] = tempMotionsList;
+                            if (!json.motions) json.motions = {};
+                            json.motions[groupName] = tempMotionsList;
+                        }
+
+                        if (!internalModel.settings.motions) internalModel.settings.motions = {};
+                        internalModel.settings.motions[groupName] = tempMotionsList;
+
+                        if (!motionManager.definitions) motionManager.definitions = {};
+                        motionManager.definitions[groupName] = tempMotionsList;
+
+                        if (!motionManager.motionGroups) motionManager.motionGroups = {};
+                        motionManager.motionGroups[groupName] = [];
+
+                        const live2dModel = this.currentModel;
+                        console.log(`[TouchSet] 正在向引擎注入并加载动作: ${motion.File}`);
+                        await motionManager.loadMotion(groupName, 0);
+
+                        if (live2dModel !== this.currentModel) {
+                            console.log('[TouchSet] 模型已切换，中止动作播放');
+                            return;
+                        }
+
+                        motionManager.stopAllMotions();
+                        const result = await live2dModel.motion(groupName, 0, 3);
+
+                        if (result) {
+                            console.log(`[TouchSet] ✅ 成功下发播放指令: ${groupName}[0]`);
+                        } else {
+                            console.warn(`[TouchSet] ❌ 动作加载成功但引擎仍拒绝播放: ${groupName}[0]`);
+                        }
+                    } catch (error) {
+                        console.warn(`[TouchSet] 动作播放异常: ${groupName}[0]`, error);
+                    } finally {
+                        if (groupExisted) {
+                            if (backupDefs !== undefined) motionManager.definitions[groupName] = backupDefs;
+                            if (backupGroups !== undefined) motionManager.motionGroups[groupName] = backupGroups;
+                            if (backupSettingsMotions !== undefined) internalModel.settings.motions[groupName] = backupSettingsMotions;
+                            if (backupJsonMotions !== undefined) {
+                                if (json) json.motions[groupName] = backupJsonMotions;
+                            }
+                            if (backupJsonFileRefs !== undefined) {
+                                if (json?.FileReferences?.Motions) json.FileReferences.Motions[groupName] = backupJsonFileRefs;
+                            }
+                        } else {
+                            delete motionManager.definitions?.[groupName];
+                            delete motionManager.motionGroups?.[groupName];
+                            delete internalModel.settings.motions?.[groupName];
+                            if (json) {
+                                delete json.motions?.[groupName];
+                                delete json.FileReferences?.Motions?.[groupName];
+                            }
+                        }
                     }
-
-                    if (!internalModel.settings.motions) internalModel.settings.motions = {};
-                    internalModel.settings.motions[groupName] = tempMotionsList;
-
-                    if (!motionManager.definitions) motionManager.definitions = {};
-                    motionManager.definitions[groupName] = tempMotionsList;
-
-                    if (!motionManager.motionGroups) motionManager.motionGroups = {};
-                    motionManager.motionGroups[groupName] = [];
-
-                    const live2dModel = this.currentModel;
-                    console.log(`[TouchSet] 正在向引擎注入并加载动作: ${motion.File}`);
-                    await motionManager.loadMotion(groupName, 0);
-
-                    if (live2dModel !== this.currentModel) {
-                        console.log('[TouchSet] 模型已切换，中止动作播放');
-                        return;
-                    }
-
-                    motionManager.stopAllMotions();
-                    const result = await live2dModel.motion(groupName, 0, 3);
-
-                    if (result) {
-                        console.log(`[TouchSet] ✅ 成功下发播放指令: ${groupName}[0]`);
-                    } else {
-                        console.warn(`[TouchSet] ❌ 动作加载成功但引擎仍拒绝播放: ${groupName}[0]`);
-                    }
-                } catch (error) {
-                    console.warn(`[TouchSet] 动作播放异常: ${groupName}[0]`, error);
-                } finally {
-                    if (backupDefs !== undefined) motionManager.definitions[groupName] = backupDefs;
-                    if (backupGroups !== undefined) motionManager.motionGroups[groupName] = backupGroups;
-                    if (backupSettingsMotions !== undefined) internalModel.settings.motions[groupName] = backupSettingsMotions;
-                    if (backupJsonMotions !== undefined) {
-                        if (json) json.motions[groupName] = backupJsonMotions;
-                    }
-                    if (backupJsonFileRefs !== undefined) {
-                        if (json?.FileReferences?.Motions) json.FileReferences.Motions[groupName] = backupJsonFileRefs;
-                    }
-                }
             }
         }
 
