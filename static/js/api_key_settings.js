@@ -3269,6 +3269,74 @@ function initConnectivityLights() {
             );
         });
     });
+
+    // ===== GPT-SoVITS connectivity test button =====
+    const gsvUrlInput = document.getElementById('gptsovitsApiUrl');
+    if (gsvUrlInput) {
+        const gsvLight = document.createElement('span');
+        gsvLight.className = 'connectivity-light';
+        gsvLight.dataset.status = LightStatus.NOT_CONFIGURED;
+        gsvLight.title = 'GPT-SoVITS';
+
+        const gsvTestBtn = document.createElement('button');
+        gsvTestBtn.type = 'button';
+        gsvTestBtn.className = 'connectivity-mini-test-btn';
+        gsvTestBtn.textContent = window.t ? window.t('connectivity.testCore', '测试') : '测试';
+        gsvTestBtn.title = 'GPT-SoVITS 连通测试';
+
+        // Wrap input with light and button
+        const gsvRow = gsvUrlInput.closest('.field-row');
+        if (gsvRow) {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'connectivity-input-row';
+            gsvUrlInput.parentNode.insertBefore(wrapper, gsvUrlInput);
+            wrapper.appendChild(gsvLight);
+            wrapper.appendChild(gsvUrlInput);
+            wrapper.appendChild(gsvTestBtn);
+        }
+
+        // Update light based on URL presence
+        const updateGsvLightStatus = () => {
+            const url = gsvUrlInput.value.trim();
+            if (!url) {
+                gsvLight.dataset.status = LightStatus.NOT_CONFIGURED;
+            } else if (gsvLight.dataset.status === LightStatus.NOT_CONFIGURED) {
+                gsvLight.dataset.status = LightStatus.UNTESTED;
+            }
+        };
+        updateGsvLightStatus();
+        gsvUrlInput.addEventListener('input', () => {
+            updateGsvLightStatus();
+        });
+
+        // Test button click: use the existing list_voices endpoint as a connectivity probe
+        gsvTestBtn.addEventListener('click', async () => {
+            const url = gsvUrlInput.value.trim() || 'http://127.0.0.1:9881';
+            gsvTestBtn.disabled = true;
+            gsvTestBtn.classList.add('testing');
+            gsvLight.dataset.status = LightStatus.TESTING;
+
+            try {
+                const resp = await fetch('/api/config/gptsovits/list_voices', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ api_url: url }),
+                    signal: AbortSignal.timeout(10000),
+                });
+                const result = await resp.json();
+                if (result.success) {
+                    gsvLight.dataset.status = LightStatus.CONNECTED;
+                } else {
+                    gsvLight.dataset.status = LightStatus.FAILED;
+                }
+            } catch (err) {
+                gsvLight.dataset.status = LightStatus.FAILED;
+            }
+
+            gsvTestBtn.classList.remove('testing');
+            gsvTestBtn.disabled = false;
+        });
+    }
 }
 
 // 等待 i18n 初始化完成
