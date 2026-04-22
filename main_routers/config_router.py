@@ -1086,13 +1086,23 @@ def _classify_openai_error(e: Exception, is_free: bool = False) -> dict:
     return {"success": False, "error": str(e), "error_code": "unknown"}
 
 
-async def _test_websocket(url: str, api_key: str) -> dict:
-    """Test a WebSocket endpoint by performing a handshake and closing immediately."""
+async def _test_websocket(url: str, api_key: str, model: str = "") -> dict:
+    """Test a WebSocket endpoint by performing a handshake and closing immediately.
+
+    Mirrors the project's OmniRealtimeClient.connect() behavior:
+    - Appends ?model={model} to the URL (same as omni_realtime_client.py)
+    - Sends Authorization header with Bearer token
+    - Optionally appends api_key as query parameter
+    """
     import websockets
 
     try:
-        # Build WebSocket URL with API key as query parameter (if key provided)
+        # Build WebSocket URL with model parameter (same as OmniRealtimeClient.connect)
         ws_url = url.rstrip("/")
+        if model and model.lower() != "free-model":
+            ws_url = f"{ws_url}?model={model}"
+
+        # Add API key as query parameter and Authorization header (if key provided)
         if api_key:
             separator = "&" if "?" in ws_url else "?"
             encoded_api_key = urllib.parse.quote(api_key, safe="")
@@ -1216,7 +1226,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
 
     try:
         if provider_type == "websocket":
-            result = await _test_websocket(url_stripped, api_key_stripped)
+            result = await _test_websocket(url_stripped, api_key_stripped, model=model)
         else:
             result = await _test_openai_compatible(url_stripped, api_key_stripped, model=model, is_free=is_free)
     except Exception as e:

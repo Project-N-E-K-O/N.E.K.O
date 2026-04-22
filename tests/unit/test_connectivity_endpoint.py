@@ -559,7 +559,7 @@ class TestConcurrency:
         """Multiple websocket requests run concurrently via asyncio.gather."""
         call_count = 0
 
-        async def mock_test_ws(url, api_key):
+        async def mock_test_ws(url, api_key, model=""):
             nonlocal call_count
             call_count += 1
             await asyncio.sleep(0.05)
@@ -591,7 +591,7 @@ class TestConcurrency:
             await asyncio.sleep(0.05)
             return {"success": True}
 
-        async def mock_test_ws(url, api_key):
+        async def mock_test_ws(url, api_key, model=""):
             await asyncio.sleep(0.05)
             return {"success": True}
 
