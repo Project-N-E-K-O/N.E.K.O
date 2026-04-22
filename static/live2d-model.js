@@ -245,7 +245,6 @@ Live2DManager.prototype._resetDerivedModelMetadata = function() {
     this._lookAtTargetY = 0;
     this._lookAtCurrentX = 0;
     this._lookAtCurrentY = 0;
-    this._isMouseTrackingActive = this._mouseTrackingEnabled || false;
     this._bubbleGeometryCache = null;
 
     if (this._missingExpressionFiles instanceof Set) {
@@ -605,7 +604,7 @@ Live2DManager.prototype._updateEyeBlink = function(delta) {
 Live2DManager.prototype._updateRandomLookAt = function(delta) {
     const coreModel = this.currentModel?.internalModel?.coreModel;
     if (!coreModel) return;
-    if (this._isMouseTrackingActive) return;
+    if (this._mouseTrackingEnabled) return;
     if (this._lookAtTimer === undefined) {
         this._lookAtTimer = 0;
         this._lookAtNextTime = 2 + Math.random() * 3;
@@ -827,7 +826,6 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     // 同步内部状态（眼睛跟踪是否启用）
     this._mouseTrackingEnabled = window.mouseTrackingEnabled !== false;
     console.log(`[Live2D] 鼠标跟踪初始化: window.mouseTrackingEnabled=${window.mouseTrackingEnabled}, _mouseTrackingEnabled=${this._mouseTrackingEnabled}`);
-    this._isMouseTrackingActive = this._mouseTrackingEnabled || false;
 
     // 设置浮动按钮系统（在模型完全就绪后再绑定ticker回调）
     this.setupFloatingButtons(model);
@@ -1356,7 +1354,7 @@ Live2DManager.prototype.installMouthOverride = function() {
             // === 注入点 1（物理引擎前）：视线微动 ===
             // 仅当 Motion 未接管时注入，让物理引擎能看到这些变化
             // 注意：呼吸由 SDK 原生 Breath 系统接管，无需我们干预
-            if (!this._isLookAtDrivenByMotion && !this._isMouseTrackingActive) {
+            if (!this._isLookAtDrivenByMotion && !this._mouseTrackingEnabled) {
                 const delta = (this.currentModel?.deltaTime || 16.66) / 1000;
                 this._updateRandomLookAt(delta);
             }
