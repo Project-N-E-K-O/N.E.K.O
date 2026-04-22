@@ -9,7 +9,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
-from loguru import logger
+from plugin.logging_config import logger
 
 import ormsgpack
 

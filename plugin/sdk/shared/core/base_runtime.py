@@ -1,12 +1,17 @@
-"""Internal runtime wiring helpers for shared.core.base."""
+"""Internal runtime wiring helpers for shared.core.base.
+
+⚠ 历史教训：本文件曾用 loguru.add/remove 给每个插件组件挂独立 sink，
+日志路径由 SDK 调用者乱传 log_dir 决定 → AppImage 打包后写到 squashfs 直接崩。
+现在统一走 utils.logger_config.RobustLoggerConfig（通过 setup_sdk_logging
+→ plugin.logging_config）。log_dir / max_bytes / backup_count 形参保留只为
+兼容旧调用，**不再生效**；本体决定路径与轮转。
+谁再往这里塞 loguru —— 按维护者口径就把谁杀了。lint: scripts/check_no_loguru.py。
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from loguru import logger as _loguru_logger
-
-from plugin.logging_config import FORMAT_FILE, LOG_COMPRESSION, LOG_DIR, LOG_MAX_SIZE, LOG_RETENTION
 from plugin.sdk.shared.logging import LogLevel, setup_sdk_logging
 
 
@@ -46,29 +51,16 @@ def setup_plugin_file_logging(
     backup_count: int | None,
     previous_sink_id: int | None,
 ) -> int | None:
+    """配置 SDK 组件日志。
+
+    兼容形参 log_dir/max_bytes/backup_count 已废弃 —— 本体 RobustLoggerConfig
+    统一管路径与轮转。仅调用 setup_sdk_logging 应用 level，返回固定 sink_id=0
+    保持 base.py 的 self._file_sink_id: int | None 契约。
+    """
     setup_sdk_logging(component=component, level=parsed_level)
-
-    if log_dir is None and max_bytes is None and backup_count is None:
-        return previous_sink_id
-
-    target_dir = Path(log_dir) if log_dir is not None else LOG_DIR
-    target_dir.mkdir(parents=True, exist_ok=True)
-    log_file = target_dir / f"{component.replace('.', '_')}.log"
-
-    if isinstance(previous_sink_id, int):
-        _loguru_logger.remove(previous_sink_id)
-
-    sink_id = _loguru_logger.add(
-        str(log_file),
-        format=FORMAT_FILE,
-        level=parsed_level.value,
-        rotation=max_bytes if max_bytes is not None else LOG_MAX_SIZE,
-        retention=backup_count if backup_count is not None else LOG_RETENTION,
-        compression=LOG_COMPRESSION,
-        encoding="utf-8",
-        filter=lambda record, c=component: record["extra"].get("component", "") == c,
-    )
-    return sink_id
+    if previous_sink_id is None:
+        return 0
+    return previous_sink_id
 
 
 __all__ = [

@@ -160,13 +160,13 @@
                 </el-form-item>
 
                 <el-form-item label="插件目录">
-                  <el-input v-model="unpackForm.plugins_root" placeholder="默认写入 plugin/plugins" />
+                  <el-input v-model="unpackForm.plugins_root" placeholder="默认写入我的文档下的用户插件目录" />
                 </el-form-item>
 
                 <el-form-item label="Profiles 目录">
                   <el-input
                     v-model="unpackForm.profiles_root"
-                    placeholder="默认写入 plugin/.neko-package-profiles"
+                    placeholder="默认写入我的文档下的 .neko-package-profiles 目录"
                   />
                 </el-form-item>
 
