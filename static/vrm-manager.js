@@ -152,7 +152,16 @@ class VRMManager {
     }
 
     _getLookAtHeadWorldPosition() {
-        const headBone = this.currentModel?.vrm?.humanoid?.getNormalizedBoneNode('head');
+        const humanoid = this.currentModel?.vrm?.humanoid;
+        let headBone = null;
+        if (humanoid) {
+            if (typeof humanoid.getRawBoneNode === 'function') {
+                headBone = humanoid.getRawBoneNode('head');
+            }
+            if (!headBone && typeof humanoid.getNormalizedBoneNode === 'function') {
+                headBone = humanoid.getNormalizedBoneNode('head');
+            }
+        }
         if (headBone) {
             headBone.updateMatrixWorld(true);
             headBone.getWorldPosition(this._lookAtHeadWorldPos);
@@ -1663,6 +1672,29 @@ class VRMManager {
         }
 
         return this._projectWorldPositionToScreen(this._getLookAtHeadWorldPosition());
+    }
+
+    getHeadDetectionGeometryInfo() {
+        const bounds = this.getModelScreenBounds();
+        if (!bounds) {
+            return null;
+        }
+
+        const headAnchor = this.getHeadScreenAnchor();
+        return {
+            type: 'vrm',
+            bounds,
+            rawHeadAnchor: headAnchor || null,
+            headAnchor: headAnchor || null,
+            headRect: null,
+            headMode: 'head',
+            headSource: 'bone',
+            bodyRect: null,
+            bodySource: null,
+            reliableHeadRect: false,
+            preciseDisplayInfoRect: false,
+            coarseHitAreaHeadRect: false
+        };
     }
 
     /**

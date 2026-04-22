@@ -64,10 +64,15 @@ def plugin_cli_test_app() -> FastAPI:
 async def test_plugin_cli_inspect_and_verify_routes(
     plugin_cli_test_app: FastAPI,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     plugin_dir = _make_plugin_dir(tmp_path)
     package_path = tmp_path / "route_demo.neko-plugin"
     pack_plugin(plugin_dir, package_path)
+
+    import plugin.server.application.plugin_cli.service as plugin_cli_service_module
+
+    monkeypatch.setattr(plugin_cli_service_module, "_TARGET_ROOT", tmp_path)
 
     transport = ASGITransport(app=plugin_cli_test_app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -142,6 +147,7 @@ async def test_plugin_cli_pack_bundle_route_uses_mode_payload(
     import plugin.server.application.plugin_cli.service as plugin_cli_service_module
 
     monkeypatch.setattr(plugin_cli_service_module, "_RUNTIME_PLUGINS_ROOT", tmp_path)
+    monkeypatch.setattr(plugin_cli_service_module, "_TARGET_ROOT", tmp_path)
 
     transport = ASGITransport(app=plugin_cli_test_app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -179,7 +185,8 @@ async def test_plugin_cli_route_workflow_pack_analyze_inspect_verify_and_unpack(
 
     monkeypatch.setattr(plugin_cli_service_module, "_RUNTIME_PLUGINS_ROOT", tmp_path)
     monkeypatch.setattr(plugin_cli_service_module, "_TARGET_ROOT", target_dir)
-    monkeypatch.setattr(plugin_cli_service_module, "_RUNTIME_PROFILES_ROOT", profiles_root)
+    monkeypatch.setattr(plugin_cli_service_module, "_UNPACK_PLUGINS_ROOT", tmp_path)
+    monkeypatch.setattr(plugin_cli_service_module, "_UNPACK_PROFILES_ROOT", profiles_root)
 
     transport = ASGITransport(app=plugin_cli_test_app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -253,3 +260,36 @@ async def test_plugin_cli_route_workflow_pack_analyze_inspect_verify_and_unpack(
         assert (plugins_root / "bundle_alpha" / "plugin.toml").is_file()
         assert (plugins_root / "bundle_beta" / "plugin.toml").is_file()
         assert (profiles_root / "route_workflow_bundle" / "default.toml").is_file()
+
+
+@pytest.mark.asyncio
+async def test_plugin_cli_unpack_route_uses_default_roots_when_fields_omitted(
+    plugin_cli_test_app: FastAPI,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """省略 plugins_root/profiles_root 时，默认落盘到 _UNPACK_*_ROOT 下。"""
+    plugin_dir = _copy_fixture_plugin(tmp_path, "simple_plugin")
+    package_path = tmp_path / "simple_plugin.neko-plugin"
+    pack_plugin(plugin_dir, package_path)
+
+    default_plugins_root = tmp_path / "default_user_plugins"
+    default_profiles_root = tmp_path / "default_user_profiles"
+
+    import plugin.server.application.plugin_cli.service as plugin_cli_service_module
+
+    monkeypatch.setattr(plugin_cli_service_module, "_TARGET_ROOT", tmp_path)
+    monkeypatch.setattr(plugin_cli_service_module, "_UNPACK_PLUGINS_ROOT", default_plugins_root)
+    monkeypatch.setattr(plugin_cli_service_module, "_UNPACK_PROFILES_ROOT", default_profiles_root)
+
+    transport = ASGITransport(app=plugin_cli_test_app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/plugin-cli/unpack",
+            json={"package": str(package_path), "on_conflict": "rename"},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["plugins_root"] == str(default_plugins_root.resolve())
+        assert (default_plugins_root / "simple_plugin" / "plugin.toml").is_file()

@@ -1,39 +1,101 @@
 """
-统一日志配置模块
+插件日志配置模块（stdlib 薄壳）
 
-提供插件系统的统一日志配置，基于 loguru。
+╔══════════════════════════════════════════════════════════════════════════╗
+║                                                                          ║
+║                        ⚠⚠⚠  警  告  ⚠⚠⚠                                ║
+║                                                                          ║
+║   本仓库 **彻底禁止** 引入 loguru / structlog / logbook 等第三方        ║
+║   日志库。所有 Python 代码（含 plugin/、utils/、main_*、agent_*、       ║
+║   memory_* 等）统一走 utils.logger_config.RobustLoggerConfig，          ║
+║   日志会自动落到 我的文档/N.E.K.O/logs/。                              ║
+║                                                                          ║
+║   过去多次有人偷偷加 loguru，结果：                                     ║
+║     1. AppImage 打包后 cwd 在只读 squashfs，loguru 默认相对路径直接     ║
+║        崩溃；                                                            ║
+║     2. 主进程一套日志、loguru 一套日志，排障时找不到地方；             ║
+║     3. 加 loguru→stdlib bridge 把简单事情搞复杂。                      ║
+║                                                                          ║
+║   再有人在本仓库引入 loguru / 把 plugin 日志写到 cwd / 自创落盘路径，  ║
+║   按维护者口径：**就把谁杀了。**                                        ║
+║                                                                          ║
+║   加 lint 守门：scripts/check_no_loguru.py 在 CI（analyze.yml）里强制   ║
+║   执行，PR 含 loguru import 直接 fail，无法合并。                       ║
+║                                                                          ║
+╚══════════════════════════════════════════════════════════════════════════╝
 
-环境变量:
-    NEKO_LOG_LEVEL: 全局日志级别 (TRACE/DEBUG/INFO/WARNING/ERROR/CRITICAL)
-    NEKO_LOG_CONSOLE: 是否输出到控制台 (true/false)
-    NEKO_LOG_FILE: 是否输出到文件 (true/false)
-    NEKO_LOG_JSON: 是否输出 JSON 格式 (true/false)
-    NEKO_LOG_DIR: 日志目录路径
+本模块对外提供的接口（全部走 stdlib logging）：
+  - get_logger(component) / logger     —— 获取 plugin 命名空间下的 logger
+  - setup_logging(...)                 —— 转发到 utils.logger_config.setup_logging
+  - configure_default_logger(level)    —— 兼容性 no-op（本体已统一管理 sink）
+  - intercept_standard_logging()       —— 兼容性 no-op（本体即 stdlib）
+  - format_log_text(...)               —— 截断/换行工具
 
-Usage:
-    from plugin.logging_config import get_logger, setup_logging
-    
-    # 获取组件 logger
-    logger = get_logger("server.lifecycle")
-    logger.info("Server started", port=8000)
-    
-    # 结构化日志
-    logger.info("Request processed", method="GET", path="/api", duration=0.5)
+PluginLoggerAdapter：
+  兼容现有 plugin 内部的 loguru 风格调用（bind / opt / braces 风格 / 关键字 extra），
+  内部全部转发到 stdlib logging.Logger。**不是为了在仓库里继续写 loguru 风格代码，
+  仅仅是不想动 1000+ 处调用。新代码请直接用 stdlib `logger.info(f"...")` 风格。**
+
+环境变量（向下兼容旧 NEKO_LOG_* 变量；新代码请用 utils.logger_config）：
+  NEKO_LOG_LEVEL          全局日志级别 (TRACE/DEBUG/INFO/WARNING/ERROR/CRITICAL)
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 import sys
+import threading
 from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
 
-from loguru import logger as _loguru_logger
 
+# ──────────────────────────────────────────────────────────────────────────
+#  brace-format 兼容（让 stdlib 支持 logger.info("msg {}", x) 这种 loguru 风格）
+#  这段代码原本在 plugin/user_plugin_server.py 里，移到这里让所有进程共享。
+# ──────────────────────────────────────────────────────────────────────────
+
+def _install_logging_brace_compat() -> None:
+    """patch stdlib LogRecord.getMessage 让 {} 风格不抛异常。
+
+    stdlib 默认是 %-style，遇到 logger.info("msg {}", x) 会抛 TypeError；
+    我们 fallback 到 str.format(*args)，让两种风格都能工作。
+    """
+    if getattr(logging, "_neko_brace_compat_installed", False):
+        return
+
+    original_get_message = logging.LogRecord.getMessage
+
+    def _compat_get_message(self: logging.LogRecord) -> str:
+        try:
+            return original_get_message(self)
+        except TypeError:
+            msg = str(self.msg)
+            args = self.args
+            if not args or "%" in msg or "{" not in msg or "}" not in msg:
+                raise
+            try:
+                if isinstance(args, dict):
+                    return msg.format(**args)
+                if not isinstance(args, tuple):
+                    args = (args,)
+                return msg.format(*args)
+            except Exception:
+                return f"{msg} | args={self.args!r}"
+
+    setattr(logging.LogRecord, "getMessage", _compat_get_message)
+    setattr(logging, "_neko_brace_compat_installed", True)
+
+
+_install_logging_brace_compat()
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#  LogLevel 枚举（向下兼容旧 plugin SDK 接口；映射到 stdlib int 等级）
+# ──────────────────────────────────────────────────────────────────────────
 
 class LogLevel(str, Enum):
-    """日志级别枚举"""
     TRACE = "TRACE"
     DEBUG = "DEBUG"
     INFO = "INFO"
@@ -42,296 +104,428 @@ class LogLevel(str, Enum):
     CRITICAL = "CRITICAL"
 
 
-def _get_bool_env(name: str, default: bool) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.lower() in ("true", "1", "yes", "on")
+_LEVEL_TO_INT = {
+    LogLevel.TRACE: logging.DEBUG,  # stdlib 没有 TRACE，降级到 DEBUG
+    LogLevel.DEBUG: logging.DEBUG,
+    LogLevel.INFO: logging.INFO,
+    LogLevel.WARNING: logging.WARNING,
+    LogLevel.ERROR: logging.ERROR,
+    LogLevel.CRITICAL: logging.CRITICAL,
+}
+
+
+def _level_to_int(level: Any) -> int:
+    if isinstance(level, int):
+        return level
+    if isinstance(level, LogLevel):
+        return _LEVEL_TO_INT[level]
+    if isinstance(level, str):
+        try:
+            return _LEVEL_TO_INT[LogLevel(level.upper())]
+        except (KeyError, ValueError):
+            mapped = logging.getLevelName(level.upper())
+            return mapped if isinstance(mapped, int) else logging.INFO
+    return logging.INFO
 
 
 def _get_log_level() -> LogLevel:
-    """获取全局日志级别"""
-    level_str = os.getenv("NEKO_LOG_LEVEL", "INFO").upper()
+    raw = os.getenv("NEKO_LOG_LEVEL", "INFO").upper()
     try:
-        return LogLevel(level_str)
+        return LogLevel(raw)
     except ValueError:
         return LogLevel.INFO
 
 
-def _get_component_level(component: str) -> Optional[LogLevel]:
-    """获取组件特定的日志级别"""
-    env_name = f"NEKO_LOG_LEVEL_{component.upper().replace('.', '_')}"
-    level_str = os.getenv(env_name)
-    if level_str:
-        try:
-            return LogLevel(level_str.upper())
-        except ValueError:
-            pass
-    return None
+# ──────────────────────────────────────────────────────────────────────────
+#  全局配置常量（向下兼容；新代码请直接用 utils.logger_config）
+# ──────────────────────────────────────────────────────────────────────────
 
-
-# 全局配置
 LOG_LEVEL = _get_log_level()
+# LOG_DIR 仅作为兼容性 stub。**绝对不要往这里写**——本体 RobustLoggerConfig
+# 会自动选择可写目录（Documents/N.E.K.O/logs/）。
 LOG_DIR = Path(os.getenv("NEKO_LOG_DIR", "log"))
-LOG_CONSOLE = _get_bool_env("NEKO_LOG_CONSOLE", True)
-LOG_FILE = _get_bool_env("NEKO_LOG_FILE", True)
-LOG_JSON = _get_bool_env("NEKO_LOG_JSON", False)
 LOG_MAX_SIZE = os.getenv("NEKO_LOG_MAX_SIZE", "10 MB")
 LOG_RETENTION = os.getenv("NEKO_LOG_RETENTION", "7 days")
 LOG_COMPRESSION = os.getenv("NEKO_LOG_COMPRESSION", "gz")
 
-# 日志格式（统一格式，所有组件使用）
-# 控制台格式（带颜色，使用 extra[component]）
+# 旧 loguru 格式字符串保留为常量；stdlib 不会用，但有几处旧代码 import 它们。
 FORMAT_CONSOLE = (
-    "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
-    "<level>{level: <8}</level> | "
-    "<cyan>{extra[component]: <20}</cyan> | "
-    "<level>{message}</level>"
+    "{asctime} | {levelname:<8} | {name:<20} | {message}"
 )
-# 文件格式（无颜色，使用 extra[component]）
 FORMAT_FILE = (
-    "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | "
-    "{extra[component]: <20} | {message}"
+    "{asctime} | {levelname:<8} | {name:<20} | {message}"
 )
+FORMAT_CONSOLE_SIMPLE = "{asctime} | {levelname:<8} | {message}"
+FORMAT_FILE_SIMPLE = "{asctime} | {levelname:<8} | {message}"
 
-# 简化格式（用于不需要 component 的场景）
-FORMAT_CONSOLE_SIMPLE = (
-    "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
-    "<level>{level: <8}</level> | "
-    "<level>{message}</level>"
-)
-FORMAT_FILE_SIMPLE = (
-    "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {message}"
-)
 
-# 插件进程格式（带进程标识）
 def get_plugin_format_console(plugin_id: str) -> str:
-    """获取插件进程的控制台日志格式"""
-    return (
-        f"<green>{{time:YYYY-MM-DD HH:mm:ss}}</green> | "
-        f"<level>{{level: <8}}</level> | "
-        f"<cyan>[{plugin_id}]</cyan> | "
-        f"<level>{{message}}</level>"
-    )
+    return f"{{asctime}} | {{levelname:<8}} | [{plugin_id}] {{message}}"
+
 
 def get_plugin_format_file(plugin_id: str) -> str:
-    """获取插件进程的文件日志格式"""
-    return (
-        f"{{time:YYYY-MM-DD HH:mm:ss.SSS}} | {{level: <8}} | "
-        f"[{plugin_id}] | {{message}}"
-    )
+    return f"{{asctime}} | {{levelname:<8}} | [{plugin_id}] {{message}}"
 
-# 敏感信息过滤模式
+
+# ──────────────────────────────────────────────────────────────────────────
+#  敏感信息过滤
+# ──────────────────────────────────────────────────────────────────────────
+
 REDACT_PATTERNS = [
     re.compile(r'(password|passwd|pwd)["\']?\s*[:=]\s*["\']?[^"\'\s]+', re.I),
     re.compile(r'(token|api_key|apikey|secret)["\']?\s*[:=]\s*["\']?[^"\'\s]+', re.I),
     re.compile(r'(authorization|auth)["\']?\s*[:=]\s*["\']?[^"\'\s]+', re.I),
 ]
 
-# 是否已配置默认 logger
-_default_configured = False
-
-
-def configure_default_logger(level: str = "INFO") -> None:
-    """配置默认的 loguru logger 格式
-    
-    在主进程启动时调用一次，统一所有使用 `from loguru import logger` 的模块的日志格式。
-    
-    Args:
-        level: 日志级别，默认 INFO
-    
-    Usage:
-        # 在 user_plugin_server.py 启动时调用
-        from plugin.logging_config import configure_default_logger
-        configure_default_logger()
-    """
-    global _default_configured
-    if _default_configured:
-        return
-    
-    _loguru_logger.remove()
-    # 同步清理组件配置状态，避免后续出现“默认 sink + 组件 sink”双输出。
-    _configured_components.clear()
-    _configured_console_roots.clear()
-    _loguru_logger.add(
-        sys.stdout,
-        format=FORMAT_CONSOLE_SIMPLE,
-        level=level,
-        colorize=True,
-    )
-    _default_configured = True
-
-# 已配置的组件集合
-_configured_components: set[str] = set()
-_configured_console_roots: set[str] = set()  # 按 root 组件去重，防止 console handler 重复
-_setup_lock = None
-try:
-    import threading
-    _setup_lock = threading.Lock()
-except ImportError:
-    pass
-
 
 def _redact_sensitive(message: str) -> str:
-    """过滤敏感信息"""
     for pattern in REDACT_PATTERNS:
         message = pattern.sub(r'\1=***REDACTED***', message)
     return message
 
 
-def _format_with_extra(record: dict) -> str:
-    """格式化日志记录，包含额外字段"""
-    extra = record.get("extra", {})
-    extra_fields = {k: v for k, v in extra.items() if k != "component"}
-    if extra_fields:
-        extra_str = " | " + " ".join(f"{k}={v}" for k, v in extra_fields.items())
-        return record["message"] + extra_str
-    return record["message"]
+# ──────────────────────────────────────────────────────────────────────────
+#  本体 logger 初始化（懒加载，避免 import 循环）
+# ──────────────────────────────────────────────────────────────────────────
 
+_setup_lock = threading.Lock()
+_root_initialised = False
+
+
+def _ensure_root_logger() -> None:
+    """确保 plugin 命名空间挂在本体 RobustLoggerConfig 之下。
+
+    多次调用幂等。但**只在真正成功 setup 之后**才把 ``_root_initialised``
+    锁死成 True，否则 import 早期 ``utils`` 还没在 sys.path / bootstrap 临时
+    抛错 时会永久禁用重试，后续真正能 setup 的调用直接被短路掉，日志链路
+    就再也挂不上了。
+    """
+    global _root_initialised
+    if _root_initialised:
+        return
+    with _setup_lock:
+        if _root_initialised:
+            return
+        # 通过 utils.logger_config 走本体落盘路径。
+        try:
+            from utils.logger_config import setup_logging as _bootstrap_setup_logging
+        except ModuleNotFoundError:
+            # 极早期 import（plugin SDK 单元测试场景）utils 不在 sys.path 时，
+            # 静默 return —— 不要把 _root_initialised 锁死，下次再调能重试。
+            return
+
+        service_name = os.getenv("NEKO_PLUGIN_SERVICE_NAME") or "Plugin"
+
+        try:
+            from config import APP_NAME as _app_name
+        except Exception:
+            _app_name = "N.E.K.O"
+
+        service_logger = logging.getLogger(f"{_app_name}.{service_name}")
+
+        # Short-circuit：上层（user_plugin_server.py / _setup_plugin_logger）
+        # 已经为该 service_name 调过 setup_logging，对应 logger 已挂 file/console
+        # handler。再调一次会触发 RobustLoggerConfig.setup_logger() 的 "幂等重建"
+        # （清掉重建），既浪费 IO，又会多打一行 "日志系统已初始化"。
+        if not service_logger.handlers:
+            # ``Plugin_<id>`` 子进程 → 收纳到 ``logs/plugin/``；
+            # ``PluginServer`` 宿主进程 → 留在顶层 ``logs/``。
+            # 前缀匹配故意卡 ``Plugin_`` 下划线，避免把 ``PluginServer`` 误路由。
+            log_subdir = "plugin" if service_name.startswith("Plugin_") else None
+            try:
+                _bootstrap_setup_logging(
+                    service_name=service_name,
+                    log_level=_level_to_int(LOG_LEVEL),
+                    silent=True,
+                    log_subdir=log_subdir,
+                )
+            except Exception:
+                # bootstrap 失败 —— 同样别锁死 flag，下次真正能跑时再重试。
+                return
+            # bootstrap 应该已经把 handlers 挂到 service_logger；重新拿一次。
+            service_logger = logging.getLogger(f"{_app_name}.{service_name}")
+
+        # 桥接 root logger → service handlers，让 uvicorn / aiohttp / urllib3 等
+        # 通过 ``logging.getLogger("xxx")`` 拿 logger 的第三方库，propagate 到
+        # root 时也能落盘。loguru 时代靠 ``intercept_standard_logging`` 在 root
+        # 上挂转发 handler；拆 loguru 后那条 bridge 没了，必须显式重建。
+        _install_root_bridge(service_logger)
+
+        _root_initialised = True
+
+
+def _install_root_bridge(service_logger: logging.Logger) -> None:
+    """让 root logger 把记录复制到 service_logger 的 handlers 上。
+
+    只在第一个真正配过 handler 的 service 上执行一次，幂等。
+
+    注意：``N.E.K.O.<service>`` 自己挂的 logger ``propagate=False``，所以
+    plugin 自己的日志走 service handler 一次，不会被 root 再写一遍；只有
+    propagate=True 的第三方 logger 会经 root 走到这里。
+    """
+    if not service_logger.handlers:
+        return
+    root = logging.getLogger()
+    if getattr(root, "_neko_plugin_root_bridged", False):
+        return
+    for h in service_logger.handlers:
+        if h not in root.handlers:
+            root.addHandler(h)
+    # root 默认 WARNING；要拉到 service 级别，否则 INFO 在到达 handler 前
+    # 就被 root 砍掉了。
+    if root.level == logging.NOTSET or root.level > service_logger.level:
+        root.setLevel(service_logger.level or logging.INFO)
+    setattr(root, "_neko_plugin_root_bridged", True)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#  PluginLoggerAdapter
+#  -------------------------------------------------------------------------
+#  兼容 plugin/ 现存 1000+ 处 loguru 风格调用：
+#    .info / .warning / .error / .debug / .critical / .exception
+#    .info("msg {}", x)         braces 风格 → 内部转 .format
+#    .info("msg", key=value)    关键字 extra → 走 stdlib extra
+#    .bind(plugin_id=...)       → 返回带 extra 的新 adapter
+#    .opt(exception=True)       → 临时 wrapper，下一次 log 自动 exc_info=True
+#    .add / .remove / .configure → no-op
+#    .level(name)               → 返回 LoguruLevel 兼容对象
+#    .success / .trace          → 映射到 INFO / DEBUG
+#  -------------------------------------------------------------------------
+#  ⚠ 该 adapter 只是历史兼容。新代码请用 stdlib 风格：
+#       logger.info(f"foo {x}")
+#       logger.warning("bar", extra={"plugin_id": pid})
+# ──────────────────────────────────────────────────────────────────────────
+
+_LOGGER_KWARGS = {"exc_info", "stack_info", "stacklevel"}
+_LOGURU_KW_BLACKLIST = {"colors", "lazy", "raw", "capture", "depth"}
+
+
+def _format_brace_msg(msg: Any, args: tuple) -> tuple[str, tuple]:
+    """如果 msg 含 {} 且 args 非空，尝试 .format(*args)；否则原样返回。"""
+    if not args:
+        return msg, args
+    text = msg if isinstance(msg, str) else str(msg)
+    if "{" not in text or "}" not in text:
+        return msg, args
+    # 优先 stdlib %-style；若失败则 fallback 到 .format
+    try:
+        text % args
+        return msg, args
+    except (TypeError, ValueError):
+        pass
+    try:
+        formatted = text.format(*args)
+        return formatted, ()
+    except Exception:
+        return msg, args
+
+
+class PluginLoggerAdapter:
+    """对外暴露的 logger 实例。
+
+    **Lazy logger resolution**：adapter 持有 *component 名*（str），每次
+    log 时根据当前 ``NEKO_PLUGIN_SERVICE_NAME`` 环境变量重算
+    ``N.E.K.O.<service>.<component>`` 拿 stdlib logger。
+
+    为什么不在 ``__init__`` 时绑定 ``logging.Logger`` 实例：
+      子进程的某个共享 module 顶部写
+      ``from plugin.logging_config import logger``，
+      会在 import 时跑一次 ``get_logger("plugin")``。这一刻 host 的
+      ``_setup_plugin_logger`` 还没把 ``NEKO_PLUGIN_SERVICE_NAME`` 设成
+      ``Plugin_<id>``，所以 logger 会被冻结到默认的 ``Plugin`` 命名空间，
+      之后再 setup_logging 也救不回来——日志都跑到 N.E.K.O_Plugin_*.log
+      去了，新建的 N.E.K.O_Plugin_<id>_*.log 反而是空的。
+
+      stdlib ``logging.getLogger(name)`` 自带 LRU，每次调用是 O(1) 拿同一
+      个 Logger 实例，所以 lazy 解析没有性能开销。
+    """
+
+    __slots__ = ("_component", "_extra", "_opt_exc_info")
+
+    def __init__(
+        self,
+        component: str,
+        extra: Optional[dict] = None,
+        opt_exc_info: Any = None,
+    ):
+        self._component = component
+        self._extra: dict = dict(extra) if extra else {}
+        self._opt_exc_info = opt_exc_info  # 仅由 .opt(exception=...) 设置，单次有效
+
+    # ── 懒解析底层 stdlib logger ────────────────────────────────────
+    def _resolve_logger(self) -> logging.Logger:
+        try:
+            from config import APP_NAME as _app_name
+        except Exception:
+            _app_name = "N.E.K.O"
+        service_name = os.getenv("NEKO_PLUGIN_SERVICE_NAME") or "Plugin"
+        return logging.getLogger(f"{_app_name}.{service_name}.{self._component}")
+
+    # ── 内部分发 ─────────────────────────────────────────────────────
+    def _log(self, level: int, msg: Any, args: tuple, kwargs: dict) -> None:
+        msg, args = _format_brace_msg(msg, args)
+
+        std_kwargs: dict[str, Any] = {}
+        for key in list(kwargs):
+            if key in _LOGGER_KWARGS:
+                std_kwargs[key] = kwargs.pop(key)
+            elif key in _LOGURU_KW_BLACKLIST:
+                kwargs.pop(key)  # 静默丢弃 loguru-only 关键字
+
+        # .opt(exception=...) 一次性附加
+        if self._opt_exc_info is not None and "exc_info" not in std_kwargs:
+            std_kwargs["exc_info"] = self._opt_exc_info
+            self._opt_exc_info = None
+
+        # 合并 binding extra + 调用 extra（既支持 extra={...}，也支持 logger.info("msg", k=v)）
+        merged_extra = dict(self._extra)
+        user_extra = kwargs.pop("extra", None)
+        if isinstance(user_extra, dict):
+            merged_extra.update(user_extra)
+        if kwargs:
+            # 剩余的 kwargs 当成 loguru 风格的 extra 字段
+            merged_extra.update(kwargs)
+
+        if merged_extra:
+            std_kwargs["extra"] = merged_extra
+
+        # 让 caller filename/lineno 跳过 adapter 本身
+        std_kwargs.setdefault("stacklevel", 2)
+
+        self._resolve_logger().log(level, msg, *args, **std_kwargs)
+
+    # ── 标准方法 ─────────────────────────────────────────────────────
+    def trace(self, msg: Any, *args, **kwargs) -> None:
+        self._log(logging.DEBUG, msg, args, kwargs)
+
+    def debug(self, msg: Any, *args, **kwargs) -> None:
+        self._log(logging.DEBUG, msg, args, kwargs)
+
+    def info(self, msg: Any, *args, **kwargs) -> None:
+        self._log(logging.INFO, msg, args, kwargs)
+
+    def success(self, msg: Any, *args, **kwargs) -> None:
+        self._log(logging.INFO, msg, args, kwargs)
+
+    def warning(self, msg: Any, *args, **kwargs) -> None:
+        self._log(logging.WARNING, msg, args, kwargs)
+
+    warn = warning
+
+    def error(self, msg: Any, *args, **kwargs) -> None:
+        self._log(logging.ERROR, msg, args, kwargs)
+
+    def critical(self, msg: Any, *args, **kwargs) -> None:
+        self._log(logging.CRITICAL, msg, args, kwargs)
+
+    def exception(self, msg: Any, *args, **kwargs) -> None:
+        kwargs.setdefault("exc_info", True)
+        self._log(logging.ERROR, msg, args, kwargs)
+
+    def log(self, level: Any, msg: Any, *args, **kwargs) -> None:
+        self._log(_level_to_int(level), msg, args, kwargs)
+
+    # ── loguru 兼容 ──────────────────────────────────────────────────
+    def bind(self, **extra: Any) -> "PluginLoggerAdapter":
+        merged = dict(self._extra)
+        merged.update(extra)
+        return PluginLoggerAdapter(self._component, extra=merged)
+
+    def opt(self, *, exception: Any = None, depth: int = 0, lazy: bool = False,
+            colors: bool = False, raw: bool = False, capture: bool = True) -> "PluginLoggerAdapter":
+        # depth/lazy/colors/raw/capture 在 stdlib 下没有意义，保留签名兼容。
+        # exception=True 触发下一次 log 自动 exc_info；exception=<exc_info_tuple> 直接透传。
+        return PluginLoggerAdapter(
+            self._component,
+            extra=self._extra,
+            opt_exc_info=True if exception is True else exception if exception else None,
+        )
+
+    def add(self, *args, **kwargs) -> int:  # noqa: ARG002 — loguru API 兼容
+        # 历史代码偶尔在运行时 logger.add(...) 加 sink，已迁到 stdlib handler 管理。
+        # 这里 no-op 并返回一个 fake sink id（loguru 风格）。
+        return 0
+
+    def remove(self, *args, **kwargs) -> None:  # noqa: ARG002 — loguru API 兼容
+        return None
+
+    def configure(self, *args, **kwargs) -> None:  # noqa: ARG002 — loguru API 兼容
+        return None
+
+    def level(self, name: str) -> Any:
+        no = _level_to_int(name)
+        return type("Level", (), {"name": name, "no": no})
+
+    def patch(self, *args, **kwargs) -> "PluginLoggerAdapter":  # noqa: ARG002
+        return self
+
+    def contextualize(self, *args, **kwargs):  # noqa: ARG002
+        # 返回 no-op context manager
+        from contextlib import nullcontext
+        return nullcontext()
+
+    @property
+    def extra(self) -> dict:
+        return dict(self._extra)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#  对外 API
+# ──────────────────────────────────────────────────────────────────────────
 
 def setup_logging(
-    component: str = "main",
-    level: Optional[LogLevel] = None,
-    force: bool = False,
+    component: str = "main",  # noqa: ARG001 — 兼容旧签名；本体接管后 component 只作命名空间
+    level: Optional[Any] = None,  # noqa: ARG001 — 同上
+    force: bool = False,  # noqa: ARG001 — 同上
 ) -> None:
-    """配置组件的日志输出
-    
-    Args:
-        component: 组件名称
-        level: 日志级别，None 使用全局或组件特定级别
-        force: 是否强制重新配置
+    """配置组件日志（兼容旧签名）。
+
+    实际配置由 utils.logger_config.RobustLoggerConfig 接管，本函数只确保
+    本体 logger 已初始化。组件名仅用作 logger 命名空间，不再单独 sink。
     """
-    if _setup_lock:
-        with _setup_lock:
-            _setup_logging_impl(component, level, force)
-    else:
-        _setup_logging_impl(component, level, force)
+    _ensure_root_logger()
 
 
-def _setup_logging_impl(
-    component: str,
-    level: Optional[LogLevel],
-    force: bool,
-) -> None:
-    """实际的日志配置实现"""
-    if component in _configured_components and not force:
-        return
-    
-    # 确定日志级别：参数 > 组件环境变量 > 全局
-    if level is None:
-        level = _get_component_level(component) or LOG_LEVEL
-    
-    # 首次配置时移除默认 handler
-    if not _configured_components:
-        _loguru_logger.remove()
-    
-    # 控制台输出（按 root 组件去重，防止重复 handler）
-    if LOG_CONSOLE:
-        root = component.split(".")[0]
-        if root not in _configured_console_roots:
-            _loguru_logger.add(
-                sys.stdout,
-                format=FORMAT_CONSOLE,
-                level=level.value,
-                colorize=True,
-                filter=lambda record, r=root: record["extra"].get("component", "").startswith(r),
-            )
-            _configured_console_roots.add(root)
-    
-    # 文件输出
-    if LOG_FILE:
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        log_file = LOG_DIR / f"{component.replace('.', '_')}.log"
-        _loguru_logger.add(
-            str(log_file),
-            format=FORMAT_FILE,
-            level=level.value,
-            rotation=LOG_MAX_SIZE,
-            retention=LOG_RETENTION,
-            compression=LOG_COMPRESSION,
-            encoding="utf-8",
-            filter=lambda record, c=component: record["extra"].get("component", "") == c,
-        )
-    
-    # JSON 输出
-    if LOG_JSON:
-        json_file = LOG_DIR / f"{component.replace('.', '_')}.json"
-        _loguru_logger.add(
-            str(json_file),
-            serialize=True,
-            level=level.value,
-            rotation=LOG_MAX_SIZE,
-            retention=LOG_RETENTION,
-            filter=lambda record, c=component: record["extra"].get("component", "") == c,
-        )
-    
-    _configured_components.add(component)
+def get_logger(component: str) -> PluginLoggerAdapter:
+    """获取带组件命名空间的 logger。
 
-
-def get_logger(component: str) -> Any:
-    """获取带组件标识的 logger
-    
-    Args:
-        component: 组件名称，如 "server.lifecycle", "runtime.host", "plugin.xxx"
-    
-    Returns:
-        绑定了组件名称的 loguru logger
-    
-    Usage:
-        logger = get_logger("server.lifecycle")
-        logger.info("Server started")
-        logger.error("Failed to start", error=str(e))
+    底层 logger 名为 ``N.E.K.O.<service>.<component>``，每次调用时根据当前
+    ``NEKO_PLUGIN_SERVICE_NAME`` 环境变量动态解析（见 PluginLoggerAdapter
+    docstring）。这样保证模块顶部的 ``logger = get_logger(...)`` 可以跟随
+    后续 host 设置的 service_name。
     """
-    # 自动配置组件
-    if component not in _configured_components:
-        setup_logging(component)
-    
-    return _loguru_logger.bind(component=component)
+    _ensure_root_logger()
+    safe = component.strip(".") or "plugin"
+    return PluginLoggerAdapter(safe)
+
+
+def configure_default_logger(level: str = "INFO") -> None:
+    """兼容性 no-op。
+
+    本体 RobustLoggerConfig 已经在主进程入口（user_plugin_server.py 等）
+    调过 setup_logging()，不需要这里再配置 sink。保留函数签名给老代码 import。
+    """
+    _ensure_root_logger()
 
 
 def intercept_standard_logging() -> None:
-    """拦截标准库 logging，重定向到 loguru
-    
-    用于兼容使用标准库 logging 的第三方库。
+    """兼容性 no-op。
+
+    本体本来就是 stdlib logging，不需要"拦截"。
     """
-    import logging
-    
-    class InterceptHandler(logging.Handler):
-        def emit(self, record: logging.LogRecord) -> None:
-            try:
-                level = _loguru_logger.level(record.levelname).name
-            except ValueError:
-                level = record.levelno
-            
-            frame, depth = sys._getframe(6), 6
-            while frame and frame.f_code.co_filename == logging.__file__:
-                frame = frame.f_back
-                depth += 1
-            
-            _loguru_logger.opt(depth=depth, exception=record.exc_info).log(
-                level, record.getMessage()
-            )
-    
-    logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
-    
-    # 拦截常见的第三方库日志
-    for name in ["uvicorn", "uvicorn.error", "uvicorn.access", "fastapi", "sqlalchemy"]:
-        logging.getLogger(name).handlers = [InterceptHandler()]
+    return None
 
 
 def format_log_text(value: Any, max_len: Optional[int] = None, wrap: Optional[int] = None) -> str:
-    """格式化日志文本，支持截断和换行
-    
+    """格式化日志文本，支持截断和换行。
+
     Args:
         value: 要格式化的值
-        max_len: 最大长度，默认从环境变量 NEKO_PLUGIN_LOG_CONTENT_MAX 读取
-        wrap: 换行宽度，默认从环境变量 NEKO_PLUGIN_LOG_WRAP 读取
-    
-    Returns:
-        格式化后的字符串
+        max_len: 最大长度，默认从环境变量 NEKO_PLUGIN_LOG_CONTENT_MAX 读取（默认 200）
+        wrap:    换行宽度，默认从环境变量 NEKO_PLUGIN_LOG_WRAP 读取（默认 0 = 不换行）
     """
     s = "" if value is None else str(value)
-    
+
     if max_len is None:
         try:
             max_len = int(os.getenv("NEKO_PLUGIN_LOG_CONTENT_MAX", "200"))
@@ -339,38 +533,50 @@ def format_log_text(value: Any, max_len: Optional[int] = None, wrap: Optional[in
             max_len = 200
     if max_len <= 0:
         max_len = 200
-    
+
     truncated = False
     if len(s) > max_len:
         s = s[:max_len]
         truncated = True
-    
+
     if wrap is None:
         try:
             wrap = int(os.getenv("NEKO_PLUGIN_LOG_WRAP", "0"))
         except (ValueError, TypeError):
             wrap = 0
-    
+
     if wrap and wrap > 0:
         s = "\n".join(s[i:i + wrap] for i in range(0, len(s), wrap))
-    
+
     if truncated:
         s = s + "...(truncated)"
-    
+
     return s
 
 
-# 导出
+# 模块级 default logger（兼容 `from plugin.logging_config import logger`）
+logger: PluginLoggerAdapter = get_logger("plugin")
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#  导出
+# ──────────────────────────────────────────────────────────────────────────
+
 __all__ = [
     "LogLevel",
     "LOG_LEVEL",
     "LOG_DIR",
+    "LOG_MAX_SIZE",
+    "LOG_RETENTION",
+    "LOG_COMPRESSION",
+    "logger",
     "get_logger",
     "setup_logging",
     "configure_default_logger",
     "intercept_standard_logging",
     "format_log_text",
-    # 日志格式常量
+    "PluginLoggerAdapter",
+    # 旧格式常量（保留作兼容性 import；stdlib 不会用）
     "FORMAT_CONSOLE",
     "FORMAT_FILE",
     "FORMAT_CONSOLE_SIMPLE",

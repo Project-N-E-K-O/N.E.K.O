@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   python-lint:
-    name: Python lint (ruff + async-blocking)
+    name: Python lint (ruff + async-blocking + no-loguru)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -40,3 +40,10 @@ jobs:
         # Custom AST checker — covers the gaps flake8-async doesn't:
         # Thread/Process.join, queue.Queue.get, raw socket recv/accept/connect.
         run: python scripts/check_async_blocking.py
+
+      - name: Forbid loguru / structlog / logbook imports
+        # Logging is unified through utils.logger_config (RobustLoggerConfig).
+        # Re-introducing a third-party logging frontend fragments the surface
+        # (formatter, sinks, file naming, multi-process behaviour) and breaks
+        # plugin/main parity. This check fails the build on any such import.
+        run: python scripts/check_no_loguru.py

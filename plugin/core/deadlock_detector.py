@@ -25,7 +25,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from loguru import logger
+from plugin.logging_config import logger
 
 
 @dataclass
