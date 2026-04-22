@@ -1846,14 +1846,22 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
         
         console.log('[Interaction] 点击效果持续时间结束，平滑恢复到默认状态');
         this._currentClickEffectId = null;
-        // 使用平滑过渡恢复到常驻表情或默认状态（smoothReset 内部会在快照后停止 motion/expression）
+        const restoreIdleMotion = () => {
+            if (typeof window.restoreLive2DIdleAnimationOnMainPage === 'function') {
+                window.restoreLive2DIdleAnimationOnMainPage();
+            }
+        };
         if (typeof this.smoothResetToInitialState === 'function') {
-            this.smoothResetToInitialState().catch(e => {
+            this.smoothResetToInitialState().then(restoreIdleMotion).catch(e => {
                 console.warn('[Interaction] 平滑恢复失败，回退到即时恢复:', e);
                 if (typeof this.clearExpression === 'function') this.clearExpression();
+                restoreIdleMotion();
             });
         } else if (typeof this.clearExpression === 'function') {
             this.clearExpression();
+            restoreIdleMotion();
+        } else {
+            restoreIdleMotion();
         }
     }, window.live2dManager.CLICK_EFFECT_DURATION);
 };
@@ -2022,14 +2030,50 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
                             }
                             
                             try {
-                                const result = await this.currentModel.motion(groupName, index, 2);
+                                const internalModel = this.currentModel.internalModel;
+                                const motionManager = internalModel.motionManager;
+                                const json = internalModel.settings.json;
+
+                                const motionsList = [{ 'File': motion.File }];
+
+                                if (json) {
+                                    json.FileReferences = json.FileReferences || {};
+                                    json.FileReferences.Motions = json.FileReferences.Motions || {};
+                                    json.FileReferences.Motions[groupName] = motionsList;
+                                    json.motions = json.motions || {};
+                                    json.motions[groupName] = motionsList;
+                                }
+
+                                internalModel.settings.motions = internalModel.settings.motions || {};
+                                internalModel.settings.motions[groupName] = motionsList;
+
+                                if (!motionManager.definitions) motionManager.definitions = {};
+                                motionManager.definitions[groupName] = motionsList;
+
+                                if (!motionManager.motionGroups) {
+                                    motionManager.motionGroups = {};
+                                }
+                                motionManager.motionGroups[groupName] = [];
+
+                                const live2dModel = this.currentModel;
+                                console.log(`[TouchSet] 正在向引擎注入并加载动作: ${motion.File}`);
+                                await motionManager.loadMotion(groupName, 0);
+
+                                if (live2dModel !== this.currentModel) {
+                                    console.log('[TouchSet] 模型已切换，中止动作播放');
+                                    return;
+                                }
+
+                                motionManager.stopAllMotions();
+                                const result = await live2dModel.motion(groupName, 0, 3);
+
                                 if (result) {
-                                    console.log(`[TouchSet] 成功播放动作: ${groupName}[${index}]`);
+                                    console.log(`[TouchSet] ✅ 成功下发播放指令: ${groupName}[0]`);
                                 } else {
-                                    console.warn(`[TouchSet] 动作播放返回空值: ${groupName}[${index}]`);
+                                    console.warn(`[TouchSet] ❌ 动作加载成功但引擎仍拒绝播放: ${groupName}[0]`);
                                 }
                             } catch (motionError) {
-                                console.warn(`[TouchSet] 动作播放异常: ${groupName}[${index}]`, motionError);
+                                console.warn(`[TouchSet] 动作播放异常: ${groupName}[0]`, motionError);
                             }
                             break;
                         }
