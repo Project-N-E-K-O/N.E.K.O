@@ -437,6 +437,103 @@ const live2dIdleAnimation = charData?._reserved?.avatar?.live2d?.idle_animation
 
 ---
 
+### 14. 动作选择异步令牌入口强化（竞态防护）
+
+**问题**：如果用户快速选了动作 A，紧接着又点了空选项（"增加动作"），因为空选项会直接 return 导致 Token 没有增加，A 加载完后一看 Token 没变，就强行播放了。
+
+**解决**：把 Token 的生成往上提到事件监听器的入口第一行，无论用户中间切了模型、切了无效项，甚至点开了"增加动作"文件选择框，旧的动画回调都抓不到控制权。
+
+```javascript
+// 修改前（Token 生成在 if 有效动作块内）
+motionSelect.addEventListener('change', async (e) => {
+    const selectedValue = e.target.value;
+    if (selectedValue === '') {
+        // ... return 直接退出，Token 未递增
+    }
+    if (motionIndex >= 0 && live2dModel) {
+        // 生成异步令牌
+        window._currentLive2DMotionToken = (window._currentLive2DMotionToken || 0) + 1;
+    }
+
+// 修改后（Token 生成在入口）
+motionSelect.addEventListener('change', async (e) => {
+    // 生成异步令牌（置于入口，确保任何 change 都会使旧的 await 失效）
+    window._currentLive2DMotionToken = (window._currentLive2DMotionToken || 0) + 1;
+    const currentToken = window._currentLive2DMotionToken;
+
+    const selectedValue = e.target.value;
+    // ... 空值 return 时 Token 已经递增，旧的 loadMotion 完成时检测到 token 变化会丢弃
+```
+
+---
+
+### 15. 恢复流程模型身份守卫（竞态防护）
+
+**问题**：在 `restoreLive2DIdleAnimation` 的 `await fetchJson()` / `await loadMotion()` 期间，如果用户切换了模型，旧恢复流程仍会改下拉框并播放动作，导致新模型被过期恢复覆盖。
+
+**解决**：在恢复流程入口捕获初始模型身份，在每个异步操作前后验证模型是否已切换。
+
+```javascript
+// 捕获初始模型身份
+const initialModel = window.live2dManager?.getCurrentModel() || live2dModel;
+
+const data = await RequestHelper.fetchJson('/api/characters/');
+// 模型可能已在 await 期间切换
+if (window.live2dManager?.getCurrentModel() !== initialModel) {
+    console.log('[Live2D Restore] 模型已在 fetchJson 期间切换，跳过恢复');
+    return;
+}
+
+// ... 修改下拉框 ...
+
+// 确保模型在 loadMotion 期间未被切换
+if (window.live2dManager?.getCurrentModel() !== initialModel) {
+    console.log('[Live2D Restore] 模型已在 loadMotion 前切换，跳过恢复');
+    return;
+}
+
+await motionManager.loadMotion(groupName, motionIndex);
+```
+
+---
+
+### 16. 动作选择器四重守卫机制
+
+**问题**：用户选 A 后立刻选空值/无效值/切模型，A 的 `loadMotion()` 完成后仍可能继续播放。
+
+**解决**：在选择变化事件中增加四重复核：
+
+```javascript
+// 入口递增 Token（任何 change 触发即失效）
+window._currentLive2DMotionToken = (window._currentLive2DMotionToken || 0) + 1;
+const currentToken = window._currentLive2DMotionToken;
+const selectedMotionId = selectedValue;
+
+// loadMotion 前检查
+if (window._currentLive2DMotionToken !== currentToken
+    || motionSelect.value !== selectedMotionId
+    || live2dModel !== window.live2dManager?.getCurrentModel()) {
+    return; // 丢弃过期请求
+}
+
+await motionManager.loadMotion(groupName, motionIndex);
+
+// loadMotion 后检查
+if (window._currentLive2DMotionToken !== currentToken
+    || motionSelect.value !== selectedMotionId
+    || live2dModel !== window.live2dManager?.getCurrentModel()) {
+    return; // 丢弃过期请求
+}
+```
+
+| 场景 | 旧行为 | 新行为 |
+|------|--------|--------|
+| 选 A → 选空值 | A 的 `loadMotion` 完成后强行播放 | 空值分支先递增 token，A 完成后检测到 token 变化，丢弃 |
+| 选 A → 快速选 B | A 的 `loadMotion` 完成后强行播放 | B 先递增 token，A 完成后检测到 token 变化，丢弃 |
+| 选 A → 切换模型 | A 的 `loadMotion` 完成后强行播放 | 切换模型时 token 已递增，A 完成后检测到 token/model 变化，丢弃 |
+
+---
+
 ## 🧪 待优化项
 
 1. ~~**缩短恢复延迟**：目前固定 2 秒，可考虑监听物理预跑完成事件~~ ✅ 已优化：移除了固定延迟，改为使用 `onModelReady` 回调触发恢复函数

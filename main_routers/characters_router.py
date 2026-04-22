@@ -7,7 +7,7 @@ Handles character (catgirl) management endpoints including:
 - Voice settings
 - Microphone settings
 """
-
+import re
 import json
 import io
 import os

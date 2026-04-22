@@ -990,7 +990,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             console.log('[Live2D Restore] lanlanName:', lanlanName);
             if (!lanlanName) return;
 
+            // 捕获初始模型身份，用于后续竞态检查
+            const initialModel = window.live2dManager?.getCurrentModel() || live2dModel;
+            if (!initialModel) return;
+
             const data = await RequestHelper.fetchJson('/api/characters/');
+            // 模型可能已在 await 期间切换
+            if (window.live2dManager?.getCurrentModel() !== initialModel) {
+                console.log('[Live2D Restore] 模型已在 fetchJson 期间切换，跳过恢复');
+                return;
+            }
             console.log('[Live2D Restore] charData from API:', data['猫娘']?.[lanlanName]);
             const charData = data['猫娘']?.[lanlanName];
 
@@ -1045,6 +1054,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             const motionManager = internalModel.motionManager;
             console.log('[Live2D Restore] motionManager:', motionManager);
             const groupName = 'PreviewAll';
+
+            // 确保模型在 loadMotion 期间未被切换
+            if (window.live2dManager?.getCurrentModel() !== initialModel) {
+                console.log('[Live2D Restore] 模型已在 loadMotion 前切换，跳过恢复');
+                return;
+            }
 
             if (!motionManager.motionGroups) {
                 motionManager.motionGroups = {};
@@ -6385,6 +6400,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 当选择新动作时，立即播放选中的动作（循环模式）
     motionSelect.addEventListener('change', async (e) => {
+        // 生成异步令牌，防止快速切换导致加载顺序错乱（置于入口，确保任何 change 都会使旧的 await 失效）
+        window._currentLive2DMotionToken = (window._currentLive2DMotionToken || 0) + 1;
+        const currentToken = window._currentLive2DMotionToken;
+
         const selectedValue = e.target.value;
 
         // 如果选择的是第一个选项（空值，即"增加动作"），触发文件选择器
@@ -6418,16 +6437,22 @@ document.addEventListener('DOMContentLoaded', async () => {
                     motionManager.motionGroups[groupName] = [];
                 }
 
-                // 生成异步令牌，防止快速切换导致加载顺序错乱
-                window._currentLive2DMotionToken = (window._currentLive2DMotionToken || 0) + 1;
-                const currentToken = window._currentLive2DMotionToken;
+                const selectedMotionId = selectedValue; // 捕获当前选择用于后续验证
 
                 // 加载并播放动作
                 try {
+                    // 如果用户已切换选择或模型，则丢弃本次请求
+                    if (window._currentLive2DMotionToken !== currentToken || motionSelect.value !== selectedMotionId || live2dModel !== window.live2dManager?.getCurrentModel()) {
+                        console.log('[Live2D] 选择或模型已变化，丢弃过期的动作加载:', selectedValue);
+                        return;
+                    }
+
                     await motionManager.loadMotion(groupName, motionIndex);
 
-                    // 如果加载期间用户又选择了其他动作，则丢弃本次过时的播放请求
-                    if (window._currentLive2DMotionToken !== currentToken) {
+                    // 如果加载期间用户又选择了其他动作或切换了模型，则丢弃本次过时的播放请求
+                    if (window._currentLive2DMotionToken !== currentToken
+                        || motionSelect.value !== selectedMotionId
+                        || live2dModel !== window.live2dManager?.getCurrentModel()) {
                         console.log('[Live2D] 动作加载完成，但已过期被丢弃:', selectedValue);
                         return;
                     }
