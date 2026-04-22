@@ -798,23 +798,49 @@
 
     async function restoreLive2DIdleAnimationOnMainPage() {
         try {
-            const lanlanName = window.lanlan_config?.name;
+            const lanlanName = window.lanlan_config?.lanlan_name;
             if (!lanlanName) {
-                console.log('[Live2D Main] 没有 lanlanName，跳过恢复待机动作');
+                console.log('[Live2D Main] 没有 lanlan_name，跳过恢复待机动作');
                 return;
             }
 
             const response = await fetch('/api/characters/');
             const data = await response.json();
             const charData = data['猫娘']?.[lanlanName];
-            const live2dIdleAnimation = charData?.avatar?.live2d?.idle_animation;
+            const live2dIdleAnimation = charData?.live2d_idle_animation || charData?.avatar?.live2d?.idle_animation;
+            const live2dModelName = charData?.live2d;
 
             if (!live2dIdleAnimation) {
                 console.log('[Live2D Main] 没有保存的待机动作');
                 return;
             }
 
+            if (!live2dModelName) {
+                console.log('[Live2D Main] 没有模型名称');
+                return;
+            }
+
             console.log('[Live2D Main] 开始恢复待机动作:', live2dIdleAnimation);
+
+            // 获取模型的动作文件列表
+            let modelFilesData;
+            try {
+                const filesResponse = await fetch('/api/live2d/model_files/' + encodeURIComponent(live2dModelName));
+                modelFilesData = await filesResponse.json();
+            } catch (e) {
+                console.warn('[Live2D Main] 获取模型文件列表失败:', e);
+                return;
+            }
+
+            const motionFiles = modelFilesData?.motion_files || [];
+            console.log('[Live2D Main] motionFiles from API:', motionFiles);
+            console.log('[Live2D Main] looking for:', live2dIdleAnimation);
+
+            const motionIndex = motionFiles.indexOf(live2dIdleAnimation);
+            if (motionIndex < 0) {
+                console.log('[Live2D Main] 待机动作不在当前模型的动作列表中:', live2dIdleAnimation);
+                return;
+            }
 
             const live2dManager = window.live2dManager;
             const live2dModel = live2dManager?.getCurrentModel();
@@ -829,22 +855,17 @@
                 return;
             }
 
-            // 从 fileReferences.Motions.PreviewAll 获取动作文件列表
             const motionManager = internalModel.motionManager;
-            const fileReferences = live2dModel.fileReferences || {};
-            const previewAllMotions = fileReferences.Motions?.PreviewAll || [];
-            const motionFiles = previewAllMotions.map(m => m.File || m);
-
-            console.log('[Live2D Main] motionFiles:', motionFiles);
-            const motionIndex = motionFiles.indexOf(live2dIdleAnimation);
-
-            if (motionIndex < 0) {
-                console.log('[Live2D Main] 待机动作不在当前模型的动作列表中:', live2dIdleAnimation);
-                return;
-            }
-
             const groupName = 'PreviewAll';
+            const motionsList = motionFiles.map(file => ({ File: file }));
 
+            // 更新 definitions
+            if (!motionManager.definitions) {
+                motionManager.definitions = {};
+            }
+            motionManager.definitions[groupName] = motionsList;
+
+            // 更新 motionGroups (只初始化空数组，绝对不能放入配置对象)
             if (!motionManager.motionGroups) {
                 motionManager.motionGroups = {};
             }
@@ -852,9 +873,30 @@
                 motionManager.motionGroups[groupName] = [];
             }
 
+            // 更新 internalModel.settings.motions
+            if (!internalModel.settings) {
+                internalModel.settings = {};
+            }
+            if (!internalModel.settings.motions) {
+                internalModel.settings.motions = {};
+            }
+            internalModel.settings.motions[groupName] = motionsList;
+
+            // 更新 fileReferences
+            if (!live2dModel.fileReferences) {
+                live2dModel.fileReferences = {};
+            }
+            if (!live2dModel.fileReferences.Motions) {
+                live2dModel.fileReferences.Motions = {};
+            }
+            live2dModel.fileReferences.Motions[groupName] = motionsList;
+
             await motionManager.loadMotion(groupName, motionIndex);
+            console.log('[Live2D Main] after loadMotion, motionGroups:', motionManager.motionGroups);
+            console.log('[Live2D Main] after loadMotion, definitions:', motionManager.definitions);
 
             const motionInstance = motionManager.motionGroups?.[groupName]?.[motionIndex];
+            console.log('[Live2D Main] motionInstance:', motionInstance);
             if (motionInstance) {
                 if (typeof motionInstance.setIsLoop === 'function') {
                     motionInstance.setIsLoop(true);

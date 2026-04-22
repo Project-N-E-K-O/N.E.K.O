@@ -827,6 +827,15 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     if (this.onModelLoaded) {
         this.onModelLoaded(model, modelPath);
     }
+
+    // 调用模型就绪回调（用于恢复待机动作等）
+    if (options.onModelReady && typeof options.onModelReady === 'function') {
+        try {
+            options.onModelReady(model);
+        } catch (callbackError) {
+            console.warn('[Live2D Model] 模型就绪回调执行失败:', callbackError);
+        }
+    }
 };
 
 
