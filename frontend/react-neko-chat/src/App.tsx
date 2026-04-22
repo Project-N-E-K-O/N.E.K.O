@@ -559,6 +559,7 @@ export default function App({
   const [draft, setDraft] = useState('');
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
   const [quickActionsPanelOpen, setQuickActionsPanelOpen] = useState<boolean>(false);
+  const [slashModeSearch, setSlashModeSearch] = useState<string>('');
   const [activeCursorToolId, setActiveCursorToolId] = useState<string | null>(null);
   const [avatarRangeCursorVariants, setAvatarRangeCursorVariants] = useState<ToolCursorVariantState>(() => createDefaultToolCursorVariantState());
   const [outsideRangeCursorVariants, setOutsideRangeCursorVariants] = useState<ToolCursorVariantState>(() => createDefaultToolCursorVariantState());
@@ -1321,11 +1322,12 @@ export default function App({
               items={quickActions ?? []}
               preferences={quickActionsPreferences ?? { pinned: [], hidden: [], recent: [] }}
               loading={quickActionsLoading}
+              initialSearch={slashModeSearch}
               onExecute={handleQuickActionExecute}
               onInjectText={handleQuickActionInjectText}
               onNavigate={handleQuickActionNavigate}
               onPreferencesChange={handleQuickActionsPreferencesChange}
-              onClose={() => setQuickActionsPanelOpen(false)}
+              onClose={() => { setQuickActionsPanelOpen(false); setSlashModeSearch(''); }}
             />
           ) : null}
           <form className="composer" onSubmit={(event) => {
@@ -1340,7 +1342,18 @@ export default function App({
                 aria-label={inputPlaceholder}
                 rows={1}
                 value={draft}
-                onChange={(event) => { setDraft(event.target.value); }}
+                onChange={(event) => {
+                  const val = event.target.value;
+                  // Detect "/" typed into empty input → open command palette in slash mode
+                  if (val === '/' && !draft && !quickActionsPanelOpen) {
+                    setSlashModeSearch('/');
+                    setQuickActionsPanelOpen(true);
+                    if (onQuickActionsRequest) onQuickActionsRequest();
+                    // Don't put "/" into the draft
+                    return;
+                  }
+                  setDraft(val);
+                }}
                 onKeyDown={(event) => {
                   if (event.nativeEvent.isComposing) return;
                   if (event.key === 'Enter' && !event.shiftKey) {
@@ -1392,7 +1405,10 @@ export default function App({
                     onClick={() => {
                       const willOpen = !quickActionsPanelOpen;
                       setQuickActionsPanelOpen(willOpen);
-                      if (willOpen && onQuickActionsRequest) onQuickActionsRequest();
+                      if (willOpen) {
+                        setSlashModeSearch('');
+                        if (onQuickActionsRequest) onQuickActionsRequest();
+                      }
                     }}
                   >
                     <img src="/static/icons/quick_actions_icon.png" alt="" aria-hidden="true" />

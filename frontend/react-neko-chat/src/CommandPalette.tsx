@@ -39,6 +39,7 @@ export interface CommandPaletteProps {
   items: CommandItem[];
   preferences: UserPreferences;
   loading?: boolean;
+  initialSearch?: string;
   onExecute: (actionId: string, value: unknown) => Promise<CommandItem | null>;
   onInjectText: (text: string) => void;
   onNavigate: (target: string, openIn: string) => void;
@@ -52,7 +53,10 @@ export interface CommandPaletteProps {
 
 function matchesSearch(item: CommandItem, query: string): boolean {
   if (!query) return true;
-  const q = query.toLowerCase();
+  const isSlashMode = query.startsWith('/');
+  if (isSlashMode && item.type !== 'chat_inject') return false;
+  const q = (isSlashMode ? query.slice(1) : query).toLowerCase();
+  if (!q) return !isSlashMode || item.type === 'chat_inject'; // "/" alone shows all inject items
   return (
     item.label.toLowerCase().includes(q) ||
     item.description.toLowerCase().includes(q) ||
@@ -352,10 +356,11 @@ function ContextMenu({ item, prefs, onPrefsChange, onClose }: {
 /*  Single command row                                                 */
 /* ================================================================== */
 
-function CommandRow({ item, loading, error, prefs, onExec, onInject, onNavigate, onPrefsChange }: {
+function CommandRow({ item, loading, error, highlighted, prefs, onExec, onInject, onNavigate, onPrefsChange }: {
   item: CommandItem;
   loading: boolean;
   error: string | null;
+  highlighted?: boolean;
   prefs: UserPreferences;
   onExec: (id: string, value: unknown) => void;
   onInject: (text: string) => void;
@@ -404,7 +409,7 @@ function CommandRow({ item, loading, error, prefs, onExec, onInject, onNavigate,
   return (
     <div className={`cp-row-wrap ${isHidden ? 'is-hidden' : ''}`}>
       <div
-        className={`cp-row ${hasInlineWidget ? '' : 'cp-row-clickable'}`}
+        className={`cp-row ${hasInlineWidget ? '' : 'cp-row-clickable'}${highlighted ? ' cp-row-highlighted' : ''}`}
         onClick={handleRowClick}
         role={hasInlineWidget ? undefined : 'button'}
         tabIndex={hasInlineWidget ? undefined : 0}
@@ -511,13 +516,14 @@ export default function CommandPalette({
   items,
   preferences,
   loading: externalLoading = false,
+  initialSearch = '',
   onExecute,
   onInjectText,
   onNavigate,
   onPreferencesChange,
   onClose,
 }: CommandPaletteProps) {
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(initialSearch);
   const [loadingMap, setLoadingMap] = useState<Record<string, boolean>>({});
   const [errorMap, setErrorMap] = useState<Record<string, string | null>>({});
   const [localItems, setLocalItems] = useState<CommandItem[]>(items);
@@ -643,6 +649,36 @@ export default function CommandPalette({
 
   const isSearching = search.trim().length > 0;
 
+  // ── Flat list for keyboard navigation ──
+  const flatItems = useMemo(() => [
+    ...pinnedItems, ...recentItems, ...commandItems,
+  ], [pinnedItems, recentItems, commandItems]);
+
+  const [highlightIdx, setHighlightIdx] = useState(-1);
+
+  // Reset highlight when items or search change
+  useEffect(() => { setHighlightIdx(-1); }, [search, flatItems.length]);
+
+  const handleSearchKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setHighlightIdx(prev => (prev + 1) % Math.max(flatItems.length, 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setHighlightIdx(prev => prev <= 0 ? flatItems.length - 1 : prev - 1);
+    } else if (e.key === 'Enter' && highlightIdx >= 0 && highlightIdx < flatItems.length) {
+      e.preventDefault();
+      const item = flatItems[highlightIdx];
+      if (item.type === 'chat_inject') {
+        handleInject(item.inject_text ?? '');
+      } else if (item.type === 'navigation') {
+        onNavigate(item.target ?? '', item.open_in ?? 'new_tab');
+      } else if (item.control === 'button') {
+        handleExecute(item.action_id, null);
+      }
+    }
+  }, [flatItems, highlightIdx, handleInject, onNavigate, handleExecute]);
+
   const sharedRowProps = {
     prefs: localPrefs,
     onExec: handleExecute, onInject: handleInject, onNavigate,
@@ -661,6 +697,7 @@ export default function CommandPalette({
           placeholder={i18n('commandPalette.searchPlaceholder', '搜索操作...')}
           value={search}
           onChange={e => setSearch(e.target.value)}
+          onKeyDown={handleSearchKeyDown}
           aria-label={i18n('commandPalette.searchAriaLabel', '搜索操作')}
         />
         {search && (
@@ -700,7 +737,7 @@ export default function CommandPalette({
           <div className="cp-section">
             {commandItems.map((item, i) => (
               <div key={item.action_id} className="cp-stagger" style={{ animationDelay: `${i * 20}ms` }}>
-                <CommandRow item={item} loading={!!loadingMap[item.action_id]} error={errorMap[item.action_id] ?? null} {...sharedRowProps} />
+                <CommandRow item={item} loading={!!loadingMap[item.action_id]} error={errorMap[item.action_id] ?? null} highlighted={highlightIdx === i} {...sharedRowProps} />
               </div>
             ))}
           </div>
@@ -710,16 +747,16 @@ export default function CommandPalette({
             {pinnedItems.length > 0 && (
               <div className="cp-section">
                 <SectionHeader icon="📌" label={i18n('commandPalette.pinned', '已置顶')} />
-                {pinnedItems.map(item => (
-                  <CommandRow key={item.action_id} item={item} loading={!!loadingMap[item.action_id]} error={errorMap[item.action_id] ?? null} {...sharedRowProps} />
+                {pinnedItems.map((item, i) => (
+                  <CommandRow key={item.action_id} item={item} loading={!!loadingMap[item.action_id]} error={errorMap[item.action_id] ?? null} highlighted={highlightIdx === i} {...sharedRowProps} />
                 ))}
               </div>
             )}
             {recentItems.length > 0 && (
               <div className="cp-section">
                 <SectionHeader icon="🕐" label={i18n('commandPalette.recent', '最近使用')} />
-                {recentItems.map(item => (
-                  <CommandRow key={item.action_id} item={item} loading={!!loadingMap[item.action_id]} error={errorMap[item.action_id] ?? null} {...sharedRowProps} />
+                {recentItems.map((item, i) => (
+                  <CommandRow key={item.action_id} item={item} loading={!!loadingMap[item.action_id]} error={errorMap[item.action_id] ?? null} highlighted={highlightIdx === pinnedItems.length + i} {...sharedRowProps} />
                 ))}
               </div>
             )}
@@ -728,7 +765,7 @@ export default function CommandPalette({
                 <SectionHeader icon="📋" label={i18n('commandPalette.allCommands', '全部')} count={commandItems.length} />
                 {commandItems.map((item, i) => (
                   <div key={item.action_id} className="cp-stagger" style={{ animationDelay: `${i * 20}ms` }}>
-                    <CommandRow item={item} loading={!!loadingMap[item.action_id]} error={errorMap[item.action_id] ?? null} {...sharedRowProps} />
+                    <CommandRow item={item} loading={!!loadingMap[item.action_id]} error={errorMap[item.action_id] ?? null} highlighted={highlightIdx === pinnedItems.length + recentItems.length + i} {...sharedRowProps} />
                   </div>
                 ))}
               </div>

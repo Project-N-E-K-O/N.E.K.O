@@ -1958,6 +1958,10 @@ button * {
   box-shadow: 0 0 0 1px rgba(68, 183, 254, 0.08) inset;
 }
 .cp-row-clickable:active { background: rgba(68, 183, 254, 0.1); }
+.cp-row-highlighted {
+  background: rgba(68, 183, 254, 0.1);
+  box-shadow: 0 0 0 1px rgba(68, 183, 254, 0.15) inset;
+}
 .cp-row:not(.cp-row-clickable):hover { background: rgba(68, 183, 254, 0.03); }
 
 /* ── Row icon ── */
@@ -2254,6 +2258,7 @@ button * {
 [data-theme="dark"] .cp-section-count { color: #7a8494; background: rgba(255, 255, 255, 0.06); }
 
 [data-theme="dark"] .cp-row-clickable:hover { background: rgba(68, 183, 254, 0.07); box-shadow: 0 0 0 1px rgba(68, 183, 254, 0.1) inset; }
+[data-theme="dark"] .cp-row-highlighted { background: rgba(68, 183, 254, 0.12); box-shadow: 0 0 0 1px rgba(68, 183, 254, 0.18) inset; }
 [data-theme="dark"] .cp-row:not(.cp-row-clickable):hover { background: rgba(68, 183, 254, 0.03); }
 [data-theme="dark"] .cp-row-icon-wrap { background: rgba(255, 255, 255, 0.06); }
 [data-theme="dark"] .cp-row-label { color: #e0e4ea; }

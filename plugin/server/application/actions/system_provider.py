@@ -141,6 +141,21 @@ def _collect_system_actions_sync(
                 entry_name = entry.get("name", entry_id)
                 entry_desc = entry.get("description", "")
 
+                # chat_command entries appear as slash commands (chat_inject)
+                if entry_kind == "chat_command":
+                    actions.append(ActionDescriptor(
+                        action_id=f"system:{pid}:entry:{entry_id}",
+                        type="chat_inject",
+                        label=str(entry_name),
+                        description=str(entry_desc),
+                        category=plugin_name,
+                        plugin_id=pid,
+                        inject_text=f"@{plugin_name} /{entry_id}",
+                        icon="📎",
+                        keywords=[pid, plugin_name, str(entry_name), entry_id],
+                    ))
+                    continue
+
                 raw_schema = entry.get("input_schema")
                 schema: dict[str, object] | None = None
                 if isinstance(raw_schema, dict):
