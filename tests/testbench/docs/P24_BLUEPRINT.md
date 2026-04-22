@@ -992,7 +992,7 @@ Day 2-5 从 §12.10 / §13.11 / §14.9 / §14A.7 / L23-L25 / L26-L27 合计 **13
 - **能力面**: 14 个域 (会话沙盒 / 虚拟时钟 / 人设&真实角色 / 三层记忆读写 / 记忆触发 / Prompt 双视图 / Chat 消息流 / SimUser / Scripted / Auto-Dialog / Stage Coach / 模型提醒横幅 / ScoringSchema / 4 类 Judger + Run 子页) + P21+ 加固面 (崩溃恢复 / 注入防御 / schema lint / 健康自检 / orphan 扫描 / 导出矩阵) 全量就位.
 - **设计原则面**: §3A 56 条原则 (A1-A18 + B1-B15 + C1-C7 + D1-D3 + E1-E3 + F1-F7) 全量入档, A7 修订完成, §11.2 新 10 条实证入库.
 - **文档面**: 6 份 docs (PLAN / PROGRESS / AGENT_NOTES / P24_BLUEPRINT / P25_BLUEPRINT / LESSONS_LEARNED) + `p24_integration_report.md` 终稿 + 阶段性 README 层留给 P26.
-- **git 面**: P21 → P24 一次性 `feat(testbench): P21-P24 ...` 定版 commit, 对齐 `8f8dc63` / `14c98c8` 前例的跨 phase commit 模式; `NEKO-dev/main` 合并 + push 完成.
+- **git 面** (2026-04-22 Day 12 实际值): P21 → P24 一次性 `feat(testbench): P21-P24 持久化+可靠性+导出+集成审查栈 + v1.0 "第一个完善版本" sign-off` 单 commit = `4964941` (99 files, +23696/-606), 对齐 `8f8dc63` (P15-P20) / `14c98c8` (P13-P14) 跨 phase commit 前例; 随后 `Merge remote-tracking branch 'NEKO-dev/main'` = `cb394ab` 并入上游 27 条 (主程序: live2d/memory RFC/autostart/soccer-demo/i18n es+pt/plugin logging/model-profiler, 与 `tests/testbench/` 零重叠, `ort` strategy 自动合并无冲突); `git push NEKO-dev main` 成功 (`474aa23..cb394ab main -> main`). merge 后 `p24_sandbox_attrs_sync_smoke` 重跑 PASS (14 direct + 16 @property 漂移守门确认上游无侵入).
 
 **版本语义**: v1.0 对应 "**原计划 25 阶段中的主要功能开发完结**"; v1.1+ 走 P25 (外部事件注入) / P26 (用户 README) 两阶段, 扩 "新系统对对话/记忆影响测试生态" 语义 + 用户门面文档. 未来再新增主程序系统 → testbench 影响评估接入都按 P25 方法论 (语义契约 vs 运行时机制, L24) 走, 不触 v1.0 骨架.
 
@@ -2466,7 +2466,7 @@ P24 动作 (Day 1 主程序同步时一并做):
 ### Day 12 · 验收 buffer + v1.0 sign-off (2026-04-22) ✅ done
 
 - [x] 总体走查 · `p24_integration_report` 终稿 (§5 代码审查结论 / §6 主程序同步清单 / §7 入档 backlog 三段骨架落实)
-- [x] v1.0 "第一个完善版本" sign-off — 本蓝图 §11 "P24 交付后回顾" 写实 + PROGRESS / PLAN 两处同步 milestone; P21-P24 代码流一次性 commit/merge 到云端 (git 历史沿用 `feat(testbench):` 跨 phase commit 模式, 对齐 `8f8dc63` / `14c98c8` 前例)
+- [x] v1.0 "第一个完善版本" sign-off — 本蓝图 §11 "P24 交付后回顾" 写实 + PROGRESS / PLAN 两处同步 milestone; P21-P24 代码流一次性 commit/merge 到云端 **done** (commit `4964941` feat(testbench) P21-P24 + merge commit `cb394ab`, 对齐 `8f8dc63` / `14c98c8` 跨 phase commit 前例, push 成功 `474aa23..cb394ab main -> main`)
 - [x] 收尾后再跑全量 smoke 9 份确认文档写作过程未摧代码断言 (2026-04-22 Day 12 最终轮)
 - [ ] 用户手动验收 (用户 go-ahead 后本条标 ✅)
 

@@ -1034,12 +1034,12 @@
      - **B14 emit/on 双向配套**: 新 `emit('xxx')` 必同步加空 stub listener + TODO 注释; repo linter 扫 emit/on 对.
      - **B15 UI placeholder 条件渲染**: 禁 `display:none` 隐藏空态 DOM, 一律 renderAll 里条件 append.
      - **E3 Full-Repo Pre-Sweep 默认化**: 阶段 kick-off 必做全仓 sweep + 全量 smoke baseline, 非可选.
-  4. **Day 12 (2026-04-22)**: 总体走查 + `p24_integration_report.md` 终稿 (§5 代码审查结论 / §6 主程序同步清单 / §7 入档 backlog 三段骨架填值) + **v1.0 "第一个完善版本" sign-off** — P24_BLUEPRINT §11 + 本文件 + PLAN 三处同步 milestone + `feat(testbench):` 单次跨 phase commit 合流 P21-P24 到 NEKO-dev/main (对齐 `8f8dc63` / `14c98c8` 前例) + push 云端; 收尾后再跑一轮全量 9 份 smoke 回归全绿.
+  4. **Day 12 (2026-04-22)**: 总体走查 + `p24_integration_report.md` 终稿 (§5 代码审查结论 / §6 主程序同步清单 / §7 入档 backlog 三段骨架填值 + §4.3 Day 10-12 期间修复) + **v1.0 "第一个完善版本" sign-off** — P24_BLUEPRINT §11 + 本文件 + PLAN 三处同步 milestone + `feat(testbench): P21-P24 ... v1.0 sign-off` 单次跨 phase commit (`4964941`, 99 files, +23696/-606) + `Merge remote-tracking branch 'NEKO-dev/main'` (`cb394ab`, 并入上游 27 条: live2d/memory RFC/autostart/soccer-demo/plugin logging/model-profiler, 与 testbench 零重叠, ort 自动合并无冲突) + push 云端 (`474aa23..cb394ab main -> main` 成功); 收尾后再跑一轮全量 9 份 smoke 回归全绿 + merge 后 `p24_sandbox_attrs_sync_smoke` 重跑 PASS (确认上游无 ConfigManager 漂移侵入).
 - **交付统计**:
   - **代码面**: 30 个 P21+ 新文件 (pipeline/ 11 + routers/ 1 + static/ 6 + smoke/ 5 + docs/ 5 + tests/run_testbench.* 3); 59 个既有文件更新 (routers/ / pipeline/ / static/ 全部).
   - **文档面**: P24_BLUEPRINT 2396 行 (本期权威) + AGENT_NOTES §4.27 #106-#108 + §3A 47→57 条 (10 新/1 修订) + LESSONS_LEARNED §7 13→22 条 (9 新) + 本文件 P24 条目 + PLAN 进度快照 + `p24_integration_report.md` 7 节完整 + `P25_BLUEPRINT.md` 接棒.
   - **烟测面**: 9/9 全绿 (p21_* 3 + p22_* 2 + p23_* 1 + p24_* 3).
-  - **发布**: v1.0 "第一个完善版本" tag + P21-P24 单次 `feat(testbench):` 跨 phase commit + 云端 push 到 NEKO-dev/main.
+  - **发布**: v1.0 "第一个完善版本" tag + P21-P24 单次 `feat(testbench):` 跨 phase commit (`4964941`) + 合流上游 `Merge 'NEKO-dev/main'` (`cb394ab`) + 云端 push 到 NEKO-dev/main 成功.
 
 ### [ ] P25 外部事件注入 · 新系统对话/记忆影响测试
 - **预期产物**: testbench 能**模拟**主程序三类"运行时 prompt 注入 + 写 memory" 外部事件 (avatar interaction / agent callback / proactive), 实时评估它们对 LLM 回复 + recent/facts/reflection 记忆流水线的影响.
