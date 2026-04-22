@@ -2080,16 +2080,6 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
                     console.log(`[TouchSet] 正在向引擎注入并加载动作: ${motion.File}`);
                     await motionManager.loadMotion(groupName, 0);
 
-                    if (backupDefs !== undefined) motionManager.definitions[groupName] = backupDefs;
-                    if (backupGroups !== undefined) motionManager.motionGroups[groupName] = backupGroups;
-                    if (backupSettingsMotions !== undefined) internalModel.settings.motions[groupName] = backupSettingsMotions;
-                    if (backupJsonMotions !== undefined) {
-                        if (json) json.motions[groupName] = backupJsonMotions;
-                    }
-                    if (backupJsonFileRefs !== undefined) {
-                        if (json?.FileReferences?.Motions) json.FileReferences.Motions[groupName] = backupJsonFileRefs;
-                    }
-
                     if (live2dModel !== this.currentModel) {
                         console.log('[TouchSet] 模型已切换，中止动作播放');
                         return;
@@ -2105,6 +2095,16 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
                     }
                 } catch (error) {
                     console.warn(`[TouchSet] 动作播放异常: ${groupName}[0]`, error);
+                } finally {
+                    if (backupDefs !== undefined) motionManager.definitions[groupName] = backupDefs;
+                    if (backupGroups !== undefined) motionManager.motionGroups[groupName] = backupGroups;
+                    if (backupSettingsMotions !== undefined) internalModel.settings.motions[groupName] = backupSettingsMotions;
+                    if (backupJsonMotions !== undefined) {
+                        if (json) json.motions[groupName] = backupJsonMotions;
+                    }
+                    if (backupJsonFileRefs !== undefined) {
+                        if (json?.FileReferences?.Motions) json.FileReferences.Motions[groupName] = backupJsonFileRefs;
+                    }
                 }
             }
         }
