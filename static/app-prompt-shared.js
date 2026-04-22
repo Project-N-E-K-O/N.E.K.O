@@ -217,6 +217,141 @@
 
     const promptDisplayCoordinator = createPromptDisplayCoordinator(PROMPT_DISPLAY_BATCH_WINDOW_MS);
 
+    // ---------------------------------------------------------------------
+    // Local-mutation CSRF security helper.
+    //
+    // Backend `_validate_local_mutation_request` (main_routers/system_router.py)
+    // rejects POSTs to /api/(tutorial|autostart)-prompt/* without a valid
+    // X-CSRF-Token header. The token is shipped to the page via the
+    // `autostart_csrf_token` field of /api/config/page_config.
+    //
+    // Contract exercised by tests/frontend/test_home_prompt_flow.py:
+    //   - On first mutation, read token from `window.pageConfigReady`.
+    //   - If the server responds 403 with `error_code: 'csrf_validation_failed'`,
+    //     refetch /api/config/page_config once, pick up the fresh token, and
+    //     retry the original request exactly once. Subsequent requests reuse
+    //     the refreshed token.
+    // ---------------------------------------------------------------------
+    const CSRF_HEADER_NAME = 'X-CSRF-Token';
+    const PAGE_CONFIG_URL = '/api/config/page_config';
+
+    function extractAutostartCsrfToken(source) {
+        if (!source || typeof source !== 'object') {
+            return '';
+        }
+        const token = source.autostart_csrf_token;
+        return typeof token === 'string' ? token : '';
+    }
+
+    function createLocalMutationSecurity() {
+        let cachedToken = '';
+        let initialTokenPromise = null;
+        let refreshPromise = null;
+        let warnedMissingPageConfig = false;
+
+        function resolveLanlanNameParam() {
+            try {
+                const urlParams = new URLSearchParams(window.location.search);
+                const name = urlParams.get('lanlan_name') || '';
+                return name ? ('?lanlan_name=' + encodeURIComponent(name)) : '';
+            } catch (_) {
+                return '';
+            }
+        }
+
+        async function fetchPageConfigToken() {
+            try {
+                const response = await fetch(PAGE_CONFIG_URL + resolveLanlanNameParam(), {
+                    cache: 'no-store',
+                });
+                if (!response.ok) {
+                    return '';
+                }
+                const data = await response.json();
+                return extractAutostartCsrfToken(data);
+            } catch (_) {
+                return '';
+            }
+        }
+
+        function readInitialToken() {
+            if (initialTokenPromise) {
+                return initialTokenPromise;
+            }
+            initialTokenPromise = (async function () {
+                const ready = window.pageConfigReady;
+                if (ready && typeof ready.then === 'function') {
+                    try {
+                        const data = await ready;
+                        const token = extractAutostartCsrfToken(data);
+                        if (token) {
+                            cachedToken = token;
+                            return token;
+                        }
+                    } catch (_) {
+                        // fall through to explicit refetch below
+                    }
+                } else if (!warnedMissingPageConfig) {
+                    warnedMissingPageConfig = true;
+                    console.warn(
+                        '[LocalMutationSecurity] window.pageConfigReady missing; '
+                        + 'will refetch /api/config/page_config for CSRF token.'
+                    );
+                }
+                // pageConfigReady yielded nothing usable — try a direct fetch.
+                const token = await fetchPageConfigToken();
+                if (token) {
+                    cachedToken = token;
+                }
+                return cachedToken;
+            })();
+            return initialTokenPromise;
+        }
+
+        async function getToken() {
+            if (cachedToken) {
+                return cachedToken;
+            }
+            return readInitialToken();
+        }
+
+        async function refreshToken() {
+            if (refreshPromise) {
+                return refreshPromise;
+            }
+            refreshPromise = (async function () {
+                try {
+                    const token = await fetchPageConfigToken();
+                    if (token) {
+                        cachedToken = token;
+                    }
+                    return cachedToken;
+                } finally {
+                    refreshPromise = null;
+                }
+            })();
+            return refreshPromise;
+        }
+
+        async function getMutationHeaders() {
+            const token = await getToken();
+            const headers = {};
+            if (token) {
+                headers[CSRF_HEADER_NAME] = token;
+            }
+            return headers;
+        }
+
+        return {
+            getMutationHeaders: getMutationHeaders,
+            refreshToken: refreshToken,
+        };
+    }
+
+    if (!window.nekoLocalMutationSecurity) {
+        window.nekoLocalMutationSecurity = createLocalMutationSecurity();
+    }
+
     function createPromptTools(options) {
         const toolOptions = options || {};
         const flowPrefix = typeof toolOptions.flowPrefix === 'string' && toolOptions.flowPrefix
@@ -280,21 +415,85 @@
             return Number.isFinite(number) && number > 0 ? number : 0;
         }
 
+        function isMutationMethod(method) {
+            const upper = String(method || 'GET').toUpperCase();
+            return upper !== 'GET' && upper !== 'HEAD' && upper !== 'OPTIONS';
+        }
+
+        async function mergeMutationHeaders(headers, method) {
+            if (!isMutationMethod(method)) {
+                return headers;
+            }
+            const helper = window.nekoLocalMutationSecurity;
+            if (!helper || typeof helper.getMutationHeaders !== 'function') {
+                return headers;
+            }
+            try {
+                const extra = await helper.getMutationHeaders();
+                if (extra && typeof extra === 'object') {
+                    return Object.assign({}, headers, extra);
+                }
+            } catch (error) {
+                console.warn(
+                    '[' + loggerName + '] getMutationHeaders failed, sending request without CSRF header:',
+                    error
+                );
+            }
+            return headers;
+        }
+
+        async function readCsrfFailureMarker(response) {
+            // We need to inspect the 403 body without consuming it for callers.
+            // Callers never receive the raw Response for failed requests
+            // (requestJson just throws), so it is safe to read the body here.
+            try {
+                const cloned = typeof response.clone === 'function' ? response.clone() : response;
+                const body = await cloned.json();
+                if (body && body.error_code === 'csrf_validation_failed') {
+                    return true;
+                }
+            } catch (_) {
+                // Not JSON, not our structured rejection — fall through.
+            }
+            return false;
+        }
+
         async function requestJson(url, options) {
             const requestOptions = options || {};
             const hasJsonBody = Object.prototype.hasOwnProperty.call(requestOptions, 'json');
-            const headers = Object.assign({}, requestOptions.headers);
-            if (hasJsonBody && !headers['Content-Type']) {
-                headers['Content-Type'] = 'application/json';
+            const method = requestOptions.method || 'GET';
+            const baseHeaders = Object.assign({}, requestOptions.headers);
+            if (hasJsonBody && !baseHeaders['Content-Type']) {
+                baseHeaders['Content-Type'] = 'application/json';
             }
 
-            const response = await fetch(url, {
-                method: requestOptions.method || 'GET',
-                headers: headers,
-                body: hasJsonBody ? JSON.stringify(requestOptions.json || {}) : requestOptions.body,
-                keepalive: !!requestOptions.keepalive,
-                cache: requestOptions.cache,
-            });
+            const body = hasJsonBody ? JSON.stringify(requestOptions.json || {}) : requestOptions.body;
+
+            async function sendOnce(headers) {
+                return fetch(url, {
+                    method: method,
+                    headers: headers,
+                    body: body,
+                    keepalive: !!requestOptions.keepalive,
+                    cache: requestOptions.cache,
+                });
+            }
+
+            const headersWithCsrf = await mergeMutationHeaders(baseHeaders, method);
+            let response = await sendOnce(headersWithCsrf);
+
+            if (
+                response.status === 403
+                && isMutationMethod(method)
+                && window.nekoLocalMutationSecurity
+                && typeof window.nekoLocalMutationSecurity.refreshToken === 'function'
+                && await readCsrfFailureMarker(response)
+            ) {
+                await window.nekoLocalMutationSecurity.refreshToken();
+                const retryHeaders = await mergeMutationHeaders(baseHeaders, method);
+                response = await sendOnce(retryHeaders);
+            }
+
             if (!response.ok) {
                 throw new Error('HTTP ' + response.status);
             }

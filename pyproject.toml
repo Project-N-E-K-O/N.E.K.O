@@ -53,7 +53,7 @@ dependencies = [
   "pyncm-async==1.8.1",
   "tornado>=6.5.4",
   "jmespath>=1.1.0",
-
+  "orjson>=3.11.8",
 ]
 
 
