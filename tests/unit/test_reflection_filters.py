@@ -104,26 +104,26 @@ async def test_aget_confirmed_excludes_suppressed(tmp_path):
     assert result == []
 
 
-# ── Change 2: aget_followup_topics derived-confirmed exclusion ──────
+# ── aget_followup_topics: derived-confirmed pending IS eligible ─────
 
 
 @pytest.mark.asyncio
-async def test_followup_excludes_derived_confirmed(tmp_path):
-    """存盘 status='pending' 但 score>=1 应被 followup 过滤（等 periodic 转存盘）。"""
+async def test_followup_includes_derived_confirmed_pending(tmp_path):
+    """Design decision (see PR #929 thread): stored=pending with
+    derived-confirmed score (>= 1) is STILL a valid followup candidate.
+    Letting AI surface it gives user a natural chance to re-affirm or
+    push back before the periodic loop flips stored status."""
     _, _, _, re, _ = _install(str(tmp_path))
     await re.asave_reflections("小天", [
-        _seed("ref_pending_real", "pending", rein=0.0),     # 真 pending
-        _seed("ref_pending_derived_confirmed", "pending", rein=1.5),  # 派生 confirmed
-        _seed("ref_pending_derived_promoted",  "pending", rein=2.5),  # 派生 promoted
+        _seed("ref_derived_confirmed", "pending", rein=1.5),
     ])
     result = await re.aget_followup_topics("小天")
-    ids = {r["id"] for r in result}
-    assert ids == {"ref_pending_real"}
+    assert {r["id"] for r in result} == {"ref_derived_confirmed"}
 
 
 @pytest.mark.asyncio
 async def test_followup_still_excludes_negative(tmp_path):
-    """原有 score<0 过滤不变。"""
+    """score<0 过滤不变：冷藏态不被主动搭话（§3.8.6）。"""
     _, _, _, re, _ = _install(str(tmp_path))
     await re.asave_reflections("小天", [
         _seed("ref_cold", "pending", rein=0.0, disp=1.0),  # score=-1

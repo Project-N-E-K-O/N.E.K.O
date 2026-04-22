@@ -818,15 +818,16 @@ class ReflectionEngine:
     def _filter_followup_candidates(pending: list[dict]) -> list[dict]:
         """Filter pending reflections for proactive chat candidacy.
 
-        Two gates on evidence_score on top of the `next_eligible_at` cooldown:
+        RFC §3.8.6 adds an `evidence_score >= 0` gate on top of the existing
+        `next_eligible_at` cooldown. A reflection with score < 0 is
+        "coldshouldered" by user signals but not yet archived — it stays in
+        `reflections.json` but is skipped from active selection.
 
-        1. `score < 0` → 冷藏态，被用户否认过了，不再主动搭话（§3.8.6）
-        2. `score >= CONFIRMED_THRESHOLD` → 派生 confirmed，只是还没来得及
-           在存盘 status 上落位，不应该继续带"还不太确定"的口吻再问
-           （漂移窗口 bug 修复，见 PR #929 讨论）
-
-        也就是说：只有 `0 <= score < CONFIRMED_THRESHOLD` 的 pending 才
-        进候选。
+        Note: we intentionally DO NOT gate on the CONFIRMED_THRESHOLD upper
+        bound — a pending reflection whose score has crossed into the
+        derived-confirmed range is still a valid followup candidate. AI
+        picking it up gives user a natural chance to re-affirm (or push
+        back) before the periodic loop finally flips the stored status.
         """
         if not pending:
             return []
@@ -840,10 +841,7 @@ class ReflectionEngine:
                         continue
                 except (ValueError, TypeError):
                     pass
-            score = evidence_score(r, now)
-            if score < 0:
-                continue
-            if score >= EVIDENCE_CONFIRMED_THRESHOLD:
+            if evidence_score(r, now) < 0:
                 continue
             eligible.append(r)
         return eligible[:2]
