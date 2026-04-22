@@ -1878,9 +1878,14 @@ async def unsubscribe_workshop_item(request: Request):
 
         # 反向索引：优先用 character_origin.source_id 找到来自该 Workshop 物品的角色，
         # 再用磁盘上 .chara.json 的扫描结果兜底合并（文件夹可能已被 Steam 删除）。
-        candidate_names = _collect_character_names_by_workshop_item_id(config_mgr, item_id_int)
+        # 两个 helper 内部都会同步读磁盘 / JSON，必须 offload 避免阻塞事件循环。
+        candidate_names = await asyncio.to_thread(
+            _collect_character_names_by_workshop_item_id, config_mgr, item_id_int
+        )
         pre_item_path = _resolve_workshop_item_install_path(steamworks, item_id_int)
-        disk_names = _scan_workshop_folder_character_names(pre_item_path)
+        disk_names = await asyncio.to_thread(
+            _scan_workshop_folder_character_names, pre_item_path
+        )
         seen_names: set[str] = set(candidate_names)
         for disk_name in disk_names:
             if disk_name not in seen_names:
@@ -1895,7 +1900,7 @@ async def unsubscribe_workshop_item(request: Request):
             current_characters = await config_mgr.aload_characters()
         except Exception as exc:
             logger.warning(f"取消订阅前读取 characters.json 失败: {exc}")
-            current_characters = config_mgr.load_characters()
+            current_characters = await asyncio.to_thread(config_mgr.load_characters)
         current_catgirl = str(current_characters.get('当前猫娘', '') or '')
         if current_catgirl and current_catgirl in candidate_names:
             logger.warning(
@@ -2008,6 +2013,20 @@ async def unsubscribe_workshop_item(request: Request):
 
             characters_mut = await config_mgr.aload_characters()
             current_catgirl_now = str(characters_mut.get('当前猫娘', '') or '')
+            # 二次校验：前置校验后、同步清理前用户可能切到候选角色；此时
+            # 仅 `continue` 会跳过角色删除但仍执行 UnsubscribeItem + 删除订阅
+            # 文件夹，留下指向已删 Workshop 资源的当前猫娘配置，应直接中止。
+            if current_catgirl_now and current_catgirl_now in candidate_names:
+                logger.warning(
+                    f"取消订阅同步清理被阻止: item_id={item_id_int} 对应角色 "
+                    f"{current_catgirl_now} 已切换为当前猫娘"
+                )
+                return JSONResponse({
+                    "success": False,
+                    "code": "CURRENT_CATGIRL_IN_USE",
+                    "error": f"不能取消订阅当前正在使用的猫娘「{current_catgirl_now}」，请先切换到其他角色后再取消订阅。",
+                    "character_name": current_catgirl_now,
+                }, status_code=400)
 
             async def _delete_memory_with_retry(name: str) -> list:
                 """Windows 文件锁 → 300ms 重试一次作为安全网。"""

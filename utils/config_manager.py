@@ -1427,7 +1427,17 @@ class ConfigManager:
             except Exception:
                 pass
 
-            for entry in list(legacy_memory.iterdir()):
+            # Per-root 兜底：权限错误或 I/O 错误不应中断后续 legacy roots 的迁移
+            try:
+                legacy_entries = list(legacy_memory.iterdir())
+            except Exception as exc:
+                self._log(
+                    f"[ConfigManager] 枚举 legacy memory 根 {legacy_memory} 失败，"
+                    f"跳过该根: {exc}"
+                )
+                continue
+
+            for entry in legacy_entries:
                 try:
                     entry_name = entry.name
                     # 跳过隐藏/临时/非角色类条目
@@ -1446,14 +1456,41 @@ class ConfigManager:
                             f"({target})，保留 legacy 副本避免覆盖"
                         )
                         continue
+                    # 跨盘 shutil.move 退化为 copy 时若半途失败，target 可能已
+                    # 存在但不完整，下次启动会被 target.exists() 跳过。改为
+                    # "复制到同父级临时路径 → 原子 rename → best-effort 清源"。
+                    temp_target = target.parent / f".{entry_name}.migrating-{uuid.uuid4().hex}"
                     try:
                         target.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.move(str(entry), str(target))
+                        if entry.is_dir():
+                            shutil.copytree(str(entry), str(temp_target), symlinks=True)
+                        else:
+                            shutil.copy2(str(entry), str(temp_target))
+                        os.replace(str(temp_target), str(target))
+                        try:
+                            if entry.is_dir():
+                                shutil.rmtree(str(entry))
+                            elif entry.exists():
+                                entry.unlink()
+                        except Exception as cleanup_exc:
+                            self._log(
+                                f"[ConfigManager] legacy memory 已复制到 runtime，"
+                                f"但源 {entry} 清理失败，保留 legacy 副本: {cleanup_exc}"
+                            )
                         migrated_count += 1
                         self._log(
                             f"[ConfigManager] 已迁移 legacy memory: {entry} -> {target}"
                         )
                     except Exception as exc:
+                        # 清理可能残留的临时目录/文件，避免下次启动误判
+                        try:
+                            if temp_target.exists():
+                                if temp_target.is_dir():
+                                    shutil.rmtree(str(temp_target), ignore_errors=True)
+                                else:
+                                    temp_target.unlink()
+                        except Exception:
+                            pass
                         self._log(
                             f"[ConfigManager] 迁移 legacy memory {entry} -> {target} 失败: {exc}"
                         )
@@ -3018,7 +3055,8 @@ def _ensure_config_manager_migrated():
     _config_manager.migrate_config_files()
     _config_manager.migrate_memory_files()
     # 在 config/memory 基础迁移完成后，对遗留 Documents/AppData 路径下的
-    # N.E.K.O/memory 做一次性迁移与孤儿清理（软迁移 A + 软清理 B）。
+    # N.E.K.O/memory 做一次性软迁移：只迁移已关联角色的条目，未关联条目
+    # 留给前端 legacy cleanup UI 手动清理（不在启动时自动清除）。
     # 失败只打日志不抛异常，绝不阻塞启动。
     try:
         _config_manager.migrate_legacy_documents_memory()

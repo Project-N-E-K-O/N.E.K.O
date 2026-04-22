@@ -1156,17 +1156,19 @@ function showToast(message, duration = 3000) {
         container.id = 'message-area';
         container.className = 'message-area';
         document.body.appendChild(container);
-
-        container.style.position = 'fixed';
-        container.style.top = '20px';
-        container.style.right = '20px';
-        container.style.maxWidth = '400px';
-        container.style.zIndex = '2147483647';
-        container.style.display = 'flex';
-        container.style.flexDirection = 'column';
-        container.style.alignItems = 'flex-end';
-        container.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
     }
+
+    // 若容器由模板/其他逻辑预先创建，首个 toast 沿用旧 zIndex 会被新模态遮挡；
+    // 无条件刷新定位 / 层级，确保每次都落在最顶层。
+    container.style.position = 'fixed';
+    container.style.top = '20px';
+    container.style.right = '20px';
+    container.style.maxWidth = '400px';
+    container.style.zIndex = '2147483647';
+    container.style.display = 'flex';
+    container.style.flexDirection = 'column';
+    container.style.alignItems = 'flex-end';
+    container.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
 
     const messageElement = document.createElement('div');
     // 使用 textContent 避免 HTML 注入风险 (resolved duplicate innerHTML comment review safely)
@@ -2342,12 +2344,19 @@ function unsubscribeItem(itemId, itemName) {
             return { response, data };
         })
         .then(({ response, data }) => {
-            // 诊断日志：完整打印后端响应，便于定位后端是否重启了新代码
+            // 诊断日志：只记录状态/计数，避免把 cleanup_summary 里的本地路径 /
+            // 角色名直接落到浏览器或 Electron 日志里，泄露用户信息。
+            const summaryForLog = data && data.cleanup_summary ? data.cleanup_summary : {};
             console.info('[unsubscribe response]', {
                 status: response.status,
                 ok: response.ok,
-                data,
+                success: !!(data && data.success),
+                code: data && data.code,
+                status_text: data && data.status,
                 has_cleanup_summary: !!(data && data.cleanup_summary),
+                cleaned_count: Array.isArray(summaryForLog.cleaned_characters) ? summaryForLog.cleaned_characters.length : 0,
+                removed_memory_count: Array.isArray(summaryForLog.removed_memory_paths) ? summaryForLog.removed_memory_paths.length : 0,
+                error_count: Array.isArray(summaryForLog.errors) ? summaryForLog.errors.length : 0,
             });
             if (!response.ok) {
                 // 后端前置校验失败（例如 CURRENT_CATGIRL_IN_USE）
@@ -2382,18 +2391,37 @@ function unsubscribeItem(itemId, itemName) {
                 const errors = Array.isArray(summary.errors) ? summary.errors : [];
 
                 if (cleanedChars.length > 0 || removedPaths.length > 0) {
-                    const detailMsg = `已清理角色卡: ${cleanedChars.length} 个（${cleanedChars.join('、') || '-'}）；已删除记忆路径: ${removedPaths.length} 条`;
+                    const charactersStr = cleanedChars.join('、') || '-';
+                    const detailMsg = (window.t ? window.t('steam.unsubscribeCleanupDetail', {
+                        characterCount: cleanedChars.length,
+                        characters: charactersStr,
+                        memoryPathCount: removedPaths.length,
+                    }) : '') || `已清理角色卡: ${cleanedChars.length} 个（${charactersStr}）；已删除记忆路径: ${removedPaths.length} 条`;
                     showMessage(detailMsg, 'success', 6000);
-                    console.info('[unsubscribe cleanup summary]', summary);
+                    // 只记录计数，避免 removed_memory_paths 里的本地路径被日志收集
+                    console.info('[unsubscribe cleanup summary]', {
+                        cleaned_count: cleanedChars.length,
+                        removed_memory_count: removedPaths.length,
+                        error_count: errors.length,
+                    });
                 } else if ((summary.candidate_characters || []).length === 0) {
                     // 后端没在 characters.json 中找到关联角色（反向索引空 + 磁盘扫描空）
-                    console.warn('[unsubscribe] 未找到与该物品关联的角色，仅删除订阅文件夹', summary);
-                    showMessage('未找到与此订阅关联的角色，仅删除了订阅文件夹；若有残留记忆请手动处理', 'warning', 6000);
+                    console.warn('[unsubscribe] 未找到与该物品关联的角色，仅删除订阅文件夹');
+                    const noAssocMsg = (window.t && window.t('steam.unsubscribeNoAssociation')) || '未找到与此订阅关联的角色，仅删除了订阅文件夹；若有残留记忆请手动处理';
+                    showMessage(noAssocMsg, 'warning', 6000);
                 }
                 if (errors.length > 0) {
-                    console.warn('[unsubscribe cleanup errors]', errors);
+                    // 只记录数量和 stage，避免 error.error 里的路径 / 角色名泄露
+                    console.warn('[unsubscribe cleanup errors]', {
+                        count: errors.length,
+                        stages: errors.map((e) => e && e.stage).filter(Boolean),
+                    });
                     const firstErr = errors[0] || {};
-                    const errMsg = `清理过程出现 ${errors.length} 个错误，首个: ${firstErr.stage || ''} -> ${firstErr.error || ''}`;
+                    const errMsg = (window.t ? window.t('steam.unsubscribeCleanupErrors', {
+                        count: errors.length,
+                        stage: firstErr.stage || '',
+                        error: firstErr.error || '',
+                    }) : '') || `清理过程出现 ${errors.length} 个错误，首个: ${firstErr.stage || ''} -> ${firstErr.error || ''}`;
                     showMessage(errMsg, 'warning', 8000);
                     try { window.alert(errMsg); } catch (_) { /* ignore */ }
                 }
@@ -2418,8 +2446,14 @@ function unsubscribeItem(itemId, itemName) {
                     console.warn('[unsubscribe] 乐观更新失败，将依赖下一次 loadSubscriptions:', optErr);
                 }
 
-                // 单次刷新同步真相（去掉原先"立即 + 1s 后"两次的双刷，减少 UGC 批量查询开销）
-                loadSubscriptions();
+                // accepted 表示 Steam/后端取消订阅还在异步收敛；立即 loadSubscriptions
+                // 会把刚刚乐观剔除的卡片重新拉回来。延迟一次，等 Steam 端完成剔除后再刷。
+                // 其它状态（同步完成）直接刷新即可。
+                if (data.status === 'accepted') {
+                    setTimeout(loadSubscriptions, 1500);
+                } else {
+                    loadSubscriptions();
+                }
             } else {
                 const errorMsg = (data && (data.error || data.message)) || (window.t ? window.t('common.unknownError') : '未知错误');
                 showMessage(`${window.t ? window.t('steam.unsubscribeFailed') : '取消订阅失败'}: ${errorMsg}`, 'error');
@@ -5165,7 +5199,15 @@ function _legacyMemoryScan() {
     fetch('/api/memory/legacy/scan')
         .then((resp) => resp.json().then((data) => ({ resp, data })).catch(() => ({ resp, data: null })))
         .then(({ resp, data }) => {
-            console.info('[legacy memory scan]', { status: resp.status, ok: resp.ok, data });
+            // 只记录状态 + 汇总计数；legacy_roots 里包含 Documents 路径，不落日志
+            console.info('[legacy memory scan]', {
+                status: resp.status,
+                ok: resp.ok,
+                success: !!(data && data.success),
+                total_entries: data && data.total_entries,
+                total_size_bytes: data && data.total_size_bytes,
+                root_count: data && Array.isArray(data.legacy_roots) ? data.legacy_roots.length : 0,
+            });
             if (!resp.ok || !data || !data.success) {
                 const errMsg = (data && data.error) || `HTTP ${resp.status}`;
                 const tableWrap = document.getElementById('legacy-memory-table-wrap');
@@ -5197,7 +5239,12 @@ function _legacyMemoryRenderTable(data) {
     if (!tableWrap) return;
 
     if (runtimeInfo) {
-        runtimeInfo.textContent = `runtime memory: ${data.runtime_memory_dir || '-'}`;
+        const runtimePath = data.runtime_memory_dir || '-';
+        runtimeInfo.textContent = _legacyMemoryI18n(
+            'steam.legacyRuntimeMemory',
+            `runtime memory: ${runtimePath}`,
+            { path: runtimePath }
+        );
     }
 
     // 总条目数为 0 → empty state
@@ -5263,7 +5310,11 @@ function _legacyMemoryRenderTable(data) {
             </table>
         </div>
         <div style="margin-top:10px;color:#888;font-size:12px;">
-            共 ${data.total_entries} 条，总大小约 ${_legacyFormatSize(data.total_size_bytes)}
+            ${_legacyEscapeHtml(_legacyMemoryI18n(
+                'steam.legacyScanFooter',
+                `共 ${data.total_entries} 条，总大小约 ${_legacyFormatSize(data.total_size_bytes)}`,
+                { count: data.total_entries, size: _legacyFormatSize(data.total_size_bytes) }
+            ))}
         </div>
     `;
     if (toolbar) toolbar.style.display = 'flex';
@@ -5327,7 +5378,14 @@ function legacyMemoryPurgeSelected() {
     })
         .then((resp) => resp.json().then((data) => ({ resp, data })).catch(() => ({ resp, data: null })))
         .then(({ resp, data }) => {
-            console.info('[legacy memory purge]', { status: resp.status, ok: resp.ok, data });
+            // 只记录状态 + 计数；removed / errors 内容含本地路径，不落日志
+            console.info('[legacy memory purge]', {
+                status: resp.status,
+                ok: resp.ok,
+                success: !!(data && data.success),
+                removed_count: data && Array.isArray(data.removed) ? data.removed.length : 0,
+                error_count: data && Array.isArray(data.errors) ? data.errors.length : 0,
+            });
             if (!resp.ok || !data || !data.success) {
                 const errMsg = (data && data.error) || `HTTP ${resp.status}`;
                 showMessage(

@@ -108,7 +108,7 @@
 <img src="/static/icons/roload_icon.png" class="refresh-icon" alt="" aria-hidden="true">
 </div>
 <div class="refresh-button-wrapper">
-<button class="btn btn-secondary" onclick="openLegacyMemoryModal()" data-i18n="steam.cleanLegacyMemory" title="扫描并清理 Documents 等遗留路径下的角色记忆">清理遗留记忆</button>
+<button class="btn btn-secondary" onclick="openLegacyMemoryModal()" data-i18n="steam.cleanLegacyMemory" data-i18n-title="steam.cleanLegacyMemoryTooltip" title="扫描并清理 Documents 等遗留路径下的角色记忆">清理遗留记忆</button>
 </div>
 </div>
 </div>
@@ -658,7 +658,7 @@
 以下目录位于 Documents 等遗留路径，不是当前使用的 memory 位置（AppData）。勾选要删除的条目。
 </p>
 <div id="legacy-memory-runtime-info" style="margin-bottom: 12px; color: #888; font-size: 12px; word-break: break-all;"></div>
-<div id="legacy-memory-toolbar" style="display: none; margin-bottom: 10px; display: flex; gap: 8px; flex-wrap: wrap;">
+<div id="legacy-memory-toolbar" style="display: none; margin-bottom: 10px; gap: 8px; flex-wrap: wrap;">
 <button type="button" class="btn btn-secondary" style="padding: 4px 12px; font-size: 13px;" onclick="legacyMemorySelectAll()" data-i18n="steam.legacySelectAll">全选</button>
 <button type="button" class="btn btn-secondary" style="padding: 4px 12px; font-size: 13px;" onclick="legacyMemorySelectNone()" data-i18n="steam.legacySelectNone">全不选</button>
 <button type="button" class="btn btn-secondary" style="padding: 4px 12px; font-size: 13px;" onclick="legacyMemorySelectUnlinked()" data-i18n="steam.legacySelectUnlinked">只选未关联</button>
