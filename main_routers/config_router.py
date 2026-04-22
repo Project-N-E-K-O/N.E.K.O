@@ -982,8 +982,21 @@ async def set_proxy_mode(request: Request):
 # ---------------------------------------------------------------------------
 
 class ConnectivityTestRequest(BaseModel):
-    url: str
+    """Request model for connectivity testing.
+
+    Two modes:
+    1. Built-in provider: provide provider_key + provider_scope + api_key.
+       Backend resolves url/model/provider_type from api_providers.json.
+    2. Custom API: provide url + api_key + model (+ provider_type).
+       Frontend passes all details directly.
+    """
+    # Built-in provider mode
+    provider_key: Optional[str] = None       # e.g. "qwen", "openai", "glm"
+    provider_scope: Optional[str] = None     # "core" or "assist"
+    # Custom / fallback mode
+    url: Optional[str] = ""
     api_key: Optional[str] = ""
+    model: Optional[str] = ""
     provider_type: Optional[str] = "openai_compatible"
     is_free: Optional[bool] = False
 
@@ -994,15 +1007,20 @@ class ConnectivityTestResponse(BaseModel):
     error_code: Optional[str] = None
 
 
-async def _test_openai_compatible(url: str, api_key: str, is_free: bool = False) -> dict:
+async def _test_openai_compatible(url: str, api_key: str, model: str = "gpt-3.5-turbo", is_free: bool = False) -> dict:
     """Test an OpenAI-compatible REST API endpoint.
 
     Uses the project's ChatOpenAI client (same as actual conversations) to send
     a minimal chat completion request (max_tokens=1). This ensures the test
     exercises the exact same auth and request path as real usage.
 
-    For free version APIs (is_free=True), 400 Bad Request also counts as success
-    because the service responded — the key simply lacks paid access.
+    Args:
+        url: Base URL for the API endpoint.
+        api_key: API key for authentication (optional for keyless services).
+        model: Model name to use for the test request. For built-in providers,
+               this comes from api_providers.json (e.g. "qwen3.6-plus", "glm-4.5-air").
+               For custom APIs, this comes from the frontend.
+        is_free: If True, 400 Bad Request is treated as success.
 
     Future: TTS/GPT-SoVITS connectivity testing is not yet supported here;
     those use different protocols and will need dedicated test paths.
@@ -1011,7 +1029,7 @@ async def _test_openai_compatible(url: str, api_key: str, is_free: bool = False)
 
     try:
         client = _ChatOpenAI(
-            model="gpt-3.5-turbo",
+            model=model,
             base_url=url,
             api_key=api_key or "sk-placeholder",
             max_tokens=1,
@@ -1138,30 +1156,69 @@ def _classify_connect_error(e) -> dict:
 async def test_connectivity(req: ConnectivityTestRequest) -> dict:
     """测试 API 连通性。
 
+    两种模式：
+    1. 内置供应商：提供 provider_key + provider_scope + api_key，
+       后端从 api_providers.json 读取 url/model/provider_type。
+    2. 自定义 API：提供 url + api_key + model (+ provider_type)，
+       前端传完整参数，后端直接使用。
+
     根据 provider_type 选择测试策略：
     - openai_compatible（默认）：通过 ChatOpenAI 发送最小 chat completion 请求（max_tokens=1）
     - websocket：WebSocket 握手，成功后立即关闭
 
     所有请求 10 秒超时。端点为 async，天然支持并发请求不阻塞。
     """
-    # --- Parameter validation ---
-    if not req.url or not req.url.strip():
-        return {"success": False, "error": "缺少必要参数", "error_code": "missing_params"}
-
-    # api_key 可选（本地服务如 Ollama 不需要 key）
     api_key_stripped = (req.api_key or "").strip()
 
-    provider = (req.provider_type or "openai_compatible").strip().lower()
-    url_stripped = req.url.strip()
+    # --- Mode 1: Built-in provider (resolve config from api_providers.json) ---
+    if req.provider_key and req.provider_scope:
+        from utils.api_config_loader import get_config as _get_api_config
 
-    # 根据 URL 识别供应商名称，用于日志显示
-    _source_label = _identify_provider_label(url_stripped, bool(req.is_free))
+        api_config = _get_api_config()
+        provider_key = req.provider_key.strip()
+        scope = req.provider_scope.strip().lower()
+
+        if scope == "core":
+            providers = api_config.get("core_api_providers", {})
+            profile = providers.get(provider_key, {})
+            url_stripped = profile.get("core_url", "")
+            model = profile.get("core_model", "")
+            provider_type = "websocket"
+            is_free = profile.get("is_free_version", False)
+            _source_label = profile.get("name", provider_key)
+        elif scope == "assist":
+            providers = api_config.get("assist_api_providers", {})
+            profile = providers.get(provider_key, {})
+            url_stripped = profile.get("openrouter_url", "")
+            # Use conversation_model as the test model (most representative)
+            model = profile.get("conversation_model", "")
+            provider_type = "openai_compatible"
+            is_free = profile.get("is_free_version", False)
+            _source_label = profile.get("name", provider_key)
+        else:
+            return {"success": False, "error": "无效的 provider_scope", "error_code": "missing_params"}
+
+        if not url_stripped:
+            # Some providers (e.g. Gemini) may not have a URL in the config
+            # (they use SDK-based connections, not raw WebSocket/HTTP)
+            return {"success": False, "error": f"供应商 {provider_key} 未配置测试 URL", "error_code": "missing_params"}
+
+    # --- Mode 2: Custom API (use frontend-provided params directly) ---
+    else:
+        if not req.url or not req.url.strip():
+            return {"success": False, "error": "缺少必要参数", "error_code": "missing_params"}
+
+        url_stripped = req.url.strip()
+        model = (req.model or "gpt-3.5-turbo").strip()
+        provider_type = (req.provider_type or "openai_compatible").strip().lower()
+        is_free = bool(req.is_free)
+        _source_label = _identify_provider_label(url_stripped, is_free)
 
     try:
-        if provider == "websocket":
+        if provider_type == "websocket":
             result = await _test_websocket(url_stripped, api_key_stripped)
         else:
-            result = await _test_openai_compatible(url_stripped, api_key_stripped, is_free=bool(req.is_free))
+            result = await _test_openai_compatible(url_stripped, api_key_stripped, model=model, is_free=is_free)
     except Exception as e:
         logger.exception("[ConnectivityTest] 未预期的异常")
         result = {"success": False, "error": str(e), "error_code": "unknown"}

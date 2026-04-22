@@ -2340,7 +2340,7 @@ const ConnectivityManager = {
      * @returns {{ key: string, url: string, providerType: string }} 解析结果
      */
     resolveEffectiveKey(context) {
-        const result = { key: '', url: '', providerType: 'openai_compatible' };
+        const result = { key: '', url: '', providerType: 'openai_compatible', providerKey: '', providerScope: '' };
 
         if (!context || !context.type) return result;
 
@@ -2351,6 +2351,8 @@ const ConnectivityManager = {
 
         if (context.type === 'core') {
             const coreProvider = coreApiSelect ? coreApiSelect.value : '';
+            result.providerKey = coreProvider;
+            result.providerScope = 'core';
             if (coreProvider === 'free') {
                 // 免费版：使用预配置端点和 Key
                 const coreProfile = _coreApiProviders['free'] || {};
@@ -2368,6 +2370,8 @@ const ConnectivityManager = {
 
         if (context.type === 'assist') {
             const assistProvider = assistApiSelect ? assistApiSelect.value : '';
+            result.providerKey = assistProvider;
+            result.providerScope = 'assist';
             if (assistProvider === 'free') {
                 const assistProfile = _assistApiProviders['free'] || {};
                 result.url = assistProfile.openrouter_url || '';
@@ -2408,13 +2412,17 @@ const ConnectivityManager = {
                     result.key = coreResult.key;
                     result.url = coreResult.url;
                     result.providerType = 'websocket';
+                    result.providerKey = coreResult.providerKey;
+                    result.providerScope = 'core';
                 } else {
-                    // 非 omni 跟随核心时，使用核心服务商的 openrouter_url
+                    // 非 omni 跟随核心时，使用核心服务商的 assist 配置
                     const coreProvider = coreApiSelect ? coreApiSelect.value : '';
                     const pInfo = _assistApiProviders[coreProvider] || _coreApiProviders[coreProvider] || {};
                     result.url = pInfo.openrouter_url || pInfo.core_url || '';
                     result.key = coreResult.key;
                     result.providerType = 'openai_compatible';
+                    result.providerKey = coreProvider;
+                    result.providerScope = 'assist';
                 }
             } else if (provider === 'follow_assist') {
                 // 跟随辅助 API
@@ -2422,8 +2430,10 @@ const ConnectivityManager = {
                 result.key = assistResult.key;
                 result.url = assistResult.url;
                 result.providerType = assistResult.providerType;
+                result.providerKey = assistResult.providerKey;
+                result.providerScope = assistResult.providerScope;
             } else if (provider === 'custom') {
-                // 自定义：直接从输入框读取
+                // 自定义：直接从输入框读取，不设 providerKey（走自定义模式）
                 result.key = keyInput ? getRealKey(keyInput) : '';
                 result.providerType = (mt === 'omni') ? 'websocket' : 'openai_compatible';
             } else {
@@ -2434,10 +2444,14 @@ const ConnectivityManager = {
                     const coreProfile = _coreApiProviders[provider] || {};
                     result.url = coreProfile.core_url || '';
                     result.providerType = 'websocket';
+                    result.providerKey = provider;
+                    result.providerScope = 'core';
                 } else {
                     const pInfo = _assistApiProviders[provider] || _coreApiProviders[provider] || {};
                     result.url = pInfo.openrouter_url || pInfo.core_url || '';
                     result.providerType = 'openai_compatible';
+                    result.providerKey = provider;
+                    result.providerScope = 'assist';
                 }
             }
 
@@ -2491,15 +2505,27 @@ const ConnectivityManager = {
      * 测试单个 Key 的连通性。
      * 调用后端 /api/config/test_connectivity 端点，前端 15 秒超时。
      *
-     * @param {string} url - API 端点 URL
-     * @param {string} apiKey - API Key
-     * @param {string} providerType - 'openai_compatible' 或 'websocket'
+     * @param {Object} params - 测试参数
+     * @param {string} [params.provider_key] - 内置供应商 key（如 "qwen"、"openai"）
+     * @param {string} [params.provider_scope] - "core" 或 "assist"
+     * @param {string} [params.url] - 自定义 API 的 URL
+     * @param {string} [params.api_key] - API Key
+     * @param {string} [params.model] - 自定义 API 的模型名
+     * @param {string} [params.provider_type] - 'openai_compatible' 或 'websocket'
+     * @param {boolean} [params.is_free] - 是否免费版
      * @returns {Promise<{success: boolean, error?: string, error_code?: string}>}
      */
-    async testKey(url, apiKey, providerType, isFree) {
-        console.log('[ConnectivityManager] testKey called:', { url, apiKey: apiKey ? (apiKey.length > 10 ? apiKey.substring(0, 4) + '***' + apiKey.slice(-4) : '***') : '(empty)', providerType, isFree });
+    async testKey(params) {
+        const { provider_key, provider_scope, url, api_key: apiKey, model, provider_type: providerType, is_free: isFree } = params;
+        console.log('[ConnectivityManager] testKey called:', {
+            provider_key: provider_key || '(custom)',
+            provider_scope: provider_scope || '(none)',
+            hasUrl: !!url,
+            hasKey: !!apiKey,
+            model: model || '(default)',
+        });
         // 取消同一 Key 的前一次未完成请求
-        const cacheKey = `${url}|${apiKey}`;
+        const cacheKey = `${provider_key || url}|${apiKey || ''}`;
         if (this._abortControllers[cacheKey]) {
             this._abortControllers[cacheKey].abort();
         }
@@ -2511,15 +2537,24 @@ const ConnectivityManager = {
         const timeoutId = setTimeout(() => controller.abort(), 15000);
 
         try {
+            // Build request body based on mode
+            const body = { api_key: apiKey || '' };
+            if (provider_key && provider_scope) {
+                // Built-in provider mode
+                body.provider_key = provider_key;
+                body.provider_scope = provider_scope;
+            } else {
+                // Custom API mode
+                body.url = url || '';
+                body.model = model || '';
+                body.provider_type = providerType || 'openai_compatible';
+                body.is_free = !!isFree;
+            }
+
             const response = await fetch('/api/config/test_connectivity', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    url: url,
-                    api_key: apiKey,
-                    provider_type: providerType || 'openai_compatible',
-                    is_free: !!isFree
-                }),
+                body: JSON.stringify(body),
                 signal: controller.signal
             });
 
@@ -2569,7 +2604,7 @@ const ConnectivityManager = {
      */
     async testAll() {
         // 收集所有需要测试的配置（以 cacheId 去重：有 key 用 key，无 key 用 URL）
-        const keyConfigs = {}; // cacheId → { url, apiKey, providerType, isFree }
+        const keyConfigs = {}; // cacheId → { provider_key, provider_scope, url, api_key, model, provider_type, is_free }
 
         // 核心 API
         const coreSelect = document.getElementById('coreApiSelect');
@@ -2579,7 +2614,10 @@ const ConnectivityManager = {
         console.log('[ConnectivityManager] testAll - core resolved:', { hasUrl: !!coreResult.url, hasKey: !!coreResult.key, providerType: coreResult.providerType });
         if (coreCacheId && !(coreResult.key && coreResult.key !== 'free-access' && isFreeVersionText(coreResult.key))) {
             if (!keyConfigs[coreCacheId]) {
-                keyConfigs[coreCacheId] = { url: coreResult.url, apiKey: coreResult.key || '', providerType: coreResult.providerType, isFree: coreIsFree };
+                keyConfigs[coreCacheId] = {
+                    provider_key: coreResult.providerKey, provider_scope: coreResult.providerScope,
+                    url: coreResult.url, api_key: coreResult.key || '', provider_type: coreResult.providerType, is_free: coreIsFree
+                };
             }
         }
 
@@ -2589,7 +2627,10 @@ const ConnectivityManager = {
         const assistResult = this.resolveEffectiveKey({ type: 'assist' });
         const assistCacheId = assistResult.key || assistResult.url;
         if (assistCacheId && !keyConfigs[assistCacheId]) {
-            keyConfigs[assistCacheId] = { url: assistResult.url, apiKey: assistResult.key || '', providerType: assistResult.providerType, isFree: assistIsFree };
+            keyConfigs[assistCacheId] = {
+                provider_key: assistResult.providerKey, provider_scope: assistResult.providerScope,
+                url: assistResult.url, api_key: assistResult.key || '', provider_type: assistResult.providerType, is_free: assistIsFree
+            };
         }
 
         // 自定义 API（如果启用）
@@ -2604,7 +2645,14 @@ const ConnectivityManager = {
                     let isFree = false;
                     if (provider === 'follow_core' && coreSelect && coreSelect.value === 'free') isFree = true;
                     else if (provider === 'follow_assist' && assistSelect && assistSelect.value === 'free') isFree = true;
-                    keyConfigs[customCacheId] = { url: customResult.url, apiKey: customResult.key || '', providerType: customResult.providerType, isFree };
+                    // For custom provider, also pass model from the input
+                    const modelInput = document.getElementById(`${mt}ModelId`);
+                    const model = modelInput ? modelInput.value.trim() : '';
+                    keyConfigs[customCacheId] = {
+                        provider_key: customResult.providerKey, provider_scope: customResult.providerScope,
+                        url: customResult.url, api_key: customResult.key || '', model: model,
+                        provider_type: customResult.providerType, is_free: isFree
+                    };
                 }
             });
         }
@@ -2620,7 +2668,7 @@ const ConnectivityManager = {
 
         // 并发测试所有唯一配置
         const testPromises = Object.entries(keyConfigs).map(async ([cacheId, config]) => {
-            const result = await this.testKey(config.url, config.apiKey, config.providerType, config.isFree);
+            const result = await this.testKey(config);
             if (result.success) {
                 this.keyStatusMap[cacheId] = LightStatus.CONNECTED;
                 this.keyErrorMap[cacheId] = null;
@@ -2683,7 +2731,7 @@ const ConnectivityManager = {
      * 由自定义 API 区域的测试按钮调用。
      */
     async testCustomOnly() {
-        const keyConfigs = {}; // cacheId → { url, apiKey, providerType, isFree }
+        const keyConfigs = {}; // cacheId → { provider_key, provider_scope, url, api_key, model, provider_type, is_free }
 
         const enableCustomApi = document.getElementById('enableCustomApi');
         const coreSelect = document.getElementById('coreApiSelect');
@@ -2702,7 +2750,13 @@ const ConnectivityManager = {
                     } else if (provider === 'follow_assist' && assistSelect && assistSelect.value === 'free') {
                         isFree = true;
                     }
-                    keyConfigs[cacheId] = { url: customResult.url, apiKey: customResult.key || '', providerType: customResult.providerType, isFree: isFree };
+                    const modelInput = document.getElementById(`${mt}ModelId`);
+                    const model = modelInput ? modelInput.value.trim() : '';
+                    keyConfigs[cacheId] = {
+                        provider_key: customResult.providerKey, provider_scope: customResult.providerScope,
+                        url: customResult.url, api_key: customResult.key || '', model: model,
+                        provider_type: customResult.providerType, is_free: isFree
+                    };
                 }
             });
         }
@@ -2717,7 +2771,7 @@ const ConnectivityManager = {
 
         // 并发测试
         const testPromises = Object.entries(keyConfigs).map(async ([cacheId, config]) => {
-            const result = await this.testKey(config.url, config.apiKey, config.providerType, config.isFree);
+            const result = await this.testKey(config);
             if (result.success) {
                 this.keyStatusMap[cacheId] = LightStatus.CONNECTED;
                 this.keyErrorMap[cacheId] = null;
@@ -2875,7 +2929,10 @@ function initConnectivityLights() {
                 ConnectivityManager.keyErrorMap[resolved.key] = null;
                 ConnectivityManager.syncLightsForKey(resolved.key);
                 ConnectivityManager.syncErrorDisplaysForKey(resolved.key);
-                const result = await ConnectivityManager.testKey(resolved.url, resolved.key, resolved.providerType, isFree);
+                const result = await ConnectivityManager.testKey({
+                    provider_key: resolved.providerKey, provider_scope: resolved.providerScope,
+                    url: resolved.url, api_key: resolved.key, provider_type: resolved.providerType, is_free: isFree
+                });
                 if (result.success) {
                     ConnectivityManager.keyStatusMap[resolved.key] = LightStatus.CONNECTED;
                     ConnectivityManager.keyErrorMap[resolved.key] = null;
@@ -2922,7 +2979,10 @@ function initConnectivityLights() {
                 ConnectivityManager.keyErrorMap[resolved.key] = null;
                 ConnectivityManager.syncLightsForKey(resolved.key);
                 ConnectivityManager.syncErrorDisplaysForKey(resolved.key);
-                const result = await ConnectivityManager.testKey(resolved.url, resolved.key, resolved.providerType, isFree);
+                const result = await ConnectivityManager.testKey({
+                    provider_key: resolved.providerKey, provider_scope: resolved.providerScope,
+                    url: resolved.url, api_key: resolved.key, provider_type: resolved.providerType, is_free: isFree
+                });
                 if (result.success) {
                     ConnectivityManager.keyStatusMap[resolved.key] = LightStatus.CONNECTED;
                     ConnectivityManager.keyErrorMap[resolved.key] = null;

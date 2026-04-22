@@ -531,7 +531,7 @@ class TestConcurrency:
         """Multiple openai_compatible requests run concurrently via asyncio.gather."""
         call_count = 0
 
-        async def mock_test_openai(url, api_key, is_free=False):
+        async def mock_test_openai(url, api_key, model="", is_free=False):
             nonlocal call_count
             call_count += 1
             await asyncio.sleep(0.05)  # simulate network latency
@@ -587,7 +587,7 @@ class TestConcurrency:
 
     async def test_concurrent_mixed_requests(self):
         """Mixed openai_compatible and websocket requests run concurrently."""
-        async def mock_test_openai(url, api_key, is_free=False):
+        async def mock_test_openai(url, api_key, model="", is_free=False):
             await asyncio.sleep(0.05)
             return {"success": True}
 
@@ -629,7 +629,7 @@ class TestConcurrency:
         """Concurrent requests where some fail — failures don't block others."""
         call_order = []
 
-        async def mock_test_openai(url, api_key, is_free=False):
+        async def mock_test_openai(url, api_key, model="", is_free=False):
             call_order.append(url)
             await asyncio.sleep(0.05)
             if "fail" in url:
@@ -717,5 +717,5 @@ class TestEndpointExceptionHandling:
             await _endpoint_test_connectivity(req)
             # Verify is_free=True was passed
             mock_http.assert_awaited_once_with(
-                "https://api.example.com/v1", "sk-free", is_free=True
+                "https://api.example.com/v1", "sk-free", model="gpt-3.5-turbo", is_free=True
             )
