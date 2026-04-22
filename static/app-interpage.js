@@ -793,17 +793,28 @@
     }
 
     // =====================================================================
-    // Restore Live2D Idle Animation on Main Page
+    // Live2D 待机动作恢复功能
+    //
+    // 功能说明：
+    // - 主页加载时自动读取 characters.json 中保存的 live2d_idle_animation
+    // - 从 API 获取当前模型的动作文件列表
+    // - 手动构建 motionManager.definitions 和 motionGroups（主页没有 PreviewAll 组）
+    // - 加载并循环播放保存的待机动作
+    //
+    // 注意：motionGroups 必须初始化为空数组 []，不能放入配置对象！
+    // 原因：SDK 会检查 motionGroups 是否已有内容来判断动作是否已加载。
+    // 如果放入 JSON 配置对象，SDK 会误认为动作已加载，跳过网络请求和解析。
     // =====================================================================
-
     async function restoreLive2DIdleAnimationOnMainPage() {
         try {
+            // 1. 获取当前角色名称
             const lanlanName = window.lanlan_config?.lanlan_name;
             if (!lanlanName) {
                 console.log('[Live2D Main] 没有 lanlan_name，跳过恢复待机动作');
                 return;
             }
 
+            // 2. 从 characters.json 获取保存的待机动作路径
             const response = await fetch('/api/characters/');
             const data = await response.json();
             const charData = data['猫娘']?.[lanlanName];
@@ -822,7 +833,7 @@
 
             console.log('[Live2D Main] 开始恢复待机动作:', live2dIdleAnimation);
 
-            // 获取模型的动作文件列表
+            // 3. 从 API 获取模型的动作文件列表（主页没有初始化 PreviewAll 组）
             let modelFilesData;
             try {
                 const filesResponse = await fetch('/api/live2d/model_files/' + encodeURIComponent(live2dModelName));
@@ -833,15 +844,13 @@
             }
 
             const motionFiles = modelFilesData?.motion_files || [];
-            console.log('[Live2D Main] motionFiles from API:', motionFiles);
-            console.log('[Live2D Main] looking for:', live2dIdleAnimation);
-
             const motionIndex = motionFiles.indexOf(live2dIdleAnimation);
             if (motionIndex < 0) {
                 console.log('[Live2D Main] 待机动作不在当前模型的动作列表中:', live2dIdleAnimation);
                 return;
             }
 
+            // 4. 获取 Live2D 模型和 motionManager
             const live2dManager = window.live2dManager;
             const live2dModel = live2dManager?.getCurrentModel();
             if (!live2dModel) {
@@ -857,15 +866,17 @@
 
             const motionManager = internalModel.motionManager;
             const groupName = 'PreviewAll';
+            // 构建动作配置列表
             const motionsList = motionFiles.map(file => ({ File: file }));
 
-            // 更新 definitions
+            // 5. 初始化 motionManager 的数据结构
+            // 注意：definitions 存配置，motionGroups 存实际动作实例（必须为空数组）
             if (!motionManager.definitions) {
                 motionManager.definitions = {};
             }
             motionManager.definitions[groupName] = motionsList;
 
-            // 更新 motionGroups (只初始化空数组，绝对不能放入配置对象)
+            // motionGroups 必须初始化为空数组，否则 SDK 会跳过动作加载
             if (!motionManager.motionGroups) {
                 motionManager.motionGroups = {};
             }
@@ -873,7 +884,7 @@
                 motionManager.motionGroups[groupName] = [];
             }
 
-            // 更新 internalModel.settings.motions
+            // 更新 internalModel.settings.motions（备用数据源）
             if (!internalModel.settings) {
                 internalModel.settings = {};
             }
@@ -882,7 +893,7 @@
             }
             internalModel.settings.motions[groupName] = motionsList;
 
-            // 更新 fileReferences
+            // 更新 fileReferences（保持一致性）
             if (!live2dModel.fileReferences) {
                 live2dModel.fileReferences = {};
             }
@@ -891,12 +902,11 @@
             }
             live2dModel.fileReferences.Motions[groupName] = motionsList;
 
+            // 6. 加载并播放动作
             await motionManager.loadMotion(groupName, motionIndex);
-            console.log('[Live2D Main] after loadMotion, motionGroups:', motionManager.motionGroups);
-            console.log('[Live2D Main] after loadMotion, definitions:', motionManager.definitions);
 
+            // 7. 设置循环播放
             const motionInstance = motionManager.motionGroups?.[groupName]?.[motionIndex];
-            console.log('[Live2D Main] motionInstance:', motionInstance);
             if (motionInstance) {
                 if (typeof motionInstance.setIsLoop === 'function') {
                     motionInstance.setIsLoop(true);
@@ -905,6 +915,7 @@
                 }
             }
 
+            // 8. 停止当前动作并播放保存的待机动作
             motionManager.stopAllMotions();
             live2dModel.motion(groupName, motionIndex, 3);
             console.log('[Live2D Main] 已恢复待机动作并循环播放:', live2dIdleAnimation);
@@ -914,7 +925,7 @@
         }
     }
 
-    // 暴露给全局作用域
+    // 暴露给全局作用域，供 live2d-init.js 调用
     window.restoreLive2DIdleAnimationOnMainPage = restoreLive2DIdleAnimationOnMainPage;
 
     // =====================================================================

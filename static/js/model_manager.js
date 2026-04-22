@@ -6363,7 +6363,19 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     });
 
-    // 当选择新动作时，重置播放状态
+    // =====================================================================
+    // Live2D 动作选择与保存功能
+    //
+    // 功能说明：
+    // - 用户选择 .motion3.json 文件后立即播放（循环模式）
+    // - 保存设置时将选中的动作路径保存到 characters.json
+    //
+    // motionGroups 初始化说明：
+    // - 必须初始化为空数组 []，不能放入配置对象
+    // - 否则 SDK 会跳过动作加载流程
+    // =====================================================================
+
+    // 当选择新动作时，立即播放选中的动作（循环模式）
     motionSelect.addEventListener('change', async (e) => {
         const selectedValue = e.target.value;
 
@@ -6380,7 +6392,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
 
-        // 立即播放选中的动作
+        // 立即播放选中的动作（循环模式）
         const motionFiles = currentModelFiles?.motion_files || [];
         const motionIndex = motionFiles.indexOf(selectedValue);
         if (motionIndex >= 0 && live2dModel) {
@@ -6389,7 +6401,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const motionManager = internalModel.motionManager;
                 const groupName = 'PreviewAll';
 
-                // 确保 motionGroups 存在
+                // 初始化 motionGroups（必须为空数组）
                 if (!motionManager.motionGroups) {
                     motionManager.motionGroups = {};
                 }

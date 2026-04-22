@@ -463,7 +463,8 @@ async function initLive2DModel() {
                         console.log('[Live2D Init] 在常驻表情应用后已重新应用用户偏好参数');
                     }
                 },
-                // 模型完全就绪后恢复待机动作（延迟确保模型完全稳定）
+                // 模型完全就绪后恢复待机动作（延迟 500ms 确保模型完全稳定）
+                // 触发 restoreLive2DIdleAnimationOnMainPage() 从 characters.json 读取保存的动作
                 onModelReady: (model) => {
                     setTimeout(() => {
                         if (typeof window.restoreLive2DIdleAnimationOnMainPage === 'function') {
