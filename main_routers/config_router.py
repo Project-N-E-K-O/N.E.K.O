@@ -978,6 +978,7 @@ async def test_gptsovits_connectivity(request: Request):
                 # Collect responses for verification
                 audio_chunks = []
                 got_sentence = False
+                gsv_error = ""
 
                 if isinstance(first_response, bytes):
                     audio_chunks.append(first_response)
@@ -1003,7 +1004,11 @@ async def test_gptsovits_connectivity(request: Request):
                             msg_data = _json.loads(msg)
                             if msg_data.get("type") == "sentence":
                                 got_sentence = True
-                            if msg_data.get("type") in ("done", "error"):
+                            if msg_data.get("type") == "error":
+                                gsv_error = str(msg_data.get("message", ""))[:200]
+                                logger.warning(f"[GSV Test] GSV error: {gsv_error}")
+                                break
+                            if msg_data.get("type") == "done":
                                 break
                 except asyncio.TimeoutError:
                     logger.info(f"[GSV Test] Receive timeout, collected {len(audio_chunks)} audio chunks")
@@ -1013,7 +1018,7 @@ async def test_gptsovits_connectivity(request: Request):
                 # Success if we got a "sentence" event (text was accepted) or audio data
                 result = {"success": got_sentence or len(audio_chunks) > 0}
                 if not result["success"]:
-                    result["error"] = "GSV 服务未返回有效响应"
+                    result["error"] = gsv_error if gsv_error else "GSV 服务未返回有效响应"
                     result["error_code"] = "unknown"
 
                 if result["success"]:
