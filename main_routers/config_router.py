@@ -961,8 +961,50 @@ async def test_gptsovits_connectivity(request: Request):
 
                 # Step 4: Wait for first response (audio binary or JSON)
                 first_response = await asyncio.wait_for(ws.recv(), timeout=10.0)
-                # Any response = success (audio bytes or JSON status)
-                return {"success": True}
+
+                # Collect all audio data for verification (temporary: will be removed after testing)
+                audio_chunks = []
+                if isinstance(first_response, bytes):
+                    audio_chunks.append(first_response)
+
+                # Continue receiving until done or timeout
+                try:
+                    while True:
+                        msg = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                        if isinstance(msg, bytes):
+                            audio_chunks.append(msg)
+                        else:
+                            msg_data = _json.loads(msg)
+                            if msg_data.get("type") == "done":
+                                break
+                except (asyncio.TimeoutError, Exception):
+                    pass
+
+                # Extract PCM from WAV chunks and return as base64 for playback verification
+                # TODO: Remove audio_data from response after GSV playback verification is confirmed
+                import base64
+                raw_pcm = b""
+                sample_rate = 0
+                for chunk in audio_chunks:
+                    if len(chunk) >= 44:
+                        sr = int.from_bytes(chunk[24:28], 'little')
+                        if sample_rate == 0:
+                            sample_rate = sr
+                        pcm = chunk[44:]
+                        if len(pcm) >= 2:
+                            if len(pcm) % 2 != 0:
+                                pcm = pcm[:-1]
+                            raw_pcm += pcm
+
+                result = {"success": True}
+                if raw_pcm:
+                    result["audio_data"] = base64.b64encode(raw_pcm).decode('ascii')
+                    result["sample_rate"] = sample_rate
+                    result["audio_length_ms"] = int(len(raw_pcm) / 2 / sample_rate * 1000) if sample_rate else 0
+                    logger.info(f"[ConnectivityTest] GPT-SoVITS → ✅ 收到 {len(audio_chunks)} 个音频块, {result['audio_length_ms']}ms")
+                else:
+                    logger.info("[ConnectivityTest] GPT-SoVITS → ✅ 连通（无音频数据）")
+                return result
 
     except TimeoutError:
         return {"success": False, "error": "请求超时（10秒）", "error_code": "timeout"}
