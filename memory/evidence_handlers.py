@@ -33,6 +33,9 @@ _EVIDENCE_SNAPSHOT_KEYS = (
     'reinforcement', 'disputation',
     'rein_last_signal_at', 'disp_last_signal_at',
     'sub_zero_days',
+    # user_fact combo counter (RFC §3.1.8) — 必须走 event log 的 replay
+    # 路径才能让重放后 view 的 combo 状态一致
+    'user_fact_reinforce_count',
 )
 _PERSONA_ENTRY_SNAPSHOT_KEYS = _EVIDENCE_SNAPSHOT_KEYS + ('merged_from_ids',)
 

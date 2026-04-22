@@ -24,6 +24,8 @@ from config import (
     EVIDENCE_DISP_HALF_LIFE_DAYS,
     EVIDENCE_PROMOTED_THRESHOLD,
     EVIDENCE_REIN_HALF_LIFE_DAYS,
+    USER_FACT_REINFORCE_COMBO_BONUS,
+    USER_FACT_REINFORCE_COMBO_THRESHOLD,
 )
 
 __all__ = [
@@ -33,7 +35,15 @@ __all__ = [
     "derive_status",
     "maybe_mark_sub_zero",
     "initial_reinforcement_from_importance",
+    "compute_evidence_snapshot",
 ]
+
+
+# Source value shared by `aapply_signal` dispatchers to trigger combo logic.
+# Kept as a string to avoid circular import with memory/event_log.py
+# where EVIDENCE_SOURCE_USER_FACT is defined (evidence.py is loaded earlier
+# in the memory package graph).
+_SOURCE_USER_FACT = "user_fact"
 
 
 # 用 tuple 定义更紧凑的分档表，避免 if 链；[(importance_threshold, rein), ...]
@@ -142,6 +152,60 @@ def derive_status(entry: dict, now: datetime) -> str:
     if s <= EVIDENCE_ARCHIVE_THRESHOLD:
         return "archive_candidate"
     return "pending"
+
+
+def compute_evidence_snapshot(
+    entry: dict, delta: dict, now_iso: str, source: str,
+) -> dict:
+    """Apply a delta to an entry's evidence and return the full-snapshot
+    payload for the outgoing event.
+
+    Shared by `PersonaManager.aapply_signal` and
+    `ReflectionEngine.aapply_signal` — both need identical semantics and
+    the same combo logic for user_fact reinforces.
+
+    Independent clocks (RFC §3.1.1):
+      只重置被触动的一侧的 last_signal_at。
+    Disputation非负：
+      §3.1.5 只有 reinforcement 允许为负，disputation 永远 >= 0。
+    User_fact combo bonus (RFC §3.1.8)：
+      base rein delta 0.5；累计 user_fact reinforce count 超过
+      USER_FACT_REINFORCE_COMBO_THRESHOLD（默认 2）后，每条新 signal
+      额外加 USER_FACT_REINFORCE_COMBO_BONUS（默认 0.5）。
+      只对 `source='user_fact'` + `delta.reinforcement > 0` 触发。
+      Count 永不清零（combo 是终生累计，配合 §3.5.3 "归档更积极"对称
+      思路：正向累计也终生生效，但 decay 仍按 rein_last_signal_at 发生）。
+
+    Returns a dict containing:
+      reinforcement, disputation, rein_last_signal_at, disp_last_signal_at,
+      sub_zero_days, user_fact_reinforce_count
+    """
+    rein_delta = float(delta.get("reinforcement", 0.0) or 0.0)
+    disp_delta = float(delta.get("disputation", 0.0) or 0.0)
+    new_rein = float(entry.get("reinforcement", 0.0) or 0.0) + rein_delta
+    new_disp = float(entry.get("disputation", 0.0) or 0.0) + disp_delta
+    if new_disp < 0:
+        new_disp = 0.0
+
+    # Combo logic: only on user_fact reinforces (indirect positive signal).
+    # Counter increments BEFORE threshold check so the threshold reads as
+    # "this is the N-th signal"；第 3 条起满足 count > 2 条件。
+    new_count = int(entry.get("user_fact_reinforce_count", 0) or 0)
+    if source == _SOURCE_USER_FACT and rein_delta > 0:
+        new_count += 1
+        if new_count > USER_FACT_REINFORCE_COMBO_THRESHOLD:
+            new_rein += USER_FACT_REINFORCE_COMBO_BONUS
+
+    return {
+        "reinforcement": new_rein,
+        "disputation": new_disp,
+        "rein_last_signal_at": now_iso if rein_delta != 0.0
+            else entry.get("rein_last_signal_at"),
+        "disp_last_signal_at": now_iso if disp_delta != 0.0
+            else entry.get("disp_last_signal_at"),
+        "sub_zero_days": int(entry.get("sub_zero_days", 0) or 0),
+        "user_fact_reinforce_count": new_count,
+    }
 
 
 def maybe_mark_sub_zero(entry: dict, now: datetime) -> bool:

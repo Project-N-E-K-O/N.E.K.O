@@ -176,6 +176,8 @@ class ReflectionEngine:
             'disp_last_signal_at': None,
             'sub_zero_days': 0,
             'sub_zero_last_increment_date': None,
+            # user_fact reinforces combo counter (RFC §3.1.8)
+            'user_fact_reinforce_count': 0,
             # Merge / archive 溯源
             'absorbed_into': None,
             # Promote 节流
@@ -561,29 +563,14 @@ class ReflectionEngine:
                 return r
         return None
 
+    # Delegated to memory.evidence.compute_evidence_snapshot — shared with
+    # PersonaManager so rein/disp/combo semantics stay in one place.
     @staticmethod
-    def _compute_evidence_after_delta(entry: dict, delta: dict, now_iso: str) -> dict:
-        """Apply delta and compute full-snapshot evidence payload fields.
-
-        Independent rein/disp clocks (RFC §3.1.1): only the touched side's
-        last_signal_at is updated; the other side stays at its previous value.
-        """
-        rein_delta = float(delta.get('reinforcement', 0.0) or 0.0)
-        disp_delta = float(delta.get('disputation', 0.0) or 0.0)
-        new_rein = float(entry.get('reinforcement', 0.0) or 0.0) + rein_delta
-        new_disp = float(entry.get('disputation', 0.0) or 0.0) + disp_delta
-        # disputation 非负（§3.1.5 只有 reinforcement 允许扣到负）
-        if new_disp < 0:
-            new_disp = 0.0
-        return {
-            'reinforcement': new_rein,
-            'disputation': new_disp,
-            'rein_last_signal_at': now_iso if rein_delta != 0.0
-                else entry.get('rein_last_signal_at'),
-            'disp_last_signal_at': now_iso if disp_delta != 0.0
-                else entry.get('disp_last_signal_at'),
-            'sub_zero_days': int(entry.get('sub_zero_days', 0) or 0),
-        }
+    def _compute_evidence_after_delta(
+        entry: dict, delta: dict, now_iso: str, source: str = 'unknown',
+    ) -> dict:
+        from memory.evidence import compute_evidence_snapshot
+        return compute_evidence_snapshot(entry, delta, now_iso, source)
 
     async def aapply_signal(
         self, lanlan_name: str, reflection_id: str, delta: dict, source: str,
@@ -613,7 +600,9 @@ class ReflectionEngine:
                 return False
 
             now_iso = datetime.now().isoformat()
-            snapshot = self._compute_evidence_after_delta(entry, delta, now_iso)
+            snapshot = self._compute_evidence_after_delta(
+                entry, delta, now_iso, source,
+            )
             payload = {
                 'reflection_id': reflection_id,
                 'reinforcement': snapshot['reinforcement'],
@@ -621,6 +610,7 @@ class ReflectionEngine:
                 'rein_last_signal_at': snapshot['rein_last_signal_at'],
                 'disp_last_signal_at': snapshot['disp_last_signal_at'],
                 'sub_zero_days': snapshot['sub_zero_days'],
+                'user_fact_reinforce_count': snapshot['user_fact_reinforce_count'],
                 'source': source,
             }
 
@@ -633,6 +623,7 @@ class ReflectionEngine:
                 entry['rein_last_signal_at'] = snapshot['rein_last_signal_at']
                 entry['disp_last_signal_at'] = snapshot['disp_last_signal_at']
                 entry['sub_zero_days'] = snapshot['sub_zero_days']
+                entry['user_fact_reinforce_count'] = snapshot['user_fact_reinforce_count']
 
             def _sync_save(n: str, view):
                 # Gate write behind the same cloudsave check as

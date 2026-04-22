@@ -13,6 +13,20 @@ PR merges.
 
 ## Revision log
 
+- **v1.2.1** (2026-04-23, same-day follow-up): split signal weights into
+  direct (金标准) vs indirect (银标准) classes and introduce a user_fact
+  reinforces combo bonus. Base deltas broken into named constants in
+  `config/__init__.py`: `USER_FACT_REINFORCE_DELTA=0.5`,
+  `USER_FACT_NEGATE_DELTA=1.0`, `USER_CONFIRM_DELTA=1.0`,
+  `USER_REBUT_DELTA=1.0`, `USER_KEYWORD_REBUT_DELTA=1.0`,
+  `USER_FACT_REINFORCE_COMBO_THRESHOLD=2`,
+  `USER_FACT_REINFORCE_COMBO_BONUS=0.5`. Combo logic: once an entry's
+  user_fact reinforce count > threshold, each subsequent user_fact
+  reinforce adds `base + bonus = 1.0` instead of `0.5`. Entry schema
+  gains `user_fact_reinforce_count: int`（永不清零，decay 不作用）。
+  Event payload gains the count field. See new §3.1.8 and updated
+  §3.4.1 table.
+
 - **v1.2** (2026-04-23, amendments during PR-1 implementation review):
   folds four behavior-affecting changes surfaced during the PR #929
   code review thread back into this design doc so readers see the
@@ -638,6 +652,74 @@ reflection dict + `rein_last_signal_at = now`。和后续 signal 经
 期信息（姓名、昵称、生日）" 打 10 分，把 "长期稳定核心偏好" 打 8-9
 分，从而让 seed 机制真落到用户意图上。
 
+#### 3.1.8 Signal weight 差异化 + user_fact combo bonus（v1.2.1 新增）
+
+原设计每种 signal 都加 1.0，`CONFIRMED_THRESHOLD=1.0` 的语义是"1 次
+用户确认"。实践中发现两类信号**强度不对等**：
+
+- **Direct signal（金标准）**：用户明确回应了 AI 主动提起的 reflection
+  或命中明确的负面关键词。目标和判定都显式。
+  - `check_feedback` confirmed / denied
+  - `user_keyword_rebut`
+- **Indirect signal（银标准）**：Stage-2 LLM 推断用户消息里的 fact 跟
+  某条已有观察相关。用户本人未必意识到自己的话影响了哪条 reflection。
+  - `user_fact` reinforces / negates
+
+如果平权，Stage-2 的误关联会快速污染 evidence，用户一次直接确认反而
+被稀释。v1.2.1 解决方法：
+
+**权重表（§3.4.1 映射）**：
+
+| Source | Signal kind | Delta 常量 | 默认值 |
+|---|---|---|---|
+| `user_fact` | reinforces | `USER_FACT_REINFORCE_DELTA` | 0.5（+ combo） |
+| `user_fact` | negates | `USER_FACT_NEGATE_DELTA` | 1.0 |
+| `user_confirm` | — | `USER_CONFIRM_DELTA` | 1.0 |
+| `user_rebut` | — | `USER_REBUT_DELTA` | 1.0 |
+| `user_ignore` | — | `IGNORED_REINFORCEMENT_DELTA` | -0.2 |
+| `user_keyword_rebut` | — | `USER_KEYWORD_REBUT_DELTA` | 1.0 |
+
+注意 `user_fact` reinforces 是**唯一**降半权的；negates 即使间接也保留
+强权，因为 LLM 判 negates 通常语义更明确（用户说"我不喜欢 X"比"我喜
+欢 Y"更有指向性）。
+
+**Combo bonus（只对 user_fact reinforces）**：
+
+- Entry schema 新增 `user_fact_reinforce_count: int`（默认 0）
+- 每次 `aapply_signal` 应用一次 user_fact reinforces，该计数器 +1
+- 当 `count > USER_FACT_REINFORCE_COMBO_THRESHOLD`（默认 2）时，本次
+  reinforce 额外加 `USER_FACT_REINFORCE_COMBO_BONUS`（默认 0.5）
+  - 第 1 条：`+0.5`（count: 0→1）
+  - 第 2 条：`+0.5`（count: 1→2）
+  - 第 3 条：`+1.0` = 0.5 + 0.5 bonus（count: 2→3，满足 > 2）
+  - 第 4 条起：每条 `+1.0`（combo 持续）
+
+**为什么 count 不清零、decay 不作用于 count**：
+- combo 设计意图是"用户重复间接表达这件事达到一定频次 → 信号被认真
+  对待"。清零会让用户"攒几次再放松"就重置，不符合心智模型。
+- decay 只对 `reinforcement` 数值（评分意义）起作用，`count` 是
+  "这条被间接强化过多少次"的审计事实——事实不衰减。
+- 代价：一条 reflection 几年前集中被 user_fact 强化过、之后无声无
+  息，某天突然一条新 reinforce 就触发 combo。可接受，因为 decay 已经
+  把 `reinforcement` 实际值压到接近 0，combo 的 1.0 重新激活也就是
+  "用户重新关心"的合理信号。
+
+**为什么 MAX 阈值不超过 `CONFIRMED_THRESHOLD`**：单次 combo 加成
+后每条最多贡献 1.0。`CONFIRMED_THRESHOLD=1.0` 意味着**单次 combo
+signal 即可跨 confirmed**——这仍比一次直接 `user_confirm` 慢，因为
+需要至少 3 条才触发 combo。保持"直接优先于间接"的序关系。
+
+**事件 payload 变更**：`reflection.evidence_updated` /
+`persona.evidence_updated` payload 新增 `user_fact_reinforce_count`
+字段，full-snapshot 一并写进去；reconciler handler 的
+`_EVIDENCE_SNAPSHOT_KEYS` 列表相应加入该字段，replay 时随其他 evidence
+一起覆写。
+
+**共享实现**：`memory/evidence.py` 新增 `compute_evidence_snapshot(entry,
+delta, now_iso, source)` pure 函数，`PersonaManager.aapply_signal` 和
+`ReflectionEngine.aapply_signal` 共同调用，保证两侧 combo 语义完全
+一致。
+
 ### 3.2 Schema changes
 
 #### 3.2.1 fact schema 不变
@@ -948,12 +1030,17 @@ source 值加进 event_log 的 `ALL_EVENT_TYPES` 校验外的一个单独 set
 
 | # | Signal 源 | 触发点 | 目标 | Evidence 变化 | source 值 |
 |---|---|---|---|---|---|
-| 1 | Stage-2 LLM 判 reinforces | `FactStore.aextract_facts_and_detect_signals` 第二次调用 | reflection / persona entry | `reinforcement += 1.0` | `user_fact` |
-| 2 | Stage-2 LLM 判 negates | 同上 | 同上 | `disputation += 1.0` | `user_fact` |
-| 3 | `check_feedback` returns `confirmed` | `ReflectionEngine.check_feedback` (`reflection.py:557`) | 该 reflection 自身 | `reinforcement += 1.0` | `user_confirm` |
-| 4 | `check_feedback` returns `denied` | 同上 | 同上 | `disputation += 1.0` | `user_rebut` |
-| 5 | `check_feedback` returns `ignored` | 同上 | 同上 | `reinforcement -= 0.2` (可负) | `user_ignore` |
-| 6 | 本地负面关键词命中 → LLM 判 target | 对话主路径 `/process` hook | LLM 返回的 target 列表 | `disputation += 1.0` | `user_keyword_rebut` |
+| 1 | Stage-2 LLM 判 reinforces | `FactStore.aextract_facts_and_detect_signals` 第二次调用 | reflection / persona entry | `reinforcement += USER_FACT_REINFORCE_DELTA` (0.5) + combo bonus（§3.1.8） | `user_fact` |
+| 2 | Stage-2 LLM 判 negates | 同上 | 同上 | `disputation += USER_FACT_NEGATE_DELTA` (1.0) | `user_fact` |
+| 3 | `check_feedback` returns `confirmed` | `ReflectionEngine.check_feedback` (`reflection.py:557`) | 该 reflection 自身 | `reinforcement += USER_CONFIRM_DELTA` (1.0) | `user_confirm` |
+| 4 | `check_feedback` returns `denied` | 同上 | 同上 | `disputation += USER_REBUT_DELTA` (1.0) | `user_rebut` |
+| 5 | `check_feedback` returns `ignored` | 同上 | 同上 | `reinforcement += IGNORED_REINFORCEMENT_DELTA` (-0.2，可负) | `user_ignore` |
+| 6 | 本地负面关键词命中 → LLM 判 target | 对话主路径 `/process` hook | LLM 返回的 target 列表 | `disputation += USER_KEYWORD_REBUT_DELTA` (1.0) | `user_keyword_rebut` |
+
+**v1.2.1 权重差异化**：user_fact reinforces 从 1.0 降到 0.5（银标准），
+其他保持 1.0。user_fact reinforces 配合 combo bonus（§3.1.8），累计 >
+`USER_FACT_REINFORCE_COMBO_THRESHOLD=2` 次后每条额外 +0.5。所有 delta
+常量集中在 `config/__init__.py`，见 Appendix A。
 
 每次 evidence 变化：
 
@@ -3126,6 +3213,16 @@ event log replay / record_and_save 合约已经由 #905 保证，不在本 RFC
   处理）。
 - **S33**：`_apersist_new_facts` 把 LLM 输出的 `importance` clamp 到
   1..10，非白名单 `entity` 回退到 `master`——脏 LLM 输出不流入 view。
+- **S34**（v1.2.1）：user_fact reinforces combo 曲线：
+  前 2 条每条 `+USER_FACT_REINFORCE_DELTA (0.5)`，第 3 条起每条
+  `+USER_FACT_REINFORCE_DELTA + USER_FACT_REINFORCE_COMBO_BONUS (= 1.0)`；
+  `user_fact_reinforce_count` 永不清零。
+- **S35**（v1.2.1）：combo 只对 `source='user_fact'` + delta.rein > 0 触发：
+  - `user_confirm` / `user_rebut` / `user_keyword_rebut` / `user_ignore`
+    不碰 combo 计数器
+  - `user_fact` + negates 不碰 combo 计数器（只作用于 disp）
+- **S36**（v1.2.1）：事件 payload 包含 `user_fact_reinforce_count`
+  字段（full-snapshot 契约），reconciler handler 重放时正确覆写。
 
 ## 9. Out-of-scope follow-ups
 
@@ -3155,6 +3252,13 @@ event log replay / record_and_save 合约已经由 #905 保证，不在本 RFC
 | `EVIDENCE_ARCHIVE_THRESHOLD` | -2.0 | float | §3.1.4 | `score ≤ -2` → archive_candidate |
 | `EVIDENCE_ARCHIVE_DAYS` | 14 | int | §3.5.3 | 累计 sub_zero 天数阈值 |
 | `IGNORED_REINFORCEMENT_DELTA` | -0.2 | float | §3.1.5 | ignored 扣在 rein 侧 |
+| `USER_FACT_REINFORCE_DELTA` | 0.5 | float | §3.1.8 | Stage-2 reinforces 基础 delta（银标准） |
+| `USER_FACT_NEGATE_DELTA` | 1.0 | float | §3.1.8 | Stage-2 negates delta |
+| `USER_CONFIRM_DELTA` | 1.0 | float | §3.1.8 | check_feedback confirmed（金标准） |
+| `USER_REBUT_DELTA` | 1.0 | float | §3.1.8 | check_feedback denied |
+| `USER_KEYWORD_REBUT_DELTA` | 1.0 | float | §3.1.8 | negative keyword hook |
+| `USER_FACT_REINFORCE_COMBO_THRESHOLD` | 2 | int | §3.1.8 | count > 阈值时激活 combo |
+| `USER_FACT_REINFORCE_COMBO_BONUS` | 0.5 | float | §3.1.8 | combo 激活后每条额外加权 |
 | `EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS` | 10 | int | §3.4.3 | 信号抽取触发 |
 | `EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES` | 5 | int | §3.4.3 | 信号抽取触发 |
 | `EVIDENCE_SIGNAL_CHECK_ENABLED` | True | bool | §3.4.3 | 独立开关 |

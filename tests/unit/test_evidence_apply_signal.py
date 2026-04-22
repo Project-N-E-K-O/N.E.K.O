@@ -193,7 +193,100 @@ async def test_reflection_apply_emits_evidence_event(tmp_path):
     assert payload["rein_last_signal_at"] is not None  # rein side touched
     assert payload["disp_last_signal_at"] is None      # disp side untouched
     assert payload["sub_zero_days"] == 0
+    # user_confirm is not user_fact → combo counter stays 0 (RFC §3.1.8)
+    assert payload["user_fact_reinforce_count"] == 0
     assert payload["source"] == "user_confirm"
+
+
+# ── user_fact combo (RFC §3.1.8) ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_user_fact_reinforce_combo_kicks_in_after_threshold(tmp_path):
+    """Base rein delta 0.5；前 2 条各 +0.5；第 3 条起 +0.5 + 0.5 bonus = +1.0。
+    直到 count 永久跨阈值（不重置）。"""
+    ev, _fs, _pm, re, _cm = _install(str(tmp_path))
+    rid = "ref_combo"
+    seed = [{
+        "id": rid, "text": "x", "entity": "master", "status": "pending",
+        "source_fact_ids": ["f1"], "created_at": "2026-04-23T10:00:00",
+        "feedback": None, "next_eligible_at": "2026-04-23T10:00:00",
+    }]
+    await re.asave_reflections("小天", seed)
+
+    from config import (
+        USER_FACT_REINFORCE_DELTA,
+        USER_FACT_REINFORCE_COMBO_BONUS,
+    )
+
+    # 1st user_fact reinforce → rein=+0.5, count=1
+    await re.aapply_signal("小天", rid, {"reinforcement": USER_FACT_REINFORCE_DELTA},
+                           source="user_fact")
+    r = _find_by_id(await re.aload_reflections("小天"), rid)
+    assert r["reinforcement"] == pytest.approx(0.5)
+    assert r["user_fact_reinforce_count"] == 1
+
+    # 2nd → rein=+0.5 more, count=2, still no bonus (2 not > 2)
+    await re.aapply_signal("小天", rid, {"reinforcement": USER_FACT_REINFORCE_DELTA},
+                           source="user_fact")
+    r = _find_by_id(await re.aload_reflections("小天"), rid)
+    assert r["reinforcement"] == pytest.approx(1.0)
+    assert r["user_fact_reinforce_count"] == 2
+
+    # 3rd → 0.5 base + 0.5 bonus = +1.0, count=3 (crosses threshold)
+    await re.aapply_signal("小天", rid, {"reinforcement": USER_FACT_REINFORCE_DELTA},
+                           source="user_fact")
+    r = _find_by_id(await re.aload_reflections("小天"), rid)
+    expected = 1.0 + USER_FACT_REINFORCE_DELTA + USER_FACT_REINFORCE_COMBO_BONUS
+    assert r["reinforcement"] == pytest.approx(expected)
+    assert r["user_fact_reinforce_count"] == 3
+
+    # 4th → combo sustained: +0.5 base + 0.5 bonus = +1.0
+    await re.aapply_signal("小天", rid, {"reinforcement": USER_FACT_REINFORCE_DELTA},
+                           source="user_fact")
+    r = _find_by_id(await re.aload_reflections("小天"), rid)
+    expected += USER_FACT_REINFORCE_DELTA + USER_FACT_REINFORCE_COMBO_BONUS
+    assert r["reinforcement"] == pytest.approx(expected)
+    assert r["user_fact_reinforce_count"] == 4
+
+
+@pytest.mark.asyncio
+async def test_combo_counter_not_triggered_by_user_confirm(tmp_path):
+    """user_confirm 是直接信号，不走 user_fact combo 计数；count 保持 0。"""
+    _, _, _, re, _ = _install(str(tmp_path))
+    rid = "ref_direct"
+    seed = [{
+        "id": rid, "text": "x", "entity": "master", "status": "pending",
+        "source_fact_ids": [], "created_at": "2026-04-23T10:00:00",
+        "feedback": None, "next_eligible_at": "2026-04-23T10:00:00",
+    }]
+    await re.asave_reflections("小天", seed)
+
+    for _ in range(5):
+        await re.aapply_signal("小天", rid, {"reinforcement": 1.0},
+                               source="user_confirm")
+    r = _find_by_id(await re.aload_reflections("小天"), rid)
+    assert r["reinforcement"] == pytest.approx(5.0)
+    assert r["user_fact_reinforce_count"] == 0  # never touched by user_confirm
+
+
+@pytest.mark.asyncio
+async def test_combo_counter_not_triggered_by_user_fact_negates(tmp_path):
+    """user_fact negates 走 disp 侧，不碰 user_fact reinforce 计数器。"""
+    _, _, _, re, _ = _install(str(tmp_path))
+    rid = "ref_neg"
+    seed = [{
+        "id": rid, "text": "x", "entity": "master", "status": "pending",
+        "source_fact_ids": [], "created_at": "2026-04-23T10:00:00",
+        "feedback": None, "next_eligible_at": "2026-04-23T10:00:00",
+    }]
+    await re.asave_reflections("小天", seed)
+
+    for _ in range(5):
+        await re.aapply_signal("小天", rid, {"disputation": 1.0}, source="user_fact")
+    r = _find_by_id(await re.aload_reflections("小天"), rid)
+    assert r["disputation"] == pytest.approx(5.0)
+    assert r["user_fact_reinforce_count"] == 0  # only reinforces tick the combo
 
 
 # ── Persona.aapply_signal ───────────────────────────────────────────
@@ -244,6 +337,8 @@ async def test_persona_apply_signal_updates_and_emits_event(tmp_path):
     assert payload["rein_last_signal_at"] is not None  # rein side touched
     assert payload["disp_last_signal_at"] is None      # disp side untouched
     assert payload["sub_zero_days"] == 0
+    # user_fact reinforces with delta > 0 → count incremented to 1 (RFC §3.1.8)
+    assert payload["user_fact_reinforce_count"] == 1
     assert payload["source"] == "user_fact"
 
 

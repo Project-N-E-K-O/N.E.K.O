@@ -33,6 +33,11 @@ from config import (
     EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS,
     IGNORED_REINFORCEMENT_DELTA,
     MEMORY_SERVER_PORT,
+    USER_CONFIRM_DELTA,
+    USER_FACT_NEGATE_DELTA,
+    USER_FACT_REINFORCE_DELTA,
+    USER_KEYWORD_REBUT_DELTA,
+    USER_REBUT_DELTA,
 )
 from config.prompts_sys import _loc
 from config.prompts_memory import (
@@ -1025,15 +1030,30 @@ async def _adispatch_evidence_signals(
     lanlan_name: str, signals: list[dict], source: str,
 ) -> None:
     """Apply each signal through ReflectionEngine / PersonaManager aapply_signal.
-    Defensive: unknown target_type / missing manager refs are skipped."""
+
+    Delta mapping (§3.4.1 v1.2.1 weight scheme):
+      source='user_fact' + reinforces → USER_FACT_REINFORCE_DELTA (indirect,
+        silver; combo bonus handled inside compute_evidence_snapshot)
+      source='user_fact' + negates    → USER_FACT_NEGATE_DELTA
+      source='user_keyword_rebut'     → USER_KEYWORD_REBUT_DELTA (always negates)
+
+    Defensive: unknown target_type / missing manager refs are skipped.
+    """
     for s in signals:
         if not isinstance(s, dict):
             continue
         signal_kind = s.get('signal')
         if signal_kind == 'reinforces':
-            delta = {'reinforcement': 1.0}
+            # Indirect inference (Stage-2) gets half weight; combo logic in
+            # `compute_evidence_snapshot` re-inflates it past the threshold.
+            delta = {'reinforcement': USER_FACT_REINFORCE_DELTA}
         elif signal_kind == 'negates':
-            delta = {'disputation': 1.0}
+            # keyword_rebut uses a different constant from fact-derived negates
+            # only in name — both currently 1.0. Pick by source for clarity.
+            if source == EVIDENCE_SOURCE_USER_KEYWORD_REBUT:
+                delta = {'disputation': USER_KEYWORD_REBUT_DELTA}
+            else:
+                delta = {'disputation': USER_FACT_NEGATE_DELTA}
         else:
             continue
 
@@ -1589,10 +1609,10 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
                 # PR-2+ decay/archive work.
                 for rid, kind in fb_map.items():
                     if kind == 'confirmed':
-                        delta = {'reinforcement': 1.0}
+                        delta = {'reinforcement': USER_CONFIRM_DELTA}
                         source = EVIDENCE_SOURCE_USER_CONFIRM
                     elif kind == 'denied':
-                        delta = {'disputation': 1.0}
+                        delta = {'disputation': USER_REBUT_DELTA}
                         source = EVIDENCE_SOURCE_USER_REBUT
                     else:  # ignored
                         delta = {'reinforcement': IGNORED_REINFORCEMENT_DELTA}
