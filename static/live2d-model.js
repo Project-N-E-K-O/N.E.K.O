@@ -3,6 +3,7 @@
  * 依赖: live2d-core.js (提供 Live2DManager 类和 window.LIPSYNC_PARAMS)
  */
 
+// 缓动函数集合（用于眨眼、口型等动画的平滑过渡）
 const Easing = {
     linear: (t) => t,
     easeInQuad: (t) => t * t,
@@ -209,14 +210,17 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
     }
 };
 
+// 检查加载令牌是否仍然有效（用于取消过期加载）
 Live2DManager.prototype._isLoadTokenActive = function(loadToken) {
     return this._activeLoadToken === loadToken;
 };
 
+// 获取当前已加载的模型实例
 Live2DManager.prototype.getCurrentModel = function() {
     return this.currentModel || null;
 };
 
+// 重置模型相关的派生元数据（用于加载新模型前清理旧状态）
 Live2DManager.prototype._resetDerivedModelMetadata = function() {
     this._displayInfo = null;
     this._autoNamedHitAreaIds = new Set();
@@ -440,6 +444,7 @@ Live2DManager.prototype._preTickPhysics = async function(model, simulatedMs, ste
 // 不再需要预解析嘴巴参数ID，保留占位以兼容旧代码调用
 Live2DManager.prototype.resolveMouthParameterId = function() { return null; };
 
+// 加载 DisplayInfo 文件（包含额外的模型显示信息）
 Live2DManager.prototype._loadDisplayInfo = async function(settings) {
     this._displayInfo = null;
 
@@ -467,6 +472,7 @@ Live2DManager.prototype._loadDisplayInfo = async function(settings) {
     }
 };
 
+// 验证眨眼参数组配置，若未配置则自动扫描
 Live2DManager.prototype._validateEyeBlinkGroup = function(settings, model) {
     const groups = settings?.Groups;
     let eyeBlinkIds = null;
@@ -521,6 +527,7 @@ Live2DManager.prototype._validateEyeBlinkGroup = function(settings, model) {
     });
 };
 
+// 自动扫描模型参数以识别眨眼相关参数
 Live2DManager.prototype._scanEyeBlinkParams = function(model) {
     if (!model?.internalModel?.coreModel) return null;
     const coreModel = model.internalModel.coreModel;
@@ -547,6 +554,7 @@ Live2DManager.prototype._scanEyeBlinkParams = function(model) {
     return found.slice(0, 2);
 };
 
+// 更新自动眨眼状态（眨眼动画逻辑）
 Live2DManager.prototype._updateEyeBlink = function(delta) {
     if (this._suspendEyeBlinkOverride) return;
     if (!this._autoEyeBlinkEnabled || !this._eyeBlinkParams || this._eyeBlinkParams.length === 0) return;
@@ -588,6 +596,7 @@ Live2DManager.prototype._updateEyeBlink = function(delta) {
     }
 };
 
+// 更新随机视线朝向（视线微动）
 Live2DManager.prototype._updateRandomLookAt = function(delta) {
     const coreModel = this.currentModel?.internalModel?.coreModel;
     if (!coreModel) return;
@@ -618,6 +627,7 @@ Live2DManager.prototype._updateRandomLookAt = function(delta) {
     } catch (_) {}
 };
 
+// 设置待机动作循环（Idle Motion 无限循环）
 Live2DManager.prototype.setupIdleMotionLoop = function(model) {
     if (!model || !model.internalModel || !model.internalModel.motionManager) return;
     const motionManager = model.internalModel.motionManager;
@@ -641,6 +651,7 @@ Live2DManager.prototype.setupIdleMotionLoop = function(model) {
     }, 2000);
 };
 
+// 播放待机动作（从用户保存的 Idle 动画或默认 Idle 随机选择）
 Live2DManager.prototype._playIdleMotion = function(motionManager) {
     const idleAnimations = this._userIdleAnimations;
     if (idleAnimations && idleAnimations.length > 0) {
@@ -1061,7 +1072,6 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
 
 
 // 根据画质设置降低模型纹理分辨率
-// 必须在模型首次渲染前调用，这样 PIXI 上传到 GPU 的就是降采样后的纹理
 Live2DManager.prototype._applyTextureQuality = function (model) {
     const quality = window.renderQuality || 'medium';
     if (quality === 'high') return;
@@ -1140,6 +1150,7 @@ const REINSTALL_OVERRIDE_DELAY_MS = 100;
 // 最大重装尝试次数
 const MAX_REINSTALL_ATTEMPTS = 3;
 
+// 延迟重新安装覆盖（当 update 调用失败时自动重试）
 Live2DManager.prototype._scheduleReinstallOverride = function() {
     if (this._reinstallScheduled) return;
     
@@ -1172,6 +1183,7 @@ Live2DManager.prototype._scheduleReinstallOverride = function() {
     }, REINSTALL_OVERRIDE_DELAY_MS);
 };
 
+// 安装口型同步覆盖（拦截 motionManager.update 和 coreModel.update 以实现口型、眨眼、视线微动）
 Live2DManager.prototype.installMouthOverride = function() {
     if (!this.currentModel || !this.currentModel.internalModel) {
         throw new Error('模型未就绪，无法安装口型覆盖');
@@ -1555,7 +1567,7 @@ Live2DManager.prototype.installMouthOverride = function() {
     console.log('已安装双重参数覆盖（motionManager.update 后 + coreModel.update 前）');
 };
 
-// 设置嘴巴开合值（0~1）
+// 设置嘴巴开合值（0~1），用于口型同步
 Live2DManager.prototype.setMouth = function(value) {
     const v = Math.max(0, Math.min(1, Number(value) || 0));
     this.mouthValue = v;
@@ -1598,7 +1610,7 @@ Live2DManager.prototype.setMouth = function(value) {
     }
 };
 
-// 应用模型设置
+// 应用模型位置和缩放设置
 Live2DManager.prototype.applyModelSettings = function(model, options) {
     const { preferences, isMobile = false } = options;
 
@@ -1699,7 +1711,7 @@ Live2DManager.prototype.applyModelSettings = function(model, options) {
     }
 };
 
-// 应用模型参数
+// 应用模型参数值到 Live2D 参数
 Live2DManager.prototype.applyModelParameters = function(model, parameters) {
     if (!model || !model.internalModel || !model.internalModel.coreModel || !parameters) {
         return;
@@ -1754,7 +1766,7 @@ Live2DManager.prototype.applyModelParameters = function(model, parameters) {
     // 参数已应用
 };
 
-// 获取常驻表情的所有参数ID集合（用于保护去水印等常驻表情参数）
+// 获取所有常驻表情参数 ID 集合（用于保护常驻表情参数不被覆盖）
 Live2DManager.prototype.getPersistentExpressionParamIds = function() {
     const paramIds = new Set();
     
