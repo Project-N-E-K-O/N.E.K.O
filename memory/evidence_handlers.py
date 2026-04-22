@@ -49,14 +49,21 @@ def make_reflection_evidence_handler(reflection_engine):
         if not rid:
             return False
         path = reflection_engine._reflections_path(name)
+        # File-not-exists is a normal state (e.g. first boot, new character)
+        # → empty view, return False (no-op). But load FAILURES (corrupt
+        # JSON, disk IO error) must propagate: swallowing them would let
+        # `Reconciler.areconcile` advance the sentinel past this event,
+        # permanently losing the mutation (CodeRabbit PR #929 critical).
         data: list[dict] = []
         if os.path.exists(path):
-            try:
-                with open(path, encoding='utf-8') as f:
-                    data = json.load(f)
-            except (json.JSONDecodeError, OSError):
-                data = []
+            with open(path, encoding='utf-8') as f:
+                data = json.load(f)
         if not isinstance(data, list):
+            # Shape mismatch is most likely manual editing; keep tolerant
+            # but log so operator can investigate.
+            logger.warning(
+                f"[EvidenceHandler] {path}: 期望 list，实际 {type(data).__name__}，按空列表处理"
+            )
             data = []
         changed = False
         for r in data:
@@ -83,14 +90,16 @@ def make_persona_evidence_handler(persona_manager):
         if not entity_key or not entry_id:
             return False
         path = persona_manager._persona_path(name)
+        # Let load failures propagate — see reflection handler above for
+        # the full rationale.
         persona: dict = {}
         if os.path.exists(path):
-            try:
-                with open(path, encoding='utf-8') as f:
-                    persona = json.load(f)
-            except (json.JSONDecodeError, OSError):
-                persona = {}
+            with open(path, encoding='utf-8') as f:
+                persona = json.load(f)
         if not isinstance(persona, dict):
+            logger.warning(
+                f"[EvidenceHandler] {path}: 期望 dict，实际 {type(persona).__name__}，按空 dict 处理"
+            )
             persona = {}
         section = persona.get(entity_key)
         if not isinstance(section, dict):
@@ -130,13 +139,20 @@ def make_persona_entry_handler(persona_manager):
         path = persona_manager._persona_path(name)
         if not os.path.exists(path):
             return False
-        try:
-            with open(path, encoding='utf-8') as f:
-                persona = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            return False
+        # Let JSONDecodeError / OSError propagate — same rationale as the
+        # evidence handlers above. A silent fallback would advance the
+        # sentinel past a text-rewrite event while the view still holds
+        # the old text; the sha256 mismatch check one level down would
+        # then fire on the NEXT event pointing at this entry instead of
+        # on this one, and the human chasing the bug would look at the
+        # wrong event.
+        with open(path, encoding='utf-8') as f:
+            persona = json.load(f)
         if not isinstance(persona, dict):
-            return False
+            logger.warning(
+                f"[EvidenceHandler] {path}: 期望 dict，实际 {type(persona).__name__}，按空 dict 处理"
+            )
+            persona = {}
         section = persona.get(entity_key)
         if not isinstance(section, dict):
             return False

@@ -880,6 +880,7 @@ async def _aone_shot_migration_if_needed(lanlan_name: str) -> None:
         reflections = []
 
     seeded_reflection = 0
+    seed_failures = 0  # 只要有一条失败就不写 marker，保证下轮可补
     for r in reflections:
         if not isinstance(r, dict):
             continue
@@ -900,6 +901,7 @@ async def _aone_shot_migration_if_needed(lanlan_name: str) -> None:
             if ok:
                 seeded_reflection += 1
         except Exception as e:
+            seed_failures += 1
             logger.warning(f"[Migration] {lanlan_name}: seed reflection {rid} 失败: {e}")
 
     # Persona entries: non-protected with no prior signal timestamps get a
@@ -933,9 +935,21 @@ async def _aone_shot_migration_if_needed(lanlan_name: str) -> None:
                 if ok:
                     seeded_persona += 1
             except Exception as e:
+                seed_failures += 1
                 logger.warning(
                     f"[Migration] {lanlan_name}: seed persona {entity_key}/{entry_id} 失败: {e}"
                 )
+
+    # CodeRabbit PR #929 fix: 如果本轮有任何 seed 失败，marker 不写入——
+    # 下次启动继续从断点补（已 seed 过的字段检查会跳过）。避免瞬时 IO
+    # 抖动导致某些 entry 永远漏种。
+    if seed_failures > 0:
+        logger.warning(
+            f"[Migration] {lanlan_name}: 本轮 {seed_failures} 条 seed 失败 "
+            f"（reflection={seeded_reflection} persona={seeded_persona}），"
+            f"marker 暂不写入，下次启动继续补"
+        )
+        return
 
     # Drop the marker entry so we don't re-run next boot. Marker is a
     # synthetic "fact" under a synthetic entity — it never surfaces in
@@ -1028,7 +1042,7 @@ def _signal_check_window_start(name: str, now: datetime) -> datetime:
 
 async def _adispatch_evidence_signals(
     lanlan_name: str, signals: list[dict], source: str,
-) -> None:
+) -> bool:
     """Apply each signal through ReflectionEngine / PersonaManager aapply_signal.
 
     Delta mapping (§3.4.1 v1.2.1 weight scheme):
@@ -1038,7 +1052,13 @@ async def _adispatch_evidence_signals(
       source='user_keyword_rebut'     → USER_KEYWORD_REBUT_DELTA (always negates)
 
     Defensive: unknown target_type / missing manager refs are skipped.
+
+    Returns True if ALL signals applied successfully; False if any raised
+    (`aapply_signal` raises for critical IO / event-log errors, but returns
+    False silently for unknown target_id). Caller can use the return value
+    to decide whether to advance its cursor (CodeRabbit PR #929 major).
     """
+    all_ok = True
     for s in signals:
         if not isinstance(s, dict):
             continue
@@ -1080,9 +1100,14 @@ async def _adispatch_evidence_signals(
             else:
                 logger.warning(f"[Signal] {lanlan_name}: 未知 target_type={target_type}")
         except Exception as e:
+            # Critical failure (event_log fsync / atomic_write_json fail,
+            # etc.) — flag so caller can preserve the cursor; subsequent
+            # signals in this batch still attempted (best-effort).
+            all_ok = False
             logger.warning(
                 f"[Signal] {lanlan_name}: aapply_signal 失败 ({target_type}/{target_id}): {e}"
             )
+    return all_ok
 
 
 async def _periodic_signal_extraction_loop():
@@ -1143,18 +1168,25 @@ async def _periodic_signal_extraction_loop():
                     )
                     return
 
-                # 先 dispatch 再 mark_done：dispatch 中途抛致命异常时 cursor
-                # 不推进，下轮重试（见 §3.4.3）。`_adispatch_evidence_signals`
-                # 本身对每条 signal 的 aapply_signal 用 try/except 兜底，
-                # 因此常规情况下这里不抛——但若 event_log 这类基础设施
-                # 崩掉，我们宁可重试也不推进 cursor。
+                # 先 dispatch 再 mark_done：dispatch 中途有任何 aapply 失败
+                # cursor 不推进，下轮 Stage-1 在同一窗口重新抽取（Stage-1
+                # dedup 保证 fact 不会翻倍写入，Stage-2 会重新生成 signal
+                # 再试一次）。CodeRabbit PR #929 fix：之前 dispatch 吞异常
+                # 后 mark_done 仍跑，单次 aapply 失败会永久丢一条 evidence。
+                dispatch_ok = True
                 if signals:
-                    await _adispatch_evidence_signals(
+                    dispatch_ok = await _adispatch_evidence_signals(
                         name, signals, source=EVIDENCE_SOURCE_USER_FACT,
                     )
                     logger.info(
                         f"[SignalLoop] {name}: dispatch {len(signals)} 个 evidence 信号"
                     )
+
+                if not dispatch_ok:
+                    logger.warning(
+                        f"[SignalLoop] {name}: dispatch 有失败，保留 cursor 下轮重试"
+                    )
+                    return  # 保留 cursor（不调 _signal_check_mark_done）
 
                 # 信号写完后触发一次 score-driven pending→confirmed 扫描；
                 # 独立 try/except：本步失败不应阻止 cursor 推进（score 下
@@ -1247,6 +1279,8 @@ async def _amaybe_trigger_negative_keyword_hook(
         })
 
     if signals:
+        # Negative-keyword hook is inline with conversation turn — no cursor
+        # to preserve on dispatch failure; best-effort fire-and-forget.
         await _adispatch_evidence_signals(
             lanlan_name, signals, source=EVIDENCE_SOURCE_USER_KEYWORD_REBUT,
         )

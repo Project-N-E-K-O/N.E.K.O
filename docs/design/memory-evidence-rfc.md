@@ -2625,7 +2625,8 @@ def _is_visible_for_proactive_retrieval(entry: dict, now: datetime) -> bool:
 
 ### 4.1 PR-1: P-A signal detection + P-B evidence data layer + migration
 
-**状态**：已合并进 PR #929（含 v1.2 的 round-9 为止的所有 review fixups）。
+**状态**：已在 PR #929 中实现，含 v1.2 / v1.2.1 的所有 review fixups，
+待合并。
 
 **新增 / 改造**：
 

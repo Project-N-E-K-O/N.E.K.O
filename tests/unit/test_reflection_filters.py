@@ -9,8 +9,6 @@ Unit tests for the reflection filter tightening (PR #929 round 8):
 """
 from __future__ import annotations
 
-import asyncio
-import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest

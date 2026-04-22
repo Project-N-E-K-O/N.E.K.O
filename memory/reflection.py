@@ -730,8 +730,12 @@ class ReflectionEngine:
                             r['suppressed_at'] = None
                             r['recent_mentions'] = []
                             changed = True
-                    except (ValueError, TypeError):
-                        pass
+                    except (ValueError, TypeError) as e:
+                        # 坏时戳（手编 / 迁移瑕疵）：suppress 冷却本轮跳过、
+                        # 下轮再评估；not raising keeps loop non-fatal.
+                        logger.debug(
+                            f"[Reflection] suppressed_at 解析失败 ({suppressed_str!r}): {e}"
+                        )
         return changed
 
     async def arecord_mentions(self, lanlan_name: str, response_text: str) -> None:
