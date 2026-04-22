@@ -1961,6 +1961,66 @@ def test_live2d_manager_compact_proxy_keeps_top_in_upper_head_band(mock_page: Pa
 
 
 @pytest.mark.frontend
+def test_live2d_manager_compact_proxy_offscreen_head_does_not_collapse_to_one_pixel(mock_page: Page, running_server: str):
+    """Regression test: mostly offscreen heads should not collapse proxy width/height to ~1px."""
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        "() => !!(window.live2dManager && window.live2dManager._createBubbleDrawableHeadProxyRect)",
+        timeout=10000,
+    )
+
+    selected = mock_page.evaluate(
+        """
+        () => {
+            const manager = window.live2dManager;
+            const bounds = {
+                left: 100,
+                right: 900,
+                top: 100,
+                bottom: 900,
+                width: 800,
+                height: 800,
+                centerX: 500,
+                centerY: 500
+            };
+            const headRect = {
+                left: -260,
+                right: 120,
+                top: -240,
+                bottom: 115,
+                width: 380,
+                height: 355,
+                centerX: -70,
+                centerY: -62.5
+            };
+
+            const bubbleHeadRect = manager._createBubbleDrawableHeadProxyRect(
+                headRect,
+                bounds,
+                null
+            );
+
+            return {
+                width: bubbleHeadRect?.width || null,
+                height: bubbleHeadRect?.height || null,
+                left: bubbleHeadRect?.left || null,
+                top: bubbleHeadRect?.top || null,
+                boundsLeft: bounds.left,
+                boundsTop: bounds.top
+            };
+        }
+        """
+    )
+
+    assert selected["width"] is not None
+    assert selected["height"] is not None
+    assert selected["width"] >= 100
+    assert selected["height"] >= 120
+    assert selected["left"] >= selected["boundsLeft"] - 0.1
+    assert selected["top"] >= selected["boundsTop"] - 0.1
+
+
+@pytest.mark.frontend
 def test_live2d_manager_tiny_hitarea_hint_dampens_conflicting_body_bias(mock_page: Page, running_server: str):
     """Regression test: tiny-hit hints should not be reversed by opposite body-direction bias."""
     mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
@@ -2409,6 +2469,148 @@ def test_live2d_bubble_geometry_cache_rebuilds_once_after_settle_window(mock_pag
     assert selected["passAfterInvalidate"] == 1
     assert selected["rebuiltPass"] == 1
     assert selected["secondFetchHeadWidth"] == pytest.approx(269.15, abs=0.1)
+
+
+@pytest.mark.frontend
+def test_live2d_bubble_geometry_cache_respects_instance_settle_refresh_window(mock_page: Page, running_server: str):
+    """Regression test: cache settle refresh should honor per-instance settle refresh window."""
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        "() => !!(window.live2dManager && window.live2dManager._cacheBubbleGeometryResult)",
+        timeout=10000,
+    )
+
+    selected = mock_page.evaluate(
+        """
+        () => {
+            const manager = window.live2dManager;
+            const originalGetModelScreenBounds = manager.getModelScreenBounds.bind(manager);
+            const originalGetModelLogicalRect = manager._getModelLogicalRect.bind(manager);
+            const originalModelRootPath = manager.modelRootPath;
+            const originalCache = manager._bubbleGeometryCache;
+            const originalReadyAt = manager._bubbleGeometryModelReadyAt;
+            const originalRefreshPass = manager._bubbleGeometryRefreshPass;
+            const originalSettleRefreshMs = manager._bubbleGeometrySettleRefreshMs;
+
+            const bounds = {
+                left: 1226.94,
+                top: 883.23,
+                right: 1800.88,
+                bottom: 1305.59,
+                width: 573.94,
+                height: 422.36,
+                centerX: 1513.91,
+                centerY: 1094.41
+            };
+            const logicalRect = {
+                x: -1,
+                y: -1,
+                width: 2,
+                height: 2
+            };
+            const detected = {
+                bounds,
+                rawHeadAnchor: {
+                    x: 1450.61,
+                    y: 996.82
+                },
+                headAnchor: {
+                    x: 1450.61,
+                    y: 996.82
+                },
+                headRect: {
+                    left: 1316.04,
+                    top: 925.55,
+                    right: 1585.19,
+                    bottom: 1095.25,
+                    width: 269.15,
+                    height: 169.70,
+                    centerX: 1450.61,
+                    centerY: 1010.40
+                },
+                bubbleHeadRect: {
+                    left: 1373.36,
+                    top: 942.52,
+                    right: 1520.23,
+                    bottom: 1056.27,
+                    width: 146.87,
+                    height: 113.75,
+                    centerX: 1446.79,
+                    centerY: 999.40
+                },
+                headMode: 'face',
+                headSource: 'drawableHeuristic',
+                bodyRect: {
+                    left: 1298.18,
+                    top: 1023.98,
+                    right: 1743.28,
+                    bottom: 1267.79,
+                    width: 445.10,
+                    height: 243.81,
+                    centerX: 1520.73,
+                    centerY: 1145.88
+                },
+                bodySource: 'drawableHeuristic',
+                reliableHeadRect: true,
+                preciseDisplayInfoRect: false,
+                coarseHitAreaHeadRect: false
+            };
+
+            try {
+                manager.modelRootPath = '/user_live2d/cache_refresh_instance_window_model';
+                manager.getModelScreenBounds = () => bounds;
+                manager._getModelLogicalRect = () => logicalRect;
+                manager._bubbleGeometryCache = null;
+                manager._bubbleGeometryRefreshPass = 0;
+
+                const customSettleRefreshMs = 5000;
+                manager._bubbleGeometrySettleRefreshMs = customSettleRefreshMs;
+                const stableNowMs = Math.max(0.1, performance.now());
+                const earlyNowMs = stableNowMs + 2500;
+                const lateNowMs = stableNowMs + customSettleRefreshMs + 200;
+                const originalPerformanceNow = performance.now.bind(performance);
+                let earlyPass = null;
+                let earlyFetchIsPresent = false;
+                let lateFetchIsNull = false;
+                let passAfterLateInvalidate = null;
+
+                manager._bubbleGeometryModelReadyAt = stableNowMs;
+                performance.now = () => earlyNowMs;
+                try {
+                    manager._cacheBubbleGeometryResult(detected, bounds, logicalRect);
+                    earlyPass = manager._bubbleGeometryCache?.refreshPass ?? null;
+                    earlyFetchIsPresent = manager._getCachedBubbleGeometryResult() !== null;
+
+                    performance.now = () => lateNowMs;
+                    lateFetchIsNull = manager._getCachedBubbleGeometryResult() === null;
+                    passAfterLateInvalidate = manager._bubbleGeometryRefreshPass;
+                } finally {
+                    performance.now = originalPerformanceNow;
+                }
+
+                return {
+                    earlyPass,
+                    earlyFetchIsPresent,
+                    lateFetchIsNull,
+                    passAfterLateInvalidate
+                };
+            } finally {
+                manager.getModelScreenBounds = originalGetModelScreenBounds;
+                manager._getModelLogicalRect = originalGetModelLogicalRect;
+                manager.modelRootPath = originalModelRootPath;
+                manager._bubbleGeometryCache = originalCache;
+                manager._bubbleGeometryModelReadyAt = originalReadyAt;
+                manager._bubbleGeometryRefreshPass = originalRefreshPass;
+                manager._bubbleGeometrySettleRefreshMs = originalSettleRefreshMs;
+            }
+        }
+        """
+    )
+
+    assert selected["earlyPass"] == 0
+    assert selected["earlyFetchIsPresent"] is True
+    assert selected["lateFetchIsNull"] is True
+    assert selected["passAfterLateInvalidate"] == 1
 
 
 @pytest.mark.frontend

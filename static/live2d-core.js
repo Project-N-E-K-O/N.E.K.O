@@ -883,10 +883,11 @@ class Live2DManager {
         const now = (typeof performance !== 'undefined' && typeof performance.now === 'function')
             ? performance.now()
             : Date.now();
+        const settleRefreshMs = this._getBubbleGeometrySettleRefreshMs();
         const modelReadyAt = Number(this._bubbleGeometryModelReadyAt);
         const modelHasSettled = Number.isFinite(modelReadyAt) &&
             modelReadyAt > 0 &&
-            now - modelReadyAt >= LIVE2D_BUBBLE_GEOMETRY_SETTLE_REFRESH_MS;
+            now - modelReadyAt >= settleRefreshMs;
         const currentPass = Number.isInteger(this._bubbleGeometryRefreshPass)
             ? this._bubbleGeometryRefreshPass
             : 0;
@@ -935,11 +936,12 @@ class Live2DManager {
         const now = (typeof performance !== 'undefined' && typeof performance.now === 'function')
             ? performance.now()
             : Date.now();
+        const settleRefreshMs = this._getBubbleGeometrySettleRefreshMs();
         const modelReadyAt = Number(this._bubbleGeometryModelReadyAt);
         const cacheNeedsSettleRefresh = Number(cache.refreshPass || 0) < 1 &&
             Number.isFinite(modelReadyAt) &&
             modelReadyAt > 0 &&
-            now - modelReadyAt >= LIVE2D_BUBBLE_GEOMETRY_SETTLE_REFRESH_MS;
+            now - modelReadyAt >= settleRefreshMs;
         if (cacheNeedsSettleRefresh) {
             this._bubbleGeometryCache = null;
             this._bubbleGeometryRefreshPass = 1;
@@ -967,6 +969,14 @@ class Live2DManager {
             preciseDisplayInfoRect: cache.preciseDisplayInfoRect,
             coarseHitAreaHeadRect: cache.coarseHitAreaHeadRect
         };
+    }
+
+    _getBubbleGeometrySettleRefreshMs() {
+        const settleRefreshMs = Number(this._bubbleGeometrySettleRefreshMs);
+        if (Number.isFinite(settleRefreshMs) && settleRefreshMs > 0) {
+            return settleRefreshMs;
+        }
+        return LIVE2D_BUBBLE_GEOMETRY_SETTLE_REFRESH_MS;
     }
 
     _invalidateBubbleGeometryCache() {
@@ -3440,14 +3450,23 @@ class Live2DManager {
         }
 
         const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+        const minVisibleCoverageRatio = 0.1;
         const boundsRight = Number.isFinite(bounds.right) ? bounds.right : bounds.left + bounds.width;
         const boundsBottom = Number.isFinite(bounds.bottom) ? bounds.bottom : bounds.top + bounds.height;
         const visibleHeadLeft = Math.max(bounds.left, headRect.left);
         const visibleHeadRight = Math.min(boundsRight, headRect.right);
         const visibleHeadTop = Math.max(bounds.top, headRect.top);
         const visibleHeadBottom = Math.min(boundsBottom, headRect.bottom);
-        const visibleHeadWidth = Math.max(1, visibleHeadRight - visibleHeadLeft);
-        const visibleHeadHeight = Math.max(1, visibleHeadBottom - visibleHeadTop);
+        const rawVisibleHeadWidth = Math.max(0, visibleHeadRight - visibleHeadLeft);
+        const rawVisibleHeadHeight = Math.max(0, visibleHeadBottom - visibleHeadTop);
+        const visibleHeadWidth = Math.max(1, rawVisibleHeadWidth);
+        const visibleHeadHeight = Math.max(1, rawVisibleHeadHeight);
+        const visibleHeadWidthCoverage = rawVisibleHeadWidth / Math.max(1, headRect.width);
+        const visibleHeadHeightCoverage = rawVisibleHeadHeight / Math.max(1, headRect.height);
+        const hasReliableVisibleWidthClip = visibleHeadWidthCoverage >= minVisibleCoverageRatio;
+        const hasReliableVisibleHeightClip = visibleHeadHeightCoverage >= minVisibleCoverageRatio;
+        const widthClipLimit = hasReliableVisibleWidthClip ? visibleHeadWidth : headRect.width;
+        const heightClipLimit = hasReliableVisibleHeightClip ? visibleHeadHeight : headRect.height;
         const headCenterX = Number.isFinite(headRect.centerX)
             ? headRect.centerX
             : headRect.left + headRect.width * 0.5;
@@ -3490,7 +3509,7 @@ class Live2DManager {
             Math.min(
                 bounds.width * 0.42,
                 headRect.width * 0.58,
-                visibleHeadWidth
+                widthClipLimit
             )
         );
         const widthMin = Math.min(
@@ -3512,7 +3531,7 @@ class Live2DManager {
             Math.min(
                 bounds.height * 0.34,
                 headRect.height * 0.7,
-                visibleHeadHeight
+                heightClipLimit
             )
         );
         const heightMin = Math.min(
@@ -3524,16 +3543,20 @@ class Live2DManager {
             heightMax
         );
         const height = clamp(heightTarget, heightMin, heightMax);
-        const centerXMin = visibleHeadLeft + width * 0.5;
-        const centerXMax = visibleHeadRight - width * 0.5;
+        const centerClampLeft = hasReliableVisibleWidthClip ? visibleHeadLeft : bounds.left;
+        const centerClampRight = hasReliableVisibleWidthClip ? visibleHeadRight : boundsRight;
+        const centerXMin = centerClampLeft + width * 0.5;
+        const centerXMax = centerClampRight - width * 0.5;
         const centerX = centerXMin <= centerXMax
             ? clamp(headCenterX + horizontalShift, centerXMin, centerXMax)
-            : clamp(headCenterX, visibleHeadLeft, visibleHeadRight);
-        const topMin = visibleHeadTop;
-        const topMax = visibleHeadBottom - height;
+            : clamp(headCenterX, bounds.left, boundsRight);
+        const topClampTop = hasReliableVisibleHeightClip ? visibleHeadTop : bounds.top;
+        const topClampBottom = hasReliableVisibleHeightClip ? visibleHeadBottom : boundsBottom;
+        const topMin = topClampTop;
+        const topMax = topClampBottom - height;
         const top = topMin <= topMax
             ? clamp(headRect.top + headRect.height * 0.1, topMin, topMax)
-            : clamp(headRect.top, visibleHeadTop, visibleHeadBottom);
+            : clamp(headRect.top, bounds.top, Math.max(bounds.top, boundsBottom - height));
 
         return this._createScreenRect(
             centerX - width * 0.5,
