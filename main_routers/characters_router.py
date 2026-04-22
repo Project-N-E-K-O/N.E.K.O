@@ -4346,6 +4346,8 @@ async def import_character_card(
                 if isinstance(metadata, dict):
                     imported_author = str(metadata.get('author', '') or '').strip()[:64]
                     imported_created_at = str(metadata.get('created_at', '') or '').strip()[:32]
+                    if not imported_created_at:
+                        imported_created_at = str(metadata.get('export_time', '') or '').strip()[:32]
                 now_iso = datetime.now().isoformat(timespec='seconds')
                 # 优先使用源卡中的创建时间，未提供时才赋为当前时间
                 created_at = imported_created_at or now_iso
@@ -4434,10 +4436,12 @@ def _write_card_meta(meta_path, meta: dict) -> None:
 
 
 def _detect_card_origin_from_character(catgirl_data: dict) -> str:
-    """从猫娘配置推断 origin（用于无 sidecar 时的回退）。"""
+    """从猫娘配置推断 origin（用于无 sidecar 时的回退）。
+    依据角色卡本身的来源（character_origin.source），而非模型来源（avatar.asset_source），
+    确保更换模型不会改变角色卡来源标注。"""
     try:
-        asset_source = get_reserved(catgirl_data, 'avatar', 'asset_source', default='')
-        if asset_source == 'steam_workshop':
+        char_source = get_reserved(catgirl_data, 'character_origin', 'source', default='')
+        if char_source == 'steam_workshop':
             return 'steam'
     except Exception:
         pass

@@ -1,4 +1,4 @@
-﻿// 角色保留字段配置（优先从后端集中配置加载；失败时使用前端兜底）
+// 角色保留字段配置（优先从后端集中配置加载；失败时使用前端兜底）
 // 共用工具由 reserved_fields_utils.js 提供（ReservedFieldsUtils）
 let characterReservedFieldsConfig = ReservedFieldsUtils.emptyConfig();
 let _reservedFieldsReady = null;
@@ -2761,6 +2761,10 @@ async function loadCharacterCards() {
     } else {
         showMessage(window.t ? window.t('steam.characterCardsRefreshedEmpty') : '已刷新角色卡列表，暂无角色卡', 'info');
     }
+
+    // 同步加载主人档案和已隐藏猫娘列表
+    loadMasterProfile();
+    renderHiddenCatgirls();
 }
 
 // ===== 角色卡 卡片/列表 视图 =====
@@ -3394,6 +3398,7 @@ let charaCardsViewMode = localStorage.getItem('charaCardsViewMode') || 'card';
 
 // 切换视图
 function switchCharaCardsView(mode) {
+    if (charaCardsViewMode === mode) return;
     charaCardsViewMode = mode;
     localStorage.setItem('charaCardsViewMode', mode);
     // 更新按钮状态
@@ -3436,6 +3441,8 @@ function renderCharaCardsView() {
     let cards = window.characterCards || [];
 
     // 应用搜索过滤
+    const hiddenKeys = getHiddenCatgirlKeys();
+
     if (_charaSearchQuery) {
         cards = cards.filter(card => {
             const name = (card.originalName || card.name || '').toLowerCase();
@@ -3443,18 +3450,31 @@ function renderCharaCardsView() {
         });
     }
 
+    // 默认过滤掉隐藏的猫娘（除非开启显示已隐藏）
+    if (!window._showHiddenCatgirls) {
+        cards = cards.filter(card => !hiddenKeys.includes(card.originalName || card.name));
+    }
+
     if (cards.length === 0) {
-        container.innerHTML = '<div class="empty-state"><p>' +
-            (window.t ? window.t('steam.noCharacterCards') : '暂无角色卡') + '</p></div>';
+        const hiddenArea = container.querySelector('#hidden-catgirl-area');
+        container.querySelectorAll('.chara-cards-grid, .chara-cards-list, .empty-state').forEach(el => el.remove());
+        const emptyDiv = document.createElement('div');
+        emptyDiv.className = 'empty-state';
+        emptyDiv.innerHTML = '<p>' + (window.t ? window.t('steam.noCharacterCards') : '暂无角色卡') + '</p>';
+        if (hiddenArea) {
+            container.insertBefore(emptyDiv, hiddenArea);
+        } else {
+            container.appendChild(emptyDiv);
+        }
         return;
     }
 
     const currentCatgirl = window._workshopCurrentCatgirl || '';
 
     if (charaCardsViewMode === 'card') {
-        renderCharaCardsGrid(container, cards, currentCatgirl);
+        renderCharaCardsGrid(container, cards, currentCatgirl, hiddenKeys);
     } else {
-        renderCharaCardsList(container, cards, currentCatgirl);
+        renderCharaCardsList(container, cards, currentCatgirl, hiddenKeys);
     }
 
     // 恢复按钮激活状态
@@ -3463,21 +3483,46 @@ function renderCharaCardsView() {
 }
 
 // 卡片视图渲染
-function renderCharaCardsGrid(container, cards, currentCatgirl) {
+function renderCharaCardsGrid(container, cards, currentCatgirl, hiddenKeys) {
     const grid = document.createElement('div');
     grid.className = 'chara-cards-grid';
 
     cards.forEach(card => {
         const name = card.originalName || card.name;
         const isCurrent = name === currentCatgirl;
+        const isHidden = (hiddenKeys || []).includes(name);
 
         const item = document.createElement('div');
-        item.className = 'chara-card-item' + (isCurrent ? ' active' : '');
+        item.className = 'chara-card-item' + (isCurrent ? ' active' : '') + (isHidden ? ' hidden-catgirl-card' : '');
+        if (isHidden) item.style.opacity = '0.6';
         item.style.cursor = 'pointer';
         item.onclick = function (e) {
-            if (e.target.closest('.card-action-btn')) return;
+            if (e.target.closest('.card-action-btn') || e.target.closest('.card-hide-corner')) return;
             openCatgirlPanel(card, item);
         };
+
+        // 左上角隐藏/显示按钮
+        if (!isCurrent) {
+            const cornerBtn = document.createElement('button');
+            cornerBtn.className = 'card-hide-corner';
+            cornerBtn.type = 'button';
+            if (isHidden) {
+                cornerBtn.title = window.t ? window.t('character.show') : '显示';
+                cornerBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+                cornerBtn.onclick = function (e) {
+                    e.stopPropagation();
+                    workshopUnhideCatgirl(name);
+                };
+            } else {
+                cornerBtn.title = window.t ? window.t('character.hideCatgirl') : '隐藏猫娘';
+                cornerBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+                cornerBtn.onclick = function (e) {
+                    e.stopPropagation();
+                    workshopHideCatgirl(name);
+                };
+            }
+            item.appendChild(cornerBtn);
+        }
 
         // 角色卡图片
         const avatar = document.createElement('div');
@@ -3547,21 +3592,28 @@ function renderCharaCardsGrid(container, cards, currentCatgirl) {
         grid.appendChild(item);
     });
 
-    container.innerHTML = '';
-    container.appendChild(grid);
+    const hiddenArea = container.querySelector('#hidden-catgirl-area');
+    container.querySelectorAll('.chara-cards-grid, .chara-cards-list, .empty-state').forEach(el => el.remove());
+    if (hiddenArea) {
+        container.insertBefore(grid, hiddenArea);
+    } else {
+        container.appendChild(grid);
+    }
 }
 
 // 列表视图渲染
-function renderCharaCardsList(container, cards, currentCatgirl) {
+function renderCharaCardsList(container, cards, currentCatgirl, hiddenKeys) {
     const list = document.createElement('div');
     list.className = 'chara-cards-list';
 
     cards.forEach(card => {
         const name = card.originalName || card.name;
         const isCurrent = name === currentCatgirl;
+        const isHidden = (hiddenKeys || []).includes(name);
 
         const item = document.createElement('div');
-        item.className = 'chara-list-item' + (isCurrent ? ' active' : '');
+        item.className = 'chara-list-item' + (isCurrent ? ' active' : '') + (isHidden ? ' hidden-catgirl-item' : '');
+        if (isHidden) item.style.opacity = '0.6';
         item.style.cursor = 'pointer';
         item.onclick = function (e) {
             if (e.target.closest('.list-action-btn')) return;
@@ -3601,6 +3653,30 @@ function renderCharaCardsList(container, cards, currentCatgirl) {
         };
         actions.appendChild(switchBtn);
 
+        if (isHidden) {
+            const unhideBtn = document.createElement('button');
+            unhideBtn.className = 'list-action-btn';
+            unhideBtn.title = window.t ? window.t('character.show') : '显示';
+            unhideBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>'
+                + '<span class="list-action-label">' + (window.t ? window.t('character.show') : '显示') + '</span>';
+            unhideBtn.onclick = function (e) {
+                e.stopPropagation();
+                workshopUnhideCatgirl(name);
+            };
+            actions.appendChild(unhideBtn);
+        } else if (!isCurrent) {
+            const hideBtn = document.createElement('button');
+            hideBtn.className = 'list-action-btn';
+            hideBtn.title = window.t ? window.t('character.hideCatgirl') : '隐藏猫娘';
+            hideBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>'
+                + '<span class="list-action-label">' + (window.t ? window.t('character.hideCatgirl') : '隐藏') + '</span>';
+            hideBtn.onclick = function (e) {
+                e.stopPropagation();
+                workshopHideCatgirl(name);
+            };
+            actions.appendChild(hideBtn);
+        }
+
         const deleteBtn = document.createElement('button');
         deleteBtn.className = 'list-action-btn delete-btn';
         deleteBtn.title = window.t ? window.t('character.deleteCard') : '删除角色卡';
@@ -3616,8 +3692,13 @@ function renderCharaCardsList(container, cards, currentCatgirl) {
         list.appendChild(item);
     });
 
-    container.innerHTML = '';
-    container.appendChild(list);
+    const hiddenArea = container.querySelector('#hidden-catgirl-area');
+    container.querySelectorAll('.chara-cards-grid, .chara-cards-list, .empty-state').forEach(el => el.remove());
+    if (hiddenArea) {
+        container.insertBefore(list, hiddenArea);
+    } else {
+        container.appendChild(list);
+    }
 }
 
 // ===== 角色卡详情面板 =====
@@ -4056,6 +4137,9 @@ function openCatgirlPanel(card, originEl) {
     overlay.appendChild(wrapper);
     document.body.appendChild(overlay);
 
+    // 禁止外层页面滚动
+    document.documentElement.style.overflowY = 'hidden';
+
     // 动画 Phase 1: 卡面移动到中间
     requestAnimationFrame(() => {
         overlay.classList.add('active');
@@ -4141,6 +4225,8 @@ function closeCatgirlPanel() {
         setTimeout(() => {
             overlay.remove();
             _catgirlPanelOpen = false;
+            // 恢复外层页面滚动
+            document.documentElement.style.overflowY = '';
         }, 400);
     }, 300);
 }
@@ -4275,6 +4361,10 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
         delBtn.innerHTML = deleteFieldText;
         delBtn.addEventListener('click', function () {
             wrapper.remove();
+            const sb = form.querySelector('#save-button');
+            const cb = form.querySelector('#cancel-button');
+            if (sb) sb.style.display = '';
+            if (cb) cb.style.display = '';
         });
         wrapper.appendChild(delBtn);
 
@@ -4358,11 +4448,20 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
         delBtn.type = 'button';
         delBtn.className = 'btn sm delete';
         delBtn.innerHTML = deleteFieldText;
-        delBtn.addEventListener('click', function () { wrapper.remove(); });
+        delBtn.addEventListener('click', function () {
+            wrapper.remove();
+            if (saveButton) saveButton.style.display = '';
+            if (cancelButton) cancelButton.style.display = '';
+        });
         wrapper.appendChild(delBtn);
 
         form.insertBefore(wrapper, addFieldArea);
         _panelAttachTextareaAutoResize(textareaEl);
+        if (!isNew && name) {
+            panelAttachAutoSaveListener(textareaEl, name);
+        }
+        if (saveButton) saveButton.style.display = '';
+        if (cancelButton) cancelButton.style.display = '';
     };
     addFieldArea.appendChild(addFieldBtn);
     form.appendChild(addFieldArea);
@@ -4608,7 +4707,17 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
             openVoiceClone(catgirlName);
         } else {
             const url = '/voice_clone?lanlan_name=' + encodeURIComponent(catgirlName);
-            window.open(url, '_blank');
+            const windowName = 'neko_voice_clone_' + encodeURIComponent(catgirlName || 'default');
+            const width = 700;
+            const height = 900;
+            const left = Math.max(0, Math.floor((screen.width - width) / 2));
+            const top = Math.max(0, Math.floor((screen.height - height) / 2));
+            const features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+            if (typeof window.openOrFocusWindow === 'function') {
+                window.openOrFocusWindow(url, windowName, features);
+            } else {
+                window.open(url, windowName, features);
+            }
         }
     });
     voiceWrapper.appendChild(registerVoiceBtn);
@@ -4636,8 +4745,10 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
     const saveButton = document.createElement('button');
     saveButton.type = 'button';
+    saveButton.id = 'save-button';
     saveButton.className = 'btn sm';
     saveButton.style.minWidth = '120px';
+    if (!isNew) saveButton.style.display = 'none';
     saveButton.textContent = isNew
         ? (window.t ? window.t('character.confirmNewCatgirl') : '确认新猫娘')
         : (window.t ? window.t('character.saveChanges') : '保存修改');
@@ -4646,15 +4757,48 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
     const cancelButton = document.createElement('button');
     cancelButton.type = 'button';
+    cancelButton.id = 'cancel-button';
     cancelButton.className = 'btn sm';
     cancelButton.style.minWidth = '120px';
+    if (!isNew) cancelButton.style.display = 'none';
     cancelButton.textContent = window.t ? window.t('character.cancel') : '取消';
-    cancelButton.onclick = closeCatgirlPanel;
+    cancelButton.onclick = function () {
+        if (saveButton) saveButton.style.display = 'none';
+        if (cancelButton) cancelButton.style.display = 'none';
+        if (isNew) {
+            closeCatgirlPanel();
+        } else {
+            const container = form.parentNode;
+            try {
+                buildCatgirlDetailForm(name, cat, false, container);
+            } catch (e) {
+                console.error('恢复猫娘数据失败:', e);
+                closeCatgirlPanel();
+            }
+        }
+    };
     btnArea.appendChild(cancelButton);
 
     form.appendChild(btnArea);
     container.innerHTML = '';
     container.appendChild(form);
+
+    // 绑定变化监听以显隐保存/取消按钮（新建猫娘始终显示）
+    if (!isNew) {
+        function showCatgirlActionButtons() {
+            if (saveButton) saveButton.style.display = '';
+            if (cancelButton) cancelButton.style.display = '';
+        }
+        form.querySelectorAll('input, textarea, select').forEach(input => {
+            input.addEventListener('change', showCatgirlActionButtons);
+            if (input.type === 'text' || input.tagName === 'TEXTAREA') {
+                input.addEventListener('input', showCatgirlActionButtons);
+            }
+        });
+        form.querySelectorAll('.btn.delete').forEach(btn => {
+            btn.addEventListener('click', showCatgirlActionButtons);
+        });
+    }
 
     // 加载音色列表
     const voicesLoadPromise = _loadPanelVoices(voiceSelect, String(cat['voice_id'] || '').trim());
@@ -4676,6 +4820,17 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     setTimeout(() => {
         form.querySelectorAll('textarea').forEach(ta => _panelAttachTextareaAutoResize(ta));
     }, 100);
+
+    // 为已存在猫娘的表单添加自动保存监听器（新建猫娘不启用，因为尚未创建记录）
+    if (!isNew && name) {
+        setTimeout(() => {
+            form.querySelectorAll('input, textarea').forEach(inp => {
+                if (inp.name && inp.name !== 'voice_id') {
+                    panelAttachAutoSaveListener(inp, name);
+                }
+            });
+        }, 150);
+    }
 }
 
 // 档案名输入限制器
@@ -4733,14 +4888,31 @@ function _panelAttachTextareaAutoResize(textarea) {
 
     function resize() {
         textarea.style.height = 'auto';
-        const lineHeight = parseFloat(getComputedStyle(textarea).lineHeight) || 20;
-        const maxHeight = lineHeight * 3 + 10;
-        const scrollHeight = textarea.scrollHeight;
-        textarea.style.height = Math.min(scrollHeight, maxHeight) + 'px';
+        const style = getComputedStyle(textarea);
+        const minHeight = parseInt(style.minHeight) || 30;
 
+        // 计算内容高度，考虑padding
+        const paddingTop = parseInt(style.paddingTop) || 0;
+        const paddingBottom = parseInt(style.paddingBottom) || 0;
+
+        const scrollHeight = textarea.scrollHeight;
+        const contentHeight = scrollHeight - paddingTop - paddingBottom;
+
+        // 三行高度的估算：line-height*3
+        const computedLineHeight = parseFloat(style.lineHeight);
+        const fontSize = parseFloat(style.fontSize) || 14;
+        const lineHeight = isNaN(computedLineHeight) ? fontSize * 1.2 : computedLineHeight;
+        const threeLinesHeight = lineHeight * 3;
+        const maxContentHeight = threeLinesHeight;
+        const newContentHeight = Math.min(maxContentHeight, contentHeight);
+        const newHeight = Math.max(minHeight, newContentHeight + paddingTop + paddingBottom);
+
+        textarea.style.height = newHeight + 'px';
+
+        // 根据内容是否超过三行来决定是否显示滚动条
         const fieldRow = textarea.closest('.field-row');
         if (fieldRow) {
-            if (scrollHeight > maxHeight) {
+            if (contentHeight > maxContentHeight) {
                 textarea.style.overflowY = 'auto';
                 fieldRow.classList.add('has-scrollbar');
             } else {
@@ -4988,7 +5160,23 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
         showMessage(isNew
             ? (window.t ? window.t('character.newCatgirlSuccess') : '新猫娘创建成功')
             : (window.t ? window.t('character.saveSuccess') : '保存成功'), 'success');
-        closeCatgirlPanel();
+        if (isNew) {
+            closeCatgirlPanel();
+        } else {
+            const container = form.parentNode;
+            const saveBtn = form.querySelector('#save-button');
+            const cancelBtn = form.querySelector('#cancel-button');
+            if (saveBtn) saveBtn.style.display = 'none';
+            if (cancelBtn) cancelBtn.style.display = 'none';
+            try {
+                const freshData = await loadCharacterData();
+                if (freshData && freshData['猫娘'] && freshData['猫娘'][data['档案名']]) {
+                    buildCatgirlDetailForm(data['档案名'], freshData['猫娘'][data['档案名']], false, container);
+                }
+            } catch (e) {
+                console.error('重新加载猫娘数据失败:', e);
+            }
+        }
         await loadCharacterCards();
     } catch (error) {
         console.error('保存猫娘失败:', error);
@@ -5026,6 +5214,21 @@ async function workshopDeleteCatgirl(name) {
     if (name === window._workshopCurrentCatgirl) {
         showMessage(window.t ? window.t('character.cannotDeleteCurrentCard') : '不能删除当前正在使用的角色卡', 'error');
         return;
+    }
+
+    // 检查是否只剩一只猫娘
+    try {
+        const resp = await fetch('/api/characters/', { cache: 'no-store' });
+        if (resp.ok) {
+            const allData = await resp.json();
+            const catgirls = allData?.['猫娘'] || {};
+            if (Object.keys(catgirls).length <= 1) {
+                showMessage(window.t ? window.t('character.onlyOneCatgirlLeft') : '只剩一只猫娘，无法删除！', 'error');
+                return;
+            }
+        }
+    } catch (e) {
+        // 如果检查失败，继续让用户尝试（后端也有保护）
     }
 
     // 确认删除
@@ -7791,4 +7994,528 @@ function selectPreviewImage() {
 
     // 触发文件选择对话框
     fileInput.click();
+}
+
+
+// ===================== 主人档案管理 =====================
+
+async function loadMasterProfile() {
+    try {
+        const resp = await fetch('/api/characters', { cache: 'no-store' });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const master = data?.['主人'] || {};
+        renderMasterForm(master);
+    } catch (e) {
+        console.error('加载主人档案失败:', e);
+    }
+}
+
+function renderMasterForm(master) {
+    const form = document.getElementById('master-form');
+    if (!form) return;
+    form.innerHTML = '';
+
+    // 档案名
+    const baseWrapper = document.createElement('div');
+    baseWrapper.className = 'field-row-wrapper';
+    const baseLabel = document.createElement('label');
+    const profileNameText = window.t ? window.t('character.profileName') : '档案名';
+    const requiredText = window.t ? window.t('character.required') : '*';
+    baseLabel.innerHTML = '<span data-i18n="character.profileName">' + profileNameText + '</span><span style="color:red" data-i18n="character.required">' + requiredText + '</span>';
+    baseWrapper.appendChild(baseLabel);
+
+    const fieldRow = document.createElement('div');
+    fieldRow.className = 'field-row';
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.name = '档案名';
+    nameInput.required = true;
+    nameInput.value = master['档案名'] || '';
+    nameInput.autocomplete = 'off';
+    fieldRow.appendChild(nameInput);
+    baseWrapper.appendChild(fieldRow);
+
+    // 重命名按钮
+    const renameBtn = document.createElement('button');
+    renameBtn.type = 'button';
+    renameBtn.className = 'btn sm';
+    renameBtn.style.minWidth = '70px';
+    const renameText = window.t ? window.t('character.rename') : '修改名称';
+    renameBtn.textContent = renameText;
+    renameBtn.onclick = renameMaster;
+    baseWrapper.appendChild(renameBtn);
+
+    form.appendChild(baseWrapper);
+
+    // 自定义字段
+    Object.keys(master).forEach(k => {
+        if (k === '档案名') return;
+        const wrapper = document.createElement('div');
+        wrapper.className = 'field-row-wrapper custom-row';
+
+        const label = document.createElement('label');
+        label.textContent = k;
+        wrapper.appendChild(label);
+
+        const row = document.createElement('div');
+        row.className = 'field-row';
+        const textarea = document.createElement('textarea');
+        textarea.name = k;
+        textarea.rows = 1;
+        textarea.value = master[k];
+        row.appendChild(textarea);
+        wrapper.appendChild(row);
+
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'btn sm delete';
+        const deleteText = window.t ? window.t('character.deleteField') : '删除设定';
+        delBtn.textContent = deleteText;
+        delBtn.onclick = function () { deleteMasterField(this); };
+        wrapper.appendChild(delBtn);
+
+        form.appendChild(wrapper);
+
+        // textarea自动调整
+        _panelAttachTextareaAutoResize(textarea);
+        // 自动保存和变化监听
+        attachAutoSaveListener(textarea, 'master');
+        textarea.addEventListener('input', showMasterActionButtons);
+        textarea.addEventListener('change', showMasterActionButtons);
+    });
+
+    // 按钮区
+    const btnArea = document.createElement('div');
+    btnArea.className = 'btn-area';
+    btnArea.style.display = 'flex';
+    btnArea.style.justifyContent = 'flex-end';
+    btnArea.style.gap = '6px';
+    btnArea.style.marginTop = '8px';
+
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'btn sm add';
+    const addText = window.t ? window.t('character.addMasterField') : '新增设定';
+    addBtn.textContent = addText;
+    addBtn.onclick = addMasterField;
+    btnArea.appendChild(addBtn);
+
+    const saveBtn = document.createElement('button');
+    saveBtn.type = 'button';
+    saveBtn.id = 'save-master-btn';
+    saveBtn.className = 'btn sm';
+    saveBtn.style.display = 'none';
+    const saveText = window.t ? window.t('character.saveMaster') : '保存主人设定';
+    saveBtn.textContent = saveText;
+    saveBtn.onclick = saveMasterForm;
+    btnArea.appendChild(saveBtn);
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.id = 'cancel-master-btn';
+    cancelBtn.className = 'btn sm';
+    cancelBtn.style.display = 'none';
+    const cancelText = window.t ? window.t('character.cancel') : '取消';
+    cancelBtn.textContent = cancelText;
+    cancelBtn.onclick = function () {
+        loadMasterProfile();
+    };
+    btnArea.appendChild(cancelBtn);
+
+    form.appendChild(btnArea);
+
+    // 为档案名输入框添加自动保存和变化监听
+    attachAutoSaveListener(nameInput, 'master');
+    nameInput.addEventListener('input', showMasterActionButtons);
+    nameInput.addEventListener('change', showMasterActionButtons);
+}
+
+function showMasterActionButtons() {
+    const form = document.getElementById('master-form');
+    if (!form) return;
+    const saveBtn = form.querySelector('#save-master-btn');
+    const cancelBtn = form.querySelector('#cancel-master-btn');
+    if (saveBtn) saveBtn.style.display = '';
+    if (cancelBtn) cancelBtn.style.display = '';
+}
+
+async function saveMasterForm() {
+    const form = document.getElementById('master-form');
+    if (!form) return;
+    const nameInput = form.querySelector('input[name="档案名"]');
+    if (!nameInput || !nameInput.value.trim()) {
+        showMessage(window.t ? window.t('character.profileNameRequired') : '档案名为必填项', 'error');
+        return;
+    }
+    const data = {};
+    for (const [k, v] of new FormData(form).entries()) {
+        if (k && v) data[k] = v;
+    }
+    try {
+        const resp = await fetch('/api/characters/master', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        if (resp.ok) {
+            showMessage(window.t ? window.t('character.saveMasterSuccess') : '保存主人设定成功', 'success');
+            await loadMasterProfile();
+        } else {
+            const err = await resp.text();
+            showMessage((window.t ? window.t('character.saveMasterError') : '保存失败') + ': ' + err, 'error');
+        }
+    } catch (e) {
+        showMessage(window.t ? window.t('character.saveMasterError') : '保存主人设定失败', 'error');
+    }
+}
+
+// 自动保存相关
+const _inputOriginalValues = new WeakMap();
+function storeOriginalValue(input) {
+    _inputOriginalValues.set(input, input.value);
+}
+function hasInputChanged(input) {
+    return _inputOriginalValues.get(input) !== input.value;
+}
+
+function attachAutoSaveListener(input, type, catgirlName) {
+    if (input.dataset.autoSaveAttached === 'true') return;
+    input.dataset.autoSaveAttached = 'true';
+    storeOriginalValue(input);
+    input.addEventListener('blur', function (e) {
+        if (!hasInputChanged(input)) return;
+        const relatedTarget = e.relatedTarget;
+        if (relatedTarget && (relatedTarget.closest('.btn.delete') || relatedTarget.closest('#cancel-button'))) return;
+        setTimeout(() => {
+            const activeEl = document.activeElement;
+            if (activeEl && (activeEl.closest('.btn.delete') || activeEl.closest('#cancel-button'))) return;
+            if (hasInputChanged(input)) {
+                if (type === 'master') {
+                    autoSaveMasterField(input);
+                } else if (type === 'catgirl' && catgirlName) {
+                    panelAutoSaveCatgirlField(input, catgirlName);
+                }
+            }
+        }, 0);
+    });
+}
+
+async function autoSaveMasterField(input) {
+    const form = input.closest('form');
+    if (!form || form.id !== 'master-form') return;
+    const fieldName = input.name;
+    if (!fieldName) return;
+    if (fieldName === '档案名' && !input.value.trim()) return;
+    const allData = {};
+    for (const [k, v] of new FormData(form).entries()) {
+        if (k && v) allData[k] = v;
+    }
+    if (!allData['档案名']) return;
+    try {
+        const resp = await fetch('/api/characters/master', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(allData)
+        });
+        if (resp.ok) {
+            storeOriginalValue(input);
+            const allInputs = form.querySelectorAll('input, textarea');
+            allInputs.forEach(inp => storeOriginalValue(inp));
+            const stillDirty = Array.from(allInputs).some(inp => hasInputChanged(inp));
+            if (!stillDirty) {
+                const saveBtn = form.querySelector('#save-master-btn');
+                const cancelBtn = form.querySelector('#cancel-master-btn');
+                if (saveBtn) saveBtn.style.display = 'none';
+                if (cancelBtn) cancelBtn.style.display = 'none';
+            }
+            showAutoSaveToast(window.t ? window.t('character.autoSaved') : '已自动保存设定');
+        }
+    } catch (e) {
+        console.error('自动保存主人字段失败:', e);
+    }
+}
+
+async function panelAutoSaveCatgirlField(input, catgirlName) {
+    if (!catgirlName) return;
+    const form = input.closest('form');
+    if (!form) return;
+    const fieldName = input.name;
+    if (!fieldName || fieldName === '档案名' || fieldName === 'voice_id') return;
+    const data = { '档案名': catgirlName };
+    const ALL_RESERVED_FIELDS = ['档案名', ...getWorkshopHiddenFields()];
+    const inputs = form.querySelectorAll('input, textarea');
+    inputs.forEach(inp => {
+        if (inp.name && !ALL_RESERVED_FIELDS.includes(inp.name) && inp.value) {
+            data[inp.name] = inp.value;
+        }
+    });
+    try {
+        const resp = await fetch('/api/characters/catgirl/' + encodeURIComponent(catgirlName), {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        if (resp.ok) {
+            storeOriginalValue(input);
+            const allInputs = form.querySelectorAll('input, textarea');
+            const sentFields = new Set(Object.keys(data));
+            allInputs.forEach(inp => {
+                if (inp.name && sentFields.has(inp.name)) {
+                    storeOriginalValue(inp);
+                }
+            });
+            const stillDirty = Array.from(allInputs).some(inp => hasInputChanged(inp));
+            if (!stillDirty) {
+                const saveBtn = form.querySelector('#save-button');
+                const cancelBtn = form.querySelector('#cancel-button');
+                if (saveBtn) saveBtn.style.display = 'none';
+                if (cancelBtn) cancelBtn.style.display = 'none';
+            }
+            showAutoSaveToast(window.t ? window.t('character.autoSaved') : '已自动保存设定');
+        }
+    } catch (e) {
+        console.error('自动保存猫娘字段失败:', e);
+    }
+}
+
+let _autoSaveToastTimer = null;
+let _autoSaveToastEl = null;
+function showAutoSaveToast(message) {
+    if (!_autoSaveToastEl) {
+        _autoSaveToastEl = document.createElement('div');
+        _autoSaveToastEl.className = 'auto-save-toast';
+        document.body.appendChild(_autoSaveToastEl);
+    }
+    _autoSaveToastEl.textContent = message;
+    _autoSaveToastEl.classList.add('visible');
+    if (_autoSaveToastTimer) clearTimeout(_autoSaveToastTimer);
+    _autoSaveToastTimer = setTimeout(() => {
+        if (_autoSaveToastEl) _autoSaveToastEl.classList.remove('visible');
+    }, 2000);
+}
+
+async function addMasterField() {
+    const form = document.getElementById('master-form');
+    if (!form) return;
+    let key = '';
+    if (typeof showPrompt === 'function') {
+        key = await showPrompt(
+            window.t ? window.t('character.addMasterFieldPrompt') : '请输入新设定的名称（键名）',
+            '',
+            window.t ? window.t('character.addMasterFieldTitle') : '新增主人设定'
+        );
+    } else {
+        key = prompt(window.t ? window.t('character.addMasterFieldPrompt') : '请输入新设定的名称（键名）');
+    }
+    if (!key || key === '档案名') return;
+    const exists = Array.from(form.querySelectorAll('textarea, input')).some(el => el.name === key);
+    if (exists) {
+        showMessage(window.t ? window.t('character.fieldExists') : '该设定已存在', 'error');
+        return;
+    }
+    const wrapper = document.createElement('div');
+    wrapper.className = 'field-row-wrapper custom-row';
+    const label = document.createElement('label');
+    label.textContent = key;
+    wrapper.appendChild(label);
+
+    const row = document.createElement('div');
+    row.className = 'field-row';
+    const textarea = document.createElement('textarea');
+    textarea.name = key;
+    textarea.rows = 1;
+    row.appendChild(textarea);
+    wrapper.appendChild(row);
+
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'btn sm delete';
+    delBtn.textContent = window.t ? window.t('character.deleteField') : '删除设定';
+    delBtn.onclick = function () { deleteMasterField(this); };
+    wrapper.appendChild(delBtn);
+
+    form.insertBefore(wrapper, form.querySelector('.btn-area'));
+    _panelAttachTextareaAutoResize(textarea);
+    attachAutoSaveListener(textarea, 'master');
+    textarea.addEventListener('input', showMasterActionButtons);
+    textarea.addEventListener('change', showMasterActionButtons);
+    textarea.focus();
+    showMasterActionButtons();
+}
+
+function deleteMasterField(btn) {
+    const wrapper = btn.parentNode;
+    const label = wrapper.querySelector('label');
+    if (label && label.textContent === (window.t ? window.t('character.profileName') : '档案名')) return;
+    wrapper.remove();
+    showMasterActionButtons();
+}
+
+async function renameMaster() {
+    const form = document.getElementById('master-form');
+    if (!form) return;
+    const nameInput = form.querySelector('input[name="档案名"]');
+    const oldName = nameInput?.value || '';
+    let newName;
+    if (typeof showPrompt === 'function') {
+        newName = await showPrompt(
+            window.t ? window.t('character.renamePrompt') : '请输入新的档案名',
+            oldName,
+            window.t ? window.t('character.renameTitle') : '修改名称'
+        );
+    } else {
+        newName = prompt(window.t ? window.t('character.renamePrompt') : '请输入新的档案名', oldName);
+    }
+    if (!newName || newName.trim() === '' || newName.trim() === oldName) return;
+    try {
+        const resp = await fetch('/api/characters/master/' + encodeURIComponent(oldName) + '/rename', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ new_name: newName.trim() })
+        });
+        const result = await resp.json();
+        if (result.success) {
+            showMessage(window.t ? window.t('character.renameSuccess') : '重命名成功', 'success');
+            await loadMasterProfile();
+        } else {
+            showMessage(result.error || (window.t ? window.t('character.renameFailed') : '重命名失败'), 'error');
+        }
+    } catch (e) {
+        showMessage(window.t ? window.t('character.renameError') : '重命名时发生错误', 'error');
+    }
+}
+
+function toggleMasterSection() {
+    const content = document.getElementById('master-profile-content');
+    const header = document.getElementById('master-profile-header');
+    if (!content || !header) return;
+    const isHidden = content.style.display === 'none';
+    content.style.display = isHidden ? 'block' : 'none';
+    header.classList.toggle('open', isHidden);
+}
+
+// ===================== 隐藏猫娘 =====================
+
+function getHiddenCatgirlKeys() {
+    try {
+        const stored = localStorage.getItem('hidden_catgirls');
+        if (!stored) return [];
+        const parsed = JSON.parse(stored);
+        if (!Array.isArray(parsed)) return [];
+        return parsed.filter(x => typeof x === 'string');
+    } catch (e) {
+        return [];
+    }
+}
+
+async function workshopHideCatgirl(name) {
+    if (name === window._workshopCurrentCatgirl) {
+        showMessage(window.t ? window.t('character.cannotHideCurrentCatgirl') : '不能隐藏当前正在使用的猫娘', 'error');
+        return;
+    }
+    const hiddenKeys = getHiddenCatgirlKeys();
+    if (!hiddenKeys.includes(name)) {
+        hiddenKeys.push(name);
+        localStorage.setItem('hidden_catgirls', JSON.stringify(hiddenKeys));
+    }
+    renderCharaCardsView();
+    renderHiddenCatgirls();
+}
+
+function workshopUnhideCatgirl(name) {
+    const hiddenKeys = getHiddenCatgirlKeys();
+    const newKeys = hiddenKeys.filter(k => k !== name);
+    localStorage.setItem('hidden_catgirls', JSON.stringify(newKeys));
+    renderCharaCardsView();
+    renderHiddenCatgirls();
+}
+
+function renderHiddenCatgirls() {
+    const area = document.getElementById('hidden-catgirl-area');
+    const list = document.getElementById('hidden-catgirl-list');
+    const countSpan = document.getElementById('hidden-catgirl-count');
+    const toggleBtn = document.getElementById('toggle-hidden-btn');
+    if (!area || !list) return;
+
+    const hiddenKeys = getHiddenCatgirlKeys();
+
+    // 更新 toolbar 按钮显示状态
+    if (toggleBtn) {
+        toggleBtn.style.display = hiddenKeys.length > 0 ? 'inline-flex' : 'none';
+        const btnText = toggleBtn.querySelector('span');
+        if (btnText) {
+            btnText.textContent = window._showHiddenCatgirls
+                ? (window.t ? window.t('character.hideHidden') : '隐藏已隐藏')
+                : (window.t ? window.t('character.showHidden') : '显示已隐藏');
+        }
+        toggleBtn.classList.toggle('active', !!window._showHiddenCatgirls);
+    }
+
+    if (hiddenKeys.length === 0) {
+        area.style.display = 'none';
+        return;
+    }
+
+    area.style.display = 'block';
+    const hiddenText = window.t ? window.t('character.hiddenCatgirls') : '已隐藏猫娘';
+    if (countSpan) countSpan.textContent = hiddenText + ' (' + hiddenKeys.length + ')';
+
+    list.innerHTML = '';
+    hiddenKeys.forEach(key => {
+        const item = document.createElement('div');
+        item.className = 'hidden-catgirl-item';
+
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'catgirl-name';
+        nameSpan.textContent = key;
+        item.appendChild(nameSpan);
+
+        const unhideBtn = document.createElement('button');
+        unhideBtn.className = 'btn sm';
+        unhideBtn.style.background = '#40C5F1';
+        unhideBtn.style.minWidth = '60px';
+        unhideBtn.textContent = window.t ? window.t('character.show') : '显示';
+        unhideBtn.onclick = function () {
+            workshopUnhideCatgirl(key);
+        };
+        item.appendChild(unhideBtn);
+
+        list.appendChild(item);
+    });
+}
+
+function toggleHiddenCatgirlsHeader() {
+    const list = document.getElementById('hidden-catgirl-list');
+    const arrow = document.getElementById('hidden-catgirl-arrow');
+    if (!list) return;
+    const isHidden = list.style.display === 'none';
+    list.style.display = isHidden ? 'block' : 'none';
+    if (arrow) arrow.classList.toggle('expanded', isHidden);
+}
+
+function toggleShowHiddenCatgirls() {
+    window._showHiddenCatgirls = !window._showHiddenCatgirls;
+    renderCharaCardsView();
+    renderHiddenCatgirls();
+}
+
+// ===================== 面板自动保存（供 buildCatgirlDetailForm 调用） =====================
+
+function panelAttachAutoSaveListener(input, catgirlName) {
+    if (input.dataset.autoSaveAttached === 'true') return;
+    input.dataset.autoSaveAttached = 'true';
+    storeOriginalValue(input);
+    input.addEventListener('blur', function (e) {
+        if (!hasInputChanged(input)) return;
+        const relatedTarget = e.relatedTarget;
+        if (relatedTarget && (relatedTarget.closest('.btn.delete') || relatedTarget.closest('#cancel-button') || relatedTarget.closest('#rename-catgirl-btn'))) return;
+        setTimeout(() => {
+            const activeEl = document.activeElement;
+            if (activeEl && (activeEl.closest('.btn.delete') || activeEl.closest('#cancel-button') || activeEl.closest('#rename-catgirl-btn'))) return;
+            if (hasInputChanged(input)) {
+                panelAutoSaveCatgirlField(input, catgirlName);
+            }
+        }, 0);
+    });
 }

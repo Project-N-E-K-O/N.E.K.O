@@ -13,6 +13,312 @@
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <link rel="stylesheet" href="/static/css/tutorial-styles.css">
     <script src="/static/theme-manager.js"></script>
+    <style>
+        /* 主人档案补充样式 */
+        .master-profile-section {
+            border: 2px solid #b3e5fc;
+            border-radius: 16px;
+            background: #f0f8ff;
+            padding: 10px 12px;
+            margin-top: 8px;
+            position: relative;
+            z-index: 10;
+        }
+        .master-profile-header {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+            color: #40C5F1;
+            font-weight: 600;
+            font-size: 0.95rem;
+            user-select: none;
+        }
+        .master-profile-header .arrow {
+            transition: transform 0.2s ease;
+            width: 20px;
+            height: 20px;
+        }
+        .master-profile-header.open .arrow {
+            transform: rotate(90deg);
+        }
+        .master-profile-content {
+            position: absolute;
+            left: 0;
+            right: 0;
+            top: 100%;
+            margin-top: 4px;
+            padding: 10px 12px;
+            background: #f0f8ff;
+            border: 2px solid #b3e5fc;
+            border-radius: 16px;
+            z-index: 20;
+            box-shadow: 0 8px 24px rgba(64, 197, 241, 0.15);
+        }
+        .master-profile-content .field-row-wrapper {
+            display: flex;
+            align-items: center;
+            margin-bottom: 8px;
+            gap: 6px;
+        }
+        .master-profile-content .field-row-wrapper label {
+            min-width: 60px;
+            max-width: 80px;
+            font-weight: 600;
+            color: #40C5F1;
+            font-size: 0.85rem;
+            flex-shrink: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .master-profile-content .field-row {
+            display: flex;
+            align-items: center;
+            flex: 1;
+            padding: 2px;
+            border: 2px solid #b3e5fc;
+            border-radius: 50px;
+            background: #fff;
+            min-height: 28px;
+            transition: border-color 0.2s, border-radius 0.3s ease;
+            overflow: hidden;
+        }
+        .master-profile-content .field-row.has-scrollbar {
+            border-radius: 16px;
+        }
+        .master-profile-content .field-row.has-scrollbar textarea {
+            border-radius: 14px;
+        }
+        /* 自定义滚动条样式 */
+        .master-profile-content .field-row textarea::-webkit-scrollbar {
+            width: 6px;
+        }
+        .master-profile-content .field-row textarea::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .master-profile-content .field-row textarea::-webkit-scrollbar-thumb {
+            background-color: rgba(64, 197, 241, 0.3);
+            border-radius: 3px;
+        }
+        .master-profile-content .field-row textarea::-webkit-scrollbar-thumb:hover {
+            background-color: rgba(64, 197, 241, 0.5);
+        }
+        .master-profile-content .field-row input,
+        .master-profile-content .field-row textarea {
+            flex: 1;
+            padding: 4px 10px;
+            border: none;
+            border-radius: 48px;
+            font-size: 0.85rem;
+            background: #fff;
+            color: #40C5F1;
+            outline: none;
+            resize: none;
+            box-sizing: border-box;
+        }
+        .master-profile-content .field-row input:focus,
+        .master-profile-content .field-row textarea:focus {
+            outline: none !important;
+            box-shadow: none !important;
+        }
+        .master-profile-content .field-row:focus-within {
+            border-color: #40C5F1;
+        }
+        .master-profile-content .field-row textarea {
+            overflow-y: hidden;
+            min-height: 30px;
+            line-height: 1.4;
+            transition: height 0.2s ease;
+            box-sizing: border-box;
+        }
+        .master-profile-content .btn-area {
+            display: flex;
+            justify-content: flex-end;
+            align-items: center;
+            gap: 6px;
+            margin-top: 6px;
+        }
+        .master-profile-content .btn-area .btn#save-master-btn,
+        .master-profile-content .btn-area .btn#cancel-master-btn {
+            display: none;
+        }
+        /* 页面全局滚动条样式 */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+            background-color: rgba(64, 197, 241, 0.55);
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background-color: rgba(64, 197, 241, 0.75);
+        }
+        .master-profile-content .btn.sm {
+            padding: 0 10px;
+            border-radius: 999px;
+            min-width: 60px;
+            height: 26px;
+            font-size: 0.75rem;
+            background: #7fd6f4;
+            color: #fff;
+            border: none;
+            transition: background 0.2s, transform 0.15s;
+        }
+        .master-profile-content .btn.sm:hover {
+            background: #40C5F1;
+            transform: translateY(-1px);
+        }
+        /* 已隐藏猫娘补充样式 */
+        .hidden-catgirl-area {
+            margin-top: 8px;
+            padding: 10px;
+            border: 2px dashed #b3e5fc;
+            border-radius: 16px;
+            background: rgba(179, 229, 252, 0.15);
+        }
+        .hidden-catgirl-header-btn {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+            color: #40C5F1;
+            font-weight: 600;
+            font-size: 0.95rem;
+            padding: 6px;
+            background: transparent;
+            border: none;
+            width: 100%;
+            text-align: left;
+        }
+        .hidden-catgirl-arrow {
+            font-size: 12px;
+            color: #40C5F1;
+            transition: transform 0.3s ease;
+            display: inline-block;
+        }
+        .hidden-catgirl-arrow.expanded {
+            transform: rotate(90deg);
+        }
+        .hidden-catgirl-list {
+            margin-top: 6px;
+        }
+        .hidden-catgirl-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 6px 10px;
+            background: #fff;
+            border-radius: 8px;
+            margin-bottom: 6px;
+            border: 1px solid #b3e5fc;
+        }
+        .hidden-catgirl-item .catgirl-name {
+            color: #40C5F1;
+            font-weight: 600;
+            font-size: 0.9rem;
+        }
+        /* 隐藏按钮 */
+        .card-hide-btn, .list-hide-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            background: transparent;
+            border: none;
+            color: #40C5F1;
+            cursor: pointer;
+            padding: 4px;
+            border-radius: 4px;
+            transition: background 0.2s;
+        }
+        .card-hide-btn:hover, .list-hide-btn:hover {
+            background: rgba(64, 197, 241, 0.12);
+        }
+        /* 自动保存提示 */
+        .auto-save-toast {
+            position: fixed;
+            top: 80px;
+            right: 20px;
+            background: #e8f5e9;
+            border: 2px solid #4caf50;
+            border-radius: 999px;
+            padding: 8px 20px;
+            color: #2e7d32;
+            font-size: 0.9rem;
+            font-weight: 500;
+            z-index: 100000;
+            opacity: 0;
+            transform: translateY(-10px);
+            transition: opacity 0.3s ease, transform 0.3s ease;
+            pointer-events: none;
+            box-shadow: 0 4px 12px rgba(76, 175, 80, 0.2);
+        }
+        .auto-save-toast.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        /* 卡片左上角隐藏按钮 */
+        .card-hide-corner {
+            position: absolute;
+            top: 8px;
+            left: 8px;
+            z-index: 10;
+            width: 22px;
+            height: 22px;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(255, 255, 255, 0.9);
+            border: 1px solid #b3e5fc;
+            border-radius: 8px;
+            color: #40C5F1;
+            cursor: pointer;
+            padding: 0;
+            transition: background 0.2s, transform 0.15s, box-shadow 0.2s;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+        }
+        .card-hide-corner:hover {
+            background: #fff;
+            transform: scale(1.1);
+            box-shadow: 0 2px 8px rgba(64, 197, 241, 0.25);
+            border-color: #40C5F1;
+        }
+        .chara-card-item.hidden-catgirl-card .card-hide-corner {
+            color: #888;
+            border-color: #ddd;
+        }
+        /* toolbar 显示已隐藏按钮 */
+        .toggle-hidden-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 14px;
+            background: #fff;
+            color: #40C5F1;
+            border: 1.5px solid #40C5F1;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: background 0.2s, color 0.2s, transform 0.15s;
+            flex-shrink: 0;
+        }
+        .toggle-hidden-btn:hover {
+            background: #40C5F1;
+            color: #fff;
+            transform: translateY(-1px);
+        }
+        .toggle-hidden-btn.active {
+            background: #40C5F1;
+            color: #fff;
+        }
+    </style>
 </head>
 
 <body>
@@ -52,6 +358,19 @@
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 17.58A5 5 0 0 0 18 8h-1.26A8 8 0 1 0 4 16.25"/><path d="M8 16l4 4 4-4"/><path d="M12 12v8"/></svg>
     <span data-i18n="character.openCloudsaveManager">云存档管理</span>
 </button>
+</div>
+
+<!-- 主人档案区域 -->
+<div class="menu-section master-profile-section" id="master-profile-section">
+    <div class="master-profile-header" id="master-profile-header" onclick="toggleMasterSection()">
+        <img src="/static/icons/dropdown_arrow.png" class="arrow" alt="" style="width:20px;height:20px;">
+        <span data-i18n="character.masterProfileTitle">主人档案</span>
+    </div>
+    <div class="master-profile-content" id="master-profile-content" style="display:none;">
+        <form id="master-form" onsubmit="event.preventDefault();">
+            <!-- 由 JS 动态渲染 -->
+        </form>
+    </div>
 </div>
 
 <!-- 角色卡封面图展示区域 -->
@@ -206,6 +525,10 @@
 </div>
 </div>
 <div class="chara-cards-toolbar-right">
+<button type="button" class="toggle-hidden-btn" id="toggle-hidden-btn" onclick="toggleShowHiddenCatgirls()" style="display:none;" data-i18n-title="character.showHidden" title="显示已隐藏">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+    <span data-i18n="character.showHidden">显示已隐藏</span>
+</button>
 <button type="button" class="api-key-toolbar-btn" id="api-key-settings-btn" data-i18n-title="character.apiKeySettings" title="API 设置" aria-label="API 设置">
 <img src="/static/icons/key.png" alt="" class="key-icon">
 <span data-i18n="character.apiKeySettings">API 设置</span>
@@ -224,6 +547,15 @@
 <!-- 角色卡片/列表由JS动态渲染 -->
 <div class="empty-state">
 <p data-i18n="steam.loadingCharacterCards">正在加载角色卡...</p>
+</div>
+
+<!-- 已隐藏猫娘区域 -->
+<div id="hidden-catgirl-area" class="hidden-catgirl-area" style="display:none;">
+    <button type="button" class="hidden-catgirl-header-btn" onclick="toggleHiddenCatgirlsHeader()">
+        <span class="hidden-catgirl-arrow" id="hidden-catgirl-arrow">▶</span>
+        <span id="hidden-catgirl-count" data-i18n="character.hiddenCatgirls">已隐藏猫娘</span>
+    </button>
+    <div id="hidden-catgirl-list" class="hidden-catgirl-list" style="display:none;"></div>
 </div>
 </div>
 </div>

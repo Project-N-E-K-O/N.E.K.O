@@ -3216,14 +3216,12 @@ background: #D4F4FF;
 color: #18A7FF;
 }
 
-#sidebar .tab.active,
-#workshop-tabs .tab.active,
-.tabs .tab.active {
+#sidebar .tab.active {
 background: linear-gradient(to right, #4BD4FF, #18A7FF);
 color: white;
 font-weight: 600;
 border: 1px solid #18A7FF;
-/* 已选中的 tab 不可再点击（含 hover/cursor），避免重复触发切换逻辑 */
+/* 已选中的 tab 不可再点击，避免重复触发切换逻辑 */
 pointer-events: none;
 cursor: default;
 }
@@ -3448,12 +3446,6 @@ margin-top: 10px;
     border-radius: 16px;
     border: 1px solid #b3e5fc;
     overflow: hidden;
-    /* 整块蓝色渐变背景限定最大高度，超出由内部 .chara-cards-container 滚动；
-       overflow:hidden + border-radius:16px 保证滚动条与底部圆角对齐不溢出 */
-    max-height: 70vh;
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
 }
 
 /* 蓝色底层已由外容器提供，此层仅作为结构包裹 */
@@ -3659,12 +3651,11 @@ margin-top: 10px;
 .chara-cards-container {
     padding: 10px 16px 16px;
     min-height: 200px;
-    /* 由父级 .chara-cards-view-area 统一限制最大高度；本层只负责在剩余空间内滚动 */
-    flex: 1 1 auto;
-    min-height: 0;
+    max-height: 80vh;
     overflow-y: auto;
     overflow-x: hidden;
     background-color: #fff;
+    border-radius: 0 0 16px 16px;
     transition: opacity 0.2s ease, transform 0.2s ease;
     /* Firefox 滚动条样式 */
     scrollbar-width: thin;
@@ -4993,8 +4984,7 @@ margin-top: 10px;
     position: relative;
     display: inline-flex;
     align-items: center;
-    background-color: #bcf1ff;
-    padding: 3px;
+    justify-content: center;
     border-radius: 50px;
     flex-shrink: 0;
 }
@@ -5014,6 +5004,7 @@ margin-top: 10px;
     transition: filter 0.2s;
     white-space: nowrap;
     text-align: center;
+    box-shadow: 0 0 0 3px #bcf1ff;
 }
 
 #live2d-preview-controls .btn-play-wrapper .btn:hover:not(:disabled) {
