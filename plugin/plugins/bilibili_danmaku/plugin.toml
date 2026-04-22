@@ -1,5 +1,5 @@
 [plugin]
-id = "bilibili-danmaku"
+id = "bilibili_danmaku"
 name = "B站弹幕监听"
 description = "实时监听B站直播间弹幕，过滤后推送给AI分析和回复"
 short_description = "Monitor Bilibili live stream danmaku. 无需主动调用。"

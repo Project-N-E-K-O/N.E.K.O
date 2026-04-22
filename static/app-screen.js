@@ -1289,6 +1289,176 @@
     // ======================== getSelectedScreenSourceId ========================
     window.getSelectedScreenSourceId = function () { return S.selectedScreenSourceId; };
 
+    // ======================== detectScreenshotCaptureType ========================
+    /**
+     * 判断截图的捕获类型，用于正确映射 Avatar 坐标。
+     *
+     * @param {MediaStream|null} stream - 捕获流（如有）
+     * @param {string|null} sourceId - Electron desktopCapturer 源 ID（如有）
+     * @returns {'screen'|'viewport'|null}
+     *   'screen'   — 全屏/整个桌面截图，坐标需从视口映射到屏幕
+     *   'viewport' — 浏览器窗口/标签页截图，坐标直接映射
+     *   null       — 无法确定或不应叠加（如其他应用窗口、手机相机等）
+     */
+    function detectScreenshotCaptureType(stream, sourceId) {
+        // Electron source ID: 'screen:0:0' → 全屏, 'window:12345' → 窗口
+        if (sourceId) {
+            if (sourceId.startsWith('screen:')) return 'screen';
+            // Electron 窗口源 — 可能是浏览器自身或其他 app
+            // 如果是其他 app 窗口，Avatar 不在截图中，应返回 null。
+            // 暂时保守返回 null（窗口截图不叠加）。
+            return null;
+        }
+
+        // getDisplayMedia / 缓存流: 检查 displaySurface
+        if (stream) {
+            try {
+                var tracks = stream.getVideoTracks();
+                for (var i = 0; i < tracks.length; i++) {
+                    var settings = tracks[i].getSettings();
+                    if (settings.displaySurface === 'monitor') return 'screen';
+                    if (settings.displaySurface === 'window') return null; // 窗口截图不叠加
+                    if (settings.displaySurface === 'browser') return 'viewport'; // 标签页
+                }
+            } catch (e) { /* ignore */ }
+            // displaySurface 可能不可用（部分浏览器），无法确定
+            return null;
+        }
+
+        return null;
+    }
+    mod.detectScreenshotCaptureType = detectScreenshotCaptureType;
+
+    // ======================== getAvatarScreenPosition ========================
+    /**
+     * 获取 Avatar 模型在截图图片坐标系中的归一化位置（0-1）。
+     *
+     * 根据 captureType 做不同的坐标映射：
+     *  - 'viewport': 截图内容 = 浏览器视口，直接用 viewport 坐标归一化
+     *  - 'screen':   截图内容 = 整个屏幕，需要加上浏览器窗口在屏幕上的偏移
+     *  - null:       不叠加，返回 null
+     *
+     * @param {'screen'|'viewport'|null} captureType
+     * @returns {{ centerX: number, centerY: number, width: number, height: number } | null}
+     */
+    function getAvatarScreenPosition(captureType) {
+        if (!captureType) return null;
+
+        // 如果 live2d-container 被最小化/隐藏，截图中无 Avatar
+        var container = document.getElementById('live2d-container');
+        if (container && (container.classList.contains('minimized') ||
+            getComputedStyle(container).visibility === 'hidden')) {
+            return null;
+        }
+
+        // --- 第一步：获取 Avatar 在视口 CSS 像素中的绝对坐标 ---
+        var avatarCx = NaN, avatarCy = NaN, avatarW = 0, avatarH = 0;
+
+        // Live2D (PIXI) — getBounds 返回的就是视口像素坐标
+        if (window.live2dManager && typeof window.live2dManager.getModelScreenBounds === 'function') {
+            try {
+                var bounds = window.live2dManager.getModelScreenBounds();
+                if (bounds && bounds.width > 0 && bounds.height > 0) {
+                    avatarCx = bounds.centerX;
+                    avatarCy = bounds.centerY;
+                    avatarW = bounds.width;
+                    avatarH = bounds.height;
+                }
+            } catch (e) { /* ignore */ }
+        }
+
+        // VRM (Three.js)
+        var THREE = window.THREE;
+        if (isNaN(avatarCx) && THREE && window.vrmManager) {
+            try {
+                var vrm = window.vrmManager;
+                var model = (typeof vrm.getCurrentModel === 'function' ? vrm.getCurrentModel() : vrm.currentModel);
+                if (model && model.vrm && model.vrm.scene && vrm.camera) {
+                    var canvas = vrm.renderer && vrm.renderer.domElement || document.getElementById('vrm-canvas');
+                    if (canvas) {
+                        var box = new THREE.Box3().setFromObject(model.vrm.scene);
+                        var size3 = box.getSize(new THREE.Vector3());
+                        var boxCenter = box.getCenter(new THREE.Vector3());
+                        var cProj = boxCenter.clone().project(vrm.camera);
+                        var cw = canvas.clientWidth || 1;
+                        var ch = canvas.clientHeight || 1;
+                        avatarCx = (cProj.x * 0.5 + 0.5) * cw;
+                        avatarCy = (-cProj.y * 0.5 + 0.5) * ch;
+                        var topPt = new THREE.Vector3(boxCenter.x, box.max.y, boxCenter.z).project(vrm.camera);
+                        var botPt = new THREE.Vector3(boxCenter.x, box.min.y, boxCenter.z).project(vrm.camera);
+                        avatarH = Math.abs((-topPt.y * 0.5 + 0.5) - (-botPt.y * 0.5 + 0.5)) * ch;
+                        avatarW = avatarH * (size3.x / Math.max(size3.y, 0.01));
+                        avatarW = Math.max(avatarW, 1);
+                        avatarH = Math.max(avatarH, 1);
+                    }
+                }
+            } catch (e) { /* ignore */ }
+        }
+
+        // MMD (Three.js)
+        if (isNaN(avatarCx) && THREE && window.mmdManager) {
+            try {
+                var mmd = window.mmdManager;
+                var mmdModel = (typeof mmd.getCurrentModel === 'function' ? mmd.getCurrentModel() : mmd.currentModel);
+                if (mmdModel && mmdModel.mesh && mmd.camera) {
+                    var mmdCanvas = mmd.renderer && mmd.renderer.domElement || mmd.canvas || document.getElementById('mmd-canvas');
+                    if (mmdCanvas) {
+                        var mbox = new THREE.Box3().setFromObject(mmdModel.mesh);
+                        var msize = mbox.getSize(new THREE.Vector3());
+                        var mc = mbox.getCenter(new THREE.Vector3());
+                        var mcP = mc.clone().project(mmd.camera);
+                        var mcw = mmdCanvas.clientWidth || 1;
+                        var mch = mmdCanvas.clientHeight || 1;
+                        avatarCx = (mcP.x * 0.5 + 0.5) * mcw;
+                        avatarCy = (-mcP.y * 0.5 + 0.5) * mch;
+                        var mtop = new THREE.Vector3(mc.x, mbox.max.y, mc.z).project(mmd.camera);
+                        var mbot = new THREE.Vector3(mc.x, mbox.min.y, mc.z).project(mmd.camera);
+                        avatarH = Math.abs((-mtop.y * 0.5 + 0.5) - (-mbot.y * 0.5 + 0.5)) * mch;
+                        avatarW = avatarH * (msize.x / Math.max(msize.y, 0.01));
+                        avatarW = Math.max(avatarW, 1);
+                        avatarH = Math.max(avatarH, 1);
+                    }
+                }
+            } catch (e) { /* ignore */ }
+        }
+
+        if (isNaN(avatarCx)) return null;
+
+        // --- 第二步：根据 captureType 将视口像素坐标映射到截图坐标系 ---
+        var refW, refH; // 截图所覆盖区域的 CSS 尺寸（用于归一化分母）
+
+        if (captureType === 'screen') {
+            // 截图覆盖整个屏幕 → 坐标需加上浏览器窗口在屏幕上的偏移
+            // viewportOrigin = windowOuter 的左上角 + chrome 偏移
+            var chromeLeft = Math.round((window.outerWidth - window.innerWidth) / 2);
+            var chromeTop = window.outerHeight - window.innerHeight - chromeLeft; // 减去等量底部边框
+            var vpOriginX = (window.screenX || 0) + chromeLeft;
+            var vpOriginY = (window.screenY || 0) + chromeTop;
+
+            avatarCx += vpOriginX;
+            avatarCy += vpOriginY;
+            refW = window.screen.width || 1;
+            refH = window.screen.height || 1;
+
+            // 如果 Avatar 中心超出屏幕范围，说明不在截图内
+            if (avatarCx < 0 || avatarCx > refW || avatarCy < 0 || avatarCy > refH) {
+                return null;
+            }
+        } else {
+            // 'viewport' — 截图覆盖浏览器视口
+            refW = window.innerWidth || 1;
+            refH = window.innerHeight || 1;
+        }
+
+        return {
+            centerX: avatarCx / refW,
+            centerY: avatarCy / refH,
+            width:   avatarW / refW,
+            height:  avatarH / refH
+        };
+    }
+    mod.getAvatarScreenPosition = getAvatarScreenPosition;
+
     // ======================== Backward-compat window exports ========================
     window.startScreenSharing = startScreenSharing;
     window.stopScreenSharing = stopScreenSharing;
@@ -1303,6 +1473,8 @@
     window.stopScreening = stopScreening;
     window.scheduleScreenCaptureIdleCheck = scheduleScreenCaptureIdleCheck;
     window.syncFloatingScreenButtonState = syncFloatingScreenButtonState;
+    window.getAvatarScreenPosition = getAvatarScreenPosition;
+    window.detectScreenshotCaptureType = detectScreenshotCaptureType;
 
     // ======================== Export module ========================
     window.appScreen = mod;

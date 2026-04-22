@@ -40,7 +40,17 @@ cd frontend/plugin-manager && npm install && npm run build-only && cd ../..
 
 ## Running
 
-Start the required servers in separate terminals:
+Prefer the unified launcher when possible:
+
+```bash
+uv run python launcher.py
+```
+
+This path bootstraps local `cloudsave/`, applies any staged snapshot, and only
+then starts the backend services, so it is closer to the real Steam / desktop
+startup path.
+
+Alternatively, start the required servers manually in separate terminals:
 
 ```bash
 # Terminal 1 — Memory server (required)
@@ -52,6 +62,21 @@ uv run python main_server.py
 # Terminal 3 — Agent server (optional)
 uv run python agent_server.py
 ```
+
+Notes:
+
+- To validate the production Steam Auto-Cloud path, launch through Steam or the desktop launcher. Desktop source runs on Windows, macOS, and Linux can now use the RemoteStorage bundle helper when Steam is running and logged in, but that helper is still a development-side compatibility path rather than the packaged app's main sync path.
+- In manual three-server mode, `main_server` will still perform a fallback snapshot import when needed and will try to notify `memory_server` to reload afterward.
+- Shutdown no longer stages runtime changes into `cloudsave/` automatically. If you want Steam to upload new character data, prepare or overwrite the staged snapshot for that character from Cloud Save Manager before you exit.
+- On macOS source runs, if Apple reports that `SteamworksPy.dylib` cannot be verified, Gatekeeper is usually blocking the local unnotarized Steamworks libraries. First make sure you are launching from the project root. If it is still blocked, run the following from the repo root:
+
+```bash
+xattr -dr com.apple.quarantine SteamworksPy.dylib libsteam_api.dylib
+codesign --force --sign - libsteam_api.dylib
+codesign --force --sign - SteamworksPy.dylib
+```
+
+- After that, retry `uv run python launcher.py` or `uv run python main_server.py`.
 
 ## Configuration
 

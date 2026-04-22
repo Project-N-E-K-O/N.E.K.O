@@ -54,7 +54,8 @@ if TYPE_CHECKING:
     from plugin.core.bus.memory_client import MemoryClient
     from plugin.core.bus.messages import MessageClient
     from plugin.core.bus.conversations import ConversationClient
-    from loguru import Logger as LoguruLogger
+    # ⚠ 严禁 import loguru。logger 字段实际类型是 plugin.logging_config.PluginLoggerAdapter。
+    from plugin.logging_config import PluginLoggerAdapter as LoguruLogger
 
 
 _IN_HANDLER: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_in_handler", default=None)

@@ -19,7 +19,7 @@
      * Add a screenshot thumbnail to the pending list.
      * @param {string} dataUrl - image data URL
      */
-    mod.addScreenshotToList = function addScreenshotToList(dataUrl) {
+    mod.addScreenshotToList = function addScreenshotToList(dataUrl, avatarPosition) {
         S.screenshotCounter++;
 
         const screenshotsList = S.dom.screenshotsList;
@@ -30,6 +30,10 @@
         item.className = 'screenshot-item';
         item.dataset.index = S.screenshotCounter;
         item.dataset.attachmentId = 'attachment-' + Date.now() + '-' + S.screenshotCounter;
+        // Store avatar position metadata (captured at screenshot time)
+        if (avatarPosition) {
+            item.dataset.avatarPosition = JSON.stringify(avatarPosition);
+        }
 
         // Create thumbnail
         const img = document.createElement('img');
@@ -1557,11 +1561,17 @@
                             var img = screenshotItems[i].querySelector('.screenshot-thumbnail');
                             if (img && img.src) {
                                 sentImageUrls.push(img.src);
-                                S.socket.send(JSON.stringify({
+                                var msg = {
                                     action: 'stream_data',
                                     data: img.src,
                                     input_type: U.isMobile() ? 'camera' : 'screen'
-                                }));
+                                };
+                                // Attach paired avatar position metadata (captured at screenshot time)
+                                var storedPos = screenshotItems[i].dataset.avatarPosition;
+                                if (storedPos) {
+                                    try { msg.avatar_position = JSON.parse(storedPos); } catch (e) { /* ignore */ }
+                                }
+                                S.socket.send(JSON.stringify(msg));
                             }
                         }
 
@@ -1866,6 +1876,7 @@
             // isCachedStream 用于区分缓存流（绝不能关）与一次性流（finally 要关）。
             var acquiredStream = null;
             var isCachedStream = false;
+            var captureType = null; // 'screen' | 'viewport' | null — 用于 Avatar 坐标映射
 
             try {
                 screenshotButton.disabled = true;
@@ -1890,6 +1901,7 @@
                             dataUrl = mframe.dataUrl;
                             width = mframe.width;
                             height = mframe.height;
+                            captureType = null; // 手机相机，Avatar 不在画面中
                         }
                     }
                 } else {
@@ -1911,6 +1923,10 @@
                                 // 此时回退到主进程上报的原始尺寸，避免日志空值。
                                 width = scaled.width || direct.width || 0;
                                 height = scaled.height || direct.height || 0;
+                                // 主进程直接捕获：靠 sourceId 前缀区分 screen/window
+                                captureType = window.detectScreenshotCaptureType
+                                    ? window.detectScreenshotCaptureType(null, selectedSourceId)
+                                    : null;
                                 console.log('[截图] 主进程直接捕获成功:', selectedSourceId, width + 'x' + height);
                             } else if (direct && direct.error) {
                                 console.warn('[截图] 主进程直接捕获失败:', direct.error);
@@ -1939,6 +1955,9 @@
                                 dataUrl = frame.dataUrl;
                                 width = frame.width;
                                 height = frame.height;
+                                captureType = window.detectScreenshotCaptureType
+                                    ? window.detectScreenshotCaptureType(acquiredStream, S.selectedScreenSourceId)
+                                    : null;
                                 if (isCachedStream) {
                                     S.screenCaptureStreamLastUsed = Date.now();
                                     if (window.scheduleScreenCaptureIdleCheck) window.scheduleScreenCaptureIdleCheck();
@@ -1973,6 +1992,11 @@
                     console.log(window.t('console.screenshotSuccess'), width + 'x' + height);
                 }
 
+                // Capture avatar position at screenshot time, mapped to capture coordinate system.
+                // Only meaningful for the uncropped path — cropping invalidates the normalized coords.
+                var avatarPos = typeof window.getAvatarScreenPosition === 'function'
+                    ? window.getAvatarScreenPosition(captureType) : null;
+
                 // Release one-time stream BEFORE opening crop overlay
                 // Only release if it's a one-time stream — cached streams are managed globally
                 if (!isCachedStream && acquiredStream instanceof MediaStream) {
@@ -1992,10 +2016,12 @@
                         window.showStatusToast(window.t ? window.t('app.screenshotCancelled') : '\u5DF2\u53D6\u6D88\u622A\u56FE', 2000);
                         return;
                     }
-                    mod.addScreenshotToList(croppedUrl);
+                    // 裁切后坐标系变了，Avatar 位置无效：不附带 avatar_position
+                    // （除非裁切图与原图相同 — 但我们无法从 appCrop API 判定，保守跳过）
+                    mod.addScreenshotToList(croppedUrl, croppedUrl === dataUrl ? avatarPos : null);
                 } else {
-                    // Fallback: no crop module available, add full screenshot directly
-                    mod.addScreenshotToList(dataUrl);
+                    // Fallback: no crop module available, add full screenshot with avatar position
+                    mod.addScreenshotToList(dataUrl, avatarPos);
                 }
                 window.showStatusToast(window.t ? window.t('app.screenshotAdded') : '\u622A\u56FE\u5DF2\u6DFB\u52A0\uFF0C\u70B9\u51FB\u53D1\u9001\u4E00\u8D77\u53D1\u9001', 3000);
 

@@ -367,7 +367,7 @@
         "default": "デフォルト",
         "noVoiceSelected": "ボイスが選択されていません",
         "noDescription": "説明なし",
-            "characterSettingsFile": "キャラクター設定ファイル",
+        "characterSettingsFile": "キャラクター設定ファイル",
         "workshopAgreementText": "「アップロード」をクリックすることで、ワークショップ法的使用許諾契約を含むSteamワークショップ利用規約に同意したことになります：",
         "alreadyUploaded": "ワークショップにアップロード済み",
         "uploadTime": "アップロード日時",
@@ -987,6 +987,12 @@
         "customApiWarning": "注: カスタムAPIを有効にすると、以下の設定が優先され、Core/Assist APIの設定よりも優先して使用されます。",
         "enableCustomApi": "カスタムAPI設定を有効にする",
         "enableCustomApiNote": "有効にすると、Core/Assist APIよりも優先してカスタム設定が使用されます",
+        "clearCustomApi": "カスタムAPI設定をクリア",
+        "clearCustomApiConfirm": "すべてのカスタムAPI設定をクリアしますか？すべてのカスタムAPI Key、モデルID、URLがクリアされ、GPT-SoVITSのチェックも外れます。",
+        "clearCustomApiConfirmTitle": "⚠️ クリア確認",
+        "clearCustomApiConfirmBtn": "クリア実行",
+        "clearCustomApiSaveHint": "⚠ この操作はページ上の設定内容をクリアするだけです。変更を保存するには「設定を保存」ボタンをクリックしてください。",
+        "clearCustomApiSuccess": "カスタムAPI設定がクリアされました。「設定を保存」ボタンをクリックして変更を保存してください。",
         "loadProvidersFailed": "プロバイダー情報の読み込みに失敗しました。ページを更新してください",
         "saveFailed": "保存失敗: {{error}}",
         "apiKeyInvalid": "APIキーが無効です",
@@ -1485,6 +1491,7 @@
         "detailDescriptionPlaceholder": "詳細説明を入力",
         "catgirlProfile": "NEKO プロフィール: 高度な設定には Live2D モデル、ボイス ID などが含まれます。",
         "addCatgirl": "NEKO を追加",
+        "openCloudsaveManager": "クラウドセーブ管理",
         "switchCatgirl": "NEKO を切り替え",
         "deleteCatgirl": "NEKO を削除",
         "hideCatgirl": "このNEKOを隠す",
@@ -1521,6 +1528,7 @@
         "cannotConfirmCatgirlStatus": "現在の neko ステータスを確認できません。削除がキャンセルされました",
         "confirmDeleteCatgirl": "neko \"{{name}}\" を削除してもよろしいですか？",
         "deleteCatgirlTitle": "NEKO を削除",
+        "deleteFailed": "削除に失敗しました",
         "addCatgirlFieldPrompt": "新しいフィールドの名前（キー名）を入力してください",
         "addCatgirlFieldTitle": "NEKO フィールドを追加",
         "live2dModelError": "NEKO \"{{name}}\" の Live2D モデルファイルが存在しないか、破損しています。\n\n現在のモデルパス: {{path}}\n\nデフォルトモデル (mao_pro) にフォールバックしますか？\n\n「OK」をクリックしてデフォルトモデルを使用するか、「キャンセル」をクリックして現在の設定を保持してください。",
@@ -1560,6 +1568,7 @@
         "saveMasterError": "マスター設定の保存に失敗しました",
         "autoSaved": "設定を自動保存しました",
         "autoSaveFailed": "自動保存に失敗しました。手動で保存してからページを閉じてください",
+        "unsavedNewCatgirlDraftDetected": "未保存の新しい NEKO 下書きが検出されました。同期更新の前に保存またはキャンセルしてください",
         "partialSaveVoiceFailed": "キャラクターは保存されましたが、音声の更新に失敗しました: {{error}}",
         "exportCard": "キャラクターカードをエクスポート",
         "exportingCard": "キャラクターカードをエクスポート中...",
@@ -1677,6 +1686,255 @@
         "micMute": "マイクをミュート",
         "micUnmute": "ミュート解除"
     },
+    "cloudsave": {
+        "pageTitle": "クラウドセーブ管理 - Project N.E.K.O.",
+        "headerTitle": "クラウドセーブ管理",
+        "subtitle": "ローカルのクラウドスナップショットキャッシュを使って、1キャラクターずつ準備または復元できます。グローバル設定を自動で上書きすることはありません。Steam 経由でゲームを終了すると、Steam Cloud がスナップショットフォルダを自動アップロードします。",
+        "refresh": "更新",
+        "backToCharacterManager": "戻る",
+        "loadingSummary": "クラウドセーブの概要を読み込み中...",
+        "emptyState": "表示できるキャラクター概要はありません。",
+        "providerAvailable": "クラウドセーブは利用可能です。キャラクター単位でローカルクラウドスナップショットを手動で準備または復元できます。",
+        "providerUnavailable": "クラウドセーブは現在利用できません。このページではローカル概要のみ表示します。",
+        "providerSteamAutoCloudReady": "Steam Cloud は接続済みです。アップロードすると今すぐローカルクラウドスナップショットへ書き込み、Steam 経由でゲーム終了後に Steam が自動でクラウドへアップロードします。",
+        "providerSteamAutoCloudOffline": "ローカルクラウドスナップショットは利用できますが、Steam Cloud は現在接続されていません。Steam にログインした状態で Steam からゲームを起動すると、Steam がスナップショットを自動でアップロードまたはダウンロードできます。",
+        "providerSteamAutoCloudSourceLaunch": "現在のセッションはソース起動です。Steam が起動中かつログイン済みであれば、デスクトップ向け RemoteStorage helper によって cloudsave のダウンロードやアップロードを補助できますが、この経路はパッケージ版の Steam Auto-Cloud 主経路と同一ではありません。本番経路を検証したい場合は、少なくとも一度 Steam またはデスクトップランチャー経由で起動してください。",
+        "providerSnapshotScope": "このページに表示されるのは、この端末にすでに保存されている cloudsave のステージ済みスナップショットです。",
+        "providerSnapshotSequence": "スナップショット番号: {{sequence}}。",
+        "providerSnapshotExportedAt": "エクスポート時刻: {{time}}。",
+        "providerSnapshotManualApply": "この端末には新しいステージ済みスナップショットがありますが、実際のランタイムデータは手動で「スナップショットを適用」を押すまで変わりません。",
+        "currentCharacter": "現在のキャラクター：{{name}}",
+        "noCurrentCharacter": "現在のキャラクター：未設定",
+        "nameConflictNotice": {
+            "title": "同名に関する注意",
+            "bodyStorage": "クラウドセーブではキャラクター名を 1 つのキャラクタースロットとして扱います。Steam Workshop 由来かローカル作成かで自動的に分離されることはありません。",
+            "bodyImpact": "出自の異なる 2 人のキャラクターが同名の場合、アップロード / ダウンロードは同じクラウドキャラクターとして処理され、キャラクター設定、記憶ディレクトリ、クラウド記録が上書きされる可能性があります。",
+            "bodyAction": "同期前に、キャラクター名が一意であることを確認してください。同じキャラクターでない場合は、アップロードまたはダウンロードの前に名前を変更してください。"
+        },
+        "group": {
+            "count": "{{count}} 件",
+            "workshopTitle": "Steam Workshop 由来キャラクター",
+            "workshopDescription": "このセクションには、ローカル側またはクラウド側のどちらかで Steam Workshop 由来だと確認できるキャラクターをまとめて表示します。現在のモデルだけを Steam Workshop リソースに切り替えても、自作キャラクターはこのグループへ移動しません。",
+            "otherTitle": "マイキャラクター",
+            "otherDescription": "このセクションには、自作キャラクターや Steam Workshop 由来ではないキャラクターを表示します。現在のモデル素材の出所は詳細で個別に表示されます。"
+        },
+        "resourceRecoveryTitle": "リソース復元の案内",
+        "metaNoValue": "なし",
+        "warning": {
+            "local_resource_missing_on_this_device": "この端末ではすでにローカルリソースが不足しています。上のリソース元ガイドに従って復元してください。",
+            "cloud_resource_may_be_missing_after_download": "ダウンロード後もリソースが不足する可能性があります。必要に応じて記録された元に従って手動復元してください。"
+        },
+        "modelType": {
+            "live2d": "Live2D",
+            "vrm": "VRM",
+            "live3d": "VRM",
+            "mmd": "MMD",
+            "unknown": "不明なモデル"
+        },
+        "assetSource": {
+            "notRecorded": "記録なし",
+            "steamWorkshop": "Steamワークショップ",
+            "localImported": "ローカルにインポートしたモデル",
+            "manualExternal": "外部モデル参照",
+            "builtin": "内蔵リソース"
+        },
+        "relationState": {
+            "local_only": "ローカルのみ",
+            "cloud_only": "クラウドのみ",
+            "matched": "ローカルとクラウドが一致",
+            "diverged": "ローカルとクラウドに差分あり",
+            "unknown": "不明な状態"
+        },
+        "assetState": {
+            "notRecorded": "記録なし",
+            "ready": "そのまま利用可能",
+            "import_required": "手動インポートが必要",
+            "downloadable": "リソース不足。Steam Workshop の復元状態を確認してください。",
+            "missing": "設定のみ復元済みで、リソースは不足しています。"
+        },
+        "workshopStatus": {
+            "notConfirmed": "未確認",
+            "installed_and_subscribed": "インストール済みで購読中",
+            "installed_but_unsubscribed": "ローカルに残っているが購読解除済み",
+            "subscribed_not_installed": "購読中、ダウンロード待ち",
+            "available_needs_resubscribe": "項目は有効だが再購読が必要",
+            "unavailable": "項目は利用不可",
+            "steam_unavailable": "Steam が利用できず確認不可",
+            "unknown": "状態未確認"
+        },
+        "badge": {
+            "local": "ローカル：{{value}}",
+            "cloud": "クラウド：{{value}}"
+        },
+        "scopePrefix": {
+            "localReady": "ローカルリソースはまだ利用可能です",
+            "cloudReady": "この端末には対応する Steam Workshop リソースがあります",
+            "localMissing": "ローカルリソース不足",
+            "cloudAfterDownload": "クラウドからダウンロード後"
+        },
+        "guidance": {
+            "workshopReadyResubscribe": {
+                "title": "{{prefix}}が、現在は有効な購読状態ではありません",
+                "bodyLocal": "この端末では現在のローカル Steam Workshop リソースをまだ使用できます。ただし今後ローカルキャッシュが失われた場合、通常は再度購読しないと復元できません。",
+                "bodyCloud": "この端末には対応する Steam Workshop リソースがあります。ただし今後ローカルキャッシュが失われた場合、通常は再度購読しないと復元できません。"
+            },
+            "workshopReadyUnavailable": {
+                "title": "{{prefix}}が、元の Steam Workshop 項目は削除・非公開の可能性があります",
+                "body": "この端末にはリソースが残っているため今は使用できますが、後でキャッシュが失われると Steam Workshop からの自動復元は通常できなくなります。手元のバックアップか手動インポートが必要です。"
+            },
+            "workshopInstalled": {
+                "title": "{{prefix}}：この端末には有効な Steam Workshop リソースがあります",
+                "bodyLocal": "Steam Workshop 項目はこの端末でインストール済みかつ購読中ですが、紐付いたモデルファイルは見つかりませんでした。フォルダ構成の変更、更新未完了、または再同期が必要な可能性があります。",
+                "bodyCloud": "Steam Workshop 項目はこの端末でインストール済みかつ購読中です。キャラクターデータのダウンロード後、通常は既存の復元経路でモデルを復元できます。失敗する場合は再同期が必要かもしれません。"
+            },
+            "workshopCacheOnly": {
+                "title": "{{prefix}}：古いキャッシュだけが残り、購読解除済みの可能性があります",
+                "bodyLocal": "この端末はすでに購読状態ではなく、現在の紐付けファイルも見つかっていません。古いキャッシュも使えない場合は、通常は再購読または手動インポートが必要です。",
+                "bodyCloud": "この端末はすでに購読状態ではありません。キャラクターデータのダウンロード後、古いキャッシュで復元できない場合は、通常は再購読か手動インポートが必要です。"
+            },
+            "workshopSubscribed": {
+                "title": "{{prefix}}：この端末はまだ Steam Workshop 項目を購読中です",
+                "bodyLocal": "この端末はまだ Steam Workshop 項目を購読しています。Steam のダウンロード完了後、通常は復元できます。長時間復元されない場合は構成変更や再同期が必要かもしれません。",
+                "bodyCloud": "この端末はまだ Steam Workshop 項目を購読しています。キャラクターデータをダウンロードした後、Steam のダウンロード完了を待てば通常はモデルを復元できます。"
+            },
+            "workshopResubscribe": {
+                "title": "{{prefix}}：Steam Workshop の再購読が必要です",
+                "bodyLocal": "このキャラクターは元々 Steam Workshop リソースを使っていましたが、この端末ではすでに購読解除されています。項目がまだ有効なら、先に再購読してから復元を試してください。",
+                "bodyCloud": "このクラウドキャラクターは元々 Steam Workshop リソースを使っていましたが、この端末では未購読です。ダウンロード後、まず再購読してからモデル復元を試してください。"
+            },
+            "workshopUnavailable": {
+                "title": "{{prefix}}：この Steam Workshop 項目には現在アクセスできません",
+                "bodyLocal": "このキャラクターは元々 Steam Workshop リソースを使っていましたが、該当項目は削除・非公開、または現在アクセスできません。この端末では自動復元できないため、手動バックアップまたは再インポートが必要です。",
+                "bodyCloud": "このクラウドキャラクターは元々 Steam Workshop リソースを使っていましたが、該当項目は削除・非公開、または現在アクセスできません。ダウンロード後も Steam Workshop からの自動復元は通常できません。"
+            },
+            "workshopSteamUnavailable": {
+                "title": "{{prefix}}：Steam Workshop で復元可能か今は確認できません",
+                "body": "Steam が利用できない、未ログイン、または Steamworks が初期化されていません。Steam が復旧してから、項目を再度ダウンロードできるか確認してください。"
+            },
+            "workshopUnknown": {
+                "title": "{{prefix}}：Steam Workshop 復元状態は未確認です",
+                "body": "現在の状態はまだ不明です。Steam Workshop ページで購読状態と項目の可用性を確認してください。"
+            },
+            "localManualImport": {
+                "title": "ローカルリソース：手動でモデルをインポートする必要があります",
+                "body": "この端末には、このキャラクターが使うローカルインポートまたは外部モデルがありません。モデルファイルを手動でインポートまたは移動してください。"
+            },
+            "cloudManualImport": {
+                "title": "クラウドからダウンロード後：手動でモデルをインポートする必要があります",
+                "body": "このクラウドキャラクターはローカルインポートまたは外部モデルに依存しています。この端末にダウンロードした後、対応するモデルファイルを手動でインポートまたは移動してください。"
+            },
+            "localManualSource": {
+                "title": "このキャラクターは現在ローカルまたは手動モデルを使用しています",
+                "body": "クラウドセーブで同期されるのはキャラクターデータのみです。現在使っているローカルインポートまたは外部モデルのファイル自体は含まれないため、別の端末では手動で用意する必要があります。"
+            },
+            "localModifiedModel": {
+                "title": "手動でモデルを変更した場合は注意してください",
+                "body": "もともと Steam Workshop から復元可能だったモデルを差し替えている場合、現在は手動インポートモデルとして扱われます。アップロード後も、他の端末ではモデルファイルを手動で戻す必要があります。"
+            },
+            "cloudManualSource": {
+                "title": "このクラウドキャラクターには現在ローカルまたは手動モデルが記録されています",
+                "body": "このクラウドキャラクターをダウンロードしても復元されるのはキャラクターデータのみです。記録されているローカルインポートまたは外部モデルのファイルは含まれないため、この端末でも手動で用意する必要があります。"
+            },
+            "localWorkshopOrigin": {
+                "title": "このキャラクターは元々 Steam Workshop から来ています",
+                "body": "このキャラクターは今でも Steam Workshop 由来として照合できますが、現在紐付いているモデルは Steam Workshop のパスではなく、この端末上のローカルまたは手動モデルです。クラウドセーブはキャラクターデータのみ同期し、現在のモデルファイルはアップロードしません。別の端末でも今の見た目を保ちたい場合はモデルを手動で用意してください。Steam Workshop の自動復元に戻したい場合は、上に表示されている Steam Workshop 項目へ切り替えてください。"
+            },
+            "cloudWorkshopOrigin": {
+                "title": "このクラウドキャラクターは元々 Steam Workshop から来ています",
+                "body": "このクラウドキャラクターは Steam Workshop 由来のキャラクターからアップロードされましたが、現在記録されているモデルは Steam Workshop のパスではなくローカルまたは手動モデルです。ダウンロードしても復元されるのはキャラクターデータのみです。別の端末でも今の見た目を保ちたい場合はモデルファイルを手動で用意し、上に表示されている Steam Workshop 由来の状態も確認してください。"
+            },
+            "sourceDiverged": {
+                "title": "ローカルのモデル元はクラウド記録と異なります",
+                "body": "ローカルでは手動インポートまたは外部モデルを使っていますが、クラウド側の記録はまだ Steam Workshop です。再度アップロードすると、クラウド側もキャラクターデータのみ同期され、モデルファイルは含まれません。"
+            }
+        },
+        "hint": {
+            "uploadResubscribe": "\nこのローカルキャラクターはまだ Steam Workshop リソースを使っていますが、この端末はすでに有効な購読状態ではありません。別の端末でダウンロードした後、モデル復元のために再購読が必要になる場合があります。",
+            "uploadUnavailable": "\nこのローカルキャラクターはまだ Steam Workshop リソースを使っていますが、元の項目は現在アクセスできません。別の端末でダウンロードした後、Steam Workshop による自動復元は通常できません。",
+            "uploadUnconfirmed": "\nこのローカルキャラクターは Steam Workshop リソース由来ですが、別の端末でも Steam Workshop から復元できるかは今の時点では確認できません。",
+            "uploadOriginResubscribe": "\nこのキャラクターは元々 Steam Workshop 由来ですが、現在バインドされているモデルはローカルまたは手動モデルに変わっています。別の端末で現在の見た目を保つには、このモデルファイルを手動で用意する必要があります。さらに元の Steam Workshop ソースへ戻したい場合は、後で再購読も必要になることがあります。",
+            "uploadOriginUnavailable": "\nこのキャラクターは元々 Steam Workshop 由来ですが、元の項目は現在アクセスできず、現在バインドされているモデルもローカルまたは手動モデルに変わっています。別の端末で現在の見た目を保つには、このモデルファイルを手動で用意する必要があり、Steam Workshop で元のソースを自動復元することも通常はできません。",
+            "uploadOriginUnconfirmed": "\nこのキャラクターは元々 Steam Workshop 由来ですが、現在バインドされているモデルはローカルまたは手動モデルに変わっています。別の端末で現在の見た目を保つには、このモデルファイルを手動で用意する必要があり、元の Steam Workshop 項目がまだ復元可能かどうかも今の時点では確認できません。",
+            "downloadResubscribe": "\nこのクラウドキャラクターは元々 Steam Workshop リソースを使っていましたが、この端末は有効な購読状態ではありません。ダウンロード後、モデル復元のためにまず再購読が必要になることがあります。",
+            "downloadUnavailable": "\nこのクラウドキャラクターは元々 Steam Workshop リソースを使っていましたが、その項目は現在アクセスできません。ダウンロード後も Steam Workshop による自動復元は通常できません。",
+            "downloadUnconfirmed": "\nこのクラウドキャラクターは元々 Steam Workshop リソースを使っていましたが、その項目がまだ復元可能かどうかは今の時点では確認できません。",
+            "downloadOriginResubscribe": "\nこのクラウドキャラクターは元々 Steam Workshop 由来ですが、記録されているバインドモデルはすでにローカルまたは手動モデルに変わっています。ダウンロード後も現在のモデルファイルを自分で用意する必要があり、元の Steam Workshop ソースへ戻したい場合は後で再購読も必要になることがあります。",
+            "downloadOriginUnavailable": "\nこのクラウドキャラクターは元々 Steam Workshop 由来ですが、元の項目は現在アクセスできず、記録されているバインドモデルもすでにローカルまたは手動モデルに変わっています。ダウンロード後も現在のモデルファイルを自分で用意する必要があり、Steam Workshop で元のソースを自動復元することも通常はできません。",
+            "downloadOriginUnconfirmed": "\nこのクラウドキャラクターは元々 Steam Workshop 由来ですが、記録されているバインドモデルはすでにローカルまたは手動モデルに変わっています。ダウンロード後も現在のモデルファイルを自分で用意する必要があり、元の Steam Workshop 項目がまだ復元可能かどうかも今の時点では確認できません。"
+        },
+        "confirm": {
+            "uploadOverwrite": "同名のローカルクラウドスナップショット項目を上書きします。ローカルキャラクターはすぐには変更されず、モデル本体ファイルも含まれません。",
+            "uploadNew": "このローカルキャラクターをローカルクラウドスナップショットキャッシュへ書き込みます。モデル本体ファイルは含まれません。",
+            "uploadManualAsset": "\nこのローカルキャラクターは手動インポートまたは外部モデルを使用しています。別の端末でダウンロードした後も、同じモデルファイルを手動で用意する必要があります。",
+            "uploadFinal": "\nSteam Cloud スナップショットの準備を続行しますか？",
+            "downloadOverwrite": "この端末にすでに同期済みのクラウドスナップショットを使って、同名のローカルキャラクター設定とメモリディレクトリを上書きします。モデルリソースは自動ダウンロードされず、先にローカルバックアップを作成します。",
+            "downloadNew": "この端末にすでに同期済みのクラウドスナップショットをローカルストレージへ復元します。モデルリソースは自動ダウンロードされず、先にローカルバックアップを作成します。",
+            "downloadManualAsset": "\nこのクラウドキャラクターは手動インポートまたは外部モデルに依存しています。この端末にファイルがない場合、ダウンロード後も手動でインポートまたは移動する必要があります。",
+            "downloadFinal": "\nSteam Cloud スナップショットからの復元を続行しますか？",
+            "forceTerminateSession": "キャラクター「{{name}}」にはアクティブなセッションがあります。\nセッションを終了すると、現在の会話内容は失われますが、クラウドセーブのダウンロードは続行できます。\n\nセッションを終了して続行しますか？"
+        },
+        "dialog": {
+            "providerUnavailable": "クラウドセーブ提供元は現在利用できません。後でもう一度お試しください。",
+            "uploadTitle": "クラウドセーブをアップロード",
+            "downloadTitle": "クラウドセーブをダウンロード",
+            "uploadSuccess": "アップロードが完了しました。",
+            "downloadSuccess": "ダウンロードが完了しました。",
+            "uploadTitleSteamAutoCloud": "Steam Cloud スナップショットを準備",
+            "downloadTitleSteamAutoCloud": "Steam Cloud スナップショットを適用",
+            "uploadSuccessSteamAutoCloud": "ローカルクラウドスナップショットを更新しました。Steam 経由でゲームを終了すると、Steam が自動でクラウドへアップロードします。",
+            "downloadSuccessSteamAutoCloud": "Steam Cloud スナップショットをローカルに適用しました。",
+            "operationFailed": "操作に失敗しました：{{message}}",
+            "operationInProgress": "このキャラクターの操作はすでに進行中です。少々お待ちください。",
+            "rollbackApplied": "\nローカルデータは操作前の状態に自動ロールバックされました。",
+            "rollbackFailed": "\nロールバックも失敗しました：{{message}}",
+            "loadFailed": "クラウドセーブ概要の読み込みに失敗しました：{{message}}",
+            "stateChanged": "クラウドセーブの状態が変わりました。最新の状態を確認してから再試行してください。",
+            "forceTerminateTitle": "セッションを終了して続行？"
+        },
+        "action": {
+            "expandDetails": "詳細を表示",
+            "collapseDetails": "詳細を隠す",
+            "uploadDisabledByProvider": "スナップショットを準備できません",
+            "uploadOverwrite": "スナップショットを準備",
+            "uploadNew": "スナップショットを準備",
+            "uploadUnavailable": "スナップショットを準備できません",
+            "downloadDisabledByProvider": "スナップショットを適用できません",
+            "downloadOverwrite": "スナップショットを適用",
+            "downloadNew": "スナップショットを適用",
+            "downloadUnavailable": "スナップショットを適用できません"
+        },
+        "meta": {
+            "groupLocal": "ローカル状態",
+            "groupCloud": "クラウド状態",
+            "localAssetState": "ローカルリソース状態",
+            "localAssetSource": "ローカルリソース元",
+            "localWorkshopStatus": "ローカル現在の状態",
+            "localCharacterOrigin": "ローカルキャラクター由来",
+            "localOriginWorkshopStatus": "ローカルキャラクターの由来と現在の状態",
+            "cloudAssetState": "クラウドリソース状態",
+            "cloudAssetSource": "クラウドリソース元",
+            "cloudWorkshopStatus": "クラウド現在の状態",
+            "cloudCharacterOrigin": "クラウドキャラクター由来",
+            "cloudOriginWorkshopStatus": "クラウドキャラクターの由来と現在の状態",
+            "localUpdatedAt": "ローカル更新時刻",
+            "cloudUpdatedAt": "クラウド更新時刻"
+        },
+        "error": {
+            "providerUnavailable": "クラウドセーブ提供元は現在利用できません。",
+            "activeSessionBlocked": "このキャラクターにはアクティブなセッションがあります。ダウンロード前に停止してください。",
+            "memoryServerReleaseFailed": "上書き前のローカルメモリハンドル解放に失敗しました。後でもう一度お試しください。",
+            "localCharacterNotFound": "ローカルキャラクターが見つかりません。",
+            "cloudCharacterNotFound": "クラウドキャラクターが見つかりません。",
+            "localCharacterExists": "同名のローカルキャラクターがすでに存在します。",
+            "cloudCharacterExists": "同名のクラウドキャラクターがすでに存在します。",
+            "writeFenceActive": "クラウドセーブのメンテナンス保護が有効です。後でもう一度お試しください。",
+            "nameAuditFailed": "キャラクター名がクラウドセーブルールの検証を通過しませんでした。",
+            "uploadFailed": "アップロードに失敗しました：{{message}}",
+            "downloadFailed": "ダウンロードに失敗しました：{{message}}",
+            "localReloadFailedRolledBack": "ダウンロードは適用されましたが、ローカルの再読み込みに失敗しました。",
+            "sessionTerminateFailed": "アクティブなセッションの終了に失敗しました。後でもう一度お試しください。"
+        }
+    },
     "settings": {
         "menu": {
             "live2dSettings": "Live2D設定",
@@ -1782,7 +2040,17 @@
         "title": "リアルタイム字幕",
         "enable": "字幕翻訳",
         "enableAriaLabel": "字幕翻訳の切り替え",
-        "markdownPlaceholder": "[整形済みコンテンツ]"
+        "markdownPlaceholder": "[整形済みコンテンツ]",
+        "settings": {
+            "targetLang": "翻訳先の言語",
+            "opacity": "不透明度",
+            "dragAnywhere": "全体ドラッグ",
+            "size": "サイズ",
+            "sizeSmall": "小",
+            "sizeMedium": "中",
+            "sizeLarge": "大",
+            "settingsBtn": "字幕設定"
+        }
     },
     "viewer": {
         "title": "ビューアー - Project N.E.K.O."

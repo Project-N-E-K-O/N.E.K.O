@@ -209,6 +209,7 @@ Live2DManager.prototype._resetDerivedModelMetadata = function() {
     this._shouldApplySavedParams = false;
     this.modelName = null;
     this.modelRootPath = null;
+    this._bubbleGeometryCache = null;
 
     if (this._missingExpressionFiles instanceof Set) {
         this._missingExpressionFiles.clear();

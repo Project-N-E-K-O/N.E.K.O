@@ -101,6 +101,7 @@ class Live2DManager {
         this._lastPIXIContext = { canvasId: null, containerId: null };
         this._displayInfo = null;
         this._autoNamedHitAreaIds = new Set();
+        this._bubbleGeometryCache = null;
 
         // 常驻表情：使用官方 expression 播放并在清理后自动重放
         this.persistentExpressionNames = [];
@@ -789,6 +790,46 @@ class Live2DManager {
         };
     }
 
+    _screenRectToLogical(screenRect, modelBounds, modelLogicalRect) {
+        if (!screenRect || !modelBounds || !modelLogicalRect) { return null; }
+        const bw = Math.max(1, modelBounds.width);
+        const bh = Math.max(1, modelBounds.height);
+        const lw = Math.max(1, modelLogicalRect.width);
+        const lh = Math.max(1, modelLogicalRect.height);
+        return {
+            x: modelLogicalRect.x + (screenRect.left - modelBounds.left) / bw * lw,
+            y: modelLogicalRect.y + (screenRect.top - modelBounds.top) / bh * lh,
+            width: screenRect.width / bw * lw,
+            height: screenRect.height / bh * lh
+        };
+    }
+
+    _logicalRectToScreenRect(logicalRect, modelLogicalRect, modelBounds) {
+        const mapped = this._mapLogicalRectToScreen(logicalRect, modelLogicalRect, modelBounds);
+        if (!mapped) { return null; }
+        return this._createScreenRect(mapped.left, mapped.top, mapped.left + mapped.width, mapped.top + mapped.height);
+    }
+
+    _screenPointToLogical(point, modelBounds, modelLogicalRect) {
+        if (!point || !modelBounds || !modelLogicalRect) { return null; }
+        const bw = Math.max(1, modelBounds.width);
+        const bh = Math.max(1, modelBounds.height);
+        return {
+            x: modelLogicalRect.x + (point.x - modelBounds.left) / bw * modelLogicalRect.width,
+            y: modelLogicalRect.y + (point.y - modelBounds.top) / bh * modelLogicalRect.height
+        };
+    }
+
+    _logicalPointToScreen(logicalPoint, modelLogicalRect, modelBounds) {
+        if (!logicalPoint || !modelLogicalRect || !modelBounds) { return null; }
+        const lw = Math.max(1, modelLogicalRect.width);
+        const lh = Math.max(1, modelLogicalRect.height);
+        return {
+            x: modelBounds.left + (logicalPoint.x - modelLogicalRect.x) / lw * modelBounds.width,
+            y: modelBounds.top + (logicalPoint.y - modelLogicalRect.y) / lh * modelBounds.height
+        };
+    }
+
     _createScreenRect(left, top, right, bottom) {
         const width = right - left;
         const height = bottom - top;
@@ -829,6 +870,71 @@ class Live2DManager {
             mode,
             source
         };
+    }
+
+    _cacheBubbleGeometryResult(result, modelBounds, modelLogicalRect) {
+        if (!result || !result.reliableHeadRect || !modelBounds || !modelLogicalRect) { return; }
+        const headRect = result.headRect ? this._screenRectToLogical(result.headRect, modelBounds, modelLogicalRect) : null;
+        const bubbleHeadRect = result.bubbleHeadRect ? this._screenRectToLogical(result.bubbleHeadRect, modelBounds, modelLogicalRect) : null;
+        const bodyRect = result.bodyRect ? this._screenRectToLogical(result.bodyRect, modelBounds, modelLogicalRect) : null;
+        const rawHeadAnchor = result.rawHeadAnchor ? this._screenPointToLogical(result.rawHeadAnchor, modelBounds, modelLogicalRect) : null;
+        const headAnchor = result.headAnchor ? this._screenPointToLogical(result.headAnchor, modelBounds, modelLogicalRect) : null;
+        if (!bubbleHeadRect && !headRect) { return; }
+        this._bubbleGeometryCache = {
+            modelPath: this.modelRootPath,
+            modelLogicalRect: { x: modelLogicalRect.x, y: modelLogicalRect.y, width: modelLogicalRect.width, height: modelLogicalRect.height },
+            headMode: result.headMode,
+            headSource: result.headSource,
+            bodySource: result.bodySource,
+            reliableHeadRect: result.reliableHeadRect,
+            preciseDisplayInfoRect: result.preciseDisplayInfoRect || false,
+            coarseHitAreaHeadRect: result.coarseHitAreaHeadRect || false,
+            overrideSignature: this._getBubbleGeometryOverrideSignature(),
+            headRect,
+            bubbleHeadRect,
+            bodyRect,
+            rawHeadAnchor,
+            headAnchor
+        };
+    }
+
+    _getCachedBubbleGeometryResult() {
+        const cache = this._bubbleGeometryCache;
+        if (!cache) { return null; }
+        if (cache.modelPath !== this.modelRootPath) {
+            this._bubbleGeometryCache = null;
+            return null;
+        }
+        if (cache.overrideSignature !== this._getBubbleGeometryOverrideSignature()) {
+            this._bubbleGeometryCache = null;
+            return null;
+        }
+        const bounds = this.getModelScreenBounds();
+        if (!bounds) { return null; }
+        const mlr = cache.modelLogicalRect;
+        const headRect = cache.headRect ? this._logicalRectToScreenRect(cache.headRect, mlr, bounds) : null;
+        const bubbleHeadRect = cache.bubbleHeadRect ? this._logicalRectToScreenRect(cache.bubbleHeadRect, mlr, bounds) : null;
+        const bodyRect = cache.bodyRect ? this._logicalRectToScreenRect(cache.bodyRect, mlr, bounds) : null;
+        const rawHeadAnchor = cache.rawHeadAnchor ? this._logicalPointToScreen(cache.rawHeadAnchor, mlr, bounds) : null;
+        const headAnchor = cache.headAnchor ? this._logicalPointToScreen(cache.headAnchor, mlr, bounds) : null;
+        return {
+            bounds,
+            rawHeadAnchor,
+            headAnchor,
+            headRect,
+            bubbleHeadRect: bubbleHeadRect || headRect,
+            headMode: cache.headMode,
+            headSource: cache.headSource,
+            bodyRect,
+            bodySource: cache.bodySource,
+            reliableHeadRect: cache.reliableHeadRect,
+            preciseDisplayInfoRect: cache.preciseDisplayInfoRect,
+            coarseHitAreaHeadRect: cache.coarseHitAreaHeadRect
+        };
+    }
+
+    _invalidateBubbleGeometryCache() {
+        this._bubbleGeometryCache = null;
     }
 
     _getDrawableScreenRect(drawableIndex, modelLogicalRect = null, modelBounds = null, skipTransformSync = false) {
@@ -879,7 +985,7 @@ class Live2DManager {
         return this._createScreenRect(minX, minY, maxX, maxY);
     }
 
-    _getRenderableDrawableScreenRects(modelBounds = null, modelLogicalRect = null) {
+    _getRenderableDrawableScreenRects(modelBounds = null, modelLogicalRect = null, includeIndex = false) {
         const internalModel = this.currentModel?.internalModel;
         const coreModel = internalModel?.coreModel;
         const drawableCount = coreModel?.getDrawableCount?.();
@@ -905,7 +1011,7 @@ class Live2DManager {
                 true
             );
             if (rect) {
-                rects.push(rect);
+                rects.push(includeIndex ? { rect, index } : rect);
             }
         }
 
@@ -925,17 +1031,262 @@ class Live2DManager {
         );
     }
 
-    _normalizeDrawableHeadScreenRect(rect, modelBounds, bodyRectHint = null, headRectHint = null) {
+    _getScreenRectArea(rect) {
+        if (!rect) {
+            return 0;
+        }
+
+        const width = Number(rect.width);
+        const height = Number(rect.height);
+        if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+            return 0;
+        }
+
+        return width * height;
+    }
+
+    _getWeightedValueQuantile(samples, quantile = 0.5) {
+        if (!Array.isArray(samples) || samples.length === 0) {
+            return null;
+        }
+
+        const resolvedQuantile = Math.max(0, Math.min(1, Number.isFinite(quantile) ? quantile : 0.5));
+        const validSamples = samples
+            .map((sample) => ({
+                value: Number(sample?.value),
+                weight: Number(sample?.weight)
+            }))
+            .filter((sample) => Number.isFinite(sample.value) && Number.isFinite(sample.weight) && sample.weight > 0)
+            .sort((left, right) => left.value - right.value);
+        if (validSamples.length === 0) {
+            return null;
+        }
+
+        const totalWeight = validSamples.reduce((sum, sample) => sum + sample.weight, 0);
+        if (!(totalWeight > 0)) {
+            return validSamples[Math.min(
+                validSamples.length - 1,
+                Math.max(0, Math.round((validSamples.length - 1) * resolvedQuantile))
+            )].value;
+        }
+
+        const targetWeight = totalWeight * resolvedQuantile;
+        let accumulatedWeight = 0;
+        for (const sample of validSamples) {
+            accumulatedWeight += sample.weight;
+            if (accumulatedWeight >= targetWeight) {
+                return sample.value;
+            }
+        }
+
+        return validSamples[validSamples.length - 1].value;
+    }
+
+    _createContributorCoreScreenRect(contributors, quantiles = {}) {
+        if (!Array.isArray(contributors) || contributors.length === 0) {
+            return null;
+        }
+
+        const resolvedContributors = contributors
+            .map((contributor) => {
+                const rect = contributor?.rect || contributor;
+                const area = this._getScreenRectArea(rect);
+                const scoreWeight = Number.isFinite(contributor?.score) ? contributor.score : 1;
+                const weight = area * Math.max(0.25, scoreWeight);
+                return rect && weight > 0
+                    ? { rect, weight }
+                    : null;
+            })
+            .filter(Boolean);
+        if (resolvedContributors.length === 0) {
+            return null;
+        }
+
+        const left = this._getWeightedValueQuantile(
+            resolvedContributors.map((contributor) => ({
+                value: contributor.rect.left,
+                weight: contributor.weight
+            })),
+            quantiles.left ?? 0.1
+        );
+        const top = this._getWeightedValueQuantile(
+            resolvedContributors.map((contributor) => ({
+                value: contributor.rect.top,
+                weight: contributor.weight
+            })),
+            quantiles.top ?? 0.1
+        );
+        const right = this._getWeightedValueQuantile(
+            resolvedContributors.map((contributor) => ({
+                value: contributor.rect.right,
+                weight: contributor.weight
+            })),
+            quantiles.right ?? 0.9
+        );
+        const bottom = this._getWeightedValueQuantile(
+            resolvedContributors.map((contributor) => ({
+                value: contributor.rect.bottom,
+                weight: contributor.weight
+            })),
+            quantiles.bottom ?? 0.9
+        );
+
+        return this._createScreenRect(left, top, right, bottom);
+    }
+
+    _extractDrawableHeadContributorCoreScreenRect(rect, modelBounds, bodyRectHint, contributors = null) {
+        const bodyRect = bodyRectHint?.rect || bodyRectHint;
+        if (!rect || !modelBounds || !bodyRect ||
+            !Array.isArray(contributors) || contributors.length < 6) {
+            return rect;
+        }
+
+        const headLooksAccessoryInflated = rect.width >= modelBounds.width * 0.42 &&
+            rect.height >= modelBounds.height * 0.2 &&
+            rect.top <= modelBounds.top + modelBounds.height * 0.18 &&
+            rect.bottom <= modelBounds.top + modelBounds.height * 0.58 &&
+            (rect.width / Math.max(1, rect.height)) >= 1.32 &&
+            Math.abs(rect.centerX - bodyRect.centerX) >= Math.max(40, modelBounds.width * 0.08) &&
+            (
+                bodyRect.top >= rect.top + rect.height * 0.38 ||
+                (bodyRect.width >= modelBounds.width * 0.68 &&
+                    bodyRect.height >= modelBounds.height * 0.68)
+            );
+        if (!headLooksAccessoryInflated) {
+            return rect;
+        }
+
+        const contributorCoreRect = this._createContributorCoreScreenRect(contributors, {
+            // Later left trimming helps reject tiny top-left accessories/hair
+            // fragments without disturbing the main head mass.
+            left: 0.18,
+            top: 0.1,
+            right: 0.94,
+            bottom: 0.96
+        });
+        if (!contributorCoreRect) {
+            return rect;
+        }
+
+        const widthRatio = contributorCoreRect.width / Math.max(1, rect.width);
+        const heightRatio = contributorCoreRect.height / Math.max(1, rect.height);
+        const bodyDeltaBefore = Math.abs(rect.centerX - bodyRect.centerX);
+        const bodyDeltaAfter = Math.abs(contributorCoreRect.centerX - bodyRect.centerX);
+        const staysInUpperHeadBand = contributorCoreRect.top <= modelBounds.top + modelBounds.height * 0.24 &&
+            contributorCoreRect.bottom <= modelBounds.top + modelBounds.height * 0.62;
+        if (!staysInUpperHeadBand ||
+            widthRatio < 0.6 ||
+            heightRatio < 0.68 ||
+            bodyDeltaAfter > bodyDeltaBefore * 0.86) {
+            return rect;
+        }
+
+        return contributorCoreRect;
+    }
+
+    _extractDrawableBodyContributorCoreScreenRect(rect, modelBounds, headRectHint, contributors = null) {
+        const headRect = headRectHint?.rect || headRectHint;
+        if (!rect || !modelBounds || !headRect ||
+            !Array.isArray(contributors) || contributors.length < 9) {
+            return rect;
+        }
+
+        const bodyLooksAccessoryInflated = rect.width >= modelBounds.width * 0.72 &&
+            rect.height >= modelBounds.height * 0.48 &&
+            rect.width >= headRect.width * 1.48 &&
+            rect.top <= headRect.bottom + Math.max(36, headRect.height * 0.42);
+        if (!bodyLooksAccessoryInflated) {
+            return rect;
+        }
+
+        const contributorCoreRect = this._createContributorCoreScreenRect(contributors, {
+            left: 0.12,
+            top: 0.08,
+            right: 0.93,
+            bottom: 0.96
+        });
+        if (!contributorCoreRect) {
+            return rect;
+        }
+
+        const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+        const minWidth = Math.max(headRect.width * 1.18, modelBounds.width * 0.24);
+        const minHeight = Math.max(headRect.height * 1.15, modelBounds.height * 0.24);
+        let left = Math.max(rect.left, contributorCoreRect.left);
+        let right = Math.min(rect.right, contributorCoreRect.right);
+        let bottom = Math.min(rect.bottom, Math.max(rect.top + minHeight, contributorCoreRect.bottom));
+
+        if (right - left < minWidth) {
+            const preferredCenterX = Number.isFinite(contributorCoreRect.centerX)
+                ? contributorCoreRect.centerX
+                : rect.centerX;
+            left = clamp(preferredCenterX - minWidth * 0.5, rect.left, rect.right - minWidth);
+            right = left + minWidth;
+        }
+
+        if (bottom - rect.top < minHeight) {
+            bottom = Math.min(rect.bottom, rect.top + minHeight);
+        }
+
+        const normalizedRect = this._createScreenRect(
+            left,
+            rect.top,
+            right,
+            bottom
+        );
+        if (!normalizedRect) {
+            return rect;
+        }
+
+        const widthRatio = normalizedRect.width / Math.max(1, rect.width);
+        const heightRatio = normalizedRect.height / Math.max(1, rect.height);
+        if (widthRatio < 0.55 || heightRatio < 0.68) {
+            return rect;
+        }
+
+        return normalizedRect;
+    }
+
+    _shouldIgnoreBodyRectHintForHeadNormalization(rect, modelBounds, bodyRectHint) {
+        if (!rect || !modelBounds || !bodyRectHint) {
+            return false;
+        }
+
+        const bodyStartsNearHeadTop = bodyRectHint.top <= rect.top + Math.max(24, rect.height * 0.16);
+        const bodyHintCoversMostModel = bodyRectHint.width >= modelBounds.width * 0.68 &&
+            bodyRectHint.height >= modelBounds.height * 0.68;
+        const headClusterAlreadyLarge = rect.width >= modelBounds.width * 0.34 &&
+            rect.height >= modelBounds.height * 0.24;
+        const headClusterLivesInUpperBand = rect.top <= modelBounds.top + modelBounds.height * 0.16 &&
+            rect.bottom <= modelBounds.top + modelBounds.height * 0.54;
+        const bodyHintIsMuchLargerThanHead = bodyRectHint.width >= rect.width * 1.45 &&
+            bodyRectHint.height >= rect.height * 1.6;
+
+        return bodyStartsNearHeadTop &&
+            bodyHintCoversMostModel &&
+            headClusterAlreadyLarge &&
+            headClusterLivesInUpperBand &&
+            bodyHintIsMuchLargerThanHead;
+    }
+
+    _normalizeDrawableHeadScreenRect(rect, modelBounds, bodyRectHint = null, headRectHint = null, contributors = null) {
         if (!rect || !modelBounds) {
             return rect;
         }
 
         const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+        const effectiveBodyRectHint = this._shouldIgnoreBodyRectHintForHeadNormalization(
+            rect,
+            modelBounds,
+            bodyRectHint
+        )
+            ? null
+            : bodyRectHint;
         let normalizedRect = rect;
 
         let bottomCap = modelBounds.top + modelBounds.height * 0.56;
-        if (bodyRectHint) {
-            bottomCap = Math.min(bottomCap, bodyRectHint.top + bodyRectHint.height * 0.36);
+        if (effectiveBodyRectHint) {
+            bottomCap = Math.min(bottomCap, effectiveBodyRectHint.top + effectiveBodyRectHint.height * 0.36);
         }
 
         const minHeadHeight = Math.max(24, modelBounds.height * 0.08);
@@ -954,38 +1305,38 @@ class Live2DManager {
         const stillLooksLikeWideBand = finalWidthRatio >= 0.44 &&
             finalHeightRatio <= 0.24 &&
             finalAspectRatio >= 2.4;
-        if (stillLooksLikeWideBand && bodyRectHint) {
+        if (stillLooksLikeWideBand && effectiveBodyRectHint) {
             const normalizedHeight = clamp(
                 Math.max(
                     normalizedRect.height,
-                    bodyRectHint.height * 0.18
+                    effectiveBodyRectHint.height * 0.18
                 ),
                 Math.max(32, modelBounds.height * 0.1),
-                bodyRectHint.height * 0.34
+                effectiveBodyRectHint.height * 0.34
             );
             const normalizedWidth = clamp(
                 Math.max(
                     normalizedHeight * 1.05,
-                    bodyRectHint.width * 0.26
+                    effectiveBodyRectHint.width * 0.26
                 ),
                 Math.max(56, modelBounds.width * 0.14),
-                bodyRectHint.width * 0.42
+                effectiveBodyRectHint.width * 0.42
             );
             const clampNormalizedCenterX = (value) => clamp(
                 value,
-                bodyRectHint.left + normalizedWidth * 0.5,
-                bodyRectHint.right - normalizedWidth * 0.5
+                effectiveBodyRectHint.left + normalizedWidth * 0.5,
+                effectiveBodyRectHint.right - normalizedWidth * 0.5
             );
             const hintedCenterX = Number.isFinite(headRectHint?.centerX)
                 ? clampNormalizedCenterX(headRectHint.centerX)
                 : null;
             const bodyBiasThreshold = modelBounds.width * 0.04;
-            const bodyBias = bodyRectHint.centerX >= (
+            const bodyBias = effectiveBodyRectHint.centerX >= (
                 (Number.isFinite(modelBounds.centerX) ? modelBounds.centerX : modelBounds.left + modelBounds.width * 0.5) +
                 bodyBiasThreshold
             )
                 ? 'right'
-                : bodyRectHint.centerX <= (
+                : effectiveBodyRectHint.centerX <= (
                     (Number.isFinite(modelBounds.centerX) ? modelBounds.centerX : modelBounds.left + modelBounds.width * 0.5) -
                     bodyBiasThreshold
                 )
@@ -1000,21 +1351,21 @@ class Live2DManager {
                 normalizedCenterX = clampNormalizedCenterX(
                     Math.min(
                         normalizedRect.right - normalizedWidth * 0.45,
-                        bodyRectHint.right - normalizedWidth * 0.48
+                        effectiveBodyRectHint.right - normalizedWidth * 0.48
                     )
                 );
             } else if (bodyBias === 'left') {
                 normalizedCenterX = clampNormalizedCenterX(
                     Math.max(
                         normalizedRect.left + normalizedWidth * 0.45,
-                        bodyRectHint.left + normalizedWidth * 0.48
+                        effectiveBodyRectHint.left + normalizedWidth * 0.48
                     )
                 );
             }
 
             const normalizedTop = Math.min(
                 normalizedRect.top,
-                bodyRectHint.top + bodyRectHint.height * 0.16
+                effectiveBodyRectHint.top + effectiveBodyRectHint.height * 0.16
             );
             normalizedRect = this._createScreenRect(
                 normalizedCenterX - normalizedWidth * 0.5,
@@ -1024,10 +1375,10 @@ class Live2DManager {
             ) || normalizedRect;
         }
 
-        if (bodyRectHint) {
-            const bodyWidthRatio = normalizedRect.width / Math.max(1, bodyRectHint.width);
-            const bodyHeightRatio = normalizedRect.height / Math.max(1, bodyRectHint.height);
-            const bodyBottomProgress = (normalizedRect.bottom - bodyRectHint.top) / Math.max(1, bodyRectHint.height);
+        if (effectiveBodyRectHint) {
+            const bodyWidthRatio = normalizedRect.width / Math.max(1, effectiveBodyRectHint.width);
+            const bodyHeightRatio = normalizedRect.height / Math.max(1, effectiveBodyRectHint.height);
+            const bodyBottomProgress = (normalizedRect.bottom - effectiveBodyRectHint.top) / Math.max(1, effectiveBodyRectHint.height);
             const boundsWidthRatio = normalizedRect.width / Math.max(1, modelBounds.width);
             const aspectRatio = normalizedRect.width / Math.max(1, normalizedRect.height);
             const looksLikeOversizedBodySlice = bodyBottomProgress >= 0.3 && (
@@ -1041,15 +1392,15 @@ class Live2DManager {
                 const minNormalizedHeight = Math.max(
                     64,
                     modelBounds.height * 0.1,
-                    bodyRectHint.height * 0.18
+                    effectiveBodyRectHint.height * 0.18
                 );
                 const maxNormalizedHeight = Math.max(
                     minNormalizedHeight + 8,
-                    bodyRectHint.height * 0.32
+                    effectiveBodyRectHint.height * 0.32
                 );
                 const normalizedHeight = clamp(
                     Math.max(
-                        bodyRectHint.height * 0.2,
+                        effectiveBodyRectHint.height * 0.2,
                         normalizedRect.height * 0.58
                     ),
                     minNormalizedHeight,
@@ -1058,14 +1409,14 @@ class Live2DManager {
                 const minNormalizedWidth = Math.max(
                     76,
                     modelBounds.width * 0.12,
-                    bodyRectHint.width * 0.22
+                    effectiveBodyRectHint.width * 0.22
                 );
                 const maxNormalizedWidth = Math.max(
                     minNormalizedWidth + 12,
-                    bodyRectHint.width * 0.44
+                    effectiveBodyRectHint.width * 0.44
                 );
                 let normalizedWidth = Math.max(
-                    bodyRectHint.width * 0.28,
+                    effectiveBodyRectHint.width * 0.28,
                     normalizedRect.width * 0.4,
                     normalizedHeight * 0.82
                 );
@@ -1080,16 +1431,16 @@ class Live2DManager {
 
                 const normalizedCenterX = clamp(
                     Number.isFinite(headRectHint?.centerX) ? headRectHint.centerX : normalizedRect.centerX,
-                    bodyRectHint.left + normalizedWidth * 0.5,
-                    bodyRectHint.right - normalizedWidth * 0.5
+                    effectiveBodyRectHint.left + normalizedWidth * 0.5,
+                    effectiveBodyRectHint.right - normalizedWidth * 0.5
                 );
                 const normalizedTop = clamp(
                     Math.min(
                         normalizedRect.top,
-                        bodyRectHint.top + bodyRectHint.height * 0.08
+                        effectiveBodyRectHint.top + effectiveBodyRectHint.height * 0.08
                     ),
                     modelBounds.top,
-                    bodyRectHint.top + bodyRectHint.height * 0.14
+                    effectiveBodyRectHint.top + effectiveBodyRectHint.height * 0.14
                 );
 
                 normalizedRect = this._createScreenRect(
@@ -1101,36 +1452,36 @@ class Live2DManager {
             }
         }
 
-        const looksLikeTinyFragment = bodyRectHint &&
+        const looksLikeTinyFragment = effectiveBodyRectHint &&
             Number.isFinite(headRectHint?.centerX) &&
             Number.isFinite(headRectHint?.centerY) &&
             (
-                normalizedRect.width <= Math.max(40, bodyRectHint.width * 0.14) ||
-                normalizedRect.height <= Math.max(40, bodyRectHint.height * 0.14)
+                normalizedRect.width <= Math.max(40, effectiveBodyRectHint.width * 0.14) ||
+                normalizedRect.height <= Math.max(40, effectiveBodyRectHint.height * 0.14)
             ) &&
             headRectHint.centerY >= normalizedRect.bottom + Math.max(28, normalizedRect.height * 0.55);
         if (looksLikeTinyFragment) {
             const normalizedHeight = clamp(
                 Math.max(
                     normalizedRect.height * 2.2,
-                    bodyRectHint.height * 0.18
+                    effectiveBodyRectHint.height * 0.18
                 ),
                 Math.max(56, modelBounds.height * 0.11),
-                bodyRectHint.height * 0.32
+                effectiveBodyRectHint.height * 0.32
             );
             const normalizedWidth = clamp(
                 Math.max(
                     normalizedHeight * 0.9,
                     normalizedRect.width * 2.4,
-                    bodyRectHint.width * 0.16
+                    effectiveBodyRectHint.width * 0.16
                 ),
                 Math.max(64, modelBounds.width * 0.12),
-                bodyRectHint.width * 0.28
+                effectiveBodyRectHint.width * 0.28
             );
             const normalizedCenterX = clamp(
                 headRectHint.centerX,
-                bodyRectHint.left + normalizedWidth * 0.5,
-                bodyRectHint.right - normalizedWidth * 0.5
+                effectiveBodyRectHint.left + normalizedWidth * 0.5,
+                effectiveBodyRectHint.right - normalizedWidth * 0.5
             );
             const normalizedCenterY = clamp(
                 headRectHint.centerY - normalizedHeight * 0.18,
@@ -1145,14 +1496,71 @@ class Live2DManager {
             ) || normalizedRect;
         }
 
+        normalizedRect = this._extractDrawableHeadContributorCoreScreenRect(
+            normalizedRect,
+            modelBounds,
+            bodyRectHint || effectiveBodyRectHint,
+            contributors
+        );
+
+        return normalizedRect;
+    }
+
+    _normalizeDrawableBodyScreenRect(rect, modelBounds, headRectHint = null, contributors = null) {
+        if (!rect || !modelBounds || !headRectHint) {
+            return rect;
+        }
+
+        const headRect = headRectHint?.rect || headRectHint;
+        if (!headRect) {
+            return rect;
+        }
+
+        const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+        let normalizedRect = rect;
+        const bodyStartsInsideHead = rect.top <= headRect.top + Math.max(24, headRect.height * 0.18);
+        const bodySpansMostOfModel = rect.width >= modelBounds.width * 0.58 &&
+            rect.height >= modelBounds.height * 0.62;
+        const bodyClearlyLargerThanHead = rect.width >= headRect.width * 1.18 &&
+            rect.height >= headRect.height * 1.45;
+
+        if (bodyStartsInsideHead && bodySpansMostOfModel && bodyClearlyLargerThanHead) {
+            const minHeight = Math.max(72, rect.height * 0.24, headRect.height * 0.9);
+            const nextTop = clamp(
+                headRect.top + headRect.height * 0.58,
+                rect.top,
+                rect.bottom - minHeight
+            );
+
+            if (nextTop > rect.top + Math.max(20, headRect.height * 0.12)) {
+                normalizedRect = this._createScreenRect(
+                    rect.left,
+                    nextTop,
+                    rect.right,
+                    rect.bottom
+                ) || rect;
+            }
+        }
+
+        normalizedRect = this._extractDrawableBodyContributorCoreScreenRect(
+            normalizedRect,
+            modelBounds,
+            headRect,
+            contributors
+        );
+
         return normalizedRect;
     }
 
     _inferDrawableRegionScreenRectInfo(kind, modelBounds = null, modelLogicalRect = null, bodyRectHint = null, headRectHint = null) {
         const resolvedModelBounds = modelBounds || this.getModelScreenBounds();
         const resolvedModelLogicalRect = modelLogicalRect || this._getModelLogicalRect();
-        const drawableRects = this._getRenderableDrawableScreenRects(resolvedModelBounds, resolvedModelLogicalRect);
-        if (!resolvedModelBounds || drawableRects.length === 0) {
+        const drawableEntries = this._getRenderableDrawableScreenRects(
+            resolvedModelBounds,
+            resolvedModelLogicalRect,
+            true
+        );
+        if (!resolvedModelBounds || drawableEntries.length === 0) {
             return null;
         }
 
@@ -1180,8 +1588,111 @@ class Live2DManager {
         const rectArea = (rect) => Math.max(1, Number(rect?.width) * Number(rect?.height));
         const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
         const clamp01 = (value) => clamp(value, 0, 1);
-        const candidates = drawableRects
-            .map((rect) => {
+        const tokenizePartId = (text) => {
+            if (!text) {
+                return [];
+            }
+
+            return String(text)
+                .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+                .replace(/[^A-Za-z0-9]+/g, ' ')
+                .toLowerCase()
+                .trim()
+                .split(/\s+/)
+                .filter(Boolean);
+        };
+        const tokenMatchesKeyword = (token, keyword) => {
+            if (!token || !keyword) {
+                return false;
+            }
+
+            if (token === keyword) {
+                return true;
+            }
+
+            if (token.startsWith(keyword) || token.endsWith(keyword)) {
+                return token.length <= keyword.length + 4;
+            }
+
+            return false;
+        };
+        const matchesAnyPartKeyword = (text, keywords) => {
+            if (!text || !Array.isArray(keywords) || keywords.length === 0) {
+                return false;
+            }
+
+            const normalizedText = String(text).toLowerCase();
+            const tokens = tokenizePartId(text);
+
+            for (const keyword of keywords) {
+                if (!keyword) {
+                    continue;
+                }
+
+                const normalizedKeyword = String(keyword).toLowerCase();
+                if (!normalizedKeyword) {
+                    continue;
+                }
+
+                // CJK (or other non-latin) labels are typically not tokenized; use direct contains.
+                if (!/^[a-z0-9]+$/.test(normalizedKeyword)) {
+                    if (normalizedText.includes(normalizedKeyword)) {
+                        return true;
+                    }
+                    continue;
+                }
+
+                for (const token of tokens) {
+                    if (tokenMatchesKeyword(token, normalizedKeyword)) {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        };
+
+        let drawableParentPartIds = null;
+        if (kind === 'head') {
+            const internalModel = this.currentModel?.internalModel;
+            const coreModel = internalModel?.coreModel;
+            drawableParentPartIds = this._getDrawableParentPartIdLookup(coreModel);
+        }
+
+        const nonHeadPartKeywords = [
+            'arm', 'hand', 'leg', 'foot', 'shoe',
+            'tuba', 'trumpet', 'flute', 'drum', 'guitar', 'violin', 'piano', 'horn',
+            'sword', 'gun', 'staff', 'wand', 'shield', 'spear', 'bow', 'axe',
+            'weapon', 'instrument',
+            'tail', 'wing'
+        ];
+        const facePartKeywords = [
+            'face', 'head', 'eye', 'eyebrow', 'brow', 'mouth', 'lip', 'nose', 'ear', 'cheek', 'blush', 'tear',
+            '脸', '脸部', '面', '头', '眼', '眉', '嘴', '口', '鼻', '耳',
+            '顔', '頭', '目', '眉', '口', '鼻', '耳'
+        ];
+        const hairPartKeywords = [
+            'hair', 'bang', 'fringe', 'ahoge', 'ponytail', 'braid', 'curl', 'sidehair', 'fronthair', 'backhair',
+            '发', '髮', '刘海', '耳发', '髪', '前髪', '後ろ髪', '横髪'
+        ];
+        const headCorePartKeywords = [
+            'head', 'face', 'neck', 'chin', 'jaw', 'forehead',
+            '头', '脸', '颈', '脖',
+            '頭', '顔', '首'
+        ];
+        const accessoryPartKeywords = [
+            'halo', 'horn', 'crown', 'hat', 'cap', 'ribbon', 'bow', 'ornament', 'clip', 'flower', 'veil', 'headdress',
+            '光环', '角', '冠', '发饰', '饰品', '蝴蝶结', '花',
+            '輪', '角', '冠', '飾', 'リボン', '花'
+        ];
+
+        const candidates = drawableEntries
+            .map((entry) => {
+                const rect = entry?.rect || entry;
+                if (!rect) {
+                    return null;
+                }
+                const drawableIndex = Number.isInteger(entry?.index) ? entry.index : null;
                 const area = rectArea(rect);
                 const overlapArea = this._getRectIntersectionArea(rect, targetRect);
                 const overlapRatio = overlapArea / area;
@@ -1197,6 +1708,9 @@ class Live2DManager {
                     : resolvedModelBounds.height * 0.34;
                 const verticalBias = clamp01(1 - Math.abs(rect.centerY - verticalTargetY) / Math.max(1, verticalBand));
                 const areaRatio = area / modelArea;
+                const partId = Array.isArray(drawableParentPartIds) && Number.isInteger(drawableIndex)
+                    ? (drawableParentPartIds[drawableIndex] || '')
+                    : '';
 
                 if (kind === 'head') {
                     const wideShallowBand = widthRatio >= 0.44 &&
@@ -1209,6 +1723,10 @@ class Live2DManager {
                         rect.height > resolvedModelBounds.height * 0.48 ||
                         rect.width > resolvedModelBounds.width * 0.82 ||
                         wideShallowBand) {
+                        return null;
+                    }
+
+                    if (partId && matchesAnyPartKeyword(partId, nonHeadPartKeywords)) {
                         return null;
                     }
                 } else if (areaRatio < 0.002 || areaRatio > 0.7 ||
@@ -1226,36 +1744,180 @@ class Live2DManager {
                     ? clamp01(1 - Math.max(0, aspectRatio - 1.9) / 1.4)
                     : 1;
 
-                return {
-                    rect,
-                    score: overlapRatio * 4.2 +
-                        centerBias * 1.8 +
-                        verticalBias * 1.9 +
-                        widthBias * (kind === 'head' ? 1.4 : 0) +
-                        aspectBias * (kind === 'head' ? 1.3 : 0)
-                };
+                let score = overlapRatio * 4.2 +
+                    centerBias * 1.8 +
+                    verticalBias * 1.9 +
+                    widthBias * (kind === 'head' ? 1.4 : 0) +
+                    aspectBias * (kind === 'head' ? 1.3 : 0);
+                if (kind === 'head' && partId) {
+                    if (matchesAnyPartKeyword(partId, facePartKeywords)) {
+                        score += 2.4;
+                    }
+                    if (matchesAnyPartKeyword(partId, hairPartKeywords)) {
+                        score += 1.05;
+                    }
+                    if (matchesAnyPartKeyword(partId, headCorePartKeywords)) {
+                        score += 0.85;
+                    }
+                    if (matchesAnyPartKeyword(partId, accessoryPartKeywords)) {
+                        score -= 0.75;
+                    }
+                }
+
+                return { rect, score, drawableIndex };
             })
-            .filter(Boolean)
-            .sort((left, right) => right.score - left.score);
+            .filter(Boolean);
+
+        if (kind === 'head' && candidates.length > 1) {
+            const semanticAnchors = [];
+            if (Array.isArray(drawableParentPartIds) && drawableParentPartIds.length > 0) {
+                for (const candidate of candidates) {
+                    const partId = drawableParentPartIds[candidate.drawableIndex] || '';
+                    if (!partId) {
+                        continue;
+                    }
+
+                    let semanticWeight = 0;
+                    if (matchesAnyPartKeyword(partId, facePartKeywords)) {
+                        semanticWeight += 2.6;
+                    }
+                    if (matchesAnyPartKeyword(partId, hairPartKeywords)) {
+                        semanticWeight += 1.2;
+                    }
+                    if (matchesAnyPartKeyword(partId, headCorePartKeywords)) {
+                        semanticWeight += 0.9;
+                    }
+                    if (matchesAnyPartKeyword(partId, accessoryPartKeywords)) {
+                        semanticWeight -= 1.0;
+                    }
+
+                    if (semanticWeight > 0.15) {
+                        semanticAnchors.push({ rect: candidate.rect, weight: semanticWeight });
+                    }
+                }
+            }
+
+            if (semanticAnchors.length > 0) {
+                const totalWeight = semanticAnchors.reduce((sum, item) => sum + item.weight, 0);
+                const semanticCenterX = semanticAnchors.reduce((sum, item) => sum + item.rect.centerX * item.weight, 0) / Math.max(0.001, totalWeight);
+                const semanticCenterY = semanticAnchors.reduce((sum, item) => sum + item.rect.centerY * item.weight, 0) / Math.max(0.001, totalWeight);
+                const maxDistance = Math.max(resolvedModelBounds.width, resolvedModelBounds.height) * 0.18;
+
+                for (const candidate of candidates) {
+                    const partId = Array.isArray(drawableParentPartIds)
+                        ? (drawableParentPartIds[candidate.drawableIndex] || '')
+                        : '';
+                    let roleWeight = 1;
+                    if (partId && matchesAnyPartKeyword(partId, facePartKeywords)) {
+                        roleWeight = 1.35;
+                    } else if (partId && matchesAnyPartKeyword(partId, hairPartKeywords)) {
+                        roleWeight = 1.12;
+                    } else if (partId && matchesAnyPartKeyword(partId, headCorePartKeywords)) {
+                        roleWeight = 1.0;
+                    }
+                    if (partId && matchesAnyPartKeyword(partId, accessoryPartKeywords)) {
+                        roleWeight *= 0.72;
+                    }
+
+                    const deltaX = candidate.rect.centerX - semanticCenterX;
+                    const deltaY = candidate.rect.centerY - semanticCenterY;
+                    const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+                    if (distance < maxDistance) {
+                        candidate.score += 2.1 * roleWeight * (1 - distance / maxDistance);
+                    }
+                }
+            }
+        }
+
+        candidates.sort((left, right) => right.score - left.score);
         if (candidates.length === 0) {
             return null;
         }
 
-        let mergedRect = candidates[0].rect;
-        const bestScore = Math.max(0.01, candidates[0].score);
+        let orderedCandidates = candidates;
+        if (kind === 'head' && candidates.length > 1) {
+            const boundsTop = resolvedModelBounds.top;
+            const boundsHeight = Math.max(1, resolvedModelBounds.height);
+            const bestScore = Math.max(0.01, candidates[0].score);
+            const isPrimaryHeadBand = (candidateRect) =>
+                candidateRect.centerY >= boundsTop + boundsHeight * 0.16 &&
+                candidateRect.centerY <= boundsTop + boundsHeight * 0.56;
+
+            // Prefer a face-tagged candidate in the central head band when available.
+            let stableAnchor = null;
+            if (Array.isArray(drawableParentPartIds) && drawableParentPartIds.length > 0) {
+                for (const candidate of candidates) {
+                    const partId = drawableParentPartIds[candidate.drawableIndex] || '';
+                    if (!partId ||
+                        !matchesAnyPartKeyword(partId, facePartKeywords) ||
+                        !isPrimaryHeadBand(candidate.rect) ||
+                        candidate.score < bestScore * 0.58) {
+                        continue;
+                    }
+
+                    if (!stableAnchor || candidate.score > stableAnchor.score) {
+                        stableAnchor = candidate;
+                    }
+                }
+            }
+
+            const topCandidate = candidates[0];
+            const topLooksLikeAccessoryFragment = topCandidate.rect.centerY <= boundsTop + boundsHeight * 0.18 &&
+                topCandidate.rect.height <= boundsHeight * 0.2 &&
+                topCandidate.rect.width <= resolvedModelBounds.width * 0.38;
+            if (!stableAnchor && topLooksLikeAccessoryFragment) {
+                for (const candidate of candidates) {
+                    if (!isPrimaryHeadBand(candidate.rect) || candidate.score < bestScore * 0.62) {
+                        continue;
+                    }
+
+                    if (!stableAnchor ||
+                        candidate.score > stableAnchor.score ||
+                        (candidate.score === stableAnchor.score &&
+                            rectArea(candidate.rect) > rectArea(stableAnchor.rect))) {
+                        stableAnchor = candidate;
+                    }
+                }
+            }
+
+            if (stableAnchor && stableAnchor !== candidates[0]) {
+                orderedCandidates = [stableAnchor, ...candidates.filter((candidate) => candidate !== stableAnchor)];
+            }
+        }
+
+        let mergedRect = orderedCandidates[0].rect;
+        const mergedCandidates = [orderedCandidates[0]];
+        const bestScore = Math.max(0.01, orderedCandidates[0].score);
         const mergePaddingX = resolvedModelBounds.width * (kind === 'head' ? 0.05 : 0.1);
         const mergePaddingY = resolvedModelBounds.height * (kind === 'head' ? 0.03 : 0.08);
+        const anchorCenterX = kind === 'head' ? orderedCandidates[0].rect.centerX : null;
+        const anchorCenterY = kind === 'head' ? orderedCandidates[0].rect.centerY : null;
 
-        for (const candidate of candidates.slice(1)) {
+        for (const candidate of orderedCandidates.slice(1)) {
             if (kind === 'head' && candidate.score < bestScore * 0.72) {
                 continue;
+            }
+
+            if (kind === 'head' &&
+                Number.isFinite(anchorCenterX) &&
+                Number.isFinite(anchorCenterY)) {
+                const deltaXFromAnchor = Math.abs(candidate.rect.centerX - anchorCenterX);
+                const deltaYFromAnchor = Math.abs(candidate.rect.centerY - anchorCenterY);
+                if (deltaXFromAnchor > resolvedModelBounds.width * 0.18 ||
+                    deltaYFromAnchor > resolvedModelBounds.height * 0.14) {
+                    continue;
+                }
             }
 
             const expandedMergedRect = this._expandScreenRect(mergedRect, mergePaddingX, mergePaddingY);
             const overlapsMerged = this._getRectIntersectionArea(candidate.rect, expandedMergedRect) > 0;
             const verticallyAdjacent = candidate.rect.top <= mergedRect.bottom + mergePaddingY &&
                 candidate.rect.bottom >= mergedRect.top - mergePaddingY;
-            const centeredEnough = Math.abs(candidate.rect.centerX - mergedRect.centerX) <= resolvedModelBounds.width * (kind === 'head' ? 0.16 : 0.28);
+            const centerReferenceX = kind === 'head' && Number.isFinite(anchorCenterX)
+                ? anchorCenterX
+                : mergedRect.centerX;
+            const centeredEnough = Math.abs(candidate.rect.centerX - centerReferenceX) <=
+                resolvedModelBounds.width * (kind === 'head' ? 0.14 : 0.28);
             if (!overlapsMerged && !(verticallyAdjacent && centeredEnough)) {
                 continue;
             }
@@ -1277,6 +1939,7 @@ class Live2DManager {
             }
 
             mergedRect = nextMergedRect;
+            mergedCandidates.push(candidate);
         }
 
         if (kind === 'head') {
@@ -1284,7 +1947,15 @@ class Live2DManager {
                 mergedRect,
                 resolvedModelBounds,
                 bodyRectHint,
-                headRectHint
+                headRectHint,
+                mergedCandidates
+            );
+        } else if (kind === 'body') {
+            mergedRect = this._normalizeDrawableBodyScreenRect(
+                mergedRect,
+                resolvedModelBounds,
+                headRectHint,
+                mergedCandidates
             );
         }
 
@@ -1459,6 +2130,31 @@ class Live2DManager {
         return nestedParentIndices && typeof nestedParentIndices.length === 'number'
             ? nestedParentIndices
             : [];
+    }
+
+    _getDrawableParentPartIdLookup(coreModel) {
+        if (!coreModel) {
+            return null;
+        }
+
+        const partIds = this._getCoreModelPartIds(coreModel);
+        const drawableParentPartIndices = this._getCoreModelDrawableParentPartIndices(coreModel);
+        if (partIds.length === 0 || drawableParentPartIndices.length === 0) {
+            return null;
+        }
+
+        const normalizedPartIds = partIds.map((partId) => String(partId || '').toLowerCase());
+        const lookup = new Array(drawableParentPartIndices.length);
+        for (let drawableIndex = 0; drawableIndex < drawableParentPartIndices.length; drawableIndex += 1) {
+            const parentPartIndex = Number(drawableParentPartIndices[drawableIndex]);
+            lookup[drawableIndex] = Number.isInteger(parentPartIndex) &&
+                parentPartIndex >= 0 &&
+                parentPartIndex < normalizedPartIds.length
+                ? normalizedPartIds[parentPartIndex]
+                : '';
+        }
+
+        return lookup;
     }
 
     _partIndexMatchesTargetIds(partIndex, partIds, partParentIndices, targetPartIdSet) {
@@ -1671,6 +2367,20 @@ class Live2DManager {
             .replace(/[^a-z0-9\u3040-\u30ff\u3400-\u9fff]/g, '');
     }
 
+    _looksLikeAccessoryHeadHitAreaLabel(value) {
+        const rawLabel = String(value || '');
+        if (!rawLabel) {
+            return false;
+        }
+
+        const rawLowerLabel = rawLabel.toLowerCase();
+        const normalizedLabel = this._normalizeHitAreaMatchKey(rawLabel);
+
+        return /ornament|accessory|ribbon|bow|hair|bang|fringe|ear|horn|hat|clip|flower|headwear|headdress|hairpin|hairclip|hairband/.test(rawLowerLabel) ||
+            /頭飾|头饰|发饰|發飾|髪飾|刘海|瀏海|前髪|耳|角|帽|蝴蝶结|蝴蝶結|发卡|發卡|髮卡|髮夾/.test(rawLabel) ||
+            /頭飾|头饰|发饰|發飾|髪飾|刘海|瀏海|前髪|蝴蝶结|蝴蝶結/.test(normalizedLabel);
+    }
+
     _findBestHitAreaLogicalRectInfo(matchInfoFn) {
         const model = this.currentModel;
         const internalModel = model?.internalModel;
@@ -1733,6 +2443,9 @@ class Live2DManager {
         return this._findBestHitAreaLogicalRectInfo((value) => {
             const key = this._normalizeHitAreaMatchKey(value);
             if (!key) return { score: -1 };
+            if (this._looksLikeAccessoryHeadHitAreaLabel(value)) {
+                return { score: -1 };
+            }
             if (key === 'face' || key === 'hitareaface' || key === '顔' || key === '脸' || key === '脸部' || key === '面') {
                 return { score: 4 };
             }
@@ -1949,7 +2662,113 @@ class Live2DManager {
         );
     }
 
-    _shouldPreferInferredRect(kind, hitAreaInfo, inferredInfo, modelBounds) {
+    _isLikelyChibiRectPair(headRect, bodyRect, modelBounds) {
+        const head = headRect?.rect || headRect;
+        const body = bodyRect?.rect || bodyRect;
+        const bounds = modelBounds?.rect || modelBounds;
+        if (!head || !body || !bounds) {
+            return false;
+        }
+
+        const rectsLookValid = [head, body, bounds].every((rect) =>
+            Number.isFinite(rect.left) &&
+            Number.isFinite(rect.top) &&
+            Number.isFinite(rect.width) &&
+            Number.isFinite(rect.height) &&
+            rect.width > 0 &&
+            rect.height > 0
+        );
+        if (!rectsLookValid) {
+            return false;
+        }
+
+        const headCenterY = Number.isFinite(head.centerY) ? head.centerY : head.top + head.height * 0.5;
+        const bodyCenterY = Number.isFinite(body.centerY) ? body.centerY : body.top + body.height * 0.5;
+        if (headCenterY >= bodyCenterY) {
+            return false;
+        }
+
+        const headWidthRatio = head.width / Math.max(1, bounds.width);
+        const headHeightRatio = head.height / Math.max(1, bounds.height);
+        const bodyWidthRatio = body.width / Math.max(1, bounds.width);
+        const bodyHeightRatio = body.height / Math.max(1, bounds.height);
+        const headToBodyWidthRatio = head.width / Math.max(1, body.width);
+        const headToBodyHeightRatio = head.height / Math.max(1, body.height);
+        const verticalGap = body.top - head.bottom;
+        const maxVerticalGap = Math.max(72, head.height * 1.05, body.height * 0.34);
+        const unionRect = this._mergeScreenRects([head, body]);
+
+        return headWidthRatio >= 0.16 &&
+            headWidthRatio <= 0.76 &&
+            headHeightRatio >= 0.1 &&
+            headHeightRatio <= 0.54 &&
+            bodyWidthRatio >= 0.1 &&
+            bodyWidthRatio <= 0.72 &&
+            bodyHeightRatio >= 0.12 &&
+            bodyHeightRatio <= 0.68 &&
+            headToBodyWidthRatio >= 0.42 &&
+            headToBodyHeightRatio >= 0.26 &&
+            body.width <= head.width * 2.18 &&
+            body.height <= head.height * 3.5 &&
+            verticalGap <= maxVerticalGap &&
+            body.top <= head.top + head.height * 1.55 &&
+            unionRect &&
+            unionRect.height <= bounds.height * 0.84;
+    }
+
+    _shouldPreferOversizedHitAreaRect(kind, hitAreaInfo, inferredInfo, modelBounds, counterpartInfo = null) {
+        if (!hitAreaInfo || !inferredInfo || !modelBounds) {
+            return false;
+        }
+
+        const hitRect = hitAreaInfo.rect;
+        const inferredRect = inferredInfo.rect;
+        if (!hitRect || !inferredRect) {
+            return false;
+        }
+
+        const counterpartRect = counterpartInfo?.rect || null;
+        const inferredLooksChibi = kind === 'head'
+            ? this._isLikelyChibiRectPair(inferredRect, counterpartRect, modelBounds)
+            : this._isLikelyChibiRectPair(counterpartRect, inferredRect, modelBounds);
+        const overlapArea = this._getRectIntersectionArea(hitAreaInfo, inferredInfo);
+        const overlapRatio = overlapArea / Math.max(1, Math.min(
+            this._getRectArea(hitAreaInfo),
+            this._getRectArea(inferredInfo)
+        ));
+        if (overlapRatio < (inferredLooksChibi ? 0.42 : 0.54)) {
+            return false;
+        }
+
+        const areaCoverageRatio = this._getRectArea(hitAreaInfo) / Math.max(this._getRectArea(inferredInfo), 1);
+        const widthCoverageRatio = hitRect.width / Math.max(inferredRect.width, 1);
+        const heightCoverageRatio = hitRect.height / Math.max(inferredRect.height, 1);
+        const coarseAreaThreshold = inferredLooksChibi || hitAreaInfo.autoNamed ? 1.42 : 1.9;
+        const coarseWidthThreshold = inferredLooksChibi || hitAreaInfo.autoNamed ? 1.16 : 1.34;
+        const coarseHeightThreshold = inferredLooksChibi || hitAreaInfo.autoNamed ? 1.16 : 1.34;
+        const hitAreaClearlyTooLarge = areaCoverageRatio >= coarseAreaThreshold ||
+            widthCoverageRatio >= coarseWidthThreshold ||
+            heightCoverageRatio >= coarseHeightThreshold;
+        if (!hitAreaClearlyTooLarge) {
+            return false;
+        }
+
+        if (kind === 'head') {
+            const hitAreaStartsTooHigh = hitRect.top <= inferredRect.top - Math.max(16, inferredRect.height * 0.14);
+            const hitAreaEndsTooLow = hitRect.bottom >= inferredRect.bottom + Math.max(20, inferredRect.height * 0.18);
+            const hitAreaCenterTooLow = hitRect.centerY >= inferredRect.centerY + Math.max(14, inferredRect.height * 0.12);
+            return hitAreaStartsTooHigh || hitAreaEndsTooLow || hitAreaCenterTooLow;
+        }
+
+        const hitAreaStartsTooHigh = hitRect.top <= inferredRect.top - Math.max(20, inferredRect.height * 0.16);
+        const hitAreaEndsTooLow = hitRect.bottom >= inferredRect.bottom + Math.max(24, inferredRect.height * 0.18);
+        const bodyCenterTooHigh = hitRect.centerY <= inferredRect.centerY - Math.max(16, inferredRect.height * 0.12);
+        const hitAreaAbsorbsHead = counterpartRect &&
+            hitRect.top <= counterpartRect.top + counterpartRect.height * 0.18;
+        return hitAreaStartsTooHigh || hitAreaEndsTooLow || bodyCenterTooHigh || hitAreaAbsorbsHead;
+    }
+
+    _shouldPreferInferredRect(kind, hitAreaInfo, inferredInfo, modelBounds, counterpartInfo = null) {
         if (!inferredInfo) {
             return false;
         }
@@ -1990,13 +2809,29 @@ class Live2DManager {
                 heightCoverageRatio <= 0.42;
             const hitAreaSitsTooLow = hitRect.top >= inferredRect.top + Math.max(18, inferredRect.height * 0.28) ||
                 hitRect.centerY >= inferredRect.top + inferredRect.height * 0.72;
-            return hitAreaClearlyTooSmall || (looksLikeTouchHotspot && hitAreaSitsTooLow);
+            return hitAreaClearlyTooSmall ||
+                (looksLikeTouchHotspot && hitAreaSitsTooLow) ||
+                this._shouldPreferOversizedHitAreaRect(
+                    kind,
+                    hitAreaInfo,
+                    inferredInfo,
+                    modelBounds,
+                    counterpartInfo
+                );
         }
 
         const hitAreaClearlyTooSmall = areaCoverageRatio <= 0.22 ||
             widthCoverageRatio <= 0.42 ||
             heightCoverageRatio <= 0.34;
-        return hitAreaClearlyTooSmall || looksLikeTouchHotspot;
+        return hitAreaClearlyTooSmall ||
+            looksLikeTouchHotspot ||
+            this._shouldPreferOversizedHitAreaRect(
+                kind,
+                hitAreaInfo,
+                inferredInfo,
+                modelBounds,
+                counterpartInfo
+            );
     }
 
     _shouldPreferInferredBodyRectOverDisplayInfo(displayInfoInfo, inferredInfo, headInfo, modelBounds) {
@@ -2263,7 +3098,7 @@ class Live2DManager {
             : this._createBubbleBodyProxyRect(headRect, bounds, bodyRect);
     }
 
-    _normalizeBubbleHeadRect(headRect, bounds, bodyRect, headSource) {
+    _normalizeBubbleHeadRect(headRect, bounds, bodyRect, headSource, headMode) {
         if (!this._hasValidBubbleScreenRect(headRect) || !bounds) {
             return headRect;
         }
@@ -2277,7 +3112,144 @@ class Live2DManager {
             ) || headRect;
         }
 
+        if (headMode === 'face') {
+            return this._expandFaceModeRectToFullHead(
+                headRect, bounds, bodyRect
+            ) || headRect;
+        }
+
         return headRect;
+    }
+
+    _expandFaceModeRectToFullHead(rect, bounds, bodyRect) {
+        if (!rect || !bounds) {
+            return rect;
+        }
+
+        const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+        const widthRatio = rect.width / Math.max(1, bounds.width);
+        const heightRatio = rect.height / Math.max(1, bounds.height);
+
+        if (widthRatio >= 0.48 || heightRatio >= 0.38) {
+            return rect;
+        }
+
+        const expandedWidth = clamp(
+            rect.width * 1.3,
+            rect.width * 1.2,
+            Math.min(bounds.width * 0.58, rect.width * 1.45)
+        );
+        const topExtension = rect.height * 0.3;
+        let newTop = rect.top - topExtension;
+        let newBottom = rect.bottom;
+
+        if (this._hasValidBubbleScreenRect(bodyRect)) {
+            const bodyCap = bodyRect.top + bodyRect.height * 0.15;
+            if (newBottom > bodyCap && bodyCap > newTop + expandedWidth * 0.4) {
+                newBottom = bodyCap;
+            }
+        }
+
+        newTop = Math.max(bounds.top, newTop);
+        newBottom = Math.min(bounds.top + bounds.height, newBottom);
+        if (newBottom - newTop < rect.height * 1.15) {
+            newBottom = newTop + rect.height * 1.25;
+            newBottom = Math.min(bounds.top + bounds.height, newBottom);
+        }
+
+        const centerX = Number.isFinite(rect.centerX)
+            ? rect.centerX
+            : rect.left + rect.width * 0.5;
+
+        return this._createScreenRect(
+            centerX - expandedWidth * 0.5,
+            newTop,
+            centerX + expandedWidth * 0.5,
+            newBottom
+        ) || rect;
+    }
+
+    _shouldUseBubbleDrawableHeadProxy(headRect, bounds, bodyRect, headSource) {
+        if (headSource !== 'drawableHeuristic' ||
+            !this._hasValidBubbleScreenRect(headRect) ||
+            !bounds) {
+            return false;
+        }
+
+        const headCenterX = Number.isFinite(headRect.centerX)
+            ? headRect.centerX
+            : headRect.left + headRect.width * 0.5;
+        const boundsCenterX = Number.isFinite(bounds.centerX)
+            ? bounds.centerX
+            : bounds.left + bounds.width * 0.5;
+        const headOccupiesLargeUpperBand = headRect.top <= bounds.top + bounds.height * 0.16 &&
+            headRect.bottom <= bounds.top + bounds.height * 0.58 &&
+            headRect.width >= bounds.width * 0.34 &&
+            headRect.height >= bounds.height * 0.22;
+        const headLooksWideForFaceAnchor = headRect.width >= bounds.width * 0.28 &&
+            (headRect.width / Math.max(1, headRect.height)) >= 1.25;
+        const bodyStartsBelowHeadCore = !this._hasValidBubbleScreenRect(bodyRect) ||
+            bodyRect.top >= headRect.top + headRect.height * 0.38;
+        const headBiasesAwayFromBoundsCenter = Math.abs(headCenterX - boundsCenterX) >= bounds.width * 0.04;
+
+        return (headOccupiesLargeUpperBand || headLooksWideForFaceAnchor) &&
+            (bodyStartsBelowHeadCore || headBiasesAwayFromBoundsCenter);
+    }
+
+    _createBubbleDrawableHeadProxyRect(headRect, bounds, bodyRect = null) {
+        if (!this._hasValidBubbleScreenRect(headRect) || !bounds) {
+            return null;
+        }
+
+        const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+        const boundsRight = Number.isFinite(bounds.right) ? bounds.right : bounds.left + bounds.width;
+        const boundsBottom = Number.isFinite(bounds.bottom) ? bounds.bottom : bounds.top + bounds.height;
+        const headCenterX = Number.isFinite(headRect.centerX)
+            ? headRect.centerX
+            : headRect.left + headRect.width * 0.5;
+        const bodyCenterX = this._hasValidBubbleScreenRect(bodyRect) && Number.isFinite(bodyRect.centerX)
+            ? bodyRect.centerX
+            : headCenterX;
+        const horizontalShift = clamp(
+            (bodyCenterX - headCenterX) * 0.82,
+            -headRect.width * 0.18,
+            headRect.width * 0.18
+        );
+        const width = clamp(
+            Math.max(
+                headRect.width * 0.4,
+                this._hasValidBubbleScreenRect(bodyRect) ? bodyRect.width * 0.24 : 0,
+                bounds.width * 0.17
+            ),
+            Math.max(92, headRect.width * 0.32),
+            Math.min(bounds.width * 0.42, headRect.width * 0.58)
+        );
+        const height = clamp(
+            Math.max(
+                headRect.height * 0.48,
+                width * 0.68,
+                bounds.height * 0.16
+            ),
+            Math.max(72, headRect.height * 0.42),
+            Math.min(bounds.height * 0.34, headRect.height * 0.7)
+        );
+        const centerX = clamp(
+            headCenterX + horizontalShift,
+            Math.max(bounds.left, headRect.left) + width * 0.5,
+            Math.min(boundsRight, headRect.right) - width * 0.5
+        );
+        const top = clamp(
+            headRect.top + headRect.height * 0.1,
+            headRect.top,
+            Math.min(boundsBottom, headRect.bottom) - height
+        );
+
+        return this._createScreenRect(
+            centerX - width * 0.5,
+            top,
+            centerX + width * 0.5,
+            top + height
+        );
     }
 
     _getBubbleGeometryOverride() {
@@ -2294,6 +3266,27 @@ class Live2DManager {
             null;
     }
 
+    _getBubbleGeometryOverrideSignature() {
+        const override = this._getBubbleGeometryOverride();
+        if (!override || typeof override !== 'object') {
+            return 'none';
+        }
+
+        const readFinite = (key) => {
+            const value = Number(override[key]);
+            return Number.isFinite(value) ? value : null;
+        };
+
+        return JSON.stringify({
+            headScaleX: readFinite('headScaleX'),
+            headScaleY: readFinite('headScaleY'),
+            headOffsetX: readFinite('headOffsetX'),
+            headOffsetY: readFinite('headOffsetY'),
+            anchorOffsetX: readFinite('anchorOffsetX'),
+            anchorOffsetY: readFinite('anchorOffsetY')
+        });
+    }
+
     _applyBubbleGeometryOverride(geometryInfo) {
         const override = this._getBubbleGeometryOverride();
         if (!override || typeof override !== 'object' || !geometryInfo) {
@@ -2301,14 +3294,15 @@ class Live2DManager {
         }
 
         const nextGeometryInfo = Object.assign({}, geometryInfo);
-        const headRect = geometryInfo.headRect;
-        if (this._hasValidBubbleScreenRect(headRect)) {
-            let left = headRect.left;
-            let top = headRect.top;
-            let width = headRect.width;
-            let height = headRect.height;
-            const centerX = Number.isFinite(headRect.centerX) ? headRect.centerX : headRect.left + headRect.width * 0.5;
-            const centerY = Number.isFinite(headRect.centerY) ? headRect.centerY : headRect.top + headRect.height * 0.5;
+        const rawHeadRect = geometryInfo.headRect;
+        const bubbleHeadRect = geometryInfo.bubbleHeadRect || geometryInfo.headRect || null;
+        if (this._hasValidBubbleScreenRect(bubbleHeadRect)) {
+            let left = bubbleHeadRect.left;
+            let top = bubbleHeadRect.top;
+            let width = bubbleHeadRect.width;
+            let height = bubbleHeadRect.height;
+            const centerX = Number.isFinite(bubbleHeadRect.centerX) ? bubbleHeadRect.centerX : bubbleHeadRect.left + bubbleHeadRect.width * 0.5;
+            const centerY = Number.isFinite(bubbleHeadRect.centerY) ? bubbleHeadRect.centerY : bubbleHeadRect.top + bubbleHeadRect.height * 0.5;
             const widthScale = Number.isFinite(override.headScaleX) ? override.headScaleX : 1;
             const heightScale = Number.isFinite(override.headScaleY) ? override.headScaleY : 1;
             const offsetX = Number.isFinite(override.headOffsetX) ? override.headOffsetX : 0;
@@ -2318,7 +3312,7 @@ class Live2DManager {
             height = Math.max(1, height * heightScale);
             left = centerX - width * 0.5 + offsetX;
             top = centerY - height * 0.5 + offsetY;
-            nextGeometryInfo.headRect = {
+            nextGeometryInfo.bubbleHeadRect = {
                 left,
                 top,
                 right: left + width,
@@ -2330,7 +3324,7 @@ class Live2DManager {
             };
         }
 
-        const resolvedHeadRect = nextGeometryInfo.headRect || null;
+        const resolvedHeadRect = nextGeometryInfo.bubbleHeadRect || bubbleHeadRect || null;
         const resolvedHeadSource = nextGeometryInfo.headSource || geometryInfo.headSource || null;
         const rawBodyRect = nextGeometryInfo.bodyRect || geometryInfo.bodyRect || null;
         const headPlausibleWithoutBody = this._isReliableBubbleHeadRect(
@@ -2385,6 +3379,8 @@ class Live2DManager {
         nextGeometryInfo.reliableHeadRect = reliableHeadRect;
         nextGeometryInfo.preciseDisplayInfoRect = preciseDisplayInfoRect;
         nextGeometryInfo.coarseHitAreaHeadRect = coarseHitAreaHeadRect;
+        nextGeometryInfo.headRect = rawHeadRect || null;
+        nextGeometryInfo.bubbleHeadRect = resolvedHeadRect || null;
 
         return nextGeometryInfo;
     }
@@ -2395,18 +3391,40 @@ class Live2DManager {
         const hitAreaInfo = this._getHeadHitAreaScreenRectInfo(modelBounds, modelLogicalRect);
         const displayInfoInfo = this._getDisplayInfoPartScreenRectInfo('head');
         const inferredBodyInfo = this._inferDrawableRegionScreenRectInfo('body', modelBounds, modelLogicalRect);
+        const useHitAreaAsHeadHint = this._isRectInfoPlausibleWithinModel(
+            hitAreaInfo,
+            modelBounds,
+            { maxWidthRatio: 0.78, maxHeightRatio: 0.56 }
+        );
         const inferredInfo = this._inferDrawableRegionScreenRectInfo(
             'head',
             modelBounds,
             modelLogicalRect,
             inferredBodyInfo?.rect || null,
-            hitAreaInfo?.rect || null
+            useHitAreaAsHeadHint ? (hitAreaInfo?.rect || null) : null
+        );
+        const headHitRect = hitAreaInfo?.rect || null;
+        const hitAreaLooksCoarseAgainstModel = !!(
+            headHitRect &&
+            modelBounds &&
+            headHitRect.width >= modelBounds.width * 0.8 &&
+            headHitRect.height >= modelBounds.height * 0.46 &&
+            headHitRect.top <= modelBounds.top + modelBounds.height * 0.12
         );
         if (this._shouldPreferDisplayInfoRect('head', hitAreaInfo, displayInfoInfo, modelBounds)) {
             return displayInfoInfo;
         }
 
-        if (this._shouldPreferInferredRect('head', hitAreaInfo, inferredInfo, modelBounds)) {
+        if (hitAreaLooksCoarseAgainstModel &&
+            this._isRectInfoPlausibleWithinModel(
+                inferredInfo,
+                modelBounds,
+                { maxWidthRatio: 0.86, maxHeightRatio: 0.64 }
+            )) {
+            return inferredInfo;
+        }
+
+        if (this._shouldPreferInferredRect('head', hitAreaInfo, inferredInfo, modelBounds, inferredBodyInfo)) {
             return inferredInfo;
         }
 
@@ -2418,10 +3436,16 @@ class Live2DManager {
         const modelLogicalRect = this._getModelLogicalRect();
         const hitAreaInfo = this._getBodyHitAreaScreenRectInfo(modelBounds, modelLogicalRect);
         const displayInfoInfo = this._getDisplayInfoPartScreenRectInfo('body');
-        const inferredInfo = this._inferDrawableRegionScreenRectInfo('body', modelBounds, modelLogicalRect);
         const resolvedHeadInfo = headInfo === undefined
             ? this.getHeadScreenRectInfo()
             : headInfo;
+        const inferredInfo = this._inferDrawableRegionScreenRectInfo(
+            'body',
+            modelBounds,
+            modelLogicalRect,
+            null,
+            resolvedHeadInfo?.rect || null
+        );
         if (this._shouldPreferInferredBodyRectOverDisplayInfo(displayInfoInfo, inferredInfo, resolvedHeadInfo, modelBounds)) {
             return inferredInfo;
         }
@@ -2429,14 +3453,14 @@ class Live2DManager {
             return displayInfoInfo;
         }
 
-        if (this._shouldPreferInferredRect('body', hitAreaInfo, inferredInfo, modelBounds)) {
+        if (this._shouldPreferInferredRect('body', hitAreaInfo, inferredInfo, modelBounds, resolvedHeadInfo)) {
             return inferredInfo;
         }
 
         return hitAreaInfo || displayInfoInfo || inferredInfo;
     }
 
-    getBubbleAnchorGeometryInfo() {
+    getHeadDetectionGeometryInfo() {
         const bounds = this.getModelScreenBounds();
         if (!bounds) {
             return null;
@@ -2449,12 +3473,14 @@ class Live2DManager {
             headInfo?.rect || null,
             bounds,
             bodyInfo?.rect || null,
-            headInfo?.source || null
+            headInfo?.source || null,
+            headInfo?.mode || null
         );
         const rawBodyRect = bodyInfo?.rect || null;
         const headMode = headInfo?.mode || null;
         const headSource = headInfo?.source || null;
         let bodySource = bodyInfo?.source || null;
+
         const headPlausibleWithoutBody = this._isReliableBubbleHeadRect(headRect, bounds, null, headSource);
         const bodyRect = this._normalizeBubbleBodyRect(
             rawBodyRect,
@@ -2466,6 +3492,7 @@ class Live2DManager {
         if (bodyRect && bodyRect !== rawBodyRect) {
             bodySource = 'bubbleBodyProxy';
         }
+
         const reliableHeadRect = this._isReliableBubbleHeadRect(headRect, bounds, bodyRect, headSource);
         const preciseDisplayInfoRect = reliableHeadRect && headSource === 'displayInfo';
         const coarseHitAreaHeadRect = headSource === 'hitArea' &&
@@ -2481,11 +3508,64 @@ class Live2DManager {
             headAnchor = rawHeadAnchor;
         }
 
-        return this._applyBubbleGeometryOverride({
+        return {
+            type: 'live2d',
             bounds,
             rawHeadAnchor: rawHeadAnchor || null,
             headAnchor: headAnchor || rawHeadAnchor || null,
-            headRect,
+            headRect: headRect || null,
+            headMode,
+            headSource,
+            bodyRect,
+            bodySource,
+            reliableHeadRect,
+            preciseDisplayInfoRect,
+            coarseHitAreaHeadRect
+        };
+    }
+
+    getBubbleAnchorGeometryInfo() {
+        const cached = this._getCachedBubbleGeometryResult();
+        if (cached) {
+            return cached;
+        }
+
+        const detectionInfo = this.getHeadDetectionGeometryInfo();
+        if (!detectionInfo || !detectionInfo.bounds) {
+            return null;
+        }
+
+        const bounds = detectionInfo.bounds;
+        const rawHeadAnchor = detectionInfo.rawHeadAnchor || null;
+        const headRect = detectionInfo.headRect || null;
+        const headMode = detectionInfo.headMode || null;
+        const headSource = detectionInfo.headSource || null;
+        const bodyRect = detectionInfo.bodyRect || null;
+        const bodySource = detectionInfo.bodySource || null;
+        const bubbleHeadRect = this._shouldUseBubbleDrawableHeadProxy(headRect, bounds, bodyRect, headSource)
+            ? (this._createBubbleDrawableHeadProxyRect(headRect, bounds, bodyRect) || headRect)
+            : headRect;
+        const reliableHeadRect = this._isReliableBubbleHeadRect(bubbleHeadRect, bounds, bodyRect, headSource);
+        const preciseDisplayInfoRect = reliableHeadRect && headSource === 'displayInfo';
+        const coarseHitAreaHeadRect = headSource === 'hitArea' &&
+            this._hasValidBubbleScreenRect(bubbleHeadRect) &&
+            rawHeadAnchor &&
+            Number.isFinite(rawHeadAnchor.y) &&
+            rawHeadAnchor.y >= bubbleHeadRect.top + bubbleHeadRect.height * 0.82;
+        let headAnchor = reliableHeadRect
+            ? (this._getBubbleHeadAnchorFromRect(bubbleHeadRect, headMode, headSource) || rawHeadAnchor)
+            : null;
+
+        if (coarseHitAreaHeadRect && rawHeadAnchor) {
+            headAnchor = rawHeadAnchor;
+        }
+
+        const result = this._applyBubbleGeometryOverride({
+            bounds,
+            rawHeadAnchor: rawHeadAnchor || null,
+            headAnchor: headAnchor || rawHeadAnchor || null,
+            headRect: headRect || null,
+            bubbleHeadRect: bubbleHeadRect || headRect || null,
             headMode,
             headSource,
             bodyRect,
@@ -2494,6 +3574,15 @@ class Live2DManager {
             preciseDisplayInfoRect,
             coarseHitAreaHeadRect
         });
+
+        if (result.reliableHeadRect) {
+            const modelLogicalRect = this._getModelLogicalRect();
+            if (modelLogicalRect) {
+                this._cacheBubbleGeometryResult(result, bounds, modelLogicalRect);
+            }
+        }
+
+        return result;
     }
 
     getHeadScreenAnchor(headScreenInfo = undefined) {
@@ -2519,6 +3608,8 @@ class Live2DManager {
         const settings = this.currentModel?.internalModel?.settings;
         const settingsJson = settings?.json;
         const hitAreaDefs = settings?.hitAreas;
+        const headInfo = this.getHeadScreenRectInfo();
+        const bodyInfo = this.getBodyScreenRectInfo(headInfo);
         const geometryInfo = this.getBubbleAnchorGeometryInfo();
 
         return {
@@ -2533,20 +3624,8 @@ class Live2DManager {
                 }))
                 : [],
             bounds: geometryInfo?.bounds || this.getModelScreenBounds(),
-            headInfo: geometryInfo
-                ? {
-                    rect: geometryInfo.headRect,
-                    mode: geometryInfo.headMode,
-                    source: geometryInfo.headSource
-                }
-                : this.getHeadScreenRectInfo(),
-            bodyInfo: geometryInfo
-                ? {
-                    rect: geometryInfo.bodyRect,
-                    mode: 'body',
-                    source: geometryInfo.bodySource
-                }
-                : this.getBodyScreenRectInfo(),
+            headInfo: headInfo || null,
+            bodyInfo: bodyInfo || null,
             geometryInfo
         };
     }
