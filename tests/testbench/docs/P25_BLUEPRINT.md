@@ -308,10 +308,10 @@ body: { kind: "avatar_interaction" | "agent_callback" | "proactive", payload: {.
 
 - [x] P24 Day 1-9 完成并用户验收 (Day 1-8 已 ✅, Day 9 已 ✅ 2026-04-22)
 - [x] P24 Day 10-12 全交付 + 用户 "不要留尾巴" 指示后 Day 12 欠账清返全清 (commit `62844c7` + push `d0fdf72..62844c7 main -> main`, 2026-04-23), **9/9 全量 smoke 全绿 baseline 锁定**
-- [x] **§A 开工前设计层回顾完成** (本次新加的 gate 条件, 2026-04-23): 六轮元审核 + 24 元教训/57 原则框架回顾 + 27 条上游 merge delta 三方交叉核查, 输出 §A.5 七条开工前必做清单 (§3/§4/§5 回写) + 3 条 Day 3 新 smoke + 2 条 §1.3 OOS 扩 + 3 条派生元教训候选 L28-L30
-- [ ] 用户对 P25_BLUEPRINT 本文档审读通过 (**含 §A 以及 §A.5 提出的 §3/§4/§5 回写**)
+- [x] **§A 开工前设计层回顾完成** (本次新加的 gate 条件, 2026-04-23): 六轮元审核 + 第七轮 self-audit + 24 元教训/57 原则框架回顾 + 27 条上游 merge delta 三方交叉核查, 输出 §A.5 **11 条开工前必做清单 + 3 条细节补完** (§3/§4/§5 回写) + 3 条 Day 3 新 smoke + 2 条 §1.3 OOS 扩 + 3 条派生元教训候选 L28-L30
+- [ ] 用户对 P25_BLUEPRINT 本文档审读通过 (**含 §A 全部 11 条矫正 + 3 条细节补完, 以及 §A.5 提出的 §3/§4/§5 回写**)
 
-满足以上 4 条后启动 P25 Day 1. **若用户同意 §A.5 清单, 本 agent 或下个 agent 即可按清单回写 §3/§4/§5 (这是小改动, 无新决策), 然后开工**; **若用户对 §A.5 七条矫正中任何一条有异议, 先讨论再修订 §A 再开工**, 不允许跳过 §A.5 直接按原 §3 开工 (会重踩 R1b/R1c/R4/R5/R6 五条高危 bug).
+满足以上 4 条后启动 P25 Day 1. **若用户同意 §A.5 清单, 本 agent 或下个 agent 即可按清单回写 §3/§4/§5 (这是小改动, 无新决策), 然后开工**; **若用户对 §A.5 11 条矫正中任何一条有异议, 先讨论再修订 §A 再开工**, 不允许跳过 §A.5 直接按原 §3 开工 (会重踩 R1b/R1c/R4/R5/R6/R7/R13 七条高危 bug, 且会引入 R9/R10 两条语义精度问题).
 
 ---
 
@@ -331,6 +331,7 @@ P25 完成后必须在以下文档中同步:
 **变更日志**:
 - 2026-04-22 初版创建 (基于 P24 Day 9 二轮评估结论 + 用户 4 轮 AskQuestion 决策)
 - 2026-04-23 §A 开工前设计层回顾新增 (P24 Day 12 欠账清返 done 后, 按用户 "开工前先研究设计草案, 从架构上理清内容 + 预防高危 bug 点" 要求, 参照 P24 开工期六轮 meta 审核节奏做的 design review gate). Git: `d6a22c2` [`docs(testbench): P25 开工前 · §A 设计层回顾 gate (元审核 + 框架回顾 + 上游 delta 三方交叉核查)`] pushed 成功.
+- 2026-04-23 §A 第七轮 self-audit 补丁 (用户"再审一轮"指示后, 回头审视 §A 本身交叉对照主程序 core.py / cross_server.py / memory_server.py / prompts_avatar_interaction.py 代码, 追加 R7/R9/R10/R13 四条针对 §A 自身的不精确/遗漏矫正, R8/R11/R12 三条细节补完). 矫正总数 7 → 11, §3 Day 1 必改 4 → 6 处, §2.4 从 "一刀切反转" 精确到 "三类分别说明", §4 补 4.6/4.7 两条决策. Git: `<pending>` (本次提交待填).
 
 ---
 
@@ -338,11 +339,11 @@ P25 完成后必须在以下文档中同步:
 
 > **权威性**: 本节是 **P25 Day 1 开工前的 design review gate**. 本节列出的 "设计层矫正" 必须落到 §3 Day-by-Day / §4 关键技术决策 / §5 风险表 后才能开工. Agent 在读本节时若发现 §3 / §4 / §5 已更新对齐, 说明矫正已落地; 若未对齐, 必须先改 §3 / §4 / §5 再开工.
 >
-> **产出方式**: 按 P24 开工期六轮 meta 审核方法论 ([P24_BLUEPRINT §14 meta-audit](P24_BLUEPRINT.md#14-p24-方案元审)), 对本蓝图 §1-§9 做六轮思想实验 + 对 LESSONS §7 24 条元教训 + §3A 57 条设计原则 + 2026-04-22 git merge 27 条上游 delta 做三方交叉核查. 用 P24 Day 12 欠账清返 (`fix(testbench): 62844c7`) 留下的工具 (semantic-contract-vs-runtime-mechanism skill + async-lazy-init-promise-cache skill + render_drift_detector 骨架) 辅助审查.
+> **产出方式**: 按 P24 开工期六轮 meta 审核方法论 ([P24_BLUEPRINT §14 meta-audit](P24_BLUEPRINT.md#14-p24-方案元审)), 对本蓝图 §1-§9 做六轮思想实验 + 对 LESSONS §7 24 条元教训 + §3A 57 条设计原则 + 2026-04-22 git merge 27 条上游 delta 做三方交叉核查; 用户要求"再审一轮"后再跑**第七轮 self-audit** (回头审视前六轮产出的 §A 本身, 交叉对照主程序 `core.py` / `cross_server.py` / `memory_server.py` / `prompts_avatar_interaction.py` 的实际代码行为, 发现 §A 自身的不精确/遗漏点 4 条: R7/R9/R10/R13). 用 P24 Day 12 欠账清返 (`fix(testbench): 62844c7`) 留下的工具 (semantic-contract-vs-runtime-mechanism skill + async-lazy-init-promise-cache skill + render_drift_detector 骨架) 辅助审查.
 
-### §A.1 六轮元审核 (发现的设计层问题)
+### §A.1 六轮元审核 + 第七轮 self-audit (发现的设计层问题)
 
-下表列出六轮审核发现的 **7 条设计层矫正**, 必须在 Day 1 开工前先回写到 §3 / §4 / §5:
+下表列出审核发现的 **11 条设计层矫正** (原 6 轮 7 条 + 第七轮 self-audit 追加 4 条), 必须在 Day 1 开工前先回写到 §3 / §4 / §5:
 
 | # | 审核维度 | 问题原文 | 正确语义 | 落地处置 | 严重度 |
 |---|---|---|---|---|---|
@@ -355,10 +356,24 @@ P25 完成后必须在以下文档中同步:
 | **R5** | L14 coerce 必须 surface | `_normalize_avatar_interaction_payload` 对非法 intensity / touch_zone / text_context>80字符 **静默 coerce**, Day 1 handler 未 surface | P24 Day 2 `messages_writer.append_message` 已踩过一次, 当时教训是"coerce 必须返 caller + caller surface". 当前 P25 Day 1 `SimulationResult` 只有 `accepted/reason/instruction/memory_pair/persisted/dedupe_info/assistant_reply`, **没** `coerce_info` 字段, 等于又一次"coerce = silent". | `SimulationResult` 加 `coerce_info: list[CoerceEntry]` 字段, `CoerceEntry = {field, original, coerced, reason}`; handler 从 `_normalize_avatar_interaction_payload` 返回值提取 coerce diff (如需 helper 改签名返三元组 则本阶段做). Day 2 UI 面板在 "Persistence decision" 栏下加一个 "Payload coerce" 子区 (若 coerce_info 非空才显示), 显示黄色 warning badge. | ❗ 高 (L14 重踩点) |
 | **R6** | L19 mutation 不能 abort | §3 Day 2 "Abort 支持 (api.js signal/abort, 中途取消 LLM 调用)" | L19 明言 "严禁给 mutations (POST/PUT/DELETE) 用 AbortController — 中途 abort 会让服务端状态模糊 (commit 了还是没 commit?)". `POST /api/session/external-event` 是 mutation (写 messages + 写 recent + 写 dedupe cache + 写 diagnostics ring, 四处副作用). abort 中途等于部分副作用落地部分没落地, 无法回滚. | §3 Day 2 改: "**不**用 AbortController; [Invoke event] 按钮在 in-flight 期间 `disabled=true` + 显示 spinner + toast 'event 正在投递, 请稍候'; 若用户真要中止必须等当前 LLM 调用超时 (api.js 默认 90s) 或手动刷新页面". 面板 [Clear dedupe cache] 按钮**可以**用 signal/abort (是 GET-like 幂等调用). | ❗ 高 (L19 重踩点) |
 
-**矫正 7 条的分级**:
-- ❗ 高 (5 条): R1b / R1c / R4 / R5 / R6 — 都是"语义错位 / 边界破坏 / 会重踩历史教训"类, 不改开工就错.
-- ⚠ 中 (2 条): R1a / R3 — 分类清晰化 + 资源 cap 补齐.
+**第七轮 self-audit (2026-04-23 §A commit 后, 追加 4 条针对 §A 自身的复审矫正)**:
+
+| # | 审核维度 | 问题原文 (§A 原表述) | 正确语义 (基于主程序代码复核) | 落地处置 | 严重度 |
+|---|---|---|---|---|---|
+| **R7** | Dual-Mode 默认反转**仅适用于 avatar**, 不是"一刀切" | R1c "§2.4 默认反转 recent_only" 被当成三类系统都适用 | 主程序 `cross_server.py` L571 `if had_user_input_this_turn and ... /cache`: **只有**带用户输入的 turn 才写 /cache. agent_callback/proactive 自身不写 /cache, 等下一轮 user turn 一起入. 所以 **avatar = 独立 memory path (recent_only 默认对) / agent_callback + proactive = 入 chat_history 但不自动入 recent (session_only 默认对)**. 两类默认**不同方向**. | §A.5 R1c 精确化: 默认反转**仅对 avatar**; agent_callback/proactive 保持原 session_only 默认. §2.4 按"三类分别说明"重写. 派生 §4 新决策 "三类 persist default 表". | ❗ 高 (语义精度) |
+| **R9** | merge_unsynced_tail_assistants 连续 proactive/agent_callback reply 合并仅保留最后一条 | §A 未覆盖, §3 Day 1 也未明示 | 主程序 `cross_server.py::merge_unsynced_tail_assistants` (L80-118): tail 如果连续 ≥2 条 assistant 且都在 last_synced_index 之后, **丢弃前 N-1 条, 只保留最后一条** ("精简了 N 条未同步的连续主动搭话消息, 仅保留最后一条"). 这是**语义契约**级别的行为 (不是运行时机制), 对"连点 3 次 proactive 应该看到几条 reply" 的直觉有实质影响. | testbench 决策: **不**复现 merge (复杂度 ↑ + 破坏"每次点击=一条 turn"的直觉; tester 手工点击间隔天然 ≥ 人类反应时间, 等价 "user 在中间 interleave 了操作", 不满足主程序 merge 触发前提 "连续未被 user turn 打断"). §4 新加决策 "4.6 merge_unsynced_tail 不复现 (OOS 理由)". | ⚠ 中 |
+| **R10** | SimulationResult.reason 候选值不明 | §3 Day 1 `SimulationResult` 字段仅列出 `reason` 字段名, 未明示哪些 reason 值是"语义契约"层面需要复现 | 主程序 `handle_avatar_interaction` 有 12 种 reject reason: `invalid_payload` / `duplicate` / `cooldown` (600ms 运行时窗口) / `voice_session_active` (OmniRealtimeClient) / `no_websocket` (连接状态) / `session_start_failed` (自启失败) / `not_text_session` (模式校验) / `busy` (text session locked) / `speak_cooldown` (另一个运行时窗口) / `error` (prompt_ephemeral 异常) / 以及 agent_callback/proactive 各自的少量对应 | §4 新加表 "4.7 SimulationResult.reason 复现表". **复现的 (语义契约)**: `invalid_payload` / `duplicate` / `busy` / `llm_error`. **不复现的 (运行时机制)**: `cooldown` (600ms) / `speak_cooldown` / `voice_session_active` / `no_websocket` / `session_start_failed` / `not_text_session`. | ⚠ 中 |
+| **R13** | agent_callback 触发路径不明 | §3 Day 1 未说明复现路径 A 还是 B | 主程序 agent_callback 有**两条触发路径**: **路径 A** = `core.py` L3623-3631, 在 user turn 发送**前**顺带 inject (`prompt_ephemeral(_loc(AGENT_CALLBACK_NOTIFICATION,...) + ctx)`); **路径 B** = `_deliver_agent_callbacks_text` L3051-3063, 作为**独立 proactive turn** 触发 (定时/idle). 两条路径都是同一 instruction + `prompt_ephemeral` 调用, 但触发时机不同. | testbench 决策: **复现路径 B** (独立 turn, tester 手动 click). **不复现路径 A** (会要求 chain 到 user text send, 破坏"简单事件驱动"哲学). §2 新加小节 "2.7 agent_callback 路径选择" 或在 §3 Day 1 交付物描述里明示 simulate_agent_callback 对应路径 B. | ❗ 高 (路径歧义) |
+
+**矫正 11 条 (原 7 + self-audit 补 4) 的分级**:
+- ❗ 高 (7 条): R1b / R1c / R4 / R5 / R6 / R7 / R13 — 都是"语义错位 / 边界破坏 / 会重踩历史教训 / 路径歧义"类, 不改开工就错.
+- ⚠ 中 (4 条): R1a / R3 / R9 / R10 — 分类清晰化 + 资源 cap 补齐 + 语义契约边界明示.
 - ℹ 低 (1 条): R2 — 条件满足, 本地 ✅ 合规; 只在 UI 扩"事件摘要"视组件时再做.
+
+**R8/R11/R12 (细节补完, 不独立成矫正点)**:
+- **R8** `/cache` endpoint 调用 `recent_history_manager.update_history(..., compress=False)`, 语义等价 testbench `CompressedRecentHistoryManager.update_history(compress=False)` ✅. 需在 §3 Day 3 验收点明示: avatar memory pair 入 recent.json **不**自动触发 facts.extract (对应主程序 /cache 不触发 /process), 要测长期记忆必须 tester 手动 trigger facts.extract / reflect. (已在 Day 3 步骤 6-7 隐含, 明写一下更清晰).
+- **R11** R5 的 coerce surface 至少应覆盖 5 处 silent coerce: `intensity` (`_normalize_avatar_interaction_intensity` 纠正) / `touch_zone` (非白名单→空串) / `text_context` (`_sanitize_avatar_interaction_text_context`) / `pointer` (非法→None) / `timestamp` (非法→`time.time()*1000` fallback). §A.5 R5 文案完善补此列举.
+- **R12** `_sanitize_avatar_interaction_text_context` 做大量 silent 清洗 (换行归一化 / 非 printable→空格 / 去 list 前缀 / 合并连续空白 / 80 字符截断). coerce_info 为避免爆表, **per-field 合并记一条** `{field: "text_context", reason: "text_sanitized", original: "...", coerced: "..."}`, 不展开子步骤.
 
 ### §A.2 框架回顾 (24 元教训 + 57 原则中 P25 必读子集)
 
@@ -444,29 +459,35 @@ L1-L5 (整体方法论, 已内化) / L7 (纸面原则静态守) / L8 (合规率 
 
 ### §A.5 Design Review Gate 结论
 
-本轮 design review gate 输出以下**开工前必做清单**:
+本轮 design review gate 输出以下**开工前必做清单** (原 7 条 + 第七轮 self-audit 补 4 条 = 总计 11 条矫正 + 3 处细节补完):
 
-1. **§3 Day 1 必改 4 处**:
-   - Acceptance 第 2 条改: instruction 只入 wire, 不入 session.messages (R1b)
+1. **§3 Day 1 必改 6 处**:
+   - Acceptance 第 2 条改: instruction 只入 wire, 不入 session.messages. **三类 reply 的去向分别明示**: avatar=独立 memory path 不入 session.messages; agent_callback/proactive=reply 入 session.messages 但不自动 /cache (对齐主程序 "had_user_input_this_turn") (R1b 精确化 + R7)
    - 新增 `pipeline/avatar_dedupe.py` (copy `_should_persist_avatar_interaction_memory` + `AVATAR_INTERACTION_MEMORY_DEDUPE_WINDOW_MS` 常量) (R4)
    - `_AvatarDedupeCache` 加 `_MAX_ENTRIES=100` + LRU + 溢出 once-notice (R3)
-   - `SimulationResult` 加 `coerce_info: list[CoerceEntry]` 字段 + handler 从 `_normalize_avatar_interaction_payload` 提取 coerce diff (R5)
-2. **§2.4 Dual-Mode Memory Write 默认值反转**:
-   - 默认 = **recent_only** (仅走 memory_writer 写 recent.json, 对齐主程序真实语义)
-   - 可选 = **mirror_ui** (额外 mirror 一份到 session.messages 让 tester 在 Chat 视图看到 note + reply) (R1c)
+   - `SimulationResult` 加 `coerce_info: list[CoerceEntry]` 字段, handler 覆盖 5 处 silent coerce (intensity / touch_zone / text_context / pointer / timestamp, per-field 合并一条) (R5 + R11 + R12)
+   - `simulate_agent_callback` 交付物明示对应**主程序路径 B** (独立 proactive turn), 不复现路径 A (顺带 inject 到 user turn) (R13)
+   - `SimulationResult.reason` 字段注释明示"复现的是语义契约层 reason: invalid_payload/duplicate/busy/llm_error; cooldown/voice_session_active 等运行时层 reason 不复现" (R10)
+2. **§2.4 Dual-Mode Memory Write 默认值 — 三类分别说明 (不是一刀切)**:
+   - **avatar**: 默认 = **recent_only** (独立 memory path, 仅写 recent.json, 对齐主程序 `/cache` 独立路径); 可选 = **mirror_ui** (额外 mirror 到 session.messages 让 tester 在 Chat 视图看到 memory pair) (R1c + R7)
+   - **agent_callback / proactive**: 默认 = **session_only** (reply 入 session.messages, 不自动入 recent, 对齐主程序 `had_user_input_this_turn` 条件); 可选 = **mirror_recent** (显式模拟 "下一轮 user turn 顺带 /cache" 行为) (R7)
 3. **§3 Day 2 必改 1 处**:
    - 删 "Abort 支持 (api.js signal/abort, 中途取消 LLM 调用)"
    - 改为 "[Invoke event] 按钮 in-flight 期间 disabled=true + spinner + toast '事件正在投递, 请稍候'" (R6)
-4. **§3 Day 3 必加 3 条 smoke**:
+4. **§3 Day 3 必加 3 条 smoke + 1 条验收点说明**:
    - `p25_avatar_dedupe_drift_smoke.py` — from 主程序 import `_should_persist_avatar_interaction_memory` vs testbench copy hash compare (R4)
    - `persona.language=es/pt` 断言 → agent_callback instruction 是英文 (上游 delta)
    - `persona.language=es/pt` 断言 → proactive prompt 是英文 (上游 delta)
+   - 验收点步骤 6 明示: avatar memory pair 入 recent.json **不**自动触发 facts.extract (主程序 /cache 语义), tester 必须手动 trigger 才能观察长期记忆影响 (R8)
 5. **§1.3 OOS 扩 2 条**:
    - 冷却三分类明示 (R1a)
    - `min_idle_secs=10s` 阈值 OOS (上游 core.py 的 prepare_proactive_delivery)
-6. **§5 风险表补 1 条**:
+6. **§4 关键技术决策必补 2 条**:
+   - **4.6 merge_unsynced_tail_assistants 不复现 (OOS)**: 主程序连续 proactive/agent_callback reply 丢弃前 N-1 条仅保留最后一条, testbench **不复现** (tester 手工点击间隔 ≥ 人类反应时间, 等价 "user 在中间 interleave 了操作", 不满足主程序 merge 触发前提); 换言之, testbench 每次 `simulate_*` 都是独立 turn, session.messages 逐条追加 (R9)
+   - **4.7 SimulationResult.reason 复现表**: 复现 (`invalid_payload` / `duplicate` / `busy` / `llm_error`) vs 不复现 (`cooldown` / `speak_cooldown` / `voice_session_active` / `no_websocket` / `session_start_failed` / `not_text_session`) 明示 (R10)
+7. **§5 风险表补 1 条**:
    - "高频事件 tester 点爆 dedupe cache" (R3 已处置, 记录到风险表)
-7. **§3A 可能新增原则 (待 P25 交付后观察)**:
+8. **§3A 可能新增原则 (待 P25 交付后观察)**:
    - 候选 H3 "外部系统 pure helper cross-package copy > import (有重副作用时)" (L30 的铁律化)
    - 候选 A19 "SimulationResult-like 响应对象必须含 coerce_info / fallback_reason 字段族" (L14/L17 的 request-response 扩展)
 
@@ -475,7 +496,7 @@ L1-L5 (整体方法论, 已内化) / L7 (纸面原则静态守) / L8 (合规率 
 原 §8 三条门禁:
 - [x] P24 Day 1-9 完成并用户验收 ✅ (Day 1-12 全 + Day 12 欠账清返 全绿)
 - [x] **P24 Day 10 smoke 交付完成 + 回归绿** ✅ (9/9 smoke 全绿, 最后一次 2026-04-23 欠账清返 commit `62844c7` 后跑的)
-- [ ] 用户对 P25_BLUEPRINT 本文档审读通过 (**含本 §A**) **← 本轮新加的 gate 条件**
+- [ ] 用户对 P25_BLUEPRINT 本文档审读通过 (**含本 §A 全部 11 条矫正 + 3 条细节补完**) **← 本轮新加的 gate 条件**
 
-**新 §8 门禁满足判据**: 用户阅读本 §A + 回复"开工" 或"修订 §A 再开工"之一, 再进 Day 1.
+**新 §8 门禁满足判据**: 用户阅读本 §A + 回复"开工" 或"修订 §A 再开工"之一, 再进 Day 1. **不**允许跳过 §A.5 的 11 条矫正 + 3 条补完直接按原 §3 开工 (会重踩 R1b/R1c/R4/R5/R6/R7/R13 七条高危 bug, 且会引入 R9/R10 两条语义精度问题).
 
