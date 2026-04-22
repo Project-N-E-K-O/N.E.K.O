@@ -3332,5 +3332,19 @@
         "useTemporary": "Use Temporarily",
         "tempBadge": "Temp",
         "popupBlocked": "Popup was blocked. Please allow popups and try again."
+    },
+    "storageMigration": {
+        "startup": {
+            "title": "Choose where N.E.K.O stores data",
+            "subtitle": "This is the Stage 1 startup flow check. Your choice is only recorded for the startup flow right now; it will not switch the runtime root or migrate data yet.",
+            "recommended": "Recommended location",
+            "detectedLegacy": "Detected old data locations",
+            "noLegacy": "No old data locations were detected on this device.",
+            "probeNotice": "This step only validates the startup order. Choosing a custom location will not move data yet.",
+            "useDefault": "Use recommended location",
+            "chooseCustom": "Choose another location",
+            "cancel": "Cancel startup",
+            "chooseCustomDialogTitle": "Choose a folder for N.E.K.O data"
+        }
     }
 }

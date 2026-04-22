@@ -3332,5 +3332,19 @@
         "useTemporary": "一時的に使用",
         "tempBadge": "一時",
         "popupBlocked": "ポップアップがブロックされました。ポップアップを許可してから再試行してください。"
+    },
+    "storageMigration": {
+        "startup": {
+            "title": "N.E.K.O のデータ保存場所を選択",
+            "subtitle": "これは初回起動時の保存場所フローを確認する第一段階です。ここでの選択は起動フロー確認のために記録されるだけで、まだ実際の実行ディレクトリ切り替えやデータ移行は行いません。",
+            "recommended": "推奨される場所",
+            "detectedLegacy": "検出された旧データの場所",
+            "noLegacy": "この端末では旧データの場所は見つかりませんでした。",
+            "probeNotice": "この段階では起動順序のみを検証します。カスタム場所を選んでも、まだデータは移動されません。",
+            "useDefault": "推奨場所を使用",
+            "chooseCustom": "別の場所を選択",
+            "cancel": "起動をキャンセル",
+            "chooseCustomDialogTitle": "N.E.K.O データフォルダーを選択"
+        }
     }
 }

@@ -104,9 +104,11 @@ import logging
 import uuid
 import importlib
 import multiprocessing
+import locale
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict
 from multiprocessing import Process, freeze_support, Event
 import config as config_module
 from config import APP_NAME, MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT
@@ -128,6 +130,7 @@ from utils.cloudsave_runtime import (
 )
 from utils.cloudsave_autocloud import get_cloudsave_manager
 from utils.config_manager import get_config_manager, reset_config_manager_cache
+from utils.file_utils import atomic_write_json
 
 
 def _configure_multiprocessing_executable(project_dir: str) -> None:
@@ -330,6 +333,618 @@ def report_startup_failure(message: str, show_dialog: bool = True):
     emit_frontend_event("startup_failure", {"message": message})
     if show_dialog and IS_FROZEN:
         _show_error_dialog(message)
+
+
+STORAGE_LOCATION_PROBE_STATE_VERSION = 1
+STORAGE_LOCATION_PROBE_STATE_FILENAME = "storage_location_probe_state.json"
+STORAGE_LOCATION_PROBE_RESPONSE_PREFIX = "neko_storage_location_probe"
+STORAGE_LOCATION_PROBE_RUNTIME_DIR_NAMES = (
+    "memory",
+    "plugins",
+    "live2d",
+    "vrm",
+    "mmd",
+    "workshop",
+    "character_cards",
+    "jukebox",
+)
+STORAGE_LOCATION_PROBE_CONFIG_FILENAMES = (
+    "characters.json",
+    "user_preferences.json",
+    "core_config.json",
+    "voice_storage.json",
+    "workshop_config.json",
+)
+TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
+
+
+def _is_truthy_env(name: str) -> bool:
+    return str(os.environ.get(name, "")).strip().lower() in TRUE_ENV_VALUES
+
+
+def _dedupe_launcher_paths(paths: list[Path]) -> list[Path]:
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        if not path:
+            continue
+        normalized = str(Path(path))
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        unique.append(Path(path))
+    return unique
+
+
+def _can_write_existing_directory(directory: Path) -> bool:
+    try:
+        directory = Path(directory)
+        if not directory.exists():
+            return False
+        if not os.access(str(directory), os.R_OK | os.W_OK):
+            return False
+        test_path = directory / f".test_neko_launcher_write.{uuid.uuid4().hex}.tmp"
+        test_path.touch()
+        test_path.unlink()
+        return True
+    except Exception:
+        return False
+
+
+def _get_launcher_standard_data_directory_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    if sys.platform == "win32":
+        localappdata = os.environ.get("LOCALAPPDATA", "").strip()
+        if localappdata:
+            candidates.append(Path(localappdata))
+    elif sys.platform == "darwin":
+        candidates.append(Path.home() / "Library" / "Application Support")
+    else:
+        xdg_data_home = os.getenv("XDG_DATA_HOME", "").strip()
+        if xdg_data_home:
+            candidates.append(Path(xdg_data_home))
+        candidates.append(Path.home() / ".local" / "share")
+    return _dedupe_launcher_paths(candidates)
+
+
+def _get_launcher_legacy_storage_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    if sys.platform == "win32":
+        try:
+            from ctypes import windll, wintypes
+
+            CSIDL_PERSONAL = 5
+            SHGFP_TYPE_CURRENT = 0
+            buf = ctypes.create_unicode_buffer(wintypes.MAX_PATH)
+            windll.shell32.SHGetFolderPathW(None, CSIDL_PERSONAL, None, SHGFP_TYPE_CURRENT, buf)
+            api_path = Path(buf.value)
+            candidates.append(api_path)
+            if not api_path.exists() and api_path.drive:
+                drive = api_path.drive
+                for name in ("文档", "Documents", "My Documents"):
+                    alt_path = Path(drive) / name
+                    if alt_path.exists():
+                        candidates.append(alt_path)
+        except Exception:
+            pass
+
+        try:
+            import winreg
+
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+            )
+            reg_path_str = winreg.QueryValueEx(key, "Personal")[0]
+            winreg.CloseKey(key)
+            candidates.append(Path(os.path.expandvars(reg_path_str)))
+        except Exception:
+            pass
+
+        candidates.append(Path.home() / "Documents")
+        candidates.append(Path.home() / "文档")
+    elif sys.platform == "darwin":
+        candidates.append(Path.home() / "Documents")
+    else:
+        xdg_docs = os.getenv("XDG_DOCUMENTS_DIR", "").strip()
+        if xdg_docs:
+            candidates.append(Path(xdg_docs))
+        candidates.append(Path.home() / "Documents")
+
+    if IS_FROZEN:
+        candidates.append(Path(sys.executable).parent)
+    candidates.append(Path.cwd())
+    return _dedupe_launcher_paths(candidates)
+
+
+def _pick_launcher_runtime_parent() -> Path:
+    candidates = _dedupe_launcher_paths(
+        _get_launcher_standard_data_directory_candidates() + _get_launcher_legacy_storage_candidates()
+    )
+    for base_dir in candidates:
+        try:
+            if base_dir.exists():
+                if _can_write_existing_directory(base_dir):
+                    return base_dir
+                continue
+
+            dirs_to_create: list[Path] = []
+            current = base_dir
+            while current and not current.exists():
+                dirs_to_create.append(current)
+                current = current.parent
+                if current == current.parent:
+                    break
+            for dir_path in reversed(dirs_to_create):
+                if not dir_path.exists():
+                    dir_path.mkdir(parents=False, exist_ok=True)
+            test_path = base_dir / ".test_neko_launcher_write"
+            test_path.touch()
+            test_path.unlink()
+            return base_dir
+        except Exception:
+            continue
+    return Path.cwd()
+
+
+def _normalize_storage_probe_path(path: str | os.PathLike[str]) -> str:
+    normalized = Path(path).expanduser().resolve(strict=False)
+    normalized_str = str(normalized)
+    if sys.platform == "win32":
+        normalized_str = os.path.normcase(normalized_str)
+    return normalized_str.rstrip("\\/") or normalized_str
+
+
+def _storage_probe_state_path(runtime_root: Path) -> Path:
+    return Path(runtime_root) / "state" / STORAGE_LOCATION_PROBE_STATE_FILENAME
+
+
+def _directory_has_meaningful_content(directory: Path) -> bool:
+    try:
+        if not directory.is_dir():
+            return False
+        for child in directory.iterdir():
+            if child.name.startswith("."):
+                continue
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def _summarize_storage_probe_root(root: Path) -> dict[str, Any]:
+    root = Path(root)
+    config_dir = root / "config"
+    present_configs = [
+        filename
+        for filename in STORAGE_LOCATION_PROBE_CONFIG_FILENAMES
+        if (config_dir / filename).is_file()
+    ]
+    dirs_with_content = [
+        dir_name
+        for dir_name in STORAGE_LOCATION_PROBE_RUNTIME_DIR_NAMES
+        if _directory_has_meaningful_content(root / dir_name)
+    ]
+    score = len(present_configs) * 3 + len(dirs_with_content) * 2
+    return {
+        "path": str(root),
+        "present_configs": present_configs,
+        "dirs_with_content": dirs_with_content,
+        "score": score,
+        "has_user_content": bool(present_configs or dirs_with_content),
+    }
+
+
+def _detect_storage_location_probe_context() -> dict[str, Any]:
+    runtime_parent = _pick_launcher_runtime_parent()
+    recommended_runtime_root = (runtime_parent / APP_NAME).resolve(strict=False)
+    recommended_summary = _summarize_storage_probe_root(recommended_runtime_root)
+
+    legacy_sources: list[dict[str, Any]] = []
+    current_root_normalized = _normalize_storage_probe_path(recommended_runtime_root)
+    for base_dir in _get_launcher_legacy_storage_candidates():
+        app_root = (Path(base_dir) / APP_NAME).resolve(strict=False)
+        if _normalize_storage_probe_path(app_root) == current_root_normalized:
+            continue
+        summary = _summarize_storage_probe_root(app_root)
+        if not summary["has_user_content"]:
+            continue
+        legacy_sources.append(summary)
+
+    legacy_sources.sort(key=lambda item: (-int(item.get("score") or 0), str(item.get("path") or "")))
+    state_path = _storage_probe_state_path(recommended_runtime_root)
+    return {
+        "recommended_runtime_root": str(recommended_runtime_root),
+        "cloudsave_root": str(recommended_runtime_root / "cloudsave"),
+        "has_existing_runtime_content": bool(recommended_summary["has_user_content"]),
+        "legacy_sources": legacy_sources,
+        "state_path": str(state_path),
+    }
+
+
+def _load_storage_location_probe_state(state_path: Path) -> dict[str, Any] | None:
+    try:
+        if not state_path.is_file():
+            return None
+        with open(state_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if not isinstance(payload, dict):
+            return None
+        return payload
+    except Exception:
+        return None
+
+
+def _should_run_storage_location_probe(state_path: Path) -> bool:
+    if _is_truthy_env("NEKO_DISABLE_STORAGE_LOCATION_PROMPT"):
+        return False
+    if _is_truthy_env("NEKO_FORCE_STORAGE_LOCATION_PROMPT"):
+        return True
+    state = _load_storage_location_probe_state(state_path)
+    if not isinstance(state, dict):
+        return True
+    if int(state.get("version") or 0) != STORAGE_LOCATION_PROBE_STATE_VERSION:
+        return True
+    return not bool(state.get("completed"))
+
+
+def _detect_launcher_locale_code() -> str:
+    override = str(os.environ.get("NEKO_STORAGE_LOCATION_PROMPT_LANG", "")).strip()
+    if override:
+        raw_lang = override
+    elif sys.platform == "win32":
+        raw_lang = ""
+        try:
+            buf = ctypes.create_unicode_buffer(85)
+            if ctypes.windll.kernel32.GetUserDefaultLocaleName(buf, 85):
+                raw_lang = buf.value
+        except Exception:
+            raw_lang = ""
+        if not raw_lang:
+            raw_lang = locale.getlocale()[0] or os.environ.get("LANG", "")
+    else:
+        raw_lang = locale.getlocale()[0] or os.environ.get("LANG", "")
+
+    lowered = str(raw_lang or "").replace("_", "-").lower()
+    if lowered.startswith("zh-tw") or lowered.startswith("zh-hk") or "hant" in lowered:
+        return "zh-TW"
+    if lowered.startswith("zh"):
+        return "zh-CN"
+    if lowered.startswith("ja"):
+        return "ja"
+    if lowered.startswith("ko"):
+        return "ko"
+    return "en"
+
+
+def _load_launcher_locale_payload() -> dict[str, Any]:
+    locale_code = _detect_launcher_locale_code()
+    locale_dir = Path(bundle_dir) / "static" / "locales"
+    for candidate in (locale_code, "en"):
+        locale_path = locale_dir / f"{candidate}.json"
+        try:
+            with open(locale_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            if isinstance(payload, dict):
+                return payload
+        except Exception:
+            continue
+    return {}
+
+
+def _launcher_t(locale_payload: dict[str, Any], key: str, fallback: str) -> str:
+    current: Any = locale_payload
+    for part in key.split("."):
+        if not isinstance(current, dict):
+            return fallback
+        current = current.get(part)
+    if isinstance(current, str) and current.strip():
+        return current
+    return fallback
+
+
+def _build_storage_location_required_payload(context: dict[str, Any], response_file: Path) -> dict[str, Any]:
+    legacy_sources = [
+        {
+            "path": str(item.get("path") or ""),
+            "score": int(item.get("score") or 0),
+            "present_configs": list(item.get("present_configs") or []),
+            "dirs_with_content": list(item.get("dirs_with_content") or []),
+        }
+        for item in context.get("legacy_sources", [])
+    ]
+    return {
+        "stage": "probe",
+        "probe_only": True,
+        "response_file": str(response_file),
+        "recommended_runtime_root": str(context.get("recommended_runtime_root") or ""),
+        "legacy_sources": legacy_sources,
+        "has_existing_runtime_content": bool(context.get("has_existing_runtime_content")),
+        "cloudsave_root": str(context.get("cloudsave_root") or ""),
+        "allow_custom_directory_picker": True,
+    }
+
+
+def _read_storage_location_probe_response_file(response_file: Path) -> dict[str, Any] | None:
+    try:
+        if not response_file.is_file():
+            return None
+        with open(response_file, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if not isinstance(payload, dict):
+            return None
+        return payload
+    except Exception:
+        return None
+
+
+def _show_native_storage_location_probe_dialog(context: dict[str, Any]) -> dict[str, Any]:
+    import tkinter as tk
+    from tkinter import filedialog, ttk
+
+    locale_payload = _load_launcher_locale_payload()
+    recommended_root = str(context.get("recommended_runtime_root") or "")
+    legacy_sources = list(context.get("legacy_sources") or [])
+    result: dict[str, Any] = {"action": "cancel_startup", "selected_path": ""}
+
+    window = tk.Tk()
+    window.title(_launcher_t(locale_payload, "storageMigration.startup.title", "Choose where N.E.K.O stores data"))
+    window.geometry("820x560")
+    window.minsize(720, 500)
+    try:
+        window.attributes("-topmost", True)
+    except Exception:
+        pass
+
+    main_frame = ttk.Frame(window, padding=18)
+    main_frame.pack(fill="both", expand=True)
+    main_frame.columnconfigure(0, weight=1)
+    main_frame.rowconfigure(3, weight=1)
+
+    title_label = ttk.Label(
+        main_frame,
+        text=_launcher_t(
+            locale_payload,
+            "storageMigration.startup.title",
+            "Choose where N.E.K.O stores data",
+        ),
+        font=("Segoe UI", 14, "bold"),
+    )
+    title_label.grid(row=0, column=0, sticky="w")
+
+    subtitle_label = ttk.Label(
+        main_frame,
+        text=_launcher_t(
+            locale_payload,
+            "storageMigration.startup.subtitle",
+            "This is the Stage 1 startup flow check. Your choice is recorded for the flow only; the current runtime root will not be switched yet.",
+        ),
+        wraplength=760,
+        justify="left",
+    )
+    subtitle_label.grid(row=1, column=0, sticky="ew", pady=(8, 12))
+
+    recommended_frame = ttk.LabelFrame(
+        main_frame,
+        text=_launcher_t(locale_payload, "storageMigration.startup.recommended", "Recommended location"),
+        padding=12,
+    )
+    recommended_frame.grid(row=2, column=0, sticky="ew")
+    recommended_frame.columnconfigure(0, weight=1)
+
+    recommended_box = tk.Text(recommended_frame, height=3, wrap="word")
+    recommended_box.grid(row=0, column=0, sticky="ew")
+    recommended_box.insert("1.0", recommended_root)
+    recommended_box.configure(state="disabled")
+
+    legacy_frame = ttk.LabelFrame(
+        main_frame,
+        text=_launcher_t(locale_payload, "storageMigration.startup.detectedLegacy", "Detected old data locations"),
+        padding=12,
+    )
+    legacy_frame.grid(row=3, column=0, sticky="nsew", pady=(12, 0))
+    legacy_frame.columnconfigure(0, weight=1)
+    legacy_frame.rowconfigure(0, weight=1)
+
+    legacy_box = tk.Text(legacy_frame, height=12, wrap="word")
+    legacy_box.grid(row=0, column=0, sticky="nsew")
+    if legacy_sources:
+        lines = []
+        for index, item in enumerate(legacy_sources, start=1):
+            path_text = str(item.get("path") or "")
+            score = int(item.get("score") or 0)
+            lines.append(f"{index}. {path_text}")
+            if score > 0:
+                lines.append(f"   score={score}")
+        legacy_box.insert("1.0", "\n".join(lines))
+    else:
+        legacy_box.insert(
+            "1.0",
+            _launcher_t(
+                locale_payload,
+                "storageMigration.startup.noLegacy",
+                "No old data locations were detected on this device.",
+            ),
+        )
+    legacy_box.configure(state="disabled")
+
+    notice_label = ttk.Label(
+        main_frame,
+        text=_launcher_t(
+            locale_payload,
+            "storageMigration.startup.probeNotice",
+            "This step only validates the startup flow. Choosing a custom path will not move data yet.",
+        ),
+        wraplength=760,
+        justify="left",
+    )
+    notice_label.grid(row=4, column=0, sticky="ew", pady=(12, 0))
+
+    button_row = ttk.Frame(main_frame)
+    button_row.grid(row=5, column=0, sticky="e", pady=(16, 0))
+
+    def _finish(action: str, selected_path: str = "") -> None:
+        result["action"] = action
+        result["selected_path"] = selected_path
+        try:
+            window.destroy()
+        except Exception:
+            pass
+
+    def _on_use_default() -> None:
+        _finish("use_default", recommended_root)
+
+    def _on_choose_custom() -> None:
+        chosen = filedialog.askdirectory(
+            parent=window,
+            title=_launcher_t(
+                locale_payload,
+                "storageMigration.startup.chooseCustomDialogTitle",
+                "Choose a folder for N.E.K.O data",
+            ),
+            initialdir=str(Path(recommended_root).parent),
+            mustexist=False,
+        )
+        if not chosen:
+            return
+        _finish("choose_custom", _normalize_storage_probe_path(chosen))
+
+    def _on_cancel() -> None:
+        _finish("cancel_startup")
+
+    cancel_button = ttk.Button(
+        button_row,
+        text=_launcher_t(locale_payload, "storageMigration.startup.cancel", "Cancel startup"),
+        command=_on_cancel,
+    )
+    cancel_button.pack(side="right", padx=(8, 0))
+
+    custom_button = ttk.Button(
+        button_row,
+        text=_launcher_t(locale_payload, "storageMigration.startup.chooseCustom", "Choose another location"),
+        command=_on_choose_custom,
+    )
+    custom_button.pack(side="right", padx=(8, 0))
+
+    default_button = ttk.Button(
+        button_row,
+        text=_launcher_t(locale_payload, "storageMigration.startup.useDefault", "Use recommended location"),
+        command=_on_use_default,
+    )
+    default_button.pack(side="right")
+
+    window.protocol("WM_DELETE_WINDOW", _on_cancel)
+    window.update_idletasks()
+    try:
+        window.lift()
+        window.focus_force()
+    except Exception:
+        pass
+    window.mainloop()
+    return result
+
+
+def _show_storage_location_probe_dialog(context: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return _show_native_storage_location_probe_dialog(context)
+    except Exception as exc:
+        safe_default = (
+            not bool(context.get("has_existing_runtime_content"))
+            and not bool(context.get("legacy_sources"))
+        )
+        if safe_default:
+            print(
+                f"[Launcher] Warning: failed to open storage probe UI, defaulting to recommended location: {exc}",
+                flush=True,
+            )
+            return {
+                "action": "use_default",
+                "selected_path": str(context.get("recommended_runtime_root") or ""),
+            }
+        raise RuntimeError(f"storage location probe UI unavailable: {exc}") from exc
+
+
+def _run_storage_location_first_run_probe() -> str:
+    context = _detect_storage_location_probe_context()
+    state_path = Path(str(context["state_path"]))
+    if not _should_run_storage_location_probe(state_path):
+        emit_frontend_event(
+            "storage_location_probe_completed",
+            {
+                "stage": "probe",
+                "probe_only": True,
+                "status": "skipped",
+                "reason": "already_completed",
+            },
+        )
+        return "skipped"
+
+    response_file = Path(tempfile.gettempdir()) / f"{STORAGE_LOCATION_PROBE_RESPONSE_PREFIX}.{LAUNCH_ID}.json"
+    emit_frontend_event(
+        "storage_location_required",
+        _build_storage_location_required_payload(context, response_file),
+    )
+
+    response = _read_storage_location_probe_response_file(response_file)
+    if response is None:
+        response = _show_storage_location_probe_dialog(context)
+
+    action = str(response.get("action") or "").strip() or "cancel_startup"
+    selected_path = str(response.get("selected_path") or "").strip()
+    if selected_path:
+        selected_path = _normalize_storage_probe_path(selected_path)
+
+    atomic_write_json(
+        response_file,
+        {
+            "launch_id": LAUNCH_ID,
+            "action": action,
+            "selected_path": selected_path,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    try:
+        if action == "cancel_startup":
+            emit_frontend_event(
+                "storage_location_cancelled",
+                {
+                    "stage": "probe",
+                    "probe_only": True,
+                    "reason": "user_cancelled",
+                },
+            )
+            return "cancelled"
+
+        state_payload = {
+            "version": STORAGE_LOCATION_PROBE_STATE_VERSION,
+            "completed": True,
+            "probe_only": True,
+            "action": action,
+            "selected_path": selected_path,
+            "recommended_runtime_root": str(context.get("recommended_runtime_root") or ""),
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        atomic_write_json(state_path, state_payload, ensure_ascii=False, indent=2)
+
+        emit_frontend_event(
+            "storage_location_probe_completed",
+            {
+                "stage": "probe",
+                "probe_only": True,
+                "status": "completed",
+                "action": action,
+                "selected_path": selected_path,
+            },
+        )
+        return "completed"
+    finally:
+        try:
+            response_file.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def _get_last_error() -> int:
@@ -1587,6 +2202,11 @@ def main():
             return 0
         if not port_result:
             return 1
+
+        probe_result = _run_storage_location_first_run_probe()
+        if probe_result == "cancelled":
+            print("[Launcher] Startup cancelled during storage location probe", flush=True)
+            return 0
 
         register_shutdown_hooks()
 
