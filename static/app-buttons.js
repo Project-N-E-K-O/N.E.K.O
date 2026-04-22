@@ -1846,10 +1846,15 @@
             await new Promise(function (r) { setTimeout(r, 300); });
             try {
                 // Priority 1: Electron direct capture (不隐藏卫星窗口版本，仅为向后兼容兜底)
-                if (selectedSourceId && window.electronDesktopCapturer
+                // 读当前的 S.selectedScreenSourceId —— Priority 0 若刚命中 'Source not found'
+                // 已经通过 maybeClearSourceOnNotFound 把它清空，此时 selectedSourceId 这个本地
+                // 快照已是僵尸 ID；继续用它只会让主进程再原样报一次 'Source not found'，
+                // 多一次 IPC 往返。重读 S 直接跳到 Priority 2 流路径。
+                var currentSourceId = S.selectedScreenSourceId;
+                if (currentSourceId && window.electronDesktopCapturer
                     && typeof window.electronDesktopCapturer.captureSourceAsDataUrl === 'function') {
                     try {
-                        var direct = await window.electronDesktopCapturer.captureSourceAsDataUrl(selectedSourceId);
+                        var direct = await window.electronDesktopCapturer.captureSourceAsDataUrl(currentSourceId);
                         if (direct && direct.success && direct.dataUrl) {
                             var scaled = await downscaleDataUrlTo720p(direct.dataUrl);
                             if (scaled && scaled.dataUrl) return scaled.dataUrl;
