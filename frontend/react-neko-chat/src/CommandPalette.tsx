@@ -39,7 +39,7 @@ export interface CommandPaletteProps {
   items: CommandItem[];
   preferences: UserPreferences;
   loading?: boolean;
-  initialSearch?: string;
+  slashMode?: boolean;
   onExecute: (actionId: string, value: unknown) => Promise<CommandItem | null>;
   onInjectText: (text: string) => void;
   onNavigate: (target: string, openIn: string) => void;
@@ -53,10 +53,7 @@ export interface CommandPaletteProps {
 
 function matchesSearch(item: CommandItem, query: string): boolean {
   if (!query) return true;
-  const isSlashMode = query.startsWith('/');
-  if (isSlashMode && item.type !== 'chat_inject') return false;
-  const q = (isSlashMode ? query.slice(1) : query).toLowerCase();
-  if (!q) return !isSlashMode || item.type === 'chat_inject'; // "/" alone shows all inject items
+  const q = query.toLowerCase();
   return (
     item.label.toLowerCase().includes(q) ||
     item.description.toLowerCase().includes(q) ||
@@ -516,14 +513,14 @@ export default function CommandPalette({
   items,
   preferences,
   loading: externalLoading = false,
-  initialSearch = '',
+  slashMode = false,
   onExecute,
   onInjectText,
   onNavigate,
   onPreferencesChange,
   onClose,
 }: CommandPaletteProps) {
-  const [search, setSearch] = useState(initialSearch);
+  const [search, setSearch] = useState('');
   const [loadingMap, setLoadingMap] = useState<Record<string, boolean>>({});
   const [errorMap, setErrorMap] = useState<Record<string, string | null>>({});
   const [localItems, setLocalItems] = useState<CommandItem[]>(items);
@@ -597,7 +594,13 @@ export default function CommandPalette({
   // ── Build sections ──
   const { pinnedItems, recentItems, commandItems, hasResults } = useMemo(() => {
     const isSearching = search.trim().length > 0;
-    const matched = localItems.filter(a => matchesSearch(a, search));
+
+    // In slash mode, only show chat_inject items
+    const baseItems = slashMode
+      ? localItems.filter(a => a.type === 'chat_inject')
+      : localItems;
+
+    const matched = baseItems.filter(a => matchesSearch(a, search));
 
     // When searching, show flat results (no sections), but still exclude hidden unless searching
     const visibleMatched = isSearching
@@ -645,7 +648,7 @@ export default function CommandPalette({
       commandItems: commands,
       hasResults: pinned.length + recent.length + commands.length > 0,
     };
-  }, [localItems, localPrefs, search]);
+  }, [localItems, localPrefs, search, slashMode]);
 
   const isSearching = search.trim().length > 0;
 
@@ -694,7 +697,9 @@ export default function CommandPalette({
           ref={searchRef}
           type="text"
           className="cp-search"
-          placeholder={i18n('commandPalette.searchPlaceholder', '搜索操作...')}
+          placeholder={slashMode
+            ? i18n('commandPalette.slashPlaceholder', '搜索斜杠命令...')
+            : i18n('commandPalette.searchPlaceholder', '搜索操作...')}
           value={search}
           onChange={e => setSearch(e.target.value)}
           onKeyDown={handleSearchKeyDown}

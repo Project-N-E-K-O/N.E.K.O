@@ -559,7 +559,7 @@ export default function App({
   const [draft, setDraft] = useState('');
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
   const [quickActionsPanelOpen, setQuickActionsPanelOpen] = useState<boolean>(false);
-  const [slashModeSearch, setSlashModeSearch] = useState<string>('');
+  const [quickActionsSlashMode, setQuickActionsSlashMode] = useState(false);
   const [activeCursorToolId, setActiveCursorToolId] = useState<string | null>(null);
   const [avatarRangeCursorVariants, setAvatarRangeCursorVariants] = useState<ToolCursorVariantState>(() => createDefaultToolCursorVariantState());
   const [outsideRangeCursorVariants, setOutsideRangeCursorVariants] = useState<ToolCursorVariantState>(() => createDefaultToolCursorVariantState());
@@ -1322,12 +1322,12 @@ export default function App({
               items={quickActions ?? []}
               preferences={quickActionsPreferences ?? { pinned: [], hidden: [], recent: [] }}
               loading={quickActionsLoading}
-              initialSearch={slashModeSearch}
+              slashMode={quickActionsSlashMode}
               onExecute={handleQuickActionExecute}
               onInjectText={handleQuickActionInjectText}
               onNavigate={handleQuickActionNavigate}
               onPreferencesChange={handleQuickActionsPreferencesChange}
-              onClose={() => { setQuickActionsPanelOpen(false); setSlashModeSearch(''); }}
+              onClose={() => { setQuickActionsPanelOpen(false); setQuickActionsSlashMode(false); }}
             />
           ) : null}
           <form className="composer" onSubmit={(event) => {
@@ -1346,7 +1346,7 @@ export default function App({
                   const val = event.target.value;
                   // Detect "/" typed into empty input → open command palette in slash mode
                   if (val === '/' && !draft && !quickActionsPanelOpen) {
-                    setSlashModeSearch('/');
+                    setQuickActionsSlashMode(true);
                     setQuickActionsPanelOpen(true);
                     if (onQuickActionsRequest) onQuickActionsRequest();
                     // Don't put "/" into the draft
@@ -1406,7 +1406,7 @@ export default function App({
                       const willOpen = !quickActionsPanelOpen;
                       setQuickActionsPanelOpen(willOpen);
                       if (willOpen) {
-                        setSlashModeSearch('');
+                        setQuickActionsSlashMode(false);
                         if (onQuickActionsRequest) onQuickActionsRequest();
                       }
                     }}
