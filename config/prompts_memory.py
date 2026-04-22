@@ -704,7 +704,7 @@ FACT_EXTRACTION_PROMPT = {
 - 忽略闲聊、寒暄、模糊的内容
 - 忽略AI幻觉、胡言乱语(gibberish)、无意义的编造内容，只提取对话中有真实依据的事实
 - 每条事实必须是一个独立的原子陈述
-- importance 评分 1-10，只返回 >= 5 的事实
+- importance 评分 1-10（低分也请返回，下游按场景筛选；不要提前过滤）
 - entity 标注为 "master"(关于{MASTER_NAME})、"neko"(关于{LANLAN_NAME})或 "relationship"(关于两人关系)
 
 ======以下为对话======
@@ -713,7 +713,7 @@ FACT_EXTRACTION_PROMPT = {
 
 请以 JSON 数组格式返回，格式如下(如果没有值得提取的事实，返回空数组 [])：
 [
-  {"text": "事实描述", "importance": 7, "entity": "master", "tags": ["preference"]},
+  {"text": "事实描述", "importance": 7, "entity": "master"},
   ...
 ]""",
     'en': """Extract important factual information about {LANLAN_NAME} and {MASTER_NAME} from the following conversation.
@@ -723,7 +723,7 @@ Requirements:
 - Ignore small talk, greetings, and vague content
 - Ignore AI hallucinations, gibberish, and meaningless fabricated content — only extract facts that are grounded in the actual conversation
 - Each fact must be an independent atomic statement
-- Rate importance 1-10, only return facts with importance >= 5
+- Rate importance 1-10 (return low-importance facts too; downstream decides how to filter — do not pre-filter here)
 - Mark entity as "master" (about {MASTER_NAME}), "neko" (about {LANLAN_NAME}), or "relationship" (about the relationship)
 
 ======以下为对话======
@@ -732,7 +732,7 @@ Requirements:
 
 Return as a JSON array in the following format (if no facts are worth extracting, return an empty array []):
 [
-  {"text": "fact description", "importance": 7, "entity": "master", "tags": ["preference"]},
+  {"text": "fact description", "importance": 7, "entity": "master"},
   ...
 ]""",
     'ja': """以下の会話から {LANLAN_NAME} と {MASTER_NAME} に関する重要な事実情報を抽出してください。
@@ -742,7 +742,7 @@ Return as a JSON array in the following format (if no facts are worth extracting
 - 雑談、挨拶、曖昧な内容は無視
 - AIの幻覚（ハルシネーション）、意味不明な発言（gibberish）、根拠のない作り話は無視し、実際の会話に基づいた事実のみを抽出
 - 各事実は独立した原子的な文でなければならない
-- importance は 1-10 で評価し、5 以上の事実のみ返す
+- importance は 1-10 で評価（低スコアも返す；下流で用途別にフィルタする）
 - entity は "master"({MASTER_NAME}について)、"neko"({LANLAN_NAME}について)、または "relationship"(二人の関係について) と記載
 
 ======以下为对话======
@@ -751,7 +751,7 @@ Return as a JSON array in the following format (if no facts are worth extracting
 
 以下の形式のJSON配列で返してください（抽出する事実がなければ空配列 [] を返す）：
 [
-  {"text": "事実の説明", "importance": 7, "entity": "master", "tags": ["preference"]},
+  {"text": "事実の説明", "importance": 7, "entity": "master"},
   ...
 ]""",
     'ko': """다음 대화에서 {LANLAN_NAME}과 {MASTER_NAME}에 대한 중요한 사실 정보를 추출해 주세요.
@@ -761,7 +761,7 @@ Return as a JSON array in the following format (if no facts are worth extracting
 - 잡담, 인사, 모호한 내용은 무시
 - AI 환각(hallucination), 의미 없는 말(gibberish), 근거 없는 조작된 내용은 무시하고, 실제 대화에 근거한 사실만 추출
 - 각 사실은 독립적인 원자적 진술이어야 함
-- importance는 1-10으로 평가하고 5 이상인 사실만 반환
+- importance는 1-10으로 평가 (낮은 점수도 반환; 하류에서 용도에 따라 필터링)
 - entity는 "master"({MASTER_NAME}에 대해), "neko"({LANLAN_NAME}에 대해), 또는 "relationship"(두 사람의 관계에 대해)로 표기
 
 ======以下为对话======
@@ -770,7 +770,7 @@ Return as a JSON array in the following format (if no facts are worth extracting
 
 다음 형식의 JSON 배열로 반환해 주세요 (추출할 사실이 없으면 빈 배열 [] 반환):
 [
-  {"text": "사실 설명", "importance": 7, "entity": "master", "tags": ["preference"]},
+  {"text": "사실 설명", "importance": 7, "entity": "master"},
   ...
 ]""",
     'ru': """Извлеките важную фактическую информацию о {LANLAN_NAME} и {MASTER_NAME} из следующей беседы.
@@ -780,7 +780,7 @@ Return as a JSON array in the following format (if no facts are worth extracting
 - Игнорируйте болтовню, приветствия и расплывчатое содержание
 - Игнорируйте галлюцинации ИИ, бессмыслицу (gibberish) и бессодержательный вымысел — извлекайте только факты, подтверждённые реальным диалогом
 - Каждый факт должен быть независимым атомарным утверждением
-- Оценка importance от 1 до 10, возвращайте только факты с importance >= 5
+- Оценка importance от 1 до 10 (возвращайте и малозначимые факты; нижестоящий код решает, как фильтровать)
 - Отмечайте entity как "master" (о {MASTER_NAME}), "neko" (о {LANLAN_NAME}) или "relationship" (об отношениях)
 
 ======以下为对话======
@@ -789,7 +789,7 @@ Return as a JSON array in the following format (if no facts are worth extracting
 
 Верните в формате JSON-массива (если нет достойных извлечения фактов, верните пустой массив []):
 [
-  {"text": "описание факта", "importance": 7, "entity": "master", "tags": ["preference"]},
+  {"text": "описание факта", "importance": 7, "entity": "master"},
   ...
 ]""",
 }
@@ -801,6 +801,341 @@ def get_fact_extraction_prompt(lang: str = 'zh') -> str:
 
 # backward compat
 fact_extraction_prompt = FACT_EXTRACTION_PROMPT['zh']
+
+
+# =====================================================================
+# ======= Signal detection (RFC §3.4.2 Stage-2) =======================
+# =====================================================================
+# 职责：给 Stage-1 抽出的 new_facts 配上"reinforces/negates 哪条已有观察"的
+# 映射。与 Stage-1 拆开的理由：Stage-1 不能看 existing context（否则 LLM
+# 可能把已有观察当新 fact 摘出来形成自循环）；而 Stage-2 必须看，两种职责
+# prompt 结构互斥（RFC §3.4.2）。
+
+SIGNAL_DETECTION_PROMPT = {
+    'zh': """你是一个 careful deduplication judge。给你一组新提取的事实，和一组
+系统已经记录过的观察，请判断每条新事实对已有观察的关系。
+
+======以下为新提取的事实======
+{NEW_FACTS}
+======以上为新事实======
+
+======以下为已有观察（按 type.entity.id 索引）======
+{EXISTING_OBSERVATIONS}
+======以上为已有观察======
+
+请对每条新事实判断：
+- reinforces：是否加强了某条已有观察？返回 target_id 和理由
+- negates：是否反驳了某条已有观察？返回 target_id 和理由
+- 若都没有，对应新事实没有 signal —— 不写进 signals 数组即可
+
+target_id 必须来自上面"已有观察"区，不要凭空生成；若某条新事实与多条已有
+观察相关，可返回多条 signal。
+
+输出 JSON（如果没有匹配任何已有观察，返回 {"signals": []}）：
+{
+  "signals": [
+    {"source_fact_id": "fact_xxx",
+     "target_type": "reflection",
+     "target_id": "r_xxx",
+     "signal": "reinforces",
+     "reason": "简短理由"},
+    ...
+  ]
+}""",
+    'en': """You are a careful deduplication judge. Given a set of newly extracted facts
+and a set of observations the system already remembers, judge the relationship
+between each new fact and the existing observations.
+
+======以下为新提取的事实======
+{NEW_FACTS}
+======以上为新事实======
+
+======以下为已有观察======
+{EXISTING_OBSERVATIONS}
+======以上为已有观察======
+
+For each new fact decide:
+- reinforces: does it strengthen any existing observation? Return target_id + reason
+- negates: does it contradict any existing observation? Return target_id + reason
+- Otherwise: no signal — simply omit it from the signals array
+
+target_id MUST come from the "existing observations" section above — do not
+invent IDs. If one new fact relates to several observations, return multiple
+signals.
+
+Return JSON (empty array if nothing matches):
+{
+  "signals": [
+    {"source_fact_id": "fact_xxx",
+     "target_type": "reflection",
+     "target_id": "r_xxx",
+     "signal": "reinforces",
+     "reason": "short rationale"},
+    ...
+  ]
+}""",
+    'ja': """あなたは careful deduplication judge です。新しく抽出された事実の一覧と、
+システムが既に記憶している観察の一覧が与えられます。各新事実が既存観察に
+対してどのような関係にあるかを判断してください。
+
+======以下为新提取的事实======
+{NEW_FACTS}
+======以上为新事实======
+
+======以下为已有观察======
+{EXISTING_OBSERVATIONS}
+======以上为已有观察======
+
+各新事実について判断:
+- reinforces: 既存観察を強化するか？ target_id と理由を返す
+- negates: 既存観察を否定するか？ target_id と理由を返す
+- どちらでもない場合は signals 配列に含めない
+
+target_id は必ず上の "既存観察" から選ぶこと（捏造禁止）。
+
+JSON で返す（該当なしなら空配列）:
+{
+  "signals": [
+    {"source_fact_id": "fact_xxx",
+     "target_type": "reflection",
+     "target_id": "r_xxx",
+     "signal": "reinforces",
+     "reason": "短い理由"},
+    ...
+  ]
+}""",
+    'ko': """당신은 careful deduplication judge입니다. 새로 추출된 사실들과 시스템이
+이미 기억하고 있는 관찰들을 비교하여, 각 새 사실이 기존 관찰에 어떤 관계를
+갖는지 판단해 주세요.
+
+======以下为新提取的事实======
+{NEW_FACTS}
+======以上为新事实======
+
+======以下为已有观察======
+{EXISTING_OBSERVATIONS}
+======以上为已有观察======
+
+각 새 사실에 대해:
+- reinforces: 기존 관찰을 강화합니까? target_id와 이유 반환
+- negates: 기존 관찰을 부정합니까? target_id와 이유 반환
+- 해당 없음: signals 배열에 포함하지 마세요
+
+target_id는 반드시 위 "기존 관찰"에서 가져와야 합니다 (날조 금지).
+
+JSON으로 반환 (일치 없으면 빈 배열):
+{
+  "signals": [
+    {"source_fact_id": "fact_xxx",
+     "target_type": "reflection",
+     "target_id": "r_xxx",
+     "signal": "reinforces",
+     "reason": "짧은 이유"},
+    ...
+  ]
+}""",
+    'ru': """Вы — careful deduplication judge. Дан набор новых извлечённых фактов и
+набор наблюдений, которые система уже помнит. Определите отношение каждого
+нового факта к существующим наблюдениям.
+
+======以下为新提取的事实======
+{NEW_FACTS}
+======以上为新事实======
+
+======以下为已有观察======
+{EXISTING_OBSERVATIONS}
+======以上为已有观察======
+
+Для каждого нового факта:
+- reinforces: усиливает ли он существующее наблюдение? Верните target_id и причину
+- negates: противоречит ли он существующему наблюдению? Верните target_id и причину
+- Если ничего — не добавляйте в массив signals
+
+target_id ДОЛЖЕН быть из раздела "существующие наблюдения" выше (не выдумывать).
+
+Верните JSON (пустой массив, если ничего не совпало):
+{
+  "signals": [
+    {"source_fact_id": "fact_xxx",
+     "target_type": "reflection",
+     "target_id": "r_xxx",
+     "signal": "reinforces",
+     "reason": "короткое обоснование"},
+    ...
+  ]
+}""",
+}
+
+
+def get_signal_detection_prompt(lang: str = 'zh') -> str:
+    return _loc(SIGNAL_DETECTION_PROMPT, lang)
+
+
+# =====================================================================
+# ======= Negative-keyword target check (RFC §3.4.5 Layer 2) ==========
+# =====================================================================
+# 职责：用户说"别提了 / 换个话题"这类话命中本地关键词后，派一次小 LLM 调
+# 用决定"用户到底是在说哪条？还是只是泛化情绪？"。水印：情感分析专家 +
+# "======以上为".
+
+NEGATIVE_TARGET_CHECK_PROMPT = {
+    'zh': """你是一个情感分析专家。
+
+======以下为用户最近消息======
+{USER_MESSAGES}
+======以上为用户最近消息======
+
+======以下为系统正在维护的观察列表======
+{OBSERVATIONS}
+======以上为观察列表======
+
+用户消息里，"别提了 / 不想聊 / 换个话题 / 别再说"这类表达到底指上述哪
+一条？可能多条、也可能一条都没有（用户只是泛化情绪）。
+
+只能从"观察列表"里选 target_id，不要凭空生成。
+
+返回 JSON（如果用户只是泛化情绪，无明确 target，返回 {"targets": []}）：
+{"targets": [{"target_type": "reflection" 或 "persona",
+              "target_id": "...",
+              "reason": "简短理由"}]}""",
+    'en': """You are an emotion analysis expert.
+sends some useful information to help decide what the user is pushing back on.
+
+======以下为用户最近消息======
+{USER_MESSAGES}
+======以上为用户最近消息======
+
+======以下为系统正在维护的观察列表======
+{OBSERVATIONS}
+======以上为观察列表======
+
+In the user's messages, when they say things like "don't mention / change
+the topic / stop talking about", which observation(s) above are they
+referring to? Could be several, or none at all (just a vague mood).
+
+target_id MUST come from "observations" above — do not invent IDs.
+
+Return JSON (empty array if the user is just venting without a target):
+{"targets": [{"target_type": "reflection" or "persona",
+              "target_id": "...",
+              "reason": "short rationale"}]}""",
+    'ja': """あなたは感情分析の専門家です。
+sends some useful information to help decide what the user is pushing back on.
+
+======以下为用户最近消息======
+{USER_MESSAGES}
+======以上为用户最近消息======
+
+======以下为系统正在维护的观察列表======
+{OBSERVATIONS}
+======以上为观察列表======
+
+ユーザーが「その話はいい／話題を変えて／やめて」などと言ったのは、上の
+観察のうちどれを指していますか？複数の場合もあれば、一つも該当しない
+場合もあります（単なるムード）。
+
+target_id は必ず上の "観察" から選ぶこと。
+
+JSON で返す（該当なしなら空配列）:
+{"targets": [{"target_type": "reflection" or "persona",
+              "target_id": "...",
+              "reason": "短い理由"}]}""",
+    'ko': """당신은 감정 분석 전문가입니다.
+sends some useful information to help decide what the user is pushing back on.
+
+======以下为用户最近消息======
+{USER_MESSAGES}
+======以上为用户最近消息======
+
+======以下为系统正在维护的观察列表======
+{OBSERVATIONS}
+======以上为观察列表======
+
+사용자가 "그 얘기는 그만 / 다른 이야기하자" 같은 표현을 쓸 때, 위 관찰
+중 어떤 것을 가리킵니까? 여러 개일 수도, 전혀 없을 수도 있습니다.
+
+target_id는 반드시 위 "관찰"에서 가져오세요.
+
+JSON 반환 (해당 없으면 빈 배열):
+{"targets": [{"target_type": "reflection" 또는 "persona",
+              "target_id": "...",
+              "reason": "짧은 이유"}]}""",
+    'ru': """Вы эксперт по анализу эмоций.
+sends some useful information to help decide what the user is pushing back on.
+
+======以下为用户最近消息======
+{USER_MESSAGES}
+======以上为用户最近消息======
+
+======以下为系统正在维护的观察列表======
+{OBSERVATIONS}
+======以上为观察列表======
+
+Когда пользователь говорит "хватит об этом / сменим тему / не надо об этом",
+к каким из перечисленных наблюдений это относится? Может быть несколько
+или ни одного (просто эмоция).
+
+target_id ДОЛЖЕН быть из "наблюдений" выше.
+
+Верните JSON (пустой массив, если конкретной цели нет):
+{"targets": [{"target_type": "reflection" или "persona",
+              "target_id": "...",
+              "reason": "короткое обоснование"}]}""",
+}
+
+
+def get_negative_target_check_prompt(lang: str = 'zh') -> str:
+    return _loc(NEGATIVE_TARGET_CHECK_PROMPT, lang)
+
+
+# =====================================================================
+# ======= Negative-keyword scanning (RFC §3.4.5 Layer 1) ==============
+# =====================================================================
+# 本地确定性 frozenset 扫描；命中后异步派发 Layer 2 LLM 判定。
+# 关键词取最常见的 "让用户显式回避某话题" 的短语，不贪心——漏扫可以补、
+# 误扫会触发无用 LLM 调用。
+NEGATIVE_KEYWORDS_I18N: dict[str, frozenset[str]] = {
+    'zh': frozenset([
+        '别再说', '别说了', '别提了', '别提', '不想聊', '换个话题',
+        '这个不用说了', '别聊这个', '别再提', '不要再说', '换话题',
+    ]),
+    'en': frozenset([
+        "stop talking about", "don't mention", "do not mention",
+        "change the topic", "change the subject",
+        "let's not discuss", "let's not talk about", "drop the subject",
+        "drop it", "not this again",
+    ]),
+    'ja': frozenset([
+        'その話は', 'やめて', '話題を変えて', 'その話はもう',
+        '言わないで', '別の話',
+    ]),
+    'ko': frozenset([
+        '그만하자', '다른 이야기', '그 얘기는 그만',
+        '다른 얘기', '말하지 마',
+    ]),
+    'ru': frozenset([
+        'хватит об этом', 'сменим тему', 'не говори об этом',
+        'другая тема', 'не надо об этом',
+    ]),
+}
+
+
+def scan_negative_keywords(message: str, lang: str = 'zh') -> bool:
+    """Fast path: case-insensitive substring scan against NEGATIVE_KEYWORDS_I18N.
+
+    Returns True if the message contains any negation keyword for the given
+    language; if lang is unknown, falls back to zh.
+    """
+    if not message:
+        return False
+    kws = NEGATIVE_KEYWORDS_I18N.get(lang) or NEGATIVE_KEYWORDS_I18N.get('zh')
+    if not kws:
+        return False
+    lower = message.lower()
+    for kw in kws:
+        if kw.lower() in lower:
+            return True
+    return False
 
 # ---------- reflection_prompt → i18n dict ----------
 

@@ -786,6 +786,56 @@ TIME_ORIGINAL_TABLE_NAME = "time_indexed_original"
 TIME_COMPRESSED_TABLE_NAME = "time_indexed_compressed"
 
 
+# ── Memory evidence mechanism (docs/design/memory-evidence-rfc.md) ────
+# 用户驱动的 evidence 计数器相关常量。所有评分计算都以 "净用户确认次数"
+# 为单位（§3.1.2 偏离 task spec 原公式——去掉 importance 项）。阈值改值
+# 会产生实际 behavior 变化，详见 RFC §6.5 pre-merge reviewer gates。
+
+# §3.1.4 派生状态阈值
+EVIDENCE_CONFIRMED_THRESHOLD = 1.0   # score ≥ 1 → confirmed
+EVIDENCE_PROMOTED_THRESHOLD = 2.0    # score ≥ 2 → promoted
+EVIDENCE_ARCHIVE_THRESHOLD = -2.0    # score ≤ -2 → archive_candidate
+
+# §3.5.3 归档相关（sub_zero_days 计数 + 分片大小上限）
+EVIDENCE_ARCHIVE_DAYS = 14           # sub_zero 累计达此天数 → 真正归档
+ARCHIVE_FILE_MAX_ENTRIES = 500       # 归档分片文件单文件最大 entry 数
+
+# §3.1.5 ignored 扣分
+IGNORED_REINFORCEMENT_DELTA = -0.2   # check_feedback ignored → reinforcement += delta
+
+# §3.4.3 signal 抽取背景循环触发条件
+EVIDENCE_SIGNAL_CHECK_ENABLED = True             # 独立开关
+EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS = 10         # 累积 N 轮触发
+EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES = 5           # 或空闲 N 分钟触发
+EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS = 40      # 轮询间隔（与 IDLE_CHECK_INTERVAL 对齐）
+EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS = 200   # Stage-2 prompt 带入的 existing 上限
+
+# §3.6 render budget（PR-3 使用，此处先占位）
+PERSONA_RENDER_TOKEN_BUDGET = 2000       # 非-protected persona 预算
+REFLECTION_RENDER_TOKEN_BUDGET = 1000    # reflection 渲染预算
+PERSONA_RENDER_ENCODING = "o200k_base"   # tiktoken encoding
+
+# §3.9 merge-on-promote 节流（PR-3 使用）
+EVIDENCE_PROMOTE_RETRY_BACKOFF_MINUTES = 30      # 连续失败节流窗口
+EVIDENCE_PROMOTE_MAX_RETRIES = 5                 # 死信阈值
+
+# §6.5 pre-merge reviewer gates —— 草案值，reviewer 敲定前保留
+# Gate 1: 半衰期（§3.5.2）
+EVIDENCE_REIN_HALF_LIFE_DAYS = 30        # reinforcement 半衰期
+EVIDENCE_DISP_HALF_LIFE_DAYS = 180       # disputation 半衰期（longer than rein）
+
+# Gate 2: reflection 合成 context 量（§3.4.3 阶段 2）
+REFLECTION_SYNTHESIS_CONTEXT_ABSORBED_COUNT = 10   # 最近 N 条 absorbed fact 作参考
+REFLECTION_SYNTHESIS_CONTEXT_ABSORBED_DAYS = 14    # 且在 N 天内
+
+# Gate 3: LLM tier 选型（候选见 RFC §6.5 Gate 3 表）
+# "summary" = qwen-plus 级；"correction" = qwen-max 级；"emotion" = qwen-flash 级
+EVIDENCE_EXTRACT_FACTS_MODEL_TIER = "summary"       # Stage-1 抽 fact
+EVIDENCE_DETECT_SIGNALS_MODEL_TIER = "correction"   # Stage-2 判 signal 映射
+EVIDENCE_NEGATIVE_TARGET_MODEL_TIER = "emotion"     # 关键词二次判定（延迟敏感）
+EVIDENCE_PROMOTION_MERGE_MODEL_TIER = "correction"  # Promote 合并决策
+
+
 # Provider 相关配置已统一迁移至 config.providers, 此处仅 re-export 保持向后兼容
 from config.providers import (  # noqa: E402, F401
     EXTRA_BODY_OPENAI,
@@ -907,4 +957,29 @@ __all__ = [
     # OpenFang
     'OPENFANG_PORT',
     'OPENFANG_BASE_URL',
+    # Memory evidence mechanism (RFC: docs/design/memory-evidence-rfc.md)
+    'EVIDENCE_CONFIRMED_THRESHOLD',
+    'EVIDENCE_PROMOTED_THRESHOLD',
+    'EVIDENCE_ARCHIVE_THRESHOLD',
+    'EVIDENCE_ARCHIVE_DAYS',
+    'ARCHIVE_FILE_MAX_ENTRIES',
+    'IGNORED_REINFORCEMENT_DELTA',
+    'EVIDENCE_SIGNAL_CHECK_ENABLED',
+    'EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS',
+    'EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES',
+    'EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS',
+    'EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS',
+    'PERSONA_RENDER_TOKEN_BUDGET',
+    'REFLECTION_RENDER_TOKEN_BUDGET',
+    'PERSONA_RENDER_ENCODING',
+    'EVIDENCE_PROMOTE_RETRY_BACKOFF_MINUTES',
+    'EVIDENCE_PROMOTE_MAX_RETRIES',
+    'EVIDENCE_REIN_HALF_LIFE_DAYS',
+    'EVIDENCE_DISP_HALF_LIFE_DAYS',
+    'REFLECTION_SYNTHESIS_CONTEXT_ABSORBED_COUNT',
+    'REFLECTION_SYNTHESIS_CONTEXT_ABSORBED_DAYS',
+    'EVIDENCE_EXTRACT_FACTS_MODEL_TIER',
+    'EVIDENCE_DETECT_SIGNALS_MODEL_TIER',
+    'EVIDENCE_NEGATIVE_TARGET_MODEL_TIER',
+    'EVIDENCE_PROMOTION_MERGE_MODEL_TIER',
 ]

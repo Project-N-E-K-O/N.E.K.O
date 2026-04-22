@@ -99,7 +99,7 @@ class PersonaManager:
     Each entity section is ``{entity: {'facts': [...]}}``.
     """
 
-    def __init__(self):
+    def __init__(self, event_log=None):
         self._config_manager = get_config_manager()
         self._personas: dict[str, dict] = {}
         # Per-character asyncio.Lock (P2.a.2). Protects load→mutate→save
@@ -109,6 +109,9 @@ class PersonaManager:
         # (pure-Python block, no await inside).
         self._alocks: dict[str, asyncio.Lock] = {}
         self._alocks_guard = threading.Lock()
+        # memory-evidence-rfc §3.3.3：evidence 写路径必须走 record_and_save，
+        # 保证 event↔view 合约。event_log 注入；None 时 aapply_signal 不可用。
+        self._event_log = event_log
 
     def _get_alock(self, name: str) -> asyncio.Lock:
         """Per-character asyncio.Lock; lazy + DCL-guarded.
@@ -544,6 +547,12 @@ class PersonaManager:
         - id: 唯一标识。card_xxx / legacy_xxx / prom_xxx / manual_xxx
         - source: 来源类型。character_card / settings / reflection / manual
         - source_id: 上游 ID（如 reflection_id），用于追溯来源链
+
+        Evidence fields (RFC §3.2.3 user-driven evidence mechanism):
+        - reinforcement / disputation: float 累加器，仅由 user signal 驱动
+        - rein_last_signal_at / disp_last_signal_at: 各自独立的衰减时钟
+        - sub_zero_days + sub_zero_last_increment_date: archive 倒计时
+        - merged_from_ids: LLM merge_into 决策吸收的 reflection id 列表
         """
         defaults = {
             'id': '',                   # 唯一标识
@@ -554,6 +563,15 @@ class PersonaManager:
             'suppress': False,          # 是否被抑制
             'suppressed_at': None,      # suppress 开始时间
             'protected': False,         # character_card 来源条目，不可 suppress
+            # Evidence counters (RFC §3.2.3)
+            'reinforcement': 0.0,
+            'disputation': 0.0,
+            'rein_last_signal_at': None,
+            'disp_last_signal_at': None,
+            'sub_zero_days': 0,
+            'sub_zero_last_increment_date': None,
+            # 溯源：merge_into 吸收的 reflection id 列表
+            'merged_from_ids': [],
         }
         if isinstance(entry, str):
             d = dict(defaults)
@@ -660,6 +678,114 @@ class PersonaManager:
             section_facts.append(self._build_fact_entry(text, source, source_id))
             await self.asave_persona(name, persona)
             return self.FACT_ADDED
+
+    # ── evidence signals (RFC §3.4, §3.8.4) ─────────────────────────
+
+    @staticmethod
+    def _find_entry_in_section(section_facts: list, entry_id: str) -> dict | None:
+        for entry in section_facts:
+            if isinstance(entry, dict) and entry.get('id') == entry_id:
+                return entry
+        return None
+
+    @staticmethod
+    def _compute_evidence_after_delta(entry: dict, delta: dict, now_iso: str) -> dict:
+        """Compute the new evidence snapshot for a full-snapshot event payload.
+
+        独立时间戳（RFC §3.1.1）：只重置"被触动那一侧"的 last_signal_at。
+        Returns: dict of new values for {reinforcement, disputation,
+        rein_last_signal_at, disp_last_signal_at, sub_zero_days}.
+        """
+        rein_delta = float(delta.get('reinforcement', 0.0) or 0.0)
+        disp_delta = float(delta.get('disputation', 0.0) or 0.0)
+        new_rein = float(entry.get('reinforcement', 0.0) or 0.0) + rein_delta
+        new_disp = float(entry.get('disputation', 0.0) or 0.0) + disp_delta
+        # disputation 非负（语义：user 明确否认次数，不会为负）。
+        # reinforcement 允许为负——§3.1.5 ignored 路径扣分会把它压到负值。
+        if new_disp < 0:
+            new_disp = 0.0
+        return {
+            'reinforcement': new_rein,
+            'disputation': new_disp,
+            'rein_last_signal_at': now_iso if rein_delta != 0.0
+                else entry.get('rein_last_signal_at'),
+            'disp_last_signal_at': now_iso if disp_delta != 0.0
+                else entry.get('disp_last_signal_at'),
+            'sub_zero_days': int(entry.get('sub_zero_days', 0) or 0),
+        }
+
+    async def aapply_signal(
+        self, name: str, entity_key: str, entry_id: str,
+        delta: dict, source: str,
+    ) -> bool:
+        """Mutate an entry's evidence counters via EVT_PERSONA_EVIDENCE_UPDATED.
+
+        Full-snapshot payload, record_and_save 合约（RFC §3.3.3）。锁嵌套：
+        先拿 PersonaManager async 锁，再在 record_and_save 内部拿 event_log
+        threading.Lock——符合 §3.3.3 "外 async 内 sync" 规约。
+
+        Returns True if the entry existed and was updated; False otherwise
+        (unknown entry — migration marker case handled by caller).
+        """
+        from memory.event_log import EVT_PERSONA_EVIDENCE_UPDATED
+        if self._event_log is None:
+            raise RuntimeError(
+                "[Persona.aapply_signal] event_log 未注入；PersonaManager() 构造时须传入 event_log"
+            )
+
+        async with self._get_alock(name):
+            persona = await self._aensure_persona_locked(name)
+            section = persona.get(entity_key)
+            if not isinstance(section, dict):
+                logger.warning(
+                    f"[Persona] {name}: aapply_signal 找不到 entity_key={entity_key}"
+                )
+                return False
+            section_facts = section.get('facts', [])
+            entry = self._find_entry_in_section(section_facts, entry_id)
+            if entry is None:
+                logger.warning(
+                    f"[Persona] {name}: aapply_signal 找不到 entry_id={entry_id}"
+                )
+                return False
+
+            now_iso = datetime.now().isoformat()
+            snapshot = self._compute_evidence_after_delta(entry, delta, now_iso)
+            payload = {
+                'entity_key': entity_key,
+                'entry_id': entry_id,
+                'reinforcement': snapshot['reinforcement'],
+                'disputation': snapshot['disputation'],
+                'rein_last_signal_at': snapshot['rein_last_signal_at'],
+                'disp_last_signal_at': snapshot['disp_last_signal_at'],
+                'sub_zero_days': snapshot['sub_zero_days'],
+                'source': source,
+            }
+
+            def _sync_load(_n: str):
+                # 我们已持 async 锁 + 内存 cache 就是当前 view，直接复用。
+                return persona
+
+            def _sync_mutate(_view):
+                entry['reinforcement'] = snapshot['reinforcement']
+                entry['disputation'] = snapshot['disputation']
+                entry['rein_last_signal_at'] = snapshot['rein_last_signal_at']
+                entry['disp_last_signal_at'] = snapshot['disp_last_signal_at']
+                entry['sub_zero_days'] = snapshot['sub_zero_days']
+
+            def _sync_save(n: str, view):
+                self._personas[n] = view
+                atomic_write_json(
+                    self._persona_path(n), view, indent=2, ensure_ascii=False,
+                )
+
+            await self._event_log.arecord_and_save(
+                name, EVT_PERSONA_EVIDENCE_UPDATED, payload,
+                sync_load_view=_sync_load,
+                sync_mutate_view=_sync_mutate,
+                sync_save_view=_sync_save,
+            )
+            return True
 
     def _get_section_facts(self, persona: dict, entity: str) -> list:
         return persona.setdefault(entity, {}).setdefault('facts', [])

@@ -26,7 +26,13 @@ import threading
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
-from config import SETTING_PROPOSER_MODEL
+from config import (
+    EVIDENCE_CONFIRMED_THRESHOLD,
+    EVIDENCE_PROMOTED_THRESHOLD,
+    IGNORED_REINFORCEMENT_DELTA,
+    SETTING_PROPOSER_MODEL,
+)
+from memory.evidence import evidence_score
 from utils.cloudsave_runtime import assert_cloudsave_writable
 from utils.config_manager import get_config_manager
 from utils.file_utils import (
@@ -40,6 +46,7 @@ from utils.token_tracker import set_call_type
 from memory.persona import PersonaManager
 
 if TYPE_CHECKING:
+    from memory.event_log import EventLog
     from memory.facts import FactStore
     from memory.persona import PersonaManager
 
@@ -47,6 +54,14 @@ logger = get_module_logger(__name__, "Memory")
 
 # Minimum unabsorbed facts to trigger reflection synthesis
 MIN_FACTS_FOR_REFLECTION = 5
+
+# memory-evidence-rfc §3.2.2: new/updated reflection status vocabulary.
+# pending | confirmed | denied | promoted | merged | archived | promote_blocked
+# `merged` = LLM merge_into 吸收到某 persona entry（reflection 保留带 absorbed_into 溯源）
+# `promote_blocked` = LLM 连续失败触发的死信状态（需人工或 user signal 重置）
+REFLECTION_TERMINAL_STATUSES = frozenset({
+    'promoted', 'denied', 'archived', 'merged', 'promote_blocked',
+})
 
 
 def _reflection_id_from_facts(source_fact_ids: list[str]) -> str:
@@ -62,9 +77,10 @@ def _reflection_id_from_facts(source_fact_ids: list[str]) -> str:
         h.update(fid.encode('utf-8'))
         h.update(b'\x00')  # 分隔符防 "ab" + "c" 与 "a" + "bc" 冲突
     return f"ref_{h.hexdigest()[:16]}"
-# Days without denial → auto state transition
-AUTO_CONFIRM_DAYS = 3       # pending → confirmed
-AUTO_PROMOTE_DAYS = 3       # confirmed → promoted (persona)
+# memory-evidence-rfc §3.9.1：time-based auto-promotion 删除。
+# pending → confirmed / confirmed → promoted 改由 evidence_score 穿阈值
+# 触发（§3.1.4）。本 PR (PR-1) 只实现 pending → confirmed 的 score 驱动；
+# confirmed → promoted 的 merge-on-promote 路径在 PR-3。
 # Cooldown between proactive chat candidacy
 REFLECTION_COOLDOWN_MINUTES = 30
 # promoted/denied reflections older than this are moved to archive
@@ -74,10 +90,17 @@ _REFLECTION_ARCHIVE_DAYS = 30
 class ReflectionEngine:
     """Synthesizes facts into reflections and manages the pending → confirmed lifecycle."""
 
-    def __init__(self, fact_store: FactStore, persona_manager: PersonaManager):
+    def __init__(
+        self, fact_store: FactStore, persona_manager: PersonaManager,
+        event_log: EventLog | None = None,
+    ):
         self._config_manager = get_config_manager()
         self._fact_store = fact_store
         self._persona_manager = persona_manager
+        # memory-evidence-rfc §3.3.3：evidence 写路径必须走 record_and_save。
+        # event_log 注入；None 时 aapply_signal 不可用（冷启动 / 纯单元测试
+        # 路径仍可用 synthesize / auto_promote 等不触 evidence 的方法）。
+        self._event_log = event_log
         # Per-character asyncio.Lock (P2.a.2). ReflectionEngine's async mutating
         # methods span multiple awaits (e.g. aauto_promote_stale calls
         # persona.aadd_fact across an await boundary) — so asyncio.Lock is the
@@ -128,13 +151,49 @@ class ReflectionEngine:
     # ── persistence ──────────────────────────────────────────────────
 
     @staticmethod
-    def _filter_reflections(data, include_archived: bool, path: str) -> list[dict]:
+    def _normalize_reflection(entry: dict) -> dict:
+        """Fill evidence/archive/promote 节流等新字段的默认值 in-place.
+
+        Schema extension from memory-evidence-rfc §3.2.2. Defaults do NOT
+        back-fill to "migrated" seed values — that's the migration-seed path
+        (§5.2), which goes through aapply_signal so it's also event-sourced.
+        Here we only guarantee the fields exist so downstream code
+        (`evidence_score`, `derive_status` …) doesn't KeyError on legacy data.
+        """
+        defaults = {
+            # Evidence counters
+            'reinforcement': 0.0,
+            'disputation': 0.0,
+            'rein_last_signal_at': None,
+            'disp_last_signal_at': None,
+            'sub_zero_days': 0,
+            'sub_zero_last_increment_date': None,
+            # Merge / archive 溯源
+            'absorbed_into': None,
+            # Promote 节流
+            'last_promote_attempt_at': None,
+            'promote_attempt_count': 0,
+            'promote_blocked_reason': None,
+        }
+        for k, v in defaults.items():
+            entry.setdefault(k, v)
+        return entry
+
+    @classmethod
+    def _filter_reflections(cls, data, include_archived: bool, path: str) -> list[dict]:
         if not isinstance(data, list):
             logger.warning(f"[Reflection] reflections 文件不是列表，忽略: {path}")
             return []
-        items = [item for item in data if isinstance(item, dict) and 'id' in item]
+        items = [
+            cls._normalize_reflection(item)
+            for item in data if isinstance(item, dict) and 'id' in item
+        ]
         if not include_archived:
-            items = [r for r in items if r.get('status') not in ('promoted', 'denied')]
+            # `merged` 也排除：表示已被 LLM merge 吸收到 persona，不再主动检索
+            items = [
+                r for r in items
+                if r.get('status') not in ('promoted', 'denied', 'merged', 'archived')
+            ]
         return items
 
     def load_reflections(self, name: str, include_archived: bool = False) -> list[dict]:
@@ -162,7 +221,11 @@ class ReflectionEngine:
     def _prepare_save_reflections(
         self, name: str, reflections: list[dict], all_on_disk: list[dict],
     ) -> tuple[list[dict], list[dict], list[dict]]:
-        """Pure logic: compute (merged_main, to_archive, keep_in_main)."""
+        """Pure logic: compute (merged_main, to_archive, keep_in_main).
+
+        `merged` reflections 保留在主文件（RFC §3.11.3：merge 后 reflection
+        仍在 reflections.json，带 absorbed_into 溯源，不归档）。
+        """
         active_ids = {r['id'] for r in reflections if 'id' in r}
         finished = [r for r in all_on_disk if r.get('id') not in active_ids
                     and r.get('status') in ('promoted', 'denied')]
@@ -441,6 +504,120 @@ class ReflectionEngine:
         results = await self.synthesize_reflections(lanlan_name)
         return results[0] if results else None
 
+    # ── evidence signals (RFC §3.4, §3.8.4) ─────────────────────────
+
+    @staticmethod
+    def _find_reflection_in_list(reflections: list[dict], rid: str) -> dict | None:
+        for r in reflections:
+            if isinstance(r, dict) and r.get('id') == rid:
+                return r
+        return None
+
+    @staticmethod
+    def _compute_evidence_after_delta(entry: dict, delta: dict, now_iso: str) -> dict:
+        """Apply delta and compute full-snapshot evidence payload fields.
+
+        Independent rein/disp clocks (RFC §3.1.1): only the touched side's
+        last_signal_at is updated; the other side stays at its previous value.
+        """
+        rein_delta = float(delta.get('reinforcement', 0.0) or 0.0)
+        disp_delta = float(delta.get('disputation', 0.0) or 0.0)
+        new_rein = float(entry.get('reinforcement', 0.0) or 0.0) + rein_delta
+        new_disp = float(entry.get('disputation', 0.0) or 0.0) + disp_delta
+        # disputation 非负（§3.1.5 只有 reinforcement 允许扣到负）
+        if new_disp < 0:
+            new_disp = 0.0
+        return {
+            'reinforcement': new_rein,
+            'disputation': new_disp,
+            'rein_last_signal_at': now_iso if rein_delta != 0.0
+                else entry.get('rein_last_signal_at'),
+            'disp_last_signal_at': now_iso if disp_delta != 0.0
+                else entry.get('disp_last_signal_at'),
+            'sub_zero_days': int(entry.get('sub_zero_days', 0) or 0),
+        }
+
+    async def aapply_signal(
+        self, lanlan_name: str, reflection_id: str, delta: dict, source: str,
+    ) -> bool:
+        """Mutate one reflection's evidence via EVT_REFLECTION_EVIDENCE_UPDATED.
+
+        record_and_save 合约（RFC §3.3.3）：
+          load → append event → mutate view → save view → advance sentinel.
+
+        Returns True if applied; False if reflection not found (LLM may point
+        at a stale id; signals are best-effort).
+        """
+        from memory.event_log import EVT_REFLECTION_EVIDENCE_UPDATED
+        if self._event_log is None:
+            raise RuntimeError(
+                "[Reflection.aapply_signal] event_log 未注入；"
+                "ReflectionEngine() 构造时须传入 event_log"
+            )
+
+        async with self._get_alock(lanlan_name):
+            reflections_full = await self._aload_reflections_full(lanlan_name)
+            entry = self._find_reflection_in_list(reflections_full, reflection_id)
+            if entry is None:
+                logger.warning(
+                    f"[Reflection] {lanlan_name}: aapply_signal 找不到 reflection_id={reflection_id}"
+                )
+                return False
+
+            now_iso = datetime.now().isoformat()
+            snapshot = self._compute_evidence_after_delta(entry, delta, now_iso)
+            payload = {
+                'reflection_id': reflection_id,
+                'reinforcement': snapshot['reinforcement'],
+                'disputation': snapshot['disputation'],
+                'rein_last_signal_at': snapshot['rein_last_signal_at'],
+                'disp_last_signal_at': snapshot['disp_last_signal_at'],
+                'sub_zero_days': snapshot['sub_zero_days'],
+                'source': source,
+            }
+
+            def _sync_load(_n: str):
+                return reflections_full
+
+            def _sync_mutate(_view):
+                entry['reinforcement'] = snapshot['reinforcement']
+                entry['disputation'] = snapshot['disputation']
+                entry['rein_last_signal_at'] = snapshot['rein_last_signal_at']
+                entry['disp_last_signal_at'] = snapshot['disp_last_signal_at']
+                entry['sub_zero_days'] = snapshot['sub_zero_days']
+
+            def _sync_save(n: str, view):
+                atomic_write_json(
+                    self._reflections_path(n), view, indent=2, ensure_ascii=False,
+                )
+
+            await self._event_log.arecord_and_save(
+                lanlan_name, EVT_REFLECTION_EVIDENCE_UPDATED, payload,
+                sync_load_view=_sync_load,
+                sync_mutate_view=_sync_mutate,
+                sync_save_view=_sync_save,
+            )
+            return True
+
+    async def _aload_reflections_full(self, name: str) -> list[dict]:
+        """Like aload_reflections(include_archived=True) but also keeps
+        `merged` entries. Needed for aapply_signal + score-driven promote
+        paths — we need to reach any non-active reflection by id as well."""
+        path = self._reflections_path(name)
+        if not await asyncio.to_thread(os.path.exists, path):
+            return []
+        try:
+            data = await read_json_async(path)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"[Reflection] 加载失败: {e}")
+            return []
+        if not isinstance(data, list):
+            return []
+        return [
+            self._normalize_reflection(item)
+            for item in data if isinstance(item, dict) and 'id' in item
+        ]
+
     # ── feedback lifecycle ───────────────────────────────────────────
 
     def get_pending_reflections(self, lanlan_name: str) -> list[dict]:
@@ -463,6 +640,13 @@ class ReflectionEngine:
 
     @staticmethod
     def _filter_followup_candidates(pending: list[dict]) -> list[dict]:
+        """Filter pending reflections for proactive chat candidacy.
+
+        RFC §3.8.6 adds an `evidence_score >= 0` gate on top of the existing
+        `next_eligible_at` cooldown. A reflection with score < 0 is
+        "coldshouldered" by user signals but not yet archived — it stays in
+        `reflections.json` but is skipped from active selection.
+        """
         if not pending:
             return []
         now = datetime.now()
@@ -475,6 +659,8 @@ class ReflectionEngine:
                         continue
                 except (ValueError, TypeError):
                     pass
+            if evidence_score(r, now) < 0:
+                continue
             eligible.append(r)
         return eligible[:2]
 
@@ -750,125 +936,91 @@ class ReflectionEngine:
             await self.asave_surfaced(lanlan_name, surfaced)
 
     def auto_promote_stale(self, lanlan_name: str) -> int:
-        """Process two automatic state transitions:
+        """Score-driven pending → confirmed (RFC §3.9.1 / §4.1 PR-1 scope).
 
-        1. pending → confirmed: after AUTO_CONFIRM_DAYS (3) days without denial
-        2. confirmed → promoted: after AUTO_PROMOTE_DAYS (3) more days → write to persona, archive
+        Deprecated sync version — retained for backward-compat callers
+        (tests / CLI scripts). Production path is the async twin below.
 
-        Returns total number of transitions.
+        - 删除时间跳级分支（`AUTO_CONFIRM_DAYS` / `AUTO_PROMOTE_DAYS` 已删）
+        - 仅做 pending → confirmed：`evidence_score(r, now) >= EVIDENCE_CONFIRMED_THRESHOLD`
+        - confirmed → promoted 由 PR-3 的 `_apromote_with_merge` 接管；
+          本函数在 PR-1 不承担 promotion 职责
+        Returns number of transitions.
         """
         reflections = self.load_reflections(lanlan_name)
         now = datetime.now()
         transitions = 0
         confirmed_ids: list[str] = []
-        promoted_ids: list[str] = []
 
         for r in reflections:
-            status = r.get('status')
-            try:
-                if status == 'pending':
-                    created = datetime.fromisoformat(r.get('created_at', ''))
-                    if (now - created).total_seconds() / 86400 >= AUTO_CONFIRM_DAYS:
-                        r['status'] = 'confirmed'
-                        r['confirmed_at'] = now.isoformat()
-                        r['auto_confirmed'] = True
-                        confirmed_ids.append(r['id'])
-                        transitions += 1
-                        logger.info(f"[Reflection] {lanlan_name}: pending→confirmed({AUTO_CONFIRM_DAYS}天): {r['text'][:50]}...")
-
-                elif status == 'confirmed':
-                    confirmed_at = datetime.fromisoformat(r.get('confirmed_at', ''))
-                    if (now - confirmed_at).total_seconds() / 86400 >= AUTO_PROMOTE_DAYS:
-                        result = self._persona_manager.add_fact(
-                            lanlan_name, r['text'],
-                            entity=r.get('entity', 'relationship'),
-                            source='reflection',
-                            source_id=r['id'],
-                        )
-                        if result == PersonaManager.FACT_ADDED:
-                            r['status'] = 'promoted'
-                            r['promoted_at'] = now.isoformat()
-                            promoted_ids.append(r['id'])
-                            transitions += 1
-                            logger.info(f"[Reflection] {lanlan_name}: confirmed→persona({AUTO_PROMOTE_DAYS}天): {r['text'][:50]}...")
-                        elif result == PersonaManager.FACT_REJECTED_CARD:
-                            r['status'] = 'denied'
-                            r['denied_at'] = now.isoformat()
-                            r['denied_reason'] = 'contradicts_character_card'
-                            transitions += 1
-                            logger.info(f"[Reflection] {lanlan_name}: confirmed→denied(与角色卡矛盾): {r['text'][:50]}...")
-                        else:
-                            logger.info(f"[Reflection] {lanlan_name}: confirmed→persona 暂缓(进入矛盾审视队列): {r['text'][:50]}...")
-            except (ValueError, TypeError):
+            if r.get('status') != 'pending':
                 continue
+            if evidence_score(r, now) < EVIDENCE_CONFIRMED_THRESHOLD:
+                continue
+            r['status'] = 'confirmed'
+            r['confirmed_at'] = now.isoformat()
+            confirmed_ids.append(r['id'])
+            transitions += 1
+            logger.info(
+                f"[Reflection] {lanlan_name}: pending→confirmed"
+                f" (score driven): {r['text'][:50]}..."
+            )
 
         if transitions:
             self.save_reflections(lanlan_name, reflections)
             if confirmed_ids:
-                self._batch_mark_surfaced_handled(lanlan_name, confirmed_ids, 'auto_confirmed')
-            if promoted_ids:
-                self._batch_mark_surfaced_handled(lanlan_name, promoted_ids, 'promoted')
+                self._batch_mark_surfaced_handled(
+                    lanlan_name, confirmed_ids, 'confirmed',
+                )
         return transitions
 
     async def aauto_promote_stale(self, lanlan_name: str) -> int:
-        """P2.a.2: 角色级 asyncio.Lock 串行化；与 synth / record_surfaced /
-        confirm / reject 在同一把锁下。锁顺序：本锁先、persona.aadd_fact
-        的 persona 锁后，避免死锁（persona 侧不会回调本类）。"""
+        """P2.a.2: 角色级 asyncio.Lock 串行化。score-driven pending →
+        confirmed（§3.9.1）。confirmed → promoted 的 merge-on-promote 路径
+        在 PR-3 补（本 PR 不承担 promotion）。"""
         async with self._get_alock(lanlan_name):
             return await self._aauto_promote_stale_locked(lanlan_name)
 
     async def _aauto_promote_stale_locked(self, lanlan_name: str) -> int:
-        reflections = await self.aload_reflections(lanlan_name)
+        """Score-driven pending → confirmed only.
+
+        Must run **after** all evidence signals for this tick have been
+        applied (signal dispatch emits EVT_REFLECTION_EVIDENCE_UPDATED then
+        this loop reads the updated view to decide promotions). The caller
+        is responsible for that ordering — see memory_server background loops.
+        """
+        reflections = await self._aload_reflections_full(lanlan_name)
         now = datetime.now()
         transitions = 0
         confirmed_ids: list[str] = []
-        promoted_ids: list[str] = []
 
         for r in reflections:
-            status = r.get('status')
-            try:
-                if status == 'pending':
-                    created = datetime.fromisoformat(r.get('created_at', ''))
-                    if (now - created).total_seconds() / 86400 >= AUTO_CONFIRM_DAYS:
-                        r['status'] = 'confirmed'
-                        r['confirmed_at'] = now.isoformat()
-                        r['auto_confirmed'] = True
-                        confirmed_ids.append(r['id'])
-                        transitions += 1
-                        logger.info(f"[Reflection] {lanlan_name}: pending→confirmed({AUTO_CONFIRM_DAYS}天): {r['text'][:50]}...")
-
-                elif status == 'confirmed':
-                    confirmed_at = datetime.fromisoformat(r.get('confirmed_at', ''))
-                    if (now - confirmed_at).total_seconds() / 86400 >= AUTO_PROMOTE_DAYS:
-                        result = await self._persona_manager.aadd_fact(
-                            lanlan_name, r['text'],
-                            entity=r.get('entity', 'relationship'),
-                            source='reflection',
-                            source_id=r['id'],
-                        )
-                        if result == PersonaManager.FACT_ADDED:
-                            r['status'] = 'promoted'
-                            r['promoted_at'] = now.isoformat()
-                            promoted_ids.append(r['id'])
-                            transitions += 1
-                            logger.info(f"[Reflection] {lanlan_name}: confirmed→persona({AUTO_PROMOTE_DAYS}天): {r['text'][:50]}...")
-                        elif result == PersonaManager.FACT_REJECTED_CARD:
-                            r['status'] = 'denied'
-                            r['denied_at'] = now.isoformat()
-                            r['denied_reason'] = 'contradicts_character_card'
-                            transitions += 1
-                            logger.info(f"[Reflection] {lanlan_name}: confirmed→denied(与角色卡矛盾): {r['text'][:50]}...")
-                        else:
-                            logger.info(f"[Reflection] {lanlan_name}: confirmed→persona 暂缓(进入矛盾审视队列): {r['text'][:50]}...")
-            except (ValueError, TypeError):
+            if r.get('status') != 'pending':
                 continue
+            if evidence_score(r, now) < EVIDENCE_CONFIRMED_THRESHOLD:
+                continue
+            r['status'] = 'confirmed'
+            r['confirmed_at'] = now.isoformat()
+            confirmed_ids.append(r['id'])
+            transitions += 1
+            logger.info(
+                f"[Reflection] {lanlan_name}: pending→confirmed"
+                f" (score driven): {r['text'][:50]}..."
+            )
 
         if transitions:
-            await self.asave_reflections(lanlan_name, reflections)
+            # 写回的集合用 filter 出 active（non-terminal）reflections，匹配
+            # aload_reflections 的行为；terminal (archived/merged 等) 条目
+            # 由 _prepare_save_reflections 的 merge 逻辑处理。
+            active = [
+                r for r in reflections
+                if r.get('status') not in ('promoted', 'denied', 'merged', 'archived')
+            ]
+            await self.asave_reflections(lanlan_name, active)
             if confirmed_ids:
-                await self._abatch_mark_surfaced_handled(lanlan_name, confirmed_ids, 'auto_confirmed')
-            if promoted_ids:
-                await self._abatch_mark_surfaced_handled(lanlan_name, promoted_ids, 'promoted')
+                await self._abatch_mark_surfaced_handled(
+                    lanlan_name, confirmed_ids, 'confirmed',
+                )
         return transitions
 
     # 允许从这些 feedback 状态转换到新状态（用于 promoted 覆盖 confirmed/auto_confirmed）
