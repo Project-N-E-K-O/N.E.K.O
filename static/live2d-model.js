@@ -210,6 +210,8 @@ Live2DManager.prototype._resetDerivedModelMetadata = function() {
     this.modelName = null;
     this.modelRootPath = null;
     this._bubbleGeometryCache = null;
+    this._bubbleGeometryModelReadyAt = 0;
+    this._bubbleGeometryRefreshPass = 0;
 
     if (this._missingExpressionFiles instanceof Set) {
         this._missingExpressionFiles.clear();
@@ -806,6 +808,10 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     }
     this._isModelReadyForInteraction = true;
     this._modelLoadState = 'ready';
+    this._bubbleGeometryModelReadyAt = (typeof performance !== 'undefined' && typeof performance.now === 'function')
+        ? performance.now()
+        : Date.now();
+    this._bubbleGeometryRefreshPass = 0;
 
     // 模型完全可见后播放 Idle 情绪（替代原来的独立 setTimeout）
     if (hasIdleInEmotionMapping || hasIdleInFileReferences) {
