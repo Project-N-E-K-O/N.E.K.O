@@ -61,6 +61,21 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
                 this._reinstallTimer = null;
                 this._reinstallScheduled = false;
             }
+
+            // 清理 Idle 循环定时器
+            if (this._idleMotionLoopTimers instanceof Set) {
+                this._idleMotionLoopTimers.forEach(timer => clearTimeout(timer));
+                this._idleMotionLoopTimers.clear();
+            }
+
+            // 解绑旧模型上的 motionFinish 监听
+            try {
+                const evts = this.currentModel.internalModel && this.currentModel.internalModel.events;
+                if (evts && typeof evts.removeAllListeners === 'function') {
+                    evts.removeAllListeners('motionFinish');
+                }
+            } catch (_) {}
+
             // 重置重装计数（切换模型时）
             this._reinstallAttempts = 0;
             // 先清空常驻表情记录和初始参数
@@ -222,6 +237,7 @@ Live2DManager.prototype.getCurrentModel = function() {
 
 // 重置模型相关的派生元数据（用于加载新模型前清理旧状态）
 Live2DManager.prototype._resetDerivedModelMetadata = function() {
+    this._randomLookAtAffectsHead = false; // 是否允许随机视线影响头部角度
     this._displayInfo = null;
     this._autoNamedHitAreaIds = new Set();
     this.fileReferences = null;
@@ -607,7 +623,7 @@ Live2DManager.prototype._updateRandomLookAt = function(delta) {
     if (this._mouseTrackingEnabled) return;
     if (this._lookAtTimer === undefined) {
         this._lookAtTimer = 0;
-        this._lookAtNextTime = 2 + Math.random() * 3;
+        this._lookAtNextTime = 1 + Math.random() * 4;
         this._lookAtTargetX = 0;
         this._lookAtTargetY = 0;
         this._lookAtCurrentX = 0;
@@ -624,8 +640,10 @@ Live2DManager.prototype._updateRandomLookAt = function(delta) {
     this._lookAtCurrentX += (this._lookAtTargetX - this._lookAtCurrentX) * lerpFactor;
     this._lookAtCurrentY += (this._lookAtTargetY - this._lookAtCurrentY) * lerpFactor;
     try {
-        coreModel.setParameterValueById('ParamAngleX', this._lookAtCurrentX);
-        coreModel.setParameterValueById('ParamAngleY', this._lookAtCurrentY);
+        if (this._randomLookAtAffectsHead) {
+            coreModel.setParameterValueById('ParamAngleX', this._lookAtCurrentX);
+            coreModel.setParameterValueById('ParamAngleY', this._lookAtCurrentY);
+        }
         coreModel.setParameterValueById('ParamEyeBallX', this._lookAtCurrentX / 30);
         coreModel.setParameterValueById('ParamEyeBallY', this._lookAtCurrentY / 30);
     } catch (_) {}
@@ -675,16 +693,23 @@ Live2DManager.prototype.setupIdleMotionLoop = function(model) {
 Live2DManager.prototype._playIdleMotion = function(motionManager) {
     const idleAnimations = this._userIdleAnimations;
     if (idleAnimations && idleAnimations.length > 0) {
-        const group = motionManager._motionGroups?.PreviewAll;
-        if (group && group.length > 0) {
-            const available = group.filter(m => m.file && idleAnimations.includes(m.file.split('/').pop()));
-            if (available.length > 0) {
-                const chosen = available[Math.floor(Math.random() * available.length)];
-                const idx = group.indexOf(chosen);
-                if (idx >= 0) {
-                    console.log(`[Live2D] 播放用户保存的待机动作: ${chosen.file}`);
-                    motionManager.startMotion('PreviewAll', idx);
-                    return;
+        // 兼容性获取 motionGroups，优先取公开属性，fallback 到私有属性
+        const motionGroups = motionManager.motionGroups || motionManager._motionGroups;
+
+        if (!motionGroups || !motionGroups.PreviewAll) {
+            console.warn('[Live2D] motionGroups 不可用或 PreviewAll 组不存在，跳过用户待机动作');
+        } else {
+            const group = motionGroups.PreviewAll;
+            if (group && group.length > 0) {
+                const available = group.filter(m => m.file && idleAnimations.includes(m.file.split('/').pop()));
+                if (available.length > 0) {
+                    const chosen = available[Math.floor(Math.random() * available.length)];
+                    const idx = group.indexOf(chosen);
+                    if (idx >= 0) {
+                        console.log(`[Live2D] 播放用户保存的待机动作: ${chosen.file}`);
+                        motionManager.startMotion('PreviewAll', idx);
+                        return;
+                    }
                 }
             }
         }
