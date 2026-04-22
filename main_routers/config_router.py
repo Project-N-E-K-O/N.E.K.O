@@ -899,6 +899,85 @@ async def list_gptsovits_voices(request: Request):
         return {"success": False, "error": "Internal TTS connection error", "code": "TTS_CONNECTION_FAILED"}
 
 
+@router.post("/gptsovits/test_connectivity")
+async def test_gptsovits_connectivity(request: Request):
+    """测试 GPT-SoVITS 完整链路：WebSocket 连接 → init → ready → 发送短文本 → 收到响应。
+
+    不播放音频，只验证服务可达且语音合成引擎正常工作。
+    """
+    import websockets as _ws
+    import json as _json
+    from urllib.parse import urlparse
+    import ipaddress
+
+    try:
+        data = await request.json()
+        api_url = (data.get("api_url", "") or "http://127.0.0.1:9881").rstrip("/")
+        voice_id = (data.get("voice_id", "") or "_default").strip()
+        # i18n test text
+        test_text = data.get("test_text", "") or "连通性测试"
+
+        # SSRF protection: localhost only
+        parsed = urlparse(api_url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            return {"success": False, "error": "URL 格式无效", "error_code": "missing_params"}
+        host = parsed.hostname
+        try:
+            if not ipaddress.ip_address(host).is_loopback:
+                return {"success": False, "error": "GPT-SoVITS 仅支持本地服务", "error_code": "connection_refused"}
+        except ValueError:
+            if host not in ("localhost",):
+                return {"success": False, "error": "GPT-SoVITS 仅支持本地服务", "error_code": "connection_refused"}
+
+        # Convert HTTP URL to WebSocket URL
+        if api_url.startswith("http://"):
+            ws_base = "ws://" + api_url[7:]
+        elif api_url.startswith("https://"):
+            ws_base = "wss://" + api_url[8:]
+        else:
+            ws_base = "ws://" + api_url
+        ws_url = f"{ws_base}/api/v3/tts/stream-input"
+
+        # Strip gsv: prefix if present
+        if voice_id.startswith("gsv:"):
+            voice_id = voice_id[4:].strip() or "_default"
+
+        async with asyncio.timeout(10):
+            async with _ws.connect(ws_url, ping_interval=None, max_size=10 * 1024 * 1024) as ws:
+                # Step 1: Send init
+                init_msg = {"cmd": "init", "voice_id": voice_id}
+                await ws.send(_json.dumps(init_msg))
+
+                # Step 2: Wait for ready
+                ready_msg = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                ready_data = _json.loads(ready_msg)
+                if ready_data.get("type") != "ready":
+                    error_detail = ready_data.get("message", str(ready_data))
+                    return {"success": False, "error": f"init 失败: {error_detail[:200]}", "error_code": "unknown"}
+
+                # Step 3: Send test text
+                await ws.send(_json.dumps({"cmd": "text", "text": test_text}))
+                await ws.send(_json.dumps({"cmd": "end"}))
+
+                # Step 4: Wait for first response (audio binary or JSON)
+                first_response = await asyncio.wait_for(ws.recv(), timeout=10.0)
+                # Any response = success (audio bytes or JSON status)
+                return {"success": True}
+
+    except TimeoutError:
+        return {"success": False, "error": "请求超时（10秒）", "error_code": "timeout"}
+    except asyncio.TimeoutError:
+        return {"success": False, "error": "请求超时（10秒）", "error_code": "timeout"}
+    except OSError as e:
+        err_str = str(e).lower()
+        if "connection refused" in err_str or "connect call failed" in err_str:
+            return {"success": False, "error": "无法连接到 GPT-SoVITS 服务", "error_code": "connection_refused"}
+        return {"success": False, "error": f"连接失败: {e}", "error_code": "connection_refused"}
+    except Exception as e:
+        logger.error(f"GPT-SoVITS 连通测试失败: {e}")
+        return {"success": False, "error": str(e)[:200], "error_code": "unknown"}
+
+
 def _sanitize_proxies(proxies: dict[str, str]) -> dict[str, str]:
     """Remove credentials from proxy URLs before returning to the client."""
     sanitized: dict[str, str] = {}

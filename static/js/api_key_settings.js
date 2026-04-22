@@ -3309,19 +3309,23 @@ function initConnectivityLights() {
             updateGsvLightStatus();
         });
 
-        // Test button click: use the existing list_voices endpoint as a connectivity probe
+        // Test button click: full WebSocket round-trip (init → ready → send text → receive response)
         gsvTestBtn.addEventListener('click', async () => {
             const url = gsvUrlInput.value.trim() || 'http://127.0.0.1:9881';
+            const voiceIdInput = document.getElementById('gptsovitsVoiceId');
+            const voiceId = voiceIdInput ? voiceIdInput.value.trim() : '_default';
+            const testText = window.t ? window.t('connectivity.gsvTestText', 'GSV连通性测试') : 'GSV连通性测试';
+
             gsvTestBtn.disabled = true;
             gsvTestBtn.classList.add('testing');
             gsvLight.dataset.status = LightStatus.TESTING;
 
             try {
-                const resp = await fetch('/api/config/gptsovits/list_voices', {
+                const resp = await fetch('/api/config/gptsovits/test_connectivity', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ api_url: url }),
-                    signal: AbortSignal.timeout(10000),
+                    body: JSON.stringify({ api_url: url, voice_id: voiceId, test_text: testText }),
+                    signal: AbortSignal.timeout(15000),
                 });
                 const result = await resp.json();
                 if (result.success) {
