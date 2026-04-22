@@ -282,6 +282,13 @@ async def test_reflection_lock_order_reflection_then_persona(tmp_path):
     results = await timed_run()
     # At least the first aauto_promote_stale call transitioned the reflection
     assert any(isinstance(r, int) and r >= 1 for r in results)
+    # Also assert the transition actually persisted — catches the case
+    # where return-count is right but the save path silently drops the
+    # status change (CodeRabbit PR #929 nit).
+    loaded = await re.aload_reflections("小天")
+    promoted = next((r for r in loaded if r["id"] == "ref_promote1"), None)
+    assert promoted is not None
+    assert promoted["status"] == "confirmed"
 
 
 @pytest.mark.asyncio

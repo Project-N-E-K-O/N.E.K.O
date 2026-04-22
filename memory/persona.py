@@ -774,6 +774,14 @@ class PersonaManager:
                 entry['sub_zero_days'] = snapshot['sub_zero_days']
 
             def _sync_save(n: str, view):
+                # Gate write behind the same cloudsave check as
+                # save_persona/asave_persona — the evidence mutation path
+                # must honour read-only/maintenance mode (CodeRabbit PR #929).
+                assert_cloudsave_writable(
+                    self._config_manager,
+                    operation="save",
+                    target=f"memory/{n}/persona.json",
+                )
                 self._personas[n] = view
                 atomic_write_json(
                     self._persona_path(n), view, indent=2, ensure_ascii=False,

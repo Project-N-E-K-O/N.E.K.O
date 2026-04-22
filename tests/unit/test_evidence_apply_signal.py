@@ -104,7 +104,6 @@ async def test_reflection_apply_independent_clocks(tmp_path):
     r = [x for x in await re.aload_reflections("小天") if x["id"] == rid][0]
     assert r["rein_last_signal_at"] == rein_ts_before  # preserved
     assert r["disp_last_signal_at"] is not None  # now set
-    assert r["disp_last_signal_at"] != rein_ts_before or True  # they can coincide
 
 
 @pytest.mark.asyncio
@@ -197,8 +196,12 @@ async def test_persona_apply_signal_unknown_entry_returns_false(tmp_path):
 
 @pytest.mark.asyncio
 async def test_reflection_evidence_handler_is_idempotent_on_replay(tmp_path):
-    """S4: replay the same event 10 times → view fields identical (snapshot payload)."""
+    """S4: replay the production reflection.evidence_updated handler 10
+    times → view fields stay identical (full-snapshot payload is trivially
+    idempotent). Uses the real handler from `memory.evidence_handlers` so
+    if production drifts, this test catches it (CodeRabbit PR #929 nit)."""
     from memory.event_log import EVT_REFLECTION_EVIDENCE_UPDATED
+    from memory.evidence_handlers import make_reflection_evidence_handler
 
     ev, _fs, _pm, re, _cm = _install(str(tmp_path))
     rid = "ref_idem"
@@ -214,39 +217,86 @@ async def test_reflection_evidence_handler_is_idempotent_on_replay(tmp_path):
     [evt] = [e for e in events if e["type"] == EVT_REFLECTION_EVIDENCE_UPDATED]
     payload = evt["payload"]
 
-    # Build the reconciler handler the same way memory_server.py does
-    from memory.event_log import Reconciler
+    # Grab the actual production handler closure
+    apply_fn = make_reflection_evidence_handler(re)
 
-    # Use a mini-mock for register path
-    applied_count = 0
+    # First replay should no-op (view already at snapshot value) — we
+    # still call it to exercise the read/compare path.
+    changed_first = apply_fn("小天", payload)
+    assert changed_first is False
 
-    def _fake_apply(name: str, pl: dict) -> bool:
-        nonlocal applied_count
-        # Simulate the handler body from _register_evidence_handlers
-        from utils.file_utils import atomic_write_json
-        path = re._reflections_path(name)
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-        for r in data:
-            if r.get("id") == pl["reflection_id"]:
-                for k in ("reinforcement", "disputation",
-                          "rein_last_signal_at", "disp_last_signal_at",
-                          "sub_zero_days"):
-                    if k in pl:
-                        r[k] = pl[k]
-                applied_count += 1
-                break
-        atomic_write_json(path, data, indent=2, ensure_ascii=False)
-        return True
-
-    reconc = Reconciler(ev)
-    reconc.register(EVT_REFLECTION_EVIDENCE_UPDATED, _fake_apply)
-
-    # Replay 10 times
-    for _ in range(10):
-        _fake_apply("小天", payload)
+    # 9 more replays — view must stay at the same values.
+    for _ in range(9):
+        apply_fn("小天", payload)
 
     reloaded = await re.aload_reflections("小天")
     r = [x for x in reloaded if x["id"] == rid][0]
     assert r["reinforcement"] == pytest.approx(1.0)
     assert r["disputation"] == 0.0
+    assert r["rein_last_signal_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_prepare_save_preserves_merged_and_promote_blocked(tmp_path):
+    """`merged` / `promote_blocked` are non-archivable terminals and must
+    stay in the main reflections file across save cycles (RFC §3.11.3 +
+    CodeRabbit PR #929). Regression for silent drop when `aauto_promote_stale`
+    filters its active set through REFLECTION_TERMINAL_STATUSES."""
+    _ev, _fs, _pm, re, _cm = _install(str(tmp_path))
+    now_iso = "2026-04-22T10:00:00"
+
+    # Seed disk with three on-disk entries: one active-pending,
+    # one merged (non-archivable), one promote_blocked (dead-letter).
+    disk = [
+        {"id": "ref_active", "text": "a", "entity": "master", "status": "pending",
+         "source_fact_ids": [], "created_at": now_iso, "feedback": None,
+         "next_eligible_at": now_iso},
+        {"id": "ref_merged", "text": "m", "entity": "master", "status": "merged",
+         "source_fact_ids": [], "created_at": now_iso, "feedback": None,
+         "next_eligible_at": now_iso, "absorbed_into": "p_target"},
+        {"id": "ref_blocked", "text": "b", "entity": "master", "status": "promote_blocked",
+         "source_fact_ids": [], "created_at": now_iso, "feedback": None,
+         "next_eligible_at": now_iso, "promote_blocked_reason": "llm_unavailable"},
+    ]
+    # Write directly bypassing the merge-save logic to simulate prior state
+    path = re._reflections_path("小天")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(disk, f)
+
+    # Now save only the active entry (as `_aauto_promote_stale_locked` would
+    # do after filtering via REFLECTION_TERMINAL_STATUSES).
+    await re.asave_reflections("小天", [disk[0]])
+
+    # Re-read ALL entries (include_archived=True sidesteps the active filter).
+    reloaded = await re.aload_reflections("小天", include_archived=True)
+    ids = {r["id"] for r in reloaded}
+    assert "ref_active" in ids
+    assert "ref_merged" in ids, "merged must survive save cycles"
+    assert "ref_blocked" in ids, "promote_blocked must survive save cycles"
+
+
+@pytest.mark.asyncio
+async def test_persona_entry_handler_sha_mismatch_raises(tmp_path):
+    """S5: persona.entry_updated handler raises on text sha256 mismatch —
+    reconciler must stop and let a human inspect (RFC §3.3.6)."""
+    from memory.evidence_handlers import make_persona_entry_handler
+
+    _ev, _fs, pm, _re, _cm = _install(str(tmp_path))
+    # Seed a persona entry with known text
+    persona_path = pm._persona_path("小天")
+    os.makedirs(os.path.dirname(persona_path), exist_ok=True)
+    persona = {"master": {"facts": [{"id": "p_x", "text": "current text",
+                                     "source": "manual", "protected": False}]}}
+    with open(persona_path, "w", encoding="utf-8") as f:
+        json.dump(persona, f)
+
+    apply_fn = make_persona_entry_handler(pm)
+    bad_payload = {
+        "entity_key": "master",
+        "entry_id": "p_x",
+        "rewrite_text_sha256": "0" * 64,  # definitely not the sha of "current text"
+        "reinforcement": 5.0,
+    }
+    with pytest.raises(RuntimeError):
+        apply_fn("小天", bad_payload)

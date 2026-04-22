@@ -993,9 +993,10 @@ NEGATIVE_TARGET_CHECK_PROMPT = {
 一条？可能多条、也可能一条都没有（用户只是泛化情绪）。
 
 只能从"观察列表"里选 target_id，不要凭空生成。
+target_type 必须是字符串 "reflection" 或 "persona" 之一。
 
-返回 JSON（如果用户只是泛化情绪，无明确 target，返回 {"targets": []}）：
-{"targets": [{"target_type": "reflection" 或 "persona",
+返回合法 JSON（如果用户只是泛化情绪，无明确 target，返回 {"targets": []}）：
+{"targets": [{"target_type": "reflection",
               "target_id": "...",
               "reason": "简短理由"}]}""",
     'en': """You are an emotion analysis expert.
@@ -1014,9 +1015,10 @@ the topic / stop talking about", which observation(s) above are they
 referring to? Could be several, or none at all (just a vague mood).
 
 target_id MUST come from "observations" above — do not invent IDs.
+target_type MUST be the literal string "reflection" or "persona".
 
-Return JSON (empty array if the user is just venting without a target):
-{"targets": [{"target_type": "reflection" or "persona",
+Return valid JSON (empty array if the user is just venting without a target):
+{"targets": [{"target_type": "reflection",
               "target_id": "...",
               "reason": "short rationale"}]}""",
     'ja': """あなたは感情分析の専門家です。
@@ -1035,9 +1037,10 @@ sends some useful information to help decide what the user is pushing back on.
 場合もあります（単なるムード）。
 
 target_id は必ず上の "観察" から選ぶこと。
+target_type は文字列 "reflection" または "persona" のいずれかでなければならない。
 
-JSON で返す（該当なしなら空配列）:
-{"targets": [{"target_type": "reflection" or "persona",
+有効な JSON で返す（該当なしなら空配列）:
+{"targets": [{"target_type": "reflection",
               "target_id": "...",
               "reason": "短い理由"}]}""",
     'ko': """당신은 감정 분석 전문가입니다.
@@ -1055,9 +1058,10 @@ sends some useful information to help decide what the user is pushing back on.
 중 어떤 것을 가리킵니까? 여러 개일 수도, 전혀 없을 수도 있습니다.
 
 target_id는 반드시 위 "관찰"에서 가져오세요.
+target_type은 문자열 "reflection" 또는 "persona" 중 하나여야 합니다.
 
-JSON 반환 (해당 없으면 빈 배열):
-{"targets": [{"target_type": "reflection" 또는 "persona",
+유효한 JSON으로 반환 (해당 없으면 빈 배열):
+{"targets": [{"target_type": "reflection",
               "target_id": "...",
               "reason": "짧은 이유"}]}""",
     'ru': """Вы эксперт по анализу эмоций.
@@ -1076,9 +1080,10 @@ sends some useful information to help decide what the user is pushing back on.
 или ни одного (просто эмоция).
 
 target_id ДОЛЖЕН быть из "наблюдений" выше.
+target_type ДОЛЖЕН быть строкой "reflection" или "persona".
 
-Верните JSON (пустой массив, если конкретной цели нет):
-{"targets": [{"target_type": "reflection" или "persona",
+Верните валидный JSON (пустой массив, если конкретной цели нет):
+{"targets": [{"target_type": "reflection",
               "target_id": "...",
               "reason": "короткое обоснование"}]}""",
 }

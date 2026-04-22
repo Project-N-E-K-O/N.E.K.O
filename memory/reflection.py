@@ -187,10 +187,13 @@ class ReflectionEngine:
             for item in data if isinstance(item, dict) and 'id' in item
         ]
         if not include_archived:
-            # `merged` 也排除：表示已被 LLM merge 吸收到 persona，不再主动检索
+            # Hides every terminal status (promoted / denied / merged /
+            # archived / promote_blocked) from active reads — reading from
+            # the shared constant so PR-3's promote_blocked dead-letter
+            # state is excluded without an additional edit here.
             items = [
                 r for r in items
-                if r.get('status') not in ('promoted', 'denied', 'merged', 'archived')
+                if r.get('status') not in REFLECTION_TERMINAL_STATUSES
             ]
         return items
 
@@ -221,24 +224,43 @@ class ReflectionEngine:
     ) -> tuple[list[dict], list[dict], list[dict]]:
         """Pure logic: compute (merged_main, to_archive, keep_in_main).
 
-        `merged` reflections 保留在主文件（RFC §3.11.3：merge 后 reflection
-        仍在 reflections.json，带 absorbed_into 溯源，不归档）。
+        RFC §3.11.3: `merged` and `promote_blocked` terminals stay in the
+        main file indefinitely (merged carries `absorbed_into` for trace
+        chains; promote_blocked is dead-letter awaiting manual / new-signal
+        reset). Only `promoted` and `denied` are candidates for the
+        `_REFLECTION_ARCHIVE_DAYS` age-based archival split.
+
+        CodeRabbit PR #929 fix: earlier this function only preserved
+        `promoted|denied` from `all_on_disk`, so when `_aauto_promote_stale_locked`
+        filters its active set through REFLECTION_TERMINAL_STATUSES (which
+        includes `merged`), any merged entry on disk would silently vanish
+        from the main file on save.
         """
         active_ids = {r['id'] for r in reflections if 'id' in r}
-        finished = [r for r in all_on_disk if r.get('id') not in active_ids
-                    and r.get('status') in ('promoted', 'denied')]
         cutoff = datetime.now() - timedelta(days=_REFLECTION_ARCHIVE_DAYS)
-        keep_in_main, to_archive = [], []
-        for r in finished:
-            ts_key = r.get('promoted_at') or r.get('denied_at') or r.get('created_at', '')
-            try:
-                if datetime.fromisoformat(ts_key) < cutoff:
-                    to_archive.append(r)
-                    continue
-            except (ValueError, TypeError):
-                # 时间戳缺失/格式异常：不归档，落回 main 保守保留
-                pass
-            keep_in_main.append(r)
+        keep_in_main: list[dict] = []
+        to_archive: list[dict] = []
+        for r in all_on_disk:
+            if r.get('id') in active_ids:
+                continue
+            status = r.get('status')
+            if status in ('promoted', 'denied'):
+                ts_key = (r.get('promoted_at') or r.get('denied_at')
+                          or r.get('created_at', ''))
+                try:
+                    if datetime.fromisoformat(ts_key) < cutoff:
+                        to_archive.append(r)
+                        continue
+                except (ValueError, TypeError):
+                    # 时间戳缺失/格式异常：不归档，落回 main 保守保留
+                    pass
+                keep_in_main.append(r)
+            elif status in ('merged', 'promote_blocked'):
+                # Non-archivable terminal states — must survive save cycles
+                keep_in_main.append(r)
+            # `archived` should never appear on disk already (that's a
+            # post-archive state for the shard file) — drop silently if
+            # it sneaks in here.
         merged = reflections + keep_in_main
         return merged, to_archive, keep_in_main
 
@@ -585,6 +607,14 @@ class ReflectionEngine:
                 entry['sub_zero_days'] = snapshot['sub_zero_days']
 
             def _sync_save(n: str, view):
+                # Gate write behind the same cloudsave check as
+                # save_reflections/asave_reflections — the evidence mutation
+                # path must honour read-only/maintenance mode (CodeRabbit PR #929).
+                assert_cloudsave_writable(
+                    self._config_manager,
+                    operation="save",
+                    target=f"memory/{n}/reflections.json",
+                )
                 atomic_write_json(
                     self._reflections_path(n), view, indent=2, ensure_ascii=False,
                 )
@@ -1012,7 +1042,7 @@ class ReflectionEngine:
             # 由 _prepare_save_reflections 的 merge 逻辑处理。
             active = [
                 r for r in reflections
-                if r.get('status') not in ('promoted', 'denied', 'merged', 'archived')
+                if r.get('status') not in REFLECTION_TERMINAL_STATUSES
             ]
             await self.asave_reflections(lanlan_name, active)
             if confirmed_ids:

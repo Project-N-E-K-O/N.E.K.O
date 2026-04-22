@@ -7,11 +7,9 @@ from memory import (
     FactStore, PersonaManager, ReflectionEngine,
 )
 from memory.cursors import CursorStore, CURSOR_REBUTTAL_CHECKED_UNTIL
+from memory.facts import FactExtractionFailed
 from memory.event_log import (
     EventLog, Reconciler,
-    EVT_REFLECTION_EVIDENCE_UPDATED,
-    EVT_PERSONA_EVIDENCE_UPDATED,
-    EVT_PERSONA_ENTRY_UPDATED,
     EVIDENCE_SOURCE_USER_CONFIRM,
     EVIDENCE_SOURCE_USER_FACT,
     EVIDENCE_SOURCE_USER_IGNORE,
@@ -19,6 +17,7 @@ from memory.event_log import (
     EVIDENCE_SOURCE_USER_REBUT,
     EVIDENCE_SOURCE_MIGRATION_SEED,
 )
+from memory.evidence_handlers import register_evidence_handlers as _register_evidence_handlers
 from memory.outbox import Outbox, OP_EXTRACT_FACTS
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse, JSONResponse
@@ -820,143 +819,10 @@ async def _periodic_idle_maintenance_loop():
             logger.info("[IdleMaint] 启动阶段结束，恢复正常轮询间隔")
 
 
-# ── memory-evidence-rfc §3.3.6: Reconciler apply handlers ───────────
-# 三个 handler 都 sync（ApplyHandler 契约，见 event_log.py:97）。handler
-# 内自己 load → mutate → save，Reconciler 只管在成功后推 sentinel。
-
-def _register_evidence_handlers(
-    reconc: Reconciler, persona_mgr: PersonaManager,
-    reflection_eng: ReflectionEngine,
-) -> None:
-    import hashlib as _hashlib
-
-    def _apply_reflection_evidence(name: str, payload: dict) -> bool:
-        rid = payload.get('reflection_id')
-        if not rid:
-            return False
-        path = reflection_eng._reflections_path(name)
-        from utils.file_utils import atomic_write_json
-        data: list[dict] = []
-        if os.path.exists(path):
-            try:
-                with open(path, encoding='utf-8') as f:
-                    data = json.load(f)
-            except (json.JSONDecodeError, OSError):
-                data = []
-        if not isinstance(data, list):
-            data = []
-        changed = False
-        for r in data:
-            if not isinstance(r, dict) or r.get('id') != rid:
-                continue
-            for k in ('reinforcement', 'disputation',
-                      'rein_last_signal_at', 'disp_last_signal_at',
-                      'sub_zero_days'):
-                if k in payload:
-                    if r.get(k) != payload[k]:
-                        r[k] = payload[k]
-                        changed = True
-            break
-        if changed:
-            atomic_write_json(path, data, indent=2, ensure_ascii=False)
-        return changed
-
-    def _apply_persona_evidence(name: str, payload: dict) -> bool:
-        entity_key = payload.get('entity_key')
-        entry_id = payload.get('entry_id')
-        if not entity_key or not entry_id:
-            return False
-        path = persona_mgr._persona_path(name)
-        from utils.file_utils import atomic_write_json
-        persona: dict = {}
-        if os.path.exists(path):
-            try:
-                with open(path, encoding='utf-8') as f:
-                    persona = json.load(f)
-            except (json.JSONDecodeError, OSError):
-                persona = {}
-        if not isinstance(persona, dict):
-            persona = {}
-        section = persona.get(entity_key)
-        if not isinstance(section, dict):
-            return False
-        facts = section.get('facts', [])
-        changed = False
-        for e in facts:
-            if not isinstance(e, dict) or e.get('id') != entry_id:
-                continue
-            for k in ('reinforcement', 'disputation',
-                      'rein_last_signal_at', 'disp_last_signal_at',
-                      'sub_zero_days'):
-                if k in payload:
-                    if e.get(k) != payload[k]:
-                        e[k] = payload[k]
-                        changed = True
-            break
-        if changed:
-            # Keep any in-memory cache in sync
-            persona_mgr._personas[name] = persona
-            atomic_write_json(path, persona, indent=2, ensure_ascii=False)
-        return changed
-
-    def _apply_persona_entry(name: str, payload: dict) -> bool:
-        """EVT_PERSONA_ENTRY_UPDATED — text + evidence full rewrite
-        (§3.3.6). text 不在 payload；靠 rewrite_text_sha256 确认 view
-        是否已 apply。mismatch → raise（reconciler 停机等人工）。PR-1
-        只落 scaffold（PR-3 的 merge-on-promote 实际使用这个事件）。"""
-        entity_key = payload.get('entity_key')
-        entry_id = payload.get('entry_id')
-        expected_sha = payload.get('rewrite_text_sha256')
-        if not entity_key or not entry_id:
-            return False
-        path = persona_mgr._persona_path(name)
-        if not os.path.exists(path):
-            return False
-        from utils.file_utils import atomic_write_json
-        try:
-            with open(path, encoding='utf-8') as f:
-                persona = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            return False
-        if not isinstance(persona, dict):
-            return False
-        section = persona.get(entity_key)
-        if not isinstance(section, dict):
-            return False
-        facts = section.get('facts', [])
-        for e in facts:
-            if not isinstance(e, dict) or e.get('id') != entry_id:
-                continue
-            if expected_sha:
-                current_sha = _hashlib.sha256(
-                    (e.get('text') or '').encode('utf-8'),
-                ).hexdigest()
-                if current_sha != expected_sha:
-                    raise RuntimeError(
-                        f"[Reconciler] {name}/persona.entry_updated: "
-                        f"entry {entry_id} text sha256 mismatch; "
-                        f"view drifted from log, manual inspection required"
-                    )
-            # PR-3 will actually rewrite text + evidence here. For PR-1,
-            # only the evidence fields in payload are applied (matches
-            # persona.evidence_updated semantics).
-            changed = False
-            for k in ('reinforcement', 'disputation',
-                      'rein_last_signal_at', 'disp_last_signal_at',
-                      'sub_zero_days', 'merged_from_ids'):
-                if k in payload:
-                    if e.get(k) != payload[k]:
-                        e[k] = payload[k]
-                        changed = True
-            if changed:
-                persona_mgr._personas[name] = persona
-                atomic_write_json(path, persona, indent=2, ensure_ascii=False)
-            return changed
-        return False
-
-    reconc.register(EVT_REFLECTION_EVIDENCE_UPDATED, _apply_reflection_evidence)
-    reconc.register(EVT_PERSONA_EVIDENCE_UPDATED, _apply_persona_evidence)
-    reconc.register(EVT_PERSONA_ENTRY_UPDATED, _apply_persona_entry)
+# memory-evidence-rfc §3.3.6 Reconciler handlers live in
+# memory/evidence_handlers.py — imported at module top as
+# `_register_evidence_handlers`. Keeping the handlers in their own module
+# lets unit tests exercise the production apply path without booting FastAPI.
 
 
 # ── memory-evidence-rfc §5: one-shot migration ──────────────────────
@@ -1127,6 +993,28 @@ def _signal_check_mark_done(name: str, now: datetime) -> None:
     state['last_check_ts'] = now.isoformat()
 
 
+def _signal_check_window_start(name: str, now: datetime) -> datetime:
+    """Compute the start of the SQL window for the signal-extraction cycle.
+
+    Use the previous successful `last_check_ts` when available so long
+    active sessions do not silently drop messages older than the fallback
+    window. Cold-start (first run or after corrupt state) falls back to
+    `now - EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES * 2` — wider than a single
+    idle trigger window but bounded so the initial scan is not unbounded.
+    """
+    state = _signal_check_state.get(name, {})
+    last = state.get('last_check_ts')
+    if last:
+        try:
+            ts = datetime.fromisoformat(last)
+            # Clock-skew safety: never let cursor land in the future
+            if ts <= now:
+                return ts
+        except (ValueError, TypeError):
+            pass
+    return now - timedelta(minutes=EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES * 2)
+
+
 async def _adispatch_evidence_signals(
     lanlan_name: str, signals: list[dict], source: str,
 ) -> None:
@@ -1188,8 +1076,10 @@ async def _periodic_signal_extraction_loop():
             try:
                 if not _signal_check_should_run(name, now):
                     continue
-                # 拉最近 user 消息：与现有 rebuttal_loop 用同一条 SQL 查询路径
-                start_time = now - timedelta(minutes=EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES * 2)
+                # 窗口起点：优先用上次成功 check 时戳（cursor 语义），避免
+                # 长对话期间 >10 分钟的消息被永远 skip（§3.4.3 游标推进）。
+                # 冷启动 / cursor 缺失时回退到 IDLE_MINUTES*2。
+                start_time = _signal_check_window_start(name, now)
                 rows = await time_manager.aretrieve_original_by_timeframe(
                     name, start_time, now,
                 )
@@ -1209,13 +1099,25 @@ async def _periodic_signal_extraction_loop():
                 ]
                 messages = convert_to_messages(json.dumps(message_dicts))
 
-                persisted, signals = await fact_store.aextract_facts_and_detect_signals(
-                    name, messages,
-                    reflection_engine=reflection_engine,
-                    persona_manager=persona_manager,
-                )
-                _signal_check_mark_done(name, now)
+                try:
+                    persisted, signals = await fact_store.aextract_facts_and_detect_signals(
+                        name, messages,
+                        reflection_engine=reflection_engine,
+                        persona_manager=persona_manager,
+                    )
+                except FactExtractionFailed as e:
+                    # Stage-1 terminal failure — cursor NOT advanced, next
+                    # cycle retries the same message window (§3.4.3).
+                    logger.warning(
+                        f"[SignalLoop] {name}: Stage-1 失败保留 cursor 重试: {e}"
+                    )
+                    continue
 
+                # 先 dispatch 再 mark_done：dispatch 中途抛致命异常时 cursor
+                # 不推进，下轮重试（见 §3.4.3）。`_adispatch_evidence_signals`
+                # 本身对每条 signal 的 aapply_signal 用 try/except 兜底，
+                # 因此常规情况下这里不抛——但若 event_log 这类基础设施
+                # 崩掉，我们宁可重试也不推进 cursor。
                 if signals:
                     await _adispatch_evidence_signals(
                         name, signals, source=EVIDENCE_SOURCE_USER_FACT,
@@ -1224,11 +1126,16 @@ async def _periodic_signal_extraction_loop():
                         f"[SignalLoop] {name}: dispatch {len(signals)} 个 evidence 信号"
                     )
 
-                # 信号写完后触发一次 score-driven pending→confirmed 扫描
+                # 信号写完后触发一次 score-driven pending→confirmed 扫描；
+                # 独立 try/except：本步失败不应阻止 cursor 推进（score 下
+                # 轮会自然重算）。
                 try:
                     await reflection_engine.aauto_promote_stale(name)
                 except Exception as e:
                     logger.debug(f"[SignalLoop] {name}: auto_promote_stale 失败: {e}")
+
+                # Stage-1 + dispatch 都跨过了，cursor 推进。
+                _signal_check_mark_done(name, now)
             except Exception as e:
                 logger.debug(f"[SignalLoop] {name}: 处理失败: {e}")
 
@@ -1641,6 +1548,15 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
                 # disputation += 1; ignored → reinforcement += -0.2.
                 # pending→confirmed/denied state transitions happen in the
                 # score-driven auto_promote_stale path (not here).
+                #
+                # Retry semantics caveat: `check_feedback` above already
+                # persisted the feedback decision into `surfaced.json`, so
+                # a downstream aapply_signal / areject_promotion failure
+                # here won't be re-tried next cycle (surfaced.feedback !=
+                # None skips the row). PR-1 accepts best-effort with WARN
+                # logs; a follow-up would move these side-effects behind an
+                # outbox op so they survive transient failures. Tracked for
+                # PR-2+ decay/archive work.
                 for rid, kind in fb_map.items():
                     if kind == 'confirmed':
                         delta = {'reinforcement': 1.0}
@@ -1656,9 +1572,11 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
                             lanlan_name, rid, delta, source=source,
                         )
                     except Exception as e:
+                        # Signal lost this turn (see caveat above). Warn so
+                        # operators can spot transient LLM / disk issues.
                         logger.warning(
                             f"[MemoryServer] {lanlan_name}: aapply_signal "
-                            f"({rid}, {kind}) 失败: {e}"
+                            f"({rid}, {kind}) 失败，此次反馈 signal 已丢失: {e}"
                         )
 
                 # denied 仍然走 areject_promotion 做 status transition（保留
@@ -1669,7 +1587,8 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
                             await reflection_engine.areject_promotion(lanlan_name, rid)
                         except Exception as e:
                             logger.warning(
-                                f"[MemoryServer] areject_promotion 失败 {rid}: {e}"
+                                f"[MemoryServer] areject_promotion 失败 "
+                                f"{rid}，此次 denial 未转入 status: {e}"
                             )
 
                 # 让后续 score 扫描把 pending→confirmed 推进

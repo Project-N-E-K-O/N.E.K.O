@@ -164,7 +164,11 @@ async def test_stage2_accepts_raw_id_prefix_mismatch(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_stage1_failure_returns_empty_no_write(tmp_path):
+async def test_stage1_failure_raises_no_cursor_advance(tmp_path):
+    """Stage-1 terminal failure must raise FactExtractionFailed so the
+    caller keeps the cursor untouched (RFC §3.4.3 Codex review P1)."""
+    from memory.facts import FactExtractionFailed
+
     fs, _cm = _install_factstore(str(tmp_path))
 
     async def _fail_call(*a, **kw):
@@ -172,14 +176,28 @@ async def test_stage1_failure_returns_empty_no_write(tmp_path):
 
     with patch.object(fs, '_allm_call_with_retries',
                        new=AsyncMock(side_effect=_fail_call)):
-        facts, signals = await fs.aextract_facts_and_detect_signals(
-            "小天", [_FakeMessage("主人喜欢咖啡")],
-        )
+        with pytest.raises(FactExtractionFailed):
+            await fs.aextract_facts_and_detect_signals(
+                "小天", [_FakeMessage("主人喜欢咖啡")],
+            )
 
-    assert facts == []
-    assert signals == []
     # No facts written
     assert await fs.aload_facts("小天") == []
+
+
+@pytest.mark.asyncio
+async def test_legacy_extract_facts_swallows_stage1_failure(tmp_path):
+    """The Stage-1-only backward-compat entry must still return [] on
+    Stage-1 terminal failure (per-turn caller treats it as best-effort)."""
+    fs, _cm = _install_factstore(str(tmp_path))
+
+    async def _fail_call(*a, **kw):
+        return None
+
+    with patch.object(fs, '_allm_call_with_retries',
+                       new=AsyncMock(side_effect=_fail_call)):
+        facts = await fs.extract_facts([_FakeMessage("主人喜欢咖啡")], "小天")
+    assert facts == []
 
 
 @pytest.mark.asyncio
