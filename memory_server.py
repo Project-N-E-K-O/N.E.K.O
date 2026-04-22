@@ -1010,8 +1010,14 @@ def _signal_check_window_start(name: str, now: datetime) -> datetime:
             # Clock-skew safety: never let cursor land in the future
             if ts <= now:
                 return ts
-        except (ValueError, TypeError):
-            pass
+        except (ValueError, TypeError) as e:
+            # Corrupt cursor value in in-memory state (shouldn't happen —
+            # we always write ISO-8601 — but stay defensive so one bad
+            # character doesn't stall the signal loop). Fall through to
+            # the bounded fallback window below.
+            logger.debug(
+                f"[SignalLoop] {name}: last_check_ts {last!r} 解析失败 ({e}), 用 fallback 窗口"
+            )
     return now - timedelta(minutes=EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES * 2)
 
 
