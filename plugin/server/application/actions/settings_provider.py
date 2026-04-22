@@ -201,9 +201,8 @@ def _collect_settings_actions_sync(
     from plugin.core.state import state
 
     plugins_snapshot = state.get_plugins_snapshot_cached()
-    hosts_snapshot: dict[str, Any] = {}
     with state.acquire_plugin_hosts_read_lock():
-        hosts_snapshot = dict(state.plugin_hosts)
+        hosts_snapshot: dict[str, Any] = dict(state.plugin_hosts)
 
     actions: list[ActionDescriptor] = []
 

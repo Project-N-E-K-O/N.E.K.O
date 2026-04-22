@@ -431,6 +431,7 @@
             if (!res.ok) {
                 return res.json().catch(function () { return null; }).then(function (body) {
                     var detail = (body && body.detail) ? body.detail : 'HTTP ' + res.status;
+                    if (typeof detail !== 'string') detail = JSON.stringify(detail);
                     throw new Error(detail);
                 });
             }
@@ -1820,10 +1821,12 @@
 
         // Re-fetch quick actions when plugin state changes or list_actions update
         window.addEventListener(EVENT_PREFIX + 'plugin-state-change', function () {
-            fetchChatActions();
+            var overlay = getOverlay();
+            if (overlay && !overlay.hidden) fetchChatActions();
         });
         window.addEventListener(EVENT_PREFIX + 'list-actions-update', function () {
-            fetchChatActions();
+            var overlay = getOverlay();
+            if (overlay && !overlay.hidden) fetchChatActions();
         });
     }
 
