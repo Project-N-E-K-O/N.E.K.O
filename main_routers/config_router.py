@@ -963,8 +963,8 @@ async def test_gptsovits_connectivity(request: Request):
                 ready_msg = await asyncio.wait_for(ws.recv(), timeout=5.0)
                 ready_data = _json.loads(ready_msg)
                 if ready_data.get("type") != "ready":
-                    error_detail = ready_data.get("message", str(ready_data))
-                    return {"success": False, "error": f"init 失败: {error_detail[:200]}", "error_code": "unknown"}
+                    error_detail = str(ready_data.get("message", ready_data))[:200]
+                    return {"success": False, "error": f"init 失败: {error_detail}", "error_code": "unknown"}
 
                 # Step 3: Send test text (use "append" command, same as gptsovits_tts_worker)
                 await ws.send(_json.dumps({"cmd": "append", "data": test_text}))
