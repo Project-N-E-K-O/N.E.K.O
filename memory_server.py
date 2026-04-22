@@ -1286,7 +1286,6 @@ async def _amaybe_trigger_negative_keyword_hook(
         if not isinstance(t, dict):
             continue
         tid = t.get('target_id')
-        ttype = t.get('target_type')
         if not tid:
             continue
         # Accept raw or prefixed id
@@ -1600,8 +1599,10 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
     try:
         if user_msgs:
             _signal_check_record_turn(lanlan_name)
-    except Exception:
-        pass
+    except Exception as e:
+        # Best-effort counter bump; a failure here only delays the next
+        # signal-extraction cycle — not worth interrupting conversation flow.
+        logger.debug(f"[MemoryServer] signal-check turn counter 更新失败: {e}")
 
     try:
         # 1. 事实提取（legacy flow；真正的 Stage-1+Stage-2 走

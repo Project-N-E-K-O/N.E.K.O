@@ -28,8 +28,6 @@ from typing import TYPE_CHECKING
 
 from config import (
     EVIDENCE_CONFIRMED_THRESHOLD,
-    EVIDENCE_PROMOTED_THRESHOLD,
-    IGNORED_REINFORCEMENT_DELTA,
     SETTING_PROPOSER_MODEL,
 )
 from memory.evidence import evidence_score
