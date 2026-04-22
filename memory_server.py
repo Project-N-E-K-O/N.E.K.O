@@ -6,6 +6,8 @@ from memory import (
     CompressedRecentHistoryManager, ImportantSettingsManager, TimeIndexedMemory,
     FactStore, PersonaManager, ReflectionEngine,
 )
+from memory.cursors import CursorStore, CURSOR_REBUTTAL_CHECKED_UNTIL
+from memory.outbox import Outbox, OP_EXTRACT_FACTS
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse, JSONResponse
 import json
@@ -36,7 +38,8 @@ import re
 import asyncio
 import logging
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from typing import Awaitable, Callable
 from utils.frontend_utils import get_timestamp
 
 # 配置日志
@@ -92,6 +95,8 @@ time_manager: TimeIndexedMemory | None = None
 fact_store: FactStore | None = None
 persona_manager: PersonaManager | None = None
 reflection_engine: ReflectionEngine | None = None
+cursor_store: CursorStore | None = None
+outbox: Outbox | None = None
 
 # 用于保护重新加载操作的锁
 _reload_lock = asyncio.Lock()
@@ -109,11 +114,17 @@ def _defer_time_manager_cleanup(manager: TimeIndexedMemory | None) -> None:
 
 async def reload_memory_components():
     """重新加载记忆组件配置（用于新角色创建后）
-    
+
     使用锁保护重新加载操作，确保原子性交换，避免竞态条件。
     先创建所有新实例，然后原子性地交换引用。
+
+    注意：reload 期间旧 cursor_store 已启动的 async 任务可能与新实例并发
+    读写同一份 cursors.json。整个架构假设"per-character 单写者"，重载是
+    管理员操作（角色新增），不会与后台 rebuttal_loop 高频冲突；
+    atomic_write_json 保证单次写原子，极端 last-writer-wins 场景下最多
+    损失一次 cursor 推进——下一轮 tick 即恢复。
     """
-    global recent_history_manager, settings_manager, time_manager, fact_store, persona_manager, reflection_engine
+    global recent_history_manager, settings_manager, time_manager, fact_store, persona_manager, reflection_engine, cursor_store, outbox
     async with _reload_lock:
         logger.info("[MemoryServer] 开始重新加载记忆组件配置...")
         old_time_manager = time_manager
@@ -125,6 +136,8 @@ async def reload_memory_components():
             new_facts = FactStore(time_indexed_memory=new_time)
             new_persona = PersonaManager()
             new_reflection = ReflectionEngine(new_facts, new_persona)
+            new_cursor_store = CursorStore()
+            new_outbox = Outbox()
 
             # 然后原子性地交换引用
             recent_history_manager = new_recent
@@ -133,6 +146,8 @@ async def reload_memory_components():
             fact_store = new_facts
             persona_manager = new_persona
             reflection_engine = new_reflection
+            cursor_store = new_cursor_store
+            outbox = new_outbox
 
             if old_time_manager is not None and old_time_manager is not new_time:
                 _defer_time_manager_cleanup(old_time_manager)
@@ -323,6 +338,139 @@ def _spawn_background_task(coro) -> asyncio.Task:
     task.add_done_callback(_on_done)
     return task
 
+
+# ── Outbox handler registry + replay (P1.c) ────────────────────────
+
+# op_type → async handler(name: str, payload: dict) -> None. Handler 必须幂等。
+OutboxHandler = Callable[[str, dict], Awaitable[None]]
+_OUTBOX_HANDLERS: dict[str, OutboxHandler] = {}
+
+# 启动期补跑 fan-out 并发上限：防止 24h 停机后的 outbox 洪水冲击 LLM 后端。
+_REPLAY_CONCURRENCY = 4
+_replay_semaphore: asyncio.Semaphore | None = None  # 懒构造（event loop-bound）
+
+
+def register_outbox_handler(op_type: str, handler: OutboxHandler) -> None:
+    _OUTBOX_HANDLERS[op_type] = handler
+
+
+async def _run_outbox_op(name: str, op: dict, sem: asyncio.Semaphore | None = None) -> None:
+    """跑单条 outbox op 并在成功后 append_done。失败保持 pending 等下次启动补跑。
+
+    `sem`：startup replay 路径传入共享 Semaphore 限制 LLM fan-out；日常单次
+    spawn 路径传 None 即不限流。
+    """
+    op_id = op.get('op_id')
+    op_type = op.get('type')
+    payload = op.get('payload') or {}
+    handler = _OUTBOX_HANDLERS.get(op_type)
+    if handler is None:
+        logger.warning(f"[Outbox] {name}: 未注册的 op type {op_type}, 跳过 {op_id}")
+        return
+    acquired = False
+    if sem is not None:
+        await sem.acquire()
+        acquired = True
+    try:
+        try:
+            await handler(name, payload)
+        except Exception as e:
+            logger.warning(f"[Outbox] {name}/{op_type}/{op_id} 执行失败（保持 pending）: {e}")
+            return
+        try:
+            await outbox.aappend_done(name, op_id)
+        except Exception as e:
+            # append_done 失败不致命：下次启动重放这个 op，handler 幂等。
+            logger.warning(f"[Outbox] {name}/{op_type}/{op_id}: append_done 失败: {e}")
+    finally:
+        if acquired and sem is not None:
+            sem.release()
+
+
+async def _spawn_outbox_extract_facts(lanlan_name: str, messages: list) -> asyncio.Task:
+    """把 extract_facts+feedback 背景任务登记到 outbox 并 spawn。
+
+    登记的 payload 包含 messages_to_dict 序列化后的整轮对话，重启时可重放。
+    """
+    from utils.llm_client import messages_to_dict
+
+    payload = {'messages': messages_to_dict(messages)}
+    try:
+        op_id = await outbox.aappend_pending(lanlan_name, OP_EXTRACT_FACTS, payload)
+    except Exception as e:
+        # Outbox 写失败不能阻塞主流程，降级为一次性任务（与重构前行为一致）
+        logger.warning(
+            f"[Outbox] {lanlan_name}: append_pending 失败，降级为内存任务: "
+            f"{type(e).__name__}: {e}"
+        )
+        return _spawn_background_task(
+            _extract_facts_and_check_feedback(messages, lanlan_name)
+        )
+    op = {'op_id': op_id, 'type': OP_EXTRACT_FACTS, 'payload': payload}
+    return _spawn_background_task(_run_outbox_op(lanlan_name, op))
+
+
+async def _replay_pending_outbox() -> list[asyncio.Task]:
+    """启动期扫描 outbox，补跑未完成 op。返回 spawn 出的 Task 列表。
+
+    返回值方便调用方（或测试）await 所有任务跑完，而不是靠
+    `_BACKGROUND_TASKS` 快照 + `asyncio.sleep(0)` 这种弱保证等法。
+
+    扫描范围 = 当前 config 的角色名 ∪ memory_dir 下有 `outbox.ndjson` 的
+    子目录。仅扫 config 会漏掉"曾经在用、后来被移出 config 但仍有 pending
+    op 的角色"，导致那些 op 永远不会被补跑。
+    """
+    global _replay_semaphore
+    spawned: list[asyncio.Task] = []
+    names: set[str] = set()
+    try:
+        character_data = await _config_manager.aload_characters()
+        names.update(character_data.get('猫娘', {}).keys())
+    except Exception as e:
+        logger.warning(f"[Outbox] 启动补跑：加载角色列表失败: {e}")
+        # 即便 config 加载失败，仍允许走磁盘扫描兜底——这正是 config
+        # 变化后仍需保证 crash-recovery 的场景。
+
+    try:
+        memory_dir = _config_manager.memory_dir
+        if memory_dir and os.path.isdir(memory_dir):
+            for entry in os.listdir(memory_dir):
+                candidate = os.path.join(memory_dir, entry, 'outbox.ndjson')
+                if os.path.isfile(candidate):
+                    names.add(entry)
+    except Exception as e:
+        logger.warning(f"[Outbox] 启动补跑：扫描 memory_dir 失败: {e}")
+
+    if not names:
+        return spawned
+
+    # Semaphore 在 event loop 里构造（不能在模块级构造）
+    if _replay_semaphore is None:
+        _replay_semaphore = asyncio.Semaphore(_REPLAY_CONCURRENCY)
+
+    for name in sorted(names):
+        try:
+            pending = await outbox.apending_ops(name)
+        except Exception as e:
+            logger.warning(f"[Outbox] {name}: 读取 pending ops 失败: {e}")
+            continue
+        if not pending:
+            # 机会性 compact：文件可能累积了很多 done 行。失败不影响主流程
+            # （compact 仅是空间回收），debug 级别记录便于观测。
+            try:
+                dropped = await outbox.amaybe_compact(name)
+                if dropped:
+                    logger.info(f"[Outbox] {name}: compact 丢弃 {dropped} 行")
+            except Exception as e:
+                logger.debug(f"[Outbox] {name}: 机会性 compact 失败（可忽略）: {e}")
+            continue
+        logger.info(f"[Outbox] {name}: 补跑 {len(pending)} 条未完成 op")
+        for op in pending:
+            spawned.append(
+                _spawn_background_task(_run_outbox_op(name, op, _replay_semaphore))
+            )
+    return spawned
+
 @app.post("/shutdown")
 async def shutdown_memory_server():
     """接收来自main_server的关闭信号"""
@@ -340,7 +488,7 @@ async def shutdown_memory_server():
         return {"status": "error", "message": str(e)}
 
 REBUTTAL_CHECK_INTERVAL = 300  # 5 分钟
-_last_rebuttal_check: dict[str, datetime] = {}  # per-character 上次检查时间戳
+REBUTTAL_FIRST_RUN_LOOKBACK_HOURS = 1  # 首次启动 / 时钟回拨兜底回扫窗口
 
 
 def _extract_user_messages_from_rows(rows: list) -> list[str]:
@@ -370,14 +518,63 @@ def _extract_user_messages_from_rows(rows: list) -> list[str]:
     return user_msgs
 
 
+async def _resolve_rebuttal_start_time(name: str, now: datetime):
+    """决定 rebuttal_loop 本轮查询的起始时间。
+
+    优先级：
+      1. 持久化的 CURSOR_REBUTTAL_CHECKED_UNTIL
+      2. 兜底回扫窗口（首次启动 / cursor 文件缺失）
+      3. 时钟回拨保护：cursor > now 视为脏数据，走兜底并**立刻重写**游标
+
+    rollback 分支立即覆写游标的原因：若只在主循环 success branch 才覆写，
+    遇上 LLM 持续失败 + 时钟回拨，主循环每轮都会命中 fallback 并告警，
+    但游标永远停留在未来时间，无法自愈；这里直接写回 fallback 打破死循环。
+
+    写 fallback 而非 now：若写 now，本 tick 的 LLM 调用若失败，
+    窗口 `[fallback, now]` 的消息会因下轮 cursor 已推进到 now 而被跳过；
+    写 fallback 则保持重试语义——主循环 success branch 再把 cursor 推进到 now。
+
+    独立成函数便于单测验证。
+    """
+    cursor = await cursor_store.aget_cursor(name, CURSOR_REBUTTAL_CHECKED_UNTIL)
+    fallback = now - timedelta(hours=REBUTTAL_FIRST_RUN_LOOKBACK_HOURS)
+    if cursor is None:
+        # 首次启动：把 fallback 落盘锚定。否则 LLM 连续失败时，下轮
+        # cursor 仍为 None，新的 fallback 会基于新的 now 重新计算并前移
+        # （滑动 1h 窗口），首轮窗口最早段消息会被永久跳过。
+        try:
+            await cursor_store.aset_cursor(
+                name, CURSOR_REBUTTAL_CHECKED_UNTIL, fallback,
+            )
+        except Exception as e:
+            logger.debug(f"[Rebuttal] {name}: 首次 fallback 锚定写入失败（将在下轮重试）: {e}")
+        return fallback
+    if cursor > now:
+        logger.warning(
+            f"[Rebuttal] {name}: 游标 {cursor.isoformat()} 晚于当前时间 "
+            f"{now.isoformat()}（时钟回拨?），回退到 {fallback.isoformat()} 并覆写"
+        )
+        # 自愈：把游标拉回 fallback（而非 now），使后续 tick 不再命中 rollback
+        # 分支，同时保留本轮窗口 [fallback, now] 的重试能力（若 LLM 失败）
+        try:
+            await cursor_store.aset_cursor(
+                name, CURSOR_REBUTTAL_CHECKED_UNTIL, fallback,
+            )
+        except Exception as e:
+            logger.debug(f"[Rebuttal] {name}: rollback 自愈写入失败（将在下轮重试）: {e}")
+        return fallback
+    return cursor
+
+
 async def _periodic_rebuttal_loop():
     """每 5 分钟检查 confirmed reflections 是否被近期对话反驳。
 
     通过 time_indexed SQL 查询上次检查之后的所有新对话消息，
     确保不遗漏任何未消费的用户回复。
-    """
-    from datetime import timedelta as _td
 
+    游标持久化（P0 修复）：`CURSOR_REBUTTAL_CHECKED_UNTIL` 写入 cursors.json，
+    关机→重启后从磁盘读取，消灭"默认只回扫 1 小时导致关机期间反驳丢失"的缺陷。
+    """
     while True:
         await asyncio.sleep(REBUTTAL_CHECK_INTERVAL)
         try:
@@ -395,22 +592,29 @@ async def _periodic_rebuttal_loop():
             try:
                 confirmed = await reflection_engine.aget_confirmed_reflections(name)
                 if not confirmed:
+                    # 无 confirmed 时仍需推进游标：否则等到有新 confirmed reflection
+                    # 出现后，首轮会把 cursor-now 之间积攒的全部用户消息喂给
+                    # check_feedback_for_confirmed，容易把无关历史回复误判为反驳。
+                    await cursor_store.aset_cursor(
+                        name, CURSOR_REBUTTAL_CHECKED_UNTIL, now,
+                    )
                     return
 
-                # 确定查询起始时间：上次检查时间 or 1小时前（首次）
-                start_time = _last_rebuttal_check.get(
-                    name, now - _td(hours=1)
-                )
+                start_time = await _resolve_rebuttal_start_time(name, now)
                 rows = await time_manager.aretrieve_original_by_timeframe(
                     name, start_time, now,
                 )
                 if not rows:
-                    _last_rebuttal_check[name] = now
+                    await cursor_store.aset_cursor(
+                        name, CURSOR_REBUTTAL_CHECKED_UNTIL, now,
+                    )
                     return
 
                 user_msgs = _extract_user_messages_from_rows(rows)
                 if not user_msgs:
-                    _last_rebuttal_check[name] = now
+                    await cursor_store.aset_cursor(
+                        name, CURSOR_REBUTTAL_CHECKED_UNTIL, now,
+                    )
                     return
 
                 # 复用 check_feedback 判断反驳
@@ -418,12 +622,14 @@ async def _periodic_rebuttal_loop():
                     name, confirmed, user_msgs,
                 )
                 if feedbacks is None:
-                    # LLM 调用失败 → 不推进窗口，下次重试这批消息
-                    logger.warning(f"[Rebuttal] {name}: 反驳检查失败，保留窗口待重试")
+                    # LLM 调用失败 → 不推进游标，下次重试这批消息
+                    logger.warning(f"[Rebuttal] {name}: 反驳检查失败，保留游标待重试")
                     return
 
-                # 成功才推进窗口
-                _last_rebuttal_check[name] = now
+                # 成功才推进游标并持久化
+                await cursor_store.aset_cursor(
+                    name, CURSOR_REBUTTAL_CHECKED_UNTIL, now,
+                )
                 for fb in feedbacks:
                     if isinstance(fb, dict) and fb.get('feedback') == 'denied':
                         rid = fb.get('reflection_id')
@@ -584,7 +790,7 @@ async def _periodic_idle_maintenance_loop():
 @app.on_event("startup")
 async def startup_event_handler():
     """应用启动时初始化"""
-    global recent_history_manager, settings_manager, time_manager, fact_store, persona_manager, reflection_engine
+    global recent_history_manager, settings_manager, time_manager, fact_store, persona_manager, reflection_engine, cursor_store, outbox
 
     # ── 步骤 1：bootstrap cloudsave 目录 ──────────────────────────
     # 磁盘满/只读 FS 等场景会 raise OSError；降级为 warning 后继续，
@@ -616,6 +822,8 @@ async def startup_event_handler():
     fact_store = FactStore(time_indexed_memory=time_manager)
     persona_manager = PersonaManager()
     reflection_engine = ReflectionEngine(fact_store, persona_manager)
+    cursor_store = CursorStore()
+    outbox = Outbox()
 
     try:
         from utils.token_tracker import TokenTracker, install_hooks
@@ -650,6 +858,14 @@ async def startup_event_handler():
         logger.info(f"[Memory] Persona 迁移检查完成，角色数: {len(catgirl_names)}")
     except Exception as e:
         logger.warning(f"[Memory] Persona 迁移检查失败: {e}")
+
+    # P1.c 启动补跑：扫 outbox 里仍 pending 的 op（进程上次被 kill 时未完成的
+    # extract_facts 等），幂等重跑。_replay_pending_outbox 内部已容错，不阻塞
+    # 主启动链路。
+    try:
+        await _replay_pending_outbox()
+    except Exception as e:
+        logger.warning(f"[Outbox] 启动补跑顶层失败: {e}")
 
     if bootstrap_ok:
         try:
@@ -871,6 +1087,32 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
         logger.warning(f"[MemoryServer] 矛盾审视失败: {e}")
 
 
+async def _outbox_extract_facts_handler(lanlan_name: str, payload: dict) -> None:
+    """OP_EXTRACT_FACTS 的 outbox handler：从 payload 还原 messages 再跑常规流程。
+
+    幂等性来源：
+      - fact_store.extract_facts 内部靠 SHA-256 对事实去重，重复提取不会
+        产生重复 fact。
+      - arecord_mentions 是单调累加计数，重放会小幅抬高提及次数（可接受的
+        at-least-once 语义）。
+      - check_feedback 下次自然回补——reflection 的 surfaced/feedback
+        列表是持久化的。
+      - resolve_corrections 内部用 processed_indices 保护幂等。
+    """
+    from utils.llm_client import messages_from_dict
+
+    raw = payload.get('messages') or []
+    if not raw:
+        return
+    messages = messages_from_dict(raw)
+    if not messages:
+        return
+    await _extract_facts_and_check_feedback(messages, lanlan_name)
+
+
+register_outbox_handler(OP_EXTRACT_FACTS, _outbox_extract_facts_handler)
+
+
 @app.post("/cache/{lanlan_name}")
 async def cache_conversation(request: HistoryRequest, lanlan_name: str):
     """轻量级缓存：仅将新消息追加到 recent history，不触发 time_manager / review 等 LLM 操作。
@@ -919,7 +1161,7 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
         await time_manager.astore_conversation(uid, input_history, lanlan_name)
 
         # 异步事实提取（不阻塞返回，失败静默跳过）
-        _spawn_background_task(_extract_facts_and_check_feedback(input_history, lanlan_name))
+        await _spawn_outbox_extract_facts(lanlan_name, input_history)
 
         # 在后台启动review_history任务
         if lanlan_name in correction_tasks and not correction_tasks[lanlan_name].done():
@@ -966,7 +1208,7 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
 
         # 以下操作在锁外执行，不阻塞 /new_dialog
         # 异步事实提取
-        _spawn_background_task(_extract_facts_and_check_feedback(input_history, lanlan_name))
+        await _spawn_outbox_extract_facts(lanlan_name, input_history)
 
         # 在后台启动review_history任务
         if lanlan_name in correction_tasks and not correction_tasks[lanlan_name].done():
@@ -1010,7 +1252,7 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
             await recent_history_manager.update_history([], lanlan_name, detailed=True)
 
         if input_history:
-            _spawn_background_task(_extract_facts_and_check_feedback(input_history, lanlan_name))
+            await _spawn_outbox_extract_facts(lanlan_name, input_history)
 
         if lanlan_name in correction_tasks and not correction_tasks[lanlan_name].done():
             correction_tasks[lanlan_name].cancel()

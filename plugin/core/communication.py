@@ -11,7 +11,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, ClassVar, Dict, Optional, TypeVar
 
-from loguru import logger
+from plugin.logging_config import logger
 
 from plugin.utils.time_utils import now_iso
 from plugin.settings import (

@@ -2642,7 +2642,7 @@ class LLMSessionManager:
         if self._screenshot_future and not self._screenshot_future.done():
             self._screenshot_future.set_result(b64)
 
-    async def prepare_proactive_delivery(self, min_idle_secs: float = 30.0) -> bool:
+    async def prepare_proactive_delivery(self, min_idle_secs: float = 10.0) -> bool:
         """Phase 2 流式输出前的前置检查 + speech_id 生成。返回 True 表示可以继续。"""
         # 早期抢占检查：在任何 await / sid 改写前快速短路，防止用户刚在入口之后
         # 抢占而后续 self.current_speech_id 写入覆盖用户的 user_sid。默认 reset()

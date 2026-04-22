@@ -106,11 +106,11 @@ class CompressedRecentHistoryManager:
             if not raw_content.strip():
                 await self._areset_history_file(file_path, lanlan_name, "文件为空")
                 return []
-            file_content = json.loads(raw_content)
+            file_content = await asyncio.to_thread(json.loads, raw_content)
             if not isinstance(file_content, list):
                 await self._areset_history_file(file_path, lanlan_name, "JSON 根节点不是列表")
                 return []
-            return messages_from_dict(file_content)
+            return await asyncio.to_thread(messages_from_dict, file_content)
         except json.JSONDecodeError as e:
             await self._areset_history_file(file_path, lanlan_name, f"JSON 解析失败: {e}")
             return []
@@ -173,7 +173,7 @@ class CompressedRecentHistoryManager:
             await asyncio.to_thread(os.makedirs, os.path.dirname(file_path), exist_ok=True)
             await atomic_write_json_async(
                 file_path,
-                messages_to_dict(self.user_histories[lanlan_name]),
+                await asyncio.to_thread(messages_to_dict, self.user_histories[lanlan_name]),
                 indent=2,
                 ensure_ascii=False,
             )
@@ -189,7 +189,7 @@ class CompressedRecentHistoryManager:
             await asyncio.to_thread(os.makedirs, os.path.dirname(file_path), exist_ok=True)
             await atomic_write_json_async(
                 file_path,
-                messages_to_dict(self.user_histories.get(lanlan_name, [])),
+                await asyncio.to_thread(messages_to_dict, self.user_histories.get(lanlan_name, [])),
                 indent=2,
                 ensure_ascii=False,
             )
@@ -481,7 +481,7 @@ class CompressedRecentHistoryManager:
                     )
                     await atomic_write_json_async(
                         self.log_file_path[lanlan_name],
-                        messages_to_dict(corrected_messages),
+                        await asyncio.to_thread(messages_to_dict, corrected_messages),
                         indent=2,
                         ensure_ascii=False,
                     )

@@ -4,82 +4,82 @@
  */
 
 // ===== 拖拽辅助工具 - 按钮事件传播管理 =====
+// 使用 body class 控制全局拖动屏蔽，替代逐元素 inline style 遍历。
+// 优势：不受 CSS !important 优先级竞争影响，新增 UI 组件只需在 CSS 中加选择器。
 (function() {
     'use strict';
 
+    var DRAGGING_CLASS = 'neko-model-dragging';
+
+    // 注入全局 CSS：拖动期间禁用所有按钮、容器、弹窗、侧面板的 pointer-events
+    // 【维护注意】新增可交互 UI 组件时，需在此选择器列表中追加对应选择器，
+    //  否则拖动模型经过该组件时会出现「粘手」卡顿。
+    //  容器类选择器需同时加 * 后代通配符（因为按钮包装器是无 class 的匿名 div）。
+    var styleId = 'neko-drag-helpers-styles';
+    if (!document.getElementById(styleId)) {
+        var style = document.createElement('style');
+        style.id = styleId;
+        style.textContent = [
+            'body.' + DRAGGING_CLASS + ' .live2d-floating-btn,',
+            'body.' + DRAGGING_CLASS + ' .live2d-trigger-btn,',
+            'body.' + DRAGGING_CLASS + ' [id^="live2d-btn-"],',
+            'body.' + DRAGGING_CLASS + ' .vrm-floating-btn,',
+            'body.' + DRAGGING_CLASS + ' [id^="vrm-btn-"],',
+            'body.' + DRAGGING_CLASS + ' .mmd-floating-btn,',
+            'body.' + DRAGGING_CLASS + ' [id^="mmd-btn-"],',
+            'body.' + DRAGGING_CLASS + ' #live2d-lock-icon,',
+            'body.' + DRAGGING_CLASS + ' #vrm-lock-icon,',
+            'body.' + DRAGGING_CLASS + ' #mmd-lock-icon,',
+            'body.' + DRAGGING_CLASS + ' #live2d-floating-buttons,',
+            'body.' + DRAGGING_CLASS + ' #live2d-floating-buttons *,',
+            'body.' + DRAGGING_CLASS + ' #vrm-floating-buttons,',
+            'body.' + DRAGGING_CLASS + ' #vrm-floating-buttons *,',
+            'body.' + DRAGGING_CLASS + ' #mmd-floating-buttons,',
+            'body.' + DRAGGING_CLASS + ' #mmd-floating-buttons *,',
+            'body.' + DRAGGING_CLASS + ' .live2d-popup,',
+            'body.' + DRAGGING_CLASS + ' .live2d-popup *,',
+            'body.' + DRAGGING_CLASS + ' [id^="live2d-popup-"],',
+            'body.' + DRAGGING_CLASS + ' [id^="live2d-popup-"] *,',
+            'body.' + DRAGGING_CLASS + ' .vrm-popup,',
+            'body.' + DRAGGING_CLASS + ' .vrm-popup *,',
+            'body.' + DRAGGING_CLASS + ' [id^="vrm-popup-"],',
+            'body.' + DRAGGING_CLASS + ' [id^="vrm-popup-"] *,',
+            'body.' + DRAGGING_CLASS + ' .mmd-popup,',
+            'body.' + DRAGGING_CLASS + ' .mmd-popup *,',
+            'body.' + DRAGGING_CLASS + ' [id^="mmd-popup-"],',
+            'body.' + DRAGGING_CLASS + ' [id^="mmd-popup-"] *,',
+            'body.' + DRAGGING_CLASS + ' [data-neko-sidepanel],',
+            'body.' + DRAGGING_CLASS + ' [data-neko-sidepanel] * {',
+            '    pointer-events: none !important;',
+            '}',
+            '',
+            '/* 排除返回按钮容器——它们有自己的拖拽行为 */',
+            'body.' + DRAGGING_CLASS + ' [id$="-return-button-container"],',
+            'body.' + DRAGGING_CLASS + ' [id$="-return-button-container"] * {',
+            '    pointer-events: auto !important;',
+            '}'
+        ].join('\n');
+        document.head.appendChild(style);
+    }
+
     /**
      * 禁用按钮的 pointer-events
-     * 在拖动开始时调用，防止按钮拦截拖动事件
+     * 在拖动开始时调用，通过 body class 让 CSS 规则生效
      */
     function disableButtonPointerEvents() {
-        // 收集所有按钮元素（包括 Live2D 和 VRM 的浮动按钮、三角触发按钮、以及锁图标）
-        const buttons = document.querySelectorAll('.live2d-floating-btn, .live2d-trigger-btn, [id^="live2d-btn-"], .vrm-floating-btn, [id^="vrm-btn-"], .mmd-floating-btn, [id^="mmd-btn-"], #live2d-lock-icon, #vrm-lock-icon, #mmd-lock-icon');
-        buttons.forEach(btn => {
-            if (btn) {
-                // 如果已经保存过，说明正在拖拽中，跳过
-                if (btn.hasAttribute('data-prev-pointer-events')) {
-                    return;
-                }
-                // 保存当前的pointerEvents值
-                const currentValue = btn.style.pointerEvents || '';
-                btn.setAttribute('data-prev-pointer-events', currentValue);
-                btn.style.pointerEvents = 'none';
-            }
-        });
-        
-        // 收集并处理所有按钮包装器元素（包括三角按钮的包装器）
-        const wrappers = new Set();
-        buttons.forEach(btn => {
-            if (btn && btn.parentElement) {
-                // 排除返回按钮和其容器，避免破坏其拖拽行为
-                if (btn.id === 'live2d-btn-return' || btn.id === 'vrm-btn-return' || btn.id === 'mmd-btn-return' ||
-                    (btn.parentElement && (btn.parentElement.id === 'live2d-return-button-container' || btn.parentElement.id === 'vrm-return-button-container' || btn.parentElement.id === 'mmd-return-button-container'))) {
-                    return;
-                }
-                wrappers.add(btn.parentElement);
-            }
-        });
-
-        // 额外包含主要按钮容器，防止它们拦截事件冒泡
-        const mainContainers = document.querySelectorAll('#live2d-floating-buttons, #vrm-floating-buttons, #mmd-floating-buttons');
-        mainContainers.forEach(container => wrappers.add(container));
-        
-        wrappers.forEach(wrapper => {
-            if (wrapper && !wrapper.hasAttribute('data-prev-pointer-events')) {
-                const currentValue = wrapper.style.pointerEvents || '';
-                wrapper.setAttribute('data-prev-pointer-events', currentValue);
-                wrapper.style.pointerEvents = 'none';
-            }
-        });
-        
-        // 禁用所有弹窗元素的 pointer-events，避免拖拽时与弹窗冲突
-        const popups = document.querySelectorAll('.live2d-popup, [id^="live2d-popup-"], .vrm-popup, [id^="vrm-popup-"], .mmd-popup, [id^="mmd-popup-"]');
-        popups.forEach(popup => {
-            if (popup && !popup.hasAttribute('data-prev-pointer-events')) {
-                const currentValue = popup.style.pointerEvents || '';
-                popup.setAttribute('data-prev-pointer-events', currentValue);
-                popup.style.pointerEvents = 'none';
-            }
+        document.body.classList.add(DRAGGING_CLASS);
+        // 拖动开始时关闭所有已展开的弹窗
+        [window.live2dManager, window.vrmManager, window.mmdManager].forEach(function(m) {
+            if (m && typeof m.closeAllPopups === 'function') m.closeAllPopups();
         });
     }
 
     /**
      * 恢复按钮的 pointer-events
-     * 在拖动结束时调用，恢复按钮的正常点击功能
+     * 在拖动结束时调用，移除 body class 让 CSS 规则失效
      */
     function restoreButtonPointerEvents() {
-        const elementsToRestore = document.querySelectorAll('[data-prev-pointer-events]');
-        elementsToRestore.forEach(element => {
-            if (element) {
-                const prevValue = element.getAttribute('data-prev-pointer-events');
-                if (prevValue === '') {
-                    element.style.pointerEvents = '';
-                } else {
-                    element.style.pointerEvents = prevValue;
-                }
-                element.removeAttribute('data-prev-pointer-events');
-            }
-        });
+        document.body.classList.remove(DRAGGING_CLASS);
     }
 
     // 挂载到全局 window 对象，供其他脚本使用
@@ -219,10 +219,13 @@ Live2DManager.prototype.setupReturnButtonContainerDrag = function (returnButtonC
             dragStartX = e.clientX;
             dragStartY = e.clientY;
 
-            const currentLeft = parseInt(returnButtonContainer.style.left) || 0;
-            const currentTop = parseInt(returnButtonContainer.style.top) || 0;
-            containerStartX = currentLeft;
-            containerStartY = currentTop;
+            const rect = returnButtonContainer.getBoundingClientRect();
+            containerStartX = rect.left;
+            containerStartY = rect.top;
+            returnButtonContainer.style.right = '';
+            returnButtonContainer.style.bottom = '';
+            returnButtonContainer.style.left = `${containerStartX}px`;
+            returnButtonContainer.style.top = `${containerStartY}px`;
 
             returnButtonContainer.setAttribute('data-dragging', 'false');
             returnButtonContainer.style.cursor = 'grabbing';
@@ -283,10 +286,13 @@ Live2DManager.prototype.setupReturnButtonContainerDrag = function (returnButtonC
             dragStartX = touch.clientX;
             dragStartY = touch.clientY;
 
-            const currentLeft = parseInt(returnButtonContainer.style.left) || 0;
-            const currentTop = parseInt(returnButtonContainer.style.top) || 0;
-            containerStartX = currentLeft;
-            containerStartY = currentTop;
+            const rect = returnButtonContainer.getBoundingClientRect();
+            containerStartX = rect.left;
+            containerStartY = rect.top;
+            returnButtonContainer.style.right = '';
+            returnButtonContainer.style.bottom = '';
+            returnButtonContainer.style.left = `${containerStartX}px`;
+            returnButtonContainer.style.top = `${containerStartY}px`;
 
             returnButtonContainer.setAttribute('data-dragging', 'false');
             e.preventDefault();

@@ -97,7 +97,6 @@ colorama==0.4.6
     # via
     #   bilibili-api-python
     #   click
-    #   loguru
     #   qrcode
     #   tqdm
 comtypes==1.4.11 ; sys_platform == 'win32'
@@ -227,8 +226,6 @@ jsonschema-specifications==2025.9.1
     # via jsonschema
 kiwisolver==1.4.9
     # via matplotlib
-loguru==0.7.3
-    # via n-e-k-o
 lxml==6.0.2
     # via
     #   bilibili-api-python
@@ -1264,8 +1261,6 @@ websockets==15.0.1
     #   cdp-use
     #   google-genai
     #   n-e-k-o
-win32-setctime==1.2.0 ; sys_platform == 'win32'
-    # via loguru
 wrapt==2.0.1
     # via smart-open
 xmod==1.8.1

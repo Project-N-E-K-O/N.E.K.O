@@ -31,9 +31,9 @@ Emotions are detected by the backend (`/api/analyze_emotion`) and sent to the fr
 | Module | Purpose |
 |--------|---------|
 | `live2d-ui-buttons.js` | Control buttons (model switch, settings) |
-| `live2d-ui-drag.js` | Drag and zoom for model positioning |
-| `live2d-ui-hud.js` | Heads-up display overlays |
-| `live2d-ui-popup.js` | Popup dialogs and menus |
+| `avatar-ui-drag.js` | Drag and zoom for model positioning (shared with VRM/MMD) |
+| `common-ui-hud.js` | Heads-up display overlays (common, all avatar types) |
+| `avatar-ui-popup.js` | Popup dialogs and menus (shared with VRM/MMD) |
 
 ## Model management pages
 

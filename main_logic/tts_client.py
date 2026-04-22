@@ -764,10 +764,13 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
     
     async def async_worker():
         """异步TTS worker主循环"""
+        from utils.language_utils import detect_tts_language_hint, TTS_LANG_DETECT_MIN_CHARS
+
         if free_mode:
             tts_url = _adjust_free_tts_url("wss://www.lanlan.tech/tts")
         else:
             tts_url = "wss://api.stepfun.com/v1/realtime/audio?model=step-tts-2"
+        is_lanlan_app = 'lanlan.app' in tts_url
         ws = None
         current_speech_id = None
         receive_task = None
@@ -775,8 +778,72 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         session_ready = asyncio.Event()
         response_done = asyncio.Event()  # 用于标记当前响应是否完成
         text_done_sent = False  # 防止同一轮次重复发送 tts.text.done
+        # 延迟 tts.create：等收到 TTS_LANG_DETECT_MIN_CHARS 个字符、检测完
+        # 语言后再发送 tts.create（lanlan.tech 的 voice_label.language /
+        # lanlan.app 的 language_code 都只能在建 session 时指定一次，
+        # 所以必须在首批文本到达后才能发），和 CosyVoice worker 对偶。
+        session_created = False
+        pending_text_buffer = ""
         # 流式重采样器（24kHz→48kHz）- 维护 chunk 边界状态
         resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
+
+        def _build_tts_create_data(sid_: str, lang_hint):
+            """根据 URL 和语言提示组装 tts.create 的 data 字段。
+            - lanlan.app: language_code（Gemini streaming-TTS 风格；命中 ja 时覆盖全局语言）
+            - lanlan.tech / 自建 StepFun: 协议对称，voice_label.language="日语"（命中 ja 时）
+            """
+            data = {
+                "session_id": sid_,
+                "voice_id": voice_id,
+                "response_format": "wav",
+                "sample_rate": 24000,
+            }
+            if is_lanlan_app:
+                data["voice_id"] = "Leda"
+                data["language_code"] = "ja-JP" if lang_hint == "ja" else _get_tts_language_code()
+            else:
+                # lanlan.tech (free) 和自建 StepFun (wss://api.stepfun.com/...) 共用同一协议
+                if lang_hint == "ja":
+                    data["voice_label"] = {"language": "日语"}
+            return data
+
+        async def _flush_deferred_create(force: bool = False) -> bool:
+            """尚未发 tts.create 时，检测语言并发送，然后把 pending 文本刷出去。
+
+            force=True 用于 sid=None 提前收尾的场景：不够 MIN_CHARS 也强制发。
+            返回 True 表示 session 已就绪（本次新建或此前已建）。
+            """
+            nonlocal session_created, pending_text_buffer
+            if session_created:
+                return True
+            if not ws or not session_id:
+                return False
+            if not force and len(pending_text_buffer) < TTS_LANG_DETECT_MIN_CHARS:
+                return False
+            lang_hint = detect_tts_language_hint(pending_text_buffer)
+            if lang_hint:
+                logger.info(f"StepFun TTS 语言提示: {lang_hint}")
+            create_data = _build_tts_create_data(session_id, lang_hint)
+            try:
+                await ws.send(json.dumps({"type": "tts.create", "data": create_data}))
+            except Exception as e:
+                logger.error(f"发送 tts.create 失败: {e}")
+                return False
+            session_created = True
+            if pending_text_buffer.strip():
+                try:
+                    await ws.send(json.dumps({
+                        "type": "tts.text.delta",
+                        "data": {"session_id": session_id, "text": pending_text_buffer},
+                    }))
+                    _record_tts_telemetry("stepfun", pending_text_buffer)
+                except Exception as e:
+                    # delta 发失败时连接多半已断，调用方不能继续发 tts.text.done；
+                    # 返回 False 让 sid=None/文本发送路径都走 continue 触发重连。
+                    logger.error(f"刷出缓冲文本失败: {e}")
+                    return False
+            pending_text_buffer = ""
+            return True
         
         try:
             # 连接WebSocket
@@ -818,26 +885,21 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                 response_queue.put(("__ready__", False))
                 return
             
-            # 发送创建会话事件
-            create_data = {
-                "session_id": session_id,
-                "voice_id": voice_id,
-                "response_format": "wav",
-                "sample_rate": 24000
-            }
-            if 'lanlan.app' in tts_url:
-                create_data["language_code"] = _get_tts_language_code()
-                create_data["voice_id"] = "Leda"
+            # 启动预热 session：这段只作为 WS 连通性验证，首个真实 speech_id
+            # 到达时会关闭重连。仍走一次 tts.create 保证旧逻辑的 ready 信号
+            # 时序不变（服务端确认 tts.response.created 后再 __ready__）。
+            create_data = _build_tts_create_data(session_id, None)
             create_event = {"type": "tts.create", "data": create_data}
             await ws.send(json.dumps(create_event))
-            
+            session_created = True
+
             # 等待会话创建成功
             async def wait_for_session_ready():
                 try:
                     async for message in ws:
                         event = json.loads(message)
                         event_type = event.get("type")
-                        
+
                         if event_type == "tts.response.created":
                             break
                         elif event_type == "tts.response.error":
@@ -845,12 +907,12 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                             break
                 except Exception as e:
                     logger.error(f"等待会话创建时出错: {e}")
-            
+
             try:
                 await asyncio.wait_for(wait_for_session_ready(), timeout=1.0)
             except asyncio.TimeoutError:
                 logger.warning("会话创建超时")
-            
+
             # 发送就绪信号，通知主进程 TTS 已经可以使用
             logger.info("StepFun TTS 已就绪，发送就绪信号")
             response_queue.put(("__ready__", True))
@@ -934,6 +996,8 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     session_ready.clear()
                     current_speech_id = None
                     text_done_sent = False
+                    session_created = False
+                    pending_text_buffer = ""
                     continue
 
                 if sid is None:
@@ -941,6 +1005,12 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     # 音频继续通过 receive_task 流入 response_queue，
                     # 连接由下次 speech_id 切换 / __interrupt__ 关闭
                     if ws and session_id and current_speech_id is not None and not text_done_sent:
+                        # 若缓冲中还有不足 MIN_CHARS 的文本，强制刷出以保证短句也能合成
+                        if not session_created:
+                            if not await _flush_deferred_create(force=True):
+                                # flush 失败（tts.create 或 delta 发失败），连接已死，
+                                # 跳过 tts.text.done，等待下一个 speech_id 触发重连
+                                continue
                         try:
                             done_event = {
                                 "type": "tts.text.done",
@@ -951,11 +1021,13 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         except Exception as e:
                             logger.warning(f"发送TTS完成信号失败: {e}")
                     continue
-                
+
                 # 新的语音ID，重新建立连接
                 if current_speech_id != sid:
                     current_speech_id = sid
                     text_done_sent = False
+                    session_created = False
+                    pending_text_buffer = ""
                     response_done.clear()
                     resampler.clear()  # 重置重采样器状态（新轮次音频不应与上轮次连续）
                     if ws:
@@ -998,21 +1070,9 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         
                         if not session_id:
                             continue
-                        
-                        # 创建会话
-                        create_data = {
-                            "session_id": session_id,
-                            "voice_id": voice_id,
-                            "response_format": "wav",
-                            "sample_rate": 24000
-                        }
-                        if 'lanlan.app' in tts_url:
-                            create_data["language_code"] = _get_tts_language_code()
-                            create_data["voice_id"] = "Leda"
-                        create_event = {"type": "tts.create", "data": create_data}
-                        await ws.send(json.dumps(create_event))
-                        
-                        # 启动新的接收任务
+
+                        # 延迟 tts.create 到首批文本到达后，由 _flush_deferred_create
+                        # 发送（带语言提示）。此处仅启动接收任务消费服务端事件。
                         _text_done_error_suppressed = False  # 重连后重置错误抑制标记
 
                         async def receive_messages():
@@ -1078,6 +1138,16 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                 if not ws or not session_id:
                     continue
 
+                # 尚未发送 tts.create 时，先缓冲 MIN_CHARS 个字符用于语言检测
+                if not session_created:
+                    pending_text_buffer += tts_text
+                    ready = await _flush_deferred_create(force=False)
+                    if not ready:
+                        continue
+                    # 已在 _flush_deferred_create 内把 pending_text_buffer 随 tts.create
+                    # 一起发出，无需再次发送当前 tts_text
+                    continue
+
                 # 发送文本
                 try:
                     text_event = {
@@ -1095,6 +1165,8 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     ws = None
                     session_id = None
                     current_speech_id = None  # 清空ID以强制下次重连
+                    session_created = False
+                    pending_text_buffer = ""
                     if receive_task and not receive_task.done():
                         receive_task.cancel()
         
@@ -1139,7 +1211,9 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
     """
     if not voice_id:
         voice_id = "Momo"
-    
+
+    from utils.language_utils import detect_tts_language_hint, TTS_LANG_DETECT_MIN_CHARS
+
     async def async_worker():
         """异步TTS worker主循环"""
         tts_url = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=qwen3-tts-flash-realtime-2025-11-27"
@@ -1149,29 +1223,73 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         session_ready = asyncio.Event()
         response_done = asyncio.Event()  # 用于标记当前响应是否完成
         buffer_committed = False  # 防止同一轮次重复提交缓冲区
+        session_configured = False  # 当前连接是否已发出 session.update（延迟到首批文本到达）
+        pending_text_buffer = ""  # 延迟发送的文本缓冲，用于首 N 字语言检测
         # 流式重采样器（24kHz→48kHz）- 维护 chunk 边界状态
         resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
-        
+
+        def build_config_message(lang_hint=None):
+            """构造 session.update 消息；lang_hint='ja' 时指定 Japanese，其他走服务端 Auto。"""
+            session = {
+                "mode": "server_commit",
+                "voice": voice_id,
+                "response_format": "pcm",
+                "sample_rate": 24000,
+                "channels": 1,
+                "bit_depth": 16,
+            }
+            if lang_hint == "ja":
+                session["language_type"] = "Japanese"
+            return {
+                "type": "session.update",
+                "event_id": f"event_{int(time.time() * 1000)}",
+                "session": session,
+            }
+
+        async def _flush_deferred_config(force: bool = False) -> bool:
+            """按需发送延迟的 session.update，并把缓冲文本 append 出去。
+
+            - 未达到阈值且非 force：返回 False。
+            - 已发送或执行后：返回 True。
+            """
+            nonlocal session_configured, pending_text_buffer
+            if session_configured:
+                return True
+            if not ws:
+                return False
+            if not force and len(pending_text_buffer) < TTS_LANG_DETECT_MIN_CHARS:
+                return False
+            lang_hint = detect_tts_language_hint(pending_text_buffer)
+            try:
+                await ws.send(json.dumps(build_config_message(lang_hint)))
+            except Exception as e:
+                logger.error(f"发送延迟 session.update 失败: {e}")
+                return False
+            session_configured = True
+            try:
+                await asyncio.wait_for(session_ready.wait(), timeout=2.0)
+            except asyncio.TimeoutError:
+                logger.warning("Qwen TTS: 延迟 session.update 等待超时")
+            if pending_text_buffer.strip():
+                try:
+                    await ws.send(json.dumps({
+                        "type": "input_text_buffer.append",
+                        "event_id": f"event_{int(time.time() * 1000)}",
+                        "text": pending_text_buffer,
+                    }))
+                    _record_tts_telemetry("qwen", pending_text_buffer)
+                except Exception as e:
+                    # append 发失败时连接多半已断，调用方不能继续发 commit；
+                    # 返回 False 让 sid=None/文本路径走 continue 触发重连。
+                    logger.error(f"发送缓冲文本失败: {e}")
+                    return False
+            pending_text_buffer = ""
+            return True
+
         try:
             # 连接WebSocket
             headers = {"Authorization": f"Bearer {audio_api_key}"}
-            
-            # 配置会话消息模板（在重连时复用）
-            # 使用 SERVER_COMMIT 模式：多次 append 文本，最后手动 commit 触发合成
-            # 这样可以累积文本，避免"一个字一个字往外蹦"的问题
-            config_message = {
-                "type": "session.update",
-                "event_id": f"event_{int(time.time() * 1000)}",
-                "session": {
-                    "mode": "server_commit",
-                    "voice": voice_id,
-                    "response_format": "pcm",
-                    "sample_rate": 24000,
-                    "channels": 1,
-                    "bit_depth": 16
-                }
-            }
-            
+
             ws = await websockets.connect(tts_url, additional_headers=headers)
             
             # 等待并处理初始消息
@@ -1192,9 +1310,11 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                 except Exception as e:
                     _enqueue_error(response_queue, e)
             
-            # 发送配置
-            await ws.send(json.dumps(config_message))
-            
+            # 发送预热配置（pre-warm），真正的 session.update 会在首批文本到达后
+            # 通过 _flush_deferred_config 重新发送（携带语言提示）。
+            await ws.send(json.dumps(build_config_message(None)))
+            session_configured = True
+
             # 等待会话就绪（超时5秒）
             try:
                 await asyncio.wait_for(wait_for_session_ready(), timeout=5.0)
@@ -1202,12 +1322,12 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                 logger.error("❌ 等待会话就绪超时")
                 response_queue.put(("__ready__", False))
                 return
-            
+
             if not session_ready.is_set():
                 logger.error("❌ 会话未能正确初始化")
                 response_queue.put(("__ready__", False))
                 return
-            
+
             # 发送就绪信号
             logger.info("Qwen TTS 已就绪，发送就绪信号")
             response_queue.put(("__ready__", True))
@@ -1291,21 +1411,33 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     session_ready.clear()
                     current_speech_id = None
                     buffer_committed = False
+                    session_configured = False
+                    pending_text_buffer = ""
                     continue
-                
+
                 if sid is None:
                     # 正常结束（非阻塞）：提交缓冲区，但不等待服务器确认、不关闭连接
                     # 音频继续通过 receive_task 流入 response_queue，
                     # 连接由下次 speech_id 切换 / __interrupt__ 关闭
-                    if ws and session_ready.is_set() and current_speech_id is not None and not buffer_committed:
-                        try:
-                            await ws.send(json.dumps({
-                                "type": "input_text_buffer.commit",
-                                "event_id": f"event_{int(time.time() * 1000)}_commit"
-                            }))
-                            buffer_committed = True
-                        except Exception as e:
-                            logger.warning(f"提交缓冲区失败: {e}")
+                    if ws and current_speech_id is not None:
+                        # 若此轮文本不足 MIN_CHARS 还没发出 session.update，force 一次
+                        if not session_configured:
+                            if not await _flush_deferred_config(force=True):
+                                # flush 失败（session.update 或 append 发失败），连接已死，
+                                # 跳过 commit，等待下一个 speech_id 触发重连
+                                continue
+                        # 短句场景下 session.updated 可能比 _flush 内的 2s 等待更晚到达；
+                        # 不再依赖 session_ready，直接发 commit（服务端会在 session.updated
+                        # 就绪后按顺序处理 append + commit）。漏 commit 会导致短句静默丢失。
+                        if not buffer_committed:
+                            try:
+                                await ws.send(json.dumps({
+                                    "type": "input_text_buffer.commit",
+                                    "event_id": f"event_{int(time.time() * 1000)}_commit"
+                                }))
+                                buffer_committed = True
+                            except Exception as e:
+                                logger.warning(f"提交缓冲区失败: {e}")
                     continue
                 
                 # 新的语音ID，重新建立连接（类似 speech_synthesis_worker 的逻辑）
@@ -1313,6 +1445,8 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                 if current_speech_id != sid:
                     current_speech_id = sid
                     buffer_committed = False
+                    session_configured = False
+                    pending_text_buffer = ""
                     response_done.clear()
                     resampler.clear()  # 重置重采样器状态（新轮次音频不应与上轮次连续）
                     if ws:
@@ -1326,36 +1460,13 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                             await receive_task
                         except asyncio.CancelledError:
                             pass
-                    
-                    # 建立新连接
+
+                    # 建立新连接（延迟 session.update 至首批文本到达后发送，携带语言提示）
                     try:
                         ws = await websockets.connect(tts_url, additional_headers=headers)
-                        await ws.send(json.dumps(config_message))
-                        
-                        # 等待 session.created
                         session_ready.clear()
-                        
-                        async def wait_ready():
-                            try:
-                                async for message in ws:
-                                    event = json.loads(message)
-                                    event_type = event.get("type")
-                                    # Qwen TTS API 返回 session.updated 而不是 session.created
-                                    if event_type in ["session.created", "session.updated"]:
-                                        session_ready.set()
-                                        break
-                                    elif event_type == "error":
-                                        _enqueue_error(response_queue, event)
-                                        break
-                            except Exception as e:
-                                _enqueue_error(response_queue, e)
-                        
-                        try:
-                            await asyncio.wait_for(wait_ready(), timeout=2.0)
-                        except asyncio.TimeoutError:
-                            logger.warning("新会话创建超时")
-                        
-                        # 启动新的接收任务
+
+                        # 启动新的接收任务（合并 session.updated 监听）
                         async def receive_messages():
                             nonlocal ws
                             try:
@@ -1363,7 +1474,9 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                     event = json.loads(message)
                                     event_type = event.get("type")
 
-                                    if event_type == "error":
+                                    if event_type in ["session.created", "session.updated"]:
+                                        session_ready.set()
+                                    elif event_type == "error":
                                         # 空闲超时 / 会话过期：不报 error，标记连接丢失，按需重连
                                         err_msg = event.get("error", {}).get("message", "")
                                         if "request timeout" in err_msg or "session_expired" in err_msg:
@@ -1410,12 +1523,27 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                 if not tts_text or not tts_text.strip():
                     continue
 
-                if not ws or not session_ready.is_set():
+                if not ws:
                     # 连接已因空闲超时断开，暂存当前片段并重置 speech_id 以触发重连
                     current_speech_id = None
                     pending = (sid, tts_text)
                     continue
-                
+
+                # 尚未发送 session.update 时，先缓冲 MIN_CHARS 个字符用于语言检测
+                if not session_configured:
+                    pending_text_buffer += tts_text
+                    ready = await _flush_deferred_config(force=False)
+                    if not ready:
+                        continue
+                    # 已在 _flush_deferred_config 内把 pending_text_buffer 随 append 一起发出
+                    continue
+
+                if not session_ready.is_set():
+                    # session.update 已发但会话还未就绪（超时/断开），触发重连
+                    current_speech_id = None
+                    pending = (sid, tts_text)
+                    continue
+
                 # 追加文本到缓冲区（不立即提交，等待响应完成时的终止信号再 commit）
                 try:
                     await ws.send(json.dumps({
@@ -1471,18 +1599,15 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         audio_api_key: API密钥
         voice_id: 音色ID
     """
-    import re
     import dashscope
     from dashscope.audio.tts_v2 import ResultCallback, SpeechSynthesizer, AudioFormat
-    
+    from utils.language_utils import detect_tts_language_hint, TTS_LANG_DETECT_MIN_CHARS
+
     dashscope.api_key = audio_api_key
 
     # 从 voice 元数据中读取注册时使用的模型，fallback 到全局配置
     _voice_meta = _get_voice_meta(voice_id)
     _enrolled_model = (_voice_meta or {}).get('clone_model') if _voice_meta else None
-    
-    _RE_KANA = re.compile(r'[\u3040-\u309F\u30A0-\u30FF]')
-    MIN_BUFFER_CHARS = 6
     
     # CosyVoice 不需要预连接，直接发送就绪信号
     logger.info("CosyVoice TTS 已就绪，发送就绪信号")
@@ -1617,9 +1742,10 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         if not char_buffer.strip():
             char_buffer = ""
             return
-        if _RE_KANA.search(char_buffer):
-            detected_lang = "ja"
-            logger.info("CosyVoice 检测到假名，语言标记为日文")
+        hint = detect_tts_language_hint(char_buffer)
+        if hint and detected_lang != hint:
+            detected_lang = hint
+            logger.info(f"CosyVoice 检测到 {hint} 语言提示")
         if synthesizer is None:
             synthesizer = _create_synthesizer(detected_lang)
             callback.accepted_speech_id = current_speech_id
@@ -1733,16 +1859,17 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             time.sleep(0.01)
             continue
 
-        # 尚未创建 synthesizer 时先缓冲，等够 MIN_BUFFER_CHARS 个字符再一起发送
+        # 尚未创建 synthesizer 时先缓冲，等够 TTS_LANG_DETECT_MIN_CHARS 个字符再一起发送
         if synthesizer is None:
             char_buffer += tts_text
-            if _RE_KANA.search(tts_text):
-                detected_lang = "ja"
-            if len(char_buffer) < MIN_BUFFER_CHARS:
+            hint = detect_tts_language_hint(tts_text)
+            if hint and detected_lang != hint:
+                detected_lang = hint
+            if len(char_buffer) < TTS_LANG_DETECT_MIN_CHARS:
                 continue
             try:
-                if detected_lang == "ja":
-                    logger.info("CosyVoice 检测到假名，语言标记为日文")
+                if detected_lang:
+                    logger.info(f"CosyVoice 语言提示: {detected_lang}")
                 synthesizer = _create_synthesizer(detected_lang)
                 callback.accepted_speech_id = current_speech_id
                 synthesizer.streaming_call(char_buffer)
