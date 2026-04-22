@@ -3295,14 +3295,28 @@ function initConnectivityLights() {
             wrapper.appendChild(gsvTestBtn);
         }
 
-        // Update light based on URL presence
+        // Update light based on URL presence and changes
+        let gsvLastUrl = gsvUrlInput.value.trim();
+        const gsvErrorMsg = document.createElement('span');
+        gsvErrorMsg.className = 'connectivity-error-msg';
+        gsvErrorMsg.style.display = 'none';
+        if (gsvRow) {
+            gsvRow.appendChild(gsvErrorMsg);
+        }
+
         const updateGsvLightStatus = () => {
             const url = gsvUrlInput.value.trim();
             if (!url) {
                 gsvLight.dataset.status = LightStatus.NOT_CONFIGURED;
+                gsvErrorMsg.style.display = 'none';
+            } else if (url !== gsvLastUrl) {
+                // URL changed — reset to untested (same behavior as key change cascade)
+                gsvLight.dataset.status = LightStatus.UNTESTED;
+                gsvErrorMsg.style.display = 'none';
             } else if (gsvLight.dataset.status === LightStatus.NOT_CONFIGURED) {
                 gsvLight.dataset.status = LightStatus.UNTESTED;
             }
+            gsvLastUrl = url;
         };
         updateGsvLightStatus();
         gsvUrlInput.addEventListener('input', () => {
@@ -3330,6 +3344,7 @@ function initConnectivityLights() {
                 const result = await resp.json();
                 if (result.success) {
                     gsvLight.dataset.status = LightStatus.CONNECTED;
+                    gsvErrorMsg.style.display = 'none';
                     // --- 以下为编写连通测试时使用的音频播放验证代码，已确认可行（2026-04-22） ---
                     // --- 保留供后续调试使用，正常运行时不启用 ---
                     // if (result.audio_data && result.sample_rate) {
@@ -3353,9 +3368,18 @@ function initConnectivityLights() {
                     // }
                 } else {
                     gsvLight.dataset.status = LightStatus.FAILED;
+                    // Show error details
+                    const errorText = result.error || result.error_code || 'Unknown error';
+                    gsvErrorMsg.textContent = errorText;
+                    gsvErrorMsg.style.display = 'inline-block';
+                    console.error('[GSV Test] Failed:', errorText);
                 }
             } catch (err) {
                 gsvLight.dataset.status = LightStatus.FAILED;
+                const errorText = err.name === 'TimeoutError' ? '请求超时' : (err.message || 'Unknown error');
+                gsvErrorMsg.textContent = errorText;
+                gsvErrorMsg.style.display = 'inline-block';
+                console.error('[GSV Test] Error:', errorText);
             }
 
             gsvTestBtn.classList.remove('testing');

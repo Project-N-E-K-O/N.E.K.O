@@ -938,14 +938,25 @@ async def test_gptsovits_connectivity(request: Request):
             ws_base = "ws://" + api_url
         ws_url = f"{ws_base}/api/v3/tts/stream-input"
 
-        # Strip gsv: prefix if present
+        # Strip gsv: prefix and parse advanced params (same as gptsovits_tts_worker)
         if voice_id.startswith("gsv:"):
-            voice_id = voice_id[4:].strip() or "_default"
+            voice_id = voice_id[4:].strip() or "init"
+        extra_params = {}
+        if '|' in voice_id:
+            parts = voice_id.split('|', 1)
+            voice_id = parts[0].strip() or "init"
+            try:
+                extra_params = _json.loads(parts[1])
+                if not isinstance(extra_params, dict):
+                    extra_params = {}
+            except (_json.JSONDecodeError, IndexError, TypeError, ValueError):
+                extra_params = {}
 
         async with asyncio.timeout(10):
             async with _ws.connect(ws_url, ping_interval=None, max_size=10 * 1024 * 1024) as ws:
-                # Step 1: Send init
-                init_msg = {"cmd": "init", "voice_id": voice_id}
+                # Step 1: Send init (merge advanced params, filter reserved fields)
+                safe_params = {k: v for k, v in extra_params.items() if k not in ("cmd", "voice_id")}
+                init_msg = {"cmd": "init", "voice_id": voice_id, **safe_params}
                 await ws.send(_json.dumps(init_msg))
 
                 # Step 2: Wait for ready
@@ -1257,7 +1268,8 @@ async def _test_websocket(url: str, api_key: str, model: str = "") -> dict:
         # Build WebSocket URL with model parameter (same as OmniRealtimeClient.connect)
         ws_url = url.rstrip("/")
         if model and model.lower() != "free-model":
-            ws_url = f"{ws_url}?model={model}"
+            separator = "&" if "?" in ws_url else "?"
+            ws_url = f"{ws_url}{separator}model={urllib.parse.quote(model, safe='')}"
 
         # Authorization header only (same as OmniRealtimeClient.connect — no api_key in URL)
         if api_key:
@@ -1296,7 +1308,8 @@ async def _test_websocket(url: str, api_key: str, model: str = "") -> dict:
 
                     if event_type == "error":
                         error_msg = str(event.get("error", ""))
-                        if "401" in error_msg or "403" in error_msg or "auth" in error_msg.lower():
+                        error_lower = error_msg.lower()
+                        if any(kw in error_lower for kw in ("401", "403", "auth", "unauthorized", "invalid api key", "invalid key", "api key")):
                             return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
                         return {"success": False, "error": f"服务端错误: {error_msg[:200]}", "error_code": "unknown"}
 
@@ -1464,18 +1477,31 @@ def _identify_provider_label(url: str, is_free: bool) -> str:
 
 
 def _redact_url_for_log(url: str) -> str:
-    """Redact sensitive query parameters before logging a custom endpoint URL."""
+    """Redact sensitive query parameters and userinfo before logging a custom endpoint URL."""
     try:
         parsed = urllib.parse.urlsplit(url)
-        if not parsed.query:
-            return url
-        sensitive_keys = {"api_key", "apikey", "key", "token", "access_token", "authorization", "signature", "sig"}
-        query_pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
-        redacted_pairs = [
-            (k, "***" if k.lower() in sensitive_keys else v)
-            for k, v in query_pairs
-        ]
-        redacted_query = urllib.parse.urlencode(redacted_pairs)
-        return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, redacted_query, parsed.fragment))
+
+        # Redact userinfo (https://user:pass@host/ → https://***:***@host/)
+        netloc = parsed.netloc
+        if '@' in netloc:
+            host_part = netloc.split('@', 1)[1]
+            netloc = f"***:***@{host_part}"
+
+        # Redact sensitive query parameters
+        sensitive_keys = {
+            "api_key", "apikey", "key", "token", "access_token", "authorization",
+            "signature", "sig", "client_secret", "password", "jwt", "bearer",
+        }
+        if parsed.query:
+            query_pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+            redacted_pairs = [
+                (k, "***" if k.lower() in sensitive_keys else v)
+                for k, v in query_pairs
+            ]
+            redacted_query = urllib.parse.urlencode(redacted_pairs)
+        else:
+            redacted_query = ""
+
+        return urllib.parse.urlunsplit((parsed.scheme, netloc, parsed.path, redacted_query, parsed.fragment))
     except Exception:
         return url
