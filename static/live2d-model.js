@@ -668,9 +668,6 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     try { await this.syncEmotionMappingWithServer({ replacePersistentOnly: true }); } catch(_) {}
     await this.setupPersistentExpressions();
 
-    // 设置常驻动作
-    try { await this.setupPersistentMotions(); } catch(_) {}
-    
     // 调用常驻表情应用完成的回调（事件驱动方式，替代不可靠的 setTimeout）
     if (options.onResidentExpressionApplied && typeof options.onResidentExpressionApplied === 'function') {
         try {

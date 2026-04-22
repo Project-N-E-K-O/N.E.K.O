@@ -463,13 +463,13 @@ async function initLive2DModel() {
                         console.log('[Live2D Init] 在常驻表情应用后已重新应用用户偏好参数');
                     }
                 },
-                // 模型完全就绪后恢复待机动作（延迟确保Idle情绪和物理预跑完成）
+                // 模型完全就绪后恢复待机动作（延迟确保模型完全稳定）
                 onModelReady: (model) => {
                     setTimeout(() => {
                         if (typeof window.restoreLive2DIdleAnimationOnMainPage === 'function') {
                             window.restoreLive2DIdleAnimationOnMainPage();
                         }
-                    }, 2000);
+                    }, 500);
                 }
             });
 
