@@ -533,25 +533,29 @@ Live2DManager.prototype._scanEyeBlinkParams = function(model) {
     if (!model?.internalModel?.coreModel) return null;
     const coreModel = model.internalModel.coreModel;
     const count = coreModel.getParameterCount();
-    const eyePatterns = [/eye.*open/i, /eye.*l/i, /eye.*r/i, /eyel/i, /eyer/i, /eye_l/i, /eye_r/i, /eye_/i, /目/i, /眼/i];
+    const blinkPatterns = [
+        /parameye[lr]open/i,
+        /eye.*open/i,
+        /eye.*blink/i,
+        /まばたき|瞬き|目.*開|眼.*開/i
+    ];
+    const nonBlinkPatterns = [/eyeball/i, /angle/i, /look/i, /iris/i, /pupil/i];
     const found = [];
 
     for (let i = 0; i < count; i++) {
         let paramId = null;
         try { paramId = coreModel.getParameterId(i); } catch (_) {}
         if (!paramId) continue;
-        const lower = String(paramId).toLowerCase();
-        if (eyePatterns.some(p => p.test(paramId))) {
+        if (!nonBlinkPatterns.some(p => p.test(paramId)) &&
+            blinkPatterns.some(p => p.test(paramId))) {
             found.push(paramId);
         }
     }
 
-    if (found.length < 2) {
-        const eyeL = found.find(id => /eye.?l/i.test(id) || /l$/i.test(id));
-        const eyeR = found.find(id => /eye.?r/i.test(id) || /r$/i.test(id));
-        if (eyeL && eyeR) return [eyeL, eyeR];
-        if (found.length >= 2) return found.slice(0, 2);
-    }
+    const eyeL = found.find(id => /eye.?l/i.test(id) || /left/i.test(id) || /l$/i.test(id));
+    const eyeR = found.find(id => /eye.?r/i.test(id) || /right/i.test(id) || /r$/i.test(id));
+    if (eyeL && eyeR) return [eyeL, eyeR];
+
     return found.slice(0, 2);
 };
 
@@ -632,24 +636,40 @@ Live2DManager.prototype._updateRandomLookAt = function(delta) {
 Live2DManager.prototype.setupIdleMotionLoop = function(model) {
     if (!model || !model.internalModel || !model.internalModel.motionManager) return;
     const motionManager = model.internalModel.motionManager;
-    const self = this;
+
+    // 初始化定时器集合，并在重新设置时清理旧定时器
+    if (this._idleMotionLoopTimers instanceof Set) {
+        this._idleMotionLoopTimers.forEach(timer => clearTimeout(timer));
+        this._idleMotionLoopTimers.clear();
+    } else {
+        this._idleMotionLoopTimers = new Set();
+    }
+
+    // 生成一个调度器，自带当前模型有效性校验与定时器回收
+    const scheduleIdleMotion = (delay) => {
+        const timer = setTimeout(() => {
+            this._idleMotionLoopTimers.delete(timer);
+            // 如果模型已销毁，或当前挂载的模型已经不是传入的这个模型，则直接取消
+            if (this.currentModel !== model || model.destroyed || window._currentMotionPreviewId != null) {
+                return;
+            }
+            if (!motionManager.playing) {
+                this._playIdleMotion(motionManager);
+            }
+        }, delay);
+        this._idleMotionLoopTimers.add(timer);
+    };
+
     model.internalModel.events.on('motionFinish', () => {
         if (window._currentMotionPreviewId != null) {
             console.log('[Live2D] 预览模式中，忽略 motionFinish，不启动新 Idle');
             return;
         }
         const randomDelay = 1000 + Math.random() * 2000;
-        setTimeout(() => {
-            if (!motionManager.playing) {
-                self._playIdleMotion(motionManager);
-            }
-        }, randomDelay);
+        scheduleIdleMotion(randomDelay);
     });
-    setTimeout(() => {
-        if (!motionManager.playing) {
-            self._playIdleMotion(motionManager);
-        }
-    }, 2000);
+
+    scheduleIdleMotion(2000);
 };
 
 // 播放待机动作（从用户保存的 Idle 动画或默认 Idle 随机选择）
@@ -1307,7 +1327,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                     }
                 } catch (_) {}
             }
-            if (!this._isMouthDrivenByMotion && this._autoEyeBlinkEnabled && this._eyeBlinkParams) {
+            if (this._autoEyeBlinkEnabled && this._eyeBlinkParams) {
                 for (const p of this._eyeBlinkParams) {
                     try {
                         const postVal = coreModel.getParameterValueByIndex(p.idx);
