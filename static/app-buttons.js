@@ -1817,6 +1817,9 @@
                         if (atomicScaled && atomicScaled.dataUrl) return atomicScaled.dataUrl;
                     } else if (atomic && atomic.error) {
                         console.warn('[隐藏NEKO] 主进程原子化路径失败:', atomic.error);
+                        if (typeof window.maybeClearSourceOnNotFound === 'function') {
+                            window.maybeClearSourceOnNotFound(atomic, 'recaptureWithoutNeko atomic Source not found');
+                        }
                     }
                 } catch (e) {
                     console.warn('[隐藏NEKO] 主进程原子化路径抛错，回退到渲染器路径:', e);
