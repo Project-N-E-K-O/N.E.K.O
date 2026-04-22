@@ -162,35 +162,64 @@ function renderPreviewCard(draft) {
   const body = el('div', { className: 'preview-body' });
   details.append(intro, el('div', { className: 'form-row' }, refreshBtn, statusLine), body);
 
-  let loaded = false;
+  // Promise-cache lazy init (P24 §13.5, skill: async-lazy-init-promise-cache).
+  //
+  // Why the Promise cache and not a `let loaded = false` flag:
+  //   Naive `loaded = true; await api.get(...)` lets a second caller
+  //   that fires in the same tick (e.g. `details.open` toggled AND the
+  //   user clicks [refresh] fast) see `loaded === true` and skip the
+  //   fetch, but `statusLine` / `body` are still in the pre-fetch state.
+  //   Worse, multiple [refresh] clicks would race N concurrent GETs
+  //   whose responses can interleave — last-write-to-DOM wins, but
+  //   that "last write" is ambiguous.
+  //
+  // Fix (this function):
+  //   - `loadPromise` caches the in-flight Promise; concurrent callers
+  //     share one request and one DOM update.
+  //   - [refresh] treats it as "force refresh": clear the cache first
+  //     so we always re-fetch, even if a previous load succeeded.
+  //   - On failure, we null the cache so next caller can retry.
+  let loadPromise = null;
 
-  async function load() {
-    statusLine.textContent = i18n('setup.persona.preview.loading');
-    body.innerHTML = '';
-    const qs = new URLSearchParams({
-      lang:           draft.language       || '',
-      master_name:    draft.master_name    || '',
-      character_name: draft.character_name || '',
-    }).toString();
-    const res = await api.get(`/api/persona/effective_system_prompt?${qs}`,
-      { expectedStatuses: [404] });
-    if (!res.ok) {
-      statusLine.textContent = res.status === 404
-        ? i18n('setup.no_session.heading')
-        : `${i18n('setup.persona.preview.load_failed')}: ${res.error?.message || res.status}`;
-      return;
-    }
-    statusLine.textContent = '';
-    renderPreviewContents(body, res.data);
+  function doLoad() {
+    if (loadPromise) return loadPromise;
+    loadPromise = (async () => {
+      statusLine.textContent = i18n('setup.persona.preview.loading');
+      body.innerHTML = '';
+      const qs = new URLSearchParams({
+        lang:           draft.language       || '',
+        master_name:    draft.master_name    || '',
+        character_name: draft.character_name || '',
+      }).toString();
+      const res = await api.get(`/api/persona/effective_system_prompt?${qs}`,
+        { expectedStatuses: [404] });
+      if (!res.ok) {
+        statusLine.textContent = res.status === 404
+          ? i18n('setup.no_session.heading')
+          : `${i18n('setup.persona.preview.load_failed')}: ${res.error?.message || res.status}`;
+        return;
+      }
+      statusLine.textContent = '';
+      renderPreviewContents(body, res.data);
+    })().catch((err) => {
+      // Clear cache so the next explicit retry actually fires.
+      loadPromise = null;
+      statusLine.textContent = `${i18n('setup.persona.preview.load_failed')}: ${err?.message || String(err)}`;
+      throw err;
+    });
+    return loadPromise;
   }
 
-  refreshBtn.addEventListener('click', () => load());
+  refreshBtn.addEventListener('click', () => {
+    loadPromise = null; // force a fresh fetch on manual refresh
+    doLoad().catch(() => { /* statusLine already shows the error */ });
+  });
 
-  // `details` toggle 事件: 第一次展开时自动加载, 之后交给 [刷新] 按钮.
+  // `details` toggle 事件: 第一次展开时自动加载. 后续交给 [刷新] 按钮;
+  // 已缓存的 Promise 让重复展开 / 快速点击不发重复请求.
   details.addEventListener('toggle', () => {
-    if (details.open && !loaded) {
-      loaded = true;
-      load();
+    if (details.open) {
+      doLoad().catch(() => { /* statusLine already shows the error */ });
     }
   });
 

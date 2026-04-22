@@ -90,7 +90,7 @@ isProject: false
 
 > 本节为后期追加, 帮助新 Agent 或调研者在不通读全文的情况下快速定位现状. 核心 `todos` 的状态仍以**条目内 `status` 字段**为准; 本节仅作总览.
 
-**进度 (2026-04-22 Day 12 更新)**: 已完成 24 / 26 阶段 (约 **92%**), 主要开发闭环 (P00-P24 + P21.1/P21.2/P21.3/P22.1 加固) 已全量落地. **P24 联调联测 + 代码审查 + 延期加固 12 天交付, 2026-04-22 Day 12 打出 v1.0 "第一个完善版本" 标**. **原规划 25 阶段因 P24 Day 9 主程序同步盘点后新增 P25 外部事件注入阶段 (原 P25 README 顺延为 P26) 扩为 26 阶段**. 当前处于"主要代码开发闭环已完成 + 第一个完善版本定版 + 待外部事件注入 + 文档两步收尾"阶段. 剩余路径: **P25 外部事件注入 · 新系统对话/记忆影响测试 → P26 文档**.
+**进度 (2026-04-22 Day 12 更新 + 同日欠账清返)**: 已完成 24 / 26 阶段 (约 **92%**), 主要开发闭环 (P00-P24 + P21.1/P21.2/P21.3/P22.1 加固) 已全量落地. **P24 联调联测 + 代码审查 + 延期加固 12 天交付 + Day 12 欠账清返 (`render_drift_detector.js` 骨架 + `page_persona.js` Promise cache + `composer.js` lazy init sweep), 2026-04-22 Day 12 打出 v1.0 "第一个完善版本" 标**. **原规划 25 阶段因 P24 Day 9 主程序同步盘点后新增 P25 外部事件注入阶段 (原 P25 README 顺延为 P26) 扩为 26 阶段**. 当前处于"主要代码开发闭环已完成 + 第一个完善版本定版 + P24 欠账归零 + 待 P25 开工前设计层回顾 + 外部事件注入 + 文档三步收尾"阶段. 剩余路径: **P25 开工前设计回顾 (元审核 + 框架回顾 + 上游 delta) → P25 外部事件注入 · 新系统对话/记忆影响测试 → P26 文档**.
 
 **已 done 的阶段 (P00-P17)**: 从"docs 骨架 / 后端骨架 / 沙盒 & 时钟"一路到"四类 Judger + Run / Results / Aggregate + 导出报告 + 内联评分徽章". 期间交付的**可用闭环**包括:
 1. 人设编辑 + 从真实角色导入 + 内置预设导入 (含记忆全量复刻);
@@ -2057,6 +2057,20 @@ P24 **唯一的 tangible 代码产物** 是延期加固四项的实装 (A/B/C/D 
 > - `AGENT_NOTES.md` §4.27 #106-#108 — Day 10-12 每日小节 + §3A 新条正式入档.
 > - `LESSONS_LEARNED.md` §7 — L26 "yield 型 API 必须拆成请求-响应 / 真 generator / Template Method base 三种再套原则" + L27 "资源上限 UX 降级是横切维度" 两条 P24 派生元教训.
 > - `p24_integration_report.md` — 七节完整联调报告终稿.
+>
+> **Day 12 欠账清返 (2026-04-22 Day 12 用户"不要留尾巴" 明确要求后同日追加)**: 全仓 grep `推迟|留待|归 P\d|TODO|FIXME|XXX` 扫出真欠账 **2 条** 全清:
+>
+> - **(a) `static/core/render_drift_detector.js`** — 蓝图 §3.5 / AGENT_NOTES §4.23 #72 声明的 dev-only 渲染漂移检测骨架, 原估 1.5-2 天"15 页全量 checker" 缩至骨架 + 3 checker (176 行实现 + `app.js` 2 全局 + `page_snapshots.js` 1 页内), 证明机制可工作, 后续按需加.
+> - **(b) `page_persona.js::renderPreviewCard` Promise cache 重构 + 全仓 lazy init sweep** — skill `async-lazy-init-promise-cache` 规则 1-4 全覆盖; 顺手扫到 `composer.js::ensureStylesLoaded / ensureAutoStylesLoaded` 原本是 Promise cache 但缺 `.catch` 清空兜底, 本次补齐 (规则 3); `loadTemplateList(force)` 从 flag-after-await race 升级为 `templateListPromise` 单 flight + `scripts:templates_changed` 外部 invalidate.
+>
+> Day 6 §13.6 F4 asyncio cancel checkbox 补 `[x]` (Day 8 M1 合并审已做, 零代码改动). 元教训候选 **L28 "跨阶段推迟项必须双向回扫"**. 专用 commit `fix(testbench): P24 Day 12 欠账清返 ...`, 不动历史 sign-off commit.
+>
+> **P25 开工前设计层回顾 (Day 12 欠账清返 done 后立项)**: 按用户明示"开工前先研究设计草案, 从架构上理清内容 + 预防高危 bug 点" 做四步:
+>
+> 1. **元审核** (参照 P24 开工期六轮 meta 审核节奏, 对 `P25_BLUEPRINT.md` 做 5-6 轮想法实验, 找设计漏洞 / 高危 bug 点 / 下游依赖漏网 / 与主程序 pure helper 对齐点).
+> 2. **框架回顾** (汇总 LESSONS_LEARNED §7 全 **24 条元教训** + AGENT_NOTES §3A 全 **57 条设计原则**, 筛出与 P25 外部事件注入相关的 «值得特别留意的高危 bug 点 + 原则» 清单).
+> 3. **上游 delta** (梳理本次 merge 并入的 27 条主程序变更对 P25 的影响点, 判断哪些需要在 P25 Day 1 开工前再次盘点).
+> 4. **设计草案** (基于前三步分析在 `P25_BLUEPRINT.md` 末尾新开 **§A 开工前设计层回顾 (高危 bug 点 / 对齐点 / 防御点)**, 作为 Day 1 之前的 design review gate, 并确认 P25_BLUEPRINT §8 开工门禁 3 条全 ✓).
 
 ## 启动方式 (README 片段)
 

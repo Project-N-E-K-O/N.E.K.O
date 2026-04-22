@@ -34,6 +34,7 @@ import { i18n } from '../../core/i18n.js';
 import { store, on, emit, set as setStore } from '../../core/state.js';
 import { toast } from '../../core/toast.js';
 import { el } from '../_dom.js';
+import { registerChecker, unregisterChecker } from '../../core/render_drift_detector.js';
 
 function defaultState() {
   return {
@@ -98,7 +99,7 @@ export async function renderSnapshotsPage(host) {
   // listeners Map 里 fn 引用保留, 每次 remount 都会叠加一个 fn, 触发
   // 一次事件跑 N 倍工作量. page_results / page_run 早已用 host.__offX
   // 这个 pattern 正确 teardown, 这里补齐.
-  for (const k of ['__offSnapshotsChanged', '__offSession']) {
+  for (const k of ['__offSnapshotsChanged', '__offSession', '__offDriftChecker']) {
     if (typeof host[k] === 'function') {
       try { host[k](); } catch { /* ignore */ }
       host[k] = null;
@@ -129,6 +130,32 @@ export async function renderSnapshotsPage(host) {
     await loadSnapshots(state);
     renderAll(state, host);
   });
+
+  // Dev-only drift checker (P24 §3.5): the row count rendered under
+  // .snapshots-page must match `state.items.length` whenever a session
+  // is active (no-op otherwise). Catches "loaded new items but forgot
+  // to renderAll" regressions in this historically-leaky page.
+  registerChecker({
+    name: 'page_snapshots.row_count',
+    event: 'snapshots:changed',
+    check: () => {
+      if (!host.isConnected) return { ok: true }; // page not mounted
+      if (!store.session) return { ok: true };    // empty-state shown instead
+      const expected = state.items.length;
+      const actual = host.querySelectorAll('.snapshots-row').length;
+      if (expected !== actual) {
+        return {
+          ok: false,
+          detail: `state.items.length=${expected} but .snapshots-row count=${actual}`,
+          driftKey: `${expected}_vs_${actual}`,
+        };
+      }
+      return { ok: true };
+    },
+  });
+  // When the page unmounts (host disconnected), detector's check() returns
+  // ok quickly; no hard unregister needed, but be defensive.
+  host.__offDriftChecker = () => unregisterChecker('page_snapshots.row_count');
 }
 
 function renderAll(state, host) {

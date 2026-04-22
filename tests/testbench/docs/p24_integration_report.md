@@ -1,6 +1,6 @@
 # P24 联调联测报告
 
-> **状态**: **Day 12 完结 (2026-04-22) · v1.0 "第一个完善版本" sign-off**. P24 全 12 天收尾交付, 全量 9/9 smoke 全绿. 用户反馈 §1.1 场景矩阵 (S1-S12) 及 §2 资源数据在 Day 1-8 的迭代过程中已由用户逐步手测覆盖; §5 / §6 / §7 Day 10-12 补齐; §4.3 Day 10-12 期间已修的 bug 补录; 附录 A / B 保留. **云端同步**: P21-P24 单 commit `4964941` (99 files, +23696/-606) + merge commit `cb394ab` (Merge NEKO-dev/main 27 条, 零冲突) + push 成功 (`474aa23..cb394ab main -> main`), 与 `8f8dc63` (P15-P20) / `14c98c8` (P13-P14) 跨 phase commit 前例对齐.
+> **状态**: **Day 12 完结 (2026-04-22) · v1.0 "第一个完善版本" sign-off · Day 12 欠账清返同日追加**. P24 全 12 天收尾交付 + 用户 "不要留尾巴" 指示后的 Day 12 欠账清返 (§4.3 末 3 行), 全量 9/9 smoke 全绿. 用户反馈 §1.1 场景矩阵 (S1-S12) 及 §2 资源数据在 Day 1-8 的迭代过程中已由用户逐步手测覆盖; §5 / §6 / §7 Day 10-12 补齐; §4.3 Day 10-12 期间已修的 bug 补录 + Day 12 欠账清返 3 条补录; 附录 A / B 保留. **云端同步**: P21-P24 单 commit `4964941` (99 files, +23696/-606) + merge commit `cb394ab` (Merge NEKO-dev/main 27 条, 零冲突) + push 成功 (`474aa23..cb394ab main -> main`), 与 `8f8dc63` (P15-P20) / `14c98c8` (P13-P14) 跨 phase commit 前例对齐; **Day 12 欠账清返将走独立 commit** `fix(testbench): P24 Day 12 欠账清返 ...` 不动历史 sign-off commit.
 > **本报告与 P24_BLUEPRINT.md §11 "P24 交付后回顾" 互为 cross-reference**: 本报告偏"联调验收视角" (场景 / 数据 / bug / backlog), 蓝图 §11 偏"阶段性总结视角" (计划 vs 实际 / 元教训 / §3A 新条 / v1.0 基线定义).
 
 ---
@@ -153,6 +153,9 @@ try {
 | `P24_BLUEPRINT.md` §14.2.E 资源上限 UX 降级 15 项总表 | Day 10 | 跨模块横切视角整理 | 3 项 ⚠ 留 P25 建议 + 派生 **L27 元教训** |
 | `P24_BLUEPRINT.md` §14.2.D A6/A9/SSE 生成器三分类复核 | Day 10 | 疑似 A6/A9 漏守的触发点复核 | 8 个 yield 型 API 合规 + 派生 **L26 元教训** |
 | Day 11-12 6 份 docs 全量回写期间未触碰代码 | Day 11-12 | 文档期规范 | 收尾后再跑一轮 9/9 smoke 仍全绿, 证明**文档写作未摧代码断言** |
+| **P24 Day 12 欠账清返 #1** `render_drift_detector.js` 骨架 | Day 12 | 用户 "不要留尾巴" 明确要求后 grep `推迟至 Day X` 双向回扫 | 新建 `static/core/render_drift_detector.js` 176 行 (dev-only, `?dev=1` / `__DEBUG_RENDER_DRIFT__` gating, `registerChecker/unregisterChecker/initRenderDriftDetector` 三件套 API, microtask 调度 + per-(event, name) dedupe, `window.__renderDrift` 调试入口) + `app.js::boot()` 注册 2 全局 checker (`topbar.session_chip_label` / `app.active_workspace_section`) + `page_snapshots.js` 注册页内 checker (`page_snapshots.row_count` 守 DOM 行数 vs state.items.length) + teardown loop 补 `__offDriftChecker`. 原蓝图估 1.5-2 天的 "15 页全量 checker" 不做, 骨架 + 3 checker 已证明机制. |
+| **P24 Day 12 欠账清返 #2** `page_persona.js` Promise cache 重构 + 全仓 lazy init sweep | Day 12 | 同上 | (a) `renderPreviewCard` 内 `let loaded = false` → `let loadPromise = null` (skill `async-lazy-init-promise-cache` 规则 1-4 全覆盖), `details.toggle` + `refreshBtn.click` 两入口走单 flight `doLoad()`, 失败 `.catch` 清空 Promise 让下次 retry; (b) `composer.js::ensureStylesLoaded / ensureAutoStylesLoaded` 原本已是 Promise cache 但缺 `.catch` 清空兜底, 本次补齐 (规则 3); (c) `loadTemplateList(force)` 从 "flag-after-await race" 升级为 `templateListPromise` 单 flight + `scripts:templates_changed` 外部 invalidate handler 同步清 Promise cache; (d) 其它 5 处 `loadXxx` 走 Day 6G `AbortController` last-click-wins, 与 Promise cache 互补不替代, 不适用本 skill. |
+| **P24 Day 12 Day 6 §13.6 F4 asyncio cancel checkbox 补 `[x]`** | Day 12 | 同上 | 零代码改动, 仅 P24_BLUEPRINT §13.6 F4 / §15 Day 6 三处 checkbox 从 `[ ]` 改 `[x]` (实际工作已在 Day 8 §14.4 M1 取消/停止语义幂等性静态审合并审查通过, 结论"当前实现合规, 无需补强", 但 Day 6 原始 checkbox 漏回填). 派生 **元教训候选 L28 "跨阶段推迟项必须双向回扫"** (Day 6 推迟到 Day 10 的 3 项, Day 10 只做 1 个, 另 2 个 Day 10 既没做也没改推 P25 说明, 直到 Day 12 用户提醒才补扫; 修法: 每阶段收尾跑 `rg "推迟至 Day X"` 双向核对). |
 
 ---
 

@@ -558,6 +558,7 @@ export function mountComposer(host, { stream, autoBanner = null }) {
 
   // 同样用单飞 Promise 守卫 — 避免多次 fire-and-forget 调用重复拷贝 options.
   // 内部先 await ensureStylesLoaded() 等后端 /styles 真正返回再拷贝, 保证不拷空.
+  // P24 欠账清返 (§13.5 sweep): 加 .catch 清空, 同 ensureStylesLoaded.
   let autoStylesLoadedPromise = null;
   function ensureAutoStylesLoaded() {
     if (autoStylesLoadedPromise) return autoStylesLoadedPromise;
@@ -569,7 +570,10 @@ export function mountComposer(host, { stream, autoBanner = null }) {
         autoStyleSelect.append(opt.cloneNode(true));
       }
       autoStyleSelect.value = styleSelect.value || 'friendly';
-    })();
+    })().catch((err) => {
+      autoStylesLoadedPromise = null;
+      throw err;
+    });
     return autoStylesLoadedPromise;
   }
 
@@ -838,6 +842,9 @@ export function mountComposer(host, { stream, autoBanner = null }) {
   // ensureAutoStylesLoaded 拷贝空的 styleSelect 就会造成 Auto 风格下拉空白
   // (触发场景: syncModeUI 里背靠背调 ensureStylesLoaded + ensureAutoStylesLoaded).
   // 改成缓存 Promise, 所有 caller await 同一个真实网络返回的 Promise, 就没这个坑.
+  //
+  // P24 欠账清返 (§13.5 sweep, 2026-04-22): 加 .catch 清空 Promise, 失败后
+  // 下一次 caller 能重试; skill `async-lazy-init-promise-cache` 规则 3.
   let stylesLoadedPromise = null;
   function ensureStylesLoaded() {
     if (stylesLoadedPromise) return stylesLoadedPromise;
@@ -860,7 +867,10 @@ export function mountComposer(host, { stream, autoBanner = null }) {
         styleSelect.append(opt);
       }
       styleSelect.value = defaultId;
-    })();
+    })().catch((err) => {
+      stylesLoadedPromise = null;
+      throw err;
+    });
     return stylesLoadedPromise;
   }
 
@@ -918,18 +928,38 @@ export function mountComposer(host, { stream, autoBanner = null }) {
 
   // ── Script mode actions (P12) ──────────────────────────────────
 
+  // P24 欠账清返 (§13.5 sweep, 2026-04-22): promise-cached single-flight.
+  // `force=true` (手动 [刷新]) 清缓存重拉; `force=false` 初次加载 / mode
+  // 切回 script 时用. templatesLoaded 仍存, 但只作"是否至少加载过一次"
+  // 的快路径判据, 并发竞态交给 Promise cache 解决.
+  let templateListPromise = null;
   async function loadTemplateList(force) {
-    if (templatesLoaded && !force) return;
-    const res = await api.get('/api/chat/script/templates',
-      { expectedStatuses: [404] });
-    if (!res.ok) {
-      templatesLoaded = true;
-      populateTemplateSelect([]);
-      return;
+    if (force) {
+      templateListPromise = null;
+      templatesLoaded = false;
     }
-    scriptTemplates = Array.isArray(res.data?.templates) ? res.data.templates : [];
-    templatesLoaded = true;
-    populateTemplateSelect(scriptTemplates);
+    if (templatesLoaded) return;
+    if (templateListPromise) return templateListPromise;
+    templateListPromise = (async () => {
+      const res = await api.get('/api/chat/script/templates',
+        { expectedStatuses: [404] });
+      if (!res.ok) {
+        templatesLoaded = true;
+        populateTemplateSelect([]);
+        return;
+      }
+      scriptTemplates = Array.isArray(res.data?.templates) ? res.data.templates : [];
+      templatesLoaded = true;
+      populateTemplateSelect(scriptTemplates);
+    })().catch((err) => {
+      templateListPromise = null;
+      // Populate with empty list so the UI is not stuck "loading"; caller
+      // decides whether to retry. templatesLoaded stays false so next
+      // non-force call will retry naturally.
+      populateTemplateSelect([]);
+      throw err;
+    });
+    return templateListPromise;
   }
 
   function populateTemplateSelect(list) {
@@ -1285,6 +1315,7 @@ export function mountComposer(host, { stream, autoBanner = null }) {
   // 避免在 manual/simuser/auto 模式下做无用功.
   const offScriptTemplates = on('scripts:templates_changed', () => {
     templatesLoaded = false;
+    templateListPromise = null; // 清 Promise cache, 下次会重拉
     if (modeSelect.value === 'script') {
       loadTemplateList(true);
     }

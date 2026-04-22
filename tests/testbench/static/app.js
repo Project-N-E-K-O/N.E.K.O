@@ -13,6 +13,7 @@
 import { hydrateI18n, i18n } from './core/i18n.js';
 import { store, set, on } from './core/state.js';
 import { initErrorsBus } from './core/errors_bus.js';
+import { initRenderDriftDetector, registerChecker } from './core/render_drift_detector.js';
 
 import { mountTopbar }            from './ui/topbar.js';
 import { mountModelConfigReminder } from './ui/model_config_reminder.js';
@@ -90,6 +91,10 @@ function boot() {
   // 错误总线必须在任何 fetch / UI 之前启动, 才能捕获启动阶段就发生的错误.
   initErrorsBus();
 
+  // Dev-only render drift detector (P24 §3.5). ?dev=1 or
+  // window.__DEBUG_RENDER_DRIFT__=true 才启用, 生产零开销.
+  initRenderDriftDetector();
+
   hydrateI18n(document);
 
   const topbar = document.getElementById('topbar');
@@ -110,6 +115,50 @@ function boot() {
 
   on('active_workspace:change', applyActiveWorkspace);
   applyActiveWorkspace(store.active_workspace || 'setup');
+
+  // Dev-only derived-state checkers (P24 §3.5). Register them after the
+  // topbar + workspaces mount so the DOM selectors in each check() resolve.
+  // These are low-risk "sanity" checkers; page-local checkers should live
+  // in their own mountXxx so teardown is paired naturally.
+  registerChecker({
+    name: 'topbar.session_chip_label',
+    event: 'session:change',
+    check: () => {
+      const labelEl = document.querySelector('.chip--session .chip__label');
+      if (!labelEl) return { ok: false, detail: 'session chip label element missing from DOM' };
+      const session = store.session;
+      const expected = session
+        ? `${i18n('topbar.session.label')}: ${session.name || session.id}`
+        : `${i18n('topbar.session.label')}: ${i18n('topbar.session.none')}`;
+      const actual = labelEl.textContent || '';
+      if (actual !== expected) {
+        return {
+          ok: false,
+          detail: `topbar session chip shows '${actual}' but store.session derived to '${expected}'`,
+          driftKey: `${actual}||${expected}`,
+        };
+      }
+      return { ok: true };
+    },
+  });
+  registerChecker({
+    name: 'app.active_workspace_section',
+    event: 'active_workspace:change',
+    check: () => {
+      const expected = store.active_workspace || 'setup';
+      const activeSec = document.querySelector('section.workspace.active');
+      if (!activeSec) return { ok: false, detail: 'no .workspace.active section in DOM' };
+      const actual = activeSec.dataset.workspace;
+      if (actual !== expected) {
+        return {
+          ok: false,
+          detail: `active section data-workspace='${actual}' but store.active_workspace='${expected}'`,
+          driftKey: `${actual}||${expected}`,
+        };
+      }
+      return { ok: true };
+    },
+  });
 
   console.info('[app] testbench UI ready');
 }
