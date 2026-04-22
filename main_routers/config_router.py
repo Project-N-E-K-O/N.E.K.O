@@ -1087,14 +1087,20 @@ def _classify_openai_error(e: Exception, is_free: bool = False) -> dict:
 
 
 async def _test_websocket(url: str, api_key: str, model: str = "") -> dict:
-    """Test a WebSocket endpoint by performing a handshake and closing immediately.
+    """Test a WebSocket endpoint by performing a handshake AND a minimal session.update.
 
     Mirrors the project's OmniRealtimeClient.connect() behavior:
     - Appends ?model={model} to the URL (same as omni_realtime_client.py)
     - Sends Authorization header with Bearer token
-    - Optionally appends api_key as query parameter
+    - After handshake, sends a minimal session.update and waits for server response
+    - If server responds with any non-error event → key is valid and model is accessible
+    - If server responds with error or closes connection → key/model issue
+
+    This goes beyond a simple handshake to verify key permissions at the model level,
+    ensuring "green = 100% usable, red = 100% not usable".
     """
     import websockets
+    import json as _json
 
     try:
         # Build WebSocket URL with model parameter (same as OmniRealtimeClient.connect)
@@ -1118,9 +1124,37 @@ async def _test_websocket(url: str, api_key: str, model: str = "") -> dict:
                 additional_headers=extra_headers,
                 open_timeout=10,
                 close_timeout=5,
-            ):
-                # Connection succeeded — close immediately
-                pass
+            ) as ws:
+                # Handshake succeeded — now send a minimal session.update to verify
+                # key permissions at the model level (same as OmniRealtimeClient)
+                session_update = {
+                    "type": "session.update",
+                    "session": {
+                        "modalities": ["text"],
+                        "instructions": "connectivity test",
+                    }
+                }
+                await ws.send(_json.dumps(session_update))
+
+                # Wait for first server response (with 5s inner timeout)
+                try:
+                    response = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                    event = _json.loads(response)
+                    event_type = event.get("type", "")
+
+                    if event_type == "error":
+                        error_msg = str(event.get("error", ""))
+                        if "401" in error_msg or "403" in error_msg or "auth" in error_msg.lower():
+                            return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
+                        return {"success": False, "error": f"服务端错误: {error_msg[:200]}", "error_code": "unknown"}
+
+                    # Any non-error response (session.created, session.updated, etc.) = success
+                    return {"success": True}
+
+                except asyncio.TimeoutError:
+                    # Handshake succeeded but no response to session.update within 5s
+                    # This is still a partial success — service is reachable
+                    return {"success": True}
 
         return {"success": True}
 

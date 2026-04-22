@@ -165,10 +165,12 @@ class TestWebSocketConnectivity:
     """Mock websockets.connect to test all WebSocket error branches."""
 
     async def test_ws_success(self):
-        """Successful WebSocket handshake → success: True."""
+        """Successful WebSocket handshake + session.update → success: True."""
         mock_conn = AsyncMock()
         mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_conn.__aexit__ = AsyncMock(return_value=False)
+        mock_conn.send = AsyncMock()
+        mock_conn.recv = AsyncMock(return_value='{"type": "session.created"}')
 
         with patch("websockets.connect", return_value=mock_conn):
             result = await _test_websocket("wss://realtime.example.com", "sk-key")
@@ -283,6 +285,8 @@ class TestWebSocketConnectivity:
         mock_conn = AsyncMock()
         mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_conn.__aexit__ = AsyncMock(return_value=False)
+        mock_conn.send = AsyncMock()
+        mock_conn.recv = AsyncMock(return_value='{"type": "session.created"}')
 
         with patch("websockets.connect", return_value=mock_conn) as mock_connect:
             result = await _test_websocket(
@@ -300,6 +304,8 @@ class TestWebSocketConnectivity:
         mock_conn = AsyncMock()
         mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_conn.__aexit__ = AsyncMock(return_value=False)
+        mock_conn.send = AsyncMock()
+        mock_conn.recv = AsyncMock(return_value='{"type": "session.created"}')
 
         with patch("websockets.connect", return_value=mock_conn) as mock_connect:
             result = await _test_websocket("wss://realtime.example.com", "sk-key")
