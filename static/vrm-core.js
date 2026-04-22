@@ -1241,6 +1241,18 @@ class VRMCore {
                     y: cameraPosition.y,
                     z: cameraPosition.z
                 };
+                if (Number.isFinite(cameraPosition.qx) && Number.isFinite(cameraPosition.qy) &&
+                    Number.isFinite(cameraPosition.qz) && Number.isFinite(cameraPosition.qw)) {
+                    preferences.camera_position.qx = cameraPosition.qx;
+                    preferences.camera_position.qy = cameraPosition.qy;
+                    preferences.camera_position.qz = cameraPosition.qz;
+                    preferences.camera_position.qw = cameraPosition.qw;
+                }
+                if (Number.isFinite(cameraPosition.targetX) && Number.isFinite(cameraPosition.targetY) && Number.isFinite(cameraPosition.targetZ)) {
+                    preferences.camera_position.targetX = cameraPosition.targetX;
+                    preferences.camera_position.targetY = cameraPosition.targetY;
+                    preferences.camera_position.targetZ = cameraPosition.targetZ;
+                }
             }
             
             // 添加超时保护（5秒超时）
@@ -1352,4 +1364,3 @@ window.addEventListener('neko-render-quality-changed', (e) => {
         window.vrmManager.core.applyQualitySettings(quality);
     }
 });
-
