@@ -6263,13 +6263,23 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     playMotionBtn.addEventListener('click', () => {
-        // 检查是否加载了模型
         if (!live2dModel) {
             showStatus(t('live2d.pleaseLoadModel', '请先加载模型'), 2000);
             return;
         }
 
-        // 检查是否选择了动作
+        if (motionSelect.value === '_no_motion_') {
+            try {
+                live2dModel.internalModel?.motionManager?.stopAllMotions();
+                isMotionPlaying = false;
+                updateMotionPlayButtonIcon();
+                showStatus(t('live2d.motionStopped', '动作已停止'), 1000);
+            } catch (error) {
+                console.error('停止动作失败:', error);
+            }
+            return;
+        }
+
         if (!motionSelect.value) {
             showStatus(t('live2d.pleaseSelectMotion', '请先选择动作'), 2000);
             return;
@@ -6400,22 +6410,28 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 当选择新动作时，立即播放选中的动作（循环模式）
     motionSelect.addEventListener('change', async (e) => {
-        // 生成异步令牌，防止快速切换导致加载顺序错乱（置于入口，确保任何 change 都会使旧的 await 失效）
         window._currentLive2DMotionToken = (window._currentLive2DMotionToken || 0) + 1;
         const currentToken = window._currentLive2DMotionToken;
 
         const selectedValue = e.target.value;
 
-        // 如果选择的是第一个选项（空值，即"增加动作"），触发文件选择器
         if (selectedValue === '') {
             const motionFileUpload = document.getElementById('motion-file-upload');
             if (motionFileUpload) {
                 motionFileUpload.click();
             }
-            // 重置选择器到第一个选项（保持显示"增加动作"）
             e.target.value = '';
-            // 播放按钮保持可用：未选择动作时点击会提示
             playMotionBtn.disabled = false;
+            return;
+        }
+
+        if (selectedValue === '_no_motion_') {
+            if (live2dModel?.internalModel?.motionManager) {
+                live2dModel.internalModel.motionManager.stopAllMotions();
+            }
+            isMotionPlaying = false;
+            updateMotionPlayButtonIcon();
+            updateMotionSelectButtonText();
             return;
         }
 
@@ -6506,15 +6522,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         expressionSelect.addEventListener('change', async (e) => {
             const selectedValue = e.target.value;
 
-            // 如果选择的是第一个选项（空值，即"增加表情"），触发文件选择器
             if (selectedValue === '') {
                 const expressionFileUpload = document.getElementById('expression-file-upload');
                 if (expressionFileUpload) {
                     expressionFileUpload.click();
                 }
-                // 重置选择器到第一个选项（保持显示"增加表情"）
                 e.target.value = '';
-                // 仅当有表情文件且已选择有效表情时启用
                 const hasExpressions = !!(
                     currentModelFiles &&
                     currentModelFiles.expression_files &&
@@ -6524,8 +6537,19 @@ document.addEventListener('DOMContentLoaded', async () => {
                 return;
             }
 
+            if (selectedValue === '_no_expression_') {
+                if (window.live2dManager?.currentModel) {
+                    try {
+                        await window.live2dManager.clearExpression();
+                    } catch (err) {
+                        console.warn('[Live2D] 清除表情失败:', err);
+                    }
+                }
+                playExpressionBtn.disabled = false;
+                return;
+            }
+
             updateExpressionSelectButtonText();
-            // 仅当有表情文件且已选择有效表情时启用
             const hasExpressions = !!(
                 currentModelFiles &&
                 currentModelFiles.expression_files &&
@@ -6536,16 +6560,26 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     playExpressionBtn.addEventListener('click', async () => {
-        // 检查当前模型类型，只处理 Live2D 模型
         if (currentModelType !== 'live2d') {
             console.warn('表情预览功能仅支持 Live2D 模型');
             return;
         }
 
-        // 重新获取当前模型，确保使用最新引用
         const currentModel = window.live2dManager ? window.live2dManager.getCurrentModel() : live2dModel;
         if (!currentModel) {
             showStatus(t('live2d.pleaseLoadModel', '请先加载模型'), 2000);
+            return;
+        }
+
+        if (expressionSelect.value === '_no_expression_') {
+            try {
+                if (window.live2dManager && typeof window.live2dManager.clearExpression === 'function') {
+                    await window.live2dManager.clearExpression();
+                }
+                showStatus(t('live2d.expressionCleared', '表情已清除'), 1000);
+            } catch (error) {
+                console.warn('清除表情失败:', error);
+            }
             return;
         }
 
@@ -6554,7 +6588,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
 
-        // 从完整路径中提取表情名称（去掉路径和扩展名）
         const expressionName = expressionSelect.value.split('/').pop().replace('.exp3.json', '');
 
         try {
@@ -8012,15 +8045,28 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function updateSelectWithOptions(select, options, defaultText, type) {
-        // 根据类型设置第一个选项的文本
-        let firstOptionText = defaultText;
+        const noMotionText = t('live2d.noMotion', '无动作');
+        const noExpressionText = t('live2d.noExpression', '无表情');
+
+        select.innerHTML = '';
+        const placeholderOption = document.createElement('option');
+        placeholderOption.value = '';
+        placeholderOption.textContent = defaultText;
+        placeholderOption.disabled = true;
+        select.appendChild(placeholderOption);
+
         if (type === 'motion') {
-            firstOptionText = t('live2d.selectMotion', '选择动作');
+            const noMotionOption = document.createElement('option');
+            noMotionOption.value = '_no_motion_';
+            noMotionOption.textContent = noMotionText;
+            select.appendChild(noMotionOption);
         } else if (type === 'expression') {
-            firstOptionText = t('live2d.selectExpression', '选择表情');
+            const noExpressionOption = document.createElement('option');
+            noExpressionOption.value = '_no_expression_';
+            noExpressionOption.textContent = noExpressionText;
+            select.appendChild(noExpressionOption);
         }
 
-        select.innerHTML = `<option value="">${firstOptionText}</option>`;
         options.forEach(opt => {
             const option = document.createElement('option');
             option.value = opt;
@@ -8037,7 +8083,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             select.appendChild(option);
         });
 
-        // 更新对应的管理器
         if (type === 'motion' && motionManager) {
             motionManager.updateButtonText();
             motionManager.updateDropdown();
