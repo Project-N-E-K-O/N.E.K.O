@@ -331,7 +331,7 @@ P25 完成后必须在以下文档中同步:
 **变更日志**:
 - 2026-04-22 初版创建 (基于 P24 Day 9 二轮评估结论 + 用户 4 轮 AskQuestion 决策)
 - 2026-04-23 §A 开工前设计层回顾新增 (P24 Day 12 欠账清返 done 后, 按用户 "开工前先研究设计草案, 从架构上理清内容 + 预防高危 bug 点" 要求, 参照 P24 开工期六轮 meta 审核节奏做的 design review gate). Git: `d6a22c2` [`docs(testbench): P25 开工前 · §A 设计层回顾 gate (元审核 + 框架回顾 + 上游 delta 三方交叉核查)`] pushed 成功.
-- 2026-04-23 §A 第七轮 self-audit 补丁 (用户"再审一轮"指示后, 回头审视 §A 本身交叉对照主程序 core.py / cross_server.py / memory_server.py / prompts_avatar_interaction.py 代码, 追加 R7/R9/R10/R13 四条针对 §A 自身的不精确/遗漏矫正, R8/R11/R12 三条细节补完). 矫正总数 7 → 11, §3 Day 1 必改 4 → 6 处, §2.4 从 "一刀切反转" 精确到 "三类分别说明", §4 补 4.6/4.7 两条决策. Git: `<pending>` (本次提交待填).
+- 2026-04-23 §A 第七轮 self-audit 补丁 (用户"再审一轮"指示后, 回头审视 §A 本身交叉对照主程序 core.py / cross_server.py / memory_server.py / prompts_avatar_interaction.py 代码, 追加 R7/R9/R10/R13 四条针对 §A 自身的不精确/遗漏矫正, R8/R11/R12 三条细节补完). 矫正总数 7 → 11, §3 Day 1 必改 4 → 6 处, §2.4 从 "一刀切反转" 精确到 "三类分别说明", §4 补 4.6/4.7 两条决策. Git: `e2dc82c` [`docs(testbench): P25 §A 第七轮 self-audit 补丁 (R7/R9/R10/R13 + R8/R11/R12)`] pushed 成功.
 
 ---
 
