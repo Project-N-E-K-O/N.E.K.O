@@ -280,8 +280,8 @@ class TestWebSocketConnectivity:
         assert result["success"] is False
         assert result["error_code"] == "ws_error"
 
-    async def test_ws_url_with_existing_query_params(self):
-        """URL already containing '?' should use '&' for api_key param."""
+    async def test_ws_url_with_model_param(self):
+        """URL gets ?model= appended for non-free models."""
         mock_conn = AsyncMock()
         mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_conn.__aexit__ = AsyncMock(return_value=False)
@@ -290,17 +290,32 @@ class TestWebSocketConnectivity:
 
         with patch("websockets.connect", return_value=mock_conn) as mock_connect:
             result = await _test_websocket(
-                "wss://realtime.example.com?model=gpt-4", "sk-key"
+                "wss://realtime.example.com", "sk-key", model="step-audio-2"
             )
-            # Verify the URL uses '&' separator
             call_args = mock_connect.call_args
             ws_url = call_args[0][0]
-            assert "&api_key=sk-key" in ws_url
+            assert "?model=step-audio-2" in ws_url
 
         assert result["success"] is True
 
-    async def test_ws_url_without_query_params(self):
-        """URL without '?' should use '?' for api_key param."""
+    async def test_ws_url_free_model_no_model_param(self):
+        """free-model skips ?model= parameter (same as OmniRealtimeClient)."""
+        mock_conn = AsyncMock()
+        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_conn.__aexit__ = AsyncMock(return_value=False)
+        mock_conn.send = AsyncMock()
+        mock_conn.recv = AsyncMock(return_value='{"type": "session.created"}')
+
+        with patch("websockets.connect", return_value=mock_conn) as mock_connect:
+            result = await _test_websocket("wss://realtime.example.com", "sk-key", model="free-model")
+            call_args = mock_connect.call_args
+            ws_url = call_args[0][0]
+            assert "?model=" not in ws_url
+
+        assert result["success"] is True
+
+    async def test_ws_auth_header_only_no_query_key(self):
+        """API key is sent via Authorization header only, not as URL query param."""
         mock_conn = AsyncMock()
         mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_conn.__aexit__ = AsyncMock(return_value=False)
@@ -311,7 +326,9 @@ class TestWebSocketConnectivity:
             result = await _test_websocket("wss://realtime.example.com", "sk-key")
             call_args = mock_connect.call_args
             ws_url = call_args[0][0]
-            assert "?api_key=sk-key" in ws_url
+            headers = call_args[1].get("additional_headers", {})
+            assert "api_key" not in ws_url
+            assert headers.get("Authorization") == "Bearer sk-key"
 
         assert result["success"] is True
 

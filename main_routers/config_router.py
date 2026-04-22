@@ -1108,19 +1108,15 @@ async def _test_websocket(url: str, api_key: str, model: str = "") -> dict:
         if model and model.lower() != "free-model":
             ws_url = f"{ws_url}?model={model}"
 
-        # Add API key as query parameter and Authorization header (if key provided)
+        # Authorization header only (same as OmniRealtimeClient.connect — no api_key in URL)
         if api_key:
-            separator = "&" if "?" in ws_url else "?"
-            encoded_api_key = urllib.parse.quote(api_key, safe="")
-            ws_url_with_key = f"{ws_url}{separator}api_key={encoded_api_key}"
             extra_headers = {"Authorization": f"Bearer {api_key}"}
         else:
-            ws_url_with_key = ws_url
             extra_headers = {}
 
         async with asyncio.timeout(10):
             async with websockets.connect(
-                ws_url_with_key,
+                ws_url,
                 additional_headers=extra_headers,
                 open_timeout=10,
                 close_timeout=5,
