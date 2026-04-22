@@ -11,7 +11,8 @@
 ### 1. 动作保存功能
 - 用户可在模型管理页面从下拉菜单选择 `.motion3.json` 动作文件
 - 选择后点击"保存设置"，动作路径会持久化保存到 `characters.json`
-- 保存格式：`live2d_idle_animation: "motions/动态.motion3.json"`（顶层字段）
+- 保存格式：`_reserved.avatar.live2d.idle_animation`（后端通过 `set_reserved(..., 'avatar', 'live2d', 'idle_animation', ...)` 写入）
+- 兼容层：顶层 `live2d_idle_animation` 字段仅用于旧版本展开视图和兼容读取，新配置应使用 `_reserved` 结构
 
 ### 2. 循环播放功能
 - 选中的动作以循环模式播放
@@ -43,17 +44,25 @@
 ### 数据结构
 
 ```javascript
-// characters.json 中的保存格式
+// characters.json 中的保存格式（真实结构）
 {
     "猫娘": {
         "小天": {
             "live2d": "小天",
-            "live2d_idle_animation": "motions/跳舞.motion3.json",
+            "_reserved": {
+                "avatar": {
+                    "live2d": {
+                        "idle_animation": "motions/跳舞.motion3.json"
+                    }
+                }
+            },
             "model_type": "live2d"
         }
     }
 }
 ```
+
+> **兼容层说明**：后端 `set_reserved(..., 'avatar', 'live2d', 'idle_animation', ...)` 写入 `_reserved.avatar.live2d.idle_animation`。顶层 `live2d_idle_animation` 字段仅用于旧版本展开视图和兼容读取。
 
 ### motionGroups vs definitions
 
@@ -96,7 +105,7 @@ onModelReady: (model) => {
 
 ### 动作加载流程
 
-```
+```text
 1. 从 API 获取模型动作列表 → motionFiles
 2. 构建 motionsList = [{ File: path }, ...]
 3. 更新 definitions[groupName] = motionsList
@@ -155,11 +164,11 @@ onModelReady: (model) => {
 | 主页恢复函数 | `app-interpage.js` | `restoreLive2DIdleAnimationOnMainPage()` |
 | 恢复触发 | `live2d-init.js` | `initLive2DModel()` |
 | 模型就绪回调 | `live2d-model.js` | `loadModel()` 完成处 |
-| 后端保存校验 | `characters_router.py` | PUT `/api/characters/{name}` |
+| 后端保存校验 | `characters_router.py` | PUT `/api/characters/catgirl/l2d/{name}` |
 
 ---
 
-## � 代码质量与稳定性增强
+## 🛡️ 代码质量与稳定性增强
 
 ### 1. setMouth 高频性能优化
 
