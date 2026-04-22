@@ -1310,9 +1310,18 @@ async def _test_websocket(url: str, api_key: str, model: str = "") -> dict:
                     event_type = event.get("type", "")
 
                     if event_type == "error":
-                        error_msg = str(event.get("error", ""))
-                        error_lower = error_msg.lower()
-                        if any(kw in error_lower for kw in ("401", "403", "auth", "unauthorized", "invalid api key", "invalid key", "api key")):
+                        # Realtime protocol: event["error"] can be dict or string
+                        raw_error = event.get("error", "")
+                        if isinstance(raw_error, dict):
+                            error_code = str(raw_error.get("code", "")).lower()
+                            error_message = str(raw_error.get("message", ""))
+                            error_msg = error_message or str(raw_error)
+                        else:
+                            error_code = ""
+                            error_msg = str(raw_error)
+                            error_message = error_msg
+                        error_lower = (error_code + " " + error_message).lower()
+                        if any(kw in error_lower for kw in ("401", "403", "auth", "unauthorized", "invalid api key", "invalid key", "api key", "invalid_api_key", "authentication_error")):
                             return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
                         return {"success": False, "error": f"服务端错误: {error_msg[:200]}", "error_code": "unknown"}
 
@@ -1401,7 +1410,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
             assist_profile = assist_providers.get(provider_key, {})
             fallback_url = assist_profile.get("openrouter_url", "")
             fallback_model = assist_profile.get("conversation_model", "")
-            if fallback_url:
+            if fallback_url and fallback_model:
                 url_stripped = fallback_url
                 model = fallback_model
                 provider_type = "openai_compatible"
