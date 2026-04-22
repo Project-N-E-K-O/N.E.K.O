@@ -55,6 +55,17 @@
     var HANDLE_SIZE = 8;
     var MIN_SEL = 10;
 
+    // ======================== i18n helpers ========================
+    function tr(key, fallback) {
+        try {
+            if (typeof window.t === 'function') {
+                var v = window.t(key);
+                if (v && v !== key) return v;
+            }
+        } catch (e) { /* fall through */ }
+        return fallback;
+    }
+
     // ======================== Ensure DOM ========================
     function ensureOverlay() {
         if (overlay) return;
@@ -85,19 +96,19 @@
         tabScreenshot = document.createElement('button');
         tabScreenshot.className = 'crop-tab crop-tab-active';
         tabScreenshot.type = 'button';
-        tabScreenshot.textContent = '\u622A\u56FE';
+        tabScreenshot.textContent = tr('chat.cropTabScreenshot', '\u622A\u56FE');
         tabScreenshot.addEventListener('click', function () { switchTab('screenshot'); });
 
         tabHideNeko = document.createElement('button');
         tabHideNeko.className = 'crop-tab';
         tabHideNeko.type = 'button';
-        tabHideNeko.textContent = '\u9690\u85CFNEKO';
+        tabHideNeko.textContent = tr('chat.cropTabHideNeko', '\u9690\u85CFNEKO');
         tabHideNeko.addEventListener('click', function () { switchTab('hideNeko'); });
 
         var tabCancel = document.createElement('button');
         tabCancel.className = 'crop-tab crop-tab-cancel';
         tabCancel.type = 'button';
-        tabCancel.textContent = '\u53D6\u6D88';
+        tabCancel.textContent = tr('chat.cropTabCancel', '\u53D6\u6D88');
         tabCancel.addEventListener('click', cancelAll);
 
         topBar.appendChild(tabScreenshot);
@@ -114,14 +125,14 @@
         btnConfirm.className = 'crop-action-btn crop-action-confirm';
         btnConfirm.type = 'button';
         btnConfirm.innerHTML = '&#x2713;';
-        btnConfirm.title = '\u786E\u8BA4\u622A\u56FE';
+        btnConfirm.title = tr('chat.cropConfirmTitle', '\u786E\u8BA4\u622A\u56FE');
         btnConfirm.addEventListener('click', confirmCrop);
 
         var btnCancel = document.createElement('button');
         btnCancel.className = 'crop-action-btn crop-action-cancel';
         btnCancel.type = 'button';
         btnCancel.innerHTML = '&#x2717;';
-        btnCancel.title = '\u53D6\u6D88\u9009\u533A';
+        btnCancel.title = tr('chat.cropClearSelectionTitle', '\u53D6\u6D88\u9009\u533A');
         btnCancel.addEventListener('click', clearSelection);
 
         actionBtns.appendChild(btnCancel);
@@ -159,7 +170,7 @@
 
         if (tab === 'hideNeko' && recaptureFn) {
             tabHideNeko.disabled = true;
-            tabHideNeko.textContent = '\u6B63\u5728\u91CD\u65B0\u622A\u56FE...';
+            tabHideNeko.textContent = tr('chat.cropTabRecapturing', '\u6B63\u5728\u91CD\u65B0\u622A\u56FE...');
             recaptureFn().then(function (newDataUrl) {
                 if (newDataUrl && activeTab === 'hideNeko') {
                     sourceDataUrl = newDataUrl;
@@ -169,8 +180,10 @@
                 console.warn('[crop] recapture failed:', err);
             }).finally(function () {
                 tabHideNeko.disabled = false;
-                tabHideNeko.textContent = '\u9690\u85CFNEKO';
+                tabHideNeko.textContent = tr('chat.cropTabHideNeko', '\u9690\u85CFNEKO');
             });
+        } else if (tab === 'hideNeko' && !recaptureFn) {
+            console.warn('[crop] 点了 hideNeko 但 recaptureFn 未设置，无法重截图');
         }
     }
 
