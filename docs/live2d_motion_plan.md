@@ -48,21 +48,23 @@
 {
     "猫娘": {
         "小天": {
-            "live2d": "小天",
             "_reserved": {
                 "avatar": {
+                    "model_type": "live2d",
                     "live2d": {
                         "idle_animation": "motions/跳舞.motion3.json"
                     }
                 }
-            },
-            "model_type": "live2d"
+            }
         }
     }
 }
 ```
 
-> **兼容层说明**：后端 `set_reserved(..., 'avatar', 'live2d', 'idle_animation', ...)` 写入 `_reserved.avatar.live2d.idle_animation`。顶层 `live2d_idle_animation` 字段仅用于旧版本展开视图和兼容读取。
+> **说明**：
+> - `idle_animation` 通过 `set_reserved(characters['猫娘'][name], 'avatar', 'live2d', 'idle_animation', ...)` 写入
+> - `model_type` 通过 `set_reserved(characters['猫娘'][name], 'avatar', 'model_type', ...)` 写入
+> - 顶层 `live2d`（模型名称）、`live2d_idle_animation`、`model_type` 字段仅用于旧版本展开视图和兼容读取
 
 ### motionGroups vs definitions
 
@@ -545,6 +547,6 @@ if (window._currentLive2DMotionToken !== currentToken
 
 ## 🧪 待优化项
 
-1. ~~**缩短恢复延迟**：目前固定 2 秒，可考虑监听物理预跑完成事件~~ ✅ 已优化：移除了固定延迟，改为使用 `onModelReady` 回调触发恢复函数
+1. ~~**缩短恢复延迟**：目前固定 2 秒，可考虑监听物理预跑完成事件~~ ✅ 已优化：移除了固定延迟，改为使用 `onModelReady` 回调 + 500ms 延迟触发恢复函数
 2. **错误处理**：网络请求失败时的用户体验优化
 3. **多动作支持**：同时保存多个待机动作，随机播放
