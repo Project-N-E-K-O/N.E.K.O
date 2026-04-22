@@ -472,6 +472,18 @@ _VALUE_TRANSLATIONS = {
         '女': 'Женский',
         'T酱, 小T': 'Тян-тян, малышка Т',
     },
+    'es': {
+        '哥哥': 'Hermano',
+        '男': 'Masculino',
+        '女': 'Femenino',
+        'T酱, 小T': 'T-chan, Pequeña T',
+    },
+    'pt': {
+        '哥哥': 'Irmão',
+        '男': 'Masculino',
+        '女': 'Feminino',
+        'T酱, 小T': 'T-chan, Pequena T',
+    },
     # zh 和 zh-CN 使用原始中文值（不需要翻译）
 }
 
@@ -517,6 +529,10 @@ def get_localized_default_characters(language: str | None = None) -> dict:
             value_trans = _VALUE_TRANSLATIONS.get('en')
         elif lang_lower.startswith('ru'):
             value_trans = _VALUE_TRANSLATIONS.get('ru')
+        elif lang_lower.startswith('es'):
+            value_trans = _VALUE_TRANSLATIONS.get('es')
+        elif lang_lower.startswith('pt'):
+            value_trans = _VALUE_TRANSLATIONS.get('pt')
 
     # 如果不需要翻译显示字段（简体中文/韩语等），仍需本地化 system_prompt
     if value_trans is None:
