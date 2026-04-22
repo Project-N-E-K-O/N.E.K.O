@@ -1121,7 +1121,12 @@ async def _test_websocket(url: str, api_key: str, model: str = "") -> dict:
                 open_timeout=10,
                 close_timeout=5,
             ) as ws:
-                # Handshake succeeded — now send a minimal session.update to verify
+                # For free-model: handshake-only test is sufficient
+                # (key is pre-configured "free-access", no need to verify permissions)
+                if model and model.lower() == "free-model":
+                    return {"success": True}
+
+                # For paid models: send a minimal session.update to verify
                 # key permissions at the model level (same as OmniRealtimeClient)
                 session_update = {
                     "type": "session.update",
