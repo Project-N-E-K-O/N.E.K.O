@@ -1104,8 +1104,8 @@ async def update_catgirl_l2d(name: str, request: Request):
             else:
                 logger.info(f"[Live2D Save] 请求中未包含 live2d_idle_animation 字段, data keys: {list(data.keys())}")
 
-            if item_id:
-                set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', str(item_id))
+            if resolved_item_id:
+                set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', str(resolved_item_id))
                 set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', 'steam_workshop')
                 logger.debug(f"已保存角色 {name} 的模型 {live2d_model} 和item_id {resolved_item_id}")
             else:
