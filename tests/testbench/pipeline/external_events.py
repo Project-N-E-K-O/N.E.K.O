@@ -616,7 +616,26 @@ async def simulate_avatar_interaction(
     # Instruction lands ONLY on the wire, NOT session.messages — per
     # P25_BLUEPRINT §A.8 #2, the testbench UI must never surface the
     # instruction as a persisted chat bubble.
-    base_wire.append({"role": "system", "content": instruction})
+    #
+    # CRITICAL — wire role must be "user", NOT "system" (L36 第三轮证据 /
+    # LESSONS_LEARNED §1.6 Semantic Contract vs Runtime Mechanism):
+    # 主程序 ``OmniOfflineClient.prompt_ephemeral`` (main_logic/
+    # omni_offline_client.py L718) 的语义契约是
+    #   messages_to_send = history + [HumanMessage(content=instruction)]
+    # 即 **以 user 角色** 临时注入 instruction. 早期我们错误地写成
+    # ``role=system`` (只看了字符串 helper 没看 role), 触发两个级联 bug:
+    #   (a) 空 session + 空 history 时 wire 变成 ``[system_prompt, system_
+    #       instruction]`` — 零 user 消息. Gemini 会直接 400
+    #       "Model input cannot be empty" (INVALID_ARGUMENT).
+    #   (b) 非空 session 时 Gemini **偶尔** 对 "两条 system 尾接" 的 shape
+    #       返回空字符串 + 200, 空 reply 被 append 进 session.messages;
+    #       下一轮 LLM 读到 "上一轮 user memory_note + 上一轮空 assistant
+    #       + 新 instruction" 的 wire, 基于上一轮事件生成回复 — tester
+    #       观察到 "再次触发才拿到上次的 reply".
+    # 两个 bug 共一个根因: 违反了主程序"instruction 入 wire 以 user 角色"
+    # 的语义契约. Smoke 漏掉这是因为 offline_chat_client.py 的 fake LLM
+    # 不会因为 wire 全 system 就返空, 反而照给 reply.
+    base_wire.append({"role": "user", "content": instruction})
 
     try:
         reply_text = await _invoke_llm_once(session, base_wire)
@@ -778,7 +797,9 @@ async def simulate_agent_callback(
             ),
             detail={"error_code": exc.code, "error_message": exc.message},
         )
-    base_wire.append({"role": "system", "content": instruction})
+    # instruction 以 user 角色入 wire (对齐主程序 prompt_ephemeral;
+    # 详见 simulate_avatar_interaction 里的长 comment).
+    base_wire.append({"role": "user", "content": instruction})
 
     try:
         reply_text = await _invoke_llm_once(session, base_wire)
@@ -936,7 +957,9 @@ async def simulate_proactive(
             ),
             detail={"error_code": exc.code, "error_message": exc.message, "kind": kind},
         )
-    base_wire.append({"role": "system", "content": instruction})
+    # instruction 以 user 角色入 wire (对齐主程序 prompt_ephemeral;
+    # 详见 simulate_avatar_interaction 里的长 comment).
+    base_wire.append({"role": "user", "content": instruction})
 
     try:
         reply_text = await _invoke_llm_once(session, base_wire)

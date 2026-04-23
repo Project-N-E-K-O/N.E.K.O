@@ -2755,9 +2755,19 @@ table.tbl .tbl-key-field {
   min-height: 48px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
-/* form-row 里的 <select class="tiny"> 原先走 width: auto + 长 label 可能
-   撑破; 这里收敛到不超过列宽, 同时保留 tiny 基础样式. */
+/* form-row 里的 <select class="tiny"> 收敛策略 (2026-04-23 hotfix #2):
+   父容器 `.external-events-form .form-row` 被覆写为 `display:flex;
+   flex-direction:column`, flex 默认 `align-items:stretch`, 导致 child
+   (select) 被横向拉到列满宽 — tester 反馈"avatar tool/action/intensity/
+   touch_zone + proactive kind 的 select 占满整个 UI 容器宽度".
+   修法: 只让 select 自己 `align-self:flex-start` 脱离 stretch, 并 `width:
+   auto` 按 `<option>` 最长 label 的 intrinsic 宽度显示; label 仍在上方,
+   select 贴左, 右边自然留白. 保持 `max-width:100%` 作为长 i18n label 兜底
+   上限, 防止极端窄列把 select 撑破. textarea / input 不走这条路径, 仍在
+   `.external-events-input, .external-events-textarea` 保留 `width:100%`. */
 .external-events-form select.tiny {
+  align-self: flex-start;
+  width: auto;
   max-width: 100%;
   min-width: 0;
   box-sizing: border-box;

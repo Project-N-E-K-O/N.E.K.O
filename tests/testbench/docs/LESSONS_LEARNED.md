@@ -7,8 +7,8 @@
 > P24 Day 10-12 整合期的 2 条元教训 (L26/L27 = §7.23/§7.24) +
 > P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理 UTF-8 事件 +
 > P25 Day 1 subagent 并行开发首次应用 + P25 Day 1 fixup mirror shape +
-> P25 Day 2 前端面板派生的 11 条候选元教训 (L28-L38, 登记于 §7.A 候选区,
-> 未计入主编号 24 条).
+> P25 Day 2 前端面板派生 + Day 2 polish 手测第二轮派生的 12 条候选元教训
+> (L28-L39, 登记于 §7.A 候选区, 未计入主编号 24 条).
 >
 > **目标读者**: (a) 本项目未来阶段的 agent (查阅原则); (b) 其它 AI 辅助
 > 的大型软件项目设计者 (借鉴经验). 与三份老 docs 的区别: AGENT_NOTES 是
@@ -490,7 +490,7 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
 
 ---
 
-## 7. 24 条元教训 (五轮审查累积 + Day 2/5/6/8/10 + 手测事故追加)
+## 7. 25 条元教训 (五轮审查累积 + Day 2/5/6/8/10 + 手测事故追加 + P25 Day 2 跨边界 shape 三次同族)
 
 源: P24_BLUEPRINT §12.10. 已按"**超项目价值**" 筛选, 项目特异的去掉.
 
@@ -541,16 +541,27 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
 
     前两问是**机制层面** (代码必问), 后两问是 **UX 层面** (经常漏). §3A F7 "fail-loud 不 silent fallback" 原则的扩展 — silent 达到资源上限是最常见的 silent fallback 类型. 如果新机制**四问中有任一个回答 "不知道 / 没想过 / 还没做"**, 就是**本 phase 的 backlog 入档项**, 不是"以后可以不做"; 至少要在阶段蓝图的资源上限总表里占一行. 同族延伸: **每个项目都应当维护一张类似 §14.2.E 的表**, 新 phase 增改资源上限时同步这张表; 到一定规模后 (≥ 10 处资源) 这张表本身就是**下一轮产品需求的富矿** (哪些 silent 的需要打屏上报 / 哪些 evict 的需要 actionable export). 对应项目 skill 候选: `resource-limit-ux-degradation-matrix` (待抽).
 
-### §7.A 候选追加 (P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理 UTF-8 事件 + P25 Day 1 subagent 并行开发 + P25 Day 1 fixup mirror shape + P25 Day 2 前端面板派生, 待二次复现后并入主编号)
+25. **"跨边界的 shape / role / 字段名必须 rg 实际消费方不按蓝图草稿拼"** ⚠⚠ (2026-04-23 P25 Day 2 + Day 2 polish 第二轮, 72 小时内三次同族, 超门槛升级自 §7.A 候选 L36). **场景**: 跨"生产方 vs 消费方"边界的数据形状 / 字段名 / 角色 / 结构契约, 默认按蓝图草稿或"第一眼语义直觉"拼, 而**不实际 rg 消费方代码**. 消费方既可以是前端 JS 面板 (消费后端 API response), 也可以是下游 LLM / 序列化消费者 (消费 wire 消息). **三次同族案例**: (1) 字段名漂移 — 前端按 BLUEPRINT §2.7 抄 `dedupe_info.remaining_ms`, 后端实际 shape 是 `{hit, cache_size, dedupe_key, dedupe_rank}`; (2) envelope vs flat 漂移 — router 返 `{"kind":..., "result":{...}}` 而 UI 期望扁平 `{"kind":..., ...result}`, UI 读 `undefined` 字段全报"假失败"; (3) LLM wire role 漂移 / prompt_ephemeral 语义契约违反 — `external_events.py` 三个 simulator 里 `base_wire.append({"role":"system", "content":instruction})` **违反**主程序 `prompt_ephemeral` 契约 (主程序是 `HumanMessage(content=instruction)` 即 `role=user`), 空 session 触发 → Gemini 400 INVALID_ARGUMENT "Model input cannot be empty"; 非空 session → Gemini 偶尔返空字符串 + 200 OK, 空 reply 被持久化, 下一轮 LLM 读"上一轮 user + 空 assistant + 新 instruction" 的残缺 wire, 基于**上一轮**事件生成 reply — tester 观察到"再次触发才拿到上次的 reply". Smoke 漏的原因: `offline_chat_client.py` 的 fake LLM 不像真 LLM 对 shape 敏感, 照给 reply, 掩盖了违反. **失败模式 (三级严重度)**: (a) 浅 — 字段 undefined → UI 显示 `N/A`, 易定位; (b) 中 — 整块功能"假失败" (后端做了前端以为没做), 诱导重跑 / 回滚 / 改配置白费精力; (c) 深 — 消费方偶尔成功偶尔失败 (Gemini 空 reply 是概率行为), fake-LLM smoke 覆盖不到, 上线后手测才暴, **更坏的是级联**: 空 reply 被持久化, 下一轮 wire 残缺, 错位一次 reply — "回答变味但不报错" 是**静默语义毒化**, 事后追根只能靠完整 wire log + 逐字节对比. **归纳为四层防御规则**:
+    1. **消费方 shape 核对必 rg**: 任何跨边界消费的**初版**, 开头必加一次消费方 shape 核对的 rg (`rg "return .*\{.*$field_name" backend/routers/ pipeline/`, 或 `rg "messages_to_send.*=|prompt_ephemeral" main_logic/`, 或 `rg "messages_from_dict|HumanMessage" utils/`). 发现 shape / role / 字段不一致立刻停下核对, 不按"直觉"拼.
+    2. **envelope / 扁平决策必显式登记**: 后端 response 要不要 envelope (`{"kind":..., "result":{...}}` vs `{"kind":..., ...result}`) 是**语义契约**, 不能让 router 和 UI 各自拍脑袋. 蓝图 §A 应当对每个 API 明写"扁平 / envelope", 实装和消费代码注释里引回那一节.
+    3. **LLM wire 消息 role 决策必显式登记**: 后端写 LLM wire 时, instruction / memory note / system prompt 分别用什么 role 是**语义契约**, 由主程序 `prompt_ephemeral` / `omni_offline_client` 定义, testbench / adapter / plugin 写 wire 时必须 rg 主程序对应函数再下键, 不按"直觉 = instruction 听起来像 system 所以用 system" 拼. 注释里写 "see main_logic/omni_offline_client.py::prompt_ephemeral for role contract".
+    4. **fake-consumer smoke 的语义盲区补偿**: 如果消费方是 LLM / 外部服务, smoke 用的 fake client **不会像真 LLM 一样对 shape 违反敏感** (fake 会宽容, 真 LLM 会 400 或返空). 补偿办法: 在 smoke 里对 fake 捕获的 wire 直接做**契约断言** (本次 A1c/A2c/A3c: `wire[-1].role == "user"`, `wire[-1].content == SimulationResult.instruction`), 不依赖 fake 的 reply 行为. 把"LLM 对 shape 敏感"显式转成"smoke 对 shape 敏感", 契约守门点前移.
 
-> 纪律: 本文档 §7 只记录 "**已经踩过 ≥ 2 次**的同族教训". 下列 11 条候选 (L28-L38)
+    **元归纳**: §7.6 "多源写入是纸面原则成败分水岭" 讲的是"同一进程多入口", §7.25 是它在**跨边界契约**维度的扩展 — "生产方 N 种实装 vs 消费方 M 种解析" 的笛卡尔积里, 任何一对错配都静默毒化, 不 rg 消费方代码就等着被笛卡尔积里的某个格子咬. 同族延伸: 任何 SDK / adapter / plugin 对接主系统时都适用 — 不是只为 testbench, 也为 OSS fork / 第三方 client / 分布式系统 message contract / protobuf schema migration. 对应 Cursor skill: `ui-wire-field-rg-backend-first` (升级版, 覆盖 response shape / envelope 决策 / wire role 决策三类场景).
+
+### §7.A 候选追加 (P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理 UTF-8 事件 + P25 Day 1 subagent 并行开发 + P25 Day 1 fixup mirror shape + P25 Day 2 前端面板派生 + P25 Day 2 polish 第二轮手测派生, 待二次复现后并入主编号)
+
+> 纪律: 本文档 §7 只记录 "**已经踩过 ≥ 2 次**的同族教训". 下列 12 条候选 (L28-L39)
 > 多数仍为**单次派生** (源自 P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理
 > UTF-8 字节损坏事件 + P25 Day 1 subagent 并行开发首次应用 + P25 Day 1 fixup
-> mirror_to_recent shape mismatch + P25 Day 2 前端面板交付 + P25 Day 2 手测联动 bug);
-> **L36 已达二次复现门槛** (P25 Day 2 内 48 小时内两起: `dedupe_info.remaining_ms`
-> 字段名漂移 + `external_event_router` envelope 顶层结构漂移), 下次 §7 更新升级为
-> §7.33. L37 (UI 页名 vs store 内容漂移) + L38 (sub-details 展开态持久化) 仍为
-> 单次, 等 P26 / P27 类似场景再命中时升级. 登记在此避免遗忘.
+> mirror_to_recent shape mismatch + P25 Day 2 前端面板交付 + P25 Day 2 polish 手测联动
+> bug + P25 Day 2 polish 第二轮手测 LLM wire role 违反 + UI 不刷新);
+> **L36 已升级至三次复现** (`dedupe_info.remaining_ms` 字段名漂移 +
+> `external_event_router` envelope 顶层结构漂移 + **LLM wire 消息 role 字段漂移 /
+> prompt_ephemeral 语义契约违反**), 已超门槛, 本次 §7 更新将 L36 升级为 §7.33.
+> **L39 新候选** (out-of-band write 共享 store 必须配对 emit + listener, P25 Day 2
+> polish 第二轮手测派生) 登记为单次, 待 P26+ 再命中升级. L37 / L38 仍为单次.
+> 登记在此避免遗忘.
 
 **L28 "跨阶段推迟项必须双向回扫"** (P24 Day 12 欠账清返派生, 2026-04-23):
 
@@ -640,18 +651,7 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
 - **关联**: L31 (审查锚定初衷) 的**执行阶段扩展** — L31 管审查时不漂, L35 管执行时蓝图歧义处理. 细分场景 = L31 之审查产出的蓝图本身**事后被发现有歧义**时怎么办. Cursor skill 候选: `blueprint-vs-code-when-disagree` (立规 "代码胜出 + 显式登记取舍").
 - **进入主编号条件**: 需要在后续阶段再有一次"蓝图草稿和实装代码不一致按代码走" 的案例, 才升级为 §7.32.
 
-**L36 "UI 消费的 wire 字段必须 rg 后端实际 response shape 不按蓝图草稿拼字段"** (P25 Day 2 前端面板派生, 2026-04-23):
-
-- **场景**: 前端面板 / 订阅者 / 下游 adapter 消费后端 response shape 时, 默认按蓝图草稿 / 接口文档拼字段名, 而**不实际 rg 后端代码确认字段名**. 蓝图草稿期会有想法层面的字段名 (比如 `remaining_ms` "剩余毫秒"), 但后端定稿时可能换成更精确的 (比如 `dedupe_rank` 更能反映 rank-upgrade 语义) 或合并字段.
-- **真实案例 (两起, 已达 "进入主编号条件")**:
-    1. **字段名漂移**: P25 Day 2 前端面板初版想展示 "8000ms 窗口剩余时间", 按 BLUEPRINT §2.7 字面抄 `dedupe_info.remaining_ms`. 动手前 rg `"dedupe_info=" pipeline/external_events.py` 一看实际 shape 是 `{hit, cache_size, cache_size_before?, dedupe_key, dedupe_rank}`, **没有 `remaining_ms`**. 改成展 `dedupe_rank` + `cache_size` 更贴近实际语义.
-    2. **顶层结构漂移 (envelope vs flat)**: P25 Day 2 手测外部事件面板时, UI 三类事件 (avatar / agent_callback / proactive) 全报 "未写入 session.messages / 本次未产出 assistant reply", 但 autosave log 显示 messages 确实写了. 根因: `routers/external_event_router.py` 返回 `{"kind": kind.value, "result": result.to_dict()}` 的**有 envelope** 结构, 但 `static/ui/chat/external_events_panel.js` 按 `P25_BLUEPRINT §A.8` "SimulationResult = 单一响应结构, 按字段渲染" 的原则期望**无 envelope** 的扁平结构, 直接读 `response.accepted` / `response.persisted` / `response.assistant_reply` 得到的全是 `undefined`, 渲染成 "未写入". 修复: `external_event_router.py` 改返回 `{"kind": kind.value, **result.to_dict()}`, 同步把 `smoke/p25_external_events_smoke.py::_extract_result` 从 `body.get("result")` 改为 `body`.
-- **失败模式**: 不 rg 直接按蓝图写 → 运行时字段 undefined → UI 显示 `N/A` / `undefined` / 整块功能"假失败" (后端做了但前端以为没做, 如 P25 的 `persisted=true` 但 UI 显示"未写入"). 第二种最危险, 因为会诱导使用者以为有 bug 进而重跑 / 回滚 / 改配置, 白费精力.
-- **防御规则 (升级为两条)**:
-    1. 任何消费 wire 的 JS / adapter 初版, 开头**必加一次后端 shape 核对的 rg**: `rg "return .*\{.*$field_name" backend/routers/ pipeline/` 或更精细的 `rg "return \{.*kind" routers/`. 发现 shape 不一致立刻停下重新核对蓝图.
-    2. **envelope 决策必须显式登记**: 后端 response 到底要不要 envelope (`{"kind": ..., "result": {...}}`) 还是扁平 (`{"kind": ..., ...result}`) 是一个**语义契约**层面的选择, 不能放任 router 和 UI 各自拍脑袋. 蓝图 §A 应当对每个 API 明写 "扁平 / envelope", 路由实装和 UI 消费代码都在注释里引回那一节.
-- **进入主编号条件**: **已达** (两起同族案例均在 P25 Day 2, 48 小时内). 下次 §7 更新时升级为 §7.33 "UI 消费 wire 字段必须 rg 后端 shape + envelope 决策显式登记".
-- **关联**: L34 (跨进程文件契约层 round-trip smoke) 的**同进程前后端补集** — L34 管 "跨进程文件" 契约, L36 管 "同进程 API response" 契约; 方法论相同 ("实际代码胜出, 不信蓝图草稿字段名"). L35 (蓝图 > 代码时按代码走) 的**具体化** — L35 管枚举值 / 功能, L36 管字段名 / 顶层结构. Cursor skill 候选: `ui-wire-field-rg-backend-first` (前端写 consumer 前先 rg 后端 shape + 查 envelope 决策).
+**L36 "跨边界 shape / role / 字段名必须 rg 消费方"** — **已升级到主编号 §7.25** (2026-04-23 P25 Day 2 polish 第二轮后): 三次同族案例 (字段名漂移 / envelope vs flat / LLM wire role prompt_ephemeral 契约违反) 在 72 小时内累积达门槛, **已从 §7.A 候选区正式升级为 §7.25**. 完整论述、案例和四层防御规则见 §7.25. 本条目保留作为"从候选区升级到主编号"的**流程示例**, 让下一位 agent 看到候选条目可以怎样通过多次复现升级.
 
 **L37 "UI 页命名 vs store 语义漂移" (容器名没跟内容扩展)** (P25 Day 2 subagent C 发现, 2026-04-23):
 
@@ -684,6 +684,36 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
     - L33 (subagent 并行 + 三段式 review) 的**复查实证** — tester 手测直接报 bug 比 smoke 能抓到的更早, 但**一旦写进 lessons 就能让下一个类似 page 的开发者避坑**; 这也是"为什么文档化很值" 的一个具体例子.
 - **候选 skill**: `auto-refresh-list-sticky-sub-details` — 触发条件: "写 auto-refresh 列表页且 renderEntry 内有 sub-<details>", 模板包含 `openSubDetails: Set` + `buildStickyDetails` helper + `clearEntryCaches` 统一清理函数, 强制文档化 "auto-refresh 频率 × 子菜单价值" 的决策记录.
 - **进入主编号条件**: 需要在下一个写 auto-refresh 列表页的 phase (P26+) 至少再命中一次同族, 才升级为 §7.35.
+
+**L39 "out-of-band write 共享 store 必须配对 emit + 对应 listener 识别 reason 白名单"** (P25 Day 2 polish 第二轮手测派生, 2026-04-23):
+
+- **场景**: 前端有 N 个后端写入路径都写同一个**共享 store** (本项目 = `session.messages`, 其它项目 = 购物车 / 通知列表 / 文件树 / 订单列表等). 主路径 (本项目 = `/chat/send` SSE) 走 streaming handle 自己直接维护 DOM, 没有全量刷新; 但**旁路写入路径** (本项目 = `POST /api/session/external-event`, 其它项目 = 管理员后台插消息 / 定时任务插通知 / WebSocket 推送) 返回一个**一次性同步响应**, 后端 **`append_message` 已写 store, 但前端没有任何 event 通知 UI 刷新**. UI 看起来"没反应", 必须 F5 才看到新数据.
+- **失败模式 (两种, 都常见)**:
+    1. **纯漏 emit**: 旁路 router 只返一个 HTTP 200, 前端没事件可订阅, UI 完全不知道 store 变了. 这是本次 P25 Day 2 polish 第二轮遇到的模式.
+    2. **emit 存在但 listener 不识别 reason**: 已有 `store:changed` 类泛事件, 但主路径 `/chat/send` 自己在 DOM 上增量做, **不希望**全量刷新 (否则清掉还没 append 完的 streaming DOM 节点, 或与 SSE 回调产生竞态). 所以主路径自己 emit 时标 reason=`stream` 或根本不 emit, 而旁路 emit 时标 reason=`external_event` 之类. listener 必须**读 payload.reason 过白名单**, 否则主路径意外触发 listener 会**擦掉 streaming 节点**或**产生竞态**.
+- **真实案例**: P25 Day 2 polish 第二轮手测: 用户触发 external event → 后端 `_record_and_return` 里 `append_message(role="assistant", ...)` 成功写 `session.messages`, autosave log 有, 右侧 wire 面板有, **但 chat 区 UI 没有新消息**, 必须 F5 才看到. 根因: `static/ui/chat/external_events_panel.js::onInvokeClicked` 只调了 `toast.ok(...)`, **没 emit 任何事件**; `static/ui/chat/message_stream.js` 也**没订阅 `chat:messages_changed`**. 修复: (a) panel 加 `import { emit } from '../../core/state.js'` + 成功后 `emit('chat:messages_changed', { reason: 'external_event' })`; (b) `message_stream.js` 加 `const offMessagesChanged = on('chat:messages_changed', (p) => { if (p?.reason !== 'external_event') return; if (!store.session?.id) return; refresh(); })`, **严格按 reason 白名单**, 不处理 `stream` / `inject` / `script` / `auto_dialog` / `local_edit` / `local_delete` / `local_truncate` / `local_patch_timestamp` 等本来就有自己 DOM 维护路径的 reason (否则擦 streaming 节点 / SSE 竞态). destroy 里必须 `offMessagesChanged()`, 防 listener 泄漏.
+- **为什么这很容易漏**: 后端 `append_message` 是**唯一写入点** (choke-point, 见 §3A 相关), 看代码时每次 grep `append_message` 都确认"写了". 但 "前端怎么知道写了" 这个**跨层信号传递**, 在纯后端 review 时看不见, 在纯前端 review 时又看不到后端改了什么. 只有**手测 "触发操作后 UI 是否自动更新"** 这种**完整用户链路**才能抓到. 这是 `event-bus-emit-on-matrix-audit` skill 的**经典盲区**: emit 和 listener 可能都在但 reason 不对齐, 或者 emit 缺位但 router 返成功响应时前端不会怀疑.
+- **防御规则 (四条)**:
+    1. **store 写入路径全覆盖 emit 表**: 对任何"多入口写入同一共享 store"的数据结构 (session.messages / notifications / file tree / orders / ...), 项目 shared docs 里维护一张 **"写入路径 × emit reason × 谁订阅"** 的二维表. 新加一条写入路径时, 必须同时加一行到表里, 并决定 reason 归属的 listener 白名单. 本次 P25 Day 2 polish 的实际表 (精简):
+
+        | 写入路径 | emit reason | message_stream 订阅? | 理由 |
+        |---|---|---|---|
+        | `/chat/send` (SSE) | *不 emit (或 reason='stream')* | ❌ | 自己 beginAssistantStream 维护 DOM |
+        | `/chat/inject_system` | reason='inject' | ❌ | composer 本地直接 append DOM |
+        | `/chat/messages` (手动) | reason='local_edit' | ❌ | 目前前端未使用该入口 |
+        | `external-event` (P25 新加) | reason='external_event' | ✅ | 无 handle, 必须 refresh |
+        | **未来**: 脚本注入 / 批量导入 / 跨进程推送 | 新 reason / 复用 external_event | ✅ 新入白名单 | 同属"无 handle 旁路写入" |
+
+    2. **listener 必须按 reason 过白名单**: `on('chat:messages_changed', (p) => { if (p?.reason !== 'whitelist_reason') return; ... })`, **永远不允许**"listener 不看 reason 直接 refresh" — 那会击中主路径的 streaming DOM / 产生竞态.
+    3. **destroy 必须 off 所有 on**: 每 `const offX = on('evt', ...)` 必配 `destroy() { offX(); }`, 防 listener 泄漏 (L11 精神: 订阅也是无界增长源). 本次 `message_stream.js::destroy` 就从 `offSession(); offResults();` 扩到 `offSession(); offResults(); offMessagesChanged();`.
+    4. **手测门槛**: 新加 "旁路写入 API" 时, 手测脚本必须包含 **"触发 API 后 UI 是否自动更新"** 一条. 这是 smoke 难以覆盖的 (需要完整 DOM + 事件总线, 纯 TestClient 测不到), 必须在 PROGRESS 的 Day N 手测门槛里显式列.
+- **关联**:
+    - **event-bus-emit-on-matrix-audit skill** 的**具体应用** — 那条 skill 管 "audit 整个事件总线找 emit × listener × teardown 漂移", L39 是它在"共享 store 多入口写入"场景的具体实例化, 补充了 "**reason 白名单**" 这个子维度 (原 skill 主要管 0 listener / dead emit, 没细化 reason 白名单).
+    - **single-writer-choke-point skill** 的**跨层扩展** — 后端 append_message 是单写点, 但**"前端如何知道写了"**也是 single-writer 的一部分: "N 个后端路径都经过 append_message → 那么 append_message 或它的 N 个调用方必须配对 emit". 两种落地方案任选: (a) 集中在 `append_message` 顶部 emit (最省心, 但 reason 粒度不够), (b) N 个调用方各自 emit + 统一 reason 表 (当前采用, 因为不同调用方 reason 明显不同).
+    - L11 (前端 map/set 无界增长) 的**订阅版** — 订阅本身是另一种需要 bounded 的集合, destroy 忘 off = listener 泄漏.
+    - L33 (subagent 并行 + 三段式 review) 的**反向例证** — subagent 做 UI 模块时如果**不拿到**全局 emit × listener 表, 做出来的模块很容易就是"自己这块成功但忘了 emit". 本次 P25 Day 2 subagent B 做 external_events_panel 就是这个情况. 防御: 给 subagent 的任务书里**必须包含** "你的模块是否写共享 store? 如是, 配对 emit 什么 reason? 该 reason 的 listener 白名单加到哪?".
+- **候选 skill**: `shared-store-out-of-band-write-emit-pairing` — 触发条件: "后端新加一条 API 路径写入已有 shared store (有其它路径同时在写)", 模板包含 写入路径×reason×listener 表 + reason 白名单 listener + destroy off + 手测门槛.
+- **进入主编号条件**: 需要在下一个后端新加"旁路写入共享 store"的 phase (P25 Day 3+ / P26) 再命中一次同族, 才升级为 §7.36.
 
 本项目抽出了 3 份**通用 skill**, 放在 `~/.cursor/skills/` 独立维护,
 不依赖本项目. 任何 AI 辅助的大型 codebase 都能用:

@@ -51,7 +51,7 @@
 import { api } from '../../core/api.js';
 import { i18n } from '../../core/i18n.js';
 import { toast } from '../../core/toast.js';
-import { on, store } from '../../core/state.js';
+import { emit, on, store } from '../../core/state.js';
 import { el } from '../_dom.js';
 
 // ─────────────────────────────────────────────────────────────
@@ -604,6 +604,13 @@ export function mountExternalEventsPanel(host) {
       if (state.lastResult?.accepted) {
         toast.ok(i18n('chat.external_events.common.invoke_ok_fmt',
           state.activeKind));
+        // P25 Day 2 polish hotfix: 通告 message_stream / preview_panel 等
+        // 订阅者, "后端刚带外写入了 session.messages, 请自查刷新".
+        // reason='external_event' 是个新白名单值, message_stream 在 subscribe
+        // 端专门识别这个 reason 才真 refresh (见 message_stream.js 的
+        // offMessagesChanged 订阅处 comment). 主 /chat/send 走 SSE 不过这
+        // 条路, 避免把正在流的 delta DOM 节点抹掉.
+        emit('chat:messages_changed', { reason: 'external_event' });
       }
     } else {
       state.lastResult = null;

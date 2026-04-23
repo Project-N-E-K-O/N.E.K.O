@@ -551,6 +551,27 @@ export function mountMessageStream(host) {
     renderAll();
   });
 
+  // External (out-of-band) session.messages writes → pull-refresh.
+  // Subscribe to `chat:messages_changed` **但只处理带外写入的 reason**:
+  // 主 /chat/send 流 / inject / script / auto_dialog / 本地 edit / delete /
+  // truncate / patch_timestamp 都已经通过 stream handle (beginAssistantStream
+  // / appendIncomingMessage / replaceTailWith) 或本地状态数组直接维护
+  // DOM, 再对自己 refresh() 会:
+  //   (a) 把正在流的 msg-streaming 节点抹掉 (renderAll → innerHTML 重建).
+  //   (b) 和 SSE 回调产生竞态 (refresh 的 GET 覆盖 append 的局部变更).
+  // 因此只有 "后端路径直接 append_message 写 session.messages 但没有
+  // stream handle 对应"的 reason 才需要本订阅 refresh. 当前只有
+  // `external_event` 属于这类 (POST /api/session/external-event 同步返回
+  // SimulationResult, 不经 SSE). 未来任何新增的同族路径 (比如导入消息
+  // / 补录消息) 只要 emit reason='external_event' 或新 reason 并在下面
+  // 白名单中加一个 case 就能免费获得 UI 刷新.
+  const offMessagesChanged = on('chat:messages_changed', (payload) => {
+    const reason = payload?.reason;
+    if (reason !== 'external_event') return;
+    if (!store.session?.id) return;
+    refresh();
+  });
+
   // 初次挂载: 有会话就拉一次.
   if (store.session?.id) {
     refresh();
@@ -563,7 +584,7 @@ export function mountMessageStream(host) {
     beginAssistantStream,
     appendIncomingMessage,
     replaceTailWith,
-    destroy() { offSession(); offResults(); },
+    destroy() { offSession(); offResults(); offMessagesChanged(); },
   };
 }
 

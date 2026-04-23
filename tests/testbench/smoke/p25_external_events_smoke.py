@@ -319,6 +319,23 @@ def check_a_happy_paths(client, mock) -> list[str]:
         _check(dedupe_info.get("hit") is False, "A1.dedupe_hit",
                f"dedupe_info.hit={dedupe_info.get('hit')}")
 
+        # A1c — wire instruction role (P25 Day 2 polish 2):
+        # 主程序 prompt_ephemeral 的语义契约是 ``messages + HumanMessage(
+        # content=instruction)`` — instruction 以 **user** 角色注入. 如果
+        # 误写成 role=system, 会让空 session 的 wire 只有 [system, system],
+        # Gemini 400 "Model input cannot be empty". 这条 check 守住契约.
+        wire = mock.last_wire or []
+        _check(bool(wire), "A1c.wire_nonempty",
+               f"mock.last_wire empty after avatar call: {wire!r}")
+        if wire:
+            _check(wire[-1].get("role") == "user", "A1c.instruction_role_user",
+                   f"instruction role in wire tail = {wire[-1].get('role')!r}, "
+                   f"expected 'user' (L36 第三轮: 违反主程序 prompt_ephemeral "
+                   f"契约 → Gemini 空消息 400)")
+            _check(wire[-1].get("content") == result.get("instruction"),
+                   "A1c.wire_tail_is_instruction",
+                   f"wire tail content != SimulationResult.instruction")
+
         # A2 — agent_callback.
         mock.set_reply("Mocked reply")
         status, body = _post_event(
@@ -341,6 +358,12 @@ def check_a_happy_paths(client, mock) -> list[str]:
         _check("- 任务已完成" in instr2 and "- 2 条邮件" in instr2,
                "A2.instruction_bullets",
                f"instruction lacks '- <item>' bullets: {instr2[:200]!r}")
+        # A2c — wire instruction role (see A1c for rationale).
+        wire2 = mock.last_wire or []
+        if wire2:
+            _check(wire2[-1].get("role") == "user", "A2c.instruction_role_user",
+                   f"agent_callback instruction role = {wire2[-1].get('role')!r}, "
+                   f"expected 'user'")
 
         # A3 — proactive.
         mock.set_reply("Mocked reply")
@@ -354,6 +377,12 @@ def check_a_happy_paths(client, mock) -> list[str]:
                f"expected 1, got {len(pair3)}")
         _check(r3.get("assistant_reply") == "Mocked reply", "A3.reply",
                f"reply={r3.get('assistant_reply')!r}")
+        # A3c — wire instruction role (see A1c for rationale).
+        wire3 = mock.last_wire or []
+        if wire3:
+            _check(wire3[-1].get("role") == "user", "A3c.instruction_role_user",
+                   f"proactive instruction role = {wire3[-1].get('role')!r}, "
+                   f"expected 'user'")
 
     except AssertionFailed as exc:
         errors.append(str(exc))
