@@ -35,6 +35,14 @@ _ENCODERS: dict = {}
 # fallback so we don't spam the log on subsequent calls.
 _FALLBACK_WARNED = False
 
+# Bump this string whenever the heuristic formula in
+# `_count_tokens_heuristic` changes — the persona/reflection token-count
+# cache keys off `tokenizer_identity()`, and a formula change must
+# invalidate old heuristic-cached counts. tiktoken identity is keyed by
+# the `tiktoken:<encoding>` pair, which already changes automatically if
+# someone flips PERSONA_RENDER_ENCODING.
+_HEURISTIC_VERSION = "v1"
+
 
 def _get_encoder(encoding: str):
     """Return the cached `tiktoken.Encoding` for `encoding`, or `None`
@@ -118,6 +126,31 @@ async def acount_tokens(
     if not text:
         return 0
     return await asyncio.to_thread(count_tokens, text, encoding)
+
+
+def tokenizer_identity(encoding: str = PERSONA_RENDER_ENCODING) -> str:
+    """Short fingerprint of the counter that `count_tokens` currently
+    uses, for use as part of a cache key.
+
+    Returns:
+        - ``"tiktoken:<encoding>"`` when the real tiktoken encoder is
+          loaded (or can be loaded on first call and cached)
+        - ``"heuristic:<version>"`` when we're running the character-
+          class fallback (tiktoken missing, encoding data file missing,
+          etc. — same conditions as `_get_encoder` returning None)
+
+    The key is bucketed per `encoding` so a deployment that changes
+    ``PERSONA_RENDER_ENCODING`` also invalidates the old cache
+    automatically. The heuristic version string is bumped whenever
+    `_count_tokens_heuristic`'s formula changes.
+
+    Cheap: piggybacks on the `_ENCODERS` cache, so after the first
+    call it's a single dict lookup.
+    """
+    enc = _get_encoder(encoding)
+    if enc is None:
+        return f"heuristic:{_HEURISTIC_VERSION}"
+    return f"tiktoken:{encoding}"
 
 
 def _reset_fallback_warned_for_tests() -> None:

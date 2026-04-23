@@ -5,11 +5,14 @@ Unit tests for the persona / reflection token-count cache.
 Covers the design in `memory/persona.py` `_get_cached_token_count` /
 `_aget_cached_token_count`:
 
-  - First render computes `token_count` + `token_count_text_sha256` and
-    writes them back onto the entry dict in-memory.
+  - First render computes `token_count` + `token_count_text_sha256` +
+    `token_count_tokenizer` and writes them back onto the entry dict
+    in-memory.
   - Second render reuses the cache — the tokenizer is NOT called again.
-  - Rewriting `entry['text']` invalidates via fingerprint mismatch on
-    the next render, triggering a clean recompute.
+  - Rewriting `entry['text']` invalidates via text-fingerprint mismatch
+    on the next render, triggering a clean recompute.
+  - Changing the tokenizer identity (e.g. tiktoken→heuristic fallback)
+    invalidates via tokenizer-fingerprint mismatch on the next render.
   - `amerge_into` explicitly invalidates the cache when it rewrites
     text, so a concurrent reader can't see new-text + stale-count.
   - Cache rides along on `asave_persona` / `asave_reflections` — a
@@ -89,16 +92,17 @@ def _sha(text: str) -> str:
 
 
 def test_first_call_computes_and_caches_sync():
-    """`_get_cached_token_count` populates both fields on first call and
-    the value matches `count_tokens` directly."""
+    """`_get_cached_token_count` populates all three fields on first
+    call and the value matches `count_tokens` directly."""
     from memory.persona import PersonaManager
-    from utils.tokenize import count_tokens
+    from utils.tokenize import count_tokens, tokenizer_identity
 
     e = _entry('m1', '主人很喜欢猫')
     n = PersonaManager._get_cached_token_count(e)
     assert n == count_tokens('主人很喜欢猫')
     assert e['token_count'] == n
     assert e['token_count_text_sha256'] == _sha('主人很喜欢猫')
+    assert e['token_count_tokenizer'] == tokenizer_identity()
 
 
 def test_second_call_uses_cache_sync():
@@ -144,18 +148,21 @@ def test_missing_fingerprint_field_triggers_recompute_sync():
     """Legacy entries (pre-schema-addition) have no fingerprint field.
     `.get()` returns None; the match check fails; recompute happens."""
     from memory.persona import PersonaManager
+    from utils.tokenize import tokenizer_identity
 
     e = _entry('m1', 'legacy pre-cache entry')
     # Simulate a legacy persona.json: the cache fields simply don't
     # exist on the dict at all.
     e.pop('token_count', None)
     e.pop('token_count_text_sha256', None)
+    e.pop('token_count_tokenizer', None)
     assert 'token_count' not in e
 
     n = PersonaManager._get_cached_token_count(e)
     assert n > 0
     assert e['token_count'] == n
     assert e['token_count_text_sha256'] == _sha('legacy pre-cache entry')
+    assert e['token_count_tokenizer'] == tokenizer_identity()
 
 
 def test_corrupted_fingerprint_triggers_recompute_sync():
@@ -166,6 +173,7 @@ def test_corrupted_fingerprint_triggers_recompute_sync():
     e = _entry('m1', 'real text')
     e['token_count'] = 999_999            # wildly wrong
     e['token_count_text_sha256'] = 'deadbeef' * 8  # bogus sha
+    e['token_count_tokenizer'] = 'tiktoken:o200k_base'  # plausible but stale
 
     recomputed = PersonaManager._get_cached_token_count(e)
     assert recomputed < 999_999, (
@@ -187,6 +195,7 @@ def test_empty_text_short_circuits_without_cache_write():
     # "never rendered" from "rendered as empty".
     assert e.get('token_count') is None
     assert e.get('token_count_text_sha256') is None
+    assert e.get('token_count_tokenizer') is None
 
 
 # ── async helper: same contract via acount_tokens ──────────────────
@@ -203,10 +212,12 @@ async def test_first_render_populates_cache_async():
     kept = await PersonaManager._ascore_trim_entries(
         entries, budget=10_000, now=datetime.now(),
     )
+    from utils.tokenize import tokenizer_identity
     assert len(kept) == 2
     for e in kept:
         assert isinstance(e['token_count'], int) and e['token_count'] > 0
         assert e['token_count_text_sha256'] == _sha(e['text'])
+        assert e['token_count_tokenizer'] == tokenizer_identity()
 
 
 @pytest.mark.asyncio
@@ -286,6 +297,7 @@ async def test_amerge_into_invalidates_cache(tmp_path):
     await PersonaManager._aget_cached_token_count(target)
     assert target['token_count'] is not None
     assert target['token_count_text_sha256'] is not None
+    assert target['token_count_tokenizer'] is not None
 
     # Drive amerge_into — this rewrites text + invalidates cache.
     res = await pm.amerge_into(
@@ -300,6 +312,7 @@ async def test_amerge_into_invalidates_cache(tmp_path):
     # Cache was cleared explicitly — next render will recompute.
     assert target['token_count'] is None
     assert target['token_count_text_sha256'] is None
+    assert target['token_count_tokenizer'] is None
 
 
 @pytest.mark.asyncio
@@ -329,12 +342,14 @@ async def test_cache_survives_persona_save_reload_roundtrip(tmp_path):
     pm._personas.pop('小天', None)
 
     # Reload — `_aensure_persona_locked` re-reads persona.json.
+    from utils.tokenize import tokenizer_identity
     reloaded = await pm.aget_persona('小天')
     reloaded_entries = reloaded['master']['facts']
     assert len(reloaded_entries) == 2
     for e in reloaded_entries:
         assert isinstance(e['token_count'], int) and e['token_count'] > 0
         assert e['token_count_text_sha256'] == _sha(e['text'])
+        assert e['token_count_tokenizer'] == tokenizer_identity()
 
     # Second render: acount_tokens must not be called for these entries.
     async def _boom(*_a, **_kw):
@@ -404,11 +419,13 @@ async def test_cache_survives_reflection_save_reload_roundtrip(tmp_path):
     # which calls `_normalize_reflection`, so our new default fields
     # get in-place defaults for any legacy items. Our persisted cache
     # already has them so nothing gets overwritten.
+    from utils.tokenize import tokenizer_identity
     reloaded = await re.aload_reflections('小天', include_archived=False)
     assert len(reloaded) == 1
     r = reloaded[0]
     assert isinstance(r['token_count'], int) and r['token_count'] > 0
     assert r['token_count_text_sha256'] == _sha(r['text'])
+    assert r['token_count_tokenizer'] == tokenizer_identity()
 
 
 def test_normalize_entry_defaults_cache_fields_to_none():
@@ -420,13 +437,16 @@ def test_normalize_entry_defaults_cache_fields_to_none():
     d = PersonaManager._normalize_entry('plain string fact')
     assert d['token_count'] is None
     assert d['token_count_text_sha256'] is None
+    assert d['token_count_tokenizer'] is None
     # Re-run on a dict that already has the field → idempotent; don't
     # clobber a populated cache.
     d['token_count'] = 42
     d['token_count_text_sha256'] = 'cafebabe' * 8
+    d['token_count_tokenizer'] = 'tiktoken:o200k_base'
     d2 = PersonaManager._normalize_entry(d)
     assert d2['token_count'] == 42
     assert d2['token_count_text_sha256'] == 'cafebabe' * 8
+    assert d2['token_count_tokenizer'] == 'tiktoken:o200k_base'
 
 
 def test_normalize_reflection_defaults_cache_fields_to_none():
@@ -438,12 +458,15 @@ def test_normalize_reflection_defaults_cache_fields_to_none():
     )
     assert r['token_count'] is None
     assert r['token_count_text_sha256'] is None
+    assert r['token_count_tokenizer'] is None
     # Idempotent on a pre-populated dict.
     r['token_count'] = 7
     r['token_count_text_sha256'] = 'f' * 64
+    r['token_count_tokenizer'] = 'tiktoken:o200k_base'
     r2 = ReflectionEngine._normalize_reflection(r)
     assert r2['token_count'] == 7
     assert r2['token_count_text_sha256'] == 'f' * 64
+    assert r2['token_count_tokenizer'] == 'tiktoken:o200k_base'
 
 
 @pytest.mark.asyncio
@@ -465,6 +488,7 @@ async def test_cached_entry_json_roundtrip_no_keyerror(tmp_path):
     disk_entry = raw['master']['facts'][0]
     assert disk_entry['token_count'] == e['token_count']
     assert disk_entry['token_count_text_sha256'] == e['token_count_text_sha256']
+    assert disk_entry['token_count_tokenizer'] == e['token_count_tokenizer']
 
     # Re-run normalize on the disk copy — must not raise and must not
     # wipe the populated cache.
@@ -472,4 +496,157 @@ async def test_cached_entry_json_roundtrip_no_keyerror(tmp_path):
     assert normalized['token_count'] == e['token_count']
     assert normalized['token_count_text_sha256'] == (
         e['token_count_text_sha256']
+    )
+    assert normalized['token_count_tokenizer'] == (
+        e['token_count_tokenizer']
+    )
+
+
+# ── tokenizer-identity guards (PR #939 round-1 review) ─────────────
+#
+# Motivation: the text-sha256 alone isn't enough. `utils.tokenize`
+# silently falls back from tiktoken to a heuristic counter when the
+# tiktoken encoding file is missing (e.g. Nuitka/PyInstaller packaging
+# without the `o200k_base.tiktoken` data file). Counts from the two
+# counters differ by a factor of ~1.5-2×. If a cache was warmed under
+# tiktoken and the next render is in heuristic-fallback mode (different
+# environment, fresh binary rollout), serving the cached count would
+# make the budget trim off by roughly that factor. The
+# `token_count_tokenizer` fingerprint catches this transition.
+
+
+def test_tokenizer_change_invalidates_cache_sync():
+    """Populate the cache under one tokenizer identity, then monkey-
+    patch `tokenizer_identity` (via the `memory.persona` import) to
+    return a different string. The next render must recompute.
+    """
+    from memory.persona import PersonaManager
+
+    e = _entry('m1', 'identity guard test text')
+    first = PersonaManager._get_cached_token_count(e)
+    assert first > 0
+    stamped_tid = e['token_count_tokenizer']
+    assert stamped_tid  # populated on write
+
+    # Swap the tokenizer identity. The underlying counter
+    # (`count_tokens`) is unchanged so the recomputed value matches
+    # what we already have — but the cache write path must still fire
+    # and re-stamp the entry with the new identity.
+    new_tid = stamped_tid + '-rolled'
+    with patch('memory.persona.tokenizer_identity', return_value=new_tid):
+        count_calls = {'n': 0}
+
+        def _counting_count_tokens(text, *a, **kw):
+            count_calls['n'] += 1
+            return first  # deterministic — just needs to be non-zero
+
+        with patch(
+            'memory.persona.count_tokens',
+            side_effect=_counting_count_tokens,
+        ):
+            second = PersonaManager._get_cached_token_count(e)
+
+    assert count_calls['n'] == 1, (
+        'tokenizer identity mismatch must force a recompute; '
+        f'got {count_calls["n"]} count_tokens calls'
+    )
+    assert second == first
+    assert e['token_count_tokenizer'] == new_tid
+
+
+def test_heuristic_fallback_cached_separately_from_tiktoken_sync():
+    """Simulate the real failure mode: cache warmed under tiktoken,
+    next render in heuristic-fallback mode. Counts differ; the cache
+    must miss and the stored count must update to the heuristic value.
+    """
+    from memory.persona import PersonaManager
+
+    tiktoken_value = 12345
+    heuristic_value = 98765
+    call_log: list[str] = []
+
+    # ── First render: pretend we're on tiktoken ─────────────────────
+    with patch(
+        'memory.persona.tokenizer_identity',
+        return_value='tiktoken:o200k_base',
+    ), patch(
+        'memory.persona.count_tokens',
+        side_effect=lambda *a, **kw: (call_log.append('tt'), tiktoken_value)[1],
+    ):
+        e = _entry('m1', 'packaging transition demo text')
+        first = PersonaManager._get_cached_token_count(e)
+
+    assert first == tiktoken_value
+    assert e['token_count'] == tiktoken_value
+    assert e['token_count_tokenizer'] == 'tiktoken:o200k_base'
+    assert call_log == ['tt']
+
+    # ── Second render: packaging shipped without encoding file; we
+    #    silently fell back to heuristic. Cache must miss.
+    with patch(
+        'memory.persona.tokenizer_identity',
+        return_value='heuristic:v1',
+    ), patch(
+        'memory.persona.count_tokens',
+        side_effect=lambda *a, **kw: (
+            call_log.append('heur'), heuristic_value,
+        )[1],
+    ):
+        second = PersonaManager._get_cached_token_count(e)
+
+    assert second == heuristic_value, (
+        'heuristic-fallback render must recompute, not serve the '
+        'tiktoken-era cached count'
+    )
+    assert call_log == ['tt', 'heur']
+    assert e['token_count'] == heuristic_value
+    assert e['token_count_tokenizer'] == 'heuristic:v1'
+
+
+@pytest.mark.asyncio
+async def test_tokenizer_change_invalidates_cache_async():
+    """Async twin of the sync identity-guard test — covers the render
+    hot path (`_ascore_trim_entries` → `_aget_cached_token_count`)."""
+    from memory.persona import PersonaManager
+
+    entries = [_entry('m1', 'async identity guard entry', rein=3.0)]
+    # Warm the cache.
+    await PersonaManager._ascore_trim_entries(
+        entries, budget=10_000, now=datetime.now(),
+    )
+    warmed_tid = entries[0]['token_count_tokenizer']
+    assert warmed_tid
+
+    # Swap identity → second render must call acount_tokens again.
+    new_tid = warmed_tid + '-rolled'
+    call_count = {'n': 0}
+    from utils.tokenize import acount_tokens as real_acount
+
+    async def _counting_acount(text, *a, **kw):
+        call_count['n'] += 1
+        return await real_acount(text, *a, **kw)
+
+    with patch('memory.persona.tokenizer_identity', return_value=new_tid), \
+         patch('memory.persona.acount_tokens', side_effect=_counting_acount):
+        await PersonaManager._ascore_trim_entries(
+            entries, budget=10_000, now=datetime.now(),
+        )
+
+    assert call_count['n'] == 1, (
+        'tokenizer identity mismatch must force recompute on the '
+        f'async render path; got {call_count["n"]} acount_tokens calls'
+    )
+    assert entries[0]['token_count_tokenizer'] == new_tid
+
+
+def test_tokenizer_identity_helper_shape():
+    """`tokenizer_identity` is the API the cache keys off — lock its
+    output shape so future refactors don't silently break the cache."""
+    from utils.tokenize import tokenizer_identity
+
+    tid = tokenizer_identity()
+    assert isinstance(tid, str) and tid
+    # Must be one of the two bucketed namespaces.
+    assert tid.startswith('tiktoken:') or tid.startswith('heuristic:'), (
+        f'unexpected tokenizer identity shape: {tid!r}'
     )

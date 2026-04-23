@@ -41,7 +41,7 @@ from utils.file_utils import (
     robust_json_loads,
 )
 from utils.logger_config import get_module_logger
-from utils.tokenize import acount_tokens, count_tokens
+from utils.tokenize import acount_tokens, count_tokens, tokenizer_identity
 
 logger = get_module_logger(__name__, "Memory")
 
@@ -667,6 +667,11 @@ class PersonaManager:
         - token_count: int | None — cached acount_tokens(text)
         - token_count_text_sha256: str | None — fingerprint of the text that
           was tokenized; a mismatch triggers recompute on the next render.
+        - token_count_tokenizer: str | None — fingerprint of the counter
+          used when `token_count` was written (e.g. `tiktoken:o200k_base`
+          or `heuristic:v1`). A mismatch with the current tokenizer
+          identity also triggers recompute, so a cache warmed under
+          tiktoken doesn't get served to a heuristic-fallback render.
 
         Zero-migration schema addition: existing on-disk entries without
         these fields naturally read as None via `.get()`, which counts as a
@@ -697,8 +702,13 @@ class PersonaManager:
             # Derived token-count cache — populated by the render path
             # (`_get_cached_token_count` / `_aget_cached_token_count`)
             # on first render and ride-alongs with normal persona saves.
+            # Both text-sha and tokenizer-identity must match for a hit,
+            # so a cache warmed under tiktoken can't be served to a
+            # heuristic-fallback render (e.g. packaging without encoding
+            # data file).
             'token_count': None,
             'token_count_text_sha256': None,
+            'token_count_tokenizer': None,
         }
         if isinstance(entry, str):
             d = dict(defaults)
@@ -1766,9 +1776,10 @@ class PersonaManager:
 
     # ── token-count cache helpers ────────────────────────────────────
     #
-    # Each entry dict may carry two derived fields populated on first
-    # render: `token_count` (int) and `token_count_text_sha256` (str).
-    # Defaults to None in `_normalize_entry` / `_normalize_reflection`.
+    # Each entry dict may carry three derived fields populated on first
+    # render: `token_count` (int), `token_count_text_sha256` (str) and
+    # `token_count_tokenizer` (str). All default to None in
+    # `_normalize_entry` / `_normalize_reflection`.
     #
     # Read path: compute sha256(text); if it matches the stored
     # fingerprint AND the count is populated, use the cached value.
@@ -1796,34 +1807,54 @@ class PersonaManager:
 
     @classmethod
     def _get_cached_token_count(cls, entry: dict) -> int:
-        """Sync cache-aware token count. Writes `token_count` +
-        `token_count_text_sha256` back to `entry` on miss."""
+        """Sync cache-aware token count. Writes `token_count`,
+        `token_count_text_sha256` and `token_count_tokenizer` back to
+        `entry` on miss.
+
+        Cache hit requires BOTH fingerprints to match:
+        - text sha256 (catches text mutation)
+        - tokenizer identity (catches tiktoken↔heuristic transition;
+          see `utils.tokenize.tokenizer_identity` docstring for the
+          motivating scenario — packaging without encoding data file).
+        """
         text = entry.get('text', '') or ''
         if not text:
             return 0
         fp = cls._text_fingerprint(text)
+        tid = tokenizer_identity()
         cached = entry.get('token_count')
-        if cached is not None and entry.get('token_count_text_sha256') == fp:
+        if (
+            cached is not None
+            and entry.get('token_count_text_sha256') == fp
+            and entry.get('token_count_tokenizer') == tid
+        ):
             return int(cached)
         n = count_tokens(text)
         entry['token_count'] = int(n)
         entry['token_count_text_sha256'] = fp
+        entry['token_count_tokenizer'] = tid
         return int(n)
 
     @classmethod
     async def _aget_cached_token_count(cls, entry: dict) -> int:
         """Async twin — uses `acount_tokens` (worker-thread tiktoken).
-        Write-back semantics match the sync helper."""
+        Write-back semantics match the sync helper (both fingerprints)."""
         text = entry.get('text', '') or ''
         if not text:
             return 0
         fp = cls._text_fingerprint(text)
+        tid = tokenizer_identity()
         cached = entry.get('token_count')
-        if cached is not None and entry.get('token_count_text_sha256') == fp:
+        if (
+            cached is not None
+            and entry.get('token_count_text_sha256') == fp
+            and entry.get('token_count_tokenizer') == tid
+        ):
             return int(cached)
         n = await acount_tokens(text)
         entry['token_count'] = int(n)
         entry['token_count_text_sha256'] = fp
+        entry['token_count_tokenizer'] = tid
         return int(n)
 
     @staticmethod
@@ -1836,6 +1867,7 @@ class PersonaManager:
         next render."""
         entry['token_count'] = None
         entry['token_count_text_sha256'] = None
+        entry['token_count_tokenizer'] = None
 
     @classmethod
     def _score_trim_entries(
