@@ -1319,6 +1319,13 @@ function createAnimationSettingsSidePanel(manager, prefix) {
 function createSidePanelContainer(manager, prefix, options = {}) {
     const container = document.createElement('div');
     container.setAttribute('data-neko-sidepanel', '');
+    const getInteractionGuardDelay = () => {
+        const sidePanelType = container.getAttribute('data-neko-sidepanel-type') || '';
+        if (sidePanelType === 'agent-user-plugin-actions' || sidePanelType === 'agent-openclaw-actions') {
+            return 220;
+        }
+        return 0;
+    };
     Object.assign(container.style, {
         position: 'fixed',
         display: 'none',
@@ -1356,6 +1363,7 @@ function createSidePanelContainer(manager, prefix, options = {}) {
     container._expand = () => {
         if (container.style.display === 'flex' && container.style.opacity !== '0') return;
         if (container._collapseTimeout) { clearTimeout(container._collapseTimeout); container._collapseTimeout = null; }
+        if (container._interactionGuardTimer) { clearTimeout(container._interactionGuardTimer); container._interactionGuardTimer = null; }
 
         container.style.display = 'flex';
         container.style.pointerEvents = 'none';
@@ -1375,15 +1383,25 @@ function createSidePanelContainer(manager, prefix, options = {}) {
         }
 
         requestAnimationFrame(() => {
-            container.style.pointerEvents = 'auto';
             container.style.opacity = '1';
             container.style.transform = 'translateX(0)';
+            const interactionGuardDelay = getInteractionGuardDelay();
+            if (interactionGuardDelay > 0) {
+                container._interactionGuardTimer = setTimeout(() => {
+                    container.style.pointerEvents = 'auto';
+                    container._interactionGuardTimer = null;
+                }, interactionGuardDelay);
+            } else {
+                container.style.pointerEvents = 'auto';
+            }
         });
     };
 
     container._collapse = () => {
         if (container.style.display === 'none') return;
         if (container._collapseTimeout) { clearTimeout(container._collapseTimeout); container._collapseTimeout = null; }
+        if (container._interactionGuardTimer) { clearTimeout(container._interactionGuardTimer); container._interactionGuardTimer = null; }
+        container.style.pointerEvents = 'none';
         container.style.opacity = '0';
         container.style.transform = container.dataset.goLeft === 'true' ? 'translateX(6px)' : 'translateX(-6px)';
         container._collapseTimeout = setTimeout(() => {

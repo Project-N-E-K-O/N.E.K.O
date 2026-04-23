@@ -235,6 +235,39 @@
         return DEFAULT_PLUGIN_DASHBOARD_ORIGIN;
     }
 
+    function buildPluginDashboardUrl(params) {
+        var origin = getPluginDashboardExpectedOrigin();
+        var normalizedOrigin = DEFAULT_PLUGIN_DASHBOARD_ORIGIN;
+
+        if (origin) {
+            try {
+                normalizedOrigin = new URL(String(origin)).origin;
+            } catch (e) {
+                console.warn('[YuiGuideHandoff] buildPluginDashboardUrl: dashboard origin 无效，回退默认值:', e);
+            }
+        }
+
+        var url = new URL('/ui/', normalizedOrigin);
+        (Array.isArray(params) ? params : []).forEach(function (entry) {
+            if (typeof entry !== 'string' || !entry) return;
+            var equalIndex = entry.indexOf('=');
+            if (equalIndex < 0) {
+                url.searchParams.append(entry, '');
+                return;
+            }
+
+            var key = entry.slice(0, equalIndex);
+            var value = entry.slice(equalIndex + 1);
+            try {
+                url.searchParams.append(key, decodeURIComponent(value));
+            } catch (_) {
+                url.searchParams.append(key, value);
+            }
+        });
+
+        return url.toString();
+    }
+
     function getHandoffTokenSignature(tokenObj) {
         if (!tokenObj) return '';
         return tokenObj.signature || tokenObj.id || tokenObj.token || '';
@@ -645,6 +678,26 @@
 
     function closeAgentPanel() {
         var manager = getManager();
+        document.querySelectorAll('[data-neko-sidepanel-type="agent-user-plugin-actions"], [data-neko-sidepanel-type="agent-openclaw-actions"]').forEach(function (panel) {
+            if (!panel) return;
+            if (panel._hoverCollapseTimer) {
+                clearTimeout(panel._hoverCollapseTimer);
+                panel._hoverCollapseTimer = null;
+            }
+            if (panel._collapseTimeout) {
+                clearTimeout(panel._collapseTimeout);
+                panel._collapseTimeout = null;
+            }
+            if (typeof panel._collapse === 'function') {
+                panel._collapse();
+                return;
+            }
+            panel.style.transition = 'none';
+            panel.style.opacity = '0';
+            panel.style.display = 'none';
+            panel.style.pointerEvents = 'none';
+            panel.style.transition = '';
+        });
         if (!manager || typeof manager.closePopupById !== 'function') {
             return Promise.resolve(false);
         }
@@ -927,7 +980,7 @@
             params.push('handoff_token=' + encodeURIComponent(tokenId));
         }
 
-        var openUrl = '/api/agent/user_plugin/dashboard?' + params.join('&');
+        var openUrl = buildPluginDashboardUrl(params);
 
         window.dispatchEvent(new CustomEvent('neko:yui-guide:handoff-sent', {
             detail: {

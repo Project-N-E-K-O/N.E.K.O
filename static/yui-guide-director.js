@@ -1805,6 +1805,35 @@
             return !!(sidePanel && sidePanel.style.display === 'flex' && sidePanel.style.opacity !== '0');
         }
 
+        collapseAgentSidePanel(toggleId) {
+            const sidePanel = this.getAgentSidePanel(toggleId);
+            if (!sidePanel) {
+                return false;
+            }
+
+            if (sidePanel._hoverCollapseTimer) {
+                window.clearTimeout(sidePanel._hoverCollapseTimer);
+                sidePanel._hoverCollapseTimer = null;
+            }
+
+            if (sidePanel._collapseTimeout) {
+                window.clearTimeout(sidePanel._collapseTimeout);
+                sidePanel._collapseTimeout = null;
+            }
+
+            if (typeof sidePanel._collapse === 'function') {
+                sidePanel._collapse();
+                return true;
+            }
+
+            sidePanel.style.transition = 'none';
+            sidePanel.style.opacity = '0';
+            sidePanel.style.display = 'none';
+            sidePanel.style.pointerEvents = 'none';
+            sidePanel.style.transition = '';
+            return true;
+        }
+
         getCharacterAppearanceMenuId() {
             const prefix = this.resolveModelPrefix();
             if (prefix === 'vrm') {
@@ -3112,9 +3141,12 @@
         }
 
         async closeAgentPanel() {
-            return this.callHomeInteractionApi('closeAgentPanel', [], () => {
+            const closed = await this.callHomeInteractionApi('closeAgentPanel', [], () => {
                 return this.setFallbackFloatingPopupVisible('agent', false);
             });
+            this.collapseAgentSidePanel('agent-user-plugin');
+            this.collapseAgentSidePanel('agent-openclaw');
+            return closed;
         }
 
         async ensureAgentToggleChecked(toggleId, checked) {
@@ -3470,7 +3502,7 @@
 
             if (api && typeof api.openPage === 'function') {
                 try {
-                    return await api.openPage('/api/agent/user_plugin/dashboard', 'plugin_dashboard');
+                    return await api.openPage('http://127.0.0.1:48916/ui/', 'plugin_dashboard');
                 } catch (error) {
                     console.warn('[YuiGuide] openPage(plugin_dashboard) 失败:', error);
                 }
@@ -4076,9 +4108,19 @@
             this.appendGuideChatMessage(dashboardText, {
                 textKey: TAKEOVER_PLUGIN_DASHBOARD_TEXT_KEY
             });
+            let pluginPanelClosed = false;
+            const closePluginPreviewPanel = async () => {
+                if (pluginPanelClosed || runId !== this.sceneRunId || this.isStopping()) {
+                    return;
+                }
+
+                pluginPanelClosed = true;
+                this.clearVirtualSpotlight('plugin-management-entry');
+                await this.closeAgentPanel().catch(() => {});
+            };
             const dashboardNarrationPromise = this.speakLineAndWait(dashboardText, {
                 voiceKey: 'takeover_plugin_preview_dashboard'
-            }).catch(() => {});
+            }).catch(() => {}).finally(() => closePluginPreviewPanel());
 
             const completed = await this.waitForPluginDashboardPerformance(dashboardWindow, {
                 line: '',
@@ -4091,7 +4133,6 @@
             this.clearSceneExtraSpotlights();
             this.clearRetainedExtraSpotlights();
             this.overlay.clearActionSpotlight();
-            this.clearVirtualSpotlight('plugin-management-entry');
             // 恢复关闭猫爪总开关和用户插件开关
             await Promise.all([
                 this.setAgentMasterEnabled(false).catch(() => {}),
@@ -4237,6 +4278,7 @@
             });
 
             let settingsPeekHighlightsCleared = false;
+            let settingsPanelClosed = false;
             const clearSettingsPeekHighlights = () => {
                 if (settingsPeekHighlightsCleared) {
                     return;
@@ -4253,6 +4295,15 @@
                     this.highlightChatWindow();
                 }
             };
+            const closeSettingsPeekPanel = async () => {
+                if (settingsPanelClosed || runId !== this.sceneRunId || this.isStopping()) {
+                    return;
+                }
+
+                settingsPanelClosed = true;
+                this.collapseCharacterSettingsSidePanel();
+                await this.closeSettingsPanel().catch(() => {});
+            };
             const narrationPromise = this.speakLineAndWait(detailText, {
                 voiceKey: 'takeover_settings_peek_detail'
             }).finally(() => {
@@ -4261,6 +4312,7 @@
                 }
 
                 clearSettingsPeekHighlights();
+                return closeSettingsPeekPanel();
             });
 
             const cycleMs = 7000;
@@ -4290,29 +4342,10 @@
             if (runId !== this.sceneRunId || this.isStopping()) {
                 return;
             }
-
-            // 语音结束后 ghost cursor 平滑移到页面中间
-            while (!this.isStopping()) {
-                const movedToViewportCenter = await this.cursor.moveToPoint(window.innerWidth / 2, window.innerHeight / 2, {
-                    durationMs: 600,
-                    pauseCheck: () => this.scenePausedForResistance,
-                    cancelCheck: () => this.isStopping()
-                });
-                if (movedToViewportCenter) {
-                    break;
-                }
-                await this.waitUntilSceneResumed();
-            }
-
-            await this.waitForHomeMainUIReady(3600);
-            if (runId !== this.sceneRunId || this.isStopping()) {
-                return;
-            }
             this.cleanupTutorialReturnButtons();
             clearSettingsPeekHighlights();
             // 恢复隐藏角色设置侧面板（通用设置 / 角色外形 / 声音克隆）
-            this.collapseCharacterSettingsSidePanel();
-            await this.closeSettingsPanel().catch(() => {});
+            await closeSettingsPeekPanel();
         }
 
         beginTerminationVisualCleanup() {
@@ -4392,7 +4425,7 @@
                     return;
                 }
 
-                await wait(1200);
+                await wait(120);
                 if (this.isStopping()) {
                     return;
                 }
@@ -4404,7 +4437,7 @@
                     return;
                 }
 
-                await wait(1400);
+                await wait(120);
                 if (this.isStopping()) {
                     return;
                 }
@@ -5356,8 +5389,6 @@
                 if (runId !== this.sceneRunId || this.destroyed || this.angryExitTriggered) {
                     return;
                 }
-
-                await this.waitForSceneDelay(DEFAULT_SCENE_SETTLE_MS);
                 return;
             }
 
@@ -5370,8 +5401,6 @@
                 if (runId !== this.sceneRunId || this.destroyed || this.angryExitTriggered) {
                     return;
                 }
-
-                await this.waitForSceneDelay(DEFAULT_SCENE_SETTLE_MS);
                 return;
             }
 

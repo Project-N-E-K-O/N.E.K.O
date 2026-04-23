@@ -207,8 +207,9 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                     labelKey: 'settings.toggles.pluginManagementPanel',
                     labelFallback: '管理面板',
                     icon: '⚙',
-                    url: '/api/agent/user_plugin/dashboard',
-                    windowName: 'neko_plugin_dashboard'
+                    url: 'http://127.0.0.1:48916/ui/',
+                    windowName: 'neko_plugin_dashboard',
+                    forceReloadOnReuse: true
                 }
                 : {
                     actionId: 'openclaw-guide',

@@ -153,6 +153,9 @@
     steps.takeover_return_control.performance.emotion = 'happy';
     steps.takeover_return_control.performance.cursorAction = 'wobble';
     steps.takeover_return_control.performance.cursorTarget = '#${p}-container';
+    steps.takeover_return_control.performance.interruptible = true;
+    steps.takeover_return_control.interrupts.mode = 'theatrical_abort';
+    steps.takeover_return_control.interrupts.resetOnStepAdvance = false;
 
     steps.interrupt_resist_light = createBaseStep('interrupt_resist_light', 'home', '#${p}-container');
     steps.interrupt_resist_light.tutorial.title = '轻微抵抗';
