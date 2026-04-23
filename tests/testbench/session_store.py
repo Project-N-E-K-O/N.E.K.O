@@ -366,6 +366,23 @@ class SessionStore:
                 payload={"purge_sandbox": purge_sandbox},
             )
 
+        # P25 Day 1: drop per-session in-memory caches held by pipeline
+        # modules. Deferred import so session_store stays free of
+        # pipeline-layer references (it's imported during server boot
+        # before external_events is usable). Best-effort: a stale cache
+        # entry is harmless (at worst 100 dedupe rows * a few bytes), so
+        # a failure here must never block teardown.
+        try:
+            from tests.testbench.pipeline.external_events import (
+                discard_session_caches as _discard_external_caches,
+            )
+            _discard_external_caches(session.id)
+        except Exception as exc:  # noqa: BLE001 - best-effort teardown
+            python_logger().debug(
+                "Session %s: external_events cache discard skipped: %s",
+                session.id, exc,
+            )
+
         self._session = None
 
     # ── per-session operation helper ────────────────────────────────

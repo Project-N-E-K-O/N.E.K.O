@@ -33,7 +33,15 @@ import { openSessionExportModal } from '../session_export_modal.js';
 
 //: 哪些 key 会被 `/system/open_path` 接受 (DATA_DIR 下). 前端用此集
 //: 合决定 [打开] 按钮是 active 还是 disabled + 带解释 tooltip.
+//:
+//: `data_root` 是顶部卡片用的特殊 key (对应 testbench_data/ 本身), 不
+//: 属于 `/system/paths` 的 entries 列表, 但同样在 DATA_DIR 白名单内 —
+//: 后端 `_path_is_inside_data_dir` 对 path == DATA_DIR 也会返回 True,
+//: `handleOpen` 走 path-based 请求可以直接打开整体数据目录. 早期遗漏
+//: 此项导致 "数据目录 (整体 gitignored)" 卡片的 [打开] 按钮被当成代码
+//: 侧只读路径而灰显.
 const OPENABLE_KEYS = new Set([
+  'data_root',
   'current_sandbox',
   'current_session_log',
   'sandboxes_all',

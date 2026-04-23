@@ -99,6 +99,51 @@ class DiagnosticsOp(StrEnum):
     # Severity: warning.
     DIAGNOSTICS_RING_FULL = "diagnostics_ring_full"
 
+    # ── P25 new ops (Day 1 外部事件仿真面板落盘) ─────────────────────────
+
+    # P25 §2.1 / §3 Day 1 — tester 从前端 Chat 工作区 "外部事件模拟" 面板
+    # 触发的 avatar interaction 仿真请求已被后端处理. 一次调用一条审计,
+    # 不管语义层是否真的落盘 (dedupe 命中窗口会把事件静默丢掉, 但本 op
+    # 仍然记录, dedupe_hit=True, 方便事后复核去重是否符合预期). detail
+    # 字典承载 interaction_id / tool_id / action_id / intensity /
+    # reward_drop / easter_egg / dedupe_hit / mirror_to_recent 等字段.
+    # 与主程序 avatar interaction 语义契约对齐 (见 §2.1). 真正的缓存
+    # "满了" 另走 AVATAR_DEDUPE_CACHE_FULL, 不要混用.
+    # Severity: info (事件密度审计, 不触发 Err 徽章).
+    AVATAR_INTERACTION_SIMULATED = "avatar_interaction_simulated"
+
+    # P25 §2.1 / §3 Day 1 — tester 从前端 "外部事件模拟" 面板触发的
+    # agent callback 仿真. 复现主程序 AGENT_CALLBACK_NOTIFICATION 的
+    # 5 语言 instruction 拼接 + LLM 回复抓取 + 回复写入 session.messages
+    # 流程. detail 字典承载 callback_count / total_chars /
+    # instruction_lang / reply_len / mirror_to_recent 等字段. **与
+    # avatar 不同**: agent_callback 不做 dedupe (多条 callback 合并成
+    # 一个 instruction 一次性塞给 LLM, 语义层只跑一次), 所以 detail
+    # 里没有 dedupe_hit 字段.
+    # Severity: info.
+    AGENT_CALLBACK_SIMULATED = "agent_callback_simulated"
+
+    # P25 §2.1 / §3 Day 1 — tester 从前端 "外部事件模拟" 面板触发的
+    # 主动搭话仿真. 复现主程序 get_proactive_chat_prompt(kind, lang)
+    # 的 LLM 调用 + LLM 可能返回 [PASS] 跳过 (合法, pass_signaled=True)
+    # + 非 [PASS] 回复走 append_message 写入 session.messages. detail
+    # 字典承载 kind (home/screenshot/window/news/video/personal/music)
+    # + lang + pass_signaled + reply_len + mirror_to_recent 等字段.
+    # 与 agent_callback 一样不做 dedupe.
+    # Severity: info.
+    PROACTIVE_SIMULATED = "proactive_simulated"
+
+    # P25 §3 Day 1 + §4.5 L27 四问 3 (通知频率) 回应 — avatar 事件去重
+    # 缓存软上限 100 条, 达到上限后按 LRU 丢最旧, 并在本 fill cycle 内
+    # 发一次本通知 (once-per-fill); caller 手动 POST
+    # /api/session/external-event/dedupe-reset 清空缓存后才会重新武装
+    # 下一次 notice. 常见触发: tester 在短时间内高频连点 avatar 道具
+    # 按钮 (L25 + LESSONS_LEARNED §4.27 #91 "避免 DoS 测试面板" 同类
+    # 风险). 自查方式: 查 GET /api/session/external-event/dedupe-info
+    # 的 cache 条目数, 配合本通知 detail 字典里的 max_entries 字段.
+    # Severity: warning.
+    AVATAR_DEDUPE_CACHE_FULL = "avatar_dedupe_cache_full"
+
 
 #: Metadata consumed by ``GET /api/diagnostics/ops``. Must contain one
 #: entry per :class:`DiagnosticsOp` member. Categories help F7 Security
@@ -188,6 +233,69 @@ OP_CATALOG: dict[str, dict[str, str]] = {
             "都会顶掉一条最老的错误, 如果需要保留本次会话的完整错误历史, "
             "建议立即导出 session / 到 Diagnostics → Errors 子页 Clear "
             "一下以重置 fill cycle."
+        ),
+    },
+    DiagnosticsOp.AVATAR_INTERACTION_SIMULATED.value: {
+        "category": "external_event",
+        "severity": "info",
+        "description": (
+            "tester 从前端 Chat 工作区 '外部事件模拟' 面板触发了一次 "
+            "avatar interaction 仿真 (敲 / 戳 / 摸等道具动作), 后端已经"
+            "处理完毕. 不管语义层是否真的把事件塞进 session.messages, 也"
+            "不管是否因 dedupe 窗口命中被丢弃, 每次调用都会记录一条本 op "
+            "的审计信息, 方便事后在 Diagnostics → Errors 页回看 '我今天 "
+            "按了几次 hammer 道具 / 有没有被 dedupe 吃掉' 这种事件密度. "
+            "detail 字典包含 interaction_id + tool_id + action_id + "
+            "intensity + reward_drop + easter_egg + dedupe_hit(True/False)"
+            " + mirror_to_recent(True/False) 等关键字段. 注意: 真正因"
+            "dedupe 被丢弃的事件本条 op 仍然会记 (dedupe_hit=True); 缓存"
+            "本身达到软上限另走 avatar_dedupe_cache_full."
+        ),
+    },
+    DiagnosticsOp.AGENT_CALLBACK_SIMULATED.value: {
+        "category": "external_event",
+        "severity": "info",
+        "description": (
+            "tester 从前端 Chat 工作区 '外部事件模拟' 面板触发了一次 "
+            "agent callback 仿真. 本 op 对应的流程复现了主程序 "
+            "AGENT_CALLBACK_NOTIFICATION 的完整链路: 5 语言 instruction "
+            "拼接 → 发给 LLM → 抓取回复 → 回复通过 append_message 写入 "
+            "session.messages. detail 字典承载 callback_count + "
+            "total_chars + instruction_lang + reply_len + mirror_to_recent "
+            "等字段. 与 avatar interaction 不同: agent callback 不做 "
+            "dedupe (多条 callback 会被合并成一个 instruction 一次性塞 "
+            "给 LLM, 语义层只跑一次), 因此 detail 里也没有 dedupe_hit "
+            "字段."
+        ),
+    },
+    DiagnosticsOp.PROACTIVE_SIMULATED.value: {
+        "category": "external_event",
+        "severity": "info",
+        "description": (
+            "tester 从前端 Chat 工作区 '外部事件模拟' 面板触发了一次主动 "
+            "搭话仿真. 本 op 对应的流程复现了主程序 "
+            "get_proactive_chat_prompt(kind, lang) 的 LLM 调用: LLM 可能 "
+            "合法地返回 [PASS] 跳过 (这种情况下 pass_signaled=True, 不 "
+            "写入 session.messages), 非 [PASS] 回复则走 append_message "
+            "写入. detail 字典承载 kind (home / screenshot / window / "
+            "news / video / personal / music) + lang + pass_signaled + "
+            "reply_len + mirror_to_recent 等字段. 与 agent callback 一样, "
+            "proactive 不做 dedupe."
+        ),
+    },
+    DiagnosticsOp.AVATAR_DEDUPE_CACHE_FULL.value: {
+        "category": "external_event",
+        "severity": "warning",
+        "description": (
+            "avatar 事件去重缓存达到了 100 条的软上限, 已按 LRU 策略丢弃 "
+            "最旧条目. 本通知在同一个 fill cycle 内只发一次 (once-per-"
+            "fill), 只有 caller 手动调用 POST "
+            "/api/session/external-event/dedupe-reset 清空缓存之后才会 "
+            "重新武装下一次 notice. 常见触发: tester 在短时间内高频连 "
+            "点 avatar 道具按钮 (参见 L25 + LESSONS_LEARNED §4.27 #91 "
+            "'避免 DoS 测试面板' 同类风险). 自查方式: 查 GET "
+            "/api/session/external-event/dedupe-info 的 cache 条目数, "
+            "并配合本通知 detail 字典里的 max_entries 字段核对上限值."
         ),
     },
 }

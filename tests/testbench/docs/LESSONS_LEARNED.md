@@ -2,8 +2,12 @@
 
 > **定位**: 本文档是 N.E.K.O. Testbench 项目 P00-P25 立项期累积的
 > 设计原则与工程经验的**抽象提炼**. 源材料是 AGENT_NOTES §4 的 77+ 踩点
-> 案例 + §3A 47 条横切原则 + P24_BLUEPRINT 五轮审查的 13 条元教训 +
-> P24 Day 9-E 二轮翻转的 3 条元教训 (L23/L24/L25).
+> 案例 + §3A 57 条横切原则 + P24_BLUEPRINT 五轮审查的 13 条元教训 +
+> P24 Day 9-E 二轮翻转的 3 条元教训 (L23/L24/L25) +
+> P24 Day 10-12 整合期的 2 条元教训 (L26/L27 = §7.23/§7.24) +
+> P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理 UTF-8 事件
+> 派生的 5 条候选元教训 (L28/L29/L30/L31/L32, 登记于 §7.A 候选区,
+> 未计入主编号 24 条).
 >
 > **目标读者**: (a) 本项目未来阶段的 agent (查阅原则); (b) 其它 AI 辅助
 > 的大型软件项目设计者 (借鉴经验). 与三份老 docs 的区别: AGENT_NOTES 是
@@ -536,9 +540,77 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
 
     前两问是**机制层面** (代码必问), 后两问是 **UX 层面** (经常漏). §3A F7 "fail-loud 不 silent fallback" 原则的扩展 — silent 达到资源上限是最常见的 silent fallback 类型. 如果新机制**四问中有任一个回答 "不知道 / 没想过 / 还没做"**, 就是**本 phase 的 backlog 入档项**, 不是"以后可以不做"; 至少要在阶段蓝图的资源上限总表里占一行. 同族延伸: **每个项目都应当维护一张类似 §14.2.E 的表**, 新 phase 增改资源上限时同步这张表; 到一定规模后 (≥ 10 处资源) 这张表本身就是**下一轮产品需求的富矿** (哪些 silent 的需要打屏上报 / 哪些 evict 的需要 actionable export). 对应项目 skill 候选: `resource-limit-ux-degradation-matrix` (待抽).
 
----
+### §7.A 候选追加 (P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理 UTF-8 事件 + P25 Day 1 subagent 并行开发派生, 待二次复现后并入主编号)
 
-## 8. 超项目价值的 cursor skills 索引
+> 纪律: 本文档 §7 只记录 "**已经踩过 ≥ 2 次**的同族教训". 下列 6 条候选 (L28-L33)
+> 都是**单次派生**, 源自 P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理
+> UTF-8 字节损坏事件 + P25 Day 1 subagent 并行开发首次应用. 登记在此避免遗忘,
+> 等 P25 或后续阶段再遇到同族时正式纳入 §7 数字主编号 (25-30).
+
+**L28 "跨阶段推迟项必须双向回扫"** (P24 Day 12 欠账清返派生, 2026-04-23):
+
+- **场景**: 跨阶段推迟 (`推迟至 PX` / `推迟到 Day N` / `留待 Day N+1`) 累积若干轮后, 很容易**功能做了但文件忘了回来写完** (checkbox 漏回填 / `推迟至 DayX` 标签过期但文本仍写着 `TODO` / `FIXME` 漏清理). 单看代码 smoke 全绿, 看文档结构也完整, 只有**全文搜索 "推迟" 关键字**才能发现漏网之鱼.
+- **失败模式**: 开发者本阶段聚焦自己的任务, "上一阶段推迟过来的一个小 checkbox 漏回填" 类事情因为**不影响功能**, 在任何日常 review 里都不会显性化; 靠时间推移自愈的概率几乎是零. 项目跨 5-10 个 phase 后, 这类欠账积累到**临近发版**才集中爆发.
+- **防御规则** (三层): (a) 每阶段收尾**强制**跑 `rg -g '!{venv,.git,node_modules}' '推迟至?|留待|归 P\d|TODO|FIXME|XXX'` 一次, 结果入 PROGRESS 阶段段; (b) 每阶段起始**强制**跑一次同样的 grep, 核对"上阶段收尾时登记的待办" 全部完成再开工; (c) "推迟项" 登记时**必须同时登记回扫时机** (哪个阶段的哪一 Day 是触发回扫点), 不允许留 `推迟至 PX` (PX 无具体边界) 这种无锚点推迟.
+- **验证案例**: P24 Day 12 欠账清返 (`62844c7`) 真的扫出 2 条真欠账 (render_drift_detector.js / page_persona.js Promise cache) + Day 6 checkbox 漏回填 1 条. 单次实锤, 但很可能下次进入 P25-P27 跨阶段时再次命中.
+- **关联**: LESSONS §7.1 "留空占位 + TODO 注释半衰期 4-6 phase" 的**双向回扫扩展** — §7.1 管"登记时不靠代码注释", L28 管 "**登记后每次跨阶段边界时主动回扫**". 对应 cursor skill 候选: `cross-phase-deferral-bidirectional-sweep` (待抽).
+- **进入主编号条件**: 需要在 P25-P26 再命中一次同族 (任何跨阶段推迟项漏网) 才升级为 §7.25.
+
+**L29 "冷却语义三分类"** (P25 §A R1a 派生, 2026-04-23):
+
+- **场景**: 主程序里有"N 秒内不复触发 X" 类行为时, 用 "**冷却**" 一词**笼统描述**几乎必然导致 testbench / 消费方混淆语义边界.
+- **三分类**: (a) **实时流抖动冷却** (比如 600ms / 1500ms 的帧合并窗口) — 是**运行时机制层**, 测试生态通常 OOS (semantic-contract-vs-runtime-mechanism); (b) **语义去重冷却** (比如 8000ms 内重复同一 avatar 触摸区不再产出 memory pair) — 是**语义契约层**, 消费方必须复现; (c) **N 秒窗口禁复触发** (比如 proactive chat `min_idle_secs=10s`) — 是**运行时机制层**, 通常 OOS, 但语义上"用户每 N 秒只能看到一条主动搭话" 有时是 **契约**. 三类**外观相同**(都是一段时间窗口内不 re-trigger), 但**归属层不同** → 测试生态对接时要不要复现结果完全不同.
+- **失败模式**: 审查时只说 "不复现冷却窗口" 或 "冷却统一 OOS" → 下一个读者 (下一轮审查 / 下一个 phase) 会以为**所有类冷却行为**都 OOS, 把 (b) 类也丢掉, 造成语义漂移.
+- **防御规则**: 任何 "N 秒内不复触发 X" 行为入文档前必先三分类标注 `(a) / (b) / (c)`, 再决定复现策略. 候选 `.cursor/rules/cooldown-three-way-classification.mdc` 待抽.
+- **关联**: L26 (§7.23) "yield 型 API 三分类" 在**时序维度**的延伸 — L26 管调用形态分类, L29 管时间窗口语义分类; 两者都是"外观相同的几种 API / 行为必先分类再套原则" 的同一方法论.
+- **进入主编号条件**: 需要在其它时序窗口 (timeout / retry backoff / rate limit / debounce) 场景再命中一次三分类必要性, 才升级为 §7.26.
+
+**L30 "外部系统 pure helper 跨 package 用 copy + drift smoke, 不 import"** (P25 §A R4 派生, 2026-04-23):
+
+- **场景**: 测试生态 (testbench / adapter layer / plugin sandbox) 需要复用主系统的 pure helper 时, 默认第一反应是 `from main_logic import X`, 但主系统 package 的 `__init__` / 模块级常量经常携带**重副作用** (aiohttp session / ssl context / event bus queue / asyncio 启动) — 一 import 就把这些副作用带进测试生态, **破坏边界**, 很多环境 (单元测试 / CI 沙盒) 会直接 import error.
+- **替代方案**: **copy** 那段 pure helper 到测试生态自己的 package + 顶部 docstring 明文 "copy from main_logic/X, 2026-04-XX 快照, 主程序该函数发生签名变更时本文件与 drift smoke 同步更新"; **drift smoke** 在 CI 里 `from main_logic import X_original` (**smoke 允许破边界, 仅它一个 file 允许**) + testbench copy 对比**hash 相等的 pure function body**, 漂移即 FAIL. 这样 "复用主程序 pure helper" 的承诺**不 import main_logic 也能兑现**.
+- **失败模式 / 防御规则**: 直接 import 的常见结果是测试环境里 aiohttp / ssl 找不到 → import error / Cursor agent 环境跑不起测试; copy 但**不加 drift smoke** 则主程序半年后改了函数签名, testbench 里还是老版本, 语义偷偷背离 → 测试结果不可信. **铁律**: copy 和 drift smoke **必须配对**, 缺一则失效.
+- **适用范围**: 测试生态 / adapter 层 / plugin 沙盒 / OSS fork 回合并 / 生成式 AI 的 runtime wrapper 等任何 "用另一系统 pure helper 但不想带它生态" 的场景.
+- **候选 §3A 新原则**: H3 "外部系统 pure helper cross-package copy > import (有重副作用时)" 待 P25 交付后观察是否稳定抽象.
+- **进入主编号条件**: 需要 P25-P27 至少再踩一次同族 (另一处 pure helper 跨边界) 才升级为 §7.27; 若升级则同步在 §3A 正式纳入 H3.
+
+**L31 "审查时必须持续锚定设计初衷, 不得悄悄引入新目标"** (P25 §A 第八轮漂移诊断派生, 2026-04-23):
+
+- **场景**: 设计草案审查阶段 (meta-audit / self-audit / design review) 中, AI 用 grep / read 深挖主程序实现时, 工具返回的信息**全是主程序 runtime 实现细节**, 容易让 AI **不自觉地**把 "testbench 应该跟主程序一样" 引入矫正清单 — 这是对 L25 "语义契约 vs 运行时机制" 的**审查流程层面**的违反.
+- **失败模式**: 矫正清单看起来越来越精细, 某条矫正单独看都对 (主程序确实那样), 但**组合起来**会把原设计目标悄悄改掉; 审查若干轮后原设计的 "语义契约 vs 运行时机制" 边界面目全非. **症状**: 用户读到矫正清单后觉得"这和你最初设计方案的目标不一致".
+- **防御规则** (三条):
+    1. 每轮审查**开头**先明写 "**本轮不得引入的新目标**" (如对 P25 = "不得把 '复现主程序 runtime 行为' 引入目标"). 列在审查笔记顶部作为 guard.
+    2. 每条候选矫正**必问三问**: (a) 这条是在回答原设计 §1 的哪个目标问题? (b) 违反了原设计 §2 哪条原则吗? (c) 如果原版 §1 §2 的作者在场, 他会说 "这是精度提升" 还是 "你改了我的目标"?
+    3. 审查 KPI 从 "**发现多少问题**" 改为 "**守住初衷的同时发现多少真正的精度缺口**". 前者指标指向 AI 过度审查, 后者指向设计连贯性.
+- **验证案例**: P25 §A 六轮 meta → 第七轮 self-audit (追加 R7/R13 = 目标漂移) → 第八轮漂移诊断 (R7/R13 完全撤回 + R1c 部分撤回 + R9 合并 + R1b 降级 → 最终 §A.8 = 8 条有效矫正). 完整过程见 [P25_BLUEPRINT §A.7](P25_BLUEPRINT.md#a7-第八轮漂移诊断-2026-04-23).
+- **关联**: L25 (**语义契约 vs 运行时机制**) 在**审查流程维度**的延伸 — L25 管 "**什么**该复现", L31 管 "审查时**怎么**不丢掉 L25". 配套 skill 候选: `design-review-original-intent-anchor` (待抽).
+- **进入主编号条件**: 需要在后续阶段 (P25 Day 3 实装或 P26 立项) 的审查过程中, 再有一次"审查过程自我发现漂移并撤回矫正" 的案例, 才升级为 §7.28.
+
+**L32 "PowerShell Set-Content / Out-File 对 UTF-8 CJK 文件是字节级陷阱"** (P25 §A 收工整理 UTF-8 损坏事件派生, 2026-04-23):
+
+- **场景**: Windows + PowerShell 5.x + 对项目里含 CJK 的 UTF-8 `.md` / `.txt` / `.py` 文件跑 `Set-Content -Path foo -Value $str -NoNewline` (或 `Out-File` 默认 `-Encoding Default`) 做 trim / dedupe / append 类操作. 一句话概括: PowerShell 5 的 `Set-Content` 默认读写都走**当前系统 ANSI/OEM code page** (简中 Windows 下 CP936), **不是** UTF-8.
+- **失败模式**: 读时按 CP936 解码 (误判 UTF-8 三字节 CJK 序列为 CP936 双字节), 写时又用 CP936 编码. **UTF-8 三字节 CJK 在 CP936 无法完整往返**, 末字节被替换成 ASCII `?` (0x3F). 文件通过 git diff / git show 看起来"有内容只是变乱了", 但 `python -c "open(...).read().decode('utf-8')"` 直接抛 UnicodeDecodeError, 所有 ~1/3 的汉字失去最后一个字节, IDE / Cursor / 浏览器全部无法正确显示. **症状迷惑**: 命令返回成功, 无任何 warning, `Get-Content` 再读回来看起来也"字符数差不多对" (因为 ANSI 解码没抛异常, 只是意义错了); 只有**字节级 UTF-8 校验**才能揪出.
+- **真实案例**: P25 收工整理为去掉 `P25_BLUEPRINT.md` 尾部 1 行空行, 跑了 `$t = [IO.File]::ReadAllText($p).TrimEnd(); Set-Content -Path $p -Value $t -NoNewline`, 结果文件从 55469 字节变成 70487 字节 (膨胀因为 `?` 取代 CJK 末字节造成 UTF-8 长度统计错位), **3280 处字节损坏 / 约 1640 个汉字末字节丢失** (占文中 CJK 的 27-33%). 修复路径: `git checkout HEAD -- P25_BLUEPRINT.md` 回到 55469 字节干净版 + 按冗余登记 (AGENT_NOTES / LESSONS / PROGRESS 三处) 的语义权威重写丢失章节, 耗时 35 分钟, 数据损失 = 0.
+- **防御规则** (四层):
+    1. **最稳**: 任何对项目 UTF-8 文件的 trim / replace / append 走 `python -X utf8 -c "data = open(p, 'rb').read(); ... ; open(p, 'wb').write(data)"` — `open(path, 'wb')` 直接二进制写字节, **完全绕过** PowerShell 编码层, 字节级可控.
+    2. **次稳 (PS 7+)**: `Set-Content -Encoding utf8NoBOM -NoNewline` (只在 PowerShell 7+ 可用, PS 5.x 不支持 utf8NoBOM, 会回退默认 CP936).
+    3. **PS 5.x 勉强能用**: `Set-Content -Encoding UTF8 -NoNewline` — 能保 UTF-8 但**强制加 BOM**, 对 `.md` 一般无害, 对 shell / python source 会改变行为, 次优.
+    4. **团队级 guard**: `.gitattributes` 标 `*.md text working-tree-encoding=UTF-8` + `.editorconfig` 标 `charset = utf-8` + CI 跑 `git diff --name-only HEAD | xargs -I{} python -c "open('{}').read().encode('utf-8')"` 或 `iconv -f utf-8 -t utf-8 -c` 发现有损就 FAIL.
+- **关联 / 对比**: L22 "编码污染" (AGENT_NOTES §4.27 #78 记录) 的**事前版** — L22 管"编码污染发生后怎么定位修复", L32 管"编码污染第一次就别发生". Cursor skill 候选: **`powershell-set-content-utf8-trap`** (Windows + PS + 任何含 CJK 的文件批量操作, 立规 "Set-Content / Out-File 不许直接接触项目 UTF-8 文件, 一律改 `python open(p, 'wb')`"). 辅助配套: agents 的 `.cursor/rules/` 里一条硬规则, grep 到 agent 输出里出现 `Set-Content` 操作项目 `.md` / `.py` 文件时立即警告.
+- **进入主编号条件**: 需要在后续阶段 (P25-P27 任何 Windows 环境下的批量文件操作) 再次命中同族 (任何 PS `Set-Content`/`Out-File` 搞坏 UTF-8), 才升级为 §7.29. **本次属于"在审查过程中自己踩的坑, 没影响产出语义"** (因为冗余登记兜住了), 但工具层面的陷阱是**确定的系统性风险**, 只是"在本项目重现两次的概率"需要观察.
+
+**L33 "Subagent 并行开发 + 主 agent 三段式 review" 范式** (P25 Day 1 派生, 2026-04-23):
+
+- **场景**: 阶段含 ≥ 3 个 "单文件单任务" 的并行可拆分子任务 (独立文件 / 零跨文件依赖 / 有明确 I/O 契约). 主 agent 一线做 N 份上下文会一次处理太多 spec, 容易把某一份 spec 的细节记岔导致静默 bug.
+- **三段式**:
+    1. **主 agent 拆粒度 + 写任务书**: 每份任务书 ≥ 6 节 = (1) 任务目标 + 字面路径 (2) 硬约束 (不准改什么 / 不准 import 什么 / 必须 preserve 什么) (3) 必覆盖列表 (assertions / scenarios / edge cases) (4) 自验证步骤 (grep pattern / 预期 byte hash / 预期 smoke 行为) (5) 结构化汇报模板 (Deliverable path / Assertions added / **Observation 字段 — 列所有自诊到的疑点**) (6) I/O 契约 (上游文件精确行号 / 下游 consumer 期望).
+    2. **Subagent 并行交付**: 各自拿独立任务书独立做, 交付时用结构化汇报模板, **不直接 fail smoke 而是把自诊到的疑点写入 Observation 字段**, 让主 agent 有机会 review 而不是被 smoke 强制阻断.
+    3. **主 agent review 三步走**: (a) **先读 subagent Observation** (不读代码), 识别潜在 spec 对齐 bug; (b) code review 代码 + lint; (c) 跑该 subagent 自己的 smoke + 全量历史回归.
+- **Subagent 自诊的 Observation 往往比主 agent 自审更可信**: 因为 subagent 独立按 spec 实证, 没有主 agent "内存对齐误差" (脑中 spec 记成了别的).
+- **失败模式**: 主 agent 自己一线做 N 个任务 + 自己写 smoke — 任何 "主 agent 对 spec 理解错 → 代码和 smoke 一起错到 align 绿" 的 bug 都会永远不被发现. 这是 L31 "审查锚定初衷" 在**执行层**的延伸 (L31 管设计层审查怎么不漂, L33 管执行层分工怎么不错).
+- **验证案例**: P25 Day 1 主 agent 在 `external_events.py::simulate_avatar_interaction` 写了 `meta.get("dedupe_key")` / `meta.get("dedupe_rank")`, **实际主程序返回的是 `memory_dedupe_key` / `memory_dedupe_rank`**, 主 agent 内存对齐错. Subagent C 独立按 P25_BLUEPRINT §A.8 的 "B2 rank 升级三步矩阵" 写 smoke 时, 发现 1→2 accept 后 2→2 也被 accept (违反 spec), **没直接 fail** 而是把该断言改为 record-and-continue + 在 Observation 写 "reported bug #1: meta key 可能是 `memory_dedupe_key`". 主 agent review 看到 Observation → 5 分钟内修代码 + 把 smoke 从 record-and-continue 升级为 strict assert. 若主 agent 自己一线做 + 自己写 smoke, bug 不会被任何自动化抓住.
+- **关联**: L24 (语义契约 vs 运行时机制) 管**什么该测**, L27 (生成器三分类 / 资源上限 UX) 管**什么边界要 UX**, L31 (审查锚定初衷) 管**审查时怎么不丢**, **L33 管执行时用什么分工守住 spec**. 配套 skill 候选: `subagent-parallel-dev-three-phase-review` (待抽).
+- **进入主编号条件**: 需要在后续阶段 (P25 Day 2/Day 3 或 P26 立项) 再有一次"subagent 并行执行 → Observation 字段抓到主 agent 写错" 的案例, 才升级为 §7.30.
 
 本项目抽出了 3 份**通用 skill**, 放在 `~/.cursor/skills/` 独立维护,
 不依赖本项目. 任何 AI 辅助的大型 codebase 都能用:
