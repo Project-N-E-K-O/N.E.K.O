@@ -21,6 +21,7 @@ from memory.event_log import (
     EVT_PERSONA_ENTRY_UPDATED,
     EVT_PERSONA_EVIDENCE_UPDATED,
     EVT_REFLECTION_EVIDENCE_UPDATED,
+    EVT_REFLECTION_STATE_CHANGED,
     Reconciler,
 )
 from utils.file_utils import atomic_write_json
@@ -36,6 +37,12 @@ _EVIDENCE_SNAPSHOT_KEYS = (
     # user_fact combo counter (RFC §3.1.8) — 必须走 event log 的 replay
     # 路径才能让重放后 view 的 combo 状态一致
     'user_fact_reinforce_count',
+)
+# Reflection-side evidence events also carry promote throttle counters
+# (RFC §3.9.2) — must replay so a crash between event-append and view-save
+# preserves the backoff window / dead-letter logic.
+_REFLECTION_EVIDENCE_SNAPSHOT_KEYS = _EVIDENCE_SNAPSHOT_KEYS + (
+    'last_promote_attempt_at', 'promote_attempt_count',
 )
 _PERSONA_ENTRY_SNAPSHOT_KEYS = _EVIDENCE_SNAPSHOT_KEYS + ('merged_from_ids',)
 
@@ -72,9 +79,68 @@ def make_reflection_evidence_handler(reflection_engine):
         for r in data:
             if not isinstance(r, dict) or r.get('id') != rid:
                 continue
-            for k in _EVIDENCE_SNAPSHOT_KEYS:
+            for k in _REFLECTION_EVIDENCE_SNAPSHOT_KEYS:
                 if k in payload and r.get(k) != payload[k]:
                     r[k] = payload[k]
+                    changed = True
+            break
+        if changed:
+            atomic_write_json(path, data, indent=2, ensure_ascii=False)
+        return changed
+
+    return _apply
+
+
+def make_reflection_state_changed_handler(reflection_engine):
+    """Build the `reflection.state_changed` apply handler.
+
+    Replays the `to` status onto the reflection identified by
+    `reflection_id`, plus any audit fields the producer recorded
+    (`absorbed_into`, `promote_blocked_reason`, `reject_reason`,
+    `<status>_at` timestamp). RFC §3.9.6 — without a handler, a crash
+    after the event log append but before the view save would leak a
+    "phantom unflipped" reflection on next boot.
+    """
+
+    def _apply(name: str, payload: dict) -> bool:
+        rid = payload.get('reflection_id')
+        to_status = payload.get('to')
+        if not rid or not to_status:
+            return False
+        path = reflection_engine._reflections_path(name)
+        data: list[dict] = []
+        if os.path.exists(path):
+            with open(path, encoding='utf-8') as f:
+                data = json.load(f)
+        if not isinstance(data, list):
+            raise RuntimeError(
+                f"[EvidenceHandler] {path}: 期望 list，实际 "
+                f"{type(data).__name__}；view 结构异常，暂停 replay"
+            )
+        changed = False
+        for r in data:
+            if not isinstance(r, dict) or r.get('id') != rid:
+                continue
+            if r.get('status') != to_status:
+                r['status'] = to_status
+                changed = True
+            ts = payload.get('ts')
+            if ts:
+                ts_key = f'{to_status}_at'
+                if r.get(ts_key) != ts:
+                    r[ts_key] = ts
+                    changed = True
+            for k in ('absorbed_into',):
+                if k in payload and r.get(k) != payload[k]:
+                    r[k] = payload[k]
+                    changed = True
+            if 'reason' in payload and to_status == 'promote_blocked':
+                if r.get('promote_blocked_reason') != payload['reason']:
+                    r['promote_blocked_reason'] = payload['reason']
+                    changed = True
+            if 'reject_explanation' in payload:
+                if r.get('reject_reason') != payload['reject_explanation']:
+                    r['reject_reason'] = payload['reject_explanation']
                     changed = True
             break
         if changed:
@@ -194,7 +260,7 @@ def register_evidence_handlers(
     persona_manager,
     reflection_engine,
 ) -> None:
-    """Register all three evidence handlers on a reconciler.
+    """Register the evidence + state-change handlers on a reconciler.
 
     Call once per boot (memory_server startup) and per hot-reload — the
     closures capture the current manager instances so reload-swapped
@@ -210,4 +276,11 @@ def register_evidence_handlers(
     reconciler.register(
         EVT_PERSONA_ENTRY_UPDATED,
         make_persona_entry_handler(persona_manager),
+    )
+    # PR-3 (RFC §3.9.6): merge-on-promote flips reflection status to
+    # `merged` / `promote_blocked` / `denied` etc. via state_changed events.
+    # Replay needs a handler to re-apply the status to the view.
+    reconciler.register(
+        EVT_REFLECTION_STATE_CHANGED,
+        make_reflection_state_changed_handler(reflection_engine),
     )

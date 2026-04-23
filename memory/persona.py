@@ -23,9 +23,15 @@ import json
 import os
 import re
 import threading
+from collections import defaultdict
 from datetime import datetime, timedelta
 
-from config import SETTING_PROPOSER_MODEL
+from config import (
+    PERSONA_RENDER_TOKEN_BUDGET,
+    REFLECTION_RENDER_TOKEN_BUDGET,
+    SETTING_PROPOSER_MODEL,
+)
+from memory.evidence import evidence_score
 from utils.cloudsave_runtime import assert_cloudsave_writable
 from utils.config_manager import get_config_manager
 from utils.file_utils import (
@@ -35,6 +41,7 @@ from utils.file_utils import (
     robust_json_loads,
 )
 from utils.logger_config import get_module_logger
+from utils.tokenize import acount_tokens, count_tokens
 
 logger = get_module_logger(__name__, "Memory")
 
@@ -787,6 +794,187 @@ class PersonaManager:
             )
             return True
 
+    @staticmethod
+    def _find_entry_with_section(
+        persona: dict, entry_id: str,
+    ) -> tuple[str | None, dict | None]:
+        """Locate an entry by id across all entity sections.
+
+        Returns `(entity_key, entry_dict)` or `(None, None)` if absent.
+        Used by `amerge_into` where the caller (LLM) supplies a fully-qualified
+        target_id but we still need to know which entity section to address
+        the event payload against.
+        """
+        for ek, section in persona.items():
+            if not isinstance(section, dict):
+                continue
+            for entry in section.get('facts', []):
+                if isinstance(entry, dict) and entry.get('id') == entry_id:
+                    return ek, entry
+        return None, None
+
+    async def amerge_into(
+        self, name: str, target_entry_id: str, merged_text: str,
+        *,
+        merged_reinforcement: float, merged_disputation: float,
+        source_reflection_id: str,
+        merged_from_ids: list[str] | None = None,
+    ) -> str:
+        """Merge a reflection's content into an existing persona entry.
+
+        Atomically rewrites the target entry's `text`, evidence values, and
+        appends `source_reflection_id` to its `merged_from_ids` audit list.
+        Emits two events (RFC §3.9.6):
+
+          1. EVT_PERSONA_ENTRY_UPDATED — text rewrite + evidence + audit;
+             carries `rewrite_text_sha256` so the reconciler can detect view
+             drift on replay.
+          2. EVT_PERSONA_EVIDENCE_UPDATED — redundant evidence-only snapshot
+             so the funnel API (§3.10) can scan for evidence changes
+             without joining the entry-update stream.
+
+        Idempotency (RFC §3.9.6 "崩溃半程"): if `source_reflection_id` is
+        already in the target's `merged_from_ids`, both events are skipped
+        and the call returns 'noop'. Subsequent retries (e.g. from a crash
+        after the first event but before reflection state was flipped to
+        'merged') are safe — replaying the event by event_id is also
+        idempotent on the reconciler side (sha256 matches → no-op).
+
+        Returns: 'merged' on success, 'noop' if already merged, 'not_found'
+        if `target_entry_id` is missing from the persona.
+        """
+        from memory.event_log import (
+            EVT_PERSONA_ENTRY_UPDATED,
+            EVT_PERSONA_EVIDENCE_UPDATED,
+            EVIDENCE_SOURCE_PROMOTE_MERGE,
+        )
+        if self._event_log is None:
+            raise RuntimeError(
+                "[Persona.amerge_into] event_log 未注入；"
+                "PersonaManager() 构造时须传入 event_log"
+            )
+
+        async with self._get_alock(name):
+            persona = await self._aensure_persona_locked(name)
+            entity_key, target_entry = self._find_entry_with_section(
+                persona, target_entry_id,
+            )
+            if target_entry is None or entity_key is None:
+                logger.warning(
+                    f"[Persona] {name}: amerge_into 找不到 target_entry_id="
+                    f"{target_entry_id}"
+                )
+                return 'not_found'
+
+            existing_merged_from = list(target_entry.get('merged_from_ids') or [])
+            if source_reflection_id in existing_merged_from:
+                logger.info(
+                    f"[Persona] {name}: amerge_into idempotent skip "
+                    f"target={target_entry_id} src={source_reflection_id}"
+                )
+                return 'noop'
+
+            # Compute new audit list — dedup by id, preserve insertion order.
+            new_merged_from = list(existing_merged_from)
+            for rid in (merged_from_ids or [source_reflection_id]):
+                if rid not in new_merged_from:
+                    new_merged_from.append(rid)
+
+            now_iso = datetime.now().isoformat()
+            new_text_sha = hashlib.sha256(
+                (merged_text or '').encode('utf-8'),
+            ).hexdigest()
+
+            entry_payload = {
+                'entity_key': entity_key,
+                'entry_id': target_entry_id,
+                'rewrite_text_sha256': new_text_sha,
+                'reinforcement': float(merged_reinforcement),
+                'disputation': float(merged_disputation),
+                # Both clocks bumped — the merge IS a fresh signal on this
+                # entry from both sides (rein from the absorbed reflection's
+                # confirmations, disp likewise). RFC §3.1.1 says "只重置被
+                # 触动的一侧" for normal aapply_signal, but merge is a
+                # special case: target evidence values are RECOMPUTED from
+                # both contributors via _compute_merged_evidence (max), so
+                # both timestamps reflect the moment that recomputation
+                # happened — semantic-clean, no half-stale clock.
+                'rein_last_signal_at': now_iso,
+                'disp_last_signal_at': now_iso,
+                # sub_zero_days reset to 0 — the merge brought new positive
+                # signal; archive countdown should restart.
+                'sub_zero_days': 0,
+                'merged_from_ids': new_merged_from,
+                'source': EVIDENCE_SOURCE_PROMOTE_MERGE,
+            }
+
+            evidence_payload = {
+                'entity_key': entity_key,
+                'entry_id': target_entry_id,
+                'reinforcement': float(merged_reinforcement),
+                'disputation': float(merged_disputation),
+                'rein_last_signal_at': now_iso,
+                'disp_last_signal_at': now_iso,
+                'sub_zero_days': 0,
+                'user_fact_reinforce_count':
+                    int(target_entry.get('user_fact_reinforce_count', 0) or 0),
+                'source': EVIDENCE_SOURCE_PROMOTE_MERGE,
+            }
+
+            def _sync_load(_n: str):
+                return persona
+
+            def _sync_mutate_entry(_view):
+                target_entry['text'] = merged_text
+                target_entry['reinforcement'] = float(merged_reinforcement)
+                target_entry['disputation'] = float(merged_disputation)
+                target_entry['rein_last_signal_at'] = now_iso
+                target_entry['disp_last_signal_at'] = now_iso
+                target_entry['sub_zero_days'] = 0
+                target_entry['merged_from_ids'] = new_merged_from
+
+            def _sync_mutate_evidence(_view):
+                # Entry-update mutate already wrote the evidence fields;
+                # the evidence event is purely a funnel hint — no further
+                # mutation needed. Kept as a no-op to satisfy the
+                # record_and_save 5-step contract (events with empty
+                # mutates are explicitly allowed by EventLog).
+                return None
+
+            def _sync_save(n: str, view):
+                assert_cloudsave_writable(
+                    self._config_manager,
+                    operation="save",
+                    target=f"memory/{n}/persona.json",
+                )
+                self._personas[n] = view
+                atomic_write_json(
+                    self._persona_path(n), view, indent=2, ensure_ascii=False,
+                )
+
+            # Event 1: entry rewrite — the canonical merge event. After this
+            # returns, persona.json is on disk with merged text + evidence.
+            await self._event_log.arecord_and_save(
+                name, EVT_PERSONA_ENTRY_UPDATED, entry_payload,
+                sync_load_view=_sync_load,
+                sync_mutate_view=_sync_mutate_entry,
+                sync_save_view=_sync_save,
+            )
+            # Event 2: evidence-only snapshot — funnel observability. View
+            # is already up to date; the event itself is the contract.
+            await self._event_log.arecord_and_save(
+                name, EVT_PERSONA_EVIDENCE_UPDATED, evidence_payload,
+                sync_load_view=_sync_load,
+                sync_mutate_view=_sync_mutate_evidence,
+                sync_save_view=_sync_save,
+            )
+            logger.info(
+                f"[Persona] {name}: amerge_into target={target_entry_id} "
+                f"src={source_reflection_id} rein={merged_reinforcement} "
+                f"disp={merged_disputation}"
+            )
+            return 'merged'
+
     def _get_section_facts(self, persona: dict, entity: str) -> list:
         return persona.setdefault(entity, {}).setdefault('facts', [])
 
@@ -1162,12 +1350,139 @@ class PersonaManager:
         return entries
 
     # ── rendering ────────────────────────────────────────────────────
+    #
+    # Three-phase pipeline (RFC §3.6.2):
+    #   Phase 1 (split): protected vs non-protected per entity.
+    #   Phase 2 (score-trim): per-section budget; protected always kept.
+    #   Phase 3 (compose): emit headers + suppressed区 in stable order.
+    #
+    # Both sync (`render_persona_markdown` / `_compose_persona_markdown`)
+    # and async (`arender_persona_markdown`) twins exist. Tests + migration
+    # scripts use the sync path; the production hot path is async — only
+    # `acount_tokens` differs (the rest of the math is sync). RFC §3.6.6:
+    # tiktoken's Rust core releases the GIL, but we still hop to a worker
+    # thread on the async path so the FastAPI event loop doesn't stall on
+    # batches of ~100 entries.
 
-    def _compose_persona_markdown(
+    @staticmethod
+    def _score_trim_entries(
+        entries: list, budget: int, now: datetime,
+    ) -> list:
+        """Sync score-trim: sort by (evidence_score, importance) DESC, keep
+        entries whose accumulated `count_tokens(text)` ≤ `budget`. Stops at
+        the first entry that would push past the cap (lower-score remainder
+        is dropped — see §3.6.3).
+
+        `entries` is a list of dicts (no entity tagging — caller sorts/keys
+        as needed). Returns the kept subset preserving the score-DESC order.
+        """
+        sorted_entries = sorted(
+            entries,
+            key=lambda e: (
+                evidence_score(e, now),
+                float(e.get('importance', 0) or 0),
+            ),
+            reverse=True,
+        )
+        kept = []
+        total = 0
+        for e in sorted_entries:
+            t = count_tokens(e.get('text', '') or '')
+            if total + t > budget:
+                break
+            kept.append(e)
+            total += t
+        return kept
+
+    @staticmethod
+    async def _ascore_trim_entries(
+        entries: list, budget: int, now: datetime,
+    ) -> list:
+        """Async twin of `_score_trim_entries`. Identical math; the only
+        difference is `acount_tokens` (worker-thread tiktoken)."""
+        sorted_entries = sorted(
+            entries,
+            key=lambda e: (
+                evidence_score(e, now),
+                float(e.get('importance', 0) or 0),
+            ),
+            reverse=True,
+        )
+        kept = []
+        total = 0
+        for e in sorted_entries:
+            t = await acount_tokens(e.get('text', '') or '')
+            if total + t > budget:
+                break
+            kept.append(e)
+            total += t
+        return kept
+
+    def _split_persona_for_render(
+        self, persona: dict,
+    ) -> tuple[list[tuple[str, dict]], dict[str, list[dict]]]:
+        """Phase 1 (RFC §3.6.2): split entries into:
+          - `protected_entries`: list[(entity_key, entry)] — character_card
+            sources, never trimmed (§3.5.7 + §3.6.1).
+          - `non_protected_by_entity`: {entity_key: [entry, ...]} — the
+            score-trim candidate pool (suppressed entries excluded; they go
+            to the dedicated "暂不主动提及" section in compose).
+        """
+        protected_entries: list[tuple[str, dict]] = []
+        non_protected_by_entity: dict[str, list[dict]] = defaultdict(list)
+        for entity_key, section in persona.items():
+            if not isinstance(section, dict):
+                continue
+            for entry in section.get('facts', []):
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get('suppress'):
+                    # Suppressed entries are rendered in their own section
+                    # (compose phase) — they don't compete with protected/
+                    # non-protected for budget.
+                    continue
+                if entry.get('protected'):
+                    protected_entries.append((entity_key, entry))
+                else:
+                    non_protected_by_entity[entity_key].append(entry)
+        return protected_entries, dict(non_protected_by_entity)
+
+    @staticmethod
+    def _filter_reflections_for_render(
+        reflections: list[dict] | None, persona: dict,
+        suppressed_text_set: set[str],
+    ) -> list[dict]:
+        """Drop reflections whose text matches a suppressed persona entry
+        (existing semantic — see `_is_suppressed_text` callers below)."""
+        if not reflections:
+            return []
+        out = []
+        for r in reflections:
+            if not isinstance(r, dict):
+                continue
+            text = r.get('text', '')
+            if not text:
+                continue
+            if text in suppressed_text_set:
+                continue
+            out.append(r)
+        return out
+
+    def _compose_markdown_from_trimmed(
         self, name: str, persona: dict, name_mapping: dict,
-        pending_reflections: list[dict] | None,
-        confirmed_reflections: list[dict] | None,
+        protected_entries: list[tuple[str, dict]],
+        trimmed_non_protected: list[dict],
+        non_protected_entity_index: dict[int, str],
+        trimmed_pending_reflections: list[dict],
+        trimmed_confirmed_reflections: list[dict],
     ) -> str:
+        """Phase 3 (RFC §3.6.2): emit markdown sections in stable order.
+
+        Headers: `关于主人` / `关于{ai_name}` / `关系动态` / 反思两类 / 抑制区.
+        Within each entity section: protected entries first (deterministic
+        order from persona file) then non-protected kept by score-trim,
+        preserving the trim-order (which is score DESC).
+        """
         master_name = name_mapping.get('human', '主人')
         ai_name = name
         _headers = {
@@ -1176,46 +1491,59 @@ class PersonaManager:
             'relationship': "关系动态",
         }
 
-        sections = []
-
-        suppressed_lines = []
+        # Suppressed entries always render (small + the whole point is "AI
+        # remembers but won't volunteer it"); not budget-counted.
+        suppressed_lines: list[str] = []
         for entry in self._collect_all_entries(persona):
             if isinstance(entry, dict) and entry.get('suppress'):
                 text = entry.get('text', '')
                 if text:
                     suppressed_lines.append(f"- {text}")
 
-        for entity_key, section in persona.items():
-            if not isinstance(section, dict):
+        # Group kept entries by entity_key so each section is contiguous.
+        # `non_protected_entity_index[id(entry)]` was populated by caller
+        # to remember which entity each non-protected entry came from
+        # (score-trim sorts globally so we lose that info).
+        per_entity: dict[str, list[dict]] = defaultdict(list)
+        for ek, entry in protected_entries:
+            per_entity[ek].append(entry)
+        for entry in trimmed_non_protected:
+            ek = non_protected_entity_index.get(id(entry))
+            if ek:
+                per_entity[ek].append(entry)
+
+        sections: list[str] = []
+        # Iterate persona's natural key order so output is stable
+        # regardless of which entries got trimmed.
+        for entity_key in persona.keys():
+            entries = per_entity.get(entity_key)
+            if not entries:
                 continue
-            facts = section.get('facts', [])
-            lines = self._render_fact_entries(facts)
+            lines = []
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                text = entry.get('text', '')
+                if text:
+                    lines.append(f"- {text}")
             if lines:
                 header = _headers.get(entity_key, entity_key)
                 sections.append(f"### {header}\n" + "\n".join(lines))
 
-        if pending_reflections:
-            pending_lines = []
-            for r in pending_reflections:
-                text = r.get('text', '')
-                if text and not self._is_suppressed_text(persona, text):
-                    pending_lines.append(f"- {text}")
-            if pending_lines:
+        if trimmed_pending_reflections:
+            lines = [f"- {r.get('text', '')}" for r in trimmed_pending_reflections
+                     if r.get('text')]
+            if lines:
                 sections.append(
-                    f"### {ai_name}最近的印象（还不太确定）\n"
-                    + "\n".join(pending_lines)
+                    f"### {ai_name}最近的印象（还不太确定）\n" + "\n".join(lines)
                 )
 
-        if confirmed_reflections:
-            confirmed_lines = []
-            for r in confirmed_reflections:
-                text = r.get('text', '')
-                if text and not self._is_suppressed_text(persona, text):
-                    confirmed_lines.append(f"- {text}")
-            if confirmed_lines:
+        if trimmed_confirmed_reflections:
+            lines = [f"- {r.get('text', '')}" for r in trimmed_confirmed_reflections
+                     if r.get('text')]
+            if lines:
                 sections.append(
-                    f"### {ai_name}比较确定的印象\n"
-                    + "\n".join(confirmed_lines)
+                    f"### {ai_name}比较确定的印象\n" + "\n".join(lines)
                 )
 
         if suppressed_lines:
@@ -1225,6 +1553,65 @@ class PersonaManager:
             )
 
         return "\n\n".join(sections) if sections else ""
+
+    def _suppressed_text_set(self, persona: dict) -> set[str]:
+        out: set[str] = set()
+        for entry in self._collect_all_entries(persona):
+            if isinstance(entry, dict) and entry.get('suppress'):
+                t = entry.get('text', '')
+                if t:
+                    out.add(t)
+        return out
+
+    def _compose_persona_markdown(
+        self, name: str, persona: dict, name_mapping: dict,
+        pending_reflections: list[dict] | None,
+        confirmed_reflections: list[dict] | None,
+    ) -> str:
+        """Sync 3-phase render path. Used by `render_persona_markdown` and
+        any test/migration caller that doesn't have an event loop."""
+        now = datetime.now()
+
+        protected_entries, non_protected_by_entity = (
+            self._split_persona_for_render(persona)
+        )
+
+        # Build entity-index by id() so we can regroup after the (entity-
+        # blind) score-trim. Using id() is safe because we never mutate
+        # entries during render — they're the same objects throughout.
+        non_protected_entity_index: dict[int, str] = {}
+        flat_non_protected: list[dict] = []
+        for ek, entries in non_protected_by_entity.items():
+            for e in entries:
+                non_protected_entity_index[id(e)] = ek
+                flat_non_protected.append(e)
+
+        trimmed_non_protected = self._score_trim_entries(
+            flat_non_protected, PERSONA_RENDER_TOKEN_BUDGET, now,
+        )
+
+        suppressed_text_set = self._suppressed_text_set(persona)
+        trimmed_reflections_combined = self._score_trim_entries(
+            self._filter_reflections_for_render(
+                (pending_reflections or []) + (confirmed_reflections or []),
+                persona, suppressed_text_set,
+            ),
+            REFLECTION_RENDER_TOKEN_BUDGET, now,
+        )
+        kept_ids = {id(r) for r in trimmed_reflections_combined}
+        trimmed_pending = [r for r in (pending_reflections or [])
+                           if id(r) in kept_ids
+                           and r.get('text') not in suppressed_text_set]
+        trimmed_confirmed = [r for r in (confirmed_reflections or [])
+                             if id(r) in kept_ids
+                             and r.get('text') not in suppressed_text_set]
+
+        return self._compose_markdown_from_trimmed(
+            name, persona, name_mapping,
+            protected_entries, trimmed_non_protected,
+            non_protected_entity_index,
+            trimmed_pending, trimmed_confirmed,
+        )
 
     def render_persona_markdown(self, name: str, pending_reflections: list[dict] | None = None,
                                    confirmed_reflections: list[dict] | None = None) -> str:
@@ -1246,11 +1633,49 @@ class PersonaManager:
         pending_reflections: list[dict] | None = None,
         confirmed_reflections: list[dict] | None = None,
     ) -> str:
+        """Async 3-phase render path. Production hot path — uses
+        `acount_tokens` so the event loop doesn't stall on tiktoken IO."""
         await self.aupdate_suppressions(name)
         persona = await self.aensure_persona(name)
         _, _, _, _, name_mapping, _, _, _, _ = await self._config_manager.aget_character_data()
-        return self._compose_persona_markdown(
-            name, persona, name_mapping, pending_reflections, confirmed_reflections,
+        now = datetime.now()
+
+        protected_entries, non_protected_by_entity = (
+            self._split_persona_for_render(persona)
+        )
+
+        non_protected_entity_index: dict[int, str] = {}
+        flat_non_protected: list[dict] = []
+        for ek, entries in non_protected_by_entity.items():
+            for e in entries:
+                non_protected_entity_index[id(e)] = ek
+                flat_non_protected.append(e)
+
+        trimmed_non_protected = await self._ascore_trim_entries(
+            flat_non_protected, PERSONA_RENDER_TOKEN_BUDGET, now,
+        )
+
+        suppressed_text_set = self._suppressed_text_set(persona)
+        trimmed_reflections_combined = await self._ascore_trim_entries(
+            self._filter_reflections_for_render(
+                (pending_reflections or []) + (confirmed_reflections or []),
+                persona, suppressed_text_set,
+            ),
+            REFLECTION_RENDER_TOKEN_BUDGET, now,
+        )
+        kept_ids = {id(r) for r in trimmed_reflections_combined}
+        trimmed_pending = [r for r in (pending_reflections or [])
+                           if id(r) in kept_ids
+                           and r.get('text') not in suppressed_text_set]
+        trimmed_confirmed = [r for r in (confirmed_reflections or [])
+                             if id(r) in kept_ids
+                             and r.get('text') not in suppressed_text_set]
+
+        return self._compose_markdown_from_trimmed(
+            name, persona, name_mapping,
+            protected_entries, trimmed_non_protected,
+            non_protected_entity_index,
+            trimmed_pending, trimmed_confirmed,
         )
 
     def _is_suppressed_text(self, persona: dict, text: str) -> bool:
