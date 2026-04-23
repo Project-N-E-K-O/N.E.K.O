@@ -175,6 +175,8 @@
         "unsubscribeFailed": "Unsubscribe failed: {{error}}",
         "unsubscribeError": "Error during unsubscribe, please try again later",
         "unsubscribeCurrentCatgirlBlocked": "Can't unsubscribe \"{{name}}\" because it's the active catgirl. Please switch to another character first.",
+        "unsubscribeLocalConfigCleanupFailed": "Failed to clean up local character configuration. The Steam unsubscribe request was cancelled; please resolve the issue and retry.",
+        "unsubscribeSteamRequestFailed": "Failed to send Steam unsubscribe request: {{error}}",
         "unsubscribeCleanupDetail": "Cleaned {{characterCount}} character card(s) ({{characters}}); deleted {{memoryPathCount}} memory path(s)",
         "unsubscribeNoAssociation": "No character associated with this subscription. Only the subscription folder was removed; clean up any leftover memory manually.",
         "unsubscribeCleanupErrors": "{{count}} error(s) during cleanup. First: {{stage}} -> {{error}}",

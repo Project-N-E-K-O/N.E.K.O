@@ -175,6 +175,8 @@
         "unsubscribeFailed": "取消訂閱失敗: {{error}}",
         "unsubscribeError": "取消訂閱時發生錯誤，請稍後再試",
         "unsubscribeCurrentCatgirlBlocked": "不能取消訂閱當前正在使用的貓娘「{{name}}」，請先切換到其他角色後再取消訂閱。",
+        "unsubscribeLocalConfigCleanupFailed": "本地角色配置清理失敗，已取消本次 Steam 退訂請求，請修復後重試。",
+        "unsubscribeSteamRequestFailed": "Steam 退訂請求發送失敗：{{error}}",
         "unsubscribeCleanupDetail": "已清理角色卡：{{characterCount}} 個（{{characters}}）；已刪除記憶路徑：{{memoryPathCount}} 條",
         "unsubscribeNoAssociation": "未找到與此訂閱關聯的角色，僅刪除了訂閱資料夾；若有殘留記憶請手動處理",
         "unsubscribeCleanupErrors": "清理過程出現 {{count}} 個錯誤，首個：{{stage}} -> {{error}}",

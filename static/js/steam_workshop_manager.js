@@ -2359,14 +2359,30 @@ function unsubscribeItem(itemId, itemName) {
                 error_count: Array.isArray(summaryForLog.errors) ? summaryForLog.errors.length : 0,
             });
             if (!response.ok) {
-                // 后端前置校验失败（例如 CURRENT_CATGIRL_IN_USE）
-                if (data && data.code === 'CURRENT_CATGIRL_IN_USE') {
+                // 后端前置校验失败：按 code 映射到本地化 key，避免把后端
+                // 硬编码的中文 error 文案直接甩给英文/繁中用户。
+                const code = data && data.code;
+                if (code === 'CURRENT_CATGIRL_IN_USE') {
                     const characterName = data.character_name || itemName;
                     const blockedMsg = (window.t ? window.t('steam.unsubscribeCurrentCatgirlBlocked', { name: characterName }) : '') || data.error || `不能取消订阅当前正在使用的猫娘「${characterName}」，请先切换到其他角色后再取消订阅。`;
                     // 优先使用 toast；同时用 alert 兜底，确保在 toast 被其它高层 overlay
                     // 遮挡时用户仍能看到阻断原因（这是阻断性 action，用户必须知情）
                     showMessage(blockedMsg, 'warning', 6000);
                     try { window.alert(blockedMsg); } catch (_) { /* 忽略 alert 被禁用 */ }
+                    restoreCard();
+                    return;
+                }
+                if (code === 'LOCAL_CONFIG_CLEANUP_FAILED') {
+                    const msg = (window.t ? window.t('steam.unsubscribeLocalConfigCleanupFailed') : '') || data.error || '本地角色配置清理失败，已取消本次 Steam 退订请求，请修复后重试。';
+                    showMessage(msg, 'error', 8000);
+                    try { window.alert(msg); } catch (_) { /* ignore */ }
+                    restoreCard();
+                    return;
+                }
+                if (code === 'STEAM_UNSUBSCRIBE_FAILED') {
+                    const detail = (data && data.error) || `HTTP ${response.status}`;
+                    const msg = (window.t ? window.t('steam.unsubscribeSteamRequestFailed', { error: detail }) : '') || `Steam 退订请求发送失败: ${detail}`;
+                    showMessage(msg, 'error', 8000);
                     restoreCard();
                     return;
                 }
