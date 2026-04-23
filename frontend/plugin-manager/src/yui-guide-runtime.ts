@@ -18,8 +18,6 @@ const GUIDE_AUDIO_BY_KEY = {
 const ROOT_ID = 'yui-guide-plugin-dashboard-runtime'
 const SVG_NS = 'http://www.w3.org/2000/svg'
 const BACKDROP_MASK_ID = `${ROOT_ID}-mask`
-const TRUSTED_OPENER_ORIGIN = getTrustedOpenerOrigin()
-const ALLOWED_ORIGINS = new Set(TRUSTED_OPENER_ORIGIN ? [TRUSTED_OPENER_ORIGIN] : [])
 let currentGuideAudio: HTMLAudioElement | null = null
 let currentGuideAudioTimer: number | null = null
 
@@ -91,6 +89,11 @@ function resolveSpeechLang() {
   if (locale === 'ko') return 'ko-KR'
   if (locale === 'ru') return 'ru-RU'
   return 'zh-CN'
+}
+
+function getAllowedOpenerOrigins() {
+  const trustedOrigin = getTrustedOpenerOrigin()
+  return trustedOrigin ? new Set([trustedOrigin]) : new Set<string>()
 }
 
 function estimateSpeechDurationMs(text: string) {
@@ -440,7 +443,7 @@ class PluginDashboardGuideRuntime {
 
   notify(type: string, sessionId: string) {
     try {
-      const targetOrigin = TRUSTED_OPENER_ORIGIN
+      const targetOrigin = getTrustedOpenerOrigin()
       if (!targetOrigin) {
         return
       }
@@ -905,7 +908,8 @@ export function initPluginDashboardYuiGuideRuntime() {
       return
     }
 
-    if (!ALLOWED_ORIGINS.has(event.origin)) {
+    const allowedOrigins = getAllowedOpenerOrigins()
+    if (!allowedOrigins.has(event.origin)) {
       return
     }
 

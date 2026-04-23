@@ -981,17 +981,14 @@
             console.warn('[YuiGuideHandoff] openPluginDashboard: token 创建失败，取消打开');
             return Promise.resolve(null);
         }
-        var tokenId = tokenObj ? tokenObj.token : '';
+        var tokenId = tokenObj.token;
         var params = [
             'yui_guide=1',
             'flow_id=' + encodeURIComponent(HANDOFF_FLOW_ID),
             'source_page=home',
-            'resume_scene=' + encodeURIComponent(scene)
+            'resume_scene=' + encodeURIComponent(scene),
+            'handoff_token=' + encodeURIComponent(tokenId)
         ];
-
-        if (tokenId) {
-            params.push('handoff_token=' + encodeURIComponent(tokenId));
-        }
 
         var openUrl = buildPluginDashboardUrl(params);
 
