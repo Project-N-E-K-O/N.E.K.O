@@ -1053,6 +1053,8 @@
         "selectMotion": "选择动作",
         "selectExpression": "选择表情",
         "selectPersistentExpression": "选择常驻表情",
+        "noMotion": "无动作",
+        "noExpression": "无表情",
         "noMotionFiles": "没有动作文件",
         "touchAnim": {
             "title": "触摸动画配置",

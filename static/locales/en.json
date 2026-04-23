@@ -1053,6 +1053,8 @@
         "selectMotion": "Animation",
         "selectExpression": "Expression",
         "selectPersistentExpression": "Persist. Expr.",
+        "noMotion": "No Motion",
+        "noExpression": "No Expression",
         "noMotionFiles": "No motion files",
         "touchAnim": {
             "title": "Touch Anim Config",

@@ -1053,6 +1053,8 @@
         "selectMotion": "Анимация",
         "selectExpression": "Выражение",
         "selectPersistentExpression": "Пост. выр.",
+        "noMotion": "Без анимации",
+        "noExpression": "Без выражения",
         "noMotionFiles": "Нет файлов анимации",
         "touchAnim": {
             "title": "Настройка касаний",

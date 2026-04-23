@@ -1053,6 +1053,8 @@
         "selectMotion": "애니메이션",
         "selectExpression": "표현식",
         "selectPersistentExpression": "지속 표현식 선택",
+        "noMotion": "모션 없음",
+        "noExpression": "표현식 없음",
         "noMotionFiles": "모션 파일 없음",
         "touchAnim": {
             "title": "터치 애니메이션 설정",

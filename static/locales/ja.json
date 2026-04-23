@@ -1053,6 +1053,8 @@
         "selectMotion": "モーション",
         "selectExpression": "表情",
         "selectPersistentExpression": "常時表情を選択",
+        "noMotion": "モーションなし",
+        "noExpression": "表情なし",
         "noMotionFiles": "モーションファイルなし",
         "touchAnim": {
             "title": "タッチアニメ設定",

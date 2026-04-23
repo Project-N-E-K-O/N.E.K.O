@@ -1053,6 +1053,8 @@
         "selectMotion": "選擇動作",
         "selectExpression": "選擇錶情",
         "selectPersistentExpression": "選擇常駐錶情",
+        "noMotion": "無動作",
+        "noExpression": "無錶情",
         "noMotionFiles": "沒有動作文件",
         "touchAnim": {
             "title": "觸摸動畫配置",
