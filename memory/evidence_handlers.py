@@ -20,7 +20,9 @@ import os
 from memory.event_log import (
     EVT_PERSONA_ENTRY_UPDATED,
     EVT_PERSONA_EVIDENCE_UPDATED,
+    EVT_PERSONA_FACT_ADDED,
     EVT_REFLECTION_EVIDENCE_UPDATED,
+    EVT_REFLECTION_STATE_CHANGED,
     Reconciler,
 )
 from utils.file_utils import atomic_write_json
@@ -33,6 +35,9 @@ _EVIDENCE_SNAPSHOT_KEYS = (
     'reinforcement', 'disputation',
     'rein_last_signal_at', 'disp_last_signal_at',
     'sub_zero_days',
+    # 防抖字段（archive sweep 写入）：与 sub_zero_days 一对，必须随其
+    # 一起 replay，否则重放后 view 同一天可能再被 +1（破坏防抖语义）。
+    'sub_zero_last_increment_date',
     # user_fact combo counter (RFC §3.1.8) — 必须走 event log 的 replay
     # 路径才能让重放后 view 的 combo 状态一致
     'user_fact_reinforce_count',
@@ -189,12 +194,97 @@ def make_persona_entry_handler(persona_manager):
     return _apply
 
 
+def make_reflection_archive_handler(reflection_engine):
+    """Build the `reflection.state_changed` apply handler.
+
+    PR-2: only the archive transition (to='archived') is wired.
+    Non-archive state_changed events remain view-writer-driven
+    (confirm_promotion / reject_promotion write the view directly and
+    currently do not emit state_changed events). For `to='archived'`:
+    remove the entry from the active view; the shard file was already
+    written before the event was appended (see
+    `ReflectionEngine.aarchive_reflection`). Idempotent if replayed —
+    the `if entry exists` guard makes a second pass a no-op.
+    """
+
+    def _apply(name: str, payload: dict) -> bool:
+        rid = payload.get('reflection_id')
+        to_status = payload.get('to')
+        if not rid or to_status != 'archived':
+            # Forward-compat: unknown state transitions are a no-op in
+            # this handler; PR-3 may add handlers for promoted/denied.
+            return False
+        path = reflection_engine._reflections_path(name)
+        data: list[dict] = []
+        if os.path.exists(path):
+            with open(path, encoding='utf-8') as f:
+                data = json.load(f)
+        if not isinstance(data, list):
+            raise RuntimeError(
+                f"[ArchiveHandler] {path}: 期望 list，实际 "
+                f"{type(data).__name__}；view 结构异常，暂停 replay"
+            )
+        before = len(data)
+        data = [r for r in data if not (isinstance(r, dict) and r.get('id') == rid)]
+        if len(data) == before:
+            return False  # already removed (idempotent replay)
+        atomic_write_json(path, data, indent=2, ensure_ascii=False)
+        return True
+
+    return _apply
+
+
+def make_persona_archive_handler(persona_manager):
+    """Build the `persona.fact_added` apply handler for archive events.
+
+    RFC §3.5.6: persona archive 复用 fact_added 事件，用 payload 里的
+    `archive_shard_path` 字段区分主路径的 fact_added（该路径未来可能由
+    PR-3 emit，但当前代码未使用）。PR-2 handler 只对带 archive_shard_path
+    的 payload 做归档（从主视图移除 entry）。不带该字段的 payload 当前
+    视为 no-op — 正向 fact_added 还没走事件路径。
+    """
+
+    def _apply(name: str, payload: dict) -> bool:
+        if not payload.get('archive_shard_path'):
+            return False  # Not an archive event → no-op for PR-2
+        entity_key = payload.get('entity_key')
+        entry_id = payload.get('entry_id')
+        if not entity_key or not entry_id:
+            return False
+        path = persona_manager._persona_path(name)
+        if not os.path.exists(path):
+            return False
+        with open(path, encoding='utf-8') as f:
+            persona = json.load(f)
+        if not isinstance(persona, dict):
+            raise RuntimeError(
+                f"[ArchiveHandler] {path}: 期望 dict，实际 "
+                f"{type(persona).__name__}；view 结构异常，暂停 replay"
+            )
+        section = persona.get(entity_key)
+        if not isinstance(section, dict):
+            return False
+        facts = section.get('facts', [])
+        before = len(facts)
+        section['facts'] = [
+            e for e in facts
+            if not (isinstance(e, dict) and e.get('id') == entry_id)
+        ]
+        if len(section['facts']) == before:
+            return False
+        persona_manager._personas[name] = persona
+        atomic_write_json(path, persona, indent=2, ensure_ascii=False)
+        return True
+
+    return _apply
+
+
 def register_evidence_handlers(
     reconciler: Reconciler,
     persona_manager,
     reflection_engine,
 ) -> None:
-    """Register all three evidence handlers on a reconciler.
+    """Register all evidence + archive handlers on a reconciler.
 
     Call once per boot (memory_server startup) and per hot-reload — the
     closures capture the current manager instances so reload-swapped
@@ -210,4 +300,13 @@ def register_evidence_handlers(
     reconciler.register(
         EVT_PERSONA_ENTRY_UPDATED,
         make_persona_entry_handler(persona_manager),
+    )
+    # RFC §3.5.6: archive events reuse state_changed / fact_added
+    reconciler.register(
+        EVT_REFLECTION_STATE_CHANGED,
+        make_reflection_archive_handler(reflection_engine),
+    )
+    reconciler.register(
+        EVT_PERSONA_FACT_ADDED,
+        make_persona_archive_handler(persona_manager),
     )

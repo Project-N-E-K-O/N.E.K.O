@@ -136,6 +136,18 @@ class PersonaManager:
         from memory import ensure_character_dir
         return os.path.join(ensure_character_dir(self._config_manager.memory_dir, name), 'persona_corrections.json')
 
+    def _persona_archive_dir(self, name: str) -> str:
+        """Sharded archive directory for persona entries (RFC §3.5.4).
+
+        New in PR-2 — persona had no archival before this RFC, so there
+        is no legacy flat file to migrate (RFC §3.5.5 末段).
+        """
+        from memory import ensure_character_dir
+        return os.path.join(
+            ensure_character_dir(self._config_manager.memory_dir, name),
+            'persona_archive',
+        )
+
     # ── CRUD ─────────────────────────────────────────────────────────
 
     def _empty_persona(self) -> dict:
@@ -784,6 +796,179 @@ class PersonaManager:
                 sync_load_view=_sync_load,
                 sync_mutate_view=_sync_mutate,
                 sync_save_view=_sync_save,
+            )
+            return True
+
+    # ── score-driven archive (RFC §3.5) ─────────────────────────────
+
+    async def aincrement_sub_zero(
+        self, name: str, entity_key: str, entry_id: str, now: datetime,
+    ) -> int | None:
+        """Increment one persona entry's `sub_zero_days` via EVT_PERSONA_EVIDENCE_UPDATED.
+
+        Symmetric to `ReflectionEngine.aincrement_sub_zero`. Called by
+        the periodic archive sweep loop. Returns the new count or None
+        if no increment happened.
+        """
+        from memory.event_log import EVT_PERSONA_EVIDENCE_UPDATED
+        from memory.evidence import maybe_mark_sub_zero
+        if self._event_log is None:
+            raise RuntimeError(
+                "[Persona.aincrement_sub_zero] event_log 未注入"
+            )
+
+        async with self._get_alock(name):
+            persona = await self._aensure_persona_locked(name)
+            section = persona.get(entity_key)
+            if not isinstance(section, dict):
+                return None
+            section_facts = section.get('facts', [])
+            entry = self._find_entry_in_section(section_facts, entry_id)
+            if entry is None:
+                return None
+            if not maybe_mark_sub_zero(entry, now):
+                return None
+
+            new_count = int(entry.get('sub_zero_days', 0) or 0)
+            new_date = entry.get('sub_zero_last_increment_date')
+
+            payload = {
+                'entity_key': entity_key,
+                'entry_id': entry_id,
+                'reinforcement': float(entry.get('reinforcement', 0.0) or 0.0),
+                'disputation': float(entry.get('disputation', 0.0) or 0.0),
+                'rein_last_signal_at': entry.get('rein_last_signal_at'),
+                'disp_last_signal_at': entry.get('disp_last_signal_at'),
+                'sub_zero_days': new_count,
+                'sub_zero_last_increment_date': new_date,
+                'user_fact_reinforce_count': int(
+                    entry.get('user_fact_reinforce_count', 0) or 0,
+                ),
+                'source': 'archive_sweep',
+            }
+
+            def _sync_load(_n: str):
+                return persona
+
+            def _sync_mutate(_view):
+                entry['sub_zero_days'] = new_count
+                entry['sub_zero_last_increment_date'] = new_date
+
+            def _sync_save(n: str, view):
+                assert_cloudsave_writable(
+                    self._config_manager,
+                    operation="save",
+                    target=f"memory/{n}/persona.json",
+                )
+                self._personas[n] = view
+                atomic_write_json(
+                    self._persona_path(n), view, indent=2, ensure_ascii=False,
+                )
+
+            await self._event_log.arecord_and_save(
+                name, EVT_PERSONA_EVIDENCE_UPDATED, payload,
+                sync_load_view=_sync_load,
+                sync_mutate_view=_sync_mutate,
+                sync_save_view=_sync_save,
+            )
+            return new_count
+
+    async def aarchive_persona_entry(
+        self, name: str, entity_key: str, entry_id: str,
+    ) -> bool:
+        """Move one persona entry from main view to a sharded archive file.
+
+        RFC §3.5.6: archive 复用 ``EVT_PERSONA_FACT_ADDED`` 事件 — payload
+        carries an `archive_shard_path` field so consumers can distinguish
+        the archive flow from a regular fact_added (regular adds have no
+        such field). Mirrors `ReflectionEngine.aarchive_reflection`.
+
+        Returns True if archived; False if not found / protected.
+        """
+        from memory.archive_shards import aappend_to_shard
+        from memory.event_log import EVT_PERSONA_FACT_ADDED
+        if self._event_log is None:
+            raise RuntimeError(
+                "[Persona.aarchive_persona_entry] event_log 未注入；"
+                "PersonaManager() 构造时须传入 event_log"
+            )
+
+        async with self._get_alock(name):
+            persona = await self._aensure_persona_locked(name)
+            section = persona.get(entity_key)
+            if not isinstance(section, dict):
+                logger.warning(
+                    f"[Persona] {name}: aarchive_persona_entry 找不到 "
+                    f"entity_key={entity_key}"
+                )
+                return False
+            section_facts = section.get('facts', [])
+            entry = self._find_entry_in_section(section_facts, entry_id)
+            if entry is None:
+                logger.warning(
+                    f"[Persona] {name}: aarchive_persona_entry 找不到 "
+                    f"entry_id={entry_id}"
+                )
+                return False
+            if entry.get('protected'):
+                logger.debug(
+                    f"[Persona] {name}: aarchive_persona_entry 跳过 protected "
+                    f"entry_id={entry_id}"
+                )
+                return False
+
+            now = datetime.now()
+            now_iso = now.isoformat()
+            from memory.archive_shards import apick_today_shard_path
+            archive_dir = self._persona_archive_dir(name)
+            shard_path = await apick_today_shard_path(archive_dir, now=now)
+            shard_basename = os.path.basename(shard_path)
+            archive_entry = dict(entry)
+            archive_entry['archived_at'] = now_iso
+            archive_entry['archive_shard_path'] = shard_basename
+            await aappend_to_shard(archive_dir, [archive_entry], now=now)
+
+            payload = {
+                'entity_key': entity_key,
+                'entry_id': entry_id,
+                'archive_shard_path': shard_basename,
+                'archived_at': now_iso,
+                # Snapshot the text/source for replayability without
+                # reading the shard back from disk.
+                'text': entry.get('text', ''),
+                'source': entry.get('source', 'unknown'),
+            }
+
+            def _sync_load(_n: str):
+                return persona
+
+            def _sync_mutate(_view):
+                # Drop the archived entry from the entity section.
+                section_facts[:] = [
+                    e for e in section_facts
+                    if not (isinstance(e, dict) and e.get('id') == entry_id)
+                ]
+
+            def _sync_save(n: str, view):
+                assert_cloudsave_writable(
+                    self._config_manager,
+                    operation="save",
+                    target=f"memory/{n}/persona.json",
+                )
+                self._personas[n] = view
+                atomic_write_json(
+                    self._persona_path(n), view, indent=2, ensure_ascii=False,
+                )
+
+            await self._event_log.arecord_and_save(
+                name, EVT_PERSONA_FACT_ADDED, payload,
+                sync_load_view=_sync_load,
+                sync_mutate_view=_sync_mutate,
+                sync_save_view=_sync_save,
+            )
+            logger.info(
+                f"[Persona] {name}: 归档 entry {entity_key}/{entry_id} "
+                f"→ {shard_basename}"
             )
             return True
 
