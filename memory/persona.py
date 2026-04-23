@@ -1830,19 +1830,27 @@ class PersonaManager:
         - tokenizer identity (catches tiktoken↔heuristic transition;
           see `utils.tokenize.tokenizer_identity` docstring for the
           motivating scenario — packaging without encoding data file).
+
+        Additionally, `token_count` must coerce cleanly to a non-negative
+        int. A hand-edited or corrupted `persona.json` could plant a
+        non-numeric or negative value with fingerprints that still happen
+        to match (or match after someone also hand-rewrote the sha256
+        field) — in which case `int(...)` on the cached value would
+        either raise or return garbage and bomb the render. On coercion
+        failure we treat it as a cache miss and recompute.
         """
         text = entry.get('text', '') or ''
         if not text:
             return 0
         fp = cls._text_fingerprint(text)
         tid = tokenizer_identity()
-        cached = entry.get('token_count')
+        cached_count = cls._coerce_cached_count(entry.get('token_count'))
         if (
-            cached is not None
+            cached_count is not None
             and entry.get('token_count_text_sha256') == fp
             and entry.get('token_count_tokenizer') == tid
         ):
-            return int(cached)
+            return cached_count
         n = count_tokens(text)
         if writeback:
             entry['token_count'] = int(n)
@@ -1855,25 +1863,50 @@ class PersonaManager:
         """Async twin — uses `acount_tokens` (worker-thread tiktoken).
         Write-back semantics match the sync helper (both fingerprints).
         See `_get_cached_token_count` for the `writeback=False` contract
-        (used by reflection render path, which has no in-memory view)."""
+        (used by reflection render path, which has no in-memory view),
+        and for the defensive coercion of poisoned `token_count` values
+        from a hand-edited or corrupted `persona.json`."""
         text = entry.get('text', '') or ''
         if not text:
             return 0
         fp = cls._text_fingerprint(text)
         tid = tokenizer_identity()
-        cached = entry.get('token_count')
+        cached_count = cls._coerce_cached_count(entry.get('token_count'))
         if (
-            cached is not None
+            cached_count is not None
             and entry.get('token_count_text_sha256') == fp
             and entry.get('token_count_tokenizer') == tid
         ):
-            return int(cached)
+            return cached_count
         n = await acount_tokens(text)
         if writeback:
             entry['token_count'] = int(n)
             entry['token_count_text_sha256'] = fp
             entry['token_count_tokenizer'] = tid
         return int(n)
+
+    @staticmethod
+    def _coerce_cached_count(raw) -> int | None:
+        """Validate a `token_count` value loaded from an entry dict.
+
+        Returns the non-negative int when `raw` is coercible and sane;
+        returns None (→ force a cache miss) when `raw` is missing,
+        non-numeric, a bool (`int(True) == 1` would silently succeed —
+        not what we want for a token count field), or negative.
+
+        `bool` is a subclass of `int` in Python, so the explicit
+        `isinstance(raw, bool)` reject keeps us from accepting `True`/
+        `False` as legitimate cached counts if persona.json was hand-
+        edited with boolean-looking garbage."""
+        if raw is None or isinstance(raw, bool):
+            return None
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return None
+        if value < 0:
+            return None
+        return value
 
     @staticmethod
     def _invalidate_token_count_cache(entry: dict) -> None:

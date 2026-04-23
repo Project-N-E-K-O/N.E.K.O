@@ -744,3 +744,165 @@ def test_tokenizer_identity_helper_shape():
     assert tid.startswith('tiktoken:') or tid.startswith('heuristic:'), (
         f'unexpected tokenizer identity shape: {tid!r}'
     )
+
+
+# ── poisoned-cache defensive guards (PR #939 round-3 review) ───────
+#
+# Motivation: `int(entry['token_count'])` on the hit path trusts the
+# value that came off disk. A hand-edited or storage-corrupted
+# `persona.json` could plant a non-numeric string ("??"), a null, a
+# boolean, or a negative number while the sha256 + tokenizer
+# fingerprints still happen to match. In that case the bare
+# `int(cached)` either raises (bombs the render) or returns
+# meaningless garbage (blows the budget math). The cache path must
+# validate the coerced value and fall back to recompute on anything
+# that isn't a non-negative int.
+
+
+def _sanity_fingerprints(entry: dict) -> None:
+    """Helper: set fingerprints so the match check passes and only
+    the `token_count` validation gate is exercised."""
+    from utils.tokenize import tokenizer_identity
+    entry['token_count_text_sha256'] = _sha(entry['text'])
+    entry['token_count_tokenizer'] = tokenizer_identity()
+
+
+def test_non_numeric_cached_count_triggers_recompute_sync():
+    """A string like `"??"` in `token_count` (hand-edit corruption)
+    must NOT bomb `int(...)` — it must be treated as a cache miss and
+    the entry rewritten with a real count."""
+    from memory.persona import PersonaManager
+
+    e = _entry('m1', 'poisoned cache recovery sync')
+    e['token_count'] = '??'
+    _sanity_fingerprints(e)
+
+    n = PersonaManager._get_cached_token_count(e)
+    assert isinstance(n, int) and n > 0, (
+        'non-numeric cached count must force recompute; got non-int result'
+    )
+    # Writeback replaced the garbage with a real int.
+    assert e['token_count'] == n
+    assert isinstance(e['token_count'], int)
+
+
+@pytest.mark.asyncio
+async def test_non_numeric_cached_count_triggers_recompute_async():
+    """Async twin — the render hot path uses `_aget_cached_token_count`
+    and must survive the same corruption without exploding."""
+    from memory.persona import PersonaManager
+
+    e = _entry('m1', 'poisoned cache recovery async')
+    e['token_count'] = '??'
+    _sanity_fingerprints(e)
+
+    n = await PersonaManager._aget_cached_token_count(e)
+    assert isinstance(n, int) and n > 0
+    assert e['token_count'] == n
+    assert isinstance(e['token_count'], int)
+
+
+def test_negative_cached_count_triggers_recompute_sync():
+    """A negative `token_count` (e.g. `-5`) is non-sensical — you can't
+    have a negative number of tokens. Treat as corruption and recompute."""
+    from memory.persona import PersonaManager
+
+    e = _entry('m1', 'negative cache recovery sync')
+    e['token_count'] = -5
+    _sanity_fingerprints(e)
+
+    n = PersonaManager._get_cached_token_count(e)
+    assert n >= 0
+    # Writeback replaced the negative with the real, non-negative value.
+    assert e['token_count'] == n
+    assert e['token_count'] >= 0
+
+
+@pytest.mark.asyncio
+async def test_negative_cached_count_triggers_recompute_async():
+    """Async twin of the negative-value guard."""
+    from memory.persona import PersonaManager
+
+    e = _entry('m1', 'negative cache recovery async')
+    e['token_count'] = -5
+    _sanity_fingerprints(e)
+
+    n = await PersonaManager._aget_cached_token_count(e)
+    assert n >= 0
+    assert e['token_count'] == n
+    assert e['token_count'] >= 0
+
+
+def test_null_cached_count_with_matching_fingerprints_triggers_recompute_sync():
+    """`token_count=None` but fingerprints populated is a near-legacy
+    shape (e.g. someone set the sha256/tokenizer fields manually but
+    left the count NULL). The existing `cached is not None` check
+    already handled this; this test locks it in explicitly as part of
+    the broader poisoned-cache family so the three cases (None, non-
+    numeric, negative) are covered symmetrically."""
+    from memory.persona import PersonaManager
+
+    e = _entry('m1', 'null cache recovery sync')
+    e['token_count'] = None
+    _sanity_fingerprints(e)
+
+    n = PersonaManager._get_cached_token_count(e)
+    assert isinstance(n, int) and n > 0
+    assert e['token_count'] == n
+
+
+@pytest.mark.asyncio
+async def test_null_cached_count_with_matching_fingerprints_triggers_recompute_async():
+    """Async symmetric twin of the null-value guard."""
+    from memory.persona import PersonaManager
+
+    e = _entry('m1', 'null cache recovery async')
+    e['token_count'] = None
+    _sanity_fingerprints(e)
+
+    n = await PersonaManager._aget_cached_token_count(e)
+    assert isinstance(n, int) and n > 0
+    assert e['token_count'] == n
+
+
+def test_boolean_cached_count_triggers_recompute_sync():
+    """`bool` is an `int` subclass in Python, so a naive
+    `isinstance(x, int)` would accept `True` (= 1) as a valid cached
+    count. That's almost never what we want — it's storage corruption,
+    not a legitimate value. The `_coerce_cached_count` helper rejects
+    booleans explicitly."""
+    from memory.persona import PersonaManager
+
+    e = _entry('m1', 'boolean cache poison sync')
+    e['token_count'] = True  # type: ignore[assignment]
+    _sanity_fingerprints(e)
+
+    n = PersonaManager._get_cached_token_count(e)
+    assert isinstance(n, int) and not isinstance(n, bool)
+    # Writeback coerced through `int(n)` — we're stricter than `True==1`.
+    assert e['token_count'] == n
+    assert e['token_count'] is not True
+    assert e['token_count'] is not False
+
+
+def test_coerce_cached_count_helper_shape():
+    """Direct unit coverage for `_coerce_cached_count`. Locks in the
+    exact coercion contract so future refactors don't silently loosen
+    it (e.g. accepting floats that truncate to negatives)."""
+    from memory.persona import PersonaManager as PM
+
+    # Accept: non-negative ints and int-parseable strings.
+    assert PM._coerce_cached_count(0) == 0
+    assert PM._coerce_cached_count(7) == 7
+    assert PM._coerce_cached_count('42') == 42
+
+    # Reject: None, booleans, non-numeric strings, negative, junk types.
+    assert PM._coerce_cached_count(None) is None
+    assert PM._coerce_cached_count(True) is None
+    assert PM._coerce_cached_count(False) is None
+    assert PM._coerce_cached_count('??') is None
+    assert PM._coerce_cached_count('') is None
+    assert PM._coerce_cached_count(-5) is None
+    assert PM._coerce_cached_count('-3') is None
+    assert PM._coerce_cached_count([1, 2, 3]) is None  # type: ignore[arg-type]
+    assert PM._coerce_cached_count({'nope': 1}) is None  # type: ignore[arg-type]
