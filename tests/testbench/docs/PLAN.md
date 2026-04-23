@@ -127,7 +127,7 @@ isProject: false
 3. **读经验层基线**: `AGENT_NOTES.md §3A` 57 条设计原则 → `LESSONS_LEARNED §7` 24 条主编号 + **`§7.A` 候选 L28-L36** (L34/L35/L36 均 P25 期产物: L34 跨进程消费方 round-trip / L35 代码 > 蓝图 / L36 UI 字段必 rg 后端实际 shape);
 4. **Day 3 开工按 §3A E3**: 全量 smoke baseline `tests\testbench\smoke\_run_all.cmd` 当前 **11/11 全绿 (19.68s)**, Day 3 新增 smoke 至少要把 reason 复现表 + persona 回退两组纳入;
 5. **Day 2 手测门槛**: 用户 `Ctrl+F5` 硬刷即可看到 Chat sidebar 下半新面板 (NoCacheStaticFiles 配头, 不需重启服务); 手测流程参考 §4.27 #111 "手测门槛" 段;
-6. **git 状态**: P25 Day 1 主交付已 commit `3d6c525`, Day 1 fixup + Day 2 尚未 commit (按用户"commit 不 push"节奏一起打一个 commit), 建议 title `feat(testbench): P25 Day 2 external event frontend panel + Day 1 fixup mirror shape + Logs op catalog`.
+6. **git 状态**: P25 Day 1 主交付 commit `3d6c525`, Day 1 fixup (mirror_to_recent shape) commit `25135d7`, Day 2 前端面板 + 7 项 polish (含 docs 回写) commit **`5c03446`** (2026-04-23, local 未 push). Day 3 开工前 working tree clean, 可直接开 smoke + tester 手册任务.
 
 **历史档案 (留供参考)**: P23 已于 2026-04-21 交付 (`pipeline/session_export.py` + `session_router.POST /api/session/export` + `session_export_modal.js` + 三入口接线 + `smoke/p23_exports_smoke.py` 绿), 交付细节见 §14 最后一节的"P23 交付实录". P24 已于 2026-04-22 Day 12 收尾, v1.0 sign-off, 详见 `P24_BLUEPRINT.md` + `PROGRESS.md P24` 条目 + §15.1-§15.6 实施细化 (规格以蓝图为准).
 
