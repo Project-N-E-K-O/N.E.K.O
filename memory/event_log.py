@@ -46,7 +46,7 @@ from utils.logger_config import get_module_logger
 logger = get_module_logger(__name__, "Memory")
 
 
-# ── Event type constants (RFC §3.3, 12 types) ────────────────────────────
+# ── Event type constants (RFC §3.3, 12 legacy + 3 evidence = 15 types) ───
 
 EVT_FACT_ADDED = "fact.added"
 EVT_FACT_ABSORBED = "fact.absorbed"
@@ -61,12 +61,39 @@ EVT_PERSONA_SUPPRESSED = "persona.suppressed"
 EVT_CORRECTION_QUEUED = "correction.queued"
 EVT_CORRECTION_RESOLVED = "correction.resolved"
 
+# memory-evidence-rfc §3.3 — 3 new event types for user-driven evidence.
+# All three are full-snapshot payloads (§3.3.5) so handlers are trivially
+# idempotent on replay.
+EVT_REFLECTION_EVIDENCE_UPDATED = "reflection.evidence_updated"
+EVT_PERSONA_EVIDENCE_UPDATED = "persona.evidence_updated"
+EVT_PERSONA_ENTRY_UPDATED = "persona.entry_updated"
+
 ALL_EVENT_TYPES: frozenset[str] = frozenset({
     EVT_FACT_ADDED, EVT_FACT_ABSORBED, EVT_FACT_ARCHIVED,
     EVT_REFLECTION_SYNTHESIZED, EVT_REFLECTION_STATE_CHANGED,
     EVT_REFLECTION_SURFACED, EVT_REFLECTION_REBUTTED,
     EVT_PERSONA_FACT_ADDED, EVT_PERSONA_FACT_MENTIONED, EVT_PERSONA_SUPPRESSED,
     EVT_CORRECTION_QUEUED, EVT_CORRECTION_RESOLVED,
+    EVT_REFLECTION_EVIDENCE_UPDATED, EVT_PERSONA_EVIDENCE_UPDATED,
+    EVT_PERSONA_ENTRY_UPDATED,
+})
+
+
+# memory-evidence-rfc §3.3.7 — source 枚举值，放在模块级常量便于未来扩展。
+# 不强制校验（event_log 不过滤），但 reconciler handler / 测试可用来核对。
+EVIDENCE_SOURCE_USER_FACT = "user_fact"            # Stage-2 signal (§3.4)
+EVIDENCE_SOURCE_USER_CONFIRM = "user_confirm"      # check_feedback confirmed
+EVIDENCE_SOURCE_USER_REBUT = "user_rebut"          # check_feedback denied
+EVIDENCE_SOURCE_USER_IGNORE = "user_ignore"        # check_feedback ignored
+EVIDENCE_SOURCE_USER_KEYWORD_REBUT = "user_keyword_rebut"  # negative-keyword hook
+EVIDENCE_SOURCE_MIGRATION_SEED = "migration_seed"  # §5 one-shot migration
+EVIDENCE_SOURCE_PROMOTE_MERGE = "promote_merge"    # persona.entry_updated
+
+ALL_EVIDENCE_SOURCES: frozenset[str] = frozenset({
+    EVIDENCE_SOURCE_USER_FACT, EVIDENCE_SOURCE_USER_CONFIRM,
+    EVIDENCE_SOURCE_USER_REBUT, EVIDENCE_SOURCE_USER_IGNORE,
+    EVIDENCE_SOURCE_USER_KEYWORD_REBUT, EVIDENCE_SOURCE_MIGRATION_SEED,
+    EVIDENCE_SOURCE_PROMOTE_MERGE,
 })
 
 
