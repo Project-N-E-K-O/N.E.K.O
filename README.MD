@@ -3,7 +3,7 @@
 ![Logo](assets/neko_logo.jpg)
 
 [English](docs/README_en.md) | [日本語](docs/README_ja.md) | [Русский](docs/README_ru.md)
-# Project N.E.K.O. :kissing_cat: <br>**主动式AI伙伴——具备24/7环境感知、智能体能力与具身情感引擎。**
+# Project N.E.K.O. :kissing_cat: <br>**主动式AI伙伴——具备24/7环境感知、自主执行力与具身情感引擎。**
 
 > **N.E.K.O.** = **N**etworked **E**motional **K**nowledging **O**rganism (网络型情感知性生命体)
 >
