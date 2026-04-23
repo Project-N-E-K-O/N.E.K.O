@@ -2246,10 +2246,12 @@ async def unsubscribe_workshop_item(request: Request):
                         "error": str(remove_or_exc),
                     })
 
-                # characters.json 条目仅做内存删除，循环结束一次性批量写盘
-                if name in (characters_mut.get('猫娘') or {}):
+                # characters.json 条目仅做内存删除，循环结束一次性批量写盘。
+                # 复用前面捕获的 catgirl_map 引用（上面 isinstance 已守卫），
+                # 避免每次都走 characters_mut.get('猫娘') or {} 的兜底链路。
+                if name in catgirl_map:
                     try:
-                        del characters_mut['猫娘'][name]
+                        del catgirl_map[name]
                         pending_del_names.append(name)
                     except Exception as exc:
                         logger.error(
@@ -2355,6 +2357,17 @@ async def unsubscribe_workshop_item(request: Request):
             with cleanup_claim_lock:
                 if cleanup_event.is_set():
                     logger.debug(f"perform_cleanup({item_id}): 已成功过，跳过（幂等）")
+                    return False
+                # 把 unsubscribe_failed_event 的判定也放进临界区。delayed_cleanup
+                # 外层的先 check cleanup_event → check unsubscribe_failed_event →
+                # 再调 perform_cleanup 两次 check 之间没锁，Steam 失败回调若恰好
+                # 落在这个窗口里，rmtree 还是会把仍订阅中的本地工坊目录删掉。
+                # 在锁内原子化闭环；成功回调路径本来就不会 set 失败 event，不会误伤。
+                if unsubscribe_failed_event.is_set():
+                    logger.warning(
+                        f"perform_cleanup({item_id}): 已收到 Steam 退订失败信号，"
+                        f"跳过订阅文件夹清理（用户仍处于订阅状态）"
+                    )
                     return False
                 if cleanup_in_progress.is_set():
                     logger.debug(f"perform_cleanup({item_id}): 已有并发清理在跑，跳过")
