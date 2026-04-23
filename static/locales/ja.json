@@ -523,7 +523,7 @@
         "unsubscribeLocalConfigCleanupFailed": "ローカルのキャラクター設定の整理に失敗しました。今回の Steam 解除リクエストはキャンセルされました。修正後に再試行してください。",
         "unsubscribeSteamRequestFailed": "Steam 解除リクエストの送信に失敗しました：{{error}}",
         "unsubscribeCleanupDetail": "キャラクターカードを {{characterCount}} 件整理（{{characters}}）；記憶パスを {{memoryPathCount}} 件削除",
-        "unsubscribeNoAssociation": "このサブスクに関連するキャラクターが見つかりませんでした。サブスクフォルダのみ削除されました。残った記憶は手動で処理してください。",
+        "unsubscribeNoAssociation": "このサブスクリプションに関連するキャラクターが見つかりませんでした。サブスクリプションフォルダのみ削除されました。残った記憶は手動で処理してください。",
         "unsubscribeCleanupErrors": "整理中に {{count}} 件のエラーが発生。最初：{{stage}} -> {{error}}"
     },
     "dialogs": {
