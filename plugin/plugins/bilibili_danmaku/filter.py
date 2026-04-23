@@ -5,89 +5,148 @@ Bilibili 弹幕过滤器模块
 - 敏感词过滤（政治/暴力色情/违法违规/低俗内容）
 - 用户等级过滤（登录用户专属高级过滤功能）
 - 礼物价值过滤
+
+词库加载：从 data/Vocabulary/ 目录动态加载词库文件
 """
 
 from __future__ import annotations
 import re
-from typing import Dict, Any, Optional
+import os
+from pathlib import Path
+from typing import Dict, Any, Optional, List, Set
 
 
 # ==========================================
-# 敏感词列表（基础版）
+# 词库加载器
 # ==========================================
-# 注意：此处仅为示例关键词类别，不穷举具体词汇
-# 实际过滤使用模式匹配
 
-# 1. 政治敏感类 - 使用模糊正则匹配
-_POLITICAL_PATTERNS = [
-    r'颠覆.*政权',
-    r'推翻.*制度',
-    r'邪教',
-    r'极端主义',
-    r'分裂.*国家',
-]
+def _load_vocabulary_files(vocab_dir: Path) -> tuple[Set[str], Set[str], List[re.Pattern]]:
+    """
+    从 Vocabulary 目录加载所有词库文件
+    
+    Returns:
+        (vulgar_words, spam_words, regex_patterns)
+    """
+    vulgar_words: Set[str] = set()
+    spam_words: Set[str] = set()
+    regex_patterns: List[re.Pattern] = []
+    
+    if not vocab_dir.exists():
+        return vulgar_words, spam_words, regex_patterns
+    
+    # 遍历所有 .txt 文件
+    for vocab_file in vocab_dir.glob("*.txt"):
+        try:
+            with open(vocab_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    # 跳过空行和注释行
+                    if not line or line.startswith('#'):
+                        continue
+                    
+                    # 根据文件名分类
+                    filename_lower = vocab_file.stem.lower()
+                    
+                    if any(kw in filename_lower for kw in ['广告', 'spam']):
+                        spam_words.add(line)
+                    elif any(kw in filename_lower for kw in ['色情', '暴恐', '暴力', '反动', '政治', '涉枪', '贪腐', '民生', '其他', 'gfw', 'covid']):
+                        # 敏感词库 - 使用正则精确匹配
+                        vulgar_words.add(line)
+                    else:
+                        # 其他词库 - 默认加入敏感词
+                        vulgar_words.add(line)
+                        
+        except Exception as e:
+            print(f"[Filter] 加载词库失败 {vocab_file.name}: {e}")
+    
+    return vulgar_words, spam_words, regex_patterns
 
-# 2. 暴力色情类
-_VIOLENCE_PATTERNS = [
-    r'色情|淫秽|裸露|性器',
-    r'自杀|自残|杀人',
-    r'毒品|冰毒|海洛因|大麻',
-    r'爆炸|炸弹|制造武器',
-]
 
-# 3. 违法违规类
-_ILLEGAL_PATTERNS = [
-    r'赌博|赌场|洗钱',
-    r'诈骗|欺诈',
-    r'传销',
-]
+def _build_compiled_filters(vocab_dir: Path) -> tuple[re.Pattern, re.Pattern]:
+    """
+    构建编译后的过滤正则
+    
+    Returns:
+        (vulgar_pattern, spam_pattern)
+    """
+    vulgar_words, spam_words, _ = _load_vocabulary_files(vocab_dir)
+    
+    # 编译粗口/敏感词正则
+    if vulgar_words:
+        vulgar_pattern = re.compile(
+            '|'.join(re.escape(w) for w in vulgar_words),
+            re.IGNORECASE
+        )
+    else:
+        # 无词库时使用空正则
+        vulgar_pattern = re.compile(r'(?!>)')
+    
+    # 编译广告词正则
+    if spam_words:
+        spam_pattern = re.compile(
+            '|'.join(re.escape(w) for w in spam_words),
+            re.IGNORECASE
+        )
+    else:
+        spam_pattern = re.compile(r'(?!>)')
+    
+    return vulgar_pattern, spam_pattern
 
-# 4. 低俗类 - 粗口词汇（使用拼音首字母等变体匹配）
-_VULGAR_WORDS = [
-    '操你', '草你', '妈的', '他妈', '尼玛', '傻逼', '煞笔', 'sb',
-    '滚', '去死', '废物', '脑残', '智障', '白痴', '混蛋',
-    '婊子', '妓女', '鸡巴', '屌', '逼',
-    # 歧视性词汇
-    '歧视', '侮辱残疾', '嘲笑老人',
-]
 
-# 5. 广告/垃圾信息
-_SPAM_PATTERNS = [
-    r'加.*v.*看',
-    r'私信.*链接',
-    r'qq群.*\d{5,}',
-    r'微信.*\d{4,}',
-    r'关注.*涨粉',
-]
+# ==========================================
+# 初始化过滤器
+# ==========================================
 
-# 组合所有模式
-_ALL_PATTERNS = (
-    _POLITICAL_PATTERNS
-    + _VIOLENCE_PATTERNS
-    + _ILLEGAL_PATTERNS
-    + _SPAM_PATTERNS
-)
+def _get_plugin_root() -> Path:
+    """获取插件根目录"""
+    return Path(__file__).parent
 
-# 预编译正则
-_COMPILED_PATTERNS = [re.compile(p, re.IGNORECASE) for p in _ALL_PATTERNS]
-_COMPILED_VULGAR = re.compile(
-    '|'.join(re.escape(w) for w in _VULGAR_WORDS),
-    re.IGNORECASE
-)
+def _get_vocab_dir() -> Path:
+    """获取词库目录"""
+    return _get_plugin_root() / "data" / "Vocabulary"
+
+# 全局编译后的过滤器
+_VULGAR_PATTERN: Optional[re.Pattern] = None
+_SPAM_PATTERN: Optional[re.Pattern] = None
+
+
+def _ensure_filters_loaded():
+    """确保过滤器已加载"""
+    global _VULGAR_PATTERN, _SPAM_PATTERN
+    if _VULGAR_PATTERN is None:
+        vocab_dir = _get_vocab_dir()
+        _VULGAR_PATTERN, _SPAM_PATTERN = _build_compiled_filters(vocab_dir)
+        print(f"[Filter] 词库加载完成")
+
+
+def reload_filters():
+    """重新加载词库"""
+    global _VULGAR_PATTERN, _SPAM_PATTERN
+    _VULGAR_PATTERN = None
+    _ensure_filters_loaded()
 
 
 def is_sensitive(text: str) -> bool:
     """检查文本是否含有敏感词"""
     if not text:
         return False
+    _ensure_filters_loaded()
     text_lower = text.lower()
-    # 检查粗口词汇
-    if _COMPILED_VULGAR.search(text_lower):
+    # 检查敏感词
+    if _VULGAR_PATTERN and _VULGAR_PATTERN.search(text_lower):
         return True
-    # 检查正则模式
-    for pattern in _COMPILED_PATTERNS:
-        if pattern.search(text_lower):
-            return True
+    return False
+
+
+def is_spam(text: str) -> bool:
+    """检查文本是否为广告/垃圾信息"""
+    if not text:
+        return False
+    _ensure_filters_loaded()
+    text_lower = text.lower()
+    # 检查广告词
+    if _SPAM_PATTERN and _SPAM_PATTERN.search(text_lower):
+        return True
     return False
 
 
@@ -177,7 +236,11 @@ class DanmakuFilter:
         if is_sensitive(content):
             return False, "sensitive"
 
-        # 2. 等级过滤（仅登录用户且开启时）
+        # 2. 广告过滤（所有用户）
+        if is_spam(content):
+            return False, "spam"
+
+        # 3. 等级过滤（仅登录用户且开启时）
         if self.is_logged_in and self.filter_level_enabled:
             if user_level < self.min_user_level:
                 return False, f"level_too_low({user_level}<{self.min_user_level})"
@@ -207,6 +270,10 @@ class DanmakuFilter:
         # 敏感词过滤
         if is_sensitive(content):
             return False, "sensitive"
+
+        # 广告过滤
+        if is_spam(content):
+            return False, "spam"
 
         # SC 价值过滤
         if self.is_logged_in and self.filter_gift_enabled:
