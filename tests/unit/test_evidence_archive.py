@@ -942,3 +942,258 @@ async def test_age_based_archival_writes_to_shards_not_flat_file(tmp_path):
     with open(os.path.join(archive_dir, shard_files[0]), encoding="utf-8") as f:
         data = json.load(f)
     assert any(e.get("id") == "ref_old" for e in data)
+
+
+# ── PR #934 round-2 regressions ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_aappend_to_shard_corrupt_shard_left_untouched(tmp_path):
+    """Round-2 Major #1: a corrupt same-day shard must NOT be picked +
+    overwritten. Prior bug: `_aread_shard` returned [] on
+    JSONDecodeError → picker saw size=0 → reuse → atomic write replaced
+    the corrupt original, losing salvageable content.
+
+    Fix: `_aread_shard` raises `ShardCorruptError`; both probe + pick
+    paths catch it and treat the shard as full.
+    """
+    from memory.archive_shards import (
+        _list_shard_files,
+        aappend_to_shard,
+    )
+
+    archive_dir = str(tmp_path / "ref_arc")
+    fixed_now = datetime(2026, 4, 23, 12, 0, 0)
+    today = fixed_now.date().isoformat()
+    os.makedirs(archive_dir, exist_ok=True)
+
+    # Plant a non-JSON corrupt shard with today's date prefix.
+    corrupt_fn = f"{today}_dead0001.json"
+    corrupt_path = os.path.join(archive_dir, corrupt_fn)
+    corrupt_payload = "this is not JSON at all { unbalanced ["
+    with open(corrupt_path, "w", encoding="utf-8") as f:
+        f.write(corrupt_payload)
+
+    # Append a new entry → must NOT touch the corrupt file.
+    new_entry = [{"id": "fresh", "text": "y"}]
+    written_path = await aappend_to_shard(
+        archive_dir, new_entry, now=fixed_now,
+    )
+
+    # Corrupt file unchanged on disk
+    with open(corrupt_path, encoding="utf-8") as f:
+        assert f.read() == corrupt_payload, (
+            "corrupt shard must not have been overwritten"
+        )
+
+    # The new entry landed in a DIFFERENT shard
+    assert os.path.basename(written_path) != corrupt_fn
+    with open(written_path, encoding="utf-8") as f:
+        new_shard_data = json.load(f)
+    assert any(e.get("id") == "fresh" for e in new_shard_data)
+
+    # Now there are two shards: the corrupt one + the new one
+    shards = _list_shard_files(archive_dir)
+    assert len(shards) == 2
+    assert any(s[0] == corrupt_fn for s in shards)
+
+
+@pytest.mark.asyncio
+async def test_aincrement_sub_zero_keeps_cache_clean_on_save_failure(tmp_path):
+    """Round-2 Major #2: if `arecord_and_save` (or its inner
+    `assert_cloudsave_writable`) raises, the cached entry must NOT have
+    been mutated by `maybe_mark_sub_zero`. Prior bug mutated in-place
+    BEFORE record_and_save → orphan increment with no event log row.
+
+    Fix: probe on a staged copy; only the `_sync_mutate` callback
+    (which runs inside record_and_save AFTER append succeeds) touches
+    the live cache.
+    """
+    from memory.event_log import EVT_REFLECTION_EVIDENCE_UPDATED
+    _ev, _fs, _pm, re, _rec, _cm = _install(str(tmp_path))
+
+    rid = "ref_cache_safety"
+    base = datetime(2026, 4, 23, 12, 0, 0)
+    seed = [{
+        "id": rid, "text": "x", "entity": "master", "status": "confirmed",
+        "source_fact_ids": [], "created_at": base.isoformat(),
+        "feedback": None, "next_eligible_at": base.isoformat(),
+        "reinforcement": 0.0,
+        "disputation": 5.0,
+        "rein_last_signal_at": None,
+        "disp_last_signal_at": base.isoformat(),
+        "sub_zero_days": 0,
+        "sub_zero_last_increment_date": None,
+    }]
+    await re.asave_reflections("小天", seed)
+
+    # Force record_and_save to raise on the next call by patching the
+    # per-character event-log lock-bound writer. We patch
+    # `EventLog.record_and_save` (the sync core) so the async hop
+    # raises before any save happens.
+    real_record = re._event_log.record_and_save
+
+    def _boom(*a, **kw):
+        raise RuntimeError("simulated cloudsave failure")
+
+    re._event_log.record_and_save = _boom
+    try:
+        with pytest.raises(RuntimeError, match="simulated cloudsave failure"):
+            await re.aincrement_sub_zero("小天", rid, base)
+    finally:
+        re._event_log.record_and_save = real_record
+
+    # Cached entry must be UNCHANGED — no orphan sub_zero increment.
+    refls = await re._aload_reflections_full("小天")
+    target = next(r for r in refls if r["id"] == rid)
+    assert target["sub_zero_days"] == 0, (
+        "cache leaked an increment despite save failure (round-2 Major #2 regression)"
+    )
+    assert target["sub_zero_last_increment_date"] is None
+
+    # And no EVIDENCE_UPDATED event was recorded for this entry.
+    events = _ev.read_since("小天", None)
+    matching = [
+        e for e in events
+        if e["type"] == EVT_REFLECTION_EVIDENCE_UPDATED
+        and e["payload"].get("reflection_id") == rid
+    ]
+    assert matching == [], (
+        f"unexpected event(s) recorded despite save failure: {matching}"
+    )
+
+    # Sanity: a NEXT call (with the writer restored) must succeed and
+    # advance to 1, proving the entry wasn't somehow already-debounced.
+    new_count = await re.aincrement_sub_zero("小天", rid, base)
+    assert new_count == 1
+
+
+@pytest.mark.asyncio
+async def test_archive_handler_self_heals_missing_shard(tmp_path):
+    """Round-2 Major #3: if `aarchive_reflection`'s shard append raises
+    AFTER record_and_save committed (entry removed from active view),
+    the next reconciler replay must re-create the shard from
+    `entry_snapshot` in the event payload — otherwise the entry is
+    pure data loss.
+
+    Symmetric for persona archive handler.
+    """
+    from unittest.mock import patch
+    from memory.event_log import (
+        EVT_PERSONA_FACT_ADDED,
+        EVT_REFLECTION_STATE_CHANGED,
+    )
+    from memory.evidence_handlers import (
+        make_persona_archive_handler,
+        make_reflection_archive_handler,
+    )
+
+    # ── reflection half ──────────────────────────────────────────────
+    _ev, _fs, pm, re, _rec, _cm = _install(str(tmp_path))
+    rid = "ref_selfheal"
+    seed = [{
+        "id": rid, "text": "lost-then-found", "entity": "master",
+        "status": "confirmed", "source_fact_ids": [],
+        "created_at": "2026-04-22T10:00:00",
+        "feedback": None, "next_eligible_at": "2026-04-22T10:00:00",
+    }]
+    await re.asave_reflections("小天", seed)
+
+    # Patch `aappend_to_shard` at its source module — both
+    # reflection.py and persona.py do a function-local import, so this
+    # is the symbol they actually resolve at call-time. Simulates a
+    # crash between record_and_save and the shard append. Active view
+    # has already lost the entry by the time this raises.
+    async def _shard_boom(*a, **kw):
+        raise RuntimeError("simulated shard write failure")
+
+    with patch("memory.archive_shards.aappend_to_shard", _shard_boom):
+        with pytest.raises(RuntimeError, match="simulated shard write failure"):
+            await re.aarchive_reflection("小天", rid)
+
+    # Active view: entry already removed (record_and_save ran)
+    remaining = await re.aload_reflections("小天", include_archived=True)
+    assert all(r.get("id") != rid for r in remaining)
+    # Shard dir: empty (the append never ran)
+    archive_dir = re._reflections_archive_dir("小天")
+    if os.path.exists(archive_dir):
+        for fn in os.listdir(archive_dir):
+            if fn.endswith(".json"):
+                with open(os.path.join(archive_dir, fn), encoding="utf-8") as f:
+                    data = json.load(f)
+                assert all(e.get("id") != rid for e in data), (
+                    "shard already contains the entry — test setup broken"
+                )
+
+    # Replay the state_changed event via the handler — must self-heal.
+    events = _ev.read_since("小天", None)
+    archive_evt = next(
+        e for e in events
+        if e["type"] == EVT_REFLECTION_STATE_CHANGED
+        and e["payload"].get("reflection_id") == rid
+    )
+    assert archive_evt["payload"].get("entry_snapshot"), (
+        "event payload missing entry_snapshot — handler can't self-heal"
+    )
+
+    handler = make_reflection_archive_handler(re)
+    changed = handler("小天", archive_evt["payload"])
+    assert changed is True, "self-heal must report a change"
+
+    # Shard now contains the entry under the basename from payload
+    shard_basename = archive_evt["payload"]["archive_shard_path"]
+    shard_path = os.path.join(archive_dir, shard_basename)
+    assert os.path.exists(shard_path), "self-healed shard file missing"
+    with open(shard_path, encoding="utf-8") as f:
+        shard_data = json.load(f)
+    assert any(e.get("id") == rid for e in shard_data)
+
+    # Replaying again is a no-op (idempotent)
+    changed2 = handler("小天", archive_evt["payload"])
+    assert changed2 is False
+    with open(shard_path, encoding="utf-8") as f:
+        shard_data2 = json.load(f)
+    assert len(shard_data2) == len(shard_data), (
+        "replay must NOT duplicate the entry"
+    )
+
+    # ── persona half (symmetric) ─────────────────────────────────────
+    persona = await pm.aensure_persona("小天")
+    persona.setdefault("master", {}).setdefault("facts", []).append({
+        "id": "p_selfheal", "text": "p-lost-then-found",
+        "source": "manual", "source_id": None,
+        "protected": False,
+    })
+    await pm.asave_persona("小天", persona)
+
+    with patch("memory.archive_shards.aappend_to_shard", _shard_boom):
+        with pytest.raises(RuntimeError, match="simulated shard write failure"):
+            await pm.aarchive_persona_entry("小天", "master", "p_selfheal")
+
+    persona = await pm.aensure_persona("小天")
+    facts = persona.get("master", {}).get("facts", [])
+    assert all(f.get("id") != "p_selfheal" for f in facts), (
+        "active view should have lost the entry already"
+    )
+
+    p_events = _ev.read_since("小天", None)
+    p_archive_evt = next(
+        e for e in p_events
+        if e["type"] == EVT_PERSONA_FACT_ADDED
+        and e["payload"].get("entry_id") == "p_selfheal"
+    )
+    p_handler = make_persona_archive_handler(pm)
+    p_changed = p_handler("小天", p_archive_evt["payload"])
+    assert p_changed is True
+
+    p_archive_dir = pm._persona_archive_dir("小天")
+    p_shard_path = os.path.join(
+        p_archive_dir, p_archive_evt["payload"]["archive_shard_path"],
+    )
+    assert os.path.exists(p_shard_path)
+    with open(p_shard_path, encoding="utf-8") as f:
+        p_shard_data = json.load(f)
+    assert any(e.get("id") == "p_selfheal" for e in p_shard_data)
+
+    # Idempotent replay
+    assert p_handler("小天", p_archive_evt["payload"]) is False

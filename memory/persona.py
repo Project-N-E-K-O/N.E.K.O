@@ -826,11 +826,17 @@ class PersonaManager:
             entry = self._find_entry_in_section(section_facts, entry_id)
             if entry is None:
                 return None
-            if not maybe_mark_sub_zero(entry, now):
+            # Coderabbit PR #934 round-2 Major #2: probe on a staged copy
+            # so the cached entry is NOT mutated until inside the locked
+            # record_and_save critical section. If event append or save
+            # raises, the cache stays clean (no orphan sub_zero_days
+            # increment that never made it to the event log).
+            staged_entry = dict(entry)
+            if not maybe_mark_sub_zero(staged_entry, now):
                 return None
 
-            new_count = int(entry.get('sub_zero_days', 0) or 0)
-            new_date = entry.get('sub_zero_last_increment_date')
+            new_count = int(staged_entry.get('sub_zero_days', 0) or 0)
+            new_date = staged_entry.get('sub_zero_last_increment_date')
 
             payload = {
                 'entity_key': entity_key,
@@ -851,6 +857,9 @@ class PersonaManager:
                 return persona
 
             def _sync_mutate(_view):
+                # Apply the staged values to the cached entry only after
+                # event append has already succeeded (record_and_save
+                # guarantees this ordering).
                 entry['sub_zero_days'] = new_count
                 entry['sub_zero_last_increment_date'] = new_date
 
@@ -941,13 +950,13 @@ class PersonaManager:
                 # reading the shard back from disk.
                 'text': entry.get('text', ''),
                 'source': entry.get('source', 'unknown'),
-                # Full entry snapshot — lets a future reconciler rewrite
-                # the shard if a crash occurs after record_and_save but
-                # before the shard append below. Today the persona archive
-                # handler only mutates the active view (idempotent), so
-                # the shard is the source of truth for archived data; if
-                # we lose the shard write we lose the archived record.
-                # Carrying the snapshot keeps that recoverable.
+                # Full entry snapshot — the persona archive handler in
+                # evidence_handlers.py reads this on every replay and
+                # idempotently recreates the shard if it's missing
+                # (coderabbit PR #934 round-2 Major #3). Recoverable
+                # crash window: any failure between record_and_save
+                # and the shard append below is healed on the next
+                # reconciler boot.
                 'entry_snapshot': archive_entry,
             }
 
@@ -972,16 +981,18 @@ class PersonaManager:
                     self._persona_path(n), view, indent=2, ensure_ascii=False,
                 )
 
-            # ORDER (coderabbit review #934 — reversed from the original
-            # "shard first, then record_and_save"): record_and_save first
-            # commits the event + view mutation atomically; only THEN do
-            # we append to the shard. The crash window shifts from
-            # "entry duplicated in shard + still in active view" (bad —
-            # next sweep re-archives → growing shard duplicates) to
-            # "entry removed from active + event recorded but shard
-            # missing" (acceptable — event log is the source of truth
-            # per RFC §3.11; entry_snapshot in payload makes future
-            # reconciler-driven shard rewrite possible).
+            # ORDER (coderabbit review #934 round-1 + round-2):
+            # 1. record_and_save first — commits event + view mutation
+            #    atomically. Avoids "duplicated shard entry + still
+            #    active in view" (next sweep would re-archive into a
+            #    second shard slot).
+            # 2. aappend_to_shard second. If this raises, the active
+            #    view has already lost the entry but the shard never
+            #    got it. Self-heal: the persona archive handler in
+            #    evidence_handlers.py reads `entry_snapshot` from the
+            #    event payload and re-creates the shard on the next
+            #    reconciler boot — event log is the source of truth
+            #    (RFC §3.11), snapshot makes recovery automatic.
             await self._event_log.arecord_and_save(
                 name, EVT_PERSONA_FACT_ADDED, payload,
                 sync_load_view=_sync_load,

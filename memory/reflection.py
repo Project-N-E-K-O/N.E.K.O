@@ -720,15 +720,17 @@ class ReflectionEngine:
             entry = self._find_reflection_in_list(reflections_full, reflection_id)
             if entry is None:
                 return None
-            # `maybe_mark_sub_zero` mutates `entry` in place and returns
-            # True iff the counter advanced. We then snapshot the new
-            # value into an EVIDENCE_UPDATED event so reconcile replay
-            # produces the same view.
-            if not maybe_mark_sub_zero(entry, now):
+            # Coderabbit PR #934 round-2 Major #2: probe on a staged copy
+            # so the in-memory list is NOT mutated until inside the
+            # locked record_and_save critical section. If the event
+            # append or save raises, the live entry stays clean (no
+            # orphan sub_zero_days increment lacking an audit-log row).
+            staged_entry = dict(entry)
+            if not maybe_mark_sub_zero(staged_entry, now):
                 return None
 
-            new_count = int(entry.get('sub_zero_days', 0) or 0)
-            new_date = entry.get('sub_zero_last_increment_date')
+            new_count = int(staged_entry.get('sub_zero_days', 0) or 0)
+            new_date = staged_entry.get('sub_zero_last_increment_date')
 
             payload = {
                 'reflection_id': reflection_id,
@@ -748,11 +750,10 @@ class ReflectionEngine:
                 return reflections_full
 
             def _sync_mutate(_view):
-                # entry is a reference into reflections_full; the in-place
-                # bump from maybe_mark_sub_zero already persisted into
-                # _view, but we still re-write the two fields explicitly
-                # here so the contract "_sync_mutate applies the snapshot"
-                # holds even if a caller bypasses the helper later.
+                # Apply staged values to the cached entry only after
+                # event append succeeded (record_and_save orders
+                # append → mutate → save, so a failure earlier never
+                # reaches this callback).
                 entry['sub_zero_days'] = new_count
                 entry['sub_zero_last_increment_date'] = new_date
 
@@ -781,14 +782,18 @@ class ReflectionEngine:
         (no new event types). Payload carries `from`/`to`/`archive_shard_path`
         so the reconciler can replay the full transition.
 
-        Flow:
-          1. Pre-write the entry into a shard (with `archived_at` +
-             `archive_shard_path` stamps) — this is OUTSIDE the event
-             log. If the sweep crashes here, the entry stays in main and
-             the next sweep re-tries; the duplicated shard entry is
-             tolerable per RFC §3.11.
-          2. Inside record_and_save: remove the entry from main view,
-             persist event + view + sentinel atomically.
+        Flow (coderabbit PR #934 round-1 + round-2):
+          1. Pre-pick the shard path (deterministic basename for the
+             event payload).
+          2. record_and_save — atomically removes the entry from the
+             active view + appends the state_changed event whose
+             payload carries `entry_snapshot` so a crash later is
+             recoverable.
+          3. aappend_to_shard — writes the snapshot into the shard
+             file. If this raises, the next reconciler boot's archive
+             handler self-heals by recreating the shard from
+             `entry_snapshot` (idempotent, see
+             `make_reflection_archive_handler`).
 
         Returns True if archived; False if `reflection_id` not found or
         the entry is `protected`.
@@ -842,10 +847,12 @@ class ReflectionEngine:
                 'to': 'archived',
                 'archive_shard_path': shard_basename,
                 'archived_at': now_iso,
-                # Symmetry with aarchive_persona_entry — full entry
-                # snapshot lets a future reconciler rewrite the shard if
-                # a crash occurs between record_and_save and the shard
-                # append below.
+                # Symmetry with aarchive_persona_entry — the reflection
+                # archive handler in evidence_handlers.py reads this on
+                # every replay and idempotently recreates the shard if
+                # it's missing (coderabbit PR #934 round-2 Major #3).
+                # Crash between record_and_save and the shard append
+                # below is healed on the next reconciler boot.
                 'entry_snapshot': archive_entry,
             }
 
@@ -867,12 +874,20 @@ class ReflectionEngine:
                     self._reflections_path(n), view, indent=2, ensure_ascii=False,
                 )
 
-            # ORDER (coderabbit review #934, mirroring persona fix):
-            # record_and_save first (commits event + view mutation),
-            # THEN append to shard. Avoids the "shard duplicate +
-            # still-active entry" race where a crash between shard write
-            # and view save would let the next sweep re-archive the same
-            # entry into a second shard slot.
+            # ORDER (coderabbit review #934 round-1 + round-2):
+            # 1. record_and_save first (commits event + active-view
+            #    removal atomically). Avoids the "shard duplicate +
+            #    still-active entry" race where a crash between shard
+            #    write and view save would let the next sweep
+            #    re-archive into a second shard slot.
+            # 2. aappend_to_shard second. If THIS step crashes (or
+            #    raises), the active view has already lost the entry
+            #    but the shard never got it. Self-heal: the
+            #    state_changed handler in evidence_handlers.py reads
+            #    `entry_snapshot` from the payload and re-creates the
+            #    shard on the next reconciler boot — the event log is
+            #    the source of truth (RFC §3.11) and the snapshot
+            #    keeps the data recoverable.
             await self._event_log.arecord_and_save(
                 lanlan_name, EVT_REFLECTION_STATE_CHANGED, payload,
                 sync_load_view=_sync_load,

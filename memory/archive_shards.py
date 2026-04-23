@@ -112,14 +112,33 @@ def _pick_shard_path_for_today(
             return os.path.join(archive_dir, candidate)
 
 
-async def _aread_shard(path: str) -> list[dict]:
-    """Read a shard file's contents, returning [] on missing/corrupt.
+class ShardCorruptError(Exception):
+    """Raised by `_aread_shard` when a shard file exists but is unusable
+    (non-JSON / not a list). Callers MUST catch this and treat the shard
+    as full so the picker doesn't reuse + overwrite the corrupt file
+    (coderabbit PR #934 round-2 Major #1 — corrupt shard isolation).
 
-    A corrupt (non-JSON / non-list) shard is logged but treated as empty
-    — same defensive posture as `reflection.py` / `persona.py` use for
-    their main view files. Caller's fresh entries get appended to a clean
-    list rather than silently lost; the corrupt original is still on disk
-    for manual recovery.
+    The corrupt file is left untouched on disk for manual recovery.
+    """
+
+    def __init__(self, path: str, reason: str):
+        super().__init__(f"shard corrupt at {path}: {reason}")
+        self.path = path
+        self.reason = reason
+
+
+async def _aread_shard(path: str) -> list[dict]:
+    """Read a shard file's contents.
+
+    Returns [] on missing (truly empty / non-existent file). Raises
+    ``ShardCorruptError`` on non-JSON / non-list contents — callers
+    must catch and treat as full so the picker can't reuse the file
+    and `atomic_write_json_async` can't overwrite the corrupt original
+    (coderabbit PR #934 round-2 Major #1).
+
+    Symmetric to the sync twin's `(json.JSONDecodeError, OSError)` →
+    `ARCHIVE_FILE_MAX_ENTRIES` defensive posture in
+    ``append_to_shard_sync`` (lines 277-285).
     """
     if not await asyncio.to_thread(os.path.exists, path):
         return []
@@ -127,11 +146,11 @@ async def _aread_shard(path: str) -> list[dict]:
         data = await read_json_async(path)
     except (json.JSONDecodeError, OSError) as e:
         logger.warning(f"[ArchiveShard] 读取分片失败 {path}: {e}")
-        return []
+        raise ShardCorruptError(path, str(e)) from e
     if isinstance(data, list):
         return [item for item in data if isinstance(item, dict)]
     logger.warning(f"[ArchiveShard] 分片不是 list，忽略: {path}")
-    return []
+    raise ShardCorruptError(path, f"top-level is {type(data).__name__}, not list")
 
 
 async def apick_today_shard_path(
@@ -163,6 +182,15 @@ async def apick_today_shard_path(
             try:
                 shard_data = await _aread_shard(shard_path)
                 sizes[fn] = len(shard_data)
+            except ShardCorruptError as e:
+                # Coderabbit PR #934 round-2 Major #1: corrupt shards
+                # are reported as full so the picker can't reuse them
+                # (else atomic_write_json_async would overwrite the
+                # corrupt original and lose any salvageable data).
+                logger.warning(
+                    f"[ArchiveShard] 损坏分片视为已满，跳过复用 {shard_path}: {e}"
+                )
+                sizes[fn] = ARCHIVE_FILE_MAX_ENTRIES
             except Exception as e:
                 logger.warning(f"[ArchiveShard] 探测分片大小失败 {shard_path}: {e}")
                 sizes[fn] = ARCHIVE_FILE_MAX_ENTRIES
@@ -223,6 +251,15 @@ async def aappend_to_shard(
             try:
                 shard_data = await _aread_shard(shard_path)
                 sizes[fn] = len(shard_data)
+            except ShardCorruptError as e:
+                # Coderabbit PR #934 round-2 Major #1: corrupt shards
+                # are reported as full so the picker can't reuse them
+                # (else atomic_write_json_async would overwrite the
+                # corrupt original and lose any salvageable data).
+                logger.warning(
+                    f"[ArchiveShard] 损坏分片视为已满，跳过复用 {shard_path}: {e}"
+                )
+                sizes[fn] = ARCHIVE_FILE_MAX_ENTRIES
             except Exception as e:
                 logger.warning(f"[ArchiveShard] 探测分片大小失败 {shard_path}: {e}")
                 sizes[fn] = ARCHIVE_FILE_MAX_ENTRIES  # treat as full → don't reuse
@@ -231,7 +268,19 @@ async def aappend_to_shard(
     remaining = list(entries)
     while remaining:
         shard_path = _pick_shard_path_for_today(archive_dir, today, sizes)
-        existing = await _aread_shard(shard_path)
+        try:
+            existing = await _aread_shard(shard_path)
+        except ShardCorruptError as e:
+            # The picker just selected a fresh shard or one we already
+            # sized as <max above. Reaching this branch means the
+            # filename we picked turns out to be corrupt on the second
+            # read (e.g. concurrent writer truncated it). Mark full
+            # and re-pick — same defensive posture as the size probe.
+            logger.warning(
+                f"[ArchiveShard] 选中分片读取损坏，标记为已满重新选 {shard_path}: {e}"
+            )
+            sizes[os.path.basename(shard_path)] = ARCHIVE_FILE_MAX_ENTRIES
+            continue
         capacity = ARCHIVE_FILE_MAX_ENTRIES - len(existing)
         if capacity <= 0:
             # Brand-new shard rolled in, but a concurrent writer filled
@@ -310,6 +359,62 @@ def append_to_shard_sync(
         sizes[os.path.basename(shard_path)] = len(merged)
         last_written = shard_path
     return last_written
+
+
+def ensure_entry_in_named_shard_sync(
+    archive_dir: str, shard_basename: str, entry: dict,
+) -> bool:
+    """Idempotent helper: ensure ``entry`` (keyed by ``entry['id']``) is
+    present in the shard file ``<archive_dir>/<shard_basename>``,
+    creating the file if missing.
+
+    Used by reconciler archive handlers (`evidence_handlers.py`) to
+    self-heal a missing shard write. Background: archive flow writes
+    the event log first then appends to a shard; if the process dies
+    between those two steps, the active view loses the entry but the
+    shard never gets it. Replaying the event lets the handler call us
+    here so the entry is reconstructed from the event payload's
+    ``entry_snapshot`` (coderabbit PR #934 round-2 Major #3).
+
+    Returns True if a write happened (entry was missing or shard was
+    absent); False if the entry was already present.
+
+    Corruption posture: if the named shard exists but is corrupt
+    (non-JSON / not list), we leave it untouched (raise nothing — log
+    + return False) rather than overwriting it. Same isolation rule
+    as `_aread_shard` (Major #1). The replay will be retried on the
+    next reconciler boot; an operator can fix the corrupt shard
+    manually in between.
+    """
+    if not isinstance(entry, dict):
+        return False
+    eid = entry.get('id')
+    if not eid:
+        return False
+    os.makedirs(archive_dir, exist_ok=True)
+    shard_path = os.path.join(archive_dir, shard_basename)
+    existing: list[dict] = []
+    if os.path.exists(shard_path):
+        try:
+            with open(shard_path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(
+                f"[ArchiveShard] self-heal 跳过损坏分片 {shard_path}: {e}"
+            )
+            return False
+        if not isinstance(data, list):
+            logger.warning(
+                f"[ArchiveShard] self-heal 跳过非 list 分片 {shard_path}"
+            )
+            return False
+        existing = [x for x in data if isinstance(x, dict)]
+        for e in existing:
+            if e.get('id') == eid:
+                return False  # Already present → idempotent no-op.
+    merged = existing + [dict(entry)]
+    atomic_write_json(shard_path, merged, indent=2, ensure_ascii=False)
+    return True
 
 
 def shard_filename_for(now: datetime) -> str:
