@@ -1994,7 +1994,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         if (urlMatch) mmdPath = urlMatch[1];
                     }
                     modelData.mmd = mmdPath;
-                    if (mmdAnimationSelect && mmdAnimationSelect.value) {
+                    if (mmdAnimationSelect && mmdAnimationSelect.value && mmdAnimationSelect.value !== '_no_motion_') {
                         modelData.mmd_animation = mmdAnimationSelect.value;
                     }
                     const mmdIdleUrls = getSelectedIdleAnimations('mmd-idle-animation-multiselect');
@@ -2017,7 +2017,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         }
                     }
                     modelData.vrm = vrmPath;
-                    if (vrmAnimation) {
+                    if (vrmAnimation && vrmAnimation !== '_no_motion_') {
                         modelData.vrm_animation = vrmAnimation;
                     }
                     const vrmIdleUrls = getSelectedIdleAnimations('vrm-idle-animation-multiselect');
@@ -2037,8 +2037,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 console.log('[Live2D Save] motionSelect.value:', motionSelect ? motionSelect.value : 'null');
                 console.log('[Live2D Save] currentModelFiles.motion_files:', currentModelFiles?.motion_files);
                 if (motionSelect) {
-                    // 【修复】无论是否有值，即使是空字符串（用户点击清空/默认选项），也要显式发送给后端，触发置空逻辑
-                    modelData.live2d_idle_animation = motionSelect.value || "";
+                    const motionVal = motionSelect.value;
+                    modelData.live2d_idle_animation = (motionVal && motionVal !== '_no_motion_') ? motionVal : "";
                     console.log('[Live2D Save] Added live2d_idle_animation to modelData:', modelData.live2d_idle_animation);
                 }
                 console.log('[Live2D Save] Final modelData:', JSON.stringify(modelData, null, 2));
@@ -3423,6 +3423,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             if (vrmAnimationSelect && vrmAnimations.length > 0) {
                 vrmAnimationSelect.innerHTML = `<option value="">${t('live2d.selectMotion', '选择动作')}</option>`;
+                const noMotionOption = document.createElement('option');
+                noMotionOption.value = '_no_motion_';
+                noMotionOption.textContent = t('live2d.noMotion', '无动作');
+                vrmAnimationSelect.appendChild(noMotionOption);
                 vrmAnimations.forEach(anim => {
                     // 确保 animPath 是字符串：优先使用 anim.path，否则使用 anim.url，最后使用 anim 本身（如果是字符串）
                     const animPath = (typeof anim.path === 'string' ? anim.path : null)
@@ -3527,6 +3531,18 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // 重置选择器到第一个选项（保持显示"选择动作"）
                 e.target.value = '';
                 updateVRMAnimationSelectButtonText(); // 更新按钮文字为"选择动作"
+                return;
+            }
+
+            // 无动作选项：停止当前播放的 VRM 动作
+            if (selectedValue === '_no_motion_') {
+                if (vrmManager) {
+                    vrmManager.stopVRMAAnimation();
+                    isVrmAnimationPlaying = false;
+                    updateVRMAnimationPlayButtonIcon();
+                    showStatus(t('live2d.motionStopped', '动作已停止'), 1000);
+                }
+                if (playVrmAnimationBtn) playVrmAnimationBtn.disabled = false;
                 return;
             }
 
@@ -3728,6 +3744,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (!mmdAnimationSelect) return;
 
             mmdAnimationSelect.innerHTML = `<option value="">${t('live2d.mmdAnimation.selectAnimation', '选择VMD动画')}</option>`;
+            const noMotionOption = document.createElement('option');
+            noMotionOption.value = '_no_motion_';
+            noMotionOption.textContent = t('live2d.noMotion', '无动作');
+            mmdAnimationSelect.appendChild(noMotionOption);
             if (mmdAnimations.length > 0) {
                 mmdAnimations.forEach(anim => {
                     const animPath = anim.path || anim.url || (typeof anim === 'string' ? anim : null);
@@ -4418,6 +4438,18 @@ document.addEventListener('DOMContentLoaded', async () => {
                 return;
             }
 
+            // 无动作选项：停止当前播放的 MMD 动画
+            if (animPath === '_no_motion_') {
+                if (window.mmdManager) {
+                    window.mmdManager.stopAnimation();
+                    isMmdAnimationPlaying = false;
+                    updateMMDAnimationPlayButtonIcon();
+                    showStatus(t('live2d.motionStopped', '动作已停止'), 1000);
+                }
+                if (playMmdAnimationBtn) playMmdAnimationBtn.disabled = false;
+                return;
+            }
+
             if (!window.mmdManager) return;
 
             try {
@@ -4509,6 +4541,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         const expressions = vrmManager.expression.getExpressionList();
 
         vrmExpressionSelect.innerHTML = `<option value="">${t('live2d.selectExpression', '选择表情')}</option>`;
+        const noExpressionOption = document.createElement('option');
+        noExpressionOption.value = '_no_expression_';
+        noExpressionOption.textContent = t('live2d.noExpression', '无表情');
+        vrmExpressionSelect.appendChild(noExpressionOption);
 
         if (expressions.length > 0) {
             expressions.forEach(name => {
@@ -4585,6 +4621,18 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (triggerVrmExpressionBtn) {
                     triggerVrmExpressionBtn.disabled = true;
                 }
+                return;
+            }
+
+            // 无表情选项：清除 VRM 表情
+            if (selectedValue === '_no_expression_') {
+                if (vrmManager && vrmManager.expression) {
+                    vrmManager.expression.resetBaseExpression();
+                    isVrmExpressionPlaying = false;
+                    updateVRMExpressionPlayButtonIcon();
+                    showStatus(t('live2d.expressionCleared', '表情已清除'), 1000);
+                }
+                if (triggerVrmExpressionBtn) triggerVrmExpressionBtn.disabled = false;
                 return;
             }
 
