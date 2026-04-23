@@ -579,6 +579,9 @@ function captureSettingsSnapshot() {
         live2dIdleAnimation: document.getElementById('motion-select')?.value ?? '',
         idleAnimation: JSON.stringify(_getSelectedIdleAnimationsGlobal('vrm-idle-animation-multiselect')),
         mmdIdleAnimation: JSON.stringify(_getSelectedIdleAnimationsGlobal('mmd-idle-animation-multiselect')),
+        // VRM/MMD 手动动作选择
+        vrmAnimation: document.getElementById('vrm-animation-select')?.value ?? '',
+        mmdAnimation: document.getElementById('mmd-animation-select')?.value ?? '',
     };
 }
 
@@ -3429,31 +3432,35 @@ document.addEventListener('DOMContentLoaded', async () => {
             const data = await RequestHelper.fetchJson('/api/model/vrm/animations');
             vrmAnimations = (data.success && data.animations) ? data.animations : [];
 
-            if (vrmAnimationSelect && vrmAnimations.length > 0) {
+            if (vrmAnimationSelect) {
+                // 始终保留"无动作"选项，让用户能清空已保存的动作配置
                 vrmAnimationSelect.innerHTML = `<option value="">${t('live2d.selectMotion', '选择动作')}</option>`;
                 const noMotionOption = document.createElement('option');
                 noMotionOption.value = '_no_motion_';
                 noMotionOption.textContent = t('live2d.noMotion', '无动作');
                 vrmAnimationSelect.appendChild(noMotionOption);
-                vrmAnimations.forEach(anim => {
-                    // 确保 animPath 是字符串：优先使用 anim.path，否则使用 anim.url，最后使用 anim 本身（如果是字符串）
-                    const animPath = (typeof anim.path === 'string' ? anim.path : null)
-                        || (typeof anim.url === 'string' ? anim.url : null)
-                        || (typeof anim === 'string' ? anim : null);
-                    if (!animPath) {
-                        console.warn('[VRM] 跳过无效动画项:', anim);
-                        return;
-                    }
 
-                    const option = document.createElement('option');
-                    const finalUrl = ModelPathHelper.vrmToUrl(animPath, 'animation');
+                if (vrmAnimations.length > 0) {
+                    vrmAnimations.forEach(anim => {
+                        // 确保 animPath 是字符串：优先使用 anim.path，否则使用 anim.url，最后使用 anim 本身（如果是字符串）
+                        const animPath = (typeof anim.path === 'string' ? anim.path : null)
+                            || (typeof anim.url === 'string' ? anim.url : null)
+                            || (typeof anim === 'string' ? anim : null);
+                        if (!animPath) {
+                            console.warn('[VRM] 跳过无效动画项:', anim);
+                            return;
+                        }
 
-                    option.value = finalUrl;
-                    option.setAttribute('data-path', animPath);
-                    option.setAttribute('data-filename', anim.name || anim.filename || finalUrl.split('/').pop());
-                    option.textContent = option.getAttribute('data-filename');
-                    vrmAnimationSelect.appendChild(option);
-                });
+                        const option = document.createElement('option');
+                        const finalUrl = ModelPathHelper.vrmToUrl(animPath, 'animation');
+
+                        option.value = finalUrl;
+                        option.setAttribute('data-path', animPath);
+                        option.setAttribute('data-filename', anim.name || anim.filename || finalUrl.split('/').pop());
+                        option.textContent = option.getAttribute('data-filename');
+                        vrmAnimationSelect.appendChild(option);
+                    });
+                }
                 vrmAnimationSelect.disabled = false;
                 if (vrmAnimationSelectBtn) {
                     vrmAnimationSelectBtn.disabled = false;
@@ -3461,10 +3468,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 updateVRMAnimationDropdown();
                 updateVRMAnimationSelectButtonText();
                 showStatus(t('live2d.vrmAnimation.animationListLoaded', '动作列表加载成功'), 2000);
-            } else {
-                vrmAnimationSelect.innerHTML = `<option value="">${t('live2d.vrmAnimation.noAnimations', '未找到动作文件')}</option>`;
-                updateVRMAnimationDropdown();
-                updateVRMAnimationSelectButtonText();
             }
         } catch (error) {
             console.error('加载 VRM 动作列表失败:', error);
@@ -3769,11 +3772,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                     option.textContent = filename;
                     mmdAnimationSelect.appendChild(option);
                 });
-                mmdAnimationSelect.disabled = false;
-                if (mmdAnimationSelectBtn) mmdAnimationSelectBtn.disabled = false;
-            } else {
-                mmdAnimationSelect.innerHTML = `<option value="">${t('live2d.mmdAnimation.noAnimation', '无动画')}</option>`;
             }
+            mmdAnimationSelect.disabled = false;
+            if (mmdAnimationSelectBtn) mmdAnimationSelectBtn.disabled = false;
             updateMMDAnimationDropdown();
             updateMMDAnimationSelectButtonText();
         } catch (error) {
@@ -4447,7 +4448,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 return;
             }
 
-            // 无动作选项：停止当前播放的 MMD 动画
+            // 无动作选项：停止当前播放的 MMD 动画，并重置 idle 状态避免状态污染
+            // stopAnimation() 会停掉当前待机动画，但 isMmdIdlePlaying 仍保持旧值；
+            // 下一次启动 idle rotation 时可能把 stale currentAnimationUrl 当成仍在播放，
+            // 导致跳过首次播放/监听器注册。因此需要同步重置 isMmdIdlePlaying。
             if (animPath === '_no_motion_') {
                 if (window.mmdManager) {
                     window.mmdManager.stopAnimation();
@@ -4456,6 +4460,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     showStatus(t('live2d.motionStopped', '动作已停止'), 1000);
                 }
                 if (playMmdAnimationBtn) playMmdAnimationBtn.disabled = true;
+                isMmdIdlePlaying = false; // 重置 idle 状态，避免下一次 idle 轮换误判
                 stopIdleRotation('mmd');
                 return;
             }
