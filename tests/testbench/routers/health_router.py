@@ -15,7 +15,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from tests.testbench import config as tb_config
@@ -42,11 +43,18 @@ async def healthz() -> dict:
 
 @router.get("/version")
 async def version() -> dict:
-    """Static version metadata for the testbench UI."""
+    """Static version metadata for the testbench UI.
+
+    Read the numeric version + phase from :mod:`tests.testbench.config`
+    so that a single constant bump updates both FastAPI's OpenAPI spec
+    (used by ``/api/docs``) and Settings → About. The About page
+    renders ``"{name} {version}"`` and ``phase`` as-is, so keep these
+    strings tester-friendly rather than machine-readable.
+    """
     return {
         "name": "N.E.K.O. Testbench",
-        "version": "0.1.0",
-        "phase": "P20",
+        "version": tb_config.TESTBENCH_VERSION,
+        "phase": tb_config.TESTBENCH_PHASE,
         "host": tb_config.DEFAULT_HOST,
         "port": tb_config.DEFAULT_PORT,
         "boot_id": BOOT_ID,
@@ -735,3 +743,191 @@ async def delete_orphan_sandbox_endpoint(session_id: str) -> dict[str, Any]:
             status_code=status,
             detail={"error_type": exc.code, "message": exc.message},
         ) from exc
+
+
+# ── /docs/{doc_name} ────────────────────────────────────────────────
+#
+# Expose a small hand-picked set of tester-facing Markdown docs under
+# ``DOCS_DIR`` so Settings → About can deep-link to them. We don't mount
+# the whole ``docs/`` directory through StaticFiles because most entries
+# there are internal (blueprint / progress / agent notes / lessons) and
+# irrelevant to testers. The whitelist below is the "public" subset.
+#
+# Two response shapes, negotiated by ``Accept`` header:
+#
+#   * ``text/markdown`` — raw source (for curl / fetch-as-text clients).
+#   * ``text/html`` (default, i.e. when opened from a browser) — rendered
+#     with ``markdown-it-py`` + inline GitHub-ish styles so the About
+#     page's [open manual] link shows a readable document instead of
+#     dumping raw markdown at the user.
+#
+# Missing-on-disk whitelist entries return a 404 with a friendly
+# explanation rather than a generic 'file not found' — some docs (the
+# user manual, the architecture overview) are written across multiple
+# commits and may be absent in intermediate states.
+
+#: Public tester-facing docs. Key is the URL segment; value is the
+#: filename under :data:`DOCS_DIR`. Kept tiny on purpose — adding a new
+#: entry is a deliberate act, not "whoever drops a file into docs/".
+_PUBLIC_DOCS: dict[str, str] = {
+    "testbench_USER_MANUAL": "testbench_USER_MANUAL.md",
+    "testbench_ARCHITECTURE_OVERVIEW": "testbench_ARCHITECTURE_OVERVIEW.md",
+    "external_events_guide": "external_events_guide.md",
+    "CHANGELOG": "CHANGELOG.md",
+}
+
+
+def _render_markdown_html(md_source: str, title: str) -> str:
+    """Render Markdown to a standalone HTML page with embedded styles.
+
+    Using ``markdown-it-py`` (already a transitive dep via ``markdownify``)
+    with ``commonmark`` + ``table`` + ``strikethrough`` so GitHub-flavored
+    tables / task-lists render correctly. The embedded CSS is deliberately
+    tiny (prose readability only, no interactive controls) — testers open
+    the doc, read, close; we're not building a wiki app here.
+
+    Defensive on import failure: if the lib can't load for some reason we
+    fall back to ``<pre>`` of the raw source so the user still sees the
+    content, just unstyled.
+    """
+    try:
+        from markdown_it import MarkdownIt
+    except ImportError:
+        body_html = (
+            "<pre style='white-space: pre-wrap; word-break: break-word;"
+            "font-family: ui-monospace, monospace; font-size: 13.5px;'>"
+            f"{_html_escape(md_source)}</pre>"
+        )
+    else:
+        md = (
+            MarkdownIt("commonmark", {"html": False, "linkify": True, "typographer": False})
+            .enable(["table", "strikethrough"])
+        )
+        body_html = md.render(md_source)
+
+    # Inline CSS — kept minimal. Layout width ~820px to match the prose
+    # width tolerance recommended by most typography guides; anything
+    # wider hurts readability on 1080p+ monitors.
+    return (
+        "<!doctype html><html lang='zh-CN'><head>"
+        "<meta charset='utf-8'>"
+        f"<title>{_html_escape(title)}</title>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<style>"
+        "body{margin:0;padding:32px 24px;background:#f6f8fa;color:#1f2328;"
+        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',"
+        "Helvetica,Arial,sans-serif,'PingFang SC','Microsoft YaHei';"
+        "line-height:1.7;font-size:15px;}"
+        "main{max-width:820px;margin:0 auto;background:#fff;padding:40px 48px;"
+        "border:1px solid #d1d9e0;border-radius:8px;"
+        "box-shadow:0 1px 3px rgba(31,35,40,0.04);}"
+        "h1,h2,h3,h4{line-height:1.3;margin-top:1.6em;margin-bottom:0.6em;"
+        "font-weight:600;color:#1f2328;}"
+        "h1{font-size:2em;border-bottom:1px solid #d1d9e0;padding-bottom:0.3em;}"
+        "h2{font-size:1.5em;border-bottom:1px solid #eaeef2;padding-bottom:0.3em;}"
+        "h3{font-size:1.25em;}"
+        "p{margin:0 0 1em 0;}"
+        "ul,ol{padding-left:2em;margin:0 0 1em 0;}"
+        "li{margin:0.2em 0;}"
+        "code{background:#eff1f3;padding:0.2em 0.4em;border-radius:4px;"
+        "font-family:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace;"
+        "font-size:85%;}"
+        "pre{background:#f6f8fa;padding:16px;border-radius:6px;overflow:auto;"
+        "line-height:1.45;font-size:85%;}"
+        "pre code{background:transparent;padding:0;font-size:inherit;}"
+        "table{border-collapse:collapse;margin:1em 0;}"
+        "table th,table td{border:1px solid #d1d9e0;padding:6px 13px;}"
+        "table th{background:#f6f8fa;font-weight:600;}"
+        "blockquote{border-left:0.25em solid #d1d9e0;padding:0 1em;color:#636c76;"
+        "margin:0 0 1em 0;}"
+        "hr{height:1px;border:0;background:#d1d9e0;margin:2em 0;}"
+        "a{color:#0969da;text-decoration:none;}a:hover{text-decoration:underline;}"
+        ".docs-backlink{display:inline-block;margin-bottom:24px;font-size:13px;"
+        "color:#636c76;}"
+        "</style>"
+        "</head><body><main>"
+        "<a class='docs-backlink' href='/'>← 回到 testbench 主页</a>"
+        f"{body_html}"
+        "</main></body></html>"
+    )
+
+
+def _html_escape(text: str) -> str:
+    """Minimal HTML escape for the fallback ``<pre>`` path.
+
+    ``html.escape`` would work too, but importing it lazily here keeps
+    the top-of-file import block focused on what's always-used. This
+    helper is only hit when ``markdown-it-py`` fails to import, which
+    should never happen in a healthy venv.
+    """
+    return (
+        text
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+@router.get("/docs/{doc_name}")
+async def serve_public_doc(doc_name: str, request: Request):  # noqa: ANN201
+    """Serve one of the whitelisted tester-facing Markdown docs.
+
+    Accept header negotiation:
+
+      * ``text/markdown`` in ``Accept`` → return raw markdown source
+        with ``text/markdown; charset=utf-8`` content type.
+      * Otherwise → render to a standalone HTML page (GitHub-ish styles)
+        so the Settings → About page's "open manual" link just opens
+        a readable document in a new tab.
+
+    Errors:
+
+      * 404 ``unknown_doc`` — ``doc_name`` not in the whitelist.
+      * 404 ``file_missing`` — whitelist entry exists but the file
+        hasn't been authored yet (e.g. we're between commits where
+        the user manual is scheduled but not written).
+    """
+    filename = _PUBLIC_DOCS.get(doc_name)
+    if filename is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error_type": "unknown_doc",
+                "message": (
+                    f"doc_name={doc_name!r} is not in the public docs "
+                    f"whitelist. Known: {sorted(_PUBLIC_DOCS)}"
+                ),
+            },
+        )
+
+    path = tb_config.DOCS_DIR / filename
+    if not path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error_type": "file_missing",
+                "message": (
+                    f"doc {doc_name!r} is on the whitelist but its file "
+                    f"({filename}) hasn't been written yet. It will appear "
+                    "in a subsequent commit of this release cycle."
+                ),
+            },
+        )
+
+    try:
+        md_source = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"failed to read {filename}: {exc}",
+        ) from exc
+
+    accept = request.headers.get("accept", "").lower()
+    if "text/markdown" in accept:
+        return PlainTextResponse(
+            content=md_source,
+            media_type="text/markdown; charset=utf-8",
+        )
+
+    html_body = _render_markdown_html(md_source, title=doc_name)
+    return HTMLResponse(content=html_body)

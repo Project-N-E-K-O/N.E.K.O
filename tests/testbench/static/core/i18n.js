@@ -2275,12 +2275,26 @@ export const I18N = {
         loading: '加载中…',
         limits_heading: '本期声明 (刻意不做的能力)',
         limits: [
-          '本期只支持单活跃会话; 多标签会相互踩状态',
+          '本期只支持单活跃会话; 多浏览器标签会相互踩状态',
           '仅文本对话, 暂不接入 Realtime / 语音',
           '默认绑定 127.0.0.1, 不监听公网',
           'api_key 在内存中保留明文, 保存到磁盘时自动脱敏',
+          '外部事件不做冷却 / 黑名单 / 用户隔离 (P25 注明的不做项)',
+          'es / pt 翻译不做, UI 静默回退到英文',
+          '单 LLM 串行, 无并发调用',
         ],
-        docs_hint: '计划与进度: tests/testbench/docs/{PLAN, PROGRESS, AGENT_NOTES}.md',
+        // Tester 文档入口 — 每条对应 /docs/<name> 端点 (由 health_router
+        // 白名单提供). 点击在新标签页打开渲染后的 HTML 版本.
+        docs_heading: '相关文档',
+        docs_list: [
+          { name: '测试用户使用手册 (中文)',  href: '/docs/testbench_USER_MANUAL' },
+          { name: '外部事件注入详细说明',      href: '/docs/external_events_guide' },
+          { name: '版本更新记录 (CHANGELOG)',  href: '/docs/CHANGELOG' },
+          { name: '代码与设计总体概述 (给开发者)', href: '/docs/testbench_ARCHITECTURE_OVERVIEW' },
+        ],
+        // 兜底: 内部开发文档在 docs/ 目录下, 不通过端点开放
+        // (blueprint / progress / agent_notes / lessons_learned).
+        internal_docs_hint: '内部开发文档 (计划 · 进度 · agent 笔记): tests/testbench/docs/',
       },
     },
     collapsible: {

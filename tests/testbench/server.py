@@ -62,7 +62,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="N.E.K.O. Testbench",
-        version="0.1.0",
+        version=tb_config.TESTBENCH_VERSION,
         docs_url="/api/docs",
         redoc_url=None,
     )

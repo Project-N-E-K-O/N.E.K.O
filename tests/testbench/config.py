@@ -10,6 +10,35 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+# ─── Version metadata ──────────────────────────────────────────────────────
+#
+# Semantic version of the testbench itself, independent from the main N.E.K.O
+# product. Surfaced via ``GET /version`` and the Settings → About page so
+# testers can tell at a glance which feature set they're looking at.
+#
+# Versioning rules:
+#   * MAJOR bumps = sign-off of a new phase that changes externally visible
+#     contracts (sandbox layout, export format, persistence schema, etc.).
+#   * MINOR bumps = additive features without breaking existing tester
+#     workflows (e.g. P25 external event injection adds a new Chat side
+#     panel but doesn't alter existing pages).
+#   * PATCH bumps = bugfixes / UI polish only.
+#
+# History so far (see ``CHANGELOG.md`` for details):
+#   * v1.0.0 — P24 sign-off (2026-04-22): first complete baseline.
+#   * v1.1.0 — P25 external event injection (2026-04-23): +Chat sidebar
+#     panel for avatar/agent-callback/proactive-chat, +Prompt Preview
+#     buttons for Memory/Evaluation, +role=system chokepoint rewrite,
+#     +tester-facing manual.
+#
+# When bumping this, remember to:
+#   1. Update ``CHANGELOG.md`` with a dated section.
+#   2. Leave ``TESTBENCH_PHASE`` consistent with the current development
+#      phase (``Pnn`` identifier matches the blueprint & plan docs).
+
+TESTBENCH_VERSION: str = "1.1.0"
+TESTBENCH_PHASE: str = "P25 external event injection"
+
 # ─── Directory layout ──────────────────────────────────────────────────────
 
 #: Project root (``E:/NEKO/NEKO dev/project`` in this workspace).
