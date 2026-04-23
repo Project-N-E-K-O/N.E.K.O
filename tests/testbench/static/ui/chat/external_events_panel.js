@@ -302,17 +302,13 @@ export function mountExternalEventsPanel(host) {
       onChange: (v) => { a.touchZone = v; },
       disabled: !touchEnabled,
     });
-    const zoneWrap = el('div', { className: 'form-col' },
-      zoneSel,
-      el('span', { className: 'form-hint' },
-        i18n('chat.external_events.avatar.touch_zone_hint')),
-    );
-    // touch_zone: wrap 自身是 select + hint 两行, 所以整行走 block
-    // (label 独占一行, wrap 在下占满宽度). inline 下 align-items:center
-    // 会让 label 和两行包围盒垂直居中 — 视觉上 label 夹在 select 和 hint
-    // 之间, 易读性下降.
+    // r5 polish r6 T4: label + select 同行 (与 tool/action/intensity 保持一致),
+    // hint 独立一行放在下方. 之前把 select+hint 包成 form-col 再喂给 block row
+    // 会让 label 独占一行, 视觉节奏和同一 tab 其它字段不一致.
     rows.push(labeledRow(
-      'chat.external_events.avatar.touch_zone_label', zoneWrap, { block: true }));
+      'chat.external_events.avatar.touch_zone_label', zoneSel));
+    rows.push(el('p', { className: 'form-hint form-hint-standalone' },
+      i18n('chat.external_events.avatar.touch_zone_hint')));
 
     // text_context
     const textarea = el('textarea', {
@@ -448,7 +444,8 @@ export function mountExternalEventsPanel(host) {
         ? i18n('chat.external_events.common.invoke_in_flight')
         : i18n('chat.external_events.common.invoke_btn'));
 
-    row.append(mirrorLabel, previewBtn, invokeBtn);
+    const spacer = el('span', { className: 'external-events-invoke-spacer' });
+    row.append(mirrorLabel, spacer, previewBtn, invokeBtn);
     return row;
   }
 
@@ -946,11 +943,6 @@ function openPreviewModal(data) {
 
   const head = el('div', { className: 'modal-head' },
     el('h3', {}, i18n('chat.external_events.preview_modal.title')),
-    el('button', {
-      type: 'button',
-      className: 'ghost tiny',
-      onClick: close,
-    }, i18n('chat.external_events.preview_modal.close_btn')),
   );
 
   const body = el('div', { className: 'modal-body' });

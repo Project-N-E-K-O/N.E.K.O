@@ -71,6 +71,10 @@ from tests.testbench.chat_messages import (
 )
 from tests.testbench.logger import python_logger
 from tests.testbench.model_config import ModelGroupConfig
+from tests.testbench.pipeline.wire_tracker import (
+    record_last_llm_wire,
+    update_last_llm_wire_reply,
+)
 from tests.testbench.pipeline.chat_runner import (
     ChatConfigError,
     resolve_group_config,
@@ -480,9 +484,39 @@ class BaseJudger(ABC):
             max_retries=1,
             streaming=False,
         )
+        _judge_wire = [{"role": ROLE_USER, "content": prompt.strip()}]
         try:
-            resp = await client.ainvoke([HumanMessage(content=prompt.strip())])
-            return (resp.content or "").strip()
+            record_last_llm_wire(
+                self.session,
+                _judge_wire,
+                source="judge.llm",
+                note=(
+                    f"judge.{type(self).__name__}:"
+                    f"prompt_chars={len(prompt)}@{cfg.provider}:{cfg.model}"
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 — observability must not block LLM
+            python_logger().debug(
+                "[judge_runner] record_last_llm_wire failed: %s: %s",
+                type(exc).__name__, exc,
+            )
+        try:
+            try:
+                resp = await client.ainvoke([HumanMessage(content=prompt.strip())])
+                reply_text = (resp.content or "").strip()
+                try:
+                    update_last_llm_wire_reply(
+                        self.session, reply_chars=len(reply_text),
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                return reply_text
+            except Exception:
+                try:
+                    update_last_llm_wire_reply(self.session, reply_chars=-1)
+                except Exception:  # noqa: BLE001
+                    pass
+                raise
         finally:
             try:
                 await client.aclose()

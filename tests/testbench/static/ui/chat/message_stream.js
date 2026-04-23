@@ -70,12 +70,29 @@ export function mountMessageStream(host) {
   // event / script turn / auto_dialog / judge) 都通过 `chat:messages_
   // changed` 事件总线驱动 refresh(), 不需要用户手动触发. 直接从 toolbar
   // 里摘掉, 保留内部 refresh() 函数让订阅者继续用.
+  //
+  // 2026-04-23 P25 Day 2 polish r6: 新增 [保存到最近对话] 快捷钮, 放在
+  // [清空] 左侧. 一键把当前 session.messages 追加落盘到 memory/<char>/
+  // recent.json (走 POST /api/memory/recent/import_from_session, 后端
+  // 过滤 banner / 空消息 / 非对话 role). 原本要这么做必须手动开 Setup
+  // → Memory → Recent 然后自己拼 LangChain canonical JSON, 太硬核.
+  const saveToRecentBtn = el('button', {
+    type: 'button',
+    className: 'small',
+    title: i18n('chat.stream.save_to_recent_title'),
+    onClick: () => { saveToRecent(); },
+  }, i18n('chat.stream.save_to_recent_btn'));
   const clearBtn = el('button', {
     type: 'button',
     className: 'small danger',
     onClick: () => { confirmClearAll(); },
   }, i18n('chat.stream.clear_btn'));
-  toolbar.append(countBadge, el('span', { className: 'spacer' }), clearBtn);
+  toolbar.append(
+    countBadge,
+    el('span', { className: 'spacer' }),
+    saveToRecentBtn,
+    clearBtn,
+  );
   host.append(toolbar);
 
   // ── list ───────────────────────────────────────────────────────
@@ -457,6 +474,44 @@ export function mountMessageStream(host) {
     messages = [];
     renderAll();
     afterMutation('clear');
+  }
+
+  // 2026-04-23 P25 Day 2 polish r6: [保存到最近对话] 处理. 把当前
+  // session.messages 追加写入 memory/<character>/recent.json. 后端
+  // (memory_router.import_recent_from_session) 会:
+  //   - 过滤 source=external_event_banner (banner 是 UI-only 标记,
+  //     不进 LLM wire, 也不该进 recent)
+  //   - 过滤 空 content / 非 user|assistant|system role
+  //   - 转成 LangChain canonical ({type, data:{content}}) 形状
+  //   - 原子读 existing → append → 原子写 (默认 append 模式)
+  // 409 NoCharacterSelected / NoMessagesToImport 在 confirm 之前挡不住,
+  // 就走 toast.warn 告诉 tester 怎么修 (expectedStatuses 声明为已知业务码,
+  // 避免 api.js 的 http:error 广播弹成红色系统错误).
+  async function saveToRecent() {
+    if (!messages.length) {
+      toast.warn(i18n('chat.stream.toast.save_to_recent_empty'));
+      return;
+    }
+    if (!confirm(i18n('chat.stream.prompt.save_to_recent', messages.length))) return;
+    const res = await api.post(
+      '/api/memory/recent/import_from_session',
+      { mode: 'append' },
+      { expectedStatuses: [404, 409] },
+    );
+    if (!res.ok) {
+      if (res.error?.type === 'NoMessagesToImport') {
+        toast.warn(i18n('chat.stream.toast.save_to_recent_empty'));
+        return;
+      }
+      toast.err(
+        i18n('chat.stream.toast.save_to_recent_error', res.error?.message || ''),
+      );
+      return;
+    }
+    const { added, total, skipped } = res.data || {};
+    toast.ok(
+      i18n('chat.stream.toast.save_to_recent_ok', added, total, skipped || {}),
+    );
   }
 
   function afterMutation(reason) {

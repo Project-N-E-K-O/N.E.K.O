@@ -113,6 +113,10 @@ from tests.testbench.pipeline.chat_runner import (
     ChatConfigError,
     resolve_group_config,
 )
+from tests.testbench.pipeline.wire_tracker import (
+    record_last_llm_wire,
+    update_last_llm_wire_reply,
+)
 from tests.testbench.session_store import Session
 
 
@@ -478,6 +482,19 @@ async def _preview_recent_compress(
     llm = _llm_for_memory(session, temperature=0.3)
     warnings: list[str] = []
     summary_text = ""
+    _memory_wire = [{"role": ROLE_USER, "content": prompt}]
+    try:
+        record_last_llm_wire(
+            session,
+            _memory_wire,
+            source="memory.llm",
+            note=f"memory.recent.compress:tail={tail_count}/{total}",
+        )
+    except Exception as exc:  # noqa: BLE001 — observability must not block LLM
+        python_logger().debug(
+            "memory.recent.compress: record_last_llm_wire failed: %s: %s",
+            type(exc).__name__, exc,
+        )
     try:
         try:
             resp = await llm.ainvoke(prompt)
@@ -497,7 +514,15 @@ async def _preview_recent_compress(
         else:
             warnings.append("摘要模型返回内容缺少 '对话摘要' 字段. 原始返回片段已截断.")
             summary_text = raw[:200] if raw else ""
+        try:
+            update_last_llm_wire_reply(session, reply_chars=len(raw))
+        except Exception:  # noqa: BLE001
+            pass
     except Exception as exc:
+        try:
+            update_last_llm_wire_reply(session, reply_chars=-1)
+        except Exception:  # noqa: BLE001
+            pass
         raise MemoryOpError(
             "LlmFailed",
             f"摘要模型调用失败: {type(exc).__name__}: {exc}",
@@ -643,6 +668,19 @@ async def _preview_facts_extract(
 
     llm = _llm_for_memory(session, temperature=0.3)
     warnings: list[str] = []
+    _memory_wire = [{"role": ROLE_USER, "content": prompt}]
+    try:
+        record_last_llm_wire(
+            session,
+            _memory_wire,
+            source="memory.llm",
+            note=f"memory.facts.extract:src={source}:{len(messages)}msgs",
+        )
+    except Exception as exc:  # noqa: BLE001 — observability must not block LLM
+        python_logger().debug(
+            "memory.facts.extract: record_last_llm_wire failed: %s: %s",
+            type(exc).__name__, exc,
+        )
     try:
         try:
             resp = await llm.ainvoke(prompt)
@@ -650,7 +688,15 @@ async def _preview_facts_extract(
             await llm.aclose()
         raw = _strip_code_fence(getattr(resp, "content", "") or "")
         extracted = robust_json_loads(raw) if raw else []
+        try:
+            update_last_llm_wire_reply(session, reply_chars=len(raw))
+        except Exception:  # noqa: BLE001
+            pass
     except Exception as exc:
+        try:
+            update_last_llm_wire_reply(session, reply_chars=-1)
+        except Exception:  # noqa: BLE001
+            pass
         raise MemoryOpError(
             "LlmFailed",
             f"事实提取模型调用失败: {type(exc).__name__}: {exc}",
@@ -857,6 +903,19 @@ async def _preview_reflect(
 
     llm = _llm_for_memory(session, temperature=0.5)
     warnings: list[str] = []
+    _memory_wire = [{"role": ROLE_USER, "content": prompt}]
+    try:
+        record_last_llm_wire(
+            session,
+            _memory_wire,
+            source="memory.llm",
+            note=f"memory.reflect:unabsorbed={len(unabsorbed)}",
+        )
+    except Exception as exc:  # noqa: BLE001 — observability must not block LLM
+        python_logger().debug(
+            "memory.reflect: record_last_llm_wire failed: %s: %s",
+            type(exc).__name__, exc,
+        )
     try:
         try:
             resp = await llm.ainvoke(prompt)
@@ -864,7 +923,15 @@ async def _preview_reflect(
             await llm.aclose()
         raw = _strip_code_fence(getattr(resp, "content", "") or "")
         result = robust_json_loads(raw) if raw else {}
+        try:
+            update_last_llm_wire_reply(session, reply_chars=len(raw))
+        except Exception:  # noqa: BLE001
+            pass
     except Exception as exc:
+        try:
+            update_last_llm_wire_reply(session, reply_chars=-1)
+        except Exception:  # noqa: BLE001
+            pass
         raise MemoryOpError(
             "LlmFailed",
             f"反思模型调用失败: {type(exc).__name__}: {exc}",
@@ -1129,6 +1196,19 @@ async def _preview_persona_resolve_corrections(
     prompt = persona_correction_prompt.format(pairs=batch_text, count=len(pairs))
 
     llm = _llm_for_memory(session, temperature=0.3)
+    _memory_wire = [{"role": ROLE_USER, "content": prompt}]
+    try:
+        record_last_llm_wire(
+            session,
+            _memory_wire,
+            source="memory.llm",
+            note=f"memory.persona.resolve_corrections:pairs={len(pairs)}",
+        )
+    except Exception as exc:  # noqa: BLE001 — observability must not block LLM
+        python_logger().debug(
+            "memory.persona.resolve_corrections: record_last_llm_wire "
+            "failed: %s: %s", type(exc).__name__, exc,
+        )
     try:
         try:
             resp = await llm.ainvoke(prompt)
@@ -1136,7 +1216,15 @@ async def _preview_persona_resolve_corrections(
             await llm.aclose()
         raw = _strip_code_fence(getattr(resp, "content", "") or "")
         results = robust_json_loads(raw) if raw else []
+        try:
+            update_last_llm_wire_reply(session, reply_chars=len(raw))
+        except Exception:  # noqa: BLE001
+            pass
     except Exception as exc:
+        try:
+            update_last_llm_wire_reply(session, reply_chars=-1)
+        except Exception:  # noqa: BLE001
+            pass
         raise MemoryOpError(
             "LlmFailed",
             f"correction 模型调用失败: {type(exc).__name__}: {exc}",

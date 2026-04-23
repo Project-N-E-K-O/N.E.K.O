@@ -7,8 +7,8 @@
 > P24 Day 10-12 整合期的 2 条元教训 (L26/L27 = §7.23/§7.24) +
 > P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理 UTF-8 事件 +
 > P25 Day 1 subagent 并行开发首次应用 + P25 Day 1 fixup mirror shape +
-> P25 Day 2 前端面板派生 + Day 2 polish 手测第二至第四轮派生的 12 条候选
-> 元教训 (L28-L40, 登记于 §7.A 候选区, 未计入主编号 25 条).
+> P25 Day 2 前端面板派生 + Day 2 polish 手测 r1-r6 派生 + Day 3 `last_llm_wire`
+> 覆盖率 smoke 派生的 15 条候选元教训 (L28-L43, 登记于 §7.A 候选区, 未计入主编号 25 条).
 >
 > **§7.25 特别说明**: 一周内已连续 **6** 次同族实锤 (字段名漂移 / envelope 漂移 /
 > LLM wire role 三次漂移 / **Prompt Preview "重建视图 ≠ 真实 stream" 架构级
@@ -560,18 +560,17 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
 
     **元归纳**: §7.6 "多源写入是纸面原则成败分水岭" 讲的是"同一进程多入口", §7.25 是它在**跨边界契约** + **视图数据源**双维度的扩展 — 第 1-3 次踩的是"生产方 N 种实装 vs 消费方 M 种解析"的笛卡尔积, 第 4 次踩的是"N 个入口 vs 1 个 chokepoint", 第 5 次踩的是"**同一概念被视图与执行两条路径独立表达, 视图按状态重建, 执行按临时合成**"的架构级分叉. 三维度总结: (a) 按错误出现的边界堵入口 — 第 1 次适用; (b) 按正确消费契约守 chokepoint — 第 ≥ 2 次适用; (c) **按 "展示即真相" 契约把 ground-truth snapshot 作为视图面板的唯一数据源** — 当存在 ephemeral 不进持久化历史的流程时适用. 识别这三种粒度所对应的"应然时机"本身就是设计能力. 同族延伸: 任何 SDK / adapter / plugin / OSS fork / runtime wrapper / 流式系统的 live view vs replay view 都适用. 对应 Cursor skill: `ui-wire-field-rg-backend-first` (升级版, 覆盖 response shape / envelope 决策 / wire role 决策 / chokepoint 下沉 / **preview snapshot chokepoint** 五类场景). **Day 3+ 必修欠账** (r5): 审计发现还有 5 个 LLM 调用点未走 `wire_tracker` — simulated_user (P0, Auto-Dialog 跑完后预览陈旧指向错对象) / memory_runner 4 处 ainvoke + judge_runner (P1, 测试员在 Memory/Judge 面板触发后 Chat Prompt Preview 看不到) / auto_dialog_target slug 与 chat.send 是否分流的设计清理 (P2) / config_router._ping_chat 明确排除 (P2); 蓝图 §A 应追加 "**每个 LLM 调用点必须 stamp last_llm_wire, smoke 扫未 stamp 的调用点即 FAIL**" 作为第五层防御的**强制**侧.
 
-### §7.A 候选追加 (P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理 UTF-8 事件 + P25 Day 1 subagent 并行开发 + P25 Day 1 fixup mirror shape + P25 Day 2 前端面板派生 + P25 Day 2 polish 第二至第四轮手测派生, 待二次复现后并入主编号)
+### §7.A 候选追加 (P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理 UTF-8 事件 + P25 Day 1 subagent 并行开发 + P25 Day 1 fixup mirror shape + P25 Day 2 前端面板派生 + P25 Day 2 polish r1-r6 手测派生, 待二次复现后并入主编号)
 
-> 纪律: 本文档 §7 只记录 "**已经踩过 ≥ 2 次**的同族教训". 下列 12 条候选 (L28-L39)
+> 纪律: 本文档 §7 只记录 "**已经踩过 ≥ 2 次**的同族教训". 下列 15 条候选 (L28-L43)
 > 多数仍为**单次派生** (源自 P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理
 > UTF-8 字节损坏事件 + P25 Day 1 subagent 并行开发首次应用 + P25 Day 1 fixup
-> mirror_to_recent shape mismatch + P25 Day 2 前端面板交付 + P25 Day 2 polish 手测联动
-> bug + P25 Day 2 polish 第二轮手测 LLM wire role 违反 + UI 不刷新);
+> mirror_to_recent shape mismatch + P25 Day 2 前端面板交付 + P25 Day 2 polish r1-r6
+> 手测联动 bug + P25 Day 3 `last_llm_wire` AST 覆盖率 smoke);
 > **L36 已升级至三次复现** (`dedupe_info.remaining_ms` 字段名漂移 +
 > `external_event_router` envelope 顶层结构漂移 + **LLM wire 消息 role 字段漂移 /
 > prompt_ephemeral 语义契约违反**), 已超门槛, 本次 §7 更新将 L36 升级为 §7.33.
-> **L39 新候选** (out-of-band write 共享 store 必须配对 emit + listener, P25 Day 2
-> polish 第二轮手测派生) 登记为单次, 待 P26+ 再命中升级. L37 / L38 仍为单次.
+> **L39 / L40 / L41 新候选** 登记为单次, 待 P26+ 再命中升级. L37 / L38 仍为单次.
 > 登记在此避免遗忘.
 
 **L28 "跨阶段推迟项必须双向回扫"** (P24 Day 12 欠账清返派生, 2026-04-23):
@@ -756,6 +755,52 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
     - semantic-contract-vs-runtime-mechanism skill — 语义契约 "Errors 页只看 error" vs 运行时机制 "record_internal 支持 info / warning / error"; smoke 必须清楚自己测的是哪一层.
 - **候选 skill**: `diagnostic-info-level-smoke-quirk` — 触发条件: "smoke 断言某诊断 op 被记录且该 op 是 info 级", 模板包含 API URL 选择表 + 必传 query params + 失败后 debug 顺序.
 - **进入主编号条件**: 需要在 P26+ 再命中一次"smoke 断言 info 诊断但忘带 level=info" 才升级为 §7.37.
+
+**L41 "UI 高频便捷操作必须走后端专用 shortcut 端点, 不要前端手工组装契约"** (P25 Day 2 polish r6 [保存到最近对话] 快捷钮派生, 2026-04-23):
+
+- **场景**: 用户经常做一项"组合多步" 的 UI 操作, 想用一个按钮一键完成. 天真做法 = 前端 JS 直接把 session state 翻译成后端现有端点 (比如 `PUT /api/memory/recent`) 接受的 shape, 好像"没写后端就完活了".
+- **失败模式**:
+    1. **shape 耦合**. 前端会学会后端 on-disk 格式 (比如 LangChain canonical `{type, data:{content}}`). 当后端调整 shape 时前端静默跟随或悄悄打破.
+    2. **invariant 漏**. 像 `SOURCE_EXTERNAL_EVENT_BANNER`, `role ∉ {user, assistant, system}`, `content 全空白` 这些过滤规则只有一处源——后端 `prompt_builder` / `chat_messages.py` —— 前端"快捷钮" 独立实现时经常漏 1-2 条. 漏 banner filter 会导致 banner 进 recent.json 下次 `/chat/send` 从 recent 读**重新污染 wire** (r5 T7 双 chokepoint 设计此时被第二次绕过).
+    3. **测试难**. 前端 jsdom + MSW 远比 TestClient 打 FastAPI 路由繁琐 + 静态解析 JS 契约 ≠ 静态类型系统保护.
+    4. **第二个 caller 必暴毙**. 当第二个 UI 入口想做同样操作 (比如 CLI 工具 / 后续 script runner / 导出子系统) 它会复制第一份前端逻辑, 产生第二份漏 filter 的实现. 这是 L33 single-writer chokepoint 的反面.
+- **正确做法**: 新建后端专用 shortcut 端点 `POST /api/<domain>/<action>_from_<source>`. 端点在后端一处完成 (a) shape 适配, (b) 过滤 filter invariant, (c) 原子写入, (d) 返回 `added / skipped` 结构化明细给前端做 toast. 前端只做 UX (confirm / toast / error branch), 不碰 shape. smoke 直接打 TestClient 端点而非经过 UI.
+- **真实案例** (P25 polish r6 派生): 用户要"Chat 页一键 [保存到最近对话]". 先想过前端直接组装 LangChain shape 调 `PUT /api/memory/recent`, 三秒内识别出 banner filter + role filter 都只有后端 `chat_messages.py` / `prompt_builder.py` 认识, 前端重建风险大. 改成新建 `POST /api/memory/recent/import_from_session` + `_session_messages_to_recent_dicts(session)` 纯函数 helper (filter + shape 各一次) + 前端 `message_stream.js::saveToRecent()` 只做 confirm / `expectedStatuses: [404, 409]` / toast 渲染 added/total/skipped. smoke 新建 `p25_r6_import_recent_smoke.py` 6 契约 (R6A-R6F) 走 TestClient, 第一跑暴露 `store.session_operation()` 无 session 抛 LookupError 映射 500 的小坑, 修为 `_require_session()` 前置拿 clean 404. 全量 15/15 绿. 关键: **过滤逻辑只在 helper 一处**, 即使未来 CLI 工具或批量导入想做同样事情, 调同一端点就行, banner filter 等 invariant 一处改全域生效.
+- **防御规则 (四条)**:
+    1. **识别信号**: 任何 "UI 一键操作 = 多步后端契约组合" 的请求都应该优先在后端开新端点. 对照信号 = "前端需要拼一个超过 2 层的 dict" / "前端需要知道 content 有效性规则" / "操作需要原子性但前端做的是 read-modify-write".
+    2. **端点命名模板**: `POST /<domain>/<target>/<action>_from_<source>` (e.g. `/memory/recent/import_from_session`) 明确表达"来源-目标-动作" 三元组, 不与已有 CRUD 冲突.
+    3. **过滤 + shape 各在一处**: 新端点必须有一个 pure helper 负责"读 session/state → 过滤 → 转 shape → 返 list + skipped dict". helper 纯函数易 unit test, 易被第二个 caller 复用.
+    4. **smoke 必覆盖过滤边界**: 每条过滤规则 (banner / empty / unsupported_role / ...) 各一个 contract case. 单独验证 `skipped.<reason>` 计数精确, 不能只验 happy path.
+- **关联**:
+    - §7.6 多源写入 / L33 single-writer chokepoint 的**UI 侧表达** — L33 讲"同一进程多入口", L41 讲"UI 便捷操作想绕过后端 chokepoint". 是同一方法论下的具体化.
+    - §7.25 L36 跨边界 shape — L36 管"消费方 shape 必 rg 生产方", L41 管"**UI 便捷操作不要自己做跨边界 shape 拼装, 让后端端点做**". 本质是"跨边界复杂度归属问题"的不同切面: L36 定位跨边界风险, L41 规定应该在哪一侧处理.
+    - r5 T7 banner 伪消息双 chokepoint — T7 已确立"banner 写 + 读各一个 chokepoint", L41 是该原则的 UI shortcut 专门扩展: 任何新写入路径不能绕过 banner filter.
+- **候选 skill**: `ui-shortcut-via-backend-endpoint` — 触发条件: "用户要求加一个 UI 便捷按钮做多步操作", 反模板 = "前端直接组装后端 shape", 正模板 = "新建 `/<domain>/<target>/<action>_from_<source>` 端点 + pure helper + 过滤边界 smoke".
+- **进入主编号条件**: 需要在 P26+ 再命中一次 "UI 便捷操作被冲动地前端实现然后漏过滤 / shape 耦合" 才升级为 §7.38.
+
+**L43 "LLM 调用点契约 (stamp / shape / source 白名单) 用 AST 静态扫 + NOSTAMP sentinel 允许白名单 escape-hatch"** (P25 Day 3 `last_llm_wire` 覆盖率 smoke 派生, 2026-04-23):
+
+- **场景**: 当一个 chokepoint helper (比如 `record_last_llm_wire(session, wire, source, note)`) 被多个 call site 调用时, **漏调一处** = 该路径触发后 UI preview / debug panel 显示**前一次残留**快照, 用户看到的是"过时的真相" — 这比完全无 preview 更危险, 因为它**伪装为当前事实**.
+- **防御方式对比**:
+    - **(a) rg 文本扫 `ainvoke|astream`**: 快但不准, 会误报 `wire_tracker` 自己对 LLM 的抽象调用, 不识别 `.invoke([HumanMessage(...)])` 变体.
+    - **(b) runtime 断言**: 在 `record_last_llm_wire` 入口加计数 / 在 chokepoint 校验 session 是否更新. 问题: 只能在 ainvoke 跑了以后才知道漏没漏, 单元测试跑真 LLM 慢 + 需要所有路径都被执行才能 100% 覆盖, 部分路径 (Auto-Dialog simuser + 真 judge 模型) 在 smoke 套件里不走真实 API.
+    - **(c) AST 静态扫 (推荐)**: 扫所有 `<xxx>.ainvoke(...)` / `<xxx>.astream(...)` / `<xxx>.invoke(...)` call, 用 AST 父节点映射找 enclosing `FunctionDef` / `AsyncFunctionDef`, 在同一 body 内扫 `record_last_llm_wire(...)` 是否存在. 秒级跑, 不依赖网络, 不依赖 mock 配置, 可被 smoke 套件独立跑.
+- **NOSTAMP escape-hatch**: 有些 LLM 调用**合法不应 stamp** — (i) helper 抽象 (callers 各自 stamp 因 note 内容依赖 caller 的 kind-specific 字段), (ii) connectivity ping 类调用 (不是会话 turn, stamp 会污染 last_llm_wire). 这类用代码内 `# NOSTAMP(wire_tracker): <justification>` sentinel 标记 + smoke 扫 lookback_lines (比如 10 行) 内有 sentinel 即跳过. **不走独立 allowlist config 文件** — 让审查员一眼看到"这个调用为什么不 stamp", 首次启动日志出 "N NOSTAMP site(s) allowlisted" 让 reviewer 审白名单增长.
+- **失败模式 / 验证案例** (P25 Day 3 派生):
+    - 原始 Day 2 polish r4 只在 `/chat/send` + 3 外部事件路径挂 stamp, `memory_runner` 4 preview.* + `judge_runner._call_llm` + `simulated_user.generate_simuser_message` 6 处**漏**. Prompt Preview 显示"上一次 /chat/send 的 wire", 用户触发 memory 操作后去 preview 看到的是**陈旧的 chat wire**, 不是刚刚发给 LLM 的 memory prompt.
+    - 写 `p25_llm_call_site_stamp_coverage_smoke.py` 后初跑暴露 2 个合法 NOSTAMP (`_invoke_llm_once` + `_ping_chat`), 各自补 sentinel + 注释后绿.
+    - 第一版 `NOSTAMP_LOOKBACK_LINES=3` 不够 (`_ping_chat` 的 justification 注释 5 行), 扩到 10. 这是 smoke 自己的**可配置窗口**设计教训 — 窗口不能小于合理注释长度.
+- **防御规则 (四条)**:
+    1. **AST > rg**. Chokepoint 覆盖率检查用 `ast.parse` + `iter_parent_map` 找 enclosing function, 比 rg 行级匹配更准. 对 `<xxx>.method(...)` 类调用模式, AST 准确识别 attribute access, rg 会被同名方法误伤.
+    2. **source 字面量白名单 双轨**. AST 还要扫 `record_last_llm_wire(source=<literal>)` 的字面量 `source` ∈ `KNOWN_SOURCES` + 每次 `KNOWN_SOURCES` 只在 chokepoint module 一处声明 — 防两套白名单漂移 (PROGRESS 和 code 各一份).
+    3. **NOSTAMP sentinel 走代码内注释, 不走独立 config**. "白名单移到哪个文件"本身是审查成本 — sentinel 紧贴被放行的那行 LLM 调用, 审查员读那行代码就自动读到 justification. config 文件与被放行代码分离, 审查员容易忽略.
+    4. **Lookback window ≥ 合理注释长度**. `NOSTAMP_LOOKBACK_LINES` 至少能覆盖多行 justification 注释 (本项目选 10). 太小会把合法 NOSTAMP 识别为漏 stamp.
+- **关联**:
+    - §7.25 L36 "跨边界 shape / role / 字段名必须 rg 消费方" 的**静态守护方法论** — L36 讲消费方 shape, L43 讲生产方 chokepoint 调用覆盖; 两者都是"静态扫优于运行时发现".
+    - §7.6 "多源写入是纸面原则成败分水岭" + L33 single-writer chokepoint 的**覆盖率验证** — chokepoint helper 存在 ≠ 所有 writer 都调. L43 给 "所有 writer 都调 chokepoint" 这个纸面原则**一个静态扫的保证**.
+    - L40 "info 级诊断 smoke 必须显式 `level=info`" — 同族"smoke 自己可能成为漏网区域, 必须对 smoke 自己的参数有纪律".
+- **候选 skill**: `llm-call-site-stamp-coverage-smoke` — 触发条件 = "codebase 有 chokepoint helper 多处 call, 漏调静默失败时 UI/UX 显示陈旧数据". 模板: AST 扫 `<method>.ainvoke/astream/invoke` + 同 body 找 chokepoint call + NOSTAMP sentinel + source literal whitelist + KNOWN_SOURCES single declaration.
+- **进入主编号条件**: 需要在 P26+ 再命中一次 "chokepoint 覆盖率漏检导致 UI 显示陈旧数据" 或 "另一种 chokepoint (非 LLM wire) 需要类似 AST 覆盖率静态守护" 才升级为 §7.38.
 
 本项目抽出了 3 份**通用 skill**, 放在 `~/.cursor/skills/` 独立维护,
 不依赖本项目. 任何 AI 辅助的大型 codebase 都能用:

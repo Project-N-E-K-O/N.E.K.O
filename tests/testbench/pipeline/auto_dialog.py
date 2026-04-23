@@ -526,6 +526,7 @@ async def _run_simuser_step(
         style=config.simuser_style,
         user_persona_prompt=config.simuser_persona_hint,
         extra_hint=config.simuser_extra_hint,
+        wire_source="auto_dialog_simuser",
     )
 
     # r5 T8: prompt-injection audit — Auto-Dialog 走的是

@@ -381,6 +381,12 @@ async def _ping_chat(cfg: ModelGroupConfig, prompt: str) -> dict[str, Any]:
             max_retries=0,
         )
         try:
+            # NOSTAMP(wire_tracker): connectivity ping, not a conversation
+            # turn — stamping this would overwrite the real "last LLM wire"
+            # snapshot with a 1-word credentials probe, polluting Prompt
+            # Preview. The coverage smoke
+            # (tests/testbench/smoke/p25_llm_call_site_stamp_coverage_smoke.py)
+            # recognizes this sentinel and skips the call site.
             resp = await client.ainvoke([HumanMessage(content=prompt)])
         finally:
             await client.aclose()

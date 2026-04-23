@@ -1598,6 +1598,13 @@ export const I18N = {
         count: (n) => `共 ${n} 条消息`,
         refresh_btn: '刷新',
         clear_btn: '清空',
+        // 2026-04-23 P25 Day 2 polish r6: "把当前对话内容追加到最近对话
+        // 记忆" 一键快捷钮; 落盘到 memory/<character>/recent.json
+        // (LangChain canonical {type, data.content} 形状, 与主程序 recent
+        // 语义对齐). 过滤 external_event_banner / 空 content / 非
+        // user|assistant|system role. 默认 append 模式.
+        save_to_recent_btn: '保存到最近对话',
+        save_to_recent_title: '把当前 Chat 对话追加写入 memory/recent.json (LangChain canonical 形状). 默认 append, banner / 空消息会被自动过滤.',
         empty: '尚无消息.',
         empty_hint: '在下方输入框输入一条用户消息, 按 [发送] 发起对话; 或用 [注入 sys] 写入一条系统级中段指令.',
         menu_title: '消息操作',
@@ -1613,6 +1620,8 @@ export const I18N = {
           delete: '确定删除这条消息? 不可撤销.',
           rerun: '将截断从此消息之后的所有内容, 并把时钟回退到本条消息的 timestamp. 继续?',
           clear_all: '清空当前会话全部消息? 不可撤销.',
+          save_to_recent: (n) =>
+            `把当前 ${n} 条消息追加写入 memory/recent.json ?\n\n(banner / 空消息 / 非对话 role 会自动过滤. 追加模式, 不去重; 可在 Setup → Memory 编辑 recent 手动校对.)`,
         },
         toast: {
           bad_timestamp: '时间戳格式无效',
@@ -1621,6 +1630,17 @@ export const I18N = {
           // AI 对这条 user 回复, 避免产生连续两条 user 消息.
           rerun_done_user_tail: (n) =>
             `已截断 ${n} 条后续消息. 末尾已是 user 消息, 直接点 [发送] (不打字) 即可让 AI 对这条重新回复; 或在 Composer 里编辑/补充内容再发送.`,
+          // r6 save_to_recent 按钮 toast (succ / empty / error).
+          save_to_recent_ok: (added, total, skipped) => {
+            const parts = [];
+            if (skipped.banner) parts.push(`${skipped.banner} 条 banner`);
+            if (skipped.empty_content) parts.push(`${skipped.empty_content} 条空消息`);
+            if (skipped.unsupported_role) parts.push(`${skipped.unsupported_role} 条非对话`);
+            const tail = parts.length ? `; 过滤: ${parts.join(' / ')}` : '';
+            return `已写入 recent.json: +${added} 条, 当前共 ${total} 条${tail}`;
+          },
+          save_to_recent_empty: '没有可写入的消息 (banner / 空内容 / 非对话 role 已全部过滤). 先发送几条真对话再试.',
+          save_to_recent_error: (msg) => `写入失败: ${msg}`,
         },
         long_content_title: (n) => `长消息 (${n} 字符)`,
         // P12: assistant 消息上挂的 reference_content (脚本 expected / 手工
@@ -1917,8 +1937,8 @@ export const I18N = {
         // last_wire.* 下面的旧 key (next_wire_heading / reply_* 等) 从此
         // 不再被引用, 保留不报错, 留给后续 diff 清理.
         wire_section: {
-          heading_real: '当前 wire (真实发给 LLM 的)',
-          heading_estimate: '当前 wire (发送前预估 — 尚未真实发送)',
+          heading_real: '当前 wire',
+          heading_estimate: '当前 wire',
           ephemeral_warning: '⚠ 外部事件注入的消息是一次性结构, 仅在本次 LLM 调用时存在, 不会长期进入 session.messages. 对话历史可在左侧聊天区或记忆系统查看.',
         },
       },

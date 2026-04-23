@@ -61,6 +61,7 @@ from tests.testbench.chat_messages import (
     ROLE_ASSISTANT,
     ROLE_SYSTEM,
     ROLE_USER,
+    SOURCE_AUTO,
     SOURCE_INJECT,
     SOURCE_LLM,
     SOURCE_MANUAL,
@@ -586,13 +587,24 @@ class OfflineChatBackend:
         # (b) 给 reply_chars 做 ground-truth 校准, 预览 UI 可以显示 LLM
         # 返回长度; (c) 把 bundle 和"真实发送"的一对一关系显式化, 未来
         # 如果 bundle 和真实 wire 漂移 (比如 retry 改了最后一条) 立即可见.
+        #
+        # P25 Day 3 — source 分流:
+        #   * ``SOURCE_AUTO`` (双 AI 自动对话的 target 轮) → ``auto_dialog_target``
+        #     这条路径在 ``auto_dialog.py::_forward_target_stream`` 里以
+        #     ``source=SOURCE_AUTO`` 进来, 语义是 "自动对话中这一轮的 target AI";
+        #     preview UI 靠这个 slug 区分 "tester 在主 composer 里发" vs.
+        #     "auto_dialog 批量推进中的一轮", 对调试多轮自动对话中 wire 为何
+        #     突然不一样有用.
+        #   * 其它 source (manual / inject / script) → ``chat.send``, 是
+        #     preview UI 的默认 "普通对话" 标签.
+        _wire_source = "auto_dialog_target" if source == SOURCE_AUTO else "chat.send"
         try:
             record_last_llm_wire(
                 session,
                 bundle.wire_messages,
-                source="chat.send",
+                source=_wire_source,
                 note=(
-                    f"chat.send:{len(bundle.wire_messages)}msgs"
+                    f"{_wire_source}:{len(bundle.wire_messages)}msgs"
                     f"@{cfg.provider}:{cfg.model}"
                 ),
             )

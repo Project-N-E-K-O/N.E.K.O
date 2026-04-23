@@ -1233,6 +1233,304 @@ def check_g_diagnostics(client, mock) -> list[str]:
 
 
 # ─────────────────────────────────────────────────────────────
+# Case H — persona.language={es,pt} → English silent fallback
+# ─────────────────────────────────────────────────────────────
+#
+# Upstream delta (P25 §A.8 #5 + §3 Day 3 smoke): ``prompts_sys._loc``
+# has a ``_SILENT_FALLBACK = {'es', 'pt'}`` set — for these two
+# languages, the LLM system prompt (``AGENT_CALLBACK_NOTIFICATION``)
+# silently falls back to English with no WARNING print, under the
+# assumption "LLM 能理解英文 system prompt, 输出语言由别的机制控".
+# Proactive chat's ``_normalize_prompt_language`` does the same
+# (explicit ``if startswith('es')|'pt': return 'en'``).
+#
+# This check asserts: when ``persona.language`` = 'es' or 'pt', the
+# instruction actually pushed onto the wire contains the English
+# AGENT_CALLBACK_NOTIFICATION / proactive prompt prefix — *not* the zh
+# or ja default. If a future upstream refactor adds es/pt to the
+# localized strings, this check would FAIL, but that would be a
+# positive signal (new translations are live) rather than a
+# regression, and the check can be updated to look for the es/pt text.
+#
+# We use the mocked ``_invoke_llm_once`` to capture ``last_wire`` and
+# inspect the final tail message's content.
+
+
+def _set_persona_language(client, language: str) -> None:
+    """Override just ``persona.language``; keep everything else default."""
+    r = client.put("/api/persona", json={
+        "character_name": "NEKO",
+        "master_name": "Master",
+        "language": language,
+        "system_prompt": "You are {LANLAN_NAME}. You address the user as {MASTER_NAME}.",
+    })
+    assert r.status_code == 200, (
+        f"persona PUT (language={language}) failed: {r.status_code} {r.text}"
+    )
+
+
+def check_h_persona_language_fallback(client, mock) -> list[str]:
+    """H — persona.language=es/pt → instruction is English (silent fallback)."""
+    errors: list[str] = []
+
+    # Expected English prefix substring from AGENT_CALLBACK_NOTIFICATION['en']
+    # (kept in this smoke as a string literal — if upstream wording
+    # changes, update here too).
+    english_callback_prefix = "System Notice: The following background tasks"
+    # Expected *absent* substrings (other languages' prefixes). We only
+    # sample a couple of non-ASCII giveaway tokens per language so tiny
+    # wording tweaks upstream don't break the test.
+    non_english_tokens = [
+        "系统通知",     # zh
+        "システム通知",  # ja
+        "시스템 알림",   # ko
+        "Системное уведомление",  # ru
+    ]
+
+    try:
+        for lang in ("es", "pt"):
+            _create_session(client, f"p25_H_{lang}_cb")
+            _set_persona_language(client, lang)
+            mock.reset()
+            mock.set_reply("Mocked reply")
+
+            # H.agent_callback — agent_callback prefix must be English.
+            _post_event(
+                client, "agent_callback",
+                {"callbacks": [f"{lang} callback test"]},
+            )
+            wire = mock.last_wire or []
+            _check(
+                len(wire) > 0,
+                f"H1.{lang}.callback.wire_nonempty",
+                "mock.last_wire empty — _invoke_llm_once not called",
+            )
+            if wire:
+                tail_content = str(wire[-1].get("content") or "")
+                _check(
+                    english_callback_prefix in tail_content,
+                    f"H1.{lang}.callback.english_prefix",
+                    f"expected English prefix; tail_content={tail_content!r}",
+                )
+                for tok in non_english_tokens:
+                    _check(
+                        tok not in tail_content,
+                        f"H1.{lang}.callback.no_{tok[:6]}",
+                        f"non-English token {tok!r} leaked into es/pt wire",
+                    )
+            _delete_session(client)
+
+        # H.proactive — proactive prompt dispatch table uses the same
+        # "es/pt → en" rule. We can't inspect the exact prompt text
+        # reliably across upstream edits, but we can assert the same
+        # negative invariant: no non-English markers. A positive English
+        # assertion is harder because proactive prompts don't ship a
+        # single stable English phrase; skip that half.
+        for lang in ("es", "pt"):
+            _create_session(client, f"p25_H_{lang}_pc")
+            _set_persona_language(client, lang)
+            mock.reset()
+            mock.set_reply("Mocked reply")
+
+            status, body = _post_event(
+                client, "proactive",
+                {"kind": "time_passed", "hours_since_last_interaction": 2.0},
+            )
+            _check(
+                status == 200,
+                f"H2.{lang}.proactive.status",
+                f"got {status}: {body!r}",
+            )
+            wire = mock.last_wire or []
+            _check(
+                len(wire) > 0,
+                f"H2.{lang}.proactive.wire_nonempty",
+                "_invoke_llm_once not called",
+            )
+            if wire:
+                tail_content = str(wire[-1].get("content") or "")
+                for tok in non_english_tokens:
+                    _check(
+                        tok not in tail_content,
+                        f"H2.{lang}.proactive.no_{tok[:6]}",
+                        f"non-English token {tok!r} leaked into es/pt "
+                        f"proactive wire",
+                    )
+            _delete_session(client)
+
+    except AssertionFailed as exc:
+        errors.append(str(exc))
+    except Exception as exc:
+        errors.append(
+            f"[H.unhandled] {type(exc).__name__}: {exc}\n"
+            + traceback.format_exc()
+        )
+    finally:
+        _delete_session(client)
+    return errors
+
+
+# ─────────────────────────────────────────────────────────────
+# Case I — SimulationResult.reason 复现表 (§A.8 #5 + §4.7)
+# ─────────────────────────────────────────────────────────────
+#
+# §4.7 defines the closed set of reasons this stack will ever emit.
+# **复现集 (语义契约层)**: invalid_payload / duplicate / busy / llm_error
+# (+ proactive_pass / missing_fields for proactive-specific short
+# circuits, documented in §A.8 #5).
+# **不复现集 (运行时机制层, §2.1)**: cooldown / speak_cooldown /
+# voice_session_active / no_websocket / session_start_failed /
+# not_text_session.
+#
+# This check scans the diagnostics ring for every
+# avatar_interaction_simulated / agent_callback_simulated /
+# proactive_simulated entry produced by *earlier* sub-cases (A-G-H)
+# and asserts each ``detail.reason`` is either null/empty (accepted
+# path) or a member of the 复现集. Any 不复现集 value leaking in would
+# mean we accidentally started reproducing main program runtime
+# mechanics, which §2.1 forbids.
+
+
+# The **actual** closed set of ``SimulationResult.reason`` values
+# the stack emits — mirrors
+# ``tests/testbench/pipeline/external_events.py::ReasonCode``
+# (which is a ``typing.Literal``, so any drift would be caught at
+# import-time by mypy too). Blueprint §4.7's abstract labels
+# ("duplicate" / "llm_error" / "proactive_pass" / "missing_fields")
+# map onto the concrete strings below. Kept in sync by hand;
+# a semantic drift would show up here + in the Literal both.
+REASON_REPRODUCED: frozenset[str] = frozenset({
+    "dedupe_window_hit",   # avatar: same dedupe_key inside window (§4.7 "duplicate")
+    "invalid_payload",     # avatar: payload failed _normalize_avatar_interaction_payload
+    "empty_callbacks",     # agent_callback: no callback items
+    "pass_signaled",       # proactive: LLM returned [PASS] (§4.7 "proactive_pass")
+    "llm_failed",          # wire assembled but LLM call raised (§4.7 "llm_error")
+    "persona_not_ready",   # build_prompt_bundle raised PreviewNotReady
+    "chat_not_configured", # resolve_group_config raised ChatConfigError
+})
+
+# §4.7 / §2.1: reasons we **must not** reproduce. These are
+# main-program runtime mechanisms (WebSocket / cooldown / session
+# activation). Leaking any of these into the testbench reason stream
+# means we accidentally pulled a runtime mechanic into the semantic
+# contract layer.
+REASON_NOT_REPRODUCED: frozenset[str] = frozenset({
+    "cooldown",
+    "speak_cooldown",
+    "voice_session_active",
+    "no_websocket",
+    "session_start_failed",
+    "not_text_session",
+    "busy",    # main program's short-lock state — §4.7 says keep as labeled
+               # concept but testbench doesn't have the state machine behind it
+    "error",   # main program's "handle_avatar_interaction error" catch-all
+    "duplicate",        # §4.7 abstract label — should surface as dedupe_window_hit
+    "llm_error",        # §4.7 abstract label — should surface as llm_failed
+    "proactive_pass",   # §4.7 abstract label — should surface as pass_signaled
+    "missing_fields",   # §4.7 abstract label — no concrete reason string matches
+})
+
+
+def check_i_reason_whitelist(client, mock) -> list[str]:
+    """I — every emitted SimulationResult.reason is in the 复现集."""
+    errors: list[str] = []
+    try:
+        _create_session(client, "p25_I_reason")
+        mock.reset()
+        mock.set_reply("Mocked reply")
+
+        # Clear ring so we only inspect this case's entries.
+        client.delete("/api/diagnostics/errors")
+
+        # I.a — Invalid payload (tool_id=unknown → reason=invalid_payload).
+        _post_event(
+            client, "avatar",
+            _avatar_payload(
+                interaction_id="i_bad", tool_id="THIS_TOOL_DOES_NOT_EXIST",
+            ),
+        )
+        # I.b — Accepted happy (reason absent / None).
+        _post_event(
+            client, "avatar",
+            _avatar_payload(interaction_id="i_good"),
+        )
+        # I.c — Duplicate (same key twice) → second attempt
+        # reason="dedupe_window_hit" (concrete slug for §4.7 "duplicate").
+        dup_payload = _avatar_payload(
+            interaction_id="i_dup", tool_id="fist", action_id="poke",
+        )
+        _post_event(client, "avatar", dup_payload)
+        _post_event(client, "avatar", dup_payload)
+        # I.d — LLM error → reason="llm_failed" (concrete slug for §4.7 "llm_error").
+        mock.set_raise(RuntimeError("simulated llm failure"))
+        _post_event(
+            client, "avatar",
+            _avatar_payload(interaction_id="i_llmerr", tool_id="hammer"),
+        )
+        mock.reset()
+        mock.set_reply("Mocked reply")
+        # I.e — agent_callback with empty callbacks → reason="empty_callbacks".
+        _post_event(client, "agent_callback", {"callbacks": []})
+
+        # Now pull every simulated_* diagnostics entry and inspect reason.
+        r = client.get(
+            "/api/diagnostics/errors",
+            params={"limit": 200, "include_info": "true"},
+        )
+        _check(r.status_code == 200, "I.list.ok",
+               f"diagnostics list {r.status_code}")
+        items = r.json().get("items") or []
+        target_ops = {
+            "avatar_interaction_simulated",
+            "agent_callback_simulated",
+            "proactive_simulated",
+        }
+        scanned = 0
+        for entry in items:
+            if entry.get("type") not in target_ops:
+                continue
+            scanned += 1
+            detail = entry.get("detail") or {}
+            reason = detail.get("reason")
+            if reason is None or reason == "":
+                continue  # accepted path — reason absent
+            reason_str = str(reason).strip()
+            _check(
+                reason_str in REASON_REPRODUCED,
+                f"I.reason_allowed[{entry.get('type')}]",
+                (
+                    f"reason={reason_str!r} not in 复现集 {sorted(REASON_REPRODUCED)};"
+                    f" entry.detail={detail!r}"
+                ),
+            )
+            _check(
+                reason_str not in REASON_NOT_REPRODUCED,
+                f"I.reason_forbidden[{entry.get('type')}]",
+                (
+                    f"reason={reason_str!r} hit 不复现集 — testbench 不应再现"
+                    f" 主程序运行时机制 (§2.1)"
+                ),
+            )
+
+        _check(
+            scanned >= 5,
+            "I.scanned_min",
+            f"scanned only {scanned} entries — I.a..I.e should have "
+            f"produced 5+; check sub-case coverage"
+        )
+    except AssertionFailed as exc:
+        errors.append(str(exc))
+    except Exception as exc:
+        errors.append(
+            f"[I.unhandled] {type(exc).__name__}: {exc}\n"
+            + traceback.format_exc()
+        )
+    finally:
+        _delete_session(client)
+    return errors
+
+
+# ─────────────────────────────────────────────────────────────
 # Orchestration
 # ─────────────────────────────────────────────────────────────
 
@@ -1279,6 +1577,12 @@ def main() -> int:
                      check_f_append_invariants(client, mock))
     total += _report("G | diagnostics op records (correct type + detail fields)",
                      check_g_diagnostics(client, mock))
+    total += _report("H | persona.language=es/pt silent English fallback "
+                     "(upstream delta)",
+                     check_h_persona_language_fallback(client, mock))
+    total += _report("I | SimulationResult.reason 复现表 "
+                     "(§4.7: 语义契约层 only, no runtime 机制)",
+                     check_i_reason_whitelist(client, mock))
 
     elapsed = time.perf_counter() - started
     print("")

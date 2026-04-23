@@ -2767,6 +2767,13 @@ table.tbl .tbl-key-field {
 .external-events-form .form-hint.warn {
   color: var(--warn, #b58900);
 }
+/* hint 独立成行 (不属于某个 form-row 的 child, 直接挂在 form-col 下).
+ * 用与 form-row 对齐的 margin 复制 form-row 的呼吸感, label min-width
+ * 位置用 padding-left 占位, 让 hint 看起来是 select 那一列的注释. */
+.external-events-form .form-hint-standalone {
+  margin: calc(-1 * var(--density-sm)) 0 var(--density-sm) 0;
+  padding-left: calc(60px + var(--density-sm));
+}
 .external-events-input,
 .external-events-textarea {
   font-family: inherit;
@@ -2808,7 +2815,7 @@ table.tbl .tbl-key-field {
 }
 .external-events-invoke-row {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-start;
   align-items: center;
   gap: var(--density-sm);
   flex-wrap: wrap;
@@ -2816,6 +2823,10 @@ table.tbl .tbl-key-field {
   padding-top: var(--density-sm);
   min-width: 0;
   max-width: 100%;
+}
+.external-events-invoke-spacer {
+  flex: 1 1 auto;
+  min-width: var(--density-md);
 }
 .external-events-clear-dedupe-row {
   display: flex;

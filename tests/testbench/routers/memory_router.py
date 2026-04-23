@@ -49,6 +49,12 @@ from pydantic import BaseModel
 
 from utils.config_manager import get_config_manager
 
+from tests.testbench.chat_messages import (
+    ROLE_ASSISTANT,
+    ROLE_SYSTEM,
+    ROLE_USER,
+    SOURCE_EXTERNAL_EVENT_BANNER,
+)
 from tests.testbench.logger import python_logger
 from tests.testbench.pipeline import memory_runner
 from tests.testbench.pipeline.snapshot_store import capture_safe as _snapshot_capture
@@ -331,6 +337,205 @@ async def write_memory(kind: str, body: MemoryWritePayload) -> dict[str, Any]:
                 "character_name": character,
                 "exists": True,
                 "data": body.data,
+            }
+    except SessionConflictError as exc:
+        raise _wrap_conflict(exc) from exc
+
+
+# ── recent.json shortcut: import current session.messages ────────────
+#
+# P25 Day 2 polish r6 (2026-04-23): tester 反馈 "把测试区现有对话一键
+# 落盘到最近对话记忆" 是高频操作 — 之前需要手动把 session.messages 转
+# LangChain 规范 ({type:human|ai|system, data:{content}}) 再走
+# PUT /api/memory/recent. 每次都要开 DevTools 拼 JSON 太硬核.
+#
+# 本端点是 **raw dump** 通道 (不跑 LLM 压缩, 也不抽事实), 和
+# `memory.trigger/recent.compress` 平行共存:
+#     * /memory/recent/import_from_session  →  直接落 session.messages
+#       (user/assistant/system 三类, 按时间顺序, 不走 LLM).
+#     * /memory/trigger/recent.compress     →  跑 LLM 压缩旧记录, 再写
+#       (preview-then-commit 两阶段).
+#
+# 过滤规则:
+#     * ``source == external_event_banner`` 跳过 — banner 是 UI-only
+#       视觉标记, 不是真实对话 (prompt_builder 在发送 LLM 前也会过滤,
+#       见 chat_messages.py L52-L54); 塞进 recent.json 会让下一次
+#       /chat/send 把 banner 再注回 wire, 造成语义污染.
+#     * role ∉ {user, assistant, system} 跳过 — LangChain
+#       messages_to_dict 只认这三类; 预留的 simuser/script/auto 是
+#       source 标签, role 本身必然是 user/assistant, 不会命中这条.
+#     * content 为空字符串跳过 — recent.json 里的空 content 毫无记忆
+#       价值, 反而会让 compress 阶段误把它当作 "用户沉默一拍".
+#
+# 写策略 (body.mode):
+#     * "append" (默认) — 读 existing recent.json, 新消息追加到尾部,
+#       然后整体原子写回; 不去重 (简单对话重复导入就是 tester 自己
+#       的意图).
+#     * "replace" — 不读 existing, 直接用本轮消息覆盖整个文件.
+#
+# 单写 choke-point: 走 ``session_operation`` 锁, 同 write_memory.
+
+
+class RecentImportFromSessionPayload(BaseModel):
+    """Body for ``POST /api/memory/recent/import_from_session``.
+
+    ``mode``:
+        * ``"append"`` (default) — 原子读 + 合并 + 写回; 旧条目保留, 新
+          条目追加到尾部.
+        * ``"replace"`` — 直接用本轮 session.messages 覆盖整个文件.
+    """
+
+    mode: str = "append"
+
+
+_ROLE_TO_LANGCHAIN_TYPE: dict[str, str] = {
+    ROLE_USER: "human",
+    ROLE_ASSISTANT: "ai",
+    ROLE_SYSTEM: "system",
+}
+
+
+def _session_messages_to_recent_dicts(session) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Convert ``session.messages`` → LangChain canonical on-disk dicts.
+
+    Returns ``(dicts, skipped_counts)``. ``dicts`` mirrors exactly what
+    ``utils.llm_client.messages_to_dict(lc_messages)`` would produce, so
+    ``CompressedRecentHistoryManager.load_all()`` (which calls
+    ``messages_from_dict``) round-trips without reshaping.
+
+    We build the dicts by hand (not via LangChain classes →
+    ``messages_to_dict``) so the helper stays pure-python — callers
+    inside routers don't need a session_operation or LLM client context.
+    The on-disk shape is defined at ``utils.llm_client.py`` L71-L95 and
+    is stable since LangChain 0.1.
+    """
+    dicts: list[dict[str, Any]] = []
+    skipped = {"banner": 0, "unsupported_role": 0, "empty_content": 0}
+
+    for m in (session.messages or []):
+        if (m.get("source") or "") == SOURCE_EXTERNAL_EVENT_BANNER:
+            skipped["banner"] += 1
+            continue
+
+        role = m.get("role")
+        lc_type = _ROLE_TO_LANGCHAIN_TYPE.get(role)
+        if not lc_type:
+            skipped["unsupported_role"] += 1
+            continue
+
+        content = m.get("content")
+        if not isinstance(content, str) or not content.strip():
+            skipped["empty_content"] += 1
+            continue
+
+        dicts.append({"type": lc_type, "data": {"content": content}})
+
+    return dicts, skipped
+
+
+@router.post("/recent/import_from_session")
+async def import_recent_from_session(
+    body: RecentImportFromSessionPayload | None = None,
+) -> dict[str, Any]:
+    """One-click dump ``session.messages`` into ``recent.json``.
+
+    Shortcut for the Chat workspace "把当前对话内容添加到最近对话记忆"
+    button. See module-level comment "recent.json shortcut" for the full
+    policy (filtering rules, append vs replace semantics).
+
+    Returns
+    -------
+    ``{
+        character_name, path,
+        mode, added, existing, total,
+        skipped: {banner, unsupported_role, empty_content},
+    }``
+
+    Error mapping:
+        * 400 ``InvalidMode``        — ``mode`` ∉ {append, replace}.
+        * 404 ``NoActiveSession``    — no session (standard).
+        * 409 ``NoCharacterSelected``— character_name 为空.
+        * 409 ``NoMessagesToImport`` — filtered list is empty (tester
+          pressed button with empty chat, or only banners).
+        * 409 ``SessionBusy``        — another op holds the session lock.
+    """
+    if body is None:
+        body = RecentImportFromSessionPayload()
+    mode = (body.mode or "append").strip().lower()
+    if mode not in ("append", "replace"):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_type": "InvalidMode",
+                "message": f"mode 必须是 'append' 或 'replace', 收到: {body.mode!r}",
+            },
+        )
+
+    # Pre-flight: no session → clean 404 instead of letting session_operation
+    # raise raw LookupError (which the global handler maps to opaque 500).
+    # UI toast for this path is "先创建会话", so keeping the error actionable
+    # matters; the server's existing memory.trigger handlers accept a 500
+    # here for historical reasons (see PROGRESS.md L406), but new endpoints
+    # should be crisp.
+    _require_session()
+
+    spec = _KINDS["recent"]
+    store = get_session_store()
+    try:
+        async with store.session_operation("memory.recent.import_from_session") as session:
+            character = _require_character(session)
+            path = _resolve_path(character, spec["filename"])
+
+            new_dicts, skipped = _session_messages_to_recent_dicts(session)
+            if not new_dicts:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error_type": "NoMessagesToImport",
+                        "message": (
+                            "session.messages 中没有可落盘的对话. "
+                            "(banner / 空内容 / 未支持 role 已全部过滤.) "
+                            "先发送几条消息或用外部事件触发再试."
+                        ),
+                        "skipped": skipped,
+                    },
+                )
+
+            if mode == "append":
+                existing, _ = _read_json(path, spec)
+                if not isinstance(existing, list):
+                    raise HTTPException(
+                        status_code=500,
+                        detail={
+                            "error_type": "InvalidRootType",
+                            "message": (
+                                f"{path.name} 顶层不是 list, "
+                                "不能 append. 去 Setup → Memory 手动修复, 或用 mode='replace'."
+                            ),
+                        },
+                    )
+                final_data = list(existing) + new_dicts
+                existing_count = len(existing)
+            else:
+                final_data = new_dicts
+                existing_count = 0
+
+            _atomic_write_json(path, final_data)
+            python_logger().info(
+                "memory_router: imported recent from session (mode=%s, "
+                "added=%d, existing=%d, total=%d, skipped=%s) → %s",
+                mode, len(new_dicts), existing_count, len(final_data),
+                skipped, path,
+            )
+            _snapshot_capture(session, trigger="memory_op")
+            return {
+                "character_name": character,
+                "path": str(path),
+                "mode": mode,
+                "added": len(new_dicts),
+                "existing": existing_count,
+                "total": len(final_data),
+                "skipped": skipped,
             }
     except SessionConflictError as exc:
         raise _wrap_conflict(exc) from exc

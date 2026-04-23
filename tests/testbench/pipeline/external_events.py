@@ -349,6 +349,15 @@ async def _invoke_llm_once(
         streaming=False,
     )
     try:
+        # NOSTAMP(wire_tracker): shared helper — each of the 3 callers
+        # (simulate_avatar_interaction / simulate_agent_callback /
+        # simulate_proactive) stamps its own source + kind-specific note
+        # immediately before calling this helper, because the note
+        # content ("avatar:fist+poke@5" vs "agent_callback:3items@zh"
+        # vs "proactive:time_passed@en") is caller-specific and would
+        # force this helper to take ~4 extra kwargs. Coverage smoke
+        # (p25_llm_call_site_stamp_coverage_smoke.py) recognizes this
+        # sentinel and skips the call site.
         resp = await client.ainvoke(wire_messages)
         return (resp.content or "").strip()
     finally:
