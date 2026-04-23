@@ -50,7 +50,7 @@
 - `prelude-start / step-enter / step-leave / tutorial-end` 事件已经会通过 `window` 广播
 - `createYuiGuideDirector(options)` 已经成为演出层的标准挂接入口
 
-当前还没有落地、因此正是开发 B 主战场的部分有：
+当时待补齐、因此正是开发 B 主战场的部分有：
 
 - `static/yui-guide-director.js`
 - `static/yui-guide-overlay.js`

@@ -863,6 +863,15 @@
                         return;
                     }
 
+                    if (typeof abortCheck === 'function' && abortCheck()) {
+                        if (pausedAt) {
+                            pausedTotalMs += Math.max(0, now - pausedAt);
+                            pausedAt = 0;
+                        }
+                        resolve(false);
+                        return;
+                    }
+
                     if (typeof pauseCheck === 'function' && pauseCheck()) {
                         if (!pausedAt) {
                             pausedAt = now;
@@ -874,11 +883,6 @@
                     if (pausedAt) {
                         pausedTotalMs += Math.max(0, now - pausedAt);
                         pausedAt = 0;
-                    }
-
-                    if (typeof abortCheck === 'function' && abortCheck()) {
-                        resolve(false);
-                        return;
                     }
 
                     var progress = Math.max(0, Math.min(1, (now - startedAt - pausedTotalMs) / cycleMs));

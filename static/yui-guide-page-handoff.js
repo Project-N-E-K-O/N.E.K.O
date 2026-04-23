@@ -222,7 +222,11 @@
 
     function getPluginDashboardExpectedOrigin() {
         if (window.YUI_GUIDE_PLUGIN_DASHBOARD_ORIGIN) {
-            return String(window.YUI_GUIDE_PLUGIN_DASHBOARD_ORIGIN);
+            try {
+                return new URL(String(window.YUI_GUIDE_PLUGIN_DASHBOARD_ORIGIN), window.location.href).origin;
+            } catch (e) {
+                console.warn('[YuiGuideHandoff] getPluginDashboardExpectedOrigin: YUI_GUIDE_PLUGIN_DASHBOARD_ORIGIN 无效:', e);
+            }
         }
 
         if (window.NEKO_USER_PLUGIN_BASE) {

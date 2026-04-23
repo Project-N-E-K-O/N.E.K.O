@@ -20,6 +20,8 @@ const SVG_NS = 'http://www.w3.org/2000/svg'
 const BACKDROP_MASK_ID = `${ROOT_ID}-mask`
 const TRUSTED_OPENER_ORIGIN = getTrustedOpenerOrigin()
 const ALLOWED_ORIGINS = new Set(TRUSTED_OPENER_ORIGIN ? [TRUSTED_OPENER_ORIGIN] : [])
+let currentGuideAudio: HTMLAudioElement | null = null
+let currentGuideAudioTimer: number | null = null
 
 type StartPayload = {
   line?: string
@@ -127,6 +129,7 @@ function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number) 
     let settled = false
     const audio = new Audio(normalizedAudioSrc)
     const maxWaitMs = Math.max(3000, minimumDurationMs) + 12000
+    currentGuideAudio = audio
 
     const finish = (success: boolean, error?: unknown) => {
       if (settled) {
@@ -134,6 +137,12 @@ function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number) 
       }
       settled = true
       window.clearTimeout(timerId)
+      if (currentGuideAudioTimer === timerId) {
+        currentGuideAudioTimer = null
+      }
+      if (currentGuideAudio === audio) {
+        currentGuideAudio = null
+      }
       audio.onended = null
       audio.onerror = null
       if (success) {
@@ -146,6 +155,7 @@ function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number) 
     const timerId = window.setTimeout(() => {
       finish(true)
     }, maxWaitMs)
+    currentGuideAudioTimer = timerId
 
     audio.preload = 'auto'
     audio.onended = () => finish(true)
@@ -733,6 +743,17 @@ class PluginDashboardGuideRuntime {
   cleanup() {
     document.documentElement.classList.remove('yui-guide-plugin-dashboard-running')
     document.body.classList.remove('yui-guide-plugin-dashboard-running')
+    if (currentGuideAudioTimer !== null) {
+      window.clearTimeout(currentGuideAudioTimer)
+      currentGuideAudioTimer = null
+    }
+    if (currentGuideAudio) {
+      currentGuideAudio.onended = null
+      currentGuideAudio.onerror = null
+      currentGuideAudio.pause()
+      currentGuideAudio.currentTime = 0
+      currentGuideAudio = null
+    }
     try {
       window.speechSynthesis?.cancel()
     } catch (_) {}
@@ -859,7 +880,6 @@ class PluginDashboardGuideRuntime {
     if (!isCurrent()) {
       return
     }
-    this.cleanup()
 
     if (payload.closeOnDone !== false) {
       await wait(120)
@@ -868,6 +888,11 @@ class PluginDashboardGuideRuntime {
       }
       window.close()
     }
+
+    if (!isCurrent()) {
+      return
+    }
+    this.cleanup()
   }
 }
 
@@ -890,6 +915,9 @@ export function initPluginDashboardYuiGuideRuntime() {
     }
 
     runtime.run(sessionId, (data.payload || {}) as StartPayload).catch(() => {
+      if (!runtime.isCurrentRun(sessionId)) {
+        return
+      }
       runtime.notify(DONE_EVENT, sessionId)
       runtime.cleanup()
     })
