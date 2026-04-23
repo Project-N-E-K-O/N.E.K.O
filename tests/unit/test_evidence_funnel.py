@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -368,6 +368,87 @@ def test_realistic_mixed_funnel_s24(tmp_path, fixed_now, wide_window):
         "persona_entries_archived": 1,
     }
     assert counts == expected
+
+
+def test_aware_window_bounds_do_not_raise_typeerror(tmp_path, fixed_now):
+    """Regression: codex P1 — `datetime.fromisoformat("...Z")` returns aware
+    in Py3.11+. Event-log `ts` is naive (local-clock from
+    `datetime.now().isoformat()`). Without normalization, comparing
+    aware bounds against naive parsed `ts` raises
+    `TypeError: can't compare offset-naive and offset-aware datetimes`.
+
+    `funnel_counts` must accept either flavor of bound and still produce
+    the right counts.
+    """
+    _write_events(str(tmp_path), [
+        {"type": "fact.added", "ts": fixed_now.isoformat(), "payload": {"fact_id": "f1"}},
+        {"type": "fact.added", "ts": fixed_now.isoformat(), "payload": {"fact_id": "f2"}},
+    ])
+    # Aware bounds in UTC — what `datetime.fromisoformat("2026-04-22T...Z")`
+    # would yield via the API.  Pick a window that, after astimezone() to
+    # local clock, brackets `fixed_now` (which is naive local).
+    aware_since = (fixed_now - timedelta(days=1)).replace(tzinfo=timezone.utc)
+    aware_until = (fixed_now + timedelta(days=1)).replace(tzinfo=timezone.utc)
+    # Should not raise; should at minimum not crash. Whether the event
+    # falls inside depends on the local UTC offset, so we only assert the
+    # structural invariants (no TypeError + 10 buckets present).
+    counts = _run(str(tmp_path), aware_since, aware_until)
+    assert set(counts.keys()) == set(_empty_buckets().keys())
+    # facts_added is either 0 or 2 depending on tz offset; never partial.
+    assert counts["facts_added"] in (0, 2)
+
+
+def test_naive_and_aware_bounds_produce_same_count_when_window_covers_event(
+    tmp_path, fixed_now,
+):
+    """When the window comfortably brackets the event in BOTH naive-local
+    and aware-UTC views, both forms must produce identical counts."""
+    _write_events(str(tmp_path), [
+        {"type": "fact.added", "ts": fixed_now.isoformat(), "payload": {"fact_id": "f1"}},
+    ])
+    naive_since = fixed_now - timedelta(days=30)
+    naive_until = fixed_now + timedelta(days=30)
+    naive_counts = _run(str(tmp_path), naive_since, naive_until)
+
+    # Same wall-clock instants but tagged UTC. After astimezone() to local
+    # they collapse back onto the local naive window (since/until are
+    # generous enough to swallow any offset on Earth).
+    aware_since = naive_since.replace(tzinfo=timezone.utc)
+    aware_until = naive_until.replace(tzinfo=timezone.utc)
+    aware_counts = _run(str(tmp_path), aware_since, aware_until)
+
+    assert naive_counts == aware_counts == _empty_buckets() | {"facts_added": 1}
+
+
+def test_mixed_naive_until_and_aware_since_does_not_raise(tmp_path, fixed_now):
+    """One bound naive, one bound aware. Per the normalization contract,
+    both should be coerced to naive-local before comparison — no
+    TypeError, even on the mixed-flavor input."""
+    _write_events(str(tmp_path), [
+        {"type": "fact.added", "ts": fixed_now.isoformat(), "payload": {"fact_id": "f1"}},
+    ])
+    aware_since = (fixed_now - timedelta(days=30)).replace(tzinfo=timezone.utc)
+    naive_until = fixed_now + timedelta(days=30)
+    counts = _run(str(tmp_path), aware_since, naive_until)
+    assert counts["facts_added"] == 1
+
+
+def test_aware_event_ts_compared_against_naive_window_does_not_raise(
+    tmp_path, fixed_now,
+):
+    """Defensive: a future writer might store aware `ts` (e.g.
+    `datetime.now(timezone.utc).isoformat()`). Naive window from caller
+    must still work — `_parse_ts` normalizes per-event."""
+    aware_ts = fixed_now.replace(tzinfo=timezone.utc).isoformat()
+    _write_events(str(tmp_path), [
+        {"type": "fact.added", "ts": aware_ts, "payload": {"fact_id": "f1"}},
+    ])
+    naive_since = fixed_now - timedelta(days=30)
+    naive_until = fixed_now + timedelta(days=30)
+    counts = _run(str(tmp_path), naive_since, naive_until)
+    # Window is wide enough that the event falls inside regardless of
+    # local-vs-UTC offset.
+    assert counts["facts_added"] == 1
 
 
 def test_per_character_isolation(tmp_path, fixed_now, wide_window):

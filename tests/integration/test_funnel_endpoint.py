@@ -181,6 +181,39 @@ async def test_funnel_endpoint_rejects_since_after_until(tmp_path):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_funnel_endpoint_accepts_aware_iso8601_bounds(tmp_path):
+    """Regression: codex P1 — `datetime.fromisoformat("...Z")` returns aware
+    in Py3.11+; event-log `ts` is naive local. The endpoint must tolerate
+    aware bounds without raising
+    `TypeError: can't compare offset-naive and offset-aware datetimes`
+    (which would surface to the client as 500).
+
+    We use a window deliberately wide enough that, regardless of the
+    local UTC offset on the runner, the lone event falls inside.
+    """
+    now = datetime(2026, 4, 22, 12, 0, 0)
+    _write_events(str(tmp_path), [
+        {"type": "fact.added", "ts": now.isoformat(), "payload": {"fact_id": "f1"}},
+    ])
+    app = _build_app(str(tmp_path))
+    # Aware-UTC bounds spanning ±30 days — wide enough that astimezone()
+    # still keeps `now` inside even with extreme UTC offsets.
+    since = (now - timedelta(days=30)).isoformat() + "Z"
+    until = (now + timedelta(days=30)).isoformat() + "+00:00"
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            f"/api/memory/funnel/{_NAME}",
+            params={"since": since, "until": until},
+        )
+    assert resp.status_code == 200, f"unexpected status {resp.status_code}: {resp.text}"
+    assert resp.json()["counts"]["facts_added"] == 1
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_funnel_endpoint_default_window_covers_recent_events(tmp_path):
     """No since/until → default window = now - 7 days .. now."""
     now = datetime.now()

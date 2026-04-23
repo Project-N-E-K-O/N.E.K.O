@@ -83,14 +83,39 @@ def _events_path(lanlan_name: str) -> str:
     )
 
 
+def _to_naive_local(dt: datetime) -> datetime:
+    """Normalize any datetime to naive local-clock for comparison with
+    event-log timestamps.
+
+    `event_log.py` writes `ts` via `datetime.now().isoformat()` — naive,
+    in local clock. `funnel_counts` therefore compares everything in that
+    same convention. If a caller supplies an aware datetime (e.g. parsed
+    from `2026-04-23T00:00:00Z` via `datetime.fromisoformat`), comparing
+    it directly against a naive parsed `ts` would raise TypeError.
+
+    Convention: aware → convert to local timezone, then drop tzinfo.
+    Naive → return unchanged (assumed already local-clock per the
+    event-log convention).
+    """
+    if dt.tzinfo is None:
+        return dt
+    return dt.astimezone().replace(tzinfo=None)
+
+
 def _parse_ts(ts: object) -> Optional[datetime]:
-    """Parse an ISO8601 timestamp; return None on any failure."""
+    """Parse an ISO8601 timestamp into a naive local-clock datetime.
+
+    `datetime.fromisoformat` will return aware iff the input string carries
+    an offset (e.g. `Z` / `+08:00`). We always normalize to naive local
+    clock to match the comparison convention enforced in `funnel_counts`
+    — see `_to_naive_local`."""
     if not isinstance(ts, str):
         return None
     try:
-        return datetime.fromisoformat(ts)
+        parsed = datetime.fromisoformat(ts)
     except ValueError:
         return None
+    return _to_naive_local(parsed)
 
 
 def funnel_counts(
@@ -106,10 +131,18 @@ def funnel_counts(
         reflections_{confirmed,promoted,merged,denied,archived},
         persona_entries_{added,rewritten,archived}
 
+    Timezone handling:
+        `since`, `until`, and each event `ts` are all normalized to naive
+        local-clock before comparison (see `_to_naive_local`). The
+        underlying convention comes from `event_log.py` which writes `ts`
+        via `datetime.now().isoformat()` — naive, local. Aware inputs are
+        accepted (converted to local then stripped of tzinfo) so callers
+        can pass either flavor without mixing-aware-and-naive TypeErrors.
+
     Behavior:
         - If events.ndjson does not exist → all zeros.
         - Events outside [since, until] are skipped (timestamp inclusive
-          on both ends).
+          on both ends, after tz normalization).
         - Events with malformed JSON / missing `type` / unparseable `ts`
           are skipped with a single WARN per scan call (not per line —
           avoids log spam on a corrupted log).
@@ -129,10 +162,17 @@ def funnel_counts(
     if not os.path.exists(path):
         return counts
 
+    # Normalize bounds once up front. Each event ts is normalized inside
+    # `_parse_ts`; doing the same to the bounds keeps all three operands
+    # in the same convention (naive local clock) and guarantees no
+    # offset-naive vs offset-aware TypeError mid-scan.
+    since = _to_naive_local(since)
+    until = _to_naive_local(until)
+
     warned_malformed = False
 
     try:
-        f = open(path, encoding="utf-8")
+        fh = open(path, encoding="utf-8")
     except OSError as e:
         logger.warning(
             f"[FunnelAnalytics] {lanlan_name}: 打开 events.ndjson 失败: {e}; "
@@ -140,8 +180,8 @@ def funnel_counts(
         )
         return counts
 
-    try:
-        for raw in f:
+    with fh:
+        for raw in fh:
             raw = raw.strip()
             if not raw:
                 continue
@@ -188,7 +228,5 @@ def funnel_counts(
             elif evt_type == "persona.entry_updated":
                 counts["persona_entries_rewritten"] += 1
             # else: 未知事件类型 → 静默跳过（forward-compat）
-    finally:
-        f.close()
 
     return counts

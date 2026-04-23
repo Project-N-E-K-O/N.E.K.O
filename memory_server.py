@@ -1977,6 +1977,14 @@ async def api_memory_funnel(lanlan_name: str, since: str | None = None, until: s
       - since: window lower bound, default = now - 7 days
       - until: window upper bound, default = now
 
+    Timezone handling: `datetime.fromisoformat` happily accepts both naive
+    (`2026-04-22T12:00:00`) and aware (`...Z`, `...+08:00`) values, but
+    the underlying event log writes naive local-clock timestamps. The
+    `funnel_counts` function normalizes both window bounds and per-event
+    `ts` to naive local clock internally (see `_to_naive_local`), so an
+    aware `since`/`until` from the client will not raise an
+    offset-naive-vs-aware TypeError mid-scan.
+
     Returns the 10-bucket dict from `funnel_counts`. PR-2 (decay+archive)
     populates `*_archived` buckets; PR-3 (merge-on-promote) populates
     `reflections_merged` / `persona_entries_rewritten`. Until those land
