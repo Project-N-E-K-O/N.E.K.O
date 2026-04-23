@@ -96,10 +96,10 @@ def make_reflection_state_changed_handler(reflection_engine):
 
     Replays the `to` status onto the reflection identified by
     `reflection_id`, plus any audit fields the producer recorded
-    (`absorbed_into`, `promote_blocked_reason`, `reject_reason`,
-    `<status>_at` timestamp). RFC §3.9.6 — without a handler, a crash
-    after the event log append but before the view save would leak a
-    "phantom unflipped" reflection on next boot.
+    (`absorbed_into`, `promote_blocked_reason`, `denied_reason`,
+    `reject_reason`, `<status>_at` timestamp). RFC §3.9.6 — without a
+    handler, a crash after the event log append but before the view
+    save would leak a "phantom unflipped" reflection on next boot.
     """
 
     def _apply(name: str, payload: dict) -> bool:
@@ -134,9 +134,18 @@ def make_reflection_state_changed_handler(reflection_engine):
                 if k in payload and r.get(k) != payload[k]:
                     r[k] = payload[k]
                     changed = True
+            # Mirror of `_arecord_state_change._sync_mutate` — route the
+            # audit `reason` to a status-specific field so denied / blocked
+            # semantics don't bleed across. Without the `denied` branch
+            # here, a crash-replay would silently drop the denied_reason
+            # that the live writer recorded.
             if 'reason' in payload and to_status == 'promote_blocked':
                 if r.get('promote_blocked_reason') != payload['reason']:
                     r['promote_blocked_reason'] = payload['reason']
+                    changed = True
+            if 'reason' in payload and to_status == 'denied':
+                if r.get('denied_reason') != payload['reason']:
+                    r['denied_reason'] = payload['reason']
                     changed = True
             if 'reject_explanation' in payload:
                 if r.get('reject_reason') != payload['reject_explanation']:

@@ -884,11 +884,22 @@ class PersonaManager:
                 )
                 return 'not_found'
 
+            # Normalize the id we put in event payloads + log lines to the
+            # canonical bare form stored on disk. `_find_entry_with_section`
+            # accepts both bare and fully-qualified (`persona.<entity>.<id>`)
+            # forms; if a future caller passes the qualified form, the
+            # downstream reconciler handlers (`make_persona_entry_handler`,
+            # `make_persona_evidence_handler`) match strictly on the bare id
+            # via `e.get('id') == entry_id`. Writing the qualified form into
+            # the payload would make crash-replay miss the entry. RFC §3.9.6:
+            # event payloads must reference the canonical on-disk id.
+            canonical_entry_id = target_entry.get('id') or target_entry_id
+
             existing_merged_from = list(target_entry.get('merged_from_ids') or [])
             if source_reflection_id in existing_merged_from:
                 logger.info(
                     f"[Persona] {name}: amerge_into idempotent skip "
-                    f"target={target_entry_id} src={source_reflection_id}"
+                    f"target={canonical_entry_id} src={source_reflection_id}"
                 )
                 return 'noop'
 
@@ -905,7 +916,7 @@ class PersonaManager:
 
             entry_payload = {
                 'entity_key': entity_key,
-                'entry_id': target_entry_id,
+                'entry_id': canonical_entry_id,
                 'rewrite_text_sha256': new_text_sha,
                 'reinforcement': float(merged_reinforcement),
                 'disputation': float(merged_disputation),
@@ -928,7 +939,7 @@ class PersonaManager:
 
             evidence_payload = {
                 'entity_key': entity_key,
-                'entry_id': target_entry_id,
+                'entry_id': canonical_entry_id,
                 'reinforcement': float(merged_reinforcement),
                 'disputation': float(merged_disputation),
                 'rein_last_signal_at': now_iso,
@@ -987,7 +998,7 @@ class PersonaManager:
                 sync_save_view=_sync_save,
             )
             logger.info(
-                f"[Persona] {name}: amerge_into target={target_entry_id} "
+                f"[Persona] {name}: amerge_into target={canonical_entry_id} "
                 f"src={source_reflection_id} rein={merged_reinforcement} "
                 f"disp={merged_disputation}"
             )

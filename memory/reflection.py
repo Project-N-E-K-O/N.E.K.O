@@ -1452,7 +1452,27 @@ class ReflectionEngine:
                 if absorbed_into is not None:
                     entry['absorbed_into'] = absorbed_into
                 if reason is not None:
-                    entry['promote_blocked_reason'] = reason
+                    # Route the `reason` audit string into a status-specific
+                    # field so the semantics of each terminal-state field
+                    # stay clean (RFC §3.9.2 / §3.9.7):
+                    #   - promote_blocked → `promote_blocked_reason` (the
+                    #     throttle/dead-letter cause; consumed by the dead-
+                    #     letter retry path).
+                    #   - denied → `denied_reason` (the rejection category;
+                    #     audit only, no recovery path).
+                    #   - merged → `absorbed_into` already captures
+                    #     provenance; no separate reason needed and the
+                    #     callers don't pass one.
+                    # Without this gate any non-None reason on a denied/
+                    # merged transition would pollute promote_blocked_reason,
+                    # making dead-letter scans see false-positive blocks.
+                    # Mirror of the reconciler handler in
+                    # `make_reflection_state_changed_handler`, which already
+                    # gates the same way on replay.
+                    if to_status == 'promote_blocked':
+                        entry['promote_blocked_reason'] = reason
+                    elif to_status == 'denied':
+                        entry['denied_reason'] = reason
                 if reject_explanation is not None:
                     # Keep audit trail off the throttle field — separate key
                     # so promote_blocked vs llm_merge_rejected stays distinct.

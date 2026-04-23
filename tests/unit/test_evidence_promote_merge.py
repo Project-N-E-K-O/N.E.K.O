@@ -228,6 +228,146 @@ async def test_amerge_into_unknown_target_returns_not_found(tmp_path):
     assert result == 'not_found'
 
 
+@pytest.mark.asyncio
+async def test_amerge_into_event_payload_uses_bare_id_for_both_forms(tmp_path):
+    """Regression (round-2 review): the EVT_PERSONA_ENTRY_UPDATED and
+    EVT_PERSONA_EVIDENCE_UPDATED payloads must always carry the canonical
+    bare entry id, even when the caller passes the fully-qualified
+    `persona.<entity>.<id>` form. Reconciler handlers
+    (`make_persona_entry_handler`, `make_persona_evidence_handler`) match
+    `e.get('id') == entry_id` strictly on the bare id; a qualified id in
+    payload would silently miss on crash-replay (RFC §3.9.6).
+    """
+    _ev, _fs, pm, _re, _cm = _install(str(tmp_path))
+
+    async def _emit_and_get_payloads(target_id: str, src_rid: str):
+        persona = {
+            'master': {'facts': [_persona_entry('p_001', 'orig', rein=1.0)]},
+        }
+        await pm.asave_persona('小天', persona)
+        result = await pm.amerge_into(
+            '小天', target_id, f'merged via {target_id}',
+            merged_reinforcement=2.0, merged_disputation=0.0,
+            source_reflection_id=src_rid, merged_from_ids=[src_rid],
+        )
+        assert result == 'merged', f"merge with {target_id!r} should succeed"
+        events_path = os.path.join(str(tmp_path), '小天', 'events.ndjson')
+        with open(events_path, encoding='utf-8') as f:
+            events = [json.loads(line) for line in f if line.strip()]
+        # Take the LAST entry/evidence event (this call's events)
+        entry_evt = [
+            e for e in events if e['type'] == 'persona.entry_updated'
+        ][-1]
+        ev_evt = [
+            e for e in events if e['type'] == 'persona.evidence_updated'
+        ][-1]
+        return entry_evt['payload'], ev_evt['payload']
+
+    # Bare form
+    bare_entry, bare_ev = await _emit_and_get_payloads('p_001', 'ref_bare')
+    assert bare_entry['entry_id'] == 'p_001'
+    assert bare_ev['entry_id'] == 'p_001'
+
+    # Reset persona for clean second merge
+    persona2 = {
+        'master': {'facts': [_persona_entry('p_001', 'orig2', rein=1.0)]},
+    }
+    pm._personas['小天'] = persona2
+    await pm.asave_persona('小天', persona2)
+
+    # Fully-qualified form — payload MUST still be bare
+    qual_entry, qual_ev = await _emit_and_get_payloads(
+        'persona.master.p_001', 'ref_qual',
+    )
+    assert qual_entry['entry_id'] == 'p_001', (
+        "qualified target_id must be normalized to bare id in payload"
+    )
+    assert qual_ev['entry_id'] == 'p_001', (
+        "qualified target_id must be normalized to bare id in evidence payload"
+    )
+
+
+@pytest.mark.asyncio
+async def test_arecord_state_change_routes_reason_by_status(tmp_path):
+    """Regression (round-2 review): the `reason` arg must land in a
+    status-specific field. Previously _sync_mutate wrote ANY non-None
+    reason into `promote_blocked_reason`, so `denied` transitions
+    (e.g. from `llm_merge_rejected` / `rejected_by_persona_add:*`)
+    polluted that field. RFC §3.9.2 reserves promote_blocked_reason for
+    status='promote_blocked'; denied transitions get `denied_reason`.
+    """
+    _ev, _fs, _pm, re, _cm = _install(str(tmp_path))
+
+    R1 = _reflection('ref_denied_route', 'a', rein=2.5)
+    R2 = _reflection('ref_blocked_route', 'b', rein=2.5)
+    await re.asave_reflections('小天', [R1, R2])
+
+    # denied transition — reason MUST go to denied_reason, NOT
+    # promote_blocked_reason
+    await re._arecord_state_change(
+        '小天', 'ref_denied_route', 'confirmed', 'denied',
+        reason='llm_merge_rejected',
+    )
+    rs1 = next(
+        r for r in await re._aload_reflections_full('小天')
+        if r['id'] == 'ref_denied_route'
+    )
+    assert rs1['status'] == 'denied'
+    assert rs1.get('denied_reason') == 'llm_merge_rejected', (
+        "denied transition must record reason in denied_reason"
+    )
+    assert rs1.get('promote_blocked_reason') in (None,), (
+        "denied transition must NOT pollute promote_blocked_reason"
+    )
+
+    # promote_blocked transition — reason MUST go to promote_blocked_reason
+    await re._arecord_state_change(
+        '小天', 'ref_blocked_route', 'confirmed', 'promote_blocked',
+        reason='llm_unavailable',
+    )
+    rs2 = next(
+        r for r in await re._aload_reflections_full('小天')
+        if r['id'] == 'ref_blocked_route'
+    )
+    assert rs2['status'] == 'promote_blocked'
+    assert rs2.get('promote_blocked_reason') == 'llm_unavailable'
+    assert rs2.get('denied_reason') in (None,)
+
+
+@pytest.mark.asyncio
+async def test_state_change_handler_routes_reason_by_status_on_replay(tmp_path):
+    """Symmetry check: the reconciler handler must route `reason` the
+    same way the live writer does — denied → denied_reason,
+    promote_blocked → promote_blocked_reason. Without this the on-disk
+    view diverges from a crash-replay rebuild.
+    """
+    from memory.evidence_handlers import (
+        make_reflection_state_changed_handler,
+    )
+
+    _ev, _fs, _pm, re, _cm = _install(str(tmp_path))
+    R = _reflection('ref_replay_denied', 'x', rein=2.5)
+    await re.asave_reflections('小天', [R])
+
+    handler = make_reflection_state_changed_handler(re)
+    handler('小天', {
+        'reflection_id': 'ref_replay_denied',
+        'from': 'confirmed',
+        'to': 'denied',
+        'ts': '2026-04-23T00:00:00',
+        'reason': 'rejected_by_persona_add:FACT_REJECTED_CARD',
+    })
+    rs = next(
+        r for r in await re._aload_reflections_full('小天')
+        if r['id'] == 'ref_replay_denied'
+    )
+    assert rs['status'] == 'denied'
+    assert rs.get('denied_reason') == (
+        'rejected_by_persona_add:FACT_REJECTED_CARD'
+    )
+    assert rs.get('promote_blocked_reason') in (None,)
+
+
 # ── _apromote_with_merge: dispatch paths ──────────────────────────
 
 
