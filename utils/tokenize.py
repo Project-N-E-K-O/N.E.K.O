@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 
 from config import PERSONA_RENDER_ENCODING
 
@@ -75,6 +76,12 @@ def _count_tokens_heuristic(text: str) -> int:
     - Other (latin / digits / punct) → 0.25 tokens / char (≈ 4 char per
       token, matches GPT tokenizer ballpark on English prose)
     """
+    if not text:
+        # Empty stays 0 — both for math sanity and because callers
+        # (count_tokens / acount_tokens) already short-circuit empty.
+        # Defensive double-check kept here so direct callers of the
+        # heuristic (tests, future callsites) get the same contract.
+        return 0
     cjk = sum(
         1 for c in text
         if '\u4e00' <= c <= '\u9fff'
@@ -82,7 +89,11 @@ def _count_tokens_heuristic(text: str) -> int:
         or '\uac00' <= c <= '\ud7af'
     )
     non_cjk = len(text) - cjk
-    return int(cjk * 1.5 + non_cjk * 0.25)
+    # Floor of 1 for non-empty text: int() truncated short latin strings
+    # (e.g. "ok" → 0.5 → 0), which made score-trim treat them as free
+    # and bypass the budget. ceil + clamp avoids that without
+    # under-counting longer text.
+    return max(1, math.ceil(cjk * 1.5 + non_cjk * 0.25))
 
 
 def count_tokens(text: str, encoding: str = PERSONA_RENDER_ENCODING) -> int:

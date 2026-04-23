@@ -1411,6 +1411,24 @@ class ReflectionEngine:
                 )
                 return
 
+            # Compare-and-swap on `from_status`. _apromote_with_merge runs
+            # the LLM call OUTSIDE the per-character lock (LLM is slow); a
+            # concurrent rebuttal / archive / parallel promote can flip the
+            # status during that window. Without this guard the late writer
+            # silently overwrites a newer terminal status (e.g. promote
+            # clobbers a freshly-set `denied` from rebuttal), losing the
+            # newer signal AND emitting a misleading state-change event
+            # whose `from` no longer matches the on-disk view.
+            current_status = entry.get('status')
+            if current_status != from_status:
+                logger.warning(
+                    f"[Reflection] {name}/{reflection_id}: "
+                    f"_arecord_state_change CAS miss — expected from={from_status!r} "
+                    f"but current status is {current_status!r}; dropping "
+                    f"transition to {to_status!r} (newer signal wins)"
+                )
+                return
+
             now_iso = datetime.now().isoformat()
             payload: dict = {
                 'reflection_id': reflection_id,
@@ -1546,7 +1564,8 @@ class ReflectionEngine:
 
         Returns one of:
           'promote_fresh' | 'merge_into' | 'reject' | 'reject_by_persona'
-          | 'skip_retry_pending' | 'blocked' | 'invalid_target' | 'noop'
+          | 'queued_correction' | 'skip_retry_pending' | 'blocked'
+          | 'invalid_target' | 'noop' | 'no_longer_eligible'
 
         Throttling: backoff window before retry, max retries → dead-letter.
         LLM failures → skip_retry_pending (NOT promote_fresh — RFC §3.9.4
@@ -1563,6 +1582,35 @@ class ReflectionEngine:
                 lanlan_name, R, 'llm_unavailable',
             )
             return 'blocked'
+
+        # Revalidate the snapshot under the lock before incurring any
+        # write or LLM cost. The caller (`_aauto_promote_score_driven`)
+        # iterates a stale snapshot collected outside the per-character
+        # lock; by the time we reach this point another coroutine may
+        # have demoted, denied, merged or otherwise disqualified `R`.
+        # Bumping `promote_attempt_count` for an already-merged
+        # reflection both wastes a retry slot and emits a misleading
+        # evidence event. Re-read the on-disk view, find the same id,
+        # and short-circuit if it's no longer eligible.
+        async with self._get_alock(lanlan_name):
+            current_list = await self._aload_reflections_full(lanlan_name)
+            current = self._find_reflection_in_list(current_list, R['id'])
+            if current is None or current.get('status') != 'confirmed':
+                logger.info(
+                    f"[Promote] {lanlan_name}/{R['id']}: no longer eligible "
+                    f"(current status={current.get('status') if current else 'gone'!r}); "
+                    f"skip"
+                )
+                return 'no_longer_eligible'
+            if evidence_score(current, now) < EVIDENCE_PROMOTED_THRESHOLD:
+                logger.info(
+                    f"[Promote] {lanlan_name}/{R['id']}: evidence_score "
+                    f"dropped below threshold under lock; skip"
+                )
+                return 'no_longer_eligible'
+            # Use the freshly-read entry from here on so downstream merge
+            # math sees the latest evidence values, not the stale snapshot.
+            R = current
 
         # Build candidate pool (RFC §3.9.3 step 1)
         persona_view = await self._persona_manager.aget_persona(lanlan_name)
@@ -1623,13 +1671,29 @@ class ReflectionEngine:
                     lanlan_name, R['id'], 'confirmed', 'promoted',
                 )
                 return 'promote_fresh'
-            # FACT_REJECTED_CARD: contradicts character_card → reflection denied
-            # FACT_QUEUED_CORRECTION: contradicts non-card → also denied with reason
-            await self._arecord_state_change(
-                lanlan_name, R['id'], 'confirmed', 'denied',
-                reason=f'rejected_by_persona_add:{result}',
+            # FACT_REJECTED_CARD: contradicts character_card → reflection
+            # is permanently denied (no recovery path; the card is fixed).
+            if result == self._persona_manager.FACT_REJECTED_CARD:
+                await self._arecord_state_change(
+                    lanlan_name, R['id'], 'confirmed', 'denied',
+                    reason=f'rejected_by_persona_add:{result}',
+                )
+                return 'reject_by_persona'
+            # FACT_QUEUED_CORRECTION: contradicts an EXISTING non-card fact;
+            # PersonaManager has queued an async LLM correction. The user's
+            # confirming intent (which got the reflection to confirmed) is
+            # NOT denied — the correction queue may resolve in either
+            # direction once the LLM weighs in. Keep the reflection in
+            # `confirmed` so a future promote cycle can revisit it after
+            # backoff (or after the correction queue has resolved); the
+            # throttle counter we already bumped this round prevents a
+            # tight retry loop.
+            logger.info(
+                f"[Promote] {lanlan_name}/{R['id']}: aadd_fact returned "
+                f"{result} (correction queued); reflection stays confirmed "
+                f"for retry after correction resolves"
             )
-            return 'reject_by_persona'
+            return 'queued_correction'
 
         if action == 'merge_into':
             target_id = decision.get('target_id')

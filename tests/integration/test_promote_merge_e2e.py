@@ -134,13 +134,12 @@ async def test_periodic_promote_with_mock_llm_merge_into(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_reconciler_replays_state_change_after_simulated_crash(
-    tmp_path,
-):
-    """S15-S17 crash recovery: simulate event-log written but view
-    not flushed by manually replaying recorded events through the
-    reconciler. The replay must produce the same final view state as
-    the original in-process write did.
+async def test_reconciler_replay_idempotent_after_full_apply(tmp_path):
+    """S15-S17 PART A — replay is idempotent over an already-merged view.
+
+    Original PR-3 test only covered this idempotence path (sentinel
+    rolled back, view kept post-merge). Kept here as the explicit
+    "everything succeeded; restart re-reads the same events" assertion.
     """
     from memory.event_log import Reconciler
     from memory.evidence_handlers import register_evidence_handlers
@@ -163,27 +162,99 @@ async def test_reconciler_replays_state_change_after_simulated_crash(
         outcome = await re._apromote_with_merge('小天', R)
     assert outcome == 'merge_into'
 
-    # Build a fresh reconciler and pretend the sentinel was never advanced
-    # past the first event — replay should converge to the same view.
+    # Roll the sentinel back; persona/reflections.json are already
+    # post-merge. Replay must converge to the same view (idempotent).
     reconciler = Reconciler(_ev)
     register_evidence_handlers(reconciler, pm, re)
-    # Reset sentinel to before-first-event; replay every event so far.
     sentinel_path = os.path.join(str(tmp_path), '小天', 'events_applied.json')
     with open(sentinel_path, 'w', encoding='utf-8') as f:
         json.dump({'last_applied_event_id': None, 'ts': 'reset'}, f)
 
     applied = await reconciler.areconcile('小天')
-    # All evidence-shaped events get reapplied by the handler; the
-    # important assertion is that no crash + view stays consistent.
-    assert applied >= 0  # don't pin exact count — depends on event mix
+    assert applied >= 0  # idempotent — any handler may no-op
 
     persona_after = await pm.aget_persona('小天')
     entry = persona_after['master']['facts'][0]
     assert entry['text'] == '合并后的文本'
     assert 'ref_crash' in entry['merged_from_ids']
 
-    # Reflection still in main file (not deleted), absorbed_into intact
     refls = await re._aload_reflections_full('小天')
     rstate = next(r for r in refls if r['id'] == 'ref_crash')
     assert rstate['status'] == 'merged'
     assert rstate['absorbed_into'] == 'p_001'
+
+
+@pytest.mark.asyncio
+async def test_reconciler_text_drift_raises_per_rfc_red_line(tmp_path):
+    """S15-S17 PART B — RFC §3.3.6 + red line 4: when the on-disk view
+    has drifted away from what the event log says (e.g. process crashed
+    between event-append and view-save, then text was edited or rolled
+    back manually), the persona.entry_updated handler MUST raise rather
+    than silently re-apply, because the event payload deliberately
+    omits the merged plaintext (red line 4: no plaintext in event log).
+
+    This is operator-intervention territory by design — the reconciler
+    refuses to advance the sentinel and surfaces the divergence so a
+    human can audit the event log and decide. The bot proposed putting
+    plaintext in the event payload; we explicitly reject that and
+    document the trade-off here.
+    """
+    from memory.event_log import Reconciler
+    from memory.evidence_handlers import register_evidence_handlers
+
+    _ev, _fs, pm, re, _cm = _install(str(tmp_path))
+    persona = {
+        'master': {'facts': [_persona_entry('p_001', 'orig text', rein=1.0)]},
+    }
+    await pm.asave_persona('小天', persona)
+    R = _reflection_above_threshold('ref_crash', '某条要被合并的反思')
+    await re.asave_reflections('小天', [R])
+
+    persona_path = os.path.join(str(tmp_path), '小天', 'persona.json')
+    sentinel_path = os.path.join(
+        str(tmp_path), '小天', 'events_applied.json',
+    )
+
+    # Snapshot pre-merge view; we'll restore it after the merge to
+    # simulate "events written, view-save crashed".
+    with open(persona_path, encoding='utf-8') as f:
+        persona_pre = f.read()
+
+    fake_decision = {
+        'action': 'merge_into',
+        'target_id': 'persona.master.p_001',
+        'merged_text': '合并后的文本',
+    }
+    with patch.object(re, '_allm_call_promotion_merge',
+                       AsyncMock(return_value=fake_decision)):
+        outcome = await re._apromote_with_merge('小天', R)
+    assert outcome == 'merge_into'
+
+    # Roll persona.json back to pre-merge state + sentinel reset:
+    # event log claims merge happened, view says it didn't.
+    with open(persona_path, 'w', encoding='utf-8') as f:
+        f.write(persona_pre)
+    with open(sentinel_path, 'w', encoding='utf-8') as f:
+        json.dump({'last_applied_event_id': None, 'ts': 'reset'}, f)
+    pm._personas.pop('小天', None)
+
+    reconciler = Reconciler(_ev)
+    register_evidence_handlers(reconciler, pm, re)
+
+    # Reconciler must NOT silently advance past the divergence. The
+    # handler logs a warning + leaves the sentinel pinned so a human
+    # can investigate. The reconcile call returns 0 applied events
+    # because the very first event diverged.
+    applied = await reconciler.areconcile('小天')
+    assert applied == 0, (
+        "reconciler must NOT apply events past a sha256 mismatch — "
+        "RFC §3.3.6 mandates operator intervention"
+    )
+
+    # View remains in its (pre-merge / drifted) state — no auto-recovery.
+    persona_after = await pm.aget_persona('小天')
+    entry = persona_after['master']['facts'][0]
+    assert entry['text'] == 'orig text', (
+        "view must NOT be auto-rewritten — RFC red line 4 keeps text "
+        "out of the event payload"
+    )

@@ -804,12 +804,30 @@ class PersonaManager:
         Used by `amerge_into` where the caller (LLM) supplies a fully-qualified
         target_id but we still need to know which entity section to address
         the event payload against.
+
+        Accepts both bare ids ("p_001") and the fully-qualified
+        prompt form ("persona.<entity>.p_001"). The reflection promote
+        path strips the prefix before calling, but we accept both forms
+        defensively so any callsite (tests, future plugins, manual
+        replay) works without re-implementing the parser.
         """
+        # Defensive parse of the qualified form. Anything that doesn't
+        # match `persona.<entity>.<id>` falls through to direct equality.
+        qualified_entity: str | None = None
+        bare_id = entry_id
+        if isinstance(entry_id, str) and entry_id.startswith('persona.'):
+            parts = entry_id.split('.', 2)
+            if len(parts) == 3 and parts[2]:
+                qualified_entity = parts[1]
+                bare_id = parts[2]
+
         for ek, section in persona.items():
             if not isinstance(section, dict):
                 continue
+            if qualified_entity is not None and ek != qualified_entity:
+                continue
             for entry in section.get('facts', []):
-                if isinstance(entry, dict) and entry.get('id') == entry_id:
+                if isinstance(entry, dict) and entry.get('id') == bare_id:
                     return ek, entry
         return None, None
 
@@ -1435,6 +1453,24 @@ class PersonaManager:
                 continue
             for entry in section.get('facts', []):
                 if not isinstance(entry, dict):
+                    # Pre-PR-1 schema sometimes stored facts as bare
+                    # strings; the legacy render path (`_render_fact_entries`)
+                    # used to emit them. Normalize ad-hoc here so they keep
+                    # appearing in prompt context until a write touches the
+                    # entry and migrates it to dict form via _normalize_entry.
+                    if entry:
+                        entry = {
+                            'text': str(entry),
+                            'protected': False,
+                            'suppress': False,
+                            'reinforcement': 0.0,
+                            'disputation': 0.0,
+                            'rein_last_signal_at': None,
+                            'disp_last_signal_at': None,
+                            'sub_zero_days': 0,
+                            'user_fact_reinforce_count': 0,
+                        }
+                        non_protected_by_entity[entity_key].append(entry)
                     continue
                 if entry.get('suppress'):
                     # Suppressed entries are rendered in their own section

@@ -182,6 +182,40 @@ async def test_amerge_into_idempotent_on_repeat(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_find_entry_with_section_accepts_qualified_id(tmp_path):
+    """Coderabbit Critical (re-evaluated as defensive): the prompt
+    documents target_id as `persona.<entity>.<id>`; the reflection
+    promote path strips the prefix before calling, but the helper
+    should accept both forms so any other callsite (tests, manual
+    replay, future plugins) doesn't have to re-implement the parser.
+    """
+    _ev, _fs, pm, _re, _cm = _install(str(tmp_path))
+    persona = {
+        'master': {'facts': [_persona_entry('p_001', 'orig', rein=1.0)]},
+        'neko': {'facts': [_persona_entry('n_001', 'cat fact', rein=1.0)]},
+    }
+    pm._personas['小天'] = persona
+
+    # Bare id — works (existing contract)
+    ek, entry = pm._find_entry_with_section(persona, 'p_001')
+    assert ek == 'master' and entry is not None
+
+    # Fully-qualified id — also works (defensive addition)
+    ek2, entry2 = pm._find_entry_with_section(
+        persona, 'persona.master.p_001',
+    )
+    assert ek2 == 'master' and entry2 is not None
+    assert entry2.get('id') == 'p_001'
+
+    # Qualified id with WRONG entity must NOT match the bare id in
+    # another section (entity scoping is enforced when present).
+    ek3, entry3 = pm._find_entry_with_section(
+        persona, 'persona.neko.p_001',
+    )
+    assert ek3 is None and entry3 is None
+
+
+@pytest.mark.asyncio
 async def test_amerge_into_unknown_target_returns_not_found(tmp_path):
     _ev, _fs, pm, _re, _cm = _install(str(tmp_path))
     await pm.asave_persona('小天', {'master': {'facts': []}})
@@ -433,3 +467,172 @@ async def test_persona_entry_updated_replay_idempotent(tmp_path):
     assert after_first == after_replays, (
         "replaying entry_updated event must be idempotent on the view"
     )
+
+
+# ── concurrency: CAS on _arecord_state_change ──────────────────────
+
+
+@pytest.mark.asyncio
+async def test_arecord_state_change_cas_drops_stale_transition(tmp_path):
+    """Coderabbit P1: a stale snapshot must NOT clobber a newer status.
+
+    Simulate the race: rebuttal flips reflection to 'denied' while a
+    promote LLM call is in flight. When promote returns and tries
+    'confirmed' → 'merged', the CAS check sees current='denied' and
+    drops the write. The reflection stays denied; no event is emitted.
+    """
+    _ev, _fs, _pm, re, _cm = _install(str(tmp_path))
+    R = _reflection('ref_cas', 'x', rein=2.5)
+    await re.asave_reflections('小天', [R])
+
+    # Rebuttal-style flip: confirmed → denied
+    await re._arecord_state_change(
+        '小天', 'ref_cas', 'confirmed', 'denied', reason='rebuttal_test',
+    )
+
+    rstate = next(
+        r for r in await re._aload_reflections_full('小天')
+        if r['id'] == 'ref_cas'
+    )
+    assert rstate['status'] == 'denied'
+
+    # Now the late promote arrives with a stale `from_status='confirmed'`.
+    # CAS must reject and leave status untouched.
+    await re._arecord_state_change(
+        '小天', 'ref_cas', 'confirmed', 'merged',
+        absorbed_into='p_999',
+    )
+
+    rstate2 = next(
+        r for r in await re._aload_reflections_full('小天')
+        if r['id'] == 'ref_cas'
+    )
+    assert rstate2['status'] == 'denied', (
+        "CAS must drop the stale promote transition; rebuttal's denied wins"
+    )
+    assert rstate2.get('absorbed_into') is None, (
+        "CAS-rejected transition must not write the new fields either"
+    )
+
+
+# ── concurrency: revalidation in _apromote_with_merge ──────────────
+
+
+@pytest.mark.asyncio
+async def test_apromote_skips_already_merged_reflection_under_lock(tmp_path):
+    """Coderabbit Major: snapshot collected outside the lock can be
+    stale. `_apromote_with_merge` must reload under the lock and skip
+    if the reflection is no longer eligible — without bumping
+    promote_attempt_count or making the LLM call.
+    """
+    _ev, _fs, pm, re, _cm = _install(str(tmp_path))
+    R = _reflection('ref_stale', 'x', rein=2.5)
+    await re.asave_reflections('小天', [R])
+    await pm.asave_persona('小天', {'master': {'facts': []}})
+
+    # Simulate: between the loop's snapshot read and the promote call,
+    # another coroutine flipped the reflection to 'merged'.
+    await re._arecord_state_change(
+        '小天', 'ref_stale', 'confirmed', 'merged',
+        absorbed_into='p_already',
+    )
+
+    # The LLM mock would explode if reached — proves we short-circuited.
+    with patch.object(
+        re, '_allm_call_promotion_merge',
+        AsyncMock(side_effect=AssertionError(
+            "LLM must NOT be called when reflection is no longer eligible"
+        )),
+    ):
+        outcome = await re._apromote_with_merge('小天', R)
+
+    assert outcome == 'no_longer_eligible'
+    rstate = next(
+        r for r in await re._aload_reflections_full('小天')
+        if r['id'] == 'ref_stale'
+    )
+    assert rstate['status'] == 'merged', (
+        "the concurrent transition must be preserved"
+    )
+    assert rstate.get('promote_attempt_count', 0) == 0, (
+        "throttle counter must NOT be bumped for a no-longer-eligible reflection"
+    )
+
+
+# ── FACT_QUEUED_CORRECTION semantics ───────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_promote_fresh_with_queued_correction_keeps_confirmed(tmp_path):
+    """Coderabbit Major: when aadd_fact returns FACT_QUEUED_CORRECTION
+    (a non-card contradiction routed to the async correction queue),
+    the reflection is NOT denied. The user's confirming intent is
+    preserved; the queue may resolve in either direction. Reflection
+    stays 'confirmed' so a future promote cycle can revisit.
+    """
+    _ev, _fs, pm, re, _cm = _install(str(tmp_path))
+    R = _reflection('ref_queued', '主人讨厌奶茶', rein=2.5)
+    await re.asave_reflections('小天', [R])
+
+    # Seed persona with a contradicting NON-card fact so aadd_fact
+    # routes to the correction queue rather than rejecting outright.
+    persona = {
+        'master': {'facts': [
+            _persona_entry('m_existing', '主人喜欢奶茶', rein=1.0),
+        ]},
+    }
+    await pm.asave_persona('小天', persona)
+
+    # Stub the contradiction detector to fire on this pair (the real
+    # detector uses LLM heuristics; we only care about the routing here).
+    with patch.object(
+        pm, '_texts_may_contradict', return_value=True,
+    ), patch.object(
+        re, '_allm_call_promotion_merge',
+        AsyncMock(return_value={
+            'action': 'promote_fresh', 'reason': 'looks novel',
+        }),
+    ):
+        outcome = await re._apromote_with_merge('小天', R)
+
+    assert outcome == 'queued_correction'
+    rstate = next(
+        r for r in await re._aload_reflections_full('小天')
+        if r['id'] == 'ref_queued'
+    )
+    assert rstate['status'] == 'confirmed', (
+        "FACT_QUEUED_CORRECTION must NOT mark reflection as denied — "
+        "the user's confirming intent is preserved in the correction queue"
+    )
+    # Throttle counter bumped once so we don't tight-loop next cycle
+    assert rstate['promote_attempt_count'] == 1
+
+
+@pytest.mark.asyncio
+async def test_promote_fresh_with_card_rejection_marks_denied(tmp_path):
+    """Sibling test: FACT_REJECTED_CARD (character-card contradiction)
+    IS a permanent terminal denial — the card is fixed and the
+    reflection cannot ever be promoted."""
+    _ev, _fs, pm, re, _cm = _install(str(tmp_path))
+    R = _reflection('ref_card_rej', '主人是机器人', rein=2.5)
+    await re.asave_reflections('小天', [R])
+
+    card_entry = _persona_entry('card_001', '主人是人类', rein=0.0)
+    card_entry['source'] = 'character_card'
+    persona = {'master': {'facts': [card_entry]}}
+    await pm.asave_persona('小天', persona)
+
+    with patch.object(
+        pm, '_texts_may_contradict', return_value=True,
+    ), patch.object(
+        re, '_allm_call_promotion_merge',
+        AsyncMock(return_value={'action': 'promote_fresh'}),
+    ):
+        outcome = await re._apromote_with_merge('小天', R)
+
+    assert outcome == 'reject_by_persona'
+    rstate = next(
+        r for r in await re._aload_reflections_full('小天')
+        if r['id'] == 'ref_card_rej'
+    )
+    assert rstate['status'] == 'denied'

@@ -12,7 +12,6 @@ Covers:
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -46,9 +45,12 @@ def test_heuristic_fallback_warns_once(caplog, monkeypatch):
     """RFC §3.6.6: when tiktoken can't load the encoding, we log a warning
     EXACTLY ONCE per process and then silently fall back to the heuristic
     counter on every subsequent call."""
-    import utils.tokenize as tok
+    from utils.tokenize import (
+        _reset_fallback_warned_for_tests,
+        count_tokens,
+    )
 
-    tok._reset_fallback_warned_for_tests()
+    _reset_fallback_warned_for_tests()
 
     # Force tiktoken.get_encoding to raise so _get_encoder hits the
     # heuristic path on every call.
@@ -60,9 +62,9 @@ def test_heuristic_fallback_warns_once(caplog, monkeypatch):
     monkeypatch.setitem(__import__('sys').modules, 'tiktoken', fake_tiktoken)
 
     with caplog.at_level(logging.WARNING, logger='utils.tokenize'):
-        n1 = tok.count_tokens("测试 hello")
-        n2 = tok.count_tokens("again 测试")
-        n3 = tok.count_tokens("more 中文 tokens")
+        n1 = count_tokens("测试 hello")
+        n2 = count_tokens("again 测试")
+        n3 = count_tokens("more 中文 tokens")
 
     assert n1 > 0 and n2 > 0 and n3 > 0
     warnings = [
@@ -74,7 +76,44 @@ def test_heuristic_fallback_warns_once(caplog, monkeypatch):
     )
 
     # Reset for any downstream test in the same process.
-    tok._reset_fallback_warned_for_tests()
+    _reset_fallback_warned_for_tests()
+
+
+def test_heuristic_floor_for_short_non_empty_text(monkeypatch):
+    """Coderabbit Major: int() truncated short non-empty strings to 0
+    (e.g. "ok" → int(0.5) → 0). Score-trim treats a 0-token entry as
+    free and bypasses the budget. The fix is a max(1, ...) clamp on
+    non-empty input. Empty stays 0 — short-circuited at the caller.
+    """
+    from utils.tokenize import (
+        _count_tokens_heuristic,
+        _reset_fallback_warned_for_tests,
+        count_tokens,
+    )
+
+    _reset_fallback_warned_for_tests()
+
+    # Direct heuristic call (bypasses tiktoken entirely)
+    assert _count_tokens_heuristic("ok") >= 1, (
+        "short latin text must count as at least 1 token, never 0"
+    )
+    assert _count_tokens_heuristic("a") >= 1
+    assert _count_tokens_heuristic("") == 0, (
+        "empty string is the only legitimate 0 — caller short-circuits"
+    )
+
+    # End-to-end via count_tokens with tiktoken forced unavailable.
+    def _broken(*_a, **_kw):
+        raise RuntimeError("force heuristic")
+
+    fake_tiktoken = MagicMock()
+    fake_tiktoken.get_encoding.side_effect = _broken
+    monkeypatch.setitem(__import__('sys').modules, 'tiktoken', fake_tiktoken)
+    _reset_fallback_warned_for_tests()
+
+    assert count_tokens("ok") >= 1
+    assert count_tokens("") == 0
+    _reset_fallback_warned_for_tests()
 
 
 # ── PersonaManager._score_trim_entries ─────────────────────────────
@@ -183,6 +222,30 @@ async def test_split_excludes_protected_from_trim_pool(tmp_path):
     protected, by_entity = pm._split_persona_for_render(persona)
     assert [(ek, e['id']) for ek, e in protected] == [('master', 'card_1')]
     assert {e['id'] for e in by_entity['master']} == {'m1', 'm2'}
+
+
+def test_split_promotes_legacy_string_facts(tmp_path):
+    """Codex P1: pre-PR-1 persona files sometimes stored facts as bare
+    strings. The pre-PR-3 render path emitted them via
+    `_render_fact_entries`'s `elif entry: lines.append(...)` branch.
+    PR-3's `_split_persona_for_render` would silently drop them; we
+    normalize ad-hoc here so legacy memories still appear in prompts.
+    """
+    pm = _persona_manager()
+    persona = {
+        'master': {'facts': [
+            _entry('m1', 'normal dict entry', rein=1.0),
+            "legacy string fact about master",  # bare string, no schema
+        ]},
+    }
+    protected, by_entity = pm._split_persona_for_render(persona)
+    assert protected == []
+    texts = {e.get('text', '') for e in by_entity.get('master', [])}
+    assert 'normal dict entry' in texts
+    assert 'legacy string fact about master' in texts, (
+        "string facts must be promoted to ad-hoc dicts so they keep "
+        "rendering — pre-PR-3 behaviour"
+    )
 
 
 @pytest.mark.asyncio
