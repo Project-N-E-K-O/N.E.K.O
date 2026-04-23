@@ -1427,8 +1427,12 @@ class ConfigManager:
             )
             return
 
+        # 分项计数便于运维排查"到底为什么没迁"。隐藏/下划线前缀、未关联角色
+        # 这两类 skip 是正常 no-op，不单独计数。
         migrated_count = 0
-        skipped_count = 0
+        target_exists_count = 0  # runtime 已存在同名目录，保留 legacy 副本
+        non_dir_count = 0  # 命中角色名但条目不是目录（反常，需关注）
+        failed_count = 0  # copytree/rename 失败
 
         # 日志脱敏策略：所有 self._log 绝不包含完整 legacy 路径 / 角色目录名 /
         # 用户 Documents 路径，只打 root 序号 + 计数 + 条目类型。这些日志可能
@@ -1471,6 +1475,7 @@ class ConfigManager:
                     # runtime 角色记忆期望是目录结构（memory_dir/{name}/time_indexed.db
                     # 等）；同名普通文件会占位并阻断后续写入，必须跳过。
                     if not entry.is_dir():
+                        non_dir_count += 1
                         self._log(
                             f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
                             f"命中角色名的条目不是目录（类型异常），跳过自动软迁移"
@@ -1479,7 +1484,7 @@ class ConfigManager:
 
                     target = self.memory_dir / entry_name
                     if target.exists():
-                        skipped_count += 1
+                        target_exists_count += 1
                         self._log(
                             f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
                             f"目标已存在于 runtime，保留 legacy 副本避免覆盖"
@@ -1491,7 +1496,11 @@ class ConfigManager:
                     temp_target = target.parent / f".{entry_name}.migrating-{uuid.uuid4().hex}"
                     try:
                         target.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copytree(str(entry), str(temp_target), symlinks=True)
+                        # symlinks=False：跟随 legacy 源里的软链，把实际内容拷到
+                        # runtime。若保留软链（symlinks=True），legacy 里用户手动
+                        # 创建的、指向 memory_dir 外部的链接会让 runtime 的
+                        # memory_dir/{name}/time_indexed.db 写入逃出边界。
+                        shutil.copytree(str(entry), str(temp_target), symlinks=False)
                         os.replace(str(temp_target), str(target))
                         try:
                             shutil.rmtree(str(entry))
@@ -1506,6 +1515,7 @@ class ConfigManager:
                             f"已迁移 1 个条目到 runtime"
                         )
                     except Exception as exc:
+                        failed_count += 1
                         # 清理可能残留的临时目录/文件，避免下次启动误判
                         try:
                             if temp_target.exists():
@@ -1520,15 +1530,19 @@ class ConfigManager:
                             f"迁移条目失败: {exc}"
                         )
                 except Exception as exc:
+                    failed_count += 1
                     self._log(
                         f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
                         f"处理条目时出错: {exc}"
                     )
 
-        if migrated_count or skipped_count:
+        if migrated_count or target_exists_count or non_dir_count or failed_count:
             self._log(
-                f"[ConfigManager] legacy memory 软迁移汇总: 迁移 {migrated_count} 个, "
-                f"跳过 {skipped_count} 个（runtime 已存在同名）"
+                f"[ConfigManager] legacy memory 软迁移汇总: "
+                f"迁移 {migrated_count} 个, "
+                f"目标已存在跳过 {target_exists_count} 个, "
+                f"非目录跳过 {non_dir_count} 个, "
+                f"失败 {failed_count} 个"
             )
     
     # --- Character configuration helpers ---

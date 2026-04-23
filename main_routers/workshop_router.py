@@ -1736,10 +1736,27 @@ def _collect_character_names_by_workshop_item_id(config_mgr, item_id: int) -> li
         )
         return []
 
+    # characters.json 是用户可写文件，根对象或 猫娘 字段被写成 list/string 时
+    # 直接 .get() / .items() 会抛异常，把退订流程打成 500。这里受控降级。
+    if not isinstance(characters, dict):
+        logger.warning(
+            "_collect_character_names_by_workshop_item_id: "
+            f"characters.json 根对象不是 dict（{type(characters).__name__}），跳过反查"
+        )
+        return []
+    catgirl_map = characters.get('猫娘')
+    if not isinstance(catgirl_map, dict):
+        if catgirl_map is not None:
+            logger.warning(
+                "_collect_character_names_by_workshop_item_id: "
+                f"characters.json 的 猫娘 字段不是 dict（{type(catgirl_map).__name__}），跳过反查"
+            )
+        return []
+
     target_id = str(item_id)
     names: list[str] = []
     seen: set[str] = set()
-    for name, payload in (characters.get('猫娘') or {}).items():
+    for name, payload in catgirl_map.items():
         if not isinstance(payload, dict):
             continue
         source = str(
@@ -1920,6 +1937,14 @@ async def unsubscribe_workshop_item(request: Request):
         except Exception as exc:
             logger.warning(f"取消订阅前读取 characters.json 失败: {exc}")
             current_characters = await asyncio.to_thread(config_mgr.load_characters)
+        # characters.json 根对象若被写成 list/string，.get() 会抛 AttributeError；
+        # 受控降级为空 dict 并继续，候选角色为空时前置校验自然 no-op。
+        if not isinstance(current_characters, dict):
+            logger.warning(
+                f"取消订阅: characters.json 根对象不是 dict"
+                f"（{type(current_characters).__name__}），按空配置处理"
+            )
+            current_characters = {}
         current_catgirl = str(current_characters.get('当前猫娘', '') or '')
         if current_catgirl and current_catgirl in candidate_names:
             logger.warning(
@@ -2031,6 +2056,24 @@ async def unsubscribe_workshop_item(request: Request):
                 }, status_code=500)
 
             characters_mut = await config_mgr.aload_characters()
+            # 同步清理会对 characters_mut['猫娘'] 做 del；根对象或 猫娘 字段
+            # 结构异常时直接按 LOCAL_CONFIG_CLEANUP_FAILED 中止，避免
+            # TypeError/AttributeError 把退订流程打成 500。
+            if (
+                not isinstance(characters_mut, dict)
+                or not isinstance(characters_mut.get('猫娘'), dict)
+            ):
+                logger.error(
+                    f"取消订阅同步清理被阻止: characters.json 结构无效 "
+                    f"(root={type(characters_mut).__name__}, "
+                    f"猫娘={type(characters_mut.get('猫娘')).__name__ if isinstance(characters_mut, dict) else 'N/A'})"
+                )
+                return JSONResponse({
+                    "success": False,
+                    "code": "LOCAL_CONFIG_CLEANUP_FAILED",
+                    "error": "本地角色配置结构无效，已取消本次 Steam 退订请求，请修复 characters.json 后重试。",
+                    "cleanup_summary": cleanup_summary,
+                }, status_code=500)
             current_catgirl_now = str(characters_mut.get('当前猫娘', '') or '')
             # 二次校验：前置校验后、同步清理前用户可能切到候选角色；此时
             # 仅 `continue` 会跳过角色删除但仍执行 UnsubscribeItem + 删除订阅
@@ -2233,16 +2276,29 @@ async def unsubscribe_workshop_item(request: Request):
         cleanup_event = threading.Event()
         cleanup_claim_lock = threading.Lock()
 
+        # cleanup_claim_lock 含义变更：现在只保护 "是否正在执行" 判定，
+        # cleanup_event 只在 **确认成功** 后 set，避免删除失败时把 5 秒延迟
+        # 兜底门闩锁死（rmtree ignore_errors 吞掉异常 / 目录仍存在 / 抛出
+        # 异常的三种失败路径都必须允许后续重试）。
+        cleanup_in_progress = threading.Event()
+
         def perform_cleanup(item_id: int):
             """
-            回调/延迟兜底共用的订阅文件夹删除。幂等：cleanup_event 保证只跑
-            一次。角色卡/记忆已由 handler 同步路径处理，这里不再重复。
+            回调/延迟兜底共用的订阅文件夹删除。幂等：
+              - cleanup_event.is_set() → 已成功过一次，直接跳过
+              - cleanup_in_progress 未设 → 抢占执行权，结束后清除
+              - cleanup_in_progress 已设 → 另一路径在跑，避免并发 rmtree 同目录
+            只有真正确认目录已不存在时才 set(cleanup_event)；失败路径仅清除
+            in_progress，让 5 秒延迟兜底仍可重试。
             """
             with cleanup_claim_lock:
                 if cleanup_event.is_set():
-                    logger.debug(f"perform_cleanup({item_id}): 已执行过，跳过（幂等）")
+                    logger.debug(f"perform_cleanup({item_id}): 已成功过，跳过（幂等）")
                     return False
-                cleanup_event.set()
+                if cleanup_in_progress.is_set():
+                    logger.debug(f"perform_cleanup({item_id}): 已有并发清理在跑，跳过")
+                    return False
+                cleanup_in_progress.set()
 
             try:
                 import shutil
@@ -2251,26 +2307,37 @@ async def unsubscribe_workshop_item(request: Request):
                     get_steamworks(), item_id
                 ) or pre_item_path
                 if final_item_path and os.path.isdir(final_item_path):
-                    shutil.rmtree(final_item_path, ignore_errors=True)
+                    try:
+                        shutil.rmtree(final_item_path, ignore_errors=True)
+                    except Exception as rmtree_exc:
+                        # ignore_errors=True 通常不会外抛，但兜底一下
+                        logger.error(
+                            f"perform_cleanup({item_id}): rmtree 抛异常: {rmtree_exc}",
+                            exc_info=True,
+                        )
                     if os.path.exists(final_item_path):
                         logger.warning(
                             f"perform_cleanup({item_id}): 订阅文件夹仍存在（可能被占用）: {final_item_path}"
                         )
-                    else:
-                        logger.info(
-                            f"perform_cleanup({item_id}): 已删除订阅文件夹 {final_item_path}"
-                        )
+                        return False  # 未成功 → 不 set cleanup_event，留给延迟兜底重试
+                    logger.info(
+                        f"perform_cleanup({item_id}): 已删除订阅文件夹 {final_item_path}"
+                    )
                 else:
                     logger.debug(
-                        f"perform_cleanup({item_id}): 订阅文件夹已不存在，跳过删除"
+                        f"perform_cleanup({item_id}): 订阅文件夹已不存在，视为成功"
                     )
+                # 只有走到这里（目录确认不存在）才锁死 cleanup_event
+                cleanup_event.set()
+                return True
             except Exception as exc:
                 logger.error(
                     f"perform_cleanup({item_id}): 删除订阅文件夹时出错: {exc}",
                     exc_info=True,
                 )
                 return False
-            return True
+            finally:
+                cleanup_in_progress.clear()
 
         def unsubscribe_callback(result):
             """Steamworks UnsubscribeItem 的回调（在 Steam 回调线程中执行）。"""
@@ -2321,11 +2388,22 @@ async def unsubscribe_workshop_item(request: Request):
             cleanup_thread.start()
 
         except Exception as e:
-            logger.error(f"调用 UnsubscribeItem 失败: {e}")
-            # 如果设置回调失败，立即尝试执行一次清理（幂等）
-            logger.warning("UnsubscribeItem 调用失败，立即执行备用清理")
-            perform_cleanup(item_id_int)
-            raise
+            # UnsubscribeItem 调用失败 = Steam 退订请求根本没发出 / 没被接受。
+            # 此时不能再 perform_cleanup：用户仍处于订阅状态，删本地文件夹会
+            # 让他保持订阅却丢失本地 Workshop 文件（下次 Steam 会再下载一遍）。
+            # 同步阶段已经删了的 characters.json / memory 无法回滚，但至少
+            # 订阅-文件夹状态保持一致，由用户手动处理后续。
+            logger.error(
+                f"调用 UnsubscribeItem 失败: {e}，已保留本地 Workshop 文件夹，"
+                f"不执行备用清理",
+                exc_info=True,
+            )
+            return JSONResponse({
+                "success": False,
+                "code": "STEAM_UNSUBSCRIBE_FAILED",
+                "error": f"Steam 退订请求发送失败: {e}",
+                "cleanup_summary": cleanup_summary,
+            }, status_code=500)
 
         logger.info(f"取消订阅请求已被接受，正在处理: {item_id_int}")
         return {
