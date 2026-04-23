@@ -827,6 +827,13 @@ EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES = 5           # 或空闲 N 分钟触发
 EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS = 40      # 轮询间隔（与 IDLE_CHECK_INTERVAL 对齐）
 EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS = 200   # Stage-2 prompt 带入的 existing 上限
 
+# §3.5 / §6.5 Gate 4：归档扫描背景循环间隔
+# 1 小时一次：sub_zero_days 计数本身按"自然日"防抖（每天最多 +1），
+# 所以扫描频率 ≥ 一天即可保证不漏；选 1h 是为了让"score 跌穿 0 当天"
+# 也能尽快被抓住而非等到次日 00:00。低频远低于 evidence 信号循环
+# (40s)，对 IO/CPU 影响可以忽略。
+EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS = 3600
+
 # §3.6 render budget（PR-3 使用，此处先占位）
 PERSONA_RENDER_TOKEN_BUDGET = 2000       # 非-protected persona 预算
 REFLECTION_RENDER_TOKEN_BUDGET = 1000    # reflection 渲染预算
@@ -993,6 +1000,7 @@ __all__ = [
     'EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES',
     'EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS',
     'EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS',
+    'EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS',
     'PERSONA_RENDER_TOKEN_BUDGET',
     'REFLECTION_RENDER_TOKEN_BUDGET',
     'PERSONA_RENDER_ENCODING',
