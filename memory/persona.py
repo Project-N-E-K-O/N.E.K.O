@@ -584,26 +584,61 @@ class PersonaManager:
         )
 
     def save_persona(self, name: str, persona: dict | None = None) -> None:
+        """Persist persona to disk; on failure evict the cached entry.
+
+        Round-7 Major (CodeRabbit PR #936): the cache assignment
+        happens BEFORE the save step, so any exception from
+        `assert_cloudsave_writable` (cloudsave flipped to read-only)
+        OR `atomic_write_json` (disk full / IO error) would otherwise
+        leave `self._personas[name]` polluted with state that never
+        landed on disk. Subsequent in-process reads (incl. sibling
+        async writers via the shared cache) would serve the stale
+        view until restart.
+
+        Mirrors the eviction-on-save-failure invariant already
+        enforced by `_sync_save_persona_view` (round-5/6 fixes) but
+        for the non-event-sourced public save paths used by
+        `add_fact`, `ensure_persona`'s character-card sync, and
+        manual save callers. Same try/except wraps both the
+        cloudsave gate and the atomic write so both failure modes
+        evict uniformly.
+        """
         if persona is None:
             persona = self._personas.get(name, self._empty_persona())
         self._personas[name] = persona
-        assert_cloudsave_writable(
-            self._config_manager,
-            operation="save",
-            target=f"memory/{name}/persona.json",
-        )
-        atomic_write_json(self._persona_path(name), persona, indent=2, ensure_ascii=False)
+        try:
+            assert_cloudsave_writable(
+                self._config_manager,
+                operation="save",
+                target=f"memory/{name}/persona.json",
+            )
+            atomic_write_json(
+                self._persona_path(name), persona, indent=2, ensure_ascii=False,
+            )
+        except Exception:
+            # Evict the polluted cache entry — next ensure/aensure
+            # reload re-reads the (unchanged) on-disk state.
+            self._personas.pop(name, None)
+            raise
 
     async def asave_persona(self, name: str, persona: dict | None = None) -> None:
+        """Async twin of `save_persona` with the same eviction-on-failure
+        contract (round-7 Major, CodeRabbit PR #936)."""
         if persona is None:
             persona = self._personas.get(name, self._empty_persona())
         self._personas[name] = persona
-        assert_cloudsave_writable(
-            self._config_manager,
-            operation="save",
-            target=f"memory/{name}/persona.json",
-        )
-        await atomic_write_json_async(self._persona_path(name), persona, indent=2, ensure_ascii=False)
+        try:
+            assert_cloudsave_writable(
+                self._config_manager,
+                operation="save",
+                target=f"memory/{name}/persona.json",
+            )
+            await atomic_write_json_async(
+                self._persona_path(name), persona, indent=2, ensure_ascii=False,
+            )
+        except Exception:
+            self._personas.pop(name, None)
+            raise
 
     def get_persona(self, name: str) -> dict:
         return self.ensure_persona(name)
