@@ -168,7 +168,8 @@ class PersonaManager:
         still sits at the pre-event state. Subsequent in-process reads
         would serve polluted state.
 
-        Fix: on atomic_write failure, evict the polluted entry from
+        Fix: on ANY save-step failure (cloudsave gate raise OR
+        atomic_write raise), evict the polluted entry from
         `self._personas`. Next access goes through
         `_aensure_persona_locked` which re-reads from disk — the
         pre-event view. The event is already in the log (append runs
@@ -176,17 +177,28 @@ class PersonaManager:
         replay on next boot restores the mutation correctly. The
         exception propagates so the caller sees the failure.
 
+        Why both calls share one try (CodeRabbit PR #936 round-6
+        Major #1): `_sync_mutate_view` has already mutated the cached
+        entry IN PLACE before this helper runs. If
+        `assert_cloudsave_writable` raises (cloudsave flipped to
+        read-only mid-flight) AFTER mutate but BEFORE atomic_write,
+        the polluted cache lingers exactly the same way an
+        atomic_write failure would. Wrapping both calls under the
+        same evict-on-raise block keeps the "any save-step failure
+        ⇒ cache evicted" invariant uniform — no corner where one
+        failure mode leaves polluted memory state.
+
         The cache assignment AFTER atomic_write succeeds is a no-op in
         the common case (view IS self._personas[n]) but kept explicit
         for the rare initialization-race where a concurrent reload may
         have replaced the entry.
         """
-        assert_cloudsave_writable(
-            self._config_manager,
-            operation="save",
-            target=f"memory/{n}/persona.json",
-        )
         try:
+            assert_cloudsave_writable(
+                self._config_manager,
+                operation="save",
+                target=f"memory/{n}/persona.json",
+            )
             atomic_write_json(
                 self._persona_path(n), view, indent=2, ensure_ascii=False,
             )
@@ -880,7 +892,7 @@ class PersonaManager:
     async def amerge_into(
         self, name: str, target_entry_id: str, merged_text: str,
         *,
-        merged_reinforcement: float, merged_disputation: float,
+        reflection_evidence: dict,
         source_reflection_id: str,
         merged_from_ids: list[str] | None = None,
     ) -> str:
@@ -921,6 +933,20 @@ class PersonaManager:
         event_id is idempotent on the reconciler side (sha256 matches →
         no-op).
 
+        Evidence aggregation (CodeRabbit PR #936 round-6 Major #2):
+        callers MUST pass `reflection_evidence={'reinforcement': ...,
+        'disputation': ...}` carrying the source reflection's own
+        evidence values; the conservative max-rule against the target's
+        CURRENT evidence is computed HERE under the per-character lock.
+        The previous signature took pre-computed `merged_reinforcement`
+        / `merged_disputation` from the caller, which forced the caller
+        to snapshot the target outside the lock. A concurrent
+        `aapply_signal` (or another merge) on the same entry between
+        the snapshot and `amerge_into` would produce stale "max"
+        values, and writing them here effectively rolled the newer
+        signal back. Computing under the lock guarantees the merge
+        consumes the freshest target state.
+
         Returns: 'merged' on success, 'noop' if already merged, 'not_found'
         if `target_entry_id` is missing from the persona.
         """
@@ -929,6 +955,7 @@ class PersonaManager:
             EVT_PERSONA_EVIDENCE_UPDATED,
             EVIDENCE_SOURCE_PROMOTE_MERGE,
         )
+        from memory.reflection import ReflectionEngine
         if self._event_log is None:
             raise RuntimeError(
                 "[Persona.amerge_into] event_log 未注入；"
@@ -946,6 +973,15 @@ class PersonaManager:
                     f"{target_entry_id}"
                 )
                 return 'not_found'
+
+            # Compute merged evidence UNDER THE LOCK against the
+            # currently-locked target entry — see "Evidence aggregation"
+            # block in docstring for the rollback hazard this prevents.
+            merged_reinforcement, merged_disputation = (
+                ReflectionEngine._compute_merged_evidence(
+                    target_entry, reflection_evidence or {},
+                )
+            )
 
             # Normalize the id we put in event payloads + log lines to the
             # canonical bare form stored on disk. `_find_entry_with_section`

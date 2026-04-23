@@ -132,7 +132,7 @@ async def test_amerge_into_emits_two_events_and_writes_view(tmp_path):
 
     result = await pm.amerge_into(
         '小天', 'p_001', 'merged new text',
-        merged_reinforcement=2.5, merged_disputation=0.0,
+        reflection_evidence={'reinforcement': 2.5, 'disputation': 0.0},
         source_reflection_id='ref_xyz', merged_from_ids=['ref_xyz'],
     )
     assert result == 'merged'
@@ -140,6 +140,7 @@ async def test_amerge_into_emits_two_events_and_writes_view(tmp_path):
     persona_reloaded = await pm.aget_persona('小天')
     entry = persona_reloaded['master']['facts'][0]
     assert entry['text'] == 'merged new text'
+    # target.rein=1.0, reflection.rein=2.5 → max=2.5 (computed under lock)
     assert entry['reinforcement'] == 2.5
     assert entry['merged_from_ids'] == ['ref_xyz']
 
@@ -169,13 +170,13 @@ async def test_amerge_into_idempotent_on_repeat(tmp_path):
 
     r1 = await pm.amerge_into(
         '小天', 'p_001', 'first merge',
-        merged_reinforcement=2.0, merged_disputation=0.0,
+        reflection_evidence={'reinforcement': 2.0, 'disputation': 0.0},
         source_reflection_id='ref_a', merged_from_ids=['ref_a'],
     )
     assert r1 == 'merged'
     r2 = await pm.amerge_into(
         '小天', 'p_001', 'second attempt — must be ignored',
-        merged_reinforcement=99.0, merged_disputation=99.0,
+        reflection_evidence={'reinforcement': 99.0, 'disputation': 99.0},
         source_reflection_id='ref_a', merged_from_ids=['ref_a'],
     )
     assert r2 == 'noop'
@@ -226,7 +227,7 @@ async def test_amerge_into_unknown_target_returns_not_found(tmp_path):
 
     result = await pm.amerge_into(
         '小天', 'never_existed', 'text',
-        merged_reinforcement=1.0, merged_disputation=0.0,
+        reflection_evidence={'reinforcement': 1.0, 'disputation': 0.0},
         source_reflection_id='ref_zzz', merged_from_ids=[],
     )
     assert result == 'not_found'
@@ -251,7 +252,7 @@ async def test_amerge_into_event_payload_uses_bare_id_for_both_forms(tmp_path):
         await pm.asave_persona('小天', persona)
         result = await pm.amerge_into(
             '小天', target_id, f'merged via {target_id}',
-            merged_reinforcement=2.0, merged_disputation=0.0,
+            reflection_evidence={'reinforcement': 2.0, 'disputation': 0.0},
             source_reflection_id=src_rid, merged_from_ids=[src_rid],
         )
         assert result == 'merged', f"merge with {target_id!r} should succeed"
@@ -590,7 +591,7 @@ async def test_persona_entry_updated_replay_idempotent(tmp_path):
     await pm.asave_persona('小天', persona)
     await pm.amerge_into(
         '小天', 'p_001', 'merged target text',
-        merged_reinforcement=2.5, merged_disputation=0.0,
+        reflection_evidence={'reinforcement': 2.5, 'disputation': 0.0},
         source_reflection_id='ref_a', merged_from_ids=['ref_a'],
     )
 
@@ -905,7 +906,7 @@ async def test_amerge_into_always_records_source_reflection_id(tmp_path):
     # Caller passes a non-empty list that OMITS source_reflection_id.
     r1 = await pm.amerge_into(
         '小天', 'p_001', 'first merge',
-        merged_reinforcement=2.0, merged_disputation=0.0,
+        reflection_evidence={'reinforcement': 2.0, 'disputation': 0.0},
         source_reflection_id='ref_A',
         merged_from_ids=['ref_B'],  # peer in the merge group — NOT ref_A
     )
@@ -922,7 +923,7 @@ async def test_amerge_into_always_records_source_reflection_id(tmp_path):
     # Retry with the same source_reflection_id must now be a no-op.
     r2 = await pm.amerge_into(
         '小天', 'p_001', 'second merge — should be ignored',
-        merged_reinforcement=99.0, merged_disputation=99.0,
+        reflection_evidence={'reinforcement': 99.0, 'disputation': 99.0},
         source_reflection_id='ref_A',
         merged_from_ids=['ref_B'],
     )
@@ -962,7 +963,7 @@ async def test_amerge_into_evidence_updated_first_then_entry_updated(tmp_path):
 
     result = await pm.amerge_into(
         '小天', 'p_001', 'merged text',
-        merged_reinforcement=3.0, merged_disputation=0.0,
+        reflection_evidence={'reinforcement': 3.0, 'disputation': 0.0},
         source_reflection_id='ref_abc', merged_from_ids=['ref_abc'],
     )
     assert result == 'merged'
@@ -1022,7 +1023,7 @@ async def test_amerge_into_retries_both_events_when_crashed_mid_flight(
     with pytest.raises(RuntimeError, match='simulated crash'):
         await pm.amerge_into(
             '小天', 'p_001', 'merged text',
-            merged_reinforcement=3.0, merged_disputation=0.0,
+            reflection_evidence={'reinforcement': 3.0, 'disputation': 0.0},
             source_reflection_id='ref_crash', merged_from_ids=['ref_crash'],
         )
 
@@ -1046,7 +1047,7 @@ async def test_amerge_into_retries_both_events_when_crashed_mid_flight(
 
     result = await pm.amerge_into(
         '小天', 'p_001', 'merged text',
-        merged_reinforcement=3.0, merged_disputation=0.0,
+        reflection_evidence={'reinforcement': 3.0, 'disputation': 0.0},
         source_reflection_id='ref_crash', merged_from_ids=['ref_crash'],
     )
     assert result == 'merged', (
@@ -1148,3 +1149,161 @@ async def test_concurrent_promote_only_records_one_attempt(tmp_path):
         f"retry counter to {rstate['promote_attempt_count']} "
         f"(round-5 Major #3 regression). Expected 1."
     )
+
+
+# ── Round-6 regressions (PR #936) ─────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_amerge_into_aggregates_evidence_under_lock_against_freshest_target(
+    tmp_path,
+):
+    """Round-6 Major #2 (CodeRabbit reflection.py:2158): the merge's
+    conservative max-rule for evidence MUST run inside `amerge_into`
+    under the per-character lock, against the CURRENTLY locked target
+    entry — NOT against a stale snapshot taken outside the lock.
+
+    Hazard: previously the caller (`_apromote_with_merge`) snapshotted
+    the target via `aget_persona`, computed `max(target.rein,
+    R.rein)` outside the lock, and passed the result as
+    `merged_reinforcement`. If a concurrent `aapply_signal` (or
+    another merge) bumped the same entry's rein between the snapshot
+    and the `amerge_into` call, the merge would write back the stale
+    max — effectively rolling the newer signal back.
+
+    The fix changes the contract: callers pass `reflection_evidence`
+    (the source reflection's own evidence) and `amerge_into` computes
+    `max(target_locked.rein, reflection.rein)` itself under the lock.
+
+    This test simulates the race: persona target starts at rein=1.0,
+    a "concurrent" coroutine bumps it to 5.0, THEN the merge runs
+    with reflection_evidence={'rein': 2.0}. Final entry rein must be
+    max(5.0, 2.0) = 5.0, NOT max(1.0, 2.0) = 2.0.
+    """
+    _ev, _fs, pm, _re, _cm = _install(str(tmp_path))
+    persona = {
+        'master': {'facts': [_persona_entry('p_001', 'orig', rein=1.0)]},
+    }
+    await pm.asave_persona('小天', persona)
+
+    # Simulate: a concurrent aapply_signal (or another agent) bumped
+    # the target's rein to 5.0 just before our merge takes the lock.
+    # In real life this is a separate coroutine; here we just mutate
+    # the persisted view + cache to mirror the race outcome.
+    bumped = await pm.aget_persona('小天')
+    bumped['master']['facts'][0]['reinforcement'] = 5.0
+    await pm.asave_persona('小天', bumped)
+
+    # Now the merge runs. With the OLD signature the caller would pass
+    # `merged_reinforcement=max(1.0, 2.0)=2.0` (stale snapshot) and
+    # the merge would clobber rein from 5.0 → 2.0 — a rollback. With
+    # the new signature, amerge_into computes max(target_locked=5.0,
+    # reflection=2.0)=5.0 inside the lock, preserving the bump.
+    result = await pm.amerge_into(
+        '小天', 'p_001', 'merged text',
+        reflection_evidence={'reinforcement': 2.0, 'disputation': 0.0},
+        source_reflection_id='ref_race', merged_from_ids=['ref_race'],
+    )
+    assert result == 'merged'
+
+    entry = (await pm.aget_persona('小天'))['master']['facts'][0]
+    assert entry['reinforcement'] == 5.0, (
+        f"merge clobbered the concurrently-bumped rein (round-6 Major "
+        f"#2 regression): expected max(target_locked=5.0, R.rein=2.0)="
+        f"5.0, got {entry['reinforcement']}. The conservative max-rule "
+        f"must run under the persona lock against the freshest target, "
+        f"not a snapshot taken before the lock was acquired."
+    )
+    # Sanity: the text rewrite still happened (merge succeeded fully).
+    assert entry['text'] == 'merged text'
+    assert entry['merged_from_ids'] == ['ref_race']
+
+
+@pytest.mark.asyncio
+async def test_amerge_into_disputation_also_under_lock(tmp_path):
+    """Round-6 Major #2 symmetry: same guarantee for disputation.
+    Target's disp gets bumped concurrently; merge with a smaller R.disp
+    must NOT roll back the concurrent bump.
+    """
+    _ev, _fs, pm, _re, _cm = _install(str(tmp_path))
+    persona = {
+        'master': {
+            'facts': [_persona_entry('p_001', 'orig', rein=2.0, disp=0.5)],
+        },
+    }
+    await pm.asave_persona('小天', persona)
+
+    bumped = await pm.aget_persona('小天')
+    bumped['master']['facts'][0]['disputation'] = 3.0
+    await pm.asave_persona('小天', bumped)
+
+    result = await pm.amerge_into(
+        '小天', 'p_001', 'merged with low disp',
+        reflection_evidence={'reinforcement': 2.0, 'disputation': 0.5},
+        source_reflection_id='ref_disp', merged_from_ids=['ref_disp'],
+    )
+    assert result == 'merged'
+
+    entry = (await pm.aget_persona('小天'))['master']['facts'][0]
+    assert entry['disputation'] == 3.0, (
+        f"merge clobbered concurrently-bumped disp (round-6 Major #2): "
+        f"expected max(3.0, 0.5)=3.0, got {entry['disputation']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_apromote_with_merge_passes_reflection_evidence_not_precomputed_max(
+    tmp_path,
+):
+    """Round-6 Major #2 contract check: `_apromote_with_merge` must
+    pass the reflection's RAW evidence values (not a pre-computed
+    max) to `amerge_into`. Regression target: a future refactor
+    re-introducing pre-lock max computation would silently restore
+    the rollback hazard. Spy on amerge_into to assert the kwargs.
+    """
+    _ev, _fs, pm, re, _cm = _install(str(tmp_path))
+
+    persona = {
+        'master': {'facts': [_persona_entry('p_001', 'orig', rein=4.0)]},
+    }
+    await pm.asave_persona('小天', persona)
+    R = _reflection('ref_contract', 'merge me', rein=2.5, disp=0.0)
+    await re.asave_reflections('小天', [R])
+
+    captured = {}
+    real_amerge = pm.amerge_into
+
+    async def _spy(name, target_id, merged_text, **kwargs):
+        captured.update(kwargs)
+        return await real_amerge(name, target_id, merged_text, **kwargs)
+
+    with patch.object(re, '_allm_call_promotion_merge',
+                      AsyncMock(return_value={
+                          'action': 'merge_into',
+                          'target_id': 'persona.master.p_001',
+                          'merged_text': 'merged via spy',
+                      })):
+        with patch.object(pm, 'amerge_into', side_effect=_spy):
+            outcome = await re._apromote_with_merge('小天', dict(R))
+
+    assert outcome == 'merge_into'
+    # The contract: kwargs MUST carry `reflection_evidence` with the
+    # reflection's raw values, NOT `merged_reinforcement` /
+    # `merged_disputation` (the deprecated pre-lock-computed form).
+    assert 'reflection_evidence' in captured, (
+        "_apromote_with_merge must pass reflection_evidence kwarg "
+        "(round-6 Major #2 contract); old keys merged_reinforcement/"
+        "merged_disputation re-introduce the rollback hazard"
+    )
+    assert 'merged_reinforcement' not in captured
+    assert 'merged_disputation' not in captured
+    rev = captured['reflection_evidence']
+    assert rev.get('reinforcement') == 2.5, (
+        f"reflection_evidence.reinforcement must be the reflection's "
+        f"raw rein (2.5), not max(target=4.0, R=2.5)=4.0; got {rev!r}"
+    )
+    assert rev.get('disputation') == 0.0
+    # And the on-disk result reflects max(target=4.0, R=2.5)=4.0
+    # (target wins), proving the lock-side compute happened.
+    entry = (await pm.aget_persona('小天'))['master']['facts'][0]
+    assert entry['reinforcement'] == 4.0

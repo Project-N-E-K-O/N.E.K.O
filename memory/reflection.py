@@ -2132,7 +2132,15 @@ class ReflectionEngine:
                 return 'invalid_target'
             target_entry_id = parts[2]
 
-            # Lookup the target entry to compute merged evidence
+            # Pre-flight existence check (under PersonaManager's read
+            # path). Note: the canonical re-lookup AND the conservative
+            # max-rule evidence aggregation now both happen INSIDE
+            # `amerge_into` under the per-character lock — see CodeRabbit
+            # PR #936 round-6 Major #2. We pass the reflection's own
+            # evidence values; `amerge_into` does the max() against the
+            # locked target entry's current evidence so a concurrent
+            # `aapply_signal` (or another merge) cannot be rolled back
+            # by a stale snapshot computed up here.
             persona_view2 = await self._persona_manager.aget_persona(lanlan_name)
             target_entity_key, target_entry = (
                 self._persona_manager._find_entry_with_section(
@@ -2146,13 +2154,12 @@ class ReflectionEngine:
                 )
                 return 'invalid_target'
 
-            merged_rein, merged_disp = self._compute_merged_evidence(
-                target_entry, R,
-            )
             merge_outcome = await self._persona_manager.amerge_into(
                 lanlan_name, target_entry_id, merged_text,
-                merged_reinforcement=merged_rein,
-                merged_disputation=merged_disp,
+                reflection_evidence={
+                    'reinforcement': float(R.get('reinforcement', 0.0) or 0.0),
+                    'disputation': float(R.get('disputation', 0.0) or 0.0),
+                },
                 source_reflection_id=R['id'],
                 merged_from_ids=[R['id']],
             )
