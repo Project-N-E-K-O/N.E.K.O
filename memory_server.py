@@ -26,6 +26,8 @@ import uvicorn
 from utils.llm_client import convert_to_messages
 from uuid import uuid4
 from config import (
+    EVIDENCE_ARCHIVE_DAYS,
+    EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS,
     EVIDENCE_NEGATIVE_TARGET_MODEL_TIER,
     EVIDENCE_SIGNAL_CHECK_ENABLED,
     EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS,
@@ -985,6 +987,163 @@ async def _aone_shot_migration_if_needed(lanlan_name: str) -> None:
     )
 
 
+# ── memory-evidence-rfc §3.5.5: one-shot archive migration ──────────
+
+
+async def _aone_shot_archive_migration_if_needed(lanlan_name: str) -> None:
+    """Migrate legacy flat ``reflections_archive.json`` → sharded directory.
+
+    Idempotent: a sentinel file inside the new dir guards re-runs.
+    Persona had no flat archive predecessor, so only reflection needs
+    migration here.
+    """
+    try:
+        await reflection_engine.aone_shot_archive_migration(lanlan_name)
+    except Exception as e:
+        # NEVER let archive migration block boot — RFC §3.5.5 explicitly
+        # allows the legacy file to remain as fallback if migration fails.
+        logger.warning(
+            f"[Migration] {lanlan_name}: 旧 reflections_archive 分片迁移失败 (非致命): {e}"
+        )
+
+
+# ── memory-evidence-rfc §3.5: periodic archive sweep ────────────────
+
+
+async def _periodic_archive_sweep_loop():
+    """Periodically scan all non-protected reflection / persona entries
+    and (a) bump `sub_zero_days` for those with `evidence_score < 0`
+    today, (b) move entries with `sub_zero_days >= EVIDENCE_ARCHIVE_DAYS`
+    into a sharded archive file.
+
+    Runs every `EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS`. The
+    `maybe_mark_sub_zero` helper has its own day-based debounce so a
+    sub-day cadence does not over-count (RFC §3.5.3).
+
+    Per-character iteration is parallel (`asyncio.gather`) — each
+    character has independent files + locks; one slow char must not
+    block another.
+    """
+    from memory.evidence import maybe_mark_sub_zero
+    while True:
+        await asyncio.sleep(EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS)
+        try:
+            character_data = await _config_manager.aload_characters()
+            catgirl_names = list(character_data.get('猫娘', {}).keys())
+        except Exception as e:
+            logger.debug(f"[ArchiveSweep] 加载角色列表失败: {e}")
+            continue
+
+        now = datetime.now()
+
+        async def _sweep_one(name: str):
+            """Scan one character's reflections + persona entries.
+
+            For each non-protected entry:
+              1. Snapshot-test `maybe_mark_sub_zero` (mutates a COPY so
+                 we don't dirty the cache; the real increment + event
+                 happen inside `aincrement_sub_zero` under the per-char
+                 lock).
+              2. Call `aincrement_sub_zero` if needed → returns the new
+                 count or None (no-op).
+              3. Determine the effective `sub_zero_days` for the archive
+                 check:
+                    - If we just incremented → use the returned count
+                    - Else → use the on-disk count from step 1's read
+                 Same-tick archival saves an extra sweep cycle for
+                 entries that were already at threshold but missed the
+                 last increment due to debounce.
+              4. If `effective_sz >= EVIDENCE_ARCHIVE_DAYS` → archive.
+
+            All three operations (increment / archive / their event
+            writes) re-read the view under the per-char lock, so this
+            outer scan can use a stale snapshot safely.
+            """
+            try:
+                # ── reflections ──
+                refls = await reflection_engine._aload_reflections_full(name)
+                for r in refls:
+                    if not isinstance(r, dict):
+                        continue
+                    if r.get('protected'):
+                        continue
+                    rid = r.get('id')
+                    if not rid:
+                        continue
+                    pre_sz = int(r.get('sub_zero_days', 0) or 0)
+                    will_increment = maybe_mark_sub_zero(dict(r), now)
+                    new_count: int | None = None
+                    if will_increment:
+                        try:
+                            new_count = await reflection_engine.aincrement_sub_zero(
+                                name, rid, now,
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"[ArchiveSweep] {name}: reflection {rid} "
+                                f"sub_zero 增量失败: {e}"
+                            )
+                    effective_sz = new_count if new_count is not None else pre_sz
+                    if effective_sz >= EVIDENCE_ARCHIVE_DAYS:
+                        try:
+                            await reflection_engine.aarchive_reflection(name, rid)
+                        except Exception as e:
+                            logger.warning(
+                                f"[ArchiveSweep] {name}: reflection {rid} 归档失败: {e}"
+                            )
+
+                # ── persona entries ──
+                persona = await persona_manager.aensure_persona(name)
+                # Snapshot (entity_key, entry_id, pre_sz) tuples; mutations
+                # go through aincrement / aarchive which re-load.
+                snapshots: list[tuple[str, str, int, bool]] = []
+                for entity_key, section in list(persona.items()):
+                    if not isinstance(section, dict):
+                        continue
+                    for entry in section.get('facts', []):
+                        if not isinstance(entry, dict):
+                            continue
+                        if entry.get('protected'):
+                            continue
+                        eid = entry.get('id')
+                        if not eid:
+                            continue
+                        pre_sz = int(entry.get('sub_zero_days', 0) or 0)
+                        will_inc = maybe_mark_sub_zero(dict(entry), now)
+                        snapshots.append((entity_key, eid, pre_sz, will_inc))
+
+                for entity_key, eid, pre_sz, will_inc in snapshots:
+                    new_count = None
+                    if will_inc:
+                        try:
+                            new_count = await persona_manager.aincrement_sub_zero(
+                                name, entity_key, eid, now,
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"[ArchiveSweep] {name}: persona {entity_key}/{eid} "
+                                f"sub_zero 增量失败: {e}"
+                            )
+                    effective_sz = new_count if new_count is not None else pre_sz
+                    if effective_sz >= EVIDENCE_ARCHIVE_DAYS:
+                        try:
+                            await persona_manager.aarchive_persona_entry(
+                                name, entity_key, eid,
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"[ArchiveSweep] {name}: persona {entity_key}/{eid} 归档失败: {e}"
+                            )
+            except Exception as e:
+                logger.debug(f"[ArchiveSweep] {name}: 扫描失败，跳过: {e}")
+
+        if catgirl_names:
+            await asyncio.gather(
+                *(_sweep_one(name) for name in catgirl_names),
+                return_exceptions=True,
+            )
+
+
 # ── memory-evidence-rfc §3.4.3: background signal extraction loop ───
 
 _signal_check_state: dict[str, dict] = {}  # {name: {turns_since, last_check_ts}}
@@ -1413,11 +1572,17 @@ async def startup_event_handler():
     # memory-evidence-rfc §5: 一次性迁移种子 —— 给旧 reflection / persona 补
     # 上 evidence 字段，失败静默（不阻塞 startup）。各角色 marker 独立、
     # 互不依赖，并行。
+    # PR-2 加：同步触发 §3.5.5 的旧 flat reflections_archive.json → 分片
+    # 目录迁移。两个 migration 都自带 idempotent guard，无依赖关系。
     async def _migrate_one(n: str):
         try:
             await _aone_shot_migration_if_needed(n)
         except Exception as e:
             logger.warning(f"[Memory] {n} evidence 迁移失败: {e}")
+        try:
+            await _aone_shot_archive_migration_if_needed(n)
+        except Exception as e:
+            logger.warning(f"[Memory] {n} archive 迁移失败: {e}")
 
     if catgirl_names:
         await asyncio.gather(
@@ -1435,6 +1600,10 @@ async def startup_event_handler():
     # memory-evidence-rfc §3.4.3: 信号抽取后台循环（Stage-1 + Stage-2 + dispatch）
     if EVIDENCE_SIGNAL_CHECK_ENABLED:
         _spawn_background_task(_periodic_signal_extraction_loop())
+
+    # memory-evidence-rfc §3.5: archive 扫描后台循环（sub_zero_days
+    # 增量 + 满阈值归档），独立于 evidence signal 抽取。
+    _spawn_background_task(_periodic_archive_sweep_loop())
 
 
 @app.on_event("shutdown")

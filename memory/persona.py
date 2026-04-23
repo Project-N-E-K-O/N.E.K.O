@@ -143,6 +143,18 @@ class PersonaManager:
         from memory import ensure_character_dir
         return os.path.join(ensure_character_dir(self._config_manager.memory_dir, name), 'persona_corrections.json')
 
+    def _persona_archive_dir(self, name: str) -> str:
+        """Sharded archive directory for persona entries (RFC §3.5.4).
+
+        New in PR-2 — persona had no archival before this RFC, so there
+        is no legacy flat file to migrate (RFC §3.5.5 末段).
+        """
+        from memory import ensure_character_dir
+        return os.path.join(
+            ensure_character_dir(self._config_manager.memory_dir, name),
+            'persona_archive',
+        )
+
     # ── CRUD ─────────────────────────────────────────────────────────
 
     def _empty_persona(self) -> dict:
@@ -1003,6 +1015,212 @@ class PersonaManager:
                 f"disp={merged_disputation}"
             )
             return 'merged'
+
+    # ── score-driven archive (RFC §3.5, PR-2 #934) ───────────────────
+
+    async def aincrement_sub_zero(
+        self, name: str, entity_key: str, entry_id: str, now: datetime,
+    ) -> int | None:
+        """Increment one persona entry's `sub_zero_days` via EVT_PERSONA_EVIDENCE_UPDATED.
+
+        Symmetric to `ReflectionEngine.aincrement_sub_zero`. Called by
+        the periodic archive sweep loop. Returns the new count or None
+        if no increment happened.
+        """
+        from memory.event_log import EVT_PERSONA_EVIDENCE_UPDATED
+        from memory.evidence import maybe_mark_sub_zero
+        if self._event_log is None:
+            raise RuntimeError(
+                "[Persona.aincrement_sub_zero] event_log 未注入"
+            )
+
+        async with self._get_alock(name):
+            persona = await self._aensure_persona_locked(name)
+            section = persona.get(entity_key)
+            if not isinstance(section, dict):
+                return None
+            section_facts = section.get('facts', [])
+            entry = self._find_entry_in_section(section_facts, entry_id)
+            if entry is None:
+                return None
+            # Coderabbit PR #934 round-2 Major #2: probe on a staged copy
+            # so the cached entry is NOT mutated until inside the locked
+            # record_and_save critical section. If event append or save
+            # raises, the cache stays clean (no orphan sub_zero_days
+            # increment that never made it to the event log).
+            staged_entry = dict(entry)
+            if not maybe_mark_sub_zero(staged_entry, now):
+                return None
+
+            new_count = int(staged_entry.get('sub_zero_days', 0) or 0)
+            new_date = staged_entry.get('sub_zero_last_increment_date')
+
+            payload = {
+                'entity_key': entity_key,
+                'entry_id': entry_id,
+                'reinforcement': float(entry.get('reinforcement', 0.0) or 0.0),
+                'disputation': float(entry.get('disputation', 0.0) or 0.0),
+                'rein_last_signal_at': entry.get('rein_last_signal_at'),
+                'disp_last_signal_at': entry.get('disp_last_signal_at'),
+                'sub_zero_days': new_count,
+                'sub_zero_last_increment_date': new_date,
+                'user_fact_reinforce_count': int(
+                    entry.get('user_fact_reinforce_count', 0) or 0,
+                ),
+                'source': 'archive_sweep',
+            }
+
+            def _sync_load(_n: str):
+                return persona
+
+            def _sync_mutate(_view):
+                # Apply the staged values to the cached entry only after
+                # event append has already succeeded (record_and_save
+                # guarantees this ordering).
+                entry['sub_zero_days'] = new_count
+                entry['sub_zero_last_increment_date'] = new_date
+
+            def _sync_save(n: str, view):
+                assert_cloudsave_writable(
+                    self._config_manager,
+                    operation="save",
+                    target=f"memory/{n}/persona.json",
+                )
+                self._personas[n] = view
+                atomic_write_json(
+                    self._persona_path(n), view, indent=2, ensure_ascii=False,
+                )
+
+            await self._event_log.arecord_and_save(
+                name, EVT_PERSONA_EVIDENCE_UPDATED, payload,
+                sync_load_view=_sync_load,
+                sync_mutate_view=_sync_mutate,
+                sync_save_view=_sync_save,
+            )
+            return new_count
+
+    async def aarchive_persona_entry(
+        self, name: str, entity_key: str, entry_id: str,
+    ) -> bool:
+        """Move one persona entry from main view to a sharded archive file.
+
+        RFC §3.5.6: archive 复用 ``EVT_PERSONA_FACT_ADDED`` 事件 — payload
+        carries an `archive_shard_path` field so consumers can distinguish
+        the archive flow from a regular fact_added (regular adds have no
+        such field). Mirrors `ReflectionEngine.aarchive_reflection`.
+
+        Returns True if archived; False if not found / protected.
+        """
+        from memory.archive_shards import aappend_to_shard, apick_today_shard_path
+        from memory.event_log import EVT_PERSONA_FACT_ADDED
+        if self._event_log is None:
+            raise RuntimeError(
+                "[Persona.aarchive_persona_entry] event_log 未注入；"
+                "PersonaManager() 构造时须传入 event_log"
+            )
+
+        async with self._get_alock(name):
+            persona = await self._aensure_persona_locked(name)
+            section = persona.get(entity_key)
+            if not isinstance(section, dict):
+                logger.warning(
+                    f"[Persona] {name}: aarchive_persona_entry 找不到 "
+                    f"entity_key={entity_key}"
+                )
+                return False
+            section_facts = section.get('facts', [])
+            entry = self._find_entry_in_section(section_facts, entry_id)
+            if entry is None:
+                logger.warning(
+                    f"[Persona] {name}: aarchive_persona_entry 找不到 "
+                    f"entry_id={entry_id}"
+                )
+                return False
+            if entry.get('protected'):
+                logger.debug(
+                    f"[Persona] {name}: aarchive_persona_entry 跳过 protected "
+                    f"entry_id={entry_id}"
+                )
+                return False
+
+            now = datetime.now()
+            now_iso = now.isoformat()
+            archive_dir = self._persona_archive_dir(name)
+            # Pre-pick the shard path BEFORE record_and_save so we can
+            # stamp it into the event payload (and into the archive_entry
+            # we'll write afterward). `apick_today_shard_path` materializes
+            # the file on disk so the choice is stable across the
+            # subsequent shard append.
+            shard_path = await apick_today_shard_path(archive_dir, now=now)
+            shard_basename = os.path.basename(shard_path)
+            archive_entry = dict(entry)
+            archive_entry['archived_at'] = now_iso
+            archive_entry['archive_shard_path'] = shard_basename
+
+            payload = {
+                'entity_key': entity_key,
+                'entry_id': entry_id,
+                'archive_shard_path': shard_basename,
+                'archived_at': now_iso,
+                # Snapshot the text/source for replayability without
+                # reading the shard back from disk.
+                'text': entry.get('text', ''),
+                'source': entry.get('source', 'unknown'),
+                # Full entry snapshot — the persona archive handler in
+                # evidence_handlers.py reads this on every replay and
+                # idempotently recreates the shard if it's missing
+                # (coderabbit PR #934 round-2 Major #3). Recoverable
+                # crash window: any failure between record_and_save
+                # and the shard append below is healed on the next
+                # reconciler boot.
+                'entry_snapshot': archive_entry,
+            }
+
+            def _sync_load(_n: str):
+                return persona
+
+            def _sync_mutate(_view):
+                # Drop the archived entry from the entity section.
+                section_facts[:] = [
+                    e for e in section_facts
+                    if not (isinstance(e, dict) and e.get('id') == entry_id)
+                ]
+
+            def _sync_save(n: str, view):
+                assert_cloudsave_writable(
+                    self._config_manager,
+                    operation="save",
+                    target=f"memory/{n}/persona.json",
+                )
+                self._personas[n] = view
+                atomic_write_json(
+                    self._persona_path(n), view, indent=2, ensure_ascii=False,
+                )
+
+            # ORDER (coderabbit review #934 round-1 + round-2):
+            # 1. record_and_save first — commits event + view mutation
+            #    atomically. Avoids "duplicated shard entry + still
+            #    active in view" (next sweep would re-archive into a
+            #    second shard slot).
+            # 2. aappend_to_shard second. If this raises, the active
+            #    view has already lost the entry but the shard never
+            #    got it. Self-heal: the persona archive handler in
+            #    evidence_handlers.py reads `entry_snapshot` from the
+            #    event payload and re-creates the shard on the next
+            #    reconciler boot — event log is the source of truth
+            #    (RFC §3.11), snapshot makes recovery automatic.
+            await self._event_log.arecord_and_save(
+                name, EVT_PERSONA_FACT_ADDED, payload,
+                sync_load_view=_sync_load,
+                sync_mutate_view=_sync_mutate,
+                sync_save_view=_sync_save,
+            )
+            await aappend_to_shard(archive_dir, [archive_entry], now=now)
+            logger.info(
+                f"[Persona] {name}: 归档 entry {entity_key}/{entry_id} "
+                f"→ {shard_basename}"
+            )
+            return True
 
     def _get_section_facts(self, persona: dict, entity: str) -> list:
         return persona.setdefault(entity, {}).setdefault('facts', [])

@@ -579,6 +579,9 @@ function captureSettingsSnapshot() {
         live2dIdleAnimation: document.getElementById('motion-select')?.value ?? '',
         idleAnimation: JSON.stringify(_getSelectedIdleAnimationsGlobal('vrm-idle-animation-multiselect')),
         mmdIdleAnimation: JSON.stringify(_getSelectedIdleAnimationsGlobal('mmd-idle-animation-multiselect')),
+        // VRM/MMD 手动动作选择
+        vrmAnimation: document.getElementById('vrm-animation-select')?.value ?? '',
+        mmdAnimation: document.getElementById('mmd-animation-select')?.value ?? '',
     };
 }
 
@@ -1994,8 +1997,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                         if (urlMatch) mmdPath = urlMatch[1];
                     }
                     modelData.mmd = mmdPath;
-                    if (mmdAnimationSelect && mmdAnimationSelect.value) {
-                        modelData.mmd_animation = mmdAnimationSelect.value;
+                    if (mmdAnimationSelect) {
+                        if (mmdAnimationSelect.value === '_no_motion_') {
+                            modelData.mmd_animation = '';
+                        } else if (mmdAnimationSelect.value) {
+                            modelData.mmd_animation = mmdAnimationSelect.value;
+                        }
                     }
                     const mmdIdleUrls = getSelectedIdleAnimations('mmd-idle-animation-multiselect');
                     modelData.mmd_idle_animation = mmdIdleUrls;
@@ -2017,8 +2024,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                         }
                     }
                     modelData.vrm = vrmPath;
-                    if (vrmAnimation) {
-                        modelData.vrm_animation = vrmAnimation;
+                    if (vrmAnimationSelect) {
+                        if (vrmAnimationSelect.value === '_no_motion_') {
+                            modelData.vrm_animation = '';
+                        } else if (vrmAnimationSelect.value) {
+                            modelData.vrm_animation = vrmAnimationSelect.value;
+                        }
                     }
                     const vrmIdleUrls = getSelectedIdleAnimations('vrm-idle-animation-multiselect');
                     modelData.idle_animation = vrmIdleUrls;
@@ -2037,8 +2048,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 console.log('[Live2D Save] motionSelect.value:', motionSelect ? motionSelect.value : 'null');
                 console.log('[Live2D Save] currentModelFiles.motion_files:', currentModelFiles?.motion_files);
                 if (motionSelect) {
-                    // 【修复】无论是否有值，即使是空字符串（用户点击清空/默认选项），也要显式发送给后端，触发置空逻辑
-                    modelData.live2d_idle_animation = motionSelect.value || "";
+                    const motionVal = motionSelect.value;
+                    modelData.live2d_idle_animation = (motionVal && motionVal !== '_no_motion_') ? motionVal : "";
                     console.log('[Live2D Save] Added live2d_idle_animation to modelData:', modelData.live2d_idle_animation);
                 }
                 console.log('[Live2D Save] Final modelData:', JSON.stringify(modelData, null, 2));
@@ -3421,27 +3432,35 @@ document.addEventListener('DOMContentLoaded', async () => {
             const data = await RequestHelper.fetchJson('/api/model/vrm/animations');
             vrmAnimations = (data.success && data.animations) ? data.animations : [];
 
-            if (vrmAnimationSelect && vrmAnimations.length > 0) {
+            if (vrmAnimationSelect) {
+                // 始终保留"无动作"选项，让用户能清空已保存的动作配置
                 vrmAnimationSelect.innerHTML = `<option value="">${t('live2d.selectMotion', '选择动作')}</option>`;
-                vrmAnimations.forEach(anim => {
-                    // 确保 animPath 是字符串：优先使用 anim.path，否则使用 anim.url，最后使用 anim 本身（如果是字符串）
-                    const animPath = (typeof anim.path === 'string' ? anim.path : null)
-                        || (typeof anim.url === 'string' ? anim.url : null)
-                        || (typeof anim === 'string' ? anim : null);
-                    if (!animPath) {
-                        console.warn('[VRM] 跳过无效动画项:', anim);
-                        return;
-                    }
+                const noMotionOption = document.createElement('option');
+                noMotionOption.value = '_no_motion_';
+                noMotionOption.textContent = t('live2d.noMotion', '无动作');
+                vrmAnimationSelect.appendChild(noMotionOption);
 
-                    const option = document.createElement('option');
-                    const finalUrl = ModelPathHelper.vrmToUrl(animPath, 'animation');
+                if (vrmAnimations.length > 0) {
+                    vrmAnimations.forEach(anim => {
+                        // 确保 animPath 是字符串：优先使用 anim.path，否则使用 anim.url，最后使用 anim 本身（如果是字符串）
+                        const animPath = (typeof anim.path === 'string' ? anim.path : null)
+                            || (typeof anim.url === 'string' ? anim.url : null)
+                            || (typeof anim === 'string' ? anim : null);
+                        if (!animPath) {
+                            console.warn('[VRM] 跳过无效动画项:', anim);
+                            return;
+                        }
 
-                    option.value = finalUrl;
-                    option.setAttribute('data-path', animPath);
-                    option.setAttribute('data-filename', anim.name || anim.filename || finalUrl.split('/').pop());
-                    option.textContent = option.getAttribute('data-filename');
-                    vrmAnimationSelect.appendChild(option);
-                });
+                        const option = document.createElement('option');
+                        const finalUrl = ModelPathHelper.vrmToUrl(animPath, 'animation');
+
+                        option.value = finalUrl;
+                        option.setAttribute('data-path', animPath);
+                        option.setAttribute('data-filename', anim.name || anim.filename || finalUrl.split('/').pop());
+                        option.textContent = option.getAttribute('data-filename');
+                        vrmAnimationSelect.appendChild(option);
+                    });
+                }
                 vrmAnimationSelect.disabled = false;
                 if (vrmAnimationSelectBtn) {
                     vrmAnimationSelectBtn.disabled = false;
@@ -3449,10 +3468,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 updateVRMAnimationDropdown();
                 updateVRMAnimationSelectButtonText();
                 showStatus(t('live2d.vrmAnimation.animationListLoaded', '动作列表加载成功'), 2000);
-            } else {
-                vrmAnimationSelect.innerHTML = `<option value="">${t('live2d.vrmAnimation.noAnimations', '未找到动作文件')}</option>`;
-                updateVRMAnimationDropdown();
-                updateVRMAnimationSelectButtonText();
             }
         } catch (error) {
             console.error('加载 VRM 动作列表失败:', error);
@@ -3527,6 +3542,19 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // 重置选择器到第一个选项（保持显示"选择动作"）
                 e.target.value = '';
                 updateVRMAnimationSelectButtonText(); // 更新按钮文字为"选择动作"
+                return;
+            }
+
+            // 无动作选项：停止当前播放的 VRM 动作
+            if (selectedValue === '_no_motion_') {
+                if (vrmManager) {
+                    vrmManager.stopVRMAAnimation();
+                    isVrmAnimationPlaying = false;
+                    updateVRMAnimationPlayButtonIcon();
+                    showStatus(t('live2d.motionStopped', '动作已停止'), 1000);
+                }
+                if (playVrmAnimationBtn) playVrmAnimationBtn.disabled = true;
+                stopIdleRotation('vrm');
                 return;
             }
 
@@ -3728,6 +3756,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (!mmdAnimationSelect) return;
 
             mmdAnimationSelect.innerHTML = `<option value="">${t('live2d.mmdAnimation.selectAnimation', '选择VMD动画')}</option>`;
+            const noMotionOption = document.createElement('option');
+            noMotionOption.value = '_no_motion_';
+            noMotionOption.textContent = t('live2d.noMotion', '无动作');
+            mmdAnimationSelect.appendChild(noMotionOption);
             if (mmdAnimations.length > 0) {
                 mmdAnimations.forEach(anim => {
                     const animPath = anim.path || anim.url || (typeof anim === 'string' ? anim : null);
@@ -3740,11 +3772,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                     option.textContent = filename;
                     mmdAnimationSelect.appendChild(option);
                 });
-                mmdAnimationSelect.disabled = false;
-                if (mmdAnimationSelectBtn) mmdAnimationSelectBtn.disabled = false;
-            } else {
-                mmdAnimationSelect.innerHTML = `<option value="">${t('live2d.mmdAnimation.noAnimation', '无动画')}</option>`;
             }
+            mmdAnimationSelect.disabled = false;
+            if (mmdAnimationSelectBtn) mmdAnimationSelectBtn.disabled = false;
             updateMMDAnimationDropdown();
             updateMMDAnimationSelectButtonText();
         } catch (error) {
@@ -4418,6 +4448,23 @@ document.addEventListener('DOMContentLoaded', async () => {
                 return;
             }
 
+            // 无动作选项：停止当前播放的 MMD 动画，并重置 idle 状态避免状态污染
+            // stopAnimation() 会停掉当前待机动画，但 isMmdIdlePlaying 仍保持旧值；
+            // 下一次启动 idle rotation 时可能把 stale currentAnimationUrl 当成仍在播放，
+            // 导致跳过首次播放/监听器注册。因此需要同步重置 isMmdIdlePlaying。
+            if (animPath === '_no_motion_') {
+                if (window.mmdManager) {
+                    window.mmdManager.stopAnimation();
+                    isMmdAnimationPlaying = false;
+                    updateMMDAnimationPlayButtonIcon();
+                    showStatus(t('live2d.motionStopped', '动作已停止'), 1000);
+                }
+                if (playMmdAnimationBtn) playMmdAnimationBtn.disabled = true;
+                isMmdIdlePlaying = false; // 重置 idle 状态，避免下一次 idle 轮换误判
+                stopIdleRotation('mmd');
+                return;
+            }
+
             if (!window.mmdManager) return;
 
             try {
@@ -4509,6 +4556,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         const expressions = vrmManager.expression.getExpressionList();
 
         vrmExpressionSelect.innerHTML = `<option value="">${t('live2d.selectExpression', '选择表情')}</option>`;
+        const noExpressionOption = document.createElement('option');
+        noExpressionOption.value = '_no_expression_';
+        noExpressionOption.textContent = t('live2d.noExpression', '无表情');
+        vrmExpressionSelect.appendChild(noExpressionOption);
 
         if (expressions.length > 0) {
             expressions.forEach(name => {
@@ -4585,6 +4636,18 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (triggerVrmExpressionBtn) {
                     triggerVrmExpressionBtn.disabled = true;
                 }
+                return;
+            }
+
+            // 无表情选项：清除 VRM 表情
+            if (selectedValue === '_no_expression_') {
+                if (vrmManager && vrmManager.expression) {
+                    vrmManager.expression.resetBaseExpression();
+                    isVrmExpressionPlaying = false;
+                    updateVRMExpressionPlayButtonIcon();
+                    showStatus(t('live2d.expressionCleared', '表情已清除'), 1000);
+                }
+                if (triggerVrmExpressionBtn) triggerVrmExpressionBtn.disabled = true;
                 return;
             }
 
