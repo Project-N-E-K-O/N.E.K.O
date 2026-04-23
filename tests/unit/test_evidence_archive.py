@@ -1460,19 +1460,18 @@ async def test_persona_sync_save_evicts_cache_on_atomic_write_failure(tmp_path):
     # second call (for persona.json) raises. We let the first call
     # through for the event.ndjson append path (which we don't want to
     # break) — but simpler: patch specifically the call made from
-    # `_sync_save_persona_view`. Easiest target: monkeypatch
-    # `_sync_save_persona_view` to wrap the real implementation and
-    # make `atomic_write_json` raise only for the persona.json target.
-    import memory.persona as persona_module
-    real_atomic = persona_module.atomic_write_json
+    # `_sync_save_persona_view`. Easiest target: patch
+    # `memory.persona.atomic_write_json` so only the persona.json target
+    # raises; event-log writes go through the real implementation.
+    from memory.persona import atomic_write_json as _real_atomic
 
     def _boom_if_persona_json(path, *args, **kwargs):
         if str(path).endswith("persona.json"):
             raise RuntimeError("simulated persona.json write failure")
-        return real_atomic(path, *args, **kwargs)
+        return _real_atomic(path, *args, **kwargs)
 
-    with patch.object(persona_module, "atomic_write_json",
-                      side_effect=_boom_if_persona_json):
+    with patch("memory.persona.atomic_write_json",
+               side_effect=_boom_if_persona_json):
         with pytest.raises(RuntimeError, match="simulated persona.json"):
             await pm.amerge_into(
                 "小天", entry_id, "merged — post-failure",
