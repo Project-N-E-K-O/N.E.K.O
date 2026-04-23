@@ -3332,19 +3332,5 @@
         "useTemporary": "临时使用",
         "tempBadge": "临时",
         "popupBlocked": "弹窗被阻止，请允许弹窗后重试"
-    },
-    "storageMigration": {
-        "startup": {
-            "title": "选择 N.E.K.O 数据存储位置",
-            "subtitle": "这是首启存储位置流程的第一阶段校验。你当前的选择只用于验证启动流程，暂时不会真正切换运行目录或迁移数据。",
-            "recommended": "推荐位置",
-            "detectedLegacy": "检测到的旧数据位置",
-            "noLegacy": "当前没有检测到旧数据位置。",
-            "probeNotice": "这一阶段只校验启动顺序。即使选择了自定义位置，也不会马上迁移数据。",
-            "useDefault": "使用推荐位置",
-            "chooseCustom": "选择其他位置",
-            "cancel": "取消启动",
-            "chooseCustomDialogTitle": "选择 N.E.K.O 数据目录"
-        }
     }
 }

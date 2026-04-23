@@ -3332,19 +3332,5 @@
         "useTemporary": "臨時使用",
         "tempBadge": "臨時",
         "popupBlocked": "彈窗被阻止，請允許彈窗後重試"
-    },
-    "storageMigration": {
-        "startup": {
-            "title": "選擇 N.E.K.O 資料儲存位置",
-            "subtitle": "這是首啟儲存位置流程的第一階段驗證。你目前的選擇只會用來確認啟動流程，暫時不會真正切換執行目錄或搬移資料。",
-            "recommended": "建議位置",
-            "detectedLegacy": "偵測到的舊資料位置",
-            "noLegacy": "目前沒有偵測到舊資料位置。",
-            "probeNotice": "這一階段只驗證啟動順序。即使選了自訂位置，也不會立刻搬移資料。",
-            "useDefault": "使用建議位置",
-            "chooseCustom": "選擇其他位置",
-            "cancel": "取消啟動",
-            "chooseCustomDialogTitle": "選擇 N.E.K.O 資料目錄"
-        }
     }
 }

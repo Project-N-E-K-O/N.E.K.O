@@ -1,7 +1,6 @@
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
-import json
 
 import pytest
 
@@ -100,74 +99,6 @@ def test_launcher_env_override_beats_default_process_mode(monkeypatch):
     monkeypatch.setattr(launcher, "IS_FROZEN", True)
     monkeypatch.setenv("NEKO_MERGED", "0")
     assert launcher._should_use_merged_mode() is False
-
-
-@pytest.mark.unit
-def test_launcher_runs_storage_probe_before_cloudsave_bootstrap(monkeypatch):
-    import launcher
-
-    call_order = []
-
-    monkeypatch.setattr(launcher, "emit_frontend_event", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(launcher, "acquire_startup_lock", lambda: True)
-    monkeypatch.setattr(launcher, "apply_port_strategy", lambda: True)
-    monkeypatch.setattr(launcher, "_run_storage_location_first_run_probe", lambda: call_order.append("probe") or "skipped")
-    monkeypatch.setattr(launcher, "register_shutdown_hooks", lambda: call_order.append("register"))
-    monkeypatch.setattr(launcher, "setup_job_object", lambda: call_order.append("job"))
-    monkeypatch.setattr(
-        launcher,
-        "_prepare_cloudsave_runtime_for_launch",
-        lambda: call_order.append("bootstrap"),
-    )
-    monkeypatch.setattr(launcher, "_ensure_playwright_browsers", lambda: None)
-    monkeypatch.setattr(launcher, "_should_use_merged_mode", lambda: True)
-    monkeypatch.setattr(launcher, "run_merged_servers", lambda: 0)
-    monkeypatch.setattr(launcher, "cleanup_servers", lambda: None)
-    monkeypatch.setattr(launcher, "release_startup_lock", lambda: None)
-    monkeypatch.setattr(launcher, "SERVERS", [], raising=False)
-
-    assert launcher.main() == 0
-    assert call_order.index("probe") < call_order.index("bootstrap")
-
-
-@pytest.mark.unit
-def test_storage_location_probe_persists_state_and_emits_completion(monkeypatch, tmp_path):
-    import launcher
-
-    runtime_root = tmp_path / "runtime"
-    state_path = runtime_root / "state" / launcher.STORAGE_LOCATION_PROBE_STATE_FILENAME
-    captured_events = []
-
-    monkeypatch.setattr(
-        launcher,
-        "_detect_storage_location_probe_context",
-        lambda: {
-            "recommended_runtime_root": str(runtime_root),
-            "cloudsave_root": str(runtime_root / "cloudsave"),
-            "has_existing_runtime_content": False,
-            "legacy_sources": [{"path": str(tmp_path / "legacy"), "score": 4}],
-            "state_path": str(state_path),
-        },
-    )
-    monkeypatch.setattr(launcher, "emit_frontend_event", lambda event_type, payload=None: captured_events.append((event_type, payload)))
-    monkeypatch.setattr(
-        launcher,
-        "_show_storage_location_probe_dialog",
-        lambda _context: {"action": "use_default", "selected_path": str(runtime_root)},
-    )
-
-    result = launcher._run_storage_location_first_run_probe()
-
-    assert result == "completed"
-    assert state_path.is_file()
-    with open(state_path, "r", encoding="utf-8") as f:
-        payload = json.load(f)
-    assert payload["completed"] is True
-    assert payload["probe_only"] is True
-    assert payload["action"] == "use_default"
-    assert captured_events[0][0] == "storage_location_required"
-    assert captured_events[-1][0] == "storage_location_probe_completed"
-    assert captured_events[-1][1]["status"] == "completed"
 
 
 @pytest.mark.unit

@@ -3332,19 +3332,5 @@
         "useTemporary": "임시로 사용",
         "tempBadge": "임시",
         "popupBlocked": "팝업이 차단되었습니다. 팝업을 허용한 후 다시 시도하세요."
-    },
-    "storageMigration": {
-        "startup": {
-            "title": "N.E.K.O 데이터 저장 위치 선택",
-            "subtitle": "이 단계는 최초 실행 시 저장 위치 흐름을 확인하기 위한 1단계입니다. 지금 선택한 내용은 시작 흐름 확인용으로만 기록되며, 아직 실제 런타임 루트를 전환하거나 데이터를 이동하지 않습니다.",
-            "recommended": "권장 위치",
-            "detectedLegacy": "감지된 이전 데이터 위치",
-            "noLegacy": "이 장치에서는 이전 데이터 위치를 찾지 못했습니다.",
-            "probeNotice": "이 단계에서는 시작 순서만 검증합니다. 사용자 지정 위치를 선택해도 아직 데이터는 이동되지 않습니다.",
-            "useDefault": "권장 위치 사용",
-            "chooseCustom": "다른 위치 선택",
-            "cancel": "시작 취소",
-            "chooseCustomDialogTitle": "N.E.K.O 데이터 폴더 선택"
-        }
     }
 }
