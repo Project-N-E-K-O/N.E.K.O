@@ -1507,6 +1507,9 @@ overflow: hidden;
     .panel-tab-content.tab-exit {
         animation: none !important;
         transition: none !important;
+        opacity: 1 !important;
+        display: block !important;
+        transform: none !important;
     }
     .tab-content.tab-entering,
     .tab-content.tab-leaving {
@@ -4151,6 +4154,8 @@ margin-top: 10px;
         max-height: 55vh;
         overflow-y: visible;
     }
+    .catgirl-panel-wrapper.card-only .catgirl-panel-card-image,
+    .catgirl-panel-wrapper.card-only.phase-center .catgirl-panel-card-image,
     .catgirl-panel-wrapper.card-only.phase-expand .catgirl-panel-card-image {
         width: 100%;
         height: auto;
@@ -4600,6 +4605,7 @@ margin-top: 10px;
     max-height: 90vh;
     display: flex;
     flex-direction: column;
+    position: relative;
 }
 
 .catgirl-panel-right .panel-tab-content {
