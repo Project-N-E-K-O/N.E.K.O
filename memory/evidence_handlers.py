@@ -229,15 +229,34 @@ def make_reflection_archive_handler(reflection_engine):
         # Step 1+2: shard self-heal (write entry into the named shard
         # if missing). Skipped if the event lacks the snapshot fields
         # — older logs from round-1 don't carry them.
-        from memory.archive_shards import ensure_entry_in_named_shard_sync
+        #
+        # Coderabbit PR #934 round-3 Major: if the named shard exists
+        # but is corrupt, ``ensure_entry_in_named_shard_sync`` raises
+        # ``ShardCorruptError`` instead of silently returning False.
+        # We MUST NOT proceed to step 3 in that case — removing the
+        # entry from the active view when we couldn't verify the shard
+        # would lose the only remaining copy. Bail with view intact;
+        # the next reconciler boot will retry once the operator has
+        # repaired (or removed) the corrupt shard.
+        from memory.archive_shards import (
+            ShardCorruptError,
+            ensure_entry_in_named_shard_sync,
+        )
         shard_basename = payload.get('archive_shard_path')
         snapshot = payload.get('entry_snapshot')
         shard_changed = False
         if shard_basename and isinstance(snapshot, dict):
             archive_dir = reflection_engine._reflections_archive_dir(name)
-            shard_changed = ensure_entry_in_named_shard_sync(
-                archive_dir, shard_basename, snapshot,
-            )
+            try:
+                shard_changed = ensure_entry_in_named_shard_sync(
+                    archive_dir, shard_basename, snapshot,
+                )
+            except ShardCorruptError as e:
+                logger.warning(
+                    f"[ArchiveHandler] {name}: 目标分片损坏，保留 active view "
+                    f"中的 reflection_id={rid} 待人工修复后重放: {e}"
+                )
+                return False
 
         # Step 3: remove from the active view (the original handler
         # behavior — still idempotent).
@@ -297,14 +316,28 @@ def make_persona_archive_handler(persona_manager):
 
         # Step 1+2: shard self-heal. Skipped if event predates
         # entry_snapshot (round-1 logs).
-        from memory.archive_shards import ensure_entry_in_named_shard_sync
+        #
+        # Coderabbit PR #934 round-3 Major (twin of reflection handler):
+        # corrupt target shard raises ``ShardCorruptError`` — bail with
+        # the persona view untouched so the entry isn't lost.
+        from memory.archive_shards import (
+            ShardCorruptError,
+            ensure_entry_in_named_shard_sync,
+        )
         snapshot = payload.get('entry_snapshot')
         shard_changed = False
         if isinstance(snapshot, dict):
             archive_dir = persona_manager._persona_archive_dir(name)
-            shard_changed = ensure_entry_in_named_shard_sync(
-                archive_dir, shard_basename, snapshot,
-            )
+            try:
+                shard_changed = ensure_entry_in_named_shard_sync(
+                    archive_dir, shard_basename, snapshot,
+                )
+            except ShardCorruptError as e:
+                logger.warning(
+                    f"[ArchiveHandler] {name}: 目标分片损坏，保留 persona "
+                    f"{entity_key}/{entry_id} 待人工修复后重放: {e}"
+                )
+                return False
 
         # Step 3: persona main-view removal.
         path = persona_manager._persona_path(name)

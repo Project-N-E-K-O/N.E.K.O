@@ -316,10 +316,21 @@ class ReflectionEngine:
         case where one batch spilled into multiple shards, the single
         returned ``shard_path`` couldn't describe per-entry locations.
         Per-chunk stamping inside ``aappend_to_shard`` fixes both.
+
+        Coderabbit PR #934 round-3 Minor: ``archived_at`` uses direct
+        assignment (not ``setdefault``) so cross-day retries restamp
+        with the actual write date. Earlier ``setdefault`` would
+        preserve the first failed attempt's timestamp; if shard write
+        failed and ``save_reflections`` rolled the entries back into
+        main with ``archived_at`` already attached, a next-day retry
+        would update ``archive_shard_path`` to the new day's basename
+        but leave ``archived_at`` pointing at yesterday — the two
+        fields would disagree on the date. Losing the first stamp is
+        fine because the entry never landed in any shard at that point.
         """
         def _stamp(chunk: list[dict], shard_basename: str) -> None:
             for e in chunk:
-                e.setdefault('archived_at', now_iso)
+                e['archived_at'] = now_iso
                 e['archive_shard_path'] = shard_basename
         return _stamp
 

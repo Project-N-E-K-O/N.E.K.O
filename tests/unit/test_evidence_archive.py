@@ -1197,3 +1197,212 @@ async def test_archive_handler_self_heals_missing_shard(tmp_path):
 
     # Idempotent replay
     assert p_handler("小天", p_archive_evt["payload"]) is False
+
+
+# ── PR #934 round-3 regressions ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_archive_handler_corrupt_shard_keeps_active_view(tmp_path):
+    """Round-3 Major: when the named target shard is corrupt, the
+    archive handler MUST NOT remove the entry from the active view.
+
+    Prior bug: ``ensure_entry_in_named_shard_sync`` returned False on
+    corruption (same as "already present"), the handler treated it as
+    "shard ok, skip", and proceeded to drop the entry from the active
+    view. If this replay was the very recovery from a "event committed
+    but shard never written" crash window, the entry would now be
+    gone from BOTH the view AND every shard — pure data loss.
+
+    Fix: the helper raises ``ShardCorruptError``; both reflection and
+    persona handlers catch it, log, leave the active view untouched,
+    and return False. Operator can repair the shard and the next
+    reconciler boot will retry.
+    """
+    from unittest.mock import patch
+    from memory.archive_shards import ShardCorruptError
+    from memory.event_log import (
+        EVT_PERSONA_FACT_ADDED,
+        EVT_REFLECTION_STATE_CHANGED,
+    )
+    from memory.evidence_handlers import (
+        make_persona_archive_handler,
+        make_reflection_archive_handler,
+    )
+
+    # ── reflection half ──────────────────────────────────────────────
+    _ev, _fs, pm, re, _rec, _cm = _install(str(tmp_path))
+    rid = "ref_corrupt_target"
+    seed = [{
+        "id": rid, "text": "must-survive", "entity": "master",
+        "status": "confirmed", "source_fact_ids": [],
+        "created_at": "2026-04-22T10:00:00",
+        "feedback": None, "next_eligible_at": "2026-04-22T10:00:00",
+    }]
+    await re.asave_reflections("小天", seed)
+
+    # Crash between record_and_save and the shard append (round-2
+    # setup) — entry leaves the active view, shard never receives it.
+    async def _shard_boom(*a, **kw):
+        raise RuntimeError("simulated shard write failure")
+
+    with patch("memory.archive_shards.aappend_to_shard", _shard_boom):
+        with pytest.raises(RuntimeError, match="simulated shard write failure"):
+            await re.aarchive_reflection("小天", rid)
+
+    # Sanity: entry already removed from active view by record_and_save.
+    remaining = await re.aload_reflections("小天", include_archived=True)
+    assert all(r.get("id") != rid for r in remaining)
+
+    # The archive handler reuses the active view as its "view to
+    # mutate" — but the round-3 invariant is about a DIFFERENT replay
+    # path: an entry the handler is about to drop from the view. To
+    # exercise the corrupt-shard-aborts-view-mutation contract we need
+    # an event whose `reflection_id` IS still in the view. Re-seed
+    # that scenario directly: place the entry back in the active view
+    # (simulating an operator recovery / snapshot restore that left
+    # the on-disk state inconsistent), then replay the archive event
+    # against a corrupt named shard.
+    re_seed = list(remaining) + [seed[0]]
+    await re.asave_reflections("小天", re_seed)
+    after_reseed = await re.aload_reflections("小天", include_archived=True)
+    assert any(r.get("id") == rid for r in after_reseed), (
+        "test setup: re-seeded entry must be back in active view"
+    )
+
+    # Plant a corrupt file at the exact basename the event references.
+    events = _ev.read_since("小天", None)
+    archive_evt = next(
+        e for e in events
+        if e["type"] == EVT_REFLECTION_STATE_CHANGED
+        and e["payload"].get("reflection_id") == rid
+    )
+    shard_basename = archive_evt["payload"]["archive_shard_path"]
+    archive_dir = re._reflections_archive_dir("小天")
+    os.makedirs(archive_dir, exist_ok=True)
+    corrupt_shard_path = os.path.join(archive_dir, shard_basename)
+    corrupt_payload = "{ broken json [["
+    with open(corrupt_shard_path, "w", encoding="utf-8") as f:
+        f.write(corrupt_payload)
+
+    # Replay → handler must abort (return False), NOT touch view.
+    handler = make_reflection_archive_handler(re)
+    changed = handler("小天", archive_evt["payload"])
+    assert changed is False, (
+        "handler must report no change when target shard is corrupt"
+    )
+
+    # Active view intact.
+    after_replay = await re.aload_reflections("小天", include_archived=True)
+    assert any(r.get("id") == rid for r in after_replay), (
+        "entry must remain in active view when shard is corrupt "
+        "(round-3 Major regression)"
+    )
+
+    # Corrupt shard untouched on disk.
+    with open(corrupt_shard_path, encoding="utf-8") as f:
+        assert f.read() == corrupt_payload, (
+            "corrupt shard must NOT be overwritten by self-heal"
+        )
+
+    # Direct check: helper raises ShardCorruptError (not returns False).
+    from memory.archive_shards import ensure_entry_in_named_shard_sync
+    snapshot = archive_evt["payload"]["entry_snapshot"]
+    with pytest.raises(ShardCorruptError):
+        ensure_entry_in_named_shard_sync(
+            archive_dir, shard_basename, snapshot,
+        )
+
+    # ── persona half (symmetric) ─────────────────────────────────────
+    persona = await pm.aensure_persona("小天")
+    persona.setdefault("master", {}).setdefault("facts", []).append({
+        "id": "p_corrupt_target", "text": "p-must-survive",
+        "source": "manual", "source_id": None,
+        "protected": False,
+    })
+    await pm.asave_persona("小天", persona)
+
+    with patch("memory.archive_shards.aappend_to_shard", _shard_boom):
+        with pytest.raises(RuntimeError, match="simulated shard write failure"):
+            await pm.aarchive_persona_entry("小天", "master", "p_corrupt_target")
+
+    # Re-seed the persona entry so the handler has something to drop.
+    persona = await pm.aensure_persona("小天")
+    persona.setdefault("master", {}).setdefault("facts", []).append({
+        "id": "p_corrupt_target", "text": "p-must-survive",
+        "source": "manual", "source_id": None,
+        "protected": False,
+    })
+    await pm.asave_persona("小天", persona)
+
+    p_events = _ev.read_since("小天", None)
+    p_archive_evt = next(
+        e for e in p_events
+        if e["type"] == EVT_PERSONA_FACT_ADDED
+        and e["payload"].get("entry_id") == "p_corrupt_target"
+    )
+    p_shard_basename = p_archive_evt["payload"]["archive_shard_path"]
+    p_archive_dir = pm._persona_archive_dir("小天")
+    os.makedirs(p_archive_dir, exist_ok=True)
+    p_corrupt_path = os.path.join(p_archive_dir, p_shard_basename)
+    with open(p_corrupt_path, "w", encoding="utf-8") as f:
+        f.write(corrupt_payload)
+
+    p_handler = make_persona_archive_handler(pm)
+    p_changed = p_handler("小天", p_archive_evt["payload"])
+    assert p_changed is False, (
+        "persona handler must report no change when target shard is corrupt"
+    )
+
+    persona_after = await pm.aensure_persona("小天")
+    facts_after = persona_after.get("master", {}).get("facts", [])
+    assert any(f.get("id") == "p_corrupt_target" for f in facts_after), (
+        "persona entry must remain in active view when shard is corrupt "
+        "(round-3 Major regression)"
+    )
+    with open(p_corrupt_path, encoding="utf-8") as f:
+        assert f.read() == corrupt_payload, (
+            "corrupt persona shard must NOT be overwritten"
+        )
+
+
+def test_archive_stamper_cross_day_retry_realigns_archived_at(tmp_path):
+    """Round-3 Minor: when shard write fails on day-1 and
+    save_reflections rolls the entries back into main, a day-2 retry
+    must restamp BOTH ``archived_at`` and ``archive_shard_path`` with
+    day-2's values. Earlier ``setdefault('archived_at', now_iso)`` left
+    yesterday's timestamp glued to a today's-shard basename — the two
+    fields disagreed on the date.
+
+    This test exercises ``_make_archive_stamper`` directly (the bug is
+    pure stamper semantics; mocking the full save retry across days
+    requires monkeypatching ``datetime.now`` inside both reflection.py
+    and archive_shards.py which is brittle).
+    """
+    from memory.reflection import ReflectionEngine
+
+    day1_iso = "2026-04-22T10:00:00"
+    day2_iso = "2026-04-23T10:00:00"
+    day1_basename = "2026-04-22_aaaa1111.json"
+    day2_basename = "2026-04-23_bbbb2222.json"
+
+    entry = {"id": "e1", "text": "x"}
+
+    # Day-1 stamp (would have been written but shard append "failed";
+    # entry rolled back into main with stamps attached).
+    stamper_day1 = ReflectionEngine._make_archive_stamper(day1_iso)
+    stamper_day1([entry], day1_basename)
+    assert entry["archived_at"] == day1_iso
+    assert entry["archive_shard_path"] == day1_basename
+
+    # Day-2 retry: a NEW stamper restamps the same dict object.
+    stamper_day2 = ReflectionEngine._make_archive_stamper(day2_iso)
+    stamper_day2([entry], day2_basename)
+    assert entry["archived_at"] == day2_iso, (
+        "archived_at must reflect day-2 retry (round-3 Minor regression: "
+        "setdefault stuck at day-1)"
+    )
+    assert entry["archive_shard_path"] == day2_basename
+    # Internal consistency: both fields agree on the date prefix.
+    assert entry["archived_at"].startswith("2026-04-23")
+    assert entry["archive_shard_path"].startswith("2026-04-23")

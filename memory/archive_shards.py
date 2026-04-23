@@ -379,12 +379,19 @@ def ensure_entry_in_named_shard_sync(
     Returns True if a write happened (entry was missing or shard was
     absent); False if the entry was already present.
 
-    Corruption posture: if the named shard exists but is corrupt
-    (non-JSON / not list), we leave it untouched (raise nothing — log
-    + return False) rather than overwriting it. Same isolation rule
-    as `_aread_shard` (Major #1). The replay will be retried on the
-    next reconciler boot; an operator can fix the corrupt shard
-    manually in between.
+    Corruption posture (coderabbit PR #934 round-3 Major): if the named
+    shard exists but is corrupt (non-JSON / not list), we raise
+    ``ShardCorruptError`` rather than returning False. The earlier
+    "log + return False" conflated "already present" with "can't
+    verify"; the archive handler then dropped the entry from the
+    active view even though the shard never received it — pure data
+    loss in the very crash window this self-heal exists to recover.
+    Callers (``make_reflection_archive_handler`` /
+    ``make_persona_archive_handler``) MUST catch ``ShardCorruptError``
+    and skip the active-view removal so the entry remains recoverable
+    until an operator repairs the corrupt shard. Replay will retry on
+    the next reconciler boot. Same isolation rule as ``_aread_shard``
+    (round-2 Major #1).
     """
     if not isinstance(entry, dict):
         return False
@@ -400,14 +407,16 @@ def ensure_entry_in_named_shard_sync(
                 data = json.load(f)
         except (json.JSONDecodeError, OSError) as e:
             logger.warning(
-                f"[ArchiveShard] self-heal 跳过损坏分片 {shard_path}: {e}"
+                f"[ArchiveShard] self-heal 中止：目标分片损坏 {shard_path}: {e}"
             )
-            return False
+            raise ShardCorruptError(shard_path, str(e)) from e
         if not isinstance(data, list):
             logger.warning(
-                f"[ArchiveShard] self-heal 跳过非 list 分片 {shard_path}"
+                f"[ArchiveShard] self-heal 中止：目标分片非 list {shard_path}"
             )
-            return False
+            raise ShardCorruptError(
+                shard_path, f"top-level is {type(data).__name__}, not list"
+            )
         existing = [x for x in data if isinstance(x, dict)]
         for e in existing:
             if e.get('id') == eid:
