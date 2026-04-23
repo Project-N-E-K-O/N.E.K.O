@@ -3377,14 +3377,14 @@ function initConnectivityLights() {
         const updateGsvLightStatus = () => {
             const url = gsvUrlInput.value.trim();
             if (!url) {
-                gsvLight.dataset.status = LightStatus.NOT_CONFIGURED;
-                gsvErrorMsg.style.display = 'none';
+                updateLightStatus(gsvLight, LightStatus.NOT_CONFIGURED);
+                updateErrorMessage(gsvErrorMsg, null, '');
             } else if (url !== gsvLastUrl) {
                 // URL changed — reset to untested (same behavior as key change cascade)
-                gsvLight.dataset.status = LightStatus.UNTESTED;
-                gsvErrorMsg.style.display = 'none';
+                updateLightStatus(gsvLight, LightStatus.UNTESTED);
+                updateErrorMessage(gsvErrorMsg, null, '');
             } else if (gsvLight.dataset.status === LightStatus.NOT_CONFIGURED) {
-                gsvLight.dataset.status = LightStatus.UNTESTED;
+                updateLightStatus(gsvLight, LightStatus.UNTESTED);
             }
             gsvLastUrl = url;
         };
@@ -3402,7 +3402,8 @@ function initConnectivityLights() {
 
             gsvTestBtn.disabled = true;
             gsvTestBtn.classList.add('testing');
-            gsvLight.dataset.status = LightStatus.TESTING;
+            updateLightStatus(gsvLight, LightStatus.TESTING);
+            updateErrorMessage(gsvErrorMsg, null, '');
 
             try {
                 const resp = await fetch('/api/config/gptsovits/test_connectivity', {
@@ -3413,8 +3414,8 @@ function initConnectivityLights() {
                 });
                 const result = await resp.json();
                 if (result.success) {
-                    gsvLight.dataset.status = LightStatus.CONNECTED;
-                    gsvErrorMsg.style.display = 'none';
+                    updateLightStatus(gsvLight, LightStatus.CONNECTED);
+                    updateErrorMessage(gsvErrorMsg, null, '');
                     // --- 以下为编写连通测试时使用的音频播放验证代码，已确认可行（2026-04-22） ---
                     // --- 保留供后续调试使用，正常运行时不启用 ---
                     // if (result.audio_data && result.sample_rate) {
@@ -3437,19 +3438,18 @@ function initConnectivityLights() {
                     //     }
                     // }
                 } else {
-                    gsvLight.dataset.status = LightStatus.FAILED;
-                    // Show error details
-                    const errorText = result.error || result.error_code || 'Unknown error';
-                    gsvErrorMsg.textContent = errorText;
-                    gsvErrorMsg.style.display = 'inline-block';
-                    console.error('[GSV Test] Failed:', errorText);
+                    updateLightStatus(gsvLight, LightStatus.FAILED);
+                    updateErrorMessage(gsvErrorMsg, result.error_code || 'unknown', result.error || '');
+                    console.error('[GSV Test] Failed:', result.error || result.error_code || 'unknown');
                 }
             } catch (err) {
-                gsvLight.dataset.status = LightStatus.FAILED;
-                const errorText = err.name === 'TimeoutError' ? '请求超时' : (err.message || 'Unknown error');
-                gsvErrorMsg.textContent = errorText;
-                gsvErrorMsg.style.display = 'inline-block';
-                console.error('[GSV Test] Error:', errorText);
+                updateLightStatus(gsvLight, LightStatus.FAILED);
+                updateErrorMessage(
+                    gsvErrorMsg,
+                    err.name === 'TimeoutError' ? 'timeout' : 'unknown',
+                    err.message || ''
+                );
+                console.error('[GSV Test] Error:', err);
             }
 
             gsvTestBtn.classList.remove('testing');
