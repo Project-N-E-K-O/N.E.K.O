@@ -2662,6 +2662,7 @@ class UniversalTutorialManager {
             this.currentStep = 0;
             this.driver = null;
             console.log('[Tutorial] 首页启用 Yui Guide，跳过旧版 driver 教程启动流程');
+            this.emitTutorialStarted();
             this.notifyYuiGuidePreludeStart(validSteps);
             this.showSkipButton();
             return;
@@ -2859,6 +2860,11 @@ class UniversalTutorialManager {
         btn.style.touchAction = 'manipulation'; // 消除 CEF 的 300ms 点击延迟
 
         let skipHandled = false;
+        const handleSkipFailure = (error) => {
+            console.warn('[Tutorial] Yui Guide skip 失败，回退到 requestTutorialDestroy:', error);
+            skipHandled = false;
+            this.requestTutorialDestroy('skip');
+        };
         const handleSkipRequest = (e) => {
             if (skipHandled) {
                 return;
@@ -2877,7 +2883,18 @@ class UniversalTutorialManager {
                 ? this.ensureYuiGuideDirector()
                 : null;
             if (director && typeof director.skip === 'function') {
-                this.callYuiGuideDirector('skip', 'skip', 'skip');
+                Promise.resolve().then(async () => {
+                    try {
+                        await Promise.race([
+                            Promise.resolve(director.skip('skip', 'skip')),
+                            new Promise((_, reject) => {
+                                window.setTimeout(() => reject(new Error('skip_timeout')), 1800);
+                            })
+                        ]);
+                    } catch (error) {
+                        handleSkipFailure(error);
+                    }
+                });
                 return;
             }
 

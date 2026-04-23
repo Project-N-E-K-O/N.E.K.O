@@ -910,6 +910,8 @@
         destroy() {
             this.document.body.classList.remove('yui-taking-over');
             this.document.body.classList.remove('yui-guide-ghost-cursor-active');
+            this.document.documentElement.style.cursor = '';
+            this.document.body.style.cursor = '';
             this.clearSpotlight();
             if (this.root && this.root.isConnected) {
                 this.root.remove();

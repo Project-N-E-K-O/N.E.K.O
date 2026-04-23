@@ -1326,6 +1326,7 @@ function createSidePanelContainer(manager, prefix, options = {}) {
         }
         return 0;
     };
+    container._getInteractionGuardDelay = getInteractionGuardDelay;
     Object.assign(container.style, {
         position: 'fixed',
         display: 'none',
@@ -1427,11 +1428,17 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
     if (ownerId) sidePanel.setAttribute('data-neko-sidepanel-owner', ownerId);
 
     const collapseWithDelay = (delay = 80) => {
+        const interactionGuardDelay = typeof sidePanel._getInteractionGuardDelay === 'function'
+            ? sidePanel._getInteractionGuardDelay()
+            : 0;
+        const normalizedDelay = interactionGuardDelay > 0
+            ? Math.max(delay, interactionGuardDelay) + 80
+            : delay;
         if (sidePanel._hoverCollapseTimer) { clearTimeout(sidePanel._hoverCollapseTimer); sidePanel._hoverCollapseTimer = null; }
         sidePanel._hoverCollapseTimer = setTimeout(() => {
             if (!anchorEl.matches(':hover') && !sidePanel.matches(':hover')) sidePanel._collapse();
             sidePanel._hoverCollapseTimer = null;
-        }, delay);
+        }, normalizedDelay);
     };
 
     const expandPanel = () => {

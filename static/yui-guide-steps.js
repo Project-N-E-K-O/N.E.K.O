@@ -233,6 +233,15 @@
     steps.handoff_plugin_dashboard.navigation.windowName = 'plugin_dashboard';
     steps.handoff_plugin_dashboard.navigation.resumeScene = 'plugin_dashboard_landing';
 
+    steps.plugin_dashboard_landing = createBaseStep('plugin_dashboard_landing', 'plugin_dashboard', '#plugin-list');
+    steps.plugin_dashboard_landing.tutorial.title = '插件面板落点';
+    steps.plugin_dashboard_landing.tutorial.description = '从首页接力后，在插件面板落到插件列表区域。';
+    steps.plugin_dashboard_landing.performance.bubbleText = '这里就是插件管理面板，我先带你看看插件列表和右侧的能力区。';
+    steps.plugin_dashboard_landing.performance.voiceKey = 'plugin_dashboard_landing';
+    steps.plugin_dashboard_landing.performance.emotion = 'happy';
+    steps.plugin_dashboard_landing.performance.cursorAction = 'wobble';
+    steps.plugin_dashboard_landing.performance.cursorTarget = '#plugin-list';
+
     steps.api_key_intro = createBaseStep('api_key_intro', 'api_key', '#coreApiSelect-dropdown-trigger');
     steps.api_key_intro.tutorial.title = 'API 密钥入口';
     steps.api_key_intro.tutorial.description = '从首页接力后，先确认核心 API 服务商入口。';
@@ -265,8 +274,24 @@
         api_key: ['api_key_intro'],
         memory_browser: ['memory_browser_intro'],
         steam_workshop: ['steam_workshop_intro'],
-        plugin_dashboard: []
+        plugin_dashboard: ['plugin_dashboard_landing']
     };
+
+    const DEV_MODE = !!(
+        typeof window !== 'undefined'
+        && window.location
+        && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+    );
+
+    if (DEV_MODE) {
+        Object.keys(sceneOrder).forEach(function (page) {
+            (sceneOrder[page] || []).forEach(function (id) {
+                if (!steps[id]) {
+                    console.warn('[YuiGuideSteps] sceneOrder 引用了未定义步骤:', page, id);
+                }
+            });
+        });
+    }
 
     const registry = {
         contractVersion: CONTRACT_VERSION,

@@ -70,12 +70,62 @@ function handleDismiss() {
 }
 
 function handleKeydown(event: KeyboardEvent) {
-  if (event.key !== 'Escape' || !isActive.value) {
+  if (!isActive.value) {
     return
   }
 
-  event.preventDefault()
-  handleDismiss()
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    handleDismiss()
+    return
+  }
+
+  if (event.key !== 'Tab') {
+    return
+  }
+
+  const focusRoot = dialogRef.value
+  if (!focusRoot) {
+    event.preventDefault()
+    focusDialog()
+    return
+  }
+
+  const focusableElements = Array.from(
+    focusRoot.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )
+  ).filter((element) => {
+    return !element.hidden && element.offsetParent !== null
+  })
+
+  if (focusableElements.length === 0) {
+    event.preventDefault()
+    focusRoot.focus()
+    return
+  }
+
+  const firstElement = focusableElements[0]
+  const lastElement = focusableElements[focusableElements.length - 1]
+  if (!firstElement || !lastElement) {
+    event.preventDefault()
+    focusRoot.focus()
+    return
+  }
+  const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null
+
+  if (event.shiftKey) {
+    if (!activeElement || activeElement === firstElement || !focusRoot.contains(activeElement)) {
+      event.preventDefault()
+      lastElement.focus()
+    }
+    return
+  }
+
+  if (!activeElement || activeElement === lastElement || !focusRoot.contains(activeElement)) {
+    event.preventDefault()
+    firstElement.focus()
+  }
 }
 
 watch(

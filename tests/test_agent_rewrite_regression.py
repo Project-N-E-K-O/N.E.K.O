@@ -203,12 +203,14 @@ def test_yui_guide_steps_registry_keeps_m1_to_m4_home_flow_contract():
         "steps.handoff_memory_browser.navigation.resumeScene = 'memory_browser_intro';",
         "steps.handoff_steam_workshop.navigation.resumeScene = 'steam_workshop_intro';",
         "steps.handoff_plugin_dashboard.navigation.resumeScene = 'plugin_dashboard_landing';",
+        "steps.plugin_dashboard_landing = createBaseStep('plugin_dashboard_landing', 'plugin_dashboard', '#plugin-list');",
         "steps.api_key_intro = createBaseStep('api_key_intro', 'api_key', '#coreApiSelect-dropdown-trigger');",
         "steps.memory_browser_intro = createBaseStep('memory_browser_intro', 'memory_browser', '#memory-file-list');",
         "steps.steam_workshop_intro = createBaseStep('steam_workshop_intro', 'steam_workshop', '#workshop-tabs');",
         "api_key: ['api_key_intro']",
         "memory_browser: ['memory_browser_intro']",
         "steam_workshop: ['steam_workshop_intro']",
+        "plugin_dashboard: ['plugin_dashboard_landing']",
     ):
         assert expected in source
 
@@ -217,10 +219,10 @@ def test_home_template_loads_yui_runtime_stack_before_tutorial_manager():
     source = Path("templates/index.html").read_text(encoding="utf-8")
 
     expected_order = [
-        '<script src="/static/yui-guide-steps.js"></script>',
-        '<script src="/static/yui-guide-overlay.js"></script>',
-        '<script src="/static/yui-guide-page-handoff.js"></script>',
-        '<script src="/static/yui-guide-director.js"></script>',
+        '<script src="/static/yui-guide-steps.js?v=20260422-1"></script>',
+        '<script src="/static/yui-guide-overlay.js?v=20260422-6"></script>',
+        '<script src="/static/yui-guide-page-handoff.js?v=20260422-6"></script>',
+        '<script src="/static/yui-guide-director.js?v=20260422-6"></script>',
         '<script src="/static/universal-tutorial-manager.js"></script>',
     ]
 
@@ -230,10 +232,10 @@ def test_home_template_loads_yui_runtime_stack_before_tutorial_manager():
 
 def test_target_page_templates_load_yui_runtime_stack_before_tutorial_manager():
     expected_order = [
-        '<script src="/static/yui-guide-steps.js"></script>',
-        '<script src="/static/yui-guide-overlay.js"></script>',
-        '<script src="/static/yui-guide-page-handoff.js"></script>',
-        '<script src="/static/yui-guide-director.js"></script>',
+        '<script src="/static/yui-guide-steps.js?v=20260422-1"></script>',
+        '<script src="/static/yui-guide-overlay.js?v=20260422-6"></script>',
+        '<script src="/static/yui-guide-page-handoff.js?v=20260422-6"></script>',
+        '<script src="/static/yui-guide-director.js?v=20260422-6"></script>',
     ]
 
     for template_path, tutorial_manager_script in (

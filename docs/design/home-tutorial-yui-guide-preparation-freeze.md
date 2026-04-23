@@ -100,14 +100,17 @@ type YuiGuideStep = {
   };
   performance?: {
     bubbleText?: string;
+    bubbleTextKey?: string;
     voiceKey?: string;
     emotion?: string;
     cursorAction?: 'move' | 'click' | 'wobble' | 'none';
     cursorTarget?: string;
+    settingsMenuId?: string;
     cursorSpeedMultiplier?: number;
     delayMs?: number;
     interruptible?: boolean;
     resistanceVoices?: string[];
+    resistanceVoiceKeys?: string[];
   };
   navigation?: {
     openUrl?: string;

@@ -181,6 +181,7 @@
     var HANDOFF_TOKEN_TTL_MS = 5 * 60 * 1000;
     var HANDOFF_FLOW_ID = 'home_yui_guide_v1';
     var DEFAULT_PLUGIN_DASHBOARD_ORIGIN = 'http://127.0.0.1:48916';
+    var _processedPluginDashboardCompletionTokens = {};
 
     function generateTokenId() {
         return 'h_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 10);
@@ -916,9 +917,13 @@
             }
 
             if (toggleId === 'agent-user-plugin' && actionId === 'management-panel') {
-                button.click();
-                return waitForWindowOpen('plugin_dashboard', 6000).then(function (childWin) {
-                    return !!childWin;
+                return openPluginDashboard('plugin_dashboard_landing').then(function (childWin) {
+                    if (childWin) {
+                        return waitForWindowOpen('plugin_dashboard', 6000).then(function (openedWindow) {
+                            return !!openedWindow;
+                        });
+                    }
+                    return false;
                 });
             }
 
@@ -968,6 +973,10 @@
     function openPluginDashboard(resumeScene) {
         var scene = resumeScene || 'plugin_dashboard_landing';
         var tokenObj = createHandoffToken('plugin_dashboard', scene);
+        if (!tokenObj || !tokenObj.token) {
+            console.warn('[YuiGuideHandoff] openPluginDashboard: token 创建失败，取消打开');
+            return Promise.resolve(null);
+        }
         var tokenId = tokenObj ? tokenObj.token : '';
         var params = [
             'yui_guide=1',
@@ -1022,8 +1031,23 @@
             if (!expectedWindow || expectedWindow.closed) return;
             if (event.source !== expectedWindow) return;
             if (!expectedOrigin || event.origin !== expectedOrigin) return;
+            var detail = event.data.detail || {};
+            var flowId = detail.flow_id || detail.flow || '';
+            var tokenId = detail.handoff_token || detail.token || '';
+            var tokenObj = readHandoffToken();
+            if (!tokenObj || !tokenId) return;
+            if (flowId !== (tokenObj.flow_id || HANDOFF_FLOW_ID)) return;
+            if (tokenId !== tokenObj.token) return;
+            if (_processedPluginDashboardCompletionTokens[tokenId]) return;
 
-            onComplete(event.data.detail || {});
+            _processedPluginDashboardCompletionTokens[tokenId] = Date.now();
+            Object.keys(_processedPluginDashboardCompletionTokens).forEach(function (processedToken) {
+                if ((Date.now() - _processedPluginDashboardCompletionTokens[processedToken]) > HANDOFF_TOKEN_TTL_MS) {
+                    delete _processedPluginDashboardCompletionTokens[processedToken];
+                }
+            });
+
+            onComplete(detail);
         }
 
         window.addEventListener('message', handler);

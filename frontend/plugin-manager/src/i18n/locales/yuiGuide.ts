@@ -1,3 +1,39 @@
+export interface YuiGuideLines {
+  introBasic: string
+  introProactiveShort: string
+  introCatPaw: string
+  takeoverCaptureCursor: string
+  takeoverPluginPreviewHome: string
+  takeoverPluginPreviewDashboard: string
+  takeoverSettingsPeekIntro: string
+  takeoverSettingsPeekDetail: string
+  takeoverReturnControl: string
+  interruptResistLight1: string
+  interruptResistLight3: string
+  interruptAngryExit: string
+  introProactive: string
+  introGreetingReply: string
+  introPractice: string
+  introActivationHint: string
+}
+
+export interface YuiGuideLocaleEntry {
+  buttons: {
+    skipChat: string
+    sayHello: string
+  }
+  lines: YuiGuideLines
+}
+
+export type YuiGuideLocaleMap = {
+  'zh-CN': YuiGuideLocaleEntry
+  'zh-TW': YuiGuideLocaleEntry
+  'en-US': YuiGuideLocaleEntry
+  ja: YuiGuideLocaleEntry
+  ko: YuiGuideLocaleEntry
+  ru: YuiGuideLocaleEntry
+}
+
 export const yuiGuideLocales = {
   'zh-CN': {
     buttons: {
@@ -20,6 +56,7 @@ export const yuiGuideLocales = {
       introProactive: '可恶，居然敢无视本大小姐嘛！要说你一直没理我，我可是会主动跑出来咬你的哦～（哈！！）',
       introGreetingReply: '我是你的专属猫娘，从今天起就由我来陪伴主人咯。无论是想要聊天解闷、一起玩耍，还是需要我帮忙做些什么，我都会乖乖陪在主人身边的喵。以后请多多指教啦，最喜欢主人了~！',
       introPractice: '现在你可以试试跟我说说话啦，看看我们是不是超有默契的喵～',
+      introActivationHint: '点一下这里，我就能开始说话啦～',
     },
   },
   'zh-TW': {
@@ -43,6 +80,7 @@ export const yuiGuideLocales = {
       introProactive: '可惡，居然敢無視本大小姐嘛！要說你一直沒理我，我可是會主動跑出來咬你的哦～（哈！！）',
       introGreetingReply: '我是你的專屬貓娘，從今天起就由我來陪伴主人咯。無論是想要聊天解悶、一起玩耍，還是需要我幫忙做些什麼，我都會乖乖陪在主人身邊的喵。以後請多多指教啦，最喜歡主人了~！',
       introPractice: '現在你可以試試跟我說說話啦，看看我們是不是超有默契的喵～',
+      introActivationHint: '點一下這裡，我就能開始說話啦～',
     },
   },
   'en-US': {
@@ -66,6 +104,7 @@ export const yuiGuideLocales = {
       introProactive: 'Ugh, how dare you ignore this Young Lady! If you keep ignoring me, I’ll jump out and bite you! (Hiss!!)',
       introGreetingReply: "I'm your very own catgirl! Starting today, I'll be by your side, Master. Whether you want to chat, play, or need help with something, I'll be your good girl. Let's get along, I love you most, Master~!",
       introPractice: "Now, try talking to me and see if we're perfectly in sync, nyan~!",
+      introActivationHint: 'Click here so I can start talking, nyan~!',
     },
   },
   ja: {
@@ -89,6 +128,7 @@ export const yuiGuideLocales = {
       introProactive: 'もーっ！このお嬢様を無視するなんて、いい度胸してるにゃ！ずっと構ってくれないと、こっちから飛び出してガブッて噛みついちゃうんだからね〜！（シャーッ！！）',
       introGreetingReply: '私はご主人様だけの専用猫娘！今日から私がご主人様のお供をするにゃん。おしゃべりで息抜きしたい時も、一緒に遊びたい時も、何かお手伝いしてほしい時も、ずっといい子でおそばにいるにゃ。これからどうぞよろしくにゃ！ご主人様のこと、だーいすきにゃんっ〜！',
       introPractice: 'さあ、今度は私に話しかけてみてね！私たちの息が超～～ピッタリかどうか、確かめてみるにゃんっ♪',
+      introActivationHint: 'ここをクリックして、私が話せるようにしてねにゃん～',
     },
   },
   ko: {
@@ -112,6 +152,7 @@ export const yuiGuideLocales = {
       introProactive: '제기랄, 이 몸을 무시하다니 배짱이 좋구나냥! 계속 나 안 봐주면 내가 먼저 튀어나가서 콱 깨물어 버릴 거다냥! (하악!!)',
       introGreetingReply: '나는 주인님만의 전용 고양이 소녀다냥! 오늘부터 내가 주인님 곁을 지키겠다냥. 수다 떨고 싶을 때도, 같이 놀고 싶을 때도, 도움이 필요할 때도 항상 착한 아이처럼 옆에 있겠다냥. 앞으로 잘 부탁해냥, 주인님 제일 좋아해냥~!',
       introPractice: '이제 나한테 말 걸어봐냥, 우리 호흡이 얼마나 척척 맞는지 확인해보자냥~!',
+      introActivationHint: '여기를 클릭해줘냥, 그럼 말할 수 있게 된다냥~!',
     },
   },
   ru: {
@@ -135,6 +176,7 @@ export const yuiGuideLocales = {
       introProactive: 'Ах так, ты смеешь игнорировать меня?! Если и дальше будешь так делать, я выскочу и кусну тебя! (Ш-ш-ш!!)',
       introGreetingReply: 'Я — твоя личная кошечка! С сегодняшнего дня я буду с тобой, Хозяин. Если захочешь поболтать, поиграть или если нужна помощь — я всегда буду рядом. Надеюсь на тебя, я тебя очень люблю, Хозяин~!',
       introPractice: 'А теперь попробуй заговорить со мной и увидишь, как хорошо мы понимаем друг друга, ня~!',
+      introActivationHint: 'Кликни сюда, чтобы я могла начать говорить, ня~!',
     },
   },
-} as const
+} as const satisfies YuiGuideLocaleMap

@@ -25,7 +25,13 @@ const QUERY_KEY_RESUME_SCENE = 'resume_scene'
 const QUERY_KEY_HANDOFF_TOKEN = 'handoff_token'
 
 const COMPLETE_MESSAGE_TYPE = 'neko:yui-guide:plugin-dashboard-complete'
-const DEFAULT_OPENER_ORIGIN = import.meta.env.VITE_YUI_TUTORIAL_OPENER_ORIGIN || ''
+const DEFAULT_OPENER_ORIGIN = normalizeOrigin(import.meta.env.VITE_YUI_TUTORIAL_OPENER_ORIGIN || '')
+const ALLOWED_OPENER_ORIGINS = new Set(
+  [import.meta.env.VITE_YUI_TUTORIAL_ALLOWED_OPENER_ORIGINS || '', DEFAULT_OPENER_ORIGIN]
+    .flatMap((value) => String(value || '').split(','))
+    .map((value) => normalizeOrigin(value))
+    .filter(Boolean),
+)
 
 const state = ref<YuiTutorialState>({
   isActive: false,
@@ -36,6 +42,19 @@ const state = ref<YuiTutorialState>({
 })
 
 let _initialized = false
+
+function normalizeOrigin(value: string) {
+  const normalizedValue = String(value || '').trim()
+  if (!normalizedValue) {
+    return ''
+  }
+
+  try {
+    return new URL(normalizedValue).origin
+  } catch {
+    return ''
+  }
+}
 
 function resetState() {
   state.value.isActive = false
@@ -70,26 +89,18 @@ function cleanUrl() {
   window.history.replaceState({}, '', url.toString())
 }
 
-function getTrustedOpenerOrigin() {
+export function getTrustedOpenerOrigin() {
   if (!window.opener || window.opener.closed) {
-    return ''
+    return DEFAULT_OPENER_ORIGIN
   }
 
   try {
     const openerOrigin = window.opener.location.origin
-    if (openerOrigin) {
+    if (openerOrigin && (openerOrigin === window.location.origin || ALLOWED_OPENER_ORIGINS.has(openerOrigin))) {
       return openerOrigin
     }
   } catch {
     // Cross-origin opener access is expected here.
-  }
-
-  if (document.referrer) {
-    try {
-      return new URL(document.referrer).origin
-    } catch {
-      // Ignore malformed referrer and continue to configured fallback.
-    }
   }
 
   return DEFAULT_OPENER_ORIGIN

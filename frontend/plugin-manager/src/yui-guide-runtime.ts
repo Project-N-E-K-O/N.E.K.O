@@ -1,6 +1,7 @@
 import defaultGhostCursorUrl from '../../../static/assets/tutorial/ghost-cursor/default-ghost-cursor.png'
 import clickGhostCursorUrl from '../../../static/assets/tutorial/ghost-cursor/click-ghost-cursor.png'
 import { getLocale } from './i18n'
+import { getTrustedOpenerOrigin } from './composables/useYuiTutorialBridge'
 
 const START_EVENT = 'neko:yui-guide:plugin-dashboard:start'
 const READY_EVENT = 'neko:yui-guide:plugin-dashboard:ready'
@@ -17,7 +18,8 @@ const GUIDE_AUDIO_BY_KEY = {
 const ROOT_ID = 'yui-guide-plugin-dashboard-runtime'
 const SVG_NS = 'http://www.w3.org/2000/svg'
 const BACKDROP_MASK_ID = `${ROOT_ID}-mask`
-const ALLOWED_ORIGINS = new Set([window.location.origin])
+const TRUSTED_OPENER_ORIGIN = getTrustedOpenerOrigin()
+const ALLOWED_ORIGINS = new Set(TRUSTED_OPENER_ORIGIN ? [TRUSTED_OPENER_ORIGIN] : [])
 
 type StartPayload = {
   line?: string
@@ -362,6 +364,10 @@ class PluginDashboardGuideRuntime {
     this.setSpotlight(this.spotlightElement)
   }
 
+  isCurrentRun(sessionId: string) {
+    return this.running && this.activeSessionId === sessionId
+  }
+
   ensureRoot() {
     if (this.root && this.root.isConnected) {
       return
@@ -424,7 +430,10 @@ class PluginDashboardGuideRuntime {
 
   notify(type: string, sessionId: string) {
     try {
-      const targetOrigin = ALLOWED_ORIGINS.values().next().value || window.location.origin
+      const targetOrigin = TRUSTED_OPENER_ORIGIN
+      if (!targetOrigin) {
+        return
+      }
       window.opener?.postMessage({
         type,
         sessionId,
@@ -580,7 +589,7 @@ class PluginDashboardGuideRuntime {
     this.cursorPosition = { x, y }
   }
 
-  moveCursor(x: number, y: number, durationMs = 480) {
+  moveCursor(x: number, y: number, durationMs = 480, isCurrent?: () => boolean) {
     this.ensureRoot()
     if (!this.cursorShell) {
       return Promise.resolve()
@@ -612,6 +621,10 @@ class PluginDashboardGuideRuntime {
 
       this.cursorShell?.addEventListener('transitionend', handleEnd)
       window.requestAnimationFrame(() => {
+        if (isCurrent && !isCurrent()) {
+          finish()
+          return
+        }
         if (this.cursorShell) {
           this.cursorShell.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`
         }
@@ -621,13 +634,13 @@ class PluginDashboardGuideRuntime {
     })
   }
 
-  async moveCursorToElement(element: Element | null, durationMs = 480) {
+  async moveCursorToElement(element: Element | null, durationMs = 480, isCurrent?: () => boolean) {
     const rect = this.getRect(element)
     if (!rect) {
       return false
     }
 
-    await this.moveCursor(rect.left + rect.width / 2, rect.top + rect.height / 2, durationMs)
+    await this.moveCursor(rect.left + rect.width / 2, rect.top + rect.height / 2, durationMs, isCurrent)
     return true
   }
 
@@ -644,13 +657,17 @@ class PluginDashboardGuideRuntime {
     }, 260)
   }
 
-  async animateScroll(container: HTMLElement, deltaY: number, durationMs: number) {
+  async animateScroll(container: HTMLElement, deltaY: number, durationMs: number, isCurrent?: () => boolean) {
     const startedAt = performance.now()
     const initialTop = container.scrollTop
     const targetTop = initialTop + deltaY
 
     return new Promise<void>((resolve) => {
       const tick = (now: number) => {
+        if (isCurrent && !isCurrent()) {
+          resolve()
+          return
+        }
         const progress = clamp((now - startedAt) / durationMs, 0, 1)
         container.scrollTop = initialTop + ((targetTop - initialTop) * progress)
         if (progress >= 1) {
@@ -664,7 +681,7 @@ class PluginDashboardGuideRuntime {
     })
   }
 
-  async runEllipse(container: HTMLElement, durationMs: number) {
+  async runEllipse(container: HTMLElement, durationMs: number, isCurrent?: () => boolean) {
     const rect = this.getRect(container)
     if (!rect) {
       return
@@ -678,6 +695,10 @@ class PluginDashboardGuideRuntime {
 
     await new Promise<void>((resolve) => {
       const tick = (now: number) => {
+        if (isCurrent && !isCurrent()) {
+          resolve()
+          return
+        }
         const progress = clamp((now - startedAt) / durationMs, 0, 1)
         const angle = progress * Math.PI * 2
         const x = centerX + Math.cos(angle) * radiusX
@@ -747,9 +768,13 @@ class PluginDashboardGuideRuntime {
     this.cleanup()
     this.running = true
     this.activeSessionId = sessionId
+    const isCurrent = () => this.isCurrentRun(sessionId)
     this.ensureRoot()
     window.addEventListener('resize', this.boundRefreshSpotlight, true)
     window.addEventListener('scroll', this.boundRefreshSpotlight, true)
+    if (!isCurrent()) {
+      return
+    }
     this.showCursor(window.innerWidth / 2, Math.max(56, window.innerHeight / 2))
 
     const pluginButton = await this.waitForElement(
@@ -761,41 +786,86 @@ class PluginDashboardGuideRuntime {
       5000,
     )
 
-    if (!pluginButton || !mainContainer) {
-      this.notify(DONE_EVENT, sessionId)
-      this.cleanup()
+    if (!isCurrent()) {
       return
     }
 
+    if (!pluginButton || !mainContainer) {
+      if (isCurrent()) {
+        this.notify(DONE_EVENT, sessionId)
+        this.cleanup()
+      }
+      return
+    }
+
+    if (!isCurrent()) {
+      return
+    }
     this.notify(READY_EVENT, sessionId)
 
     const pluginRect = this.getRect(pluginButton)
     const startX = pluginRect ? pluginRect.left + pluginRect.width / 2 - 56 : window.innerWidth / 2
     const startY = pluginRect ? pluginRect.top + pluginRect.height / 2 - 24 : window.innerHeight / 2
+    if (!isCurrent()) {
+      return
+    }
     this.showCursor(startX, startY)
     this.setSpotlight(pluginButton)
-    await this.moveCursorToElement(pluginButton, 700)
+    await this.moveCursorToElement(pluginButton, 700, isCurrent)
+    if (!isCurrent()) {
+      return
+    }
     this.clickCursor()
+    if (!isCurrent()) {
+      return
+    }
     pluginButton.click()
     await wait(280)
+    if (!isCurrent()) {
+      return
+    }
 
     const speechPromise = this.speakLine(payload.line || '', {
       voiceKey: payload.voiceKey,
       audioUrl: payload.audioUrl,
     })
 
+    if (!isCurrent()) {
+      return
+    }
     this.setSpotlight(mainContainer)
-    await this.moveCursorToElement(mainContainer, 780)
-    await this.animateScroll(mainContainer, 150, 1000)
-    await this.animateScroll(mainContainer, -150, 1000)
-    await this.runEllipse(mainContainer, 7000)
+    await this.moveCursorToElement(mainContainer, 780, isCurrent)
+    if (!isCurrent()) {
+      return
+    }
+    await this.animateScroll(mainContainer, 150, 1000, isCurrent)
+    if (!isCurrent()) {
+      return
+    }
+    await this.animateScroll(mainContainer, -150, 1000, isCurrent)
+    if (!isCurrent()) {
+      return
+    }
+    await this.runEllipse(mainContainer, 7000, isCurrent)
+    if (!isCurrent()) {
+      return
+    }
     await speechPromise
+    if (!isCurrent()) {
+      return
+    }
 
     this.notify(DONE_EVENT, sessionId)
+    if (!isCurrent()) {
+      return
+    }
     this.cleanup()
 
     if (payload.closeOnDone !== false) {
       await wait(120)
+      if (!isCurrent()) {
+        return
+      }
       window.close()
     }
   }
@@ -803,7 +873,6 @@ class PluginDashboardGuideRuntime {
 
 export function initPluginDashboardYuiGuideRuntime() {
   const runtime = new PluginDashboardGuideRuntime()
-  let expectedSource: MessageEventSource | null = window.opener || null
 
   window.addEventListener('message', (event: MessageEvent) => {
     const data = event.data
@@ -811,16 +880,9 @@ export function initPluginDashboardYuiGuideRuntime() {
       return
     }
 
-    if (!ALLOWED_ORIGINS.has(event.origin) && event.source !== window.opener) {
+    if (!ALLOWED_ORIGINS.has(event.origin)) {
       return
     }
-
-    const openerSource = window.opener || null
-    const validSource = expectedSource || openerSource
-    if (!validSource || event.source !== validSource) {
-      return
-    }
-    expectedSource = validSource
 
     const sessionId = typeof data.sessionId === 'string' ? data.sessionId : ''
     if (!sessionId) {
