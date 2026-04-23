@@ -31,7 +31,7 @@ import os
 import re
 import uuid
 from datetime import datetime
-from typing import Iterable
+from typing import Callable, Iterable
 
 from config import ARCHIVE_FILE_MAX_ENTRIES
 from utils.file_utils import (
@@ -82,20 +82,28 @@ def _pick_shard_path_for_today(
 ) -> str:
     """Decide which shard path to append into for `today`.
 
-    Strategy:
-    - If today's most-recent (lexicographically last) shard exists and has
-      < ARCHIVE_FILE_MAX_ENTRIES entries → reuse it.
-    - Otherwise → create a fresh shard with a new uuid8 (re-roll if it
-      collides with an existing filename).
+    Strategy (chatgpt-codex review #934 — earlier "lexical-last only"
+    strategy was buggy because the uuid8 suffix is RANDOM, so the
+    lexically-last shard is not necessarily the most-recently-written one
+    nor the one with capacity. If lex-last happened to be full but an
+    earlier same-day shard still had room, every append rolled a fresh
+    shard → unbounded shard proliferation):
+
+    - Scan ALL of today's shards in lex order; return the FIRST one with
+      ``current_size < ARCHIVE_FILE_MAX_ENTRIES``. This naturally coalesces
+      same-day appends into earlier shards (a shard fills before the next
+      one is touched) while staying deterministic for the
+      `apick_today_shard_path` predict-then-write contract.
+    - If every same-day shard is full (or there are none) → mint a fresh
+      uuid8 shard, re-rolling on the (vanishingly rare) filename collision.
     """
     todays = [
         (fn, u8) for (fn, d, u8) in _list_shard_files(archive_dir)
         if d == today
     ]
-    if todays:
-        latest_fn, _ = todays[-1]
-        if current_size_by_filename.get(latest_fn, 0) < ARCHIVE_FILE_MAX_ENTRIES:
-            return os.path.join(archive_dir, latest_fn)
+    for fn, _ in todays:
+        if current_size_by_filename.get(fn, 0) < ARCHIVE_FILE_MAX_ENTRIES:
+            return os.path.join(archive_dir, fn)
 
     existing_names = {fn for fn, _, _ in _list_shard_files(archive_dir)}
     while True:
@@ -170,13 +178,24 @@ async def apick_today_shard_path(
 
 
 async def aappend_to_shard(
-    archive_dir: str, entries: list[dict], *, now: datetime | None = None,
+    archive_dir: str, entries: list[dict], *,
+    now: datetime | None = None,
+    stamper: Callable[[list[dict], str], None] | None = None,
 ) -> str:
     """Append `entries` into today's shard (creating new ones as needed).
 
     Returns the absolute path of the LAST shard written to. If the entries
     overflow `ARCHIVE_FILE_MAX_ENTRIES` for today's currently-open shard,
     they spill into one or more freshly-created shards.
+
+    The optional ``stamper`` callback (chatgpt-codex / coderabbit review
+    #934) is invoked as ``stamper(chunk, shard_basename)`` immediately
+    BEFORE the chunk is serialized to disk — this lets callers attach
+    per-chunk metadata (notably ``archive_shard_path`` so on-disk records
+    carry their own correct shard filename even when overflow spreads
+    one batch across multiple shards). Stamper mutates entries in place;
+    its return value is ignored. Without a stamper the previous
+    "write-only" behavior is preserved.
 
     Atomicity:
       Each shard write goes through `atomic_write_json_async`. The
@@ -221,6 +240,11 @@ async def aappend_to_shard(
             continue
         chunk = remaining[:capacity]
         remaining = remaining[capacity:]
+        if stamper is not None:
+            # Stamp BEFORE merge+write so the on-disk record matches
+            # what consumers see. Per-chunk basename is correct even
+            # under overflow.
+            stamper(chunk, os.path.basename(shard_path))
         merged = existing + chunk
         await atomic_write_json_async(shard_path, merged, indent=2, ensure_ascii=False)
         sizes[os.path.basename(shard_path)] = len(merged)
@@ -229,11 +253,15 @@ async def aappend_to_shard(
 
 
 def append_to_shard_sync(
-    archive_dir: str, entries: list[dict], *, now: datetime | None = None,
+    archive_dir: str, entries: list[dict], *,
+    now: datetime | None = None,
+    stamper: Callable[[list[dict], str], None] | None = None,
 ) -> str:
     """Sync twin of `aappend_to_shard` — symmetry with sync save paths
     (CLAUDE.md). Used by sync test fixtures and by the one-shot migration
     when called from a non-async context.
+
+    See ``aappend_to_shard`` for ``stamper`` semantics.
     """
     if not entries:
         return ""
@@ -275,6 +303,8 @@ def append_to_shard_sync(
             continue
         chunk = remaining[:capacity]
         remaining = remaining[capacity:]
+        if stamper is not None:
+            stamper(chunk, os.path.basename(shard_path))
         merged = existing + chunk
         atomic_write_json(shard_path, merged, indent=2, ensure_ascii=False)
         sizes[os.path.basename(shard_path)] = len(merged)

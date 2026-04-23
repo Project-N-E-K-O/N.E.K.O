@@ -30,8 +30,6 @@ import pytest
 from config import (
     ARCHIVE_FILE_MAX_ENTRIES,
     EVIDENCE_ARCHIVE_DAYS,
-    EVIDENCE_DISP_HALF_LIFE_DAYS,
-    EVIDENCE_REIN_HALF_LIFE_DAYS,
 )
 
 
@@ -79,23 +77,29 @@ def _install(tmpdir: str):
 # ── decay math snapshot (parametrized) ──────────────────────────────
 
 
-@pytest.mark.parametrize("age_days,value,half_life,expected", [
-    # Fresh signal — no decay
-    (0.0, 2.0, 30.0, 2.0),
-    # One half-life
-    (30.0, 2.0, 30.0, 1.0),
-    # Two half-lives
-    (60.0, 2.0, 30.0, 0.5),
-    # Disputation slower
-    (180.0, 2.0, 180.0, 1.0),
-    (90.0, 1.0, 180.0, 0.5 ** 0.5),  # ~0.707
+@pytest.mark.parametrize("func,age_days,value,half_life,expected", [
+    # Reinforcement — fresh signal, no decay
+    ("rein", 0.0, 2.0, 30.0, 2.0),
+    # Reinforcement — one half-life
+    ("rein", 30.0, 2.0, 30.0, 1.0),
+    # Reinforcement — two half-lives
+    ("rein", 60.0, 2.0, 30.0, 0.5),
+    # Disputation — one half-life (slower; default 180d)
+    ("disp", 180.0, 2.0, 180.0, 1.0),
+    # Disputation — half a half-life
+    ("disp", 90.0, 1.0, 180.0, 0.5 ** 0.5),  # ~0.707
 ])
-def test_effective_value_decay_snapshots(age_days, value, half_life, expected):
-    """Direct math: 0.5 ** (age/half_life) * value, tolerance 1e-6."""
+def test_effective_value_decay_snapshots(func, age_days, value, half_life, expected):
+    """Direct math: 0.5 ** (age/half_life) * value, tolerance 1e-6.
+
+    `func` ("rein" | "disp") explicitly dispatches to the right helper
+    so the test doesn't rely on numeric-equality probes against the
+    module constants (coderabbit nit, PR #934).
+    """
     fixed_now = datetime(2026, 4, 23, 12, 0, 0)
     past = fixed_now - timedelta(days=age_days)
 
-    if half_life == EVIDENCE_REIN_HALF_LIFE_DAYS or half_life == 30.0:
+    if func == "rein":
         from memory.evidence import effective_reinforcement
         # Patch the module constant to the test's chosen half_life
         with patch("memory.evidence.EVIDENCE_REIN_HALF_LIFE_DAYS", half_life):
@@ -227,6 +231,321 @@ async def test_shard_append_rolls_multiple_shards_for_huge_batch(tmp_path):
         with open(os.path.join(archive_dir, fn), encoding="utf-8") as f:
             total += len(json.load(f))
     assert total == n
+
+
+# ── shard selection by capacity (chatgpt-codex review #934) ─────────
+
+
+@pytest.mark.asyncio
+async def test_shard_picker_fills_earlier_same_day_shard_first(tmp_path):
+    """When today already has multiple shards and the lexically-LAST one
+    is full but an earlier one still has room, append must coalesce into
+    the earlier shard rather than rolling a brand-new third shard.
+
+    Regression for chatgpt-codex P1 (PR #934): the old `_pick_shard_path`
+    only checked `todays[-1]`, so a full lex-last + non-full lex-earlier
+    state caused unbounded shard proliferation."""
+    from memory.archive_shards import (
+        _list_shard_files,
+        _pick_shard_path_for_today,
+        aappend_to_shard,
+    )
+
+    archive_dir = str(tmp_path / "reflection_archive")
+    fixed_now = datetime(2026, 4, 23, 12, 0, 0)
+    today = fixed_now.date().isoformat()
+
+    # Manually craft two same-day shards: "earlier" (lex-smaller uuid8 = "0")
+    # holds a few entries with capacity left; "later" (lex-larger uuid8 = "f")
+    # is full. Real production filenames use random uuid8 — here we force the
+    # lex order so the test is deterministic.
+    os.makedirs(archive_dir, exist_ok=True)
+    earlier_fn = f"{today}_00000000.json"
+    later_fn = f"{today}_ffffffff.json"
+    earlier_entries = [{"id": f"early{i}", "text": "x"} for i in range(3)]
+    later_entries = [
+        {"id": f"late{i}", "text": "x"} for i in range(ARCHIVE_FILE_MAX_ENTRIES)
+    ]
+    with open(os.path.join(archive_dir, earlier_fn), "w", encoding="utf-8") as f:
+        json.dump(earlier_entries, f)
+    with open(os.path.join(archive_dir, later_fn), "w", encoding="utf-8") as f:
+        json.dump(later_entries, f)
+
+    # Direct picker check: must return the earlier (non-full) shard, not
+    # roll a fresh one and not return the full lex-last shard.
+    sizes = {earlier_fn: len(earlier_entries), later_fn: len(later_entries)}
+    picked = _pick_shard_path_for_today(archive_dir, today, sizes)
+    assert os.path.basename(picked) == earlier_fn, (
+        f"expected coalesce into {earlier_fn}, got {os.path.basename(picked)}"
+    )
+
+    # End-to-end: appending one entry should land in the earlier shard;
+    # total shard count stays at 2, no new file created.
+    new_entry = [{"id": "added", "text": "y"}]
+    await aappend_to_shard(archive_dir, new_entry, now=fixed_now)
+    shards = _list_shard_files(archive_dir)
+    assert len(shards) == 2, (
+        f"expected exactly 2 shards (no proliferation), got "
+        f"{[s[0] for s in shards]}"
+    )
+    with open(os.path.join(archive_dir, earlier_fn), encoding="utf-8") as f:
+        earlier_data = json.load(f)
+    assert any(e.get("id") == "added" for e in earlier_data), (
+        "new entry should have landed in the earlier shard"
+    )
+    with open(os.path.join(archive_dir, later_fn), encoding="utf-8") as f:
+        later_data = json.load(f)
+    assert all(e.get("id") != "added" for e in later_data), (
+        "full lex-last shard must not have been touched"
+    )
+
+
+@pytest.mark.asyncio
+async def test_shard_picker_rolls_new_shard_when_all_today_full(tmp_path):
+    """When every same-day shard is full, picker must mint a fresh
+    uuid8 shard (not return one of the full ones)."""
+    from memory.archive_shards import (
+        _list_shard_files,
+        aappend_to_shard,
+    )
+
+    archive_dir = str(tmp_path / "reflection_archive")
+    fixed_now = datetime(2026, 4, 23, 12, 0, 0)
+    today = fixed_now.date().isoformat()
+    os.makedirs(archive_dir, exist_ok=True)
+
+    # Two pre-existing same-day shards, both saturated.
+    full_a_fn = f"{today}_00000000.json"
+    full_b_fn = f"{today}_aaaaaaaa.json"
+    saturated = [{"id": f"x{i}"} for i in range(ARCHIVE_FILE_MAX_ENTRIES)]
+    for fn in (full_a_fn, full_b_fn):
+        with open(os.path.join(archive_dir, fn), "w", encoding="utf-8") as f:
+            json.dump(saturated, f)
+
+    await aappend_to_shard(archive_dir, [{"id": "spillover"}], now=fixed_now)
+    shards = _list_shard_files(archive_dir)
+    assert len(shards) == 3, f"expected 3 shards, got {[s[0] for s in shards]}"
+    new_fn = next(
+        s[0] for s in shards if s[0] not in {full_a_fn, full_b_fn}
+    )
+    with open(os.path.join(archive_dir, new_fn), encoding="utf-8") as f:
+        assert json.load(f) == [{"id": "spillover"}]
+
+
+# ── stamper callback applies metadata pre-write (chatgpt-codex P2) ──
+
+
+@pytest.mark.asyncio
+async def test_aappend_to_shard_stamper_runs_before_write(tmp_path):
+    """The `stamper` callback must mutate each chunk BEFORE serialization
+    so the on-disk record carries the stamped fields. Regression for
+    chatgpt-codex P2 / coderabbit Major (PR #934)."""
+    from memory.archive_shards import aappend_to_shard
+
+    archive_dir = str(tmp_path / "ref_arc")
+    fixed_now = datetime(2026, 4, 23, 12, 0, 0)
+    entries = [{"id": f"r{i}", "text": "x"} for i in range(3)]
+
+    def _stamp(chunk, basename):
+        for e in chunk:
+            e["archived_at"] = fixed_now.isoformat()
+            e["archive_shard_path"] = basename
+
+    path = await aappend_to_shard(
+        archive_dir, list(entries), now=fixed_now, stamper=_stamp,
+    )
+    with open(path, encoding="utf-8") as f:
+        on_disk = json.load(f)
+    assert len(on_disk) == 3
+    for e in on_disk:
+        assert e["archived_at"] == fixed_now.isoformat()
+        assert e["archive_shard_path"] == os.path.basename(path)
+
+
+@pytest.mark.asyncio
+async def test_aappend_to_shard_stamper_uses_correct_path_per_chunk_on_overflow(
+    tmp_path,
+):
+    """When one batch overflows into multiple shards, each entry's
+    stamped `archive_shard_path` must match the SHARD IT WAS WRITTEN TO,
+    not just the last shard the call touched. Regression for chatgpt-
+    codex P2 (PR #934)."""
+    from memory.archive_shards import _list_shard_files, aappend_to_shard
+
+    archive_dir = str(tmp_path / "ref_arc")
+    fixed_now = datetime(2026, 4, 23, 12, 0, 0)
+    n = ARCHIVE_FILE_MAX_ENTRIES + 5
+    entries = [{"id": f"r{i}", "text": "x"} for i in range(n)]
+
+    def _stamp(chunk, basename):
+        for e in chunk:
+            e["archive_shard_path"] = basename
+
+    await aappend_to_shard(
+        archive_dir, list(entries), now=fixed_now, stamper=_stamp,
+    )
+    shards = _list_shard_files(archive_dir)
+    assert len(shards) == 2
+    # Map every on-disk entry to the shard it lives in; verify the stamped
+    # field matches the actual filename (not the "last shard touched").
+    for fn, _, _ in shards:
+        with open(os.path.join(archive_dir, fn), encoding="utf-8") as f:
+            data = json.load(f)
+        for e in data:
+            assert e["archive_shard_path"] == fn, (
+                f"entry {e.get('id')} stamped with "
+                f"{e['archive_shard_path']!r} but lives in {fn!r}"
+            )
+
+
+def test_append_to_shard_sync_stamper_uses_correct_path_per_chunk_on_overflow(
+    tmp_path,
+):
+    """Sync twin of the async overflow-stamper test — keeps the symmetry
+    invariant (CLAUDE.md "对偶性是硬性要求")."""
+    from memory.archive_shards import _list_shard_files, append_to_shard_sync
+
+    archive_dir = str(tmp_path / "ref_arc")
+    fixed_now = datetime(2026, 4, 23, 12, 0, 0)
+    n = ARCHIVE_FILE_MAX_ENTRIES + 3
+    entries = [{"id": f"r{i}", "text": "x"} for i in range(n)]
+
+    def _stamp(chunk, basename):
+        for e in chunk:
+            e["archive_shard_path"] = basename
+
+    append_to_shard_sync(
+        archive_dir, list(entries), now=fixed_now, stamper=_stamp,
+    )
+    shards = _list_shard_files(archive_dir)
+    assert len(shards) == 2
+    for fn, _, _ in shards:
+        with open(os.path.join(archive_dir, fn), encoding="utf-8") as f:
+            data = json.load(f)
+        for e in data:
+            assert e["archive_shard_path"] == fn
+
+
+@pytest.mark.asyncio
+async def test_age_based_archival_records_have_metadata_on_disk(tmp_path):
+    """End-to-end regression: after `asave_reflections` archives an aged
+    entry into a shard, the ON-DISK shard JSON must include both
+    `archived_at` and `archive_shard_path`. Previously these were only
+    set on the in-memory list AFTER the disk write, so the on-disk record
+    was missing them. Regression for chatgpt-codex P2 + coderabbit
+    Major (PR #934)."""
+    from memory.reflection import _REFLECTION_ARCHIVE_DAYS
+
+    _ev, _fs, _pm, re, _rec, _cm = _install(str(tmp_path))
+    cutoff = datetime.now() - timedelta(days=_REFLECTION_ARCHIVE_DAYS + 1)
+    old = {
+        "id": "ref_meta_old", "text": "x", "entity": "master",
+        "status": "promoted", "source_fact_ids": [],
+        "created_at": cutoff.isoformat(),
+        "promoted_at": cutoff.isoformat(),
+        "feedback": None, "next_eligible_at": cutoff.isoformat(),
+    }
+    refl_path = re._reflections_path("小天")
+    os.makedirs(os.path.dirname(refl_path), exist_ok=True)
+    with open(refl_path, "w", encoding="utf-8") as f:
+        json.dump([old], f)
+
+    await re.asave_reflections("小天", [])
+
+    archive_dir = re._reflections_archive_dir("小天")
+    shard_files = [f for f in os.listdir(archive_dir) if f.endswith(".json")]
+    assert len(shard_files) == 1
+    shard_fn = shard_files[0]
+    with open(os.path.join(archive_dir, shard_fn), encoding="utf-8") as f:
+        data = json.load(f)
+    archived = next(e for e in data if e.get("id") == "ref_meta_old")
+    assert archived.get("archived_at"), (
+        "on-disk record must have archived_at timestamp"
+    )
+    assert archived.get("archive_shard_path") == shard_fn, (
+        "on-disk record must have archive_shard_path matching its own filename"
+    )
+
+
+def test_age_based_archival_records_have_metadata_on_disk_sync(tmp_path):
+    """Sync twin — keeps symmetry between save_reflections /
+    asave_reflections (CLAUDE.md 对偶性)."""
+    from memory.reflection import _REFLECTION_ARCHIVE_DAYS
+
+    _ev, _fs, _pm, re, _rec, _cm = _install(str(tmp_path))
+    cutoff = datetime.now() - timedelta(days=_REFLECTION_ARCHIVE_DAYS + 1)
+    old = {
+        "id": "ref_meta_old_sync", "text": "x", "entity": "master",
+        "status": "denied", "source_fact_ids": [],
+        "created_at": cutoff.isoformat(),
+        "denied_at": cutoff.isoformat(),
+        "feedback": None, "next_eligible_at": cutoff.isoformat(),
+    }
+    refl_path = re._reflections_path("小天")
+    os.makedirs(os.path.dirname(refl_path), exist_ok=True)
+    with open(refl_path, "w", encoding="utf-8") as f:
+        json.dump([old], f)
+
+    re.save_reflections("小天", [])
+
+    archive_dir = re._reflections_archive_dir("小天")
+    shard_files = [f for f in os.listdir(archive_dir) if f.endswith(".json")]
+    assert len(shard_files) == 1
+    shard_fn = shard_files[0]
+    with open(os.path.join(archive_dir, shard_fn), encoding="utf-8") as f:
+        data = json.load(f)
+    archived = next(e for e in data if e.get("id") == "ref_meta_old_sync")
+    assert archived.get("archived_at")
+    assert archived.get("archive_shard_path") == shard_fn
+
+
+@pytest.mark.asyncio
+async def test_age_based_archival_overflow_each_chunk_has_correct_path(
+    tmp_path,
+):
+    """Archive a batch large enough to overflow into 2 shards; every
+    on-disk entry must carry the `archive_shard_path` of the shard it
+    actually lives in (NOT just the last shard touched). Regression for
+    chatgpt-codex P2 (PR #934)."""
+    from memory.reflection import _REFLECTION_ARCHIVE_DAYS
+
+    _ev, _fs, _pm, re, _rec, _cm = _install(str(tmp_path))
+    cutoff = datetime.now() - timedelta(days=_REFLECTION_ARCHIVE_DAYS + 1)
+    n = ARCHIVE_FILE_MAX_ENTRIES + 7
+    olds = [
+        {
+            "id": f"ref_overflow_{i}", "text": "x", "entity": "master",
+            "status": "promoted", "source_fact_ids": [],
+            "created_at": cutoff.isoformat(),
+            "promoted_at": cutoff.isoformat(),
+            "feedback": None, "next_eligible_at": cutoff.isoformat(),
+        }
+        for i in range(n)
+    ]
+    refl_path = re._reflections_path("小天")
+    os.makedirs(os.path.dirname(refl_path), exist_ok=True)
+    with open(refl_path, "w", encoding="utf-8") as f:
+        json.dump(olds, f)
+
+    await re.asave_reflections("小天", [])
+
+    archive_dir = re._reflections_archive_dir("小天")
+    shard_files = sorted(
+        f for f in os.listdir(archive_dir) if f.endswith(".json")
+    )
+    assert len(shard_files) == 2
+    total_seen = 0
+    for fn in shard_files:
+        with open(os.path.join(archive_dir, fn), encoding="utf-8") as f:
+            data = json.load(f)
+        for e in data:
+            assert e.get("archive_shard_path") == fn, (
+                f"entry {e.get('id')} stamped {e.get('archive_shard_path')!r} "
+                f"but lives in {fn!r}"
+            )
+            assert e.get("archived_at")
+            total_seen += 1
+    assert total_seen == n
 
 
 # ── legacy flat-file migration ──────────────────────────────────────

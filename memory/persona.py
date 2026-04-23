@@ -921,12 +921,16 @@ class PersonaManager:
             now_iso = now.isoformat()
             from memory.archive_shards import apick_today_shard_path
             archive_dir = self._persona_archive_dir(name)
+            # Pre-pick the shard path BEFORE record_and_save so we can
+            # stamp it into the event payload (and into the archive_entry
+            # we'll write afterward). `apick_today_shard_path` materializes
+            # the file on disk so the choice is stable across the
+            # subsequent shard append.
             shard_path = await apick_today_shard_path(archive_dir, now=now)
             shard_basename = os.path.basename(shard_path)
             archive_entry = dict(entry)
             archive_entry['archived_at'] = now_iso
             archive_entry['archive_shard_path'] = shard_basename
-            await aappend_to_shard(archive_dir, [archive_entry], now=now)
 
             payload = {
                 'entity_key': entity_key,
@@ -937,6 +941,14 @@ class PersonaManager:
                 # reading the shard back from disk.
                 'text': entry.get('text', ''),
                 'source': entry.get('source', 'unknown'),
+                # Full entry snapshot — lets a future reconciler rewrite
+                # the shard if a crash occurs after record_and_save but
+                # before the shard append below. Today the persona archive
+                # handler only mutates the active view (idempotent), so
+                # the shard is the source of truth for archived data; if
+                # we lose the shard write we lose the archived record.
+                # Carrying the snapshot keeps that recoverable.
+                'entry_snapshot': archive_entry,
             }
 
             def _sync_load(_n: str):
@@ -960,12 +972,23 @@ class PersonaManager:
                     self._persona_path(n), view, indent=2, ensure_ascii=False,
                 )
 
+            # ORDER (coderabbit review #934 — reversed from the original
+            # "shard first, then record_and_save"): record_and_save first
+            # commits the event + view mutation atomically; only THEN do
+            # we append to the shard. The crash window shifts from
+            # "entry duplicated in shard + still in active view" (bad —
+            # next sweep re-archives → growing shard duplicates) to
+            # "entry removed from active + event recorded but shard
+            # missing" (acceptable — event log is the source of truth
+            # per RFC §3.11; entry_snapshot in payload makes future
+            # reconciler-driven shard rewrite possible).
             await self._event_log.arecord_and_save(
                 name, EVT_PERSONA_FACT_ADDED, payload,
                 sync_load_view=_sync_load,
                 sync_mutate_view=_sync_mutate,
                 sync_save_view=_sync_save,
             )
+            await aappend_to_shard(archive_dir, [archive_entry], now=now)
             logger.info(
                 f"[Persona] {name}: 归档 entry {entity_key}/{entry_id} "
                 f"→ {shard_basename}"

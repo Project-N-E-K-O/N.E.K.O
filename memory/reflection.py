@@ -301,20 +301,27 @@ class ReflectionEngine:
         return merged, to_archive, keep_in_main
 
     @staticmethod
-    def _stamp_archive_metadata(entries: list[dict], shard_path: str) -> list[dict]:
-        """Add archived_at + archive_shard_path fields to each entry
-        before they go into a shard. RFC §3.5.6: "归档后字段追加：
-        archived_at（ISO8601）和 archive_shard_path（相对路径字符串）"。
+    def _make_archive_stamper(now_iso: str):
+        """Return a ``stamper(chunk, shard_basename)`` callback for
+        ``aappend_to_shard`` / ``append_to_shard_sync``. RFC §3.5.6:
+        "归档后字段追加：archived_at（ISO8601）和 archive_shard_path
+        （相对路径字符串）"。
 
         We store the basename only (relative to the kind-archive dir) —
         keeps logs short and survives memory_dir relocation.
+
+        Why a callback (chatgpt-codex / coderabbit review #934): the
+        previous "stamp after write" path mutated only the in-memory
+        list, so on-disk records lacked both fields; and in the overflow
+        case where one batch spilled into multiple shards, the single
+        returned ``shard_path`` couldn't describe per-entry locations.
+        Per-chunk stamping inside ``aappend_to_shard`` fixes both.
         """
-        now_iso = datetime.now().isoformat()
-        shard_basename = os.path.basename(shard_path) if shard_path else ''
-        for e in entries:
-            e.setdefault('archived_at', now_iso)
-            e['archive_shard_path'] = shard_basename
-        return entries
+        def _stamp(chunk: list[dict], shard_basename: str) -> None:
+            for e in chunk:
+                e.setdefault('archived_at', now_iso)
+                e['archive_shard_path'] = shard_basename
+        return _stamp
 
     def save_reflections(self, name: str, reflections: list[dict]) -> None:
         """Save reflections, archiving stale promoted/denied entries to shards.
@@ -347,8 +354,10 @@ class ReflectionEngine:
         if to_archive:
             archive_dir = self._reflections_archive_dir(name)
             try:
-                shard_path = append_to_shard_sync(archive_dir, list(to_archive))
-                self._stamp_archive_metadata(to_archive, shard_path)
+                stamper = self._make_archive_stamper(datetime.now().isoformat())
+                shard_path = append_to_shard_sync(
+                    archive_dir, list(to_archive), stamper=stamper,
+                )
                 logger.info(
                     f"[Reflection] {name}: 归档 {len(to_archive)} 条旧 reflections → {os.path.basename(shard_path)}"
                 )
@@ -385,8 +394,10 @@ class ReflectionEngine:
         if to_archive:
             archive_dir = self._reflections_archive_dir(name)
             try:
-                shard_path = await aappend_to_shard(archive_dir, list(to_archive))
-                self._stamp_archive_metadata(to_archive, shard_path)
+                stamper = self._make_archive_stamper(datetime.now().isoformat())
+                shard_path = await aappend_to_shard(
+                    archive_dir, list(to_archive), stamper=stamper,
+                )
                 logger.info(
                     f"[Reflection] {name}: 归档 {len(to_archive)} 条旧 reflections → {os.path.basename(shard_path)}"
                 )
@@ -824,7 +835,6 @@ class ReflectionEngine:
             archive_entry['archived_at'] = now_iso
             archive_entry['status'] = 'archived'
             archive_entry['archive_shard_path'] = shard_basename
-            await aappend_to_shard(archive_dir, [archive_entry], now=now)
 
             payload = {
                 'reflection_id': reflection_id,
@@ -832,6 +842,11 @@ class ReflectionEngine:
                 'to': 'archived',
                 'archive_shard_path': shard_basename,
                 'archived_at': now_iso,
+                # Symmetry with aarchive_persona_entry — full entry
+                # snapshot lets a future reconciler rewrite the shard if
+                # a crash occurs between record_and_save and the shard
+                # append below.
+                'entry_snapshot': archive_entry,
             }
 
             def _sync_load(_n: str):
@@ -852,12 +867,19 @@ class ReflectionEngine:
                     self._reflections_path(n), view, indent=2, ensure_ascii=False,
                 )
 
+            # ORDER (coderabbit review #934, mirroring persona fix):
+            # record_and_save first (commits event + view mutation),
+            # THEN append to shard. Avoids the "shard duplicate +
+            # still-active entry" race where a crash between shard write
+            # and view save would let the next sweep re-archive the same
+            # entry into a second shard slot.
             await self._event_log.arecord_and_save(
                 lanlan_name, EVT_REFLECTION_STATE_CHANGED, payload,
                 sync_load_view=_sync_load,
                 sync_mutate_view=_sync_mutate,
                 sync_save_view=_sync_save,
             )
+            await aappend_to_shard(archive_dir, [archive_entry], now=now)
             logger.info(
                 f"[Reflection] {lanlan_name}: 归档 reflection {reflection_id} "
                 f"(score-driven, prev_status={prev_status}) → {shard_basename}"
