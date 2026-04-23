@@ -1639,10 +1639,10 @@ export const I18N = {
         send: '发送',
         sending: '发送中…',
         send_title_user: '把你输入的内容以 role=user 写入历史, 并立即调用 LLM 拿一条回复.',
-        send_title_system: '把你输入的内容以 role=system 写入历史, 并立即调用 LLM 拿一条回复 (等价于"下一秒 AI 看到新规则就马上开口回应").',
+        send_title_system: '把你输入的内容以 role=system 写入 session.messages, 立即调用 LLM 拿一条回复. 注意: 主程序运行期无 role=system 消息 (SystemMessage 只存在于初始化 position 0), 为避免 Gemini 对 shape 过敏 (400 空输入 / 200 空 reply 导致错位), wire 层会把本条消息重写为 role=user + `[system note] ` 前缀发给 LLM. Diagnostics → Logs 会留审计记录.',
         inject: '注入 sys',
         inject_title: '把你输入的内容以 role=system 写入历史, 但不调 LLM. 适合"中段改规则/改背景", 下一次点发送时 AI 才会看到.',
-        system_mode_hint: 'role=system 下 [发送] 会写入 + 立即跑 LLM; [注入 sys] 仅写入历史不跑 LLM.',
+        system_mode_hint: 'role=system 下 [发送] 会写入 session.messages + 调 LLM (wire 层自动把本条转写为 role=user + `[system note] ` 前缀避免 provider 过敏); [注入 sys] 仅写入历史不跑 LLM.',
         inject_empty: 'textarea 为空, 无法注入.',
         clock_prefix: '虚拟时间: ',
         clock_unset: '未设置',
@@ -1903,6 +1903,7 @@ export const I18N = {
           busy: '当前会话正忙 (可能在跑 LLM / 写文件), 请稍后再点.',
         },
         avatar: {
+          instruction_integration_hint: '下方所有字段 (道具 / 动作 / 强度 / 触碰区 / 文本上下文 / 附带奖励 / 彩蛋) 都会拼进 Instruction preview — 触发后展开结果区的 "Instruction 预览" 即可看到完整 wire 文本.',
           tool_label: '道具',
           tool_option: {
             lollipop: '棒棒糖',

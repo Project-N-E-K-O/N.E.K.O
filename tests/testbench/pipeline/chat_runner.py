@@ -446,6 +446,46 @@ class OfflineChatBackend:
                     },
                 }
             yield {"event": "user", "message": user_msg}
+
+            # role=system + /chat/send: 上层前端 (composer.js) 默认允许此
+            # 组合, UI 文案承诺"写入 + 立即跑 LLM". 但主程序 (main_logic/
+            # omni_offline_client.py) 语义里 SystemMessage 只存在于
+            # _conversation_history[0] (初始化阶段), 运行期无 role=system
+            # 消息; 因此 Gemini 对 "wire 中间/末尾 system" shape 过敏, 偶
+            # 返空 reply 200 或 400 (详见 prompt_builder.build_prompt_bundle
+            # 的长注释 + AGENT_NOTES #32 + §7.25). 现在 wire 层 chokepoint
+            # 会把 role=system 重写为 role=user 加 `[system note] ` 前缀,
+            # 提示 tester 自己所选的 role **在 LLM 眼里等价于一条带前缀的
+            # user 消息**, 不等价于初始化 system prompt. 写一个 diagnostics
+            # warning 让 Diagnostics → Errors/Logs 能直接看到契约偏离点.
+            if role == ROLE_SYSTEM:
+                try:
+                    from tests.testbench.pipeline import (
+                        diagnostics_store as _ds,
+                    )
+                    from tests.testbench.pipeline.diagnostics_ops import (
+                        DiagnosticsOp,
+                    )
+                    _ds.record_internal(
+                        DiagnosticsOp.CHAT_SEND_SYSTEM_REWRITTEN,
+                        (
+                            "chat.send role=system — wire 层已重写为 "
+                            "role=user + `[system note] ` 前缀 (主程序"
+                            "运行期无 role=system 消息契约)."
+                        ),
+                        level="info",
+                        detail={
+                            "message_id": user_msg["id"],
+                            "session_id": getattr(session, "id", None),
+                            "content_length": len(user_content or ""),
+                            "source": "chat.send",
+                        },
+                    )
+                except Exception as exc:  # noqa: BLE001 — 审计不得阻主流程
+                    python_logger().debug(
+                        "chat.send: system-rewrite diagnostics log "
+                        "failed: %s: %s", type(exc).__name__, exc,
+                    )
         # user_content is None 时 ({event:'user'} 缺省) — 上游调用方负责
         # 生成 "user 消息已就绪" 的 UI 提示 (例如 Auto-Dialog 的 simuser_done
         # 事件). 这里不伪造 event 保持单一职责.

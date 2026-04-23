@@ -210,6 +210,16 @@ export function mountExternalEventsPanel(host) {
     const rows = [];
     const a = state.avatar;
 
+    // 开头一行 hint — 2026-04-23 r3 polish: tester 反馈 "text_context /
+    // reward_drop / easter_egg 看起来像没作用". 实际 config/prompts_avatar_
+    // interaction.py::_build_avatar_interaction_instruction 已把这些字段拼进
+    // instruction (运行时已验证), 但 UI 默认折叠 "Instruction preview", tester
+    // 可能没展开 → 直觉认为字段被吞. 加一行显式 hint 指向结果区的 instruction
+    // 预览, 让 tester 先看 wire 再判断 LLM 行为.
+    rows.push(el('p', { className: 'form-hint' },
+      i18n('chat.external_events.avatar.instruction_integration_hint'),
+    ));
+
     // tool
     const toolSel = buildSelect({
       options: AVATAR_TOOLS.map((t) => ({
@@ -289,8 +299,12 @@ export function mountExternalEventsPanel(host) {
       el('span', { className: 'form-hint' },
         i18n('chat.external_events.avatar.touch_zone_hint')),
     );
+    // touch_zone: wrap 自身是 select + hint 两行, 所以整行走 block
+    // (label 独占一行, wrap 在下占满宽度). inline 下 align-items:center
+    // 会让 label 和两行包围盒垂直居中 — 视觉上 label 夹在 select 和 hint
+    // 之间, 易读性下降.
     rows.push(labeledRow(
-      'chat.external_events.avatar.touch_zone_label', zoneWrap));
+      'chat.external_events.avatar.touch_zone_label', zoneWrap, { block: true }));
 
     // text_context
     const textarea = el('textarea', {
@@ -301,8 +315,10 @@ export function mountExternalEventsPanel(host) {
       value: a.textContext,
       onInput: (e) => { a.textContext = e.target.value; },
     });
+    // text_context textarea 是多行输入, row 走 block (label 独占一行,
+    // textarea 在下 width:100%).
     rows.push(labeledRow(
-      'chat.external_events.avatar.text_context_label', textarea));
+      'chat.external_events.avatar.text_context_label', textarea, { block: true }));
 
     // reward_drop (仅 fist)
     if (a.tool === 'fist') {
@@ -344,8 +360,9 @@ export function mountExternalEventsPanel(host) {
       value: ac.callbacksText,
       onInput: (e) => { ac.callbacksText = e.target.value; },
     });
+    // callbacks textarea 是多行输入 (一行一条 callback), row 走 block.
     return [labeledRow(
-      'chat.external_events.agent_callback.callbacks_label', textarea)];
+      'chat.external_events.agent_callback.callbacks_label', textarea, { block: true })];
   }
 
   // ── Proactive 表单 ─────────────────────────────────────────
@@ -726,8 +743,22 @@ export function mountExternalEventsPanel(host) {
 // helpers
 // ─────────────────────────────────────────────────────────────
 
-function labeledRow(labelKey, child) {
-  return el('div', { className: 'form-row' },
+/**
+ * Label + control 一行容器.
+ *
+ * 默认 (opts.block === false) 渲染成 "label: [control]" 水平并列 —
+ * CSS 层 `.external-events-form .form-row` 默认已是 row + wrap +
+ * align-items:center (2026-04-23 r3 起, 对齐项目 Virtual Clock 基准).
+ *
+ * 长控件 (textarea / 多行输入) 应传 `{block: true}` 切回 column — 配合
+ * `.form-row.block` 让 label 独占一行, 控件在下占满宽度.
+ *
+ * LESSONS_LEARNED §1.6 (语义契约 vs 运行时机制): 这里 "短控件" 和 "长
+ * 控件" 是 UI 语义层的契约, 不是组件库层的强校验 — 调用点自觉传对.
+ */
+function labeledRow(labelKey, child, opts = {}) {
+  const cls = 'form-row' + (opts.block ? ' block' : '');
+  return el('div', { className: cls },
     el('label', { className: 'form-label' }, i18n(labelKey)),
     child,
   );

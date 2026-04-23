@@ -336,6 +336,89 @@ def check_a_happy_paths(client, mock) -> list[str]:
                    "A1c.wire_tail_is_instruction",
                    f"wire tail content != SimulationResult.instruction")
 
+        # A1d — "UI 扩展字段真进了 wire instruction 正文" 防回归
+        # (2026-04-23 r3 polish).
+        #
+        # LESSONS_LEARNED §1.6 (语义契约 vs 运行时机制): 主程序
+        # ``config.prompts_avatar_interaction._build_avatar_interaction_
+        # instruction`` 把 ``text_context`` / ``reward_drop`` / ``easter_egg``
+        # 这类"上下文可选字段"拼进 instruction body 的指定 bullet 行
+        # (见 `_AVATAR_INTERACTION_PROMPT_TEXT` 里的 ``reward_drop_line`` /
+        # ``easter_egg_line`` / ``text_context_line``). tester 反馈"这些
+        # 字段在发送给 AI 的消息里完全不会有体现" — 实际是 UI 折叠 +
+        # tester 未展开 Instruction preview 看. 加这条断言守住契约, 若
+        # 未来主程序签名漂移 / testbench pipeline 错过 normalizer 字段,
+        # smoke 立刻红.
+        #
+        # Matrix:
+        #   - fist + reward_drop + text_context → "附加结果 ... 奖励" +
+        #     "输入框草稿"
+        #   - hammer + easter_egg (+ intensity 自动归一成 easter_egg) →
+        #     "附加结果 ... 彩蛋"
+        # (persona.language 默认 zh-CN, 检 zh 文案 key.)
+        #
+        # 用 intensity=rapid 升 rank 越过 A1 留下的 fist_touch rank=1 条目
+        # (8000ms 窗口内需要 rank 更高才走接收分支); 不这样 A1 和 A1d
+        # 会彼此 dedupe_window_hit.
+        mock.set_reply("Mocked reply")
+        status, body = _post_event(
+            client, "avatar",
+            _avatar_payload(
+                interaction_id="i1-context",
+                tool_id="fist", action_id="poke",
+                intensity="rapid",
+                extra={
+                    "text_context": "主人今天看起来心情不太好",
+                    "reward_drop": True,
+                },
+            ),
+        )
+        _check(status == 200, "A1d.status", f"{status} {body}")
+        rd = _extract_result(body)
+        _check(rd.get("accepted") is True, "A1d.accepted",
+               f"reason={rd.get('reason')}")
+        instruction_d = rd.get("instruction") or ""
+        _check("输入框草稿" in instruction_d, "A1d.text_context_line",
+               f"instruction missing '输入框草稿' bullet for text_context; "
+               f"main-program prompts_avatar_interaction 里 "
+               f"_AVATAR_INTERACTION_PROMPT_TEXT['zh']['text_context_line'] "
+               f"应该拼进来. 前 400 字符: {instruction_d[:400]!r}")
+        _check("主人今天看起来心情不太好" in instruction_d,
+               "A1d.text_context_body",
+               f"text_context body not interpolated into instruction; "
+               f"前 400 字符: {instruction_d[:400]!r}")
+        _check("奖励" in instruction_d, "A1d.reward_drop_line",
+               f"instruction missing reward_drop bullet (zh '附加结果 ... "
+               f"掉落奖励'); 主程序 reward_drop_line 应在 fist + reward_drop=True "
+               f"时拼入. 前 400 字符: {instruction_d[:400]!r}")
+        # 并且 wire 最后一条 instruction 必须等于 SimulationResult.instruction
+        # (已由 A1c 守住 happy path, 这里对 context/reward 路径再守一次).
+        wired = (mock.last_wire or [])[-1:] or [{}]
+        _check(wired[0].get("content") == instruction_d,
+               "A1d.wire_tail_matches",
+               "wire tail content != SimulationResult.instruction for the "
+               "text_context + reward_drop case")
+
+        # A1e — hammer + easter_egg 触发彩蛋文案入 instruction.
+        mock.set_reply("Mocked reply")
+        status, body = _post_event(
+            client, "avatar",
+            _avatar_payload(
+                interaction_id="i1-easter",
+                tool_id="hammer", action_id="bonk",
+                extra={"easter_egg": True},
+            ),
+        )
+        _check(status == 200, "A1e.status", f"{status} {body}")
+        re_ = _extract_result(body)
+        _check(re_.get("accepted") is True, "A1e.accepted",
+               f"reason={re_.get('reason')}")
+        instruction_e = re_.get("instruction") or ""
+        _check("彩蛋" in instruction_e, "A1e.easter_egg_line",
+               f"instruction missing '彩蛋' bullet for hammer+easter_egg; "
+               f"主程序 easter_egg_line 应在 hammer + easter_egg=True 时拼入. "
+               f"前 400 字符: {instruction_e[:400]!r}")
+
         # A2 — agent_callback.
         mock.set_reply("Mocked reply")
         status, body = _post_event(

@@ -2703,18 +2703,49 @@ table.tbl .tbl-key-field {
   min-width: 0;
   max-width: 100%;
 }
+/* form-row 默认 inline (label + short control 同一行) — 2026-04-23 r3 修法.
+   r2 把 `.external-events-form .form-row` 覆写成 column (为了配合早期
+   select 满宽问题), 但 r2 的 select 宽度已经改由 `select.tiny {align-self:
+   flex-start; width:auto}` 单独解决, 外层 form-row 的 column 不再必要;
+   保留 column 反而让 label (block) 独占一整行, 下一行孤零零一个窄 select,
+   视觉空档极大. tester 2026-04-23 反馈 "道具、动作等短选项完全可以并列".
+   r3 修法: form-row 默认对齐项目 Virtual Clock 等地方的 `.form-row` 基准
+   (row + wrap + align-items: center), 短控件 (select / 小 input) 在 label
+   右侧自然接一行; 长控件 (textarea) 通过 `.form-row.block` 显式 opt-in 回
+   column. `.form-row.inline` 语义不变, 作为冗余同义词保留 (历史 JS 可能
+   传 inline:true 作显式声明).
+   L33 教训: 不对称覆写 — 所有 `.form-row` 都在项目别处是 row 默认, 唯独
+   外部事件面板是 column, 维护者容易被误导. 默认对齐到全局基准, 只让"违反
+   基准的长控件"显式标注, 可读性更高. */
 .external-events-form .form-row {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--density-sm);
   min-width: 0;
   max-width: 100%;
 }
 .external-events-form .form-row.inline {
+  /* r3 冗余同义词: 默认已 row, 留这个类是为 JS 可显式声明 "我要 inline". */
   flex-direction: row;
   align-items: center;
   gap: var(--density-sm);
   flex-wrap: wrap;
+}
+.external-events-form .form-row.block {
+  /* 长控件 (textarea / context / callbacks / reward note) 明确 opt-in 回
+     column 布局 — label 独占一行, 控件在下占满宽度. 对应 §A.8 R5 textarea
+     maxLength/content 场景, label 上 + 控件 100% 宽更符合"多行输入区". */
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+.external-events-form .form-row > .form-label {
+  /* inline 模式下 label 和控件肩并肩时, 给 label 一个稳定的 min-width,
+     视觉上多个 form-row 的控件左对齐 (避免 "道具:[sel]" "动作:  [sel]"
+     控件位置漂移). block 模式下 label 独占一行, min-width 无实质影响. */
+  min-width: 60px;
 }
 .external-events-form .form-col {
   display: flex;
@@ -2755,16 +2786,19 @@ table.tbl .tbl-key-field {
   min-height: 48px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
-/* form-row 里的 <select class="tiny"> 收敛策略 (2026-04-23 hotfix #2):
-   父容器 `.external-events-form .form-row` 被覆写为 `display:flex;
-   flex-direction:column`, flex 默认 `align-items:stretch`, 导致 child
-   (select) 被横向拉到列满宽 — tester 反馈"avatar tool/action/intensity/
-   touch_zone + proactive kind 的 select 占满整个 UI 容器宽度".
-   修法: 只让 select 自己 `align-self:flex-start` 脱离 stretch, 并 `width:
-   auto` 按 `<option>` 最长 label 的 intrinsic 宽度显示; label 仍在上方,
-   select 贴左, 右边自然留白. 保持 `max-width:100%` 作为长 i18n label 兜底
-   上限, 防止极端窄列把 select 撑破. textarea / input 不走这条路径, 仍在
-   `.external-events-input, .external-events-textarea` 保留 `width:100%`. */
+/* form-row 里的 <select class="tiny"> 收敛策略 (2026-04-23 hotfix r2 + r3
+   修订).
+   r2 时 form-row 是 column 默认, flex align-items 默认 stretch 会把 select
+   拉到列满宽; 修法是 `align-self:flex-start + width:auto` 让 select 按
+   intrinsic 宽度显示.
+   r3 把 form-row 默认改成 row + wrap + align-items:center (L33 对齐项目
+   基准), select 这条规则仍然有效: row 下 `align-self:flex-start` 让 select
+   顶边对齐 label 而不被 center 拉伸, `width:auto` 仍按 option 最长 label
+   收敛; 在 `.form-row.block` (textarea 场景) 下 select 极少出现, 退化到
+   `align-self:flex-start + width:auto` 也不伤. 保持 `max-width:100%` 作为
+   长 i18n label 兜底上限, 防止极端窄列把 select 撑破. textarea / input
+   不走这条路径, 仍在 `.external-events-input, .external-events-textarea`
+   保留 `width:100%`. */
 .external-events-form select.tiny {
   align-self: flex-start;
   width: auto;

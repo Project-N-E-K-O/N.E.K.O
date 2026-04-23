@@ -537,13 +537,70 @@ def build_prompt_bundle(session: Session) -> PromptBundle:
     # tests.testbench.chat_messages.make_message 规范化的 dict 结构: role ∈
     # {user, assistant, system} 已与 OpenAI 直通, 无需翻译. 多模态 content
     # (list[dict]) 会原样保留 — 上游 ChatOpenAI._normalize_messages 能接受.
+    #
+    # wire 层契约 (L36 §7.25 第四次同族证据 / PROGRESS 2026-04-19 Gemini
+    # nudge 教训 / AGENT_NOTES §4.16 #32):
+    #   主程序 ``main_logic/omni_offline_client.py`` 的 SystemMessage 只出
+    #   现在 ``_conversation_history[0]`` (初始化阶段 position 0), 运行期
+    #   所有输入路径 (``send_text_message`` / ``create_response`` /
+    #   ``prompt_ephemeral``) 统一以 ``HumanMessage`` (role=user) 追加.
+    #   换言之 — **主程序运行期不存在 role=system 的 wire 消息**. testbench
+    #   composer 却有个 "Role=User/System" 下拉 + [发送] 按钮组合, 让 tester
+    #   可以往 session.messages 里 append 一条 role=system. 若原样透传进
+    #   wire, Vertex AI Gemini 会挂:
+    #     (a) 空 session 只有 tester 发的一条 system → wire 变
+    #         [system_prompt, system(user-input)]. Gemini ``contents`` 字段
+    #         为空 (它把 system 单独塞进 systemInstruction), 直接 400
+    #         ``INVALID_ARGUMENT: Model input cannot be empty``.
+    #     (b) 有历史, 末尾被 tester 追一条 system → Gemini 对 "wire 末尾/
+    #         中间有 system" shape 过敏, **偶返空字符串 + 200**. 空 reply
+    #         被 ``chat_runner`` append 到 session.messages, 下一轮 wire
+    #         里就有 "上一轮 user 输入 + 空 assistant + 新 user", LLM 基于
+    #         上一轮输入生成本应属于上一轮的 reply — tester 观察到 "再次
+    #         触发才拿到上次的 reply" (stale reply bug).
+    # OpenAI / Claude / Lanlan 兼容端对"wire 中间 system"更宽容, 不会挂,
+    # 但也不会像主程序语义那样"把 system 当初始化指令"处理 — 它们只是作
+    # 为一条上下文消息混在对话里. 因此所有 provider 上, 运行期 role=system
+    # 的**实际执行语义**与主程序初始化态 SystemMessage 并**不等价**.
+    #
+    # 修复策略 (chokepoint — 单点守护, 和 simulated_user 的 nudge 范式一致):
+    #   1. session.messages 里所有 role=system 消息, 在 wire 层**重写为
+    #      role=user + 内容前缀 `[system note] `**. 这样 session.messages
+    #      本身诚实保留 tester 的原始 role (preview / 审计可见), 但 wire
+    #      永远不会出现 "运行期 system" 这个 provider 过敏 shape.
+    #   2. 若重写 + 过滤后末尾不是 user (极端情况下, 比如最后一条是 assistant
+    #      待续), 不强加 nudge — ``chat_runner`` 自己有"只跑 LLM 模式"校
+    #      验, 会抛 ValueError 让路由层翻译友好错误. 真正的空 session +
+    #      合法 role=user 发送由上游保证末尾 user, 这里是被动防御不是主动
+    #      塑形.
+    #   3. 首条 wire (即 ``{role: 'system', content: system_prompt}``) 是
+    #      主程序语义下唯一合法的 system — 不参与重写, 因为它对应主程序
+    #      ``_conversation_history[0]``.
     wire_messages: list[dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
     ]
     for msg in session.messages or []:
         role = msg.get("role", "user")
         content = msg.get("content", "")
-        wire_messages.append({"role": role, "content": content})
+        if role == "system":
+            # Rewrite runtime system → user with explicit prefix so the
+            # LLM can still understand semantics, but the wire stays within
+            # "role ∈ {user, assistant} after the initial system" contract.
+            # Plain string: prefix inline. List content (multi-modal):
+            # prepend a text block — ChatOpenAI._normalize_messages accepts
+            # both shapes.
+            if isinstance(content, str):
+                rewritten_content: Any = "[system note] " + content
+            elif isinstance(content, list):
+                rewritten_content = [
+                    {"type": "text", "text": "[system note] "},
+                    *content,
+                ]
+            else:
+                rewritten_content = "[system note] " + str(content)
+            wire_messages.append({"role": "user", "content": rewritten_content})
+        else:
+            wire_messages.append({"role": role, "content": content})
 
     # ── 字符数 / 估算 token ──
     structured_for_ui = {

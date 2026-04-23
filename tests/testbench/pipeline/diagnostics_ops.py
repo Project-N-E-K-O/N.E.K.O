@@ -144,6 +144,21 @@ class DiagnosticsOp(StrEnum):
     # Severity: warning.
     AVATAR_DEDUPE_CACHE_FULL = "avatar_dedupe_cache_full"
 
+    # P25 Day 2 polish r3 (L36 §7.25 第四次同族证据 / 同族更广根因) —
+    # tester 在 composer 里选 Role=System 并点 [发送]. 主程序
+    # (main_logic/omni_offline_client.py) 的运行期契约是 SystemMessage
+    # 只出现在 _conversation_history[0] (初始化阶段), 所有运行期输入路径
+    # 统一以 HumanMessage(role=user) 注入; 因此 session.messages 里追加
+    # 的 role=system 消息与主程序语义**不等价**. wire 层 chokepoint
+    # (prompt_builder.build_prompt_bundle) 会把这条消息重写为 role=user
+    # + `[system note] ` 前缀, 避免 Vertex AI Gemini 对 "wire 中间/末尾
+    # 有 system" shape 过敏 (400 INVALID_ARGUMENT 或 200 空 reply 导致
+    # stale reply 时序错位). 本 op 把契约偏离点审计进 ring buffer, 方便
+    # tester 在 Diagnostics → Errors/Logs 回看 "我发的 system 实际被 LLM
+    # 当 user 消费了".
+    # Severity: info.
+    CHAT_SEND_SYSTEM_REWRITTEN = "chat_send_system_rewritten"
+
 
 #: Metadata consumed by ``GET /api/diagnostics/ops``. Must contain one
 #: entry per :class:`DiagnosticsOp` member. Categories help F7 Security
@@ -296,6 +311,26 @@ OP_CATALOG: dict[str, dict[str, str]] = {
             "'避免 DoS 测试面板' 同类风险). 自查方式: 查 GET "
             "/api/session/external-event/dedupe-info 的 cache 条目数, "
             "并配合本通知 detail 字典里的 max_entries 字段核对上限值."
+        ),
+    },
+    DiagnosticsOp.CHAT_SEND_SYSTEM_REWRITTEN.value: {
+        "category": "data_integrity",
+        "severity": "info",
+        "description": (
+            "tester 在 composer 里选 Role=System 并点 [发送]. 主程序语义 "
+            "里 SystemMessage 只出现在初始化阶段 (position 0), 运行期所 "
+            "有输入路径 (send_text_message / create_response / "
+            "prompt_ephemeral) 都以 HumanMessage 注入; 所以 session. "
+            "messages 里追加的 role=system 消息与主程序 SystemMessage "
+            "**并不等价**, 它只是一条带 system 角色标签的上下文消息. "
+            "wire 层 chokepoint (prompt_builder.build_prompt_bundle) 会 "
+            "把这条消息重写为 role=user + `[system note] ` 前缀, 避免 "
+            "Vertex AI Gemini 对 'wire 中间/末尾有 system' shape 过敏 "
+            "(400 INVALID_ARGUMENT '空输入' 或 200 空 reply 导致 stale "
+            "reply 时序错位). 本 op 是契约偏离审计点, 不是错误 — 如果 "
+            "你期望的是主程序初始化 system prompt 行为, 请改用 Setup → "
+            "Persona 编辑; 如果你就是想让 LLM 看到一条带 system 标签的 "
+            "提示信息, 这条 op 告诉你它已经被转写成什么了."
         ),
     },
 }
