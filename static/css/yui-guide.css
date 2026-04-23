@@ -299,6 +299,28 @@ body.yui-taking-over #neko-tutorial-skip-btn:focus-visible {
   outline-offset: 3px;
 }
 
+body.yui-guide-home-driver-hidden #sidebar,
+body.yui-guide-home-driver-hidden #sidebarbox,
+body.yui-guide-home-driver-hidden #resetSessionButton,
+body.yui-guide-home-driver-hidden .side-btn,
+body.yui-guide-home-driver-hidden #status,
+body.yui-guide-home-driver-hidden #live2d-return-button-container,
+body.yui-guide-home-driver-hidden #vrm-return-button-container,
+body.yui-guide-home-driver-hidden #mmd-return-button-container,
+body.yui-taking-over #sidebar,
+body.yui-taking-over #sidebarbox,
+body.yui-taking-over #resetSessionButton,
+body.yui-taking-over .side-btn,
+body.yui-taking-over #status,
+body.yui-taking-over #live2d-return-button-container,
+body.yui-taking-over #vrm-return-button-container,
+body.yui-taking-over #mmd-return-button-container {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
 body.yui-guide-home-driver-hidden #live2d-container,
 body.yui-guide-home-driver-hidden #live2d-canvas,
 body.yui-guide-home-driver-hidden #vrm-container,

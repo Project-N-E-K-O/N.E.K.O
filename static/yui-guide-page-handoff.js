@@ -598,10 +598,18 @@
         if (!manager || typeof manager.closePopupById !== 'function') {
             return Promise.resolve(false);
         }
-        manager.closePopupById('settings');
         var popup = getPopup('settings');
-        var closed = !popup || popup.style.display !== 'flex';
-        return Promise.resolve(closed);
+        if (!popup || popup.style.display !== 'flex') {
+            return Promise.resolve(true);
+        }
+
+        manager.closePopupById('settings');
+
+        return waitFor(function () {
+            return !popup || popup.style.display !== 'flex' ? true : null;
+        }, POPUP_OPEN_ANIMATION_MS + 500).then(function (closed) {
+            return !!closed;
+        });
     }
 
     /**
@@ -640,10 +648,18 @@
         if (!manager || typeof manager.closePopupById !== 'function') {
             return Promise.resolve(false);
         }
-        manager.closePopupById('agent');
         var popup = getPopup('agent');
-        var closed = !popup || popup.style.display !== 'flex';
-        return Promise.resolve(closed);
+        if (!popup || popup.style.display !== 'flex') {
+            return Promise.resolve(true);
+        }
+
+        manager.closePopupById('agent');
+
+        return waitFor(function () {
+            return !popup || popup.style.display !== 'flex' ? true : null;
+        }, POPUP_OPEN_ANIMATION_MS + 500).then(function (closed) {
+            return !!closed;
+        });
     }
 
     /**

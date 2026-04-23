@@ -1230,19 +1230,14 @@ class UniversalTutorialManager {
         if (!hasSeen) {
             // 对于主页，需要等待浮动按钮创建
             if (this.currentPage === 'home') {
-                const requestedSource = this.peekTutorialStartSource('home');
-                if (requestedSource) {
-                    this.waitForFloatingButtons().then((found) => {
-                        if (!found) {
-                            console.warn('[Tutorial] 浮动按钮始终未出现，跳过主页引导');
-                            return;
-                        }
-                        // 延迟启动，确保 DOM 完全加载，并等待 i18n 准备完成
-                        this.startTutorialWhenI18nReady(1500);
-                    });
-                } else {
-                    console.log('[Tutorial] 主页首次引导等待空闲提示或手动触发，不再立即自动启动');
-                }
+                this.waitForFloatingButtons().then((found) => {
+                    if (!found) {
+                        console.warn('[Tutorial] 浮动按钮始终未出现，跳过主页引导');
+                        return;
+                    }
+                    // 延迟启动，确保 DOM 完全加载，并等待 i18n 准备完成
+                    this.startTutorialWhenI18nReady(1500);
+                });
             } else if (this.currentPage === 'chara_manager') {
                 // 对于角色管理页面，需要等待猫娘卡片加载
                 this.waitForCatgirlCards().then(async () => {
