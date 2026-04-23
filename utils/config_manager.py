@@ -1487,8 +1487,10 @@ class ConfigManager:
             for entry in legacy_entries:
                 try:
                     entry_name = entry.name
-                    # 跳过隐藏/临时/非角色类条目
-                    if entry_name.startswith(".") or entry_name.startswith("_"):
+                    # 只过滤真正的隐藏条目（dot-file），其它形态的合法性交给
+                    # known_characters 裁定——用户如果把角色命名为 "_foo"，
+                    # 之前的 "_" 前缀黑名单会直接把它当临时条目静默跳过。
+                    if entry_name.startswith("."):
                         continue
 
                     # 未关联条目交给手动清理按钮，此处不做任何操作
