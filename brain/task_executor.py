@@ -1742,6 +1742,24 @@ class DirectTaskExecutor:
                 safe_args = dict(plugin_args)
             else:
                 safe_args = {}
+
+            # ── Inject image attachments into plugin args ────────────
+            # If the caller (agent_server) placed attachments at the top
+            # level, keep them as-is — they will be popped by the plugin
+            # subprocess and stored per-request on the context.
+            #
+            # Large base64 data-URL attachments inflate the JSON body sent
+            # to /runs.  We estimate the payload size and extend the HTTP
+            # timeout accordingly so localhost transfers don't time out.
+            _attachment_bytes_estimate = 0
+            _raw_attachments = safe_args.get("_attachments")
+            if isinstance(_raw_attachments, list):
+                for _att in _raw_attachments:
+                    if isinstance(_att, dict):
+                        _url = _att.get("url") or ""
+                        if isinstance(_url, str) and _url.startswith("data:"):
+                            _attachment_bytes_estimate += len(_url)
+
             try:
                 # 构建 _ctx 对象，包含 lanlan_name 和 conversation_id
                 ctx_obj = safe_args.get("_ctx")
@@ -1773,7 +1791,15 @@ class DirectTaskExecutor:
                 "args": safe_args,
             }
 
-            timeout = httpx.Timeout(10.0, connect=2.0)
+            # Scale HTTP timeout for large attachment payloads.
+            # Base: 10s.  Add 5s per MB of estimated attachment data.
+            _base_http_timeout = 10.0
+            if _attachment_bytes_estimate > 0:
+                _extra_seconds = (_attachment_bytes_estimate / (1024 * 1024)) * 5.0
+                _http_timeout = _base_http_timeout + min(_extra_seconds, 60.0)
+            else:
+                _http_timeout = _base_http_timeout
+            timeout = httpx.Timeout(_http_timeout, connect=2.0)
             async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as client:
                 r = await client.post(runs_endpoint, json=run_body)
                 if not (200 <= r.status_code < 300):
@@ -1993,13 +2019,21 @@ class DirectTaskExecutor:
                 if r.status_code == 200:
                     export_data = r.json()
                     items = export_data.get("items") or []
+                    media_exports: list[Dict[str, Any]] = []
+                    _primary_json_consumed = False
                     for item in items:
                         if not isinstance(item, dict):
                             continue
-                        # Look for the system trigger_response export
-                        if item.get("type") == "json" and (item.get("json") is not None or item.get("json_data") is not None):
+                        item_type = item.get("type")
+                        # Primary result: the system trigger_response (json).
+                        # Only the first json export is used; subsequent
+                        # json items are collected as supplementary media.
+                        if item_type == "json" and (item.get("json") is not None or item.get("json_data") is not None):
+                            if _primary_json_consumed:
+                                continue
                             raw = item.get("json") or item.get("json_data")
                             if isinstance(raw, dict):
+                                _primary_json_consumed = True
                                 plugin_result["data"] = raw.get("data")
                                 plugin_result["meta"] = raw.get("meta")
                                 if raw.get("error"):
@@ -2008,7 +2042,34 @@ class DirectTaskExecutor:
                                         plugin_result["error"] = err.get("message") or str(err)
                                     elif isinstance(err, str):
                                         plugin_result["error"] = err
-                            break
+                        # Collect media exports (binary_url, binary, url)
+                        # so the caller can surface images/audio.
+                        elif item_type in ("binary_url", "binary", "url"):
+                            raw_mime = item.get("mime")
+                            mime = str(raw_mime).lower() if isinstance(raw_mime, str) and raw_mime else None
+                            media_entry: Dict[str, Any] = {
+                                "type": item_type,
+                                "mime": mime,
+                                "description": item.get("description"),
+                                "metadata": item.get("metadata"),
+                            }
+                            if item_type == "binary_url":
+                                media_entry["binary_url"] = item.get("binary_url")
+                            elif item_type == "binary":
+                                media_entry["binary"] = item.get("binary")
+                            elif item_type == "url":
+                                media_entry["url"] = item.get("url")
+                            media_exports.append(media_entry)
+                        elif item_type == "text":
+                            # Text exports are appended as supplementary data
+                            media_exports.append({
+                                "type": "text",
+                                "text": item.get("text"),
+                                "description": item.get("description"),
+                                "metadata": item.get("metadata"),
+                            })
+                    if media_exports:
+                        plugin_result["media"] = media_exports
             except Exception as e:
                 logger.debug("[_await_run_completion] export fetch error: %s", e)
 

@@ -978,6 +978,23 @@ def _plugin_process_runner(
             except Exception:
                 pass
 
+            # Store image attachments on the context's run scope so
+            # plugins can access them via ``self.get_attachments()``.
+            # Using a per-run-id dict avoids races when multiple
+            # triggers execute concurrently in the same process.
+            try:
+                raw_att = args.pop("_attachments", None) if isinstance(args, dict) else None
+                _current_attachments = raw_att if isinstance(raw_att, list) and raw_att else []
+                # Store on instance keyed by run_id for concurrent safety.
+                # Also set a "latest" fallback for plugins that don't use run scopes.
+                if not hasattr(instance, "_run_attachments"):
+                    instance._run_attachments = {}
+                if run_id:
+                    instance._run_attachments[run_id] = _current_attachments
+                instance._last_attachments = _current_attachments
+            except Exception:
+                pass
+
             try:
                 if not method:
                     raise PluginEntryNotFoundError(plugin_id, entry_id)
@@ -1028,6 +1045,13 @@ def _plugin_process_runner(
             finally:
                 if run_id:
                     _run_tasks.pop(run_id, None)
+                    # Clean up per-run attachments to avoid memory leaks.
+                    try:
+                        run_att = getattr(instance, "_run_attachments", None)
+                        if isinstance(run_att, dict):
+                            run_att.pop(run_id, None)
+                    except Exception:
+                        pass
                 try:
                     res_sender.put(ret, timeout=10.0)
                 except Exception:

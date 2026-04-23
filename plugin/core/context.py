@@ -559,6 +559,152 @@ class PluginContext:
     def export_push_binary_url_sync(self, *, run_id: Optional[str] = None, binary_url: str, mime: Optional[str] = None, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
         return self._run_coro_sync(self._export_push_binary_url_async(run_id=run_id, binary_url=binary_url, mime=mime, description=description, metadata=metadata, timeout=timeout), operation="export_push_binary_url")
 
+    # ==================== Image convenience wrappers ====================
+
+    async def _export_push_image_async(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        image_data: Optional[bytes] = None,
+        image_url: Optional[str] = None,
+        mime: Optional[str] = None,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        timeout: float = 10.0,
+    ) -> Dict[str, Any]:
+        """Push an image export, automatically choosing inline binary or URL.
+
+        Provide either ``image_data`` (raw bytes) or ``image_url`` (a URL
+        the host can fetch).
+
+        When ``image_data`` is given it is sent as inline base64.  The
+        inline limit is controlled by ``EXPORT_INLINE_BINARY_MAX_BYTES``
+        (default 256 KB).  For larger images, upload via the blob store
+        first and pass the resulting URL as ``image_url`` instead.
+
+        ``mime`` defaults to ``"image/png"`` when not specified.
+        """
+        resolved_mime = mime or "image/png"
+        meta = dict(metadata or {})
+        meta.setdefault("media_type", "image")
+
+        if image_data is not None:
+            limit = int(EXPORT_INLINE_BINARY_MAX_BYTES) if EXPORT_INLINE_BINARY_MAX_BYTES is not None else 0
+            if limit > 0 and len(image_data) > limit:
+                raise ValueError(
+                    f"image_data ({len(image_data)} bytes) exceeds inline limit "
+                    f"({limit} bytes). Upload to blob store and use image_url instead."
+                )
+            return await self._export_push_async(
+                export_type="binary",
+                run_id=run_id,
+                binary_data=image_data,
+                mime=resolved_mime,
+                description=description,
+                metadata=meta,
+                timeout=timeout,
+            )
+        if image_url is not None:
+            return await self._export_push_async(
+                export_type="binary_url",
+                run_id=run_id,
+                binary_url=image_url,
+                mime=resolved_mime,
+                description=description,
+                metadata=meta,
+                timeout=timeout,
+            )
+        raise ValueError("export_push_image requires either image_data or image_url")
+
+    def export_push_image(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        image_data: Optional[bytes] = None,
+        image_url: Optional[str] = None,
+        mime: Optional[str] = None,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        timeout: float = 10.0,
+    ):
+        """Push an image export (smart sync/async proxy)."""
+        coro = self._export_push_image_async(
+            run_id=run_id, image_data=image_data, image_url=image_url,
+            mime=mime, description=description, metadata=metadata, timeout=timeout,
+        )
+        if self._is_in_event_loop():
+            return coro
+        return self._run_coro_sync(coro, operation="export_push_image")
+
+    async def export_push_image_async(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        image_data: Optional[bytes] = None,
+        image_url: Optional[str] = None,
+        mime: Optional[str] = None,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        timeout: float = 10.0,
+    ) -> Dict[str, Any]:
+        """Push an image export (explicit async)."""
+        return await self._export_push_image_async(
+            run_id=run_id, image_data=image_data, image_url=image_url,
+            mime=mime, description=description, metadata=metadata, timeout=timeout,
+        )
+
+    def export_push_image_sync(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        image_data: Optional[bytes] = None,
+        image_url: Optional[str] = None,
+        mime: Optional[str] = None,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        timeout: float = 10.0,
+    ) -> Dict[str, Any]:
+        """Push an image export (explicit sync)."""
+        return self._run_coro_sync(
+            self._export_push_image_async(
+                run_id=run_id, image_data=image_data, image_url=image_url,
+                mime=mime, description=description, metadata=metadata, timeout=timeout,
+            ),
+            operation="export_push_image",
+        )
+
+    # ==================== Attachment helpers ====================
+
+    def get_attachments(self) -> list[dict]:
+        """Return image attachments forwarded from the user's chat message.
+
+        Plugins receive attachments via the ``_attachments`` key in their
+        entry args.  This helper reads from the per-run attachment store
+        (falling back to the latest-trigger store) so plugin code can call
+        ``ctx.get_attachments()`` without manually digging into raw args.
+
+        Each item is ``{"type": "image_url", "url": "data:image/...;base64,..."}``
+        """
+        instance = getattr(self, "_instance", None)
+        if instance is None:
+            return []
+
+        # Prefer per-run attachments (concurrent-safe via contextvars).
+        current_run_id = self.run_id  # uses _CURRENT_RUN_ID ContextVar
+        if current_run_id:
+            run_att = getattr(instance, "_run_attachments", None)
+            if isinstance(run_att, dict):
+                per_run = run_att.get(current_run_id)
+                if isinstance(per_run, list):
+                    return list(per_run)
+
+        # Fallback: latest trigger (not concurrent-safe, but works for
+        # single-trigger-at-a-time plugins).
+        raw = getattr(instance, "_last_attachments", None)
+        if isinstance(raw, list):
+            return list(raw)
+        return []
+
     async def _run_update_async(
         self,
         *,

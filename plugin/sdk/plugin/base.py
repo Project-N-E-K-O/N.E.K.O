@@ -79,6 +79,22 @@ class NekoPluginBase(_SharedNekoPluginBase):
     async def export_push(self, **kwargs: Any) -> object:
         return await self.ctx.export_push(**kwargs)
 
+    async def export_push_image(self, **kwargs: Any) -> object:
+        return await self.ctx.export_push_image(**kwargs)
+
+    def get_attachments(self) -> list[dict]:
+        """Return image attachments forwarded from the user's chat message."""
+        # Prefer the context's run-scoped implementation (concurrent-safe).
+        try:
+            result = self.ctx.get_attachments()
+            if result:
+                return result
+        except Exception:
+            pass
+        # Fallback to instance attribute set by _handle_trigger.
+        raw = getattr(self, "_last_attachments", None)
+        return list(raw) if isinstance(raw, list) else []
+
     async def finish(self, **kwargs: Any) -> Any:
         return await self.ctx.finish(**kwargs)
 

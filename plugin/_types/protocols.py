@@ -303,7 +303,53 @@ class PluginContextProtocol(Protocol):
     ) -> Dict[str, Any]:
         """推送二进制URL导出(同步)"""
         ...
-    
+
+    def export_push_image(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        image_data: Optional[bytes] = None,
+        image_url: Optional[str] = None,
+        mime: Optional[str] = None,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        timeout: float = 10.0,
+    ) -> Union[Dict[str, Any], Coroutine[Any, Any, Dict[str, Any]]]:
+        """推送图片导出(智能同步/异步)"""
+        ...
+
+    async def export_push_image_async(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        image_data: Optional[bytes] = None,
+        image_url: Optional[str] = None,
+        mime: Optional[str] = None,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        timeout: float = 10.0,
+    ) -> Dict[str, Any]:
+        """推送图片导出(异步)"""
+        ...
+
+    def export_push_image_sync(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        image_data: Optional[bytes] = None,
+        image_url: Optional[str] = None,
+        mime: Optional[str] = None,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        timeout: float = 10.0,
+    ) -> Dict[str, Any]:
+        """推送图片导出(同步)"""
+        ...
+
+    def get_attachments(self) -> list[dict]:
+        """获取用户消息中的图片附件列表"""
+        ...
+
     def export_push_url(
         self,
         *,

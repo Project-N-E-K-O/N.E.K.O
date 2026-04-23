@@ -1052,6 +1052,35 @@ def _normalize_lanlan_key(lanlan_name: Optional[str]) -> str:
     return name or "__default__"
 
 
+def _extract_user_attachments(messages: Any) -> list[dict]:
+    """Extract image attachments from the latest user message.
+
+    Returns a list of ``{"type": "image_url", "url": "..."}`` dicts that
+    can be forwarded to plugins via ``_attachments`` in plugin_args.
+    """
+    if not isinstance(messages, list):
+        return []
+    for m in reversed(messages[-10:]):
+        if not isinstance(m, dict) or m.get("role") != "user":
+            continue
+        raw = m.get("attachments") or []
+        if not isinstance(raw, list):
+            continue
+        result: list[dict] = []
+        for item in raw:
+            if isinstance(item, str):
+                url = item.strip()
+            elif isinstance(item, dict):
+                url = str(item.get("url") or item.get("image_url") or "").strip()
+            else:
+                url = ""
+            if url:
+                result.append({"type": "image_url", "url": url})
+        if result:
+            return result
+    return []
+
+
 def _build_user_turn_fingerprint(messages: Any) -> Optional[str]:
     """
     Build a stable fingerprint from user-role messages only.
@@ -1593,6 +1622,16 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 plugin_args = result.tool_args or {}
                 entry_id = result.entry_id
                 up_start = _now_iso()
+
+                # ── Inject image attachments into plugin_args ────────
+                # Extract attachments from the latest user message so
+                # plugins can access images the user uploaded in chat.
+                if isinstance(plugin_args, dict):
+                    _user_attachments = _extract_user_attachments(messages)
+                    if _user_attachments:
+                        plugin_args = dict(plugin_args)
+                        plugin_args["_attachments"] = _user_attachments
+
                 # 获取插件友好名称（用于 HUD 显示）
                 plugin_name = await _get_plugin_friendly_name(plugin_id)
                 logger.info(

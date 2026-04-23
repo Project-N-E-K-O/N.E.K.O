@@ -301,6 +301,28 @@ class SdkContext:
             timeout=timeout,
         )
 
+    async def export_push_image(
+        self,
+        *,
+        run_id: str | None = None,
+        image_data: bytes | None = None,
+        image_url: str | None = None,
+        mime: str | None = None,
+        description: str | None = None,
+        metadata: dict[str, object] | None = None,
+        timeout: float = 10.0,
+    ) -> object:
+        """Push an image export via the host context."""
+        return await self._host_ctx.export_push_image_async(
+            run_id=run_id,
+            image_data=image_data,
+            image_url=image_url,
+            mime=mime,
+            description=description,
+            metadata=metadata,
+            timeout=timeout,
+        )
+
     async def finish(
         self,
         *,
