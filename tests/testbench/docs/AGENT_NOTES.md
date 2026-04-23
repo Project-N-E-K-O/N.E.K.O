@@ -634,7 +634,7 @@ smoke 用 `monkeypatch _invoke_llm_once / stream_send_inner` 注入 mock reply +
 - **回归**: `p25_avatar_dedupe_drift` / `p25_wire_role_chokepoint` / `p25_external_events` / `p25_prompt_preview_truth` / `p24_session_fields_audit` / `p21_3_prompt_injection` / `p24_integration` / `p25_r5_polish` **8 份 smoke 全绿**, 零 regression.
 - **代码层面统计**: 新文件 2 (`injection_audit.py` + `p25_r5_polish_smoke.py`); 改动文件 ~10 (external_events / chat_router / chat_runner / diagnostics_ops / composer / message_stream / preview_panel / external_events_panel / auto_dialog / i18n / testbench.css / chat_messages / prompt_builder); 新增契约 7 条 (R5A-R5G); 元教训候选新加 1 条 (L40 "info 级诊断的 smoke 必须显式 query"), L37 候选向 L40 靠近升级门槛 (include_info 第三次同族).
 
-**Commit**: 待 docs 回写后一次 local commit (不 push, 按用户 "先 commit 再手测" 模式). **下个接手点** = **P25 Day 3** (原计划: tester 手册 `external_events_guide.md` + drift smoke + persona.language=es/pt 回退断言 + 补 P1/P2 的 memory.llm / judge.llm 共 4 处 last_llm_wire stamp — #115 留的尾).
+**Commit**: `c9e8e25` (2026-04-23 local, 不 push). **下个接手点** = **P25 Day 3** (原计划: tester 手册 `external_events_guide.md` + drift smoke + persona.language=es/pt 回退断言 + 补 P1/P2 的 memory.llm / judge.llm 共 4 处 last_llm_wire stamp — #115 留的尾).
 
 **元教训回写 (§7.25 升级 + L33 子条目补强)**:
 
