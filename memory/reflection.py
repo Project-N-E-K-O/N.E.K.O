@@ -192,15 +192,19 @@ class ReflectionEngine:
         confirmed reflections can share persona's 5h-window rate-limit
         machinery (AI 自我克制，不在 5h 内反复提同一条)。
 
-        Token-count cache fields (derived, cache-only — not event-sourced;
-        see `PersonaManager._get_cached_token_count` for semantics):
-        - token_count: int | None
-        - token_count_text_sha256: str | None
-        - token_count_tokenizer: str | None
-
-        Zero-migration schema addition: legacy on-disk reflections without
-        these fields read as None via `.get()` during `_ascore_trim_entries`,
-        which is a clean cache miss → recompute on first render.
+        Note on token-count cache: persona entries carry a
+        `token_count` / `token_count_text_sha256` / `token_count_tokenizer`
+        cache that survives across renders because `PersonaManager._personas`
+        is a process-resident view — render-time cache writes land on the
+        same dict that the next render reads. Reflections do NOT have an
+        equivalent in-memory view; `aload_reflections` /
+        `_aload_reflections_full` always read fresh from disk, so any cache
+        writeback on a reflection entry would be garbage-collected right
+        after the render. We deliberately do NOT add the cache fields to
+        this schema — populating them would be misleading (they'd look like
+        a working cache but every render still tokenizes from scratch).
+        Reflection tokenization stays live; in typical workloads the
+        persona-side cache captures the bulk of render time anyway.
         """
         defaults = {
             # Evidence counters
@@ -222,16 +226,6 @@ class ReflectionEngine:
             'recent_mentions': [],
             'suppress': False,
             'suppressed_at': None,
-            # Derived token-count cache — populated on first render via
-            # PersonaManager._aget_cached_token_count (reflections share the
-            # persona render budget machinery via `_ascore_trim_entries`,
-            # which is entry-schema-agnostic). Rides along on normal
-            # reflection saves; fresh boot recomputes on first render.
-            # `token_count_tokenizer` guards against tiktoken↔heuristic
-            # transitions (see PersonaManager._get_cached_token_count).
-            'token_count': None,
-            'token_count_text_sha256': None,
-            'token_count_tokenizer': None,
         }
         for k, v in defaults.items():
             entry.setdefault(k, v)

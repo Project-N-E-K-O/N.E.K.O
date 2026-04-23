@@ -510,6 +510,11 @@ class PersonaManager:
                         # 文本变化 → 更新
                         old_text = entry.get('text', '')
                         entry['text'] = text
+                        # token_count 缓存是从 text 派生的；这里原地改写
+                        # text 必须同步失效缓存，否则渲染路径要等到
+                        # fingerprint mismatch 才补算，还会额外浪费一次
+                        # sha256（对偶于 amerge_into 的 _sync_mutate_entry）。
+                        self._invalidate_token_count_cache(entry)
                         modified = True
                         logger.info(f"[Persona] {name}: card 同步更新 [{entity}] \"{old_text[:30]}\" → \"{text[:30]}\"")
                     new_card_entries.append(entry)
@@ -1806,10 +1811,19 @@ class PersonaManager:
         return hashlib.sha256((text or '').encode('utf-8')).hexdigest()
 
     @classmethod
-    def _get_cached_token_count(cls, entry: dict) -> int:
+    def _get_cached_token_count(cls, entry: dict, *, writeback: bool = True) -> int:
         """Sync cache-aware token count. Writes `token_count`,
         `token_count_text_sha256` and `token_count_tokenizer` back to
-        `entry` on miss.
+        `entry` on miss when `writeback=True` (the default, for persona
+        entries that live in the `_personas` in-memory view and therefore
+        benefit from across-render cache reuse).
+
+        Callers should pass `writeback=False` for entries that do not have
+        a process-resident view (currently: reflection entries, which are
+        always loaded fresh from disk via `aload_reflections`). In that
+        mode we still short-circuit on a pre-existing cache hit — that's
+        free — but we never pollute the entry dict with fields that
+        wouldn't survive the next render anyway.
 
         Cache hit requires BOTH fingerprints to match:
         - text sha256 (catches text mutation)
@@ -1830,15 +1844,18 @@ class PersonaManager:
         ):
             return int(cached)
         n = count_tokens(text)
-        entry['token_count'] = int(n)
-        entry['token_count_text_sha256'] = fp
-        entry['token_count_tokenizer'] = tid
+        if writeback:
+            entry['token_count'] = int(n)
+            entry['token_count_text_sha256'] = fp
+            entry['token_count_tokenizer'] = tid
         return int(n)
 
     @classmethod
-    async def _aget_cached_token_count(cls, entry: dict) -> int:
+    async def _aget_cached_token_count(cls, entry: dict, *, writeback: bool = True) -> int:
         """Async twin — uses `acount_tokens` (worker-thread tiktoken).
-        Write-back semantics match the sync helper (both fingerprints)."""
+        Write-back semantics match the sync helper (both fingerprints).
+        See `_get_cached_token_count` for the `writeback=False` contract
+        (used by reflection render path, which has no in-memory view)."""
         text = entry.get('text', '') or ''
         if not text:
             return 0
@@ -1852,9 +1869,10 @@ class PersonaManager:
         ):
             return int(cached)
         n = await acount_tokens(text)
-        entry['token_count'] = int(n)
-        entry['token_count_text_sha256'] = fp
-        entry['token_count_tokenizer'] = tid
+        if writeback:
+            entry['token_count'] = int(n)
+            entry['token_count_text_sha256'] = fp
+            entry['token_count_tokenizer'] = tid
         return int(n)
 
     @staticmethod
@@ -1872,6 +1890,7 @@ class PersonaManager:
     @classmethod
     def _score_trim_entries(
         cls, entries: list, budget: int, now: datetime,
+        *, cache_writeback: bool = True,
     ) -> list:
         """Sync score-trim: sort by (evidence_score, importance) DESC, keep
         entries whose accumulated `count_tokens(text)` ≤ `budget`. Stops at
@@ -1880,6 +1899,13 @@ class PersonaManager:
 
         `entries` is a list of dicts (no entity tagging — caller sorts/keys
         as needed). Returns the kept subset preserving the score-DESC order.
+
+        `cache_writeback`: default True writes `token_count` fields back
+        onto each entry for across-render reuse (persona path — entries
+        live in `_personas`). Pass False for reflection entries, which are
+        loaded fresh from disk every render and would have no persistent
+        view to cache against; writing cache fields there would be
+        misleading and pollute reflection.json on the next save.
         """
         sorted_entries = sorted(
             entries,
@@ -1892,7 +1918,7 @@ class PersonaManager:
         kept = []
         total = 0
         for e in sorted_entries:
-            t = cls._get_cached_token_count(e)
+            t = cls._get_cached_token_count(e, writeback=cache_writeback)
             if total + t > budget:
                 break
             kept.append(e)
@@ -1902,9 +1928,11 @@ class PersonaManager:
     @classmethod
     async def _ascore_trim_entries(
         cls, entries: list, budget: int, now: datetime,
+        *, cache_writeback: bool = True,
     ) -> list:
         """Async twin of `_score_trim_entries`. Identical math; the only
-        difference is `acount_tokens` (worker-thread tiktoken)."""
+        difference is `acount_tokens` (worker-thread tiktoken). See the
+        sync twin for the `cache_writeback` contract."""
         sorted_entries = sorted(
             entries,
             key=lambda e: (
@@ -1916,7 +1944,7 @@ class PersonaManager:
         kept = []
         total = 0
         for e in sorted_entries:
-            t = await cls._aget_cached_token_count(e)
+            t = await cls._aget_cached_token_count(e, writeback=cache_writeback)
             if total + t > budget:
                 break
             kept.append(e)
@@ -2120,6 +2148,11 @@ class PersonaManager:
                 persona, suppressed_text_set,
             ),
             REFLECTION_RENDER_TOKEN_BUDGET, now,
+            # Reflections have no `_personas`-style in-memory view — they're
+            # always loaded fresh from disk. Writing cache fields onto the
+            # transient dicts would be garbage-collected on render exit and
+            # could only pollute reflection.json on the next save.
+            cache_writeback=False,
         )
         # Preserve the score-DESC order produced by _score_trim_entries.
         # The previous implementation filtered the ORIGINAL source lists by
@@ -2216,6 +2249,10 @@ class PersonaManager:
                 persona, suppressed_text_set,
             ),
             REFLECTION_RENDER_TOKEN_BUDGET, now,
+            # See sync twin: reflections have no `_personas`-style
+            # in-memory view, so we compute fresh every render without
+            # writing cache fields back onto the transient dicts.
+            cache_writeback=False,
         )
         # Preserve score-DESC order from _ascore_trim_entries — mirror of
         # the sync path fix in _compose_persona_markdown (CodeRabbit PR

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Unit tests for the persona / reflection token-count cache.
+Unit tests for the persona token-count cache.
 
 Covers the design in `memory/persona.py` `_get_cached_token_count` /
 `_aget_cached_token_count`:
@@ -13,15 +13,23 @@ Covers the design in `memory/persona.py` `_get_cached_token_count` /
     on the next render, triggering a clean recompute.
   - Changing the tokenizer identity (e.g. tiktoken→heuristic fallback)
     invalidates via tokenizer-fingerprint mismatch on the next render.
-  - `amerge_into` explicitly invalidates the cache when it rewrites
-    text, so a concurrent reader can't see new-text + stale-count.
-  - Cache rides along on `asave_persona` / `asave_reflections` — a
-    save-then-reload round-trip preserves the fields and the subsequent
-    render is a pure cache hit with zero tokenizer calls.
+  - `amerge_into` and `_apply_character_card_sync` explicitly invalidate
+    the cache when they rewrite text, so a concurrent reader can't see
+    new-text + stale-count.
+  - Cache rides along on `asave_persona` — a save-then-reload round-trip
+    preserves the fields and the subsequent render is a pure cache hit
+    with zero tokenizer calls.
   - Legacy entries without the fingerprint field (or with a corrupted
     fingerprint) get a clean recompute on first render.
   - The JSON round-trip of a cached entry does not KeyError on reload
     and the fields survive disk.
+
+Reflection entries are deliberately NOT cached (see
+`_ascore_trim_entries(..., cache_writeback=False)` call at the reflection
+render site): reflections are always loaded fresh from disk via
+`aload_reflections` / `_aload_reflections_full`, so any writeback would
+be garbage-collected before the next render could reuse it. The tests at
+the bottom of this file lock in that "no pollution" contract.
 """
 from __future__ import annotations
 
@@ -316,6 +324,64 @@ async def test_amerge_into_invalidates_cache(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_character_card_sync_invalidates_cache_on_text_rewrite(tmp_path):
+    """`_apply_character_card_sync` rewrites `entry['text']` in-place when
+    the character card's field value changes (lines 509-513). The cache
+    must be explicitly invalidated alongside the rewrite, mirroring the
+    contract `amerge_into` already holds. Without the invalidator the
+    stale `token_count` would ride on disk until the fingerprint safety
+    net caught the mismatch on the NEXT render — correct, but slower
+    (one extra sha256 per stale entry) and misleading during debug."""
+    from memory.persona import PersonaManager
+
+    pm, _event_log, _cm = _build_pm(str(tmp_path))
+
+    # Set up a card-sourced entry WITH a warmed cache (simulating an
+    # entry that has already survived one render).
+    entity = 'master'
+    field_name = 'nickname'
+    entry_id = PersonaManager._card_entry_id(entity, field_name)
+    card_entry = {
+        'id': entry_id,
+        'text': 'nickname: 原始称呼',
+        'source': 'character_card',
+        'protected': True,
+        'reinforcement': 0.0, 'disputation': 0.0,
+        'rein_last_signal_at': None, 'disp_last_signal_at': None,
+        'sub_zero_days': 0, 'sub_zero_last_increment_date': None,
+        'user_fact_reinforce_count': 0,
+        'merged_from_ids': [],
+        'importance': 0,
+        'suppress': False, 'suppressed_at': None,
+        'recent_mentions': [],
+    }
+    persona = {'master': {'facts': [card_entry]}}
+
+    # Warm the cache.
+    PersonaManager._get_cached_token_count(card_entry)
+    assert card_entry['token_count'] is not None
+    warmed_fp = card_entry['token_count_text_sha256']
+    assert warmed_fp == _sha('nickname: 原始称呼')
+
+    # Drive the sync with a changed card value → in-place text rewrite.
+    changed = pm._apply_character_card_sync(
+        '小天', persona,
+        master_basic_config={field_name: '新的称呼改动比较大的样例文本'},
+        lanlan_basic_config={},
+    )
+    assert changed is True
+    # The mutation happened in place …
+    updated = persona['master']['facts'][0]
+    assert updated is card_entry
+    assert updated['text'] == 'nickname: 新的称呼改动比较大的样例文本'
+    # … and the invalidator ran, so the render path won't serve the
+    # stale tiktoken count for new text.
+    assert updated['token_count'] is None
+    assert updated['token_count_text_sha256'] is None
+    assert updated['token_count_tokenizer'] is None
+
+
+@pytest.mark.asyncio
 async def test_cache_survives_persona_save_reload_roundtrip(tmp_path):
     """Cache fields ride along on `asave_persona`. After eviction from
     `_personas` and a disk reload, the fields come back populated and
@@ -365,9 +431,15 @@ async def test_cache_survives_persona_save_reload_roundtrip(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_cache_survives_reflection_save_reload_roundtrip(tmp_path):
-    """Mirror test for reflections: after `asave_reflections` +
-    eviction + reload, the fields are still there."""
+async def test_reflection_render_does_not_pollute_cache_fields(tmp_path):
+    """Reflections have no `_personas`-style in-memory view — each render
+    reads fresh from disk — so the render path MUST NOT write
+    `token_count*` fields onto reflection dicts. If it did, the fields
+    would ride along on the next `asave_reflections`, making a useless
+    cache look authoritative on disk while every render still tokenizes.
+
+    This test locks in the `cache_writeback=False` contract at the
+    reflection call site in `arender_persona_markdown`."""
     from memory.event_log import EventLog
     from memory.facts import FactStore
     from memory.persona import PersonaManager
@@ -390,7 +462,7 @@ async def test_cache_survives_reflection_save_reload_roundtrip(tmp_path):
     now_iso = datetime.now().isoformat()
     reflections = [
         {
-            'id': 'r1', 'text': 'reflection caching test',
+            'id': 'r1', 'text': 'reflection no-pollution contract',
             'entity': 'master', 'status': 'confirmed',
             'created_at': now_iso, 'importance': 1,
             'reinforcement': 1.0, 'disputation': 0.0,
@@ -406,26 +478,32 @@ async def test_cache_survives_reflection_save_reload_roundtrip(tmp_path):
         },
     ]
 
-    # Warm the cache via the render helper (reflections go through the
-    # same generic `_ascore_trim_entries`).
-    await PersonaManager._ascore_trim_entries(
+    # Run the trim under the reflection-render contract.
+    kept = await PersonaManager._ascore_trim_entries(
         reflections, budget=10_000, now=datetime.now(),
+        cache_writeback=False,
     )
-    assert reflections[0]['token_count'] is not None
+    assert len(kept) == 1
+    # Trim still sorted/kept correctly — the count was computed — but
+    # the fields must NOT be populated on the entry dict.
+    assert 'token_count' not in reflections[0] or (
+        reflections[0].get('token_count') is None
+    )
+    assert 'token_count_text_sha256' not in reflections[0] or (
+        reflections[0].get('token_count_text_sha256') is None
+    )
+    assert 'token_count_tokenizer' not in reflections[0] or (
+        reflections[0].get('token_count_tokenizer') is None
+    )
 
+    # Save + reload to confirm nothing pollution-y hit disk either.
     await re.asave_reflections('小天', reflections)
-
-    # Reload from disk — `aload_reflections` runs `_filter_reflections`
-    # which calls `_normalize_reflection`, so our new default fields
-    # get in-place defaults for any legacy items. Our persisted cache
-    # already has them so nothing gets overwritten.
-    from utils.tokenize import tokenizer_identity
     reloaded = await re.aload_reflections('小天', include_archived=False)
     assert len(reloaded) == 1
     r = reloaded[0]
-    assert isinstance(r['token_count'], int) and r['token_count'] > 0
-    assert r['token_count_text_sha256'] == _sha(r['text'])
-    assert r['token_count_tokenizer'] == tokenizer_identity()
+    assert r.get('token_count') is None
+    assert r.get('token_count_text_sha256') is None
+    assert r.get('token_count_tokenizer') is None
 
 
 def test_normalize_entry_defaults_cache_fields_to_none():
@@ -449,24 +527,40 @@ def test_normalize_entry_defaults_cache_fields_to_none():
     assert d2['token_count_tokenizer'] == 'tiktoken:o200k_base'
 
 
-def test_normalize_reflection_defaults_cache_fields_to_none():
-    """Mirror for reflections."""
+def test_normalize_reflection_does_not_default_cache_fields():
+    """Regression guard: `_normalize_reflection` must NOT inject
+    `token_count*` defaults. Reflections have no in-memory view
+    (`_personas` has no `_reflections` twin), so caching on them would
+    produce fields that look meaningful on disk but never serve a hit.
+
+    If a future refactor ever adds a reflection-side in-memory cache,
+    this test is the intentional signal that the schema can be extended
+    — but it should be extended deliberately, not by default."""
     from memory.reflection import ReflectionEngine
 
     r = ReflectionEngine._normalize_reflection(
         {'id': 'r1', 'text': 'anything'}
     )
-    assert r['token_count'] is None
-    assert r['token_count_text_sha256'] is None
-    assert r['token_count_tokenizer'] is None
-    # Idempotent on a pre-populated dict.
-    r['token_count'] = 7
-    r['token_count_text_sha256'] = 'f' * 64
-    r['token_count_tokenizer'] = 'tiktoken:o200k_base'
-    r2 = ReflectionEngine._normalize_reflection(r)
-    assert r2['token_count'] == 7
-    assert r2['token_count_text_sha256'] == 'f' * 64
-    assert r2['token_count_tokenizer'] == 'tiktoken:o200k_base'
+    assert 'token_count' not in r, (
+        'reflection schema must not default token_count — see '
+        'docstring for rationale'
+    )
+    assert 'token_count_text_sha256' not in r
+    assert 'token_count_tokenizer' not in r
+    # Idempotent: if a legacy reflection somehow already carries the
+    # fields (e.g. from an older build of this PR that cached
+    # reflections), normalize must preserve them byte-for-byte rather
+    # than dropping data — even though we no longer write them.
+    legacy = {
+        'id': 'r2', 'text': 'legacy has fields',
+        'token_count': 7,
+        'token_count_text_sha256': 'f' * 64,
+        'token_count_tokenizer': 'tiktoken:o200k_base',
+    }
+    normalized = ReflectionEngine._normalize_reflection(legacy)
+    assert normalized['token_count'] == 7
+    assert normalized['token_count_text_sha256'] == 'f' * 64
+    assert normalized['token_count_tokenizer'] == 'tiktoken:o200k_base'
 
 
 @pytest.mark.asyncio
