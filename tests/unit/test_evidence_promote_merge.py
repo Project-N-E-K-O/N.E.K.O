@@ -699,6 +699,104 @@ async def test_apromote_skips_already_merged_reflection_under_lock(tmp_path):
     )
 
 
+@pytest.mark.asyncio
+async def test_apromote_post_llm_revalidation_blocks_persona_write(tmp_path):
+    """Coderabbit round-2 (duplicate critical re-raised): the pre-LLM
+    revalidation only fences up to the LLM await. The LLM call itself
+    is multi-second, and another coroutine can flip the reflection's
+    status to denied / merged during that window. Without a SECOND
+    revalidation after the LLM returns, `aadd_fact` / `amerge_into`
+    will mutate persona FIRST, and only then will _arecord_state_change's
+    CAS guard refuse the status flip — leaving persona polluted with a
+    fact whose source reflection is no longer eligible.
+    """
+    _ev, _fs, pm, re, _cm = _install(str(tmp_path))
+    R = _reflection('ref_in_flight', '主人爱编程', rein=2.5)
+    await re.asave_reflections('小天', [R])
+    await pm.asave_persona('小天', {'master': {'facts': []}})
+
+    # Stub the LLM call to BOTH return a promote_fresh decision AND
+    # simulate a concurrent rebuttal flipping the reflection to denied
+    # while the LLM is "thinking".
+    async def _llm_with_concurrent_flip(*_a, **_k):
+        await re._arecord_state_change(
+            '小天', 'ref_in_flight', 'confirmed', 'denied',
+            reason='concurrent_rebuttal',
+        )
+        return {'action': 'promote_fresh', 'reason': 'looks novel'}
+
+    with patch.object(
+        re, '_allm_call_promotion_merge',
+        AsyncMock(side_effect=_llm_with_concurrent_flip),
+    ):
+        outcome = await re._apromote_with_merge('小天', R)
+
+    assert outcome == 'no_longer_eligible', (
+        "post-LLM revalidation must catch the in-flight state flip"
+    )
+
+    # Persona MUST stay empty — the central guarantee is that we do NOT
+    # write to persona for a reflection that is no longer eligible.
+    persona = await pm.aget_persona('小天')
+    assert persona['master']['facts'] == [], (
+        "post-LLM revalidation failed: persona was polluted by a "
+        "no-longer-eligible reflection"
+    )
+
+    # The concurrent rebuttal's `denied` must survive
+    rstate = next(
+        r for r in await re._aload_reflections_full('小天')
+        if r['id'] == 'ref_in_flight'
+    )
+    assert rstate['status'] == 'denied'
+    assert rstate.get('denied_reason') == 'concurrent_rebuttal'
+
+
+@pytest.mark.asyncio
+async def test_apromote_post_llm_revalidation_blocks_merge_into_write(tmp_path):
+    """Same protection but for the merge_into branch: the LLM picks a
+    target and asks to rewrite it; meanwhile rebuttal flips status. We
+    must NOT call `amerge_into` (which would rewrite the target's text).
+    """
+    _ev, _fs, pm, re, _cm = _install(str(tmp_path))
+    persona = {
+        'master': {'facts': [
+            _persona_entry('p_001', '原始描述', rein=1.0),
+        ]},
+    }
+    await pm.asave_persona('小天', persona)
+    R = _reflection('ref_merge_inflight', '主人喜欢编程', rein=2.5)
+    await re.asave_reflections('小天', [R])
+
+    async def _llm_with_flip(*_a, **_k):
+        await re._arecord_state_change(
+            '小天', 'ref_merge_inflight', 'confirmed', 'denied',
+            reason='concurrent_rebuttal',
+        )
+        return {
+            'action': 'merge_into',
+            'target_id': 'persona.master.p_001',
+            'merged_text': '主人非常喜欢编程',
+        }
+
+    with patch.object(
+        re, '_allm_call_promotion_merge',
+        AsyncMock(side_effect=_llm_with_flip),
+    ):
+        outcome = await re._apromote_with_merge('小天', R)
+
+    assert outcome == 'no_longer_eligible'
+
+    # The target's text MUST be untouched
+    entry = (await pm.aget_persona('小天'))['master']['facts'][0]
+    assert entry['text'] == '原始描述', (
+        "post-LLM revalidation failed: target entry was rewritten by a "
+        "no-longer-eligible reflection"
+    )
+    # And it must NOT carry the merged_from audit either
+    assert 'ref_merge_inflight' not in (entry.get('merged_from_ids') or [])
+
+
 # ── FACT_QUEUED_CORRECTION semantics ───────────────────────────────
 
 

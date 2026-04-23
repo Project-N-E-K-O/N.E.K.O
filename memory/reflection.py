@@ -1680,6 +1680,38 @@ class ReflectionEngine:
 
         action = decision.get('action')
 
+        # Post-LLM revalidation (round-2 review). The pre-LLM check above
+        # only fences the snapshot up to the LLM await; the LLM call itself
+        # is multi-second. During that window another coroutine (rebuttal,
+        # parallel promote of a duplicate signal, archive sweep) can flip
+        # status to denied / merged / promote_blocked. Without re-checking
+        # here, the post-LLM `aadd_fact` / `amerge_into` will write to
+        # persona FIRST, and only then will `_arecord_state_change`'s CAS
+        # guard refuse the status flip — leaving persona polluted with a
+        # fact whose source reflection is no longer eligible. Re-read the
+        # status under the lock; bail out cleanly if the gate has closed.
+        async with self._get_alock(lanlan_name):
+            current_list2 = await self._aload_reflections_full(lanlan_name)
+            current2 = self._find_reflection_in_list(current_list2, R['id'])
+            if current2 is None or current2.get('status') != 'confirmed':
+                logger.info(
+                    f"[Promote] {lanlan_name}/{R['id']}: status changed "
+                    f"during LLM await (now "
+                    f"{current2.get('status') if current2 else 'gone'!r}); "
+                    f"discarding LLM decision={action!r} without persona write"
+                )
+                return 'no_longer_eligible'
+            if evidence_score(current2, datetime.now()) < EVIDENCE_PROMOTED_THRESHOLD:
+                logger.info(
+                    f"[Promote] {lanlan_name}/{R['id']}: evidence_score "
+                    f"dropped below threshold during LLM await; "
+                    f"discarding LLM decision={action!r}"
+                )
+                return 'no_longer_eligible'
+            # Refresh R from the freshly-read view so any merge-evidence
+            # math below sees current values, not the pre-LLM snapshot.
+            R = current2
+
         if action == 'promote_fresh':
             result = await self._persona_manager.aadd_fact(
                 lanlan_name, R.get('text', ''),
