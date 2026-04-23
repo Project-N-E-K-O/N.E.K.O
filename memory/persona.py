@@ -155,6 +155,49 @@ class PersonaManager:
             'persona_archive',
         )
 
+    def _sync_save_persona_view(self, n: str, view: dict) -> None:
+        """`_sync_save` helper for `arecord_and_save` paths on persona.json.
+
+        Context (CodeRabbit PR #936 round-5 Major #1): all event-sourced
+        mutation paths in this file follow the record_and_save contract,
+        meaning `_sync_mutate_view` mutates `self._personas[n]` IN PLACE
+        (the cached dict and the `view` arg are the same object — see
+        `_aensure_persona_locked`). If the subsequent `atomic_write_json`
+        fails (disk full, cloudsave read-only kicked in mid-call, …), the
+        in-memory cache has already taken the mutation while the disk
+        still sits at the pre-event state. Subsequent in-process reads
+        would serve polluted state.
+
+        Fix: on atomic_write failure, evict the polluted entry from
+        `self._personas`. Next access goes through
+        `_aensure_persona_locked` which re-reads from disk — the
+        pre-event view. The event is already in the log (append runs
+        before mutate, see event_log.record_and_save), so reconciler
+        replay on next boot restores the mutation correctly. The
+        exception propagates so the caller sees the failure.
+
+        The cache assignment AFTER atomic_write succeeds is a no-op in
+        the common case (view IS self._personas[n]) but kept explicit
+        for the rare initialization-race where a concurrent reload may
+        have replaced the entry.
+        """
+        assert_cloudsave_writable(
+            self._config_manager,
+            operation="save",
+            target=f"memory/{n}/persona.json",
+        )
+        try:
+            atomic_write_json(
+                self._persona_path(n), view, indent=2, ensure_ascii=False,
+            )
+        except Exception:
+            # Evict the polluted cache; next _aensure_persona_locked
+            # reloads from disk (pre-event state). Reconciler replays
+            # the already-appended event on next boot.
+            self._personas.pop(n, None)
+            raise
+        self._personas[n] = view
+
     # ── CRUD ─────────────────────────────────────────────────────────
 
     def _empty_persona(self) -> dict:
@@ -784,19 +827,10 @@ class PersonaManager:
                 entry['sub_zero_days'] = snapshot['sub_zero_days']
                 entry['user_fact_reinforce_count'] = snapshot['user_fact_reinforce_count']
 
-            def _sync_save(n: str, view):
-                # Gate write behind the same cloudsave check as
-                # save_persona/asave_persona — the evidence mutation path
-                # must honour read-only/maintenance mode (CodeRabbit PR #929).
-                assert_cloudsave_writable(
-                    self._config_manager,
-                    operation="save",
-                    target=f"memory/{n}/persona.json",
-                )
-                self._personas[n] = view
-                atomic_write_json(
-                    self._persona_path(n), view, indent=2, ensure_ascii=False,
-                )
+            # _sync_save: cloudsave gate + write + cache-evict-on-failure
+            # (CodeRabbit PR #929 for the gate, PR #936 round-5 for the
+            # evict). See `_sync_save_persona_view` docstring.
+            _sync_save = self._sync_save_persona_view
 
             await self._event_log.arecord_and_save(
                 name, EVT_PERSONA_EVIDENCE_UPDATED, payload,
@@ -1018,16 +1052,10 @@ class PersonaManager:
                 target_entry['sub_zero_days'] = 0
                 target_entry['merged_from_ids'] = new_merged_from
 
-            def _sync_save(n: str, view):
-                assert_cloudsave_writable(
-                    self._config_manager,
-                    operation="save",
-                    target=f"memory/{n}/persona.json",
-                )
-                self._personas[n] = view
-                atomic_write_json(
-                    self._persona_path(n), view, indent=2, ensure_ascii=False,
-                )
+            # _sync_save: cloudsave gate + write + cache-evict-on-failure
+            # (CodeRabbit PR #936 round-5 Major #1). See
+            # `_sync_save_persona_view` docstring.
+            _sync_save = self._sync_save_persona_view
 
             # Event 1: evidence_updated — emitted FIRST so a crash between
             # the two writes does NOT permanently orphan this signal. The
@@ -1124,16 +1152,10 @@ class PersonaManager:
                 entry['sub_zero_days'] = new_count
                 entry['sub_zero_last_increment_date'] = new_date
 
-            def _sync_save(n: str, view):
-                assert_cloudsave_writable(
-                    self._config_manager,
-                    operation="save",
-                    target=f"memory/{n}/persona.json",
-                )
-                self._personas[n] = view
-                atomic_write_json(
-                    self._persona_path(n), view, indent=2, ensure_ascii=False,
-                )
+            # _sync_save: cloudsave gate + write + cache-evict-on-failure
+            # (CodeRabbit PR #936 round-5 Major #1). See
+            # `_sync_save_persona_view` docstring.
+            _sync_save = self._sync_save_persona_view
 
             await self._event_log.arecord_and_save(
                 name, EVT_PERSONA_EVIDENCE_UPDATED, payload,
@@ -1230,16 +1252,10 @@ class PersonaManager:
                     if not (isinstance(e, dict) and e.get('id') == entry_id)
                 ]
 
-            def _sync_save(n: str, view):
-                assert_cloudsave_writable(
-                    self._config_manager,
-                    operation="save",
-                    target=f"memory/{n}/persona.json",
-                )
-                self._personas[n] = view
-                atomic_write_json(
-                    self._persona_path(n), view, indent=2, ensure_ascii=False,
-                )
+            # _sync_save: cloudsave gate + write + cache-evict-on-failure
+            # (CodeRabbit PR #936 round-5 Major #1). See
+            # `_sync_save_persona_view` docstring.
+            _sync_save = self._sync_save_persona_view
 
             # ORDER (coderabbit review #934 round-1 + round-2):
             # 1. record_and_save first — commits event + view mutation

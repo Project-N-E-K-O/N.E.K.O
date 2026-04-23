@@ -1608,8 +1608,26 @@ class ReflectionEngine:
     async def _arecord_promote_attempt(
         self, name: str, reflection_id: str, now_iso: str,
     ) -> None:
+        """Public wrapper: acquires the per-character lock then delegates
+        to `_arecord_promote_attempt_locked`. See that method for details.
+        """
+        async with self._get_alock(name):
+            await self._arecord_promote_attempt_locked(
+                name, reflection_id, now_iso,
+            )
+
+    async def _arecord_promote_attempt_locked(
+        self, name: str, reflection_id: str, now_iso: str,
+    ) -> None:
         """Increment `promote_attempt_count` and stamp
         `last_promote_attempt_at` via EVT_REFLECTION_EVIDENCE_UPDATED.
+
+        Caller MUST hold `self._get_alock(name)`. This locked variant
+        exists so `_apromote_with_merge` can fuse throttle-check +
+        attempt-record into a single critical section (CodeRabbit PR
+        #936 round-5 Major #3) — otherwise two concurrent invocations
+        could both pass the pre-lock backoff check and both record
+        attempts, defeating the throttle.
 
         Why an evidence event for a counter (not a state change): the
         throttle counters live alongside evidence on each reflection and
@@ -1625,58 +1643,57 @@ class ReflectionEngine:
                 "[Reflection._arecord_promote_attempt] event_log 未注入"
             )
 
-        async with self._get_alock(name):
-            reflections_full = await self._aload_reflections_full(name)
-            entry = self._find_reflection_in_list(reflections_full, reflection_id)
-            if entry is None:
-                logger.warning(
-                    f"[Reflection] {name}: _arecord_promote_attempt 找不到 "
-                    f"reflection_id={reflection_id}"
-                )
-                return
-
-            new_count = int(entry.get('promote_attempt_count', 0) or 0) + 1
-            payload = {
-                'reflection_id': reflection_id,
-                # Full-snapshot evidence values (unchanged by this event,
-                # but present so the handler+replay see the consistent view).
-                'reinforcement': float(entry.get('reinforcement', 0.0) or 0.0),
-                'disputation': float(entry.get('disputation', 0.0) or 0.0),
-                'rein_last_signal_at': entry.get('rein_last_signal_at'),
-                'disp_last_signal_at': entry.get('disp_last_signal_at'),
-                'sub_zero_days': int(entry.get('sub_zero_days', 0) or 0),
-                'user_fact_reinforce_count':
-                    int(entry.get('user_fact_reinforce_count', 0) or 0),
-                # New throttle fields — whitelisted in the handler.
-                'last_promote_attempt_at': now_iso,
-                'promote_attempt_count': new_count,
-                'source': 'promote_attempt',
-            }
-
-            def _sync_load(_n: str):
-                return reflections_full
-
-            def _sync_mutate(_view):
-                entry['last_promote_attempt_at'] = now_iso
-                entry['promote_attempt_count'] = new_count
-
-            def _sync_save(n: str, view):
-                assert_cloudsave_writable(
-                    self._config_manager,
-                    operation="save",
-                    target=f"memory/{n}/reflections.json",
-                )
-                atomic_write_json(
-                    self._reflections_path(n), view,
-                    indent=2, ensure_ascii=False,
-                )
-
-            await self._event_log.arecord_and_save(
-                name, EVT_REFLECTION_EVIDENCE_UPDATED, payload,
-                sync_load_view=_sync_load,
-                sync_mutate_view=_sync_mutate,
-                sync_save_view=_sync_save,
+        reflections_full = await self._aload_reflections_full(name)
+        entry = self._find_reflection_in_list(reflections_full, reflection_id)
+        if entry is None:
+            logger.warning(
+                f"[Reflection] {name}: _arecord_promote_attempt 找不到 "
+                f"reflection_id={reflection_id}"
             )
+            return
+
+        new_count = int(entry.get('promote_attempt_count', 0) or 0) + 1
+        payload = {
+            'reflection_id': reflection_id,
+            # Full-snapshot evidence values (unchanged by this event,
+            # but present so the handler+replay see the consistent view).
+            'reinforcement': float(entry.get('reinforcement', 0.0) or 0.0),
+            'disputation': float(entry.get('disputation', 0.0) or 0.0),
+            'rein_last_signal_at': entry.get('rein_last_signal_at'),
+            'disp_last_signal_at': entry.get('disp_last_signal_at'),
+            'sub_zero_days': int(entry.get('sub_zero_days', 0) or 0),
+            'user_fact_reinforce_count':
+                int(entry.get('user_fact_reinforce_count', 0) or 0),
+            # New throttle fields — whitelisted in the handler.
+            'last_promote_attempt_at': now_iso,
+            'promote_attempt_count': new_count,
+            'source': 'promote_attempt',
+        }
+
+        def _sync_load(_n: str):
+            return reflections_full
+
+        def _sync_mutate(_view):
+            entry['last_promote_attempt_at'] = now_iso
+            entry['promote_attempt_count'] = new_count
+
+        def _sync_save(n: str, view):
+            assert_cloudsave_writable(
+                self._config_manager,
+                operation="save",
+                target=f"memory/{n}/reflections.json",
+            )
+            atomic_write_json(
+                self._reflections_path(n), view,
+                indent=2, ensure_ascii=False,
+            )
+
+        await self._event_log.arecord_and_save(
+            name, EVT_REFLECTION_EVIDENCE_UPDATED, payload,
+            sync_load_view=_sync_load,
+            sync_mutate_view=_sync_mutate,
+            sync_save_view=_sync_save,
+        )
 
     async def _arecord_state_change(
         self, name: str, reflection_id: str, from_status: str, to_status: str,
@@ -1684,13 +1701,19 @@ class ReflectionEngine:
         reject_explanation: str | None = None,
     ) -> None:
         """Mutate a reflection's `status` and emit
-        EVT_REFLECTION_STATE_CHANGED for audit / future analytics.
+        EVT_REFLECTION_STATE_CHANGED for audit + reconciler replay.
 
-        For now the event has no dedicated reconciler handler — replay
-        restoration relies on the persisted view, which is updated in the
-        same record_and_save call. If a future PR needs reflection state
-        replay, it can add a handler that re-applies the `to_status` field
-        keyed by `reflection_id`.
+        Replay path: `make_reflection_state_changed_composite` in
+        `memory/evidence_handlers.py` dispatches on the `to` field —
+        `'archived'` routes to the archive handler (PR-2, RFC §3.5),
+        any other status routes to `make_reflection_state_changed_handler`
+        which re-applies `status`, `<status>_at` timestamp,
+        `absorbed_into`, `promote_blocked_reason` (when to='promote_blocked'),
+        `denied_reason` (when to='denied'), and `reject_reason` onto the
+        reflection entry keyed by `reflection_id`. The persisted view
+        updated in this same record_and_save call is therefore
+        redundant with the replay path — both paths are kept (view for
+        live reads, event for crash recovery). See RFC §3.9.6.
         """
         from memory.event_log import EVT_REFLECTION_STATE_CHANGED
         if self._event_log is None:
@@ -1889,8 +1912,11 @@ class ReflectionEngine:
         explicitly forbids silent fresh-fallback because that breaks
         dedup semantics during outages).
         """
-        # Snapshot the throttle gates BEFORE any lock — they're advisory
-        # and a stale-but-recent value still defers in the right direction.
+        # Pre-lock advisory throttle check — cheap early-exit when the
+        # reflection is obviously inside its backoff window. The
+        # authoritative throttle + attempt-record fuse happens under
+        # the lock below (CodeRabbit PR #936 round-5 Major #3); this
+        # pre-check just saves a lock acquisition in the common case.
         now = datetime.now()
         if self._within_backoff(R, now):
             return 'skip_retry_pending'
@@ -1900,15 +1926,22 @@ class ReflectionEngine:
             )
             return 'blocked'
 
-        # Revalidate the snapshot under the lock before incurring any
-        # write or LLM cost. The caller (`_aauto_promote_score_driven`)
-        # iterates a stale snapshot collected outside the per-character
-        # lock; by the time we reach this point another coroutine may
-        # have demoted, denied, merged or otherwise disqualified `R`.
-        # Bumping `promote_attempt_count` for an already-merged
-        # reflection both wastes a retry slot and emits a misleading
-        # evidence event. Re-read the on-disk view, find the same id,
-        # and short-circuit if it's no longer eligible.
+        # Revalidate snapshot + throttle gate + record attempt — ALL
+        # inside the same lock section. CodeRabbit PR #936 round-5
+        # Major #3: without this fusion, two concurrent invocations
+        # can both pass the pre-lock backoff check, both take the lock
+        # serially, and both record attempts — defeating the throttle
+        # and double-bumping promote_attempt_count toward the
+        # max-retries dead-letter.
+        #
+        # The caller (`_aauto_promote_score_driven`) iterates a stale
+        # snapshot collected outside the per-character lock; by the
+        # time we reach this point another coroutine may have demoted,
+        # denied, merged or otherwise disqualified `R`. Bumping
+        # `promote_attempt_count` for an already-merged reflection
+        # both wastes a retry slot and emits a misleading evidence
+        # event. Re-read the on-disk view, find the same id, and
+        # short-circuit if it's no longer eligible.
         async with self._get_alock(lanlan_name):
             current_list = await self._aload_reflections_full(lanlan_name)
             current = self._find_reflection_in_list(current_list, R['id'])
@@ -1925,11 +1958,45 @@ class ReflectionEngine:
                     f"dropped below threshold under lock; skip"
                 )
                 return 'no_longer_eligible'
-            # Use the freshly-read entry from here on so downstream merge
-            # math sees the latest evidence values, not the stale snapshot.
-            R = current
+            # Re-check throttle against the freshly-read entry — this
+            # closes the race where another coroutine recorded an
+            # attempt between our pre-lock check and our lock
+            # acquisition.
+            if self._within_backoff(current, now):
+                logger.info(
+                    f"[Promote] {lanlan_name}/{R['id']}: another attempt "
+                    f"recorded during lock wait; skip_retry_pending"
+                )
+                return 'skip_retry_pending'
+            if self._exceeds_max_retries(current):
+                # Must release lock before calling _amark_promote_blocked
+                # (it re-acquires the same lock via _arecord_state_change).
+                R = current
+                break_for_blocked = True
+            else:
+                break_for_blocked = False
+                # Use the freshly-read entry from here on so downstream
+                # merge math sees the latest evidence values.
+                R = current
+                # Record the attempt INSIDE the lock so the throttle
+                # stamp lands atomically with the eligibility decision.
+                # `_arecord_promote_attempt_locked` expects the caller
+                # to hold the lock — we do.
+                now_iso = datetime.now().isoformat()
+                await self._arecord_promote_attempt_locked(
+                    lanlan_name, R['id'], now_iso,
+                )
 
-        # Build candidate pool (RFC §3.9.3 step 1)
+        if break_for_blocked:
+            await self._amark_promote_blocked(
+                lanlan_name, R, 'llm_unavailable',
+            )
+            return 'blocked'
+
+        # Build candidate pool (RFC §3.9.3 step 1) — outside the lock
+        # because same_entity_persona / same_entity_reflections are
+        # advisory inputs to the LLM; stale reads cost at most a
+        # suboptimal merge decision, not correctness.
         persona_view = await self._persona_manager.aget_persona(lanlan_name)
         target_entity = R.get('entity')
         same_entity_persona: list[tuple[str, dict]] = []
@@ -1946,14 +2013,6 @@ class ReflectionEngine:
             and r.get('status') in ('confirmed', 'promoted')
             and r.get('id') != R.get('id')
         ]
-
-        # Record the attempt FIRST — this both stamps the backoff window
-        # and increments the retry counter, so even if the LLM call hangs
-        # past the next loop tick, throttle gates above will skip-defer
-        # rather than re-invoke. The reflection mutation goes through
-        # arecord_and_save (event log + view + sentinel atomic).
-        now_iso = datetime.now().isoformat()
-        await self._arecord_promote_attempt(lanlan_name, R['id'], now_iso)
 
         try:
             _, _, _, _, name_mapping, _, _, _, _ = (

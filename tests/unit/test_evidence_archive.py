@@ -1406,3 +1406,103 @@ def test_archive_stamper_cross_day_retry_realigns_archived_at(tmp_path):
     # Internal consistency: both fields agree on the date prefix.
     assert entry["archived_at"].startswith("2026-04-23")
     assert entry["archive_shard_path"].startswith("2026-04-23")
+
+
+@pytest.mark.asyncio
+async def test_persona_sync_save_evicts_cache_on_atomic_write_failure(tmp_path):
+    """Round-5 Major #1: if `atomic_write_json` inside
+    `_sync_save_persona_view` fails AFTER `_sync_mutate_view` already
+    mutated the cached persona (record_and_save contract:
+    mutate-then-save), the in-memory cache would be left polluted with
+    the merged state while disk still sits at pre-event. Subsequent
+    in-process reads would serve the stale/polluted state.
+
+    Fix: `_sync_save_persona_view` wraps `atomic_write_json` in a
+    try/except that evicts the dirty cache entry on failure. Next
+    `_aensure_persona_locked` reloads from disk (pre-event state). The
+    event is already appended to the log (append runs before mutate per
+    event_log.record_and_save), so reconciler replay on next boot
+    restores the mutation correctly.
+
+    Covers all three persona paths that go through the helper:
+    aapply_signal, amerge_into (2 events), aincrement_sub_zero,
+    aarchive_persona_entry. We exercise amerge_into here because it's
+    the subject of the round-5 review; the shared helper makes the
+    guarantee uniform across the others.
+    """
+    _ev, _fs, pm, _re, _rec, _cm = _install(str(tmp_path))
+
+    entry_id = "p_cache_safety"
+    initial_text = "original — pre-merge"
+    persona = {
+        "master": {
+            "facts": [{
+                "id": entry_id,
+                "text": initial_text,
+                "reinforcement": 1.0,
+                "disputation": 0.0,
+                "rein_last_signal_at": None,
+                "disp_last_signal_at": None,
+                "sub_zero_days": 0,
+                "user_fact_reinforce_count": 0,
+                "source": "test",
+                "merged_from_ids": [],
+                "protected": False,
+            }],
+        },
+    }
+    await pm.asave_persona("小天", persona)
+    # Prime the in-memory cache by loading once.
+    before = await pm.aget_persona("小天")
+    assert before["master"]["facts"][0]["text"] == initial_text
+
+    # Patch `atomic_write_json` at the persona module level so the
+    # second call (for persona.json) raises. We let the first call
+    # through for the event.ndjson append path (which we don't want to
+    # break) — but simpler: patch specifically the call made from
+    # `_sync_save_persona_view`. Easiest target: monkeypatch
+    # `_sync_save_persona_view` to wrap the real implementation and
+    # make `atomic_write_json` raise only for the persona.json target.
+    import memory.persona as persona_module
+    real_atomic = persona_module.atomic_write_json
+
+    def _boom_if_persona_json(path, *args, **kwargs):
+        if str(path).endswith("persona.json"):
+            raise RuntimeError("simulated persona.json write failure")
+        return real_atomic(path, *args, **kwargs)
+
+    with patch.object(persona_module, "atomic_write_json",
+                      side_effect=_boom_if_persona_json):
+        with pytest.raises(RuntimeError, match="simulated persona.json"):
+            await pm.amerge_into(
+                "小天", entry_id, "merged — post-failure",
+                merged_reinforcement=3.0, merged_disputation=0.0,
+                source_reflection_id="ref_boom", merged_from_ids=["ref_boom"],
+            )
+
+    # Cache must have been EVICTED — subsequent read re-loads from disk
+    # (pre-merge state). If the evict were missing, the cache would
+    # still hold the mutated dict from `_sync_mutate_entry`.
+    after = await pm.aget_persona("小天")
+    entry_after = after["master"]["facts"][0]
+    assert entry_after["text"] == initial_text, (
+        f"cache leaked merged text despite save failure "
+        f"(round-5 Major #1 regression): got {entry_after['text']!r}"
+    )
+    assert entry_after["reinforcement"] == 1.0, (
+        "cache leaked merged reinforcement despite save failure"
+    )
+    assert entry_after["merged_from_ids"] == [], (
+        "cache leaked merged_from_ids despite save failure"
+    )
+
+    # Sanity: a retry with atomic_write restored must now succeed,
+    # proving the entry wasn't somehow already-merged in memory.
+    r = await pm.amerge_into(
+        "小天", entry_id, "merged — retry succeeds",
+        merged_reinforcement=3.0, merged_disputation=0.0,
+        source_reflection_id="ref_boom", merged_from_ids=["ref_boom"],
+    )
+    assert r == "merged"
+    final = await pm.aget_persona("小天")
+    assert final["master"]["facts"][0]["text"] == "merged — retry succeeds"

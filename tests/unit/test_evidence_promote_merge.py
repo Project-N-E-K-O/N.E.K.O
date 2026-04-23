@@ -143,7 +143,11 @@ async def test_amerge_into_emits_two_events_and_writes_view(tmp_path):
     assert entry['reinforcement'] == 2.5
     assert entry['merged_from_ids'] == ['ref_xyz']
 
-    # Two events expected: PERSONA_ENTRY_UPDATED then PERSONA_EVIDENCE_UPDATED
+    # Two events expected: PERSONA_EVIDENCE_UPDATED first (no-op mutate,
+    # crash-safe signal) then PERSONA_ENTRY_UPDATED (canonical merge with
+    # merged_from_ids sentinel). Round-4 flipped the order; the dedicated
+    # order test is `test_amerge_into_evidence_updated_first_then_entry_updated`
+    # — this test only asserts that both event types are present.
     events_path = os.path.join(str(tmp_path), '小天', 'events.ndjson')
     with open(events_path, encoding='utf-8') as f:
         events = [json.loads(line) for line in f if line.strip()]
@@ -1062,3 +1066,85 @@ async def test_amerge_into_retries_both_events_when_crashed_mid_flight(
     entry_after = (await pm.aget_persona('小天'))['master']['facts'][0]
     assert entry_after['text'] == 'merged text'
     assert 'ref_crash' in (entry_after.get('merged_from_ids') or [])
+
+
+# ── concurrency: throttle check + attempt record fused under lock ──
+
+
+@pytest.mark.asyncio
+async def test_concurrent_promote_only_records_one_attempt(tmp_path):
+    """Round-5 Major #3: the throttle check (backoff + max retries) was
+    evaluated OUTSIDE the per-character lock, while
+    `_arecord_promote_attempt` grabbed the lock separately later. Two
+    concurrent invocations on the same eligible reflection could both
+    pass the check then both record attempts — defeating the throttle
+    and double-bumping `promote_attempt_count` toward the max-retries
+    dead-letter.
+
+    Fix: fuse the throttle re-check + attempt record into the same
+    lock section inside `_apromote_with_merge`; the late arrival
+    observes `last_promote_attempt_at` set by the winner and returns
+    `skip_retry_pending`.
+
+    This test spawns two coroutines that both call `_apromote_with_merge`
+    on the same reflection; asserts only one attempt is recorded.
+    """
+    import asyncio
+    _ev, _fs, pm, re, _cm = _install(str(tmp_path))
+    R = _reflection('ref_concurrent', '主人爱编程', rein=2.5)
+    await re.asave_reflections('小天', [R])
+    await pm.asave_persona('小天', {'master': {'facts': []}})
+
+    # Stub the LLM to simulate a slow call so the two coroutines have
+    # time to both pass the pre-lock throttle check. The LLM returns a
+    # "reject" decision (no persona write) — we only care about the
+    # throttle counter. Without the fused-lock fix, both coroutines would
+    # pass the OUTER throttle check, then each take the lock serially
+    # for `_arecord_promote_attempt`, resulting in count=2.
+    llm_calls = 0
+    llm_lock = asyncio.Lock()
+
+    async def _slow_llm(*_a, **_k):
+        nonlocal llm_calls
+        async with llm_lock:
+            llm_calls += 1
+        await asyncio.sleep(0.01)
+        return {'action': 'reject', 'reason': 'test no-op'}
+
+    with patch.object(
+        re, '_allm_call_promotion_merge',
+        AsyncMock(side_effect=_slow_llm),
+    ):
+        # Launch both calls with the SAME stale snapshot R (mimics the
+        # _aauto_promote_score_driven loop iterating a stale list).
+        results = await asyncio.gather(
+            re._apromote_with_merge('小天', dict(R)),
+            re._apromote_with_merge('小天', dict(R)),
+            return_exceptions=False,
+        )
+
+    # Exactly one call should have run the LLM path to completion
+    # (the winner). The other must have short-circuited with
+    # 'skip_retry_pending' when it saw the winner's attempt stamp
+    # inside the lock's throttle re-check.
+    winners = [r for r in results if r == 'reject']
+    losers = [r for r in results if r == 'skip_retry_pending']
+    assert len(winners) == 1, (
+        f"exactly one coroutine should have proceeded to the LLM "
+        f"call; got results={results}"
+    )
+    assert len(losers) == 1, (
+        f"the late arrival must return skip_retry_pending; got "
+        f"results={results}"
+    )
+
+    # And crucially — promote_attempt_count must be 1, not 2.
+    rstate = next(
+        r for r in await re._aload_reflections_full('小天')
+        if r['id'] == 'ref_concurrent'
+    )
+    assert rstate['promote_attempt_count'] == 1, (
+        f"throttle race: concurrent invocations double-bumped the "
+        f"retry counter to {rstate['promote_attempt_count']} "
+        f"(round-5 Major #3 regression). Expected 1."
+    )
