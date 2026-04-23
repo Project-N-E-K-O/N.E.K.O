@@ -528,6 +528,32 @@ async def _run_simuser_step(
         extra_hint=config.simuser_extra_hint,
     )
 
+    # r5 T8: prompt-injection audit — Auto-Dialog 走的是
+    # ``stream_send(user_content=None)`` 复跑路径, 所以 chat_runner 内的
+    # 扫描看不到 SimUser 生成的 user 文本, 也看不到 tester 在
+    # ``simuser_persona_hint`` / ``simuser_extra_hint`` 里埋的自定义提示.
+    # 这是 Subagent C r5 审计中 5 个 P0 缺口之一. 我们分三个字段扫,
+    # 每个字段独立 record — 让 tester 在 Diagnostics → Errors 能分清
+    # 是 "SimUser 自己写 out" 还是 "我 tester 写的 persona_hint" 命中了.
+    try:
+        from tests.testbench.pipeline import injection_audit as _ia
+        _ia.scan_many(
+            {
+                "draft_content": draft.content or "",
+                "persona_hint": config.simuser_persona_hint or "",
+                "extra_hint": config.simuser_extra_hint or "",
+            },
+            source_prefix="auto_dialog.simuser",
+            session_id=getattr(session, "id", None),
+            extra={"style": config.simuser_style},
+        )
+    except Exception as exc:  # noqa: BLE001
+        from tests.testbench.logger import python_logger
+        python_logger().warning(
+            "auto_dialog simuser injection_audit skipped: %s: %s",
+            type(exc).__name__, exc,
+        )
+
     # 手工追加 user 消息到 session.messages — 复制 chat_runner stream_send
     # 里相同的 make_message + append 流程, 但 source=SOURCE_AUTO 区分 "自动
     # 模式下 SimUser 生成的" 与 "用户在 SimUser 模式下生成到 textarea 后

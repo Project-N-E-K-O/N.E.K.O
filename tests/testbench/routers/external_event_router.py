@@ -38,6 +38,7 @@ from pydantic import BaseModel, Field
 
 from tests.testbench.pipeline.external_events import (
     SimulationKind,
+    build_external_event_preview,
     peek_dedupe_info,
     reset_dedupe,
     simulate_agent_callback,
@@ -86,6 +87,27 @@ class _ExternalEventRequest(BaseModel):
 
 class _DedupeResetResponse(BaseModel):
     cleared: int = Field(..., description="清除前 cache 中的条目数.")
+
+
+class _ExternalEventPreviewRequest(BaseModel):
+    """POST /api/session/external-event/preview body — dry-run only."""
+
+    kind: str = Field(
+        ...,
+        description=(
+            "事件类型; 同 /external-event, avatar / agent_callback / "
+            "proactive 之一."
+        ),
+    )
+    payload: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "与 /external-event 完全同构的 payload; 本 endpoint 不写 "
+            "session.messages / last_llm_wire / dedupe 缓存, 也不调 "
+            "LLM — 仅把 \"这次 /external-event 会构造什么样的 wire\" "
+            "同步返回, 供 UI 发送前预览."
+        ),
+    )
 
 
 # ── helpers ──────────────────────────────────────────────────────────
@@ -190,6 +212,72 @@ async def post_external_event(body: _ExternalEventRequest) -> dict[str, Any]:
         raise _session_conflict_to_http(exc) from exc
     except LookupError as exc:
         raise _lookup_error_to_http(exc) from exc
+
+
+@router.post("/external-event/preview")
+async def post_external_event_preview(
+    body: _ExternalEventPreviewRequest,
+) -> dict[str, Any]:
+    """Return a dry-run snapshot of the wire ``simulate_<kind>(session, payload)``
+    would emit — **without** touching ``session.messages``, ``last_llm_wire``,
+    or the dedupe cache, and **without** calling the LLM.
+
+    Contract (L36 §7.25 第 5 层 "预览=真实"):
+
+      The returned ``wire_preview[-1]["content"]`` MUST equal the ``content``
+      field of the wire entry that a subsequent ``POST /external-event`` call
+      with the same ``(kind, payload)`` would record via
+      :func:`tests.testbench.pipeline.wire_tracker.record_last_llm_wire`
+      before invoking the LLM. Both the preview and the real-send paths
+      route through the same ``_build_<kind>_instruction_bundle`` helper in
+      :mod:`tests.testbench.pipeline.external_events` to guarantee this
+      byte-identical correspondence.
+
+    Does **not** acquire ``session_operation`` — a preview is a pure read,
+    and we don't want a tester clicking \"preview\" to compete with an
+    in-flight ``/chat/send`` for the BUSY lock.
+    """
+    kind = _parse_kind(body.kind)
+
+    store = get_session_store()
+    session = store.get()
+    if session is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error_type": "NoActiveSession",
+                "message": "No active session; create one via POST /api/session first.",
+            },
+        )
+
+    preview = build_external_event_preview(session, kind, body.payload or {})
+
+    # to_dict shape mirrors SimulationResult.to_dict — flat fields, no
+    # envelope. Fields a UI panel cares about: wire_preview (list of
+    # {role, content}), instruction_final (str), instruction_template_raw
+    # (str, for "模板 vs 填完后的差异" toggle if ever added), coerce_info
+    # (list of rule-application notes to render in a hint strip). When
+    # the preview fails pre-LLM (invalid_payload / empty_callbacks /
+    # persona_not_ready), ``reason`` / ``error_code`` / ``error_message``
+    # surface the cause so the UI can render "why I can't preview".
+    return {
+        "kind": preview.kind,
+        "instruction_template_raw": preview.instruction_template_raw,
+        "instruction_final": preview.instruction_final,
+        "wire_preview": preview.wire_preview,
+        "coerce_info": [
+            {
+                "field": info.field,
+                "requested": info.requested,
+                "applied": info.applied,
+                "note": info.note,
+            }
+            for info in preview.coerce_info
+        ],
+        "reason": preview.reason,
+        "error_code": preview.error_code,
+        "error_message": preview.error_message,
+    }
 
 
 @router.get("/external-event/dedupe-info")

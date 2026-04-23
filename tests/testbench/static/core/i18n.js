@@ -1589,6 +1589,10 @@ export const I18N = {
         simuser: '假想用户',
         script: '脚本',
         auto: '自动',
+        // r5 T7: 外部事件 banner 伪消息 — 只在对话流里作可视标记, 不进
+        // LLM wire (prompt_builder 单点过滤). 文案和普通 source pill
+        // 保持"短短两三字"的风格, 避免 header 被挤乱.
+        external_event_banner: '测试事件',
       },
       stream: {
         count: (n) => `共 ${n} 条消息`,
@@ -1771,6 +1775,7 @@ export const I18N = {
         timestamp_coerced_toast: '消息时间已自动前移, 保持消息时间顺序不倒退',
         timestamp_coerced_detail: (originalTs, coercedTs) =>
           `原时间: ${originalTs} → 调整为: ${coercedTs}. 原因: 虚拟时钟被回退到过去, 系统自动把新消息时间对齐到上一条消息时间避免列表错乱. 详情可在 Diagnostics → Errors 查看 op=timestamp_coerced.`,
+        empty_content_toast: '消息内容不能为空',
         // 2026-04-22 Day 8 §13 F3 scope 扩展: Chat 发送命中注入模式时显示
         // advisory toast. 按"检测不改"原则不阻断, 仅告知 + 留审计.
         // 函数叶子用 `_fmt` 后缀 (§3A i18n-fmt-naming).
@@ -1907,6 +1912,15 @@ export const I18N = {
           reply_missing: '(本次未拿到回复 — 调用失败或还在传输中)',
           reply_empty: '(LLM 回复为空字符串 — 0 字符, 通常说明 wire shape 异常, 见上方注释)',
         },
+        // P25 Day 2 polish r5: "真实 wire (顶) + 预估 wire (底)" 两段面板
+        // 合并成单一面板. 新 key 给标题和 ephemeral 提示用;
+        // last_wire.* 下面的旧 key (next_wire_heading / reply_* 等) 从此
+        // 不再被引用, 保留不报错, 留给后续 diff 清理.
+        wire_section: {
+          heading_real: '当前 wire (真实发给 LLM 的)',
+          heading_estimate: '当前 wire (发送前预估 — 尚未真实发送)',
+          ephemeral_warning: '⚠ 外部事件注入的消息是一次性结构, 仅在本次 LLM 调用时存在, 不会长期进入 session.messages. 对话历史可在左侧聊天区或记忆系统查看.',
+        },
       },
       // P25 Day 2 — Chat sidebar 下半的 "外部事件模拟" 折叠面板.
       // 三 tab (Avatar / Agent Callback / Proactive), 复现主程序
@@ -1926,6 +1940,9 @@ export const I18N = {
           invoke_btn: '触发事件',
           invoke_in_flight: '投递中…',
           invoke_in_flight_toast: '事件正在投递, 请稍候 (不要刷新页面, 中途放弃会留部分状态)',
+          preview_btn: '预览 prompt',
+          preview_in_flight: '预览中…',
+          preview_failed_fmt: (msg) => `预览失败: ${msg}`,
           clear_dedupe_btn: '清空去重缓存',
           clear_dedupe_done: (size) => `已清空 avatar 去重缓存 (${size} 条)`,
           clear_dedupe_empty: 'avatar 去重缓存已为空, 无需清理',
@@ -1992,6 +2009,9 @@ export const I18N = {
             personal: 'personal (用户画像私聊)',
             music: 'music (音乐关键词推荐)',
           },
+          topic_label: '主动对话话题 (可选)',
+          topic_placeholder: '例: 今日 B 站热搜: 某游戏新 PV / 某主播新动态 / 某微博大 V 发言',
+          topic_hint: '会被后端填进 proactive 模板的 {trending_content}/{personal_dynamic}/{current_chat} 占位. 留空 → 后端走占位回退文本 (让 LLM 自行聊起来).',
         },
         result: {
           section_accepted: '已处理',
@@ -2024,6 +2044,18 @@ export const I18N = {
           reply_heading: 'LLM 回复',
           reply_empty: '(本次未产出 assistant reply)',
           elapsed_fmt: (ms) => `耗时 ${ms}ms`,
+        },
+        preview_modal: {
+          title: '发送前预览 prompt',
+          close_btn: '关闭',
+          dry_run_hint: '以下为 dry-run 预览: 后端未写入 session.messages / last_llm_wire / 去重缓存, 也未调用 LLM. tester 确认无误后再回面板点 "触发事件" 真正下发.',
+          wire_heading: '预览 wire (真实会发给 LLM 的序列)',
+          wire_empty: '(本次无 wire 可预览)',
+          coerce_heading: 'Payload Coerce 提示',
+          reason_fmt: (code) => `预览失败原因: ${code}`,
+          copy_wire_btn: '复制 wire JSON',
+          copied_wire: '已复制到剪贴板',
+          copy_failed: '复制失败 (剪贴板 API 不可用?)',
         },
       },
     },

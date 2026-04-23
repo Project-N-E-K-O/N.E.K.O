@@ -1,4 +1,4 @@
-"""External-event simulation handlers (P25 §2.1/§3 Day 1).
+"""External-event simulation handlers (P25 §2.1/§3 Day 1 + Day 2 polish r5).
 
 Reproduce the three main-program "runtime prompt injection + write memory"
 external event classes so a tester can study their impact on LLM reply,
@@ -61,7 +61,9 @@ from typing import Any, Literal, Optional
 
 from tests.testbench.chat_messages import (
     ROLE_ASSISTANT,
+    ROLE_SYSTEM,
     ROLE_USER,
+    SOURCE_EXTERNAL_EVENT_BANNER,
     SOURCE_INJECT,
     SOURCE_LLM,
     make_message,
@@ -524,18 +526,14 @@ async def simulate_avatar_interaction(
       8. Optionally mirror to recent.json (opt-in).
     """
     started = time.perf_counter()
-    from config.prompts_avatar_interaction import (
-        _build_avatar_interaction_instruction,
-        _build_avatar_interaction_memory_meta,
-        _normalize_avatar_interaction_payload,
-    )
 
-    coerce_info: list[CoerceInfo] = []
-    full_lang, _short_lang = _resolve_language(session)
-    lanlan_name, master_name = _resolve_names(session)
-
-    normalized = _normalize_avatar_interaction_payload(payload)
-    if normalized is None:
+    # Shared helper between real send + preview — keeps instruction
+    # construction byte-identical across both paths (L33 "跨路径不对称"
+    # / L36 §7.25 第 5 层防御). Any future change to how we assemble the
+    # avatar instruction MUST go through this builder to prevent the
+    # "preview says one thing, LLM sees another" drift bug.
+    bundle = _build_avatar_instruction_bundle(session, payload)
+    if bundle is None:
         return _record_and_return(
             session,
             SimulationKind.AVATAR,
@@ -547,29 +545,11 @@ async def simulate_avatar_interaction(
             detail={"payload_keys": sorted(payload.keys()) if isinstance(payload, dict) else None},
         )
 
-    # Intensity coercion surfacing — reverse-diff against raw request.
-    raw_intensity = str(payload.get("intensity") or "").strip().lower()
-    if raw_intensity and raw_intensity != normalized["intensity"]:
-        coerce_info.append(CoerceInfo(
-            field="intensity",
-            requested=raw_intensity,
-            applied=normalized["intensity"],
-            note=(
-                "intensity 被 _normalize_avatar_interaction_intensity 归一 — "
-                "原值不在 tool/action 允许集合中, 已回退到 'normal' 或合法子集."
-            ),
-        ))
-
-    meta = _build_avatar_interaction_memory_meta(full_lang, normalized)
-    memory_note = str(meta.get("memory_note") or "")
-    # Main program returns these under the ``memory_*`` prefix (see
-    # config/prompts_avatar_interaction.py::_build_avatar_interaction_memory_meta
-    # and main_logic/core.py L2864 / main_logic/cross_server.py L478). We
-    # fall back to the tool_id only when the meta has none (should not
-    # happen for the main tool_ids: lollipop / fist / hammer always set
-    # memory_dedupe_key explicitly).
-    dedupe_key = str(meta.get("memory_dedupe_key") or normalized["tool_id"])
-    dedupe_rank = int(meta.get("memory_dedupe_rank") or 1)
+    coerce_info = bundle.coerce_info
+    normalized = bundle.avatar_normalized or {}
+    memory_note = bundle.avatar_memory_note
+    dedupe_key = bundle.avatar_dedupe_key
+    dedupe_rank = bundle.avatar_dedupe_rank
 
     cache = _get_dedupe_cache(session)
     cache_size_before = len(cache)
@@ -593,9 +573,48 @@ async def simulate_avatar_interaction(
             detail={"interaction_id": normalized.get("interaction_id"), "tool_id": normalized["tool_id"]},
         )
 
-    instruction = _build_avatar_interaction_instruction(
-        full_lang, lanlan_name, master_name, normalized,
-    )
+    instruction = bundle.instruction_final
+
+    # r5 T8: prompt-injection audit — scan the tester-editable ``text_
+    # context`` field on BOTH the raw payload and the normalized copy.
+    # Scanning both lets audit diffs surface if a future _normalize_* step
+    # adds accidental rewriting that hides a jailbreak from detection.
+    # Never raises (helper catches); never mutates.
+    try:
+        from tests.testbench.pipeline import injection_audit as _ia
+        raw_tc = ""
+        if isinstance(payload, dict):
+            raw_tc = str(
+                payload.get("text_context")
+                or payload.get("textContext")
+                or ""
+            )
+        norm_tc = str(normalized.get("text_context") or "")
+        _ia.scan_and_record(
+            raw_tc,
+            source="avatar_event.text_context.raw",
+            session_id=getattr(session, "id", None),
+            extra={
+                "interaction_id": normalized.get("interaction_id"),
+                "tool_id": normalized.get("tool_id"),
+                "action_id": normalized.get("action_id"),
+            },
+        )
+        if norm_tc and norm_tc != raw_tc:
+            _ia.scan_and_record(
+                norm_tc,
+                source="avatar_event.text_context.normalized",
+                session_id=getattr(session, "id", None),
+                extra={
+                    "interaction_id": normalized.get("interaction_id"),
+                    "tool_id": normalized.get("tool_id"),
+                },
+            )
+    except Exception as exc:  # noqa: BLE001 — audit never blocks pipeline
+        python_logger().warning(
+            "avatar injection_audit skipped: %s: %s",
+            type(exc).__name__, exc,
+        )
 
     try:
         base_wire = _build_base_wire(session)
@@ -793,10 +812,11 @@ async def simulate_agent_callback(
 ) -> SimulationResult:
     """Simulate one agent callback (``AGENT_CALLBACK_NOTIFICATION`` prefix)."""
     started = time.perf_counter()
-    from config.prompts_sys import AGENT_CALLBACK_NOTIFICATION
 
     full_lang, short_lang = _resolve_language(session)
 
+    # Count raw items for diagnostics note (needed regardless of bundle
+    # success — empty bundle still wants the raw_len surfacing).
     raw_items = payload.get("callbacks") if isinstance(payload, dict) else None
     if not isinstance(raw_items, list):
         raw_items = []
@@ -810,7 +830,11 @@ async def simulate_agent_callback(
             if text:
                 items.append(text)
 
-    if not items:
+    # Shared helper between real send + preview (L33/L36 §7.25 第 5 层 —
+    # see simulate_avatar_interaction for the full rationale). Note: the
+    # builder does its own identical ``items`` collapse so we never drift.
+    bundle = _build_agent_callback_instruction_bundle(session, payload)
+    if bundle is None:
         return _record_and_return(
             session,
             SimulationKind.AGENT_CALLBACK,
@@ -822,8 +846,27 @@ async def simulate_agent_callback(
             detail={"raw_len": len(raw_items)},
         )
 
-    prefix = AGENT_CALLBACK_NOTIFICATION.get(short_lang, AGENT_CALLBACK_NOTIFICATION["en"])
-    instruction = prefix + "\n".join(f"- {t}" for t in items)
+    instruction = bundle.instruction_final
+
+    # r5 T8: prompt-injection audit — scan the concatenated callback
+    # bodies. These are the only tester-editable free-form text fields
+    # on the agent-callback path; target/language/kind are enum-bounded.
+    try:
+        from tests.testbench.pipeline import injection_audit as _ia
+        _ia.scan_and_record(
+            "\n".join(items),
+            source="agent_callback.callbacks",
+            session_id=getattr(session, "id", None),
+            extra={
+                "callback_count": len(items),
+                "language": full_lang,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        python_logger().warning(
+            "agent_callback injection_audit skipped: %s: %s",
+            type(exc).__name__, exc,
+        )
 
     try:
         base_wire = _build_base_wire(session)
@@ -901,6 +944,14 @@ async def simulate_agent_callback(
             "%s: %s", type(exc).__name__, exc,
         )
 
+    # r5 T7: banner 在 assistant_msg 之前落盘, 对话流里按时间戳会先显示
+    # 一条 "[测试事件] 测试用户触发了一次 Agent 回调事件 · N 条回调",
+    # 再是 AI 的回复, tester 能立刻看出因果.
+    _append_external_event_banner(
+        session, SimulationKind.AGENT_CALLBACK,
+        extra_suffix=f"{len(items)} 条回调",
+    )
+
     assistant_msg = make_message(
         role=ROLE_ASSISTANT,
         content=reply_text,
@@ -946,14 +997,295 @@ _PROACTIVE_KINDS = frozenset({
 })
 
 
-async def simulate_proactive(
+# ─────────────────────────────────────────────────────────────
+# Proactive prompt slot fill (Day 2 polish r5)
+# ─────────────────────────────────────────────────────────────
+#
+# 主程序填 ``{memory_context}`` 走 memory_server ``/new_dialog/<character>``
+# HTTP (system_router.proactive_chat L2847-L2861); testbench **不** 起 memory
+# server, 所以直接从 ``session.messages`` 的尾部 K 条渲染成 role-prefixed 纯
+# 文本 (与主程序 ``_format_recent_proactive_chats`` 风格一致, 非字节级 copy:
+# 主程序用的是全局 ``_proactive_chat_history`` 时间窗口过滤, testbench 走
+# session.messages 尾部 K 条).
+#
+# K 选取: 主程序没有一个统一常量明显是"proactive memory K" — plugin/qq_
+# auto_reply 用 6, system_router 用 time-window 过滤 (无硬数量). 我们保
+# 守地取 **12**, 够覆盖一轮 6-turn 对话而不膨胀 prompt; Day 3+ 若 tester
+# 反馈想改就加 UI 可调.
+_PROACTIVE_MEMORY_K: int = 12
+
+# 完整占位符白名单 (逐 kind 扫描 config/prompts_proactive.py 五语种). 缺的
+# 占位符用 ``"(无)"`` 兜底, 保证 ``replace`` 不漏 (见 L33 §1: 语义契约 vs
+# 运行时机制 — 缺失 slot 必须显式 surface, 不能让 ``{window_context}``
+# 字面量漏进 LLM 引发 silent parse error).
+_PROACTIVE_SLOT_WHITELIST: frozenset[str] = frozenset({
+    # 五语种所有 kind 共用:
+    "lanlan_name",
+    "master_name",
+    "memory_context",
+    # home / news / video 用 trending_content:
+    "trending_content",
+    # personal 用 personal_dynamic:
+    "personal_dynamic",
+    # music 用 current_chat:
+    "current_chat",
+    # screenshot 用 screenshot_content + window_title_section:
+    "screenshot_content",
+    "window_title_section",
+    # window (window_search) 用 window_context:
+    "window_context",
+})
+
+_PROACTIVE_MEMORY_EMPTY_FALLBACK: str = "(暂无对话历史)"
+_PROACTIVE_TOPIC_EMPTY_FALLBACK: str = "(无内容)"
+_PROACTIVE_CONTEXT_EMPTY_FALLBACK: str = "(无)"
+
+
+def _render_session_messages_for_memory_context(
+    session: Session,
+    *,
+    k: int = _PROACTIVE_MEMORY_K,
+) -> str:
+    """Render ``session.messages[-k:]`` into a role-prefixed string block.
+
+    Shape per line: ``"<role_label>: <content>"`` where ``role_label`` is:
+
+      * ``"用户"`` for ``role == "user"``
+      * ``"AI"`` for ``role == "assistant"``
+      * ``"系统"`` for ``role == "system"``
+
+    Multiple physical lines inside a single message content are preserved
+    (no line-flattening) so ``memory_note`` style multi-line messages stay
+    readable; we just prepend the role label on the first line.
+
+    Empty history → :data:`_PROACTIVE_MEMORY_EMPTY_FALLBACK` so the LLM
+    sees an explicit "empty" marker rather than a bare blank line.
+    """
+    messages = getattr(session, "messages", None) or []
+    if not messages:
+        return _PROACTIVE_MEMORY_EMPTY_FALLBACK
+    recent = messages[-max(1, k):]
+    lines: list[str] = []
+    for msg in recent:
+        role = str((msg or {}).get("role") or "").lower()
+        if role == "user":
+            label = "用户"
+        elif role == "assistant":
+            label = "AI"
+        elif role == "system":
+            label = "系统"
+        else:
+            # defensive: skip unknown roles rather than poison the context
+            # with a cryptic label; testbench's ALLOWED_ROLES is a hard
+            # chokepoint at append time so this is essentially dead code,
+            # but keep the guard so a future refactor can't bypass it.
+            continue
+        content = (msg or {}).get("content")
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list) and content and isinstance(content[0], dict):
+            # testbench's richer content shape {type:"text", text:"..."}
+            text = str(content[0].get("text") or "")
+        else:
+            text = str(content or "")
+        lines.append(f"{label}: {text}")
+    if not lines:
+        return _PROACTIVE_MEMORY_EMPTY_FALLBACK
+    return "\n".join(lines)
+
+
+def _fill_proactive_instruction(
+    template_raw: str,
+    *,
+    lanlan_name: str,
+    master_name: str,
+    memory_context: str,
+    topic_text: str,
+) -> str:
+    """Substitute every slot in :data:`_PROACTIVE_SLOT_WHITELIST` into
+    ``template_raw`` via :py:meth:`str.replace` (NOT :py:meth:`str.format`).
+
+    Why ``replace`` and not ``format``: proactive templates contain literal
+    ``{`` / ``}`` in bullet rules ("例如 '[PASS]'") and occasionally in Ruby
+    / Russian / Japanese punctuation paths. ``format`` would raise on the
+    first brace-literal and lose fidelity. ``replace`` is brittle only if a
+    slot name is a **substring** of another slot name — our whitelist has
+    no such collision (``memory_context`` is never a prefix of another
+    slot name, ``master_name`` is not a prefix of ``master`` anywhere).
+
+    Fallbacks:
+      * ``{trending_content}`` / ``{personal_dynamic}`` / ``{current_chat}``
+        → tester-provided ``topic_text`` (same semantic "main content" slot
+        across kinds) or :data:`_PROACTIVE_TOPIC_EMPTY_FALLBACK`.
+      * ``{screenshot_content}`` / ``{window_title_section}`` /
+        ``{window_context}`` → :data:`_PROACTIVE_CONTEXT_EMPTY_FALLBACK`
+        (testbench can't reproduce real vision / shell inspection out of
+        scope).
+    """
+    topic_filled = topic_text.strip() or _PROACTIVE_TOPIC_EMPTY_FALLBACK
+    out = template_raw
+    out = out.replace("{lanlan_name}", lanlan_name)
+    out = out.replace("{master_name}", master_name)
+    out = out.replace("{memory_context}", memory_context)
+    # The three "main content" slots (mutually exclusive per kind) all take
+    # the tester's topic text; only one of them will appear in any given
+    # template, the others are no-ops.
+    out = out.replace("{trending_content}", topic_filled)
+    out = out.replace("{personal_dynamic}", topic_filled)
+    out = out.replace("{current_chat}", topic_filled)
+    # Vision / shell context — OOS for testbench; substitute a visible
+    # placeholder so the LLM can't silently parse an un-replaced
+    # ``{screenshot_content}`` as the payload.
+    out = out.replace("{screenshot_content}", _PROACTIVE_CONTEXT_EMPTY_FALLBACK)
+    out = out.replace("{window_title_section}", _PROACTIVE_CONTEXT_EMPTY_FALLBACK)
+    out = out.replace("{window_context}", _PROACTIVE_CONTEXT_EMPTY_FALLBACK)
+    return out
+
+
+# ─────────────────────────────────────────────────────────────
+# Instruction-bundle builders (shared between simulate_* and
+# build_external_event_preview — Day 2 polish r5)
+# ─────────────────────────────────────────────────────────────
+#
+# L33 §"跨路径不对称" + L36 §7.25 第 5 层防御:
+# "预览给测试人员看的" 和 "真实发给 LLM 的" 必须**字符级一致**. 若 preview
+# 走一条 path, simulate_* 走另一条 path, 同一 bug 会以不同方式偷偷漂移;
+# 解法 = 抽出单一 builder 让两个调用点共用. 每个 builder 接受 ``session``
+# + ``payload``, 返回 ``(instruction_template_raw, instruction_final,
+# coerce_info)`` 三元组, **不**触碰 session.messages / dedupe cache /
+# last_llm_wire — 这些副作用保留在 simulate_* 外层, preview 跳过.
+
+
+@dataclass
+class _InstructionBundle:
+    """Tuple returned by the three ``_build_*_instruction_bundle`` helpers."""
+
+    template_raw: str
+    instruction_final: str
+    coerce_info: list[CoerceInfo]
+    # Avatar-specific: the normalized payload + dedupe metadata. Other
+    # kinds leave these empty; callers should only read them when ``kind``
+    # is AVATAR. Not a separate type because three kinds share ~90% of
+    # the builder contract and Python dataclasses don't do tagged unions
+    # cheaply; a discriminator is added by the caller via ``kind``.
+    avatar_normalized: Optional[dict[str, Any]] = None
+    avatar_memory_note: str = ""
+    avatar_dedupe_key: str = ""
+    avatar_dedupe_rank: int = 0
+
+
+def _build_avatar_instruction_bundle(
     session: Session,
     payload: dict[str, Any],
-    *,
-    mirror_to_recent: bool = False,
-) -> SimulationResult:
-    """Simulate one proactive-chat opener via ``get_proactive_chat_prompt``."""
-    started = time.perf_counter()
+) -> Optional[_InstructionBundle]:
+    """Build the avatar instruction bundle. Returns ``None`` if the payload
+    is invalid (caller converts to ``reason="invalid_payload"``).
+
+    Shared between :func:`simulate_avatar_interaction` (real path) and
+    :func:`build_external_event_preview` (dry-run path). Both paths see
+    the exact same ``instruction_final`` string — that's the contract.
+    """
+    from config.prompts_avatar_interaction import (
+        _build_avatar_interaction_instruction,
+        _build_avatar_interaction_memory_meta,
+        _normalize_avatar_interaction_payload,
+    )
+
+    coerce_info: list[CoerceInfo] = []
+    full_lang, _short_lang = _resolve_language(session)
+    lanlan_name, master_name = _resolve_names(session)
+
+    normalized = _normalize_avatar_interaction_payload(payload)
+    if normalized is None:
+        return None
+
+    raw_intensity = str(payload.get("intensity") or "").strip().lower()
+    if raw_intensity and raw_intensity != normalized["intensity"]:
+        coerce_info.append(CoerceInfo(
+            field="intensity",
+            requested=raw_intensity,
+            applied=normalized["intensity"],
+            note=(
+                "intensity 被 _normalize_avatar_interaction_intensity 归一 — "
+                "原值不在 tool/action 允许集合中, 已回退到 'normal' 或合法子集."
+            ),
+        ))
+
+    meta = _build_avatar_interaction_memory_meta(full_lang, normalized)
+    memory_note = str(meta.get("memory_note") or "")
+    dedupe_key = str(meta.get("memory_dedupe_key") or normalized["tool_id"])
+    dedupe_rank = int(meta.get("memory_dedupe_rank") or 1)
+
+    instruction = _build_avatar_interaction_instruction(
+        full_lang, lanlan_name, master_name, normalized,
+    )
+    # Avatar's "template_raw" in the preview UI sense is the main-program
+    # instruction helper output **before** any further UI polish. We don't
+    # currently expose the nine-helper intermediate templates separately
+    # (they're already fused by _build_avatar_interaction_instruction), so
+    # template_raw == instruction_final for avatar. The tester still sees
+    # the rich parameterised body through the payload summary.
+    return _InstructionBundle(
+        template_raw=instruction,
+        instruction_final=instruction,
+        coerce_info=coerce_info,
+        avatar_normalized=normalized,
+        avatar_memory_note=memory_note,
+        avatar_dedupe_key=dedupe_key,
+        avatar_dedupe_rank=dedupe_rank,
+    )
+
+
+def _build_agent_callback_instruction_bundle(
+    session: Session,
+    payload: dict[str, Any],
+) -> Optional[_InstructionBundle]:
+    """Build the agent_callback instruction bundle. Returns ``None`` if
+    callbacks are empty (caller → ``reason="empty_callbacks"``).
+    """
+    from config.prompts_sys import AGENT_CALLBACK_NOTIFICATION
+
+    _full_lang, short_lang = _resolve_language(session)
+
+    raw_items = payload.get("callbacks") if isinstance(payload, dict) else None
+    if not isinstance(raw_items, list):
+        raw_items = []
+    items: list[str] = []
+    for item in raw_items:
+        if isinstance(item, str) and item.strip():
+            items.append(item.strip())
+        elif isinstance(item, dict):
+            text = item.get("text") or item.get("summary") or ""
+            text = str(text or "").strip()
+            if text:
+                items.append(text)
+
+    if not items:
+        return None
+
+    prefix = AGENT_CALLBACK_NOTIFICATION.get(short_lang, AGENT_CALLBACK_NOTIFICATION["en"])
+    template_raw = prefix
+    instruction = prefix + "\n".join(f"- {t}" for t in items)
+    return _InstructionBundle(
+        template_raw=template_raw,
+        instruction_final=instruction,
+        coerce_info=[],
+    )
+
+
+def _build_proactive_instruction_bundle(
+    session: Session,
+    payload: dict[str, Any],
+) -> _InstructionBundle:
+    """Build the proactive instruction bundle.
+
+    Unlike avatar/agent_callback, proactive always returns a bundle —
+    invalid ``kind`` coerces to ``home`` (surfaced via ``coerce_info``),
+    unknown language falls back to en (also surfaced). Tester-provided
+    ``topic`` fills the ``{trending_content}`` / ``{personal_dynamic}``
+    / ``{current_chat}`` slot; session.messages[-K:] fills
+    ``{memory_context}``.
+    """
     from config.prompts_proactive import (
         _normalize_prompt_language,
         get_proactive_chat_prompt,
@@ -977,12 +1309,6 @@ async def simulate_proactive(
             ),
         ))
 
-    # proactive uses _normalize_prompt_language (zh/en/ja/ko/ru + es/pt→en).
-    # We only surface a coerce when an explicitly-requested language silently
-    # falls back to en — that is, when the requested short form is not in
-    # {zh, en, ja, ko, ru} but the normaliser returned en anyway. Plain
-    # zh-CN/zh-TW/zh-Hant all normalise to "zh" with no behaviour surprise,
-    # so we don't wave a flag for them.
     normalized_lang = _normalize_prompt_language(full_lang)
     req_lower = full_lang.lower() if full_lang else ""
     _PROACTIVE_NATIVE_PREFIXES = ("zh", "en", "ja", "ko", "ru")
@@ -998,22 +1324,82 @@ async def simulate_proactive(
             ),
         ))
 
-    instruction_template = get_proactive_chat_prompt(kind, full_lang)
-
-    # The proactive prompts are big templates parameterised by lanlan_name /
-    # master_name / memory_context / recent_chats_section etc. For the P25
-    # testbench simulation we let the LLM operate on the live session's
-    # base wire (which already carries persona + memory + recent history via
-    # build_prompt_bundle), and append the raw template with best-effort
-    # placeholder substitution for names only. The other slots (memory,
-    # recent) are intentionally left raw — the existing wire already carries
-    # equivalent context, so double-injecting would over-count tokens.
+    template_raw = get_proactive_chat_prompt(kind, full_lang)
     lanlan_name, master_name = _resolve_names(session)
-    instruction = (
-        instruction_template
-        .replace("{lanlan_name}", lanlan_name)
-        .replace("{master_name}", master_name)
+
+    # Fill memory_context from session.messages[-K:] (L36 §7.25 第 5 层:
+    # 预览 = 真实, 这里是 **单一 source of truth** — 让 simulate_proactive
+    # 和 build_external_event_preview 读到字符级一致的 instruction).
+    memory_context = _render_session_messages_for_memory_context(session)
+    topic_text = str((payload or {}).get("topic") or "")
+
+    instruction = _fill_proactive_instruction(
+        template_raw,
+        lanlan_name=lanlan_name,
+        master_name=master_name,
+        memory_context=memory_context,
+        topic_text=topic_text,
     )
+    return _InstructionBundle(
+        template_raw=template_raw,
+        instruction_final=instruction,
+        coerce_info=coerce_info,
+    )
+
+
+async def simulate_proactive(
+    session: Session,
+    payload: dict[str, Any],
+    *,
+    mirror_to_recent: bool = False,
+) -> SimulationResult:
+    """Simulate one proactive-chat opener via ``get_proactive_chat_prompt``.
+
+    Day 2 polish r5: now fills ``{memory_context}`` from
+    ``session.messages[-K:]`` (so the LLM sees real conversation history, not
+    the literal placeholder) and ``{trending_content}`` / related content
+    slots from the tester-provided ``payload['topic']``. See
+    :func:`_build_proactive_instruction_bundle` for the shared builder that
+    :func:`build_external_event_preview` also calls — L36 §7.25 第 5 层.
+    """
+    started = time.perf_counter()
+    from config.prompts_proactive import _normalize_prompt_language
+
+    full_lang, _short_lang = _resolve_language(session)
+
+    # Shared helper between real send + preview (L33/L36 §7.25 第 5 层 —
+    # see simulate_avatar_interaction for the full rationale).
+    bundle = _build_proactive_instruction_bundle(session, payload)
+    coerce_info = bundle.coerce_info
+    instruction = bundle.instruction_final
+
+    # Recover ``kind`` + ``normalized_lang`` from the same logic the builder
+    # used — we need them for diagnostics note + detail payload. The builder
+    # already applied coerce_info, so this branch is cheap bookkeeping.
+    requested_kind = str((payload or {}).get("kind") or "home").strip().lower()
+    kind = requested_kind if requested_kind in _PROACTIVE_KINDS else "home"
+    normalized_lang = _normalize_prompt_language(full_lang)
+
+    # r5 T8: prompt-injection audit — scan the tester-filled "主动对话
+    # 话题" (topic) field. Only meaningful tester-editable free-form
+    # field on the proactive path; kind/language are enum-bounded.
+    try:
+        from tests.testbench.pipeline import injection_audit as _ia
+        topic_text = ""
+        if isinstance(payload, dict):
+            topic_text = str(payload.get("topic") or "")
+        if topic_text:
+            _ia.scan_and_record(
+                topic_text,
+                source="proactive.topic",
+                session_id=getattr(session, "id", None),
+                extra={"kind": kind, "language": normalized_lang},
+            )
+    except Exception as exc:  # noqa: BLE001
+        python_logger().warning(
+            "proactive injection_audit skipped: %s: %s",
+            type(exc).__name__, exc,
+        )
 
     try:
         base_wire = _build_base_wire(session)
@@ -1122,6 +1508,15 @@ async def simulate_proactive(
             },
         )
 
+    # r5 T7: banner 仅在 non-[PASS] 分支 (LLM 真的开口说话了) 才落盘 —
+    # 如果 LLM 返回 [PASS] 意味着 "本轮不说话", 这时 banner 会让 tester
+    # 困惑 ("我触发了事件, 但 AI 没回, banner 却在"), 所以上面 [PASS]
+    # early-return 分支没有 banner.
+    _append_external_event_banner(
+        session, SimulationKind.PROACTIVE,
+        extra_suffix=f"触发类型: {kind}",
+    )
+
     assistant_msg = make_message(
         role=ROLE_ASSISTANT,
         content=reply_text,
@@ -1158,6 +1553,126 @@ async def simulate_proactive(
 
 
 # ─────────────────────────────────────────────────────────────
+# Dry-run preview (Day 2 polish r5 — L36 §7.25 第 5 层)
+# ─────────────────────────────────────────────────────────────
+
+
+@dataclass
+class ExternalEventPreview:
+    """Snapshot returned by :func:`build_external_event_preview`.
+
+    Contract: ``wire_preview[-1]["content"] == instruction_final``, and the
+    ``instruction_final`` field here MUST equal the ``instruction`` that
+    :func:`simulate_avatar_interaction` / :func:`simulate_agent_callback`
+    / :func:`simulate_proactive` would pass to the LLM for the same
+    ``(session, payload)`` pair. This is the "预览 = 真实" contract — any
+    future change to any of the four functions must preserve it, or the
+    two PE2-style smoke tests in ``p25_prompt_preview_truth_smoke.py``
+    will fail.
+    """
+
+    kind: str
+    instruction_template_raw: str
+    instruction_final: str
+    wire_preview: list[dict[str, Any]]
+    coerce_info: list[CoerceInfo]
+    # Why ``reason`` here: same shape as SimulationResult — if the payload
+    # is invalid (avatar) or empty (agent_callback) we still want the UI to
+    # render "why can't I preview this?" rather than silently fail.
+    reason: Optional[str] = None
+    # Base-wire assembly error surfacing (persona not ready etc). When set,
+    # ``wire_preview`` will be empty and ``instruction_final`` still holds
+    # whatever we managed to build.
+    error_code: Optional[str] = None
+    error_message: Optional[str] = None
+
+
+def build_external_event_preview(
+    session: Session,
+    kind: SimulationKind,
+    payload: dict[str, Any],
+) -> ExternalEventPreview:
+    """Build a dry-run preview of what ``simulate_<kind>(session, payload)``
+    would send to the LLM — **without** touching ``session.messages``,
+    ``last_llm_wire``, the dedupe cache, or calling the LLM.
+
+    Contract (L36 §7.25 第 5 层 / L33 跨路径不对称):
+
+      ``build_external_event_preview(session, kind, payload)
+        .wire_preview[-1]["content"]``
+
+    MUST equal the ``content`` field of the last element of the wire that
+    ``simulate_<kind>(session, payload)`` would record via
+    :func:`record_last_llm_wire` before calling ``_invoke_llm_once``. This
+    is enforced at runtime by having both paths route through the same
+    ``_build_<kind>_instruction_bundle`` helper + ``_build_base_wire``.
+    """
+    # kind dispatch table — keep the same order as SimulationKind for
+    # readability. The builder returns None for user-error cases (invalid
+    # avatar payload, empty callbacks); we surface those as ``reason``
+    # instead of raising so the UI can render the specific error.
+    if kind is SimulationKind.AVATAR:
+        bundle = _build_avatar_instruction_bundle(session, payload)
+        if bundle is None:
+            return ExternalEventPreview(
+                kind=kind.value,
+                instruction_template_raw="",
+                instruction_final="",
+                wire_preview=[],
+                coerce_info=[],
+                reason="invalid_payload",
+            )
+    elif kind is SimulationKind.AGENT_CALLBACK:
+        bundle = _build_agent_callback_instruction_bundle(session, payload)
+        if bundle is None:
+            return ExternalEventPreview(
+                kind=kind.value,
+                instruction_template_raw="",
+                instruction_final="",
+                wire_preview=[],
+                coerce_info=[],
+                reason="empty_callbacks",
+            )
+    elif kind is SimulationKind.PROACTIVE:
+        bundle = _build_proactive_instruction_bundle(session, payload)
+    else:  # pragma: no cover — SimulationKind is an Enum, exhaustive
+        raise ValueError(f"build_external_event_preview: unknown kind {kind!r}")
+
+    # Base wire may raise PreviewNotReady when persona/memory/recent are
+    # not configured; surface as preview-level error_code/error_message
+    # rather than 500 so the tester can diagnose.
+    try:
+        base_wire = _build_base_wire(session)
+    except PreviewNotReady as exc:
+        return ExternalEventPreview(
+            kind=kind.value,
+            instruction_template_raw=bundle.template_raw,
+            instruction_final=bundle.instruction_final,
+            wire_preview=[],
+            coerce_info=bundle.coerce_info,
+            reason="persona_not_ready",
+            error_code=exc.code,
+            error_message=exc.message,
+        )
+
+    # Identical append shape to the real-send path: role="user" (NOT
+    # system — see long comment in simulate_avatar_interaction). Use a
+    # fresh list copy so the caller can't mutate anything the real
+    # simulate_* path is sharing (currently there's no sharing but the
+    # copy is cheap and prevents future aliasing footguns).
+    wire_preview = list(base_wire)
+    wire_preview.append({"role": "user", "content": bundle.instruction_final})
+
+    return ExternalEventPreview(
+        kind=kind.value,
+        instruction_template_raw=bundle.template_raw,
+        instruction_final=bundle.instruction_final,
+        wire_preview=wire_preview,
+        coerce_info=bundle.coerce_info,
+    )
+
+
+# ─────────────────────────────────────────────────────────────
 # Diagnostics recording
 # ─────────────────────────────────────────────────────────────
 
@@ -1167,6 +1682,77 @@ _KIND_TO_OP: dict[SimulationKind, DiagnosticsOp] = {
     SimulationKind.AGENT_CALLBACK: DiagnosticsOp.AGENT_CALLBACK_SIMULATED,
     SimulationKind.PROACTIVE: DiagnosticsOp.PROACTIVE_SIMULATED,
 }
+
+
+# ─────────────────────────────────────────────────────────────
+# Day 2 polish r5 T7: external-event system banner
+# ─────────────────────────────────────────────────────────────
+#
+# 对"不制造 user 对话消息但又真实存在"的外部事件 (agent_callback /
+# proactive), 在对话流里插一条 role=system + source=external_event_banner
+# 的短消息 ("测试用户触发了一次 agent_callback 事件"), 让 tester 能在一
+# 长串对话里看出"这条 assistant 回复是回应一次 tester 模拟的事件". 用
+# 户原话 (2026-04-23 r4 feedback): "XXX later 系统提示的扩展 — 对于
+# 不制造对话消息但是又真实存在的操作, 加一行提示".
+#
+# 关键约束:
+#   * banner 不能进 LLM wire — 否则会污染上下文 + 和 prompt_builder 的
+#     system→user rewrite chokepoint 冲突. 靠 source = SOURCE_EXTERNAL_
+#     EVENT_BANNER + prompt_builder.py 第 604 行的单点过滤实现 (L33 单
+#     chokepoint pattern).
+#   * banner 走 session.messages 持久化 — 这样 refresh / 重载会话后
+#     banner 仍在, 不是 UI 层 ephemeral. 语义是"对话流的一部分, 只是
+#     不进 LLM".
+#   * 必须在 assistant_msg append 之前, base_wire 构造之后. 如果 banner
+#     先写再构 base_wire, 不会出问题 (prompt_builder 过滤), 但语义上更
+#     干净的是 banner 和 assistant_msg 背靠背出现.
+#   * avatar 路径不加 banner — avatar 本身就 append memory_note (role=
+#     user) 作为 "tester 触发" 的锚点, 再加 banner 重复.
+_EXTERNAL_EVENT_BANNER_TEMPLATES: dict[SimulationKind, str] = {
+    SimulationKind.AGENT_CALLBACK:
+        "[测试事件] 测试用户触发了一次 Agent 回调事件",
+    SimulationKind.PROACTIVE:
+        "[测试事件] 测试用户触发了一次主动搭话事件",
+}
+
+
+def _append_external_event_banner(
+    session: Session,
+    kind: SimulationKind,
+    *,
+    extra_suffix: str = "",
+) -> None:
+    """Append a visual-only banner marking the external event in the
+    conversation timeline. Does NOT enter the LLM wire (filtered at
+    :mod:`tests.testbench.pipeline.prompt_builder` chokepoint).
+
+    ``extra_suffix`` (optional) 追加到 banner 末尾, 用来给 tester 一个
+    简短区分 ("触发类型: home" / "3 条回调: ..."). 留空也没问题.
+    """
+    template = _EXTERNAL_EVENT_BANNER_TEMPLATES.get(kind)
+    if not template:
+        # avatar 路径不配 banner; 任何未来新 kind 也默认不配, 直到明确
+        # 写进 _EXTERNAL_EVENT_BANNER_TEMPLATES.
+        return
+    content = template
+    if extra_suffix:
+        content = f"{content} · {extra_suffix}"
+    banner = make_message(
+        role=ROLE_SYSTEM,
+        content=content,
+        timestamp=session.clock.now(),
+        source=SOURCE_EXTERNAL_EVENT_BANNER,
+    )
+    try:
+        append_message(session, banner, on_violation="coerce")
+    except Exception as exc:  # noqa: BLE001
+        # Don't let a banner write failure bubble and abort the whole
+        # simulation — banner is convenience-only, the real assistant
+        # reply is what tester actually cares about.
+        python_logger().warning(
+            "external_events: failed to append banner for %s: %s: %s",
+            kind.value, type(exc).__name__, exc,
+        )
 
 
 def _record_and_return(
@@ -1250,9 +1836,11 @@ def _elapsed(started_perf: float) -> int:
 
 __all__ = [
     "CoerceInfo",
+    "ExternalEventPreview",
     "MirrorToRecentInfo",
     "SimulationKind",
     "SimulationResult",
+    "build_external_event_preview",
     "discard_session_caches",
     "peek_dedupe_info",
     "reset_dedupe",

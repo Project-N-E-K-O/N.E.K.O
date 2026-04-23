@@ -760,6 +760,11 @@ export function mountComposer(host, { stream, autoBanner = null }) {
             // to preserve monotonicity (user rewound the virtual clock).
             // Toast is the user-visible surfacing the chokepoint design
             // was missing in Day 2 initial landing.
+            //
+            // 2026-04-23 r5: empty_content_ignored — 空 textarea (或只
+            // 打了空白) + session.messages 末尾不是 user. 后端不走 error,
+            // 走 warning + diagnostics info, 前端只提示一下别让 tester
+            // 误以为系统挂了.
             const warn = ev.warning || {};
             if (warn.type === 'timestamp_coerced') {
               toast.warn(
@@ -769,6 +774,8 @@ export function mountComposer(host, { stream, autoBanner = null }) {
                   warn.original_ts || '?', warn.coerced_ts || '?',
                 )},
               );
+            } else if (warn.type === 'empty_content_ignored') {
+              toast.warn(i18n('chat.composer.empty_content_toast'));
             } else {
               console.debug('[composer] SSE warning:', warn);
             }

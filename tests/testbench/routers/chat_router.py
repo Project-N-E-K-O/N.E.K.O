@@ -641,6 +641,25 @@ async def inject_system(body: _InjectSystemRequest) -> dict[str, Any]:
     store = get_session_store()
     try:
         async with store.session_operation("chat.inject_system") as session:
+            # r5 T8: prompt-injection audit — inject_system was the only
+            # *free-form tester text → wire* path without detection. The
+            # content is role=system (not user), so the normal /send scan
+            # never sees it. Scan here *before* the backend appends so
+            # the audit record lands even if append fails downstream.
+            try:
+                from tests.testbench.pipeline import injection_audit as _ia
+                _ia.scan_and_record(
+                    body.content or "",
+                    source="chat.inject_system",
+                    session_id=getattr(session, "id", None),
+                    extra={"content_length": len(body.content or "")},
+                )
+            except Exception as exc:  # noqa: BLE001
+                python_logger().warning(
+                    "inject_system injection_audit skipped: %s: %s",
+                    type(exc).__name__, exc,
+                )
+
             backend = get_chat_backend()
             msg = backend.inject_system(session, body.content)
             _snapshot_capture(session, trigger="edit")
@@ -709,14 +728,73 @@ async def _send_event_stream(
                     delta=timedelta(seconds=body.time_advance_seconds),
                 )
 
+            # 2026-04-23 P25 Day 2 polish r5 — 空输入框 (或只打了空白
+            # 字符) 的 [发送] 点击分诊:
+            #
+            #   - 末尾是 user 消息 → 走 Day 8 #3 "重发最后一条 user 的
+            #     LLM 回复" 合法路径 (user_content=None).
+            #   - 末尾不是 user (或 session 为空) → 之前 (r4 及以前)
+            #     走 pipeline ValueError → SSE error frame → UI error
+            #     徽章 + Errors 页都会出现假信号. 用户反馈: "这种情况
+            #     不应当算 error, 只需要报警提示用户不得输入空消息即可,
+            #     但是依然需要在日志里面记录下来". 降级为:
+            #       (a) SSE 发一个 `warning` frame (type=empty_content_
+            #           ignored) 让前端弹 toast warn, **不走 error 路径**;
+            #       (b) diagnostics_store.record_internal 写一条
+            #           CHAT_SEND_EMPTY_IGNORED (info 级), 日志可见但
+            #           Errors 页不当 error 计数;
+            #       (c) 直接 return, 不调 LLM 不改 session.messages.
+            content_stripped = (body.content or "").strip()
+            is_empty_click = (not content_stripped)
+            if is_empty_click:
+                tail_role = None
+                tail_empty = not session.messages
+                if session.messages:
+                    tail_role = session.messages[-1].get("role")
+                if tail_role != ROLE_USER:
+                    # 不是合法"重发" — 发 warning 然后提前 return.
+                    from tests.testbench.pipeline import diagnostics_store as _ds
+                    from tests.testbench.pipeline.diagnostics_ops import (
+                        DiagnosticsOp,
+                    )
+                    try:
+                        _ds.record_internal(
+                            DiagnosticsOp.CHAT_SEND_EMPTY_IGNORED,
+                            "空消息发送请求被忽略 (textarea 无内容, "
+                            "且 session.messages 末尾不是 user).",
+                            level="info",
+                            session_id=getattr(session, "id", None),
+                            detail={
+                                "role": body.role,
+                                "source": body.source,
+                                "tail_role": tail_role,
+                                "tail_empty": tail_empty,
+                            },
+                        )
+                    except Exception as exc:  # noqa: BLE001 — audit 不得阻流
+                        python_logger().warning(
+                            "chat.send empty-ignore audit record failed: "
+                            "%s: %s", type(exc).__name__, exc,
+                        )
+                    yield _sse_frame({
+                        "event": "warning",
+                        "warning": {
+                            "type": "empty_content_ignored",
+                            "tail_role": tail_role,
+                            "tail_empty": tail_empty,
+                            "message": "消息内容不能为空",
+                        },
+                    })
+                    return
+
             backend = get_chat_backend()
             stream_ok = False
             try:
                 # 2026-04-22 Day 8 #3: 空字符串 → None, 触发 pipeline 的
                 # "只跑 LLM 对末尾已有 user 回复" 路径. pipeline 自己校验
-                # 末尾必须是 user, 否则抛 ValueError → 下面 Exception 分支
-                # 翻译成友好错误.
-                user_content_arg = body.content if body.content else None
+                # 末尾必须是 user (r5 前已在上面预诊拦截, 到这里 None 路径
+                # 一定合法).
+                user_content_arg = body.content if content_stripped else None
                 async for event in backend.stream_send(
                     session,
                     user_content=user_content_arg,

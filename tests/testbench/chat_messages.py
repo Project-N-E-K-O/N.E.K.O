@@ -44,9 +44,22 @@ SOURCE_LLM: Final[str] = "llm"                # Target chat LLM reply.
 SOURCE_SIMUSER: Final[str] = "simuser"        # Reserved for P11 (假想用户 AI).
 SOURCE_SCRIPT: Final[str] = "script"          # Reserved for P12 (脚本化对话).
 SOURCE_AUTO: Final[str] = "auto"              # Reserved for P13 (双 AI 自动对话).
+# P25 Day 2 polish r5 — pseudo-message inserted by external-event simulators
+# to mark "tester triggered a non-dialog event here" in the chat timeline.
+# The banner is a VISUAL-ONLY marker rendered like the auto-generated
+# ``time-sep`` bars (". X min later .") but anchored to a real message so
+# it survives across refreshes / session save-load. Crucially:
+#   * the banner must NOT be sent to the LLM — ``prompt_builder.build_
+#     prompt_bundle`` filters ``source == external_event_banner`` before
+#     building ``wire_messages`` so the LLM never sees the meta-note;
+#   * the banner can be either ``role=system`` (legacy pattern) or
+#     ``role=user`` (neutral pattern) — filter is source-driven, not
+#     role-driven, to avoid accidentally dropping real system injects.
+SOURCE_EXTERNAL_EVENT_BANNER: Final[str] = "external_event_banner"
 ALLOWED_SOURCES: Final[frozenset[str]] = frozenset({
     SOURCE_MANUAL, SOURCE_INJECT, SOURCE_LLM,
     SOURCE_SIMUSER, SOURCE_SCRIPT, SOURCE_AUTO,
+    SOURCE_EXTERNAL_EVENT_BANNER,
 })
 
 
@@ -221,6 +234,7 @@ __all__ = [
     "ROLE_SYSTEM",
     "ROLE_USER",
     "SOURCE_AUTO",
+    "SOURCE_EXTERNAL_EVENT_BANNER",
     "SOURCE_INJECT",
     "SOURCE_LLM",
     "SOURCE_MANUAL",

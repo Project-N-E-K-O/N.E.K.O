@@ -593,7 +593,17 @@ def build_prompt_bundle(session: Session) -> PromptBundle:
     wire_messages: list[dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
     ]
+    # P25 Day 2 polish r5 — external-event "banner" pseudo-messages
+    # (``source == external_event_banner``) are visual-only timeline
+    # markers for tester diagnostic convenience. They must be dropped
+    # BEFORE wire assembly so the LLM never sees them; dropping them at
+    # this single chokepoint means every entry path (/chat/send preview,
+    # external-event record_last_llm_wire, manual build_prompt_bundle
+    # call) gets the same filter for free (L33 single-writer pattern).
+    from tests.testbench.chat_messages import SOURCE_EXTERNAL_EVENT_BANNER
     for msg in session.messages or []:
+        if msg.get("source") == SOURCE_EXTERNAL_EVENT_BANNER:
+            continue
         role = msg.get("role", "user")
         content = msg.get("content", "")
         if role == "system":

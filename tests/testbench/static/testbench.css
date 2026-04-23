@@ -3218,11 +3218,13 @@ table.tbl .tbl-key-field {
   box-shadow: inset 0 0 0 1px rgba(74, 160, 90, 0.18);
 }
 
-/* P25 Day 2 polish r4: Raw wire 视图被拆成两个 subsection —
-   (1) 最近一次真实 wire (ground truth) 放在最上面, 视觉优先级最高;
-   (2) 下次 /send 预估 wire (prediction) 退到下面, muted 一点.
-   subsection 之间用一条浅分割线 + 更大 gap 视觉分开, 免得两块列表糊
-   成一块让 tester 以为都是同一串消息. */
+/* P25 Day 2 polish r5: Raw wire 视图合并成单一面板 (wire-section).
+   历史上 r4 曾拆成"真实 wire + 预估 wire"两段, 用户手测反馈同时显示
+   两个面板让人困惑, r5 回退到单面板策略: 优先展示 last_llm_wire
+   (ground truth), 无则退回 bundle.wire_messages (发送前预估).
+   保留 .raw-subsection 作为 flex 容器骨架, 标题色带还原默认.
+   .last-llm-wire / .next-send-wire / .last-wire-reply 三个特化类在 r5
+   不再被使用, 已清除. */
 .raw-view {
   gap: var(--density-md);
 }
@@ -3230,12 +3232,6 @@ table.tbl .tbl-key-field {
   display: flex;
   flex-direction: column;
   gap: var(--density-sm);
-  padding-top: var(--density-sm);
-  border-top: 1px solid var(--border-subtle, var(--border));
-}
-.raw-subsection:first-of-type {
-  padding-top: 0;
-  border-top: none;
 }
 .raw-subsection-heading {
   margin: 0;
@@ -3243,36 +3239,102 @@ table.tbl .tbl-key-field {
   font-weight: 600;
   color: var(--text-primary);
 }
-.raw-subsection.last-llm-wire .raw-subsection-heading {
-  color: var(--accent, #4a9eff);
-}
-.raw-subsection.next-send-wire .raw-subsection-heading {
-  color: var(--text-secondary);
-}
 .last-wire-meta {
   margin: 4px 0;
 }
-.last-wire-reply {
-  margin-top: var(--density-sm);
+.preview-hint.small { font-size: 12px; }
+.preview-hint.muted { color: var(--text-tertiary); background: transparent; }
+/* P25 Day 2 polish r5: ephemeral wire 专用的高亮提示 — 仅在 source 是
+   avatar_event / agent_callback / proactive_chat 时挂在单一 wire
+   section 顶部, 让 tester 一眼看清 "这条长指令不会污染 session.messages".
+   视觉上比 .warn 更重一点 (左侧实心色条 + 浅黄背景), 仍走
+   .preview-hint 基础 padding / radius / font-size. */
+.preview-hint.ephemeral-warning {
+  border: 1px solid rgba(214, 159, 61, 0.55);
+  border-left: 4px solid var(--warn, #d69f3d);
+  color: var(--warn, #d69f3d);
+  background: rgba(255, 193, 77, 0.08);
+  font-weight: 500;
+}
+.empty-state.warn { color: var(--err, #e05a5a); }
+
+/* P25 Day 2 polish r5 T5: 外部事件"发送前预览 prompt" modal + 面板按钮.
+   Modal 结构是 .modal-backdrop > .modal{head,body,foot}; 复用全局
+   .modal-backdrop / .modal 基础样式, 这里只补 head/body/foot 细节
+   (session_export_modal 等有自己的 __body 类, 我们走通用分段). */
+.external-events-preview-modal .modal {
+  min-width: 540px;
+  max-width: 80vw;
+  gap: var(--density-sm);
+}
+.external-events-preview-modal .modal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-shrink: 0;
+  gap: var(--density-sm);
+}
+.external-events-preview-modal .modal-head h3 {
+  margin: 0;
+  font-size: 15px;
+}
+.external-events-preview-modal .modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--density-sm);
+}
+.external-events-preview-modal .modal-body h4 {
+  margin: var(--density-sm) 0 0 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.external-events-preview-modal .modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  flex-shrink: 0;
   padding-top: var(--density-sm);
-  border-top: 1px dashed var(--border);
+  border-top: 1px solid var(--border);
+}
+.external-events-preview-wire {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
-.last-wire-reply .reply-heading {
-  margin: 0;
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-.last-wire-reply .reply-char-count {
+.external-events-preview-wire .wire-row > summary {
+  cursor: pointer;
   font-family: var(--font-mono);
   font-size: 12px;
+  padding: 4px 8px;
+  background: var(--bg-subtle, rgba(255, 255, 255, 0.04));
+  border-radius: var(--radius-sm);
 }
-.preview-hint.small { font-size: 12px; }
-.preview-hint.muted { color: var(--text-tertiary); background: transparent; }
-.empty-state.warn { color: var(--err, #e05a5a); }
+.external-events-preview-wire .wire-row.wire-tail > summary {
+  background: rgba(74, 160, 255, 0.10);
+  border-left: 3px solid var(--accent, #4a9eff);
+}
+.external-events-preview-wire .wire-row > pre {
+  margin: 4px 0 8px 0;
+  padding: 8px;
+  background: var(--bg-code, rgba(0, 0, 0, 0.15));
+  border-radius: var(--radius-sm);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+}
+.external-events-preview-error {
+  border: 1px solid rgba(224, 90, 90, 0.45);
+  background: rgba(224, 90, 90, 0.08);
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+}
+.modal-actions-inline {
+  display: flex;
+  gap: var(--density-sm);
+  flex-shrink: 0;
+}
 
 /* 按钮密度修饰 (chat 面板里到处用) */
 button.small { font-size: 12px; padding: 3px 10px; }
@@ -3383,6 +3445,43 @@ button.primary.small { font-size: 12px; padding: 3px 12px; }
 .chat-message[data-role="system"] {
   border-left: 3px solid var(--accent);
   background: rgba(233, 208, 255, 0.04);
+}
+
+/* r5 T7: external-event banner pseudo-message — 视觉上和 "2h Later"
+   时间分隔符同类 (对话流的可视标记, 非真实消息), 但又要保留时间戳
+   以参与 time-sep 计算, 所以走 .chat-message 基础结构, 只在这里把
+   它弱化成 centered + muted + dashed border. banner 没有 role pill
+   (see message_stream.js), 没有 menu, 没有 eval badge, 所以 header
+   非常短, 行内居中就够. */
+.chat-message.is-event-banner {
+  align-self: center;
+  max-width: 80%;
+  border-left: 1px dashed var(--border) !important;
+  border-top: 1px dashed var(--border);
+  border-right: 1px dashed var(--border);
+  border-bottom: 1px dashed var(--border);
+  background: transparent !important;
+  padding: 4px 12px;
+  opacity: 0.78;
+  font-size: 11.5px;
+}
+.chat-message.is-event-banner .msg-header {
+  justify-content: center;
+  gap: 8px;
+}
+.chat-message.is-event-banner .msg-source {
+  border: 1px solid var(--border);
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: var(--text-secondary);
+}
+.chat-message.is-event-banner .msg-body {
+  text-align: center;
+  color: var(--text-secondary);
+}
+.chat-message.is-event-banner .msg-content {
+  white-space: normal;
 }
 
 .msg-header {

@@ -159,6 +159,18 @@ class DiagnosticsOp(StrEnum):
     # Severity: info.
     CHAT_SEND_SYSTEM_REWRITTEN = "chat_send_system_rewritten"
 
+    # P25 Day 2 polish r5 — tester 在 composer textarea 里留空或只输了
+    # 空白然后点 [发送]. 不走 pipeline 的"只跑 LLM 对末尾 user 重发"
+    # 路径 (那条路径只有当 session.messages 末尾已经是 user 时才合法)
+    # 而是直接忽略本次点击, 只 toast warn 提示 tester "消息不能为空".
+    # 之前 (r4 及以前) 是让后端走 user_content=None → pipeline 抛
+    # ValueError → 前端 SSE error frame → UI error 徽章 + Errors 页也
+    # 会出现. 用户反馈 "这种情况不应当算 error, 只需要报警提示用户不
+    # 得输入空消息即可, 但是依然需要在日志里面记录下来" — 所以降级到
+    # info + 仅 ring 审计留痕, 不写 session JSONL 避免成为"假信号".
+    # Severity: info.
+    CHAT_SEND_EMPTY_IGNORED = "chat_send_empty_ignored"
+
 
 #: Metadata consumed by ``GET /api/diagnostics/ops``. Must contain one
 #: entry per :class:`DiagnosticsOp` member. Categories help F7 Security
@@ -331,6 +343,21 @@ OP_CATALOG: dict[str, dict[str, str]] = {
             "你期望的是主程序初始化 system prompt 行为, 请改用 Setup → "
             "Persona 编辑; 如果你就是想让 LLM 看到一条带 system 标签的 "
             "提示信息, 这条 op 告诉你它已经被转写成什么了."
+        ),
+    },
+    DiagnosticsOp.CHAT_SEND_EMPTY_IGNORED.value: {
+        "category": "runtime",
+        "severity": "info",
+        "description": (
+            "tester 在 composer 空输入框 (或只打了空白字符) 状态下点了 "
+            "[发送]. 已被直接忽略, 没有调 LLM, 也没有向 session.messages "
+            "追加任何消息. 前端会弹一条 toast warning 提示 '消息不能为空'. "
+            "注意: 空 textarea + session.messages 末尾是 user 的场景走 "
+            "另一条合法路径 (stream_send(user_content=None) '重发最后一条 "
+            "user 的 LLM 回复'), 该场景不会记本 op. 本 op 的 detail 字典 "
+            "包含 role + source + session_id + tail_role (末尾消息的 role, "
+            "一般是非 user 时才走这里) + tail_empty(True/False 表示 session "
+            "是否为空会话)."
         ),
     },
 }

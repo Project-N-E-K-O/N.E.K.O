@@ -65,17 +65,17 @@ export function mountMessageStream(host) {
   const toolbar = el('div', { className: 'chat-stream-toolbar' });
   const countBadge = el('span', { className: 'chat-stream-count muted' },
     i18n('chat.stream.count', 0));
-  const refreshBtn = el('button', {
-    type: 'button',
-    className: 'small',
-    onClick: () => { refresh(); },
-  }, i18n('chat.stream.refresh_btn'));
+  // 2026-04-23 P25 Day 2 polish r5: tester 反馈 [刷新] 按钮没实际意义
+  // — 所有写入 session.messages 的路径 (send / inject_system / external
+  // event / script turn / auto_dialog / judge) 都通过 `chat:messages_
+  // changed` 事件总线驱动 refresh(), 不需要用户手动触发. 直接从 toolbar
+  // 里摘掉, 保留内部 refresh() 函数让订阅者继续用.
   const clearBtn = el('button', {
     type: 'button',
     className: 'small danger',
     onClick: () => { confirmClearAll(); },
   }, i18n('chat.stream.clear_btn'));
-  toolbar.append(countBadge, el('span', { className: 'spacer' }), refreshBtn, clearBtn);
+  toolbar.append(countBadge, el('span', { className: 'spacer' }), clearBtn);
   host.append(toolbar);
 
   // ── list ───────────────────────────────────────────────────────
@@ -137,8 +137,20 @@ export function mountMessageStream(host) {
   }
 
   function buildMessageNode(msg) {
+    // 2026-04-23 P25 Day 2 polish r5 T7: external-event "banner" pseudo-
+    // messages are visual timeline markers ("测试用户触发了一次 Agent 回
+    // 调事件"), not real dialogue — they MUST NOT expose the edit / rerun
+    // / delete menu (tester rewriting a banner would cause confusion), and
+    // MUST NOT show an eval badge (not an assistant reply), and MUST NOT
+    // show the role pill ("系统" - banner isn't a real system prompt, it's
+    // a UI marker). Instead we render a compact centered one-liner with
+    // just timestamp + content. Same structural shape as a .chat-message
+    // (so renderAll's time-sep insertion logic still works) but a stripped-
+    // down header and a dedicated CSS class for styling.
+    const isBanner = (msg.source || '') === 'external_event_banner';
+
     const node = el('div', {
-      className: 'chat-message',
+      className: 'chat-message' + (isBanner ? ' is-event-banner' : ''),
       'data-role': msg.role,
       'data-source': msg.source || 'manual',
       'data-msg-id': msg.id,
@@ -153,16 +165,26 @@ export function mountMessageStream(host) {
     // 一串 "null" 字样, 容易被误判成"徽章逻辑坏了". 改成先算后过滤, 保
     // 持 `el()` helper 里 "null/undefined/false 自动跳过" 同样的语义.
     const header = el('div', { className: 'msg-header' });
-    const evalBadge = buildEvalBadge(msg);
+    const evalBadge = isBanner ? null : buildEvalBadge(msg);
+    const menuButton = isBanner ? null : buildMenuButton(msg);
+    const roleSpan = isBanner
+      ? null
+      : el('span', { className: `msg-role role-${msg.role}` }, roleLabel(msg.role));
+    const sourceSpan = isBanner
+      // Banner 的"身份"是 source=external_event_banner, 已经通过 i18n
+      // 给出明确文案 ("测试事件"), 但在 header 里放一个 pill 会让 banner
+      // 显得像普通消息; 把 source 文案直接并进 timestamp 行即可.
+      ? el('span', { className: 'msg-source muted' }, sourceLabel(msg.source))
+      : el('span', { className: 'msg-source' }, sourceLabel(msg.source || 'manual'));
     header.append(
       ...[
-        el('span', { className: `msg-role role-${msg.role}` }, roleLabel(msg.role)),
-        el('span', { className: 'msg-source' }, sourceLabel(msg.source || 'manual')),
+        roleSpan,
+        sourceSpan,
         el('span', { className: 'msg-timestamp muted', title: msg.timestamp },
           formatTimestamp(msg.timestamp)),
         el('span', { className: 'spacer' }),
         evalBadge,
-        buildMenuButton(msg),
+        menuButton,
       ].filter(Boolean),
     );
     node.append(header);

@@ -33,6 +33,17 @@ import { on, store } from '../../core/state.js';
 import { createCollapsible, mountContainerToolbar } from '../../core/collapsible.js';
 import { el } from '../_dom.js';
 
+// P25 Day 2 polish r5: 外部事件注入的 instruction 是 "一次性结构, 不会进
+// session.messages". 当真实 wire 来自这三类路径时, 面板顶部插一条突出
+// 提示避免 tester 误以为超长指令会污染对话历史. 其它 source
+// (chat.send / judge.llm / memory.llm / simulated_user / auto_dialog_*) 不显示
+// 提示 — 要么本来就进 session.messages (chat.send), 要么 tester 不会在意.
+const EPHEMERAL_SOURCES = new Set([
+  'avatar_event',
+  'agent_callback',
+  'proactive_chat',
+]);
+
 /**
  * 挂载预览面板到给定 host.
  *
@@ -296,22 +307,23 @@ export function mountPreviewPanel(host) {
     return container;
   }
 
-  /** Raw wire 视图: 两段结构.
+  /** Raw wire 视图: 单一面板.
    *
-   *   1. "最近一次真实 wire" — 从 bundle.last_llm_wire 读, 由后端
-   *      pipeline/wire_tracker.py 在每个 LLM 调用点 stamp. 这是 ground
-   *      truth — 外部事件 / auto-dialog 等 ephemeral instruction 路径的
-   *      instruction 只会在这里出现, 永远不会进 session.messages.
-   *   2. "下次 /send 预估 wire" — bundle.wire_messages 本身, 从当前
-   *      session.messages 反推出的"如果现在点发送 wire 会长什么样". 这
-   *      只是预测, 不等价于上一轮真实 wire.
+   * P25 Day 2 polish r5: 早期 r4 把面板拆成"真实 wire (顶) + 预估 wire
+   * (底)"两段, 用户手测反馈两个面板并列让人困惑, 要求只保留一个.
+   * 现在的策略:
+   *   - 优先显示 `bundle.last_llm_wire.wire_messages` (ground truth —
+   *     上一轮真正送到 LLM 的消息数组, 由 pipeline/wire_tracker.py
+   *     在每个 LLM 调用点 stamp). 标题标注"真实发给 LLM 的".
+   *   - 如果会话还没调用过 LLM (last_llm_wire 为空), 退回展示
+   *     `bundle.wire_messages` (从 session.messages 反推的"发送前预估"),
+   *     并在标题里明确告诉 tester "尚未真实发送".
    *
-   * 这个拆分来自 P25 Day 2 polish r4 的语义漂移修复: 早期实现把两者
-   * 混为一谈, 导致 external event 触发后预览里只看得到短短一行
-   * memory_note ("[主人摸了摸你的头]"), 却看不到实际送给 LLM 的完整
-   * instruction (包含触碰区 / 道具强度 / 文本上下文 / 附带奖励 / 彩蛋).
-   * 测试平台的核心价值就是让 tester 看到真实 wire, 所以 ground-truth
-   * 块被放在最上面, 预测块退到下面.
+   * 外部事件 / auto-dialog 等 ephemeral instruction 路径只会出现在
+   * ground truth 那侧, 永远不会进 session.messages 也不会进预估 wire.
+   * 为了让 tester 不误以为 "那条超长的道具指令会污染 session.messages",
+   * 额外在 source ∈ {avatar_event, agent_callback, proactive_chat} 时
+   * 顶部插一条突出提示.
    */
   function renderRawWire(bundle) {
     const container = el('div', { className: 'preview-view raw-view' });
@@ -319,92 +331,118 @@ export function mountPreviewPanel(host) {
     container.append(el('div', { className: 'preview-hint warn' },
       i18n('chat.preview.hint.raw')));
 
-    // ── Section 1: 最近一次真实 wire (ground truth) ──
-    container.append(renderLastLlmWireSection(bundle));
-
-    // ── Section 2: 下次 /send 预估 wire ──
-    container.append(renderNextSendWirePreview(bundle));
+    container.append(renderWireSection(bundle));
 
     mountContainerToolbar(container);
     return container;
   }
 
-  /** 真实 wire section — 从 bundle.last_llm_wire 读. */
-  function renderLastLlmWireSection(bundle) {
-    const section = el('div', { className: 'raw-subsection last-llm-wire' });
+  /** 单一 wire section — 真实 wire 优先, 无则回退预估 wire. */
+  function renderWireSection(bundle) {
+    const section = el('div', { className: 'raw-subsection wire-section' });
 
-    section.append(
-      el('h4', { className: 'raw-subsection-heading' },
-        i18n('chat.preview.last_wire.section_heading')),
-      el('div', { className: 'preview-hint info' },
-        i18n('chat.preview.last_wire.section_hint')),
-    );
-
+    // 数据源选择: last_llm_wire 存在且非空 → 用真实 wire; 否则用预估 wire.
     const last = bundle.last_llm_wire;
-    if (!last || !last.wire_messages || !last.wire_messages.length) {
-      section.append(el('div', { className: 'empty-state muted' },
-        i18n('chat.preview.last_wire.none')));
-      return section;
-    }
+    const hasReal = !!(last && last.wire_messages && last.wire_messages.length);
+    const wireMessages = hasReal
+      ? last.wire_messages
+      : (bundle.wire_messages || []);
 
-    // ── metadata strip ──
-    // source_label 是个对象, 用 i18nRaw 显式拿对象; 找不到的 source 兜底回
-    // 原始 slug 而不是 "chat.preview.last_wire.source_label.xxx" 整 key.
-    const sourceLabelMap = i18nRaw('chat.preview.last_wire.source_label') || {};
-    const sourceLabel = sourceLabelMap[last.source] || last.source || '?';
-    const recordedReal = (last.recorded_at_real || '').replace('T', ' ');
-    const recordedVirtual = (last.recorded_at_virtual || '').replace('T', ' ');
-    const replyChars = typeof last.reply_chars === 'number' ? last.reply_chars : -1;
-    const replyCharsText = replyChars < 0
-      ? i18n('chat.preview.last_wire.meta_reply_pending')
-      : String(replyChars);
-
-    const metaStrip = el('div', { className: 'preview-meta last-wire-meta' });
-    metaStrip.append(
-      metaBadge(i18n('chat.preview.last_wire.meta_source'), sourceLabel),
-      metaBadge(i18n('chat.preview.last_wire.meta_recorded_at'), recordedReal || '-'),
-      metaBadge(i18n('chat.preview.last_wire.meta_virtual_time'), recordedVirtual || '-'),
-      metaBadge(i18n('chat.preview.last_wire.meta_reply_chars'), replyCharsText),
+    // 标题 & 副标题
+    const headingKey = hasReal
+      ? 'chat.preview.wire_section.heading_real'
+      : 'chat.preview.wire_section.heading_estimate';
+    section.append(
+      el('h4', { className: 'raw-subsection-heading' }, i18n(headingKey)),
     );
-    if (last.note) {
-      metaStrip.append(
-        metaBadge(i18n('chat.preview.last_wire.meta_note'), String(last.note)),
-      );
-    }
-    section.append(metaStrip);
 
-    // ── copy button ──
+    // ephemeral 提示 — 仅在外部事件 / proactive / agent_callback 路径的
+    // 真实 wire 下显示, 普通 chat.send / 回退预估路径不展示避免干扰.
+    if (hasReal && EPHEMERAL_SOURCES.has(last.source)) {
+      section.append(el('div', { className: 'preview-hint ephemeral-warning' },
+        i18n('chat.preview.wire_section.ephemeral_warning')));
+    }
+
+    // ── metadata strip (仅 hasReal 时有意义) ──
+    if (hasReal) {
+      // source_label 是个对象, 用 i18nRaw 显式拿对象; 找不到的 source 兜底回
+      // 原始 slug 而不是 "chat.preview.last_wire.source_label.xxx" 整 key.
+      const sourceLabelMap = i18nRaw('chat.preview.last_wire.source_label') || {};
+      const sourceLabel = sourceLabelMap[last.source] || last.source || '?';
+      const recordedReal = (last.recorded_at_real || '').replace('T', ' ');
+      const recordedVirtual = (last.recorded_at_virtual || '').replace('T', ' ');
+      const replyChars = typeof last.reply_chars === 'number' ? last.reply_chars : -1;
+      const replyCharsText = replyChars < 0
+        ? i18n('chat.preview.last_wire.meta_reply_pending')
+        : String(replyChars);
+
+      const metaStrip = el('div', { className: 'preview-meta last-wire-meta' });
+      metaStrip.append(
+        metaBadge(i18n('chat.preview.last_wire.meta_source'), sourceLabel),
+        metaBadge(i18n('chat.preview.last_wire.meta_recorded_at'), recordedReal || '-'),
+        metaBadge(i18n('chat.preview.last_wire.meta_virtual_time'), recordedVirtual || '-'),
+        metaBadge(i18n('chat.preview.last_wire.meta_reply_chars'), replyCharsText),
+      );
+      if (last.note) {
+        metaStrip.append(
+          metaBadge(i18n('chat.preview.last_wire.meta_note'), String(last.note)),
+        );
+      }
+      section.append(metaStrip);
+    }
+
+    // ── copy buttons ──
     const actions = el('div', { className: 'raw-actions' });
     actions.append(
       el('button', {
         type: 'button',
         className: 'small',
         onClick: () => copyText(
-          JSON.stringify(last.wire_messages, null, 2),
+          JSON.stringify(wireMessages, null, 2),
           'chat.preview.copied_wire',
         ),
       }, i18n('chat.preview.copy_wire_json')),
     );
+    // 回退路径: 还有 system_prompt 可以单独复制. 真实路径下
+    // system_prompt 是 wire[0] 本体, 复制 wire JSON 已包含, 不重复给按钮.
+    if (!hasReal && bundle.system_prompt) {
+      actions.append(
+        el('button', {
+          type: 'button',
+          className: 'small',
+          onClick: () => copyText(bundle.system_prompt || '', 'chat.preview.copied_system'),
+        }, i18n('chat.preview.copy_system_string')),
+      );
+    }
     section.append(actions);
 
     // ── wire messages list ──
+    if (!wireMessages.length) {
+      section.append(el('div', { className: 'empty-state muted' },
+        i18n(hasReal
+          ? 'chat.preview.last_wire.none'
+          : 'chat.preview.empty.no_wire')));
+      return section;
+    }
+
     const list = el('div', { className: 'wire-list' });
-    last.wire_messages.forEach((msg, idx) => {
+    const blockIdPrefix = hasReal ? 'preview-last-wire' : 'preview-wire';
+    wireMessages.forEach((msg, idx) => {
       const role = msg.role || '?';
       const content = typeof msg.content === 'string'
         ? msg.content
         : JSON.stringify(msg.content);
       const isSystem = role === 'system';
-      const isTail = idx === last.wire_messages.length - 1;
+      const isTail = idx === wireMessages.length - 1;
       const title = i18n('chat.preview.wire.title', idx, role.toUpperCase());
-      // 末尾 user 消息 (通常是 ephemeral instruction) 默认展开 — 这正是
-      // tester 想看的 ground truth, 折叠掉反而失去修复意义. 首条 system
-      // 默认折叠 (很长, 干扰阅读). 中段消息依字符数决定.
+      // 末尾消息 (通常是 ephemeral instruction 或最后一条 user) 默认展开 —
+      // 这正是 tester 想看的 ground truth, 折叠掉反而失去修复意义.
+      // 首条 system 默认折叠 (很长, 干扰阅读). 中段消息依字符数决定.
       const defaultCollapsed = isSystem
         ? true
         : (isTail ? false : content.length > 500);
       const block = createCollapsible({
-        blockId: `preview-last-wire-${idx}`,
+        blockId: `${blockIdPrefix}-${idx}`,
         title,
         content,
         lengthBadge: i18n('chat.preview.length_badge', content.length),
@@ -413,87 +451,6 @@ export function mountPreviewPanel(host) {
       });
       block.classList.add(`wire-role-${role}`);
       if (isTail) block.classList.add('wire-tail');
-      list.append(block);
-    });
-    section.append(list);
-
-    // ── assistant reply preview ──
-    const replyBox = el('div', { className: 'last-wire-reply' });
-    replyBox.append(
-      el('h5', { className: 'reply-heading' },
-        i18n('chat.preview.last_wire.reply_preview_heading')),
-      el('div', { className: 'preview-hint info small' },
-        i18n('chat.preview.last_wire.reply_preview_hint')),
-    );
-    if (replyChars < 0) {
-      replyBox.append(el('div', { className: 'empty-state muted' },
-        i18n('chat.preview.last_wire.reply_missing')));
-    } else if (replyChars === 0) {
-      replyBox.append(el('div', { className: 'empty-state warn' },
-        i18n('chat.preview.last_wire.reply_empty')));
-    } else {
-      replyBox.append(el('div', { className: 'reply-char-count muted' },
-        i18n('chat.preview.length_badge', replyChars)));
-    }
-    section.append(replyBox);
-
-    return section;
-  }
-
-  /** 预估 wire section — bundle.wire_messages (基于 session.messages 反推). */
-  function renderNextSendWirePreview(bundle) {
-    const section = el('div', { className: 'raw-subsection next-send-wire' });
-
-    section.append(
-      el('h4', { className: 'raw-subsection-heading' },
-        i18n('chat.preview.last_wire.next_wire_heading')),
-      el('div', { className: 'preview-hint muted' },
-        i18n('chat.preview.last_wire.next_wire_hint')),
-    );
-
-    // 顶部 Copy 按钮群.
-    const actions = el('div', { className: 'raw-actions' });
-    actions.append(
-      el('button', {
-        type: 'button',
-        className: 'small',
-        onClick: () => copyText(
-          JSON.stringify(bundle.wire_messages, null, 2),
-          'chat.preview.copied_wire',
-        ),
-      }, i18n('chat.preview.copy_wire_json')),
-      el('button', {
-        type: 'button',
-        className: 'small',
-        onClick: () => copyText(bundle.system_prompt || '', 'chat.preview.copied_system'),
-      }, i18n('chat.preview.copy_system_string')),
-    );
-    section.append(actions);
-
-    const wire = bundle.wire_messages || [];
-    if (!wire.length) {
-      section.append(el('div', { className: 'empty-state' },
-        i18n('chat.preview.empty.no_wire')));
-      return section;
-    }
-
-    const list = el('div', { className: 'wire-list' });
-    wire.forEach((msg, idx) => {
-      const role = msg.role || '?';
-      const content = typeof msg.content === 'string'
-        ? msg.content
-        : JSON.stringify(msg.content);
-      const isSystem = role === 'system';
-      const title = i18n('chat.preview.wire.title', idx, role.toUpperCase());
-      const block = createCollapsible({
-        blockId: `preview-wire-${idx}`,
-        title,
-        content,
-        lengthBadge: i18n('chat.preview.length_badge', content.length),
-        defaultCollapsed: isSystem || content.length > 500,
-        copyable: true,
-      });
-      block.classList.add(`wire-role-${role}`);
       list.append(block);
     });
     section.append(list);

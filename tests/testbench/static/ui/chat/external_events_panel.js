@@ -123,9 +123,17 @@ export function mountExternalEventsPanel(host) {
     },
     proactive: {
       kind: 'home',
+      // P25 Day 2 polish r5 T6: 测试人员可手填 "主动对话话题".
+      // 后端 _fill_proactive_instruction 把此字段填入 {trending_content} /
+      // {personal_dynamic} / {current_chat} 三个 "主内容" 占位 (哪个生效
+      // 由 kind 决定, 但后端不挑, 三槽都替换). 空字符串时后端回落到
+      // _PROACTIVE_TOPIC_EMPTY_FALLBACK, 避免 LLM 看到未填的 {trending_content}
+      // 字面量.
+      topic: '',
     },
     inFlight: false,
     clearingDedupe: false,
+    previewing: false,         // r5 T5: "预览 prompt" 按钮 in-flight lock
     lastResult: null,          // SimulationResult-shaped dict
     lastResultKind: null,      // 'avatar' / 'agent_callback' / 'proactive'
     lastRequestError: null,    // string | null (HTTP / 网络层)
@@ -368,6 +376,8 @@ export function mountExternalEventsPanel(host) {
   // ── Proactive 表单 ─────────────────────────────────────────
   function renderProactiveFields() {
     const p = state.proactive;
+    const rows = [];
+
     const kindSel = buildSelect({
       options: PROACTIVE_KINDS.map((k) => ({
         value: k,
@@ -376,11 +386,29 @@ export function mountExternalEventsPanel(host) {
       value: p.kind,
       onChange: (v) => { p.kind = v; },
     });
-    return [labeledRow(
-      'chat.external_events.proactive.kind_label', kindSel)];
+    rows.push(labeledRow(
+      'chat.external_events.proactive.kind_label', kindSel));
+
+    // r5 T6: 主动对话话题 — 对应后端 payload.topic, 后端 builder 把它
+    // 填进模板的 {trending_content} / {personal_dynamic} / {current_chat}
+    // 三个主内容占位. 空串时后端有 fallback, tester 不填也不会崩.
+    const topicTextarea = el('textarea', {
+      className: 'external-events-textarea',
+      rows: 2,
+      placeholder: i18n('chat.external_events.proactive.topic_placeholder'),
+      value: p.topic,
+      onInput: (e) => { p.topic = e.target.value; },
+    });
+    rows.push(labeledRow(
+      'chat.external_events.proactive.topic_label', topicTextarea, { block: true }));
+
+    rows.push(el('p', { className: 'form-hint' },
+      i18n('chat.external_events.proactive.topic_hint')));
+
+    return rows;
   }
 
-  // ── [触发事件] + [mirror_to_recent] 行 ───────────────────
+  // ── [预览 prompt] + [触发事件] + [mirror_to_recent] 行 ───
   function renderInvokeRow() {
     const row = el('div', { className: 'external-events-invoke-row' });
 
@@ -399,16 +427,28 @@ export function mountExternalEventsPanel(host) {
         i18n('chat.external_events.common.mirror_to_recent_label')),
     );
 
+    // r5 T5: 预览按钮 — 在 tester 点 "触发事件" 之前, 先 dry-run 看
+    // "这次如果点下去会给 LLM 发什么 wire". 后端 /preview endpoint 不
+    // 写 session.messages / last_llm_wire / dedupe cache, 不调 LLM.
+    const previewBtn = el('button', {
+      type: 'button',
+      className: 'btn',
+      disabled: state.inFlight || state.previewing,
+      onClick: onPreviewClicked,
+    }, state.previewing
+        ? i18n('chat.external_events.common.preview_in_flight')
+        : i18n('chat.external_events.common.preview_btn'));
+
     const invokeBtn = el('button', {
       type: 'button',
       className: 'btn primary',
-      disabled: state.inFlight,
+      disabled: state.inFlight || state.previewing,
       onClick: onInvokeClicked,
     }, state.inFlight
         ? i18n('chat.external_events.common.invoke_in_flight')
         : i18n('chat.external_events.common.invoke_btn'));
 
-    row.append(mirrorLabel, invokeBtn);
+    row.append(mirrorLabel, previewBtn, invokeBtn);
     return row;
   }
 
@@ -640,6 +680,73 @@ export function mountExternalEventsPanel(host) {
     renderAll();
   }
 
+  // r5 T5: 预览 prompt — dry-run, 不写 session, 不调 LLM.
+  async function onPreviewClicked() {
+    if (state.previewing || state.inFlight) return;
+    const sid = store.session?.id;
+    if (!sid) return;
+
+    // preview 允许 "空 callbacks" / "空 topic" 等部分 payload — tester
+    // 的用意就是看 "就算我不填这个字段, 会发出去什么". 这里不走
+    // buildRequestBody() 的 toast 门禁, 而是直接拼最小 payload.
+    const body = buildPreviewBody();
+    state.previewing = true;
+    renderAll();
+
+    const resp = await api.post(
+      '/api/session/external-event/preview',
+      body,
+      {
+        expectedStatuses: [400, 404, 409, 422, 500],
+      },
+    );
+
+    state.previewing = false;
+    renderAll();
+
+    if (!resp.ok) {
+      const msg = resp.error?.message || `HTTP ${resp.status}`;
+      toast.err(i18n('chat.external_events.common.preview_failed_fmt', msg));
+      return;
+    }
+    openPreviewModal(resp.data || {});
+  }
+
+  // Preview 用的 body: 和 buildRequestBody 结构相同, 但不做 "必填校验"
+  // (空 callbacks 走后端 reason=empty_callbacks 路径, UI 显示为准).
+  function buildPreviewBody() {
+    if (state.activeKind === 'avatar') {
+      const a = state.avatar;
+      const payload = {
+        interaction_id: a.interactionId?.trim() || genInteractionId(),
+        target: 'avatar',
+        tool_id: a.tool,
+        action_id: a.action,
+      };
+      if (a.intensity) payload.intensity = a.intensity;
+      if (AVATAR_TOUCH_ZONE_TOOLS.has(a.tool) && a.touchZone) {
+        payload.touch_zone = a.touchZone;
+      }
+      if (a.textContext) payload.text_context = a.textContext;
+      if (a.tool === 'fist' && a.rewardDrop) payload.reward_drop = true;
+      if (a.easterEgg) payload.easter_egg = true;
+      return { kind: 'avatar', payload };
+    }
+    if (state.activeKind === 'agent_callback') {
+      const lines = state.agentCallback.callbacksText
+        .split('\n').map((s) => s.trim()).filter(Boolean);
+      return { kind: 'agent_callback', payload: { callbacks: lines } };
+    }
+    // proactive
+    return {
+      kind: 'proactive',
+      payload: {
+        kind: state.proactive.kind,
+        topic: state.proactive.topic || '',
+      },
+    };
+  }
+
   async function onClearDedupeClicked() {
     if (state.clearingDedupe) return;
     const sid = store.session?.id;
@@ -814,4 +921,148 @@ function genInteractionId() {
   const ts = Date.now().toString(36);
   const rnd = Math.random().toString(36).slice(2, 7);
   return `ui-${ts}-${rnd}`;
+}
+
+/**
+ * r5 T5: 弹 "预览 prompt" 模态框.
+ *
+ * 数据来自 POST /api/session/external-event/preview, 后端字段 (见
+ * external_event_router.py::post_external_event_preview):
+ *   - kind: avatar | agent_callback | proactive
+ *   - wire_preview: [{role, content}, ...]   — 真实将会发给 LLM 的 wire
+ *   - instruction_final: str                 — wire 末尾 user 条的 content
+ *   - instruction_template_raw: str          — 模板源 (未做 slot 替换前)
+ *   - coerce_info: [{field, requested, applied, note}, ...]
+ *   - reason / error_code / error_message    — 发不出去时的原因
+ *
+ * Modal 只做展示 + 关闭, 不做二次编辑/提交; tester 看完 prompt 后
+ * 回 panel 按 "触发事件" 才真的跑. 这样保持 "预览 ≠ 触发" 干净分离.
+ */
+function openPreviewModal(data) {
+  const backdrop = el('div', {
+    className: 'modal-backdrop external-events-preview-modal',
+  });
+  const dialog = el('div', { className: 'modal' });
+
+  const head = el('div', { className: 'modal-head' },
+    el('h3', {}, i18n('chat.external_events.preview_modal.title')),
+    el('button', {
+      type: 'button',
+      className: 'ghost tiny',
+      onClick: close,
+    }, i18n('chat.external_events.preview_modal.close_btn')),
+  );
+
+  const body = el('div', { className: 'modal-body' });
+
+  // 顶部 hint — "这是 dry-run, 没写 session, 没调 LLM".
+  body.append(el('p', { className: 'hint' },
+    i18n('chat.external_events.preview_modal.dry_run_hint'),
+  ));
+
+  // reason/error — 发不出去的场景 (invalid_payload / empty_callbacks /
+  // persona_not_ready).
+  if (data.reason) {
+    const errBox = el('div', {
+      className: 'external-events-preview-error hint warn',
+    });
+    errBox.append(el('div', {},
+      i18n('chat.external_events.preview_modal.reason_fmt', data.reason),
+    ));
+    if (data.error_code || data.error_message) {
+      errBox.append(el('div', { className: 'mono small' },
+        `${data.error_code || ''} ${data.error_message || ''}`.trim(),
+      ));
+    }
+    body.append(errBox);
+  }
+
+  // Wire preview list
+  const wire = Array.isArray(data.wire_preview) ? data.wire_preview : [];
+  if (wire.length) {
+    body.append(el('h4', {},
+      i18n('chat.external_events.preview_modal.wire_heading'),
+    ));
+    const list = el('div', { className: 'external-events-preview-wire' });
+    wire.forEach((msg, idx) => {
+      const role = msg?.role || '?';
+      const content = typeof msg?.content === 'string'
+        ? msg.content : JSON.stringify(msg?.content);
+      const isTail = idx === wire.length - 1;
+      const item = el('details', {
+        className: `wire-row wire-role-${role}` + (isTail ? ' wire-tail' : ''),
+        open: isTail,
+      });
+      item.append(el('summary', {},
+        `#${idx} · ${role.toUpperCase()} · ${content.length} chars`,
+      ));
+      item.append(el('pre', { className: 'mono' }, content));
+      list.append(item);
+    });
+    body.append(list);
+
+    body.append(el('div', { className: 'modal-actions-inline' },
+      el('button', {
+        type: 'button',
+        className: 'btn',
+        onClick: async () => {
+          try {
+            await navigator.clipboard.writeText(
+              JSON.stringify(wire, null, 2));
+            toast.ok(i18n('chat.external_events.preview_modal.copied_wire'));
+          } catch {
+            toast.err(i18n('chat.external_events.preview_modal.copy_failed'));
+          }
+        },
+      }, i18n('chat.external_events.preview_modal.copy_wire_btn')),
+    ));
+  } else if (!data.reason) {
+    body.append(el('div', { className: 'empty-state muted' },
+      i18n('chat.external_events.preview_modal.wire_empty'),
+    ));
+  }
+
+  // Coerce info
+  const coerce = Array.isArray(data.coerce_info) ? data.coerce_info : [];
+  if (coerce.length) {
+    body.append(el('h4', {},
+      i18n('chat.external_events.preview_modal.coerce_heading'),
+    ));
+    for (const c of coerce) {
+      body.append(el('div', { className: 'external-events-coerce-entry' },
+        `${c.field}: ${JSON.stringify(c.requested)} → ${JSON.stringify(c.applied)}`,
+        c.note ? el('div', { className: 'muted small' }, c.note) : null,
+      ));
+    }
+  }
+
+  const foot = el('div', { className: 'modal-foot' },
+    el('button', {
+      type: 'button',
+      className: 'btn primary',
+      onClick: close,
+    }, i18n('chat.external_events.preview_modal.close_btn')),
+  );
+
+  dialog.append(head, body, foot);
+  backdrop.append(dialog);
+
+  function close() {
+    backdrop.remove();
+    document.removeEventListener('keydown', onKey);
+  }
+  function onKey(ev) {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      close();
+    }
+  }
+  // 点击 backdrop 外围 (而不是 dialog 本身) 关闭. 不要直接 =close,
+  // 否则点击 dialog 内部也会冒泡到 backdrop.
+  backdrop.addEventListener('click', (ev) => {
+    if (ev.target === backdrop) close();
+  });
+  document.addEventListener('keydown', onKey);
+
+  document.body.appendChild(backdrop);
 }
