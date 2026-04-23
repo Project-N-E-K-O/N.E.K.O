@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-Unit tests for the reflection filter tightening (PR #929 round 8):
+Unit tests for the reflection filter tightening (PR #929 round 8, plus
+round-9 revert of the followup exclusion):
 
 - aget_confirmed_reflections: score > 0 AND not suppress
-- aget_followup_topics: also excludes derived-confirmed (score >= CONFIRMED)
+- aget_followup_topics: excludes score < 0 only —
+  **derived-confirmed pending (stored=pending, score >= CONFIRMED)
+  is still a valid followup candidate** (design call, see round-9 revert)
 - arecord_mentions: 5h window suppress机制 apply to confirmed reflection
 - synthesize 的 importance-based initial rein seed
 """

@@ -59,12 +59,15 @@ def make_reflection_evidence_handler(reflection_engine):
             with open(path, encoding='utf-8') as f:
                 data = json.load(f)
         if not isinstance(data, list):
-            # Shape mismatch is most likely manual editing; keep tolerant
-            # but log so operator can investigate.
-            logger.warning(
-                f"[EvidenceHandler] {path}: 期望 list，实际 {type(data).__name__}，按空列表处理"
+            # Top-level shape wrong — can't apply the event, but silently
+            # coercing to empty + returning False would let the reconciler
+            # advance the sentinel past this event and lose it forever.
+            # Raise instead so replay pauses and operator can fix the file
+            # (CodeRabbit PR #929 round-2 on round-11).
+            raise RuntimeError(
+                f"[EvidenceHandler] {path}: 期望 list，实际 "
+                f"{type(data).__name__}；view 结构异常，暂停 replay"
             )
-            data = []
         changed = False
         for r in data:
             if not isinstance(r, dict) or r.get('id') != rid:
@@ -97,10 +100,12 @@ def make_persona_evidence_handler(persona_manager):
             with open(path, encoding='utf-8') as f:
                 persona = json.load(f)
         if not isinstance(persona, dict):
-            logger.warning(
-                f"[EvidenceHandler] {path}: 期望 dict，实际 {type(persona).__name__}，按空 dict 处理"
+            # Same rationale as the reflection handler above: don't let
+            # replay advance past an event we can't apply.
+            raise RuntimeError(
+                f"[EvidenceHandler] {path}: 期望 dict，实际 "
+                f"{type(persona).__name__}；view 结构异常，暂停 replay"
             )
-            persona = {}
         section = persona.get(entity_key)
         if not isinstance(section, dict):
             return False
@@ -149,10 +154,10 @@ def make_persona_entry_handler(persona_manager):
         with open(path, encoding='utf-8') as f:
             persona = json.load(f)
         if not isinstance(persona, dict):
-            logger.warning(
-                f"[EvidenceHandler] {path}: 期望 dict，实际 {type(persona).__name__}，按空 dict 处理"
+            raise RuntimeError(
+                f"[EvidenceHandler] {path}: 期望 dict，实际 "
+                f"{type(persona).__name__}；view 结构异常，暂停 replay"
             )
-            persona = {}
         section = persona.get(entity_key)
         if not isinstance(section, dict):
             return False

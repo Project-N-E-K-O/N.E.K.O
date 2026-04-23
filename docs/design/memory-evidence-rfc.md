@@ -613,7 +613,7 @@ Mapping:
 reflection 获得一个初始 `reinforcement` 种子分，使其能用更少的 user
 signal 穿越 CONFIRMED / PROMOTED 阈值。
 
-```
+```text
 max_importance(source_facts) → initial reinforcement
   10 → 0.8
    9 → 0.6
