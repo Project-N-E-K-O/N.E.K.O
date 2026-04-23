@@ -1784,7 +1784,23 @@ def _scan_workshop_folder_character_names(item_path: str | None) -> list[str]:
                         f"_scan_workshop_folder_character_names: 读取 {chara_file_path} 失败: {exc}"
                     )
                     continue
-                chara_name = chara_data.get('档案名') or chara_data.get('name')
+                # Workshop 文件属于外部输入，任何畸形（顶层非 dict、档案名为 list/dict
+                # 等）不应中断整个 os.walk；校验失败跳过该卡片继续扫描。
+                if not isinstance(chara_data, dict):
+                    logger.warning(
+                        f"_scan_workshop_folder_character_names: {chara_file_path} "
+                        f"顶层不是 dict，跳过"
+                    )
+                    continue
+                raw_name = chara_data.get('档案名') or chara_data.get('name')
+                if not isinstance(raw_name, str):
+                    if raw_name is not None:
+                        logger.warning(
+                            f"_scan_workshop_folder_character_names: {chara_file_path} "
+                            f"档案名/name 不是字符串（{type(raw_name).__name__}），跳过"
+                        )
+                    continue
+                chara_name = raw_name.strip()
                 if chara_name and chara_name not in seen:
                     names.append(chara_name)
                     seen.add(chara_name)
@@ -1878,11 +1894,14 @@ async def unsubscribe_workshop_item(request: Request):
 
         # 反向索引：优先用 character_origin.source_id 找到来自该 Workshop 物品的角色，
         # 再用磁盘上 .chara.json 的扫描结果兜底合并（文件夹可能已被 Steam 删除）。
-        # 两个 helper 内部都会同步读磁盘 / JSON，必须 offload 避免阻塞事件循环。
+        # 三个 helper 都是同步磁盘 / Steamworks 调用（_resolve_workshop_item_install_path
+        # 会调 GetItemInstallInfo + 磁盘兜底搜索），必须 offload 避免阻塞事件循环。
         candidate_names = await asyncio.to_thread(
             _collect_character_names_by_workshop_item_id, config_mgr, item_id_int
         )
-        pre_item_path = _resolve_workshop_item_install_path(steamworks, item_id_int)
+        pre_item_path = await asyncio.to_thread(
+            _resolve_workshop_item_install_path, steamworks, item_id_int
+        )
         disk_names = await asyncio.to_thread(
             _scan_workshop_folder_character_names, pre_item_path
         )
@@ -2143,6 +2162,12 @@ async def unsubscribe_workshop_item(request: Request):
                             "error": str(exc),
                         })
 
+            # 本地角色配置写盘失败 / 内存 del 失败 → 绝不能继续发 UnsubscribeItem：
+            # Steam 订阅一旦取消，订阅文件夹会被删；但 characters.json 仍保留
+            # 该角色，配置会指向不存在的 Workshop 资源，且下次启动可能加载坏卡。
+            # 这里 Steam 请求还没发，安全地提前中止并把 summary 返回给前端。
+            local_config_cleanup_failed = False
+
             # 批量写 characters.json（N 个 del → 1 次 atomic write）
             if pending_del_names:
                 try:
@@ -2153,6 +2178,7 @@ async def unsubscribe_workshop_item(request: Request):
                         f"{pending_del_names}"
                     )
                 except Exception as exc:
+                    local_config_cleanup_failed = True
                     logger.error(
                         f"取消订阅同步清理: 批量 asave_characters 失败: {exc}",
                         exc_info=True,
@@ -2162,6 +2188,23 @@ async def unsubscribe_workshop_item(request: Request):
                         "stage": "delete_config",
                         "error": str(exc),
                     })
+
+            # 若任一本地配置清理失败（per-name del 或批量写盘），立即中止。
+            delete_config_failed = any(
+                err.get("stage") == "delete_config"
+                for err in cleanup_summary.get("errors") or []
+            )
+            if local_config_cleanup_failed or delete_config_failed:
+                logger.error(
+                    f"取消订阅同步清理: 本地角色配置清理失败（item_id={item_id_int}），"
+                    f"已中止 Steam UnsubscribeItem 请求以避免配置-订阅不一致"
+                )
+                return JSONResponse({
+                    "success": False,
+                    "code": "LOCAL_CONFIG_CLEANUP_FAILED",
+                    "error": "本地角色配置清理失败，已取消本次 Steam 退订请求，请修复后重试。",
+                    "cleanup_summary": cleanup_summary,
+                }, status_code=500)
 
             # 通知 memory_server 重新加载（一次即可）
             try:

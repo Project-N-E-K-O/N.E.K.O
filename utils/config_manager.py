@@ -1401,7 +1401,24 @@ class ConfigManager:
             )
             return
 
-        known_characters = set((characters.get("猫娘") or {}).keys())
+        # characters.json 是用户可写边界；"猫娘" 字段若被损坏成 list / 字符串等
+        # 非空但非 dict 的值，.keys() 会抛 AttributeError 并被外层吞掉。
+        catgirl_map = characters.get("猫娘")
+        if not isinstance(catgirl_map, dict):
+            if catgirl_map is not None:
+                self._log(
+                    f"[ConfigManager] migrate_legacy_documents_memory: "
+                    f"characters.json 中猫娘字段类型异常 "
+                    f"({type(catgirl_map).__name__})，跳过本次软迁移"
+                )
+            else:
+                self._log(
+                    "[ConfigManager] migrate_legacy_documents_memory: "
+                    "characters.json 中无猫娘字段，跳过本次软迁移"
+                )
+            return
+
+        known_characters = set(catgirl_map.keys())
         if not known_characters:
             # characters.json 异常/为空时无从判断哪些应当迁移，直接退出。
             self._log(
@@ -1413,7 +1430,10 @@ class ConfigManager:
         migrated_count = 0
         skipped_count = 0
 
-        for legacy_root in legacy_roots:
+        # 日志脱敏策略：所有 self._log 绝不包含完整 legacy 路径 / 角色目录名 /
+        # 用户 Documents 路径，只打 root 序号 + 计数 + 条目类型。这些日志可能
+        # 被收集到日志文件或遥测，泄露用户本地信息不值当。
+        for legacy_root_index, legacy_root in enumerate(legacy_roots, start=1):
             try:
                 legacy_memory = Path(legacy_root) / "memory"
             except Exception:
@@ -1432,8 +1452,8 @@ class ConfigManager:
                 legacy_entries = list(legacy_memory.iterdir())
             except Exception as exc:
                 self._log(
-                    f"[ConfigManager] 枚举 legacy memory 根 {legacy_memory} 失败，"
-                    f"跳过该根: {exc}"
+                    f"[ConfigManager] 枚举 legacy memory 根 #{legacy_root_index} "
+                    f"失败，跳过该根: {exc}"
                 )
                 continue
 
@@ -1448,12 +1468,21 @@ class ConfigManager:
                     if entry_name not in known_characters:
                         continue
 
+                    # runtime 角色记忆期望是目录结构（memory_dir/{name}/time_indexed.db
+                    # 等）；同名普通文件会占位并阻断后续写入，必须跳过。
+                    if not entry.is_dir():
+                        self._log(
+                            f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
+                            f"命中角色名的条目不是目录（类型异常），跳过自动软迁移"
+                        )
+                        continue
+
                     target = self.memory_dir / entry_name
                     if target.exists():
                         skipped_count += 1
                         self._log(
-                            f"[ConfigManager] legacy memory {entry} 已存在于 runtime "
-                            f"({target})，保留 legacy 副本避免覆盖"
+                            f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
+                            f"目标已存在于 runtime，保留 legacy 副本避免覆盖"
                         )
                         continue
                     # 跨盘 shutil.move 退化为 copy 时若半途失败，target 可能已
@@ -1462,24 +1491,19 @@ class ConfigManager:
                     temp_target = target.parent / f".{entry_name}.migrating-{uuid.uuid4().hex}"
                     try:
                         target.parent.mkdir(parents=True, exist_ok=True)
-                        if entry.is_dir():
-                            shutil.copytree(str(entry), str(temp_target), symlinks=True)
-                        else:
-                            shutil.copy2(str(entry), str(temp_target))
+                        shutil.copytree(str(entry), str(temp_target), symlinks=True)
                         os.replace(str(temp_target), str(target))
                         try:
-                            if entry.is_dir():
-                                shutil.rmtree(str(entry))
-                            elif entry.exists():
-                                entry.unlink()
+                            shutil.rmtree(str(entry))
                         except Exception as cleanup_exc:
                             self._log(
-                                f"[ConfigManager] legacy memory 已复制到 runtime，"
-                                f"但源 {entry} 清理失败，保留 legacy 副本: {cleanup_exc}"
+                                f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
+                                f"已复制到 runtime，但 legacy 源清理失败，保留 legacy 副本: {cleanup_exc}"
                             )
                         migrated_count += 1
                         self._log(
-                            f"[ConfigManager] 已迁移 legacy memory: {entry} -> {target}"
+                            f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
+                            f"已迁移 1 个条目到 runtime"
                         )
                     except Exception as exc:
                         # 清理可能残留的临时目录/文件，避免下次启动误判
@@ -1492,11 +1516,13 @@ class ConfigManager:
                         except Exception:
                             pass
                         self._log(
-                            f"[ConfigManager] 迁移 legacy memory {entry} -> {target} 失败: {exc}"
+                            f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
+                            f"迁移条目失败: {exc}"
                         )
                 except Exception as exc:
                     self._log(
-                        f"[ConfigManager] 处理 legacy memory 条目 {entry} 时出错: {exc}"
+                        f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
+                        f"处理条目时出错: {exc}"
                     )
 
         if migrated_count or skipped_count:
