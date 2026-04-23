@@ -874,3 +874,191 @@ async def test_promote_fresh_with_card_rejection_marks_denied(tmp_path):
         if r['id'] == 'ref_card_rej'
     )
     assert rstate['status'] == 'denied'
+
+
+# ── Round-4 regressions (PR #936) ─────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_amerge_into_always_records_source_reflection_id(tmp_path):
+    """Round-4 Minor (CodeRabbit line 923): the idempotency sentinel is
+    `source_reflection_id in existing_merged_from`. If a caller passes a
+    non-empty `merged_from_ids` that OMITS `source_reflection_id` (e.g.
+    only contains peer merge-group ids), the previous fallback
+    `(merged_from_ids or [source_reflection_id])` would skip adding the
+    sentinel. A retry with the same `source_reflection_id` would then
+    re-merge instead of no-op'ing — audit completeness + idempotency bug.
+
+    The fix always appends `source_reflection_id` (if not already present)
+    regardless of the caller's `merged_from_ids` input.
+    """
+    _ev, _fs, pm, _re, _cm = _install(str(tmp_path))
+    persona = {
+        'master': {'facts': [_persona_entry('p_001', 'orig', rein=1.0)]},
+    }
+    await pm.asave_persona('小天', persona)
+
+    # Caller passes a non-empty list that OMITS source_reflection_id.
+    r1 = await pm.amerge_into(
+        '小天', 'p_001', 'first merge',
+        merged_reinforcement=2.0, merged_disputation=0.0,
+        source_reflection_id='ref_A',
+        merged_from_ids=['ref_B'],  # peer in the merge group — NOT ref_A
+    )
+    assert r1 == 'merged'
+
+    entry = (await pm.aget_persona('小天'))['master']['facts'][0]
+    # Both ids must end up in the audit list, preserving insertion order.
+    # The sentinel (ref_A) must be present — otherwise idempotency breaks.
+    assert entry['merged_from_ids'] == ['ref_B', 'ref_A'], (
+        "amerge_into must always append source_reflection_id to the "
+        "audit list, even when merged_from_ids is provided and omits it"
+    )
+
+    # Retry with the same source_reflection_id must now be a no-op.
+    r2 = await pm.amerge_into(
+        '小天', 'p_001', 'second merge — should be ignored',
+        merged_reinforcement=99.0, merged_disputation=99.0,
+        source_reflection_id='ref_A',
+        merged_from_ids=['ref_B'],
+    )
+    assert r2 == 'noop', (
+        "retry with the same source_reflection_id must hit the "
+        "idempotency gate now that the sentinel is recorded"
+    )
+    entry_after = (await pm.aget_persona('小天'))['master']['facts'][0]
+    assert entry_after['text'] == 'first merge'
+    assert entry_after['reinforcement'] == 2.0
+
+
+@pytest.mark.asyncio
+async def test_amerge_into_evidence_updated_first_then_entry_updated(tmp_path):
+    """Round-4 Major (CodeRabbit line 1011): the two merge events must be
+    emitted in the order (evidence_updated, entry_updated) so that a
+    crash between them does not permanently orphan the evidence_updated
+    signal (which funnel observability §3.10 relies on).
+
+    The old order emitted entry_updated first; entry_updated writes
+    `merged_from_ids` (the idempotency sentinel). A crash before the
+    second event meant the retry's idempotency gate returned 'noop' and
+    evidence_updated was permanently lost.
+
+    The new order emits evidence_updated first as a no-op mutate; the
+    sentinel is only written by the second event (entry_updated). A
+    crash between them leaves the view in the "still not merged" state,
+    so a retry re-emits BOTH events. The trade-off is a rare double-emit
+    of evidence_updated on retry (funnel over-counts slightly, but never
+    under-counts).
+    """
+    _ev, _fs, pm, _re, _cm = _install(str(tmp_path))
+    persona = {
+        'master': {'facts': [_persona_entry('p_001', 'orig', rein=1.0)]},
+    }
+    await pm.asave_persona('小天', persona)
+
+    result = await pm.amerge_into(
+        '小天', 'p_001', 'merged text',
+        merged_reinforcement=3.0, merged_disputation=0.0,
+        source_reflection_id='ref_abc', merged_from_ids=['ref_abc'],
+    )
+    assert result == 'merged'
+
+    events_path = os.path.join(str(tmp_path), '小天', 'events.ndjson')
+    with open(events_path, encoding='utf-8') as f:
+        events = [json.loads(line) for line in f if line.strip()]
+    # Filter to the two merge-related events just emitted.
+    merge_events = [
+        e for e in events
+        if e['type'] in ('persona.entry_updated', 'persona.evidence_updated')
+    ]
+    assert len(merge_events) == 2, (
+        f"expected 2 merge events, got {[e['type'] for e in merge_events]}"
+    )
+    assert merge_events[0]['type'] == 'persona.evidence_updated', (
+        "evidence_updated MUST emit first so a crash between the two "
+        "writes can be recovered — see round-4 Major regression docstring"
+    )
+    assert merge_events[1]['type'] == 'persona.entry_updated', (
+        "entry_updated MUST emit second; it writes the idempotency "
+        "sentinel merged_from_ids"
+    )
+
+
+@pytest.mark.asyncio
+async def test_amerge_into_retries_both_events_when_crashed_mid_flight(
+    tmp_path, monkeypatch,
+):
+    """Round-4 Major (CodeRabbit line 1011) — stronger regression: simulate
+    a crash AFTER evidence_updated and BEFORE entry_updated. The retry
+    must re-emit BOTH events, not no-op out.
+
+    We monkey-patch `arecord_and_save` on the event_log to raise on the
+    second call (entry_updated), letting the first call (evidence_updated)
+    succeed. That mirrors a process kill between the two awaits. Then
+    the retry with the same `source_reflection_id` must succeed and
+    bring the view into the fully-merged state.
+    """
+    _ev, _fs, pm, _re, _cm = _install(str(tmp_path))
+    persona = {
+        'master': {'facts': [_persona_entry('p_001', 'orig', rein=1.0)]},
+    }
+    await pm.asave_persona('小天', persona)
+
+    real_arecord = _ev.arecord_and_save
+    call_state = {'count': 0}
+
+    async def _crashing_arecord(name, event_type, payload, **kwargs):
+        call_state['count'] += 1
+        if call_state['count'] == 2:
+            raise RuntimeError('simulated crash between events')
+        return await real_arecord(name, event_type, payload, **kwargs)
+
+    monkeypatch.setattr(_ev, 'arecord_and_save', _crashing_arecord)
+
+    with pytest.raises(RuntimeError, match='simulated crash'):
+        await pm.amerge_into(
+            '小天', 'p_001', 'merged text',
+            merged_reinforcement=3.0, merged_disputation=0.0,
+            source_reflection_id='ref_crash', merged_from_ids=['ref_crash'],
+        )
+
+    # Only one event landed (evidence_updated); view is still un-merged
+    # because entry_updated is what writes merged_from_ids.
+    events_path = os.path.join(str(tmp_path), '小天', 'events.ndjson')
+    with open(events_path, encoding='utf-8') as f:
+        events = [json.loads(line) for line in f if line.strip()]
+    assert [e['type'] for e in events] == ['persona.evidence_updated']
+    entry = (await pm.aget_persona('小天'))['master']['facts'][0]
+    assert entry['text'] == 'orig', (
+        "view must NOT reflect the merge — entry_updated did not land"
+    )
+    assert 'ref_crash' not in (entry.get('merged_from_ids') or []), (
+        "idempotency sentinel must NOT be on the view if entry_updated "
+        "failed — otherwise retry would be stuck"
+    )
+
+    # Restore a working arecord_and_save and retry the same merge.
+    monkeypatch.setattr(_ev, 'arecord_and_save', real_arecord)
+
+    result = await pm.amerge_into(
+        '小天', 'p_001', 'merged text',
+        merged_reinforcement=3.0, merged_disputation=0.0,
+        source_reflection_id='ref_crash', merged_from_ids=['ref_crash'],
+    )
+    assert result == 'merged', (
+        "retry must complete the merge (NOT noop) — the idempotency "
+        "gate must be open because no entry_updated landed"
+    )
+
+    # After retry: both events present; evidence_updated appears twice
+    # (once pre-crash, once post-retry — this is the documented
+    # over-count trade-off). entry_updated appears exactly once.
+    with open(events_path, encoding='utf-8') as f:
+        events_after = [json.loads(line) for line in f if line.strip()]
+    types_after = [e['type'] for e in events_after]
+    assert types_after.count('persona.evidence_updated') == 2
+    assert types_after.count('persona.entry_updated') == 1
+    # View now reflects the merge.
+    entry_after = (await pm.aget_persona('小天'))['master']['facts'][0]
+    assert entry_after['text'] == 'merged text'
+    assert 'ref_crash' in (entry_after.get('merged_from_ids') or [])

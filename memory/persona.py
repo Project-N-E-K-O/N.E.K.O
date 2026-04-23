@@ -854,21 +854,38 @@ class PersonaManager:
 
         Atomically rewrites the target entry's `text`, evidence values, and
         appends `source_reflection_id` to its `merged_from_ids` audit list.
-        Emits two events (RFC §3.9.6):
+        Emits two events (RFC §3.9.6), in this deliberate order:
 
-          1. EVT_PERSONA_ENTRY_UPDATED — text rewrite + evidence + audit;
+          1. EVT_PERSONA_EVIDENCE_UPDATED — evidence-only snapshot so the
+             funnel API (§3.10) can scan for evidence changes without
+             joining the entry-update stream. Emitted FIRST so that a crash
+             between the two writes does not permanently orphan this
+             signal.
+          2. EVT_PERSONA_ENTRY_UPDATED — text rewrite + evidence + audit;
              carries `rewrite_text_sha256` so the reconciler can detect view
-             drift on replay.
-          2. EVT_PERSONA_EVIDENCE_UPDATED — redundant evidence-only snapshot
-             so the funnel API (§3.10) can scan for evidence changes
-             without joining the entry-update stream.
+             drift on replay. This is also the event that actually writes
+             `merged_from_ids` (the idempotency sentinel) onto the view.
+
+        Order rationale (CodeRabbit PR #936 round-4 Major): the old order
+        (entry_updated first, evidence_updated second) created a crash
+        window where the sentinel `merged_from_ids` landed on disk but the
+        evidence_updated event never did. On retry the idempotency gate at
+        line ~911 (`source_reflection_id in existing_merged_from`) returned
+        'noop' and the evidence event was permanently lost — funnel
+        observability silently missed that merge. By emitting
+        evidence_updated FIRST (it has no idempotency side-state), a crash
+        between the two writes leaves a retry in the "still not merged"
+        state, so on retry BOTH events re-emit and entry_updated finalizes.
+        The trade-off is that a crash-retry may append an extra
+        evidence_updated to the log (new event_id); the funnel then
+        slightly over-counts this merge (rare, human-facing metric) —
+        strictly better than the alternative of permanently missing it.
 
         Idempotency (RFC §3.9.6 "崩溃半程"): if `source_reflection_id` is
         already in the target's `merged_from_ids`, both events are skipped
-        and the call returns 'noop'. Subsequent retries (e.g. from a crash
-        after the first event but before reflection state was flipped to
-        'merged') are safe — replaying the event by event_id is also
-        idempotent on the reconciler side (sha256 matches → no-op).
+        and the call returns 'noop'. Replaying persisted events by
+        event_id is idempotent on the reconciler side (sha256 matches →
+        no-op).
 
         Returns: 'merged' on success, 'noop' if already merged, 'not_found'
         if `target_entry_id` is missing from the persona.
@@ -916,8 +933,16 @@ class PersonaManager:
                 return 'noop'
 
             # Compute new audit list — dedup by id, preserve insertion order.
+            # source_reflection_id MUST be in the final list because it is the
+            # idempotency sentinel used at line ~911 (`if source_reflection_id
+            # in existing_merged_from: return 'noop'`). If a caller passes a
+            # non-empty `merged_from_ids` that omits `source_reflection_id`,
+            # the previous fallback `(merged_from_ids or [source_reflection_id])`
+            # would skip adding the sentinel and a retry of the same merge
+            # would re-apply instead of no-op'ing — audit completeness /
+            # idempotency bug (CodeRabbit PR #936 round-4 Minor).
             new_merged_from = list(existing_merged_from)
-            for rid in (merged_from_ids or [source_reflection_id]):
+            for rid in list(merged_from_ids or []) + [source_reflection_id]:
                 if rid not in new_merged_from:
                     new_merged_from.append(rid)
 
@@ -965,7 +990,26 @@ class PersonaManager:
             def _sync_load(_n: str):
                 return persona
 
+            def _sync_mutate_evidence(_view):
+                # Evidence_updated emits FIRST and intentionally does NOT
+                # write `merged_from_ids` — that sentinel is the idempotency
+                # signal for the whole 2-event sequence (line ~911). If we
+                # set it here, a crash between the two emits would make the
+                # retry think the merge is already done and skip
+                # entry_updated forever. Keeping this as a no-op means the
+                # view on disk after event 1 still looks "un-merged" from
+                # the idempotency gate's perspective, so retries fire both
+                # events in order. The evidence_updated event payload
+                # itself already carries the post-merge reinforcement /
+                # disputation snapshot — replay handler will apply it.
+                return None
+
             def _sync_mutate_entry(_view):
+                # Entry_updated (event 2) writes the full final state,
+                # including `merged_from_ids` (the idempotency sentinel).
+                # By the time this runs, event 1 has already been recorded
+                # to the log, so any crash from here onward is
+                # replay-recoverable.
                 target_entry['text'] = merged_text
                 target_entry['reinforcement'] = float(merged_reinforcement)
                 target_entry['disputation'] = float(merged_disputation)
@@ -973,14 +1017,6 @@ class PersonaManager:
                 target_entry['disp_last_signal_at'] = now_iso
                 target_entry['sub_zero_days'] = 0
                 target_entry['merged_from_ids'] = new_merged_from
-
-            def _sync_mutate_evidence(_view):
-                # Entry-update mutate already wrote the evidence fields;
-                # the evidence event is purely a funnel hint — no further
-                # mutation needed. Kept as a no-op to satisfy the
-                # record_and_save 5-step contract (events with empty
-                # mutates are explicitly allowed by EventLog).
-                return None
 
             def _sync_save(n: str, view):
                 assert_cloudsave_writable(
@@ -993,20 +1029,28 @@ class PersonaManager:
                     self._persona_path(n), view, indent=2, ensure_ascii=False,
                 )
 
-            # Event 1: entry rewrite — the canonical merge event. After this
-            # returns, persona.json is on disk with merged text + evidence.
-            await self._event_log.arecord_and_save(
-                name, EVT_PERSONA_ENTRY_UPDATED, entry_payload,
-                sync_load_view=_sync_load,
-                sync_mutate_view=_sync_mutate_entry,
-                sync_save_view=_sync_save,
-            )
-            # Event 2: evidence-only snapshot — funnel observability. View
-            # is already up to date; the event itself is the contract.
+            # Event 1: evidence_updated — emitted FIRST so a crash between
+            # the two writes does NOT permanently orphan this signal. The
+            # mutate is a no-op (see _sync_mutate_evidence above); the view
+            # on disk is unchanged after this call, which keeps the
+            # idempotency gate "still not merged" so a retry re-emits
+            # both events. Slight funnel over-count on retry is
+            # acceptable vs. permanent signal loss (RFC §3.10 is a
+            # human-facing metric).
             await self._event_log.arecord_and_save(
                 name, EVT_PERSONA_EVIDENCE_UPDATED, evidence_payload,
                 sync_load_view=_sync_load,
                 sync_mutate_view=_sync_mutate_evidence,
+                sync_save_view=_sync_save,
+            )
+            # Event 2: entry_updated — canonical merge event. Writes the
+            # text rewrite + evidence + audit list (`merged_from_ids`).
+            # After this returns, persona.json is on disk with the full
+            # merged state and the idempotency sentinel is in place.
+            await self._event_log.arecord_and_save(
+                name, EVT_PERSONA_ENTRY_UPDATED, entry_payload,
+                sync_load_view=_sync_load,
+                sync_mutate_view=_sync_mutate_entry,
                 sync_save_view=_sync_save,
             )
             logger.info(
@@ -1863,13 +1907,16 @@ class PersonaManager:
             ),
             REFLECTION_RENDER_TOKEN_BUDGET, now,
         )
-        kept_ids = {id(r) for r in trimmed_reflections_combined}
-        trimmed_pending = [r for r in (pending_reflections or [])
-                           if id(r) in kept_ids
-                           and r.get('text') not in suppressed_text_set]
-        trimmed_confirmed = [r for r in (confirmed_reflections or [])
-                             if id(r) in kept_ids
-                             and r.get('text') not in suppressed_text_set]
+        # Preserve the score-DESC order produced by _score_trim_entries.
+        # The previous implementation filtered the ORIGINAL source lists by
+        # id-membership in `trimmed_reflections_combined`, which lost the
+        # sort order and emitted reflections in caller-supplied order. Fix:
+        # iterate the already-sorted `trimmed_reflections_combined` and
+        # split back into pending/confirmed by source-list membership
+        # (CodeRabbit PR #936 round-4 Minor).
+        trimmed_pending, trimmed_confirmed = self._partition_trimmed_reflections(
+            trimmed_reflections_combined, pending_reflections, suppressed_text_set,
+        )
 
         return self._compose_markdown_from_trimmed(
             name, persona, name_mapping,
@@ -1877,6 +1924,34 @@ class PersonaManager:
             non_protected_entity_index,
             trimmed_pending, trimmed_confirmed,
         )
+
+    @staticmethod
+    def _partition_trimmed_reflections(
+        trimmed_combined: list[dict],
+        pending_source: list[dict] | None,
+        suppressed_text_set: set[str],
+    ) -> tuple[list[dict], list[dict]]:
+        """Split score-sorted combined trim output back into
+        (pending, confirmed) while preserving the sort order.
+
+        Membership in `pending_source` decides pending vs confirmed; all
+        entries not in `pending_source` are treated as confirmed (matches
+        the original construction where the combined list was
+        `pending + confirmed`). Suppressed entries are dropped defensively
+        (the trim input already filtered them, but keep the guard so the
+        render output never leaks suppressed text).
+        """
+        pending_ids = {id(r) for r in (pending_source or [])}
+        trimmed_pending: list[dict] = []
+        trimmed_confirmed: list[dict] = []
+        for r in trimmed_combined:
+            if r.get('text') in suppressed_text_set:
+                continue
+            if id(r) in pending_ids:
+                trimmed_pending.append(r)
+            else:
+                trimmed_confirmed.append(r)
+        return trimmed_pending, trimmed_confirmed
 
     def render_persona_markdown(self, name: str, pending_reflections: list[dict] | None = None,
                                    confirmed_reflections: list[dict] | None = None) -> str:
@@ -1928,13 +2003,12 @@ class PersonaManager:
             ),
             REFLECTION_RENDER_TOKEN_BUDGET, now,
         )
-        kept_ids = {id(r) for r in trimmed_reflections_combined}
-        trimmed_pending = [r for r in (pending_reflections or [])
-                           if id(r) in kept_ids
-                           and r.get('text') not in suppressed_text_set]
-        trimmed_confirmed = [r for r in (confirmed_reflections or [])
-                             if id(r) in kept_ids
-                             and r.get('text') not in suppressed_text_set]
+        # Preserve score-DESC order from _ascore_trim_entries — mirror of
+        # the sync path fix in _compose_persona_markdown (CodeRabbit PR
+        # #936 round-4 Minor).
+        trimmed_pending, trimmed_confirmed = self._partition_trimmed_reflections(
+            trimmed_reflections_combined, pending_reflections, suppressed_text_set,
+        )
 
         return self._compose_markdown_from_trimmed(
             name, persona, name_mapping,

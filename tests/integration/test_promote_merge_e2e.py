@@ -241,17 +241,25 @@ async def test_reconciler_text_drift_raises_per_rfc_red_line(tmp_path):
     reconciler = Reconciler(_ev)
     register_evidence_handlers(reconciler, pm, re)
 
-    # Reconciler must NOT silently advance past the divergence. The
-    # handler logs a warning + leaves the sentinel pinned so a human
-    # can investigate. The reconcile call returns 0 applied events
-    # because the very first event diverged.
+    # Reconciler must stop at the divergent event (entry_updated's
+    # sha256 mismatch) and NOT auto-rewrite the text. Since round-4's
+    # event order was changed to emit evidence_updated FIRST (see
+    # memory/persona.py amerge_into docstring), the reconciler applies
+    # the idempotent evidence snapshot before hitting the diverging
+    # entry_updated — so `applied` is 1, not 0. The critical invariant
+    # is still: text remains un-rewritten and the sentinel stays pinned
+    # at the pre-mismatch event so a human can audit.
     applied = await reconciler.areconcile('小天')
-    assert applied == 0, (
-        "reconciler must NOT apply events past a sha256 mismatch — "
-        "RFC §3.3.6 mandates operator intervention"
+    assert applied == 1, (
+        "reconciler applies the idempotent evidence_updated snapshot "
+        "(emitted first post round-4 Major) then stops at the "
+        "sha256-mismatching entry_updated — RFC §3.3.6"
     )
 
-    # View remains in its (pre-merge / drifted) state — no auto-recovery.
+    # View's text remains in its (pre-merge / drifted) state — no
+    # auto-recovery. Evidence fields DO update from the idempotent
+    # snapshot replay; that is by design (RFC §3.9.6 evidence_updated
+    # is a full snapshot, always safe to replay).
     persona_after = await pm.aget_persona('小天')
     entry = persona_after['master']['facts'][0]
     assert entry['text'] == 'orig text', (

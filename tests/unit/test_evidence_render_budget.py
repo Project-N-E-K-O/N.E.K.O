@@ -348,3 +348,139 @@ async def test_render_protected_always_emitted_under_tight_budget(tmp_path):
     assert '主人是一只猫娘的主人' in md, (
         "protected entries must render even when budget is exhausted"
     )
+
+
+# ── Reflection render preserves score-DESC order ──────────────────────
+
+
+def _reflection_dict(rid: str, text: str, *, rein: float = 0.0,
+                     disp: float = 0.0) -> dict:
+    """Minimal reflection shape understood by `_score_trim_entries` and
+    `_partition_trimmed_reflections`. Matches the runtime shape that
+    `ReflectionEngine` persists (see `tests/unit/test_evidence_promote_merge
+    ._reflection`)."""
+    return {
+        'id': rid, 'text': text,
+        'reinforcement': rein, 'disputation': disp,
+        'rein_last_signal_at': None, 'disp_last_signal_at': None,
+        'sub_zero_days': 0, 'user_fact_reinforce_count': 0,
+        'importance': 0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_arender_preserves_reflection_score_order(tmp_path):
+    """Regression for CodeRabbit PR #936 round-4 Minor (line 1872): the
+    score-trim output was being converted to a `kept_ids` set and then
+    re-filtered by iterating the ORIGINAL `pending_reflections` /
+    `confirmed_reflections` lists, which lost the score-DESC order from
+    `_ascore_trim_entries`. Fix iterates the sorted combined list and
+    partitions back to pending/confirmed while preserving order.
+
+    This test: 3 non-protected reflections with varying evidence scores,
+    all fit the budget; assert the rendered markdown emits them in
+    score-DESC order within their respective sections.
+    """
+    from memory.persona import PersonaManager
+
+    cm = MagicMock()
+    cm.memory_dir = str(tmp_path)
+    cm.aget_character_data = AsyncMock(return_value=(
+        "主人", "小天", {}, {}, {"human": "主人"}, {}, {}, {}, {},
+    ))
+    cm.get_character_data = MagicMock(return_value=(
+        "主人", "小天", {}, {}, {"human": "主人"}, {}, {}, {}, {},
+    ))
+    with patch("memory.persona.get_config_manager", return_value=cm):
+        pm = PersonaManager()
+    pm._config_manager = cm
+
+    persona = {'master': {'facts': []}}
+    pm._personas['小天'] = persona
+
+    async def _aensure(name):
+        return persona
+    pm.aensure_persona = _aensure  # type: ignore[assignment]
+    pm.aupdate_suppressions = AsyncMock()
+
+    # Caller-supplied lists in DELIBERATELY non-score order so a
+    # score-order-preserving render is distinguishable from a
+    # source-order-preserving render.
+    pending = [
+        _reflection_dict('p_low', '低分pending', rein=0.5),
+        _reflection_dict('p_high', '高分pending', rein=5.0),
+    ]
+    confirmed = [
+        _reflection_dict('c_mid', '中分confirmed', rein=2.0),
+        _reflection_dict('c_top', '最高confirmed', rein=9.0),
+    ]
+
+    md = await pm.arender_persona_markdown(
+        '小天', pending_reflections=pending, confirmed_reflections=confirmed,
+    )
+
+    # Locate the two reflection sections in the output.
+    pending_header = '### 小天最近的印象（还不太确定）'
+    confirmed_header = '### 小天比较确定的印象'
+    assert pending_header in md
+    assert confirmed_header in md
+
+    # Within pending section: 高分pending (rein=5.0) must appear before
+    # 低分pending (rein=0.5).
+    pending_section = md.split(pending_header, 1)[1]
+    # Next section starts with '\n\n### ' — cut there.
+    pending_body = pending_section.split('\n\n### ', 1)[0]
+    high_pos = pending_body.find('高分pending')
+    low_pos = pending_body.find('低分pending')
+    assert high_pos >= 0 and low_pos >= 0, (
+        f"both pending entries must render, got body:\n{pending_body!r}"
+    )
+    assert high_pos < low_pos, (
+        f"pending must be score-DESC; got 高分@{high_pos} vs 低分@{low_pos}"
+    )
+
+    # Within confirmed section: 最高confirmed (rein=9.0) must appear
+    # before 中分confirmed (rein=2.0).
+    confirmed_section = md.split(confirmed_header, 1)[1]
+    confirmed_body = confirmed_section.split('\n\n### ', 1)[0]
+    top_pos = confirmed_body.find('最高confirmed')
+    mid_pos = confirmed_body.find('中分confirmed')
+    assert top_pos >= 0 and mid_pos >= 0, (
+        f"both confirmed entries must render, got body:\n{confirmed_body!r}"
+    )
+    assert top_pos < mid_pos, (
+        f"confirmed must be score-DESC; got 最高@{top_pos} vs 中分@{mid_pos}"
+    )
+
+
+def test_partition_trimmed_reflections_preserves_order():
+    """Unit-level regression for the new helper: iterating the
+    score-sorted input and partitioning back to pending/confirmed must
+    preserve the input order within each bucket, and must drop
+    suppressed text."""
+    pm = _persona_manager()
+
+    pending_source = [
+        {'id': 'p1', 'text': 'alpha'},
+        {'id': 'p2', 'text': 'gamma'},
+    ]
+    # The combined list is in DELIBERATELY different order from the
+    # source lists — it simulates what _score_trim_entries emits.
+    trimmed_combined = [
+        pending_source[1],                    # gamma (pending, rank 1)
+        {'id': 'c1', 'text': 'delta'},        # confirmed, rank 2
+        pending_source[0],                    # alpha (pending, rank 3)
+        {'id': 'c2', 'text': 'epsilon'},      # confirmed, rank 4 —
+                                              # but suppressed below
+    ]
+    suppressed = {'epsilon'}
+
+    pend, conf = pm._partition_trimmed_reflections(
+        trimmed_combined, pending_source, suppressed,
+    )
+    assert [r['id'] for r in pend] == ['p2', 'p1'], (
+        "pending must preserve the input (score-sorted) order"
+    )
+    assert [r['id'] for r in conf] == ['c1'], (
+        "confirmed must preserve input order AND drop suppressed text"
+    )
