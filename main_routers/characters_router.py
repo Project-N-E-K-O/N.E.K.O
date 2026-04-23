@@ -4640,8 +4640,8 @@ async def put_card_face(name: str, image: UploadFile = File(...)):
 
     try:
         from PIL import Image as PILImage
-        img = PILImage.open(io.BytesIO(image_data))
-        img.verify()
+        img = await asyncio.to_thread(PILImage.open, io.BytesIO(image_data))
+        await asyncio.to_thread(img.verify)
     except Exception:
         return JSONResponse({'success': False, 'error': '无效的图片文件'}, status_code=400)
 
