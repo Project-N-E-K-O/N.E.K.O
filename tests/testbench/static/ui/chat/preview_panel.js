@@ -36,9 +36,26 @@ import { el } from '../_dom.js';
 // P25 Day 2 polish r5: 外部事件注入的 instruction 是 "一次性结构, 不会进
 // session.messages". 当真实 wire 来自这三类路径时, 面板顶部插一条突出
 // 提示避免 tester 误以为超长指令会污染对话历史. 其它 source
-// (chat.send / judge.llm / memory.llm / simulated_user / auto_dialog_*) 不显示
-// 提示 — 要么本来就进 session.messages (chat.send), 要么 tester 不会在意.
+// (chat.send / judge.llm / memory.llm / auto_dialog_target) 不显示提示 —
+// 要么本来就进 session.messages (chat.send), 要么 tester 不会在意.
 const EPHEMERAL_SOURCES = new Set([
+  'avatar_event',
+  'agent_callback',
+  'proactive_chat',
+]);
+
+// P25 Day 2 polish r7 (2026-04-23): Chat 页 Preview Panel 只显示**对话 AI**
+// 实际收到的 wire. 其它域的 LLM 调用 (memory.llm 记忆合成 / judge.llm 评
+// 分) 仍然会 stamp ``session.last_llm_wire`` (backend 不变), 但前端过滤
+// 掉它们 — 避免 "刚压缩了 recent.json, Chat 页就以为下次对话 wire 已经
+// 变成 memory compress prompt" 的错觉. 这些域的 wire 有各自的入口
+// (Memory 子页 / Evaluation Run 页的 [预览 prompt] 按钮) 单独预览.
+//
+// SimUser (``simulated_user`` / ``auto_dialog_simuser``) 在 r7 已改成
+// NOSTAMP, 永远不会 stamp, 所以这里不用列它.
+const CHAT_VISIBLE_SOURCES = new Set([
+  'chat.send',
+  'auto_dialog_target',
   'avatar_event',
   'agent_callback',
   'proactive_chat',
@@ -337,24 +354,47 @@ export function mountPreviewPanel(host) {
     return container;
   }
 
-  /** 单一 wire section — 真实 wire 优先, 无则回退预估 wire. */
+  /** 单一 wire section — 真实 wire 优先, 无则回退预估 wire.
+   *
+   * r7 白名单过滤: last_llm_wire.source 必须 ∈ CHAT_VISIBLE_SOURCES.
+   * 否则 (来自 memory.llm / judge.llm 等非对话域) 视作 "Chat 页看不到的",
+   * 回退展示 bundle.wire_messages 预估, 并插一条提示告诉 tester 去哪
+   * 找该 source 的 wire.
+   */
   function renderWireSection(bundle) {
     const section = el('div', { className: 'raw-subsection wire-section' });
 
-    // 数据源选择: last_llm_wire 存在且非空 → 用真实 wire; 否则用预估 wire.
+    // 数据源选择:
+    //   1. last_llm_wire 存在且非空 且 source ∈ CHAT_VISIBLE_SOURCES
+    //      → 用真实 wire (hasReal = true);
+    //   2. last_llm_wire 存在但 source ∉ 白名单 (例如 memory.llm)
+    //      → 不展示, 回退到预估 wire, 并插一条 "去对应页面看" 提示;
+    //   3. last_llm_wire 不存在 → 回退预估, 不插提示.
     const last = bundle.last_llm_wire;
-    const hasReal = !!(last && last.wire_messages && last.wire_messages.length);
+    const hasRealAny = !!(last && last.wire_messages && last.wire_messages.length);
+    const sourceIsChatVisible = hasRealAny && CHAT_VISIBLE_SOURCES.has(last.source);
+    const hasReal = hasRealAny && sourceIsChatVisible;
+    const nonChatSource = hasRealAny && !sourceIsChatVisible;
+
     const wireMessages = hasReal
       ? last.wire_messages
       : (bundle.wire_messages || []);
 
-    // 标题 & 副标题
     const headingKey = hasReal
       ? 'chat.preview.wire_section.heading_real'
       : 'chat.preview.wire_section.heading_estimate';
     section.append(
       el('h4', { className: 'raw-subsection-heading' }, i18n(headingKey)),
     );
+
+    // r7: 若最新一次 stamp 来自非对话域 (memory.llm / judge.llm 等),
+    // 插一条友好引导让 tester 知道该去哪个页面查看那个 wire.
+    if (nonChatSource) {
+      const labelMap = i18nRaw('chat.preview.last_wire.source_label') || {};
+      const srcLabel = labelMap[last.source] || last.source || '?';
+      section.append(el('div', { className: 'preview-hint info non-chat-source-hint' },
+        i18n('chat.preview.wire_section.non_chat_source_hint', srcLabel)));
+    }
 
     // ephemeral 提示 — 仅在外部事件 / proactive / agent_callback 路径的
     // 真实 wire 下显示, 普通 chat.send / 回退预估路径不展示避免干扰.

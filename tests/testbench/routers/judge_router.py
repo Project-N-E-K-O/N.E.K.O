@@ -76,6 +76,7 @@ from tests.testbench.pipeline.judge_runner import (
     EvalResult,
     JudgeInputs,
     JudgeRunError,
+    build_judge_prompt_preview,
     load_schema_by_id,
     make_judger,
 )
@@ -1021,6 +1022,162 @@ async def judge_run(body: _JudgeRunRequest) -> dict[str, Any]:
         #   - requested=False, applied=False → not asked (default path)
         #   - requested=True,  applied=True  → full build_prompt_bundle
         #   - requested=True,  applied=False → fallback, reason in field
+        "match_main_chat_requested": bool(body.match_main_chat),
+        "match_main_chat_applied": persona_meta.applied,
+        "match_main_chat_fallback_reason": persona_meta.fallback_reason,
+    }
+
+
+@router.post("/run_prompt_preview")
+async def judge_run_prompt_preview(body: _JudgeRunRequest) -> dict[str, Any]:
+    """Show the wire ``/run`` **would** send to each judger, without calling LLM.
+
+    P25 r7 — used by the Evaluation/Run page's [预览 prompt] button next
+    to the run bar. Mirrors the first half of ``judge_run``: validate
+    inputs, load schema, build per-target ``JudgeInputs``, then for each
+    call ``build_judge_prompt_preview(judger, inp)`` to produce a wire.
+
+    Returns:
+        ``{previews: [{target_message_ids, wire_messages, schema_id,
+        schema_mode, schema_granularity, note, prompt_char_count}],
+        count, skipped_count, persona_applied, persona_fallback_reason}``.
+
+    Behavior:
+        * No session lock (read-only).
+        * No ``session.last_llm_wire`` stamp (r7 semantic partitioning —
+          Chat page Preview Panel must not be polluted by judger wires).
+        * No injection audit (that fires on real runs only — preview is
+          side-effect-free).
+        * Same error vocabulary as ``/run`` for precondition failures;
+          per-item validation errors produce a ``skipped_count``
+          increment rather than a 4xx for the whole batch.
+    """
+    session = _require_session()
+
+    _audit_extra_context_override(
+        body.extra_context,
+        schema_id=body.schema_id,
+        session_id=getattr(session, "id", None),
+    )
+
+    try:
+        schema = load_schema_by_id(body.schema_id)
+    except JudgeRunError as exc:
+        raise _judge_run_error_to_http(exc) from exc
+
+    override_cfg = _override_to_model_config(body.judge_model_override)
+    try:
+        judger = make_judger(
+            session=session, schema=schema, judge_model_override=override_cfg,
+        )
+    except JudgeRunError as exc:
+        raise _judge_run_error_to_http(exc) from exc
+
+    try:
+        messages = _collect_messages(session, body.scope, body.message_ids)
+    except JudgeRunError as exc:
+        raise _judge_run_error_to_http(exc) from exc
+
+    persona_meta = _extract_persona_meta(
+        session, match_main_chat=bool(body.match_main_chat),
+    )
+    system_prompt = persona_meta.system_prompt
+    character_name = persona_meta.character_name
+    master_name = persona_meta.master_name
+
+    runs: list[JudgeInputs] = []
+    if schema.granularity == "single":
+        assistant_indices = [
+            i for i, m in enumerate(messages) if m.get("role") == ROLE_ASSISTANT
+        ]
+        if not assistant_indices:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error_type": "NoAssistantTarget",
+                    "message": (
+                        "selected messages contain no assistant response to "
+                        "preview."
+                    ),
+                },
+            )
+        all_session_messages = session.messages or []
+        for local_idx in assistant_indices:
+            target_msg = messages[local_idx]
+            target_id = target_msg.get("id")
+            global_idx = next(
+                (
+                    gi for gi, gm in enumerate(all_session_messages)
+                    if gm.get("id") == target_id
+                ),
+                None,
+            )
+            if global_idx is None:
+                continue
+            reference_text = ""
+            if schema.mode == "comparative":
+                reference_text = _resolve_reference_text(
+                    session=session,
+                    inline=body.reference_response,
+                    ref_message_id=body.reference_message_id,
+                    target_msg=target_msg,
+                )
+            runs.append(_build_single_inputs(
+                session=session,
+                granularity=schema.granularity,
+                target_idx=global_idx,
+                all_messages=all_session_messages,
+                system_prompt=system_prompt,
+                character_name=character_name,
+                master_name=master_name,
+                reference_response=reference_text,
+                extra_context=body.extra_context,
+                scope=body.scope,
+            ))
+    else:
+        runs.append(_build_conversation_inputs(
+            granularity=schema.granularity,
+            messages=messages,
+            reference_conversation=body.reference_conversation or [],
+            system_prompt=system_prompt,
+            character_name=character_name,
+            master_name=master_name,
+            extra_context=body.extra_context,
+            scope=body.scope,
+        ))
+
+    if not runs:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error_type": "EmptyRunPlan",
+                "message": "no judger calls produced from the selected inputs.",
+            },
+        )
+
+    if len(runs) > MAX_BATCH_ITEMS:
+        runs = runs[:MAX_BATCH_ITEMS]
+
+    previews: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for inp in runs:
+        try:
+            preview = build_judge_prompt_preview(judger, inp)
+        except JudgeRunError as exc:
+            skipped.append({
+                "target_message_ids": list(inp.target_message_ids or []),
+                "error_type": exc.code,
+                "message": exc.message,
+            })
+            continue
+        preview["target_message_ids"] = list(inp.target_message_ids or [])
+        previews.append(preview)
+
+    return {
+        "previews": previews,
+        "count": len(previews),
+        "skipped_count": len(skipped),
+        "skipped": skipped,
         "match_main_chat_requested": bool(body.match_main_chat),
         "match_main_chat_applied": persona_meta.applied,
         "match_main_chat_fallback_reason": persona_meta.fallback_reason,

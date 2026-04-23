@@ -487,6 +487,21 @@ export const I18N = {
           committing: '写入中...',
           committed: op => `${op} 已应用到磁盘`,
           drop_item: '从本次提交中剔除',
+          // P25 r7 (2026-04-23): [预览 prompt] 按钮 — 不调 LLM, 只看
+          // "这次触发会发什么 prompt 给记忆 LLM".
+          preview_prompt: {
+            label: '预览 prompt',
+            tooltip: '不调用 LLM, 只查看这次触发会发给记忆合成 LLM 的 prompt',
+            params_title: (op) => `预览参数 · ${op}`,
+            run_button: '预览 prompt',
+            failed: '预览 prompt 失败',
+            modal_title: (op) => `预览 prompt · ${op}`,
+            intro: '以下是 Dry-run 真正触发时会发给记忆合成 LLM 的 prompt. 本次预览没有真正调用 LLM, 也不会写入 session.memory_previews / session.last_llm_wire.',
+            meta: {
+              op: '操作',
+              note: '备注',
+            },
+          },
           recent: {
             intro: '把 recent.json 尾部若干条消息压成一条 system 摘要, 节省 context. 只影响 recent.json, 不动 facts/reflections.',
             compress: { label: '压缩尾部消息' },
@@ -775,6 +790,27 @@ export const I18N = {
           run: '运行评分',
           running: '运行中…',
           running_hint: 'LLM 单次调用通常 5-15 秒; batch 可能要一分钟以上, 请耐心等.',
+        },
+        // P25 r7 (2026-04-23): [预览 prompt] 按钮位于 [运行评分] 旁边, 调
+        // /api/judge/run_prompt_preview 不真调 LLM, 只展示本次会发给评
+        // 委 LLM 的 prompt. Chat 页 Preview Panel 现在专注对话 AI 的 wire,
+        // judge.llm 的 wire 统一通过这里看.
+        preview_prompt: {
+          label: '预览 prompt',
+          tooltip: '不调用 LLM, 展示本次运行会发给评委 LLM 的 prompt',
+          failed: '预览 prompt 失败',
+          no_previews: '没有可预览的 prompt (可能所有 target 都被 skip)',
+          modal_title: (schema_id) => `预览 judge prompt · ${schema_id}`,
+          intro: (count) =>
+            `以下为 ${count} 次 judge 调用会发给评委 LLM 的 prompt 合并视图. 各 target 之间用 system 行标签 "── preview #k ──" 分隔. 本次预览没有真正调用 LLM, 也未写 session.eval_results / last_llm_wire.`,
+          meta: {
+            schema: 'schema',
+            mode: 'mode',
+            granularity: 'granularity',
+            target_count: 'target 数',
+          },
+          skipped_fmt: (target, err) =>
+            `skip target=${target}: ${err}`,
         },
         disabled: {
           no_schema: '先选一个 Scoring Schema.',
@@ -1940,6 +1976,12 @@ export const I18N = {
           heading_real: '当前 wire',
           heading_estimate: '当前 wire',
           ephemeral_warning: '⚠ 外部事件注入的消息是一次性结构, 仅在本次 LLM 调用时存在, 不会长期进入 session.messages. 对话历史可在左侧聊天区或记忆系统查看.',
+          // P25 r7 (2026-04-23): 最近一次 LLM 调用来自非对话域 (例如
+          // 记忆合成 / 评分), Chat 页只关心对话 AI 的 wire, 这里不
+          // 显示那条 wire, 而是引导 tester 去对应页面找 [预览 prompt].
+          // 参数 srcLabel = source 对应的中文标签 (如 "记忆总结 LLM").
+          non_chat_source_hint: (srcLabel) =>
+            `🔎 最近一次 LLM 调用来自 [${srcLabel}] (非对话 AI). 此面板只显示对话 AI 收到的 prompt. 如需查看该域的 prompt, 请到相关页面 (记忆系统各子页 / 评分 Run 页) 使用 [预览 prompt] 按钮.`,
         },
       },
       // P25 Day 2 — Chat sidebar 下半的 "外部事件模拟" 折叠面板.
@@ -2253,6 +2295,18 @@ export const I18N = {
     toast: {
       close: '关闭',
       dismiss_all: '清除全部',
+    },
+    // P25 r7 (2026-04-23): shared modal for Memory / Judge [预览 prompt]
+    // buttons. Kept flat (not under chat.*) because it's used across
+    // workspaces (Memory sub-pages + Evaluation/Run, and can be reused
+    // by any future domain that needs "show wire, no LLM call").
+    prompt_preview_modal: {
+      wire_heading: '预览 wire (真实会发给 LLM 的序列)',
+      wire_empty: '(本次无 wire 可预览)',
+      copy_wire_btn: '复制 wire JSON',
+      copied_wire: '已复制到剪贴板',
+      copy_failed: '复制失败 (剪贴板 API 不可用?)',
+      close_btn: '关闭',
     },
     session: {
       created: name => `会话已创建: ${name}`,

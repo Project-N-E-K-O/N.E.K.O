@@ -8,7 +8,7 @@
 > P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理 UTF-8 事件 +
 > P25 Day 1 subagent 并行开发首次应用 + P25 Day 1 fixup mirror shape +
 > P25 Day 2 前端面板派生 + Day 2 polish 手测 r1-r6 派生 + Day 3 `last_llm_wire`
-> 覆盖率 smoke 派生的 15 条候选元教训 (L28-L43, 登记于 §7.A 候选区, 未计入主编号 25 条).
+> 覆盖率 smoke 派生的 16 条候选元教训 (L28-L44, 登记于 §7.A 候选区, 未计入主编号 25 条).
 >
 > **§7.25 特别说明**: 一周内已连续 **6** 次同族实锤 (字段名漂移 / envelope 漂移 /
 > LLM wire role 三次漂移 / **Prompt Preview "重建视图 ≠ 真实 stream" 架构级
@@ -562,7 +562,7 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
 
 ### §7.A 候选追加 (P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理 UTF-8 事件 + P25 Day 1 subagent 并行开发 + P25 Day 1 fixup mirror shape + P25 Day 2 前端面板派生 + P25 Day 2 polish r1-r6 手测派生, 待二次复现后并入主编号)
 
-> 纪律: 本文档 §7 只记录 "**已经踩过 ≥ 2 次**的同族教训". 下列 15 条候选 (L28-L43)
+> 纪律: 本文档 §7 只记录 "**已经踩过 ≥ 2 次**的同族教训". 下列 16 条候选 (L28-L44)
 > 多数仍为**单次派生** (源自 P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理
 > UTF-8 字节损坏事件 + P25 Day 1 subagent 并行开发首次应用 + P25 Day 1 fixup
 > mirror_to_recent shape mismatch + P25 Day 2 前端面板交付 + P25 Day 2 polish r1-r6
@@ -570,7 +570,7 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
 > **L36 已升级至三次复现** (`dedupe_info.remaining_ms` 字段名漂移 +
 > `external_event_router` envelope 顶层结构漂移 + **LLM wire 消息 role 字段漂移 /
 > prompt_ephemeral 语义契约违反**), 已超门槛, 本次 §7 更新将 L36 升级为 §7.33.
-> **L39 / L40 / L41 新候选** 登记为单次, 待 P26+ 再命中升级. L37 / L38 仍为单次.
+> **L39 / L40 / L41 / L42 / L43 / L44 新候选** 登记为单次, 待 P26+ 再命中升级. L37 / L38 仍为单次.
 > 登记在此避免遗忘.
 
 **L28 "跨阶段推迟项必须双向回扫"** (P24 Day 12 欠账清返派生, 2026-04-23):
@@ -801,6 +801,32 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
     - L40 "info 级诊断 smoke 必须显式 `level=info`" — 同族"smoke 自己可能成为漏网区域, 必须对 smoke 自己的参数有纪律".
 - **候选 skill**: `llm-call-site-stamp-coverage-smoke` — 触发条件 = "codebase 有 chokepoint helper 多处 call, 漏调静默失败时 UI/UX 显示陈旧数据". 模板: AST 扫 `<method>.ainvoke/astream/invoke` + 同 body 找 chokepoint call + NOSTAMP sentinel + source literal whitelist + KNOWN_SOURCES single declaration.
 - **进入主编号条件**: 需要在 P26+ 再命中一次 "chokepoint 覆盖率漏检导致 UI 显示陈旧数据" 或 "另一种 chokepoint (非 LLM wire) 需要类似 AST 覆盖率静态守护" 才升级为 §7.38.
+
+**L44 "wire / preview 面板按消费域分区, 避免跨域 stamp 污染 Preview Panel"** (P25 Day 2 polish r7 派生, 2026-04-23):
+
+- **背景**: Day 3 (L43) 给 6 处 LLM 调用 (memory 4 + judge 1 + simuser 1) 统一补了 `last_llm_wire` stamp 追求**全面覆盖**. 看似纸面上正确 ("每次 LLM 调用都留痕"), 实际 Chat 页 Preview Panel 显示**最新 stamp**, 跑完一次 `recent.compress` 后用户回 Chat 页以为看到的是"下次对话 AI 的 prompt", 实则是"记忆总结 LLM 的 prompt" — **全面 stamp + 单一展示面板 = 语义漂移**.
+- **本质**: chokepoint + 全面覆盖 解决 "写入侧纸面原则不漂移", 但没解决 "读出侧展示应该按消费域分区" — **生产和消费在 chokepoint 后必须再分一次**.
+- **r7 根治架构**:
+    1. **Chat 页白名单过滤** — `preview_panel.js::CHAT_VISIBLE_SOURCES = {chat.send, auto_dialog_target, avatar_event, agent_callback, proactive_chat}`. 非白名单 stamp (如 `memory.llm` / `judge.llm`) 存在但不渲染, 回退预估 wire + hint 引导去对应页面.
+    2. **每个非 Chat 域必须有独立 [预览 prompt] 按钮**, 调 **pure preview endpoint** 不调 LLM 不 stamp. r7 交付: `POST /api/memory/prompt_preview/{op}` (调 `build_memory_prompt_preview()` dispatcher → 4 个 `_build_*_wire()` helper) + `POST /api/judge/run_prompt_preview` (调 `build_judge_prompt_preview(judger, inputs)`). 两者都**共享真实 run 80% 代码** (验证 → 构 ctx → 渲染 prompt → 前置 preamble), 只差 `client.ainvoke` 那一步 — 契约一致性由代码路径共享天然保证.
+    3. **"不被测的域" 直接 NOSTAMP**. r7 把 `simulated_user.generate_simuser_message` 改回 NOSTAMP — SimUser 是"对话来源", 不是"被考察对象", 它的 wire 对 tester 无价值, stamp 只会污染 Chat Preview Panel 让 tester 看不到"真正在测的那条". 识别准则: 如果一个 LLM 调用的 prompt **tester 从未需要审视**, 那它就不应该 stamp — 哪怕它也是 LLM 调用.
+- **L36 / L43 / L44 三者层次**:
+    - **L36 §7.25** (生产侧): 单条 wire 内**字段 shape / role / 字段名**不漂移 (跨边界反序列化).
+    - **L43** (chokepoint 覆盖): 所有 writer 都**调 chokepoint 留痕** (静态 AST 扫 + NOSTAMP escape).
+    - **L44** (消费侧): chokepoint 已经留痕了, 但**展示面板不是所有 stamp 都该展示**. 按"消费域" (对话 / 记忆 / 评分 / ...) 分区, 每个域有独立预览入口 + chat-only 白名单过滤 + 非白名单回退引导.
+- **教训**: 不要在 "写入侧 chokepoint" 和 "读出侧展示面板" 之间假设一一对应. chokepoint 的职责是"不丢", 展示面板的职责是"按用户意图过滤显示". **chokepoint 全面覆盖 ≠ 展示面板全面展示**, 两者都对, 但中间必须有一层过滤 (白名单 / 域标签 / 按钮入口).
+- **规则** (升级到主编号前先记):
+    1. **写入侧 chokepoint 追求全面覆盖** (L43). 但必须**同时**定义 "展示面板的消费域白名单" (L44 第 1 条).
+    2. **pure preview endpoint 架构** 比 "调一次 LLM 顺便显示 prompt" 好得多: tester 查看 prompt 不必付 2-10s LLM round-trip, 也不会触发副作用 (不写 `session.last_llm_wire`, 不写 diagnostics, 不吃 LLM 额度).
+    3. **共享 helper 保证 preview 与 actual run 不漂移**. Preview 的实现**必须**和 actual run 共享 prompt 构造代码 (L36 §7.25 第 5 层 chokepoint 下沉的"跨接口"变体). 新加一个域时, 应 **抽出 `build_X_prompt_preview()` 和 `run_X()` 共享的构造函数**, 而非 preview 自己复制粘贴构造逻辑 (否则下次 prompt 格式升级, actual 改了 preview 没改, 悄悄漂移).
+    4. **"不被测的域" 主动 NOSTAMP + 注释解释**. 识别信号 = "这个 LLM 调用的 prompt tester 从没反馈过想审查" → 直接 NOSTAMP, 不要"为了 chokepoint 覆盖率好看"也加 stamp.
+    5. **Preview 按钮的位置要跟随"交互阶段"而非"功能分类"** (r7 2nd pass 2026-04-23 派生). r7 初版把 Memory 每个 op 的 `[预览 prompt]` 挂在外层按钮行 (紧贴触发按钮, "功能分类"语义的"触发操作 / 预览操作" 并列展示); 用户反馈更自然的交互是: 点 trigger 按钮打开参数 drawer → 填好参数 → 在 drawer 底部同时看到 `[执行] [预览]` — 即**按"交互阶段"分区**: `(a) 选择 op` 阶段只显示 op 触发按钮不显示 preview; `(b) 填参数` 阶段参数还没填完 preview 只会返回默认/空值无意义; `(c) 参数填完` 阶段在 drawer 底部同时暴露 `[执行] [预览]` 让 tester 决定跑不跑. 核心原则: **UI 元素的暴露时机要和它依赖的数据准备好的时机对齐**, 否则 tester 会在"数据还没准备好"时点按钮看到空/默认结果, 形成"按钮不可信"的负印象. 技术实装: 预览按钮 click handler **不清 drawer** 只弹 modal, 这样 tester 能"预览 → 微调参数 → 再预览 → 真跑"全在一个 drawer 里. 评分页的 Run + 预览并排布局是例外 — 因为评分的"参数"不在 drawer 内而是在主页面 (schema / target 选择), 参数准备和触发位置重合, 两按钮天然共在同一交互阶段.
+- **关联**:
+    - §7.25 L36 "跨边界 shape" 的**展示侧对偶** — L36 管跨边界生产→消费的 shape 不漂移, L44 管**展示面板按消费意图分区**: "即使数据对了, 展示在哪一页也必须按用户意图过滤".
+    - L43 "LLM 调用点 chokepoint 覆盖" 的**读出侧对偶** — L43 管写入覆盖, L44 管读出分区. 两条是"chokepoint 架构"的两个半页, 只有 L43 没 L44 = "全面 stamp 但 Chat 页被跨域 stamp 污染".
+    - §7.6 "多源写入是纸面原则成败分水岭" + L33 single-writer chokepoint 的**展示侧扩展** — L33 讲"多入口统一 writer", L44 讲"单 writer 多消费域时展示必须分区".
+- **候选 skill**: `preview-panel-domain-partition` — 触发条件 = "codebase 有 Preview Panel / Debug Panel 展示 last-X 类单点状态, 且 X 有多个 source 域". 模板: (1) 定义 `<panel>_VISIBLE_SOURCES` 白名单; (2) 非白名单 source 回退到预估数据 + 显式 hint 引导; (3) 每个非默认域有独立"预览"按钮调 pure preview endpoint; (4) pure preview endpoint 与真实 run 共享构造 helper.
+- **进入主编号条件**: 需要在 P26+ 再命中一次 "chokepoint 全面覆盖但 Preview Panel 展示域污染" 场景 (例如 diagnostics panel / error panel / snapshot panel 等) 才升级为 §7.38/§7.39.
 
 本项目抽出了 3 份**通用 skill**, 放在 `~/.cursor/skills/` 独立维护,
 不依赖本项目. 任何 AI 辅助的大型 codebase 都能用:

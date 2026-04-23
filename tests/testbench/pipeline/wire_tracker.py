@@ -85,11 +85,19 @@ KNOWN_SOURCES: frozenset[str] = frozenset({
     "agent_callback",        # /api/session/external-event kind=agent_callback
     "proactive_chat",        # /api/session/external-event kind=proactive
     "auto_dialog_target",    # auto_dialog.py → target (character) LLM
-    "auto_dialog_simuser",   # auto_dialog.py → simulated user LLM
-    "judge.llm",             # judge_runner.py (M-1 future use)
-    "memory.llm",            # memory_runner.py (facts/persona/inner extractors)
-    "simulated_user",        # simulated_user.py stand-alone
+    "judge.llm",             # judge_runner.py — displayed on Evaluation/Run
+    "memory.llm",            # memory_runner.py — displayed on Memory subpages
 })
+# ── Removed in P25 r7 (2026-04-23) ─────────────────────────────────
+# ``"simulated_user"`` + ``"auto_dialog_simuser"`` used to live here
+# but were removed when SimUser LLM calls switched to ``NOSTAMP``.
+# Rationale: the simulated user is a *conversation source*, not an
+# object under test — its wire has no diagnostic value for the tester
+# and only pollutes the Chat Preview Panel (which promises "what the
+# target AI sees"). See ``simulated_user.py::generate_simuser_message``
+# and ``LESSONS_LEARNED §L44`` for full justification. If you ever need
+# to re-enable SimUser wire stamping (e.g. for a future SimUser-focused
+# diagnostic view), add it back here + add the i18n source label.
 
 
 def record_last_llm_wire(

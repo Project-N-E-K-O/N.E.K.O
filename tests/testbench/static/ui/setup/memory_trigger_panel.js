@@ -31,6 +31,7 @@ import { api } from '../../core/api.js';
 import { i18n } from '../../core/i18n.js';
 import { toast } from '../../core/toast.js';
 import { el } from '../_dom.js';
+import { openPromptPreviewModal } from '../_prompt_preview_modal.js';
 
 // ── 每个 kind 能触发的 op 列表 ───────────────────────────────────────
 
@@ -87,29 +88,83 @@ export function renderTriggerPanel(host, kind, opts = {}) {
     onCommitted: opts.onCommitted || (() => {}),
   };
 
+  // r7 2nd pass (2026-04-23): 外层 buttonRow 只保留一排 op 触发按钮 —
+  // [预览 prompt] 从这里挪到了参数 drawer 内部, 紧贴 [执行 (Dry-run)],
+  // 用户诉求是"在点开某个 op 子菜单后再看到 preview 按钮", 因为他此刻
+  // 才刚填完参数, 想先看一眼要发什么 prompt 再决定跑不跑.
   for (const spec of ops) {
-    const btn = el('button', { className: 'secondary' }, i18n(spec.labelKey));
-    btn.addEventListener('click', () => openParamForm(drawerHost, spec, state));
-    buttonRow.append(btn);
+    const triggerBtn = el('button', { className: 'secondary' }, i18n(spec.labelKey));
+    triggerBtn.addEventListener('click', () => openParamForm(drawerHost, spec, state));
+    buttonRow.append(triggerBtn);
   }
 
   root.append(buttonRow, drawerHost);
   host.append(root);
 }
 
+// ── P25 r7 2nd pass: Preview Prompt 合并进 Dry-run drawer ──────────
+//
+// 此前 [预览 prompt] 有独立入口 (外层 buttonRow 里和 triggerBtn 并排),
+// 用户点它会复制一份和 Dry-run 几乎一样的参数 drawer — 两个 drawer
+// 结构重复. 用户反馈更自然的交互: "点 trigger → 填参数 → 想看看要
+// 发什么就按 [预览 prompt], 跑真 Dry-run 就按 [执行]", 即两个按钮
+// 共用同一个 drawer / 同一份 paramsRef. 现在 previewBtn 出现在 drawer
+// 底部 runBtn 旁边 (见 ``openParamForm``), 点它**不清 drawer**, 只
+// 弹 modal — 用户可以预览之后微调参数再预览, 或者直接按 [执行]
+// 跑真 Dry-run (复用已经填的同一份 paramsRef).
+async function fetchAndShowPromptPreview(spec, params) {
+  const res = await api.post(`/api/memory/prompt_preview/${spec.op}`,
+    { params }, { expectedStatuses: [404, 409, 412, 422, 500] });
+
+  if (!res.ok) {
+    const detail = res.error || {};
+    toast.err(
+      i18n('setup.memory.trigger.preview_prompt.failed'),
+      { message: `${detail.error_type || 'Error'}: ${detail.message || res.status}` },
+    );
+    return;
+  }
+
+  const data = res.data || {};
+  const metaRows = [
+    { label: i18n('setup.memory.trigger.preview_prompt.meta.op'), value: data.op || spec.op },
+  ];
+  if (data.note) {
+    metaRows.push({
+      label: i18n('setup.memory.trigger.preview_prompt.meta.note'),
+      value: String(data.note),
+    });
+  }
+  for (const [k, v] of Object.entries(data.params_echo || {})) {
+    metaRows.push({ label: k, value: JSON.stringify(v) });
+  }
+
+  openPromptPreviewModal({
+    title: i18n('setup.memory.trigger.preview_prompt.modal_title',
+      i18n(spec.labelKey)),
+    intro: i18n('setup.memory.trigger.preview_prompt.intro'),
+    wireMessages: data.wire_messages || [],
+    metaRows,
+    warnings: data.warnings || [],
+  });
+}
+
+
 // ── 参数采集表单 (触发前) ──────────────────────────────────────────
 
 /**
- * Step 1 (可选): 渲染 op 的参数表单到 drawer. 无参 op 直接跳到 step 2.
+ * Step 1: 渲染 op 的参数 drawer. 底部按钮行包含
+ * ``[执行 (Dry-run)] [预览 prompt] [取消]`` 三按钮 (其中 [预览 prompt]
+ * 只对 ``persona.add_fact`` 以外的 op 挂 — add_fact 在 preview 阶段
+ * 不调 LLM, 后端 ``NoPromptForOp`` 422). 无参 op (persona.resolve_corrections)
+ * 也走这个 drawer, fields 区域显示 "此操作无可配置参数".
+ *
+ * 重要交互: [预览 prompt] 点击**不清 drawer**, 只弹 modal; 这样用户
+ * 可以预览 → 微调参数 → 再预览 → 真跑 Dry-run, 全在一个 drawer 里.
  */
 function openParamForm(drawerHost, spec, state) {
   drawerHost.innerHTML = '';
   state.activeOp = spec.op;
-
-  if (!spec.hasParams) {
-    triggerAndShowPreview(drawerHost, spec, {}, state);
-    return;
-  }
 
   const form = el('div', { className: 'memory-preview-drawer' });
   form.append(
@@ -123,24 +178,29 @@ function openParamForm(drawerHost, spec, state) {
   closeBtn.addEventListener('click', () => { drawerHost.innerHTML = ''; });
 
   const fields = el('div', { className: 'memory-preview-fields' });
-  const paramsRef = { value: {} };  // mutable by renderers
+  const paramsRef = { value: {} };
 
-  switch (spec.op) {
-    case 'recent.compress':
-      renderRecentCompressParams(fields, paramsRef);
-      break;
-    case 'facts.extract':
-      renderFactsExtractParams(fields, paramsRef);
-      break;
-    case 'reflect':
-      renderReflectParams(fields, paramsRef);
-      break;
-    case 'persona.add_fact':
-      renderPersonaAddFactParams(fields, paramsRef);
-      break;
-    default:
-      fields.append(el('p', { className: 'muted' },
-        i18n('setup.memory.trigger.no_params')));
+  if (spec.hasParams) {
+    switch (spec.op) {
+      case 'recent.compress':
+        renderRecentCompressParams(fields, paramsRef);
+        break;
+      case 'facts.extract':
+        renderFactsExtractParams(fields, paramsRef);
+        break;
+      case 'reflect':
+        renderReflectParams(fields, paramsRef);
+        break;
+      case 'persona.add_fact':
+        renderPersonaAddFactParams(fields, paramsRef);
+        break;
+      default:
+        fields.append(el('p', { className: 'muted' },
+          i18n('setup.memory.trigger.no_params')));
+    }
+  } else {
+    fields.append(el('p', { className: 'muted' },
+      i18n('setup.memory.trigger.no_params')));
   }
 
   const runBtn = el('button', { className: 'primary' },
@@ -152,7 +212,23 @@ function openParamForm(drawerHost, spec, state) {
   });
   cancelBtn.addEventListener('click', () => { drawerHost.innerHTML = ''; });
 
-  form.append(fields, el('div', { className: 'form-row' }, runBtn, cancelBtn));
+  // 按钮行: [执行 (Dry-run)] [预览 prompt] [取消].
+  // persona.add_fact 的 preview 阶段不调 LLM (只做启发式矛盾评估),
+  // 没 prompt 可预览; 所以仅对其它 4 个 op 挂 [预览 prompt].
+  const actions = el('div', { className: 'form-row' }, runBtn);
+  if (spec.op !== 'persona.add_fact') {
+    const previewBtn = el('button', {
+      type: 'button',
+      className: 'ghost memory-trigger-preview-btn',
+      title: i18n('setup.memory.trigger.preview_prompt.tooltip'),
+    }, i18n('setup.memory.trigger.preview_prompt.label'));
+    previewBtn.addEventListener('click',
+      () => fetchAndShowPromptPreview(spec, paramsRef.value));
+    actions.append(previewBtn);
+  }
+  actions.append(cancelBtn);
+
+  form.append(fields, actions);
   drawerHost.append(form);
 }
 

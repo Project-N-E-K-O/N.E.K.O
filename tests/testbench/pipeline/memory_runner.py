@@ -89,7 +89,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from utils.config_manager import get_config_manager
 from utils.file_utils import robust_json_loads
@@ -1476,17 +1476,316 @@ def discard_op(session: Session, op: str) -> bool:
     return session.memory_previews.pop(op, None) is not None
 
 
+# ── P25 r7: Prompt-only preview (不调 LLM, 不 stamp) ────────────────
+#
+# 设计背景
+# --------
+# r7 把 Chat 页 Preview Panel 改成只显示对话 AI 的 wire. 记忆域
+# (``memory.llm``) 的 wire 被移到 Memory 各子页 Dry-run 按钮旁的 [预
+# 览 prompt] 按钮. 但那个按钮**不应真跑 LLM** — tester 只想看"这个
+# op 会发什么 prompt", 不想每次点都耗 2-10 s + token 额度.
+#
+# 实现选择
+# --------
+# 复制每个 LLM-using handler 的 "prompt 拼装" 部分到独立函数, 不调
+# LLM 也不 stamp (避免污染 ``session.last_llm_wire``). 代码重复但每
+# 段都 < 30 行且一目了然, 而在 handler 内部加 ``preview_wire_only``
+# 分支反而让主流程变得难读. ``persona.add_fact`` 的 preview 本身不调
+# LLM (只做 contradiction 评估), 所以它不参与这个路径.
+
+
+@dataclass
+class MemoryPromptPreview:
+    """Return shape for :func:`build_memory_prompt_preview`.
+
+    Layout matches the ``last_llm_wire`` dict so frontend rendering can
+    share the "messages list + source label + note" shell:
+    ``{wire_messages: list[{role, content}], op: str, note: str | None,
+       params_echo: dict, warnings: list[str]}``.
+    """
+
+    op: str
+    wire_messages: list[dict[str, Any]]
+    note: str | None
+    params_echo: dict[str, Any]
+    warnings: list[str]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "op": self.op,
+            "wire_messages": list(self.wire_messages),
+            "note": self.note,
+            "params_echo": dict(self.params_echo),
+            "warnings": list(self.warnings),
+        }
+
+
+async def _build_recent_compress_wire(
+    session: Session,
+    params: dict[str, Any],
+) -> MemoryPromptPreview:
+    from config.prompts_memory import (
+        get_detailed_recent_history_manager_prompt,
+        get_recent_history_manager_prompt,
+    )
+    from utils.language_utils import get_global_language
+
+    character = _require_character(session)
+    name_mapping = _build_name_mapping(session, character)
+
+    recent_path = _memory_dir(character) / "recent.json"
+    recent_dicts = _read_json_list(recent_path)
+    if not recent_dicts:
+        raise MemoryOpError(
+            "RecentEmpty",
+            "recent.json 为空, 没有可压缩的消息. 先在 Chat 页发几条消息, "
+            "或在 Recent 编辑器手动填充.",
+            status=409,
+        )
+
+    messages = messages_from_dict(recent_dicts)
+    total = len(messages)
+    max_history_length = int(params.get("max_history_length") or 10)
+    default_tail = max(1, total - max_history_length + 1)
+    tail_count = int(params.get("tail_count") or default_tail)
+    tail_count = max(1, min(tail_count, total))
+    detailed = bool(params.get("detailed") or False)
+    to_compress = messages[:tail_count]
+
+    mapping_for_prompt = dict(name_mapping)
+    mapping_for_prompt["ai"] = character
+    messages_text = _messages_to_wire_lines(to_compress, mapping_for_prompt)
+
+    lang = get_global_language()
+    if detailed:
+        prompt = get_detailed_recent_history_manager_prompt(lang) % messages_text
+    else:
+        prompt = get_recent_history_manager_prompt(lang).replace("%s", messages_text)
+
+    return MemoryPromptPreview(
+        op=OP_RECENT_COMPRESS,
+        wire_messages=[{"role": ROLE_USER, "content": prompt}],
+        note=f"memory.recent.compress:tail={tail_count}/{total}",
+        params_echo={
+            "tail_count": tail_count,
+            "total_before": total,
+            "detailed": detailed,
+        },
+        warnings=[],
+    )
+
+
+async def _build_facts_extract_wire(
+    session: Session,
+    params: dict[str, Any],
+) -> MemoryPromptPreview:
+    from config.prompts_memory import get_fact_extraction_prompt
+    from utils.language_utils import get_global_language
+
+    character = _require_character(session)
+    name_mapping = _build_name_mapping(session, character)
+
+    source = params.get("source") or "session.messages"
+    min_importance = int(params.get("min_importance") or 5)
+
+    if source == "recent.json":
+        recent_path = _memory_dir(character) / "recent.json"
+        messages = messages_from_dict(_read_json_list(recent_path))
+    else:
+        source = "session.messages"
+        messages = _session_messages_to_langchain(session)
+
+    if not messages:
+        raise MemoryOpError(
+            "NoMessages",
+            f"source={source!r} 没有可用的消息. 先发几条消息或切换 source.",
+            status=409,
+        )
+
+    mapping_for_prompt = dict(name_mapping)
+    mapping_for_prompt["ai"] = character
+    master_display = name_mapping.get("human", "主人")
+    conversation_text = _messages_to_wire_lines(messages, mapping_for_prompt)
+
+    lang = get_global_language()
+    prompt = get_fact_extraction_prompt(lang)
+    prompt = prompt.replace("{CONVERSATION}", conversation_text)
+    prompt = prompt.replace("{LANLAN_NAME}", character)
+    prompt = prompt.replace("{MASTER_NAME}", master_display)
+
+    return MemoryPromptPreview(
+        op=OP_FACTS_EXTRACT,
+        wire_messages=[{"role": ROLE_USER, "content": prompt}],
+        note=f"memory.facts.extract:src={source}:{len(messages)}msgs",
+        params_echo={
+            "source": source,
+            "min_importance": min_importance,
+            "message_count": len(messages),
+        },
+        warnings=[],
+    )
+
+
+async def _build_reflect_wire(
+    session: Session,
+    params: dict[str, Any],
+) -> MemoryPromptPreview:
+    from config.prompts_memory import get_reflection_prompt
+    from memory.reflection import MIN_FACTS_FOR_REFLECTION
+    from utils.language_utils import get_global_language
+
+    character = _require_character(session)
+    name_mapping = _build_name_mapping(session, character)
+    master_display = name_mapping.get("human", "主人")
+
+    min_facts = int(params.get("min_facts") or MIN_FACTS_FOR_REFLECTION)
+
+    facts_path = _memory_dir(character) / "facts.json"
+    facts = _read_json_list(facts_path)
+    unabsorbed = [
+        f for f in facts
+        if isinstance(f, dict) and not bool(f.get("absorbed", False))
+    ]
+    if len(unabsorbed) < min_facts:
+        raise MemoryOpError(
+            "NotEnoughFacts",
+            (
+                f"未吸收事实仅 {len(unabsorbed)} 条, 低于 reflect 阈值 "
+                f"{min_facts}. 先跑几次 facts.extract 或手动添加事实."
+            ),
+            status=409,
+        )
+
+    facts_text = "\n".join(
+        f"- {f.get('text', '')} (importance: {f.get('importance', 5)})"
+        for f in unabsorbed
+    )
+    lang = get_global_language()
+    prompt = get_reflection_prompt(lang)
+    prompt = prompt.replace("{FACTS}", facts_text)
+    prompt = prompt.replace("{LANLAN_NAME}", character)
+    prompt = prompt.replace("{MASTER_NAME}", master_display)
+
+    return MemoryPromptPreview(
+        op=OP_REFLECT,
+        wire_messages=[{"role": ROLE_USER, "content": prompt}],
+        note=f"memory.reflect:unabsorbed={len(unabsorbed)}",
+        params_echo={
+            "min_facts": min_facts,
+            "unabsorbed_count": len(unabsorbed),
+        },
+        warnings=[],
+    )
+
+
+async def _build_persona_resolve_corrections_wire(
+    session: Session,
+    params: dict[str, Any],
+) -> MemoryPromptPreview:
+    from config.prompts_memory import persona_correction_prompt
+    from memory.persona import PersonaManager
+
+    character = _require_character(session)
+    pm = PersonaManager()
+    corrections = await pm.aload_pending_corrections(character)
+    if not corrections:
+        raise MemoryOpError(
+            "QueueEmpty",
+            "persona_corrections.json 没有待裁决的矛盾. 先用 persona.add_fact "
+            "加一条会触发冲突的事实.",
+            status=409,
+        )
+
+    pairs = [
+        (i, item) for i, item in enumerate(corrections)
+        if item.get("old_text") and item.get("new_text")
+    ]
+    if not pairs:
+        raise MemoryOpError(
+            "QueueMalformed",
+            "矛盾队列内所有条目都缺少 old_text / new_text, 请清理 "
+            "persona_corrections.json 后重试.",
+            status=500,
+        )
+
+    batch_text = "\n".join(
+        f"[{i}] 已有: {item['old_text']} | 新观察: {item['new_text']}"
+        for i, item in pairs
+    )
+    prompt = persona_correction_prompt.format(pairs=batch_text, count=len(pairs))
+
+    return MemoryPromptPreview(
+        op=OP_PERSONA_RESOLVE_CORRECTIONS,
+        wire_messages=[{"role": ROLE_USER, "content": prompt}],
+        note=f"memory.persona.resolve_corrections:pairs={len(pairs)}",
+        params_echo={
+            "queue_size": len(corrections),
+            "valid_pair_count": len(pairs),
+        },
+        warnings=[],
+    )
+
+
+_PROMPT_PREVIEW_BUILDERS: dict[
+    str,
+    Callable[[Session, dict[str, Any]], Any],
+] = {
+    OP_RECENT_COMPRESS: _build_recent_compress_wire,
+    OP_FACTS_EXTRACT: _build_facts_extract_wire,
+    OP_REFLECT: _build_reflect_wire,
+    OP_PERSONA_RESOLVE_CORRECTIONS: _build_persona_resolve_corrections_wire,
+}
+
+
+async def build_memory_prompt_preview(
+    session: Session,
+    op: str,
+    params: dict[str, Any] | None = None,
+) -> MemoryPromptPreview:
+    """Compose the wire a given memory ``op`` **would** send to the LLM.
+
+    Does **not** call the LLM, does **not** stamp ``session.last_llm_wire``,
+    does **not** cache anything. Pure function over (session snapshot,
+    params). Intended for the Memory sub-page [预览 prompt] buttons that
+    appear next to the Dry-run triggers in r7.
+
+    Raises:
+        MemoryOpError: Same vocabulary as :func:`trigger_op` — e.g.
+            ``RecentEmpty`` (409) if ``recent.json`` is empty,
+            ``NoPromptForOp`` (422) if the op has no LLM call
+            (``persona.add_fact``), ``UnknownOp`` (404).
+    """
+    if op not in ALL_OPS:
+        raise MemoryOpError(
+            "UnknownOp",
+            f"未知 memory op: {op!r}; 合法值: {', '.join(ALL_OPS)}",
+            status=404,
+        )
+    if op == OP_PERSONA_ADD_FACT:
+        raise MemoryOpError(
+            "NoPromptForOp",
+            "persona.add_fact 的预览阶段不调用 LLM "
+            "(它只做启发式矛盾评估), 没有 prompt 可预览. "
+            "真正调 LLM 的 persona 操作是 persona.resolve_corrections.",
+            status=422,
+        )
+    builder = _PROMPT_PREVIEW_BUILDERS[op]
+    return await builder(session, params or {})
+
+
 __all__ = [
     "ALL_OPS",
     "MEMORY_PREVIEW_TTL_SECONDS",
     "MemoryOpError",
     "MemoryPreviewResult",
+    "MemoryPromptPreview",
     "OP_FACTS_EXTRACT",
     "OP_PERSONA_ADD_FACT",
     "OP_PERSONA_RESOLVE_CORRECTIONS",
     "OP_RECENT_COMPRESS",
     "OP_REFLECT",
     "OP_TO_KIND",
+    "build_memory_prompt_preview",
     "commit_op",
     "discard_op",
     "is_valid_op",

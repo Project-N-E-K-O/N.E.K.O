@@ -16,6 +16,16 @@ Without this smoke, we found 4 bare call sites the dynamic
 memory.facts / memory.reflect / memory.persona_correction + 1 in
 judge + 1 in simuser). This smoke locks all of them.
 
+r7 update (2026-04-23)
+~~~~~~~~~~~~~~~~~~~~~~
+``simulated_user.generate_simuser_message`` switched from stamped
+(``source="simulated_user"``) to ``NOSTAMP(wire_tracker)`` — SimUser
+is a *conversation source*, not an object under test, so its wire
+has no diagnostic value on the Chat Preview Panel. The C2 sentinel
+check correspondingly dropped ``simulated_user`` + ``auto_dialog_simuser``
+from ``KNOWN_SOURCES``; this smoke re-validates that removal does
+not leave any stale literal behind.
+
 Escape hatch
 ------------
 Not every ``ainvoke`` is a conversation turn. Add a
@@ -345,10 +355,14 @@ def check_c2_stamp_source_literal_matches_whitelist() -> list[str]:
         for lineno, literal in _extract_wire_source_args(tree):
             if literal is None:
                 # Non-literal source — could be a variable passed in
-                # (e.g. simulated_user's ``wire_source`` param). Allow,
-                # because the runtime hard-validates against
+                # (e.g. ``source=_wire_source`` in chat_router, where the
+                # branch depends on whether the caller is SOURCE_AUTO).
+                # Allow, because the runtime hard-validates against
                 # KNOWN_SOURCES (wire_tracker raises ValueError) + PP7
-                # already covers typo propagation.
+                # already covers typo propagation. (r7 2026-04-23: note
+                # that the earlier ``simulated_user.wire_source`` pattern
+                # is gone — SimUser is now NOSTAMP, so no such kwarg
+                # remains in the codebase.)
                 continue
             if literal not in KNOWN_SOURCES:
                 errors.append(

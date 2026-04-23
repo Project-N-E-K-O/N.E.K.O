@@ -47,6 +47,7 @@ import { i18n } from '../../core/i18n.js';
 import { store, on, emit } from '../../core/state.js';
 import { toast } from '../../core/toast.js';
 import { el, field } from '../_dom.js';
+import { openPromptPreviewModal } from '../_prompt_preview_modal.js';
 
 //
 // ── module-local state ────────────────────────────────────────────
@@ -780,6 +781,18 @@ function renderRunBar(root, state) {
     : i18n('evaluation.run.button.run'));
   wrap.append(btn);
 
+  // P25 r7 — Dry-run 旁边 [预览 prompt]. 和运行按钮共享 canRun 的禁用
+  // 逻辑 (没有有效 schema / target 就没法构 prompt). 调 /run_prompt_preview
+  // 拿到每个 target 的 wire 弹共享 modal.
+  const previewBtn = el('button', {
+    className: 'ghost',
+    type: 'button',
+    disabled: (state.running || disabled) ? true : undefined,
+    title: i18n('evaluation.run.preview_prompt.tooltip'),
+    onClick: () => previewJudgePrompt(state),
+  }, i18n('evaluation.run.preview_prompt.label'));
+  wrap.append(previewBtn);
+
   const reason = describeDisabledReason(state);
   if (reason && !state.running) {
     wrap.append(el('span', { className: 'hint' }, reason));
@@ -789,6 +802,81 @@ function renderRunBar(root, state) {
       i18n('evaluation.run.button.running_hint')));
   }
   return wrap;
+}
+
+async function previewJudgePrompt(state) {
+  const schema = state.selectedSchema;
+  if (!schema) return;
+  const body = {
+    schema_id: state.selectedSchemaId,
+    scope: state.scope,
+    persist: false,
+  };
+  if (schema.granularity === 'single' && state.scope === 'messages') {
+    body.message_ids = Array.from(state.selectedMessageIds);
+  } else {
+    body.message_ids = [];
+  }
+  if (schema.mode === 'comparative') {
+    if (state.referenceMode === 'inline') {
+      body.reference_response = state.referenceText.trim();
+    }
+  }
+  const override = collectOverride(state.override);
+  if (override) body.judge_model_override = override;
+  if (state.matchMainChat) body.match_main_chat = true;
+
+  const resp = await api.post('/api/judge/run_prompt_preview', body, {
+    expectedStatuses: [200, 422, 404],
+  });
+  if (!resp.ok) {
+    toast.err(i18n('evaluation.run.preview_prompt.failed'),
+      { message: resp.error?.message || `HTTP ${resp.status}` });
+    return;
+  }
+
+  const data = resp.data || {};
+  const previews = Array.isArray(data.previews) ? data.previews : [];
+  const skipped = Array.isArray(data.skipped) ? data.skipped : [];
+
+  if (!previews.length) {
+    toast.warn(i18n('evaluation.run.preview_prompt.no_previews'));
+    return;
+  }
+
+  // Batch preview: 拼成一个大 wire list, 每个 target 之间用 role=system
+  // 分隔一条 "── Target #k / message_id=... ──" 标签, 让 tester 在一
+  // 个 modal 里看完所有 targets. 这比弹 N 个 modal 友好得多.
+  const mergedWire = [];
+  previews.forEach((p, idx) => {
+    const tid = (p.target_message_ids || []).join(',') || `batch#${idx + 1}`;
+    mergedWire.push({
+      role: 'system',
+      content: `── preview #${idx + 1} · target=${tid} · chars=${p.prompt_char_count || 0} ──`,
+    });
+    for (const m of (p.wire_messages || [])) mergedWire.push(m);
+  });
+
+  const warnings = skipped.length
+    ? skipped.map(
+      (s) => i18n('evaluation.run.preview_prompt.skipped_fmt',
+        (s.target_message_ids || []).join(',') || '?',
+        `${s.error_type || 'Error'}: ${s.message || '?'}`))
+    : [];
+
+  openPromptPreviewModal({
+    title: i18n('evaluation.run.preview_prompt.modal_title', schema.id || '?'),
+    intro: i18n('evaluation.run.preview_prompt.intro',
+      data.count || previews.length),
+    wireMessages: mergedWire,
+    metaRows: [
+      { label: i18n('evaluation.run.preview_prompt.meta.schema'), value: schema.id || '?' },
+      { label: i18n('evaluation.run.preview_prompt.meta.mode'), value: schema.mode || '?' },
+      { label: i18n('evaluation.run.preview_prompt.meta.granularity'), value: schema.granularity || '?' },
+      { label: i18n('evaluation.run.preview_prompt.meta.target_count'), value: String(previews.length) },
+    ],
+    warnings,
+  });
 }
 
 function canRun(state) {

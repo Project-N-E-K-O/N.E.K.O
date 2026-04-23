@@ -63,10 +63,6 @@ from tests.testbench.pipeline.chat_runner import (
     ChatConfigError,
     resolve_group_config,
 )
-from tests.testbench.pipeline.wire_tracker import (
-    record_last_llm_wire,
-    update_last_llm_wire_reply,
-)
 from tests.testbench.session_store import Session
 
 
@@ -382,7 +378,6 @@ async def generate_simuser_message(
     style: str | None = None,
     user_persona_prompt: str = "",
     extra_hint: str = "",
-    wire_source: str = "simulated_user",
 ) -> SimUserDraft:
     """Call the simuser LLM once and return a clean user-message draft.
 
@@ -397,20 +392,20 @@ async def generate_simuser_message(
         可选自定义人设; 追加到 system prompt 的 "额外人设/背景" 段.
     extra_hint
         单次临时指示; 只在本次生成内生效, 不写回任何持久状态.
-    wire_source
-        ``wire_tracker`` 的 source slug (必须在
-        :data:`pipeline.wire_tracker.KNOWN_SOURCES` 内). 默认
-        ``"simulated_user"`` = 独立 ``POST /api/simuser/draft`` 入口;
-        ``auto_dialog.py`` 在自动对话循环里调用时传
-        ``"auto_dialog_simuser"``, 让 preview UI 能区分 "tester 按草稿
-        按钮" vs. "自动对话批量推进中的一轮 SimUser".
 
     副作用 — **无**:
         * 不读写 ``session.messages``;
         * 不消耗 / 不修改 ``session.clock.pending_*``;
         * 不调用任何记忆 manager;
-        * 只写 JSONL 日志 (``simuser.generate.begin`` / ``.end`` / ``.error``)
-          + 会话级 ``last_llm_wire`` RUNTIME 字段 (不落盘, 仅 preview UI).
+        * 只写 JSONL 日志 (``simuser.generate.begin`` / ``.end`` / ``.error``).
+
+    Wire stamping (P25 r7 语义分区, 2026-04-23):
+        SimUser 只是"对话来源", 不是被考察/测试的对象. 它的 wire 对测
+        试人员无价值 (测试人员的关注点始终在目标 AI 那侧), 反而会把
+        Chat 页的 Preview Panel 污染成"看不到真正在测的那条". 故这条
+        LLM 调用**不 stamp** ``session.last_llm_wire`` — 目标 AI 那侧
+        (``chat.send`` / ``auto_dialog_target``) 的 stamp 独立生效, Chat
+        页 Preview 恒显示"对话 AI 看到的东西".
     """
     warnings: list[str] = []
 
@@ -486,22 +481,6 @@ async def generate_simuser_message(
     content_raw = ""
     client = None
     try:
-        record_last_llm_wire(
-            session,
-            wire_messages,
-            source=wire_source,
-            note=(
-                f"{wire_source}:style={style_key}:"
-                f"history={len(flipped_history)}"
-                f"@{cfg.provider}:{cfg.model}"
-            ),
-        )
-    except Exception as exc:  # noqa: BLE001 — observability must not block LLM
-        python_logger().debug(
-            "simuser: record_last_llm_wire failed: %s: %s",
-            type(exc).__name__, exc,
-        )
-    try:
         from utils.llm_client import ChatOpenAI
 
         client = ChatOpenAI(
@@ -514,18 +493,14 @@ async def generate_simuser_message(
             max_retries=1,
             streaming=False,
         )
+        # NOSTAMP(wire_tracker): SimUser 是"对话来源", 不是被考察对象 —
+        # 它的 wire 对测试人员无价值, stamp 进 session.last_llm_wire 会让
+        # Chat 页 Preview Panel 看到"不是对话 AI 真实收到的 prompt", 严
+        # 重 mislead 测试人员. 故 simuser 的 LLM 调用不进入 stamp 机制.
         resp = await client.ainvoke(wire_messages)
         content_raw = resp.content or ""
         token_usage = (resp.response_metadata or {}).get("token_usage") or None
-        try:
-            update_last_llm_wire_reply(session, reply_chars=len(content_raw))
-        except Exception:  # noqa: BLE001
-            pass
     except Exception as exc:  # noqa: BLE001
-        try:
-            update_last_llm_wire_reply(session, reply_chars=-1)
-        except Exception:  # noqa: BLE001
-            pass
         session.logger.log_sync(
             "simuser.generate.error",
             level="ERROR",

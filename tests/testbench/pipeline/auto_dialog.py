@@ -526,8 +526,11 @@ async def _run_simuser_step(
         style=config.simuser_style,
         user_persona_prompt=config.simuser_persona_hint,
         extra_hint=config.simuser_extra_hint,
-        wire_source="auto_dialog_simuser",
     )
+    # P25 r7: SimUser LLM 不再 stamp ``session.last_llm_wire`` —
+    # 见 ``simulated_user.py::generate_simuser_message`` 文档. Target
+    # 那一侧 (``stream_send`` with ``source=SOURCE_AUTO``) 仍会 stamp
+    # ``auto_dialog_target``, 这是测试人员真正关心的 wire.
 
     # r5 T8: prompt-injection audit — Auto-Dialog 走的是
     # ``stream_send(user_content=None)`` 复跑路径, 所以 chat_runner 内的

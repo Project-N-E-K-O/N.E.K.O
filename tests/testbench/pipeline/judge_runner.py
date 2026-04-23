@@ -1244,6 +1244,49 @@ def load_schema_by_id(schema_id: str) -> ScoringSchema:
         ) from exc
 
 
+def build_judge_prompt_preview(
+    judger: BaseJudger,
+    inputs: JudgeInputs,
+) -> dict[str, Any]:
+    """Compose the wire ``judger.run(inputs)`` **would** send, without calling LLM.
+
+    Pure function over (judger, inputs). Mirrors the first half of
+    :meth:`BaseJudger.run` (``_build_ctx`` → ``schema.render_prompt`` →
+    prepend preamble) and returns the wire shape the UI's [预览 prompt]
+    button can render. Does **not** stamp ``session.last_llm_wire``
+    (that would mislead the Chat page Preview Panel which is now chat-
+    only, see r7).
+
+    Does **not** call ``_log_injection_hits`` either — injection audit
+    fires on real runs; preview-only should stay side-effect-free.
+
+    Returns:
+        ``{wire_messages: [{role: 'user', content: prompt}], schema_id,
+           schema_mode, schema_granularity, note, prompt_char_count}``.
+
+    Raises:
+        JudgeRunError: If ``_validate_inputs`` catches an input problem.
+            Unlike :meth:`BaseJudger.run` we re-raise here (not wrap into
+            an EvalResult) because the UI gesture is "show me the wire",
+            not "attempt a failed run".
+    """
+    judger._validate_inputs(inputs)  # noqa: SLF001 — runner-internal helper
+    ctx = judger._build_ctx(inputs)  # noqa: SLF001
+    prompt = judger.schema.render_prompt(ctx)
+    prompt = JUDGER_INJECTION_PREAMBLE + prompt
+    return {
+        "wire_messages": [{"role": ROLE_USER, "content": prompt.strip()}],
+        "schema_id": judger.schema.id,
+        "schema_mode": judger.MODE,
+        "schema_granularity": judger.GRANULARITY,
+        "note": (
+            f"judge.{type(judger).__name__}:"
+            f"prompt_chars={len(prompt)} (dry-run, no LLM call)"
+        ),
+        "prompt_char_count": len(prompt),
+    }
+
+
 __all__ = [
     "AbsoluteConversationJudger",
     "AbsoluteSingleJudger",
@@ -1253,6 +1296,7 @@ __all__ = [
     "EvalResult",
     "JudgeInputs",
     "JudgeRunError",
+    "build_judge_prompt_preview",
     "load_schema_by_id",
     "make_judger",
 ]

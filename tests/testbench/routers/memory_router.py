@@ -657,3 +657,37 @@ async def discard_memory_op(op: str) -> dict[str, Any]:
     session = _require_session()
     dropped = memory_runner.discard_op(session, op)
     return {"op": op, "discarded": dropped}
+
+
+@router.post("/prompt_preview/{op}")
+async def prompt_preview_memory_op(
+    op: str, body: MemoryTriggerPayload,
+) -> dict[str, Any]:
+    """Show what wire ``op`` would send to the memory LLM, without calling it.
+
+    P25 r7 — the Chat page's Preview Panel is now chat-only; memory LLM
+    wires are exposed here so the Memory sub-page [预览 prompt] button
+    can fetch the wire without paying the 2-10 s LLM round trip.
+
+    Behavior:
+        * Pure function over (session snapshot, params). Does not stamp
+          ``session.last_llm_wire`` (that would pollute the Chat panel
+          for an unrelated UI click).
+        * Takes no session lock — read-only; OK to run concurrently
+          with chat.send.
+        * Returns :class:`memory_runner.MemoryPromptPreview` as dict:
+          ``{op, wire_messages, note, params_echo, warnings}``.
+        * Same error vocabulary as ``/trigger/{op}``: 404 UnknownOp, 409
+          for "no input" cases (``RecentEmpty`` / ``NoMessages`` /
+          ``NotEnoughFacts`` / ``QueueEmpty``), 422 ``NoPromptForOp``
+          (specifically for ``persona.add_fact`` which has no LLM call).
+    """
+    _require_op(op)
+    session = _require_session()
+    try:
+        preview = await memory_runner.build_memory_prompt_preview(
+            session, op, body.params,
+        )
+        return preview.to_dict()
+    except memory_runner.MemoryOpError as exc:
+        raise _wrap_memory_op_error(exc) from exc

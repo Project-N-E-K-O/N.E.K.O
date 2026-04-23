@@ -1877,6 +1877,15 @@ button.memory-item-delete:hover {
   gap: var(--density-sm);
   flex-wrap: wrap;
 }
+/* P25 r7 2nd pass: [预览 prompt] 从 buttonRow 挪到 drawer 底部 actions
+   行 (紧邻 [执行 (Dry-run)]). buttonRow 回到一排纯触发按钮, 不再需要
+   op-group 包裹. 这里保留 ``.memory-trigger-preview-btn`` 类是因为
+   drawer 内也要让 [预览 prompt] 比主 Dry-run 按钮更低视觉优先级 (ghost
+   style + 略小字号), 否则同一行里两个 primary 亮度的按钮会让用户
+   分不清哪一个才是"真跑". */
+.memory-trigger-preview-btn {
+  font-size: 0.9em;
+}
 
 .memory-preview-drawer-host {
   margin-top: 10px;
@@ -3345,6 +3354,155 @@ table.tbl .tbl-key-field {
   display: flex;
   gap: var(--density-sm);
   flex-shrink: 0;
+}
+
+/* =====================================================================
+ * Prompt Preview Modal (P25 r7, 共享)
+ * ---------------------------------------------------------------------
+ * ``_prompt_preview_modal.js`` 统一供 Memory 子页 [预览 prompt] + 评
+ * 分 Run 页 [预览 prompt] + 未来其它域用. 结构同 external-events
+ * preview modal (head / body / foot), 但样式独立因为:
+ *
+ *   - Memory 压缩 / reflect / judge 的 prompt 比外部事件 instruction
+ *     长得多 (system prompt + recent 历史 + 注入 preamble), 默认
+ *     640px (继承自全局 `.modal`) 会让长行被横向截断, 用户反馈"从
+ *     文本框容器的右侧边缘溢出"即此.
+ *   - 这里 `.modal` 覆盖 min/max-width 放大到 ~1100px 上限, 并显式
+ *     挂 `min-width: 0` 解掉 flex 子元素默认 min-content 撑破 (§3A C5).
+ *   - `.wire-row > pre` 复用和 external-events 一样的 `white-space:
+ *     pre-wrap; word-break: break-word` 确保超长 URL / JSON blob
+ *     自动换行, 再加 `overflow-wrap: anywhere` 兜底.
+ *   - 整段 meta-badge / hint 也走 `u-wrap-anywhere` 契约, 长文本 value
+ *     不会把 badge 横向撑破容器.
+ *
+ * 不提供 `.modal-head` override 让 h3 右侧出现 X 按钮 — r6 Part A 明
+ * 确"只保留右下角关闭按钮", 即 modal-foot 里的 [关闭], 不再出现右上
+ * 角的 X. ``_prompt_preview_modal.js`` 里 head 已经只渲染 h3.
+ * ===================================================================== */
+.prompt-preview-modal .modal {
+  min-width: min(760px, 92vw);
+  max-width: min(1100px, 96vw);
+  width: min(1100px, 96vw);
+  gap: var(--density-sm);
+  min-height: 0;
+}
+.prompt-preview-modal .modal-head {
+  flex: 0 0 auto;
+  overflow: visible;
+  padding-bottom: var(--density-sm);
+  border-bottom: 1px solid var(--border);
+}
+.prompt-preview-modal .modal-head h3 {
+  margin: 0;
+  font-size: 15px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.prompt-preview-modal .modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;  /* §3A C5 打破 min-content 链, 让子级的 wrap 真的生效 */
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--density-sm);
+}
+.prompt-preview-modal .modal-body h4 {
+  margin: var(--density-sm) 0 0 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.prompt-preview-modal .modal-body .hint {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.prompt-preview-modal .modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  flex: 0 0 auto;
+  overflow: visible;
+  padding-top: var(--density-sm);
+  border-top: 1px solid var(--border);
+}
+
+/* prompt-preview-warnings / prompt-preview-meta / prompt-preview-wire
+   三个分段 — 都要做长文本换行, 并打破 flex min-content 链. */
+.prompt-preview-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.prompt-preview-warnings .hint {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.prompt-preview-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+.prompt-preview-meta .meta-badge {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--bg-subtle, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  max-width: 100%;
+  min-width: 0;
+}
+.prompt-preview-meta .meta-label {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+}
+.prompt-preview-meta .meta-value {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  min-width: 0;
+}
+.prompt-preview-wire {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.prompt-preview-wire .wire-row {
+  min-width: 0;
+}
+.prompt-preview-wire .wire-row > summary {
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 4px 8px;
+  background: var(--bg-subtle, rgba(255, 255, 255, 0.04));
+  border-radius: var(--radius-sm);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.prompt-preview-wire .wire-row.wire-tail > summary {
+  background: rgba(74, 160, 255, 0.10);
+  border-left: 3px solid var(--accent, #4a9eff);
+}
+.prompt-preview-wire .wire-row > pre {
+  margin: 4px 0 8px 0;
+  padding: 8px;
+  background: var(--bg-code, rgba(0, 0, 0, 0.15));
+  border-radius: var(--radius-sm);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.5;
+  max-width: 100%;
+  min-width: 0;
 }
 
 /* 按钮密度修饰 (chat 面板里到处用) */
