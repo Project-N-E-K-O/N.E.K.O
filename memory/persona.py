@@ -662,6 +662,16 @@ class PersonaManager:
         - rein_last_signal_at / disp_last_signal_at: 各自独立的衰减时钟
         - sub_zero_days + sub_zero_last_increment_date: archive 倒计时
         - merged_from_ids: LLM merge_into 决策吸收的 reflection id 列表
+
+        Token-count cache fields (derived, cache-only — not event-sourced):
+        - token_count: int | None — cached acount_tokens(text)
+        - token_count_text_sha256: str | None — fingerprint of the text that
+          was tokenized; a mismatch triggers recompute on the next render.
+
+        Zero-migration schema addition: existing on-disk entries without
+        these fields naturally read as None via `.get()`, which counts as a
+        cache miss and triggers a clean recompute on first render. No
+        explicit migration event is needed.
         """
         defaults = {
             'id': '',                   # 唯一标识
@@ -684,6 +694,11 @@ class PersonaManager:
             'user_fact_reinforce_count': 0,
             # 溯源：merge_into 吸收的 reflection id 列表
             'merged_from_ids': [],
+            # Derived token-count cache — populated by the render path
+            # (`_get_cached_token_count` / `_aget_cached_token_count`)
+            # on first render and ride-alongs with normal persona saves.
+            'token_count': None,
+            'token_count_text_sha256': None,
         }
         if isinstance(entry, str):
             d = dict(defaults)
@@ -1122,6 +1137,13 @@ class PersonaManager:
                 target_entry['disp_last_signal_at'] = now_iso
                 target_entry['sub_zero_days'] = 0
                 target_entry['merged_from_ids'] = new_merged_from
+                # Token-count cache is derived from `text`; rewriting text
+                # must drop the cache so the next render recomputes. The
+                # fingerprint check would catch the drift anyway, but
+                # explicit invalidation avoids the tiny window where a
+                # concurrent reader might see new text + stale count and
+                # saves one sha256 compute on the next render.
+                self._invalidate_token_count_cache(target_entry)
 
             # _sync_save: cloudsave gate + write + cache-evict-on-failure
             # (CodeRabbit PR #936 round-5 Major #1). See
@@ -1742,9 +1764,82 @@ class PersonaManager:
     # thread on the async path so the FastAPI event loop doesn't stall on
     # batches of ~100 entries.
 
+    # ── token-count cache helpers ────────────────────────────────────
+    #
+    # Each entry dict may carry two derived fields populated on first
+    # render: `token_count` (int) and `token_count_text_sha256` (str).
+    # Defaults to None in `_normalize_entry` / `_normalize_reflection`.
+    #
+    # Read path: compute sha256(text); if it matches the stored
+    # fingerprint AND the count is populated, use the cached value.
+    # Otherwise compute (sync `count_tokens` / async `acount_tokens`)
+    # and write both fields back to the in-memory entry. The cache is
+    # never written to disk directly — it rides along whenever the
+    # persona/reflection is otherwise saved (add_fact, amerge_into,
+    # asave_persona, etc.). A fresh process boot re-tokenizes on first
+    # render which is an acceptable warm-up cost.
+    #
+    # Red line compliance: the cache is purely derived from `text`, so
+    # event-sourcing it would duplicate the source of truth (see
+    # RFC §3.6.8 + the "derived values shouldn't produce events"
+    # principle). The in-memory update + ride-along-on-save approach
+    # also avoids "view mutations outside an event" — we only ever
+    # invoke a disk write through existing event-sourced or save-
+    # permitted paths.
+
     @staticmethod
+    def _text_fingerprint(text: str) -> str:
+        """sha256 hex digest of `text` used as the cache key. Same
+        encoding as the `rewrite_text_sha256` payload in amerge_into so
+        the two stay consistent if we ever cross-check."""
+        return hashlib.sha256((text or '').encode('utf-8')).hexdigest()
+
+    @classmethod
+    def _get_cached_token_count(cls, entry: dict) -> int:
+        """Sync cache-aware token count. Writes `token_count` +
+        `token_count_text_sha256` back to `entry` on miss."""
+        text = entry.get('text', '') or ''
+        if not text:
+            return 0
+        fp = cls._text_fingerprint(text)
+        cached = entry.get('token_count')
+        if cached is not None and entry.get('token_count_text_sha256') == fp:
+            return int(cached)
+        n = count_tokens(text)
+        entry['token_count'] = int(n)
+        entry['token_count_text_sha256'] = fp
+        return int(n)
+
+    @classmethod
+    async def _aget_cached_token_count(cls, entry: dict) -> int:
+        """Async twin — uses `acount_tokens` (worker-thread tiktoken).
+        Write-back semantics match the sync helper."""
+        text = entry.get('text', '') or ''
+        if not text:
+            return 0
+        fp = cls._text_fingerprint(text)
+        cached = entry.get('token_count')
+        if cached is not None and entry.get('token_count_text_sha256') == fp:
+            return int(cached)
+        n = await acount_tokens(text)
+        entry['token_count'] = int(n)
+        entry['token_count_text_sha256'] = fp
+        return int(n)
+
+    @staticmethod
+    def _invalidate_token_count_cache(entry: dict) -> None:
+        """Explicitly drop the cached count. Called by code paths that
+        rewrite `entry['text']` (e.g. `amerge_into`) to avoid the tiny
+        window where a concurrent reader sees new text + stale count.
+        The fingerprint check would catch it anyway, but explicit
+        invalidation is clearer and saves one sha256 compute on the
+        next render."""
+        entry['token_count'] = None
+        entry['token_count_text_sha256'] = None
+
+    @classmethod
     def _score_trim_entries(
-        entries: list, budget: int, now: datetime,
+        cls, entries: list, budget: int, now: datetime,
     ) -> list:
         """Sync score-trim: sort by (evidence_score, importance) DESC, keep
         entries whose accumulated `count_tokens(text)` ≤ `budget`. Stops at
@@ -1765,16 +1860,16 @@ class PersonaManager:
         kept = []
         total = 0
         for e in sorted_entries:
-            t = count_tokens(e.get('text', '') or '')
+            t = cls._get_cached_token_count(e)
             if total + t > budget:
                 break
             kept.append(e)
             total += t
         return kept
 
-    @staticmethod
+    @classmethod
     async def _ascore_trim_entries(
-        entries: list, budget: int, now: datetime,
+        cls, entries: list, budget: int, now: datetime,
     ) -> list:
         """Async twin of `_score_trim_entries`. Identical math; the only
         difference is `acount_tokens` (worker-thread tiktoken)."""
@@ -1789,7 +1884,7 @@ class PersonaManager:
         kept = []
         total = 0
         for e in sorted_entries:
-            t = await acount_tokens(e.get('text', '') or '')
+            t = await cls._aget_cached_token_count(e)
             if total + t > budget:
                 break
             kept.append(e)

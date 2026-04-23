@@ -191,6 +191,15 @@ class ReflectionEngine:
         Also adds the `recent_mentions` / `suppress` mention抑制 fields so
         confirmed reflections can share persona's 5h-window rate-limit
         machinery (AI 自我克制，不在 5h 内反复提同一条)。
+
+        Token-count cache fields (derived, cache-only — not event-sourced;
+        see `PersonaManager._get_cached_token_count` for semantics):
+        - token_count: int | None
+        - token_count_text_sha256: str | None
+
+        Zero-migration schema addition: legacy on-disk reflections without
+        these fields read as None via `.get()` during `_ascore_trim_entries`,
+        which is a clean cache miss → recompute on first render.
         """
         defaults = {
             # Evidence counters
@@ -212,6 +221,13 @@ class ReflectionEngine:
             'recent_mentions': [],
             'suppress': False,
             'suppressed_at': None,
+            # Derived token-count cache — populated on first render via
+            # PersonaManager._aget_cached_token_count (reflections share the
+            # persona render budget machinery via `_ascore_trim_entries`,
+            # which is entry-schema-agnostic). Rides along on normal
+            # reflection saves; fresh boot recomputes on first render.
+            'token_count': None,
+            'token_count_text_sha256': None,
         }
         for k, v in defaults.items():
             entry.setdefault(k, v)
