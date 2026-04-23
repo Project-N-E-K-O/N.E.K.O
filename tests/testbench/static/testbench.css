@@ -3210,6 +3210,69 @@ table.tbl .tbl-key-field {
 .wire-role-system .cb-header { border-left: 3px solid var(--accent); padding-left: 6px; }
 .wire-role-user .cb-header   { border-left: 3px solid #4aa05a; padding-left: 6px; }
 .wire-role-assistant .cb-header { border-left: 3px solid #b56ad0; padding-left: 6px; }
+/* P25 Day 2 polish r4: "最近一次真实 wire" 末尾 (通常是 ephemeral
+   instruction) 稍微加粗边框 — tester 第一眼就知道 "这条是刚刚事件注入
+   的 wire 内容". 不做背景色染色以避免和 role 色带冲突. */
+.wire-tail .cb-header {
+  border-left-width: 4px;
+  box-shadow: inset 0 0 0 1px rgba(74, 160, 90, 0.18);
+}
+
+/* P25 Day 2 polish r4: Raw wire 视图被拆成两个 subsection —
+   (1) 最近一次真实 wire (ground truth) 放在最上面, 视觉优先级最高;
+   (2) 下次 /send 预估 wire (prediction) 退到下面, muted 一点.
+   subsection 之间用一条浅分割线 + 更大 gap 视觉分开, 免得两块列表糊
+   成一块让 tester 以为都是同一串消息. */
+.raw-view {
+  gap: var(--density-md);
+}
+.raw-subsection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--density-sm);
+  padding-top: var(--density-sm);
+  border-top: 1px solid var(--border-subtle, var(--border));
+}
+.raw-subsection:first-of-type {
+  padding-top: 0;
+  border-top: none;
+}
+.raw-subsection-heading {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.raw-subsection.last-llm-wire .raw-subsection-heading {
+  color: var(--accent, #4a9eff);
+}
+.raw-subsection.next-send-wire .raw-subsection-heading {
+  color: var(--text-secondary);
+}
+.last-wire-meta {
+  margin: 4px 0;
+}
+.last-wire-reply {
+  margin-top: var(--density-sm);
+  padding-top: var(--density-sm);
+  border-top: 1px dashed var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.last-wire-reply .reply-heading {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.last-wire-reply .reply-char-count {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.preview-hint.small { font-size: 12px; }
+.preview-hint.muted { color: var(--text-tertiary); background: transparent; }
+.empty-state.warn { color: var(--err, #e05a5a); }
 
 /* 按钮密度修饰 (chat 面板里到处用) */
 button.small { font-size: 12px; padding: 3px 10px; }

@@ -90,6 +90,15 @@ class PromptBundle:
     ``structured`` / ``system_prompt`` / ``wire_messages`` are the three
     views described in PLAN §技术点 3. ``metadata`` and ``warnings`` are
     Testbench-specific UX affordances.
+
+    Prompt-preview contract extension (P25 Day 2 polish r4, §7.25 第五次):
+    ``wire_messages`` 是 **"下次 /chat/send 会发给 LLM 的预测 wire"** —
+    从 ``session.messages`` 反推. 这对 ``/send`` 是准确的 (user 入 wire 前
+    已 append 进 session.messages), 但对 external event / auto-dialog 的
+    ephemeral instruction 路径**不准确** — instruction 只在 wire 末尾活
+    一瞬间, 不入 session.messages. ``last_llm_wire`` 补的就是"上一次真正
+    被发出去的 wire 及其元数据", 由 ``pipeline.wire_tracker`` 在每个 LLM
+    调用点前 stamp.
     """
 
     session_id: str
@@ -99,6 +108,10 @@ class PromptBundle:
     char_counts: dict[str, int]
     metadata: dict[str, Any]
     warnings: list[str] = field(default_factory=list)
+    # Optional — filled by build_prompt_bundle from session.last_llm_wire
+    # right before return. None = 本会话还没调过 LLM (或会话 reload 后
+    # runtime-only 字段被清空).
+    last_llm_wire: dict[str, Any] | None = None
 
     def to_json(self) -> dict[str, Any]:
         """Render as the JSON payload consumed by the frontend."""
@@ -110,6 +123,7 @@ class PromptBundle:
             "char_counts": self.char_counts,
             "metadata": self.metadata,
             "warnings": list(self.warnings),
+            "last_llm_wire": self.last_llm_wire,
         }
 
 
@@ -664,6 +678,21 @@ def build_prompt_bundle(session: Session) -> PromptBundle:
     except Exception as exc:  # noqa: BLE001 - best-effort cleanup
         warnings.append(f"TimeIndexedMemory.cleanup 失败: {exc}")
 
+    # Fold in "上次真实 wire" snapshot. Read through wire_tracker so the
+    # defensive deep-copy sits at the module boundary — preview JSON can
+    # be mutated freely without leaking back into session.last_llm_wire.
+    # Import lazily: wire_tracker is a small sibling module with no deps,
+    # but doing it at function-call time avoids a circular import risk
+    # if someone later adds prompt_builder imports into wire_tracker.
+    try:
+        from tests.testbench.pipeline.wire_tracker import get_last_llm_wire
+        last_llm_wire_snapshot = get_last_llm_wire(session)
+    except Exception as exc:  # noqa: BLE001 — observability must not break preview
+        last_llm_wire_snapshot = None
+        warnings.append(
+            f"last_llm_wire 读取失败 (非致命): {type(exc).__name__}: {exc}"
+        )
+
     return PromptBundle(
         session_id=session.id,
         structured=structured_for_ui,
@@ -672,4 +701,5 @@ def build_prompt_bundle(session: Session) -> PromptBundle:
         char_counts=char_counts,
         metadata=metadata,
         warnings=warnings,
+        last_llm_wire=last_llm_wire_snapshot,
     )

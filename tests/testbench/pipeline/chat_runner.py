@@ -78,6 +78,10 @@ from tests.testbench.pipeline.prompt_builder import (
     PreviewNotReady,
     build_prompt_bundle,
 )
+from tests.testbench.pipeline.wire_tracker import (
+    record_last_llm_wire,
+    update_last_llm_wire_reply,
+)
 from tests.testbench.session_store import Session
 
 
@@ -570,6 +574,34 @@ class OfflineChatBackend:
         chunks: list[str] = []
         token_usage: dict[str, Any] | None = None
         client = None
+
+        # L36 §7.25 r4 — Prompt Preview "预览 = 真实" 契约.
+        # chat.send 的 wire 和 session.messages 在设计上是同步的 (user 消息
+        # 已经 append 到 session.messages 才构建 bundle), 所以理论上从
+        # session.messages 反推出来的预览 wire 和这里送的 wire 一致. 但我们
+        # 仍然把真实 wire 快照一份 — 好处: (a) external_events / auto_dialog /
+        # simuser 等路径必须快照, 这里一起快照保证 "上次真实 wire" 的语义
+        # 在任何入口都是覆盖的, 不会出现 "切换入口后预览看到的是上一轮
+        # external event 的 wire, 但最近一次其实是 chat.send" 的时序错位;
+        # (b) 给 reply_chars 做 ground-truth 校准, 预览 UI 可以显示 LLM
+        # 返回长度; (c) 把 bundle 和"真实发送"的一对一关系显式化, 未来
+        # 如果 bundle 和真实 wire 漂移 (比如 retry 改了最后一条) 立即可见.
+        try:
+            record_last_llm_wire(
+                session,
+                bundle.wire_messages,
+                source="chat.send",
+                note=(
+                    f"chat.send:{len(bundle.wire_messages)}msgs"
+                    f"@{cfg.provider}:{cfg.model}"
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 — observability must not block LLM
+            python_logger().debug(
+                "chat.send: record_last_llm_wire failed: %s: %s",
+                type(exc).__name__, exc,
+            )
+
         try:
             from utils.llm_client import ChatOpenAI
 
@@ -595,6 +627,10 @@ class OfflineChatBackend:
             # empty bubble after a failed stream.
             if session.messages and session.messages[-1].get("id") == assistant_msg["id"]:
                 session.messages.pop()
+            try:
+                update_last_llm_wire_reply(session, reply_chars=-1)
+            except Exception:  # noqa: BLE001
+                pass
             session.logger.log_sync(
                 "chat.send.error",
                 level="ERROR",
@@ -625,6 +661,14 @@ class OfflineChatBackend:
         full_content = "".join(chunks).strip()
         assistant_msg["content"] = full_content
         elapsed_ms = int((time.perf_counter() - started_perf) * 1000)
+
+        try:
+            update_last_llm_wire_reply(session, reply_chars=len(full_content))
+        except Exception as exc:  # noqa: BLE001
+            python_logger().debug(
+                "chat.send: update_last_llm_wire_reply failed: %s: %s",
+                type(exc).__name__, exc,
+            )
 
         session.logger.log_sync(
             "chat.send.end",

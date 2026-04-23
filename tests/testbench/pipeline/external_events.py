@@ -74,6 +74,10 @@ from tests.testbench.pipeline.chat_runner import ChatConfigError, resolve_group_
 from tests.testbench.pipeline.diagnostics_ops import DiagnosticsOp
 from tests.testbench.pipeline.messages_writer import append_message
 from tests.testbench.pipeline.prompt_builder import PreviewNotReady, build_prompt_bundle
+from tests.testbench.pipeline.wire_tracker import (
+    record_last_llm_wire,
+    update_last_llm_wire_reply,
+)
 from tests.testbench.session_store import Session
 from utils.llm_client import (
     AIMessage,
@@ -637,10 +641,36 @@ async def simulate_avatar_interaction(
     # 不会因为 wire 全 system 就返空, 反而照给 reply.
     base_wire.append({"role": "user", "content": instruction})
 
+    # Prompt Preview 契约 (L36 §7.25 第五次同族证据 / r4):
+    # 下面这行 wire 是**真正发给 LLM 的**, 但 instruction 本身不会进
+    # session.messages (只有 memory_note 会). 如果 tester 打开 Prompt
+    # Preview 时我们从 session.messages 反推, 预览里就**看不到** instruction.
+    # 必须在这里把真实 wire 快照一下, 让 preview 从 session.last_llm_wire
+    # 读取, 否则就是"UI 承诺的预览 ≠ 实际发送的 wire"语义漂移.
+    try:
+        record_last_llm_wire(
+            session,
+            base_wire,
+            source="avatar_event",
+            note=(
+                f"avatar:{normalized['tool_id']}+{normalized['action_id']}"
+                f"@{normalized['intensity']}"
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 — observability must not block LLM
+        python_logger().debug(
+            "external_events avatar: record_last_llm_wire failed: %s: %s",
+            type(exc).__name__, exc,
+        )
+
     try:
         reply_text = await _invoke_llm_once(session, base_wire)
     except ChatConfigError as exc:
         _rollback_dedupe(cache, dedupe_key)
+        try:
+            update_last_llm_wire_reply(session, reply_chars=-1)
+        except Exception:  # noqa: BLE001
+            pass
         return _record_and_return(
             session,
             SimulationKind.AVATAR,
@@ -655,6 +685,10 @@ async def simulate_avatar_interaction(
         )
     except Exception as exc:  # noqa: BLE001
         _rollback_dedupe(cache, dedupe_key)
+        try:
+            update_last_llm_wire_reply(session, reply_chars=-1)
+        except Exception:  # noqa: BLE001
+            pass
         return _record_and_return(
             session,
             SimulationKind.AVATAR,
@@ -666,6 +700,14 @@ async def simulate_avatar_interaction(
                 elapsed_ms=_elapsed(started),
             ),
             detail={"error_type": type(exc).__name__, "error_message": str(exc)},
+        )
+
+    try:
+        update_last_llm_wire_reply(session, reply_chars=len(reply_text or ""))
+    except Exception as exc:  # noqa: BLE001
+        python_logger().debug(
+            "external_events avatar: update_last_llm_wire_reply failed: %s: %s",
+            type(exc).__name__, exc,
         )
 
     now = session.clock.now()
@@ -801,9 +843,28 @@ async def simulate_agent_callback(
     # 详见 simulate_avatar_interaction 里的长 comment).
     base_wire.append({"role": "user", "content": instruction})
 
+    # L36 §7.25 r4 — Prompt Preview "预览 = 真实" 契约 (详见
+    # simulate_avatar_interaction 里的长 comment).
+    try:
+        record_last_llm_wire(
+            session,
+            base_wire,
+            source="agent_callback",
+            note=f"agent_callback:{len(items)}items@{short_lang}",
+        )
+    except Exception as exc:  # noqa: BLE001
+        python_logger().debug(
+            "external_events agent_callback: record_last_llm_wire failed: %s: %s",
+            type(exc).__name__, exc,
+        )
+
     try:
         reply_text = await _invoke_llm_once(session, base_wire)
     except ChatConfigError as exc:
+        try:
+            update_last_llm_wire_reply(session, reply_chars=-1)
+        except Exception:  # noqa: BLE001
+            pass
         return _record_and_return(
             session,
             SimulationKind.AGENT_CALLBACK,
@@ -816,6 +877,10 @@ async def simulate_agent_callback(
             detail={"error_code": exc.code, "error_message": exc.message},
         )
     except Exception as exc:  # noqa: BLE001
+        try:
+            update_last_llm_wire_reply(session, reply_chars=-1)
+        except Exception:  # noqa: BLE001
+            pass
         return _record_and_return(
             session,
             SimulationKind.AGENT_CALLBACK,
@@ -826,6 +891,14 @@ async def simulate_agent_callback(
                 elapsed_ms=_elapsed(started),
             ),
             detail={"error_type": type(exc).__name__, "error_message": str(exc)},
+        )
+
+    try:
+        update_last_llm_wire_reply(session, reply_chars=len(reply_text or ""))
+    except Exception as exc:  # noqa: BLE001
+        python_logger().debug(
+            "external_events agent_callback: update_last_llm_wire_reply failed: "
+            "%s: %s", type(exc).__name__, exc,
         )
 
     assistant_msg = make_message(
@@ -961,9 +1034,28 @@ async def simulate_proactive(
     # 详见 simulate_avatar_interaction 里的长 comment).
     base_wire.append({"role": "user", "content": instruction})
 
+    # L36 §7.25 r4 — Prompt Preview "预览 = 真实" 契约 (详见
+    # simulate_avatar_interaction 里的长 comment).
+    try:
+        record_last_llm_wire(
+            session,
+            base_wire,
+            source="proactive_chat",
+            note=f"proactive:{kind}@{normalized_lang}",
+        )
+    except Exception as exc:  # noqa: BLE001
+        python_logger().debug(
+            "external_events proactive: record_last_llm_wire failed: %s: %s",
+            type(exc).__name__, exc,
+        )
+
     try:
         reply_text = await _invoke_llm_once(session, base_wire)
     except ChatConfigError as exc:
+        try:
+            update_last_llm_wire_reply(session, reply_chars=-1)
+        except Exception:  # noqa: BLE001
+            pass
         return _record_and_return(
             session,
             SimulationKind.PROACTIVE,
@@ -977,6 +1069,10 @@ async def simulate_proactive(
             detail={"error_code": exc.code, "error_message": exc.message, "kind": kind},
         )
     except Exception as exc:  # noqa: BLE001
+        try:
+            update_last_llm_wire_reply(session, reply_chars=-1)
+        except Exception:  # noqa: BLE001
+            pass
         return _record_and_return(
             session,
             SimulationKind.PROACTIVE,
@@ -988,6 +1084,14 @@ async def simulate_proactive(
                 elapsed_ms=_elapsed(started),
             ),
             detail={"error_type": type(exc).__name__, "error_message": str(exc), "kind": kind},
+        )
+
+    try:
+        update_last_llm_wire_reply(session, reply_chars=len(reply_text or ""))
+    except Exception as exc:  # noqa: BLE001
+        python_logger().debug(
+            "external_events proactive: update_last_llm_wire_reply failed: "
+            "%s: %s", type(exc).__name__, exc,
         )
 
     # Main program proactive semantics: reply == "[PASS]" (case-insensitive,

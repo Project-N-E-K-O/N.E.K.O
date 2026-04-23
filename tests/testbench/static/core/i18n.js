@@ -1874,6 +1874,39 @@ export const I18N = {
         copy_system_string: '复制 system 字符串',
         copied_wire: '已复制 wire_messages JSON',
         copied_system: '已复制 system 字符串',
+        // P25 Day 2 polish r4: "最近一次真正发给 AI 的 wire" 视图. 用来
+        // 把 external event / auto-dialog 等 ephemeral instruction 路径
+        // 发出去的真实 wire 暴露给 tester — 这些路径的 instruction 只存
+        // 活一瞬间不入 session.messages, 原先的"从 session.messages 反推"
+        // 预览永远看不到.
+        last_wire: {
+          section_heading: '最近一次真实 wire (ground truth)',
+          section_hint: '这是 testbench 最近一次真正发给 LLM 的 wire_messages, 原封不动保留. 和下方"下次 /send 预估 wire"的区别: 预估 wire 是从 session.messages 反推的"如果现在点发送会是什么", 真实 wire 是"上一次 AI 看到了什么"— 外部事件 / auto-dialog 等 ephemeral instruction 路径的 instruction 只会在这里出现, 不会进 session.messages 也就不会进预估 wire. 作为测试平台, 这是 ground truth.',
+          none: '本会话还没调用过 LLM. 触发一次 chat.send / 外部事件 / 自动对话 后, 这里会出现真实 wire 快照.',
+          meta_source: '来源',
+          meta_recorded_at: '记录于',
+          meta_reply_chars: 'AI 回复字符数',
+          meta_reply_pending: '— (尚未收到回复 / 调用失败)',
+          meta_virtual_time: '虚拟时钟',
+          meta_note: '备注',
+          source_label: {
+            'chat.send':            'chat.send (普通发送)',
+            avatar_event:           'avatar_event (道具交互)',
+            agent_callback:         'agent_callback (后台回调)',
+            proactive_chat:         'proactive_chat (主动搭话)',
+            auto_dialog_target:     'auto_dialog_target (双 AI · target)',
+            auto_dialog_simuser:    'auto_dialog_simuser (双 AI · simuser)',
+            'judge.llm':            'judge.llm (评估)',
+            'memory.llm':           'memory.llm (记忆提取)',
+            simulated_user:         'simulated_user (单独 simuser)',
+          },
+          next_wire_heading: '下次 /send 预估 wire',
+          next_wire_hint: '基于当前 session.messages 反推的"如果现在点发送按钮, wire 会长什么样". 这一节不等于"上一次 AI 看到的 wire", 真正的历史在上方的"最近一次真实 wire".',
+          reply_preview_heading: 'AI 回复预览',
+          reply_preview_hint: 'LLM 返回的文本. 某些模型 (Gemini) 偶尔会返空字符串 (0 字符) — 如果看到这里是空且 wire 末尾是 role=system, 查 Diagnostics 的 chat_send_system_rewritten / 本面板长条注释.',
+          reply_missing: '(本次未拿到回复 — 调用失败或还在传输中)',
+          reply_empty: '(LLM 回复为空字符串 — 0 字符, 通常说明 wire shape 异常, 见上方注释)',
+        },
       },
       // P25 Day 2 — Chat sidebar 下半的 "外部事件模拟" 折叠面板.
       // 三 tab (Avatar / Agent Callback / Proactive), 复现主程序

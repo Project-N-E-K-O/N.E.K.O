@@ -27,7 +27,7 @@
  */
 
 import { api } from '../../core/api.js';
-import { i18n } from '../../core/i18n.js';
+import { i18n, i18nRaw } from '../../core/i18n.js';
 import { toast } from '../../core/toast.js';
 import { on, store } from '../../core/state.js';
 import { createCollapsible, mountContainerToolbar } from '../../core/collapsible.js';
@@ -296,12 +296,160 @@ export function mountPreviewPanel(host) {
     return container;
   }
 
-  /** Raw wire 视图: 真正送去模型的 messages 数组. */
+  /** Raw wire 视图: 两段结构.
+   *
+   *   1. "最近一次真实 wire" — 从 bundle.last_llm_wire 读, 由后端
+   *      pipeline/wire_tracker.py 在每个 LLM 调用点 stamp. 这是 ground
+   *      truth — 外部事件 / auto-dialog 等 ephemeral instruction 路径的
+   *      instruction 只会在这里出现, 永远不会进 session.messages.
+   *   2. "下次 /send 预估 wire" — bundle.wire_messages 本身, 从当前
+   *      session.messages 反推出的"如果现在点发送 wire 会长什么样". 这
+   *      只是预测, 不等价于上一轮真实 wire.
+   *
+   * 这个拆分来自 P25 Day 2 polish r4 的语义漂移修复: 早期实现把两者
+   * 混为一谈, 导致 external event 触发后预览里只看得到短短一行
+   * memory_note ("[主人摸了摸你的头]"), 却看不到实际送给 LLM 的完整
+   * instruction (包含触碰区 / 道具强度 / 文本上下文 / 附带奖励 / 彩蛋).
+   * 测试平台的核心价值就是让 tester 看到真实 wire, 所以 ground-truth
+   * 块被放在最上面, 预测块退到下面.
+   */
   function renderRawWire(bundle) {
     const container = el('div', { className: 'preview-view raw-view' });
 
     container.append(el('div', { className: 'preview-hint warn' },
       i18n('chat.preview.hint.raw')));
+
+    // ── Section 1: 最近一次真实 wire (ground truth) ──
+    container.append(renderLastLlmWireSection(bundle));
+
+    // ── Section 2: 下次 /send 预估 wire ──
+    container.append(renderNextSendWirePreview(bundle));
+
+    mountContainerToolbar(container);
+    return container;
+  }
+
+  /** 真实 wire section — 从 bundle.last_llm_wire 读. */
+  function renderLastLlmWireSection(bundle) {
+    const section = el('div', { className: 'raw-subsection last-llm-wire' });
+
+    section.append(
+      el('h4', { className: 'raw-subsection-heading' },
+        i18n('chat.preview.last_wire.section_heading')),
+      el('div', { className: 'preview-hint info' },
+        i18n('chat.preview.last_wire.section_hint')),
+    );
+
+    const last = bundle.last_llm_wire;
+    if (!last || !last.wire_messages || !last.wire_messages.length) {
+      section.append(el('div', { className: 'empty-state muted' },
+        i18n('chat.preview.last_wire.none')));
+      return section;
+    }
+
+    // ── metadata strip ──
+    // source_label 是个对象, 用 i18nRaw 显式拿对象; 找不到的 source 兜底回
+    // 原始 slug 而不是 "chat.preview.last_wire.source_label.xxx" 整 key.
+    const sourceLabelMap = i18nRaw('chat.preview.last_wire.source_label') || {};
+    const sourceLabel = sourceLabelMap[last.source] || last.source || '?';
+    const recordedReal = (last.recorded_at_real || '').replace('T', ' ');
+    const recordedVirtual = (last.recorded_at_virtual || '').replace('T', ' ');
+    const replyChars = typeof last.reply_chars === 'number' ? last.reply_chars : -1;
+    const replyCharsText = replyChars < 0
+      ? i18n('chat.preview.last_wire.meta_reply_pending')
+      : String(replyChars);
+
+    const metaStrip = el('div', { className: 'preview-meta last-wire-meta' });
+    metaStrip.append(
+      metaBadge(i18n('chat.preview.last_wire.meta_source'), sourceLabel),
+      metaBadge(i18n('chat.preview.last_wire.meta_recorded_at'), recordedReal || '-'),
+      metaBadge(i18n('chat.preview.last_wire.meta_virtual_time'), recordedVirtual || '-'),
+      metaBadge(i18n('chat.preview.last_wire.meta_reply_chars'), replyCharsText),
+    );
+    if (last.note) {
+      metaStrip.append(
+        metaBadge(i18n('chat.preview.last_wire.meta_note'), String(last.note)),
+      );
+    }
+    section.append(metaStrip);
+
+    // ── copy button ──
+    const actions = el('div', { className: 'raw-actions' });
+    actions.append(
+      el('button', {
+        type: 'button',
+        className: 'small',
+        onClick: () => copyText(
+          JSON.stringify(last.wire_messages, null, 2),
+          'chat.preview.copied_wire',
+        ),
+      }, i18n('chat.preview.copy_wire_json')),
+    );
+    section.append(actions);
+
+    // ── wire messages list ──
+    const list = el('div', { className: 'wire-list' });
+    last.wire_messages.forEach((msg, idx) => {
+      const role = msg.role || '?';
+      const content = typeof msg.content === 'string'
+        ? msg.content
+        : JSON.stringify(msg.content);
+      const isSystem = role === 'system';
+      const isTail = idx === last.wire_messages.length - 1;
+      const title = i18n('chat.preview.wire.title', idx, role.toUpperCase());
+      // 末尾 user 消息 (通常是 ephemeral instruction) 默认展开 — 这正是
+      // tester 想看的 ground truth, 折叠掉反而失去修复意义. 首条 system
+      // 默认折叠 (很长, 干扰阅读). 中段消息依字符数决定.
+      const defaultCollapsed = isSystem
+        ? true
+        : (isTail ? false : content.length > 500);
+      const block = createCollapsible({
+        blockId: `preview-last-wire-${idx}`,
+        title,
+        content,
+        lengthBadge: i18n('chat.preview.length_badge', content.length),
+        defaultCollapsed,
+        copyable: true,
+      });
+      block.classList.add(`wire-role-${role}`);
+      if (isTail) block.classList.add('wire-tail');
+      list.append(block);
+    });
+    section.append(list);
+
+    // ── assistant reply preview ──
+    const replyBox = el('div', { className: 'last-wire-reply' });
+    replyBox.append(
+      el('h5', { className: 'reply-heading' },
+        i18n('chat.preview.last_wire.reply_preview_heading')),
+      el('div', { className: 'preview-hint info small' },
+        i18n('chat.preview.last_wire.reply_preview_hint')),
+    );
+    if (replyChars < 0) {
+      replyBox.append(el('div', { className: 'empty-state muted' },
+        i18n('chat.preview.last_wire.reply_missing')));
+    } else if (replyChars === 0) {
+      replyBox.append(el('div', { className: 'empty-state warn' },
+        i18n('chat.preview.last_wire.reply_empty')));
+    } else {
+      replyBox.append(el('div', { className: 'reply-char-count muted' },
+        i18n('chat.preview.length_badge', replyChars)));
+    }
+    section.append(replyBox);
+
+    return section;
+  }
+
+  /** 预估 wire section — bundle.wire_messages (基于 session.messages 反推). */
+  function renderNextSendWirePreview(bundle) {
+    const section = el('div', { className: 'raw-subsection next-send-wire' });
+
+    section.append(
+      el('h4', { className: 'raw-subsection-heading' },
+        i18n('chat.preview.last_wire.next_wire_heading')),
+      el('div', { className: 'preview-hint muted' },
+        i18n('chat.preview.last_wire.next_wire_hint')),
+    );
 
     // 顶部 Copy 按钮群.
     const actions = el('div', { className: 'raw-actions' });
@@ -320,13 +468,13 @@ export function mountPreviewPanel(host) {
         onClick: () => copyText(bundle.system_prompt || '', 'chat.preview.copied_system'),
       }, i18n('chat.preview.copy_system_string')),
     );
-    container.append(actions);
+    section.append(actions);
 
     const wire = bundle.wire_messages || [];
     if (!wire.length) {
-      container.append(el('div', { className: 'empty-state' },
+      section.append(el('div', { className: 'empty-state' },
         i18n('chat.preview.empty.no_wire')));
-      return container;
+      return section;
     }
 
     const list = el('div', { className: 'wire-list' });
@@ -335,10 +483,8 @@ export function mountPreviewPanel(host) {
       const content = typeof msg.content === 'string'
         ? msg.content
         : JSON.stringify(msg.content);
-      // system 作为首条, 默认折叠 (长, 只想对照结构时无需展开).
       const isSystem = role === 'system';
-      const title = i18n('chat.preview.wire.title',
-        idx, role.toUpperCase());
+      const title = i18n('chat.preview.wire.title', idx, role.toUpperCase());
       const block = createCollapsible({
         blockId: `preview-wire-${idx}`,
         title,
@@ -347,14 +493,12 @@ export function mountPreviewPanel(host) {
         defaultCollapsed: isSystem || content.length > 500,
         copyable: true,
       });
-      // 用 role 给块加 class 以便 CSS 染色.
       block.classList.add(`wire-role-${role}`);
       list.append(block);
     });
-    container.append(list);
+    section.append(list);
 
-    mountContainerToolbar(container);
-    return container;
+    return section;
   }
 
   async function copyText(text, okKey) {

@@ -178,6 +178,37 @@ class Session:
     # the op succeeded); direct writers must call notify() themselves.
     autosave_scheduler: AutosaveScheduler | None = None
 
+    # P25 Day 2 polish r4 (L36 §7.25 语义契约 — "预览 = 真实").
+    # 最近一次**真正送进 LLM** 的 wire 快照. 不要把这个当成历史记录; 它是
+    # "上一次的 Ground truth", 存在原因是: 有些 LLM 调用路径 (external
+    # event 的 instruction 注入 / auto-dialog 的 ephemeral nudge) 会把
+    # 一次性 user 消息挂在 wire 末尾但**不写进 session.messages**. 那种
+    # 情况下 ``build_prompt_bundle`` 从 ``session.messages`` 反推出来的
+    # "预览 wire" 会**缺**这条 user (预览与真实 LLM 入口脱节). Prompt
+    # Preview 面板承诺的语义是"让 tester 看到真正发给 AI 的完整 wire",
+    # 不该是"下次 send 的预估 wire". 所以每条 LLM 调用路径都在调 LLM 前
+    # 把即将发的 wire 写到这里, Prompt Preview 的 Raw wire 视图从这里
+    # 读, 而不是从 session.messages 派生.
+    #
+    # Shape (None = 本会话还没调过 LLM):
+    #     {
+    #       "wire_messages": list[dict],  # OpenAI-style, role+content
+    #       "source": str,                # "chat.send" / "avatar_event" /
+    #                                     # "agent_callback" / "proactive_chat" /
+    #                                     # "auto_dialog_target" / "auto_dialog_simuser" ...
+    #       "recorded_at_real": iso_str,  # 真实时钟, 方便 tester 对时间戳
+    #       "recorded_at_virtual": iso_str,  # 虚拟时钟 (session.clock)
+    #       "reply_chars": int,           # LLM 回复字符数 (-1 = 还没回复/失败)
+    #       "note": str | None,           # 可选, 附加 tag (比如
+    #                                     # "avatar:fist+context+reward")
+    #     }
+    #
+    # **RUNTIME only** — 不入 save / snapshot / export. 会话存档 reload
+    # 回来的 session 这个字段为 None 直到 tester 再触发一次 LLM 调用 —
+    # 这是故意的, 存档本就是"还原会话内容", 不应带"上次运行时的外部 LLM 交互"
+    # (敏感: prompt 可能含 system_prompt 全文).
+    last_llm_wire: dict[str, Any] | None = None
+
     # Mutated directly by SessionStore under its own lock.
     state: SessionState = SessionState.IDLE
     busy_op: str | None = None

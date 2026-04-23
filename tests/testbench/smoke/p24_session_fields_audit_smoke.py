@@ -90,6 +90,11 @@ RUNTIME_FIELDS: frozenset[str] = frozenset({
     "memory_previews",      # P10 TTL cache (MEMORY_PREVIEW_TTL_SECONDS)
     "state",                # SessionState enum — runtime lifecycle
     "busy_op",              # short-lived op tag, paired with .state
+    "last_llm_wire",        # P25 Day 2 polish r4: 最近一次真实发给 LLM 的
+                            # wire 快照, 为 Prompt Preview "预览 = 真实"
+                            # 契约服务. 仅通过 GET /api/chat/prompt_preview
+                            # 暴露, 不入存档/快照/导出 (dataclass docstring
+                            # 给出了完整理由).
 })
 
 
@@ -276,6 +281,7 @@ def check_serialize_exit(session) -> list[str]:
     runtime_leak_keys = (
         "lock", "logger", "sandbox", "snapshot_store", "autosave_scheduler",
         "script_state", "auto_state", "memory_previews", "state", "busy_op",
+        "last_llm_wire",
     )
     leaked = [k for k in runtime_leak_keys if k in archive_dict]
     if leaked:
@@ -328,7 +334,7 @@ def check_snapshot_capture_exit(session) -> list[str]:
     forbidden_runtime = {
         "lock", "logger", "sandbox", "snapshot_store",
         "autosave_scheduler", "script_state", "auto_state",
-        "memory_previews", "state", "busy_op",
+        "memory_previews", "state", "busy_op", "last_llm_wire",
     }
     leaked = forbidden_runtime & fields
     if leaked:
