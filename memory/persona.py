@@ -1781,19 +1781,27 @@ class PersonaManager:
 
     # ── token-count cache helpers ────────────────────────────────────
     #
-    # Each entry dict may carry three derived fields populated on first
-    # render: `token_count` (int), `token_count_text_sha256` (str) and
-    # `token_count_tokenizer` (str). All default to None in
-    # `_normalize_entry` / `_normalize_reflection`.
+    # Each persona entry dict may carry three derived fields populated
+    # on first render: `token_count` (int), `token_count_text_sha256`
+    # (str) and `token_count_tokenizer` (str). `_normalize_entry`
+    # defaults all three to None.
     #
-    # Read path: compute sha256(text); if it matches the stored
-    # fingerprint AND the count is populated, use the cached value.
-    # Otherwise compute (sync `count_tokens` / async `acount_tokens`)
-    # and write both fields back to the in-memory entry. The cache is
-    # never written to disk directly — it rides along whenever the
-    # persona/reflection is otherwise saved (add_fact, amerge_into,
-    # asave_persona, etc.). A fresh process boot re-tokenizes on first
-    # render which is an acceptable warm-up cost.
+    # Reflection entries deliberately do NOT default these fields —
+    # `_normalize_reflection` leaves them absent because reflections
+    # have no process-resident cache (each render re-reads from disk),
+    # so any writeback would be garbage-collected with the transient
+    # list. Reflection renders therefore call the same helpers with
+    # `writeback=False` and never persist cache fields. See the
+    # commentary on `_get_cached_token_count` for the contract.
+    #
+    # Read path (persona): compute sha256(text); if it matches the
+    # stored fingerprint AND the count is populated, use the cached
+    # value. Otherwise compute (sync `count_tokens` / async
+    # `acount_tokens`) and write all three fields back to the in-memory
+    # entry. The cache is never written to disk directly — it rides
+    # along whenever the persona is otherwise saved (add_fact,
+    # amerge_into, asave_persona, etc.). A fresh process boot
+    # re-tokenizes on first render which is an acceptable warm-up cost.
     #
     # Red line compliance: the cache is purely derived from `text`, so
     # event-sourcing it would duplicate the source of truth (see
