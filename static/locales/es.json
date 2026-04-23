@@ -3340,5 +3340,33 @@
         "useTemporary": "Usar temporalmente",
         "tempBadge": "Temperatura",
         "popupBlocked": "La ventana emergente fue bloqueada. Permita las ventanas emergentes e inténtelo de nuevo."
+    },
+    "connectivity": {
+        "testCustom": "Probar conectividad de API personalizada",
+        "testCore": "Probar",
+        "testCoreTooltip": "Probar conectividad de API principal",
+        "testAssist": "Probar",
+        "testAssistTooltip": "Probar conectividad de API auxiliar",
+        "gsvTestText": "Prueba de conectividad GSV",
+        "gsvTestTooltip": "Probar conectividad de GPT-SoVITS",
+        "error": {
+            "timeout": "Tiempo de espera de solicitud agotado (10 s)",
+            "auth_failed": "La API Key no es válida o ha caducado",
+            "connection_refused": "No se puede conectar al servidor de destino",
+            "dns_error": "Error al resolver DNS",
+            "ssl_error": "Error al verificar el certificado SSL",
+            "ws_error": "Error de conexión WebSocket",
+            "missing_params": "Faltan parámetros obligatorios",
+            "unknown": "Error desconocido",
+            "backend_unavailable": "Servicio backend no disponible",
+            "invalid_response": "Formato de respuesta no válido"
+        },
+        "status": {
+            "connected": "Conectado",
+            "failed": "Conexión fallida",
+            "untested": "No probado",
+            "not_configured": "No configurado",
+            "testing": "Probando..."
+        }
     }
 }

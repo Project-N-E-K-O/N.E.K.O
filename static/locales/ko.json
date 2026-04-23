@@ -3347,6 +3347,8 @@
         "testCoreTooltip": "코어 API 연결 테스트",
         "testAssist": "테스트",
         "testAssistTooltip": "보조 API 연결 테스트",
+        "gsvTestText": "GSV 연결 테스트",
+        "gsvTestTooltip": "GPT-SoVITS 연결 테스트",
         "error": {
             "timeout": "요청 시간 초과 (10초)",
             "auth_failed": "API Key가 유효하지 않거나 만료되었습니다",

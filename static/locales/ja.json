@@ -3347,6 +3347,8 @@
         "testCoreTooltip": "コアAPI接続テスト",
         "testAssist": "テスト",
         "testAssistTooltip": "アシストAPI接続テスト",
+        "gsvTestText": "GSV接続テスト",
+        "gsvTestTooltip": "GPT-SoVITS 接続テスト",
         "error": {
             "timeout": "リクエストがタイムアウトしました（10秒）",
             "auth_failed": "APIキーが無効または期限切れです",

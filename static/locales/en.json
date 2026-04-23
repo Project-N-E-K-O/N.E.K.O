@@ -3347,6 +3347,8 @@
         "testCoreTooltip": "Test Core API Connectivity",
         "testAssist": "Test",
         "testAssistTooltip": "Test Assist API Connectivity",
+        "gsvTestText": "GSV connectivity test",
+        "gsvTestTooltip": "Test GPT-SoVITS Connectivity",
         "error": {
             "timeout": "Request timed out (10s)",
             "auth_failed": "API Key is invalid or expired",

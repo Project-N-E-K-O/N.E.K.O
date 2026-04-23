@@ -3352,7 +3352,7 @@ function initConnectivityLights() {
         gsvTestBtn.type = 'button';
         gsvTestBtn.className = 'connectivity-mini-test-btn';
         gsvTestBtn.textContent = window.t ? window.t('connectivity.testCore', '测试') : '测试';
-        gsvTestBtn.title = 'GPT-SoVITS 连通测试';
+        gsvTestBtn.title = window.t ? window.t('connectivity.gsvTestTooltip', 'GPT-SoVITS 连通性测试') : 'GPT-SoVITS 连通性测试';
 
         // Wrap input with light and button
         const gsvRow = gsvUrlInput.closest('.field-row');

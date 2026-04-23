@@ -3347,6 +3347,8 @@
         "testCoreTooltip": "測試核心 API 連通性",
         "testAssist": "測試",
         "testAssistTooltip": "測試輔助 API 連通性",
+        "gsvTestText": "GSV 連通性測試",
+        "gsvTestTooltip": "GPT-SoVITS 連通性測試",
         "error": {
             "timeout": "請求逾時（10秒）",
             "auth_failed": "API Key 無效或已過期",

@@ -3347,6 +3347,8 @@
         "testCoreTooltip": "Тест подключения основного API",
         "testAssist": "Тест",
         "testAssistTooltip": "Тест подключения вспомогательного API",
+        "gsvTestText": "Тест подключения GSV",
+        "gsvTestTooltip": "Тест подключения GPT-SoVITS",
         "error": {
             "timeout": "Время ожидания запроса истекло (10 сек)",
             "auth_failed": "API Key недействителен или истёк",
