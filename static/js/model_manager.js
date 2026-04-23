@@ -1994,8 +1994,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                         if (urlMatch) mmdPath = urlMatch[1];
                     }
                     modelData.mmd = mmdPath;
-                    if (mmdAnimationSelect && mmdAnimationSelect.value && mmdAnimationSelect.value !== '_no_motion_') {
-                        modelData.mmd_animation = mmdAnimationSelect.value;
+                    if (mmdAnimationSelect) {
+                        if (mmdAnimationSelect.value === '_no_motion_') {
+                            modelData.mmd_animation = '';
+                        } else if (mmdAnimationSelect.value) {
+                            modelData.mmd_animation = mmdAnimationSelect.value;
+                        }
                     }
                     const mmdIdleUrls = getSelectedIdleAnimations('mmd-idle-animation-multiselect');
                     modelData.mmd_idle_animation = mmdIdleUrls;
@@ -2017,8 +2021,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                         }
                     }
                     modelData.vrm = vrmPath;
-                    if (vrmAnimation && vrmAnimation !== '_no_motion_') {
-                        modelData.vrm_animation = vrmAnimation;
+                    if (vrmAnimationSelect) {
+                        if (vrmAnimationSelect.value === '_no_motion_') {
+                            modelData.vrm_animation = '';
+                        } else if (vrmAnimationSelect.value) {
+                            modelData.vrm_animation = vrmAnimationSelect.value;
+                        }
                     }
                     const vrmIdleUrls = getSelectedIdleAnimations('vrm-idle-animation-multiselect');
                     modelData.idle_animation = vrmIdleUrls;
@@ -3542,7 +3550,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     updateVRMAnimationPlayButtonIcon();
                     showStatus(t('live2d.motionStopped', '动作已停止'), 1000);
                 }
-                if (playVrmAnimationBtn) playVrmAnimationBtn.disabled = false;
+                if (playVrmAnimationBtn) playVrmAnimationBtn.disabled = true;
+                stopIdleRotation('vrm');
                 return;
             }
 
@@ -4446,7 +4455,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     updateMMDAnimationPlayButtonIcon();
                     showStatus(t('live2d.motionStopped', '动作已停止'), 1000);
                 }
-                if (playMmdAnimationBtn) playMmdAnimationBtn.disabled = false;
+                if (playMmdAnimationBtn) playMmdAnimationBtn.disabled = true;
+                stopIdleRotation('mmd');
                 return;
             }
 
@@ -4632,7 +4642,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     updateVRMExpressionPlayButtonIcon();
                     showStatus(t('live2d.expressionCleared', '表情已清除'), 1000);
                 }
-                if (triggerVrmExpressionBtn) triggerVrmExpressionBtn.disabled = false;
+                if (triggerVrmExpressionBtn) triggerVrmExpressionBtn.disabled = true;
                 return;
             }
 

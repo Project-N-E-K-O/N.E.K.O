@@ -2044,14 +2044,15 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
                 }
 
                 let backupDefs, backupGroups, backupSettingsMotions, backupJsonMotions, backupJsonFileRefs;
-                    let groupExisted = false;
+                let groupExisted = false;
+                let internalModel, motionManager, json, live2dModel;
 
-                    try {
-                        const internalModel = this.currentModel.internalModel;
-                        const motionManager = internalModel.motionManager;
-                        const json = internalModel.settings.json;
+                try {
+                    internalModel = this.currentModel.internalModel;
+                    motionManager = internalModel.motionManager;
+                    json = internalModel.settings.json;
 
-                        backupDefs = motionManager.definitions?.[groupName];
+                    backupDefs = motionManager.definitions?.[groupName];
                         backupGroups = motionManager.motionGroups?.[groupName];
                         backupSettingsMotions = internalModel.settings.motions?.[groupName];
                         backupJsonMotions = json?.motions?.[groupName];
@@ -2059,7 +2060,7 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
 
                         groupExisted = backupDefs !== undefined || backupGroups !== undefined;
 
-                        const tempMotionsList = [{ 'File': motion.File }];
+                        let tempMotionsList = [{ 'File': motion.File }];
 
                         if (json) {
                             if (!json.FileReferences) json.FileReferences = {};
@@ -2078,7 +2079,7 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
                         if (!motionManager.motionGroups) motionManager.motionGroups = {};
                         motionManager.motionGroups[groupName] = [];
 
-                        const live2dModel = this.currentModel;
+                        live2dModel = this.currentModel;
                         console.log(`[TouchSet] 正在向引擎注入并加载动作: ${motion.File}`);
                         await motionManager.loadMotion(groupName, 0);
 
