@@ -2142,6 +2142,62 @@ async def get_persona(lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
     return await persona_manager.aget_persona(lanlan_name)
 
+
+@app.get("/api/memory/funnel/{lanlan_name}")
+async def api_memory_funnel(lanlan_name: str, since: str | None = None, until: str | None = None):
+    """RFC §3.10 funnel analytics — read-only counts of evidence-pipeline
+    transitions in a [since, until] window.
+
+    Query params (both ISO8601, optional):
+      - since: window lower bound, default = now - 7 days
+      - until: window upper bound, default = now
+
+    Timezone handling: `datetime.fromisoformat` happily accepts both naive
+    (`2026-04-22T12:00:00`) and aware (`...Z`, `...+08:00`) values, but
+    the underlying event log writes naive local-clock timestamps. We
+    normalize both bounds via `to_naive_local` immediately after parse
+    — *before* the `since_dt > until_dt` validation — so a client
+    passing one aware bound and one naive (or default-naive `now()`)
+    bound never trips
+    `TypeError: can't compare offset-naive and offset-aware datetimes`
+    and surfaces as a 500. `funnel_counts` re-normalizes internally
+    too; the second pass is a cheap no-op once both are naive.
+
+    Returns the 10-bucket dict from `funnel_counts`. PR-2 (decay+archive)
+    populates `*_archived` buckets; PR-3 (merge-on-promote) populates
+    `reflections_merged` / `persona_entries_rewritten`. Until those land
+    the corresponding buckets stay at 0.
+    """
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    now = datetime.now()
+    try:
+        since_dt = datetime.fromisoformat(since) if since else now - timedelta(days=7)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"invalid `since` ISO8601: {since!r}")
+    try:
+        until_dt = datetime.fromisoformat(until) if until else now
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"invalid `until` ISO8601: {until!r}")
+    # Normalize BEFORE the inequality check — `now` above is naive but a
+    # client-supplied bound may be aware; comparing them directly would
+    # raise TypeError → 500. coderabbitai PR #937 round-2.
+    from memory.evidence_analytics import funnel_counts, to_naive_local
+    since_dt = to_naive_local(since_dt)
+    until_dt = to_naive_local(until_dt)
+    if since_dt > until_dt:
+        raise HTTPException(status_code=400, detail="`since` must be <= `until`")
+
+    # 文件 IO + 行级解析 → 跑 worker，避开 event loop 阻塞
+    # (同样的模式见 EventLog 的 a-twins)。
+    counts = await asyncio.to_thread(funnel_counts, lanlan_name, since_dt, until_dt)
+    return {
+        "lanlan_name": lanlan_name,
+        "since": since_dt.isoformat(),
+        "until": until_dt.isoformat(),
+        "counts": counts,
+    }
+
+
 @app.post("/reload")
 async def reload_config():
     """重新加载记忆服务器配置（用于新角色创建后）"""
