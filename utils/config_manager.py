@@ -3136,9 +3136,12 @@ def _ensure_config_manager_migrated():
     try:
         _config_manager.migrate_legacy_documents_memory()
     except Exception as exc:
+        # "shouldn't happen" 路径（方法内部已吞所有异常），但 OSError 的 str(exc)
+        # 带 filename 会泄露 Documents 用户名，只打类名避免绕过脱敏。
         try:
             _config_manager._log(
-                f"[ConfigManager] migrate_legacy_documents_memory 抛异常（已忽略）: {exc}"
+                f"[ConfigManager] migrate_legacy_documents_memory 抛异常（已忽略）: "
+                f"{type(exc).__name__}"
             )
         except Exception:
             pass
