@@ -1100,30 +1100,43 @@ async def get_subscribed_workshop_items():
                     result = steamworks.Workshop.GetItemInstallInfo(item_id)
                     
                     # 检查返回值的结构 - 支持字典格式（根据日志显示）
+                    # GetItemInstallInfo 即使在物品已被退订后仍可能短暂返回成功，
+                    # 必须用 os.path.isdir(folder) 二次确认目录仍存在才能标记
+                    # installed=True，否则前端会展示"已安装但目录不存在"的幽灵态。
                     if result and isinstance(result, dict):
                         logger.debug(f'物品 {item_id} 安装信息字典: {result}')
-                        
-                        # 从字典中提取信息（仅非空字典才视为已安装）
-                        item_info["state"]["installed"] = True
-                        # 获取安装路径 - workshop.py中已经将folder解码为字符串
-                        folder_path = result.get('folder', '')
-                        item_info["installedFolder"] = str(folder_path) if folder_path else None
+
+                        raw_folder = result.get('folder', '')
+                        folder_path = str(raw_folder) if raw_folder else ''
+                        if folder_path and os.path.isdir(folder_path):
+                            item_info["state"]["installed"] = True
+                            item_info["installedFolder"] = folder_path
+                            disk_size = result.get('disk_size', 0)
+                            item_info["fileSizeOnDisk"] = (
+                                int(disk_size) if isinstance(disk_size, (int, float)) else 0
+                            )
+                        else:
+                            item_info["state"]["installed"] = False
+                            item_info["installedFolder"] = None
+                            item_info["fileSizeOnDisk"] = 0
+                            logger.debug(
+                                f'物品 {item_id} Steam 报告已安装但安装目录不存在，'
+                                f'按未安装处理: {folder_path!r}'
+                            )
                         logger.debug(f'物品 {item_id} 的安装路径: {item_info["installedFolder"]}')
-                        
-                        # 处理磁盘大小 - GetItemInstallInfo返回的disk_size是普通整数
-                        disk_size = result.get('disk_size', 0)
-                        item_info["fileSizeOnDisk"] = int(disk_size) if isinstance(disk_size, (int, float)) else 0
                     # 也支持元组格式作为备选
                     elif isinstance(result, tuple) and len(result) >= 3:
                         installed, folder, size = result
                         logger.debug(f'物品 {item_id} 安装状态: 已安装={installed}, 路径={folder}, 大小={size}')
-                        
-                        # 安全的类型转换
-                        item_info["state"]["installed"] = bool(installed)
-                        item_info["installedFolder"] = str(folder) if folder and isinstance(folder, (str, bytes)) else None
-                        
-                        # 处理大小值
-                        if isinstance(size, (int, float)):
+
+                        folder_str = (
+                            str(folder) if folder and isinstance(folder, (str, bytes)) else ''
+                        )
+                        folder_ok = bool(folder_str) and os.path.isdir(folder_str)
+                        item_info["state"]["installed"] = bool(installed) and folder_ok
+                        item_info["installedFolder"] = folder_str if item_info["state"]["installed"] else None
+
+                        if item_info["state"]["installed"] and isinstance(size, (int, float)):
                             item_info["fileSizeOnDisk"] = int(size)
                         else:
                             item_info["fileSizeOnDisk"] = 0
@@ -1922,10 +1935,18 @@ async def unsubscribe_workshop_item(request: Request):
         disk_names = await asyncio.to_thread(
             _scan_workshop_folder_character_names, pre_item_path
         )
+        # 跟踪每个候选角色的来源：
+        #   "origin" = 从 characters.json 的 character_origin.source_id 反查命中，
+        #              配置明确标记来自该 item_id，可放心删除。
+        #   "disk"   = 仅来自磁盘 .chara.json 的名字扫描，只是"名字碰撞"，
+        #              不能证明这角色就是该 item_id 的；删除前必须对每个
+        #              候选在 characters.json 里二次确认 source_id / asset_source_id。
+        candidate_sources: dict[str, str] = {name: "origin" for name in candidate_names}
         seen_names: set[str] = set(candidate_names)
         for disk_name in disk_names:
             if disk_name not in seen_names:
                 candidate_names.append(disk_name)
+                candidate_sources[disk_name] = "disk"
                 seen_names.add(disk_name)
         logger.info(
             f"取消订阅 {item_id_int}: 反向索引候选角色 {candidate_names}（磁盘扫描追加 {disk_names}）"
@@ -2124,6 +2145,8 @@ async def unsubscribe_workshop_item(request: Request):
                     await fn(name)
 
             pending_del_names: list[str] = []
+            catgirl_map = characters_mut['猫娘']  # 上面 isinstance 已守卫
+            target_item_id_str = str(item_id_int)
             for name in candidate_names:
                 if not name:
                     continue
@@ -2133,6 +2156,40 @@ async def unsubscribe_workshop_item(request: Request):
                         f"取消订阅同步清理: 跳过当前猫娘 '{name}'（保护性双保险）"
                     )
                     continue
+
+                # 磁盘兜底候选必须二次确认来源：名字一致 ≠ 同一 item_id。
+                # 如果用户本地已有同名非 Workshop 角色（或同名但来自别的
+                # item_id 的 Workshop 角色），按磁盘名字盲删会误删。
+                # 反向索引候选（"origin"）已经是在 characters.json 里按
+                # source_id 匹配到的，不需要二次校验。
+                if candidate_sources.get(name) == "disk":
+                    payload = catgirl_map.get(name) if isinstance(catgirl_map, dict) else None
+                    origin_source = str(
+                        get_reserved(payload, 'character_origin', 'source', default='') or ''
+                    ).strip() if isinstance(payload, dict) else ''
+                    origin_source_id = str(
+                        get_reserved(payload, 'character_origin', 'source_id', default='') or ''
+                    ).strip() if isinstance(payload, dict) else ''
+                    asset_source = str(
+                        get_reserved(payload, 'avatar', 'asset_source', default='') or ''
+                    ).strip() if isinstance(payload, dict) else ''
+                    asset_source_id = str(
+                        get_reserved(payload, 'avatar', 'asset_source_id', default='') or ''
+                    ).strip() if isinstance(payload, dict) else ''
+                    confirmed_workshop_match = (
+                        origin_source == 'steam_workshop' and origin_source_id == target_item_id_str
+                    ) or (
+                        asset_source == 'steam_workshop' and asset_source_id == target_item_id_str
+                    )
+                    if not confirmed_workshop_match:
+                        logger.warning(
+                            f"取消订阅同步清理: 跳过未确认来源的磁盘候选角色 '{name}' "
+                            f"(item_id={item_id_int}, origin_source={origin_source!r}, "
+                            f"origin_source_id={origin_source_id!r}, "
+                            f"asset_source={asset_source!r}, asset_source_id={asset_source_id!r})"
+                        )
+                        cleanup_summary.setdefault("skipped_unverified_characters", []).append(name)
+                        continue
 
                 # 三步独立：并发执行
                 results = await asyncio.gather(
@@ -2281,6 +2338,10 @@ async def unsubscribe_workshop_item(request: Request):
         # 兜底门闩锁死（rmtree ignore_errors 吞掉异常 / 目录仍存在 / 抛出
         # 异常的三种失败路径都必须允许后续重试）。
         cleanup_in_progress = threading.Event()
+        # Steam 明确返回取消订阅失败时设置：此时用户仍处于订阅状态，
+        # 5 秒延迟兜底必须跳过 perform_cleanup，否则会删掉仍在订阅中的
+        # 本地 Workshop 文件夹（Steam 下次同步会再下回来）。
+        unsubscribe_failed_event = threading.Event()
 
         def perform_cleanup(item_id: int):
             """
@@ -2359,8 +2420,11 @@ async def unsubscribe_workshop_item(request: Request):
                 logger.info(f"取消订阅成功回调: {item_id_int}，开始执行清理")
                 perform_cleanup(item_id_int)
             else:
+                # Steam 明确退订失败 → 订阅仍然存在，不能删本地文件夹。
+                unsubscribe_failed_event.set()
                 logger.warning(
-                    f"取消订阅失败回调: {item_id_int}, 错误代码: {getattr(result, 'result', None)}"
+                    f"取消订阅失败回调: {item_id_int}, 错误代码: {getattr(result, 'result', None)}，"
+                    f"不执行订阅文件夹清理"
                 )
 
         # 调用 Steamworks 的 UnsubscribeItem 方法，并提供回调函数
@@ -2378,6 +2442,13 @@ async def unsubscribe_workshop_item(request: Request):
                 _time.sleep(5)
                 if cleanup_event.is_set():
                     logger.debug(f"延迟兜底: item_id={item_id_int} 已清理，跳过")
+                    return
+                if unsubscribe_failed_event.is_set():
+                    # 已收到 Steam 明确失败回调，用户仍订阅中 → 不删本地文件夹。
+                    logger.warning(
+                        f"延迟兜底: item_id={item_id_int} 已收到退订失败回调，"
+                        f"跳过订阅文件夹清理"
+                    )
                     return
                 logger.warning(
                     f"延迟兜底: item_id={item_id_int} 5 秒内未收到回调，执行备用清理"

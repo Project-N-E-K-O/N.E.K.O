@@ -1434,6 +1434,22 @@ class ConfigManager:
         non_dir_count = 0  # 命中角色名但条目不是目录（反常，需关注）
         failed_count = 0  # copytree/rename 失败
 
+        def _legacy_error_summary(exc: BaseException) -> str:
+            """
+            把异常压成脱敏字符串：只保留类名 + errno + strerror，
+            绝不打印 OSError/PermissionError 自带的 filename 参数（那会
+            暴露 Documents 用户名 + 角色目录名）。
+            """
+            if isinstance(exc, OSError):
+                parts = [type(exc).__name__]
+                if exc.errno is not None:
+                    parts.append(f"errno={exc.errno}")
+                strerror = getattr(exc, "strerror", None)
+                if strerror:
+                    parts.append(f"reason={strerror}")
+                return " ".join(parts)
+            return type(exc).__name__
+
         # 日志脱敏策略：所有 self._log 绝不包含完整 legacy 路径 / 角色目录名 /
         # 用户 Documents 路径，只打 root 序号 + 计数 + 条目类型。这些日志可能
         # 被收集到日志文件或遥测，泄露用户本地信息不值当。
@@ -1457,7 +1473,7 @@ class ConfigManager:
             except Exception as exc:
                 self._log(
                     f"[ConfigManager] 枚举 legacy memory 根 #{legacy_root_index} "
-                    f"失败，跳过该根: {exc}"
+                    f"失败，跳过该根: {_legacy_error_summary(exc)}"
                 )
                 continue
 
@@ -1483,7 +1499,10 @@ class ConfigManager:
                         continue
 
                     target = self.memory_dir / entry_name
-                    if target.exists():
+                    # target.exists() 对断链软链接返回 False（跟随软链找不到目标），
+                    # 但 os.replace 会直接覆盖该软链接，违反"绝不覆盖 runtime 已有
+                    # 目标"的语义。is_symlink() 不跟随，把断链也当成"已存在"。
+                    if target.exists() or target.is_symlink():
                         target_exists_count += 1
                         self._log(
                             f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
@@ -1507,7 +1526,8 @@ class ConfigManager:
                         except Exception as cleanup_exc:
                             self._log(
                                 f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
-                                f"已复制到 runtime，但 legacy 源清理失败，保留 legacy 副本: {cleanup_exc}"
+                                f"已复制到 runtime，但 legacy 源清理失败，保留 legacy 副本: "
+                                f"{_legacy_error_summary(cleanup_exc)}"
                             )
                         migrated_count += 1
                         self._log(
@@ -1527,13 +1547,13 @@ class ConfigManager:
                             pass
                         self._log(
                             f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
-                            f"迁移条目失败: {exc}"
+                            f"迁移条目失败: {_legacy_error_summary(exc)}"
                         )
                 except Exception as exc:
                     failed_count += 1
                     self._log(
                         f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
-                        f"处理条目时出错: {exc}"
+                        f"处理条目时出错: {_legacy_error_summary(exc)}"
                     )
 
         if migrated_count or target_exists_count or non_dir_count or failed_count:
