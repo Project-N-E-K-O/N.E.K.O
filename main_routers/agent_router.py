@@ -73,6 +73,7 @@ def _load_openclaw_guide_markdown(lang: str | None = None) -> str:
         )
         return (
             "# OpenClaw 接入教程\n\n"
+            "> 本项目中的 OpenClaw 指代 QwenPaw。\n\n"
             "教程内容暂时无法加载，请检查文档文件是否存在：\n\n"
             f"`{candidate.name}`"
         )

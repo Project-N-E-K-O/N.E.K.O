@@ -12,6 +12,9 @@ import en from 'element-plus/dist/locale/en.mjs'
 import jaLocale from 'element-plus/dist/locale/ja.mjs'
 import koLocale from 'element-plus/dist/locale/ko.mjs'
 import ruLocale from 'element-plus/dist/locale/ru.mjs'
+import esLocale from 'element-plus/dist/locale/es.mjs'
+import ptLocale from 'element-plus/dist/locale/pt.mjs'
+import { MotionPlugin } from '@vueuse/motion'
 import App from './App.vue'
 import { initDarkMode } from './composables/useDarkMode'
 import { useYuiTutorialBridge } from './composables/useYuiTutorialBridge'
@@ -48,6 +51,9 @@ app.use(router)
 console.log('✅ Setting up i18n...')
 app.use(i18n)
 
+console.log('✅ Setting up Motion...')
+app.use(MotionPlugin)
+
 console.log('✅ Setting up Element Plus...')
 // 根据当前语言设置 Element Plus 的 locale
 const currentLocale = getLocale()
@@ -57,7 +63,9 @@ const elLocaleMap: Record<string, typeof zhCn> = {
   'en-US': en,
   'ja': jaLocale,
   'ko': koLocale,
-  'ru': ruLocale
+  'ru': ruLocale,
+  'es': esLocale,
+  'pt': ptLocale
 }
 app.use(ElementPlus, {
   locale: elLocaleMap[currentLocale] ?? zhCn

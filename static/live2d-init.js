@@ -457,11 +457,26 @@ async function initLive2DModel() {
                 isMobile: window.innerWidth <= 768,
                 // 在常驻表情应用完成后应用参数（事件驱动，替代不可靠的 setTimeout）
                 onResidentExpressionApplied: (model) => {
-                    if (modelPreferences && modelPreferences.parameters && 
+                    if (modelPreferences && modelPreferences.parameters &&
                         model && model.internalModel && model.internalModel.coreModel) {
                         window.live2dManager.applyModelParameters(model, modelPreferences.parameters);
                         console.log('[Live2D Init] 在常驻表情应用后已重新应用用户偏好参数');
                     }
+                },
+                // 模型完全就绪后恢复待机动作（延迟 500ms 确保模型完全稳定）
+                // 触发 restoreLive2DIdleAnimationOnMainPage() 从 characters.json 读取保存的动作
+                onModelReady: (model) => {
+                    setTimeout(() => {
+                        // 防竞态：确保 500ms 后当前存活的模型仍然是触发这个回调的模型
+                        if (window.live2dManager && (window.live2dManager.getCurrentModel() !== model || model.destroyed)) {
+                            console.log('[Live2D Init] 模型已在 500ms 延迟期间被切换或销毁，跳过待机动作恢复');
+                            return;
+                        }
+
+                        if (typeof window.restoreLive2DIdleAnimationOnMainPage === 'function') {
+                            window.restoreLive2DIdleAnimationOnMainPage();
+                        }
+                    }, 500);
                 }
             });
 

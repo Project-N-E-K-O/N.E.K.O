@@ -15,16 +15,18 @@ import os
 import threading
 import urllib.parse
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
 from .shared_state import get_config_manager, get_steamworks, get_session_manager, get_initialize_character_data
 from .characters_router import get_current_live2d_model
 from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.preferences import aload_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top, aload_global_conversation_settings, save_global_conversation_settings, GLOBAL_CONVERSATION_KEY
+from utils.cloudsave_runtime import MaintenanceModeError
 from utils.logger_config import get_module_logger
 from utils.config_manager import get_reserved
 from config import (
+    AUTOSTART_CSRF_TOKEN,
     CHARACTER_SYSTEM_RESERVED_FIELDS,
     CHARACTER_WORKSHOP_RESERVED_FIELDS,
     CHARACTER_RESERVED_FIELDS,
@@ -200,9 +202,12 @@ def _resolve_mmd_path(mmd_path: str, _config_manager, target_name: str) -> str:
 
 
 @router.get("/page_config")
-async def get_page_config(lanlan_name: str = ""):
+async def get_page_config(response: Response, lanlan_name: str = ""):
     """获取页面配置(lanlan_name 和 model_path),支持Live2D、VRM和MMD(Live3D)模型"""
     try:
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+
         # 获取角色数据
         _config_manager = get_config_manager()
         master_name, her_name, master_basic_config, lanlan_basic_config, _, _, _, _, _ = await _config_manager.aget_character_data()
@@ -281,6 +286,7 @@ async def get_page_config(lanlan_name: str = ""):
             "master_profile_name": str(master_basic_config.get('档案名', '') or ''),
             "master_nickname": str(master_basic_config.get('昵称', '') or ''),
             "master_display_name": master_display_name or "",
+            "autostart_csrf_token": AUTOSTART_CSRF_TOKEN,
             "model_path": model_path,
             "model_type": model_type,
             "lighting": lighting,
@@ -298,6 +304,7 @@ async def get_page_config(lanlan_name: str = ""):
             "master_profile_name": "",
             "master_nickname": "",
             "master_display_name": "",
+            "autostart_csrf_token": AUTOSTART_CSRF_TOKEN,
             "model_path": "",
             "model_type": ""
         }
@@ -359,6 +366,8 @@ async def save_preferences(request: Request):
         else:
             return {"success": False, "error": "保存失败"}
             
+    except MaintenanceModeError:
+        raise
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -407,6 +416,8 @@ async def save_conversation_settings(request: Request):
             _apply_noise_reduction_to_active_sessions(data['noiseReductionEnabled'])
 
         return {"success": True, "message": "对话设置已保存"}
+    except MaintenanceModeError:
+        raise
     except Exception as e:
         logger.exception(f"保存对话设置失败: {e}")
         return {"success": False, "error": "Internal server error"}
@@ -648,12 +659,8 @@ async def update_core_config(request: Request):
                 return {"success": False, "error": "API Key不能为空"}
         
         # 保存到core_config.json
-        from pathlib import Path
         from utils.config_manager import get_config_manager
         config_manager = get_config_manager()
-        core_config_path = str(config_manager.get_config_path('core_config.json'))
-        # 确保配置目录存在
-        Path(core_config_path).parent.mkdir(parents=True, exist_ok=True)
         
         # 构建配置对象
         core_cfg = {}
@@ -714,7 +721,12 @@ async def update_core_config(request: Request):
         if 'ttsVoiceId' in data:
             core_cfg['ttsVoiceId'] = data['ttsVoiceId']
         
-        await atomic_write_json_async(core_config_path, core_cfg, indent=2, ensure_ascii=False)
+        # save_json_config 内部已调用 assert_cloudsave_writable + ensure_config_directory
+        # + atomic_write_json，不需要再显式栅栏 / 手工拼 core_config_path
+        await asyncio.to_thread(
+            config_manager.save_json_config, 'core_config.json', core_cfg
+        )
+
 
         # API配置更新后，需要先通知所有客户端，再关闭session，最后重新加载配置
         logger.info("API配置已更新，准备通知客户端并重置所有session...")
@@ -786,6 +798,7 @@ async def update_core_config(request: Request):
             return {"success": False, "error": f"配置已保存但重新加载失败: {str(reload_error)}"}
         
         # 4. Notify agent_server to rebuild CUA adapter with fresh config
+        # per-call AsyncClient: 用户保存 API key 才触发，冷路径
         try:
             import httpx
             from config import TOOL_SERVER_PORT
@@ -797,6 +810,8 @@ async def update_core_config(request: Request):
 
         logger.info(f"已通知 {notification_count} 个连接的客户端API配置已更新")
         return {"success": True, "message": "API Key已保存并重新加载配置", "sessions_ended": len(sessions_ended)}
+    except MaintenanceModeError:
+        raise
     except Exception as e:
         return {"success": False, "error": str(e)}
 

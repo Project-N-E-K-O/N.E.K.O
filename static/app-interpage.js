@@ -214,6 +214,18 @@
     // =====================================================================
 
     /**
+     * Capability check: does the current page host the full model UI?
+     * index.html (served at / and /{lanlan_name}) has live2d-container,
+     * vrm-container AND mmd-container. Other pages (chat, subtitle, etc.)
+     * lack the complete set and must not run model reload / hide / show.
+     */
+    function _isModelHostPage() {
+        return !!(document.getElementById('live2d-container')
+              && document.getElementById('vrm-container')
+              && document.getElementById('mmd-container'));
+    }
+
+    /**
      * Handle model hot-swap triggered from another tab (model_manager).
      *
      * Concurrency-safe: if a reload is already in flight, the new request
@@ -223,6 +235,13 @@
      */
     async function handleModelReload(targetLanlanName) {
         targetLanlanName = targetLanlanName || '';
+
+        // 只有承载完整模型 UI 的页面才处理重载；Chat 等子窗口缺少渲染容器，
+        // 执行会导致异常并弹出误导性的"模型切换失败"toast。
+        if (!_isModelHostPage()) {
+            console.log('[Model] 当前页面无模型容器，跳过模型重载');
+            return;
+        }
 
         // If the message targets a different character, ignore it
         var currentLanlanName = window.lanlan_config?.lanlan_name || '';
@@ -404,11 +423,12 @@
                                 if (charResVrm.ok) {
                                     var charDataVrm = await charResVrm.json();
                                     var catDataVrm = charDataVrm?.['猫娘']?.[nameForConfig];
-                                    vrmIdleList = catDataVrm?.idleAnimations;
-                                    if (!Array.isArray(vrmIdleList)) {
-                                        var singleIdle = catDataVrm?.idleAnimation;
-                                        vrmIdleList = singleIdle ? [singleIdle] : [];
-                                    }
+                                    // 【修复】兼容新旧版字段，穿透 _reserved 读取 VRM 待机动作
+                                    var rawVrmIdle = catDataVrm?._reserved?.avatar?.vrm?.idle_animation
+                                                  || catDataVrm?.idle_animation
+                                                  || catDataVrm?.idleAnimations
+                                                  || catDataVrm?.idleAnimation;
+                                    vrmIdleList = Array.isArray(rawVrmIdle) ? rawVrmIdle : (rawVrmIdle ? [rawVrmIdle] : []);
                                     window.lanlan_config.vrmIdleAnimation = vrmIdleList[0] || '';
                                     window.lanlan_config.vrmIdleAnimations = vrmIdleList;
                                 }
@@ -440,6 +460,15 @@
                                     }
                                 });
                             }
+                        }
+
+                        // 重启 UI 更新循环（被 handleHideMainUI 停止）。
+                        // handleShowMainUI 在 _modelReloadInFlight 为 true 时会跳过，
+                        // 因此必须在模型加载完成后手动重启，否则悬浮按钮不会重新出现。
+                        if (window.vrmManager && window.vrmManager._uiUpdateLoopId == null
+                            && typeof window.vrmManager._startUIUpdateLoop === 'function') {
+                            window.vrmManager._snapUIPosition = true;
+                            window.vrmManager._startUIUpdateLoop();
                         }
                     } else {
                         console.error('[Model] VRM 管理器初始化失败');
@@ -549,11 +578,11 @@
                                 if (charRes.ok) {
                                     const charData = await charRes.json();
                                     const catData = charData?.['猫娘']?.[nameForConfig];
-                                    let idleList = catData?.mmd_idle_animations;
-                                    if (!Array.isArray(idleList)) {
-                                        const single = catData?.mmd_idle_animation;
-                                        idleList = single ? [single] : [];
-                                    }
+                                    // 【修复】兼容新旧版字段，穿透 _reserved 读取 MMD 待机动作
+                                    let rawMmdIdle = catData?._reserved?.avatar?.mmd?.idle_animation
+                                                  || catData?.mmd_idle_animations
+                                                  || catData?.mmd_idle_animation;
+                                    let idleList = Array.isArray(rawMmdIdle) ? rawMmdIdle : (rawMmdIdle ? [rawMmdIdle] : []);
                                     if (idleList.length > 0) {
                                         try {
                                             window.MMDLoadingOverlay?.update(loadingSessionId, { stage: 'idle' });
@@ -582,6 +611,15 @@
                             restoreMMDCanvasForLoadingSession(mmdCanvasReady, loadingSessionId);
                             mmdRequestSessionId = '';
                             activeMmdLoadingSessionId = '';
+                        }
+
+                        // 重启 UI 更新循环（被 handleHideMainUI 停止）。
+                        // handleShowMainUI 在 _modelReloadInFlight 为 true 时会跳过，
+                        // 因此必须在模型加载完成后手动重启，否则悬浮按钮不会重新出现。
+                        if (window.mmdManager && window.mmdManager._uiUpdateLoopId == null
+                            && typeof window.mmdManager._startUIUpdateLoop === 'function') {
+                            window.mmdManager._snapUIPosition = true;
+                            window.mmdManager._startUIUpdateLoop();
                         }
                     } else {
                         console.error('[Model] MMD 管理器初始化失败');
@@ -689,6 +727,9 @@
                                 window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
                                 window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
                             }
+
+                            // 恢复 Live2D 待机动作
+                            restoreLive2DIdleAnimationOnMainPage();
                         } else {
                             console.error('[Model] Live2D 管理器初始化失败');
                         }
@@ -752,6 +793,174 @@
         }
     }
 
+    /**
+     * [HACK/WORKAROUND] 动态向已加载的 Live2D 模型实例注入动作组。
+     * 注意：这里直接修改了 pixi-live2d-display SDK 的内部私有/只读数据结构。
+     * @deprecated-if-sdk-upgraded 如果未来升级了 live2d SDK，此函数极易崩溃，请优先寻找官方 API 替代。
+     */
+    function _injectMotionGroupSafely(live2dModel, groupName, motionFiles) {
+        if (!live2dModel || !live2dModel.internalModel || !live2dModel.internalModel.motionManager) {
+            console.warn('[_injectMotionGroup] 模型结构不完整，注入失败');
+            return false;
+        }
+
+        const internalModel = live2dModel.internalModel;
+        const motionManager = internalModel.motionManager;
+        const motionsList = motionFiles.map(file => ({ File: file }));
+
+        try {
+            console.debug(`[_injectMotionGroup] 正在向内部结构注入动作组: ${groupName}`);
+
+            // 1. 注入 MotionManager 配置
+            if (!motionManager.definitions) motionManager.definitions = {};
+            motionManager.definitions[groupName] = motionsList;
+
+            // 2. 初始化实例缓存数组（关键：必须为空数组，避免跳过实际加载）
+            if (!motionManager.motionGroups) motionManager.motionGroups = {};
+            if (!motionManager.motionGroups[groupName]) motionManager.motionGroups[groupName] = [];
+
+            // 3. 同步 fallback 的 Settings 树
+            if (!internalModel.settings) internalModel.settings = {};
+            if (!internalModel.settings.motions) internalModel.settings.motions = {};
+            internalModel.settings.motions[groupName] = motionsList;
+
+            // 4. 同步最外层的文件引用树
+            if (!live2dModel.fileReferences) live2dModel.fileReferences = {};
+            if (!live2dModel.fileReferences.Motions) live2dModel.fileReferences.Motions = {};
+            live2dModel.fileReferences.Motions[groupName] = motionsList;
+
+            console.debug('[_injectMotionGroup] 注入完成');
+            return true;
+        } catch (err) {
+            console.error('[_injectMotionGroup] 篡改 SDK 内部结构时崩溃，可能是 SDK 已升级:', err);
+            return false;
+        }
+    }
+
+    // =====================================================================
+    // Live2D 待机动作恢复功能
+    //
+    // 功能说明：
+    // - 主页加载时自动读取 characters.json 中保存的 live2d_idle_animation
+    // - 从 API 获取当前模型的动作文件列表
+    // - 手动构建 motionManager.definitions 和 motionGroups（主页没有 PreviewAll 组）
+    // - 加载并循环播放保存的待机动作
+    //
+    // 注意：motionGroups 必须初始化为空数组 []，不能放入配置对象！
+    // 原因：SDK 会检查 motionGroups 是否已有内容来判断动作是否已加载。
+    // 如果放入 JSON 配置对象，SDK 会误认为动作已加载，跳过网络请求和解析。
+    // =====================================================================
+    async function restoreLive2DIdleAnimationOnMainPage() {
+        try {
+            // 1. 获取当前角色名称，并作为当前任务的标识（防竞态）
+            const initialLanlanName = window.lanlan_config?.lanlan_name;
+            if (!initialLanlanName) {
+                console.log('[Live2D Main] 没有 lanlan_name，跳过恢复待机动作');
+                return;
+            }
+
+            // 2. 从 characters.json 获取保存的待机动作路径
+            const response = await fetch('/api/characters/');
+            const data = await response.json();
+
+            // 【竞态防护】如果中途角色被切换了，立刻中止
+            if (window.lanlan_config?.lanlan_name !== initialLanlanName) return;
+
+            const charData = data['猫娘']?.[initialLanlanName];
+            // 【修复】兼容新旧版字段，穿透 _reserved 读取 Live2D 待机动作
+            const live2dIdleAnimation = charData?._reserved?.avatar?.live2d?.idle_animation
+                                     || charData?.live2d_idle_animation
+                                     || charData?.avatar?.live2d?.idle_animation;
+            const live2dModelName = charData?.live2d;
+
+            if (!live2dIdleAnimation) {
+                console.log('[Live2D Main] 没有保存的待机动作');
+                return;
+            }
+
+            if (!live2dModelName) {
+                console.log('[Live2D Main] 没有模型名称');
+                return;
+            }
+
+            console.log('[Live2D Main] 开始恢复待机动作:', live2dIdleAnimation);
+
+            // 3. 从 API 获取模型的动作文件列表（主页没有初始化 PreviewAll 组）
+            let modelFilesData;
+            try {
+                const filesResponse = await fetch('/api/live2d/model_files/' + encodeURIComponent(live2dModelName));
+                modelFilesData = await filesResponse.json();
+            } catch (e) {
+                console.warn('[Live2D Main] 获取模型文件列表失败:', e);
+                return;
+            }
+
+            // 【竞态防护】如果中途角色被切换了，立刻中止
+            if (window.lanlan_config?.lanlan_name !== initialLanlanName) return;
+
+            const motionFiles = modelFilesData?.motion_files || [];
+            const motionIndex = motionFiles.indexOf(live2dIdleAnimation);
+            if (motionIndex < 0) {
+                console.log('[Live2D Main] 待机动作不在当前模型的动作列表中:', live2dIdleAnimation);
+                return;
+            }
+
+            // 4. 获取 Live2D 模型和 motionManager
+            const live2dManager = window.live2dManager;
+            const live2dModel = live2dManager?.getCurrentModel();
+            if (!live2dModel) {
+                console.log('[Live2D Main] Live2D 模型未加载，跳过恢复');
+                return;
+            }
+
+            const internalModel = live2dModel.internalModel;
+            if (!internalModel?.motionManager) {
+                console.log('[Live2D Main] motionManager 不存在');
+                return;
+            }
+
+            const motionManager = internalModel.motionManager;
+            const groupName = 'PreviewAll';
+
+            // 5. 使用隔离的 Helper 函数注入动作组配置
+            const injectSuccess = _injectMotionGroupSafely(live2dModel, groupName, motionFiles);
+            if (!injectSuccess) {
+                console.log('[Live2D Main] 注入动作组失败，跳过动作恢复');
+                return;
+            }
+
+            // 6. 加载动作（耗时操作）
+            await motionManager.loadMotion(groupName, motionIndex);
+
+            // 【最终竞态防护】加载完成后，确保角色没切走，且当前的 Live2D 模型实例还是我之前拿到的那个
+            if (window.lanlan_config?.lanlan_name !== initialLanlanName || live2dManager?.getCurrentModel() !== live2dModel) {
+                console.log('[Live2D Main] 模型或角色已切换，中止待机动作播放');
+                return;
+            }
+
+            // 7. 设置循环播放
+            const motionInstance = motionManager.motionGroups?.[groupName]?.[motionIndex];
+            if (motionInstance) {
+                if (typeof motionInstance.setIsLoop === 'function') {
+                    motionInstance.setIsLoop(true);
+                } else if (motionInstance._loop !== undefined) {
+                    motionInstance._loop = true;
+                }
+            }
+
+            // 8. 停止当前动作并播放保存的待机动作
+            motionManager.stopAllMotions();
+            live2dModel.motion(groupName, motionIndex, 3);
+            console.log('[Live2D Main] 已恢复待机动作并循环播放:', live2dIdleAnimation);
+
+        } catch (error) {
+            console.error('[Live2D Main] 恢复待机动作失败:', error);
+        }
+    }
+
+    // 暴露给全局作用域，供 live2d-init.js 调用
+    window.restoreLive2DIdleAnimationOnMainPage = restoreLive2DIdleAnimationOnMainPage;
+
     // =====================================================================
     // Hide / Show main UI (called when entering/leaving model manager)
     // =====================================================================
@@ -760,6 +969,7 @@
      * Hide main-page model rendering (entering model manager).
      */
     function handleHideMainUI() {
+        if (!_isModelHostPage()) return;
         console.log('[UI] 隐藏主界面并暂停渲染');
 
         try {
@@ -840,6 +1050,7 @@
      * Show main-page model rendering (returning to main page).
      */
     function handleShowMainUI() {
+        if (!_isModelHostPage()) return;
         // 模型重载进行中时跳过：handleModelReload 自己会正确切换容器，
         // 此时 lanlan_config.model_type 尚未更新，handleShowMainUI 会
         // 错误地恢复旧模型类型的容器，导致需要切换两次才能成功。

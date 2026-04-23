@@ -16,6 +16,7 @@ import httpx
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 from utils.logger_config import setup_logging, ThrottledLogger
 
@@ -46,6 +47,22 @@ except Exception as e:
 
 
 app = FastAPI(title="N.E.K.O Tool Server")
+
+
+class ToolCorrectionPayload(BaseModel):
+    correct_tool: str = Field(min_length=1)
+    correct_instruction: str = Field(min_length=1)
+    user_note: str = ""
+
+
+_LEGACY_CORRECTION_PUBLIC_KEYS = {
+    "decision_reason",
+    "task_description",
+    "latest_user_request",
+    "normalized_intent",
+    "recent_context",
+}
+
 
 class Modules:
     computer_use: ComputerUseAdapter | None = None
@@ -281,6 +298,121 @@ _task_tracker = AgentTaskTracker()
 
 def _default_openclaw_task_description() -> str:
     return _rp_phrase('openclaw_processing', _rp_lang(None))
+
+
+def _resolve_openclaw_sender_id(messages: list[dict[str, Any]] | None) -> str:
+    if not isinstance(messages, list):
+        return ""
+
+    for message in reversed(messages[-10:]):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+
+        candidates: list[Any] = [
+            message.get("sender_id"),
+            message.get("user_id"),
+        ]
+        for container_key in ("meta", "metadata", "_ctx"):
+            container = message.get(container_key)
+            if isinstance(container, dict):
+                candidates.extend([
+                    container.get("sender_id"),
+                    container.get("user_id"),
+                ])
+
+        for candidate in candidates:
+            resolved = str(candidate or "").strip()
+            if resolved:
+                return resolved
+    return ""
+
+
+def _collect_active_openclaw_task_ids(
+    *,
+    sender_id: Optional[str] = None,
+    lanlan_name: Optional[str] = None,
+    exclude_task_id: Optional[str] = None,
+) -> list[str]:
+    task_ids: list[str] = []
+    for task_id, info in Modules.task_registry.items():
+        if task_id == exclude_task_id or not isinstance(info, dict):
+            continue
+        if info.get("type") != "openclaw":
+            continue
+        if info.get("status") not in {"queued", "running"}:
+            continue
+        if sender_id and str(info.get("sender_id") or "").strip() != str(sender_id).strip():
+            continue
+        if lanlan_name and str(info.get("lanlan_name") or "").strip() != str(lanlan_name).strip():
+            continue
+        task_ids.append(task_id)
+    return task_ids
+
+
+async def _cancel_openclaw_tasks_for_stop(
+    *,
+    sender_id: Optional[str],
+    lanlan_name: Optional[str],
+    exclude_task_id: Optional[str] = None,
+) -> list[str]:
+    cancelled_task_ids: list[str] = []
+    for task_id in _collect_active_openclaw_task_ids(
+        sender_id=sender_id,
+        lanlan_name=lanlan_name,
+        exclude_task_id=exclude_task_id,
+    ):
+        info = Modules.task_registry.get(task_id)
+        if not isinstance(info, dict):
+            continue
+
+        bg = Modules.task_async_handles.get(task_id)
+        if bg and not bg.done():
+            bg.cancel()
+
+        if Modules.openclaw:
+            try:
+                stop_result = await Modules.openclaw.stop_running(
+                    sender_id=info.get("sender_id"),
+                    session_id=info.get("session_id"),
+                    conversation_id=info.get("session_id"),
+                    role_name=info.get("lanlan_name"),
+                    task_id=task_id,
+                )
+                if not stop_result.get("success"):
+                    logger.warning(
+                        "[OpenClaw] stop_running failed during /stop for %s: %s",
+                        task_id,
+                        stop_result.get("error"),
+                    )
+            except Exception as exc:
+                logger.warning("[OpenClaw] stop_running failed during /stop for %s: %s", task_id, exc)
+
+        info["status"] = "cancelled"
+        info["error"] = "Cancelled by user"
+        info["end_time"] = _now_iso()
+        cancelled_task_ids.append(task_id)
+
+        # Let the task coroutine emit the cancelled update when it is still
+        # alive; only emit here when there is no active background handle.
+        if not (bg and not bg.done()):
+            try:
+                await _emit_main_event(
+                    "task_update",
+                    info.get("lanlan_name"),
+                    task={
+                        "id": task_id,
+                        "status": "cancelled",
+                        "type": "openclaw",
+                        "start_time": info.get("start_time"),
+                        "end_time": info.get("end_time"),
+                        "params": info.get("params", {}),
+                        "error": "Cancelled by user",
+                    },
+                )
+            except Exception:
+                logger.debug("[OpenClaw] emit task_update(cancelled by /stop) failed: task_id=%s", task_id, exc_info=True)
+
+    return cancelled_task_ids
 
 
 def _cleanup_task_registry() -> List[Dict[str, Any]]:
@@ -939,8 +1071,23 @@ def _build_user_turn_fingerprint(messages: Any) -> Optional[str]:
         if m.get("role") != "user":
             continue
         text = str(m.get("text") or m.get("content") or "").strip()
-        if text:
-            user_parts.append(text)
+        attachments = m.get("attachments") or []
+        attachment_urls: list[str] = []
+        if isinstance(attachments, list):
+            for item in attachments:
+                if isinstance(item, str):
+                    url = item.strip()
+                elif isinstance(item, dict):
+                    url = str(item.get("url") or item.get("image_url") or "").strip()
+                else:
+                    url = ""
+                if url:
+                    attachment_urls.append(url)
+        if text or attachment_urls:
+            part = text
+            if attachment_urls:
+                part = f"{part}\n[attachments]\n" + "\n".join(attachment_urls)
+            user_parts.append(part.strip())
     if not user_parts:
         return None
     payload = "\n".join(user_parts).encode("utf-8", errors="ignore")
@@ -1038,6 +1185,47 @@ def _spawn_task(kind: str, args: Dict[str, Any]) -> Dict[str, Any]:
         return info
     else:
         raise ValueError(f"Unknown task kind: {kind}")
+
+
+def _set_internal_correction_context(task_info: Dict[str, Any], result: Any) -> None:
+    task_info["_internal_corrections"] = {
+        "decision_reason": getattr(result, "reason", "") or "",
+        "task_description": getattr(result, "task_description", "") or "",
+        "latest_user_request": getattr(result, "latest_user_request", "") or "",
+        "normalized_intent": getattr(result, "normalized_intent", "") or "",
+        "recent_context": getattr(result, "recent_context", None) or [],
+    }
+
+
+def _get_internal_correction_context(task_info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    internal = task_info.get("_internal_corrections")
+    if isinstance(internal, dict):
+        return internal
+
+    legacy = {key: task_info.get(key) for key in _LEGACY_CORRECTION_PUBLIC_KEYS if key in task_info}
+    if legacy:
+        return legacy
+
+    params = task_info.get("params")
+    if isinstance(params, dict):
+        fallback_text = str(params.get("query") or params.get("instruction") or "").strip()
+        if fallback_text:
+            return {
+                "task_description": fallback_text,
+                "latest_user_request": fallback_text,
+                "normalized_intent": "",
+                "recent_context": [],
+            }
+
+    return None
+
+
+def _public_task_info(task_info: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        key: value
+        for key, value in task_info.items()
+        if not key.startswith("_") and key not in _LEGACY_CORRECTION_PUBLIC_KEYS
+    }
 
 
 async def _run_computer_use_task(
@@ -1182,19 +1370,48 @@ async def _computer_use_scheduler_loop():
         Modules.computer_use_queue = asyncio.Queue()
     while True:
         try:
-            await asyncio.sleep(0.05)
-            if Modules.computer_use_running:
-                continue
-            if Modules.computer_use_queue.empty():
-                continue
+            # Event-driven: block until a task is pushed. Producers (_spawn_task)
+            # put_nowait from async contexts on the same loop, so get() wakes
+            # immediately — no polling needed.
+            next_task = await Modules.computer_use_queue.get()
+            # 先等前一个 CU task 跑完，再做 flag 检查——覆盖用户在 await 期间
+            # 通过 /agent/flags 关闭 CU 的窗口；否则被禁用后仍会 dispatch。
+            if Modules.computer_use_running and Modules.active_computer_use_async_task is not None:
+                try:
+                    await Modules.active_computer_use_async_task
+                except Exception as e:
+                    # 前一个 CU task 的异常已由 _run_computer_use_task 的 finally 处理/记录；
+                    # 此处仅防御未预期的穿透，保留 scheduler 存活以调度下一任务。
+                    logger.debug("[ComputerUse] prior task raised on await: %s", e)
             if not Modules.analyzer_enabled or not Modules.agent_flags.get("computer_use_enabled", False):
+                # 把排队任务显式标成 cancelled 并 emit task_update；否则 registry 里会
+                # 一直留着 "queued" 的僵尸项，污染重复任务判定与 UI 显示。
+                dropped = [next_task]
                 while not Modules.computer_use_queue.empty():
                     try:
-                        Modules.computer_use_queue.get_nowait()
+                        dropped.append(Modules.computer_use_queue.get_nowait())
                     except asyncio.QueueEmpty:
                         break
+                now_iso = _now_iso()
+                for entry in dropped:
+                    tid = entry.get("task_id") if isinstance(entry, dict) else None
+                    if not tid:
+                        continue
+                    reg = Modules.task_registry.get(tid)
+                    if reg is None or reg.get("status") not in ("queued", None):
+                        continue
+                    reg["status"] = "cancelled"
+                    reg["end_time"] = now_iso
+                    reg["error"] = "computer_use disabled before dispatch"
+                    lanlan_name = reg.get("lanlan_name")
+                    asyncio.create_task(_emit_main_event(
+                        "task_update", lanlan_name,
+                        task={
+                            "id": tid, "status": "cancelled", "type": "computer_use",
+                            "end_time": now_iso, "error": reg["error"],
+                        },
+                    ))
                 continue
-            next_task = await Modules.computer_use_queue.get()
             tid = next_task.get("task_id")
             if not tid or tid not in Modules.task_registry:
                 continue
@@ -1343,6 +1560,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     ti = _spawn_task("computer_use", {"instruction": result.task_description, "screenshot": None})
                     ti["lanlan_name"] = lanlan_name
                     ti["session_id"] = cu_session.session_id
+                    _set_internal_correction_context(ti, result)
                     _task_tracker.record_assigned(
                         lanlan_name, task_id=ti["id"], method="computer_use",
                         desc=result.task_description or "",
@@ -1632,10 +1850,71 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
             if Modules.agent_flags.get("openclaw_enabled", False) and Modules.openclaw:
                 nk_start = _now_iso()
                 instruction = ""
+                attachments = []
+                magic_command = None
+                direct_reply = False
                 if isinstance(result.tool_args, dict):
                     instruction = str(result.tool_args.get("instruction") or "")
-                task_params = {"description": result.task_description or _default_openclaw_task_description()}
-                nk_sender_id = Modules.openclaw.default_sender_id
+                    attachments = result.tool_args.get("attachments") or []
+                    magic_command = Modules.openclaw.normalize_magic_command(result.tool_args.get("magic_command"))
+                    direct_reply = bool(result.tool_args.get("direct_reply"))
+                task_params = {
+                    "description": result.task_description or _default_openclaw_task_description(),
+                    "attachment_count": len(attachments) if isinstance(attachments, list) else 0,
+                }
+                if magic_command:
+                    task_params["magic_command"] = magic_command
+                nk_sender_id = _resolve_openclaw_sender_id(messages) or Modules.openclaw.default_sender_id
+                if magic_command:
+                    if magic_command == "/stop":
+                        cancelled_task_ids = await _cancel_openclaw_tasks_for_stop(
+                            sender_id=nk_sender_id,
+                            lanlan_name=lanlan_name,
+                            exclude_task_id=result.task_id,
+                        )
+                        if cancelled_task_ids:
+                            task_params["cancelled_task_ids"] = cancelled_task_ids
+                    try:
+                        nk_result = await Modules.openclaw.run_magic_command(
+                            magic_command,
+                            sender_id=nk_sender_id,
+                            role_name=lanlan_name,
+                        )
+                        success = bool(nk_result.get("success"))
+                        reply = str(nk_result.get("reply") or "")
+                        if success:
+                            await _emit_task_result(
+                                lanlan_name,
+                                channel="openclaw",
+                                task_id=str(result.task_id or ""),
+                                success=True,
+                                summary=reply[:500] if reply else _rp_phrase('openclaw_done', _rp_lang(None)),
+                                detail=reply,
+                                direct_reply=direct_reply,
+                            )
+                        else:
+                            await _emit_task_result(
+                                lanlan_name,
+                                channel="openclaw",
+                                task_id=str(result.task_id or ""),
+                                success=False,
+                                summary=_rp_phrase('openclaw_failed', _rp_lang(None)),
+                                error_message=str(nk_result.get("error") or "")[:500],
+                            )
+                    except Exception as e:
+                        logger.exception("[OpenClaw] magic command dispatch failed: %s", e)
+                        try:
+                            await _emit_task_result(
+                                lanlan_name,
+                                channel="openclaw",
+                                task_id=str(result.task_id or ""),
+                                success=False,
+                                summary=_rp_phrase('openclaw_dispatch_failed', _rp_lang(None)),
+                                error_message=str(e)[:500],
+                            )
+                        except Exception:
+                            pass
+                    return
                 nk_session_id = Modules.openclaw.get_or_create_persistent_session_id(
                     role_name=lanlan_name,
                     sender_id=nk_sender_id,
@@ -1672,11 +1951,12 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 except Exception as emit_err:
                     logger.debug("[OpenClaw] emit task_update(running) failed: task_id=%s error=%s", result.task_id, emit_err)
                 try:
+                    ack_text = _rp_phrase("openclaw_try", _rp_lang(None))
                     await _emit_main_event(
                         "proactive_message",
                         lanlan_name,
-                        text="我试试",
-                        detail="我试试",
+                        text=ack_text,
+                        detail=ack_text,
                         direct_reply=True,
                         timestamp=_now_iso(),
                     )
@@ -1686,6 +1966,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     try:
                         nk_result = await Modules.openclaw.run_instruction(
                             instruction,
+                            attachments=attachments,
                             sender_id=nk_sender_id,
                             session_id=nk_session_id,
                             conversation_id=conversation_id,
@@ -1701,6 +1982,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             _reg["status"] = "completed" if success else "failed"
                             _reg["end_time"] = _now_iso()
                             _reg["result"] = nk_result
+                            _reg["session_id"] = str(nk_result.get("session_id") or _reg.get("session_id") or "")
                             if not success:
                                 _reg["error"] = str(nk_result.get("error") or "")[:500]
                         _task_tracker.record_completed(
@@ -1716,7 +1998,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 success=True,
                                 summary=reply[:500] if reply else _rp_phrase('openclaw_done', _rp_lang(None)),
                                 detail=reply,
-                                direct_reply=False,
+                                direct_reply=direct_reply,
                             )
                         else:
                             await _emit_task_result(
@@ -1850,6 +2132,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     "result": None,
                     "error": None,
                 }
+                _set_internal_correction_context(bu_info, result)
                 Modules.task_registry[bu_task_id] = bu_info
                 Modules.active_browser_use_task_id = bu_task_id
                 _task_tracker.record_assigned(
@@ -2505,6 +2788,68 @@ async def health():
     )
 
 
+@app.post("/openclaw/preflight")
+async def openclaw_preflight(payload: Dict[str, Any]):
+    """快速判断当前输入是否应由 OpenClaw(QwenPaw) 接管。"""
+    if not Modules.task_executor:
+        raise HTTPException(503, "Task executor not ready")
+
+    if not Modules.analyzer_enabled:
+        return {
+            "success": True,
+            "should_handoff": False,
+            "reason": "analyzer_disabled",
+        }
+
+    if not Modules.agent_flags.get("openclaw_enabled", False):
+        return {
+            "success": True,
+            "should_handoff": False,
+            "reason": "openclaw_disabled",
+        }
+
+    messages = (payload or {}).get("messages") or []
+    if not isinstance(messages, list) or not messages:
+        raise HTTPException(400, "messages required")
+
+    lanlan_name = (payload or {}).get("lanlan_name")
+    conversation_id = (payload or {}).get("conversation_id")
+    lang = str((payload or {}).get("lang") or "en")
+
+    flags = {
+        "computer_use_enabled": False,
+        "browser_use_enabled": False,
+        "user_plugin_enabled": False,
+        "openclaw_enabled": True,
+        "openfang_enabled": False,
+    }
+
+    result = await Modules.task_executor.analyze_and_execute(
+        messages=messages,
+        lanlan_name=lanlan_name,
+        agent_flags=flags,
+        conversation_id=conversation_id,
+        lang=lang,
+    )
+
+    should_handoff = bool(
+        result
+        and getattr(result, "has_task", False)
+        and getattr(result, "execution_method", "") == "openclaw"
+    )
+    tool_args = result.tool_args if isinstance(getattr(result, "tool_args", None), dict) else {}
+
+    return {
+        "success": True,
+        "should_handoff": should_handoff,
+        "execution_method": getattr(result, "execution_method", None) if result else None,
+        "task_description": getattr(result, "task_description", "") if result else "",
+        "reason": getattr(result, "reason", "") if result else "",
+        "magic_command": tool_args.get("magic_command"),
+        "direct_reply": bool(tool_args.get("direct_reply")) if tool_args else False,
+    }
+
+
 # 插件直接触发路由（放在顶层，确保不在其它函数体内）
 @app.post("/plugin/execute")
 async def plugin_execute_direct(payload: Dict[str, Any]):
@@ -2719,8 +3064,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
 async def get_task(task_id: str):
     info = Modules.task_registry.get(task_id)
     if info:
-        out = {k: v for k, v in info.items() if k != "_proc"}
-        return out
+        return _public_task_info(info)
     raise HTTPException(404, "task not found")
 
 
@@ -2829,6 +3173,77 @@ async def cancel_task(task_id: str):
         pass
     logger.info("[Agent] Task %s (%s) cancelled by user", task_id, task_type)
     return {"success": True, "task_id": task_id, "status": "cancelled"}
+
+
+@app.post("/api/agent/tasks/{task_id}/correction")
+async def submit_task_correction(task_id: str, body: ToolCorrectionPayload):
+    info = Modules.task_registry.get(task_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    task_type = str(info.get("type") or "").strip()
+    if task_type not in {"computer_use", "browser_use"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Only computer_use/browser_use tasks support tool correction",
+        )
+    if Modules.task_executor is None:
+        raise HTTPException(status_code=503, detail="Task executor not ready")
+
+    correct_tool = str(body.correct_tool or "").strip()
+    if correct_tool not in {"computer_use", "browser_use"}:
+        raise HTTPException(
+            status_code=400,
+            detail="correct_tool must be computer_use or browser_use",
+        )
+    if correct_tool == task_type:
+        raise HTTPException(
+            status_code=400,
+            detail="correct_tool must be different from the current task type",
+        )
+
+    instr = str(body.correct_instruction or "").strip()
+    if not instr:
+        raise HTTPException(
+            status_code=400,
+            detail="correct_instruction cannot be blank",
+        )
+
+    correction_info = _get_internal_correction_context(info)
+    if correction_info is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Task correction context is unavailable for this task",
+        )
+    task_status = str(info.get("status") or info.get("state") or "").strip().lower()
+    if task_status not in {"completed", "failed", "cancelled"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Task correction is only allowed after the task reaches a terminal state",
+        )
+
+    try:
+        event = Modules.task_executor.record_tool_correction(
+            {
+                **correction_info,
+                "task_id": task_id,
+                "type": task_type,
+            },
+            correct_tool=correct_tool,
+            correct_instruction=instr,
+            user_note=body.user_note,
+        )
+    except Exception as exc:
+        logger.exception("[CorrectionMemory] Failed to record correction for %s: %s", task_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to record correction") from exc
+
+    logger.info(
+        "[CorrectionMemory] Recorded correction: task_id=%s chosen=%s correct=%s",
+        task_id,
+        task_type,
+        correct_tool,
+    )
+    return {"success": True, "task_id": task_id}
 
 
 @app.post("/api/agent/tasks/{task_id}/complete")

@@ -1,5 +1,4 @@
 import re
-import time
 from pathlib import Path
 
 import pytest
@@ -8,11 +7,8 @@ from playwright.sync_api import Page
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MANAGER_TEMPLATE = (REPO_ROOT / "templates" / "jukebox_manager.html").read_text(encoding="utf-8")
-INLINE_SCRIPTS = re.findall(r"<script\b(?![^>]*\bsrc=)[^>]*>(.*?)</script>", MANAGER_TEMPLATE, flags=re.S)
-MANAGER_SCRIPT = next((script for script in INLINE_SCRIPTS if "_bindManagerStandaloneDrag" in script), None)
-if MANAGER_SCRIPT is None:
-    raise RuntimeError("manager template missing inline script containing '_bindManagerStandaloneDrag'")
 JUKEBOX_SCRIPT = (REPO_ROOT / "static" / "Jukebox.js").read_text(encoding="utf-8")
+JUKEBOX_STANDALONE_SCRIPT = (REPO_ROOT / "static" / "jukebox-standalone.js").read_text(encoding="utf-8")
 
 HARNESS_HTML = """
 <!DOCTYPE html>
@@ -28,200 +24,25 @@ HARNESS_HTML = """
 """
 
 
-def _bootstrap_manager_page(page: Page) -> None:
-    page.set_viewport_size({"width": 900, "height": 700})
-    page.set_content(HARNESS_HTML)
-    page.evaluate(
-        """
-        () => {
-          window.t = (key, fallback) => typeof fallback === 'string' ? fallback : key;
-          window.i18n = { isInitialized: true };
-          window.__managerLog = [];
-          window.__closeClicks = 0;
-          window.__bounds = { x: 100, y: 120, width: 640, height: 520 };
-          window.nekoJukeboxWindow = {
-            getBounds() {
-              return new Promise((resolve) => {
-                setTimeout(() => resolve({ ...window.__bounds }), 80);
-              });
-            },
-            getWorkArea() {
-              return new Promise((resolve) => {
-                setTimeout(() => resolve({ x: 0, y: 0, width: 1920, height: 1080 }), 80);
-              });
-            },
-            setBounds(x, y, width, height) {
-              window.__bounds = { x, y, width, height };
-              window.__managerLog.push(['setBounds', x, y, width, height]);
-            }
-          };
-
-          window.Jukebox = {
-            SongActionManager: {
-              create() {
-                const panel = document.createElement('div');
-                panel.className = 'jukebox-sam-panel';
-                panel.innerHTML = `
-                  <div class="sam-header">
-                    <div class="sam-title">Manager</div>
-                    <div class="sam-tabs">
-                      <button class="sam-tab active" type="button">Songs</button>
-                    </div>
-                    <button class="sam-close-btn" id="closeBtn" type="button">×</button>
-                  </div>
-                  <div class="sam-content">
-                    <div class="sam-panel active">
-                      <div class="sam-gap" id="contentGap"></div>
-                      <div class="sam-item" id="songItem">
-                        <button id="itemBtn" type="button">Action</button>
-                      </div>
-                    </div>
-                  </div>
-                  <div class="sam-footer">
-                    <span class="sam-selection-info">Info</span>
-                    <span class="sam-click-add" id="clickAdd">+ Add</span>
-                  </div>
-                `;
-
-                panel.querySelector('#closeBtn').addEventListener('click', () => {
-                  window.__closeClicks += 1;
-                });
-
-                this.element = panel;
-                return panel;
-              },
-              getStyles() {
-                return `
-                  .jukebox-sam-panel {
-                    position: fixed;
-                    inset: 0;
-                    display: flex;
-                    flex-direction: column;
-                    box-sizing: border-box;
-                    padding: 16px;
-                    background: rgba(20, 20, 20, 0.96);
-                    color: #fff;
-                  }
-                  .sam-header {
-                    height: 52px;
-                    display: flex;
-                    align-items: center;
-                    gap: 12px;
-                    flex-shrink: 0;
-                  }
-                  .sam-tabs {
-                    flex: 1;
-                    display: flex;
-                    justify-content: center;
-                  }
-                  .sam-content {
-                    flex: 1;
-                    min-height: 0;
-                    padding: 12px 0;
-                  }
-                  .sam-panel.active {
-                    display: block;
-                    height: 100%;
-                  }
-                  .sam-gap {
-                    height: 180px;
-                    margin-bottom: 12px;
-                    border-radius: 8px;
-                    background: rgba(255, 255, 255, 0.06);
-                  }
-                  .sam-item {
-                    padding: 12px;
-                    border-radius: 8px;
-                    background: rgba(255, 255, 255, 0.14);
-                  }
-                  .sam-footer {
-                    height: 60px;
-                    display: flex;
-                    align-items: center;
-                    justify-content: space-between;
-                    flex-shrink: 0;
-                  }
-                `;
-              },
-              hide() {}
-            }
-          };
-        }
-        """
-    )
-    page.add_script_tag(content=MANAGER_SCRIPT)
-    page.evaluate("_tryInitManager()")
-    page.wait_for_selector(".jukebox-sam-panel")
-
-
-def _wait_for_manager_drag_log(page: Page, timeout: float = 1.0, interval: float = 0.02):
-    deadline = time.monotonic() + timeout
-    drag_log = []
-
-    while time.monotonic() < deadline:
-        drag_log = page.evaluate("window.__managerLog")
-        if any(entry[0] == "setBounds" and (entry[1] != 100 or entry[2] != 120) for entry in drag_log):
-            return drag_log
-        time.sleep(interval)
-
-    return drag_log
-
-
 @pytest.mark.frontend
-def test_jukebox_manager_standalone_fast_drag_survives_async_bounds(mock_page: Page):
-    _bootstrap_manager_page(mock_page)
+def test_jukebox_manager_standalone_uses_native_drag_regions():
+    """
+    回归保护：管理器的拖动必须走 CSS `-webkit-app-region: drag`（OS 原生 HTCAPTION），
+    而不是 JS mousedown + setBounds。历史 bug：JS 设 setBounds 会和 Windows 边缘
+    WS_THICKFRAME resize 热区并发触发，表现为"拖一下窗口变大一下"。
 
-    gap = mock_page.locator("#contentGap").bounding_box()
-    assert gap is not None
-
-    mock_page.mouse.move(gap["x"] + 24, gap["y"] + 24)
-    mock_page.mouse.down()
-    mock_page.mouse.move(gap["x"] + 180, gap["y"] + 120)
-    mock_page.mouse.up()
-
-    body_class = mock_page.locator("body").get_attribute("class") or ""
-    assert "neko-jukebox-manager-standalone-dragging" not in body_class
-
-    drag_log = _wait_for_manager_drag_log(mock_page)
-    assert any(entry[0] == "setBounds" and (entry[1] != 100 or entry[2] != 120) for entry in drag_log)
-
-    body_class = mock_page.locator("body").get_attribute("class") or ""
-    assert "neko-jukebox-manager-standalone-dragging" not in body_class
-
-    mock_page.evaluate("window.__managerLog = []")
-    mock_page.click("#closeBtn")
-    assert mock_page.evaluate("window.__closeClicks") == 1
-    assert mock_page.evaluate("window.__managerLog") == []
-
-
-@pytest.mark.frontend
-def test_jukebox_manager_standalone_ignores_post_release_pointer_moves(mock_page: Page):
-    _bootstrap_manager_page(mock_page)
-
-    gap = mock_page.locator("#contentGap").bounding_box()
-    assert gap is not None
-
-    start_x = gap["x"] + 24
-    start_y = gap["y"] + 24
-    release_x = gap["x"] + 180
-    release_y = gap["y"] + 120
-    after_release_x = gap["x"] + 320
-    after_release_y = gap["y"] + 220
-
-    expected_x = 100 + int(release_x - start_x)
-    expected_y = 120 + int(release_y - start_y)
-
-    mock_page.mouse.move(start_x, start_y)
-    mock_page.mouse.down()
-    mock_page.mouse.move(release_x, release_y)
-    mock_page.mouse.up()
-    mock_page.mouse.move(after_release_x, after_release_y)
-
-    _wait_for_manager_drag_log(mock_page)
-
-    final_bounds = mock_page.evaluate("window.__bounds")
-    assert final_bounds["x"] == expected_x
-    assert final_bounds["y"] == expected_y
+    改回 JS 驱动拖动会让这个测试失败。
+    """
+    # 面板本体必须声明为 drag 区域（放宽空白容忍 CSS 格式化工具）
+    assert re.search(r"-webkit-app-region:\s*drag\s*!important", MANAGER_TEMPLATE)
+    # 交互元素必须声明为 no-drag，否则点击会被原生拖动吃掉
+    assert re.search(r"\.jukebox-sam-panel\s+button\b", MANAGER_TEMPLATE)
+    assert re.search(r"\.jukebox-sam-panel\s+\.sam-close-btn\b", MANAGER_TEMPLATE)
+    assert re.search(r"-webkit-app-region:\s*no-drag\s*!important", MANAGER_TEMPLATE)
+    # 不应再注册 JS mousedown 拖动（旧实现的标志函数）——模板和外部 JS 文件都要拦
+    for source in (MANAGER_TEMPLATE, JUKEBOX_STANDALONE_SCRIPT, JUKEBOX_SCRIPT):
+        assert "_bindManagerStandaloneDrag" not in source
+        assert "neko-jukebox-manager-standalone-dragging" not in source
 
 
 @pytest.mark.frontend

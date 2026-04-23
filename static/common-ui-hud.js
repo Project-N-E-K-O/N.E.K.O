@@ -242,9 +242,17 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
             configIcon.textContent = actionConfig.icon;
             configIcon.style.fontSize = '13px';
             const configLabel = document.createElement('span');
-            configLabel.textContent = window.t ? window.t(actionConfig.labelKey) : actionConfig.labelFallback;
             configLabel.setAttribute('data-i18n', actionConfig.labelKey);
             configLabel.style.userSelect = 'none';
+            configBtn.setAttribute('data-i18n-title', actionConfig.labelKey);
+            const updateConfigI18n = () => {
+                const translated = window.t ? window.t(actionConfig.labelKey) : actionConfig.labelFallback;
+                configLabel.textContent = translated;
+                configBtn.title = translated;
+                configBtn.setAttribute('aria-label', translated);
+            };
+            configLabel._updateLabelText = updateConfigI18n;
+            updateConfigI18n();
             const configArrow = document.createElement('span');
             configArrow.textContent = '↗';
             configArrow.style.marginLeft = 'auto';

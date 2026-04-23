@@ -20,8 +20,14 @@ ability to solve the problem and think insightfully"""
 # =====================================================================
 
 def _loc(d: dict, lang: str) -> str:
-    """从多语言 dict 按 lang 取值，缺失则回退 'zh'。"""
-    if lang not in d:
+    """从多语言 dict 按 lang 取值，缺失则回退 'en'。
+
+    对于已在 SUPPORTED_LANGUAGES 但未在某个 dict 里显式翻译的语言
+    （当前是 'es'、'pt'）静默回退到英文，不打 WARNING。
+    非本地化层的内部 LLM 系统 prompt 保持英文即可，LLM 能正确处理。
+    """
+    _SILENT_FALLBACK = {'es', 'pt'}
+    if lang not in d and lang not in _SILENT_FALLBACK:
         print(f"WARNING: Unexpected lang code {lang}")
     return d.get(lang, d['en'])
 
@@ -101,7 +107,12 @@ RESULT_PARSER_PHRASES = {
     'cu_fail':            {'zh': '任务执行失败', 'en': 'Task failed', 'ja': 'タスク失敗', 'ko': '작업 실패', 'ru': 'Задача не выполнена'},
     'cu_status_done':     {'zh': '已完成', 'en': 'completed', 'ja': '完了', 'ko': '완료', 'ru': 'выполнена'},
     'cu_status_ended':    {'zh': '已结束', 'en': 'ended', 'ja': '終了', 'ko': '종료', 'ru': 'завершена'},
-'openclaw_processing': {'zh': 'OpenClaw 处理中...', 'en': 'OpenClaw is processing...', 'ja': 'OpenClaw 処理中...', 'ko': 'OpenClaw 처리 중...', 'ru': 'OpenClaw обрабатывает...'},    'openclaw_done':       {'zh': 'OpenClaw 执行完成', 'en': 'OpenClaw execution completed', 'ja': 'OpenClaw 実行完了', 'ko': 'OpenClaw 실행 완료', 'ru': 'OpenClaw выполнено'},    'openclaw_failed':     {'zh': 'OpenClaw 执行失败', 'en': 'OpenClaw execution failed', 'ja': 'OpenClaw 実行失敗', 'ko': 'OpenClaw 실행 실패', 'ru': 'OpenClaw не выполнено'},    'openclaw_cancelled':  {'zh': 'OpenClaw 任务已取消', 'en': 'OpenClaw task cancelled', 'ja': 'OpenClaw タスクがキャンセルされました', 'ko': 'OpenClaw 작업 취소됨', 'ru': 'Задача OpenClaw отменена'},    'openclaw_dispatch_failed': {'zh': 'OpenClaw 任务分发失败', 'en': 'OpenClaw task dispatch failed', 'ja': 'OpenClaw タスク配信失敗', 'ko': 'OpenClaw 작업 전달 실패', 'ru': 'Ошибка отправки задачи OpenClaw'},
+    'openclaw_try':       {'zh': '我试试', 'en': "I'll try", 'ja': 'やってみるね', 'ko': '해볼게', 'ru': 'Я попробую'},
+    'openclaw_processing': {'zh': 'OpenClaw(QwenPaw) 处理中...', 'en': 'OpenClaw (QwenPaw) is processing...', 'ja': 'OpenClaw(QwenPaw) 処理中...', 'ko': 'OpenClaw(QwenPaw) 처리 중...', 'ru': 'OpenClaw (QwenPaw) обрабатывает...'},
+    'openclaw_done':       {'zh': 'OpenClaw(QwenPaw) 执行完成', 'en': 'OpenClaw (QwenPaw) execution completed', 'ja': 'OpenClaw(QwenPaw) 実行完了', 'ko': 'OpenClaw(QwenPaw) 실행 완료', 'ru': 'OpenClaw (QwenPaw) выполнено'},
+    'openclaw_failed':     {'zh': 'OpenClaw(QwenPaw) 执行失败', 'en': 'OpenClaw (QwenPaw) execution failed', 'ja': 'OpenClaw(QwenPaw) 実行失敗', 'ko': 'OpenClaw(QwenPaw) 실행 실패', 'ru': 'OpenClaw (QwenPaw) не выполнено'},
+    'openclaw_cancelled':  {'zh': 'OpenClaw(QwenPaw) 任务已取消', 'en': 'OpenClaw (QwenPaw) task cancelled', 'ja': 'OpenClaw(QwenPaw) タスクがキャンセルされました', 'ko': 'OpenClaw(QwenPaw) 작업 취소됨', 'ru': 'Задача OpenClaw (QwenPaw) отменена'},
+    'openclaw_dispatch_failed': {'zh': 'OpenClaw(QwenPaw) 任务分发失败', 'en': 'OpenClaw (QwenPaw) task dispatch failed', 'ja': 'OpenClaw(QwenPaw) タスク配信失敗', 'ko': 'OpenClaw(QwenPaw) 작업 전달 실패', 'ru': 'Ошибка отправки задачи OpenClaw (QwenPaw)'},
     'bu_cancelled':        {'zh': '你的任务"{desc}"已取消', 'en': 'Your task "{desc}" cancelled', 'ja': 'タスク「{desc}」がキャンセルされました', 'ko': '작업 "{desc}" 취소됨', 'ru': 'Ваша задача «{desc}» отменена'},
     'of_cancelled':        {'zh': '虚拟机任务 "{desc}" 已取消', 'en': 'VM task "{desc}" cancelled', 'ja': 'VM タスク「{desc}」がキャンセルされました', 'ko': 'VM 작업 "{desc}" 취소됨', 'ru': 'Задача ВМ «{desc}» отменена'},
 }
@@ -116,19 +127,19 @@ SESSION_INIT_PROMPT = {
 }
 
 SESSION_INIT_PROMPT_AGENT = {
-    'zh': '你是一个角色扮演大师，并且精通电脑操作。请按要求扮演以下角色（{name}），并在对方请求时、回答"我试试"并尝试操纵电脑。',
-    'en': 'You are a role-playing expert and skilled at computer operations. Please play the following character ({name}) as instructed, and when the user asks, respond "Let me try" and attempt to control the computer.',
-    'ja': 'あなたはロールプレイの達人で、コンピュータ操作も得意です。指示に従い、以下のキャラクター（{name}）を演じてください。ユーザーに頼まれたら「やってみる」と答えてコンピュータを操作してください。',
-    'ko': '당신은 롤플레이 전문가이며 컴퓨터 조작에도 능숙합니다. 지시에 따라 다음 캐릭터（{name}）를 연기하고, 상대방이 요청하면 "해볼게요"라고 답하며 컴퓨터를 조작하세요.',
-    'ru': 'Вы мастер ролевых игр и хорошо разбираетесь в управлении компьютером. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям, а когда пользователь просит — отвечайте "Попробую" и управляйте компьютером.',
+    'zh': '你是一个角色扮演大师，并且精通电脑操作。请按要求扮演以下角色（{name}）。当外部任务系统接管执行时，不要抢先声称自己已经开始执行或自行编造执行结果。',
+    'en': 'You are a role-playing expert and skilled at computer operations. Please play the following character ({name}) as instructed. When an external task system is responsible for execution, do not claim you have already started or fabricate execution results.',
+    'ja': 'あなたはロールプレイの達人で、コンピュータ操作も得意です。指示に従い、以下のキャラクター（{name}）を演じてください。外部タスクシステムが実行を担当する場合、自分がすでに着手したかのように主張したり、結果を捏造したりしないでください。',
+    'ko': '당신은 롤플레이 전문가이며 컴퓨터 조작에도 능숙합니다. 지시에 따라 다음 캐릭터（{name}）를 연기하세요. 외부 작업 시스템이 실행을 담당할 때는 이미 시작했다고 먼저 말하거나 실행 결과를 지어내지 마세요.',
+    'ru': 'Вы мастер ролевых игр и хорошо разбираетесь в управлении компьютером. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям. Когда выполнение поручено внешней системе задач, не утверждайте заранее, что уже начали выполнять запрос, и не выдумывайте результаты.',
 }
 
 SESSION_INIT_PROMPT_AGENT_DYNAMIC = {
-    'zh': '你是一个角色扮演大师，并且能够{capabilities}。请按要求扮演以下角色（{name}），并在对方请求时、回答"我试试"并尝试执行。',
-    'en': 'You are a role-playing expert and can {capabilities}. Please play the following character ({name}) as instructed, and when the user asks, respond "Let me try" and attempt to execute the request.',
-    'ja': 'あなたはロールプレイの達人で、{capabilities}ことができます。指示に従い、以下のキャラクター（{name}）を演じてください。ユーザーに頼まれたら「やってみる」と答えて実行を試みてください。',
-    'ko': '당신은 롤플레이 전문가이며 {capabilities} 수 있습니다. 지시에 따라 다음 캐릭터（{name}）를 연기하고, 상대방이 요청하면 "해볼게요"라고 답하며 실행을 시도하세요.',
-    'ru': 'Вы мастер ролевых игр и можете {capabilities}. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям, а когда пользователь просит — отвечайте "Попробую" и пытайтесь выполнить запрос.',
+    'zh': '你是一个角色扮演大师，并且能够{capabilities}。请按要求扮演以下角色（{name}）。当外部任务系统接管执行时，不要抢先声称自己已经开始执行或自行编造执行结果。',
+    'en': 'You are a role-playing expert and can {capabilities}. Please play the following character ({name}) as instructed. When an external task system is responsible for execution, do not claim you have already started or fabricate execution results.',
+    'ja': 'あなたはロールプレイの達人で、{capabilities}ことができます。指示に従い、以下のキャラクター（{name}）を演じてください。外部タスクシステムが実行を担当する場合、自分がすでに着手したかのように主張したり、結果を捏造したりしないでください。',
+    'ko': '당신은 롤플레이 전문가이며 {capabilities} 수 있습니다. 지시에 따라 다음 캐릭터（{name}）를 연기하세요. 외부 작업 시스템이 실행을 담당할 때는 이미 시작했다고 먼저 말하거나 실행 결과를 지어내지 마세요.',
+    'ru': 'Вы мастер ролевых игр и можете {capabilities}. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям. Когда выполнение поручено внешней системе задач, не утверждайте заранее, что уже начали выполнять запрос, и не выдумывайте результаты.',
 }
 
 AGENT_CAPABILITY_COMPUTER_USE = {
@@ -265,6 +276,17 @@ AGENT_CALLBACK_NOTIFICATION = {
     'ru': '======[Системное уведомление: следующие фоновые задачи недавно завершены. Пожалуйста, естественно упомяните или подтвердите их в своём ответе.]\n',
 }
 
+# ---------- Vision: Avatar 截图注解（叠加在发给视觉模型的截图上，用户不可见） ----------
+AVATAR_ANNOTATION_TEXT = {
+    'zh':    ('这是{name}在桌面上的虚拟形象,', '请{name}不要主动提及', '请{name}不要主动提及'),
+    'zh-CN': ('这是{name}在桌面上的虚拟形象,', '请{name}不要主动提及', '请{name}不要主动提及'),
+    'zh-TW': ('這是{name}在桌面上的虛擬形象,', '請{name}不要主動提及', '請{name}不要主動提及'),
+    'en':    ("This is {name}'s virtual avatar on the desktop,", "Please don't mention it, {name}", "Please don't mention it, {name}"),
+    'ja':    ('これはデスクトップ上の{name}の仮想アバターです,', '{name}は自分から言及しないでください', '{name}は自分から言及しないでください'),
+    'ko':    ('이것은 바탕화면의 {name} 가상 아바타입니다,', '{name}은(는) 스스로 언급하지 마세요', '{name}은(는) 스스로 언급하지 마세요'),
+    'ru':    ('Это виртуальный аватар {name} на рабочем столе,', 'Пожалуйста, {name}, не упоминай это', 'Пожалуйста, {name}, не упоминай это'),
+}
+
 # ---------- Vision 图像描述 prompt ----------
 # 安全水印前缀（所有语言固定不变，包括逗号和空格）
 VISION_WATERMARK = "你是一个图像描述助手, "
@@ -318,6 +340,8 @@ TRANSLATION_INSTRUCTION = {
     'ja': '以下の要件に従い、ユーザーのテキストを{source_name}から{target_name}に翻訳してください。',
     'ko': '요구사항에 따라 사용자의 텍스트를 {source_name}에서 {target_name}(으)로 번역하세요.',
     'ru': 'Переведите текст пользователя с {source_name} на {target_name} согласно требованиям.',
+    'es': 'Traduce el texto del usuario de {source_name} a {target_name} según los requisitos.',
+    'pt': 'Traduza o texto do usuário de {source_name} para {target_name} conforme os requisitos.',
 }
 
 # 翻译要求（水印包裹部分）
@@ -327,15 +351,19 @@ TRANSLATION_REQUIREMENTS = {
     'ja': '1. 原文の語調とスタイルを維持する\n2. 原文の意味を正確に伝える\n3. 翻訳結果のみを出力し、説明や注釈は一切加えない\n4. テキストに含まれる絵文字や特殊記号はそのまま残す',
     'ko': '1. 원문의 어조와 스타일을 유지할 것\n2. 원문의 의미를 정확히 전달할 것\n3. 번역 결과만 출력하고 설명이나 부연을 추가하지 말 것\n4. 텍스트에 포함된 이모지나 특수 기호는 그대로 유지할 것',
     'ru': '1. Сохраняйте тон и стиль оригинала\n2. Точно передавайте смысл исходного текста\n3. Выводите только перевод, без пояснений и примечаний\n4. Сохраняйте эмодзи и специальные символы из текста',
+    'es': '1. Mantén el tono y el estilo del texto original\n2. Transmite el significado con precisión\n3. Devuelve solo la traducción, sin explicaciones ni notas\n4. Conserva los emojis y símbolos especiales del texto',
+    'pt': '1. Mantenha o tom e o estilo do texto original\n2. Transmita o significado com precisão\n3. Retorne apenas a tradução, sem explicações ou notas\n4. Preserve emojis e símbolos especiais do texto',
 }
 
 # 语言名称（外层 key=UI 语言，内层 key=语言代码）
 TRANSLATION_LANG_NAMES = {
-    'zh': {'zh': '中文', 'en': '英文', 'ja': '日语', 'ko': '韩语', 'ru': '俄语'},
-    'en': {'zh': 'Chinese', 'en': 'English', 'ja': 'Japanese', 'ko': 'Korean', 'ru': 'Russian'},
-    'ja': {'zh': '中国語', 'en': '英語', 'ja': '日本語', 'ko': '韓国語', 'ru': 'ロシア語'},
-    'ko': {'zh': '중국어', 'en': '영어', 'ja': '일본어', 'ko': '한국어', 'ru': '러시아어'},
-    'ru': {'zh': 'китайский', 'en': 'английский', 'ja': 'японский', 'ko': 'корейский', 'ru': 'русский'},
+    'zh': {'zh': '中文', 'en': '英文', 'ja': '日语', 'ko': '韩语', 'ru': '俄语', 'es': '西班牙语', 'pt': '葡萄牙语'},
+    'en': {'zh': 'Chinese', 'en': 'English', 'ja': 'Japanese', 'ko': 'Korean', 'ru': 'Russian', 'es': 'Spanish', 'pt': 'Portuguese'},
+    'ja': {'zh': '中国語', 'en': '英語', 'ja': '日本語', 'ko': '韓国語', 'ru': 'ロシア語', 'es': 'スペイン語', 'pt': 'ポルトガル語'},
+    'ko': {'zh': '중국어', 'en': '영어', 'ja': '일본어', 'ko': '한국어', 'ru': '러시아어', 'es': '스페인어', 'pt': '포르투갈어'},
+    'ru': {'zh': 'китайский', 'en': 'английский', 'ja': 'японский', 'ko': 'корейский', 'ru': 'русский', 'es': 'испанский', 'pt': 'португальский'},
+    'es': {'zh': 'chino', 'en': 'inglés', 'ja': 'japonés', 'ko': 'coreano', 'ru': 'ruso', 'es': 'español', 'pt': 'portugués'},
+    'pt': {'zh': 'chinês', 'en': 'inglês', 'ja': 'japonês', 'ko': 'coreano', 'ru': 'russo', 'es': 'espanhol', 'pt': 'português'},
 }
 
 # ---------- 对话备忘录注入 LLM 上下文 ----------
@@ -345,6 +373,8 @@ MEMORY_MEMO_WITH_SUMMARY = {
     'ja': '以前の会話のメモ: {summary}',
     'ko': '이전 대화의 메모: {summary}',
     'ru': 'Заметки из предыдущих разговоров: {summary}',
+    'es': 'Notas de conversaciones previas: {summary}',
+    'pt': 'Notas de conversas anteriores: {summary}',
 }
 
 MEMORY_MEMO_EMPTY = {
@@ -353,6 +383,8 @@ MEMORY_MEMO_EMPTY = {
     'ja': '以前の会話のメモ: なし。',
     'ko': '이전 대화의 메모: 없음.',
     'ru': 'Заметки из предыдущих разговоров: нет.',
+    'es': 'Notas de conversaciones previas: ninguna.',
+    'pt': 'Notas de conversas anteriores: nenhuma.',
 }
 
 # ---------- 搜索关键词生成 prompt ----------
@@ -367,6 +399,8 @@ SEARCH_KEYWORD_SYSTEM = {
     'ja': 'ウィンドウタイトルから検索キーワードを生成してください。\n\n要件：\n1. 異なる角度から検索用のキーワードを 3 つ生成\n2. 各キーワードは簡潔に、2〜6 語程度\n3. キーワードは多様性を持たせる\n4. 3 行のみ出力し、番号・句読点・説明等は一切不要',
     'ko': '창 제목에서 검색 키워드를 생성하세요.\n\n요구사항:\n1. 서로 다른 관점에서 검색 키워드 3개 생성\n2. 각 키워드는 간결하게, 2~6 단어 정도\n3. 키워드는 다양하게\n4. 정확히 3줄만 출력하고 번호, 구두점, 설명 등은 추가하지 마세요',
     'ru': 'Сгенерируйте ключевые слова для поиска на основе заголовка окна.\n\nТребования:\n1. Сгенерируйте 3 разнообразных ключевых слова для поиска с разных сторон\n2. Каждое ключевое слово — кратко, около 2-6 слов\n3. Ключевые слова должны быть разнообразными\n4. Выведите ровно 3 строки, по одному ключевому слову, без номеров, пунктуации и пояснений',
+    'es': 'Generas palabras clave de búsqueda a partir del título de una ventana.\n\nRequisitos:\n1. Genera 3 palabras clave diversas desde distintos ángulos\n2. Cada palabra clave debe ser concisa, de 2 a 6 palabras\n3. Mantén las palabras clave variadas\n4. Devuelve exactamente 3 líneas, una palabra clave por línea, sin números, puntuación, explicaciones ni texto adicional',
+    'pt': 'Você gera palavras-chave de busca a partir do título de uma janela.\n\nRequisitos:\n1. Gere 3 palavras-chave diversas de ângulos distintos\n2. Cada palavra-chave deve ser concisa, com 2 a 6 palavras\n3. Mantenha as palavras-chave variadas\n4. Retorne exatamente 3 linhas, uma palavra-chave por linha, sem números, pontuação, explicações ou texto adicional',
 }
 
 SEARCH_KEYWORD_USER = {
@@ -375,6 +409,8 @@ SEARCH_KEYWORD_USER = {
     'ja': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n\n検索キーワードを 3 つ出力してください。',
     'ko': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n\n검색 키워드 3개를 출력하세요.',
     'ru': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n\nВыведите 3 ключевых слова для поиска.',
+    'es': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n\nDevuelve 3 palabras clave de búsqueda.',
+    'pt': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n\nRetorne 3 palavras-chave de busca.',
 }
 
 # =====================================================================

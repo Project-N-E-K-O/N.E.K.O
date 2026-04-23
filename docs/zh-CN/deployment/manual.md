@@ -40,6 +40,14 @@ cd frontend/plugin-manager && npm install && npm run build-only && cd ../..
 
 ## 运行
 
+推荐优先使用统一启动器：
+
+```bash
+uv run python launcher.py
+```
+
+这样会先完成本地 `cloudsave/` bootstrap 与快照导入，再启动各个服务，更接近 Steam / 桌面版实际启动链路。
+
 在不同终端中启动所需的服务器：
 
 ```bash
@@ -52,6 +60,21 @@ uv run python main_server.py
 # 终端 3 — 智能体服务器（可选）
 uv run python agent_server.py
 ```
+
+补充说明：
+
+- 想验证生产态的 Steam Auto-Cloud 主路径，仍应优先通过 Steam 或桌面启动器启动。现在 Windows / macOS / Linux 的源码模式在 Steam 运行且已登录时，也可以走 RemoteStorage bundle helper 做跨设备联调；但这条链路仍是开发态兼容路径，不是打包版主同步路径。
+- 手动三服务模式更适合开发调试；当前 `main_server` 会在需要时兜底导入快照，并尝试通知 `memory_server` reload。
+- shutdown 不会再自动把运行时变化写回 `cloudsave/`。如果希望 Steam 上传新的角色数据，需要在退出前先到云存档管理页手动为对应角色生成或覆盖 staged snapshot。
+- macOS 源码模式如果提示“Apple 无法验证 `SteamworksPy.dylib`”，通常是 Gatekeeper 在拦截未公证的本地动态库。先确认从项目根目录启动；如果仍被拦截，可在项目根目录执行：
+
+```bash
+xattr -dr com.apple.quarantine SteamworksPy.dylib libsteam_api.dylib
+codesign --force --sign - libsteam_api.dylib
+codesign --force --sign - SteamworksPy.dylib
+```
+
+- 重新签名后再执行 `uv run python launcher.py` 或 `uv run python main_server.py`。
 
 ## 配置
 

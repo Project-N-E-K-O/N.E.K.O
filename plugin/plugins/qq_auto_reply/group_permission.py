@@ -1,7 +1,7 @@
 """
 群聊权限管理模块
 
-管理信任的 QQ 群聊
+管理允许自动回复的 QQ 群聊
 """
 
 from typing import Dict, List
@@ -10,12 +10,15 @@ from typing import Dict, List
 class GroupPermissionManager:
     """群聊权限管理器"""
 
+    VALID_LEVELS = {"trusted", "open", "normal"}
+    LEGACY_LEVEL_ALIASES = {"truth": "open"}
+
     def __init__(self, trusted_groups: List[Dict[str, str]] = None):
         """
         初始化群聊权限管理器
 
         Args:
-            trusted_groups: 信任群聊列表，格式: [{"group_id": "123456", "level": "trusted"}, ...]
+            trusted_groups: 群聊列表，格式: [{"group_id": "123456", "level": "trusted"}, ...]
         """
         self._groups: Dict[str, str] = {}  # {group_id: level}
 
@@ -24,7 +27,13 @@ class GroupPermissionManager:
                 group_id = group.get("group_id", "")
                 level = group.get("level", "normal")
                 if group_id:
-                    self._groups[group_id] = level
+                    self._groups[group_id] = self._normalize_level(level)
+
+    @classmethod
+    def _normalize_level(cls, level: str) -> str:
+        normalized = str(level or "normal").strip().lower()
+        normalized = cls.LEGACY_LEVEL_ALIASES.get(normalized, normalized)
+        return normalized if normalized in cls.VALID_LEVELS else "normal"
 
     def add_group(self, group_id: str, level: str = "normal"):
         """
@@ -32,11 +41,9 @@ class GroupPermissionManager:
 
         Args:
             group_id: 群号
-            level: 权限等级 (trusted, normal)
+            level: 权限等级 (trusted, open, normal)
         """
-        if level not in ["trusted", "normal"]:
-            level = "normal"
-        self._groups[group_id] = level
+        self._groups[group_id] = self._normalize_level(level)
 
     def remove_group(self, group_id: str):
         """移除群聊"""
@@ -51,19 +58,19 @@ class GroupPermissionManager:
             group_id: 群号
 
         Returns:
-            权限等级: trusted, normal, none
+            权限等级: trusted, open, normal, none
         """
         group_str = str(group_id)
         return self._groups.get(group_str, "none")
 
     def is_trusted_group(self, group_id: str) -> bool:
-        """检查是否是信任群聊"""
+        """检查是否是 @ 后回复的信任群聊"""
         return self.get_group_level(str(group_id)) == "trusted"
 
     def is_allowed_group(self, group_id: str) -> bool:
-        """检查群聊是否被允许（信任或普通）"""
+        """检查群聊是否被允许（信任、开放或普通）"""
         level = self.get_group_level(str(group_id))
-        return level in ["trusted", "normal"]
+        return level in self.VALID_LEVELS
 
     def list_groups(self) -> List[Dict[str, str]]:
         """列出所有群聊"""

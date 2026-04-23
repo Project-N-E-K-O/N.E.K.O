@@ -7,13 +7,31 @@
 // 注意：此列表包含 localStorage 使用的存储子键（如 model_manager_*），
 // 并不完全等同于 detectPage() 返回的逻辑页面集合。
 const TUTORIAL_PAGES = Object.freeze(['home', 'model_manager', 'model_manager_live2d', 'model_manager_vrm', 'model_manager_mmd', 'model_manager_common', 'parameter_editor', 'emotion_manager', 'chara_manager', 'settings', 'voice_clone', 'steam_workshop', 'memory_browser']);
+const TUTORIAL_STORAGE_KEY_PREFIX = 'neko_tutorial_';
+const TUTORIAL_PROMPT_FLOW_PREFIX = '[TutorialPromptFlow]';
+
+function getTutorialStorageKeyForPage(pageKey) {
+    return TUTORIAL_STORAGE_KEY_PREFIX + pageKey;
+}
+
+function getTutorialManualIntentKeyForPage(pageKey) {
+    return getTutorialStorageKeyForPage(pageKey) + '_manual_intent';
+}
+
+function logTutorialPromptFlow(step, details = {}) {
+    console.log(TUTORIAL_PROMPT_FLOW_PREFIX + ' ' + step, details);
+}
+
+window.getTutorialStorageKeyForPage = getTutorialStorageKeyForPage;
+window.getTutorialManualIntentKeyForPage = getTutorialManualIntentKeyForPage;
+window.logTutorialPromptFlow = logTutorialPromptFlow;
 
 class UniversalTutorialManager {
     constructor() {
         // 立即设置全局引用，以便在 getter 中使用
         window.universalTutorialManager = this;
 
-        this.STORAGE_KEY_PREFIX = 'neko_tutorial_';
+        this.STORAGE_KEY_PREFIX = TUTORIAL_STORAGE_KEY_PREFIX;
         this.driver = null;
         this.isInitialized = false;
         this.isTutorialRunning = false; // 防止重复启动
@@ -34,6 +52,8 @@ class UniversalTutorialManager {
         this.cachedValidSteps = null;
         this._refreshTimers = [];
         this._pendingI18nStart = false;
+        this.pendingTutorialStartSource = null;
+        this.currentTutorialStartSource = 'auto';
         this._modelManagerTutorialRecheckTimer = null;
         this._modelManagerModeListenerAttached = false;
         this._modelManagerTutorialDebounceTimer = null;
@@ -64,6 +84,10 @@ class UniversalTutorialManager {
 
         // 等待 driver.js 库加载
         this.waitForDriver();
+    }
+
+    logPromptFlow(step, details = {}) {
+        logTutorialPromptFlow(step, details);
     }
 
     /**
@@ -601,6 +625,8 @@ class UniversalTutorialManager {
      */
     startTutorialWhenI18nReady(delayMs = 0) {
         if (this.isTutorialRunning || window.isInTutorial) {
+            // 已在引导中：消耗掉本次启动意图，避免遗留到下次刷新
+            this.consumeTutorialStartSource();
             return;
         }
 
@@ -997,33 +1023,137 @@ class UniversalTutorialManager {
 
     getStorageKey() {
         const pageKey = this.getPreferredStoragePageKey(this.currentPage);
-        return this.STORAGE_KEY_PREFIX + pageKey;
+        return getTutorialStorageKeyForPage(pageKey);
     }
 
     /**
      * 获取指定页面相关的所有存储键（用于重置/判断）
      */
     getStorageKeysForPage(page) {
-        const keys = [];
         const targetPage = page || this.currentPage;
-
         if (targetPage === 'model_manager') {
-            // 兼容历史键 + 细分键 + 通用步骤键
-            keys.push(this.STORAGE_KEY_PREFIX + 'model_manager');
-            keys.push(this.STORAGE_KEY_PREFIX + 'model_manager_live2d');
-            keys.push(this.STORAGE_KEY_PREFIX + 'model_manager_vrm');
-            keys.push(this.STORAGE_KEY_PREFIX + 'model_manager_mmd');
-            keys.push(this.STORAGE_KEY_PREFIX + 'model_manager_common');
-        } else {
-            const preferredPageKey = this.getPreferredStoragePageKey(targetPage);
-            keys.push(this.STORAGE_KEY_PREFIX + preferredPageKey);
-
-            if (preferredPageKey !== targetPage) {
-                keys.push(this.STORAGE_KEY_PREFIX + targetPage);
-            }
+            return ['model_manager', 'model_manager_live2d', 'model_manager_vrm', 'model_manager_mmd', 'model_manager_common']
+                .map(getTutorialStorageKeyForPage);
         }
 
-        return Array.from(new Set(keys));
+        const preferredPageKey = this.getPreferredStoragePageKey(targetPage);
+        const pageKeys = [preferredPageKey];
+        if (preferredPageKey !== targetPage) {
+            pageKeys.push(targetPage);
+        }
+
+        return Array.from(new Set(pageKeys)).map(getTutorialStorageKeyForPage);
+    }
+
+    getManualStartIntentKey(page = null) {
+        const targetPage = page || this.currentPage;
+        return getTutorialManualIntentKeyForPage(targetPage);
+    }
+
+    markTutorialManualStartIntent(page = null) {
+        const targetPage = page || this.currentPage;
+        if (!targetPage || targetPage === 'unknown') {
+            return;
+        }
+        localStorage.setItem(this.getManualStartIntentKey(targetPage), 'true');
+    }
+
+    peekTutorialStartSource(page = null) {
+        const targetPage = page || this.currentPage;
+        if (this.pendingTutorialStartSource) {
+            return this.pendingTutorialStartSource;
+        }
+
+        const intentKey = this.getManualStartIntentKey(targetPage);
+        if (localStorage.getItem(intentKey) === 'true') {
+            return 'manual';
+        }
+
+        return null;
+    }
+
+    consumeTutorialStartSource(page = null) {
+        const targetPage = page || this.currentPage;
+
+        if (this.pendingTutorialStartSource) {
+            const source = this.pendingTutorialStartSource;
+            this.pendingTutorialStartSource = null;
+            return source;
+        }
+
+        const intentKey = this.getManualStartIntentKey(targetPage);
+        if (localStorage.getItem(intentKey) === 'true') {
+            localStorage.removeItem(intentKey);
+            return 'manual';
+        }
+
+        return 'auto';
+    }
+
+    waitUntilInitialized(maxWaitTime = 5000) {
+        if (this.isInitialized) {
+            return Promise.resolve(true);
+        }
+
+        this.waitForDriver();
+
+        return new Promise(resolve => {
+            const startedAt = Date.now();
+            const poll = () => {
+                if (this.isInitialized) {
+                    resolve(true);
+                    return;
+                }
+                if ((Date.now() - startedAt) >= maxWaitTime) {
+                    resolve(false);
+                    return;
+                }
+                setTimeout(poll, 100);
+            };
+            poll();
+        });
+    }
+
+    async requestTutorialStart(source = 'manual', delayMs = 0) {
+        const requestedSource = source || 'manual';
+        this.pendingTutorialStartSource = requestedSource;
+        this.logPromptFlow('request-tutorial-start', {
+            page: this.currentPage,
+            source: requestedSource,
+            delayMs: delayMs || 0,
+        });
+
+        try {
+            const ready = await this.waitUntilInitialized();
+            if (!ready) {
+                this.pendingTutorialStartSource = null;
+                throw new Error('tutorial_not_initialized');
+            }
+
+            if (this.isTutorialRunning) {
+                this.pendingTutorialStartSource = null;
+                return true;
+            }
+
+            if (this.currentPage === 'home') {
+                await this.waitForFloatingButtons();
+                this.startTutorialWhenI18nReady(delayMs);
+                return true;
+            }
+
+            if (this.currentPage === 'chara_manager') {
+                await this.waitForCatgirlCards();
+                await this.prepareCharaManagerForTutorial();
+                this.startTutorialWhenI18nReady(delayMs);
+                return true;
+            }
+
+            this.startTutorialWhenI18nReady(delayMs);
+            return true;
+        } catch (error) {
+            this.pendingTutorialStartSource = null;
+            throw error;
+        }
     }
 
     clearModelManagerTutorialRecheckTimer() {
@@ -1100,14 +1230,19 @@ class UniversalTutorialManager {
         if (!hasSeen) {
             // 对于主页，需要等待浮动按钮创建
             if (this.currentPage === 'home') {
-                this.waitForFloatingButtons().then((found) => {
-                    if (!found) {
-                        console.warn('[Tutorial] 浮动按钮始终未出现，跳过主页引导');
-                        return;
-                    }
-                    // 延迟启动，确保 DOM 完全加载，并等待 i18n 准备完成
-                    this.startTutorialWhenI18nReady(1500);
-                });
+                const requestedSource = this.peekTutorialStartSource('home');
+                if (requestedSource) {
+                    this.waitForFloatingButtons().then((found) => {
+                        if (!found) {
+                            console.warn('[Tutorial] 浮动按钮始终未出现，跳过主页引导');
+                            return;
+                        }
+                        // 延迟启动，确保 DOM 完全加载，并等待 i18n 准备完成
+                        this.startTutorialWhenI18nReady(1500);
+                    });
+                } else {
+                    console.log('[Tutorial] 主页首次引导等待空闲提示或手动触发，不再立即自动启动');
+                }
             } else if (this.currentPage === 'chara_manager') {
                 // 对于角色管理页面，需要等待猫娘卡片加载
                 this.waitForCatgirlCards().then(async () => {
@@ -2272,6 +2407,10 @@ class UniversalTutorialManager {
         }
 
         try {
+            // 在 early-return 之前先消耗 pendingTutorialStartSource 和 manual_intent
+            // localStorage 标记，避免页面无步骤/无有效步骤时把用户的"启动"意图遗留到下次。
+            this.currentTutorialStartSource = this.consumeTutorialStartSource();
+
             const steps = this.getStepsForPage();
 
             if (steps.length === 0) {
@@ -2329,12 +2468,27 @@ class UniversalTutorialManager {
             }
         } catch (error) {
             console.error('[Tutorial] 启动引导失败:', error);
-            this.isTutorialRunning = false;
-            window.isInTutorial = false;
-            this.unlockBodyScroll();
-            this.restoreTutorialInteractionState();
-            this.setTutorialMarkersVisible(true);
+            this.resetTutorialStartState();
         }
+    }
+
+    resetTutorialStartState() {
+        this._teardownTutorialUI();
+        this.setTutorialMarkersVisible(true);
+    }
+
+    emitTutorialStarted(page = this.currentPage, source = this.currentTutorialStartSource) {
+        window.dispatchEvent(new CustomEvent('neko:tutorial-started', {
+            detail: {
+                page: page,
+                source: source
+            }
+        }));
+        this.logPromptFlow('tutorial-started', {
+            page: page,
+            source: source,
+        });
+        console.log('[Tutorial] 引导启动来源:', source);
     }
 
     /**
@@ -2491,6 +2645,9 @@ class UniversalTutorialManager {
      * 启动引导步骤（内部方法）
      */
     startTutorialSteps(validSteps) {
+        // 预加载所有步骤中的图片，确保走到含图片的步骤时图片已在浏览器缓存中
+        this._preloadStepImages(validSteps);
+
         // 重置步骤 onHighlighted 触发标记（避免重复/跨次引导）
         this._lastOnHighlightedStepIndex = null;
         this._tutorialEndHandled = false;
@@ -2520,11 +2677,7 @@ class UniversalTutorialManager {
 
         if (!this.driver) {
             console.error('[Tutorial] driver 实例创建失败，无法启动引导');
-            this.isTutorialRunning = false;
-            window.isInTutorial = false;
-            this.unlockBodyScroll();
-            this.restoreTutorialInteractionState();
-            this.setTutorialMarkersVisible(true);
+            this.resetTutorialStartState();
             return;
         }
 
@@ -2633,9 +2786,18 @@ class UniversalTutorialManager {
         }));
 
         this.notifyYuiGuidePreludeStart(validSteps);
+        const tutorialStartPage = this.currentPage;
+        const tutorialStartSource = this.currentTutorialStartSource;
+        let startResult;
 
         // 启动引导
-        this.driver.start();
+        try {
+            startResult = this.driver.start();
+        } catch (error) {
+            console.error('[Tutorial] 启动引导步骤失败:', error);
+            this.resetTutorialStartState();
+            return;
+        }
 
         if (validSteps.length > 0) {
             this.notifyYuiGuideStepEnter(validSteps[0], 0, 'tutorial-start');
@@ -2670,6 +2832,16 @@ class UniversalTutorialManager {
 
         // 显示跳过按钮
         this.showSkipButton();
+
+        Promise.resolve(startResult).then(() => {
+            if (!this.isTutorialRunning || !window.isInTutorial) {
+                return;
+            }
+            this.emitTutorialStarted(tutorialStartPage, tutorialStartSource);
+        }).catch(error => {
+            console.error('[Tutorial] 启动引导步骤失败:', error);
+            this.resetTutorialStartState();
+        });
 
         console.log('[Tutorial] 引导已启动，页面:', this.currentPage);
     }
@@ -3109,6 +3281,34 @@ class UniversalTutorialManager {
     }
 
     /**
+     * 预加载所有教程步骤中的图片。
+     * 解析每个步骤的 popover.description HTML，提取 <img src="..."> 中的 URL，
+     * 通过 new Image() 提前下载到浏览器缓存。这样走到含图片的步骤时，
+     * createPopover 插入 DOM 后图片能立即渲染，offsetHeight 计算准确，
+     * 避免图片异步加载导致弹窗定位偏移、按钮被截断。
+     */
+    _preloadStepImages(steps) {
+        if (!steps || steps.length === 0) return;
+        const srcSet = new Set();
+        const imgTagRegex = /<img[^>]+src\s*=\s*["']([^"']+)["'][^>]*>/gi;
+        for (const step of steps) {
+            const desc = step.popover && step.popover.description;
+            if (!desc || typeof desc !== 'string') continue;
+            let match;
+            while ((match = imgTagRegex.exec(desc)) !== null) {
+                srcSet.add(match[1]);
+            }
+            imgTagRegex.lastIndex = 0;
+        }
+        if (srcSet.size === 0) return;
+        console.log(`[Tutorial] 预加载 ${srcSet.size} 张教程图片:`, [...srcSet]);
+        for (const src of srcSet) {
+            const img = new Image();
+            img.src = src;
+        }
+    }
+
+    /**
      * 将 popover 钳位到视口内，确保用户始终能看到并操作它
      */
     clampPopoverToViewport() {
@@ -3437,7 +3637,40 @@ class UniversalTutorialManager {
 
         this.notifyYuiGuideStepLeave(finalStepConfig, finalStepIndex, 'tutorial-end');
         this.notifyYuiGuideTutorialEnd(endMeta.rawReason);
+        const completedSource = this.currentTutorialStartSource;
 
+        this._teardownTutorialUI();
+
+        // 标记用户已看过该页面的引导
+        const storageKey = this.getStorageKey();
+        localStorage.setItem(storageKey, 'true');
+        if (this.currentPage === 'model_manager') {
+            const commonStorageKey = getTutorialStorageKeyForPage('model_manager_common');
+            localStorage.setItem(commonStorageKey, 'true');
+            console.log('[Tutorial] 已标记模型管理通用步骤为已看过');
+        }
+
+        window.dispatchEvent(new CustomEvent('neko:tutorial-completed', {
+            detail: {
+                page: this.currentPage,
+                source: completedSource
+            }
+        }));
+        this.logPromptFlow('tutorial-completed', {
+            page: this.currentPage,
+            source: completedSource,
+            reason: endMeta.reason,
+            rawReason: endMeta.rawReason
+        });
+        console.log('[Tutorial] 引导已完成，页面:', this.currentPage);
+    }
+
+    /**
+     * 拆除引导期间安装的 UI 状态（定时器、临时样式、监听器等）。
+     * 不写入"已看过"存储，也不派发 tutorial-completed 事件，
+     * 因此既能给正常结束（onTutorialEnd）复用，也能给启动失败的回退路径复用。
+     */
+    _teardownTutorialUI() {
         // 重置运行标志
         this.isTutorialRunning = false;
         this.clearNextButtonGuard();
@@ -3448,6 +3681,7 @@ class UniversalTutorialManager {
         this.cachedValidSteps = null;
         this._tutorialEndReason = null;
         this._tutorialEndRawReason = null;
+        this.currentTutorialStartSource = 'auto';
 
         // 移除跳过按钮
         this.hideSkipButton();
@@ -3483,28 +3717,12 @@ class UniversalTutorialManager {
             this.cleanupCharaManagerTutorialIds();
         }
 
-        // 标记用户已看过该页面的引导
-        const storageKey = this.getStorageKey();
-        localStorage.setItem(storageKey, 'true');
-        console.log('[Tutorial] onTutorialEnd 写入存储键:', storageKey, '当前页面:', this.currentPage);
-        if (storageKey.includes('model_manager')) {
-            console.trace('[Tutorial] model_manager 存储键写入调用栈');
-        }
-
         if (this.currentPage === 'model_manager') {
             this.clearModelManagerTutorialRecheckTimer();
         }
 
-        // 对于模型管理页面，同时标记通用步骤为已看过
-        if (this.currentPage === 'model_manager') {
-            const commonStorageKey = this.STORAGE_KEY_PREFIX + 'model_manager_common';
-            localStorage.setItem(commonStorageKey, 'true');
-            console.log('[Tutorial] 已标记模型管理通用步骤为已看过');
-        }
-
         // 清除全局引导标记
         window.isInTutorial = false;
-        console.log('[Tutorial] 清除全局引导标记');
 
         // 恢复页面滚动
         this.unlockBodyScroll();
@@ -3589,8 +3807,6 @@ class UniversalTutorialManager {
         // 恢复所有在引导中修改过的元素的原始样式
         this.restoreAllModifiedElements();
         this.restoreTutorialInteractionState();
-
-        console.log('[Tutorial] 引导已完成，页面:', this.currentPage);
     }
 
     /**
@@ -3638,6 +3854,7 @@ class UniversalTutorialManager {
     restartTutorial() {
         const storageKeys = this.getStorageKeysForPage(this.currentPage);
         storageKeys.forEach(key => localStorage.removeItem(key));
+        this.pendingTutorialStartSource = 'manual';
 
         if (this.driver) {
             this.driver.destroy();
@@ -3807,6 +4024,7 @@ class UniversalTutorialManager {
         TUTORIAL_PAGES.forEach(page => {
             this.getStorageKeysForPage(page).forEach(key => localStorage.removeItem(key));
         });
+        this.markTutorialManualStartIntent('home');
         console.log('[Tutorial] 已重置所有页面引导');
         this.notifyTutorialResetForCurrentPageIfNeeded('all');
     } 
@@ -3820,21 +4038,14 @@ class UniversalTutorialManager {
             return;
         }
 
-        // 特殊处理模型管理页面
-        if (pageKey === 'model_manager') {
-            const keysToRemove = ['model_manager', 'model_manager_live2d', 'model_manager_vrm', 'model_manager_mmd', 'model_manager_common'];
-            keysToRemove.forEach(k => {
-                const fullKey = this.STORAGE_KEY_PREFIX + k;
-                const oldVal = localStorage.getItem(fullKey);
-                localStorage.removeItem(fullKey);
-                if (oldVal) console.log('[Tutorial] 重置: 移除', fullKey, '(旧值:', oldVal, ')');
-            });
-        } else {
-            this.getStorageKeysForPage(pageKey).forEach(fullKey => {
-                const oldVal = localStorage.getItem(fullKey);
-                localStorage.removeItem(fullKey);
-                if (oldVal) console.log('[Tutorial] 重置: 移除', fullKey, '(旧值:', oldVal, ')');
-            });
+        this.getStorageKeysForPage(pageKey).forEach((storageKey) => {
+            const oldVal = localStorage.getItem(storageKey);
+            localStorage.removeItem(storageKey);
+            if (oldVal) console.log('[Tutorial] 重置: 移除', storageKey, '(旧值:', oldVal, ')');
+        });
+
+        if (pageKey === 'home') {
+            this.markTutorialManualStartIntent('home');
         }
 
         console.log('[Tutorial] 已重置页面引导:', pageKey);
@@ -3860,10 +4071,10 @@ class UniversalTutorialManager {
             this.driver = null;
         }
 
-        // 清除当前页面的引导记录
         const storageKeys = this.getStorageKeysForPage(this.currentPage);
         storageKeys.forEach(storageKey => localStorage.removeItem(storageKey));
         console.log('[Tutorial] 已清除当前页面引导记录:', this.currentPage, storageKeys);
+        this.pendingTutorialStartSource = 'manual';
 
         // 重新初始化并启动引导
         this.isInitialized = false;
@@ -3917,8 +4128,8 @@ function resetAllTutorials() {
         window.universalTutorialManager.resetAllTutorials();
     } else {
         // 如果管理器未初始化，直接清除 localStorage
-        const prefix = 'neko_tutorial_';
-        TUTORIAL_PAGES.forEach(page => { localStorage.removeItem(prefix + page); });
+        TUTORIAL_PAGES.forEach(page => { localStorage.removeItem(getTutorialStorageKeyForPage(page)); });
+        localStorage.setItem(getTutorialManualIntentKeyForPage('home'), 'true');
     }
     alert(window.t ? window.t('memory.tutorialResetSuccess', '已重置所有引导，下次进入各页面时将重新显示引导。') : '已重置所有引导，下次进入各页面时将重新显示引导。');
 }
@@ -3939,15 +4150,17 @@ function resetTutorialForPage(pageKey) {
     if (window.universalTutorialManager) {
         window.universalTutorialManager.resetPageTutorial(pageKey);
     } else {
-        const prefix = 'neko_tutorial_';
         if (pageKey === 'model_manager') {
-            localStorage.removeItem(prefix + 'model_manager');
-            localStorage.removeItem(prefix + 'model_manager_live2d');
-            localStorage.removeItem(prefix + 'model_manager_vrm');
-            localStorage.removeItem(prefix + 'model_manager_mmd');
-            localStorage.removeItem(prefix + 'model_manager_common');
+            localStorage.removeItem(getTutorialStorageKeyForPage('model_manager'));
+            localStorage.removeItem(getTutorialStorageKeyForPage('model_manager_live2d'));
+            localStorage.removeItem(getTutorialStorageKeyForPage('model_manager_vrm'));
+            localStorage.removeItem(getTutorialStorageKeyForPage('model_manager_mmd'));
+            localStorage.removeItem(getTutorialStorageKeyForPage('model_manager_common'));
         } else {
-            localStorage.removeItem(prefix + pageKey);
+            localStorage.removeItem(getTutorialStorageKeyForPage(pageKey));
+        }
+        if (pageKey === 'home') {
+            localStorage.setItem(getTutorialManualIntentKeyForPage('home'), 'true');
         }
     }
 

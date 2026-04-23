@@ -133,7 +133,8 @@ Live2DManager.prototype.setupHTMLLockIcon = function(model) {
     const tick = () => {
         try {
             if (!model || !model.parent) {
-                if (lockIcon) lockIcon.style.display = 'none';
+                // 教程期间不隐藏锁图标，防止高亮框位置被刷到 (0,0)
+                if (lockIcon && !window.isInTutorial) lockIcon.style.display = 'none';
                 return;
             }
             const bounds = model.getBounds();
@@ -639,6 +640,8 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
         this.closeAllPopups();
     };
     document.addEventListener('click', this._outsideClickHandler);
+    this._uiWindowHandlers = this._uiWindowHandlers || [];
+    this._uiWindowHandlers.push({ event: 'click', handler: this._outsideClickHandler, target: document });
 
     window.dispatchEvent(new CustomEvent('live2d-floating-buttons-ready'));
     console.log('[Live2D] 浮动按钮就绪事件已发送');

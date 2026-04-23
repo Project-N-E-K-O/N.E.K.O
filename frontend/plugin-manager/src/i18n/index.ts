@@ -8,8 +8,10 @@ import enUS from './locales/en-US'
 import ja from './locales/ja'
 import ko from './locales/ko'
 import ru from './locales/ru'
+import es from './locales/es'
+import pt from './locales/pt'
 
-export const SUPPORTED_LOCALES = ['zh-CN', 'zh-TW', 'en-US', 'ja', 'ko', 'ru'] as const
+export const SUPPORTED_LOCALES = ['zh-CN', 'zh-TW', 'en-US', 'ja', 'ko', 'ru', 'es', 'pt'] as const
 export type AppLocale = (typeof SUPPORTED_LOCALES)[number]
 export type LocaleSetting = AppLocale | 'auto'
 const DEFAULT_LOCALE: AppLocale = 'zh-CN'
@@ -34,6 +36,8 @@ function resolveLocaleFromBrowser(): AppLocale {
     if (langCode === 'ja') return 'ja'
     if (langCode === 'ko') return 'ko'
     if (langCode === 'ru') return 'ru'
+    if (langCode === 'es') return 'es'
+    if (langCode === 'pt') return 'pt'
     if (langCode === 'zh') {
       const upper = lang.toUpperCase()
       if (upper.includes('HANS')) return 'zh-CN'
@@ -72,7 +76,9 @@ export const i18n = createI18n({
     'en-US': enUS,
     'ja': ja,
     'ko': ko,
-    'ru': ru
+    'ru': ru,
+    'es': es,
+    'pt': pt
   }
 })
 

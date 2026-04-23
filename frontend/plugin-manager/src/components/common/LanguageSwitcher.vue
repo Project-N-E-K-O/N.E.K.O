@@ -26,6 +26,12 @@
         <el-dropdown-item command="ru" :disabled="currentSetting === 'ru'">
           <span>🇷🇺 Русский</span>
         </el-dropdown-item>
+        <el-dropdown-item command="es" :disabled="currentSetting === 'es'">
+          <span>🇪🇸 Español</span>
+        </el-dropdown-item>
+        <el-dropdown-item command="pt" :disabled="currentSetting === 'pt'">
+          <span>🇵🇹 Português</span>
+        </el-dropdown-item>
       </el-dropdown-menu>
     </template>
   </el-dropdown>
@@ -46,7 +52,9 @@ const LOCALE_SHORT_LABELS: Record<AppLocale, string> = {
   'en-US': 'EN',
   'ja': 'JP',
   'ko': 'KR',
-  'ru': 'RU'
+  'ru': 'RU',
+  'es': 'ES',
+  'pt': 'PT'
 }
 
 const displayLabel = computed(() => LOCALE_SHORT_LABELS[getLocale()])

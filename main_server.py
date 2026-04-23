@@ -35,7 +35,7 @@ def _get_app_root():
         else:
             return os.path.dirname(sys.executable)
     else:
-        return os.getcwd()
+        return os.path.dirname(os.path.abspath(__file__))
 
 # 仅在 Windows 上调整 DLL 搜索路径
 if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
@@ -44,10 +44,24 @@ if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
 import mimetypes # noqa
 mimetypes.add_type("application/javascript", ".js")
 import asyncio # noqa
+import importlib # noqa
+import inspect # noqa
 import logging # noqa
 import atexit # noqa
 import httpx # noqa
+import time # noqa
+from datetime import datetime, timezone # noqa
 from config import MAIN_SERVER_PORT, MONITOR_SERVER_PORT # noqa
+from utils.cloudsave_autocloud import get_cloudsave_manager # noqa
+from utils.cloudsave_runtime import (
+    CloudsaveDeadlineExceeded,
+    MaintenanceModeError,
+    ROOT_MODE_NORMAL,
+    bootstrap_local_cloudsave_environment,
+    is_write_fence_active,
+    maintenance_error_payload,
+    set_root_mode,
+)
 from utils.config_manager import get_config_manager, get_reserved # noqa
 # 将日志初始化提前，确保导入阶段异常也能落盘
 from utils.logger_config import setup_logging # noqa: E402
@@ -162,6 +176,69 @@ steamworks = None
 _server_loop: asyncio.AbstractEventLoop | None = None
 
 _config_manager = get_config_manager()
+_cloudsave_manager = get_cloudsave_manager(_config_manager)
+
+
+def _cloudsave_action_supports_deadline(action) -> bool:
+    try:
+        signature = inspect.signature(action)
+    except (TypeError, ValueError):
+        return False
+    if "deadline_monotonic" in signature.parameters:
+        return True
+    return any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+
+
+def _cloudsave_action_supports_steamworks(action) -> bool:
+    try:
+        signature = inspect.signature(action)
+    except (TypeError, ValueError):
+        return False
+    if "steamworks" in signature.parameters:
+        return True
+    return any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+
+
+async def _run_cloudsave_manager_action(
+    action_name: str,
+    *,
+    reason: str,
+    budget_seconds: float | None = None,
+    steamworks=None,
+):
+    action = getattr(_cloudsave_manager, action_name)
+    kwargs = {"reason": reason}
+    if (
+        budget_seconds is not None
+        and budget_seconds > 0
+        and _cloudsave_action_supports_deadline(action)
+    ):
+        kwargs["deadline_monotonic"] = time.monotonic() + float(budget_seconds)
+    if steamworks is not None and _cloudsave_action_supports_steamworks(action):
+        kwargs["steamworks"] = steamworks
+    return await asyncio.to_thread(action, **kwargs)
+
+
+async def _request_memory_server_shutdown() -> None:
+    """Request memory_server shutdown after main_server has finished its own cleanup."""
+    try:
+        from config import MEMORY_SERVER_PORT
+
+        shutdown_url = f"http://127.0.0.1:{MEMORY_SERVER_PORT}/shutdown"
+        async with httpx.AsyncClient(timeout=1, proxy=None, trust_env=False) as client:
+            response = await client.post(shutdown_url)
+        if response.status_code == 200:
+            logger.info("已向memory_server发送关闭信号")
+        else:
+            logger.warning(f"向memory_server发送关闭信号失败，状态码: {response.status_code}")
+    except Exception as e:
+        logger.warning(f"向memory_server发送关闭信号时出错: {e}")
 
 @dataclass
 class RoleState:
@@ -195,18 +272,67 @@ class RoleState:
 role_state: dict[str, RoleState] = {}
 
 
-def cleanup():
-    """通知所有同步线程停止"""
-    logger.info("正在关闭同步线程...")
+def _iter_sync_connector_threads():
+    """迭代所有仍然存活的同步连接器线程（按 role_state 为准）。"""
+    for name, rs in role_state.items():
+        thread = rs.sync_process
+        if thread is None:
+            continue
+        yield name, thread
+
+
+def _signal_sync_connectors_shutdown(*, log: bool = True) -> None:
+    if log:
+        logger.info("正在关闭同步线程...")
     for rs in role_state.values():
         try:
             rs.sync_shutdown_event.set()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"设置同步关闭事件失败: {e}", exc_info=True)
+
+
+async def join_sync_connector_threads(timeout: float = 3.0) -> list[str]:
+    """并行 join 所有同步连接器线程，返回在 timeout 内仍未退出的线程名。
+
+    N 个角色串行 join 会把最坏墙钟放大成 N * timeout；gather + to_thread
+    让每个 join 在自己的线程里跑，墙钟收敛到单个 timeout。
+    """
+    wait_timeout = max(0.0, float(timeout))
+    targets = list(_iter_sync_connector_threads())
+    if not targets:
+        return []
+
+    async def _join_one(name: str, thread) -> str | None:
+        try:
+            await asyncio.to_thread(thread.join, wait_timeout)
+        except Exception as e:
+            logger.debug(f"等待同步连接器线程 {name} 退出时出错: {e}", exc_info=True)
+            return None
+        return name if thread.is_alive() else None
+
+    results = await asyncio.gather(
+        *(_join_one(name, thread) for name, thread in targets),
+        return_exceptions=False,
+    )
+    alive_threads = [name for name in results if name]
+
+    if alive_threads:
+        logger.warning(
+            "以下同步连接器线程未在 %.1fs 内退出: %s",
+            wait_timeout,
+            ", ".join(alive_threads),
+        )
+    return alive_threads
+
+
+def cleanup(*, log: bool = True):
+    """通知所有同步线程停止。log=False 用于 atexit 二次触发时抑制重复日志。"""
+    _signal_sync_connectors_shutdown(log=log)
 
 # 只在主进程中注册 cleanup 函数，防止子进程退出时执行清理
+# log=False：on_shutdown 已经打印过 "正在清理资源..."，atexit 补一刀时不重复 log
 if _IS_MAIN_PROCESS:
-    atexit.register(cleanup)
+    atexit.register(cleanup, log=False)
 # 角色数据全局变量（会在重载时更新）
 master_name = None
 her_name = None
@@ -544,7 +670,13 @@ async def _init_character_resources(k: str, is_new_character: bool):
         # 如果旧session_manager有活跃session，保留它，只更新配置相关的字段
 
         # 先检查会话状态（在锁内检查避免竞态条件）
-        has_active_session = rs.session_manager is not None and rs.session_manager.is_active
+        # 同时覆盖 "正在启动" 窗口：_starting_session_count>0 但 is_active=False
+        # 的期间，start_session 协程仍持有对当前 manager 的引用；如果此时替换
+        # 实例，旧 manager 会在后台完成启动并挂起 OmniRealtimeClient / TTS 线程 /
+        # message_handler_task，永远没人调用 end_session — 造成资源泄漏。
+        mgr = rs.session_manager
+        has_active_session = mgr is not None and mgr.is_active
+        has_starting_session = mgr is not None and mgr.is_starting and not mgr.is_active
 
         if has_active_session:
             # 有活跃session，不重新创建session_manager，只更新配置
@@ -565,6 +697,17 @@ async def _init_character_resources(k: str, is_new_character: bool):
                 logger.error(f"更新 {k} 的活跃session配置失败: {e}", exc_info=True)
                 # 配置更新失败，但为了不影响正在运行的session，继续使用旧配置
                 # 如果确实需要更新配置，可以考虑在下次session重启时再应用
+        elif has_starting_session:
+            # start_session 正在执行中：只保留实例避免孤儿泄漏，但绝对不热改
+            # lanlan_prompt / voice_id — start_session 会在 core.py 内用
+            # self.lanlan_prompt 拼装首帧 session prompt，并基于当前 self.voice_id
+            # 计算音色/TTS 分支。本轮写入会让正在进行的启动拿到半旧半新配置
+            # （用户侧看到启动出来的会话 prompt / 音色与最新配置不一致）。
+            # 本轮的新 prompt / 音色由下一次 start_session 应用。
+            logger.info(
+                f"{k} session 正在启动中（is_starting），保留现有 session_manager，"
+                "本轮不热更新 prompt/voice_id 以免污染 in-flight 启动"
+            )
         else:
             # 没有活跃session，可以安全地重新创建session_manager
             new_mgr = core.LLMSessionManager(
@@ -759,19 +902,21 @@ async def remove_one_catgirl(name: str):
     await _refresh_character_globals()
     logger.info(f"[fast-remove] 已移除角色 {name}")
 
-# 初始化角色数据（使用asyncio.run在模块级别执行async函数）
-# 只在主进程中执行，防止 Windows 上子进程重复导入时再次启动子进程
-if _IS_MAIN_PROCESS:
-    import asyncio as _init_asyncio
-    try:
-        _init_asyncio.get_event_loop()
-    except RuntimeError:
-        _init_asyncio.set_event_loop(_init_asyncio.new_event_loop())
-    _init_asyncio.get_event_loop().run_until_complete(initialize_character_data())
+# 注：不再在模块级别执行 initialize_character_data()——cloud_archive 要求先做
+# bootstrap_local_cloudsave_environment + import_if_needed，才能在 startup hook 里
+# 安全地初始化角色数据。见 on_startup 里的调用顺序。
+
 lock = asyncio.Lock()
 
 # --- FastAPI App Setup ---
 app = FastAPI()
+
+
+@app.exception_handler(MaintenanceModeError)
+async def handle_maintenance_mode_error(_request, exc: MaintenanceModeError):
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse(status_code=409, content=maintenance_error_payload(exc))
 
 
 
@@ -852,22 +997,21 @@ if _IS_MAIN_PROCESS:
         logger.info(f"已挂载用户mod路径: {user_mod_path}")
 
 # --- 初始化共享状态并挂载路由 ---
-# 从 main_routers 包导入并挂载路由
-from main_routers import ( # noqa
-    config_router,
-    characters_router,
-    live2d_router,
-    vrm_router,
-    mmd_router,
-    jukebox_router,
-    workshop_router,
-    memory_router,
-    pages_router,
-    websocket_router,
-    agent_router,
-    system_router,
-)
-from main_routers import music_router # noqa
+# 显式从各子模块导入 router，避免与包级模块导出产生同名遮蔽。
+from main_routers.agent_router import router as agent_router # noqa
+from main_routers.characters_router import router as characters_router # noqa
+from main_routers.cloudsave_router import router as cloudsave_router # noqa
+from main_routers.config_router import router as config_router # noqa
+from main_routers.jukebox_router import router as jukebox_router # noqa
+from main_routers.live2d_router import router as live2d_router # noqa
+from main_routers.memory_router import router as memory_router # noqa
+from main_routers.mmd_router import router as mmd_router # noqa
+from main_routers.music_router import router as music_router # noqa
+from main_routers.pages_router import router as pages_router # noqa
+from main_routers.system_router import router as system_router # noqa
+from main_routers.vrm_router import router as vrm_router # noqa
+from main_routers.websocket_router import router as websocket_router # noqa
+from main_routers.workshop_router import router as workshop_router # noqa
 from main_routers.cookies_login_router import router as cookies_login_router # noqa
 from main_routers.shared_state import init_shared_state # noqa
 
@@ -922,11 +1066,12 @@ app.include_router(mmd_router)
 app.include_router(jukebox_router)
 app.include_router(workshop_router)
 app.include_router(memory_router)
+app.include_router(cloudsave_router)
 # 注意：pages_router 含 /{lanlan_name} 兜底路由，应最后挂载
 app.include_router(websocket_router)
 app.include_router(agent_router)
 app.include_router(system_router)
-app.include_router(music_router.router)
+app.include_router(music_router)
 app.include_router(cookies_login_router) # Cookies登录相关路由，放在最后以避免与其他API路由冲突
 app.include_router(pages_router)  # 兜底路由需最后挂载
 
@@ -1036,8 +1181,9 @@ def _sync_preload_modules():
     try:
         import httpx
         import asyncio
-        
+
         async def _warmup_httpx():
+            # per-call AsyncClient: 这就是 SSL warmup 本身，改共享 client 反而没意义
             async with httpx.AsyncClient(timeout=1.0, proxy=None, trust_env=False) as client:
                 # 发送一个简单请求预热 SSL 上下文
                 try:
@@ -1063,6 +1209,23 @@ def _sync_preload_modules():
     
     elapsed = time.time() - start
     logger.info(f"📦 模块预加载完成，耗时 {elapsed:.2f}s")
+
+
+async def _sync_memory_server_after_startup_import(import_result):
+    """Keep memory_server aligned when main_server applies a cloud snapshot on startup."""
+    if not isinstance(import_result, dict) or import_result.get("action") != "imported":
+        return
+
+    try:
+        from main_routers.characters_router import notify_memory_server_reload
+
+        reloaded = await notify_memory_server_reload(
+            reason="Steam Auto-Cloud startup import",
+        )
+        if not reloaded:
+            logger.warning("Steam Auto-Cloud startup import applied, but memory_server reload did not succeed")
+    except Exception as e:
+        logger.warning(f"Steam Auto-Cloud startup import could not sync memory_server: {e}")
 
 
 # Startup 事件：延迟初始化 Steamworks 和全局语言
@@ -1113,6 +1276,38 @@ async def on_startup():
                     logger.debug(f"[prewarm] import {mod} failed (ignored): {e}")
         asyncio.create_task(_prewarm_heavy_imports())
 
+        # ── Steam Auto-Cloud 启动导入 + 角色数据初始化 ─────────────
+        # 先 bootstrap 再 import，保证导入时序稳定；任何异常都不中断启动
+        # 但会阻止持久化 ROOT_MODE_NORMAL 标记
+        bootstrap_local_cloudsave_environment(_config_manager)
+        import_result = None
+        try:
+            import_result = await _run_cloudsave_manager_action(
+                "import_if_needed",
+                reason="main_server_startup",
+                budget_seconds=10.0,
+            )
+            logger.info("Steam Auto-Cloud startup import: %s", import_result)
+        except CloudsaveDeadlineExceeded:
+            logger.warning(
+                "Steam Auto-Cloud startup import exceeded 10.0s budget before applying runtime changes; continuing with local runtime state"
+            )
+        except Exception as e:
+            logger.warning(f"Steam Auto-Cloud startup import failed: {e}")
+        try:
+            set_root_mode(
+                _config_manager,
+                ROOT_MODE_NORMAL,
+                current_root=str(_config_manager.app_docs_dir),
+                last_known_good_root=str(_config_manager.app_docs_dir),
+                last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            )
+        except Exception as e:
+            logger.error("写入 main_server 启动成功标记失败，已中止后续启动写盘初始化: %s", e)
+            raise RuntimeError("main_server failed to persist ROOT_MODE_NORMAL state") from e
+        await initialize_character_data()
+        await _sync_memory_server_after_startup_import(import_result)
+
         logger.info("正在初始化 Steamworks...")
         steamworks = initialize_steamworks()
         
@@ -1137,7 +1332,7 @@ async def on_startup():
         
         # 后台预热 UGC 缓存 + 同步角色卡（分别独立任务，互不阻塞）
         if steamworks:
-            import main_routers.workshop_router as _wr
+            _wr = importlib.import_module("main_routers.workshop_router")
             
             async def _warmup_only():
                 """仅预热 UGC 缓存"""
@@ -1148,6 +1343,29 @@ async def on_startup():
             
             async def _sync_characters_only():
                 """等待预热完成后同步角色卡"""
+                max_fence_retries = 15
+                retry_interval_seconds = 2
+                for attempt in range(1, max_fence_retries + 1):
+                    if not is_write_fence_active(_config_manager):
+                        break
+                    logger.info(
+                        "创意工坊角色卡同步检测到维护态写围栏，等待解除后重试 (%s/%s)",
+                        attempt,
+                        max_fence_retries,
+                    )
+                    await asyncio.sleep(retry_interval_seconds)
+                else:
+                    logger.info("创意工坊角色卡同步等待维护态解除超时，30s 后重新排队重试")
+
+                    async def _retry_sync_after_delay():
+                        try:
+                            await asyncio.sleep(30)
+                            await _sync_characters_only()
+                        except Exception as retry_exc:
+                            logger.warning(f"创意工坊角色卡同步重试任务失败: {retry_exc}")
+
+                    _wr._ugc_sync_task = asyncio.create_task(_retry_sync_after_delay())
+                    return
                 # 先等预热完成，角色卡同步依赖订阅物品列表
                 if _wr._ugc_warmup_task is not None:
                     try:
@@ -1195,6 +1413,12 @@ async def on_shutdown():
     """服务器关闭时清理资源"""
     if _IS_MAIN_PROCESS:
         logger.info("正在清理资源...")
+        cleanup()
+        try:
+            # join_sync_connector_threads 内部已经 gather 并行 join，直接 await
+            await join_sync_connector_threads(3.0)
+        except Exception as e:
+            logger.debug(f"同步连接器线程清理失败: {e}", exc_info=True)
         
         # 等待预加载任务完成（如果还在运行）
         global _preload_task, agent_event_bridge
@@ -1257,14 +1481,118 @@ async def on_shutdown():
         except Exception as e:
             logger.debug(f"音乐爬虫清理失败: {e}", exc_info=True)
 
-        # 关闭 memory_server 共享 httpx 连接池
+        # Steam Auto-Cloud: 预先释放 memory_server 句柄 + 上传 staged snapshot
+        # 必须在关 http pool 之前，因为 release / upload 都依赖 internal_http_client
+        any_release_failed = False
+        failed_release_characters: list[str] = []
         try:
-            from utils.memory_client import aclose_memory_client
-            await asyncio.wait_for(aclose_memory_client(), timeout=1.0)
-        except asyncio.TimeoutError:
-            logger.warning("memory_client 清理超时，已强制跳过。")
+            from main_routers.characters_router import release_memory_server_character
+
+            releasable_names = sorted(name for name, _mgr in _iter_session_managers())
+
+            # 并发释放所有角色句柄：给整体一个 3s 总预算，而不是 N*1s 串行
+            # memory_server 端是独立进程，/release_character 之间没有共享状态依赖，
+            # 可以安全并发；单角色仍设 2.5s 上限避免慢调用拖尾
+            async def _release_one(character_name: str) -> tuple[str, bool, Exception | None]:
+                try:
+                    released = await asyncio.wait_for(
+                        release_memory_server_character(
+                            character_name,
+                            reason=f"Steam Auto-Cloud pre-shutdown release: {character_name}",
+                        ),
+                        timeout=2.5,
+                    )
+                    return character_name, bool(released), None
+                except Exception as e:
+                    return character_name, False, e
+
+            if releasable_names:
+                try:
+                    results = await asyncio.wait_for(
+                        asyncio.gather(
+                            *(_release_one(n) for n in releasable_names),
+                            return_exceptions=False,
+                        ),
+                        timeout=3.0,
+                    )
+                except asyncio.TimeoutError:
+                    any_release_failed = True
+                    failed_release_characters = list(releasable_names)
+                    logger.warning(
+                        "Steam Auto-Cloud pre-shutdown release phase exceeded 3.0s budget; assuming all characters not fully released"
+                    )
+                    results = []
+
+                for character_name, ok, err in results:
+                    if ok:
+                        continue
+                    any_release_failed = True
+                    failed_release_characters.append(character_name)
+                    if err is None:
+                        logger.warning(
+                            "Steam Auto-Cloud pre-shutdown release failed for %s: returned False; uploaded snapshot may be stale/incomplete",
+                            character_name,
+                        )
+                    else:
+                        logger.warning(
+                            "Steam Auto-Cloud pre-shutdown release failed for %s: %s; uploaded snapshot may be stale/incomplete",
+                            character_name,
+                            err,
+                        )
         except Exception as e:
-            logger.debug(f"memory_client 清理失败: {e}", exc_info=True)
+            any_release_failed = True
+            failed_release_characters = ["<release_phase_error>"]
+            logger.warning(
+                f"Steam Auto-Cloud pre-shutdown release phase failed: {e}; uploaded snapshot may be stale/incomplete"
+            )
+
+        if any_release_failed:
+            logger.warning(
+                "Steam Auto-Cloud shutdown staged snapshot upload skipped because pre-shutdown release failed for: %s",
+                ", ".join(sorted(set(failed_release_characters))) if failed_release_characters else "<unknown>",
+            )
+        else:
+            try:
+                upload_action_kwargs = {
+                    "reason": "main_server_shutdown_remote_upload",
+                    "budget_seconds": 5.0,
+                }
+                if steamworks is not None:
+                    upload_action_kwargs["steamworks"] = steamworks
+                remote_upload_result = await _run_cloudsave_manager_action(
+                    "upload_existing_snapshot",
+                    **upload_action_kwargs,
+                )
+                logger.info("Steam Auto-Cloud shutdown staged snapshot upload: %s", remote_upload_result)
+            except CloudsaveDeadlineExceeded:
+                logger.warning(
+                    "Steam Auto-Cloud shutdown staged snapshot upload exceeded 5.0s budget; source launch may leave Steam remote snapshot unchanged"
+                )
+            except Exception as e:
+                logger.warning(f"Steam Auto-Cloud shutdown staged snapshot upload failed: {e}")
+
+        current_config = get_start_config()
+        if current_config.get("shutdown_memory_server_on_exit"):
+            current_config["shutdown_memory_server_on_exit"] = False
+            await _request_memory_server_shutdown()
+
+        # 关闭内部共享 httpx 连接池（必须在 release/upload 之后，因为它们依赖此 pool）
+        try:
+            from utils.internal_http_client import aclose_internal_http_client
+            await asyncio.wait_for(aclose_internal_http_client(), timeout=1.0)
+        except asyncio.TimeoutError:
+            logger.warning("internal_http_client 清理超时，已强制跳过。")
+        except Exception as e:
+            logger.debug(f"internal_http_client 清理失败: {e}", exc_info=True)
+
+        # 关闭外部共享 httpx 连接池
+        try:
+            from utils.external_http_client import aclose_external_http_client
+            await asyncio.wait_for(aclose_external_http_client(), timeout=2.0)
+        except asyncio.TimeoutError:
+            logger.warning("external_http_client 清理超时，已强制跳过。")
+        except Exception as e:
+            logger.debug(f"external_http_client 清理失败: {e}", exc_info=True)
 
 # 使用 FastAPI 的 app.state 来管理启动配置
 def get_start_config():
@@ -1274,6 +1602,7 @@ def get_start_config():
     return {
         "browser_mode_enabled": False,
         "browser_page": "chara_manager",
+        "shutdown_memory_server_on_exit": False,
         'server': None
     }
 
@@ -1334,7 +1663,7 @@ async def shutdown_server_async():
 
         # 取消后台创意工坊任务，避免残留协程
         try:
-            import main_routers.workshop_router as _wr
+            _wr = importlib.import_module("main_routers.workshop_router")
             _SHUTDOWN_TASK_TIMEOUT = 5  # 等待后台任务结束的超时秒数
             for task_attr in ('_ugc_warmup_task', '_ugc_sync_task'):
                 task = getattr(_wr, task_attr, None)
@@ -1350,22 +1679,12 @@ async def shutdown_server_async():
                         logger.debug(f"后台任务 {task_attr} 取消时异常: {e}")
         except Exception as e:
             logger.debug(f"取消创意工坊后台任务时出错: {e}")
-        
-        # 向memory_server发送关闭信号
-        try:
-            from config import MEMORY_SERVER_PORT
-            shutdown_url = f"http://127.0.0.1:{MEMORY_SERVER_PORT}/shutdown"
-            async with httpx.AsyncClient(timeout=1, proxy=None, trust_env=False) as client:
-                response = await client.post(shutdown_url)
-                if response.status_code == 200:
-                    logger.info("已向memory_server发送关闭信号")
-                else:
-                    logger.warning(f"向memory_server发送关闭信号失败，状态码: {response.status_code}")
-        except Exception as e:
-            logger.warning(f"向memory_server发送关闭信号时出错: {e}")
-        
+        # HEAD: memory_server shutdown signal moved into on_shutdown via
+        # _request_memory_server_shutdown() to share internal_http_client pool
+
         # 通知服务器退出
         current_config = get_start_config()
+        current_config["shutdown_memory_server_on_exit"] = True
         if current_config['server'] is not None:
             current_config['server'].should_exit = True
     except Exception as e:
@@ -1428,6 +1747,8 @@ def _get_port_owners(port: int) -> list[int]:
                 ["netstat", "-ano", "-p", "tcp"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=3,
                 check=False,
             )
@@ -1447,6 +1768,8 @@ def _get_port_owners(port: int) -> list[int]:
                 ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=3,
                 check=False,
             )
@@ -1559,6 +1882,7 @@ if __name__ == "__main__":
         start_config = {
             "browser_mode_enabled": True,
             "browser_page": args.page if args.page!='index' else '',
+            "shutdown_memory_server_on_exit": False,
             'server': server
         }
         set_start_config(start_config)
@@ -1567,6 +1891,7 @@ if __name__ == "__main__":
         start_config = {
             "browser_mode_enabled": False,
             "browser_page": "",
+            "shutdown_memory_server_on_exit": False,
             'server': server
         }
         set_start_config(start_config)

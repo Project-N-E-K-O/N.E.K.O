@@ -394,9 +394,25 @@ class MMDCore {
         // 自定义 LoadingManager: 追踪加载失败的纹理 URL
         const loadManager = new THREE.LoadingManager();
         loadManager._failedUrls = [];
+        loadManager._allResourcesLoaded = false;
         loadManager.onError = (url) => {
             console.warn(`[MMD Core] 资源加载失败: ${url}`);
             loadManager._failedUrls.push(url);
+        };
+        // 所有资源（含失败的）加载完成后，检查并修复缺失纹理
+        // 使用 _pendingMmd 捕获模型引用，避免 onLoad 在 currentModel 赋值前触发时跳过检查
+        this._pendingMmd = null;
+        loadManager.onLoad = () => {
+            loadManager._allResourcesLoaded = true;
+            console.log('[MMD Core] 所有资源加载完成，检查纹理状态');
+            const mmd = this._pendingMmd || this.manager.currentModel;
+            if (mmd) {
+                if (this._fixMissingTexturesTimer) {
+                    clearTimeout(this._fixMissingTexturesTimer);
+                    this._fixMissingTexturesTimer = null;
+                }
+                this._fixMissingTextures(mmd);
+            }
         };
         this.manager._loadManager = loadManager;
 
@@ -416,7 +432,10 @@ class MMDCore {
             const mmd = await new Promise((resolve, reject) => {
                 loader.load(
                     modelUrl,
-                    (mmd) => resolve(mmd),
+                    (mmd) => {
+                        this._pendingMmd = mmd;
+                        resolve(mmd);
+                    },
                     (progress) => {
                         this._updateLoadingOverlay(
                             loadingSessionId,
@@ -565,8 +584,16 @@ class MMDCore {
         }
         console.log(`[MMD Core] 材质后处理完成: ${materialCount} 个材质`);
 
-        // 延迟检查纹理加载状态，为加载失败的纹理提供白色 fallback
-        setTimeout(() => this._fixMissingTextures(mmd), 3000);
+        // 兜底：如果 LoadingManager.onLoad 30 秒内未触发，强制检查纹理状态
+        // （正常情况下 onLoad 会在所有资源加载完后触发，此定时器仅防极端情况）
+        this._fixMissingTexturesTimer = setTimeout(() => {
+            this._fixMissingTexturesTimer = null;
+            const loadManager = this.manager._loadManager;
+            if (loadManager && !loadManager._allResourcesLoaded) {
+                console.warn('[MMD Core] 纹理加载兜底超时（30s），强制检查纹理状态');
+                this._fixMissingTextures(mmd);
+            }
+        }, 30000);
     }
 
     /**
@@ -785,6 +812,12 @@ class MMDCore {
     // ═══════════════════ 模型清理 ═══════════════════
 
     _clearModel() {
+        // 清理纹理修复兜底定时器（必须在早退之前，防止 currentModel 被外部提前置空时 timer 泄漏）
+        if (this._fixMissingTexturesTimer) {
+            clearTimeout(this._fixMissingTexturesTimer);
+            this._fixMissingTexturesTimer = null;
+        }
+
         const mmd = this.manager.currentModel;
         if (!mmd) return;
 

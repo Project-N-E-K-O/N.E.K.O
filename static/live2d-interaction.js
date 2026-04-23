@@ -310,7 +310,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     const CLICK_THRESHOLD_DISTANCE = 10; // 移动距离阈值（像素）
     const CLICK_THRESHOLD_TIME = 300; // 时间阈值（毫秒）
 
-    // 使用 live2d-ui-drag.js 中的共享工具函数（按钮 pointer-events 管理）
+    // 使用 avatar-ui-drag.js 中的共享工具函数（按钮 pointer-events 管理）
     const disableButtonPointerEvents = () => {
         if (window.DragHelpers) {
             window.DragHelpers.disableButtonPointerEvents();
@@ -460,6 +460,9 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
                 // 如果变成多点触摸，停止拖拽
                 this._isDraggingModel = false;
                 document.getElementById('live2d-canvas').style.cursor = '';
+                // 【维护注意】所有退出拖拽的路径都必须调用 restoreButtonPointerEvents，
+                //  否则 body 上的 neko-model-dragging class 不会被移除，按钮将永久失效。
+                restoreButtonPointerEvents();
                 return;
             }
 
@@ -848,17 +851,14 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
         if (this._goodbyeClicked) {
             const lockIcon = document.getElementById('live2d-lock-icon');
             const floatingButtons = document.getElementById('live2d-floating-buttons');
-            const returnButtonContainer = document.getElementById('live2d-return-button-container');
 
             if (lockIcon) {
                 lockIcon.style.setProperty('display', 'none', 'important');
             }
-            // 隐藏浮动按钮容器，显示"请她回来"按钮
+            // goodbye 状态下这里只维护锁图标/浮动按钮可见性。
+            // 返回球必须由 app-ui.js 在完成定位后再显示，避免先以默认 (0, 0) 闪现。
             if (floatingButtons) {
                 floatingButtons.style.display = 'none';
-            }
-            if (returnButtonContainer) {
-                returnButtonContainer.style.display = 'block';
             }
             ctrlFadeActive = false;
             stationaryFadeActive = false;
@@ -1871,6 +1871,9 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
         } else if (typeof this.clearExpression === 'function') {
             this.clearExpression();
         }
+        if (typeof window.restoreLive2DIdleAnimationOnMainPage === 'function') {
+            window.restoreLive2DIdleAnimationOnMainPage();
+        }
     }, window.live2dManager.CLICK_EFFECT_DURATION);
 };
 
@@ -2036,13 +2039,47 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
                             } catch (error) {
                                 console.warn(`[TouchSet] 无法获取motion持续时间:`, error);
                             }
-                            
+
                             try {
-                                const result = await this.currentModel.motion(groupName, index, 2);
+                                const internalModel = this.currentModel.internalModel;
+                                const motionManager = internalModel.motionManager;
+                                const json = internalModel.settings.json;
+
+                                if (json) {
+                                    json.FileReferences = json.FileReferences || {};
+                                    json.FileReferences.Motions = json.FileReferences.Motions || {};
+                                    json.FileReferences.Motions[groupName] = json.FileReferences.Motions[groupName] || [];
+                                    json.FileReferences.Motions[groupName][index] = { 'File': motion.File };
+
+                                    json.motions = json.motions || {};
+                                    json.motions[groupName] = json.motions[groupName] || [];
+                                    json.motions[groupName][index] = { 'File': motion.File };
+                                }
+
+                                internalModel.settings.motions = internalModel.settings.motions || {};
+                                internalModel.settings.motions[groupName] = internalModel.settings.motions[groupName] || [];
+                                internalModel.settings.motions[groupName][index] = { 'File': motion.File };
+
+                                if (!motionManager.definitions) motionManager.definitions = {};
+                                motionManager.definitions[groupName] = internalModel.settings.motions[groupName];
+
+                                if (!motionManager.motionGroups) {
+                                    motionManager.motionGroups = {};
+                                }
+                                if (!motionManager.motionGroups[groupName]) {
+                                    motionManager.motionGroups[groupName] = [];
+                                }
+
+                                console.log(`[TouchSet] 正在向引擎注入并加载动作: ${motion.File}`);
+                                await motionManager.loadMotion(groupName, index);
+
+                                motionManager.stopAllMotions();
+                                const result = await this.currentModel.motion(groupName, index, 3);
+
                                 if (result) {
-                                    console.log(`[TouchSet] 成功播放动作: ${groupName}[${index}]`);
+                                    console.log(`[TouchSet] ✅ 成功下发播放指令: ${groupName}[${index}]`);
                                 } else {
-                                    console.warn(`[TouchSet] 动作播放返回空值: ${groupName}[${index}]`);
+                                    console.warn(`[TouchSet] ❌ 动作加载成功但引擎仍拒绝播放: ${groupName}[${index}]`);
                                 }
                             } catch (motionError) {
                                 console.warn(`[TouchSet] 动作播放异常: ${groupName}[${index}]`, motionError);
