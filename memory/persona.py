@@ -1891,8 +1891,9 @@ class PersonaManager:
 
         Returns the non-negative int when `raw` is coercible and sane;
         returns None (→ force a cache miss) when `raw` is missing,
-        non-numeric, a bool (`int(True) == 1` would silently succeed —
-        not what we want for a token count field), or negative.
+        non-numeric, a bool, a non-integer float (1.9 would silently
+        truncate to 1), `inf` / `nan` (`int(inf)` raises
+        `OverflowError`), or negative.
 
         `bool` is a subclass of `int` in Python, so the explicit
         `isinstance(raw, bool)` reject keeps us from accepting `True`/
@@ -1900,9 +1901,15 @@ class PersonaManager:
         edited with boolean-looking garbage."""
         if raw is None or isinstance(raw, bool):
             return None
+        if isinstance(raw, float):
+            if not raw.is_integer():
+                return None
+            if raw < 0:
+                return None
+            return int(raw)
         try:
             value = int(raw)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return None
         if value < 0:
             return None

@@ -891,18 +891,29 @@ def test_coerce_cached_count_helper_shape():
     it (e.g. accepting floats that truncate to negatives)."""
     from memory.persona import PersonaManager as PM
 
-    # Accept: non-negative ints and int-parseable strings.
+    # Accept: non-negative ints, int-parseable strings, and int-valued floats
+    # (e.g. 42.0 — json.loads of "42.0" produces a float). `bool` subclass
+    # check MUST run before `float` check so True/False don't slip through.
     assert PM._coerce_cached_count(0) == 0
     assert PM._coerce_cached_count(7) == 7
     assert PM._coerce_cached_count('42') == 42
+    assert PM._coerce_cached_count(42.0) == 42
 
-    # Reject: None, booleans, non-numeric strings, negative, junk types.
+    # Reject: None, booleans, non-numeric strings, negative, junk types,
+    # non-integer floats (1.9 → would silently truncate to 1 under int()),
+    # and float infinities / NaN (int(inf) raises OverflowError).
+    import math
     assert PM._coerce_cached_count(None) is None
     assert PM._coerce_cached_count(True) is None
     assert PM._coerce_cached_count(False) is None
     assert PM._coerce_cached_count('??') is None
     assert PM._coerce_cached_count('') is None
     assert PM._coerce_cached_count(-5) is None
+    assert PM._coerce_cached_count(-3.0) is None
+    assert PM._coerce_cached_count(1.9) is None
+    assert PM._coerce_cached_count(float('inf')) is None
+    assert PM._coerce_cached_count(float('nan')) is None
+    assert math.isnan(float('nan'))  # sanity — nan.is_integer() is False
     assert PM._coerce_cached_count('-3') is None
     assert PM._coerce_cached_count([1, 2, 3]) is None  # type: ignore[arg-type]
     assert PM._coerce_cached_count({'nope': 1}) is None  # type: ignore[arg-type]
