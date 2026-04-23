@@ -75,6 +75,25 @@ from tests.testbench.pipeline.diagnostics_ops import DiagnosticsOp
 from tests.testbench.pipeline.messages_writer import append_message
 from tests.testbench.pipeline.prompt_builder import PreviewNotReady, build_prompt_bundle
 from tests.testbench.session_store import Session
+from utils.llm_client import (
+    AIMessage,
+    HumanMessage,
+    SystemMessage,
+    messages_to_dict,
+)
+
+# Map ``session.messages``'s role field → the corresponding LangChain
+# message class so :func:`_apply_mirror_to_recent` can write
+# ``recent.json`` in the main-program canonical on-disk shape
+# ``{"type": "human"|"ai"|"system", "data": {"content": <str>}}``.
+# Using the LangChain classes + ``messages_to_dict`` instead of hand-
+# rolling the dict guarantees byte-exact round-trip with
+# ``messages_from_dict`` (see ``utils.llm_client.py`` L71-L95).
+_LANGCHAIN_ROLE_CLS: dict[str, type] = {
+    "user": HumanMessage,
+    "assistant": AIMessage,
+    "system": SystemMessage,
+}
 
 # ─────────────────────────────────────────────────────────────
 # Public value objects
@@ -424,24 +443,40 @@ def _apply_mirror_to_recent(
             fallback_reason=f"recent.json 读取失败: {type(exc).__name__}: {exc}",
         )
 
-    # Mirror entries use the main-program /cache minimal shape:
-    #   {role, content:[{type:"text", text:<str>}]}
-    # Session.messages keeps the richer testbench shape; we project down so
-    # downstream recent_history parsers (main program + testbench) both read
-    # uniformly. This mirrors the byte-shape written by cross_server /cache.
-    mirrored: list[dict[str, Any]] = []
+    # Mirror entries must be written in the main-program canonical
+    # ``messages_to_dict`` shape — ``{"type": "human"|"ai"|"system",
+    # "data": {"content": <str>}}`` — because downstream consumers
+    # (``memory_runner._preview_recent_compress`` at line 456,
+    # ``memory_runner._preview_facts_extract`` at line 621, plus the
+    # main program's own ``memory/recent.py``) all round-trip via
+    # ``messages_from_dict(_read_json_list(recent_path))``. Writing our
+    # testbench-internal ``{role, content:[{type:text,text:...}]}``
+    # shape would pass ``isinstance(loaded, list)`` but then silently
+    # fall back to ``HumanMessage(content=str(d))`` inside
+    # ``messages_from_dict`` (``utils.llm_client.py`` L113-114) — the
+    # content would read as the stringified dict ``"{'role': ...}"``
+    # instead of the actual user/assistant text, breaking compress /
+    # facts-extract without raising.
+    #
+    # Build LangChain messages via ``_ROLE_CLS`` (which maps
+    # user→HumanMessage, assistant→AIMessage, system→SystemMessage),
+    # then serialize with ``messages_to_dict``. This is exactly the
+    # write path the main program uses in ``memory/recent.py``
+    # (``cm.memory_dir / character / "recent.json"``).
+    lc_messages: list[Any] = []
     for msg in messages_to_mirror:
+        role = str(msg.get("role") or "user").strip().lower()
+        cls = _LANGCHAIN_ROLE_CLS.get(role, _LANGCHAIN_ROLE_CLS["user"])
         content = msg.get("content")
         if isinstance(content, str):
             text = content
         elif isinstance(content, list) and content and isinstance(content[0], dict):
+            # testbench richer content shape — flatten to plain text
             text = str(content[0].get("text") or "")
         else:
             text = str(content or "")
-        mirrored.append({
-            "role": msg.get("role", "user"),
-            "content": [{"type": "text", "text": text}],
-        })
+        lc_messages.append(cls(content=text))
+    mirrored = messages_to_dict(lc_messages)
 
     try:
         atomic_write_json(recent_path, existing + mirrored)

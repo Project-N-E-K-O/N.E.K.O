@@ -733,6 +733,57 @@ def check_d_mirror(client, mock) -> list[str]:
             _check(len(data) == 2, "D1.recent_len",
                    f"expected 2 rows (user + assistant), got {len(data)}")
 
+            # P25 Day 1 fixup (2026-04-23): recent.json entries MUST be
+            # written in the main-program canonical LangChain shape
+            # ``{"type": "human"|"ai"|"system", "data": {"content": str}}``,
+            # NOT the testbench-internal shape ``{"role", "content":
+            # [{"type": "text", "text": ...}]}``. The latter was the
+            # original Day 1 impl, caught post-commit by manual curl
+            # verification: downstream ``memory_runner._preview_recent_
+            # compress`` / ``_preview_facts_extract`` both round-trip
+            # via ``messages_from_dict(_read_json_list(recent_path))``
+            # (``memory_runner.py`` L456 + L621), and the main program's
+            # ``memory/recent.py`` uses the same deserializer. Writing
+            # testbench-internal shape would silently fall through
+            # ``messages_from_dict`` (``utils/llm_client.py`` L113-114)
+            # into ``HumanMessage(content=str(d))``, stringifying the
+            # whole dict — corrupting both sides' understanding of the
+            # file. The fix threads mirror writes through
+            # ``messages_to_dict([HumanMessage|AIMessage|SystemMessage])``
+            # in ``external_events._apply_mirror_to_recent``.
+            _check(
+                all(isinstance(e, dict) and "type" in e and "data" in e
+                    and isinstance(e["data"], dict) and "content" in e["data"]
+                    for e in data),
+                "D1.recent_langchain_shape",
+                "every row must be {type, data:{content}} (canonical "
+                "LangChain ``messages_to_dict`` shape). Found row "
+                f"keys: {[sorted(e.keys()) if isinstance(e, dict) else type(e).__name__ for e in data]}",
+            )
+            _check(
+                data[0]["type"] == "human" and data[1]["type"] == "ai",
+                "D1.recent_role_pair",
+                f"avatar pair must map user→human + assistant→ai; got "
+                f"types=[{data[0].get('type')}, {data[1].get('type')}]",
+            )
+            # And the round-trip must survive ``messages_from_dict`` —
+            # i.e. ``content`` comes back as a plain string, not a
+            # stringified dict (the silent-failure signature).
+            from utils.llm_client import messages_from_dict
+            roundtripped = messages_from_dict(data)
+            _check(
+                len(roundtripped) == 2,
+                "D1.recent_roundtrip_len",
+                f"messages_from_dict returned {len(roundtripped)} msgs",
+            )
+            _check(
+                all(isinstance(m.content, str) and not m.content.startswith("{")
+                    for m in roundtripped),
+                "D1.recent_roundtrip_content",
+                f"content field must round-trip as plain str, got: "
+                f"{[(type(m.content).__name__, str(m.content)[:40]) for m in roundtripped]}",
+            )
+
         # D2 — mirror_to_recent: true + persona.character_name="" → fallback.
         r = client.patch("/api/persona", json={"character_name": ""})
         _check(r.status_code == 200, "D2.persona_patch_status",
