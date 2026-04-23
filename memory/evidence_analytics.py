@@ -34,7 +34,7 @@ from utils.config_manager import get_config_manager
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["funnel_counts"]
+__all__ = ["funnel_counts", "to_naive_local"]
 
 
 # Bucket schema — the keys in the returned dict, frozen by RFC §3.10.2.
@@ -83,7 +83,7 @@ def _events_path(lanlan_name: str) -> str:
     )
 
 
-def _to_naive_local(dt: datetime) -> datetime:
+def to_naive_local(dt: datetime) -> datetime:
     """Normalize any datetime to naive local-clock for comparison with
     event-log timestamps.
 
@@ -96,10 +96,23 @@ def _to_naive_local(dt: datetime) -> datetime:
     Convention: aware → convert to local timezone, then drop tzinfo.
     Naive → return unchanged (assumed already local-clock per the
     event-log convention).
+
+    Public-ish (re-exported via `__all__`) so the HTTP endpoint in
+    `memory_server.py` can normalize bounds *before* its own
+    `since_dt > until_dt` validation, not just inside `funnel_counts`.
+    Otherwise mixed aware/naive bounds (e.g. `?until=...Z` with `since`
+    defaulted to a naive `datetime.now()`) would still raise TypeError
+    at the comparison and surface as 500 instead of the intended 400.
     """
     if dt.tzinfo is None:
         return dt
     return dt.astimezone().replace(tzinfo=None)
+
+
+# Backward-compat alias for any internal callers that imported the
+# private name; the underscore form is kept so we don't have to rewrite
+# in-module references in this same patch.
+_to_naive_local = to_naive_local
 
 
 def _parse_ts(ts: object) -> Optional[datetime]:

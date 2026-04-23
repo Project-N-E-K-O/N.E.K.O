@@ -61,7 +61,7 @@ def _build_app(tmpdir: str) -> FastAPI:
     """
     import asyncio
 
-    from memory.evidence_analytics import funnel_counts
+    from memory.evidence_analytics import funnel_counts, to_naive_local
 
     app = FastAPI()
     cm = MagicMock()
@@ -88,6 +88,10 @@ def _build_app(tmpdir: str) -> FastAPI:
             until_dt = datetime.fromisoformat(until) if until else now
         except ValueError:
             raise HTTPException(status_code=400, detail=f"invalid `until` ISO8601: {until!r}")
+        # Normalize tz BEFORE the inequality check — mirrors the
+        # production handler's round-2 fix for coderabbitai PR #937.
+        since_dt = to_naive_local(since_dt)
+        until_dt = to_naive_local(until_dt)
         if since_dt > until_dt:
             raise HTTPException(status_code=400, detail="`since` must be <= `until`")
 
@@ -228,3 +232,63 @@ async def test_funnel_endpoint_default_window_covers_recent_events(tmp_path):
         resp = await client.get(f"/api/memory/funnel/{_NAME}")
     assert resp.status_code == 200
     assert resp.json()["counts"]["facts_added"] == 1
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_funnel_endpoint_aware_since_naive_default_until(tmp_path):
+    """Regression: coderabbitai PR #937 round-2 — only `since` aware (e.g.
+    `...Z`) and `until` defaulted to naive `datetime.now()`. The endpoint
+    must NOT raise TypeError on the `since_dt > until_dt` comparison;
+    must return 200 with valid JSON.
+
+    Picks an old `since` (>30 days ago) so the default `until = now()`
+    is unambiguously after it regardless of the local UTC offset that
+    `astimezone()` resolves to.
+    """
+    now = datetime.now()
+    _write_events(str(tmp_path), [
+        {"type": "fact.added", "ts": (now - timedelta(hours=1)).isoformat(), "payload": {}},
+    ])
+    app = _build_app(str(tmp_path))
+    since = (now - timedelta(days=30)).isoformat() + "Z"
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            f"/api/memory/funnel/{_NAME}",
+            params={"since": since},
+        )
+    assert resp.status_code == 200, f"unexpected status {resp.status_code}: {resp.text}"
+    body = resp.json()
+    assert body["counts"]["facts_added"] == 1
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_funnel_endpoint_naive_default_since_aware_until(tmp_path):
+    """Reverse mix: `since` defaulted (naive `now() - 7d`), `until` aware
+    (`...Z`). Symmetric regression for coderabbitai PR #937 round-2.
+
+    Pins the event into the default 7-day window and chooses `until` far
+    enough in the future that it's unambiguously > the naive default
+    `since` after `astimezone()` normalization on any UTC offset.
+    """
+    now = datetime.now()
+    _write_events(str(tmp_path), [
+        {"type": "fact.added", "ts": (now - timedelta(hours=1)).isoformat(), "payload": {}},
+    ])
+    app = _build_app(str(tmp_path))
+    until = (now + timedelta(days=30)).isoformat() + "Z"
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            f"/api/memory/funnel/{_NAME}",
+            params={"until": until},
+        )
+    assert resp.status_code == 200, f"unexpected status {resp.status_code}: {resp.text}"
+    body = resp.json()
+    assert body["counts"]["facts_added"] == 1
