@@ -1501,6 +1501,20 @@ overflow: hidden;
     }
 }
 
+@media (prefers-reduced-motion: reduce) {
+    .tab-content.tab-entering,
+    .panel-tab-content.tab-enter,
+    .panel-tab-content.tab-exit {
+        animation: none !important;
+        transition: none !important;
+    }
+    .tab-content.tab-entering,
+    .tab-content.tab-leaving {
+        clip-path: none !important;
+        transform: none !important;
+    }
+}
+
 #character-cards-content > .chara-cards-view-area {
     flex: 1 1 auto;
     display: flex;
@@ -3705,8 +3719,9 @@ margin-top: 10px;
 /* ===== 卡片视图 ===== */
 .chara-cards-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(180px, 220px));
     gap: 14px;
+    justify-content: start;
 }
 
 .chara-card-item {
@@ -3721,6 +3736,25 @@ margin-top: 10px;
     box-shadow: 0 1px 2px rgba(15, 30, 60, 0.04);
     display: flex;
     flex-direction: column;
+}
+
+.chara-card-item .card-hide-corner {
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    width: 22px;
+    height: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 5;
+    pointer-events: auto;
+    background: rgba(255,255,255,0.85);
+    border: 1px solid #e6eef5;
+    border-radius: 6px;
+    color: #40C5F1;
+    cursor: pointer;
+    padding: 0;
 }
 
 .chara-card-item:hover {
@@ -4088,6 +4122,21 @@ margin-top: 10px;
     overflow-x: hidden;
 }
 
+@media (max-width: 768px) {
+    .catgirl-panel-wrapper.card-only.phase-center {
+        width: min(calc(65vh * 0.75), 95vw);
+    }
+    .catgirl-panel-wrapper.card-only .catgirl-panel-left,
+    .catgirl-panel-wrapper.card-only.phase-expand .catgirl-panel-left {
+        width: min(calc(65vh * 0.75), 95vw);
+    }
+    .catgirl-panel-wrapper.card-only.phase-expand .catgirl-panel-card-image {
+        width: min(calc(65vh * 0.75), 95vw);
+        height: auto;
+        max-height: 55vh;
+    }
+}
+
 .catgirl-panel-wrapper.card-only.phase-expand .catgirl-panel-right {
     flex: 1 1 auto;
     min-width: 0;
@@ -4216,7 +4265,7 @@ margin-top: 10px;
     animation: tabSlideIn 0.45s cubic-bezier(0.22, 1, 0.36, 1) forwards;
 }
 
-.panel-tab-content.tab-exit {
+.catgirl-panel-right .panel-tab-content.tab-exit {
     display: block;
     position: absolute;
     top: 0;

@@ -1738,14 +1738,6 @@ async def rename_catgirl(old_name: str, request: Request):
                 error_message = f"{error_message}; 回滚失败: {rollback_error}"
             return JSONResponse({"success": False, "error": error_message}, status_code=500)
 
-    # 数据更新+重载完成后再通知前端，避免前端 fetch /api/characters 时新名称尚未就绪
-    if memory_server_reloaded and rename_notification_ws and rename_notification_message:
-        try:
-            await rename_notification_ws.send_text(rename_notification_message)
-            logger.info(f"已向 {old_name} 发送重命名通知")
-        except Exception as e:
-            logger.warning(f"发送重命名通知给 {old_name} 失败: {e}")
-
     # 迁移卡面 PNG 与 sidecar JSON（如有）
     from datetime import datetime as _dt
     _ts = _dt.now().strftime('%Y%m%d%H%M%S')
@@ -1770,6 +1762,20 @@ async def rename_catgirl(old_name: str, request: Request):
             logger.info(f"[重命名卡面元数据] 已迁移: {old_meta} -> {new_meta}")
     except Exception as e:
         logger.warning(f"[重命名卡面] 迁移失败 {old_name} -> {new_name}: {e}")
+        return JSONResponse({
+            "success": False,
+            "error": f"角色数据已更新，但卡面迁移失败: {e}",
+            "memory_renamed": True,
+            "memory_server_reloaded": memory_server_reloaded,
+        }, status_code=500)
+
+    # 数据更新+重载+卡面迁移完成后再通知前端
+    if memory_server_reloaded and rename_notification_ws and rename_notification_message:
+        try:
+            await rename_notification_ws.send_text(rename_notification_message)
+            logger.info(f"已向 {old_name} 发送重命名通知")
+        except Exception as e:
+            logger.warning(f"发送重命名通知给 {old_name} 失败: {e}")
 
     return {
         "success": True,
@@ -2223,6 +2229,10 @@ async def delete_catgirl(name: str):
 
     characters_snapshot = copy.deepcopy(characters)
     memory_targets = list_character_memory_paths(_config_manager, name)
+    face_path = _config_manager.card_faces_dir / f"{name}.png"
+    meta_path = _config_manager.card_face_meta_path(name)
+    memory_targets.append(face_path)
+    memory_targets.append(meta_path)
 
     with _create_character_operation_backup_dir(_config_manager, "neko-delete-character-") as temp_dir:
         memory_snapshot_records = await asyncio.to_thread(
@@ -2238,6 +2248,12 @@ async def delete_catgirl(name: str):
             )
             for entry_path in removed_memory_paths:
                 logger.info(f"已删除: {entry_path}")
+
+            # 同步删除卡面 PNG 与 sidecar JSON（纳入同一事务以便回滚）
+            if face_path.exists():
+                await asyncio.to_thread(face_path.unlink)
+            if meta_path.exists():
+                await asyncio.to_thread(meta_path.unlink)
 
             await asyncio.to_thread(
                 _config_manager.save_character_tombstones_state,
@@ -2284,17 +2300,6 @@ async def delete_catgirl(name: str):
                 },
                 status_code=500,
             )
-
-    # 清理卡面 PNG 与 sidecar JSON（如有）
-    try:
-        face_path = _config_manager.card_faces_dir / f"{name}.png"
-        meta_path = _config_manager.card_face_meta_path(name)
-        if face_path.exists():
-            await asyncio.to_thread(face_path.unlink)
-        if meta_path.exists():
-            await asyncio.to_thread(meta_path.unlink)
-    except Exception as e:
-        logger.warning(f"删除卡面文件失败 {name}: {e}")
 
     return {"success": True, "memory_server_reloaded": memory_server_reloaded}
 
@@ -3849,6 +3854,7 @@ async def export_catgirl_card(name: str):
 
                 # 3. 读取卡面元数据 sidecar（作者 / 创建时间）
                 _sidecar_meta_path = _config_manager.card_face_meta_path(name)
+                _sidecar_existed = await asyncio.to_thread(_sidecar_meta_path.exists)
                 _sidecar_meta = await asyncio.to_thread(_read_card_meta, _sidecar_meta_path)
                 now_iso = datetime.now().isoformat(timespec='seconds')
                 # 优先使用已有的创建时间；未设置时使用当前时间并回写 sidecar，
@@ -3863,7 +3869,9 @@ async def export_catgirl_card(name: str):
                         _new_meta['created_at'] = _created_at
                         if not _new_meta.get('updated_at'):
                             _new_meta['updated_at'] = now_iso
-                        if not _new_meta.get('origin'):
+                        # 仅当 sidecar 原本不存在且没有用户提供的 origin 时才推断来源，
+                        # 避免覆盖已有的 self 默认值或用户设定。
+                        if not _sidecar_existed and not _new_meta.get('origin'):
                             _new_meta['origin'] = _detect_card_origin_from_character(catgirl_data or {})
                         await asyncio.to_thread(_write_card_meta, _sidecar_meta_path, _new_meta)
                     except Exception as _meta_persist_err:
@@ -4501,11 +4509,8 @@ def _read_card_meta(meta_path) -> dict:
 
 def _write_card_meta(meta_path, meta: dict) -> None:
     """写入 sidecar JSON。调用方需先 ensure_card_faces_directory()。"""
-    try:
-        with open(meta_path, 'w', encoding='utf-8') as f:
-            json.dump(meta, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.warning(f"写入卡面元数据失败 {meta_path}: {e}")
+    with open(meta_path, 'w', encoding='utf-8') as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
 
 
 def _detect_card_origin_from_character(catgirl_data: dict) -> str:
@@ -4556,14 +4561,17 @@ async def list_card_metas():
     faces_dir = _config_manager.card_faces_dir
     metas: dict = {}
     try:
-        # 先加载所有已持久化的 sidecar
+        # 先加载角色列表，构建有效名称集合
+        characters = await _config_manager.aload_characters()
+        valid_names = set((characters.get('猫娘', {}) or {}).keys())
+        # 只读取属于有效角色的 sidecar
         if faces_dir.exists():
             json_files = await asyncio.to_thread(lambda: list(faces_dir.glob('*.json')))
             for p in json_files:
-                meta = await asyncio.to_thread(_read_card_meta, p)
-                metas[p.stem] = meta
-        # 再补齐缺失 sidecar 的猫娘：按配置推断 origin，返回默认值
-        characters = await _config_manager.aload_characters()
+                if p.stem in valid_names:
+                    meta = await asyncio.to_thread(_read_card_meta, p)
+                    metas[p.stem] = meta
+        # 补齐缺失 sidecar 的猫娘：按配置推断 origin，返回默认值
         for cname, cdata in (characters.get('猫娘', {}) or {}).items():
             if cname in metas:
                 continue
@@ -4651,7 +4659,7 @@ async def get_card_face(name: str):
         return JSONResponse({'success': False, 'error': '卡面不存在'}, status_code=404)
 
     image_data = await asyncio.to_thread(face_path.read_bytes)
-    return Response(content=image_data, media_type='image/png')
+    return Response(content=image_data, media_type='image/png', headers={'Cache-Control': 'no-store'})
 
 
 @router.put('/catgirl/{name}/card-face')

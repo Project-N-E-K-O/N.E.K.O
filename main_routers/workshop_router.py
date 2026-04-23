@@ -3546,8 +3546,7 @@ async def sync_workshop_character_cards() -> dict:
                                         'created_at': now_iso,
                                         'updated_at': now_iso,
                                     }
-                                    with open(meta_path, 'w', encoding='utf-8') as f:
-                                        json.dump(meta, f, ensure_ascii=False, indent=2)
+                                    await atomic_write_json_async(meta_path, meta, ensure_ascii=False, indent=2)
                             except Exception as meta_err:
                                 logger.warning(f"sync_workshop_character_cards: 写入卡面元数据失败 {chara_name}: {meta_err}")
                             

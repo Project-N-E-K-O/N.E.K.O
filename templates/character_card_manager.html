@@ -33,6 +33,13 @@
             font-weight: 600;
             font-size: 0.95rem;
             user-select: none;
+            background: none;
+            border: none;
+            padding: 0;
+            appearance: none;
+            -webkit-appearance: none;
+            width: 100%;
+            text-align: left;
         }
         .master-profile-header .arrow {
             transition: transform 0.2s ease;
@@ -520,7 +527,7 @@
 </button>
 <input type="file" id="chara-import-input" accept="image/png,.nekocfg" style="display:none">
 <div class="chara-search-wrapper">
-<input type="text" id="chara-search-input" class="control-input" placeholder="搜索角色卡..." oninput="filterCharaCards(this.value)" data-i18n-placeholder="steam.searchCharacterCards" aria-label="搜索角色卡" data-i18n-aria-label="steam.searchCharacterCards">
+<input type="text" id="chara-search-input" class="control-input" placeholder="搜索角色卡..." oninput="filterCharaCards(this.value)" data-i18n-placeholder="steam.searchCharacterCards" aria-label="搜索角色卡" data-i18n-aria="steam.searchCharacterCards">
 <img src="/static/icons/search_icon.png" class="search-icon" alt="">
 </div>
 </div>
@@ -529,15 +536,15 @@
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
     <span data-i18n="character.showHidden">显示已隐藏</span>
 </button>
-<button type="button" class="api-key-toolbar-btn" id="api-key-settings-btn" data-i18n-title="character.apiKeySettings" title="API 设置" aria-label="API 设置" data-i18n-aria-label="character.apiKeySettings">
+<button type="button" class="api-key-toolbar-btn" id="api-key-settings-btn" data-i18n-title="character.apiKeySettings" title="API 设置" aria-label="API 设置" data-i18n-aria="character.apiKeySettings">
 <img src="/static/icons/key.png" alt="" class="key-icon">
 <span data-i18n="character.apiKeySettings">API 设置</span>
 </button>
 <div class="chara-cards-view-toggle">
-<button class="view-toggle-btn active" id="chara-view-card-btn" onclick="switchCharaCardsView('card')" title="卡片视图" data-i18n-title="steam.cardView" aria-label="卡片视图" data-i18n-aria-label="steam.cardView">
+<button class="view-toggle-btn active" id="chara-view-card-btn" onclick="switchCharaCardsView('card')" title="卡片视图" data-i18n-title="steam.cardView" aria-label="卡片视图" data-i18n-aria="steam.cardView">
 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
 </button>
-<button class="view-toggle-btn" id="chara-view-list-btn" onclick="switchCharaCardsView('list')" title="列表视图" data-i18n-title="steam.listView" aria-label="列表视图" data-i18n-aria-label="steam.listView">
+<button class="view-toggle-btn" id="chara-view-list-btn" onclick="switchCharaCardsView('list')" title="列表视图" data-i18n-title="steam.listView" aria-label="列表视图" data-i18n-aria="steam.listView">
 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
 </button>
 </div>
@@ -551,7 +558,7 @@
 
 <!-- 已隐藏猫娘区域 -->
 <div id="hidden-catgirl-area" class="hidden-catgirl-area" style="display:none;">
-    <button type="button" class="hidden-catgirl-header-btn" onclick="toggleHiddenCatgirlsHeader()">
+    <button type="button" class="hidden-catgirl-header-btn" onclick="toggleHiddenCatgirlsHeader()" aria-controls="hidden-catgirl-list" aria-expanded="false">
         <span class="hidden-catgirl-arrow" id="hidden-catgirl-arrow">▶</span>
         <span id="hidden-catgirl-count" data-i18n="character.hiddenCatgirls">已隐藏猫娘</span>
     </button>

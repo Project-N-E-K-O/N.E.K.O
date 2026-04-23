@@ -8521,10 +8521,12 @@ function renderHiddenCatgirls() {
 function toggleHiddenCatgirlsHeader() {
     const list = document.getElementById('hidden-catgirl-list');
     const arrow = document.getElementById('hidden-catgirl-arrow');
+    const btn = document.querySelector('.hidden-catgirl-header-btn');
     if (!list) return;
     const isHidden = list.style.display === 'none';
     list.style.display = isHidden ? 'block' : 'none';
     if (arrow) arrow.classList.toggle('expanded', isHidden);
+    if (btn) btn.setAttribute('aria-expanded', isHidden ? 'true' : 'false');
 }
 
 function toggleShowHiddenCatgirls() {

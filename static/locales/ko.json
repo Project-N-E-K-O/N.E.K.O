@@ -1772,7 +1772,7 @@
         },
         "assetSource": {
             "notRecorded": "기록 없음",
-            "steamWorkshop": "Steam 창작마당",
+            "steamWorkshop": "캐릭터 카드 관리",
             "localImported": "로컬로 가져온 모델",
             "manualExternal": "외부 모델 참조",
             "builtin": "내장 리소스"
@@ -2426,8 +2426,8 @@
             "desc": "동반자의 메모리 내용을 보고 관리합니다~"
         },
         "step18": {
-            "title": "🛠️ Steam 창작마당",
-            "desc": "Steam 창작마당 페이지에 접속하여 구독을 관리하세요~"
+            "title": "🛠️ 캐릭터 카드 관리",
+            "desc": "캐릭터 카드 관리 페이지에 접속하여 구독을 관리하세요~"
         },
         "systray": {
             "location": {
