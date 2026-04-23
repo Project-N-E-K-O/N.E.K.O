@@ -1952,6 +1952,43 @@ async def unsubscribe_workshop_item(request: Request):
             f"取消订阅 {item_id_int}: 反向索引候选角色 {candidate_names}（磁盘扫描追加 {disk_names}）"
         )
 
+        target_item_id_str = str(item_id_int)
+
+        def _is_confirmed_workshop_character(snapshot, name: str) -> bool:
+            """
+            判定角色 `name` 在 `snapshot`（characters.json 的快照）里是否**明确绑定**
+            到当前 `item_id_int`。判定只看配置里的 character_origin.source_id /
+            avatar.asset_source_id，不看磁盘上的 .chara.json。
+
+            用于拦截"磁盘同名 .chara.json 把无辜本地角色卷进候选、进而误挡住当前
+            猫娘退订"的场景：只有当前猫娘确实来源于这个 Workshop item 时才阻断。
+            """
+            if not isinstance(snapshot, dict):
+                return False
+            cg_map = snapshot.get('猫娘')
+            if not isinstance(cg_map, dict):
+                return False
+            payload = cg_map.get(name)
+            if not isinstance(payload, dict):
+                return False
+            origin_source = str(
+                get_reserved(payload, 'character_origin', 'source', default='') or ''
+            ).strip()
+            origin_source_id = str(
+                get_reserved(payload, 'character_origin', 'source_id', default='') or ''
+            ).strip()
+            asset_source = str(
+                get_reserved(payload, 'avatar', 'asset_source', default='') or ''
+            ).strip()
+            asset_source_id = str(
+                get_reserved(payload, 'avatar', 'asset_source_id', default='') or ''
+            ).strip()
+            return (
+                origin_source == 'steam_workshop' and origin_source_id == target_item_id_str
+            ) or (
+                asset_source == 'steam_workshop' and asset_source_id == target_item_id_str
+            )
+
         # 前置校验：候选角色中若包含当前猫娘，直接阻止取消订阅并提示用户切换。
         try:
             current_characters = await config_mgr.aload_characters()
@@ -1967,7 +2004,13 @@ async def unsubscribe_workshop_item(request: Request):
             )
             current_characters = {}
         current_catgirl = str(current_characters.get('当前猫娘', '') or '')
-        if current_catgirl and current_catgirl in candidate_names:
+        # 只在当前猫娘**确实绑定该 Workshop item** 时才阻断；仅靠名字匹配的磁盘
+        # 候选（如工坊另有同名 .chara.json）不应把无辜的本地猫娘挡住退订。
+        if (
+            current_catgirl
+            and current_catgirl in candidate_names
+            and _is_confirmed_workshop_character(current_characters, current_catgirl)
+        ):
             logger.warning(
                 f"取消订阅被阻止: item_id={item_id_int} 对应角色 {current_catgirl} 正是当前猫娘"
             )
@@ -2099,7 +2142,13 @@ async def unsubscribe_workshop_item(request: Request):
             # 二次校验：前置校验后、同步清理前用户可能切到候选角色；此时
             # 仅 `continue` 会跳过角色删除但仍执行 UnsubscribeItem + 删除订阅
             # 文件夹，留下指向已删 Workshop 资源的当前猫娘配置，应直接中止。
-            if current_catgirl_now and current_catgirl_now in candidate_names:
+            # 同样复用 _is_confirmed_workshop_character：只有当前猫娘确实绑定
+            # 当前 item_id 才阻断，避免磁盘同名误挡。
+            if (
+                current_catgirl_now
+                and current_catgirl_now in candidate_names
+                and _is_confirmed_workshop_character(characters_mut, current_catgirl_now)
+            ):
                 logger.warning(
                     f"取消订阅同步清理被阻止: item_id={item_id_int} 对应角色 "
                     f"{current_catgirl_now} 已切换为当前猫娘"
@@ -2345,7 +2394,30 @@ async def unsubscribe_workshop_item(request: Request):
         # 本地 Workshop 文件夹（Steam 下次同步会再下回来）。
         unsubscribe_failed_event = threading.Event()
 
-        def perform_cleanup(item_id: int):
+        def _is_item_still_subscribed(item_id: int) -> bool:
+            """
+            Fail-closed 订阅状态检查：返回 True 表示仍订阅中（或无法确认）。
+            取不到 Steamworks / 查询抛异常时一律按"仍订阅"保守处理，
+            避免在不确定状态下误删用户仍在订阅中的本地文件夹。
+            """
+            try:
+                sw = get_steamworks()
+                if sw is None:
+                    logger.warning(
+                        f"perform_cleanup({item_id}): Steamworks 不可用，"
+                        f"无法确认订阅状态，按仍订阅处理"
+                    )
+                    return True
+                state = sw.Workshop.GetItemState(item_id)
+                return bool(state & 1)  # EItemState.SUBSCRIBED = 1
+            except Exception as exc:
+                logger.warning(
+                    f"perform_cleanup({item_id}): GetItemState 失败，"
+                    f"按仍订阅处理: {exc}"
+                )
+                return True
+
+        def perform_cleanup(item_id: int, *, confirmed_unsubscribed: bool = False):
             """
             回调/延迟兜底共用的订阅文件夹删除。幂等：
               - cleanup_event.is_set() → 已成功过一次，直接跳过
@@ -2353,6 +2425,11 @@ async def unsubscribe_workshop_item(request: Request):
               - cleanup_in_progress 已设 → 另一路径在跑，避免并发 rmtree 同目录
             只有真正确认目录已不存在时才 set(cleanup_event)；失败路径仅清除
             in_progress，让 5 秒延迟兜底仍可重试。
+
+            fail-closed 订阅状态校验：除非 `confirmed_unsubscribed=True`（仅成功
+            回调路径传入），进 rmtree 前必须过 `_is_item_still_subscribed()`。
+            "5 秒没收到回调" 不能推断为退订成功——Steam 可能延后发失败回调，
+            此时删本地文件夹会让仍订阅中的用户丢失内容。
             """
             with cleanup_claim_lock:
                 if cleanup_event.is_set():
@@ -2376,6 +2453,17 @@ async def unsubscribe_workshop_item(request: Request):
 
             try:
                 import shutil
+                # Fail-closed: 未明确确认成功时，必须先查 Steam 的订阅位
+                # （GetItemState & 1）。仍订阅中就跳过清理，同时 set 失败
+                # event 防止后续路径重复发起 rmtree。
+                if not confirmed_unsubscribed and _is_item_still_subscribed(item_id):
+                    logger.warning(
+                        f"perform_cleanup({item_id}): Steam 状态仍显示已订阅，"
+                        f"跳过订阅文件夹清理"
+                    )
+                    unsubscribe_failed_event.set()
+                    return False
+
                 # 重新解析一次路径（候选路径可能在取消订阅过程中失效）
                 final_item_path = _resolve_workshop_item_install_path(
                     get_steamworks(), item_id
@@ -2431,7 +2519,8 @@ async def unsubscribe_workshop_item(request: Request):
 
             if getattr(result, 'result', None) == 1:  # k_EResultOK
                 logger.info(f"取消订阅成功回调: {item_id_int}，开始执行清理")
-                perform_cleanup(item_id_int)
+                # Steam 明确回调 OK，不必再用 GetItemState 二次确认；直接删。
+                perform_cleanup(item_id_int, confirmed_unsubscribed=True)
             else:
                 # Steam 明确退订失败 → 订阅仍然存在，不能删本地文件夹。
                 unsubscribe_failed_event.set()

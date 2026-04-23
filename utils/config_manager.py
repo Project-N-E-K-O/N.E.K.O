@@ -1380,13 +1380,19 @@ class ConfigManager:
             )
             return
 
-        # CFA 回退场景：_readable_docs_dir 是只读原 Documents，也要纳入
+        # CFA 回退场景：_readable_docs_dir 是只读原 Documents，也要纳入。
+        # 只读根意味着 rmtree 永远失败、target 永远存在，下面会基于
+        # readonly_legacy_roots 跳过 rmtree 并静默 target_exists 噪音，
+        # 避免每次启动都打"清理失败/已存在"的重复日志。
+        readonly_legacy_roots: set[str] = set()
         readable_docs = getattr(self, "_readable_docs_dir", None)
         if readable_docs:
             try:
                 extra = Path(readable_docs) / self.app_name
-                if all(str(extra) != str(existing) for existing in legacy_roots):
+                extra_str = str(extra)
+                if all(extra_str != str(existing) for existing in legacy_roots):
                     legacy_roots.append(extra)
+                readonly_legacy_roots.add(extra_str)
             except Exception:
                 pass
 
@@ -1454,6 +1460,7 @@ class ConfigManager:
         # 用户 Documents 路径，只打 root 序号 + 计数 + 条目类型。这些日志可能
         # 被收集到日志文件或遥测，泄露用户本地信息不值当。
         for legacy_root_index, legacy_root in enumerate(legacy_roots, start=1):
+            source_is_readonly = str(legacy_root) in readonly_legacy_roots
             try:
                 legacy_memory = Path(legacy_root) / "memory"
             except Exception:
@@ -1503,11 +1510,15 @@ class ConfigManager:
                     # 但 os.replace 会直接覆盖该软链接，违反"绝不覆盖 runtime 已有
                     # 目标"的语义。is_symlink() 不跟随，把断链也当成"已存在"。
                     if target.exists() or target.is_symlink():
-                        target_exists_count += 1
-                        self._log(
-                            f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
-                            f"目标已存在于 runtime，保留 legacy 副本避免覆盖"
-                        )
+                        # 只读根（如 CFA _readable_docs_dir）上的源永远删不掉，
+                        # target 存在是上一次成功迁移后的常态；静默跳过以免每次
+                        # 启动都打"已存在"日志噪音。可写根仍正常计数 + 打日志。
+                        if not source_is_readonly:
+                            target_exists_count += 1
+                            self._log(
+                                f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
+                                f"目标已存在于 runtime，保留 legacy 副本避免覆盖"
+                            )
                         continue
                     # 跨盘 shutil.move 退化为 copy 时若半途失败，target 可能已
                     # 存在但不完整，下次启动会被 target.exists() 跳过。改为
@@ -1521,14 +1532,18 @@ class ConfigManager:
                         # memory_dir/{name}/time_indexed.db 写入逃出边界。
                         shutil.copytree(str(entry), str(temp_target), symlinks=False)
                         os.replace(str(temp_target), str(target))
-                        try:
-                            shutil.rmtree(str(entry))
-                        except Exception as cleanup_exc:
-                            self._log(
-                                f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
-                                f"已复制到 runtime，但 legacy 源清理失败，保留 legacy 副本: "
-                                f"{_legacy_error_summary(cleanup_exc)}"
-                            )
+                        # 只读根（CFA _readable_docs_dir）上根本不可写，rmtree
+                        # 永远会抛 PermissionError。成功迁移后直接跳过清源，
+                        # 避免每次启动都打一遍"legacy 源清理失败"日志。
+                        if not source_is_readonly:
+                            try:
+                                shutil.rmtree(str(entry))
+                            except Exception as cleanup_exc:
+                                self._log(
+                                    f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
+                                    f"已复制到 runtime，但 legacy 源清理失败，保留 legacy 副本: "
+                                    f"{_legacy_error_summary(cleanup_exc)}"
+                                )
                         migrated_count += 1
                         self._log(
                             f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
