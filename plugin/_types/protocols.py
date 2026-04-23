@@ -21,7 +21,7 @@ class PluginContextProtocol(Protocol):
     Attributes:
         plugin_id: 插件ID
         config_path: 插件配置文件路径
-        logger: 日志记录器(loguru.Logger)
+        logger: 日志记录器(plugin.logging_config.PluginLoggerAdapter)
         run_id: 当前运行ID(如果在/runs触发的上下文中)
     
     Example:
@@ -36,7 +36,7 @@ class PluginContextProtocol(Protocol):
     # ==================== 基础属性 ====================
     plugin_id: str
     config_path: Path
-    logger: Any  # loguru.Logger
+    logger: Any  # plugin.logging_config.PluginLoggerAdapter (stdlib-backed)
     
     @property
     def run_id(self) -> Optional[str]:

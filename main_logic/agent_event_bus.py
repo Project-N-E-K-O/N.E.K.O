@@ -14,6 +14,8 @@ import time
 import uuid
 from typing import Any, Awaitable, Callable, Dict, Optional
 
+import orjson
+
 from utils.logger_config import get_module_logger
 
 try:
@@ -99,7 +101,7 @@ class MainServerAgentBridge:
     def _recv_thread_fn(self) -> None:
         while not self._stop.is_set():
             try:
-                msg = self.pull.recv_json()
+                msg = orjson.loads(self.pull.recv())
                 if isinstance(msg, dict) and self.owner_loop is not None:
                     asyncio.run_coroutine_threadsafe(
                         self.on_agent_event(msg), self.owner_loop,
@@ -117,7 +119,7 @@ class MainServerAgentBridge:
         if not self.ready or self.pub is None:
             return False
         try:
-            self.pub.send_json(event, zmq.NOBLOCK)
+            self.pub.send(orjson.dumps(event), zmq.NOBLOCK)
             return True
         except Exception:
             return False
@@ -126,7 +128,7 @@ class MainServerAgentBridge:
         if not self.ready or self.analyze_push is None:
             return False
         try:
-            self.analyze_push.send_json(event, zmq.NOBLOCK)
+            self.analyze_push.send(orjson.dumps(event), zmq.NOBLOCK)
             return True
         except Exception:
             return False
@@ -226,7 +228,7 @@ class AgentServerEventBridge:
     def _recv_sub_fn(self) -> None:
         while not self._stop.is_set():
             try:
-                msg = self.sub.recv_json()
+                msg = orjson.loads(self.sub.recv())
                 if isinstance(msg, dict) and self._owner_loop is not None:
                     asyncio.run_coroutine_threadsafe(
                         self.on_session_event(msg), self._owner_loop,
@@ -241,7 +243,7 @@ class AgentServerEventBridge:
     def _recv_analyze_fn(self) -> None:
         while not self._stop.is_set():
             try:
-                msg = self.analyze_pull.recv_json()
+                msg = orjson.loads(self.analyze_pull.recv())
                 if isinstance(msg, dict):
                     if msg.get("event_type") == "analyze_request":
                         logger.info(
@@ -267,7 +269,7 @@ class AgentServerEventBridge:
         if not self.ready or self.push is None:
             return False
         try:
-            self.push.send_json(event, zmq.NOBLOCK)
+            self.push.send(orjson.dumps(event), zmq.NOBLOCK)
             return True
         except Exception:
             return False

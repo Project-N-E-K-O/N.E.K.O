@@ -998,6 +998,43 @@ padding-left: 4px;
 transition: all 0.3s ease-in-out;
 }
 
+/* 清空自定义API按钮 */
+.clear-custom-api-wrapper {
+    margin-bottom: 16px;
+    text-align: right;
+}
+
+.clear-custom-api-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 18px;
+    background: linear-gradient(135deg, #ff6b6b, #ee5a24);
+    color: #fff;
+    border: none;
+    border-radius: 20px;
+    font-size: 0.9em;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    box-shadow: 0 2px 8px rgba(238, 90, 36, 0.3);
+}
+
+.clear-custom-api-btn:hover {
+    background: linear-gradient(135deg, #ff5252, #d63031);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(238, 90, 36, 0.4);
+}
+
+.clear-custom-api-btn:active {
+    transform: translateY(1px) scale(0.98);
+    box-shadow: 0 1px 4px rgba(238, 90, 36, 0.2);
+}
+
+.clear-custom-api-icon {
+    font-size: 1em;
+}
+
 .model-config-container {
     margin-bottom: 16px;
     border: 1px solid #e0e0e0;

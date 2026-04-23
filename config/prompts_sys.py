@@ -20,8 +20,14 @@ ability to solve the problem and think insightfully"""
 # =====================================================================
 
 def _loc(d: dict, lang: str) -> str:
-    """从多语言 dict 按 lang 取值，缺失则回退 'zh'。"""
-    if lang not in d:
+    """从多语言 dict 按 lang 取值，缺失则回退 'en'。
+
+    对于已在 SUPPORTED_LANGUAGES 但未在某个 dict 里显式翻译的语言
+    （当前是 'es'、'pt'）静默回退到英文，不打 WARNING。
+    非本地化层的内部 LLM 系统 prompt 保持英文即可，LLM 能正确处理。
+    """
+    _SILENT_FALLBACK = {'es', 'pt'}
+    if lang not in d and lang not in _SILENT_FALLBACK:
         print(f"WARNING: Unexpected lang code {lang}")
     return d.get(lang, d['en'])
 
@@ -334,6 +340,8 @@ TRANSLATION_INSTRUCTION = {
     'ja': '以下の要件に従い、ユーザーのテキストを{source_name}から{target_name}に翻訳してください。',
     'ko': '요구사항에 따라 사용자의 텍스트를 {source_name}에서 {target_name}(으)로 번역하세요.',
     'ru': 'Переведите текст пользователя с {source_name} на {target_name} согласно требованиям.',
+    'es': 'Traduce el texto del usuario de {source_name} a {target_name} según los requisitos.',
+    'pt': 'Traduza o texto do usuário de {source_name} para {target_name} conforme os requisitos.',
 }
 
 # 翻译要求（水印包裹部分）
@@ -343,15 +351,19 @@ TRANSLATION_REQUIREMENTS = {
     'ja': '1. 原文の語調とスタイルを維持する\n2. 原文の意味を正確に伝える\n3. 翻訳結果のみを出力し、説明や注釈は一切加えない\n4. テキストに含まれる絵文字や特殊記号はそのまま残す',
     'ko': '1. 원문의 어조와 스타일을 유지할 것\n2. 원문의 의미를 정확히 전달할 것\n3. 번역 결과만 출력하고 설명이나 부연을 추가하지 말 것\n4. 텍스트에 포함된 이모지나 특수 기호는 그대로 유지할 것',
     'ru': '1. Сохраняйте тон и стиль оригинала\n2. Точно передавайте смысл исходного текста\n3. Выводите только перевод, без пояснений и примечаний\n4. Сохраняйте эмодзи и специальные символы из текста',
+    'es': '1. Mantén el tono y el estilo del texto original\n2. Transmite el significado con precisión\n3. Devuelve solo la traducción, sin explicaciones ni notas\n4. Conserva los emojis y símbolos especiales del texto',
+    'pt': '1. Mantenha o tom e o estilo do texto original\n2. Transmita o significado com precisão\n3. Retorne apenas a tradução, sem explicações ou notas\n4. Preserve emojis e símbolos especiais do texto',
 }
 
 # 语言名称（外层 key=UI 语言，内层 key=语言代码）
 TRANSLATION_LANG_NAMES = {
-    'zh': {'zh': '中文', 'en': '英文', 'ja': '日语', 'ko': '韩语', 'ru': '俄语'},
-    'en': {'zh': 'Chinese', 'en': 'English', 'ja': 'Japanese', 'ko': 'Korean', 'ru': 'Russian'},
-    'ja': {'zh': '中国語', 'en': '英語', 'ja': '日本語', 'ko': '韓国語', 'ru': 'ロシア語'},
-    'ko': {'zh': '중국어', 'en': '영어', 'ja': '일본어', 'ko': '한국어', 'ru': '러시아어'},
-    'ru': {'zh': 'китайский', 'en': 'английский', 'ja': 'японский', 'ko': 'корейский', 'ru': 'русский'},
+    'zh': {'zh': '中文', 'en': '英文', 'ja': '日语', 'ko': '韩语', 'ru': '俄语', 'es': '西班牙语', 'pt': '葡萄牙语'},
+    'en': {'zh': 'Chinese', 'en': 'English', 'ja': 'Japanese', 'ko': 'Korean', 'ru': 'Russian', 'es': 'Spanish', 'pt': 'Portuguese'},
+    'ja': {'zh': '中国語', 'en': '英語', 'ja': '日本語', 'ko': '韓国語', 'ru': 'ロシア語', 'es': 'スペイン語', 'pt': 'ポルトガル語'},
+    'ko': {'zh': '중국어', 'en': '영어', 'ja': '일본어', 'ko': '한국어', 'ru': '러시아어', 'es': '스페인어', 'pt': '포르투갈어'},
+    'ru': {'zh': 'китайский', 'en': 'английский', 'ja': 'японский', 'ko': 'корейский', 'ru': 'русский', 'es': 'испанский', 'pt': 'португальский'},
+    'es': {'zh': 'chino', 'en': 'inglés', 'ja': 'japonés', 'ko': 'coreano', 'ru': 'ruso', 'es': 'español', 'pt': 'portugués'},
+    'pt': {'zh': 'chinês', 'en': 'inglês', 'ja': 'japonês', 'ko': 'coreano', 'ru': 'russo', 'es': 'espanhol', 'pt': 'português'},
 }
 
 # ---------- 对话备忘录注入 LLM 上下文 ----------
@@ -361,6 +373,8 @@ MEMORY_MEMO_WITH_SUMMARY = {
     'ja': '以前の会話のメモ: {summary}',
     'ko': '이전 대화의 메모: {summary}',
     'ru': 'Заметки из предыдущих разговоров: {summary}',
+    'es': 'Notas de conversaciones previas: {summary}',
+    'pt': 'Notas de conversas anteriores: {summary}',
 }
 
 MEMORY_MEMO_EMPTY = {
@@ -369,6 +383,8 @@ MEMORY_MEMO_EMPTY = {
     'ja': '以前の会話のメモ: なし。',
     'ko': '이전 대화의 메모: 없음.',
     'ru': 'Заметки из предыдущих разговоров: нет.',
+    'es': 'Notas de conversaciones previas: ninguna.',
+    'pt': 'Notas de conversas anteriores: nenhuma.',
 }
 
 # ---------- 搜索关键词生成 prompt ----------
@@ -383,6 +399,8 @@ SEARCH_KEYWORD_SYSTEM = {
     'ja': 'ウィンドウタイトルから検索キーワードを生成してください。\n\n要件：\n1. 異なる角度から検索用のキーワードを 3 つ生成\n2. 各キーワードは簡潔に、2〜6 語程度\n3. キーワードは多様性を持たせる\n4. 3 行のみ出力し、番号・句読点・説明等は一切不要',
     'ko': '창 제목에서 검색 키워드를 생성하세요.\n\n요구사항:\n1. 서로 다른 관점에서 검색 키워드 3개 생성\n2. 각 키워드는 간결하게, 2~6 단어 정도\n3. 키워드는 다양하게\n4. 정확히 3줄만 출력하고 번호, 구두점, 설명 등은 추가하지 마세요',
     'ru': 'Сгенерируйте ключевые слова для поиска на основе заголовка окна.\n\nТребования:\n1. Сгенерируйте 3 разнообразных ключевых слова для поиска с разных сторон\n2. Каждое ключевое слово — кратко, около 2-6 слов\n3. Ключевые слова должны быть разнообразными\n4. Выведите ровно 3 строки, по одному ключевому слову, без номеров, пунктуации и пояснений',
+    'es': 'Generas palabras clave de búsqueda a partir del título de una ventana.\n\nRequisitos:\n1. Genera 3 palabras clave diversas desde distintos ángulos\n2. Cada palabra clave debe ser concisa, de 2 a 6 palabras\n3. Mantén las palabras clave variadas\n4. Devuelve exactamente 3 líneas, una palabra clave por línea, sin números, puntuación, explicaciones ni texto adicional',
+    'pt': 'Você gera palavras-chave de busca a partir do título de uma janela.\n\nRequisitos:\n1. Gere 3 palavras-chave diversas de ângulos distintos\n2. Cada palavra-chave deve ser concisa, com 2 a 6 palavras\n3. Mantenha as palavras-chave variadas\n4. Retorne exatamente 3 linhas, uma palavra-chave por linha, sem números, pontuação, explicações ou texto adicional',
 }
 
 SEARCH_KEYWORD_USER = {
@@ -391,6 +409,8 @@ SEARCH_KEYWORD_USER = {
     'ja': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n\n検索キーワードを 3 つ出力してください。',
     'ko': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n\n검색 키워드 3개를 출력하세요.',
     'ru': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n\nВыведите 3 ключевых слова для поиска.',
+    'es': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n\nDevuelve 3 palabras clave de búsqueda.',
+    'pt': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n\nRetorne 3 palavras-chave de busca.',
 }
 
 # =====================================================================

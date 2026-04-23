@@ -369,22 +369,37 @@ VRMManager.prototype.setupFloatingButtons = function() {
 
         const bc = document.getElementById('vrm-floating-buttons');
         if (!bc) { this.setupFloatingButtons(); return; }
-        bc.style.removeProperty('display');
-        bc.style.removeProperty('visibility');
-        bc.style.removeProperty('opacity');
+        const isMobile = window.isMobileWidth && window.isMobileWidth();
+        if (isMobile) {
+            bc.style.removeProperty('display');
+            bc.style.removeProperty('visibility');
+            bc.style.removeProperty('opacity');
+        } else {
+            bc.style.display = 'none';
+            bc.style.visibility = 'hidden';
+            bc.style.opacity = '0';
+        }
 
         if (this.interaction && typeof this.interaction.setLocked === 'function') {
             this.interaction.setLocked(false);
         }
 
-        applyResponsiveFloatingLayout();
+        if (isMobile) {
+            applyResponsiveFloatingLayout();
+        }
 
         if (this._vrmLockIcon) {
-            this._vrmLockIcon.style.removeProperty('display');
-            this._vrmLockIcon.style.removeProperty('visibility');
-            this._vrmLockIcon.style.removeProperty('opacity');
             this._vrmLockIcon.style.backgroundImage = 'url(/static/icons/unlocked_icon.png)';
-            this._vrmLockIcon.style.display = shouldShowLockIcon() ? 'block' : 'none';
+            if (isMobile) {
+                this._vrmLockIcon.style.removeProperty('display');
+                this._vrmLockIcon.style.removeProperty('visibility');
+                this._vrmLockIcon.style.removeProperty('opacity');
+                this._vrmLockIcon.style.display = shouldShowLockIcon() ? 'block' : 'none';
+            } else {
+                this._vrmLockIcon.style.display = 'none';
+                this._vrmLockIcon.style.visibility = 'hidden';
+                this._vrmLockIcon.style.opacity = '0';
+            }
         }
     };
     this._uiWindowHandlers.push({ event: 'vrm-return-click', handler: returnHandler });
@@ -446,6 +461,24 @@ VRMManager.prototype.setupFloatingButtons = function() {
 
     this._syncButtonStatesWithGlobalState();
 
+    // 点击按钮栏/弹窗/侧面板之外的区域时，自动关闭所有弹窗
+    if (this._outsideClickHandler) {
+        document.removeEventListener('click', this._outsideClickHandler);
+    }
+    this._outsideClickHandler = (e) => {
+        const path = e.composedPath ? e.composedPath() : (e.path || []);
+        if (path.includes(buttonsContainer)) return;
+        if (path.some(n => n && n.id && n.id.startsWith('vrm-popup-'))) return;
+        if (path.some(n => n && typeof n.hasAttribute === 'function' && n.hasAttribute('data-neko-sidepanel'))) return;
+        const openPopup = Array.from(document.querySelectorAll('[id^="vrm-popup-"]')).find(el =>
+            getComputedStyle(el).display === 'flex');
+        if (!openPopup) return;
+        this.closeAllPopups();
+    };
+    document.addEventListener('click', this._outsideClickHandler);
+    this._uiWindowHandlers = this._uiWindowHandlers || [];
+    this._uiWindowHandlers.push({ event: 'click', handler: this._outsideClickHandler, target: document });
+
     // 通知外部浮动按钮已就绪
     window.dispatchEvent(new CustomEvent('live2d-floating-buttons-ready'));
 };
@@ -456,7 +489,6 @@ VRMManager.prototype.setupFloatingButtons = function() {
 VRMManager.prototype._startUIUpdateLoop = function() {
     if (this._uiUpdateLoopId !== null && this._uiUpdateLoopId !== undefined) return;
 
-    const box = new window.THREE.Box3();
     const getVisibleButtonCount = () => {
         const mobile = window.isMobileWidth && window.isMobileWidth();
         return [{ id: 'mic' }, { id: 'screen' }, { id: 'agent' }, { id: 'settings' }, { id: 'goodbye' }]
@@ -506,42 +538,37 @@ VRMManager.prototype._startUIUpdateLoop = function() {
         }
 
         try {
-            const camera = this.camera;
             const renderer = this.renderer;
             const canvasRect = renderer.domElement.getBoundingClientRect();
             const canvasWidth = canvasRect.width;
             const canvasHeight = canvasRect.height;
-
-            box.setFromObject(this.currentModel.scene);
-
-            const corners = [
-                new window.THREE.Vector3(box.min.x, box.min.y, box.min.z),
-                new window.THREE.Vector3(box.min.x, box.min.y, box.max.z),
-                new window.THREE.Vector3(box.min.x, box.max.y, box.min.z),
-                new window.THREE.Vector3(box.min.x, box.max.y, box.max.z),
-                new window.THREE.Vector3(box.max.x, box.min.y, box.min.z),
-                new window.THREE.Vector3(box.max.x, box.min.y, box.max.z),
-                new window.THREE.Vector3(box.max.x, box.max.y, box.min.z),
-                new window.THREE.Vector3(box.max.x, box.max.y, box.max.z)
-            ];
-
-            let screenLeft = Infinity, screenRight = -Infinity;
-            let screenTop = Infinity, screenBottom = -Infinity;
-
-            for (const corner of corners) {
-                corner.project(camera);
-                const sx = canvasRect.left + (corner.x * 0.5 + 0.5) * canvasWidth;
-                const sy = canvasRect.top + (-corner.y * 0.5 + 0.5) * canvasHeight;
-                screenLeft = Math.min(screenLeft, sx);
-                screenRight = Math.max(screenRight, sx);
-                screenTop = Math.min(screenTop, sy);
-                screenBottom = Math.max(screenBottom, sy);
+            const isMobile = window.isMobileWidth && window.isMobileWidth();
+            const modelBounds = typeof this.getModelScreenBounds === 'function'
+                ? this.getModelScreenBounds()
+                : null;
+            if (!modelBounds) {
+                if (!isMobile) {
+                    if (buttonsContainer) {
+                        buttonsContainer.style.display = 'none';
+                        buttonsContainer.style.visibility = 'hidden';
+                        buttonsContainer.style.opacity = '0';
+                    }
+                    if (lockIcon && !this._isInReturnState) {
+                        lockIcon.style.display = 'none';
+                        lockIcon.style.visibility = 'hidden';
+                        lockIcon.style.opacity = '0';
+                    }
+                }
+                if (this._uiUpdateLoopId !== null && this._uiUpdateLoopId !== undefined) {
+                    this._uiUpdateLoopId = requestAnimationFrame(update);
+                }
+                return;
             }
 
-            const visibleLeft = Math.max(0, Math.min(canvasWidth, screenLeft - canvasRect.left));
-            const visibleRight = Math.max(0, Math.min(canvasWidth, screenRight - canvasRect.left));
-            const visibleTop = Math.max(0, Math.min(canvasHeight, screenTop - canvasRect.top));
-            const visibleBottom = Math.max(0, Math.min(canvasHeight, screenBottom - canvasRect.top));
+            const visibleLeft = Math.max(0, Math.min(canvasWidth, modelBounds.left - canvasRect.left));
+            const visibleRight = Math.max(0, Math.min(canvasWidth, modelBounds.right - canvasRect.left));
+            const visibleTop = Math.max(0, Math.min(canvasHeight, modelBounds.top - canvasRect.top));
+            const visibleBottom = Math.max(0, Math.min(canvasHeight, modelBounds.bottom - canvasRect.top));
             const visibleHeight = Math.max(1, visibleBottom - visibleTop);
 
             const modelScreenHeight = visibleHeight;
@@ -582,26 +609,13 @@ VRMManager.prototype._startUIUpdateLoop = function() {
             const scale = Math.max(0.5, Math.min(1.0, targetToolbarHeight / baseToolbarHeight));
 
             if (buttonsContainer) {
-                const isMobile = window.isMobileWidth && window.isMobileWidth();
                 if (isMobile) {
                     buttonsContainer.style.transformOrigin = 'right bottom';
+                    buttonsContainer.style.visibility = 'visible';
+                    buttonsContainer.style.opacity = '1';
                     buttonsContainer.style.display = this.interaction && this.interaction.checkLocked && this.interaction.checkLocked() ? 'none' : 'flex';
                 } else {
                     buttonsContainer.style.transformOrigin = 'left top';
-                    const isLocked = this.interaction && this.interaction.checkLocked ? this.interaction.checkLocked() : false;
-                    const hoveringButtons = this._vrmButtonsHovered === true;
-                    const popupUi = window.AvatarPopupUI || null;
-                    const hasOpenOverlay = popupUi && typeof popupUi.hasVisibleOverlay === 'function'
-                        ? popupUi.hasVisibleOverlay('vrm')
-                        : Array.from(document.querySelectorAll('[id^="vrm-popup-"]'))
-                            .some(popup => popup.style.display === 'flex' && popup.style.opacity !== '0');
-                    const inTutorial = buttonsContainer.dataset.inTutorial === 'true' || window.isInTutorial === true;
-                    const shouldShowButtons = inTutorial || (!isLocked && (this._vrmUiNearModel || hoveringButtons || hasOpenOverlay));
-                    buttonsContainer.style.display = shouldShowButtons ? 'flex' : 'none';
-                }
-                buttonsContainer.style.transform = `scale(${scale})`;
-
-                if (!isMobile) {
                     const screenWidth = window.innerWidth;
                     const screenHeight = window.innerHeight;
                     const targetX = canvasRect.left + visibleRight * 0.8 + visibleLeft * 0.2;
@@ -614,11 +628,9 @@ VRMManager.prototype._startUIUpdateLoop = function() {
 
                     const rawLeft = parseFloat(buttonsContainer.style.left);
                     if (this._snapUIPosition || Number.isNaN(rawLeft)) {
-                        if (canvasWidth > 0 && canvasHeight > 0) {
-                            buttonsContainer.style.left = `${boundedX}px`;
-                            buttonsContainer.style.top = `${boundedY}px`;
-                            this._snapUIPosition = false;
-                        }
+                        buttonsContainer.style.left = `${boundedX}px`;
+                        buttonsContainer.style.top = `${boundedY}px`;
+                        this._snapUIPosition = false;
                     } else {
                         const currentTop = parseFloat(buttonsContainer.style.top) || boundedY;
                         const dist = Math.sqrt(Math.pow(boundedX - rawLeft, 2) + Math.pow(boundedY - currentTop, 2));
@@ -628,6 +640,24 @@ VRMManager.prototype._startUIUpdateLoop = function() {
                             buttonsContainer.style.top = `${currentTop + (boundedY - currentTop) * lerpFactor}px`;
                         }
                     }
+
+                    const isLocked = this.interaction && this.interaction.checkLocked ? this.interaction.checkLocked() : false;
+                    const hoveringButtons = this._vrmButtonsHovered === true;
+                    const popupUi = window.AvatarPopupUI || null;
+                    const hasOpenOverlay = popupUi && typeof popupUi.hasVisibleOverlay === 'function'
+                        ? popupUi.hasVisibleOverlay('vrm')
+                        : Array.from(document.querySelectorAll('[id^="vrm-popup-"]'))
+                            .some(popup => popup.style.display === 'flex' && popup.style.opacity !== '0');
+                    const inTutorial = buttonsContainer.dataset.inTutorial === 'true' || window.isInTutorial === true;
+                    const isUiPositionReady =
+                        Number.isFinite(parseFloat(buttonsContainer.style.left)) &&
+                        Number.isFinite(parseFloat(buttonsContainer.style.top)) &&
+                        !this._snapUIPosition;
+                    const shouldShowButtons = isUiPositionReady &&
+                        (inTutorial || (!isLocked && (this._vrmUiNearModel || hoveringButtons || hasOpenOverlay)));
+                    buttonsContainer.style.display = shouldShowButtons ? 'flex' : 'none';
+                    buttonsContainer.style.visibility = shouldShowButtons ? 'visible' : 'hidden';
+                    buttonsContainer.style.opacity = shouldShowButtons ? '1' : '0';
 
                     if (lockIcon && !this._isInReturnState) {
                         const lockTargetX = canvasRect.left + visibleRight * 0.7 + visibleLeft * 0.3;
@@ -645,10 +675,8 @@ VRMManager.prototype._startUIUpdateLoop = function() {
 
                         const rawLockLeft = parseFloat(lockIcon.style.left);
                         if (Number.isNaN(rawLockLeft)) {
-                            if (canvasWidth > 0 && canvasHeight > 0) {
-                                lockIcon.style.left = `${boundedLockX}px`;
-                                lockIcon.style.top = `${boundedLockY}px`;
-                            }
+                            lockIcon.style.left = `${boundedLockX}px`;
+                            lockIcon.style.top = `${boundedLockY}px`;
                         } else {
                             const currentLockTop = parseFloat(lockIcon.style.top) || boundedLockY;
                             const lockDist = Math.sqrt(Math.pow(boundedLockX - rawLockLeft, 2) + Math.pow(boundedLockY - currentLockTop, 2));
@@ -658,7 +686,12 @@ VRMManager.prototype._startUIUpdateLoop = function() {
                                 lockIcon.style.top = `${currentLockTop + (boundedLockY - currentLockTop) * lerpFactor}px`;
                             }
                         }
-                        lockIcon.style.display = (this._shouldShowVrmLockIcon && this._shouldShowVrmLockIcon()) ? 'block' : 'none';
+                        const shouldShowLock = (this._shouldShowVrmLockIcon && this._shouldShowVrmLockIcon()) &&
+                            Number.isFinite(parseFloat(lockIcon.style.left)) &&
+                            Number.isFinite(parseFloat(lockIcon.style.top));
+                        lockIcon.style.display = shouldShowLock ? 'block' : 'none';
+                        lockIcon.style.visibility = shouldShowLock ? 'visible' : 'hidden';
+                        lockIcon.style.opacity = shouldShowLock ? '' : '0';
 
                         const lockRect = lockIcon.getBoundingClientRect();
                         let isLockOverlapped = false;
@@ -674,6 +707,7 @@ VRMManager.prototype._startUIUpdateLoop = function() {
                         lockIcon.style.opacity = isLockOverlapped ? '0.3' : '';
                     }
                 }
+                buttonsContainer.style.transform = `scale(${scale})`;
             }
         } catch (error) {
             if (window.DEBUG_MODE) console.debug('[VRM UI] 更新循环单帧异常:', error);
@@ -718,9 +752,6 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
         // commitDragPosition() 使用过期值产生错误位移
         pendingClientX = clientX;
         pendingClientY = clientY;
-
-        // 设置全局拖拽标志，供 preload 等跳过昂贵操作
-        if (window.DragHelpers) window.DragHelpers.isDragging = true;
 
         // 获取当前容器的实际位置（考虑居中定位）
         const rect = returnButtonContainer.getBoundingClientRect();
@@ -802,9 +833,6 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
             setTimeout(() => returnButtonContainer.setAttribute('data-dragging', 'false'), 10);
             isDragging = false;
             returnButtonContainer.style.cursor = 'grab';
-
-            // 清除全局拖拽标志
-            if (window.DragHelpers) window.DragHelpers.isDragging = false;
 
             // 恢复拖拽期间禁用的视觉效果
             const returnBtn = returnButtonContainer.querySelector('#vrm-btn-return');

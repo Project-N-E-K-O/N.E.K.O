@@ -6,13 +6,41 @@ from memory import (
     CompressedRecentHistoryManager, ImportantSettingsManager, TimeIndexedMemory,
     FactStore, PersonaManager, ReflectionEngine,
 )
+from memory.cursors import CursorStore, CURSOR_REBUTTAL_CHECKED_UNTIL
+from memory.facts import FactExtractionFailed
+from memory.event_log import (
+    EventLog, Reconciler,
+    EVIDENCE_SOURCE_USER_CONFIRM,
+    EVIDENCE_SOURCE_USER_FACT,
+    EVIDENCE_SOURCE_USER_IGNORE,
+    EVIDENCE_SOURCE_USER_KEYWORD_REBUT,
+    EVIDENCE_SOURCE_USER_REBUT,
+    EVIDENCE_SOURCE_MIGRATION_SEED,
+)
+from memory.evidence_handlers import register_evidence_handlers as _register_evidence_handlers
+from memory.outbox import Outbox, OP_EXTRACT_FACTS
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse, JSONResponse
 import json
 import uvicorn
 from utils.llm_client import convert_to_messages
 from uuid import uuid4
-from config import MEMORY_SERVER_PORT
+from config import (
+    EVIDENCE_ARCHIVE_DAYS,
+    EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS,
+    EVIDENCE_NEGATIVE_TARGET_MODEL_TIER,
+    EVIDENCE_SIGNAL_CHECK_ENABLED,
+    EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS,
+    EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES,
+    EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS,
+    IGNORED_REINFORCEMENT_DELTA,
+    MEMORY_SERVER_PORT,
+    USER_CONFIRM_DELTA,
+    USER_FACT_NEGATE_DELTA,
+    USER_FACT_REINFORCE_DELTA,
+    USER_KEYWORD_REBUT_DELTA,
+    USER_REBUT_DELTA,
+)
 from config.prompts_sys import _loc
 from config.prompts_memory import (
     INNER_THOUGHTS_HEADER, INNER_THOUGHTS_BODY,
@@ -20,6 +48,8 @@ from config.prompts_memory import (
     CHAT_HOLIDAY_CONTEXT,
     MEMORY_RECALL_HEADER, MEMORY_RESULTS_HEADER,
     PERSONA_HEADER, INNER_THOUGHTS_DYNAMIC,
+    get_negative_target_check_prompt,
+    scan_negative_keywords,
 )
 from utils.language_utils import get_global_language
 from utils.character_name import validate_character_name
@@ -36,7 +66,8 @@ import re
 import asyncio
 import logging
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from typing import Awaitable, Callable
 from utils.frontend_utils import get_timestamp
 
 # 配置日志
@@ -92,6 +123,12 @@ time_manager: TimeIndexedMemory | None = None
 fact_store: FactStore | None = None
 persona_manager: PersonaManager | None = None
 reflection_engine: ReflectionEngine | None = None
+cursor_store: CursorStore | None = None
+outbox: Outbox | None = None
+# memory-evidence-rfc §3.3 基础设施：EventLog + Reconciler 单例。
+# 初始化时机同 persona_manager 等——startup hook 里建，reload 时重建。
+event_log: EventLog | None = None
+reconciler: Reconciler | None = None
 
 # 用于保护重新加载操作的锁
 _reload_lock = asyncio.Lock()
@@ -109,11 +146,17 @@ def _defer_time_manager_cleanup(manager: TimeIndexedMemory | None) -> None:
 
 async def reload_memory_components():
     """重新加载记忆组件配置（用于新角色创建后）
-    
+
     使用锁保护重新加载操作，确保原子性交换，避免竞态条件。
     先创建所有新实例，然后原子性地交换引用。
+
+    注意：reload 期间旧 cursor_store 已启动的 async 任务可能与新实例并发
+    读写同一份 cursors.json。整个架构假设"per-character 单写者"，重载是
+    管理员操作（角色新增），不会与后台 rebuttal_loop 高频冲突；
+    atomic_write_json 保证单次写原子，极端 last-writer-wins 场景下最多
+    损失一次 cursor 推进——下一轮 tick 即恢复。
     """
-    global recent_history_manager, settings_manager, time_manager, fact_store, persona_manager, reflection_engine
+    global recent_history_manager, settings_manager, time_manager, fact_store, persona_manager, reflection_engine, cursor_store, outbox, event_log, reconciler
     async with _reload_lock:
         logger.info("[MemoryServer] 开始重新加载记忆组件配置...")
         old_time_manager = time_manager
@@ -123,8 +166,15 @@ async def reload_memory_components():
             new_settings = ImportantSettingsManager()
             new_time = TimeIndexedMemory(new_recent)
             new_facts = FactStore(time_indexed_memory=new_time)
-            new_persona = PersonaManager()
-            new_reflection = ReflectionEngine(new_facts, new_persona)
+            # EventLog 复用（per-character lock dict 没有必要跨 reload 丢弃），
+            # 但每次 reload 重建 Reconciler 以便 handlers 指向新 manager 实例。
+            new_event_log = event_log if event_log is not None else EventLog()
+            new_persona = PersonaManager(event_log=new_event_log)
+            new_reflection = ReflectionEngine(new_facts, new_persona, event_log=new_event_log)
+            new_cursor_store = CursorStore()
+            new_outbox = Outbox()
+            new_reconciler = Reconciler(new_event_log)
+            _register_evidence_handlers(new_reconciler, new_persona, new_reflection)
 
             # 然后原子性地交换引用
             recent_history_manager = new_recent
@@ -133,6 +183,10 @@ async def reload_memory_components():
             fact_store = new_facts
             persona_manager = new_persona
             reflection_engine = new_reflection
+            cursor_store = new_cursor_store
+            outbox = new_outbox
+            event_log = new_event_log
+            reconciler = new_reconciler
 
             if old_time_manager is not None and old_time_manager is not new_time:
                 _defer_time_manager_cleanup(old_time_manager)
@@ -323,6 +377,139 @@ def _spawn_background_task(coro) -> asyncio.Task:
     task.add_done_callback(_on_done)
     return task
 
+
+# ── Outbox handler registry + replay (P1.c) ────────────────────────
+
+# op_type → async handler(name: str, payload: dict) -> None. Handler 必须幂等。
+OutboxHandler = Callable[[str, dict], Awaitable[None]]
+_OUTBOX_HANDLERS: dict[str, OutboxHandler] = {}
+
+# 启动期补跑 fan-out 并发上限：防止 24h 停机后的 outbox 洪水冲击 LLM 后端。
+_REPLAY_CONCURRENCY = 4
+_replay_semaphore: asyncio.Semaphore | None = None  # 懒构造（event loop-bound）
+
+
+def register_outbox_handler(op_type: str, handler: OutboxHandler) -> None:
+    _OUTBOX_HANDLERS[op_type] = handler
+
+
+async def _run_outbox_op(name: str, op: dict, sem: asyncio.Semaphore | None = None) -> None:
+    """跑单条 outbox op 并在成功后 append_done。失败保持 pending 等下次启动补跑。
+
+    `sem`：startup replay 路径传入共享 Semaphore 限制 LLM fan-out；日常单次
+    spawn 路径传 None 即不限流。
+    """
+    op_id = op.get('op_id')
+    op_type = op.get('type')
+    payload = op.get('payload') or {}
+    handler = _OUTBOX_HANDLERS.get(op_type)
+    if handler is None:
+        logger.warning(f"[Outbox] {name}: 未注册的 op type {op_type}, 跳过 {op_id}")
+        return
+    acquired = False
+    if sem is not None:
+        await sem.acquire()
+        acquired = True
+    try:
+        try:
+            await handler(name, payload)
+        except Exception as e:
+            logger.warning(f"[Outbox] {name}/{op_type}/{op_id} 执行失败（保持 pending）: {e}")
+            return
+        try:
+            await outbox.aappend_done(name, op_id)
+        except Exception as e:
+            # append_done 失败不致命：下次启动重放这个 op，handler 幂等。
+            logger.warning(f"[Outbox] {name}/{op_type}/{op_id}: append_done 失败: {e}")
+    finally:
+        if acquired and sem is not None:
+            sem.release()
+
+
+async def _spawn_outbox_extract_facts(lanlan_name: str, messages: list) -> asyncio.Task:
+    """把 extract_facts+feedback 背景任务登记到 outbox 并 spawn。
+
+    登记的 payload 包含 messages_to_dict 序列化后的整轮对话，重启时可重放。
+    """
+    from utils.llm_client import messages_to_dict
+
+    payload = {'messages': messages_to_dict(messages)}
+    try:
+        op_id = await outbox.aappend_pending(lanlan_name, OP_EXTRACT_FACTS, payload)
+    except Exception as e:
+        # Outbox 写失败不能阻塞主流程，降级为一次性任务（与重构前行为一致）
+        logger.warning(
+            f"[Outbox] {lanlan_name}: append_pending 失败，降级为内存任务: "
+            f"{type(e).__name__}: {e}"
+        )
+        return _spawn_background_task(
+            _extract_facts_and_check_feedback(messages, lanlan_name)
+        )
+    op = {'op_id': op_id, 'type': OP_EXTRACT_FACTS, 'payload': payload}
+    return _spawn_background_task(_run_outbox_op(lanlan_name, op))
+
+
+async def _replay_pending_outbox() -> list[asyncio.Task]:
+    """启动期扫描 outbox，补跑未完成 op。返回 spawn 出的 Task 列表。
+
+    返回值方便调用方（或测试）await 所有任务跑完，而不是靠
+    `_BACKGROUND_TASKS` 快照 + `asyncio.sleep(0)` 这种弱保证等法。
+
+    扫描范围 = 当前 config 的角色名 ∪ memory_dir 下有 `outbox.ndjson` 的
+    子目录。仅扫 config 会漏掉"曾经在用、后来被移出 config 但仍有 pending
+    op 的角色"，导致那些 op 永远不会被补跑。
+    """
+    global _replay_semaphore
+    spawned: list[asyncio.Task] = []
+    names: set[str] = set()
+    try:
+        character_data = await _config_manager.aload_characters()
+        names.update(character_data.get('猫娘', {}).keys())
+    except Exception as e:
+        logger.warning(f"[Outbox] 启动补跑：加载角色列表失败: {e}")
+        # 即便 config 加载失败，仍允许走磁盘扫描兜底——这正是 config
+        # 变化后仍需保证 crash-recovery 的场景。
+
+    try:
+        memory_dir = _config_manager.memory_dir
+        if memory_dir and os.path.isdir(memory_dir):
+            for entry in os.listdir(memory_dir):
+                candidate = os.path.join(memory_dir, entry, 'outbox.ndjson')
+                if os.path.isfile(candidate):
+                    names.add(entry)
+    except Exception as e:
+        logger.warning(f"[Outbox] 启动补跑：扫描 memory_dir 失败: {e}")
+
+    if not names:
+        return spawned
+
+    # Semaphore 在 event loop 里构造（不能在模块级构造）
+    if _replay_semaphore is None:
+        _replay_semaphore = asyncio.Semaphore(_REPLAY_CONCURRENCY)
+
+    for name in sorted(names):
+        try:
+            pending = await outbox.apending_ops(name)
+        except Exception as e:
+            logger.warning(f"[Outbox] {name}: 读取 pending ops 失败: {e}")
+            continue
+        if not pending:
+            # 机会性 compact：文件可能累积了很多 done 行。失败不影响主流程
+            # （compact 仅是空间回收），debug 级别记录便于观测。
+            try:
+                dropped = await outbox.amaybe_compact(name)
+                if dropped:
+                    logger.info(f"[Outbox] {name}: compact 丢弃 {dropped} 行")
+            except Exception as e:
+                logger.debug(f"[Outbox] {name}: 机会性 compact 失败（可忽略）: {e}")
+            continue
+        logger.info(f"[Outbox] {name}: 补跑 {len(pending)} 条未完成 op")
+        for op in pending:
+            spawned.append(
+                _spawn_background_task(_run_outbox_op(name, op, _replay_semaphore))
+            )
+    return spawned
+
 @app.post("/shutdown")
 async def shutdown_memory_server():
     """接收来自main_server的关闭信号"""
@@ -340,7 +527,7 @@ async def shutdown_memory_server():
         return {"status": "error", "message": str(e)}
 
 REBUTTAL_CHECK_INTERVAL = 300  # 5 分钟
-_last_rebuttal_check: dict[str, datetime] = {}  # per-character 上次检查时间戳
+REBUTTAL_FIRST_RUN_LOOKBACK_HOURS = 1  # 首次启动 / 时钟回拨兜底回扫窗口
 
 
 def _extract_user_messages_from_rows(rows: list) -> list[str]:
@@ -370,14 +557,63 @@ def _extract_user_messages_from_rows(rows: list) -> list[str]:
     return user_msgs
 
 
+async def _resolve_rebuttal_start_time(name: str, now: datetime):
+    """决定 rebuttal_loop 本轮查询的起始时间。
+
+    优先级：
+      1. 持久化的 CURSOR_REBUTTAL_CHECKED_UNTIL
+      2. 兜底回扫窗口（首次启动 / cursor 文件缺失）
+      3. 时钟回拨保护：cursor > now 视为脏数据，走兜底并**立刻重写**游标
+
+    rollback 分支立即覆写游标的原因：若只在主循环 success branch 才覆写，
+    遇上 LLM 持续失败 + 时钟回拨，主循环每轮都会命中 fallback 并告警，
+    但游标永远停留在未来时间，无法自愈；这里直接写回 fallback 打破死循环。
+
+    写 fallback 而非 now：若写 now，本 tick 的 LLM 调用若失败，
+    窗口 `[fallback, now]` 的消息会因下轮 cursor 已推进到 now 而被跳过；
+    写 fallback 则保持重试语义——主循环 success branch 再把 cursor 推进到 now。
+
+    独立成函数便于单测验证。
+    """
+    cursor = await cursor_store.aget_cursor(name, CURSOR_REBUTTAL_CHECKED_UNTIL)
+    fallback = now - timedelta(hours=REBUTTAL_FIRST_RUN_LOOKBACK_HOURS)
+    if cursor is None:
+        # 首次启动：把 fallback 落盘锚定。否则 LLM 连续失败时，下轮
+        # cursor 仍为 None，新的 fallback 会基于新的 now 重新计算并前移
+        # （滑动 1h 窗口），首轮窗口最早段消息会被永久跳过。
+        try:
+            await cursor_store.aset_cursor(
+                name, CURSOR_REBUTTAL_CHECKED_UNTIL, fallback,
+            )
+        except Exception as e:
+            logger.debug(f"[Rebuttal] {name}: 首次 fallback 锚定写入失败（将在下轮重试）: {e}")
+        return fallback
+    if cursor > now:
+        logger.warning(
+            f"[Rebuttal] {name}: 游标 {cursor.isoformat()} 晚于当前时间 "
+            f"{now.isoformat()}（时钟回拨?），回退到 {fallback.isoformat()} 并覆写"
+        )
+        # 自愈：把游标拉回 fallback（而非 now），使后续 tick 不再命中 rollback
+        # 分支，同时保留本轮窗口 [fallback, now] 的重试能力（若 LLM 失败）
+        try:
+            await cursor_store.aset_cursor(
+                name, CURSOR_REBUTTAL_CHECKED_UNTIL, fallback,
+            )
+        except Exception as e:
+            logger.debug(f"[Rebuttal] {name}: rollback 自愈写入失败（将在下轮重试）: {e}")
+        return fallback
+    return cursor
+
+
 async def _periodic_rebuttal_loop():
     """每 5 分钟检查 confirmed reflections 是否被近期对话反驳。
 
     通过 time_indexed SQL 查询上次检查之后的所有新对话消息，
     确保不遗漏任何未消费的用户回复。
-    """
-    from datetime import timedelta as _td
 
+    游标持久化（P0 修复）：`CURSOR_REBUTTAL_CHECKED_UNTIL` 写入 cursors.json，
+    关机→重启后从磁盘读取，消灭"默认只回扫 1 小时导致关机期间反驳丢失"的缺陷。
+    """
     while True:
         await asyncio.sleep(REBUTTAL_CHECK_INTERVAL)
         try:
@@ -395,22 +631,29 @@ async def _periodic_rebuttal_loop():
             try:
                 confirmed = await reflection_engine.aget_confirmed_reflections(name)
                 if not confirmed:
+                    # 无 confirmed 时仍需推进游标：否则等到有新 confirmed reflection
+                    # 出现后，首轮会把 cursor-now 之间积攒的全部用户消息喂给
+                    # check_feedback_for_confirmed，容易把无关历史回复误判为反驳。
+                    await cursor_store.aset_cursor(
+                        name, CURSOR_REBUTTAL_CHECKED_UNTIL, now,
+                    )
                     return
 
-                # 确定查询起始时间：上次检查时间 or 1小时前（首次）
-                start_time = _last_rebuttal_check.get(
-                    name, now - _td(hours=1)
-                )
+                start_time = await _resolve_rebuttal_start_time(name, now)
                 rows = await time_manager.aretrieve_original_by_timeframe(
                     name, start_time, now,
                 )
                 if not rows:
-                    _last_rebuttal_check[name] = now
+                    await cursor_store.aset_cursor(
+                        name, CURSOR_REBUTTAL_CHECKED_UNTIL, now,
+                    )
                     return
 
                 user_msgs = _extract_user_messages_from_rows(rows)
                 if not user_msgs:
-                    _last_rebuttal_check[name] = now
+                    await cursor_store.aset_cursor(
+                        name, CURSOR_REBUTTAL_CHECKED_UNTIL, now,
+                    )
                     return
 
                 # 复用 check_feedback 判断反驳
@@ -418,12 +661,14 @@ async def _periodic_rebuttal_loop():
                     name, confirmed, user_msgs,
                 )
                 if feedbacks is None:
-                    # LLM 调用失败 → 不推进窗口，下次重试这批消息
-                    logger.warning(f"[Rebuttal] {name}: 反驳检查失败，保留窗口待重试")
+                    # LLM 调用失败 → 不推进游标，下次重试这批消息
+                    logger.warning(f"[Rebuttal] {name}: 反驳检查失败，保留游标待重试")
                     return
 
-                # 成功才推进窗口
-                _last_rebuttal_check[name] = now
+                # 成功才推进游标并持久化
+                await cursor_store.aset_cursor(
+                    name, CURSOR_REBUTTAL_CHECKED_UNTIL, now,
+                )
                 for fb in feedbacks:
                     if isinstance(fb, dict) and fb.get('feedback') == 'denied':
                         rid = fb.get('reflection_id')
@@ -445,7 +690,13 @@ AUTO_PROMOTE_CHECK_INTERVAL = 300  # 5 分钟
 async def _periodic_auto_promote_loop():
     """定期执行 auto_promote_stale：pending→confirmed→promoted 状态迁移。
 
-    确保即使用户长时间不触发主动搭话，confirmed 反思也能按时升格为 persona。
+    PR-3 (RFC §3.9.1)：`aauto_promote_stale` 现在包含两段：
+      1. 锁内 pending → confirmed (score driven)
+      2. 锁外 confirmed → promoted via `_apromote_with_merge`（LLM 决策
+         合并 / 独立晋升 / 拒绝；带节流防 LLM 失败 DOS）
+
+    Per-character 用 asyncio.gather 并行——每个角色内部仍是顺序操作
+    （锁串行），但跨角色可以打满。
     """
     while True:
         await asyncio.sleep(AUTO_PROMOTE_CHECK_INTERVAL)
@@ -581,10 +832,632 @@ async def _periodic_idle_maintenance_loop():
             logger.info("[IdleMaint] 启动阶段结束，恢复正常轮询间隔")
 
 
+# memory-evidence-rfc §3.3.6 Reconciler handlers live in
+# memory/evidence_handlers.py — imported at module top as
+# `_register_evidence_handlers`. Keeping the handlers in their own module
+# lets unit tests exercise the production apply path without booting FastAPI.
+
+
+# ── memory-evidence-rfc §5: one-shot migration ──────────────────────
+
+_MIGRATION_MARKER_ENTITY = '__meta__'
+_MIGRATION_MARKER_ENTRY = '__evidence_migration_v1__'
+
+
+def _migration_seed_from_reflection_status(status: str) -> tuple[float, float]:
+    if status == 'promoted':
+        return 2.0, 0.0
+    if status == 'confirmed':
+        return 1.0, 0.0
+    if status == 'denied':
+        return 0.0, 2.0
+    return 0.0, 0.0
+
+
+async def _aone_shot_migration_if_needed(lanlan_name: str) -> None:
+    """Seed evidence fields on legacy reflection / persona entries.
+
+    Marker-based guard: we inject a synthetic `__meta__.__evidence_migration_v1__`
+    entry into persona (idempotent — `_find_entry_in_section` returns None if
+    missing). Subsequent boots see the marker and skip.
+
+    Reconciler-safe: all seed mutations go through `aapply_signal` which is
+    event-sourced. A half-run migration is fully resumable: already-seeded
+    entries have non-None `rein_last_signal_at`/`disp_last_signal_at` (set by
+    the first seed event) and are skipped on resume.
+    """
+    try:
+        persona = await persona_manager.aensure_persona(lanlan_name)
+    except Exception as e:
+        logger.debug(f"[Migration] {lanlan_name}: 读取 persona 失败: {e}")
+        return
+
+    marker_section = persona.get(_MIGRATION_MARKER_ENTITY)
+    if isinstance(marker_section, dict):
+        for entry in marker_section.get('facts', []):
+            if isinstance(entry, dict) and entry.get('id') == _MIGRATION_MARKER_ENTRY:
+                return  # Already migrated on a prior boot
+
+    logger.info(f"[Migration] {lanlan_name}: 触发 evidence 字段一次性种子迁移")
+
+    # Seed reflections
+    try:
+        reflections = await reflection_engine._aload_reflections_full(lanlan_name)
+    except Exception as e:
+        logger.warning(f"[Migration] {lanlan_name}: 读取 reflections 失败: {e}")
+        reflections = []
+
+    seeded_reflection = 0
+    seed_failures = 0  # 只要有一条失败就不写 marker，保证下轮可补
+    for r in reflections:
+        if not isinstance(r, dict):
+            continue
+        rid = r.get('id')
+        if not rid:
+            continue
+        # Skip already-seeded
+        if r.get('rein_last_signal_at') or r.get('disp_last_signal_at'):
+            continue
+        rein, disp = _migration_seed_from_reflection_status(r.get('status', 'pending'))
+        if rein == 0.0 and disp == 0.0:
+            continue  # pending → no seed needed (defaults already 0)
+        delta = {'reinforcement': rein, 'disputation': disp}
+        try:
+            ok = await reflection_engine.aapply_signal(
+                lanlan_name, rid, delta, source=EVIDENCE_SOURCE_MIGRATION_SEED,
+            )
+            if ok:
+                seeded_reflection += 1
+        except Exception as e:
+            seed_failures += 1
+            logger.warning(f"[Migration] {lanlan_name}: seed reflection {rid} 失败: {e}")
+
+    # Persona entries: non-protected with no prior signal timestamps get a
+    # zero-seed event so they carry the evidence schema keys consistently
+    # on disk even before the first real signal arrives. Protected entries
+    # are exempt (their evidence_score is always inf anyway).
+    seeded_persona = 0
+    for entity_key, section in list(persona.items()):
+        if entity_key == _MIGRATION_MARKER_ENTITY or not isinstance(section, dict):
+            continue
+        for entry in section.get('facts', []):
+            if not isinstance(entry, dict):
+                continue
+            if entry.get('protected'):
+                continue
+            if entry.get('rein_last_signal_at') or entry.get('disp_last_signal_at'):
+                continue
+            if entry.get('reinforcement') or entry.get('disputation'):
+                continue
+            entry_id = entry.get('id')
+            if not entry_id:
+                continue
+            # 零 delta 等效 "no-op + 字段 normalize"；不推进 last_signal_at，
+            # 但走完一次 record_and_save 保证 view 里 schema 完整。
+            try:
+                ok = await persona_manager.aapply_signal(
+                    lanlan_name, entity_key, entry_id,
+                    delta={'reinforcement': 0.0, 'disputation': 0.0},
+                    source=EVIDENCE_SOURCE_MIGRATION_SEED,
+                )
+                if ok:
+                    seeded_persona += 1
+            except Exception as e:
+                seed_failures += 1
+                logger.warning(
+                    f"[Migration] {lanlan_name}: seed persona {entity_key}/{entry_id} 失败: {e}"
+                )
+
+    # CodeRabbit PR #929 fix: 如果本轮有任何 seed 失败，marker 不写入——
+    # 下次启动继续从断点补（已 seed 过的字段检查会跳过）。避免瞬时 IO
+    # 抖动导致某些 entry 永远漏种。
+    if seed_failures > 0:
+        logger.warning(
+            f"[Migration] {lanlan_name}: 本轮 {seed_failures} 条 seed 失败 "
+            f"（reflection={seeded_reflection} persona={seeded_persona}），"
+            f"marker 暂不写入，下次启动继续补"
+        )
+        return
+
+    # Drop the marker entry so we don't re-run next boot. Marker is a
+    # synthetic "fact" under a synthetic entity — it never surfaces in
+    # render (protected-free path for it is also skipped; render loops
+    # over the known entity keys and the sync_character_card path).
+    async with persona_manager._get_alock(lanlan_name):
+        persona = await persona_manager._aensure_persona_locked(lanlan_name)
+        marker_section = persona.setdefault(_MIGRATION_MARKER_ENTITY, {})
+        facts = marker_section.setdefault('facts', [])
+        if not any(
+            isinstance(e, dict) and e.get('id') == _MIGRATION_MARKER_ENTRY
+            for e in facts
+        ):
+            facts.append({
+                'id': _MIGRATION_MARKER_ENTRY,
+                'text': '',
+                'source': EVIDENCE_SOURCE_MIGRATION_SEED,
+                'source_id': None,
+                'protected': True,  # 豁免 render/archive 任意扫描
+                'migrated_at': datetime.now().isoformat(),
+            })
+            await persona_manager.asave_persona(lanlan_name, persona)
+
+    logger.info(
+        f"[Migration] {lanlan_name}: seed 完成 "
+        f"reflection={seeded_reflection} persona={seeded_persona}"
+    )
+
+
+# ── memory-evidence-rfc §3.5.5: one-shot archive migration ──────────
+
+
+async def _aone_shot_archive_migration_if_needed(lanlan_name: str) -> None:
+    """Migrate legacy flat ``reflections_archive.json`` → sharded directory.
+
+    Idempotent: a sentinel file inside the new dir guards re-runs.
+    Persona had no flat archive predecessor, so only reflection needs
+    migration here.
+    """
+    try:
+        await reflection_engine.aone_shot_archive_migration(lanlan_name)
+    except Exception as e:
+        # NEVER let archive migration block boot — RFC §3.5.5 explicitly
+        # allows the legacy file to remain as fallback if migration fails.
+        logger.warning(
+            f"[Migration] {lanlan_name}: 旧 reflections_archive 分片迁移失败 (非致命): {e}"
+        )
+
+
+# ── memory-evidence-rfc §3.5: periodic archive sweep ────────────────
+
+
+async def _periodic_archive_sweep_loop():
+    """Periodically scan all non-protected reflection / persona entries
+    and (a) bump `sub_zero_days` for those with `evidence_score < 0`
+    today, (b) move entries with `sub_zero_days >= EVIDENCE_ARCHIVE_DAYS`
+    into a sharded archive file.
+
+    Runs every `EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS`. The
+    `maybe_mark_sub_zero` helper has its own day-based debounce so a
+    sub-day cadence does not over-count (RFC §3.5.3).
+
+    Per-character iteration is parallel (`asyncio.gather`) — each
+    character has independent files + locks; one slow char must not
+    block another.
+    """
+    from memory.evidence import maybe_mark_sub_zero
+    while True:
+        await asyncio.sleep(EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS)
+        try:
+            character_data = await _config_manager.aload_characters()
+            catgirl_names = list(character_data.get('猫娘', {}).keys())
+        except Exception as e:
+            logger.debug(f"[ArchiveSweep] 加载角色列表失败: {e}")
+            continue
+
+        now = datetime.now()
+
+        async def _sweep_one(name: str):
+            """Scan one character's reflections + persona entries.
+
+            For each non-protected entry:
+              1. Snapshot-test `maybe_mark_sub_zero` (mutates a COPY so
+                 we don't dirty the cache; the real increment + event
+                 happen inside `aincrement_sub_zero` under the per-char
+                 lock).
+              2. Call `aincrement_sub_zero` if needed → returns the new
+                 count or None (no-op).
+              3. Determine the effective `sub_zero_days` for the archive
+                 check:
+                    - If we just incremented → use the returned count
+                    - Else → use the on-disk count from step 1's read
+                 Same-tick archival saves an extra sweep cycle for
+                 entries that were already at threshold but missed the
+                 last increment due to debounce.
+              4. If `effective_sz >= EVIDENCE_ARCHIVE_DAYS` → archive.
+
+            All three operations (increment / archive / their event
+            writes) re-read the view under the per-char lock, so this
+            outer scan can use a stale snapshot safely.
+            """
+            try:
+                # ── reflections ──
+                refls = await reflection_engine._aload_reflections_full(name)
+                for r in refls:
+                    if not isinstance(r, dict):
+                        continue
+                    if r.get('protected'):
+                        continue
+                    rid = r.get('id')
+                    if not rid:
+                        continue
+                    pre_sz = int(r.get('sub_zero_days', 0) or 0)
+                    will_increment = maybe_mark_sub_zero(dict(r), now)
+                    new_count: int | None = None
+                    if will_increment:
+                        try:
+                            new_count = await reflection_engine.aincrement_sub_zero(
+                                name, rid, now,
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"[ArchiveSweep] {name}: reflection {rid} "
+                                f"sub_zero 增量失败: {e}"
+                            )
+                    effective_sz = new_count if new_count is not None else pre_sz
+                    if effective_sz >= EVIDENCE_ARCHIVE_DAYS:
+                        try:
+                            await reflection_engine.aarchive_reflection(name, rid)
+                        except Exception as e:
+                            logger.warning(
+                                f"[ArchiveSweep] {name}: reflection {rid} 归档失败: {e}"
+                            )
+
+                # ── persona entries ──
+                persona = await persona_manager.aensure_persona(name)
+                # Snapshot (entity_key, entry_id, pre_sz) tuples; mutations
+                # go through aincrement / aarchive which re-load.
+                snapshots: list[tuple[str, str, int, bool]] = []
+                for entity_key, section in list(persona.items()):
+                    if not isinstance(section, dict):
+                        continue
+                    for entry in section.get('facts', []):
+                        if not isinstance(entry, dict):
+                            continue
+                        if entry.get('protected'):
+                            continue
+                        eid = entry.get('id')
+                        if not eid:
+                            continue
+                        pre_sz = int(entry.get('sub_zero_days', 0) or 0)
+                        will_inc = maybe_mark_sub_zero(dict(entry), now)
+                        snapshots.append((entity_key, eid, pre_sz, will_inc))
+
+                for entity_key, eid, pre_sz, will_inc in snapshots:
+                    new_count = None
+                    if will_inc:
+                        try:
+                            new_count = await persona_manager.aincrement_sub_zero(
+                                name, entity_key, eid, now,
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"[ArchiveSweep] {name}: persona {entity_key}/{eid} "
+                                f"sub_zero 增量失败: {e}"
+                            )
+                    effective_sz = new_count if new_count is not None else pre_sz
+                    if effective_sz >= EVIDENCE_ARCHIVE_DAYS:
+                        try:
+                            await persona_manager.aarchive_persona_entry(
+                                name, entity_key, eid,
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"[ArchiveSweep] {name}: persona {entity_key}/{eid} 归档失败: {e}"
+                            )
+            except Exception as e:
+                logger.debug(f"[ArchiveSweep] {name}: 扫描失败，跳过: {e}")
+
+        if catgirl_names:
+            await asyncio.gather(
+                *(_sweep_one(name) for name in catgirl_names),
+                return_exceptions=True,
+            )
+
+
+# ── memory-evidence-rfc §3.4.3: background signal extraction loop ───
+
+_signal_check_state: dict[str, dict] = {}  # {name: {turns_since, last_check_ts}}
+
+
+def _signal_check_should_run(name: str, now: datetime) -> bool:
+    state = _signal_check_state.setdefault(name, {'turns_since': 0, 'last_check_ts': None})
+    if state['turns_since'] >= EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS:
+        return True
+    last = state.get('last_check_ts')
+    if last is None:
+        # 未 check 过 → 走空闲分支（需要 idle）
+        return _is_idle() and state['turns_since'] > 0
+    try:
+        last_dt = datetime.fromisoformat(last)
+    except (ValueError, TypeError):
+        return True
+    if (now - last_dt).total_seconds() >= EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES * 60:
+        return state['turns_since'] > 0
+    return False
+
+
+def _signal_check_record_turn(name: str) -> None:
+    state = _signal_check_state.setdefault(name, {'turns_since': 0, 'last_check_ts': None})
+    state['turns_since'] = int(state.get('turns_since', 0) or 0) + 1
+
+
+def _signal_check_mark_done(name: str, now: datetime) -> None:
+    state = _signal_check_state.setdefault(name, {'turns_since': 0, 'last_check_ts': None})
+    state['turns_since'] = 0
+    state['last_check_ts'] = now.isoformat()
+
+
+def _signal_check_window_start(name: str, now: datetime) -> datetime:
+    """Compute the start of the SQL window for the signal-extraction cycle.
+
+    Use the previous successful `last_check_ts` when available so long
+    active sessions do not silently drop messages older than the fallback
+    window. Cold-start (first run or after corrupt state) falls back to
+    `now - EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES * 2` — wider than a single
+    idle trigger window but bounded so the initial scan is not unbounded.
+    """
+    state = _signal_check_state.get(name, {})
+    last = state.get('last_check_ts')
+    if last:
+        try:
+            ts = datetime.fromisoformat(last)
+            # Clock-skew safety: never let cursor land in the future
+            if ts <= now:
+                return ts
+        except (ValueError, TypeError) as e:
+            # Corrupt cursor value in in-memory state (shouldn't happen —
+            # we always write ISO-8601 — but stay defensive so one bad
+            # character doesn't stall the signal loop). Fall through to
+            # the bounded fallback window below.
+            logger.debug(
+                f"[SignalLoop] {name}: last_check_ts {last!r} 解析失败 ({e}), 用 fallback 窗口"
+            )
+    return now - timedelta(minutes=EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES * 2)
+
+
+async def _adispatch_evidence_signals(
+    lanlan_name: str, signals: list[dict], source: str,
+) -> bool:
+    """Apply each signal through ReflectionEngine / PersonaManager aapply_signal.
+
+    Delta mapping (§3.4.1 v1.2.1 weight scheme):
+      source='user_fact' + reinforces → USER_FACT_REINFORCE_DELTA (indirect,
+        silver; combo bonus handled inside compute_evidence_snapshot)
+      source='user_fact' + negates    → USER_FACT_NEGATE_DELTA
+      source='user_keyword_rebut'     → USER_KEYWORD_REBUT_DELTA (always negates)
+
+    Defensive: unknown target_type / missing manager refs are skipped.
+
+    Returns True if ALL signals applied successfully; False if any raised
+    (`aapply_signal` raises for critical IO / event-log errors, but returns
+    False silently for unknown target_id). Caller can use the return value
+    to decide whether to advance its cursor (CodeRabbit PR #929 major).
+    """
+    all_ok = True
+    for s in signals:
+        if not isinstance(s, dict):
+            continue
+        signal_kind = s.get('signal')
+        if signal_kind == 'reinforces':
+            # Indirect inference (Stage-2) gets half weight; combo logic in
+            # `compute_evidence_snapshot` re-inflates it past the threshold.
+            delta = {'reinforcement': USER_FACT_REINFORCE_DELTA}
+        elif signal_kind == 'negates':
+            # keyword_rebut uses a different constant from fact-derived negates
+            # only in name — both currently 1.0. Pick by source for clarity.
+            if source == EVIDENCE_SOURCE_USER_KEYWORD_REBUT:
+                delta = {'disputation': USER_KEYWORD_REBUT_DELTA}
+            else:
+                delta = {'disputation': USER_FACT_NEGATE_DELTA}
+        else:
+            continue
+
+        target_type = s.get('target_type')
+        target_id = s.get('target_id')
+        if not target_id:
+            continue
+
+        try:
+            if target_type == 'reflection':
+                await reflection_engine.aapply_signal(
+                    lanlan_name, target_id, delta, source=source,
+                )
+            elif target_type == 'persona':
+                entity_key = s.get('entity_key')
+                if not entity_key:
+                    logger.warning(
+                        f"[Signal] {lanlan_name}: persona signal 缺 entity_key，丢弃"
+                    )
+                    continue
+                await persona_manager.aapply_signal(
+                    lanlan_name, entity_key, target_id, delta, source=source,
+                )
+            else:
+                logger.warning(f"[Signal] {lanlan_name}: 未知 target_type={target_type}")
+        except Exception as e:
+            # Critical failure (event_log fsync / atomic_write_json fail,
+            # etc.) — flag so caller can preserve the cursor; subsequent
+            # signals in this batch still attempted (best-effort).
+            all_ok = False
+            logger.warning(
+                f"[Signal] {lanlan_name}: aapply_signal 失败 ({target_type}/{target_id}): {e}"
+            )
+    return all_ok
+
+
+async def _periodic_signal_extraction_loop():
+    """每 EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS 轮询，满足触发条件时对每个
+    catgirl 跑 Stage-1 + Stage-2 + signal dispatch（RFC §3.4.3）。"""
+    while True:
+        await asyncio.sleep(EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS)
+        try:
+            character_data = await _config_manager.aload_characters()
+            catgirl_names = list(character_data.get('猫娘', {}).keys())
+        except Exception as e:
+            logger.debug(f"[SignalLoop] 加载角色列表失败: {e}")
+            continue
+
+        now = datetime.now()
+
+        async def _signal_check_one(name: str):
+            """单角色的 Stage-1 + Stage-2 + signal dispatch。各角色互相
+            独立（per-char event_log 锁 / 文件），外层 gather 并行。失败
+            不阻塞其他角色，cursor 只在完整成功路径上推进。"""
+            try:
+                if not _signal_check_should_run(name, now):
+                    return
+                # 窗口起点：优先用上次成功 check 时戳（cursor 语义），避免
+                # 长对话期间 >10 分钟的消息被永远 skip（§3.4.3 游标推进）。
+                # 冷启动 / cursor 缺失时回退到 IDLE_MINUTES*2。
+                start_time = _signal_check_window_start(name, now)
+                rows = await time_manager.aretrieve_original_by_timeframe(
+                    name, start_time, now,
+                )
+                if not rows:
+                    _signal_check_mark_done(name, now)
+                    return
+                user_msgs_text = _extract_user_messages_from_rows(rows)
+                if not user_msgs_text:
+                    _signal_check_mark_done(name, now)
+                    return
+
+                # 组装成 BaseMessage-like 结构给 extract_facts 使用
+                from utils.llm_client import convert_to_messages
+                message_dicts = [
+                    {'type': 'human', 'data': {'content': m}}
+                    for m in user_msgs_text
+                ]
+                messages = convert_to_messages(json.dumps(message_dicts))
+
+                try:
+                    persisted, signals = await fact_store.aextract_facts_and_detect_signals(
+                        name, messages,
+                        reflection_engine=reflection_engine,
+                        persona_manager=persona_manager,
+                    )
+                except FactExtractionFailed as e:
+                    # Stage-1 terminal failure — cursor NOT advanced, next
+                    # cycle retries the same message window (§3.4.3).
+                    logger.warning(
+                        f"[SignalLoop] {name}: Stage-1 失败保留 cursor 重试: {e}"
+                    )
+                    return
+
+                # 先 dispatch 再 mark_done：dispatch 中途有任何 aapply 失败
+                # cursor 不推进，下轮 Stage-1 在同一窗口重新抽取（Stage-1
+                # dedup 保证 fact 不会翻倍写入，Stage-2 会重新生成 signal
+                # 再试一次）。CodeRabbit PR #929 fix：之前 dispatch 吞异常
+                # 后 mark_done 仍跑，单次 aapply 失败会永久丢一条 evidence。
+                dispatch_ok = True
+                if signals:
+                    dispatch_ok = await _adispatch_evidence_signals(
+                        name, signals, source=EVIDENCE_SOURCE_USER_FACT,
+                    )
+                    logger.info(
+                        f"[SignalLoop] {name}: dispatch {len(signals)} 个 evidence 信号"
+                    )
+
+                if not dispatch_ok:
+                    logger.warning(
+                        f"[SignalLoop] {name}: dispatch 有失败，保留 cursor 下轮重试"
+                    )
+                    return  # 保留 cursor（不调 _signal_check_mark_done）
+
+                # 信号写完后触发一次 score-driven pending→confirmed 扫描；
+                # 独立 try/except：本步失败不应阻止 cursor 推进（score 下
+                # 轮会自然重算）。
+                try:
+                    await reflection_engine.aauto_promote_stale(name)
+                except Exception as e:
+                    logger.debug(f"[SignalLoop] {name}: auto_promote_stale 失败: {e}")
+
+                # Stage-1 + dispatch 都跨过了，cursor 推进。
+                _signal_check_mark_done(name, now)
+            except Exception as e:
+                logger.debug(f"[SignalLoop] {name}: 处理失败: {e}")
+
+        if catgirl_names:
+            await asyncio.gather(
+                *(_signal_check_one(name) for name in catgirl_names),
+                return_exceptions=True,
+            )
+
+
+# ── memory-evidence-rfc §3.4.5: negative-keyword hook helpers ───────
+
+async def _amaybe_trigger_negative_keyword_hook(
+    lanlan_name: str, user_messages: list[str], lang: str,
+) -> None:
+    """If any user message hits NEGATIVE_KEYWORDS_I18N, fire the async LLM
+    target-check and dispatch disputation signals. Non-blocking for the
+    calling conversation path."""
+    if not user_messages:
+        return
+    hit = any(scan_negative_keywords(m, lang) for m in user_messages)
+    if not hit:
+        return
+
+    # Assemble observation pool (§3.4.5 prompt inputs)
+    try:
+        observations = await fact_store._aload_signal_targets(
+            lanlan_name,
+            reflection_engine=reflection_engine,
+            persona_manager=persona_manager,
+        )
+    except Exception as e:
+        logger.debug(f"[NegKW] {lanlan_name}: 观察集加载失败: {e}")
+        return
+    if not observations:
+        return
+
+    user_msg_text = "\n".join(user_messages[-3:])
+    obs_text = "\n".join(f"[{o['id']}] {o.get('text', '')}" for o in observations)
+    prompt = get_negative_target_check_prompt(lang) \
+        .replace('{USER_MESSAGES}', user_msg_text) \
+        .replace('{OBSERVATIONS}', obs_text)
+
+    parsed = await fact_store._allm_call_with_retries(
+        prompt, lanlan_name,
+        tier=EVIDENCE_NEGATIVE_TARGET_MODEL_TIER,
+        call_type="memory_negative_target_check",
+        temperature=0.1,
+        max_retries=2,
+    )
+    if parsed is None or not isinstance(parsed, dict):
+        return
+    targets = parsed.get('targets', [])
+    if not isinstance(targets, list) or not targets:
+        return
+
+    # Validate + dispatch (same defensive filter as Stage-2)
+    valid_ids = {o['id']: o for o in observations}
+    signals: list[dict] = []
+    for t in targets:
+        if not isinstance(t, dict):
+            continue
+        tid = t.get('target_id')
+        if not tid:
+            continue
+        # Accept raw or prefixed id
+        full_id = tid if tid in valid_ids else next(
+            (vid for vid in valid_ids if vid.endswith(f".{tid}")), None,
+        )
+        if full_id is None:
+            logger.warning(f"[NegKW] {lanlan_name}: 未知 target_id={tid}, 丢弃")
+            continue
+        obs = valid_ids[full_id]
+        signals.append({
+            'signal': 'negates',
+            'target_type': obs['target_type'],
+            'target_id': obs['raw_id'],
+            'entity_key': obs.get('entity_key'),
+        })
+
+    if signals:
+        # Negative-keyword hook is inline with conversation turn — no cursor
+        # to preserve on dispatch failure; best-effort fire-and-forget.
+        await _adispatch_evidence_signals(
+            lanlan_name, signals, source=EVIDENCE_SOURCE_USER_KEYWORD_REBUT,
+        )
+        logger.info(
+            f"[NegKW] {lanlan_name}: 关键词触发 {len(signals)} 个 disputation 信号"
+        )
+
+
 @app.on_event("startup")
 async def startup_event_handler():
     """应用启动时初始化"""
-    global recent_history_manager, settings_manager, time_manager, fact_store, persona_manager, reflection_engine
+    global recent_history_manager, settings_manager, time_manager, fact_store, persona_manager, reflection_engine, cursor_store, outbox, event_log, reconciler
 
     # ── 步骤 1：bootstrap cloudsave 目录 ──────────────────────────
     # 磁盘满/只读 FS 等场景会 raise OSError；降级为 warning 后继续，
@@ -614,8 +1487,13 @@ async def startup_event_handler():
     settings_manager = ImportantSettingsManager()  # 保留兼容，逐步迁移
     time_manager = TimeIndexedMemory(recent_history_manager)
     fact_store = FactStore(time_indexed_memory=time_manager)
-    persona_manager = PersonaManager()
-    reflection_engine = ReflectionEngine(fact_store, persona_manager)
+    event_log = EventLog()
+    persona_manager = PersonaManager(event_log=event_log)
+    reflection_engine = ReflectionEngine(fact_store, persona_manager, event_log=event_log)
+    cursor_store = CursorStore()
+    outbox = Outbox()
+    reconciler = Reconciler(event_log)
+    _register_evidence_handlers(reconciler, persona_manager, reflection_engine)
 
     try:
         from utils.token_tracker import TokenTracker, install_hooks
@@ -651,6 +1529,14 @@ async def startup_event_handler():
     except Exception as e:
         logger.warning(f"[Memory] Persona 迁移检查失败: {e}")
 
+    # P1.c 启动补跑：扫 outbox 里仍 pending 的 op（进程上次被 kill 时未完成的
+    # extract_facts 等），幂等重跑。_replay_pending_outbox 内部已容错，不阻塞
+    # 主启动链路。
+    try:
+        await _replay_pending_outbox()
+    except Exception as e:
+        logger.warning(f"[Outbox] 启动补跑顶层失败: {e}")
+
     if bootstrap_ok:
         try:
             set_root_mode(
@@ -665,12 +1551,59 @@ async def startup_event_handler():
     else:
         logger.warning("[Memory] 跳过 ROOT_MODE_NORMAL 写入：cloudsave bootstrap 未成功")
 
+    # memory-evidence-rfc §3.3.4: reconciler 启动期补跑 —— 崩溃后把未 apply
+    # 的 evidence / persona / reflection 事件重放到 view。per-character 独
+    # 立（各自有独立 event_log 锁 + 独立文件），并行 replay 把 N×IO 的墙
+    # 钟压成 max，同时 return_exceptions 保证一个角色的失败不带倒其他。
+    async def _reconcile_one(n: str):
+        try:
+            applied = await reconciler.areconcile(n)
+            if applied:
+                logger.info(f"[Memory] reconciler {n}: 重放 {applied} 条事件")
+        except Exception as e:
+            logger.warning(f"[Memory] reconciler {n} replay 失败: {e}")
+
+    if catgirl_names:
+        await asyncio.gather(
+            *(_reconcile_one(n) for n in catgirl_names),
+            return_exceptions=True,
+        )
+
+    # memory-evidence-rfc §5: 一次性迁移种子 —— 给旧 reflection / persona 补
+    # 上 evidence 字段，失败静默（不阻塞 startup）。各角色 marker 独立、
+    # 互不依赖，并行。
+    # PR-2 加：同步触发 §3.5.5 的旧 flat reflections_archive.json → 分片
+    # 目录迁移。两个 migration 都自带 idempotent guard，无依赖关系。
+    async def _migrate_one(n: str):
+        try:
+            await _aone_shot_migration_if_needed(n)
+        except Exception as e:
+            logger.warning(f"[Memory] {n} evidence 迁移失败: {e}")
+        try:
+            await _aone_shot_archive_migration_if_needed(n)
+        except Exception as e:
+            logger.warning(f"[Memory] {n} archive 迁移失败: {e}")
+
+    if catgirl_names:
+        await asyncio.gather(
+            *(_migrate_one(n) for n in catgirl_names),
+            return_exceptions=True,
+        )
+
     # 启动定期后台任务
     _spawn_background_task(_periodic_rebuttal_loop())
     _spawn_background_task(_periodic_auto_promote_loop())
 
     # 空闲时自动维护记忆（压缩、矛盾审视、review）
     _spawn_background_task(_periodic_idle_maintenance_loop())
+
+    # memory-evidence-rfc §3.4.3: 信号抽取后台循环（Stage-1 + Stage-2 + dispatch）
+    if EVIDENCE_SIGNAL_CHECK_ENABLED:
+        _spawn_background_task(_periodic_signal_extraction_loop())
+
+    # memory-evidence-rfc §3.5: archive 扫描后台循环（sub_zero_days
+    # 增量 + 满阈值归档），独立于 evidence signal 抽取。
+    _spawn_background_task(_periodic_archive_sweep_loop())
 
 
 @app.on_event("shutdown")
@@ -819,48 +1752,125 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
     """后台异步：事实提取 + 反馈检查 + 复读嗅探。失败静默跳过。
 
     认知框架：Facts → Reflection(pending→confirmed→promoted) → Persona
+    memory-evidence-rfc 接入点：
+      - 每轮 tick 给 signal-extraction loop 的 turn counter +1
+      - check_feedback 的 confirmed/denied/ignored 三值分别派 evidence 信号
+      - 如果 user message 命中 NEGATIVE_KEYWORDS，触发快速 LLM target check
     """
+    user_msgs = _extract_user_messages(messages)
+
+    # 本轮算入 signal-extraction 触发计数器（RFC §3.4.3）
     try:
-        # 1. 事实提取
+        if user_msgs:
+            _signal_check_record_turn(lanlan_name)
+    except Exception as e:
+        # Best-effort counter bump; a failure here only delays the next
+        # signal-extraction cycle — not worth interrupting conversation flow.
+        logger.debug(f"[MemoryServer] signal-check turn counter 更新失败: {e}")
+
+    try:
+        # 1. 事实提取（legacy flow；真正的 Stage-1+Stage-2 走
+        #    _periodic_signal_extraction_loop。这里保留 Stage-1-only 以便
+        #    短期行为不变，facts.json 在每轮对话后仍及时更新。）
         await fact_store.extract_facts(messages, lanlan_name)
     except Exception as e:
         logger.warning(f"[MemoryServer] 事实提取失败: {e}")
 
     try:
-        # 2. 全局复读嗅探：扫描 AI 回复中是否重复提及 persona 条目
+        # 2. 全局复读嗅探：扫描 AI 回复中是否重复提及 persona 条目 +
+        #    confirmed reflection（§2.6 5h 窗口 suppress 机制，两者正交）
         ai_response = _extract_ai_response(messages)
         if ai_response:
             await persona_manager.arecord_mentions(lanlan_name, ai_response)
+            await reflection_engine.arecord_mentions(lanlan_name, ai_response)
     except Exception as e:
         logger.warning(f"[MemoryServer] 复读嗅探失败: {e}")
 
     try:
-        # 3. 检查用户对之前 surfaced 反思的反馈（宽松确认）
+        # 3. 检查用户对之前 surfaced 反思的反馈 + 派 evidence 信号
         surfaced = await reflection_engine.aload_surfaced(lanlan_name)
         pending_surfaced = [s for s in surfaced if s.get('feedback') is None]
-        if pending_surfaced:
-            user_msgs = _extract_user_messages(messages)
-            if user_msgs:
-                feedbacks = await reflection_engine.check_feedback(lanlan_name, user_msgs)
-                if feedbacks is None:
-                    # LLM 调用失败，跳过本轮（不误 confirm）
-                    pass
-                else:
-                    # 收集 LLM 返回的 denied IDs
-                    denied_ids = {
-                        fb.get('reflection_id')
-                        for fb in feedbacks
-                        if isinstance(fb, dict) and fb.get('feedback') == 'denied'
-                    }
-                    for s in pending_surfaced:
-                        rid = s.get('reflection_id')
-                        if rid in denied_ids:
+        if pending_surfaced and user_msgs:
+            feedbacks = await reflection_engine.check_feedback(lanlan_name, user_msgs)
+            if feedbacks is not None:
+                # Build id→feedback map for quick lookup
+                fb_map: dict[str, str] = {}
+                for fb in feedbacks:
+                    if not isinstance(fb, dict):
+                        continue
+                    rid = fb.get('reflection_id')
+                    kind = fb.get('feedback')
+                    if rid and kind in ('confirmed', 'denied', 'ignored'):
+                        fb_map[rid] = kind
+
+                # RFC §3.1.5: confirmed → reinforcement += 1; denied →
+                # disputation += 1; ignored → reinforcement += -0.2.
+                # pending→confirmed/denied state transitions happen in the
+                # score-driven auto_promote_stale path (not here).
+                #
+                # Retry semantics caveat: `check_feedback` above already
+                # persisted the feedback decision into `surfaced.json`, so
+                # a downstream aapply_signal / areject_promotion failure
+                # here won't be re-tried next cycle (surfaced.feedback !=
+                # None skips the row). PR-1 accepts best-effort with WARN
+                # logs; a follow-up would move these side-effects behind an
+                # outbox op so they survive transient failures. Tracked for
+                # PR-2+ decay/archive work.
+                for rid, kind in fb_map.items():
+                    if kind == 'confirmed':
+                        delta = {'reinforcement': USER_CONFIRM_DELTA}
+                        source = EVIDENCE_SOURCE_USER_CONFIRM
+                    elif kind == 'denied':
+                        delta = {'disputation': USER_REBUT_DELTA}
+                        source = EVIDENCE_SOURCE_USER_REBUT
+                    else:  # ignored
+                        delta = {'reinforcement': IGNORED_REINFORCEMENT_DELTA}
+                        source = EVIDENCE_SOURCE_USER_IGNORE
+                    try:
+                        await reflection_engine.aapply_signal(
+                            lanlan_name, rid, delta, source=source,
+                        )
+                    except Exception as e:
+                        # Signal lost this turn (see caveat above). Warn so
+                        # operators can spot transient LLM / disk issues.
+                        logger.warning(
+                            f"[MemoryServer] {lanlan_name}: aapply_signal "
+                            f"({rid}, {kind}) 失败，此次反馈 signal 已丢失: {e}"
+                        )
+
+                # denied 仍然走 areject_promotion 做 status transition（保留
+                # 既有 surfaced 登记 + reflection status='denied' 行为）
+                for rid, kind in fb_map.items():
+                    if kind == 'denied':
+                        try:
                             await reflection_engine.areject_promotion(lanlan_name, rid)
-                        else:
-                            # 宽松确认：用户有回复 + 未被 denied → 自动 confirm
-                            await reflection_engine.aconfirm_promotion(lanlan_name, rid)
+                        except Exception as e:
+                            logger.warning(
+                                f"[MemoryServer] areject_promotion 失败 "
+                                f"{rid}，此次 denial 未转入 status: {e}"
+                            )
+
+                # 让后续 score 扫描把 pending→confirmed 推进
+                try:
+                    await reflection_engine.aauto_promote_stale(lanlan_name)
+                except Exception as e:
+                    logger.debug(
+                        f"[MemoryServer] {lanlan_name}: auto_promote_stale 失败: {e}"
+                    )
     except Exception as e:
         logger.warning(f"[MemoryServer] 反馈检查失败: {e}")
+
+    try:
+        # 3.5 负面关键词 hook（§3.4.5）——命中就派个异步小 LLM 任务
+        if user_msgs:
+            from utils.language_utils import get_global_language
+            _spawn_background_task(
+                _amaybe_trigger_negative_keyword_hook(
+                    lanlan_name, user_msgs, get_global_language(),
+                )
+            )
+    except Exception as e:
+        logger.debug(f"[MemoryServer] 负面关键词 hook 派发失败: {e}")
 
     try:
         # 4. 审视矛盾队列（如果有 pending corrections）
@@ -869,6 +1879,32 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
             logger.info(f"[MemoryServer] {lanlan_name}: 审视了 {resolved} 条 persona 矛盾")
     except Exception as e:
         logger.warning(f"[MemoryServer] 矛盾审视失败: {e}")
+
+
+async def _outbox_extract_facts_handler(lanlan_name: str, payload: dict) -> None:
+    """OP_EXTRACT_FACTS 的 outbox handler：从 payload 还原 messages 再跑常规流程。
+
+    幂等性来源：
+      - fact_store.extract_facts 内部靠 SHA-256 对事实去重，重复提取不会
+        产生重复 fact。
+      - arecord_mentions 是单调累加计数，重放会小幅抬高提及次数（可接受的
+        at-least-once 语义）。
+      - check_feedback 下次自然回补——reflection 的 surfaced/feedback
+        列表是持久化的。
+      - resolve_corrections 内部用 processed_indices 保护幂等。
+    """
+    from utils.llm_client import messages_from_dict
+
+    raw = payload.get('messages') or []
+    if not raw:
+        return
+    messages = messages_from_dict(raw)
+    if not messages:
+        return
+    await _extract_facts_and_check_feedback(messages, lanlan_name)
+
+
+register_outbox_handler(OP_EXTRACT_FACTS, _outbox_extract_facts_handler)
 
 
 @app.post("/cache/{lanlan_name}")
@@ -919,7 +1955,7 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
         await time_manager.astore_conversation(uid, input_history, lanlan_name)
 
         # 异步事实提取（不阻塞返回，失败静默跳过）
-        _spawn_background_task(_extract_facts_and_check_feedback(input_history, lanlan_name))
+        await _spawn_outbox_extract_facts(lanlan_name, input_history)
 
         # 在后台启动review_history任务
         if lanlan_name in correction_tasks and not correction_tasks[lanlan_name].done():
@@ -966,7 +2002,7 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
 
         # 以下操作在锁外执行，不阻塞 /new_dialog
         # 异步事实提取
-        _spawn_background_task(_extract_facts_and_check_feedback(input_history, lanlan_name))
+        await _spawn_outbox_extract_facts(lanlan_name, input_history)
 
         # 在后台启动review_history任务
         if lanlan_name in correction_tasks and not correction_tasks[lanlan_name].done():
@@ -1010,7 +2046,7 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
             await recent_history_manager.update_history([], lanlan_name, detailed=True)
 
         if input_history:
-            _spawn_background_task(_extract_facts_and_check_feedback(input_history, lanlan_name))
+            await _spawn_outbox_extract_facts(lanlan_name, input_history)
 
         if lanlan_name in correction_tasks and not correction_tasks[lanlan_name].done():
             correction_tasks[lanlan_name].cancel()
@@ -1081,6 +2117,12 @@ async def get_settings(lanlan_name: str):
         logger.error(f"检查角色配置失败: {e}")
         return f"{lanlan_name}记得{{}}"
 
+    # Render 前刷新 reflection suppress 状态（冷却期过 → 解除），语义对齐
+    # persona render 的 update_suppressions 调用位置
+    try:
+        await reflection_engine.aupdate_suppressions(lanlan_name)
+    except Exception as e:
+        logger.debug(f"[MemoryServer] reflection suppress 刷新失败: {e}")
     # 优先使用 persona markdown 渲染（与 /new_dialog 保持一致），回退到旧 settings 格式
     pending_reflections = await reflection_engine.aget_pending_reflections(lanlan_name)
     confirmed_reflections = await reflection_engine.aget_confirmed_reflections(lanlan_name)
@@ -1099,6 +2141,62 @@ async def get_persona(lanlan_name: str):
     """返回完整 persona JSON（供 UI / memory_browser 使用）。"""
     lanlan_name = validate_lanlan_name(lanlan_name)
     return await persona_manager.aget_persona(lanlan_name)
+
+
+@app.get("/api/memory/funnel/{lanlan_name}")
+async def api_memory_funnel(lanlan_name: str, since: str | None = None, until: str | None = None):
+    """RFC §3.10 funnel analytics — read-only counts of evidence-pipeline
+    transitions in a [since, until] window.
+
+    Query params (both ISO8601, optional):
+      - since: window lower bound, default = now - 7 days
+      - until: window upper bound, default = now
+
+    Timezone handling: `datetime.fromisoformat` happily accepts both naive
+    (`2026-04-22T12:00:00`) and aware (`...Z`, `...+08:00`) values, but
+    the underlying event log writes naive local-clock timestamps. We
+    normalize both bounds via `to_naive_local` immediately after parse
+    — *before* the `since_dt > until_dt` validation — so a client
+    passing one aware bound and one naive (or default-naive `now()`)
+    bound never trips
+    `TypeError: can't compare offset-naive and offset-aware datetimes`
+    and surfaces as a 500. `funnel_counts` re-normalizes internally
+    too; the second pass is a cheap no-op once both are naive.
+
+    Returns the 10-bucket dict from `funnel_counts`. PR-2 (decay+archive)
+    populates `*_archived` buckets; PR-3 (merge-on-promote) populates
+    `reflections_merged` / `persona_entries_rewritten`. Until those land
+    the corresponding buckets stay at 0.
+    """
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    now = datetime.now()
+    try:
+        since_dt = datetime.fromisoformat(since) if since else now - timedelta(days=7)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"invalid `since` ISO8601: {since!r}")
+    try:
+        until_dt = datetime.fromisoformat(until) if until else now
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"invalid `until` ISO8601: {until!r}")
+    # Normalize BEFORE the inequality check — `now` above is naive but a
+    # client-supplied bound may be aware; comparing them directly would
+    # raise TypeError → 500. coderabbitai PR #937 round-2.
+    from memory.evidence_analytics import funnel_counts, to_naive_local
+    since_dt = to_naive_local(since_dt)
+    until_dt = to_naive_local(until_dt)
+    if since_dt > until_dt:
+        raise HTTPException(status_code=400, detail="`since` must be <= `until`")
+
+    # 文件 IO + 行级解析 → 跑 worker，避开 event loop 阻塞
+    # (同样的模式见 EventLog 的 a-twins)。
+    counts = await asyncio.to_thread(funnel_counts, lanlan_name, since_dt, until_dt)
+    return {
+        "lanlan_name": lanlan_name,
+        "since": since_dt.isoformat(),
+        "until": until_dt.isoformat(),
+        "counts": counts,
+    }
+
 
 @app.post("/reload")
 async def reload_config():
@@ -1178,7 +2276,11 @@ async def new_dialog(lanlan_name: str):
         _lang = get_global_language()
 
         # ── [静态前缀] Persona 长期记忆（变化极少 → 最大化 prefix cache） ──
-    # pending + confirmed 反思也注入上下文（分区标注）
+        # pending + confirmed 反思也注入上下文（分区标注）
+        try:
+            await reflection_engine.aupdate_suppressions(lanlan_name)
+        except Exception as e:
+            logger.debug(f"[MemoryServer] reflection suppress 刷新失败: {e}")
         pending_reflections = await reflection_engine.aget_pending_reflections(lanlan_name)
         confirmed_reflections = await reflection_engine.aget_confirmed_reflections(lanlan_name)
         result = _loc(PERSONA_HEADER, _lang).format(name=lanlan_name)
