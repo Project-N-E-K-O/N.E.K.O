@@ -8,6 +8,7 @@
 import { i18n } from '../../core/i18n.js';
 import { api } from '../../core/api.js';
 import { toast } from '../../core/toast.js';
+import { formatIsoReadable } from '../../core/time_utils.js';
 import { el } from '../_dom.js';
 
 export async function renderApiKeysPage(host) {
@@ -46,7 +47,12 @@ function renderStatusCard(status, refresh) {
     el('dd', {}, status.path + (status.exists ? '' : ` ${i18n('settings.api_keys.path_missing')}`)),
   );
   if (status.last_mtime) {
-    const ts = new Date(status.last_mtime * 1000).toISOString().replace('T', ' ').slice(0, 19);
+    // P25 Day 2 hotfix (2026-04-23): stop displaying UTC wall clock
+    // where the tester expects local. ``toISOString()`` is UTC-only,
+    // so for an Asia/Shanghai browser (UTC+8) the displayed "last_mtime"
+    // was 8 hours behind the actual file mtime. Match the Diagnostics
+    // Logs/Errors pages by routing through :func:`formatIsoReadable`.
+    const ts = formatIsoReadable(new Date(status.last_mtime * 1000));
     meta.append(
       el('dt', {}, i18n('settings.api_keys.last_read')),
       el('dd', {}, ts),

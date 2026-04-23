@@ -26,6 +26,7 @@ import { api } from '../../core/api.js';
 import { i18n, i18nRaw } from '../../core/i18n.js';
 import { store, on, set as setStore } from '../../core/state.js';
 import { toast } from '../../core/toast.js';
+import { formatIsoReadable } from '../../core/time_utils.js';
 import { el } from '../_dom.js';
 
 const LS_FILTER_KEY = 'testbench:diagnostics:errors:filter:v1';
@@ -66,7 +67,22 @@ function defaultState() {
     // ERROR 默认展开, INFO/warning 其它折叠. 与 page_logs.js 同族
     // 设计 (§4.24 #81). 切 filter 时清掉 (新筛选集合里旧 key 失效).
     toggledKeys: new Map(),
+    // P25 Day 2 hotfix (2026-04-23): sub-<details> 展开态持久化.
+    // renderEntry() 里的 "trace_digest" + "detail" 两个 nested <details>
+    // 之前是 naked ``open: false``, 5s auto-refresh rebuild 整棵子树,
+    // 用户刚点开的 Error detail 就被收回. 参考 page_logs.js 同族 fix.
+    // key 格式 ``${entryKey}|trace_digest`` / ``${entryKey}|detail``,
+    // 父 entry key 隔离冲突. filter / 分页 等 "entry 集合换了" 场景
+    // 调 clearEntryCaches() 一并清, 防 Set 无界 (L11).
+    openSubDetails: new Set(),
   };
+}
+
+// P25 Day 2 helper: 与 page_logs.js::clearEntryCaches 对齐. 集合换了
+// 的场景 (filter/search/分页/重置) 统一调它, 保证两个 cache 同步清.
+function clearEntryCaches(state) {
+  state.toggledKeys?.clear();
+  state.openSubDetails?.clear();
 }
 
 function filterToQs(state) {
@@ -76,6 +92,18 @@ function filterToQs(state) {
     if (f[k] != null && String(f[k]).trim() !== '') {
       usp.set(k, String(f[k]).trim());
     }
+  }
+  // P25 hotfix 2026-04-23: ``include_info`` default-false flag so that
+  // level=info entries (e.g. avatar_interaction_simulated audit replays
+  // from P25 external_events._record_and_return) don't pollute the
+  // Errors page's "recent problems" default view. Only emit the param
+  // when the user has actually checked it — keeps URLs clean and
+  // backend default matches frontend default. If the user also
+  // selected an explicit level in the dropdown, the backend will
+  // honor level= and ignore include_info (see diagnostics_store
+  // docstring), so sending both is safe.
+  if (f.include_info === true) {
+    usp.set('include_info', 'true');
   }
   usp.set('limit', String(state.pageSize));
   usp.set('offset', String(state.offset));
@@ -221,7 +249,7 @@ function renderToolbar(root, state) {
       f.source = e.target.value || undefined;
       state.offset = 0;
       // 新筛选集可能包含/排除不同 entry, 旧 toggledKeys 意图对新集合无参考.
-      state.toggledKeys?.clear();
+      clearEntryCaches(state);
       persistFilter(f);
       loadErrors(state).then(() => renderAll(root, state));
     },
@@ -237,7 +265,7 @@ function renderToolbar(root, state) {
     onChange: (e) => {
       f.level = e.target.value || undefined;
       state.offset = 0;
-      state.toggledKeys?.clear();
+      clearEntryCaches(state);
       persistFilter(f);
       loadErrors(state).then(() => renderAll(root, state));
     },
@@ -275,6 +303,29 @@ function renderToolbar(root, state) {
     autoChk,
     el('span', {}, i18n('diagnostics.errors.auto_refresh')));
 
+  // P25 hotfix 2026-04-23: include_info toggle. Default off = hide
+  // info-level entries (audit-replay noise). L14 "coerce must
+  // surface" — the checkbox state IS the surface of "I'm currently
+  // hiding info level". Tooltip explains what's hidden / why, plus
+  // the interaction with the level dropdown (explicit level= wins).
+  const infoChk = el('input', {
+    type: 'checkbox',
+    checked: f.include_info === true,
+    onChange: (e) => {
+      f.include_info = e.target.checked ? true : undefined;
+      state.offset = 0;
+      clearEntryCaches(state);
+      persistFilter(f);
+      loadErrors(state).then(() => renderAll(root, state));
+    },
+  });
+  const infoLabel = el('label', {
+    className: 'diag-checkbox-label',
+    title: i18n('diagnostics.errors.include_info_tooltip'),
+  },
+    infoChk,
+    el('span', {}, i18n('diagnostics.errors.include_info_label')));
+
   const refreshBtn = el('button', {
     className: 'ghost tiny',
     onClick: () => { loadErrors(state).then(() => renderAll(root, state)); },
@@ -309,7 +360,7 @@ function renderToolbar(root, state) {
         // 本地 store.errors 也清一下, 避免 count 虚高. 不触发 http:error.
         setStore('errors', []);
         state.offset = 0;
-        state.toggledKeys?.clear();
+        clearEntryCaches(state);
         await loadErrors(state);
         renderAll(root, state);
       } else {
@@ -330,7 +381,7 @@ function renderToolbar(root, state) {
         i18n('diagnostics.errors.count_fmt', state.matched, state.total)),
     ),
     el('div', { className: 'diag-toolbar-right' },
-      sourceSel, levelSel, searchBox, autoLabel, refreshBtn, synthBtn, clearBtn,
+      sourceSel, levelSel, searchBox, infoLabel, autoLabel, refreshBtn, synthBtn, clearBtn,
     ),
     secRow,
   );
@@ -351,7 +402,7 @@ function renderSecurityFilters(root, state) {
       onClick: () => {
         f.op_type = active ? undefined : opName;
         state.offset = 0;
-        state.toggledKeys?.clear();
+        clearEntryCaches(state);
         persistFilter(f);
         loadErrors(state).then(() => renderAll(root, state));
       },
@@ -372,7 +423,7 @@ function renderSecurityFilters(root, state) {
     onClick: () => {
       f.op_type = allActive ? undefined : allJoined;
       state.offset = 0;
-      state.toggledKeys?.clear();
+      clearEntryCaches(state);
       persistFilter(f);
       loadErrors(state).then(() => renderAll(root, state));
     },
@@ -389,6 +440,10 @@ function renderFilterChips(root, state) {
   if (f.session_id) active.push(['session_id', f.session_id]);
   if (f.search) active.push(['search', f.search]);
   if (f.op_type) active.push(['op_type', f.op_type]);
+  // include_info=true is "departure from default" so surface it as a
+  // chip too. Default (undefined/false) = "hide info" is not shown
+  // because it's the baseline, and the checkbox itself is the surface.
+  if (f.include_info === true) active.push(['include_info', 'true']);
   if (!active.length) return null;
   const wrap = el('div', { className: 'diag-filter-chips' });
   for (const [k, v] of active) {
@@ -399,7 +454,7 @@ function renderFilterChips(root, state) {
     onClick: () => {
       state.filter = {};
       state.offset = 0;
-      state.toggledKeys?.clear();
+      clearEntryCaches(state);
       persistFilter({});
       loadErrors(state).then(() => renderAll(root, state));
     },
@@ -486,22 +541,59 @@ function renderEntry(entry, state) {
 
   const body = el('div', { className: 'cb-body diag-entry-body' });
   body.append(renderEntryMeta(entry));
+  // P25 Day 2 hotfix (2026-04-23): "trace_digest" 与 "detail" 两个 sub
+  // <details> 需要展开态持久化, 避免 5s auto-refresh rebuild 时收回用户
+  // 手动展开的节点. 同族修 page_logs.js::buildStickyDetails. 下面这个
+  // helper 是 page_errors 页专属的 mirror — 不 hoist 到 _dom.js 的理由
+  // 见 page_logs.js::buildStickyDetails 注释 (state-shape 耦合).
   if (entry.trace_digest) {
-    body.append(el('details', { className: 'diag-entry-trace', open: false },
-      el('summary', {}, i18n('diagnostics.errors.trace_digest_label')),
+    body.append(buildStickyDetails(
+      state,
+      `${key}|trace_digest`,
+      i18n('diagnostics.errors.trace_digest_label'),
       el('pre', { className: 'mono' }, entry.trace_digest),
+      { extraClass: 'diag-entry-trace' },
     ));
   }
   const detailKeys = entry.detail ? Object.keys(entry.detail) : [];
   if (detailKeys.length) {
-    body.append(el('details', { className: 'diag-entry-detail', open: false },
-      el('summary', {}, i18n('diagnostics.errors.detail_label')),
+    body.append(buildStickyDetails(
+      state,
+      `${key}|detail`,
+      i18n('diagnostics.errors.detail_label'),
       el('pre', { className: 'mono' }, safeStringify(entry.detail)),
+      { extraClass: 'diag-entry-detail' },
     ));
   }
 
   cb.append(header, body);
   return cb;
+}
+
+/**
+ * Persist sub-<details> open state across re-renders.
+ *
+ * Mirrors page_logs.js::buildStickyDetails (see that file for rationale).
+ * Keeping it local to page_errors.js keeps the state-shape coupling
+ * tight — ``openSubDetails`` is a page-level state field, not a cross-
+ * page primitive.
+ */
+function buildStickyDetails(state, subKey, summaryText, contentNode, { extraClass = '' } = {}) {
+  const set = state.openSubDetails;
+  const initialOpen = set?.has(subKey) === true;
+  const details = el('details', {
+    className: extraClass,
+    open: initialOpen,
+  },
+    el('summary', {}, summaryText),
+    contentNode,
+  );
+  details.addEventListener('toggle', () => {
+    if (!set) return;
+    if (details.open) set.add(subKey);
+    else set.delete(subKey);
+  });
+  return details;
 }
 
 function renderEntryMeta(entry) {
@@ -559,12 +651,14 @@ function renderPager(root, state) {
 //
 
 function formatTimestamp(iso) {
-  if (!iso) return '—';
-  try {
-    return new Date(iso).toISOString().replace('T', ' ').slice(0, 19);
-  } catch {
-    return iso;
-  }
+  // P25 Day 2 hotfix (2026-04-23): same -8h UTC drift as page_logs.js.
+  // Backend emits naive local ISO strings (no TZ suffix); the old
+  // ``toISOString()`` forcibly converted them to UTC and sliced the
+  // wrong hours/minutes out. :func:`formatIsoReadable` uses
+  // ``getHours()`` / ``getMinutes()`` / ``getSeconds()`` which resolve
+  // against the browser's local timezone — identical wall-clock to the
+  // tester's expectation.
+  return formatIsoReadable(iso);
 }
 
 function sourceLabel(source) {

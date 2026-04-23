@@ -168,7 +168,24 @@ async def post_external_event(body: _ExternalEventRequest) -> dict[str, Any]:
                     "error_type": "InvalidKind",
                     "message": f"unexpected kind={kind!r}",
                 })
-            return {"kind": kind.value, "result": result.to_dict()}
+            # Wire shape: flat SimulationResult fields + a sibling "kind"
+            # discriminator at the top level. P25_BLUEPRINT §2.6 "一个响应
+            # 结构 — SimulationResult dataclass 三类共用, UI 前端按字段渲染
+            # 不按 kind 分支": return SimulationResult keys directly; do NOT
+            # wrap them inside a "result" envelope (that was the L36 shape
+            # drift bug caught during 2026-04-23 manual P25 Day 2 UI
+            # testing — the UI's ``state.lastResult = resp.data`` then
+            # accessed ``r.accepted`` / ``r.persisted`` which were
+            # ``undefined`` under the envelope, silently surfacing
+            # "未处理 / 未写入 session.messages / 本次未产出 assistant
+            # reply" for every successful simulation).
+            #
+            # ``kind`` is kept as a top-level sibling for audit/log clarity
+            # (identical to what the UI already tracks locally); it's OK
+            # for SimulationResult to never carry ``kind`` internally —
+            # that keeps the dataclass clean (three handlers share one
+            # shape) and leaves wire composition to the router.
+            return {"kind": kind.value, **result.to_dict()}
     except SessionConflictError as exc:
         raise _session_conflict_to_http(exc) from exc
     except LookupError as exc:
@@ -212,7 +229,18 @@ async def post_dedupe_reset() -> _DedupeResetResponse:
             state=SessionState.BUSY,
         ) as session:
             summary = reset_dedupe(session)
-            return _DedupeResetResponse(cleared=int(summary.get("cleared", 0)))
+            cleared = int(summary.get("cleared", 0))
+            # P25 Day 2 hotfix: audit trail. session_operation() 只是把
+            # "external_event.dedupe_reset" 作为 busy_op 标签占锁, 不写
+            # JSONL. 但 tester 需要在 Logs 页看到 "何时重置过缓存" 才能
+            # 复现 "为什么上一次 avatar 事件没被去重" 这类调试问题. 本
+            # 行把动作写入 session JSONL, 和其它 external_event.* 家族
+            # 保持对称 (avatar/agent_callback/proactive 都走 log_sync).
+            session.logger.log_sync(
+                "external_event.dedupe_reset",
+                payload={"cleared": cleared},
+            )
+            return _DedupeResetResponse(cleared=cleared)
     except SessionConflictError as exc:
         raise _session_conflict_to_http(exc) from exc
     except LookupError as exc:

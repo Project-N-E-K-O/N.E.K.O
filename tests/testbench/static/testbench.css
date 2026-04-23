@@ -2526,14 +2526,17 @@ table.tbl .tbl-key-field {
   min-height: 320px;
   height: 100%;
   display: grid;
-  /* 三行: auto-banner (空闲 display:none = 0 高度, 运行时 = 自身内容高度) /
-     stream (1fr 填满剩余) / composer (内容高度). P13 前只有后两行, 当时写
-     的是 `1fr auto`; P13 在最前面插了 autoBannerHost 但忘了同步改这里,
-     导致第一行被默认 1fr 分配给 banner, 第二行 auto 给 stream — 现象是
-     banner 下方留一大片空白, 且 stream 消息数变化时 1fr/auto 重算导致
-     banner 视觉上下跳动. 修正: 行数和子元素数一一对应, 1fr 必须给
-     stream 这个"应当填满"的主区. */
-  grid-template-rows: auto 1fr auto;
+  /* 四行: auto-banner (空闲 display:none = 0 高度, 运行时 = 自身内容高度) /
+     stream (1fr 填满剩余) / composer (内容高度) / external events 折叠面板
+     (内容高度, 折叠态 ~32px). P13 前只有中间两行 (`1fr auto`), 当时写的是
+     `1fr auto`; P13 在最前面插了 autoBannerHost 但忘了同步改这里, 导致
+     第一行被默认 1fr 分配给 banner, 第二行 auto 给 stream — 现象是 banner
+     下方留一大片空白, 且 stream 消息数变化时 1fr/auto 重算导致 banner 视
+     觉上下跳动. P25 Day 2 又在最底部加了 external events 面板, 第 4 行必
+     须同步显式声明 — 否则 implicit auto-row 会在面板折叠/展开时触发重排
+     (见 .cursor skill css-grid-template-child-sync). 行数和子元素数一一
+     对应, 1fr 必须给 stream 这个"应当填满"的主区. */
+  grid-template-rows: auto 1fr auto auto;
   overflow: hidden;  /* 内部 stream-list 自己滚 */
   /* P17 hotfix 2: .chat-main 自己是 .workspace.chat-layout 这个外层 grid
      (`minmax(360px, 1fr) minmax(380px, 42%)`) 的 grid item, 默认 `min-width:
@@ -2572,6 +2575,445 @@ table.tbl .tbl-key-field {
   /* 同 .chat-main: sidebar 作为 chat-layout grid 的第二列也需要 min-width:0
      防止 preview-panel 里的 raw wire JSON / 长 token 撑宽列. */
   min-width: 0;
+  /* P25 Day 2 (调整后): sidebar 回归单子区 (只挂 preview). external events
+     面板已迁到 leftPane composer 下方 (输入性 UI 贴输入区). 不再需要
+     flex 容器和 gap — preview-panel 自己在 host 里撑满即可. */
+}
+.chat-sidebar-preview-host {
+  min-width: 0;
+}
+/* P25 Day 2 (调整后): external events 面板挂在 leftPane composer 下方, host
+   作为 .chat-main 这个 grid 的第 4 行子元素. 要点:
+   - min-width: 0: grid item 默认 min-content 会撑宽父 grid 列, 必须归零
+     才能让 .chat-main 被外层 grid 的 1fr 正确压缩; 同时也让内部 textarea /
+     select / pre 可以在窄列正确收缩 (min-width:0 必须沿 flex/grid 链路全程
+     传递).
+   - max-height + overflow-y: auto: 展开后面板本身会占空间 (表单 + 结果区),
+     在 .chat-main 的 4 行 grid (auto / 1fr / auto / auto) 中它是 auto 行,
+     grid 会先按内容分配 auto, 再把剩余给 1fr (stream). 不限制就会在结果
+     多 / 长 LLM reply 时吞掉 stream 的 1fr. max-height: 40vh 是在 720p
+     小屏 (`calc(100vh - 140px)` ≈ 580px) 里给 stream 至少留 ≈ 300px 的
+     兜底; 1440p 大屏时 40vh ≈ 432px 仍给 stream 几百 px. 配合面板内部
+     多处子元素已有自己的 max-height (reply 260px / instruction pre
+     220px), 实际上 host 触发 overflow-y 的情况很少. 折叠态 ~32px, 远
+     低于 40vh 上限, 不触发滚动条.
+   - 不画 border: .external-events-details 自带 border; host 只是透明
+     grid-row 容器. */
+.chat-main-external-events-host {
+  min-width: 0;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+/* P25 Day 2: 外部事件模拟面板 (Chat leftPane 底部) ----------------- *
+ * 宽度加固策略 (2026-04-23 hotfix):
+ *   主 trap: 面板嵌在 .chat-main-external-events-host 里, 外层一路 grid /
+ *   flex 链 (.workspace.chat-layout → .chat-main (grid) → host → details →
+ *   inner → form-row → control). flex/grid item 默认 min-width: auto =
+ *   min-content, 长 token / 无空格 URL / select 长 label / JSON coerce
+ *   entry 的 min-content 会反向撑宽每一层, 直到最外 workspace-host 横向
+ *   出现滚动条.
+ *   加固四件套 (全链条):
+ *     (a) box-sizing: border-box   - 防 padding 把 width:100% 推出边界.
+ *     (b) min-width: 0             - 阻断 min-content 撑父; 沿 inner/form-row
+ *                                    /memory-row 等 flex 容器链路逐层传递.
+ *     (c) max-width: 100%          - 兜底上限, 即使链路某处漏了 min-width:0
+ *                                    也不会让单个子元素越界.
+ *     (d) overflow-wrap: anywhere  - 无空格长串 (dedupe_key / reply text /
+ *                                    coerce JSON) 允许中断换行, 不撑宽容器.
+ *   `<pre>` 再叠一个 white-space: pre-wrap 即可软换行保留缩进. */
+.external-events-panel {
+  font-size: 13px;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.external-events-details {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input, var(--bg-panel));
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.external-events-summary {
+  cursor: pointer;
+  padding: var(--density-sm) var(--density-md);
+  font-weight: 600;
+  user-select: none;
+  /* summary 单行显示, 折叠态不换行; 即使 i18n 文本较长也靠 overflow-wrap
+     兜底而不撑破父宽度. details 本身负责 marker 放置. */
+  overflow-wrap: anywhere;
+}
+.external-events-details[open] > .external-events-summary {
+  border-bottom: 1px solid var(--border);
+}
+.external-events-inner {
+  padding: var(--density-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--density-md);
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.external-events-hint {
+  color: var(--fg-dim, #888);
+  font-size: 12px;
+  margin: 0;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.external-events-tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0;
+  /* 窄列时三个 tab 允许折行, 不横向溢出. */
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.external-events-tabs .tab-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--fg-dim, #888);
+  border-top-left-radius: var(--radius-sm);
+  border-top-right-radius: var(--radius-sm);
+  min-width: 0;
+  max-width: 100%;
+}
+.external-events-tabs .tab-btn:hover:not(:disabled) {
+  color: var(--fg);
+  background: var(--bg-panel);
+}
+.external-events-tabs .tab-btn.active {
+  color: var(--fg);
+  background: var(--bg-panel);
+  border-color: var(--border);
+  margin-bottom: -1px;
+}
+.external-events-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--density-sm);
+  min-width: 0;
+  max-width: 100%;
+}
+.external-events-form .form-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+.external-events-form .form-row.inline {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--density-sm);
+  flex-wrap: wrap;
+}
+.external-events-form .form-col {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+.external-events-form .form-label {
+  font-size: 12px;
+  color: var(--fg-dim, #888);
+  overflow-wrap: anywhere;
+}
+.external-events-form .form-hint {
+  font-size: 11px;
+  color: var(--fg-dim, #888);
+  overflow-wrap: anywhere;
+}
+.external-events-form .form-hint.warn {
+  color: var(--warn, #b58900);
+}
+.external-events-input,
+.external-events-textarea {
+  font-family: inherit;
+  font-size: 12px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  color: var(--fg);
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.external-events-textarea {
+  resize: vertical;
+  min-height: 48px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+/* form-row 里的 <select class="tiny"> 原先走 width: auto + 长 label 可能
+   撑破; 这里收敛到不超过列宽, 同时保留 tiny 基础样式. */
+.external-events-form select.tiny {
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.external-events-invoke-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--density-sm);
+  flex-wrap: wrap;
+  border-top: 1px solid var(--border);
+  padding-top: var(--density-sm);
+  min-width: 0;
+  max-width: 100%;
+}
+.external-events-clear-dedupe-row {
+  display: flex;
+  justify-content: flex-end;
+  min-width: 0;
+  max-width: 100%;
+}
+.external-events-result {
+  border-top: 1px solid var(--border);
+  padding-top: var(--density-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--density-sm);
+  min-width: 0;
+  max-width: 100%;
+}
+.external-events-request-error {
+  border: 1px solid var(--err, #dc322f);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  color: var(--err, #dc322f);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.external-events-result-header {
+  display: flex;
+  align-items: center;
+  gap: var(--density-sm);
+  flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
+}
+.external-events-result-header.accepted .external-events-result-label {
+  color: var(--ok, #268bd2);
+  font-weight: 600;
+}
+.external-events-result-header.rejected .external-events-result-label {
+  color: var(--warn, #b58900);
+  font-weight: 600;
+}
+.external-events-kind-badge {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  padding: 1px 6px;
+  background: var(--bg-input, var(--bg-panel));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--fg-dim, #888);
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+.external-events-elapsed {
+  font-size: 11px;
+  color: var(--fg-dim, #888);
+  margin-left: auto;
+}
+.external-events-reason-line {
+  font-size: 12px;
+  color: var(--fg-dim, #888);
+  overflow-wrap: anywhere;
+  min-width: 0;
+  max-width: 100%;
+}
+.external-events-reason-human {
+  color: var(--fg);
+}
+.external-events-instruction {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  background: var(--bg-panel);
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.external-events-instruction > summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+.external-events-instruction pre {
+  margin: 6px 0 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-height: 220px;
+  overflow-y: auto;
+  font-size: 11px;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.external-events-memory-pair {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+.external-events-memory-row {
+  display: flex;
+  gap: var(--density-sm);
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  border: 1px solid var(--border);
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.external-events-memory-row.role-user {
+  background: color-mix(in srgb, var(--accent, #268bd2) 8%, transparent);
+}
+.external-events-memory-row.role-assistant {
+  background: color-mix(in srgb, var(--ok, #2aa198) 8%, transparent);
+}
+.external-events-memory-role {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 600;
+  min-width: 72px;
+  color: var(--fg-dim, #888);
+  text-transform: lowercase;
+  /* 固定列宽, 不参与收缩 — 否则 body 的 min-width:0 会反吃掉它导致 role
+     标签被压成截断. */
+  flex: 0 0 auto;
+}
+.external-events-memory-body {
+  flex: 1 1 auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.external-events-persistence {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+.external-events-persisted {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.external-events-dedupe-line,
+.external-events-dedupe-hit {
+  font-size: 11px;
+  color: var(--fg-dim, #888);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* dedupe_key 常是长 token, 必须允许无空格换行. */
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  min-width: 0;
+  max-width: 100%;
+}
+.external-events-mirror-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  max-width: 100%;
+}
+.external-events-mirror {
+  font-size: 11px;
+  padding: 3px 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  box-sizing: border-box;
+}
+.external-events-mirror.mirror-off {
+  color: var(--fg-dim, #888);
+  background: transparent;
+}
+.external-events-mirror.mirror-applied {
+  color: var(--ok, #2aa198);
+  border-color: var(--ok, #2aa198);
+}
+.external-events-mirror.mirror-fallback {
+  color: var(--warn, #b58900);
+  border-color: var(--warn, #b58900);
+  background: color-mix(in srgb, var(--warn, #b58900) 12%, transparent);
+}
+.external-events-coerce {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--warn, #b58900);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  background: color-mix(in srgb, var(--warn, #b58900) 8%, transparent);
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.external-events-coerce .diag-entry-section-label.warn {
+  color: var(--warn, #b58900);
+}
+.external-events-coerce-entry {
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* coerce 行里的 JSON safeJson(v) 可能很长, 必须允许无空格换行. */
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  min-width: 0;
+  max-width: 100%;
+}
+.external-events-coerce-note {
+  font-family: inherit;
+  color: var(--fg-dim, #888);
+}
+.external-events-reply {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+.external-events-reply-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  font-size: 12px;
+  max-height: 260px;
+  overflow-y: auto;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.external-events-reply-empty {
+  color: var(--fg-dim, #888);
+  font-size: 12px;
+  font-style: italic;
 }
 
 /* Prompt Preview 面板 ---------------------------------------------- */

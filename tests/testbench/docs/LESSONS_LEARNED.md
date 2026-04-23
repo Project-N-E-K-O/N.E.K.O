@@ -5,8 +5,9 @@
 > 案例 + §3A 57 条横切原则 + P24_BLUEPRINT 五轮审查的 13 条元教训 +
 > P24 Day 9-E 二轮翻转的 3 条元教训 (L23/L24/L25) +
 > P24 Day 10-12 整合期的 2 条元教训 (L26/L27 = §7.23/§7.24) +
-> P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理 UTF-8 事件
-> 派生的 5 条候选元教训 (L28/L29/L30/L31/L32, 登记于 §7.A 候选区,
+> P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理 UTF-8 事件 +
+> P25 Day 1 subagent 并行开发首次应用 + P25 Day 1 fixup mirror shape +
+> P25 Day 2 前端面板派生的 11 条候选元教训 (L28-L38, 登记于 §7.A 候选区,
 > 未计入主编号 24 条).
 >
 > **目标读者**: (a) 本项目未来阶段的 agent (查阅原则); (b) 其它 AI 辅助
@@ -540,12 +541,16 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
 
     前两问是**机制层面** (代码必问), 后两问是 **UX 层面** (经常漏). §3A F7 "fail-loud 不 silent fallback" 原则的扩展 — silent 达到资源上限是最常见的 silent fallback 类型. 如果新机制**四问中有任一个回答 "不知道 / 没想过 / 还没做"**, 就是**本 phase 的 backlog 入档项**, 不是"以后可以不做"; 至少要在阶段蓝图的资源上限总表里占一行. 同族延伸: **每个项目都应当维护一张类似 §14.2.E 的表**, 新 phase 增改资源上限时同步这张表; 到一定规模后 (≥ 10 处资源) 这张表本身就是**下一轮产品需求的富矿** (哪些 silent 的需要打屏上报 / 哪些 evict 的需要 actionable export). 对应项目 skill 候选: `resource-limit-ux-degradation-matrix` (待抽).
 
-### §7.A 候选追加 (P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理 UTF-8 事件 + P25 Day 1 subagent 并行开发派生, 待二次复现后并入主编号)
+### §7.A 候选追加 (P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理 UTF-8 事件 + P25 Day 1 subagent 并行开发 + P25 Day 1 fixup mirror shape + P25 Day 2 前端面板派生, 待二次复现后并入主编号)
 
-> 纪律: 本文档 §7 只记录 "**已经踩过 ≥ 2 次**的同族教训". 下列 6 条候选 (L28-L33)
-> 都是**单次派生**, 源自 P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理
-> UTF-8 字节损坏事件 + P25 Day 1 subagent 并行开发首次应用. 登记在此避免遗忘,
-> 等 P25 或后续阶段再遇到同族时正式纳入 §7 数字主编号 (25-30).
+> 纪律: 本文档 §7 只记录 "**已经踩过 ≥ 2 次**的同族教训". 下列 11 条候选 (L28-L38)
+> 多数仍为**单次派生** (源自 P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理
+> UTF-8 字节损坏事件 + P25 Day 1 subagent 并行开发首次应用 + P25 Day 1 fixup
+> mirror_to_recent shape mismatch + P25 Day 2 前端面板交付 + P25 Day 2 手测联动 bug);
+> **L36 已达二次复现门槛** (P25 Day 2 内 48 小时内两起: `dedupe_info.remaining_ms`
+> 字段名漂移 + `external_event_router` envelope 顶层结构漂移), 下次 §7 更新升级为
+> §7.33. L37 (UI 页名 vs store 内容漂移) + L38 (sub-details 展开态持久化) 仍为
+> 单次, 等 P26 / P27 类似场景再命中时升级. 登记在此避免遗忘.
 
 **L28 "跨阶段推迟项必须双向回扫"** (P24 Day 12 欠账清返派生, 2026-04-23):
 
@@ -611,6 +616,74 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
 - **验证案例**: P25 Day 1 主 agent 在 `external_events.py::simulate_avatar_interaction` 写了 `meta.get("dedupe_key")` / `meta.get("dedupe_rank")`, **实际主程序返回的是 `memory_dedupe_key` / `memory_dedupe_rank`**, 主 agent 内存对齐错. Subagent C 独立按 P25_BLUEPRINT §A.8 的 "B2 rank 升级三步矩阵" 写 smoke 时, 发现 1→2 accept 后 2→2 也被 accept (违反 spec), **没直接 fail** 而是把该断言改为 record-and-continue + 在 Observation 写 "reported bug #1: meta key 可能是 `memory_dedupe_key`". 主 agent review 看到 Observation → 5 分钟内修代码 + 把 smoke 从 record-and-continue 升级为 strict assert. 若主 agent 自己一线做 + 自己写 smoke, bug 不会被任何自动化抓住.
 - **关联**: L24 (语义契约 vs 运行时机制) 管**什么该测**, L27 (生成器三分类 / 资源上限 UX) 管**什么边界要 UX**, L31 (审查锚定初衷) 管**审查时怎么不丢**, **L33 管执行时用什么分工守住 spec**. 配套 skill 候选: `subagent-parallel-dev-three-phase-review` (待抽).
 - **进入主编号条件**: 需要在后续阶段 (P25 Day 2/Day 3 或 P26 立项) 再有一次"subagent 并行执行 → Observation 字段抓到主 agent 写错" 的案例, 才升级为 §7.30.
+
+**L34 "跨进程文件契约层 smoke 必须用消费方反序列化器做 round-trip 断言"** (P25 Day 1 fixup 派生, 2026-04-23):
+
+- **场景**: 测试生态 / adapter 层 / mirror / projection 等**跨进程落地**机制, 把内存对象序列化成 JSON / YAML / SQLite 等**文件级** payload, 供另一进程或将来的自己重新反序列化消费. 序列化 shape 和消费方期望 shape 不一致时, **多数序列化库不会抛异常**, 而是走 fallback 把整个 dict 字符串化 (`HumanMessage(content=str(d))` / `yaml.safe_load` 失败回 `None` / `pickle.loads` 失败直接 crash 对比, 前两类静默, 后一类响) 或部分字段丢失. 下游 compress / facts extract / reflect / query 读到"看起来合法"的数据但语义已经毒化.
+- **失败模式**: smoke 只断言 "`len(persisted) == N` / `isinstance(persisted, list)` / `persisted[0]['type'] == 'human'`" 等**浅断言**, 过得了. 真跑下游消费时才暴露. 症状延迟几天或几周 (依赖下游触发频率), 回溯根因很难 (数据已经污染 log 一片, 不知道是写入时污染还是消费时污染).
+- **真实案例**: P25 Day 1 `external_events._apply_mirror_to_recent` 初版把 memory pair 写成 testbench 内部 shape `{role: "user", content: [{type: "text", text: "..."}]}`, 主程序 canonical on-disk shape 是 LangChain serialized `{"type": "human", "data": {"content": "..."}}`. `utils.llm_client.messages_from_dict` 对未知 shape 走 fallback `HumanMessage(content=str(d))` 把整 dict stringify 进 content. smoke 只断言了 "len(persisted) == 2" 和 "'type' in persisted[0]", 绿. 用户手测 `B6 proactive + mirror_to_recent` + 手动 trigger recent.compress 才暴露"recent 里的 human message 内容是 `{'role': 'user', ...}` 字面串"的毒数据. 修复: `external_events.py` 改用 `HumanMessage/AIMessage/SystemMessage` + `messages_to_dict()`; smoke `p25_external_events_smoke::D1` 追加 4 条严格断言 (recent_langchain_shape / recent_role_pair / **recent_roundtrip_len / recent_roundtrip_content** — 后两条就是**用消费方反序列化器 round-trip** 再核对 content 是否一致).
+- **防御规则** (三层):
+    1. **smoke 必做 round-trip**: 任何跨进程文件契约层, smoke 必须 `persisted_bytes = read_file(...); obj = consumer_deserializer(persisted_bytes); assert obj == expected` — **用消费方自己的反序列化器**, 不是测试方自己写个 `assert 'type' in data`. 这才是契约层真正的 "端到端" 断言.
+    2. **契约层文档标注**: 跨进程文件的每个字段在代码注释里标**哪个消费方用哪个反序列化器消费**, 便于审查时快速定位"这个字段应该长什么样".
+    3. **静默 stringify 探针**: 消费方的反序列化 fallback (如 LangChain 的 `HumanMessage(content=str(d))`) 应加 diagnostic log, 方便在 DEBUG 模式下发现 "本应命中已知 shape 却走了 fallback" 的静默毒化.
+- **关联**: L22 (编码污染) 的**契约层扩展** — L22 管字节级编码, L34 管 JSON/YAML shape 级编码. L30 (pure helper copy + drift smoke) 的**补集** — L30 管"跨 package 复用主系统 pure helper 不 import", L34 管"跨进程写文件给主系统消费方消费的 shape". Cursor skill 候选: `cross-process-file-contract-roundtrip-smoke` (场景 = testbench / mirror / projection / ETL / cross-service message queue; 立规 "smoke 必 round-trip via consumer deserializer, 严禁浅断言").
+- **进入主编号条件**: 需要在后续阶段 (P25 Day 3 / P26 立项) 再有一次跨进程文件契约层 shape 漂移被 round-trip smoke 抓住的案例, 才升级为 §7.31.
+
+**L35 "蓝图 > 代码时按代码走 + 显式登记"** (P25 Day 2 前端面板派生, 2026-04-23):
+
+- **场景**: 设计阶段蓝图草稿 (文字描述 API / 字段 / 枚举值) 和最终**实装代码**不一致时 — 可能是蓝图起草时笔误 / 主程序后续调整 / 评审轮次没同步. 阶段执行期 (Day N 实装) 遇到歧义, agent 默认按蓝图照抄会**把一个已经删掉的枚举值重新引入**或**测试不存在的 payload 场景**.
+- **真实案例**: P25_BLUEPRINT Day 2 §237 列 avatar tool_id 含 `{lollipop, fist, hammer, hand}`, 但实装的 `config/prompts_avatar_interaction.py::_AVATAR_INTERACTION_ALLOWED_ACTIONS` 只有 `{lollipop, fist, hammer}` 三种, `hand` 从未出现在代码里. 前端面板开发时如果按蓝图做 4 tab, tester 点 `hand` 触发后后端 `_normalize_avatar_interaction_payload` 返 `invalid_payload`, UX 差且**无语义价值** (hand 根本不存在不是 bug). 取舍: 按代码做 3 tab + 面板代码注释 + AGENT_NOTES §4.27 #111 登记 "蓝图写了 hand, 代码未实装, 按代码走".
+- **失败模式**: 不登记直接按代码做 → 下一轮 agent 读蓝图又补 hand 回来 → 打回; 或者按蓝图做 → tester 实际使用时抱怨 "UI 给了 hand 按钮点击失败". 两条路都不对.
+- **防御规则** (两条):
+    1. **蓝图 vs 代码不一致 = 代码胜出** (代码是实装, 蓝图是草案, 且蓝图起草时间早于代码定稿).
+    2. **显式登记取舍**: AGENT_NOTES 对应阶段条目写一段 "蓝图写了 X, 代码实装为 Y, 我们按 Y 做, 因为 …", 下一轮 agent 不用再重复这道判断.
+- **关联**: L31 (审查锚定初衷) 的**执行阶段扩展** — L31 管审查时不漂, L35 管执行时蓝图歧义处理. 细分场景 = L31 之审查产出的蓝图本身**事后被发现有歧义**时怎么办. Cursor skill 候选: `blueprint-vs-code-when-disagree` (立规 "代码胜出 + 显式登记取舍").
+- **进入主编号条件**: 需要在后续阶段再有一次"蓝图草稿和实装代码不一致按代码走" 的案例, 才升级为 §7.32.
+
+**L36 "UI 消费的 wire 字段必须 rg 后端实际 response shape 不按蓝图草稿拼字段"** (P25 Day 2 前端面板派生, 2026-04-23):
+
+- **场景**: 前端面板 / 订阅者 / 下游 adapter 消费后端 response shape 时, 默认按蓝图草稿 / 接口文档拼字段名, 而**不实际 rg 后端代码确认字段名**. 蓝图草稿期会有想法层面的字段名 (比如 `remaining_ms` "剩余毫秒"), 但后端定稿时可能换成更精确的 (比如 `dedupe_rank` 更能反映 rank-upgrade 语义) 或合并字段.
+- **真实案例 (两起, 已达 "进入主编号条件")**:
+    1. **字段名漂移**: P25 Day 2 前端面板初版想展示 "8000ms 窗口剩余时间", 按 BLUEPRINT §2.7 字面抄 `dedupe_info.remaining_ms`. 动手前 rg `"dedupe_info=" pipeline/external_events.py` 一看实际 shape 是 `{hit, cache_size, cache_size_before?, dedupe_key, dedupe_rank}`, **没有 `remaining_ms`**. 改成展 `dedupe_rank` + `cache_size` 更贴近实际语义.
+    2. **顶层结构漂移 (envelope vs flat)**: P25 Day 2 手测外部事件面板时, UI 三类事件 (avatar / agent_callback / proactive) 全报 "未写入 session.messages / 本次未产出 assistant reply", 但 autosave log 显示 messages 确实写了. 根因: `routers/external_event_router.py` 返回 `{"kind": kind.value, "result": result.to_dict()}` 的**有 envelope** 结构, 但 `static/ui/chat/external_events_panel.js` 按 `P25_BLUEPRINT §A.8` "SimulationResult = 单一响应结构, 按字段渲染" 的原则期望**无 envelope** 的扁平结构, 直接读 `response.accepted` / `response.persisted` / `response.assistant_reply` 得到的全是 `undefined`, 渲染成 "未写入". 修复: `external_event_router.py` 改返回 `{"kind": kind.value, **result.to_dict()}`, 同步把 `smoke/p25_external_events_smoke.py::_extract_result` 从 `body.get("result")` 改为 `body`.
+- **失败模式**: 不 rg 直接按蓝图写 → 运行时字段 undefined → UI 显示 `N/A` / `undefined` / 整块功能"假失败" (后端做了但前端以为没做, 如 P25 的 `persisted=true` 但 UI 显示"未写入"). 第二种最危险, 因为会诱导使用者以为有 bug 进而重跑 / 回滚 / 改配置, 白费精力.
+- **防御规则 (升级为两条)**:
+    1. 任何消费 wire 的 JS / adapter 初版, 开头**必加一次后端 shape 核对的 rg**: `rg "return .*\{.*$field_name" backend/routers/ pipeline/` 或更精细的 `rg "return \{.*kind" routers/`. 发现 shape 不一致立刻停下重新核对蓝图.
+    2. **envelope 决策必须显式登记**: 后端 response 到底要不要 envelope (`{"kind": ..., "result": {...}}`) 还是扁平 (`{"kind": ..., ...result}`) 是一个**语义契约**层面的选择, 不能放任 router 和 UI 各自拍脑袋. 蓝图 §A 应当对每个 API 明写 "扁平 / envelope", 路由实装和 UI 消费代码都在注释里引回那一节.
+- **进入主编号条件**: **已达** (两起同族案例均在 P25 Day 2, 48 小时内). 下次 §7 更新时升级为 §7.33 "UI 消费 wire 字段必须 rg 后端 shape + envelope 决策显式登记".
+- **关联**: L34 (跨进程文件契约层 round-trip smoke) 的**同进程前后端补集** — L34 管 "跨进程文件" 契约, L36 管 "同进程 API response" 契约; 方法论相同 ("实际代码胜出, 不信蓝图草稿字段名"). L35 (蓝图 > 代码时按代码走) 的**具体化** — L35 管枚举值 / 功能, L36 管字段名 / 顶层结构. Cursor skill 候选: `ui-wire-field-rg-backend-first` (前端写 consumer 前先 rg 后端 shape + 查 envelope 决策).
+
+**L37 "UI 页命名 vs store 语义漂移" (容器名没跟内容扩展)** (P25 Day 2 subagent C 发现, 2026-04-23):
+
+- **场景**: 诊断 / 审计 / 日志 / 监控类**共享 ring buffer / store** 被多个后端路径写入, 每个路径独立决定 level (info / warning / error / fatal). 初期所有写入方都只写 error 级, 前端页面也命名为 "Errors". 后续新功能陆续把 warning 级 (如 security override audit) 加进同一 store — 还能接受; 再后来 info 级审计事件 (如 P25 外部事件仿真) 也往里塞, 这时**容器名 (Errors) 已经语义漂移**: 前端页面叫 Errors 且 intro 文案写 "最近出了什么问题", 但实际内容一半是 audit trail (info 级).
+- **失败模式**: tester 打开 Errors 页看到三条 `avatar_interaction_simulated` 等 info 级条目, 第一反应是"系统报错了?"——但这其实是成功的仿真动作. 语义信任被破坏, 排查真正的 error 时增加噪声. 同时这类"顺手塞 info 进 errors store"在代码评审阶段看起来无害 (ring buffer 容器通用), 漂移是时间叠加的, **难在单 PR 层面发现**.
+- **真实案例**: P25 Day 2 `pipeline/external_events.py::_record_and_return` 用 `diagnostics_store.record_internal(..., level="info")` 往 ring 写仿真成功事件, 导致 Errors 页冒出三条 info. 修复分三步: (a) `diagnostics_store.list_errors` 加 `include_info: bool = False` 参数, 默认过滤掉 info (尊重容器**名字**的语义契约); (b) API 层 `GET /api/diagnostics/errors` 把 `include_info` 作为 opt-in query 透传, 保留"全看"能力 (因为该 ring 仍是**唯一**统一查询入口); (c) UI 加 "包含 info 级" 复选框, 默认关, 勾选后走 `include_info=true` 路径. Errors 页回归"错误专用", 同时不丢审计能力.
+- **防御规则 (四层, 按触发先后排)**:
+    1. **命名检测**: 任何名为 "errors" / "failures" / "alerts" / "warnings" / "incidents" 的 store / table / ring / API 路径, 允许的 level 集合必须**在源代码的 docstring 里明写** (例 `# 本 store 只允许 level in {error, warning, fatal}`). 写入方 PR 要过这个 docstring.
+    2. **容器级 assert 守护**: store 的 `_push(entry)` 或等价 sink 加 `assert entry.level in ALLOWED_LEVELS, f"{entry.op} 写 {container_name} 但 level={entry.level} 不在白名单"`, 运行时 FAIL_LOUD.
+    3. **入口级 opt-in**: 如果实在需要 info 也走这条路 (避免再造一个 store), 必须设计 `include_info` 类的 opt-in 参数, **默认行为不变**. 这是本次 P25 Day 2 采用的 "不破坏语义契约前提下折衷" 方案.
+    4. **UI 端对齐**: 前端消费方**独立检查** endpoint 返回的 level 分布, 和页面命名做一次心智对齐. 若发现 "endpoint 名叫 /errors 但返回一半是 info", 必须 surface 给用户 (本次做法: Errors 页加 `include_info` chip, tester 知道自己正在看的是 "含 info" 的视图).
+- **关联**:
+    - L1 (ring buffer 满了怎么办?) 的**语义命名扩展** — L1 管"满了怎么办", L37 管"装进来的东西是不是配得上容器名".
+    - L14 "coerce 必须 surface" 的**容器级扩展** — L14 管单条记录的默认值要可见, L37 管整类记录的默认 filter 要可见 (Errors 页的 include_info chip 就是 L14 的 surface 实例).
+    - semantic-contract-vs-runtime-mechanism skill 的**命名层版本** — 那条 skill 管"语义 vs 机制不要混", L37 管"语义 vs 容器名不要漂".
+- **候选 skill**: `ui-page-name-vs-store-content-drift` — 触发条件: "任何名为 X 的 store / ring / API 开始接收不属于 X 语义的记录", 输出决策三选一 (改名 / 分家 / opt-in filter), 模板包含 docstring + assert + query param + UI chip 四层.
+- **进入主编号条件**: 需要在后续阶段再有一次"某 store / 页面名称语义漂移"(比如 `warnings` 表开始收 info / `alerts` endpoint 开始返回 debug) 才升级为 §7.34.
+
+**L38 "自动刷新列表的 sub-<details> 展开态必须单独持久化 (和父 entry 的 toggledKeys 同级)"** (P25 Day 2 手测发现, 2026-04-23):
+
+- **场景**: 前端有**自动刷新列表**页 (日志 / 错误 / 任务 / 事件流), 每条 entry 内部嵌套若干可展开 sub-`<details>` (如 "原始 JSON" / "trace digest" / "详细信息"). 初版的父 entry 展开态用 `toggledKeys: Map<key, bool>` 持久化 (跨 auto-refresh 保留), 但 sub-details 直接 `el('details', {open: false}, ...)` 裸写 — 每次 auto-refresh 重建整棵子树, 刚点开的子菜单被收回, tester 要读的详细 payload 刚看半秒就消失.
+- **失败模式**: 只在**触发 auto-refresh 的场景**下暴露 (5s 周期或 filter 切换后), 单元测试 / smoke 在同一秒内断言根本看不到. tester 手测时"每 5 秒就折叠一次"的体感非常明显, 但**很容易被当成"顺手点一下再打开"的小烦恼**, 不主动报 bug. 如果不是 log 量大到 tester 必须长时间盯着某一条, 可能整个 phase 都不会被发现.
+- **真实案例**: P25 Day 2 tester 同时复现**两处**: `page_logs.js` 的 "原始 JSON" 子菜单 + `page_errors.js` 的 "trace_digest" / "detail" 子菜单, **三处子菜单共用同一种 naked <details> 写法**. 修复: 两个 page 都加 `openSubDetails: new Set()` 字段 + `buildStickyDetails(state, subKey, summary, content)` helper (各 page 自己持一份 helper, 不 hoist 到 `_dom.js`, 因为它耦合 page state shape). 父 entry 切换 filter / 分页 / 换 session 时调统一的 `clearEntryCaches(state)` 一并清 `toggledKeys` 和 `openSubDetails`, 防 Set 无界增长 (L11 精神: 前端 map/set 不能无界).
+- **防御规则**:
+    1. **同族扫描义务**: 凡前端出现 `toggledKeys` 类 "父 entry 展开态持久化" 机制的页面, 必须同时扫一次**该 page 的所有 sub-`<details>`** (也就是 renderEntry / renderItem 内部的所有嵌套 `<details>`). 写 `toggledKeys` helper 当天就决定: (a) sub 们要不要持久化 (按 "auto-refresh 频率 × 子菜单内容量" 决定), (b) 如果要, 共用 `openSubDetails: Set` + `buildStickyDetails(state, key, ...)` 模式.
+    2. **同族 helper 对齐**: 当多个 page 出现同种模式 (`toggledKeys` + `openSubDetails` + `clearEntryCaches`) 时, helper 名称和 state field 名称**三处对齐**. 本次 `page_logs.js` 和 `page_errors.js` 都起名 `clearEntryCaches(state)` + `openSubDetails: new Set()` + `buildStickyDetails(state, subKey, summary, content, {extraClass})`, 便于下一个写同类 page 的人直接抄.
+    3. **clear 同步规则**: 凡切 filter / 分页 / 换 session 等 "entry 集合可能变" 的路径, 在调 `toggledKeys.clear()` 的同行必调 `openSubDetails.clear()`. 建议抽 helper `clearEntryCaches(state)` 统一管, 两处 cache 绑一起.
+- **关联**:
+    - L11 (前端 map/set 无界增长) 的**具体化场景** — L11 说不能无界, L38 给出具体 "auto-refresh 列表的 sub-details 持久化" 这一族的正确形式 (`clearEntryCaches` helper 同步清).
+    - L33 (subagent 并行 + 三段式 review) 的**复查实证** — tester 手测直接报 bug 比 smoke 能抓到的更早, 但**一旦写进 lessons 就能让下一个类似 page 的开发者避坑**; 这也是"为什么文档化很值" 的一个具体例子.
+- **候选 skill**: `auto-refresh-list-sticky-sub-details` — 触发条件: "写 auto-refresh 列表页且 renderEntry 内有 sub-<details>", 模板包含 `openSubDetails: Set` + `buildStickyDetails` helper + `clearEntryCaches` 统一清理函数, 强制文档化 "auto-refresh 频率 × 子菜单价值" 的决策记录.
+- **进入主编号条件**: 需要在下一个写 auto-refresh 列表页的 phase (P26+) 至少再命中一次同族, 才升级为 §7.35.
 
 本项目抽出了 3 份**通用 skill**, 放在 `~/.cursor/skills/` 独立维护,
 不依赖本项目. 任何 AI 辅助的大型 codebase 都能用:

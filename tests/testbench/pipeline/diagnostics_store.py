@@ -260,6 +260,7 @@ def list_errors(
     session_id: Optional[str] = None,
     search: Optional[str] = None,
     op_type: Optional[str] = None,
+    include_info: bool = False,
 ) -> dict[str, Any]:
     """Return ``{total, matched, items}`` newest-first after filtering.
 
@@ -271,6 +272,28 @@ def list_errors(
     security-relevant internal ops can be isolated without relying on
     fuzzy ``search`` matching (op strings are tokens, but ``search``
     also matches substrings of user messages, which can drift).
+
+    ``include_info`` (P25 hotfix 2026-04-23) — default ``False``: the
+    ring buffer accepts level=``info`` writes (e.g. P25's
+    ``external_events._record_and_return`` emits
+    ``avatar_interaction_simulated`` / ``agent_callback_simulated`` /
+    ``proactive_simulated`` at info level for audit replay). Those
+    entries should NOT pollute the Errors subpage's default view
+    whose semantic is "recent problems". We default-hide them unless
+    either (a) the caller asked for them explicitly via
+    ``include_info=True``, or (b) the caller passed ``level="info"``
+    to pin the filter onto info level — in which case we respect the
+    explicit ask and do NOT double-filter. Ordering: ``level=`` runs
+    first and is exact-match; ``include_info`` only fires as a
+    **default hide** when ``level=`` was not passed. This keeps the
+    existing "show me info only" UI path working.
+
+    .. note:: This is a *default-filter* change, not a breaking API
+       change. Callers that already scoped by ``level=`` see
+       identical behavior. Callers that passed no level (previously
+       saw info + warning + error + fatal mixed) now see warning +
+       error + fatal by default and must opt-in for info. Audit of
+       in-tree callers done at P25 §3 Day 2 — see task transcript.
     """
     with _LOCK:
         snapshot = list(_BUFFER)
@@ -281,6 +304,15 @@ def list_errors(
         items = [e for e in items if e.source == source]
     if level:
         items = [e for e in items if e.level == level]
+    elif not include_info:
+        # Default-hide info-level entries when caller did not pin a
+        # specific level. L14-style "coerce must surface": the UI
+        # shows a checkbox (``state.filter.include_info``) whose
+        # state maps 1-to-1 to this flag so users always know whether
+        # info is hidden. Entries with unexpected/unknown levels
+        # (shouldn't happen — ``ErrorLevel`` Literal covers them)
+        # fall through as "not info" and remain visible.
+        items = [e for e in items if e.level != "info"]
     if session_id:
         items = [e for e in items if e.session_id == session_id]
     if op_type:

@@ -220,17 +220,34 @@ def _post_event(
 
 
 def _extract_result(body: dict[str, Any]) -> dict[str, Any]:
-    """Pull the SimulationResult dict out of the envelope."""
+    """Return the SimulationResult fields from the POST response body.
+
+    Wire shape (router post-2026-04-23, per P25_BLUEPRINT §2.6 "一个响应
+    结构"): SimulationResult fields are flat at the top level alongside a
+    sibling ``kind`` discriminator — ``{kind, accepted, reason, ...}``.
+    Previously the router wrapped them inside an ``{kind, result: {...}}``
+    envelope, which shape-drifted against the P25 Day 2 UI (the panel's
+    ``state.lastResult = resp.data`` expected flat). We flipped the
+    router and the smoke together to eliminate the envelope.
+    """
     if not isinstance(body, dict):
         return {}
-    return body.get("result") or {}
+    return body
 
 
 def _latest_diag(client, op_type: str) -> dict[str, Any] | None:
-    """Return the most recent diagnostics entry with this op_type, or None."""
+    """Return the most recent diagnostics entry with this op_type, or None.
+
+    Passes ``include_info=true`` because the P25 simulated-event records
+    (``avatar_interaction_simulated`` / ``agent_callback_simulated`` /
+    ``proactive_simulated``) are written at level=info for audit replay.
+    As of P25 hotfix 2026-04-23, ``/api/diagnostics/errors`` default-
+    hides info-level entries; the UI exposes a checkbox to opt-in, and
+    this smoke is that opt-in from the backend side.
+    """
     r = client.get(
         "/api/diagnostics/errors",
-        params={"op_type": op_type, "limit": 10},
+        params={"op_type": op_type, "limit": 10, "include_info": "true"},
     )
     if r.status_code != 200:
         return None

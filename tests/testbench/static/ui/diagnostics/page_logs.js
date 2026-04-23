@@ -23,6 +23,7 @@ import { api } from '../../core/api.js';
 import { i18n, i18nRaw } from '../../core/i18n.js';
 import { store } from '../../core/state.js';
 import { toast } from '../../core/toast.js';
+import { formatIsoReadable } from '../../core/time_utils.js';
 import { el } from '../_dom.js';
 import { lookupOp, opDescription, opLabel } from './op_catalog.js';
 
@@ -63,7 +64,24 @@ function defaultState() {
     // key: entryKey(entry) → bool (true=open). 未在此 map 的 entry 走
     // defaultOpenFor(level): WARNING/ERROR → 默认展开, INFO/DEBUG → 折叠.
     toggledKeys: new Map(),
+    // P25 Day 2 hotfix (2026-04-23): sub-<details> 展开态持久化.
+    // renderEntry() 里有 "原始 JSON" 的 nested <details>; auto-refresh
+    // rebuild 整个 entry list 时, 原来的 <details open> 节点被丢掉重建,
+    // 用户刚点开的原始 JSON 就收回去了. 这个 Set 记录用户手动展开的
+    // 子节点, key 格式 `${entryKey}|raw` (父 entry key + "|raw"). 父
+    // 折叠时不清理 — 父重新展开能直接恢复. filter / 分页 / 换 session
+    // 等路径会连同 toggledKeys.clear() 一起做 openSubDetails.clear(),
+    // 避免 Set 无限增长 (L11 精神: 前端 map/set 不能无界).
+    openSubDetails: new Set(),
   };
+}
+
+// P25 Day 2 helper: filter / 分页 / 换 session 等 "entry 集合换了"
+// 的场景统一调用, 保证 toggledKeys / openSubDetails 一起清, 防止
+// Set 无限增长. 之前 6 处 naked ``toggledKeys.clear()`` 漏扫子 Set.
+function clearEntryCaches(state) {
+  state.toggledKeys.clear();
+  state.openSubDetails.clear();
 }
 
 async function loadRetentionInfo(state) {
@@ -396,7 +414,7 @@ function renderSelectorBar(root, state) {
       }
       state.offset = 0;
       // 切换数据源 = 用户关心的上下文变了, 展开记录不再相关, 清空.
-      state.toggledKeys.clear();
+      clearEntryCaches(state);
       try {
         localStorage.setItem(LS_SESSION_KEY, state.sessionId);
         localStorage.setItem(LS_DATE_KEY, state.date || '');
@@ -423,7 +441,7 @@ function renderSelectorBar(root, state) {
     onChange: (e) => {
       state.date = e.target.value;
       state.offset = 0;
-      state.toggledKeys.clear();
+      clearEntryCaches(state);
       try { localStorage.setItem(LS_DATE_KEY, state.date); } catch { /* ignore */ }
       loadLogs(state).then(() => renderAll(root, state));
     },
@@ -517,7 +535,7 @@ function renderToolbar(root, state) {
       state.offset = 0;
       // P20 hotfix 3 (round 2): 切 level 过滤等价于换了一批 entry,
       // 旧 toggledKeys 对新集合无参考意义. 和 page_errors.js 对齐.
-      state.toggledKeys.clear();
+      clearEntryCaches(state);
       loadLogs(state).then(() => renderAll(root, state));
     },
   }, ...levels.map((l) => {
@@ -535,7 +553,7 @@ function renderToolbar(root, state) {
     onInput: (e) => {
       state.keyword = e.target.value;
       state.offset = 0;
-      state.toggledKeys.clear();
+      clearEntryCaches(state);
       if (state._searchDebounce) clearTimeout(state._searchDebounce);
       state._searchDebounce = setTimeout(() => {
         state._searchDebounce = null;
@@ -549,7 +567,7 @@ function renderToolbar(root, state) {
     onClick: () => {
       state.op = '';
       state.offset = 0;
-      state.toggledKeys.clear();
+      clearEntryCaches(state);
       loadLogs(state).then(() => renderAll(root, state));
     },
   }, i18n('diagnostics.logs.op_clear', state.op)) : null;
@@ -605,7 +623,7 @@ function renderFacets(root, state) {
       onClick: () => {
         state.op = active ? '' : opName;
         state.offset = 0;
-        state.toggledKeys.clear();
+        clearEntryCaches(state);
         loadLogs(state).then(() => renderAll(root, state));
       },
     }, `${opName} · ${count}`);
@@ -741,13 +759,56 @@ function renderEntry(entry, state, opts = {}) {
       el('pre', { className: 'mono' }, safeStringify(entry.payload)),
     ));
   }
-  body.append(el('details', { className: 'diag-entry-raw' },
-    el('summary', {}, i18n('diagnostics.logs.raw_label')),
+  // P25 Day 2 hotfix (2026-04-23): sub-<details> open state must survive
+  // auto-refresh. Previously this was a naked ``<details>`` — each 5-second
+  // refresh rebuilt ``renderEntry`` from scratch, so the user's "open
+  // 原始 JSON" click got wiped. Pattern mirrors the parent-level
+  // ``toggledKeys`` (header click → Map), but scoped to the nested
+  // details children via ``openSubDetails`` (Set of compound keys).
+  body.append(buildStickyDetails(
+    state,
+    `${key}|raw`,
+    i18n('diagnostics.logs.raw_label'),
     el('pre', { className: 'mono' }, safeStringify(entry)),
+    { extraClass: 'diag-entry-raw' },
   ));
 
   cb.append(header, body);
   return cb;
+}
+
+/**
+ * Build a ``<details>`` whose open state is persisted across re-renders
+ * via ``state.openSubDetails`` (Set<string>). ``subKey`` must be unique
+ * across concurrently-rendered sub-details on the page — using
+ * ``${entryKey}|${slot}`` is the canonical pattern.
+ *
+ * The ``toggle`` event fires whenever ``open`` flips, so we listen for
+ * it (not click) to catch keyboard ENTER and programmatic changes.
+ *
+ * Not extracted to ``_dom.js`` because it is diagnostics-specific:
+ * it needs the ``openSubDetails`` Set (a state-shape concern) plus
+ * the ``initialOpen`` semantics (closed by default, opt-in expand).
+ * Hoisting it would require either threading ``state`` through a
+ * generic helper or standing up a per-module factory — both more
+ * overhead than a 20-line local helper.
+ */
+function buildStickyDetails(state, subKey, summaryText, contentNode, { extraClass = '' } = {}) {
+  const set = state.openSubDetails;
+  const initialOpen = set?.has(subKey) === true;
+  const details = el('details', {
+    className: extraClass ? `diag-entry-raw ${extraClass}` : 'diag-entry-raw',
+    open: initialOpen,
+  },
+    el('summary', {}, summaryText),
+    contentNode,
+  );
+  details.addEventListener('toggle', () => {
+    if (!set) return;
+    if (details.open) set.add(subKey);
+    else set.delete(subKey);
+  });
+  return details;
 }
 
 function renderPager(root, state) {
@@ -788,12 +849,20 @@ function formatDate(d) {
 }
 
 function formatLogTimestamp(iso) {
-  if (!iso) return '—';
-  try {
-    return new Date(iso).toISOString().replace('T', ' ').slice(0, 19);
-  } catch {
-    return String(iso);
-  }
+  // P25 Day 2 hotfix (2026-04-23): switch from ``toISOString()`` (UTC
+  // wall clock) to local-wall-clock formatting via
+  // :func:`formatIsoReadable`. The old implementation was
+  // ``new Date(iso).toISOString().replace('T', ' ').slice(0, 19)``, which
+  // silently converted the backend's naive local ISO string (e.g.
+  // ``2026-04-23T13:37:00``) to the browser's UTC representation and
+  // displayed ``05:37`` for an Asia/Shanghai-based tester — an 8-hour
+  // drift that looked like a backend logging bug but was a frontend
+  // rendering bug. ``formatIsoReadable`` pads via ``getHours()`` /
+  // ``getMinutes()`` / ``getSeconds()`` which honor the local timezone.
+  //
+  // Same fix is applied to page_errors.js::formatTimestamp in the same
+  // patch so the two sibling pages stay consistent.
+  return formatIsoReadable(iso);
 }
 
 function levelLabel(level) {

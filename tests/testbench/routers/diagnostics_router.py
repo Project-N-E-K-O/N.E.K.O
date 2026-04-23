@@ -99,6 +99,7 @@ def list_errors(
     session_id: Optional[str] = Query(None),
     search: Optional[str] = Query(None, min_length=1, max_length=200),
     op_type: Optional[str] = Query(None, max_length=200),
+    include_info: bool = Query(False),
 ) -> dict[str, Any]:
     """Return newest-first errors matching the given filters.
 
@@ -107,6 +108,14 @@ def list_errors(
     for "any of" semantics. Used by Errors subpage's Security filter
     buttons (integrity_check / judge_extra_context_override /
     timestamp_coerced).
+
+    ``include_info`` — P25 hotfix 2026-04-23. Default ``False``:
+    hide level=info entries (e.g. P25 ``avatar_interaction_simulated``
+    audit replays) from the "recent problems" default view. Pass
+    ``True`` from the UI's "包含 info 级" checkbox to surface them.
+    If the caller passes an explicit ``level=`` that filter wins
+    and ``include_info`` is ignored (see
+    ``diagnostics_store.list_errors`` for precedence details).
     """
     return diagnostics_store.list_errors(
         limit=limit,
@@ -116,6 +125,7 @@ def list_errors(
         session_id=session_id,
         search=search,
         op_type=op_type,
+        include_info=include_info,
     )
 
 
