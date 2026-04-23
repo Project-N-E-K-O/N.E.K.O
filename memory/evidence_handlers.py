@@ -42,6 +42,12 @@ _EVIDENCE_SNAPSHOT_KEYS = (
     # 路径才能让重放后 view 的 combo 状态一致
     'user_fact_reinforce_count',
 )
+# Reflection-side evidence events also carry promote throttle counters
+# (RFC §3.9.2) — must replay so a crash between event-append and view-save
+# preserves the backoff window / dead-letter logic.
+_REFLECTION_EVIDENCE_SNAPSHOT_KEYS = _EVIDENCE_SNAPSHOT_KEYS + (
+    'last_promote_attempt_at', 'promote_attempt_count',
+)
 _PERSONA_ENTRY_SNAPSHOT_KEYS = _EVIDENCE_SNAPSHOT_KEYS + ('merged_from_ids',)
 
 
@@ -77,9 +83,77 @@ def make_reflection_evidence_handler(reflection_engine):
         for r in data:
             if not isinstance(r, dict) or r.get('id') != rid:
                 continue
-            for k in _EVIDENCE_SNAPSHOT_KEYS:
+            for k in _REFLECTION_EVIDENCE_SNAPSHOT_KEYS:
                 if k in payload and r.get(k) != payload[k]:
                     r[k] = payload[k]
+                    changed = True
+            break
+        if changed:
+            atomic_write_json(path, data, indent=2, ensure_ascii=False)
+        return changed
+
+    return _apply
+
+
+def make_reflection_state_changed_handler(reflection_engine):
+    """Build the `reflection.state_changed` apply handler.
+
+    Replays the `to` status onto the reflection identified by
+    `reflection_id`, plus any audit fields the producer recorded
+    (`absorbed_into`, `promote_blocked_reason`, `denied_reason`,
+    `reject_reason`, `<status>_at` timestamp). RFC §3.9.6 — without a
+    handler, a crash after the event log append but before the view
+    save would leak a "phantom unflipped" reflection on next boot.
+    """
+
+    def _apply(name: str, payload: dict) -> bool:
+        rid = payload.get('reflection_id')
+        to_status = payload.get('to')
+        if not rid or not to_status:
+            return False
+        path = reflection_engine._reflections_path(name)
+        data: list[dict] = []
+        if os.path.exists(path):
+            with open(path, encoding='utf-8') as f:
+                data = json.load(f)
+        if not isinstance(data, list):
+            raise RuntimeError(
+                f"[EvidenceHandler] {path}: 期望 list，实际 "
+                f"{type(data).__name__}；view 结构异常，暂停 replay"
+            )
+        changed = False
+        for r in data:
+            if not isinstance(r, dict) or r.get('id') != rid:
+                continue
+            if r.get('status') != to_status:
+                r['status'] = to_status
+                changed = True
+            ts = payload.get('ts')
+            if ts:
+                ts_key = f'{to_status}_at'
+                if r.get(ts_key) != ts:
+                    r[ts_key] = ts
+                    changed = True
+            for k in ('absorbed_into',):
+                if k in payload and r.get(k) != payload[k]:
+                    r[k] = payload[k]
+                    changed = True
+            # Mirror of `_arecord_state_change._sync_mutate` — route the
+            # audit `reason` to a status-specific field so denied / blocked
+            # semantics don't bleed across. Without the `denied` branch
+            # here, a crash-replay would silently drop the denied_reason
+            # that the live writer recorded.
+            if 'reason' in payload and to_status == 'promote_blocked':
+                if r.get('promote_blocked_reason') != payload['reason']:
+                    r['promote_blocked_reason'] = payload['reason']
+                    changed = True
+            if 'reason' in payload and to_status == 'denied':
+                if r.get('denied_reason') != payload['reason']:
+                    r['denied_reason'] = payload['reason']
+                    changed = True
+            if 'reject_explanation' in payload:
+                if r.get('reject_reason') != payload['reject_explanation']:
+                    r['reject_reason'] = payload['reject_explanation']
                     changed = True
             break
         if changed:
@@ -368,16 +442,47 @@ def make_persona_archive_handler(persona_manager):
     return _apply
 
 
+def make_reflection_state_changed_composite(reflection_engine):
+    """Composite handler for `EVT_REFLECTION_STATE_CHANGED`.
+
+    The event is emitted by two disjoint paths that happen to share the
+    same event type (RFC §3.5.6 deliberately reuses it to keep the event
+    vocabulary compact):
+
+      1. **Archive** (PR-2, RFC §3.5): `to='archived'` — remove from
+         active view + self-heal the sharded archive file.
+      2. **Merge-on-promote** (PR-3, RFC §3.9.6): `to` ∈ {confirmed,
+         promoted, merged, denied, promote_blocked} — flip the status
+         field + update audit fields on the existing entry.
+
+    `Reconciler.register` replaces rather than chains, so we dispatch
+    here rather than registering two handlers. The `to` value is the
+    only source of truth needed to pick a branch — both producers must
+    set it.
+    """
+    archive_handler = make_reflection_archive_handler(reflection_engine)
+    status_handler = make_reflection_state_changed_handler(reflection_engine)
+
+    def _apply(name: str, payload: dict) -> bool:
+        to_status = payload.get('to')
+        if to_status == 'archived':
+            return archive_handler(name, payload)
+        return status_handler(name, payload)
+
+    return _apply
+
+
 def register_evidence_handlers(
     reconciler: Reconciler,
     persona_manager,
     reflection_engine,
 ) -> None:
-    """Register all evidence + archive handlers on a reconciler.
+    """Register all evidence + state-change + archive handlers on a reconciler.
 
     Call once per boot (memory_server startup) and per hot-reload — the
     closures capture the current manager instances so reload-swapped
-    instances see their own file paths."""
+    instances see their own file paths.
+    """
     reconciler.register(
         EVT_REFLECTION_EVIDENCE_UPDATED,
         make_reflection_evidence_handler(reflection_engine),
@@ -390,11 +495,14 @@ def register_evidence_handlers(
         EVT_PERSONA_ENTRY_UPDATED,
         make_persona_entry_handler(persona_manager),
     )
-    # RFC §3.5.6: archive events reuse state_changed / fact_added
+    # RFC §3.5.6 + §3.9.6: archive + merge-on-promote both emit
+    # EVT_REFLECTION_STATE_CHANGED. Dispatch on `to` inside the composite.
     reconciler.register(
         EVT_REFLECTION_STATE_CHANGED,
-        make_reflection_archive_handler(reflection_engine),
+        make_reflection_state_changed_composite(reflection_engine),
     )
+    # RFC §3.5.6: persona archive reuses EVT_PERSONA_FACT_ADDED (payload
+    # carries `archive_shard_path` to differentiate from a regular add).
     reconciler.register(
         EVT_PERSONA_FACT_ADDED,
         make_persona_archive_handler(persona_manager),

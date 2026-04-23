@@ -1406,3 +1406,382 @@ def test_archive_stamper_cross_day_retry_realigns_archived_at(tmp_path):
     # Internal consistency: both fields agree on the date prefix.
     assert entry["archived_at"].startswith("2026-04-23")
     assert entry["archive_shard_path"].startswith("2026-04-23")
+
+
+def _persona_cache_safety_initial(entry_id: str, initial_text: str) -> dict:
+    return {
+        "master": {
+            "facts": [{
+                "id": entry_id,
+                "text": initial_text,
+                "reinforcement": 1.0,
+                "disputation": 0.0,
+                "rein_last_signal_at": None,
+                "disp_last_signal_at": None,
+                "sub_zero_days": 0,
+                "user_fact_reinforce_count": 0,
+                "source": "test",
+                "merged_from_ids": [],
+                "protected": False,
+            }],
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_persona_sync_save_evicts_cache_on_atomic_write_failure(tmp_path):
+    """Round-5 Major #1 + Round-6 Major #3: if the save step inside
+    `_sync_save_persona_view` fails AFTER `_sync_mutate_view` already
+    mutated the cached persona (record_and_save contract:
+    mutate-then-save), the in-memory cache would be left polluted with
+    the merged state while disk still sits at pre-event. Subsequent
+    in-process reads would serve the stale/polluted state.
+
+    Fix: `_sync_save_persona_view` wraps the WHOLE save step
+    (cloudsave gate + atomic_write_json) in a try/except that evicts
+    the dirty cache entry on any failure. Next `_aensure_persona_locked`
+    reloads from disk (pre-event state). The event is already appended
+    to the log (append runs before mutate per event_log.record_and_save),
+    so reconciler replay on next boot restores the mutation correctly.
+
+    Round-6 Major #3 tightening: the bomb MUST land on the SECOND
+    persona.json write — that is, on EVT_PERSONA_ENTRY_UPDATED's save.
+    `amerge_into` emits EVT_PERSONA_EVIDENCE_UPDATED FIRST as a no-op
+    mutate (RFC §3.9.6 + round-4 fix); its `_sync_mutate_view` is a
+    pass so even if its save fails the cache would NOT be polluted.
+    The pollution window is event-2 (entry_updated) where
+    `_sync_mutate_entry` rewrites text/evidence/merged_from_ids in
+    place on the cached dict. Bombing on the FIRST save would never
+    exercise the actual round-5 fix — just walk the no-op path.
+
+    Covers all persona paths that go through the helper:
+    aapply_signal, amerge_into (2 events), aincrement_sub_zero,
+    aarchive_persona_entry. The shared helper makes the guarantee
+    uniform across the others.
+    """
+    _ev, _fs, pm, _re, _rec, _cm = _install(str(tmp_path))
+
+    entry_id = "p_cache_safety"
+    initial_text = "original — pre-merge"
+    await pm.asave_persona(
+        "小天", _persona_cache_safety_initial(entry_id, initial_text),
+    )
+    # Prime the in-memory cache by loading once.
+    before = await pm.aget_persona("小天")
+    assert before["master"]["facts"][0]["text"] == initial_text
+
+    # Round-6 Major #3: bomb on the SECOND persona.json save (the
+    # entry_updated save, which is the one whose mutate ACTUALLY
+    # touched the cached dict). The first save is for evidence_updated
+    # whose mutate is a documented no-op (round-4 crash-safety fix);
+    # bombing it would not exercise the round-5 cache-eviction window.
+    from memory.persona import atomic_write_json as _real_atomic
+
+    persona_write_count = {"n": 0}
+
+    def _boom_on_second_persona_write(path, *args, **kwargs):
+        if str(path).endswith("persona.json"):
+            persona_write_count["n"] += 1
+            if persona_write_count["n"] >= 2:
+                raise RuntimeError(
+                    "simulated persona.json write failure on entry_updated"
+                )
+        return _real_atomic(path, *args, **kwargs)
+
+    with patch("memory.persona.atomic_write_json",
+               side_effect=_boom_on_second_persona_write):
+        with pytest.raises(RuntimeError, match="simulated persona.json"):
+            await pm.amerge_into(
+                "小天", entry_id, "merged — post-failure",
+                reflection_evidence={
+                    'reinforcement': 3.0, 'disputation': 0.0,
+                },
+                source_reflection_id="ref_boom", merged_from_ids=["ref_boom"],
+            )
+
+    # Sanity: we hit the entry_updated save (not a stray write count).
+    assert persona_write_count["n"] == 2, (
+        f"expected 2 persona.json writes (evidence_updated then "
+        f"entry_updated); got {persona_write_count['n']} — the bomb may "
+        f"have fired on the wrong event, missing the pollution window"
+    )
+
+    # Cache must have been EVICTED — subsequent read re-loads from disk.
+    # The first save (evidence_updated, no-op mutate) succeeded; its
+    # event-driven evidence values DID land on disk. The second save
+    # (entry_updated, in-place mutate of text + merged_from_ids)
+    # failed — the cache must NOT carry that polluted text/sentinel.
+    after = await pm.aget_persona("小天")
+    entry_after = after["master"]["facts"][0]
+    assert entry_after["text"] == initial_text, (
+        f"cache leaked merged text despite entry_updated save failure "
+        f"(round-5 Major #1 + round-6 Major #3 regression): "
+        f"got {entry_after['text']!r}"
+    )
+    assert entry_after["merged_from_ids"] == [], (
+        "cache leaked merged_from_ids despite entry_updated save failure "
+        "— this is the idempotency sentinel; if leaked the retry would "
+        "no-op and lose the merge entirely"
+    )
+
+    # Sanity: a retry with atomic_write restored must now succeed,
+    # proving the entry wasn't somehow already-merged in memory.
+    r = await pm.amerge_into(
+        "小天", entry_id, "merged — retry succeeds",
+        reflection_evidence={'reinforcement': 3.0, 'disputation': 0.0},
+        source_reflection_id="ref_boom", merged_from_ids=["ref_boom"],
+    )
+    assert r == "merged"
+    final = await pm.aget_persona("小天")
+    assert final["master"]["facts"][0]["text"] == "merged — retry succeeds"
+
+
+@pytest.mark.asyncio
+async def test_persona_sync_save_evicts_cache_on_cloudsave_gate_raise(tmp_path):
+    """Round-6 Major #1: the cache-eviction try/except must also wrap
+    `assert_cloudsave_writable`, not just `atomic_write_json`. If
+    cloudsave flips to read-only mid-flight (e.g. quota hit between
+    the mutate and the save), the gate raises BEFORE the atomic_write —
+    but `_sync_mutate_entry` has already polluted the cached dict. The
+    old try-block scope only caught atomic_write failures, so the
+    gate-raise path would leak the polluted cache.
+
+    Symmetric assertion to the atomic_write test above, exercising the
+    second persona.json save (entry_updated) for the same reason: the
+    pollution window is event-2 in `amerge_into`.
+    """
+    _ev, _fs, pm, _re, _rec, _cm = _install(str(tmp_path))
+
+    entry_id = "p_cache_safety_cs"
+    initial_text = "original — pre-merge (cloudsave path)"
+    await pm.asave_persona(
+        "小天", _persona_cache_safety_initial(entry_id, initial_text),
+    )
+    before = await pm.aget_persona("小天")
+    assert before["master"]["facts"][0]["text"] == initial_text
+
+    # Bomb the cloudsave gate on the SECOND call only (let the
+    # evidence_updated save through; round-6 Major #3 tightening).
+    gate_call_count = {"n": 0}
+
+    def _boom_on_second_cloudsave(_cm, *, operation: str, target: str):
+        if target.endswith("persona.json") and operation == "save":
+            gate_call_count["n"] += 1
+            if gate_call_count["n"] >= 2:
+                raise RuntimeError(
+                    "simulated cloudsave readonly on entry_updated save"
+                )
+
+    with patch("memory.persona.assert_cloudsave_writable",
+               side_effect=_boom_on_second_cloudsave):
+        with pytest.raises(RuntimeError, match="simulated cloudsave"):
+            await pm.amerge_into(
+                "小天", entry_id, "merged — cloudsave failed",
+                reflection_evidence={
+                    'reinforcement': 3.0, 'disputation': 0.0,
+                },
+                source_reflection_id="ref_cs", merged_from_ids=["ref_cs"],
+            )
+
+    assert gate_call_count["n"] == 2, (
+        f"expected 2 cloudsave gate calls (evidence_updated then "
+        f"entry_updated); got {gate_call_count['n']} — the bomb may "
+        f"have fired on the wrong event"
+    )
+
+    # Cache must have been EVICTED — same invariant as the atomic_write
+    # variant: cloudsave-gate raise on the polluting save must not
+    # leave merged text / sentinel in memory.
+    after = await pm.aget_persona("小天")
+    entry_after = after["master"]["facts"][0]
+    assert entry_after["text"] == initial_text, (
+        f"cache leaked merged text despite cloudsave-gate raise on "
+        f"entry_updated (round-6 Major #1 regression): "
+        f"got {entry_after['text']!r}"
+    )
+    assert entry_after["merged_from_ids"] == [], (
+        "cache leaked merged_from_ids despite cloudsave-gate raise — "
+        "the eviction try/except must wrap assert_cloudsave_writable, "
+        "not just atomic_write_json"
+    )
+
+
+# ── Round-7 Major: extend eviction-on-save-failure to the public
+# `save_persona` / `asave_persona` paths (used by add_fact,
+# ensure_persona's character-card sync, and other non-event writers).
+# Round-5/6 only fixed `_sync_save_persona_view` (event-sourced path);
+# the public save methods kept the legacy "cache-then-save" order, so
+# any save-step failure left `self._personas[name]` polluted with
+# state that never landed on disk.
+
+
+def _persona_round7_baseline() -> dict:
+    """Baseline persona that fits the `aget_persona` reload path."""
+    return {
+        "master": {
+            "facts": [{
+                "id": "p_round7_baseline",
+                "text": "baseline disk text",
+                "reinforcement": 0.5,
+                "disputation": 0.0,
+                "rein_last_signal_at": None,
+                "disp_last_signal_at": None,
+                "sub_zero_days": 0,
+                "user_fact_reinforce_count": 0,
+                "source": "test",
+                "merged_from_ids": [],
+                "protected": False,
+            }],
+        },
+    }
+
+
+def _persona_round7_polluted() -> dict:
+    """The dict the caller WANTS to save — must NOT remain in cache
+    after a save-step failure."""
+    return {
+        "master": {
+            "facts": [{
+                "id": "p_round7_baseline",
+                "text": "polluted in-memory text",
+                "reinforcement": 9.0,
+                "disputation": 0.0,
+                "rein_last_signal_at": None,
+                "disp_last_signal_at": None,
+                "sub_zero_days": 0,
+                "user_fact_reinforce_count": 0,
+                "source": "test",
+                "merged_from_ids": ["polluted_ref"],
+                "protected": False,
+            }],
+        },
+    }
+
+
+def test_save_persona_evicts_cache_on_atomic_write_failure(tmp_path):
+    """Round-7 Major: sync `save_persona` must evict polluted cache
+    when `atomic_write_json` raises. Otherwise `add_fact()` /
+    `ensure_persona()`'s character-card sync would leave stale state
+    in memory until restart.
+    """
+    _ev, _fs, pm, _re, _rec, _cm = _install(str(tmp_path))
+
+    # Persist a clean baseline to disk first.
+    pm.save_persona("小天", _persona_round7_baseline())
+    assert pm.ensure_persona("小天")["master"]["facts"][0]["text"] == \
+        "baseline disk text"
+
+    from memory.persona import atomic_write_json as _real_atomic
+
+    def _boom(path, *args, **kwargs):
+        if str(path).endswith("persona.json"):
+            raise RuntimeError("simulated atomic_write_json failure")
+        return _real_atomic(path, *args, **kwargs)
+
+    with patch("memory.persona.atomic_write_json", side_effect=_boom):
+        with pytest.raises(RuntimeError, match="simulated atomic_write_json"):
+            pm.save_persona("小天", _persona_round7_polluted())
+
+    # Cache MUST be evicted — next ensure re-reads disk (still baseline).
+    after = pm.ensure_persona("小天")
+    entry_after = after["master"]["facts"][0]
+    assert entry_after["text"] == "baseline disk text", (
+        f"cache leaked polluted text despite atomic_write failure "
+        f"(round-7 Major regression on save_persona): "
+        f"got {entry_after['text']!r}"
+    )
+    assert entry_after["merged_from_ids"] == [], (
+        "cache leaked merged_from_ids despite save failure on save_persona"
+    )
+
+
+def test_save_persona_evicts_cache_on_cloudsave_gate_raise(tmp_path):
+    """Round-7 Major: sync `save_persona` must also evict cache when
+    the cloudsave gate raises (e.g. cloudsave flipped to read-only
+    between cache assignment and atomic_write). Symmetric to the
+    atomic_write variant above.
+    """
+    _ev, _fs, pm, _re, _rec, _cm = _install(str(tmp_path))
+
+    pm.save_persona("小天", _persona_round7_baseline())
+    pm.ensure_persona("小天")  # prime cache
+
+    def _boom_gate(_cm, *, operation: str, target: str):
+        if target.endswith("persona.json") and operation == "save":
+            raise RuntimeError("simulated cloudsave readonly")
+
+    with patch("memory.persona.assert_cloudsave_writable",
+               side_effect=_boom_gate):
+        with pytest.raises(RuntimeError, match="simulated cloudsave"):
+            pm.save_persona("小天", _persona_round7_polluted())
+
+    after = pm.ensure_persona("小天")
+    entry_after = after["master"]["facts"][0]
+    assert entry_after["text"] == "baseline disk text", (
+        f"cache leaked polluted text despite cloudsave-gate raise on "
+        f"save_persona (round-7 Major regression): "
+        f"got {entry_after['text']!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_asave_persona_evicts_cache_on_atomic_write_failure(tmp_path):
+    """Round-7 Major (async twin): `asave_persona` must evict polluted
+    cache when `atomic_write_json_async` raises. Covers the path used
+    by `aadd_fact` and `_aensure_persona_locked`'s character-card sync.
+    """
+    _ev, _fs, pm, _re, _rec, _cm = _install(str(tmp_path))
+
+    await pm.asave_persona("小天", _persona_round7_baseline())
+    before = await pm.aget_persona("小天")
+    assert before["master"]["facts"][0]["text"] == "baseline disk text"
+
+    from memory.persona import atomic_write_json_async as _real_atomic_a
+
+    async def _boom_async(path, *args, **kwargs):
+        if str(path).endswith("persona.json"):
+            raise RuntimeError("simulated atomic_write_json_async failure")
+        return await _real_atomic_a(path, *args, **kwargs)
+
+    with patch("memory.persona.atomic_write_json_async", side_effect=_boom_async):
+        with pytest.raises(RuntimeError, match="simulated atomic_write_json_async"):
+            await pm.asave_persona("小天", _persona_round7_polluted())
+
+    after = await pm.aget_persona("小天")
+    entry_after = after["master"]["facts"][0]
+    assert entry_after["text"] == "baseline disk text", (
+        f"cache leaked polluted text despite atomic_write_async failure "
+        f"on asave_persona (round-7 Major regression): "
+        f"got {entry_after['text']!r}"
+    )
+    assert entry_after["merged_from_ids"] == [], (
+        "cache leaked merged_from_ids despite save failure on asave_persona"
+    )
+
+
+@pytest.mark.asyncio
+async def test_asave_persona_evicts_cache_on_cloudsave_gate_raise(tmp_path):
+    """Round-7 Major (async twin): `asave_persona` must evict cache
+    when the cloudsave gate raises before `atomic_write_json_async`.
+    """
+    _ev, _fs, pm, _re, _rec, _cm = _install(str(tmp_path))
+
+    await pm.asave_persona("小天", _persona_round7_baseline())
+    await pm.aget_persona("小天")  # prime cache
+
+    def _boom_gate(_cm, *, operation: str, target: str):
+        if target.endswith("persona.json") and operation == "save":
+            raise RuntimeError("simulated cloudsave readonly (async)")
+
+    with patch("memory.persona.assert_cloudsave_writable",
+               side_effect=_boom_gate):
+        with pytest.raises(RuntimeError, match="simulated cloudsave"):
+            await pm.asave_persona("小天", _persona_round7_polluted())
+
+    after = await pm.aget_persona("小天")
+    entry_after = after["master"]["facts"][0]
+    assert entry_after["text"] == "baseline disk text", (
+        f"cache leaked polluted text despite cloudsave-gate raise on "
+        f"asave_persona (round-7 Major regression): "
+        f"got {entry_after['text']!r}"
+    )

@@ -690,7 +690,13 @@ AUTO_PROMOTE_CHECK_INTERVAL = 300  # 5 分钟
 async def _periodic_auto_promote_loop():
     """定期执行 auto_promote_stale：pending→confirmed→promoted 状态迁移。
 
-    确保即使用户长时间不触发主动搭话，confirmed 反思也能按时升格为 persona。
+    PR-3 (RFC §3.9.1)：`aauto_promote_stale` 现在包含两段：
+      1. 锁内 pending → confirmed (score driven)
+      2. 锁外 confirmed → promoted via `_apromote_with_merge`（LLM 决策
+         合并 / 独立晋升 / 拒绝；带节流防 LLM 失败 DOS）
+
+    Per-character 用 asyncio.gather 并行——每个角色内部仍是顺序操作
+    （锁串行），但跨角色可以打满。
     """
     while True:
         await asyncio.sleep(AUTO_PROMOTE_CHECK_INTERVAL)
