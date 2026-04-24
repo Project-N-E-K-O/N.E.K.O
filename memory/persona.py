@@ -23,9 +23,15 @@ import json
 import os
 import re
 import threading
+from collections import defaultdict
 from datetime import datetime, timedelta
 
-from config import SETTING_PROPOSER_MODEL
+from config import (
+    PERSONA_RENDER_TOKEN_BUDGET,
+    REFLECTION_RENDER_TOKEN_BUDGET,
+    SETTING_PROPOSER_MODEL,
+)
+from memory.evidence import evidence_score
 from utils.cloudsave_runtime import assert_cloudsave_writable
 from utils.config_manager import get_config_manager
 from utils.file_utils import (
@@ -35,6 +41,7 @@ from utils.file_utils import (
     robust_json_loads,
 )
 from utils.logger_config import get_module_logger
+from utils.tokenize import acount_tokens, count_tokens, tokenizer_identity
 
 logger = get_module_logger(__name__, "Memory")
 
@@ -135,6 +142,73 @@ class PersonaManager:
     def _corrections_path(self, name: str) -> str:
         from memory import ensure_character_dir
         return os.path.join(ensure_character_dir(self._config_manager.memory_dir, name), 'persona_corrections.json')
+
+    def _persona_archive_dir(self, name: str) -> str:
+        """Sharded archive directory for persona entries (RFC §3.5.4).
+
+        New in PR-2 — persona had no archival before this RFC, so there
+        is no legacy flat file to migrate (RFC §3.5.5 末段).
+        """
+        from memory import ensure_character_dir
+        return os.path.join(
+            ensure_character_dir(self._config_manager.memory_dir, name),
+            'persona_archive',
+        )
+
+    def _sync_save_persona_view(self, n: str, view: dict) -> None:
+        """`_sync_save` helper for `arecord_and_save` paths on persona.json.
+
+        Context (CodeRabbit PR #936 round-5 Major #1): all event-sourced
+        mutation paths in this file follow the record_and_save contract,
+        meaning `_sync_mutate_view` mutates `self._personas[n]` IN PLACE
+        (the cached dict and the `view` arg are the same object — see
+        `_aensure_persona_locked`). If the subsequent `atomic_write_json`
+        fails (disk full, cloudsave read-only kicked in mid-call, …), the
+        in-memory cache has already taken the mutation while the disk
+        still sits at the pre-event state. Subsequent in-process reads
+        would serve polluted state.
+
+        Fix: on ANY save-step failure (cloudsave gate raise OR
+        atomic_write raise), evict the polluted entry from
+        `self._personas`. Next access goes through
+        `_aensure_persona_locked` which re-reads from disk — the
+        pre-event view. The event is already in the log (append runs
+        before mutate, see event_log.record_and_save), so reconciler
+        replay on next boot restores the mutation correctly. The
+        exception propagates so the caller sees the failure.
+
+        Why both calls share one try (CodeRabbit PR #936 round-6
+        Major #1): `_sync_mutate_view` has already mutated the cached
+        entry IN PLACE before this helper runs. If
+        `assert_cloudsave_writable` raises (cloudsave flipped to
+        read-only mid-flight) AFTER mutate but BEFORE atomic_write,
+        the polluted cache lingers exactly the same way an
+        atomic_write failure would. Wrapping both calls under the
+        same evict-on-raise block keeps the "any save-step failure
+        ⇒ cache evicted" invariant uniform — no corner where one
+        failure mode leaves polluted memory state.
+
+        The cache assignment AFTER atomic_write succeeds is a no-op in
+        the common case (view IS self._personas[n]) but kept explicit
+        for the rare initialization-race where a concurrent reload may
+        have replaced the entry.
+        """
+        try:
+            assert_cloudsave_writable(
+                self._config_manager,
+                operation="save",
+                target=f"memory/{n}/persona.json",
+            )
+            atomic_write_json(
+                self._persona_path(n), view, indent=2, ensure_ascii=False,
+            )
+        except Exception:
+            # Evict the polluted cache; next _aensure_persona_locked
+            # reloads from disk (pre-event state). Reconciler replays
+            # the already-appended event on next boot.
+            self._personas.pop(n, None)
+            raise
+        self._personas[n] = view
 
     # ── CRUD ─────────────────────────────────────────────────────────
 
@@ -436,6 +510,11 @@ class PersonaManager:
                         # 文本变化 → 更新
                         old_text = entry.get('text', '')
                         entry['text'] = text
+                        # token_count 缓存是从 text 派生的；这里原地改写
+                        # text 必须同步失效缓存，否则渲染路径要等到
+                        # fingerprint mismatch 才补算，还会额外浪费一次
+                        # sha256（对偶于 amerge_into 的 _sync_mutate_entry）。
+                        self._invalidate_token_count_cache(entry)
                         modified = True
                         logger.info(f"[Persona] {name}: card 同步更新 [{entity}] \"{old_text[:30]}\" → \"{text[:30]}\"")
                     new_card_entries.append(entry)
@@ -510,26 +589,61 @@ class PersonaManager:
         )
 
     def save_persona(self, name: str, persona: dict | None = None) -> None:
+        """Persist persona to disk; on failure evict the cached entry.
+
+        Round-7 Major (CodeRabbit PR #936): the cache assignment
+        happens BEFORE the save step, so any exception from
+        `assert_cloudsave_writable` (cloudsave flipped to read-only)
+        OR `atomic_write_json` (disk full / IO error) would otherwise
+        leave `self._personas[name]` polluted with state that never
+        landed on disk. Subsequent in-process reads (incl. sibling
+        async writers via the shared cache) would serve the stale
+        view until restart.
+
+        Mirrors the eviction-on-save-failure invariant already
+        enforced by `_sync_save_persona_view` (round-5/6 fixes) but
+        for the non-event-sourced public save paths used by
+        `add_fact`, `ensure_persona`'s character-card sync, and
+        manual save callers. Same try/except wraps both the
+        cloudsave gate and the atomic write so both failure modes
+        evict uniformly.
+        """
         if persona is None:
             persona = self._personas.get(name, self._empty_persona())
         self._personas[name] = persona
-        assert_cloudsave_writable(
-            self._config_manager,
-            operation="save",
-            target=f"memory/{name}/persona.json",
-        )
-        atomic_write_json(self._persona_path(name), persona, indent=2, ensure_ascii=False)
+        try:
+            assert_cloudsave_writable(
+                self._config_manager,
+                operation="save",
+                target=f"memory/{name}/persona.json",
+            )
+            atomic_write_json(
+                self._persona_path(name), persona, indent=2, ensure_ascii=False,
+            )
+        except Exception:
+            # Evict the polluted cache entry — next ensure/aensure
+            # reload re-reads the (unchanged) on-disk state.
+            self._personas.pop(name, None)
+            raise
 
     async def asave_persona(self, name: str, persona: dict | None = None) -> None:
+        """Async twin of `save_persona` with the same eviction-on-failure
+        contract (round-7 Major, CodeRabbit PR #936)."""
         if persona is None:
             persona = self._personas.get(name, self._empty_persona())
         self._personas[name] = persona
-        assert_cloudsave_writable(
-            self._config_manager,
-            operation="save",
-            target=f"memory/{name}/persona.json",
-        )
-        await atomic_write_json_async(self._persona_path(name), persona, indent=2, ensure_ascii=False)
+        try:
+            assert_cloudsave_writable(
+                self._config_manager,
+                operation="save",
+                target=f"memory/{name}/persona.json",
+            )
+            await atomic_write_json_async(
+                self._persona_path(name), persona, indent=2, ensure_ascii=False,
+            )
+        except Exception:
+            self._personas.pop(name, None)
+            raise
 
     def get_persona(self, name: str) -> dict:
         return self.ensure_persona(name)
@@ -553,6 +667,21 @@ class PersonaManager:
         - rein_last_signal_at / disp_last_signal_at: 各自独立的衰减时钟
         - sub_zero_days + sub_zero_last_increment_date: archive 倒计时
         - merged_from_ids: LLM merge_into 决策吸收的 reflection id 列表
+
+        Token-count cache fields (derived, cache-only — not event-sourced):
+        - token_count: int | None — cached acount_tokens(text)
+        - token_count_text_sha256: str | None — fingerprint of the text that
+          was tokenized; a mismatch triggers recompute on the next render.
+        - token_count_tokenizer: str | None — fingerprint of the counter
+          used when `token_count` was written (e.g. `tiktoken:o200k_base`
+          or `heuristic:v1`). A mismatch with the current tokenizer
+          identity also triggers recompute, so a cache warmed under
+          tiktoken doesn't get served to a heuristic-fallback render.
+
+        Zero-migration schema addition: existing on-disk entries without
+        these fields naturally read as None via `.get()`, which counts as a
+        cache miss and triggers a clean recompute on first render. No
+        explicit migration event is needed.
         """
         defaults = {
             'id': '',                   # 唯一标识
@@ -575,6 +704,16 @@ class PersonaManager:
             'user_fact_reinforce_count': 0,
             # 溯源：merge_into 吸收的 reflection id 列表
             'merged_from_ids': [],
+            # Derived token-count cache — populated by the render path
+            # (`_get_cached_token_count` / `_aget_cached_token_count`)
+            # on first render and ride-alongs with normal persona saves.
+            # Both text-sha and tokenizer-identity must match for a hit,
+            # so a cache warmed under tiktoken can't be served to a
+            # heuristic-fallback render (e.g. packaging without encoding
+            # data file).
+            'token_count': None,
+            'token_count_text_sha256': None,
+            'token_count_tokenizer': None,
         }
         if isinstance(entry, str):
             d = dict(defaults)
@@ -765,25 +904,489 @@ class PersonaManager:
                 entry['sub_zero_days'] = snapshot['sub_zero_days']
                 entry['user_fact_reinforce_count'] = snapshot['user_fact_reinforce_count']
 
-            def _sync_save(n: str, view):
-                # Gate write behind the same cloudsave check as
-                # save_persona/asave_persona — the evidence mutation path
-                # must honour read-only/maintenance mode (CodeRabbit PR #929).
-                assert_cloudsave_writable(
-                    self._config_manager,
-                    operation="save",
-                    target=f"memory/{n}/persona.json",
-                )
-                self._personas[n] = view
-                atomic_write_json(
-                    self._persona_path(n), view, indent=2, ensure_ascii=False,
-                )
+            # _sync_save: cloudsave gate + write + cache-evict-on-failure
+            # (CodeRabbit PR #929 for the gate, PR #936 round-5 for the
+            # evict). See `_sync_save_persona_view` docstring.
+            _sync_save = self._sync_save_persona_view
 
             await self._event_log.arecord_and_save(
                 name, EVT_PERSONA_EVIDENCE_UPDATED, payload,
                 sync_load_view=_sync_load,
                 sync_mutate_view=_sync_mutate,
                 sync_save_view=_sync_save,
+            )
+            return True
+
+    @staticmethod
+    def _find_entry_with_section(
+        persona: dict, entry_id: str,
+    ) -> tuple[str | None, dict | None]:
+        """Locate an entry by id across all entity sections.
+
+        Returns `(entity_key, entry_dict)` or `(None, None)` if absent.
+        Used by `amerge_into` where the caller (LLM) supplies a fully-qualified
+        target_id but we still need to know which entity section to address
+        the event payload against.
+
+        Accepts both bare ids ("p_001") and the fully-qualified
+        prompt form ("persona.<entity>.p_001"). The reflection promote
+        path strips the prefix before calling, but we accept both forms
+        defensively so any callsite (tests, future plugins, manual
+        replay) works without re-implementing the parser.
+        """
+        # Defensive parse of the qualified form. Anything that doesn't
+        # match `persona.<entity>.<id>` falls through to direct equality.
+        qualified_entity: str | None = None
+        bare_id = entry_id
+        if isinstance(entry_id, str) and entry_id.startswith('persona.'):
+            parts = entry_id.split('.', 2)
+            if len(parts) == 3 and parts[2]:
+                qualified_entity = parts[1]
+                bare_id = parts[2]
+
+        for ek, section in persona.items():
+            if not isinstance(section, dict):
+                continue
+            if qualified_entity is not None and ek != qualified_entity:
+                continue
+            for entry in section.get('facts', []):
+                if isinstance(entry, dict) and entry.get('id') == bare_id:
+                    return ek, entry
+        return None, None
+
+    async def amerge_into(
+        self, name: str, target_entry_id: str, merged_text: str,
+        *,
+        reflection_evidence: dict,
+        source_reflection_id: str,
+        merged_from_ids: list[str] | None = None,
+    ) -> str:
+        """Merge a reflection's content into an existing persona entry.
+
+        Atomically rewrites the target entry's `text`, evidence values, and
+        appends `source_reflection_id` to its `merged_from_ids` audit list.
+        Emits two events (RFC §3.9.6), in this deliberate order:
+
+          1. EVT_PERSONA_EVIDENCE_UPDATED — evidence-only snapshot so the
+             funnel API (§3.10) can scan for evidence changes without
+             joining the entry-update stream. Emitted FIRST so that a crash
+             between the two writes does not permanently orphan this
+             signal.
+          2. EVT_PERSONA_ENTRY_UPDATED — text rewrite + evidence + audit;
+             carries `rewrite_text_sha256` so the reconciler can detect view
+             drift on replay. This is also the event that actually writes
+             `merged_from_ids` (the idempotency sentinel) onto the view.
+
+        Order rationale (CodeRabbit PR #936 round-4 Major): the old order
+        (entry_updated first, evidence_updated second) created a crash
+        window where the sentinel `merged_from_ids` landed on disk but the
+        evidence_updated event never did. On retry the idempotency gate at
+        line ~911 (`source_reflection_id in existing_merged_from`) returned
+        'noop' and the evidence event was permanently lost — funnel
+        observability silently missed that merge. By emitting
+        evidence_updated FIRST (it has no idempotency side-state), a crash
+        between the two writes leaves a retry in the "still not merged"
+        state, so on retry BOTH events re-emit and entry_updated finalizes.
+        The trade-off is that a crash-retry may append an extra
+        evidence_updated to the log (new event_id); the funnel then
+        slightly over-counts this merge (rare, human-facing metric) —
+        strictly better than the alternative of permanently missing it.
+
+        Idempotency (RFC §3.9.6 "崩溃半程"): if `source_reflection_id` is
+        already in the target's `merged_from_ids`, both events are skipped
+        and the call returns 'noop'. Replaying persisted events by
+        event_id is idempotent on the reconciler side (sha256 matches →
+        no-op).
+
+        Evidence aggregation (CodeRabbit PR #936 round-6 Major #2):
+        callers MUST pass `reflection_evidence={'reinforcement': ...,
+        'disputation': ...}` carrying the source reflection's own
+        evidence values; the conservative max-rule against the target's
+        CURRENT evidence is computed HERE under the per-character lock.
+        The previous signature took pre-computed `merged_reinforcement`
+        / `merged_disputation` from the caller, which forced the caller
+        to snapshot the target outside the lock. A concurrent
+        `aapply_signal` (or another merge) on the same entry between
+        the snapshot and `amerge_into` would produce stale "max"
+        values, and writing them here effectively rolled the newer
+        signal back. Computing under the lock guarantees the merge
+        consumes the freshest target state.
+
+        Returns: 'merged' on success, 'noop' if already merged, 'not_found'
+        if `target_entry_id` is missing from the persona.
+        """
+        from memory.event_log import (
+            EVT_PERSONA_ENTRY_UPDATED,
+            EVT_PERSONA_EVIDENCE_UPDATED,
+            EVIDENCE_SOURCE_PROMOTE_MERGE,
+        )
+        from memory.reflection import ReflectionEngine
+        if self._event_log is None:
+            raise RuntimeError(
+                "[Persona.amerge_into] event_log 未注入；"
+                "PersonaManager() 构造时须传入 event_log"
+            )
+
+        async with self._get_alock(name):
+            persona = await self._aensure_persona_locked(name)
+            entity_key, target_entry = self._find_entry_with_section(
+                persona, target_entry_id,
+            )
+            if target_entry is None or entity_key is None:
+                logger.warning(
+                    f"[Persona] {name}: amerge_into 找不到 target_entry_id="
+                    f"{target_entry_id}"
+                )
+                return 'not_found'
+
+            # Compute merged evidence UNDER THE LOCK against the
+            # currently-locked target entry — see "Evidence aggregation"
+            # block in docstring for the rollback hazard this prevents.
+            merged_reinforcement, merged_disputation = (
+                ReflectionEngine._compute_merged_evidence(
+                    target_entry, reflection_evidence or {},
+                )
+            )
+
+            # Normalize the id we put in event payloads + log lines to the
+            # canonical bare form stored on disk. `_find_entry_with_section`
+            # accepts both bare and fully-qualified (`persona.<entity>.<id>`)
+            # forms; if a future caller passes the qualified form, the
+            # downstream reconciler handlers (`make_persona_entry_handler`,
+            # `make_persona_evidence_handler`) match strictly on the bare id
+            # via `e.get('id') == entry_id`. Writing the qualified form into
+            # the payload would make crash-replay miss the entry. RFC §3.9.6:
+            # event payloads must reference the canonical on-disk id.
+            canonical_entry_id = target_entry.get('id') or target_entry_id
+
+            existing_merged_from = list(target_entry.get('merged_from_ids') or [])
+            if source_reflection_id in existing_merged_from:
+                logger.info(
+                    f"[Persona] {name}: amerge_into idempotent skip "
+                    f"target={canonical_entry_id} src={source_reflection_id}"
+                )
+                return 'noop'
+
+            # Compute new audit list — dedup by id, preserve insertion order.
+            # source_reflection_id MUST be in the final list because it is the
+            # idempotency sentinel used at line ~911 (`if source_reflection_id
+            # in existing_merged_from: return 'noop'`). If a caller passes a
+            # non-empty `merged_from_ids` that omits `source_reflection_id`,
+            # the previous fallback `(merged_from_ids or [source_reflection_id])`
+            # would skip adding the sentinel and a retry of the same merge
+            # would re-apply instead of no-op'ing — audit completeness /
+            # idempotency bug (CodeRabbit PR #936 round-4 Minor).
+            new_merged_from = list(existing_merged_from)
+            for rid in list(merged_from_ids or []) + [source_reflection_id]:
+                if rid not in new_merged_from:
+                    new_merged_from.append(rid)
+
+            now_iso = datetime.now().isoformat()
+            new_text_sha = hashlib.sha256(
+                (merged_text or '').encode('utf-8'),
+            ).hexdigest()
+
+            entry_payload = {
+                'entity_key': entity_key,
+                'entry_id': canonical_entry_id,
+                'rewrite_text_sha256': new_text_sha,
+                'reinforcement': float(merged_reinforcement),
+                'disputation': float(merged_disputation),
+                # Both clocks bumped — the merge IS a fresh signal on this
+                # entry from both sides (rein from the absorbed reflection's
+                # confirmations, disp likewise). RFC §3.1.1 says "只重置被
+                # 触动的一侧" for normal aapply_signal, but merge is a
+                # special case: target evidence values are RECOMPUTED from
+                # both contributors via _compute_merged_evidence (max), so
+                # both timestamps reflect the moment that recomputation
+                # happened — semantic-clean, no half-stale clock.
+                'rein_last_signal_at': now_iso,
+                'disp_last_signal_at': now_iso,
+                # sub_zero_days reset to 0 — the merge brought new positive
+                # signal; archive countdown should restart.
+                'sub_zero_days': 0,
+                'merged_from_ids': new_merged_from,
+                'source': EVIDENCE_SOURCE_PROMOTE_MERGE,
+            }
+
+            evidence_payload = {
+                'entity_key': entity_key,
+                'entry_id': canonical_entry_id,
+                'reinforcement': float(merged_reinforcement),
+                'disputation': float(merged_disputation),
+                'rein_last_signal_at': now_iso,
+                'disp_last_signal_at': now_iso,
+                'sub_zero_days': 0,
+                'user_fact_reinforce_count':
+                    int(target_entry.get('user_fact_reinforce_count', 0) or 0),
+                'source': EVIDENCE_SOURCE_PROMOTE_MERGE,
+            }
+
+            def _sync_load(_n: str):
+                return persona
+
+            def _sync_mutate_evidence(_view):
+                # Evidence_updated emits FIRST and intentionally does NOT
+                # write `merged_from_ids` — that sentinel is the idempotency
+                # signal for the whole 2-event sequence (line ~911). If we
+                # set it here, a crash between the two emits would make the
+                # retry think the merge is already done and skip
+                # entry_updated forever. Keeping this as a no-op means the
+                # view on disk after event 1 still looks "un-merged" from
+                # the idempotency gate's perspective, so retries fire both
+                # events in order. The evidence_updated event payload
+                # itself already carries the post-merge reinforcement /
+                # disputation snapshot — replay handler will apply it.
+                return None
+
+            def _sync_mutate_entry(_view):
+                # Entry_updated (event 2) writes the full final state,
+                # including `merged_from_ids` (the idempotency sentinel).
+                # By the time this runs, event 1 has already been recorded
+                # to the log, so any crash from here onward is
+                # replay-recoverable.
+                target_entry['text'] = merged_text
+                target_entry['reinforcement'] = float(merged_reinforcement)
+                target_entry['disputation'] = float(merged_disputation)
+                target_entry['rein_last_signal_at'] = now_iso
+                target_entry['disp_last_signal_at'] = now_iso
+                target_entry['sub_zero_days'] = 0
+                target_entry['merged_from_ids'] = new_merged_from
+                # Token-count cache is derived from `text`; rewriting text
+                # must drop the cache so the next render recomputes. The
+                # fingerprint check would catch the drift anyway, but
+                # explicit invalidation avoids the tiny window where a
+                # concurrent reader might see new text + stale count and
+                # saves one sha256 compute on the next render.
+                self._invalidate_token_count_cache(target_entry)
+
+            # _sync_save: cloudsave gate + write + cache-evict-on-failure
+            # (CodeRabbit PR #936 round-5 Major #1). See
+            # `_sync_save_persona_view` docstring.
+            _sync_save = self._sync_save_persona_view
+
+            # Event 1: evidence_updated — emitted FIRST so a crash between
+            # the two writes does NOT permanently orphan this signal. The
+            # mutate is a no-op (see _sync_mutate_evidence above); the view
+            # on disk is unchanged after this call, which keeps the
+            # idempotency gate "still not merged" so a retry re-emits
+            # both events. Slight funnel over-count on retry is
+            # acceptable vs. permanent signal loss (RFC §3.10 is a
+            # human-facing metric).
+            await self._event_log.arecord_and_save(
+                name, EVT_PERSONA_EVIDENCE_UPDATED, evidence_payload,
+                sync_load_view=_sync_load,
+                sync_mutate_view=_sync_mutate_evidence,
+                sync_save_view=_sync_save,
+            )
+            # Event 2: entry_updated — canonical merge event. Writes the
+            # text rewrite + evidence + audit list (`merged_from_ids`).
+            # After this returns, persona.json is on disk with the full
+            # merged state and the idempotency sentinel is in place.
+            await self._event_log.arecord_and_save(
+                name, EVT_PERSONA_ENTRY_UPDATED, entry_payload,
+                sync_load_view=_sync_load,
+                sync_mutate_view=_sync_mutate_entry,
+                sync_save_view=_sync_save,
+            )
+            logger.info(
+                f"[Persona] {name}: amerge_into target={canonical_entry_id} "
+                f"src={source_reflection_id} rein={merged_reinforcement} "
+                f"disp={merged_disputation}"
+            )
+            return 'merged'
+
+    # ── score-driven archive (RFC §3.5, PR-2 #934) ───────────────────
+
+    async def aincrement_sub_zero(
+        self, name: str, entity_key: str, entry_id: str, now: datetime,
+    ) -> int | None:
+        """Increment one persona entry's `sub_zero_days` via EVT_PERSONA_EVIDENCE_UPDATED.
+
+        Symmetric to `ReflectionEngine.aincrement_sub_zero`. Called by
+        the periodic archive sweep loop. Returns the new count or None
+        if no increment happened.
+        """
+        from memory.event_log import EVT_PERSONA_EVIDENCE_UPDATED
+        from memory.evidence import maybe_mark_sub_zero
+        if self._event_log is None:
+            raise RuntimeError(
+                "[Persona.aincrement_sub_zero] event_log 未注入"
+            )
+
+        async with self._get_alock(name):
+            persona = await self._aensure_persona_locked(name)
+            section = persona.get(entity_key)
+            if not isinstance(section, dict):
+                return None
+            section_facts = section.get('facts', [])
+            entry = self._find_entry_in_section(section_facts, entry_id)
+            if entry is None:
+                return None
+            # Coderabbit PR #934 round-2 Major #2: probe on a staged copy
+            # so the cached entry is NOT mutated until inside the locked
+            # record_and_save critical section. If event append or save
+            # raises, the cache stays clean (no orphan sub_zero_days
+            # increment that never made it to the event log).
+            staged_entry = dict(entry)
+            if not maybe_mark_sub_zero(staged_entry, now):
+                return None
+
+            new_count = int(staged_entry.get('sub_zero_days', 0) or 0)
+            new_date = staged_entry.get('sub_zero_last_increment_date')
+
+            payload = {
+                'entity_key': entity_key,
+                'entry_id': entry_id,
+                'reinforcement': float(entry.get('reinforcement', 0.0) or 0.0),
+                'disputation': float(entry.get('disputation', 0.0) or 0.0),
+                'rein_last_signal_at': entry.get('rein_last_signal_at'),
+                'disp_last_signal_at': entry.get('disp_last_signal_at'),
+                'sub_zero_days': new_count,
+                'sub_zero_last_increment_date': new_date,
+                'user_fact_reinforce_count': int(
+                    entry.get('user_fact_reinforce_count', 0) or 0,
+                ),
+                'source': 'archive_sweep',
+            }
+
+            def _sync_load(_n: str):
+                return persona
+
+            def _sync_mutate(_view):
+                # Apply the staged values to the cached entry only after
+                # event append has already succeeded (record_and_save
+                # guarantees this ordering).
+                entry['sub_zero_days'] = new_count
+                entry['sub_zero_last_increment_date'] = new_date
+
+            # _sync_save: cloudsave gate + write + cache-evict-on-failure
+            # (CodeRabbit PR #936 round-5 Major #1). See
+            # `_sync_save_persona_view` docstring.
+            _sync_save = self._sync_save_persona_view
+
+            await self._event_log.arecord_and_save(
+                name, EVT_PERSONA_EVIDENCE_UPDATED, payload,
+                sync_load_view=_sync_load,
+                sync_mutate_view=_sync_mutate,
+                sync_save_view=_sync_save,
+            )
+            return new_count
+
+    async def aarchive_persona_entry(
+        self, name: str, entity_key: str, entry_id: str,
+    ) -> bool:
+        """Move one persona entry from main view to a sharded archive file.
+
+        RFC §3.5.6: archive 复用 ``EVT_PERSONA_FACT_ADDED`` 事件 — payload
+        carries an `archive_shard_path` field so consumers can distinguish
+        the archive flow from a regular fact_added (regular adds have no
+        such field). Mirrors `ReflectionEngine.aarchive_reflection`.
+
+        Returns True if archived; False if not found / protected.
+        """
+        from memory.archive_shards import aappend_to_shard, apick_today_shard_path
+        from memory.event_log import EVT_PERSONA_FACT_ADDED
+        if self._event_log is None:
+            raise RuntimeError(
+                "[Persona.aarchive_persona_entry] event_log 未注入；"
+                "PersonaManager() 构造时须传入 event_log"
+            )
+
+        async with self._get_alock(name):
+            persona = await self._aensure_persona_locked(name)
+            section = persona.get(entity_key)
+            if not isinstance(section, dict):
+                logger.warning(
+                    f"[Persona] {name}: aarchive_persona_entry 找不到 "
+                    f"entity_key={entity_key}"
+                )
+                return False
+            section_facts = section.get('facts', [])
+            entry = self._find_entry_in_section(section_facts, entry_id)
+            if entry is None:
+                logger.warning(
+                    f"[Persona] {name}: aarchive_persona_entry 找不到 "
+                    f"entry_id={entry_id}"
+                )
+                return False
+            if entry.get('protected'):
+                logger.debug(
+                    f"[Persona] {name}: aarchive_persona_entry 跳过 protected "
+                    f"entry_id={entry_id}"
+                )
+                return False
+
+            now = datetime.now()
+            now_iso = now.isoformat()
+            archive_dir = self._persona_archive_dir(name)
+            # Pre-pick the shard path BEFORE record_and_save so we can
+            # stamp it into the event payload (and into the archive_entry
+            # we'll write afterward). `apick_today_shard_path` materializes
+            # the file on disk so the choice is stable across the
+            # subsequent shard append.
+            shard_path = await apick_today_shard_path(archive_dir, now=now)
+            shard_basename = os.path.basename(shard_path)
+            archive_entry = dict(entry)
+            archive_entry['archived_at'] = now_iso
+            archive_entry['archive_shard_path'] = shard_basename
+
+            payload = {
+                'entity_key': entity_key,
+                'entry_id': entry_id,
+                'archive_shard_path': shard_basename,
+                'archived_at': now_iso,
+                # Snapshot the text/source for replayability without
+                # reading the shard back from disk.
+                'text': entry.get('text', ''),
+                'source': entry.get('source', 'unknown'),
+                # Full entry snapshot — the persona archive handler in
+                # evidence_handlers.py reads this on every replay and
+                # idempotently recreates the shard if it's missing
+                # (coderabbit PR #934 round-2 Major #3). Recoverable
+                # crash window: any failure between record_and_save
+                # and the shard append below is healed on the next
+                # reconciler boot.
+                'entry_snapshot': archive_entry,
+            }
+
+            def _sync_load(_n: str):
+                return persona
+
+            def _sync_mutate(_view):
+                # Drop the archived entry from the entity section.
+                section_facts[:] = [
+                    e for e in section_facts
+                    if not (isinstance(e, dict) and e.get('id') == entry_id)
+                ]
+
+            # _sync_save: cloudsave gate + write + cache-evict-on-failure
+            # (CodeRabbit PR #936 round-5 Major #1). See
+            # `_sync_save_persona_view` docstring.
+            _sync_save = self._sync_save_persona_view
+
+            # ORDER (coderabbit review #934 round-1 + round-2):
+            # 1. record_and_save first — commits event + view mutation
+            #    atomically. Avoids "duplicated shard entry + still
+            #    active in view" (next sweep would re-archive into a
+            #    second shard slot).
+            # 2. aappend_to_shard second. If this raises, the active
+            #    view has already lost the entry but the shard never
+            #    got it. Self-heal: the persona archive handler in
+            #    evidence_handlers.py reads `entry_snapshot` from the
+            #    event payload and re-creates the shard on the next
+            #    reconciler boot — event log is the source of truth
+            #    (RFC §3.11), snapshot makes recovery automatic.
+            await self._event_log.arecord_and_save(
+                name, EVT_PERSONA_FACT_ADDED, payload,
+                sync_load_view=_sync_load,
+                sync_mutate_view=_sync_mutate,
+                sync_save_view=_sync_save,
+            )
+            await aappend_to_shard(archive_dir, [archive_entry], now=now)
+            logger.info(
+                f"[Persona] {name}: 归档 entry {entity_key}/{entry_id} "
+                f"→ {shard_basename}"
             )
             return True
 
@@ -1162,12 +1765,323 @@ class PersonaManager:
         return entries
 
     # ── rendering ────────────────────────────────────────────────────
+    #
+    # Three-phase pipeline (RFC §3.6.2):
+    #   Phase 1 (split): protected vs non-protected per entity.
+    #   Phase 2 (score-trim): per-section budget; protected always kept.
+    #   Phase 3 (compose): emit headers + suppressed区 in stable order.
+    #
+    # Both sync (`render_persona_markdown` / `_compose_persona_markdown`)
+    # and async (`arender_persona_markdown`) twins exist. Tests + migration
+    # scripts use the sync path; the production hot path is async — only
+    # `acount_tokens` differs (the rest of the math is sync). RFC §3.6.6:
+    # tiktoken's Rust core releases the GIL, but we still hop to a worker
+    # thread on the async path so the FastAPI event loop doesn't stall on
+    # batches of ~100 entries.
 
-    def _compose_persona_markdown(
+    # ── token-count cache helpers ────────────────────────────────────
+    #
+    # Each persona entry dict may carry three derived fields populated
+    # on first render: `token_count` (int), `token_count_text_sha256`
+    # (str) and `token_count_tokenizer` (str). `_normalize_entry`
+    # defaults all three to None.
+    #
+    # Reflection entries deliberately do NOT default these fields —
+    # `_normalize_reflection` leaves them absent because reflections
+    # have no process-resident cache (each render re-reads from disk),
+    # so any writeback would be garbage-collected with the transient
+    # list. Reflection renders therefore call the same helpers with
+    # `writeback=False` and never persist cache fields. See the
+    # commentary on `_get_cached_token_count` for the contract.
+    #
+    # Read path (persona): compute sha256(text); if it matches the
+    # stored fingerprint AND the count is populated, use the cached
+    # value. Otherwise compute (sync `count_tokens` / async
+    # `acount_tokens`) and write all three fields back to the in-memory
+    # entry. The cache is never written to disk directly — it rides
+    # along whenever the persona is otherwise saved (add_fact,
+    # amerge_into, asave_persona, etc.). A fresh process boot
+    # re-tokenizes on first render which is an acceptable warm-up cost.
+    #
+    # Red line compliance: the cache is purely derived from `text`, so
+    # event-sourcing it would duplicate the source of truth (see
+    # RFC §3.6.8 + the "derived values shouldn't produce events"
+    # principle). The in-memory update + ride-along-on-save approach
+    # also avoids "view mutations outside an event" — we only ever
+    # invoke a disk write through existing event-sourced or save-
+    # permitted paths.
+
+    @staticmethod
+    def _text_fingerprint(text: str) -> str:
+        """sha256 hex digest of `text` used as the cache key. Same
+        encoding as the `rewrite_text_sha256` payload in amerge_into so
+        the two stay consistent if we ever cross-check."""
+        return hashlib.sha256((text or '').encode('utf-8')).hexdigest()
+
+    @classmethod
+    def _get_cached_token_count(cls, entry: dict, *, writeback: bool = True) -> int:
+        """Sync cache-aware token count. Writes `token_count`,
+        `token_count_text_sha256` and `token_count_tokenizer` back to
+        `entry` on miss when `writeback=True` (the default, for persona
+        entries that live in the `_personas` in-memory view and therefore
+        benefit from across-render cache reuse).
+
+        Callers should pass `writeback=False` for entries that do not have
+        a process-resident view (currently: reflection entries, which are
+        always loaded fresh from disk via `aload_reflections`). In that
+        mode we still short-circuit on a pre-existing cache hit — that's
+        free — but we never pollute the entry dict with fields that
+        wouldn't survive the next render anyway.
+
+        Cache hit requires BOTH fingerprints to match:
+        - text sha256 (catches text mutation)
+        - tokenizer identity (catches tiktoken↔heuristic transition;
+          see `utils.tokenize.tokenizer_identity` docstring for the
+          motivating scenario — packaging without encoding data file).
+
+        Additionally, `token_count` must coerce cleanly to a non-negative
+        int. A hand-edited or corrupted `persona.json` could plant a
+        non-numeric or negative value with fingerprints that still happen
+        to match (or match after someone also hand-rewrote the sha256
+        field) — in which case `int(...)` on the cached value would
+        either raise or return garbage and bomb the render. On coercion
+        failure we treat it as a cache miss and recompute.
+        """
+        text = entry.get('text', '') or ''
+        if not text:
+            return 0
+        fp = cls._text_fingerprint(text)
+        tid = tokenizer_identity()
+        cached_count = cls._coerce_cached_count(entry.get('token_count'))
+        if (
+            cached_count is not None
+            and entry.get('token_count_text_sha256') == fp
+            and entry.get('token_count_tokenizer') == tid
+        ):
+            return cached_count
+        n = count_tokens(text)
+        if writeback:
+            entry['token_count'] = int(n)
+            entry['token_count_text_sha256'] = fp
+            entry['token_count_tokenizer'] = tid
+        return int(n)
+
+    @classmethod
+    async def _aget_cached_token_count(cls, entry: dict, *, writeback: bool = True) -> int:
+        """Async twin — uses `acount_tokens` (worker-thread tiktoken).
+        Write-back semantics match the sync helper (both fingerprints).
+        See `_get_cached_token_count` for the `writeback=False` contract
+        (used by reflection render path, which has no in-memory view),
+        and for the defensive coercion of poisoned `token_count` values
+        from a hand-edited or corrupted `persona.json`."""
+        text = entry.get('text', '') or ''
+        if not text:
+            return 0
+        fp = cls._text_fingerprint(text)
+        tid = tokenizer_identity()
+        cached_count = cls._coerce_cached_count(entry.get('token_count'))
+        if (
+            cached_count is not None
+            and entry.get('token_count_text_sha256') == fp
+            and entry.get('token_count_tokenizer') == tid
+        ):
+            return cached_count
+        n = await acount_tokens(text)
+        if writeback:
+            entry['token_count'] = int(n)
+            entry['token_count_text_sha256'] = fp
+            entry['token_count_tokenizer'] = tid
+        return int(n)
+
+    @staticmethod
+    def _coerce_cached_count(raw) -> int | None:
+        """Validate a `token_count` value loaded from an entry dict.
+
+        Returns the non-negative int when `raw` is coercible and sane;
+        returns None (→ force a cache miss) when `raw` is missing,
+        non-numeric, a bool, a non-integer float (1.9 would silently
+        truncate to 1), `inf` / `nan` (`int(inf)` raises
+        `OverflowError`), or negative.
+
+        `bool` is a subclass of `int` in Python, so the explicit
+        `isinstance(raw, bool)` reject keeps us from accepting `True`/
+        `False` as legitimate cached counts if persona.json was hand-
+        edited with boolean-looking garbage."""
+        if raw is None or isinstance(raw, bool):
+            return None
+        if isinstance(raw, float):
+            if not raw.is_integer():
+                return None
+            if raw < 0:
+                return None
+            return int(raw)
+        try:
+            value = int(raw)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if value < 0:
+            return None
+        return value
+
+    @staticmethod
+    def _invalidate_token_count_cache(entry: dict) -> None:
+        """Explicitly drop the cached count. Called by code paths that
+        rewrite `entry['text']` (e.g. `amerge_into`) to avoid the tiny
+        window where a concurrent reader sees new text + stale count.
+        The fingerprint check would catch it anyway, but explicit
+        invalidation is clearer and saves one sha256 compute on the
+        next render."""
+        entry['token_count'] = None
+        entry['token_count_text_sha256'] = None
+        entry['token_count_tokenizer'] = None
+
+    @classmethod
+    def _score_trim_entries(
+        cls, entries: list, budget: int, now: datetime,
+        *, cache_writeback: bool = True,
+    ) -> list:
+        """Sync score-trim: sort by (evidence_score, importance) DESC, keep
+        entries whose accumulated `count_tokens(text)` ≤ `budget`. Stops at
+        the first entry that would push past the cap (lower-score remainder
+        is dropped — see §3.6.3).
+
+        `entries` is a list of dicts (no entity tagging — caller sorts/keys
+        as needed). Returns the kept subset preserving the score-DESC order.
+
+        `cache_writeback`: default True writes `token_count` fields back
+        onto each entry for across-render reuse (persona path — entries
+        live in `_personas`). Pass False for reflection entries, which are
+        loaded fresh from disk every render and would have no persistent
+        view to cache against; writing cache fields there would be
+        misleading and pollute reflection.json on the next save.
+        """
+        sorted_entries = sorted(
+            entries,
+            key=lambda e: (
+                evidence_score(e, now),
+                float(e.get('importance', 0) or 0),
+            ),
+            reverse=True,
+        )
+        kept = []
+        total = 0
+        for e in sorted_entries:
+            t = cls._get_cached_token_count(e, writeback=cache_writeback)
+            if total + t > budget:
+                break
+            kept.append(e)
+            total += t
+        return kept
+
+    @classmethod
+    async def _ascore_trim_entries(
+        cls, entries: list, budget: int, now: datetime,
+        *, cache_writeback: bool = True,
+    ) -> list:
+        """Async twin of `_score_trim_entries`. Identical math; the only
+        difference is `acount_tokens` (worker-thread tiktoken). See the
+        sync twin for the `cache_writeback` contract."""
+        sorted_entries = sorted(
+            entries,
+            key=lambda e: (
+                evidence_score(e, now),
+                float(e.get('importance', 0) or 0),
+            ),
+            reverse=True,
+        )
+        kept = []
+        total = 0
+        for e in sorted_entries:
+            t = await cls._aget_cached_token_count(e, writeback=cache_writeback)
+            if total + t > budget:
+                break
+            kept.append(e)
+            total += t
+        return kept
+
+    def _split_persona_for_render(
+        self, persona: dict,
+    ) -> tuple[list[tuple[str, dict]], dict[str, list[dict]]]:
+        """Phase 1 (RFC §3.6.2): split entries into:
+          - `protected_entries`: list[(entity_key, entry)] — character_card
+            sources, never trimmed (§3.5.7 + §3.6.1).
+          - `non_protected_by_entity`: {entity_key: [entry, ...]} — the
+            score-trim candidate pool (suppressed entries excluded; they go
+            to the dedicated "暂不主动提及" section in compose).
+        """
+        protected_entries: list[tuple[str, dict]] = []
+        non_protected_by_entity: dict[str, list[dict]] = defaultdict(list)
+        for entity_key, section in persona.items():
+            if not isinstance(section, dict):
+                continue
+            for entry in section.get('facts', []):
+                if not isinstance(entry, dict):
+                    # Pre-PR-1 schema sometimes stored facts as bare
+                    # strings; the legacy render path (`_render_fact_entries`)
+                    # used to emit them. Normalize ad-hoc here so they keep
+                    # appearing in prompt context until a write touches the
+                    # entry and migrates it to dict form via _normalize_entry.
+                    if entry:
+                        entry = {
+                            'text': str(entry),
+                            'protected': False,
+                            'suppress': False,
+                            'reinforcement': 0.0,
+                            'disputation': 0.0,
+                            'rein_last_signal_at': None,
+                            'disp_last_signal_at': None,
+                            'sub_zero_days': 0,
+                            'user_fact_reinforce_count': 0,
+                        }
+                        non_protected_by_entity[entity_key].append(entry)
+                    continue
+                if entry.get('suppress'):
+                    # Suppressed entries are rendered in their own section
+                    # (compose phase) — they don't compete with protected/
+                    # non-protected for budget.
+                    continue
+                if entry.get('protected'):
+                    protected_entries.append((entity_key, entry))
+                else:
+                    non_protected_by_entity[entity_key].append(entry)
+        return protected_entries, dict(non_protected_by_entity)
+
+    @staticmethod
+    def _filter_reflections_for_render(
+        reflections: list[dict] | None, persona: dict,
+        suppressed_text_set: set[str],
+    ) -> list[dict]:
+        """Drop reflections whose text matches a suppressed persona entry
+        (existing semantic — see `_is_suppressed_text` callers below)."""
+        if not reflections:
+            return []
+        out = []
+        for r in reflections:
+            if not isinstance(r, dict):
+                continue
+            text = r.get('text', '')
+            if not text:
+                continue
+            if text in suppressed_text_set:
+                continue
+            out.append(r)
+        return out
+
+    def _compose_markdown_from_trimmed(
         self, name: str, persona: dict, name_mapping: dict,
-        pending_reflections: list[dict] | None,
-        confirmed_reflections: list[dict] | None,
+        protected_entries: list[tuple[str, dict]],
+        trimmed_non_protected: list[dict],
+        non_protected_entity_index: dict[int, str],
+        trimmed_pending_reflections: list[dict],
+        trimmed_confirmed_reflections: list[dict],
     ) -> str:
+        """Phase 3 (RFC §3.6.2): emit markdown sections in stable order.
+
+        Headers: `关于主人` / `关于{ai_name}` / `关系动态` / 反思两类 / 抑制区.
+        Within each entity section: protected entries first (deterministic
+        order from persona file) then non-protected kept by score-trim,
+        preserving the trim-order (which is score DESC).
+        """
         master_name = name_mapping.get('human', '主人')
         ai_name = name
         _headers = {
@@ -1176,46 +2090,59 @@ class PersonaManager:
             'relationship': "关系动态",
         }
 
-        sections = []
-
-        suppressed_lines = []
+        # Suppressed entries always render (small + the whole point is "AI
+        # remembers but won't volunteer it"); not budget-counted.
+        suppressed_lines: list[str] = []
         for entry in self._collect_all_entries(persona):
             if isinstance(entry, dict) and entry.get('suppress'):
                 text = entry.get('text', '')
                 if text:
                     suppressed_lines.append(f"- {text}")
 
-        for entity_key, section in persona.items():
-            if not isinstance(section, dict):
+        # Group kept entries by entity_key so each section is contiguous.
+        # `non_protected_entity_index[id(entry)]` was populated by caller
+        # to remember which entity each non-protected entry came from
+        # (score-trim sorts globally so we lose that info).
+        per_entity: dict[str, list[dict]] = defaultdict(list)
+        for ek, entry in protected_entries:
+            per_entity[ek].append(entry)
+        for entry in trimmed_non_protected:
+            ek = non_protected_entity_index.get(id(entry))
+            if ek:
+                per_entity[ek].append(entry)
+
+        sections: list[str] = []
+        # Iterate persona's natural key order so output is stable
+        # regardless of which entries got trimmed.
+        for entity_key in persona.keys():
+            entries = per_entity.get(entity_key)
+            if not entries:
                 continue
-            facts = section.get('facts', [])
-            lines = self._render_fact_entries(facts)
+            lines = []
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                text = entry.get('text', '')
+                if text:
+                    lines.append(f"- {text}")
             if lines:
                 header = _headers.get(entity_key, entity_key)
                 sections.append(f"### {header}\n" + "\n".join(lines))
 
-        if pending_reflections:
-            pending_lines = []
-            for r in pending_reflections:
-                text = r.get('text', '')
-                if text and not self._is_suppressed_text(persona, text):
-                    pending_lines.append(f"- {text}")
-            if pending_lines:
+        if trimmed_pending_reflections:
+            lines = [f"- {r.get('text', '')}" for r in trimmed_pending_reflections
+                     if r.get('text')]
+            if lines:
                 sections.append(
-                    f"### {ai_name}最近的印象（还不太确定）\n"
-                    + "\n".join(pending_lines)
+                    f"### {ai_name}最近的印象（还不太确定）\n" + "\n".join(lines)
                 )
 
-        if confirmed_reflections:
-            confirmed_lines = []
-            for r in confirmed_reflections:
-                text = r.get('text', '')
-                if text and not self._is_suppressed_text(persona, text):
-                    confirmed_lines.append(f"- {text}")
-            if confirmed_lines:
+        if trimmed_confirmed_reflections:
+            lines = [f"- {r.get('text', '')}" for r in trimmed_confirmed_reflections
+                     if r.get('text')]
+            if lines:
                 sections.append(
-                    f"### {ai_name}比较确定的印象\n"
-                    + "\n".join(confirmed_lines)
+                    f"### {ai_name}比较确定的印象\n" + "\n".join(lines)
                 )
 
         if suppressed_lines:
@@ -1225,6 +2152,101 @@ class PersonaManager:
             )
 
         return "\n\n".join(sections) if sections else ""
+
+    def _suppressed_text_set(self, persona: dict) -> set[str]:
+        out: set[str] = set()
+        for entry in self._collect_all_entries(persona):
+            if isinstance(entry, dict) and entry.get('suppress'):
+                t = entry.get('text', '')
+                if t:
+                    out.add(t)
+        return out
+
+    def _compose_persona_markdown(
+        self, name: str, persona: dict, name_mapping: dict,
+        pending_reflections: list[dict] | None,
+        confirmed_reflections: list[dict] | None,
+    ) -> str:
+        """Sync 3-phase render path. Used by `render_persona_markdown` and
+        any test/migration caller that doesn't have an event loop."""
+        now = datetime.now()
+
+        protected_entries, non_protected_by_entity = (
+            self._split_persona_for_render(persona)
+        )
+
+        # Build entity-index by id() so we can regroup after the (entity-
+        # blind) score-trim. Using id() is safe because we never mutate
+        # entries during render — they're the same objects throughout.
+        non_protected_entity_index: dict[int, str] = {}
+        flat_non_protected: list[dict] = []
+        for ek, entries in non_protected_by_entity.items():
+            for e in entries:
+                non_protected_entity_index[id(e)] = ek
+                flat_non_protected.append(e)
+
+        trimmed_non_protected = self._score_trim_entries(
+            flat_non_protected, PERSONA_RENDER_TOKEN_BUDGET, now,
+        )
+
+        suppressed_text_set = self._suppressed_text_set(persona)
+        trimmed_reflections_combined = self._score_trim_entries(
+            self._filter_reflections_for_render(
+                (pending_reflections or []) + (confirmed_reflections or []),
+                persona, suppressed_text_set,
+            ),
+            REFLECTION_RENDER_TOKEN_BUDGET, now,
+            # Reflections have no `_personas`-style in-memory view — they're
+            # always loaded fresh from disk. Writing cache fields onto the
+            # transient dicts would be garbage-collected on render exit and
+            # could only pollute reflection.json on the next save.
+            cache_writeback=False,
+        )
+        # Preserve the score-DESC order produced by _score_trim_entries.
+        # The previous implementation filtered the ORIGINAL source lists by
+        # id-membership in `trimmed_reflections_combined`, which lost the
+        # sort order and emitted reflections in caller-supplied order. Fix:
+        # iterate the already-sorted `trimmed_reflections_combined` and
+        # split back into pending/confirmed by source-list membership
+        # (CodeRabbit PR #936 round-4 Minor).
+        trimmed_pending, trimmed_confirmed = self._partition_trimmed_reflections(
+            trimmed_reflections_combined, pending_reflections, suppressed_text_set,
+        )
+
+        return self._compose_markdown_from_trimmed(
+            name, persona, name_mapping,
+            protected_entries, trimmed_non_protected,
+            non_protected_entity_index,
+            trimmed_pending, trimmed_confirmed,
+        )
+
+    @staticmethod
+    def _partition_trimmed_reflections(
+        trimmed_combined: list[dict],
+        pending_source: list[dict] | None,
+        suppressed_text_set: set[str],
+    ) -> tuple[list[dict], list[dict]]:
+        """Split score-sorted combined trim output back into
+        (pending, confirmed) while preserving the sort order.
+
+        Membership in `pending_source` decides pending vs confirmed; all
+        entries not in `pending_source` are treated as confirmed (matches
+        the original construction where the combined list was
+        `pending + confirmed`). Suppressed entries are dropped defensively
+        (the trim input already filtered them, but keep the guard so the
+        render output never leaks suppressed text).
+        """
+        pending_ids = {id(r) for r in (pending_source or [])}
+        trimmed_pending: list[dict] = []
+        trimmed_confirmed: list[dict] = []
+        for r in trimmed_combined:
+            if r.get('text') in suppressed_text_set:
+                continue
+            if id(r) in pending_ids:
+                trimmed_pending.append(r)
+            else:
+                trimmed_confirmed.append(r)
+        return trimmed_pending, trimmed_confirmed
 
     def render_persona_markdown(self, name: str, pending_reflections: list[dict] | None = None,
                                    confirmed_reflections: list[dict] | None = None) -> str:
@@ -1246,11 +2268,52 @@ class PersonaManager:
         pending_reflections: list[dict] | None = None,
         confirmed_reflections: list[dict] | None = None,
     ) -> str:
+        """Async 3-phase render path. Production hot path — uses
+        `acount_tokens` so the event loop doesn't stall on tiktoken IO."""
         await self.aupdate_suppressions(name)
         persona = await self.aensure_persona(name)
         _, _, _, _, name_mapping, _, _, _, _ = await self._config_manager.aget_character_data()
-        return self._compose_persona_markdown(
-            name, persona, name_mapping, pending_reflections, confirmed_reflections,
+        now = datetime.now()
+
+        protected_entries, non_protected_by_entity = (
+            self._split_persona_for_render(persona)
+        )
+
+        non_protected_entity_index: dict[int, str] = {}
+        flat_non_protected: list[dict] = []
+        for ek, entries in non_protected_by_entity.items():
+            for e in entries:
+                non_protected_entity_index[id(e)] = ek
+                flat_non_protected.append(e)
+
+        trimmed_non_protected = await self._ascore_trim_entries(
+            flat_non_protected, PERSONA_RENDER_TOKEN_BUDGET, now,
+        )
+
+        suppressed_text_set = self._suppressed_text_set(persona)
+        trimmed_reflections_combined = await self._ascore_trim_entries(
+            self._filter_reflections_for_render(
+                (pending_reflections or []) + (confirmed_reflections or []),
+                persona, suppressed_text_set,
+            ),
+            REFLECTION_RENDER_TOKEN_BUDGET, now,
+            # See sync twin: reflections have no `_personas`-style
+            # in-memory view, so we compute fresh every render without
+            # writing cache fields back onto the transient dicts.
+            cache_writeback=False,
+        )
+        # Preserve score-DESC order from _ascore_trim_entries — mirror of
+        # the sync path fix in _compose_persona_markdown (CodeRabbit PR
+        # #936 round-4 Minor).
+        trimmed_pending, trimmed_confirmed = self._partition_trimmed_reflections(
+            trimmed_reflections_combined, pending_reflections, suppressed_text_set,
+        )
+
+        return self._compose_markdown_from_trimmed(
+            name, persona, name_mapping,
+            protected_entries, trimmed_non_protected,
+            non_protected_entity_index,
+            trimmed_pending, trimmed_confirmed,
         )
 
     def _is_suppressed_text(self, persona: dict, text: str) -> bool:
