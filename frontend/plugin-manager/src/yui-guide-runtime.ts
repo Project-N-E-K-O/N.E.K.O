@@ -171,16 +171,16 @@ function getAllowedOpenerOrigins() {
 
 function isAllowedOpenerEvent(event: MessageEvent) {
   const allowedOrigins = getAllowedOpenerOrigins()
-  if (allowedOrigins.has(event.origin)) {
-    return true
+  if (!event.origin || !allowedOrigins.has(event.origin)) {
+    return false
   }
 
-  if (window.opener && !window.opener.closed && event.source === window.opener && !!event.origin) {
-    openerMessageOrigin = event.origin
-    return true
+  if (!window.opener || window.opener.closed || event.source !== window.opener) {
+    return false
   }
 
-  return false
+  openerMessageOrigin = event.origin
+  return true
 }
 
 function estimateSpeechDurationMs(text: string) {
@@ -1882,9 +1882,30 @@ export function initPluginDashboardYuiGuideRuntime() {
     && initialBridgeState.sourcePage === 'home'
     && initialBridgeState.resumeScene === PLUGIN_DASHBOARD_LANDING_SCENE
   )
+  const fallbackStartPayload: StartPayload = {
+    line: '',
+    closeOnDone: false,
+  }
+  let fallbackSessionId = shouldUseBridgeFallback
+    ? `query-${initialBridgeState.handoffToken || Date.now()}`
+    : ''
 
-  if (shouldUseBridgeFallback) {
-    receivedStartMessage = true
+  const mergeStartPayload = (target: StartPayload, payload: StartPayload) => {
+    if (typeof payload.line === 'string') {
+      target.line = payload.line
+    }
+    if (payload.voiceKey) {
+      target.voiceKey = payload.voiceKey
+    }
+    if (typeof payload.audioUrl === 'string') {
+      target.audioUrl = payload.audioUrl
+    }
+    if (typeof payload.closeOnDone === 'boolean') {
+      target.closeOnDone = payload.closeOnDone
+    }
+    if (Number.isFinite(payload.interruptCount)) {
+      target.interruptCount = Math.max(0, Math.floor(payload.interruptCount as number))
+    }
   }
 
   window.addEventListener('message', (event: MessageEvent) => {
@@ -1911,8 +1932,17 @@ export function initPluginDashboardYuiGuideRuntime() {
       return
     }
 
+    const startPayload = (data.payload || {}) as StartPayload
+
+    if (shouldUseBridgeFallback && !receivedStartMessage) {
+      fallbackSessionId = sessionId
+      mergeStartPayload(fallbackStartPayload, startPayload)
+      receivedStartMessage = true
+      return
+    }
+
     receivedStartMessage = true
-    runtime.run(sessionId, (data.payload || {}) as StartPayload).catch(() => {
+    runtime.run(sessionId, startPayload).catch(() => {
       if (!runtime.isCurrentRun(sessionId)) {
         return
       }
@@ -1936,11 +1966,9 @@ export function initPluginDashboardYuiGuideRuntime() {
       return
     }
 
-    const sessionId = `query-${bridgeState.handoffToken || Date.now()}`
-    runtime.run(sessionId, {
-      line: '',
-      closeOnDone: false,
-    }).catch(() => {
+    receivedStartMessage = true
+    const sessionId = fallbackSessionId || `query-${bridgeState.handoffToken || Date.now()}`
+    runtime.run(sessionId, fallbackStartPayload).catch(() => {
       if (!runtime.isCurrentRun(sessionId)) {
         return
       }
