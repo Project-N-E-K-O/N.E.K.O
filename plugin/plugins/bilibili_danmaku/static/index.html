@@ -1001,6 +1001,91 @@
     <div id="biliToolResult" style="margin-top:0;padding:14px;border:1px solid var(--border);border-radius:12px;background:var(--bg-page);white-space:pre-wrap;word-break:break-word;font-family:Consolas,monospace;font-size:0.8rem;overflow-wrap:anywhere;">等待调用工具…</div>
   </div>
 
+  <style>
+    .toggle-wrap { display:inline-flex; align-items:center; gap:6px; margin-right:8px; }
+    .toggle-switch { position:relative; width:36px; height:20px; background:var(--border); border-radius:10px; cursor:pointer; transition:background .2s; flex-shrink:0; }
+    .toggle-switch.active { background:var(--accent-pink); }
+    .toggle-switch .knob { position:absolute; top:2px; left:2px; width:16px; height:16px; border-radius:50%; background:#fff; transition:transform .2s; box-shadow:0 1px 2px rgba(0,0,0,.2); }
+    .toggle-switch.active .knob { transform:translateX(16px); }
+    .toggle-label { font-size:0.75rem; color:var(--text-secondary); user-select:none; }
+  </style>
+
+  <div class="card">
+    <div class="card-title">背景LLM设置</div>
+
+    <div class="status-card" style="margin-bottom:16px;">
+      <div class="status-dot" id="bgLlmDot"></div>
+      <div class="status-info">
+        <div class="status-text" id="bgLlmStatus">未启用</div>
+        <div class="status-sub" id="bgLlmStats"></div>
+      </div>
+      <div class="toggle-wrap">
+        <div class="toggle-switch" id="bgLlmToggle" onclick="toggleBgLLM()">
+          <span class="knob"></span>
+        </div>
+        <span class="toggle-label" style="display:none;">启用</span>
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="testBgLLM()">🔍 测试</button>
+      <button class="btn btn-primary btn-sm" id="bgLlmSaveBtn" onclick="saveBgLLM()">保存配置</button>
+    </div>
+
+    <div style="margin-bottom:18px;">
+      <label style="font-size:0.8rem;color:var(--text-secondary);display:block;margin-bottom:10px;font-weight:500;">Cloud API 配置</label>
+      <div class="form-row" style="margin-bottom:10px;">
+        <div class="input-group">
+          <label>API 地址</label>
+          <input type="text" id="bgLlmApiUrl" placeholder="https://api.openai.com/v1/chat/completions">
+        </div>
+        <div class="input-group">
+          <label>模型名称</label>
+          <input type="text" id="bgLlmModel" placeholder="如 gpt-4o-mini">
+        </div>
+      </div>
+      <div class="input-group">
+        <label>API Key</label>
+        <div class="input-wrap">
+          <input type="password" id="bgLlmApiKey" placeholder="sk-...">
+          <button class="reveal-btn" onclick="toggleReveal('bgLlmApiKey')">👁</button>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-bottom:16px;">
+      <label style="font-size:0.8rem;color:var(--text-secondary);display:block;margin-bottom:10px;font-weight:500;">聚合窗口</label>
+      <div class="slider-row">
+        <input type="range" id="bgLlmWindowSlider" min="5" max="60" value="15">
+        <span class="slider-value" id="bgLlmWindowDisplay">15</span>
+      </div>
+      <div class="slider-hint">收集多少条弹幕后触发 LLM 总结</div>
+    </div>
+
+    <div style="margin-bottom:12px;">
+      <label style="font-size:0.8rem;color:var(--text-secondary);display:block;margin-bottom:10px;font-weight:500;">最大采样数</label>
+      <div class="slider-row">
+        <input type="range" id="bgLlmMaxSamplesSlider" min="10" max="200" value="30">
+        <span class="slider-value" id="bgLlmMaxSamplesDisplay">30</span>
+      </div>
+      <div class="slider-hint">弹幕采样池最大容量</div>
+    </div>
+
+    <div class="login-toggle" onclick="toggleBgLlmAdvanced()" style="margin-bottom:0;">
+      <span style="font-size:0.8rem;font-weight:500;">进阶设置（画像 / 知识库 / 提示词）</span>
+      <span class="login-toggle-text" id="bgLlmAdvToggleText">点击展开 ▼</span>
+    </div>
+    <div class="login-panel" id="bgLlmAdvPanel">
+      <div class="input-group" style="margin-bottom:12px;">
+        <label>用户画像摘要</label>
+        <textarea id="bgLlmProfile" rows="3" style="width:100%;resize:vertical;background:var(--bg-input);border:1.5px solid var(--border);border-radius:10px;color:var(--text);padding:10px 14px;font-size:0.9rem;font-family:inherit;"
+          placeholder="描述主播/用户的基本画像，用于 LLM 上下文..."></textarea>
+      </div>
+      <div class="input-group">
+        <label>提示词模板</label>
+        <textarea id="bgLlmPromptTemplate" rows="3" style="width:100%;resize:vertical;background:var(--bg-input);border:1.5px solid var(--border);border-radius:10px;color:var(--text);padding:10px 14px;font-size:0.9rem;font-family:inherit;"
+          placeholder="自定义 LLM 提示词模板，留空则使用默认模板..."></textarea>
+      </div>
+    </div>
+  </div>
+
 </div>
 
 <script>
@@ -1264,6 +1349,26 @@
     }
     if (data.master_bili_name !== undefined) {
       document.getElementById('masterBiliNameInput').value = data.master_bili_name || '';
+    }
+
+    if (data.background_llm) {
+      const bg = data.background_llm;
+      const enabled = bg.enabled === true;
+      syncBgLlmToggle(enabled);
+
+      const dot = document.getElementById('bgLlmDot');
+      dot.className = 'status-dot';
+      if (enabled) {
+        dot.classList.add('connected');
+        document.getElementById('bgLlmStatus').textContent = '\uD83D\uDFE2 已启用';
+        document.getElementById('bgLlmStats').textContent =
+          `窗口: ${bg.window_size ?? '\u2014'} · 采样: ${bg.max_samples ?? '\u2014'}` +
+          (bg.llm_stats ? ` · LLM调用: ${bg.llm_stats.total_calls ?? 0}` : '');
+      } else {
+        dot.classList.add('error');
+        document.getElementById('bgLlmStatus').textContent = '\uD83D\uDD34 未启用';
+        document.getElementById('bgLlmStats').textContent = '请在下方配置 Cloud API 并连接后启用';
+      }
     }
 
     updateLoginBadge(data.logged_in === true);
@@ -1756,6 +1861,128 @@
     }
   }
 
+  // ---------- 背景LLM 配置 ----------
+
+  function syncBgLlmToggle(enabled) {
+    const toggle = document.getElementById('bgLlmToggle');
+    toggle.classList.toggle('active', !!enabled);
+  }
+
+  async function loadBgLLMConfig() {
+    try {
+      const data = await callPlugin('get_bg_llm_config', {});
+      const config = data.config || {};
+      const cloud = config.cloud || {};
+
+      document.getElementById('bgLlmApiUrl').value = cloud.api_url || '';
+      document.getElementById('bgLlmModel').value = cloud.model || '';
+      document.getElementById('bgLlmApiKey').value = '';
+
+      const ws = config.window_size || 15;
+      document.getElementById('bgLlmWindowSlider').value = ws;
+      document.getElementById('bgLlmWindowDisplay').textContent = ws;
+
+      const ms = config.max_samples || 30;
+      document.getElementById('bgLlmMaxSamplesSlider').value = ms;
+      document.getElementById('bgLlmMaxSamplesDisplay').textContent = ms;
+
+      document.getElementById('bgLlmProfile').value = config.user_profile || '';
+      document.getElementById('bgLlmPromptTemplate').value = config.prompt_template || '';
+
+      const enabled = data.enabled === true;
+      syncBgLlmToggle(enabled);
+
+      const dot = document.getElementById('bgLlmDot');
+      dot.className = 'status-dot';
+      if (enabled) {
+        dot.classList.add('connected');
+        document.getElementById('bgLlmStatus').textContent = '\uD83D\uDFE2 已启用';
+      } else {
+        dot.classList.add('error');
+        document.getElementById('bgLlmStatus').textContent = '\uD83D\uDD34 未启用';
+      }
+    } catch (e) {
+      console.warn('[bgLLM] 加载配置失败:', e.message);
+    }
+  }
+
+  async function saveBgLLM() {
+    const btn = document.getElementById('bgLlmSaveBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> 保存中...';
+    try {
+      const apiUrl = document.getElementById('bgLlmApiUrl').value.trim();
+      const model = document.getElementById('bgLlmModel').value.trim();
+      const apiKey = document.getElementById('bgLlmApiKey').value.trim();
+      const windowSize = parseInt(document.getElementById('bgLlmWindowSlider').value);
+      const maxSamples = parseInt(document.getElementById('bgLlmMaxSamplesSlider').value);
+      const userProfile = document.getElementById('bgLlmProfile').value.trim();
+      const promptTemplate = document.getElementById('bgLlmPromptTemplate').value.trim();
+
+      const enabled = document.getElementById('bgLlmToggle').classList.contains('active');
+      const config = {
+        enabled: enabled,
+        cloud: { api_url: apiUrl, model: model },
+        window_size: windowSize,
+        max_samples: maxSamples,
+        user_profile: userProfile,
+        prompt_template: promptTemplate,
+      };
+      if (apiKey) {
+        config.cloud.api_key = apiKey;
+      }
+
+      const data = await callPlugin('update_guidance_config', config);
+      toast('背景LLM配置已保存', 'success');
+      document.getElementById('bgLlmApiKey').value = '';
+      await loadBgLLMConfig();
+      await refreshStatus(true, true);
+    } catch (e) {
+      toast('保存失败：' + e.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '保存配置';
+    }
+  }
+
+  async function testBgLLM() {
+    try {
+      const data = await callPlugin('get_guidance_config', {});
+      toast('背景LLM连接正常', 'success');
+      if (data.stats) {
+        document.getElementById('bgLlmStats').textContent =
+          `LLM调用: ${data.stats.llm_calls ?? data.stats.total_calls ?? 0} · ` +
+          `Token: ${data.stats.total_tokens ?? '\u2014'}`;
+      }
+    } catch (e) {
+      toast('测试失败：' + e.message, 'error');
+    }
+  }
+
+  async function toggleBgLLM() {
+    const toggle = document.getElementById('bgLlmToggle');
+    const newEnabled = !toggle.classList.contains('active');
+    toggle.classList.toggle('active');
+    try {
+      await callPlugin('update_guidance_config', { enabled: newEnabled });
+      toast(newEnabled ? '背景LLM 已启用' : '背景LLM 已停用', 'success');
+      await refreshStatus(true, true);
+    } catch (e) {
+      // 回滚开关状态
+      toggle.classList.toggle('active');
+      toast('操作失败：' + e.message, 'error');
+    }
+  }
+
+  function toggleBgLlmAdvanced() {
+    const panel = document.getElementById('bgLlmAdvPanel');
+    const text = document.getElementById('bgLlmAdvToggleText');
+    panel.classList.toggle('open');
+    text.textContent = panel.classList.contains('open') ? '点击收起 \u25B2' : '点击展开 \u25BC';
+  }
+
+  // ---------- 背景LLM 配置结束 ----------
+
   document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('intervalSlider').addEventListener('input', e => {
       document.getElementById('intervalDisplay').textContent = e.target.value + 's';
@@ -1763,6 +1990,8 @@
     document.getElementById('danmakuMaxSlider').addEventListener('input', e => {
       document.getElementById('danmakuMaxDisplay').textContent = e.target.value;
     });
+
+    loadBgLLMConfig();
 
     const status = await refreshStatus();
     addSystemMsg('控制台已就绪');

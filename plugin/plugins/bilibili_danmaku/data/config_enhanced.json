@@ -1,114 +1,22 @@
 {
-  "_purpose": "增强配置模板 - 背景LLM系统完整配置（云端/本地LLM、聚合、过滤、用户画像、熔断器、监控）",
-  "_relation_to_config_json": "config.json 为基础配置（房间号、间隔等），config_enhanced.json 为背景LLM系统增强配置。两者独立共存，config.json 始终生效，config_enhanced.json 仅在 BACKGROUND_LLM_AVAILABLE 且 enabled=true 时生效",
-  "_status": "模板文件，字段含占位符（如 api.company.internal），使用前需替换为真实值",
-  "room_id": 123456,
-  "interval_seconds": 30,
-  "_comment_interval": "推送间隔范围 5~180 秒",
-  "target_lanlan": "皖萱",
-  "_comment_target_lanlan": "弹幕推送的目标 AI 名称（应与 lanlan_name 一致，留空则不指定）",
-  "danmaku_max_length": 20,
-  "_comment_danmaku_max_length": "发送弹幕的最大长度限制（B站限制 20 字符，建议 20）",
-  "master_bili_uid": 0,
-  "_comment_master_bili_uid": "主人的 B站 UID。设置后，NEKO 会明确知道该 UID 对应主人本人",
-  "master_bili_name": "",
-  "_comment_master_bili_name": "主人的 B站 用户名/显示名。用于辅助 NEKO 识别主人账号",
-  
+  "_purpose": "背景LLM系统增强配置模板（三件套架构：LLMClient + GuidanceOrchestrator + TimeWindowAggregator + UserProfileTracker）",
+  "_note": "本文件在 background_llm.enabled=true 时生效，由 _init_background_llm 读取",
+  "_model_hint": "如需使用 DeepSeek 思考模式（工具调用），请设置 cloud.model 为 deepseek-reasoner",
   "background_llm": {
     "enabled": true,
-    "_comment_enabled": "是否启用背景LLM系统",
-    
+    "_comment_enabled": "是否启用背景LLM系统，开启后将使用LLM生成引导词推送给AI",
     "cloud": {
-      "enabled": true,
-      "_comment_enabled": "是否启用云端LLM摘要",
-      "url": "https://api.deepseek.com",
-      "_comment_url": "云端LLM API地址（占位符，需替换为真实地址）",
-      "api_key": "sk-7cfec40c619343f79d1b2de5b11f4992",
-      "_comment_api_key": "API密钥，建议使用环境变量",
-      "timeout_sec": 10,
-      "_comment_timeout_sec": "API调用超时时间（秒）",
-      "retry_times": 2,
-      "_comment_retry_times": "失败重试次数"
+      "api_url": "https://api.deepseek.com",
+      "model": "deepseek-v4-flash",
+      "api_key": ""
     },
-    
-    "local": {
-      "enabled": true,
-      "_comment_enabled": "是否启用本地规则引擎",
-      "engine": "template",
-      "_comment_engine": "本地引擎类型：template（模板）| model（小模型）",
-      "template_path": "./data/summary_templates/",
-      "_comment_template_path": "摘要模板目录"
-    },
-    
-    "aggregation": {
-      "strategy": "hybrid",
-      "_comment_strategy": "聚合策略：time_based（时间）| count_based（数量）| hybrid（混合）",
-      "max_wait_sec": 30,
-      "_comment_max_wait_sec": "最长等待时间（秒）",
-      "max_events": 20,
-      "_comment_max_events": "最大事件数",
-      "min_events": 5,
-      "_comment_min_events": "最小事件数（低于此数可跳过摘要）"
-    },
-    
-    "filter": {
-      "quadrant_enabled": true,
-      "_comment_quadrant_enabled": "是否启用四象限过滤",
-      "quadrant_config": {
-        "I": {"push_now": true, "priority": 9},
-        "II": {"queue": true, "priority": 5},
-        "III": {"drop": true},
-        "IV": {"drop": true}
-      },
-      "value_weights": {
-        "guard_1": 2000,
-        "_comment_guard_1": "总督价值权重",
-        "guard_2": 500,
-        "_comment_guard_2": "提督价值权重",
-        "guard_3": 100,
-        "_comment_guard_3": "舰长价值权重",
-        "vip": 30,
-        "_comment_vip": "老爷（大会员）价值权重",
-        "fan_medal": 20,
-        "_comment_fan_medal": "粉丝团价值权重",
-        "ul_level": 1,
-        "_comment_ul_level": "用户等级每级价值权重"
-      }
-    },
-    
-    "user_profile": {
-      "storage": {
-        "type": "json",
-        "_comment_type": "存储类型：json | sqlite",
-        "path": "./data/user_profiles/",
-        "_comment_path": "用户画像存储目录",
-        "shard_by": "uid_range",
-        "_comment_shard_by": "分片策略：uid_range（按UID范围）| time（按时间）",
-        "shard_size": 10000,
-        "_comment_shard_size": "每个分片最大用户数",
-        "cache_size": 10000,
-        "_comment_cache_size": "内存缓存大小",
-        "save_interval_sec": 300,
-        "_comment_save_interval_sec": "自动保存间隔（秒）",
-        "save_batch_size": 100,
-        "_comment_save_batch_size": "批量保存大小"
-      }
-    },
-    
-    "circuit_breaker": {
-      "failure_threshold": 3,
-      "_comment_failure_threshold": "失败阈值（连续失败次数）",
-      "reset_timeout_sec": 300,
-      "_comment_reset_timeout_sec": "熔断恢复时间（秒）",
-      "half_open_max_attempts": 1,
-      "_comment_half_open_max_attempts": "半开状态最大尝试次数"
-    },
-    
-    "monitoring": {
-      "metrics_enabled": true,
-      "_comment_metrics_enabled": "是否启用监控指标",
-      "log_level": "INFO",
-      "_comment_log_level": "日志级别：DEBUG | INFO | WARNING | ERROR"
-    }
+    "window_size": 15,
+    "_comment_window_size": "时间窗口大小（秒），与主配置 interval_seconds 联动",
+    "max_samples": 30,
+    "_comment_max_samples": "每次推送最多采样的弹幕条数，超出时随机采样",
+    "knowledge_context": "",
+    "_comment_knowledge_context": "注入LLM Prompt的专属知识库内容（主播人设、口头禅、常见梗等）",
+    "user_profile": "",
+    "prompt_template": ""
   }
 }

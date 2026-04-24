@@ -1,456 +1,262 @@
 """
-用户画像存储模块
+轻量级用户画像追踪器
 
 功能：
-- 用户画像数据模型定义
-- 用户价值权重计算
-- JSON持久化存储
-- LRU内存缓存管理
+- 记录每个发弹幕用户的历史发言、频率
+- 追踪送礼记录
+- 生成 LLM Prompt 可用的画像上下文
+- 定期持久化到 JSON（防断线丢失）
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import time
-import hashlib
+from collections import defaultdict
 from dataclasses import dataclass, field, asdict
-from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Set
-from collections import OrderedDict
-import asyncio
+from typing import Dict, List, Optional
 
+logger = logging.getLogger(__name__)
 
+# 单用户画像
 @dataclass
 class UserProfile:
-    """用户画像数据类"""
-    
-    # 基础信息
-    uid: int
-    name: str = ""
-    first_seen: float = field(default_factory=time.time)
-    last_seen: float = field(default_factory=time.time)
-    
-    # 身份等级
-    ul_level: int = 0                    # 用户等级 (0-60)
-    fan_medal_level: int = 0             # 粉丝团等级
-    fan_medal_name: str = ""             # 粉丝团名称
-    is_vip: bool = False                 # 老爷（大会员）
-    guard_level: int = 0                 # 0=无，1=总督，2=提督，3=舰长
-    
-    # 消费统计
-    total_battery_spent: int = 0         # 总电池消费（1电池=0.1元）
-    total_gift_count: int = 0            # 总礼物次数
-    total_sc_count: int = 0              # 总SC次数
-    last_spend_time: float = 0           # 最后消费时间
-    
-    # 互动统计
-    total_danmaku: int = 0               # 总弹幕数
-    reply_count: int = 0                 # 被回复次数
-    recent_messages: List[str] = field(default_factory=list)  # 最近5条消息
-    avg_response_time: float = 0         # 平均回应时间（秒）
-    
-    # 标记与标签
-    is_whitelist: bool = False           # 白名单用户
-    is_blacklist: bool = False           # 黑名单用户
-    tags: Set[str] = field(default_factory=set)  # 用户标签
-    
-    # 会话统计（当前直播）
-    session_danmaku: int = 0             # 本次直播弹幕数
-    session_battery: int = 0             # 本次直播消费电池
-    
-    @property
-    def value_tier(self) -> int:
-        """计算用户价值等级（0-6）"""
-        if self.guard_level == 1:
-            return 6  # 总督
-        if self.guard_level == 2:
-            return 5  # 提督
-        if self.guard_level == 3:
-            return 4  # 舰长
-        if self.is_vip:
-            return 3  # 老爷
-        if self.fan_medal_level > 0:
-            return 2  # 粉丝团
-        if self.ul_level > 0:
-            return 1  # 普通用户
-        return 0      # 路人
-    
-    @property
-    def value_weight(self) -> int:
-        """计算用户价值权重（用于优先级排序）"""
-        # 基础价值权重
-        tier_weights = {
-            0: 0,    # 路人
-            1: max(1, self.ul_level // 5),  # 普通用户：每5级+1权重
-            2: 20,   # 粉丝团
-            3: 30,   # 老爷
-            4: 100,  # 舰长
-            5: 500,  # 提督
-            6: 2000  # 总督
-        }
-        
-        base_weight = tier_weights.get(self.value_tier, 0)
-        
-        # 消费加成：每1000电池（100元）+1权重
-        spend_bonus = self.total_battery_spent // 1000
-        
-        # 互动加成：每100条弹幕+1权重
-        interaction_bonus = self.total_danmaku // 100
-        
-        # 衰减因子：长时间未活跃的用户权重降低
-        days_since_last_seen = (time.time() - self.last_seen) / 86400
-        decay_factor = max(0.1, 1.0 - (days_since_last_seen / 90))  # 90天衰减到10%
-        
-        total_weight = int((base_weight + spend_bonus + interaction_bonus) * decay_factor)
-        
-        # 白名单用户额外加成
-        if self.is_whitelist:
-            total_weight *= 2
-        
-        return max(0, min(10000, total_weight))  # 限制在0-10000范围内
-    
-    @property
-    def is_core_fan(self) -> bool:
-        """判断是否为核心粉丝"""
-        return self.value_tier >= 4 or self.total_battery_spent >= 10000  # 舰长以上或消费超1000元
-    
-    @property
-    def is_high_value(self) -> bool:
-        """判断是否为高价值用户"""
-        return self.value_weight >= 100
-    
-    def update_from_event(self, event: Dict[str, Any]) -> None:
-        """根据事件更新用户画像"""
-        self.last_seen = time.time()
-        
-        event_type = event.get("type")
-        
-        if event_type == "danmaku":
-            self.total_danmaku += 1
-            self.session_danmaku += 1
-            
-            # 更新最近消息
-            content = event.get("content", "")
-            if content:
-                self.recent_messages.append(content)
-                if len(self.recent_messages) > 5:
-                    self.recent_messages.pop(0)
-            
-            # 更新身份信息
-            self.ul_level = max(self.ul_level, event.get("user_level", 0))
-            self.fan_medal_level = max(self.fan_medal_level, event.get("medal_level", 0))
-            self.fan_medal_name = event.get("medal_name", self.fan_medal_name)
-            
-        elif event_type == "gift":
-            battery = event.get("battery", 0)
-            self.total_battery_spent += battery
-            self.session_battery += battery
-            self.total_gift_count += 1
-            self.last_spend_time = time.time()
-            
-        elif event_type == "superchat":
-            battery = event.get("battery", 0)
-            self.total_battery_spent += battery
-            self.session_battery += battery
-            self.total_sc_count += 1
-            self.last_spend_time = time.time()
-            
-        elif event_type == "guard":
-            self.guard_level = max(self.guard_level, event.get("guard_level", 0))
-            battery = event.get("battery", 0)
-            self.total_battery_spent += battery
-            self.session_battery += battery
-            self.last_spend_time = time.time()
-    
-    def add_tag(self, tag: str) -> None:
-        """添加用户标签"""
-        self.tags.add(tag)
-    
-    def remove_tag(self, tag: str) -> None:
-        """移除用户标签"""
-        self.tags.discard(tag)
-    
-    def has_tag(self, tag: str) -> bool:
-        """检查是否有指定标签"""
-        return tag in self.tags
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """转换为字典（用于JSON序列化）"""
-        data = asdict(self)
-        # 转换set为list
-        data["tags"] = list(self.tags)
-        return data
-    
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> UserProfile:
-        """从字典创建用户画像"""
-        # 转换list为set
-        if "tags" in data and isinstance(data["tags"], list):
-            data["tags"] = set(data["tags"])
-        return cls(**data)
+    """单个用户的画像数据"""
+    key: str               # 标识键: str(uid) 或 user_name 兜底
+    uid: int = 0
+    uname: str = ""
+    message_count: int = 0
+    recent_texts: List[str] = field(default_factory=list)
+    last_seen: float = 0.0
+    has_gifted: bool = False
+    gift_total: float = 0.0
+    gift_count: int = 0
+    response_style: str = "默认"  # LLM 推测的回应风格
 
 
-class UserProfileStore:
-    """用户画像存储管理器"""
-    
-    def __init__(self, data_dir: Path, max_cache_size: int = 10000):
-        """
-        初始化用户画像存储
-        
-        Args:
-            data_dir: 数据存储目录
-            max_cache_size: 内存缓存最大大小
-        """
-        self.data_dir = data_dir
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        
-        # LRU内存缓存
-        self.cache: OrderedDict[int, UserProfile] = OrderedDict()
-        self.max_cache_size = max_cache_size
-        
-        # 分片存储配置
-        self.shard_size = 10000  # 每个分片最多存储10000个用户
-        
-        # 异步锁
-        self._lock = asyncio.Lock()
-        
-        # 脏数据标记
-        self._dirty_profiles: Set[int] = set()
-        self._save_task: Optional[asyncio.Task] = None
-        
-        # 自动保存配置
-        self.auto_save_interval = 300  # 5分钟
-        self.auto_save_batch_size = 100
-        
-        # 启动自动保存任务
-        self._start_auto_save()
-    
-    def _get_shard_path(self, uid: int) -> Path:
-        """获取用户所在分片文件路径"""
-        shard_id = uid // self.shard_size
-        return self.data_dir / f"profiles_shard_{shard_id}.json"
-    
-    def _start_auto_save(self) -> None:
-        """启动自动保存任务"""
-        async def auto_save_loop():
-            while True:
-                await asyncio.sleep(self.auto_save_interval)
-                await self.save_dirty_profiles()
-        
-        self._save_task = asyncio.create_task(auto_save_loop())
-    
-    async def get_profile(self, uid: int) -> Optional[UserProfile]:
-        """获取用户画像（优先从缓存，缓存不存在则从文件加载）"""
-        async with self._lock:
-            # 检查缓存
-            if uid in self.cache:
-                # 移动到最近使用位置
-                profile = self.cache.pop(uid)
-                self.cache[uid] = profile
-                return profile
-            
-            # 从文件加载
-            shard_path = self._get_shard_path(uid)
-            if not shard_path.exists():
-                return None
-            
-            try:
-                # 异步读取文件
-                def read_file():
-                    with open(shard_path, 'r', encoding='utf-8') as f:
-                        return json.load(f)
-                
-                data = await asyncio.to_thread(read_file)
-                profiles_data = data.get("profiles", {})
-                
-                if str(uid) in profiles_data:
-                    profile_data = profiles_data[str(uid)]
-                    profile = UserProfile.from_dict(profile_data)
-                    
-                    # 加入缓存
-                    self._add_to_cache(uid, profile)
-                    return profile
-            
-            except Exception as e:
-                print(f"加载用户画像失败 uid={uid}: {e}")
-            
-            return None
-    
-    async def get_or_create_profile(self, uid: int, name: str = "") -> UserProfile:
-        """获取或创建用户画像"""
-        profile = await self.get_profile(uid)
-        if profile is None:
-            profile = UserProfile(uid=uid, name=name)
-            await self.save_profile(profile)
-        elif name and profile.name != name:
-            profile.name = name
-            await self.save_profile(profile)
-        
-        return profile
-    
-    async def save_profile(self, profile: UserProfile) -> None:
-        """保存用户画像（标记为脏数据，稍后批量保存）"""
-        async with self._lock:
-            # 更新缓存
-            self._add_to_cache(profile.uid, profile)
-            
-            # 标记为脏数据
-            self._dirty_profiles.add(profile.uid)
-            
-            # 如果脏数据达到批量大小，立即保存
-            if len(self._dirty_profiles) >= self.auto_save_batch_size:
-                await self._save_dirty_profiles_now()
-    
-    async def _save_dirty_profiles_now(self) -> None:
-        """立即保存所有脏数据"""
-        if not self._dirty_profiles:
+class UserProfileTracker:
+    """
+    用户画像追踪器
+
+    用法:
+        tracker = UserProfileTracker(data_dir=...)
+        tracker.record(uid=12345, uname="小明", text="你好")
+        tracker.record_gift(uname="小明", price=20)
+        ctx = tracker.get_profile_context()  # -> 供 LLM Prompt 使用
+
+    持久化:
+        await tracker.save()
+        await tracker.load()
+    """
+
+    def __init__(
+        self,
+        data_dir: Optional[Path] = None,
+        max_recent: int = 15,
+        max_active: int = 50,
+    ):
+        self._profiles: Dict[str, UserProfile] = {}
+        self._data_dir = data_dir
+        self._max_recent = max_recent          # 每个人保留最近发言数
+        self._max_active = max_active          # 最多跟踪多少人
+
+        # 简单 LRU 顺序（最近有活动的排前面）
+        self._activity_order: List[str] = []
+
+    # ── 公开记录接口 ──────────────────────────────────────
+
+    def record(
+        self,
+        uid: int,
+        uname: str,
+        text: str,
+        has_gifted: bool = False,
+        gift_amount: float = 0.0,
+    ):
+        """记录一条用户活动"""
+        key = str(uid) if uid > 0 else uname
+        if not key:
             return
-        
-        async with self._lock:
-            # 按分片分组
-            shard_profiles: Dict[Path, Dict[str, Any]] = {}
-            
-            for uid in self._dirty_profiles:
-                if uid in self.cache:
-                    profile = self.cache[uid]
-                    shard_path = self._get_shard_path(uid)
-                    
-                    if shard_path not in shard_profiles:
-                        shard_profiles[shard_path] = {}
-                    
-                    shard_profiles[shard_path][str(uid)] = profile.to_dict()
-            
-            # 保存每个分片
-            for shard_path, profiles_data in shard_profiles.items():
-                await self._save_shard(shard_path, profiles_data)
-            
-            # 清空脏数据标记
-            self._dirty_profiles.clear()
-    
-    async def _save_shard(self, shard_path: Path, new_profiles: Dict[str, Any]) -> None:
-        """保存分片数据（合并更新）"""
+
+        now = time.time()
+        profile = self._profiles.get(key)
+
+        if profile is None:
+            # 超过上限时剔除最久没活动的
+            if len(self._profiles) >= self._max_active:
+                if self._activity_order:
+                    oldest = self._activity_order.pop()
+                    self._profiles.pop(oldest, None)
+            profile = UserProfile(key=key, uid=uid, uname=uname)
+            self._profiles[key] = profile
+
+        # 更新信息
+        profile.uid = uid
+        profile.uname = uname
+        profile.message_count += 1
+        profile.last_seen = now
+        profile.recent_texts.append(text)
+        if len(profile.recent_texts) > self._max_recent:
+            profile.recent_texts = profile.recent_texts[-self._max_recent:]
+
+        if has_gifted:
+            profile.has_gifted = True
+            profile.gift_total += gift_amount
+            profile.gift_count += 1
+
+        # 移到活动列表前端
+        self._touch(key)
+
+    def record_gift(self, uname: str, price: float):
+        """记录送礼（无 uid 时用 uname 标识）"""
+        # 尝试通过 uname 找到已有 profile
+        key = self._find_by_uname(uname)
+        if key:
+            profile = self._profiles[key]
+            profile.has_gifted = True
+            profile.gift_total += price
+            profile.gift_count += 1
+            self._touch(key)
+        else:
+            # 新建一个仅以 uname 标识的 profile
+            self.record(uid=0, uname=uname, text="[送礼]", has_gifted=True, gift_amount=price)
+
+    # ── Prompt 上下文生成 ──────────────────────────────
+
+    def get_profile_context(self, max_count: int = 10) -> str:
+        """
+        生成供 LLM Prompt 注入的画像上下文
+
+        Returns:
+            格式化字符串，描述活跃观众画像
+        """
+        active = self._get_active_profiles(max_count)
+        if not active:
+            return ""
+
+        lines = ["观众画像信息（发言较多的活跃观众）："]
+        for p in active:
+            parts = [f"- @{p.uname}"]
+
+            # 身份标签
+            tags = []
+            if p.message_count >= 50:
+                tags.append("铁粉")
+            elif p.message_count >= 10:
+                tags.append("活跃观众")
+            if p.has_gifted:
+                tags.append(f"送礼×{p.gift_count} (¥{p.gift_total:.0f})")
+            if p.gift_count >= 3:
+                tags.append("大股东")
+            if tags:
+                parts.append(f"（{'，'.join(tags)}）")
+
+            # 回应风格（非默认才显示）
+            if p.response_style and p.response_style != "默认":
+                parts.append(f"→ 回应风格：{p.response_style}")
+
+            # 最近发言摘要
+            recent = p.recent_texts[-3:] if p.recent_texts else []
+            if recent:
+                # 去重 + 截断
+                seen = set()
+                unique = []
+                for t in reversed(recent):
+                    t_stripped = t.strip()
+                    if t_stripped and t_stripped not in seen:
+                        seen.add(t_stripped)
+                        unique.append(t_stripped)
+                    if len(unique) >= 3:
+                        break
+                if unique:
+                    parts.append(f"最近说：{' | '.join(reversed(unique))}")
+
+            lines.append(" ".join(parts))
+
+        lines.append("")
+        lines.append("根据画像信息，对不同类型的观众使用不同的回应方式：")
+        lines.append("- 铁粉/送礼观众 → 可以撒娇、亲昵、点名互动")
+        lines.append("- 活跃观众 → 热情回应、延展话题")
+        lines.append("- 新观众/低频用户 → 友善引导、多欢迎")
+        lines.append("- 所有回应都应符合猫娘虚拟主播的角色设定")
+
+        return "\n".join(lines)
+
+    def update_style(self, uname: str, style: str):
+        """更新某用户的回应风格（供 LLM 反馈使用）"""
+        key = self._find_by_uname(uname)
+        if key:
+            self._profiles[key].response_style = style
+
+    # ── 持久化 ──────────────────────────────────────────
+
+    async def save(self):
+        """序列化到 JSON"""
+        if not self._data_dir:
+            return
+        self._data_dir.mkdir(parents=True, exist_ok=True)
+        path = self._data_dir / "user_profiles.json"
+        data = {
+            "profiles": {k: asdict(v) for k, v in self._profiles.items()},
+            "activity_order": self._activity_order,
+        }
+        import asyncio
+        await asyncio.to_thread(
+            lambda: path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        )
+
+    async def load(self):
+        """从 JSON 恢复"""
+        if not self._data_dir:
+            return
+        path = self._data_dir / "user_profiles.json"
+        if not path.exists():
+            return
         try:
-            # 读取现有数据
-            existing_data = {}
-            if shard_path.exists():
-                def read_existing():
-                    with open(shard_path, 'r', encoding='utf-8') as f:
-                        return json.load(f)
-                existing_data = await asyncio.to_thread(read_existing)
-            
-            # 合并数据
-            if "profiles" not in existing_data:
-                existing_data["profiles"] = {}
-            
-            existing_data["profiles"].update(new_profiles)
-            existing_data["_metadata"] = {
-                "updated_at": time.time(),
-                "profile_count": len(existing_data["profiles"])
-            }
-            
-            # 写入文件
-            def write_file():
-                with open(shard_path, 'w', encoding='utf-8') as f:
-                    json.dump(existing_data, f, ensure_ascii=False, indent=2)
-            
-            await asyncio.to_thread(write_file)
-            
+            import asyncio
+            raw = await asyncio.to_thread(lambda: json.loads(path.read_text(encoding="utf-8")))
+            self._profiles.clear()
+            for k, v in raw.get("profiles", {}).items():
+                self._profiles[k] = UserProfile(**v)
+            self._activity_order = raw.get("activity_order", [])
+            logger.info(f"已恢复 {len(self._profiles)} 个用户画像")
         except Exception as e:
-            print(f"保存分片数据失败 {shard_path}: {e}")
-    
-    async def save_dirty_profiles(self) -> None:
-        """保存所有脏数据（供外部调用）"""
-        await self._save_dirty_profiles_now()
+            logger.warning(f"加载用户画像失败: {e}")
 
-    async def save_all(self) -> None:
-        """保存所有缓存的用户画像数据（关闭时调用）"""
-        async with self._lock:
-            # 将所有缓存用户标记为脏数据
-            for uid in self.cache:
-                self._dirty_profiles.add(uid)
-        await self._save_dirty_profiles_now()
-    
-    def _add_to_cache(self, uid: int, profile: UserProfile) -> None:
-        """添加用户画像到缓存"""
-        if uid in self.cache:
-            # 更新现有
-            self.cache.pop(uid)
-        
-        self.cache[uid] = profile
-        
-        # 检查缓存大小
-        if len(self.cache) > self.max_cache_size:
-            # 移除最久未使用的
-            self.cache.popitem(last=False)
-    
-    async def get_high_value_users(self, limit: int = 50) -> List[UserProfile]:
-        """获取高价值用户列表"""
-        async with self._lock:
-            # 从缓存中获取所有用户
-            profiles = list(self.cache.values())
-            
-            # 按价值权重排序
-            profiles.sort(key=lambda p: p.value_weight, reverse=True)
-            
-            return profiles[:limit]
-    
-    async def search_users(self, keyword: str, limit: int = 20) -> List[UserProfile]:
-        """搜索用户（按UID或名称）"""
-        async with self._lock:
-            results = []
-            
-            for profile in self.cache.values():
-                if (keyword in str(profile.uid) or 
-                    keyword.lower() in profile.name.lower()):
-                    results.append(profile)
-                
-                if len(results) >= limit:
-                    break
-            
-            return results
-    
-    async def clear_cache(self) -> None:
-        """清空缓存"""
-        async with self._lock:
-            self.cache.clear()
-    
-    async def shutdown(self) -> None:
-        """关闭存储管理器（保存所有数据）"""
-        if self._save_task:
-            self._save_task.cancel()
-            try:
-                await self._save_task
-            except asyncio.CancelledError:
-                pass
-        
-        # 保存所有脏数据
-        await self.save_dirty_profiles()
-    
-    @property
-    def cache_size(self) -> int:
-        """获取缓存大小"""
-        return len(self.cache)
-    
-    @property
-    def dirty_count(self) -> int:
-        """获取脏数据数量"""
-        return len(self._dirty_profiles)
+    # ── 内部方法 ────────────────────────────────────────
 
+    def _touch(self, key: str):
+        """将 key 移到活动列表最前"""
+        if key in self._activity_order:
+            self._activity_order.remove(key)
+        self._activity_order.insert(0, key)
 
-# 全局用户画像存储实例
-_global_profile_store: Optional[UserProfileStore] = None
+    def _get_active_profiles(self, max_count: int = 10) -> List[UserProfile]:
+        """按活跃度排序返回前 N 个画像"""
+        order = self._activity_order[:max_count]
+        result = []
+        for key in order:
+            p = self._profiles.get(key)
+            if p and p.message_count >= 2:  # 至少发过2条
+                result.append(p)
+        return result
 
-def get_global_profile_store(data_dir: Optional[Path] = None) -> UserProfileStore:
-    """获取全局用户画像存储实例"""
-    global _global_profile_store
-    
-    if _global_profile_store is None:
-        if data_dir is None:
-            # 默认使用插件data目录
-            plugin_root = Path(__file__).parent
-            data_dir = plugin_root / "data" / "user_profiles"
-        
-        _global_profile_store = UserProfileStore(data_dir)
-    
-    return _global_profile_store
+    def _find_by_uname(self, uname: str) -> Optional[str]:
+        """通过 uname 查找 profile key（无 uid 场景使用）"""
+        if not uname:
+            return None
+        # 优先精确匹配
+        for key, p in self._profiles.items():
+            if p.uname == uname:
+                return key
+        return None
+
+    def get_stats(self) -> dict:
+        """获取统计"""
+        return {
+            "total_profiles": len(self._profiles),
+            "active_in_order": len(self._activity_order),
+            "profiles_with_gifts": sum(1 for p in self._profiles.values() if p.has_gifted),
+        }

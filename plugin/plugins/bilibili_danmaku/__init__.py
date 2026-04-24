@@ -2,11 +2,9 @@
 Bilibili 弹幕插件 (Bilibili-Danmaku) - 增强版（集成背景LLM系统）
 
 功能：
-- 监听 B站直播间弹幕，通过背景LLM系统智能过滤和摘要后推送给AI
-- 四象限智能分级：紧急+重要事件立即推送，重要事件进入聚合池
-- 用户画像持久化：跨会话积累用户价值数据
-- 智能摘要生成：云端LLM+本地规则双模摘要
-- 熔断降级机制：云端API故障时自动降级本地规则
+- 监听 B站直播间弹幕，通过 TimeWindowAggregator 按时间窗口聚合弹幕
+- 到达窗口期限时自动回调 GuidanceOrchestrator 调用 LLM 生成引导词
+- LLM 失败时自动降级为简单统计摘要
 - SC、高价值礼物即时推送通知给AI，触发语音感谢
 - AI 可通过 send_danmaku 发送弹幕到直播间（需登录）
 - 自动读取 NEKO 项目已保存的 B站 Cookie（无需重复登录）
@@ -23,11 +21,9 @@ Bilibili 弹幕插件 (Bilibili-Danmaku) - 增强版（集成背景LLM系统）
 - connect / disconnect 开始/停止监听
 
 背景LLM系统API：
-- get_summary_config     获取背景LLM配置
-- update_summary_config  更新配置
-- get_user_profile       查询单个用户画像
-- clear_user_profiles    清空画像数据（慎用）
-- test_summary_local     测试本地摘要效果
+- get_guidance_config     获取背景LLM配置与统计
+- update_guidance_config  更新配置
+- test_guidance           测试引导词生成
 """
 
 from __future__ import annotations
@@ -150,16 +146,10 @@ async def _delete_credential_files(data_dir: Path) -> list[str]:
     return failed
 
 try:
-    from .user_profile import UserProfileStore
-    from .filter_pipeline import FilterPipeline, Quadrant, FilterResult
-    from .aggregator import AggregationBuffer, AggregatedEvent
-    from .summary import (
-        SummaryOrchestrator, 
-        OrchestratorConfig,
-        LocalEngine,
-        CloudClient,
-        CircuitBreaker
-    )
+    from .aggregator import TimeWindowAggregator, BatchedDanmaku
+    from .llm_client import LLMClient
+    from .orchestrator import GuidanceOrchestrator
+    from .user_profile import UserProfileTracker
     BACKGROUND_LLM_AVAILABLE = True
 except ImportError as e:
     _logger.warning("背景LLM模块导入失败: %s, 将使用原始模式", e)
@@ -217,12 +207,12 @@ class BiliDanmakuPlugin(NekoPluginBase):
         self._gift_queue = deque(maxlen=100)  # 礼物队列
         self._ui_queue = deque(maxlen=500)  # UI展示队列
         
-        # 背景LLM系统组件
+        # 背景LLM系统组件（新体系）
         self._background_llm_enabled = False
-        self._user_profile_store = None
-        self._filter_pipeline = None
-        self._aggregation_buffer = None
-        self._summary_orchestrator = None
+        self._aggregator = None  # TimeWindowAggregator
+        self._llm_client = None  # LLMClient
+        self._orchestrator = None  # GuidanceOrchestrator
+        self._tracker = None  # UserProfileTracker
         
         # 旧版弹幕过滤器（用于非背景LLM模式）
         self._filter = None
@@ -392,7 +382,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
     async def _init_filter(self):
         """初始化弹幕过滤器"""
         if BACKGROUND_LLM_AVAILABLE and self._background_llm_enabled:
-            # 背景LLM模式已自行初始化过滤流水线
+            # 背景LLM模式使用聚合器+编排器，不初始化旧版过滤器
             return
         # 非背景LLM模式：初始化旧版过滤器（从 filter.py 导入）
         try:
@@ -400,13 +390,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
         except ImportError:
             self.logger.warning("DanmakuFilter 不可用，跳过过滤器初始化")
             return
-        filter_cfg_path = self.data_path("filter_config.json")
-        filter_cfg = {}
-        if filter_cfg_path.exists():
-            try:
-                filter_cfg = await asyncio.to_thread(self._read_json, filter_cfg_path)
-            except Exception:
-                pass
+        # 从主配置 config.json 的 filter 子对象读取过滤配置
+        filter_cfg = self._config.get("filter", {})
         config = {
             "is_logged_in": self._is_logged_in,
             "filter": filter_cfg,
@@ -806,9 +791,13 @@ class BiliDanmakuPlugin(NekoPluginBase):
         """插件关闭时调用"""
         self.logger.info("Bilibili弹幕插件关闭中...")
         
-        # 保存用户画像数据
-        if self._user_profile_store:
-            await self._user_profile_store.save_all()
+        # 停止聚合器
+        if self._aggregator:
+            await self._aggregator.stop()
+        
+        # 保存用户画像
+        if self._tracker:
+            await self._tracker.save()
         
         return Ok({"status": "shutdown"})
 
@@ -817,7 +806,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
     # ==========================================
 
     async def _init_background_llm(self):
-        """初始化背景LLM系统"""
+        """初始化背景LLM系统（新体系：LLMClient + GuidanceOrchestrator + TimeWindowAggregator）"""
         self.logger.info(f"_init_background_llm 进入, _config keys={list(self._config.keys()) if self._config else '空'}")
         try:
             # 从 self._config 读取，如果 background_llm 不存在则从 config_enhanced.json 直接读取
@@ -839,95 +828,84 @@ class BiliDanmakuPlugin(NekoPluginBase):
                 self.logger.info(f"背景LLM系统未启用: config_background_llm={'有' if config else '无'}, enabled={enabled}")
                 return
             
-            self.logger.info("初始化背景LLM系统...")
+            self.logger.info("初始化背景LLM系统（新体系）...")
             
-            # 1. 用户画像存储
+            # 1. LLM客户端
+            llm_config = config.get("cloud", {})
+            self._llm_client = LLMClient.from_config(llm_config)
+            self.logger.info(f"LLMClient 初始化完成: url={self._llm_client.api_url}")
+            
+            # 2. 用户画像追踪器
             profiles_dir = Path(__file__).parent / "data" / "user_profiles"
-            profiles_dir.mkdir(parents=True, exist_ok=True)
+            self._tracker = UserProfileTracker(data_dir=profiles_dir)
+            await self._tracker.load()
+            self.logger.info(f"UserProfileTracker 初始化完成: {self._tracker.get_stats()}")
             
-            self._user_profile_store = UserProfileStore(
-                data_dir=profiles_dir,
-                max_cache_size=config.get("user_profile", {}).get("cache_size", 10000)
+            # 3. 引导词编排器
+            knowledge_context = config.get("knowledge_context", "")
+            self._orchestrator = GuidanceOrchestrator(
+                llm_client=self._llm_client,
+                knowledge_context=knowledge_context,
+                tracker=self._tracker,
             )
+            self.logger.info(f"GuidanceOrchestrator 初始化完成")
             
-            # 2. 过滤流水线
-            self._filter_pipeline = FilterPipeline(
-                profile_store=self._user_profile_store,
-                config=config.get("filter", {})
-            )
-            
-            # 3. 聚合缓冲器（使用 _interval 作为推送间隔）
+            # 4. 弹幕聚合器（使用 _interval 作为窗口大小基准）
             agg_config = config.get("aggregation", {})
-            bg_interval = self._interval  # 复用用户设置的推送间隔
-            agg_config.setdefault("time_based", {})
-            agg_config["time_based"]["max_wait_sec"] = bg_interval
-            agg_config["time_based"]["min_wait_sec"] = max(5, bg_interval // 2)
-            self._aggregation_buffer = AggregationBuffer(
-                trigger_callback=self._on_aggregation_ready,
-                config={"aggregation": agg_config}
-            )
-            self.logger.info(f"聚合缓冲器初始化完成: interval={bg_interval}s, max_events={agg_config.get('max_events', 20)}, min_events={agg_config.get('min_events', 5)}")
+            window_size = float(agg_config.get("window_size", self._interval))
+            max_samples = int(agg_config.get("max_samples", 30))
             
-            # 4. 摘要编排器
-            orchestrator_config = OrchestratorConfig(
-                cloud_enabled=config.get("cloud", {}).get("enabled", True),
-                cloud_url=config.get("cloud", {}).get("url", ""),
-                cloud_api_key=config.get("cloud", {}).get("api_key", ""),
-                cloud_timeout=config.get("cloud", {}).get("timeout_sec", 10),
-                local_enabled=config.get("local", {}).get("enabled", True),
-                circuit_breaker_config=config.get("circuit_breaker", {})
+            self._aggregator = TimeWindowAggregator(
+                callback=self._on_batch_ready,
+                window_size=window_size,
+                max_samples=max_samples,
             )
-            
-            self._summary_orchestrator = SummaryOrchestrator(
-                config=orchestrator_config,
-                room_id=self._room_id,
-                logger=self.logger
-            )
+            await self._aggregator.start()
             
             self._background_llm_enabled = True
-            self.logger.info(f"背景LLM系统初始化完成，模式: {orchestrator_config.mode}")
+            self.logger.info(f"背景LLM系统初始化完成: window={window_size}s, max_samples={max_samples}")
             
         except Exception as e:
             self.logger.error(f"背景LLM系统初始化失败: {e}")
             self._background_llm_enabled = False
 
-    async def _on_aggregation_ready(self, events: List[AggregatedEvent]):
-        """聚合缓冲器触发回调"""
-        if not self._background_llm_enabled or not self._summary_orchestrator:
-            self.logger.info(f"_on_aggregation_ready 跳过: bg_enabled={self._background_llm_enabled}, orchestrator={'有' if self._summary_orchestrator else '无'}")
+    async def _stop_background_llm(self):
+        """停用背景LLM系统：停止聚合器、清理组件"""
+        self._background_llm_enabled = False
+        if self._aggregator:
+            await self._aggregator.stop()
+            self._aggregator = None
+        if self._tracker:
+            await self._tracker.save()
+        self._orchestrator = None
+        self._llm_client = None
+        self.logger.info("背景LLM系统已停用")
+
+    async def _on_batch_ready(self, batch: BatchedDanmaku):
+        """聚合器回调：批次就绪后生成引导词并推送"""
+        if not self._background_llm_enabled or not self._orchestrator:
             return
         
-        self.logger.info(f"_on_aggregation_ready 触发: events={len(events)}条, orchestrator={'有'}")
+        self.logger.info(f"_on_batch_ready 触发: entries={len(batch.entries)}条, total={batch.total_count}, sampled={batch.sampled}")
         
         try:
-            # 生成摘要
-            self.logger.info(f"摘要编排器 generate 开始: events={len(events)}条")
-            summary_result = await self._summary_orchestrator.generate(events)
-            self.logger.info(f"摘要编排器 generate 完成: has_summary={bool(summary_result and summary_result.summary_text)}, summary_len={len(summary_result.summary_text) if summary_result and summary_result.summary_text else 0}")
-            
-            if summary_result and summary_result.summary_text:
-                self.logger.info(f"摘要内容前100字: {summary_result.summary_text[:100]}")
-                # 推送摘要给AI
-                await self._push_summary_to_ai(summary_result)
-                
-                # 更新用户画像（基于摘要中的用户互动）
-                if self._user_profile_store:
-                    for event in events:
-                        await self._user_profile_store.update_from_event(event)
+            guidance = await self._orchestrator.generate(batch)
+            if guidance:
+                await self._push_guidance_to_ai(guidance, batch)
+                self._last_push_time = datetime.now().timestamp()
             else:
-                self.logger.warning(f"摘要生成结果为空: summary_result={'有' if summary_result else '无'}, summary_text={'有' if summary_result and summary_result.summary_text else '无'}")
+                self.logger.warning(f"引导词生成为空")
                         
         except Exception as e:
-            self.logger.error(f"摘要生成失败: {e}", exc_info=True)
+            self.logger.error(f"引导词生成失败: {e}", exc_info=True)
 
     # ==========================================
     # 弹幕处理流程（集成背景LLM）
     # ==========================================
 
     async def _process_danmaku_event(self, event: Dict[str, Any]):
-        """处理弹幕事件（集成背景LLM）"""
+        """处理弹幕事件（新体系：聚合器缓冲 + LLM 引导词）"""
         self.logger.info(f"✅ _process_danmaku_event 被调用: {event.get('user_name', '?')}: {event.get('content', '')[:30]}")
-        # 1. 基础处理（保持兼容）
         content = event.get("content", "").strip()
         if not content:
             return
@@ -953,51 +931,24 @@ class BiliDanmakuPlugin(NekoPluginBase):
             "timestamp": datetime.now().isoformat()
         })
         
-        # 3. 背景LLM处理（四象限过滤 + 聚合）
-        if self._background_llm_enabled and self._filter_pipeline:
+        # 背景LLM模式：添加到时间窗口聚合器 + 更新画像
+        if self._background_llm_enabled and self._aggregator:
             try:
-                # 执行四象限过滤
-                self.logger.info(f"背景LLM过滤: content={content[:30]}, bg_enabled={self._background_llm_enabled}, filter_pipeline=有")
-                filter_result = await self._filter_pipeline.process(event)
-                self.logger.info(f"背景LLM过滤结果: quadrant={filter_result.quadrant}, value_tier={filter_result.value_tier}, value_name={filter_result.value_name}")
-                
-                if filter_result.quadrant == Quadrant.I:
-                    # I类：紧急+重要，立即推送
-                    self.logger.info(f"背景LLM I类事件(紧急重要): {content[:30]}")
-                    await self._push_immediate_event(event, "紧急重要事件")
-                    
-                elif filter_result.quadrant == Quadrant.II:
-                    # II类：重要但不紧急，进入聚合池
-                    self.logger.info(f"背景LLM II类事件(聚合): {content[:30]}, 队列大小={len(self._aggregation_buffer.priority_queue) if self._aggregation_buffer else 'N/A'}")
-                    aggregated_event = AggregatedEvent(
-                        type="danmaku",
-                        user_id=event.get("uid", 0),
-                        user_name=event.get("user_name", "未知用户"),
-                        value_tier=filter_result.value_tier,
-                        value_name=filter_result.value_name,
-                        content=content,
-                        battery=0
+                await self._aggregator.add(
+                    uid=event.get("uid", 0),
+                    uname=event.get("user_name", "未知用户"),
+                    level=event.get("user_level", 0),
+                    text=content,
+                )
+                # 更新用户画像
+                if self._tracker:
+                    self._tracker.record(
+                        uid=event.get("uid", 0),
+                        uname=event.get("user_name", "未知用户"),
+                        text=content,
                     )
-                    await self._aggregation_buffer.add_event(aggregated_event)
-                    self.logger.info(f"背景LLM 添加后队列大小={len(self._aggregation_buffer.priority_queue) if self._aggregation_buffer else 'N/A'}")
-                    
-                elif filter_result.quadrant == Quadrant.III:
-                    # III类：紧急但不重要，记录日志
-                    self._total_filtered += 1
-                    self.logger.info(f"背景LLM III类事件(丢弃): {content[:30]}, total_filtered={self._total_filtered}")
-                    
-                else:
-                    # IV类：不紧急不重要，直接丢弃
-                    self._total_filtered += 1
-                    self.logger.info(f"背景LLM IV类事件(丢弃): {content[:30]}, total_filtered={self._total_filtered}")
-                
             except Exception as e:
-                self.logger.error(f"背景LLM处理失败: {e}")
-                # 降级到原始处理（_danmaku_queue 已有数据，legacy 推送会处理）
-        else:
-            self.logger.info(f"背景LLM未启用: bg_enabled={self._background_llm_enabled}, filter_pipeline={'有' if self._filter_pipeline else '无'}")
-            # 非背景LLM模式：_danmaku_queue 已有数据，legacy 推送会处理
-            pass
+                self.logger.error(f"聚合器添加弹幕失败: {e}")
 
     async def _process_danmaku_legacy(self, event: Dict[str, Any]):
         """原始弹幕处理（降级模式）"""
@@ -1031,6 +982,13 @@ class BiliDanmakuPlugin(NekoPluginBase):
         self._gift_queue.append(gift_info)
         self._ui_gift_queue.append(gift_info)
         
+        # 更新用户画像（送礼）
+        if self._tracker:
+            self._tracker.record_gift(
+                uname=event.get("user_name", "未知用户"),
+                price=gift_info["price_rmb"],
+            )
+        
         # 高价值礼物立即推送
         if gift_info["price_rmb"] >= 10:  # 10元以上礼物
             await self._push_immediate_event(gift_info, "高价值礼物")
@@ -1048,6 +1006,13 @@ class BiliDanmakuPlugin(NekoPluginBase):
         self._sc_queue.append(sc_info)
         self._ui_sc_queue.append(sc_info)
         
+        # 更新用户画像（SC 也算送礼）
+        if self._tracker:
+            self._tracker.record_gift(
+                uname=event.get("user_name", "未知用户"),
+                price=sc_info["price"],
+            )
+        
         await self._push_immediate_event(sc_info, "Super Chat")
 
     async def _push_immediate_event(self, event: Dict[str, Any], event_type: str):
@@ -1063,25 +1028,14 @@ class BiliDanmakuPlugin(NekoPluginBase):
         
         self._push_to_ai(content, f"{event_type}通知", priority=9)
 
-    async def _push_summary_to_ai(self, summary_result):
-        """推送摘要给AI"""
-        self.logger.info(f"_push_summary_to_ai 开始: highlights={len(summary_result.highlights) if summary_result.highlights else 0}, suggestions={len(summary_result.suggestions) if summary_result.suggestions else 0}, priority={summary_result.priority}")
+    async def _push_guidance_to_ai(self, guidance: str, batch: BatchedDanmaku):
+        """推送引导词给AI"""
+        sample_note = f"（基于 {batch.total_count} 条弹幕" + (f"，采样 {len(batch.entries)} 条" if batch.sampled else "）") + ""
         
-        content = f"📊【直播摘要】\n\n{summary_result.summary_text}\n\n"
+        content = f"📊【弹幕引导词】\n\n{guidance}\n\n{sample_note}"
         
-        if summary_result.highlights:
-            content += "✨ 高亮事件：\n"
-            for highlight in summary_result.highlights:
-                content += f"- {highlight}\n"
-        
-        if summary_result.suggestions:
-            content += "\n💡 回应建议：\n"
-            for suggestion in summary_result.suggestions:
-                content += f"- {suggestion}\n"
-        
-        self.logger.info(f"_push_summary_to_ai 推送: content_len={len(content)}, preview={content[:80]}")
-        self._push_to_ai(content, "智能直播摘要", priority=summary_result.priority)
-        self.logger.info(f"_push_summary_to_ai 完成")
+        self.logger.info(f"_push_guidance_to_ai 推送: content_len={len(content)}, preview={content[:80]}")
+        self._push_to_ai(content, "弹幕引导词", priority=5)
 
     # ==========================================
     # 定时器：智能推送（集成背景LLM）
@@ -1090,32 +1044,28 @@ class BiliDanmakuPlugin(NekoPluginBase):
     @timer_interval(id="push_danmaku", seconds=5, auto_start=True)
     async def push_danmaku_tick(self, **_):
         """
-        每5秒检查一次，实际推送频率由 _interval 控制。
-        如果背景LLM启用，则使用智能摘要；否则使用原始弹幕列表。
+        每5秒检查一次推送。
+        背景LLM模式下：TimeWindowAggregator 自管理定时回调，此处只做超时强制刷新。
+        降级模式：使用原始弹幕列表推送。
         """
-        self.logger.info(f"push_danmaku_tick 触发: listening={self._listener is not None and self._listener.is_running()}, connecting={self._connecting}, last_push={self._last_push_time}, interval={self._interval}, queue={len(self._danmaku_queue)}")
-        # 未监听时不推送
         is_listening = self._listener is not None and self._listener.is_running()
         if not is_listening and not self._connecting:
             return Ok({"skipped": True, "reason": "not_listening"})
 
         now = datetime.now().timestamp()
         if now - self._last_push_time < self._interval:
-            self.logger.info(f"push_danmaku_tick 跳过(冷却中): last_push={self._last_push_time}, now={now}, elapsed={now - self._last_push_time:.1f}s, interval={self._interval}s")
             return Ok({"skipped": True})
 
-        # 背景LLM模式：触发聚合缓冲器检查
-        if self._background_llm_enabled and self._aggregation_buffer:
+        # 背景LLM模式：强制刷新聚合器
+        if self._background_llm_enabled and self._aggregator:
             try:
-                triggered = await self._aggregation_buffer.check_trigger(force=False)
-                if triggered:
+                batch = await self._aggregator.force_flush()
+                if batch and batch.entries:
                     self._last_push_time = now
-                    self.logger.info(f"push_danmaku_tick 聚合池触发推送")
-                    return Ok({"pushed": True, "mode": "background_llm", "triggered": True})
-                else:
-                    self.logger.info(f"push_danmaku_tick 聚合池未触发, 降级到legacy推送")
+                    self.logger.info(f"push_danmaku_tick 强制刷新聚合器: {len(batch.entries)}条")
+                    return Ok({"pushed": True, "mode": "background_llm"})
             except Exception as e:
-                self.logger.error(f"push_danmaku_tick 聚合池检查异常: {e}, 降级到legacy推送")
+                self.logger.error(f"push_danmaku_tick 强制刷新异常: {e}")
         
         # 降级模式：原始弹幕列表推送
         return await self._push_danmaku_legacy()
@@ -1198,13 +1148,17 @@ class BiliDanmakuPlugin(NekoPluginBase):
         })
 
     # ==========================================
-    # 背景LLM系统API
+    # 背景LLM系统API（新体系）
+    # ==========================================
+
+    # ==========================================
+    # 背景LLM配置读写 API
     # ==========================================
 
     @plugin_entry(
-        id="get_summary_config",
-        name="获取背景LLM配置",
-        description="查询背景LLM系统的当前配置，包括工作模式、用户画像数量、聚合缓冲区大小、熔断器状态等",
+        id="get_bg_llm_config",
+        name="获取背景LLM完整配置",
+        description="从 config_enhanced.json 读取完整背景LLM配置（含 cloud/api_key/model 等），不受 enabled 状态影响",
         input_schema={
             "type": "object",
             "properties": {},
@@ -1212,23 +1166,59 @@ class BiliDanmakuPlugin(NekoPluginBase):
         },
         llm_result_fields=["config"]
     )
-    async def get_summary_config(self) -> dict:
-        """获取背景LLM配置"""
+    async def get_bg_llm_config(self, **_) -> dict:
+        """获取背景LLM完整配置（始终可用，即使未启用）"""
+        config = self._config.get("background_llm", {})
+        if not config:
+            try:
+                enhanced_path = Path(__file__).parent / "data" / "config_enhanced.json"
+                if enhanced_path.exists():
+                    with open(enhanced_path, "r", encoding="utf-8") as f:
+                        enhanced = json.load(f)
+                    config = enhanced.get("background_llm", {})
+            except Exception as e:
+                self.logger.warning(f"读取 config_enhanced.json 失败: {e}")
+        # 遮蔽 api_key（只显示前4后4）
+        safe_config = json.loads(json.dumps(config))
+        cloud = safe_config.get("cloud", {})
+        if "api_key" in cloud and cloud["api_key"]:
+            raw = cloud["api_key"]
+            if len(raw) > 8:
+                cloud["api_key"] = raw[:4] + "*" * (len(raw) - 8) + raw[-4:]
+            else:
+                cloud["api_key"] = "***"
+        return Ok({
+            "enabled": self._background_llm_enabled,
+            "config": safe_config
+        })
+
+    @plugin_entry(
+        id="get_guidance_config",
+        name="获取背景LLM配置与统计",
+        description="查询背景LLM系统的当前配置，包括聚合窗口大小、采样数、LLM调用统计等",
+        input_schema={
+            "type": "object",
+            "properties": {},
+            "required": []
+        },
+        llm_result_fields=["config"]
+    )
+    async def get_guidance_config(self, **_) -> dict:
+        """获取背景LLM配置与统计"""
         if not self._background_llm_enabled:
             return Err(SdkError(code="BACKGROUND_LLM_DISABLED", message="背景LLM系统未启用"))
         
         config = {
             "enabled": self._background_llm_enabled,
-            "mode": self._summary_orchestrator.config.mode if self._summary_orchestrator else "unknown",
-            "user_profiles_count": await self._user_profile_store.count() if self._user_profile_store else 0,
-            "aggregation_buffer_size": len(self._aggregation_buffer) if self._aggregation_buffer else 0,
-            "circuit_breaker_state": self._summary_orchestrator.circuit_breaker.state if self._summary_orchestrator else "unknown"
+            "aggregator": self._aggregator.get_stats() if self._aggregator else {},
+            "orchestrator": self._orchestrator.get_stats() if self._orchestrator else {},
+            "llm_client": self._llm_client.get_stats() if self._llm_client else {},
         }
         
         return Ok(config)
 
     @plugin_entry(
-        id="update_summary_config",
+        id="update_guidance_config",
         name="更新背景LLM配置",
         description="更新背景LLM系统的配置参数",
         input_schema={
@@ -1243,105 +1233,81 @@ class BiliDanmakuPlugin(NekoPluginBase):
         },
         llm_result_fields=["updated", "config"]
     )
-    async def update_summary_config(self, config: dict) -> dict:
-        """更新背景LLM配置"""
-        # 这里实现配置更新逻辑
-        return Ok({"updated": True, "config": config})
+    async def update_guidance_config(self, **kwargs) -> dict:
+        """更新背景LLM配置并持久化到 config_enhanced.json"""
+        # 过滤框架注入的 _ctx 等内置参数，只保留业务字段
+        config = {k: v for k, v in kwargs.items() if not k.startswith('_')}
+        enhanced_path = Path(__file__).parent / "data" / "config_enhanced.json"
+        try:
+            # 读取现有文件（保留未修改的字段）
+            if enhanced_path.exists():
+                with open(enhanced_path, "r", encoding="utf-8") as f:
+                    enhanced = json.load(f)
+            else:
+                enhanced = {}
+            # 合并 background_llm 子树
+            current_bg = enhanced.get("background_llm", {})
+            merged_bg = {**current_bg, **config}
+            enhanced["background_llm"] = merged_bg
+            # 原子写入
+            tmp_path = enhanced_path.with_suffix(".json.tmp")
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(enhanced, f, ensure_ascii=False, indent=2)
+            tmp_path.replace(enhanced_path)
+            # 同步到内存
+            if "background_llm" not in self._config:
+                self._config["background_llm"] = {}
+            self._config["background_llm"].update(config)
+            self.logger.info(f"背景LLM配置已更新: keys={list(config.keys())}")
+
+            # 运行时启停
+            if "enabled" in config:
+                target_enabled = bool(config["enabled"])
+                if target_enabled and not self._background_llm_enabled:
+                    self.logger.info("背景LLM启用请求：运行时启动...")
+                    await self._init_background_llm()
+                    merged_bg["_runtime_status"] = "已启用"
+                elif not target_enabled and self._background_llm_enabled:
+                    self.logger.info("背景LLM停用请求：运行时停止...")
+                    await self._stop_background_llm()
+                    merged_bg["_runtime_status"] = "已停用"
+
+            return Ok({"updated": True, "config": merged_bg})
+        except Exception as e:
+            self.logger.error(f"保存背景LLM配置失败: {e}")
+            return Err(SdkError(code="SAVE_FAILED", message=str(e)))
 
     @plugin_entry(
-        id="get_user_profile",
-        name="查询用户画像",
-        description="根据B站用户UID查询该用户的画像数据，包括用户等级、价值标签、弹幕统计等",
+        id="test_guidance",
+        name="测试引导词生成",
+        description="用测试弹幕验证引导词生成效果",
         input_schema={
             "type": "object",
             "properties": {
-                "uid": {
-                    "type": "integer",
-                    "description": "B站用户UID"
+                "danmaku_texts": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "测试弹幕文本列表"
                 }
             },
-            "required": ["uid"]
-        },
-        llm_result_fields=["profile"]
-    )
-    async def get_user_profile(self, uid: int) -> dict:
-        """查询单个用户画像"""
-        if not self._user_profile_store:
-            return Err(SdkError(code="NO_USER_PROFILE_STORE", message="用户画像存储未初始化"))
-        
-        profile = await self._user_profile_store.get(uid)
-        if not profile:
-            return Err(SdkError(code="USER_NOT_FOUND", message=f"用户 {uid} 不存在"))
-        
-        return Ok(profile.to_dict())
-
-    @plugin_entry(
-        id="clear_user_profiles",
-        name="清空用户画像",
-        description="清空所有用户画像数据（危险操作，需设置 confirm=true 确认）",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "confirm": {
-                    "type": "boolean",
-                    "description": "必须设置为 true 确认清空操作"
-                }
-            },
-            "required": ["confirm"]
-        },
-        llm_result_fields=["cleared"]
-    )
-    async def clear_user_profiles(self, confirm: bool = False) -> dict:
-        """清空画像数据（慎用）"""
-        if not confirm:
-            return Err(SdkError(code="CONFIRMATION_REQUIRED", message="请设置 confirm=true 确认清空"))
-        
-        if self._user_profile_store:
-            await self._user_profile_store.clear_all()
-        
-        return Ok({"cleared": True})
-
-    @plugin_entry(
-        id="test_summary_local",
-        name="测试本地摘要",
-        description="测试本地规则摘要生成效果，生成指定数量的测试事件进行演示",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "events_count": {
-                    "type": "integer",
-                    "description": "测试事件数量，默认5个",
-                    "default": 5
-                }
-            },
-            "required": []
+            "required": ["danmaku_texts"]
         },
         llm_result_fields=["test_result"]
     )
-    async def test_summary_local(self, events_count: int = 5) -> dict:
-        """测试本地摘要效果"""
+    async def test_guidance(self, danmaku_texts: list[str]) -> dict:
+        """测试引导词生成效果"""
         if not self._background_llm_enabled:
             return Err(SdkError(code="BACKGROUND_LLM_DISABLED", message="背景LLM系统未启用"))
         
-        # 生成测试事件
-        test_events = []
-        for i in range(events_count):
-            test_events.append(AggregatedEvent(
-                type="danmaku",
-                user_id=10000 + i,
-                user_name=f"测试用户{i}",
-                value_tier=2 if i % 3 == 0 else 1,
-                value_name="粉丝团" if i % 3 == 0 else "普通用户",
-                content=f"这是第{i+1}条测试弹幕内容，用于验证摘要生成功能",
-                battery=0
-            ))
-        
-        # 生成摘要
-        summary_result = await self._summary_orchestrator.generate(test_events)
+        guidance = await self._orchestrator.generate_from_texts(
+            danmaku_texts=danmaku_texts,
+            total_original_count=len(danmaku_texts),
+        )
         
         return Ok({
-            "test_events": [e.to_dict() for e in test_events],
-            "summary_result": summary_result.to_dict() if summary_result else None
+            "input_count": len(danmaku_texts),
+            "guidance": guidance,
+            "orchestrator_stats": self._orchestrator.get_stats(),
         })
 
     # ==========================================
@@ -1418,11 +1384,10 @@ class BiliDanmakuPlugin(NekoPluginBase):
         self._interval = seconds
         await self._save_plugin_config()
 
-        # 同步更新聚合缓冲器的推送间隔
-        if self._background_llm_enabled and self._aggregation_buffer:
-            self._aggregation_buffer.trigger_config["time_based"]["max_wait_sec"] = seconds
-            self._aggregation_buffer.trigger_config["time_based"]["min_wait_sec"] = max(5, seconds // 2)
-            self.logger.info(f"聚合缓冲器间隔已同步: max_wait={seconds}s, min_wait={max(5, seconds // 2)}s")
+        # 同步更新聚合器窗口大小
+        if self._background_llm_enabled and self._aggregator:
+            self._aggregator.window_size = seconds
+            self.logger.info(f"聚合器窗口已同步: window={seconds}s")
 
         return Ok({
             "success": True,
@@ -1681,6 +1646,17 @@ class BiliDanmakuPlugin(NekoPluginBase):
             f"已推送: {self._total_pushed} 条",
         ]
 
+        # 背景LLM状态
+        bg_llm_status = {
+            "enabled": self._background_llm_enabled,
+            "window_size": self._config.get("background_llm", {}).get("window_size", 15),
+            "max_samples": self._config.get("background_llm", {}).get("max_samples", 30),
+        }
+        if self._llm_client:
+            bg_llm_status["llm_stats"] = self._llm_client.get_stats()
+        if self._aggregator:
+            bg_llm_status["aggregator_stats"] = self._aggregator.get_stats()
+
         return Ok({
             "success": True,
             "message": "\n".join(lines),
@@ -1696,6 +1672,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
             "danmaku_max_length": self._danmaku_max_length,
             "queue_size": len(self._danmaku_queue),
             "connection": conn_state,
+            "background_llm": bg_llm_status,
             "stats": {
                 "received": self._total_received,
                 "filtered": self._total_filtered,

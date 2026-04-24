@@ -79,23 +79,27 @@
 - `room_id`：直播间ID，0 表示不自动连接
 - `interval_seconds`：AI 推送间隔（10~180秒）
 
-### `data/filter_config.json` — 过滤器配置（登录用户专属）
+### `data/config.json` — `filter` 字段（登录用户专属）
 
 ```json
 {
-  "filter_level_enabled": true,
-  "min_user_level": 10,
-  "filter_gift_enabled": true,
-  "min_gift_value": 1.0
+  "room_id": 1234567,
+  "interval_seconds": 30,
+  "filter": {
+    "filter_level_enabled": true,
+    "min_user_level": 10,
+    "filter_gift_enabled": true,
+    "min_gift_value": 1.0
+  }
 }
 ```
 
 | 字段 | 说明 |
 |------|------|
-| `filter_level_enabled` | 是否过滤低等级用户 |
-| `min_user_level` | 最低用户等级（0-60） |
-| `filter_gift_enabled` | 是否过滤低价值礼物/SC |
-| `min_gift_value` | 最低礼物价值（人民币） |
+| `filter.filter_level_enabled` | 是否过滤低等级用户 |
+| `filter.min_user_level` | 最低用户等级（0-60） |
+| `filter.filter_gift_enabled` | 是否过滤低价值礼物/SC |
+| `filter.min_gift_value` | 最低礼物价值（人民币） |
 
 > **注意**：过滤配置仅在 NEKO 已登录 B站账号时生效，游客模式只有基础敏感词过滤。
 
