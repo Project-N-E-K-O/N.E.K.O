@@ -267,14 +267,13 @@ class NekoPluginBase(_SharedNekoPluginBase):
 
         return self.push_message(
             source=source or self.plugin_id,
-            message_type="proactive_notification",
+            message_type="chat_content",
             description="",
             priority=priority,
             content="\n".join(text_parts) if text_parts else "📋",
             metadata={
                 "chat_content_blocks": validated,
                 "plugin_id": self.plugin_id,
-                "display_mode": "blocks",
             },
             target_lanlan=target_lanlan,
         )
