@@ -15,7 +15,9 @@
 
 **对应的 `.cursor/plans/n.e.k.o._testbench_web_ui_787681c0.plan.md` 也应维护同样的状态**, 因为 todos 字段被 Cursor 用于渲染任务列表。两处需保持同步。
 
-> **⚠️ 2026-04-24 P26 Commit 3 · USER_MANUAL 中文简体 (测试员/中级用户向, ~520 行 10 节 13 张配图占位) + 4 workspace 真实结构校准 + `/docs/testbench_USER_MANUAL` 端点自动从 404 file_missing 过渡到 200 HTML**: 按 PROGRESS P26 行 Commit 3 清单 + PLAN §P26 Commit 3 落地. 用户三项决策: (a) 篇幅 `comprehensive` 全面手册 ~500-800 行 (中级用户 cold-start 可直接上手) / (b) 配图占位 `agent_decide_img` 扫后发现项目 docs 零图片历史 → 采 **内联 HTML 注释 `<!-- IMG: 文件名 | 描述 | 分辨率建议 | 高亮区域 -->`** 不引入空目录 / (c) Commit 3 smoke `agent_decide_smoke` 扫后决 **不加新 smoke** (D9 已够 + 散文结构 smoke 易成"挑剔员"阻碍迭代). **交付 1 份新 md** `tests/testbench/docs/testbench_USER_MANUAL.md` ~520 行 10 大节: §1 准备事项 (启动 + 5 首次步骤) / §2 Workspace 导航 (**真 5 workspace 纠正 PLAN 的"6"**) / §3 Chat (composer 3 模式 manual/simuser/script + 外部事件三入口 + Auto-Dialog + Preview Panel 双 tab 语义) / §4 Memory 4 子页 CRUD + 5 LLM op + §7.27 drawer 预览按钮布局 / §5 Evaluation (**真 4 子页, 纠正 PLAN 的"+Export"**) / §6 Session 11 组合 + rewind 隐式快照 / §7 Diagnostics (**真 5 子页 errors/logs/snapshots/paths/reset 纠正 PLAN 的"6 含 security" 为 5 无 security**) / §8 Settings (**真 6 子页含 providers, 补 PLAN 漏写**) / §9 FAQ 9 问 + 4 已知限制 / §10 扩展点 (Script 格式 / Schema 协作 / curl 5 端点 / 延伸阅读 6 文档顺序). 风格对齐兄弟手册 `external_events_guide.md` (表格+编号步骤+blockquote hint). **价值点 1 真实结构校准**: 写前 Grep `workspace_*.js` + `composer.js` 拿真实子页, PLAN 笔记 4 处偏差纠正 (placeholder 非独立 workspace / Diag 无 Security / Eval 无独立 Export / Settings 含 providers). **价值点 2 端点自动过渡**: `/docs/testbench_USER_MANUAL` 从 `404 file_missing` 自动转 `200 HTML`, L46 双 404 + L49 独立可签收 联合实证: Commit 1 白名单 / Commit 2 第 1 条 md / Commit 3 第 2 条 md 渐进交付. **回归 18/18 smoke 全绿 33.52s** 零 regression. `p26_docs_endpoint_smoke` 10 契约独立 ~1s 全绿 (D9 现由 2 条白名单 md 同时在盘命中). **P26 三 commit 全齐**: Commit 1 (版本+端点+About) + Commit 2 (ARCH+LESSONS+skills+smoke 欠账) + Commit 3 (USER_MANUAL) — 一次 push 把 P25 整批 + P26 C1/C2/C3 推远端. 详见 §4.27 **#119**.
+> **✅ 2026-04-24 P26 C3 手测 hotfix + 全 P25/P26 已 push · markdown 链接/锚点/图片 pipeline + USER_MANUAL 深度事实对齐 + ARCHITECTURE_OVERVIEW 二审 + D13 smoke 契约 + 本地 working-copy 打包合并进 hotfix commit + merge 上游 15 条 + `git push NEKO-dev main` 全推**: 用户 4 轮手测 USER_MANUAL + ARCHITECTURE_OVERVIEW 反馈四类问题收敛 (链接失效 / 表格溢出 / 图片虚构 / 手册大面积与实际代码不符), 一次 hotfix commit `063201a` 全治: (1) `routers/health_router.py` `_slugify_heading` GitHub 风 slug 算法 + `_rewrite_internal_doc_links` 剥白名单 `.md` 后缀 + 内部开发文档 `<span class="muted-link">` 降级 + `/docs/images/{filename}` 新端点 (basename + 扩展名白名单 + resolve 边界) + 图片响应式 CSS `max-width:100%; height:auto` + 纯 JS lightbox 点击放大; (2) `testbench_USER_MANUAL.md` 深度事实对齐第三轮 (uv 启动 / `tests/testbench_data/` / 无 Welcome Banner / Setup 8 子页 / 6 stage id / 4 composer 模式 / 3 种外部事件 / Structured+Raw 两种 wire / 5 真实 memory op / Eval Run 不可暂停/停止 / autosave 4 字段 / UI 语言+主题 select 为 disabled 占位 / 反馈机制改"截图报告给开发者"不写"Diagnostics Errors 下反馈") + **13 张真实 png 入 `docs/images/`** 替换 `<!-- IMG: -->` 占位 + TOC 13 条锚点 `--` → `-` 批修配合 `_slugify_heading` 丢标点的算法; (3) `testbench_ARCHITECTURE_OVERVIEW.md` 二审纠正 (Logs 5s 轮询 auto-refresh 非实时 tail / Paths 描述 / i18n 单语言 zh-CN); (4) smoke 扩 **D11 (heading id 必有) + D12 (跨文档 `.md` 自动剥) + D13 (文内 `#anchor` 必对齐 heading slug)** 三契约; (5) About 按钮右上角三点菜单解禁显示跳 Settings→About, Settings→About 页 "当前阶段" 改 "最后更新日期" + `TESTBENCH_LAST_UPDATED` 常量, 全仓 UI 文本清 Pxx/蓝图/阶段内部开发术语; (6) 把开场 git status 的 `testbench.css` + `memory_trigger_panel.js` 本地未 commit 残留 (§4.27 #117 r7 2nd pass) 打包进 hotfix commit 一并吃掉. 回归 **18/18 smoke 全绿 ~34s 零 regression**. 与上游 `main` 15 条新 commit (Memory RFC PR-3/PR-4 render budget + funnel analytics / Live2D / tiktoken 缓存 / API 连通测试灯) 通过 `git pull --no-rebase` (ort) **自动无冲突合并** 成 `4994b41`. `git push NEKO-dev main` 把 P25 整批 (Day 1-3 + polish r5/r6/r7/r7 2nd pass + 第三轮 chokepoint 下沉) + P26 Commit 1/2/3 + hotfix + merge commit 一次全推. **测试用户可见的改进点** 已同步 CHANGELOG v1.1.0 hotfix 小节. §4.27 新增 **#120**, LESSONS §7.A 登记 **L50 (server boot_id) / L51 (文档先 grep 真实代码) / L52 (slug 算法与作者手写 anchor 的契约必须双向机械化校验)** 三条候选, PLAN `下一任 agent 指引` 收尾进入 P27+ 待用户定方向态. 详见 §4.27 **#120**.
+>
+> **✅ 2026-04-24 P26 Commit 3 · USER_MANUAL 中文简体 (测试员/中级用户向, ~520 行 10 节 13 张配图占位) + 4 workspace 真实结构校准 + `/docs/testbench_USER_MANUAL` 端点自动从 404 file_missing 过渡到 200 HTML**: 按 PROGRESS P26 行 Commit 3 清单 + PLAN §P26 Commit 3 落地. 用户三项决策: (a) 篇幅 `comprehensive` 全面手册 ~500-800 行 (中级用户 cold-start 可直接上手) / (b) 配图占位 `agent_decide_img` 扫后发现项目 docs 零图片历史 → 采 **内联 HTML 注释 `<!-- IMG: 文件名 | 描述 | 分辨率建议 | 高亮区域 -->`** 不引入空目录 / (c) Commit 3 smoke `agent_decide_smoke` 扫后决 **不加新 smoke** (D9 已够 + 散文结构 smoke 易成"挑剔员"阻碍迭代). **交付 1 份新 md** `tests/testbench/docs/testbench_USER_MANUAL.md` ~520 行 10 大节: §1 准备事项 (启动 + 5 首次步骤) / §2 Workspace 导航 (**真 5 workspace 纠正 PLAN 的"6"**) / §3 Chat (composer 3 模式 manual/simuser/script + 外部事件三入口 + Auto-Dialog + Preview Panel 双 tab 语义) / §4 Memory 4 子页 CRUD + 5 LLM op + §7.27 drawer 预览按钮布局 / §5 Evaluation (**真 4 子页, 纠正 PLAN 的"+Export"**) / §6 Session 11 组合 + rewind 隐式快照 / §7 Diagnostics (**真 5 子页 errors/logs/snapshots/paths/reset 纠正 PLAN 的"6 含 security" 为 5 无 security**) / §8 Settings (**真 6 子页含 providers, 补 PLAN 漏写**) / §9 FAQ 9 问 + 4 已知限制 / §10 扩展点 (Script 格式 / Schema 协作 / curl 5 端点 / 延伸阅读 6 文档顺序). 风格对齐兄弟手册 `external_events_guide.md` (表格+编号步骤+blockquote hint). **价值点 1 真实结构校准**: 写前 Grep `workspace_*.js` + `composer.js` 拿真实子页, PLAN 笔记 4 处偏差纠正 (placeholder 非独立 workspace / Diag 无 Security / Eval 无独立 Export / Settings 含 providers). **价值点 2 端点自动过渡**: `/docs/testbench_USER_MANUAL` 从 `404 file_missing` 自动转 `200 HTML`, L46 双 404 + L49 独立可签收 联合实证: Commit 1 白名单 / Commit 2 第 1 条 md / Commit 3 第 2 条 md 渐进交付. **回归 18/18 smoke 全绿 33.52s** 零 regression. `p26_docs_endpoint_smoke` 10 契约独立 ~1s 全绿 (D9 现由 2 条白名单 md 同时在盘命中). **P26 三 commit 全齐**: Commit 1 (版本+端点+About) + Commit 2 (ARCH+LESSONS+skills+smoke 欠账) + Commit 3 (USER_MANUAL) — 一次 push 把 P25 整批 + P26 C1/C2/C3 推远端. 详见 §4.27 **#119**.
 >
 > **✅ 2026-04-24 P26 Commit 2 · ARCHITECTURE_OVERVIEW + LESSONS L45-L49 + §7.26/§7.27 升级 + 2 跨项目 Cursor skill + p26_docs_endpoint_smoke (Commit 1 欠账)**: 今天落 Commit 2 完整包, **18/18 smoke 全绿** 零 regression. 新建 4 文件: (1) **`tests/testbench/docs/testbench_ARCHITECTURE_OVERVIEW.md`** (~1400 行开发者向 6 章: 概念图谱 / 后端模块拓扑 / 前端模块拓扑 / 10 关键子系统 / 横切关注点 / 开发者 cheatsheet); (2+3) **2 个跨项目 Cursor skill**: `~/.cursor/skills/subagent-parallel-dev-three-phase-review/SKILL.md` (从 L33 升主编号 §7.26 派生: 固定 `_subagent_handoff/<task-id>.json + .DONE` 协议 + 任务书 6 节模板 + 主 agent 三步 review) + `~/.cursor/skills/preview-panel-domain-partition/SKILL.md` (从 L44 升主编号 §7.27 派生: 生产侧 source tag + 消费侧 VISIBLE_SOURCES 白名单 + pure preview endpoint 不 stamp + UI 按钮按"交互阶段"分区); (4) **`tests/testbench/smoke/p26_docs_endpoint_smoke.py`** (10 静态契约 D1-D10 守 version 元信息 + `/docs/{doc_name}` 白名单 + 双 404 语义 + `page_about.js` 接线 + `CHANGELOG.md` 对齐 TESTBENCH_VERSION, Commit 1 欠的 smoke 补上). 改动 **`LESSONS_LEARNED.md`**: §7 主编号 25 → **27** (§7.26 = Subagent 三段式, §7.27 = Preview 面板按消费域分区), §7.A 候选 **新增 L45-L49** (pure preview endpoint / dual 404 / version+phase 双轨 / 4 象限文档分层 / independent deliverable commits), §8 skill 索引 3 → **5**. 改动 **`PROGRESS.md`** + 本 **`AGENT_NOTES.md`** 加 **§4.27 #118** + **`PLAN.md`** P26 状态同步. **未合入** 开场 git status 显示的 `testbench.css` + `memory_trigger_panel.js` 本地 working-copy 变更 (那是 #117 r7 2nd pass 的用户手调残留, 不属于 Commit 2 范围). 本地 commit 不 push, 等 Commit 3 (USER_MANUAL 中文 + 配图占位) 完成一起 push. 详见 §4.27 **#118**.
 >
@@ -716,6 +718,77 @@ smoke 用 `monkeypatch _invoke_llm_once / stream_send_inner` 注入 mock reply +
 - **§7.25 (跨边界 shape / 单一 chokepoint) 第 5 层防御 "chokepoint 优于单点堵" 从 "第 4 次同族" 升级为 "**第 6 次同族**"** — r5 T8 把 injection detection 从 5 处手写 collapse 到 1 处 helper, T7 把 banner 写读 collapse 到 2 个 chokepoint, T5+T6 把 real-send 和 preview collapse 到 shared instruction_bundle helper. 一次 polish 内 3 处独立应用 chokepoint, 证明这不是"偶发经验"而是**跨子域可复用的主导工具**. §7.25 第 5 层从"识别信号 → 补防守" 扩展为 "**识别 + 同批内主动转化所有同型手写为 chokepoint**".
 - **§7.A 新候选 L40** "info 级诊断的 smoke 必须显式 `level=info&include_info=true` 查询" — `list_errors` 默认过滤 info 级是设计 (Errors 页不该被 info noise 淹没), 但 smoke 作者容易踩. 当前 L37 (include_info 第一次复现) / #113 (第二次) / #116 r5 (第三次) 已达升级门槛, 候选 L40 可直接合到 §7.25 的 "三次同族升级" 规则里作为 "smoke 写法盲区" 子条目.
 - **§7.A L33.x "Subagent handoff 显式交付文件 + 完成标志"** 经 #116 实证**双证据** — A 正常落盘 + 主 agent 手补; B 中途 NameError 停 + 主 agent 接手; C read-only 无写权限 + 主 agent 手补. 三种状态 (正常 / 中途失败 / 无权限) 全走通证明 handoff 协议覆盖了 3 个典型失败模式, 可以从 "候选 L33.x" 升级为 **"L33 第二类补充 · Subagent Handoff 协议"** (原 L33 是 single-writer chokepoint, 这个补充是并行开发协议).
+
+---
+
+#### #120 2026-04-24 P26 C3 手测 hotfix · markdown 链接/锚点/图片 pipeline + USER_MANUAL 深度事实对齐 + ARCHITECTURE_OVERVIEW 二审 + D13 smoke 契约 + 本地 working-copy 合并 + merge 上游 15 条 + git push NEKO-dev main
+
+**背景**: Commit 3 (#119) 交付的 USER_MANUAL 是"写前 Grep 真实 runtime 校准 PLAN 4 处偏差"的起草版, 但用户 4 轮手测后仍揭出 4 类深层问题, 且 Commit 3 之后不能再开 Commit 4 (B 方案 "3 commit 全齐" 已告一段落), 故这些反馈作为**同期 hotfix** 统一收治, 一次 commit `063201a` 记账, 与 Commit 1/2/3 + 上游 15 条新 commit 一起推远端.
+
+**用户手测 4 轮反馈汇总**:
+
+1. **第 1 轮 (markdown 链接跳转一律无法使用)**: 内部 `[§X.Y](#xxx)` 点击无反应 + 跨文档 `[arch](testbench_ARCHITECTURE_OVERVIEW.md)` 400 报 `{"detail":{"error_type":"unknown_doc",...}}` (白名单 key 是**无 `.md` 后缀**的 `testbench_ARCHITECTURE_OVERVIEW`, 浏览器解析 `.md` 链接后原样带到 URL 路径导致落空). 只有 "回到主页" 按钮功能正常.
+2. **第 1 轮 (表格溢出 + 图片占位 + 手册事实偏差)**: ARCHITECTURE_OVERVIEW 部分宽表格右侧溢出 + 用户已按占位名截图入 `tests/testbench/docs/images/` 但手册里是 `<!-- IMG: ... -->` HTML 注释浏览器看不到 + USER_MANUAL "非常多与实际项目不符" (例如启动命令应 `uv run` / 不支持 UI 语言切换 / 评分 Run 启动后**不能**暂停).
+3. **第 2 轮 (链接+图片**仍**失败)**: 用户重测, 报 "链接依然失效 ... 图片无法正常渲染". 根因排查 = **服务器进程未重启**, 新代码 (slugify + rewrite + images 端点) 未加载. Kill 老 pid + restart 后 curl 验 200 OK + HTML 带 heading id + `.md` 后缀已剥.
+4. **第 3 轮 (图片太大 + 事实对齐要更深)**: 图片以原始分辨率嵌入溢出文本栏 + "是否允许点击放大?" 决策. 另举 "图 1 应放 §1.3 实际放在 §1.2 / Reset 子页残留 `P19 之后可能微调` / About 子页没 `TESTBENCH_PHASE`" 三例, 要求"类似问题继续审". 再举 "使用手册拉到最下面'请在 Diagnostics → Errors 相关条目下反馈' — 但本地环境没反馈按钮". 启动**第三轮整本深度对齐**.
+5. **第 4 轮 (文档内跳转链接不能用)**: "相关文档的一些文档内跳转链接因为被修改过所以不能用了". 根因 = `_slugify_heading` 算法**丢标点** (`/`, `+`, `(`, `)`), 作者手写 TOC 时把 `§1.1 Heading / Subheading` 对应的 anchor 写成 `#11-heading--subheading` (两 hyphen 对应 `/`), 实际算法产出 `#11-heading-subheading` (单 hyphen, 标点 drop 不变 hyphen). 13 条 TOC 链接全部失配. 手动逐条校准 + 新建 **D13 smoke 契约** 静态锁防回归.
+
+**修改文件 5 (本次 hotfix 全量)**:
+
+**(a) 渲染层 `routers/health_router.py` (+约 280 行)**:
+- `_slugify_heading(text) -> str` GitHub 风 slug 算法: 去 HTML tag → 去非 (字母 / 数字 / 空白 / hyphen) 字符 (CJK 属 `\w` 保留) → 空白序列 → 单 hyphen → lower. **标点 `/`, `+`, `(`, `)`, `&` 全部 drop, 不替换为 hyphen** (GitHub 行为与 `markdown-it-py`-compatible toc slugger 对齐).
+- `_render_markdown_html()` 走 `md.parse() → 对每个 heading_open token stamp `id` 属性 → md.renderer.render()`. 旧版 `markdown_it` 默认 html 不带 heading id, 现在 `<h2 id="11-foo">` 起可跳.
+- `_rewrite_internal_doc_links(html)` post-render regex pass: (A) 对 `<a href="testbench_XXX.md">` 剥 `.md` 后缀**仅当**去后缀后的 stem 在 `_PUBLIC_DOCS` 白名单里 (保留其它 `.md` 外链原样); fragment `#xxx` 透传. (B) 对 `<a href="LESSONS_LEARNED.md">` 等内部开发文档 (LESSONS/PROGRESS/AGENT_NOTES/PLAN/P*_BLUEPRINT) 降级为 `<span class="muted-link" title="内部开发文档, 未公开">文本</span>` (不 404 / 不引测试员撞 unknown_doc).
+- 新端点 `GET /docs/images/{filename}`: basename 强校验 (禁 `..` 穿出) + 扩展名白名单 `{.png, .jpg, .jpeg, .gif, .webp, .svg}` + `resolve()` 后必须仍在 `docs/images/` 目录内 (path boundary check), 通过则 `FileResponse()`, 失败 404.
+- **CSS/JS 注入**: 渲染 HTML 头尾加 `img { max-width: 100%; height: auto; display: block; margin: 1rem auto; border-radius: 4px; cursor: zoom-in; }` + 约 40 行纯 JS lightbox (点击图片 → overlay → 居中 100% 原图 → ESC/点击关闭). 表格溢出用 `table { display: block; overflow-x: auto; white-space: nowrap; }` + `td { word-break: break-word; }` 双保险.
+
+**(b) `testbench_USER_MANUAL.md` 深度事实对齐第三轮 (~+500/-300 行整本重写)**:
+- 启动命令: `python -m tests.testbench.server` → **`uv run python -m tests.testbench.server`** (对齐 `pyproject.toml` 声明的 uv 运行方式).
+- 数据目录: `~/.testbench` → **`tests/testbench_data/`** (git status 底下实测是 project 相对路径不是 home).
+- Welcome Banner 删除 (实际 UI 无该组件, 可能是作者幻觉). Setup 真 8 子页 (persona / chat_import / memory_import / scripts / recent / facts / reflections / persona_memory). Stage 6 id (not 7). Composer 4 模式 (manual / simuser / script / **system**, system 由用户选 role 触发). 外部事件 3 tab (avatar / agent_callback / proactive). Prompt Preview 双 wire 区分: **Structured** (结构化视图 LangChain Message 对象列表) vs **Raw** (完整 JSON 导出). 真实 memory op 5 个 (recent.compress / facts.extract / reflect / persona.resolve_corrections / persona.add_fact).
+- **Evaluation Run 启动后不可暂停/停止** (从 `page_run.js` 源码确认: 只有 Auto-Dialog 能暂停停止, Judger Run 是 fire-and-forget). autosave 真 4 字段 (enabled / interval_sec / on_idle_only / retention_count). UI Settings 的 "Language" + "Theme" select 在当前版本是 **disabled 占位符** (对应 L50 "尚未支持"类未来功能).
+- **反馈机制**: "请在 Diagnostics → Errors 相关条目下反馈" → **"截图当前 Chat/Error/Logs 子页 + `tests/testbench_data/` 下相关 json 发给开发者"** (本地环境无反馈按钮, 是 tester 与 dev 的线下协议).
+- Reset 子页残留 `P19 之后可能微调` 全部去除 (开发术语泄漏 §7.A L51 "文档不应含内部 phase 编号" 实证加强). About 子页 "当前阶段 = P25 external event injection" 改 "最后更新日期 = 2026-04-24", `TESTBENCH_PHASE` 字段不在面向 tester 的手册里提.
+- TOC 13 条 anchor link 逐条修 (配合 `_slugify_heading` 标点 drop 算法). 典型修正: `#11-heading--subheading` → `#11-heading-subheading` / `#1-ready-to-test-launch--config--first-open` → `#1-ready-to-test-launch-config-first-open` / `#6-session-11-组合--rewind` → `#6-session-11-组合-rewind`.
+- **13 张真实 png 入盘 `docs/images/`** (用户手动截屏放入), HTML 注释占位 `<!-- IMG: ... -->` 替换为 `![描述](images/XX_name.png)`. `_rewrite_internal_doc_links` 和 image 端点保证浏览器能 GET 到图 + 响应式缩放 + 点击放大.
+
+**(c) `testbench_ARCHITECTURE_OVERVIEW.md` 二审 (~+30/-20 行)**:
+- Logs 描述: "实时 tail" → **"5 秒轮询 auto-refresh + 无自动滚动 + 展开 filter chips"** (从 `page_logs.js` 源码校准).
+- Paths 子页: 单纯列路径 → **"列运行时数据目录结构 + 高亮孤儿(沙盒外 orphan) + 每行可复制到剪贴板"**.
+- i18n: "多语言 (zh-CN / en / ja / ko / es / pt 等 6+)" → **"当前仅 zh-CN 实装, 其它 locale 静默回退到 zh-CN (主程序有 es/pt 英文回退契约, testbench UI 层统一 zh-CN)"**.
+- TOC 13 条 anchor 同样 `--` → `-` 批修.
+
+**(d) `smoke/p26_docs_endpoint_smoke.py` 扩 D11-D13 三契约**:
+- D11: 每条白名单 md 渲染后 HTML 的每个 `<hX>` 必含 `id=` 属性.
+- D12: 渲染后 HTML 不得含 `href="testbench_*.md"` (白名单文档 .md 后缀必须已剥).
+- D13: 每份公开 md 的 `[...](#xxx)` 内部锚点 `xxx` 必在该 md 的 heading slug 集合里 (双向机械化校验, 防作者手写时 slug 算法不一致). 失败时报 `[D13] <file>:L<line> link '[<label>](#<anchor>)' doesn't match any heading slug. Check for '/', '+', '(' / ')' in the heading — those get dropped by _slugify_heading, they do NOT become '-'.`
+
+**(e) UI polish 合并进 hotfix**:
+- Settings → About 页 "当前阶段" 去掉, 改 "最后更新日期" + 新常量 `TESTBENCH_LAST_UPDATED = "2026-04-24"` in `config.py`. About 页渲染从读 `TESTBENCH_PHASE` 改读 `TESTBENCH_LAST_UPDATED`.
+- 右上角三点菜单 "关于" 按钮 hidden 解禁 (`topbar.js` 改 `hidden` → 默认显示, 点击 `selectWorkspace('settings'); selectSettingsSubpage('about')`).
+- 全仓 UI 文本搜索清除 `P[0-9]+` / `蓝图` / `阶段` 等内部开发术语 (对比 tester 侧不理解 Pxx). 修正点位: `external_events_panel.js` "详见 P25 蓝图" → "详见外部事件使用手册"; `page_run.js` "P16 暂不在 UI 中支持" → "当前版本 UI 暂不支持, 请直接调 API"; `page_memory_*.js` 类似 2-3 处.
+
+**(f) 打包本地 working-copy 残留**:
+- 开场 `git status` 显示 `testbench.css` + `memory_trigger_panel.js` (§4.27 #117 r7 2nd pass 的用户手调) 未 commit. 本次 hotfix commit 一并包含, 不再分离.
+
+**用户反馈驱动的 3 类元教训候选** (登记 §7.A, 等二次同族升主编号):
+
+- **L50 "Server boot_id 驱动 UI state reset"** (已有 Commit 3 USER_MANUAL §8.6 About 页 server_boot_id 作为首例证据, 本次 hotfix 用户两轮 "链接仍失效 / 图片仍不渲染" 都因服务器未重启再次实证: 代码层变更 ↔ 运行态加载 ↔ 前端可见 三段解耦, 必须靠服务端发 server_boot_id 让前端判是否"同进程"继而决定要不要忽略自己的 localStorage 状态). 二次实证收到 ✓, 达主编号升级门槛.
+- **L51 "Document authoring must reality-check before written"** (Commit 3 写前 Grep PLAN 4 处偏差是首例; 本次 hotfix 4 轮手测揭出的 ~12+ 处事实偏差 — 启动命令 / 数据目录 / Welcome Banner 有无 / Setup 子页数 / stage id 数 / composer 模式数 / 真实 memory op / Eval 可不可暂停 / autosave 字段 / UI select 是否 disabled / 反馈机制 / 内部 phase 编号泄漏 — 是第二次独立实锤, 且说明**即使 agent 声称"写前 grep 过"实际仍会幻觉**, 最终靠"用户手测 + 多轮细致对齐"才能收敛). 二次实证收到 ✓, 达主编号升级门槛.
+- **L52 (新候选) "Slug 算法与作者手写 anchor 必须双向机械化校验"**: `_slugify_heading` 属于"跨边界契约" — 算法产 slug / 作者手写 anchor 作为消费方. 只要 slug 规则复杂到"标点 drop 不 hyphen", 作者手写必然漂移. **防御**: 文档端 smoke 必须扫 `[xxx](#yyy)` 的所有 `yyy` 都 ∈ 该文档的 heading slug 集合. 类比 L36 §7.25 "跨边界 shape 必 rg 消费方" 的扩展, 从数据 shape 扩到**算法产出 ↔ 人类手写消费** 两侧. 单次, 等二次同族.
+
+**回归 18/18 smoke 全绿 ~34s 零 regression**. D13 新增确保未来 agent 修 heading 时锚点双向同步.
+
+**与上游 `main` 15 条新 commit (`540d67d` 前) 通过 `git pull --no-rebase` (ort strategy) 自动无冲突合并** → merge commit `4994b41`. 上游变更主要集中在主程序侧 (Memory RFC PR-3/PR-4 render budget + funnel analytics / Live2D / tiktoken 缓存 / API 连通测试灯 / README 更新 / i18n 截图功能), **与 testbench 零交集**, 合并安全.
+
+**`git push NEKO-dev main`** 把 P25 整批 + P26 Commit 1/2/3 + hotfix + merge commit 一次全推. 远端 head 现在 `4994b41`, 本地工作树 clean.
+
+**下个接手点 = P27+ 新阶段**, 由用户定方向. 候选见 PLAN `下一任 agent 指引 §7`: (a) 主程序 integration / (b) 新 feature (voice/multimodal) / (c) 测试覆盖扩充 (真 LLM e2e) / (d) UI 迭代 (用户继续拍图替换) / (e) 性能/大 session 优化.
+
+**方法论回写**:
+
+- **"hotfix 纪律"**: 即使已完成"N commit 全齐"的大阶段, 用户手测仍会揭出同期 bug/事实偏差, 应收治为 **"阶段 hotfix" 合并进最后一个 commit 前的本地分支** 一起 push, 不要因为"阶段已 sign-off" 就拒收反馈或拖到 P27+. 对比 P24 Day 12 欠账清返 (当时是跨阶段扫出前期 TODO), 本次是本阶段手测扫出自身 bug, 都是 "sign-off 门前最后一次手测拦截". 未来立项时**必须把"阶段级手测 + hotfix"作为阶段内的一个明确 checkpoint**, 不是可选项.
+- **"服务器必须重启"反复作为 root cause**: L22 "Intent ≠ Reality" 在**运行时层**的反复实证. agent 改代码后**必须显式验证**: (a) 进程重启 / (b) curl 命中新路径返新内容 / (c) 浏览器硬刷 (JS/CSS 已有 NoCacheStaticFiles 护, Python 代码未护). 否则用户看到的仍是旧进程的老行为, 反复浪费修-测循环. 已在 §4.19 #79 首次登记, 本次再实证, 未来 agent 修 backend 代码后**必须**主动 `powershell Get-Process python` + `Stop-Process + python -m tests.testbench.server &` 一整套, 再让用户测.
 
 ---
 

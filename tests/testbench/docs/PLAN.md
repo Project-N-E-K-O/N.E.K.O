@@ -86,7 +86,7 @@ todos:
 isProject: false
 ---
 
-## 当前快照 (2026-04-20, P17 完成 → 2026-04-21 P22/P22.1 补交付 → 2026-04-21 新增 P24 联调/代码审查/延期加固阶段 → 2026-04-21 P23 交付 → 2026-04-22 Day 12 P24 收尾 **v1.0 "第一个完善版本" sign-off** → 2026-04-23 P25 开工前 §A 八轮设计审查完成 → 2026-04-23 **P25 Day 1-3 全量交付** → 2026-04-23 **P26 Commit 1 (版本号 v1.1 + CHANGELOG + `/docs/{doc_name}` + About 接线)** → 2026-04-24 **P26 Commit 2 (ARCHITECTURE_OVERVIEW + LESSONS L45-L49 + §7.26/§7.27 升级 + 2 跨项目 Cursor skill + p26_docs_endpoint_smoke)** → 2026-04-24 **P26 Commit 3 (testbench_USER_MANUAL.md 中文简体 ~520 行 + 真实结构校准 + /docs/testbench_USER_MANUAL 自动从 file_missing 过渡到 200)** **P26 三 commit 全齐**)
+## 当前快照 (2026-04-20, P17 完成 → 2026-04-21 P22/P22.1 补交付 → 2026-04-21 新增 P24 联调/代码审查/延期加固阶段 → 2026-04-21 P23 交付 → 2026-04-22 Day 12 P24 收尾 **v1.0 "第一个完善版本" sign-off** → 2026-04-23 P25 开工前 §A 八轮设计审查完成 → 2026-04-23 **P25 Day 1-3 全量交付** → 2026-04-23 **P26 Commit 1 (版本号 v1.1 + CHANGELOG + `/docs/{doc_name}` + About 接线)** → 2026-04-24 **P26 Commit 2 (ARCHITECTURE_OVERVIEW + LESSONS L45-L49 + §7.26/§7.27 升级 + 2 跨项目 Cursor skill + p26_docs_endpoint_smoke)** → 2026-04-24 **P26 Commit 3 (testbench_USER_MANUAL.md 中文简体 ~520 行 + 真实结构校准 + /docs/testbench_USER_MANUAL 自动从 file_missing 过渡到 200)** → 2026-04-24 **P26 C3 hotfix (markdown 链接/锚点/图片 pipeline + USER_MANUAL 深度事实对齐 + ARCHITECTURE_OVERVIEW 二审 + D13 smoke + UI 清内部术语 + About 按钮解禁)** → 2026-04-24 **`git push NEKO-dev main` 合并上游 15 条, P25 整批 + P26 全部推远端**, 本地 clean, 工作树在 merge commit `4994b41`)
 
 > 本节为后期追加, 帮助新 Agent 或调研者在不通读全文的情况下快速定位现状. 核心 `todos` 的状态仍以**条目内 `status` 字段**为准; 本节仅作总览.
 
@@ -118,30 +118,45 @@ isProject: false
 - 踩过但未形成全仓 lint 规则的: `Node.append(null)` 静默插入、`??` 对 0/空串不 fallback、Grid template-rows 与子节点数不一致 (详见 `AGENT_NOTES.md §3A` + `§4`);
 - P17 新增的 `_coerce_bool` / `_coerce_float` 值得抽成通用 helper 供将来 export/persistence 阶段复用 (目前局限在 `judge_router`).
 
-**下一个 Agent 的第一件事 (2026-04-24 更新, P26 C3 + hotfix 链接/锚点/图片/内容对齐 完结)**:
+**下一个 Agent 的第一件事 (2026-04-24 更新 · P25 + P26 全部推远端后, 进入 P27+ 待用户定方向态)**:
 
-1. **先读 P26 + hotfix 交付档**: `PROGRESS.md` 最新条目 "P26 Commit 3 手测 hotfix" 含本次四类问题 (链接跳转失效 / 表格溢出 / 图片引用虚构 / USER_MANUAL 与实际代码大面积不符) 的完整修复 + `testbench_USER_MANUAL.md` 全本重写 + `routers/health_router.py` 的 `_slugify_heading` / `_rewrite_internal_doc_links` / `/docs/images/{filename}` 三段新代码.
+1. **当前项目态一句话**: 项目主线 **26/26 阶段 100% 完成**, v1.1.0 + hotfix 全部推远端 `NEKO-dev/main`, 本地工作树 clean, 与远端对齐在 merge commit `4994b41`. 无任何 pending 开发任务, 等用户开新阶段 (P27+).
 
-2. **剩余唯一动作 = 用户手测 + git push** (估 ~0.3-0.5 天). 重启服务后按 7 条手测:
-   - (a) 浏览器打开 `/docs/testbench_USER_MANUAL` 目录链接 `[§1 ...](#1-准备事项-启动--配置--首次打开)` 全部能跳 (heading 都有 id).
-   - (b) `[代码与设计总体概述](testbench_ARCHITECTURE_OVERVIEW.md)` 类 **带 `.md` 后缀** 的跨文档链接应 200 渲染 (渲染端已自动剥 `.md`, 锚点 `#xxx` fragment 保留).
-   - (c) `ARCHITECTURE_OVERVIEW` 宽表格右侧不再溢出 (CSS `word-break: break-word + display:block; overflow-x:auto` 双保险).
-   - (d) `USER_MANUAL` 13 张图全部在浏览器渲染 (`/docs/images/<filename>` 新端点, 限 basename + 扩展名白名单 + resolve 边界检查).
-   - (e) 查看 `USER_MANUAL` HTML 源码确认 `<h2 id="2-workspace-..."` 等 heading id 均有.
-   - (f) 指向 `LESSONS_LEARNED.md` / `PROGRESS.md` 等**内部开发文档**的链接显示为灰色 dotted 不可点 `<span class="muted-link">` (避免引测试员撞 404 `unknown_doc`).
-   - (g) 按手册 §1-§10 顺序真跑一遍 UI, 对照 PROGRESS 里"关键纠错"清单逐项验 "原错 → 现对" (12+ 处修正: uv 启动 / `tests/testbench_data/` / 无 Welcome Banner / Setup 8 子页 / 6 stage id / 4 composer 模式 / 3 种外部事件 / Structured+Raw wire / 5 真实 memory op / Eval 不可暂停 / autosave 4 字段 / UI 语言/主题 disabled 占位).
+2. **先读必要基线** (按阅读优先级):
+   - `PROGRESS.md` 最后两条: **"P26 Commit 3 手测 hotfix"** (本轮 4 类问题全修复 + `testbench_USER_MANUAL.md` 全本重写 + `routers/health_router.py` 三段新代码) + **"P26 + hotfix 文档清理 + 合并上游 + push"** (本次最后一轮文档整理).
+   - `AGENT_NOTES.md §4.27 最新条目 #120` = P26 C3 手测 hotfix 的完整叙事 (4 轮用户反馈 + 5 类修改文件 + 3 条元教训候选 L50/L51/L52 + merge 策略).
+   - `CHANGELOG.md v1.1.0 hotfix 小节` = tester-visible 修复/改进清单.
+   - `LESSONS_LEARNED §7.A` 候选区最新三条 L50 (server boot_id, 已达两次同族) + L51 (文档先 grep 真实代码, 已达两次同族) + L52 (slug 算法 ↔ 作者手写 anchor 双向校验, 单次).
 
-3. **push 策略**: 手测通过后**一次** `git push NEKO-dev main` 把 P25 整批 (Day 1/2/3 + polish r5/r6/r7/r7 2nd pass + 第三轮 chokepoint 下沉) + **P26 Commit 1/2/3** + **本次 hotfix** 全部推远端. hotfix 因内部同轮反复迭代 (UI polish r1 去 Pxx/蓝图 + ARCH 二审 + 图片 lightbox + USER_MANUAL 深度对齐第三轮 + TOC 锚点 13 条 `--` → `-` 批修 + D13 smoke 契约) 建议一次单 commit 记账, 消息如 `docs(testbench): P26 C3 hotfix — md link/anchor/image + content alignment + D13 contract`.
+3. **git 状态 (ground truth)**:
+   - 远端 HEAD = `4994b41` (merge commit, 上游 15 条 + P25/P26 全部).
+   - 本地 HEAD = 远端 HEAD, 工作树 clean.
+   - P25 Day 1-3 + polish r5/r6/r7/r7 2nd pass + 第三轮 chokepoint 下沉 若干 commit, P26 Commit 1/2/3, P26 C3 hotfix (`063201a`), 本次文档清理 commit, 全部已推远端.
 
-3. **读经验层基线**: `AGENT_NOTES.md §3A` 57 条设计原则 → `LESSONS_LEARNED §7` **27 条主编号** (§7.26 Subagent 三段式 / §7.27 Preview 面板按消费域分区 均 P26 Commit 2 升级) + **`§7.A` 候选 L28-L49** (22 条, P26 Commit 2 新增 L45-L49 5 条); §7.25 "跨边界 shape / role / 字段名必须 rg 消费方" 已升到第 6 次同族 + 五层防御; §7.27 从 L44 升为两次同族实锤. **P26 Commit 3 新候选** (§7.A 待加): L50 "Server boot_id for UI state reset" (USER_MANUAL §8.6 讲 About 页 server_boot_id 时发现的 Welcome Banner 服务端重启后重新出现的实现基础, 等二次同族升级) + L51 "Document authoring must reality-check before written" (写前 Grep 真实 runtime 校准 PLAN 笔记 4 处偏差的实证, 等二次同族升级).
+4. **全量 smoke baseline (maintain 线)**: **18/18 全绿 ~34s**, 覆盖:
+   - `p21_3_prompt_injection` / `p21_1_sandbox_session` / `p21_persistence` (P21 家族)
+   - `p22_hardening` (P22)
+   - `p23_exports` (P23)
+   - `p24_{integration, sandbox_attrs_sync, lint_drift, session_fields_audit}` (P24 家族 4)
+   - `p25_{avatar_dedupe_drift, external_events, wire_role_chokepoint, prompt_preview_truth, r5_polish, r6_import_recent, r7_wire_partition, llm_call_site_stamp_coverage}` (P25 家族 8)
+   - `p26_docs_endpoint_smoke` (D1-D13 13 契约, D11-D13 为 C3 hotfix 新增锁 heading id / .md 后缀剥 / anchor slug 双向一致)
 
-4. **Commit 3 基线**: 全量 smoke baseline **18/18 全绿** ~34s, 含 `p26_docs_endpoint_smoke.py` (10 静态契约, D9 现由 2 条白名单 md 同时命中). 未来 P27+ 新改动要保持这个绿线.
+   未来 P27+ 新改动必须保持这条绿线. 任何 smoke 变红**都不应 push**.
 
-5. **未合入的本地残留**: git status 开场显示 `tests/testbench/static/testbench.css` + `static/ui/setup/memory_trigger_panel.js` 有未 commit 的 working-copy 改动, 属于 #117 r7 2nd pass 的用户本地调整, **P26 三 commit 全部未合并也未覆盖**, 下个 agent/用户决定是否随后续小 commit 一起打包, 或独立 commit 掉, 或 git checkout 放弃.
+5. **读经验层基线**: `AGENT_NOTES.md §3A` 57 条设计原则 → `LESSONS_LEARNED §7` **27 条主编号** (§7.26 Subagent 三段式 / §7.27 Preview 面板按消费域分区 均 P26 Commit 2 升级) + **`§7.A` 候选 25 条 L28-L52** (P26 Commit 2 加 L45-L49 共 5 条 + P26 C3 hotfix 加 L50/L51/L52 共 3 条). §7.25 "跨边界 shape / role / 字段名必须 rg 消费方" 已升到第 6 次同族 + 五层防御; §7.27 两次同族实锤. **L50 / L51 已达两次同族门槛**, 下轮主编号更新应升 §7.28 / §7.29.
 
-6. **git 状态 (2026-04-24 Commit 3 落地后)**: P25 Day 1-3 若干 commit 本地已存但**未 push**. P26 Commit 1/2/3 本地 commit 已全部完成 (Commit 3 commit 待本次 agent 最后一步 `git commit` 落档). 用户手测通过后一次 `git push NEKO-dev main` 把 P25 整批 + P26 全部推远端.
+6. **P27+ 新阶段** (等用户定方向). 候选方向 (按价值粗估排序):
+   - **(a) 主程序 integration**: 把 testbench 训好的 prompt / persona / schema 导给桌宠生产环境. 价值最高也最有可能是下阶段真需求.
+   - **(b) 新 feature**: 比如 voice / multimodal 测试支持. 依赖主程序先支持对应能力.
+   - **(c) 测试覆盖扩充**: 补 e2e smoke 用**真实** LLM 跑完整 session (当前 smoke 都是 mock LLM), 是稳定性验证的延续, 但成本高 (token 费 + 不稳定).
+   - **(d) UI 迭代**: 用户继续拍 UI 实图做小 commit 替换或补 manual 中还不对齐的细节. 低价值高频 type.
+   - **(e) 性能/大 session 优化**: `testbench_USER_MANUAL §9 已知限制` 里列的 "大 session (>500 轮) 性能劣化" 等. 需要用户先有实际痛点.
 
-7. **P27+ 新阶段** (可选, 由用户定方向): 项目主线 26/26 阶段已完成. 下一阶段方向候选 (等用户提): (a) 主程序 integration (把 testbench 训出的 prompt / persona / schema 导给桌宠生产环境); (b) 新 feature (e.g. voice/multimodal 测试支持); (c) 测试覆盖扩充 (补 e2e smoke 用真实 LLM); (d) UI 进一步迭代 (用户拍的 UI 实图逐步替换 USER_MANUAL 的 `<!-- IMG: -->` 占位, 做小 commit 迭代); (e) 性能/大 session 优化 (P26 §9 已列限制).
+7. **常见维护任务** (不算新阶段):
+   - 用户拍新图替换 `testbench_USER_MANUAL.md` 里已有的占位, 小 commit 迭代.
+   - CHANGELOG 新版本 bump (v1.2.0 等) 时, 按本次 hotfix 小节的范式再追加.
+   - LESSONS §7.A 候选达两次同族时升主编号 (现在 L50/L51 已具备条件, 随下个新阶段一起升).
+   - 任何代码改动后要记得**先重启服务**再让用户手测 (§4.27 #120 反复实证的 "服务器未重启" root cause).
 
 **历史档案 (留供参考)**: P23 已于 2026-04-21 交付 (`pipeline/session_export.py` + `session_router.POST /api/session/export` + `session_export_modal.js` + 三入口接线 + `smoke/p23_exports_smoke.py` 绿), 交付细节见 §14 最后一节的"P23 交付实录". P24 已于 2026-04-22 Day 12 收尾, v1.0 sign-off, 详见 `P24_BLUEPRINT.md` + `PROGRESS.md P24` 条目 + §15.1-§15.6 实施细化 (规格以蓝图为准).
 

@@ -111,6 +111,77 @@
 
 ---
 
+## v1.1.0 hotfix (2026-04-24) — 文档渲染 / 手册事实对齐 / 图片 pipeline
+
+v1.1.0 发布当日的用户手测反馈收治, 仍属 v1.1 同一版本号 (未 bump) 的维护性
+更新, 仅对 `/docs` 端点行为 / UI 文案 / 内置手册内容做 tester-visible 修正.
+
+### 修复
+
+- **`/docs/<name>` 渲染的 markdown 链接跳转** — 之前:
+  - 内部 `[§X.Y](#xxx)` 点击无反应 (heading 没 `id` 属性).
+  - 跨文档 `[arch](testbench_ARCHITECTURE_OVERVIEW.md)` 报 404
+    `unknown_doc` (白名单 key 无 `.md` 后缀, 浏览器把 `.md` 原样带进 URL).
+  - 现在 heading 自动生成 GitHub 风 slug id (保留 CJK 字符, 标点 drop,
+    空白 → hyphen); 白名单文档的 `.md` 后缀自动剥; 指向内部开发文档
+    (LESSONS_LEARNED / PROGRESS / AGENT_NOTES / PLAN / P*_BLUEPRINT)
+    的链接降级为灰色 dotted 不可点提示.
+
+- **测试用户使用手册大面积与实际 UI 不符** — 手册内容 4 轮手测后深度
+  对齐实装代码, 典型修正点:
+  - 启动命令 `python -m ...` → **`uv run python -m tests.testbench.server`**.
+  - 数据目录 `~/.testbench` → **`tests/testbench_data/`** (项目内相对路径).
+  - 删掉 "Welcome Banner 首次打开引导" 描述 (当前 UI 无该组件).
+  - Setup 子页 5 个 → **8 个** (persona / chat_import / memory_import /
+    scripts / recent / facts / reflections / persona_memory).
+  - Stage 7 id → **6 id**. Composer 3 模式 → **4 模式** (含 system).
+  - Evaluation Run **启动后不可暂停/停止** (之前手册误写 "可暂停",
+    实际只有 Auto-Dialog 能暂停/停止).
+  - Settings → UI 的 "Language" + "Theme" select 标注为**当前版本
+    未实装** (disabled 占位符).
+  - 反馈渠道改为 "截图当前子页 + `tests/testbench_data/` 下相关 json
+    发给开发者" (本地环境无在线反馈按钮).
+  - 清理手册中所有 `P19 之后可能微调` / `P25 之后独立立项` / `详见蓝图`
+    等内部开发术语 — tester 不应读到项目的内部 phase 编号.
+
+- **手册 13 张配图现在真的能看到** — 用户手动截屏放入
+  `tests/testbench/docs/images/` 后, 手册从 HTML 注释占位
+  `<!-- IMG: ... -->` 替换为标准 markdown `![描述](images/01_xxx.png)`.
+  新增 `/docs/images/{filename}` 端点 (basename + 扩展名白名单 +
+  路径边界校验), 响应式 CSS `max-width: 100%; height: auto` 防溢出,
+  点击图片弹出 lightbox 看原图.
+
+- **ARCHITECTURE_OVERVIEW 部分宽表格右侧溢出** — 表格改 `display: block;
+  overflow-x: auto`, 长单元格改 `word-break: break-word`, 双保险.
+
+- **ARCHITECTURE_OVERVIEW 二审事实偏差** (开发者向但同样是可见内容):
+  - Logs 子页描述 "实时 tail" → "5 秒轮询 auto-refresh + 无自动滚动".
+  - Paths 子页描述补 "列孤儿(沙盒外)高亮 + 每行可复制".
+  - i18n 描述 "多语言 zh-CN/en/ja/ko/es/pt" → "当前仅 zh-CN 实装,
+    其它 locale 静默回退" (主程序才有 es/pt 英文回退契约).
+
+### 改进
+
+- **Settings → About 页** — "当前阶段" 字段去掉 (内部术语), 替换为
+  "最后更新日期: 2026-04-24". 新增 `TESTBENCH_LAST_UPDATED` 常量维护.
+
+- **右上角三点菜单的 "关于" 按钮** — 之前 hidden, 现在常显, 点击
+  直接跳到 Settings → About 页, 不再需要测试员记路径.
+
+- **全仓 UI 文案清理内部 phase/蓝图术语** — 外部事件面板 "详见 P25
+  蓝图" → "详见外部事件使用手册"; 评分 Run 页 "P16 暂不支持" →
+  "当前版本 UI 暂不支持, 请直接调 API"; 记忆页同类 2-3 处.
+
+### 兼容性
+
+- 持久化 / 导出 / HTTP 端口 / 数据目录结构, 全部未动.
+- CHANGELOG 版本号仍为 v1.1.0, 本次 hotfix **不 bump 版本** (纯 tester
+  可见文档/文案修复, 无新功能 / 无 schema 变更).
+- 所有 `/docs/{name}` 端点 URL 未变, 响应 Content-Type 协商规则未变
+  (`text/markdown` vs HTML).
+
+---
+
 ## v1.0.0 (2026-04-22) — 第一个完善版本 (P24 sign-off)
 
 首个对外可用的稳定版本. 所有基线能力都已冻结:

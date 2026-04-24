@@ -9,7 +9,7 @@
 > P25 Day 1 subagent 并行开发首次应用 + P25 Day 1 fixup mirror shape +
 > P25 Day 2 前端面板派生 + Day 2 polish 手测 r1-r6 派生 + Day 3 `last_llm_wire`
 > 覆盖率 smoke 派生 + P26 Commit 1 版本号落档/公共文档端点/4 象限分层派生的
-> 22 条候选元教训 (L28-L49, 登记于 §7.A 候选区, 未计入主编号 25 条).
+> 25 条候选元教训 (L28-L52, 登记于 §7.A 候选区, 未计入主编号 27 条; 其中 L50/L51 已达两次同族门槛, 待下轮主编号更新升 §7.28/§7.29).
 >
 > **§7.25 特别说明**: 一周内已连续 **6** 次同族实锤 (字段名漂移 / envelope 漂移 /
 > LLM wire role 三次漂移 / **Prompt Preview "重建视图 ≠ 真实 stream" 架构级
@@ -602,19 +602,22 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
         4. **Preview 按钮的位置按"交互阶段"而非"功能分类"**. 点 trigger 按钮打开 drawer → 填参数 → drawer 底部同时暴露 `[执行] [预览]` — 按**交互阶段**分区.
     - **对应 Cursor skill**: `preview-panel-domain-partition` (本次 P26 Commit 2 新抽, 见 §8.5).
 
-### §7.A 候选追加 (P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理 UTF-8 事件 + P25 Day 1 subagent 并行开发 + P25 Day 1 fixup mirror shape + P25 Day 2 前端面板派生 + P25 Day 2 polish r1-r6 手测派生 + P26 Commit 1 版本号落档 / 公共文档端点 / 4 象限文档分层派生, 待二次复现后并入主编号)
+### §7.A 候选追加 (P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理 UTF-8 事件 + P25 Day 1 subagent 并行开发 + P25 Day 1 fixup mirror shape + P25 Day 2 前端面板派生 + P25 Day 2 polish r1-r6 手测派生 + P26 Commit 1 版本号落档 / 公共文档端点 / 4 象限文档分层派生 + **P26 Commit 3 USER_MANUAL + C3 hotfix 链接锚点图片 pipeline 派生**, 待二次复现后并入主编号)
 
-> 纪律: 本文档 §7 只记录 "**已经踩过 ≥ 2 次**的同族教训". 下列 22 条候选 (L28-L49)
+> 纪律: 本文档 §7 只记录 "**已经踩过 ≥ 2 次**的同族教训". 下列 25 条候选 (L28-L52)
 > 多数仍为**单次派生** (源自 P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理
 > UTF-8 字节损坏事件 + P25 Day 1 subagent 并行开发首次应用 + P25 Day 1 fixup
 > mirror_to_recent shape mismatch + P25 Day 2 前端面板交付 + P25 Day 2 polish r1-r6
-> 手测联动 bug + P25 Day 3 `last_llm_wire` AST 覆盖率 smoke + **P26 Commit 1 版本号
+> 手测联动 bug + P25 Day 3 `last_llm_wire` AST 覆盖率 smoke + P26 Commit 1 版本号
 > 常量化 / `/docs/{name}` 白名单端点 / 4 象限文档分层 / "Commit 可独立成型" B 方案 /
-> pure preview 端点架构化**);
+> pure preview 端点架构化 + **P26 Commit 3 USER_MANUAL 起草 + C3 hotfix 4 轮手测对齐**);
 > **L36 已升级至三次复现** (`dedupe_info.remaining_ms` 字段名漂移 +
 > `external_event_router` envelope 顶层结构漂移 + **LLM wire 消息 role 字段漂移 /
-> prompt_ephemeral 语义契约违反**), 已超门槛, 本次 §7 更新将 L36 升级为 §7.33.
-> **L39 / L40 / L41 / L42 / L43 / L44 / L45 / L46 / L47 / L48 / L49 新候选** 登记为单次,
+> prompt_ephemeral 语义契约违反**), 已超门槛, 本次 §7 更新将 L36 升级为 §7.25.
+> **L50 / L51 已达两次同族门槛** (L50: USER_MANUAL §8.6 首例 + C3 hotfix 服务器未重启反向例;
+> L51: USER_MANUAL 起草时 Grep 4 处校准首例 + C3 hotfix 手测揭 12+ 处深层偏差), 待下轮
+> 主编号更新升为 **§7.28 / §7.29**.
+> **L39 / L40 / L41 / L42 / L43 / L44 / L45 / L46 / L47 / L48 / L49 / L52 新候选** 登记为单次,
 > 待 P27+ 再命中升级. L37 / L38 仍为单次.
 > 登记在此避免遗忘.
 >
@@ -1033,6 +1036,75 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
     - L28 "跨阶段推迟项必须双向回扫" 的**项目内实施版** — L28 管 "跨阶段别漏", L49 管 "阶段内拆 commit 别漏" (跨越短时间尺度).
 - **候选 skill**: `commit-independent-deliverable` — 触发条件 = "大型交付要分 N 个 commit". 模板: (1) 按切面而非进度拆; (2) 每 commit 后跑独立 smoke 绿; (3) 软缺失设计兜底未交付部分; (4) 每 commit 独立写 CHANGELOG.
 - **进入主编号条件**: 需要在 P26+ 或其它 AI 辅助项目再命中一次 "多 commit 拆分时中间状态 unusable" 才升级为 §7.38/§7.39.
+
+---
+
+**L50 "Server boot_id 为 client 端状态重置提供服务端生命周期锚"** (P26 Commit 3 USER_MANUAL §8.6 派生首例 + P26 C3 hotfix 两轮"链接仍失效 / 图片仍不渲染"因服务器未重启二次实锤, 2026-04-24, **已达主编号升级门槛**):
+
+- **场景**: 前端需要一些 "客户端状态应该跟随服务端生命周期重置" 的行为 — 比如首次启动提示 / 一次性引导 tour / 本地缓存 enum 失效 / 服务端重启后提示 "你正在用的会话已失效". 传统做法要么 (a) 服务端维护 per-client 记录 (需要 session cookie + 后端状态), 要么 (b) client 端纯按 localStorage 记 "见过了" (服务端重启后 client 根本不知道).
+- **L50 模式**: 服务端**进程启动时生成一次性 UUID** `server_boot_id`, 暴露在 `GET /api/version` 或类似健康端点. 前端进入每个需要该状态的地方时:
+    1. 读本地 `localStorage.seen_boot_ids: Set[string]`.
+    2. `fetch /api/version` 拿当前 `server_boot_id`.
+    3. 若 id **不在** set 里 → 走"首次见到这个 boot 的逻辑" (显示 welcome banner / 重置本地缓存 / 清 stale session token) → 然后 `set.add(id); localStorage.save`.
+    4. 若 id **在** set 里 → 走"老用户老 boot" 的逻辑, 直接跳过.
+- **好处**: 服务端**零 per-client 状态维护**, 只暴露一个 UUID; 前端**纯 localStorage 语义 + 服务端生命周期锚点**两段拼接. 服务端重启自动让所有 client 重新走一次 "首次见到" 路径, 不需要服务端发广播也不需要 client 定期轮询.
+- **实证 1 (首例)**: Testbench USER_MANUAL §8.6 讲 About 页的 `server_boot_id` 字段时, 明确这是 Welcome Banner (首次启动提示) 能 "服务端重启后重新出现" 的实现基础. `localStorage.seen_boot_ids` 在前端存已见过的 boot_id 集合, 新 boot_id 不在里面就显示一次.
+- **实证 2 (P26 C3 hotfix 反向例)**: 用户两轮反馈 "链接仍失效 / 图片仍不渲染", 根因都是**服务器未重启**新代码未加载. 如果前端有 `server_boot_id` 显示 + "服务端已升级, 请点这里刷新" 的 Banner, 会直接告诉用户 "你在跟老进程说话". 这次没做, 导致修-测循环来回 2 轮才识破. 未来 testbench 若重视 dev-loop 生产力, 可在 topbar 补一个 "当前 server_boot_id" 角标, 开发者 agent 改完代码后一看角标变了就知道进程重启成功.
+- **变体**: 服务端不必然是 UUID, 只要**每次进程启动都不同**即可 — timestamp (精度到秒) 也行, 甚至 `pid + boot_time` 元组. 关键是 **client 能独立判断 "这是新进程吗"** 而不需要服务端帮忙记住 "我见过这个 client 吗".
+- **关联**:
+    - L22 §1.1 "Intent ≠ Reality" 在**运行时层**的分布式应用 — L22 管"审查时代码未 deploy", L50 管"UI 上怎么让 client 知道代码 deploy 了"; 两者都服务同一焦点 "源 ≠ 线上 ≠ client 看到的".
+    - L44 §7.27 "Preview 面板按消费域分区" 的**时间维度** — L44 按空间 (域) 分区显示, L50 按时间 (boot 周期) 分区重置; 两者都通过 "带**源信号**的 key (source tag / boot_id) 触发 UI 行为".
+    - L46 "404 双语义" 的**并发补充** — L46 让端点能区分 "未知资源 / 资源未就绪", L50 让客户端能区分 "同 server / 新 server", 都是"状态机精确化" 方向.
+- **对应 skill**: `~/.cursor/skills/server-boot-id-for-ui-state/SKILL.md` 已存在 (本项目外骨架, 用于任何需要 "服务端重启 reset client 侧状态" 的场景).
+- **进入主编号条件**: 已达两次同族门槛 (首例 + hotfix 反向例). 下一次 `LESSONS §7` 主编号更新应正式升为 **§7.28 "Server boot_id 驱动 client 侧状态重置"**.
+
+---
+
+**L51 "文档作者必须先扫真实代码再写, 不按 PLAN 笔记/蓝图/内存 draft"** (P26 Commit 3 USER_MANUAL 写前 Grep 4 处校准首例 + P26 C3 hotfix 4 轮手测揭出 12+ 处事实偏差二次实锤, 2026-04-24, **已达主编号升级门槛**):
+
+- **场景**: AI agent 被派写面向用户的文档 (user manual / architecture overview / API reference), 往往会**凭记忆 + PLAN 笔记 + 蓝图描述**起稿. 失败模式: PLAN 笔记是**设计 intent**, 蓝图是**设计 draft**, 代码是**当前 reality** — 三者不自动同步, 凭记忆写出来的内容会含有大量**看起来对但实际已过时**的细节.
+- **典型偏差类别** (P26 C3 实证):
+    1. **启动命令过时**: PLAN 写 `python -m xxx`, pyproject.toml 早已声明 `uv run`.
+    2. **目录路径幻觉**: PLAN 写 `~/.testbench`, 代码实际走 `tests/testbench_data/`.
+    3. **UI 组件不存在**: 凭蓝图写 "Welcome Banner 首次打开引导", 实际 UI 无该组件 (可能是上游 feature 被砍但文档没同步).
+    4. **子页数量不对**: 凭内存写 "Setup 5 子页", 实际走 `workspace_setup.js` 看是 8 子页.
+    5. **状态/枚举不对**: Stage id 数 / Composer 模式数 / 外部事件 tab 数 / memory op 数, 均可能偏差.
+    6. **行为约束反向**: 凭印象写 "Evaluation Run 可暂停", 实际源码是 fire-and-forget.
+    7. **可配置项幻觉**: 凭印象写 "UI 可以切语言切主题", 实际 select 是 disabled 占位.
+    8. **内部术语泄漏**: 写着写着把 `P19 之后可能微调` / `详见 P25 蓝图` / `P16 UI 暂不支持` 这类**内部开发 phase 编号**带进了面向 tester 的文档.
+- **防御规则** (四层):
+    1. **写前必扫**: 凡文档涉及 UI 结构 / 命令 / 配置, 先 Glob/Grep 对应模块 (`static/ui/workspace_*.js` / `pyproject.toml` / `composer.js` / ...) 拿**真实 runtime 结构**, **再**起稿.
+    2. **写中必交叉验**: 写到某个枚举值 / 字段名 / 数字时, 当场 rg 一次该 key 在代码里出现几次 / 实际值是什么.
+    3. **写后必找真实 UI 手测**: 起稿完**必须**让**用户或另一 agent** 按文档走一遍真实 UI, 不一致点全部收集回来作为第二轮对齐.
+    4. **术语 grep**: 收尾前 grep 一次 `P[0-9]+` / `蓝图` / `阶段` / `deferred` / `TODO` / `FIXME`, 面向 tester 的文档里这些词一律删.
+- **实证 1 (首例, Commit 3 起稿)**: 写 USER_MANUAL 前 Grep 4 个 workspace 文件, 纠正 PLAN 笔记 4 处偏差 (workspace 数 / diag 子页 / eval 子页 / settings 子页). 但这只纠正了 "结构性" 偏差, **没纠正行为性 + 术语性**偏差.
+- **实证 2 (hotfix 反向例)**: 用户 4 轮手测**仍揭出 12+ 处深层偏差** — 启动命令 / 数据目录 / Welcome Banner 有无 / stage id 数 / composer 模式数 / Eval 可不可暂停 / autosave 字段 / UI select disabled / 反馈机制错 / 内部术语 3 处泄漏. 说明**即使 agent 声称"写前 grep 过"**, 覆盖率也远达不到 tester 实用所需. 最终靠 **"用户手测 + 多轮细致对齐"** 才收敛.
+- **元教训**: 本条从 "写前扫代码" 扩展到 "**必须配多轮 tester 手测回写**", 即使起稿 agent 再认真也有幻觉盲区. 真相是 **agent 凭内存写文档 ≈ 按蓝图写代码, 都必然漂移**, 靠 "用消费方视角 (tester / 代码读者) 校准" 才能收敛.
+- **关联**:
+    - L22 §1.1 "Intent ≠ Reality" 在**文档作者侧**的扩展 — L22 管审查者警惕, L51 管创作者前置校准 + 创作后手测收敛.
+    - L32 "PowerShell CJK UTF-8 陷阱" 在**内容准确度维度**的对偶 — L32 管字节正确性, L51 管语义正确性.
+    - §6.3 "三份 docs 同步更新模式" 的**文档→代码方向扩展** — §6.3 是代码改后同步三份 docs, L51 是 docs 起草时按代码校准.
+- **进入主编号条件**: 已达两次同族门槛. 下一次主编号更新应正式升为 **§7.29 "文档作者必须先扫真实代码再写 + 多轮 tester 手测回写收敛"**.
+
+---
+
+**L52 (新候选) "Slug 算法产出 ↔ 作者手写 anchor 必须双向机械化校验"** (P26 C3 hotfix `_slugify_heading` 标点 drop ↔ 作者手写 TOC `--` 双 hyphen 对应 `/` 不匹配派生, 2026-04-24, 单次实锤):
+
+- **场景**: markdown 渲染器自动给每个 heading 生成 slug id (GitHub 风 `_slugify_heading`), 同时手册作者在文档顶部 TOC 手写 `[§1.1 Foo / Bar](#11-foo-bar)`. **两边都编码 "heading → anchor" 这段契约, 但用不同机制** — 一边是代码算法, 一边是人类手写. 算法规则略复杂时 (比如 "标点 drop 不换 hyphen"), 作者会下意识按 "每段特殊字符变 hyphen" 脑补, 产出和实际算法不一致的 anchor.
+- **典型失败模式**: heading 含 `/`, `+`, `(`, `)`, `&` 等标点时:
+    - 算法 `_slugify_heading("§1.1 Foo / Bar")` → `#11-foo-bar` (单 hyphen, `/` 直接 drop).
+    - 作者手写 → `#11-foo--bar` (双 hyphen 用来对应 `/ `, 直觉模式).
+    - 点击链接 → 404 锚点 (不报错, 只是不跳).
+- **实证 (P26 C3 hotfix)**: 用户第 4 轮手测 "相关文档的一些文档内跳转链接因为被修改过所以不能用了". 静态扫 USER_MANUAL + ARCHITECTURE_OVERVIEW 发现 **13 条 TOC 锚点全部 `--` → `-` 对应不上**. 修法 = (a) 逐条手动改 anchor 对齐算法产出; (b) 新建 **D13 smoke 契约** — 静态扫每份公开 md 的 `[xxx](#yyy)`, 断言 `yyy` ∈ 该 md 的 heading slug 集合, 失败时输出可行动诊断 `[D13] <file>:L<line> link ... doesn't match any heading slug. Check for '/', '+', '(' / ')' in the heading — those get dropped by _slugify_heading, they do NOT become '-'.`
+- **关联**:
+    - L36 §7.25 "跨边界 shape 必 rg 消费方" 的**算法产出 ↔ 人类消费**扩展 — L36 原讨论的都是**代码端两侧都机械化** (writer 代码 + reader 代码), L52 讨论一边算法 + 一边人手. 同族但消费方不同, 防御需要从 "rg 消费方" 扩展到 **"smoke 断言算法产出 ≡ 人类手写"**.
+    - L45 "pure preview endpoint" 的**文档层变体** — L45 讓 preview 和 real run 共享 helper 保证一致, L52 让算法 slug 和手写 anchor 共享 smoke 保证一致. 都是 "避免 divergent paths 产出不一致".
+    - L50 "server boot_id" 的**算法产出 vs 人类输入**对偶 — L50 是 "server 算 id / client 存 id" 双边算法, L52 是 "算法产 slug / 人手写 anchor" 混合, 两者都需要 "跨边界 key 双向校验".
+- **防御规则**:
+    1. **任何跨算法边界的 key 契约**必须有 smoke 断言两边对齐 (代码 ↔ 代码 rg 互查; 代码 ↔ 人手写时 smoke 静态扫).
+    2. **算法规则复杂时** (含有非直觉规则如 "标点 drop 不 hyphen") **必须在 smoke 错误信息里点明规则**, 否则作者改来改去还是错.
+    3. **首选把人手写这一侧消灭**: 有 TOC generator 的场景 (例如 `markdown-it-anchor` + table-of-contents 插件), 直接让算法同时生成 heading id **和** TOC, 两边同源 — 此时根本没有 drift 可能.
+- **进入主编号条件**: 需要在 P27+ 或其它项目再命中一次 "算法 slug 规则 ↔ 人手写 anchor 漂移" 才升级为 §7.30 (或合并入 §7.25 作子条目 "跨边界 key 含非代码消费方").
 
 ---
 
