@@ -194,6 +194,8 @@
     const PLUGIN_DASHBOARD_HANDOFF_EVENT = 'neko:yui-guide:plugin-dashboard:start';
     const PLUGIN_DASHBOARD_READY_EVENT = 'neko:yui-guide:plugin-dashboard:ready';
     const PLUGIN_DASHBOARD_DONE_EVENT = 'neko:yui-guide:plugin-dashboard:done';
+    const PLUGIN_DASHBOARD_INTERRUPT_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-request';
+    const PLUGIN_DASHBOARD_INTERRUPT_ACK_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-ack';
     const DEFAULT_TUTORIAL_MODEL_MANAGER_LANLAN_NAME = 'ATLS';
     const GUIDE_AUDIO_BASE_URL = '/static/assets/tutorial/guide-audio/';
     const INTRO_ACTIVATION_HINT_KEY = 'tutorial.yuiGuide.lines.introActivationHint';
@@ -1369,6 +1371,7 @@
             this.retainedExtraSpotlightElements = [];
             this.sceneExtraSpotlightElements = [];
             this.pluginDashboardHandoff = null;
+            this.pluginDashboardLastInterruptRequestId = '';
             this.customSecondarySpotlightTarget = null;
             this.keydownHandler = this.onKeyDown.bind(this);
             this.pointerMoveHandler = this.onPointerMove.bind(this);
@@ -1389,7 +1392,14 @@
             window.addEventListener('neko:yui-guide:tutorial-end', this.tutorialEndHandler, true);
             window.addEventListener('message', this.messageHandler, true);
             document.addEventListener('pointerdown', this.interactionGuardHandler, true);
+            document.addEventListener('pointerup', this.interactionGuardHandler, true);
+            document.addEventListener('mousedown', this.interactionGuardHandler, true);
+            document.addEventListener('mouseup', this.interactionGuardHandler, true);
+            document.addEventListener('touchstart', this.interactionGuardHandler, true);
+            document.addEventListener('touchend', this.interactionGuardHandler, true);
             document.addEventListener('click', this.interactionGuardHandler, true);
+            document.addEventListener('dblclick', this.interactionGuardHandler, true);
+            document.addEventListener('contextmenu', this.interactionGuardHandler, true);
             document.addEventListener('click', this.skipButtonClickHandler, true);
         }
 
@@ -3987,11 +3997,15 @@
             }
 
             return new Promise((resolve, reject) => {
+                this.pluginDashboardLastInterruptRequestId = '';
                 const sessionId = 'plugin-dashboard-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
                 const startedAt = Date.now();
+                const handoffPayload = Object.assign({}, payload || {}, {
+                    interruptCount: Math.max(0, Math.floor(Number.isFinite(this.interruptCount) ? this.interruptCount : 0))
+                });
                 const preloadTimeoutMs = 15000;
                 const executionTimeoutMs = clamp(
-                    estimateSpeechDurationMs(payload && payload.line ? payload.line : '') + 12000,
+                    estimateSpeechDurationMs(handoffPayload && handoffPayload.line ? handoffPayload.line : '') + 12000,
                     12000,
                     42000
                 );
@@ -4040,7 +4054,7 @@
                             windowRef.postMessage({
                                 type: PLUGIN_DASHBOARD_HANDOFF_EVENT,
                                 sessionId: sessionId,
-                                payload: payload || {}
+                                payload: handoffPayload
                             }, targetOrigin);
                         } catch (error) {
                             console.warn('[YuiGuide] 向插件面板发送 handoff 消息失败:', error);
@@ -5908,7 +5922,14 @@
             window.removeEventListener('neko:yui-guide:tutorial-end', this.tutorialEndHandler, true);
             window.removeEventListener('message', this.messageHandler, true);
             document.removeEventListener('pointerdown', this.interactionGuardHandler, true);
+            document.removeEventListener('pointerup', this.interactionGuardHandler, true);
+            document.removeEventListener('mousedown', this.interactionGuardHandler, true);
+            document.removeEventListener('mouseup', this.interactionGuardHandler, true);
+            document.removeEventListener('touchstart', this.interactionGuardHandler, true);
+            document.removeEventListener('touchend', this.interactionGuardHandler, true);
             document.removeEventListener('click', this.interactionGuardHandler, true);
+            document.removeEventListener('dblclick', this.interactionGuardHandler, true);
+            document.removeEventListener('contextmenu', this.interactionGuardHandler, true);
             document.removeEventListener('click', this.skipButtonClickHandler, true);
         }
 
@@ -6013,6 +6034,70 @@
             this.destroy();
         }
 
+        async handlePluginDashboardInterruptRequest(event, handoff, data) {
+            const requestId = typeof data.requestId === 'string' ? data.requestId : '';
+            if (!requestId) {
+                return;
+            }
+
+            const windowRef = handoff && handoff.windowRef ? handoff.windowRef : null;
+            const targetOrigin = event && typeof event.origin === 'string' && event.origin
+                ? event.origin
+                : '*';
+            const postAck = () => {
+                if (!windowRef || windowRef.closed) {
+                    return;
+                }
+
+                try {
+                    windowRef.postMessage({
+                        type: PLUGIN_DASHBOARD_INTERRUPT_ACK_EVENT,
+                        sessionId: typeof data.sessionId === 'string' ? data.sessionId : '',
+                        requestId: requestId
+                    }, targetOrigin);
+                } catch (error) {
+                    console.warn('[YuiGuide] 向插件面板发送 interrupt ack 失败:', error);
+                }
+            };
+
+            if (this.pluginDashboardLastInterruptRequestId === requestId) {
+                postAck();
+                return;
+            }
+            this.pluginDashboardLastInterruptRequestId = requestId;
+
+            const detail = data.detail && typeof data.detail === 'object' ? data.detail : {};
+            const text = typeof detail.text === 'string' ? detail.text : '';
+            const textKey = typeof detail.textKey === 'string' ? detail.textKey : '';
+            const voiceKey = typeof detail.voiceKey === 'string' ? detail.voiceKey : '';
+            const interruptCount = Number.isFinite(detail.interruptCount) ? Math.max(0, Math.floor(detail.interruptCount)) : null;
+
+            if (interruptCount !== null) {
+                this.interruptCount = Math.max(
+                    Math.max(0, Math.floor(Number.isFinite(this.interruptCount) ? this.interruptCount : 0)),
+                    interruptCount
+                );
+            }
+
+            if (text) {
+                this.appendGuideChatMessage(text, {
+                    textKey: textKey
+                });
+            }
+
+            if (text) {
+                try {
+                    await this.speakLineAndWait(text, {
+                        voiceKey: voiceKey
+                    });
+                } catch (error) {
+                    console.warn('[YuiGuide] 播放插件面板打断语音失败:', error);
+                }
+            }
+
+            postAck();
+        }
+
         onWindowMessage(event) {
             const data = event && event.data ? event.data : null;
             if (!data || typeof data !== 'object') {
@@ -6021,6 +6106,11 @@
 
             const handoff = this.pluginDashboardHandoff;
             if (!handoff || !handoff.windowRef || event.source !== handoff.windowRef) {
+                return;
+            }
+
+            if (data.type === PLUGIN_DASHBOARD_INTERRUPT_REQUEST_EVENT) {
+                void this.handlePluginDashboardInterruptRequest(event, handoff, data);
                 return;
             }
 
