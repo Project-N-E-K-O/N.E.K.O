@@ -559,8 +559,8 @@ export default function CommandPalette({
   onClose,
 }: CommandPaletteProps) {
   const [search, setSearch] = useState('');
-  const [contentTab, setContentTab] = useState<ContentTab>('quick');
-  const [groupMode, setGroupMode] = useState<GroupMode>('byPlugin');
+  const [viewMode, setViewMode] = useState<GroupMode>('byFunction');
+  const [filterTab, setFilterTab] = useState<ContentTab>('all');
   const [loadingMap, setLoadingMap] = useState<Record<string, boolean>>({});
   const [errorMap, setErrorMap] = useState<Record<string, string | null>>({});
   const [localItems, setLocalItems] = useState<CommandItem[]>(items);
@@ -572,20 +572,12 @@ export default function CommandPalette({
   useEffect(() => { setLocalItems(items); }, [items]);
   useEffect(() => { setLocalPrefs(preferences); }, [preferences]);
 
-  // Auto-select: if no quick actions, start on 'all'
-  useEffect(() => {
-    const hasQuick = localItems.some(a => a.quick_action);
-    if (!hasQuick && contentTab === 'quick') setContentTab('all');
-  }, [localItems, contentTab]);
-
   useEffect(() => { searchRef.current?.focus(); }, []);
-
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
-
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
       if (panelRef.current && !panelRef.current.contains(e.target as Node)) onClose();
@@ -634,7 +626,7 @@ export default function CommandPalette({
     onPreferencesChange(prefs);
   }, [onPreferencesChange]);
 
-  // ── Build filtered items per tab ──
+  // ── Build display items ──
   const { displayItems, hasResults } = useMemo(() => {
     const isSearching = search.trim().length > 0;
     const baseItems = slashMode
@@ -652,8 +644,15 @@ export default function CommandPalette({
       return a.label.localeCompare(b.label);
     };
 
+    // "按插件" mode: show all, no filter tabs
+    if (viewMode === 'byPlugin') {
+      const sorted = [...visible].sort(sortByPriority);
+      return { displayItems: sorted, hasResults: sorted.length > 0 };
+    }
+
+    // "按功能" mode: apply filter tab
     let filtered: CommandItem[];
-    if (contentTab === 'quick') {
+    if (filterTab === 'quick') {
       const pinnedIds = new Set(localPrefs.pinned);
       const pinned = localPrefs.pinned
         .map(id => visible.find(a => a.action_id === id))
@@ -662,34 +661,31 @@ export default function CommandPalette({
         .filter(a => a.quick_action && !pinnedIds.has(a.action_id))
         .sort(sortByPriority);
       filtered = [...pinned, ...quick];
-    } else if (contentTab === 'settings') {
+    } else if (filterTab === 'settings') {
       filtered = visible.filter(isSettingsItem).sort(sortByPriority);
     } else {
       filtered = [...visible].sort(sortByPriority);
     }
 
     return { displayItems: filtered, hasResults: filtered.length > 0 };
-  }, [localItems, localPrefs, search, slashMode, contentTab]);
+  }, [localItems, localPrefs, search, slashMode, viewMode, filterTab]);
 
   const isSearching = search.trim().length > 0;
 
   // ── Keyboard navigation ──
-  const flatItems = contentTab === 'all' && groupMode !== 'byPlugin'
-    ? displayItems
-    : displayItems; // grouped view still uses flat for keyboard
   const [highlightIdx, setHighlightIdx] = useState(-1);
-  useEffect(() => { setHighlightIdx(-1); }, [search, displayItems.length, contentTab, groupMode]);
+  useEffect(() => { setHighlightIdx(-1); }, [search, displayItems.length, viewMode, filterTab]);
 
   const handleSearchKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      setHighlightIdx(prev => (prev + 1) % Math.max(flatItems.length, 1));
+      setHighlightIdx(prev => (prev + 1) % Math.max(displayItems.length, 1));
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      setHighlightIdx(prev => prev <= 0 ? flatItems.length - 1 : prev - 1);
-    } else if (e.key === 'Enter' && highlightIdx >= 0 && highlightIdx < flatItems.length) {
+      setHighlightIdx(prev => prev <= 0 ? displayItems.length - 1 : prev - 1);
+    } else if (e.key === 'Enter' && highlightIdx >= 0 && highlightIdx < displayItems.length) {
       e.preventDefault();
-      const item = flatItems[highlightIdx];
+      const item = displayItems[highlightIdx];
       if (item.type === 'chat_inject') {
         handleInject(item.inject_text ?? '');
       } else if (item.type === 'navigation') {
@@ -698,7 +694,7 @@ export default function CommandPalette({
         handleExecute(item.action_id, null);
       }
     }
-  }, [flatItems, highlightIdx, handleInject, onNavigate, handleExecute]);
+  }, [displayItems, highlightIdx, handleInject, onNavigate, handleExecute]);
 
   const sharedRowProps = {
     prefs: localPrefs,
@@ -708,15 +704,15 @@ export default function CommandPalette({
 
   const hasQuickActions = localItems.some(a => a.quick_action);
   const hasSettingsItems = localItems.some(isSettingsItem);
-  const showGroupToggle = contentTab === 'all' && !isSearching && !slashMode;
+  const showFilterTabs = viewMode === 'byFunction' && !slashMode;
+  const showGrouped = viewMode === 'byPlugin' && !isSearching;
 
-  // Grouped rendering helper
   const renderGrouped = (items: CommandItem[]) => {
-    const groups = groupItems(items, groupMode);
+    const groups = groupItems(items, 'byPlugin');
     let flatIdx = 0;
     return Array.from(groups.entries()).map(([groupLabel, groupItems]) => (
       <div key={groupLabel} className="cp-section">
-        <SectionHeader icon="" label={groupLabel} count={groupItems.length} />
+        <SectionHeader icon="🧩" label={groupLabel} count={groupItems.length} />
         {groupItems.map((item) => {
           const idx = flatIdx++;
           return (
@@ -739,6 +735,15 @@ export default function CommandPalette({
     </div>
   );
 
+  const emptyText = (() => {
+    if (isSearching) return i18n('commandPalette.noResults', '没有匹配的操作');
+    if (viewMode === 'byFunction') {
+      if (filterTab === 'quick') return i18n('commandPalette.noQuickActions', '暂无快捷操作');
+      if (filterTab === 'settings') return i18n('commandPalette.noSettings', '暂无配置项');
+    }
+    return i18n('commandPalette.empty', '暂无可用操作');
+  })();
+
   return (
     <div className="cp-panel" ref={panelRef} role="dialog" aria-label={i18n('commandPalette.title', '命令面板')}>
       {/* ── Search ── */}
@@ -757,33 +762,27 @@ export default function CommandPalette({
           aria-label={i18n('commandPalette.searchAriaLabel', '搜索操作')}
         />
         {search && (
-          <button
-            type="button"
-            className="cp-search-clear"
-            aria-label={i18n('commandPalette.clearSearch', '清除搜索')}
-            onClick={() => { setSearch(''); searchRef.current?.focus(); }}
-          >
-            ✕
-          </button>
+          <button type="button" className="cp-search-clear" aria-label={i18n('commandPalette.clearSearch', '清除搜索')}
+            onClick={() => { setSearch(''); searchRef.current?.focus(); }}>✕</button>
         )}
       </div>
 
-      {/* ── Top tabs (content mode) ── */}
-      {!slashMode && (
+      {/* ── Filter tabs (only in "按功能" mode) ── */}
+      {showFilterTabs && (
         <div className="cp-tab-bar cp-tab-bar-top">
+          <button type="button" className={`cp-tab ${filterTab === 'all' ? 'cp-tab-active' : ''}`} onClick={() => setFilterTab('all')}>
+            📋 {i18n('commandPalette.allCommands', '全部')}
+          </button>
           {hasQuickActions && (
-            <button type="button" className={`cp-tab ${contentTab === 'quick' ? 'cp-tab-active' : ''}`} onClick={() => setContentTab('quick')}>
+            <button type="button" className={`cp-tab ${filterTab === 'quick' ? 'cp-tab-active' : ''}`} onClick={() => setFilterTab('quick')}>
               ⚡ {i18n('commandPalette.quickActions', '快捷操作')}
             </button>
           )}
           {hasSettingsItems && (
-            <button type="button" className={`cp-tab ${contentTab === 'settings' ? 'cp-tab-active' : ''}`} onClick={() => setContentTab('settings')}>
+            <button type="button" className={`cp-tab ${filterTab === 'settings' ? 'cp-tab-active' : ''}`} onClick={() => setFilterTab('settings')}>
               ⚙️ {i18n('commandPalette.settings', '配置项')}
             </button>
           )}
-          <button type="button" className={`cp-tab ${contentTab === 'all' ? 'cp-tab-active' : ''}`} onClick={() => setContentTab('all')}>
-            📋 {i18n('commandPalette.allCommands', '全部')}
-          </button>
         </div>
       )}
 
@@ -794,35 +793,27 @@ export default function CommandPalette({
         ) : !hasResults ? (
           <div className="cp-empty">
             <div className="cp-empty-icon" aria-hidden="true">{isSearching ? '🔍' : '📋'}</div>
-            <div className="cp-empty-text">
-              {isSearching
-                ? i18n('commandPalette.noResults', '没有匹配的操作')
-                : contentTab === 'quick'
-                  ? i18n('commandPalette.noQuickActions', '暂无快捷操作')
-                  : contentTab === 'settings'
-                    ? i18n('commandPalette.noSettings', '暂无配置项')
-                    : i18n('commandPalette.empty', '暂无可用操作')}
-            </div>
+            <div className="cp-empty-text">{emptyText}</div>
             {isSearching && (
               <button type="button" className="cp-empty-clear" onClick={() => { setSearch(''); searchRef.current?.focus(); }}>
                 {i18n('commandPalette.clearSearch', '清除搜索')}
               </button>
             )}
           </div>
-        ) : showGroupToggle ? (
+        ) : showGrouped ? (
           renderGrouped(displayItems)
         ) : (
           renderFlat(displayItems)
         )}
       </div>
 
-      {/* ── Bottom toggle (group mode, only in 'all' tab) ── */}
-      {showGroupToggle && (
+      {/* ── Bottom: view mode toggle (always visible) ── */}
+      {!slashMode && (
         <div className="cp-tab-bar cp-tab-bar-bottom">
-          <button type="button" className={`cp-tab ${groupMode === 'byPlugin' ? 'cp-tab-active' : ''}`} onClick={() => setGroupMode('byPlugin')}>
+          <button type="button" className={`cp-tab ${viewMode === 'byPlugin' ? 'cp-tab-active' : ''}`} onClick={() => setViewMode('byPlugin')}>
             🧩 {i18n('commandPalette.byPlugin', '按插件')}
           </button>
-          <button type="button" className={`cp-tab ${groupMode === 'byFunction' ? 'cp-tab-active' : ''}`} onClick={() => setGroupMode('byFunction')}>
+          <button type="button" className={`cp-tab ${viewMode === 'byFunction' ? 'cp-tab-active' : ''}`} onClick={() => setViewMode('byFunction')}>
             🏷️ {i18n('commandPalette.byFunction', '按功能')}
           </button>
         </div>
