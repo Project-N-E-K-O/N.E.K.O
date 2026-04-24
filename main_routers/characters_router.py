@@ -7,7 +7,7 @@ Handles character (catgirl) management endpoints including:
 - Voice settings
 - Microphone settings
 """
-
+import re
 import json
 import io
 import os
@@ -664,6 +664,9 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
         # 查找指定角色的Live2D模型
         live2d_model_name = None
         model_info = None
+        saved_model_path = ""
+        saved_asset_source = ""
+        saved_item_id = ""
         
         # 首先尝试通过item_id查找模型
         if item_id:
@@ -780,16 +783,16 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                     matching_model = _find_live2d_model_catalog_entry(
                         all_models,
                         model_name=live2d_model_name,
-                        model_path=saved_model_path if 'saved_model_path' in locals() else '',
-                        asset_source=saved_asset_source if 'saved_asset_source' in locals() else '',
-                        item_id=saved_item_id if 'saved_item_id' in locals() else '',
+                        model_path=saved_model_path,
+                        asset_source=saved_asset_source,
+                        item_id=saved_item_id,
                     )
-                elif not item_id and not (saved_item_id if 'saved_item_id' in locals() else ''):
+                elif not item_id and not saved_item_id:
                     fallback_model = _find_live2d_model_catalog_entry(
                         all_models,
                         model_name=live2d_model_name,
-                        model_path=saved_model_path if 'saved_model_path' in locals() else '',
-                        asset_source=saved_asset_source if 'saved_asset_source' in locals() else '',
+                        model_path=saved_model_path,
+                        asset_source=saved_asset_source,
                         item_id='',
                     )
                     if fallback_model is not None:
@@ -1087,8 +1090,37 @@ async def update_catgirl_l2d(name: str, request: Request):
                 live2d_model_path,
             )
             set_reserved(characters['猫娘'][name], 'avatar', 'model_type', 'live2d')
+
+            if 'live2d_idle_animation' in data:
+                live2d_idle_animation = data.get('live2d_idle_animation')
+                logger.info(f"[Live2D Save] 收到 live2d_idle_animation 请求: {live2d_idle_animation}")
+
+                if live2d_idle_animation is None:
+                    set_reserved(characters['猫娘'][name], 'avatar', 'live2d', 'idle_animation', None)
+                    logger.info(f"[Live2D Save] 已清空 idle_animation")
+                elif isinstance(live2d_idle_animation, str):
+                    live2d_idle_str = live2d_idle_animation.strip()
+                    if not live2d_idle_str:
+                        set_reserved(characters['猫娘'][name], 'avatar', 'live2d', 'idle_animation', None)
+                        logger.info(f"[Live2D Save] 已清空 idle_animation")
+                    else:
+                        if '://' in live2d_idle_str or live2d_idle_str.startswith('data:'):
+                            return JSONResponse(content={'success': False, 'error': 'Live2D待机动作路径不能包含URL方案'}, status_code=400)
+                        if '..' in live2d_idle_str:
+                            return JSONResponse(content={'success': False, 'error': 'Live2D待机动作路径不能包含路径遍历（..）'}, status_code=400)
+                        if live2d_idle_str.startswith('/') or live2d_idle_str.startswith('\\') or re.match(r'^[A-Za-z]:', live2d_idle_str):
+                            return JSONResponse(content={'success': False, 'error': 'Live2D待机动作路径必须是相对路径，不能是绝对路径'}, status_code=400)
+                        if not live2d_idle_str.lower().endswith('.motion3.json'):
+                            return JSONResponse(content={'success': False, 'error': 'Live2D待机动作必须是 .motion3.json 文件'}, status_code=400)
+                        set_reserved(characters['猫娘'][name], 'avatar', 'live2d', 'idle_animation', live2d_idle_str)
+                        logger.info(f"[Live2D Save] 已保存 idle_animation: {live2d_idle_str}")
+                else:
+                    return JSONResponse(content={'success': False, 'error': 'live2d_idle_animation 必须是字符串或 null'}, status_code=400)
+            else:
+                logger.info(f"[Live2D Save] 请求中未包含 live2d_idle_animation 字段, data keys: {list(data.keys())}")
+
             if resolved_item_id:
-                set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', resolved_item_id)
+                set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', str(resolved_item_id))
                 set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', 'steam_workshop')
                 logger.debug(f"已保存角色 {name} 的模型 {live2d_model} 和item_id {resolved_item_id}")
             else:
@@ -3801,15 +3833,23 @@ async def export_catgirl_card(name: str):
             draw.rectangle([0, 0, width, header_height], fill='#40C5F1')
 
             # 在顶部左侧添加角色名称
-            try:
-                # 尝试使用系统默认字体，支持中文
-                font_size = 36
-                font = ImageFont.truetype("msyh.ttc", font_size)  # 微软雅黑
-            except (OSError, IOError):
+            font_size = 36
+            font = None
+            font_candidates = [
+                "msyhbd.ttc", "Microsoft YaHei Bold.ttf", "simhei.ttf",
+                "msyh.ttc", "Microsoft YaHei.ttf", "simsun.ttc",
+                "NotoSansCJK-Regular.ttc", "wqy-microhei.ttc"
+            ]
+            for font_name in font_candidates:
                 try:
-                    font = ImageFont.truetype("simhei.ttf", font_size)  # 黑体
+                    font = ImageFont.truetype(font_name, font_size)
+                    break
                 except (OSError, IOError):
-                    font = ImageFont.load_default()
+                    continue
+
+            if font is None:
+                font = ImageFont.load_default()
+                logger.warning("[导出角色卡] 未找到支持中文的系统字体，可能会显示为方框")
 
             # 计算文字位置（左侧居中偏上）
             text = name
@@ -4504,6 +4544,8 @@ async def export_catgirl_with_portrait(
                 ("simsun.ttc", font_size),
                 ("msyh.ttc", font_size),
                 ("Microsoft YaHei.ttf", font_size),
+                ("NotoSansCJK-Regular.ttc", font_size),
+                ("wqy-microhei.ttc", font_size),
             ]
             for font_name, size in font_candidates:
                 try:

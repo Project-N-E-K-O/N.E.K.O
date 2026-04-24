@@ -242,46 +242,53 @@ async def test_reflection_aconfirm_serializes(tmp_path):
 
 @pytest.mark.asyncio
 async def test_reflection_lock_order_reflection_then_persona(tmp_path):
-    """aauto_promote_stale (holds reflection lock) → aadd_fact (acquires persona lock).
-    Verify this ordering does NOT deadlock: under concurrent /reflect and arecord_mentions,
-    all complete within a bounded time."""
-    from datetime import datetime, timedelta
-    from memory.reflection import AUTO_PROMOTE_DAYS
+    """Score-driven aauto_promote_stale runs concurrently with arecord_mentions.
+
+    Post memory-evidence-rfc: `aauto_promote_stale` no longer time-promotes
+    to persona (PR-3 owns the score→persona path via _apromote_with_merge).
+    It only does pending→confirmed based on evidence_score. So this test no
+    longer exercises the reflection→persona lock chain; it now exercises
+    that the per-character reflection lock coexists with per-character
+    persona lock under mixed load.
+    """
+    from datetime import datetime
 
     fs, pm, re, _ = _install_reflection(str(tmp_path))
 
-    # Seed a confirmed reflection ripe for promotion
-    long_ago = (datetime.now() - timedelta(days=AUTO_PROMOTE_DAYS + 1)).isoformat()
+    now_iso = datetime.now().isoformat()
+    # Seed a pending reflection with enough rein to cross CONFIRMED_THRESHOLD
     reflections = [{
         "id": "ref_promote1", "text": "主人其实不讨厌咖啡",
-        "entity": "master", "status": "confirmed",
-        "confirmed_at": long_ago, "source_fact_ids": ["f1"],
-        "created_at": long_ago, "feedback": None,
-        "next_eligible_at": long_ago,
+        "entity": "master", "status": "pending",
+        "source_fact_ids": ["f1"], "created_at": now_iso,
+        "feedback": None, "next_eligible_at": now_iso,
+        "reinforcement": 1.5, "disputation": 0.0,
+        "rein_last_signal_at": now_iso, "disp_last_signal_at": None,
     }]
     await re.asave_reflections("小天", reflections)
     await pm.aensure_persona("小天")
 
-    # Concurrent:
-    # - aauto_promote_stale (grabs reflection lock → persona lock chain)
-    # - arecord_mentions (grabs persona lock)
-    # Must both complete; ordering is reflection→persona never reversed.
     async def timed_run():
         return await asyncio.wait_for(
             asyncio.gather(
                 re.aauto_promote_stale("小天"),
                 pm.arecord_mentions("小天", "主人"),
-                re.aauto_promote_stale("小天"),  # second call hits dedup
+                re.aauto_promote_stale("小天"),  # second call idempotent
                 pm.arecord_mentions("小天", "主人"),
             ),
-            timeout=5.0,  # generous — real work is <100ms
+            timeout=5.0,
         )
 
-    # If locks deadlock, this raises TimeoutError
     results = await timed_run()
-    # Some of the promotions should have landed (not asserting exact count —
-    # race between the two aauto_promote_stale calls means one may dedup)
-    assert any(r >= 1 for r in results if isinstance(r, int))
+    # At least the first aauto_promote_stale call transitioned the reflection
+    assert any(isinstance(r, int) and r >= 1 for r in results)
+    # Also assert the transition actually persisted — catches the case
+    # where return-count is right but the save path silently drops the
+    # status change (CodeRabbit PR #929 nit).
+    loaded = await re.aload_reflections("小天")
+    promoted = next((r for r in loaded if r["id"] == "ref_promote1"), None)
+    assert promoted is not None
+    assert promoted["status"] == "confirmed"
 
 
 @pytest.mark.asyncio

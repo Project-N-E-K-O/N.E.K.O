@@ -33,6 +33,13 @@ critical_packages = [
     'browser_use',       # browser-use agent 需要 .md 模板文件
     'pyrnnoise',         # 音频降噪，含 rnnoise.dll native 库
     'bilibili_api',      # B站弹幕/视频，含 data/*.json 资源文件
+    # memory-evidence-rfc §3.6.7: tiktoken ships per-encoding data files
+    # under tiktoken/encodings/*.tiktoken (~1.5MB each). collect_all pulls
+    # them in alongside the Rust extension; without this, utils.tokenize
+    # falls back to the heuristic counter and the §8 S13 self-check warns
+    # at first call.
+    'tiktoken',
+    'tiktoken_ext',
 ]
 
 for pkg in critical_packages:
