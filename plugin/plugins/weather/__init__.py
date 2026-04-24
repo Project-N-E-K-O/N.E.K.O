@@ -15,9 +15,10 @@ from __future__ import annotations
 import json
 import os
 import time
+from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -37,7 +38,7 @@ from plugin.sdk.plugin import (
 _RAIN_CODES = frozenset({51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82, 95, 96, 99})
 _SNOW_CODES = frozenset({71, 73, 75, 77, 85, 86})
 
-_GEOIP_URL = "http://ip-api.com/json/?fields=city,lat,lon,countryCode,regionName,timezone&lang=zh-CN"
+_GEOIP_BASE = "http://ip-api.com/json/"
 _GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 _FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 _UA = "NEKO-Weather-Plugin/0.1"
@@ -45,6 +46,43 @@ _UA = "NEKO-Weather-Plugin/0.1"
 _LOCALES_DIR = Path(__file__).parent / "locales"
 _DEFAULT_LOCALE = "zh-CN"
 _SUPPORTED_LOCALES = ("zh-CN", "zh-TW", "en")
+_CACHE_MAX_ENTRIES = 32
+
+# locale → ip-api lang 参数
+_LOCALE_TO_GEOIP_LANG: Dict[str, str] = {
+    "zh-CN": "zh-CN", "zh-TW": "zh-CN", "en": "en",
+}
+# locale → Open-Meteo geocoding language 参数
+_LOCALE_TO_GEOCODE_LANG: Dict[str, str] = {
+    "zh-CN": "zh", "zh-TW": "zh", "en": "en",
+}
+
+
+# ── LRU 缓存 ────────────────────────────────────────────────────
+
+class _LRUCache:
+    """简易 LRU 缓存，带 TTL 和容量上限。"""
+
+    def __init__(self, max_size: int = _CACHE_MAX_ENTRIES):
+        self._store: OrderedDict[str, Tuple[Any, float]] = OrderedDict()
+        self._max_size = max(1, max_size)
+
+    def get(self, key: str, ttl: float) -> Any:
+        item = self._store.get(key)
+        if item is None:
+            return None
+        data, ts = item
+        if (time.time() - ts) >= ttl:
+            self._store.pop(key, None)
+            return None
+        self._store.move_to_end(key)
+        return data
+
+    def put(self, key: str, data: Any) -> None:
+        self._store[key] = (data, time.time())
+        self._store.move_to_end(key)
+        while len(self._store) > self._max_size:
+            self._store.popitem(last=False)
 
 
 # ── i18n ─────────────────────────────────────────────────────────
@@ -75,19 +113,15 @@ class I18n:
             self._locale = normalized
 
     def _normalize(self, code: str) -> str:
-        """将各种语言代码归一到支持的 locale key。"""
         if not code:
             return self._default
         c = code.strip().replace("_", "-")
-        # 精确匹配
         if c in self._bundles:
             return c
-        # 大小写不敏感
         lower = c.lower()
         for key in self._bundles:
             if key.lower() == lower:
                 return key
-        # 前缀匹配: "zh" → "zh-CN", "en-US" → "en"
         prefix = lower.split("-")[0]
         for key in self._bundles:
             if key.lower().startswith(prefix):
@@ -95,10 +129,6 @@ class I18n:
         return self._default
 
     def t(self, path: str, locale: Optional[str] = None, **kwargs: Any) -> str:
-        """按 dot-path 取翻译文本，支持 {key} 模板插值。
-
-        查找顺序：指定 locale → 当前 locale → default locale → 返回 path 本身。
-        """
         for code in self._resolve_chain(locale):
             bundle = self._bundles.get(code)
             if bundle is None:
@@ -127,9 +157,8 @@ class I18n:
 
     @staticmethod
     def _get_nested(d: Dict[str, Any], path: str) -> Any:
-        parts = path.split(".")
         cur: Any = d
-        for p in parts:
+        for p in path.split("."):
             if isinstance(cur, dict):
                 cur = cur.get(p)
             else:
@@ -140,7 +169,6 @@ class I18n:
 # ── 系统时区检测 ─────────────────────────────────────────────────
 
 def _get_system_timezone() -> Optional[str]:
-    """获取系统本地时区名称（IANA 格式）。"""
     try:
         local_tz = datetime.now().astimezone().tzinfo
         if local_tz is None:
@@ -186,7 +214,6 @@ def _tz_offset_hours(tz_name: str) -> Optional[float]:
 
 
 def _detect_vpn_conflict(ip_timezone: str, system_tz: Optional[str]) -> bool:
-    """IP 时区与系统时区偏差 ≥ 2h 视为 VPN。"""
     if not ip_timezone or not system_tz:
         return False
     ip_off = _tz_offset_hours(ip_timezone)
@@ -196,18 +223,19 @@ def _detect_vpn_conflict(ip_timezone: str, system_tz: Optional[str]) -> bool:
     return abs(ip_off - sys_off) >= 2.0
 
 
-# ── 网络工具 ─────────────────────────────────────────────────────
+# ── 网络工具（API 语言参数跟随 locale）───────────────────────────
 
-async def _geoip_locate(timeout: float = 4.0) -> Optional[Dict[str, Any]]:
+async def _geoip_locate(locale: str = "zh-CN", timeout: float = 4.0) -> Optional[Dict[str, Any]]:
+    lang = _LOCALE_TO_GEOIP_LANG.get(locale, "en")
+    url = f"{_GEOIP_BASE}?fields=city,lat,lon,countryCode,regionName,timezone&lang={lang}"
     try:
         async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as c:
-            r = await c.get(_GEOIP_URL, headers={"User-Agent": _UA})
+            r = await c.get(url, headers={"User-Agent": _UA})
             d = r.json()
             lat, lon = d.get("lat"), d.get("lon")
             if lat is not None and lon is not None:
-                city = d.get("city") or d.get("regionName") or ""
                 return {
-                    "city": city,
+                    "city": d.get("city") or d.get("regionName") or "",
                     "lat": float(lat),
                     "lon": float(lon),
                     "country": d.get("countryCode", ""),
@@ -218,10 +246,11 @@ async def _geoip_locate(timeout: float = 4.0) -> Optional[Dict[str, Any]]:
     return None
 
 
-async def _geocode_city(city: str, timeout: float = 5.0) -> Optional[Dict[str, Any]]:
+async def _geocode_city(city: str, locale: str = "zh-CN", timeout: float = 5.0) -> Optional[Dict[str, Any]]:
+    lang = _LOCALE_TO_GEOCODE_LANG.get(locale, "en")
     try:
         async with httpx.AsyncClient(timeout=timeout) as c:
-            r = await c.get(_GEOCODE_URL, params={"name": city, "count": 1, "language": "zh"})
+            r = await c.get(_GEOCODE_URL, params={"name": city, "count": 1, "language": lang})
             results = r.json().get("results")
             if results:
                 hit = results[0]
@@ -257,24 +286,27 @@ async def _fetch_forecast(
     return None
 
 
-# ── 出行建议生成 ─────────────────────────────────────────────────
+# ── 出行建议生成（使用体感温度）───────────────────────────────────
 
 def _build_travel_advice(
     current: Dict[str, Any], daily: Dict[str, Any], t: "I18n",
 ) -> Dict[str, Any]:
     temp = current.get("temperature_2m")
+    feels = current.get("apparent_temperature")
+    # 穿衣建议基于体感温度，更贴合实际感受
+    ref_temp = feels if feels is not None else temp
     code = current.get("weather_code", -1)
     uv = current.get("uv_index", 0)
     wind = current.get("wind_speed_10m", 0)
 
     tips: List[str] = []
 
-    if temp is not None:
-        if temp < 5:
+    if ref_temp is not None:
+        if ref_temp < 5:
             tips.append(t.t("advice.cold"))
-        elif temp < 15:
+        elif ref_temp < 15:
             tips.append(t.t("advice.cool"))
-        elif temp < 25:
+        elif ref_temp < 25:
             tips.append(t.t("advice.mild"))
         else:
             tips.append(t.t("advice.hot"))
@@ -301,10 +333,10 @@ def _build_travel_advice(
     if rain_days:
         tips.append(t.t("advice.rain_forecast", dates=", ".join(rain_days)))
 
-    eff_temp = temp if temp is not None else 20
-    if eff_temp < 10:
+    eff = ref_temp if ref_temp is not None else 20
+    if eff < 10:
         clothing = t.t("clothing.heavy")
-    elif eff_temp < 22:
+    elif eff < 22:
         clothing = t.t("clothing.light")
     else:
         clothing = t.t("clothing.cool")
@@ -326,7 +358,7 @@ class WeatherPlugin(NekoPluginBase):
     def __init__(self, ctx: Any):
         super().__init__(ctx)
         self.logger = ctx.logger
-        self._cache: Dict[str, Any] = {}
+        self._cache = _LRUCache(_CACHE_MAX_ENTRIES)
         self._cfg: Dict[str, Any] = {}
         self._i18n = I18n(_LOCALES_DIR)
 
@@ -335,10 +367,12 @@ class WeatherPlugin(NekoPluginBase):
     @lifecycle(id="startup")
     async def startup(self, **_):
         await self._reload_config()
-        # 启动时从主干查询全局语言并缓存，供后续 entry 调用使用
-        await self.fetch_user_language(timeout=3.0)
+        lang = await self.fetch_user_language(timeout=3.0)
         self._resolve_locale()
-        self.logger.info("WeatherPlugin started, locale={}", self._i18n.locale)
+        self.logger.info(
+            "WeatherPlugin started, locale={}, host_lang={}",
+            self._i18n.locale, lang or "(none)",
+        )
         return Ok({"status": "ready"})
 
     @lifecycle(id="shutdown")
@@ -355,15 +389,10 @@ class WeatherPlugin(NekoPluginBase):
         cfg = cfg if isinstance(cfg, dict) else {}
         self._cfg = cfg.get("weather", {}) if isinstance(cfg.get("weather"), dict) else {}
 
-    def _resolve_locale(self) -> None:
-        """每次 entry 调用时解析 locale。
+    # ── locale 解析 ──
 
-        优先级链：
-        1. force_locale=true + locale 配置 → 强制使用，忽略一切
-        2. self.get_user_language()（主干下发的用户语言）
-        3. locale 配置（toml 默认值）
-        4. 系统时区自动检测
-        """
+    def _resolve_locale(self) -> None:
+        """优先级：force_locale > host lang > toml locale > 系统时区"""
         force = bool(self._cfg.get("force_locale", False))
         configured = str(self._cfg.get("locale", "")).strip()
 
@@ -371,22 +400,18 @@ class WeatherPlugin(NekoPluginBase):
             self._i18n.set_locale(configured)
             return
 
-        # 主干下发的用户语言（每次 entry 触发时由 host 自动更新）
         host_lang = self.get_user_language()
         if host_lang:
             self._i18n.set_locale(host_lang)
             return
 
-        # toml 配置的默认 locale
         if configured:
             self._i18n.set_locale(configured)
             return
 
-        # 最终 fallback：系统时区
         self._detect_locale_from_tz()
 
     def _detect_locale_from_tz(self) -> None:
-        """根据系统时区自动推断 locale。"""
         tz = _get_system_timezone() or ""
         if tz.startswith("Asia/Taipei") or tz.startswith("Asia/Hong_Kong"):
             self._i18n.set_locale("zh-TW")
@@ -395,18 +420,22 @@ class WeatherPlugin(NekoPluginBase):
         else:
             self._i18n.set_locale("en")
 
-    # ── 位置解析 ──
+    @property
+    def _locale(self) -> str:
+        return self._i18n.locale
+
+    # ── 位置解析（API 语言跟随 locale）──
 
     async def _resolve_location(self, city: Optional[str] = None) -> Optional[Dict[str, Any]]:
         target = (city or "").strip()
         if target:
-            return await _geocode_city(target)
+            return await _geocode_city(target, locale=self._locale)
 
         default = self._cfg.get("default_city", "")
         if default:
-            return await _geocode_city(default)
+            return await _geocode_city(default, locale=self._locale)
 
-        ip_loc = await _geoip_locate()
+        ip_loc = await _geoip_locate(locale=self._locale)
         if ip_loc is None:
             return await self._timezone_fallback()
 
@@ -414,9 +443,7 @@ class WeatherPlugin(NekoPluginBase):
         system_tz = _get_system_timezone()
 
         if _detect_vpn_conflict(ip_tz, system_tz):
-            self.logger.info(
-                "VPN detected: IP tz={} vs system tz={}", ip_tz, system_tz,
-            )
+            self.logger.info("VPN detected: IP tz={} vs system tz={}", ip_tz, system_tz)
             fallback = await self._timezone_fallback(system_tz)
             if fallback:
                 fallback["_vpn_detected"] = True
@@ -431,37 +458,43 @@ class WeatherPlugin(NekoPluginBase):
         if not tz:
             return None
         fallback_city = self._i18n.t(f"tz_city.{tz}")
-        # t() 返回 path 本身说明没命中，尝试从时区名提取
         if fallback_city == f"tz_city.{tz}":
             parts = tz.split("/")
             fallback_city = parts[-1].replace("_", " ") if len(parts) >= 2 else ""
         if fallback_city:
-            return await _geocode_city(fallback_city)
+            return await _geocode_city(fallback_city, locale=self._locale)
         return None
 
-    # ── 天气数据（带缓存）──
+    # ── 天气数据（LRU 缓存）──
 
     async def _get_weather_data(self, loc: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         cache_key = f"{loc['lat']:.2f},{loc['lon']:.2f}"
         ttl = int(self._cfg.get("cache_ttl_seconds", 1800))
-        cached = self._cache.get(cache_key)
-        if cached and (time.time() - cached["ts"]) < ttl:
-            return cached["data"]
+        cached = self._cache.get(cache_key, ttl)
+        if cached is not None:
+            return cached
 
         days = int(self._cfg.get("forecast_days", 3))
         tz = str(self._cfg.get("timezone", "Asia/Shanghai"))
         data = await _fetch_forecast(loc["lat"], loc["lon"], days=days, tz=tz)
         if data:
-            self._cache[cache_key] = {"data": data, "ts": time.time()}
+            self._cache.put(cache_key, data)
         return data
-
-    # ── 辅助：WMO code → 翻译文本 ──
 
     def _wmo_text(self, code: int) -> str:
         text = self._i18n.t(f"wmo.{code}")
         if text == f"wmo.{code}":
             return self._i18n.t("error.unknown_weather", code=code)
         return text
+
+    # ── 辅助：安全取 daily 数组元素 ──
+
+    @staticmethod
+    def _daily_val(daily: Dict[str, Any], field: str, idx: int) -> Any:
+        arr = daily.get(field)
+        if isinstance(arr, list) and idx < len(arr):
+            return arr[idx]
+        return None
 
     # ── Entry: 获取天气 ──
 
@@ -506,17 +539,16 @@ class WeatherPlugin(NekoPluginBase):
         }
 
         forecast: List[Dict[str, Any]] = []
-        dates = daily_raw.get("time", [])
-        for i, date in enumerate(dates):
-            d_code = (daily_raw.get("weather_code") or [])[i] if i < len(daily_raw.get("weather_code", [])) else -1
+        for i, date in enumerate(daily_raw.get("time", [])):
+            d_code = self._daily_val(daily_raw, "weather_code", i)
             forecast.append({
                 "date": date,
-                "weather": self._wmo_text(d_code),
-                "temp_max": (daily_raw.get("temperature_2m_max") or [])[i] if i < len(daily_raw.get("temperature_2m_max", [])) else None,
-                "temp_min": (daily_raw.get("temperature_2m_min") or [])[i] if i < len(daily_raw.get("temperature_2m_min", [])) else None,
-                "precipitation": (daily_raw.get("precipitation_sum") or [])[i] if i < len(daily_raw.get("precipitation_sum", [])) else None,
-                "uv_max": (daily_raw.get("uv_index_max") or [])[i] if i < len(daily_raw.get("uv_index_max", [])) else None,
-                "wind_max": (daily_raw.get("wind_speed_10m_max") or [])[i] if i < len(daily_raw.get("wind_speed_10m_max", [])) else None,
+                "weather": self._wmo_text(d_code) if d_code is not None else "",
+                "temp_max": self._daily_val(daily_raw, "temperature_2m_max", i),
+                "temp_min": self._daily_val(daily_raw, "temperature_2m_min", i),
+                "precipitation": self._daily_val(daily_raw, "precipitation_sum", i),
+                "uv_max": self._daily_val(daily_raw, "uv_index_max", i),
+                "wind_max": self._daily_val(daily_raw, "wind_speed_10m_max", i),
             })
 
         summary = self._i18n.t(

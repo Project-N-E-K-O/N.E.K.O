@@ -30,8 +30,6 @@ default_city = ""
 forecast_days = 3
 # 缓存有效期（秒）
 cache_ttl_seconds = 1800
-# 定时推送间隔（秒），0 = 关闭
-alert_interval_seconds = 0
 # 用户时区
 timezone = "Asia/Shanghai"
 # 语言（留空则从主干获取用户语言，再 fallback 到系统时区自动检测）
