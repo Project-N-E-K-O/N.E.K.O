@@ -34,6 +34,8 @@ cache_ttl_seconds = 1800
 alert_interval_seconds = 0
 # 用户时区
 timezone = "Asia/Shanghai"
-# 语言（留空则根据系统时区自动检测）
+# 语言（留空则从主干获取用户语言，再 fallback 到系统时区自动检测）
 # 支持: zh-CN, zh-TW, en
-language = ""
+locale = ""
+# 强制使用上面的 locale，忽略主干下发的语言（默认关闭）
+force_locale = false

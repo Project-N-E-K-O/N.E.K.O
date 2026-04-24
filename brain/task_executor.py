@@ -1642,6 +1642,7 @@ class DirectTaskExecutor:
         lanlan_name: Optional[str] = None,
         conversation_id: Optional[str] = None,
         on_progress: Optional[Callable[..., Awaitable[None]]] = None,
+        lang: Optional[str] = None,
     ) -> TaskResult:
         """
         Execute a user plugin via HTTP /runs endpoint.
@@ -1761,7 +1762,7 @@ class DirectTaskExecutor:
                             _attachment_bytes_estimate += len(_url)
 
             try:
-                # 构建 _ctx 对象，包含 lanlan_name 和 conversation_id
+                # 构建 _ctx 对象，包含 lanlan_name、conversation_id 和 lang
                 ctx_obj = safe_args.get("_ctx")
                 if not isinstance(ctx_obj, dict):
                     ctx_obj = {}
@@ -1770,6 +1771,9 @@ class DirectTaskExecutor:
                 # 添加 conversation_id，用于关联触发事件和对话上下文
                 if conversation_id:
                     ctx_obj["conversation_id"] = conversation_id
+                # 注入用户语言，供插件侧 i18n 使用
+                if lang and "lang" not in ctx_obj:
+                    ctx_obj["lang"] = lang
                 entry_timeout = _resolve_plugin_entry_timeout(plugin_meta, plugin_entry_id)
                 effective_entry_timeout = _resolve_ctx_entry_timeout(ctx_obj, entry_timeout)
                 ctx_obj["entry_timeout"] = effective_entry_timeout
@@ -2084,6 +2088,7 @@ class DirectTaskExecutor:
         lanlan_name: Optional[str] = None,
         conversation_id: Optional[str] = None,
         on_progress: Optional[Callable[..., Awaitable[None]]] = None,
+        lang: Optional[str] = None,
     ) -> TaskResult:
         """
         Directly execute a plugin entry by calling /runs with explicit plugin_id and optional entry_id.
@@ -2099,6 +2104,7 @@ class DirectTaskExecutor:
             lanlan_name=lanlan_name,
             conversation_id=conversation_id,
             on_progress=on_progress,
+            lang=lang,
         )
     
     async def refresh_capabilities(self) -> Dict[str, Dict[str, Any]]:

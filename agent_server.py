@@ -1501,11 +1501,18 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
         enriched_messages = _task_tracker.inject(messages, lanlan_name)
 
         # 一步完成：分析 + 执行
+        # 获取用户语言，传递给插件侧
+        try:
+            _user_lang = _rp_lang(None)
+        except Exception:
+            _user_lang = "zh"
+
         result = await Modules.task_executor.analyze_and_execute(
             messages=enriched_messages,
             lanlan_name=lanlan_name,
             agent_flags=Modules.agent_flags,
-            conversation_id=conversation_id
+            conversation_id=conversation_id,
+            lang=_user_lang,
         )
 
         if result is None:
@@ -1711,6 +1718,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             lanlan_name=lanlan_name,
                             conversation_id=conversation_id,
                             on_progress=_on_plugin_progress,
+                            lang=_user_lang,
                         )
                         up_terminal = "completed" if up_result.success else "failed"
                         run_data = up_result.result.get("run_data") if isinstance(up_result.result, dict) else None
