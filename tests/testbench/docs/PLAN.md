@@ -118,9 +118,44 @@ isProject: false
 - 踩过但未形成全仓 lint 规则的: `Node.append(null)` 静默插入、`??` 对 0/空串不 fallback、Grid template-rows 与子节点数不一致 (详见 `AGENT_NOTES.md §3A` + `§4`);
 - P17 新增的 `_coerce_bool` / `_coerce_float` 值得抽成通用 helper 供将来 export/persistence 阶段复用 (目前局限在 `judge_router`).
 
-**下一个 Agent 的第一件事 (2026-04-24 更新 · P25 + P26 全部推远端后, 进入 P27+ 待用户定方向态)**:
+### ⚑ 阶段分水岭 · v1.1-maintenance-window (2026-04-24 用户 sign-off)
 
-1. **当前项目态一句话**: 项目主线 **26/26 阶段 100% 完成**, v1.1.0 + hotfix 全部推远端 `NEKO-dev/main`, 本地工作树 clean, 与远端对齐在 merge commit `4994b41`. 无任何 pending 开发任务, 等用户开新阶段 (P27+).
+> 用户于 2026-04-24 post-upgrade 机制固化 commit (`374e207`) push 后明确指示:
+> **"那项目开发就到此为止吧, 等后续主程序更新或者使用出现问题再进一步跟进"**.
+>
+> 这是从**阶段驱动 (P00→P26 主动推进)** 切到 **信号驱动 (被动响应)** 的正式分水岭.
+> 自此本项目进入 **v1.1-maintenance-window**: 开发节奏从"进攻"转"防守", 不再自发找任务做.
+
+**维护期的 agent 默认行为**:
+
+1. **不要主动提"下一阶段 P27+ 做什么"** — 用户说了等信号再启动.
+2. **启动任何改动前先跑一次 smoke**: `uv run tests/testbench/smoke/p26_docs_endpoint_smoke.py` (最好顺带全量 19 份 smoke), 绿了再动; 红了先修文档/代码对齐再说.
+3. **只在以下信号出现时才启动开发**:
+   - (A) 用户明确下一个阶段任务 / 新需求 / 新 bug 报告;
+   - (B) 主程序 (上游 NEKO 主仓 `cross_server` / `memory_server` / `core` 等) 更新带来 testbench 必须同步的接口 drift — 通常表现为 merge 时冲突、smoke 变红、或用户手测报"某功能不再工作";
+   - (C) 用户手测 / 实际使用中报出具体问题 (UI 漂移 / 文档对不上 / 端点坏掉 / 新 workspace 需加子页等).
+4. **轻量 + 安全的被动维护动作** (不需要等用户触发, 但也不强制做):
+   - 每次读 PLAN 时顺手看看 `LESSONS_LEARNED §7.A` 候选区 (当前仅 **L52** slug↔anchor 双向校验单次) — 若后续再遇到同族场景, 按 `.cursor/rules/lessons-candidate-promote-on-threshold.mdc` 升格;
+   - 写任何 tester-facing 文档前先读 `~/.cursor/skills/docs-code-reality-grep-before-draft/SKILL.md` 四层防御.
+5. **不做的事** (显式负面清单): 不主动重构, 不主动抽 helper, 不主动扩 smoke (除非是修 bug 附带锁契约), 不主动补 i18n key, 不主动优化性能, 不主动升版本号, 不主动碰 `.gitignore` / `tests/testbench_data/`.
+
+**重启开发的信号触发 checklist** (满足任一即可从维护期退回开发期):
+
+```text
+□ 用户说 "开 P27" / "加 XX 功能" / "改 XX 行为"
+□ 用户贴一张 UI 截图 + 说 "不对" / "应该是"
+□ 用户手测后列一份 bug list
+□ 主程序 merge 冲突 / smoke 变红
+□ 用户说 "重新开始" / "继续开发" / "恢复推进"
+```
+
+满足即按常规流程: 读 AGENT_NOTES §4 最新条目 → 开 todo list → 按 PLAN 约定走完 plan/code/test/docs 四段.
+
+---
+
+**下一个 Agent 的第一件事 (2026-04-24 更新 · v1.1-maintenance-window 开始)**:
+
+1. **当前项目态一句话**: 项目主线 **26/26 阶段 100% 完成** + v1.1.0 + hotfix + post-push 文档整理 + L50/L51 升格 + post-upgrade 机制固化 全部推远端 `NEKO-dev/main`, 本地工作树 clean. **进入维护期, 不再主动推进开发**, 等上面"信号触发 checklist" 任一命中再恢复.
 
 2. **先读必要基线** (按阅读优先级):
    - `PROGRESS.md` 最后两条: **"P26 Commit 3 手测 hotfix"** (本轮 4 类问题全修复 + `testbench_USER_MANUAL.md` 全本重写 + `routers/health_router.py` 三段新代码) + **"P26 + hotfix 文档清理 + 合并上游 + push"** (本次最后一轮文档整理).
