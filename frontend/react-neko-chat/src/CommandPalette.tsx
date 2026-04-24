@@ -822,9 +822,9 @@ export default function CommandPalette({
         )}
       </div>
 
-      {/* ── Filter tabs (only in "按功能" mode) ── */}
+      {/* ── Filter tabs (slide in/out with view mode) ── */}
       {showFilterTabs && (
-        <div className="cp-tab-bar cp-tab-bar-top">
+        <div className="cp-tab-bar cp-tab-bar-top cp-filter-tabs-enter" key={`filter-${viewMode}`}>
           <button type="button" className={`cp-tab ${filterTab === 'all' ? 'cp-tab-active' : ''}`} onClick={() => setFilterTab('all')}>
             📋 {i18n('commandPalette.allCommands', '全部')}
           </button>
@@ -855,10 +855,10 @@ export default function CommandPalette({
               </button>
             )}
           </div>
-        ) : showGrouped ? (
-          renderGrouped(displayItems)
         ) : (
-          renderFlat(displayItems)
+          <div className="cp-page-transition" key={`${viewMode}-${filterTab}`}>
+            {showGrouped ? renderGrouped(displayItems) : renderFlat(displayItems)}
+          </div>
         )}
       </div>
 

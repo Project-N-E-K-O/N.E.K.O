@@ -1994,7 +1994,7 @@ button * {
 .cp-plugin-card-collapse {
   max-height: 0;
   overflow: hidden;
-  transition: max-height 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: max-height 0.35s cubic-bezier(0.25, 0.8, 0.25, 1);
 }
 .cp-plugin-card-body { padding: 2px 0; }
 
@@ -2004,6 +2004,20 @@ button * {
   to { opacity: 1; transform: translateY(0); }
 }
 .cp-card-item-stagger { animation: cp-card-item-in 0.2s ease both; }
+
+/* ── Page transition (tab/view switch) ── */
+@keyframes cp-page-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.cp-page-transition { animation: cp-page-in 0.22s cubic-bezier(0.4, 0, 0.2, 1) both; }
+
+/* ── Filter tabs slide-in ── */
+@keyframes cp-filter-tabs-slide {
+  from { opacity: 0; max-height: 0; }
+  to { opacity: 1; max-height: 44px; }
+}
+.cp-filter-tabs-enter { animation: cp-filter-tabs-slide 0.25s cubic-bezier(0.4, 0, 0.2, 1) both; overflow: hidden; }
 .cp-tab {
   flex: 1;
   display: flex; align-items: center; justify-content: center; gap: 5px;
@@ -2405,7 +2419,8 @@ button * {
 [data-theme="dark"] .cp-empty-clear:hover { background: rgba(68, 183, 254, 0.18); }
 
 @media (prefers-reduced-motion: reduce) {
-  .cp-panel, .cp-stagger, .cp-toast, .cp-card-item-stagger { animation: none !important; }
+  .cp-panel, .cp-stagger, .cp-toast, .cp-card-item-stagger,
+  .cp-page-transition, .cp-filter-tabs-enter { animation: none !important; }
   .cp-plugin-card-collapse { transition: none !important; }
   .cp-plugin-card-chevron { transition: none !important; }
 }
