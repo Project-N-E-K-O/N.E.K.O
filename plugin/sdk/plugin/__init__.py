@@ -8,6 +8,7 @@ from __future__ import annotations
 from . import base as _base
 from . import decorators as _decorators
 from . import runtime as _runtime
+from . import settings as _settings
 
 # --- Base ---
 NEKO_PLUGIN_META_ATTR = _base.NEKO_PLUGIN_META_ATTR
@@ -53,6 +54,10 @@ TransportError = _runtime.TransportError
 # --- Logging ---
 get_plugin_logger = _runtime.get_plugin_logger
 
+# --- Settings ---
+PluginSettings = _settings.PluginSettings
+SettingsField = _settings.SettingsField
+
 __all__ = [
     # Base
     "NEKO_PLUGIN_META_ATTR",
@@ -92,4 +97,7 @@ __all__ = [
     "TransportError",
     # Logging
     "get_plugin_logger",
+    # Settings
+    "PluginSettings",
+    "SettingsField",
 ]

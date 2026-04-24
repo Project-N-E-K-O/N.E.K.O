@@ -76,6 +76,10 @@ async def hot_update_plugin_config(
         persisted["mode"] = mode
         return persisted
 
+    # --- Hot field validation for temporary mode ---
+    if mode == "temporary":
+        _validate_hot_fields(host, plugin_id, normalized_updates)
+
     if mode == "permanent":
         await loop.run_in_executor(None, update_plugin_config, plugin_id, normalized_updates)
 
@@ -150,3 +154,40 @@ async def hot_update_plugin_config(
         "handler_called": handler_called,
         "message": "Config hot-updated successfully",
     }
+
+
+def _validate_hot_fields(
+    host: object,
+    plugin_id: str,
+    updates: dict[str, object],
+) -> None:
+    """Check that all update keys are marked ``hot=True`` in the plugin's PluginSettings.
+
+    If the plugin has no ``PluginSettings`` subclass (backward compat), all
+    fields are allowed.  Only raises for temporary-mode updates where at
+    least one key is not in the hot fields set.
+    """
+    from plugin.sdk.plugin.settings import get_hot_fields
+    from plugin.server.infrastructure.plugin_settings_resolver import resolve_settings_class
+
+    settings_cls = resolve_settings_class(plugin_id, host=host)
+    if settings_cls is None:
+        return  # No PluginSettings — backward compat, allow all
+
+    hot_fields = get_hot_fields(settings_cls)
+    non_hot = sorted(k for k in updates if k not in hot_fields)
+
+    if non_hot:
+        raise ServerDomainError(
+            code="NON_HOT_FIELD_UPDATE",
+            message=(
+                f"Cannot hot-update non-hot fields: {', '.join(non_hot)}. "
+                f"These fields require a plugin restart to take effect."
+            ),
+            status_code=400,
+            details={
+                "plugin_id": plugin_id,
+                "non_hot_fields": non_hot,
+                "hot_fields": sorted(hot_fields),
+            },
+        )

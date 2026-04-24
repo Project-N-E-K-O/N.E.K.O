@@ -1013,6 +1013,7 @@ from main_routers.vrm_router import router as vrm_router # noqa
 from main_routers.websocket_router import router as websocket_router # noqa
 from main_routers.workshop_router import router as workshop_router # noqa
 from main_routers.cookies_login_router import router as cookies_login_router # noqa
+from main_routers.actions_proxy_router import router as actions_proxy_router # noqa
 from main_routers.shared_state import init_shared_state # noqa
 
 # 初始化共享状态，供各路由访问
@@ -1073,6 +1074,7 @@ app.include_router(agent_router)
 app.include_router(system_router)
 app.include_router(music_router)
 app.include_router(cookies_login_router) # Cookies登录相关路由，放在最后以避免与其他API路由冲突
+app.include_router(actions_proxy_router)  # Quick Actions Panel: 代理到插件服务器
 app.include_router(pages_router)  # 兜底路由需最后挂载
 
 # 后台预加载任务

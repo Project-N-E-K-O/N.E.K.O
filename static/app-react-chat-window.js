@@ -24,6 +24,9 @@
     var savedShellSize = null;
     var savedShellPosition = null; // {left, top} before minimize – used to fly back on expand
     var _sortKeySeq = 0; // monotonically increasing sortKey counter
+    var _cachedActions = [];
+    var _cachedPreferences = { pinned: [], hidden: [], recent: [] };
+    var _actionsLoading = false;
 
     var state = {
         viewProps: null,
@@ -388,6 +391,89 @@
         });
     }
 
+    /* ---- Quick Actions (chat plugin commands) ---- */
+
+    function fetchChatActions() {
+        _actionsLoading = true;
+        renderWindow();
+        return fetch('/chat/actions', {
+            method: 'GET',
+            headers: { 'Accept': 'application/json' },
+            credentials: 'same-origin'
+        })
+        .then(function (res) {
+            if (!res.ok) throw new Error('fetchChatActions: HTTP ' + res.status);
+            return res.json();
+        })
+        .then(function (data) {
+            _cachedActions = (data && data.actions) || [];
+            _cachedPreferences = (data && data.preferences) || { pinned: [], hidden: [], recent: [] };
+            _actionsLoading = false;
+            renderWindow();
+            return _cachedActions;
+        })
+        .catch(function (err) {
+            console.warn('[ReactChatWindow] fetchChatActions failed:', err);
+            _actionsLoading = false;
+            renderWindow();
+            return _cachedActions;
+        });
+    }
+
+    function executeChatAction(actionId, value) {
+        return fetch('/chat/actions/' + encodeURIComponent(actionId) + '/execute', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ value: value !== undefined ? value : null })
+        })
+        .then(function (res) {
+            if (!res.ok) {
+                return res.json().catch(function () { return null; }).then(function (body) {
+                    var detail = (body && body.detail) ? body.detail : 'HTTP ' + res.status;
+                    if (typeof detail !== 'string') detail = JSON.stringify(detail);
+                    throw new Error(detail);
+                });
+            }
+            return res.json();
+        })
+        .then(function (data) {
+            if (data && data.success) {
+                // Lifecycle actions (start/stop/reload/toggle) change the
+                // disabled state of sibling actions.  Re-fetch all actions
+                // so every button reflects the current plugin state.
+                fetchChatActions();
+                return data.action || null;
+            }
+            // Backend returned success: false — treat as error
+            throw new Error(data && data.message ? data.message : 'Action failed');
+        })
+        .catch(function (err) {
+            console.error('[ReactChatWindow] executeChatAction failed:', err);
+            throw err;
+        });
+    }
+
+    function saveChatActionPreferences(prefs) {
+        var previousPreferences = _cachedPreferences;
+        _cachedPreferences = prefs;
+        renderWindow();
+        fetch('/chat/actions/preferences', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify(prefs)
+        }).then(function (res) {
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+        }).catch(function (err) {
+            console.warn('[ReactChatWindow] saveChatActionPreferences failed, rolling back:', err);
+            _cachedPreferences = previousPreferences;
+            renderWindow();
+        });
+    }
+
+    /* ---- End Quick Actions ---- */
+
     function buildRenderProps() {
         if (state.rollbackDraft) {
             console.log('[ROLLBACK] buildRenderProps: rollbackDraftPresent=true length=' + state.rollbackDraft.length + ' key=' + state._rollbackKey);
@@ -406,7 +492,19 @@
             onAvatarInteraction: handleAvatarInteraction,
             onJukeboxClick: handleJukeboxClick,
             onAvatarGeneratorClick: handleAvatarGeneratorClick,
-            onTranslateToggle: handleTranslateToggle
+            onTranslateToggle: handleTranslateToggle,
+            quickActions: _cachedActions,
+            quickActionsPreferences: _cachedPreferences,
+            quickActionsLoading: _actionsLoading,
+            onQuickActionsRequest: function () {
+                fetchChatActions();
+            },
+            onQuickActionExecute: function (actionId, value) {
+                return executeChatAction(actionId, value);
+            },
+            onQuickActionsPreferencesChange: function (prefs) {
+                saveChatActionPreferences(prefs);
+            }
         });
     }
 
@@ -1357,6 +1455,8 @@
                     showToast(getI18nText('chat.reactWindowMountFailed', '新版聊天框挂载失败'), 3000);
                     return;
                 }
+                // Fetch quick actions when window becomes visible
+                fetchChatActions();
                 // closeWindow 已经会重置 minimized，所以到这里通常 minimized=false
                 // 但如果外部直接调用 openWindow（未经 closeWindow），仍需处理
                 var wasMinimized = minimized;
@@ -1718,6 +1818,16 @@
         window.addEventListener(EVENT_PREFIX + 'set-composer-hidden', function (event) {
             setComposerHidden(event.detail && event.detail.hidden);
         });
+
+        // Re-fetch quick actions when plugin state changes or list_actions update
+        window.addEventListener(EVENT_PREFIX + 'plugin-state-change', function () {
+            var overlay = getOverlay();
+            if (overlay && !overlay.hidden) fetchChatActions();
+        });
+        window.addEventListener(EVENT_PREFIX + 'list-actions-update', function () {
+            var overlay = getOverlay();
+            if (overlay && !overlay.hidden) fetchChatActions();
+        });
     }
 
     function init() {
@@ -1764,6 +1874,10 @@
         createResizeEdges();
         bindResizing();
         bindBridgeEvents();
+
+        // Quick actions are fetched on-demand when the panel is opened,
+        // ensuring data is always fresh regardless of plugin startup timing.
+        // The openWindow handler and bridge events also trigger refreshes.
 
         // 恢复手机端用户设置的高度
         try {

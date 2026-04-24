@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, type CSSProperties } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback, type CSSProperties } from 'react';
 import MessageList from './MessageList';
 import { i18n } from './i18n';
 import {
@@ -9,6 +9,7 @@ import {
   type ComposerAttachment,
   type AvatarInteractionPayload,
 } from './message-schema';
+import CommandPalette, { type CommandItem, type UserPreferences } from './CommandPalette';
 
 export type ChatWindowProps = ChatWindowSchemaProps & {
   onMessageAction?: (message: ChatMessage, action: MessageAction) => void;
@@ -19,6 +20,12 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
   onAvatarInteraction?: (payload: AvatarInteractionPayload) => void;
   onJukeboxClick?: () => void;
   onTranslateToggle?: () => void;
+  quickActions?: CommandItem[];
+  quickActionsPreferences?: UserPreferences;
+  quickActionsLoading?: boolean;
+  onQuickActionExecute?: (actionId: string, value: unknown) => Promise<CommandItem | null>;
+  onQuickActionsRequest?: () => void;
+  onQuickActionsPreferencesChange?: (prefs: UserPreferences) => void;
 };
 
 const defaultMessages: ChatMessage[] = [];
@@ -540,11 +547,19 @@ export default function App({
   onAvatarInteraction,
   onJukeboxClick,
   onTranslateToggle,
+  quickActions,
+  quickActionsPreferences,
+  quickActionsLoading,
+  onQuickActionExecute,
+  onQuickActionsRequest,
+  onQuickActionsPreferencesChange,
   rollbackDraft,
   _rollbackKey,
 }: ChatWindowProps) {
   const [draft, setDraft] = useState('');
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
+  const [quickActionsPanelOpen, setQuickActionsPanelOpen] = useState<boolean>(false);
+  const [quickActionsSlashMode, setQuickActionsSlashMode] = useState(false);
   const [activeCursorToolId, setActiveCursorToolId] = useState<string | null>(null);
   const [avatarRangeCursorVariants, setAvatarRangeCursorVariants] = useState<ToolCursorVariantState>(() => createDefaultToolCursorVariantState());
   const [outsideRangeCursorVariants, setOutsideRangeCursorVariants] = useState<ToolCursorVariantState>(() => createDefaultToolCursorVariantState());
@@ -578,6 +593,7 @@ export default function App({
   const [floatingHearts, setFloatingHearts] = useState<FloatingHeart[]>([]);
   const [floatingFistDrops, setFloatingFistDrops] = useState<FloatingFistDrop[]>([]);
   const submittingRef = useRef(false);
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const lastRollbackKeyRef = useRef('');
   const canSubmit = draft.trim().length > 0 || composerAttachments.length > 0;
 
@@ -1110,6 +1126,38 @@ export default function App({
     root.style.removeProperty('--neko-chat-tool-cursor');
   }, []);
 
+  const handleQuickActionInjectText = useCallback((text: string) => {
+    setDraft(prev => {
+      if (!prev || !prev.trim()) return text;
+      return prev + ' ' + text;
+    });
+    setQuickActionsPanelOpen(false);
+    requestAnimationFrame(() => {
+      composerTextareaRef.current?.focus();
+    });
+  }, []);
+
+  const handleQuickActionNavigate = useCallback((target: string, openIn: string) => {
+    // Only allow http(s) and relative URLs — block javascript: and other dangerous protocols
+    if (target && /^javascript:/i.test(target)) return;
+    if (openIn === 'same_tab') {
+      window.location.href = target;
+    } else {
+      window.open(target, '_blank', 'noopener,noreferrer');
+    }
+  }, []);
+
+  const handleQuickActionExecute = useCallback(async (actionId: string, value: unknown): Promise<CommandItem | null> => {
+    if (onQuickActionExecute) {
+      return onQuickActionExecute(actionId, value);
+    }
+    return null;
+  }, [onQuickActionExecute]);
+
+  const handleQuickActionsPreferencesChange = useCallback((prefs: UserPreferences) => {
+    if (onQuickActionsPreferencesChange) onQuickActionsPreferencesChange(prefs);
+  }, [onQuickActionsPreferencesChange]);
+
   function submitDraft() {
     if (submittingRef.current) return;
     const text = draft.trim();
@@ -1269,6 +1317,19 @@ export default function App({
               ))}
             </div>
           ) : null}
+          {quickActionsPanelOpen ? (
+            <CommandPalette
+              items={quickActions ?? []}
+              preferences={quickActionsPreferences ?? { pinned: [], hidden: [], recent: [] }}
+              loading={quickActionsLoading}
+              slashMode={quickActionsSlashMode}
+              onExecute={handleQuickActionExecute}
+              onInjectText={handleQuickActionInjectText}
+              onNavigate={handleQuickActionNavigate}
+              onPreferencesChange={handleQuickActionsPreferencesChange}
+              onClose={() => { setQuickActionsPanelOpen(false); setQuickActionsSlashMode(false); }}
+            />
+          ) : null}
           <form className="composer" onSubmit={(event) => {
             event.preventDefault();
             submitDraft();
@@ -1276,11 +1337,23 @@ export default function App({
             <div className="composer-input-shell">
               <textarea
                 className="composer-input"
+                ref={composerTextareaRef}
                 placeholder={inputPlaceholder}
                 aria-label={inputPlaceholder}
                 rows={1}
                 value={draft}
-                onChange={(event) => { setDraft(event.target.value); }}
+                onChange={(event) => {
+                  const val = event.target.value;
+                  // Detect "/" typed into empty input → open command palette in slash mode
+                  if (val === '/' && !draft && !quickActionsPanelOpen) {
+                    setQuickActionsSlashMode(true);
+                    setQuickActionsPanelOpen(true);
+                    if (onQuickActionsRequest) onQuickActionsRequest();
+                    // Don't put "/" into the draft
+                    return;
+                  }
+                  setDraft(val);
+                }}
                 onKeyDown={(event) => {
                   if (event.nativeEvent.isComposing) return;
                   if (event.key === 'Enter' && !event.shiftKey) {
@@ -1320,6 +1393,25 @@ export default function App({
                     onClick={() => onTranslateToggle?.()}
                   >
                     <img src="/static/icons/translate_icon.png" alt="" aria-hidden="true" />
+                  </button>
+                  <span className="composer-tool-divider" aria-hidden="true">|</span>
+                  <button
+                    className={`composer-tool-btn${quickActionsPanelOpen ? ' is-active' : ''}`}
+                    type="button"
+                    aria-label={i18n('chat.quickActionsAriaLabel', '快捷操作')}
+                    title={i18n('chat.quickActionsLabel', '快捷操作')}
+                    aria-pressed={quickActionsPanelOpen}
+                    aria-expanded={quickActionsPanelOpen}
+                    onClick={() => {
+                      const willOpen = !quickActionsPanelOpen;
+                      setQuickActionsPanelOpen(willOpen);
+                      if (willOpen) {
+                        setQuickActionsSlashMode(false);
+                        if (onQuickActionsRequest) onQuickActionsRequest();
+                      }
+                    }}
+                  >
+                    <img src="/static/icons/quick_actions_icon.png" alt="" aria-hidden="true" />
                   </button>
                   <span className="composer-tool-divider" aria-hidden="true">|</span>
                   <button
