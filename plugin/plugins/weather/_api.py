@@ -74,9 +74,14 @@ async def geoip_locate(locale: str = "zh-CN", timeout: float = 2.0) -> Optional[
         raise GeoIPError(f"IP locate failed: {e}", cause="network")
 
 
+_NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+
+
 async def geocode_city(city: str, locale: str = "zh-CN", timeout: float = 5.0) -> Optional[Dict[str, Any]]:
-    """城市 geocoding。成功返回 dict，无结果返回 None，网络问题抛 GeocodeError。"""
+    """Geocoding：先试 Open-Meteo（城市名），再试 Nominatim（支持地址）。"""
     lang = LOCALE_TO_GEOCODE_LANG.get(locale, "en")
+
+    # 1. Open-Meteo（快，但只支持城市名）
     try:
         async with httpx.AsyncClient(timeout=timeout) as c:
             r = await c.get(_GEOCODE_URL, params={"name": city, "count": 1, "language": lang})
@@ -89,13 +94,38 @@ async def geocode_city(city: str, locale: str = "zh-CN", timeout: float = 5.0) -
                     "lon": float(hit["longitude"]),
                     "country": hit.get("country_code", ""),
                 }
-            return None
+    except (httpx.TimeoutException, httpx.ConnectTimeout, httpx.ReadTimeout):
+        pass  # 继续尝试 Nominatim
+    except httpx.ConnectError:
+        pass
+    except Exception:
+        pass
+
+    # 2. Nominatim fallback（支持地址、POI、街道等）
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as c:
+            r = await c.get(_NOMINATIM_URL, params={
+                "q": city, "format": "json", "limit": "1",
+                "accept-language": lang,
+            }, headers={"User-Agent": _UA})
+            results = r.json()
+            if isinstance(results, list) and results:
+                hit = results[0]
+                display = hit.get("display_name", city).split(",")[0].strip()
+                return {
+                    "city": display,
+                    "lat": float(hit["lat"]),
+                    "lon": float(hit["lon"]),
+                    "country": "",
+                }
     except (httpx.TimeoutException, httpx.ConnectTimeout, httpx.ReadTimeout):
         raise GeocodeError(f"Geocode '{city}' timed out", cause="timeout")
     except httpx.ConnectError:
         raise GeocodeError(f"Geocode '{city}' connection failed", cause="network")
     except Exception as e:
         raise GeocodeError(f"Geocode '{city}' failed: {e}", cause="network")
+
+    return None
 
 
 async def fetch_forecast(
