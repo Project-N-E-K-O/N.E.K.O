@@ -1,15 +1,17 @@
 # 本项目沉淀的代码设计与开发经验 (P00-P25 立项)
 
-> **定位**: 本文档是 N.E.K.O. Testbench 项目 P00-P25 立项期累积的
-> 设计原则与工程经验的**抽象提炼**. 源材料是 AGENT_NOTES §4 的 77+ 踩点
+> **定位**: 本文档是 N.E.K.O. Testbench 项目 P00-P26 立项期累积的
+> 设计原则与工程经验的**抽象提炼**. 源材料是 AGENT_NOTES §4 的 120+ 踩点
 > 案例 + §3A 57 条横切原则 + P24_BLUEPRINT 五轮审查的 13 条元教训 +
 > P24 Day 9-E 二轮翻转的 3 条元教训 (L23/L24/L25) +
 > P24 Day 10-12 整合期的 2 条元教训 (L26/L27 = §7.23/§7.24) +
 > P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理 UTF-8 事件 +
 > P25 Day 1 subagent 并行开发首次应用 + P25 Day 1 fixup mirror shape +
 > P25 Day 2 前端面板派生 + Day 2 polish 手测 r1-r6 派生 + Day 3 `last_llm_wire`
-> 覆盖率 smoke 派生 + P26 Commit 1 版本号落档/公共文档端点/4 象限分层派生的
-> 25 条候选元教训 (L28-L52, 登记于 §7.A 候选区, 未计入主编号 27 条; 其中 L50/L51 已达两次同族门槛, 待下轮主编号更新升 §7.28/§7.29).
+> 覆盖率 smoke 派生 + P26 Commit 1 版本号落档/公共文档端点/4 象限分层派生 +
+> P26 C3 hotfix markdown pipeline + USER_MANUAL 深度事实对齐派生的
+> 25 条候选元教训 (L28-L52, 登记于 §7.A 候选区, 未计入主编号 29 条;
+> **L50 / L51 已升格为 §7.28 / §7.29**, 其余候选待 P27+ 二次复现后升格).
 >
 > **§7.25 特别说明**: 一周内已连续 **6** 次同族实锤 (字段名漂移 / envelope 漂移 /
 > LLM wire role 三次漂移 / **Prompt Preview "重建视图 ≠ 真实 stream" 架构级
@@ -501,7 +503,7 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
 
 ---
 
-## 7. 27 条元教训 (五轮审查累积 + Day 2/5/6/8/10 + 手测事故追加 + P25 Day 2 跨边界 shape 三次同族 + P26 Commit 2 两条升级 = L33 → §7.26 / L44 → §7.27)
+## 7. 29 条元教训 (五轮审查累积 + Day 2/5/6/8/10 + 手测事故追加 + P25 Day 2 跨边界 shape 三次同族 + P26 Commit 2 两条升级 = L33 → §7.26 / L44 → §7.27 + P26 C3 hotfix 两条升级 = L50 → §7.28 / L51 → §7.29)
 
 源: P24_BLUEPRINT §12.10. 已按"**超项目价值**" 筛选, 项目特异的去掉.
 
@@ -602,9 +604,58 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
         4. **Preview 按钮的位置按"交互阶段"而非"功能分类"**. 点 trigger 按钮打开 drawer → 填参数 → drawer 底部同时暴露 `[执行] [预览]` — 按**交互阶段**分区.
     - **对应 Cursor skill**: `preview-panel-domain-partition` (本次 P26 Commit 2 新抽, 见 §8.5).
 
-### §7.A 候选追加 (P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理 UTF-8 事件 + P25 Day 1 subagent 并行开发 + P25 Day 1 fixup mirror shape + P25 Day 2 前端面板派生 + P25 Day 2 polish r1-r6 手测派生 + P26 Commit 1 版本号落档 / 公共文档端点 / 4 象限文档分层派生 + **P26 Commit 3 USER_MANUAL + C3 hotfix 链接锚点图片 pipeline 派生**, 待二次复现后并入主编号)
+28. **"Server boot_id 为 client 端状态重置提供服务端生命周期锚"** ⚠⚠ (L50 首例 + C3 hotfix 反向例两次同族已达门槛, 2026-04-24 P26 C3 hotfix 后升级自候选):
+    - **场景**: 前端有一些"客户端状态应当跟随服务端生命周期重置"的行为 — 首次启动提示 / 一次性引导 tour / 本地缓存 enum 失效 / stale session token 清除 / 开发循环里"新代码是否已加载"的可观测性. 传统做法要么 (a) 服务端维护 per-client 记录 (需要 session cookie + 后端状态), 要么 (b) client 端纯按 localStorage 记 "见过了" (服务端重启后 client 根本不知道). 两者都不理想: (a) 引入 per-client 状态膨胀, (b) 无法区分"同一 server 进程的连续会话"和"server 重启后首次会话".
+    - **两次同族实锤**:
+        - **第一次** (P26 Commit 3 USER_MANUAL §8.6 首例 · 正向应用): About 页的 `server_boot_id` 字段是 Welcome Banner "服务端重启后重新出现一次"的实现基础. `localStorage.seen_boot_ids: Set<string>` 存已见过的 boot_id 集合, 新 boot_id 不在里面就显示一次 banner 然后 add. 服务端**零 per-client 状态**, 只暴露一个 UUID; client 端纯 localStorage 语义. 服务端重启自动让所有 client 重新走一次"首次见到"路径, 不需要服务端发广播也不需要 client 定期轮询.
+        - **第二次** (P26 C3 hotfix 反向例 · 痛点证伪): 用户两轮反馈"链接仍失效 / 图片仍不渲染", 根因都是**服务器未重启**, 新代码未加载. agent 改完代码就去测, 没意识到后端进程还在跑旧 `health_router.py`. 两轮来回 45 分钟空转才识破. 如果 topbar 有一个"当前 server_boot_id" 的**可观测角标** (可选复制), agent 每次改代码只要一眼角标 id 变了就知道进程重启成功, 没变就知道得重启. L50 在此场景是**dev loop 生产力工具**, 不是用户可见功能. 反向实锤了"boot_id 除了 reset UI state, 还能作为 server process identity 的 first-class 信号"这一扩展.
+    - **L50 模式** (抽象):
+        1. 服务端进程启动时生成一次性 id (UUID / timestamp / `pid + boot_time` 皆可), 暴露在 `GET /api/version` 或类似健康端点.
+        2. 前端进入需要该状态的地方时: 读 `localStorage.seen_<thing>: Set<string>` → fetch 当前 `server_boot_id` → 不在 set 里走"首次"路径 + add → 在 set 里跳过.
+        3. 可选: 把 boot_id 显式 surface 到某个 UI 角落 (status bar / about page / devtools panel), 作为 "你在跟哪个 server 进程说话" 的信号.
+    - **关键性质**:
+        - 服务端**零 per-client 状态**. 只需暴露 id, 不必记 "谁见过".
+        - 语义**自愈**: server 重启 = 所有 client 下次自动走"首次"路径, 不需要 server 主动通知.
+        - 跨多实例场景自然退化: 多副本负载均衡下每个 pod 的 boot_id 不同, client 看到的是"我这次打到哪个 pod", 如果需要 cluster-level id 就换成 "deploy id" 等更粗粒度来源.
+    - **防御规则** (三条):
+        1. **所有需要"跟随 server 生命周期 reset"的 UI 状态走 boot_id 白名单**, 不自己发明别的"上次更新时间"戳机制.
+        2. **localStorage set 必须 bounded** (§7.11 前端 map/set 无界增长): seen_boot_ids 超过 N 条 (本项目 N=50) 时 evict 最旧的. boot_id 集合本身也是 map, 不能无界.
+        3. **boot_id 不等于身份, 不做授权**: boot_id 只是"生命周期锚", 不承载任何身份 / 权限语义. 切勿 `if boot_id == expected: allow` 用作 CSRF / 鉴权替代品.
+    - **关联**:
+        - §1.1 "Intent ≠ Reality" 在**运行时部署层**的扩展 — §1.1 管"审查时源 ≠ 线上", L50 管"UI 层怎么让 client 知道 server 代码已 redeploy".
+        - §7.27 "Preview 面板按消费域分区" 的**时间维度对偶** — §7.27 按空间 (域) 分区, §7.28 按时间 (boot 周期) 分区; 两者都通过带"源信号"的 key (source tag / boot_id) 触发 UI 行为.
+        - §7.11 "前端 map/set 无界增长" — localStorage 的 seen_boot_ids 也是 map, bounded 是本条的隐含前提.
+    - **对应 Cursor skill**: `server-boot-id-for-ui-state` (`~/.cursor/skills/` 下已存在, 本项目内第一个直接对齐使用 skill 的主编号条目).
 
-> 纪律: 本文档 §7 只记录 "**已经踩过 ≥ 2 次**的同族教训". 下列 25 条候选 (L28-L52)
+29. **"文档作者必须先扫真实代码再写 + 多轮 tester 手测回写收敛"** ⚠⚠⚠ (L51 首例 + C3 hotfix 二次同族已达门槛, 2026-04-24 P26 C3 hotfix 后升级自候选. 严重度比 §7.28 高半级因为它直接关乎文档作为"用户契约"的可信度):
+    - **场景**: AI agent 被派写面向用户的文档 (user manual / architecture overview / API reference / CHANGELOG). 第一反应是按 PLAN 笔记 + 蓝图 + 内存 draft, 完全跳过"当前代码实际是什么"这一步. 失败模式: PLAN 笔记是**设计 intent**, 蓝图是**设计 draft**, 代码是**当前 reality** — 三者不自动同步, 凭记忆写出来的内容会含有大量**看起来对但已过时**的细节.
+    - **两次同族实锤**:
+        - **第一次** (P26 Commit 3 USER_MANUAL 起草 · 结构性偏差): 写 USER_MANUAL 前主动 Grep 4 个 workspace_*.js 文件, 纠正 PLAN 笔记 4 处结构性偏差 (workspace 数 / diag 子页 / eval 子页 / settings 子页). 看似"已经对齐".
+        - **第二次** (P26 C3 hotfix 4 轮手测 · 行为 + 术语偏差): 用户在 USER_MANUAL v1 基础上 **4 轮手测**仍揭出 **12+ 处深层偏差**, 覆盖 8 类:
+            1. 启动命令过时 (`python -m xxx` vs pyproject 声明的 `uv run`).
+            2. 数据目录幻觉 (`~/.testbench` vs `tests/testbench_data/`).
+            3. UI 组件不存在 (凭蓝图写 Welcome Banner 首次引导, 当时版本还没那组件).
+            4. 子页数量不对 (凭内存写 Setup 5 子页, 实际 8 子页).
+            5. 状态 / 枚举不对 (Stage id 数 / Composer 模式数 / memory op 数).
+            6. 行为约束反向 (写"Evaluation Run 可暂停", 实际 fire-and-forget).
+            7. 可配置项幻觉 (写"UI 可切语言切主题", select 实为 disabled 占位).
+            8. 内部术语泄漏 (`P19 之后可能微调` / `详见 P25 蓝图` / `P16 UI 暂不支持` 混入面向 tester 的文档).
+    - **元结论**: 即使 agent 声称"写前 grep 过", 覆盖率也远达不到 tester 实用所需. **Agent 凭内存写文档 ≈ 按蓝图写代码**, 都必然漂移. 真相是文档起草 **≠ "一次写好再 commit"**, 必须 **"先 grep 结构 → 起稿 → 用户或独立 agent 按文档跑一遍真实 UI → 不一致点回收 → 第二轮对齐"** 的**多轮**循环. 这是**写文档**和**写代码**的**共同**方法论: 先 grep 真实再动键 + 多轮 review 收敛, 不能只靠起草 agent 自审.
+    - **四层防御规则**:
+        1. **写前必扫**: 凡文档涉及 UI 结构 / 命令 / 配置 / 枚举值, 先 Glob/Grep 对应模块 (`static/ui/workspace_*.js` / `pyproject.toml` / `composer.js` / ...) 拿真实 runtime 结构, **再**起稿.
+        2. **写中必交叉验**: 写到某个枚举值 / 字段名 / 数字时, 当场 rg 一次该 key 在代码里出现几次 / 实际值是什么. 凡是 "N 个" / "M 种" 类声明必须现场数.
+        3. **写后必真实 UI 手测**: 起稿完**必须**让**用户或另一 agent** 按文档走一遍真实 UI, 不一致点全部收集回来作为第二轮对齐. 第二轮后再跑第三轮. 手测本身是**一级生产资源**, 不是"用户有空才跑".
+        4. **术语 grep 扫尾**: 收尾前 grep 一次 `P[0-9]+` / `蓝图` / `阶段` / `deferred` / `TODO` / `FIXME` / 阶段编号, 面向 tester 的文档 (象限 2, 见 §7.A L48) 里这些词一律删或改写为用户语言. 这一步**必须在 commit 前跑**, 不能留给下一轮.
+    - **关联**:
+        - §1.1 "Intent ≠ Reality" 在**文档作者侧**的扩展 — §1.1 管审查者警惕 gap, §7.29 管创作者**前置 grep + 多轮手测 + 术语扫尾** 三层主动校准.
+        - §6.3 "三份 docs 同步更新模式" 的**方向反转** — §6.3 是"代码改后同步三份 docs", §7.29 是"docs 起草时按代码校准"; 同一"docs 与 code 谁是真相"辩论的两个方向, 答案都是"代码是真相, docs 服从".
+        - §7.26 "Subagent 并行 + 三段式 review" 的**文档层对偶** — §7.26 通过让 subagent 独立按 spec 跑出 Observation 字段, 让主 agent 自诊中捕获 spec 漂移; §7.29 通过让 tester 独立按文档跑 UI, 让起稿 agent 自诊中捕获文档漂移. 两条同构: 用"独立执行者"消除"自己写自己审"的盲点.
+        - §1.4 "覆盖度 RAG 灯" 的**文档版本** — 文档起草也可做 RAG 自检: 章节覆盖 UI 区域的比例 / 章节实锤的代码引用行数 / 章节手测通过的 pass 轮次. 绿黄红三灯对齐.
+    - **对应 Cursor skill**: `docs-code-reality-grep-before-draft` (待抽, P27+ 之前任一写文档的 agent 跑本条都会补完该 skill). 现阶段直接用 §1.1 `audit-chokepoint-invariant` 的 "grep before doc" 变体手法.
+
+### §7.A 候选追加 (P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理 UTF-8 事件 + P25 Day 1 subagent 并行开发 + P25 Day 1 fixup mirror shape + P25 Day 2 前端面板派生 + P25 Day 2 polish r1-r6 手测派生 + P26 Commit 1 版本号落档 / 公共文档端点 / 4 象限文档分层派生 + **P26 Commit 3 USER_MANUAL + C3 hotfix 链接锚点图片 pipeline 派生 (L50/L51 已于 post-push 整理期升格为 §7.28/§7.29)**, 待二次复现后并入主编号)
+
+> 纪律: 本文档 §7 只记录 "**已经踩过 ≥ 2 次**的同族教训". 下列候选 (L28-L52)
 > 多数仍为**单次派生** (源自 P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理
 > UTF-8 字节损坏事件 + P25 Day 1 subagent 并行开发首次应用 + P25 Day 1 fixup
 > mirror_to_recent shape mismatch + P25 Day 2 前端面板交付 + P25 Day 2 polish r1-r6
@@ -614,22 +665,36 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
 > **L36 已升级至三次复现** (`dedupe_info.remaining_ms` 字段名漂移 +
 > `external_event_router` envelope 顶层结构漂移 + **LLM wire 消息 role 字段漂移 /
 > prompt_ephemeral 语义契约违反**), 已超门槛, 本次 §7 更新将 L36 升级为 §7.25.
-> **L50 / L51 已达两次同族门槛** (L50: USER_MANUAL §8.6 首例 + C3 hotfix 服务器未重启反向例;
-> L51: USER_MANUAL 起草时 Grep 4 处校准首例 + C3 hotfix 手测揭 12+ 处深层偏差), 待下轮
-> 主编号更新升为 **§7.28 / §7.29**.
-> **L39 / L40 / L41 / L42 / L43 / L44 / L45 / L46 / L47 / L48 / L49 / L52 新候选** 登记为单次,
+> **L50 → §7.28 已升格** (USER_MANUAL §8.6 首例 + C3 hotfix 服务器未重启反向例),
+> **L51 → §7.29 已升格** (USER_MANUAL 起草时 Grep 4 处校准首例 + C3 hotfix 手测揭
+> 12+ 处深层偏差). 两条正文均已写入上方主编号 §7.28 / §7.29, 本候选区保留原文作为
+> "候选 → 主编号" 升级过程的历史档案 + 下一位 agent 的范例.
+> **L39 / L40 / L41 / L42 / L43 / L45 / L46 / L47 / L48 / L49 / L52 新候选** 登记为单次,
 > 待 P27+ 再命中升级. L37 / L38 仍为单次.
 > 登记在此避免遗忘.
 >
 > **L33 → §7.26 升级**: P25 Day 1 (subagent C 自诊 meta.get 漏字段) + P25 Day 2
 > polish (subagent 重复派任务致使 handoff 协议漏洞, 衍生 L33.x 交付目录 +
-> DONE 标志协议) 两次独立实锤, 已达门槛. 升级论述见下方 §7.26 正文 + 本次
+> DONE 标志协议) 两次独立实锤, 已达门槛. 升级论述见上方 §7.26 正文 + 本次
 > **P26 Commit 2 同步抽取 cursor skill `subagent-parallel-dev-three-phase-review`**.
 >
 > **L44 → §7.27 升级**: P25 Day 2 polish r7 (wire 消费域分区) + P25 Day 2 polish
 > r7 2nd pass (Memory `[预览 prompt]` 按交互阶段分区) 两次独立实锤, 已达门槛.
-> 升级论述见下方 §7.27 正文 + 本次 **P26 Commit 2 同步抽取 cursor skill
+> 升级论述见上方 §7.27 正文 + 本次 **P26 Commit 2 同步抽取 cursor skill
 > `preview-panel-domain-partition`**.
+>
+> **L50 → §7.28 升级** (2026-04-24 P26 post-push 文档整理期): USER_MANUAL §8.6
+> Welcome Banner 设计 (正向首例) + C3 hotfix 两轮"链接/图片仍失效"根因是服务端
+> 未重启 (反向例, 痛点实锤 boot_id 作为 dev-loop 可观测性信号的价值) 两次同族.
+> 升级论述见上方 §7.28 正文. 本项目**首次**直接对齐 `~/.cursor/skills/server-boot-id-for-ui-state`
+> 使用现成 skill.
+>
+> **L51 → §7.29 升级** (2026-04-24 P26 post-push 文档整理期): USER_MANUAL 起草
+> 期 Grep 4 个 workspace 文件纠正 PLAN 笔记 4 处结构性偏差 (首例, 结构层) +
+> C3 hotfix 4 轮手测揭 12+ 处深层行为 / 术语 / 幻觉偏差 (二次实锤, 行为 + 术语层)
+> 两次同族. 元结论扩展: "写文档必须先 grep 真实代码" 不足, 还得 "**多轮真实 UI
+> 手测回写**" 才能收敛. 升级论述见上方 §7.29 正文. 对应 skill 候选
+> `docs-code-reality-grep-before-draft` 待 P27+ 写第三次文档时正式抽出.
 
 **L28 "跨阶段推迟项必须双向回扫"** (P24 Day 12 欠账清返派生, 2026-04-23):
 

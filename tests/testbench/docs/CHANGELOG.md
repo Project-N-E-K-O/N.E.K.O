@@ -179,6 +179,9 @@ v1.1.0 发布当日的用户手测反馈收治, 仍属 v1.1 同一版本号 (未
   可见文档/文案修复, 无新功能 / 无 schema 变更).
 - 所有 `/docs/{name}` 端点 URL 未变, 响应 Content-Type 协商规则未变
   (`text/markdown` vs HTML).
+- **post-push 文档整理期 (2026-04-24 晚)**: 完成 `LESSONS_LEARNED §7.28 / §7.29`
+  升格 (L50 Server boot_id / L51 文档作者先 grep + 多轮 tester 手测回写), 以及
+  `AGENT_NOTES §4.27 #121` 记账. 纯内部开发经验沉淀, 对测试用户无可见变化.
 
 ---
 

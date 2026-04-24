@@ -792,6 +792,48 @@ smoke 用 `monkeypatch _invoke_llm_once / stream_send_inner` 注入 mock reply +
 
 ---
 
+#### #121 2026-04-24 P26 post-push 文档整理补刀 · LESSONS §7.28 / §7.29 升格 (L50 server boot_id + L51 文档先 grep + 多轮 tester 回写) + 首例项目内直接对齐 `~/.cursor/skills/server-boot-id-for-ui-state`
+
+**背景**: #120 的 post-push 整理 commit `263ffd8` 把 L50/L51/L52 三条候选登进了 `LESSONS §7.A`, 但 L50 / L51 在 #120 叙事里已显式达 "两次同族" 门槛 (§7 纪律), 按惯例可立即升主编号而不必等下一个阶段. 用户确认后本轮**专跑升格动作**, 不牵动任何代码或 smoke, 也不 bump `TESTBENCH_VERSION`.
+
+**修改文件 4 (纯内部文档)**:
+
+1. **`LESSONS_LEARNED.md` §7**:
+    - 主标题 `27 条元教训` → `29 条元教训`, 注记追加 "+ P26 C3 hotfix 两条升级 = L50 → §7.28 / L51 → §7.29".
+    - 追加 `28. "Server boot_id 为 client 端状态重置提供服务端生命周期锚"` 主条目: 两次同族实锤 (USER_MANUAL §8.6 Welcome Banner 正向首例 + P26 C3 hotfix 两轮"链接仍失效 / 图片仍不渲染"因服务器未重启反向痛点例) / L50 抽象模式 (server 生成 boot_id + 前端 `localStorage.seen_boot_ids: Set<string>` + 不在集则首次路径 + 加入集) / 关键性质 (server 零 per-client 状态 / 语义自愈 / 多副本自然退化) / 三条防御规则 (boot_id 白名单唯一 / localStorage set bounded 对接 §7.11 / 绝非身份鉴权). 对应 skill = `~/.cursor/skills/server-boot-id-for-ui-state/SKILL.md` (本项目**首次**直接对齐使用已有 skill 的主编号条目, 验证"跨项目 skill 沉淀 → 项目内落地"双向通道可行).
+    - 追加 `29. "文档作者必须先扫真实代码再写 + 多轮 tester 手测回写收敛"` 主条目 (严重度 ⚠⚠⚠, 比 §7.28 高半级因直接关乎文档作为用户契约的可信度): 两次同族实锤 (Commit 3 起稿 Grep 4 workspace 结构层校准首例 / C3 hotfix 4 轮手测揭 12+ 处深层偏差 = 启动命令 / 目录路径 / UI 组件不存在 / 子页数 / 枚举值 / 行为反向 / 可配置项幻觉 / 内部术语泄漏 **8 类偏差**二次实锤) / 元结论扩展 ("写前 grep 真实代码" 不足, 必须 + **"多轮 tester 手测回写"** 闭环才能收敛, agent 起草**≠** "一次写好再 commit") / 四层防御规则 (写前 grep 结构 / 写中交叉验 key / 写后真实 UI 手测 / 术语 grep 扫尾) / 关联 §1.1 / §6.3 / §7.26 / §1.4 的文档层对偶. 对应 skill 候选 `docs-code-reality-grep-before-draft` 待 P27+ 写第三次文档时抽.
+    - §7.A 候选区引语同步: L50 / L51 条目下标 "候选" 改为 "**已升格**为 §7.28 / §7.29", 保留原 L50 / L51 候选全文作为"候选 → 主编号" 升级路径的历史档案; 未升格候选清单从 L28-L52 裁为不含 L50 / L51 的其余条 + L52 仍为单次等 P27+.
+    - 文档顶部引语 "25 条候选元教训 (L28-L52), 未计入主编号 **27** 条" 同步改为 "未计入主编号 **29** 条, L50 / L51 已升格为 §7.28 / §7.29".
+
+2. **`PLAN.md`**:
+    - 当前快照行追加时间线末段 "→ 2026-04-24 **LESSONS §7.28 / §7.29 升格 commit** (L50 Server boot_id / L51 文档作者先 grep + 多轮 tester 手测回写)".
+    - 下一任 agent 指引行 4 "LESSONS 最新三条 L50 / L51 / L52 已达门槛待升" → "**L50 / L51 已升格为 §7.28 / §7.29**, L52 仍候选".
+    - 行 5 "LESSONS §7 **27 条主编号**" → "**29 条主编号**", 升格说明表更新.
+    - 行 7.c "常见维护任务 · LESSONS §7.A 候选达两次同族时升主编号 (L50 / L51 已具备条件, 随下个新阶段一起升)" → "L50 / L51 本轮 post-push 整理期已升; L52 等 P27+ 二次复现再升".
+
+3. **`AGENT_NOTES.md`** (本文件):
+    - §4.27 追加本条 **#121**.
+    - 顶部 banner 区 #120 banner 保留原样作为 "当前态" 锚, 本条升格属于 "同期文档补刀" 不再新加一条顶部 banner (顶层空间有限 + 升格本身不破坏任何用户可见行为).
+
+4. **`CHANGELOG.md`**: **不 bump 版本** (纯内部沉淀不面向用户). v1.1.0 hotfix 小节 尾部追加 "另: 本轮 post-push 整理期完成内部文档维护 (LESSONS §7.28 / §7.29 升格), 对测试用户无可见变化."
+
+**无代码改动 / 无 smoke 跑 / 无版本 bump**. ReadLints 4 份文档, 预期无新增 lint (仅为既有 style-类 markdownlint warning, 按项目"只修本轮引入"原则不碰).
+
+**价值点**:
+
+1. **跨项目 skill 通道双向验证**: §7.28 首次让本项目主编号条目**直接对齐** `~/.cursor/skills/server-boot-id-for-ui-state` 这一早先从别处沉淀下来的 skill. 反过来也验证了 skill 沉淀不是"一次性写完归档", 而是"被具体项目引用后确立其有效性". 这是本项目 LESSONS 文档**第一次**把已有 skill 作为主编号条目的对应物, 而非只抽新 skill.
+
+2. **L51 "严重度 ⚠⚠⚠"** 的严重度标记是刻意加一级 (§7.28 只打 ⚠⚠): 文档偏差破坏的是**用户契约可信度**, 一旦用户不信文档, 后续所有"用户报 bug 找代码" 的路径都失效, 成本比"单条 UI 状态没自动 reset" 高一个数量级.
+
+3. **"post-push 再开一个纯文档 commit"** 的 pattern 证明价值: P26 阶段虽 #120 已结, 但 L50 / L51 升格门槛是在 #120 叙事内部实锤的, **不应拖到 P27+**. 本次单独 commit 不 push (留给 t8) 就是 "post-push 整理期可以包含 > 1 次 local commit, push 动作一次性整合" 的操作范式, 未来 P27+ 若遇到同类"在 sign-off 门前最后一轮发现候选达标" 场景直接套用.
+
+**方法论回写**:
+
+- **§7 纪律细化**: 候选达 "两次同族" 门槛的识别时机应该是**在写入 §7.A 时**, 不是"等下个阶段". #120 把 L50 / L51 写进 §7.A 时已明确两条都"已达两次同族门槛", 但当时习惯性留到下轮, 本条把**"候选写入即升格, 不等下轮"** 作为纪律明写: 同一篇 commit 同时完成候选记录 + 升主编号 + §7.A 标"已升格", 不再拆两次 commit.
+- **skill 对齐作为验证信号**: 本项目 LESSONS §7.28 对应 `server-boot-id-for-ui-state`, §7.26/§7.27 对应 P26 Commit 2 新抽的 2 个 skill, §7.1/§7.2 对应 `audit-chokepoint-invariant` 和 `single-writer-choke-point` — **每条主编号条目都应该能映射到一个 skill** (可新抽 / 可复用已有). 若映射不到, 说明该条目要么还抽象不够 (提不出可复用方法论), 要么就不该升主编号. 这条作为 §7 隐式门槛, 下次主编号升级前 agent 必须 check.
+
+---
+
 #### #119 2026-04-24 P26 Commit 3 (USER_MANUAL.md 中文简体测试员向 ~520 行 10 节 13 图位 + 4 workspace 真实结构校准 + /docs 端点自动过渡验证)
 
 **背景**: P26 B 方案三 commit 最后一块. Commit 1 (#118 背景) 白名单 + 双 404 / Commit 2 (#118 本体) ARCH + LESSONS + 2 skills + smoke 欠账. **今天 Commit 3** = 面向测试员/中级用户的中文手册, 完成后 `/docs/testbench_USER_MANUAL` 端点自动从 `404 file_missing` 过渡到 `200 HTML`, P26 三 commit 全齐可一次 push.
