@@ -4509,6 +4509,7 @@ def _read_card_meta(meta_path) -> dict:
                 return merged
     except Exception as e:
         logger.warning(f"读取卡面元数据失败 {meta_path}: {e}")
+        return _default_card_meta(origin=None)
     return _default_card_meta()
 
 
@@ -4551,8 +4552,8 @@ async def list_card_faces():
         if orphans:
             logger.info(f"[list_card_faces] 孤儿卡面文件（无对应角色）: {orphans}")
     except Exception:
-        pass
-    return JSONResponse({'success': True, 'names': names})
+        logger.exception("list_card_faces failed")
+        return JSONResponse({'success': False, 'error': '读取卡面列表失败'}, status_code=500)
 
 
 @router.get('/card-metas')
@@ -4575,6 +4576,9 @@ async def list_card_metas():
             for p in json_files:
                 if p.stem in valid_names:
                     meta = await asyncio.to_thread(_read_card_meta, p)
+                    if meta.get('origin') is None:
+                        # sidecar 损坏：当作缺失处理，重新推断 origin
+                        meta = _default_card_meta(_detect_card_origin_from_character(characters['猫娘'][p.stem]))
                     metas[p.stem] = meta
         # 补齐缺失 sidecar 的猫娘：按配置推断 origin，返回默认值
         for cname, cdata in (characters.get('猫娘', {}) or {}).items():
@@ -4601,8 +4605,8 @@ async def get_card_meta(name: str):
 
     meta_path = _config_manager.card_face_meta_path(name)
     meta = await asyncio.to_thread(_read_card_meta, meta_path)
-    if not meta_path.exists():
-        # 无 sidecar：根据猫娘配置推断 origin
+    if not meta_path.exists() or meta.get('origin') is None:
+        # 无 sidecar 或读取失败：根据猫娘配置推断 origin
         meta['origin'] = _detect_card_origin_from_character(characters['猫娘'][name])
     return JSONResponse({'success': True, 'meta': meta})
 
@@ -4633,7 +4637,7 @@ async def put_card_meta(name: str, request: Request):
 
     meta_path = _config_manager.card_face_meta_path(name)
     existing = await asyncio.to_thread(_read_card_meta, meta_path)
-    if not meta_path.exists():
+    if not meta_path.exists() or existing.get('origin') is None:
         existing['origin'] = _detect_card_origin_from_character(characters['猫娘'][name])
 
     if existing.get('origin') != 'self':
@@ -4722,15 +4726,23 @@ async def put_card_face(name: str, image: UploadFile = File(...)):
 
     # 同步更新 sidecar 元数据
     meta_path = _config_manager.card_face_meta_path(name)
-    meta = await asyncio.to_thread(_read_card_meta, meta_path)
-    now_iso = datetime.now().isoformat(timespec='seconds')
-    # 上传即视为本地创作；若此前是导入的，刷新创建时间
-    previous_origin = meta.get('origin')
-    meta['origin'] = 'self'
-    if previous_origin != 'self' or not meta.get('created_at'):
-        meta['created_at'] = now_iso
-    meta['updated_at'] = now_iso
-    await asyncio.to_thread(_write_card_meta, meta_path, meta)
+    try:
+        meta = await asyncio.to_thread(_read_card_meta, meta_path)
+        now_iso = datetime.now().isoformat(timespec='seconds')
+        # 上传即视为本地创作；若此前是导入的，刷新创建时间
+        previous_origin = meta.get('origin')
+        meta['origin'] = 'self'
+        if previous_origin != 'self' or not meta.get('created_at'):
+            meta['created_at'] = now_iso
+        meta['updated_at'] = now_iso
+        await asyncio.to_thread(_write_card_meta, meta_path, meta)
+    except Exception as meta_err:
+        logger.warning(f"[上传卡面] 写入 sidecar 元数据失败: {meta_err}")
+        return JSONResponse({
+            'success': True,
+            'partial_success': True,
+            'error': f"卡面已保存，但元数据写入失败: {meta_err}",
+        }, status_code=200)
 
     return JSONResponse({'success': True})
 

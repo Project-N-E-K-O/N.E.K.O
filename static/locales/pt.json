@@ -1638,8 +1638,8 @@
         "showHidden": "Mostrar ocultos",
         "switchCard": "Trocar cartão",
         "switchSuccess": "Trocado com sucesso",
-        "tempSaveFailed": "Falha ao salvar temporariamente: ",
-        "editCardFace": "✎ Editar rosto do cartão"
+        "tempSaveFailed": "Falha ao salvar temporariamente:{{error}}",
+        "editCardFace": "Editar rosto do cartão"
     },
     "app": {
         "welcomeBack": "{{name}} está de volta!",
@@ -3383,7 +3383,7 @@
         "saveCardFace": "Salvar rosto do cartão",
         "savingCardFace": "Salvando...",
         "saveCardFaceSuccess": "Salvo com sucesso!",
-        "saveCardFaceFailed": "Falha ao salvar: ",
+        "saveCardFaceFailed": "Falha ao salvar:{{error}}",
         "renderFailed": "Não foi possível renderizar a imagem do cartão"
     },
     "connectivity": {

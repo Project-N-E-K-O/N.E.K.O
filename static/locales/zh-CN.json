@@ -1612,7 +1612,7 @@
         "settings": "设定",
         "renamePrompt": "请输入新的档案名",
         "renameTitle": "修改名称",
-        "tempSaveFailed": "临时保存失败: ",
+        "tempSaveFailed": "临时保存失败:{{error}}",
         "newCatgirlSuccess": "新猫娘创建成功",
         "saveSuccess": "保存成功",
         "switchSuccess": "切换成功",
@@ -1638,7 +1638,7 @@
         "cardAuthorUpdated": "作者已更新",
         "cardAuthorUpdateFailed": "更新作者失败：{{error}}",
         "saveMasterSuccess": "保存主人设定成功",
-        "editCardFace": "✎ 编辑卡面"
+        "editCardFace": "编辑卡面"
     },
     "app": {
         "welcomeBack": "{{name}}回来了！",
@@ -3382,7 +3382,7 @@
         "saveCardFace": "保存卡面",
         "savingCardFace": "保存中...",
         "saveCardFaceSuccess": "保存成功！",
-        "saveCardFaceFailed": "保存失败: ",
+        "saveCardFaceFailed": "保存失败:{{error}}",
         "renderFailed": "无法渲染卡面图片"
     },
     "connectivity": {

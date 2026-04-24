@@ -1612,7 +1612,7 @@
         "settings": "Settings",
         "renamePrompt": "Please enter a new profile name",
         "renameTitle": "Rename",
-        "tempSaveFailed": "Temp save failed: ",
+        "tempSaveFailed": "Temp save failed:{{error}}",
         "newCatgirlSuccess": "New catgirl created successfully",
         "saveSuccess": "Saved successfully",
         "switchSuccess": "Switched successfully",
@@ -1638,7 +1638,7 @@
         "cardAuthorUpdated": "Author updated",
         "cardAuthorUpdateFailed": "Failed to update author: {{error}}",
         "saveMasterSuccess": "Master profile saved successfully",
-        "editCardFace": "✎ Edit Card Face"
+        "editCardFace": "Edit Card Face"
     },
     "app": {
         "welcomeBack": "{{name}} is back!",
@@ -3382,7 +3382,7 @@
         "saveCardFace": "Save Card Face",
         "savingCardFace": "Saving...",
         "saveCardFaceSuccess": "Saved successfully!",
-        "saveCardFaceFailed": "Save failed: ",
+        "saveCardFaceFailed": "Save failed:{{error}}",
         "renderFailed": "Unable to render card face image"
     },
     "connectivity": {

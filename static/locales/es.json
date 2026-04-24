@@ -1638,8 +1638,8 @@
         "showHidden": "Mostrar ocultos",
         "switchCard": "Cambiar tarjeta",
         "switchSuccess": "Cambiado con éxito",
-        "tempSaveFailed": "Error al guardar temporalmente: ",
-        "editCardFace": "✎ Editar tarjeta"
+        "tempSaveFailed": "Error al guardar temporalmente:{{error}}",
+        "editCardFace": "Editar tarjeta"
     },
     "app": {
         "welcomeBack": "¡{{name}} ha vuelto!",
@@ -1781,7 +1781,7 @@
         },
         "assetSource": {
             "notRecorded": "No registrado",
-            "steamWorkshop": "Gestión de tarjetas de personaje",
+            "steamWorkshop": "Steam Workshop",
             "localImported": "Modelo importado localmente",
             "manualExternal": "Referencia de modelo externo",
             "builtin": "Activo incorporado"
@@ -3383,7 +3383,7 @@
         "saveCardFace": "Guardar cara de la tarjeta",
         "savingCardFace": "Guardando...",
         "saveCardFaceSuccess": "¡Guardado correctamente!",
-        "saveCardFaceFailed": "Error al guardar: ",
+        "saveCardFaceFailed": "Error al guardar:{{error}}",
         "renderFailed": "No se puede renderizar la imagen de la tarjeta"
     },
     "connectivity": {

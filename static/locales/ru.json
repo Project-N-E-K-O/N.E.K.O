@@ -1611,7 +1611,7 @@
         "settings": "Настройки",
         "renamePrompt": "Введите новое имя профиля",
         "renameTitle": "Переименовать",
-        "tempSaveFailed": "Ошибка временного сохранения: ",
+        "tempSaveFailed": "Ошибка временного сохранения:{{error}}",
         "newCatgirlSuccess": "Новый персонаж успешно создан",
         "saveSuccess": "Сохранено",
         "switchSuccess": "Переключено",
@@ -1629,7 +1629,7 @@
         "cardCreatedAt": "Создано",
         "cardOriginLabel": "Источник",
         "cardOriginSelf": "Локальная",
-        "cardOriginImported": "Импортировано",
+        "cardOriginImported": "Импортированная",
         "cardOriginSteam": "Мастерская Steam",
         "cardNotCreated": "Ещё не создано",
         "editAuthor": "Изменить автора",
@@ -1637,8 +1637,8 @@
         "cardAuthorUpdated": "Автор обновлён",
         "cardAuthorUpdateFailed": "Не удалось обновить автора: {{error}}",
         "idleMotionHint": "При сохранении выбранное движение будет установлено как ожидающее",
-        "saveMasterSuccess": "Профиль мастера сохранен",
-        "editCardFace": "✎ Редактировать обложку"
+        "saveMasterSuccess": "Профиль мастера сохранён",
+        "editCardFace": "Редактировать обложку"
     },
     "app": {
         "welcomeBack": "{{name}} вернулась!",
@@ -3382,7 +3382,7 @@
         "saveCardFace": "Сохранить обложку",
         "savingCardFace": "Сохранение...",
         "saveCardFaceSuccess": "Сохранено успешно!",
-        "saveCardFaceFailed": "Ошибка сохранения: ",
+        "saveCardFaceFailed": "Ошибка сохранения:{{error}}",
         "renderFailed": "Не удалось отрендерить изображение карточки"
     },
     "connectivity": {

@@ -707,7 +707,7 @@
             }, 1500);
         } catch (e) {
             console.error('[CardMaker] 保存卡面失败:', e);
-            alert(t('cardExport.saveCardFaceFailed', '保存失败: ') + e.message);
+            alert(t('cardExport.saveCardFaceFailed', '保存失败: ' + e.message, { error: e.message }));
             exportFullBtn.disabled = false;
             exportFullBtn.textContent = t('cardExport.saveCardFace', '保存卡面');
         }
@@ -1296,13 +1296,13 @@
     }
 
     // ====== 工具函数 ======
-    function t(key, fallback) {
+    function t(key, fallback, options) {
         if (window.i18next && typeof window.i18next.t === 'function') {
-            const val = window.i18next.t(key);
+            const val = window.i18next.t(key, options);
             if (val && val !== key) return val;
         }
         if (window.t && typeof window.t === 'function') {
-            const val = window.t(key);
+            const val = window.t(key, options);
             if (val && val !== key) return val;
         }
         return fallback;

@@ -1611,7 +1611,7 @@
         "settings": "設定",
         "renamePrompt": "請輸入新的檔案名",
         "renameTitle": "修改名稱",
-        "tempSaveFailed": "臨時保存失敗: ",
+        "tempSaveFailed": "臨時保存失敗:{{error}}",
         "newCatgirlSuccess": "新貓娘創建成功",
         "saveSuccess": "保存成功",
         "switchSuccess": "切換成功",
@@ -1638,7 +1638,7 @@
         "cardAuthorUpdateFailed": "更新作者失敗：{{error}}",
         "idleMotionHint": "保存角色時，當前選中的動作將被設為待機動作",
         "saveMasterSuccess": "儲存主人設定成功",
-        "editCardFace": "✎ 編輯卡面"
+        "editCardFace": "編輯卡面"
     },
     "app": {
         "welcomeBack": "{{name}}迴來瞭！",
@@ -3382,7 +3382,7 @@
         "saveCardFace": "儲存卡面",
         "savingCardFace": "儲存中...",
         "saveCardFaceSuccess": "儲存成功！",
-        "saveCardFaceFailed": "儲存失敗: ",
+        "saveCardFaceFailed": "儲存失敗:{{error}}",
         "renderFailed": "無法渲染卡面圖片"
     },
     "connectivity": {

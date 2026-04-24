@@ -1611,7 +1611,7 @@
         "settings": "設定",
         "renamePrompt": "新しいプロフィール名を入力してください",
         "renameTitle": "名前の変更",
-        "tempSaveFailed": "一時保存に失敗しました: ",
+        "tempSaveFailed": "一時保存に失敗しました:{{error}}",
         "newCatgirlSuccess": "新しいキャラクターが作成されました",
         "saveSuccess": "保存しました",
         "switchSuccess": "切り替えに成功しました",
@@ -1638,7 +1638,7 @@
         "cardAuthorUpdateFailed": "作者の更新に失敗しました: {{error}}",
         "idleMotionHint": "保存時に選択されたモーションが待機モーションとして設定されます",
         "saveMasterSuccess": "マスタープロフィールを保存しました",
-        "editCardFace": "✎ カードフェイスを編集"
+        "editCardFace": "カードフェイスを編集"
     },
     "app": {
         "welcomeBack": "{{name}}が戻りました！",
@@ -3382,7 +3382,7 @@
         "saveCardFace": "カードフェイスを保存",
         "savingCardFace": "保存中...",
         "saveCardFaceSuccess": "保存しました！",
-        "saveCardFaceFailed": "保存に失敗しました: ",
+        "saveCardFaceFailed": "保存に失敗しました:{{error}}",
         "renderFailed": "カード画像をレンダリングできません"
     },
     "connectivity": {

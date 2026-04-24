@@ -4569,11 +4569,11 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
                     form._autoCreatedName = catgirlName;
                 } else {
                     const errData = await tmpResp.json().catch(() => ({}));
-                    showMessage((window.t ? window.t('character.tempSaveFailed') : '临时保存失败: ') + (errData.error || ''), 'error');
+                    showMessage((window.t ? window.t('character.tempSaveFailed', { error: errData.error || '' }) : '临时保存失败: ' + (errData.error || '')), 'error');
                     return;
                 }
             } catch (e) {
-                showMessage((window.t ? window.t('character.tempSaveFailed') : '临时保存失败: ') + e.message, 'error');
+                showMessage((window.t ? window.t('character.tempSaveFailed', { error: e.message }) : '临时保存失败: ' + e.message), 'error');
                 return;
             }
         }

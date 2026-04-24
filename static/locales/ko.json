@@ -1611,7 +1611,7 @@
         "settings": "설정",
         "renamePrompt": "새 프로필 이름을 입력하세요",
         "renameTitle": "이름 변경",
-        "tempSaveFailed": "임시 저장 실패: ",
+        "tempSaveFailed": "임시 저장 실패:{{error}}",
         "newCatgirlSuccess": "새 캐릭터가 생성되었습니다",
         "saveSuccess": "저장 완료",
         "switchSuccess": "전환 완료",
@@ -1638,7 +1638,7 @@
         "cardAuthorUpdateFailed": "작성자 업데이트 실패: {{error}}",
         "idleMotionHint": "저장 시 선택한 모션이 대기 모션으로 설정됩니다",
         "saveMasterSuccess": "주인 설정 저장 성공",
-        "editCardFace": "✎ 카드 페이스 편집"
+        "editCardFace": "카드 페이스 편집"
     },
     "app": {
         "welcomeBack": "{{name}}이 돌아왔습니다!",
@@ -3382,7 +3382,7 @@
         "saveCardFace": "카드 페이스 저장",
         "savingCardFace": "저장 중...",
         "saveCardFaceSuccess": "저장 성공!",
-        "saveCardFaceFailed": "저장 실패: ",
+        "saveCardFaceFailed": "저장 실패:{{error}}",
         "renderFailed": "카드 이미지를 렌더링할 수 없습니다"
     },
     "connectivity": {

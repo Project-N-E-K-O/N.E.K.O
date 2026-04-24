@@ -4516,13 +4516,7 @@ margin-top: 10px;
     background: #fafcff;
 }
 
-.catgirl-panel-wrapper.card-only .catgirl-panel-left {
-    width: auto;
-    padding: 0;
-    border-right: none;
-    background: transparent;
-    gap: 0;
-}
+
 
 .catgirl-panel-card-image {
     width: 200px;
@@ -4544,7 +4538,7 @@ margin-top: 10px;
 }
 
 .catgirl-panel-card-image::after {
-    content: attr(data-edit-label);
+    content: "✎ " attr(data-edit-label);
     position: absolute;
     bottom: 0;
     left: 0;
