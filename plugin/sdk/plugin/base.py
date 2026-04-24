@@ -95,6 +95,29 @@ class NekoPluginBase(_SharedNekoPluginBase):
         raw = getattr(self, "_last_attachments", None)
         return list(raw) if isinstance(raw, list) else []
 
+    def get_user_language(self) -> str:
+        """获取当前用户语言代码。
+
+        返回主干下发的语言（如 ``"zh"``、``"en"``、``"zh-TW"``），
+        未下发时返回空字符串。每次 entry 触发时自动更新。
+
+        也可通过 ``set_user_language()`` 手动覆盖。
+        """
+        try:
+            return self.ctx.get_user_language()
+        except Exception:
+            return ""
+
+    def set_user_language(self, lang: str) -> None:
+        """手动设置用户语言（覆盖主干下发值）。
+
+        传空字符串可清除覆盖，恢复为主干下发值。
+        """
+        try:
+            self.ctx.set_user_language(lang)
+        except Exception:
+            pass
+
     async def finish(self, **kwargs: Any) -> Any:
         return await self.ctx.finish(**kwargs)
 

@@ -350,6 +350,14 @@ class PluginContextProtocol(Protocol):
         """获取用户消息中的图片附件列表"""
         ...
 
+    def get_user_language(self) -> str:
+        """获取当前用户语言代码（由主干通过 _ctx.lang 下发）"""
+        ...
+
+    def set_user_language(self, lang: str) -> None:
+        """手动设置/覆盖用户语言"""
+        ...
+
     def export_push_url(
         self,
         *,

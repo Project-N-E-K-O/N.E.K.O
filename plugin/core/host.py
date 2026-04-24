@@ -975,6 +975,9 @@ def _plugin_process_runner(
                     lanlan_name = ctx_obj.get("lanlan_name")
                     if lanlan_name:
                         ctx._current_lanlan = str(lanlan_name)
+                    _lang = ctx_obj.get("lang")
+                    if _lang:
+                        ctx._current_lang = str(_lang)
             except Exception:
                 pass
 
@@ -1071,6 +1074,9 @@ def _plugin_process_runner(
                     lanlan_name = ctx_obj.get("lanlan_name")
                     if lanlan_name:
                         ctx._current_lanlan = str(lanlan_name)
+                    _lang = ctx_obj.get("lang")
+                    if _lang:
+                        ctx._current_lang = str(_lang)
             except Exception:
                 pass
 

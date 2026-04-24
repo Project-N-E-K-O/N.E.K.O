@@ -351,16 +351,36 @@ class WeatherPlugin(NekoPluginBase):
         cfg = await self.config.dump(timeout=5.0)
         cfg = cfg if isinstance(cfg, dict) else {}
         self._cfg = cfg.get("weather", {}) if isinstance(cfg.get("weather"), dict) else {}
-        # 设置基础 locale（不含主干下发，那个在每次 entry 调用时动态应用）
-        self._apply_base_locale()
 
-    def _apply_base_locale(self) -> None:
-        """从配置或系统时区设置基础 locale（启动/配置变更时调用）。"""
+    def _resolve_locale(self) -> None:
+        """每次 entry 调用时解析 locale。
+
+        优先级链：
+        1. force_locale=true + locale 配置 → 强制使用，忽略一切
+        2. self.get_user_language()（主干下发的用户语言）
+        3. locale 配置（toml 默认值）
+        4. 系统时区自动检测
+        """
+        force = bool(self._cfg.get("force_locale", False))
         configured = str(self._cfg.get("locale", "")).strip()
+
+        if force and configured:
+            self._i18n.set_locale(configured)
+            return
+
+        # 主干下发的用户语言（每次 entry 触发时由 host 自动更新）
+        host_lang = self.get_user_language()
+        if host_lang:
+            self._i18n.set_locale(host_lang)
+            return
+
+        # toml 配置的默认 locale
         if configured:
             self._i18n.set_locale(configured)
-        else:
-            self._detect_locale_from_tz()
+            return
+
+        # 最终 fallback：系统时区
+        self._detect_locale_from_tz()
 
     def _detect_locale_from_tz(self) -> None:
         """根据系统时区自动推断 locale。"""
@@ -371,34 +391,6 @@ class WeatherPlugin(NekoPluginBase):
             self._i18n.set_locale("zh-CN")
         else:
             self._i18n.set_locale("en")
-
-    def _resolve_locale(self, kwargs: Dict[str, Any]) -> None:
-        """每次 entry 调用时解析 locale。
-
-        优先级链：
-        1. force_locale=true + locale 配置 → 强制使用，忽略一切
-        2. _ctx.lang（主干下发的用户语言）
-        3. locale 配置（toml 默认值）
-        4. 系统时区自动检测
-        """
-        force = bool(self._cfg.get("force_locale", False))
-        configured = str(self._cfg.get("locale", "")).strip()
-
-        if force and configured:
-            # 强制覆盖：直接用配置值，不看主干
-            self._i18n.set_locale(configured)
-            return
-
-        # 尝试从 _ctx.lang 获取主干下发的语言
-        ctx = kwargs.get("_ctx")
-        if isinstance(ctx, dict):
-            host_lang = str(ctx.get("lang") or "").strip()
-            if host_lang:
-                self._i18n.set_locale(host_lang)
-                return
-
-        # fallback 到配置或系统检测（已在 _apply_base_locale 中设好）
-        self._apply_base_locale()
 
     # ── 位置解析 ──
 
@@ -486,8 +478,8 @@ class WeatherPlugin(NekoPluginBase):
             },
         },
     )
-    async def get_weather(self, city: str = "", **kwargs):
-        self._resolve_locale(kwargs)
+    async def get_weather(self, city: str = "", **_):
+        self._resolve_locale()
 
         loc = await self._resolve_location(city)
         if not loc:
@@ -561,8 +553,8 @@ class WeatherPlugin(NekoPluginBase):
             },
         },
     )
-    async def travel_advice(self, city: str = "", **kwargs):
-        self._resolve_locale(kwargs)
+    async def travel_advice(self, city: str = "", **_):
+        self._resolve_locale()
 
         loc = await self._resolve_location(city)
         if not loc:
