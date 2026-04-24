@@ -96,12 +96,15 @@ class NekoPluginBase(_SharedNekoPluginBase):
         return list(raw) if isinstance(raw, list) else []
 
     def get_user_language(self) -> str:
-        """获取当前用户语言代码。
+        """获取当前用户语言代码（同步，零开销）。
 
-        返回主干下发的语言（如 ``"zh"``、``"en"``、``"zh-TW"``），
-        未下发时返回空字符串。每次 entry 触发时自动更新。
+        返回值来源（按优先级）：
+        1. ``set_user_language()`` 手动覆盖的值
+        2. 主干通过 ``_ctx.lang`` 下发的请求级语言
 
-        也可通过 ``set_user_language()`` 手动覆盖。
+        如果都没有则返回空字符串。对于需要兜底的场景，
+        可在 startup 时调用 ``await self.fetch_user_language()``
+        从主干实时查询全局语言并缓存。
         """
         try:
             return self.ctx.get_user_language()
@@ -117,6 +120,24 @@ class NekoPluginBase(_SharedNekoPluginBase):
             self.ctx.set_user_language(lang)
         except Exception:
             pass
+
+    async def fetch_user_language(self, *, timeout: float = 5.0) -> str:
+        """从主干实时查询全局用户语言（异步 IPC）。
+
+        返回完整语言代码如 ``"zh-CN"``、``"zh-TW"``、``"en"``。
+        查询结果会自动写入 context，后续 ``get_user_language()`` 可直接读取。
+
+        适用于 startup、定时器等没有 ``_ctx.lang`` 的场景。
+        """
+        try:
+            result = await self.system_info.get_user_language(timeout=timeout)
+            if isinstance(result, Ok) and result.value:
+                lang = str(result.value)
+                self.ctx.set_user_language(lang)
+                return lang
+        except Exception:
+            pass
+        return self.get_user_language()
 
     async def finish(self, **kwargs: Any) -> Any:
         return await self.ctx.finish(**kwargs)

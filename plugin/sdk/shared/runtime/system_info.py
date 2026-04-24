@@ -148,6 +148,26 @@ class SystemInfo:
                 Err(self._normalize_impl_error(error, op_name="system_info.get_server_settings", timeout=timeout)),
             )
 
+    async def get_user_language(self, *, timeout: float = 5.0) -> Result[str, SystemInfoErrorLike]:
+        """获取主干侧的全局用户语言（实时 IPC 查询）。
+
+        返回完整语言代码如 ``"zh-CN"``、``"zh-TW"``、``"en"``、``"ja"``。
+        优先返回 ``user_language_full``（区分简繁体），fallback 到 ``user_language``。
+        """
+        config_result = await self.get_system_config(timeout=timeout)
+        if isinstance(config_result, Err):
+            return cast(Result[str, SystemInfoErrorLike], config_result)
+        payload = config_result.value
+        cfg = payload.get("config") if isinstance(payload, dict) else payload
+        if isinstance(cfg, dict):
+            full = cfg.get("user_language_full")
+            if isinstance(full, str) and full:
+                return Ok(full)
+            short = cfg.get("user_language")
+            if isinstance(short, str) and short:
+                return Ok(short)
+        return Ok("")
+
     async def get_python_env(self) -> Result[JsonObject, TransportError]:
         try:
             try:

@@ -124,6 +124,14 @@ def _build_system_config_sync() -> SystemConfigResponse:
             continue
         config[key] = _jsonify_setting_value(value)
 
+    # ── 动态注入用户语言（不属于 settings 模块，从全局语言管理获取）──
+    try:
+        from utils.language_utils import get_global_language, get_global_language_full
+        config["user_language"] = get_global_language()
+        config["user_language_full"] = get_global_language_full()
+    except Exception:
+        pass
+
     return {"config": config}
 
 

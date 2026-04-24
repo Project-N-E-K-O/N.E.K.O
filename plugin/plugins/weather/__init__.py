@@ -335,6 +335,9 @@ class WeatherPlugin(NekoPluginBase):
     @lifecycle(id="startup")
     async def startup(self, **_):
         await self._reload_config()
+        # 启动时从主干查询全局语言并缓存，供后续 entry 调用使用
+        await self.fetch_user_language(timeout=3.0)
+        self._resolve_locale()
         self.logger.info("WeatherPlugin started, locale={}", self._i18n.locale)
         return Ok({"status": "ready"})
 
