@@ -93,6 +93,7 @@ class CurrentWeatherRouter(PluginRouter):
             {"type": "text", "text": f"体感 {current['feels_like']}°C | 💧 {current['humidity']}% | 💨 {current['wind_speed']}km/h"},
             {"type": "text", "text": "\n".join(forecast_lines)} if forecast_lines else {"type": "text", "text": ""},
         ])
+        plugin.logger.info("push_chat_content called for {}", loc['city'])
 
         return Ok({
             "city": loc["city"],
