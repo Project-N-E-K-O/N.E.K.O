@@ -69,14 +69,25 @@ class WeatherPlugin(NekoPluginBase):
     async def startup(self, **_):
         await self._reload_config()
 
+        # 确保 store 启用（和 memo_reminder 同样的处理）
+        if not self.store.enabled:
+            store_cfg = (await self.config.dump(timeout=5.0) or {}).get("plugin", {})
+            store_cfg = store_cfg.get("store", {}) if isinstance(store_cfg, dict) else {}
+            if isinstance(store_cfg, dict) and store_cfg.get("enabled"):
+                self.store.enabled = True
+                self.logger.info("Store enabled from config (was disabled at init)")
+            else:
+                self.store.enabled = True
+                self.logger.warning("Store force-enabled (config missing plugin.store.enabled)")
+
         # 从主干查询全局语言
         lang = await self.fetch_user_language(timeout=3.0)
         self._resolve_locale()
         # 注册 Web UI（地点管理面板）
         self.register_static_ui("static")
         self.logger.info(
-            "WeatherPlugin started, locale={}, host_lang={}, routers=4",
-            self._i18n.locale, lang or "(none)",
+            "WeatherPlugin started, locale={}, host_lang={}, store={}",
+            self._i18n.locale, lang or "(none)", self.store.enabled,
         )
         return Ok({"status": "ready"})
 
