@@ -21,6 +21,8 @@ from plugin.sdk.plugin import (
     Ok,
     Err,
     SdkError,
+    PluginSettings,
+    SettingsField,
 )
 
 from ._i18n import I18n, LRUCache
@@ -34,6 +36,17 @@ _LOCALES_DIR = Path(__file__).parent / "locales"
 @neko_plugin
 class WeatherPlugin(NekoPluginBase):
     """天气出行插件 — 生命周期 + 共享基础设施。"""
+
+    class Settings(PluginSettings):
+        """天气插件配置 — hot 字段会自动出现在聊天面板中。"""
+        model_config = {"toml_section": "weather"}
+
+        default_city: str = SettingsField("", hot=True, description="默认城市（留空则自动定位）")
+        timezone: str = SettingsField("Asia/Shanghai", hot=True, description="时区")
+        forecast_days: int = SettingsField(3, hot=True, ge=1, le=7, description="预报天数")
+        cache_ttl_seconds: int = SettingsField(1800, description="缓存有效期（秒）")
+        locale: str = SettingsField("", hot=True, description="语言（留空自动检测）", json_schema_extra={"hot": True, "enum": ["", "zh-CN", "zh-TW", "en"]})
+        force_locale: bool = SettingsField(False, description="强制使用上面的语言设置")
 
     # 声明 router 类，供主进程静态扫描 entry 元数据
     __routers__ = [CurrentWeatherRouter, TravelAdviceRouter, HourlyForecastRouter]
