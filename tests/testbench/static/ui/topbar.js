@@ -377,15 +377,29 @@ function mountRightMenu(host) {
   // * `topbar.menu.reset` removed — Diagnostics → Reset subpage already
   //   exposes all three reset tiers (soft/medium/hard) with full backup UX;
   //   a second entry here would violate §3A B6 ("single entry per feature").
-  // * `topbar.menu.about` hidden — placeholder pending P25 README work.
-  //   i18n key retained so P25 can un-hide without re-translation.
   //
-  // Both items were previously rendered as `btn.disabled = true` with
-  // toast("not implemented"), which is exactly the anti-pattern §3A B15
-  // new clause forbids ("UI stub buttons must not linger — wire or delete").
+  // 2026-04-24 (P26 Commit 3.1): `topbar.menu.about` unhidden now that
+  // USER_MANUAL / ARCHITECTURE_OVERVIEW / CHANGELOG docs ship as part
+  // of v1.1.0 and Settings → About is a real destination (version +
+  // last-updated date + 相关文档 deep-links). Click flows:
+  //   1. set('active_workspace', 'settings') — switches right pane.
+  //   2. emit('settings:goto_page', 'about') — coordinator event the
+  //      Settings workspace already listens for (mirrors the Errors
+  //      badge's 'diagnostics:navigate' pattern so the subpage is
+  //      force-selected even if the user last left Settings on
+  //      Models/API Keys/etc.).
+  const gotoAbout = el('button', {
+    className: 'item',
+    onClick: (ev) => {
+      ev.stopPropagation();
+      closeMenu();
+      set('active_workspace', 'settings');
+      emit('settings:goto_page', 'about');
+    },
+  }, i18n('topbar.menu.about'));
 
   menu.append(
-    gotoDiag, gotoSet,
+    gotoDiag, gotoSet, gotoAbout,
     el('div', { className: 'divider' }),
     exportItem,
   );

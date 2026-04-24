@@ -118,20 +118,20 @@ isProject: false
 - 踩过但未形成全仓 lint 规则的: `Node.append(null)` 静默插入、`??` 对 0/空串不 fallback、Grid template-rows 与子节点数不一致 (详见 `AGENT_NOTES.md §3A` + `§4`);
 - P17 新增的 `_coerce_bool` / `_coerce_float` 值得抽成通用 helper 供将来 export/persistence 阶段复用 (目前局限在 `judge_router`).
 
-**下一个 Agent 的第一件事 (2026-04-24 更新, P26 Commit 3 完结, P26 三 commit 全齐)**:
+**下一个 Agent 的第一件事 (2026-04-24 更新, P26 C3 + hotfix 链接/锚点/图片/内容对齐 完结)**:
 
-1. **先读 P26 三 commit 交付档**: `AGENT_NOTES.md` 顶部三条 P26 banner (Commit 3 = USER_MANUAL 中文简体 10 节 13 图位 + 真实结构校准 + 端点自动过渡; Commit 2 = ARCH + LESSONS L45-L49 + §7.26/§7.27 升级 + 2 skill + smoke; Commit 1 = 版本号常量化 + CHANGELOG + `/docs/{doc_name}` 端点 + About 接线) + `§4.27 #119` (Commit 3 完整 spec) + `#118` (Commit 2 完整 spec) + `PROGRESS.md` 对应三条 P26 日志 + `testbench_USER_MANUAL.md` + `testbench_ARCHITECTURE_OVERVIEW.md` + `LESSONS_LEARNED.md §7.26/§7.27` 两条新主编号原文.
+1. **先读 P26 + hotfix 交付档**: `PROGRESS.md` 最新条目 "P26 Commit 3 手测 hotfix" 含本次四类问题 (链接跳转失效 / 表格溢出 / 图片引用虚构 / USER_MANUAL 与实际代码大面积不符) 的完整修复 + `testbench_USER_MANUAL.md` 全本重写 + `routers/health_router.py` 的 `_slugify_heading` / `_rewrite_internal_doc_links` / `/docs/images/{filename}` 三段新代码.
 
-2. **剩余唯一动作 = 用户手测 + git push** (估 ~0.3-0.5 天):
+2. **剩余唯一动作 = 用户手测 + git push** (估 ~0.3-0.5 天). 重启服务后按 7 条手测:
+   - (a) 浏览器打开 `/docs/testbench_USER_MANUAL` 目录链接 `[§1 ...](#1-准备事项-启动--配置--首次打开)` 全部能跳 (heading 都有 id).
+   - (b) `[代码与设计总体概述](testbench_ARCHITECTURE_OVERVIEW.md)` 类 **带 `.md` 后缀** 的跨文档链接应 200 渲染 (渲染端已自动剥 `.md`, 锚点 `#xxx` fragment 保留).
+   - (c) `ARCHITECTURE_OVERVIEW` 宽表格右侧不再溢出 (CSS `word-break: break-word + display:block; overflow-x:auto` 双保险).
+   - (d) `USER_MANUAL` 13 张图全部在浏览器渲染 (`/docs/images/<filename>` 新端点, 限 basename + 扩展名白名单 + resolve 边界检查).
+   - (e) 查看 `USER_MANUAL` HTML 源码确认 `<h2 id="2-workspace-..."` 等 heading id 均有.
+   - (f) 指向 `LESSONS_LEARNED.md` / `PROGRESS.md` 等**内部开发文档**的链接显示为灰色 dotted 不可点 `<span class="muted-link">` (避免引测试员撞 404 `unknown_doc`).
+   - (g) 按手册 §1-§10 顺序真跑一遍 UI, 对照 PROGRESS 里"关键纠错"清单逐项验 "原错 → 现对" (12+ 处修正: uv 启动 / `tests/testbench_data/` / 无 Welcome Banner / Setup 8 子页 / 6 stage id / 4 composer 模式 / 3 种外部事件 / Structured+Raw wire / 5 真实 memory op / Eval 不可暂停 / autosave 4 字段 / UI 语言/主题 disabled 占位).
 
-   - **用户手测 P26 整批**: 重启 testbench 服务后按以下顺序手测:
-     - (a) `curl http://127.0.0.1:48920/docs/testbench_USER_MANUAL` 应 **200 HTML 渲染** (不再 `404 file_missing`), 浏览器打开看格式 + 链接跳转 OK;
-     - (b) `curl http://127.0.0.1:48920/docs/testbench_ARCHITECTURE_OVERVIEW` 同样 200;
-     - (c) Settings → About 页 "相关文档" 4 条链接全部可点 (USER_MANUAL / ARCHITECTURE_OVERVIEW / external_events_guide / CHANGELOG);
-     - (d) USER_MANUAL Ctrl+F 搜 `IMG:` 应定位 13 个配图占位, 每个含"文件名 | 描述 | 分辨率建议 | 高亮区域" 四段;
-     - (e) 按手册 10 节顺序真跑一遍 (启动 → Workspace → Chat → Memory → Eval → Session → Diagnostics → Settings), 验**手册与实际 UI 逐点对齐**, 发现任何不对齐的地方做小补丁修订.
-
-   - **一次 push 远端**: 手测通过后 `git push NEKO-dev main` 把 **P25 整批** (Day 1/2/3 + polish r5/r6/r7/r7 2nd pass + 第三轮 chokepoint 下沉) + **P26 Commit 1/2/3** 全部推远端.
+3. **push 策略**: 手测通过后**一次** `git push NEKO-dev main` 把 P25 整批 (Day 1/2/3 + polish r5/r6/r7/r7 2nd pass + 第三轮 chokepoint 下沉) + **P26 Commit 1/2/3** + **本次 hotfix** 全部推远端. hotfix 因内部同轮反复迭代 (UI polish r1 去 Pxx/蓝图 + ARCH 二审 + 图片 lightbox + USER_MANUAL 深度对齐第三轮 + TOC 锚点 13 条 `--` → `-` 批修 + D13 smoke 契约) 建议一次单 commit 记账, 消息如 `docs(testbench): P26 C3 hotfix — md link/anchor/image + content alignment + D13 contract`.
 
 3. **读经验层基线**: `AGENT_NOTES.md §3A` 57 条设计原则 → `LESSONS_LEARNED §7` **27 条主编号** (§7.26 Subagent 三段式 / §7.27 Preview 面板按消费域分区 均 P26 Commit 2 升级) + **`§7.A` 候选 L28-L49** (22 条, P26 Commit 2 新增 L45-L49 5 条); §7.25 "跨边界 shape / role / 字段名必须 rg 消费方" 已升到第 6 次同族 + 五层防御; §7.27 从 L44 升为两次同族实锤. **P26 Commit 3 新候选** (§7.A 待加): L50 "Server boot_id for UI state reset" (USER_MANUAL §8.6 讲 About 页 server_boot_id 时发现的 Welcome Banner 服务端重启后重新出现的实现基础, 等二次同族升级) + L51 "Document authoring must reality-check before written" (写前 Grep 真实 runtime 校准 PLAN 笔记 4 处偏差的实证, 等二次同族升级).
 

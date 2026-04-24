@@ -33,11 +33,18 @@ from pathlib import Path
 #
 # When bumping this, remember to:
 #   1. Update ``CHANGELOG.md`` with a dated section.
-#   2. Leave ``TESTBENCH_PHASE`` consistent with the current development
-#      phase (``Pnn`` identifier matches the blueprint & plan docs).
+#   2. Update ``TESTBENCH_PHASE`` to a short human-readable release
+#      name that will be shown on Settings → About as "当前阶段: X".
+#      Avoid internal blueprint codes (``Pnn``) in this value — those
+#      are developer nomenclature and shouldn't leak into tester UI.
+#   3. Update ``TESTBENCH_LAST_UPDATED`` to the ISO-8601 date of the
+#      release cut (``YYYY-MM-DD``). Shown on Settings → About so
+#      testers can tell at a glance how fresh the build is without
+#      cross-referencing CHANGELOG.md.
 
 TESTBENCH_VERSION: str = "1.1.0"
-TESTBENCH_PHASE: str = "P25 external event injection"
+TESTBENCH_PHASE: str = "外部事件注入"
+TESTBENCH_LAST_UPDATED: str = "2026-04-24"
 
 # ─── Directory layout ──────────────────────────────────────────────────────
 

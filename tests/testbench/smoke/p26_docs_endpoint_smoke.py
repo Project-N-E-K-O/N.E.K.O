@@ -29,7 +29,19 @@ Contracts
 ---------
     D1  ``tb_config.TESTBENCH_VERSION`` exists and is semver-shaped
         (MAJOR.MINOR.PATCH, all digits). ``TESTBENCH_PHASE`` exists and
-        starts with ``P`` + digits.
+        is a non-empty user-facing string. ``TESTBENCH_LAST_UPDATED``
+        exists and matches ISO-8601 date format (``YYYY-MM-DD``) —
+        this is the "最后更新日期" value rendered on Settings → About
+        so testers can see at a glance when the build was cut. (The
+        phase-prefix sub-check previously enforced ``P<digits>``
+        mirroring internal blueprint phase codes; that prefix leaked
+        developer-internal nomenclature into the About page and
+        tooltips. Since the UI polish that strips Pxx identifiers from
+        tester-visible text, ``TESTBENCH_PHASE`` is a human-readable
+        release name — the contract now just verifies it's a non-empty
+        string. In practice the About page no longer renders phase
+        directly, but keeping the constant non-empty prevents
+        accidental regressions if any code path consumes it.)
 
     D2  ``server.py`` wires FastAPI ``version=`` to
         ``tb_config.TESTBENCH_VERSION`` (not a hard-coded string).
@@ -71,6 +83,32 @@ Contracts
         the version constant is bumped, the CHANGELOG must get a new
         section for it, and vice versa.
 
+    D11 The rendered HTML stamps every heading with an ``id`` attribute
+        (GitHub-style slug). Without this, the TOC links
+        ``[§1.1](#11-...)`` in both the USER_MANUAL and the
+        ARCHITECTURE_OVERVIEW go nowhere — which broke user manual
+        testing of P26 Commit 3. Probe by running the real renderer
+        over a small fixture and asserting ``<h2 id="..."`` appears.
+
+    D12 The rendered HTML strips ``.md`` suffix off intra-whitelist
+        cross-doc links. Markdown authors naturally write
+        ``[arch](testbench_ARCHITECTURE_OVERVIEW.md)``, but the
+        endpoint only whitelists the stem — the browser resolves the
+        link relative to ``/docs/testbench_USER_MANUAL`` and hits
+        ``/docs/testbench_ARCHITECTURE_OVERVIEW.md`` which 404s on
+        ``unknown_doc``. D12 verifies the renderer rewrites such
+        links to the whitelist-correct stem.
+
+    D13 Every in-doc anchor link (``[label](#slug)``) in the two
+        tester-facing long-form docs (USER_MANUAL, ARCHITECTURE_OVERVIEW)
+        must resolve to some heading's slug under the same
+        ``_slugify_heading`` algorithm the server uses at render time.
+        This catches "author guessed the slug" bugs where the heading
+        contains punctuation (``/``, ``+``, ``(...)``) that the slug
+        algorithm drops outright rather than replacing with ``-``, so
+        the link's ``--`` double-hyphen never matches the rendered
+        ``-`` single-hyphen and the TOC click silently does nothing.
+
 Usage::
 
     .venv\\Scripts\\python.exe tests/testbench/smoke/p26_docs_endpoint_smoke.py
@@ -106,7 +144,16 @@ _EXPECTED_WHITELIST_KEYS = {
 }
 
 _SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
-_PHASE_RE = re.compile(r"^P\d+\b")
+# TESTBENCH_PHASE is a human-readable release nickname; the About page
+# no longer renders it, but it stays in the /version endpoint for
+# programmatic consumers. Any non-whitespace character is acceptable —
+# we just guard against "None" / "" / "   ".
+_PHASE_NON_EMPTY_RE = re.compile(r"\S")
+# TESTBENCH_LAST_UPDATED is rendered on Settings → About as
+# "最后更新日期: YYYY-MM-DD". Enforce strict ISO-8601 date (not full
+# datetime) — the About page shows dates only, and accepting a
+# datetime string would render awkwardly in the kv list.
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _read(path: Path) -> str:
@@ -128,10 +175,19 @@ def check_version_metadata_shape() -> list[str]:
         )
 
     phase = getattr(tb_config, "TESTBENCH_PHASE", None)
-    if not isinstance(phase, str) or not _PHASE_RE.match(phase):
+    if not isinstance(phase, str) or not _PHASE_NON_EMPTY_RE.search(phase):
         errors.append(
-            f"[D1] tb_config.TESTBENCH_PHASE must start with 'P<digits>' "
-            f"(e.g. 'P25 external event injection'). Got: {phase!r}"
+            f"[D1] tb_config.TESTBENCH_PHASE must be a non-empty "
+            f"string (exposed via /version for programmatic consumers). "
+            f"Got: {phase!r}"
+        )
+
+    last_updated = getattr(tb_config, "TESTBENCH_LAST_UPDATED", None)
+    if not isinstance(last_updated, str) or not _ISO_DATE_RE.match(last_updated):
+        errors.append(
+            f"[D1] tb_config.TESTBENCH_LAST_UPDATED must be an "
+            f"ISO-8601 date (YYYY-MM-DD) — shown on Settings → About "
+            f"as '最后更新日期'. Got: {last_updated!r}"
         )
     return errors
 
@@ -180,6 +236,13 @@ def check_health_router_version_endpoint() -> list[str]:
         errors.append(
             "[D3] health_router.py does not read tb_config.TESTBENCH_PHASE "
             "(the /api/version endpoint must expose the phase tag)."
+        )
+    if "tb_config.TESTBENCH_LAST_UPDATED" not in src:
+        errors.append(
+            "[D3] health_router.py does not read "
+            "tb_config.TESTBENCH_LAST_UPDATED (the /api/version endpoint "
+            "must expose the release cut date — consumed by Settings → "
+            "About's '最后更新日期' field)."
         )
     return errors
 
@@ -360,6 +423,117 @@ def check_changelog_has_current_version() -> list[str]:
     return errors
 
 
+# ── D11 — renderer stamps heading ids ──────────────────────────────
+
+def check_rendered_headings_have_ids() -> list[str]:
+    errors: list[str] = []
+    try:
+        from tests.testbench.routers.health_router import (  # noqa: PLC0415
+            _render_markdown_html,
+        )
+    except ImportError as exc:
+        return [f"[D11] cannot import _render_markdown_html: {exc}"]
+    md = "# Top heading\n\n## Sub 1.1\n\ntext"
+    html = _render_markdown_html(md, title="fixture")
+    if 'id="top-heading"' not in html.lower() and "id='top-heading'" not in html.lower():
+        errors.append(
+            "[D11] _render_markdown_html output has no ``id`` attr on "
+            "the top-level heading. Expected the renderer to slug each "
+            "heading so in-doc TOC anchors work. Without this, "
+            "clicking '目录 → §1.1' in USER_MANUAL / ARCHITECTURE_OVERVIEW "
+            "produces no navigation."
+        )
+    if 'id="sub-11"' not in html.lower() and "id='sub-11'" not in html.lower():
+        errors.append(
+            "[D11] slug for 'Sub 1.1' is not 'sub-11' — the slug "
+            "algorithm changed? Check _slugify_heading(). Author-side "
+            "anchors in the shipped docs rely on this exact form."
+        )
+    return errors
+
+
+# ── D12 — renderer rewrites .md cross-doc links ────────────────────
+
+def check_rendered_md_links_stripped() -> list[str]:
+    errors: list[str] = []
+    try:
+        from tests.testbench.routers.health_router import (  # noqa: PLC0415
+            _render_markdown_html,
+        )
+    except ImportError as exc:
+        return [f"[D12] cannot import _render_markdown_html: {exc}"]
+    md = (
+        "see [arch](testbench_ARCHITECTURE_OVERVIEW.md) "
+        "and [arch section](testbench_ARCHITECTURE_OVERVIEW.md#11-foo) "
+        "and [external](external_events_guide.md#q5)."
+    )
+    html = _render_markdown_html(md, title="fixture")
+    if "testbench_ARCHITECTURE_OVERVIEW.md" in html:
+        errors.append(
+            "[D12] rendered HTML still contains 'testbench_ARCHITECTURE_OVERVIEW.md' "
+            "— the link rewriter should strip the .md suffix on whitelisted "
+            "stems so the browser doesn't hit /docs/xxx.md and 404."
+        )
+    if 'href="testbench_ARCHITECTURE_OVERVIEW#11-foo"' not in html:
+        errors.append(
+            "[D12] expected rewritten href "
+            "'testbench_ARCHITECTURE_OVERVIEW#11-foo' in rendered HTML "
+            "(anchor fragment must be preserved across the .md-suffix strip)."
+        )
+    return errors
+
+
+# ── D13 — all in-doc anchor links resolve to a real heading ────────
+#
+# Background: authors frequently write TOC links by eyeballing the
+# heading text and guessing the slug (``[准备事项](#1-准备事项-启动--配置--首次打开)``).
+# The live ``_slugify_heading`` drops punctuation entirely rather than
+# replacing it with ``-``, so ``/ (...)`` evaporates and ``--`` double
+# hyphens in links never match the single-``-`` headings actually
+# rendered. Users see link clicks that silently do nothing. This check
+# scans the two public .md docs for ``](#anchor)`` links and verifies
+# each one matches some real heading's slug.
+#
+# Scoped to ``testbench_USER_MANUAL`` and ``testbench_ARCHITECTURE_OVERVIEW``
+# because those are the two tester-facing long-form docs with real TOCs;
+# CHANGELOG / external_events_guide are short enough that they don't
+# bother with cross-section links.
+
+def check_in_doc_anchors_resolve() -> list[str]:
+    import re as _re  # noqa: PLC0415
+    errors: list[str] = []
+    try:
+        from tests.testbench.routers.health_router import (  # noqa: PLC0415
+            _slugify_heading,
+        )
+    except ImportError as exc:
+        return [f"[D13] cannot import _slugify_heading: {exc}"]
+
+    docs_dir = REPO_ROOT / "tests" / "testbench" / "docs"
+    targets = ["testbench_USER_MANUAL.md", "testbench_ARCHITECTURE_OVERVIEW.md"]
+    for name in targets:
+        path = docs_dir / name
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8")
+        heading_slugs: set[str] = set()
+        for m in _re.finditer(r"^#{1,6}\s+(.+?)\s*$", text, flags=_re.M):
+            slug = _slugify_heading(m.group(1).strip())
+            if slug:
+                heading_slugs.add(slug)
+        for m in _re.finditer(r"\[([^\]\n]+)\]\(#([^)]+)\)", text):
+            label, anchor = m.group(1), m.group(2)
+            if anchor not in heading_slugs:
+                line = text[: m.start()].count("\n") + 1
+                errors.append(
+                    f"[D13] {name}:L{line} link '[{label}](#{anchor})' "
+                    f"doesn't match any heading slug. Check for `/`, `+`, "
+                    f"`(` / `)` in the heading — those get dropped by "
+                    f"_slugify_heading, they do NOT become `-`."
+                )
+    return errors
+
+
 # ── entry point ────────────────────────────────────────────────────
 
 CHECKS = (
@@ -373,6 +547,9 @@ CHECKS = (
     ("D8 — About page references /docs/", check_about_page_consumes_docs_endpoint),
     ("D9 — at least one whitelisted doc on disk", check_at_least_one_doc_on_disk),
     ("D10 — CHANGELOG has current version heading", check_changelog_has_current_version),
+    ("D11 — rendered headings have ids", check_rendered_headings_have_ids),
+    ("D12 — renderer strips .md suffix on whitelist cross-links", check_rendered_md_links_stripped),
+    ("D13 — all in-doc anchor links resolve to a heading", check_in_doc_anchors_resolve),
 )
 
 

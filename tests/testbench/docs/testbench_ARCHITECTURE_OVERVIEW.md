@@ -28,10 +28,10 @@
 - [第二部分: 后端模块拓扑](#第二部分-后端模块拓扑) — Python 侧
   - [§2.1 目录速查](#21-目录速查)
   - [§2.2 启动路径 (`run_testbench.py` → `server.py` → 各 router)](#22-启动路径)
-  - [§2.3 Session / Sandbox / ConfigManager 三位一体](#23-session--sandbox--configmanager-三位一体)
+  - [§2.3 Session / Sandbox / ConfigManager 三位一体](#23-session-sandbox-configmanager-三位一体)
   - [§2.4 Pipeline 层 (`pipeline/`)](#24-pipeline-层-pipeline)
   - [§2.5 Router 层 (`routers/`)](#25-router-层-routers)
-  - [§2.6 持久化 / 自动保存 / 快照](#26-持久化--自动保存--快照)
+  - [§2.6 持久化 / 自动保存 / 快照](#26-持久化-自动保存-快照)
 - [第三部分: 前端模块拓扑](#第三部分-前端模块拓扑) — JS 侧
   - [§3.1 目录速查](#31-目录速查)
   - [§3.2 boot 流程 (`app.js`)](#32-boot-流程-appjs)
@@ -40,11 +40,11 @@
   - [§3.5 `renderDriftDetector` (dev 模式断言)](#35-renderdriftdetector)
 - [第四部分: 关键子系统](#第四部分-关键子系统)
   - [§4.1 Chat 对话四模式](#41-chat-对话四模式)
-  - [§4.2 Memory 三层 + 5 Op + Preview/Commit](#42-memory-三层--5-op--previewcommit)
+  - [§4.2 Memory 三层 + 5 Op + Preview/Commit](#42-memory-三层-5-op-previewcommit)
   - [§4.3 Stage Coach (六阶段引导)](#43-stage-coach-六阶段引导)
   - [§4.4 Evaluation (Schema + Run + Results + Aggregate + Export)](#44-evaluation)
-  - [§4.5 External Event Injection (P25)](#45-external-event-injection)
-  - [§4.6 Diagnostics 六子页](#46-diagnostics-六子页)
+  - [§4.5 External Event Injection (P25)](#45-external-event-injection-p25)
+  - [§4.6 Diagnostics 五子页](#46-diagnostics-五子页)
   - [§4.7 Virtual Clock](#47-virtual-clock)
 - [第五部分: 横切关注点](#第五部分-横切关注点)
   - [§5.1 原子写入 (`atomic_io`)](#51-原子写入)
@@ -145,7 +145,7 @@ persona + 多外部触发源 (avatar 道具 / agent 回调 / proactive 主动搭
 | **PromptBundle** | 发给 LLM 的 prompt 的**两种表达**: `structured` (给代码处理) + `wire` (给 LLM 看的 messages 列表). **session.messages 是唯一事实源**, wire 按 messages 构造. | `pipeline/prompt_builder.py` |
 | **Session messages** | `session.messages` 列表, 唯一真相. 所有 chat turn / external event / role=system reply 最终都经 `messages_writer.append_message` 写入. | `pipeline/messages_writer.py` |
 | **three-tier memory** | recent (短期对话缓冲) / facts (中期事实) / reflections (长期反思) 三层, 再加 persona (角色卡). 分别对应 `memory/recent.json` / `memory/facts.json` / `memory/reflections.json` / `persona.json` 四个文件. | `main_logic.memory.*` (主程序) |
-| **Stage Coach** | 六阶段引导: `persona_ready` → `memory_ready` → `chat_ready` → `chat_active` → `evaluation_ready` → `evaluation_active`. 状态机只 suggest + advance, 不阻塞. | `pipeline/stage_coordinator.py` |
+| **Stage Coach** | 六阶段引导: `persona_setup` → `memory_build` → `prompt_assembly` → `chat_turn` → `post_turn_memory_update` → `evaluation` (chat_turn ↔ post_turn_memory_update 循环). 状态机只 suggest + advance, 不阻塞. | `pipeline/stage_coordinator.py` |
 | **Virtual Clock** | 可手动拖拽的时间游标. 只影响 "XXX ago" 类相对时间渲染, 不影响真实墙钟. 解决 "测试员不等 30 分钟就要看 30 分钟后的记忆效果" 的刚需. | `virtual_clock.py` + `pipeline/prompt_builder.py::time_manager` |
 | **Judger** | 评分器. 四类: pairwise (两两比较) / head-to-head (每对 N 轮对决) / single-turn (单条打分) / full-session (全轮评分). 都接受 `ScoringSchema` 定义的评分维度. | `pipeline/judge_runner.py` + `pipeline/scoring_schema.py` |
 | **Preview / Commit (Memory Op)** | memory op 的**两阶段 API**. preview 调 LLM + 返回 "将要写入什么", commit 只写盘不跑 LLM. | `routers/memory_router.py` + `pipeline/memory_runner.py` |
@@ -247,13 +247,13 @@ tests/testbench/
 ├── virtual_clock.py       # 虚拟时钟 + time_manager
 ├── logger.py              # JSONL session logger + anon logger
 ├── pipeline/              # 业务逻辑 (~30 个文件, 见 §2.4)
-├── routers/               # HTTP 端点 (14 个, 见 §2.5)
+├── routers/               # HTTP 端点 (13 个, 见 §2.5)
 ├── static/                # 前端: core/ + ui/ (见第三部分)
 ├── templates/             # Jinja2 (只有 index.html 壳子)
 ├── dialog_templates/      # 内置脚本模板 (.json)
 ├── scoring_schemas/       # 内置评分 schema (.json)
 ├── presets/               # persona 内置预设
-├── smoke/                 # 18 份 smoke 脚本 (见 §6.3)
+├── smoke/                 # 18 份 Python smoke + 1 份 Node.js UI smoke (见 §6.3)
 ├── docs/                  # 本文所在目录, 全项目文档入口
 └── _subagent_handoff/     # 运行时 subagent 交付目录 (见 L33.x)
 ```
@@ -261,13 +261,16 @@ tests/testbench/
 ### §2.2 启动路径
 
 ```
-python -m tests.testbench.server    # 或 python -m tests.testbench.run_testbench
+uv run python tests/testbench/run_testbench.py [--port 48920] [--host 127.0.0.1]
   │
   ▼
-run_testbench.py::main()            # argparse + log level 调整
+run_testbench.py::main()            # argparse + log level + live_runtime_log 安装
   │
   ▼
-server.py::create_app()             # FastAPI 工厂
+uvicorn.run("tests.testbench.server:app", ...)
+  │
+  ▼
+server.py::create_app()             # FastAPI 工厂 (模块级 app = create_app())
   │
   ├── config.ensure_code_support_dirs()  # 保证 docs/ static/ templates/ 存在
   ├── config.ensure_data_dirs()          # 保证 tests/testbench_data/ 存在, 写入首次 README
@@ -360,7 +363,7 @@ server.py::create_app()             # FastAPI 工厂
 
 ### §2.5 Router 层 (`routers/`)
 
-HTTP 端点按**业务域**分, 14 个 router:
+HTTP 端点按**业务域**分, 13 个 router:
 
 | Router | 路径前缀 | 职责 |
 |---|---|---|
@@ -549,12 +552,14 @@ initRenderDriftDetector();
 
 ### §4.1 Chat 对话四模式
 
+Chat composer 顶部的 **Mode 切换器** 让测试员切入下面四类驱动:
+
 | 模式 | 入口 | pipeline 模块 |
 |---|---|---|
-| **手动单发** | Chat composer 发送按钮 | `chat_runner.stream_send(source="chat.send")` |
-| **假想用户自动续写** | Auto-Dialog 面板 `[Simuser] on` | `simulated_user.generate_simuser_message` → `chat_runner.stream_send(source="auto_dialog_simuser")` |
-| **脚本化回放** | Setup → Scripts → `[Run]` | `script_runner.run_script` → `chat_runner.stream_send(source="script.playback")` |
-| **双 AI 自动对话** | Auto-Dialog 面板 `[Dual AI] on` | `auto_dialog.AutoDialogController` → `chat_runner.stream_send(source=...)` 交替 |
+| **Manual (手动单发)** | composer Mode = manual, 点发送按钮 | `chat_runner.stream_send(source="chat.send")` |
+| **SimUser (假想用户自动续写)** | composer Mode = simuser | `simulated_user.generate_simuser_message` (NOSTAMP) → `chat_runner.stream_send(source="chat.send")` |
+| **Script (脚本化回放)** | composer Mode = script, 选 dialog template (Setup → Scripts 里维护) | `script_runner.run_script` → `chat_runner.stream_send(source="chat.send")` |
+| **Auto (双 AI 自动对话)** | composer Mode = auto | `auto_dialog.AutoDialogController` → `chat_runner.stream_send(source="auto_dialog_target")` 交替 |
 
 **一条 chat turn 的完整路径**:
 
@@ -611,13 +616,15 @@ POST /api/memory/prompt_preview/{op}   # 只返 "将要发给 LLM 的 wire", 不
 
 ### §4.3 Stage Coach (六阶段引导)
 
-`pipeline/stage_coordinator.py`. 状态:
+`pipeline/stage_coordinator.py`. 状态 (`Stage` Literal):
 
 ```
-persona_ready → memory_ready → chat_ready → chat_active → evaluation_ready → evaluation_active
+persona_setup → memory_build → prompt_assembly → chat_turn ⇄ post_turn_memory_update → evaluation
+                                                   ↑___________________________|
+                                                   (chat_turn 和 post_turn_memory_update 循环)
 ```
 
-每状态有 `suggest_next()` 给 UI 提示下一步 + `advance()` 推进条件校验.
+每状态有 `suggest()` 给 UI 提示下一步 + `advance()` 推进条件校验.
 **只 suggest + advance**, 不阻塞. 测试员可以跳阶段 (比如跳过 memory 直
 接 chat), 顶栏 chip 显示当前阶段.
 
@@ -652,8 +659,8 @@ Evaluation 链路:
 ```
 POST /api/session/external-event
 {
-  "kind": "avatar_interaction" | "agent_callback" | "proactive_chat",
-  "payload": {...},          # kind-specific
+  "kind": "avatar" | "agent_callback" | "proactive",   # kind 字符串值, 不带后缀
+  "payload": {...},          # kind-specific (见 external_events_guide.md)
   "mirror_to_recent": bool   # 可选, default false
 }
 ```
@@ -662,13 +669,17 @@ POST /api/session/external-event
 
 ```
   kind = request.kind
-  if kind == "avatar_interaction":
+  if kind == "avatar":
       result = await external_events.simulate_avatar_interaction(session, payload, mirror_to_recent)
   elif kind == "agent_callback":
       result = await external_events.simulate_agent_callback(...)
-  elif kind == "proactive_chat":
-      result = await external_events.simulate_proactive_chat(...)
+  elif kind == "proactive":
+      result = await external_events.simulate_proactive(...)
   return result.to_dict()
+
+> ℹ️ 注意 ``wire_tracker`` 给这些事件打的 source 字符串是 ``avatar_event`` /
+> ``agent_callback`` / ``proactive_chat`` — 即 wire 层 slug 和 API kind 不
+> 同名 (历史原因). 做 Preview Panel 过滤时用 wire slug.
 ```
 
 每个 handler 内部:
@@ -689,16 +700,18 @@ POST /api/session/external-event
 `dedupe_window_hit`, `empty_callbacks`, `pass_signaled`, `llm_failed`,
 `persona_not_ready`, `chat_not_configured`). 见 `external_events_guide.md`.
 
-### §4.6 Diagnostics 六子页
+### §4.6 Diagnostics 五子页
 
 | 子页 | 数据源 | 用途 |
 |---|---|---|
-| **Errors** | `diagnostics_store` (filter level=error/warning) | 错误排查 |
-| **Logs** | `logger.py` JSONL (per session) | 实时 tail + 按 op 过滤 + 中文化 op 名 |
-| **Paths** | `boot_self_check.scan_orphan_sandboxes()` + 实时目录扫描 | 沙盒孤儿清理 + 导出默认落盘目录 |
+| **Errors** | `diagnostics_store` (filter level=error/warning) | 错误排查; 内置 "Security 视图" filter (切到 prompt_injection / security 相关 op) |
+| **Logs** | `logger.py` JSONL (per session per date) | session + date 选择, level / op / keyword 过滤, 5s 轮询 auto-refresh, 导出 JSONL. **无 follow/tail 自动滚动**. |
+| **Paths** | `/system/paths` + `/system/health` + `/system/orphans` | 数据/代码路径一览 (按 session/shared/code 三组) + 系统健康卡片 (5 项指标) + 孤儿沙盒 triage (批量清 0B + 逐条删) + [复制路径] / [在文件管理器中打开] (仅限 DATA_DIR 子路径) + [导出沙盒快照] |
 | **Snapshots** | `snapshot_store` | list / edit / rewind / rerun |
 | **Reset** | `reset_runner` | 硬重置 (清沙盒 + 清持久化 + 清日志) |
-| **Security** | `security_router` + `prompt_injection_detect` | injection 审计视图 + 模式库编辑 |
+
+> Injection 审计的**模式库编辑**不在 Diagnostics, 而是独立 `security_router`
+> 下的后端端点 (当前版本无独立子页, 由 agent / 二开通过 HTTP 直调).
 
 ### §4.7 Virtual Clock
 
@@ -744,7 +757,7 @@ os.replace(tmp, path)   # POSIX rename 原子性
 `pipeline/wire_tracker.py::record_last_llm_wire(session, wire, source, note)`:
 
 - 唯一 stamp `session.last_llm_wire` 入口.
-- `source` ∈ `KNOWN_SOURCES` = `{chat.send, auto_dialog_target, auto_dialog_simuser, avatar_event, agent_callback, proactive_chat, memory.llm, judge.llm}`. unknown 抛 `ValueError`.
+- `source` ∈ `KNOWN_SOURCES` = `{chat.send, auto_dialog_target, avatar_event, agent_callback, proactive_chat, memory.llm, judge.llm}` (**7 项**, P25 r7 移除了 simuser — 参见 `LESSONS_LEARNED §L44`). unknown 抛 `ValueError`.
 - smoke `p25_llm_call_site_stamp_coverage_smoke.py` AST 扫所有
   `<xxx>.ainvoke/astream/invoke(...)` 调用, 确保同 body 内有
   `record_last_llm_wire`, 否则 FAIL; 合法不 stamp 的用代码内 `# NOSTAMP(wire_tracker): <理由>` sentinel (10 行 lookback).
@@ -775,8 +788,10 @@ Chat / Judge 的流式端点走 SSE. 约束 (`pipeline/sse_events.py`):
 
 ### §5.5 i18n
 
-`static/core/i18n.js` 一个大字典. 默认 `zh-CN`, 缺 key 回退到 `en` (若
-也缺, 显式展示 `<missing:key>` 方便审计).
+`static/core/i18n.js` 一个大字典. **当前只定义 `zh-CN`**; `setLocale()`
+仅接受 `zh-CN`, Settings → UI 的语言切换下拉也 disabled, 只有 "简体中文" 一项.
+缺 key 时调用点显式展示 `<missing:key>` 方便审计. en / ja 字典尚未落地
+(P04 预留位).
 
 **命名约定** (见 `.cursor/rules/i18n-fmt-naming.mdc`):
 - `<workspace>.<section>.<key>` 层级.
@@ -825,13 +840,13 @@ Chat / Judge 的流式端点走 SSE. 约束 (`pipeline/sse_events.py`):
 
 ### §6.3 smoke 套件导航
 
-18 份 smoke 按阶段归属:
+18 份 Python smoke + 1 份 Node.js UI smoke, 按阶段归属:
 
 ```
 p21_1_reliability_smoke.py            # 生命周期 / lock / atomic write
 p21_persistence_smoke.py              # 保存加载 roundtrip
 p21_3_prompt_injection_smoke.py       # injection 模式库
-p21_ui_smoke.mjs                      # (Node.js) 前端 UI smoke
+p21_ui_smoke.mjs                      # (Node.js) 前端 UI smoke — 单独跑
 p22_hardening_smoke.py                # P22 加固 (sha256 / boot cleanup / judger extra_context)
 p23_exports_smoke.py                  # 导出 11 组合 + 脱敏 + 导入往返
 p24_integration_smoke.py              # P24 端到端联调
@@ -846,11 +861,11 @@ p25_r5_polish_smoke.py                # polish r5 7 契约
 p25_r6_import_recent_smoke.py         # recent.json import shape
 p25_r7_wire_partition_smoke.py        # Preview Panel 域分区
 p25_wire_role_chokepoint_smoke.py     # role=system rewrite chokepoint
+p26_docs_endpoint_smoke.py            # /docs/{name} 公开白名单 + heading id 锚点 + .md 后缀改写
 ```
 
-**跑全量**: `tests/testbench/smoke/_run_all.cmd` (Windows) /
-`_run_all.sh` (POSIX) / `_run_all.py` (cross-platform). 当前基线:
-17/17 Python smoke 全绿 (p21_ui_smoke.mjs 需 Node.js 单独跑).
+**跑全量**: `uv run python tests/testbench/smoke/_run_all.py` (cross-platform).
+当前基线: 18/18 Python smoke 全绿 (`p21_ui_smoke.mjs` 需 Node.js 单独跑).
 
 ---
 

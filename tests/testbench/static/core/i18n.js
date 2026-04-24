@@ -27,8 +27,8 @@ export const I18N = {
         save: '保存到存档',
         save_as: '另存为…',
         restore_autosave: '恢复自动保存…',
-        restore_autosave_hint: '崩溃恢复 / 自动保存入口 (P22)',
-        not_implemented: '该功能将在后续 phase 实装',
+        restore_autosave_hint: '崩溃恢复 / 自动保存入口',
+        not_implemented: '该功能将在后续版本实装',
       },
       stage: {
         label: '阶段',
@@ -169,7 +169,7 @@ export const I18N = {
           master_name: '出现在 human 消息前的说话人标签.',
           character_name: '角色专属 memory 子目录名; 变更后 Import 会写到新目录.',
           language: 'zh-CN / en / ja 等 ISO 代码. 作用于后续 Prompt 本地化.',
-          system_prompt: '支持 {LANLAN_NAME} / {MASTER_NAME} 占位符, 由 Prompt 合成阶段 (P08) 替换. 留空或保留默认文本时, 运行期会自动替换为当前 language 的默认模板 — 下方可预览实际效果.',
+          system_prompt: '支持 {LANLAN_NAME} / {MASTER_NAME} 占位符, 由 Prompt 合成器在运行期替换. 留空或保留默认文本时, 运行期会自动替换为当前 language 的默认模板 — 下方可预览实际效果.',
         },
         buttons: {
           save: '保存',
@@ -272,7 +272,7 @@ export const I18N = {
       // P12.5: Setup → Scripts 子页 (对话剧本模板编辑器).
       scripts: {
         heading: '对话剧本 (Dialog Scripts)',
-        intro: '阅览 / 复制 / 编辑 / 新建 `dialog_templates/*.json`. 剧本里的 user turn 是测试输入, assistant turn 的 `expected` 字段会在 Chat 里跑脚本时自动写入消息的"参考回复"供对照评分 (P15 Comparative Judger). 评分 prompt / 评分维度不在这里, 归 Evaluation → Schemas 子页.',
+        intro: '阅览 / 复制 / 编辑 / 新建 `dialog_templates/*.json`. 剧本里的 user turn 是测试输入, assistant turn 的 `expected` 字段会在 Chat 里跑脚本时自动写入消息的"参考回复"供对照评分 (Comparative Judger). 评分 prompt / 评分维度不在这里, 归 Evaluation → Schemas 子页.',
         buttons: {
           refresh_list: '刷新列表',
           new_blank: '+ 新建空白模板',
@@ -699,7 +699,7 @@ export const I18N = {
       },
       run: {
         heading: 'Run 评分运行',
-        intro: '选一个 Scoring Schema, 挑要评分的目标 (整段对话 / 某几条 AI 回复), 可选择覆盖 judge 模型参数, 然后 [运行评分]. 结果会立即出现在下方并落到 session.eval_results (P17 Results 子页读取).',
+        intro: '选一个 Scoring Schema, 挑要评分的目标 (整段对话 / 某几条 AI 回复), 可选择覆盖 judge 模型参数, 然后 [运行评分]. 结果会立即出现在下方并落到 session.eval_results (Results 子页读取).',
         no_session: {
           heading: '当前没有活动 session',
           body: '请先去 Home 或顶栏 [+ 新会话] 创建一个 session, 再来跑评分.',
@@ -742,7 +742,7 @@ export const I18N = {
           mode_inline: '内联文本 (1:N 同一份 B)',
           mode_msg_ref: '每条消息自带参考 (1:1 自动配对)',
           inline_placeholder: '在此粘贴参考回复 B...',
-          conversation_unsupported: 'P16 暂不在 UI 中支持"整段对比" (comparative + 整段 scope / 或 conversation 粒度). 这类 schema 要走 reference_conversation 字段 (结构化轨迹), 请直接调 POST /api/judge/run; 或把 scope 切回 [按消息挑选] 走 1:N pairwise.',
+          conversation_unsupported: '当前版本 UI 暂不支持"整段对比" (comparative + 整段 scope / 或 conversation 粒度). 这类 schema 要走 reference_conversation 字段 (结构化轨迹), 请直接调 POST /api/judge/run; 或把 scope 切回 [按消息挑选] 走 1:N pairwise.',
           disabled_placeholder: '此组合下参考输入已禁用 (切换 scope 至 "按消息挑选" 可恢复).',
           pairing_none: '先在上面挑至少一条 assistant 回复, 这里的参考 B 才有对比对象.',
           pairing_single: '将把这份参考 B 与选中的那 1 条 assistant 回复 (A) 做 pairwise 对比.',
@@ -817,12 +817,12 @@ export const I18N = {
           no_message: '先挑至少一条 assistant 回复.',
           no_ref_inline: '比较模式下需要填 [参考回复 B] (内联文本).',
           no_ref_per_target: '选中的消息都没有 reference_content 字段; 要么切回 [内联文本] 手写 B, 要么去 Script 子页跑一遍让脚本落盘参考.',
-          conv_comparative_unsupported: '当前 schema 是 comparative + conversation, P16 UI 暂不支持, 请直接调 API.',
+          conv_comparative_unsupported: '当前 schema 是 comparative + conversation, 当前版本 UI 暂不支持, 请直接调 API.',
         },
         results: {
           heading: '本次运行结果',
           empty: '还没有运行过. 按 [运行评分] 开始.',
-          empty_after_nav: '切走再回来结果会清空, 持久化的历史记录请看 Results 子页 (P17 上线).',
+          empty_after_nav: '切走再回来结果会清空, 持久化的历史记录请看 Results 子页.',
           batch_error: '整批运行失败',
           verdict_unknown: '(无 verdict)',
           passed: '通过',
@@ -1004,7 +1004,7 @@ export const I18N = {
       },
       schemas: {
         heading: 'Scoring Schemas (评分模板)',
-        intro: '定义评分的维度 / 权重 / 锚点 / 公式 / 判决规则 / prompt 模板. ScoringSchema 是 P15 起的一等公民, P16 的四类 Judger 均由同一份 schema 驱动. 内置三套模板: `builtin_human_like` (整段对话 · Absolute) / `builtin_prompt_test` (单条回复 · Absolute) / `builtin_comparative_basic` (单条 A/B 对比 · Comparative). 内置只读, 需要定制时 [复制为可编辑] 生成 user 副本再改, 或 [+ 新建空白] 从头写.',
+        intro: '定义评分的维度 / 权重 / 锚点 / 公式 / 判决规则 / prompt 模板. ScoringSchema 是一等公民, 四类 Judger (Absolute / Comparative / Prompt Test / Analysis) 均由同一份 schema 驱动. 内置三套模板: `builtin_human_like` (整段对话 · Absolute) / `builtin_prompt_test` (单条回复 · Absolute) / `builtin_comparative_basic` (单条 A/B 对比 · Comparative). 内置只读, 需要定制时 [复制为可编辑] 生成 user 副本再改, 或 [+ 新建空白] 从头写.',
         buttons: {
           refresh_list: '刷新列表',
           new_blank: '+ 新建空白 schema',
@@ -1181,7 +1181,7 @@ export const I18N = {
         search_placeholder: '搜索 type / message / url...',
         auto_refresh: '自动刷新 (5s)',
         include_info_label: '包含 info 级',
-        include_info_tooltip: '默认隐藏 info 级条目 (Errors 页语义 = "最近出了什么问题"; info 级一般是审计回放, 例如 P25 外部事件仿真成功时会往 ring 里写一条 avatar_interaction_simulated 给"事后可溯源"留痕, 但它不是"问题"). 勾上后会把 info 级也一起显示. 如果在 "级别" 下拉里已经选了具体的 level, 这个开关会被忽略 (尊重用户显式筛选意图).',
+        include_info_tooltip: '默认隐藏 info 级条目 (Errors 页语义 = "最近出了什么问题"; info 级一般是审计回放, 例如外部事件仿真成功时会往 ring 里写一条 avatar_interaction_simulated 给"事后可溯源"留痕, 但它不是"问题"). 勾上后会把 info 级也一起显示. 如果在 "级别" 下拉里已经选了具体的 level, 这个开关会被忽略 (尊重用户显式筛选意图).',
         refresh: '刷新',
         trigger_test: '制造测试错误',
         synth_msg: '人工触发的测试错误 (用于验证诊断面板全链路).',
@@ -1332,10 +1332,10 @@ export const I18N = {
           current_session_log: '本会话今天的 JSONL 日志. 每一条 chat.send / judge.run / memory.op 都会记一行. 跨日会切到新的 YYYYMMDD 文件.',
           sandboxes_all: '所有历史会话的沙盒. 销毁会话会清理对应子目录; 异常退出可能留下残留, 需要时可以手动删除不活跃的目录.',
           logs_all: '所有会话的 JSONL 日志按 `<session_id>-YYYYMMDD.jsonl` 组织. 可以直接复制路径给别人协作排错.',
-          saved_sessions: 'P21 实装后保存的会话档案 (.json). 本期只是个空壳目录.',
-          autosave: 'P22 实装后自动存档的落点 (debounced, 最新 N 份). 本期是空的.',
-          exports: 'P23 导出 (Markdown / JSON / dialog template) 的目标目录. Evaluation → Aggregate 的 [导出报告] 目前已落在这里.',
-          user_schemas: '用户自定义 ScoringSchema. P15 新建 / 复制内置 schema 都会写到这里.',
+          saved_sessions: '手动保存的会话档案 (.json) 落点.',
+          autosave: '自动存档落点 (debounced, 最新 N 份).',
+          exports: '导出 (Markdown / JSON / dialog template) 的目标目录. Evaluation → Aggregate 的 [导出报告] 目前已落在这里.',
+          user_schemas: '用户自定义 ScoringSchema. 新建 / 复制内置 schema 都会写到这里.',
           user_dialog_templates: '用户自定义对话模板 (*.json). Setup → Scripts 里新建 / 复制内置模板写到这里.',
           code_dir: 'testbench 源码. 由 git 管理, 只读.',
           builtin_schemas: '仓库里自带的三套 schema (human-like / prompt-test / comparative-basic). 只读.',
@@ -1682,7 +1682,7 @@ export const I18N = {
         // P12: assistant 消息上挂的 reference_content (脚本 expected / 手工
         // 写的"理想人类回复") 折叠块标题 + 空态提示.
         reference_title: '参考回复 (reference_content)',
-        reference_hint: '由脚本 expected 回填或测试人员手动写入, 用于 P15+ 对照评分. 不会发给目标 AI.',
+        reference_hint: '由脚本 expected 回填或测试人员手动写入, 用于 Comparative Judger 对照评分. 不会发给目标 AI.',
         // P17 消息头内联评分徽章. 只挂在 assistant 气泡且有命中评分时;
         // verdict 只在 tooltip 里展示, 徽章主文本仅用 overall / gap,
         // 以免 header 行被撑爆.
@@ -1990,7 +1990,7 @@ export const I18N = {
       // 语义契约层 (prompt 注入 + memory 写入), 不复现实时流机制.
       external_events: {
         section_title: '外部事件模拟',
-        section_hint: '复现主程序 "运行时外部触发 + 临时 prompt 注入 + 写 memory" 三类系统的语义契约 (详见 P25 蓝图). 每次提交都真实调用目标 AI, 消耗 token; 不复现实时流机制 / 多进程 queue / WebSocket.',
+        section_hint: '复现主程序 "运行时外部触发 + 临时 prompt 注入 + 写 memory" 三类系统的语义契约 (详见 Settings → About → 外部事件注入详细说明). 每次提交都真实调用目标 AI, 消耗 token; 不复现实时流机制 / 多进程 queue / WebSocket.',
         tab: {
           avatar: 'Avatar 道具',
           agent_callback: 'Agent 回调',
@@ -2270,7 +2270,7 @@ export const I18N = {
       about: {
         heading: '关于 N.E.K.O. Testbench',
         version_label: '版本',
-        phase_label: '当前阶段',
+        last_updated_label: '最后更新日期',
         host_label: '监听地址',
         loading: '加载中…',
         limits_heading: '本期声明 (刻意不做的能力)',
@@ -2279,8 +2279,8 @@ export const I18N = {
           '仅文本对话, 暂不接入 Realtime / 语音',
           '默认绑定 127.0.0.1, 不监听公网',
           'api_key 在内存中保留明文, 保存到磁盘时自动脱敏',
-          '外部事件不做冷却 / 黑名单 / 用户隔离 (P25 注明的不做项)',
-          'es / pt 翻译不做, UI 静默回退到英文',
+          '外部事件不做冷却 / 黑名单 / 用户隔离 (有意不做项)',
+          'en翻译不做, 当前版本UI仅中文可用',
           '单 LLM 串行, 无并发调用',
         ],
         // Tester 文档入口 — 每条对应 /docs/<name> 端点 (由 health_router

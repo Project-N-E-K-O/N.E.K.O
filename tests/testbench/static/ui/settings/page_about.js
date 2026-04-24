@@ -1,7 +1,7 @@
 /**
  * page_about.js — Settings → About 子页.
  *
- * 展示 testbench 版本 + 当前阶段 + 本期声明 + 测试人员文档入口.
+ * 展示 testbench 版本 + 最后更新日期 + 本期声明 + 测试人员文档入口.
  * 读 `/version` 拿实时数据, 失败时回退成 "加载中…".
  *
  * v1.1 (P25) 起 About 页多了一个 "相关文档" 卡片, 每一条指向
@@ -27,8 +27,8 @@ export async function renderAboutPage(host) {
   kv.append(
     el('dt', {}, i18n('settings.about.version_label')),
     el('dd', {}, version ? `${version.name} ${version.version}` : i18n('settings.about.loading')),
-    el('dt', {}, i18n('settings.about.phase_label')),
-    el('dd', {}, version?.phase || '—'),
+    el('dt', {}, i18n('settings.about.last_updated_label')),
+    el('dd', {}, version?.last_updated || '—'),
     el('dt', {}, i18n('settings.about.host_label')),
     el('dd', {}, version ? `${version.host}:${version.port}` : '—'),
   );

@@ -1852,7 +1852,9 @@ button.memory-item-delete:hover {
  * P10 · 记忆合成触发面板 + 预览 drawer
  *   — 挂在 memory editor 下方作为独立 section, 视觉上与编辑器解耦:
  *     较浅的容器 / 次级标题 / buttons row / 可展开的 drawer.
- *   — drawer 内字段统一用 .memory-preview-field (label + control 上下排).
+ *   — drawer 内字段默认 .memory-preview-field (label + control 上下排);
+ *     个别 checkbox 用 .memory-preview-field--checkbox-inline 与
+ *     .memory-field-inline 同一行 (文案左、勾选框右).
  * ===================================================================== */
 
 .memory-trigger-host {
@@ -1933,6 +1935,11 @@ button.memory-item-delete:hover {
   display: flex;
   flex-direction: column;
   gap: 3px;
+}
+/* Checkbox + label on one line (recent.compress 「详细摘要」); avoid column
+   layout leaving a lone checkbox visually centered under the heading. */
+.memory-preview-field--checkbox-inline > label.memory-field-inline {
+  align-self: flex-start;
 }
 .memory-preview-field > label {
   font-size: 12px;

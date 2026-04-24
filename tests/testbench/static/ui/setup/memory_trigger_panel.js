@@ -373,7 +373,8 @@ function renderRecentCompressParams(host, paramsRef) {
     kvRow(i18n('setup.memory.trigger.recent.params.tail_count'),
       intInput('', v => { paramsRef.value.tail_count = v; }, { min: 1, placeholder: i18n('setup.memory.trigger.recent.params.tail_count_ph') }),
       i18n('setup.memory.trigger.recent.params.tail_count_help')),
-    kvRow(i18n('setup.memory.trigger.recent.params.detailed'),
+    kvCheckboxInlineRow(
+      i18n('setup.memory.trigger.recent.params.detailed'),
       checkbox(false, v => { paramsRef.value.detailed = v; }),
       i18n('setup.memory.trigger.recent.params.detailed_help')),
   );
@@ -635,6 +636,24 @@ function kvRow(labelText, control, helpText) {
   const row = el('div', { className: 'memory-preview-field' });
   row.append(el('label', {}, labelText));
   row.append(control);
+  if (helpText) row.append(el('div', { className: 'muted tiny' }, helpText));
+  return row;
+}
+
+/**
+ * One row: label text immediately left of checkbox (same baseline as
+ * ``memory_editor_structured.inlineField`` but label-first — tester asked
+ * for 勾在文案右侧, not a lone checkbox centered on a second row under
+ * a column ``.memory-preview-field`` layout).
+ */
+function kvCheckboxInlineRow(labelText, checkboxEl, helpText) {
+  const row = el('div', { className: 'memory-preview-field memory-preview-field--checkbox-inline' });
+  row.append(
+    el('label', { className: 'memory-field-inline' },
+      el('span', {}, labelText),
+      checkboxEl,
+    ),
+  );
   if (helpText) row.append(el('div', { className: 'muted tiny' }, helpText));
   return row;
 }

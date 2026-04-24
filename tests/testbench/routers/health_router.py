@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from tests.testbench import config as tb_config
@@ -55,6 +55,7 @@ async def version() -> dict:
         "name": "N.E.K.O. Testbench",
         "version": tb_config.TESTBENCH_VERSION,
         "phase": tb_config.TESTBENCH_PHASE,
+        "last_updated": tb_config.TESTBENCH_LAST_UPDATED,
         "host": tb_config.DEFAULT_HOST,
         "port": tb_config.DEFAULT_PORT,
         "boot_id": BOOT_ID,
@@ -777,6 +778,115 @@ _PUBLIC_DOCS: dict[str, str] = {
 }
 
 
+def _slugify_heading(text: str) -> str:
+    """Convert heading text to a GitHub-style URL slug.
+
+    GitHub's algorithm: lower-case, strip non-[\\w\\s\\-], collapse
+    whitespace to ``-``, preserve CJK so Chinese headings like "准备
+    事项" still get usable anchors (``#准备事项`` is what the docs
+    actually link to). We intentionally keep it stable and de-accent-
+    free so the same heading always slugs to the same anchor.
+    """
+    import re as _re
+    # Strip HTML tags (rare but possible in inline anchor pre-emphasis)
+    text = _re.sub(r"<[^>]+>", "", text)
+    # Keep word chars (incl. CJK via Unicode \w), spaces and hyphens;
+    # drop punctuation like . , / : ( ) etc. that break anchor lookups.
+    text = _re.sub(r"[^\w\s\-]", "", text, flags=_re.UNICODE)
+    # Collapse runs of whitespace into a single hyphen.
+    text = _re.sub(r"\s+", "-", text.strip())
+    return text.lower()
+
+
+# _PUBLIC_DOCS is declared further up; reuse for link rewriting below.
+
+def _rewrite_internal_doc_links(html: str) -> str:
+    """Fix two classes of broken links in the rendered Markdown:
+
+    1. **Cross-doc links with ``.md`` suffix** — e.g. the manual links
+       to ``[ARCHITECTURE_OVERVIEW](testbench_ARCHITECTURE_OVERVIEW.md)``
+       which the browser resolves relative to the current URL
+       (``/docs/testbench_USER_MANUAL`` → ``/docs/testbench_ARCHITECTURE_
+       OVERVIEW.md``). The ``.md`` suffix isn't a whitelist key so we
+       404. Transparently strip the suffix so authors can keep the
+       natural GitHub-style link form in the source.
+
+       Only strips when the bare stem (sans ``.md``) is a whitelisted
+       doc name; links to arbitrary external ``.md`` files are left
+       alone.
+
+    2. **Links to non-whitelisted internal docs** — e.g. LESSONS_LEARNED,
+       PROGRESS, AGENT_NOTES are developer-only docs never exposed via
+       ``/docs/`` by design. The manual sometimes references them for
+       cross-reading; those references get downgraded to plain ``<span
+       class="muted-link">…</span>`` so testers aren't led to a 404.
+
+    Done as a post-render regex sweep rather than a markdown-it plugin
+    because the rule is **doc-layer**, not markdown-layer (the author
+    writing ``.md`` is grammatically correct, it's our endpoint routing
+    that can't handle it).
+    """
+    import re as _re
+
+    whitelist_stems = set(_PUBLIC_DOCS.keys())
+
+    # Candidate internal doc filenames the manual / arch doc reference
+    # but that are intentionally NOT whitelisted. These become plain
+    # text so readers don't get a "unknown_doc" 404 when they click.
+    internal_only_docs = {
+        "LESSONS_LEARNED.md",
+        "LESSONS_LEARNED",
+        "PROGRESS.md",
+        "PROGRESS",
+        "AGENT_NOTES.md",
+        "AGENT_NOTES",
+        "PLAN.md",
+        "PLAN",
+        "P24_BLUEPRINT.md",
+        "P25_BLUEPRINT.md",
+        "P26_BLUEPRINT.md",
+    }
+
+    def _rewrite(match: _re.Match) -> str:
+        prefix = match.group(1)  # ``<a href="``
+        href = match.group(2)
+        suffix = match.group(3)  # closing quote + any other attrs before >
+        body = match.group(4)    # link text
+        closing = match.group(5)  # ``</a>``
+
+        # External / anchor-only / already-rooted links: leave alone.
+        if (
+            href.startswith(("http://", "https://", "mailto:", "/", "#"))
+            or not href
+        ):
+            return match.group(0)
+
+        # Split off ``#anchor`` suffix if present (preserved through).
+        bare, sep, anchor = href.partition("#")
+
+        # Rule 2: downgrade links to internal-only docs.
+        if bare in internal_only_docs:
+            return f'<span class="muted-link">{body}</span>'
+
+        # Rule 1: strip ``.md`` if the stem is whitelisted.
+        if bare.endswith(".md"):
+            stem = bare[:-3]
+            if stem in whitelist_stems:
+                new_href = stem + (sep + anchor if anchor else "")
+                return f"{prefix}{new_href}{suffix}{body}{closing}"
+
+        # Fallback: leave untouched (could be a link to another file
+        # in the same folder — not our concern at this layer).
+        return match.group(0)
+
+    return _re.sub(
+        r"(<a\s+[^>]*href=\")([^\"]*)(\"[^>]*>)(.*?)(</a>)",
+        _rewrite,
+        html,
+        flags=_re.DOTALL,
+    )
+
+
 def _render_markdown_html(md_source: str, title: str) -> str:
     """Render Markdown to a standalone HTML page with embedded styles.
 
@@ -785,6 +895,14 @@ def _render_markdown_html(md_source: str, title: str) -> str:
     tables / task-lists render correctly. The embedded CSS is deliberately
     tiny (prose readability only, no interactive controls) — testers open
     the doc, read, close; we're not building a wiki app here.
+
+    Two post-processing passes are applied to the rendered HTML:
+
+    1. **Heading anchor ids** — every ``<h1>`` … ``<h6>`` gets an
+       ``id`` derived from its text (GitHub-style slug). This makes
+       the in-doc TOC links ``[§1.1](#11-testbench-...)`` actually
+       jump.
+    2. **Broken-link rewrite** — see :func:`_rewrite_internal_doc_links`.
 
     Defensive on import failure: if the lib can't load for some reason we
     fall back to ``<pre>`` of the raw source so the user still sees the
@@ -803,7 +921,21 @@ def _render_markdown_html(md_source: str, title: str) -> str:
             MarkdownIt("commonmark", {"html": False, "linkify": True, "typographer": False})
             .enable(["table", "strikethrough"])
         )
-        body_html = md.render(md_source)
+        # Heading anchor ids: walk the token stream and stamp the
+        # opening h-tag with an ``id`` attr computed from the following
+        # inline text token. Done at token level so it survives any
+        # later render customisation (vs a post-render regex that can
+        # get confused by headings containing ``<code>`` etc.).
+        tokens = md.parse(md_source)
+        for i, tok in enumerate(tokens):
+            if tok.type == "heading_open" and i + 1 < len(tokens):
+                inline = tokens[i + 1]
+                if inline.type == "inline" and inline.content:
+                    slug = _slugify_heading(inline.content)
+                    if slug:
+                        tok.attrSet("id", slug)
+        body_html = md.renderer.render(tokens, md.options, {})
+        body_html = _rewrite_internal_doc_links(body_html)
 
     # Inline CSS — kept minimal. Layout width ~820px to match the prose
     # width tolerance recommended by most typography guides; anything
@@ -835,20 +967,81 @@ def _render_markdown_html(md_source: str, title: str) -> str:
         "pre{background:#f6f8fa;padding:16px;border-radius:6px;overflow:auto;"
         "line-height:1.45;font-size:85%;}"
         "pre code{background:transparent;padding:0;font-size:inherit;}"
-        "table{border-collapse:collapse;margin:1em 0;}"
-        "table th,table td{border:1px solid #d1d9e0;padding:6px 13px;}"
+        # Tables: force layout:fixed + word-break so long CJK/path/code
+        # cells wrap instead of pushing the table off-screen. Wrap
+        # the ``<table>`` in an overflow-x auto container via display
+        # so super-wide tables (6+ cols) get a scrollbar rather than
+        # overflowing the main card.
+        "table{border-collapse:collapse;margin:1em 0;width:100%;"
+        "table-layout:auto;display:block;overflow-x:auto;max-width:100%;}"
+        "table th,table td{border:1px solid #d1d9e0;padding:6px 13px;"
+        "word-break:break-word;overflow-wrap:anywhere;vertical-align:top;}"
         "table th{background:#f6f8fa;font-weight:600;}"
+        "table code{white-space:normal;word-break:break-all;}"
+        # Smooth-scroll + a bit of top padding so clicking an anchor
+        # doesn't hide the target heading behind the page top.
+        "html{scroll-behavior:smooth;}"
+        ":target{scroll-margin-top:16px;background:#fff8c5;"
+        "transition:background 1.2s ease-out;}"
+        # Muted link = downgraded link to an internal-only doc. Keeps
+        # the text visible but signals it's not clickable so the
+        # tester doesn't keep trying to click it.
+        ".muted-link{color:#636c76;border-bottom:1px dotted #afb8c1;"
+        "cursor:help;}"
         "blockquote{border-left:0.25em solid #d1d9e0;padding:0 1em;color:#636c76;"
         "margin:0 0 1em 0;}"
         "hr{height:1px;border:0;background:#d1d9e0;margin:2em 0;}"
         "a{color:#0969da;text-decoration:none;}a:hover{text-decoration:underline;}"
         ".docs-backlink{display:inline-block;margin-bottom:24px;font-size:13px;"
         "color:#636c76;}"
+        # Images: fit container width (screenshot source is up to 2560
+        # wide, container inner ~724px), preserve aspect ratio. Narrow
+        # images (e.g. small menu screenshots around 340–600 px wide)
+        # render at their native size because max-width only caps the
+        # upper bound. Tall portrait shots are readable at container
+        # width; the lightbox covers "I need to see details" cases.
+        "main img{display:block;max-width:100%;height:auto;"
+        "margin:1em auto;border:1px solid #d1d9e0;"
+        "border-radius:6px;cursor:zoom-in;"
+        "background:#f6f8fa;}"
+        # Lightbox overlay — hidden until JS toggles .open. Click anywhere
+        # to dismiss (the <img> inside also cursor:zoom-out). Keeping the
+        # overlay layout in pure CSS so the no-JS fallback at least shows
+        # normal-size images; click just won't do anything without JS.
+        "#docs-lightbox{position:fixed;inset:0;background:rgba(13,17,23,0.88);"
+        "display:none;align-items:center;justify-content:center;"
+        "z-index:9999;cursor:zoom-out;padding:24px;}"
+        "#docs-lightbox.open{display:flex;}"
+        "#docs-lightbox img{max-width:100%;max-height:100%;"
+        "box-shadow:0 8px 32px rgba(0,0,0,0.4);border-radius:4px;}"
         "</style>"
         "</head><body><main>"
         "<a class='docs-backlink' href='/'>← 回到 testbench 主页</a>"
         f"{body_html}"
-        "</main></body></html>"
+        "</main>"
+        # Lightbox: single overlay reused for any clicked image. The JS
+        # below attaches one delegated click handler on <main>; we don't
+        # need per-image listeners. Esc / click-outside dismisses.
+        "<div id='docs-lightbox' role='dialog' aria-hidden='true'>"
+        "<img alt='' />"
+        "</div>"
+        "<script>"
+        "(function(){"
+        "var box=document.getElementById('docs-lightbox');"
+        "var boxImg=box.querySelector('img');"
+        "function open(src,alt){boxImg.src=src;boxImg.alt=alt||'';"
+        "box.classList.add('open');box.setAttribute('aria-hidden','false');}"
+        "function close(){box.classList.remove('open');"
+        "box.setAttribute('aria-hidden','true');boxImg.src='';}"
+        "document.querySelector('main').addEventListener('click',function(e){"
+        "var t=e.target;if(t&&t.tagName==='IMG'&&t.closest('main')){"
+        "e.preventDefault();open(t.currentSrc||t.src,t.alt);}});"
+        "box.addEventListener('click',close);"
+        "document.addEventListener('keydown',function(e){"
+        "if(e.key==='Escape'&&box.classList.contains('open'))close();});"
+        "})();"
+        "</script>"
+        "</body></html>"
     )
 
 
@@ -865,6 +1058,116 @@ def _html_escape(text: str) -> str:
         .replace("&", "&amp;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
+    )
+
+
+# Allowed image extensions for docs screenshots. Kept to a short
+# whitelist because ``/docs/images/`` is served off-disk from
+# ``DOCS_DIR/images`` and we don't want to accidentally hand out
+# arbitrary binary payloads if someone drops a stray ``foo.exe`` in
+# that folder.
+_ALLOWED_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
+
+_IMAGE_CONTENT_TYPE = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".svg": "image/svg+xml",
+}
+
+
+@router.get("/docs/images/{filename}")
+async def serve_doc_image(filename: str):  # noqa: ANN201
+    """Serve a screenshot referenced from a whitelisted markdown doc.
+
+    The markdown docs (e.g. USER_MANUAL) embed images via relative
+    paths ``![caption](images/09_eval_workflow.png)``. When the doc
+    is rendered at ``/docs/testbench_USER_MANUAL``, the browser
+    resolves those as ``/docs/images/09_eval_workflow.png``; this
+    endpoint serves them off-disk from ``DOCS_DIR / images``.
+
+    Security:
+
+      * filename must be a bare basename (no ``/`` ``\\`` ``..``) —
+        we reject anything else up front to kill path-traversal.
+      * extension must be in :data:`_ALLOWED_IMAGE_EXTS` — the docs
+        folder is developer-writable, but we still refuse to hand
+        out e.g. ``.py`` / ``.exe`` / ``.zip`` over this endpoint.
+
+    Returns 404 with ``error_type='image_missing'`` if the file
+    isn't on disk; this mirrors the dual-semantics pattern in
+    :func:`serve_public_doc`.
+    """
+    # Reject anything that looks like a traversal attempt or nested
+    # path. We intentionally don't support subfolders under
+    # ``docs/images/`` — flat layout is a testbench convention.
+    if (
+        not filename
+        or "/" in filename
+        or "\\" in filename
+        or ".." in filename
+        or filename.startswith(".")
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_type": "bad_filename",
+                "message": f"image filename {filename!r} contains illegal characters.",
+            },
+        )
+
+    suffix = Path(filename).suffix.lower()
+    if suffix not in _ALLOWED_IMAGE_EXTS:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_type": "bad_extension",
+                "message": (
+                    f"extension {suffix!r} not allowed. Allowed: "
+                    f"{sorted(_ALLOWED_IMAGE_EXTS)}."
+                ),
+            },
+        )
+
+    images_dir = tb_config.DOCS_DIR / "images"
+    path = images_dir / filename
+    # Resolve + boundary check defends against corner cases where
+    # the basename-only check above would let through (e.g. Windows
+    # short names). After resolve, the parent must equal images_dir.
+    try:
+        resolved = path.resolve()
+        if resolved.parent != images_dir.resolve():
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error_type": "bad_filename",
+                    "message": "resolved image path escapes docs/images/.",
+                },
+            )
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"failed to resolve image path: {exc}",
+        ) from exc
+
+    if not resolved.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error_type": "image_missing",
+                "message": (
+                    f"image {filename!r} is not on disk under "
+                    f"{images_dir}. If the doc still references it, "
+                    f"either commit the screenshot or remove the link."
+                ),
+            },
+        )
+
+    return FileResponse(
+        path=resolved,
+        media_type=_IMAGE_CONTENT_TYPE.get(suffix, "application/octet-stream"),
     )
 
 
