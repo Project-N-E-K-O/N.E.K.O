@@ -74,12 +74,13 @@
      * @param {string} [features] - 可选的 window.open features 字符串
      * @returns {Promise<Window|null>} 子窗口引用，失败时返回 null
      */
-    function openPage(openUrl, windowName, features) {
+    function openPage(openUrl, windowName, features, options) {
         var fullName = normalizeWindowName(windowName);
         if (!fullName) {
             console.warn('[YuiGuideHandoff] windowName 为空，取消打开');
             return Promise.resolve(null);
         }
+        var normalizedOptions = options || {};
         var targetUrl = openUrl;
         try {
             targetUrl = new URL(openUrl, window.location.origin).toString();
@@ -107,7 +108,7 @@
             childWin.focus();
         } catch (_) {}
 
-        if (typeof window.handleHideMainUI === 'function') {
+        if (!normalizedOptions.keepMainUIVisible && typeof window.handleHideMainUI === 'function') {
             window.handleHideMainUI();
         }
 
@@ -911,7 +912,7 @@
         });
     }
 
-    function clickAgentSidePanelAction(toggleId, actionId) {
+    function clickAgentSidePanelAction(toggleId, actionId, options) {
         if (!toggleId || !actionId) return Promise.resolve(false);
 
         return ensureAgentSidePanelActionVisible(toggleId, actionId).then(function (button) {
@@ -921,7 +922,7 @@
             }
 
             if (toggleId === 'agent-user-plugin' && actionId === 'management-panel') {
-                return openPluginDashboard('plugin_dashboard_landing').then(function (childWin) {
+                return openPluginDashboard('plugin_dashboard_landing', options).then(function (childWin) {
                     if (childWin) {
                         return waitForWindowOpen('plugin_dashboard', 6000).then(function (openedWindow) {
                             return !!openedWindow;
@@ -974,12 +975,23 @@
         return Promise.resolve(true);
     }
 
-    function openPluginDashboard(resumeScene) {
+    function openPluginDashboard(resumeScene, options) {
         return openPage(
             buildPluginDashboardUrl(),
             'plugin_dashboard',
-            buildCenteredWindowFeatures()
+            buildCenteredWindowFeatures(),
+            options
         );
+    }
+
+    function dispatchHandoffSentEvent(tokenObj, targetPage, resumeScene) {
+        window.dispatchEvent(new CustomEvent('neko:yui-guide:handoff-sent', {
+            detail: {
+                token: tokenObj && tokenObj.token ? tokenObj.token : '',
+                target_page: targetPage || '',
+                resume_scene: resumeScene || null
+            }
+        }));
     }
 
     function listenPluginDashboardComplete(onComplete) {
@@ -1066,16 +1078,9 @@
             return openPage(openUrl, windowName, features);
         }
 
-        window.dispatchEvent(new CustomEvent('neko:yui-guide:handoff-sent', {
-            detail: {
-                token: tokenObj.token,
-                target_page: targetPage || '',
-                resume_scene: resumeScene || null
-            }
-        }));
-
         return openPage(openUrl, windowName, features).then(function (childWin) {
             if (childWin) {
+                dispatchHandoffSentEvent(tokenObj, targetPage, resumeScene);
                 return childWin;
             }
 

@@ -6,8 +6,8 @@
 window.AgentHUD = window.AgentHUD || {};
 
 var PLUGIN_DASHBOARD_FIRST_VISIT_STORAGE_KEY = 'neko_plugin_dashboard_first_visit_completed';
-var PLUGIN_DASHBOARD_DIRECT_URL = 'http://127.0.0.1:48916/ui/';
-var PLUGIN_DASHBOARD_FIRST_VISIT_URL = '/api/agent/user_plugin/dashboard?yui_guide=1';
+var PLUGIN_DASHBOARD_REDIRECT_URL = '/api/agent/user_plugin/dashboard';
+var PLUGIN_DASHBOARD_FIRST_VISIT_URL = `${PLUGIN_DASHBOARD_REDIRECT_URL}?yui_guide=1`;
 
 function hasSeenPluginDashboardFirstVisit() {
     try {
@@ -230,7 +230,7 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                     labelKey: 'settings.toggles.pluginManagementPanel',
                     labelFallback: '管理面板',
                     icon: '⚙',
-                    url: PLUGIN_DASHBOARD_DIRECT_URL,
+                    url: PLUGIN_DASHBOARD_REDIRECT_URL,
                     firstVisitUrl: PLUGIN_DASHBOARD_FIRST_VISIT_URL,
                     windowName: 'neko_plugin_dashboard',
                     forceReloadOnReuse: true

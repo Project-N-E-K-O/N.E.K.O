@@ -408,7 +408,12 @@ function createSettingsPopupContent(manager, prefix, popup) {
  */
 function createMenuAnchorId(prefix, rawId) {
     if (!rawId) return '';
-    var sanitized = String(rawId).trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+    var sanitized = String(rawId)
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^[-]+|[-]+$/g, '');
     return sanitized ? `${prefix}-menu-${sanitized}` : '';
 }
 
@@ -1447,7 +1452,13 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
     if (ownerId) sidePanel.setAttribute('data-neko-sidepanel-owner', ownerId);
 
     const collapseWithDelay = (delay = 80) => {
-        if (isTutorialHoverDisabled()) return;
+        if (isTutorialHoverDisabled()) {
+            if (sidePanel._hoverCollapseTimer) {
+                clearTimeout(sidePanel._hoverCollapseTimer);
+                sidePanel._hoverCollapseTimer = null;
+            }
+            return;
+        }
         const interactionGuardDelay = typeof sidePanel._getInteractionGuardDelay === 'function'
             ? sidePanel._getInteractionGuardDelay()
             : 0;

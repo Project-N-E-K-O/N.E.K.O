@@ -344,9 +344,10 @@ body.yui-taking-over #react-chat-window-drag-handle {
 }
 
 .yui-guide-overlay.is-angry .yui-guide-cursor {
-  box-shadow:
-    0 0 0 6px rgba(255, 130, 130, 0.2),
-    0 12px 32px rgba(198, 54, 54, 0.26);
+  background-color: transparent;
+  filter:
+    drop-shadow(0 14px 26px rgba(116, 33, 25, 0.34))
+    saturate(1.08);
 }
 
 body.yui-taking-over #react-chat-window-root .composer-input-shell,

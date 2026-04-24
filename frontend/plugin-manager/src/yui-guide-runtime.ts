@@ -17,6 +17,7 @@ const DEFAULT_INTERRUPT_SPEED_THRESHOLD = 1.8
 const DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD = 0.09
 const DEFAULT_INTERRUPT_ACCELERATION_STREAK = 3
 const DEFAULT_INTERRUPT_THROTTLE_MS = 500
+const SCRIPTED_MOTION_INTERRUPT_STREAK = 2
 const DEFAULT_PASSIVE_RESISTANCE_DISTANCE = 10
 const DEFAULT_PASSIVE_RESISTANCE_SPEED_THRESHOLD = 0.2
 const DEFAULT_PASSIVE_RESISTANCE_INTERVAL_MS = 140
@@ -458,9 +459,15 @@ function injectStyle() {
 
     #${ROOT_ID}.is-angry .yui-guide-plugin-spotlight {
       opacity: 0 !important;
+      display: none !important;
       border-color: transparent;
       box-shadow: none;
       animation: none;
+    }
+
+    #${ROOT_ID}.is-angry .yui-guide-plugin-backdrop-cutout {
+      visibility: hidden !important;
+      display: none !important;
     }
 
     #${ROOT_ID} .yui-guide-plugin-cursor-shell {
@@ -494,9 +501,15 @@ function injectStyle() {
     }
 
     #${ROOT_ID}.is-angry .yui-guide-plugin-cursor {
+      background-color: transparent;
       filter:
         drop-shadow(0 14px 26px rgba(116, 33, 25, 0.34))
         saturate(1.08);
+    }
+
+    #${ROOT_ID}.is-angry .yui-guide-plugin-cursor.is-clicking {
+      background-image: url('${defaultGhostCursorUrl}');
+      animation: none;
     }
 
     #${ROOT_ID} .yui-guide-plugin-cursor::after {
@@ -609,6 +622,8 @@ class PluginDashboardGuideRuntime {
     const backdropCutout = createSvgElement('rect', 'yui-guide-plugin-backdrop-cutout')
     backdropCutout.setAttribute('fill', 'black')
     backdropCutout.setAttribute('visibility', 'hidden')
+    ;(backdropCutout as unknown as { hidden?: boolean }).hidden = true
+    backdropCutout.style.display = 'none'
 
     const backdropFill = createSvgElement('rect', 'yui-guide-plugin-backdrop-fill')
     backdropFill.setAttribute('fill', 'rgba(3, 7, 18, 0.76)')
@@ -622,6 +637,7 @@ class PluginDashboardGuideRuntime {
 
     const spotlight = document.createElement('div')
     spotlight.className = 'yui-guide-plugin-spotlight'
+    spotlight.hidden = true
 
     const interactionShield = document.createElement('div')
     interactionShield.className = 'yui-guide-plugin-interaction-shield'
@@ -825,6 +841,7 @@ class PluginDashboardGuideRuntime {
     }
 
     if (!spotlightRect) {
+      ;(this.backdropCutout as unknown as { hidden?: boolean }).hidden = true
       this.backdropCutout.setAttribute('visibility', 'hidden')
       this.backdropCutout.setAttribute('x', '0')
       this.backdropCutout.setAttribute('y', '0')
@@ -832,10 +849,13 @@ class PluginDashboardGuideRuntime {
       this.backdropCutout.setAttribute('height', '0')
       this.backdropCutout.setAttribute('rx', '0')
       this.backdropCutout.setAttribute('ry', '0')
+      this.backdropCutout.style.display = 'none'
       return
     }
 
+    ;(this.backdropCutout as unknown as { hidden?: boolean }).hidden = false
     this.backdropCutout.setAttribute('visibility', 'visible')
+    this.backdropCutout.style.removeProperty('display')
     this.backdropCutout.setAttribute('x', String(spotlightRect.left))
     this.backdropCutout.setAttribute('y', String(spotlightRect.top))
     this.backdropCutout.setAttribute('width', String(spotlightRect.width))
@@ -855,11 +875,13 @@ class PluginDashboardGuideRuntime {
 
     const rect = this.getSpotlightRect(element)
     if (!rect) {
+      this.spotlight.hidden = true
       this.spotlight.classList.remove('is-visible')
       this.updateBackdropCutout(null)
       return
     }
 
+    this.spotlight.hidden = false
     this.spotlight.style.left = `${rect.left}px`
     this.spotlight.style.top = `${rect.top}px`
     this.spotlight.style.width = `${rect.width}px`
@@ -872,6 +894,7 @@ class PluginDashboardGuideRuntime {
   clearSpotlight() {
     this.spotlightElement = null
     if (this.spotlight) {
+      this.spotlight.hidden = true
       this.spotlight.classList.remove('is-visible')
       this.spotlight.style.left = '0px'
       this.spotlight.style.top = '0px'
@@ -1049,6 +1072,14 @@ class PluginDashboardGuideRuntime {
     }, 260)
   }
 
+  resetCursorVisualState() {
+    if (!this.cursorInner) {
+      return
+    }
+
+    this.cursorInner.classList.remove('is-clicking')
+  }
+
   async animateScroll(container: HTMLElement, deltaY: number, durationMs: number, isCurrent?: () => boolean) {
     const startedAt = performance.now()
     const initialTop = container.scrollTop
@@ -1127,6 +1158,7 @@ class PluginDashboardGuideRuntime {
             this.cursorShell.style.transitionDuration = '80ms'
             this.cursorShell.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`
             this.cursorPosition = { x, y }
+            this.lastCursorTarget = { x, y }
           }
 
           if (progress >= 1) {
@@ -1493,13 +1525,17 @@ class PluginDashboardGuideRuntime {
       this.interruptAccelerationStreak = 0
       return
     }
-    if (acceleration < DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD) {
+    const isScriptedMotionInterrupt = this.cursorTransitionActive
+    if (!isScriptedMotionInterrupt && acceleration < DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD) {
       this.interruptAccelerationStreak = 0
       return
     }
 
     this.interruptAccelerationStreak += 1
-    if (this.interruptAccelerationStreak < DEFAULT_INTERRUPT_ACCELERATION_STREAK) {
+    const requiredStreak = isScriptedMotionInterrupt
+      ? SCRIPTED_MOTION_INTERRUPT_STREAK
+      : DEFAULT_INTERRUPT_ACCELERATION_STREAK
+    if (this.interruptAccelerationStreak < requiredStreak) {
       return
     }
     this.interruptAccelerationStreak = 0
@@ -1585,7 +1621,9 @@ class PluginDashboardGuideRuntime {
     this.angryExitTriggered = true
     this.interruptsEnabled = false
     this.cancelActiveNarration()
+    this.cancelCursorMotion()
     this.clearSpotlight()
+    this.resetCursorVisualState()
     this.setAngryVisual(true)
     const handledByHome = await this.requestHomeInterruptPlayback({
       kind: 'interrupt_angry_exit',
@@ -1632,10 +1670,12 @@ class PluginDashboardGuideRuntime {
       currentGuideAudioTimer = null
     }
     if (currentGuideAudio) {
-      currentGuideAudio.onended = null
-      currentGuideAudio.onerror = null
-      currentGuideAudio.pause()
-      currentGuideAudio.currentTime = 0
+      try {
+        currentGuideAudio.onended = null
+        currentGuideAudio.onerror = null
+        currentGuideAudio.pause()
+        currentGuideAudio.currentTime = 0
+      } catch (_) {}
       currentGuideAudio = null
     }
     try {
@@ -1835,6 +1875,17 @@ export function initPluginDashboardYuiGuideRuntime() {
   const runtime = new PluginDashboardGuideRuntime()
   const tutorialBridge = useYuiTutorialBridge()
   let receivedStartMessage = false
+  const initialBridgeState = tutorialBridge.state.value
+  const shouldUseBridgeFallback = !!(
+    initialBridgeState.isActive
+    && initialBridgeState.flowId === HOME_YUI_GUIDE_FLOW_ID
+    && initialBridgeState.sourcePage === 'home'
+    && initialBridgeState.resumeScene === PLUGIN_DASHBOARD_LANDING_SCENE
+  )
+
+  if (shouldUseBridgeFallback) {
+    receivedStartMessage = true
+  }
 
   window.addEventListener('message', (event: MessageEvent) => {
     const data = event.data
@@ -1848,6 +1899,10 @@ export function initPluginDashboardYuiGuideRuntime() {
     }
 
     if (data.type !== START_EVENT || !isAllowedOpenerEvent(event)) {
+      return
+    }
+
+    if (receivedStartMessage) {
       return
     }
 
@@ -1867,7 +1922,7 @@ export function initPluginDashboardYuiGuideRuntime() {
   })
 
   window.setTimeout(() => {
-    if (receivedStartMessage) {
+    if (!shouldUseBridgeFallback) {
       return
     }
 
