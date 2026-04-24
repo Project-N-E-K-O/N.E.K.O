@@ -1,0 +1,404 @@
+"""P26 Commit 1 — public docs endpoint + version metadata invariants.
+
+Purpose
+-------
+P26 Commit 1 introduced four docs-related invariants:
+
+* ``tb_config.TESTBENCH_VERSION`` / ``TESTBENCH_PHASE`` are the single
+  source of truth for the app's self-reported version & dev stage; both
+  ``server.py`` and ``/api/version`` must consume these constants (not
+  re-hardcode a separate string).
+* ``GET /docs/{doc_name}`` serves a *small, hand-picked* whitelist of
+  tester-facing Markdown docs under ``DOCS_DIR`` with two-mode content
+  negotiation (``text/markdown`` raw vs rendered HTML). Everything else
+  returns 404 with ``error_type=unknown_doc``.
+* When a whitelisted doc hasn't been authored yet (e.g. ``USER_MANUAL``
+  is scheduled for Commit 3 but we're between commits), the endpoint
+  returns 404 ``error_type=file_missing`` *with a friendly message*,
+  not a generic "file not found". The dual-semantics distinction
+  (unknown vs file-missing) is **per L46** a cross-project lesson.
+* Settings → About page consumes the ``/docs/{name}`` endpoint via
+  whitelisted URL segments, matching the set declared in
+  ``_PUBLIC_DOCS``.
+
+This smoke is intentionally **static** (AST / regex / filesystem
+checks, no live server) — regressions here surface at CI time, faster
+than round-tripping through uvicorn.
+
+Contracts
+---------
+    D1  ``tb_config.TESTBENCH_VERSION`` exists and is semver-shaped
+        (MAJOR.MINOR.PATCH, all digits). ``TESTBENCH_PHASE`` exists and
+        starts with ``P`` + digits.
+
+    D2  ``server.py`` wires FastAPI ``version=`` to
+        ``tb_config.TESTBENCH_VERSION`` (not a hard-coded string).
+
+    D3  ``routers/health_router.py::version()`` returns keys
+        ``version`` + ``phase`` sourced from ``tb_config.TESTBENCH_*``
+        (not re-hardcoded).
+
+    D4  ``routers/health_router.py`` declares a
+        ``@router.get("/docs/{doc_name}")`` endpoint.
+
+    D5  ``_PUBLIC_DOCS`` whitelist contains the four tester-facing
+        entries we ship with v1.1.0: ``testbench_USER_MANUAL``,
+        ``testbench_ARCHITECTURE_OVERVIEW``, ``external_events_guide``,
+        ``CHANGELOG``.
+
+    D6  Each whitelist value maps to a file under ``DOCS_DIR`` (file
+        may or may not exist — that's the dual-semantics contract —
+        but the basename must match a known filename pattern).
+
+    D7  The endpoint handler distinguishes two 404 error_types:
+        ``unknown_doc`` (not in whitelist) vs ``file_missing``
+        (whitelist entry but file on disk absent). Both variants must
+        appear as literal strings in the handler source — this is the
+        L46 "dual 404 semantics" invariant.
+
+    D8  Settings → About page (``static/ui/settings/page_about.js``)
+        references ``/docs/`` URL path at least once (so the
+        whitelisted docs are actually deep-linked from the UI — not
+        just a dead endpoint).
+
+    D9  At least one of the whitelisted docs exists on disk (sanity
+        check — if all four are missing, the whole endpoint is dead
+        and the invariant is vacuous).
+
+    D10 ``CHANGELOG.md`` file content begins with a ``## v1.1.0`` (or
+        ``## [v1.1.0]``) heading matching ``TESTBENCH_VERSION``. This
+        is the "version-metadata ↔ CHANGELOG" alignment invariant — if
+        the version constant is bumped, the CHANGELOG must get a new
+        section for it, and vice versa.
+
+Usage::
+
+    .venv\\Scripts\\python.exe tests/testbench/smoke/p26_docs_endpoint_smoke.py
+
+Exits non-zero on any violation. Fast (< 1s) — no network, no LLM.
+"""
+from __future__ import annotations
+
+import ast
+import io
+import re
+import sys
+from pathlib import Path
+
+
+if isinstance(sys.stdout, io.TextIOWrapper):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+TESTBENCH_ROOT = REPO_ROOT / "tests" / "testbench"
+DOCS_DIR = TESTBENCH_ROOT / "docs"
+
+
+_EXPECTED_WHITELIST_KEYS = {
+    "testbench_USER_MANUAL",
+    "testbench_ARCHITECTURE_OVERVIEW",
+    "external_events_guide",
+    "CHANGELOG",
+}
+
+_SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
+_PHASE_RE = re.compile(r"^P\d+\b")
+
+
+def _read(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+# ── D1 — version metadata shape ────────────────────────────────────
+
+def check_version_metadata_shape() -> list[str]:
+    from tests.testbench import config as tb_config  # noqa: PLC0415
+
+    errors: list[str] = []
+
+    version = getattr(tb_config, "TESTBENCH_VERSION", None)
+    if not isinstance(version, str) or not _SEMVER_RE.match(version):
+        errors.append(
+            f"[D1] tb_config.TESTBENCH_VERSION must be a semver string "
+            f"(MAJOR.MINOR.PATCH, digits only). Got: {version!r}"
+        )
+
+    phase = getattr(tb_config, "TESTBENCH_PHASE", None)
+    if not isinstance(phase, str) or not _PHASE_RE.match(phase):
+        errors.append(
+            f"[D1] tb_config.TESTBENCH_PHASE must start with 'P<digits>' "
+            f"(e.g. 'P25 external event injection'). Got: {phase!r}"
+        )
+    return errors
+
+
+# ── D2 — server.py wires FastAPI version= to tb_config ─────────────
+
+def check_server_version_sourced_from_config() -> list[str]:
+    errors: list[str] = []
+    path = TESTBENCH_ROOT / "server.py"
+    if not path.exists():
+        return [f"[D2] server.py missing at {path}"]
+    src = _read(path)
+    if "tb_config.TESTBENCH_VERSION" not in src:
+        errors.append(
+            "[D2] server.py does not read tb_config.TESTBENCH_VERSION; "
+            "FastAPI app `version=` must consume the central constant "
+            "(not a hard-coded string). See P26 Commit 1."
+        )
+    # Red-flag any literal semver in the FastAPI init that would
+    # indicate someone re-hardcoded version= without going through the
+    # constant.
+    m = re.search(r"FastAPI\s*\([^)]*version\s*=\s*['\"]\d+\.\d+\.\d+['\"]", src, flags=re.DOTALL)
+    if m:
+        errors.append(
+            f"[D2] server.py FastAPI(...) has a hardcoded version= string "
+            f"({m.group(0)!r}); must reference tb_config.TESTBENCH_VERSION."
+        )
+    return errors
+
+
+# ── D3 — health_router.version() reads tb_config ───────────────────
+
+def check_health_router_version_endpoint() -> list[str]:
+    errors: list[str] = []
+    path = TESTBENCH_ROOT / "routers" / "health_router.py"
+    if not path.exists():
+        return [f"[D3] health_router.py missing at {path}"]
+    src = _read(path)
+    if "tb_config.TESTBENCH_VERSION" not in src:
+        errors.append(
+            "[D3] health_router.py does not read "
+            "tb_config.TESTBENCH_VERSION (the /api/version endpoint "
+            "must expose the central constant)."
+        )
+    if "tb_config.TESTBENCH_PHASE" not in src:
+        errors.append(
+            "[D3] health_router.py does not read tb_config.TESTBENCH_PHASE "
+            "(the /api/version endpoint must expose the phase tag)."
+        )
+    return errors
+
+
+# ── D4 — /docs/{doc_name} endpoint present ─────────────────────────
+
+def check_docs_endpoint_declared() -> list[str]:
+    errors: list[str] = []
+    path = TESTBENCH_ROOT / "routers" / "health_router.py"
+    src = _read(path)
+    if not re.search(r"""@router\.get\(\s*["']\/docs\/\{doc_name\}["']""", src):
+        errors.append(
+            "[D4] health_router.py missing "
+            "@router.get('/docs/{doc_name}') — the public docs endpoint "
+            "must stay reachable for the About-page deep links."
+        )
+    return errors
+
+
+# ── D5 — _PUBLIC_DOCS whitelist content ────────────────────────────
+
+def _extract_public_docs_dict(src: str) -> dict[str, str] | None:
+    """Parse ``_PUBLIC_DOCS: dict[str, str] = {...}`` via AST."""
+    tree = ast.parse(src)
+    for node in tree.body:
+        targets = []
+        value = None
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            targets = [node.target]
+            value = node.value
+        elif isinstance(node, ast.Assign):
+            targets = [t for t in node.targets if isinstance(t, ast.Name)]
+            value = node.value
+        for t in targets:
+            if t.id == "_PUBLIC_DOCS" and isinstance(value, ast.Dict):
+                out: dict[str, str] = {}
+                for k, v in zip(value.keys, value.values):
+                    if isinstance(k, ast.Constant) and isinstance(v, ast.Constant):
+                        if isinstance(k.value, str) and isinstance(v.value, str):
+                            out[k.value] = v.value
+                return out
+    return None
+
+
+def check_public_docs_whitelist() -> list[str]:
+    errors: list[str] = []
+    path = TESTBENCH_ROOT / "routers" / "health_router.py"
+    src = _read(path)
+    mapping = _extract_public_docs_dict(src)
+    if mapping is None:
+        errors.append(
+            "[D5] health_router.py does not declare `_PUBLIC_DOCS: dict[str, str] = {...}` "
+            "at module level (AST could not locate it)."
+        )
+        return errors
+    missing = _EXPECTED_WHITELIST_KEYS - mapping.keys()
+    if missing:
+        errors.append(
+            f"[D5] _PUBLIC_DOCS is missing expected whitelist keys for "
+            f"v1.1.0: {sorted(missing)}. Expected at least: "
+            f"{sorted(_EXPECTED_WHITELIST_KEYS)}."
+        )
+    return errors
+
+
+# ── D6 — whitelist values look like .md filenames ──────────────────
+
+def check_whitelist_values_are_markdown_filenames() -> list[str]:
+    errors: list[str] = []
+    path = TESTBENCH_ROOT / "routers" / "health_router.py"
+    src = _read(path)
+    mapping = _extract_public_docs_dict(src) or {}
+    for key, filename in mapping.items():
+        if not filename.endswith(".md"):
+            errors.append(
+                f"[D6] _PUBLIC_DOCS[{key!r}] = {filename!r}; value must "
+                f"be a ``*.md`` filename under DOCS_DIR."
+            )
+        if "/" in filename or "\\" in filename:
+            errors.append(
+                f"[D6] _PUBLIC_DOCS[{key!r}] = {filename!r} contains a "
+                f"path separator; must be a bare filename (DOCS_DIR is "
+                f"joined by the handler)."
+            )
+    return errors
+
+
+# ── D7 — dual 404 error_type strings present in handler ────────────
+
+def check_dual_404_semantics() -> list[str]:
+    errors: list[str] = []
+    path = TESTBENCH_ROOT / "routers" / "health_router.py"
+    src = _read(path)
+    for sentinel in ('"unknown_doc"', "'unknown_doc'"):
+        if sentinel in src:
+            break
+    else:
+        errors.append(
+            "[D7] health_router.py missing the ``unknown_doc`` error_type "
+            "sentinel — the /docs/{doc_name} handler must distinguish "
+            "'not in whitelist' (unknown_doc) from 'on whitelist but not "
+            "yet authored' (file_missing) per L46."
+        )
+    for sentinel in ('"file_missing"', "'file_missing'"):
+        if sentinel in src:
+            break
+    else:
+        errors.append(
+            "[D7] health_router.py missing the ``file_missing`` error_type "
+            "sentinel — the /docs/{doc_name} handler must distinguish "
+            "'not in whitelist' (unknown_doc) from 'on whitelist but not "
+            "yet authored' (file_missing) per L46."
+        )
+    return errors
+
+
+# ── D8 — Settings → About page references /docs/ ───────────────────
+
+def check_about_page_consumes_docs_endpoint() -> list[str]:
+    errors: list[str] = []
+    path = TESTBENCH_ROOT / "static" / "ui" / "settings" / "page_about.js"
+    if not path.exists():
+        errors.append(f"[D8] page_about.js missing at {path}")
+        return errors
+    src = _read(path)
+    if "/docs/" not in src:
+        errors.append(
+            "[D8] page_about.js does not reference the /docs/ URL path; "
+            "the About-page doc links must deep-link into the public "
+            "docs endpoint (P26 Commit 1 integration)."
+        )
+    return errors
+
+
+# ── D9 — at least one whitelisted doc exists on disk ───────────────
+
+def check_at_least_one_doc_on_disk() -> list[str]:
+    errors: list[str] = []
+    path = TESTBENCH_ROOT / "routers" / "health_router.py"
+    src = _read(path)
+    mapping = _extract_public_docs_dict(src) or {}
+    if not mapping:
+        return errors  # D5 already flagged
+    present = [fn for fn in mapping.values() if (DOCS_DIR / fn).is_file()]
+    if not present:
+        errors.append(
+            f"[D9] None of the whitelisted docs are present on disk under "
+            f"{DOCS_DIR}. Whitelist claims {sorted(mapping.values())} but "
+            f"zero files exist — the /docs/ endpoint is effectively dead."
+        )
+    return errors
+
+
+# ── D10 — CHANGELOG heading matches TESTBENCH_VERSION ──────────────
+
+def check_changelog_has_current_version() -> list[str]:
+    from tests.testbench import config as tb_config  # noqa: PLC0415
+
+    errors: list[str] = []
+    changelog = DOCS_DIR / "CHANGELOG.md"
+    if not changelog.is_file():
+        errors.append(
+            f"[D10] CHANGELOG.md not found at {changelog}. P26 Commit 1 "
+            f"must ship a CHANGELOG aligned with TESTBENCH_VERSION."
+        )
+        return errors
+    version = getattr(tb_config, "TESTBENCH_VERSION", None) or ""
+    src = _read(changelog)
+    pat = re.compile(r"^#{1,3}\s*\[?v?" + re.escape(version) + r"\]?\b", re.MULTILINE)
+    if not pat.search(src):
+        errors.append(
+            f"[D10] CHANGELOG.md has no heading matching TESTBENCH_VERSION "
+            f"({version!r}). Expected a top-level heading like "
+            f"'## v{version}' or '## [v{version}]'. Keeping these in sync "
+            f"is a P26 invariant — bumping the version constant without "
+            f"adding a CHANGELOG section is a silent regression."
+        )
+    return errors
+
+
+# ── entry point ────────────────────────────────────────────────────
+
+CHECKS = (
+    ("D1 — version metadata shape", check_version_metadata_shape),
+    ("D2 — server.py version sourced from config", check_server_version_sourced_from_config),
+    ("D3 — health_router /version endpoint sources config", check_health_router_version_endpoint),
+    ("D4 — /docs/{doc_name} endpoint declared", check_docs_endpoint_declared),
+    ("D5 — _PUBLIC_DOCS contains expected keys", check_public_docs_whitelist),
+    ("D6 — whitelist values are .md basenames", check_whitelist_values_are_markdown_filenames),
+    ("D7 — dual 404 error_type sentinels", check_dual_404_semantics),
+    ("D8 — About page references /docs/", check_about_page_consumes_docs_endpoint),
+    ("D9 — at least one whitelisted doc on disk", check_at_least_one_doc_on_disk),
+    ("D10 — CHANGELOG has current version heading", check_changelog_has_current_version),
+)
+
+
+def main() -> int:
+    print("[p26_docs_endpoint_smoke] P26 Commit 1 docs-endpoint invariants")
+    print(f"  REPO_ROOT = {REPO_ROOT}")
+    total_violations = 0
+    for name, fn in CHECKS:
+        try:
+            errs = fn()
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [{name}] CRASHED: {type(exc).__name__}: {exc}")
+            total_violations += 1
+            continue
+        status = "OK" if not errs else f"FAIL ({len(errs)})"
+        print(f"  [{name}] {status}")
+        for e in errs:
+            print(f"     - {e}")
+        total_violations += len(errs)
+
+    if total_violations:
+        print(f"FAIL {total_violations} violation(s)")
+        return 1
+    print("OK all P26 docs-endpoint contracts hold")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -8,7 +8,8 @@
 > P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理 UTF-8 事件 +
 > P25 Day 1 subagent 并行开发首次应用 + P25 Day 1 fixup mirror shape +
 > P25 Day 2 前端面板派生 + Day 2 polish 手测 r1-r6 派生 + Day 3 `last_llm_wire`
-> 覆盖率 smoke 派生的 16 条候选元教训 (L28-L44, 登记于 §7.A 候选区, 未计入主编号 25 条).
+> 覆盖率 smoke 派生 + P26 Commit 1 版本号落档/公共文档端点/4 象限分层派生的
+> 22 条候选元教训 (L28-L49, 登记于 §7.A 候选区, 未计入主编号 25 条).
 >
 > **§7.25 特别说明**: 一周内已连续 **6** 次同族实锤 (字段名漂移 / envelope 漂移 /
 > LLM wire role 三次漂移 / **Prompt Preview "重建视图 ≠ 真实 stream" 架构级
@@ -500,7 +501,7 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
 
 ---
 
-## 7. 25 条元教训 (五轮审查累积 + Day 2/5/6/8/10 + 手测事故追加 + P25 Day 2 跨边界 shape 三次同族)
+## 7. 27 条元教训 (五轮审查累积 + Day 2/5/6/8/10 + 手测事故追加 + P25 Day 2 跨边界 shape 三次同族 + P26 Commit 2 两条升级 = L33 → §7.26 / L44 → §7.27)
 
 源: P24_BLUEPRINT §12.10. 已按"**超项目价值**" 筛选, 项目特异的去掉.
 
@@ -560,18 +561,72 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
 
     **元归纳**: §7.6 "多源写入是纸面原则成败分水岭" 讲的是"同一进程多入口", §7.25 是它在**跨边界契约** + **视图数据源**双维度的扩展 — 第 1-3 次踩的是"生产方 N 种实装 vs 消费方 M 种解析"的笛卡尔积, 第 4 次踩的是"N 个入口 vs 1 个 chokepoint", 第 5 次踩的是"**同一概念被视图与执行两条路径独立表达, 视图按状态重建, 执行按临时合成**"的架构级分叉. 三维度总结: (a) 按错误出现的边界堵入口 — 第 1 次适用; (b) 按正确消费契约守 chokepoint — 第 ≥ 2 次适用; (c) **按 "展示即真相" 契约把 ground-truth snapshot 作为视图面板的唯一数据源** — 当存在 ephemeral 不进持久化历史的流程时适用. 识别这三种粒度所对应的"应然时机"本身就是设计能力. 同族延伸: 任何 SDK / adapter / plugin / OSS fork / runtime wrapper / 流式系统的 live view vs replay view 都适用. 对应 Cursor skill: `ui-wire-field-rg-backend-first` (升级版, 覆盖 response shape / envelope 决策 / wire role 决策 / chokepoint 下沉 / **preview snapshot chokepoint** 五类场景). **Day 3+ 必修欠账** (r5): 审计发现还有 5 个 LLM 调用点未走 `wire_tracker` — simulated_user (P0, Auto-Dialog 跑完后预览陈旧指向错对象) / memory_runner 4 处 ainvoke + judge_runner (P1, 测试员在 Memory/Judge 面板触发后 Chat Prompt Preview 看不到) / auto_dialog_target slug 与 chat.send 是否分流的设计清理 (P2) / config_router._ping_chat 明确排除 (P2); 蓝图 §A 应追加 "**每个 LLM 调用点必须 stamp last_llm_wire, smoke 扫未 stamp 的调用点即 FAIL**" 作为第五层防御的**强制**侧.
 
-### §7.A 候选追加 (P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理 UTF-8 事件 + P25 Day 1 subagent 并行开发 + P25 Day 1 fixup mirror shape + P25 Day 2 前端面板派生 + P25 Day 2 polish r1-r6 手测派生, 待二次复现后并入主编号)
+26. **"Subagent 并行开发 + 主 agent 三段式 review 是 AI 协作的默认范式"** ⚠⚠ (L33 + L33.x 两次同族已达门槛, 2026-04-23 P26 Commit 2 升级自候选):
+    - **场景**: AI 驱动的大型开发阶段中, 单个主 agent 做 ≥ 3 个"单文件单任务" 的并行可拆分子任务时, 一个 agent 同时处理 N 份 spec 会出现"某一份 spec 的细节记岔"的静默错误. 同时 subagent 调用后因为 `AwaitShell` 不支持 subagent id, 没有显式的 handoff 机制会导致主 agent 不知道 subagent 是否完成、交付在哪.
+    - **两次同族实锤**:
+        - **第一次** (P25 Day 1): 主 agent 在 `external_events.py::simulate_avatar_interaction` 写了 `meta.get("dedupe_key")` / `meta.get("dedupe_rank")`, 实际主程序返 `memory_dedupe_key` / `memory_dedupe_rank`, 主 agent 内存对齐错. Subagent C 独立按 P25_BLUEPRINT §A.8 的 "B2 rank 升级三步矩阵" 写 smoke 时发现 1→2 accept 后 2→2 也被 accept, 没 fail 而是写入 Observation 字段 "reported bug #1: meta key 可能是 `memory_dedupe_key`". 主 agent review 看 Observation → 5 分钟内修代码. 若主 agent 自己一线做 + 自己写 smoke, bug 不会被任何自动化抓住.
+        - **第二次** (P25 Day 2 polish 第二轮): 主 agent 派一或多个 subagent 并行后, 因为 AwaitShell 不支持 subagent id, 只能靠"估等时间 + 读 transcript 目录"轮询. 主 agent 等不够就**重复启动已经完工的 subagent**, 盖掉原 subagent 已写的输出. 用户反馈 "你应该建立一套合适的机制来判断 subagent 到底有没有完成工作, 交付在哪里, 而不是发现 wait 没办法使用之后靠干等和靠猜来解决问题".
+    - **三段式**:
+        1. **主 agent 拆粒度 + 写任务书**: 每份任务书 ≥ 6 节 = (1) 任务目标 + 字面路径 (2) 硬约束 (不准改什么 / 不准 import 什么 / 必须 preserve 什么) (3) 必覆盖列表 (assertions / scenarios / edge cases) (4) 自验证步骤 (grep pattern / 预期 byte hash / 预期 smoke 行为) (5) 结构化汇报模板 (Deliverable path / Assertions added / **Observation 字段 — 列所有自诊到的疑点**) (6) I/O 契约 (上游文件精确行号 / 下游 consumer 期望).
+        2. **Subagent 并行交付 + 固定交付协议 (3 件套)**:
+            - **固定交付目录**: 每个 subagent 写产出到 `tests/testbench/_subagent_handoff/<task-id>.json`. 主 agent **派任务前**决定 `<task-id>` 并写进任务书.
+            - **完成标志**: 同目录下 `<task-id>.DONE` 空文件, 由 subagent **最后一步** touch. 严格顺序 — json 写好之后才 touch DONE.
+            - **汇报模板的 Observation 字段**: subagent 不直接 fail smoke, 而是把自诊到的疑点写入 Observation, 让主 agent 有机会 review 而不是被 smoke 强制阻断.
+        3. **主 agent review 三步走**:
+            - (a) **先读 subagent Observation** (不读代码), 识别潜在 spec 对齐 bug.
+            - (b) code review 代码 + lint.
+            - (c) 跑该 subagent 自己的 smoke + 全量历史回归.
+    - **Subagent 自诊的 Observation 往往比主 agent 自审更可信** — 因为 subagent 独立按 spec 实证, 没有主 agent "内存对齐误差" (脑中 spec 记成了别的).
+    - **失败模式**: 主 agent 自己一线做 N 个任务 + 自己写 smoke — 任何"主 agent 对 spec 理解错 → 代码和 smoke 一起错到 align 绿"的 bug 都会永远不被发现. 这是 L31 "审查锚定初衷" 在执行层的延伸.
+    - **关联**: L31 (审查锚定初衷) 管"审查时怎么不丢", §7.26 管"执行时用什么分工守住 spec". L24 (语义契约 vs 运行时机制) 管"什么该测". 三条共同防御"AI 协作时的 spec 漂移".
+    - **对应 Cursor skill**: `subagent-parallel-dev-three-phase-review` (本次 P26 Commit 2 新抽, 见 §8.4).
 
-> 纪律: 本文档 §7 只记录 "**已经踩过 ≥ 2 次**的同族教训". 下列 16 条候选 (L28-L44)
+27. **"Preview 面板按消费域分区, 避免跨域 stamp 污染"** ⚠⚠ (L44 初版 + L44 r7 2nd pass 两次同族已达门槛, 2026-04-23 P26 Commit 2 升级自候选):
+    - **两次同族实锤**:
+        - **第一次** (P25 Day 2 polish r7 初版): Day 3 (L43) 给 6 处 LLM 调用 (memory 4 + judge 1 + simuser 1) 统一补了 `last_llm_wire` stamp 追求**全面覆盖**. 看似纸面上正确, 实际 Chat 页 Preview Panel 显示**最新 stamp**, 跑完一次 `recent.compress` 后用户回 Chat 页以为看到的是"下次对话 AI 的 prompt", 实则是"记忆总结 LLM 的 prompt" — **全面 stamp + 单一展示面板 = 语义漂移**.
+        - **第二次** (P25 Day 2 polish r7 2nd pass): Memory `[预览 prompt]` 按钮位置问题 — r7 初版把按钮挂在外层按钮行 (紧贴触发按钮, "功能分类"语义的"触发操作 / 预览操作"并列), 用户反馈更自然的交互是: 点 trigger 按钮打开 drawer → 填好参数 → drawer 底部同时看到 `[执行] [预览]` — 即**按"交互阶段"分区**. 核心原则: **UI 元素的暴露时机要和它依赖的数据准备好的时机对齐**. 这和第一次是同一原则的 UI 侧对偶 — 第一次是"按消费域分区展示", 第二次是"按交互阶段分区按钮".
+    - **本质**: chokepoint + 全面覆盖 解决"写入侧纸面原则不漂移", 但没解决"读出侧展示应该按消费域分区" — **生产和消费在 chokepoint 后必须再分一次**. 同理, UI 按钮的"按功能分类"和"按交互阶段"也是两条分区维度, 错用会导致 tester 在"数据还没准备好"时看按钮失望.
+    - **根治架构 (三层)**:
+        1. **Chat 页白名单过滤**: `preview_panel.js::CHAT_VISIBLE_SOURCES = {chat.send, auto_dialog_target, avatar_event, agent_callback, proactive_chat}`. 非白名单 stamp (如 `memory.llm` / `judge.llm`) 存在但不渲染, 回退预估 wire + hint 引导去对应页面.
+        2. **每个非 Chat 域必须有独立 [预览 prompt] 按钮**, 调 **pure preview endpoint** (见 L45) 不调 LLM 不 stamp.
+        3. **"不被测的域" 直接 NOSTAMP**. 识别准则: 如果一个 LLM 调用的 prompt **tester 从未需要审视**, 那它就不应该 stamp.
+    - **L36 / L43 / L44 / §7.26 / §7.27 五者层次**:
+        - **L36 §7.25** (生产侧): 单条 wire 内**字段 shape / role / 字段名**不漂移 (跨边界反序列化).
+        - **L43** (chokepoint 覆盖): 所有 writer 都**调 chokepoint 留痕** (静态 AST 扫 + NOSTAMP escape).
+        - **§7.27** = **L44** 升级 (消费侧 / 展示分区): chokepoint 已经留痕了, 但**展示面板不是所有 stamp 都该展示**. 按"消费域" (对话 / 记忆 / 评分 / ...) 分区.
+        - **§7.27 对偶** (交互阶段分区): UI 按钮/控件的暴露时机要和它依赖的数据准备好的时机对齐.
+    - **防御规则**:
+        1. **写入侧 chokepoint 追求全面覆盖** (L43). 但必须**同时**定义"展示面板的消费域白名单".
+        2. **Pure preview endpoint 架构** (L45). 共享 helper 保证 preview 与 actual run 不漂移.
+        3. **"不被测的域"主动 NOSTAMP**.
+        4. **Preview 按钮的位置按"交互阶段"而非"功能分类"**. 点 trigger 按钮打开 drawer → 填参数 → drawer 底部同时暴露 `[执行] [预览]` — 按**交互阶段**分区.
+    - **对应 Cursor skill**: `preview-panel-domain-partition` (本次 P26 Commit 2 新抽, 见 §8.5).
+
+### §7.A 候选追加 (P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理 UTF-8 事件 + P25 Day 1 subagent 并行开发 + P25 Day 1 fixup mirror shape + P25 Day 2 前端面板派生 + P25 Day 2 polish r1-r6 手测派生 + P26 Commit 1 版本号落档 / 公共文档端点 / 4 象限文档分层派生, 待二次复现后并入主编号)
+
+> 纪律: 本文档 §7 只记录 "**已经踩过 ≥ 2 次**的同族教训". 下列 22 条候选 (L28-L49)
 > 多数仍为**单次派生** (源自 P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理
 > UTF-8 字节损坏事件 + P25 Day 1 subagent 并行开发首次应用 + P25 Day 1 fixup
 > mirror_to_recent shape mismatch + P25 Day 2 前端面板交付 + P25 Day 2 polish r1-r6
-> 手测联动 bug + P25 Day 3 `last_llm_wire` AST 覆盖率 smoke);
+> 手测联动 bug + P25 Day 3 `last_llm_wire` AST 覆盖率 smoke + **P26 Commit 1 版本号
+> 常量化 / `/docs/{name}` 白名单端点 / 4 象限文档分层 / "Commit 可独立成型" B 方案 /
+> pure preview 端点架构化**);
 > **L36 已升级至三次复现** (`dedupe_info.remaining_ms` 字段名漂移 +
 > `external_event_router` envelope 顶层结构漂移 + **LLM wire 消息 role 字段漂移 /
 > prompt_ephemeral 语义契约违反**), 已超门槛, 本次 §7 更新将 L36 升级为 §7.33.
-> **L39 / L40 / L41 / L42 / L43 / L44 新候选** 登记为单次, 待 P26+ 再命中升级. L37 / L38 仍为单次.
+> **L39 / L40 / L41 / L42 / L43 / L44 / L45 / L46 / L47 / L48 / L49 新候选** 登记为单次,
+> 待 P27+ 再命中升级. L37 / L38 仍为单次.
 > 登记在此避免遗忘.
+>
+> **L33 → §7.26 升级**: P25 Day 1 (subagent C 自诊 meta.get 漏字段) + P25 Day 2
+> polish (subagent 重复派任务致使 handoff 协议漏洞, 衍生 L33.x 交付目录 +
+> DONE 标志协议) 两次独立实锤, 已达门槛. 升级论述见下方 §7.26 正文 + 本次
+> **P26 Commit 2 同步抽取 cursor skill `subagent-parallel-dev-three-phase-review`**.
+>
+> **L44 → §7.27 升级**: P25 Day 2 polish r7 (wire 消费域分区) + P25 Day 2 polish
+> r7 2nd pass (Memory `[预览 prompt]` 按交互阶段分区) 两次独立实锤, 已达门槛.
+> 升级论述见下方 §7.27 正文 + 本次 **P26 Commit 2 同步抽取 cursor skill
+> `preview-panel-domain-partition`**.
 
 **L28 "跨阶段推迟项必须双向回扫"** (P24 Day 12 欠账清返派生, 2026-04-23):
 
@@ -828,7 +883,162 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
 - **候选 skill**: `preview-panel-domain-partition` — 触发条件 = "codebase 有 Preview Panel / Debug Panel 展示 last-X 类单点状态, 且 X 有多个 source 域". 模板: (1) 定义 `<panel>_VISIBLE_SOURCES` 白名单; (2) 非白名单 source 回退到预估数据 + 显式 hint 引导; (3) 每个非默认域有独立"预览"按钮调 pure preview endpoint; (4) pure preview endpoint 与真实 run 共享构造 helper.
 - **进入主编号条件**: 需要在 P26+ 再命中一次 "chokepoint 全面覆盖但 Preview Panel 展示域污染" 场景 (例如 diagnostics panel / error panel / snapshot panel 等) 才升级为 §7.38/§7.39.
 
-本项目抽出了 3 份**通用 skill**, 放在 `~/.cursor/skills/` 独立维护,
+**L45 "Pure preview 端点是 chokepoint 架构的执行层对偶"** (P25 Day 2 polish r7 + P26 Commit 1 推理派生, 2026-04-23):
+
+- **场景**: 任何包含 "跑一次贵操作 (LLM / 远程 API / 慢 IO) → 产出结果 → 写持久化 / 副作用" 流程的系统, 测试员 / reviewer / 二次开发者几乎必然会提出 "我想看这次**将要发出去的 wire / 请求 / payload**, 但我**不想**真的跑" 需求. 常见表现: 'Dry-run' / 'Preview' / 'Plan only' / '看 prompt 不调 LLM'.
+- **反模式 (踩过)**: 把 preview 做成 "真的跑一次 LLM, 只是 UI 不渲 assistant reply" → tester 看个 prompt 也要付 2-10s + token 费用 + 吃 rate limit + 触发副作用 (写 diagnostics / stamp last_llm_wire / 记 ring buffer). 心理成本过高, tester 实际就不会按 `[预览]`, 等于该功能不存在. 本项目 P25 polish r4 曾经一度想走这个路线, r7 根治改成 pure preview.
+- **正模式 (落地)**: 抽一个**共享 helper** `build_X_prompt_preview(*args)` 纯函数, 返 `{messages, wire, context}`, **无任何副作用**. 真实 run 调 `run_X` = `build_X_prompt_preview(...)` + `llm.ainvoke(wire)` + 副作用链. Preview 端点直接调 `build_X_prompt_preview` + 包装返给前端. P25 交付两对: (a) `memory_runner.build_memory_prompt_preview(op, params)` 给 `POST /api/memory/prompt_preview/{op}` 用, 4 个 `_build_*_wire` helper 覆盖 4 个 op; (b) `judge_runner.build_judge_prompt_preview(judger, inputs)` 给 `POST /api/judge/run_prompt_preview` 用, 覆盖四类 Judger. 两者都**共享真实 run 80%+ 代码** (验证 → 构 context → 渲染 prompt → 前置 preamble), 只差 `client.ainvoke` 那一步 — 契约一致性由代码路径共享**天然保证**.
+- **防御规则 (三条)**:
+    1. **Preview 端点契约**: 输入和真实 run 一致, 返回**只含 wire / request 的快照**, 不返 run id / 不返结果. 明确告知前端 "这条不会真的发生".
+    2. **共享 helper 必须是 pure**. 不可以在 helper 里 stamp `last_llm_wire` / 记 diagnostics / 写 cache — 那会让 preview 有 side effect, 蜕化为反模式. Side effect 在 `run_X` 端加.
+    3. **Preview 端点在 smoke 里要和真实 run 对比**: 同样的 input, `build_X_prompt_preview(inp).wire == run_X(inp).wire` (除 LLM 响应外). 这是防 "preview 和真实 run shape drift" 的机械保证 (L36 §7.25 第 5 层 chokepoint 下沉的跨接口变体).
+- **验证案例**:
+    - **P25 polish r4 → r7 架构迁移**: r4 的 `GET /memory/prompt_preview/{op}` 走 "真跑 LLM + 丢 reply" 路线, tester 反馈"看个 prompt 也要等 5s + 还消耗 api_key 额度", r7 改为 pure preview, 响应时间从 2-10s 降到 < 50ms, 零 token 消耗, 零 side effect.
+    - **Judge 评分页预览**: 评分 run 本身是"贵", 一次 full_session judger 可能跑十几分钟 + 花 $0.5-$2 token. tester 在 Schemas 里改了一个维度就想 "看看新的 judge prompt 长什么样", pure preview 端点让这变成"点一下等 50ms", 从"改 schema 前要掂量三次要不要试" 变为"敢放心试".
+- **识别信号**:
+    - 任何 "贵操作的结果里有一段 **外部世界会看到的 wire / payload / plan**, 且 consumer 会**希望预审这段**" 的场景.
+    - 具体信号词: `preview` / `dry_run` / `plan_only` / `what_if` / `simulate` (非 LLM 意义的 simulate) / `build_without_execute`.
+- **关联**:
+    - **L43** (chokepoint 写入覆盖) + **L44** (chokepoint 读出分区) + **L45** (chokepoint 预览无副作用) 构成 chokepoint 架构的**三位一体**: 写入全面覆盖, 读出按域分区, 预览无副作用. 三条缺一则系统中存在"看不到 / 看到假的 / 看一眼就付真钱" 三类缺陷之一.
+    - §7.25 L36 "跨边界 shape 必 rg 消费方" 的**执行层变体** — L36 管数据 shape, L45 管"preview 与 real run 的构造路径对齐". Preview 走 helper, real run 也走 helper, 才不会"preview 显示 A 但 real run 实际发 B".
+    - §7.6 "多源写入是纸面原则成败分水岭" — Preview 端点和 Real run 端点是"同一行为两入口", 也属于多源场景, 必须共享写入路径 (这里是 "wire 构造路径").
+- **候选 skill**: `pure-preview-endpoint-for-expensive-ops` — 触发条件 = "codebase 有 LLM / API / 慢 IO 类贵操作, tester 要求预览 wire/payload 不跑真调用". 模板: (1) 抽 `build_X_preview(inp) -> {wire, ctx}` pure helper; (2) real run 端点 = `build_X_preview` + `execute(wire)` + 副作用; (3) preview 端点 = `build_X_preview` + 直接返; (4) smoke 断言 `build_X_preview(inp).wire == run_X(inp).wire`.
+- **进入主编号条件**: 需要在 P26+ 再命中一次 "贵操作 preview 场景被错误地做成真调用" 或 "preview 端点漂移 shape 和 real run 不一致" 才升级为 §7.38/§7.39.
+
+**L46 "白名单派发式端点的 404 双语义 (未知资源 vs 资源未就绪)"** (P26 Commit 1 `/docs/{name}` 端点设计派生, 2026-04-23):
+
+- **场景**: 端点接收一个参数 (资源名 / 文档名 / module id), 后端对参数**做白名单校验**, 命中白名单才返实际内容; 白名单条目本身指向的**磁盘文件 / 远程资源**可能暂时**不存在** (尚未写 / 已删 / 外部挂了). 这类场景下 "404 Not Found" **有两种截然不同含义**, 必须分开表达.
+- **反模式**: 只返一个统一的 `404`, 消费方 (前端 / 调试员) 无法区分:
+    - (a) "这个资源名我根本不认识" → 应该检查拼写 / 配置, 不会自愈.
+    - (b) "这个资源名我认识但当前文件/副本不在" → 应该等一会 / 等后续发布, 不改配置.
+    合并成一个 404 → 调试员只能靠其它副作用 (grep 代码 / 看部署 timeline) 来猜哪个情况.
+- **正模式**: 404 body 加**离散 `reason` 字段** + **人可读 `hint` 字段**. 本次 `/docs/{doc_name}` 的做法:
+    - `reason=unknown_doc` + `hint="Check that the doc name matches one of the whitelisted entries"` (a 类情况 - 白名单 miss).
+    - `reason=file_missing` + `hint="Will appear in a subsequent commit of this release cycle"` (b 类情况 - 白名单 hit 但文件还没写, 本次 P26 Commit 1 场景: ARCHITECTURE_OVERVIEW 和 USER_MANUAL 文件还没创建).
+- **防御规则 (四条)**:
+    1. **两类 404 分别有 `reason` code**. 消费方 (前端) 可以按 reason 做不同 UX: unknown_doc → 红色 "配置错误"; file_missing → 灰色 "内容即将上线".
+    2. **白名单条目本身是 "承诺"**. 把一个条目加入白名单 = 团队承诺该条目将来会有内容. 所以 file_missing 是一种**预期的软状态**, 不应上报为 error 级 diagnostics.
+    3. **不要把白名单 miss 降级为 file_missing**. 反过来也不行. reason code 必须精确反映 "白名单是否命中", 否则 debugging 信号丢失.
+    4. **白名单和文件的 schema version 要对齐**. 如果白名单配置里的条目名和磁盘文件名的映射规则在不同 version 下变了 (e.g. 中划线 vs 下划线 / 带版本号 vs 不带), 必须同时 bump; 否则会出现"白名单 miss 其实是文件改名了"这种隐蔽情况.
+- **验证案例**:
+    - P26 Commit 1 `/docs/{doc_name}` 端点. 白名单 4 条: `testbench_USER_MANUAL`, `testbench_ARCHITECTURE_OVERVIEW`, `external_events_guide`, `CHANGELOG`. Commit 1 只有 `external_events_guide.md` + `CHANGELOG.md` 文件存在, 另两个要到 Commit 2/3 才写. 如果没有 `file_missing` 区分, tester 点 About 页的链接看到"404"会以为"链接配错了", 实际是"内容还没到". 加了 reason 后, 端点明确 "链接对, 文件还没到, 后续 release 会补" — 这条实际上给了 Commit 1 "作为独立 deliverable 存档" 的底气 (About 页不会显示死链, 只会显示 "即将上线").
+- **识别信号**:
+    - 端点签名形如 `GET /<prefix>/{name}` 且 name 来自有限白名单.
+    - 白名单条目和磁盘副本 / 外部资源是"引用关系"而非"绑定关系" (条目是承诺, 副本是实现).
+    - debugging 时问过自己 "这个 404 是因为没注册还是因为文件没了".
+- **关联**:
+    - §7.25 L36 "跨边界 shape 必 rg 消费方" 的**错误 taxonomy 扩展** — L36 管数据字段 shape, L46 管**错误分类 code** shape. 两者都是 "消费方必须能精确 discriminate" 的不同切面.
+    - L40 "info 级诊断 smoke 必须显式 `level=info`" 的**错误级别精确化** — L40 管 info 级 diag 不能漂移到 warning, L46 管 404 不能漂移成混合语义.
+- **候选 skill**: `whitelist-endpoint-404-two-semantics` — 触发条件 = "端点参数来自有限白名单且白名单条目与磁盘/远程资源是引用关系". 模板: (1) 白名单 miss → `reason=unknown_<kind>`; (2) 白名单 hit + 资源 miss → `reason=<kind>_missing`; (3) reason 字段为闭集 + 文档化; (4) smoke 覆盖两种 404.
+- **进入主编号条件**: 需要在 P26+ 再命中一次 "白名单端点的 404 合并为单一语义导致 debugging 困难" 才升级为 §7.38/§7.39.
+
+**L47 "版本号 + phase 标签二元组 (semver 不够用)"** (P26 Commit 1 `TESTBENCH_VERSION` + `TESTBENCH_PHASE` 并列设计派生, 2026-04-23):
+
+- **场景**: 测试工具 / 开发工具 / SDK / 内部产品有**两条正交的变更时间线**:
+    - (a) **面向外部消费者 (测试员 / 集成方 / 用户) 的语义版本**. 关注点 = 我的使用流程会变吗 / 持久化兼容吗 / 端点契约变了吗. 用 **semver** 表达: `1.0.0` → `1.1.0` (MINOR: 新特性不破坏流程) / `2.0.0` (MAJOR: 破坏性变更).
+    - (b) **面向内部开发者 (项目 agent / PR reviewer / 代码考古者) 的开发阶段**. 关注点 = 当前代码对应的是 "哪个阶段的设计" / 查文档用哪份蓝图. 用 **Phase id** 表达: `P24 sign-off baseline` / `P25 external event injection` / `P26 documentation consolidation`.
+- **反模式**: 只记 semver. 外部消费者满意, 但内部开发者查"这个 bug 是 P20 还是 P23 引入" 只能翻 git blame / commit history, 成本高. 或只记 Phase id. 内部开发者满意, 但外部消费者看不懂"P25 是什么" / "我的存档从 P24 能加载到 P25 吗". 两者都单轨 → 必有一方查询成本过高.
+- **正模式**: **并列两个常量 + 同一文件 + 维护守则**:
+    ```python
+    # tests/testbench/config.py
+    TESTBENCH_VERSION: str = "1.1.0"  # semver, 外部语义兼容轨
+    TESTBENCH_PHASE: str = "P25 external event injection"  # phase id, 内部开发轨
+    ```
+    **两个变量的 bump 时机不同**:
+    - Phase 每开一个新阶段都改, 对齐 BLUEPRINT + PLAN 的 Pnn.
+    - Semver 只在阶段 sign-off **且**有外部可见契约变化时 MAJOR / MINOR bump; 只内部重构 / 文档调整 不 bump.
+    既不让外部消费者看到"开发细节", 又不让内部开发者"通过翻 git 来定位阶段".
+- **配套维护守则** (注释里明写):
+    1. 改 `TESTBENCH_VERSION` 时, 必须同步改 `CHANGELOG.md` 加一条 dated section.
+    2. 改 `TESTBENCH_PHASE` 时, 该 Phase id 必须在 BLUEPRINT / PLAN 里能找到对应的 Pnn.
+    3. 两者在 `server.py` (FastAPI app version) + `health_router.py` (GET /version 端点) + 前端 Settings → About 页都消费 — 单点定义, 多点消费.
+- **验证案例**:
+    - P26 Commit 1 引入 `TESTBENCH_VERSION="1.1.0"` + `TESTBENCH_PHASE="P25 external event injection"`. 之前是 P20 遗留的硬编码 `"0.1.0" / "P20"` 以及 FastAPI app 硬编码 `"0.1.0"`. 整合后: `/version` 端点返 `{version: "1.1.0", phase: "P25 ..."}`, `/api/docs` OpenAPI spec 顶部显示 "1.1.0", About 页同时渲染两行. 外部消费者看 "1.1.0", 内部开发者看 "P25 ...".
+    - 为什么 Phase 不写成 "P25" 而是 "P25 external event injection": Phase 标签**给人看**, 带主题描述, 比纯数字代号易识别. 数字加英文短语对齐本项目文档风格.
+- **识别信号**:
+    - 产品有 "不稳定的内部开发时间线" (新阶段 / 新实验 / 新特性分支) 同时也有 "对外消费 API / 数据格式 / 持久化 schema".
+    - PR description 经常同时包含"版本变更"和"阶段归属"两个元数据.
+    - 产品文档有两套 (外部手册 + 内部蓝图).
+- **关联**:
+    - §7.1 "TODO 注释半衰期 4-6 phase" 的**时间管理维度** — §7.1 讲代码里临时标记的寿命, L47 讲项目里两条时间线的正交. 两者都认可"时间维度不止一条". 
+    - LESSONS §7 开篇的"目标读者二元组" (本项目内 agent + 其它 AI 辅助项目设计者) 思路一致 — "同一份档案 要同时服务两个受众, 必须让两个受众各自能快速定位自己关心的信息".
+- **候选 skill**: `version-plus-phase-dual-track` — 触发条件 = "产品有外部消费契约 + 内部开发阶段两条时间线". 模板: (1) semver 常量 (外部轨); (2) phase 标签常量 (内部轨); (3) 两个常量同一文件 + 注释明写 bump 规则; (4) `/version` 端点返二元组; (5) CHANGELOG (外部轨) + BLUEPRINT/PROGRESS (内部轨) 分开维护.
+- **进入主编号条件**: 需要在 P26+ 再命中一次 "产品版本信息单轨导致内外部查询成本不均" 才升级为 §7.38/§7.39.
+
+**L48 "大型 codebase 文档 4 象限分层 (长期 / 版本 / 历史 / 跨项目)"** (P26 r2 方案 "4 份文档分工" 派生, 2026-04-23):
+
+- **场景**: 任何经历 10+ 开发阶段, 有 2000+ 行 BLUEPRINT + 3000+ 行 AGENT_NOTES + 多份 PROGRESS 的大型项目. 文档膨胀后**必然**出现"找不到权威源" / "某条信息写在了 3 处但互相矛盾" / "新接手 agent 不知道先读哪份" 三类病.
+- **反模式 (踩过)**:
+    - (a) **单 README 膨胀式**: 把所有信息塞进 `README.md` / `tests/testbench_README.md`. 结果是 500+ 行的"文档汤", 测试员看不懂术语, 开发者看不进去实施细节, 文档既非入门材料也非权威源.
+    - (b) **按内容分散式**: 每个子系统一个文档, 无交叉索引. 结果是 "`memory.md` 写一套 preview/commit 契约, `chat.md` 写另一套 consistency 规则, 读完两份才知道它们是同一个契约的两面".
+    - (c) **按阶段积累式** (本项目 P01-P23 曾经一度的模式): `PROGRESS.md` 从 50 行长到 10000+ 行, 每次新阶段都追加. 结果是**档案属性**盖过**入门属性**, 新接手 agent 读到第 2000 行就放弃.
+- **正模式 (落地, P26 r2 方案)**: 按**受众 × 时效**做 **4 象限分层**:
+
+    | 象限 | 时效 | 受众 | 代表文档 |
+    |---|---|---|---|
+    | **1. 长期稳定** | 基本不变 (跨 N 个版本) | 二次开发者 / 新接手 agent / 代码审查者 | `ARCHITECTURE_OVERVIEW.md` (架构概述) / `CONTRIBUTING.md` (贡献指南) |
+    | **2. 版本活档** | 每次 MINOR / MAJOR bump 更新 | 测试员 / 集成方 / 用户 | `USER_MANUAL.md` (使用手册) / `CHANGELOG.md` / 子系统专项手册 (如 `external_events_guide.md`) |
+    | **3. 历史档** | 每阶段追加, 只增不删 | 项目内 agent / 代码考古 | `BLUEPRINT.md` / `PROGRESS.md` / `AGENT_NOTES.md` / `PLAN.md` |
+    | **4. 跨项目沉淀** | 每发现新 takeaway 追加 | 任何 AI 辅助项目 / 外部同行 | `LESSONS_LEARNED.md` + `~/.cursor/skills/*` |
+
+- **防御规则 (五条)**:
+    1. **每份文档顶部明写"时效 + 受众 + 侧重"**. 读者第一眼就能判断"这份适不适合我".
+    2. **任何新信息先问"属于哪个象限"**. 同一信息不在两个象限里重复写 (DRY 原则). 若真的跨象限, 一个象限写权威, 其它象限只做索引链接.
+    3. **象限 1 文档变更要 bump 版本**. 架构文档是承诺. 架构变了代码肯定变, CHANGELOG 也得变. 但反过来不成立 (CHANGELOG 变未必架构变).
+    4. **象限 3 文档只增不删**. 阶段结束后不删旧 section, 旧 section 是历史档案. 新阶段 append. 这样 `git blame` 能定位"这个决策是哪个阶段做的".
+    5. **象限 4 文档独立维护**. `LESSONS_LEARNED` 和 `~/.cursor/skills/*` 不受本项目阶段 gating 约束. 其它 AI 项目可以 fork / reference.
+- **配套: 入口索引文档**. 要有一份**文档目录**告诉新接手者"从哪里开始读" — 本项目就是 `ARCHITECTURE_OVERVIEW` 末尾的文档关系表. 没有这张表, 4 象限分层也会退化为"又多了一份要读的文档".
+- **验证案例**:
+    - **P26 r2 方案**: 从最初的"单 README" 思路 (反模式 a) 翻转为 4 象限分层. 产物:
+        - 象限 1: `testbench_ARCHITECTURE_OVERVIEW.md` (本次 P26 Commit 2 新建).
+        - 象限 2: `testbench_USER_MANUAL.md` (P26 Commit 3) + `CHANGELOG.md` (P26 Commit 1) + `external_events_guide.md` (P25 Day 3 已交付).
+        - 象限 3: `P24_BLUEPRINT.md` / `P25_BLUEPRINT.md` / `PROGRESS.md` / `AGENT_NOTES.md` / `PLAN.md` / `p24_integration_report.md` (已存在, 继续维护).
+        - 象限 4: `LESSONS_LEARNED.md` (本文) + `~/.cursor/skills/*` (2 + 本次新增 = 5 个).
+    - **入口**: `ARCHITECTURE_OVERVIEW` 末尾的文档关系表 + Settings → About 页 `/docs/{name}` 端点链接.
+- **识别信号**:
+    - 文档总行数 > 3000 或单文档 > 1000 行.
+    - 读完 README 后仍不知道"子系统 X 的权威档在哪".
+    - 同一条信息在 2+ 处不同文档各写一遍, 且略有差异 (已经在漂移).
+    - PR review 有时要求"请同时更新 README / BLUEPRINT / AGENT_NOTES 三处" — 这是象限分层没做好的症状.
+- **关联**:
+    - §7.1 "TODO 半衰期" 的**文档版本** — TODO 生命周期短, 长期信息应该沉淀到架构文档而非散落在代码注释里.
+    - §7.6 "多源写入是纸面原则成败分水岭" 的**文档版本** — 多个文档写同一信息 = 多个 writer 写同一 field, 必然漂移. 对应治理 = DRY + 权威源 + 索引链接.
+    - L31 "审查时必须持续锚定设计初衷" — 架构文档是设计初衷的**固化载体**, 审查时可 `ctrl+F` 查找.
+- **候选 skill**: `docs-four-quadrant-layering` — 触发条件 = "项目经过 10+ 开发阶段, 文档总行数 > 3000, 出现 '找不到权威源' 症状". 模板: (1) 梳理所有现有文档归哪个象限; (2) 长期 / 版本 / 历史 / 跨项目 4 象限; (3) 每份文档顶部明写时效 + 受众 + 侧重; (4) 建立入口索引文档; (5) 同一信息不跨象限重复 (DRY).
+- **进入主编号条件**: 需要在 P26+ 或其它 AI 辅助项目再命中一次 "文档膨胀导致新接手者无法定位权威源" 才升级为 §7.38/§7.39.
+
+**L49 "Commit 可独立成型: 分 N 次 commit 时每次都必须是可 sign-off 的 deliverable"** (P26 B 方案 "每大块存档再继续" 派生, 2026-04-23):
+
+- **场景**: 大型交付被拆成多个 commit 落地 (本项目 P26 拆成 3 次 commit, P24 拆成 12 Day commit). 测试员 / reviewer 会在任何一个 commit 之后**独立接触当前状态**, 不等整套做完. 每次 commit 必须是 "如果这里就停, 也不影响系统 usability" 的可发布状态.
+- **反模式**: "接力型 commit" — commit 1 写了端点但不接线, commit 2 接线但忘了 i18n, commit 3 才齐. 如果用户在 commit 1 后的某个时间点更新到 HEAD, **用户看到的是半拉子状态** (端点存在但 UI 不露 → 或 UI 露但点了报 404). 这是典型的 "dev 友好但 user 不友好" 模式.
+- **正模式 (P26 Commit 1 案例)**: 每次 commit 按 "**独立切面**" 组织, 而非"工作进度切片":
+    - **Commit 1 (今天)** = 可独立成型的基础件: 版本号常量化 + CHANGELOG (独立完整的文档) + 公共 docs 端点 (带 `file_missing` 软状态兜底) + About 页接线 (链接 4 个未来会有的文档, 其中 2 个还没写 — 不会显示死链, 会显示"即将上线"). 这个切面**本身可 sign-off**: 外部可见契约 (`TESTBENCH_VERSION=1.1.0`) 已 bump, tester 点 About 页的 4 个文档链接能看到两个 200 HTML + 两个 "即将上线" 404, 服务不崩.
+    - **Commit 2 (明天)** = ARCHITECTURE_OVERVIEW + LESSONS L45-L49 + 2 个 skills: 是"开发者文档 + 沉淀"切面. Commit 2 之后 About 页的 "相关文档" 里 ARCHITECTURE_OVERVIEW 从"即将上线"变"可看". USER_MANUAL 仍是"即将上线". 这个切面**也可 sign-off**: 即使 Commit 3 的 USER_MANUAL 不交, tester 仍能看到完整的 CHANGELOG + 架构文档 + 外部事件手册, 只是缺一份面向新 tester 的中文操作手册.
+    - **Commit 3** = USER_MANUAL 补上: Commit 3 只影响象限 2 (tester 视角的操作手册), 前两个 commit 的开发者视角全部不动. 系统 usability 单调递增, 任何中间状态都可用.
+- **防御规则 (四条)**:
+    1. **每个 commit 对应一个"独立切面"**, 不对应"工作进度切片". 独立切面 = "交付后该切面内所有 consumer 立即受益", "进度切片" = "交付了 X 的一半, 等 Y 交付才有用".
+    2. **每个 commit 结束后跑独立 smoke 套件验证**. 不依赖后续 commit 的断言. P26 Commit 1 后跑 17/17 Python smoke 全绿 (未依赖 ARCHITECTURE_OVERVIEW / USER_MANUAL 文件存在).
+    3. **"软缺失" 设计兜底 "暂未交付"**. 本次 `file_missing` reason code (L46) 就是这层设计的典型: 允许未来 commit 逐步填空, 当前 commit 链接不会死. 类比: database migration 的 `create_if_not_exists` / `nullable columns`; API 的 optional fields / default values.
+    4. **每个 commit 独立写 commit message + 更新 CHANGELOG**. CHANGELOG 是"每个切面交付后的阶段性 sign-off 文档", 不等所有 commit 做完才加.
+- **验证案例**:
+    - **P26 B 方案 vs A 方案**. A 方案 = "全部 4 份文档 + 2 个 skills + 版本号 + 端点 一起一个 commit", 优点是原子性, 缺点是**任何一环卡壳 (比如 USER_MANUAL 拍照等配图) 全部卡住**, 可能连续几天没进展. B 方案 = 分 3 commit, 每次独立成型. 本次 P26 选 B, Commit 1 当天落地 4 改 1 新 1 删, 用户立即能看到 About 页 "相关文档" 入口, 即使 Commit 2/3 延期几天也有阶段性交付.
+    - **对偶: P24 Day 1-12 模式**. 每 Day 是一个独立切面, Day N 结束跑 smoke 全绿, Day N+1 不依赖 Day N+K (K>1) 的未来交付. Day 1-6 各自可 sign-off, Day 12 = 最终收尾而非 "所有 Day 交付的合并依赖".
+- **识别信号**:
+    - 大型交付计划写 "Commit 1 做 A 和 B 的前半, Commit 2 做 A 的后半和 B 的后半" — 这是进度切片, 反模式.
+    - Commit message 写 "Part 1/N, 等 Part N 再用" — 反模式.
+    - PR 合并前必须强调 "**所有 commit 合并完**才能 deploy, 中间 commit 不能 deploy" — 反模式.
+- **关联**:
+    - L46 "404 双语义" 的**交付层实现** — L46 给了 "file_missing" 这个软状态, L49 告诉你什么时候**应该**用它. 两条是 "用配 L46 机制 + L49 方法论" 的配套.
+    - §7.6 "多源写入是纸面原则成败分水岭" 的**时间维度** — 多源写 = 空间维度的并行, 多 commit = 时间维度的并行. 空间上要 chokepoint, 时间上要 "每个切面独立成型".
+    - L28 "跨阶段推迟项必须双向回扫" 的**项目内实施版** — L28 管 "跨阶段别漏", L49 管 "阶段内拆 commit 别漏" (跨越短时间尺度).
+- **候选 skill**: `commit-independent-deliverable` — 触发条件 = "大型交付要分 N 个 commit". 模板: (1) 按切面而非进度拆; (2) 每 commit 后跑独立 smoke 绿; (3) 软缺失设计兜底未交付部分; (4) 每 commit 独立写 CHANGELOG.
+- **进入主编号条件**: 需要在 P26+ 或其它 AI 辅助项目再命中一次 "多 commit 拆分时中间状态 unusable" 才升级为 §7.38/§7.39.
+
+---
+
+## 8. 本项目抽出的通用 cursor skills
+
+本项目抽出了 5 份**通用 skill**, 放在 `~/.cursor/skills/` 独立维护,
 不依赖本项目. 任何 AI 辅助的大型 codebase 都能用:
 
 ### 8.1 `audit-chokepoint-invariant` (§1.1 方法论落地)
@@ -856,6 +1066,37 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
 **触发**: 任何"审查前端事件总线 / 找事件漂移 bug / 重构事件订阅"
 的任务.
 
+### 8.4 `subagent-parallel-dev-three-phase-review` (§7.26 方法论落地, P26 Commit 2 新抽)
+
+**用途**: AI 辅助开发时, 把 ≥ 3 个"单文件单任务"的可并行子任务分派给 subagent,
+主 agent 按"**派任务 → 固定交付协议 → 三步 review**"接收交付. 核心产物:
+`_subagent_handoff/<task-id>.json` + `<task-id>.DONE` 交付握手 + 任务书 6 节
+模板 + Observation 字段驱动的"subagent 独立自诊 → 主 agent 识别 spec 漂移".
+
+**触发**: 任何"把大任务拆成 ≥ 3 个独立子任务 / 并行开发 / subagent 协作 /
+需要避免主 agent 内存对齐 spec 出错"的场景.
+
+**要解决的核心痛点**: (a) 单个主 agent 同时处理 N 份 spec 时"细节记岔"的静默错误;
+(b) `AwaitShell` 不支持 subagent id 导致主 agent 不知道 subagent 是否完工 /
+交付在哪, 继而重复启动 subagent 覆盖已完成产物.
+
+### 8.5 `preview-panel-domain-partition` (§7.27 方法论落地, P26 Commit 2 新抽)
+
+**用途**: 设计"一个 chokepoint 收集全量事实 + 展示面板按消费域分区"的
+UI/数据架构. 核心产物: **写入侧全面 stamp** (不漏任何真实发生的事件) +
+**展示侧消费域白名单** (`DOMAIN_VISIBLE_SOURCES` 过滤) + **pure preview endpoint**
+(UI 要看"假设发送"时走共享 helper 算一次, 不触发真实 LLM / 不 stamp) +
+**UI 按钮按"交互阶段"而非"功能分类"分区** (点 trigger → 打开 drawer → 填参 →
+drawer 底同时暴露 `[执行] [预览]`).
+
+**触发**: 任何"一个 chokepoint 被多个 UI 面板消费 / 不同面板的用户预期
+数据来源不同 / 全面覆盖导致最新事件污染了专用面板 / 预览按钮位置被用户
+吐槽点了没反应"的场景.
+
+**要解决的核心痛点**: chokepoint 全面覆盖 (L43) 是写入侧的正确策略, 但
+如果所有面板都无差别读"最新 stamp", 专用面板会被其它域的事件污染, tester
+以为看到的是 A 的 prompt 实际是 B 的 (跑 memory 后回 chat 页看到 memory prompt).
+
 ---
 
 ## 9. 本文档的使用建议
@@ -869,7 +1110,7 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
 ### 9.2 其它 AI 辅助软件项目
 
 - §1 + §5 + §7 可直接套用, 不带项目特异信息
-- §8 的 3 个 skills 独立可用
+- §8 的 5 个 skills 独立可用
 - §2 的 10 条架构原则按项目性质选 (本项目是前端重的 web app, 其它类型项目参考 §2.1-§2.3 后端部分)
 - §6 节奏模板按项目规模缩放
 
@@ -881,7 +1122,7 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
 
 ---
 
-*本文档是 N.E.K.O. Testbench 项目 P00-P24 开发周期的设计经验沉淀,
+*本文档是 N.E.K.O. Testbench 项目 P00-P26 开发周期的设计经验沉淀,
 与三份老 docs (PLAN / PROGRESS / AGENT_NOTES) 和 P24_BLUEPRINT 的关系:
 三份老 docs 是**当下项目的执行档案**, 本文档是**跨项目的抽象沉淀**.
 **本文档不需要每次修改后同步更新其它 docs** — 它是向外输出的稳定版.*
