@@ -3,10 +3,15 @@
 
     var state = {
         initialized: false,
+        initPromise: null,
         phase: 'hidden',
+        systemStatus: null,
+        startupDecision: null,
         bootstrap: null,
         overlay: null,
         loadingView: null,
+        loadingTitle: null,
+        loadingSubtitle: null,
         selectionView: null,
         errorView: null,
         banner: null,
@@ -31,6 +36,24 @@
             path: '',
         },
     };
+
+    function createDeferred() {
+        var deferred = {
+            settled: false,
+            promise: null,
+            resolve: null,
+        };
+        deferred.promise = new Promise(function (resolve) {
+            deferred.resolve = function (value) {
+                if (deferred.settled) return;
+                deferred.settled = true;
+                resolve(value);
+            };
+        });
+        return deferred;
+    }
+
+    state.startupDecision = createDeferred();
 
     function translate(key, fallback) {
         try {
@@ -63,6 +86,16 @@
         }
     }
 
+    function resolveStartupDecision(payload) {
+        if (!state.startupDecision) {
+            state.startupDecision = createDeferred();
+        }
+        state.startupDecision.resolve(payload || {
+            canContinue: true,
+            reason: 'continue_current_session',
+        });
+    }
+
     function setPhase(phase) {
         state.phase = phase;
         if (!state.overlay) return;
@@ -80,6 +113,90 @@
         // 这里只关闭当前页面上的覆盖层；刷新主页后，后端仍会返回 selection_required=true，
         // 因而开发阶段会再次弹出，便于反复检查首屏展示与交互。
         setPhase('hidden');
+    }
+
+    function setLoadingCopy(title, subtitle) {
+        if (state.loadingTitle && typeof title === 'string' && title) {
+            state.loadingTitle.textContent = title;
+        }
+        if (state.loadingSubtitle && typeof subtitle === 'string' && subtitle) {
+            state.loadingSubtitle.textContent = subtitle;
+        }
+    }
+
+    function sleep(ms) {
+        return new Promise(function (resolve) {
+            window.setTimeout(resolve, ms);
+        });
+    }
+
+    function shouldBlockMainUi(statusPayload) {
+        if (!statusPayload || typeof statusPayload !== 'object') {
+            return true;
+        }
+
+        var storage = statusPayload.storage || {};
+        return statusPayload.ready !== true
+            || statusPayload.status === 'migration_required'
+            || !!storage.selection_required
+            || !!storage.migration_pending
+            || !!storage.recovery_required;
+    }
+
+    function shouldShowSelectionView(bootstrapPayload) {
+        if (!bootstrapPayload || typeof bootstrapPayload !== 'object') {
+            return false;
+        }
+
+        return !!bootstrapPayload.selection_required
+            || !!bootstrapPayload.migration_pending
+            || !!bootstrapPayload.recovery_required;
+    }
+
+    async function fetchSystemStatus() {
+        var response = await fetch('/api/v1/system/status', {
+            cache: 'no-store',
+            headers: {
+                'Accept': 'application/json'
+            }
+        });
+        if (!response.ok) {
+            throw new Error('system status request failed: ' + response.status);
+        }
+
+        var payload = await response.json();
+        if (!payload || payload.ok !== true) {
+            throw new Error(
+                translate('storage.systemStatusUnexpected', '存储启动状态接口返回了未识别的结果。')
+            );
+        }
+        state.systemStatus = payload;
+        return payload;
+    }
+
+    async function waitForSystemStatus() {
+        var lastError = null;
+
+        for (var attempt = 0; attempt < 20; attempt += 1) {
+            try {
+                var payload = await fetchSystemStatus();
+                if (payload.status !== 'starting') {
+                    return payload;
+                }
+            } catch (error) {
+                lastError = error;
+            }
+
+            setLoadingCopy(
+                translate('storage.loadingTitle', '正在确认存储布局状态'),
+                translate('storage.loadingWaitSubtitle', '主业务界面会在存储状态确认完成后再继续加载。')
+            );
+            await sleep(250);
+        }
+
+        throw lastError || new Error(
+            translate('storage.systemStatusUnavailable', '暂时无法确认本地服务状态，请重试。')
+        );
     }
 
     function renderLegacyList() {
@@ -204,6 +321,10 @@
             state.otherPanel.hidden = true;
         }
         hideOverlay();
+        resolveStartupDecision({
+            canContinue: true,
+            reason: 'continue_current_session',
+        });
     }
 
     function useRecommendedPath() {
@@ -450,8 +571,12 @@
         var shell = createElement('div', 'storage-location-shell');
         var hero = createElement('div', 'storage-location-hero');
         hero.appendChild(createElement('span', 'storage-location-badge', translate('storage.badge', '存储位置')));
-        hero.appendChild(createElement('h2', 'storage-location-title', translate('storage.loadingTitle', '正在读取存储位置状态')));
-        hero.appendChild(createElement('p', 'storage-location-subtitle', translate('storage.loadingSubtitle', '应用已打开，正在准备首轮存储位置选择页面。')));
+        var loadingTitle = createElement('h2', 'storage-location-title', translate('storage.loadingTitle', '正在确认存储布局状态'));
+        var loadingSubtitle = createElement('p', 'storage-location-subtitle', translate('storage.loadingSubtitle', '主业务界面会在存储状态确认完成后再继续加载。'));
+        state.loadingTitle = loadingTitle;
+        state.loadingSubtitle = loadingSubtitle;
+        hero.appendChild(loadingTitle);
+        hero.appendChild(loadingSubtitle);
         shell.appendChild(hero);
         shell.appendChild(createElement('div', 'storage-location-loader'));
         view.appendChild(shell);
@@ -477,7 +602,7 @@
         var retryButton = createElement('button', 'storage-location-btn storage-location-btn--primary', translate('common.retry', '重试'));
         retryButton.type = 'button';
         retryButton.addEventListener('click', function () {
-            fetchBootstrap();
+            beginSentinelFlow();
         });
         actions.appendChild(retryButton);
         shell.appendChild(actions);
@@ -510,6 +635,10 @@
 
     async function fetchBootstrap() {
         setPhase('loading');
+        setLoadingCopy(
+            translate('storage.loadingTitle', '正在确认存储布局状态'),
+            translate('storage.loadingFetchBootstrapSubtitle', '正在准备存储位置选择页面。')
+        );
         try {
             var response = await fetch('/api/storage/location/bootstrap', {
                 cache: 'no-store',
@@ -523,21 +652,80 @@
 
             state.bootstrap = await response.json();
             updateSelectionSummary();
-            setPhase(state.bootstrap.selection_required ? 'selection_required' : 'hidden');
+            if (shouldShowSelectionView(state.bootstrap)) {
+                setPhase('selection_required');
+                return;
+            }
+
+            hideOverlay();
+            resolveStartupDecision({
+                canContinue: true,
+                reason: 'status_ready',
+            });
         } catch (error) {
             console.warn('[storage-location] bootstrap failed', error);
             showError(error);
         }
     }
 
-    async function init() {
-        if (state.initialized) return;
-        state.initialized = true;
+    async function beginSentinelFlow() {
         buildModalDom();
-        await fetchBootstrap();
+        setPhase('loading');
+        setLoadingCopy(
+            translate('storage.loadingTitle', '正在确认存储布局状态'),
+            translate('storage.loadingSubtitle', '主业务界面会在存储状态确认完成后再继续加载。')
+        );
+
+        try {
+            var statusPayload = await waitForSystemStatus();
+            if (!shouldBlockMainUi(statusPayload)) {
+                hideOverlay();
+                resolveStartupDecision({
+                    canContinue: true,
+                    reason: 'status_ready',
+                });
+                return;
+            }
+
+            await fetchBootstrap();
+        } catch (error) {
+            console.warn('[storage-location] sentinel init failed', error);
+            showError(error);
+        }
+    }
+
+    async function init() {
+        if (state.initPromise) return state.initPromise;
+        state.initialized = true;
+        state.initPromise = state.startupDecision.promise;
+        beginSentinelFlow();
+        return state.initPromise;
+    }
+
+    function scheduleEarlyInit() {
+        function start() {
+            init();
+        }
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', start, { once: true });
+            return;
+        }
+
+        window.setTimeout(start, 0);
     }
 
     window.appStorageLocation = {
         init: init,
+        waitUntilMainUiAllowed: function () {
+            return init();
+        },
     };
+
+    window.waitForStorageLocationStartupBarrier = function waitForStorageLocationStartupBarrier() {
+        return init();
+    };
+
+    window.__nekoStorageLocationStartupBarrier = init();
+    scheduleEarlyInit();
 })();

@@ -352,7 +352,14 @@ def clean_user_data_dir(tmp_path_factory):
     import shutil
     if cm.app_docs_dir.exists():
         new_app_docs_dir = Path(tmp_path) / "N.E.K.O"
-        shutil.copytree(str(cm.app_docs_dir), str(new_app_docs_dir), dirs_exist_ok=True)
+        shutil.copytree(
+            str(cm.app_docs_dir),
+            str(new_app_docs_dir),
+            dirs_exist_ok=True,
+            # Chromium / Electron 运行时可能遗留 SingletonSocket / SingletonLock 等特殊文件，
+            # 这些文件既不属于用户数据，也会在 macOS 上导致 copytree 失败。
+            ignore=shutil.ignore_patterns("Singleton*"),
+        )
     
     cm.app_docs_dir = cm.docs_dir / "N.E.K.O"
     cm.app_docs_dir.mkdir(parents=True, exist_ok=True)

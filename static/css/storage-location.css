@@ -6,6 +6,16 @@ body.storage-location-modal-open {
     overflow: hidden;
 }
 
+body.storage-location-modal-open > *:not(#storage-location-overlay) {
+    pointer-events: none !important;
+    user-select: none;
+}
+
+body.storage-location-modal-open #storage-location-overlay,
+body.storage-location-modal-open #storage-location-overlay * {
+    pointer-events: auto;
+}
+
 .storage-location-overlay {
     position: fixed;
     inset: 0;
@@ -19,6 +29,7 @@ body.storage-location-modal-open {
         rgba(12, 18, 28, 0.78);
     backdrop-filter: blur(10px);
     -webkit-backdrop-filter: blur(10px);
+    isolation: isolate;
 }
 
 .storage-location-modal {

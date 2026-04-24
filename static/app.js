@@ -183,7 +183,26 @@ const ready = async () => {
     if (ready._called) return;
     ready._called = true;
 
-    // 等待页面配置就绪（带超时）
+    if (window.appStorageLocation && typeof window.appStorageLocation.init === 'function') {
+        try {
+            // 先经过网页端“存储位置哨兵”闸门，只有确认允许继续当前会话后，
+            // 才继续 pageConfig 和主业务初始化。
+            var storageDecision = await window.appStorageLocation.init();
+            if (storageDecision && storageDecision.canContinue === false) {
+                return;
+            }
+        } catch (error) {
+            console.warn('[Init] storage location overlay init failed', error);
+            return;
+        }
+    }
+
+    // 存储位置闸门放行后，才允许 pageConfig 开始加载。
+    if (typeof window.startPageConfigLoad === 'function') {
+        window.startPageConfigLoad();
+    }
+
+    // pageConfig 真正开始后，再等待页面配置就绪（带超时）
     if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
         const TIMEOUT = Symbol('timeout');
         const TIMEOUT_MS = 3000;
@@ -205,15 +224,6 @@ const ready = async () => {
         }
     }
 
-    if (window.appStorageLocation && typeof window.appStorageLocation.init === 'function') {
-        try {
-            // Stage 1: 让存储位置选择页尽量优先出现，避免其它提示层先抢占用户视线。
-            await window.appStorageLocation.init();
-        } catch (error) {
-            console.warn('[Init] storage location overlay init failed', error);
-        }
-    }
-
     init_app();
 };
 
@@ -226,8 +236,23 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
 
 // ======================== 页面加载后的事件 ========================
 
+async function waitForStorageLocationStartupBarrierInternal() {
+    if (typeof window.waitForStorageLocationStartupBarrier === 'function') {
+        try {
+            await window.waitForStorageLocationStartupBarrier();
+        } catch (_) { }
+    } else if (window.__nekoStorageLocationStartupBarrier
+        && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
+        try {
+            await window.__nekoStorageLocationStartupBarrier;
+        } catch (_) { }
+    }
+}
+
 // 启动提示（chat 独立窗口不弹）
-window.addEventListener('load', () => {
+window.addEventListener('load', async () => {
+    await waitForStorageLocationStartupBarrierInternal();
+
     const _isChatPage = window.location.pathname === '/chat';
 
     setTimeout(() => {

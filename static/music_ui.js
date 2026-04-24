@@ -2062,7 +2062,22 @@
     window.dispatchEvent(new CustomEvent('music-ui-ready'));
     console.log('[Music UI] 接口已暴露，就绪信号已发送');
 
+    async function syncDomainsAfterStorageBarrier() {
+        if (typeof window.waitForStorageLocationStartupBarrier === 'function') {
+            try {
+                await window.waitForStorageLocationStartupBarrier();
+            } catch (_) {}
+        } else if (window.__nekoStorageLocationStartupBarrier
+            && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
+            try {
+                await window.__nekoStorageLocationStartupBarrier;
+            } catch (_) {}
+        }
+
+        syncDomainsFromBackend();
+    }
+
     // 自动从后端同步音乐源域名到白名单
-    syncDomainsFromBackend();
+    syncDomainsAfterStorageBarrier();
 
 })();

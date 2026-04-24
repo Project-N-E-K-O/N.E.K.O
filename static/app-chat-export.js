@@ -2461,10 +2461,24 @@
         });
     }
 
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', init);
-    } else {
+    async function initAfterStorageBarrier() {
+        if (typeof window.waitForStorageLocationStartupBarrier === 'function') {
+            try {
+                await window.waitForStorageLocationStartupBarrier();
+            } catch (_) {}
+        } else if (window.__nekoStorageLocationStartupBarrier
+            && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
+            try {
+                await window.__nekoStorageLocationStartupBarrier;
+            } catch (_) {}
+        }
         init();
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initAfterStorageBarrier);
+    } else {
+        initAfterStorageBarrier();
     }
 
     window.appChatExport = {

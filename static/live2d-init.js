@@ -223,6 +223,10 @@ async function cleanupVRMResources() {
 
 // 自动初始化函数（延迟执行，等待 cubism4Model 设置）
 async function initLive2DModel() {
+    if (window.__nekoStorageLocationStartupBarrier && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
+        await window.__nekoStorageLocationStartupBarrier;
+    }
+
     // 检查是否在 VRM/MMD 模式下，如果是则跳过 Live2D 初始化
     const isVRMMode = window.vrmManager && window.vrmManager.currentModel;
     const isMMDMode = window.mmdManager && window.mmdManager.currentModel;
@@ -504,4 +508,3 @@ if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function')
         }, 1000);
     }
 }
-
