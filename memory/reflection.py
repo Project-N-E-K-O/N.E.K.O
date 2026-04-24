@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import os
 import threading
 from datetime import datetime, timedelta
@@ -135,6 +136,15 @@ def _validate_reflection_ontology(
             c = float(confidence)
         except (TypeError, ValueError):
             return False, f'non-numeric confidence: {confidence!r}'
+        # Reject NaN / ±Inf before range-checking. Non-finite floats would
+        # otherwise be silently kept and, once persisted, emit non-standard
+        # JSON literals (NaN/Infinity) that break strict parsers downstream.
+        if not math.isfinite(c):
+            return False, f'non-finite confidence: {c}'
+        # Prompt contract is 0.0–1.0; clamp out-of-range values to invalid so
+        # a hallucinated "1.7" or "-0.2" doesn't slip through as metadata.
+        if c < 0.0 or c > 1.0:
+            return False, f'confidence out of range [0.0, 1.0]: {c}'
         if c < MIN_REFLECTION_CONFIDENCE:
             return False, f'low confidence: {c}'
     if temporal_scope is not None and temporal_scope not in TEMPORAL_SCOPES:

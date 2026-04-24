@@ -110,6 +110,26 @@ def test_validate_rejects_low_confidence():
     assert "low confidence" in reason
 
 
+def test_validate_rejects_out_of_range_confidence():
+    """prompt contract is 0.0–1.0; hallucinated 1.7 must not persist."""
+    from memory.reflection import _validate_reflection_ontology
+    ok, reason = _validate_reflection_ontology("master", "preference", 1.7, "current", "x")
+    assert ok is False
+    assert "out of range" in reason
+    ok2, reason2 = _validate_reflection_ontology("master", "preference", -0.2, "current", "x")
+    assert ok2 is False
+    assert "out of range" in reason2
+
+
+def test_validate_rejects_non_finite_confidence():
+    """NaN / Infinity must not land on disk — they serialize to non-standard JSON."""
+    from memory.reflection import _validate_reflection_ontology
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        ok, reason = _validate_reflection_ontology("master", "preference", bad, "current", "x")
+        assert ok is False, f"{bad!r} should be rejected"
+        assert "non-finite" in reason
+
+
 def test_validate_rejects_overlong_text():
     from memory.reflection import _validate_reflection_ontology
     ok, reason = _validate_reflection_ontology(
