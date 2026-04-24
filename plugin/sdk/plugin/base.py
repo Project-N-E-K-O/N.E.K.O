@@ -218,6 +218,57 @@ class NekoPluginBase(_SharedNekoPluginBase):
     def push_message(self, **kwargs: Any) -> object:
         return self.ctx.push_message(**kwargs)
 
+    def push_chat_content(
+        self,
+        blocks: list[dict[str, Any]],
+        *,
+        source: str | None = None,
+        priority: int = 5,
+        target_lanlan: str | None = None,
+    ) -> object:
+        """推送富内容消息到聊天框。
+
+        每个 block 是一个内容单元，前端按顺序渲染。
+
+        支持的 block type：
+        - ``{"type": "text", "text": "..."}``
+        - ``{"type": "image", "url": "...", "alt": "..."}``
+        - ``{"type": "url", "url": "...", "title": "...", "description": "..."}``
+        - ``{"type": "audio", "url": "..."}``
+        - ``{"type": "video", "url": "..."}``
+        - ``{"type": "dom", "html": "<div>...</div>"}``
+        - ``{"type": "table", "headers": [...], "rows": [[...], ...]}``
+        - ``{"type": "json", "data": {...}, "label": "..."}``
+        - ``{"type": "card", "card_type": "weather", "title": "...", "data": {...}}``
+
+        Example::
+
+            self.push_chat_content([
+                {"type": "text", "text": "上海今天天气"},
+                {"type": "card", "card_type": "weather", "title": "上海", "data": {...}},
+                {"type": "url", "url": "https://...", "title": "详细预报"},
+            ])
+        """
+        validated: list[dict[str, Any]] = []
+        for block in blocks:
+            if not isinstance(block, dict) or "type" not in block:
+                continue
+            validated.append(block)
+        if not validated:
+            return None
+        return self.push_message(
+            source=source or self.plugin_id,
+            message_type="chat_content",
+            description="",
+            priority=priority,
+            content=None,
+            metadata={
+                "blocks": validated,
+                "plugin_id": self.plugin_id,
+            },
+            target_lanlan=target_lanlan,
+        )
+
     def register_music_domains(self, domains: list[str] | str) -> None:
         """
         向前端注册合法的音乐源域名白名单。
