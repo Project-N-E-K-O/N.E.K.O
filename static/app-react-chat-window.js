@@ -1094,6 +1094,57 @@
         return normalized;
     }
 
+    function appendPluginContent(payload) {
+        if (!payload) return null;
+        var pluginId = payload.pluginId || 'plugin';
+        var blocks = payload.blocks || [];
+        var text = payload.text || '';
+
+        // Convert plugin blocks to React message blocks
+        var msgBlocks = [];
+        for (var i = 0; i < blocks.length; i++) {
+            var b = blocks[i];
+            if (b.type === 'text' && b.text) {
+                msgBlocks.push({ type: 'text', text: b.text });
+            } else if (b.type === 'image' && b.url) {
+                msgBlocks.push({ type: 'image', url: b.url, alt: b.alt || '' });
+            } else if (b.type === 'url' && b.url) {
+                msgBlocks.push({ type: 'link', url: b.url, text: b.title || b.url });
+            } else if (b.type === 'card' && b.title) {
+                // Render card as styled text for now
+                var cardText = '📋 ' + b.title;
+                if (b.data) {
+                    var entries = Object.entries(b.data);
+                    for (var j = 0; j < Math.min(entries.length, 5); j++) {
+                        cardText += '\n  ' + entries[j][0] + ': ' + entries[j][1];
+                    }
+                }
+                msgBlocks.push({ type: 'text', text: cardText });
+            } else if (b.type === 'table' && b.headers) {
+                var tableText = b.headers.join(' | ');
+                if (b.rows) {
+                    for (var r = 0; r < Math.min(b.rows.length, 10); r++) {
+                        tableText += '\n' + b.rows[r].join(' | ');
+                    }
+                }
+                msgBlocks.push({ type: 'text', text: tableText });
+            }
+        }
+        if (msgBlocks.length === 0 && text) {
+            msgBlocks.push({ type: 'text', text: text });
+        }
+        if (msgBlocks.length === 0) return null;
+
+        return appendMessage({
+            id: 'plugin-' + Date.now() + '-' + Math.random().toString(36).substr(2, 6),
+            role: 'assistant',
+            author: '🔌 ' + pluginId,
+            avatarLabel: '🔌',
+            blocks: msgBlocks,
+            time: payload.timestamp ? new Date(payload.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : undefined,
+        });
+    }
+
     function updateMessage(messageId, patch) {
         var updatedMessage = null;
 
@@ -1969,6 +2020,7 @@
         setComposerAttachments: setComposerAttachments,
         setComposerHidden: setComposerHidden,
         appendMessage: appendMessage,
+        appendPluginContent: appendPluginContent,
         updateMessage: updateMessage,
         removeMessage: removeMessage,
         clearMessages: clearMessages,
