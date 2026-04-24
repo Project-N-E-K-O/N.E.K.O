@@ -128,28 +128,55 @@ class ProactiveBridge:
                     # -------- 1. Proactive Spoken Notification --------
                     if msg_type == "proactive_notification":
                         raw_content = payload.get("content")
-                        # 通过 result_parser 确保 content 不含原始 JSON
-                        try:
-                            from brain.result_parser import parse_push_message_content
-                            content = parse_push_message_content(raw_content)
-                        except Exception:
-                            content = str(raw_content or "").strip()
 
-                        if not content:
-                            continue
+                        # Check if this is a chat_content blocks message
+                        # (rich content that should go directly to frontend, no LLM)
+                        blocks = metadata.get("chat_content_blocks")
+                        if isinstance(blocks, list) and blocks:
+                            # 通过 result_parser 确保 content 不含原始 JSON
+                            try:
+                                from brain.result_parser import parse_push_message_content
+                                content = parse_push_message_content(raw_content)
+                            except Exception:
+                                content = str(raw_content or "").strip()
 
-                        proactive_event = {
-                            "event_type": "proactive_message",
-                            "lanlan_name": metadata.get("target_lanlan") or None,
-                            "text": content,
-                            "summary": content,
-                            "detail": content,
-                            "channel": f"plugin:{plugin_id}" if plugin_id else "plugin",
-                            "task_id": metadata.get("task_id", ""),
-                            "success": True,
-                            "status": "completed",
-                            "timestamp": payload.get("time", ""),
-                        }
+                            proactive_event = {
+                                "event_type": "proactive_message",
+                                "lanlan_name": metadata.get("target_lanlan") or None,
+                                "text": content or "📋",
+                                "summary": content or "📋",
+                                "detail": content or "📋",
+                                "channel": f"plugin:{plugin_id}" if plugin_id else "plugin",
+                                "task_id": metadata.get("task_id", ""),
+                                "success": True,
+                                "status": "completed",
+                                "direct_reply": True,
+                                "timestamp": payload.get("time", ""),
+                                "chat_content_blocks": blocks,
+                            }
+                        else:
+                            # 通过 result_parser 确保 content 不含原始 JSON
+                            try:
+                                from brain.result_parser import parse_push_message_content
+                                content = parse_push_message_content(raw_content)
+                            except Exception:
+                                content = str(raw_content or "").strip()
+
+                            if not content:
+                                continue
+
+                            proactive_event = {
+                                "event_type": "proactive_message",
+                                "lanlan_name": metadata.get("target_lanlan") or None,
+                                "text": content,
+                                "summary": content,
+                                "detail": content,
+                                "channel": f"plugin:{plugin_id}" if plugin_id else "plugin",
+                                "task_id": metadata.get("task_id", ""),
+                                "success": True,
+                                "status": "completed",
+                                "timestamp": payload.get("time", ""),
+                            }
                     
                     # -------- 2. Music Allowlist Add --------
                     elif msg_type == "music_allowlist_add":

@@ -229,6 +229,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         """推送富内容消息到聊天框。
 
         每个 block 是一个内容单元，前端按顺序渲染。
+        消息不进入 LLM 上下文，直接显示在聊天界面。
 
         支持的 block type：
         - ``{"type": "text", "text": "..."}``
@@ -246,7 +247,6 @@ class NekoPluginBase(_SharedNekoPluginBase):
             self.push_chat_content([
                 {"type": "text", "text": "上海今天天气"},
                 {"type": "card", "card_type": "weather", "title": "上海", "data": {...}},
-                {"type": "url", "url": "https://...", "title": "详细预报"},
             ])
         """
         validated: list[dict[str, Any]] = []
@@ -256,15 +256,25 @@ class NekoPluginBase(_SharedNekoPluginBase):
             validated.append(block)
         if not validated:
             return None
+
+        # 构建纯文本 fallback（给不支持 blocks 的前端）
+        text_parts: list[str] = []
+        for b in validated:
+            if b["type"] == "text":
+                text_parts.append(str(b.get("text", "")))
+            elif b["type"] == "card":
+                text_parts.append(str(b.get("title", "")))
+
         return self.push_message(
             source=source or self.plugin_id,
-            message_type="chat_content",
+            message_type="proactive_notification",
             description="",
             priority=priority,
-            content=None,
+            content="\n".join(text_parts) if text_parts else "📋",
             metadata={
-                "blocks": validated,
+                "chat_content_blocks": validated,
                 "plugin_id": self.plugin_id,
+                "display_mode": "blocks",
             },
             target_lanlan=target_lanlan,
         )
