@@ -1952,6 +1952,37 @@ button * {
 }
 .cp-tab-bar-top { border-bottom: 1px solid rgba(140, 160, 190, 0.1); }
 .cp-tab-bar-bottom { border-top: 1px solid rgba(140, 160, 190, 0.1); }
+
+/* ── Plugin card (collapsible, for "按插件" view) ── */
+.cp-plugin-card {
+  border: 1px solid rgba(140, 160, 190, 0.1);
+  border-radius: 8px;
+  margin: 4px 6px;
+  overflow: hidden;
+}
+.cp-plugin-card + .cp-plugin-card { margin-top: 4px; }
+.cp-plugin-card-header {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; padding: 10px 12px;
+  background: rgba(140, 160, 190, 0.04);
+  border: none; cursor: pointer;
+  font-size: 0.82rem; font-weight: 600;
+  color: inherit; text-align: left;
+  transition: background 0.15s;
+}
+.cp-plugin-card-header:hover { background: rgba(140, 160, 190, 0.08); }
+.cp-plugin-card-chevron { font-size: 0.7rem; color: #8a95a8; width: 12px; }
+.cp-plugin-card-name { flex: 1; }
+.cp-plugin-card-counts { display: flex; gap: 4px; }
+.cp-plugin-card-badge {
+  font-size: 0.6rem; font-weight: 600;
+  background: rgba(64, 197, 241, 0.12); color: #40c5f1;
+  padding: 1px 6px; border-radius: 999px;
+}
+.cp-plugin-card-badge-mgmt {
+  background: rgba(140, 160, 190, 0.1); color: #8a95a8;
+}
+.cp-plugin-card-body { padding: 2px 0; }
 .cp-tab {
   flex: 1;
   display: flex; align-items: center; justify-content: center; gap: 5px;
@@ -2298,6 +2329,13 @@ button * {
 [data-theme="dark"] .cp-tab-active { color: #40c5f1; }
 [data-theme="dark"] .cp-tab-count { background: rgba(255, 255, 255, 0.06); color: #7a8494; }
 [data-theme="dark"] .cp-tab-active .cp-tab-count { background: rgba(64, 197, 241, 0.15); color: #40c5f1; }
+
+[data-theme="dark"] .cp-plugin-card { border-color: rgba(255, 255, 255, 0.06); }
+[data-theme="dark"] .cp-plugin-card-header { background: rgba(255, 255, 255, 0.03); }
+[data-theme="dark"] .cp-plugin-card-header:hover { background: rgba(255, 255, 255, 0.06); }
+[data-theme="dark"] .cp-plugin-card-chevron { color: #7a8494; }
+[data-theme="dark"] .cp-plugin-card-badge { background: rgba(64, 197, 241, 0.12); }
+[data-theme="dark"] .cp-plugin-card-badge-mgmt { background: rgba(255, 255, 255, 0.06); color: #7a8494; }
 
 [data-theme="dark"] .cp-row-clickable:hover { background: rgba(68, 183, 254, 0.07); box-shadow: 0 0 0 1px rgba(68, 183, 254, 0.1) inset; }
 [data-theme="dark"] .cp-row-highlighted { background: rgba(68, 183, 254, 0.12); box-shadow: 0 0 0 1px rgba(68, 183, 254, 0.18) inset; }

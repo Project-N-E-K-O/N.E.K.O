@@ -493,20 +493,6 @@ function ToastStack({ toasts }: { toasts: ToastItem[] }) {
 }
 
 /* ================================================================== */
-/*  Section header (for grouped views)                                 */
-/* ================================================================== */
-
-function SectionHeader({ icon, label, count }: { icon: string; label: string; count?: number }) {
-  return (
-    <div className="cp-section-header">
-      <span className="cp-section-icon" aria-hidden="true">{icon}</span>
-      <span className="cp-section-label">{label}</span>
-      {count !== undefined && count > 0 && <span className="cp-section-count">{count}</span>}
-    </div>
-  );
-}
-
-/* ================================================================== */
 /*  Helpers: classify items                                            */
 /* ================================================================== */
 
@@ -536,11 +522,66 @@ function functionGroupLabel(item: CommandItem): string {
 function groupItems(items: CommandItem[], mode: GroupMode): Map<string, CommandItem[]> {
   const groups = new Map<string, CommandItem[]>();
   for (const item of items) {
-    const key = mode === 'byPlugin' ? item.category : functionGroupLabel(item);
+    // "按插件" groups by plugin_id so lifecycle actions join their plugin
+    const key = mode === 'byPlugin' ? item.plugin_id : functionGroupLabel(item);
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key)!.push(item);
   }
   return groups;
+}
+
+/* ================================================================== */
+/*  Collapsible plugin card (for "按插件" view)                        */
+/* ================================================================== */
+
+function PluginCard({ pluginName, items, loadingMap, errorMap, sharedRowProps }: {
+  pluginName: string;
+  items: CommandItem[];
+  loadingMap: Record<string, boolean>;
+  errorMap: Record<string, string | null>;
+  sharedRowProps: {
+    prefs: UserPreferences;
+    onExec: (id: string, value: unknown) => void;
+    onInject: (text: string) => void;
+    onNavigate: (target: string, openIn: string) => void;
+    onPrefsChange: (p: UserPreferences) => void;
+  };
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const entryCount = items.filter(a => a.category !== '插件管理').length;
+  const mgmtCount = items.filter(a => a.category === '插件管理').length;
+
+  return (
+    <div className="cp-plugin-card">
+      <button
+        type="button"
+        className="cp-plugin-card-header"
+        onClick={() => setExpanded(e => !e)}
+        aria-expanded={expanded}
+      >
+        <span className="cp-plugin-card-chevron">{expanded ? '▾' : '▸'}</span>
+        <span className="cp-plugin-card-name">{pluginName}</span>
+        <span className="cp-plugin-card-counts">
+          {entryCount > 0 && <span className="cp-plugin-card-badge">{entryCount}</span>}
+          {mgmtCount > 0 && <span className="cp-plugin-card-badge cp-plugin-card-badge-mgmt">⚙{mgmtCount}</span>}
+        </span>
+      </button>
+      {expanded && (
+        <div className="cp-plugin-card-body">
+          {items.map((item) => (
+            <CommandRow
+              key={item.action_id}
+              item={item}
+              loading={!!loadingMap[item.action_id]}
+              error={errorMap[item.action_id] ?? null}
+              highlighted={false}
+              {...sharedRowProps}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /* ================================================================== */
@@ -709,20 +750,21 @@ export default function CommandPalette({
 
   const renderGrouped = (items: CommandItem[]) => {
     const groups = groupItems(items, 'byPlugin');
-    let flatIdx = 0;
-    return Array.from(groups.entries()).map(([groupLabel, groupItems]) => (
-      <div key={groupLabel} className="cp-section">
-        <SectionHeader icon="🧩" label={groupLabel} count={groupItems.length} />
-        {groupItems.map((item) => {
-          const idx = flatIdx++;
-          return (
-            <div key={item.action_id} className="cp-stagger" style={{ animationDelay: `${idx * 15}ms` }}>
-              <CommandRow item={item} loading={!!loadingMap[item.action_id]} error={errorMap[item.action_id] ?? null} highlighted={highlightIdx === idx} {...sharedRowProps} />
-            </div>
-          );
-        })}
-      </div>
-    ));
+    // Resolve display name: use category from first non-management item, fallback to plugin_id
+    return Array.from(groups.entries()).map(([pluginId, groupItems]) => {
+      const nameItem = groupItems.find(a => a.category !== '插件管理');
+      const displayName = nameItem?.category || pluginId;
+      return (
+        <PluginCard
+          key={pluginId}
+          pluginName={displayName}
+          items={groupItems}
+          loadingMap={loadingMap}
+          errorMap={errorMap}
+          sharedRowProps={sharedRowProps}
+        />
+      );
+    });
   };
 
   const renderFlat = (items: CommandItem[]) => (
