@@ -1100,13 +1100,7 @@
         var blocks = payload.blocks || [];
         var text = payload.text || '';
 
-        // Build message blocks: status header + content blocks
         var msgBlocks = [];
-
-        // Header: plugin name as a status bar
-        msgBlocks.push({ type: 'status', tone: 'info', text: '🔌 ' + pluginId });
-
-        // Convert plugin blocks to React message blocks
         for (var i = 0; i < blocks.length; i++) {
             var b = blocks[i];
             if (b.type === 'text' && b.text) {
@@ -1116,11 +1110,11 @@
             } else if (b.type === 'url' && b.url) {
                 msgBlocks.push({ type: 'link', url: b.url, text: b.title || b.url });
             } else if (b.type === 'card' && b.title) {
-                var cardText = '📋 ' + b.title;
+                var cardText = b.title;
                 if (b.data) {
                     var entries = Object.entries(b.data);
                     for (var j = 0; j < Math.min(entries.length, 5); j++) {
-                        cardText += '\n  ' + entries[j][0] + ': ' + entries[j][1];
+                        cardText += '\n' + entries[j][0] + ': ' + entries[j][1];
                     }
                 }
                 msgBlocks.push({ type: 'text', text: cardText });
@@ -1134,16 +1128,21 @@
                 msgBlocks.push({ type: 'text', text: tableText });
             }
         }
-        if (msgBlocks.length <= 1 && text) {
+        if (msgBlocks.length === 0 && text) {
             msgBlocks.push({ type: 'text', text: text });
         }
-        if (msgBlocks.length <= 1) return null;
+        if (msgBlocks.length === 0) return null;
+
+        // Prepend plugin badge as status block
+        msgBlocks.unshift({ type: 'status', tone: 'plugin', text: '🔌 ' + pluginId });
 
         return appendMessage({
             id: 'plugin-' + Date.now() + '-' + Math.random().toString(36).substr(2, 6),
             role: 'system',
             blocks: msgBlocks,
-            time: payload.timestamp ? new Date(payload.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : undefined,
+            time: payload.timestamp
+                ? new Date(payload.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                : undefined,
         });
     }
 

@@ -1062,39 +1062,72 @@ button * {
   white-space: normal;
 }
 
-/* Plugin content in system chip: card-like layout */
-.system-chip:has(.message-block-status) {
+/* ── Plugin acrylic card (system-chip with tone-plugin status) ── */
+.system-chip:has(.tone-plugin) {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 4px;
-  max-width: min(90%, 480px);
-  padding: 10px 14px;
-  border-radius: 12px;
-  background: rgba(240, 244, 255, 0.8);
-  border: 1px solid rgba(64, 197, 241, 0.15);
+  gap: 0;
+  max-width: min(92%, 420px);
+  padding: 0;
+  border-radius: 16px;
+  background: linear-gradient(135deg,
+    rgba(255, 255, 255, 0.72) 0%,
+    rgba(240, 248, 255, 0.65) 50%,
+    rgba(230, 244, 255, 0.58) 100%);
+  backdrop-filter: blur(20px) saturate(1.4);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  box-shadow:
+    0 4px 24px rgba(100, 140, 200, 0.08),
+    0 1px 4px rgba(100, 140, 200, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  overflow: hidden;
+  animation: plugin-card-in 0.3s cubic-bezier(0.4, 0, 0.2, 1) both;
 }
-.system-chip:has(.message-block-status) .system-chip-time {
-  font-size: 0.65rem;
-  align-self: flex-end;
+@keyframes plugin-card-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
-.system-chip:has(.message-block-status) .system-chip-content {
+
+/* Plugin card header */
+.system-chip:has(.tone-plugin) .message-block-status.tone-plugin {
+  padding: 8px 14px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #3a7bd5;
+  background: linear-gradient(90deg, rgba(58, 123, 213, 0.08), rgba(64, 197, 241, 0.06));
+  border-bottom: 1px solid rgba(58, 123, 213, 0.08);
+  border-radius: 0;
+}
+
+/* Plugin card content area */
+.system-chip:has(.tone-plugin) .system-chip-content {
   flex-direction: column;
   align-items: stretch;
-  gap: 2px;
+  gap: 0;
+  padding: 10px 14px 12px;
 }
-.system-chip:has(.message-block-status) .message-block-status {
-  font-size: 0.72rem;
-  font-weight: 600;
-  padding: 4px 0;
-  border-radius: 0;
-  border-bottom: 1px solid rgba(64, 197, 241, 0.12);
-  margin-bottom: 2px;
+
+/* Plugin card text blocks */
+.system-chip:has(.tone-plugin) .message-block-text {
+  font-size: 0.82rem;
+  line-height: 1.6;
+  color: #2c3e50;
+  white-space: pre-wrap;
 }
-.system-chip:has(.message-block-status) .message-block-text {
-  font-size: 0.8rem;
-  line-height: 1.5;
-  color: #3a3f4b;
+
+/* Plugin card time */
+.system-chip:has(.tone-plugin) .system-chip-time {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  font-size: 0.6rem;
+  color: rgba(58, 123, 213, 0.4);
+}
+.system-chip:has(.tone-plugin) {
+  position: relative;
 }
 
 .composer-panel {
@@ -1754,15 +1787,28 @@ button * {
   background: rgba(80, 90, 110, 0.2);
 }
 
-[data-theme="dark"] .system-chip:has(.message-block-status) {
-  background: rgba(40, 45, 65, 0.7);
-  border-color: rgba(64, 197, 241, 0.1);
+/* Dark mode plugin acrylic card */
+[data-theme="dark"] .system-chip:has(.tone-plugin) {
+  background: linear-gradient(135deg,
+    rgba(30, 35, 55, 0.75) 0%,
+    rgba(25, 32, 52, 0.7) 50%,
+    rgba(20, 28, 48, 0.65) 100%);
+  border-color: rgba(64, 197, 241, 0.12);
+  box-shadow:
+    0 4px 24px rgba(0, 0, 0, 0.2),
+    0 1px 4px rgba(0, 0, 0, 0.15),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
-[data-theme="dark"] .system-chip:has(.message-block-status) .message-block-text {
-  color: #c8cdd8;
+[data-theme="dark"] .system-chip:has(.tone-plugin) .message-block-status.tone-plugin {
+  color: #64c5f1;
+  background: linear-gradient(90deg, rgba(64, 197, 241, 0.08), rgba(64, 197, 241, 0.04));
+  border-bottom-color: rgba(64, 197, 241, 0.06);
 }
-[data-theme="dark"] .system-chip:has(.message-block-status) .message-block-status {
-  border-bottom-color: rgba(64, 197, 241, 0.08);
+[data-theme="dark"] .system-chip:has(.tone-plugin) .message-block-text {
+  color: #c8d0dc;
+}
+[data-theme="dark"] .system-chip:has(.tone-plugin) .system-chip-time {
+  color: rgba(64, 197, 241, 0.3);
 }
 
 [data-theme="dark"] .system-chip-time {
@@ -2485,6 +2531,7 @@ button * {
 @media (prefers-reduced-motion: reduce) {
   .cp-panel, .cp-stagger, .cp-toast, .cp-card-item-stagger,
   .cp-page-transition, .cp-filter-tabs-enter { animation: none !important; }
+  .system-chip:has(.tone-plugin) { animation: none !important; }
   .cp-plugin-card-collapse { transition: none !important; }
   .cp-plugin-card-chevron { transition: none !important; }
 }
