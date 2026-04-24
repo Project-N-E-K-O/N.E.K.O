@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from plugin.sdk.plugin import plugin_entry, Ok, Err, SdkError
+from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError
 from plugin.sdk.shared.core.router import PluginRouter
 
 from .._api import daily_val
@@ -32,6 +32,7 @@ class CurrentWeatherRouter(PluginRouter):
             },
         },
     )
+    @quick_action(icon="🌤️", inject="今天天气怎么样", priority=10)
     async def get_weather(self, city: str = "", **_):
         plugin = self.main_plugin
         plugin._resolve_locale()

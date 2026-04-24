@@ -56,40 +56,6 @@ class WeatherPlugin(NekoPluginBase):
         # 从主干查询全局语言
         lang = await self.fetch_user_language(timeout=3.0)
         self._resolve_locale()
-
-        # 注册快捷操作（显示在命令面板的 ⚡ 快捷操作区）
-        self.set_list_actions([
-            {
-                "id": "quick_weather",
-                "kind": "chat_inject",
-                "label": self._i18n.t("action.get_weather", locale=self._i18n.locale) if hasattr(self, '_i18n') else "查天气",
-                "description": self._i18n.t("action.get_weather_desc", locale=self._i18n.locale) if hasattr(self, '_i18n') else "",
-                "target": "今天天气怎么样",
-                "icon": "🌤️",
-                "quick_action": True,
-                "priority": 10,
-            },
-            {
-                "id": "quick_travel",
-                "kind": "chat_inject",
-                "label": self._i18n.t("action.travel_advice", locale=self._i18n.locale) if hasattr(self, '_i18n') else "出行建议",
-                "description": self._i18n.t("action.travel_advice_desc", locale=self._i18n.locale) if hasattr(self, '_i18n') else "",
-                "target": "今天出门需要注意什么",
-                "icon": "🧳",
-                "quick_action": True,
-                "priority": 9,
-            },
-            {
-                "id": "quick_hourly",
-                "kind": "chat_inject",
-                "label": self._i18n.t("action.hourly_forecast", locale=self._i18n.locale) if hasattr(self, '_i18n') else "逐小时预报",
-                "description": self._i18n.t("action.hourly_forecast_desc", locale=self._i18n.locale) if hasattr(self, '_i18n') else "",
-                "target": "未来48小时天气变化",
-                "icon": "📊",
-                "quick_action": True,
-                "priority": 8,
-            },
-        ])
         self.logger.info(
             "WeatherPlugin started, locale={}, host_lang={}, routers=3",
             self._i18n.locale, lang or "(none)",

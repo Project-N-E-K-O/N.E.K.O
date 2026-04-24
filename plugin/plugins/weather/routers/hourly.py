@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from plugin.sdk.plugin import plugin_entry, Ok, Err, SdkError
+from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError
 from plugin.sdk.shared.core.router import PluginRouter
 
 from .._api import fetch_forecast, RAIN_CODES, SNOW_CODES
@@ -42,6 +42,7 @@ class HourlyForecastRouter(PluginRouter):
             },
         },
     )
+    @quick_action(icon="📊", inject="未来48小时天气变化", priority=8)
     async def hourly_forecast(self, city: str = "", hours: int = 48, **_):
         plugin = self.main_plugin
         plugin._resolve_locale()

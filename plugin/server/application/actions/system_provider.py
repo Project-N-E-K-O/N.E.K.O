@@ -85,6 +85,8 @@ def _get_entries_for_plugin(
         entry_kind = getattr(meta, "kind", "action") if meta else "action"
         entry_description = getattr(meta, "description", "") if meta else ""
         entry_input_schema = getattr(meta, "input_schema", None) if meta else None
+        is_quick = bool(getattr(meta, "quick_action", False)) if meta else False
+        qa_config = getattr(meta, "quick_action_config", {}) if meta else {}
 
         entries.append({
             "id": entry_id,
@@ -92,6 +94,8 @@ def _get_entries_for_plugin(
             "kind": entry_kind,
             "description": entry_description,
             "input_schema": entry_input_schema,
+            "quick_action": is_quick,
+            "quick_action_config": qa_config if isinstance(qa_config, dict) else {},
         })
 
     return entries
@@ -153,8 +157,12 @@ def _collect_system_actions_sync(
                         inject_text=f"@{plugin_name} /{entry_id}",
                         icon="📎",
                         keywords=[pid, plugin_name, str(entry_name), entry_id],
+                        quick_action=entry.get("quick_action", False),
                     ))
                     continue
+
+                is_quick = entry.get("quick_action", False)
+                qa_cfg = entry.get("quick_action_config") or {}
 
                 raw_schema = entry.get("input_schema")
                 schema: dict[str, object] | None = None
@@ -163,18 +171,37 @@ def _collect_system_actions_sync(
                     if isinstance(props, dict) and len(props) > 0:
                         schema = raw_schema
 
-                actions.append(ActionDescriptor(
-                    action_id=f"system:{pid}:entry:{entry_id}",
-                    type="instant",
-                    label=str(entry_name),
-                    description=str(entry_desc),
-                    category=plugin_name,
-                    plugin_id=pid,
-                    control="button",
-                    input_schema=schema,
-                    icon="⚡",
-                    keywords=[pid, plugin_name, str(entry_name)],
-                ))
+                # Quick action with inject text → chat_inject type
+                qa_inject = qa_cfg.get("inject") if isinstance(qa_cfg, dict) else None
+                if is_quick and isinstance(qa_inject, str) and qa_inject:
+                    actions.append(ActionDescriptor(
+                        action_id=f"system:{pid}:entry:{entry_id}",
+                        type="chat_inject",
+                        label=str(qa_cfg.get("label") or entry_name),
+                        description=str(entry_desc),
+                        category=plugin_name,
+                        plugin_id=pid,
+                        inject_text=qa_inject,
+                        icon=str(qa_cfg.get("icon") or "⚡"),
+                        keywords=[pid, plugin_name, str(entry_name), entry_id],
+                        quick_action=True,
+                        priority=int(qa_cfg.get("priority", 0)),
+                    ))
+                else:
+                    actions.append(ActionDescriptor(
+                        action_id=f"system:{pid}:entry:{entry_id}",
+                        type="instant",
+                        label=str(qa_cfg.get("label") or entry_name) if is_quick else str(entry_name),
+                        description=str(entry_desc),
+                        category=plugin_name,
+                        plugin_id=pid,
+                        control="button",
+                        input_schema=schema,
+                        icon=str(qa_cfg.get("icon") or "⚡") if is_quick else "⚡",
+                        keywords=[pid, plugin_name, str(entry_name)],
+                        quick_action=is_quick,
+                        priority=int(qa_cfg.get("priority", 0)) if is_quick else 0,
+                    ))
 
         # ── Static UI navigation ──
         if _has_static_ui(meta):

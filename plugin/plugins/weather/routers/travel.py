@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from plugin.sdk.plugin import plugin_entry, Ok, Err, SdkError
+from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError
 from plugin.sdk.shared.core.router import PluginRouter
 
 from .._api import RAIN_CODES, SNOW_CODES
@@ -94,6 +94,7 @@ class TravelAdviceRouter(PluginRouter):
             },
         },
     )
+    @quick_action(icon="🧳", inject="今天出门需要注意什么", priority=9)
     async def travel_advice(self, city: str = "", **_):
         plugin = self.main_plugin
         plugin._resolve_locale()

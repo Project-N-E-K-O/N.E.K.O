@@ -24,6 +24,8 @@ class EventMeta:
     llm_result_fields: list[str] | None = None
     llm_result_schema: InputSchema | None = None
     llm_result_model: type | None = None
+    quick_action: bool = False
+    quick_action_config: dict[str, JsonValue] = field(default_factory=dict)
     extra: dict[str, JsonValue] = field(default_factory=dict)
     metadata: dict[str, JsonValue] = field(default_factory=dict)
 

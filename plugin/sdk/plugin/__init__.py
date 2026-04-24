@@ -31,6 +31,7 @@ after_entry = _decorators.after_entry
 around_entry = _decorators.around_entry
 replace_entry = _decorators.replace_entry
 plugin = _decorators.plugin
+quick_action = _decorators.quick_action
 
 # --- Result ---
 Ok = _runtime.Ok
@@ -79,6 +80,7 @@ __all__ = [
     "around_entry",
     "replace_entry",
     "plugin",
+    "quick_action",
     # Result
     "Ok",
     "Err",
