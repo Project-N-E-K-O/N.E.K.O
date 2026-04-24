@@ -584,6 +584,30 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
             handlers_updated = True
             if etype == "plugin_entry":
                 plugin_entry_method_map[(pid, str(eid))] = name
+
+    # Scan __routers__ class attribute for router-declared entries
+    router_classes = getattr(cls, "__routers__", None)
+    if isinstance(router_classes, (list, tuple)):
+        for router_cls in router_classes:
+            if not isinstance(router_cls, type):
+                continue
+            for name, member in inspect.getmembers(router_cls):
+                event_meta = getattr(member, EVENT_META_ATTR, None)
+                if event_meta is None and hasattr(member, "__wrapped__"):
+                    event_meta = getattr(member.__wrapped__, EVENT_META_ATTR, None)
+                if not event_meta:
+                    continue
+                etype = getattr(event_meta, "event_type", None) or "plugin_entry"
+                if etype != "plugin_entry":
+                    continue
+                eid = getattr(event_meta, "id", name)
+                handler_obj = EventHandler(meta=event_meta, handler=member)
+                with state.acquire_event_handlers_write_lock():
+                    state.event_handlers[f"{pid}.{eid}"] = handler_obj
+                    state.event_handlers[f"{pid}:plugin_entry:{eid}"] = handler_obj
+                handlers_updated = True
+                plugin_entry_method_map[(pid, str(eid))] = name
+
     if handlers_updated:
         state.invalidate_snapshot_cache("handlers")
 
