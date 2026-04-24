@@ -12,7 +12,7 @@
 
 ### 0.1 任务输入
 
-- Handoff spec: [`docs/design/memory-evidence-task.md`](memory-evidence-task.md)（commit `bd2477be`，target branch `claude/review-pr-634-memory-rSsDR`）
+- Handoff spec: `docs/design/memory-evidence-task.md`（commit `bd2477be`，target branch `claude/review-pr-634-memory-rSsDR`）— 已按 RFC 交付后删除
 - Template RFC: [`docs/design/memory-event-log-rfc.md`](memory-event-log-rfc.md)（840 行，结构参考）
 - 上游 PR / Issue：
   - [#849](https://github.com/Project-N-E-K-O/N.E.K.O/issues/849)（**OPEN issue**）条目级 user-driven evidence 提议——本 RFC 是它的设计落地
