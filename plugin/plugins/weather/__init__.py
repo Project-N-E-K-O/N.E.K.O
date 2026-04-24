@@ -42,16 +42,17 @@ class WeatherPlugin(NekoPluginBase):
         self._cfg: Dict[str, Any] = {}
         self._i18n = I18n(_LOCALES_DIR)
 
+        # 注册 routers（模块化 entry）— 必须在 __init__ 中注册，
+        # 这样 collect_entries() 在 startup 之前就能扫描到 router 的 entry。
+        self.include_router(CurrentWeatherRouter())
+        self.include_router(TravelAdviceRouter())
+        self.include_router(HourlyForecastRouter())
+
     # ── 生命周期 ──
 
     @lifecycle(id="startup")
     async def startup(self, **_):
         await self._reload_config()
-
-        # 注册 routers（模块化 entry）
-        self.include_router(CurrentWeatherRouter())
-        self.include_router(TravelAdviceRouter())
-        self.include_router(HourlyForecastRouter())
 
         # 从主干查询全局语言
         lang = await self.fetch_user_language(timeout=3.0)
