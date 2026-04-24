@@ -17,8 +17,17 @@ import threading
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from config import SETTING_PROPOSER_MODEL
-from config.prompts_memory import get_fact_extraction_prompt
+from config import (
+    EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS,
+    EVIDENCE_DETECT_SIGNALS_MODEL_TIER,
+    EVIDENCE_EXTRACT_FACTS_MODEL_TIER,
+    SETTING_PROPOSER_MODEL,
+)
+from config.prompts_memory import (
+    get_fact_extraction_prompt,
+    get_signal_detection_prompt,
+)
+from memory.evidence import evidence_score
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.language_utils import get_global_language
 from utils.config_manager import get_config_manager
@@ -37,6 +46,16 @@ logger = get_module_logger(__name__, "Memory")
 
 _ARCHIVE_AGE_DAYS = 7          # absorbed 且创建超过此天数的 facts 被归档
 _ARCHIVE_COOLDOWN_HOURS = 24   # 两次归档尝试之间的最小间隔
+
+
+class FactExtractionFailed(RuntimeError):
+    """Stage-1 LLM call exhausted retries (RFC §3.4.2 末段).
+
+    Distinct from "Stage-1 returned an empty list" — the latter is a
+    successful zero-result run that should advance the signal-extraction
+    cursor, while the former must leave the cursor untouched so the next
+    idle cycle retries the same message window.
+    """
 
 
 class FactStore:
@@ -214,18 +233,9 @@ class FactStore:
 
     # ── extraction ───────────────────────────────────────────────────
 
-    async def extract_facts(self, messages: list, lanlan_name: str) -> list[dict]:
-        """Extract facts from a conversation using LLM.
-
-        Returns list of new (non-duplicate) facts that were stored.
-        """
-        from openai import APIConnectionError, InternalServerError, RateLimitError
-        from utils.llm_client import create_chat_llm
-
-        _, _, _, _, name_mapping, _, _, _, _ = await self._config_manager.aget_character_data()
-        name_mapping['ai'] = lanlan_name
-
-        # Build conversation text
+    @staticmethod
+    def _format_conversation(messages: list, name_mapping: dict) -> str:
+        """Serialize messages into the 'role | content' shape used by LLM prompts."""
         lines = []
         for msg in messages:
             role = name_mapping.get(getattr(msg, 'type', ''), getattr(msg, 'type', ''))
@@ -240,71 +250,121 @@ class FactStore:
                     else:
                         parts.append(str(item))
                 lines.append(f"{role} | {''.join(parts)}")
-        conversation_text = "\n".join(lines)
+        return "\n".join(lines)
 
-        prompt = get_fact_extraction_prompt(get_global_language()).replace('{CONVERSATION}', conversation_text)
-        prompt = prompt.replace('{LANLAN_NAME}', lanlan_name)
-        prompt = prompt.replace('{MASTER_NAME}', name_mapping.get('human', '主人'))
+    @staticmethod
+    def _strip_code_fence(raw: str) -> str:
+        """Remove ```json ... ``` fences if present."""
+        if not raw.startswith("```"):
+            return raw
+        match = re.search(r'```(?:json)?\s*([\s\S]*?)```', raw)
+        if match:
+            return match.group(1).strip()
+        return raw.replace("```json", "").replace("```", "").strip()
+
+    async def _allm_call_with_retries(
+        self, prompt: str, lanlan_name: str, tier: str, call_type: str,
+        max_retries: int = 3, temperature: float = 0.3,
+    ):
+        """Shared LLM helper: retry on network errors + JSON errors, same
+        policy as the old `extract_facts`. Returns parsed JSON or None on
+        terminal failure (caller decides whether to abort / swallow)."""
+        from openai import APIConnectionError, InternalServerError, RateLimitError
+        from utils.llm_client import create_chat_llm
 
         retries = 0
-        max_retries = 3
         while retries < max_retries:
             try:
-                set_call_type("memory_fact_extraction")
-                api_config = self._config_manager.get_model_api_config('summary')
+                set_call_type(call_type)
+                api_config = self._config_manager.get_model_api_config(tier)
                 llm = create_chat_llm(
                     api_config.get('model', SETTING_PROPOSER_MODEL),
                     api_config['base_url'], api_config['api_key'],
-                    temperature=0.3,
+                    temperature=temperature,
                 )
                 try:
                     resp = await llm.ainvoke(prompt)
                 finally:
                     await llm.aclose()
                 raw = resp.content.strip()
-                if raw.startswith("```"):
-                    match = re.search(r'```(?:json)?\s*([\s\S]*?)```', raw)
-                    if match:
-                        raw = match.group(1).strip()
-                    else:
-                        raw = raw.replace("```json", "").replace("```", "").strip()
-                extracted = robust_json_loads(raw)
-                if not isinstance(extracted, list):
-                    logger.warning(f"[FactStore] {lanlan_name}: LLM 返回非数组类型 {type(extracted).__name__}，重试")
-                    retries += 1
-                    if retries < max_retries:
-                        await asyncio.sleep(2 ** (retries - 1))
-                    continue
-                break
+                raw = self._strip_code_fence(raw)
+                return robust_json_loads(raw)
             except (APIConnectionError, InternalServerError, RateLimitError) as e:
                 retries += 1
-                logger.warning(f"[FactStore] {lanlan_name}: 网络错误 {type(e).__name__}，重试 {retries}/{max_retries}")
+                logger.warning(
+                    f"[FactStore] {lanlan_name}: {call_type} 网络错误 {type(e).__name__}, "
+                    f"重试 {retries}/{max_retries}"
+                )
                 if retries < max_retries:
                     await asyncio.sleep(2 ** (retries - 1))
                 continue
             except json.JSONDecodeError as e:
                 retries += 1
-                print(f"⚠️ [FactStore] {lanlan_name}: JSON 解析失败 (重试 {retries}/{max_retries}): {e}")
-                print(f"⚠️ [FactStore] 原始返回: {raw[:500]}")
+                logger.warning(
+                    f"[FactStore] {lanlan_name}: {call_type} JSON 解析失败 "
+                    f"(重试 {retries}/{max_retries}): {e}"
+                )
                 if retries < max_retries:
                     await asyncio.sleep(2 ** (retries - 1))
                 continue
             except Exception as e:
                 retries += 1
-                logger.warning(f"[FactStore] {lanlan_name}: 事实提取失败 (重试 {retries}/{max_retries}): {type(e).__name__}: {e}")
+                logger.warning(
+                    f"[FactStore] {lanlan_name}: {call_type} 失败 "
+                    f"(重试 {retries}/{max_retries}): {type(e).__name__}: {e}"
+                )
                 if retries < max_retries:
                     await asyncio.sleep(2 ** (retries - 1))
                 continue
-        else:
-            logger.warning(f"[FactStore] {lanlan_name}: 事实提取达到最大重试次数 {max_retries}，放弃")
-            return []
 
-        # Deduplicate and store
-        new_facts = []
+        logger.warning(
+            f"[FactStore] {lanlan_name}: {call_type} 达到最大重试 {max_retries}，放弃"
+        )
+        return None
+
+    async def _allm_extract_facts(
+        self, lanlan_name: str, messages: list,
+    ) -> list[dict] | None:
+        """Stage-1: pure extraction. Prompt carries no existing observations
+        to avoid self-cycling (LLM摘 existing reflection back as new fact).
+        Returns raw LLM-extracted list, or None on terminal failure."""
+        _, _, _, _, name_mapping, _, _, _, _ = await self._config_manager.aget_character_data()
+        name_mapping['ai'] = lanlan_name
+        conversation_text = self._format_conversation(messages, name_mapping)
+
+        prompt = get_fact_extraction_prompt(get_global_language()) \
+            .replace('{CONVERSATION}', conversation_text) \
+            .replace('{LANLAN_NAME}', lanlan_name) \
+            .replace('{MASTER_NAME}', name_mapping.get('human', '主人'))
+
+        extracted = await self._allm_call_with_retries(
+            prompt, lanlan_name,
+            tier=EVIDENCE_EXTRACT_FACTS_MODEL_TIER,
+            call_type="memory_fact_extraction",
+        )
+        if extracted is None:
+            return None
+        if not isinstance(extracted, list):
+            logger.warning(
+                f"[FactStore] {lanlan_name}: Stage-1 返回非数组 "
+                f"{type(extracted).__name__}，当作空列表处理"
+            )
+            return []
+        return extracted
+
+    async def _apersist_new_facts(
+        self, lanlan_name: str, extracted: list[dict],
+    ) -> list[dict]:
+        """Dedup (SHA-256 + FTS5) + persist. importance < 5 facts are KEPT
+        (RFC §3.1.3)—downstream `get_unabsorbed_facts(min_importance=5)`
+        filters at read time."""
+        new_facts: list[dict] = []
         existing_facts = await self.aload_facts(lanlan_name)
         existing_hashes = {f.get('hash') for f in existing_facts if f.get('hash')}
 
         for fact in extracted:
+            if not isinstance(fact, dict):
+                continue
             text = fact.get('text', '').strip()
             if not text:
                 continue
@@ -312,8 +372,29 @@ class FactStore:
                 importance = int(fact.get('importance', 5))
             except (ValueError, TypeError):
                 importance = 5
-            if importance < 5:
-                continue
+            # Clamp to the documented 1..10 range so downstream consumers
+            # can assume a well-formed value; dirty LLM output (-3, 999)
+            # would otherwise leak straight into reflection synthesis
+            # weighting and audit dashboards (CodeRabbit PR #929).
+            if importance < 1:
+                importance = 1
+            elif importance > 10:
+                importance = 10
+            # RFC §3.1.3: **不再**在抽取入口硬丢 importance < 5。所有 fact
+            # 一律落盘，消费侧按场景 min_importance= 过滤；保留完整 audit。
+
+            # Entity whitelist: RFC uses exactly these three values. Any
+            # other LLM output (common mistake: "user"→"master") gets
+            # snapped back to "master" with a debug log so the miss is
+            # visible but not alarming.
+            raw_entity = fact.get('entity', 'master')
+            if raw_entity in ('master', 'neko', 'relationship'):
+                entity = raw_entity
+            else:
+                logger.debug(
+                    f"[FactStore] {lanlan_name}: LLM 返回非法 entity={raw_entity!r}，回退到 master"
+                )
+                entity = 'master'
 
             # Stage 1: SHA-256 exact dedup
             content_hash = hashlib.sha256(text.encode()).hexdigest()[:16]
@@ -335,8 +416,9 @@ class FactStore:
                 'id': f"fact_{datetime.now().strftime('%Y%m%d%H%M%S')}_{content_hash[:8]}",
                 'text': text,
                 'importance': importance,
-                'entity': fact.get('entity', 'master'),
-                'tags': fact.get('tags', []),
+                'entity': entity,
+                # RFC §2.7: tags 字段保留位但新 fact 默认写空，LLM 不再填
+                'tags': [],
                 'hash': content_hash,
                 'created_at': datetime.now().isoformat(),
                 'absorbed': False,  # True when consumed by a reflection
@@ -345,18 +427,250 @@ class FactStore:
             existing_hashes.add(content_hash)
             new_facts.append(fact_entry)
 
-            # Index in FTS5
             if self._time_indexed is not None:
-                await self._time_indexed.aindex_fact(lanlan_name, fact_entry['id'], text)
+                await self._time_indexed.aindex_fact(
+                    lanlan_name, fact_entry['id'], text,
+                )
 
         if new_facts:
             await self.asave_facts(lanlan_name)
-            print(f"📝 [FactStore] {lanlan_name}: 提取了 {len(new_facts)} 条新事实")
+            logger.info(
+                f"[FactStore] {lanlan_name}: 提取了 {len(new_facts)} 条新事实"
+            )
             for nf in new_facts:
-                print(f"   - [{nf.get('entity','?')}] {nf.get('text','')[:80]}")
-            logger.info(f"[FactStore] {lanlan_name}: 提取了 {len(new_facts)} 条新事实")
+                logger.debug(
+                    f"   - [{nf.get('entity','?')}] {nf.get('text','')[:80]}"
+                )
 
         return new_facts
+
+    async def _aload_signal_targets(
+        self, lanlan_name: str,
+        reflection_engine=None, persona_manager=None,
+    ) -> list[dict]:
+        """Assemble the Stage-2 `existing_observations` set.
+
+        Per RFC §3.4.2 coverage rule:
+          - confirmed + promoted reflection 全量（最 recent 优先）
+          - 非 protected persona entry 全量
+
+        Scale control (§3.4.2 end):
+          - Hard cap: top-N by evidence_score DESC (N = EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS)
+          - TODO PR follow-up: filter by new_facts[*].entity once Stage-1
+            returns entity; for now broad pool is acceptable (<200 items typical).
+
+        Injection pattern: memory_server wires `reflection_engine` / `persona_manager`
+        references at call time. Without them we return empty, which simply
+        makes Stage-2 skip (fail-open for unit tests).
+
+        Returns list of {id, text, entity, evidence_score} — id is already
+        in the `{target_type}.{entity}.{suffix}` shape the prompt expects.
+        """
+        now = datetime.now()
+        pool: list[dict] = []
+
+        if reflection_engine is not None:
+            try:
+                all_refl = await reflection_engine._aload_reflections_full(lanlan_name)
+                for r in all_refl:
+                    if r.get('status') not in ('confirmed', 'promoted'):
+                        continue
+                    pool.append({
+                        'id': f"reflection.{r.get('id', '')}",
+                        'raw_id': r.get('id', ''),
+                        'target_type': 'reflection',
+                        'text': r.get('text', ''),
+                        'entity': r.get('entity', 'relationship'),
+                        'score': evidence_score(r, now),
+                    })
+            except Exception as e:
+                logger.debug(
+                    f"[FactStore] _aload_signal_targets 读取 reflection 失败: {e}"
+                )
+
+        if persona_manager is not None:
+            try:
+                persona = await persona_manager.aensure_persona(lanlan_name)
+                for entity_key, section in persona.items():
+                    if not isinstance(section, dict):
+                        continue
+                    for entry in section.get('facts', []):
+                        if not isinstance(entry, dict):
+                            continue
+                        if entry.get('protected'):
+                            # protected = character_card；evidence 对它永远
+                            # inf，signal 施加它也没语义。跳过。
+                            continue
+                        pool.append({
+                            'id': f"persona.{entity_key}.{entry.get('id', '')}",
+                            'raw_id': entry.get('id', ''),
+                            'target_type': 'persona',
+                            'entity_key': entity_key,
+                            'text': entry.get('text', ''),
+                            'entity': entity_key,
+                            'score': evidence_score(entry, now),
+                        })
+            except Exception as e:
+                logger.debug(
+                    f"[FactStore] _aload_signal_targets 读取 persona 失败: {e}"
+                )
+
+        # Top-N by score DESC (most relevant first)
+        pool.sort(key=lambda o: o.get('score', 0.0), reverse=True)
+        return pool[:EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS]
+
+    async def _allm_detect_signals(
+        self, lanlan_name: str, new_facts: list[dict],
+        existing_observations: list[dict],
+    ) -> list[dict] | None:
+        """Stage-2: map new facts onto existing observations with
+        reinforces/negates signals. Returns validated signals (target_ids
+        already filtered against existing_observations), or None on
+        terminal failure."""
+        if not new_facts or not existing_observations:
+            return []
+
+        # Build prompt sections
+        new_facts_text = "\n".join(
+            f"[{f.get('id', '')}] {f.get('text', '')}" for f in new_facts
+        )
+        obs_text = "\n".join(
+            f"[{o['id']}] {o.get('text', '')}"
+            for o in existing_observations
+        )
+        prompt = get_signal_detection_prompt(get_global_language()) \
+            .replace('{NEW_FACTS}', new_facts_text) \
+            .replace('{EXISTING_OBSERVATIONS}', obs_text) \
+            .replace('{LANLAN_NAME}', lanlan_name)
+
+        parsed = await self._allm_call_with_retries(
+            prompt, lanlan_name,
+            tier=EVIDENCE_DETECT_SIGNALS_MODEL_TIER,
+            call_type="memory_signal_detection",
+            temperature=0.2,  # judgment-style task, keep deterministic-ish
+        )
+        if parsed is None:
+            return None
+        if not isinstance(parsed, dict):
+            logger.warning(
+                f"[FactStore] {lanlan_name}: Stage-2 返回非 dict "
+                f"{type(parsed).__name__}，丢弃"
+            )
+            return []
+        raw_signals = parsed.get('signals', [])
+        if not isinstance(raw_signals, list):
+            return []
+
+        # Defensive: drop hallucinated target_ids (§3.4.8)
+        valid_ids = {o['id'] for o in existing_observations}
+        id_to_obs = {o['id']: o for o in existing_observations}
+        validated: list[dict] = []
+        for s in raw_signals:
+            if not isinstance(s, dict):
+                continue
+            tid = s.get('target_id')
+            ttype = s.get('target_type')
+            signal = s.get('signal')
+            if signal not in ('reinforces', 'negates'):
+                continue
+            # Reconstruct full prompt-space id if LLM returned just the raw id
+            candidate_full = tid
+            if tid not in valid_ids:
+                # Try prefixing (LLM sometimes returns just "r_xxx" instead of
+                # "reflection.r_xxx"). Match by endswith on prompt ids.
+                candidates = [vid for vid in valid_ids if vid.endswith(f".{tid}")]
+                if len(candidates) == 1:
+                    candidate_full = candidates[0]
+                else:
+                    logger.warning(
+                        f"[FactStore] {lanlan_name}: Stage-2 返回未知 "
+                        f"target_id={tid}，丢弃"
+                    )
+                    continue
+            obs = id_to_obs[candidate_full]
+            if obs['target_type'] != ttype:
+                # LLM 说的 target_type 与实际不符 → 以实际为准（修正），
+                # 但仍记录原值便于 debug
+                logger.info(
+                    f"[FactStore] {lanlan_name}: Stage-2 target_type 修正 "
+                    f"{ttype}→{obs['target_type']} for {candidate_full}"
+                )
+            validated.append({
+                'source_fact_id': s.get('source_fact_id'),
+                'target_type': obs['target_type'],
+                'target_id': obs['raw_id'],
+                'target_full_id': candidate_full,
+                'entity_key': obs.get('entity_key'),   # 只 persona 有
+                'signal': signal,
+                'reason': s.get('reason', ''),
+            })
+        return validated
+
+    async def aextract_facts_and_detect_signals(
+        self, lanlan_name: str, messages: list,
+        reflection_engine=None, persona_manager=None,
+    ) -> tuple[list[dict], list[dict]]:
+        """Two-stage extraction (RFC §3.4.2).
+
+        Stage-1: pure fact extraction from user messages — no existing
+        observations in prompt to avoid self-cycling.
+        Stage-2: new_facts × existing_observations → reinforces/negates
+        signals (with defensive target_id validation).
+
+        Returns (new_facts, signals). Caller dispatches each signal through
+        PersonaManager.aapply_signal / ReflectionEngine.aapply_signal.
+
+        Failure semantics (§3.4.2 末段):
+        - Stage-1 failure → abort, no fact written; caller retries later
+        - Stage-2 failure → new facts already on disk; signals empty this round
+        """
+        extracted = await self._allm_extract_facts(lanlan_name, messages)
+        if extracted is None:
+            # Stage-1 terminal failure — caller MUST NOT advance cursor
+            # (§3.4.3 "Stage-1 失败 → 整次 abort，... 下次 idle 触发再试")
+            raise FactExtractionFailed(
+                f"Stage-1 LLM call exhausted retries for {lanlan_name!r}"
+            )
+        if not extracted:
+            return [], []
+
+        persisted = await self._apersist_new_facts(lanlan_name, extracted)
+        if not persisted:
+            return [], []
+
+        existing_observations = await self._aload_signal_targets(
+            lanlan_name,
+            reflection_engine=reflection_engine,
+            persona_manager=persona_manager,
+        )
+        if not existing_observations:
+            return persisted, []
+
+        signals = await self._allm_detect_signals(
+            lanlan_name, persisted, existing_observations,
+        )
+        if signals is None:
+            # Stage-2 LLM failure: facts already persisted; signals drop this round
+            return persisted, []
+        return persisted, signals
+
+    async def extract_facts(self, messages: list, lanlan_name: str) -> list[dict]:
+        """Stage-1-only backward-compat entry.
+
+        Kept for callers that predate the evidence mechanism
+        (memory_server's _extract_facts_and_check_feedback flow transitively
+        calls this, plus outbox replay). Emits only new facts and skips
+        signal detection — downstream `_periodic_signal_extraction_loop`
+        runs Stage-1+Stage-2 together.
+
+        Unlike the Stage-1+2 entry, a Stage-1 terminal failure is swallowed
+        here (returns []): the legacy per-turn call site treats extraction as
+        best-effort — the next turn / the background loop will retry.
+        """
+        extracted = await self._allm_extract_facts(lanlan_name, messages)
+        if not extracted:
+            return []
+        return await self._apersist_new_facts(lanlan_name, extracted)
 
     # ── query helpers ────────────────────────────────────────────────
 

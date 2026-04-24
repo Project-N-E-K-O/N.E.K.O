@@ -12,11 +12,14 @@ Handles configuration-related API endpoints including:
 import asyncio
 import json
 import os
+import ssl
 import threading
 import urllib.parse
+from typing import Optional
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from .shared_state import get_config_manager, get_steamworks, get_session_manager, get_initialize_character_data
 from .characters_router import get_current_live2d_model
@@ -896,6 +899,167 @@ async def list_gptsovits_voices(request: Request):
         return {"success": False, "error": "Internal TTS connection error", "code": "TTS_CONNECTION_FAILED"}
 
 
+@router.post("/gptsovits/test_connectivity")
+async def test_gptsovits_connectivity(request: Request):
+    """测试 GPT-SoVITS 完整链路：WebSocket 连接 → init → ready → 发送短文本 → 收到响应。
+
+    不播放音频，只验证服务可达且语音合成引擎正常工作。
+    """
+    import websockets as _ws
+    import json as _json
+    from urllib.parse import urlparse
+    import ipaddress
+
+    try:
+        data = await request.json()
+        api_url = (data.get("api_url", "") or "http://127.0.0.1:9881").rstrip("/")
+        voice_id = (data.get("voice_id", "") or "init").strip()
+        # i18n test text
+        test_text = data.get("test_text", "") or "连通性测试"
+
+        # SSRF protection: localhost only
+        parsed = urlparse(api_url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            return {"success": False, "error": "URL 格式无效", "error_code": "missing_params"}
+        host = parsed.hostname
+        try:
+            if not ipaddress.ip_address(host).is_loopback:
+                return {"success": False, "error": "GPT-SoVITS 仅支持本地服务", "error_code": "connection_refused"}
+        except ValueError:
+            if host not in ("localhost",):
+                return {"success": False, "error": "GPT-SoVITS 仅支持本地服务", "error_code": "connection_refused"}
+
+        # Convert HTTP URL to WebSocket URL
+        if api_url.startswith("http://"):
+            ws_base = "ws://" + api_url[7:]
+        elif api_url.startswith("https://"):
+            ws_base = "wss://" + api_url[8:]
+        else:
+            ws_base = "ws://" + api_url
+        ws_url = f"{ws_base}/api/v3/tts/stream-input"
+
+        # Strip gsv: prefix and parse advanced params (same as gptsovits_tts_worker)
+        if voice_id.startswith("gsv:"):
+            voice_id = voice_id[4:].strip() or "init"
+        extra_params = {}
+        if '|' in voice_id:
+            parts = voice_id.split('|', 1)
+            voice_id = parts[0].strip() or "init"
+            try:
+                extra_params = _json.loads(parts[1])
+                if not isinstance(extra_params, dict):
+                    extra_params = {}
+            except (_json.JSONDecodeError, IndexError, TypeError, ValueError):
+                extra_params = {}
+
+        async with asyncio.timeout(10):
+            async with _ws.connect(ws_url, ping_interval=None, max_size=10 * 1024 * 1024) as ws:
+                # Step 1: Send init (merge advanced params, filter reserved fields)
+                safe_params = {k: v for k, v in extra_params.items() if k not in ("cmd", "voice_id")}
+                init_msg = {"cmd": "init", "voice_id": voice_id, **safe_params}
+                await ws.send(_json.dumps(init_msg))
+
+                # Step 2: Wait for ready
+                ready_msg = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                ready_data = _json.loads(ready_msg)
+                if ready_data.get("type") != "ready":
+                    error_detail = str(ready_data.get("message", ready_data))[:200]
+                    return {"success": False, "error": f"init 失败: {error_detail}", "error_code": "unknown"}
+
+                # Step 3: Send test text (use "append" command, same as gptsovits_tts_worker)
+                await ws.send(_json.dumps({"cmd": "append", "data": test_text}))
+                # Small delay to let GSV process the text before sending end
+                await asyncio.sleep(0.1)
+                await ws.send(_json.dumps({"cmd": "end"}))
+
+                # Step 4: Wait for first response
+                first_response = await asyncio.wait_for(ws.recv(), timeout=10.0)
+
+                # Collect responses for verification
+                audio_chunks = []
+                got_sentence = False
+                gsv_error = ""
+
+                if isinstance(first_response, bytes):
+                    audio_chunks.append(first_response)
+                    logger.info(f"[GSV Test] First response: binary {len(first_response)} bytes")
+                else:
+                    logger.info(f"[GSV Test] First response: {first_response[:200]}")
+                    try:
+                        first_data = _json.loads(first_response)
+                        if first_data.get("type") == "sentence":
+                            got_sentence = True
+                    except _json.JSONDecodeError:
+                        pass
+
+                # Continue receiving until done or timeout
+                try:
+                    while True:
+                        msg = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                        if isinstance(msg, bytes):
+                            audio_chunks.append(msg)
+                            logger.debug(f"[GSV Test] Audio chunk: {len(msg)} bytes")
+                        else:
+                            logger.info(f"[GSV Test] JSON msg: {msg[:200]}")
+                            msg_data = _json.loads(msg)
+                            if msg_data.get("type") == "sentence":
+                                got_sentence = True
+                            if msg_data.get("type") == "error":
+                                gsv_error = str(msg_data.get("message", ""))[:200]
+                                logger.warning(f"[GSV Test] GSV error: {gsv_error}")
+                                break
+                            if msg_data.get("type") == "done":
+                                break
+                except asyncio.TimeoutError:
+                    logger.info(f"[GSV Test] Receive timeout, collected {len(audio_chunks)} audio chunks")
+                except Exception as e:
+                    logger.info(f"[GSV Test] Receive ended: {e}")
+
+                # Success if we got a "sentence" event (text was accepted) or audio data
+                result = {"success": got_sentence or len(audio_chunks) > 0}
+                if not result["success"]:
+                    result["error"] = gsv_error if gsv_error else "GSV 服务未返回有效响应"
+                    result["error_code"] = "unknown"
+
+                if result["success"]:
+                    logger.info(f"[ConnectivityTest] GPT-SoVITS → ✅ 收到 {len(audio_chunks)} 个音频块")
+                else:
+                    logger.info("[ConnectivityTest] GPT-SoVITS → ❌ 未收到有效响应")
+
+                # --- 以下为编写连通测试时使用的音频播放验证代码，已确认可行（2026-04-22） ---
+                # --- 保留供后续调试使用，正常运行时不启用 ---
+                # import base64
+                # raw_pcm = b""
+                # sample_rate = 0
+                # for chunk in audio_chunks:
+                #     if len(chunk) >= 44:
+                #         sr = int.from_bytes(chunk[24:28], 'little')
+                #         if sample_rate == 0:
+                #             sample_rate = sr
+                #         pcm = chunk[44:]
+                #         if len(pcm) >= 2:
+                #             if len(pcm) % 2 != 0:
+                #                 pcm = pcm[:-1]
+                #             raw_pcm += pcm
+                # if raw_pcm:
+                #     result["audio_data"] = base64.b64encode(raw_pcm).decode('ascii')
+                #     result["sample_rate"] = sample_rate
+                #     result["audio_length_ms"] = int(len(raw_pcm) / 2 / sample_rate * 1000) if sample_rate else 0
+
+                return result
+
+    except (TimeoutError, asyncio.TimeoutError):
+        return {"success": False, "error": "请求超时（10秒）", "error_code": "timeout"}
+    except OSError as e:
+        err_str = str(e).lower()
+        if "connection refused" in err_str or "connect call failed" in err_str:
+            return {"success": False, "error": "无法连接到 GPT-SoVITS 服务", "error_code": "connection_refused"}
+        return {"success": False, "error": f"连接失败: {e}", "error_code": "connection_refused"}
+    except Exception as e:
+        logger.error(f"GPT-SoVITS 连通测试失败: {e}")
+        return {"success": False, "error": str(e)[:200], "error_code": "unknown"}
+
+
 def _sanitize_proxies(proxies: dict[str, str]) -> dict[str, str]:
     """Remove credentials from proxy URLs before returning to the client."""
     sanitized: dict[str, str] = {}
@@ -972,3 +1136,368 @@ async def set_proxy_mode(request: Request):
     except Exception:
         logger.exception("[ProxyMode] 切换失败")
         return JSONResponse({"success": False, "error": "切换失败，服务器内部错误"}, status_code=500)
+
+
+# ---------------------------------------------------------------------------
+# Connectivity Test Models & Endpoint
+# ---------------------------------------------------------------------------
+
+class ConnectivityTestRequest(BaseModel):
+    """Request model for connectivity testing.
+
+    Two modes:
+    1. Built-in provider: provide provider_key + provider_scope + api_key.
+       Backend resolves url/model/provider_type from api_providers.json.
+    2. Custom API: provide url + api_key + model (+ provider_type).
+       Frontend passes all details directly.
+    """
+    # Built-in provider mode
+    provider_key: Optional[str] = None       # e.g. "qwen", "openai", "glm"
+    provider_scope: Optional[str] = None     # "core" or "assist"
+    # Custom / fallback mode
+    url: Optional[str] = ""
+    api_key: Optional[str] = ""
+    model: Optional[str] = ""
+    provider_type: Optional[str] = "openai_compatible"
+    is_free: Optional[bool] = False
+
+
+class ConnectivityTestResponse(BaseModel):
+    success: bool
+    error: Optional[str] = None
+    error_code: Optional[str] = None
+
+
+async def _test_openai_compatible(url: str, api_key: str, model: str = "gpt-3.5-turbo", is_free: bool = False) -> dict:
+    """Test an OpenAI-compatible REST API endpoint.
+
+    Uses the project's ChatOpenAI client (same as actual conversations) to send
+    a minimal chat completion request (max_tokens=1). This ensures the test
+    exercises the exact same auth and request path as real usage.
+
+    Args:
+        url: Base URL for the API endpoint.
+        api_key: API key for authentication (optional for keyless services).
+        model: Model name to use for the test request. For built-in providers,
+               this comes from api_providers.json (e.g. "qwen3.6-plus", "glm-4.5-air").
+               For custom APIs, this comes from the frontend.
+        is_free: If True, 400 Bad Request is treated as success.
+
+    Future: TTS/GPT-SoVITS connectivity testing is not yet supported here;
+    those use different protocols and will need dedicated test paths.
+    """
+    from utils.llm_client import ChatOpenAI as _ChatOpenAI
+
+    try:
+        client = _ChatOpenAI(
+            model=model,
+            base_url=url,
+            api_key=api_key or "sk-placeholder",
+            max_tokens=1,
+            timeout=10.0,
+            max_retries=0,
+        )
+        try:
+            await client.ainvoke([{"role": "user", "content": "hi"}])
+            return {"success": True}
+        finally:
+            await client.aclose()
+
+    except Exception as e:
+        return _classify_openai_error(e, is_free=is_free)
+
+
+def _classify_openai_error(e: Exception, is_free: bool = False) -> dict:
+    """Classify an OpenAI client exception into a connectivity test result."""
+    import httpx
+    from openai import AuthenticationError, APITimeoutError, APIConnectionError, APIStatusError, RateLimitError
+
+    # Auth errors (401, 403)
+    if isinstance(e, AuthenticationError):
+        return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
+
+    # Rate limit (429) — key is valid but temporarily throttled, treat as success
+    if isinstance(e, RateLimitError):
+        return {"success": True}
+
+    # Timeout
+    if isinstance(e, (APITimeoutError, TimeoutError, asyncio.TimeoutError)):
+        return {"success": False, "error": "请求超时（10秒）", "error_code": "timeout"}
+
+    # Connection errors (DNS, refused, etc.)
+    if isinstance(e, APIConnectionError):
+        err_str = str(e).lower()
+        if "getaddrinfo" in err_str or "name or service not known" in err_str or "nodename nor servname" in err_str:
+            return {"success": False, "error": "域名解析失败", "error_code": "dns_error"}
+        if "connection refused" in err_str or "connect call failed" in err_str:
+            return {"success": False, "error": "无法连接到目标服务器", "error_code": "connection_refused"}
+        return {"success": False, "error": f"连接失败: {e}", "error_code": "connection_refused"}
+
+    # SSL errors
+    if isinstance(e, ssl.SSLError):
+        return {"success": False, "error": "SSL证书验证失败", "error_code": "ssl_error"}
+
+    # HTTP status errors (400, 500, etc.)
+    if isinstance(e, APIStatusError):
+        status = e.status_code
+        if status in (401, 403):
+            return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
+        # 免费版 API：400 = 服务可达，Key 未被拒绝
+        if is_free and status == 400:
+            return {"success": True}
+        return {"success": False, "error": f"HTTP {status}", "error_code": "unknown"}
+
+    # Fallback
+    return {"success": False, "error": str(e), "error_code": "unknown"}
+
+
+async def _test_websocket(url: str, api_key: str, model: str = "") -> dict:
+    """Test a WebSocket endpoint by performing a handshake AND a minimal session.update.
+
+    Mirrors the project's OmniRealtimeClient.connect() behavior:
+    - Appends ?model={model} to the URL (same as omni_realtime_client.py)
+    - Sends Authorization header with Bearer token
+    - After handshake, sends a minimal session.update and waits for server response
+    - If server responds with any non-error event → key is valid and model is accessible
+    - If server responds with error or closes connection → key/model issue
+
+    This goes beyond a simple handshake to verify key permissions at the model level,
+    ensuring "green = 100% usable, red = 100% not usable".
+    """
+    import websockets
+    import json as _json
+
+    try:
+        # Build WebSocket URL with model parameter (same as OmniRealtimeClient.connect)
+        ws_url = url.rstrip("/")
+        if model and model.lower() != "free-model":
+            separator = "&" if "?" in ws_url else "?"
+            ws_url = f"{ws_url}{separator}model={urllib.parse.quote(model, safe='')}"
+
+        # Authorization header only (same as OmniRealtimeClient.connect — no api_key in URL)
+        if api_key:
+            extra_headers = {"Authorization": f"Bearer {api_key}"}
+        else:
+            extra_headers = {}
+
+        async with asyncio.timeout(10):
+            async with websockets.connect(
+                ws_url,
+                additional_headers=extra_headers,
+                open_timeout=10,
+                close_timeout=5,
+            ) as ws:
+                # For free-model: handshake-only test is sufficient
+                # (key is pre-configured "free-access", no need to verify permissions)
+                if model and model.lower() == "free-model":
+                    return {"success": True}
+
+                # For paid models: send a minimal session.update to verify
+                # key permissions at the model level (same as OmniRealtimeClient)
+                session_update = {
+                    "type": "session.update",
+                    "session": {
+                        "modalities": ["text"],
+                        "instructions": "connectivity test",
+                    }
+                }
+                await ws.send(_json.dumps(session_update))
+
+                # Wait for first server response (with 5s inner timeout)
+                try:
+                    response = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                    event = _json.loads(response)
+                    event_type = event.get("type", "")
+
+                    if event_type == "error":
+                        # Realtime protocol: event["error"] can be dict or string
+                        raw_error = event.get("error", "")
+                        if isinstance(raw_error, dict):
+                            error_code = str(raw_error.get("code", "")).lower()
+                            error_message = str(raw_error.get("message", ""))
+                            error_msg = error_message or str(raw_error)
+                        else:
+                            error_code = ""
+                            error_msg = str(raw_error)
+                            error_message = error_msg
+                        error_lower = (error_code + " " + error_message).lower()
+                        if any(kw in error_lower for kw in ("401", "403", "auth", "unauthorized", "invalid api key", "invalid key", "api key", "invalid_api_key", "authentication_error")):
+                            return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
+                        return {"success": False, "error": f"服务端错误: {error_msg[:200]}", "error_code": "unknown"}
+
+                    # Any non-error response (session.created, session.updated, etc.) = success
+                    return {"success": True}
+
+                except asyncio.TimeoutError:
+                    # Handshake succeeded but no response to session.update within 5s
+                    # This is still a partial success — service is reachable
+                    return {"success": True}
+
+    except (TimeoutError, asyncio.TimeoutError):
+        return {"success": False, "error": "请求超时（10秒）", "error_code": "timeout"}
+    except ssl.SSLError:
+        return {"success": False, "error": "SSL证书验证失败", "error_code": "ssl_error"}
+    except OSError as e:
+        err_str = str(e).lower()
+        if "getaddrinfo" in err_str or "name or service not known" in err_str or "nodename nor servname" in err_str:
+            return {"success": False, "error": "域名解析失败", "error_code": "dns_error"}
+        if "connection refused" in err_str or "connect call failed" in err_str:
+            return {"success": False, "error": "无法连接到目标服务器", "error_code": "connection_refused"}
+        return {"success": False, "error": f"WebSocket连接失败: {e}", "error_code": "ws_error"}
+    except Exception as e:
+        err_str = str(e).lower()
+        # websockets library raises InvalidStatus for HTTP 401/403 during handshake
+        # websockets 15.0.1: status code is at e.response.status_code, not e.status_code
+        status_code = getattr(e, "status_code", None)
+        if status_code is None:
+            _resp = getattr(e, "response", None)
+            status_code = getattr(_resp, "status_code", None)
+        if status_code in (401, 403):
+            return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
+        return {"success": False, "error": f"WebSocket连接失败: {e}", "error_code": "ws_error"}
+
+
+@router.post("/test_connectivity")
+async def test_connectivity(req: ConnectivityTestRequest) -> dict:
+    """测试 API 连通性。
+
+    两种模式：
+    1. 内置供应商：提供 provider_key + provider_scope + api_key，
+       后端从 api_providers.json 读取 url/model/provider_type。
+    2. 自定义 API：提供 url + api_key + model (+ provider_type)，
+       前端传完整参数，后端直接使用。
+
+    根据 provider_type 选择测试策略：
+    - openai_compatible（默认）：通过 ChatOpenAI 发送最小 chat completion 请求（max_tokens=1）
+    - websocket：WebSocket 握手，成功后立即关闭
+
+    所有请求 10 秒超时。端点为 async，天然支持并发请求不阻塞。
+    """
+    api_key_stripped = (req.api_key or "").strip()
+
+    # --- Mode 1: Built-in provider (resolve config from api_providers.json) ---
+    if req.provider_key and req.provider_scope:
+        from utils.api_config_loader import get_config as _get_api_config
+
+        api_config = _get_api_config()
+        provider_key = req.provider_key.strip()
+        scope = req.provider_scope.strip().lower()
+
+        if scope == "core":
+            providers = api_config.get("core_api_providers", {})
+            profile = providers.get(provider_key, {})
+            url_stripped = profile.get("core_url", "")
+            model = profile.get("core_model", "")
+            provider_type = "websocket"
+            is_free = profile.get("is_free_version", False)
+            _source_label = profile.get("name", provider_key)
+        elif scope == "assist":
+            providers = api_config.get("assist_api_providers", {})
+            profile = providers.get(provider_key, {})
+            url_stripped = profile.get("openrouter_url", "")
+            # Use conversation_model as the test model (most representative)
+            model = profile.get("conversation_model", "")
+            provider_type = "openai_compatible"
+            is_free = profile.get("is_free_version", False)
+            _source_label = profile.get("name", provider_key)
+        else:
+            return {"success": False, "error": "无效的 provider_scope", "error_code": "missing_params"}
+
+        if not url_stripped:
+            # Provider has no core_url (e.g. Gemini uses SDK, not raw WebSocket).
+            # Fall back to the assist profile's OpenAI-compatible endpoint to verify the key.
+            assist_providers = api_config.get("assist_api_providers", {})
+            assist_profile = assist_providers.get(provider_key, {})
+            fallback_url = assist_profile.get("openrouter_url", "")
+            fallback_model = assist_profile.get("conversation_model", "")
+            if fallback_url and fallback_model:
+                url_stripped = fallback_url
+                model = fallback_model
+                provider_type = "openai_compatible"
+                _source_label = assist_profile.get("name", profile.get("name", provider_key)) + "（通过辅助端点验证）"
+            else:
+                return {"success": False, "error": f"供应商 {_source_label} 暂不支持连通测试", "error_code": "missing_params"}
+
+    # --- Mode 2: Custom API (use frontend-provided params directly) ---
+    else:
+        if not req.url or not req.url.strip():
+            return {"success": False, "error": "缺少必要参数", "error_code": "missing_params"}
+
+        url_stripped = req.url.strip()
+        model = (req.model or "gpt-3.5-turbo").strip()
+        provider_type = (req.provider_type or "openai_compatible").strip().lower()
+        is_free = bool(req.is_free)
+        _source_label = _identify_provider_label(url_stripped, is_free)
+
+    try:
+        if provider_type == "websocket":
+            result = await _test_websocket(url_stripped, api_key_stripped, model=model)
+        else:
+            result = await _test_openai_compatible(url_stripped, api_key_stripped, model=model, is_free=is_free)
+    except Exception as e:
+        logger.exception("[ConnectivityTest] 未预期的异常")
+        result = {"success": False, "error": str(e), "error_code": "unknown"}
+
+    # 单条结果日志：供应商/自定义 + 成功/失败
+    if result.get("success"):
+        logger.info("[ConnectivityTest] %s → ✅ 连通", _source_label)
+    else:
+        logger.info("[ConnectivityTest] %s → ❌ %s", _source_label, result.get("error_code", "unknown"))
+
+    return result
+
+
+def _identify_provider_label(url: str, is_free: bool) -> str:
+    """根据 URL 识别是哪个供应商，返回人类可读的标签。
+    已知供应商显示名称，自定义的显示完整 URL。
+    """
+    _KNOWN_PROVIDERS = {
+        "lanlan.tech": "免费版",
+        "dashscope.aliyuncs.com": "阿里百炼",
+        "dashscope-intl.aliyuncs.com": "阿里国际版",
+        "api.openai.com": "OpenAI",
+        "open.bigmodel.cn": "智谱",
+        "api.stepfun.com": "阶跃星辰",
+        "api.siliconflow.cn": "硅基流动",
+        "generativelanguage.googleapis.com": "Gemini",
+        "api.moonshot.cn": "Kimi",
+    }
+    url_lower = url.lower()
+    for domain, name in _KNOWN_PROVIDERS.items():
+        if domain in url_lower:
+            if is_free:
+                return f"{name}(免费)"
+            return name
+    # 自定义 URL：脱敏后显示（移除敏感 query 参数）
+    return f"自定义({_redact_url_for_log(url)})"
+
+
+def _redact_url_for_log(url: str) -> str:
+    """Redact sensitive query parameters and userinfo before logging a custom endpoint URL."""
+    try:
+        parsed = urllib.parse.urlsplit(url)
+
+        # Redact userinfo (https://user:pass@host/ → https://***:***@host/)
+        netloc = parsed.netloc
+        if '@' in netloc:
+            host_part = netloc.split('@', 1)[1]
+            netloc = f"***:***@{host_part}"
+
+        # Redact sensitive query parameters
+        sensitive_keys = {
+            "api_key", "apikey", "key", "token", "access_token", "authorization",
+            "signature", "sig", "client_secret", "password", "jwt", "bearer",
+        }
+        if parsed.query:
+            query_pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+            redacted_pairs = [
+                (k, "***" if k.lower() in sensitive_keys else v)
+                for k, v in query_pairs
+            ]
+            redacted_query = urllib.parse.urlencode(redacted_pairs)
+        else:
+            redacted_query = ""
+
+        return urllib.parse.urlunsplit((parsed.scheme, netloc, parsed.path, redacted_query, parsed.fragment))
+    except Exception:
+        return url

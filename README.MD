@@ -3,7 +3,7 @@
 ![Logo](assets/neko_logo.jpg)
 
 [English](docs/README_en.md) | [日本語](docs/README_ja.md) | [Русский](docs/README_ru.md)
-# Project N.E.K.O. :kissing_cat: <br>**主动式、原生全模态AI伙伴——具备24/7环境感知、智能体能力与具身情感引擎。**
+# Project N.E.K.O. :kissing_cat: <br>**主动式AI伙伴——具备24/7环境感知、自主执行力与具身情感引擎。**
 
 > **N.E.K.O.** = **N**etworked **E**motional **K**nowledging **O**rganism (网络型情感知性生命体)
 >
@@ -26,27 +26,19 @@
 
 </div>
 
-<div align="center">
-
-#### 功能演示（完整版见B站） [![Bilibili](https://img.shields.io/badge/Bilibili-%E6%95%99%E7%A8%8B%E8%A7%86%E9%A2%91-blue)](https://www.bilibili.com/video/BV1mM32zXE46/)
-
-https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
-
-</div>
-
 ---
 
 ## 核心特性
 
 <table>
 <tr>
-<td align="center" width="25%">🎙️<br><b>全模态对话</b><br>语音实时对话 (Realtime API) + 文字对话 (ChatCompletion)，支持视觉理解</td>
+<td align="center" width="25%">🎙️<br><b>全模态对话</b><br>语音实时对话 (Realtime API) + 文字对话 (ChatCompletion)，支持实时视觉理解</td>
 <td align="center" width="25%">🧠<br><b>三层记忆系统</b><br>事实记忆 / 反思记忆 / 人格记忆，她真的会"记住"你</td>
-<td align="center" width="25%">🤖<br><b>Agent 智能体</b><br>浏览器操控 (CUA)、电脑操控、OpenClaw A2A调用，她能帮你干活</td>
+<td align="center" width="25%">🤖<br><b>Agent 智能体</b><br>浏览器操控、键鼠操控、OpenClaw A2A调用，她能帮你干活</td>
 <td align="center" width="25%">🎭<br><b>多形态 Avatar</b><br>Live2D / VRM / MMD 三种形态，支持动作捕捉与全屏追踪</td>
 </tr>
 <tr>
-<td align="center">🔌<br><b>插件生态</b><br>完整的插件 SDK 与商城，支持自定义扩展功能</td>
+<td align="center">🔌<br><b>插件生态</b><br>完整的插件 SDK 与商城，支持自定义扩展功能，可陪玩MC/杀戮尖塔/嘎啦给木</td>
 <td align="center">🌐<br><b>14+ AI 服务商</b><br>OpenAI / Gemini / Qwen / DeepSeek 等，含免费模型开箱即用</td>
 <td align="center">💬<br><b>主动对话</b><br>24/7环境感知：屏幕理解、社交媒体热搜、个人动态、音乐梗图，她会主动找你聊天</td>
 <td align="center">🏪<br><b>UGC 创意工坊</b><br>Steam 创意工坊上传分享自定义角色、模型、语音包</td>

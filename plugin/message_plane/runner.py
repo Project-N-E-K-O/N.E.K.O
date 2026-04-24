@@ -29,19 +29,32 @@ class MessagePlaneRunner:
         raise NotImplementedError
 
 
-def _wait_tcp_ready(endpoint: str, *, timeout_s: float = 2.0) -> bool:
+def _parse_wait_tcp_target(endpoint: str) -> tuple[str, int] | None:
     ep = str(endpoint)
     if not ep.startswith("tcp://"):
-        return True
+        return None
     rest = ep[len("tcp://") :]
     if ":" not in rest:
-        return True
+        return None
     host, port_s = rest.rsplit(":", 1)
     host = host.strip() or "127.0.0.1"
     try:
         port = int(port_s)
     except Exception:
+        return None
+    if port <= 0 or port > 65535:
+        return None
+    return host, port
+
+
+def _wait_tcp_ready(endpoint: str, *, timeout_s: float = 2.0) -> bool:
+    # Blocking TCP readiness probe. Safe to call from a dedicated thread (e.g. runner startup
+    # thread), but NOT from an asyncio event-loop thread — use ``_wait_tcp_ready_async`` there.
+    target = _parse_wait_tcp_target(endpoint)
+    if target is None:
+        # Non-tcp endpoint or malformed port: preserve original "assume ready" behavior.
         return True
+    host, port = target
 
     deadline = time.time() + max(0.0, float(timeout_s))
     while time.time() < deadline:
@@ -53,6 +66,54 @@ def _wait_tcp_ready(endpoint: str, *, timeout_s: float = 2.0) -> bool:
                 time.sleep(0.05)
             except Exception:
                 pass
+    return False
+
+
+async def _wait_tcp_ready_async(endpoint: str, *, timeout_s: float = 2.0) -> bool:
+    # Non-blocking equivalent of ``_wait_tcp_ready`` for use inside an asyncio event loop.
+    # Same semantics: 0.2s per-attempt connect timeout, 0.05s retry interval, ``timeout_s``
+    # overall deadline, returns True on first successful connect else False.
+    target = _parse_wait_tcp_target(endpoint)
+    if target is None:
+        return True
+    host, port = target
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max(0.0, float(timeout_s))
+    while loop.time() < deadline:
+        remaining = deadline - loop.time()
+        attempt_timeout = 0.2 if remaining > 0.2 else max(remaining, 0.0)
+        if attempt_timeout <= 0.0:
+            break
+        writer = None
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port), timeout=attempt_timeout
+            )
+            return True
+        except (asyncio.TimeoutError, OSError, ConnectionError):
+            # Expected during readiness probe: endpoint not yet listening — retry until deadline.
+            pass
+        except Exception:
+            # Belt-and-suspenders: don't let an unexpected error kill the retry loop.
+            pass
+        finally:
+            if writer is not None:
+                try:
+                    writer.close()
+                    try:
+                        await writer.wait_closed()
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+        try:
+            await asyncio.sleep(0.05)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # asyncio.sleep should only raise CancelledError; swallow anything else to keep retrying.
+            pass
     return False
 
 
@@ -237,6 +298,14 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
         if not _wait_tcp_ready(str(self._endpoints.rpc), timeout_s=float(timeout_s)):
             return False
         return _rpc_health_check(str(self._endpoints.rpc), timeout_s=float(timeout_s))
+
+    async def health_check_async(self, *, timeout_s: float = 1.0) -> bool:
+        # Async-safe variant of ``health_check`` — never blocks the event loop thread.
+        if not await _wait_tcp_ready_async(str(self._endpoints.rpc), timeout_s=float(timeout_s)):
+            return False
+        return await asyncio.to_thread(
+            _rpc_health_check, str(self._endpoints.rpc), timeout_s=float(timeout_s)
+        )
 
 
 def _parse_tcp_endpoint(endpoint: str) -> tuple[str, int] | None:

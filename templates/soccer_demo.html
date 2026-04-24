@@ -1,0 +1,1623 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Soccer MVP (VRM sister 接入验证)</title>
+
+<!-- VRM 光照默认值：从后端注入（vrm-core.js 依赖） -->
+<script>window.VRM_DEFAULT_LIGHTING = Object.freeze({{ vrm_defaults | tojson }});</script>
+
+<!-- Mock 桌宠运行环境（必要最小子集，避免各 init 脚本崩溃） -->
+<script>
+  window.lanlan_config = window.lanlan_config || {
+    lanlan_name: 'soccer_demo',
+    master_name: '', master_profile_name: '', master_nickname: '', master_display_name: '',
+    model_type: 'vrm', live3d_sub_type: 'vrm'
+  };
+  window.LanLan1 = window.LanLan1 || {};
+  // 注意：mouseTrackingEnabled 要 true，不然 VRM 的眼/头 cursor-follow 不会跟鼠标
+  window.mouseTrackingEnabled = true;
+  window.live2dFullscreenTrackingEnabled = false;
+  // 阻止 vrm-init.js 自动加载 sister 到默认 #vrm-container（id 对不上会出事），
+  // 同时让 manager.loadModel 跳过 setupFloatingButtons（缺 common-ui-hud.js 依赖会崩）
+  window._cardExportPage = true;
+</script>
+
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: #111; cursor: crosshair; user-select: none; }
+  canvas#game { display: block; position: fixed; inset: 0; z-index: 0; }
+  canvas#debug { display: block; position: fixed; inset: 0; z-index: 20; pointer-events: none; }
+  /* 默认气泡。未来替换成美术素材时整个 DOM 换掉即可，数据走 SoccerDemo.onSpeak 钩子 */
+  #ai-speech-bubble {
+    position: fixed; z-index: 30; pointer-events: none;
+    transform: translate(-50%, -100%);
+    background: rgba(255,255,255,0.96); color: #222;
+    padding: 8px 14px; border-radius: 14px;
+    font: 14px/1.4 "Segoe UI", "PingFang SC", sans-serif;
+    max-width: 260px; text-align: center;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.25);
+    opacity: 0; transition: opacity 0.18s ease-out, transform 0.22s ease-out;
+    white-space: pre-wrap;
+  }
+  #ai-speech-bubble.show { opacity: 1; transform: translate(-50%, calc(-100% - 6px)); }
+  #ai-speech-bubble::after {
+    content: ''; position: absolute; left: 50%; bottom: -7px;
+    transform: translateX(-50%);
+    border-left: 8px solid transparent; border-right: 8px solid transparent;
+    border-top: 8px solid rgba(255,255,255,0.96);
+  }
+  #ai-speech-bubble[data-mood="angry"] { background: #ffe0e0; }
+  #ai-speech-bubble[data-mood="angry"]::after { border-top-color: #ffe0e0; }
+  #ai-speech-bubble[data-mood="happy"] { background: #fff5c2; }
+  #ai-speech-bubble[data-mood="happy"]::after { border-top-color: #fff5c2; }
+  #ai-speech-bubble[data-mood="sad"] { background: #e0e8f0; color: #667; }
+  #ai-speech-bubble[data-mood="sad"]::after { border-top-color: #e0e8f0; }
+  #ai-speech-bubble[data-mood="surprised"] { background: #fff; border: 2px solid #f08; }
+  #ai-speech-bubble[data-mood="surprised"]::after { border-top-color: #fff; }
+  #player-vrm-container,
+  #ai-l2d-container {
+    position: fixed;
+    left: 0; top: 0;
+    width: 200px; height: 300px;
+    pointer-events: none !important;
+    z-index: 10;
+    will-change: transform;
+    transform: translate3d(-9999px, -9999px, 0);
+  }
+  #player-vrm-container *, #ai-l2d-container * { pointer-events: none !important; }
+  #player-vrm-container canvas, #ai-l2d-container canvas { width: 100%; height: 100%; display: block; }
+  #hint {
+    position: fixed; left: 12px; bottom: 12px; z-index: 20;
+    color: rgba(255,255,255,0.7); font: 12px/1.4 sans-serif;
+    pointer-events: none;
+  }
+  #status {
+    position: fixed; right: 12px; bottom: 12px; z-index: 20;
+    color: rgba(255,255,255,0.8); font: 12px/1.4 sans-serif;
+    background: rgba(0,0,0,0.4); padding: 6px 10px; border-radius: 4px;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="player-vrm-container">
+  <canvas id="player-vrm-canvas"></canvas>
+</div>
+<div id="ai-l2d-container">
+  <canvas id="ai-l2d-canvas"></canvas>
+</div>
+<canvas id="debug"></canvas>
+<div id="ai-speech-bubble" role="status" aria-live="polite"></div>
+<div id="hint">
+  鼠标 = 引导玩家 · 按住左键 = 蓄力，松开 = 射门（离球 ≤90px 触发）· R 复位<br>
+  1-6 = AI 心情（平静/开心/生气/放松/悲伤/惊讶）· 进球后自动切换难度档
+</div>
+<div id="status">loading VRM dependencies…</div>
+
+<!-- i18n（某些 vrm-*.js 使用 window.t） -->
+<script src="/static/i18n-i18next.js"></script>
+
+<!-- Avatar popup 公共依赖（vrm-ui-buttons / live2d-ui-buttons 会用） -->
+<script src="/static/avatar-popup-common.js"></script>
+<script src="/static/avatar-ui-popup.js"></script>
+<script src="/static/avatar-ui-popup-config.js"></script>
+<script src="/static/avatar-ui-buttons.js"></script>
+
+<!-- Live2D SDK + Cubism + Pixi + pixi-live2d-display + manager -->
+<script src="/static/libs/live2dcubismcore.min.js"></script>
+<script src="/static/libs/live2d.min.js"></script>
+<script src="/static/libs/pixi.min.js"></script>
+<script src="/static/libs/index.min.js"></script>
+<script src="/static/live2d-core.js"></script>
+<script src="/static/live2d-emotion.js"></script>
+<script src="/static/live2d-model.js"></script>
+<script src="/static/live2d-interaction.js"></script>
+<script src="/static/live2d-init.js"></script>
+
+<!-- Three.js via importmap -->
+<script type="importmap">
+{
+    "imports": {
+        "three": "/static/libs/three.module.js",
+        "three/addons/": "/static/libs/three/addons/",
+        "@pixiv/three-vrm": "/static/libs/three-vrm.module.min.js",
+        "@pixiv/three-vrm-animation": "/static/libs/three-vrm-animation.module.js"
+    }
+}
+</script>
+<script type="module">
+    import * as THREE from 'three';
+    window.THREE = THREE;
+    window.dispatchEvent(new CustomEvent('three-ready'));
+    console.log('[soccer_demo] THREE ready');
+</script>
+
+<!-- VRM init（监听 three-ready，再并行加载 vrm-*.js） -->
+<script src="/static/vrm-init.js"></script>
+
+<script>
+(async () => {
+  const statusEl = document.getElementById('status');
+  const setStatus = (s) => { statusEl.textContent = s; };
+
+  // 等 vrm 模块链加载完
+  await new Promise(resolve => {
+    if (window.vrmModuleLoaded) return resolve();
+    window.addEventListener('vrm-modules-ready', resolve, { once: true });
+    window.addEventListener('vrm-modules-failed', e => {
+      console.error('[soccer_demo] VRM modules failed:', e.detail);
+      setStatus('VRM modules failed: ' + (e.detail?.failedModules || []).join(', '));
+      resolve();
+    }, { once: true });
+  });
+
+  try {
+    console.log('[soccer_demo] modules ready, starting VRM init');
+    setStatus('initializing VRM renderer…');
+    if (typeof VRMManager === 'undefined') {
+      throw new Error('VRMManager class not found');
+    }
+    window.vrmManager = new VRMManager();
+    await window.vrmManager.core.init(
+      'player-vrm-canvas', 'player-vrm-container', null, { embed: true }
+    );
+    console.log('[soccer_demo] core.init done; scene children BEFORE load:', window.vrmManager.scene?.children?.length);
+    setStatus('loading sister1.0.vrm…');
+    // 绕开 core.loadModel（它里面有 3 帧 rAF 等待，在 headless/背景 tab 下会 hang），
+    // 直接用 GLTFLoader + VRMLoaderPlugin 加载，手动 scene.add。
+    const [{ GLTFLoader }, vrmModule] = await Promise.all([
+      import('three/addons/loaders/GLTFLoader.js'),
+      import('@pixiv/three-vrm'),
+    ]);
+    const loader = new GLTFLoader();
+    loader.register(p => new vrmModule.VRMLoaderPlugin(p));
+    const gltf = await new Promise((res, rej) => loader.load('/static/vrm/sister1.0.vrm', res, null, rej));
+    const vrm = gltf.userData.vrm;
+    if (!vrm) throw new Error('Loaded file is not a valid VRM');
+    console.log('[soccer_demo] VRM parsed');
+    // 把模型放进 manager 的 scene，交给 core.init 已经设置好的 renderer/camera 渲染
+    window.vrmManager.scene.add(vrm.scene);
+    // 让 three-vrm 的更新发生——挂到 clock/render loop 上
+    window.vrmManager.currentModel = { vrm, gltf, scene: vrm.scene, url: '/static/vrm/sister1.0.vrm' };
+    vrm.scene.visible = true;
+
+    // 相机自适应：测出 bbox，把模型脚底放到 y=0、水平居中，再把相机拉到够远能装下整个人
+    {
+      const THREE = window.THREE;
+      vrm.scene.updateMatrixWorld(true);
+      const box = new THREE.Box3().setFromObject(vrm.scene);
+      const mid = new THREE.Vector3();
+      box.getCenter(mid);
+      vrm.scene.position.x -= mid.x;
+      vrm.scene.position.z -= mid.z;
+      vrm.scene.position.y -= box.min.y; // 脚底贴地
+      vrm.scene.updateMatrixWorld(true);
+
+      const box2 = new THREE.Box3().setFromObject(vrm.scene);
+      const h = box2.max.y - box2.min.y;  // 身高
+      const w = Math.max(box2.max.x - box2.min.x, box2.max.z - box2.min.z); // 最大横宽（含胳膊/厚度）
+
+      const cam = window.vrmManager.camera;
+      const fovRad = cam.fov * Math.PI / 180;
+      const container = document.getElementById('player-vrm-container');
+      const aspect = container.clientWidth / container.clientHeight; // 200/300 ≈ 0.67
+      cam.aspect = aspect;
+      // 只按身高适配（T-pose 臂展比身高还宽，一起参与会把人拉到很小）；
+      // 把 lookAt 抬高到 (visibleH/2)，这样视口底边 = 模型脚底 y=0 —— 容器底边 = 角色脚底
+      const pad = 1.15;
+      const visibleH = h * pad;
+      const dist = visibleH / (2 * Math.tan(fovRad / 2));
+      const lookY = visibleH / 2;
+      cam.position.set(0, lookY, dist);
+      cam.lookAt(0, lookY, 0);
+      cam.updateProjectionMatrix();
+      console.log('[soccer_demo] fit camera: h=', h.toFixed(2), 'w=', w.toFixed(2), 'dist=', dist.toFixed(2));
+    }
+
+    if (window.vrmManager.renderer?.domElement) {
+      window.vrmManager.renderer.domElement.style.opacity = '1';
+    }
+    // 启动 three 渲染循环（管理 camera/scene 每帧 render）
+    if (typeof window.vrmManager.startAnimateLoop === 'function' && !window.vrmManager._animationFrameId) {
+      window.vrmManager.startAnimateLoop();
+      console.log('[soccer_demo] animate loop started');
+    }
+
+    // 启用 VRM 的头/眼 cursor follow。cursor-follow controller 是在
+    // manager.initThreeJS 里 lazy 创建的，我们走的是 core.init 直通路径，手动补一下。
+    if (typeof window.vrmManager._initMouseLookAtTracking === 'function') {
+      window.vrmManager._initMouseLookAtTracking();
+    }
+    if (window.vrmManager.interaction?.enableMouseTracking) {
+      window.vrmManager.interaction.enableMouseTracking(true);
+    }
+    if (window.vrmManager._cursorFollow?.setEnabled) {
+      window.vrmManager._cursorFollow.setEnabled(true);
+    }
+
+    // 加载 idle 动画（wait03.vrma），去掉 T-pose
+    setStatus('loading idle animation…');
+    try {
+      await window.vrmManager.playVRMAAnimation('/static/vrm/animation/wait03.vrma', {
+        loop: true, immediate: true, isIdle: true,
+      });
+      console.log('[soccer_demo] idle animation loaded');
+    } catch (animErr) {
+      console.warn('[soccer_demo] idle animation failed (will keep T-pose):', animErr);
+    }
+    setStatus('VRM ready');
+
+    // --- 接 Live2D mao_pro 作为 AI ---
+    try {
+      setStatus('loading Live2D mao_pro…');
+      if (!window.live2dManager) throw new Error('live2dManager missing');
+      // 显式传 width/height，避免某些环境 window.screen.width=0 导致 canvas 变 1x1
+      await window.live2dManager.initPIXI('ai-l2d-canvas', 'ai-l2d-container', {
+        width: 200,
+        height: 300,
+      });
+      // loadModel 内部会调几个桌宠 UI 钩子（浮动按钮、锁图标、返回按钮），demo 里不需要，空实现绕过
+      const uiStubs = ['setupFloatingButtons', 'setupHTMLLockIcon', 'setupReturnButtonContainerDrag'];
+      for (const name of uiStubs) {
+        if (typeof window.live2dManager[name] !== 'function') {
+          window.live2dManager[name] = () => {};
+        }
+      }
+      // loadModel 的 await 在某些环境（preview/background tab）里 rAF 被 throttle 时不 resolve，
+      // 但 currentModel 其实早就设上了；用 race + 轮询等 currentModel 出现后直接做 fit，而不是死等 await
+      const loadPromise = window.live2dManager.loadModel('/static/mao_pro/mao_pro.model3.json');
+      loadPromise.catch(e => console.warn('[soccer_demo] L2D loadModel awaited reject:', e));
+      await new Promise((resolve, reject) => {
+        const t0 = Date.now();
+        const tick = () => {
+          if (window.live2dManager?.currentModel?.width > 0) return resolve();
+          if (Date.now() - t0 > 20000) return reject(new Error('L2D model not appear within 20s'));
+          setTimeout(tick, 200);
+        };
+        tick();
+      });
+      console.log('[soccer_demo] L2D currentModel ready');
+
+      // 适配：缩放 + 底部对齐（脚落在 canvas 底部，留一点 margin）
+      const l2dModel = window.live2dManager.currentModel;
+      if (l2dModel && l2dModel.width && l2dModel.height) {
+        const canvasW = 200, canvasH = 300, margin = 6;
+        const s = Math.min(
+          (canvasW - margin * 2) / l2dModel.width,
+          (canvasH - margin * 2) / l2dModel.height
+        );
+        l2dModel.scale.set(l2dModel.scale.x * s, l2dModel.scale.y * s);
+        // 注意：L2D model 有 anchor（mao_pro 是 0.65, 0.75），model.x/y 是 anchor 点位置，
+        // 不是左上角。要把 bounds 放到指定位置，得加上 width*anchor.x / height*anchor.y 补偿。
+        const ax = l2dModel.anchor ? l2dModel.anchor.x : 0;
+        const ay = l2dModel.anchor ? l2dModel.anchor.y : 0;
+        const boundsX = (canvasW - l2dModel.width) / 2;
+        const boundsY = canvasH - margin - l2dModel.height;
+        l2dModel.x = boundsX + l2dModel.width * ax;
+        l2dModel.y = boundsY + l2dModel.height * ay;
+        // 强制可见：loadModel 内部的 "3 frame rAF 等待 + CSS fade-in" 在 rAF 被 throttle 的
+        // 环境（后台/headless）下不会完成，alpha 会一直卡在 0.001、canvas opacity=0。
+        // 直接置 1 绕过，真浏览器里原流程会同样置 1，不冲突。
+        l2dModel.alpha = 1;
+        if (window.live2dManager.pixi_app?.view) {
+          window.live2dManager.pixi_app.view.style.opacity = '1';
+        }
+        console.log('[soccer_demo] L2D fit:', l2dModel.width|0, 'x', l2dModel.height|0, 'at', l2dModel.x|0, ',', l2dModel.y|0);
+      }
+
+      // AI 注视控制：每帧从游戏 loop 调用 window.__focusL2DAt(targetScreenX, targetScreenY)
+      // 直接走 focusController，避免 model.focus 按 200x300 canvas 归一化导致的"超出=锁边"
+      const aiCanvas = document.getElementById('ai-l2d-canvas');
+      window.__focusL2DAt = (tx, ty) => {
+        const mm = window.live2dManager?.currentModel;
+        const fc = mm?.internalModel?.focusController;
+        if (!fc) return;
+        const rect = aiCanvas.getBoundingClientRect();
+        if (rect.width < 10) return; // 容器还没被 transform 到场上
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        const reach = 400; // 多少屏幕像素等价于最大转头角度
+        const nx = Math.max(-1, Math.min(1, (tx - cx) / reach));
+        const ny = Math.max(-1, Math.min(1, -(ty - cy) / reach)); // L2D Y 轴向上为正
+        fc.focus(nx, ny);
+      };
+
+      setStatus('all ready');
+    } catch (l2dErr) {
+      console.error('[soccer_demo] L2D failed:', l2dErr);
+      setStatus('L2D failed: ' + (l2dErr.message || l2dErr));
+    }
+
+    setTimeout(() => { statusEl.style.opacity = '0'; statusEl.style.transition = 'opacity 0.8s'; }, 1500);
+  } catch (e) {
+    console.error('[soccer_demo] VRM init failed:', e);
+    setStatus('VRM init failed: ' + (e.message || e));
+  }
+})();
+</script>
+
+<!-- 游戏逻辑 -->
+<script>
+/* ═══════════════════════════════════════════════════════════════════════════
+ *  SoccerDemo 对外 API（挂在 window.SoccerDemo）
+ *  给 neko 本体 / 外部脚本（LLM 生成、美术素材、UI 控件）使用的稳定入口。
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ *  ── 心情（只作用于 AI；影响速度/冷却/冲量/散射/特殊行为，并同步 L2D 表情）
+ *     SoccerDemo.MOODS                  // ['calm','happy','angry','relaxed','sad','surprised']
+ *     SoccerDemo.setMood(name)          // 切换心情；会触发 'mood-<name>' 气泡 + onEvent('mood-changed')
+ *     SoccerDemo.getMood()              // 当前心情字符串
+ *     SoccerDemo.enableMoodRotation(s)  // 启用随机轮换；默认 20s（页面加载后自动开启）
+ *     SoccerDemo.disableMoodRotation()  // 关闭自动轮换
+ *
+ *  ── 难度（4 档循环：max → lv2 → lv3 → lv4 → max，每进一球自动切）
+ *     SoccerDemo.DIFFICULTIES           // ['max','lv2','lv3','lv4']
+ *     SoccerDemo.setDifficulty(name)    // 直接设；触发 'diff-<name>' 气泡
+ *     SoccerDemo.getDifficulty()
+ *     SoccerDemo.cycleDifficulty()      // 手动推进一档
+ *
+ *     档位差异：
+ *       max  完整强度
+ *       lv2  踢球 CD ×1.5、前摇 0.35s（移动速度不变）
+ *       lv3  lv2 基础上速度 ×0.78
+ *       lv4  lv3 基础上 attack 模式强制降为 defend（不主动进攻）
+ *
+ *  ── 头像（运行时替换，无需刷新）
+ *     await SoccerDemo.setPlayerAvatar({ type: 'vrm',    path: '/static/vrm/xxx.vrm' })
+ *     await SoccerDemo.setAiAvatar   ({ type: 'live2d', path: '/static/xxx/xxx.model3.json' })
+ *     SoccerDemo.getPlayerAvatar()      // { type, path }
+ *     SoccerDemo.getAiAvatar()
+ *
+ *     注意：目前 player 只支持 vrm、AI 只支持 live2d；换 avatar 会自动 fit 相机/scale。
+ *
+ *  ── 说话（气泡 + LLM 钩子）
+ *     SoccerDemo.say(text, opts?)       // 直接说一句任意文本，返回 bool（是否成功播出）
+ *       opts = {
+ *         kind?:        string,           // 分类标签，供 LLM / 分析使用
+ *         priority?:    number,           // 0-9，越大越优先；低优先级在气泡显示期间被阻塞
+ *         duration?:    number,           // ms，省略时按文本长度估算
+ *         cooldownKey?: string,           // 节流键；同 key 冷却内不会重复说
+ *         cooldownSec?: number,
+ *       }
+ *     SoccerDemo.triggerScene(kind)     // 按场景 kind 从内建文案池随机抽一条说（见下方场景列表）
+ *     SoccerDemo.clearBubble()          // 立刻清当前气泡
+ *
+ *     文本在输出前会套心情装饰（sad→前缀"……"、surprised→前缀"诶？！"、happy→尾部" ♪"…）
+ *
+ *  ── 订阅事件流（LLM / 美术 / UI 接入点）
+ *     const unsub = SoccerDemo.onSpeak(payload => { ... })
+ *     // payload = {
+ *     //   text,           // 心情装饰后
+ *     //   textRaw,        // 原文
+ *     //   mood, kind, priority, durationMs, ts
+ *     // }
+ *     unsub()                            // 取消订阅
+ *     SoccerDemo.offSpeak(fn)
+ *
+ *     const unsubEv = SoccerDemo.onEvent(({label, meta, time}) => { ... })
+ *     // label 取值：
+ *     //   'goal-scored'          meta = { side: 'ai' }
+ *     //   'goal-conceded'        meta = { side: 'player' }
+ *     //   'player-kick'          玩家踢球（无 meta）
+ *     //   'ai-kick'              AI 踢球
+ *     //   'unstick'              球被脱困
+ *     //   'mood-changed'         meta = { mood }
+ *     //   'difficulty-changed'   meta = { difficulty }
+ *     //   'player-avatar-changed'/'ai-avatar-changed'  meta = { type, path }
+ *
+ *  ── 美术素材接入（替换默认 DOM 气泡）
+ *     SoccerDemo.setBubbleRenderer(fn)
+ *     // fn(payload) 会在每次 say 时被调用，payload 同 onSpeak。
+ *     // 传 null 或非函数会 fallback 回内置默认气泡（#ai-speech-bubble DOM）
+ *
+ *  ── LLM 接入范式
+ *     SoccerDemo.onSpeak(async p => {
+ *       if (p.kind === 'goal-scored' || p.kind === 'mood-happy') {
+ *         const line = await myLLM(p.kind, p.mood, p.textRaw);
+ *         SoccerDemo.say(line, { priority: p.priority + 1, kind: p.kind + '-llm' });
+ *       }
+ *     });
+ *
+ *  ── 内建场景 kind（SoccerDemo.triggerScene 会用这些作为 LINES 池的 key）
+ *     进球:             'goal-scored' / 'goal-conceded'
+ *     射门/抢断:        'shot-miss' / 'steal' / 'stolen'
+ *     场面控制:         'long-attack-possession' / 'long-defense-possession'（按 allowAttack 分支）
+ *     观察玩家:         'player-idle' / 'player-charging-long' / 'close-proximity'
+ *     空场氛围:         'free-ball' / 'score-boring' / 'no-goal-1min'
+ *     物理彩蛋:         'fast-ball' / 'startle' / 'zoneout' / 'unstick'
+ *     档位切换:         'diff-max' / 'diff-lv2' / 'diff-lv3' / 'diff-lv4'
+ *     心情切换:         'mood-calm' / 'mood-happy' / 'mood-angry' / 'mood-relaxed' / 'mood-sad' / 'mood-surprised'
+ *
+ *  ── Debug
+ *     SoccerDemo._snapshot()            // { mood, difficulty, score, aiMode, aiFreezeSec, ballGhost }
+ *
+ *  ── 键盘（debug 快捷键）
+ *     1-6   切换心情（同 setMood）
+ *     R     复位球权和双方位置
+ *
+ *  ═══════════════════════════════════════════════════════════════════════════
+ */
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const debugCanvas = document.getElementById('debug');
+  const dctx = debugCanvas.getContext('2d');
+  const playerEl = document.getElementById('player-vrm-container');
+  const aiEl = document.getElementById('ai-l2d-container');
+
+  const CFG = {
+    charSize: 80,
+    vrmW: 200, vrmH: 300,
+    ballRadius: 15,
+    goalWidth: 22,
+    goalHeight: 200,
+    playerMaxSpeed: 520,
+    playerAccel: 3200,
+    aiMaxSpeed: 520,   // 跟玩家一样
+    aiAccel: 3200,
+    charDamping: 9,
+    ballFriction: 0.55,
+    kickImpulse: 950,
+    kickRange: 90,
+    wallRestitution: 0.7,
+    charBallRestitution: 1.25,
+  };
+
+  const state = {
+    player: { x: 0, y: 0, vx: 0, vy: 0 },
+    ai:     { x: 0, y: 0, vx: 0, vy: 0, color: '#ef4565' },
+    ball:   { x: 0, y: 0, vx: 0, vy: 0 },
+    mouse:  { x: 0, y: 0 },
+    score:  { player: 0, ai: 0 },
+    flashTimer: 0,
+    flashSide: null,
+  };
+
+  function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    debugCanvas.width = window.innerWidth;
+    debugCanvas.height = window.innerHeight;
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  function resetPositions(servingSide = 0) {
+    const W = canvas.width, H = canvas.height;
+    state.player.x = W * 0.22 - CFG.charSize/2;
+    state.player.y = H * 0.55 - CFG.charSize/2;
+    state.player.vx = state.player.vy = 0;
+    state.ai.x     = W * 0.78 - CFG.charSize/2;
+    state.ai.y     = H * 0.55 - CFG.charSize/2;
+    state.ai.vx = state.ai.vy = 0;
+    state.ball.x = W * 0.5;
+    state.ball.y = H * 0.55;
+    state.ball.vx = servingSide * 80;
+    state.ball.vy = 0;
+    state.mouse.x = state.player.x + CFG.charSize/2;
+    state.mouse.y = state.player.y + CFG.charSize/2;
+  }
+  resetPositions();
+
+  window.addEventListener('mousemove', e => {
+    state.mouse.x = e.clientX;
+    state.mouse.y = e.clientY;
+  });
+  // 玩家蓄力：按下 = 开始蓄力，松开 = 出脚；冲量 = 1.0 + 0.6*charge（tap=1.0，满蓄=1.6）
+  let playerCharging = false;
+  let playerCharge = 0;
+  const CHARGE_MAX_SEC = 1.2;
+  window.addEventListener('mousedown', e => {
+    if (e.button !== 0) return;
+    playerCharging = true;
+    playerCharge = 0;
+  });
+  window.addEventListener('mouseup', e => {
+    if (e.button !== 0 || !playerCharging) return;
+    const { nx, ny } = kickDirFor(state.player);
+    const mul = 1.0 + 0.6 * playerCharge;
+    kickBall(state.player, nx, ny, mul);
+    playerCharging = false;
+    playerCharge = 0;
+  });
+  window.addEventListener('blur', () => { playerCharging = false; playerCharge = 0; });
+  window.addEventListener('contextmenu', e => e.preventDefault());
+  window.addEventListener('keydown', e => {
+    if (e.key === 'r' || e.key === 'R') resetPositions();
+    // 1-6 切换 AI 心情（debug）
+    const idx = Number(e.key) - 1;
+    if (idx >= 0 && idx < MOOD_KEYS.length) setMood(MOOD_KEYS[idx]);
+  });
+
+  // 通用踢球：从 kicker 中心向 (aimX, aimY) 踢；dirX/dirY 为单位向量，球得到一次性大冲量。
+  // 返回是否成功（球必须在射门范围内）。
+  function kickBall(kicker, dirX, dirY, impulseScale = 1) {
+    const b = state.ball;
+    const cx = kicker.x + CFG.charSize/2, cy = kicker.y + CFG.charSize/2;
+    const dx = b.x - cx, dy = b.y - cy;
+    const d = Math.hypot(dx, dy);
+    if (d > CFG.kickRange + CFG.ballRadius) return false;
+    // 抢断/被抢断判定：对方在球周围 100px 内 = 抢断
+    const isPlayer = kicker === state.player;
+    const opp = isPlayer ? state.ai : state.player;
+    const opx = opp.x + CFG.charSize/2, opy = opp.y + CFG.charSize/2;
+    const oppNearBall = Math.hypot(b.x - opx, b.y - opy) < 100;
+    b.vx = dirX * CFG.kickImpulse * impulseScale + kicker.vx * 0.4;
+    b.vy = dirY * CFG.kickImpulse * impulseScale + kicker.vy * 0.4;
+    logGameEvent(isPlayer ? 'player-kick' : 'ai-kick');
+    markBallTouched();
+    emitEvent(isPlayer ? 'player-kick' : 'ai-kick');
+    // AI 把球从玩家附近踢走 → AI 抢到了；玩家把球从 AI 附近踢走 → AI 被抢
+    if (oppNearBall) triggerScene(isPlayer ? 'stolen' : 'steal');
+    return true;
+  }
+
+  // 射门方向 = 从 kicker 中心指向球
+  function kickDirFor(kicker) {
+    const cx = kicker.x + CFG.charSize/2, cy = kicker.y + CFG.charSize/2;
+    const dx = state.ball.x - cx, dy = state.ball.y - cy;
+    const d = Math.hypot(dx, dy) || 1;
+    return { nx: dx / d, ny: dy / d, d };
+  }
+
+  // AI 踢球：根据难度档决定冷却/前摇；根据 mode 决定朝哪儿踢
+  let aiKickCd = 0;
+  let aiWindupRemaining = 0;   // > 0 时处于前摇（已锁定方向等待出脚）
+  let aiWindupAim = null;      // { x, y } 单位向量
+  let aiWindupTotal = 0;       // 用来画前摇进度
+
+  function aiTryKick(dt) {
+    const diff = DIFFICULTY[difficultyIdx];
+    const mood = MOODS[moodKey];
+    const kickImpulse = 0.95 * mood.kickImpulseMul;
+    const rollCd = () => (diff.kickCdMin + Math.random() * (diff.kickCdMax - diff.kickCdMin)) * mood.kickCdMul;
+
+    const a = state.ai, b = state.ball;
+    const acx = a.x + CFG.charSize/2, acy = a.y + CFG.charSize/2;
+    const inRange = Math.hypot(b.x - acx, b.y - acy) <= CFG.kickRange + CFG.ballRadius;
+    if (aiFreezeSec > 0) return;  // 冻结期间不能踢
+
+    // 前摇进行中
+    if (aiWindupRemaining > 0) {
+      aiWindupRemaining -= dt;
+      if (!inRange) {
+        aiWindupRemaining = 0; aiWindupAim = null; aiWindupTotal = 0;
+        aiKickCd = 0.3;
+        return;
+      }
+      if (aiWindupRemaining <= 0) {
+        if (aiWindupAim) kickBall(a, aiWindupAim.x, aiWindupAim.y, kickImpulse);
+        aiWindupRemaining = 0; aiWindupAim = null; aiWindupTotal = 0;
+        aiKickCd = rollCd();
+      }
+      return;
+    }
+
+    aiKickCd -= dt;
+    if (aiKickCd > 0 || !inRange) return;
+    if (!diff.allowAttack && aiMode === 'attack') return;
+
+    const W = canvas.width, H = canvas.height;
+    let aimX, aimY;
+    // 心情给射门加散射（正值 = 更乱，负值 = 更准；在基础随机之外叠加）
+    const spreadY = mood.spread > 0 ? (Math.random() - 0.5) * mood.spread * 2 : 0;
+    const accuracyMul = mood.spread < 0 ? (1 + mood.spread / 100) : 1; // relaxed 瞄得更准
+
+    if (aiMode === 'defend' || aiMode === 'clear') {
+      const upClearer = b.y < H / 2;
+      aimX = W * 0.25 - b.x;
+      aimY = (upClearer ? 0 : H) - b.y;
+      aimY *= 0.4 + Math.random() * 0.3;
+      aimY += spreadY;
+    } else {
+      const playerCy = state.player.y + CFG.charSize/2;
+      const shootTop = playerCy > H / 2;
+      const cornerY = shootTop
+        ? H/2 - CFG.goalHeight/2 + 20
+        : H/2 + CFG.goalHeight/2 - 20;
+      aimX = 0 - b.x;
+      aimY = (cornerY + (Math.random() - 0.5) * 50 * accuracyMul + spreadY) - b.y;
+    }
+    const aL = Math.hypot(aimX, aimY) || 1;
+    const dx = aimX / aL, dy = aimY / aL;
+
+    if (diff.windupSec > 0) {
+      aiWindupAim = { x: dx, y: dy };
+      aiWindupRemaining = diff.windupSec;
+      aiWindupTotal = diff.windupSec;
+    } else {
+      kickBall(a, dx, dy, kickImpulse);
+      aiKickCd = rollCd();
+    }
+  }
+
+  function stepCharacter(c, tx, ty, maxSpeed, accel, dt) {
+    const cx = c.x + CFG.charSize/2, cy = c.y + CFG.charSize/2;
+    const dx = tx - cx, dy = ty - cy;
+    const d = Math.hypot(dx, dy);
+    if (d > 3) {
+      c.vx += (dx / d) * accel * dt;
+      c.vy += (dy / d) * accel * dt;
+    }
+    const k = Math.max(0, 1 - CFG.charDamping * dt);
+    c.vx *= k; c.vy *= k;
+    const v = Math.hypot(c.vx, c.vy);
+    if (v > maxSpeed) { c.vx = c.vx / v * maxSpeed; c.vy = c.vy / v * maxSpeed; }
+    c.x += c.vx * dt;
+    c.y += c.vy * dt;
+    c.x = Math.max(0, Math.min(canvas.width  - CFG.charSize, c.x));
+    c.y = Math.max(0, Math.min(canvas.height - CFG.charSize, c.y));
+  }
+
+  function stepBall(dt) {
+    const b = state.ball, r = CFG.ballRadius;
+    b.x += b.vx * dt;
+    b.y += b.vy * dt;
+    const k = Math.max(0, 1 - CFG.ballFriction * dt);
+    b.vx *= k; b.vy *= k;
+    const W = canvas.width, H = canvas.height;
+    const goalY1 = H/2 - CFG.goalHeight/2, goalY2 = H/2 + CFG.goalHeight/2;
+    if (b.y < r)     { b.y = r;     b.vy = -b.vy * CFG.wallRestitution; }
+    if (b.y > H - r) { b.y = H - r; b.vy = -b.vy * CFG.wallRestitution; }
+    const inGoalBand = (b.y > goalY1 && b.y < goalY2);
+    if (!inGoalBand) {
+      if (b.x < r)     { b.x = r;     b.vx = -b.vx * CFG.wallRestitution; }
+      if (b.x > W - r) { b.x = W - r; b.vx = -b.vx * CFG.wallRestitution; }
+    }
+  }
+
+  // 球"幽灵"时间：大于 0 时球临时穿透所有角色（unstick 用，让球能从死角飞出去）
+  let ballGhostSec = 0;
+
+  // 圆 vs 圆碰撞（角色是半径 = charSize/2 的圆，中心 = 物理框中心）
+  function resolveCharBall(c) {
+    if (ballGhostSec > 0) return;
+    const b = state.ball;
+    const cx = c.x + CFG.charSize/2, cy = c.y + CFG.charSize/2;
+    const charR = CFG.charSize/2;
+    const dx = b.x - cx, dy = b.y - cy;
+    const d = Math.hypot(dx, dy);
+    const minD = charR + CFG.ballRadius;
+    if (d >= minD) return;
+    const nxn = d === 0 ? 1 : dx / d;
+    const nyn = d === 0 ? 0 : dy / d;
+    const overlap = minD - d;
+    b.x += nxn * overlap;
+    b.y += nyn * overlap;
+    const rvx = b.vx - c.vx, rvy = b.vy - c.vy;
+    const vn = rvx * nxn + rvy * nyn;
+    if (vn < 0) {
+      const j = -vn * CFG.charBallRestitution;
+      b.vx += j * nxn;
+      b.vy += j * nyn;
+    }
+    b.vx += c.vx * 0.15;
+    b.vy += c.vy * 0.15;
+  }
+
+  function checkGoal() {
+    const b = state.ball, r = CFG.ballRadius;
+    const W = canvas.width, H = canvas.height;
+    const y1 = H/2 - CFG.goalHeight/2, y2 = H/2 + CFG.goalHeight/2;
+    if (b.x - r < CFG.goalWidth && b.y > y1 && b.y < y2) {
+      state.score.ai++; flash('ai');
+      triggerScene('goal-scored');
+      emitEvent('goal-scored', { side: 'ai' });
+      resetPositions(+1); cycleDifficulty();
+    }
+    if (b.x + r > W - CFG.goalWidth && b.y > y1 && b.y < y2) {
+      state.score.player++; flash('player');
+      triggerScene('goal-conceded');
+      emitEvent('goal-conceded', { side: 'player' });
+      resetPositions(-1); cycleDifficulty();
+    }
+  }
+
+  function flash(side) { state.flashTimer = 0.6; state.flashSide = side; }
+
+  // 难度档：从 max（最难）到 lv4（最弱）。每进一个球（任一方）循环到下一档。
+  const DIFFICULTY = [
+    { name: 'max', kickCdMin: 0.4, kickCdMax: 0.6, windupSec: 0.00, speedMul: 1.00, allowAttack: true },
+    { name: 'lv2', kickCdMin: 0.9, kickCdMax: 1.4, windupSec: 0.35, speedMul: 1.00, allowAttack: true },
+    { name: 'lv3', kickCdMin: 0.9, kickCdMax: 1.4, windupSec: 0.35, speedMul: 0.78, allowAttack: true },
+    { name: 'lv4', kickCdMin: 0.9, kickCdMax: 1.4, windupSec: 0.35, speedMul: 0.78, allowAttack: false },
+  ];
+  let difficultyIdx = 0;
+  function cycleDifficulty() {
+    difficultyIdx = (difficultyIdx + 1) % DIFFICULTY.length;
+  }
+
+  // 心情（只作用于 AI）。键盘 1-6 切换
+  //   speedMul:       行动速度倍率
+  //   kickCdMul:      冷却倍率
+  //   kickImpulseMul: 冲量倍率
+  //   spread:         瞄准时 y 轴随机扰动范围（px），负值 = 更准
+  //   style:          特殊行为 tag
+  const MOODS = {
+    calm:      { speedMul: 1.00, kickCdMul: 1.00, kickImpulseMul: 1.00, spread: 0,   style: 'default',     emotion: 'neutral' },
+    happy:     { speedMul: 1.00, kickCdMul: 0.90, kickImpulseMul: 1.05, spread: 35,  style: 'aggressive',  emotion: 'happy' },
+    angry:     { speedMul: 1.15, kickCdMul: 0.80, kickImpulseMul: 1.25, spread: 80,  style: 'reckless',    emotion: 'angry' },
+    relaxed:   { speedMul: 0.85, kickCdMul: 1.30, kickImpulseMul: 1.00, spread: -15, style: 'patient',     emotion: 'relaxed' },
+    sad:       { speedMul: 0.70, kickCdMul: 1.50, kickImpulseMul: 0.70, spread: 10,  style: 'zoneout',     emotion: 'sad' },
+    surprised: { speedMul: 1.00, kickCdMul: 1.10, kickImpulseMul: 1.00, spread: 70,  style: 'startle',     emotion: 'surprised' },
+  };
+  const MOOD_KEYS = ['calm', 'happy', 'angry', 'relaxed', 'sad', 'surprised'];
+  let moodKey = 'calm';
+  function setMood(name) {
+    if (!MOODS[name]) return;
+    moodKey = name;
+    // 同步 L2D 表情（复用项目原有 setEmotion）
+    const emotion = MOODS[name].emotion;
+    try { window.live2dManager?.setEmotion?.(emotion); } catch (_) {}
+  }
+
+  // startle：检测球加速度，突变时冻结 AI 一段时间
+  let aiFreezeSec = 0;
+  let lastBallVx = 0, lastBallVy = 0;
+  // zoneout：sad 模式下周期性走神
+  let zoneoutCooldown = 3 + Math.random() * 2;
+
+  // AI 决策：状态机 + 球预判 + 反应延时
+  //   defend：球高速冲向己方球门（右）→ 退守在球和门之间
+  //   clear： 球进入己方半场腹地 → 冲向球（即便 stalk 位置出界也直接撞）
+  //   attack：默认 → 站到球后方（相对于左门）的位置，冲过去顺带把球推进门
+  let aiMode = 'attack';
+  let aiReactSec = 0;
+  let aiTargetCache = { x: 0, y: 0 };
+  // 强制撤退：unstick 触发后 AI 必须离开球一段时间，防止立刻冲回去把球再次卡墙
+  let aiRetreatSec = 0;
+  let aiRetreatTarget = null;
+
+  function aiDecide(dt) {
+    const mood = MOODS[moodKey];
+    // 强制撤退期间锁定目标，不让 aiDecide 把目标改回球
+    if (aiRetreatSec > 0) {
+      aiRetreatSec -= dt;
+      if (aiRetreatTarget) aiTargetCache = aiRetreatTarget;
+      return;
+    }
+    aiReactSec += dt;
+    // relaxed（放松）反应更慢；其他默认 100ms
+    const reactThreshold = mood.style === 'patient' ? 0.18 : 0.1;
+    if (aiReactSec < reactThreshold) return;
+    aiReactSec = 0;
+
+    const b = state.ball;
+    const W = canvas.width, H = canvas.height;
+    const goalY = H / 2;
+
+    // relaxed 预判更远（提前走位），其他默认 0.25s
+    const predictT = mood.style === 'patient' ? 0.4 : 0.25;
+    const pbx = b.x + b.vx * predictT;
+    const pby = b.y + b.vy * predictT;
+
+    // aggressive（开心）/ reckless（生气）：不切 defend 态，一路进攻
+    const skipDefend = mood.style === 'aggressive' || mood.style === 'reckless';
+    const ballGoingToOwnGoal = !skipDefend && b.vx > 80 && b.x > W * 0.4;
+    const ballDeepInOwnHalf = mood.style === 'reckless' ? false : b.x > W * 0.7;
+
+    const margin = CFG.charSize/2 + 6;
+
+    if (ballGoingToOwnGoal && ballDeepInOwnHalf) {
+      aiMode = 'defend';
+      const tx = Math.min(W - margin, b.x + 60);
+      const ty = Math.max(margin, Math.min(H - margin, b.y));
+      aiTargetCache = { x: tx, y: ty };
+    } else if (ballDeepInOwnHalf) {
+      aiMode = 'clear';
+      aiTargetCache = { x: Math.max(margin, Math.min(W - margin, pbx)),
+                        y: Math.max(margin, Math.min(H - margin, pby)) };
+    } else {
+      aiMode = 'attack';
+      const toGoalX = 0 - pbx;
+      const toGoalY = goalY - pby;
+      const gl = Math.hypot(toGoalX, toGoalY) || 1;
+      const ngx = toGoalX / gl, ngy = toGoalY / gl;
+      const stalkDist = CFG.charSize/2 + CFG.ballRadius + 8;
+      let tx = pbx - ngx * stalkDist;
+      let ty = pby - ngy * stalkDist;
+      if (tx < margin || tx > W - margin || ty < margin || ty > H - margin) {
+        tx = pbx; ty = pby;
+      }
+      aiTargetCache = { x: tx, y: ty };
+    }
+
+    // 第四档：只防御不进攻。强行把 attack 改为守在己方半场腹地
+    const diff = DIFFICULTY[difficultyIdx];
+    if (!diff.allowAttack && aiMode === 'attack') {
+      aiMode = 'defend';
+      const tx = Math.max(W * 0.65, Math.min(W - margin, b.x + 30));
+      const ty = Math.max(margin, Math.min(H - margin, b.y));
+      aiTargetCache = { x: tx, y: ty };
+    }
+  }
+
+  function aiTarget() {
+    return aiTargetCache;
+  }
+
+  // 事件日志：记录每次 kick / unstick，debug 显示在屏幕左侧。用来排查"球为什么突然转弯"。
+  const GAME_EVENTS = [];
+  function logGameEvent(label) {
+    const b = state.ball;
+    GAME_EVENTS.push({ label, time: performance.now(), x: b.x|0, y: b.y|0,
+                       vx: b.vx|0, vy: b.vy|0 });
+    while (GAME_EVENTS.length > 5) GAME_EVENTS.shift();
+  }
+
+  // 心情逐帧副作用：startle（惊讶，球速突变冻结）/ zoneout（悲伤，周期性走神）
+  function aiMoodTick(dt) {
+    const mood = MOODS[moodKey];
+    const b = state.ball;
+    const dVx = b.vx - lastBallVx, dVy = b.vy - lastBallVy;
+    const accelMag = Math.hypot(dVx, dVy) / Math.max(dt, 0.001);
+    lastBallVx = b.vx; lastBallVy = b.vy;
+
+    if (mood.style === 'startle' && accelMag > 4000 && aiFreezeSec <= 0) {
+      aiFreezeSec = 0.25;
+      aiKickCd = 0;
+      triggerScene('startle');
+    }
+    if (mood.style === 'zoneout') {
+      zoneoutCooldown -= dt;
+      if (zoneoutCooldown <= 0 && aiFreezeSec <= 0) {
+        aiFreezeSec = 0.3;
+        zoneoutCooldown = 3 + Math.random() * 2;
+        triggerScene('zoneout');
+      }
+    }
+  }
+
+  // 球死角脱困：用 500ms 时间窗位移判断卡死（不是逐帧速度，更准）。
+  // 触发时：给球朝场中心的软冲量（在现有速度上叠加），同时把 AI 往反方向推一下，
+  // 避免 AI 立刻冲回来再次把球卡住。
+  const STUCK_WINDOW = 0.5;
+  let ballPosHistory = []; // [{t, x, y}]
+  let unstickCd = 0;
+  function unstickBall(dt) {
+    const b = state.ball;
+    const W = canvas.width, H = canvas.height;
+    const r = CFG.ballRadius;
+    const now = performance.now() / 1000;
+    ballPosHistory.push({ t: now, x: b.x, y: b.y });
+    while (ballPosHistory.length > 2 && now - ballPosHistory[0].t > STUCK_WINDOW * 2) {
+      ballPosHistory.shift();
+    }
+    unstickCd -= dt;
+    const oldFrame = ballPosHistory.find(p => now - p.t >= STUCK_WINDOW - 0.05);
+    if (!oldFrame) return;
+    const displacement = Math.hypot(b.x - oldFrame.x, b.y - oldFrame.y);
+    const atWall = b.x < r + 10 || b.x > W - r - 10 || b.y < r + 10 || b.y > H - r - 10;
+    if (displacement < 12 && atWall && unstickCd <= 0) {
+      const toCenterX = W / 2 - b.x, toCenterY = H / 2 - b.y;
+      const l = Math.hypot(toCenterX, toCenterY) || 1;
+      // 软冲量（叠加而非覆盖），减少"隔空转弯"的突兀感
+      b.vx += (toCenterX / l) * 280;
+      b.vy += (toCenterY / l) * 280;
+      // 让球短时穿模，从 AI 身体里直接飞出去，再开启碰撞
+      ballGhostSec = 0.5;
+      // 把 AI 往球的反方向推，并锁定撤退目标 1 秒 —— 不让 aiDecide 把它拉回球那儿
+      const ai = state.ai;
+      const acx = ai.x + CFG.charSize/2, acy = ai.y + CFG.charSize/2;
+      const axdir = (acx - b.x) || 1, aydir = (acy - b.y) || 0;
+      const aL = Math.hypot(axdir, aydir) || 1;
+      // 撤退目标 = AI 中心 + 反方向 200px，clamp 在场内
+      const retreatMargin = CFG.charSize/2 + 6;
+      const rtx = Math.max(retreatMargin, Math.min(W - retreatMargin, acx + (axdir / aL) * 200));
+      const rty = Math.max(retreatMargin, Math.min(H - retreatMargin, acy + (aydir / aL) * 200));
+      aiRetreatTarget = { x: rtx, y: rty };
+      // 与 unstickCd 对齐：撤退锁定覆盖整个脱困冷却期，避免 AI 重新冲向同一个墙角
+      aiRetreatSec = 1.8;
+      aiTargetCache = aiRetreatTarget;
+      // 瞬间给 AI 一个反向速度，不然刚解锁撤退目标时它得从零加速
+      ai.vx = (axdir / aL) * 400;
+      ai.vy = (aydir / aL) * 400;
+      aiKickCd = Math.max(aiKickCd, 0.9);
+      aiWindupRemaining = 0; aiWindupAim = null; aiWindupTotal = 0;
+      unstickCd = 1.8;
+      logGameEvent('unstick');
+      emitEvent('unstick');
+      triggerScene('unstick');
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  AI 说话子系统（Speech）
+  //  外部接口在 window.SoccerDemo 里，详见底部。
+  //  - say(text, opts)          : 生成气泡 + 同步触发 onSpeak 监听器（给 LLM 用）
+  //  - setBubbleRenderer(fn)    : 美术素材接入时把默认 DOM 气泡替换掉
+  //  - onSpeak(cb) / onEvent(cb): 订阅文本流 / 游戏事件流
+  // ═══════════════════════════════════════════════════════════════════════════
+  const speakListeners = new Set();
+  const eventListeners = new Set();
+  function emitSpeak(payload) {
+    for (const cb of speakListeners) { try { cb(payload); } catch(e) { console.warn('[SoccerDemo] speak listener error', e); } }
+  }
+  function emitEvent(label, meta = {}) {
+    const payload = { label, meta, time: performance.now() };
+    for (const cb of eventListeners) { try { cb(payload); } catch(e) { console.warn('[SoccerDemo] event listener error', e); } }
+  }
+
+  // 心情装饰：同一句在不同心情下风味不同
+  const MOOD_STYLE = {
+    calm:      (s) => s,
+    happy:     (s) => s.endsWith('~') || s.endsWith('♪') ? s : s + ' ♪',
+    angry:     (s) => (s.endsWith('！') ? s : s + '！'),
+    relaxed:   (s) => s.replace(/！+/g, '~'),
+    sad:       (s) => '……' + s,
+    surprised: (s) => (s.startsWith('诶') || s.startsWith('！') ? s : '诶？！' + s),
+  };
+
+  // 气泡渲染：默认 DOM 气泡；可通过 setBubbleRenderer 替换
+  const bubbleEl = document.getElementById('ai-speech-bubble');
+  let bubbleEndsAt = 0;
+  let bubbleHideTimer = null;
+  function defaultBubbleRenderer({ text, mood, durationMs }) {
+    if (!bubbleEl) return;
+    bubbleEl.textContent = text;
+    bubbleEl.setAttribute('data-mood', mood);
+    bubbleEl.classList.add('show');
+    if (bubbleHideTimer) clearTimeout(bubbleHideTimer);
+    bubbleHideTimer = setTimeout(() => { bubbleEl.classList.remove('show'); }, durationMs);
+  }
+  function defaultBubbleClear() {
+    if (!bubbleEl) return;
+    bubbleEl.classList.remove('show');
+    if (bubbleHideTimer) { clearTimeout(bubbleHideTimer); bubbleHideTimer = null; }
+  }
+  let bubbleRenderer = defaultBubbleRenderer;
+  let bubbleClearer  = defaultBubbleClear;
+
+  // 每帧同步气泡位置到 AI 头顶（容器 top + 15% 处当作"头")
+  function positionBubble() {
+    if (!bubbleEl || !bubbleEl.classList.contains('show')) return;
+    const r = aiEl.getBoundingClientRect();
+    if (r.width < 10 || r.left < -5000) return;
+    const x = r.left + r.width / 2;
+    const y = r.top + r.height * 0.15;
+    bubbleEl.style.left = x + 'px';
+    bubbleEl.style.top  = y + 'px';
+  }
+
+  // 冷却管理：全局 + per-key
+  const SPEECH_CD = Object.create(null);
+  let currentSpeechPriority = 0;
+
+  function canSay(opts) {
+    const now = performance.now();
+    if (opts.cooldownKey && SPEECH_CD[opts.cooldownKey] > now) return false;
+    // 全局：有气泡在显示且新消息 priority <= 当前，就等着
+    if (now < bubbleEndsAt && (opts.priority || 0) <= currentSpeechPriority) return false;
+    return true;
+  }
+
+  function say(raw, opts = {}) {
+    if (!raw) return false;
+    opts.priority = opts.priority || 0;
+    if (!canSay(opts)) return false;
+    const styled = (MOOD_STYLE[moodKey] || MOOD_STYLE.calm)(raw);
+    const now = performance.now();
+    const dur = opts.duration || Math.min(3800, 1500 + raw.length * 90);
+    currentSpeechPriority = opts.priority;
+    bubbleEndsAt = now + dur;
+    if (opts.cooldownKey && opts.cooldownSec) {
+      SPEECH_CD[opts.cooldownKey] = now + opts.cooldownSec * 1000;
+    }
+    const payload = {
+      text: styled, textRaw: raw,
+      mood: moodKey, kind: opts.kind || 'generic',
+      priority: opts.priority, durationMs: dur,
+      ts: now,
+    };
+    try { bubbleRenderer(payload); } catch(e) { console.warn('[SoccerDemo] bubble render error', e); }
+    emitSpeak(payload);
+    return true;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  场景 → 文案：按 kind 分发
+  // ═══════════════════════════════════════════════════════════════════════════
+  const LINES = {
+    'goal-scored':   ['进啦！😼', '我赢定了~', '嘻嘻~'],
+    'goal-conceded': ['啊——！', '等等，再来一次！', '可恶……'],
+    'shot-miss':     ['啧……', '差一点', '嗯？'],
+    'steal':         ['嘿嘿，给我的~', '我拿到了', '哈！'],
+    'stolen':        ['哎呀', '啊！', '等等！'],
+    'long-attack-possession':   ['得去拿回来！', '等我的'],
+    'long-defense-possession':  ['就这样吧~', '你想射就射呗'],
+    'player-idle':   ['你打不打？', '怎么不动了？', '在想什么呢'],
+    'player-charging-long':  ['蓄这么久？', '快松手嘛~'],
+    'close-proximity':  ['你离我太近了！', '喂'],
+    'free-ball':     ['球在哪——？', '哎，没人管吗'],
+    'score-boring':  ['好无聊啊', '什么时候进球啊'],
+    'no-goal-1min':  ['要不……平局？', '手累了……'],
+    'fast-ball':     ['好猛！', '哇！'],
+    'startle':       ['！', '吓我一跳'],
+    'zoneout':       ['……啊？在打球呢。', '嗯？到哪了'],
+    'unstick':       ['！球怎么不动了', '球卡了？'],
+    'diff-max':      ['热身好了哦', '认真模式~'],
+    'diff-lv2':      ['稍微休息一下~'],
+    'diff-lv3':      ['嗯……体力不太行了'],
+    'diff-lv4':      ['打不过，就守着吧'],
+    'mood-calm':     ['……'],
+    'mood-happy':    ['好开心喵~'],
+    'mood-angry':    ['气死我了！'],
+    'mood-relaxed':  ['懒得动了……'],
+    'mood-sad':      ['……'],
+    'mood-surprised':['诶诶？！'],
+  };
+  const PRIORITY = {
+    'goal-scored': 9, 'goal-conceded': 9,
+    'diff-max': 7, 'diff-lv2': 7, 'diff-lv3': 7, 'diff-lv4': 7,
+    'mood-happy': 6, 'mood-angry': 6, 'mood-sad': 6, 'mood-surprised': 6, 'mood-relaxed': 6, 'mood-calm': 6,
+    'unstick': 5, 'startle': 5, 'zoneout': 5,
+    'steal': 4, 'stolen': 4, 'shot-miss': 4,
+    'long-attack-possession': 3, 'long-defense-possession': 3,
+    'close-proximity': 3, 'fast-ball': 3,
+    'player-idle': 2, 'player-charging-long': 2,
+    'free-ball': 1, 'score-boring': 1, 'no-goal-1min': 1,
+  };
+  const COOLDOWN = {
+    // key, cooldownSec
+    'shot-miss': 4, 'steal': 8, 'stolen': 8,
+    'long-attack-possession': 15, 'long-defense-possession': 15,
+    'close-proximity': 12, 'fast-ball': 10,
+    'player-idle': 20, 'player-charging-long': 15,
+    'free-ball': 20, 'score-boring': 30, 'no-goal-1min': 60,
+    'startle': 6, 'zoneout': 6, 'unstick': 4,
+  };
+
+  function triggerScene(kind) {
+    const pool = LINES[kind];
+    if (!pool || !pool.length) return false;
+    const text = pool[Math.floor(Math.random() * pool.length)];
+    return say(text, {
+      kind,
+      priority: PRIORITY[kind] || 0,
+      cooldownKey: kind,
+      cooldownSec: COOLDOWN[kind] || 0,
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  场景触发器：部分在事件点调用（goal/kick/unstick/freeze），部分在 tick 轮询
+  // ═══════════════════════════════════════════════════════════════════════════
+  const speechState = {
+    ballInOppHalfSec: 0,
+    playerIdleSec: 0,
+    closeProximitySec: 0,
+    lastBallTouchTime: 0,     // 球最后被碰的时间（kick 或 unstick）
+    lastGoalTime: performance.now(),
+    scoreAgeAccum: 0,
+    lastFreezeKind: null,
+  };
+
+  function speechTick(dt) {
+    const b = state.ball;
+    const W = canvas.width;
+
+    // 球长时间在对方半场（按 allowAttack 分支）
+    if (b.x < W * 0.5) {
+      speechState.ballInOppHalfSec += dt;
+      if (speechState.ballInOppHalfSec > 8) {
+        const diff = DIFFICULTY[difficultyIdx];
+        triggerScene(diff.allowAttack ? 'long-attack-possession' : 'long-defense-possession');
+        speechState.ballInOppHalfSec = 0;
+      }
+    } else {
+      speechState.ballInOppHalfSec = 0;
+    }
+
+    // 玩家 idle 10s
+    const pSpeed = Math.hypot(state.player.vx, state.player.vy);
+    if (pSpeed < 40) speechState.playerIdleSec += dt;
+    else speechState.playerIdleSec = 0;
+    if (speechState.playerIdleSec > 10) {
+      triggerScene('player-idle');
+      speechState.playerIdleSec = 0;
+    }
+
+    // 玩家蓄力 1s+ 没放
+    if (playerCharging && playerCharge > 0.85) {
+      triggerScene('player-charging-long');
+    }
+
+    // 玩家靠得太近 2s
+    const dxPA = (state.player.x + CFG.charSize/2) - (state.ai.x + CFG.charSize/2);
+    const dyPA = (state.player.y + CFG.charSize/2) - (state.ai.y + CFG.charSize/2);
+    const distPA = Math.hypot(dxPA, dyPA);
+    if (distPA < 90) speechState.closeProximitySec += dt;
+    else speechState.closeProximitySec = 0;
+    if (speechState.closeProximitySec > 2) {
+      triggerScene('close-proximity');
+      speechState.closeProximitySec = 0;
+    }
+
+    // 球无人管 5s（无 kick / unstick）
+    const sinceTouch = (performance.now() - speechState.lastBallTouchTime) / 1000;
+    if (sinceTouch > 5) {
+      triggerScene('free-ball');
+      speechState.lastBallTouchTime = performance.now() - 3000; // 重新计
+    }
+
+    // 快球
+    if (Math.hypot(b.vx, b.vy) > 1200) {
+      triggerScene('fast-ball');
+    }
+
+    // 0:0 很久
+    speechState.scoreAgeAccum += dt;
+    if (state.score.player === 0 && state.score.ai === 0 && speechState.scoreAgeAccum > 30) {
+      triggerScene('score-boring');
+      speechState.scoreAgeAccum = 0;
+    }
+    if (speechState.scoreAgeAccum > 60) {
+      triggerScene('no-goal-1min');
+      speechState.scoreAgeAccum = 0;
+    }
+
+    // 冻结：进入时触发一次（hook 在 aiMoodTick 里会检测 aiFreezeSec 从 0 突变 > 0）
+  }
+
+  // 外挂到 kickBall / checkGoal / aiMoodTick 的触发已经用 emitEvent + triggerScene 实现，
+  // 这里的 speechState.lastBallTouchTime 由 kickBall 和 unstickBall 间接更新
+  function markBallTouched() { speechState.lastBallTouchTime = performance.now(); }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  心情 20s 随机轮换
+  // ═══════════════════════════════════════════════════════════════════════════
+  let moodRotateTimer = null;
+  function enableMoodRotation(intervalSec = 20) {
+    disableMoodRotation();
+    moodRotateTimer = setInterval(() => {
+      const others = MOOD_KEYS.filter(k => k !== moodKey);
+      const next = others[Math.floor(Math.random() * others.length)];
+      setMood(next);
+    }, intervalSec * 1000);
+  }
+  function disableMoodRotation() {
+    if (moodRotateTimer) { clearInterval(moodRotateTimer); moodRotateTimer = null; }
+  }
+
+  // 心情切换时播"mood-XX"气泡（重写 setMood 让它走一下这个钩子）
+  const __setMoodBase = setMood;
+  setMood = function(name) {
+    if (!MOODS[name] || name === moodKey) { __setMoodBase(name); return; }
+    __setMoodBase(name);
+    triggerScene('mood-' + name);
+    emitEvent('mood-changed', { mood: name });
+  };
+
+  const __cycleDiffBase = cycleDifficulty;
+  cycleDifficulty = function() {
+    __cycleDiffBase();
+    triggerScene('diff-' + DIFFICULTY[difficultyIdx].name);
+    emitEvent('difficulty-changed', { difficulty: DIFFICULTY[difficultyIdx].name });
+  };
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  头像切换（最小实现：VRM 路径切换 + L2D 路径切换）
+  // ═══════════════════════════════════════════════════════════════════════════
+  async function setPlayerAvatar({ type, path } = {}) {
+    if (type !== 'vrm') throw new Error('player avatar: only vrm supported');
+    if (!path) throw new Error('player avatar: path required');
+    const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
+    const vrmModule = await import('@pixiv/three-vrm');
+    const loader = new GLTFLoader();
+    loader.register(p => new vrmModule.VRMLoaderPlugin(p));
+    const gltf = await new Promise((res, rej) => loader.load(path, res, null, rej));
+    const vrm = gltf.userData.vrm;
+    if (!vrm) throw new Error('not a valid VRM: ' + path);
+    if (window.vrmManager.currentModel?.vrm?.scene) {
+      const oldScene = window.vrmManager.currentModel.vrm.scene;
+      window.vrmManager.scene.remove(oldScene);
+      // 释放旧模型 GPU 资源（geometry / material / texture），避免多次切换泄漏
+      try { vrmModule.VRMUtils?.deepDispose?.(oldScene); }
+      catch (e) { console.warn('[setPlayerAvatar] deepDispose failed:', e); }
+      window.vrmManager.currentModel = null;
+    }
+    window.vrmManager.scene.add(vrm.scene);
+    window.vrmManager.currentModel = { vrm, gltf, scene: vrm.scene, url: path };
+    vrm.scene.visible = true;
+    // 重新 fit 相机
+    const THREE = window.THREE;
+    vrm.scene.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(vrm.scene);
+    const mid = new THREE.Vector3(); box.getCenter(mid);
+    vrm.scene.position.x -= mid.x;
+    vrm.scene.position.z -= mid.z;
+    vrm.scene.position.y -= box.min.y;
+    vrm.scene.updateMatrixWorld(true);
+    const box2 = new THREE.Box3().setFromObject(vrm.scene);
+    const h = box2.max.y - box2.min.y;
+    const cam = window.vrmManager.camera;
+    const fovRad = cam.fov * Math.PI / 180;
+    const visibleH = h * 1.15;
+    const dist = visibleH / (2 * Math.tan(fovRad / 2));
+    const lookY = visibleH / 2;
+    cam.position.set(0, lookY, dist);
+    cam.lookAt(0, lookY, 0);
+    cam.updateProjectionMatrix();
+    emitEvent('player-avatar-changed', { type, path });
+  }
+
+  async function setAiAvatar({ type, path } = {}) {
+    if (type !== 'live2d') throw new Error('ai avatar: only live2d supported');
+    if (!path) throw new Error('ai avatar: path required');
+    // 不 await loadModel 的 Promise —— 在 rAF 被 throttle（后台 tab/headless）时它可能永不 resolve，
+    // 会把外部调用者（LLM / 本体集成）挂死。改用就绪轮询，与初始 AI 加载路径一致。
+    const loadPromise = window.live2dManager.loadModel(path);
+    loadPromise.catch(e => console.warn('[setAiAvatar] loadModel awaited reject:', e));
+    await new Promise((resolve, reject) => {
+      const t0 = Date.now();
+      const prevUrl = window.live2dManager.currentModel?.internalModel?.settings?.url || '';
+      const startedWithSameModel = prevUrl === path || prevUrl.endsWith(path);
+      const tick = () => {
+        const m = window.live2dManager.currentModel;
+        const curUrl = m?.internalModel?.settings?.url || '';
+        // 用完整路径比对（不是只看文件名），避免不同目录同名模型被误判
+        const urlMatches = curUrl === path || curUrl.endsWith(path);
+        if (m && m.width > 0 && (urlMatches || !startedWithSameModel)) return resolve();
+        if (Date.now() - t0 > 20000) return reject(new Error('L2D model not ready within 20s'));
+        setTimeout(tick, 150);
+      };
+      tick();
+    });
+    const m = window.live2dManager.currentModel;
+    if (m && m.width && m.height) {
+      const canvasW = 200, canvasH = 300, margin = 6;
+      const s = Math.min((canvasW - margin * 2) / m.width, (canvasH - margin * 2) / m.height);
+      m.scale.set(m.scale.x * s, m.scale.y * s);
+      const ax = m.anchor ? m.anchor.x : 0;
+      const ay = m.anchor ? m.anchor.y : 0;
+      const bx = (canvasW - m.width) / 2;
+      const by = canvasH - margin - m.height;
+      m.x = bx + m.width * ax;
+      m.y = by + m.height * ay;
+      m.alpha = 1;
+      if (window.live2dManager.pixi_app?.view) window.live2dManager.pixi_app.view.style.opacity = '1';
+    }
+    emitEvent('ai-avatar-changed', { type, path });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  对外接口
+  // ═══════════════════════════════════════════════════════════════════════════
+  window.SoccerDemo = {
+    MOODS: Object.freeze(MOOD_KEYS.slice()),
+    DIFFICULTIES: Object.freeze(DIFFICULTY.map(d => d.name)),
+    // mood
+    setMood: (name) => setMood(name),
+    getMood: () => moodKey,
+    enableMoodRotation,
+    disableMoodRotation,
+    // difficulty
+    setDifficulty(name) {
+      const i = DIFFICULTY.findIndex(d => d.name === name);
+      if (i >= 0) {
+        difficultyIdx = i;
+        triggerScene('diff-' + name);
+        emitEvent('difficulty-changed', { difficulty: name });
+      }
+    },
+    getDifficulty: () => DIFFICULTY[difficultyIdx].name,
+    cycleDifficulty: () => cycleDifficulty(),
+    // avatar
+    setPlayerAvatar,
+    setAiAvatar,
+    getPlayerAvatar: () => ({ type: 'vrm', path: window.vrmManager?.currentModel?.url }),
+    getAiAvatar:    () => ({ type: 'live2d', path: window.live2dManager?.currentModel?.internalModel?.settings?.url }),
+    // speech
+    say,
+    triggerScene,
+    onSpeak(cb) { speakListeners.add(cb); return () => speakListeners.delete(cb); },
+    offSpeak(cb) { speakListeners.delete(cb); },
+    setBubbleRenderer(fn) {
+      bubbleRenderer = typeof fn === 'function' ? fn : defaultBubbleRenderer;
+    },
+    clearBubble() { bubbleClearer(); bubbleEndsAt = 0; currentSpeechPriority = 0; },
+    // events
+    onEvent(cb) { eventListeners.add(cb); return () => eventListeners.delete(cb); },
+    offEvent(cb) { eventListeners.delete(cb); },
+    // 供外部调试：获取内部状态（只读快照）
+    _snapshot: () => ({ mood: moodKey, difficulty: DIFFICULTY[difficultyIdx].name,
+                        score: { ...state.score }, aiMode, aiFreezeSec,
+                        ballGhost: ballGhostSec > 0 }),
+  };
+
+  // 默认开启 20s 心情轮换
+  enableMoodRotation(20);
+
+  let lastT = performance.now();
+  function loop(t) {
+    const dt = Math.min(0.033, (t - lastT) / 1000);
+    lastT = t;
+
+    stepCharacter(state.player, state.mouse.x, state.mouse.y,
+      CFG.playerMaxSpeed, CFG.playerAccel, dt);
+    aiDecide(dt);
+    aiMoodTick(dt);  // 心情副作用：startle/zoneout 计时
+    const at = aiTarget();
+    const diffCur = DIFFICULTY[difficultyIdx];
+    const moodCur = MOODS[moodKey];
+    // startle/zoneout 冻结期间 AI 原地不动
+    if (aiFreezeSec > 0) {
+      aiFreezeSec -= dt;
+      stepCharacter(state.ai, state.ai.x + CFG.charSize/2, state.ai.y + CFG.charSize/2,
+        1, 1, dt); // 目标就是当前位置 → 阻尼让它停下
+    } else {
+      const speedFactor = diffCur.speedMul * moodCur.speedMul;
+      stepCharacter(state.ai, at.x, at.y,
+        CFG.aiMaxSpeed * speedFactor, CFG.aiAccel * speedFactor, dt);
+    }
+    // 玩家蓄力累积
+    if (playerCharging) playerCharge = Math.min(1, playerCharge + dt / CHARGE_MAX_SEC);
+    if (ballGhostSec > 0) ballGhostSec -= dt;
+
+    stepBall(dt);
+    resolveCharBall(state.player);
+    resolveCharBall(state.ai);
+    aiTryKick(dt);
+    checkGoal();
+    unstickBall(dt);
+    if (state.flashTimer > 0) state.flashTimer -= dt;
+
+    // 容器定位：脚落在物理框底边，物理框中心（= 碰撞圆心、=debug 红点）就在角色身体处、
+    // 比脚高 charSize/2 像素 —— 这样红点看起来是"腰部/胸口"而不是脚底。
+    const pcx = state.player.x + CFG.charSize/2;
+    const pFeetY = state.player.y + CFG.charSize;
+    playerEl.style.transform = `translate3d(${pcx - CFG.vrmW/2}px, ${pFeetY - CFG.vrmH}px, 0)`;
+
+    const acx = state.ai.x + CFG.charSize/2;
+    const aFeetY = state.ai.y + CFG.charSize;
+    aiEl.style.transform = `translate3d(${acx - CFG.vrmW/2}px, ${aFeetY - CFG.vrmH}px, 0)`;
+
+    // AI 盯着球
+    if (typeof window.__focusL2DAt === 'function') {
+      window.__focusL2DAt(state.ball.x, state.ball.y);
+    }
+
+    // 说话子系统：场景轮询 + 气泡同步到 AI 头顶
+    speechTick(dt);
+    positionBubble();
+
+    render();
+    requestAnimationFrame(loop);
+  }
+
+  function render() {
+    const W = canvas.width, H = canvas.height;
+
+    // ═══ 底层（game canvas，在角色容器之下）：球场 + 球门 + 闪屏 + 分数 + AI fallback 方块 ═══
+    ctx.fillStyle = '#1f6e4a';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = 'rgba(255,255,255,0.03)';
+    const stripe = 80;
+    for (let x = 0; x < W; x += stripe*2) ctx.fillRect(x, 0, stripe, H);
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(W/2, 0); ctx.lineTo(W/2, H);
+    ctx.moveTo(W/2 + 90, H/2); ctx.arc(W/2, H/2, 90, 0, Math.PI*2);
+    ctx.stroke();
+    const y1 = H/2 - CFG.goalHeight/2;
+    ctx.fillStyle = 'rgba(61,169,252,0.18)';
+    ctx.fillRect(0, y1, CFG.goalWidth, CFG.goalHeight);
+    ctx.fillStyle = 'rgba(239,69,101,0.18)';
+    ctx.fillRect(W - CFG.goalWidth, y1, CFG.goalWidth, CFG.goalHeight);
+    ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+    ctx.strokeRect(0, y1, CFG.goalWidth, CFG.goalHeight);
+    ctx.strokeRect(W - CFG.goalWidth, y1, CFG.goalWidth, CFG.goalHeight);
+
+    // AI：L2D 没加载成功的话，用方块 fallback
+    if (!window.live2dManager?.currentModel) {
+      drawChar(state.ai);
+    }
+
+    if (state.flashTimer > 0) {
+      const a = Math.min(1, state.flashTimer / 0.6) * 0.35;
+      ctx.fillStyle = state.flashSide === 'player'
+        ? `rgba(61,169,252,${a})`
+        : `rgba(239,69,101,${a})`;
+      ctx.fillRect(0, 0, W, H);
+    }
+
+    // ═══ 上层（debug canvas，在角色容器之上）：碰撞圆、debug 点、视线、射门范围、预览箭头、球、HUD ═══
+    dctx.clearRect(0, 0, W, H);
+    const p = state.player;
+    const pcx = p.x + CFG.charSize/2, pcy = p.y + CFG.charSize/2;
+    const acx = state.ai.x + CFG.charSize/2, acy = state.ai.y + CFG.charSize/2;
+
+    // 玩家碰撞圆
+    dctx.strokeStyle = 'rgba(61,169,252,0.7)';
+    dctx.lineWidth = 2;
+    dctx.setLineDash([4, 4]);
+    dctx.beginPath();
+    dctx.arc(pcx, pcy, CFG.charSize/2, 0, Math.PI*2);
+    dctx.stroke();
+
+    // AI 碰撞圆
+    dctx.strokeStyle = 'rgba(239,69,101,0.7)';
+    dctx.beginPath();
+    dctx.arc(acx, acy, CFG.charSize/2, 0, Math.PI*2);
+    dctx.stroke();
+    dctx.setLineDash([]);
+
+    // 玩家射门范围
+    const distBall = Math.hypot(state.ball.x - pcx, state.ball.y - pcy);
+    const inRange = distBall <= CFG.kickRange + CFG.ballRadius;
+    dctx.strokeStyle = inRange ? 'rgba(255,255,255,0.85)' : 'rgba(61,169,252,0.35)';
+    dctx.lineWidth = 1.5;
+    dctx.setLineDash([4, 4]);
+    dctx.beginPath();
+    dctx.arc(pcx, pcy, CFG.kickRange, 0, Math.PI*2);
+    dctx.stroke();
+    dctx.setLineDash([]);
+
+    // 玩家射门预览箭头：在 kick range 内时画；蓄力越足，箭头越长越"热"
+    if (inRange) {
+      const { nx, ny } = kickDirFor(state.player);
+      const ahX0 = state.ball.x + nx * CFG.ballRadius;
+      const ahY0 = state.ball.y + ny * CFG.ballRadius;
+      const aLen = 90 + playerCharge * 110; // 90px (tap) → 200px (满蓄)
+      const ahX1 = ahX0 + nx * aLen;
+      const ahY1 = ahY0 + ny * aLen;
+      // 颜色插值：白 → 金
+      const chHue = 60; // 金色 hue
+      const chLight = 95 - playerCharge * 35;
+      const chSat = 30 + playerCharge * 70;
+      dctx.strokeStyle = `hsla(${chHue}, ${chSat}%, ${chLight}%, 0.95)`;
+      dctx.lineWidth = 3 + playerCharge * 2;
+      dctx.beginPath();
+      dctx.moveTo(ahX0, ahY0);
+      dctx.lineTo(ahX1, ahY1);
+      dctx.stroke();
+      const ang = Math.atan2(ny, nx);
+      const ah = 14 + playerCharge * 6;
+      dctx.fillStyle = dctx.strokeStyle;
+      dctx.beginPath();
+      dctx.moveTo(ahX1, ahY1);
+      dctx.lineTo(ahX1 - ah * Math.cos(ang - 0.45), ahY1 - ah * Math.sin(ang - 0.45));
+      dctx.lineTo(ahX1 - ah * Math.cos(ang + 0.45), ahY1 - ah * Math.sin(ang + 0.45));
+      dctx.closePath();
+      dctx.fill();
+    }
+
+    // 玩家身边画蓄力环（无论是否在 range 内都能看到自己蓄到哪儿）
+    if (playerCharging && playerCharge > 0.02) {
+      dctx.strokeStyle = `hsla(60, ${30 + playerCharge * 70}%, ${95 - playerCharge * 35}%, 0.9)`;
+      dctx.lineWidth = 4;
+      dctx.beginPath();
+      dctx.arc(pcx, pcy, CFG.charSize/2 + 12, -Math.PI/2, -Math.PI/2 + playerCharge * Math.PI * 2);
+      dctx.stroke();
+    }
+
+    // AI 冻结（惊讶/走神）：大感叹号 + 脉动光晕 + 黑色描边 + 眩晕星圈
+    if (aiFreezeSec > 0) {
+      const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 90);
+      const yTop = acy - CFG.charSize/2 - 70;
+      // 光晕背景
+      const haloR = 42 + pulse * 10;
+      const grad = dctx.createRadialGradient(acx, yTop, 6, acx, yTop, haloR);
+      grad.addColorStop(0, `rgba(255,240,120,${0.55 + 0.25 * pulse})`);
+      grad.addColorStop(1, 'rgba(255,220,60,0)');
+      dctx.fillStyle = grad;
+      dctx.beginPath(); dctx.arc(acx, yTop, haloR, 0, Math.PI*2); dctx.fill();
+      // 感叹号（大字 + 描边）
+      dctx.font = 'bold 84px sans-serif';
+      dctx.textAlign = 'center';
+      dctx.textBaseline = 'middle';
+      dctx.lineWidth = 8;
+      dctx.strokeStyle = '#000';
+      dctx.strokeText('!', acx, yTop);
+      dctx.fillStyle = '#fff347';
+      dctx.fillText('!', acx, yTop);
+      dctx.textBaseline = 'alphabetic';
+      // 眩晕小星圈：AI 头顶三颗随时间旋转的小星
+      const t = performance.now() / 260;
+      for (let i = 0; i < 3; i++) {
+        const a = t + i * (Math.PI * 2 / 3);
+        const sx = acx + Math.cos(a) * 34;
+        const sy = (acy - CFG.charSize/2 - 12) + Math.sin(a) * 8;
+        dctx.fillStyle = '#fff347';
+        dctx.beginPath(); dctx.arc(sx, sy, 4, 0, Math.PI*2); dctx.fill();
+        dctx.strokeStyle = '#000'; dctx.lineWidth = 1.5; dctx.stroke();
+      }
+    }
+
+    // debug dots & 连线
+    dctx.fillStyle = '#ff4757';
+    dctx.beginPath(); dctx.arc(state.mouse.x, state.mouse.y, 6, 0, Math.PI*2); dctx.fill();
+    dctx.fillStyle = '#2ed573';
+    dctx.beginPath(); dctx.arc(pcx, pcy, 5, 0, Math.PI*2); dctx.fill();
+    dctx.fillStyle = '#ef4565';
+    dctx.beginPath(); dctx.arc(acx, acy, 5, 0, Math.PI*2); dctx.fill();
+    dctx.strokeStyle = 'rgba(255,255,0,0.6)';
+    dctx.lineWidth = 1;
+    dctx.beginPath(); dctx.moveTo(state.mouse.x, state.mouse.y); dctx.lineTo(pcx, pcy); dctx.stroke();
+    dctx.strokeStyle = 'rgba(239,69,101,0.4)';
+    dctx.setLineDash([2, 3]);
+    dctx.beginPath(); dctx.moveTo(acx, acy); dctx.lineTo(state.ball.x, state.ball.y); dctx.stroke();
+    dctx.setLineDash([]);
+
+    // 球（debug 层，这样角色容器不会遮挡球）
+    // 幽灵期：半透 + 闪烁轮廓，提示当前球无视角色碰撞
+    const ghost = ballGhostSec > 0;
+    const flicker = ghost ? (0.45 + 0.3 * Math.sin(performance.now() / 60)) : 1;
+    dctx.fillStyle = ghost ? `rgba(255,255,255,${flicker * 0.55})` : '#fff';
+    dctx.beginPath();
+    dctx.arc(state.ball.x, state.ball.y, CFG.ballRadius, 0, Math.PI*2);
+    dctx.fill();
+    dctx.strokeStyle = ghost ? `rgba(80,220,255,${flicker})` : '#222';
+    dctx.lineWidth = ghost ? 2 : 1.5;
+    dctx.stroke();
+
+    // debug 文字
+    dctx.fillStyle = '#fff';
+    dctx.textAlign = 'left';
+    dctx.font = '12px monospace';
+    dctx.fillText(`mouse: ${state.mouse.x|0}, ${state.mouse.y|0}`, 12, 20);
+    dctx.fillText(`player ctr: ${pcx|0}, ${pcy|0}`, 12, 36);
+    dctx.fillText(`ai ctr: ${acx|0}, ${acy|0}  mode: ${aiMode}`, 12, 52);
+    dctx.fillText(`difficulty: ${DIFFICULTY[difficultyIdx].name}  mood: ${moodKey}  charge: ${(playerCharge*100)|0}%`, 12, 68);
+    const ballSp = Math.hypot(state.ball.vx, state.ball.vy) | 0;
+    dctx.fillText(`ball: (${state.ball.x|0}, ${state.ball.y|0})  v=${ballSp}`, 12, 84);
+
+    // 最近事件（kick / unstick），4 秒内可见，按时间淡出
+    const nowMs = performance.now();
+    dctx.font = '11px monospace';
+    for (let i = 0; i < GAME_EVENTS.length; i++) {
+      const ev = GAME_EVENTS[i];
+      const ageSec = (nowMs - ev.time) / 1000;
+      if (ageSec > 4) continue;
+      const alpha = Math.max(0, 1 - ageSec / 4);
+      const col = ev.label === 'unstick' ? '255,220,60'
+                : ev.label === 'ai-kick' ? '239,69,101'
+                : '61,169,252';
+      dctx.fillStyle = `rgba(${col},${alpha})`;
+      dctx.fillText(`${ageSec.toFixed(1)}s  ${ev.label}  @(${ev.x},${ev.y})  v=(${ev.vx},${ev.vy})`,
+        12, 104 + i * 14);
+    }
+
+    // 前摇视觉指示：AI 周围环形进度 + 瞄准线
+    if (aiWindupRemaining > 0 && aiWindupAim && aiWindupTotal > 0) {
+      const progress = 1 - aiWindupRemaining / aiWindupTotal;
+      const ringR = CFG.charSize/2 + 8;
+      dctx.strokeStyle = 'rgba(255,220,60,0.9)';
+      dctx.lineWidth = 3;
+      dctx.beginPath();
+      dctx.arc(acx, acy, ringR, -Math.PI/2, -Math.PI/2 + progress * Math.PI * 2);
+      dctx.stroke();
+      // 瞄准线：AI → 球方向延伸
+      const len = 60;
+      dctx.strokeStyle = 'rgba(255,220,60,0.55)';
+      dctx.lineWidth = 2;
+      dctx.setLineDash([3, 4]);
+      dctx.beginPath();
+      dctx.moveTo(acx, acy);
+      dctx.lineTo(acx + aiWindupAim.x * len, acy + aiWindupAim.y * len);
+      dctx.stroke();
+      dctx.setLineDash([]);
+    }
+
+    // HUD 分数（debug 层）
+    dctx.fillStyle = '#fff';
+    dctx.textAlign = 'center';
+    dctx.font = 'bold 36px sans-serif';
+    dctx.fillText(`${state.score.player}  :  ${state.score.ai}`, W/2, 54);
+  }
+
+  function drawChar(c) {
+    ctx.fillStyle = c.color;
+    ctx.fillRect(c.x, c.y, CFG.charSize, CFG.charSize);
+    ctx.strokeStyle = 'rgba(0,0,0,0.4)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(c.x + 0.5, c.y + 0.5, CFG.charSize - 1, CFG.charSize - 1);
+  }
+
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>

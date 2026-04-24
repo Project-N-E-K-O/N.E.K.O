@@ -26,11 +26,11 @@
     window.i18nInitialized = true;
 
     // 支持的语言列表
-    const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru'];
+    const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // 更新语言包内容时可以递增此值
-    const LOCALE_VERSION = '2026-04-20-1';
+    const LOCALE_VERSION = '2026-04-22-1';
 
     function getLanguageFromQuery() {
         try {
@@ -71,6 +71,8 @@
             if (langCode === 'ja') return 'ja';
             if (langCode === 'ko') return 'ko';
             if (langCode === 'ru') return 'ru';
+            if (langCode === 'es') return 'es';
+            if (langCode === 'pt') return 'pt';
             if (langCode === 'zh') {
                 // 根据地区/脚本区分简繁（如 zh-TW / zh-HK / zh-Hant）
                 const upper = browserLanguage.toUpperCase();

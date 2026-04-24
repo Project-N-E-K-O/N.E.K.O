@@ -1370,19 +1370,48 @@ async def _computer_use_scheduler_loop():
         Modules.computer_use_queue = asyncio.Queue()
     while True:
         try:
-            await asyncio.sleep(0.05)
-            if Modules.computer_use_running:
-                continue
-            if Modules.computer_use_queue.empty():
-                continue
+            # Event-driven: block until a task is pushed. Producers (_spawn_task)
+            # put_nowait from async contexts on the same loop, so get() wakes
+            # immediately — no polling needed.
+            next_task = await Modules.computer_use_queue.get()
+            # 先等前一个 CU task 跑完，再做 flag 检查——覆盖用户在 await 期间
+            # 通过 /agent/flags 关闭 CU 的窗口；否则被禁用后仍会 dispatch。
+            if Modules.computer_use_running and Modules.active_computer_use_async_task is not None:
+                try:
+                    await Modules.active_computer_use_async_task
+                except Exception as e:
+                    # 前一个 CU task 的异常已由 _run_computer_use_task 的 finally 处理/记录；
+                    # 此处仅防御未预期的穿透，保留 scheduler 存活以调度下一任务。
+                    logger.debug("[ComputerUse] prior task raised on await: %s", e)
             if not Modules.analyzer_enabled or not Modules.agent_flags.get("computer_use_enabled", False):
+                # 把排队任务显式标成 cancelled 并 emit task_update；否则 registry 里会
+                # 一直留着 "queued" 的僵尸项，污染重复任务判定与 UI 显示。
+                dropped = [next_task]
                 while not Modules.computer_use_queue.empty():
                     try:
-                        Modules.computer_use_queue.get_nowait()
+                        dropped.append(Modules.computer_use_queue.get_nowait())
                     except asyncio.QueueEmpty:
                         break
+                now_iso = _now_iso()
+                for entry in dropped:
+                    tid = entry.get("task_id") if isinstance(entry, dict) else None
+                    if not tid:
+                        continue
+                    reg = Modules.task_registry.get(tid)
+                    if reg is None or reg.get("status") not in ("queued", None):
+                        continue
+                    reg["status"] = "cancelled"
+                    reg["end_time"] = now_iso
+                    reg["error"] = "computer_use disabled before dispatch"
+                    lanlan_name = reg.get("lanlan_name")
+                    asyncio.create_task(_emit_main_event(
+                        "task_update", lanlan_name,
+                        task={
+                            "id": tid, "status": "cancelled", "type": "computer_use",
+                            "end_time": now_iso, "error": reg["error"],
+                        },
+                    ))
                 continue
-            next_task = await Modules.computer_use_queue.get()
             tid = next_task.get("task_id")
             if not tid or tid not in Modules.task_registry:
                 continue
