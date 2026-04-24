@@ -86,7 +86,7 @@ todos:
 isProject: false
 ---
 
-## 当前快照 (2026-04-20, P17 完成 → 2026-04-21 P22/P22.1 补交付 → 2026-04-21 新增 P24 联调/代码审查/延期加固阶段 → 2026-04-21 P23 交付 → 2026-04-22 Day 12 P24 收尾 **v1.0 "第一个完善版本" sign-off** → 2026-04-23 P25 开工前 §A 八轮设计审查完成 → 2026-04-23 **P25 Day 1-3 全量交付** → 2026-04-23 **P26 Commit 1 (版本号 v1.1 + CHANGELOG + `/docs/{doc_name}` + About 接线)** → 2026-04-24 **P26 Commit 2 (ARCHITECTURE_OVERVIEW + LESSONS L45-L49 + §7.26/§7.27 升级 + 2 跨项目 Cursor skill + p26_docs_endpoint_smoke)** → 2026-04-24 **P26 Commit 3 (testbench_USER_MANUAL.md 中文简体 ~520 行 + 真实结构校准 + /docs/testbench_USER_MANUAL 自动从 file_missing 过渡到 200)** → 2026-04-24 **P26 C3 hotfix (markdown 链接/锚点/图片 pipeline + USER_MANUAL 深度事实对齐 + ARCHITECTURE_OVERVIEW 二审 + D13 smoke + UI 清内部术语 + About 按钮解禁)** → 2026-04-24 **`git push NEKO-dev main` 合并上游 15 条, P25 整批 + P26 全部推远端** → 2026-04-24 **post-push 文档整理 commit (`263ffd8`: AGENT_NOTES #120 补齐 + CHANGELOG v1.1.0 hotfix 子节 + LESSONS §7.A 登 L50/L51/L52)** → 2026-04-24 **LESSONS §7.28 / §7.29 升格 commit (L50 Server boot_id / L51 文档作者先 grep + 多轮 tester 手测回写)**, 本地 clean, 工作树与远端对齐)
+## 当前快照 (2026-04-20, P17 完成 → 2026-04-21 P22/P22.1 补交付 → 2026-04-21 新增 P24 联调/代码审查/延期加固阶段 → 2026-04-21 P23 交付 → 2026-04-22 Day 12 P24 收尾 **v1.0 "第一个完善版本" sign-off** → 2026-04-23 P25 开工前 §A 八轮设计审查完成 → 2026-04-23 **P25 Day 1-3 全量交付** → 2026-04-23 **P26 Commit 1 (版本号 v1.1 + CHANGELOG + `/docs/{doc_name}` + About 接线)** → 2026-04-24 **P26 Commit 2 (ARCHITECTURE_OVERVIEW + LESSONS L45-L49 + §7.26/§7.27 升级 + 2 跨项目 Cursor skill + p26_docs_endpoint_smoke)** → 2026-04-24 **P26 Commit 3 (testbench_USER_MANUAL.md 中文简体 ~520 行 + 真实结构校准 + /docs/testbench_USER_MANUAL 自动从 file_missing 过渡到 200)** → 2026-04-24 **P26 C3 hotfix (markdown 链接/锚点/图片 pipeline + USER_MANUAL 深度事实对齐 + ARCHITECTURE_OVERVIEW 二审 + D13 smoke + UI 清内部术语 + About 按钮解禁)** → 2026-04-24 **`git push NEKO-dev main` 合并上游 15 条, P25 整批 + P26 全部推远端** → 2026-04-24 **post-push 文档整理 commit (`263ffd8`: AGENT_NOTES #120 补齐 + CHANGELOG v1.1.0 hotfix 子节 + LESSONS §7.A 登 L50/L51/L52)** → 2026-04-24 **LESSONS §7.28 / §7.29 升格 commit (L50 Server boot_id / L51 文档作者先 grep + 多轮 tester 手测回写)** → 2026-04-24 **post-upgrade 机制固化 commit** (抽出 `~/.cursor/skills/docs-code-reality-grep-before-draft` 四层防御 skill + 新增 `.cursor/rules/lessons-candidate-promote-on-threshold.mdc` / `lessons-main-entry-requires-skill.mdc` 两条元纪律 + `p26_docs_endpoint_smoke.py` 加 D14 锁 USER_MANUAL 7 条高价值 tester-fact, 19/19 全绿), 本地 clean, 工作树与远端对齐)
 
 > 本节为后期追加, 帮助新 Agent 或调研者在不通读全文的情况下快速定位现状. 核心 `todos` 的状态仍以**条目内 `status` 字段**为准; 本节仅作总览.
 
@@ -133,13 +133,13 @@ isProject: false
    - 本地 HEAD = 远端 HEAD, 工作树 clean.
    - P25 Day 1-3 + polish r5/r6/r7/r7 2nd pass + 第三轮 chokepoint 下沉 若干 commit, P26 Commit 1/2/3, P26 C3 hotfix (`063201a`), 本次文档清理 commit, 全部已推远端.
 
-4. **全量 smoke baseline (maintain 线)**: **18/18 全绿 ~34s**, 覆盖:
+4. **全量 smoke baseline (maintain 线)**: **18/18 全绿 ~34s** (p26 docs endpoint smoke 内部 14 契约 D1-D14), 覆盖:
    - `p21_3_prompt_injection` / `p21_1_sandbox_session` / `p21_persistence` (P21 家族)
    - `p22_hardening` (P22)
    - `p23_exports` (P23)
    - `p24_{integration, sandbox_attrs_sync, lint_drift, session_fields_audit}` (P24 家族 4)
    - `p25_{avatar_dedupe_drift, external_events, wire_role_chokepoint, prompt_preview_truth, r5_polish, r6_import_recent, r7_wire_partition, llm_call_site_stamp_coverage}` (P25 家族 8)
-   - `p26_docs_endpoint_smoke` (D1-D13 13 契约, D11-D13 为 C3 hotfix 新增锁 heading id / .md 后缀剥 / anchor slug 双向一致)
+   - `p26_docs_endpoint_smoke` (D1-D14 14 契约, D11-D13 为 C3 hotfix 新增锁 heading id / .md 后缀剥 / anchor slug 双向一致; **D14 post-upgrade 新增锁 USER_MANUAL 7 条高价值 tester-fact (5 workspace 数 / Setup Evaluation Diagnostics Settings 子页数 / memory op 数 / DATA_DIR 路径)**)
 
    未来 P27+ 新改动必须保持这条绿线. 任何 smoke 变红**都不应 push**.
 
@@ -155,8 +155,9 @@ isProject: false
 7. **常见维护任务** (不算新阶段):
    - 用户拍新图替换 `testbench_USER_MANUAL.md` 里已有的占位, 小 commit 迭代.
    - CHANGELOG 新版本 bump (v1.2.0 等) 时, 按本次 hotfix 小节的范式再追加.
-   - LESSONS §7.A 候选达两次同族时升主编号 (L50/L51 本轮 post-push 整理期已升为 §7.28/§7.29; L52 等 P27+ 二次复现再升).
+   - LESSONS §7.A 候选达两次同族时升主编号 (L50/L51 本轮 post-push 整理期已升为 §7.28/§7.29; L52 等 P27+ 二次复现再升). **升格纪律**见 `.cursor/rules/lessons-candidate-promote-on-threshold.mdc` + `lessons-main-entry-requires-skill.mdc` (候选写入即判决 + 主条目必映射 skill).
    - 任何代码改动后要记得**先重启服务**再让用户手测 (§4.27 #120 反复实证的 "服务器未重启" root cause).
+   - 写面向 tester 的文档时先读 `~/.cursor/skills/docs-code-reality-grep-before-draft/SKILL.md` 四层防御, 起草前跑 Defense 1 grep, 起草后必须跑 ≥ 2 轮独立 tester 手测 (§7.29 纪律的机械化版本).
 
 **历史档案 (留供参考)**: P23 已于 2026-04-21 交付 (`pipeline/session_export.py` + `session_router.POST /api/session/export` + `session_export_modal.js` + 三入口接线 + `smoke/p23_exports_smoke.py` 绿), 交付细节见 §14 最后一节的"P23 交付实录". P24 已于 2026-04-22 Day 12 收尾, v1.0 sign-off, 详见 `P24_BLUEPRINT.md` + `PROGRESS.md P24` 条目 + §15.1-§15.6 实施细化 (规格以蓝图为准).
 

@@ -109,6 +109,30 @@ Contracts
         the link's ``--`` double-hyphen never matches the rendered
         ``-`` single-hyphen and the TOC click silently does nothing.
 
+    D14 USER_MANUAL high-value tester-fact alignment. A tight set of
+        discrete facts that the manual claims about the live UI / runtime
+        must still match the code:
+
+          * Number of top-level workspaces (tabs) matches
+            ``static/app.js::WORKSPACES``.
+          * Number of Setup sub-pages matches
+            ``static/ui/workspace_setup.js::PAGES`` filtered by
+            ``kind == 'page'``.
+          * Number of Evaluation / Diagnostics / Settings sub-pages
+            match the respective ``PAGES`` arrays.
+          * Number of Memory trigger ops (the "触发操作" panel) matches
+            ``static/ui/setup/memory_trigger_panel.js::OPS``.
+          * The manual's data directory path claim resolves to the
+            same ``DATA_DIR`` basename as ``tb_config.DATA_DIR``.
+
+        Scope is **intentionally narrow** — only countable / path-literal
+        facts that (a) are already stated in the manual with an exact
+        value and (b) have a single point of truth in code. Prose /
+        behavior claims are out of scope; those rely on D13's
+        hand-test pass (§7.29 Defense 3) instead of a static linter
+        to avoid the "fact-extraction linter becomes a format pedant"
+        anti-pattern.
+
 Usage::
 
     .venv\\Scripts\\python.exe tests/testbench/smoke/p26_docs_endpoint_smoke.py
@@ -534,6 +558,189 @@ def check_in_doc_anchors_resolve() -> list[str]:
     return errors
 
 
+# ── D14 — USER_MANUAL high-value tester-fact alignment ─────────────
+#
+# Background: LESSONS_LEARNED §7.29 Defense 3 (multi-round hand-test)
+# is the primary guard against doc drift, but a small set of countable
+# facts in the manual are cheap to lock at CI time. This check locks
+# exactly those — anything where the manual already states a number /
+# path literal AND the code has a single point of truth. Prose /
+# behavioral claims are deliberately excluded (Defense 3's job).
+#
+# Scoped to ``testbench_USER_MANUAL`` only — the other whitelisted
+# docs are short enough that a terminology sweep during authoring
+# catches drift.
+
+def _count_dict_entries_in_array(src: str, array_name: str, kind_filter: str | None = None) -> int | None:
+    """Count top-level dict literals inside ``const <array_name> = [ ... ]``.
+
+    If ``kind_filter`` is given (e.g. ``'page'``), only entries whose
+    ``kind: '<kind_filter>'`` property matches are counted. Returns
+    None if the array declaration cannot be located.
+    """
+    pat = re.compile(
+        r"const\s+" + re.escape(array_name) + r"\s*=\s*\[(?P<body>.*?)\];",
+        re.DOTALL,
+    )
+    m = pat.search(src)
+    if not m:
+        return None
+    body = m.group("body")
+    count = 0
+    depth = 0
+    chunk_start: int | None = None
+    for i, ch in enumerate(body):
+        if ch == "{":
+            if depth == 0:
+                chunk_start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and chunk_start is not None:
+                chunk = body[chunk_start : i + 1]
+                if kind_filter is None:
+                    count += 1
+                else:
+                    if re.search(r"kind\s*:\s*['\"]" + re.escape(kind_filter) + r"['\"]", chunk):
+                        count += 1
+                chunk_start = None
+    return count
+
+
+def _count_memory_ops(src: str) -> int | None:
+    """Count literals of the form ``{ op: '<something>', ... }``."""
+    hits = re.findall(r"\{\s*op\s*:\s*['\"][a-z._]+['\"]", src)
+    return len(hits) if hits else None
+
+
+def check_user_manual_high_value_facts() -> list[str]:
+    from tests.testbench import config as tb_config  # noqa: PLC0415
+
+    errors: list[str] = []
+    manual = DOCS_DIR / "testbench_USER_MANUAL.md"
+    if not manual.is_file():
+        # USER_MANUAL is whitelisted but may not be authored in a given
+        # checkpoint (dual-semantics, D7). Silently skip when missing.
+        return errors
+    manual_src = _read(manual)
+    static_root = TESTBENCH_ROOT / "static"
+
+    # Fact 1 — workspace count (app.js::WORKSPACES)
+    app_src = _read(static_root / "app.js")
+    ws_count = _count_dict_entries_in_array(app_src, "WORKSPACES")
+    if ws_count is None:
+        errors.append("[D14] cannot locate `const WORKSPACES = [...]` in static/app.js")
+    else:
+        if not re.search(rf"\b{ws_count}\s*个\s*workspace\b", manual_src):
+            errors.append(
+                f"[D14] USER_MANUAL does not state '{ws_count} 个 workspace' "
+                f"anywhere, but static/app.js::WORKSPACES has exactly "
+                f"{ws_count} entries. Update the manual's §2.1 + TOC if "
+                f"workspaces were added/removed."
+            )
+
+    # Fact 2 — Setup sub-page count (workspace_setup.js::PAGES, kind='page')
+    setup_src = _read(static_root / "ui" / "workspace_setup.js")
+    setup_pages = _count_dict_entries_in_array(setup_src, "PAGES", kind_filter="page")
+    if setup_pages is None:
+        errors.append("[D14] cannot locate `const PAGES = [...]` in static/ui/workspace_setup.js")
+    elif not re.search(rf"\b{setup_pages}\s*(?:个)?\s*子页", manual_src):
+        errors.append(
+            f"[D14] USER_MANUAL does not state '{setup_pages} 子页' / "
+            f"'{setup_pages} 个子页' for the Setup workspace, but "
+            f"workspace_setup.js::PAGES has {setup_pages} kind='page' "
+            f"entries. Check the manual's §3 + the overview table in §2.1."
+        )
+
+    # Fact 3 — Evaluation sub-page count
+    eval_src = _read(static_root / "ui" / "workspace_evaluation.js")
+    eval_pages = _count_dict_entries_in_array(eval_src, "PAGES", kind_filter="page")
+    if eval_pages is None:
+        errors.append("[D14] cannot locate `const PAGES = [...]` in static/ui/workspace_evaluation.js")
+    elif eval_pages == 4:
+        if not re.search(r"四\s*子页|\b4\s*(?:个)?\s*子页", manual_src):
+            errors.append(
+                "[D14] USER_MANUAL does not state 'Evaluation 四子页' / "
+                "'4 个子页' but workspace_evaluation.js::PAGES has exactly 4 entries."
+            )
+    else:
+        errors.append(
+            f"[D14] workspace_evaluation.js::PAGES has {eval_pages} entries "
+            f"(expected 4 for v1.1.0 — Schemas/Run/Results/Aggregate). If "
+            f"this is an intentional change, update the manual's §5 and "
+            f"this smoke's expected value together."
+        )
+
+    # Fact 4 — Diagnostics sub-page count
+    diag_src = _read(static_root / "ui" / "workspace_diagnostics.js")
+    diag_pages = _count_dict_entries_in_array(diag_src, "PAGES", kind_filter="page")
+    if diag_pages is None:
+        errors.append("[D14] cannot locate `const PAGES = [...]` in static/ui/workspace_diagnostics.js")
+    elif diag_pages == 5:
+        if not re.search(r"五\s*子页|\b5\s*(?:个)?\s*子页", manual_src):
+            errors.append(
+                "[D14] USER_MANUAL does not state 'Diagnostics 五子页' / "
+                "'5 个子页' but workspace_diagnostics.js::PAGES has exactly 5 entries."
+            )
+    else:
+        errors.append(
+            f"[D14] workspace_diagnostics.js::PAGES has {diag_pages} entries "
+            f"(expected 5 for v1.1.0). If intentional, update §7 + smoke together."
+        )
+
+    # Fact 5 — Settings sub-page count
+    settings_src = _read(static_root / "ui" / "workspace_settings.js")
+    # workspace_settings.js PAGES entries are plain dicts without kind;
+    # count unconditionally.
+    settings_pages = _count_dict_entries_in_array(settings_src, "PAGES")
+    if settings_pages is None:
+        errors.append("[D14] cannot locate `const PAGES = [...]` in static/ui/workspace_settings.js")
+    elif settings_pages == 6:
+        if not re.search(r"六\s*子页|\b6\s*(?:个)?\s*子页", manual_src):
+            errors.append(
+                "[D14] USER_MANUAL does not state 'Settings 六子页' / "
+                "'6 个子页' but workspace_settings.js::PAGES has exactly 6 entries."
+            )
+    else:
+        errors.append(
+            f"[D14] workspace_settings.js::PAGES has {settings_pages} entries "
+            f"(expected 6 for v1.1.0). If intentional, update §8 + smoke together."
+        )
+
+    # Fact 6 — Memory trigger op count (memory_trigger_panel.js)
+    mem_src = _read(static_root / "ui" / "setup" / "memory_trigger_panel.js")
+    mem_ops = _count_memory_ops(mem_src)
+    if mem_ops is None:
+        errors.append("[D14] cannot locate `{ op: '...' }` literals in memory_trigger_panel.js")
+    elif mem_ops == 5:
+        if not re.search(r"\b5\s*个\s*(?:LLM\s*)?[Oo]p\b", manual_src):
+            errors.append(
+                "[D14] USER_MANUAL does not state '5 个 LLM Op' but "
+                "memory_trigger_panel.js has exactly 5 op literals "
+                "(recent.compress / facts.extract / reflect / persona.add_fact / "
+                "persona.resolve_corrections). Check §4.2."
+            )
+    else:
+        errors.append(
+            f"[D14] memory_trigger_panel.js has {mem_ops} op literals "
+            f"(expected 5 for v1.1.0). If intentional, update §4.2 + smoke together."
+        )
+
+    # Fact 7 — DATA_DIR path literal
+    data_dir = getattr(tb_config, "DATA_DIR", None)
+    if data_dir is not None:
+        rel = f"tests/{data_dir.name}/"
+        if rel not in manual_src:
+            errors.append(
+                f"[D14] USER_MANUAL does not contain the literal path "
+                f"{rel!r} but tb_config.DATA_DIR resolves to "
+                f"'{data_dir}'. The manual's §1.1 'data directory' note "
+                f"must use the real runtime path, not a guess."
+            )
+
+    return errors
+
+
 # ── entry point ────────────────────────────────────────────────────
 
 CHECKS = (
@@ -550,6 +757,7 @@ CHECKS = (
     ("D11 — rendered headings have ids", check_rendered_headings_have_ids),
     ("D12 — renderer strips .md suffix on whitelist cross-links", check_rendered_md_links_stripped),
     ("D13 — all in-doc anchor links resolve to a heading", check_in_doc_anchors_resolve),
+    ("D14 — USER_MANUAL high-value tester-facts aligned", check_user_manual_high_value_facts),
 )
 
 

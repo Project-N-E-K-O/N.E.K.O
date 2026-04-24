@@ -651,7 +651,7 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
         - §6.3 "三份 docs 同步更新模式" 的**方向反转** — §6.3 是"代码改后同步三份 docs", §7.29 是"docs 起草时按代码校准"; 同一"docs 与 code 谁是真相"辩论的两个方向, 答案都是"代码是真相, docs 服从".
         - §7.26 "Subagent 并行 + 三段式 review" 的**文档层对偶** — §7.26 通过让 subagent 独立按 spec 跑出 Observation 字段, 让主 agent 自诊中捕获 spec 漂移; §7.29 通过让 tester 独立按文档跑 UI, 让起稿 agent 自诊中捕获文档漂移. 两条同构: 用"独立执行者"消除"自己写自己审"的盲点.
         - §1.4 "覆盖度 RAG 灯" 的**文档版本** — 文档起草也可做 RAG 自检: 章节覆盖 UI 区域的比例 / 章节实锤的代码引用行数 / 章节手测通过的 pass 轮次. 绿黄红三灯对齐.
-    - **对应 Cursor skill**: `docs-code-reality-grep-before-draft` (待抽, P27+ 之前任一写文档的 agent 跑本条都会补完该 skill). 现阶段直接用 §1.1 `audit-chokepoint-invariant` 的 "grep before doc" 变体手法.
+    - **对应 Cursor skill**: `docs-code-reality-grep-before-draft` (2026-04-24 post-push 整理期同批抽出, `~/.cursor/skills/docs-code-reality-grep-before-draft/SKILL.md`, 四层防御全量落纸; 与 §7.28 `server-boot-id-for-ui-state` 同为"升格条目 → 可机械化 skill"第二个实证).
 
 ### §7.A 候选追加 (P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理 UTF-8 事件 + P25 Day 1 subagent 并行开发 + P25 Day 1 fixup mirror shape + P25 Day 2 前端面板派生 + P25 Day 2 polish r1-r6 手测派生 + P26 Commit 1 版本号落档 / 公共文档端点 / 4 象限文档分层派生 + **P26 Commit 3 USER_MANUAL + C3 hotfix 链接锚点图片 pipeline 派生 (L50/L51 已于 post-push 整理期升格为 §7.28/§7.29)**, 待二次复现后并入主编号)
 
@@ -693,8 +693,9 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
 > 期 Grep 4 个 workspace 文件纠正 PLAN 笔记 4 处结构性偏差 (首例, 结构层) +
 > C3 hotfix 4 轮手测揭 12+ 处深层行为 / 术语 / 幻觉偏差 (二次实锤, 行为 + 术语层)
 > 两次同族. 元结论扩展: "写文档必须先 grep 真实代码" 不足, 还得 "**多轮真实 UI
-> 手测回写**" 才能收敛. 升级论述见上方 §7.29 正文. 对应 skill 候选
-> `docs-code-reality-grep-before-draft` 待 P27+ 写第三次文档时正式抽出.
+> 手测回写**" 才能收敛. 升级论述见上方 §7.29 正文. 对应 skill
+> `docs-code-reality-grep-before-draft` 已于同批 (2026-04-24) 抽出至
+> `~/.cursor/skills/`, 含 Defense 1-4 四层完整方法论.
 
 **L28 "跨阶段推迟项必须双向回扫"** (P24 Day 12 欠账清返派生, 2026-04-23):
 

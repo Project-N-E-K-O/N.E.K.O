@@ -834,6 +834,70 @@ smoke 用 `monkeypatch _invoke_llm_once / stream_send_inner` 注入 mock reply +
 
 ---
 
+#### #122 2026-04-24 post-upgrade 机制固化补刀 · 抽 `docs-code-reality-grep-before-draft` skill + `.cursor/rules/` 新增两条升格纪律 + p26 smoke D14 锁 USER_MANUAL 7 条高价值 tester-fact
+
+**背景**: #121 把 L50 / L51 升为 §7.28 / §7.29 后, 用户提问"候选不急着实现还有什么能做的", agent 列出候选维护清单后用户选 **A1 (抽 docs 反漂移 skill) + D7 (把 #121 两条方法论纪律落地为 project rule) + A2 (把 §7.29 Defense 1-2 里能机械化的 USER_MANUAL 高价值事实锁进已有 p26 smoke)** 三项, 目的都是"**把本轮经验固化成未来 agent 会被自动用上的机制**, 而不是靠读 #121 叙事记忆". 即 **§7.29 "文档作者先 grep + 多轮手测回写" 的落地三线: (1) skill 形式载体 / (2) rule 形式纪律 / (3) smoke 形式硬断言**, 三线并行从不同层面挡住未来的文档漂移.
+
+**交付 1 (A1 · skill)**: 新建 `~/.cursor/skills/docs-code-reality-grep-before-draft/SKILL.md` (**243 行**, 远低于 500 行 skill 上限):
+
+- **The Problem** 段直述 "PLAN / blueprint / memory 三者都是 intent 不是 reality, 凭记忆写 docs ≈ 按蓝图写代码都必然漂移".
+- **When To Use** 段列 6 个 trigger 口型 + 4 条强触发条件 (codebase > 3 设计轮 / 先前 draft 存在 / reader 看不到 code / 读者是 tester / 非作者 agent).
+- **Four Defenses** 四层防御, 对齐 §7.29 四层规则 + 每层配**具体工具用法**:
+    1. **Defense 1 Grep Before Drafting**: 提出 "claim class × what-to-grep" 7 行映射表 (UI 结构 → Glob 组件目录; 启动命令 → pyproject/package.json/Makefile/CI; 数据路径 → rg 字符串 literal; feature availability → rg flag / handler; enum/state count → rg enum 定义数; 行为断言 → 读函数体; 配置面 → 找 settings UI node + 查 disabled/readonly/placeholder), 并硬性规定 "grep receipt (file+line 命中列表) 必须先于 drafting".
+    2. **Defense 2 Cross-Verify While Writing**: 禁"无 receipt 直接写入" 的 5 类 pattern (counts / paths / commands / enum values / **negative claims**), 其中**negative claim** 特别提示是"最高 miss 类别", 因为 rg "不支持 X" 很难命中, 必须找反方向的 positive 证据 (无 route handler / `disabled` attr / early return).
+    3. **Defense 3 Force Multi-Round Real-UI Hand-Test**: **明写"作者不是 done 当作者满意, 而是独立消费者至少跑 2 轮 diff 为空"**, 并给出 3 轮 workflow (Round 1 收集 → Round 2 repair+regrep+re-run → Round 3 仅在 R2 diff 非空时). **Agent-as-tester alternative** 一段写"无人类 tester 时用**无 draft 历史** fresh agent 代替, 弱 proxy 但远强于 self-review".
+    4. **Defense 4 Terminology Sweep Before Commit**: 提供 fixed regex `rg -n 'P\d+|阶段|蓝图|deferred|推迟|留待|TODO|FIXME|XXX'`, 每 hit 二选一 (delete / rewrite), **必须 commit 前跑**.
+- **Canonical Workflow** 段给 copy-paste checkbox 列表, agent 在接到 doc 任务时直接 copy.
+- **Key Design Rules 6 条 / Anti-Patterns 5 条**: 呼应 §7.29 元结论, "self-review ≠ 独立 round" / "grep receipts beat confidence" / "negative claims = highest-miss" 三条是 skill 特有的抽象提升.
+- **Related Skills** 段对接 `audit-chokepoint-invariant` (同 "Intent ≠ Reality" 家族) / `semantic-contract-vs-runtime-mechanism` (辨"要 promise 什么 vs 恰好怎么工作") / `subagent-parallel-dev-three-phase-review` (Defense 3 的单阶段退化形式), 完成跨 skill 网状索引. 本条是 **§7.29 对应 skill 候选 `docs-code-reality-grep-before-draft` 的正式抽出**, 同批把 LESSONS §7.29 正文对应 skill 字段从 "(待抽, P27+ 之前任一写文档 agent 跑本条都会补完该 skill)" 改为 "(2026-04-24 post-push 整理期同批抽出, ...)".
+
+**交付 2 (D7 · 两条 project rule)**: 新建 `.cursor/rules/lessons-candidate-promote-on-threshold.mdc` + `.cursor/rules/lessons-main-entry-requires-skill.mdc`, 都只 glob `tests/testbench/docs/LESSONS_LEARNED.md`, `alwaysApply: false`:
+
+1. **`lessons-candidate-promote-on-threshold.mdc` (候选写入即升格)**: 把 #121 方法论回写的第一条"候选写入 §7.A 时必须当场判决, 已达两次同族门槛直接同 commit 升主编号不等下轮" 固化. 三条硬性规则 + 场景 A (单次 → 写候选) 场景 B (已两次 → 直接写主编号) 双示例, 明确 6 份连带更新清单 (LESSONS 正文 / §7.A 归档 / 顶部引语 / PLAN / AGENT_NOTES #N / CHANGELOG hotfix 内部注记). 规则 3 追加"进入主编号条件必须可验证" 禁"下次遇到类似情况" 空模板.
+2. **`lessons-main-entry-requires-skill.mdc` (主条目必映射 skill)**: 把 #121 第二条"skill 对齐作为验证信号 → 主编号条目必映射 skill" 固化. 规则 1 规定"对应 Cursor skill"字段三种合法形态: 对齐已存在 skill (最强) / 本 commit 同步抽新 / 延迟到下次实装 (有时效: 最多留一个主编号轮次否则升 hard blocker). 规则 2 升格前置判决 (不能给 skill 候选 → 本次不升格). 规则 4 "待抽有时效": 下轮 LESSONS 更新前没抽出 → 下位 agent 必须先抽 skill 再做其他事. 两条 rule 互为前置/配套 (第一条管"什么时候升", 第二条管"升了之后怎么验").
+
+**交付 3 (A2 · smoke D14)**: `p26_docs_endpoint_smoke.py` 新加一条契约 D14 "USER_MANUAL 高价值 tester-facts 对齐", **只锁**"(a) 手册已用精确值声明 + (b) 代码有单一真值源" 的 7 条离散事实:
+
+1. **Workspace 数** ↔ `static/app.js::WORKSPACES` = 5 → 手册 §2.1 "5 个 workspace".
+2. **Setup 子页数** ↔ `static/ui/workspace_setup.js::PAGES` (kind='page' 过滤, 排除 'group' 分组头) = 8.
+3. **Evaluation 子页数** = 4 → 手册 "四子页".
+4. **Diagnostics 子页数** = 5 → 手册 "五子页".
+5. **Settings 子页数** = 6 → 手册 "六子页".
+6. **Memory op 数** ↔ `memory_trigger_panel.js` 里 `{ op: '...' }` literal 数 = 5 (recent.compress / facts.extract / reflect / persona.add_fact / persona.resolve_corrections) → 手册 §4.2 "5 个 LLM Op".
+7. **DATA_DIR 路径** = `tb_config.DATA_DIR` → 手册 §1 "tests/testbench_data/" literal 存在.
+
+实现用 2 个通用 parser (`_count_dict_entries_in_array` 支持 kind_filter + `_count_memory_ops` regex 数 op literal), 零 import 项目代码外的东西只用 `re` + `ast` (D5 已有的 helper). 每条 fact 检查独立 assert 独立产错, 错文含修复指引 (e.g. "If intentional, update §X + smoke together"). **故意不锁**的项: 散文 / 行为语义 / 章节名 / 目录结构 / `reason` 8 值闭集等 — 这些走 §7.29 Defense 3 手测, 静态锁容易变"格式挑剔员" 阻碍散文迭代. 边界: USER_MANUAL 不在盘时 silently skip (D7 双 404 dual-semantics + 其它 doc 本 smoke 也不 bail).
+
+**验收 smoke 跑通**: `.venv\Scripts\python.exe tests\testbench\smoke\p26_docs_endpoint_smoke.py` → D1-D14 全绿 ~2.5s. D14 对齐当前 USER_MANUAL + 当前代码, 没有打断现有 CI. 未来若有人改 `WORKSPACES` / 子页数 / memory op 数忘了同步 manual, D14 立刻 fail. 未来若改 manual 文案 (比如 "5 个" → "5 种" / 五子页 → 五个子页) 让 regex 不再匹配, D14 fail 提示"check §X", 作者强制走"改手册 + 同改 smoke 正则" 双向对齐.
+
+**修改文件 5 (含同批 LESSONS / PLAN 同步)**:
+
+1. 新建 `~/.cursor/skills/docs-code-reality-grep-before-draft/SKILL.md` (243 行).
+2. 新建 `.cursor/rules/lessons-candidate-promote-on-threshold.mdc`.
+3. 新建 `.cursor/rules/lessons-main-entry-requires-skill.mdc`.
+4. `tests/testbench/smoke/p26_docs_endpoint_smoke.py`: 文件头 docstring D14 段 + 2 parser helper + `check_user_manual_high_value_facts` + CHECKS 追加. ReadLints 零新 lint.
+5. `tests/testbench/docs/LESSONS_LEARNED.md §7.29`: "对应 Cursor skill" 字段从 "(待抽, P27+ 之前任一写文档的 agent 跑本条都会补完该 skill)" → "(2026-04-24 post-push 整理期同批抽出, `~/.cursor/skills/docs-code-reality-grep-before-draft/SKILL.md`, 四层防御全量落纸; 与 §7.28 `server-boot-id-for-ui-state` 同为升格条目 → 可机械化 skill 第二个实证)". §7.A 候选区 L51 升格档案行同步改 skill 字段.
+6. `tests/testbench/docs/PLAN.md`: 当前快照行末追加本轮 commit 时间线, smoke baseline 行把 D1-D13 → D1-D14, 常见维护任务行补"写文档前先读 skill + §7.A 升格纪律指向两条 mdc rule".
+
+**无代码改动 / 无版本 bump / 无用户可见变化**. 仅文档元层 + 工具链 (skill / rule / smoke) 机制增强.
+
+**关于 skill / rule 不随 commit 入 git**: 本仓库 `.gitignore` 第 49 行把整个 `.cursor/` 忽略, 即本项目已有的 8 条 `.cursor/rules/*.mdc` (emit-grep-listener / no-hardcoded-chinese-in-ui / hidden-attribute-vs-flex-css 等) **从来都不入 git**, 作为 agent 本地引导文件存在; 本轮新增的 `lessons-candidate-promote-on-threshold.mdc` / `lessons-main-entry-requires-skill.mdc` 同样遵循此策略, 本地有效但不 push. `~/.cursor/skills/docs-code-reality-grep-before-draft/SKILL.md` 在用户 home 目录, 跨项目使用, 本就不在本仓库范围. 因此本次 commit 的 git diff **只含 5 份文件** (`p26_docs_endpoint_smoke.py` + `LESSONS_LEARNED.md` + `PLAN.md` + `AGENT_NOTES.md` + `CHANGELOG.md`), 未来 agent 若在远端 clone 仓库后找不到本条提到的 skill / rule, 需在**本地另行抽出**同名同内容的文件 (可参考本 AGENT_NOTES #122 正文复原).
+
+**价值点**:
+
+1. **三线防御形成**: §7.29 "先 grep + 多轮 tester 回写" 从一条元教训变成三条独立机制: (a) **skill 形态的 how-to 载体** 让未来 agent 接到 doc 任务第一秒就能 read 到四层防御; (b) **project rule 形态的 审查门槛** 让 agent 升格 LESSONS 时被强制 check "能否给 skill 候选"; (c) **smoke 形态的硬断言** 让 USER_MANUAL 7 条核心 fact 无论作者记不记得都在 CI 上被自动对齐. 三线覆盖 **drafting 期 / review 期 / post-commit 期** 三个阶段.
+2. **元纪律自指性**: 两条新 mdc rule 本身就是对 "L50/L51 升格过程里 agent 发现 / 归纳出的纪律" 的落地, 而且两条 rule 互相交叉引用 (`lessons-candidate-promote-on-threshold.mdc` 延伸阅读指向 `lessons-main-entry-requires-skill.mdc`, 反之亦然) 构成双前置. 这完成了 #121 方法论回写里两条纪律的"从自然语言规范到机械化 rule"转换.
+3. **skill 抽出验证 L51 抽象力**: §7.29 在 #121 写进主编号时, skill 字段还标 "待抽". 本条把 skill 实际抽出 = 给 §7.29 主编号升格**补完了 `lessons-main-entry-requires-skill.mdc` 规则 1 要求的三种合法形态之一**. §7.29 主编号从此刻起对齐规则完整. 同时也验证了"该条目抽象足够 → 写得出 skill" 的隐式门槛, 反过来证 L51 适合做主编号.
+4. **D14 范式: 锁高价值离散事实 + 放散文行为断言**: D14 显式把"锁什么 / 不锁什么"分开 — counts / path literal 锁 (CI 直接算, 偏差必然漂到值), 散文 / 语义约束放 (D13 手测生态) 避免 smoke 变 "章节名挑剔员". 这个 pattern 可复用: 未来若增其他 tester-facing doc (比如 TROUBLESHOOTING.md), 类似策略 = 先列 "discrete fact with single truth source" 清单, 不在清单的散文靠 Defense 3 接.
+
+**方法论回写 (#121 的更上一层)**:
+
+- **主编号条目固化"三线" 的新隐式门槛**: 升格一条主编号后, 不止要给 skill, 还要 check **"是否有至少一条 rule / smoke 形式的机械化守护"**. 纯 skill (如 §7.29 的新 `docs-code-reality-grep-before-draft`) 是**文档级 how-to**, 作用是 next agent 被 prompt 时能读到; 但 skill 不主动介入 review 流程. rule (如两条新 mdc) 和 smoke (如 D14) 才是 "自动化守护". §7.28 (boot_id) 已有 skill 但无 smoke/rule — 这是 **L50 可以晚一步做 "UI 端 boot_id 角标 dev-loop 工具"时顺带补 rule/smoke** 的提示. 这条作为下一轮升格前的隐式 check.
+- **候选 vs 主编号 vs skill 的三层转换率**: 本项目 §7.A 现有 **25 条候选 (L28-L52 范围, L50/L51 已升格), 主编号 29 条, skill 对应比 ≥ 5** (§7.1/§7.2/§7.26/§7.27/§7.28 + §7.29 新抽). **候选升格率 ≈ 2/25 = 8% 本阶段** (另 23 条等 P27+), **升格即抽 skill 率 ≈ 100%** (L50 对齐已有 / L51 本轮抽出). 这个比例可作为未来 LESSONS 审查的健康基线: 候选升格率低于 5% 说明大部分候选是一次性 bug, 高于 20% 说明抽象可能不够严. 当前 8% 正常.
+- **"不急着做就做元机制固化"是一条稳态维护路径**: 这次操作是在"主开发线暂停, 用户问还能做啥"时的合理答复 — 不上新 feature 不追新 bug, **把过去 N 轮踩过的教训转成机制**, 让未来的 agent / user 不需要读长篇叙事就被自动引导. 成本 (本轮约 1h) 远低于"再次踩同类坑的成本" (P26 C3 hotfix 4 轮手测光耗时 ≈ 4h 就是反面教材). 这一 pattern 下次主开发线暂停 / sign-off 之间的空窗期可复用.
+
+---
+
 #### #119 2026-04-24 P26 Commit 3 (USER_MANUAL.md 中文简体测试员向 ~520 行 10 节 13 图位 + 4 workspace 真实结构校准 + /docs 端点自动过渡验证)
 
 **背景**: P26 B 方案三 commit 最后一块. Commit 1 (#118 背景) 白名单 + 双 404 / Commit 2 (#118 本体) ARCH + LESSONS + 2 skills + smoke 欠账. **今天 Commit 3** = 面向测试员/中级用户的中文手册, 完成后 `/docs/testbench_USER_MANUAL` 端点自动从 `404 file_missing` 过渡到 `200 HTML`, P26 三 commit 全齐可一次 push.

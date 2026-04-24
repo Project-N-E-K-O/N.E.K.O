@@ -182,6 +182,14 @@ v1.1.0 发布当日的用户手测反馈收治, 仍属 v1.1 同一版本号 (未
 - **post-push 文档整理期 (2026-04-24 晚)**: 完成 `LESSONS_LEARNED §7.28 / §7.29`
   升格 (L50 Server boot_id / L51 文档作者先 grep + 多轮 tester 手测回写), 以及
   `AGENT_NOTES §4.27 #121` 记账. 纯内部开发经验沉淀, 对测试用户无可见变化.
+- **post-upgrade 机制固化补刀 (2026-04-24 晚, `AGENT_NOTES §4.27 #122`)**: 把
+  L51 升格后的反漂移经验分三线沉淀 — 抽出 `~/.cursor/skills/docs-code-reality-grep-before-draft`
+  跨项目 skill (四层防御 how-to) + 新增 `.cursor/rules/lessons-candidate-promote-on-threshold.mdc`
+  / `lessons-main-entry-requires-skill.mdc` 两条 project rule (候选写入即判决升格 +
+  主条目必映射 skill) + `p26_docs_endpoint_smoke.py` 新加 D14 契约锁 USER_MANUAL
+  7 条高价值 tester-fact (workspace/子页/memory op 数 + DATA_DIR 路径). 全量
+  18/18 smoke 仍全绿 (p26_docs_endpoint_smoke 内部 D1-D14 14 契约). 纯工具链
+  / 元文档增强, 对测试用户无可见变化.
 
 ---
 
