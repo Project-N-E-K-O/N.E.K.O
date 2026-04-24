@@ -68,6 +68,12 @@
     "recommended": "推荐",
     "no_destination": "请指定目的地"
   },
+  "nearby": {
+    "no_query": "请输入搜索关键词（如：火锅、咖啡、超市）",
+    "no_results": "在 {location} 附近没有找到「{query}」相关的地点",
+    "summary": "在 {location} 附近找到 {count} 个「{query}」: {top}",
+    "rain_tip": "🌂 当前有雨，建议选择室内场所"
+  },
   "tz_city": {
     "Asia/Shanghai": "上海",
     "Asia/Chongqing": "重庆",

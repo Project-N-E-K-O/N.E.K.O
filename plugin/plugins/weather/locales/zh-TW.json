@@ -68,6 +68,12 @@
     "recommended": "推薦",
     "no_destination": "請指定目的地"
   },
+  "nearby": {
+    "no_query": "請輸入搜尋關鍵詞（如：火鍋、咖啡、超市）",
+    "no_results": "在 {location} 附近沒有找到「{query}」相關的地點",
+    "summary": "在 {location} 附近找到 {count} 個「{query}」: {top}",
+    "rain_tip": "🌂 目前有雨，建議選擇室內場所"
+  },
   "tz_city": {
     "Asia/Shanghai": "上海",
     "Asia/Chongqing": "重慶",

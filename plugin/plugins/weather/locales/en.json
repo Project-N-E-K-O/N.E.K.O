@@ -68,6 +68,12 @@
     "recommended": "Recommended",
     "no_destination": "Please specify a destination"
   },
+  "nearby": {
+    "no_query": "Please enter a search keyword (e.g. restaurant, cafe, park)",
+    "no_results": "No '{query}' found near {location}",
+    "summary": "Found {count} '{query}' near {location}: {top}",
+    "rain_tip": "🌂 It's raining — consider indoor options"
+  },
   "tz_city": {
     "Asia/Shanghai": "Shanghai",
     "Asia/Chongqing": "Chongqing",
