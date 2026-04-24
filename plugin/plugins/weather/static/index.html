@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>天气出行 - 地点管理</title>
+  <title>Weather — Locations</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -18,14 +18,13 @@
       box-shadow: 0 2px 12px rgba(0,0,0,0.06);
       padding: 20px; margin-bottom: 16px;
     }
+    .card-title { font-size: 1rem; margin-bottom: 12px; font-weight: 600; }
     .status-bar {
       padding: 10px 14px; border-radius: 10px; font-size: 0.85rem;
       margin-bottom: 16px; border-left: 4px solid #007aff; background: #f0f4ff;
     }
     .status-bar.success { border-left-color: #34c759; background: #eaf7e6; }
     .status-bar.error { border-left-color: #ff3b30; background: #ffe9e8; }
-
-    /* ── Location list ── */
     .loc-item {
       display: flex; align-items: center; gap: 10px;
       padding: 12px 0; border-bottom: 1px solid #f0f0f5;
@@ -48,16 +47,14 @@
     .btn-default:hover { background: #d0e8ff; }
     .btn-delete { background: #ffe9e8; color: #ff3b30; }
     .btn-delete:hover { background: #ffd4d2; }
-
-    /* ── Add form ── */
     .add-form { display: flex; flex-direction: column; gap: 12px; }
     .form-row { display: flex; gap: 10px; }
     .form-row label { flex: 1; display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; color: #6c6c70; font-weight: 500; }
-    .form-row input {
+    .form-row input[type="text"] {
       padding: 8px 10px; border: 1px solid #d9d9df; border-radius: 10px;
       font-size: 0.9rem; transition: 0.15s;
     }
-    .form-row input:focus { outline: none; border-color: #007aff; box-shadow: 0 0 0 3px rgba(0,122,255,0.1); }
+    .form-row input[type="text"]:focus { outline: none; border-color: #007aff; box-shadow: 0 0 0 3px rgba(0,122,255,0.1); }
     .btn-add {
       background: #007aff; color: #fff; border: none;
       padding: 10px; border-radius: 10px; font-size: 0.9rem;
@@ -65,43 +62,143 @@
     }
     .btn-add:hover { background: #005fc5; }
     .btn-add:disabled { opacity: 0.5; cursor: not-allowed; }
-
     .empty { text-align: center; padding: 32px 0; color: #aaa; font-size: 0.9rem; }
   </style>
 </head>
 <body>
   <div class="container">
-    <h1>🌤️ 天气出行 — 地点管理</h1>
+    <h1 id="pageTitle"></h1>
     <div id="statusMsg" class="status-bar" style="display:none"></div>
-
-    <!-- 已保存的地点 -->
     <div class="card">
-      <h2 style="font-size:1rem;margin-bottom:12px;">📍 常用地点</h2>
-      <div id="locationList"><div class="empty">加载中...</div></div>
+      <h2 class="card-title" id="listTitle"></h2>
+      <div id="locationList"><div class="empty" id="loadingText"></div></div>
     </div>
-
-    <!-- 添加地点 -->
     <div class="card">
-      <h2 style="font-size:1rem;margin-bottom:12px;">➕ 添加地点</h2>
+      <h2 class="card-title" id="addTitle"></h2>
       <div class="add-form">
         <div class="form-row">
-          <label>标签 <input id="inputLabel" type="text" placeholder="如：家、公司、学校"></label>
-          <label>城市 <input id="inputCity" type="text" placeholder="如：上海、Tokyo"></label>
+          <label><span id="labelLabel"></span> <input id="inputLabel" type="text"></label>
+          <label><span id="cityLabel"></span> <input id="inputCity" type="text"></label>
         </div>
         <div class="form-row">
-          <label>具体地址（可选）<input id="inputAddress" type="text" placeholder="如：浦东新区陆家嘴"></label>
+          <label><span id="addressLabel"></span> <input id="inputAddress" type="text"></label>
         </div>
         <div class="form-row">
           <label style="flex-direction:row;align-items:center;gap:6px;">
-            <input id="inputDefault" type="checkbox"> 设为默认地点
+            <input id="inputDefault" type="checkbox"> <span id="setDefaultLabel"></span>
           </label>
         </div>
-        <button class="btn-add" id="btnAdd" onclick="addLocation()">添加</button>
+        <button class="btn-add" id="btnAdd" onclick="addLocation()"></button>
       </div>
     </div>
   </div>
 
 <script>
+/* ── i18n ── */
+const I18N = {
+  'zh-CN': {
+    pageTitle: '🌤️ 天气出行 — 地点管理',
+    listTitle: '📍 常用地点',
+    addTitle: '➕ 添加地点',
+    loading: '加载中...',
+    empty: '暂无保存的地点，请在下方添加',
+    loadFailed: '加载失败: {err}',
+    label: '标签',
+    city: '城市',
+    address: '具体地址（可选）',
+    setDefault: '设为默认地点',
+    add: '添加',
+    defaultBadge: '默认',
+    btnSetDefault: '设为默认',
+    btnDelete: '删除',
+    added: '已添加: {label} ({city})',
+    deleted: '已删除',
+    defaultSet: '已设为默认',
+    fillRequired: '请填写标签和城市',
+    labelPlaceholder: '如：家、公司、学校',
+    cityPlaceholder: '如：上海、Tokyo',
+    addressPlaceholder: '如：浦东新区陆家嘴',
+  },
+  'zh-TW': {
+    pageTitle: '🌤️ 天氣出行 — 地點管理',
+    listTitle: '📍 常用地點',
+    addTitle: '➕ 新增地點',
+    loading: '載入中...',
+    empty: '尚無儲存的地點，請在下方新增',
+    loadFailed: '載入失敗: {err}',
+    label: '標籤',
+    city: '城市',
+    address: '具體地址（選填）',
+    setDefault: '設為預設地點',
+    add: '新增',
+    defaultBadge: '預設',
+    btnSetDefault: '設為預設',
+    btnDelete: '刪除',
+    added: '已新增: {label} ({city})',
+    deleted: '已刪除',
+    defaultSet: '已設為預設',
+    fillRequired: '請填寫標籤和城市',
+    labelPlaceholder: '如：家、公司、學校',
+    cityPlaceholder: '如：台北、Tokyo',
+    addressPlaceholder: '如：信義區101大樓',
+  },
+  'en': {
+    pageTitle: '🌤️ Weather — Location Manager',
+    listTitle: '📍 Saved Locations',
+    addTitle: '➕ Add Location',
+    loading: 'Loading...',
+    empty: 'No saved locations yet. Add one below.',
+    loadFailed: 'Load failed: {err}',
+    label: 'Label',
+    city: 'City',
+    address: 'Address (optional)',
+    setDefault: 'Set as default',
+    add: 'Add',
+    defaultBadge: 'Default',
+    btnSetDefault: 'Set default',
+    btnDelete: 'Delete',
+    added: 'Added: {label} ({city})',
+    deleted: 'Deleted',
+    defaultSet: 'Set as default',
+    fillRequired: 'Please fill in label and city',
+    labelPlaceholder: 'e.g. Home, Office, School',
+    cityPlaceholder: 'e.g. Shanghai, Tokyo',
+    addressPlaceholder: 'e.g. 123 Main St',
+  },
+};
+
+function detectLocale() {
+  const nav = (navigator.language || 'en').toLowerCase();
+  if (nav.startsWith('zh-tw') || nav.startsWith('zh-hant') || nav.startsWith('zh-hk')) return 'zh-TW';
+  if (nav.startsWith('zh')) return 'zh-CN';
+  return 'en';
+}
+
+const LOCALE = detectLocale();
+const STRINGS = I18N[LOCALE] || I18N['en'];
+
+function t(key, vars) {
+  let s = STRINGS[key] || I18N['en'][key] || key;
+  if (vars) for (const [k, v] of Object.entries(vars)) s = s.replace(`{${k}}`, v);
+  return s;
+}
+
+/* ── Apply i18n to static elements ── */
+document.getElementById('pageTitle').textContent = t('pageTitle');
+document.getElementById('listTitle').textContent = t('listTitle');
+document.getElementById('addTitle').textContent = t('addTitle');
+document.getElementById('loadingText').textContent = t('loading');
+document.getElementById('labelLabel').textContent = t('label');
+document.getElementById('cityLabel').textContent = t('city');
+document.getElementById('addressLabel').textContent = t('address');
+document.getElementById('setDefaultLabel').textContent = t('setDefault');
+document.getElementById('btnAdd').textContent = t('add');
+document.getElementById('inputLabel').placeholder = t('labelPlaceholder');
+document.getElementById('inputCity').placeholder = t('cityPlaceholder');
+document.getElementById('inputAddress').placeholder = t('addressPlaceholder');
+document.title = t('pageTitle').replace(/🌤️\s*/, '');
+
+/* ── Plugin API ── */
 const PLUGIN_ID = 'weather';
 const RUNS_URL = '/runs';
 
@@ -114,7 +211,6 @@ async function callPlugin(entry, args = {}) {
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   const { run_id } = await resp.json();
   if (!run_id) throw new Error('No run_id');
-
   const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
     await new Promise(r => setTimeout(r, 300));
@@ -130,11 +226,10 @@ async function callPlugin(entry, args = {}) {
       if (res.error) throw new Error(res.error.message || res.error);
       return res.data || {};
     }
-    if (['failed', 'canceled', 'timeout'].includes(rec.status)) {
+    if (['failed', 'canceled', 'timeout'].includes(rec.status))
       throw new Error(rec.error?.message || rec.status);
-    }
   }
-  throw new Error('超时');
+  throw new Error('Timeout');
 }
 
 function showMsg(text, type = 'success') {
@@ -145,37 +240,30 @@ function showMsg(text, type = 'success') {
   setTimeout(() => { el.style.display = 'none'; }, 4000);
 }
 
-function escapeHtml(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
 async function loadLocations() {
   const list = document.getElementById('locationList');
   try {
     const data = await callPlugin('list_locations');
     const locs = data.locations || [];
-    if (!locs.length) {
-      list.innerHTML = '<div class="empty">暂无保存的地点，请在下方添加</div>';
-      return;
-    }
+    if (!locs.length) { list.innerHTML = `<div class="empty">${esc(t('empty'))}</div>`; return; }
     list.innerHTML = locs.map(loc => `
       <div class="loc-item">
         <div class="loc-info">
-          <div class="loc-label">${escapeHtml(loc.label)}</div>
-          <div class="loc-city">${escapeHtml(loc.city)}${loc.address ? ' · ' + escapeHtml(loc.address) : ''}</div>
+          <div class="loc-label">${esc(loc.label)}</div>
+          <div class="loc-city">${esc(loc.city)}${loc.address ? ' · ' + esc(loc.address) : ''}</div>
           <div class="loc-coords">${loc.lat.toFixed(4)}, ${loc.lon.toFixed(4)}</div>
         </div>
-        ${loc.is_default ? '<span class="loc-default-badge">默认</span>' : ''}
+        ${loc.is_default ? `<span class="loc-default-badge">${esc(t('defaultBadge'))}</span>` : ''}
         <div class="loc-actions">
-          ${!loc.is_default ? `<button class="btn-default" onclick="setDefault('${loc.id}')">设为默认</button>` : ''}
-          <button class="btn-delete" onclick="removeLoc('${loc.id}')">删除</button>
+          ${!loc.is_default ? `<button class="btn-default" onclick="setDefault('${loc.id}')">${esc(t('btnSetDefault'))}</button>` : ''}
+          <button class="btn-delete" onclick="removeLoc('${loc.id}')">${esc(t('btnDelete'))}</button>
         </div>
       </div>
     `).join('');
   } catch (e) {
-    list.innerHTML = `<div class="empty" style="color:#ff3b30">加载失败: ${escapeHtml(e.message)}</div>`;
+    list.innerHTML = `<div class="empty" style="color:#ff3b30">${esc(t('loadFailed', { err: e.message }))}</div>`;
   }
 }
 
@@ -184,42 +272,31 @@ async function addLocation() {
   const city = document.getElementById('inputCity').value.trim();
   const address = document.getElementById('inputAddress').value.trim();
   const setDef = document.getElementById('inputDefault').checked;
-  if (!label || !city) { showMsg('请填写标签和城市', 'error'); return; }
-
+  if (!label || !city) { showMsg(t('fillRequired'), 'error'); return; }
   const btn = document.getElementById('btnAdd');
   btn.disabled = true;
   try {
     await callPlugin('add_location', { label, city, address, set_default: setDef });
-    showMsg(`已添加: ${label} (${city})`);
+    showMsg(t('added', { label, city }));
     document.getElementById('inputLabel').value = '';
     document.getElementById('inputCity').value = '';
     document.getElementById('inputAddress').value = '';
     document.getElementById('inputDefault').checked = false;
     await loadLocations();
-  } catch (e) {
-    showMsg(e.message, 'error');
-  } finally {
-    btn.disabled = false;
-  }
+  } catch (e) { showMsg(e.message, 'error'); }
+  finally { btn.disabled = false; }
 }
 
 async function removeLoc(id) {
-  try {
-    await callPlugin('remove_location', { location_id: id });
-    showMsg('已删除');
-    await loadLocations();
-  } catch (e) { showMsg(e.message, 'error'); }
+  try { await callPlugin('remove_location', { location_id: id }); showMsg(t('deleted')); await loadLocations(); }
+  catch (e) { showMsg(e.message, 'error'); }
 }
 
 async function setDefault(id) {
-  try {
-    await callPlugin('set_default_location', { location_id: id });
-    showMsg('已设为默认');
-    await loadLocations();
-  } catch (e) { showMsg(e.message, 'error'); }
+  try { await callPlugin('set_default_location', { location_id: id }); showMsg(t('defaultSet')); await loadLocations(); }
+  catch (e) { showMsg(e.message, 'error'); }
 }
 
-// 页面加载
 loadLocations();
 </script>
 </body>
