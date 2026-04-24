@@ -548,38 +548,51 @@ function PluginCard({ pluginName, items, loadingMap, errorMap, sharedRowProps }:
   };
 }) {
   const [expanded, setExpanded] = useState(false);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const [bodyHeight, setBodyHeight] = useState(0);
   const entryCount = items.filter(a => a.category !== '插件管理').length;
   const mgmtCount = items.filter(a => a.category === '插件管理').length;
 
+  // Measure body height after render for smooth animation
+  useEffect(() => {
+    if (expanded && bodyRef.current) {
+      setBodyHeight(bodyRef.current.scrollHeight);
+    }
+  }, [expanded, items.length]);
+
   return (
-    <div className="cp-plugin-card">
+    <div className={`cp-plugin-card ${expanded ? 'is-expanded' : ''}`}>
       <button
         type="button"
         className="cp-plugin-card-header"
         onClick={() => setExpanded(e => !e)}
         aria-expanded={expanded}
       >
-        <span className="cp-plugin-card-chevron">{expanded ? '▾' : '▸'}</span>
+        <span className={`cp-plugin-card-chevron ${expanded ? 'is-open' : ''}`}>▸</span>
         <span className="cp-plugin-card-name">{pluginName}</span>
         <span className="cp-plugin-card-counts">
           {entryCount > 0 && <span className="cp-plugin-card-badge">{entryCount}</span>}
           {mgmtCount > 0 && <span className="cp-plugin-card-badge cp-plugin-card-badge-mgmt">⚙{mgmtCount}</span>}
         </span>
       </button>
-      {expanded && (
-        <div className="cp-plugin-card-body">
-          {items.map((item) => (
-            <CommandRow
-              key={item.action_id}
-              item={item}
-              loading={!!loadingMap[item.action_id]}
-              error={errorMap[item.action_id] ?? null}
-              highlighted={false}
-              {...sharedRowProps}
-            />
+      <div
+        className="cp-plugin-card-collapse"
+        style={{ maxHeight: expanded ? `${bodyHeight}px` : '0px' }}
+      >
+        <div className="cp-plugin-card-body" ref={bodyRef}>
+          {items.map((item, i) => (
+            <div key={item.action_id} className="cp-card-item-stagger" style={expanded ? { animationDelay: `${i * 30}ms` } : undefined}>
+              <CommandRow
+                item={item}
+                loading={!!loadingMap[item.action_id]}
+                error={errorMap[item.action_id] ?? null}
+                highlighted={false}
+                {...sharedRowProps}
+              />
+            </div>
           ))}
         </div>
-      )}
+      </div>
     </div>
   );
 }

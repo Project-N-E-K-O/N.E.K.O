@@ -1959,6 +1959,10 @@ button * {
   border-radius: 8px;
   margin: 4px 6px;
   overflow: hidden;
+  transition: box-shadow 0.2s ease;
+}
+.cp-plugin-card.is-expanded {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
 }
 .cp-plugin-card + .cp-plugin-card { margin-top: 4px; }
 .cp-plugin-card-header {
@@ -1971,7 +1975,12 @@ button * {
   transition: background 0.15s;
 }
 .cp-plugin-card-header:hover { background: rgba(140, 160, 190, 0.08); }
-.cp-plugin-card-chevron { font-size: 0.7rem; color: #8a95a8; width: 12px; }
+.cp-plugin-card-chevron {
+  font-size: 0.7rem; color: #8a95a8; width: 12px;
+  display: inline-block;
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.cp-plugin-card-chevron.is-open { transform: rotate(90deg); }
 .cp-plugin-card-name { flex: 1; }
 .cp-plugin-card-counts { display: flex; gap: 4px; }
 .cp-plugin-card-badge {
@@ -1982,7 +1991,19 @@ button * {
 .cp-plugin-card-badge-mgmt {
   background: rgba(140, 160, 190, 0.1); color: #8a95a8;
 }
+.cp-plugin-card-collapse {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
 .cp-plugin-card-body { padding: 2px 0; }
+
+/* Card item stagger animation */
+@keyframes cp-card-item-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.cp-card-item-stagger { animation: cp-card-item-in 0.2s ease both; }
 .cp-tab {
   flex: 1;
   display: flex; align-items: center; justify-content: center; gap: 5px;
@@ -2331,6 +2352,7 @@ button * {
 [data-theme="dark"] .cp-tab-active .cp-tab-count { background: rgba(64, 197, 241, 0.15); color: #40c5f1; }
 
 [data-theme="dark"] .cp-plugin-card { border-color: rgba(255, 255, 255, 0.06); }
+[data-theme="dark"] .cp-plugin-card.is-expanded { box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2); }
 [data-theme="dark"] .cp-plugin-card-header { background: rgba(255, 255, 255, 0.03); }
 [data-theme="dark"] .cp-plugin-card-header:hover { background: rgba(255, 255, 255, 0.06); }
 [data-theme="dark"] .cp-plugin-card-chevron { color: #7a8494; }
@@ -2383,5 +2405,7 @@ button * {
 [data-theme="dark"] .cp-empty-clear:hover { background: rgba(68, 183, 254, 0.18); }
 
 @media (prefers-reduced-motion: reduce) {
-  .cp-panel, .cp-stagger, .cp-toast { animation: none !important; }
+  .cp-panel, .cp-stagger, .cp-toast, .cp-card-item-stagger { animation: none !important; }
+  .cp-plugin-card-collapse { transition: none !important; }
+  .cp-plugin-card-chevron { transition: none !important; }
 }
