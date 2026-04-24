@@ -229,7 +229,7 @@
     steps.handoff_plugin_dashboard.performance.voiceKey = 'handoff_plugin_dashboard';
     steps.handoff_plugin_dashboard.performance.cursorAction = 'click';
     steps.handoff_plugin_dashboard.performance.cursorTarget = '#${p}-btn-agent';
-    steps.handoff_plugin_dashboard.navigation.openUrl = '/api/agent/user_plugin/dashboard?yui_guide=1';
+    steps.handoff_plugin_dashboard.navigation.openUrl = '/ui/';
     steps.handoff_plugin_dashboard.navigation.windowName = 'plugin_dashboard';
     steps.handoff_plugin_dashboard.navigation.resumeScene = 'plugin_dashboard_landing';
 

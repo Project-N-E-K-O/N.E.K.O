@@ -3389,6 +3389,10 @@
                 navigation.features || ''
             ], async () => {
                 const api = this.getHomeInteractionApi();
+                if (targetPage === 'plugin_dashboard' && api && typeof api.openPluginDashboard === 'function') {
+                    const childWin = await api.openPluginDashboard();
+                    return !!childWin;
+                }
                 if (api && typeof api.openPage === 'function') {
                     const childWin = await api.openPage(
                         navigation.openUrl,
@@ -4122,6 +4126,10 @@
             this.appendGuideChatMessage(dashboardText, {
                 textKey: TAKEOVER_PLUGIN_DASHBOARD_TEXT_KEY
             });
+            const homeCursorPosition = this.overlay && typeof this.overlay.getCursorPosition === 'function'
+                ? this.overlay.getCursorPosition()
+                : null;
+            this.cursor.hide();
             let pluginPanelClosed = false;
             const closePluginPreviewPanel = async () => {
                 if (pluginPanelClosed || runId !== this.sceneRunId || this.isStopping()) {
@@ -4158,6 +4166,9 @@
                 return;
             }
 
+            if (homeCursorPosition) {
+                this.cursor.showAt(homeCursorPosition.x, homeCursorPosition.y);
+            }
             this.overlay.clearActionSpotlight();
         }
 

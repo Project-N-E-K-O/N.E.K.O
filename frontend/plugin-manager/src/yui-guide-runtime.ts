@@ -457,11 +457,9 @@ function injectStyle() {
     }
 
     #${ROOT_ID}.is-angry .yui-guide-plugin-spotlight {
-      border-color: #ff9f7c;
-      box-shadow:
-        0 0 0 7px rgba(255, 171, 122, 0.34),
-        0 0 0 12px rgba(255, 133, 98, 0.22),
-        0 22px 44px rgba(99, 22, 22, 0.34);
+      opacity: 0 !important;
+      border-color: transparent;
+      box-shadow: none;
       animation: none;
     }
 
@@ -875,6 +873,11 @@ class PluginDashboardGuideRuntime {
     this.spotlightElement = null
     if (this.spotlight) {
       this.spotlight.classList.remove('is-visible')
+      this.spotlight.style.left = '0px'
+      this.spotlight.style.top = '0px'
+      this.spotlight.style.width = '0px'
+      this.spotlight.style.height = '0px'
+      this.spotlight.style.borderRadius = '0px'
     }
     this.updateBackdropCutout(null)
   }
@@ -1582,6 +1585,7 @@ class PluginDashboardGuideRuntime {
     this.angryExitTriggered = true
     this.interruptsEnabled = false
     this.cancelActiveNarration()
+    this.clearSpotlight()
     this.setAngryVisual(true)
     const handledByHome = await this.requestHomeInterruptPlayback({
       kind: 'interrupt_angry_exit',

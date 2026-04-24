@@ -975,49 +975,11 @@
     }
 
     function openPluginDashboard(resumeScene) {
-        var scene = resumeScene || 'plugin_dashboard_landing';
-        var tokenObj = createHandoffToken('plugin_dashboard', scene);
-        if (!tokenObj || !tokenObj.token) {
-            console.warn('[YuiGuideHandoff] openPluginDashboard: token 创建失败，取消打开');
-            return Promise.resolve(null);
-        }
-        var tokenId = tokenObj.token;
-        var params = [
-            'yui_guide=1',
-            'flow_id=' + encodeURIComponent(HANDOFF_FLOW_ID),
-            'source_page=home',
-            'resume_scene=' + encodeURIComponent(scene),
-            'handoff_token=' + encodeURIComponent(tokenId)
-        ];
-
-        var openUrl = buildPluginDashboardUrl(params);
-
-        window.dispatchEvent(new CustomEvent('neko:yui-guide:handoff-sent', {
-            detail: {
-                token: tokenId,
-                target_page: 'plugin_dashboard',
-                resume_scene: scene
-            }
-        }));
-
         return openPage(
-            openUrl,
+            buildPluginDashboardUrl(),
             'plugin_dashboard',
             buildCenteredWindowFeatures()
-        ).then(function (childWin) {
-            if (!childWin && tokenObj) {
-                var currentTokenObj = readHandoffToken();
-                if (
-                    currentTokenObj
-                    && !currentTokenObj.consumed
-                    && getHandoffTokenSignature(currentTokenObj) === getHandoffTokenSignature(tokenObj)
-                ) {
-                    clearHandoffToken();
-                }
-            }
-
-            return childWin;
-        });
+        );
     }
 
     function listenPluginDashboardComplete(onComplete) {

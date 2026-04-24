@@ -5,6 +5,29 @@
 
 window.AgentHUD = window.AgentHUD || {};
 
+var PLUGIN_DASHBOARD_FIRST_VISIT_STORAGE_KEY = 'neko_plugin_dashboard_first_visit_completed';
+var PLUGIN_DASHBOARD_DIRECT_URL = 'http://127.0.0.1:48916/ui/';
+var PLUGIN_DASHBOARD_FIRST_VISIT_URL = '/api/agent/user_plugin/dashboard?yui_guide=1';
+
+function hasSeenPluginDashboardFirstVisit() {
+    try {
+        return window.localStorage.getItem(PLUGIN_DASHBOARD_FIRST_VISIT_STORAGE_KEY) === '1';
+    } catch (_) {
+        return false;
+    }
+}
+
+function markPluginDashboardFirstVisitSeen() {
+    try {
+        window.localStorage.setItem(PLUGIN_DASHBOARD_FIRST_VISIT_STORAGE_KEY, '1');
+    } catch (_) {}
+}
+
+function appendCacheBuster(url) {
+    var separator = typeof url === 'string' && url.indexOf('?') >= 0 ? '&' : '?';
+    return `${url}${separator}v=${Date.now()}`;
+}
+
 /**
  * 精简 AI 生成的冗长任务描述为用户友好的短文本
  * 例: "设置一个15分钟后的一次性提醒，内容为'起来活动'" → "15分钟后 起来活动"
@@ -207,7 +230,8 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                     labelKey: 'settings.toggles.pluginManagementPanel',
                     labelFallback: '管理面板',
                     icon: '⚙',
-                    url: 'http://127.0.0.1:48916/ui/',
+                    url: PLUGIN_DASHBOARD_DIRECT_URL,
+                    firstVisitUrl: PLUGIN_DASHBOARD_FIRST_VISIT_URL,
                     windowName: 'neko_plugin_dashboard',
                     forceReloadOnReuse: true
                 }
@@ -280,10 +304,14 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                 const left = Math.max(0, Math.floor((screen.width - width) / 2));
                 const top = Math.max(0, Math.floor((screen.height - height) / 2));
                 const features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
-                const targetUrl = actionConfig.forceReloadOnReuse
-                    ? `${actionConfig.url}?v=${Date.now()}`
+                const rawUrl = actionConfig.actionId === 'management-panel' && !hasSeenPluginDashboardFirstVisit()
+                    ? (actionConfig.firstVisitUrl || actionConfig.url)
                     : actionConfig.url;
+                const targetUrl = actionConfig.forceReloadOnReuse
+                    ? appendCacheBuster(rawUrl)
+                    : rawUrl;
                 const existingWindow = window._openedWindows && window._openedWindows[actionConfig.windowName];
+                let openedWindow = null;
                 if (actionConfig.forceReloadOnReuse && existingWindow && !existingWindow.closed) {
                     try {
                         existingWindow.location.replace(targetUrl);
@@ -291,10 +319,14 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                         existingWindow.location.href = targetUrl;
                     }
                     existingWindow.focus();
+                    openedWindow = existingWindow;
                 } else if (typeof window.openOrFocusWindow === 'function') {
-                    window.openOrFocusWindow(targetUrl, actionConfig.windowName, features);
+                    openedWindow = window.openOrFocusWindow(targetUrl, actionConfig.windowName, features);
                 } else {
-                    window.open(targetUrl, actionConfig.windowName, features);
+                    openedWindow = window.open(targetUrl, actionConfig.windowName, features);
+                }
+                if (actionConfig.actionId === 'management-panel' && openedWindow && !openedWindow.closed) {
+                    markPluginDashboardFirstVisitSeen();
                 }
                 setTimeout(() => { isOpening = false; }, 500);
             });

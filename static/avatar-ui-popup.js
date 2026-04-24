@@ -1424,10 +1424,30 @@ function createSidePanelContainer(manager, prefix, options = {}) {
 function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
     const popupEl = sidePanel._popupElement || null;
     const ownerId = popupEl && popupEl.id ? popupEl.id : '';
+    const isTutorialHoverDisabled = () => {
+        if (window.isInTutorial !== true) {
+            return false;
+        }
+
+        const sidePanelType = sidePanel && typeof sidePanel.getAttribute === 'function'
+            ? (sidePanel.getAttribute('data-neko-sidepanel-type') || '')
+            : '';
+
+        return [
+            'agent-user-plugin-actions',
+            'agent-openclaw-actions',
+            'chat-settings',
+            'animation-settings',
+            'interval-proactive-chat',
+            'interval-proactive-vision',
+            'character-settings'
+        ].includes(sidePanelType);
+    };
 
     if (ownerId) sidePanel.setAttribute('data-neko-sidepanel-owner', ownerId);
 
     const collapseWithDelay = (delay = 80) => {
+        if (isTutorialHoverDisabled()) return;
         const interactionGuardDelay = typeof sidePanel._getInteractionGuardDelay === 'function'
             ? sidePanel._getInteractionGuardDelay()
             : 0;
@@ -1442,6 +1462,7 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
     };
 
     const expandPanel = () => {
+        if (isTutorialHoverDisabled()) return;
         if (window.AvatarPopupUI && window.AvatarPopupUI.collapseOtherSidePanels) {
             window.AvatarPopupUI.collapseOtherSidePanels(sidePanel);
         }
@@ -1450,6 +1471,7 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
         sidePanel._expand();
     };
     const collapsePanel = (e) => {
+        if (isTutorialHoverDisabled()) return;
         const target = e.relatedTarget;
         if (!target || (!anchorEl.contains(target) && !sidePanel.contains(target))) collapseWithDelay();
     };
