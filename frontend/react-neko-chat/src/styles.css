@@ -2185,6 +2185,22 @@ button * {
 .cp-select {
   height: 28px; min-width: 88px; max-width: 140px;
   padding: 0 22px 0 8px;
+
+/* ── Text input ── */
+.cp-text-input {
+  height: 28px; min-width: 100px; max-width: 160px;
+  padding: 0 8px;
+  font-size: 0.75rem;
+  border: 1px solid rgba(140, 160, 190, 0.2);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.6);
+  color: inherit;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.cp-text-input:focus { border-color: rgba(64, 197, 241, 0.5); box-shadow: 0 0 0 2px rgba(64, 197, 241, 0.1); }
+.cp-text-input:disabled { opacity: 0.4; cursor: not-allowed; }
+.cp-text-input::placeholder { color: #aab4c4; }
   border: 1px solid rgba(140, 160, 190, 0.2); border-radius: 8px;
   background: rgba(255, 255, 255, 0.8); color: #273042;
   font-size: 0.74rem; cursor: pointer; outline: none;
@@ -2398,6 +2414,8 @@ button * {
 [data-theme="dark"] .cp-toggle-thumb { background: #e8eaed; }
 
 [data-theme="dark"] .cp-select { background: rgba(255, 255, 255, 0.06); border-color: rgba(255, 255, 255, 0.1); color: #e0e4ea; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%239aa0ac' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E"); }
+[data-theme="dark"] .cp-text-input { background: rgba(255, 255, 255, 0.06); border-color: rgba(255, 255, 255, 0.1); color: #e0e4ea; }
+[data-theme="dark"] .cp-text-input::placeholder { color: #5a6474; }
 [data-theme="dark"] .cp-slider { background: rgba(200, 210, 230, 0.12); }
 [data-theme="dark"] .cp-slider-val { color: #7a8494; background: rgba(255, 255, 255, 0.04); }
 [data-theme="dark"] .cp-num-group { border-color: rgba(255, 255, 255, 0.08); background: rgba(255, 255, 255, 0.05); }

@@ -28,6 +28,7 @@ class ActionDescriptor(BaseModel):
         "dropdown",
         "number",
         "slider",
+        "text",
         "plugin_lifecycle",
         "entry_toggle",
     ] | None = None

@@ -12,7 +12,7 @@ export interface CommandItem {
   description: string;
   category: string;
   plugin_id: string;
-  control?: 'toggle' | 'button' | 'dropdown' | 'number' | 'slider' | 'plugin_lifecycle' | 'entry_toggle';
+  control?: 'toggle' | 'button' | 'dropdown' | 'number' | 'slider' | 'text' | 'plugin_lifecycle' | 'entry_toggle';
   current_value?: unknown;
   options?: string[];
   min?: number;
@@ -200,6 +200,33 @@ function NumberWidget({ item, loading, onExec }: ControlProps) {
   );
 }
 
+function TextWidget({ item, loading, onExec }: ControlProps) {
+  const strVal = String(item.current_value ?? '');
+  const [local, setLocal] = useState(strVal);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => { setLocal(strVal); }, [strVal]);
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+
+  const commit = useCallback((v: string) => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => onExec(item.action_id, v), 600);
+  }, [item.action_id, onExec]);
+
+  return (
+    <input
+      type="text"
+      className="cp-text-input"
+      value={local}
+      disabled={item.disabled || loading}
+      aria-label={item.label}
+      placeholder={item.description || item.label}
+      onClick={e => e.stopPropagation()}
+      onChange={e => { setLocal(e.target.value); commit(e.target.value); }}
+      onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); if (timer.current) clearTimeout(timer.current); onExec(item.action_id, local); } }}
+    />
+  );
+}
+
 function InlineWidget(props: ControlProps) {
   const { item } = props;
   if (item.type === 'chat_inject' || item.type === 'navigation') return null;
@@ -213,6 +240,8 @@ function InlineWidget(props: ControlProps) {
       return <SliderWidget {...props} />;
     case 'number':
       return <NumberWidget {...props} />;
+    case 'text':
+      return <TextWidget {...props} />;
     default:
       return null;
   }
@@ -499,7 +528,7 @@ function ToastStack({ toasts }: { toasts: ToastItem[] }) {
 type ContentTab = 'quick' | 'settings' | 'all';
 type GroupMode = 'byPlugin' | 'byFunction';
 
-const _SETTINGS_CONTROLS = new Set(['toggle', 'entry_toggle', 'dropdown', 'slider', 'number']);
+const _SETTINGS_CONTROLS = new Set(['toggle', 'entry_toggle', 'dropdown', 'slider', 'number', 'text']);
 
 function isSettingsItem(item: CommandItem): boolean {
   return item.type === 'instant' && _SETTINGS_CONTROLS.has(item.control ?? '');

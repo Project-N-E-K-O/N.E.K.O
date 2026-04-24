@@ -153,8 +153,13 @@ def _build_descriptor_for_field(
                 options=options,
                 icon="📋",
             )
-        # str without enum → skip (no sensible control)
-        return None
+        # str without enum → text input
+        return ActionDescriptor(
+            **base,
+            control="text",
+            current_value=current_value,
+            icon="✏️",
+        )
 
     # --- Enum subclass → dropdown ---
     if isinstance(core_type, type) and issubclass(core_type, enum.Enum):
