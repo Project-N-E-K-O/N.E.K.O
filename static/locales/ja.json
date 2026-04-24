@@ -599,6 +599,12 @@
         "screenshotAlt": "スクリーンショット {{index}}",
         "screenshotTitle": "クリックしてスクリーンショット {{index}} を表示",
         "removeScreenshot": "このスクリーンショットを削除",
+        "cropTabScreenshot": "スクリーンショット",
+        "cropTabHideNeko": "NEKOを隠す",
+        "cropTabCancel": "キャンセル",
+        "cropTabRecapturing": "再撮影中...",
+        "cropConfirmTitle": "トリミングを確定",
+        "cropClearSelectionTitle": "選択をクリア",
         "avatarPreview": "現在のアバターを表示",
         "avatarPreviewLabel": "現在のアバター",
         "avatarPreviewCardTitle": "現在のアバター",
@@ -1053,6 +1059,8 @@
         "selectMotion": "モーション",
         "selectExpression": "表情",
         "selectPersistentExpression": "常時表情を選択",
+        "noMotion": "モーションなし",
+        "noExpression": "表情なし",
         "noMotionFiles": "モーションファイルなし",
         "touchAnim": {
             "title": "タッチアニメ設定",
@@ -3356,5 +3364,33 @@
         "useTemporary": "一時的に使用",
         "tempBadge": "一時",
         "popupBlocked": "ポップアップがブロックされました。ポップアップを許可してから再試行してください。"
+    },
+    "connectivity": {
+        "testCustom": "カスタムAPI接続テスト",
+        "testCore": "テスト",
+        "testCoreTooltip": "コアAPI接続テスト",
+        "testAssist": "テスト",
+        "testAssistTooltip": "アシストAPI接続テスト",
+        "gsvTestText": "GSV接続テスト",
+        "gsvTestTooltip": "GPT-SoVITS 接続テスト",
+        "error": {
+            "timeout": "リクエストがタイムアウトしました（10秒）",
+            "auth_failed": "APIキーが無効または期限切れです",
+            "connection_refused": "ターゲットサーバーに接続できません",
+            "dns_error": "DNS解決に失敗しました",
+            "ssl_error": "SSL証明書の検証に失敗しました",
+            "ws_error": "WebSocket接続に失敗しました",
+            "missing_params": "必須パラメータが不足しています",
+            "unknown": "不明なエラー",
+            "backend_unavailable": "バックエンドサービスが利用できません",
+            "invalid_response": "レスポンス形式が不正です"
+        },
+        "status": {
+            "connected": "接続済み",
+            "failed": "接続失敗",
+            "untested": "未テスト",
+            "not_configured": "未設定",
+            "testing": "テスト中..."
+        }
     }
 }

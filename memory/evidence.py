@@ -38,6 +38,13 @@ __all__ = [
     "compute_evidence_snapshot",
 ]
 
+# Note: RFC §3.10 funnel analytics (`funnel_counts`) lives in the sibling
+# module `memory.evidence_analytics`, NOT here.  It does file IO and pulls
+# in `utils.config_manager`; per RFC §3.8.2 / §7 this module must stay
+# pure-function with no stateful imports, so callers must
+#   from memory.evidence_analytics import funnel_counts
+# directly.
+
 
 # Source value shared by `aapply_signal` dispatchers to trigger combo logic.
 # Kept as a string to avoid circular import with memory/event_log.py

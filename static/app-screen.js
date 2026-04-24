@@ -59,6 +59,43 @@
     }
     mod.pushSelectedSourceToMain = pushSelectedSourceToMain;
 
+    // ======================== clearSelectedScreenSource ========================
+    /**
+     * 统一清除已失效的选中屏幕源 ID：渲染器 state + localStorage + 主进程三处一起清，
+     * 并同步 popup UI 高亮状态。用在检测到 selectedScreenSourceId 对应的窗口/屏幕
+     * 已不复存在（HWND 失效、窗口被关、屏幕被拔掉）时，防止下一次截图仍拿同一个
+     * 过期 ID 去走必然失败的快路径。
+     */
+    function clearSelectedScreenSource(reason) {
+        if (S.selectedScreenSourceId == null) return;
+        try {
+            console.log('[屏幕源] 清除失效的选中源' + (reason ? ' (' + reason + ')' : ''), S.selectedScreenSourceId);
+        } catch (_) { }
+        S.selectedScreenSourceId = null;
+        try { localStorage.removeItem('selectedScreenSourceId'); } catch (_) { }
+        pushSelectedSourceToMain(null);
+        try {
+            if (typeof updateScreenSourceListSelection === 'function') {
+                updateScreenSourceListSelection();
+            }
+        } catch (_) { }
+    }
+    mod.clearSelectedScreenSource = clearSelectedScreenSource;
+
+    // ======================== maybeClearSourceOnNotFound ========================
+    /**
+     * 通用兜底：主进程 captureSourceAsDataUrl 返回 { error: 'Source not found' }
+     * 时统一清掉失效的 selectedScreenSourceId。所有调用 captureSourceAsDataUrl 的
+     * 路径（截图、隐藏NEKO 重截、主动搭话）共用同一份语义，避免漏处理。
+     * 返回 true 表示已清理（调用方可据此判断要不要走下一个兜底）。
+     */
+    function maybeClearSourceOnNotFound(direct, reason) {
+        if (!direct || direct.error !== 'Source not found') return false;
+        clearSelectedScreenSource(reason);
+        return true;
+    }
+    mod.maybeClearSourceOnNotFound = maybeClearSourceOnNotFound;
+
     // 模块初始化：立刻将还原的选择推送到主进程，覆盖上次会话遗留的值
     pushSelectedSourceToMain(S.selectedScreenSourceId);
 
@@ -305,6 +342,11 @@
                         var captureSourceId = selectedSourceId;
                         if (!sourceExists) {
                             console.warn('[acquireStream] 选中的源已不可用，尝试回退到全屏源');
+                            // 把失效的 ID 从 state / localStorage / 主进程一起清掉，
+                            // 否则下次截图还会拿这个过期 ID 去走 Priority 1 (主进程
+                            // 直接捕获 "Source not found") 和 Priority 2 的 Electron
+                            // getUserMedia（会跑到 500ms 超时），整条失败链路每次重放。
+                            clearSelectedScreenSource('getSources 未找到该源');
                             var screenSources = currentSources.filter(function (s) { return s.id.startsWith('screen:'); });
                             if (screenSources.length > 0) {
                                 captureSourceId = screenSources[0].id;
@@ -1475,6 +1517,8 @@
     window.syncFloatingScreenButtonState = syncFloatingScreenButtonState;
     window.getAvatarScreenPosition = getAvatarScreenPosition;
     window.detectScreenshotCaptureType = detectScreenshotCaptureType;
+    window.clearSelectedScreenSource = clearSelectedScreenSource;
+    window.maybeClearSourceOnNotFound = maybeClearSourceOnNotFound;
 
     // ======================== Export module ========================
     window.appScreen = mod;

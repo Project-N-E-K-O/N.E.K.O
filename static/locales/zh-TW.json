@@ -599,6 +599,12 @@
         "screenshotAlt": "截圖 {{index}}",
         "screenshotTitle": "點擊查看截圖 {{index}}",
         "removeScreenshot": "移除此截圖",
+        "cropTabScreenshot": "截圖",
+        "cropTabHideNeko": "隱藏NEKO",
+        "cropTabCancel": "取消",
+        "cropTabRecapturing": "正在重新截圖...",
+        "cropConfirmTitle": "確認截圖",
+        "cropClearSelectionTitle": "取消選區",
         "avatarPreview": "顯示當前頭像",
         "avatarPreviewLabel": "當前頭像",
         "avatarPreviewCardTitle": "當前頭像",
@@ -1053,6 +1059,8 @@
         "selectMotion": "選擇動作",
         "selectExpression": "選擇錶情",
         "selectPersistentExpression": "選擇常駐錶情",
+        "noMotion": "無動作",
+        "noExpression": "無錶情",
         "noMotionFiles": "沒有動作文件",
         "touchAnim": {
             "title": "觸摸動畫配置",
@@ -3356,5 +3364,33 @@
         "useTemporary": "臨時使用",
         "tempBadge": "臨時",
         "popupBlocked": "彈窗被阻止，請允許彈窗後重試"
+    },
+    "connectivity": {
+        "testCustom": "測試自訂 API 連通性",
+        "testCore": "測試",
+        "testCoreTooltip": "測試核心 API 連通性",
+        "testAssist": "測試",
+        "testAssistTooltip": "測試輔助 API 連通性",
+        "gsvTestText": "GSV 連通性測試",
+        "gsvTestTooltip": "GPT-SoVITS 連通性測試",
+        "error": {
+            "timeout": "請求逾時（10秒）",
+            "auth_failed": "API Key 無效或已過期",
+            "connection_refused": "無法連接到目標伺服器",
+            "dns_error": "域名解析失敗",
+            "ssl_error": "SSL 憑證驗證失敗",
+            "ws_error": "WebSocket 連接失敗",
+            "missing_params": "缺少必要參數",
+            "unknown": "未知錯誤",
+            "backend_unavailable": "後端服務不可用",
+            "invalid_response": "回應格式錯誤"
+        },
+        "status": {
+            "connected": "已連通",
+            "failed": "連接失敗",
+            "untested": "未測試",
+            "not_configured": "未設定",
+            "testing": "測試中..."
+        }
     }
 }

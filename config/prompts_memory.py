@@ -1358,6 +1358,148 @@ def get_reflection_feedback_prompt(lang: str = 'zh') -> str:
 
 reflection_feedback_prompt = REFLECTION_FEEDBACK_PROMPT['zh']
 
+# =====================================================================
+# ======= Promotion merge (RFC §3.9.7) ===============================
+# =====================================================================
+# 当 reflection 的 evidence_score 穿过 EVIDENCE_PROMOTED_THRESHOLD 时，
+# `_apromote_with_merge` 调用 LLM 在 promote_fresh / merge_into / reject
+# 三选一。LLM 失败不静默降级到 promote_fresh（§3.9.4），所以 prompt 必
+# 须给出明确判定边界。
+#
+# 双水印（§3.9.7）：
+#   - 主体语义 watermark: "careful deduplication judge."
+#   - 印象池块界 watermark: "======以上为现有印象池======"
+# 翻译时按 CLAUDE.md 规约：水印行 (`======以上为...======`) 保留中文，
+# 不翻译——审计时用以快速定位 prompt 边界。
+PROMOTION_MERGE_PROMPT = {
+    'zh': """你是一个 careful deduplication judge。你在维护 {AI_NAME} 对 {MASTER_NAME} 的长期印象。现在有一条待晋升的观察：
+
+  R: "{R_TEXT}"
+  R.evidence_score: {R_SCORE}
+
+======以下是 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
+（已 promoted 的 persona fact + 其它 confirmed 的 reflection）
+
+{IMPRESSION_POOL}
+======以上为现有印象池======
+
+请判断 R 应该：
+
+- promote_fresh：作为新 persona fact 独立收录（和现有任何条目都不重复、不矛盾）
+- merge_into：和某条现有 persona entry 语义相近，应合并。返回 target_id（**必须**来自上面"现有印象池"区里的 persona.* 条目，不要合并到 reflection 条目）和合并后的文本。
+- reject：和现有某条明确矛盾且 R 证据弱于对方，不应收录。返回 reason。
+
+只输出合法 JSON，不要任何额外文本：
+{{"action": "promote_fresh", "reason": "为什么独立收录"}}
+或
+{{"action": "merge_into", "target_id": "persona.master.p_001", "merged_text": "合并后的完整描述"}}
+或
+{{"action": "reject", "reason": "与某条矛盾的简短说明"}}""",
+
+    'en': """You are a careful deduplication judge. You maintain {AI_NAME}'s long-term impressions of {MASTER_NAME}. A new observation is pending promotion:
+
+  R: "{R_TEXT}"
+  R.evidence_score: {R_SCORE}
+
+======以下是 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
+(promoted persona facts + other confirmed reflections)
+
+{IMPRESSION_POOL}
+======以上为现有印象池======
+
+Decide whether R should be:
+
+- promote_fresh: recorded as a new standalone persona fact (does not duplicate or contradict anything above).
+- merge_into: semantically close to one existing persona entry — merge them. Return `target_id` (which **MUST** be one of the `persona.*` entries listed above; never merge into a `reflection.*` entry) and the merged text.
+- reject: directly contradicts an existing entry whose evidence is stronger than R; do not record. Return `reason`.
+
+Output only valid JSON — no extra text:
+{{"action": "promote_fresh", "reason": "why standalone"}}
+or
+{{"action": "merge_into", "target_id": "persona.master.p_001", "merged_text": "full merged description"}}
+or
+{{"action": "reject", "reason": "short note on the contradiction"}}""",
+
+    'ja': """あなたは careful deduplication judge です。{AI_NAME} の {MASTER_NAME} に対する長期的な印象を管理しています。次の観察が昇格待ちです：
+
+  R: "{R_TEXT}"
+  R.evidence_score: {R_SCORE}
+
+======以下是 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
+（既に promoted の persona fact ＋ 他の confirmed の reflection）
+
+{IMPRESSION_POOL}
+======以上为现有印象池======
+
+R をどう扱うか判断してください：
+
+- promote_fresh：新たな persona fact として独立収録（上のどの項目とも重複・矛盾しない）。
+- merge_into：既存の persona エントリと意味的に近いので統合。`target_id` を返す（**必ず**上の "現有印象池" にある `persona.*` を選ぶこと。`reflection.*` への統合は禁止）、統合後の本文も返す。
+- reject：既存のいずれかと明確に矛盾し R の証拠の方が弱い場合は収録しない。`reason` を返す。
+
+合法な JSON のみを出力し、追加テキストは禁止：
+{{"action": "promote_fresh", "reason": "独立収録の理由"}}
+または
+{{"action": "merge_into", "target_id": "persona.master.p_001", "merged_text": "統合後の完全な記述"}}
+または
+{{"action": "reject", "reason": "矛盾する内容の簡潔な説明"}}""",
+
+    'ko': """당신은 careful deduplication judge입니다. {AI_NAME}의 {MASTER_NAME}에 대한 장기 인상을 관리합니다. 승격 대기 중인 관찰입니다:
+
+  R: "{R_TEXT}"
+  R.evidence_score: {R_SCORE}
+
+======以下是 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
+(이미 promoted된 persona fact + 기타 confirmed reflection)
+
+{IMPRESSION_POOL}
+======以上为现有印象池======
+
+R을 어떻게 처리할지 판단하세요:
+
+- promote_fresh: 새로운 persona fact로 독립 수록 (위의 어떤 항목과도 중복/모순되지 않음).
+- merge_into: 기존 persona 항목과 의미가 가까워 병합. `target_id` (반드시 위의 "现有印象池"에서 `persona.*` 항목 중 하나여야 함; `reflection.*`로의 병합은 금지)와 병합된 텍스트를 반환.
+- reject: 기존의 어떤 항목과 명확히 모순되며 R의 근거가 더 약한 경우, 수록하지 않음. `reason`을 반환.
+
+유효한 JSON만 출력하고 추가 텍스트는 출력하지 마세요:
+{{"action": "promote_fresh", "reason": "독립 수록 이유"}}
+또는
+{{"action": "merge_into", "target_id": "persona.master.p_001", "merged_text": "병합된 전체 서술"}}
+또는
+{{"action": "reject", "reason": "모순에 대한 짧은 설명"}}""",
+
+    'ru': """Вы — careful deduplication judge. Вы поддерживаете долгосрочные впечатления {AI_NAME} о {MASTER_NAME}. На повышение ожидает наблюдение:
+
+  R: "{R_TEXT}"
+  R.evidence_score: {R_SCORE}
+
+======以下是 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
+(уже promoted-факты persona + другие confirmed-reflection)
+
+{IMPRESSION_POOL}
+======以上为现有印象池======
+
+Решите, как обработать R:
+
+- promote_fresh: записать как новый отдельный persona-факт (не дублирует и не противоречит ничему выше).
+- merge_into: семантически близок одной существующей persona-записи — объединить. Верните `target_id` (**обязательно** один из `persona.*` записей выше; объединение в `reflection.*` запрещено) и итоговый текст.
+- reject: явно противоречит существующей записи, чьи свидетельства сильнее R; не записывать. Верните `reason`.
+
+Выводите только валидный JSON, без лишнего текста:
+{{"action": "promote_fresh", "reason": "почему отдельная запись"}}
+или
+{{"action": "merge_into", "target_id": "persona.master.p_001", "merged_text": "полный объединённый текст"}}
+или
+{{"action": "reject", "reason": "краткое описание противоречия"}}""",
+}
+
+
+def get_promotion_merge_prompt(lang: str = 'zh') -> str:
+    return _loc(PROMOTION_MERGE_PROMPT, lang)
+
+
+promotion_merge_prompt = PROMOTION_MERGE_PROMPT['zh']
+
 # ---------- persona_correction_prompt → i18n dict ----------
 
 PERSONA_CORRECTION_PROMPT = {

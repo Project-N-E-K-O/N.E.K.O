@@ -599,6 +599,12 @@
         "screenshotAlt": "截图 {{index}}",
         "screenshotTitle": "点击查看截图 {{index}}",
         "removeScreenshot": "移除此截图",
+        "cropTabScreenshot": "截图",
+        "cropTabHideNeko": "隐藏NEKO",
+        "cropTabCancel": "取消",
+        "cropTabRecapturing": "正在重新截图...",
+        "cropConfirmTitle": "确认截图",
+        "cropClearSelectionTitle": "取消选区",
         "avatarPreview": "显示当前头像",
         "avatarPreviewLabel": "当前头像",
         "avatarPreviewCardTitle": "当前头像",
@@ -1053,6 +1059,8 @@
         "selectMotion": "选择动作",
         "selectExpression": "选择表情",
         "selectPersistentExpression": "选择常驻表情",
+        "noMotion": "无动作",
+        "noExpression": "无表情",
         "noMotionFiles": "没有动作文件",
         "touchAnim": {
             "title": "触摸动画配置",
@@ -3356,5 +3364,33 @@
         "useTemporary": "临时使用",
         "tempBadge": "临时",
         "popupBlocked": "弹窗被阻止，请允许弹窗后重试"
+    },
+    "connectivity": {
+        "testCustom": "测试自定义 API 连通性",
+        "testCore": "测试",
+        "testCoreTooltip": "测试核心 API 连通性",
+        "testAssist": "测试",
+        "testAssistTooltip": "测试辅助 API 连通性",
+        "gsvTestText": "GSV连通性测试",
+        "gsvTestTooltip": "GPT-SoVITS 连通性测试",
+        "error": {
+            "timeout": "请求超时（10秒）",
+            "auth_failed": "API Key 无效或已过期",
+            "connection_refused": "无法连接到目标服务器",
+            "dns_error": "域名解析失败",
+            "ssl_error": "SSL 证书验证失败",
+            "ws_error": "WebSocket 连接失败",
+            "missing_params": "缺少必要参数",
+            "unknown": "未知错误",
+            "backend_unavailable": "后端服务不可用",
+            "invalid_response": "响应格式错误"
+        },
+        "status": {
+            "connected": "已连通",
+            "failed": "连接失败",
+            "untested": "未测试",
+            "not_configured": "未配置",
+            "testing": "测试中..."
+        }
     }
 }

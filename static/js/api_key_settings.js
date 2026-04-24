@@ -16,6 +16,11 @@ let _assistApiProviders = {};
 let _coreApiProviders = {};
 // 所有模型类型
 const MODEL_TYPES = ['conversation', 'summary', 'correction', 'emotion', 'vision', 'agent', 'omni', 'tts'];
+// Model types that support connectivity testing.
+// All model types including TTS are testable — TTS follows the same
+// provider resolution logic (follow_core/follow_assist/custom).
+// Future: GPT-SoVITS custom TTS may need dedicated WebSocket test path.
+const CONNECTIVITY_TESTABLE_TYPES = MODEL_TYPES;
 // 当前加载到页面中的 GPT-SoVITS 状态：none | enabled | disabled
 let _loadedGptSovitsState = 'none';
 // 上方普通 TTS 配置是否被用户在本页改动过
@@ -2258,6 +2263,1201 @@ function initTooltips() {
     });
 }
 
+// ==================== 连通性测试：指示灯 UI 组件 ====================
+
+/**
+ * 指示灯状态常量
+ */
+const LightStatus = {
+    CONNECTED: 'connected',
+    FAILED: 'failed',
+    UNTESTED: 'untested',
+    NOT_CONFIGURED: 'not_configured',
+    TESTING: 'testing',
+};
+
+/**
+ * 创建指示灯 DOM 元素，插入到 inputElement 前方。
+ * @param {HTMLElement} inputElement - 关联的输入框
+ * @param {object} context - 上下文信息（用于后续 ConnectivityManager 注册）
+ * @returns {HTMLElement} 创建的指示灯 <span> 元素
+ */
+function createIndicatorLight(inputElement, context) {
+    const light = document.createElement('span');
+    light.className = 'connectivity-light';
+    light.dataset.status = LightStatus.NOT_CONFIGURED;
+    light.title = window.t ? window.t('connectivity.status.not_configured') : '未配置';
+
+    // 存储上下文信息，供后续 ConnectivityManager 使用
+    if (context) {
+        light.dataset.context = JSON.stringify(context);
+    }
+
+    // 将灯和 input 包在一个水平 flex 容器中，确保同行对齐
+    if (inputElement && inputElement.parentNode) {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'connectivity-input-row';
+        inputElement.parentNode.insertBefore(wrapper, inputElement);
+        wrapper.appendChild(light);
+        wrapper.appendChild(inputElement);
+    }
+
+    return light;
+}
+
+/**
+ * 更新指示灯的状态（颜色、tooltip、动画）。
+ * @param {HTMLElement} lightElement - 指示灯 DOM 元素
+ * @param {string} status - 状态值：connected | failed | untested | not_configured | testing
+ */
+function updateLightStatus(lightElement, status) {
+    if (!lightElement) return;
+
+    lightElement.dataset.status = status;
+
+    // 通过 i18n 获取 tooltip 文本
+    const tooltipKey = `connectivity.status.${status}`;
+    const fallbackMap = {
+        [LightStatus.CONNECTED]: '已连通',
+        [LightStatus.FAILED]: '连接失败',
+        [LightStatus.UNTESTED]: '未测试',
+        [LightStatus.NOT_CONFIGURED]: '未配置',
+        [LightStatus.TESTING]: '测试中...',
+    };
+    const fallback = fallbackMap[status] || status;
+    lightElement.title = window.t ? window.t(tooltipKey, fallback) : fallback;
+}
+
+// ==================== 连通性测试：错误信息展示 UI 组件 ====================
+
+/**
+ * 创建错误信息展示 DOM 元素，插入到 inputElement 后方。
+ * @param {HTMLElement} inputElement - 关联的输入框
+ * @returns {HTMLElement} 创建的错误信息 <span> 元素
+ */
+function createErrorMessageDisplay(inputElement) {
+    const errorSpan = document.createElement('span');
+    errorSpan.className = 'connectivity-error-msg';
+    errorSpan.style.display = 'none';
+
+    // 插入到 inputElement 后方
+    if (inputElement && inputElement.parentNode) {
+        // insertBefore(newNode, referenceNode.nextSibling) 等效于 insertAfter
+        inputElement.parentNode.insertBefore(errorSpan, inputElement.nextSibling);
+    }
+
+    return errorSpan;
+}
+
+/**
+ * 更新错误信息展示内容。
+ * @param {HTMLElement} errorDisplayElement - 错误信息 DOM 元素
+ * @param {string|null} errorCode - 错误代码（null 表示成功/重置，隐藏错误信息）
+ * @param {string} errorDetail - 后端返回的原始错误描述（作为 i18n fallback）
+ */
+function updateErrorMessage(errorDisplayElement, errorCode, errorDetail) {
+    if (!errorDisplayElement) return;
+
+    // 成功或重置：隐藏错误信息
+    if (!errorCode) {
+        errorDisplayElement.textContent = '';
+        errorDisplayElement.style.display = 'none';
+        return;
+    }
+
+    // 尝试从 i18n 获取本地化错误信息
+    const i18nKey = `connectivity.error.${errorCode}`;
+    let message = '';
+    if (window.t) {
+        const translated = window.t(i18nKey);
+        // i18next 在 key 不存在时返回 key 本身，需要判断
+        message = (translated && translated !== i18nKey) ? translated : '';
+    }
+
+    // i18n key 不存在时回退到 errorDetail
+    if (!message) {
+        message = errorDetail || errorCode;
+    }
+
+    errorDisplayElement.textContent = message;
+    errorDisplayElement.style.display = 'inline';
+}
+
+// ==================== 连通性测试：ConnectivityManager ====================
+
+const ConnectivityManager = {
+    /** Key → 测试状态映射 */
+    keyStatusMap: {},
+
+    /** Key → 错误信息映射 { error_code, error } */
+    keyErrorMap: {},
+
+    /** Key → 指示灯 DOM 元素列表映射 */
+    keyLightsMap: {},
+
+    /** Key → 错误信息 DOM 元素列表映射 */
+    keyErrorDisplayMap: {},
+
+    /** 用于取消正在进行的测试请求 */
+    _abortControllers: {},
+
+    /**
+     * 解析某个 API 配置的实际 Key。
+     * 处理 follow_core、follow_assist、Key Book 同步、getRealKey 等各种 Key 来源。
+     *
+     * @param {object} context - 上下文对象
+     *   context.type: 'core' | 'assist' | 'custom'
+     *   context.modelType: (仅 custom) 模型类型，如 'conversation'
+     * @returns {{ key: string, url: string, providerType: string }} 解析结果
+     */
+    resolveEffectiveKey(context) {
+        const result = { key: '', url: '', providerType: 'openai_compatible', providerKey: '', providerScope: '' };
+
+        if (!context || !context.type) return result;
+
+        const coreApiSelect = document.getElementById('coreApiSelect');
+        const assistApiSelect = document.getElementById('assistApiSelect');
+        const apiKeyInput = document.getElementById('apiKeyInput');
+        const assistApiKeyInput = document.getElementById('assistApiKeyInput');
+
+        if (context.type === 'core') {
+            const coreProvider = coreApiSelect ? coreApiSelect.value : '';
+            result.providerKey = coreProvider;
+            result.providerScope = 'core';
+            if (coreProvider === 'free') {
+                // 免费版：使用预配置端点和 Key
+                const coreProfile = _coreApiProviders['free'] || {};
+                result.url = coreProfile.core_url || '';
+                result.key = 'free-access';
+                result.providerType = 'websocket';
+            } else {
+                const coreProfile = _coreApiProviders[coreProvider] || {};
+                result.url = coreProfile.core_url || '';
+                result.key = getRealKey(apiKeyInput);
+                result.providerType = 'websocket';
+            }
+            return result;
+        }
+
+        if (context.type === 'assist') {
+            const assistProvider = assistApiSelect ? assistApiSelect.value : '';
+            result.providerKey = assistProvider;
+            result.providerScope = 'assist';
+            if (assistProvider === 'free') {
+                const assistProfile = _assistApiProviders['free'] || {};
+                result.url = assistProfile.openrouter_url || '';
+                result.key = 'free-access';
+                result.providerType = 'openai_compatible';
+            } else {
+                const assistProfile = _assistApiProviders[assistProvider] || {};
+                result.url = assistProfile.openrouter_url || '';
+                // 优先从输入框读取，其次从 Key Book
+                const inputKey = getRealKey(assistApiKeyInput);
+                if (inputKey && !isFreeVersionText(inputKey)) {
+                    result.key = inputKey;
+                } else {
+                    const bookKey = syncKeyFromBook(assistProvider);
+                    result.key = (bookKey !== null) ? bookKey : '';
+                }
+                result.providerType = 'openai_compatible';
+            }
+            return result;
+        }
+
+        if (context.type === 'custom' && context.modelType) {
+            const mt = context.modelType;
+            const providerSel = document.getElementById(`${mt}ModelProvider`);
+            const urlInput = document.getElementById(`${mt}ModelUrl`);
+            const keyInput = document.getElementById(`${mt}ModelApiKey`);
+
+            if (!providerSel) return result;
+
+            const provider = providerSel.value;
+            result.url = urlInput ? urlInput.value.trim() : '';
+
+            if (provider === 'follow_core') {
+                // 跟随核心 API
+                const coreResult = this.resolveEffectiveKey({ type: 'core' });
+                // omni 模型使用 core_url (WebSocket)，其他模型使用 openrouter_url
+                if (mt === 'omni') {
+                    result.key = coreResult.key;
+                    result.url = coreResult.url;
+                    result.providerType = 'websocket';
+                    result.providerKey = coreResult.providerKey;
+                    result.providerScope = 'core';
+                } else {
+                    // 非 omni 跟随核心时，使用核心服务商的 assist 配置
+                    const coreProvider = coreApiSelect ? coreApiSelect.value : '';
+                    const pInfo = _assistApiProviders[coreProvider] || _coreApiProviders[coreProvider] || {};
+                    result.url = pInfo.openrouter_url || pInfo.core_url || '';
+                    result.key = coreResult.key;
+                    result.providerType = 'openai_compatible';
+                    result.providerKey = coreProvider;
+                    result.providerScope = 'assist';
+                }
+            } else if (provider === 'follow_assist') {
+                // 跟随辅助 API
+                const assistResult = this.resolveEffectiveKey({ type: 'assist' });
+                result.key = assistResult.key;
+                result.url = assistResult.url;
+                result.providerType = assistResult.providerType;
+                result.providerKey = assistResult.providerKey;
+                result.providerScope = assistResult.providerScope;
+            } else if (provider === 'custom') {
+                // 自定义：直接从输入框读取，不设 providerKey（走自定义模式）
+                result.key = keyInput ? getRealKey(keyInput) : '';
+                result.providerType = (mt === 'omni') ? 'websocket' : 'openai_compatible';
+            } else {
+                // 指定服务商：从 Key Book 读取
+                const bookKey = syncKeyFromBook(provider);
+                result.key = (bookKey !== null) ? bookKey : '';
+                if (mt === 'omni') {
+                    const coreProfile = _coreApiProviders[provider] || {};
+                    result.url = coreProfile.core_url || '';
+                    result.providerType = 'websocket';
+                    result.providerKey = provider;
+                    result.providerScope = 'core';
+                } else {
+                    const pInfo = _assistApiProviders[provider] || _coreApiProviders[provider] || {};
+                    result.url = pInfo.openrouter_url || pInfo.core_url || '';
+                    result.providerType = 'openai_compatible';
+                    result.providerKey = provider;
+                    result.providerScope = 'assist';
+                }
+            }
+
+            return result;
+        }
+
+        return result;
+    },
+
+    /**
+     * 注册一个指示灯到某个 Key
+     */
+    registerLight(key, lightElement) {
+        if (!key || !lightElement) return;
+        if (!this.keyLightsMap[key]) {
+            this.keyLightsMap[key] = [];
+        }
+        if (!this.keyLightsMap[key].includes(lightElement)) {
+            this.keyLightsMap[key].push(lightElement);
+        }
+    },
+
+    /**
+     * 取消注册指示灯
+     */
+    unregisterLight(key, lightElement) {
+        if (!key || !lightElement || !this.keyLightsMap[key]) return;
+        const idx = this.keyLightsMap[key].indexOf(lightElement);
+        if (idx !== -1) {
+            this.keyLightsMap[key].splice(idx, 1);
+        }
+        if (this.keyLightsMap[key].length === 0) {
+            delete this.keyLightsMap[key];
+        }
+    },
+
+    /**
+     * 注册一个错误信息展示元素到某个 Key
+     */
+    registerErrorDisplay(key, errorElement) {
+        if (!key || !errorElement) return;
+        if (!this.keyErrorDisplayMap[key]) {
+            this.keyErrorDisplayMap[key] = [];
+        }
+        if (!this.keyErrorDisplayMap[key].includes(errorElement)) {
+            this.keyErrorDisplayMap[key].push(errorElement);
+        }
+    },
+
+    /**
+     * 测试单个 Key 的连通性。
+     * 调用后端 /api/config/test_connectivity 端点，前端 15 秒超时。
+     *
+     * @param {Object} params - 测试参数
+     * @param {string} [params.provider_key] - 内置供应商 key（如 "qwen"、"openai"）
+     * @param {string} [params.provider_scope] - "core" 或 "assist"
+     * @param {string} [params.url] - 自定义 API 的 URL
+     * @param {string} [params.api_key] - API Key
+     * @param {string} [params.model] - 自定义 API 的模型名
+     * @param {string} [params.provider_type] - 'openai_compatible' 或 'websocket'
+     * @param {boolean} [params.is_free] - 是否免费版
+     * @returns {Promise<{success: boolean, error?: string, error_code?: string}>}
+     */
+    async testKey(params) {
+        const { provider_key, provider_scope, url, api_key: apiKey, model, provider_type: providerType, is_free: isFree } = params;
+        console.log('[ConnectivityManager] testKey called:', {
+            provider_key: provider_key || '(custom)',
+            provider_scope: provider_scope || '(none)',
+            hasUrl: !!url,
+            hasKey: !!apiKey,
+            model: model || '(default)',
+        });
+        // 取消同一 Key 的前一次未完成请求
+        const cacheKey = `${provider_key || url}|${apiKey || ''}`;
+        if (this._abortControllers[cacheKey]) {
+            this._abortControllers[cacheKey].abort();
+        }
+
+        const controller = new AbortController();
+        this._abortControllers[cacheKey] = controller;
+
+        // 前端 15 秒超时
+        const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+        try {
+            // Build request body based on mode
+            const body = { api_key: apiKey || '' };
+            if (provider_key && provider_scope) {
+                // Built-in provider mode
+                body.provider_key = provider_key;
+                body.provider_scope = provider_scope;
+            } else {
+                // Custom API mode
+                body.url = url || '';
+                body.model = model || '';
+                body.provider_type = providerType || 'openai_compatible';
+                body.is_free = !!isFree;
+            }
+
+            const response = await fetch('/api/config/test_connectivity', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+                signal: controller.signal
+            });
+
+            clearTimeout(timeoutId);
+            // Only delete if map still points to this controller (avoid race with newer request)
+            if (this._abortControllers[cacheKey] === controller) {
+                delete this._abortControllers[cacheKey];
+            }
+
+            if (!response.ok) {
+                return {
+                    success: false,
+                    error: `HTTP ${response.status}`,
+                    error_code: 'backend_unavailable'
+                };
+            }
+
+            const data = await response.json();
+            return {
+                success: !!data.success,
+                error: data.error || null,
+                error_code: data.error_code || null
+            };
+        } catch (err) {
+            clearTimeout(timeoutId);
+            if (this._abortControllers[cacheKey] === controller) {
+                delete this._abortControllers[cacheKey];
+            }
+
+            if (err.name === 'AbortError') {
+                return {
+                    success: false,
+                    error: 'Request timed out or was cancelled',
+                    error_code: 'timeout'
+                };
+            }
+            return {
+                success: false,
+                error: err.message || 'Unknown error',
+                error_code: 'backend_unavailable'
+            };
+        }
+    },
+
+    /**
+     * 批量测试所有已配置的 Key（去重，相同 Key 只测试一次）。
+     */
+    async testAll() {
+        // 收集所有需要测试的配置（以 cacheId 去重：有 key 用 key，无 key 用 URL）
+        const keyConfigs = {}; // cacheId → { provider_key, provider_scope, url, api_key, model, provider_type, is_free }
+
+        // 核心 API
+        const coreSelect = document.getElementById('coreApiSelect');
+        const coreIsFree = coreSelect && coreSelect.value === 'free';
+        const coreResult = this.resolveEffectiveKey({ type: 'core' });
+        const coreCacheId = coreResult.key || coreResult.url;
+        console.log('[ConnectivityManager] testAll - core resolved:', { hasUrl: !!coreResult.url, hasKey: !!coreResult.key, providerType: coreResult.providerType });
+        if (coreCacheId && !(coreResult.key && coreResult.key !== 'free-access' && isFreeVersionText(coreResult.key))) {
+            if (!keyConfigs[coreCacheId]) {
+                keyConfigs[coreCacheId] = {
+                    provider_key: coreResult.providerKey, provider_scope: coreResult.providerScope,
+                    url: coreResult.url, api_key: coreResult.key || '', provider_type: coreResult.providerType, is_free: coreIsFree
+                };
+            }
+        }
+
+        // 辅助 API
+        const assistSelect = document.getElementById('assistApiSelect');
+        const assistIsFree = assistSelect && assistSelect.value === 'free';
+        const assistResult = this.resolveEffectiveKey({ type: 'assist' });
+        const assistCacheId = assistResult.key || assistResult.url;
+        if (assistCacheId && !keyConfigs[assistCacheId]) {
+            keyConfigs[assistCacheId] = {
+                provider_key: assistResult.providerKey, provider_scope: assistResult.providerScope,
+                url: assistResult.url, api_key: assistResult.key || '', provider_type: assistResult.providerType, is_free: assistIsFree
+            };
+        }
+
+        // 自定义 API（如果启用）
+        const enableCustomApi = document.getElementById('enableCustomApi');
+        if (enableCustomApi && enableCustomApi.checked) {
+            CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
+                const customResult = this.resolveEffectiveKey({ type: 'custom', modelType: mt });
+                const customCacheId = customResult.key || customResult.url;
+                if (customCacheId && !keyConfigs[customCacheId]) {
+                    const providerSel = document.getElementById(`${mt}ModelProvider`);
+                    const provider = providerSel ? providerSel.value : '';
+                    let isFree = false;
+                    if (provider === 'follow_core' && coreSelect && coreSelect.value === 'free') isFree = true;
+                    else if (provider === 'follow_assist' && assistSelect && assistSelect.value === 'free') isFree = true;
+                    // For custom provider, also pass model from the input
+                    const modelInput = document.getElementById(`${mt}ModelId`);
+                    const model = modelInput ? modelInput.value.trim() : '';
+                    keyConfigs[customCacheId] = {
+                        provider_key: customResult.providerKey, provider_scope: customResult.providerScope,
+                        url: customResult.url, api_key: customResult.key || '', model: model,
+                        provider_type: customResult.providerType, is_free: isFree
+                    };
+                }
+            });
+        }
+
+        // 将所有待测试的 Key 设为 testing 状态
+        console.log('[ConnectivityManager] testAll - keyConfigs to test:', Object.keys(keyConfigs).length);
+        Object.keys(keyConfigs).forEach(key => {
+            this.keyStatusMap[key] = LightStatus.TESTING;
+            this.keyErrorMap[key] = null;
+            this.syncLightsForKey(key);
+            this.syncErrorDisplaysForKey(key);
+        });
+
+        // 并发测试所有唯一配置
+        const testPromises = Object.entries(keyConfigs).map(async ([cacheId, config]) => {
+            const result = await this.testKey(config);
+            if (result.success) {
+                this.keyStatusMap[cacheId] = LightStatus.CONNECTED;
+                this.keyErrorMap[cacheId] = null;
+            } else {
+                this.keyStatusMap[cacheId] = LightStatus.FAILED;
+                this.keyErrorMap[cacheId] = {
+                    error_code: result.error_code || 'unknown',
+                    error: result.error || ''
+                };
+            }
+            this.syncLightsForKey(cacheId);
+            this.syncErrorDisplaysForKey(cacheId);
+        });
+
+        await Promise.allSettled(testPromises);
+    },
+
+    /**
+     * 更新所有共享同一 Key 的指示灯状态。
+     */
+    syncLightsForKey(key) {
+        if (!key) return;
+        const status = this.keyStatusMap[key] || LightStatus.NOT_CONFIGURED;
+        const lights = this.keyLightsMap[key] || [];
+        console.log(`[ConnectivityManager] syncLightsForKey: status=${status}, lights=${lights.length}`);
+        lights.forEach(light => {
+            updateLightStatus(light, status);
+        });
+    },
+
+    /**
+     * 更新所有共享同一 Key 的错误信息展示。
+     */
+    syncErrorDisplaysForKey(key) {
+        if (!key) return;
+        const errorInfo = this.keyErrorMap[key];
+        const displays = this.keyErrorDisplayMap[key] || [];
+        displays.forEach(display => {
+            if (errorInfo) {
+                updateErrorMessage(display, errorInfo.error_code, errorInfo.error);
+            } else {
+                updateErrorMessage(display, null, '');
+            }
+        });
+    },
+
+    /**
+     * 当 Key 被修改时重置状态为 untested，清除错误信息。
+     */
+    onKeyChanged(key) {
+        if (!key) return;
+        this.keyStatusMap[key] = LightStatus.UNTESTED;
+        this.keyErrorMap[key] = null;
+        this.syncLightsForKey(key);
+        this.syncErrorDisplaysForKey(key);
+    },
+
+    /**
+     * 仅测试自定义 API 的连通性（不包含核心和辅助 API）。
+     * 由自定义 API 区域的测试按钮调用。
+     */
+    async testCustomOnly() {
+        const keyConfigs = {}; // cacheId → { provider_key, provider_scope, url, api_key, model, provider_type, is_free }
+
+        const enableCustomApi = document.getElementById('enableCustomApi');
+        const coreSelect = document.getElementById('coreApiSelect');
+        const assistSelect = document.getElementById('assistApiSelect');
+
+        if (enableCustomApi && enableCustomApi.checked) {
+            CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
+                const customResult = this.resolveEffectiveKey({ type: 'custom', modelType: mt });
+                const cacheId = customResult.key || customResult.url;
+                if (cacheId && !keyConfigs[cacheId]) {
+                    const providerSel = document.getElementById(`${mt}ModelProvider`);
+                    const provider = providerSel ? providerSel.value : '';
+                    let isFree = false;
+                    if (provider === 'follow_core' && coreSelect && coreSelect.value === 'free') {
+                        isFree = true;
+                    } else if (provider === 'follow_assist' && assistSelect && assistSelect.value === 'free') {
+                        isFree = true;
+                    }
+                    const modelInput = document.getElementById(`${mt}ModelId`);
+                    const model = modelInput ? modelInput.value.trim() : '';
+                    keyConfigs[cacheId] = {
+                        provider_key: customResult.providerKey, provider_scope: customResult.providerScope,
+                        url: customResult.url, api_key: customResult.key || '', model: model,
+                        provider_type: customResult.providerType, is_free: isFree
+                    };
+                }
+            });
+        }
+
+        // 将所有待测试的配置设为 testing 状态
+        Object.keys(keyConfigs).forEach(cacheId => {
+            this.keyStatusMap[cacheId] = LightStatus.TESTING;
+            this.keyErrorMap[cacheId] = null;
+            this.syncLightsForKey(cacheId);
+            this.syncErrorDisplaysForKey(cacheId);
+        });
+
+        // 并发测试
+        const testPromises = Object.entries(keyConfigs).map(async ([cacheId, config]) => {
+            const result = await this.testKey(config);
+            if (result.success) {
+                this.keyStatusMap[cacheId] = LightStatus.CONNECTED;
+                this.keyErrorMap[cacheId] = null;
+            } else {
+                this.keyStatusMap[cacheId] = LightStatus.FAILED;
+                this.keyErrorMap[cacheId] = {
+                    error_code: result.error_code || 'unknown',
+                    error: result.error || ''
+                };
+            }
+            this.syncLightsForKey(cacheId);
+            this.syncErrorDisplaysForKey(cacheId);
+        });
+
+        await Promise.allSettled(testPromises);
+    },
+
+    /**
+     * 页面加载时的自动测试。
+     */
+    async autoTestOnLoad() {
+        console.log('[ConnectivityManager] autoTestOnLoad called');
+        await this.testAll();
+        console.log('[ConnectivityManager] autoTestOnLoad finished');
+    },
+};
+
+// ==================== 连通性测试：集成初始化 ====================
+
+/**
+ * 初始化所有连通性指示灯、错误信息展示、测试按钮和事件绑定。
+ * 在 initializePage() 中调用，负责 Tasks 6.1, 6.2, 6.3, 7.1, 7.2, 8.1, 8.2。
+ */
+function initConnectivityLights() {
+    // Prevent duplicate initialization (race condition guard)
+    if (window._connectivityLightsInitialized) return;
+    window._connectivityLightsInitialized = true;
+
+    const apiKeyInput = document.getElementById('apiKeyInput');
+    const assistApiKeyInput = document.getElementById('assistApiKeyInput');
+    const coreApiSelect = document.getElementById('coreApiSelect');
+    const assistApiSelect = document.getElementById('assistApiSelect');
+    const enableCustomApiCheckbox = document.getElementById('enableCustomApi');
+    const customApiContainer = document.getElementById('custom-api-container');
+
+    // 用于存储所有创建的指示灯和错误展示元素的引用，方便事件处理
+    const lightRefs = {
+        core: { light: null, errorDisplay: null },
+        assist: { light: null, errorDisplay: null },
+        custom: {} // { [modelType]: { light, errorDisplay } }
+    };
+
+    // 简单的 debounce 工具函数
+    function debounce(fn, delay) {
+        let timer = null;
+        return function (...args) {
+            if (timer) clearTimeout(timer);
+            timer = setTimeout(() => fn.apply(this, args), delay);
+        };
+    }
+
+    /**
+     * 为指定的 light 和 errorDisplay 注册到 ConnectivityManager，
+     * 根据当前 key 设置初始状态。
+     */
+    function registerAndSetInitialStatus(light, errorDisplay, context) {
+        const resolved = ConnectivityManager.resolveEffectiveKey(context);
+        const key = resolved.key;
+        const url = resolved.url;
+
+        // 用于注册和缓存的标识：优先用 key，无 key 时用 URL（本地服务场景）
+        const cacheId = key || url;
+
+        if (!cacheId || (key && key !== 'free-access' && isFreeVersionText(key))) {
+            // 无 key 且无 URL → 灰色（真正的未配置）
+            updateLightStatus(light, LightStatus.NOT_CONFIGURED);
+            updateErrorMessage(errorDisplay, null, '');
+        } else {
+            // 有 key 或有 URL → 检查缓存，有缓存用缓存，无缓存显示黄色
+            const cachedStatus = ConnectivityManager.keyStatusMap[cacheId];
+            if (cachedStatus) {
+                updateLightStatus(light, cachedStatus);
+                const errorInfo = ConnectivityManager.keyErrorMap[cacheId];
+                if (errorInfo) {
+                    updateErrorMessage(errorDisplay, errorInfo.error_code, errorInfo.error);
+                } else {
+                    updateErrorMessage(errorDisplay, null, '');
+                }
+            } else {
+                updateLightStatus(light, LightStatus.UNTESTED);
+                ConnectivityManager.keyStatusMap[cacheId] = LightStatus.UNTESTED;
+                updateErrorMessage(errorDisplay, null, '');
+            }
+            ConnectivityManager.registerLight(cacheId, light);
+            ConnectivityManager.registerErrorDisplay(cacheId, errorDisplay);
+        }
+
+        return cacheId;
+    }
+
+    /**
+     * 重新注册一个 light/errorDisplay 到新的 key（取消旧注册）。
+     * 可选地同时重新注册一个 summaryLight。
+     * 返回新的 key。
+     */
+    function reRegister(light, errorDisplay, context, oldKey, summaryLight) {
+        // 取消旧注册
+        if (oldKey) {
+            ConnectivityManager.unregisterLight(oldKey, light);
+            if (summaryLight) {
+                ConnectivityManager.unregisterLight(oldKey, summaryLight);
+            }
+            // unregister error display
+            const displays = ConnectivityManager.keyErrorDisplayMap[oldKey];
+            if (displays) {
+                const idx = displays.indexOf(errorDisplay);
+                if (idx !== -1) displays.splice(idx, 1);
+                if (displays.length === 0) delete ConnectivityManager.keyErrorDisplayMap[oldKey];
+            }
+        }
+        const newKey = registerAndSetInitialStatus(light, errorDisplay, context);
+        // Re-register summary light to the new key
+        if (summaryLight && newKey) {
+            ConnectivityManager.registerLight(newKey, summaryLight);
+            summaryLight.dataset.status = light.dataset.status;
+        } else if (summaryLight) {
+            summaryLight.dataset.status = LightStatus.NOT_CONFIGURED;
+        }
+        return newKey;
+    }
+
+    // ===== Task 6.1: Core API indicator light and error display =====
+    let coreCurrentKey = '';
+    if (apiKeyInput) {
+        const coreLight = createIndicatorLight(apiKeyInput, { type: 'core' });
+        const coreErrorDisplay = createErrorMessageDisplay(apiKeyInput);
+        lightRefs.core.light = coreLight;
+        lightRefs.core.errorDisplay = coreErrorDisplay;
+        coreCurrentKey = registerAndSetInitialStatus(coreLight, coreErrorDisplay, { type: 'core' });
+
+        // 核心 API 手动测试按钮
+        const coreTestBtn = document.createElement('button');
+        coreTestBtn.type = 'button';
+        coreTestBtn.className = 'connectivity-mini-test-btn';
+        coreTestBtn.textContent = window.t ? window.t('connectivity.testCore', '测试') : '测试';
+        coreTestBtn.title = window.t ? window.t('connectivity.testCoreTooltip', '测试核心 API 连通性') : '测试核心 API 连通性';
+        coreTestBtn.addEventListener('click', async () => {
+            coreTestBtn.disabled = true;
+            coreTestBtn.classList.add('testing');
+            const resolved = ConnectivityManager.resolveEffectiveKey({ type: 'core' });
+            if (resolved.key) {
+                const coreSelect = document.getElementById('coreApiSelect');
+                const isFree = coreSelect && coreSelect.value === 'free';
+                ConnectivityManager.keyStatusMap[resolved.key] = LightStatus.TESTING;
+                ConnectivityManager.keyErrorMap[resolved.key] = null;
+                ConnectivityManager.syncLightsForKey(resolved.key);
+                ConnectivityManager.syncErrorDisplaysForKey(resolved.key);
+                const result = await ConnectivityManager.testKey({
+                    provider_key: resolved.providerKey, provider_scope: resolved.providerScope,
+                    url: resolved.url, api_key: resolved.key, provider_type: resolved.providerType, is_free: isFree
+                });
+                if (result.success) {
+                    ConnectivityManager.keyStatusMap[resolved.key] = LightStatus.CONNECTED;
+                    ConnectivityManager.keyErrorMap[resolved.key] = null;
+                } else {
+                    ConnectivityManager.keyStatusMap[resolved.key] = LightStatus.FAILED;
+                    ConnectivityManager.keyErrorMap[resolved.key] = { error_code: result.error_code || 'unknown', error: result.error || '' };
+                }
+                ConnectivityManager.syncLightsForKey(resolved.key);
+                ConnectivityManager.syncErrorDisplaysForKey(resolved.key);
+            }
+            coreTestBtn.classList.remove('testing');
+            coreTestBtn.disabled = false;
+        });
+        // 插入到 connectivity-input-row 内部，输入框后面（同一行）
+        const coreInputRow = apiKeyInput.closest('.connectivity-input-row');
+        if (coreInputRow) {
+            coreInputRow.appendChild(coreTestBtn);
+        }
+    }
+
+    // ===== Task 6.2: Assist API indicator light and error display =====
+    let assistCurrentKey = '';
+    if (assistApiKeyInput) {
+        const assistLight = createIndicatorLight(assistApiKeyInput, { type: 'assist' });
+        const assistErrorDisplay = createErrorMessageDisplay(assistApiKeyInput);
+        lightRefs.assist.light = assistLight;
+        lightRefs.assist.errorDisplay = assistErrorDisplay;
+        assistCurrentKey = registerAndSetInitialStatus(assistLight, assistErrorDisplay, { type: 'assist' });
+
+        // 辅助 API 手动测试按钮
+        const assistTestBtn = document.createElement('button');
+        assistTestBtn.type = 'button';
+        assistTestBtn.className = 'connectivity-mini-test-btn';
+        assistTestBtn.textContent = window.t ? window.t('connectivity.testAssist', '测试') : '测试';
+        assistTestBtn.title = window.t ? window.t('connectivity.testAssistTooltip', '测试辅助 API 连通性') : '测试辅助 API 连通性';
+        assistTestBtn.addEventListener('click', async () => {
+            assistTestBtn.disabled = true;
+            assistTestBtn.classList.add('testing');
+            const resolved = ConnectivityManager.resolveEffectiveKey({ type: 'assist' });
+            if (resolved.key) {
+                const assistSelect = document.getElementById('assistApiSelect');
+                const isFree = assistSelect && assistSelect.value === 'free';
+                ConnectivityManager.keyStatusMap[resolved.key] = LightStatus.TESTING;
+                ConnectivityManager.keyErrorMap[resolved.key] = null;
+                ConnectivityManager.syncLightsForKey(resolved.key);
+                ConnectivityManager.syncErrorDisplaysForKey(resolved.key);
+                const result = await ConnectivityManager.testKey({
+                    provider_key: resolved.providerKey, provider_scope: resolved.providerScope,
+                    url: resolved.url, api_key: resolved.key, provider_type: resolved.providerType, is_free: isFree
+                });
+                if (result.success) {
+                    ConnectivityManager.keyStatusMap[resolved.key] = LightStatus.CONNECTED;
+                    ConnectivityManager.keyErrorMap[resolved.key] = null;
+                } else {
+                    ConnectivityManager.keyStatusMap[resolved.key] = LightStatus.FAILED;
+                    ConnectivityManager.keyErrorMap[resolved.key] = { error_code: result.error_code || 'unknown', error: result.error || '' };
+                }
+                ConnectivityManager.syncLightsForKey(resolved.key);
+                ConnectivityManager.syncErrorDisplaysForKey(resolved.key);
+            }
+            assistTestBtn.classList.remove('testing');
+            assistTestBtn.disabled = false;
+        });
+        // 插入到 connectivity-input-row 内部，输入框后面（同一行）
+        const assistInputRow = assistApiKeyInput.closest('.connectivity-input-row');
+        if (assistInputRow) {
+            assistInputRow.appendChild(assistTestBtn);
+        }
+    }
+
+    // ===== Task 7.1: Custom API test button =====
+    let testButton = null;
+    if (customApiContainer) {
+        testButton = document.createElement('button');
+        testButton.type = 'button';
+        testButton.className = 'connectivity-test-btn';
+        testButton.id = 'customApiTestBtn';
+
+        // 创建按钮内的小指示灯图标
+        const btnLight = document.createElement('span');
+        btnLight.className = 'connectivity-light';
+        btnLight.dataset.status = LightStatus.NOT_CONFIGURED;
+        btnLight.style.marginRight = '6px';
+        testButton.appendChild(btnLight);
+
+        const btnText = document.createElement('span');
+        btnText.textContent = window.t ? window.t('connectivity.testCustom', '测试自定义 API 连通性') : '测试自定义 API 连通性';
+        btnText.setAttribute('data-i18n', 'connectivity.testCustom');
+        testButton.appendChild(btnText);
+
+        // 插入到 custom-api-container 顶部
+        customApiContainer.insertBefore(testButton, customApiContainer.firstChild);
+
+        // ===== Issue 3: Summary lights row next to test button =====
+        const summaryRow = document.createElement('span');
+        summaryRow.className = 'connectivity-summary-row';
+        summaryRow.id = 'customApiSummaryLights';
+
+        CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
+            const summaryLight = document.createElement('span');
+            summaryLight.className = 'connectivity-summary-light';
+            summaryLight.dataset.status = LightStatus.NOT_CONFIGURED;
+            summaryLight.dataset.modelType = mt;
+            const modelLabel = window.t ? window.t(`model.${mt}`, mt) : mt;
+            summaryLight.title = modelLabel;
+            summaryRow.appendChild(summaryLight);
+        });
+
+        // Wrap button and summary lights in a container
+        const btnWrapper = document.createElement('div');
+        btnWrapper.className = 'connectivity-test-btn-wrapper';
+        btnWrapper.style.display = 'flex';
+        btnWrapper.style.alignItems = 'center';
+        btnWrapper.style.marginBottom = '12px';
+
+        // Move button into wrapper (replace its position)
+        testButton.style.marginBottom = '0';
+        customApiContainer.removeChild(testButton);
+        btnWrapper.appendChild(testButton);
+        btnWrapper.appendChild(summaryRow);
+        customApiContainer.insertBefore(btnWrapper, customApiContainer.firstChild);
+
+        // 根据 enableCustomApi 状态显示/隐藏
+        if (enableCustomApiCheckbox) {
+            btnWrapper.style.display = enableCustomApiCheckbox.checked ? 'flex' : 'none';
+        }
+
+        testButton.addEventListener('click', async () => {
+            testButton.disabled = true;
+            try {
+                await ConnectivityManager.testCustomOnly();
+            } finally {
+                testButton.disabled = false;
+            }
+        });
+    }
+
+    // ===== Task 7.2: Custom model indicator lights =====
+    const customCurrentKeys = {}; // { [modelType]: currentKey }
+    CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
+        const keyInput = document.getElementById(`${mt}ModelApiKey`);
+        if (!keyInput) return;
+
+        const light = createIndicatorLight(keyInput, { type: 'custom', modelType: mt });
+        const errorDisplay = createErrorMessageDisplay(keyInput);
+        lightRefs.custom[mt] = { light, errorDisplay };
+
+        const key = registerAndSetInitialStatus(light, errorDisplay, { type: 'custom', modelType: mt });
+        customCurrentKeys[mt] = key;
+
+        // Also register the corresponding summary light for the same key
+        const summaryLight = document.querySelector(`.connectivity-summary-light[data-model-type="${mt}"]`);
+        if (summaryLight && key) {
+            ConnectivityManager.registerLight(key, summaryLight);
+            // Set initial status to match the main light
+            summaryLight.dataset.status = light.dataset.status;
+            summaryLight.title = (window.t ? window.t(`model.${mt}`, mt) : mt) + ' - ' + (light.title || '');
+        }
+        if (summaryLight) {
+            lightRefs.custom[mt].summaryLight = summaryLight;
+        }
+    });
+
+    // ===== Task 7.1 (continued): Show/hide test button on enableCustomApi change =====
+    if (enableCustomApiCheckbox && testButton) {
+        const wrapper = document.getElementById('customApiTestBtn')?.closest('.connectivity-test-btn-wrapper');
+        enableCustomApiCheckbox.addEventListener('change', () => {
+            if (wrapper) {
+                wrapper.style.display = enableCustomApiCheckbox.checked ? 'flex' : 'none';
+            }
+        });
+    }
+
+    // ===== Task 8.1: Key modification event binding =====
+
+    // Helper: cascade reset for all lights sharing the same key
+    function cascadeResetForKey(key) {
+        if (!key) return;
+        ConnectivityManager.onKeyChanged(key);
+    }
+
+    // Core API key input change
+    if (apiKeyInput) {
+        const handleCoreKeyChange = debounce(() => {
+            const oldKey = coreCurrentKey;
+            coreCurrentKey = reRegister(
+                lightRefs.core.light, lightRefs.core.errorDisplay,
+                { type: 'core' }, oldKey
+            );
+            // Cascade: reset all lights that shared the OLD key (they lost their source)
+            if (oldKey && oldKey !== coreCurrentKey) {
+                cascadeResetForKey(oldKey);
+            }
+            // 新 key 不需要 cascadeReset — reRegister 已经从缓存正确恢复了状态
+            // Re-register custom models that follow_core so they track the new key
+            CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
+                const providerSel = document.getElementById(`${mt}ModelProvider`);
+                if (providerSel && providerSel.value === 'follow_core' && lightRefs.custom[mt]) {
+                    const oldCustomKey = customCurrentKeys[mt];
+                    customCurrentKeys[mt] = reRegister(
+                        lightRefs.custom[mt].light, lightRefs.custom[mt].errorDisplay,
+                        { type: 'custom', modelType: mt }, oldCustomKey,
+                        lightRefs.custom[mt].summaryLight
+                    );
+                }
+            });
+        }, 300);
+
+        apiKeyInput.addEventListener('input', handleCoreKeyChange);
+        apiKeyInput.addEventListener('change', handleCoreKeyChange);
+    }
+
+    // Assist API key input change
+    if (assistApiKeyInput) {
+        const handleAssistKeyChange = debounce(() => {
+            const oldKey = assistCurrentKey;
+            assistCurrentKey = reRegister(
+                lightRefs.assist.light, lightRefs.assist.errorDisplay,
+                { type: 'assist' }, oldKey
+            );
+            if (oldKey && oldKey !== assistCurrentKey) {
+                cascadeResetForKey(oldKey);
+            }
+            // 新 key 不需要 cascadeReset — reRegister 已经从缓存正确恢复了状态
+            // Re-register custom models that follow_assist so they track the new key
+            CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
+                const providerSel = document.getElementById(`${mt}ModelProvider`);
+                if (providerSel && providerSel.value === 'follow_assist' && lightRefs.custom[mt]) {
+                    const oldCustomKey = customCurrentKeys[mt];
+                    customCurrentKeys[mt] = reRegister(
+                        lightRefs.custom[mt].light, lightRefs.custom[mt].errorDisplay,
+                        { type: 'custom', modelType: mt }, oldCustomKey,
+                        lightRefs.custom[mt].summaryLight
+                    );
+                }
+            });
+        }, 300);
+
+        assistApiKeyInput.addEventListener('input', handleAssistKeyChange);
+        assistApiKeyInput.addEventListener('change', handleAssistKeyChange);
+    }
+
+    // Custom model key input changes
+    CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
+        const keyInput = document.getElementById(`${mt}ModelApiKey`);
+        if (!keyInput || !lightRefs.custom[mt]) return;
+
+        const handleCustomKeyChange = debounce(() => {
+            const oldKey = customCurrentKeys[mt];
+            customCurrentKeys[mt] = reRegister(
+                lightRefs.custom[mt].light, lightRefs.custom[mt].errorDisplay,
+                { type: 'custom', modelType: mt }, oldKey,
+                lightRefs.custom[mt].summaryLight
+            );
+            if (oldKey && oldKey !== customCurrentKeys[mt]) {
+                cascadeResetForKey(oldKey);
+            }
+            // 新 key 不需要 cascadeReset — reRegister 已经从缓存正确恢复了状态
+        }, 300);
+
+        keyInput.addEventListener('input', handleCustomKeyChange);
+        keyInput.addEventListener('change', handleCustomKeyChange);
+    });
+
+    // ===== Task 8.2: Provider switch event binding =====
+
+    // Core API provider change
+    if (coreApiSelect) {
+        coreApiSelect.addEventListener('change', () => {
+            const oldKey = coreCurrentKey;
+            coreCurrentKey = reRegister(
+                lightRefs.core.light, lightRefs.core.errorDisplay,
+                { type: 'core' }, oldKey
+            );
+            // 核心切换可能导致辅助被强制改变（如切到免费版时辅助锁定为免费版）
+            // 需要重新注册辅助灯
+            if (lightRefs.assist.light) {
+                const oldAssistKey = assistCurrentKey;
+                assistCurrentKey = reRegister(
+                    lightRefs.assist.light, lightRefs.assist.errorDisplay,
+                    { type: 'assist' }, oldAssistKey
+                );
+            }
+            // Also re-register custom models that follow_core or follow_assist
+            CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
+                const providerSel = document.getElementById(`${mt}ModelProvider`);
+                if (providerSel && (providerSel.value === 'follow_core' || providerSel.value === 'follow_assist') && lightRefs.custom[mt]) {
+                    const oldCustomKey = customCurrentKeys[mt];
+                    customCurrentKeys[mt] = reRegister(
+                        lightRefs.custom[mt].light, lightRefs.custom[mt].errorDisplay,
+                        { type: 'custom', modelType: mt }, oldCustomKey,
+                        lightRefs.custom[mt].summaryLight
+                    );
+                }
+            });
+        });
+    }
+
+    // Assist API provider change
+    if (assistApiSelect) {
+        assistApiSelect.addEventListener('change', () => {
+            const oldKey = assistCurrentKey;
+            assistCurrentKey = reRegister(
+                lightRefs.assist.light, lightRefs.assist.errorDisplay,
+                { type: 'assist' }, oldKey
+            );
+            // Also re-register custom models that follow_assist
+            CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
+                const providerSel = document.getElementById(`${mt}ModelProvider`);
+                if (providerSel && providerSel.value === 'follow_assist' && lightRefs.custom[mt]) {
+                    const oldCustomKey = customCurrentKeys[mt];
+                    customCurrentKeys[mt] = reRegister(
+                        lightRefs.custom[mt].light, lightRefs.custom[mt].errorDisplay,
+                        { type: 'custom', modelType: mt }, oldCustomKey,
+                        lightRefs.custom[mt].summaryLight
+                    );
+                }
+            });
+        });
+    }
+
+    // Custom model provider dropdown changes
+    CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
+        const providerSel = document.getElementById(`${mt}ModelProvider`);
+        if (!providerSel || !lightRefs.custom[mt]) return;
+
+        providerSel.addEventListener('change', () => {
+            const oldKey = customCurrentKeys[mt];
+            customCurrentKeys[mt] = reRegister(
+                lightRefs.custom[mt].light, lightRefs.custom[mt].errorDisplay,
+                { type: 'custom', modelType: mt }, oldKey,
+                lightRefs.custom[mt].summaryLight
+            );
+        });
+    });
+
+    // ===== GPT-SoVITS connectivity test button =====
+    const gsvUrlInput = document.getElementById('gptsovitsApiUrl');
+    if (gsvUrlInput) {
+        const gsvLight = document.createElement('span');
+        gsvLight.className = 'connectivity-light';
+        gsvLight.dataset.status = LightStatus.NOT_CONFIGURED;
+        gsvLight.title = 'GPT-SoVITS';
+
+        const gsvTestBtn = document.createElement('button');
+        gsvTestBtn.type = 'button';
+        gsvTestBtn.className = 'connectivity-mini-test-btn';
+        gsvTestBtn.textContent = window.t ? window.t('connectivity.testCore', '测试') : '测试';
+        gsvTestBtn.title = window.t ? window.t('connectivity.gsvTestTooltip', 'GPT-SoVITS 连通性测试') : 'GPT-SoVITS 连通性测试';
+
+        // Wrap input with light and button
+        const gsvRow = gsvUrlInput.closest('.field-row');
+        if (gsvRow) {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'connectivity-input-row';
+            gsvUrlInput.parentNode.insertBefore(wrapper, gsvUrlInput);
+            wrapper.appendChild(gsvLight);
+            wrapper.appendChild(gsvUrlInput);
+            wrapper.appendChild(gsvTestBtn);
+        }
+
+        // Update light based on URL presence and changes
+        let gsvLastUrl = gsvUrlInput.value.trim();
+        const gsvErrorMsg = document.createElement('span');
+        gsvErrorMsg.className = 'connectivity-error-msg';
+        gsvErrorMsg.style.display = 'none';
+        if (gsvRow) {
+            gsvRow.appendChild(gsvErrorMsg);
+        }
+
+        const updateGsvLightStatus = () => {
+            const url = gsvUrlInput.value.trim();
+            if (!url) {
+                updateLightStatus(gsvLight, LightStatus.NOT_CONFIGURED);
+                updateErrorMessage(gsvErrorMsg, null, '');
+            } else if (url !== gsvLastUrl) {
+                // URL changed — reset to untested (same behavior as key change cascade)
+                updateLightStatus(gsvLight, LightStatus.UNTESTED);
+                updateErrorMessage(gsvErrorMsg, null, '');
+            } else if (gsvLight.dataset.status === LightStatus.NOT_CONFIGURED) {
+                updateLightStatus(gsvLight, LightStatus.UNTESTED);
+            }
+            gsvLastUrl = url;
+        };
+        updateGsvLightStatus();
+        gsvUrlInput.addEventListener('input', () => {
+            updateGsvLightStatus();
+        });
+
+        // Test button click: full WebSocket round-trip (init → ready → send text → receive response)
+        gsvTestBtn.addEventListener('click', async () => {
+            const url = gsvUrlInput.value.trim() || 'http://127.0.0.1:9881';
+            const voiceIdInput = document.getElementById('gptsovitsVoiceId');
+            const voiceId = voiceIdInput ? voiceIdInput.value.trim() : '_default';
+            const testText = window.t ? window.t('connectivity.gsvTestText', 'GSV连通性测试') : 'GSV连通性测试';
+
+            gsvTestBtn.disabled = true;
+            gsvTestBtn.classList.add('testing');
+            updateLightStatus(gsvLight, LightStatus.TESTING);
+            updateErrorMessage(gsvErrorMsg, null, '');
+
+            try {
+                const resp = await fetch('/api/config/gptsovits/test_connectivity', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ api_url: url, voice_id: voiceId, test_text: testText }),
+                    signal: AbortSignal.timeout(15000),
+                });
+                const result = await resp.json();
+                if (result.success) {
+                    updateLightStatus(gsvLight, LightStatus.CONNECTED);
+                    updateErrorMessage(gsvErrorMsg, null, '');
+                    // --- 以下为编写连通测试时使用的音频播放验证代码，已确认可行（2026-04-22） ---
+                    // --- 保留供后续调试使用，正常运行时不启用 ---
+                    // if (result.audio_data && result.sample_rate) {
+                    //     try {
+                    //         const pcmBytes = Uint8Array.from(atob(result.audio_data), c => c.charCodeAt(0));
+                    //         const samples = new Int16Array(pcmBytes.buffer);
+                    //         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                    //         const buffer = audioCtx.createBuffer(1, samples.length, result.sample_rate);
+                    //         const channelData = buffer.getChannelData(0);
+                    //         for (let i = 0; i < samples.length; i++) {
+                    //             channelData[i] = samples[i] / 32768;
+                    //         }
+                    //         const source = audioCtx.createBufferSource();
+                    //         source.buffer = buffer;
+                    //         source.connect(audioCtx.destination);
+                    //         source.start();
+                    //         console.log(`[GSV Test] Playing ${result.audio_length_ms}ms audio at ${result.sample_rate}Hz`);
+                    //     } catch (audioErr) {
+                    //         console.warn('[GSV Test] Audio playback failed:', audioErr);
+                    //     }
+                    // }
+                } else {
+                    updateLightStatus(gsvLight, LightStatus.FAILED);
+                    updateErrorMessage(gsvErrorMsg, result.error_code || 'unknown', result.error || '');
+                    console.error('[GSV Test] Failed:', result.error || result.error_code || 'unknown');
+                }
+            } catch (err) {
+                updateLightStatus(gsvLight, LightStatus.FAILED);
+                updateErrorMessage(
+                    gsvErrorMsg,
+                    err.name === 'TimeoutError' ? 'timeout' : 'unknown',
+                    err.message || ''
+                );
+                console.error('[GSV Test] Error:', err);
+            }
+
+            gsvTestBtn.classList.remove('testing');
+            gsvTestBtn.disabled = false;
+        });
+    }
+}
+
 // 等待 i18n 初始化完成
 async function waitForI18n(timeout = 3000) {
     const startTime = Date.now();
@@ -2419,11 +3619,20 @@ async function initializePage() {
             loadingOverlay.style.display = 'none';
         }
 
+        // Task 6.1, 6.2, 7.1, 7.2, 8.1, 8.2: Initialize connectivity lights, buttons, and event bindings
+        initConnectivityLights();
+
         window.apiKeySettingsInitialized = true;
 
         setTimeout(() => {
             toggleCustomApi(true);
         }, 0);
+
+        // Task 6.3: Auto-test removed per maintainer feedback (Wehos).
+        // Manual test buttons are sufficient; auto-test on page load could
+        // consume tokens without user consent and /models doesn't reliably
+        // verify key validity across all providers.
+        // Future: consider auto-test opt-in via user preference.
 
     } catch (error) {
         console.error('页面初始化失败:', error);
