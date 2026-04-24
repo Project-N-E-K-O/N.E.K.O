@@ -1474,6 +1474,9 @@
                     return direct.dataUrl;
                 } else if (direct && direct.error) {
                     console.warn('[主动搭话截图] 主进程直接捕获失败，将回退到流路径:', direct.error);
+                    if (typeof window.maybeClearSourceOnNotFound === 'function') {
+                        window.maybeClearSourceOnNotFound(direct, '主动搭话截图 capture-source-as-dataurl Source not found');
+                    }
                 }
             } catch (e) { console.warn('[主动搭话截图] 主进程直接捕获抛错，将回退到流路径:', e); }
         }
