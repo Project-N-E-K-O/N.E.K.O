@@ -23,16 +23,34 @@ class LocationsRouter(PluginRouter):
 
     async def _load(self) -> List[Dict[str, Any]]:
         plugin = self.main_plugin
+        if not plugin.store.enabled:
+            return []
         result = await plugin.store.get(_STORE_KEY, [])
-        if hasattr(result, "value"):
+        # Result 类型：Ok(value) 或 Err(error)
+        if hasattr(result, "is_ok") and callable(result.is_ok):
+            if result.is_ok():
+                data = result.value
+            else:
+                plugin.logger.warning("store.get failed: {}", result.error)
+                return []
+        elif hasattr(result, "value"):
             data = result.value
         else:
             data = result
         return data if isinstance(data, list) else []
 
-    async def _save(self, locations: List[Dict[str, Any]]) -> None:
+    async def _save(self, locations: List[Dict[str, Any]]) -> bool:
+        """保存地点列表。返回是否成功。"""
         plugin = self.main_plugin
-        await plugin.store.set(_STORE_KEY, locations)
+        if not plugin.store.enabled:
+            plugin.logger.error("PluginStore is disabled, cannot save locations")
+            return False
+        result = await plugin.store.set(_STORE_KEY, locations)
+        if hasattr(result, "is_ok") and callable(result.is_ok):
+            if not result.is_ok():
+                plugin.logger.error("store.set failed: {}", result.error)
+                return False
+        return True
 
     # ── entries ──
 
@@ -103,7 +121,8 @@ class LocationsRouter(PluginRouter):
             new_loc["is_default"] = True
 
         locations.append(new_loc)
-        await self._save(locations)
+        if not await self._save(locations):
+            return Err(SdkError("保存失败，请检查插件存储是否启用"))
 
         return Ok({"message": f"已添加地点: {new_loc['label']} ({new_loc['city']})", "location": new_loc})
 
@@ -132,7 +151,8 @@ class LocationsRouter(PluginRouter):
         if locations and not any(loc.get("is_default") for loc in locations):
             locations[0]["is_default"] = True
 
-        await self._save(locations)
+        if not await self._save(locations):
+            return Err(SdkError("保存失败"))
         return Ok({"message": f"已删除地点: {key}", "remaining": len(locations)})
 
     @plugin_entry(
@@ -160,5 +180,6 @@ class LocationsRouter(PluginRouter):
                 loc["is_default"] = False
         if not found:
             return Err(SdkError(f"未找到地点: {key}"))
-        await self._save(locations)
+        if not await self._save(locations):
+            return Err(SdkError("保存失败"))
         return Ok({"message": f"已将 '{key}' 设为默认地点"})
