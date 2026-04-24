@@ -38,13 +38,13 @@ class CurrentWeatherRouter(PluginRouter):
         plugin._resolve_locale()
         i18n = plugin._i18n
 
-        loc = await plugin._resolve_location(city)
+        loc, loc_err = await plugin._resolve_location(city)
         if not loc:
-            return Err(SdkError(i18n.t("error.no_location")))
+            return Err(SdkError(i18n.t(loc_err or "error.no_location")))
 
-        data = await plugin._get_weather_data(loc)
+        data, data_err = await plugin._get_weather_data(loc)
         if not data:
-            return Err(SdkError(i18n.t("error.fetch_failed", city=loc["city"])))
+            return Err(SdkError(i18n.t(data_err or "error.fetch_failed", city=loc["city"])))
 
         current_raw = data.get("current", {})
         daily_raw = data.get("daily", {})

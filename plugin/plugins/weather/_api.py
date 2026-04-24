@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import httpx
 
@@ -25,7 +25,31 @@ RAIN_CODES = frozenset({51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82, 95, 
 SNOW_CODES = frozenset({71, 73, 75, 77, 85, 86})
 
 
-async def geoip_locate(locale: str = "zh-CN", timeout: float = 4.0) -> Optional[Dict[str, Any]]:
+# ── 错误类型 ─────────────────────────────────────────────────────
+
+class WeatherAPIError(Exception):
+    """天气 API 调用失败的基类。"""
+    def __init__(self, message: str, cause: str = "unknown"):
+        super().__init__(message)
+        self.cause = cause  # "timeout" | "network" | "api_error" | "not_found"
+
+
+class GeoIPError(WeatherAPIError):
+    """IP 定位失败。"""
+
+
+class GeocodeError(WeatherAPIError):
+    """城市 geocoding 失败。"""
+
+
+class ForecastError(WeatherAPIError):
+    """天气预报 API 失败。"""
+
+
+# ── API 函数 ─────────────────────────────────────────────────────
+
+async def geoip_locate(locale: str = "zh-CN", timeout: float = 2.0) -> Optional[Dict[str, Any]]:
+    """IP 定位。成功返回 dict，无结果返回 None，网络问题抛 GeoIPError。"""
     lang = LOCALE_TO_GEOIP_LANG.get(locale, "en")
     url = f"{_GEOIP_BASE}?fields=city,lat,lon,countryCode,regionName,timezone&lang={lang}"
     try:
@@ -41,12 +65,17 @@ async def geoip_locate(locale: str = "zh-CN", timeout: float = 4.0) -> Optional[
                     "country": d.get("countryCode", ""),
                     "ip_timezone": d.get("timezone", ""),
                 }
-    except Exception:
-        pass
-    return None
+            return None
+    except (httpx.TimeoutException, httpx.ConnectTimeout, httpx.ReadTimeout):
+        raise GeoIPError("IP locate timed out", cause="timeout")
+    except httpx.ConnectError:
+        raise GeoIPError("IP locate connection failed", cause="network")
+    except Exception as e:
+        raise GeoIPError(f"IP locate failed: {e}", cause="network")
 
 
 async def geocode_city(city: str, locale: str = "zh-CN", timeout: float = 5.0) -> Optional[Dict[str, Any]]:
+    """城市 geocoding。成功返回 dict，无结果返回 None，网络问题抛 GeocodeError。"""
     lang = LOCALE_TO_GEOCODE_LANG.get(locale, "en")
     try:
         async with httpx.AsyncClient(timeout=timeout) as c:
@@ -60,9 +89,13 @@ async def geocode_city(city: str, locale: str = "zh-CN", timeout: float = 5.0) -
                     "lon": float(hit["longitude"]),
                     "country": hit.get("country_code", ""),
                 }
-    except Exception:
-        pass
-    return None
+            return None
+    except (httpx.TimeoutException, httpx.ConnectTimeout, httpx.ReadTimeout):
+        raise GeocodeError(f"Geocode '{city}' timed out", cause="timeout")
+    except httpx.ConnectError:
+        raise GeocodeError(f"Geocode '{city}' connection failed", cause="network")
+    except Exception as e:
+        raise GeocodeError(f"Geocode '{city}' failed: {e}", cause="network")
 
 
 async def fetch_forecast(
@@ -73,13 +106,8 @@ async def fetch_forecast(
     hourly_vars: Optional[str] = None,
     forecast_hours: Optional[int] = None,
     timeout: float = 8.0,
-) -> Optional[Dict[str, Any]]:
-    """调用 Open-Meteo Forecast API。
-
-    Args:
-        hourly_vars: 逐小时变量（逗号分隔），None 则不请求 hourly 数据。
-        forecast_hours: 限制逐小时数据的时间范围（小时数）。
-    """
+) -> Dict[str, Any]:
+    """调用 Open-Meteo Forecast API。成功返回 dict，失败抛 ForecastError。"""
     params: Dict[str, Any] = {
         "latitude": lat,
         "longitude": lon,
@@ -97,9 +125,15 @@ async def fetch_forecast(
             r = await c.get(_FORECAST_URL, params=params)
             if r.status_code == 200:
                 return r.json()
-    except Exception:
-        pass
-    return None
+            raise ForecastError(f"API returned HTTP {r.status_code}", cause="api_error")
+    except ForecastError:
+        raise
+    except (httpx.TimeoutException, httpx.ConnectTimeout, httpx.ReadTimeout):
+        raise ForecastError("Weather API timed out", cause="timeout")
+    except httpx.ConnectError:
+        raise ForecastError("Weather API connection failed", cause="network")
+    except Exception as e:
+        raise ForecastError(f"Weather API failed: {e}", cause="network")
 
 
 def daily_val(daily: Dict[str, Any], field: str, idx: int) -> Any:

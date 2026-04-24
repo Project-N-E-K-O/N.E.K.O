@@ -56,7 +56,11 @@
   },
   "error": {
     "no_location": "无法确定位置，请手动指定城市名",
+    "city_not_found": "找不到该城市，请检查城市名是否正确",
+    "geocode_timeout": "城市查询超时，请稍后重试或直接指定城市名",
+    "geocode_failed": "城市查询失败，请检查网络连接",
     "fetch_failed": "获取天气数据失败 ({city})",
+    "forecast_timeout": "天气数据请求超时，请稍后重试",
     "unknown_weather": "未知({code})"
   },
   "tz_city": {

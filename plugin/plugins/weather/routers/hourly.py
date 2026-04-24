@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError
 from plugin.sdk.shared.core.router import PluginRouter
 
-from .._api import fetch_forecast, RAIN_CODES, SNOW_CODES
+from .._api import fetch_forecast, ForecastError, RAIN_CODES, SNOW_CODES
 
 _HOURLY_VARS = (
     "temperature_2m,apparent_temperature,precipitation_probability,"
@@ -48,22 +48,24 @@ class HourlyForecastRouter(PluginRouter):
         plugin._resolve_locale()
         i18n = plugin._i18n
 
-        loc = await plugin._resolve_location(city)
+        loc, loc_err = await plugin._resolve_location(city)
         if not loc:
-            return Err(SdkError(i18n.t("error.no_location")))
+            return Err(SdkError(i18n.t(loc_err or "error.no_location")))
 
         hours = max(1, min(int(hours), 168))
         tz = str(plugin._cfg.get("timezone", "Asia/Shanghai"))
 
-        data = await fetch_forecast(
-            loc["lat"], loc["lon"],
-            days=1,
-            tz=tz,
-            hourly_vars=_HOURLY_VARS,
-            forecast_hours=hours,
-        )
-        if not data:
-            return Err(SdkError(i18n.t("error.fetch_failed", city=loc["city"])))
+        try:
+            data = await fetch_forecast(
+                loc["lat"], loc["lon"],
+                days=1,
+                tz=tz,
+                hourly_vars=_HOURLY_VARS,
+                forecast_hours=hours,
+            )
+        except ForecastError as e:
+            err_key = "error.forecast_timeout" if e.cause == "timeout" else "error.fetch_failed"
+            return Err(SdkError(i18n.t(err_key, city=loc["city"])))
 
         hourly = data.get("hourly", {})
         times = hourly.get("time", [])

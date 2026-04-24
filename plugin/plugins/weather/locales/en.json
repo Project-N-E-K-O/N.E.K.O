@@ -56,7 +56,11 @@
   },
   "error": {
     "no_location": "Unable to determine location — please specify a city name",
+    "city_not_found": "City not found — please check the city name",
+    "geocode_timeout": "City lookup timed out — please try again or specify a city name",
+    "geocode_failed": "City lookup failed — please check your network",
     "fetch_failed": "Failed to fetch weather data ({city})",
+    "forecast_timeout": "Weather data request timed out — please try again",
     "unknown_weather": "Unknown ({code})"
   },
   "tz_city": {
