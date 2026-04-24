@@ -49,7 +49,10 @@
   "summary": {
     "weather": "{city}：{weather}，{temp}°C（体感 {feels}°C），湿度 {humidity}%",
     "vpn_hint": "（检测到代理，IP 显示 {ip_city}，已自动切换到系统时区定位）",
-    "travel_prefix": "{city}出行建议："
+    "travel_prefix": "{city}出行建议：",
+    "hourly_temp_range": "未来 {count} 小时气温 {low}~{high}°C",
+    "hourly_rain_times": "降水时段: {times}",
+    "hourly_no_rain": "无降水"
   },
   "error": {
     "no_location": "无法确定位置，请手动指定城市名",

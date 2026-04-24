@@ -49,7 +49,10 @@
   "summary": {
     "weather": "{city}: {weather}, {temp}°C (feels like {feels}°C), humidity {humidity}%",
     "vpn_hint": " (Proxy detected — IP shows {ip_city}, auto-switched to system timezone location)",
-    "travel_prefix": "Travel advice for {city}: "
+    "travel_prefix": "Travel advice for {city}: ",
+    "hourly_temp_range": "Next {count}h temperature {low}~{high}°C",
+    "hourly_rain_times": "Rain expected at: {times}",
+    "hourly_no_rain": "No rain expected"
   },
   "error": {
     "no_location": "Unable to determine location — please specify a city name",
