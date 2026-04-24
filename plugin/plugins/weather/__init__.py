@@ -17,6 +17,7 @@ from typing import Any, Dict, Optional
 from plugin.sdk.plugin import (
     NekoPluginBase,
     neko_plugin,
+    plugin_entry,
     lifecycle,
     Ok,
     Err,
@@ -249,3 +250,40 @@ class WeatherPlugin(NekoPluginBase):
             return None
         except Exception:
             return None
+
+    # ── 配置读写（供 Web UI 调用）──
+
+    @plugin_entry(
+        id="get_config",
+        name="获取配置",
+        description="获取天气插件当前配置。",
+    )
+    async def get_config_entry(self, **_):
+        return Ok(dict(self._cfg))
+
+    @plugin_entry(
+        id="update_config",
+        name="更新配置",
+        description="更新天气插件配置字段。",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "default_city": {"type": "string"},
+                "timezone": {"type": "string"},
+                "forecast_days": {"type": "integer"},
+                "locale": {"type": "string"},
+                "cache_ttl_seconds": {"type": "integer"},
+            },
+        },
+    )
+    async def update_config_entry(self, **kwargs):
+        allowed = {"default_city", "timezone", "forecast_days", "locale", "cache_ttl_seconds", "force_locale"}
+        updates = {k: v for k, v in kwargs.items() if k in allowed and not k.startswith("_")}
+        if not updates:
+            return Err(SdkError("No valid fields to update"))
+        try:
+            await self.config.update({"weather": updates})
+            await self._reload_config()
+            return Ok({"message": "Config updated", "config": dict(self._cfg)})
+        except Exception as e:
+            return Err(SdkError(f"Config update failed: {e}"))
