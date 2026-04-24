@@ -599,6 +599,12 @@
         "screenshotAlt": "Captura de tela {{index}}",
         "screenshotTitle": "Clique para ver a captura de tela {{index}}",
         "removeScreenshot": "Remover esta captura de tela",
+        "cropTabScreenshot": "Captura",
+        "cropTabHideNeko": "Ocultar NEKO",
+        "cropTabCancel": "Cancelar",
+        "cropTabRecapturing": "Recapturando...",
+        "cropConfirmTitle": "Confirmar recorte",
+        "cropClearSelectionTitle": "Limpar seleção",
         "avatarPreview": "Mostrar avatar atual",
         "avatarPreviewLabel": "Avatar atual",
         "avatarPreviewCardTitle": "Avatar atual",
@@ -1053,6 +1059,8 @@
         "selectMotion": "Animação",
         "selectExpression": "Expressão",
         "selectPersistentExpression": "Persistir. Expr.",
+        "noMotion": "Sem Movimento",
+        "noExpression": "Sem Expressão",
         "noMotionFiles": "Nenhum arquivo de movimento",
         "touchAnim": {
             "title": "Toque em Configuração do Anim",
@@ -3332,5 +3340,33 @@
         "useTemporary": "Usar temporariamente",
         "tempBadge": "Temperatura",
         "popupBlocked": "O pop-up foi bloqueado. Permita pop-ups e tente novamente."
+    },
+    "connectivity": {
+        "testCustom": "Testar conectividade de API personalizada",
+        "testCore": "Testar",
+        "testCoreTooltip": "Testar conectividade da API principal",
+        "testAssist": "Testar",
+        "testAssistTooltip": "Testar conectividade da API auxiliar",
+        "gsvTestText": "Teste de conectividade GSV",
+        "gsvTestTooltip": "Testar conectividade do GPT-SoVITS",
+        "error": {
+            "timeout": "Tempo limite da solicitação esgotado (10 s)",
+            "auth_failed": "API Key inválida ou expirada",
+            "connection_refused": "Não foi possível conectar ao servidor de destino",
+            "dns_error": "Falha na resolução de DNS",
+            "ssl_error": "Falha na verificação do certificado SSL",
+            "ws_error": "Falha na conexão WebSocket",
+            "missing_params": "Parâmetros obrigatórios ausentes",
+            "unknown": "Erro desconhecido",
+            "backend_unavailable": "Serviço de backend indisponível",
+            "invalid_response": "Formato de resposta inválido"
+        },
+        "status": {
+            "connected": "Conectado",
+            "failed": "Falha na conexão",
+            "untested": "Não testado",
+            "not_configured": "Não configurado",
+            "testing": "Testando..."
+        }
     }
 }

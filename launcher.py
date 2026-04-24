@@ -51,7 +51,11 @@ if IS_FROZEN:
     else:
         # Nuitka 或其他
         bundle_dir = os.path.dirname(os.path.abspath(__file__))
-    
+    # tiktoken encodings (e.g. o200k_base) load merge tables from TIKTOKEN_CACHE_DIR;
+    # build_nuitka.bat pre-fetches into data/tiktoken_cache for offline use.
+    _tiktoken_cache = os.path.join(bundle_dir, "data", "tiktoken_cache")
+    if os.path.isdir(_tiktoken_cache):
+        os.environ.setdefault("TIKTOKEN_CACHE_DIR", _tiktoken_cache)
 else:
     # 运行在正常 Python 环境
     bundle_dir = os.path.dirname(os.path.abspath(__file__))
