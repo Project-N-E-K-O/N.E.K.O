@@ -274,6 +274,21 @@
         return url.toString();
     }
 
+    function buildPluginDashboardHandoffUrl(tokenObj, resumeScene) {
+        var handoffParams = ['yui_guide=1'];
+        var flowId = tokenObj && tokenObj.flow_id ? tokenObj.flow_id : HANDOFF_FLOW_ID;
+        var resolvedResumeScene = tokenObj && typeof tokenObj.resume_scene === 'string'
+            ? tokenObj.resume_scene
+            : (resumeScene || '');
+        var handoffToken = tokenObj && tokenObj.token ? tokenObj.token : '';
+
+        handoffParams.push('flow_id=' + encodeURIComponent(flowId));
+        handoffParams.push('resume_scene=' + encodeURIComponent(resolvedResumeScene));
+        handoffParams.push('handoff_token=' + encodeURIComponent(handoffToken));
+
+        return buildPluginDashboardUrl(handoffParams);
+    }
+
     function getHandoffTokenSignature(tokenObj) {
         if (!tokenObj) return '';
         return tokenObj.signature || tokenObj.id || tokenObj.token || '';
@@ -976,7 +991,9 @@
     }
 
     function openPluginDashboard(resumeScene, options) {
-        return openPage(
+        return openPageWithHandoff(
+            'plugin_dashboard',
+            resumeScene || null,
             buildPluginDashboardUrl(),
             'plugin_dashboard',
             buildCenteredWindowFeatures(),
@@ -1067,18 +1084,27 @@
         clearHandoffToken();
     }
 
-    function openPageWithHandoff(targetPage, resumeScene, openUrl, windowName, features) {
-        if (targetPage === 'plugin_dashboard' || windowName === 'plugin_dashboard') {
-            return openPluginDashboard(resumeScene);
-        }
-
+    function openPageWithHandoff(targetPage, resumeScene, openUrl, windowName, features, options) {
+        var isPluginDashboardTarget = (
+            targetPage === 'plugin_dashboard'
+            || normalizeWindowName(windowName) === normalizeWindowName('plugin_dashboard')
+        );
         var tokenObj = createHandoffToken(targetPage, resumeScene);
         if (!tokenObj) {
             console.warn('[YuiGuideHandoff] openPageWithHandoff: token 创建失败，回退到普通打开');
-            return openPage(openUrl, windowName, features);
+            return openPage(
+                isPluginDashboardTarget ? buildPluginDashboardUrl() : openUrl,
+                windowName,
+                features,
+                options
+            );
         }
 
-        return openPage(openUrl, windowName, features).then(function (childWin) {
+        var targetUrl = isPluginDashboardTarget
+            ? buildPluginDashboardHandoffUrl(tokenObj, resumeScene)
+            : openUrl;
+
+        return openPage(targetUrl, windowName, features, options).then(function (childWin) {
             if (childWin) {
                 dispatchHandoffSentEvent(tokenObj, targetPage, resumeScene);
                 return childWin;
