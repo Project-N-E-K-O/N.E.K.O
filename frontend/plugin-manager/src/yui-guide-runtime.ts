@@ -1813,7 +1813,7 @@ export function initPluginDashboardYuiGuideRuntime() {
 
   window.addEventListener('message', (event: MessageEvent) => {
     const data = event.data
-    if (!data || typeof data !== 'object' || data.type !== START_EVENT) {
+    if (!data || typeof data !== 'object') {
       return
     }
 
