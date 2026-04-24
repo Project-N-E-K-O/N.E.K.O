@@ -94,7 +94,7 @@ class TravelAdviceRouter(PluginRouter):
             },
         },
     )
-    @quick_action(icon="🧳", inject="今天出门需要注意什么", priority=9)
+    @quick_action(icon="🧳", priority=9)
     async def travel_advice(self, city: str = "", **_):
         plugin = self.main_plugin
         plugin._resolve_locale()

@@ -42,7 +42,7 @@ class HourlyForecastRouter(PluginRouter):
             },
         },
     )
-    @quick_action(icon="📊", inject="未来48小时天气变化", priority=8)
+    @quick_action(icon="📊", priority=8)
     async def hourly_forecast(self, city: str = "", hours: int = 48, **_):
         plugin = self.main_plugin
         plugin._resolve_locale()

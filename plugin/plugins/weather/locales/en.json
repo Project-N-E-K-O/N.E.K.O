@@ -59,14 +59,6 @@
     "fetch_failed": "Failed to fetch weather data ({city})",
     "unknown_weather": "Unknown ({code})"
   },
-  "action": {
-    "get_weather": "Weather",
-    "get_weather_desc": "Current weather and forecast",
-    "travel_advice": "Travel advice",
-    "travel_advice_desc": "Clothing, umbrella, sunscreen tips",
-    "hourly_forecast": "Hourly forecast",
-    "hourly_forecast_desc": "Next 48 hours weather changes"
-  },
   "tz_city": {
     "Asia/Shanghai": "Shanghai",
     "Asia/Chongqing": "Chongqing",

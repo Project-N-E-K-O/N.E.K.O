@@ -32,7 +32,7 @@ class CurrentWeatherRouter(PluginRouter):
             },
         },
     )
-    @quick_action(icon="🌤️", inject="今天天气怎么样", priority=10)
+    @quick_action(icon="🌤️", priority=10)
     async def get_weather(self, city: str = "", **_):
         plugin = self.main_plugin
         plugin._resolve_locale()

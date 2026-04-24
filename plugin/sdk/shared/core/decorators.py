@@ -18,7 +18,7 @@ from plugin.sdk.shared.constants import (
     NEKO_PLUGIN_TAG,
     PERSIST_ATTR,
 )
-from .events import EventMeta
+from .events import EventMeta, QuickActionConfig
 from .result_contract import (
     fields_from_schema,
     model_schema_from_type,
@@ -448,12 +448,12 @@ def plugin_entry(
             metadata=_json_compatible_mapping(metadata),
         )
         wrapped = _attach_event_meta(fn, meta)
-        # Merge @quick_action decorator config if present
-        qa_config = getattr(fn, _QUICK_ACTION_CONFIG_ATTR, None)
-        if quick_action or isinstance(qa_config, dict):
+        # Read @quick_action config stored on fn by the decorator below
+        qa_cfg = getattr(fn, _QUICK_ACTION_CONFIG_ATTR, None)
+        if quick_action or isinstance(qa_cfg, QuickActionConfig):
             meta.quick_action = True
-            if isinstance(qa_config, dict):
-                meta.quick_action_config = cast(dict[str, JsonValue], qa_config)
+            if isinstance(qa_cfg, QuickActionConfig):
+                meta.quick_action_config = qa_cfg
         setattr(wrapped, _AUTO_INFER_PARAMS_ATTR, params is None and input_schema is None)
         setattr(wrapped, _AUTO_INFER_LLM_RESULT_ATTR, llm_model is None and normalized_llm_fields is None)
         if effective_params_model is not None:
@@ -590,45 +590,26 @@ plugin = _PluginDecorators()
 def quick_action(
     *,
     icon: str | None = None,
-    label: str | None = None,
-    inject: str | None = None,
-    priority: int | None = None,
+    priority: int = 0,
 ) -> Callable[[F], F]:
     """标记一个 entry 为快捷操作，在命令面板中优先展示。
 
-    可单独使用（配合 @plugin_entry），也可叠加在 @plugin_entry 上。
-    当 @plugin_entry 已设置 quick_action=True 时，此装饰器的配置会合并进去。
+    必须放在 @plugin_entry 下面（先执行），由 @plugin_entry 读取配置。
 
     用法::
 
         @plugin_entry(id="get_weather", name="获取天气")
-        @quick_action(icon="🌤️", inject="今天天气怎么样")
+        @quick_action(icon="🌤️", priority=10)
         async def get_weather(self, ...): ...
 
     Args:
-        icon: 面板中显示的图标（emoji），覆盖默认图标
-        label: 面板中显示的标签，覆盖 entry name
-        inject: chat_inject 模式下注入到输入框的文本
-        priority: 排序权重（越大越靠前）
+        icon: 面板中显示的图标（emoji），覆盖默认 ⚡ 图标
+        priority: 排序权重（越大越靠前），默认 0
     """
-    config: dict[str, object] = {}
-    if icon is not None:
-        config["icon"] = icon
-    if label is not None:
-        config["label"] = label
-    if inject is not None:
-        config["inject"] = inject
-    if priority is not None:
-        config["priority"] = priority
+    cfg = QuickActionConfig(icon=icon, priority=priority)
 
     def _decorator(fn: F) -> F:
-        setattr(fn, _QUICK_ACTION_CONFIG_ATTR, config)
-        # If @plugin_entry was already applied (above this decorator),
-        # patch the existing EventMeta directly.
-        meta = getattr(fn, EVENT_META_ATTR, None)
-        if isinstance(meta, EventMeta):
-            meta.quick_action = True
-            meta.quick_action_config = cast(dict[str, JsonValue], config)
+        setattr(fn, _QUICK_ACTION_CONFIG_ATTR, cfg)
         return fn
 
     return _decorator
