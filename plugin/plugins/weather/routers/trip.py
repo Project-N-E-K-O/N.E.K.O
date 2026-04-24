@@ -48,10 +48,13 @@ class TripRouter(PluginRouter):
         },
     )
     @quick_action(icon="🗺️", priority=7)
-    async def trip_advice(self, destination: str, origin: str = "", mode: str = "", **_):
+    async def trip_advice(self, destination: str = "", origin: str = "", mode: str = "", **_):
         plugin = self.main_plugin
         plugin._resolve_locale()
         i18n = plugin._i18n
+
+        if not destination.strip():
+            return Err(SdkError(i18n.t("trip.no_destination")))
 
         # 解析起点
         origin_loc, origin_err = await plugin._resolve_location(origin or None)

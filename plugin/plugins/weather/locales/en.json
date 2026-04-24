@@ -65,7 +65,8 @@
   },
   "trip": {
     "distance": "Distance",
-    "recommended": "Recommended"
+    "recommended": "Recommended",
+    "no_destination": "Please specify a destination"
   },
   "tz_city": {
     "Asia/Shanghai": "Shanghai",

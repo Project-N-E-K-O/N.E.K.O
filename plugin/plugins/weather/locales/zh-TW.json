@@ -65,7 +65,8 @@
   },
   "trip": {
     "distance": "直線距離",
-    "recommended": "推薦"
+    "recommended": "推薦",
+    "no_destination": "請指定目的地"
   },
   "tz_city": {
     "Asia/Shanghai": "上海",
