@@ -52,6 +52,7 @@ class ActionDescriptor(BaseModel):
     keywords: list[str] = Field(default_factory=list, description="搜索关键词（多语言）")
     icon: str | None = Field(default=None, description="Emoji 或图标标识")
     priority: int = Field(default=0, description="排序权重，越大越靠前")
+    quick_action: bool = Field(default=False, description="插件自注册的快捷操作，在面板中优先展示")
     section: Literal["pinned", "recent", "commands"] | None = Field(
         default=None, description="面板分区，由前端根据偏好计算",
     )

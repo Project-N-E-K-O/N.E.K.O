@@ -27,6 +27,7 @@ export interface CommandItem {
   icon?: string | null;
   priority?: number;
   section?: 'pinned' | 'recent' | 'commands' | null;
+  quick_action?: boolean;
 }
 
 export interface UserPreferences {
@@ -592,7 +593,7 @@ export default function CommandPalette({
   }, [onPreferencesChange]);
 
   // ── Build sections ──
-  const { pinnedItems, recentItems, commandItems, hasResults } = useMemo(() => {
+  const { pinnedItems, quickItems, recentItems, commandItems, hasResults } = useMemo(() => {
     const isSearching = search.trim().length > 0;
 
     // In slash mode, only show chat_inject items
@@ -615,7 +616,7 @@ export default function CommandPalette({
         if (pa !== pb) return pb - pa;
         return a.label.localeCompare(b.label);
       });
-      return { pinnedItems: [] as CommandItem[], recentItems: [] as CommandItem[], commandItems: sorted, hasResults: sorted.length > 0 };
+      return { pinnedItems: [] as CommandItem[], quickItems: [] as CommandItem[], recentItems: [] as CommandItem[], commandItems: sorted, hasResults: sorted.length > 0 };
     }
 
     // Not searching — split into sections
@@ -626,13 +627,19 @@ export default function CommandPalette({
       .map(id => visibleMatched.find(a => a.action_id === id))
       .filter((a): a is CommandItem => a !== undefined);
 
-    const recentSeen = new Set(pinnedIds);
+    // Quick actions: items marked by plugins as quick_action, excluding already-pinned
+    const quick = visibleMatched
+      .filter(a => a.quick_action && !pinnedIds.has(a.action_id))
+      .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0) || a.label.localeCompare(b.label));
+    const quickIds = new Set(quick.map(a => a.action_id));
+
+    const recentSeen = new Set([...pinnedIds, ...quickIds]);
     const recent = recentIds
       .filter(id => !recentSeen.has(id))
       .map(id => { recentSeen.add(id); return visibleMatched.find(a => a.action_id === id); })
       .filter((a): a is CommandItem => a !== undefined);
 
-    const usedIds = new Set([...pinnedIds, ...recentIds]);
+    const usedIds = new Set([...pinnedIds, ...quickIds, ...recentIds]);
     const commands = visibleMatched
       .filter(a => !usedIds.has(a.action_id))
       .sort((a, b) => {
@@ -644,9 +651,10 @@ export default function CommandPalette({
 
     return {
       pinnedItems: pinned,
+      quickItems: quick,
       recentItems: recent,
       commandItems: commands,
-      hasResults: pinned.length + recent.length + commands.length > 0,
+      hasResults: pinned.length + quick.length + recent.length + commands.length > 0,
     };
   }, [localItems, localPrefs, search, slashMode]);
 
@@ -654,8 +662,8 @@ export default function CommandPalette({
 
   // ── Flat list for keyboard navigation ──
   const flatItems = useMemo(() => [
-    ...pinnedItems, ...recentItems, ...commandItems,
-  ], [pinnedItems, recentItems, commandItems]);
+    ...pinnedItems, ...quickItems, ...recentItems, ...commandItems,
+  ], [pinnedItems, quickItems, recentItems, commandItems]);
 
   const [highlightIdx, setHighlightIdx] = useState(-1);
 
@@ -757,11 +765,19 @@ export default function CommandPalette({
                 ))}
               </div>
             )}
+            {quickItems.length > 0 && (
+              <div className="cp-section">
+                <SectionHeader icon="⚡" label={i18n('commandPalette.quickActions', '快捷操作')} count={quickItems.length} />
+                {quickItems.map((item, i) => (
+                  <CommandRow key={item.action_id} item={item} loading={!!loadingMap[item.action_id]} error={errorMap[item.action_id] ?? null} highlighted={highlightIdx === pinnedItems.length + i} {...sharedRowProps} />
+                ))}
+              </div>
+            )}
             {recentItems.length > 0 && (
               <div className="cp-section">
                 <SectionHeader icon="🕐" label={i18n('commandPalette.recent', '最近使用')} />
                 {recentItems.map((item, i) => (
-                  <CommandRow key={item.action_id} item={item} loading={!!loadingMap[item.action_id]} error={errorMap[item.action_id] ?? null} highlighted={highlightIdx === pinnedItems.length + i} {...sharedRowProps} />
+                  <CommandRow key={item.action_id} item={item} loading={!!loadingMap[item.action_id]} error={errorMap[item.action_id] ?? null} highlighted={highlightIdx === pinnedItems.length + quickItems.length + i} {...sharedRowProps} />
                 ))}
               </div>
             )}
@@ -770,7 +786,7 @@ export default function CommandPalette({
                 <SectionHeader icon="📋" label={i18n('commandPalette.allCommands', '全部')} count={commandItems.length} />
                 {commandItems.map((item, i) => (
                   <div key={item.action_id} className="cp-stagger" style={{ animationDelay: `${i * 20}ms` }}>
-                    <CommandRow item={item} loading={!!loadingMap[item.action_id]} error={errorMap[item.action_id] ?? null} highlighted={highlightIdx === pinnedItems.length + recentItems.length + i} {...sharedRowProps} />
+                    <CommandRow item={item} loading={!!loadingMap[item.action_id]} error={errorMap[item.action_id] ?? null} highlighted={highlightIdx === pinnedItems.length + quickItems.length + recentItems.length + i} {...sharedRowProps} />
                   </div>
                 ))}
               </div>

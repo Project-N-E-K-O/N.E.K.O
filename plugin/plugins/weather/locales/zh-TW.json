@@ -59,6 +59,14 @@
     "fetch_failed": "獲取天氣資料失敗 ({city})",
     "unknown_weather": "未知({code})"
   },
+  "action": {
+    "get_weather": "查天氣",
+    "get_weather_desc": "查詢當前天氣和未來預報",
+    "travel_advice": "出行建議",
+    "travel_advice_desc": "穿衣、帶傘、防曬建議",
+    "hourly_forecast": "逐小時預報",
+    "hourly_forecast_desc": "未來48小時天氣變化"
+  },
   "tz_city": {
     "Asia/Shanghai": "上海",
     "Asia/Chongqing": "重慶",

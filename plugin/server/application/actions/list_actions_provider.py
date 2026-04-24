@@ -38,6 +38,9 @@ def _map_list_action(
     label = str(action.get("label", action_id))
     description = str(action.get("description", ""))
     full_action_id = f"{plugin_id}:{action_id}"
+    quick = bool(action.get("quick_action", False))
+    icon_override = action.get("icon")
+    priority_override = action.get("priority")
 
     if kind == "chat_inject":
         target = action.get("target")
@@ -53,8 +56,10 @@ def _map_list_action(
             category=plugin_name,
             plugin_id=plugin_id,
             inject_text=inject_text,
-            icon="📎",
+            icon=icon_override or "📎",
             keywords=[plugin_id, plugin_name, action_id, label],
+            quick_action=quick,
+            priority=int(priority_override) if priority_override is not None else 0,
         )
 
     if kind in _NAVIGATION_KINDS:
@@ -71,8 +76,10 @@ def _map_list_action(
             plugin_id=plugin_id,
             target=target,
             open_in=open_in,
-            icon="↗",
+            icon=icon_override or "↗",
             keywords=[plugin_id, plugin_name, action_id, label],
+            quick_action=quick,
+            priority=int(priority_override) if priority_override is not None else 0,
         )
 
     # All other kinds (toggle, trigger, action, button, …) are
@@ -86,8 +93,10 @@ def _map_list_action(
             category=plugin_name,
             plugin_id=plugin_id,
             control="button",
-            icon="⚡",
+            icon=icon_override or "⚡",
             keywords=[plugin_id, plugin_name, action_id, label],
+            quick_action=quick,
+            priority=int(priority_override) if priority_override is not None else 0,
         )
 
     return None
