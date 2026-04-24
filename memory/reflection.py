@@ -684,9 +684,14 @@ class ReflectionEngine:
                     f"[Reflection] ontology 验证不通过({reason})，降级为 null: "
                     f"entity={reflection_entity} rel_type={rel_type}"
                 )
+                # Strip the entire ontology tuple — keeping `subject` while
+                # dropping the rest would leave a half-structured record
+                # (no class but still a subject label), which downstream
+                # grouping/filtering can't interpret consistently.
                 rel_type = None
                 confidence = None
                 temporal = None
+                subject = None
         except Exception as e:
             logger.warning(f"[Reflection] 合成失败: {e}")
             return []

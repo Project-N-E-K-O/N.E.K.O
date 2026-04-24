@@ -1615,27 +1615,46 @@ class PersonaManager:
             section_facts = self._get_section_facts(persona, entity)
 
             if action == 'replace':
+                # `replace` means "new observation is an update/correction to
+                # the old memory" — semantically an in-place edit, not a
+                # fresh insertion. We update `text` + extend the version
+                # chain but **preserve** id / source / source_id / evidence
+                # counters (reinforcement, disputation, sub_zero_days) /
+                # recent_mentions / merged_from_ids so confirm/dispute state
+                # and provenance survive the rewrite. Rebuilding via
+                # `_normalize_entry(merged_text)` would wipe all of that,
+                # reducing a confirmed persona entry to a blank slate.
+                history_entry = {
+                    'text': old_text,
+                    'replaced_at': datetime.now().isoformat(),
+                    'reason': 'correction',
+                    # `source_fact_id` stays None: the pending-correction
+                    # record has no upstream fact id today. Follow-up work
+                    # can plumb one through _queue_correction without
+                    # changing this structure.
+                    'source_fact_id': None,
+                }
                 for j, existing in enumerate(section_facts):
                     et = existing.get('text', '') if isinstance(existing, dict) else str(existing)
                     if et == old_text:
-                        new_entry = self._normalize_entry(merged_text)
-                        # Fact version chain (RFC §2): preserve the chain from
-                        # the replaced entry, then record the old text itself.
-                        # `source_fact_id` is None because the pending-correction
-                        # record has no upstream fact id today; future work can
-                        # plumb one through _queue_correction without changing
-                        # this structure.
-                        prior_history = (
-                            existing.get('version_history', []) or []
-                            if isinstance(existing, dict) else []
-                        )
-                        new_entry['version_history'] = list(prior_history) + [{
-                            'text': old_text,
-                            'replaced_at': datetime.now().isoformat(),
-                            'reason': 'correction',
-                            'source_fact_id': None,
-                        }]
-                        section_facts[j] = new_entry
+                        if isinstance(existing, dict):
+                            prior_history = existing.get('version_history', []) or []
+                            existing['text'] = merged_text
+                            existing['version_history'] = list(prior_history) + [history_entry]
+                            # Text changed → invalidate the derived
+                            # token-count cache so the next render recomputes
+                            # against the new text instead of serving a
+                            # stale count tied to old_text's sha.
+                            existing['token_count'] = None
+                            existing['token_count_text_sha256'] = None
+                            existing['token_count_tokenizer'] = None
+                            section_facts[j] = self._normalize_entry(existing)
+                        else:
+                            # Legacy str entry — no metadata to preserve;
+                            # migrate to dict form and seed the chain.
+                            new_entry = self._normalize_entry(merged_text)
+                            new_entry['version_history'] = [history_entry]
+                            section_facts[j] = new_entry
                         break
             elif action == 'keep_new':
                 section_facts[:] = [

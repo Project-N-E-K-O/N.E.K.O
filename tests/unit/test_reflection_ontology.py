@@ -191,6 +191,28 @@ async def test_synthesize_degrades_invalid_relation_type_to_null(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_synthesize_demotes_subject_alongside_other_ontology(tmp_path):
+    """Soft-fail must strip `subject` too — keeping it would leave a
+    half-structured record (no class but still a label)."""
+    fs, re = _install(str(tmp_path))
+    results = await _run_synth(fs, re, {
+        "reflection": "某观察",
+        "entity": "master",
+        "relation_type": "dynamic",  # illegal for master → triggers demotion
+        "confidence": 0.9,
+        "temporal_scope": "current",
+        "subject": "主人",
+    })
+    assert len(results) == 1
+    reflections = await re._aload_reflections_full("小天")
+    r = reflections[0]
+    assert r["relation_type"] is None
+    assert r["confidence"] is None
+    assert r["temporal_scope"] is None
+    assert r["subject"] is None
+
+
+@pytest.mark.asyncio
 async def test_synthesize_degrades_low_confidence_to_null(tmp_path):
     fs, re = _install(str(tmp_path))
     results = await _run_synth(fs, re, {
