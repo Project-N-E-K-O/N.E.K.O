@@ -575,10 +575,6 @@ function captureSettingsSnapshot() {
         mmdExposure: document.getElementById('mmd-exposure-slider')?.value ?? '',
         mmdToneMapping: document.getElementById('mmd-tonemapping-select')?.value ?? '',
         mmdOutline: String(document.getElementById('mmd-outline-toggle')?.checked ?? false),
-        vrmRotationDeg: document.getElementById('vrm-rotation-slider')?.value ?? '',
-        mmdRotationDeg: document.getElementById('mmd-rotation-slider')?.value ?? '',
-        vrmCameraPitchDeg: document.getElementById('vrm-camera-pitch-slider')?.value ?? '',
-        mmdCameraPitchDeg: document.getElementById('mmd-camera-pitch-slider')?.value ?? '',
         // 待机动作（多选，序列化为 JSON 数组）
         idleAnimation: JSON.stringify(_getSelectedIdleAnimationsGlobal('vrm-idle-animation-multiselect')),
         mmdIdleAnimation: JSON.stringify(_getSelectedIdleAnimationsGlobal('mmd-idle-animation-multiselect')),
@@ -997,14 +993,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     const mmdTonemappingSelect = document.getElementById('mmd-tonemapping-select');
     const mmdExposureSlider = document.getElementById('mmd-exposure-slider');
     const mmdOutlineToggle = document.getElementById('mmd-outline-toggle');
-    const mmdRotationSlider = document.getElementById('mmd-rotation-slider');
-    const mmdRotationValue = document.getElementById('mmd-rotation-value');
-    const vrmRotationSlider = document.getElementById('vrm-rotation-slider');
-    const vrmRotationValue = document.getElementById('vrm-rotation-value');
-    const vrmCameraPitchSlider = document.getElementById('vrm-camera-pitch-slider');
-    const vrmCameraPitchValue = document.getElementById('vrm-camera-pitch-value');
-    const mmdCameraPitchSlider = document.getElementById('mmd-camera-pitch-slider');
-    const mmdCameraPitchValue = document.getElementById('mmd-camera-pitch-value');
     // MMD 待机动作（多选）
     const mmdIdleAnimationMultiselect = document.getElementById('mmd-idle-animation-multiselect');
     const mmdIdleAnimationGroup = document.getElementById('mmd-idle-animation-group');
@@ -1673,416 +1661,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     };
 
-    const RAD_TO_DEG = 180 / Math.PI;
-    const DEG_TO_RAD = Math.PI / 180;
-    const CAMERA_PITCH_MIN_DEG = -90;
-    const CAMERA_PITCH_MAX_DEG = 90;
-    const CAMERA_PITCH_FALLBACK_DISTANCE = 2;
-
-    function clampRotationDegrees(value) {
-        const parsed = Number(value);
-        if (!Number.isFinite(parsed)) return 0;
-        return Math.max(-180, Math.min(180, parsed));
-    }
-
-    function setRotationValueLabel(valueEl, degrees) {
-        if (!valueEl) return;
-        valueEl.textContent = `${Math.round(clampRotationDegrees(degrees))}\u00b0`;
-    }
-
-    function clampCameraPitchDegrees(value) {
-        const parsed = Number(value);
-        if (!Number.isFinite(parsed)) return 0;
-        return Math.max(CAMERA_PITCH_MIN_DEG, Math.min(CAMERA_PITCH_MAX_DEG, parsed));
-    }
-
-    function setCameraPitchValueLabel(valueEl, degrees) {
-        if (!valueEl) return;
-        valueEl.textContent = `${Math.round(clampCameraPitchDegrees(degrees))}\u00b0`;
-    }
-
-    function getCurrentVrmScene() {
-        return vrmManager?.currentModel?.vrm?.scene || null;
-    }
-
-    function getCurrentMmdMesh() {
-        return window.mmdManager?.currentModel?.mesh || null;
-    }
-
-    function isFinitePoint3(point) {
-        return !!point &&
-            Number.isFinite(point.x) &&
-            Number.isFinite(point.y) &&
-            Number.isFinite(point.z);
-    }
-
-    function getVrmCameraTargetCoordinates() {
-        const target = vrmManager?._cameraTarget || vrmManager?.controls?.target;
-        if (isFinitePoint3(target)) {
-            return { x: target.x, y: target.y, z: target.z };
-        }
-        const scene = getCurrentVrmScene();
-        if (isFinitePoint3(scene?.position)) {
-            return {
-                x: scene.position.x,
-                y: scene.position.y + 1,
-                z: scene.position.z
-            };
-        }
-        return { x: 0, y: 1, z: 0 };
-    }
-
-    function getMmdCameraTargetCoordinates() {
-        const manager = window.mmdManager;
-        const controlsTarget = manager?.controls?.target;
-        if (isFinitePoint3(controlsTarget)) {
-            return { x: controlsTarget.x, y: controlsTarget.y, z: controlsTarget.z };
-        }
-        if (isFinitePoint3(manager?._cameraPitchTarget)) {
-            return {
-                x: manager._cameraPitchTarget.x,
-                y: manager._cameraPitchTarget.y,
-                z: manager._cameraPitchTarget.z
-            };
-        }
-
-        const mesh = getCurrentMmdMesh();
-        if (mesh && window.THREE) {
-            try {
-                const center = new window.THREE.Box3()
-                    .setFromObject(mesh)
-                    .getCenter(new window.THREE.Vector3());
-                if (isFinitePoint3(center)) {
-                    manager._cameraPitchTarget = center.clone();
-                    return { x: center.x, y: center.y, z: center.z };
-                }
-            } catch (error) {
-                console.warn('[MMD] 计算摄影机目标点失败:', error);
-            }
-        }
-
-        if (isFinitePoint3(mesh?.position)) {
-            return { x: mesh.position.x, y: mesh.position.y + 10, z: mesh.position.z };
-        }
-        return { x: 0, y: 10, z: 0 };
-    }
-
-    function getCameraPitchDegrees(camera, target, fallbackDegrees = 0) {
-        if (!camera || !isFinitePoint3(target)) {
-            return clampCameraPitchDegrees(fallbackDegrees);
-        }
-        const dx = camera.position.x - target.x;
-        const dy = camera.position.y - target.y;
-        const dz = camera.position.z - target.z;
-        const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
-        if (!Number.isFinite(distance) || distance < 1e-4) {
-            return clampCameraPitchDegrees(fallbackDegrees);
-        }
-        const normalizedY = Math.max(-1, Math.min(1, dy / distance));
-        const pitchDeg = Math.asin(normalizedY) * RAD_TO_DEG;
-        return clampCameraPitchDegrees(pitchDeg);
-    }
-
-    function applyCameraPitchToCamera(camera, target, pitchDegrees) {
-        if (!camera || !isFinitePoint3(target)) return false;
-
-        const dx = camera.position.x - target.x;
-        const dy = camera.position.y - target.y;
-        const dz = camera.position.z - target.z;
-        const rawDistance = Math.sqrt(dx * dx + dy * dy + dz * dz);
-        const distance = (Number.isFinite(rawDistance) && rawDistance > 1e-4)
-            ? rawDistance
-            : CAMERA_PITCH_FALLBACK_DISTANCE;
-        const yaw = Math.atan2(dx, dz);
-        const finalPitchDeg = clampCameraPitchDegrees(pitchDegrees);
-        const pitchRad = finalPitchDeg * DEG_TO_RAD;
-        const cosPitch = Math.cos(pitchRad);
-
-        camera.position.set(
-            target.x + Math.sin(yaw) * cosPitch * distance,
-            target.y + Math.sin(pitchRad) * distance,
-            target.z + Math.cos(yaw) * cosPitch * distance
-        );
-        camera.lookAt(target.x, target.y, target.z);
-        return true;
-    }
-
-    function syncRotationSliderFromScene(subType) {
-        if (subType === 'vrm') {
-            const scene = getCurrentVrmScene();
-            const degrees = scene
-                ? clampRotationDegrees(scene.rotation.y * RAD_TO_DEG)
-                : clampRotationDegrees(vrmRotationSlider?.value ?? 0);
-            if (vrmRotationSlider) vrmRotationSlider.value = String(Math.round(degrees));
-            setRotationValueLabel(vrmRotationValue, degrees);
-            return;
-        }
-        const mesh = getCurrentMmdMesh();
-        const degrees = mesh
-            ? clampRotationDegrees(mesh.rotation.y * RAD_TO_DEG)
-            : clampRotationDegrees(mmdRotationSlider?.value ?? 0);
-        if (mmdRotationSlider) mmdRotationSlider.value = String(Math.round(degrees));
-        setRotationValueLabel(mmdRotationValue, degrees);
-    }
-
-    function syncCameraPitchSliderFromScene(subType) {
-        if (subType === 'vrm') {
-            const camera = vrmManager?.camera;
-            const target = getVrmCameraTargetCoordinates();
-            const degrees = camera
-                ? getCameraPitchDegrees(camera, target, vrmCameraPitchSlider?.value ?? 0)
-                : clampCameraPitchDegrees(vrmCameraPitchSlider?.value ?? 0);
-            if (vrmCameraPitchSlider) vrmCameraPitchSlider.value = String(Math.round(degrees));
-            setCameraPitchValueLabel(vrmCameraPitchValue, degrees);
-            return;
-        }
-        const camera = window.mmdManager?.camera;
-        const target = getMmdCameraTargetCoordinates();
-        const degrees = camera
-            ? getCameraPitchDegrees(camera, target, mmdCameraPitchSlider?.value ?? 0)
-            : clampCameraPitchDegrees(mmdCameraPitchSlider?.value ?? 0);
-        if (mmdCameraPitchSlider) mmdCameraPitchSlider.value = String(Math.round(degrees));
-        setCameraPitchValueLabel(mmdCameraPitchValue, degrees);
-    }
-
-    function syncLive3dRotationControlsFromScene() {
-        syncRotationSliderFromScene('vrm');
-        syncRotationSliderFromScene('mmd');
-        syncCameraPitchSliderFromScene('vrm');
-        syncCameraPitchSliderFromScene('mmd');
-    }
-
-    function applyVrmRotationDegrees(degrees, { markUnsaved = true } = {}) {
-        const finalDegrees = clampRotationDegrees(degrees);
-        if (vrmRotationSlider) vrmRotationSlider.value = String(Math.round(finalDegrees));
-        setRotationValueLabel(vrmRotationValue, finalDegrees);
-
-        const scene = getCurrentVrmScene();
-        if (!scene) return false;
-
-        scene.rotation.y = finalDegrees * DEG_TO_RAD;
-        scene.updateMatrixWorld(true);
-        if (vrmManager?.interaction) {
-            // 手动旋转后关闭自动面向相机，避免被下一帧覆盖
-            vrmManager.interaction.enableFaceCamera = false;
-        }
-        if (vrmManager?.renderer && vrmManager?.scene && vrmManager?.camera) {
-            vrmManager.renderer.render(vrmManager.scene, vrmManager.camera);
-        }
-        if (markUnsaved) {
-            window.hasUnsavedChanges = true;
-        }
-        return true;
-    }
-
-    function applyMmdRotationDegrees(degrees, { markUnsaved = true } = {}) {
-        const finalDegrees = clampRotationDegrees(degrees);
-        if (mmdRotationSlider) mmdRotationSlider.value = String(Math.round(finalDegrees));
-        setRotationValueLabel(mmdRotationValue, finalDegrees);
-
-        const mesh = getCurrentMmdMesh();
-        if (!mesh) return false;
-
-        mesh.rotation.order = 'YXZ';
-        mesh.rotation.y = finalDegrees * DEG_TO_RAD;
-        mesh.updateMatrixWorld(true);
-        const physics = window.mmdManager?.currentModel?.physics;
-        if (physics && typeof physics.reset === 'function') {
-            try {
-                physics.reset();
-            } catch (error) {
-                console.warn('[MMD] 重置物理状态失败:', error);
-            }
-        }
-        if (markUnsaved) {
-            window.hasUnsavedChanges = true;
-        }
-        return true;
-    }
-
-    function applyVrmCameraPitchDegrees(degrees, { markUnsaved = true } = {}) {
-        const finalDegrees = clampCameraPitchDegrees(degrees);
-        if (vrmCameraPitchSlider) vrmCameraPitchSlider.value = String(Math.round(finalDegrees));
-        setCameraPitchValueLabel(vrmCameraPitchValue, finalDegrees);
-
-        const camera = vrmManager?.camera;
-        if (!camera) return false;
-
-        const target = getVrmCameraTargetCoordinates();
-        const applied = applyCameraPitchToCamera(camera, target, finalDegrees);
-        if (!applied) return false;
-
-        if (vrmManager?._cameraTarget && typeof vrmManager._cameraTarget.set === 'function') {
-            vrmManager._cameraTarget.set(target.x, target.y, target.z);
-        } else if (!vrmManager?._cameraTarget && window.THREE) {
-            vrmManager._cameraTarget = new window.THREE.Vector3(target.x, target.y, target.z);
-        }
-        if (vrmManager?.controls?.target && typeof vrmManager.controls.target.set === 'function') {
-            vrmManager.controls.target.set(target.x, target.y, target.z);
-            vrmManager.controls.update();
-        }
-        if (vrmManager?.renderer && vrmManager?.scene && vrmManager?.camera) {
-            vrmManager.renderer.render(vrmManager.scene, vrmManager.camera);
-        }
-        if (markUnsaved) {
-            window.hasUnsavedChanges = true;
-        }
-        return true;
-    }
-
-    function applyMmdCameraPitchDegrees(degrees, { markUnsaved = true } = {}) {
-        const finalDegrees = clampCameraPitchDegrees(degrees);
-        if (mmdCameraPitchSlider) mmdCameraPitchSlider.value = String(Math.round(finalDegrees));
-        setCameraPitchValueLabel(mmdCameraPitchValue, finalDegrees);
-
-        const manager = window.mmdManager;
-        const camera = manager?.camera;
-        if (!camera) return false;
-
-        const target = getMmdCameraTargetCoordinates();
-        const applied = applyCameraPitchToCamera(camera, target, finalDegrees);
-        if (!applied) return false;
-
-        if (manager?.controls?.target && typeof manager.controls.target.set === 'function') {
-            manager.controls.target.set(target.x, target.y, target.z);
-            manager.controls.update();
-        } else if (window.THREE) {
-            if (manager._cameraPitchTarget && typeof manager._cameraPitchTarget.set === 'function') {
-                manager._cameraPitchTarget.set(target.x, target.y, target.z);
-            } else {
-                manager._cameraPitchTarget = new window.THREE.Vector3(target.x, target.y, target.z);
-            }
-        } else {
-            manager._cameraPitchTarget = { x: target.x, y: target.y, z: target.z };
-        }
-
-        if (manager?.scene && manager?.camera) {
-            if (manager.effect && manager.useOutlineEffect && typeof manager.effect.render === 'function') {
-                manager.effect.render(manager.scene, manager.camera);
-            } else if (manager.renderer && typeof manager.renderer.render === 'function') {
-                manager.renderer.render(manager.scene, manager.camera);
-            }
-        }
-        if (markUnsaved) {
-            window.hasUnsavedChanges = true;
-        }
-        return true;
-    }
-
-    function buildViewportPreference() {
-        const width = window.screen?.width;
-        const height = window.screen?.height;
-        if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
-            return null;
-        }
-        return { width, height };
-    }
-
-    function normalizeModelPreferencePath(path) {
-        if (!path || typeof path !== 'string') return '';
-        return path
-            .replace(/^https?:\/\/[^/]+/i, '')
-            .replace(/\\/g, '/')
-            .split('?')[0]
-            .split('#')[0]
-            .toLowerCase()
-            .trim();
-    }
-
-    function isLikelySameModelPath(currentPath, expectedPath) {
-        const a = normalizeModelPreferencePath(currentPath);
-        const b = normalizeModelPreferencePath(expectedPath);
-        if (!a || !b) return false;
-        if (a === b) return true;
-        const aName = a.split('/').filter(Boolean).pop();
-        const bName = b.split('/').filter(Boolean).pop();
-        return !!(aName && bName && aName === bName);
-    }
-
-    function buildVrmCameraPositionPreference() {
-        const camera = vrmManager?.camera;
-        if (!camera) return null;
-        const target = vrmManager?._cameraTarget || vrmManager?.controls?.target;
-        const result = {
-            x: camera.position.x,
-            y: camera.position.y,
-            z: camera.position.z,
-            qx: camera.quaternion.x,
-            qy: camera.quaternion.y,
-            qz: camera.quaternion.z,
-            qw: camera.quaternion.w,
-        };
-        if (target && Number.isFinite(target.x) && Number.isFinite(target.y) && Number.isFinite(target.z)) {
-            result.targetX = target.x;
-            result.targetY = target.y;
-            result.targetZ = target.z;
-        }
-        return result;
-    }
-
-    function buildMmdCameraPositionPreference() {
-        const manager = window.mmdManager;
-        const camera = manager?.camera;
-        if (!camera) return null;
-        const result = {
-            x: camera.position.x,
-            y: camera.position.y,
-            z: camera.position.z,
-        };
-        const target = manager?.controls?.target;
-        if (target && Number.isFinite(target.x) && Number.isFinite(target.y) && Number.isFinite(target.z)) {
-            result.targetX = target.x;
-            result.targetY = target.y;
-            result.targetZ = target.z;
-        }
-        return result;
-    }
-
-    async function saveLive3dTransformPreferences() {
-        if (currentModelType !== 'live3d') return true;
-
-        if (currentLive3dSubType === 'mmd') {
-            const manager = window.mmdManager;
-            const mesh = getCurrentMmdMesh();
-            const modelUrl = manager?.currentModel?.url;
-            if (!manager?.core || typeof manager.core.saveUserPreferences !== 'function' || !mesh || !modelUrl) {
-                return true;
-            }
-            const expectedPath = currentModelInfo?.path || currentModelInfo?.url || '';
-            if (expectedPath && !isLikelySameModelPath(modelUrl, expectedPath)) {
-                return true;
-            }
-            return manager.core.saveUserPreferences(
-                modelUrl,
-                { x: mesh.position.x, y: mesh.position.y, z: mesh.position.z },
-                { x: mesh.scale.x, y: mesh.scale.y, z: mesh.scale.z },
-                { x: mesh.rotation.x, y: mesh.rotation.y, z: mesh.rotation.z },
-                null,
-                buildViewportPreference(),
-                buildMmdCameraPositionPreference()
-            );
-        }
-
-        const scene = getCurrentVrmScene();
-        const modelUrl = vrmManager?.currentModel?.url || currentModelInfo?.url || currentModelInfo?.path || '';
-        if (!vrmManager?.core || typeof vrmManager.core.saveUserPreferences !== 'function' || !scene || !modelUrl) {
-            return true;
-        }
-        const expectedPath = currentModelInfo?.url || currentModelInfo?.path || '';
-        if (expectedPath && !isLikelySameModelPath(modelUrl, expectedPath)) {
-            return true;
-        }
-        return vrmManager.core.saveUserPreferences(
-            modelUrl,
-            { x: scene.position.x, y: scene.position.y, z: scene.position.z },
-            { x: scene.scale.x, y: scene.scale.y, z: scene.scale.z },
-            { x: scene.rotation.x, y: scene.rotation.y, z: scene.rotation.z },
-            null,
-            buildViewportPreference(),
-            buildVrmCameraPositionPreference()
-        );
-    }
-
     try {
         if (!window.live2dManager) {
             throw new Error('Live2DManager 未初始化');
@@ -2430,37 +2008,19 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }
 
-            let transformPreferencesSaved = true;
-            if (currentModelType === 'live3d') {
-                try {
-                    transformPreferencesSaved = await saveLive3dTransformPreferences();
-                } catch (e) {
-                    console.warn('保存Live3D旋转偏好失败:', e);
-                    transformPreferencesSaved = false;
-                }
-            }
-
             let modelDisplayName = (currentModelType === 'live3d')
                 ? modelName.split(/[\\/]/).pop().replace(/\.(vrm|pmx|pmd)$/i, '') 
                 : modelName;
             let saveMessage;
             const lightingFailed = (currentModelType === 'live3d') && isVrmSubTypeForSave && ambient && main && (!lightingResult || !lightingResult.success);
             const mmdSettingsFailed = mmdSettingsResult && !mmdSettingsResult.success;
-            const transformFailed = (currentModelType === 'live3d') && !transformPreferencesSaved;
 
-            const failedItems = [];
-            if (lightingFailed) failedItems.push(t('live2d.vrmLighting', '光照'));
-            if (mmdSettingsFailed) failedItems.push(t('mmd.settingsTitle', 'MMD设置'));
-            if (transformFailed) failedItems.push(t('cardExport.rotation', '旋转'));
-
-            if (failedItems.length > 0) {
-                const separator = t('common.fieldSeparator', '、');
-                const itemsText = failedItems.join(separator);
-                saveMessage = t(
-                    'live2d.modelSavedPartialFailed',
-                    `已保存模型设置，但以下项目保存失败：${itemsText}`,
-                    { items: itemsText, name: modelDisplayName }
-                );
+            if (lightingFailed && mmdSettingsFailed) {
+                saveMessage = t('live2d.modelSavedLightingFailed', `已保存模型设置，光照和MMD设置保存失败`, { name: modelDisplayName });
+            } else if (mmdSettingsFailed) {
+                saveMessage = t('live2d.modelSavedMmdSettingsFailed', `已保存模型设置，MMD设置保存失败`, { name: modelDisplayName });
+            } else if (lightingFailed) {
+                saveMessage = t('live2d.modelSavedLightingFailed', `已保存模型设置，光照设置保存失败`, { name: modelDisplayName });
             } else if ((currentModelType === 'live3d') && isVrmSubTypeForSave && ambient && main) {
                 saveMessage = t('live2d.modelSettingsSavedWithLighting', `已保存模型和光照设置`, { name: modelDisplayName });
             } else if (currentModelType === 'live3d') {
@@ -2468,8 +2028,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             } else {
                 saveMessage = t('live2d.modelSettingsSaved', `已保存模型设置`, { name: modelDisplayName });
             }
-            showStatus(saveMessage, failedItems.length > 0 ? 3000 : 2000);
-            return failedItems.length === 0;
+            showStatus(saveMessage, mmdSettingsFailed || lightingFailed ? 3000 : 2000);
+            return !mmdSettingsFailed && !lightingFailed;
 
         } catch (error) {
             console.error('保存模型设置失败:', error);
@@ -3103,7 +2663,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (mmdIdleAnimGroup) mmdIdleAnimGroup.style.display = 'none';
                     // 显示 VRM 专属控件（已在上方设置）
                 }
-                syncLive3dRotationControlsFromScene();
             }
         }
 
@@ -3705,7 +3264,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                 // 自动加载角色的打光配置
                 await loadCharacterLighting();
-                syncLive3dRotationControlsFromScene();
 
                 showStatus(t('live2d.vrmModelLoaded', `VRM 模型 ${modelPath} 加载成功`, { model: modelPath }));
             } catch (error) {
@@ -4664,7 +4222,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (window.MMDLoadingOverlay) {
                     window.MMDLoadingOverlay.update(loadingSessionId, { stage: 'model' });
                 }
-                window.mmdManager._cameraPitchTarget = null;
                 await window.mmdManager.loadModel(modelPath, { loadingSessionId });
                 showStatusForMMDLoadingSession(mmdCanvas, loadingSessionId, t('mmd.modelLoaded', 'MMD模型加载成功'), 2000);
 
@@ -4683,7 +4240,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
 
                 await loadCharacterLighting();
-                syncLive3dRotationControlsFromScene();
                 if (window.MMDLoadingOverlay) {
                     window.MMDLoadingOverlay.update(loadingSessionId, { stage: 'done' });
                 }
@@ -5128,24 +4684,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             applyVrmOutlineWidth(parseFloat(e.target.value));
             window.hasUnsavedChanges = true;
         });
-    }
-
-    if (vrmRotationSlider) {
-        setRotationValueLabel(vrmRotationValue, vrmRotationSlider.value);
-        const onVrmRotationChange = (e) => {
-            applyVrmRotationDegrees(e.target.value, { markUnsaved: true });
-        };
-        vrmRotationSlider.addEventListener('input', onVrmRotationChange);
-        vrmRotationSlider.addEventListener('change', onVrmRotationChange);
-    }
-
-    if (vrmCameraPitchSlider) {
-        setCameraPitchValueLabel(vrmCameraPitchValue, vrmCameraPitchSlider.value);
-        const onVrmCameraPitchChange = (e) => {
-            applyVrmCameraPitchDegrees(e.target.value, { markUnsaved: true });
-        };
-        vrmCameraPitchSlider.addEventListener('input', onVrmCameraPitchChange);
-        vrmCameraPitchSlider.addEventListener('change', onVrmCameraPitchChange);
     }
 
     // ===== 待机动作多选：工具函数 =====
@@ -5995,24 +5533,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 applyMmdSettings();
                 window.hasUnsavedChanges = true;
             });
-        }
-
-        if (mmdRotationSlider) {
-            setRotationValueLabel(mmdRotationValue, mmdRotationSlider.value);
-            const onMmdRotationChange = (e) => {
-                applyMmdRotationDegrees(e.target.value, { markUnsaved: true });
-            };
-            mmdRotationSlider.addEventListener('input', onMmdRotationChange);
-            mmdRotationSlider.addEventListener('change', onMmdRotationChange);
-        }
-
-        if (mmdCameraPitchSlider) {
-            setCameraPitchValueLabel(mmdCameraPitchValue, mmdCameraPitchSlider.value);
-            const onMmdCameraPitchChange = (e) => {
-                applyMmdCameraPitchDegrees(e.target.value, { markUnsaved: true });
-            };
-            mmdCameraPitchSlider.addEventListener('input', onMmdCameraPitchChange);
-            mmdCameraPitchSlider.addEventListener('change', onMmdCameraPitchChange);
         }
 
         // 像素比例、物理、鼠标跟踪 已移至 popup-ui 统一控制

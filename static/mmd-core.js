@@ -1339,40 +1339,6 @@ class MMDCore {
                 }
             }
 
-            // 恢复相机位置（用于摄影机俯仰/缩放视角）
-            if (this.manager.camera && preferences.camera_position) {
-                const camPos = preferences.camera_position;
-                const camPosValid = Number.isFinite(camPos.x) &&
-                    Number.isFinite(camPos.y) &&
-                    Number.isFinite(camPos.z) &&
-                    (camPos.x * camPos.x + camPos.y * camPos.y + camPos.z * camPos.z) > 0.01;
-                if (camPosValid) {
-                    this.manager.camera.position.set(camPos.x, camPos.y, camPos.z);
-
-                    let lookTarget = null;
-                    if (Number.isFinite(camPos.targetX) && Number.isFinite(camPos.targetY) && Number.isFinite(camPos.targetZ)) {
-                        lookTarget = new THREE.Vector3(camPos.targetX, camPos.targetY, camPos.targetZ);
-                    } else {
-                        try {
-                            lookTarget = new THREE.Box3().setFromObject(mesh).getCenter(new THREE.Vector3());
-                        } catch (error) {
-                            console.warn('[MMD Core] 恢复相机目标点失败，使用默认目标:', error);
-                        }
-                    }
-                    if (!lookTarget) {
-                        lookTarget = new THREE.Vector3(mesh.position.x, mesh.position.y + 10, mesh.position.z);
-                    }
-
-                    this.manager.camera.lookAt(lookTarget.x, lookTarget.y, lookTarget.z);
-                    this.manager._cameraPitchTarget = lookTarget.clone();
-
-                    if (this.manager.controls?.target && typeof this.manager.controls.target.set === 'function') {
-                        this.manager.controls.target.set(lookTarget.x, lookTarget.y, lookTarget.z);
-                        this.manager.controls.update();
-                    }
-                }
-            }
-
             // 物理重置：更新世界矩阵后重置所有刚体到新骨骼位置
             if (mmd.physics && typeof mmd.physics.reset === 'function') {
                 mesh.updateMatrixWorld(true);
