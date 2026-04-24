@@ -359,7 +359,7 @@ function stopCurrentGuideSpeech() {
 }
 
 function resolveResistanceTextKey(interruptCount: number) {
-  return Math.max(0, interruptCount - 1) >= 1
+  return interruptCount >= 2
     ? 'tutorial.yuiGuide.lines.interruptResistLight3'
     : 'tutorial.yuiGuide.lines.interruptResistLight1'
 }
@@ -1533,6 +1533,9 @@ class PluginDashboardGuideRuntime {
       return
     }
 
+    const sessionAtStart = this.activeSessionId
+    const isSameSession = () => this.running && this.activeSessionId === sessionAtStart
+
     this.pauseCurrentSceneForResistance()
     this.interruptNarrationForResistance()
     this.revealRealCursorTemporarily()
@@ -1549,10 +1552,19 @@ class PluginDashboardGuideRuntime {
       voiceKey,
       interruptCount: this.interruptCount,
     })
+    if (!isSameSession()) {
+      return
+    }
     if (!handledByHome) {
       await this.speakLine(line, { voiceKey })
+      if (!isSameSession()) {
+        return
+      }
     }
     await resistanceMotionPromise.catch(() => {})
+    if (!isSameSession()) {
+      return
+    }
     this.resumeCurrentSceneAfterResistance()
     if (this.activeNarration?.interrupted) {
       this.scheduleNarrationResume()
@@ -1563,6 +1575,9 @@ class PluginDashboardGuideRuntime {
     if (this.angryExitTriggered || !this.running) {
       return
     }
+
+    const sessionAtStart = this.activeSessionId
+    const isSameSession = () => this.running && this.activeSessionId === sessionAtStart
 
     this.angryExitTriggered = true
     this.interruptsEnabled = false
@@ -1575,12 +1590,18 @@ class PluginDashboardGuideRuntime {
       voiceKey: 'interrupt_angry_exit',
       interruptCount: this.interruptCount,
     })
+    if (!isSameSession()) {
+      return
+    }
     if (!handledByHome) {
       await this.speakLine(ANGRY_EXIT_LINE, {
         voiceKey: 'interrupt_angry_exit',
       })
+      if (!isSameSession()) {
+        return
+      }
     }
-    if (!this.running) {
+    if (!isSameSession()) {
       return
     }
     this.notify(DONE_EVENT, this.activeSessionId)
