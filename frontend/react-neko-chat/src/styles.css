@@ -1943,13 +1943,15 @@ button * {
 }
 .cp-stagger { animation: cp-fade-in 0.22s ease both; }
 
-/* ── Tab bar (bottom) ── */
+/* ── Tab bar ── */
 .cp-tab-bar {
   display: flex;
-  border-top: 1px solid rgba(140, 160, 190, 0.1);
+  border-color: rgba(140, 160, 190, 0.1);
   padding: 0;
   flex-shrink: 0;
 }
+.cp-tab-bar-top { border-bottom: 1px solid rgba(140, 160, 190, 0.1); }
+.cp-tab-bar-bottom { border-top: 1px solid rgba(140, 160, 190, 0.1); }
 .cp-tab {
   flex: 1;
   display: flex; align-items: center; justify-content: center; gap: 5px;
@@ -2290,7 +2292,7 @@ button * {
 [data-theme="dark"] .cp-section-label { color: #7a8494; }
 [data-theme="dark"] .cp-section-count { color: #7a8494; background: rgba(255, 255, 255, 0.06); }
 
-[data-theme="dark"] .cp-tab-bar { border-top-color: rgba(255, 255, 255, 0.06); }
+[data-theme="dark"] .cp-tab-bar { border-color: rgba(255, 255, 255, 0.06); }
 [data-theme="dark"] .cp-tab { color: #7a8494; }
 [data-theme="dark"] .cp-tab:hover { background: rgba(255, 255, 255, 0.05); }
 [data-theme="dark"] .cp-tab-active { color: #40c5f1; }

@@ -493,6 +493,57 @@ function ToastStack({ toasts }: { toasts: ToastItem[] }) {
 }
 
 /* ================================================================== */
+/*  Section header (for grouped views)                                 */
+/* ================================================================== */
+
+function SectionHeader({ icon, label, count }: { icon: string; label: string; count?: number }) {
+  return (
+    <div className="cp-section-header">
+      <span className="cp-section-icon" aria-hidden="true">{icon}</span>
+      <span className="cp-section-label">{label}</span>
+      {count !== undefined && count > 0 && <span className="cp-section-count">{count}</span>}
+    </div>
+  );
+}
+
+/* ================================================================== */
+/*  Helpers: classify items                                            */
+/* ================================================================== */
+
+type ContentTab = 'quick' | 'settings' | 'all';
+type GroupMode = 'byPlugin' | 'byFunction';
+
+const _SETTINGS_CONTROLS = new Set(['toggle', 'entry_toggle', 'dropdown', 'slider', 'number']);
+
+function isSettingsItem(item: CommandItem): boolean {
+  return item.type === 'instant' && _SETTINGS_CONTROLS.has(item.control ?? '');
+}
+
+function functionGroupLabel(item: CommandItem): string {
+  if (item.type === 'chat_inject') return '💬 斜杠命令';
+  if (item.type === 'navigation') return '↗ 导航';
+  switch (item.control) {
+    case 'toggle': case 'entry_toggle': return '🔘 开关';
+    case 'slider': return '🎚 滑块';
+    case 'number': return '🔢 数值';
+    case 'dropdown': return '📋 下拉';
+    case 'button': return '⚡ 操作';
+    case 'plugin_lifecycle': return '🔧 生命周期';
+    default: return '• 其他';
+  }
+}
+
+function groupItems(items: CommandItem[], mode: GroupMode): Map<string, CommandItem[]> {
+  const groups = new Map<string, CommandItem[]>();
+  for (const item of items) {
+    const key = mode === 'byPlugin' ? item.category : functionGroupLabel(item);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(item);
+  }
+  return groups;
+}
+
+/* ================================================================== */
 /*  Main component                                                     */
 /* ================================================================== */
 
@@ -508,7 +559,8 @@ export default function CommandPalette({
   onClose,
 }: CommandPaletteProps) {
   const [search, setSearch] = useState('');
-  const [activeTab, setActiveTab] = useState<'quick' | 'all'>('quick');
+  const [contentTab, setContentTab] = useState<ContentTab>('quick');
+  const [groupMode, setGroupMode] = useState<GroupMode>('byPlugin');
   const [loadingMap, setLoadingMap] = useState<Record<string, boolean>>({});
   const [errorMap, setErrorMap] = useState<Record<string, string | null>>({});
   const [localItems, setLocalItems] = useState<CommandItem[]>(items);
@@ -520,23 +572,20 @@ export default function CommandPalette({
   useEffect(() => { setLocalItems(items); }, [items]);
   useEffect(() => { setLocalPrefs(preferences); }, [preferences]);
 
-  // Auto-select tab: if no quick actions exist, default to 'all'
+  // Auto-select: if no quick actions, start on 'all'
   useEffect(() => {
     const hasQuick = localItems.some(a => a.quick_action);
-    if (!hasQuick) setActiveTab('all');
-  }, [localItems]);
+    if (!hasQuick && contentTab === 'quick') setContentTab('all');
+  }, [localItems, contentTab]);
 
-  // Auto-focus search on open
   useEffect(() => { searchRef.current?.focus(); }, []);
 
-  // Close on Escape
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  // Close on click outside
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
       if (panelRef.current && !panelRef.current.contains(e.target as Node)) onClose();
@@ -585,16 +634,14 @@ export default function CommandPalette({
     onPreferencesChange(prefs);
   }, [onPreferencesChange]);
 
-  // ── Build filtered lists for each tab ──
-  const { quickTabItems, allTabItems, hasResults } = useMemo(() => {
+  // ── Build filtered items per tab ──
+  const { displayItems, hasResults } = useMemo(() => {
     const isSearching = search.trim().length > 0;
-
     const baseItems = slashMode
       ? localItems.filter(a => a.type === 'chat_inject')
       : localItems;
-
     const matched = baseItems.filter(a => matchesSearch(a, search));
-    const visibleMatched = isSearching
+    const visible = isSearching
       ? matched
       : matched.filter(a => !localPrefs.hidden.includes(a.action_id));
 
@@ -605,43 +652,44 @@ export default function CommandPalette({
       return a.label.localeCompare(b.label);
     };
 
-    // Quick tab: pinned + quick_action items
-    const pinnedIds = new Set(localPrefs.pinned);
-    const pinned = localPrefs.pinned
-      .map(id => visibleMatched.find(a => a.action_id === id))
-      .filter((a): a is CommandItem => a !== undefined);
-    const quick = visibleMatched
-      .filter(a => a.quick_action && !pinnedIds.has(a.action_id))
-      .sort(sortByPriority);
-    const quickTab = [...pinned, ...quick];
+    let filtered: CommandItem[];
+    if (contentTab === 'quick') {
+      const pinnedIds = new Set(localPrefs.pinned);
+      const pinned = localPrefs.pinned
+        .map(id => visible.find(a => a.action_id === id))
+        .filter((a): a is CommandItem => a !== undefined);
+      const quick = visible
+        .filter(a => a.quick_action && !pinnedIds.has(a.action_id))
+        .sort(sortByPriority);
+      filtered = [...pinned, ...quick];
+    } else if (contentTab === 'settings') {
+      filtered = visible.filter(isSettingsItem).sort(sortByPriority);
+    } else {
+      filtered = [...visible].sort(sortByPriority);
+    }
 
-    // All tab: everything, sorted
-    const allTab = [...visibleMatched].sort(sortByPriority);
-
-    return {
-      quickTabItems: quickTab,
-      allTabItems: allTab,
-      hasResults: (activeTab === 'quick' ? quickTab.length : allTab.length) > 0,
-    };
-  }, [localItems, localPrefs, search, slashMode, activeTab]);
+    return { displayItems: filtered, hasResults: filtered.length > 0 };
+  }, [localItems, localPrefs, search, slashMode, contentTab]);
 
   const isSearching = search.trim().length > 0;
-  const displayItems = activeTab === 'quick' ? quickTabItems : allTabItems;
 
-  // ── Flat list for keyboard navigation ──
+  // ── Keyboard navigation ──
+  const flatItems = contentTab === 'all' && groupMode !== 'byPlugin'
+    ? displayItems
+    : displayItems; // grouped view still uses flat for keyboard
   const [highlightIdx, setHighlightIdx] = useState(-1);
-  useEffect(() => { setHighlightIdx(-1); }, [search, displayItems.length, activeTab]);
+  useEffect(() => { setHighlightIdx(-1); }, [search, displayItems.length, contentTab, groupMode]);
 
   const handleSearchKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      setHighlightIdx(prev => (prev + 1) % Math.max(displayItems.length, 1));
+      setHighlightIdx(prev => (prev + 1) % Math.max(flatItems.length, 1));
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      setHighlightIdx(prev => prev <= 0 ? displayItems.length - 1 : prev - 1);
-    } else if (e.key === 'Enter' && highlightIdx >= 0 && highlightIdx < displayItems.length) {
+      setHighlightIdx(prev => prev <= 0 ? flatItems.length - 1 : prev - 1);
+    } else if (e.key === 'Enter' && highlightIdx >= 0 && highlightIdx < flatItems.length) {
       e.preventDefault();
-      const item = displayItems[highlightIdx];
+      const item = flatItems[highlightIdx];
       if (item.type === 'chat_inject') {
         handleInject(item.inject_text ?? '');
       } else if (item.type === 'navigation') {
@@ -650,7 +698,7 @@ export default function CommandPalette({
         handleExecute(item.action_id, null);
       }
     }
-  }, [displayItems, highlightIdx, handleInject, onNavigate, handleExecute]);
+  }, [flatItems, highlightIdx, handleInject, onNavigate, handleExecute]);
 
   const sharedRowProps = {
     prefs: localPrefs,
@@ -659,6 +707,37 @@ export default function CommandPalette({
   };
 
   const hasQuickActions = localItems.some(a => a.quick_action);
+  const hasSettingsItems = localItems.some(isSettingsItem);
+  const showGroupToggle = contentTab === 'all' && !isSearching && !slashMode;
+
+  // Grouped rendering helper
+  const renderGrouped = (items: CommandItem[]) => {
+    const groups = groupItems(items, groupMode);
+    let flatIdx = 0;
+    return Array.from(groups.entries()).map(([groupLabel, groupItems]) => (
+      <div key={groupLabel} className="cp-section">
+        <SectionHeader icon="" label={groupLabel} count={groupItems.length} />
+        {groupItems.map((item) => {
+          const idx = flatIdx++;
+          return (
+            <div key={item.action_id} className="cp-stagger" style={{ animationDelay: `${idx * 15}ms` }}>
+              <CommandRow item={item} loading={!!loadingMap[item.action_id]} error={errorMap[item.action_id] ?? null} highlighted={highlightIdx === idx} {...sharedRowProps} />
+            </div>
+          );
+        })}
+      </div>
+    ));
+  };
+
+  const renderFlat = (items: CommandItem[]) => (
+    <div className="cp-section">
+      {items.map((item, i) => (
+        <div key={item.action_id} className="cp-stagger" style={{ animationDelay: `${i * 20}ms` }}>
+          <CommandRow item={item} loading={!!loadingMap[item.action_id]} error={errorMap[item.action_id] ?? null} highlighted={highlightIdx === i} {...sharedRowProps} />
+        </div>
+      ))}
+    </div>
+  );
 
   return (
     <div className="cp-panel" ref={panelRef} role="dialog" aria-label={i18n('commandPalette.title', '命令面板')}>
@@ -689,21 +768,40 @@ export default function CommandPalette({
         )}
       </div>
 
+      {/* ── Top tabs (content mode) ── */}
+      {!slashMode && (
+        <div className="cp-tab-bar cp-tab-bar-top">
+          {hasQuickActions && (
+            <button type="button" className={`cp-tab ${contentTab === 'quick' ? 'cp-tab-active' : ''}`} onClick={() => setContentTab('quick')}>
+              ⚡ {i18n('commandPalette.quickActions', '快捷操作')}
+            </button>
+          )}
+          {hasSettingsItems && (
+            <button type="button" className={`cp-tab ${contentTab === 'settings' ? 'cp-tab-active' : ''}`} onClick={() => setContentTab('settings')}>
+              ⚙️ {i18n('commandPalette.settings', '配置项')}
+            </button>
+          )}
+          <button type="button" className={`cp-tab ${contentTab === 'all' ? 'cp-tab-active' : ''}`} onClick={() => setContentTab('all')}>
+            📋 {i18n('commandPalette.allCommands', '全部')}
+          </button>
+        </div>
+      )}
+
       {/* ── Content ── */}
       <div className="cp-content">
         {externalLoading && localItems.length === 0 ? (
-          <div className="cp-empty">
-            <span className="cp-spinner" />
-          </div>
+          <div className="cp-empty"><span className="cp-spinner" /></div>
         ) : !hasResults ? (
           <div className="cp-empty">
             <div className="cp-empty-icon" aria-hidden="true">{isSearching ? '🔍' : '📋'}</div>
             <div className="cp-empty-text">
               {isSearching
                 ? i18n('commandPalette.noResults', '没有匹配的操作')
-                : activeTab === 'quick'
+                : contentTab === 'quick'
                   ? i18n('commandPalette.noQuickActions', '暂无快捷操作')
-                  : i18n('commandPalette.empty', '暂无可用操作')}
+                  : contentTab === 'settings'
+                    ? i18n('commandPalette.noSettings', '暂无配置项')
+                    : i18n('commandPalette.empty', '暂无可用操作')}
             </div>
             {isSearching && (
               <button type="button" className="cp-empty-clear" onClick={() => { setSearch(''); searchRef.current?.focus(); }}>
@@ -711,40 +809,25 @@ export default function CommandPalette({
               </button>
             )}
           </div>
+        ) : showGroupToggle ? (
+          renderGrouped(displayItems)
         ) : (
-          <div className="cp-section">
-            {displayItems.map((item, i) => (
-              <div key={item.action_id} className="cp-stagger" style={{ animationDelay: `${i * 20}ms` }}>
-                <CommandRow item={item} loading={!!loadingMap[item.action_id]} error={errorMap[item.action_id] ?? null} highlighted={highlightIdx === i} {...sharedRowProps} />
-              </div>
-            ))}
-          </div>
+          renderFlat(displayItems)
         )}
       </div>
 
-      {/* ── Tab bar (bottom) ── */}
-      {hasQuickActions && !slashMode && (
-        <div className="cp-tab-bar">
-          <button
-            type="button"
-            className={`cp-tab ${activeTab === 'quick' ? 'cp-tab-active' : ''}`}
-            onClick={() => setActiveTab('quick')}
-          >
-            ⚡ {i18n('commandPalette.quickActions', '快捷操作')}
-            {quickTabItems.length > 0 && <span className="cp-tab-count">{quickTabItems.length}</span>}
+      {/* ── Bottom toggle (group mode, only in 'all' tab) ── */}
+      {showGroupToggle && (
+        <div className="cp-tab-bar cp-tab-bar-bottom">
+          <button type="button" className={`cp-tab ${groupMode === 'byPlugin' ? 'cp-tab-active' : ''}`} onClick={() => setGroupMode('byPlugin')}>
+            🧩 {i18n('commandPalette.byPlugin', '按插件')}
           </button>
-          <button
-            type="button"
-            className={`cp-tab ${activeTab === 'all' ? 'cp-tab-active' : ''}`}
-            onClick={() => setActiveTab('all')}
-          >
-            📋 {i18n('commandPalette.allCommands', '全部操作')}
-            {allTabItems.length > 0 && <span className="cp-tab-count">{allTabItems.length}</span>}
+          <button type="button" className={`cp-tab ${groupMode === 'byFunction' ? 'cp-tab-active' : ''}`} onClick={() => setGroupMode('byFunction')}>
+            🏷️ {i18n('commandPalette.byFunction', '按功能')}
           </button>
         </div>
       )}
 
-      {/* ── Toasts ── */}
       <ToastStack toasts={toasts} />
     </div>
   );
