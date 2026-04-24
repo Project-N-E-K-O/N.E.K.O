@@ -10,6 +10,8 @@ from plugin.sdk.shared.models.exceptions import EntryConflictError, PluginRouter
 from .events import EventHandler, EventMeta
 from .types import EntryHandler, JsonObject, JsonValue
 
+from plugin.sdk.shared.constants import EVENT_META_ATTR
+
 
 class RouteHandler(Protocol):
     """Async route handler contract."""
@@ -32,6 +34,28 @@ class PluginRouter:
         self._name = name or self.__class__.__name__
         self._entries: dict[str, _EntryRecord] = {}
         self._main_plugin: object | None = None
+        # Auto-scan decorated methods (@plugin_entry) on the router class
+        self._scan_decorated_entries()
+
+    def _scan_decorated_entries(self) -> None:
+        """Scan class methods for @plugin_entry decorators and register them."""
+        import inspect as _inspect
+        for attr_name in dir(type(self)):
+            if attr_name.startswith("_"):
+                continue
+            class_val = getattr(type(self), attr_name, None)
+            target = class_val.__func__ if isinstance(class_val, (staticmethod, classmethod)) else class_val
+            if not callable(target):
+                continue
+            meta = getattr(target, EVENT_META_ATTR, None)
+            if not isinstance(meta, EventMeta) or meta.event_type != "plugin_entry":
+                continue
+            entry_id = meta.id
+            if entry_id in self._entries:
+                continue
+            bound_method = getattr(self, attr_name, None)
+            if callable(bound_method):
+                self._entries[entry_id] = _EntryRecord(meta=meta, handler=bound_method)
 
     @property
     def prefix(self) -> str:
