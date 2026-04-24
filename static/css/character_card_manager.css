@@ -4109,10 +4109,6 @@ margin-top: 10px;
     overflow-y: auto;
 }
 
-.catgirl-panel-wrapper.card-only .catgirl-panel-card-image {
-    border-radius: 0;
-}
-
 .catgirl-panel-wrapper.card-only.phase-expand .catgirl-panel-left {
     border-right: 1px solid #f0f0f0;
 }

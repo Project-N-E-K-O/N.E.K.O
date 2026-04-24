@@ -1611,7 +1611,7 @@
         "settings": "설정",
         "renamePrompt": "새 프로필 이름을 입력하세요",
         "renameTitle": "이름 변경",
-        "tempSaveFailed": "임시 저장 실패:{{error}}",
+        "tempSaveFailed": "임시 저장 실패: {{error}}",
         "newCatgirlSuccess": "새 캐릭터가 생성되었습니다",
         "saveSuccess": "저장 완료",
         "switchSuccess": "전환 완료",
@@ -3382,7 +3382,7 @@
         "saveCardFace": "카드 페이스 저장",
         "savingCardFace": "저장 중...",
         "saveCardFaceSuccess": "저장 성공!",
-        "saveCardFaceFailed": "저장 실패:{{error}}",
+        "saveCardFaceFailed": "저장 실패: {{error}}",
         "renderFailed": "카드 이미지를 렌더링할 수 없습니다"
     },
     "connectivity": {

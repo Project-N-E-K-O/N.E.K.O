@@ -1638,7 +1638,7 @@
         "showHidden": "Mostrar ocultos",
         "switchCard": "Cambiar tarjeta",
         "switchSuccess": "Cambiado con éxito",
-        "tempSaveFailed": "Error al guardar temporalmente:{{error}}",
+        "tempSaveFailed": "Error al guardar temporalmente: {{error}}",
         "editCardFace": "Editar tarjeta"
     },
     "app": {
@@ -1991,7 +1991,7 @@
             "characterManage": "Gestión de personajes",
             "voiceClone": "Clon de voz",
             "memoryBrowser": "Explorador de memoria",
-            "steamWorkshop": "Taller de vapor",
+            "steamWorkshop": "Gestión de tarjetas de personaje",
             "memoryManage": "Gestión de la memoria",
             "characterSettings": "Configuración de personajes",
             "live2dManage": "Gestión Live2D",
@@ -3383,7 +3383,7 @@
         "saveCardFace": "Guardar cara de la tarjeta",
         "savingCardFace": "Guardando...",
         "saveCardFaceSuccess": "¡Guardado correctamente!",
-        "saveCardFaceFailed": "Error al guardar:{{error}}",
+        "saveCardFaceFailed": "Error al guardar: {{error}}",
         "renderFailed": "No se puede renderizar la imagen de la tarjeta"
     },
     "connectivity": {

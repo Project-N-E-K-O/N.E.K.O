@@ -1611,7 +1611,7 @@
         "settings": "Настройки",
         "renamePrompt": "Введите новое имя профиля",
         "renameTitle": "Переименовать",
-        "tempSaveFailed": "Ошибка временного сохранения:{{error}}",
+        "tempSaveFailed": "Ошибка временного сохранения: {{error}}",
         "newCatgirlSuccess": "Новый персонаж успешно создан",
         "saveSuccess": "Сохранено",
         "switchSuccess": "Переключено",
@@ -3382,7 +3382,7 @@
         "saveCardFace": "Сохранить обложку",
         "savingCardFace": "Сохранение...",
         "saveCardFaceSuccess": "Сохранено успешно!",
-        "saveCardFaceFailed": "Ошибка сохранения:{{error}}",
+        "saveCardFaceFailed": "Ошибка сохранения: {{error}}",
         "renderFailed": "Не удалось отрендерить изображение карточки"
     },
     "connectivity": {

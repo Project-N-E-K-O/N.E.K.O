@@ -4555,6 +4555,8 @@ async def list_card_faces():
         logger.exception("list_card_faces failed")
         return JSONResponse({'success': False, 'error': '读取卡面列表失败'}, status_code=500)
 
+    return JSONResponse({'success': True, 'names': names}, status_code=200)
+
 
 @router.get('/card-metas')
 async def list_card_metas():
@@ -4588,6 +4590,8 @@ async def list_card_metas():
             metas[cname] = inferred
     except Exception as e:
         logger.warning(f"批量读取卡面元数据失败: {e}")
+        return JSONResponse({'success': False, 'error': '批量读取卡面元数据失败', 'details': str(e)}, status_code=500)
+
     return JSONResponse({'success': True, 'metas': metas})
 
 

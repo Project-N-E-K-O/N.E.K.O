@@ -1539,7 +1539,7 @@
         "fieldExists": "このフィールドは既に存在します",
         "profileNameRequired": "プロフィール名は必須です",
         "onlyOneCatgirlLeft": "neko が 1 つだけ残っています。削除できません！",
-        "cannotHideCurrentCatgirl": "現在アクティブな猫娘は非表示にできません",
+        "cannotHideCurrentCatgirl": "現在アクティブな neko は非表示にできません",
         "cannotDeleteCurrentCatgirl": "現在アクティブな neko は削除できません！\n\n別の neko に切り替えてからお試しください。",
         "cannotConfirmCatgirlStatus": "現在の neko ステータスを確認できません。削除がキャンセルされました",
         "confirmDeleteCatgirl": "neko \"{{name}}\" を削除してもよろしいですか？",
@@ -1611,7 +1611,7 @@
         "settings": "設定",
         "renamePrompt": "新しいプロフィール名を入力してください",
         "renameTitle": "名前の変更",
-        "tempSaveFailed": "一時保存に失敗しました:{{error}}",
+        "tempSaveFailed": "一時保存に失敗しました: {{error}}",
         "newCatgirlSuccess": "新しいキャラクターが作成されました",
         "saveSuccess": "保存しました",
         "switchSuccess": "切り替えに成功しました",
@@ -3382,7 +3382,7 @@
         "saveCardFace": "カードフェイスを保存",
         "savingCardFace": "保存中...",
         "saveCardFaceSuccess": "保存しました！",
-        "saveCardFaceFailed": "保存に失敗しました:{{error}}",
+        "saveCardFaceFailed": "保存に失敗しました: {{error}}",
         "renderFailed": "カード画像をレンダリングできません"
     },
     "connectivity": {
