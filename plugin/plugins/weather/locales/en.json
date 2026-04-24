@@ -1,0 +1,81 @@
+{
+  "wmo": {
+    "0": "Clear sky",
+    "1": "Mainly clear",
+    "2": "Partly cloudy",
+    "3": "Overcast",
+    "45": "Fog",
+    "48": "Rime fog",
+    "51": "Light drizzle",
+    "53": "Moderate drizzle",
+    "55": "Dense drizzle",
+    "56": "Light freezing drizzle",
+    "57": "Dense freezing drizzle",
+    "61": "Light rain",
+    "63": "Moderate rain",
+    "65": "Heavy rain",
+    "66": "Light freezing rain",
+    "67": "Heavy freezing rain",
+    "71": "Light snow",
+    "73": "Moderate snow",
+    "75": "Heavy snow",
+    "77": "Snow grains",
+    "80": "Light showers",
+    "81": "Moderate showers",
+    "82": "Heavy showers",
+    "85": "Light snow showers",
+    "86": "Heavy snow showers",
+    "95": "Thunderstorm",
+    "96": "Thunderstorm with light hail",
+    "99": "Thunderstorm with heavy hail"
+  },
+  "advice": {
+    "cold": "🧥 Very cold — wear a heavy coat or down jacket",
+    "cool": "🧣 A bit chilly — bring a jacket",
+    "mild": "👕 Comfortable — a light layer or long sleeves will do",
+    "hot": "☀️ Hot — go with shorts and a tee",
+    "rain": "🌂 Rain expected — bring an umbrella",
+    "snow": "❄️ Snow expected — watch for slippery roads and stay warm",
+    "uv_extreme": "🧴 Extreme UV — sunscreen is a must",
+    "uv_high": "🕶️ High UV — sunscreen recommended",
+    "wind_strong": "💨 Strong winds — be careful outdoors",
+    "rain_forecast": "📅 Rain expected on: {dates}"
+  },
+  "clothing": {
+    "heavy": "Heavy",
+    "light": "Light",
+    "cool": "Minimal"
+  },
+  "summary": {
+    "weather": "{city}: {weather}, {temp}°C (feels like {feels}°C), humidity {humidity}%",
+    "vpn_hint": " (Proxy detected — IP shows {ip_city}, auto-switched to system timezone location)",
+    "travel_prefix": "Travel advice for {city}: "
+  },
+  "error": {
+    "no_location": "Unable to determine location — please specify a city name",
+    "fetch_failed": "Failed to fetch weather data ({city})",
+    "unknown_weather": "Unknown ({code})"
+  },
+  "tz_city": {
+    "Asia/Shanghai": "Shanghai",
+    "Asia/Chongqing": "Chongqing",
+    "Asia/Hong_Kong": "Hong Kong",
+    "Asia/Taipei": "Taipei",
+    "Asia/Tokyo": "Tokyo",
+    "Asia/Seoul": "Seoul",
+    "Asia/Singapore": "Singapore",
+    "Asia/Bangkok": "Bangkok",
+    "Asia/Kolkata": "Mumbai",
+    "Asia/Dubai": "Dubai",
+    "Europe/London": "London",
+    "Europe/Paris": "Paris",
+    "Europe/Berlin": "Berlin",
+    "Europe/Moscow": "Moscow",
+    "America/New_York": "New York",
+    "America/Chicago": "Chicago",
+    "America/Denver": "Denver",
+    "America/Los_Angeles": "Los Angeles",
+    "America/Sao_Paulo": "São Paulo",
+    "Australia/Sydney": "Sydney"
+  }
+}

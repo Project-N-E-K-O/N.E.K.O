@@ -1,0 +1,39 @@
+[plugin]
+id = "weather"
+name = "天气出行"
+description = "查询天气与出行建议。基于 IP 自动定位或手动指定城市，提供实时天气、未来预报和穿衣/出行建议。"
+short_description = "Weather & travel advice. Auto-locates via IP or accepts a city name. Returns current conditions, forecast, and travel tips."
+keywords = ["天气", "weather", "出行", "travel", "温度", "temperature", "预报", "forecast", "穿衣", "下雨", "rain", "紫外线", "UV", "空气", "air", "날씨", "天気", "погода", "umbrella", "伞"]
+version = "0.1.0"
+entry = "plugin.plugins.weather:WeatherPlugin"
+
+[plugin.author]
+name = "N.E.K.O Team"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin_runtime]
+enabled = true
+auto_start = true
+
+[plugin.store]
+enabled = true
+
+[weather]
+# Open-Meteo 免费，无需 key；如需和风天气可在 profile 中覆盖
+provider = "open-meteo"
+# 默认城市（留空则 IP 自动定位）
+default_city = ""
+# 预报天数 (1-7)
+forecast_days = 3
+# 缓存有效期（秒）
+cache_ttl_seconds = 1800
+# 定时推送间隔（秒），0 = 关闭
+alert_interval_seconds = 0
+# 用户时区
+timezone = "Asia/Shanghai"
+# 语言（留空则根据系统时区自动检测）
+# 支持: zh-CN, zh-TW, en
+language = ""

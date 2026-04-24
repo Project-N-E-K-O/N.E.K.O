@@ -1,0 +1,81 @@
+{
+  "wmo": {
+    "0": "晴",
+    "1": "大部晴",
+    "2": "多云",
+    "3": "阴",
+    "45": "雾",
+    "48": "雾凇",
+    "51": "小毛毛雨",
+    "53": "中毛毛雨",
+    "55": "大毛毛雨",
+    "56": "冻毛毛雨",
+    "57": "强冻毛毛雨",
+    "61": "小雨",
+    "63": "中雨",
+    "65": "大雨",
+    "66": "冻雨",
+    "67": "强冻雨",
+    "71": "小雪",
+    "73": "中雪",
+    "75": "大雪",
+    "77": "雪粒",
+    "80": "小阵雨",
+    "81": "中阵雨",
+    "82": "强阵雨",
+    "85": "小阵雪",
+    "86": "大阵雪",
+    "95": "雷暴",
+    "96": "雷暴+小冰雹",
+    "99": "雷暴+大冰雹"
+  },
+  "advice": {
+    "cold": "🧥 气温很低，建议穿厚外套/羽绒服",
+    "cool": "🧣 偏凉，建议穿外套或夹克",
+    "mild": "👕 温度舒适，薄外套或长袖即可",
+    "hot": "☀️ 天热，短袖短裤走起",
+    "rain": "🌂 有降雨，记得带伞",
+    "snow": "❄️ 有降雪，注意路滑和保暖",
+    "uv_extreme": "🧴 紫外线极强，务必防晒",
+    "uv_high": "🕶️ 紫外线较强，建议涂防晒",
+    "wind_strong": "💨 风力较大，外出注意安全",
+    "rain_forecast": "📅 未来有雨的日期: {dates}"
+  },
+  "clothing": {
+    "heavy": "厚",
+    "light": "薄",
+    "cool": "清凉"
+  },
+  "summary": {
+    "weather": "{city}：{weather}，{temp}°C（体感 {feels}°C），湿度 {humidity}%",
+    "vpn_hint": "（检测到代理，IP 显示 {ip_city}，已自动切换到系统时区定位）",
+    "travel_prefix": "{city}出行建议："
+  },
+  "error": {
+    "no_location": "无法确定位置，请手动指定城市名",
+    "fetch_failed": "获取天气数据失败 ({city})",
+    "unknown_weather": "未知({code})"
+  },
+  "tz_city": {
+    "Asia/Shanghai": "上海",
+    "Asia/Chongqing": "重庆",
+    "Asia/Hong_Kong": "香港",
+    "Asia/Taipei": "台北",
+    "Asia/Tokyo": "东京",
+    "Asia/Seoul": "首尔",
+    "Asia/Singapore": "新加坡",
+    "Asia/Bangkok": "曼谷",
+    "Asia/Kolkata": "孟买",
+    "Asia/Dubai": "迪拜",
+    "Europe/London": "伦敦",
+    "Europe/Paris": "巴黎",
+    "Europe/Berlin": "柏林",
+    "Europe/Moscow": "莫斯科",
+    "America/New_York": "纽约",
+    "America/Chicago": "芝加哥",
+    "America/Denver": "丹佛",
+    "America/Los_Angeles": "洛杉矶",
+    "America/Sao_Paulo": "圣保罗",
+    "Australia/Sydney": "悉尼"
+  }
+}
