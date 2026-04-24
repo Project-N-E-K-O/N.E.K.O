@@ -1100,8 +1100,13 @@
         var blocks = payload.blocks || [];
         var text = payload.text || '';
 
-        // Convert plugin blocks to React message blocks
+        // Build message blocks: status header + content blocks
         var msgBlocks = [];
+
+        // Header: plugin name as a status bar
+        msgBlocks.push({ type: 'status', tone: 'info', text: '🔌 ' + pluginId });
+
+        // Convert plugin blocks to React message blocks
         for (var i = 0; i < blocks.length; i++) {
             var b = blocks[i];
             if (b.type === 'text' && b.text) {
@@ -1111,7 +1116,6 @@
             } else if (b.type === 'url' && b.url) {
                 msgBlocks.push({ type: 'link', url: b.url, text: b.title || b.url });
             } else if (b.type === 'card' && b.title) {
-                // Render card as styled text for now
                 var cardText = '📋 ' + b.title;
                 if (b.data) {
                     var entries = Object.entries(b.data);
@@ -1130,16 +1134,14 @@
                 msgBlocks.push({ type: 'text', text: tableText });
             }
         }
-        if (msgBlocks.length === 0 && text) {
+        if (msgBlocks.length <= 1 && text) {
             msgBlocks.push({ type: 'text', text: text });
         }
-        if (msgBlocks.length === 0) return null;
+        if (msgBlocks.length <= 1) return null;
 
         return appendMessage({
             id: 'plugin-' + Date.now() + '-' + Math.random().toString(36).substr(2, 6),
-            role: 'assistant',
-            author: '🔌 ' + pluginId,
-            avatarLabel: '🔌',
+            role: 'system',
             blocks: msgBlocks,
             time: payload.timestamp ? new Date(payload.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : undefined,
         });

@@ -1062,6 +1062,41 @@ button * {
   white-space: normal;
 }
 
+/* Plugin content in system chip: card-like layout */
+.system-chip:has(.message-block-status) {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  max-width: min(90%, 480px);
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: rgba(240, 244, 255, 0.8);
+  border: 1px solid rgba(64, 197, 241, 0.15);
+}
+.system-chip:has(.message-block-status) .system-chip-time {
+  font-size: 0.65rem;
+  align-self: flex-end;
+}
+.system-chip:has(.message-block-status) .system-chip-content {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+}
+.system-chip:has(.message-block-status) .message-block-status {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 4px 0;
+  border-radius: 0;
+  border-bottom: 1px solid rgba(64, 197, 241, 0.12);
+  margin-bottom: 2px;
+}
+.system-chip:has(.message-block-status) .message-block-text {
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: #3a3f4b;
+}
+
 .composer-panel {
   display: grid;
   gap: 4px;
@@ -1717,6 +1752,17 @@ button * {
 [data-theme="dark"] .system-chip {
   color: #9aa0ac;
   background: rgba(80, 90, 110, 0.2);
+}
+
+[data-theme="dark"] .system-chip:has(.message-block-status) {
+  background: rgba(40, 45, 65, 0.7);
+  border-color: rgba(64, 197, 241, 0.1);
+}
+[data-theme="dark"] .system-chip:has(.message-block-status) .message-block-text {
+  color: #c8cdd8;
+}
+[data-theme="dark"] .system-chip:has(.message-block-status) .message-block-status {
+  border-bottom-color: rgba(64, 197, 241, 0.08);
 }
 
 [data-theme="dark"] .system-chip-time {
