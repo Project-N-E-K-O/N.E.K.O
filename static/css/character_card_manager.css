@@ -3698,7 +3698,7 @@ margin-top: 10px;
     scrollbar-color: #7dd3ff transparent;
 }
 
-/* WebKit 滚动条美化（与页面蓝色主题谐调）*/
+/* WebKit 滚动条美化（与页面蓝色主题谐调） */
 .chara-cards-container::-webkit-scrollbar,
 .chara-cards-list::-webkit-scrollbar {
     width: 8px;
@@ -4065,7 +4065,7 @@ margin-top: 10px;
     position: relative;
     opacity: 0;
     transform: scale(0.3);
-    transition: all 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+    transition: opacity 0.5s cubic-bezier(0.34, 1.56, 0.64, 1), transform 0.5s cubic-bezier(0.34, 1.56, 0.64, 1), width 0.5s cubic-bezier(0.34, 1.56, 0.64, 1), height 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
     width: 260px;
 }
 
@@ -4090,7 +4090,7 @@ margin-top: 10px;
     opacity: 1;
     transform: scale(1);
     width: 95vw;
-    transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    transition: opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1), transform 0.4s cubic-bezier(0.4, 0, 0.2, 1), width 0.4s cubic-bezier(0.4, 0, 0.2, 1), height 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .catgirl-panel-wrapper.card-only.phase-expand {

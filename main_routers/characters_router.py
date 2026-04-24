@@ -4421,10 +4421,10 @@ async def import_character_card(
             except Exception as meta_err:
                 logger.warning(f"[导入角色卡] 写入卡面元数据失败: {meta_err}")
                 return JSONResponse({
-                    "success": False,
+                    "success": True,
                     "error": f"角色数据已导入，但卡面元数据写入失败: {meta_err}",
                     "card_meta_saved": False,
-                }, status_code=500)
+                }, status_code=200)
 
             # 老角色卡兼容：如果前端上传了载体 PNG，且本地还没有同名卡面，
             # 则直接使用该 PNG 作为卡面（带 neKo chunk 不影响质量）。
@@ -4710,6 +4710,10 @@ async def put_card_face(name: str, image: UploadFile = File(...)):
     except Exception:
         return JSONResponse({'success': False, 'error': '无效的图片文件'}, status_code=400)
 
+    # 重编码后再次校验大小（压缩后仍可能超过限制）
+    if len(png_bytes) > MAX_CARD_FACE_SIZE:
+        return JSONResponse({'success': False, 'error': '文件过大（重编码后超过10MB）'}, status_code=413)
+
     # 确保目录存在
     _config_manager.ensure_card_faces_directory()
 
@@ -4720,12 +4724,10 @@ async def put_card_face(name: str, image: UploadFile = File(...)):
     meta_path = _config_manager.card_face_meta_path(name)
     meta = await asyncio.to_thread(_read_card_meta, meta_path)
     now_iso = datetime.now().isoformat(timespec='seconds')
-    if not meta_path.exists():
-        # 首次创建：标记为本地创作
-        meta['origin'] = 'self'
-    # 没有卡面时 created_at 保持为空；一旦设置了卡面就写入创建时间
-    # （即便 sidecar 已存在但此前一直没有 created_at，也补写为当次设置时间）
-    if not meta.get('created_at'):
+    # 上传即视为本地创作；若此前是导入的，刷新创建时间
+    previous_origin = meta.get('origin')
+    meta['origin'] = 'self'
+    if previous_origin != 'self' or not meta.get('created_at'):
         meta['created_at'] = now_iso
     meta['updated_at'] = now_iso
     await asyncio.to_thread(_write_card_meta, meta_path, meta)
