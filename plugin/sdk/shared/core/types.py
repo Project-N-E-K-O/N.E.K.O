@@ -163,6 +163,10 @@ class PluginContextProtocol(Protocol):
         timeout: float = 10.0,
     ) -> object: ...
 
+    def get_user_language(self) -> str: ...
+
+    def set_user_language(self, lang: str) -> None: ...
+
     async def finish(
         self,
         *,

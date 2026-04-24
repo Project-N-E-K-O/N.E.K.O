@@ -323,6 +323,19 @@ class SdkContext:
             timeout=timeout,
         )
 
+    def get_user_language(self) -> str:
+        """获取当前用户语言代码（由主干通过 _ctx.lang 下发或 IPC 查询缓存）。"""
+        getter = getattr(self._host_ctx, "get_user_language", None)
+        if callable(getter):
+            return str(getter() or "")
+        return ""
+
+    def set_user_language(self, lang: str) -> None:
+        """手动设置/覆盖用户语言。"""
+        setter = getattr(self._host_ctx, "set_user_language", None)
+        if callable(setter):
+            setter(lang)
+
     async def finish(
         self,
         *,
