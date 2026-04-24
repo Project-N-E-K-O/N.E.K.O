@@ -205,6 +205,15 @@ const ready = async () => {
         }
     }
 
+    if (window.appStorageLocation && typeof window.appStorageLocation.init === 'function') {
+        try {
+            // Stage 1: 让存储位置选择页尽量优先出现，避免其它提示层先抢占用户视线。
+            await window.appStorageLocation.init();
+        } catch (error) {
+            console.warn('[Init] storage location overlay init failed', error);
+        }
+    }
+
     init_app();
 };
 

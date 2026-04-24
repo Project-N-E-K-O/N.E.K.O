@@ -1014,6 +1014,7 @@ from main_routers.memory_router import router as memory_router # noqa
 from main_routers.mmd_router import router as mmd_router # noqa
 from main_routers.music_router import router as music_router # noqa
 from main_routers.pages_router import router as pages_router # noqa
+from main_routers.storage_location_router import router as storage_location_router # noqa
 from main_routers.system_router import router as system_router # noqa
 from main_routers.vrm_router import router as vrm_router # noqa
 from main_routers.websocket_router import router as websocket_router # noqa
@@ -1073,6 +1074,7 @@ app.include_router(jukebox_router)
 app.include_router(workshop_router)
 app.include_router(memory_router)
 app.include_router(cloudsave_router)
+app.include_router(storage_location_router)
 # 注意：pages_router 含 /{lanlan_name} 兜底路由，应最后挂载
 app.include_router(websocket_router)
 app.include_router(agent_router)

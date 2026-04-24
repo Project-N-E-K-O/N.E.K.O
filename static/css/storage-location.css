@@ -1,0 +1,321 @@
+.storage-location-overlay[hidden] {
+    display: none !important;
+}
+
+body.storage-location-modal-open {
+    overflow: hidden;
+}
+
+.storage-location-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 120000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background:
+        radial-gradient(circle at top left, rgba(255, 210, 116, 0.14), transparent 34%),
+        rgba(12, 18, 28, 0.78);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+}
+
+.storage-location-modal {
+    width: min(900px, calc(100vw - 32px));
+    max-height: min(90vh, 920px);
+    overflow-y: auto;
+    border-radius: 28px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background:
+        radial-gradient(circle at top right, rgba(255, 180, 91, 0.16), transparent 32%),
+        linear-gradient(180deg, rgba(24, 31, 45, 0.98), rgba(13, 18, 28, 0.98));
+    box-shadow: 0 28px 100px rgba(0, 0, 0, 0.36);
+    color: #f8f5ef;
+}
+
+.storage-location-view[hidden] {
+    display: none !important;
+}
+
+.storage-location-shell {
+    display: grid;
+    gap: 20px;
+    padding: 28px;
+}
+
+.storage-location-hero {
+    display: grid;
+    gap: 10px;
+}
+
+.storage-location-badge {
+    display: inline-flex;
+    width: fit-content;
+    align-items: center;
+    min-height: 28px;
+    padding: 0 12px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.1);
+    color: #ffd27f;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.storage-location-title {
+    margin: 0;
+    font-size: 30px;
+    line-height: 1.2;
+    font-weight: 800;
+}
+
+.storage-location-subtitle,
+.storage-location-note,
+.storage-location-error-text,
+.storage-location-empty {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.7;
+    color: rgba(248, 245, 239, 0.78);
+}
+
+.storage-location-banner {
+    padding: 14px 16px;
+    border-radius: 18px;
+    border: 1px solid rgba(255, 191, 94, 0.3);
+    background: rgba(255, 191, 94, 0.1);
+    color: #ffe2b1;
+}
+
+.storage-location-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
+    gap: 18px;
+}
+
+.storage-location-panel {
+    display: grid;
+    gap: 14px;
+    padding: 18px;
+    border-radius: 22px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.storage-location-panel-title {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 700;
+    color: #ffd27f;
+}
+
+.storage-location-path-list,
+.storage-location-summary-list,
+.storage-location-legacy-list,
+.storage-location-restart-list {
+    display: grid;
+    gap: 12px;
+}
+
+.storage-location-path-item,
+.storage-location-summary-item,
+.storage-location-legacy-item {
+    display: grid;
+    gap: 6px;
+}
+
+.storage-location-label {
+    font-size: 12px;
+    font-weight: 700;
+    color: rgba(248, 245, 239, 0.62);
+}
+
+.storage-location-path,
+.storage-location-restart-path {
+    font-family: ui-monospace, "SFMono-Regular", "SF Mono", Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.65;
+    word-break: break-all;
+    color: rgba(248, 245, 239, 0.9);
+}
+
+.storage-location-summary-value {
+    font-size: 14px;
+    line-height: 1.6;
+    color: #f8f5ef;
+}
+
+.storage-location-preview-steps {
+    display: grid;
+    gap: 8px;
+}
+
+.storage-location-preview-step {
+    font-size: 14px;
+    line-height: 1.65;
+    color: rgba(248, 245, 239, 0.88);
+}
+
+.storage-location-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.storage-location-btn {
+    min-height: 46px;
+    padding: 0 18px;
+    border-radius: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.08);
+    color: #f8f5ef;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: transform 0.16s ease, border-color 0.16s ease, background 0.16s ease;
+}
+
+.storage-location-btn:hover {
+    transform: translateY(-1px);
+    border-color: rgba(255, 210, 127, 0.42);
+}
+
+.storage-location-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.48;
+    transform: none;
+}
+
+.storage-location-btn--primary {
+    border-color: rgba(255, 210, 127, 0.5);
+    background: linear-gradient(180deg, #ffd27f, #ffb24f);
+    color: #2a1700;
+}
+
+.storage-location-btn--secondary {
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.storage-location-other[hidden] {
+    display: none !important;
+}
+
+.storage-location-other {
+    display: grid;
+    gap: 14px;
+    padding: 16px;
+    border-radius: 18px;
+    border: 1px dashed rgba(255, 255, 255, 0.18);
+    background: rgba(8, 12, 20, 0.34);
+}
+
+.storage-location-choice-list {
+    display: grid;
+    gap: 10px;
+}
+
+.storage-location-choice {
+    width: 100%;
+    text-align: left;
+    border-radius: 16px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.04);
+    color: inherit;
+    padding: 14px 16px;
+    cursor: pointer;
+}
+
+.storage-location-choice.is-active {
+    border-color: rgba(255, 210, 127, 0.55);
+    background: rgba(255, 210, 127, 0.12);
+    box-shadow: 0 0 0 3px rgba(255, 210, 127, 0.08);
+}
+
+.storage-location-choice-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 8px;
+    font-size: 14px;
+    font-weight: 700;
+}
+
+.storage-location-choice-check {
+    color: #ffd27f;
+}
+
+.storage-location-input {
+    width: 100%;
+    min-height: 48px;
+    border-radius: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: rgba(3, 7, 12, 0.42);
+    color: #f8f5ef;
+    padding: 0 14px;
+    font-size: 14px;
+    outline: none;
+}
+
+.storage-location-input:focus {
+    border-color: rgba(255, 210, 127, 0.62);
+    box-shadow: 0 0 0 3px rgba(255, 210, 127, 0.12);
+}
+
+.storage-location-loader {
+    width: 42px;
+    height: 42px;
+    border-radius: 50%;
+    border: 3px solid rgba(255, 255, 255, 0.12);
+    border-top-color: #ffd27f;
+    animation: storage-location-spin 0.9s linear infinite;
+}
+
+.storage-location-error-actions,
+.storage-location-restart-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.storage-location-panel[hidden] {
+    display: none !important;
+}
+
+@keyframes storage-location-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+@media (max-width: 860px) {
+    .storage-location-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 640px) {
+    .storage-location-overlay {
+        padding: 12px;
+    }
+
+    .storage-location-shell {
+        padding: 20px;
+    }
+
+    .storage-location-title {
+        font-size: 24px;
+    }
+
+    .storage-location-actions,
+    .storage-location-error-actions,
+    .storage-location-restart-actions {
+        flex-direction: column;
+    }
+
+    .storage-location-btn {
+        width: 100%;
+    }
+}
