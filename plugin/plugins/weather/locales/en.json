@@ -63,6 +63,10 @@
     "forecast_timeout": "Weather data request timed out — please try again",
     "unknown_weather": "Unknown ({code})"
   },
+  "trip": {
+    "distance": "Distance",
+    "recommended": "Recommended"
+  },
   "tz_city": {
     "Asia/Shanghai": "Shanghai",
     "Asia/Chongqing": "Chongqing",

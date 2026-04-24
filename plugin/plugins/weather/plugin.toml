@@ -37,3 +37,10 @@ timezone = "Asia/Shanghai"
 locale = ""
 # 强制使用上面的 locale，忽略主干下发的语言（默认关闭）
 force_locale = false
+
+# 路线规划 API Key（至少配一个才能用公交/地铁路线）
+# 不配 key 也能用 OSRM（步行/骑行/驾车，无公交）
+# 高德地图: https://console.amap.com/dev/key/app
+amap_key = ""
+# 百度地图: https://lbsyun.baidu.com/apiconsole/key
+baidu_map_key = ""

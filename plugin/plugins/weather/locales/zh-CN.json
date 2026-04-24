@@ -63,6 +63,10 @@
     "forecast_timeout": "天气数据请求超时，请稍后重试",
     "unknown_weather": "未知({code})"
   },
+  "trip": {
+    "distance": "直线距离",
+    "recommended": "推荐"
+  },
   "tz_city": {
     "Asia/Shanghai": "上海",
     "Asia/Chongqing": "重庆",
