@@ -1,0 +1,164 @@
+"""地点管理 router — 保存/删除/列出常用地点。"""
+
+from __future__ import annotations
+
+import uuid
+from typing import Any, Dict, List
+
+from plugin.sdk.plugin import plugin_entry, Ok, Err, SdkError
+from plugin.sdk.shared.core.router import PluginRouter
+
+from .._api import geocode_city
+
+_STORE_KEY = "saved_locations"
+
+
+class LocationsRouter(PluginRouter):
+    """地点管理 entry：增删查 + 设默认。"""
+
+    def __init__(self):
+        super().__init__(name="locations")
+
+    # ── helpers ──
+
+    async def _load(self) -> List[Dict[str, Any]]:
+        plugin = self.main_plugin
+        result = await plugin.store.get(_STORE_KEY, [])
+        if hasattr(result, "value"):
+            data = result.value
+        else:
+            data = result
+        return data if isinstance(data, list) else []
+
+    async def _save(self, locations: List[Dict[str, Any]]) -> None:
+        plugin = self.main_plugin
+        await plugin.store.set(_STORE_KEY, locations)
+
+    # ── entries ──
+
+    @plugin_entry(
+        id="list_locations",
+        name="查看常用地点",
+        description="列出所有保存的常用地点。",
+        llm_result_fields=["count", "locations"],
+    )
+    async def list_locations(self, **_):
+        locations = await self._load()
+        return Ok({"count": len(locations), "locations": locations})
+
+    @plugin_entry(
+        id="add_location",
+        name="添加常用地点",
+        description="添加一个常用地点。提供标签和城市名，自动获取坐标。",
+        llm_result_fields=["message"],
+        input_schema={
+            "type": "object",
+            "properties": {
+                "label": {"type": "string", "description": "地点标签（如：家、公司）"},
+                "city": {"type": "string", "description": "城市名"},
+                "address": {"type": "string", "description": "具体地址（可选）", "default": ""},
+                "set_default": {"type": "boolean", "description": "是否设为默认地点", "default": False},
+            },
+            "required": ["label", "city"],
+        },
+    )
+    async def add_location(self, label: str, city: str, address: str = "", set_default: bool = False, **_):
+        if not label.strip():
+            return Err(SdkError("标签不能为空"))
+        if not city.strip():
+            return Err(SdkError("城市不能为空"))
+
+        plugin = self.main_plugin
+        locale = plugin._i18n.locale
+
+        # geocode
+        try:
+            geo = await geocode_city(city.strip(), locale=locale)
+        except Exception:
+            geo = None
+        if not geo:
+            return Err(SdkError(f"无法定位城市: {city}"))
+
+        locations = await self._load()
+
+        # 检查标签重复
+        for loc in locations:
+            if loc.get("label") == label.strip():
+                return Err(SdkError(f"标签 '{label}' 已存在"))
+
+        new_loc: Dict[str, Any] = {
+            "id": uuid.uuid4().hex[:8],
+            "label": label.strip(),
+            "city": geo["city"],
+            "address": address.strip(),
+            "lat": geo["lat"],
+            "lon": geo["lon"],
+            "country": geo.get("country", ""),
+            "is_default": False,
+        }
+
+        if set_default or not locations:
+            for loc in locations:
+                loc["is_default"] = False
+            new_loc["is_default"] = True
+
+        locations.append(new_loc)
+        await self._save(locations)
+
+        return Ok({"message": f"已添加地点: {new_loc['label']} ({new_loc['city']})", "location": new_loc})
+
+    @plugin_entry(
+        id="remove_location",
+        name="删除常用地点",
+        description="按 ID 或标签删除一个常用地点。",
+        llm_result_fields=["message"],
+        input_schema={
+            "type": "object",
+            "properties": {
+                "location_id": {"type": "string", "description": "地点 ID 或标签"},
+            },
+            "required": ["location_id"],
+        },
+    )
+    async def remove_location(self, location_id: str, **_):
+        locations = await self._load()
+        key = location_id.strip()
+        before = len(locations)
+        locations = [loc for loc in locations if loc.get("id") != key and loc.get("label") != key]
+        if len(locations) == before:
+            return Err(SdkError(f"未找到地点: {key}"))
+
+        # 如果删掉了默认地点，把第一个设为默认
+        if locations and not any(loc.get("is_default") for loc in locations):
+            locations[0]["is_default"] = True
+
+        await self._save(locations)
+        return Ok({"message": f"已删除地点: {key}", "remaining": len(locations)})
+
+    @plugin_entry(
+        id="set_default_location",
+        name="设置默认地点",
+        description="将指定地点设为默认（查天气时优先使用）。",
+        llm_result_fields=["message"],
+        input_schema={
+            "type": "object",
+            "properties": {
+                "location_id": {"type": "string", "description": "地点 ID 或标签"},
+            },
+            "required": ["location_id"],
+        },
+    )
+    async def set_default_location(self, location_id: str, **_):
+        locations = await self._load()
+        key = location_id.strip()
+        found = False
+        for loc in locations:
+            if loc.get("id") == key or loc.get("label") == key:
+                loc["is_default"] = True
+                found = True
+            else:
+                loc["is_default"] = False
+        if not found:
+            return Err(SdkError(f"未找到地点: {key}"))
+        await self._save(locations)
+        return Ok({"message": f"已将 '{key}' 设为默认地点"})

@@ -28,7 +28,7 @@ from plugin.sdk.plugin import (
 from ._i18n import I18n, LRUCache
 from ._geo import get_system_timezone, detect_vpn_conflict
 from ._api import geoip_locate, geocode_city, fetch_forecast, GeoIPError, GeocodeError, ForecastError, WeatherAPIError
-from .routers import CurrentWeatherRouter, TravelAdviceRouter, HourlyForecastRouter
+from .routers import CurrentWeatherRouter, TravelAdviceRouter, HourlyForecastRouter, LocationsRouter
 
 _LOCALES_DIR = Path(__file__).parent / "locales"
 
@@ -49,7 +49,7 @@ class WeatherPlugin(NekoPluginBase):
         force_locale: bool = SettingsField(False, description="强制使用上面的语言设置")
 
     # 声明 router 类，供主进程静态扫描 entry 元数据
-    __routers__ = [CurrentWeatherRouter, TravelAdviceRouter, HourlyForecastRouter]
+    __routers__ = [CurrentWeatherRouter, TravelAdviceRouter, HourlyForecastRouter, LocationsRouter]
 
     def __init__(self, ctx: Any):
         super().__init__(ctx)
@@ -71,8 +71,10 @@ class WeatherPlugin(NekoPluginBase):
         # 从主干查询全局语言
         lang = await self.fetch_user_language(timeout=3.0)
         self._resolve_locale()
+        # 注册 Web UI（地点管理面板）
+        self.register_static_ui("static")
         self.logger.info(
-            "WeatherPlugin started, locale={}, host_lang={}, routers=3",
+            "WeatherPlugin started, locale={}, host_lang={}, routers=4",
             self._i18n.locale, lang or "(none)",
         )
         return Ok({"status": "ready"})
@@ -128,7 +130,13 @@ class WeatherPlugin(NekoPluginBase):
         """
         locale = self._i18n.locale
         target = (city or "").strip()
+
+        # 1. 用户本次指定的城市
         if target:
+            # 检查是否匹配保存的地点标签
+            saved = await self._get_saved_default_or_named(target)
+            if saved:
+                return saved, ""
             try:
                 loc = await geocode_city(target, locale=locale)
                 if loc:
@@ -137,6 +145,12 @@ class WeatherPlugin(NekoPluginBase):
             except GeocodeError as e:
                 return None, "error.geocode_timeout" if e.cause == "timeout" else "error.geocode_failed"
 
+        # 2. 保存的默认地点（PluginStore）
+        saved_default = await self._get_saved_default_or_named(None)
+        if saved_default:
+            return saved_default, ""
+
+        # 3. 配置文件的 default_city
         default = self._cfg.get("default_city", "")
         if default:
             try:
@@ -212,3 +226,26 @@ class WeatherPlugin(NekoPluginBase):
         if text == f"wmo.{code}":
             return self._i18n.t("error.unknown_weather", code=code)
         return text
+
+    async def _get_saved_default_or_named(self, name: Optional[str]) -> Optional[Dict[str, Any]]:
+        """从 PluginStore 读取保存的地点。
+
+        name=None → 返回默认地点；name="家" → 返回标签匹配的地点。
+        """
+        try:
+            result = await self.store.get("saved_locations", [])
+            locations = result.value if hasattr(result, "value") else result
+            if not isinstance(locations, list) or not locations:
+                return None
+            if name:
+                for loc in locations:
+                    if loc.get("label") == name:
+                        return {"city": loc["city"], "lat": loc["lat"], "lon": loc["lon"], "country": loc.get("country", "")}
+                return None
+            # 返回默认地点
+            for loc in locations:
+                if loc.get("is_default"):
+                    return {"city": loc["city"], "lat": loc["lat"], "lon": loc["lon"], "country": loc.get("country", "")}
+            return None
+        except Exception:
+            return None
