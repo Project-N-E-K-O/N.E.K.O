@@ -92,6 +92,14 @@ body.storage-location-modal-open #storage-location-overlay * {
     color: rgba(248, 245, 239, 0.78);
 }
 
+.storage-location-note--error {
+    padding: 12px 14px;
+    border-radius: 16px;
+    border: 1px solid rgba(255, 123, 123, 0.32);
+    background: rgba(255, 123, 123, 0.12);
+    color: #ffd7d7;
+}
+
 .storage-location-banner {
     padding: 14px 16px;
     border-radius: 18px;

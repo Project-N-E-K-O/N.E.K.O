@@ -111,7 +111,7 @@ def test_storage_location_overlay_blocks_independent_startup_requests_while_barr
 
 
 @pytest.mark.frontend
-def test_storage_location_overlay_keeps_page_config_blocked_on_restart_preview(
+def test_storage_location_overlay_keeps_page_config_blocked_on_restart_required_preview(
     mock_page: Page,
     running_server: str,
     tmp_path,
@@ -122,9 +122,9 @@ def test_storage_location_overlay_keeps_page_config_blocked_on_restart_preview(
     overlay = page.locator("#storage-location-overlay")
     selection_title = page.get_by_role("heading", name="请选择本次运行使用的存储位置")
     choose_other_button = page.get_by_role("button", name="选择其他位置")
-    preview_other_button = page.get_by_role("button", name="预览该位置的后续切换")
+    submit_other_button = page.get_by_role("button", name="提交该位置")
     custom_input = page.locator(".storage-location-input")
-    preview_title = page.get_by_role("heading", name="不同路径的后续流程")
+    preview_title = page.get_by_role("heading", name="该选择需要后续关闭并迁移")
 
     expect(overlay).to_be_visible(timeout=15_000)
     expect(selection_title).to_be_visible(timeout=15_000)
@@ -137,7 +137,7 @@ def test_storage_location_overlay_keeps_page_config_blocked_on_restart_preview(
 
     target_root = tmp_path / "alt-storage" / "N.E.K.O"
     custom_input.fill(str(target_root))
-    preview_other_button.click()
+    submit_other_button.click()
 
     expect(preview_title).to_be_visible(timeout=10_000)
     assert _page_config_state(page) == "pending"
@@ -164,7 +164,7 @@ def test_storage_location_overlay_stays_open_for_recovery_required_state_even_if
                 "selection_required": false,
                 "migration_pending": false,
                 "recovery_required": true,
-                "stage": "stage1_web_bootstrap"
+                "stage": "stage2_web_selection"
               }
             }
             """,
@@ -190,7 +190,7 @@ def test_storage_location_overlay_stays_open_for_recovery_required_state_even_if
               "migration": {
                 "last_error": "mock recovery"
               },
-              "stage": "stage1_web_bootstrap"
+              "stage": "stage2_web_selection"
             }
             """,
         ),
@@ -228,7 +228,7 @@ def test_storage_location_ready_state_skips_overlay_and_allows_normal_startup(
                 "selection_required": false,
                 "migration_pending": false,
                 "recovery_required": false,
-                "stage": "stage1_web_bootstrap"
+                "stage": "stage2_web_selection"
               }
             }
             """,

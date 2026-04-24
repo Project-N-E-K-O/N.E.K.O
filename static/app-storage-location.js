@@ -4,6 +4,7 @@
     var state = {
         initialized: false,
         initPromise: null,
+        submitting: false,
         phase: 'hidden',
         systemStatus: null,
         startupDecision: null,
@@ -30,7 +31,14 @@
         previewText: null,
         previewSource: null,
         previewTarget: null,
+        previewActions: null,
+        selectionStatus: null,
         errorText: null,
+        actionButtons: [],
+        pendingSelection: {
+            path: '',
+            source: '',
+        },
         otherSelection: {
             key: '',
             path: '',
@@ -86,6 +94,12 @@
         }
     }
 
+    function registerActionButton(button) {
+        if (!button) return button;
+        state.actionButtons.push(button);
+        return button;
+    }
+
     function resolveStartupDecision(payload) {
         if (!state.startupDecision) {
             state.startupDecision = createDeferred();
@@ -109,10 +123,28 @@
     }
 
     function hideOverlay() {
-        // TEMP(Stage 1 development):
+        // TEMP(development):
         // 这里只关闭当前页面上的覆盖层；刷新主页后，后端仍会返回 selection_required=true，
         // 因而开发阶段会再次弹出，便于反复检查首屏展示与交互。
         setPhase('hidden');
+    }
+
+    function setSubmitting(submitting) {
+        state.submitting = !!submitting;
+        state.actionButtons.forEach(function (button) {
+            button.disabled = state.submitting || !!button.dataset.forceDisabled;
+        });
+        if (state.customInput) {
+            state.customInput.disabled = state.submitting;
+        }
+    }
+
+    function setSelectionStatus(message, isError) {
+        if (!state.selectionStatus) return;
+        var text = String(message || '').trim();
+        state.selectionStatus.hidden = !text;
+        state.selectionStatus.textContent = text;
+        state.selectionStatus.classList.toggle('storage-location-note--error', !!isError && !!text);
     }
 
     function setLoadingCopy(title, subtitle) {
@@ -197,6 +229,14 @@
         throw lastError || new Error(
             translate('storage.systemStatusUnavailable', '暂时无法确认本地服务状态，请重试。')
         );
+    }
+
+    function resetPreviewState() {
+        state.pendingSelection.path = '';
+        state.pendingSelection.source = '';
+        if (state.previewPanel) {
+            state.previewPanel.hidden = true;
+        }
     }
 
     function renderLegacyList() {
@@ -288,65 +328,144 @@
 
     function updateOtherButtonState() {
         if (!state.useOtherButton) return;
-        state.useOtherButton.disabled = !String(state.otherSelection.path || '').trim();
+        var disabled = !String(state.otherSelection.path || '').trim();
+        state.useOtherButton.dataset.forceDisabled = disabled ? '1' : '';
+        state.useOtherButton.disabled = state.submitting || disabled;
     }
 
     function openOtherPanel() {
-        if (state.previewPanel) {
-            state.previewPanel.hidden = true;
-        }
+        resetPreviewState();
+        setSelectionStatus('', false);
         state.otherPanel.hidden = false;
         if (state.customInput) {
             state.customInput.focus();
         }
     }
 
-    function showMigrationPreview(targetPath, selectionSource) {
-        if (!state.bootstrap || !state.previewPanel) return;
-
-        state.previewSource.textContent = state.bootstrap.current_root || '';
-        state.previewTarget.textContent = targetPath || '';
-        state.previewText.textContent = selectionSource === 'recommended'
-            ? translate('storage.recommendedPreviewNotice', '如果后续改用推荐位置，正式流程会在当前实例关闭后迁移数据，再自动重启。')
-            : translate('storage.customPreviewNotice', '如果后续改用这个位置，正式流程也会在当前实例关闭后迁移数据，再自动重启。');
-        state.previewPanel.hidden = false;
+    function backToSelection() {
+        var pendingSource = state.pendingSelection.source;
+        resetPreviewState();
+        setSelectionStatus('', false);
+        if (pendingSource === 'custom' || pendingSource === 'legacy') {
+            state.otherPanel.hidden = false;
+        }
         setPhase('selection_required');
     }
 
-    function continueWithCurrentPath() {
-        if (state.previewPanel) {
-            state.previewPanel.hidden = true;
-        }
-        if (state.otherPanel) {
-            state.otherPanel.hidden = true;
-        }
-        hideOverlay();
-        resolveStartupDecision({
-            canContinue: true,
-            reason: 'continue_current_session',
-        });
+    function showRestartRequired(targetPath, selectionSource) {
+        if (!state.bootstrap || !state.previewPanel) return;
+
+        state.pendingSelection.path = targetPath || '';
+        state.pendingSelection.source = selectionSource || '';
+        state.previewSource.textContent = state.bootstrap.current_root || '';
+        state.previewTarget.textContent = targetPath || '';
+        state.previewText.textContent = selectionSource === 'recommended'
+            ? translate('storage.recommendedPreviewNotice', '后端已确认：如果后续改用推荐位置，需要先关闭当前实例，再迁移数据并自动重启。')
+            : translate('storage.customPreviewNotice', '后端已确认：如果后续改用这个位置，也需要先关闭当前实例，再迁移数据并自动重启。');
+        state.otherPanel.hidden = true;
+        state.previewPanel.hidden = false;
+        setSelectionStatus('', false);
+        setPhase('selection_required');
     }
 
-    function useRecommendedPath() {
-        if (!state.bootstrap) return;
-        var recommendedRoot = String(state.bootstrap.recommended_root || '').trim();
-        if (!recommendedRoot) return;
-        if (pathEquals(recommendedRoot, state.bootstrap.current_root || '')) {
-            continueWithCurrentPath();
-            return;
+    function extractResponseError(payload, fallbackText) {
+        if (payload && typeof payload.error === 'string' && payload.error) {
+            return payload.error;
         }
-        showMigrationPreview(recommendedRoot, 'recommended');
+        if (payload && payload.detail) {
+            if (typeof payload.detail === 'string' && payload.detail) {
+                return payload.detail;
+            }
+            if (payload.detail && typeof payload.detail.message === 'string' && payload.detail.message) {
+                return payload.detail.message;
+            }
+        }
+        return fallbackText;
     }
 
-    function useOtherPath() {
+    async function submitSelection(targetPath, selectionSource) {
         if (!state.bootstrap) return;
-        var targetPath = String(state.otherSelection.path || '').trim();
-        if (!targetPath) return;
-        if (pathEquals(targetPath, state.bootstrap.current_root || '')) {
-            continueWithCurrentPath();
+
+        var normalizedTargetPath = String(targetPath || '').trim();
+        if (!normalizedTargetPath) {
+            setSelectionStatus(
+                translate('storage.selectPathRequired', '请先提供目标路径。'),
+                true
+            );
             return;
         }
-        showMigrationPreview(targetPath, 'custom');
+
+        setSubmitting(true);
+        setSelectionStatus('', false);
+
+        try {
+            var response = await fetch('/api/storage/location/select', {
+                method: 'POST',
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    selected_root: normalizedTargetPath,
+                    selection_source: selectionSource
+                })
+            });
+
+            var payload = null;
+            try {
+                payload = await response.json();
+            } catch (_) {}
+
+            if (!response.ok) {
+                throw new Error(
+                    extractResponseError(
+                        payload,
+                        translate('storage.selectionSubmitFailed', '提交存储位置选择失败，请稍后重试。')
+                    )
+                );
+            }
+
+            if (!payload || payload.ok !== true) {
+                throw new Error(
+                    translate('storage.selectionSubmitUnexpected', '存储位置选择接口返回了未识别的结果。')
+                );
+            }
+
+            if (payload.result === 'continue_current_session') {
+                resetPreviewState();
+                if (state.otherPanel) {
+                    state.otherPanel.hidden = true;
+                }
+                hideOverlay();
+                resolveStartupDecision({
+                    canContinue: true,
+                    reason: 'continue_current_session',
+                });
+                return;
+            }
+
+            if (payload.result === 'restart_required') {
+                showRestartRequired(
+                    String(payload.selected_root || normalizedTargetPath),
+                    selectionSource
+                );
+                return;
+            }
+
+            throw new Error(
+                translate('storage.selectionSubmitUnexpected', '存储位置选择接口返回了未识别的结果。')
+            );
+        } catch (error) {
+            console.warn('[storage-location] select failed', error);
+            resetPreviewState();
+            setSelectionStatus(
+                String((error && error.message) || error || translate('storage.selectionSubmitFailed', '提交存储位置选择失败，请稍后重试。')),
+                true
+            );
+            setPhase('selection_required');
+        } finally {
+            setSubmitting(false);
+        }
     }
 
     function showError(error) {
@@ -363,6 +482,25 @@
         state[targetRefName] = value;
         item.appendChild(value);
         return item;
+    }
+
+    function continueWithCurrentPath() {
+        if (!state.bootstrap) return;
+        submitSelection(state.bootstrap.current_root || '', 'current');
+    }
+
+    function useRecommendedPath() {
+        if (!state.bootstrap) return;
+        submitSelection(state.bootstrap.recommended_root || '', 'recommended');
+    }
+
+    function useOtherPath() {
+        submitSelection(
+            state.otherSelection.path || '',
+            state.otherSelection.key === 'legacy' || String(state.otherSelection.key || '').indexOf('legacy-') === 0
+                ? 'legacy'
+                : 'custom'
+        );
     }
 
     function buildSelectionView() {
@@ -416,12 +554,12 @@
         summaryList.appendChild(restartItem);
 
         var noteItem = createElement('div', 'storage-location-summary-item');
-        noteItem.appendChild(createElement('div', 'storage-location-label', translate('storage.stage1Boundary', '当前阶段边界')));
+        noteItem.appendChild(createElement('div', 'storage-location-label', translate('storage.stage1Boundary', '当前已完成范围')));
         noteItem.appendChild(
             createElement(
                 'div',
                 'storage-location-summary-value',
-                translate('storage.stage1BoundaryText', '当前仅实现网页主页内的选择与后续预览，不在本阶段执行真实迁移、切根或自动重启。')
+                translate('storage.stage1BoundaryText', '当前已接入网页主页内的首轮选择提交；但本阶段仍不会执行真实迁移、会话内切根或自动重启。')
             )
         );
         summaryList.appendChild(noteItem);
@@ -444,28 +582,39 @@
 
         var actions = createElement('div', 'storage-location-actions');
 
-        var currentButton = createElement('button', 'storage-location-btn storage-location-btn--primary', translate('storage.useCurrent', '保持当前路径'));
+        var currentButton = registerActionButton(
+            createElement('button', 'storage-location-btn storage-location-btn--primary', translate('storage.useCurrent', '保持当前路径'))
+        );
         currentButton.type = 'button';
         currentButton.addEventListener('click', continueWithCurrentPath);
         actions.appendChild(currentButton);
 
-        var recommendedButton = createElement('button', 'storage-location-btn', translate('storage.useRecommended', '使用推荐位置'));
+        var recommendedButton = registerActionButton(
+            createElement('button', 'storage-location-btn', translate('storage.useRecommended', '使用推荐位置'))
+        );
         recommendedButton.type = 'button';
         recommendedButton.addEventListener('click', useRecommendedPath);
         actions.appendChild(recommendedButton);
 
-        var chooseOtherButton = createElement('button', 'storage-location-btn storage-location-btn--secondary', translate('storage.chooseOther', '选择其他位置'));
+        var chooseOtherButton = registerActionButton(
+            createElement('button', 'storage-location-btn storage-location-btn--secondary', translate('storage.chooseOther', '选择其他位置'))
+        );
         chooseOtherButton.type = 'button';
         chooseOtherButton.addEventListener('click', openOtherPanel);
         actions.appendChild(chooseOtherButton);
 
         shell.appendChild(actions);
 
+        var selectionStatus = createElement('p', 'storage-location-note');
+        selectionStatus.hidden = true;
+        state.selectionStatus = selectionStatus;
+        shell.appendChild(selectionStatus);
+
         var otherPanel = createElement('section', 'storage-location-other');
         otherPanel.hidden = true;
         state.otherPanel = otherPanel;
         otherPanel.appendChild(createElement('h3', 'storage-location-panel-title', translate('storage.otherPanelTitle', '其他位置')));
-        otherPanel.appendChild(createElement('p', 'storage-location-note', translate('storage.otherPanelNote', '你可以直接使用已检测到的旧数据目录，或者手动输入其它目标路径。')));
+        otherPanel.appendChild(createElement('p', 'storage-location-note', translate('storage.otherPanelNote', '你可以直接使用已检测到的旧数据目录，或者手动输入其它目标路径。第二阶段会先把选择提交给后端做正式判断。')));
 
         var legacyChoices = createElement('div', 'storage-location-choice-list');
         state.legacyChoices = legacyChoices;
@@ -487,8 +636,11 @@
         otherPanel.appendChild(customInput);
 
         var otherActions = createElement('div', 'storage-location-actions');
-        var useOtherButton = createElement('button', 'storage-location-btn', translate('storage.previewOther', '预览该位置的后续切换'));
+        var useOtherButton = registerActionButton(
+            createElement('button', 'storage-location-btn', translate('storage.previewOther', '提交该位置'))
+        );
         useOtherButton.type = 'button';
+        useOtherButton.dataset.forceDisabled = '1';
         useOtherButton.disabled = true;
         useOtherButton.addEventListener('click', useOtherPath);
         state.useOtherButton = useOtherButton;
@@ -500,7 +652,7 @@
         var previewPanel = createElement('section', 'storage-location-panel');
         previewPanel.hidden = true;
         state.previewPanel = previewPanel;
-        previewPanel.appendChild(createElement('h3', 'storage-location-panel-title', translate('storage.previewTitle', '不同路径的后续流程')));
+        previewPanel.appendChild(createElement('h3', 'storage-location-panel-title', translate('storage.previewTitle', '该选择需要后续关闭并迁移')));
         var previewText = createElement('p', 'storage-location-note');
         state.previewText = previewText;
         previewPanel.appendChild(previewText);
@@ -554,9 +706,19 @@
             createElement(
                 'p',
                 'storage-location-note',
-                translate('storage.previewBoundary', '第一阶段先把主页内选择页做正确；真实关闭、迁移和自动重启会在后续阶段接入。')
+                translate('storage.previewBoundary', '第二阶段已经把“选择提交到后端”接通；但当前仍不会在本会话里热切根，也不会提前把稳定根改成新路径。真实关闭、迁移和自动重启将在后续阶段接入。')
             )
         );
+
+        var previewActions = createElement('div', 'storage-location-restart-actions');
+        var backButton = registerActionButton(
+            createElement('button', 'storage-location-btn storage-location-btn--secondary', translate('common.back', '返回重新选择'))
+        );
+        backButton.type = 'button';
+        backButton.addEventListener('click', backToSelection);
+        previewActions.appendChild(backButton);
+        previewPanel.appendChild(previewActions);
+        state.previewActions = previewActions;
         shell.appendChild(previewPanel);
 
         view.appendChild(shell);

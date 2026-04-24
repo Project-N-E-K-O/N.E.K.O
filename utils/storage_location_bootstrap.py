@@ -4,30 +4,17 @@ from pathlib import Path
 from typing import Any
 
 from utils.cloudsave_runtime import ROOT_MODE_DEFERRED_INIT, _runtime_root_has_user_content
+from utils.storage_policy import compute_anchor_root, should_require_storage_selection
 
-# TEMP(Stage 1 development):
+# TEMP(development):
 # 当前开发阶段要求网页主页每次打开都弹出存储位置选择层，方便反复验证首屏显示。
-# 等 Stage 2/正常模式接入 storage_policy 或首轮完成态后，这里应改回“仅首次需要选择时才返回 True”。
+# 第二阶段已经接入 storage_policy；开发结束后这里应改回 False，
+# 恢复成“只在真正首次或恢复态时才需要选择”的正常模式。
 DEVELOPMENT_ALWAYS_REQUIRE_SELECTION = True
 
 
 def _normalize_path(value: Path | str) -> str:
-    return str(Path(value))
-
-
-def _compute_anchor_root(config_manager, current_root: Path) -> Path:
-    getter = getattr(config_manager, "_get_standard_data_directory_candidates", None)
-    if callable(getter):
-        try:
-            candidates = getter()
-        except Exception:
-            candidates = []
-        for candidate in candidates:
-            try:
-                return Path(candidate) / config_manager.app_name
-            except Exception:
-                continue
-    return current_root
+    return str(Path(value).expanduser().resolve(strict=False))
 
 
 def _collect_legacy_sources(config_manager, *, current_root: Path, anchor_root: Path) -> list[str]:
@@ -54,15 +41,23 @@ def _extract_last_error(last_migration_result: str) -> str:
     return ""
 
 
-def _should_require_selection() -> bool:
-    # TEMP(Stage 1 development):
-    # 现在始终强制弹窗；开发结束后改为读取正式持久化状态，恢复正常“只在需要时弹出”的模式。
-    return DEVELOPMENT_ALWAYS_REQUIRE_SELECTION
+def _should_require_selection(config_manager, *, current_root: Path, anchor_root: Path) -> bool:
+    # TEMP(development):
+    # 开发阶段仍然始终强制弹窗，方便反复验证首屏流程。
+    # 正式收口时把 DEVELOPMENT_ALWAYS_REQUIRE_SELECTION 改回 False，
+    # 下面这条 storage_policy 判定就会恢复为正常“仅首次需要选择时弹出”。
+    if DEVELOPMENT_ALWAYS_REQUIRE_SELECTION:
+        return True
+    return should_require_storage_selection(
+        config_manager,
+        current_root=current_root,
+        anchor_root=anchor_root,
+    )
 
 
 def build_storage_location_bootstrap_payload(config_manager) -> dict[str, Any]:
-    current_root = Path(config_manager.app_docs_dir)
-    anchor_root = _compute_anchor_root(config_manager, current_root)
+    current_root = Path(config_manager.app_docs_dir).expanduser().resolve(strict=False)
+    anchor_root = compute_anchor_root(config_manager, current_root=current_root)
     root_state = config_manager.load_root_state()
     root_mode = str(root_state.get("mode") or "")
     last_migration_result = str(root_state.get("last_migration_result") or "")
@@ -77,7 +72,11 @@ def build_storage_location_bootstrap_payload(config_manager) -> dict[str, Any]:
         ),
         "anchor_root": _normalize_path(anchor_root),
         "cloudsave_root": _normalize_path(anchor_root / "cloudsave"),
-        "selection_required": _should_require_selection(),
+        "selection_required": _should_require_selection(
+            config_manager,
+            current_root=current_root,
+            anchor_root=anchor_root,
+        ),
         "migration_pending": False,
         "recovery_required": root_mode == ROOT_MODE_DEFERRED_INIT,
         "legacy_cleanup_pending": False,
@@ -85,5 +84,5 @@ def build_storage_location_bootstrap_payload(config_manager) -> dict[str, Any]:
         "migration": {
             "last_error": _extract_last_error(last_migration_result),
         },
-        "stage": "stage1_web_bootstrap",
+        "stage": "stage2_web_selection",
     }
