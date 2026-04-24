@@ -714,6 +714,11 @@ class PersonaManager:
             'token_count': None,
             'token_count_text_sha256': None,
             'token_count_tokenizer': None,
+            # Fact version chain (RFC memory-enhancements §2). Populated in
+            # resolve_corrections' replace branch so "主人以前住东京，后来搬到
+            # 大阪" stays traceable. Each item: {text, replaced_at, reason,
+            # source_fact_id}. None/empty list means no version history.
+            'version_history': [],
         }
         if isinstance(entry, str):
             d = dict(defaults)
@@ -1613,7 +1618,24 @@ class PersonaManager:
                 for j, existing in enumerate(section_facts):
                     et = existing.get('text', '') if isinstance(existing, dict) else str(existing)
                     if et == old_text:
-                        section_facts[j] = self._normalize_entry(merged_text)
+                        new_entry = self._normalize_entry(merged_text)
+                        # Fact version chain (RFC §2): preserve the chain from
+                        # the replaced entry, then record the old text itself.
+                        # `source_fact_id` is None because the pending-correction
+                        # record has no upstream fact id today; future work can
+                        # plumb one through _queue_correction without changing
+                        # this structure.
+                        prior_history = (
+                            existing.get('version_history', []) or []
+                            if isinstance(existing, dict) else []
+                        )
+                        new_entry['version_history'] = list(prior_history) + [{
+                            'text': old_text,
+                            'replaced_at': datetime.now().isoformat(),
+                            'reason': 'correction',
+                            'source_fact_id': None,
+                        }]
+                        section_facts[j] = new_entry
                         break
             elif action == 'keep_new':
                 section_facts[:] = [
