@@ -772,6 +772,49 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
         # Best-effort: preview must never break plugin listing.
         pass
 
+    # 1b) Scan __routers__ class attribute for router-declared entries
+    try:
+        router_classes = getattr(cls, "__routers__", None)
+        if isinstance(router_classes, (list, tuple)):
+            for router_cls in router_classes:
+                if not isinstance(router_cls, type):
+                    continue
+                for name, member in inspect.getmembers(router_cls):
+                    event_meta = getattr(member, EVENT_META_ATTR, None)
+                    if event_meta is None and hasattr(member, "__wrapped__"):
+                        event_meta = getattr(member.__wrapped__, EVENT_META_ATTR, None)
+                    if not event_meta:
+                        continue
+                    etype = getattr(event_meta, "event_type", None) or "plugin_entry"
+                    if etype != "plugin_entry":
+                        continue
+                    eid = str(getattr(event_meta, "id", None) or name)
+                    if not eid or eid in seen:
+                        continue
+                    seen.add(eid)
+                    input_schema = _to_dict(getattr(event_meta, "input_schema", {}) or {})
+                    results.append({
+                        "id": eid,
+                        "name": str(getattr(event_meta, "name", "") or ""),
+                        "description": str(getattr(event_meta, "description", "") or ""),
+                        "event_key": f"{pid}.{eid}",
+                        "input_schema": input_schema,
+                        "return_message": "",
+                        "event_type": str(getattr(event_meta, "event_type", "plugin_entry") or "plugin_entry"),
+                        "kind": str(getattr(event_meta, "kind", "action") or "action"),
+                        "auto_start": bool(getattr(event_meta, "auto_start", False)),
+                        "timeout": getattr(event_meta, "timeout", None),
+                        "model_validate": bool(getattr(event_meta, "model_validate", True)),
+                        "llm_result_fields": _to_string_list(getattr(event_meta, "llm_result_fields", None)),
+                        "llm_result_schema": _to_dict(getattr(event_meta, "llm_result_schema", {}) or {}),
+                        "metadata": _to_dict(getattr(event_meta, "metadata", {}) or {}),
+                    })
+    except Exception:
+        pass
+    except Exception:
+        # Best-effort: preview must never break plugin listing.
+        pass
+
     # 2) Config-specified entries (conf/pdata)
     entries = conf.get("entries") or pdata.get("entries") or []
     for ent in entries:

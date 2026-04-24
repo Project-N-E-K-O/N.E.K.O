@@ -35,6 +35,9 @@ _LOCALES_DIR = Path(__file__).parent / "locales"
 class WeatherPlugin(NekoPluginBase):
     """天气出行插件 — 生命周期 + 共享基础设施。"""
 
+    # 声明 router 类，供主进程静态扫描 entry 元数据
+    __routers__ = [CurrentWeatherRouter, TravelAdviceRouter, HourlyForecastRouter]
+
     def __init__(self, ctx: Any):
         super().__init__(ctx)
         self.logger = ctx.logger
@@ -42,11 +45,9 @@ class WeatherPlugin(NekoPluginBase):
         self._cfg: Dict[str, Any] = {}
         self._i18n = I18n(_LOCALES_DIR)
 
-        # 注册 routers（模块化 entry）— 必须在 __init__ 中注册，
-        # 这样 collect_entries() 在 startup 之前就能扫描到 router 的 entry。
-        self.include_router(CurrentWeatherRouter())
-        self.include_router(TravelAdviceRouter())
-        self.include_router(HourlyForecastRouter())
+        # 注册 routers — 必须在 __init__ 中，collect_entries 在 startup 之前调用
+        for router_cls in self.__routers__:
+            self.include_router(router_cls())
 
     # ── 生命周期 ──
 
