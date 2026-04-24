@@ -473,20 +473,6 @@ function CommandRow({ item, loading, error, highlighted, prefs, onExec, onInject
 }
 
 /* ================================================================== */
-/*  Section header                                                     */
-/* ================================================================== */
-
-function SectionHeader({ icon, label, count }: { icon: string; label: string; count?: number }) {
-  return (
-    <div className="cp-section-header">
-      <span className="cp-section-icon" aria-hidden="true">{icon}</span>
-      <span className="cp-section-label">{label}</span>
-      {count !== undefined && count > 0 && <span className="cp-section-count">{count}</span>}
-    </div>
-  );
-}
-
-/* ================================================================== */
 /*  Toast stack                                                        */
 /* ================================================================== */
 
