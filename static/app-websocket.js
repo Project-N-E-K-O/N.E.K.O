@@ -1108,6 +1108,41 @@
                         turnId: response.turn_id || ''
                     });
 
+                // -------- plugin_chat_content --------
+                } else if (response.type === 'plugin_chat_content') {
+                    var pluginId = response.plugin_id || 'plugin';
+                    var blocks = response.blocks || [];
+                    var fallbackText = response.text || '';
+
+                    // Build display text from blocks
+                    var displayParts = [];
+                    for (var bi = 0; bi < blocks.length; bi++) {
+                        var block = blocks[bi];
+                        if (block.type === 'text' && block.text) {
+                            displayParts.push(block.text);
+                        } else if (block.type === 'card' && block.title) {
+                            displayParts.push(block.title + (block.data ? ': ' + JSON.stringify(block.data).substring(0, 100) : ''));
+                        } else if (block.type === 'url' && block.url) {
+                            displayParts.push((block.title || block.url));
+                        } else if (block.type === 'table' && block.headers) {
+                            displayParts.push('[' + block.headers.join(' | ') + ']');
+                        } else if (block.type === 'image' && block.url) {
+                            displayParts.push('[图片]');
+                        }
+                    }
+                    var displayText = displayParts.join('\n') || fallbackText || '📋';
+
+                    // Render as a plugin bubble (different from AI bubble)
+                    if (window.reactChatWindowHost) {
+                        var pluginMsg = {
+                            id: 'plugin-' + Date.now() + '-' + Math.random().toString(36).substr(2, 6),
+                            role: 'assistant',
+                            content: '🔌 ' + pluginId + '\n' + displayText,
+                            timestamp: response.timestamp || new Date().toISOString(),
+                        };
+                        window.reactChatWindowHost.appendMessage(pluginMsg);
+                    }
+
                 // -------- agent_notification --------
                 } else if (response.type === 'agent_notification') {
                     var notifMsg = typeof response.text === 'string' ? response.text : '';

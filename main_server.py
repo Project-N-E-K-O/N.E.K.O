@@ -524,6 +524,38 @@ async def _handle_agent_event(event: dict):
             return
         if event_type in ("task_result", "proactive_message"):
             text = (event.get("text") or "").strip()
+
+            # ── Plugin chat_content blocks: send directly to WebSocket, no LLM ──
+            blocks = event.get("chat_content_blocks")
+            if isinstance(blocks, list) and blocks:
+                channel = event.get("channel") or "plugin"
+                plugin_name = channel.replace("plugin:", "") if channel.startswith("plugin:") else channel
+                ws = getattr(mgr, "websocket", None)
+                if _is_websocket_connected(ws):
+                    try:
+                        await ws.send_json({
+                            "type": "plugin_chat_content",
+                            "plugin_id": plugin_name,
+                            "blocks": blocks,
+                            "text": text,
+                            "timestamp": event.get("timestamp") or "",
+                        })
+                        logger.info("[EventBus] plugin_chat_content delivered: plugin=%s blocks=%d", plugin_name, len(blocks))
+                    except Exception as e:
+                        logger.warning("[EventBus] plugin_chat_content send failed: %s", e)
+                smq = getattr(mgr, "sync_message_queue", None)
+                if smq:
+                    smq.put({
+                        "type": "json",
+                        "data": {
+                            "type": "plugin_chat_content",
+                            "plugin_id": plugin_name,
+                            "blocks": blocks,
+                            "text": text,
+                        },
+                    })
+                return
+
             if text:
                 if event.get("direct_reply"):
                     detail_text = (event.get("detail") or text).strip()

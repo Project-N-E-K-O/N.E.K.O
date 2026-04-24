@@ -83,6 +83,17 @@ class CurrentWeatherRouter(PluginRouter):
         if loc.get("_vpn_detected"):
             summary += i18n.t("summary.vpn_hint", ip_city=loc.get("_ip_city", ""))
 
+        # 推送天气卡片到聊天框（直接显示，不经过 LLM）
+        forecast_lines = []
+        for f in forecast[:3]:
+            forecast_lines.append(f"{f['date']}  {f['weather']}  {f.get('temp_min', '')}~{f.get('temp_max', '')}°C")
+
+        plugin.push_chat_content([
+            {"type": "text", "text": f"🌤️ {loc['city']} — {current['weather']} {current['temperature']}°C"},
+            {"type": "text", "text": f"体感 {current['feels_like']}°C | 💧 {current['humidity']}% | 💨 {current['wind_speed']}km/h"},
+            {"type": "text", "text": "\n".join(forecast_lines)} if forecast_lines else {"type": "text", "text": ""},
+        ])
+
         return Ok({
             "city": loc["city"],
             "summary": summary,
