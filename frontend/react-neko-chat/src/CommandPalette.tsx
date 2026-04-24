@@ -522,6 +522,7 @@ export default function CommandPalette({
   onClose,
 }: CommandPaletteProps) {
   const [search, setSearch] = useState('');
+  const [activeTab, setActiveTab] = useState<'quick' | 'all'>('quick');
   const [loadingMap, setLoadingMap] = useState<Record<string, boolean>>({});
   const [errorMap, setErrorMap] = useState<Record<string, string | null>>({});
   const [localItems, setLocalItems] = useState<CommandItem[]>(items);
@@ -532,6 +533,12 @@ export default function CommandPalette({
 
   useEffect(() => { setLocalItems(items); }, [items]);
   useEffect(() => { setLocalPrefs(preferences); }, [preferences]);
+
+  // Auto-select tab: if no quick actions exist, default to 'all'
+  useEffect(() => {
+    const hasQuick = localItems.some(a => a.quick_action);
+    if (!hasQuick) setActiveTab('all');
+  }, [localItems]);
 
   // Auto-focus search on open
   useEffect(() => { searchRef.current?.focus(); }, []);
@@ -592,94 +599,63 @@ export default function CommandPalette({
     onPreferencesChange(prefs);
   }, [onPreferencesChange]);
 
-  // ── Build sections ──
-  const { pinnedItems, quickItems, recentItems, commandItems, hasResults } = useMemo(() => {
+  // ── Build filtered lists for each tab ──
+  const { quickTabItems, allTabItems, hasResults } = useMemo(() => {
     const isSearching = search.trim().length > 0;
 
-    // In slash mode, only show chat_inject items
     const baseItems = slashMode
       ? localItems.filter(a => a.type === 'chat_inject')
       : localItems;
 
     const matched = baseItems.filter(a => matchesSearch(a, search));
-
-    // When searching, show flat results (no sections), but still exclude hidden unless searching
     const visibleMatched = isSearching
-      ? matched // Show hidden items in search results (greyed out)
+      ? matched
       : matched.filter(a => !localPrefs.hidden.includes(a.action_id));
 
-    if (isSearching) {
-      // Flat search results — sort by priority desc, then label
-      const sorted = [...visibleMatched].sort((a, b) => {
-        const pa = a.priority ?? 0;
-        const pb = b.priority ?? 0;
-        if (pa !== pb) return pb - pa;
-        return a.label.localeCompare(b.label);
-      });
-      return { pinnedItems: [] as CommandItem[], quickItems: [] as CommandItem[], recentItems: [] as CommandItem[], commandItems: sorted, hasResults: sorted.length > 0 };
-    }
+    const sortByPriority = (a: CommandItem, b: CommandItem) => {
+      const pa = a.priority ?? 0;
+      const pb = b.priority ?? 0;
+      if (pa !== pb) return pb - pa;
+      return a.label.localeCompare(b.label);
+    };
 
-    // Not searching — split into sections
+    // Quick tab: pinned + quick_action items
     const pinnedIds = new Set(localPrefs.pinned);
-    const recentIds = localPrefs.recent;
-
     const pinned = localPrefs.pinned
       .map(id => visibleMatched.find(a => a.action_id === id))
       .filter((a): a is CommandItem => a !== undefined);
-
-    // Quick actions: items marked by plugins as quick_action, excluding already-pinned
     const quick = visibleMatched
       .filter(a => a.quick_action && !pinnedIds.has(a.action_id))
-      .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0) || a.label.localeCompare(b.label));
-    const quickIds = new Set(quick.map(a => a.action_id));
+      .sort(sortByPriority);
+    const quickTab = [...pinned, ...quick];
 
-    const recentSeen = new Set([...pinnedIds, ...quickIds]);
-    const recent = recentIds
-      .filter(id => !recentSeen.has(id))
-      .map(id => { recentSeen.add(id); return visibleMatched.find(a => a.action_id === id); })
-      .filter((a): a is CommandItem => a !== undefined);
-
-    const usedIds = new Set([...pinnedIds, ...quickIds, ...recentIds]);
-    const commands = visibleMatched
-      .filter(a => !usedIds.has(a.action_id))
-      .sort((a, b) => {
-        const pa = a.priority ?? 0;
-        const pb = b.priority ?? 0;
-        if (pa !== pb) return pb - pa;
-        return a.label.localeCompare(b.label);
-      });
+    // All tab: everything, sorted
+    const allTab = [...visibleMatched].sort(sortByPriority);
 
     return {
-      pinnedItems: pinned,
-      quickItems: quick,
-      recentItems: recent,
-      commandItems: commands,
-      hasResults: pinned.length + quick.length + recent.length + commands.length > 0,
+      quickTabItems: quickTab,
+      allTabItems: allTab,
+      hasResults: (activeTab === 'quick' ? quickTab.length : allTab.length) > 0,
     };
-  }, [localItems, localPrefs, search, slashMode]);
+  }, [localItems, localPrefs, search, slashMode, activeTab]);
 
   const isSearching = search.trim().length > 0;
+  const displayItems = activeTab === 'quick' ? quickTabItems : allTabItems;
 
   // ── Flat list for keyboard navigation ──
-  const flatItems = useMemo(() => [
-    ...pinnedItems, ...quickItems, ...recentItems, ...commandItems,
-  ], [pinnedItems, quickItems, recentItems, commandItems]);
-
   const [highlightIdx, setHighlightIdx] = useState(-1);
-
-  // Reset highlight when items or search change
-  useEffect(() => { setHighlightIdx(-1); }, [search, flatItems.length]);
+  useEffect(() => { setHighlightIdx(-1); }, [search, displayItems.length, activeTab]);
 
   const handleSearchKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      setHighlightIdx(prev => (prev + 1) % Math.max(flatItems.length, 1));
+      setHighlightIdx(prev => (prev + 1) % Math.max(displayItems.length, 1));
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      setHighlightIdx(prev => prev <= 0 ? flatItems.length - 1 : prev - 1);
-    } else if (e.key === 'Enter' && highlightIdx >= 0 && highlightIdx < flatItems.length) {
+      setHighlightIdx(prev => prev <= 0 ? displayItems.length - 1 : prev - 1);
+    } else if (e.key === 'Enter' && highlightIdx >= 0 && highlightIdx < displayItems.length) {
       e.preventDefault();
-      const item = flatItems[highlightIdx];
+      const item = displayItems[highlightIdx];
       if (item.type === 'chat_inject') {
         handleInject(item.inject_text ?? '');
       } else if (item.type === 'navigation') {
@@ -688,13 +664,15 @@ export default function CommandPalette({
         handleExecute(item.action_id, null);
       }
     }
-  }, [flatItems, highlightIdx, handleInject, onNavigate, handleExecute]);
+  }, [displayItems, highlightIdx, handleInject, onNavigate, handleExecute]);
 
   const sharedRowProps = {
     prefs: localPrefs,
     onExec: handleExecute, onInject: handleInject, onNavigate,
     onPrefsChange: handlePrefsChange,
   };
+
+  const hasQuickActions = localItems.some(a => a.quick_action);
 
   return (
     <div className="cp-panel" ref={panelRef} role="dialog" aria-label={i18n('commandPalette.title', '命令面板')}>
@@ -737,7 +715,9 @@ export default function CommandPalette({
             <div className="cp-empty-text">
               {isSearching
                 ? i18n('commandPalette.noResults', '没有匹配的操作')
-                : i18n('commandPalette.empty', '暂无可用操作')}
+                : activeTab === 'quick'
+                  ? i18n('commandPalette.noQuickActions', '暂无快捷操作')
+                  : i18n('commandPalette.empty', '暂无可用操作')}
             </div>
             {isSearching && (
               <button type="button" className="cp-empty-clear" onClick={() => { setSearch(''); searchRef.current?.focus(); }}>
@@ -745,55 +725,38 @@ export default function CommandPalette({
               </button>
             )}
           </div>
-        ) : isSearching ? (
-          /* Flat search results */
+        ) : (
           <div className="cp-section">
-            {commandItems.map((item, i) => (
+            {displayItems.map((item, i) => (
               <div key={item.action_id} className="cp-stagger" style={{ animationDelay: `${i * 20}ms` }}>
                 <CommandRow item={item} loading={!!loadingMap[item.action_id]} error={errorMap[item.action_id] ?? null} highlighted={highlightIdx === i} {...sharedRowProps} />
               </div>
             ))}
           </div>
-        ) : (
-          /* Sectioned view */
-          <>
-            {pinnedItems.length > 0 && (
-              <div className="cp-section">
-                <SectionHeader icon="📌" label={i18n('commandPalette.pinned', '已置顶')} />
-                {pinnedItems.map((item, i) => (
-                  <CommandRow key={item.action_id} item={item} loading={!!loadingMap[item.action_id]} error={errorMap[item.action_id] ?? null} highlighted={highlightIdx === i} {...sharedRowProps} />
-                ))}
-              </div>
-            )}
-            {quickItems.length > 0 && (
-              <div className="cp-section">
-                <SectionHeader icon="⚡" label={i18n('commandPalette.quickActions', '快捷操作')} count={quickItems.length} />
-                {quickItems.map((item, i) => (
-                  <CommandRow key={item.action_id} item={item} loading={!!loadingMap[item.action_id]} error={errorMap[item.action_id] ?? null} highlighted={highlightIdx === pinnedItems.length + i} {...sharedRowProps} />
-                ))}
-              </div>
-            )}
-            {recentItems.length > 0 && (
-              <div className="cp-section">
-                <SectionHeader icon="🕐" label={i18n('commandPalette.recent', '最近使用')} />
-                {recentItems.map((item, i) => (
-                  <CommandRow key={item.action_id} item={item} loading={!!loadingMap[item.action_id]} error={errorMap[item.action_id] ?? null} highlighted={highlightIdx === pinnedItems.length + quickItems.length + i} {...sharedRowProps} />
-                ))}
-              </div>
-            )}
-            {commandItems.length > 0 && (
-              <div className="cp-section">
-                <SectionHeader icon="📋" label={i18n('commandPalette.allCommands', '全部')} count={commandItems.length} />
-                {commandItems.map((item, i) => (
-                  <div key={item.action_id} className="cp-stagger" style={{ animationDelay: `${i * 20}ms` }}>
-                    <CommandRow item={item} loading={!!loadingMap[item.action_id]} error={errorMap[item.action_id] ?? null} highlighted={highlightIdx === pinnedItems.length + quickItems.length + recentItems.length + i} {...sharedRowProps} />
-                  </div>
-                ))}
-              </div>
-            )}
-          </>
         )}
       </div>
+
+      {/* ── Tab bar (bottom) ── */}
+      {hasQuickActions && !slashMode && (
+        <div className="cp-tab-bar">
+          <button
+            type="button"
+            className={`cp-tab ${activeTab === 'quick' ? 'cp-tab-active' : ''}`}
+            onClick={() => setActiveTab('quick')}
+          >
+            ⚡ {i18n('commandPalette.quickActions', '快捷操作')}
+            {quickTabItems.length > 0 && <span className="cp-tab-count">{quickTabItems.length}</span>}
+          </button>
+          <button
+            type="button"
+            className={`cp-tab ${activeTab === 'all' ? 'cp-tab-active' : ''}`}
+            onClick={() => setActiveTab('all')}
+          >
+            📋 {i18n('commandPalette.allCommands', '全部操作')}
+            {allTabItems.length > 0 && <span className="cp-tab-count">{allTabItems.length}</span>}
+          </button>
+        </div>
+      )}
 
       {/* ── Toasts ── */}
       <ToastStack toasts={toasts} />

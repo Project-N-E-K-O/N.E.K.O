@@ -1943,6 +1943,39 @@ button * {
 }
 .cp-stagger { animation: cp-fade-in 0.22s ease both; }
 
+/* ── Tab bar (bottom) ── */
+.cp-tab-bar {
+  display: flex;
+  border-top: 1px solid rgba(140, 160, 190, 0.1);
+  padding: 0;
+  flex-shrink: 0;
+}
+.cp-tab {
+  flex: 1;
+  display: flex; align-items: center; justify-content: center; gap: 5px;
+  padding: 10px 8px;
+  font-size: 0.75rem; font-weight: 600;
+  color: #8a95a8;
+  background: transparent;
+  border: none; border-radius: 0;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+.cp-tab:hover { background: rgba(140, 160, 190, 0.06); }
+.cp-tab-active {
+  color: #40c5f1;
+  box-shadow: inset 0 -2px 0 #40c5f1;
+}
+.cp-tab-count {
+  font-size: 0.6rem;
+  background: rgba(140, 160, 190, 0.1);
+  padding: 1px 5px; border-radius: 999px;
+}
+.cp-tab-active .cp-tab-count {
+  background: rgba(64, 197, 241, 0.15);
+  color: #40c5f1;
+}
+
 /* ── Command row ── */
 .cp-row-wrap { position: relative; }
 .cp-row-wrap.is-hidden { opacity: 0.35; }
@@ -2256,6 +2289,13 @@ button * {
 [data-theme="dark"] .cp-section + .cp-section { border-top-color: rgba(255, 255, 255, 0.05); }
 [data-theme="dark"] .cp-section-label { color: #7a8494; }
 [data-theme="dark"] .cp-section-count { color: #7a8494; background: rgba(255, 255, 255, 0.06); }
+
+[data-theme="dark"] .cp-tab-bar { border-top-color: rgba(255, 255, 255, 0.06); }
+[data-theme="dark"] .cp-tab { color: #7a8494; }
+[data-theme="dark"] .cp-tab:hover { background: rgba(255, 255, 255, 0.05); }
+[data-theme="dark"] .cp-tab-active { color: #40c5f1; }
+[data-theme="dark"] .cp-tab-count { background: rgba(255, 255, 255, 0.06); color: #7a8494; }
+[data-theme="dark"] .cp-tab-active .cp-tab-count { background: rgba(64, 197, 241, 0.15); color: #40c5f1; }
 
 [data-theme="dark"] .cp-row-clickable:hover { background: rgba(68, 183, 254, 0.07); box-shadow: 0 0 0 1px rgba(68, 183, 254, 0.1) inset; }
 [data-theme="dark"] .cp-row-highlighted { background: rgba(68, 183, 254, 0.12); box-shadow: 0 0 0 1px rgba(68, 183, 254, 0.18) inset; }
