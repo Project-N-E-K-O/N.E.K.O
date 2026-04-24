@@ -158,8 +158,8 @@ function showStatus(message, type = 'info') {
     statusDiv.className = `status ${type}`;
     statusDiv.style.display = 'block';
 
-    var delay = type === 'error' ? 5000 : 3000;
-    showStatus._hideTimer = setTimeout(function () {
+    const delay = type === 'error' ? 5000 : 3000;
+    showStatus._hideTimer = setTimeout(() => {
         statusDiv.style.display = 'none';
         showStatus._hideTimer = null;
     }, delay);
