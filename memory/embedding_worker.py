@@ -278,6 +278,12 @@ class EmbeddingWarmupWorker:
                 logger.warning(
                     "[EmbeddingWorker] persona save failed for %s: %s", name, e,
                 )
+                # Returning len(targets) here would mark the batch as
+                # progress; combined with the no-sleep saturated-budget
+                # branch in _run, a persistent disk error (full / RO /
+                # permission) would hot-loop on the same entries. 0
+                # routes us through ACTIVE/POLL_INTERVAL backoff.
+                return 0
             return len(targets)
 
     async def _sweep_reflections(self, name: str, budget: int) -> int:
@@ -303,6 +309,7 @@ class EmbeddingWarmupWorker:
                 logger.warning(
                     "[EmbeddingWorker] reflection save failed for %s: %s", name, e,
                 )
+                return 0  # see _sweep_persona — same hot-loop guard
             return len(targets)
 
     async def _sweep_facts(self, name: str, budget: int) -> int:
@@ -324,6 +331,7 @@ class EmbeddingWarmupWorker:
             logger.warning(
                 "[EmbeddingWorker] fact save failed for %s: %s", name, e,
             )
+            return 0  # see _sweep_persona — same hot-loop guard
         return len(targets)
 
     # ── helpers ──────────────────────────────────────────────────────
