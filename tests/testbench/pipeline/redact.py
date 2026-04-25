@@ -135,7 +135,11 @@ def redact_secrets(
                     isinstance(k, str) and k.lower() in sensitive
                 )
                 if is_sensitive and v:  # don't mask empty / None (no secret to hide)
-                    out[k] = placeholder if isinstance(v, str) else placeholder
+                    # Non-string sensitive values get the whole subtree elided
+                    # (matches the module-level "subtree elided" guarantee).
+                    out[k] = placeholder
+                else:
+                    out[k] = _walk(v)
                 else:
                     out[k] = _walk(v)
             return out
