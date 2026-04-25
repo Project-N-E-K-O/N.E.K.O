@@ -76,6 +76,10 @@ if [[ -n "$pid" ]]; then
                 ;;
             c|C)
                 read -rp "  New port (1024-65535): " PORT
+                if ! [[ "$PORT" =~ ^[0-9]+$ ]] || (( PORT < 1024 || PORT > 65535 )); then
+                    echo "[ERR] Invalid port: $PORT" >&2
+                    exit 1
+                fi
                 if [[ -n "$(port_owner "$PORT")" ]]; then
                     echo "[ERR] Port $PORT also in use. Aborting." >&2
                     exit 1
