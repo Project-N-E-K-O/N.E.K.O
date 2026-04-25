@@ -1,0 +1,20 @@
+[plugin]
+id = "music_pusher"
+name = "音乐推送"
+description = "仅保留稳定可用的音乐推送：上传本地音乐或输入链接后自动推送到主对话。Web UI：http://127.0.0.1:48916/plugin/music_pusher/ui/"
+version = "0.1.0"
+entry = "plugin.plugins.music_pusher:MusicPusherPlugin"
+
+[plugin.author]
+name = "N.E.K.O Team"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin_runtime]
+enabled = true
+auto_start = true
+
+[plugin.store]
+enabled = true
