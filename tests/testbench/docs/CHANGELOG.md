@@ -206,7 +206,7 @@ v1.1.0 发布当日的用户手测反馈收治, 仍属 v1.1 同一版本号 (未
 - **Chat 对话四模式** — 手动单发 · 假想用户自动续写 · 脚本化回放
   · 双 AI 自动对话.
 - **三层记忆** (Recent / Facts / Reflections / Persona) + 5 个
-  手动 Op (压缩尾部消息 / 从对话抽取事实 / 合成反思 / 修正 persona
+  手动 Op (压缩最旧消息 / 从对话抽取事实 / 合成反思 / 修正 persona
   事实 / 加 persona 事实), 全部两阶段 (Preview / Commit).
 - **Stage Coach 6 阶段引导** — suggest → advance 状态机, 帮测试
   人员从 "创建会话" 到 "开测" 的最短路径.

@@ -184,7 +184,7 @@ class ChatOpenAI:
         model: str = "",
         base_url: str | None = None,
         api_key: str | None = None,
-        temperature: float = 1.0,
+        temperature: float | None = 1.0,
         streaming: bool = False,
         max_retries: int = 2,
         extra_body: dict | None = None,
@@ -198,6 +198,11 @@ class ChatOpenAI:
         **_kwargs: Any,
     ):
         self.model = model
+        # ``temperature=None`` is a legitimate caller intent: "don't include a
+        # temperature field in the request body at all". Required for models
+        # that reject the parameter outright (o1 / o3 / gpt-5-thinking /
+        # Claude extended-thinking). Kept default=1.0 for backwards compat so
+        # existing callers that omit the kwarg behave unchanged.
         self.temperature = temperature
         self.extra_body: dict = extra_body or {}
         self.max_completion_tokens = max_completion_tokens
@@ -221,9 +226,13 @@ class ChatOpenAI:
         p: dict[str, Any] = {
             "model": self.model,
             "messages": _normalize_messages(messages),
-            "temperature": self.temperature,
             "stream": stream,
         }
+        # 仅当显式设置 temperature 才写进请求体; None 表示 "由模型端自定".
+        # 这让 o1/o3/gpt-5-thinking/Claude extended-thinking 等拒绝该参数的
+        # 模型可以直通. 0.0 合法 → `is not None` 而不是 `if self.temperature`.
+        if self.temperature is not None:
+            p["temperature"] = self.temperature
         if self.max_completion_tokens:
             p["max_completion_tokens"] = self.max_completion_tokens
         elif self.max_tokens:

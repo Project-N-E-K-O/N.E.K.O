@@ -669,9 +669,20 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
 > **L51 → §7.29 已升格** (USER_MANUAL 起草时 Grep 4 处校准首例 + C3 hotfix 手测揭
 > 12+ 处深层偏差). 两条正文均已写入上方主编号 §7.28 / §7.29, 本候选区保留原文作为
 > "候选 → 主编号" 升级过程的历史档案 + 下一位 agent 的范例.
-> **L39 / L40 / L41 / L42 / L43 / L45 / L46 / L47 / L48 / L49 / L52 新候选** 登记为单次,
+> **L39 / L40 / L41 / L42 / L43 / L45 / L46 / L47 / L48 / L49 / L52 / L55 新候选** 登记为单次,
 > 待 P27+ 再命中升级. L37 / L38 仍为单次.
 > 登记在此避免遗忘.
+>
+> **L53 二次实锤升级门槛达成** (2026-04-25 P26 post-PR 第二批次 6 条 AI 意见同 PR cycle 内再次实锤,
+> 6 条 → 14 处实际修复, 同族放大率 2.3× 高于第一批 1.06×): 下次主编号更新升 **§7.30 "AI review
+> 的同族扩展是 chokepoint 漏装的最佳探针"**, 同批考虑升 L55 → §7.31 "AI review 多轮迭代价值 +
+> bug surface 多维". 论述见 §7.A L53 主条目末尾的"附: 第二批次新派生的元教训" 4 条 + L55 主条目.
+>
+> **L54 已机制化** (2026-04-25 第二批次 AI review 收尾时, `tests/testbench/smoke/p00_static_gate_smoke.py`
+> 已抽为 "Gate-0" — 78 个 .py `py_compile` sweep + 43 个 pipeline/routers/services/clients/snapshots
+> 模块 importlib sweep, 由 `_run_all.py` 第一项执行): L54 教训本身不过期, 升级条件改为 "再有一次
+> rebase/merge 引入 push 时未触发 p00 (人为绕过) 导致坏代码 push 出去" 才升 §7.32. 当前状态 = 留作
+> "为什么有 p00 静态门" 的设计动机说明, 防止未来 agent 嫌 p00 慢删掉它.
 >
 > **L33 → §7.26 升级**: P25 Day 1 (subagent C 自诊 meta.get 漏字段) + P25 Day 2
 > polish (subagent 重复派任务致使 handoff 协议漏洞, 衍生 L33.x 交付目录 +
@@ -816,7 +827,7 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
 - **候选 skill**: `ui-page-name-vs-store-content-drift` — 触发条件: "任何名为 X 的 store / ring / API 开始接收不属于 X 语义的记录", 输出决策三选一 (改名 / 分家 / opt-in filter), 模板包含 docstring + assert + query param + UI chip 四层.
 - **进入主编号条件**: 需要在后续阶段再有一次"某 store / 页面名称语义漂移"(比如 `warnings` 表开始收 info / `alerts` endpoint 开始返回 debug) 才升级为 §7.34.
 
-**L38 "自动刷新列表的 sub-<details> 展开态必须单独持久化 (和父 entry 的 toggledKeys 同级)"** (P25 Day 2 手测发现, 2026-04-23):
+**L38 "自动刷新列表的展开态必须单独持久化 (和父 entry 的 toggledKeys 同级)"** (P25 Day 2 手测发现, 2026-04-23):
 
 - **场景**: 前端有**自动刷新列表**页 (日志 / 错误 / 任务 / 事件流), 每条 entry 内部嵌套若干可展开 sub-`<details>` (如 "原始 JSON" / "trace digest" / "详细信息"). 初版的父 entry 展开态用 `toggledKeys: Map<key, bool>` 持久化 (跨 auto-refresh 保留), 但 sub-details 直接 `el('details', {open: false}, ...)` 裸写 — 每次 auto-refresh 重建整棵子树, 刚点开的子菜单被收回, tester 要读的详细 payload 刚看半秒就消失.
 - **失败模式**: 只在**触发 auto-refresh 的场景**下暴露 (5s 周期或 filter 切换后), 单元测试 / smoke 在同一秒内断言根本看不到. tester 手测时"每 5 秒就折叠一次"的体感非常明显, 但**很容易被当成"顺手点一下再打开"的小烦恼**, 不主动报 bug. 如果不是 log 量大到 tester 必须长时间盯着某一条, 可能整个 phase 都不会被发现.
@@ -1171,6 +1182,100 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
     2. **算法规则复杂时** (含有非直觉规则如 "标点 drop 不 hyphen") **必须在 smoke 错误信息里点明规则**, 否则作者改来改去还是错.
     3. **首选把人手写这一侧消灭**: 有 TOC generator 的场景 (例如 `markdown-it-anchor` + table-of-contents 插件), 直接让算法同时生成 heading id **和** TOC, 两边同源 — 此时根本没有 drift 可能.
 - **进入主编号条件**: 需要在 P27+ 或其它项目再命中一次 "算法 slug 规则 ↔ 人手写 anchor 漂移" 才升级为 §7.30 (或合并入 §7.25 作子条目 "跨边界 key 含非代码消费方").
+
+---
+
+**L53 "AI code review 的同族扩展是单点修复的 1.5-3 倍价值放大器"** (P26 post-PR GitHub AI review 16 条意见消化派生 + **第二批次 6 条意见再次实锤**, 单条意见 grep-同族-审计后实际触发 1-3 处真 bug, 2026-04-25, **二次实锤已达主编号升级门槛**):
+
+- **场景**: PR 提交后 GitHub 上的 AI 代码审核工具 (CodeRabbit / Greptile / Sourcery 之类) 给出 N 条单点意见. 朴素消费 = "对一条修一条", **同族消费** = "每条意见看作一个 pattern probe, 修该点之前先 grep 整个 codebase 找同 pattern 的其它位置, 一并修".
+- **本次实证 (16 条意见 → 17 处实际修复)**:
+    - **Issue 5 + 9 + 第三处隐藏**: AI 单独指出 #5 (`external_events.py::_render_session_messages_for_memory_context` 没过滤 banner) 和 #9 (`memory_runner.py::_session_messages_to_langchain` 没过滤 banner). 表面是两条独立意见. **同族 grep** `for m in session\.messages` → 触发**第三处** `judge_router.py::_collect_messages` + 同文件另两处 `all_session_messages = session.messages` (共 3 处需补 helper `_visible_session_messages(session)` chokepoint). 最终一条 AI hint pattern → 修了 4 个文件 5 个 read site. **chokepoint coverage 第 N 处遗漏**几乎是规律 — 项目已确立 "banner 不进 LLM" 原则 (§7.25 第 5 层防御), 但每次新增 "session.messages → LLM" 路径都默认漏装防护, 三个不同模块各漏一次.
+    - **Issue S1 (ast.walk 不下钻嵌套作用域)**: AI 在 `p25_llm_call_site_stamp_coverage_smoke.py::_has_preceding_stamp` 指出 `ast.walk(func_node)` 会下钻 nested def/lambda. **同族 grep** `ast\.walk\(` → 6 处其它使用. 逐项审计判定: 5 处都是 walk module-level tree (找 ClassDef / 找 module-level _PATCHED_ATTRS / sandbox AST 安全沙箱), **本来就应该全树扫**, **不**需修. 1 处 (p24_sandbox_attrs_sync_smoke.py:232 walk @property body) 模式相同但实际属性都简短无 nested, 标记 LL 不修. **同族扫一次确认其它都对的"假阴性 win"**: 给"我不是只看 AI 指的那一处"留下证据.
+    - **Issue 14 (content 假设 str)**: AI 指出 `simulated_user._flip_history` 调 `.content.strip()` 但 LangChain 的 content 可以是 list. **同族 grep** `\.content.*\.strip` → 3 处其它 (`external_events:362` resp.content, `judge_runner:506` resp.content, `prompt_builder:334` item.content). 这些都是 LLM resp 的 content, **实际同族 bug** 在 Gemini thinking mode 等场景才触发, 本次 testbench 走 OpenAI provider 不会命中, **降级为 LL 记录**而非立即修.
+    - **Issue 4 (counter race)**: AI 指出 `diagnostics_store._next_id` 用 `global _COUNTER; _COUNTER += 1` 不原子. **同族 grep** `global _\w+\s*$` → 8 处. 逐项审计: `chat_runner._backend` / `session_store._store` / `autosave._config` / `logger._anon_logger` / `api_keys_registry._registry` 都是 module 单例 setter (一次写, 多次读, 写本身用其它锁保证), `diagnostics_store._RING_FULL_NOTICE_FIRED` 是布尔 flag (CAS 语义, 双写无害). **唯一真 race 是本次修的那一处 (counter, 双写丢值)**, 其它都是合理的 module-level mutable singleton.
+- **同族放大率 = 实际修复 / AI 单点意见数**: 本次 16 条意见 → 17 处实际修复 (1 条 #5 + 1 条 #9 → 5 处 banner 过滤; 14 条独立点 → 12 处真修 + 2 处文档/降级). **放大率 ≈ 1.06×**, 看起来不高, 但**结构性收益更重要**: (a) 抽出了 `_visible_session_messages(session)` chokepoint, 未来第 N+1 处 "读 session.messages → LLM" 直接 grep 这个 helper 名就能一次性判断有没有漏装防护; (b) 同族扫确认其它处不是同 bug 比"没扫"更让人放心 — 不留"也许还有十处"的 unease.
+- **判定流程模板** (每条 AI 意见 4 步):
+    1. **细读 + 锚定**: 阅读 AI 指出的代码段和相关设计文档 (本项目里 = `LESSONS_LEARNED.md` + `AGENT_NOTES.md` 相关 §). 不要凭直觉信任或反对.
+    2. **判定**: 真 bug / 边缘 bug (低优先, 文档说明) / 误报 (说明为什么 AI 错了, 写在 commit message). 误报本身是 review-of-review 的成果, 不是失败.
+    3. **同族 grep**: 抽出该 bug 的 **抽象 pattern** (比如 "for ... in session.messages 然后送 LLM" / "ast.walk(<sub-node>) 想找本作用域内某 call" / "global counter += 1"), `rg` 整个 codebase 找所有同 pattern 实例, **每个**判定真假.
+    4. **chokepoint 收敛**: 如果同 pattern 在 ≥ 3 处都是 bug, 说明这是项目里一个**反复漂移**的不变量, 应该抽 single helper / chokepoint (本次的 `_visible_session_messages`) 让未来新代码绕不过去.
+- **反模式 (本次没踩但要警惕)**:
+    1. **直接 squash-fix**: 不读相关设计文档, 看一条 AI 意见就直接照建议改. 风险 = AI 建议本身可能与项目设计原则冲突 (本次 #8 就是反例: AI 想颠倒 persona vs corrections 写顺序, 实际现序更幂等鲁棒, 改了反而 worse).
+    2. **同族不扫**: 修 #5 后不顺手 grep, 漏 #9 (LangChain) 还能等下一轮 AI review 抓, 漏 judge_router 那处可能**永远没人发现** (judge 评分受污染但不易看出来).
+    3. **过度抽象**: 同族扫到 N 处都是真 bug 就立刻冲动重构整个模块. 应该先**全部就地修**保证当前 PR 可 merge, **抽 helper 作为下一 PR**单独评审.
+- **关联**:
+    - L36 §7.25 "跨边界 shape 必 rg 消费方" 的**review-time 反向应用** — L36 是写代码时主动 rg 消费方避免漂移, L53 是 review 阶段 rg 同族避免单点修复的代价 (从 "$cost(漏的同族 bug)" 角度看, L36 是 prevention, L53 是 detection during review).
+    - L43 "single-writer chokepoint" 的**多读者扩展** — L43 是 1 writer + N readers 中守护 writer 唯一; L53 同族审计的最终落点 (本次抽 `_visible_session_messages` helper) 等于在 reader 侧也建一个 single read chokepoint, 让 N readers 共享同一过滤逻辑. **写侧 + 读侧双 chokepoint** 才是 chokepoint coverage 的完成态.
+    - L48 "文档四象限分层" 的**review 维度对应** — L48 管文档读者按象限分流, L53 管 AI review 反馈按"指 vs 同族"分流, 都是"输入分类后差异处理".
+- **候选 skill**: `audit-ai-review-with-grep-fanout` — 触发条件 = "项目接收到 AI 代码审核工具的 N 条单点意见, 准备做维护性 patch". 模板四步: (1) 每条意见做"细读 + 锚定 + 判定"; (2) 真 bug 立刻 grep 同族 pattern 全 codebase 列出实例; (3) 同族 ≥ 3 → 抽 helper 收敛; (4) 同族 = 1 → 就地修 + LL 记录"扫了 N 处都对". **同族放大率应记录在 commit message 里** ("AI 指 X 处, 同族扫 grep 出额外 Y 处"), 让未来 reviewer 知道这次 patch 的覆盖范围.
+- **进入主编号条件**: ~~需要在 P27+ 或其它项目再命中一次 "AI 评审单点意见 → 同族扩展放大" 才升级为 §7.30~~ **已达升级门槛**: **第二批次 6 条 AI 意见同 PR cycle 内再次实锤** (2026-04-25, AGENT_NOTES §4.27 #124): 6 条 → 14 处实际修复, 同族放大率 **2.3×** (高于第一批 1.06×), 同族扫一次确认 N 处都对 = 假阴性 win 在 await asyncio.to_thread 1 处 + global counter 8 处中其它 7 处复现, "同族 ≥ 3 → 抽 helper" 规则在第一批已抽 `_visible_session_messages` chokepoint 第二批仍发现孤岛 (`simulated_user._flip_history` 不读 session.messages 直接喂 SimUser LLM, 是 chokepoint 覆盖范围之外). 下次主编号更新升 **§7.30 "AI review 的同族扩展是 chokepoint 漏装的最佳探针"**.
+
+**附: 第二批次新派生的元教训** (并入升格论述):
+
+1. **bug pattern 与第一批不重叠** — 第一批主体是 chokepoint coverage 漏装 + 经典 race + AST 误用; 第二批主体是 numeric overflow + cross-module design drift + docstring 反相 + race-on-await-after-clear + preview ≠ truth + role-only filter. 说明 AI review 探的 bug 维度可能每轮不同, "做过一轮就完了" 的直觉错 — 详见新候选 **L55**.
+2. **chokepoint helper 抽出后仍可能有"读路径孤岛"** — 第一批抽 `_visible_session_messages` 让 4 处读路径一次性兜底, 但第二批仍发现 `simulated_user._flip_history` 是孤岛 (它读 messages → flip → LLM 而非直接 read → LLM). 防御 = 在 helper docstring 里枚举已知 caller + 已知**不受 helper 保护的孤岛 + 解释为什么**.
+3. **AI 工具自身有缺陷, 任何 AI 产物都视作"未经验证的草稿"** — 第一批 AI 单点指认 16 条有 1 误报 + 1 部分误报 (=12.5%); 第一批 hotfix 中 `coderabbitai` bot 在 GitHub Web UI 上 +5/-1 patch 自带 SyntaxError. 不光 review meta 用 AI 要审, AI 给的 patch 本体也要走与人类 PR 相同的 review + 静态门 + smoke 流水线 — 详见 L54 已机制化 (`p00_static_gate_smoke`).
+4. **维护期 sign-off 后 AI review 戳活是常态** — 项目已在 #123 v1.1-maintenance-window 阶段分水岭明确 "等信号再跟进", GitHub AI review 本质就是 PR 评论触发, 是 sign-off 后**预期的合理触发器**, 不算"擅自加戏". 处理后 push 回主分支保持 v1.1.0 hotfix 序列, 不发新版本号.
+
+---
+
+**L54 (新候选) "rebase / merge 引入上游 commit 后必须重跑静态门 + smoke, 哪怕只有 5 条 +5/-1 行的小改"** (P26 post-PR push 后立即被 tester 揭出 `redact.py` 双 else 语法错误派生, 2026-04-25, 单次实锤):
+
+- **场景**: 本地 hotfix branch 在某个 base commit `B` 上做完所有验证 (lint + 全量 smoke 全绿), 然后 `git pull --rebase` 把上游 N 个 small commit (这次是 5 条 GitHub UI "Apply suggestion" 产物, 每条 +5/-1 行) 拉到本地 hotfix commit 之下. **rebase 完成后习惯性认为 "上游小改 + 本地已验证 = 整体仍绿"**, 直接 push 出去. 实际**任何上游小改都可能引入 syntax / import / 行为漂移**, 必须重新过一遍静态门 + smoke 才能 push.
+- **本次踩点**: 上游 `4977107 Update tests/testbench/pipeline/redact.py` 是 GitHub Web UI 上点 **"Commit suggestion"** 应用 coderabbitai bot 建议的 `+5/-1` patch. bot 建议的 5 行新代码内**自带一个 `else:` 子句**, GitHub UI 应用时只删了被替换的那 1 行 (`out[k] = placeholder if isinstance(v, str) else placeholder`), **没删原本就在下面的 `else: out[k] = _walk(v)`**, 结果 `if: ... else: ... else: ...` 两个 else 同级 → `SyntaxError: invalid syntax @ line 143`. **整个 redact 模块 import 即崩**, 任何依赖它的 diagnostics_store / persistence 路径全跪.
+- **流程漏洞**: rebase 之后只看 `git log` "确认 commit 顺序对了 + git status 干净" 就 push. **没跑** `python -m py_compile <changed files>`, **没跑** smoke. 修 bug 的人 (本地 hotfix 作者) 和写 bug 的人 (Web UI 应用 suggestion 的人) 不是同一时刻同一 agent, **本地不能假设上游 small commit 已经过 CI** — 尤其 GitHub Web UI 的 "Apply suggestion" 不会触发 CI 重跑, 上游 5 条小改可能**全都没经过任何静态检查**.
+- **触发器**: 这次 tester (=用户) 直接打开 `redact.py` 看到第 144 行就 catch 了 — 这告诉我们**人眼审查和静态门是有效的最后防线**, 但 push **之前**就该有自动化静态门兜住, 而不是依赖 tester 手测发现.
+- **防御规则** (5 层):
+    1. **rebase / merge 后**, push 之前必须**至少**跑: (a) `python -m py_compile` 整个被改动子树 (本项目 = `tests/testbench`); (b) **import sweep** (importlib.import_module 每个非 `__init__.py` 模块, 抓 NameError / 缺包 / 顶层赋值崩溃); (c) **smoke 套件全量** (本项目 = `_run_all.py` 18 个 smoke).
+    2. **GitHub UI "Apply suggestion" / "Commit suggestion" 来源的 commit 默认不可信**: bot 建议在浏览器里点一下就 commit, 没经过 CI / 没经过本地复现, 很容易 +N/-1 patch 内含 `else:` / `try:` / `with:` 等结构性 token 与原代码上下文不兼容产出"看着像但解析不了"的 patch.
+    3. **静态门必须是 push 链的最后一站**, 而不是 push 之后再补救. 本次因为 tester 第一时间扫到才避免了 PR maintainers 看到坏代码; 在没人盯的项目里, push 出坏代码会被 CI 兜底 (如果有), 没 CI 的项目就直接进了 main.
+    4. **将"上游 small change ≈ 安全"的直觉永久去除**: 同族 "5 行 hotfix 不可能错" 历史失败案例还有 — 错把 `is None` 写成 `is not None` 的反向条件 / 把 `return x` 写成 `return X` 的大小写漂移 / 把 i18n key 写错一个字母. 这些**单字符级**漂移都能让单元测试整批红, 却用肉眼看 5 行 patch 看不出来.
+    5. **静态门跑不动也要跑**: PowerShell 没 `cat` / `head` / `gh`, 但 `python -m py_compile path` 是 stdlib, 任何 venv 都有; smoke runner 是项目自带 (`_run_all.py`). **没有"本机环境不方便"的借口**.
+- **本次实证 + 后果**:
+    - **bug**: `redact.py` push 后 5 分钟内被 tester 发现 (`tests/testbench/pipeline/redact.py` 144 行).
+    - **修复成本**: 删 2 行 (重复 else 子块) + 跑 1 次 lint sweep + 1 次 import sweep + 1 次全量 smoke (35s) + 1 次 hotfix commit + push.
+    - **如果未发现的代价**: testbench 启动后任何 path 触发 `import redact` 即崩, diagnostics 录错失败 / `record_internal(detail=...)` 失败 → 错误处理路径自己崩 → 二级 cascading failure. tester 一旦点到任何"复现内部错误"的 UI 路径会看到 ImportError stacktrace, 而不是预期的诊断 banner.
+- **元教训**: rebase 不是 "merge 一下没冲突就完事", **任何引入新代码 (无论本地写还是上游 pull) 的操作之后, 静态门 + smoke 都必须重跑**. 这条比"自己写代码后跑测试"更容易被忘记, 因为 rebase 看起来"只是顺序调整, 没动我的代码".
+- **关联**:
+    - L22 §1.1 "Intent ≠ Reality" 在**协作工具链层**的实例化 — L22 管"代码已写但未审 / 未 deploy", L54 管"上游已 push 但未 verify". 都是 "**纸面已完成 vs 实际可运行**" 的同一类 gap.
+    - L43 "single-writer chokepoint" 的**push 流水线对偶** — L43 让多个 writer 走同一个 helper 守护数据不变量, L54 让多种代码引入路径 (本地写 / cherry-pick / rebase / merge / Web UI suggestion) 走同一个 push gate (lint + import + smoke) 守护代码可运行性. **写源 chokepoint + 出口 chokepoint** 才是完整防线.
+    - L51 "文档作者必须先扫真实代码再写" 的**对偶动作** — L51 是写文档前必扫代码, L54 是 push 代码前必扫静态门. 都是 "**用机械化校验对抗 agent 内存 / 直觉的盲区**".
+    - L53 "AI review 同族扩展" 的**对立面教训** — L53 的同族扩展 grep 找出了多处隐藏 bug, 但这些 bug 都来自 AI review 的指认; L54 的 bug 来自 **AI 自己 (coderabbitai) 给出的 patch 引入了语法错误**. 也就是 **"AI review 既能找到 bug 也能引入 bug"**, 后者尤其需要 push 时静态门兜住.
+- **候选 skill** (P27+ 再命中 1 次后抽): `pre-push-static-gate-after-merge` — 触发条件 = "git rebase / merge / cherry-pick / pull / Web UI commit suggestion 之后准备 push". 模板: (1) 跑 `py_compile` 整个被改动子树; (2) 跑 import sweep (importlib 每个模块); (3) 跑 smoke 套件; (4) 三关全绿才 push. **本质**: rebase / merge 是 "重新合成代码", 不是 "无害的版本控制操作", 应享受与"本地手写代码"同等的 push gate.
+- **进入主编号条件**: ~~需要在 P27+ 或其它项目再命中一次~~ **已被本项目机制化兜底** (2026-04-25 第二批次 AI review 收尾时, `tests/testbench/smoke/p00_static_gate_smoke.py` 已抽为 "**Gate-0**" — 78 个 .py `py_compile` sweep + 43 个 pipeline/routers/services/clients/snapshots 模块 importlib sweep, 由 `_run_all.py` 第一项执行, 任何 push 前跑 `_run_all.py` 都会先过这关). 教训本身不过期, 升级条件改为 "再有一次 rebase/merge 引入 push 时未触发 p00 (人为绕过) 导致坏代码 push 出去"才升 §7.32. **当前状态**: L54 已机制化但教训留作"为什么有 p00 静态门" 的设计动机说明, 防止未来 agent 嫌 p00 慢删掉它.
+
+---
+
+**L55 (新候选) "AI code review 是多轮迭代博弈 + bug surface 多维, 单 pass 不是终态"** (P26 post-PR 第一批次 16 条 + 第二批次 6 条 bug pattern 不重叠首次实证派生, 2026-04-25, 单次实锤):
+
+- **场景**: 同一 PR / 同一 branch 经过 N 轮 GitHub AI review (`coderabbitai` / Greptile / Sourcery 等), 每轮 N 条单点意见. 朴素直觉 = "第一轮 16 条已严格做过 L53 同族扫了, 第二轮 6 条剩下的应该都是边缘小问题, 估计大半误报". **实际**: 第二轮仍能挖出 5 处真 bug + 1 处防御性对齐, **bug pattern 与第一批不重叠**, 同族放大率 2.3× 反而更高.
+- **典型差异维度** (P26 实证):
+
+    | 维度 | 第一批 16 条 | 第二批 6 条 |
+    |---|---|---|
+    | 主要 bug 类 | chokepoint coverage 漏装 + 经典 race + AST 误用 + counter race | numeric overflow + cross-module design drift + docstring 反相 + race-on-await-after-clear + preview ≠ truth + role-only filter |
+    | 探的"维度" | 数据流 / 并发 / 静态分析 | 数值边界 / 跨模块设计一致性 / 文档 vs 代码语义 / async race / preview-truth invariant |
+    | 同族放大 | 1.06× (16 → 17, chokepoint 漏装 + ast.walk 假阴性 win 占大头) | 2.3× (6 → 14, OverflowError + i18n 文档同族占大头) |
+    | 假阴性 win | ast.walk 6 处其它都是合理使用 / global 8 处其它 7 处都是合理 module 单例 | await asyncio.to_thread 1 处其它 (`logger.py` log_sync) 无 race / `for m in session.messages` 第一批已抽 chokepoint helper 全覆盖 |
+    | 误报率 | 1/16 误报 + 1/16 部分误报 ≈ 12.5% | 0/6 (本批所有指认都是真问题, 仅其中 1 条是防御性对齐而非 bug) |
+
+- **失败模式**: 第一轮 review 修完之后, agent / 维护者倾向于认为 "我已经做过同族扫描了, 后续 review 大概率是无意义噪声, 可以批量驳回". 实际 bug surface 是**多维空间**, 第一轮探到的维度 (e.g. "chokepoint 漏装") 不代表第二轮探到的维度 (e.g. "numeric overflow") 已被覆盖, **每轮 AI review 像是从不同角度扫激光**, 单轮覆盖率不是 100%.
+- **真实案例 (P26 第二批)**:
+    - **(1) Stage 2 race**: 第一轮 #1 / #2 已修过 autosave 的 `_closed` / backoff 分别 race, 第一轮 reviewer (AI + 主 agent) 都没看出"释放 lock 后 Stage 2 await 期间 notify 会被吞". 第二轮 AI 直接指出.
+    - **(2) cross-module design drift**: 第一轮无任何 review 触及 `avatar_dedupe._full_notified` 与 `diagnostics_store._RING_FULL_NOTICE_FIRED` 同款 "fill cycle" 概念在两个模块的语义不一致. 第二轮 AI 看出 — 这不是单文件读 review, 是要**跨模块对比设计文档**才能发现.
+    - **(3) docstring 反相**: 第一轮 review 都在改代码, 第二轮 AI 来读 docstring 发现 "tail_count" 文字写 "tail" 但代码 `messages[:tail_count]` 是 head — 这是**纯文档 review 维度**, 第一轮不在范围.
+    - **(4) numeric overflow**: 第一轮没人想到 `float("1e309") = inf` 这条路径, 第二轮 AI 指出, 一 grep 同族 7 处都漏 OverflowError catch.
+- **防御规则** (4 条):
+    1. **每轮 AI review 都按 L53 4 步流程过, 不能用 "上轮已 grep 过" 跳过本轮 grep**. 即使 grep 同 pattern 早已扫过, 本轮的新 pattern 可能从未扫过.
+    2. **判定记录写在 commit message + AGENT_NOTES, 不写在脑子里**. 第二轮 reviewer (可能是不同 agent) 没法读上一轮的脑内判定; 写下来是对自己负责也对下一轮负责.
+    3. **跨轮汇总 bug pattern 维度表** (类似上方"典型差异维度" 表格), 显式标记本项目"哪些维度已被 AI 探过 / 哪些维度从未被探过", 帮助下一轮 reviewer 快速识别"这是新维度还是重复维度".
+    4. **维护期 sign-off 不等于"AI review 关闭"** — sign-off 后如果 PR 评论持续到来, 仍要 N+1 轮处理. 见 **L53 升格论述 第 4 条 "维护期 sign-off 后 AI review 戳活是常态"**.
+- **关联**:
+    - L53 §7.30 (升格中) "AI review 同族扩展" 的**时间维度扩展** — L53 是同一轮内单点 → 同族 grep, L55 是跨轮内 bug pattern 维度的不重叠扩展. 两条配套使用: 单轮内 L53 横向扫, 跨轮间 L55 纵向跟.
+    - L31 §7.A "审查时锚定初衷" 的**反向应用** — L31 防"审查时引入新目标致目标漂移", L55 防"审查时假定旧维度已盖致漏新维度". 都是审查者自我防御.
+    - L48 §7.A "文档四象限分层" 的**review 维度版** — L48 按读者象限分流文档, L55 按 bug 维度分流 review. 两者都强调"输入分类后差异处理".
+- **候选 skill** (P27+ 再命中 1 次后抽): `multi-round-ai-review-pattern-matrix` — 触发条件 = "项目接收第 2/3/4 轮 GitHub AI review, 准备做第 N 批 maintenance patch". 模板: (1) 列出本轮 N 条意见; (2) 对照上轮维度矩阵, 标注本轮每条所属维度 (新维度 / 已扫维度); (3) 已扫维度的指认仍按 L53 流程过 (不假定为误报); (4) 新维度优先抽 chokepoint 或 sweep helper; (5) 收尾把本轮维度并入矩阵供下一轮参考.
+- **进入主编号条件**: 需要在 P27+ 或其它项目再有一次"二轮以上 AI review 仍挖出真 bug 且 pattern 与前轮不重叠" 才升级为 **§7.31 "AI review 多轮迭代价值 + bug surface 多维"** (与 L53 升 §7.30 同批考虑).
 
 ---
 
