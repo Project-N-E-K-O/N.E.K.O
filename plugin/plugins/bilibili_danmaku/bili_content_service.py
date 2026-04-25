@@ -318,10 +318,14 @@ class BiliContentService:
                 "segments": 0,
                 "text": "",
             }
+        # 字幕语言优先级：人工中文 > 简体中文 > AI 中文
         target = None
-        for subtitle in subtitles:
-            if subtitle.get("lan") in ["ai-zh", "zh-CN", "zh"]:
-                target = subtitle
+        for prio in ["zh-CN", "zh", "ai-zh"]:
+            for subtitle in subtitles:
+                if subtitle.get("lan") == prio:
+                    target = subtitle
+                    break
+            if target:
                 break
         if not target:
             target = subtitles[0]
@@ -350,8 +354,9 @@ class BiliContentService:
     async def danmaku(self, *, bvid: str, num: int = 100) -> Dict[str, Any]:
         v, _, _ = await self._get_video_and_info(bvid=bvid)
         danmakus = await v.get_danmakus(page_index=0)
+        count = max(1, min(int(num or 100), 1000))
         result: List[Dict[str, Any]] = []
-        for item in danmakus[:num]:
+        for item in danmakus[:count]:
             result.append({"text": item.text, "time": item.dm_time})
         return {"bvid": bvid, "count": len(result), "danmakus": result}
 
