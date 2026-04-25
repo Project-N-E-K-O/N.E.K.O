@@ -4480,48 +4480,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
 // 添加标签（角色卡用）
 function addCharacterCardTag(type, tagValue) {
-    const tagInput = document.getElementById(`${type}-tag-input`);
-    const tagText = tagValue.trim();
-
-    if (tagText) {
-        const tagsContainer = document.getElementById(`${type}-tags-container`);
-
-        // 检查标签数量是否超过限制（最多4个）
-        const existingTags = tagsContainer.querySelectorAll('.tag');
-        if (existingTags.length >= 4) {
-            alert(window.t ? window.t('steam.tagLimitReached') : '标签数量不能超过4个！');
-            return;
-        }
-
-        // 检查标签字数是否超过限制（最多30字）
-        if (tagText.length > 30) {
-            alert(window.t ? window.t('steam.tagTooLong') : '标签字数不能超过30字！');
-            return;
-        }
-
-        // 检查标签是否已存在
-        const tagTexts = Array.from(existingTags).map(tag =>
-            tag.textContent.replace('×', '').trim()
-        );
-        if (!tagTexts.includes(tagText)) {
-            // 创建新标签
-            const tagElement = document.createElement('div');
-            tagElement.className = 'tag';
-            tagElement.innerHTML = `${tagText}<span class="tag-remove" onclick="removeTag(this, '${type}')">×</span>`;
-            tagsContainer.appendChild(tagElement);
-            if (type === 'character-card') {
-                updateCharacterCardTagScrollControls();
-            }
-        }
-    }
-}
-
-// 移除标签
-function removeTag(tagElement, type) {
-    tagElement.parentElement.remove();
-    if (type === 'character-card') {
-        updateCharacterCardTagScrollControls();
-    }
+    const tagText = String(tagValue || '').trim();
+    if (!tagText) return;
+    addTag(tagText, type);
 }
 
 // 清除所有标签

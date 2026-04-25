@@ -137,6 +137,8 @@
         "live2dPreviewLoadFailed": "Ошибка загрузки предпросмотра модели Live2D: {{error}}",
         "searchAriaLabel": "Поиск по подпискам",
         "sortAriaLabel": "Порядок сортировки",
+        "scrollTagsLeftAriaLabel": "Прокрутить теги влево",
+        "scrollTagsRightAriaLabel": "Прокрутить теги вправо",
         "vrmModuleLoadFailed": "Не удалось загрузить модуль VRM",
         "vrmPreviewLoaded": "Предпросмотр модели VRM загружен",
         "vrmPreviewFailed": "Не удалось загрузить предпросмотр модели VRM",

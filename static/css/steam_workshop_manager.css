@@ -899,16 +899,29 @@ flex: 1;
 min-height: 0;
 overflow-y: auto;
 overflow-x: hidden;
-scrollbar-width: none;
--ms-overflow-style: none;
+scrollbar-width: thin;
+-ms-overflow-style: auto;
+scrollbar-color: rgba(64, 197, 241, 0.55) rgba(179, 229, 252, 0.3);
 position: relative;
 z-index: 1;
 }
 
 #card-info-preview::-webkit-scrollbar {
-width: 0;
-height: 0;
-display: none;
+width: 8px;
+}
+
+#card-info-preview::-webkit-scrollbar-track {
+background: rgba(179, 229, 252, 0.3);
+border-radius: 999px;
+}
+
+#card-info-preview::-webkit-scrollbar-thumb {
+background: rgba(64, 197, 241, 0.55);
+border-radius: 999px;
+}
+
+#card-info-preview::-webkit-scrollbar-thumb:hover {
+background: rgba(64, 197, 241, 0.75);
 }
 
 #card-info-dynamic-content {
@@ -1206,6 +1219,31 @@ border-bottom: 1px solid #eaeaea;
             
 .character-card-buttons-row {
 flex-direction: column;
+}
+}
+
+@media (max-height: 820px), (max-height: 900px) and (orientation: landscape) {
+.character-card-layout {
+--character-card-top-panel-height: min(460px, 58vh);
+--character-card-description-height: min(220px, 24vh);
+}
+
+.character-card-top-row {
+height: var(--character-card-top-panel-height);
+max-height: var(--character-card-top-panel-height);
+overflow: hidden;
+}
+
+.character-card-info-section,
+.character-card-live2d-section {
+height: 100%;
+max-height: 100%;
+}
+
+.description-content,
+.control-group.tags-content {
+height: var(--character-card-description-height);
+max-height: var(--character-card-description-height);
 }
 }
 
@@ -3363,14 +3401,27 @@ margin-top: 10px;
     resize: none;
     overflow-y: auto;
     overflow-x: hidden;
-    scrollbar-width: none;
-    -ms-overflow-style: none;
+    -ms-overflow-style: auto;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(64, 197, 241, 0.55) rgba(179, 229, 252, 0.3);
 }
 
 #character-cards-content #character-card-description::-webkit-scrollbar {
-    width: 0;
-    height: 0;
-    display: none;
+    width: 8px;
+}
+
+#character-cards-content #character-card-description::-webkit-scrollbar-track {
+    background: rgba(179, 229, 252, 0.3);
+    border-radius: 999px;
+}
+
+#character-cards-content #character-card-description::-webkit-scrollbar-thumb {
+    background: rgba(64, 197, 241, 0.55);
+    border-radius: 999px;
+}
+
+#character-cards-content #character-card-description::-webkit-scrollbar-thumb:hover {
+    background: rgba(64, 197, 241, 0.75);
 }
 
 #character-cards-content #character-card-description:focus {

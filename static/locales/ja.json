@@ -137,6 +137,8 @@
         "live2dPreviewLoadFailed": "Live2Dモデルプレビューの読み込みに失敗しました: {{error}} ",
         "searchAriaLabel": "サブスクリプションを検索",
         "sortAriaLabel": "並び順",
+        "scrollTagsLeftAriaLabel": "タグを左にスクロール",
+        "scrollTagsRightAriaLabel": "タグを右にスクロール",
         "vrmModuleLoadFailed": "VRM モジュールの読み込みに失敗しました",
         "vrmPreviewLoaded": "VRM モデルプレビューを読み込みました",
         "vrmPreviewFailed": "VRM モデルプレビューの読み込みに失敗しました",

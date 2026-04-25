@@ -137,6 +137,8 @@
         "live2dPreviewLoadFailed": "Error al cargar la vista previa del modelo Live2D: {{error}}",
         "searchAriaLabel": "Buscar suscripciones",
         "sortAriaLabel": "Opciones de clasificación",
+        "scrollTagsLeftAriaLabel": "Desplazar etiquetas a la izquierda",
+        "scrollTagsRightAriaLabel": "Desplazar etiquetas a la derecha",
         "vrmModuleLoadFailed": "No se pudo cargar el módulo VRM",
         "vrmPreviewLoaded": "Vista previa del modelo VRM cargada",
         "vrmPreviewFailed": "No se pudo cargar la vista previa del modelo VRM",
