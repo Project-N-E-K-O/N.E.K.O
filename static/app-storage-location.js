@@ -1,6 +1,8 @@
 (function () {
     if (window.appStorageLocation) return;
 
+    var STORAGE_APP_FOLDER_NAME = 'N.E.K.O';
+
     var STORAGE_I18N_EN = {
         badge: 'Storage Location',
         bootstrapError: 'Failed to load storage initialization information. Please try again.',
@@ -14,8 +16,9 @@
         confirmReconnect: 'Confirm shutdown and reconnect path',
         confirmRestart: 'Confirm shutdown and migrate',
         currentPath: 'Current path',
-        customPathPlaceholder: 'Enter the target path you want to use next',
+        customPathPlaceholder: 'Choose a parent folder; N.E.K.O will use its N.E.K.O subfolder',
         customPreviewNotice: 'Backend confirmed that switching to this location requires closing the current instance, migrating data, and restarting automatically.',
+        customSubfolderNote: 'When you choose a normal folder, the app will use a dedicated N.E.K.O subfolder inside it.',
         dialogLabel: 'Storage location selection',
         errorBadge: 'Load failed',
         errorTitle: 'Storage startup information is temporarily unavailable',
@@ -38,6 +41,10 @@
         noWarnings: 'No additional risk notes detected.',
         otherPanelNote: 'You can reuse an existing data folder or choose a new folder for future runs.',
         otherPanelTitle: 'Another location',
+        openActiveRoot: 'Open active directory',
+        openDirectoryFailed: 'Failed to open the directory.',
+        openDirectoryUnavailable: 'Opening directories is unavailable in this environment.',
+        openRetainedRoot: 'Open old directory',
         pathOverview: 'Path overview',
         permissionBlocked: 'Not writable',
         permissionCheck: 'Write access',
@@ -109,8 +116,9 @@
         confirmReconnect: '确认关闭并重连路径',
         confirmRestart: '确认关闭并迁移',
         currentPath: '当前路径',
-        customPathPlaceholder: '输入你希望后续迁移到的目标路径',
+        customPathPlaceholder: '选择一个父目录，应用会使用其中的 N.E.K.O 子文件夹',
         customPreviewNotice: '后端已确认：如果后续改用这个位置，需要先关闭当前实例，再迁移数据并自动重启。',
+        customSubfolderNote: '选择普通文件夹时，应用会使用其中独立的 N.E.K.O 子文件夹，避免和已有内容混在一起。',
         dialogLabel: '存储位置选择',
         errorBadge: '读取失败',
         errorTitle: '暂时无法读取存储位置引导信息',
@@ -133,6 +141,10 @@
         noWarnings: '当前未检测到需要额外提示的风险项。',
         otherPanelNote: '你可以直接复用旧数据目录，也可以选择一个新的文件夹作为后续运行位置。',
         otherPanelTitle: '其他位置',
+        openActiveRoot: '打开当前目录',
+        openDirectoryFailed: '打开目录失败。',
+        openDirectoryUnavailable: '当前环境不支持直接打开目录。',
+        openRetainedRoot: '打开旧目录',
         pathOverview: '路径总览',
         permissionBlocked: '当前不可写',
         permissionCheck: '目标路径写入权限',
@@ -214,7 +226,8 @@
         confirmReconnect: '確認關閉並重連路徑',
         confirmRestart: '確認關閉並遷移',
         currentPath: '當前路徑',
-        customPathPlaceholder: '輸入你希望後續遷移到的目標路徑',
+        customPathPlaceholder: '選擇一個父目錄，應用會使用其中的 N.E.K.O 子資料夾',
+        customSubfolderNote: '選擇普通資料夾時，應用會使用其中獨立的 N.E.K.O 子資料夾，避免和既有內容混在一起。',
         errorTitle: '暫時無法讀取存儲位置引導資訊',
         estimatedPayload: '預計遷移體量',
         legacyChoiceEmpty: '未檢測到可直接沿用的舊資料目錄，可直接選擇資料夾或手動輸入路徑。',
@@ -235,6 +248,10 @@
         noWarnings: '目前未檢測到需要額外提示的風險項。',
         otherPanelNote: '你可以直接沿用舊資料目錄，也可以選擇新的資料夾作為後續執行位置。',
         otherPanelTitle: '其他位置',
+        openActiveRoot: '開啟目前目錄',
+        openDirectoryFailed: '開啟目錄失敗。',
+        openDirectoryUnavailable: '目前環境不支援直接開啟目錄。',
+        openRetainedRoot: '開啟舊目錄',
         pathOverview: '路徑總覽',
         permissionBlocked: '目前不可寫',
         permissionCheck: '目標路徑寫入權限',
@@ -398,6 +415,8 @@
         completionSource: null,
         completionTarget: null,
         completionRetained: null,
+        completionOpenTargetButton: null,
+        completionOpenRetainedButton: null,
         completionCleanupButton: null,
         selectionView: null,
         errorView: null,
@@ -485,6 +504,76 @@
         if (className) element.className = className;
         if (typeof text === 'string') element.textContent = text;
         return element;
+    }
+
+    function trimPathTrailingSeparators(value) {
+        var pathText = String(value || '').trim();
+        if (/^[A-Za-z]:[\\/]*$/.test(pathText)) {
+            return pathText.replace(/[\\/]*$/, '\\');
+        }
+        if (/^\/+$/.test(pathText)) {
+            return '/';
+        }
+        return pathText.replace(/[\\/]+$/, '');
+    }
+
+    function getPathLeafName(pathText) {
+        var normalized = trimPathTrailingSeparators(pathText);
+        if (!normalized || normalized === '/') return '';
+        var parts = normalized.split(/[\\/]+/);
+        return parts.length ? parts[parts.length - 1] : '';
+    }
+
+    function pathEndsWithAppFolder(pathText) {
+        return getPathLeafName(pathText).toLowerCase() === STORAGE_APP_FOLDER_NAME.toLowerCase();
+    }
+
+    function normalizeCustomStorageRootForDisplay(pathText) {
+        var normalized = trimPathTrailingSeparators(pathText);
+        if (!normalized || pathEndsWithAppFolder(normalized)) {
+            return normalized;
+        }
+        if (normalized === '/') {
+            return '/' + STORAGE_APP_FOLDER_NAME;
+        }
+        if (/^[A-Za-z]:\\$/.test(normalized)) {
+            return normalized + STORAGE_APP_FOLDER_NAME;
+        }
+        var separator = normalized.lastIndexOf('\\') > normalized.lastIndexOf('/') ? '\\' : '/';
+        return normalized + separator + STORAGE_APP_FOLDER_NAME;
+    }
+
+    function applyCustomStorageRootDisplay(pathText) {
+        var normalized = normalizeCustomStorageRootForDisplay(pathText);
+        if (state.customInput) {
+            state.customInput.value = normalized;
+        }
+        state.otherSelection.key = 'custom';
+        state.otherSelection.path = normalized;
+        return normalized;
+    }
+
+    async function requestHostWindowClose() {
+        var host = window.nekoHost || {};
+        if (host && typeof host.closeWindow === 'function') {
+            try {
+                var result = await host.closeWindow();
+                if (result && result.ok === true) return;
+            } catch (_) {}
+        }
+
+        try {
+            window.close();
+        } catch (_) {}
+    }
+
+    function buildStorageLocationCloseButton(onClick) {
+        var closeButton = createElement('button', 'storage-location-close', '×');
+        closeButton.type = 'button';
+        closeButton.setAttribute('aria-label', translate('common.close', '关闭'));
+        closeButton.setAttribute('title', translate('common.close', '关闭'));
+        closeButton.addEventListener('click', onClick || requestHostWindowClose);
+        return closeButton;
     }
 
     function pathEquals(left, right) {
@@ -856,35 +945,107 @@
         return '';
     }
 
+    async function pickDirectoryWithHostBridge(startPath) {
+        var host = window.nekoHost;
+        if (!host || typeof host.pickDirectory !== 'function') {
+            return null;
+        }
+
+        try {
+            var result = await host.pickDirectory({
+                startPath: startPath,
+                title: translate('storage.pickFolder', '选择文件夹')
+            });
+            if (!result || typeof result !== 'object') {
+                throw new Error('Host directory picker returned an invalid result.');
+            }
+            if (result.cancelled) {
+                return {
+                    ok: true,
+                    cancelled: true,
+                    selected_root: ''
+                };
+            }
+            var selectedRoot = String(result.selected_root || '').trim();
+            if (!selectedRoot) {
+                throw new Error('Host directory picker returned an empty path.');
+            }
+            return {
+                ok: true,
+                cancelled: false,
+                selected_root: selectedRoot
+            };
+        } catch (error) {
+            console.warn('[storage-location] host directory picker failed, falling back to backend picker', error);
+            return null;
+        }
+    }
+
+    async function pickDirectoryWithBackend(startPath) {
+        var response = await fetch('/api/storage/location/pick-directory', {
+            method: 'POST',
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                start_path: startPath
+            })
+        });
+
+        var payload = null;
+        try {
+            payload = await response.json();
+        } catch (_) {}
+
+        if (!response.ok || !payload || payload.ok !== true) {
+            throw new Error(
+                extractResponseError(
+                    payload,
+                    translate('storage.pickFolderFailed', '打开文件夹选择器失败，请手动输入路径。')
+                )
+            );
+        }
+
+        return payload;
+    }
+
+    function getHostBridge() {
+        var host = window.nekoHost;
+        return host && typeof host === 'object' ? host : null;
+    }
+
+    function canOpenPathWithHostBridge() {
+        var host = getHostBridge();
+        return !!(host && typeof host.openPath === 'function');
+    }
+
+    async function openPathWithHostBridge(targetPath) {
+        var host = getHostBridge();
+        if (!host || typeof host.openPath !== 'function') {
+            throw new Error(translate('storage.openDirectoryUnavailable', '当前环境不支持直接打开目录。'));
+        }
+
+        var result = await host.openPath({
+            path: targetPath
+        });
+        if (result && typeof result === 'object' && result.ok === false) {
+            throw new Error(
+                String(result.error || translate('storage.openDirectoryFailed', '打开目录失败。')).trim()
+            );
+        }
+    }
+
     async function pickOtherDirectory() {
         if (!state.customInput) return;
 
         setSubmitting(true);
         setSelectionStatus('', false);
         try {
-            var response = await fetch('/api/storage/location/pick-directory', {
-                method: 'POST',
-                headers: {
-                    'Accept': 'application/json',
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    start_path: getDirectoryPickerStartPath()
-                })
-            });
-
-            var payload = null;
-            try {
-                payload = await response.json();
-            } catch (_) {}
-
-            if (!response.ok || !payload || payload.ok !== true) {
-                throw new Error(
-                    extractResponseError(
-                        payload,
-                        translate('storage.pickFolderFailed', '打开文件夹选择器失败，请手动输入路径。')
-                    )
-                );
+            var startPath = getDirectoryPickerStartPath();
+            var payload = await pickDirectoryWithHostBridge(startPath);
+            if (!payload) {
+                payload = await pickDirectoryWithBackend(startPath);
             }
 
             if (payload.cancelled) {
@@ -896,9 +1057,7 @@
                 return;
             }
 
-            state.customInput.value = selectedRoot;
-            state.otherSelection.key = 'custom';
-            state.otherSelection.path = selectedRoot;
+            applyCustomStorageRootDisplay(selectedRoot);
             renderLegacyList();
             updateOtherButtonState();
             state.customInput.focus();
@@ -1116,6 +1275,9 @@
 
         var card = createElement('section', 'storage-location-completion-card');
         card.hidden = true;
+        card.appendChild(buildStorageLocationCloseButton(function () {
+            card.hidden = true;
+        }));
 
         var title = createElement('h3', 'storage-location-panel-title', translate('storage.completionTitle', '存储迁移已完成'));
         var message = createElement('p', 'storage-location-note', translate('storage.completionMessage', '新的运行目录已经生效，旧数据目录目前仍保留，是否清理由你手动决定。'));
@@ -1129,6 +1291,20 @@
         pathList.appendChild(retainedItem);
 
         var actions = createElement('div', 'storage-location-actions');
+        var openTargetButton = createElement('button', 'storage-location-btn storage-location-btn--secondary', translate('storage.openActiveRoot', '打开当前目录'));
+        openTargetButton.type = 'button';
+        openTargetButton.addEventListener('click', function () {
+            openCompletionDirectory('target');
+        });
+        actions.appendChild(openTargetButton);
+
+        var openRetainedButton = createElement('button', 'storage-location-btn storage-location-btn--secondary', translate('storage.openRetainedRoot', '打开旧目录'));
+        openRetainedButton.type = 'button';
+        openRetainedButton.addEventListener('click', function () {
+            openCompletionDirectory('retained');
+        });
+        actions.appendChild(openRetainedButton);
+
         var cleanupButton = createElement('button', 'storage-location-btn storage-location-btn--primary', translate('storage.cleanupRetainedRoot', '清理旧数据目录'));
         cleanupButton.type = 'button';
         cleanupButton.addEventListener('click', cleanupRetainedSourceRoot);
@@ -1144,8 +1320,11 @@
         state.completionCard = card;
         state.completionTitle = title;
         state.completionMessage = message;
+        state.completionOpenTargetButton = openTargetButton;
+        state.completionOpenRetainedButton = openRetainedButton;
         state.completionCleanupButton = cleanupButton;
 
+        title.classList.add('storage-location-panel-title--with-close');
         card.appendChild(title);
         card.appendChild(message);
         card.appendChild(pathList);
@@ -1171,6 +1350,8 @@
         state.completionSource.textContent = String(state.completionNotice.source_root || '').trim();
         state.completionTarget.textContent = String(state.completionNotice.target_root || '').trim();
         state.completionRetained.textContent = String(state.completionNotice.retained_root || '').trim();
+        state.completionOpenTargetButton.hidden = !canOpenPathWithHostBridge() || !String(state.completionNotice.target_root || '').trim();
+        state.completionOpenRetainedButton.hidden = !canOpenPathWithHostBridge() || !String(state.completionNotice.retained_root || '').trim();
         state.completionCleanupButton.hidden = !state.completionNotice.cleanup_available;
         card.hidden = false;
     }
@@ -1214,6 +1395,43 @@
         }
 
         state.completionPollTimer = window.setTimeout(tick, 0);
+    }
+
+    async function openCompletionDirectory(kind) {
+        if (!state.completionNotice || state.completionNotice.completed !== true) {
+            return;
+        }
+
+        var isRetained = kind === 'retained';
+        var targetPath = String(
+            isRetained
+                ? state.completionNotice.retained_root || ''
+                : state.completionNotice.target_root || ''
+        ).trim();
+        if (!targetPath) {
+            return;
+        }
+
+        var button = isRetained ? state.completionOpenRetainedButton : state.completionOpenTargetButton;
+        if (button) {
+            button.disabled = true;
+        }
+
+        try {
+            await openPathWithHostBridge(targetPath);
+        } catch (error) {
+            console.warn('[storage-location] open directory failed', error);
+            if (typeof window.showStatusToast === 'function') {
+                window.showStatusToast(
+                    String((error && error.message) || error || translate('storage.openDirectoryFailed', '打开目录失败。')),
+                    4000
+                );
+            }
+        } finally {
+            if (button) {
+                button.disabled = false;
+            }
+        }
     }
 
     async function cleanupRetainedSourceRoot() {
@@ -1581,12 +1799,15 @@
     }
 
     function useOtherPath() {
-        submitSelection(
-            state.otherSelection.path || '',
-            state.otherSelection.key === 'legacy' || String(state.otherSelection.key || '').indexOf('legacy-') === 0
-                ? 'legacy'
-                : 'custom'
-        );
+        var isLegacySelection = state.otherSelection.key === 'legacy'
+            || String(state.otherSelection.key || '').indexOf('legacy-') === 0;
+        var selectionPath = state.otherSelection.path || '';
+        if (!isLegacySelection) {
+            selectionPath = applyCustomStorageRootDisplay(selectionPath);
+            renderLegacyList();
+            updateOtherButtonState();
+        }
+        submitSelection(selectionPath, isLegacySelection ? 'legacy' : 'custom');
     }
 
     function buildSelectionView() {
@@ -1658,7 +1879,7 @@
         var inputRow = createElement('div', 'storage-location-input-row');
         var customInput = createElement('input', 'storage-location-input');
         customInput.type = 'text';
-        customInput.placeholder = translate('storage.customPathPlaceholder', '输入你希望后续迁移到的目标路径');
+        customInput.placeholder = translate('storage.customPathPlaceholder', '选择一个父目录，应用会使用其中的 N.E.K.O 子文件夹');
         customInput.addEventListener('focus', function () {
             state.otherSelection.key = 'custom';
         });
@@ -1679,6 +1900,7 @@
         state.pickFolderButton = pickFolderButton;
         inputRow.appendChild(pickFolderButton);
         otherPanel.appendChild(inputRow);
+        otherPanel.appendChild(createElement('p', 'storage-location-note', translate('storage.customSubfolderNote', '选择普通文件夹时，应用会使用其中独立的 N.E.K.O 子文件夹，避免和已有内容混在一起。')));
 
         var otherActions = createElement('div', 'storage-location-actions');
         var useOtherButton = registerActionButton(
@@ -1949,6 +2171,7 @@
         modal.setAttribute('aria-modal', 'true');
         modal.setAttribute('aria-label', translate('storage.dialogLabel', '存储位置选择'));
 
+        modal.appendChild(buildStorageLocationCloseButton());
         modal.appendChild(buildLoadingView());
         modal.appendChild(buildMaintenanceView());
         modal.appendChild(buildSelectionView());

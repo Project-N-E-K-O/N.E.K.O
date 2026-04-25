@@ -24,27 +24,50 @@ body.storage-location-modal-open #storage-location-overlay * {
     align-items: center;
     justify-content: center;
     padding: 24px;
-    background:
-        radial-gradient(circle at top left, rgba(101, 182, 255, 0.26), transparent 32%),
-        radial-gradient(circle at bottom right, rgba(222, 241, 255, 0.4), transparent 30%),
-        rgba(226, 241, 255, 0.62);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
+    background: linear-gradient(145deg, rgba(232, 243, 255, 0.72), rgba(238, 246, 251, 0.84));
+    backdrop-filter: blur(16px) saturate(1.08);
+    -webkit-backdrop-filter: blur(16px) saturate(1.08);
     isolation: isolate;
 }
 
 .storage-location-modal {
+    position: relative;
     width: min(960px, calc(100vw - 32px));
     max-height: min(90vh, 920px);
     overflow-y: auto;
-    border-radius: 30px;
-    border: 1px solid rgba(118, 176, 228, 0.28);
-    background:
-        radial-gradient(circle at top right, rgba(144, 205, 255, 0.28), transparent 30%),
-        linear-gradient(180deg, rgba(250, 253, 255, 0.98), rgba(235, 246, 255, 0.98));
-    box-shadow: 0 32px 90px rgba(33, 88, 140, 0.24);
+    border-radius: 22px;
+    border: 1px solid rgba(97, 147, 190, 0.22);
+    background: linear-gradient(180deg, rgba(253, 254, 255, 0.98), rgba(241, 248, 252, 0.98));
+    box-shadow: 0 30px 84px rgba(28, 72, 113, 0.22);
     color: #14385d;
     font-family: "Avenir Next", "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", sans-serif;
+}
+
+.storage-location-close {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    z-index: 4;
+    width: 34px;
+    height: 34px;
+    display: grid;
+    place-items: center;
+    border-radius: 999px;
+    border: 1px solid rgba(91, 137, 180, 0.2);
+    background: rgba(255, 255, 255, 0.82);
+    color: rgba(20, 56, 93, 0.72);
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+    box-shadow: 0 10px 26px rgba(43, 91, 135, 0.1);
+    transition: transform 0.16s ease, background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+}
+
+.storage-location-close:hover {
+    transform: translateY(-1px);
+    border-color: rgba(59, 140, 221, 0.32);
+    background: rgba(255, 255, 255, 0.96);
+    color: #104c81;
 }
 
 .storage-location-view[hidden] {
@@ -54,7 +77,8 @@ body.storage-location-modal-open #storage-location-overlay * {
 .storage-location-shell {
     display: grid;
     gap: 20px;
-    padding: 30px;
+    padding: 32px;
+    padding-right: 60px;
 }
 
 .storage-location-hero {
@@ -123,9 +147,9 @@ body.storage-location-modal-open #storage-location-overlay * {
     display: grid;
     gap: 14px;
     padding: 20px;
-    border-radius: 24px;
-    border: 1px solid rgba(122, 175, 224, 0.2);
-    background: rgba(255, 255, 255, 0.74);
+    border-radius: 18px;
+    border: 1px solid rgba(122, 175, 224, 0.18);
+    background: rgba(255, 255, 255, 0.8);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.66);
 }
 
@@ -294,16 +318,18 @@ body.storage-location-modal-open #storage-location-overlay * {
 }
 
 .storage-location-loader {
-    width: 42px;
-    height: 42px;
+    width: 48px;
+    height: 48px;
     border-radius: 50%;
-    border: 3px solid rgba(63, 136, 209, 0.15);
+    border: 3px solid rgba(63, 136, 209, 0.14);
     border-top-color: #2f8fe9;
     animation: storage-location-spin 0.9s linear infinite;
+    box-shadow: 0 10px 28px rgba(47, 143, 233, 0.16);
 }
 
 .storage-location-progress {
-    gap: 16px;
+    gap: 18px;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(247, 251, 255, 0.88));
 }
 
 .storage-location-progress-meta {
@@ -328,10 +354,10 @@ body.storage-location-modal-open #storage-location-overlay * {
 
 .storage-location-progress-track {
     position: relative;
-    height: 12px;
+    height: 10px;
     overflow: hidden;
     border-radius: 999px;
-    background: rgba(70, 140, 209, 0.12);
+    background: rgba(70, 140, 209, 0.1);
     box-shadow: inset 0 1px 2px rgba(42, 92, 141, 0.08);
 }
 
@@ -352,35 +378,71 @@ body.storage-location-modal-open #storage-location-overlay * {
 }
 
 .storage-location-progress-steps {
+    position: relative;
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 10px;
+    gap: 0;
+    padding-top: 12px;
+}
+
+.storage-location-progress-steps::before {
+    content: "";
+    position: absolute;
+    top: 20px;
+    left: calc(12.5% + 8px);
+    right: calc(12.5% + 8px);
+    height: 2px;
+    border-radius: 999px;
+    background: rgba(73, 132, 189, 0.16);
 }
 
 .storage-location-progress-step {
-    min-height: 52px;
+    position: relative;
+    min-height: 58px;
     display: flex;
-    align-items: center;
-    padding: 10px 12px;
-    border-radius: 16px;
-    border: 1px solid rgba(118, 176, 228, 0.14);
-    background: rgba(244, 249, 255, 0.92);
-    color: rgba(20, 56, 93, 0.68);
+    align-items: flex-start;
+    justify-content: center;
+    padding: 28px 8px 0;
+    border: 0;
+    background: transparent;
+    color: rgba(20, 56, 93, 0.58);
     font-size: 12px;
     line-height: 1.55;
-    font-weight: 700;
+    font-weight: 800;
+    text-align: center;
+}
+
+.storage-location-progress-step::before {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 50%;
+    width: 14px;
+    height: 14px;
+    transform: translateX(-50%);
+    border-radius: 999px;
+    border: 2px solid rgba(78, 144, 206, 0.22);
+    background: #f7fbff;
+    box-shadow: 0 0 0 5px rgba(255, 255, 255, 0.9);
 }
 
 .storage-location-progress-step.is-active {
-    border-color: rgba(48, 136, 226, 0.28);
-    background: rgba(225, 241, 255, 0.98);
     color: #0f5ea9;
 }
 
+.storage-location-progress-step.is-active::before {
+    border-color: rgba(47, 143, 233, 0.86);
+    background: #2f8fe9;
+    box-shadow: 0 0 0 5px rgba(47, 143, 233, 0.12), 0 8px 18px rgba(47, 143, 233, 0.2);
+}
+
 .storage-location-progress-step.is-completed {
-    border-color: rgba(48, 136, 226, 0.22);
-    background: rgba(234, 245, 255, 0.98);
     color: #186ebf;
+}
+
+.storage-location-progress-step.is-completed::before {
+    border-color: rgba(31, 127, 215, 0.78);
+    background: #dff0ff;
 }
 
 .storage-location-completion-card {
@@ -394,13 +456,20 @@ body.storage-location-modal-open #storage-location-overlay * {
     display: grid;
     gap: 14px;
     padding: 20px;
-    border-radius: 24px;
+    border-radius: 18px;
     border: 1px solid rgba(98, 160, 217, 0.22);
-    background:
-        radial-gradient(circle at top right, rgba(131, 198, 255, 0.24), transparent 28%),
-        linear-gradient(180deg, rgba(251, 254, 255, 0.98), rgba(235, 246, 255, 0.98));
+    background: linear-gradient(180deg, rgba(251, 254, 255, 0.98), rgba(239, 248, 255, 0.98));
     color: #14385d;
     box-shadow: 0 24px 80px rgba(37, 91, 143, 0.2);
+}
+
+.storage-location-completion-card .storage-location-close {
+    top: 12px;
+    right: 12px;
+}
+
+.storage-location-panel-title--with-close {
+    padding-right: 36px;
 }
 
 .storage-location-completion-card[hidden] {
@@ -420,6 +489,11 @@ body.storage-location-modal-open #storage-location-overlay * {
 
     .storage-location-progress-steps {
         grid-template-columns: 1fr 1fr;
+        gap: 8px 0;
+    }
+
+    .storage-location-progress-steps::before {
+        display: none;
     }
 }
 
@@ -430,6 +504,7 @@ body.storage-location-modal-open #storage-location-overlay * {
 
     .storage-location-shell {
         padding: 20px;
+        padding-right: 52px;
     }
 
     .storage-location-title {

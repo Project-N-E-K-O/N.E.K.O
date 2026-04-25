@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from playwright.sync_api import Page, expect
 
@@ -200,6 +202,7 @@ def test_storage_location_selection_view_hides_internal_paths_and_supports_folde
     tmp_path,
 ):
     page = mock_page
+    picked_parent = str((tmp_path / "picked-root").resolve())
     picked_root = str((tmp_path / "picked-root" / "N.E.K.O").resolve())
     _mock_selection_required_state(
         page,
@@ -214,7 +217,7 @@ def test_storage_location_selection_view_hides_internal_paths_and_supports_folde
             {{
               "ok": true,
               "cancelled": false,
-              "selected_root": "{picked_root}"
+              "selected_root": "{picked_parent}"
             }}
             """,
         ),
@@ -229,6 +232,7 @@ def test_storage_location_selection_view_hides_internal_paths_and_supports_folde
     assert page.locator("text=本阶段提示").count() == 0
 
     page.get_by_role("button", name="选择其他位置").click()
+    expect(page.locator("text=应用会使用其中独立的 N.E.K.O 子文件夹")).to_be_visible(timeout=5_000)
     page.get_by_role("button", name="选择文件夹").click()
 
     custom_input = page.locator(".storage-location-input")
@@ -244,22 +248,25 @@ def test_storage_location_overlay_keeps_page_config_blocked_on_restart_required_
     tmp_path,
 ):
     page = mock_page
+    select_requests = []
+    target_root = tmp_path / "alt-storage" / "N.E.K.O"
     _mock_selection_required_state(page)
-    page.route(
-        "**/api/storage/location/select",
-        lambda route: route.fulfill(
+    def handle_select(route):
+        select_requests.append(json.loads(route.request.post_data or "{}"))
+        route.fulfill(
             status=200,
             content_type="application/json",
             body=f"""
             {{
               "ok": true,
               "result": "restart_required",
-              "selected_root": "{str((tmp_path / "alt-storage" / "N.E.K.O").resolve())}",
+              "selected_root": "{str(target_root.resolve())}",
               "selection_source": "custom"
             }}
             """,
-        ),
-    )
+        )
+
+    page.route("**/api/storage/location/select", handle_select)
     page.goto(f"{running_server}/", wait_until="domcontentloaded")
 
     overlay = page.locator("#storage-location-overlay")
@@ -278,11 +285,11 @@ def test_storage_location_overlay_keeps_page_config_blocked_on_restart_required_
     choose_other_button.click()
     expect(custom_input).to_be_visible(timeout=5_000)
 
-    target_root = tmp_path / "alt-storage" / "N.E.K.O"
-    custom_input.fill(str(target_root))
+    custom_input.fill(str(tmp_path / "alt-storage"))
     submit_other_button.click()
 
     expect(preview_title).to_be_visible(timeout=10_000)
+    assert select_requests[-1]["selected_root"] == str(target_root.resolve())
     assert _page_config_state(page) == "pending"
 
 
