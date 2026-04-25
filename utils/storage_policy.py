@@ -68,7 +68,20 @@ def is_runtime_root_available(value: Path | str) -> bool:
         return False
 
 
-def normalize_selected_root(value: Path | str) -> Path:
+def _path_name_matches_app_name(path: Path, app_name: str) -> bool:
+    if not app_name:
+        return False
+    if os.name == "nt":
+        return os.path.normcase(path.name) == os.path.normcase(app_name)
+    return path.name == app_name
+
+
+def normalize_selected_root(
+    value: Path | str,
+    *,
+    app_name: str = "",
+    selection_source: str = "",
+) -> Path:
     raw_value = str(value or "").strip()
     if not raw_value:
         raise StorageSelectionValidationError("selected_root_empty", "目标路径不能为空。")
@@ -76,6 +89,13 @@ def normalize_selected_root(value: Path | str) -> Path:
     expanded = Path(raw_value).expanduser()
     if not expanded.is_absolute():
         raise StorageSelectionValidationError("selected_root_not_absolute", "目标路径必须是绝对路径。")
+
+    if (
+        str(selection_source or "").strip().lower() == "custom"
+        and app_name
+        and not _path_name_matches_app_name(expanded, app_name)
+    ):
+        expanded = expanded / app_name
 
     return expanded.resolve(strict=False)
 
@@ -238,12 +258,17 @@ def validate_selected_root(
     *,
     current_root: Path | None = None,
     anchor_root: Path | None = None,
+    selection_source: str = "",
 ) -> Path:
     normalized_current_root = normalize_runtime_root(current_root or config_manager.app_docs_dir)
     normalized_anchor_root = normalize_runtime_root(
         anchor_root or compute_anchor_root(config_manager, current_root=normalized_current_root)
     )
-    normalized_target_root = normalize_selected_root(selected_root)
+    normalized_target_root = normalize_selected_root(
+        selected_root,
+        app_name=str(getattr(config_manager, "app_name", "") or ""),
+        selection_source=selection_source,
+    )
 
     if _paths_equal(normalized_target_root, normalized_current_root):
         return normalized_current_root

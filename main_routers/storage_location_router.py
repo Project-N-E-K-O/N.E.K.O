@@ -34,6 +34,7 @@ from utils.storage_location_bootstrap import (
 )
 from utils.storage_migration import (
     STORAGE_MIGRATION_STATUS_COMPLETED,
+    STORAGE_MIGRATION_STATUS_FAILED,
     create_pending_storage_migration,
     delete_storage_migration,
     load_storage_migration,
@@ -183,6 +184,20 @@ def _estimate_runtime_payload_bytes(source_root: Path) -> int:
     return total
 
 
+def _target_root_has_user_content(target_root: Path, config_manager) -> bool:
+    try:
+        from utils.cloudsave_runtime import _runtime_root_has_user_content
+
+        return bool(_runtime_root_has_user_content(target_root, config_manager=config_manager))
+    except Exception:
+        if not target_root.exists() or not target_root.is_dir():
+            return False
+        try:
+            return any(target_root.iterdir())
+        except OSError:
+            return False
+
+
 def _find_existing_ancestor(path: Path) -> Path:
     candidate = path.expanduser()
     while True:
@@ -235,7 +250,9 @@ def _build_restart_preflight(
     current_root: Path,
     target_root: Path,
     *,
+    config_manager=None,
     estimated_required_bytes: int | None = None,
+    allow_existing_target_content: bool = False,
 ) -> dict[str, Any]:
     target_root = normalize_runtime_root(target_root)
     if estimated_required_bytes is None:
@@ -259,6 +276,13 @@ def _build_restart_preflight(
     if not permission_ok:
         blocking_error_code = "target_not_writable"
         blocking_error_message = "目标路径当前不可写，无法开始关闭后的迁移流程。"
+    elif (
+        not allow_existing_target_content
+        and config_manager is not None
+        and _target_root_has_user_content(target_root, config_manager)
+    ):
+        blocking_error_code = "target_not_empty"
+        blocking_error_message = "目标路径已经包含现有数据。请选择一个空目录，或选择其父目录让应用创建独立的 N.E.K.O 子目录。"
     elif (
         estimated_required_bytes > 0
         and target_free_bytes > 0
@@ -1038,6 +1062,7 @@ async def post_storage_location_select(
             payload.selected_root,
             current_root=current_root,
             anchor_root=anchor_root,
+            selection_source=payload.selection_source,
         )
     except StorageSelectionValidationError as exc:
         response.status_code = 400
@@ -1068,11 +1093,52 @@ async def post_storage_location_select(
             }
         if bool(blocking_bootstrap.get("recovery_required")):
             if not selected_root_missing_recovery:
-                response.status_code = 409
+                migration_payload = load_storage_migration(
+                    config_manager,
+                    anchor_root=anchor_root,
+                ) or {}
+                migration_failed_on_current_root = (
+                    str(migration_payload.get("status") or "").strip() == STORAGE_MIGRATION_STATUS_FAILED
+                    and paths_equal(migration_payload.get("source_root") or "", current_root)
+                )
+                if not migration_failed_on_current_root:
+                    response.status_code = 409
+                    return {
+                        "ok": False,
+                        "error_code": "storage_bootstrap_blocking",
+                        "error": "当前存储状态仍需恢复或迁移，暂时不能继续当前会话。",
+                    }
+
+                delete_storage_migration(config_manager, anchor_root=anchor_root)
+                policy_payload = save_storage_policy(
+                    config_manager,
+                    selected_root=current_root,
+                    selection_source=payload.selection_source,
+                    anchor_root=anchor_root,
+                )
+                set_root_mode(
+                    config_manager,
+                    ROOT_MODE_NORMAL,
+                    current_root=str(current_root),
+                    last_known_good_root=str(current_root),
+                    last_migration_result=f"recovered:failed_migration:{migration_payload.get('error_code') or 'unknown'}",
+                )
+                try:
+                    await _release_storage_startup_barrier_if_needed(
+                        reason="storage_selection_continue_current_session",
+                    )
+                except Exception as exc:
+                    response.status_code = 503
+                    return {
+                        "ok": False,
+                        "error_code": "startup_release_failed",
+                        "error": f"当前会话暂时无法解除受限启动，请重试或刷新页面后再继续。{exc}",
+                    }
                 return {
-                    "ok": False,
-                    "error_code": "storage_bootstrap_blocking",
-                    "error": "当前存储状态仍需恢复或迁移，暂时不能继续当前会话。",
+                    "ok": True,
+                    "result": "continue_current_session",
+                    "selected_root": str(current_root),
+                    "selection_source": policy_payload["selection_source"],
                 }
 
             policy_payload = save_storage_policy(
@@ -1147,7 +1213,9 @@ async def post_storage_location_select(
         restart_preflight = _build_restart_preflight(
             current_root,
             normalized_selected_root,
+            config_manager=config_manager,
             estimated_required_bytes=0,
+            allow_existing_target_content=True,
         )
         return {
             "ok": True,
@@ -1158,7 +1226,11 @@ async def post_storage_location_select(
             **restart_preflight,
         }
 
-    restart_preflight = _build_restart_preflight(current_root, normalized_selected_root)
+    restart_preflight = _build_restart_preflight(
+        current_root,
+        normalized_selected_root,
+        config_manager=config_manager,
+    )
     return {
         "ok": True,
         "result": "restart_required",
@@ -1186,6 +1258,7 @@ async def post_storage_location_restart(
             payload.selected_root,
             current_root=current_root,
             anchor_root=anchor_root,
+            selection_source=payload.selection_source,
         )
     except StorageSelectionValidationError as exc:
         response.status_code = 400
@@ -1242,7 +1315,9 @@ async def post_storage_location_restart(
         restart_preflight = _build_restart_preflight(
             current_root,
             normalized_selected_root,
+            config_manager=config_manager,
             estimated_required_bytes=0,
+            allow_existing_target_content=True,
         )
         if restart_preflight["blocking_error_code"]:
             response.status_code = 409
@@ -1277,7 +1352,11 @@ async def post_storage_location_restart(
             **restart_preflight,
         }
 
-    restart_preflight = _build_restart_preflight(current_root, normalized_selected_root)
+    restart_preflight = _build_restart_preflight(
+        current_root,
+        normalized_selected_root,
+        config_manager=config_manager,
+    )
     if restart_preflight["blocking_error_code"]:
         response.status_code = 409
         return {

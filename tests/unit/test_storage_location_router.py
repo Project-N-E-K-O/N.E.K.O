@@ -16,6 +16,7 @@ from utils.storage_migration import (
     get_storage_migration_path,
     load_storage_migration,
     run_pending_storage_migration,
+    save_storage_migration,
 )
 from utils.storage_policy import get_storage_policy_path, load_storage_policy
 
@@ -180,6 +181,57 @@ def test_storage_location_select_different_path_requires_restart_without_committ
     assert payload["blocking_error_message"] == ""
 
     assert not get_storage_policy_path(config_manager).exists()
+
+
+@pytest.mark.unit
+def test_storage_location_select_custom_parent_targets_app_subdirectory(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    selected_parent = tmp_path / "custom-storage-parent"
+    selected_parent.mkdir()
+    expected_root = selected_parent / "N.E.K.O"
+
+    with _build_client(config_manager) as client:
+        response = client.post(
+            "/api/storage/location/select",
+            json={
+                "selected_root": str(selected_parent),
+                "selection_source": "custom",
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["result"] == "restart_required"
+    assert payload["selected_root"] == str(expected_root.resolve())
+    assert payload["target_root"] == str(expected_root.resolve())
+    assert payload["blocking_error_code"] == ""
+
+
+@pytest.mark.unit
+def test_storage_location_select_blocks_existing_target_content_before_restart(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    selected_parent = tmp_path / "custom-storage-parent"
+    target_root = selected_parent / "N.E.K.O"
+    (target_root / "config").mkdir(parents=True)
+    (target_root / "config" / "characters.json").write_text('{"existing": true}', encoding="utf-8")
+
+    with _build_client(config_manager) as client:
+        response = client.post(
+            "/api/storage/location/select",
+            json={
+                "selected_root": str(selected_parent),
+                "selection_source": "custom",
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["result"] == "restart_required"
+    assert payload["selected_root"] == str(target_root.resolve())
+    assert payload["blocking_error_code"] == "target_not_empty"
+    assert "请选择一个空目录" in payload["blocking_error_message"]
 
 
 @pytest.mark.unit
@@ -483,6 +535,63 @@ def test_storage_location_select_recovery_switch_to_recommended_root_resolves_cu
     policy_payload = load_storage_policy(reloaded_manager, anchor_root=reloaded_manager.anchor_root)
     assert policy_payload["selected_root"] == str(reloaded_manager.anchor_root)
     assert reloaded_manager.load_root_state()["mode"] == "normal"
+
+
+@pytest.mark.unit
+def test_storage_location_select_current_root_recovers_failed_migration_checkpoint(tmp_path, monkeypatch):
+    config_manager = _make_real_config_manager(tmp_path)
+    target_root = tmp_path / "target-not-empty" / "N.E.K.O"
+    create_pending_storage_migration(
+        config_manager,
+        source_root=config_manager.app_docs_dir,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    save_storage_migration(
+        config_manager,
+        {
+            "status": "failed",
+            "source_root": str(config_manager.app_docs_dir),
+            "target_root": str(target_root),
+            "selection_source": "custom",
+            "error_code": "target_not_empty",
+            "error_message": "目标路径已经包含现有数据，为避免覆盖，本次迁移已停止。",
+        },
+    )
+    config_manager.save_root_state({
+        "mode": "deferred_init",
+        "current_root": str(config_manager.app_docs_dir),
+        "last_known_good_root": str(config_manager.app_docs_dir),
+        "last_migration_result": "failed:target_not_empty",
+        "last_migration_source": str(config_manager.app_docs_dir),
+    })
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "DEVELOPMENT_ALWAYS_REQUIRE_SELECTION",
+        False,
+    )
+
+    with _build_client(config_manager) as client:
+        response = client.post(
+            "/api/storage/location/select",
+            json={
+                "selected_root": str(config_manager.app_docs_dir),
+                "selection_source": "recovered",
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["result"] == "continue_current_session"
+    assert payload["selected_root"] == str(config_manager.app_docs_dir)
+    assert load_storage_migration(config_manager) is None
+
+    policy_payload = load_storage_policy(config_manager, anchor_root=config_manager.anchor_root)
+    assert policy_payload["selected_root"] == str(config_manager.app_docs_dir)
+    root_state = config_manager.load_root_state()
+    assert root_state["mode"] == "normal"
+    assert root_state["last_migration_result"] == "recovered:failed_migration:target_not_empty"
 
 
 @pytest.mark.unit

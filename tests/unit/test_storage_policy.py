@@ -55,3 +55,32 @@ def test_validate_selected_root_rejects_anchor_reserved_state_directory(tmp_path
         validate_selected_root(config_manager, invalid_target)
 
     assert "锚点目录保留区域" in str(exc_info.value)
+
+
+@pytest.mark.unit
+def test_validate_selected_root_appends_app_folder_for_custom_parent_directory(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    selected_parent = tmp_path / "custom-parent"
+    selected_parent.mkdir()
+
+    normalized = validate_selected_root(
+        config_manager,
+        selected_parent,
+        selection_source="custom",
+    )
+
+    assert normalized == selected_parent / "N.E.K.O"
+
+
+@pytest.mark.unit
+def test_validate_selected_root_keeps_custom_app_folder_when_already_selected(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    selected_root = tmp_path / "custom-parent" / "N.E.K.O"
+
+    normalized = validate_selected_root(
+        config_manager,
+        selected_root,
+        selection_source="custom",
+    )
+
+    assert normalized == selected_root
