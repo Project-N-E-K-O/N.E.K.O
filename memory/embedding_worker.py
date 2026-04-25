@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
 
 from memory.embeddings import (
     clear_embedding_fields,
@@ -46,10 +45,11 @@ from memory.embeddings import (
     stamp_embedding_fields,
 )
 
-if TYPE_CHECKING:
-    from memory.facts import FactStore
-    from memory.persona import PersonaManager
-    from memory.reflection import ReflectionEngine
+# Type annotations on `__init__` use string forward refs — keeping the
+# TYPE_CHECKING imports earned a lint warning for "unused" because the
+# `from __future__ import annotations` above already makes the strings
+# unresolved at runtime. Static analyzers that need the resolved types
+# can import the modules themselves; we don't pay an extra import here.
 
 logger = logging.getLogger(__name__)
 
@@ -74,9 +74,9 @@ class EmbeddingWarmupWorker:
     def __init__(
         self,
         *,
-        persona_manager: "PersonaManager",
-        reflection_engine: "ReflectionEngine",
-        fact_store: "FactStore",
+        persona_manager,
+        reflection_engine,
+        fact_store,
         get_character_names,         # callable returning list[str]
         warmup_delay_seconds: float,
     ) -> None:
@@ -229,48 +229,58 @@ class EmbeddingWarmupWorker:
 
     async def _sweep_persona(self, name: str, budget: int) -> int:
         """Persona facts live in nested ``{entity: {facts: [...]}}``;
-        we walk every section and collect entries that need embedding."""
-        try:
-            persona = await self._persona_manager.aensure_persona(name)
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "[EmbeddingWorker] persona load failed for %s: %s", name, e,
-            )
-            return 0
-        targets = self._collect_stale_persona_entries(persona, budget)
-        if not targets:
-            return 0
-        await self._fill_embeddings(targets)
-        try:
-            await self._persona_manager.asave_persona(name, persona)
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "[EmbeddingWorker] persona save failed for %s: %s", name, e,
-            )
-        return len(targets)
+        we walk every section and collect entries that need embedding.
+
+        Holds the per-character asyncio.Lock around the whole
+        load → mutate → save sequence so we don't race
+        ``aadd_fact`` / ``arecord_mentions`` / ``resolve_corrections``
+        and clobber their writes (Codex PR-956 P1). The lock is
+        already used by every other write path in PersonaManager so
+        the convention is safe here.
+        """
+        async with self._persona_manager._get_alock(name):
+            try:
+                persona = await self._persona_manager._aensure_persona_locked(name)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "[EmbeddingWorker] persona load failed for %s: %s", name, e,
+                )
+                return 0
+            targets = self._collect_stale_persona_entries(persona, budget)
+            if not targets:
+                return 0
+            await self._fill_embeddings(targets)
+            try:
+                await self._persona_manager.asave_persona(name, persona)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "[EmbeddingWorker] persona save failed for %s: %s", name, e,
+                )
+            return len(targets)
 
     async def _sweep_reflections(self, name: str, budget: int) -> int:
-        try:
-            reflections = await self._reflection_engine._aload_reflections_full(name)
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "[EmbeddingWorker] reflection load failed for %s: %s", name, e,
-            )
-            return 0
-        targets = self._collect_stale_simple_entries(reflections, budget)
-        if not targets:
-            return 0
-        await self._fill_embeddings(targets)
-        # Reflection save uses the same path that synthesis writes through;
-        # it preserves the on-disk shape and survives concurrent writers
-        # via the per-character asyncio.Lock the engine already holds.
-        try:
-            await self._reflection_engine.asave_reflections(name, reflections)
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "[EmbeddingWorker] reflection save failed for %s: %s", name, e,
-            )
-        return len(targets)
+        """Same lock contract as persona — synthesis / auto-promote /
+        confirm-promotion all hold ``_get_alock(name)`` around their
+        load+save, so the worker must too (Codex PR-956 P1)."""
+        async with self._reflection_engine._get_alock(name):
+            try:
+                reflections = await self._reflection_engine._aload_reflections_full(name)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "[EmbeddingWorker] reflection load failed for %s: %s", name, e,
+                )
+                return 0
+            targets = self._collect_stale_simple_entries(reflections, budget)
+            if not targets:
+                return 0
+            await self._fill_embeddings(targets)
+            try:
+                await self._reflection_engine.asave_reflections(name, reflections)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "[EmbeddingWorker] reflection save failed for %s: %s", name, e,
+                )
+            return len(targets)
 
     async def _sweep_facts(self, name: str, budget: int) -> int:
         try:

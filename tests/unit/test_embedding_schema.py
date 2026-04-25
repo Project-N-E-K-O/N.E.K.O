@@ -211,3 +211,77 @@ async def test_replace_preserves_embedding_when_replace_branch_not_taken(tmp_pat
     )
     assert cat_entry["embedding"] == original_embedding
     assert cat_entry["embedding_model_id"] == "jina-v5-nano-128d-int8"
+
+
+def test_invalidate_embedding_cache_helper_wipes_triple():
+    """The shared helper called by every text-rewriting code path
+    (resolve_corrections replace branch, amerge_into,
+    _apply_character_card_sync) must drop all three fields atomically
+    — leaving any one populated would either re-embed unnecessarily
+    or pretend a cache hit against the new text (silently corrupts
+    retrieval).  Locks the contract so any future caller that bypasses
+    the helper still has a regression test pointing at the right
+    invariant."""
+    entry = {
+        "embedding": [0.1, 0.2, 0.3],
+        "embedding_text_sha256": "deadbeef" * 8,
+        "embedding_model_id": "jina-v5-nano-128d-int8",
+    }
+    PersonaManager._invalidate_embedding_cache(entry)
+    assert entry["embedding"] is None
+    assert entry["embedding_text_sha256"] is None
+    assert entry["embedding_model_id"] is None
+
+
+def test_invalidate_embedding_cache_helper_safe_on_missing_fields():
+    """Legacy entries without the embedding fields shouldn't crash —
+    setting None on absent keys is the same as setting None on present
+    keys, but we want an explicit assertion so the contract is locked
+    in for callers that hand us bare dicts."""
+    entry: dict = {}
+    PersonaManager._invalidate_embedding_cache(entry)
+    assert entry["embedding"] is None
+    assert entry["embedding_text_sha256"] is None
+    assert entry["embedding_model_id"] is None
+
+
+def test_apply_character_card_sync_invalidates_embedding_on_text_change():
+    """When characters.json's master/neko fields change, the per-entry
+    text on persona is rewritten in place — the embedding cache MUST
+    flip to None so the warmup worker re-embeds.  Mirrors the
+    token_count invalidation contract added by #939."""
+    pm = PersonaManager()
+    persona = {
+        "master": {"facts": []},
+        "neko": {"facts": []},
+    }
+    # The card-entry id is content-addressed off (entity, field_name);
+    # use the helper so the test stays aligned with whatever encoding
+    # _card_entry_id picks (currently sha256 prefix).  Use a non-reserved
+    # field name so _build_expected actually emits a row for it (reserved
+    # fields like "name" are filtered out → entry would be removed,
+    # not updated).
+    field_name = "personality"
+    card_id = pm._card_entry_id("master", field_name)
+    # Text format mirrors what _build_expected emits ("{key}: {value}")
+    # so the function recognises this as the SAME card row and takes
+    # the update branch instead of remove+insert.
+    persona["master"]["facts"].append({
+        "id": card_id,
+        "text": f"{field_name}: old card text",
+        "source": "character_card",
+        "protected": True,
+        "embedding": [0.9] * 4,
+        "embedding_text_sha256": "stale" * 12,
+        "embedding_model_id": "jina-v5-nano-128d-int8",
+    })
+    pm._apply_character_card_sync(
+        "test", persona,
+        master_basic_config={field_name: "new card text"},
+        lanlan_basic_config={},
+    )
+    entry = persona["master"]["facts"][0]
+    assert entry["text"] == f"{field_name}: new card text"
+    assert entry["embedding"] is None
+    assert entry["embedding_text_sha256"] is None
+    assert entry["embedding_model_id"] is None

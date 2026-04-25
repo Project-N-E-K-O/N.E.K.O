@@ -45,7 +45,6 @@ import hashlib
 import logging
 import os
 import platform
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +81,10 @@ class _DisableReason(enum.Enum):
     NONE = "none"
     USER_DISABLED = "user_disabled_via_config"
     NO_ONNXRUNTIME = "onnxruntime_not_importable"
+    # Distinct from NO_ONNXRUNTIME so operators see exactly which dep
+    # is missing in the startup log — the two libs ship separately and
+    # the install commands diverge.
+    NO_TOKENIZERS = "tokenizers_not_importable"
     NO_MODEL_FILE = "model_file_missing"
     LOW_RAM = "ram_below_threshold"
     LOAD_ERROR = "load_raised"
@@ -256,9 +259,6 @@ class EmbeddingService:
     naturally serialized through ``asyncio.to_thread`` and the
     onnxruntime session itself releases the GIL during inference.
     """
-
-    _instance: Optional["EmbeddingService"] = None
-    _instance_lock = asyncio.Lock()
 
     def __init__(
         self,
@@ -469,9 +469,11 @@ class EmbeddingService:
             from tokenizers import Tokenizer  # type: ignore
         except ImportError as e:
             # huggingface tokenizers is the only sane way to load the
-            # SentencePiece-based Jina tokenizer offline; fall back on
-            # missing dep rather than crashing.
-            raise _DisabledError(_DisableReason.NO_ONNXRUNTIME) from e
+            # SentencePiece-based Jina tokenizer offline. Distinct
+            # disable reason so operators don't chase a phantom
+            # onnxruntime install when it's actually tokenizers
+            # that's missing.
+            raise _DisabledError(_DisableReason.NO_TOKENIZERS) from e
 
         sess_opts = ort.SessionOptions()
         sess_opts.intra_op_num_threads = max(1, (os.cpu_count() or 2) // 2)
@@ -548,7 +550,6 @@ class _DisabledError(Exception):
 # ── module-level singleton accessor ──────────────────────────────────
 
 _SERVICE: EmbeddingService | None = None
-_SERVICE_LOCK = asyncio.Lock()
 
 
 def get_embedding_service() -> EmbeddingService:

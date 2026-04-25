@@ -149,11 +149,12 @@ def test_service_low_ram_disables_with_correct_reason():
 
 def test_service_unknown_ram_disables(monkeypatch):
     """psutil failure ⇒ detect_total_ram_gb returns None ⇒ disabled.
-    We treat 'unknown' as 'unsafe to load on a possibly-tiny VM'."""
-    import memory.embeddings as emb
-    # Bypass the injection arg: passing ram_gb=None hits the auto-detect
-    # branch, which we monkeypatch to simulate a psutil failure.
-    monkeypatch.setattr(emb, "detect_total_ram_gb", lambda: None)
+    We treat 'unknown' as 'unsafe to load on a possibly-tiny VM'.
+
+    Patches the symbol at the module level via the same `from memory.embeddings`
+    import path the test file already uses — keeps a single import style."""
+    from memory import embeddings as embeddings_module
+    monkeypatch.setattr(embeddings_module, "detect_total_ram_gb", lambda: None)
     svc = EmbeddingService(
         model_dir="/nonexistent/embedding_models",
         enabled=True,

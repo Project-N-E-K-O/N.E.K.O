@@ -1626,18 +1626,28 @@ async def startup_event_handler():
         from memory.embedding_worker import EmbeddingWarmupWorker
         from config import VECTORS_WARMUP_DELAY_SECONDS
 
-        async def _get_catgirl_names():
+        # Resolve characters dynamically on each tick rather than
+        # capturing the startup snapshot — new characters added via
+        # the admin path (or restored from cloudsave) need to land in
+        # the worker's sweep without a process restart. config_manager
+        # caches load_characters internally so this is a cache lookup
+        # in the steady state; cache misses do file I/O but only
+        # once per character-config change.
+        def _current_catgirl_names() -> list[str]:
             try:
-                data = await _config_manager.aload_characters()
-                return list(data.get('猫娘', {}).keys())
+                data = _config_manager.load_characters()
+                return list((data or {}).get('猫娘', {}).keys())
             except Exception:
-                return []
+                # Lookup failure shouldn't crash the sweep — fall back
+                # to the startup snapshot so at least the originally
+                # known characters keep getting backfilled.
+                return list(catgirl_names)
 
         embedding_warmup_worker = EmbeddingWarmupWorker(
             persona_manager=persona_manager,
             reflection_engine=reflection_engine,
             fact_store=fact_store,
-            get_character_names=lambda: catgirl_names,
+            get_character_names=_current_catgirl_names,
             warmup_delay_seconds=VECTORS_WARMUP_DELAY_SECONDS,
         )
         embedding_warmup_worker.start()

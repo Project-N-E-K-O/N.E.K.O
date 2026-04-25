@@ -20,20 +20,15 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
-
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from memory.embedding_worker import (
     EmbeddingWarmupWorker,
-    BATCH_SIZE,
     MAX_ENTRIES_PER_TICK,
 )
 from memory.embeddings import (
     _embedding_text_sha256,
-    EmbeddingState,
     reset_embedding_service_for_tests,
 )
 
@@ -95,19 +90,29 @@ def _isolate_singleton():
 
 
 class _PersonaStub:
-    """In-memory stand-in for PersonaManager. Just enough to satisfy
-    EmbeddingWarmupWorker — aensure_persona returns the live dict so
-    in-place mutations show up in the asave_persona round-trip."""
+    """In-memory stand-in for PersonaManager.  Mirrors the per-character
+    asyncio.Lock + ``_aensure_persona_locked`` API the worker now uses
+    (CodeRabbit/Codex PR-956 P1 — lock the load+mutate+save sequence)."""
 
     def __init__(self) -> None:
         self.store: dict[str, dict] = {}
         self.save_calls = 0
+        self._alocks: dict[str, asyncio.Lock] = {}
 
-    async def aensure_persona(self, name: str) -> dict:
+    def _get_alock(self, name: str) -> asyncio.Lock:
+        if name not in self._alocks:
+            self._alocks[name] = asyncio.Lock()
+        return self._alocks[name]
+
+    async def _aensure_persona_locked(self, name: str) -> dict:
         return self.store.setdefault(name, {
             "master": {"facts": []},
             "neko": {"facts": []},
         })
+
+    async def aensure_persona(self, name: str) -> dict:
+        async with self._get_alock(name):
+            return await self._aensure_persona_locked(name)
 
     async def asave_persona(self, name: str, persona: dict) -> None:
         # Rebind so serialisation → load round trips lose nothing.
@@ -116,11 +121,19 @@ class _PersonaStub:
 
 
 class _ReflectionStub:
-    """Mirrors the two ReflectionEngine methods the worker calls."""
+    """Mirrors the two ReflectionEngine methods the worker calls plus the
+    per-character asyncio.Lock helper (same lock-around-load+save
+    contract synthesis already uses)."""
 
     def __init__(self) -> None:
         self.store: dict[str, list[dict]] = {}
         self.save_calls = 0
+        self._alocks: dict[str, asyncio.Lock] = {}
+
+    def _get_alock(self, name: str) -> asyncio.Lock:
+        if name not in self._alocks:
+            self._alocks[name] = asyncio.Lock()
+        return self._alocks[name]
 
     async def _aload_reflections_full(self, name: str) -> list[dict]:
         return self.store.setdefault(name, [])
