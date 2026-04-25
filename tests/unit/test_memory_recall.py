@@ -500,3 +500,72 @@ def test_oversample_constant_is_at_least_two():
     candidate would already fit the budget. Lock the lower bound so
     a future tweak can't accidentally collapse the LLM step."""
     assert COARSE_OVERSAMPLE >= 2
+
+
+# ── _aload_signal_targets propagates suppress flag ──────────────────
+
+
+@pytest.mark.asyncio
+async def test_aload_signal_targets_carries_reflection_suppress_flag(tmp_path):
+    """Codex PR-958 P2 regression: when ``_aload_signal_targets``
+    materialises reflection rows for the rerank pool, it must copy
+    ``suppress`` over from the source dict.  Without it, a
+    suppressed reflection would survive the reranker's hard filter
+    (which checks ``o.get('suppress')``) and leak back into Stage-2
+    signal detection — defeating the AI-mention rate-limit gate."""
+    from unittest.mock import AsyncMock, MagicMock
+    from memory.facts import FactStore
+
+    cm = MagicMock()
+    cm.memory_dir = str(tmp_path)
+    cm.aget_character_data = AsyncMock(return_value=(
+        "主人", "小天", {}, {}, {"human": "主人", "system": "SYS"}, {}, {}, {}, {},
+    ))
+    cm.get_character_data = MagicMock(return_value=(
+        "主人", "小天", {}, {}, {"human": "主人", "system": "SYS"}, {}, {}, {}, {},
+    ))
+    cm.get_model_api_config = MagicMock(return_value={
+        "model": "fake", "base_url": "http://fake", "api_key": "sk-fake",
+    })
+    with patch("memory.facts.get_config_manager", return_value=cm):
+        fs = FactStore()
+        fs._config_manager = cm
+
+    # Build a stub reflection engine that returns one suppressed +
+    # one not-suppressed confirmed reflection.
+    refl_engine = MagicMock()
+
+    async def _fake_load(_name):
+        return [
+            {"id": "r_active", "text": "active observation",
+             "entity": "master", "status": "confirmed",
+             "suppress": False},
+            {"id": "r_silent", "text": "silenced observation",
+             "entity": "master", "status": "confirmed",
+             "suppress": True, "suppressed_at": "2026-04-25T00:00:00"},
+        ]
+
+    refl_engine._aload_reflections_full = _fake_load
+
+    # Persona stub returns nothing — the bug under test is reflection-side.
+    persona = MagicMock()
+
+    async def _fake_persona(_name):
+        return {}
+
+    persona.aensure_persona = _fake_persona
+
+    pool = await fs._aload_signal_targets(
+        "小天", reflection_engine=refl_engine, persona_manager=persona,
+    )
+    by_id = {o["id"]: o for o in pool}
+    assert "reflection.r_silent" in by_id
+    assert by_id["reflection.r_silent"]["suppress"] is True
+    assert by_id["reflection.r_active"]["suppress"] is False
+
+    # And the reranker's hard filter actually drops the silenced one
+    # — the end-to-end check that the propagation matters.
+    survivors = MemoryRecallReranker._hard_filter(pool)
+    survivor_ids = {o["id"] for o in survivors}
+    assert "reflection.r_active" in survivor_ids
+    assert "reflection.r_silent" not in survivor_ids

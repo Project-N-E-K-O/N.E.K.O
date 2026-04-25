@@ -501,6 +501,16 @@ class FactStore:
                         'embedding_text_sha256': r.get('embedding_text_sha256'),
                         'embedding_model_id': r.get('embedding_model_id'),
                         'status': r.get('status'),
+                        # Carry the AI-mention rate-limit suppress flag
+                        # so MemoryRecallReranker._hard_filter can drop
+                        # suppressed reflections from the rerank pool —
+                        # reflections share persona's 5h-window mention
+                        # gating (see ReflectionEngine._normalize_reflection).
+                        # Codex PR-958 P2: without this, a vector-recall
+                        # path with a suppressed reflection would slip
+                        # past the filter and re-enter Stage-2 signal
+                        # detection, defeating the suppression contract.
+                        'suppress': r.get('suppress'),
                     })
             except Exception as e:
                 logger.debug(
