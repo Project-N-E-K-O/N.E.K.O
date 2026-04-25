@@ -1698,12 +1698,11 @@ async def startup_event_handler():
         # globals atomically; capturing the instances here would let
         # the worker keep writing through the old managers and clobber
         # post-reload updates from the new ones.
-        # Dedup resolver shares the FactStore — its enqueue side is
-        # called from the embedding worker after each fact-sweep, its
-        # resolve side is called from the idle-maintenance loop below.
-        # NOTE: this resolver still snapshots fact_store at construction,
-        # which has the same /reload-staleness shape the worker just
-        # fixed. Tracked for a follow-up — see PR comment.
+        # The dedup resolver follows the same pattern: reload rebuilds
+        # it against the new FactStore (see reload_memory_components),
+        # and the worker reads the current instance per sweep so
+        # enqueue and the idle-maintenance loop's resolve never end up
+        # racing on facts_pending_dedup.json across two instances.
         fact_dedup_resolver = FactDedupResolver(fact_store)
 
         embedding_warmup_worker = EmbeddingWarmupWorker(
@@ -1712,7 +1711,7 @@ async def startup_event_handler():
             get_fact_store=lambda: fact_store,
             get_character_names=_current_catgirl_names,
             warmup_delay_seconds=VECTORS_WARMUP_DELAY_SECONDS,
-            dedup_resolver=fact_dedup_resolver,
+            get_dedup_resolver=lambda: fact_dedup_resolver,
         )
         embedding_warmup_worker.start()
     except Exception as e:
