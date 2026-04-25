@@ -1890,8 +1890,10 @@ button * {
 
 [data-theme="dark"] .composer-overflow-popover {
   /* 0.78 而非 0.96：与浅色模式对齐，base 规则的 backdrop-filter blur(12px)
-     是级联继承下来的，太高 alpha 会让 blur 看不见还白吃 GPU 合成开销喵。 */
-  background: rgba(40, 40, 40, 0.78);
+     是级联继承下来的，太高 alpha 会让 blur 看不见还白吃 GPU 合成开销喵。
+     色温也微调到 (38,38,58)，对齐 .chat-body / .composer-input-shell 的蓝灰调子，
+     避免纯灰底色和下方输入栏色温脱节。 */
+  background: rgba(38, 38, 58, 0.78);
   border-color: rgba(255, 255, 255, 0.08);
   box-shadow:
     0 8px 24px rgba(0, 0, 0, 0.5),
