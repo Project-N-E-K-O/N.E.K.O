@@ -67,8 +67,6 @@ B站 WebSocket → danmaku_core.py
     "window_size": 15,
     "max_samples": 30,
     "knowledge_context": "主播是一只猫娘...",
-    "timeout_sec": 10,
-    "retry_times": 2,
     "user_profile": ""
   }
 }
@@ -76,7 +74,7 @@ B站 WebSocket → danmaku_core.py
 
 - `cloud.url`：LLM API 基地址（不含 chat/completions 后缀，代码自动拼接 `/v1/chat/completions`）
 - `cloud.model`：`deepseek-chat`（普通模式）或 `deepseek-reasoner`（思考模式，需处理 reasoning_content 回传）
-- `timeout_sec` / `retry_times`：API 超时秒数和重试次数（可选，默认 10s / 2次）
+- `cloud.timeout_sec` / `cloud.retry_times`：API 超时秒数和重试次数（可选，默认 10s / 2次，注意放在 `cloud` 下级）
 - `knowledge_context`：注入 Prompt 的专属知识库（人设、世界观、常见梗）
 - `user_profile`：用户画像配置（当前实际由代码直接初始化 db_path，该字段仅占位保留，配置不影响运行）
 

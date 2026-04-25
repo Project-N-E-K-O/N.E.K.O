@@ -223,7 +223,7 @@ class BiliContentService:
         if bvid:
             v = sdk.video.Video(bvid=bvid, credential=cred)
         elif aid is not None:
-            v = video.Video(aid=aid, credential=cred)
+            v = sdk.video.Video(aid=aid, credential=cred)
         else:
             raise RuntimeError("bvid or aid is required")
         info = await v.get_info()
