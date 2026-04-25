@@ -25,24 +25,26 @@ body.storage-location-modal-open #storage-location-overlay * {
     justify-content: center;
     padding: 24px;
     background:
-        radial-gradient(circle at top left, rgba(255, 210, 116, 0.14), transparent 34%),
-        rgba(12, 18, 28, 0.78);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
+        radial-gradient(circle at top left, rgba(101, 182, 255, 0.26), transparent 32%),
+        radial-gradient(circle at bottom right, rgba(222, 241, 255, 0.4), transparent 30%),
+        rgba(226, 241, 255, 0.62);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
     isolation: isolate;
 }
 
 .storage-location-modal {
-    width: min(900px, calc(100vw - 32px));
+    width: min(960px, calc(100vw - 32px));
     max-height: min(90vh, 920px);
     overflow-y: auto;
-    border-radius: 28px;
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 30px;
+    border: 1px solid rgba(118, 176, 228, 0.28);
     background:
-        radial-gradient(circle at top right, rgba(255, 180, 91, 0.16), transparent 32%),
-        linear-gradient(180deg, rgba(24, 31, 45, 0.98), rgba(13, 18, 28, 0.98));
-    box-shadow: 0 28px 100px rgba(0, 0, 0, 0.36);
-    color: #f8f5ef;
+        radial-gradient(circle at top right, rgba(144, 205, 255, 0.28), transparent 30%),
+        linear-gradient(180deg, rgba(250, 253, 255, 0.98), rgba(235, 246, 255, 0.98));
+    box-shadow: 0 32px 90px rgba(33, 88, 140, 0.24);
+    color: #14385d;
+    font-family: "Avenir Next", "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", sans-serif;
 }
 
 .storage-location-view[hidden] {
@@ -52,7 +54,7 @@ body.storage-location-modal-open #storage-location-overlay * {
 .storage-location-shell {
     display: grid;
     gap: 20px;
-    padding: 28px;
+    padding: 30px;
 }
 
 .storage-location-hero {
@@ -64,22 +66,23 @@ body.storage-location-modal-open #storage-location-overlay * {
     display: inline-flex;
     width: fit-content;
     align-items: center;
-    min-height: 28px;
+    min-height: 30px;
     padding: 0 12px;
     border-radius: 999px;
-    background: rgba(255, 255, 255, 0.1);
-    color: #ffd27f;
+    background: rgba(56, 140, 230, 0.12);
+    color: #1972c5;
     font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
+    font-weight: 800;
+    letter-spacing: 0.05em;
     text-transform: uppercase;
 }
 
 .storage-location-title {
     margin: 0;
-    font-size: 30px;
+    font-size: 31px;
     line-height: 1.2;
     font-weight: 800;
+    color: #123a63;
 }
 
 .storage-location-subtitle,
@@ -89,51 +92,55 @@ body.storage-location-modal-open #storage-location-overlay * {
     margin: 0;
     font-size: 14px;
     line-height: 1.7;
-    color: rgba(248, 245, 239, 0.78);
+    color: rgba(20, 56, 93, 0.78);
 }
 
 .storage-location-note--error {
     padding: 12px 14px;
     border-radius: 16px;
-    border: 1px solid rgba(255, 123, 123, 0.32);
-    background: rgba(255, 123, 123, 0.12);
-    color: #ffd7d7;
+    border: 1px solid rgba(215, 90, 90, 0.24);
+    background: rgba(255, 238, 238, 0.95);
+    color: #b54040;
 }
 
 .storage-location-banner {
     padding: 14px 16px;
     border-radius: 18px;
-    border: 1px solid rgba(255, 191, 94, 0.3);
-    background: rgba(255, 191, 94, 0.1);
-    color: #ffe2b1;
+    border: 1px solid rgba(79, 156, 230, 0.22);
+    background: linear-gradient(180deg, rgba(239, 247, 255, 0.98), rgba(228, 242, 255, 0.98));
+    color: #145287;
 }
 
 .storage-location-grid {
     display: grid;
-    grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
+    grid-template-columns: minmax(0, 1fr);
     gap: 18px;
 }
 
-.storage-location-panel {
+.storage-location-panel,
+.storage-location-other,
+.storage-location-progress {
     display: grid;
     gap: 14px;
-    padding: 18px;
-    border-radius: 22px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    background: rgba(255, 255, 255, 0.04);
+    padding: 20px;
+    border-radius: 24px;
+    border: 1px solid rgba(122, 175, 224, 0.2);
+    background: rgba(255, 255, 255, 0.74);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.66);
 }
 
 .storage-location-panel-title {
     margin: 0;
     font-size: 15px;
-    font-weight: 700;
-    color: #ffd27f;
+    font-weight: 800;
+    color: #1061ad;
 }
 
 .storage-location-path-list,
 .storage-location-summary-list,
 .storage-location-legacy-list,
-.storage-location-restart-list {
+.storage-location-restart-list,
+.storage-location-choice-list {
     display: grid;
     gap: 12px;
 }
@@ -147,23 +154,23 @@ body.storage-location-modal-open #storage-location-overlay * {
 
 .storage-location-label {
     font-size: 12px;
-    font-weight: 700;
-    color: rgba(248, 245, 239, 0.62);
+    font-weight: 800;
+    color: rgba(20, 56, 93, 0.58);
 }
 
 .storage-location-path,
 .storage-location-restart-path {
     font-family: ui-monospace, "SFMono-Regular", "SF Mono", Consolas, monospace;
     font-size: 12px;
-    line-height: 1.65;
+    line-height: 1.7;
     word-break: break-all;
-    color: rgba(248, 245, 239, 0.9);
+    color: #204e79;
 }
 
 .storage-location-summary-value {
     font-size: 14px;
-    line-height: 1.6;
-    color: #f8f5ef;
+    line-height: 1.65;
+    color: #14385d;
 }
 
 .storage-location-preview-steps {
@@ -174,10 +181,12 @@ body.storage-location-modal-open #storage-location-overlay * {
 .storage-location-preview-step {
     font-size: 14px;
     line-height: 1.65;
-    color: rgba(248, 245, 239, 0.88);
+    color: rgba(20, 56, 93, 0.88);
 }
 
-.storage-location-actions {
+.storage-location-actions,
+.storage-location-error-actions,
+.storage-location-restart-actions {
     display: flex;
     flex-wrap: wrap;
     gap: 12px;
@@ -186,70 +195,64 @@ body.storage-location-modal-open #storage-location-overlay * {
 .storage-location-btn {
     min-height: 46px;
     padding: 0 18px;
-    border-radius: 14px;
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    background: rgba(255, 255, 255, 0.08);
-    color: #f8f5ef;
+    border-radius: 15px;
+    border: 1px solid rgba(96, 159, 216, 0.24);
+    background: rgba(255, 255, 255, 0.88);
+    color: #145287;
     font-size: 14px;
-    font-weight: 700;
+    font-weight: 800;
     cursor: pointer;
-    transition: transform 0.16s ease, border-color 0.16s ease, background 0.16s ease;
+    transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
 }
 
 .storage-location-btn:hover {
     transform: translateY(-1px);
-    border-color: rgba(255, 210, 127, 0.42);
+    border-color: rgba(59, 140, 221, 0.42);
+    box-shadow: 0 10px 24px rgba(49, 114, 175, 0.12);
 }
 
 .storage-location-btn:disabled {
     cursor: not-allowed;
     opacity: 0.48;
     transform: none;
+    box-shadow: none;
 }
 
 .storage-location-btn--primary {
-    border-color: rgba(255, 210, 127, 0.5);
-    background: linear-gradient(180deg, #ffd27f, #ffb24f);
-    color: #2a1700;
+    border-color: rgba(40, 128, 214, 0.3);
+    background: linear-gradient(180deg, #48a6ff, #2187ea);
+    color: #f8fbff;
 }
 
 .storage-location-btn--secondary {
-    background: rgba(255, 255, 255, 0.05);
+    background: rgba(240, 248, 255, 0.95);
 }
 
-.storage-location-other[hidden] {
+.storage-location-btn--compact {
+    min-width: 132px;
+    white-space: nowrap;
+}
+
+.storage-location-other[hidden],
+.storage-location-panel[hidden] {
     display: none !important;
-}
-
-.storage-location-other {
-    display: grid;
-    gap: 14px;
-    padding: 16px;
-    border-radius: 18px;
-    border: 1px dashed rgba(255, 255, 255, 0.18);
-    background: rgba(8, 12, 20, 0.34);
-}
-
-.storage-location-choice-list {
-    display: grid;
-    gap: 10px;
 }
 
 .storage-location-choice {
     width: 100%;
     text-align: left;
     border-radius: 16px;
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(96, 159, 216, 0.18);
+    background: rgba(245, 250, 255, 0.96);
     color: inherit;
     padding: 14px 16px;
     cursor: pointer;
 }
 
 .storage-location-choice.is-active {
-    border-color: rgba(255, 210, 127, 0.55);
-    background: rgba(255, 210, 127, 0.12);
-    box-shadow: 0 0 0 3px rgba(255, 210, 127, 0.08);
+    border-color: rgba(51, 136, 221, 0.5);
+    background: rgba(226, 241, 255, 0.95);
+    box-shadow: 0 0 0 3px rgba(77, 160, 238, 0.1);
 }
 
 .storage-location-choice-title {
@@ -259,47 +262,148 @@ body.storage-location-modal-open #storage-location-overlay * {
     gap: 10px;
     margin-bottom: 8px;
     font-size: 14px;
-    font-weight: 700;
+    font-weight: 800;
 }
 
 .storage-location-choice-check {
-    color: #ffd27f;
+    color: #1f7fd7;
+}
+
+.storage-location-input-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 12px;
+    align-items: center;
 }
 
 .storage-location-input {
     width: 100%;
     min-height: 48px;
-    border-radius: 14px;
-    border: 1px solid rgba(255, 255, 255, 0.14);
-    background: rgba(3, 7, 12, 0.42);
-    color: #f8f5ef;
+    border-radius: 15px;
+    border: 1px solid rgba(96, 159, 216, 0.2);
+    background: rgba(255, 255, 255, 0.98);
+    color: #14385d;
     padding: 0 14px;
     font-size: 14px;
     outline: none;
 }
 
 .storage-location-input:focus {
-    border-color: rgba(255, 210, 127, 0.62);
-    box-shadow: 0 0 0 3px rgba(255, 210, 127, 0.12);
+    border-color: rgba(54, 138, 221, 0.56);
+    box-shadow: 0 0 0 4px rgba(88, 164, 238, 0.14);
 }
 
 .storage-location-loader {
     width: 42px;
     height: 42px;
     border-radius: 50%;
-    border: 3px solid rgba(255, 255, 255, 0.12);
-    border-top-color: #ffd27f;
+    border: 3px solid rgba(63, 136, 209, 0.15);
+    border-top-color: #2f8fe9;
     animation: storage-location-spin 0.9s linear infinite;
 }
 
-.storage-location-error-actions,
-.storage-location-restart-actions {
+.storage-location-progress {
+    gap: 16px;
+}
+
+.storage-location-progress-meta {
     display: flex;
-    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
     gap: 12px;
 }
 
-.storage-location-panel[hidden] {
+.storage-location-progress-label {
+    font-size: 14px;
+    line-height: 1.5;
+    font-weight: 800;
+    color: #145287;
+}
+
+.storage-location-progress-value {
+    font-size: 13px;
+    font-weight: 800;
+    color: rgba(20, 82, 135, 0.76);
+}
+
+.storage-location-progress-track {
+    position: relative;
+    height: 12px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: rgba(70, 140, 209, 0.12);
+    box-shadow: inset 0 1px 2px rgba(42, 92, 141, 0.08);
+}
+
+.storage-location-progress-track.is-error {
+    background: rgba(215, 90, 90, 0.14);
+}
+
+.storage-location-progress-fill {
+    height: 100%;
+    width: 0;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #3c9eff, #7bcfff);
+    transition: width 0.28s ease;
+}
+
+.storage-location-progress-track.is-error .storage-location-progress-fill {
+    background: linear-gradient(90deg, #e47373, #f0aaaa);
+}
+
+.storage-location-progress-steps {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.storage-location-progress-step {
+    min-height: 52px;
+    display: flex;
+    align-items: center;
+    padding: 10px 12px;
+    border-radius: 16px;
+    border: 1px solid rgba(118, 176, 228, 0.14);
+    background: rgba(244, 249, 255, 0.92);
+    color: rgba(20, 56, 93, 0.68);
+    font-size: 12px;
+    line-height: 1.55;
+    font-weight: 700;
+}
+
+.storage-location-progress-step.is-active {
+    border-color: rgba(48, 136, 226, 0.28);
+    background: rgba(225, 241, 255, 0.98);
+    color: #0f5ea9;
+}
+
+.storage-location-progress-step.is-completed {
+    border-color: rgba(48, 136, 226, 0.22);
+    background: rgba(234, 245, 255, 0.98);
+    color: #186ebf;
+}
+
+.storage-location-completion-card {
+    position: fixed;
+    right: 20px;
+    bottom: 20px;
+    z-index: 2147483000;
+    pointer-events: auto;
+    isolation: isolate;
+    width: min(420px, calc(100vw - 24px));
+    display: grid;
+    gap: 14px;
+    padding: 20px;
+    border-radius: 24px;
+    border: 1px solid rgba(98, 160, 217, 0.22);
+    background:
+        radial-gradient(circle at top right, rgba(131, 198, 255, 0.24), transparent 28%),
+        linear-gradient(180deg, rgba(251, 254, 255, 0.98), rgba(235, 246, 255, 0.98));
+    color: #14385d;
+    box-shadow: 0 24px 80px rgba(37, 91, 143, 0.2);
+}
+
+.storage-location-completion-card[hidden] {
     display: none !important;
 }
 
@@ -313,6 +417,10 @@ body.storage-location-modal-open #storage-location-overlay * {
     .storage-location-grid {
         grid-template-columns: 1fr;
     }
+
+    .storage-location-progress-steps {
+        grid-template-columns: 1fr 1fr;
+    }
 }
 
 @media (max-width: 640px) {
@@ -325,16 +433,29 @@ body.storage-location-modal-open #storage-location-overlay * {
     }
 
     .storage-location-title {
-        font-size: 24px;
+        font-size: 25px;
     }
 
     .storage-location-actions,
     .storage-location-error-actions,
-    .storage-location-restart-actions {
+    .storage-location-restart-actions,
+    .storage-location-progress-meta {
         flex-direction: column;
+        align-items: stretch;
+    }
+
+    .storage-location-input-row,
+    .storage-location-progress-steps {
+        grid-template-columns: 1fr;
     }
 
     .storage-location-btn {
         width: 100%;
+    }
+
+    .storage-location-completion-card {
+        right: 12px;
+        bottom: 12px;
+        width: calc(100vw - 24px);
     }
 }

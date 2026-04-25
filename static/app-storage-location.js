@@ -1,6 +1,372 @@
 (function () {
     if (window.appStorageLocation) return;
 
+    var STORAGE_I18N_EN = {
+        badge: 'Storage Location',
+        bootstrapError: 'Failed to load storage initialization information. Please try again.',
+        chooseOther: 'Choose another location',
+        cleanupRetainedRoot: 'Clean up old data directory',
+        cleanupRetainedRootConfirm: 'This will delete the retained old data directory and will not affect the new active directory. Continue?',
+        cleanupRetainedRootDone: 'The old data directory has been cleaned up. Only the new runtime directory remains.',
+        cleanupRetainedRootFailed: 'Failed to clean up the old data directory. Please try again later.',
+        completionMessage: 'The new runtime directory is active. The old data directory is still retained for manual cleanup.',
+        completionTitle: 'Storage migration completed',
+        confirmReconnect: 'Confirm shutdown and reconnect path',
+        confirmRestart: 'Confirm shutdown and migrate',
+        currentPath: 'Current path',
+        customPathPlaceholder: 'Enter the target path you want to use next',
+        customPreviewNotice: 'Backend confirmed that switching to this location requires closing the current instance, migrating data, and restarting automatically.',
+        dialogLabel: 'Storage location selection',
+        errorBadge: 'Load failed',
+        errorTitle: 'Storage startup information is temporarily unavailable',
+        estimatedPayload: 'Estimated data size',
+        legacyChoiceEmpty: 'No reusable legacy data folder was found. You can choose a folder or enter a path manually.',
+        loadingFetchBootstrapSubtitle: 'Preparing the storage location screen.',
+        loadingSubtitle: 'The main UI will continue after the storage state is confirmed.',
+        loadingTitle: 'Checking storage layout',
+        loadingWaitSubtitle: 'The main UI will continue after the storage state is confirmed.',
+        maintenanceClosingStatus: 'Waiting for the current instance to finish shutting down...',
+        maintenanceNote: 'A brief disconnect is expected. The page will reconnect automatically after the service recovers.',
+        maintenanceOfflineStatus: 'The connection is temporarily interrupted. Waiting for the service to recover. Please keep this page open.',
+        maintenanceReconnectStatus: 'Keep this page open. The home page will recover automatically.',
+        maintenanceReconnectSubtitle: 'The service is back. Reconnecting the app...',
+        maintenanceTargetStatus: 'Target path recorded. Waiting for shutdown and recovery:',
+        maintenanceTitle: 'Optimizing storage layout...',
+        maintenanceWaitingStatus: 'This page will stay here and retry automatically until the service recovers.',
+        maintenanceWaitingSubtitle: 'The current instance is about to close. Data will be migrated after shutdown and the service will restart automatically.',
+        migrationPending: 'An unfinished migration plan was detected. The home page will remain blocked until the service becomes usable again.',
+        noWarnings: 'No additional risk notes detected.',
+        otherPanelNote: 'You can reuse an existing data folder or choose a new folder for future runs.',
+        otherPanelTitle: 'Another location',
+        pathOverview: 'Path overview',
+        permissionBlocked: 'Not writable',
+        permissionCheck: 'Write access',
+        permissionOk: 'Writable',
+        pickFolder: 'Choose folder',
+        pickFolderFailed: 'Failed to open the folder picker. Please enter the path manually.',
+        previewBoundary: 'The root will not hot-switch in this session, and the stable root will not be changed early. After confirmation, the backend will perform shutdown, any required migration, auto-restart, and final layout recovery in order.',
+        previewOther: 'Use this location',
+        previewStepClose: '1. The current instance will close first.',
+        previewStepMigrate: '2. After shutdown, the target layout will be restored; data will be migrated only when needed.',
+        previewStepRestart: '3. The app will restart automatically after that.',
+        previewStepRetain: '4. Old data is kept by default and will not be deleted automatically.',
+        previewTitle: 'This choice requires a shutdown and migration',
+        progressCommitting: 'Applying the new storage location',
+        progressCompleted: 'Migration completed. Recovering the service',
+        progressCopying: 'Migrating runtime data',
+        progressFailed: 'Migration did not complete. Waiting for recovery handling',
+        progressPending: 'Target path recorded. Preparing to shut down the current instance',
+        progressPreflight: 'Checking the target location and preparing migration',
+        progressRebindPreflight: 'Preparing to reconnect the original storage location',
+        progressRebinding: 'Shutting down the current instance and reconnecting the original path',
+        progressRecovered: 'The service is back. Reconnecting the page',
+        progressRetaining: 'Keeping the old data directory for later manual cleanup',
+        progressStepCommit: 'Verify and apply',
+        progressStepRecover: 'Recover service',
+        progressStepShutdown: 'Shut down current instance',
+        progressStepTransfer: 'Process storage directory',
+        progressVerifying: 'Verifying migration results',
+        progressWaitingShutdown: 'Waiting for the current instance to shut down safely',
+        rebindPreviewNotice: 'Backend confirmed that the original path is reachable again. The current instance will close and restart on that path. No runtime data will be copied this time.',
+        recommendedPath: 'Recommended path',
+        recommendedPreviewNotice: 'Backend confirmed that switching to the recommended location requires closing the current instance, migrating data, and restarting automatically.',
+        recoveryRequired: 'A recoverable storage state was detected. Confirm the storage location for this launch before continuing.',
+        restartRequestFailed: 'Failed to start shutdown and migration preparation. Please try again later.',
+        restartRequestUnexpected: 'The shutdown and migration preparation API returned an unrecognized result.',
+        retainedRoot: 'Retained directory',
+        selectPathRequired: 'Please provide a target path first.',
+        selectionSubmitFailed: 'Failed to submit the storage location choice. Please try again later.',
+        selectionSubmitUnexpected: 'The storage location selection API returned an unrecognized result.',
+        selectionSubtitle: 'The app is open. Confirm the storage location on this page before continuing.',
+        selectionTitle: 'Choose the storage location for this launch',
+        sourceLabel: 'Source path',
+        statusUnexpected: 'The storage maintenance status API returned an unrecognized result.',
+        systemStatusUnavailable: 'The local service status could not be confirmed. Please try again.',
+        systemStatusUnexpected: 'The storage startup status API returned an unrecognized result.',
+        targetFreeSpace: 'Free space on target volume',
+        targetLabel: 'Target path',
+        unknownBytes: 'Not estimated yet',
+        useCurrent: 'Keep current path',
+        useLegacyPath: 'Use this legacy data path',
+        useRecommended: 'Use recommended location',
+        warningExternalVolume: 'The target path is on an external or mounted volume. Stability depends on whether the volume stays available.',
+        warningNetworkShare: 'The target path is on a network share. Connection instability may affect migration reliability.',
+        warningSummary: 'Risk notes',
+        warningSymlink: 'The target path goes through a symlink or equivalent redirect. Please confirm the actual destination.',
+        warningSyncFolder: 'The target path is inside a sync folder. Sync software may interfere during migration.'
+    };
+
+    var STORAGE_I18N_ZH_CN = {
+        badge: '存储位置',
+        bootstrapError: '无法读取存储位置初始化信息，请重试。',
+        chooseOther: '选择其他位置',
+        cleanupRetainedRoot: '清理旧数据目录',
+        cleanupRetainedRootConfirm: '这会删除当前保留的旧数据目录，且不会影响当前已经生效的新目录。要继续吗？',
+        cleanupRetainedRootDone: '旧数据目录已清理，当前仅保留新的运行目录。',
+        cleanupRetainedRootFailed: '清理旧数据目录失败，请稍后重试。',
+        completionMessage: '新的运行目录已经生效，旧数据目录目前仍保留，你可以稍后再决定是否清理。',
+        completionTitle: '存储迁移已完成',
+        confirmReconnect: '确认关闭并重连路径',
+        confirmRestart: '确认关闭并迁移',
+        currentPath: '当前路径',
+        customPathPlaceholder: '输入你希望后续迁移到的目标路径',
+        customPreviewNotice: '后端已确认：如果后续改用这个位置，需要先关闭当前实例，再迁移数据并自动重启。',
+        dialogLabel: '存储位置选择',
+        errorBadge: '读取失败',
+        errorTitle: '暂时无法读取存储位置引导信息',
+        estimatedPayload: '预计迁移体量',
+        legacyChoiceEmpty: '未检测到可直接复用的旧数据目录，可直接选择文件夹或手动输入路径。',
+        loadingFetchBootstrapSubtitle: '正在准备存储位置选择页面。',
+        loadingSubtitle: '主业务界面会在存储状态确认完成后再继续加载。',
+        loadingTitle: '正在确认存储布局状态',
+        loadingWaitSubtitle: '主业务界面会在存储状态确认完成后再继续加载。',
+        maintenanceClosingStatus: '正在等待当前实例完成关闭...',
+        maintenanceNote: '连接短暂中断属于正常现象。页面会在服务恢复后自动重新连接。',
+        maintenanceOfflineStatus: '连接已暂时中断，正在等待服务恢复。请不要关闭当前页面。',
+        maintenanceReconnectStatus: '请保持当前页面打开，主页会自动恢复。',
+        maintenanceReconnectSubtitle: '检测到服务已经恢复，正在重新连接应用。',
+        maintenanceTargetStatus: '目标路径已记录，正在等待服务关闭并恢复：',
+        maintenanceTitle: '正在优化存储布局...',
+        maintenanceWaitingStatus: '服务尚未恢复前，页面会继续停留在这里并自动重试连接。',
+        maintenanceWaitingSubtitle: '当前实例即将关闭，数据会在关闭后迁移并自动重启。',
+        migrationPending: '检测到尚未完成的迁移计划。当前主页会继续保持阻断，直到服务恢复到可继续状态。',
+        noWarnings: '当前未检测到需要额外提示的风险项。',
+        otherPanelNote: '你可以直接复用旧数据目录，也可以选择一个新的文件夹作为后续运行位置。',
+        otherPanelTitle: '其他位置',
+        pathOverview: '路径总览',
+        permissionBlocked: '当前不可写',
+        permissionCheck: '目标路径写入权限',
+        permissionOk: '当前可写',
+        pickFolder: '选择文件夹',
+        pickFolderFailed: '打开文件夹选择器失败，请手动输入路径。',
+        previewBoundary: '当前不会在本会话里热切根，也不会提前把稳定根改成新路径。确认后会由后端按设计顺序完成关闭、必要迁移、自动重启与最终布局恢复。',
+        previewOther: '提交该位置',
+        previewStepClose: '1. 当前实例会先关闭。',
+        previewStepMigrate: '2. 关闭后会恢复目标存储布局；必要时再迁移数据。',
+        previewStepRestart: '3. 迁移完成后会自动重启。',
+        previewStepRetain: '4. 旧数据默认不会自动删除。',
+        previewTitle: '该选择需要后续关闭并迁移',
+        progressCommitting: '正在提交新的存储位置',
+        progressCompleted: '迁移已完成，正在恢复服务',
+        progressCopying: '正在迁移运行时数据',
+        progressFailed: '迁移未能完成，正在等待恢复处理',
+        progressPending: '目标路径已记录，正在准备关闭当前实例',
+        progressPreflight: '正在检查目标位置并准备迁移',
+        progressRebindPreflight: '正在准备重连原始存储位置',
+        progressRebinding: '正在关闭当前实例并重连原始路径',
+        progressRecovered: '服务已恢复，正在重新连接页面',
+        progressRetaining: '正在保留旧数据目录以便后续手动清理',
+        progressStepCommit: '校验并生效',
+        progressStepRecover: '恢复服务',
+        progressStepShutdown: '关闭当前实例',
+        progressStepTransfer: '处理存储目录',
+        progressVerifying: '正在校验迁移结果',
+        progressWaitingShutdown: '正在等待当前实例安全关闭',
+        rebindPreviewNotice: '后端已确认：原路径已经可以重新连接。后续会关闭当前实例并自动重启到该路径，本次不会复制运行时数据。',
+        recommendedPath: '推荐路径',
+        recommendedPreviewNotice: '后端已确认：如果后续改用推荐位置，需要先关闭当前实例，再迁移数据并自动重启。',
+        recoveryRequired: '检测到需要恢复的存储状态，请先重新确认本次使用的存储位置。',
+        restartRequestFailed: '启动关闭与迁移准备失败，请稍后重试。',
+        restartRequestUnexpected: '关闭与迁移准备接口返回了未识别的结果。',
+        retainedRoot: '当前保留目录',
+        selectPathRequired: '请先提供目标路径。',
+        selectionSubmitFailed: '提交存储位置选择失败，请稍后重试。',
+        selectionSubmitUnexpected: '存储位置选择接口返回了未识别的结果。',
+        selectionSubtitle: '应用已经正常打开。接下来请先在当前页面内确认存储位置，再继续使用。',
+        selectionTitle: '请选择本次运行使用的存储位置',
+        sourceLabel: '原始路径',
+        statusUnexpected: '存储维护状态接口返回了未识别的结果。',
+        systemStatusUnavailable: '暂时无法确认本地服务状态，请重试。',
+        systemStatusUnexpected: '存储启动状态接口返回了未识别的结果。',
+        targetFreeSpace: '目标卷剩余空间',
+        targetLabel: '目标路径',
+        unknownBytes: '暂未估算',
+        useCurrent: '保持当前路径',
+        useLegacyPath: '使用该旧数据路径',
+        useRecommended: '使用推荐位置',
+        warningExternalVolume: '目标路径位于外置卷或挂载卷，稳定性取决于卷是否持续可用。',
+        warningNetworkShare: '目标路径位于网络共享目录，连接波动可能影响迁移稳定性。',
+        warningSummary: '额外风险提示',
+        warningSymlink: '目标路径命中了符号链接或等价重定向目录，请确认真实落点正确。',
+        warningSyncFolder: '目标路径位于同步盘目录，迁移期间可能受到同步程序干扰。'
+    };
+
+    function cloneTranslations(base, overrides) {
+        var cloned = {};
+        Object.keys(base).forEach(function (key) {
+            cloned[key] = base[key];
+        });
+        Object.keys(overrides || {}).forEach(function (key) {
+            cloned[key] = overrides[key];
+        });
+        return cloned;
+    }
+
+    var STORAGE_I18N_ZH_TW = cloneTranslations(STORAGE_I18N_ZH_CN, {
+        badge: '存儲位置',
+        chooseOther: '選擇其他位置',
+        cleanupRetainedRoot: '清理舊資料目錄',
+        cleanupRetainedRootConfirm: '這會刪除目前保留的舊資料目錄，且不會影響目前已生效的新目錄。要繼續嗎？',
+        cleanupRetainedRootDone: '舊資料目錄已清理，目前僅保留新的執行目錄。',
+        cleanupRetainedRootFailed: '清理舊資料目錄失敗，請稍後重試。',
+        completionMessage: '新的執行目錄已生效，舊資料目錄目前仍保留，你可以稍後再決定是否清理。',
+        completionTitle: '存儲遷移已完成',
+        confirmReconnect: '確認關閉並重連路徑',
+        confirmRestart: '確認關閉並遷移',
+        currentPath: '當前路徑',
+        customPathPlaceholder: '輸入你希望後續遷移到的目標路徑',
+        errorTitle: '暫時無法讀取存儲位置引導資訊',
+        estimatedPayload: '預計遷移體量',
+        legacyChoiceEmpty: '未檢測到可直接沿用的舊資料目錄，可直接選擇資料夾或手動輸入路徑。',
+        loadingFetchBootstrapSubtitle: '正在準備存儲位置選擇頁面。',
+        loadingSubtitle: '主業務介面會在存儲狀態確認完成後再繼續載入。',
+        loadingTitle: '正在確認存儲布局狀態',
+        loadingWaitSubtitle: '主業務介面會在存儲狀態確認完成後再繼續載入。',
+        maintenanceClosingStatus: '正在等待當前實例完成關閉...',
+        maintenanceNote: '連線短暫中斷屬於正常現象。頁面會在服務恢復後自動重新連線。',
+        maintenanceOfflineStatus: '連線已暫時中斷，正在等待服務恢復。請不要關閉目前頁面。',
+        maintenanceReconnectStatus: '請保持目前頁面開啟，首頁會自動恢復。',
+        maintenanceReconnectSubtitle: '檢測到服務已恢復，正在重新連線應用。',
+        maintenanceTargetStatus: '目標路徑已記錄，正在等待服務關閉並恢復：',
+        maintenanceTitle: '正在優化存儲布局...',
+        maintenanceWaitingStatus: '服務尚未恢復前，頁面會繼續停留在這裡並自動重試連線。',
+        maintenanceWaitingSubtitle: '當前實例即將關閉，資料會在關閉後遷移並自動重啟。',
+        migrationPending: '檢測到尚未完成的遷移計畫。目前首頁會繼續保持阻斷，直到服務恢復到可繼續狀態。',
+        noWarnings: '目前未檢測到需要額外提示的風險項。',
+        otherPanelNote: '你可以直接沿用舊資料目錄，也可以選擇新的資料夾作為後續執行位置。',
+        otherPanelTitle: '其他位置',
+        pathOverview: '路徑總覽',
+        permissionBlocked: '目前不可寫',
+        permissionCheck: '目標路徑寫入權限',
+        permissionOk: '目前可寫',
+        pickFolder: '選擇資料夾',
+        pickFolderFailed: '開啟資料夾選擇器失敗，請手動輸入路徑。',
+        previewBoundary: '目前不會在本次會話裡熱切根，也不會提前把穩定根改成新路徑。確認後會由後端按設計順序完成關閉、必要遷移、自動重啟與最終布局恢復。',
+        previewOther: '提交此位置',
+        previewStepClose: '1. 當前實例會先關閉。',
+        previewStepMigrate: '2. 關閉後會恢復目標存儲布局；必要時再遷移資料。',
+        previewStepRestart: '3. 遷移完成後會自動重啟。',
+        previewStepRetain: '4. 舊資料預設不會自動刪除。',
+        previewTitle: '此選擇需要後續關閉並遷移',
+        progressCommitting: '正在提交新的存儲位置',
+        progressCompleted: '遷移已完成，正在恢復服務',
+        progressCopying: '正在遷移執行時資料',
+        progressFailed: '遷移未能完成，正在等待恢復處理',
+        progressPending: '目標路徑已記錄，正在準備關閉當前實例',
+        progressPreflight: '正在檢查目標位置並準備遷移',
+        progressRebindPreflight: '正在準備重連原始存儲位置',
+        progressRebinding: '正在關閉當前實例並重連原始路徑',
+        progressRecovered: '服務已恢復，正在重新連線頁面',
+        progressRetaining: '正在保留舊資料目錄以便後續手動清理',
+        progressStepCommit: '校驗並生效',
+        progressStepRecover: '恢復服務',
+        progressStepShutdown: '關閉當前實例',
+        progressStepTransfer: '處理存儲目錄',
+        progressVerifying: '正在校驗遷移結果',
+        progressWaitingShutdown: '正在等待當前實例安全關閉',
+        rebindPreviewNotice: '後端已確認：原路徑已可以重新連線。後續會關閉當前實例並自動重啟到該路徑，本次不會複製執行時資料。',
+        recommendedPath: '建議路徑',
+        recommendedPreviewNotice: '後端已確認：如果後續改用建議位置，需要先關閉當前實例，再遷移資料並自動重啟。',
+        recoveryRequired: '檢測到需要恢復的存儲狀態，請先重新確認本次使用的存儲位置。',
+        restartRequestFailed: '啟動關閉與遷移準備失敗，請稍後重試。',
+        restartRequestUnexpected: '關閉與遷移準備介面返回了未識別的結果。',
+        retainedRoot: '目前保留目錄',
+        selectPathRequired: '請先提供目標路徑。',
+        selectionSubmitFailed: '提交存儲位置選擇失敗，請稍後重試。',
+        selectionSubmitUnexpected: '存儲位置選擇介面返回了未識別的結果。',
+        selectionSubtitle: '應用已正常開啟。接下來請先在目前頁面內確認存儲位置，再繼續使用。',
+        selectionTitle: '請選擇本次執行使用的存儲位置',
+        sourceLabel: '原始路徑',
+        statusUnexpected: '存儲維護狀態介面返回了未識別的結果。',
+        systemStatusUnavailable: '暫時無法確認本地服務狀態，請重試。',
+        systemStatusUnexpected: '存儲啟動狀態介面返回了未識別的結果。',
+        targetFreeSpace: '目標卷剩餘空間',
+        targetLabel: '目標路徑',
+        unknownBytes: '暫未估算',
+        useCurrent: '保持當前路徑',
+        useLegacyPath: '使用此舊資料路徑',
+        useRecommended: '使用建議位置',
+        warningExternalVolume: '目標路徑位於外接卷或掛載卷，穩定性取決於該卷是否持續可用。',
+        warningNetworkShare: '目標路徑位於網路共享目錄，連線波動可能影響遷移穩定性。',
+        warningSummary: '額外風險提示',
+        warningSymlink: '目標路徑命中了符號連結或等價重導向目錄，請確認實際落點正確。',
+        warningSyncFolder: '目標路徑位於同步碟目錄，遷移期間可能受到同步程式干擾。'
+    });
+
+    var STORAGE_I18N_RESOURCES = {
+        en: STORAGE_I18N_EN,
+        ja: STORAGE_I18N_EN,
+        ko: STORAGE_I18N_EN,
+        ru: STORAGE_I18N_EN,
+        'zh-CN': STORAGE_I18N_ZH_CN,
+        'zh-TW': STORAGE_I18N_ZH_TW
+    };
+
+    var storageTranslationsRegistered = false;
+
+    function resolveStorageLocale(language) {
+        var normalized = String(language || '').trim();
+        if (!normalized) return 'en';
+        if (STORAGE_I18N_RESOURCES[normalized]) return normalized;
+
+        var lower = normalized.toLowerCase();
+        if (lower === 'zh-tw' || lower === 'zh-hk' || lower === 'zh-mo') return 'zh-TW';
+        if (lower.indexOf('zh') === 0) return 'zh-CN';
+        if (lower.indexOf('ja') === 0) return 'ja';
+        if (lower.indexOf('ko') === 0) return 'ko';
+        if (lower.indexOf('ru') === 0) return 'ru';
+        return 'en';
+    }
+
+    function isI18nReady() {
+        return !!(
+            window.i18next
+            && window.i18next.isInitialized === true
+        );
+    }
+
+    function getCurrentLanguage() {
+        if (isI18nReady()) {
+            if (typeof window.i18next.resolvedLanguage === 'string' && window.i18next.resolvedLanguage) {
+                return window.i18next.resolvedLanguage;
+            }
+            if (typeof window.i18next.language === 'string' && window.i18next.language) {
+                return window.i18next.language;
+            }
+        }
+        if (typeof window.currentLanguage === 'string' && window.currentLanguage) {
+            return window.currentLanguage;
+        }
+        if (document && document.documentElement && document.documentElement.lang) {
+            return document.documentElement.lang;
+        }
+        return '';
+    }
+
+    function registerStorageTranslations() {
+        if (storageTranslationsRegistered) return;
+        if (!isI18nReady() || typeof window.i18next.addResourceBundle !== 'function') return;
+
+        Object.keys(STORAGE_I18N_RESOURCES).forEach(function (locale) {
+            window.i18next.addResourceBundle(
+                locale,
+                'translation',
+                { storage: STORAGE_I18N_RESOURCES[locale] },
+                true,
+                true
+            );
+        });
+        storageTranslationsRegistered = true;
+    }
+
+    function getInlineStorageTranslation(key) {
+        if (String(key || '').indexOf('storage.') !== 0) return '';
+        var shortKey = String(key || '').slice('storage.'.length);
+        var locale = resolveStorageLocale(getCurrentLanguage());
+        var bundle = STORAGE_I18N_RESOURCES[locale] || STORAGE_I18N_EN;
+        return String(bundle[shortKey] || STORAGE_I18N_EN[shortKey] || '').trim();
+    }
+
     var state = {
         initialized: false,
         initPromise: null,
@@ -13,24 +379,46 @@
         loadingView: null,
         loadingTitle: null,
         loadingSubtitle: null,
+        maintenanceView: null,
+        maintenanceTitle: null,
+        maintenanceSubtitle: null,
+        maintenanceStatus: null,
+        maintenanceProgressBar: null,
+        maintenanceProgressFill: null,
+        maintenanceProgressLabel: null,
+        maintenanceProgressValue: null,
+        maintenanceProgressSteps: [],
+        maintenancePollPromise: null,
+        completionPollTimer: null,
+        completionPollAttempts: 0,
+        completionNotice: null,
+        completionCard: null,
+        completionTitle: null,
+        completionMessage: null,
+        completionSource: null,
+        completionTarget: null,
+        completionRetained: null,
+        completionCleanupButton: null,
         selectionView: null,
         errorView: null,
         banner: null,
         currentPath: null,
         recommendedPath: null,
-        anchorPath: null,
-        cloudsavePath: null,
-        legacyList: null,
-        recommendedAdvice: null,
-        recommendedRestart: null,
         otherPanel: null,
         legacyChoices: null,
         customInput: null,
+        pickFolderButton: null,
         useOtherButton: null,
         previewPanel: null,
         previewText: null,
         previewSource: null,
         previewTarget: null,
+        previewEstimated: null,
+        previewFreeSpace: null,
+        previewPermission: null,
+        previewWarnings: null,
+        previewBlocking: null,
+        previewConfirmButton: null,
         previewActions: null,
         selectionStatus: null,
         errorText: null,
@@ -38,6 +426,7 @@
         pendingSelection: {
             path: '',
             source: '',
+            preflight: null,
         },
         otherSelection: {
             key: '',
@@ -64,15 +453,30 @@
     state.startupDecision = createDeferred();
 
     function translate(key, fallback) {
-        try {
-            if (typeof window.safeT === 'function') {
-                return window.safeT(key, fallback);
-            }
-            if (typeof window.t === 'function') {
-                var translated = window.t(key, { defaultValue: fallback });
-                if (typeof translated === 'string' && translated) return translated;
-            }
-        } catch (_) {}
+        var normalizedKey = String(key || '');
+        var storageKey = normalizedKey.indexOf('storage.') === 0;
+
+        if (!storageKey || isI18nReady()) {
+            registerStorageTranslations();
+            try {
+                if (typeof window.safeT === 'function') {
+                    var safeTranslated = window.safeT(key, fallback);
+                    if (typeof safeTranslated === 'string' && safeTranslated && safeTranslated !== key) {
+                        return safeTranslated;
+                    }
+                }
+                if (typeof window.t === 'function') {
+                    var translated = window.t(key, { defaultValue: fallback });
+                    if (typeof translated === 'string' && translated && translated !== key) return translated;
+                }
+            } catch (_) {}
+        }
+
+        if (storageKey && isI18nReady()) {
+            var inlineTranslation = getInlineStorageTranslation(key);
+            if (inlineTranslation) return inlineTranslation;
+        }
+
         return fallback || key;
     }
 
@@ -92,6 +496,66 @@
         while (element.firstChild) {
             element.removeChild(element.firstChild);
         }
+    }
+
+    function formatBytes(value) {
+        var size = Number(value || 0);
+        if (!Number.isFinite(size) || size <= 0) {
+            return translate('storage.unknownBytes', '暂未估算');
+        }
+
+        var units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        var index = 0;
+        while (size >= 1024 && index < units.length - 1) {
+            size /= 1024;
+            index += 1;
+        }
+        var digits = size >= 100 || index === 0 ? 0 : 1;
+        return size.toFixed(digits) + ' ' + units[index];
+    }
+
+    function normalizeWarningCodes(value) {
+        return Array.isArray(value) ? value.filter(Boolean) : [];
+    }
+
+    function translateWarningCode(code) {
+        switch (String(code || '').trim()) {
+            case 'sync_folder':
+                return translate('storage.warningSyncFolder', '目标路径位于同步盘目录，迁移期间可能受到同步程序干扰。');
+            case 'external_volume':
+                return translate('storage.warningExternalVolume', '目标路径位于外置卷或挂载卷，稳定性取决于卷是否持续可用。');
+            case 'network_share':
+                return translate('storage.warningNetworkShare', '目标路径位于网络共享目录，连接波动可能影响迁移稳定性。');
+            case 'symlink_path':
+                return translate('storage.warningSymlink', '目标路径命中了符号链接或等价重定向目录，请确认真实落点正确。');
+            default:
+                return code;
+        }
+    }
+
+    function extractPreflightDetails(payload, fallbackTargetPath) {
+        if (!payload || typeof payload !== 'object') {
+            return {
+                target_root: String(fallbackTargetPath || '').trim(),
+                estimated_required_bytes: 0,
+                target_free_bytes: 0,
+                permission_ok: true,
+                warning_codes: [],
+                blocking_error_code: '',
+                blocking_error_message: ''
+            };
+        }
+
+        return {
+            target_root: String(payload.target_root || payload.selected_root || fallbackTargetPath || '').trim(),
+            estimated_required_bytes: Number(payload.estimated_required_bytes || 0),
+            target_free_bytes: Number(payload.target_free_bytes || 0),
+            permission_ok: payload.permission_ok !== false,
+            warning_codes: normalizeWarningCodes(payload.warning_codes),
+            restart_mode: String(payload.restart_mode || 'migrate_after_shutdown').trim(),
+            blocking_error_code: String(payload.blocking_error_code || '').trim(),
+            blocking_error_message: String(payload.blocking_error_message || '').trim()
+        };
     }
 
     function registerActionButton(button) {
@@ -118,14 +582,14 @@
         document.body.classList.toggle('storage-location-modal-open', phase !== 'hidden');
 
         state.loadingView.hidden = phase !== 'loading';
+        state.maintenanceView.hidden = phase !== 'maintenance';
         state.selectionView.hidden = phase !== 'selection_required';
         state.errorView.hidden = phase !== 'error';
     }
 
     function hideOverlay() {
-        // TEMP(development):
-        // 这里只关闭当前页面上的覆盖层；刷新主页后，后端仍会返回 selection_required=true，
-        // 因而开发阶段会再次弹出，便于反复检查首屏展示与交互。
+        // 正常模式下，覆盖层关闭后是否再次出现由后端状态决定：
+        // 首次未完成、存在待迁移检查点或恢复态时仍会阻断，其余情况直接放行。
         setPhase('hidden');
     }
 
@@ -156,6 +620,18 @@
         }
     }
 
+    function setMaintenanceCopy(title, subtitle, status) {
+        if (state.maintenanceTitle && typeof title === 'string' && title) {
+            state.maintenanceTitle.textContent = title;
+        }
+        if (state.maintenanceSubtitle && typeof subtitle === 'string' && subtitle) {
+            state.maintenanceSubtitle.textContent = subtitle;
+        }
+        if (state.maintenanceStatus) {
+            state.maintenanceStatus.textContent = String(status || '').trim();
+        }
+    }
+
     function sleep(ms) {
         return new Promise(function (resolve) {
             window.setTimeout(resolve, ms);
@@ -180,9 +656,21 @@
             return false;
         }
 
-        return !!bootstrapPayload.selection_required
-            || !!bootstrapPayload.migration_pending
+        var blockingReason = String(bootstrapPayload.blocking_reason || '').trim();
+        return blockingReason === 'selection_required'
+            || blockingReason === 'recovery_required'
+            || !!bootstrapPayload.selection_required
             || !!bootstrapPayload.recovery_required;
+    }
+
+    function shouldShowMaintenanceView(bootstrapPayload) {
+        if (!bootstrapPayload || typeof bootstrapPayload !== 'object') {
+            return false;
+        }
+
+        var blockingReason = String(bootstrapPayload.blocking_reason || '').trim();
+        return blockingReason === 'migration_pending'
+            || (!!bootstrapPayload.migration_pending && !bootstrapPayload.recovery_required);
     }
 
     async function fetchSystemStatus() {
@@ -203,6 +691,26 @@
             );
         }
         state.systemStatus = payload;
+        return payload;
+    }
+
+    async function fetchStorageLocationStatus() {
+        var response = await fetch('/api/storage/location/status', {
+            cache: 'no-store',
+            headers: {
+                'Accept': 'application/json'
+            }
+        });
+        if (!response.ok) {
+            throw new Error('storage location status request failed: ' + response.status);
+        }
+
+        var payload = await response.json();
+        if (!payload || payload.ok !== true) {
+            throw new Error(
+                translate('storage.statusUnexpected', '存储维护状态接口返回了未识别的结果。')
+            );
+        }
         return payload;
     }
 
@@ -234,13 +742,14 @@
     function resetPreviewState() {
         state.pendingSelection.path = '';
         state.pendingSelection.source = '';
+        state.pendingSelection.preflight = null;
         if (state.previewPanel) {
             state.previewPanel.hidden = true;
         }
     }
 
     function renderLegacyList() {
-        clearChildren(state.legacyList);
+        if (!state.legacyChoices) return;
         clearChildren(state.legacyChoices);
 
         var legacySources = Array.isArray(state.bootstrap && state.bootstrap.legacy_sources)
@@ -248,29 +757,17 @@
             : [];
 
         if (!legacySources.length) {
-            state.legacyList.appendChild(
-                createElement(
-                    'p',
-                    'storage-location-empty',
-                    translate('storage.legacyEmpty', '未检测到额外的旧数据目录。')
-                )
-            );
             state.legacyChoices.appendChild(
                 createElement(
                     'p',
                     'storage-location-empty',
-                    translate('storage.legacyEmpty', '未检测到额外的旧数据目录。')
+                    translate('storage.legacyChoiceEmpty', '未检测到可直接复用的旧数据目录，可直接选择文件夹或手动输入路径。')
                 )
             );
             return;
         }
 
         legacySources.forEach(function (path, index) {
-            var item = createElement('div', 'storage-location-legacy-item');
-            item.appendChild(createElement('div', 'storage-location-label', translate('storage.legacyPath', '检测到的旧数据目录')));
-            item.appendChild(createElement('div', 'storage-location-path', path));
-            state.legacyList.appendChild(item);
-
             var choice = createElement('button', 'storage-location-choice');
             choice.type = 'button';
             if (state.otherSelection.key === 'legacy-' + index) {
@@ -301,18 +798,14 @@
 
         state.currentPath.textContent = currentRoot;
         state.recommendedPath.textContent = recommendedRoot;
-        state.anchorPath.textContent = state.bootstrap.anchor_root || '';
-        state.cloudsavePath.textContent = state.bootstrap.cloudsave_root || '';
 
-        state.recommendedAdvice.textContent = currentIsRecommended
-            ? translate('storage.recommendationAlreadyCurrent', '当前路径已经是推荐位置，本次不建议额外切换。')
-            : translate('storage.recommendationMoveSuggested', '推荐迁移到平台标准应用数据目录，以便后续固定锚点与 cloudsave 语义一致。');
-
-        state.recommendedRestart.textContent = currentIsRecommended
-            ? translate('storage.recommendationNoRestart', '若使用推荐位置：不需要重启，当前会话可继续。')
-            : translate('storage.recommendationNeedsRestart', '若使用推荐位置：后续阶段需要关闭当前实例、迁移数据并自动重启。');
-
-        if (state.bootstrap.recovery_required) {
+        if (state.bootstrap.migration_pending) {
+            state.banner.hidden = false;
+            state.banner.textContent = translate(
+                'storage.migrationPending',
+                '检测到尚未完成的迁移计划。当前主页会继续保持阻断，直到服务恢复到可继续状态。'
+            );
+        } else if (state.bootstrap.recovery_required) {
             state.banner.hidden = false;
             state.banner.textContent =
                 (state.bootstrap.migration && state.bootstrap.migration.last_error)
@@ -352,25 +845,440 @@
         setPhase('selection_required');
     }
 
-    function showRestartRequired(targetPath, selectionSource) {
+    function getDirectoryPickerStartPath() {
+        var currentInputPath = String(state.customInput && state.customInput.value || '').trim();
+        if (currentInputPath) return currentInputPath;
+        if (String(state.otherSelection.path || '').trim()) return String(state.otherSelection.path || '').trim();
+        if (state.bootstrap) {
+            if (String(state.bootstrap.recommended_root || '').trim()) return String(state.bootstrap.recommended_root || '').trim();
+            if (String(state.bootstrap.current_root || '').trim()) return String(state.bootstrap.current_root || '').trim();
+        }
+        return '';
+    }
+
+    async function pickOtherDirectory() {
+        if (!state.customInput) return;
+
+        setSubmitting(true);
+        setSelectionStatus('', false);
+        try {
+            var response = await fetch('/api/storage/location/pick-directory', {
+                method: 'POST',
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    start_path: getDirectoryPickerStartPath()
+                })
+            });
+
+            var payload = null;
+            try {
+                payload = await response.json();
+            } catch (_) {}
+
+            if (!response.ok || !payload || payload.ok !== true) {
+                throw new Error(
+                    extractResponseError(
+                        payload,
+                        translate('storage.pickFolderFailed', '打开文件夹选择器失败，请手动输入路径。')
+                    )
+                );
+            }
+
+            if (payload.cancelled) {
+                return;
+            }
+
+            var selectedRoot = String(payload.selected_root || '').trim();
+            if (!selectedRoot) {
+                return;
+            }
+
+            state.customInput.value = selectedRoot;
+            state.otherSelection.key = 'custom';
+            state.otherSelection.path = selectedRoot;
+            renderLegacyList();
+            updateOtherButtonState();
+            state.customInput.focus();
+        } catch (error) {
+            setSelectionStatus(
+                String((error && error.message) || error || translate('storage.pickFolderFailed', '打开文件夹选择器失败，请手动输入路径。')),
+                true
+            );
+        } finally {
+            setSubmitting(false);
+        }
+    }
+
+    function updateRestartPreviewPreflight(preflight) {
+        if (!preflight) return;
+        if (state.previewEstimated) {
+            state.previewEstimated.textContent = formatBytes(preflight.estimated_required_bytes);
+        }
+        if (state.previewFreeSpace) {
+            state.previewFreeSpace.textContent = formatBytes(preflight.target_free_bytes);
+        }
+        if (state.previewPermission) {
+            state.previewPermission.textContent = preflight.permission_ok
+                ? translate('storage.permissionOk', '当前可写')
+                : translate('storage.permissionBlocked', '当前不可写');
+        }
+        if (state.previewWarnings) {
+            var warnings = normalizeWarningCodes(preflight.warning_codes).map(translateWarningCode);
+            state.previewWarnings.textContent = warnings.length
+                ? warnings.join('；')
+                : translate('storage.noWarnings', '当前未检测到需要额外提示的风险项。');
+        }
+        if (state.previewBlocking) {
+            var blockingText = String(preflight.blocking_error_message || '').trim();
+            state.previewBlocking.hidden = !blockingText;
+            state.previewBlocking.textContent = blockingText;
+            state.previewBlocking.classList.toggle('storage-location-note--error', !!blockingText);
+        }
+        if (state.previewConfirmButton) {
+            state.previewConfirmButton.dataset.forceDisabled = preflight.blocking_error_code ? '1' : '';
+            state.previewConfirmButton.disabled = state.submitting || !!state.previewConfirmButton.dataset.forceDisabled;
+        }
+    }
+
+    function showRestartRequired(payload, fallbackTargetPath, selectionSource) {
         if (!state.bootstrap || !state.previewPanel) return;
 
-        state.pendingSelection.path = targetPath || '';
+        var preflight = extractPreflightDetails(payload, fallbackTargetPath);
+        state.pendingSelection.path = preflight.target_root || '';
         state.pendingSelection.source = selectionSource || '';
+        state.pendingSelection.preflight = preflight;
         state.previewSource.textContent = state.bootstrap.current_root || '';
-        state.previewTarget.textContent = targetPath || '';
-        state.previewText.textContent = selectionSource === 'recommended'
-            ? translate('storage.recommendedPreviewNotice', '后端已确认：如果后续改用推荐位置，需要先关闭当前实例，再迁移数据并自动重启。')
-            : translate('storage.customPreviewNotice', '后端已确认：如果后续改用这个位置，也需要先关闭当前实例，再迁移数据并自动重启。');
+        state.previewTarget.textContent = preflight.target_root || '';
+        if (preflight.restart_mode === 'rebind_only') {
+            state.previewText.textContent = translate(
+                'storage.rebindPreviewNotice',
+                '后端已确认：原路径已经可以重新连接。后续会关闭当前实例并自动重启到该路径，本次不会复制运行时数据。'
+            );
+            if (state.previewConfirmButton) {
+                state.previewConfirmButton.textContent = translate('storage.confirmReconnect', '确认关闭并重连路径');
+            }
+        } else {
+            state.previewText.textContent = selectionSource === 'recommended'
+                ? translate('storage.recommendedPreviewNotice', '后端已确认：如果后续改用推荐位置，需要先关闭当前实例，再迁移数据并自动重启。')
+                : translate('storage.customPreviewNotice', '后端已确认：如果后续改用这个位置，也需要先关闭当前实例，再迁移数据并自动重启。');
+            if (state.previewConfirmButton) {
+                state.previewConfirmButton.textContent = translate('storage.confirmRestart', '确认关闭并迁移');
+            }
+        }
+        updateRestartPreviewPreflight(preflight);
         state.otherPanel.hidden = true;
         state.previewPanel.hidden = false;
         setSelectionStatus('', false);
         setPhase('selection_required');
     }
 
+    function buildMaintenanceStatusText(statusPayload) {
+        if (!statusPayload || typeof statusPayload !== 'object') {
+            return translate('storage.maintenanceWaitingStatus', '服务尚未恢复前，页面会继续停留在这里并自动重试连接。');
+        }
+
+        var targetRoot = '';
+        if (statusPayload.migration && typeof statusPayload.migration === 'object') {
+            targetRoot = String(statusPayload.migration.target_root || '').trim();
+        }
+        if (!targetRoot && state.pendingSelection && state.pendingSelection.preflight) {
+            targetRoot = String(state.pendingSelection.preflight.target_root || '').trim();
+        }
+        if (targetRoot) {
+            return translate('storage.maintenanceTargetStatus', '目标路径已记录，正在等待服务关闭并恢复：') + ' ' + targetRoot;
+        }
+        if (statusPayload.last_error_summary) {
+            return String(statusPayload.last_error_summary).trim();
+        }
+        return translate('storage.maintenanceWaitingStatus', '服务尚未恢复前，页面会继续停留在这里并自动重试连接。');
+    }
+
+    function buildMaintenanceProgressModel(statusPayload) {
+        var lifecycleState = String(
+            statusPayload && (statusPayload.lifecycle_state || statusPayload.status) || ''
+        ).trim();
+        var migrationStage = String(
+            statusPayload && (statusPayload.migration_stage || (statusPayload.migration && statusPayload.migration.status)) || ''
+        ).trim();
+        var restartMode = String(
+            statusPayload && statusPayload.restart_mode
+            || state.pendingSelection && state.pendingSelection.preflight && state.pendingSelection.preflight.restart_mode
+            || ''
+        ).trim();
+        var isRebindOnly = restartMode === 'rebind_only';
+        var hasError = lifecycleState === 'recovery_required' || migrationStage === 'failed' || migrationStage === 'rollback_required';
+        var percent = 14;
+        var activeIndex = 0;
+        var label = translate('storage.progressWaitingShutdown', '正在等待当前实例安全关闭');
+
+        if (lifecycleState === 'ready') {
+            percent = 100;
+            activeIndex = 3;
+            label = translate('storage.progressRecovered', '服务已恢复，正在重新连接页面');
+        } else {
+            switch (migrationStage) {
+                case 'pending':
+                    percent = 18;
+                    activeIndex = 0;
+                    label = translate('storage.progressPending', '目标路径已记录，正在准备关闭当前实例');
+                    break;
+                case 'preflight':
+                    percent = 34;
+                    activeIndex = 1;
+                    label = isRebindOnly
+                        ? translate('storage.progressRebindPreflight', '正在准备重连原始存储位置')
+                        : translate('storage.progressPreflight', '正在检查目标位置并准备迁移');
+                    break;
+                case 'copying':
+                    percent = 56;
+                    activeIndex = 1;
+                    label = translate('storage.progressCopying', '正在迁移运行时数据');
+                    break;
+                case 'verifying':
+                    percent = 74;
+                    activeIndex = 2;
+                    label = translate('storage.progressVerifying', '正在校验迁移结果');
+                    break;
+                case 'committing':
+                    percent = 86;
+                    activeIndex = 2;
+                    label = translate('storage.progressCommitting', '正在提交新的存储位置');
+                    break;
+                case 'retaining_source':
+                    percent = 94;
+                    activeIndex = 2;
+                    label = translate('storage.progressRetaining', '正在保留旧数据目录以便后续手动清理');
+                    break;
+                case 'completed':
+                    percent = 98;
+                    activeIndex = 3;
+                    label = translate('storage.progressCompleted', '迁移已完成，正在恢复服务');
+                    break;
+                case 'failed':
+                case 'rollback_required':
+                    percent = 100;
+                    activeIndex = 2;
+                    label = translate('storage.progressFailed', '迁移未能完成，正在等待恢复处理');
+                    break;
+                default:
+                    percent = isRebindOnly ? 38 : 14;
+                    activeIndex = isRebindOnly ? 1 : 0;
+                    label = isRebindOnly
+                        ? translate('storage.progressRebinding', '正在关闭当前实例并重连原始路径')
+                        : translate('storage.progressWaitingShutdown', '正在等待当前实例安全关闭');
+                    break;
+            }
+        }
+
+        return {
+            percent: percent,
+            activeIndex: activeIndex,
+            hasError: hasError,
+            label: label,
+            steps: [
+                translate('storage.progressStepShutdown', '关闭当前实例'),
+                translate('storage.progressStepTransfer', '处理存储目录'),
+                translate('storage.progressStepCommit', '校验并生效'),
+                translate('storage.progressStepRecover', '恢复服务')
+            ]
+        };
+    }
+
+    function applyMaintenanceProgress(statusPayload) {
+        if (!state.maintenanceProgressBar || !state.maintenanceProgressFill) {
+            return;
+        }
+
+        var progress = buildMaintenanceProgressModel(statusPayload);
+        state.maintenanceProgressBar.setAttribute('aria-valuenow', String(progress.percent));
+        state.maintenanceProgressBar.setAttribute('aria-valuetext', progress.label);
+        state.maintenanceProgressFill.style.width = progress.percent + '%';
+        if (state.maintenanceProgressLabel) {
+            state.maintenanceProgressLabel.textContent = progress.label;
+        }
+        if (state.maintenanceProgressValue) {
+            state.maintenanceProgressValue.textContent = progress.percent + '%';
+        }
+        state.maintenanceProgressBar.classList.toggle('is-error', !!progress.hasError);
+
+        state.maintenanceProgressSteps.forEach(function (step, index) {
+            step.textContent = progress.steps[index] || '';
+            step.classList.toggle('is-active', index === progress.activeIndex);
+            step.classList.toggle('is-completed', index < progress.activeIndex || progress.percent >= 100);
+        });
+    }
+
+    function buildCompletionNoticeCard() {
+        if (state.completionCard) return state.completionCard;
+
+        var card = createElement('section', 'storage-location-completion-card');
+        card.hidden = true;
+
+        var title = createElement('h3', 'storage-location-panel-title', translate('storage.completionTitle', '存储迁移已完成'));
+        var message = createElement('p', 'storage-location-note', translate('storage.completionMessage', '新的运行目录已经生效，旧数据目录目前仍保留，是否清理由你手动决定。'));
+        var pathList = createElement('div', 'storage-location-path-list');
+
+        var sourceItem = buildInfoPathRow(translate('storage.sourceLabel', '原始路径'), 'completionSource');
+        var targetItem = buildInfoPathRow(translate('storage.targetLabel', '当前生效路径'), 'completionTarget');
+        var retainedItem = buildInfoPathRow(translate('storage.retainedRoot', '当前保留目录'), 'completionRetained');
+        pathList.appendChild(sourceItem);
+        pathList.appendChild(targetItem);
+        pathList.appendChild(retainedItem);
+
+        var actions = createElement('div', 'storage-location-actions');
+        var cleanupButton = createElement('button', 'storage-location-btn storage-location-btn--primary', translate('storage.cleanupRetainedRoot', '清理旧数据目录'));
+        cleanupButton.type = 'button';
+        cleanupButton.addEventListener('click', cleanupRetainedSourceRoot);
+        actions.appendChild(cleanupButton);
+
+        var dismissButton = createElement('button', 'storage-location-btn storage-location-btn--secondary', translate('common.close', '关闭'));
+        dismissButton.type = 'button';
+        dismissButton.addEventListener('click', function () {
+            card.hidden = true;
+        });
+        actions.appendChild(dismissButton);
+
+        state.completionCard = card;
+        state.completionTitle = title;
+        state.completionMessage = message;
+        state.completionCleanupButton = cleanupButton;
+
+        card.appendChild(title);
+        card.appendChild(message);
+        card.appendChild(pathList);
+        card.appendChild(actions);
+        document.body.appendChild(card);
+        return card;
+    }
+
+    function applyCompletionNotice(notice) {
+        state.completionNotice = notice && typeof notice === 'object' ? notice : null;
+        if (!state.completionNotice || state.completionNotice.completed !== true || !state.completionNotice.retained_root_exists) {
+            if (state.completionCard) {
+                state.completionCard.hidden = true;
+            }
+            return;
+        }
+
+        var card = buildCompletionNoticeCard();
+        state.completionMessage.textContent = String(
+            state.completionNotice.message
+            || translate('storage.completionMessage', '新的运行目录已经生效，旧数据目录目前仍保留，是否清理由你手动决定。')
+        ).trim();
+        state.completionSource.textContent = String(state.completionNotice.source_root || '').trim();
+        state.completionTarget.textContent = String(state.completionNotice.target_root || '').trim();
+        state.completionRetained.textContent = String(state.completionNotice.retained_root || '').trim();
+        state.completionCleanupButton.hidden = !state.completionNotice.cleanup_available;
+        card.hidden = false;
+    }
+
+    async function checkReadyStateCompletionNotice() {
+        try {
+            var statusPayload = await fetchStorageLocationStatus();
+            if (statusPayload && statusPayload.ready === true) {
+                applyCompletionNotice(statusPayload.completion_notice);
+                return !!(
+                    statusPayload.completion_notice
+                    && statusPayload.completion_notice.completed === true
+                    && statusPayload.completion_notice.retained_root_exists
+                );
+            }
+        } catch (error) {
+            console.warn('[storage-location] completion notice check failed', error);
+        }
+        return false;
+    }
+
+    function clearCompletionNoticePolling() {
+        if (state.completionPollTimer) {
+            window.clearTimeout(state.completionPollTimer);
+            state.completionPollTimer = null;
+        }
+    }
+
+    function scheduleCompletionNoticePolling() {
+        clearCompletionNoticePolling();
+        state.completionPollAttempts = 0;
+
+        async function tick() {
+            state.completionPollAttempts += 1;
+            var completed = await checkReadyStateCompletionNotice();
+            if (completed || state.completionPollAttempts >= 10) {
+                clearCompletionNoticePolling();
+                return;
+            }
+            state.completionPollTimer = window.setTimeout(tick, 500);
+        }
+
+        state.completionPollTimer = window.setTimeout(tick, 0);
+    }
+
+    async function cleanupRetainedSourceRoot() {
+        if (!state.completionNotice || state.completionNotice.cleanup_available !== true) {
+            return;
+        }
+
+        var retainedRoot = String(state.completionNotice.retained_root || '').trim();
+        if (!retainedRoot) {
+            return;
+        }
+
+        if (!window.confirm(translate('storage.cleanupRetainedRootConfirm', '这会删除当前保留的旧数据目录，且不会影响当前已经生效的新目录。要继续吗？'))) {
+            return;
+        }
+
+        if (state.completionCleanupButton) {
+            state.completionCleanupButton.disabled = true;
+        }
+
+        try {
+            var response = await fetch('/api/storage/location/retained-source/cleanup', {
+                method: 'POST',
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    retained_root: retainedRoot
+                })
+            });
+            var payload = null;
+            try {
+                payload = await response.json();
+            } catch (_) {}
+            if (!response.ok || !payload || payload.ok !== true) {
+                throw new Error(extractResponseError(payload, translate('storage.cleanupRetainedRootFailed', '清理旧数据目录失败，请稍后重试。')));
+            }
+
+            applyCompletionNotice({ completed: false });
+            if (typeof window.showStatusToast === 'function') {
+                window.showStatusToast(
+                    translate('storage.cleanupRetainedRootDone', '旧数据目录已清理，当前仅保留新的运行目录。'),
+                    4000
+                );
+            }
+        } catch (error) {
+            if (state.completionCleanupButton) {
+                state.completionCleanupButton.disabled = false;
+            }
+            if (typeof window.showStatusToast === 'function') {
+                window.showStatusToast(
+                    String((error && error.message) || error || translate('storage.cleanupRetainedRootFailed', '清理旧数据目录失败，请稍后重试。')),
+                    5000
+                );
+            }
+        }
+    }
+
     function extractResponseError(payload, fallbackText) {
         if (payload && typeof payload.error === 'string' && payload.error) {
             return payload.error;
+        }
+        if (payload && typeof payload.blocking_error_message === 'string' && payload.blocking_error_message) {
+            return payload.blocking_error_message;
         }
         if (payload && payload.detail) {
             if (typeof payload.detail === 'string' && payload.detail) {
@@ -446,6 +1354,7 @@
 
             if (payload.result === 'restart_required') {
                 showRestartRequired(
+                    payload,
                     String(payload.selected_root || normalizedTargetPath),
                     selectionSource
                 );
@@ -460,6 +1369,183 @@
             resetPreviewState();
             setSelectionStatus(
                 String((error && error.message) || error || translate('storage.selectionSubmitFailed', '提交存储位置选择失败，请稍后重试。')),
+                true
+            );
+            setPhase('selection_required');
+        } finally {
+            setSubmitting(false);
+        }
+    }
+
+    async function startMaintenancePolling() {
+        if (state.maintenancePollPromise) {
+            return state.maintenancePollPromise;
+        }
+
+        state.maintenancePollPromise = (async function () {
+            var failureCount = 0;
+
+            while (state.phase === 'maintenance') {
+                var pollIntervalMs = 0;
+                try {
+                    var statusPayload = await fetchStorageLocationStatus();
+                    failureCount = 0;
+                    pollIntervalMs = Number(statusPayload.poll_interval_ms || 0);
+
+                    if (statusPayload.ready === true) {
+                        setMaintenanceCopy(
+                            translate('storage.maintenanceTitle', '正在优化存储布局...'),
+                            translate('storage.maintenanceReconnectSubtitle', '检测到服务已经恢复，正在重新连接应用。'),
+                            translate('storage.maintenanceReconnectStatus', '请保持当前页面打开，主页会自动恢复。')
+                        );
+                        applyMaintenanceProgress({
+                            ready: true,
+                            status: 'ready',
+                            lifecycle_state: 'ready',
+                            migration_stage: 'completed'
+                        });
+                        window.location.reload();
+                        return;
+                    }
+
+                    setMaintenanceCopy(
+                        translate('storage.maintenanceTitle', '正在优化存储布局...'),
+                        String(statusPayload.maintenance_message || '').trim()
+                            || translate('storage.maintenanceWaitingSubtitle', '当前实例即将关闭，数据会在关闭后迁移并自动重启。'),
+                        buildMaintenanceStatusText(statusPayload)
+                    );
+                    applyMaintenanceProgress(statusPayload);
+                } catch (_) {
+                    try {
+                        var fallbackStatusPayload = await fetchSystemStatus();
+                        failureCount = 0;
+                        if (!shouldBlockMainUi(fallbackStatusPayload)) {
+                            setMaintenanceCopy(
+                                translate('storage.maintenanceTitle', '正在优化存储布局...'),
+                                translate('storage.maintenanceReconnectSubtitle', '检测到服务已经恢复，正在重新连接应用。'),
+                                translate('storage.maintenanceReconnectStatus', '请保持当前页面打开，主页会自动恢复。')
+                            );
+                            applyMaintenanceProgress({
+                                ready: true,
+                                status: 'ready',
+                                lifecycle_state: 'ready',
+                                migration_stage: 'completed'
+                            });
+                            window.location.reload();
+                            return;
+                        }
+
+                        setMaintenanceCopy(
+                            translate('storage.maintenanceTitle', '正在优化存储布局...'),
+                            translate('storage.maintenanceWaitingSubtitle', '当前实例即将关闭，数据会在关闭后迁移并自动重启。'),
+                            buildMaintenanceStatusText(fallbackStatusPayload)
+                        );
+                        applyMaintenanceProgress(fallbackStatusPayload);
+                    } catch (error) {
+                        failureCount += 1;
+                        setMaintenanceCopy(
+                            translate('storage.maintenanceTitle', '正在优化存储布局...'),
+                            translate('storage.maintenanceWaitingSubtitle', '当前实例即将关闭，数据会在关闭后迁移并自动重启。'),
+                            failureCount <= 1
+                                ? translate('storage.maintenanceClosingStatus', '正在等待当前实例完成关闭...')
+                                : translate('storage.maintenanceOfflineStatus', '连接已暂时中断，正在等待服务恢复。请不要关闭当前页面。')
+                        );
+                        applyMaintenanceProgress({
+                            status: 'maintenance',
+                            lifecycle_state: 'maintenance',
+                            restart_mode: state.pendingSelection && state.pendingSelection.preflight && state.pendingSelection.preflight.restart_mode
+                        });
+                    }
+                }
+
+                if (!(pollIntervalMs > 0)) {
+                    pollIntervalMs = failureCount > 0 ? 1200 : 900;
+                }
+                await sleep(pollIntervalMs);
+            }
+        })();
+
+        return state.maintenancePollPromise;
+    }
+
+    function enterMaintenanceMode(payload) {
+        var migration = payload && payload.migration ? payload.migration : {};
+        var targetRoot = String(
+            migration.target_root
+            || payload.target_root
+            || payload.selected_root
+            || state.pendingSelection.path
+            || ''
+        ).trim();
+
+        setMaintenanceCopy(
+            translate('storage.maintenanceTitle', '正在优化存储布局...'),
+            String(payload && payload.maintenance_message || '').trim()
+                || translate('storage.maintenanceWaitingSubtitle', '当前实例即将关闭，数据会在关闭后迁移并自动重启。'),
+            targetRoot
+                ? translate('storage.maintenanceTargetStatus', '目标路径已记录，正在等待服务关闭并恢复：') + ' ' + targetRoot
+                : buildMaintenanceStatusText(payload)
+        );
+        applyMaintenanceProgress(payload || {});
+        setPhase('maintenance');
+        startMaintenancePolling();
+    }
+
+    async function requestRestart() {
+        if (!state.pendingSelection.path) {
+            setSelectionStatus(
+                translate('storage.selectPathRequired', '请先提供目标路径。'),
+                true
+            );
+            return;
+        }
+
+        setSubmitting(true);
+        setSelectionStatus('', false);
+
+        try {
+            var response = await fetch('/api/storage/location/restart', {
+                method: 'POST',
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    selected_root: state.pendingSelection.path,
+                    selection_source: state.pendingSelection.source || 'user_selected'
+                })
+            });
+
+            var payload = null;
+            try {
+                payload = await response.json();
+            } catch (_) {}
+
+            if (!response.ok) {
+                if (payload && state.previewPanel) {
+                    state.pendingSelection.preflight = extractPreflightDetails(payload, state.pendingSelection.path);
+                    updateRestartPreviewPreflight(state.pendingSelection.preflight);
+                    state.previewPanel.hidden = false;
+                }
+                throw new Error(
+                    extractResponseError(
+                        payload,
+                        translate('storage.restartRequestFailed', '启动关闭与迁移准备失败，请稍后重试。')
+                    )
+                );
+            }
+
+            if (!payload || payload.ok !== true || payload.result !== 'restart_initiated') {
+                throw new Error(
+                    translate('storage.restartRequestUnexpected', '关闭与迁移准备接口返回了未识别的结果。')
+                );
+            }
+
+            enterMaintenanceMode(payload);
+        } catch (error) {
+            console.warn('[storage-location] restart failed', error);
+            setSelectionStatus(
+                String((error && error.message) || error || translate('storage.restartRequestFailed', '启动关闭与迁移准备失败，请稍后重试。')),
                 true
             );
             setPhase('selection_required');
@@ -525,59 +1611,8 @@
         var pathList = createElement('div', 'storage-location-path-list');
         pathList.appendChild(buildInfoPathRow(translate('storage.currentPath', '当前路径'), 'currentPath'));
         pathList.appendChild(buildInfoPathRow(translate('storage.recommendedPath', '推荐路径'), 'recommendedPath'));
-        pathList.appendChild(buildInfoPathRow(translate('storage.anchorRoot', '固定锚点目录'), 'anchorPath'));
-        pathList.appendChild(buildInfoPathRow(translate('storage.cloudsaveRoot', '固定 cloudsave 目录'), 'cloudsavePath'));
         pathsPanel.appendChild(pathList);
-
-        var legacySectionTitle = createElement('h3', 'storage-location-panel-title', translate('storage.legacyDetected', '已检测到的旧数据目录'));
-        pathsPanel.appendChild(legacySectionTitle);
-        var legacyList = createElement('div', 'storage-location-legacy-list');
-        state.legacyList = legacyList;
-        pathsPanel.appendChild(legacyList);
-
-        var summaryPanel = createElement('section', 'storage-location-panel');
-        summaryPanel.appendChild(createElement('h3', 'storage-location-panel-title', translate('storage.decisionSummary', '本阶段提示')));
-        var summaryList = createElement('div', 'storage-location-summary-list');
-
-        var adviceItem = createElement('div', 'storage-location-summary-item');
-        adviceItem.appendChild(createElement('div', 'storage-location-label', translate('storage.shouldMove', '是否建议切换')));
-        var adviceValue = createElement('div', 'storage-location-summary-value');
-        state.recommendedAdvice = adviceValue;
-        adviceItem.appendChild(adviceValue);
-        summaryList.appendChild(adviceItem);
-
-        var restartItem = createElement('div', 'storage-location-summary-item');
-        restartItem.appendChild(createElement('div', 'storage-location-label', translate('storage.restartNeeded', '若使用推荐位置是否需要重启')));
-        var restartValue = createElement('div', 'storage-location-summary-value');
-        state.recommendedRestart = restartValue;
-        restartItem.appendChild(restartValue);
-        summaryList.appendChild(restartItem);
-
-        var noteItem = createElement('div', 'storage-location-summary-item');
-        noteItem.appendChild(createElement('div', 'storage-location-label', translate('storage.stage1Boundary', '当前已完成范围')));
-        noteItem.appendChild(
-            createElement(
-                'div',
-                'storage-location-summary-value',
-                translate('storage.stage1BoundaryText', '当前已接入网页主页内的首轮选择提交；但本阶段仍不会执行真实迁移、会话内切根或自动重启。')
-            )
-        );
-        summaryList.appendChild(noteItem);
-
-        var currentBehaviorItem = createElement('div', 'storage-location-summary-item');
-        currentBehaviorItem.appendChild(createElement('div', 'storage-location-label', translate('storage.currentBehavior', '若保持当前路径')));
-        currentBehaviorItem.appendChild(
-            createElement(
-                'div',
-                'storage-location-summary-value',
-                translate('storage.currentBehaviorText', '当前会话会继续运行，不会关闭应用，也不会在当前会话里切换根目录。')
-            )
-        );
-        summaryList.appendChild(currentBehaviorItem);
-
-        summaryPanel.appendChild(summaryList);
         grid.appendChild(pathsPanel);
-        grid.appendChild(summaryPanel);
         shell.appendChild(grid);
 
         var actions = createElement('div', 'storage-location-actions');
@@ -614,12 +1649,13 @@
         otherPanel.hidden = true;
         state.otherPanel = otherPanel;
         otherPanel.appendChild(createElement('h3', 'storage-location-panel-title', translate('storage.otherPanelTitle', '其他位置')));
-        otherPanel.appendChild(createElement('p', 'storage-location-note', translate('storage.otherPanelNote', '你可以直接使用已检测到的旧数据目录，或者手动输入其它目标路径。第二阶段会先把选择提交给后端做正式判断。')));
+        otherPanel.appendChild(createElement('p', 'storage-location-note', translate('storage.otherPanelNote', '你可以直接复用旧数据目录，也可以选择一个新的文件夹作为后续运行位置。')));
 
         var legacyChoices = createElement('div', 'storage-location-choice-list');
         state.legacyChoices = legacyChoices;
         otherPanel.appendChild(legacyChoices);
 
+        var inputRow = createElement('div', 'storage-location-input-row');
         var customInput = createElement('input', 'storage-location-input');
         customInput.type = 'text';
         customInput.placeholder = translate('storage.customPathPlaceholder', '输入你希望后续迁移到的目标路径');
@@ -633,7 +1669,16 @@
             updateOtherButtonState();
         });
         state.customInput = customInput;
-        otherPanel.appendChild(customInput);
+        inputRow.appendChild(customInput);
+
+        var pickFolderButton = registerActionButton(
+            createElement('button', 'storage-location-btn storage-location-btn--secondary storage-location-btn--compact', translate('storage.pickFolder', '选择文件夹'))
+        );
+        pickFolderButton.type = 'button';
+        pickFolderButton.addEventListener('click', pickOtherDirectory);
+        state.pickFolderButton = pickFolderButton;
+        inputRow.appendChild(pickFolderButton);
+        otherPanel.appendChild(inputRow);
 
         var otherActions = createElement('div', 'storage-location-actions');
         var useOtherButton = registerActionButton(
@@ -672,6 +1717,44 @@
         targetItem.appendChild(previewTarget);
         previewList.appendChild(targetItem);
         previewPanel.appendChild(previewList);
+
+        var preflightList = createElement('div', 'storage-location-summary-list');
+
+        var estimatedItem = createElement('div', 'storage-location-summary-item');
+        estimatedItem.appendChild(createElement('div', 'storage-location-label', translate('storage.estimatedPayload', '预计迁移体量')));
+        var previewEstimated = createElement('div', 'storage-location-summary-value');
+        state.previewEstimated = previewEstimated;
+        estimatedItem.appendChild(previewEstimated);
+        preflightList.appendChild(estimatedItem);
+
+        var freeSpaceItem = createElement('div', 'storage-location-summary-item');
+        freeSpaceItem.appendChild(createElement('div', 'storage-location-label', translate('storage.targetFreeSpace', '目标卷剩余空间')));
+        var previewFreeSpace = createElement('div', 'storage-location-summary-value');
+        state.previewFreeSpace = previewFreeSpace;
+        freeSpaceItem.appendChild(previewFreeSpace);
+        preflightList.appendChild(freeSpaceItem);
+
+        var permissionItem = createElement('div', 'storage-location-summary-item');
+        permissionItem.appendChild(createElement('div', 'storage-location-label', translate('storage.permissionCheck', '目标路径写入权限')));
+        var previewPermission = createElement('div', 'storage-location-summary-value');
+        state.previewPermission = previewPermission;
+        permissionItem.appendChild(previewPermission);
+        preflightList.appendChild(permissionItem);
+
+        var warningsItem = createElement('div', 'storage-location-summary-item');
+        warningsItem.appendChild(createElement('div', 'storage-location-label', translate('storage.warningSummary', '额外风险提示')));
+        var previewWarnings = createElement('div', 'storage-location-summary-value');
+        state.previewWarnings = previewWarnings;
+        warningsItem.appendChild(previewWarnings);
+        preflightList.appendChild(warningsItem);
+
+        previewPanel.appendChild(preflightList);
+
+        var previewBlocking = createElement('p', 'storage-location-note');
+        previewBlocking.hidden = true;
+        state.previewBlocking = previewBlocking;
+        previewPanel.appendChild(previewBlocking);
+
         var previewSteps = createElement('div', 'storage-location-preview-steps');
         previewSteps.appendChild(
             createElement(
@@ -684,7 +1767,7 @@
             createElement(
                 'div',
                 'storage-location-preview-step',
-                translate('storage.previewStepMigrate', '2. 关闭后才会迁移数据。')
+                translate('storage.previewStepMigrate', '2. 关闭后会恢复目标存储布局；必要时再迁移数据。')
             )
         );
         previewSteps.appendChild(
@@ -706,11 +1789,19 @@
             createElement(
                 'p',
                 'storage-location-note',
-                translate('storage.previewBoundary', '第二阶段已经把“选择提交到后端”接通；但当前仍不会在本会话里热切根，也不会提前把稳定根改成新路径。真实关闭、迁移和自动重启将在后续阶段接入。')
+                translate('storage.previewBoundary', '当前不会在本会话里热切根，也不会提前把稳定根改成新路径。确认后会由后端按设计顺序完成关闭、必要迁移、自动重启与最终布局恢复。')
             )
         );
 
         var previewActions = createElement('div', 'storage-location-restart-actions');
+        var confirmRestartButton = registerActionButton(
+            createElement('button', 'storage-location-btn storage-location-btn--primary', translate('storage.confirmRestart', '确认关闭并迁移'))
+        );
+        confirmRestartButton.type = 'button';
+        confirmRestartButton.addEventListener('click', requestRestart);
+        state.previewConfirmButton = confirmRestartButton;
+        previewActions.appendChild(confirmRestartButton);
+
         var backButton = registerActionButton(
             createElement('button', 'storage-location-btn storage-location-btn--secondary', translate('common.back', '返回重新选择'))
         );
@@ -744,6 +1835,78 @@
         view.appendChild(shell);
 
         state.loadingView = view;
+        return view;
+    }
+
+    function buildMaintenanceView() {
+        var view = createElement('section', 'storage-location-view');
+        view.hidden = true;
+
+        var shell = createElement('div', 'storage-location-shell');
+        var hero = createElement('div', 'storage-location-hero');
+        hero.appendChild(createElement('span', 'storage-location-badge', translate('storage.badge', '存储位置')));
+
+        var maintenanceTitle = createElement('h2', 'storage-location-title', translate('storage.maintenanceTitle', '正在优化存储布局...'));
+        var maintenanceSubtitle = createElement('p', 'storage-location-subtitle', translate('storage.maintenanceWaitingSubtitle', '当前实例即将关闭，数据会在关闭后迁移并自动重启。'));
+        var maintenanceStatus = createElement('p', 'storage-location-note');
+        var maintenanceProgress = createElement('section', 'storage-location-progress');
+        var progressMeta = createElement('div', 'storage-location-progress-meta');
+        var progressLabel = createElement('div', 'storage-location-progress-label', translate('storage.progressWaitingShutdown', '正在等待当前实例安全关闭'));
+        var progressValue = createElement('div', 'storage-location-progress-value', '14%');
+        var progressTrack = createElement('div', 'storage-location-progress-track');
+        progressTrack.setAttribute('role', 'progressbar');
+        progressTrack.setAttribute('aria-valuemin', '0');
+        progressTrack.setAttribute('aria-valuemax', '100');
+        progressTrack.setAttribute('aria-valuenow', '14');
+        progressTrack.setAttribute('aria-valuetext', translate('storage.progressWaitingShutdown', '正在等待当前实例安全关闭'));
+        var progressFill = createElement('div', 'storage-location-progress-fill');
+        progressTrack.appendChild(progressFill);
+        progressMeta.appendChild(progressLabel);
+        progressMeta.appendChild(progressValue);
+        maintenanceProgress.appendChild(progressMeta);
+        maintenanceProgress.appendChild(progressTrack);
+
+        var progressSteps = createElement('div', 'storage-location-progress-steps');
+        var maintenanceStepItems = [];
+        [
+            translate('storage.progressStepShutdown', '关闭当前实例'),
+            translate('storage.progressStepTransfer', '处理存储目录'),
+            translate('storage.progressStepCommit', '校验并生效'),
+            translate('storage.progressStepRecover', '恢复服务')
+        ].forEach(function (text, index) {
+            var step = createElement('div', 'storage-location-progress-step', text);
+            if (index === 0) {
+                step.classList.add('is-active');
+            }
+            progressSteps.appendChild(step);
+            maintenanceStepItems.push(step);
+        });
+        maintenanceProgress.appendChild(progressSteps);
+
+        state.maintenanceTitle = maintenanceTitle;
+        state.maintenanceSubtitle = maintenanceSubtitle;
+        state.maintenanceStatus = maintenanceStatus;
+        state.maintenanceProgressBar = progressTrack;
+        state.maintenanceProgressFill = progressFill;
+        state.maintenanceProgressLabel = progressLabel;
+        state.maintenanceProgressValue = progressValue;
+        state.maintenanceProgressSteps = maintenanceStepItems;
+
+        hero.appendChild(maintenanceTitle);
+        hero.appendChild(maintenanceSubtitle);
+        hero.appendChild(maintenanceStatus);
+        shell.appendChild(hero);
+        shell.appendChild(maintenanceProgress);
+        shell.appendChild(
+            createElement(
+                'p',
+                'storage-location-note',
+                translate('storage.maintenanceNote', '连接短暂中断属于正常现象。页面会在服务恢复后自动重新连接。')
+            )
+        );
+        view.appendChild(shell);
+
+        state.maintenanceView = view;
         return view;
     }
 
@@ -787,6 +1950,7 @@
         modal.setAttribute('aria-label', translate('storage.dialogLabel', '存储位置选择'));
 
         modal.appendChild(buildLoadingView());
+        modal.appendChild(buildMaintenanceView());
         modal.appendChild(buildSelectionView());
         modal.appendChild(buildErrorView());
 
@@ -813,6 +1977,10 @@
             }
 
             state.bootstrap = await response.json();
+            if (shouldShowMaintenanceView(state.bootstrap)) {
+                enterMaintenanceMode(state.bootstrap);
+                return;
+            }
             updateSelectionSummary();
             if (shouldShowSelectionView(state.bootstrap)) {
                 setPhase('selection_required');
@@ -824,6 +1992,7 @@
                 canContinue: true,
                 reason: 'status_ready',
             });
+            scheduleCompletionNoticePolling();
         } catch (error) {
             console.warn('[storage-location] bootstrap failed', error);
             showError(error);
@@ -846,6 +2015,7 @@
                     canContinue: true,
                     reason: 'status_ready',
                 });
+                scheduleCompletionNoticePolling();
                 return;
             }
 
@@ -881,6 +2051,9 @@
         init: init,
         waitUntilMainUiAllowed: function () {
             return init();
+        },
+        refreshCompletionNotice: function () {
+            return checkReadyStateCompletionNotice();
         },
     };
 
