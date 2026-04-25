@@ -589,6 +589,9 @@ class PluginContext:
         meta = dict(metadata or {})
         meta.setdefault("media_type", "image")
 
+        if image_data is not None and image_url is not None:
+            raise ValueError("export_push_image requires either image_data or image_url, not both")
+
         if image_data is not None:
             limit = int(EXPORT_INLINE_BINARY_MAX_BYTES) if EXPORT_INLINE_BINARY_MAX_BYTES is not None else 0
             if limit > 0 and len(image_data) > limit:

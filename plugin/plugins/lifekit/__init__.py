@@ -84,7 +84,7 @@ class LifeKitPlugin(NekoPluginBase):
     async def startup(self, **_):
         await self._reload_config()
 
-        # 确保 store 启用（和 memo_reminder 同样的处理）
+        # 尝试从配置启用 store（如果配置中明确启用但 init 时未生效）
         if not self.store.enabled:
             store_cfg = (await self.config.dump(timeout=5.0) or {}).get("plugin", {})
             store_cfg = store_cfg.get("store", {}) if isinstance(store_cfg, dict) else {}
@@ -92,7 +92,7 @@ class LifeKitPlugin(NekoPluginBase):
                 self.store.enabled = True
                 self.logger.info("Store enabled from config (was disabled at init)")
             else:
-                self.store.enabled = True
+                self.logger.info("Store is disabled — location save/load will be unavailable")
                 self.logger.warning("Store force-enabled (config missing plugin.store.enabled)")
 
         # 从主干查询全局语言

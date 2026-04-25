@@ -156,8 +156,10 @@ class OverpassPOI:
     ) -> List[POIItem]:
         tag = self._TAG_MAP.get(query, "")
         if not tag:
-            # 通用搜索：用 name 匹配
-            tag_filter = f'["name"~"{query}",i]'
+            # 通用搜索：用 name 匹配 — 转义正则和 Overpass QL 特殊字符
+            import re
+            escaped = re.sub(r'(["\\\.\*\+\?\(\)\[\]\{\}\|^$])', r'\\\1', query)
+            tag_filter = f'["name"~"{escaped}",i]'
         else:
             k, v = tag.split("=", 1)
             tag_filter = f'["{k}"="{v}"]'
