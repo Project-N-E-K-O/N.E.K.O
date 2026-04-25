@@ -148,19 +148,32 @@ def test_hard_filter_drops_protected_persona():
     assert {o["id"] for o in out} == {"p.master.a"}
 
 
-def test_hard_filter_drops_terminal_reflections():
-    """promoted/denied/archived/etc reflections shouldn't appear in
-    the active signal pool. Same exclusion as the render path."""
-    from memory.reflection import REFLECTION_TERMINAL_STATUSES
+def test_hard_filter_drops_only_dead_reflection_statuses():
+    """The drop set is intentionally a *subset* of
+    `REFLECTION_TERMINAL_STATUSES` — `promoted` is kept because the
+    upstream `_aload_signal_targets` ships it as part of the
+    `confirmed + promoted` Stage-2 observation pool (a promoted
+    reflection is the strongest signal we have: confirmed,
+    consolidated, still active).  Filtering it out here would
+    silently shrink the rerank pool below what the legacy path
+    produced (CodeRabbit PR-957 Major regression test).
+
+    Truly-dead statuses (denied / archived / merged / promote_blocked)
+    still get dropped — those are dead-letter or already consumed."""
     obs = [
-        _obs("r.x", "kept", target_type="reflection", status="confirmed"),
+        _obs("r.confirmed", "kept", target_type="reflection", status="confirmed"),
+        _obs("r.promoted", "kept", target_type="reflection", status="promoted"),
     ]
-    for status in REFLECTION_TERMINAL_STATUSES:
+    drop_statuses = ("denied", "archived", "merged", "promote_blocked")
+    for status in drop_statuses:
         obs.append(_obs(f"r.{status}", "drop", target_type="reflection", status=status))
     out = MemoryRecallReranker._hard_filter(obs)
     ids = {o["id"] for o in out}
-    assert "r.x" in ids
-    for status in REFLECTION_TERMINAL_STATUSES:
+    assert "r.confirmed" in ids
+    assert "r.promoted" in ids, (
+        "promoted must NOT be filtered — upstream pool includes it"
+    )
+    for status in drop_statuses:
         assert f"r.{status}" not in ids
 
 
@@ -254,9 +267,9 @@ async def test_coarse_rank_breaks_ties_with_evidence_score():
 
 @pytest.mark.asyncio
 async def test_coarse_rank_demotes_candidates_without_embedding():
-    """A row with embedding=None gets cosine = -1 so it ranks below
-    everything that does have a vector — the LLM rerank can still
-    pick it up if it's the right answer text-wise."""
+    """A row with embedding=None falls below the cosine-ranked
+    embedded ones — the LLM rerank can still pick it up if it's the
+    right answer text-wise. With k=2 and one of each, both survive."""
     svc = _FakeService(
         available=True,
         vector_factory=lambda text: [1.0, 0.0],
@@ -268,6 +281,84 @@ async def test_coarse_rank_demotes_candidates_without_embedding():
     ]
     out = await r._coarse_rank(obs, query_texts=["q"], k=2)
     assert [o["id"] for o in out] == ["with_vec", "no_vec"]
+
+
+@pytest.mark.asyncio
+async def test_coarse_rank_reserves_quota_for_unembedded_candidates():
+    """CodeRabbit PR-957 Major regression: when there are ≥k embedded
+    candidates, the previous implementation tagged un-embedded with
+    cosine=-1 and let `[:k]` truncate them off entirely, so the LLM
+    rerank never saw them despite the docstring promising they'd
+    "fall through". Fix: split into two pools and reserve a quota
+    for un-embedded entries (top by evidence_score) so they reach
+    the LLM for text-based matching."""
+    svc = _FakeService(
+        available=True,
+        vector_factory=lambda text: [1.0, 0.0],
+    )
+    r = _make_reranker(svc)
+    # 6 embedded + 3 un-embedded; k=6 (would be budget*COARSE_OVERSAMPLE
+    # in real call). Without the fix, all 6 slots go to embedded, and
+    # the un-embedded ones (even with high evidence_score) get starved.
+    obs = []
+    for i in range(6):
+        obs.append(_obs(f"emb{i}", "t", score=float(i), embedding=[1.0, 0.0]))
+    for i in range(3):
+        # High evidence_score so they'd win on a fairer ranking.
+        obs.append(_obs(f"unemb{i}", "t", score=100.0 + i))
+    out = await r._coarse_rank(obs, query_texts=["q"], k=6)
+    # With the quota fix, at least one un-embedded entry must reach
+    # the output so the LLM rerank gets a chance at it.
+    out_ids = {o["id"] for o in out}
+    unembedded_in_out = {oid for oid in out_ids if oid.startswith("unemb")}
+    assert len(unembedded_in_out) >= 1, (
+        "un-embedded entries must reserve at least one slot in the "
+        "coarse pool — otherwise text-matching by LLM is impossible"
+    )
+    # And we still emit exactly k entries.
+    assert len(out) == 6
+
+
+@pytest.mark.asyncio
+async def test_coarse_rank_unembedded_quota_picks_highest_evidence():
+    """When the un-embedded slot count is smaller than the un-embedded
+    pool, slot allocation goes to the highest-evidence_score entries —
+    evidence is the only signal we have for them.
+
+    k=4 with COARSE_OVERSAMPLE=3 yields quota = max(1, 4 // 4) = 1, so
+    exactly one un-embedded entry should reach the output, and it
+    should be the higher-score one."""
+    svc = _FakeService(
+        available=True,
+        vector_factory=lambda text: [1.0, 0.0],
+    )
+    r = _make_reranker(svc)
+    obs = [_obs(f"emb{i}", "t", score=0.0, embedding=[1.0, 0.0])
+           for i in range(8)]
+    obs.append(_obs("unemb_low", "t", score=1.0))
+    obs.append(_obs("unemb_high", "t", score=99.0))
+    out = await r._coarse_rank(obs, query_texts=["q"], k=4)
+    out_ids = {o["id"] for o in out}
+    # Quota=1 → only the higher-evidence un-embedded entry survives.
+    assert "unemb_high" in out_ids
+    assert "unemb_low" not in out_ids
+
+
+@pytest.mark.asyncio
+async def test_coarse_rank_no_unembedded_uses_full_quota_for_embedded():
+    """When the pool has no un-embedded entries, the full k goes to
+    embedded — quota mechanism mustn't waste slots on a pool that
+    doesn't exist."""
+    svc = _FakeService(
+        available=True,
+        vector_factory=lambda text: [1.0, 0.0],
+    )
+    r = _make_reranker(svc)
+    obs = [_obs(f"emb{i}", "t", score=float(i), embedding=[1.0, 0.0])
+           for i in range(6)]
+    out = await r._coarse_rank(obs, query_texts=["q"], k=4)
+    assert len(out) == 4
+    assert all(o["id"].startswith("emb") for o in out)
 
 
 # ── phase 3: LLM rerank ──────────────────────────────────────────────

@@ -161,6 +161,19 @@ class MemoryRecallReranker:
 
     # ── phase 1: hard filter ─────────────────────────────────────────
 
+    # Reflection statuses we drop from the rerank pool.  Note that
+    # ``promoted`` is NOT here even though it lives in
+    # `memory.reflection.REFLECTION_TERMINAL_STATUSES`: the upstream
+    # `_aload_signal_targets` deliberately ships ``confirmed +
+    # promoted`` as Stage-2 observation candidates (a promoted
+    # reflection is the strongest signal we have — confirmed,
+    # consolidated into persona, and still active).  Filtering it out
+    # here would silently shrink the pool below what the legacy path
+    # produced (CodeRabbit PR-957 Major).
+    _REFLECTION_DROP_STATUSES = frozenset({
+        'denied', 'archived', 'merged', 'promote_blocked',
+    })
+
     @staticmethod
     def _hard_filter(observations: list[dict]) -> list[dict]:
         """Drop everything we know up-front shouldn't reach the LLM:
@@ -168,8 +181,10 @@ class MemoryRecallReranker:
           * ``score < 0`` — evidence net-negative; user has been
             disputing this more than confirming it.
           * suppressed — explicit "AI is over-mentioning this" gate.
-          * terminal-status reflection — promoted/denied/archived/etc
-            shouldn't generate fresh signals.
+          * truly-dead reflection (denied / archived / merged /
+            promote_blocked) — these are dead-letter or already
+            consumed, can't generate fresh signals.  ``promoted`` is
+            kept because the upstream pool includes it.
           * protected persona — character-card source; evidence is
             effectively infinite there, no signal would ever flip it.
 
@@ -177,8 +192,6 @@ class MemoryRecallReranker:
         consolidated into one function so callers don't duplicate the
         list.
         """
-        from memory.reflection import REFLECTION_TERMINAL_STATUSES
-
         out: list[dict] = []
         for o in observations:
             if not isinstance(o, dict):
@@ -192,7 +205,8 @@ class MemoryRecallReranker:
                 continue
             target_type = o.get('target_type')
             status = o.get('status')
-            if target_type == 'reflection' and status in REFLECTION_TERMINAL_STATUSES:
+            if (target_type == 'reflection'
+                    and status in MemoryRecallReranker._REFLECTION_DROP_STATUSES):
                 continue
             text = o.get('text', '')
             if not text or not text.strip():
@@ -244,7 +258,16 @@ class MemoryRecallReranker:
         if not query_vectors:
             return evidence_sorted[:k]
 
-        scored: list[tuple[float, dict]] = []
+        # Split into two pools so un-embedded candidates can't be
+        # starved out by embedded ones at the [:k] truncation
+        # (CodeRabbit PR-957 Major).  The original implementation
+        # tagged un-embedded with cosine = -1.0, then sorted+sliced —
+        # whenever there were ≥k embedded candidates, every
+        # unembedded one fell off the cliff before reaching the LLM
+        # rerank, even though the docstring promised they'd "fall
+        # through to the LLM rerank below the cosine-ranked rows".
+        embedded_scored: list[tuple[float, dict]] = []
+        unembedded: list[dict] = []
         for o in observations:
             text = o.get('text', '')
             cvec = o.get('embedding')
@@ -255,15 +278,36 @@ class MemoryRecallReranker:
                 best = max(
                     cosine_similarity(cvec, qv) for qv in query_vectors
                 )
+                embedded_scored.append((best, o))
             else:
-                best = -1.0  # below all cosine values, but above "missing"
-            scored.append((best, o))
-        # Sort: cosine DESC, evidence_score DESC as tie-breaker.
-        scored.sort(
+                unembedded.append(o)
+        # Sort embedded by cosine DESC, evidence_score DESC tie-break.
+        embedded_scored.sort(
             key=lambda pair: (pair[0], pair[1].get('score', 0.0)),
             reverse=True,
         )
-        return [o for _, o in scored[:k]]
+        embedded_ranked = [o for _, o in embedded_scored]
+        # Sort unembedded by evidence_score DESC — the only signal we
+        # have for them, and the legacy fallback for the whole pool
+        # uses the same key.
+        unembedded.sort(key=lambda o: o.get('score', 0.0), reverse=True)
+        # Reserve up to UNEMBEDDED_QUOTA slots for unembedded entries
+        # so the LLM rerank gets a chance to text-match them.  Fill
+        # the rest with embedded entries (the cosine-ranked majority).
+        unembed_quota = max(1, k // (COARSE_OVERSAMPLE + 1)) if unembedded else 0
+        unembed_quota = min(unembed_quota, len(unembedded))
+        embed_slot_count = max(0, k - unembed_quota)
+        result = (
+            embedded_ranked[:embed_slot_count]
+            + unembedded[:unembed_quota]
+        )
+        # If the embedded pool was smaller than its allotment, top up
+        # from the unembedded tail so we always emit min(k, total).
+        deficit = k - len(result)
+        if deficit > 0:
+            tail = unembedded[unembed_quota:unembed_quota + deficit]
+            result.extend(tail)
+        return result[:k]
 
     # ── phase 3: LLM rerank ──────────────────────────────────────────
 
