@@ -1,4 +1,4 @@
-"""Weather plugin routers."""
+"""Life Kit plugin routers."""
 
 from .current import CurrentWeatherRouter
 from .travel import TravelAdviceRouter
