@@ -1,11 +1,10 @@
 # -*- coding: utf-8 -*-
 """Unit tests for reflection ontology constraints (RFC memory-enhancements §3).
 
-The synthesize flow parses relation_type / confidence / temporal_scope from
-the LLM response and validates them against RELATION_TYPES /
-ENTITY_RELATION_MAP / MIN_REFLECTION_CONFIDENCE. Invalid or low-confidence
-fields degrade to None (soft fail per §3.3.6) — the reflection text itself
-is preserved."""
+The synthesize flow parses relation_type / temporal_scope from the LLM
+response and validates them against RELATION_TYPES / ENTITY_RELATION_MAP.
+Invalid fields degrade to None (soft fail) rather than dropping the
+whole reflection — the text itself is always preserved."""
 from __future__ import annotations
 
 import json
@@ -84,56 +83,36 @@ async def _run_synth(fs, re, payload: dict):
 
 def test_validate_accepts_matching_entity_and_type():
     from memory.reflection import _validate_reflection_ontology
-    ok, _ = _validate_reflection_ontology("master", "preference", 0.9, "current", "主人喜欢猫")
+    ok, _ = _validate_reflection_ontology("master", "preference", "current", "主人喜欢猫")
     assert ok is True
 
 
 def test_validate_rejects_cross_entity_relation():
     """master 不能用 dynamic（属于 relationship）。"""
     from memory.reflection import _validate_reflection_ontology
-    ok, reason = _validate_reflection_ontology("master", "dynamic", 0.9, "current", "x")
+    ok, reason = _validate_reflection_ontology("master", "dynamic", "current", "x")
     assert ok is False
     assert "not valid for entity" in reason
 
 
 def test_validate_rejects_unknown_relation_type():
     from memory.reflection import _validate_reflection_ontology
-    ok, reason = _validate_reflection_ontology("master", "nonsense", 0.9, "current", "x")
+    ok, reason = _validate_reflection_ontology("master", "nonsense", "current", "x")
     assert ok is False
     assert "unknown relation_type" in reason
 
 
-def test_validate_rejects_low_confidence():
+def test_validate_rejects_unknown_temporal_scope():
     from memory.reflection import _validate_reflection_ontology
-    ok, reason = _validate_reflection_ontology("master", "preference", 0.3, "current", "x")
+    ok, reason = _validate_reflection_ontology("master", "preference", "yesterday", "x")
     assert ok is False
-    assert "low confidence" in reason
-
-
-def test_validate_rejects_out_of_range_confidence():
-    """prompt contract is 0.0–1.0; hallucinated 1.7 must not persist."""
-    from memory.reflection import _validate_reflection_ontology
-    ok, reason = _validate_reflection_ontology("master", "preference", 1.7, "current", "x")
-    assert ok is False
-    assert "out of range" in reason
-    ok2, reason2 = _validate_reflection_ontology("master", "preference", -0.2, "current", "x")
-    assert ok2 is False
-    assert "out of range" in reason2
-
-
-def test_validate_rejects_non_finite_confidence():
-    """NaN / Infinity must not land on disk — they serialize to non-standard JSON."""
-    from memory.reflection import _validate_reflection_ontology
-    for bad in (float("nan"), float("inf"), float("-inf")):
-        ok, reason = _validate_reflection_ontology("master", "preference", bad, "current", "x")
-        assert ok is False, f"{bad!r} should be rejected"
-        assert "non-finite" in reason
+    assert "temporal_scope" in reason
 
 
 def test_validate_rejects_overlong_text():
     from memory.reflection import _validate_reflection_ontology
     ok, reason = _validate_reflection_ontology(
-        "master", "preference", 0.9, "current", "x" * 250,
+        "master", "preference", "current", "x" * 250,
     )
     assert ok is False
     assert "text too long" in reason
@@ -142,7 +121,7 @@ def test_validate_rejects_overlong_text():
 def test_validate_tolerates_missing_optional_fields():
     """None-valued optional fields should not cause validation to fail."""
     from memory.reflection import _validate_reflection_ontology
-    ok, _ = _validate_reflection_ontology("master", None, None, None, "主人喜欢猫")
+    ok, _ = _validate_reflection_ontology("master", None, None, "主人喜欢猫")
     assert ok is True
 
 
@@ -156,7 +135,6 @@ async def test_synthesize_persists_valid_ontology_fields(tmp_path):
         "reflection": "主人偏好用 Python 而非 JavaScript",
         "entity": "master",
         "relation_type": "preference",
-        "confidence": 0.9,
         "temporal_scope": "current",
     })
     assert len(results) == 1
@@ -164,8 +142,9 @@ async def test_synthesize_persists_valid_ontology_fields(tmp_path):
     reflections = await re._aload_reflections_full("小天")
     r = reflections[0]
     assert r["relation_type"] == "preference"
-    assert r["confidence"] == pytest.approx(0.9)
     assert r["temporal_scope"] == "current"
+    # `confidence` is no longer part of the schema.
+    assert "confidence" not in r
 
 
 @pytest.mark.asyncio
@@ -176,7 +155,6 @@ async def test_synthesize_degrades_invalid_relation_type_to_null(tmp_path):
         "reflection": "观察到的某个模式",
         "entity": "master",
         "relation_type": "dynamic",  # illegal: dynamic is relationship-only
-        "confidence": 0.9,
         "temporal_scope": "current",
     })
     assert len(results) == 1
@@ -186,7 +164,6 @@ async def test_synthesize_degrades_invalid_relation_type_to_null(tmp_path):
     # Soft fail: text preserved but ontology stripped.
     assert r["text"] == "观察到的某个模式"
     assert r["relation_type"] is None
-    assert r["confidence"] is None
     assert r["temporal_scope"] is None
 
 
@@ -199,7 +176,6 @@ async def test_synthesize_demotes_subject_alongside_other_ontology(tmp_path):
         "reflection": "某观察",
         "entity": "master",
         "relation_type": "dynamic",  # illegal for master → triggers demotion
-        "confidence": 0.9,
         "temporal_scope": "current",
         "subject": "主人",
     })
@@ -207,27 +183,8 @@ async def test_synthesize_demotes_subject_alongside_other_ontology(tmp_path):
     reflections = await re._aload_reflections_full("小天")
     r = reflections[0]
     assert r["relation_type"] is None
-    assert r["confidence"] is None
     assert r["temporal_scope"] is None
     assert r["subject"] is None
-
-
-@pytest.mark.asyncio
-async def test_synthesize_degrades_low_confidence_to_null(tmp_path):
-    fs, re = _install(str(tmp_path))
-    results = await _run_synth(fs, re, {
-        "reflection": "某个不太确定的观察",
-        "entity": "master",
-        "relation_type": "preference",
-        "confidence": 0.2,
-        "temporal_scope": "current",
-    })
-    assert len(results) == 1
-
-    reflections = await re._aload_reflections_full("小天")
-    r = reflections[0]
-    assert r["relation_type"] is None
-    assert r["confidence"] is None
 
 
 @pytest.mark.asyncio
@@ -243,27 +200,10 @@ async def test_synthesize_handles_legacy_prompt_missing_ontology(tmp_path):
     reflections = await re._aload_reflections_full("小天")
     r = reflections[0]
     assert r["relation_type"] is None
-    assert r["confidence"] is None
     assert r["temporal_scope"] is None
     # Entity and text still carry through.
     assert r["entity"] == "relationship"
     assert r["text"] == "legacy-style reflection"
-
-
-@pytest.mark.asyncio
-async def test_synthesize_tolerates_non_numeric_confidence(tmp_path):
-    """LLM 偶尔会返回 confidence 为字符串 'high'；降级为 null，不应崩溃。"""
-    fs, re = _install(str(tmp_path))
-    results = await _run_synth(fs, re, {
-        "reflection": "示例反思",
-        "entity": "master",
-        "relation_type": "preference",
-        "confidence": "high",
-        "temporal_scope": "current",
-    })
-    assert len(results) == 1
-    reflections = await re._aload_reflections_full("小天")
-    assert reflections[0]["confidence"] is None
 
 
 def test_normalize_reflection_backfills_ontology_defaults():
@@ -272,6 +212,7 @@ def test_normalize_reflection_backfills_ontology_defaults():
     legacy = {"id": "r1", "text": "旧反思", "entity": "master", "status": "pending"}
     out = ReflectionEngine._normalize_reflection(legacy)
     assert out["relation_type"] is None
-    assert out["confidence"] is None
     assert out["temporal_scope"] is None
     assert out["subject"] is None
+    # `confidence` is intentionally not in the default schema anymore.
+    assert "confidence" not in out

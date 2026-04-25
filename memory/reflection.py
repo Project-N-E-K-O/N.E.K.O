@@ -21,7 +21,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import math
 import os
 import threading
 from datetime import datetime, timedelta
@@ -104,49 +103,26 @@ ENTITY_RELATION_MAP: dict[str, frozenset[str]] = {
 
 TEMPORAL_SCOPES = frozenset({'current', 'past', 'ongoing'})
 
-# Minimum LLM self-rated confidence to accept a reflection outright.
-# Below this the ontology fields are stripped (degraded to null) but the
-# reflection text itself still lands — RFC §3.3.6 "不把本体约束做成硬失败".
-MIN_REFLECTION_CONFIDENCE = 0.5
-
 # Soft cap on reflection text length. Beyond this, the ontology fields
-# are stripped because the text is likely a compound/multi-fact statement
-# (§3.3.4 validator). The reflection itself still persists unchanged so
-# no information is lost.
+# are stripped because the text is likely a compound/multi-fact statement.
+# The reflection itself still persists unchanged so no information is lost.
 MAX_REFLECTION_TEXT_CHARS = 200
 
 
 def _validate_reflection_ontology(
     entity: str,
     relation_type: str | None,
-    confidence: float | None,
     temporal_scope: str | None,
     text: str,
 ) -> tuple[bool, str]:
     """Returns (is_valid, reason). Invalid entries keep their text but
-    have relation_type/confidence/temporal_scope stripped — see caller."""
+    have relation_type/temporal_scope stripped — see caller."""
     if relation_type is not None:
         if relation_type not in RELATION_TYPES:
             return False, f'unknown relation_type: {relation_type!r}'
         allowed = ENTITY_RELATION_MAP.get(entity, frozenset())
         if relation_type not in allowed:
             return False, f'{relation_type!r} not valid for entity {entity!r}'
-    if confidence is not None:
-        try:
-            c = float(confidence)
-        except (TypeError, ValueError):
-            return False, f'non-numeric confidence: {confidence!r}'
-        # Reject NaN / ±Inf before range-checking. Non-finite floats would
-        # otherwise be silently kept and, once persisted, emit non-standard
-        # JSON literals (NaN/Infinity) that break strict parsers downstream.
-        if not math.isfinite(c):
-            return False, f'non-finite confidence: {c}'
-        # Prompt contract is 0.0–1.0; clamp out-of-range values to invalid so
-        # a hallucinated "1.7" or "-0.2" doesn't slip through as metadata.
-        if c < 0.0 or c > 1.0:
-            return False, f'confidence out of range [0.0, 1.0]: {c}'
-        if c < MIN_REFLECTION_CONFIDENCE:
-            return False, f'low confidence: {c}'
     if temporal_scope is not None and temporal_scope not in TEMPORAL_SCOPES:
         return False, f'unknown temporal_scope: {temporal_scope!r}'
     if len(text) > MAX_REFLECTION_TEXT_CHARS:
@@ -311,7 +287,6 @@ class ReflectionEngine:
             # Ontology fields (RFC memory-enhancements §3). All optional —
             # legacy entries and validation-stripped entries both read None.
             'relation_type': None,
-            'confidence': None,
             'subject': None,
             'temporal_scope': None,
         }
@@ -659,16 +634,10 @@ class ReflectionEngine:
             # Ontology fields (RFC §3). Missing fields are tolerated — we
             # only enforce consistency when the LLM does fill them in, so
             # older prompts stay compatible. Validation failure degrades
-            # to null (soft fail per §3.3.6) rather than dropping the whole
-            # reflection.
+            # to null (soft fail) rather than dropping the whole reflection.
             rel_type = result.get('relation_type')
             if rel_type is not None and not isinstance(rel_type, str):
                 rel_type = None
-            conf_raw = result.get('confidence')
-            try:
-                confidence = float(conf_raw) if conf_raw is not None else None
-            except (TypeError, ValueError):
-                confidence = None
             temporal = result.get('temporal_scope')
             if temporal is not None and not isinstance(temporal, str):
                 temporal = None
@@ -677,7 +646,7 @@ class ReflectionEngine:
                 subject = None
 
             ok, reason = _validate_reflection_ontology(
-                reflection_entity, rel_type, confidence, temporal, reflection_text,
+                reflection_entity, rel_type, temporal, reflection_text,
             )
             if not ok:
                 logger.info(
@@ -689,7 +658,6 @@ class ReflectionEngine:
                 # (no class but still a subject label), which downstream
                 # grouping/filtering can't interpret consistently.
                 rel_type = None
-                confidence = None
                 temporal = None
                 subject = None
         except Exception as e:
@@ -728,7 +696,6 @@ class ReflectionEngine:
             # validation demoted them. Callers that want to filter or group
             # by relation_type should treat None as "uncategorized".
             'relation_type': rel_type,
-            'confidence': confidence,
             'temporal_scope': temporal,
             'subject': subject,
         })
