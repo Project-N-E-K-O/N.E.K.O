@@ -1630,7 +1630,7 @@
         "capturingPortrait": "Захват портрета...",
         "generatingCard": "Создание карточки персонажа...",
         "settings": "Настройки",
-        "renamePrompt": "Введите новое имя профиля",
+        "renamePrompt": "Введите новое имя карточки",
         "renameTitle": "Переименовать",
         "tempSaveFailed": "Ошибка временного сохранения: {{error}}",
         "newCatgirlSuccess": "Новый NEKO успешно создан",
@@ -1658,7 +1658,7 @@
         "cardAuthorUpdated": "Автор обновлён",
         "cardAuthorUpdateFailed": "Не удалось обновить автора: {{error}}",
         "idleMotionHint": "При сохранении выбранное движение будет установлено как ожидающее",
-        "saveMasterSuccess": "Профиль мастера сохранён",
+        "saveMasterSuccess": "Профиль хозяина сохранён",
         "editCardFace": "Редактировать обложку"
     },
     "app": {

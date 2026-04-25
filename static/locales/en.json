@@ -3404,6 +3404,7 @@
         "savingCardFace": "Saving...",
         "saveCardFaceSuccess": "Saved successfully!",
         "saveCardFaceFailed": "Save failed: {{error}}",
+        "saveCardFacePartialSuccess": "PNG saved, but metadata write failed: {{error}}",
         "renderFailed": "Unable to render card face image",
         "exportTitle": "Export Character Card"
     },

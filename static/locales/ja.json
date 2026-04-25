@@ -516,7 +516,7 @@
         "noCharacterCardSelected": "先にキャラクターカードを選択してください",
         "steamNotRunningTitle": "Steamが実行されていません",
         "steamNotRunningMessage": "Steamクライアントが実行されていないか、ログインしていません。\n\nワークショップ機能にはSteamクライアントが必要です：\n1. Steamクライアントをダウンロードしてインストール\n2. Steamを起動してアカウントにログイン\n3. このページを再度開いてください",
-        "addNewCatgirl": "新規キャラ設定",
+        "addNewCatgirl": "新規キャラを追加",
         "searchCharacterCards": "キャラカードを検索...",
         "cardView": "カード表示",
         "listView": "リスト表示",

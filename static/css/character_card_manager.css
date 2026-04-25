@@ -1664,7 +1664,6 @@ overflow: hidden;
         animation: none !important;
         transition: none !important;
         opacity: 1 !important;
-        display: block !important;
         transform: none !important;
     }
     .panel-tab-content.tab-exit {
