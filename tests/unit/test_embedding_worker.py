@@ -159,9 +159,9 @@ def _build_worker(
     *, service, persona, reflection, fact, names=("小天",), warmup_delay=0.01,
 ) -> EmbeddingWarmupWorker:
     w = EmbeddingWarmupWorker(
-        persona_manager=persona,
-        reflection_engine=reflection,
-        fact_store=fact,
+        get_persona_manager=lambda: persona,
+        get_reflection_engine=lambda: reflection,
+        get_fact_store=lambda: fact,
         get_character_names=lambda: list(names),
         warmup_delay_seconds=warmup_delay,
     )

@@ -1643,10 +1643,14 @@ async def startup_event_handler():
                 # known characters keep getting backfilled.
                 return list(catgirl_names)
 
+        # Live getters (not snapshots): /reload swaps these module
+        # globals atomically; capturing the instances here would let
+        # the worker keep writing through the old managers and clobber
+        # post-reload updates from the new ones.
         embedding_warmup_worker = EmbeddingWarmupWorker(
-            persona_manager=persona_manager,
-            reflection_engine=reflection_engine,
-            fact_store=fact_store,
+            get_persona_manager=lambda: persona_manager,
+            get_reflection_engine=lambda: reflection_engine,
+            get_fact_store=lambda: fact_store,
             get_character_names=_current_catgirl_names,
             warmup_delay_seconds=VECTORS_WARMUP_DELAY_SECONDS,
         )

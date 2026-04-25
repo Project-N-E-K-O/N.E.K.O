@@ -80,15 +80,19 @@ class EmbeddingWarmupWorker:
     def __init__(
         self,
         *,
-        persona_manager,
-        reflection_engine,
-        fact_store,
+        get_persona_manager,         # callable returning current PersonaManager
+        get_reflection_engine,       # callable returning current ReflectionEngine
+        get_fact_store,              # callable returning current FactStore
         get_character_names,         # callable returning list[str]
         warmup_delay_seconds: float,
     ) -> None:
-        self._persona_manager = persona_manager
-        self._reflection_engine = reflection_engine
-        self._fact_store = fact_store
+        # All store/manager accesses go through getters so /reload (which
+        # rebinds the memory_server module globals) is observed on the next
+        # sweep. Capturing concrete instances here would let the worker
+        # write through stale managers and clobber the new ones' updates.
+        self._get_persona_manager = get_persona_manager
+        self._get_reflection_engine = get_reflection_engine
+        self._get_fact_store = get_fact_store
         self._get_character_names = get_character_names
         self._warmup_delay = warmup_delay_seconds
 
@@ -255,9 +259,10 @@ class EmbeddingWarmupWorker:
         already used by every other write path in PersonaManager so
         the convention is safe here.
         """
-        async with self._persona_manager._get_alock(name):
+        persona_manager = self._get_persona_manager()
+        async with persona_manager._get_alock(name):
             try:
-                persona = await self._persona_manager._aensure_persona_locked(name)
+                persona = await persona_manager._aensure_persona_locked(name)
             except Exception as e:  # noqa: BLE001
                 logger.warning(
                     "[EmbeddingWorker] persona load failed for %s: %s", name, e,
@@ -268,7 +273,7 @@ class EmbeddingWarmupWorker:
                 return 0
             await self._fill_embeddings(targets)
             try:
-                await self._persona_manager.asave_persona(name, persona)
+                await persona_manager.asave_persona(name, persona)
             except Exception as e:  # noqa: BLE001
                 logger.warning(
                     "[EmbeddingWorker] persona save failed for %s: %s", name, e,
@@ -279,9 +284,10 @@ class EmbeddingWarmupWorker:
         """Same lock contract as persona — synthesis / auto-promote /
         confirm-promotion all hold ``_get_alock(name)`` around their
         load+save, so the worker must too (Codex PR-956 P1)."""
-        async with self._reflection_engine._get_alock(name):
+        reflection_engine = self._get_reflection_engine()
+        async with reflection_engine._get_alock(name):
             try:
-                reflections = await self._reflection_engine._aload_reflections_full(name)
+                reflections = await reflection_engine._aload_reflections_full(name)
             except Exception as e:  # noqa: BLE001
                 logger.warning(
                     "[EmbeddingWorker] reflection load failed for %s: %s", name, e,
@@ -292,7 +298,7 @@ class EmbeddingWarmupWorker:
                 return 0
             await self._fill_embeddings(targets)
             try:
-                await self._reflection_engine.asave_reflections(name, reflections)
+                await reflection_engine.asave_reflections(name, reflections)
             except Exception as e:  # noqa: BLE001
                 logger.warning(
                     "[EmbeddingWorker] reflection save failed for %s: %s", name, e,
@@ -300,8 +306,9 @@ class EmbeddingWarmupWorker:
             return len(targets)
 
     async def _sweep_facts(self, name: str, budget: int) -> int:
+        fact_store = self._get_fact_store()
         try:
-            facts = await self._fact_store.aload_facts(name)
+            facts = await fact_store.aload_facts(name)
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 "[EmbeddingWorker] fact load failed for %s: %s", name, e,
@@ -312,7 +319,7 @@ class EmbeddingWarmupWorker:
             return 0
         await self._fill_embeddings(targets)
         try:
-            await self._fact_store.asave_facts(name)
+            await fact_store.asave_facts(name)
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 "[EmbeddingWorker] fact save failed for %s: %s", name, e,
