@@ -1,6 +1,8 @@
 /**
  * 한국어 언어 팩
  */
+import { yuiGuideLocales } from './yuiGuide'
+
 export default {
   common: {
     loading: '로딩 중...',
@@ -406,5 +408,15 @@ export default {
   },
   app: {
     titleSuffix: 'N.E.K.O 플러그인 관리'
+  },
+  tutorial: {
+    yuiGuide: yuiGuideLocales.ko
+  },
+  yuiTutorial: {
+    title: '냐~ 플러그인 관리 패널에 오신 걸 환영해!',
+    welcome: '여기가 모든 플러그인을 관리하는 곳이야! 플러그인을 보고, 실행하고, 설정해서 나를 더 강력하게 만들어줘~',
+    hint: '천천히 둘러보고 다 봤으면 아래 버튼을 눌러줘~',
+    complete: '다 봤어 냐~',
+    dismiss: '나중에 볼게'
   }
 }

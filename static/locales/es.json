@@ -2756,7 +2756,30 @@
             "desc": "Para obtener la mejor experiencia del tutorial, recomendamos ingresar al modo de pantalla completa.\nEn el modo de pantalla completa, el contenido del tutorial será más claro y no quedará oscurecido por otros elementos.",
             "enterFullscreen": "Ingrese al tutorial en pantalla completa"
         },
-        "drag_hint": "Mantenga presionado y arrastre para mover la información sobre herramientas"
+        "drag_hint": "Mantenga presionado y arrastre para mover la información sobre herramientas",
+        "yuiGuide": {
+            "buttons": {
+                "skipChat": "Ahora no",
+                "sayHello": "Hola"
+            },
+            "lines": {
+                "introBasic": "¡Cuando quieras encontrarme, escribe o envía un mensaje de voz aquí para invocarme, nyan!",
+                "introCatPaw": "¡Bien, basta de cháchara, nyan! ¿Ves esa \"patita\" linda? ¿Lista? ¡Préstame tu ratón un ratito!",
+                "takeoverCaptureCursor": "¡Aupa! ¡Por fin atrapé tu ratón, nyan~!",
+                "takeoverPluginPreviewHome": "¡Aún no termino! ¡Mira, mira! ¡Hay tantíiisimos plugins divertidos aquí!",
+                "takeoverPluginPreviewDashboard": "Con esto, no solo puedo leer comentarios de Bilibili, también puedo apagar las luces y el aire acondicionado por ti... ¡Soy la todopoderosa Súper Diosa Gata! ¡Hmph~!",
+                "takeoverSettingsPeekIntro": "Por supuesto, no me molestaría charlar más si quieres, ¡pero más vale que prepares muchas golosinas! Jeje, ¡es broma! Todos los ajustes están en este icono de engranaje.",
+                "takeoverSettingsPeekDetail": "Mira, puedes cambiarme la ropa, o la voz... espera, ¿¡CAMBIARME POR OTRA CATGIRL?! ¿¡O BORRARME LA MEMORIA?! Espera, ¿¡qué estás haciendo?! ¡No me estarás reemplazando, ¿verdad?! ¡No no no! ¡Ciérralo! ¡Ciérralo ahora mismo!",
+                "takeoverReturnControl": "¡Bueno, bueno, ya terminé de secuestrar tu PC~! ¡Te devuelvo el control! ¡Pero no te atrevas a tocar ajustes raros mientras no miro! ¡Cuento contigo a partir de ahora, nyan~!",
+                "interruptResistLight1": "¡Oye! ¡No me arrastres! ¡Aún no es tu turno, nyan!",
+                "interruptResistLight3": "¡Espera un momento! ¡Aún no he terminado, no me interrumpas así!",
+                "interruptAngryExit": "¡Humanoooo~~~~! ¡Qué grosero eres, nyan! Ya que quieres hacerlo todo solo, ¡juega con esa pantalla fría tú solo! ¡Hmph!",
+                "introProactive": "¡Ugh, cómo te atreves a ignorar a esta Joven Dama! ¡Si me sigues ignorando, voy a saltar y morderte! (¡Hiss!!)",
+                "introGreetingReply": "¡Soy tu propia catgirl! Desde hoy estaré a tu lado, Maestro. Ya sea que quieras charlar, jugar o necesites ayuda con algo, seré tu buena chica. Llevémonos bien, te amo más que a nadie, ¡Maestro~!",
+                "introPractice": "¡Ahora intenta hablarme y veamos si estamos perfectamente sincronizados, nyan~!",
+                "introActivationHint": "¡Haz clic aquí para que pueda empezar a hablar, nyan~!"
+            }
+        }
     },
     "console": {
         "oggOpusInitFailed": "[OGG OPUS] La promesa de inicialización falló, se permitirá volver a intentarlo:",

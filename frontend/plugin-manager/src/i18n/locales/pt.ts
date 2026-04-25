@@ -1,6 +1,8 @@
 /**
  * Pacote de idioma português
  */
+import { yuiGuideLocales } from './yuiGuide'
+
 export default {
   common: {
     loading: 'Carregando...',
@@ -406,5 +408,15 @@ export default {
   },
   app: {
     titleSuffix: 'Gerenciador de plugins N.E.K.O'
+  },
+  tutorial: {
+    yuiGuide: yuiGuideLocales.pt
+  },
+  yuiTutorial: {
+    title: 'Meow~ Bem-vindo ao Gerenciador de Plugins!',
+    welcome: 'É aqui que você gerencia todos os seus plugins, nya~ Pode navegar, executar e ajustar pra me deixar ainda mais poderosa!',
+    hint: 'Vá com calma, dê uma olhadinha, e toca no botão abaixo quando terminar~',
+    complete: 'Tudo pronto, meow~',
+    dismiss: 'Talvez depois~'
   }
 }

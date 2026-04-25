@@ -593,6 +593,7 @@
                     // 重置并发锁，确保正在 sleep 的 processRealisticQueue 循环
                     // 醒来后通过 version 检查退出，且不会阻塞下一轮启动
                     window._isProcessingRealisticQueue = false;
+                    window._realisticProcessingOwner = null;
 
                     // 同时清理 host 未就绪期间缓存的待发消息（防止 discard 的消息在 host ready 后被重放）
                     var hadTrackedBubbles = window.currentTurnGeminiBubbles && window.currentTurnGeminiBubbles.length > 0;

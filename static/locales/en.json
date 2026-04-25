@@ -2756,7 +2756,30 @@
             "desc": "For the best tutorial experience, we recommend entering fullscreen mode.\nIn fullscreen mode, the tutorial content will be clearer and won't be obscured by other elements.",
             "enterFullscreen": "Enter Fullscreen Tutorial"
         },
-        "drag_hint": "Hold and drag to move the tooltip"
+        "drag_hint": "Hold and drag to move the tooltip",
+        "yuiGuide": {
+            "buttons": {
+                "skipChat": "Not now",
+                "sayHello": "Hello"
+            },
+            "lines": {
+                "introBasic": "Whenever you want to find me, just type or send a voice message here to summon me, nyan!",
+                "introCatPaw": "Alright, enough chit-chat, nyan! See that cute \"paw\"? Ready? Let me borrow your mouse for a tiny bit!",
+                "takeoverCaptureCursor": "Heave-ho! I finally caught your mouse, nyan~!",
+                "takeoverPluginPreviewHome": "Not done yet! Look, look! There are so~~ many fun plugins here!",
+                "takeoverPluginPreviewDashboard": "With these, I can not only read Bilibili comments, but also turn off lights and AC for you... I am the all-powerful Super Cat God! Hmph~",
+                "takeoverSettingsPeekIntro": "Of course, I wouldn't mind chatting more if you want, but you'd better prepare lots of treats! Hehe, just kidding! All the settings are in this gear icon.",
+                "takeoverSettingsPeekDetail": "Look, you can change my outfit, or my voice... wait, CHANGE TO ANOTHER CATGIRL?! OR ERASE MEMORIES?! Wait, what are you doing?! You're not trying to replace me, are you?! No no no! Close it! Close it right now!",
+                "takeoverReturnControl": "Alright, alright, I'm done hijacking your PC~! Giving control back to you! But don't you dare touch any weird settings while I'm not looking! I'm counting on you from now on, nyan~!",
+                "interruptResistLight1": "Hey! Don't drag me around! It's not your turn yet, nyan!",
+                "interruptResistLight3": "Wait a sec! I'm not finished yet, don't just interrupt me like that!",
+                "interruptAngryExit": "Humannnn~~~~! You're so rude, nyan! Since you want to do everything yourself, go play with that cold screen alone! Hmph!",
+                "introProactive": "Ugh, how dare you ignore this Young Lady! If you keep ignoring me, I'll jump out and bite you! (Hiss!!)",
+                "introGreetingReply": "I'm your very own catgirl! Starting today, I'll be by your side, Master. Whether you want to chat, play, or need help with something, I'll be your good girl. Let's get along, I love you most, Master~!",
+                "introPractice": "Now, try talking to me and see if we're perfectly in sync, nyan~!",
+                "introActivationHint": "Click here so I can start talking, nyan~!"
+            }
+        }
     },
     "console": {
         "oggOpusInitFailed": "[OGG OPUS] Initialization Promise failed, will allow retry:",

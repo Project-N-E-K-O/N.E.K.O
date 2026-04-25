@@ -1,6 +1,8 @@
 /**
  * Русский языковой пакет
  */
+import { yuiGuideLocales } from './yuiGuide'
+
 export default {
   common: {
     loading: 'Загрузка...',
@@ -406,5 +408,15 @@ export default {
   },
   app: {
     titleSuffix: 'N.E.K.O Управление плагинами'
+  },
+  tutorial: {
+    yuiGuide: yuiGuideLocales.ru
+  },
+  yuiTutorial: {
+    title: 'Добро пожаловать в менеджер плагинов!',
+    welcome: 'Здесь вы управляете всеми плагинами! Просматривайте, запускайте и настраивайте плагины, чтобы сделать меня ещё мощнее~',
+    hint: 'Осмотритесь и нажмите кнопку ниже, когда закончите~',
+    complete: 'Всё осмотрел~',
+    dismiss: 'Пропустить'
   }
 }

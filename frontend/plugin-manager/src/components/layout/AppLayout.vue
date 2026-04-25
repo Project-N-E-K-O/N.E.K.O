@@ -28,7 +28,7 @@
           <Header />
         </header>
 
-        <main class="app-main">
+        <main class="app-main" data-yui-guide-id="plugin-main">
           <router-view v-slot="{ Component, route: currentRoute }">
             <Transition name="page" mode="out-in">
               <component :is="Component" :key="currentRoute.path" />
